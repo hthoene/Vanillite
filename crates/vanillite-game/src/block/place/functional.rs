@@ -329,7 +329,7 @@ fn fire_state(level: &dyn BlockReader, pos: BlockPos) -> BlockState {
 }
 
 /// `BaseFireBlock.getState(level, pos)`: soul fire on soul fire bases, else fire.
-fn base_fire_state(level: &dyn BlockReader, pos: BlockPos) -> BlockState {
+pub(super) fn base_fire_state(level: &dyn BlockReader, pos: BlockPos) -> BlockState {
     if tags::SOUL_FIRE_BASE_BLOCKS.has(level.state(util::below(pos))) {
         ids::SOUL_FIRE.default_state()
     } else {
