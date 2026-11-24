@@ -11,6 +11,18 @@ repository.workspace = true
 [dependencies]
 vanillite-protocol.workspace = true
 vanillite-config.workspace = true
+vanillite-data.workspace = true
+vanillite-datapack.workspace = true
+vanillite-nbt.workspace = true
+log.workspace = true
+rsa.workspace = true
+serde_json.workspace = true
+sha1.workspace = true
+tokio.workspace = true
+ureq.workspace = true
+
+[dev-dependencies]
+env_logger.workspace = true
 
 # SEC-07: input-handling crate. Cargo cannot extend `[lints] workspace = true`,
 # so this repeats the workspace lints and adds the SEC-07 set.

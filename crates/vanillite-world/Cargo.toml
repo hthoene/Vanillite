@@ -9,6 +9,9 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+vanillite-base.workspace = true
+vanillite-data.workspace = true
+rustc-hash.workspace = true
 vanillite-chunk.workspace = true
 vanillite-datapack.workspace = true
 vanillite-config.workspace = true
