@@ -52,6 +52,13 @@ fn tick(level: &mut Level, _state: BlockState, pos: BlockPos) {
     // The item behaviours come with containers.
     if dispense_slot(level, pos).is_none() {
         level.level_event(None, DISPENSE_FAIL, pos, 0);
+        let state = level.block(pos);
+        let context = crate::level::game_event::GameEventContext::with_state(None, state);
+        level.game_event_block(
+            crate::level::game_event::events().block_activate,
+            pos,
+            context,
+        );
     }
 }
 

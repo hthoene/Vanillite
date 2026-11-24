@@ -862,11 +862,12 @@ impl Level {
         }
     }
 
-    /// Spawns an entity with a fresh network id and a random UUID
-    /// (`Mth.createInsecureUUID(level.random)`).
+    /// A random UUID for a new entity (`Mth.createInsecureUUID(entity.random)`): drawn from a
+    /// random of its own, as Vanilla's entities draw it from theirs, so spawning entities does
+    /// not shift the level random.
     pub fn new_uuid(&mut self) -> u128 {
-        let most = self.random.next_long() as u64;
-        let least = self.random.next_long() as u64;
+        let most = self.sound_seeds.next_long() as u64;
+        let least = self.sound_seeds.next_long() as u64;
         // Version 4, IETF variant.
         let most = (most & !0xF000) | 0x4000;
         let least = (least & !(0xC000_0000_0000_0000)) | 0x8000_0000_0000_0000;

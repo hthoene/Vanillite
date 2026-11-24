@@ -143,6 +143,13 @@ fn daylight_use(
     }
     let new_state = state.set_flag("inverted", !state.flag("inverted"));
     level.set_block(pos, new_state, update::CLIENTS);
+    let context =
+        crate::level::game_event::GameEventContext::with_state(Some(context.player), new_state);
+    level.game_event_block(
+        crate::level::game_event::events().block_change,
+        pos,
+        context,
+    );
     update_signal_strength(level, new_state, pos);
     Interaction::Success
 }

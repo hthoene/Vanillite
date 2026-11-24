@@ -273,6 +273,7 @@ fn emit_state(
             0.4,
             0.6,
         );
+        level.game_event_at(None, crate::level::game_event::events().block_activate, pos);
     } else if !powered && was_powered {
         level.play_block_sound(
             None,
@@ -281,6 +282,11 @@ fn emit_state(
             SOUND_BLOCKS,
             0.4,
             0.5,
+        );
+        level.game_event_at(
+            None,
+            crate::level::game_event::events().block_deactivate,
+            pos,
         );
     } else if attached && !was_attached {
         level.play_block_sound(
@@ -291,6 +297,7 @@ fn emit_state(
             0.4,
             0.7,
         );
+        level.game_event_at(None, crate::level::game_event::events().block_attach, pos);
     } else if !attached && was_attached {
         let pitch = 1.2 / (level.random().next_float() * 0.2 + 0.9);
         level.play_block_sound(
@@ -301,6 +308,7 @@ fn emit_state(
             0.4,
             pitch,
         );
+        level.game_event_at(None, crate::level::game_event::events().block_detach, pos);
     }
 }
 

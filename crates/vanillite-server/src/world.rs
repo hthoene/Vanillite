@@ -57,6 +57,8 @@ pub struct ServerWorld {
     /// The chunk ticket and simulation ticket of every player at its centre chunk.
     player_tickets: FxHashMap<EntityId, (ChunkPos, TicketId, TicketId)>,
     scratch: Vec<ChunkPos>,
+    /// Player ids of the tick (block effects).
+    player_scratch: Vec<vanillite_world::entity::EntityId>,
 }
 
 impl fmt::Debug for ServerWorld {
@@ -98,6 +100,7 @@ impl ServerWorld {
             updates: WorldUpdates::default(),
             player_tickets: FxHashMap::default(),
             scratch: Vec::new(),
+            player_scratch: Vec::new(),
         }
     }
 
@@ -225,6 +228,7 @@ impl ServerWorld {
             self.id,
             i64::try_from(self.ticks).unwrap_or(i64::MAX),
         );
+        self.players_inside_blocks();
         let level = &mut self.level;
         if ctx.runs_normally {
             level.tick_time();
@@ -256,6 +260,17 @@ impl ServerWorld {
         WorldPlayers::send_entity_updates(&self.level.entities, &self.entity_updates);
         self.players
             .tick_connections(&mut self.level.entities, ctx.tick, ctx.global, self.id);
+    }
+
+    /// `applyEffectsFromBlocks` after the players' moves: pressure plates, tripwire and other
+    /// blocks they stand in react (`Entity.checkInsideBlocks`).
+    fn players_inside_blocks(&mut self) {
+        self.player_scratch.clear();
+        self.player_scratch
+            .extend(self.level.entities.players.iter().map(|(id, _)| id));
+        for &id in &self.player_scratch {
+            vanillite_game::block::plate::check_inside_blocks(&mut self.level, id);
+        }
     }
 
     /// `entityTickList.forEach(tickNonPassenger)`: every entity in tick order; players move

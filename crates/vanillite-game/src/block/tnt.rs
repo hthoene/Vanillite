@@ -74,6 +74,7 @@ pub fn prime(level: &mut Level, pos: BlockPos, source: Option<EntityId>) -> bool
         1.0,
         1.0,
     );
+    level.game_event_at(source, crate::level::game_event::events().prime_fuse, pos);
     true
 }
 

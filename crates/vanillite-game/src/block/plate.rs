@@ -207,8 +207,14 @@ fn check_pressed(level: &mut Level, pos: BlockPos, state: BlockState, old_signal
     }
     if !is_pressed && was_pressed {
         level.play_block_sound(None, pos, click_sound(state, false), SOUND_BLOCKS, 1.0, 1.0);
+        level.game_event_at(
+            None,
+            crate::level::game_event::events().block_deactivate,
+            pos,
+        );
     } else if is_pressed && !was_pressed {
         level.play_block_sound(None, pos, click_sound(state, true), SOUND_BLOCKS, 1.0, 1.0);
+        level.game_event_at(None, crate::level::game_event::events().block_activate, pos);
     }
     if is_pressed {
         level.schedule_block_tick(pos, state.block(), pressed_time(state));
@@ -251,6 +257,14 @@ fn direct_signal(_level: &Level, state: BlockState, _pos: BlockPos, direction: D
 /// bounding box (shrunk by 1e-5) touches, in x, y, z order. The entity collision code calls this
 /// after moving an entity; pressure plates, tripwires and detector rails react through it.
 pub fn check_inside_blocks(level: &mut Level, entity: EntityId) {
+    // `isAffectedByBlocks`: not spectators.
+    if level
+        .entities
+        .player(entity)
+        .is_some_and(|p| p.game_mode == vanillite_config::GameMode::Spectator)
+    {
+        return;
+    }
     let Some(aabb) = level.entities.store.get(entity).map(|e| e.aabb()) else {
         return;
     };

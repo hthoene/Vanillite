@@ -25,6 +25,7 @@ use vanillite_world::entity::EntityId;
 use vanillite_worldgen::behaviour::{PosExt, StateExt};
 
 use super::{BlockBehaviour, Interaction, UseContext, sound_id};
+use crate::level::game_event::{GameEventContext, events};
 use crate::level::{BlockEntity, Level, SOUND_BLOCKS, UPDATE_LIMIT, update};
 pub use moving::{MovingPiston, final_tick, moving_piston_tick};
 use resolver::{Resolver, Structure, offset};
@@ -227,6 +228,8 @@ fn base_trigger_event(
         let pitch = level.random().next_float() * 0.25 + 0.6;
         let sound = sound_id("block.piston.extend");
         level.play_block_sound(None, pos, sound, SOUND_BLOCKS, 0.5, pitch);
+        let context = GameEventContext::with_state(None, extended_state);
+        level.game_event_block(events().block_activate, pos, context);
     } else if b0 == TRIGGER_CONTRACT || b0 == TRIGGER_DROP {
         let arm = pos.relative(direction);
         if matches!(level.block_entity(arm), Some(BlockEntity::MovingPiston(_))) {
@@ -281,6 +284,8 @@ fn base_trigger_event(
         let pitch = level.random().next_float() * 0.15 + 0.6;
         let sound = sound_id("block.piston.contract");
         level.play_block_sound(None, pos, sound, SOUND_BLOCKS, 0.5, pitch);
+        let context = GameEventContext::with_state(None, moving_state);
+        level.game_event_block(events().block_deactivate, pos, context);
     }
     true
 }
@@ -338,6 +343,8 @@ fn move_blocks(
         let state = level.block(pos);
         super::drops::drop_resources(level, pos, state, None);
         level.set_block(pos, BlockState::AIR, update::KNOWN_SHAPE | update::CLIENTS);
+        let context = GameEventContext::with_state(None, state);
+        level.game_event_block(events().block_destroy, pos, context);
         to_update.push(state);
     }
     let unmark = |delete: &mut Vec<(BlockPos, BlockState, bool)>, pos: BlockPos| {
@@ -356,10 +363,12 @@ fn move_blocks(
             .default_state()
             .set_direction("facing", direction);
         level.set_block(pos, moving, moving_flags);
+        // The TNT duplication switch (D1) decides what a primed TNT block moves as.
+        let moved = crate::block::tnt::piston_moved_state(level, shapes[i], state);
         level.set_block_entity(
             pos,
             BlockEntity::MovingPiston(Box::new(MovingPiston::new(
-                shapes[i], direction, extending, false,
+                moved, direction, extending, false,
             ))),
         );
         to_update.push(state);

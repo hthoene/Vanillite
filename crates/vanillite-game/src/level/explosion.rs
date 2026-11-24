@@ -63,6 +63,8 @@ impl Level {
         radius: f32,
         interaction: BlockInteraction,
     ) -> usize {
+        let context = super::game_event::GameEventContext::of(source);
+        self.game_event(super::game_event::events().explode, center, context);
         let mut targets = self.exploded_positions(center, radius);
         let hit_players = self.hurt_entities(source, center, radius);
         if interaction != BlockInteraction::Keep {

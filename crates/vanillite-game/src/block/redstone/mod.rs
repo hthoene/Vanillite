@@ -232,14 +232,17 @@ pub(crate) fn direction_from_yaw(yaw: f32) -> Direction {
     }
 }
 
-/// `level.gameEvent(entity, event, pos)`: the vibration of a redstone component. Game event
-/// listeners (sculk sensors) hook in here.
-pub(crate) fn game_event(
-    _level: &mut Level,
-    _event: &str,
-    _pos: BlockPos,
-    _source: Option<EntityId>,
-) {
+/// `level.gameEvent(entity, event, pos)`: the vibration of a redstone component
+/// (`block_activate`, `block_deactivate`, `block_open` or `block_close`).
+pub(crate) fn game_event(level: &mut Level, event: &str, pos: BlockPos, source: Option<EntityId>) {
+    let events = crate::level::game_event::events();
+    let id = match event {
+        "block_activate" => events.block_activate,
+        "block_deactivate" => events.block_deactivate,
+        "block_open" => events.block_open,
+        _ => events.block_close,
+    };
+    level.game_event_at(source, id, pos);
 }
 
 /// `level.getRandom().nextFloat() * 0.1F + 0.9F`: the pitch of door and gate sounds.
