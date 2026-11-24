@@ -106,6 +106,11 @@ impl Tx {
         self.encoder.body(body, &mut self.out)
     }
 
+    /// Queues a frame of a link with the same compression threshold, unchanged.
+    pub(crate) fn raw(&mut self, frame: &[u8]) -> vanillite_protocol::Result<()> {
+        self.encoder.raw(frame, &mut self.out)
+    }
+
     /// Writes everything queued; fails if the peer does not read within `timeout` (SEC-17).
     pub(crate) async fn flush(&mut self, timeout: Duration) -> std::io::Result<()> {
         if self.out.is_empty() {

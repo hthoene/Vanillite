@@ -419,9 +419,15 @@ impl Conn {
             )));
         }
         let shared = Arc::clone(&self.shared);
+        let mut threshold = self.shared.config.compression_threshold;
         let profile = if let Some(profile) = self.vouched.clone() {
             profile
-        } else if let Some(profile) = self.forwarded(&hello.name).await? {
+        } else if let Some((profile, link)) = self.forwarded(&hello.name).await? {
+            // A trusted Vanillite proxy relays frames unchanged if they are compressed for its
+            // client: use its threshold.
+            if let Some(t) = link {
+                threshold = t;
+            }
             profile
         } else if let Some(keys) = shared.keys.as_ref() {
             let challenge: [u8; 4] = rand_bytes();
@@ -456,7 +462,6 @@ impl Conn {
             }
         };
 
-        let threshold = self.shared.config.compression_threshold;
         if threshold >= 0 && self.vouched.is_none() {
             self.out.send(&login::LoginCompression { threshold });
             self.out.control(Out::Compression(threshold));
@@ -482,27 +487,41 @@ impl Conn {
         Ok(profile)
     }
 
-    /// Velocity modern forwarding: asks the proxy for the player's identity. `None` when
-    /// forwarding is off, or for a direct connection where those are allowed.
-    async fn forwarded(&mut self, name: &str) -> Result<Option<GameProfile>> {
+    /// Velocity modern forwarding: asks the proxy for the player's identity, and offers the
+    /// trusted link in the same round trip. `None` when forwarding is off, or for a direct
+    /// connection where those are allowed; otherwise the profile and, if the proxy accepted
+    /// the link, its compression threshold.
+    async fn forwarded(&mut self, name: &str) -> Result<Option<(GameProfile, Option<i32>)>> {
         let Some(secret) = self.shared.config.forwarding_secret.clone() else {
             return Ok(None);
         };
-        let transaction_id = i32::from_be_bytes(rand_bytes()) & i32::MAX;
+        let transaction_id = i32::from_be_bytes(rand_bytes()) & (i32::MAX >> 1);
+        let link_id = transaction_id.wrapping_add(1);
+        let link_request = velocity::link_request(rand_bytes());
         self.out.send(&login::CustomQuery {
             transaction_id,
             channel: Identifier::new(velocity::CHANNEL)?,
             payload: RawBytes(vec![velocity::MAX_VERSION]),
         });
-        let ServerboundLogin::CustomQueryAnswer(answer) =
-            self.recv(ServerboundLogin::decode).await?
-        else {
-            return Err(Error::Invalid("expected forwarding answer").into());
-        };
-        if answer.transaction_id != transaction_id {
-            return Err(Error::Invalid("forwarding transaction").into());
+        self.out.send(&login::CustomQuery {
+            transaction_id: link_id,
+            channel: Identifier::new(velocity::LINK_CHANNEL)?,
+            payload: RawBytes(link_request.clone()),
+        });
+        let mut answers = [None, None];
+        for (slot, id) in answers.iter_mut().zip([transaction_id, link_id]) {
+            let ServerboundLogin::CustomQueryAnswer(answer) =
+                self.recv(ServerboundLogin::decode).await?
+            else {
+                return Err(Error::Invalid("expected forwarding answer").into());
+            };
+            if answer.transaction_id != id {
+                return Err(Error::Invalid("forwarding transaction").into());
+            }
+            *slot = answer.payload;
         }
-        let Some(payload) = answer.payload else {
+        let [forwarding, link] = answers;
+        let Some(payload) = forwarding else {
             // A Vanilla client does not understand the request.
             return if self.shared.config.allow_direct_connections {
                 Ok(None)
@@ -515,7 +534,8 @@ impl Conn {
         match velocity::decode(&secret, &payload.0) {
             Ok(f) if f.profile.name == name && is_valid_player_name(&f.profile.name) => {
                 self.addr = SocketAddr::new(f.address, self.addr.port());
-                Ok(Some(f.profile))
+                let link = link.and_then(|a| velocity::link_verify(&secret, &link_request, &a.0));
+                Ok(Some((f.profile, link)))
             }
             Ok(_) | Err(_) => {
                 log::warn!("{}: invalid forwarding data", self.addr);
@@ -666,8 +686,8 @@ fn kick(reason: Component) -> End {
 
 /// Random bytes from the OS.
 pub fn rand_bytes<const N: usize>() -> [u8; N] {
-    use rsa::rand_core::RngCore;
+    use rsa::rand_core::Rng;
     let mut b = [0u8; N];
-    rsa::rand_core::OsRng.fill_bytes(&mut b);
+    rsa::rand_core::UnwrapErr(getrandom::SysRng).fill_bytes(&mut b);
     b
 }

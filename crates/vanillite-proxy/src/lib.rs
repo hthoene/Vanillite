@@ -6,6 +6,10 @@
 //! reconfiguration (`start_configuration` → configuration → play), so the client never
 //! reconnects. A lost backend sends the player to the next server of the try order.
 //!
+//! Vanillite backends accept a trusted link (negotiated with the forwarding secret): they
+//! compress for the client's threshold, and the proxy passes their frames on unchanged instead
+//! of inflating and deflating every packet. Other backends keep the re-encoding relay.
+//!
 //! With `[bedrock]` enabled, the `vanillite-bedrock` frontend runs in the proxy: each Bedrock
 //! player becomes a virtual connection that the proxy logs in with the identity the frontend
 //! verified and forwards like a Java player.
@@ -15,6 +19,7 @@ mod client;
 pub mod config;
 mod link;
 mod session;
+mod zlib;
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};

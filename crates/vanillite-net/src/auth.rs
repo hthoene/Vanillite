@@ -1,14 +1,14 @@
 //! Login authentication: the server key pair, Minecraft's server hash and the
 //! [`Authenticator`] slot with the session-server implementation (SEC-14).
 
+use rsa::PrivateKey;
 use rsa::pkcs8::EncodePublicKey;
-use rsa::{Pkcs1v15Encrypt, RsaPrivateKey};
 use sha1::{Digest, Sha1};
 use vanillite_protocol::types::{GameProfile, Property, Uuid};
 
 /// The RSA key pair of a server run (1024 bits like Vanilla).
 pub struct KeyPair {
-    private: RsaPrivateKey,
+    private: PrivateKey,
     public_der: Vec<u8>,
 }
 
@@ -21,8 +21,7 @@ impl std::fmt::Debug for KeyPair {
 impl KeyPair {
     /// Generates a fresh key pair.
     pub fn generate() -> Result<Self, String> {
-        let private =
-            RsaPrivateKey::new(&mut rsa::rand_core::OsRng, 1024).map_err(|e| e.to_string())?;
+        let private = PrivateKey::new(&mut getrandom::SysRng, 1024).map_err(|e| e.to_string())?;
         let public_der = private
             .to_public_key()
             .to_public_key_der()
@@ -40,8 +39,12 @@ impl KeyPair {
     }
 
     /// Decrypts a PKCS#1 v1.5 block from the client.
+    ///
+    /// Blinded and with implicit rejection (no Marvin/Bleichenbacher timing oracle): bad
+    /// padding yields a deterministic synthetic message instead of an error, so callers
+    /// must check the result (shared secret length, echoed challenge) like any other input.
     pub fn decrypt(&self, data: &[u8]) -> Option<Vec<u8>> {
-        self.private.decrypt(Pkcs1v15Encrypt, data).ok()
+        self.private.pkcs1v15_decrypt(data).ok()
     }
 }
 

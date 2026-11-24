@@ -8,7 +8,9 @@ use crate::Result;
 /// SSH host of the test server; override with `VANILLITE_TEST_HOST`.
 const DEFAULT_HOST: &str = "vanillite-test";
 /// Port of the main Vanillite dev server. Paper runs on 30000.
-const DEFAULT_PORT: u16 = 30001;
+// 30001, 30002 and the proxy on 30010 follow dev automatically (vanillite-autodeploy on the
+// test server); manual deploys of a branch go to 30003-30099.
+const DEFAULT_PORT: u16 = 30003;
 const PORTS: std::ops::RangeInclusive<u16> = 30001..=30999;
 
 pub fn host() -> String {
@@ -100,7 +102,7 @@ pub fn testserver(root: &Path, args: &[&str]) -> Result<()> {
         ["status"] => ssh(
             &host,
             "systemctl --no-pager --all list-units paper.service 'vanillite@*'; \
-             echo; ss -ltnp | grep -E ':30[0-9]{3} ' || true",
+             echo; ss -ltnp | grep -E ':30[0-9]{3} ' || true; echo; vanillite-autodeploy status",
         ),
         ["logs", port @ ..] => run(Command::new("ssh").args([
             "-t",

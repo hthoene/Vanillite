@@ -79,6 +79,9 @@ pub struct BlockLootContext<'a> {
     pub item_in_tag: &'a dyn Fn(u16, &str) -> bool,
     /// Explosion radius if destroyed by an explosion (None for players).
     pub explosion_radius: Option<f32>,
+    /// The components of the broken block's block entity (`collectComponents`), by component
+    /// type id, as wire values; `None` without a block entity.
+    pub block_entity: Option<&'a dyn Fn(u16) -> Option<Box<[u8]>>>,
 }
 
 impl fmt::Debug for BlockLootContext<'_> {
@@ -348,7 +351,7 @@ impl LootTables {
 }
 
 /// Adds every `*.json` below `dir` as `<prefix><relative path without .json>`.
-fn collect_json(dir: &Path, prefix: &str, out: &mut BTreeMap<String, PathBuf>) {
+pub(crate) fn collect_json(dir: &Path, prefix: &str, out: &mut BTreeMap<String, PathBuf>) {
     fn walk(dir: &Path, rel: &str, prefix: &str, out: &mut BTreeMap<String, PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
@@ -369,7 +372,9 @@ fn collect_json(dir: &Path, prefix: &str, out: &mut BTreeMap<String, PathBuf>) {
 }
 
 /// Reads and parses the files of [`collect_json`].
-fn read_files(files: &BTreeMap<String, PathBuf>) -> Vec<(String, Result<Value, String>)> {
+pub(crate) fn read_files(
+    files: &BTreeMap<String, PathBuf>,
+) -> Vec<(String, Result<Value, String>)> {
     files
         .iter()
         .map(|(id, path)| {
@@ -532,6 +537,8 @@ enum FuncKind {
         properties: Box<[Box<str>]>,
     },
     Discard,
+    /// `copy_components` / `copy_name` from the block entity: component type ids.
+    CopyComponents(Box<[u16]>),
     Noop,
 }
 
@@ -1160,7 +1167,31 @@ impl Parser<'_> {
             }
             "minecraft:sequence" => FuncKind::Sequence(self.func_list(field(o, "functions")?)?),
             "minecraft:discard" => FuncKind::Discard,
-            // Block entity data is not available yet; the killer never exists for blocks.
+            "minecraft:copy_components"
+                if o.get("source").and_then(Value::as_str) == Some("block_entity") =>
+            {
+                let include = o
+                    .get("include")
+                    .and_then(Value::as_array)
+                    .map(|list| {
+                        list.iter()
+                            .filter_map(Value::as_str)
+                            .filter_map(|n| {
+                                vanillite_data::registry::DATA_COMPONENT_TYPE.id(&qualify(n))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                FuncKind::CopyComponents(include)
+            }
+            "minecraft:copy_name"
+                if o.get("source").and_then(Value::as_str) == Some("block_entity") =>
+            {
+                FuncKind::CopyComponents(Box::new([
+                    vanillite_protocol::components::ids::CUSTOM_NAME,
+                ]))
+            }
+            // The killer never exists for blocks.
             "minecraft:copy_components"
             | "minecraft:copy_name"
             | "minecraft:copy_custom_data"
@@ -1659,6 +1690,15 @@ impl<'t> Eval<'t, '_> {
             }
             FuncKind::CopyState { properties } => copy_state(stack, self.ctx.state, properties),
             FuncKind::Discard => *stack = ItemStack::EMPTY,
+            FuncKind::CopyComponents(include) => {
+                if let Some(source) = self.ctx.block_entity {
+                    for &id in include.iter() {
+                        if let Some(value) = source(id) {
+                            stack.patch_mut().set(id, value);
+                        }
+                    }
+                }
+            }
             FuncKind::Noop => {}
         }
     }
@@ -1855,6 +1895,7 @@ mod tests {
             enchantment_level: &level,
             item_in_tag: &in_tag,
             explosion_radius,
+            block_entity: None,
         };
         let mut rng = XoroshiroRandom::new(seed);
         let mut out = Vec::new();
