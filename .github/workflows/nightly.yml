@@ -6,6 +6,10 @@ on:
   schedule:
     - cron: "0 2 * * *"
   workflow_dispatch:
+    inputs:
+      fuzz_seconds:
+        description: Fuzzing time per target in seconds
+        default: "300"
 
 env:
   CARGO_TERM_COLOR: always
@@ -66,24 +70,26 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: dev
-      - name: Find fuzz targets
-        id: targets
-        run: |
-          if [ -f fuzz/Cargo.toml ]; then echo "present=true" >> "$GITHUB_OUTPUT"; else echo "present=false" >> "$GITHUB_OUTPUT"; fi
-      - if: steps.targets.outputs.present == 'true'
-        run: rustup toolchain install nightly --profile minimal
-      - if: steps.targets.outputs.present == 'true'
-        uses: taiki-e/install-action@v2
+      - run: rustup toolchain install nightly --profile minimal
+      - uses: taiki-e/install-action@v2
         with:
           tool: cargo-fuzz
-      - name: Run every fuzz target for 5 minutes
-        if: steps.targets.outputs.present == 'true'
-        run: |
-          for target in $(cargo +nightly fuzz list); do
-            cargo +nightly fuzz run "$target" -- -max_total_time=300 || exit 1
-          done
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      # The corpus grows from night to night; every run saves it under a new key and restores
+      # the newest one.
+      - uses: actions/cache@v4
+        with:
+          path: fuzz/corpus
+          key: fuzz-corpus-${{ github.run_id }}
+          restore-keys: fuzz-corpus-
+      - name: Every fuzz target in parallel, each with the time budget
+        run: scripts/fuzz.sh "${{ inputs.fuzz_seconds || 300 }}"
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: fuzz-artifacts
-          path: fuzz/artifacts
+          path: |
+            fuzz/artifacts
+            fuzz/*.log
