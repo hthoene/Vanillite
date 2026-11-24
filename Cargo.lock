@@ -1534,6 +1534,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "toml",
+ "vanillite-bedrock",
  "vanillite-net",
  "vanillite-protocol",
  "vanillite-server",

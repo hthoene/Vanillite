@@ -96,12 +96,38 @@ pub(crate) async fn handle(
     shared: Arc<Shared>,
     socket: TcpStream,
     addr: SocketAddr,
-    mut guard: ConnectionGuard,
+    guard: ConnectionGuard,
 ) {
-    let (mut rx, mut tx) = link::split(socket, shared.config.compression_level);
+    let (rx, tx) = link::split(socket, shared.config.compression_level);
+    run(shared, rx, tx, addr, guard, None).await;
+}
+
+/// Runs one virtual connection (a Bedrock player) to its end. `profile` is the identity the
+/// frontend verified: the login skips encryption, the session server and compression, but
+/// passes the proxy's limits.
+pub(crate) async fn handle_virtual(
+    shared: Arc<Shared>,
+    from_client: tokio::sync::mpsc::Receiver<Vec<u8>>,
+    to_client: tokio::sync::mpsc::Sender<Vec<u8>>,
+    addr: SocketAddr,
+    guard: ConnectionGuard,
+    profile: GameProfile,
+) {
+    let (rx, tx) = link::virtual_link(from_client, to_client);
+    run(shared, rx, tx, addr, guard, Some(profile)).await;
+}
+
+async fn run(
+    shared: Arc<Shared>,
+    mut rx: Rx,
+    mut tx: Tx,
+    addr: SocketAddr,
+    mut guard: ConnectionGuard,
+    vouched: Option<GameProfile>,
+) {
     let timeout = shared.config.limits.read_timeout;
     let mut state = State::Handshake;
-    let r = pre_play(&shared, &mut rx, &mut tx, addr, &mut state).await;
+    let r = pre_play(&shared, &mut rx, &mut tx, addr, &mut state, vouched).await;
     let (profile, host, registered) = match r {
         Ok(Some(v)) => v,
         Ok(None) => return,
@@ -136,6 +162,7 @@ async fn pre_play(
     tx: &mut Tx,
     addr: SocketAddr,
     state: &mut State,
+    vouched: Option<GameProfile>,
 ) -> Result<Option<Joined>, End> {
     let limits = &shared.config.limits;
     let deadline = Instant::now()
@@ -197,10 +224,16 @@ async fn pre_play(
     let ServerboundLogin::Hello(hello) = recv(rx, deadline, ServerboundLogin::decode).await? else {
         return Err(Error::Invalid("expected login hello").into());
     };
-    if !is_valid_player_name(&hello.name) {
+    let is_virtual = vouched.is_some();
+    let profile = if let Some(profile) = vouched {
+        // The frontend logs in with the name it vouches for.
+        if hello.name != profile.name {
+            return Err(kick_key("multiplayer.disconnect.invalid_player_data"));
+        }
+        profile
+    } else if !is_valid_player_name(&hello.name) {
         return Err(kick_key("multiplayer.disconnect.invalid_player_data"));
-    }
-    let profile = if let Some(keys) = shared.keys.as_ref() {
+    } else if let Some(keys) = shared.keys.as_ref() {
         let challenge: [u8; 4] = vanillite_net::rand_bytes();
         tx.send(&login::EncryptionRequest {
             server_id: String::new(),
@@ -253,7 +286,7 @@ async fn pre_play(
     };
 
     let threshold = shared.config.compression_threshold;
-    if threshold >= 0 {
+    if threshold >= 0 && !is_virtual {
         tx.send(&login::LoginCompression { threshold })?;
         tx.encoder.set_compression(threshold);
         rx.decoder.set_compression(threshold);

@@ -12,7 +12,8 @@
 #   `ssh <host> vanillite-proxy-deploy < target/release-fast/vanillite-proxy`) in front of
 #   Vanillite 30001 and 30002 and a Paper with modern forwarding on 30011 (/opt/paper-proxy).
 # - Bedrock players on UDP 30019: the Bedrock frontend of Vanillite 30001 (`[bedrock]` set by the
-#   drop-in vanillite@30001.service.d/bedrock.conf).
+#   drop-in vanillite@30001.service.d/bedrock.conf), and on UDP 30020 the Bedrock frontend of
+#   the proxy (`[bedrock]` in /opt/vanillite-proxy/proxy.toml).
 # Only ports 30000-30999 are reachable by players.
 set -euo pipefail
 
@@ -564,6 +565,11 @@ paper = "127.0.0.1:30011"
 [permissions]
 server = ["*"]
 glist = ["*"]
+
+# Bedrock players join the proxy's network on UDP 30020.
+[bedrock]
+enabled = true
+bind = "0.0.0.0:30020"
 EOF
 write_if_changed /etc/systemd/system/vanillite-proxy.service <<'EOF'
 [Unit]
