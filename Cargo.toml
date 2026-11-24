@@ -34,6 +34,11 @@ vanillite-test = { path = "crates/vanillite-test" }
 vanillite-world = { path = "crates/vanillite-world" }
 vanillite-worldgen = { path = "crates/vanillite-worldgen" }
 
+# External crates.
+bumpalo = { version = "3.20", features = ["collections"] }
+md5 = { package = "md-5", version = "0.10", default-features = false }
+rustc-hash = "2.1"
+
 # Workspace-wide lints. Input-handling crates (SEC-07) repeat these in their own
 # `[lints]` tables and add the SEC-07 deny set, because Cargo cannot extend
 # `workspace = true`.
