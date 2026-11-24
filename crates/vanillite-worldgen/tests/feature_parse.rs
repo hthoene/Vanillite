@@ -6,7 +6,7 @@ mod common;
 use serde_json::json;
 use vanillite_base::ChunkPos;
 use vanillite_worldgen::{
-    DimensionSpec, NeighbourBiomes, ProtoChunk, TerrainGenerator, TerrainJob,
+    DimensionSpec, NeighbourBiomes, ProtoChunk, ReferencedStarts, TerrainGenerator, TerrainJob,
 };
 
 fn generator(
@@ -39,6 +39,7 @@ fn decorate_one(generator: &TerrainGenerator, center: ChunkPos) {
             terrain.push(TerrainJob {
                 chunk: biomes[at(dx, dz)].clone(),
                 neighbours,
+                structures: ReferencedStarts::empty(),
             });
         }
     }
@@ -49,7 +50,7 @@ fn decorate_one(generator: &TerrainGenerator, center: ChunkPos) {
         .collect::<Vec<_>>()
         .try_into()
         .expect("nine chunks");
-    generator.generate_features(area);
+    generator.generate_features(area, &ReferencedStarts::empty());
 }
 
 #[test]
