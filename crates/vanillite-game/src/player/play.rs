@@ -1023,7 +1023,10 @@ fn block_action_restricted(ctx: &PlayContext<'_>) -> bool {
 }
 
 /// `BlockItem.updateBlockStateFromTag`: the `block_state` component sets properties.
-fn apply_block_state_component(stack: &ItemStack, state: BlockState) -> Option<BlockState> {
+pub(crate) fn apply_block_state_component(
+    stack: &ItemStack,
+    state: BlockState,
+) -> Option<BlockState> {
     let data = stack.component(ids::BLOCK_STATE)?;
     let mut r = Reader::new(data);
     let n = r.varint().ok()?;

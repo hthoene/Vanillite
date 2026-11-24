@@ -247,7 +247,7 @@ pub fn potion_of(stack: &ItemStack) -> Option<u16> {
 }
 
 /// A `potion_contents` value with only a potion.
-fn potion_contents(potion: u16) -> Box<[u8]> {
+pub(crate) fn potion_contents(potion: u16) -> Box<[u8]> {
     let mut out = vec![1];
     write_varint(&mut out, i32::from(potion));
     // No custom colour, no custom effects, no custom name.

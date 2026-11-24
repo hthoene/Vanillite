@@ -20,7 +20,7 @@ fn below_n(pos: BlockPos, n: i32) -> BlockPos {
 }
 
 /// The highest age of a crop (`getMaxAge`).
-fn crop_max_age(block: BlockId) -> i32 {
+pub(super) fn crop_max_age(block: BlockId) -> i32 {
     if block == ids::BEETROOTS {
         3
     } else if block == ids::TORCHFLOWER_CROP {
@@ -31,7 +31,7 @@ fn crop_max_age(block: BlockId) -> i32 {
 }
 
 /// `CropBlock.getStateForAge`: the torchflower crop becomes a torchflower.
-fn crop_state_for_age(block: BlockId, age: i32) -> BlockState {
+pub(super) fn crop_state_for_age(block: BlockId, age: i32) -> BlockState {
     if block == ids::TORCHFLOWER_CROP && age == 2 {
         ids::TORCHFLOWER.default_state()
     } else {

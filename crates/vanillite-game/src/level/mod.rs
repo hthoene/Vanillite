@@ -97,6 +97,8 @@ pub struct LevelSettings {
     pub entity_drops: bool,
     /// The dimension's `fast_lava` attribute (the Nether).
     pub fast_lava: bool,
+    /// `tntExplodes` game rule (`TNT_EXPLODES`).
+    pub tnt_explodes: bool,
     /// The dimension has sky light.
     pub has_sky_light: bool,
     /// The dimension's `water_evaporates` attribute (the Nether).
@@ -117,6 +119,7 @@ impl Default for LevelSettings {
             block_drops: true,
             entity_drops: true,
             fast_lava: false,
+            tnt_explodes: true,
             has_sky_light: true,
             water_evaporates: false,
             exploits: ExploitSettings::default(),

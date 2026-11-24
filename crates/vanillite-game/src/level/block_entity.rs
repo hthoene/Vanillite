@@ -334,6 +334,13 @@ fn is_valid(entity: &BlockEntity, state: BlockState) -> bool {
     }
 }
 
+/// `shouldChangedStateKeepBlockEntity`: copper chests keep their block entity (and stacks) when
+/// they weather or get waxed.
+fn keeps_block_entity(old: BlockState, new: BlockState) -> bool {
+    let copper_chests = &vanillite_worldgen::behaviour::tags().blocks.copper_chests;
+    copper_chests.contains(old) && copper_chests.contains(new)
+}
+
 impl Level {
     /// `getBlockEntity(pos)`.
     #[inline]
@@ -368,7 +375,10 @@ impl Level {
         pos: BlockPos,
         flags: u32,
     ) {
-        if old.block() != new.block() && old.block().info().block_entity != u16::MAX {
+        if old.block() != new.block()
+            && old.block().info().block_entity != u16::MAX
+            && !keeps_block_entity(old, new)
+        {
             let side_effects = flags & super::update::SKIP_BLOCK_ENTITY_SIDEEFFECTS == 0;
             if side_effects {
                 // `preRemoveSideEffects`, while the block entity is still there.

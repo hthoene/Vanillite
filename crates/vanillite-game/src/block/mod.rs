@@ -11,6 +11,7 @@
 //! blocks that placing or breaking one block adds or removes.
 
 pub mod bell;
+pub mod bonemeal;
 pub mod bookshelf;
 pub mod brewing;
 pub mod brushable;
