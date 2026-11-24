@@ -125,6 +125,8 @@ pub struct PlayerData {
     pub last_equipment: [crate::item::ItemStack; 6],
     /// Health, food, air, fire, experience and the combat tracker.
     pub survival: crate::survival::player::Survival,
+    /// `ServerPlayer.postEffects` (`/posteffect`), saved as `post_effects`.
+    pub post_effects: Vec<String>,
 }
 
 /// `Player.getDefaultDimensions(pose)`.

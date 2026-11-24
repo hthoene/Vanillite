@@ -350,7 +350,7 @@ pub(crate) fn modify(
         }
         ExecuteOp::Summon => {
             let id = args.identifier("entity").ok_or_else(|| missing("entity"))?;
-            let target = summon(env, source, id, source.pos)?;
+            let target = summon(env, source, id, source.pos, &vanillite_nbt::Compound::new())?;
             one(with_entity(source, &target))
         }
         ExecuteOp::On(relation) => {
@@ -451,31 +451,160 @@ fn height(env: &Env<'_>, kind: HeightmapKind, pos: BlockPos) -> i32 {
         .saturating_add(chunk.chunk.min_y())
 }
 
-/// `SummonCommand.createEntity` for kinds without own data; the entity starts at `pos`.
+/// The entity types built with `notInPeaceful()` (`EntityType.isAllowedInPeaceful`).
+const NOT_IN_PEACEFUL: [&str; 38] = [
+    "blaze",
+    "bogged",
+    "breeze",
+    "cave_spider",
+    "creaking",
+    "creeper",
+    "drowned",
+    "elder_guardian",
+    "enderman",
+    "endermite",
+    "evoker",
+    "ghast",
+    "giant",
+    "guardian",
+    "hoglin",
+    "husk",
+    "illusioner",
+    "magma_cube",
+    "parched",
+    "phantom",
+    "piglin_brute",
+    "pillager",
+    "ravager",
+    "silverfish",
+    "skeleton",
+    "slime",
+    "spider",
+    "stray",
+    "vex",
+    "vindicator",
+    "warden",
+    "witch",
+    "wither",
+    "wither_skeleton",
+    "zoglin",
+    "zombie",
+    "zombie_villager",
+    "zombified_piglin",
+];
+
+/// `ResourceArgument.getSummonableEntityType` and `SummonCommand.createEntity`: the entity
+/// loaded from `nbt` and moved to `pos`. Items, falling blocks and TNT get their kind data from
+/// the NBT like their `readAdditionalSaveData`; other kinds keep what
+/// [`data::apply_entity_nbt`] reads (mobs have no data of their own yet).
 pub(crate) fn summon(
     env: &mut Env<'_>,
     source: &CommandSource,
     id: &str,
     pos: Vec3,
+    nbt: &vanillite_nbt::Compound,
 ) -> Result<Target, CommandError> {
+    use vanillite_game::entities::{FallingBlockData, PrimedTntData};
     let failed = || CommandError::new("commands.summon.failed", vec![]);
-    let kind = EntityTypeId::by_name(id).ok_or_else(failed)?;
+    let duplicate = || CommandError::new("commands.summon.failed.uuid", vec![]);
+    let kind = EntityTypeId::by_name(id)
+        .filter(|k| k.info().summonable)
+        .ok_or_else(|| CommandError::new("entity.not_summonable", vec![ErrArg::from(id)]))?;
     let block = BlockPos::new(floor(pos.x), floor(pos.y), floor(pos.z));
-    let in_bounds = block.x.abs() < 30_000_000
-        && block.z.abs() < 30_000_000
+    let in_bounds = (-30_000_000..30_000_000).contains(&block.x)
+        && (-30_000_000..30_000_000).contains(&block.z)
         && (-20_000_000..20_000_000).contains(&block.y);
     if !in_bounds {
         return Err(CommandError::new("commands.summon.invalidPosition", vec![]));
     }
-    let own_data = [ids::PLAYER, ids::ITEM, ids::FALLING_BLOCK, ids::TNT];
-    if !kind.info().summonable || own_data.contains(&kind) || source.world != env.world {
+    let path = id.strip_prefix("minecraft:").unwrap_or(id);
+    if env.global.level.difficulty == vanillite_game::survival::rules::Difficulty::Peaceful
+        && NOT_IN_PEACEFUL.contains(&path)
+    {
+        return Err(CommandError::new("commands.summon.failed.peaceful", vec![]));
+    }
+    // Only the level of the command's world is reachable here.
+    if source.world != env.world || kind == ids::PLAYER {
         return Err(failed());
     }
-    let uuid = env.level.new_uuid();
+    let uuid = match nbt.get("UUID") {
+        Some(Tag::IntArray(ints)) => match ints.as_slice() {
+            [a, b, c, d] => [*a, *b, *c, *d]
+                .iter()
+                .fold(0u128, |acc, v| (acc << 32) | u128::from(v.cast_unsigned())),
+            _ => env.level.new_uuid(),
+        },
+        _ => env.level.new_uuid(),
+    };
+    if select::find_uuid(&env.level.entities, uuid).is_some() {
+        return Err(duplicate());
+    }
     let network_id = env.global.network_ids.next();
     let new = NewEntity::new(kind, network_id, uuid, pos);
-    let id = env.level.entities.store.spawn(new, |_| 0);
-    select::local(&env.level.entities, env.world, id).ok_or_else(failed)
+    let short = |key: &str, default: i32| {
+        nbt.get(key)
+            .and_then(Tag::as_i64)
+            .and_then(|v| i16::try_from(v).ok())
+            .map_or(default, i32::from)
+    };
+    let block_state = |key: &str, default: BlockState| match nbt.get(key) {
+        Some(Tag::Compound(c)) => vanillite_game::level::block_entity::read_block_state(c),
+        _ => default,
+    };
+    let entities = &mut env.level.entities;
+    let id = if kind == ids::ITEM {
+        let stack = match nbt.get("Item") {
+            Some(Tag::Compound(c)) => vanillite_game::inventory::stack_from_nbt(c),
+            _ => vanillite_protocol::item::ItemStack::EMPTY,
+        };
+        // An item entity without an item discards itself while loading, and
+        // `tryAddFreshEntityWithPassengers` refuses removed entities.
+        if stack.is_empty() {
+            return Err(duplicate());
+        }
+        let data = vanillite_game::item_entity::ItemData::new(stack, 0, None);
+        entities.spawn_item(network_id, uuid, pos, Vec3::new(0.0, 0.0, 0.0), 0.0, data)
+    } else if kind == ids::FALLING_BLOCK {
+        let data = FallingBlockData {
+            state: block_state(
+                "BlockState",
+                vanillite_data::block::ids::SAND.default_state(),
+            ),
+            time: nbt
+                .get("Time")
+                .and_then(Tag::as_i64)
+                .and_then(|v| i32::try_from(v).ok())
+                .unwrap_or(0),
+            drop_item: nbt
+                .get("DropItem")
+                .and_then(Tag::as_i64)
+                .is_none_or(|v| v != 0),
+            start: BlockPos::new(0, 0, 0),
+        };
+        entities.spawn_falling_block(new, data)
+    } else if kind == ids::TNT {
+        let power = match nbt.get("explosion_power") {
+            Some(Tag::Float(v)) => v.clamp(0.0, 128.0),
+            _ => 4.0,
+        };
+        let data = PrimedTntData {
+            fuse: short("fuse", 80),
+            state: block_state(
+                "block_state",
+                vanillite_data::block::ids::TNT.default_state(),
+            ),
+            owner: None,
+            explosion_power: power,
+        };
+        entities.spawn_primed_tnt(new, data)
+    } else {
+        entities.store.spawn(new, |_| 0)
+    };
+    // `snapTo(pos)` after loading: the position is the command's, the rest the NBT's.
+    let mut loaded = nbt.clone();
+    loaded.remove("Pos");
+    data::apply_entity_nbt(entities, id, &loaded)?;
+    select::local(entities, env.world, id).ok_or_else(failed)
 }
 
 /// A condition's count: 1/0 for the boolean conditions, the number of matches for `entity`,

@@ -10,10 +10,14 @@
     clippy::as_conversions
 )]
 
+mod entities;
 mod execute;
 mod players;
 mod server;
+mod sound;
 mod world;
+
+pub use sound::SOUND_SOURCES;
 
 pub use vanillite_command::Dispatcher;
 
@@ -60,6 +64,10 @@ pub mod suggest {
     pub const STOPWATCHES: &str = "stopwatches";
     /// Entity types `summon` may create; the client answers it itself.
     pub const SUMMONABLE_ENTITIES: &str = "minecraft:summonable_entities";
+    /// Sound event ids; the client answers it itself.
+    pub const AVAILABLE_SOUNDS: &str = "minecraft:available_sounds";
+    /// Post effect ids; the client answers it itself.
+    pub const POST_EFFECTS: &str = "minecraft:post_effects";
 }
 
 /// A score comparison of `execute if score`.
@@ -209,6 +217,37 @@ pub enum ScoreboardOp {
     Operation,
 }
 
+/// The subcommands of `bossbar`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BossbarOp {
+    Add,
+    Remove,
+    List,
+    SetName,
+    /// `set <id> color <color>`: the `BossBarColor` id.
+    SetColor(u8),
+    /// `set <id> style <style>`: the `BossBarOverlay` id.
+    SetStyle(u8),
+    SetValue,
+    SetMax,
+    SetVisible,
+    /// `set <id> players [<targets>]`.
+    SetPlayers,
+    GetValue,
+    GetMax,
+    GetVisible,
+    GetPlayers,
+}
+
+/// The subcommands of `posteffect`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PostEffectOp {
+    Add,
+    Clear,
+    List,
+    Remove,
+}
+
 /// What to execute. Variants that share a syntax with optional arguments say so; the
 /// arguments are read by name from `Parsed::args`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -324,11 +363,42 @@ pub enum CommandId {
     ReturnRun,
     /// `scoreboard ...`.
     Scoreboard(ScoreboardOp),
+    /// `bossbar ...`.
+    Bossbar(BossbarOp),
+    /// `damage <target> <amount> [<damageType> [at <location> | by <entity> [from <cause>]]]`.
+    Damage,
+    /// `effect clear [<targets> [<effect>]]`.
+    EffectClear,
+    /// `effect give <targets> <effect> [<seconds> | infinite] [<amplifier> [<hideParticles>]]`.
+    EffectGive { infinite: bool },
+    /// `swing [<targets> [mainhand | offhand [<animation> [<duration>]]]]`.
+    Swing { offhand: bool },
+    /// `particle <name> [<pos> [<delta> <speed> <count> [force | normal [<viewers>]]]]`.
+    Particle { force: bool },
+    /// `playsound <sound> [<source> [<targets> [<pos> ...]]]`: the index into
+    /// [`SOUND_SOURCES`] (`master` without a source).
+    PlaySound(u8),
+    /// `posteffect ...`.
+    PostEffect(PostEffectOp),
+    /// `ride <target> mount <vehicle>`.
+    RideMount,
+    /// `ride <target> dismount`.
+    RideDismount,
+    /// `rotate <target> (<rotation> | facing (entity <facingEntity> [<facingAnchor>] |
+    /// <facingLocation>))`.
+    Rotate,
+    /// `stopsound <targets> [* | <source>] [<sound>]`: the index into [`SOUND_SOURCES`].
+    StopSound(Option<u8>),
+    /// `summon <entity> [<pos> [<nbt>]]`.
+    Summon,
 }
 
 /// Registers all commands in Vanilla's registration order (`Commands` constructor).
 pub fn register(d: &mut Dispatcher<CommandId>) {
     execute::register_execute(d);
+    entities::register_bossbar(d);
+    entities::register_damage(d);
+    entities::register_effect(d);
     execute::register_function(d);
     players::register_game_mode(d);
     world::register_game_rule(d);
@@ -337,10 +407,18 @@ pub fn register(d: &mut Dispatcher<CommandId>) {
     world::register_kill(d);
     players::register_list(d);
     players::register_msg(d);
+    entities::register_swing(d);
+    sound::register_particle(d);
+    sound::register_playsound(d);
+    sound::register_posteffect(d);
     execute::register_return(d);
+    entities::register_ride(d);
+    entities::register_rotate(d);
     players::register_say(d);
     execute::register_scoreboard(d);
     world::register_seed(d);
+    sound::register_stopsound(d);
+    entities::register_summon(d);
     players::register_teleport(d);
     world::register_time(d);
     world::register_weather(d);

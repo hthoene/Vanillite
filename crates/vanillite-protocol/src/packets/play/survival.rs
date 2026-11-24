@@ -1,10 +1,10 @@
 //! Clientbound play packets of survival gameplay: time, weather sounds, health, food,
-//! experience, damage, death and respawn.
+//! experience, damage, death and respawn; and the sounds, particles and rotations of commands.
 
 use crate::Packet;
 use crate::codec::{Decode, Encode, Error, Reader, Result, write_varint, write_varlong};
 use crate::text::Component;
-use crate::types::Vec3;
+use crate::types::{Identifier, Vec3};
 
 use super::clientbound::SpawnInfo;
 
@@ -242,6 +242,220 @@ impl Sound {
     }
 }
 
+/// `sound` with a direct sound event (`Holder.direct(SoundEvent.createVariableRangeEvent(id))`),
+/// as `/playsound` sends it. The position is in eighths of a block.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SoundDirect {
+    pub sound: Identifier,
+    /// A fixed audible range; `None` for variable range events.
+    pub fixed_range: Option<f32>,
+    pub source: SoundSource,
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
+    pub volume: f32,
+    pub pitch: f32,
+    pub seed: i64,
+}
+
+impl Encode for SoundDirect {
+    fn encode(&self, out: &mut Vec<u8>) {
+        write_varint(out, 0);
+        self.sound.encode(out);
+        self.fixed_range.encode(out);
+        self.source.encode(out);
+        for v in [self.x, self.y, self.z] {
+            v.encode(out);
+        }
+        self.volume.encode(out);
+        self.pitch.encode(out);
+        self.seed.encode(out);
+    }
+}
+
+impl Decode for SoundDirect {
+    fn decode(r: &mut Reader<'_>) -> Result<Self> {
+        if r.varint()? != 0 {
+            return Err(Error::Invalid("registry sound event"));
+        }
+        Ok(SoundDirect {
+            sound: Identifier::decode(r)?,
+            fixed_range: Option::<f32>::decode(r)?,
+            source: SoundSource::decode(r)?,
+            x: r.i32()?,
+            y: r.i32()?,
+            z: r.i32()?,
+            volume: r.f32()?,
+            pitch: r.f32()?,
+            seed: r.i64()?,
+        })
+    }
+}
+
+/// `stop_sound` (`ClientboundStopSoundPacket`): stops sounds by source and/or name; neither
+/// stops all sounds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StopSound {
+    pub source: Option<SoundSource>,
+    pub sound: Option<Identifier>,
+}
+
+impl Encode for StopSound {
+    fn encode(&self, out: &mut Vec<u8>) {
+        let flags = u8::from(self.source.is_some()) | (u8::from(self.sound.is_some()) << 1);
+        out.push(flags);
+        if let Some(source) = &self.source {
+            source.encode(out);
+        }
+        if let Some(sound) = &self.sound {
+            sound.encode(out);
+        }
+    }
+}
+
+impl Decode for StopSound {
+    fn decode(r: &mut Reader<'_>) -> Result<Self> {
+        let flags = r.u8()?;
+        let source = if flags & 1 != 0 {
+            Some(SoundSource::decode(r)?)
+        } else {
+            None
+        };
+        let sound = if flags & 2 != 0 {
+            Some(Identifier::decode(r)?)
+        } else {
+            None
+        };
+        Ok(StopSound { source, sound })
+    }
+}
+
+/// `player_rotation` (`ClientboundPlayerRotationPacket`): turns the client's player.
+#[derive(Debug, Clone, PartialEq, Packet)]
+#[packet(state = Play, dir = Clientbound, name = "player_rotation")]
+pub struct PlayerRotation {
+    pub y_rot: f32,
+    pub relative_y: bool,
+    pub x_rot: f32,
+    pub relative_x: bool,
+}
+
+/// A particle with its options in their network form (`ParticleTypes.STREAM_CODEC`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Particle {
+    /// Id in `minecraft:particle_type`.
+    pub kind: i32,
+    /// The type's options as written by its stream codec (empty for simple particles).
+    pub options: Vec<u8>,
+}
+
+impl Particle {
+    /// Reads the options of `kind`. Item particles (a full item stack) are not decoded.
+    fn decode_options(kind: i32, r: &mut Reader<'_>) -> Result<Vec<u8>> {
+        let name = u16::try_from(kind)
+            .ok()
+            .and_then(|id| vanillite_data::registry::PARTICLE_TYPE.name(id))
+            .ok_or(Error::Invalid("particle type"))?;
+        let path = name.strip_prefix("minecraft:").unwrap_or(name);
+        let start = r.rest();
+        match path {
+            "block" | "block_marker" | "falling_dust" | "dust_pillar" | "block_crumble"
+            | "shriek" => {
+                r.varint()?;
+            }
+            "entity_effect" | "tinted_leaves" | "flash" | "dragon_breath" | "sculk_charge"
+            | "geyser" | "geyser_plume" => r.skip(4)?,
+            "dust" | "effect" | "instant_effect" | "geyser_base" | "geyser_poof" => r.skip(8)?,
+            "dust_color_transition" => r.skip(12)?,
+            "trail" => {
+                r.skip(28)?;
+                r.varint()?;
+            }
+            "vibration" => {
+                match r.varint()? {
+                    0 => r.skip(8)?,
+                    _ => {
+                        r.varint()?;
+                        r.skip(4)?;
+                    }
+                }
+                r.varint()?;
+            }
+            "item" => return Err(Error::Invalid("item particle")),
+            _ => {}
+        }
+        let used = start.len().saturating_sub(r.rest().len());
+        Ok(start.get(..used).unwrap_or_default().to_vec())
+    }
+}
+
+/// `level_particles` (`ClientboundLevelParticlesPacket`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LevelParticles {
+    pub particle: Particle,
+    pub override_limiter: bool,
+    pub always_show: bool,
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+    pub x_dist: f32,
+    pub y_dist: f32,
+    pub z_dist: f32,
+    pub x_max_speed: f32,
+    pub y_max_speed: f32,
+    pub z_max_speed: f32,
+    pub count: i32,
+    /// `RandomizationType` id: 0 default, 1 alternative, 2 alternative with speed.
+    pub randomization: i32,
+}
+
+impl Encode for LevelParticles {
+    fn encode(&self, out: &mut Vec<u8>) {
+        write_varint(out, self.particle.kind);
+        out.extend_from_slice(&self.particle.options);
+        self.override_limiter.encode(out);
+        self.always_show.encode(out);
+        for v in [self.x, self.y, self.z] {
+            v.encode(out);
+        }
+        for v in [
+            self.x_dist,
+            self.y_dist,
+            self.z_dist,
+            self.x_max_speed,
+            self.y_max_speed,
+            self.z_max_speed,
+        ] {
+            v.encode(out);
+        }
+        write_varint(out, self.count);
+        write_varint(out, self.randomization);
+    }
+}
+
+impl Decode for LevelParticles {
+    fn decode(r: &mut Reader<'_>) -> Result<Self> {
+        let kind = r.varint()?;
+        let options = Particle::decode_options(kind, r)?;
+        Ok(LevelParticles {
+            particle: Particle { kind, options },
+            override_limiter: bool::decode(r)?,
+            always_show: bool::decode(r)?,
+            x: r.f64()?,
+            y: r.f64()?,
+            z: r.f64()?,
+            x_dist: r.f32()?,
+            y_dist: r.f32()?,
+            z_dist: r.f32()?,
+            x_max_speed: r.f32()?,
+            y_max_speed: r.f32()?,
+            z_max_speed: r.f32()?,
+            count: r.varint()?,
+            randomization: r.varint()?,
+        })
+    }
+}
+
 macro_rules! manual_packet {
     ($ty:ident, $id:ident, $name:literal) => {
         impl Packet for $ty {
@@ -258,3 +472,6 @@ macro_rules! manual_packet {
 manual_packet!(SetTime, SET_TIME, "set_time");
 manual_packet!(Respawn, RESPAWN, "respawn");
 manual_packet!(DamageEvent, DAMAGE_EVENT, "damage_event");
+manual_packet!(SoundDirect, SOUND, "sound");
+manual_packet!(StopSound, STOP_SOUND, "stop_sound");
+manual_packet!(LevelParticles, LEVEL_PARTICLES, "level_particles");

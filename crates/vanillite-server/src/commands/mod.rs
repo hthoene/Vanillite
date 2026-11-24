@@ -7,12 +7,16 @@
 mod data;
 mod dispatch;
 mod engine;
+mod entities_cmd;
 mod exec;
 mod execute;
 pub(crate) mod functions;
 mod nbt_ops;
+mod particle;
+mod response;
 mod scores;
 mod select;
+mod sound;
 mod source;
 mod survival;
 
@@ -29,6 +33,7 @@ use vanillite_protocol::text::{Arg, ClickEvent, Color, Component, NamedColor};
 use vanillite_world::entity::EntityId;
 
 pub(crate) use exec::permission_event;
+pub(crate) use sound::send_post_effects;
 pub(crate) use source::{CommandSource, SourceKind};
 
 use crate::global::Global;

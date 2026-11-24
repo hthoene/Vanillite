@@ -380,6 +380,43 @@ impl WorldSurvival {
         dimension: &str,
         id: EntityId,
     ) -> bool {
+        Self::on_player(entities, chunks, global, dimension, id, player::kill)
+    }
+
+    /// Hurts a player (`/damage`, `hurtServer`) and delivers the effects at once.
+    pub(crate) fn hurt(
+        entities: &mut Entities,
+        chunks: Option<&Chunks>,
+        global: &Global,
+        dimension: &str,
+        id: EntityId,
+        source: vanillite_game::survival::damage::DamageSource,
+        amount: f32,
+    ) -> bool {
+        Self::on_player(
+            entities,
+            chunks,
+            global,
+            dimension,
+            id,
+            |entity, data, env| player::hurt(entity, data, env, source, amount),
+        )
+    }
+
+    /// Runs `f` on a player with a survival environment outside the tick (commands) and
+    /// delivers its effects at once.
+    fn on_player(
+        entities: &mut Entities,
+        chunks: Option<&Chunks>,
+        global: &Global,
+        dimension: &str,
+        id: EntityId,
+        f: impl FnOnce(
+            &mut vanillite_world::entity::EntityMut<'_>,
+            &mut vanillite_game::player::PlayerData,
+            &mut Env<'_>,
+        ) -> bool,
+    ) -> bool {
         struct NoBlocks;
         impl BlockAccess for NoBlocks {
             fn block_state(&self, _: BlockPos) -> Option<BlockState> {
@@ -418,9 +455,9 @@ impl WorldSurvival {
         let Some(data) = players.get_mut(row) else {
             return false;
         };
-        let killed = player::kill(&mut entity, data, &mut env);
+        let done = f(&mut entity, data, &mut env);
         deliver_simple(&out, entities, global);
-        killed
+        done
     }
 
     /// `tickThunder` over the ticking chunks around the players, and the bolts' life.

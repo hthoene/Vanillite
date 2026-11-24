@@ -231,6 +231,15 @@ impl DamageTypes {
         )
     }
 
+    /// The kind of a type id, e.g. `minecraft:generic`.
+    pub fn kind(&self, id: &str) -> Option<DamageKind> {
+        self.types
+            .iter()
+            .position(|t| t.id == id)
+            .and_then(|i| u16::try_from(i).ok())
+            .map(DamageKind)
+    }
+
     /// The type of a kind.
     pub fn get(&self, kind: DamageKind) -> &DamageType {
         self.types

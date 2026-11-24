@@ -172,6 +172,11 @@ impl WorldPlayers {
             .as_ref()
             .map(|saved| PlayerInventory::load(&saved.other))
             .unwrap_or_default();
+        let post_effects = arrival
+            .saved
+            .as_ref()
+            .map(|saved| load_post_effects(&saved.other))
+            .unwrap_or_default();
         let data = PlayerData {
             inventory,
             last_equipment: std::array::from_fn(|_| ItemStack::EMPTY),
@@ -193,6 +198,7 @@ impl WorldPlayers {
                 Arc::clone(&arrival.inbox),
             ),
             survival,
+            post_effects,
         };
         let id = entities.spawn_player(
             &global.network_ids,
@@ -280,6 +286,10 @@ impl WorldPlayers {
         player.inventory.send_all(sink.as_ref());
         for (last, slot) in player.last_equipment.iter_mut().zip(EQUIPMENT_SLOTS) {
             *last = player.inventory.equipment(slot).clone();
+        }
+        // `sendPostEffects` of the first tick (an empty list changes nothing on the client).
+        if !player.post_effects.is_empty() {
+            crate::commands::send_post_effects(player);
         }
     }
 
@@ -749,6 +759,16 @@ impl WorldPlayers {
         let mut survival = vanillite_nbt::Compound::new();
         player.inventory.save(&mut survival);
         player.survival.save(&mut survival);
+        survival.insert(
+            "post_effects",
+            vanillite_nbt::Tag::List(vanillite_nbt::List(
+                player
+                    .post_effects
+                    .iter()
+                    .map(|e| vanillite_nbt::Tag::String(e.clone()))
+                    .collect(),
+            )),
+        );
         // `Survival::save` removes the death location when there is none.
         let has_death = survival.get("LastDeathLocation").is_some();
         self.store.update(entity.uuid(), move |data| {
@@ -772,6 +792,19 @@ impl WorldPlayers {
             self.save_player(entities, id);
         }
     }
+}
+
+/// `ServerPlayer.readAdditionalSaveData`'s `post_effects`: the valid identifiers.
+fn load_post_effects(data: &vanillite_nbt::Compound) -> Vec<String> {
+    let Some(vanillite_nbt::Tag::List(list)) = data.get("post_effects") else {
+        return Vec::new();
+    };
+    list.0
+        .iter()
+        .filter_map(|t| t.as_str())
+        .filter_map(|id| vanillite_protocol::types::Identifier::new(id).ok())
+        .map(|id| id.to_string())
+        .collect()
 }
 
 /// What the block and item handling of a tick needs from the world.

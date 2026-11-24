@@ -165,7 +165,7 @@ fn require_player(source: &CommandSource) -> Result<(), CommandError> {
 }
 
 /// The source itself as a target.
-fn self_target(env: &Env<'_>, source: &CommandSource) -> Result<Target, CommandError> {
+pub(crate) fn self_target(env: &Env<'_>, source: &CommandSource) -> Result<Target, CommandError> {
     let own = source
         .entity
         .as_ref()
@@ -447,6 +447,21 @@ pub(crate) fn execute(
             super::execute::run_condition(condition, unless, &parsed.args, source, env)
         }
         CommandId::Scoreboard(op) => super::scores::run(op, &parsed.args, source, env),
+        CommandId::Summon
+        | CommandId::RideMount
+        | CommandId::RideDismount
+        | CommandId::Rotate
+        | CommandId::Damage
+        | CommandId::Swing { .. }
+        | CommandId::EffectClear
+        | CommandId::EffectGive { .. }
+        | CommandId::Bossbar(_) => {
+            super::entities_cmd::run(parsed.command, &parsed.args, source, env)
+        }
+        CommandId::Particle { force } => super::particle::run(force, &parsed.args, source, env),
+        CommandId::PlaySound(index) => super::sound::play_sound(index, &parsed.args, source, env),
+        CommandId::StopSound(index) => super::sound::stop_sound(index, &parsed.args, source, env),
+        CommandId::PostEffect(op) => super::sound::post_effect(op, &parsed.args, source, env),
         // Redirect modifiers never end a command; the engine runs `function` and `return`.
         CommandId::Execute(_)
         | CommandId::ExecuteIfFunction
