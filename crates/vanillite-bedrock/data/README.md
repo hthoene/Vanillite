@@ -7,10 +7,10 @@ generator.
 Sources (MIT licence, Copyright (c) 2019-2026 GeyserMC, http://geysermc.org):
 
 - https://github.com/GeyserMC/mappings at 6e7d6c55736f8363535434d02b0391f202e9b399
-  (`blocks.nbt`, `biomes.json`)
+  (`blocks.nbt`, `biomes.json`, `items.json`, `sounds.json`)
 - https://github.com/GeyserMC/Geyser at d2cf20058c6c875f7036deb6f6c59e0c39775199,
   `core/src/main/resources/bedrock` (`block_palette.26_60.nbt`, `data_driven_blocks.26_60.nbt`,
-  `runtime_item_states.26_60.json`, `item_components.26_60.nbt`,
+  `runtime_item_states.26_60.json`, `item_components.26_60.nbt`, `creative_items.26_60.json`,
   `stripped_biome_definitions.json`, `entity_identifiers.dat`)
 
 GeyserMC does not relicense Minecraft data owned by Mojang or Microsoft.

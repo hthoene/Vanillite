@@ -277,3 +277,125 @@ pub fn read_move_player(body: &[u8]) -> Option<(u64, [f32; 3])> {
     let rid = r.varu64().ok()?;
     Some((rid, r.vec3().ok()?))
 }
+
+pub use crate::packets::{action as block_action, container};
+
+/// Encodes `player_auth_input` with block actions (action, position, face).
+pub fn auth_input_with_blocks(i: &AuthInput, actions: &[(i32, [i32; 3], i32)]) -> Vec<u8> {
+    let mut out = bp::write_auth_input(i);
+    // The tail: five optional flags, then fixed vectors (28 bytes).
+    let tail = out.split_off(out.len().saturating_sub(5 + 28));
+    out.extend_from_slice(&[0, 0, 1]);
+    io::write_len(&mut out, actions.len());
+    for (a, pos, face) in actions {
+        io::write_vari32(&mut out, *a);
+        io::write_block_pos(&mut out, *pos);
+        io::write_vari32(&mut out, *face);
+    }
+    out.extend_from_slice(tail.get(3..).unwrap_or_default());
+    out
+}
+
+/// Encodes `inventory_transaction`: use the held item on a block face.
+pub fn use_item_on(pos: [i32; 3], face: u8, hotbar: i32, click: [f32; 3]) -> Vec<u8> {
+    let mut out = Vec::new();
+    io::write_vari32(&mut out, 0); // legacy request id
+    out.push(0); // no legacy slots
+    io::write_varu32(&mut out, 2); // use item
+    io::write_varu32(&mut out, 0); // no actions
+    io::write_vari32(&mut out, 0); // click block
+    out.push(1); // trigger: player input
+    io::write_block_pos(&mut out, pos);
+    out.push(face);
+    io::write_vari32(&mut out, hotbar);
+    out.push(0);
+    out.extend_from_slice(&[0; 8]); // held item (not checked)
+    io::write_vec3(&mut out, [0.0; 3]);
+    io::write_vec3(&mut out, click);
+    io::write_varu32(&mut out, 0);
+    out.push(0);
+    out.push(0);
+    out
+}
+
+/// An item stack request action of the test client: (container, slot) pairs.
+#[derive(Debug, Clone, Copy)]
+pub enum RequestAction {
+    CraftCreative(u32),
+    Take(u8, (u8, u8), (u8, u8)),
+    Place(u8, (u8, u8), (u8, u8)),
+    Drop(u8, (u8, u8)),
+}
+
+fn write_slot(out: &mut Vec<u8>, (container, slot): (u8, u8)) {
+    out.push(container);
+    out.push(0);
+    out.push(slot);
+    out.extend_from_slice(&0i32.to_le_bytes());
+}
+
+/// Encodes `item_stack_request` with one request.
+pub fn stack_request(request: i32, actions: &[RequestAction]) -> Vec<u8> {
+    let mut out = Vec::new();
+    io::write_varu32(&mut out, 1);
+    io::write_vari32(&mut out, request);
+    io::write_len(&mut out, actions.len());
+    for a in actions {
+        match *a {
+            RequestAction::CraftCreative(net) => {
+                out.extend_from_slice(&[12, 14]);
+                io::write_varu32(&mut out, net);
+                out.push(1);
+            }
+            RequestAction::Take(n, src, dst) | RequestAction::Place(n, src, dst) => {
+                let kind = if matches!(a, RequestAction::Take(..)) {
+                    0
+                } else {
+                    1
+                };
+                out.extend_from_slice(&[kind, kind, n]);
+                write_slot(&mut out, src);
+                write_slot(&mut out, dst);
+            }
+            RequestAction::Drop(n, src) => {
+                out.extend_from_slice(&[3, 3, n]);
+                write_slot(&mut out, src);
+                out.push(0);
+            }
+        }
+    }
+    io::write_varu32(&mut out, 0);
+    out.extend_from_slice(&0i32.to_le_bytes());
+    out
+}
+
+/// Reads the first response of `item_stack_response`: request id and whether it succeeded.
+pub fn read_stack_response(body: &[u8]) -> Option<(i32, bool)> {
+    let mut r = Reader::new(body);
+    if r.len("responses", 64).ok()? == 0 {
+        return None;
+    }
+    let status = r.u8().ok()?;
+    Some((r.vari32().ok()?, status == 0))
+}
+
+/// Reads `update_block`: position, runtime id and layer.
+pub fn read_update_block(body: &[u8]) -> Option<([i32; 3], u32, u32)> {
+    let mut r = Reader::new(body);
+    let pos = [r.vari32().ok()?, r.vari32().ok()?, r.vari32().ok()?];
+    let rid = r.varu32().ok()?;
+    r.varu32().ok()?;
+    Some((pos, rid, r.varu32().ok()?))
+}
+
+/// Bedrock runtime id of air.
+pub fn air_runtime_id() -> u32 {
+    crate::data::Blocks::get().air
+}
+
+/// The creative item network id of a Java item.
+pub fn creative_net_id(java_item: &str) -> Option<u32> {
+    let item = vanillite_data::item::ItemId::by_name(java_item)?.0;
+    let items = crate::items::Items::get();
+    (1..4096u32).find(|&n| items.creative(n) == Some(item))
+}

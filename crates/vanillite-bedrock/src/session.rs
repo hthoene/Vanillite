@@ -2,7 +2,10 @@
 //! it and the translation in both directions.
 //!
 //! Everything for one player runs on one task, so no state is shared except the read-only data,
-//! the section cache and the skins of other Bedrock players.
+//! the section cache, the skins of other players and the form registry.
+
+mod inventory;
+mod play;
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -46,6 +49,18 @@ pub(crate) struct Shared {
     pub status: Arc<Status>,
     pub guid: i64,
     pub entity_types: FxHashSet<String>,
+    /// Loaded Java skins by texture URL (`None` while loading).
+    pub java_skins: Mutex<FxHashMap<String, Option<Arc<Skin>>>>,
+    pub forms: Arc<crate::forms::FormRegistry>,
+}
+
+/// Messages to a session from other tasks.
+#[derive(Debug)]
+pub(crate) enum Event {
+    /// A form to show (id, JSON).
+    Form(u32, String),
+    /// A loaded Java skin of a listed player.
+    Skin(u128, Arc<Skin>),
 }
 
 impl std::fmt::Debug for Shared {
@@ -71,19 +86,37 @@ enum JavaState {
     Play,
 }
 
+/// What a Java entity is on the Bedrock side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Player,
+    /// An item entity (`add_item_actor`).
+    Item,
+    /// An item entity whose item has not arrived yet (not spawned on Bedrock).
+    PendingItem,
+    Actor,
+}
+
 #[derive(Debug, Clone)]
 struct Entity {
     pos: [f64; 3],
     yaw: f32,
     pitch: f32,
     head_yaw: f32,
-    player: bool,
+    kind: Kind,
+    java_type: u16,
+    flags: u8,
+    name: Option<String>,
+    baby: bool,
 }
 
 /// The player's world on the Java side, after the Java `login`.
 #[derive(Debug)]
 struct World {
+    /// Java entity id of the first join: the Bedrock runtime id of the own player.
     entity_id: i32,
+    /// Current Java entity id of the own player (changes with a server switch).
+    java_id: i32,
     layout: Layout,
     biomes: BiomeTable,
     biome_key: u64,
@@ -105,6 +138,30 @@ struct World {
     abilities: u8,
     walk_speed: f32,
     fly_speed: f32,
+    /// Sequence of Java block interactions.
+    sequence: i32,
+    /// Block being broken.
+    breaking: Option<[i32; 3]>,
+    dead: bool,
+    /// Block cracking of others: Java breaker id -> progress.
+    cracking: FxHashMap<i32, u8>,
+    /// Last sent `dodaylightcycle`.
+    daylight: Option<bool>,
+    /// Boss bars: actor, title, health, colour.
+    bosses: FxHashMap<u128, (i64, String, f32, u8)>,
+    next_boss: u32,
+    /// Dimension to switch to at the next position, and whether it is the same dimension
+    /// (a server switch).
+    pending_dimension: Option<(i32, bool)>,
+}
+
+/// The layout of a Java dimension (`dim_type`: its dimension type name).
+fn layout_for(dimension: &str, dim_type: &str) -> Layout {
+    let (min_y, height) = match dim_type {
+        "minecraft:the_nether" | "minecraft:the_end" => (0, 256),
+        _ => (-64, 384),
+    };
+    Layout::for_dimension(dimension, min_y, height)
 }
 
 /// Bedrock runtime and unique id of a Java entity id.
@@ -171,6 +228,16 @@ pub(crate) struct Session {
     world: Option<World>,
     chunk_radius: i32,
     scratch: Vec<Vec<u8>>,
+    inv: inventory::Inventory,
+    /// Send the whole inventory after this packet (a request was refused).
+    inventory_resync: bool,
+    inventory_open: bool,
+    /// Names of the `minecraft:world_clock` registry (ids of `set_time`).
+    world_clocks: Vec<String>,
+    equipment: play::Equipment,
+    events_tx: mpsc::Sender<Event>,
+    /// The event receiver for the task loop to take.
+    pub events_rx: Option<mpsc::Receiver<Event>>,
 }
 
 impl std::fmt::Debug for Session {
@@ -193,6 +260,7 @@ impl Session {
         );
         let chunk_radius = i32::from(c.max_view_distance);
         let plain = Arc::clone(&shared.plain);
+        let (events_tx, events_rx) = mpsc::channel(64);
         Self {
             shared,
             peer,
@@ -217,6 +285,13 @@ impl Session {
             world: None,
             chunk_radius,
             scratch: Vec::new(),
+            inv: inventory::Inventory::default(),
+            inventory_resync: false,
+            inventory_open: false,
+            world_clocks: Vec::new(),
+            equipment: play::Equipment::default(),
+            events_tx,
+            events_rx: Some(events_rx),
         }
     }
 
@@ -269,10 +344,15 @@ impl Session {
     }
 
     fn java_send<P: Packet>(&mut self, packet: &P) {
+        self.java_send_raw(encode_body(packet));
+    }
+
+    /// Sends a Java packet body (id and payload).
+    fn java_send_raw(&mut self, body: Vec<u8>) {
         let Some(tx) = &self.java_tx else {
             return;
         };
-        if tx.try_send(encode_body(packet)).is_err() {
+        if tx.try_send(body).is_err() {
             // The server does not keep up with this player's input (SEC-17).
             self.kick("Connection to the server lost");
         }
@@ -425,7 +505,43 @@ impl Session {
             (Phase::Playing, id::SET_LOCAL_PLAYER_AS_INITIALIZED) => {
                 self.java_send(&psb::PlayerLoaded);
             }
-            (Phase::Playing, id::PLAYER_AUTH_INPUT) => self.auth_input(&bp::read_auth_input(body)?),
+            (Phase::Playing, id::PLAYER_AUTH_INPUT) => {
+                self.auth_input(&bp::read_auth_input(body)?);
+                let extra = bp::read_auth_input_extra(body)?;
+                if let Some(t) = extra.item_interaction {
+                    self.transaction(t);
+                }
+                if !extra.block_actions.is_empty() {
+                    self.block_actions(&extra.block_actions);
+                }
+                if let Some(req) = extra.stack_request {
+                    let resp = self.stack_request(&req);
+                    self.send(id::ITEM_STACK_RESPONSE, &bp::item_stack_response(&[resp]));
+                    if std::mem::take(&mut self.inventory_resync) {
+                        self.send_inventory();
+                    }
+                }
+            }
+            (Phase::Playing, id::ITEM_STACK_REQUEST) => self.stack_requests(body)?,
+            (Phase::Playing, id::INVENTORY_TRANSACTION) => {
+                let t = bp::read_inventory_transaction(body)?;
+                self.transaction(t);
+            }
+            (Phase::Playing, id::MOB_EQUIPMENT) => {
+                let (hotbar, window) = bp::read_mob_equipment(body)?;
+                if window == 0 {
+                    self.select_hotbar(hotbar);
+                }
+            }
+            (Phase::Playing, id::INTERACT) => self.interact(body)?,
+            (Phase::Playing, id::CONTAINER_CLOSE) => self.container_close(body)?,
+            (Phase::Playing, id::PLAYER_ACTION) => self.player_action(body)?,
+            (Phase::Playing, id::RESPAWN) => self.bedrock_respawn(body)?,
+            (Phase::Playing, id::BLOCK_PICK_REQUEST) => self.pick_block(body)?,
+            (Phase::Playing, id::MODAL_FORM_RESPONSE) => {
+                let (form, data) = bp::read_modal_form_response(body)?;
+                self.shared.forms.answer(self.uuid, form, data.as_deref());
+            }
             (Phase::Playing, id::TEXT) => {
                 let message = bp::read_text_message(body)?;
                 let message: String = message
@@ -460,7 +576,7 @@ impl Session {
             (Phase::NetworkSettings | Phase::Login | Phase::Handshake, _) => {
                 self.kick("Unexpected packet during login");
             }
-            // Everything else (inventory, interaction, emotes, ...) is not translated yet.
+            // Everything else (emotes, books, ...) is not translated.
             _ => {}
         }
         Ok(())
@@ -538,6 +654,9 @@ impl Session {
         if let Ok(mut skins) = self.shared.skins.lock() {
             skins.insert(self.uuid, Arc::clone(&self.skin));
         }
+        if let Ok(mut forms) = self.shared.forms.sessions.lock() {
+            forms.insert(self.uuid, self.events_tx.clone());
+        }
         self.java_send(&Intention {
             protocol_version: vanillite_protocol::PROTOCOL_VERSION,
             host: "bedrock".into(),
@@ -610,7 +729,7 @@ impl Session {
         }
         let jumping = i.has(input::JUMP_DOWN) || i.has(input::START_JUMPING);
         let sneaking = w.sneaking;
-        let entity_id = w.entity_id;
+        let entity_id = w.java_id;
         let move_packet = psb::MovePlayerPosRot {
             x: feet[0],
             y: feet[1],
@@ -641,6 +760,18 @@ impl Session {
     }
 
     // ---- Java input ---------------------------------------------------------------------
+
+    pub(crate) fn event(&mut self, e: Event) {
+        if self.phase != Phase::Playing {
+            return;
+        }
+        match e {
+            Event::Form(form, json) => {
+                self.send(id::MODAL_FORM_REQUEST, &bp::modal_form_request(form, &json));
+            }
+            Event::Skin(uuid, skin) => self.apply_skin(uuid, &skin),
+        }
+    }
 
     pub(crate) fn java_closed(&mut self) {
         self.java_rx = None;
@@ -709,6 +840,7 @@ impl Session {
                 match r.registry.as_str() {
                     "minecraft:worldgen/biome" => self.biome_names = names,
                     "minecraft:dimension_type" => self.dimension_types = names,
+                    "minecraft:world_clock" => self.world_clocks = names,
                     _ => {}
                 }
             }
@@ -764,38 +896,12 @@ impl Session {
                 self.send(id::TEXT, &bp::text_raw(&line));
             }
             ClientboundPlay::Commands(t) => {
-                let tree = &t.0;
-                let root = usize::try_from(tree.root)
-                    .ok()
-                    .and_then(|r| tree.nodes.get(r));
-                let names: Vec<String> = root
-                    .map(|r| r.children.as_slice())
-                    .unwrap_or_default()
-                    .iter()
-                    .filter_map(|&c| tree.nodes.get(usize::try_from(c).ok()?))
-                    .filter_map(|n| match &n.kind {
-                        vanillite_protocol::commands::NodeKind::Literal(l) => Some(l.clone()),
-                        _ => None,
-                    })
-                    .collect();
-                self.send(id::AVAILABLE_COMMANDS, &bp::available_commands(&names));
-            }
-            ClientboundPlay::GameEvent(e) if e.event == pcb::GameEvent::CHANGE_GAME_MODE => {
-                let mode = match crate::num::f32_to_u8(e.param) {
-                    1 => GameMode::Creative,
-                    2 => GameMode::Adventure,
-                    3 => GameMode::Spectator,
-                    _ => GameMode::Survival,
-                };
-                if let Some(w) = &mut self.world {
-                    w.game_mode = mode;
-                }
                 self.send(
-                    id::SET_PLAYER_GAME_TYPE,
-                    &bp::set_player_game_type(bedrock_game_mode(mode)),
+                    id::AVAILABLE_COMMANDS,
+                    &crate::commands::available_commands(&t.0),
                 );
-                self.send_abilities();
             }
+            ClientboundPlay::GameEvent(e) => self.java_game_event(&e),
             ClientboundPlay::PlayerAbilities(a) => {
                 if let Some(w) = &mut self.world {
                     w.abilities = a.flags;
@@ -816,18 +922,7 @@ impl Session {
                 self.send(id::PLAYER_LIST, &bp::player_list_remove(&ids));
             }
             ClientboundPlay::AddEntity(e) => self.add_entity(&e),
-            ClientboundPlay::RemoveEntities(r) => {
-                for &e in &r.ids.0 {
-                    let known = self
-                        .world
-                        .as_mut()
-                        .and_then(|w| w.entities.remove(&e))
-                        .is_some();
-                    if known {
-                        self.send(id::REMOVE_ACTOR, &bp::remove_actor(uid(e)));
-                    }
-                }
-            }
+            ClientboundPlay::RemoveEntities(r) => self.remove_entities(&r.ids.0),
             ClientboundPlay::MoveEntityPos(m) => {
                 self.move_entity(m.entity_id, Some(&m.delta), None, m.on_ground);
             }
@@ -875,6 +970,38 @@ impl Session {
                 }
                 self.send_entity_move(h.entity_id, false, false);
             }
+            ClientboundPlay::BlockUpdate(b) => {
+                self.block_update(
+                    [b.pos.x, b.pos.y, b.pos.z],
+                    u32::try_from(b.state).unwrap_or(0),
+                );
+            }
+            ClientboundPlay::SectionBlocksUpdate(s) => self.java_section_update(&s),
+            ClientboundPlay::BlockDestruction(d) => self.java_block_destruction(&d),
+            ClientboundPlay::LevelEvent(e) => self.java_level_event(&e),
+            ClientboundPlay::ContainerSetContent(c) => self.java_container_content(c),
+            ClientboundPlay::ContainerSetSlot(c) => self.java_container_slot(c),
+            ClientboundPlay::SetCursorItem(c) => self.java_cursor(c.item),
+            ClientboundPlay::SetPlayerInventory(i) => self.java_player_inventory(i.slot, i.item),
+            ClientboundPlay::SetHeldSlot(h) => self.java_held_slot(h.slot),
+            ClientboundPlay::SetEquipment(e) => self.java_equipment(&e),
+            ClientboundPlay::SetEntityData(d) => self.java_entity_data(&d),
+            ClientboundPlay::SetEntityMotion(m) => self.java_motion(&m),
+            ClientboundPlay::TakeItemEntity(t) => self.java_take_item(&t),
+            ClientboundPlay::SwingAnimation(a) => self.java_swing(&a),
+            ClientboundPlay::DamageEvent(d) => self.java_hurt(d.entity_id),
+            ClientboundPlay::EntityEvent(e) => self.java_entity_event(&e),
+            ClientboundPlay::SetHealth(h) => self.java_health(&h),
+            ClientboundPlay::SetExperience(x) => self.java_experience(&x),
+            ClientboundPlay::PlayerCombatKill(k) => self.java_combat_kill(&k),
+            ClientboundPlay::SetTime(t) => self.java_time(&t),
+            ClientboundPlay::ChangeDifficulty(d) => {
+                let d = u32::try_from(d.difficulty.clamp(0, 3)).unwrap_or(0);
+                self.send(id::SET_DIFFICULTY, &bp::set_difficulty(d));
+            }
+            ClientboundPlay::Respawn(r) => self.java_respawn(&r),
+            ClientboundPlay::SetDefaultSpawnPosition(s) => self.java_spawn_position(&s),
+            ClientboundPlay::Sound(s) => self.java_sound(&s),
             ClientboundPlay::Unhandled { id } => self.java_unhandled(id, body),
             _ => {}
         }
@@ -882,48 +1009,12 @@ impl Session {
 
     fn java_unhandled(&mut self, packet: i32, body: &[u8]) {
         use vanillite_protocol::ids::play::clientbound as ids;
-        let mut r = vanillite_protocol::codec::Reader::new(body);
-        if r.varint().is_err() {
+        if packet == ids::START_CONFIGURATION {
+            self.java_send(&psb::ConfigurationAcknowledged);
+            self.java = JavaState::Configuration;
             return;
         }
-        match packet {
-            ids::BLOCK_UPDATE => {
-                let (Ok(pos), Ok(state)) = (r.i64(), r.varint()) else {
-                    return;
-                };
-                let p = vanillite_protocol::types::BlockPos::unpack(pos);
-                self.block_update([p.x, p.y, p.z], u32::try_from(state).unwrap_or(0));
-            }
-            ids::SECTION_BLOCKS_UPDATE => {
-                let Ok(section) = r.i64() else {
-                    return;
-                };
-                let sx = i32::try_from(section.wrapping_shr(42)).unwrap_or(0);
-                let sy = i32::try_from(section.wrapping_shl(44).wrapping_shr(44)).unwrap_or(0);
-                let sz = i32::try_from(section.wrapping_shl(22).wrapping_shr(42)).unwrap_or(0);
-                let Ok(n) = r.varint() else {
-                    return;
-                };
-                for _ in 0..n.clamp(0, 4096) {
-                    let Ok(v) = r.varlong() else {
-                        return;
-                    };
-                    let state = u32::try_from(v.wrapping_shr(12)).unwrap_or(0);
-                    let local = i32::try_from(v & 0xfff).unwrap_or(0);
-                    let pos = [
-                        sx.wrapping_mul(16).wrapping_add(local.wrapping_shr(8) & 15),
-                        sy.wrapping_mul(16).wrapping_add(local & 15),
-                        sz.wrapping_mul(16).wrapping_add(local.wrapping_shr(4) & 15),
-                    ];
-                    self.block_update(pos, state);
-                }
-            }
-            ids::START_CONFIGURATION => {
-                self.java_send(&psb::ConfigurationAcknowledged);
-                self.java = JavaState::Configuration;
-            }
-            _ => {}
-        }
+        self.java_other(packet, body);
     }
 
     fn block_update(&mut self, pos: [i32; 3], java_state: u32) {
@@ -947,11 +1038,7 @@ impl Session {
             .and_then(|i| self.dimension_types.get(i))
             .cloned()
             .unwrap_or_else(|| l.spawn.dimension.as_str().to_owned());
-        let (min_y, height) = match dim_type.as_str() {
-            "minecraft:the_nether" | "minecraft:the_end" => (0, 256),
-            _ => (-64, 384),
-        };
-        let layout = Layout::for_dimension(l.spawn.dimension.as_str(), min_y, height);
+        let layout = layout_for(l.spawn.dimension.as_str(), &dim_type);
         let biomes = BiomeTable::new(&self.biome_names);
         let biome_key = {
             use std::hash::{Hash, Hasher};
@@ -959,13 +1046,29 @@ impl Session {
             biomes.hash(&mut h);
             h.finish()
         };
-        if self.world.as_ref().is_some_and(|w| w.started) {
-            // A second login (server switch through a proxy) is not translated yet.
-            self.kick("Server switch is not supported for Bedrock players yet");
+        if let Some(w) = &mut self.world
+            && w.started
+        {
+            // A second login: a server switch through a proxy.
+            w.java_id = l.entity_id;
+            w.biomes = biomes;
+            w.biome_key = biome_key;
+            w.hardcore = l.hardcore;
+            let listed: Vec<u128> = w
+                .listed
+                .iter()
+                .copied()
+                .filter(|&u| u != self.uuid)
+                .collect();
+            w.listed.retain(|&u| u == self.uuid);
+            w.names.clear();
+            self.send(id::PLAYER_LIST, &bp::player_list_remove(&listed));
+            self.reset_world(layout, l.spawn.game_mode, true);
             return;
         }
         self.world = Some(World {
             entity_id: l.entity_id,
+            java_id: l.entity_id,
             layout,
             biomes,
             biome_key,
@@ -987,6 +1090,14 @@ impl Session {
             abilities: 0,
             walk_speed: 0.1,
             fly_speed: 0.05,
+            sequence: 0,
+            breaking: None,
+            dead: false,
+            cracking: FxHashMap::default(),
+            daylight: None,
+            bosses: FxHashMap::default(),
+            next_boss: 0,
+            pending_dimension: None,
         });
     }
 
@@ -1039,12 +1150,13 @@ impl Session {
             return;
         }
         w.pending_teleport = Some((p.teleport_id, target));
-        let (yaw, pitch, rid) = (w.yaw, w.pitch, rid(w.entity_id));
-        let eye = [target[0], target[1] + EYE, target[2]];
-        self.send(
-            id::MOVE_PLAYER,
-            &bp::move_player(rid, f3(eye), pitch, yaw, yaw, move_mode::TELEPORT, false, 0),
-        );
+        let switching = w.pending_dimension.is_some();
+        if switching {
+            w.pos = target;
+            self.finish_dimension_change(target);
+            self.publish_chunks();
+        }
+        self.send_own_position(target);
     }
 
     fn start_game(&mut self) {
@@ -1079,7 +1191,7 @@ impl Session {
             id::AVAILABLE_ACTOR_IDENTIFIERS,
             crate::data::ENTITY_IDENTIFIERS,
         );
-        self.send(id::CREATIVE_CONTENT, &bp::creative_content());
+        self.send(id::CREATIVE_CONTENT, crate::items::CREATIVE);
         self.send(id::SET_COMMANDS_ENABLED, &bp::set_commands_enabled(true));
         self.send(
             id::UPDATE_ATTRIBUTES,
@@ -1212,6 +1324,14 @@ impl Session {
         if owned.is_empty() {
             return;
         }
+        for e in &u.entries {
+            if let Some(profile) = &e.profile
+                && !skins.contains_key(&e.id.0)
+                && e.id.0 != self.uuid
+            {
+                self.fetch_java_skin(e.id.0, &profile.properties);
+            }
+        }
         let entries: Vec<bp::ListEntry<'_>> = owned
             .iter()
             .map(|(uuid, name, skin)| bp::ListEntry {
@@ -1226,66 +1346,6 @@ impl Session {
         self.send(id::PLAYER_LIST, &body);
     }
 
-    fn add_entity(&mut self, e: &pcb::AddEntity) {
-        let Some(w) = &mut self.world else {
-            return;
-        };
-        let pos = [e.position.x, e.position.y, e.position.z];
-        let entity = Entity {
-            pos,
-            yaw: angle_deg(e.y_rot),
-            pitch: angle_deg(e.x_rot),
-            head_yaw: angle_deg(e.y_head_rot),
-            player: false,
-        };
-        let kind = u16::try_from(e.entity_type)
-            .ok()
-            .map(vanillite_data::entity::EntityTypeId);
-        if kind == Some(vanillite_data::entity::ids::PLAYER) {
-            let name = w.names.get(&e.uuid.0).cloned().unwrap_or_default();
-            let mode = bedrock_game_mode(w.game_mode);
-            w.entities.insert(
-                e.entity_id,
-                Entity {
-                    player: true,
-                    ..entity.clone()
-                },
-            );
-            let eye = [pos[0], pos[1] + EYE, pos[2]];
-            let body = bp::add_player(&bp::AddPlayer {
-                uuid: e.uuid.0,
-                name: &name,
-                entity_id: uid(e.entity_id),
-                pos: f3(eye),
-                pitch: entity.pitch,
-                yaw: entity.yaw,
-                head_yaw: entity.head_yaw,
-                game_mode: if mode == 6 { 0 } else { mode },
-                sneaking: false,
-            });
-            self.send(id::ADD_PLAYER, &body);
-            return;
-        }
-        let Some(name) = kind.map(|k| k.name()) else {
-            return;
-        };
-        if !self.shared.entity_types.contains(name) || name == "minecraft:item" {
-            return;
-        }
-        w.entities.insert(e.entity_id, entity.clone());
-        let v = e.movement.0;
-        let body = bp::add_actor(
-            uid(e.entity_id),
-            name,
-            f3(pos),
-            f3([v.x, v.y, v.z]),
-            entity.pitch,
-            entity.yaw,
-            entity.head_yaw,
-        );
-        self.send(id::ADD_ACTOR, &body);
-    }
-
     fn move_entity(
         &mut self,
         eid: i32,
@@ -1293,7 +1353,12 @@ impl Session {
         rot: Option<(f32, f32)>,
         on_ground: bool,
     ) {
-        let Some(e) = self.world.as_mut().and_then(|w| w.entities.get_mut(&eid)) else {
+        let Some(e) = self
+            .world
+            .as_mut()
+            .and_then(|w| w.entities.get_mut(&eid))
+            .filter(|e| e.kind != Kind::PendingItem)
+        else {
             return;
         };
         if let Some(d) = delta {
@@ -1323,7 +1388,7 @@ impl Session {
         else {
             return;
         };
-        if e.player {
+        if e.kind == Kind::Player {
             let eye = [e.pos[0], e.pos[1] + EYE, e.pos[2]];
             let mode = if teleport {
                 move_mode::TELEPORT
@@ -1361,6 +1426,9 @@ impl Drop for Session {
         {
             skins.remove(&self.uuid);
         }
+        if self.uuid != 0 {
+            self.shared.forms.leave(self.uuid);
+        }
     }
 }
 
@@ -1374,6 +1442,7 @@ pub(crate) async fn run(
 ) {
     let mut s = Session::new(shared, peer, mtu, Instant::now());
     let mut java: Option<mpsc::Receiver<Vec<u8>>> = None;
+    let mut events = s.events_rx.take();
     let mut tick = tokio::time::interval(Duration::from_millis(10));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -1413,6 +1482,15 @@ pub(crate) async fn run(
                     }
                 }
             }
+            e = async {
+                match &mut events {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => match e {
+                Some(e) => s.event(e),
+                None => events = None,
+            },
             _ = tick.tick() => s.tick(Instant::now()),
         }
         if let Some(rx) = s.java_rx.take() {

@@ -1,7 +1,12 @@
 //! Player skins on the Bedrock side.
 //!
 //! Bedrock players keep the skin their client sent (shown to other Bedrock players). Java players
-//! get a plain built-in skin for now; Java skins are not fetched yet.
+//! start with a plain built-in skin; their Mojang skin is fetched from the texture server named
+//! in their signed `textures` property and replaces it once loaded.
+//!
+//! Java players see Bedrock players with the default skin: Java clients only show skins signed by
+//! Mojang, and a Bedrock skin has no such signature (uploading it to a signing service would send
+//! player data to a third party), so the Java side keeps the default Steve/Alex look.
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -25,6 +30,49 @@ pub struct Skin {
 
 /// The classic humanoid model.
 const DEFAULT_PATCH: &str = r#"{"geometry":{"default":"geometry.humanoid.custom"}}"#;
+/// The slim model.
+const SLIM_PATCH: &str = r#"{"geometry":{"default":"geometry.humanoid.customSlim"}}"#;
+
+/// Where Java skins may be loaded from.
+const TEXTURE_HOST: &str = "http://textures.minecraft.net/texture/";
+
+/// The skin URL and model (slim) of a Java profile's `textures` property.
+pub fn java_texture(properties: &[vanillite_protocol::types::Property]) -> Option<(String, bool)> {
+    let p = properties.iter().find(|p| p.name == "textures")?;
+    let json = STANDARD.decode(p.value.as_bytes()).ok()?;
+    let v: Value = serde_json::from_slice(&json).ok()?;
+    let skin = field(field(&v, "textures"), "SKIN");
+    let url = skin.get("url")?.as_str()?;
+    let hash = url
+        .strip_prefix(TEXTURE_HOST)
+        .or_else(|| url.strip_prefix("https://textures.minecraft.net/texture/"))?;
+    if hash.is_empty() || hash.len() > 128 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let slim = field(field(skin, "metadata"), "model").as_str() == Some("slim");
+    Some((format!("{TEXTURE_HOST}{hash}"), slim))
+}
+
+/// Loads a Java skin (blocking): 64x64 PNG from the texture server.
+pub fn fetch_java(url: &str, slim: bool) -> Option<Skin> {
+    if !url.starts_with(TEXTURE_HOST) {
+        return None;
+    }
+    let agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(5)))
+        .build()
+        .new_agent();
+    let png = agent
+        .get(url)
+        .call()
+        .ok()?
+        .body_mut()
+        .with_config()
+        .limit(64 << 10)
+        .read_to_vec()
+        .ok()?;
+    Skin::from_java_png(&png, slim, url.rsplit('/').next().unwrap_or("java"))
+}
 
 impl Skin {
     /// A plain 64x64 skin: skin-coloured head and arms, a shirt and trousers.
@@ -59,6 +107,26 @@ impl Skin {
             geometry_version: b"0.0.0".to_vec(),
             slim: false,
         }
+    }
+
+    /// A Java skin image (64x64) as a Bedrock skin.
+    pub fn from_java_png(png: &[u8], slim: bool, id: &str) -> Option<Self> {
+        let (w, h, data) = crate::png::decode_rgba(png)?;
+        if (w, h) != (64, 64) {
+            return None;
+        }
+        Some(Self {
+            id: format!("vanillite.java.{id}"),
+            resource_patch: if slim { SLIM_PATCH } else { DEFAULT_PATCH }
+                .as_bytes()
+                .to_vec(),
+            width: w,
+            height: h,
+            data,
+            geometry: Vec::new(),
+            geometry_version: b"0.0.0".to_vec(),
+            slim,
+        })
     }
 
     /// The skin of a Bedrock client's login data, if it is well-formed.

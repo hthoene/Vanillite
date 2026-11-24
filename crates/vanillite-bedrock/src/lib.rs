@@ -6,21 +6,30 @@
 //! Java-only and every translated packet passes the same validation as a Java client's. The
 //! frontend runs on its own small runtime and can run inside the server or a proxy.
 //!
-//! Translated: join, chunks (blocks, water layer, biomes), movement (Bedrock's client
-//! authoritative input -> Java movement, teleports), other players (with the skins of Bedrock
-//! players, a plain skin for Java players) and mobs, block changes, chat, commands (names, free
-//! arguments), game mode and abilities. Not translated yet: inventory and items, block breaking
-//! and placing, interaction and combat, health, hunger and death, dimension changes and respawn,
-//! entity metadata (sneaking, names of mobs), sounds, particles, time and weather, Java skins.
+//! Translated: join, chunks (blocks, water layer, biomes), movement, other players (Bedrock
+//! skins, Java skins from the texture server) and mobs with their flags, names, equipment and
+//! effects, item entities, falling blocks and TNT, server authoritative block breaking and
+//! placing, the inventory (item stack requests as Java clicks, creative slots, the creative
+//! palette), attacking, health, hunger, experience, death and respawn, dimension changes and
+//! server switches behind a proxy, time and weather, block break particles and sounds, chat,
+//! commands (the Java command tree with syntax hints), titles and boss bars, game mode and
+//! abilities. Forms are offered to plugins through [`Forms`]. Not translated yet: other
+//! containers (chests, crafting tables, furnaces), crafting, interacting with entities, Java
+//! particles.
 
 mod batch;
 mod chunk;
 pub mod client;
+mod commands;
 mod data;
+mod entity;
+pub mod forms;
 mod io;
+mod items;
 mod login;
 mod num;
 mod packets;
+mod png;
 mod raknet;
 mod session;
 mod skin;
@@ -37,6 +46,7 @@ use vanillite_net::VirtualConnection;
 use vanillite_protocol::types::GameProfile;
 
 pub use data::{PROTOCOL, VERSION};
+pub use forms::Forms;
 pub use raknet::Limits as RakNetLimits;
 
 /// Opens the Java connection of a Bedrock player (a virtual connection in the server).
@@ -157,6 +167,7 @@ impl Status {
 pub struct Frontend {
     runtime: tokio::runtime::Runtime,
     local_addr: SocketAddr,
+    forms: Forms,
 }
 
 impl std::fmt::Debug for Frontend {
@@ -190,6 +201,7 @@ impl Frontend {
             log::warn!("Bedrock online mode is off: Bedrock identities are not verified");
         }
         let entity_types = entity_types();
+        let forms = Arc::new(forms::FormRegistry::default());
         let shared = Arc::new(session::Shared {
             cache: chunk::ChunkCache::new(config.chunk_cache_sections),
             config,
@@ -200,6 +212,8 @@ impl Frontend {
             status,
             guid: i64::from_ne_bytes(vanillite_net::rand_bytes()),
             entity_types,
+            java_skins: Mutex::new(FxHashMap::default()),
+            forms: Arc::clone(&forms),
         });
         runtime.spawn(listen(Arc::new(socket), shared));
         log::info!(
@@ -210,7 +224,13 @@ impl Frontend {
         Ok(Self {
             runtime,
             local_addr,
+            forms: Forms(forms),
         })
+    }
+
+    /// Sends forms to the frontend's players.
+    pub fn forms(&self) -> Forms {
+        self.forms.clone()
     }
 
     /// The bound address.
@@ -225,7 +245,7 @@ impl Frontend {
 }
 
 /// Entity identifiers the client knows (from the `available_actor_identifiers` data).
-fn entity_types() -> rustc_hash::FxHashSet<String> {
+pub(crate) fn entity_types() -> rustc_hash::FxHashSet<String> {
     let bytes = data::ENTITY_IDENTIFIERS;
     let mut set = rustc_hash::FxHashSet::default();
     let needle = b"minecraft:";

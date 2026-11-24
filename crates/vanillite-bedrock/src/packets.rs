@@ -44,6 +44,85 @@ pub mod id {
     pub const ITEM_REGISTRY: u32 = 162;
     pub const UPDATE_ABILITIES: u32 = 187;
     pub const REQUEST_NETWORK_SETTINGS: u32 = 193;
+    pub const SET_TIME: u32 = 10;
+    pub const ADD_ITEM_ACTOR: u32 = 15;
+    pub const TAKE_ITEM_ACTOR: u32 = 17;
+    pub const LEVEL_EVENT: u32 = 25;
+    pub const ACTOR_EVENT: u32 = 27;
+    pub const MOB_EFFECT: u32 = 28;
+    pub const INVENTORY_TRANSACTION: u32 = 30;
+    pub const MOB_EQUIPMENT: u32 = 31;
+    pub const MOB_ARMOUR_EQUIPMENT: u32 = 32;
+    pub const INTERACT: u32 = 33;
+    pub const BLOCK_PICK_REQUEST: u32 = 34;
+    pub const PLAYER_ACTION: u32 = 36;
+    pub const SET_SPAWN_POSITION: u32 = 43;
+    pub const RESPAWN: u32 = 45;
+    pub const CONTAINER_OPEN: u32 = 46;
+    pub const CONTAINER_CLOSE: u32 = 47;
+    pub const PLAYER_HOTBAR: u32 = 48;
+    pub const INVENTORY_CONTENT: u32 = 49;
+    pub const INVENTORY_SLOT: u32 = 50;
+    pub const SET_DIFFICULTY: u32 = 60;
+    pub const CHANGE_DIMENSION: u32 = 61;
+    pub const BOSS_EVENT: u32 = 74;
+    pub const PLAY_SOUND: u32 = 86;
+    pub const SET_TITLE: u32 = 88;
+    pub const PLAYER_SKIN: u32 = 93;
+    pub const MODAL_FORM_REQUEST: u32 = 100;
+    pub const MODAL_FORM_RESPONSE: u32 = 101;
+    pub const SPAWN_PARTICLE_EFFECT: u32 = 118;
+    pub const ITEM_STACK_REQUEST: u32 = 147;
+    pub const ITEM_STACK_RESPONSE: u32 = 148;
+    pub const DEATH_INFO: u32 = 189;
+    pub const LEVEL_SOUND_EVENT: u32 = 123;
+}
+
+/// Inventory window ids.
+pub mod window {
+    pub const INVENTORY: u32 = 0;
+    pub const OFFHAND: u32 = 119;
+    pub const ARMOUR: u32 = 120;
+    pub const UI: u32 = 124;
+}
+
+/// `FullContainerName` container ids used in item stack requests and responses.
+pub mod container {
+    pub const ARMOUR: u8 = 6;
+    pub const COMBINED_INVENTORY: u8 = 12;
+    pub const CRAFTING_INPUT: u8 = 13;
+    pub const HOTBAR: u8 = 28;
+    pub const INVENTORY: u8 = 29;
+    pub const OFFHAND: u8 = 34;
+    pub const CURSOR: u8 = 59;
+    pub const CREATED_OUTPUT: u8 = 60;
+}
+
+/// `player_action` / block action types used here.
+pub mod action {
+    pub const START_BREAK: i32 = 0;
+    pub const ABORT_BREAK: i32 = 1;
+    pub const RESPAWN: i32 = 7;
+    pub const CRACK_BREAK: i32 = 18;
+    pub const PREDICT_DESTROY_BLOCK: i32 = 26;
+    pub const CONTINUE_DESTROY_BLOCK: i32 = 27;
+}
+
+/// `level_event` ids used here.
+pub mod level_event {
+    pub const PARTICLES_DESTROY_BLOCK: i32 = 2001;
+    pub const START_RAIN: i32 = 3001;
+    pub const START_THUNDER: i32 = 3002;
+    pub const STOP_RAIN: i32 = 3003;
+    pub const STOP_THUNDER: i32 = 3004;
+    pub const START_BLOCK_CRACKING: i32 = 3600;
+    pub const STOP_BLOCK_CRACKING: i32 = 3601;
+}
+
+/// `actor_event` ids used here.
+pub mod actor_event {
+    pub const HURT: u8 = 2;
+    pub const DEATH: u8 = 3;
 }
 
 /// `play_status` values.
@@ -93,6 +172,14 @@ pub mod meta {
     pub const FLAG_BREATHING: u32 = 35;
     pub const FLAG_HAS_COLLISION: u32 = 48;
     pub const FLAG_HAS_GRAVITY: u32 = 49;
+    pub const FLAG_ON_FIRE: u32 = 0;
+    pub const FLAG_INVISIBLE: u32 = 5;
+    pub const FLAG_BABY: u32 = 11;
+    pub const FLAG_SWIMMING: u32 = 57;
+    pub const FLAG_GLIDING: u32 = 32;
+    pub const FLAG_IGNITED: u32 = 10;
+    pub const VARIANT: u32 = 2;
+    pub const FUSE: u32 = 55;
 }
 
 /// Entity metadata, written in key order.
@@ -131,6 +218,13 @@ impl Metadata {
         self
     }
 
+    /// An `int32` entry.
+    pub fn int(mut self, key: u32, v: i32) -> Self {
+        self.entry(key, 2);
+        io::write_vari32(&mut self.data, v);
+        self
+    }
+
     /// A byte entry.
     pub fn byte(mut self, key: u32, v: u8) -> Self {
         self.entry(key, 0);
@@ -138,7 +232,8 @@ impl Metadata {
         self
     }
 
-    fn write(&self, out: &mut Vec<u8>) {
+    /// Writes the entries.
+    pub fn write(&self, out: &mut Vec<u8>) {
         io::write_varu32(out, self.count);
         out.extend_from_slice(&self.data);
     }
@@ -318,7 +413,7 @@ pub fn start_game(p: &StartGame<'_>) -> Vec<u8> {
     io::write_vari32(&mut out, 0); // enchantment seed
     out.extend_from_slice(crate::data::BLOCK_PROPERTIES);
     io::write_str(&mut out, ""); // multiplayer correlation id
-    out.push(0); // server authoritative inventory
+    out.push(1); // server authoritative inventory (item stack requests)
     io::write_str(&mut out, "*"); // game version
     out.extend_from_slice(&[0x0a, 0, 0]); // player property data: empty compound
     out.extend_from_slice(&0u64.to_le_bytes()); // block state checksum: unchecked
@@ -338,11 +433,6 @@ fn game_rule_bool(out: &mut Vec<u8>, name: &str, value: bool) {
     out.push(0); // not editable by the player
     io::write_varu32(out, 1);
     out.push(u8::from(value));
-}
-
-/// `creative_content` without groups and items.
-pub fn creative_content() -> Vec<u8> {
-    vec![0, 0]
 }
 
 /// `chunk_radius_updated`.
@@ -478,7 +568,8 @@ pub fn add_player(p: &AddPlayer<'_>) -> Vec<u8> {
     out
 }
 
-/// `add_actor` for a non-player entity.
+/// `add_actor` for a non-player entity with its metadata.
+#[allow(clippy::too_many_arguments)]
 pub fn add_actor(
     entity_id: i64,
     kind: &str,
@@ -487,6 +578,7 @@ pub fn add_actor(
     pitch: f32,
     yaw: f32,
     head_yaw: f32,
+    metadata: &Metadata,
 ) -> Vec<u8> {
     let mut out = Vec::with_capacity(96);
     io::write_vari64(&mut out, entity_id);
@@ -498,13 +590,7 @@ pub fn add_actor(
         out.extend_from_slice(&v.to_le_bytes());
     }
     io::write_varu32(&mut out, 0); // attributes
-    let mut flags = entity_flags(false, false);
-    flags &=
-        !(1i64.wrapping_shl(meta::FLAG_ALWAYS_SHOW_NAME) | 1i64.wrapping_shl(meta::FLAG_SHOW_NAME));
-    Metadata::default()
-        .long(meta::FLAGS, flags)
-        .float(meta::SCALE, 1.0)
-        .write(&mut out);
+    metadata.write(&mut out);
     out.extend_from_slice(&[0, 0]); // no entity properties
     io::write_varu32(&mut out, 0); // links
     out.push(0); // not a passenger of a block
@@ -659,38 +745,6 @@ pub fn update_abilities(
     out
 }
 
-/// `available_commands`: each command takes free text.
-pub fn available_commands(names: &[String]) -> Vec<u8> {
-    let mut out = Vec::new();
-    for _ in 0..3 {
-        io::write_varu32(&mut out, 0); // enum values, chained values, suffixes
-    }
-    io::write_varu32(&mut out, 0); // enums
-    io::write_varu32(&mut out, 0); // chained subcommands
-    io::write_len(&mut out, names.len());
-    for name in names {
-        io::write_str(&mut out, name);
-        io::write_str(&mut out, "");
-        out.extend_from_slice(&0u16.to_le_bytes());
-        io::write_str(&mut out, "any");
-        out.extend_from_slice(&u32::MAX.to_le_bytes()); // no aliases
-        io::write_varu32(&mut out, 0); // chained subcommand offsets
-        io::write_varu32(&mut out, 1); // overloads
-        out.push(0);
-        io::write_varu32(&mut out, 1);
-        io::write_str(&mut out, "args");
-        out.extend_from_slice(&(0x10_0000u32 | RAW_TEXT).to_le_bytes());
-        out.push(1); // optional
-        out.push(0);
-    }
-    io::write_varu32(&mut out, 0); // dynamic enums
-    io::write_varu32(&mut out, 0); // constraints
-    out
-}
-
-/// Parameter type "raw text" (rest of the line).
-const RAW_TEXT: u32 = 70;
-
 /// `update_block` in layer `layer`.
 pub fn update_block(pos: [i32; 3], runtime_id: u32, layer: u32) -> Vec<u8> {
     let mut out = Vec::new();
@@ -791,5 +845,828 @@ pub fn write_auth_input(i: &AuthInput) -> Vec<u8> {
     io::write_vec3(&mut out, i.delta);
     out.extend_from_slice(&[0, 0, 0, 0, 0]);
     out.extend_from_slice(&[0; 8 + 12 + 8]);
+    out
+}
+
+// ---- Gameplay -----------------------------------------------------------------------------------
+
+/// A slot in an item stack request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SlotRef {
+    pub container: u8,
+    pub slot: u8,
+    pub net_id: i32,
+}
+
+fn read_slot_ref(r: &mut Reader<'_>) -> Result<SlotRef> {
+    let container = r.u8()?;
+    if r.bool()? {
+        r.array::<4>()?;
+    }
+    let slot = r.u8()?;
+    let net_id = i32::from_le_bytes(r.array::<4>()?);
+    Ok(SlotRef {
+        container,
+        slot,
+        net_id,
+    })
+}
+
+/// One action of an item stack request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StackAction {
+    Take {
+        count: u8,
+        src: SlotRef,
+        dst: SlotRef,
+    },
+    Place {
+        count: u8,
+        src: SlotRef,
+        dst: SlotRef,
+    },
+    Swap {
+        src: SlotRef,
+        dst: SlotRef,
+    },
+    Drop {
+        count: u8,
+        src: SlotRef,
+    },
+    Destroy {
+        count: u8,
+        src: SlotRef,
+    },
+    Consume {
+        count: u8,
+        src: SlotRef,
+    },
+    Create,
+    CraftCreative {
+        net_id: u32,
+        times: u8,
+    },
+    CraftRecipe {
+        net_id: u32,
+        times: u8,
+    },
+    /// Tool durability prediction of block breaking (nothing to do).
+    MineBlock,
+    /// Anything the frontend does not translate (lab table, beacon, loom, ...).
+    Unsupported,
+}
+
+/// One item stack request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StackRequest {
+    pub id: i32,
+    pub actions: Vec<StackAction>,
+}
+
+/// Largest number of actions in one request.
+const MAX_STACK_ACTIONS: usize = 64;
+
+fn read_descriptor_count(r: &mut Reader<'_>) -> Result<()> {
+    let kind = r.varu32()?;
+    r.u8()?;
+    match kind {
+        0 => {}
+        1 => {
+            r.string("item name", 256)?;
+            r.vari32()?;
+        }
+        2 => {
+            r.string("molang", 4096)?;
+            r.array::<2>()?;
+        }
+        3 => {
+            r.string("item tag", 256)?;
+        }
+        _ => return Err(io::Error::Invalid("item descriptor")),
+    }
+    r.array::<2>()?;
+    Ok(())
+}
+
+fn read_stack_action(r: &mut Reader<'_>) -> Result<StackAction> {
+    let variant = r.varu32()?;
+    r.u8()?;
+    let transfer = |r: &mut Reader<'_>| -> Result<(u8, SlotRef, SlotRef)> {
+        Ok((r.u8()?, read_slot_ref(r)?, read_slot_ref(r)?))
+    };
+    Ok(match variant {
+        0 => {
+            let (count, src, dst) = transfer(r)?;
+            StackAction::Take { count, src, dst }
+        }
+        1 => {
+            let (count, src, dst) = transfer(r)?;
+            StackAction::Place { count, src, dst }
+        }
+        2 => StackAction::Swap {
+            src: read_slot_ref(r)?,
+            dst: read_slot_ref(r)?,
+        },
+        3 => {
+            let count = r.u8()?;
+            let src = read_slot_ref(r)?;
+            r.bool()?;
+            StackAction::Drop { count, src }
+        }
+        4 | 5 => {
+            let count = r.u8()?;
+            let src = read_slot_ref(r)?;
+            if variant == 4 {
+                StackAction::Destroy { count, src }
+            } else {
+                StackAction::Consume { count, src }
+            }
+        }
+        6 => {
+            r.u8()?;
+            StackAction::Create
+        }
+        // Lab table combine.
+        7 => StackAction::Unsupported,
+        8 => {
+            r.vari32()?;
+            r.vari32()?;
+            StackAction::Unsupported
+        }
+        9 => {
+            r.vari32()?;
+            r.vari32()?;
+            r.array::<4>()?;
+            StackAction::MineBlock
+        }
+        10 => StackAction::CraftRecipe {
+            net_id: r.varu32()?,
+            times: r.u8()?,
+        },
+        11 => {
+            let net_id = r.varu32()?;
+            let times = r.u8()?;
+            let n = r.u8()?;
+            for _ in 0..n {
+                read_descriptor_count(r)?;
+            }
+            StackAction::CraftRecipe { net_id, times }
+        }
+        12 => StackAction::CraftCreative {
+            net_id: r.varu32()?,
+            times: r.u8()?,
+        },
+        13 => {
+            r.varu32()?;
+            r.array::<4>()?;
+            StackAction::Unsupported
+        }
+        14 => {
+            r.array::<4>()?;
+            r.u8()?;
+            r.vari32()?;
+            StackAction::Unsupported
+        }
+        15 => {
+            r.string("loom pattern", 256)?;
+            r.u8()?;
+            StackAction::Unsupported
+        }
+        16 => {
+            r.string("reserved id", 256)?;
+            r.u8()?;
+            StackAction::Unsupported
+        }
+        17 => StackAction::Unsupported,
+        18 => {
+            let n = r.len("craft results", 64)?;
+            for _ in 0..n {
+                let kind = r.varu32()?;
+                r.u8()?;
+                if kind == 1 {
+                    r.string("item name", 256)?;
+                    r.vari32()?;
+                }
+                r.array::<2>()?;
+                r.varu32()?;
+                r.bytes("item user data", 1 << 16)?;
+            }
+            r.u8()?;
+            StackAction::Unsupported
+        }
+        _ => return Err(io::Error::Invalid("stack request action")),
+    })
+}
+
+/// Reads one `ItemStackRequest` (also embedded in `player_auth_input`).
+pub fn read_stack_request(r: &mut Reader<'_>) -> Result<StackRequest> {
+    let id = r.vari32()?;
+    let n = r.len("stack actions", MAX_STACK_ACTIONS)?;
+    let mut actions = Vec::with_capacity(n);
+    for _ in 0..n {
+        actions.push(read_stack_action(r)?);
+    }
+    let strings = r.len("filter strings", 64)?;
+    for _ in 0..strings {
+        r.string("filter string", 1024)?;
+    }
+    r.array::<4>()?;
+    Ok(StackRequest { id, actions })
+}
+
+/// Reads `item_stack_request`.
+pub fn read_stack_requests(body: &[u8]) -> Result<Vec<StackRequest>> {
+    let mut r = Reader::new(body);
+    let n = r.len("stack requests", 64)?;
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        out.push(read_stack_request(&mut r)?);
+    }
+    Ok(out)
+}
+
+/// One slot of an item stack response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResponseSlot {
+    pub slot: u8,
+    pub count: u8,
+    pub net_id: i32,
+    pub durability: i32,
+}
+
+/// One item stack response: `None` slots = rejected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StackResponse {
+    pub id: i32,
+    pub containers: Option<Vec<(u8, Vec<ResponseSlot>)>>,
+}
+
+/// `item_stack_response`.
+pub fn item_stack_response(responses: &[StackResponse]) -> Vec<u8> {
+    let mut out = Vec::new();
+    io::write_len(&mut out, responses.len());
+    for resp in responses {
+        out.push(if resp.containers.is_some() { 0 } else { 1 });
+        io::write_vari32(&mut out, resp.id);
+        match &resp.containers {
+            Some(containers) if !containers.is_empty() => {
+                out.push(1);
+                io::write_len(&mut out, containers.len());
+                for (container, slots) in containers {
+                    out.push(*container);
+                    out.push(0); // not dynamic
+                    io::write_len(&mut out, slots.len());
+                    for s in slots {
+                        out.push(s.slot);
+                        out.push(s.slot);
+                        out.push(s.count);
+                        if s.net_id > 0 {
+                            out.push(1);
+                            io::write_vari32(&mut out, s.net_id);
+                        } else {
+                            out.push(0);
+                        }
+                        io::write_str(&mut out, "");
+                        out.push(0);
+                        io::write_vari32(&mut out, s.durability);
+                    }
+                }
+            }
+            _ => out.push(0),
+        }
+    }
+    out
+}
+
+/// `inventory_content` from pre-encoded `ItemInstance`s.
+pub fn inventory_content(window: u32, count: usize, items: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(items.len().saturating_add(16));
+    io::write_varu32(&mut out, window);
+    io::write_len(&mut out, count);
+    out.extend_from_slice(items);
+    out.extend_from_slice(&[0, 0]); // container name: none, not dynamic
+    write_empty_item(&mut out); // storage item
+    out
+}
+
+/// `inventory_slot` from a pre-encoded `ItemInstance`.
+pub fn inventory_slot(window: u32, slot: u32, item: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(item.len().saturating_add(8));
+    io::write_varu32(&mut out, window);
+    io::write_varu32(&mut out, slot);
+    out.push(0); // no container name
+    out.push(0); // no storage item
+    out.extend_from_slice(item);
+    out
+}
+
+/// `mob_equipment` (held item) from a pre-encoded `ItemInstance`.
+pub fn mob_equipment(runtime_id: u64, item: &[u8], slot: u8, window: u8) -> Vec<u8> {
+    let mut out = Vec::with_capacity(item.len().saturating_add(12));
+    io::write_varu64(&mut out, runtime_id);
+    out.extend_from_slice(item);
+    out.push(slot);
+    out.push(slot);
+    out.push(window);
+    out
+}
+
+/// Reads `mob_equipment` from the client: the selected hotbar slot and window.
+pub fn read_mob_equipment(body: &[u8]) -> Result<(u8, u8)> {
+    let mut r = Reader::new(body);
+    r.varu64()?;
+    crate::items::read_instance(&mut r)?;
+    let _inventory_slot = r.u8()?;
+    let hotbar = r.u8()?;
+    let window = r.u8()?;
+    Ok((hotbar, window))
+}
+
+/// `mob_armour_equipment` from pre-encoded `ItemInstance`s (head, chest, legs, feet, body).
+pub fn mob_armour_equipment(runtime_id: u64, items: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(items.len().saturating_add(10));
+    io::write_varu64(&mut out, runtime_id);
+    out.extend_from_slice(items);
+    out
+}
+
+/// `player_hotbar`: select a hotbar slot.
+pub fn player_hotbar(slot: u32) -> Vec<u8> {
+    let mut out = Vec::new();
+    io::write_varu32(&mut out, slot);
+    out.push(0);
+    out.push(1);
+    out
+}
+
+/// `container_open`.
+pub fn container_open(window: u8, kind: i8, pos: [i32; 3], entity: i64) -> Vec<u8> {
+    let mut out = vec![window, kind.to_le_bytes()[0]];
+    io::write_block_pos(&mut out, pos);
+    io::write_vari64(&mut out, entity);
+    out
+}
+
+/// `container_close` (`server_side`: the server closes it, not an answer to the client).
+pub fn container_close(window: u8, kind: i8, server_side: bool) -> Vec<u8> {
+    vec![window, kind.to_le_bytes()[0], u8::from(server_side)]
+}
+
+/// Reads `container_close`: the window id.
+pub fn read_container_close(body: &[u8]) -> Result<u8> {
+    Reader::new(body).u8()
+}
+
+/// What an `inventory_transaction` (or the item interaction of `player_auth_input`) asks for.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Transaction {
+    /// Click on a block (0), in the air (1) or break a block (2).
+    UseItem {
+        action: u32,
+        pos: [i32; 3],
+        face: i32,
+        hotbar: i32,
+        click: [f32; 3],
+    },
+    /// Interact (0) with or attack (1) an entity.
+    UseItemOnEntity {
+        target: u64,
+        action: u32,
+        hotbar: i32,
+    },
+    /// Release a used item (bow, food).
+    Release { action: u32 },
+    /// Legacy inventory actions (dropping from the hotbar outside a screen) and anything else.
+    Other,
+}
+
+fn read_block_pos(r: &mut Reader<'_>) -> Result<[i32; 3]> {
+    Ok([r.vari32()?, r.vari32()?, r.vari32()?])
+}
+
+fn read_legacy_slots(r: &mut Reader<'_>) -> Result<()> {
+    let _legacy_id = r.vari32()?;
+    if r.bool()? {
+        let n = r.len("legacy slots", 64)?;
+        for _ in 0..n {
+            r.u8()?;
+            r.bytes("legacy slot list", 256)?;
+        }
+    }
+    Ok(())
+}
+
+fn read_inventory_actions(r: &mut Reader<'_>) -> Result<()> {
+    let n = r.len("inventory actions", 64)?;
+    for _ in 0..n {
+        r.varu32()?;
+        if r.bool()? {
+            r.u8()?;
+        }
+        if r.bool()? {
+            r.varu32()?;
+        }
+        r.varu32()?;
+        crate::items::read_instance(r)?;
+        crate::items::read_instance(r)?;
+    }
+    Ok(())
+}
+
+fn read_use_item(r: &mut Reader<'_>) -> Result<Transaction> {
+    let action = u32::try_from(r.vari32()?).map_err(|_| io::Error::Invalid("use item action"))?;
+    let _trigger = r.u8()?;
+    let pos = read_block_pos(r)?;
+    let face = i32::from(r.u8()?);
+    let hotbar = r.vari32()?;
+    let _hand = r.u8()?;
+    crate::items::read_instance(r)?;
+    let _player = r.vec3()?;
+    let click = r.vec3()?;
+    let _block = r.varu32()?;
+    let _prediction = r.u8()?;
+    let _cooldown = r.u8()?;
+    if !click.iter().all(|v| v.is_finite()) {
+        return Err(io::Error::Invalid("click position"));
+    }
+    Ok(Transaction::UseItem {
+        action,
+        pos,
+        face,
+        hotbar,
+        click,
+    })
+}
+
+/// Reads `inventory_transaction`.
+pub fn read_inventory_transaction(body: &[u8]) -> Result<Transaction> {
+    let mut r = Reader::new(body);
+    read_legacy_slots(&mut r)?;
+    let kind = r.varu32()?;
+    read_inventory_actions(&mut r)?;
+    Ok(match kind {
+        2 => read_use_item(&mut r)?,
+        3 => {
+            let target = r.varu64()?;
+            let action = u32::try_from(r.vari32()?).unwrap_or(u32::MAX);
+            let hotbar = r.vari32()?;
+            Transaction::UseItemOnEntity {
+                target,
+                action,
+                hotbar,
+            }
+        }
+        4 => Transaction::Release {
+            action: u32::try_from(r.vari32()?).unwrap_or(u32::MAX),
+        },
+        _ => Transaction::Other,
+    })
+}
+
+/// A block action of `player_auth_input`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockAction {
+    pub action: i32,
+    pub pos: [i32; 3],
+    pub face: i32,
+}
+
+/// The optional tail of `player_auth_input`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AuthInputExtra {
+    pub item_interaction: Option<Transaction>,
+    pub stack_request: Option<StackRequest>,
+    pub block_actions: Vec<BlockAction>,
+}
+
+/// Reads the optional parts of `player_auth_input` after the movement fields.
+pub fn read_auth_input_extra(body: &[u8]) -> Result<AuthInputExtra> {
+    let mut r = Reader::new(body);
+    // Skip the fixed fields read by `read_auth_input`.
+    r.take(4 * 2 + 12 + 8 + 4)?;
+    let n = r.len("input flags", usize::try_from(input::COUNT).unwrap_or(0))?;
+    for _ in 0..n {
+        r.vari32()?;
+    }
+    r.varu32()?;
+    r.varu32()?;
+    r.vari32()?;
+    r.take(8)?;
+    r.varu64()?;
+    r.vec3()?;
+    let mut extra = AuthInputExtra::default();
+    if r.bool()? {
+        read_legacy_slots(&mut r)?;
+        read_inventory_actions(&mut r)?;
+        extra.item_interaction = Some(read_use_item(&mut r)?);
+    }
+    if r.bool()? {
+        extra.stack_request = Some(read_stack_request(&mut r)?);
+    }
+    if r.bool()? {
+        let n = r.len("block actions", 64)?;
+        for _ in 0..n {
+            let action = r.vari32()?;
+            let pos = read_block_pos(&mut r)?;
+            let face = r.vari32()?;
+            extra.block_actions.push(BlockAction { action, pos, face });
+        }
+    }
+    Ok(extra)
+}
+
+/// Reads `player_action`: action, block position and face.
+pub fn read_player_action(body: &[u8]) -> Result<(i32, [i32; 3], i32)> {
+    let mut r = Reader::new(body);
+    r.varu64()?;
+    let action = r.vari32()?;
+    let pos = read_block_pos(&mut r)?;
+    let _result = read_block_pos(&mut r)?;
+    let face = r.vari32()?;
+    Ok((action, pos, face))
+}
+
+/// Reads `interact`: action and target runtime id.
+pub fn read_interact(body: &[u8]) -> Result<(u8, u64)> {
+    let mut r = Reader::new(body);
+    Ok((r.u8()?, r.varu64()?))
+}
+
+/// Reads `block_pick_request`: the block position.
+pub fn read_block_pick(body: &[u8]) -> Result<[i32; 3]> {
+    read_block_pos(&mut Reader::new(body))
+}
+
+/// `add_item_actor` from a pre-encoded `ItemInstance`.
+pub fn add_item_actor(entity_id: i64, item: &[u8], pos: [f32; 3], vel: [f32; 3]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(item.len().saturating_add(48));
+    io::write_vari64(&mut out, entity_id);
+    io::write_varu64(&mut out, u64::try_from(entity_id).unwrap_or(0));
+    out.extend_from_slice(item);
+    io::write_vec3(&mut out, pos);
+    io::write_vec3(&mut out, vel);
+    Metadata::default()
+        .long(meta::FLAGS, entity_flags(false, false) & !name_flags())
+        .write(&mut out);
+    out.push(0); // not from fishing
+    out
+}
+
+fn name_flags() -> i64 {
+    1i64.wrapping_shl(meta::FLAG_ALWAYS_SHOW_NAME) | 1i64.wrapping_shl(meta::FLAG_SHOW_NAME)
+}
+
+/// `take_item_actor`.
+pub fn take_item_actor(item: u64, taker: u64) -> Vec<u8> {
+    let mut out = Vec::new();
+    io::write_varu64(&mut out, item);
+    io::write_varu64(&mut out, taker);
+    out
+}
+
+/// `set_actor_data`.
+pub fn set_actor_data(runtime_id: u64, metadata: &Metadata) -> Vec<u8> {
+    let mut out = Vec::new();
+    io::write_varu64(&mut out, runtime_id);
+    metadata.write(&mut out);
+    out.extend_from_slice(&[0, 0]); // no entity properties
+    io::write_varu64(&mut out, 0);
+    out
+}
+
+/// `set_actor_motion`.
+pub fn set_actor_motion(runtime_id: u64, vel: [f32; 3]) -> Vec<u8> {
+    let mut out = Vec::new();
+    io::write_varu64(&mut out, runtime_id);
+    io::write_vec3(&mut out, vel);
+    io::write_varu64(&mut out, 0);
+    out
+}
+
+/// `animate` (1 = swing arm, 4 = critical hit, 3 = wake up).
+pub fn animate(action: u8, runtime_id: u64) -> Vec<u8> {
+    let mut out = vec![action];
+    io::write_varu64(&mut out, runtime_id);
+    out.extend_from_slice(&0f32.to_le_bytes());
+    out.push(0); // no swing source
+    out.push(0); // main hand
+    out
+}
+
+/// `actor_event`.
+pub fn actor_event(runtime_id: u64, event: u8, data: i32) -> Vec<u8> {
+    let mut out = Vec::new();
+    io::write_varu64(&mut out, runtime_id);
+    out.push(event);
+    io::write_vari32(&mut out, data);
+    out.push(0);
+    out
+}
+
+/// `level_event`.
+pub fn level_event(event: i32, pos: [f32; 3], data: i32) -> Vec<u8> {
+    let mut out = Vec::new();
+    io::write_vari32(&mut out, event);
+    io::write_vec3(&mut out, pos);
+    io::write_vari32(&mut out, data);
+    out
+}
+
+/// `level_sound_event` without an entity (e.g. `break` with a block runtime id).
+pub fn level_sound_event(sound: &str, pos: [f32; 3], data: i32) -> Vec<u8> {
+    let mut out = Vec::new();
+    io::write_str(&mut out, sound);
+    io::write_vec3(&mut out, pos);
+    io::write_vari32(&mut out, data);
+    io::write_str(&mut out, "");
+    out.push(0); // not a baby mob
+    out.push(0); // relative volume
+    out.extend_from_slice(&(-1i64).to_le_bytes());
+    out.push(0); // no fire position
+    out
+}
+
+/// `play_sound`.
+pub fn play_sound(name: &str, pos: [f32; 3], volume: f32, pitch: f32) -> Vec<u8> {
+    let mut out = Vec::new();
+    io::write_str(&mut out, name);
+    let eighths = pos.map(|v| crate::num::floor_i32(f64::from(v) * 8.0));
+    io::write_block_pos(&mut out, eighths);
+    out.extend_from_slice(&volume.to_le_bytes());
+    out.extend_from_slice(&pitch.to_le_bytes());
+    io::write_vari32(&mut out, 0);
+    out.push(0);
+    out.push(0);
+    out.push(0);
+    out
+}
+
+/// `set_time`.
+pub fn set_time(time: i32) -> Vec<u8> {
+    let mut out = Vec::new();
+    io::write_vari32(&mut out, time);
+    out
+}
+
+/// `game_rules_changed` with one boolean rule.
+pub fn game_rule_changed(name: &str, value: bool) -> Vec<u8> {
+    let mut out = Vec::new();
+    io::write_varu32(&mut out, 1);
+    game_rule_bool(&mut out, name, value);
+    out
+}
+
+/// `set_difficulty`.
+pub fn set_difficulty(difficulty: u32) -> Vec<u8> {
+    let mut out = Vec::new();
+    io::write_varu32(&mut out, difficulty);
+    out
+}
+
+/// One attribute of `update_attributes`.
+#[derive(Debug, Clone, Copy)]
+pub struct Attribute<'a> {
+    pub name: &'a str,
+    pub min: f32,
+    pub max: f32,
+    pub value: f32,
+    pub default: f32,
+}
+
+/// `update_attributes`.
+pub fn update_attributes(runtime_id: u64, attributes: &[Attribute<'_>]) -> Vec<u8> {
+    let mut out = Vec::new();
+    io::write_varu64(&mut out, runtime_id);
+    io::write_len(&mut out, attributes.len());
+    for a in attributes {
+        for v in [a.min, a.max, a.value, a.min, a.max, a.default] {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        io::write_str(&mut out, a.name);
+        io::write_varu32(&mut out, 0);
+    }
+    io::write_varu64(&mut out, 0);
+    out
+}
+
+/// `respawn` (state 0 searching, 1 ready, 2 client ready).
+pub fn respawn(pos: [f32; 3], state: u8, runtime_id: u64) -> Vec<u8> {
+    let mut out = Vec::new();
+    io::write_vec3(&mut out, pos);
+    out.push(state);
+    io::write_varu64(&mut out, runtime_id);
+    out
+}
+
+/// Reads `respawn` from the client: the state.
+pub fn read_respawn_state(body: &[u8]) -> Result<u8> {
+    let mut r = Reader::new(body);
+    r.vec3()?;
+    r.u8()
+}
+
+/// `change_dimension`.
+pub fn change_dimension(dimension: i32, pos: [f32; 3], respawn: bool) -> Vec<u8> {
+    let mut out = Vec::new();
+    io::write_vari32(&mut out, dimension);
+    io::write_vec3(&mut out, pos);
+    out.push(u8::from(respawn));
+    out.push(0); // no loading screen id
+    out
+}
+
+/// `death_info`.
+pub fn death_info(cause: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    io::write_str(&mut out, cause);
+    io::write_varu32(&mut out, 0);
+    out
+}
+
+/// `set_spawn_position` (type 1: world spawn).
+pub fn set_spawn_position(pos: [i32; 3], dimension: i32) -> Vec<u8> {
+    let mut out = Vec::new();
+    io::write_vari32(&mut out, 1);
+    io::write_block_pos(&mut out, pos);
+    io::write_vari32(&mut out, dimension);
+    io::write_block_pos(&mut out, pos);
+    out
+}
+
+/// `mob_effect` (operation 1 add, 2 modify, 3 remove).
+pub fn mob_effect(
+    runtime_id: u64,
+    operation: u8,
+    effect: i32,
+    amplifier: i32,
+    particles: bool,
+    duration: i32,
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    io::write_varu64(&mut out, runtime_id);
+    out.push(operation);
+    io::write_vari32(&mut out, effect);
+    io::write_vari32(&mut out, amplifier);
+    out.push(u8::from(particles));
+    io::write_vari32(&mut out, duration);
+    io::write_varu64(&mut out, 0);
+    out.push(0);
+    out
+}
+
+/// `set_title` (0 clear, 1 reset, 2 title, 3 subtitle, 4 action bar, 5 durations).
+pub fn set_title(action: i32, text: &str, times: [i32; 3]) -> Vec<u8> {
+    let mut out = Vec::new();
+    io::write_vari32(&mut out, action);
+    io::write_str(&mut out, text);
+    for t in times {
+        io::write_vari32(&mut out, t);
+    }
+    for _ in 0..3 {
+        io::write_str(&mut out, "");
+    }
+    out
+}
+
+/// `boss_event` show (0), hide (2), health (4) or title (5).
+pub fn boss_event(entity_id: i64, event: u8, title: &str, health: f32, colour: u8) -> Vec<u8> {
+    let mut out = Vec::new();
+    io::write_vari64(&mut out, entity_id);
+    out.push(event);
+    io::write_str(&mut out, title);
+    io::write_str(&mut out, title);
+    out.extend_from_slice(&health.to_le_bytes());
+    out.push(colour);
+    out.push(0);
+    out
+}
+
+/// `modal_form_request`.
+pub fn modal_form_request(id: u32, json: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    io::write_varu32(&mut out, id);
+    io::write_str(&mut out, json);
+    out
+}
+
+/// Reads `modal_form_response`: form id and the response JSON (`None` when closed).
+pub fn read_modal_form_response(body: &[u8]) -> Result<(u32, Option<String>)> {
+    let mut r = Reader::new(body);
+    let id = r.varu32()?;
+    let data = if r.bool()? {
+        Some(r.string("form response", 64 << 10)?.to_owned())
+    } else {
+        None
+    };
+    Ok((id, data))
+}
+
+/// `player_skin`.
+pub fn player_skin(uuid: u128, skin: &crate::skin::Skin) -> Vec<u8> {
+    let mut out = Vec::new();
+    io::write_uuid(&mut out, uuid);
+    skin.write(&mut out);
+    io::write_str(&mut out, "");
+    io::write_str(&mut out, "");
     out
 }
