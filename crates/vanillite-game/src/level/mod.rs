@@ -12,6 +12,7 @@
 //!   fluid ticks, random ticks, block events); entities tick in the world's entity phase.
 
 pub mod block_entity;
+pub mod game_event;
 mod neighbors;
 pub mod signal;
 mod tick;
@@ -176,7 +177,9 @@ pub struct Sound {
 /// `SoundSource.BLOCKS`.
 pub const SOUND_BLOCKS: u8 = 4;
 /// `SoundSource.NEUTRAL`.
-pub const SOUND_NEUTRAL: u8 = 7;
+pub const SOUND_NEUTRAL: u8 = 6;
+/// `SoundSource.RECORDS`.
+pub const SOUND_RECORDS: u8 = 2;
 
 /// What the world sends after a tick: changed blocks per section, block events, level events
 /// and sounds. Filled by the simulation, drained by the server.
@@ -213,6 +216,9 @@ pub struct Level {
     block_events: Vec<BlockEvent>,
     block_event_set: FxHashSet<BlockEvent>,
     random: LegacyRandom,
+    /// `soundSeedGenerator`: the seeds of sounds without an explicit seed; separate from the
+    /// level random so sounds do not shift the simulation's random sequence.
+    sound_seeds: LegacyRandom,
     /// `randValue` of `getBlockRandomPos`.
     rand_value: i32,
     game_time: i64,
@@ -255,6 +261,7 @@ impl Level {
             block_events: Vec::new(),
             block_event_set: FxHashSet::default(),
             random: LegacyRandom::new(seed),
+            sound_seeds: LegacyRandom::new(seed ^ 0x50_4E_44_53),
             rand_value: LegacyRandom::new(seed ^ 0x5DEE_CE66).next_int(),
             game_time: 0,
             output: LevelOutput::default(),
@@ -454,8 +461,7 @@ impl Level {
         }
     }
 
-    /// `playSound(except, pos, sound, source, volume, pitch)` at the block's centre, with a
-    /// seed from the level random.
+    /// `playSound(except, pos, sound, source, volume, pitch)` at the block's centre.
     pub fn play_block_sound(
         &mut self,
         except: Option<EntityId>,
@@ -486,7 +492,24 @@ impl Level {
         volume: f32,
         pitch: f32,
     ) {
-        let seed = self.random.next_long();
+        let seed = self.sound_seeds.next_long();
+        self.play_seeded_sound(except, x, y, z, sound, source, volume, pitch, seed);
+    }
+
+    /// `playSeededSound(except, x, y, z, sound, source, volume, pitch, seed)`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn play_seeded_sound(
+        &mut self,
+        except: Option<EntityId>,
+        x: f64,
+        y: f64,
+        z: f64,
+        sound: u16,
+        source: u8,
+        volume: f32,
+        pitch: f32,
+        seed: i64,
+    ) {
         self.output.sounds.push(Sound {
             sound,
             source,
@@ -696,11 +719,17 @@ impl Level {
                 continue;
             }
             let side = pos.relative(direction);
-            if self.block(side).is(vanillite_data::block::ids::REDSTONE_WIRE) {
+            if self
+                .block(side)
+                .is(vanillite_data::block::ids::REDSTONE_WIRE)
+            {
                 continue;
             }
             for wire in [side.offset(0, -1, 0), side.offset(0, 1, 0)] {
-                if self.block(wire).is(vanillite_data::block::ids::REDSTONE_WIRE) {
+                if self
+                    .block(wire)
+                    .is(vanillite_data::block::ids::REDSTONE_WIRE)
+                {
                     let neighbour = wire.relative(direction.opposite());
                     let neighbour_state = self.block(neighbour);
                     self.neighbor_shape_changed(
@@ -761,7 +790,11 @@ impl Level {
     }
 
     /// `state.useWithoutItem(level, pos, player, hitResult)` of the block at `pos`.
-    pub fn use_without_item(&mut self, pos: BlockPos, context: &block::UseContext) -> block::Interaction {
+    pub fn use_without_item(
+        &mut self,
+        pos: BlockPos,
+        context: &block::UseContext,
+    ) -> block::Interaction {
         let state = self.block(pos);
         match self.behaviours.get(state.block()).use_without_item {
             Some(f) => f(self, state, pos, context),
