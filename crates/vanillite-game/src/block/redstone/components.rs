@@ -495,3 +495,27 @@ pub(super) fn fence_gate_use(
     );
     Interaction::Success
 }
+
+// --- Composter (its fill level is an analog output) -------------------------------------------
+
+/// `ComposterBlock.onPlace`: a composter at level 7 becomes ready after 20 ticks.
+pub(super) fn composter_on_place(
+    level: &mut Level,
+    state: BlockState,
+    pos: BlockPos,
+    _: BlockState,
+    _: bool,
+) {
+    if state.int("level") == Some(7) {
+        level.schedule_block_tick(pos, state.block(), 20);
+    }
+}
+
+/// `ComposterBlock.tick`.
+pub(super) fn composter_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
+    if state.int("level") == Some(7) {
+        level.set_block_and_update(pos, state.set_int("level", 8));
+        let sound = crate::block::sound_id("block.composter.ready");
+        level.play_block_sound(None, pos, sound, SOUND_BLOCKS, 1.0, 1.0);
+    }
+}

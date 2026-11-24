@@ -8,13 +8,12 @@ use vanillite_base::{BlockPos, ChunkPos};
 use vanillite_chunk::ProtoChunk;
 use vanillite_chunk::slots::{ChunkStorage, FlatGenerator, LightEngine, Neighbours, WorldInfo};
 use vanillite_data::block::{BlockState, ids};
-use vanillite_data::entity::ids as entity_ids;
 use vanillite_world::chunks::{ChunkSettings, ChunkSlots, Chunks, InlineExecutor};
 use vanillite_world::entity::NetworkIds;
 use vanillite_worldgen::behaviour::StateExt;
 
 use super::{Level, LevelSettings, update};
-use crate::block::{Behaviours, falling};
+use crate::block::Behaviours;
 
 struct NoStorage;
 
@@ -113,11 +112,8 @@ pub(crate) fn tick(level: &mut Level) {
     level.run_block_events();
     let mut cursor = level.entities.store.tick_cursor();
     while let Some(id) = level.entities.store.next_to_tick(&mut cursor) {
-        let kind = level.entities.store.get(id).map(|e| e.kind());
-        if kind == Some(entity_ids::FALLING_BLOCK) {
-            falling::tick_entity(level, id);
-        } else if kind == Some(entity_ids::TNT) {
-            crate::block::tnt::tick_entity(level, id);
+        if let Some(kind) = level.entities.store.get(id).map(|e| e.kind()) {
+            crate::entities::tick_entity(level, id, kind);
         }
     }
     level.tick_block_entities();

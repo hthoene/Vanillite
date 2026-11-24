@@ -87,6 +87,9 @@ pub(super) fn fill(block: BlockId, b: &mut BlockBehaviour) {
     } else if name.ends_with("_trapdoor") {
         b.neighbor_changed = Some(components::trapdoor_neighbor_changed);
         b.use_without_item = Some(components::trapdoor_use);
+    } else if block == ids::COMPOSTER {
+        b.on_place = Some(components::composter_on_place);
+        b.tick = Some(components::composter_tick);
     } else if name.ends_with("_fence_gate") {
         b.neighbor_changed = Some(components::fence_gate_neighbor_changed);
         b.use_without_item = Some(components::fence_gate_use);

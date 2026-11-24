@@ -284,11 +284,7 @@ impl ServerWorld {
             };
             entity.set_old_pos();
             let kind = entity.as_ref().kind();
-            if kind == vanillite_data::entity::ids::FALLING_BLOCK {
-                vanillite_game::block::falling::tick_entity(level, id);
-            } else if kind == vanillite_data::entity::ids::TNT {
-                vanillite_game::block::tnt::tick_entity(level, id);
-            }
+            vanillite_game::entities::tick_entity(level, id, kind);
         }
     }
 

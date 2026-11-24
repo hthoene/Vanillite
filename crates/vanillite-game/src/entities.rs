@@ -162,3 +162,13 @@ impl Entities {
         self.players.get_mut(row)
     }
 }
+
+/// `tickNonPassenger` of the non-player entity kinds that tick: the one dispatch the world tick
+/// and the scenario world share.
+pub fn tick_entity(level: &mut crate::level::Level, id: EntityId, kind: EntityTypeId) {
+    if kind == ids::FALLING_BLOCK {
+        crate::block::falling::tick_entity(level, id);
+    } else if kind == ids::TNT {
+        crate::block::tnt::tick_entity(level, id);
+    }
+}

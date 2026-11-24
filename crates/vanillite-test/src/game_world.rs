@@ -13,7 +13,6 @@ use vanillite_base::{BlockPos, ChunkPos};
 use vanillite_chunk::ProtoChunk;
 use vanillite_chunk::slots::{ChunkStorage, FlatGenerator, LightEngine, Neighbours, WorldInfo};
 use vanillite_data::block::{BlockId, BlockState};
-use vanillite_data::entity::ids as entity_ids;
 use vanillite_game::block::Behaviours;
 use vanillite_game::level::{Level, LevelOutput, LevelSettings, update};
 use vanillite_world::chunks::{ChunkSettings, ChunkSlots, Chunks, InlineExecutor};
@@ -164,11 +163,7 @@ impl GameWorld {
             };
             entity.set_old_pos();
             let kind = entity.as_ref().kind();
-            // Entity kinds with a tick go here, in the same dispatch as the server's world
-            // tick (`vanillite-server/src/world.rs`, `tick_entities`).
-            if kind == entity_ids::FALLING_BLOCK {
-                vanillite_game::block::falling::tick_entity(level, id);
-            }
+            vanillite_game::entities::tick_entity(level, id, kind);
         }
     }
 }
@@ -224,7 +219,7 @@ impl ScenarioWorld for GameWorld {
         let level = &mut self.level;
         level.tick_time();
         level.run_scheduled_ticks();
-        level.chunks.tick();
+        level.tick_chunk_runtime();
         level.post_process();
         let mut scratch = Vec::new();
         level.tick_chunks(&mut scratch);
