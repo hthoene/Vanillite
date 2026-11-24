@@ -13,15 +13,18 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use vanillite_protocol::codec::{Decode, Reader, write_varint};
 use vanillite_protocol::commands::{NodeKind, Parser, ParserProps, StringKind};
+use vanillite_protocol::frame::RawFrame;
+use vanillite_protocol::ids;
 use vanillite_protocol::packets::{configuration as cfg, play};
-use vanillite_protocol::text::{Color, Component, NamedColor};
-use vanillite_protocol::types::GameProfile;
+use vanillite_protocol::text::{ClickEvent, Color, Component, HoverEvent, NamedColor};
+use vanillite_protocol::types::{GameProfile, Identifier, RawBytes};
 use vanillite_protocol::{Packet, State};
 
 use crate::Shared;
 use crate::backend::{self, Backend};
 use crate::client::{End, Registered, kick, reason};
 use crate::link::{Rx, Tx};
+use crate::zlib;
 
 // Serverbound ids the proxy looks at.
 const C_CFG_FINISH: i32 = cfg::serverbound::FinishConfiguration::ID;
@@ -31,12 +34,22 @@ const C_PLAY_COMMAND: i32 = play::serverbound::ChatCommand::ID;
 const C_PLAY_ACK: i32 = play::serverbound::ConfigurationAcknowledged::ID;
 const C_PLAY_INFO: i32 = play::serverbound::ClientInformation::ID;
 const C_PLAY_PAYLOAD: i32 = play::serverbound::CustomPayload::ID;
+const C_PLAY_SUGGEST: i32 = play::serverbound::CommandSuggestion::ID;
 // Clientbound ids the proxy looks at.
 const B_CFG_FINISH: i32 = cfg::clientbound::FinishConfiguration::ID;
 const B_CFG_DISCONNECT: i32 = cfg::clientbound::Disconnect::ID;
 const B_PLAY_START_CFG: i32 = play::clientbound::StartConfiguration::ID;
 const B_PLAY_DISCONNECT: i32 = play::clientbound::Disconnect::ID;
 const B_PLAY_COMMANDS: i32 = play::clientbound::Commands::ID;
+const B_CFG_PACK_PUSH: i32 = ids::configuration::clientbound::RESOURCE_PACK_PUSH;
+const B_CFG_PACK_POP: i32 = ids::configuration::clientbound::RESOURCE_PACK_POP;
+const B_PLAY_PACK_PUSH: i32 = ids::play::clientbound::RESOURCE_PACK_PUSH;
+const B_PLAY_PACK_POP: i32 = ids::play::clientbound::RESOURCE_PACK_POP;
+
+/// Resource packs of one server the proxy keeps track of.
+const MAX_PACKS: usize = 64;
+/// Bytes of channel registrations kept for later servers.
+const MAX_CHANNELS: usize = 16 * 1024;
 
 /// Where the client is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +100,14 @@ struct Session {
     client_info: Vec<u8>,
     /// Last brand payload body (without id), replayed to new backends.
     brand: Vec<u8>,
+    /// Plugin channels the client registered (`minecraft:register` data, NUL-separated),
+    /// replayed to new backends.
+    channels: Vec<u8>,
+    /// Resource packs the current server pushed.
+    packs: Vec<u128>,
+    /// Packs of earlier servers, removed when the new server ends its configuration unless it
+    /// pushed them again.
+    old_packs: Vec<u128>,
     /// Copy of an intercepted packet.
     scratch: Vec<u8>,
     /// Last reason a server connection failed, for the final kick.
@@ -124,6 +145,7 @@ pub(crate) async fn run(
         address,
         secret: config.secret.clone(),
         compression_level: config.compression_level,
+        link_threshold: config.trusted_link.then_some(config.compression_threshold),
     });
     let now = Instant::now();
     let mut session = Session {
@@ -139,6 +161,9 @@ pub(crate) async fn run(
         candidates,
         client_info: Vec::new(),
         brand: Vec::new(),
+        channels: Vec::new(),
+        packs: Vec::new(),
+        old_packs: Vec::new(),
         scratch: Vec::new(),
         last_error: "no server is configured".to_owned(),
         last_client_read: now,
@@ -180,6 +205,25 @@ fn after_id(body: &[u8]) -> &[u8] {
     match r.varint() {
         Ok(_) => r.take_rest(),
         Err(_) => &[],
+    }
+}
+
+/// Whether the proxy acts on a clientbound packet (all others pass unchanged).
+fn backend_intercepts(config: bool, id: i32) -> bool {
+    if config {
+        matches!(
+            id,
+            B_CFG_FINISH | B_CFG_DISCONNECT | B_CFG_PACK_PUSH | B_CFG_PACK_POP
+        )
+    } else {
+        matches!(
+            id,
+            B_PLAY_START_CFG
+                | B_PLAY_DISCONNECT
+                | B_PLAY_COMMANDS
+                | B_PLAY_PACK_PUSH
+                | B_PLAY_PACK_POP
+        )
     }
 }
 
@@ -272,7 +316,7 @@ impl Session {
                 Phase::Config => matches!(id, C_CFG_FINISH | C_CFG_INFO | C_CFG_PAYLOAD),
                 _ => matches!(
                     id,
-                    C_PLAY_COMMAND | C_PLAY_ACK | C_PLAY_INFO | C_PLAY_PAYLOAD
+                    C_PLAY_COMMAND | C_PLAY_ACK | C_PLAY_INFO | C_PLAY_PAYLOAD | C_PLAY_SUGGEST
                 ),
             };
             if !intercept {
@@ -329,6 +373,14 @@ impl Session {
                     self.forward()?;
                 }
             }
+            (Phase::Play, C_PLAY_SUGGEST) => {
+                let mut r = Reader::new(&self.scratch);
+                let _ = r.varint()?;
+                let request = play::serverbound::CommandSuggestion::decode(&mut r)?;
+                if !self.suggest(&request)? {
+                    self.forward()?;
+                }
+            }
             _ => self.relay_if_connected()?,
         }
         Ok(())
@@ -340,14 +392,25 @@ impl Session {
         self.relay_if_connected()
     }
 
-    /// A custom payload: remembers the client's brand for later backends.
+    /// A custom payload: remembers the client's brand and channel registrations for later
+    /// backends.
     fn store_brand(&mut self) -> Result<(), End> {
         let mut r = Reader::new(after_id(&self.scratch));
-        if vanillite_protocol::types::Identifier::decode(&mut r)
-            .is_ok_and(|c| c.as_str() == "minecraft:brand")
-        {
-            self.brand.clear();
-            self.brand.extend_from_slice(after_id(&self.scratch));
+        match Identifier::decode(&mut r) {
+            Ok(c) if c.as_str() == "minecraft:brand" => {
+                self.brand.clear();
+                self.brand.extend_from_slice(after_id(&self.scratch));
+            }
+            Ok(c) if c.as_str() == "minecraft:register" => {
+                let data = r.take_rest();
+                if self.channels.len().saturating_add(data.len()) < MAX_CHANNELS {
+                    if !self.channels.is_empty() {
+                        self.channels.push(0);
+                    }
+                    self.channels.extend_from_slice(data);
+                }
+            }
+            _ => {}
         }
         self.relay_if_connected()
     }
@@ -369,26 +432,48 @@ impl Session {
             let Some(b) = self.backend.as_mut() else {
                 return Ok(());
             };
-            let frame = match b.rx.decoder.next_frame() {
+            let next = if b.passthrough {
+                b.rx.decoder.next_raw()
+            } else {
+                b.rx.decoder.next_frame().map(|f| f.map(RawFrame::Packet))
+            };
+            let frame = match next {
                 Ok(Some(f)) => f,
                 Ok(None) => return Ok(()),
                 Err(e) => return self.backend_lost(Some(format!("protocol error: {e}"))),
             };
-            let Ok(id) = packet_id(frame) else {
-                return self.backend_lost(Some("protocol error".to_owned()));
-            };
-            let intercept = if self.backend_config {
-                matches!(id, B_CFG_FINISH | B_CFG_DISCONNECT)
-            } else {
-                matches!(id, B_PLAY_START_CFG | B_PLAY_DISCONNECT | B_PLAY_COMMANDS)
-            };
-            if !intercept {
-                self.client_tx.body(frame)?;
-                continue;
+            match frame {
+                RawFrame::Packet(body) => {
+                    let Ok(id) = packet_id(body) else {
+                        return self.backend_lost(Some("protocol error".to_owned()));
+                    };
+                    if !backend_intercepts(self.backend_config, id) {
+                        self.client_tx.body(body)?;
+                        continue;
+                    }
+                    self.scratch.clear();
+                    self.scratch.extend_from_slice(body);
+                    self.backend_packet(id)?;
+                }
+                RawFrame::Compressed {
+                    frame,
+                    zlib: data,
+                    data_len,
+                } => {
+                    // Trusted link: compressed for the client already; only the id is looked at.
+                    let Some(id) = zlib::peek_id(data) else {
+                        return self.backend_lost(Some("protocol error".to_owned()));
+                    };
+                    if !backend_intercepts(self.backend_config, id) {
+                        self.client_tx.raw(frame)?;
+                        continue;
+                    }
+                    if !zlib::inflate(data, data_len, &mut self.scratch) {
+                        return self.backend_lost(Some("bad compressed data".to_owned()));
+                    }
+                    self.backend_packet(id)?;
+                }
             }
-            self.scratch.clear();
-            self.scratch.extend_from_slice(frame);
-            self.backend_packet(id)?;
         }
     }
 
@@ -396,8 +481,29 @@ impl Session {
         let mut r = Reader::new(after_id(&self.scratch));
         match (self.backend_config, id) {
             (true, B_CFG_FINISH) => {
+                self.drop_old_packs()?;
                 self.client_tx.body(&self.scratch)?;
                 self.backend_config = false;
+            }
+            (true, B_CFG_PACK_PUSH) | (false, B_PLAY_PACK_PUSH) => {
+                if let Ok(id) = r.u128()
+                    && !self.packs.contains(&id)
+                    && self.packs.len() < MAX_PACKS
+                {
+                    self.packs.push(id);
+                }
+                self.client_tx.body(&self.scratch)?;
+            }
+            (true, B_CFG_PACK_POP) | (false, B_PLAY_PACK_POP) => {
+                match r.u8() {
+                    Ok(0) => self.packs.clear(),
+                    _ => {
+                        if let Ok(id) = r.u128() {
+                            self.packs.retain(|p| *p != id);
+                        }
+                    }
+                }
+                self.client_tx.body(&self.scratch)?;
             }
             (true, _) => {
                 let reason = cfg::clientbound::Disconnect::decode(&mut r)
@@ -414,13 +520,31 @@ impl Session {
                     .map_or_else(|_| "disconnected".to_owned(), |d| d.reason.plain());
                 self.backend_lost(Some(reason))?;
             }
-            (false, _) => match play::clientbound::Commands::decode(&mut r) {
+            (false, B_PLAY_COMMANDS) => match play::clientbound::Commands::decode(&mut r) {
                 Ok(mut commands) => {
                     self.inject_commands(&mut commands);
                     self.client_tx.send(&commands)?;
                 }
                 Err(_) => self.client_tx.body(&self.scratch)?,
             },
+            (false, _) => self.client_tx.body(&self.scratch)?,
+        }
+        Ok(())
+    }
+
+    /// Removes the packs of earlier servers that the new server did not push again; sent while
+    /// the client is still in configuration.
+    fn drop_old_packs(&mut self) -> Result<(), End> {
+        let mut out = Vec::new();
+        for id in std::mem::take(&mut self.old_packs) {
+            if self.packs.contains(&id) {
+                continue;
+            }
+            out.clear();
+            write_varint(&mut out, B_CFG_PACK_POP);
+            out.push(1);
+            out.extend_from_slice(&id.to_be_bytes());
+            self.client_tx.body(&out)?;
         }
         Ok(())
     }
@@ -469,7 +593,7 @@ impl Session {
                             name: "brigadier:string",
                             props: ParserProps::String(StringKind::SingleWord),
                         },
-                        suggestions: None,
+                        suggestions: Identifier::new("minecraft:ask_server").ok(),
                     },
                     executable: true,
                     restricted: false,
@@ -492,9 +616,13 @@ impl Session {
     // ---- commands ----
 
     fn message(&mut self, text: String, color: NamedColor) -> Result<(), End> {
+        self.chat(Component::text(text).color(Color::Named(color)))
+    }
+
+    fn chat(&mut self, content: Component) -> Result<(), End> {
         if matches!(self.phase, Phase::Play | Phase::Limbo) {
             self.client_tx.send(&play::clientbound::SystemChat {
-                content: Component::text(text).color(Color::Named(color)),
+                content,
                 overlay: false,
             })?;
         }
@@ -508,24 +636,8 @@ impl Session {
             Some("server") if self.may_switch => {
                 match words.next() {
                     None => {
-                        let current = self
-                            .backend
-                            .as_ref()
-                            .map_or_else(|| "none".to_owned(), |b| b.name.to_string());
-                        let list: Vec<&str> = self
-                            .shared
-                            .config
-                            .servers
-                            .keys()
-                            .map(String::as_str)
-                            .collect();
-                        self.message(
-                            format!(
-                                "You are on {current}. Servers: {}. Switch with /server <name>.",
-                                list.join(", ")
-                            ),
-                            NamedColor::Yellow,
-                        )?;
+                        let list = self.server_list();
+                        self.chat(list)?;
                     }
                     Some(target) => self.switch(target)?,
                 }
@@ -538,6 +650,91 @@ impl Session {
             }
             _ => Ok(false),
         }
+    }
+
+    /// `/server` without a name: the current server and every server to click on, with its
+    /// player count, like Velocity.
+    fn server_list(&self) -> Component {
+        let current = self.backend.as_ref().map(|b| Arc::clone(&b.name));
+        let mut counts = vec![0usize; self.shared.config.servers.len()];
+        if let Ok(players) = self.shared.players.lock() {
+            for p in players.values() {
+                let Some(server) = p.server.as_deref() else {
+                    continue;
+                };
+                let index = self.shared.config.servers.keys().position(|s| s == server);
+                if let Some(c) = index.and_then(|i| counts.get_mut(i)) {
+                    *c = c.saturating_add(1);
+                }
+            }
+        }
+        let yellow = Color::Named(NamedColor::Yellow);
+        let mut out = Component::text(match &current {
+            Some(name) => format!("You are currently connected to {name}.\n"),
+            None => "You are not connected to a server.\n".to_owned(),
+        })
+        .color(yellow)
+        .append(Component::text("Available servers: ").color(yellow));
+        for (i, (name, count)) in self.shared.config.servers.keys().zip(counts).enumerate() {
+            if i > 0 {
+                out = out.append(Component::text(", ").color(Color::Named(NamedColor::Gray)));
+            }
+            let here = current.as_deref() == Some(name.as_str());
+            let players = if count == 1 {
+                "1 player online".to_owned()
+            } else {
+                format!("{count} players online")
+            };
+            let (color, hover) = if here {
+                (NamedColor::Green, format!("Currently connected\n{players}"))
+            } else {
+                (NamedColor::Gray, format!("Click to connect\n{players}"))
+            };
+            out = out.append(
+                Component::text(name.clone())
+                    .color(Color::Named(color))
+                    .click(ClickEvent::RunCommand(format!("/server {name}")))
+                    .hover(HoverEvent::ShowText(Component::text(hover))),
+            );
+        }
+        out
+    }
+
+    /// Tab completion of `/server <name>`; `false` passes the request on to the backend.
+    fn suggest(&mut self, request: &play::serverbound::CommandSuggestion) -> Result<bool, End> {
+        let line = request
+            .command
+            .strip_prefix('/')
+            .unwrap_or(&request.command);
+        let Some(partial) = line.strip_prefix("server ") else {
+            return Ok(false);
+        };
+        if !self.may_switch || partial.contains(' ') {
+            return Ok(false);
+        }
+        let lower = partial.to_ascii_lowercase();
+        let suggestions = self
+            .shared
+            .config
+            .servers
+            .keys()
+            .filter(|n| n.to_ascii_lowercase().starts_with(&lower))
+            .map(|n| play::clientbound::Suggestion {
+                text: n.clone(),
+                tooltip: None,
+            })
+            .collect();
+        let start = request.command.len().saturating_sub(partial.len());
+        let prefix = request.command.get(..start).unwrap_or_default();
+        let java_len = |s: &str| i32::try_from(s.encode_utf16().count()).unwrap_or(i32::MAX);
+        self.client_tx
+            .send(&play::clientbound::CommandSuggestions {
+                id: request.id,
+                start: java_len(prefix),
+                length: java_len(partial),
+                suggestions,
+            })?;
+        Ok(true)
     }
 
     fn player_list(&self) -> String {
@@ -674,6 +871,19 @@ impl Session {
             write_varint(&mut self.scratch, C_CFG_PAYLOAD);
             self.scratch.extend_from_slice(&self.brand);
             backend.tx.body(&self.scratch)?;
+        }
+        if !self.channels.is_empty() {
+            backend.tx.send(&cfg::serverbound::CustomPayload {
+                channel: Identifier::new("minecraft:register")?,
+                data: RawBytes(self.channels.clone()),
+            })?;
+        }
+        // The new server's configuration decides which packs stay.
+        let earlier = std::mem::take(&mut self.packs);
+        for id in earlier {
+            if !self.old_packs.contains(&id) && self.old_packs.len() < MAX_PACKS {
+                self.old_packs.push(id);
+            }
         }
         self.shared
             .set_server(self.player.profile.id, Some(Arc::clone(&backend.name)));

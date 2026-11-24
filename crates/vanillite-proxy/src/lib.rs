@@ -5,12 +5,17 @@
 //! it relays packet bodies with no work beyond framing, and switches servers through Vanilla's
 //! reconfiguration (`start_configuration` → configuration → play), so the client never
 //! reconnects. A lost backend sends the player to the next server of the try order.
+//!
+//! Vanillite backends accept a trusted link (negotiated with the forwarding secret): they
+//! compress for the client's threshold, and the proxy passes their frames on unchanged instead
+//! of inflating and deflating every packet. Other backends keep the re-encoding relay.
 
 mod backend;
 mod client;
 pub mod config;
 mod link;
 mod session;
+mod zlib;
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
