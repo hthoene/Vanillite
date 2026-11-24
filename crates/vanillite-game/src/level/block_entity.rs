@@ -24,6 +24,8 @@ pub enum BlockEntity {
     },
     /// `PistonMovingBlockEntity`.
     MovingPiston(Box<MovingPiston>),
+    /// `HopperBlockEntity`: the transfer timing (its items come with containers).
+    Hopper(crate::block::hopper::Hopper),
 }
 
 /// `BlockEntityTicker.tick(level, pos, state, blockEntity)`: the block entity is looked up at
@@ -107,6 +109,7 @@ fn ticker_of(entity: &BlockEntity) -> Option<TickerFn> {
     match entity {
         BlockEntity::Comparator { .. } => None,
         BlockEntity::MovingPiston(_) => Some(crate::block::piston::moving_piston_tick),
+        BlockEntity::Hopper(_) => Some(crate::block::hopper::push_items_tick),
     }
 }
 
@@ -116,6 +119,8 @@ pub fn new_block_entity(state: BlockState) -> Option<BlockEntity> {
     let block = state.block();
     if block == ids::COMPARATOR {
         Some(BlockEntity::Comparator { output: 0 })
+    } else if block == ids::HOPPER {
+        Some(BlockEntity::Hopper(crate::block::hopper::Hopper::default()))
     } else {
         None
     }
@@ -127,6 +132,7 @@ fn is_valid(entity: &BlockEntity, state: BlockState) -> bool {
     match entity {
         BlockEntity::Comparator { .. } => state.block() == ids::COMPARATOR,
         BlockEntity::MovingPiston(_) => state.block() == ids::MOVING_PISTON,
+        BlockEntity::Hopper(_) => state.block() == ids::HOPPER,
     }
 }
 

@@ -76,6 +76,7 @@ block_tags!(
     supports_warped_fungus,
     supports_warped_roots,
     supports_wither_rose,
+    suppresses_bounce,
     unstable_bottom_center,
     wall_post_override,
     walls,

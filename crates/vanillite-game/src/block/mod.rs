@@ -7,18 +7,21 @@
 //! replace entries before the world starts. Blocks whose class has no such behaviour have
 //! empty entries and cost nothing.
 
+pub mod dispenser;
 pub mod drops;
 pub mod falling;
 pub mod fluid;
 mod growth;
+pub mod hopper;
 pub mod piston;
 pub mod redstone;
 mod spread;
+pub mod tnt;
 pub mod weather;
 
 use vanillite_base::{BlockPos, Direction, Vec3};
-use vanillite_world::entity::EntityId;
 use vanillite_data::block::{BLOCK_COUNT, BlockId, BlockState, flags, ids};
+use vanillite_world::entity::EntityId;
 use vanillite_worldgen::behaviour::StateExt;
 use vanillite_worldgen::behaviour::{self as shared, Class, class_of_block, tags};
 
@@ -217,6 +220,9 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
     }
     redstone::fill(block, &mut b);
     piston::fill(block, &mut b);
+    tnt::fill(block, &mut b);
+    dispenser::fill(block, &mut b);
+    hopper::fill(block, &mut b);
     b
 }
 
