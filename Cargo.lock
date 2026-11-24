@@ -1260,6 +1260,7 @@ version = "0.1.0"
 dependencies = [
  "log",
  "rsa",
+ "serde_json",
  "sha1",
  "sha2",
  "vanillite-base",
@@ -1272,6 +1273,7 @@ dependencies = [
  "vanillite-protocol",
  "vanillite-world",
  "vanillite-worldgen",
+ "zip",
 ]
 
 [[package]]
@@ -1437,6 +1439,7 @@ dependencies = [
  "vanillite-data",
  "vanillite-datapack",
  "vanillite-nbt",
+ "vanillite-storage",
 ]
 
 [[package]]

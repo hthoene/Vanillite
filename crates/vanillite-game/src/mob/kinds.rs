@@ -888,3 +888,125 @@ pub fn after_hurt(
 pub fn living_flags(m: &MobData) -> u8 {
     u8::from(m.using_item >= 0)
 }
+
+/// One loot entry: an item with a uniform count, smelted when the mob burns.
+struct Drop {
+    item: &'static str,
+    min: i32,
+    max: i32,
+    smelted: Option<&'static str>,
+    player_kill: bool,
+}
+
+const fn drop(item: &'static str, min: i32, max: i32) -> Drop {
+    Drop {
+        item,
+        min,
+        max,
+        smelted: None,
+        player_kill: false,
+    }
+}
+
+const fn meat(item: &'static str, min: i32, max: i32, smelted: &'static str) -> Drop {
+    Drop {
+        item,
+        min,
+        max,
+        smelted: Some(smelted),
+        player_kill: false,
+    }
+}
+
+/// The items of `entities/<kind>` of the 26.3 loot tables without looting: one pool per
+/// entry. `killed_by_player`, `on_fire` and the sheep's wool decide the conditional parts.
+pub fn death_loot(m: &mut MobData, killed_by_player: bool) -> Vec<crate::item::ItemStack> {
+    const SHEEP_WOOL: [&str; 16] = [
+        "minecraft:white_wool",
+        "minecraft:orange_wool",
+        "minecraft:magenta_wool",
+        "minecraft:light_blue_wool",
+        "minecraft:yellow_wool",
+        "minecraft:lime_wool",
+        "minecraft:pink_wool",
+        "minecraft:gray_wool",
+        "minecraft:light_gray_wool",
+        "minecraft:cyan_wool",
+        "minecraft:purple_wool",
+        "minecraft:blue_wool",
+        "minecraft:brown_wool",
+        "minecraft:green_wool",
+        "minecraft:red_wool",
+        "minecraft:black_wool",
+    ];
+    let pools: &[Drop] = match m.kind {
+        Kind::Zombie => &[drop("minecraft:rotten_flesh", 0, 2)],
+        Kind::Skeleton => &[drop("minecraft:arrow", 0, 2), drop("minecraft:bone", 0, 2)],
+        Kind::Creeper => &[drop("minecraft:gunpowder", 0, 2)],
+        Kind::Spider => &[
+            drop("minecraft:string", 0, 2),
+            Drop {
+                item: "minecraft:spider_eye",
+                min: -1,
+                max: 1,
+                smelted: None,
+                player_kill: true,
+            },
+        ],
+        Kind::Enderman => &[drop("minecraft:ender_pearl", 0, 1)],
+        Kind::Cow => &[
+            drop("minecraft:leather", 0, 2),
+            meat("minecraft:beef", 1, 3, "minecraft:cooked_beef"),
+        ],
+        Kind::Pig => &[meat(
+            "minecraft:porkchop",
+            1,
+            3,
+            "minecraft:cooked_porkchop",
+        )],
+        Kind::Chicken => &[
+            drop("minecraft:feather", 0, 2),
+            meat("minecraft:chicken", 1, 1, "minecraft:cooked_chicken"),
+        ],
+        Kind::Sheep => &[meat("minecraft:mutton", 1, 2, "minecraft:cooked_mutton")],
+    };
+    let on_fire = m.is_on_fire();
+    let mut out = Vec::new();
+    let push = |name: &str, count: i32, out: &mut Vec<crate::item::ItemStack>| {
+        if count > 0
+            && let Some(id) = vanillite_data::registry::ITEM.id(name)
+        {
+            out.push(crate::item::ItemStack::new(id, count));
+        }
+    };
+    for d in pools {
+        if d.player_kill && !killed_by_player {
+            continue;
+        }
+        let count = m.random.next_int_between_inclusive(d.min, d.max);
+        let name = match d.smelted {
+            Some(cooked) if on_fire => cooked,
+            _ => d.item,
+        };
+        push(name, count, &mut out);
+    }
+    match m.kind {
+        Kind::Zombie => {
+            // The rare drop: `killed_by_player` and a 2.5 % chance.
+            if killed_by_player && m.random.next_float() < 0.025 {
+                let rare = [
+                    "minecraft:iron_ingot",
+                    "minecraft:carrot",
+                    "minecraft:potato",
+                ];
+                let i = usize::try_from(m.random.next_int_bounded(3)).unwrap_or(0);
+                push(rare[i], 1, &mut out);
+            }
+        }
+        Kind::Sheep if !m.sheared => {
+            push(SHEEP_WOOL[usize::from(m.sheep_color & 15)], 1, &mut out);
+        }
+        _ => {}
+    }
+    out
+}

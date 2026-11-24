@@ -234,5 +234,12 @@ rules! {
             activation_range: u16 = "activation-range", Performance, range = [0, 512],
                 vanilla = 0, paper = 32;
         }
+        /// Item entities (dropped items).
+        items: ItemRules = "performance.items" {
+            /// Ticks an item lies on the ground before it despawns. Lower values keep fewer
+            /// item entities around on busy servers.
+            despawn_ticks: u16 = "despawn-ticks", Performance, range = [20, 32766],
+                vanilla = 6000;
+        }
     }
 }

@@ -5,9 +5,9 @@
 //! one varies fastest.
 
 pub use crate::generated::blocks::{
-    BLOCK_COUNT, BLOCKS, INSTRUMENTS, MISC, PROPERTIES, PushReaction, SHAPE_SETS, SHAPES,
-    STATE_BLOCK, STATE_COUNT, STATE_FLAGS, STATE_FLUID, STATE_LIGHT, STATE_MISC, STATE_SHAPES,
-    flags, ids,
+    BLOCK_COUNT, BLOCKS, BlockKind, INSTRUMENTS, MISC, PROPERTIES, PushReaction, SHAPE_SETS,
+    SHAPES, SOUND_TYPES, STATE_BLOCK, STATE_COUNT, STATE_FLAGS, STATE_FLUID, STATE_LIGHT,
+    STATE_MISC, STATE_SHAPES, flags, ids,
 };
 
 use crate::fluid::FluidState;
@@ -42,6 +42,22 @@ pub struct BlockInfo {
     pub item: u16,
     /// Block entity type id, or `u16::MAX` if the block has none.
     pub block_entity: u16,
+    /// The block's Java class.
+    pub kind: BlockKind,
+    /// Index into [`SOUND_TYPES`] of the default state's sound type.
+    pub sound: u16,
+}
+
+/// A block sound type (`SoundType`): sound event ids (`minecraft:sound_event`).
+#[derive(Debug, PartialEq)]
+pub struct SoundType {
+    pub volume: f32,
+    pub pitch: f32,
+    pub break_sound: u16,
+    pub step_sound: u16,
+    pub place_sound: u16,
+    pub hit_sound: u16,
+    pub fall_sound: u16,
 }
 
 /// A block state property with its values in Vanilla's order.
@@ -86,6 +102,12 @@ impl BlockId {
     #[inline]
     pub fn default_state(self) -> BlockState {
         BlockState(self.info().default_state)
+    }
+
+    /// The sound type of the block's default state.
+    #[inline]
+    pub fn sound(self) -> &'static SoundType {
+        &SOUND_TYPES[usize::from(self.info().sound)]
     }
 
     /// Looks a block up by its registry name.

@@ -326,7 +326,32 @@ fn die(
     };
     let pos = e.pos();
     let network_id = e.network_id().0;
-    // `dropAllDeathLoot`: experience (the loot table items follow with the item entities).
+    // `dropAllDeathLoot`: the loot table, then the experience.
+    if !baby && env.rules.bool(Rule::MOB_DROPS) {
+        let loot = ents
+            .mob_mut(target)
+            .map(|m| kinds::death_loot(m, killed_by_player))
+            .unwrap_or_default();
+        for stack in loot {
+            // `spawnAtLocation`: an item entity with the default random motion.
+            let r = &mut *env.random;
+            let velocity = Vec3::new(
+                r.next_double() * 0.2 - 0.1,
+                0.2,
+                r.next_double() * 0.2 - 0.1,
+            );
+            let uuid = super::random_uuid(r);
+            let y_rot = r.next_float() * 360.0;
+            env.out.push(Effect::DropItem {
+                uuid,
+                pos,
+                velocity,
+                y_rot,
+                pickup_delay: 10,
+                stack,
+            });
+        }
+    }
     if (killed_by_player && env.rules.bool(Rule::MOB_DROPS)) && reward > 0 {
         award_experience(level, ents, cx, pos, reward);
     }

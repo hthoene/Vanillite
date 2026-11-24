@@ -265,7 +265,27 @@ pub fn explode(level: &mut Level, env: &mut Env<'_>, cx: &mut MobContext, e: Exp
             if state.is_air() {
                 continue;
             }
-            // TODO(#27): the block's loot with the explosion radius (`dropFromExplosion`).
+            // `onExplosionHit`: the block's loot (with the explosion radius for decay), then
+            // air.
+            if level.settings.block_drops
+                && let Some(data) = crate::player::play::game_data()
+            {
+                let tool = crate::item::ItemStack::EMPTY;
+                let item_in_tag = |item: u16, tag: &str| data.item_in_tag(item, tag);
+                let loot = crate::loot::BlockLootContext {
+                    state,
+                    tool: &tool,
+                    enchantment_level: &|_| 0,
+                    item_in_tag: &item_in_tag,
+                    explosion_radius: (interaction == BlockInteraction::DestroyWithDecay)
+                        .then_some(e.radius),
+                };
+                let mut stacks = Vec::new();
+                data.loot.block_drops(&loot, level.random(), &mut stacks);
+                for stack in stacks {
+                    crate::block::drops::pop_resource(level, pos, stack);
+                }
+            }
             level.set_block(pos, BlockState::AIR, 3);
         }
     }

@@ -4,11 +4,12 @@ use vanillite_base::{BlockPos, Vec3};
 use vanillite_data::block::BlockState;
 use vanillite_data::entity::{EntityTypeId, ids};
 use vanillite_world::entity::{
-    Dense, EntityId, EntityStore, NetworkIds, NewEntity, Removed, Rotation,
+    Dense, EntityId, EntityStore, NetworkId, NetworkIds, NewEntity, Removed, Rotation,
 };
 
 use vanillite_base::hash::FxHashMap;
 
+use crate::item_entity::ItemData;
 use crate::mob::MobData;
 use crate::mob::projectile::{ArrowData, OrbData};
 use crate::player::PlayerData;
@@ -33,6 +34,8 @@ pub struct Entities {
     pub store: EntityStore,
     /// Player kind data.
     pub players: Dense<PlayerData>,
+    /// Item entity kind data.
+    pub items: Dense<ItemData>,
     /// Falling block kind data.
     pub falling_blocks: Dense<FallingBlockData>,
     /// Mob kind data (every type with a [`crate::mob::Kind`]).
@@ -76,6 +79,27 @@ impl Entities {
         new.rot = rot;
         let players = &mut self.players;
         self.store.spawn(new, |id| players.push(id, data))
+    }
+
+    /// Adds an item entity (`new ItemEntity`): a random yaw like Vanilla's constructor.
+    pub fn spawn_item(
+        &mut self,
+        network_id: NetworkId,
+        uuid: u128,
+        pos: Vec3,
+        velocity: Vec3,
+        y_rot: f32,
+        data: ItemData,
+    ) -> EntityId {
+        let mut new = NewEntity::new(ids::ITEM, network_id, uuid, pos);
+        new.velocity = velocity;
+        new.rot = Rotation {
+            y_rot,
+            x_rot: 0.0,
+            y_head_rot: y_rot,
+        };
+        let items = &mut self.items;
+        self.store.spawn(new, |id| items.push(id, data))
     }
 
     /// Adds a falling block entity.
@@ -217,6 +241,8 @@ impl Entities {
     fn remove_kind_row(&mut self, kind: EntityTypeId, row: u32) -> Option<EntityId> {
         if kind == ids::PLAYER {
             self.players.swap_remove(row).and_then(|(_, moved)| moved)
+        } else if kind == ids::ITEM {
+            self.items.swap_remove(row).and_then(|(_, moved)| moved)
         } else if kind == ids::FALLING_BLOCK {
             self.falling_blocks
                 .swap_remove(row)
@@ -255,4 +281,24 @@ impl Entities {
 #[inline]
 pub fn is_mob_kind(kind: EntityTypeId) -> bool {
     crate::mob::Kind::of(kind).is_some()
+}
+
+impl Entities {
+    /// The item data of an entity, `None` if it is no (live) item entity.
+    pub fn item(&self, id: EntityId) -> Option<&ItemData> {
+        let entity = self.store.get(id)?;
+        (entity.kind() == ids::ITEM)
+            .then(|| self.items.get(entity.kind_row()))
+            .flatten()
+    }
+
+    /// The item data of an entity, mutably.
+    pub fn item_mut(&mut self, id: EntityId) -> Option<&mut ItemData> {
+        let entity = self.store.get(id)?;
+        if entity.kind() != ids::ITEM {
+            return None;
+        }
+        let row = entity.kind_row();
+        self.items.get_mut(row)
+    }
 }

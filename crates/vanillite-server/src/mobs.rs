@@ -114,7 +114,7 @@ impl WorldMobs {
         }
         level.entities = ents;
         self.finish_removals(level);
-        survival.deliver(&level.entities, global);
+        survival.deliver(&mut level.entities, global);
     }
 
     /// Natural spawning (`NaturalSpawner` via `ServerChunkCache.tickChunks`) and the animals of
@@ -259,7 +259,7 @@ impl WorldMobs {
             }
         }
         level.entities = ents;
-        survival.deliver(&level.entities, global);
+        survival.deliver(&mut level.entities, global);
     }
 
     /// Applies what the last mob tick queued: explosions and block changes.

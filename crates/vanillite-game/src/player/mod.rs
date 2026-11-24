@@ -16,7 +16,9 @@ pub mod connection;
 pub mod encode;
 pub mod join;
 pub mod movement;
+pub mod play;
 pub mod sink;
+pub mod world;
 
 pub use chunks::{ChunkSource, PlayerChunks};
 pub use connection::{
@@ -116,6 +118,11 @@ pub struct PlayerData {
     pub chunk_view: ChunkView,
     /// The connection to the client.
     pub connection: Connection,
+    /// Inventory and inventory menu.
+    pub inventory: crate::inventory::PlayerInventory,
+    /// The equipment other players last saw (`detectEquipmentUpdates`), in
+    /// [`encode::EQUIPMENT_SLOTS`] order.
+    pub last_equipment: [crate::item::ItemStack; 6],
     /// Health, food, air, fire, experience and the combat tracker.
     pub survival: crate::survival::player::Survival,
 }

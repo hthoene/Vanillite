@@ -677,8 +677,23 @@ pub fn die(
             message: Component::empty(),
         });
     }
-    // TODO(#27): drop the inventory unless `keep_inventory` is on (`dropAllDeathLoot`), and the
-    // experience orbs (`ExperienceOrb.award`).
+    // `dropAllDeathLoot` → `dropEquipment`. TODO: the experience orbs (`ExperienceOrb.award`).
+    if !env.rules.bool(Rule::KEEP_INVENTORY) && player.game_mode != GameMode::Spectator {
+        let pos = entity.as_ref().pos();
+        // `getEyeY()` with the pose's float eye height.
+        let eye = match entity.as_ref().pose() {
+            Pose::Crouching => 1.27f32,
+            Pose::Swimming | Pose::FallFlying | Pose::SpinAttack => 0.4,
+            Pose::Sleeping | Pose::Dying => 0.2,
+            _ => 1.62,
+        };
+        let eye_y = pos.y + f64::from(eye);
+        drop_all(
+            &mut player.inventory,
+            Vec3::new(pos.x, eye_y - 0.3, pos.z),
+            env,
+        );
+    }
     env.out.push(Effect::Tracking {
         entity: id,
         with_self: true,
@@ -696,6 +711,46 @@ pub fn die(
     s.combat.recheck_status(s.tick_count, alive);
     s.last_death = Some((env.dimension.to_owned(), block_pos(entity.as_ref().pos())));
     player.connection.movement.mark_client_unloaded();
+}
+
+/// `destroyVanishingCursedItems` + `Inventory.dropAll`: every stack is thrown in a random
+/// direction from `from` (`createItemStackToDrop(stack, true, false)`).
+fn drop_all(inventory: &mut crate::inventory::PlayerInventory, from: Vec3, env: &mut Env<'_>) {
+    let vanishing = |stack: &crate::item::ItemStack| {
+        crate::player::play::game_data()
+            .is_some_and(|d| d.enchantment_level(stack, "minecraft:vanishing_curse") > 0)
+    };
+    let inv = inventory;
+    // The main inventory, then the equipment in `EquipmentSlot` order.
+    let slots = inv
+        .items
+        .iter_mut()
+        .chain(std::iter::once(&mut inv.offhand))
+        .chain(inv.armor.iter_mut());
+    for slot in slots {
+        let stack = std::mem::replace(slot, crate::item::ItemStack::EMPTY);
+        if stack.is_empty() || vanishing(&stack) {
+            continue;
+        }
+        let pow = env.random.next_float() * 0.5;
+        let dir = env.random.next_float() * std::f32::consts::TAU;
+        let velocity = Vec3::new(
+            f64::from(-vanillite_base::math::sin(f64::from(dir)) * pow),
+            f64::from(0.2f32),
+            f64::from(vanillite_base::math::cos(f64::from(dir)) * pow),
+        );
+        let uuid = (u128::from(env.random.next_long() as u64) << 64)
+            | u128::from(env.random.next_long() as u64);
+        let y_rot = env.random.next_float() * 360.0;
+        env.out.push(Effect::DropItem {
+            uuid,
+            pos: from,
+            velocity,
+            y_rot,
+            pickup_delay: 40,
+            stack,
+        });
+    }
 }
 
 /// `/kill`: `hurtServer(genericKill, Float.MAX_VALUE)`.

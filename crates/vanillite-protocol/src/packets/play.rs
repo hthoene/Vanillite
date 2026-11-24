@@ -2,7 +2,10 @@
 //! [`Unhandled`](crate::sets::ServerboundPlay::Unhandled) on the server side.
 
 /// Serverbound play packets.
+mod world;
+
 pub mod serverbound {
+    pub use super::world::serverbound::*;
     use crate::Packet;
     use crate::codec::{Decode, Encode, Reader, Result};
     use crate::varint_enum;
@@ -283,6 +286,7 @@ pub mod serverbound {
 
 /// Clientbound play packets.
 pub mod clientbound {
+    pub use super::world::clientbound::*;
     use crate::Packet;
     use crate::text::Component;
     use crate::types::VarIntList;

@@ -11,7 +11,8 @@ use vanillite_protocol::SharedPacket;
 use vanillite_protocol::codec::write_varint;
 use vanillite_protocol::packets::play::clientbound::{
     AddEntity, BundleDelimiter, EntityPositionSync, MoveEntityPos, MoveEntityPosRot, MoveEntityRot,
-    PositionPath, RemoveEntities, RotateHead, SetEntityData, SetEntityMotion, VecDelta,
+    PositionPath, RemoveEntities, RotateHead, SetEntityData, SetEntityMotion, SetEquipment,
+    VecDelta,
 };
 use vanillite_protocol::types::{self, LpVec3, RawBytes, Uuid, VarIntList};
 use vanillite_world::entity::{EntityRef, Pose};
@@ -19,6 +20,8 @@ use vanillite_world::tracking::{EntityUpdate, Message};
 
 use super::MainHand;
 use crate::entities::Entities;
+use crate::item::{EquipmentSlot, ItemStack};
+use vanillite_protocol::codec::Encode;
 
 /// The packets of one update, shared by all its viewers.
 pub type Encoded = Vec<Arc<SharedPacket>>;
@@ -28,6 +31,7 @@ mod data_id {
     pub const SHARED_FLAGS: u8 = 0;
     pub const AIR_SUPPLY: u8 = 1;
     pub const POSE: u8 = 6;
+    pub const ITEM_ENTITY_ITEM: u8 = 8;
     pub const HEALTH: u8 = 9;
     pub const PLAYER_MAIN_HAND: u8 = 15;
     pub const PLAYER_MODE_CUSTOMISATION: u8 = 16;
@@ -47,6 +51,7 @@ mod data_id {
 /// Entity data serializer ids (`EntityDataSerializers` registration order of 26.3).
 mod serializer {
     pub const BYTE: i32 = 0;
+    pub const ITEM_STACK: i32 = 7;
     pub const INT: i32 = 1;
     pub const FLOAT: i32 = 3;
     pub const BOOLEAN: i32 = 8;
@@ -181,6 +186,19 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
             );
         }
     }
+    if entity.kind() == ids::ITEM
+        && let Some(data) = entities.item(entity.id())
+        && (all || !data.stack.is_empty())
+    {
+        item(
+            &mut out,
+            data_id::ITEM_ENTITY_ITEM,
+            serializer::ITEM_STACK,
+            |o| {
+                data.stack.encode(o);
+            },
+        );
+    }
     if out.is_empty() {
         return None;
     }
@@ -270,6 +288,38 @@ fn mob_data(out: &mut Vec<u8>, mob: &crate::mob::MobData, all: bool) {
     }
 }
 
+/// `set_equipment` with every non-empty equipment slot of a player (pairing data).
+fn equipment(entity: &EntityRef<'_>, entities: &Entities) -> Option<SetEquipment> {
+    if let Some(mob) = entities.mob(entity.id()) {
+        // Skeletons hold their bow (`populateDefaultEquipmentSlots`).
+        let bow = vanillite_data::registry::ITEM.id("minecraft:bow")?;
+        return (mob.kind == crate::mob::Kind::Skeleton).then(|| SetEquipment {
+            entity_id: entity.network_id().0,
+            slots: vec![(EquipmentSlot::MainHand.ordinal(), ItemStack::new(bow, 1))],
+        });
+    }
+    let player = entities.player(entity.id())?;
+    let slots: Vec<(u8, ItemStack)> = EQUIPMENT_SLOTS
+        .iter()
+        .map(|&slot| (slot.ordinal(), player.inventory.equipment(slot).clone()))
+        .filter(|(_, stack)| !stack.is_empty())
+        .collect();
+    (!slots.is_empty()).then(|| SetEquipment {
+        entity_id: entity.network_id().0,
+        slots,
+    })
+}
+
+/// The equipment slots of a player in Vanilla order.
+pub const EQUIPMENT_SLOTS: [EquipmentSlot; 6] = [
+    EquipmentSlot::MainHand,
+    EquipmentSlot::OffHand,
+    EquipmentSlot::Feet,
+    EquipmentSlot::Legs,
+    EquipmentSlot::Chest,
+    EquipmentSlot::Head,
+];
+
 /// Encodes one tracker message. `None` skips it (the entity is gone and nothing is left to
 /// send).
 pub fn encode_update(message: &Message, entities: &Entities) -> Option<Encoded> {
@@ -305,23 +355,27 @@ pub fn encode_update(message: &Message, entities: &Entities) -> Option<Encoded> 
                     })
                     .unwrap_or(0),
             });
-            let data = entities
-                .store
-                .get(message.entity)
-                .and_then(|e| entity_data(&e, entities, false));
-            match data {
-                // `sendPairingData` bundles the spawn with its data.
-                Some(items) => Some(vec![
-                    SharedPacket::of(&BundleDelimiter),
-                    add,
-                    SharedPacket::of(&SetEntityData {
-                        entity_id: id,
-                        items: RawBytes(items),
-                    }),
-                    SharedPacket::of(&BundleDelimiter),
-                ]),
-                None => Some(vec![add]),
+            let entity = entities.store.get(message.entity);
+            let data = entity
+                .as_ref()
+                .and_then(|e| entity_data(e, entities, false));
+            let gear = entity.as_ref().and_then(|e| equipment(e, entities));
+            if data.is_none() && gear.is_none() {
+                return Some(vec![add]);
             }
+            // `sendPairingData` bundles the spawn with its data and equipment.
+            let mut packets = vec![SharedPacket::of(&BundleDelimiter), add];
+            if let Some(items) = data {
+                packets.push(SharedPacket::of(&SetEntityData {
+                    entity_id: id,
+                    items: RawBytes(items),
+                }));
+            }
+            if let Some(gear) = gear {
+                packets.push(SharedPacket::of(&gear));
+            }
+            packets.push(SharedPacket::of(&BundleDelimiter));
+            Some(packets)
         }
         EntityUpdate::Remove => one(SharedPacket::of(&RemoveEntities {
             ids: VarIntList(vec![id]),
