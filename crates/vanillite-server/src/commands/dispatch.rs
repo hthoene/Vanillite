@@ -46,7 +46,7 @@ fn selector_arg<'a>(
 
 /// `GameProfileArgument.getGameProfiles`: selected players, or a name of an online player,
 /// an operator or a whitelisted player. In offline mode an unknown name gets its offline UUID.
-fn profiles(
+pub(super) fn profiles(
     env: &Env<'_>,
     source: &CommandSource,
     parsed: &Parsed<CommandId>,
@@ -102,7 +102,7 @@ fn profiles(
 
 /// `MessageArgument.Message.resolveComponent`: the text with its selectors replaced by the
 /// names they select.
-fn resolve_message(
+pub(super) fn resolve_message(
     env: &Env<'_>,
     source: &CommandSource,
     message: &Message,
@@ -133,20 +133,18 @@ fn resolve_message(
     Ok(out)
 }
 
-/// `MessageArgument.resolveChatMessage`: the signed message with the resolved text as unsigned
-/// content, or a system message when the argument is not signed.
-fn chat_message(
+/// `MessageArgument.resolveChatMessage` of the argument `name`: the signed message with the
+/// resolved text as unsigned content, or a system message when the argument is not signed.
+pub(super) fn chat_message(
     env: &Env<'_>,
     source: &CommandSource,
     parsed: &Parsed<CommandId>,
     signed: &SignedArguments,
+    name: &str,
 ) -> Result<ChatMessage, CommandError> {
-    let message = parsed
-        .args
-        .message("message")
-        .ok_or_else(|| missing("message"))?;
+    let message = parsed.args.message(name).ok_or_else(|| missing(name))?;
     let formatted = resolve_message(env, source, message)?;
-    let mut out = match signed.get("message") {
+    let mut out = match signed.get(name) {
         Some(m) => m.clone(),
         None => ChatMessage::system(message.text.clone()),
     };
@@ -284,11 +282,11 @@ pub(crate) fn execute(
         CommandId::ListUuids => Ok(exec::list(source, global, true)),
         CommandId::Msg => {
             let targets = targets(env, source, selector_arg(parsed, "targets")?, true)?;
-            let message = chat_message(env, source, parsed, signed)?;
+            let message = chat_message(env, source, parsed, signed, "message")?;
             Ok(exec::msg(source, global, &targets, &message))
         }
         CommandId::Say => {
-            let message = chat_message(env, source, parsed, signed)?;
+            let message = chat_message(env, source, parsed, signed, "message")?;
             exec::say(source, global, &message);
             Ok(1)
         }
@@ -474,6 +472,38 @@ pub(crate) fn execute(
         CommandId::RecipeGive => super::player_data::recipe(true, &parsed.args, source, env),
         CommandId::RecipeTake => super::player_data::recipe(false, &parsed.args, source, env),
         CommandId::Tag(op) => super::data_cmd::run_tag(op, &parsed.args, source, env),
+        CommandId::TellRaw
+        | CommandId::Title(_)
+        | CommandId::Me
+        | CommandId::TeamMsg
+        | CommandId::Trigger(_)
+        | CommandId::DialogShow
+        | CommandId::DialogClear => super::chat_cmd::run(parsed, signed, source, env),
+        CommandId::Team(op) => super::teams::run(op, &parsed.args, source, env),
+        CommandId::Ban
+        | CommandId::BanIp
+        | CommandId::BanList(_)
+        | CommandId::Pardon
+        | CommandId::PardonIp => super::bans::run(parsed, source, env),
+        CommandId::ScheduleFunction(replace) => {
+            super::schedule::schedule(&parsed.args, replace, source, env)
+        }
+        CommandId::ScheduleClear => super::schedule::clear(&parsed.args, source, env),
+        CommandId::Random(_)
+        | CommandId::FetchProfile(_)
+        | CommandId::Version
+        | CommandId::Spectate
+        | CommandId::Stopwatch(_)
+        | CommandId::Test(_)
+        | CommandId::Waypoint(_)
+        | CommandId::JfrStart
+        | CommandId::JfrStop
+        | CommandId::PerfStart
+        | CommandId::PerfStop
+        | CommandId::DebugStart
+        | CommandId::DebugStop
+        | CommandId::SetIdleTimeout
+        | CommandId::Transfer => super::system_cmd::run(parsed, source, env),
         // Redirect modifiers never end a command; the engine runs `function` and `return`.
         CommandId::Execute(_)
         | CommandId::ExecuteIfFunction
@@ -484,6 +514,7 @@ pub(crate) fn execute(
         | CommandId::FunctionWithPath
         | CommandId::ReturnValue
         | CommandId::ReturnFail
-        | CommandId::ReturnRun => Err(CommandError::new("command.unknown.command", vec![])),
+        | CommandId::ReturnRun
+        | CommandId::DebugFunction => Err(CommandError::new("command.unknown.command", vec![])),
     }
 }

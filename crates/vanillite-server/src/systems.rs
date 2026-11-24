@@ -1,5 +1,6 @@
 //! Server-wide game systems around the simulation: the scoreboard, command storage, data pack
-//! functions. Each sits behind its own lock, held only for one command's change.
+//! functions, scheduled functions, random sequences, stopwatches and the profilers. Each sits
+//! behind its own lock, held only for one command's change.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -9,7 +10,12 @@ use vanillite_base::Vec3;
 use vanillite_game::scoreboard::Scoreboard;
 use vanillite_nbt::Compound;
 
+use crate::command_state::{Profiling, RandomSequences, Stopwatches, TimerQueue, WaypointIcon};
 use crate::commands::functions::FunctionLibrary;
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 /// `CommandStorage`: compounds by id.
 pub(crate) type CommandStorage = std::collections::BTreeMap<String, Compound>;
@@ -29,6 +35,11 @@ pub(crate) struct GameSystems {
     spawn: Mutex<Vec3>,
     /// Tags of the static and dynamic registries: registry → tag → entries.
     tags: RwLock<Arc<RegistryTags>>,
+    scheduled: Mutex<TimerQueue>,
+    random_sequences: Mutex<RandomSequences>,
+    stopwatches: Mutex<Stopwatches>,
+    profiling: Mutex<Profiling>,
+    waypoints: Mutex<std::collections::BTreeMap<u128, WaypointIcon>>,
 }
 
 /// Registry tags: registry name → tag id → resolved entry ids.
@@ -58,7 +69,39 @@ impl GameSystems {
             vanilla_pack,
             spawn: Mutex::new(Vec3::ZERO),
             tags: RwLock::new(Arc::new(RegistryTags::new())),
+            scheduled: Mutex::default(),
+            random_sequences: Mutex::default(),
+            stopwatches: Mutex::default(),
+            profiling: Mutex::default(),
+            waypoints: Mutex::default(),
         }
+    }
+
+    /// Scheduled functions (`MinecraftServer.getScheduledEvents`).
+    pub(crate) fn scheduled(&self) -> MutexGuard<'_, TimerQueue> {
+        lock(&self.scheduled)
+    }
+
+    /// Random sequences (`MinecraftServer.getRandomSequences`).
+    pub(crate) fn random_sequences(&self) -> MutexGuard<'_, RandomSequences> {
+        lock(&self.random_sequences)
+    }
+
+    /// Stopwatches (`MinecraftServer.getStopwatches`).
+    pub(crate) fn stopwatches(&self) -> MutexGuard<'_, Stopwatches> {
+        lock(&self.stopwatches)
+    }
+
+    /// The profilers of `debug`, `perf` and `jfr`.
+    pub(crate) fn profiling(&self) -> MutexGuard<'_, Profiling> {
+        lock(&self.profiling)
+    }
+
+    /// Waypoint icons changed by `/waypoint`, by entity UUID.
+    pub(crate) fn waypoints(
+        &self,
+    ) -> MutexGuard<'_, std::collections::BTreeMap<u128, WaypointIcon>> {
+        lock(&self.waypoints)
     }
 
     /// The registry tags.
@@ -123,9 +166,11 @@ impl GameSystems {
     /// Sets a command boss bar's value or maximum (`execute store bossbar`).
     pub(crate) fn set_bossbar_value(&self, _id: &str, _max: bool, _value: i32) {}
 
-    /// The elapsed seconds of a stopwatch (`Stopwatches.get`); stopwatches are not kept yet.
-    pub(crate) fn stopwatch_seconds(&self, _id: &str) -> Option<f64> {
-        None
+    /// The elapsed seconds of a stopwatch (`Stopwatches.get`, `Stopwatch.elapsedSeconds`).
+    pub(crate) fn stopwatch_seconds(&self, id: &str) -> Option<f64> {
+        let stopwatches = self.stopwatches();
+        let now = stopwatches.now();
+        stopwatches.get(id).map(|s| s.elapsed_seconds(now))
     }
 
     /// The overworld spawn (the server's command position).

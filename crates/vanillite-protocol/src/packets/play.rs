@@ -525,9 +525,11 @@ pub mod clientbound {
     }
 
     pub use super::entities::*;
+    pub use super::hud::*;
     pub use super::survival::*;
 }
 
+mod hud;
 mod survival;
 
 /// Clientbound play packets with hand-written codecs (variable layouts).

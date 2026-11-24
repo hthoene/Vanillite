@@ -383,33 +383,34 @@ impl Team {
         u8::from(self.allow_friendly_fire) | (u8::from(self.see_friendly_invisibles) << 1)
     }
 
-    /// `getFormattedDisplayName`: the display name in the team style with a hover of the name,
-    /// in brackets.
+    /// `PlayerTeam.applyColor`.
+    fn apply_color(&self, c: Component) -> Component {
+        match self.color.and_then(named_color) {
+            Some(color) => c.color(vanillite_protocol::text::Color::Named(color)),
+            None => c,
+        }
+    }
+
+    /// `getFormattedDisplayName`: the display name with the name as hover and insertion, in
+    /// `chat.square_brackets`, in the team colour.
     pub fn formatted_display_name(&self) -> Component {
         use vanillite_protocol::text::HoverEvent;
-        let mut inner = self
+        let inner = self
             .display_name
             .clone()
             .hover(HoverEvent::ShowText(Component::text(self.name.as_str())))
             .insertion(self.name.clone());
-        if let Some(color) = self.color.and_then(named_color) {
-            inner = inner.color(vanillite_protocol::text::Color::Named(color));
-        }
-        Component::text("[")
-            .append(inner)
-            .append(Component::text("]"))
+        self.apply_color(Component::translatable("chat.square_brackets", vec![inner]))
     }
 
-    /// `PlayerTeam.formatNameForTeam`: prefix, the name in the team colour, suffix.
+    /// `PlayerTeam.getFormattedName`: prefix, name, suffix, in the team colour.
     pub fn format_name(&self, name: Component) -> Component {
-        let mut name_part = Component::empty().append(name);
-        if let Some(color) = self.color.and_then(named_color) {
-            name_part = name_part.color(vanillite_protocol::text::Color::Named(color));
-        }
-        Component::empty()
-            .append(self.prefix.clone())
-            .append(name_part)
-            .append(self.suffix.clone())
+        self.apply_color(
+            Component::empty()
+                .append(self.prefix.clone())
+                .append(name)
+                .append(self.suffix.clone()),
+        )
     }
 }
 
@@ -481,6 +482,22 @@ impl Scoreboard {
     /// Takes the changes since the last call.
     pub fn take_events(&mut self) -> Vec<ScoreEvent> {
         std::mem::take(&mut self.events)
+    }
+
+    /// Takes the team changes since the last call; the other changes stay.
+    pub fn take_team_events(&mut self) -> Vec<ScoreEvent> {
+        let (teams, rest) = std::mem::take(&mut self.events).into_iter().partition(|e| {
+            matches!(
+                e,
+                ScoreEvent::TeamAdded(_)
+                    | ScoreEvent::TeamChanged(_)
+                    | ScoreEvent::TeamRemoved(_)
+                    | ScoreEvent::TeamJoined { .. }
+                    | ScoreEvent::TeamLeft { .. }
+            )
+        });
+        self.events = rest;
+        teams
     }
 
     /// Whether it changed since the last save; clears the flag.
@@ -803,16 +820,13 @@ impl Scoreboard {
         self.teams.get(self.team_of.get(holder)?)
     }
 
-    /// `addPlayerToTeam`: leaves the old team first. `false` if already in this team or the
-    /// team is unknown.
+    /// `addPlayerToTeam`: leaves the current team first (also when it is this team, as in
+    /// Vanilla). `false` if the team is unknown.
     pub fn join_team(&mut self, holder: &str, team: &str) -> bool {
         if !self.teams.contains_key(team) {
             return false;
         }
-        if let Some(old) = self.team_of.get(holder).cloned() {
-            if old == team {
-                return false;
-            }
+        if self.team_of.contains_key(holder) {
             self.leave_team(holder);
         }
         self.team_of.insert(holder.to_owned(), team.to_owned());

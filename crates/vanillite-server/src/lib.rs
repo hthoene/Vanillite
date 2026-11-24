@@ -9,6 +9,7 @@ mod access;
 mod blocks;
 mod chat;
 mod clock;
+mod command_state;
 mod commands;
 pub mod compute;
 pub mod eula;

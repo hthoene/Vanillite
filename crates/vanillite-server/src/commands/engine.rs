@@ -193,6 +193,11 @@ enum Action {
         source: CommandSource,
         output: Callback,
     },
+    /// Feedback once the entries before it ran (`debug function`).
+    Message {
+        source: CommandSource,
+        message: Component,
+    },
 }
 
 struct Entry {
@@ -438,6 +443,9 @@ impl Engine {
                     callback.fire(env, true, acc.sum.load(Ordering::Relaxed));
                 }
             }
+            Action::Message { source, message } => {
+                source.send_success(env.global, message, true);
+            }
             Action::Isolated {
                 functions,
                 source,
@@ -680,6 +688,12 @@ impl Engine {
                 frame.ret.fire(env, false, 0);
                 self.discard(frame.control);
             }
+            CommandId::DebugFunction => {
+                if let Err(e) = self.debug_function(line, &source, mods, frame, env) {
+                    handle_error(&source, env, &e, mods.forked);
+                    source.callback.fire(env, false, 0);
+                }
+            }
             _ => {
                 if let Err(e) = self.function_command(command, line, &source, mods, frame, env) {
                     handle_error(&source, env, &e, mods.forked);
@@ -736,6 +750,106 @@ impl Engine {
             mods,
             env,
         )
+    }
+
+    /// `DebugCommand.TraceCustomExecutor`: runs the functions with the source's output going
+    /// to a trace file in `debug/`. There is no command tracer: the trace lists the functions
+    /// called and their sizes.
+    fn debug_function(
+        &mut self,
+        line: &Line,
+        source: &CommandSource,
+        mods: Mods,
+        frame: &Frame,
+        env: &mut Env<'_>,
+    ) -> Result<(), CommandError> {
+        use vanillite_protocol::text::Arg;
+        if mods.is_return {
+            return Err(CommandError::new(
+                "commands.debug.function.noReturnRun",
+                vec![],
+            ));
+        }
+        let found = functions::resolve(env.global, &line.parsed.args, "name")?;
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let (y, mo, d, h, mi, s) = crate::access::utc(secs);
+        let output = format!("debug-trace-{y:04}-{mo:02}-{d:02}_{h:02}.{mi:02}.{s:02}.txt");
+        let dir = env
+            .global
+            .systems
+            .level_dir
+            .parent()
+            .map_or_else(|| std::path::PathBuf::from("debug"), |p| p.join("debug"));
+        let mut trace = String::new();
+        let mut tracker = super::tracker::Tracker::<String>::default();
+        let mut function_source = source.clone();
+        function_source.silent = true;
+        function_source.level = function_source
+            .level
+            .min(vanillite_game::commands::level::GAMEMASTERS);
+        let function_source = function_source.with_callback(Callback::Empty);
+        for function in &found {
+            match function.instantiate(None, env.global) {
+                Ok(instantiated) => {
+                    let size = instantiated.lines.len();
+                    trace.push_str(&format!(
+                        "{0}
+    [F] {0} size={size}
+",
+                        function.id
+                    ));
+                    self.queue(
+                        frame,
+                        Action::Call {
+                            function: instantiated,
+                            callback: Callback::Empty,
+                            return_parent: false,
+                            source: function_source.clone(),
+                        },
+                    );
+                    tracker.track(
+                        &function.id.to_string(),
+                        i32::try_from(size).unwrap_or(i32::MAX),
+                    );
+                }
+                Err(reason) => source.send_failure(env.global, *reason),
+            }
+        }
+        let written =
+            std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(dir.join(&output), trace));
+        if let Err(e) = written {
+            log::warn!("Tracing failed: {e}");
+            source.send_failure(
+                env.global,
+                Component::translatable("commands.debug.function.traceFailed", vec![]),
+            );
+        }
+        let (single, count) = tracker.pick(true);
+        let total = tracker.total();
+        let message = match single {
+            Some(id) => Component::translatable_args(
+                "commands.debug.function.success.single",
+                vec![
+                    Arg::Int(total),
+                    Arg::String(id.clone()),
+                    Arg::String(output),
+                ],
+            ),
+            None => Component::translatable_args(
+                "commands.debug.function.success.multiple",
+                vec![Arg::Int(total), Arg::Int(count), Arg::String(output)],
+            ),
+        };
+        self.queue(
+            frame,
+            Action::Message {
+                source: source.clone(),
+                message,
+            },
+        );
+        Ok(())
     }
 
     /// `FunctionCommand.queueFunctions`.
@@ -837,6 +951,7 @@ fn is_custom_command(command: CommandId) -> bool {
             | CommandId::FunctionWithArguments
             | CommandId::FunctionWith
             | CommandId::FunctionWithPath
+            | CommandId::DebugFunction
     )
 }
 

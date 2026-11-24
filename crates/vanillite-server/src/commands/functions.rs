@@ -57,6 +57,11 @@ pub(crate) struct Function {
 }
 
 impl Function {
+    /// Whether it is a `MacroFunction`.
+    pub(crate) fn is_macro(&self) -> bool {
+        matches!(self.body, Body::Macro(_))
+    }
+
     /// `CommandFunction.instantiate`; the error is the reason (`FunctionInstantiationException`).
     pub(crate) fn instantiate(
         &self,
@@ -652,7 +657,7 @@ pub(crate) fn function_sender(source: &CommandSource) -> CommandSource {
 }
 
 /// `getGameLoopSender`: the server at the overworld spawn, game master level, silent.
-fn game_loop_sender(global: &Global) -> Option<CommandSource> {
+pub(crate) fn game_loop_sender(global: &Global) -> Option<CommandSource> {
     let mut source = CommandSource::new(
         global.arc()?,
         SourceKind::Server,

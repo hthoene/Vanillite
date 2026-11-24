@@ -981,6 +981,8 @@ impl Server {
     /// world part runs on the player's world.
     fn accept(&mut self, joined: vanillite_net::Joined) {
         let uuid = joined.profile.id.0;
+        // `ServerPlayer.getIpAddress`.
+        let ip = joined.address.ip().to_string();
         let saved = match self.player_store.load(uuid) {
             Ok(saved) => saved,
             Err(e) => {
@@ -999,22 +1001,33 @@ impl Server {
         let access = &self.global.access;
         // The server's own test bots come over virtual connections it opened itself.
         let test_bot = arrival.memory_connection && self.test_bots.contains(&uuid);
-        let refuse = if !test_bot && !access.is_whitelisted(uuid) {
-            Some("multiplayer.disconnect.not_whitelisted")
+        use vanillite_protocol::text::Component;
+        let refuse = if let Some(reason) = crate::commands::ban_reason(access, uuid, None) {
+            Some(reason)
+        } else if !test_bot && !access.is_whitelisted(uuid) {
+            Some(Component::translatable(
+                "multiplayer.disconnect.not_whitelisted",
+                vec![],
+            ))
+        } else if let Some(reason) = crate::commands::ban_reason(access, uuid, Some(&ip)) {
+            Some(reason)
         } else if players.contains(Uuid(uuid)) {
             // Vanilla kicks the older session; refusing the new one keeps a single owner of the
             // player without a cross-world removal.
-            Some("multiplayer.disconnect.duplicate_login")
+            Some(Component::translatable(
+                "multiplayer.disconnect.duplicate_login",
+                vec![],
+            ))
         } else if players.count() >= players.max_players() && !access.bypasses_player_limit(uuid) {
-            Some("multiplayer.disconnect.server_full")
+            Some(Component::translatable(
+                "multiplayer.disconnect.server_full",
+                vec![],
+            ))
         } else {
             None
         };
-        if let Some(key) = refuse {
-            sink.kick(vanillite_protocol::text::Component::translatable(
-                key,
-                vec![],
-            ));
+        if let Some(reason) = refuse {
+            sink.kick(reason);
             return;
         }
         let world = arrival
@@ -1030,6 +1043,7 @@ impl Server {
             info: crate::players::info_entry(&arrival),
             sink,
             inbox: Arc::clone(&arrival.inbox),
+            ip,
         });
         let global = Arc::clone(&self.global);
         self.run_in_world(

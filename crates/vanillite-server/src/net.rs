@@ -163,11 +163,14 @@ pub(crate) fn prepare(
         msg_incoming: chat_type("minecraft:msg_command_incoming"),
         msg_outgoing: chat_type("minecraft:msg_command_outgoing"),
         emote_command: chat_type("minecraft:emote_command"),
+        team_msg_incoming: chat_type("minecraft:team_msg_command_incoming"),
+        team_msg_outgoing: chat_type("minecraft:team_msg_command_outgoing"),
     };
     let registries = [
         "minecraft:timeline",
         "minecraft:world_clock",
         "minecraft:enchantment",
+        "minecraft:dialog",
     ]
     .into_iter()
     .map(|name| {

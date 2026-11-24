@@ -10,13 +10,16 @@
     clippy::as_conversions
 )]
 
-mod entities;
+mod admin;
+mod chat;
 mod data;
+mod entities;
 mod execute;
 mod items;
 mod players;
 mod server;
 mod sound;
+mod system;
 mod world;
 
 pub use sound::SOUND_SOURCES;
@@ -68,6 +71,18 @@ pub mod suggest {
     pub const ENTITY_TAGS: &str = "entity.tags";
     /// Modifier ids of an attribute of the `target` entity (`attribute ... modifier`).
     pub const ATTRIBUTE_MODIFIERS: &str = "attribute.modifiers";
+    /// Trigger objectives the source has an unlocked score in (`TriggerCommand`).
+    pub const TRIGGERS: &str = "trigger.objectives";
+    /// Random sequences (`RandomCommand.suggestRandomSequence`).
+    pub const RANDOM_SEQUENCES: &str = "random.sequences";
+    /// Ids of scheduled functions (`ScheduleCommand.SUGGEST_SCHEDULE`).
+    pub const SCHEDULED: &str = "schedule.ids";
+    /// Names of banned players (`/pardon`).
+    pub const BANNED_PLAYERS: &str = "bans.players";
+    /// Banned IP addresses (`/pardon-ip`).
+    pub const BANNED_IPS: &str = "bans.ips";
+    /// Test instances (`TestCommand.suggestTestInstanceIds`).
+    pub const TEST_INSTANCES: &str = "test.instances";
     /// Entity types `summon` may create; the client answers it itself.
     pub const SUMMONABLE_ENTITIES: &str = "minecraft:summonable_entities";
     /// Sound event ids; the client answers it itself.
@@ -348,6 +363,129 @@ pub enum TagOp {
     List,
 }
 
+/// The subcommands of `title <targets>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TitleOp {
+    Clear,
+    Reset,
+    Title,
+    Subtitle,
+    Actionbar,
+    Times,
+}
+
+/// The forms of `trigger <objective>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TriggerOp {
+    /// Adds 1.
+    Simple,
+    Add,
+    Set,
+}
+
+/// The subcommands of `team`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TeamOp {
+    List,
+    ListMembers,
+    Add,
+    Remove,
+    Empty,
+    /// `join <team>`: the source joins.
+    JoinSelf,
+    Join,
+    Leave,
+    DisplayName,
+    ColorReset,
+    Color,
+    FriendlyFire,
+    SeeFriendlyInvisibles,
+    /// `nametagVisibility <visibility>` (the `Team.Visibility` id).
+    NametagVisibility(u8),
+    /// `deathMessageVisibility <visibility>` (the `Team.Visibility` id).
+    DeathMessageVisibility(u8),
+    /// `collisionRule <rule>` (the `Team.CollisionRule` id).
+    CollisionRule(u8),
+    Prefix,
+    Suffix,
+}
+
+/// The subcommands of `random`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RandomOp {
+    /// `value <range> [<sequence>]`.
+    Value,
+    /// `roll <range> [<sequence>]`.
+    Roll,
+    /// `reset *`.
+    ResetAll,
+    /// `reset * <seed> [<includeWorldSeed> [<includeSequenceId>]]`.
+    ResetAllWithDefaults,
+    /// `reset <sequence>`.
+    Reset,
+    /// `reset <sequence> <seed> [<includeWorldSeed> [<includeSequenceId>]]`.
+    ResetWithSeed,
+}
+
+/// The subcommands of `stopwatch`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StopwatchOp {
+    Create,
+    Query,
+    Restart,
+    Remove,
+}
+
+/// The subcommands of `waypoint`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WaypointOp {
+    List,
+    Color,
+    ColorHex,
+    ColorReset,
+    StyleReset,
+    StyleSet,
+}
+
+/// The subcommands of `fetchprofile`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FetchProfileOp {
+    Name,
+    Id,
+    Entity,
+}
+
+/// The subcommands of `test` (`TestCommand`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TestOp {
+    Run,
+    RunMultiple,
+    RunThese,
+    RunClosest,
+    RunThat,
+    RunFailed,
+    Verify,
+    Locate,
+    ResetClosest,
+    ResetThese,
+    ResetThat,
+    ClearThat,
+    ClearThese,
+    ClearAll,
+    Stop,
+    Pos,
+    Create,
+}
+
+/// Which lists `banlist` shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BanListKind {
+    /// Players, then IPs.
+    All,
+    Ips,
+    Players,
+}
+
 /// What to execute. Variants that share a syntax with optional arguments say so; the
 /// arguments are read by name from `Parsed::args`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -511,6 +649,68 @@ pub enum CommandId {
     RecipeTake,
     /// `tag <targets> ...`.
     Tag(TagOp),
+    /// `debug start`.
+    DebugStart,
+    /// `debug stop`.
+    DebugStop,
+    /// `debug function <name>` (works on the queue like `function`).
+    DebugFunction,
+    /// `dialog show <targets> <dialog>`.
+    DialogShow,
+    /// `dialog clear <targets>`.
+    DialogClear,
+    /// `me <action>`.
+    Me,
+    /// `random ...`.
+    Random(RandomOp),
+    /// `fetchprofile ...`.
+    FetchProfile(FetchProfileOp),
+    /// `schedule function <function> <time> [append|replace]` (`true` = replace).
+    ScheduleFunction(bool),
+    /// `schedule clear <function>`.
+    ScheduleClear,
+    /// `version`.
+    Version,
+    /// `spectate [<target> [<player>]]`.
+    Spectate,
+    /// `stopwatch ...`.
+    Stopwatch(StopwatchOp),
+    /// `team ...`.
+    Team(TeamOp),
+    /// `teammsg|tm <message>`.
+    TeamMsg,
+    /// `tellraw <targets> <message>`.
+    TellRaw,
+    /// `test ...`.
+    Test(TestOp),
+    /// `title <targets> ...`.
+    Title(TitleOp),
+    /// `trigger <objective> ...`.
+    Trigger(TriggerOp),
+    /// `waypoint ...`.
+    Waypoint(WaypointOp),
+    /// `jfr start`.
+    JfrStart,
+    /// `jfr stop`.
+    JfrStop,
+    /// `ban-ip <target> [<reason>]`.
+    BanIp,
+    /// `banlist [ips|players]`.
+    BanList(BanListKind),
+    /// `ban <targets> [<reason>]`.
+    Ban,
+    /// `pardon <targets>`.
+    Pardon,
+    /// `pardon-ip <target>`.
+    PardonIp,
+    /// `perf start`.
+    PerfStart,
+    /// `perf stop`.
+    PerfStop,
+    /// `setidletimeout <minutes>`.
+    SetIdleTimeout,
+    /// `transfer <hostname> [<port> [<players>]]`.
+    Transfer,
 }
 
 /// Registers all commands in Vanilla's registration order (`Commands` constructor).
@@ -521,7 +721,10 @@ pub fn register(d: &mut Dispatcher<CommandId>) {
     items::register_clear(d);
     entities::register_damage(d);
     data::register_data(d);
+    system::register_debug(d);
+    chat::register_dialog(d);
     entities::register_effect(d);
+    chat::register_me(d);
     items::register_enchant(d);
     items::register_experience(d);
     execute::register_function(d);
@@ -538,25 +741,48 @@ pub fn register(d: &mut Dispatcher<CommandId>) {
     sound::register_particle(d);
     sound::register_playsound(d);
     sound::register_posteffect(d);
+    system::register_random(d);
     items::register_recipe(d);
+    system::register_fetch_profile(d);
     execute::register_return(d);
     entities::register_ride(d);
     entities::register_rotate(d);
     players::register_say(d);
+    system::register_schedule(d);
     execute::register_scoreboard(d);
     world::register_seed(d);
+    system::register_version(d);
+    system::register_spectate(d);
     sound::register_stopsound(d);
+    system::register_stopwatch(d);
     entities::register_summon(d);
     data::register_tag(d);
+    chat::register_team(d);
+    chat::register_team_msg(d);
     players::register_teleport(d);
+    chat::register_tellraw(d);
+    system::register_test(d);
     world::register_time(d);
+    chat::register_title(d);
+    chat::register_trigger(d);
+    system::register_waypoint(d);
     world::register_weather(d);
+    system::register_jfr(d);
+    // Dedicated server only.
+    admin::register_ban_ip(d);
+    admin::register_ban_list(d);
+    admin::register_ban(d);
     server::register_deop(d);
     server::register_op(d);
+    admin::register_pardon(d);
+    admin::register_pardon_ip(d);
+    admin::register_perf(d);
     server::register_save_all(d);
     server::register_save_off(d);
     server::register_save_on(d);
+    admin::register_set_idle_timeout(d);
     server::register_stop(d);
+    admin::register_transfer(d);
     server::register_whitelist(d);
 }
 
