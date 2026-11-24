@@ -228,7 +228,7 @@ fn on_broken_after_fall(level: &mut Level, block: BlockId, pos: BlockPos) {
 
 /// `Entity.collide` against block collision shapes: the movement left after the boxes in the
 /// way, Y first, then X and Z (larger first).
-fn collide(level: &Level, aabb: Aabb, movement: Vec3) -> Vec3 {
+pub(crate) fn collide(level: &Level, aabb: Aabb, movement: Vec3) -> Vec3 {
     let mut aabb = aabb;
     let dy = collide_axis(level, &aabb, 1, movement.y);
     aabb = aabb.offset(0.0, dy, 0.0);

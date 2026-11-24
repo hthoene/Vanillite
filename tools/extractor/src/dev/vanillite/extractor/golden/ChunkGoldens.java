@@ -195,7 +195,7 @@ public final class ChunkGoldens {
   }
 
   /** Per-section block hashes, WG heightmaps and post-processing marks. */
-  private static JsonObject snapshot(ProtoChunk chunk) {
+  static JsonObject snapshot(ProtoChunk chunk) {
     JsonObject o = new JsonObject();
     JsonArray sections = new JsonArray();
     for (LevelChunkSection section : chunk.getSections()) {

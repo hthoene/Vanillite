@@ -27,6 +27,19 @@ pub struct FallingBlockData {
     pub start: BlockPos,
 }
 
+/// The kind data of a `tnt` entity (`PrimedTnt`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PrimedTntData {
+    /// Ticks until it explodes (`DATA_FUSE_ID`).
+    pub fuse: i32,
+    /// The block it shows (`DATA_BLOCK_STATE_ID`).
+    pub state: BlockState,
+    /// The entity that primed it (`owner`).
+    pub owner: Option<EntityId>,
+    /// `explosionPower`.
+    pub explosion_power: f32,
+}
+
 /// All entities of a world. Kinds without own data yet only live in the core store.
 #[derive(Debug, Default)]
 pub struct Entities {
@@ -46,6 +59,8 @@ pub struct Entities {
     pub orbs: Dense<OrbData>,
     /// Network id → entity of mobs (attack and interaction packets name their target by it).
     pub by_network_id: FxHashMap<i32, EntityId>,
+    /// Primed TNT kind data.
+    pub primed_tnts: Dense<PrimedTntData>,
 }
 
 impl Entities {
@@ -210,6 +225,30 @@ impl Entities {
             .filter(|&id| self.store.contains(id))
     }
 
+    /// Adds a primed TNT entity.
+    pub fn spawn_primed_tnt(&mut self, new: NewEntity, data: PrimedTntData) -> EntityId {
+        let primed_tnts = &mut self.primed_tnts;
+        self.store.spawn(new, |id| primed_tnts.push(id, data))
+    }
+
+    /// The primed TNT data of an entity.
+    pub fn primed_tnt(&self, id: EntityId) -> Option<&PrimedTntData> {
+        let entity = self.store.get(id)?;
+        (entity.kind() == ids::TNT)
+            .then(|| self.primed_tnts.get(entity.kind_row()))
+            .flatten()
+    }
+
+    /// The primed TNT data of an entity, mutably.
+    pub fn primed_tnt_mut(&mut self, id: EntityId) -> Option<&mut PrimedTntData> {
+        let entity = self.store.get(id)?;
+        if entity.kind() != ids::TNT {
+            return None;
+        }
+        let row = entity.kind_row();
+        self.primed_tnts.get_mut(row)
+    }
+
     /// Removes an entity of any kind together with its kind data.
     pub fn despawn(&mut self, id: EntityId) -> Option<Removed> {
         let removed = self.store.despawn(id)?;
@@ -253,6 +292,10 @@ impl Entities {
             self.orbs.swap_remove(row).and_then(|(_, moved)| moved)
         } else if is_mob_kind(kind) {
             self.mobs.swap_remove(row).and_then(|(_, moved)| moved)
+        } else if kind == ids::TNT {
+            self.primed_tnts
+                .swap_remove(row)
+                .and_then(|(_, moved)| moved)
         } else {
             None
         }
@@ -281,6 +324,16 @@ impl Entities {
 #[inline]
 pub fn is_mob_kind(kind: EntityTypeId) -> bool {
     crate::mob::Kind::of(kind).is_some()
+}
+
+/// `tickNonPassenger` of the non-player entity kinds that tick: the one dispatch the world tick
+/// and the scenario world share.
+pub fn tick_entity(level: &mut crate::level::Level, id: EntityId, kind: EntityTypeId) {
+    if kind == ids::FALLING_BLOCK {
+        crate::block::falling::tick_entity(level, id);
+    } else if kind == ids::TNT {
+        crate::block::tnt::tick_entity(level, id);
+    }
 }
 
 impl Entities {

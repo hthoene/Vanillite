@@ -63,6 +63,8 @@ pub struct ServerWorld {
     /// The chunk ticket and simulation ticket of every player at its centre chunk.
     player_tickets: FxHashMap<EntityId, (ChunkPos, TicketId, TicketId)>,
     scratch: Vec<ChunkPos>,
+    /// Player ids of the tick (block effects).
+    player_scratch: Vec<vanillite_world::entity::EntityId>,
     /// Weather, lightning and the players' survival.
     pub(crate) survival: crate::survival::WorldSurvival,
     /// Mobs: their tick, the players' attacks and spawning.
@@ -120,6 +122,7 @@ impl ServerWorld {
             effects: LevelEffects::default(),
             item_random: XoroshiroRandom::new(seed),
             scratch: Vec::new(),
+            player_scratch: Vec::new(),
             survival,
             mobs,
             entity_io,
@@ -295,6 +298,8 @@ impl ServerWorld {
                 id,
             );
         }
+        self.players_inside_blocks();
+        self.level.set_handling_tick(true);
         if ctx.runs_normally {
             // `advanceWeatherCycle`, then `tickTime`: the overworld advances the shared game
             // time, every world runs on it.
@@ -307,7 +312,7 @@ impl ServerWorld {
         }
         self.update_player_tickets();
         let level = &mut self.level;
-        level.chunks.tick();
+        level.tick_chunk_runtime();
         self.entity_io.tick(level);
         level.post_process();
         if ctx.runs_normally {
@@ -325,9 +330,11 @@ impl ServerWorld {
             level.tick_chunks(&mut self.scratch);
             level.run_block_events();
         }
+        level.set_handling_tick(false);
         if ctx.runs_normally {
             self.ticks += 1;
             self.tick_entities(ctx.global);
+            self.level.tick_block_entities();
         }
         self.players.tick_entities(&mut self.level.entities);
         if ctx.runs_normally {
@@ -365,6 +372,17 @@ impl ServerWorld {
             },
         );
         self.effects.flush(&self.level.entities);
+    }
+
+    /// `applyEffectsFromBlocks` after the players' moves: pressure plates, tripwire and other
+    /// blocks they stand in react (`Entity.checkInsideBlocks`).
+    fn players_inside_blocks(&mut self) {
+        self.player_scratch.clear();
+        self.player_scratch
+            .extend(self.level.entities.players.iter().map(|(id, _)| id));
+        for &id in &self.player_scratch {
+            vanillite_game::block::plate::check_inside_blocks(&mut self.level, id);
+        }
     }
 
     /// `entityTickList.forEach(tickNonPassenger)`: every entity in tick order; players move
@@ -422,7 +440,7 @@ impl ServerWorld {
         log::debug!("Saving {} (flush: {flush})", self.dimension);
         self.players.save_all(&self.level.entities);
         self.entity_io.save_all(&mut self.level, flush);
-        self.level.chunks.save_all(flush);
+        self.level.save(flush);
     }
 }
 

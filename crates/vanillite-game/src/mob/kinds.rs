@@ -559,7 +559,6 @@ fn explode_creeper(t: &mut Tick<'_, '_>) {
         source: Some(id),
         pos,
         radius,
-        fire: false,
         mob: true,
     }));
 }

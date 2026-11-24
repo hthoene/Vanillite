@@ -180,7 +180,17 @@ impl StateExt for BlockState {
     }
 
     fn set_int(self, property: &str, value: i32) -> Self {
-        self.set(property, &value.to_string())
+        // The value's position without formatting it (integer values are in ascending order).
+        let Some(prop) = self.block().info().properties.iter().find_map(|&p| {
+            let prop = &vanillite_data::block::PROPERTIES[usize::from(p)];
+            (prop.name == property).then_some(prop)
+        }) else {
+            return self;
+        };
+        match prop.values.iter().position(|v| v.parse() == Ok(value)) {
+            Some(index) => self.with_index(property, index as u16).unwrap_or(self),
+            None => self,
+        }
     }
 }
 

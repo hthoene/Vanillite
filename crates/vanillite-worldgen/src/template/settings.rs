@@ -100,6 +100,14 @@ impl LiquidSettings {
             _ => None,
         }
     }
+
+    /// The serialized name.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::IgnoreWaterlogging => "ignore_waterlogging",
+            Self::ApplyWaterlogging => "apply_waterlogging",
+        }
+    }
 }
 
 /// `StructurePlaceSettings`: how a template is placed. Processors are borrowed from their

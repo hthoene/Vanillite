@@ -16,10 +16,11 @@ toml.workspace = true
 vanillite-base.workspace = true
 vanillite-chunk.workspace = true
 vanillite-data.workspace = true
-vanillite-server.workspace = true
-
-[dev-dependencies]
 vanillite-datapack.workspace = true
+vanillite-game.workspace = true
+vanillite-server.workspace = true
+vanillite-world.workspace = true
+vanillite-worldgen.workspace = true
 
 [lints]
 workspace = true

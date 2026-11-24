@@ -19,7 +19,7 @@ use vanillite_config::{
 };
 use vanillite_game::level::Level;
 use vanillite_light::BfsLightEngineProvider;
-use vanillite_storage::{AnvilStorageProvider, Compression};
+use vanillite_storage::{AnvilStorageProvider, Compression, WorldLayout};
 use vanillite_world::chunks::{ChunkSettings, ChunkSlots, Chunks};
 use vanillite_world::entity::NetworkIds;
 use vanillite_world::tracking::{ChunkTrackerProvider, EntityTrackerProvider, TrackerSettings};
@@ -216,6 +216,15 @@ impl ServerBuilder {
         let level_name = config.properties.level_name.clone();
         let level_dir = dir.join(&level_name);
         let session_lock = lock_world(&level_dir)?;
+        let layout = match config.server.storage.layout {
+            vanillite_config::StorageLayout::Vanilla => WorldLayout::Vanilla,
+            vanillite_config::StorageLayout::Spigot => WorldLayout::Spigot,
+        };
+        let moved = vanillite_storage::layout::adopt_layout(&dir, &level_name, layout, &DIMENSIONS)
+            .map_err(|e| StartError::Io(format!("world layout of \"{level_name}\": {e}")))?;
+        for line in moved {
+            log::warn!("storage.layout = {layout:?}: {line}");
+        }
         // Mojang's profile key signers are fetched while the data packs load.
         let services_keys = (config.properties.online_mode && self.network).then(|| {
             std::thread::spawn(|| {
@@ -322,8 +331,12 @@ impl ServerBuilder {
             );
             let tracker = tracker_provider.create(&tracker_settings);
             let player_range = tracker_settings.range(vanillite_data::entity::ids::PLAYER);
-            let info =
-                crate::world_setup::world_info(packs.as_deref(), &level_dir, dimension, seed)?;
+            let info = crate::world_setup::world_info(
+                packs.as_deref(),
+                layout.dimension_dir(&dir, &level_name, dimension),
+                dimension,
+                seed,
+            )?;
             let entity_io =
                 crate::entity_io::EntityChunks::new(&info.dir, entity_compression, dimension);
             let slots = ChunkSlots {
@@ -711,6 +724,15 @@ impl Server {
     /// thread while the server runs; they log in like a client from the handshake on.
     pub fn virtual_opener(&self) -> Option<VirtualOpener> {
         self.net.as_ref().map(|n| n.network.virtual_opener())
+    }
+
+    /// The UDP address of the Bedrock frontend, if it runs.
+    pub fn bedrock_addr(&self) -> Option<std::net::SocketAddr> {
+        self.net
+            .as_ref()?
+            .bedrock
+            .as_ref()
+            .map(|(f, _)| f.local_addr())
     }
 
     /// The address the network listens on.
@@ -1222,7 +1244,7 @@ impl Server {
         self.global.level.save();
         log::info!("All dimensions are saved");
         if let Some(net) = self.net.take() {
-            net.network.shutdown();
+            net.shutdown();
         }
         self.compute.scheduler().shutdown();
         if let Some(watchdog) = self.watchdog.take() {

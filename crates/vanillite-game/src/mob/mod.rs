@@ -355,7 +355,6 @@ pub struct ExplosionRequest {
     pub source: Option<EntityId>,
     pub pos: Vec3,
     pub radius: f32,
-    pub fire: bool,
     /// `ExplosionInteraction.MOB`: blocks only break with `mobGriefing`.
     pub mob: bool,
 }

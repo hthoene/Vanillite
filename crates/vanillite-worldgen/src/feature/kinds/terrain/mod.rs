@@ -106,9 +106,9 @@ pub(crate) fn parse_fluid_state(json: &Value) -> Result<FluidState, Error> {
 
 /// Registry ids of `minecraft:fluid`.
 const FLUID_FLOWING_WATER: u16 = 1;
-const FLUID_WATER: u16 = 2;
+pub(crate) const FLUID_WATER: u16 = 2;
 const FLUID_FLOWING_LAVA: u16 = 3;
-const FLUID_LAVA: u16 = 4;
+pub(crate) const FLUID_LAVA: u16 = 4;
 
 /// `fluidState.is(FluidTags.WATER)`.
 #[inline]

@@ -2,7 +2,6 @@
 //! `Direction` parsing and planes, `Vec3i.distManhattan`, block state setters and the
 //! iteration order of `java.util.HashSet<BlockPos>`.
 
-use rustc_hash::FxHashSet;
 use serde_json::Value;
 use vanillite_base::random::RandomSource;
 use vanillite_base::{BlockPos, Direction};
@@ -116,138 +115,9 @@ pub(crate) fn is_water_source(fluid: FluidState) -> bool {
     is_water_fluid(fluid) && fluid.info().source
 }
 
-/// A `java.util.HashSet<BlockPos>` that only grows: positions are kept in insertion order and
-/// iterated in the order Java's `HashMap` buckets yield them.
-///
-/// Java iterates bucket by bucket (`(capacity - 1) & (h ^ h >>> 16)` with `h` =
-/// `Vec3i.hashCode`), each bucket in insertion order (resizing splits buckets but keeps their
-/// relative order). The capacity is simulated insert by insert, including the resize that
-/// `treeifyBin` does instead of treeifying while the table is smaller than 64. Tree bins of
-/// larger tables (nine or more positions in one bucket) are not modelled: their order depends on
-/// identity hash codes in Vanilla itself.
-#[derive(Debug, Default)]
-pub(crate) struct JavaPosSet {
-    entries: Vec<BlockPos>,
-    seen: FxHashSet<BlockPos>,
-    capacity: usize,
-    bucket_sizes: Vec<u32>,
-}
-
-impl JavaPosSet {
-    /// `Vec3i.hashCode()` spread like `HashMap.hash`.
-    fn hash(pos: BlockPos) -> u32 {
-        let h = pos
-            .y
-            .wrapping_add(pos.z.wrapping_mul(31))
-            .wrapping_mul(31)
-            .wrapping_add(pos.x) as u32;
-        h ^ (h >> 16)
-    }
-
-    fn bucket(&self, pos: BlockPos) -> usize {
-        Self::hash(pos) as usize & (self.capacity - 1)
-    }
-
-    fn resize(&mut self, capacity: usize) {
-        self.capacity = capacity;
-        self.bucket_sizes.clear();
-        self.bucket_sizes.resize(capacity, 0);
-        for i in 0..self.entries.len() {
-            let bucket = self.bucket(self.entries[i]);
-            self.bucket_sizes[bucket] += 1;
-        }
-    }
-
-    /// `add(pos)`: whether the position was new.
-    pub(crate) fn insert(&mut self, pos: BlockPos) -> bool {
-        if !self.seen.insert(pos) {
-            return false;
-        }
-        if self.capacity == 0 {
-            self.resize(16);
-        }
-        let bucket = self.bucket(pos);
-        let bin_count = self.bucket_sizes[bucket];
-        self.entries.push(pos);
-        self.bucket_sizes[bucket] += 1;
-        // `putVal`: a ninth node in one bin calls `treeifyBin`, which resizes small tables.
-        if bin_count >= 8 && self.capacity < 64 {
-            self.resize(self.capacity * 2);
-        }
-        if self.entries.len() > self.capacity / 4 * 3 {
-            self.resize(self.capacity * 2);
-        }
-        true
-    }
-
-    /// `isEmpty()`.
-    pub(crate) fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
-    /// Writes the positions to `out` (cleared first) in Java's iteration order.
-    pub(crate) fn iteration_order(&self, out: &mut Vec<BlockPos>) {
-        out.clear();
-        out.extend_from_slice(&self.entries);
-        if self.capacity > 0 {
-            out.sort_by_key(|&pos| self.bucket(pos));
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn java_hash_set_orders_by_bucket_then_insertion() {
-        let mut set = JavaPosSet::default();
-        // Hashes 17 and 1 share bucket 1 of a 16 bucket table; 0 is bucket 0.
-        for pos in [
-            BlockPos::new(17, 0, 0),
-            BlockPos::new(1, 0, 0),
-            BlockPos::new(0, 0, 0),
-        ] {
-            assert!(set.insert(pos));
-        }
-        assert!(!set.insert(BlockPos::new(1, 0, 0)));
-        let mut order = Vec::new();
-        set.iteration_order(&mut order);
-        assert_eq!(
-            order,
-            [
-                BlockPos::new(0, 0, 0),
-                BlockPos::new(17, 0, 0),
-                BlockPos::new(1, 0, 0)
-            ]
-        );
-    }
-
-    #[test]
-    fn java_hash_set_grows_after_three_quarters() {
-        let mut set = JavaPosSet::default();
-        for x in 0..12 {
-            set.insert(BlockPos::new(x, 0, 0));
-        }
-        assert_eq!(set.capacity, 16);
-        set.insert(BlockPos::new(12, 0, 0));
-        assert_eq!(set.capacity, 32);
-    }
-
-    #[test]
-    fn java_hash_set_resizes_instead_of_treeifying_small_tables() {
-        let mut set = JavaPosSet::default();
-        // Hashes x·16 all fall into bucket 0 of 16: the ninth one resizes to 32 buckets, where
-        // the even multiples stay in bucket 0 and the odd ones move to bucket 16.
-        for x in 0..9 {
-            set.insert(BlockPos::new(x * 16, 0, 0));
-        }
-        assert_eq!(set.capacity, 32);
-        let mut order = Vec::new();
-        set.iteration_order(&mut order);
-        let xs: Vec<i32> = order.iter().map(|p| p.x / 16).collect();
-        assert_eq!(xs, [0, 2, 4, 6, 8, 1, 3, 5, 7]);
-    }
 
     #[test]
     fn shuffle_matches_vanilla_swaps() {

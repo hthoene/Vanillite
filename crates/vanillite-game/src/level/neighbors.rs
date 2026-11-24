@@ -36,6 +36,13 @@ pub(super) enum Update {
     },
     /// `SimpleNeighborUpdate`.
     Simple { pos: BlockPos, source: BlockId },
+    /// `FullNeighborUpdate`: the update of a given state.
+    Full {
+        state: BlockState,
+        pos: BlockPos,
+        source: BlockId,
+        moved: bool,
+    },
     /// `MultiNeighborUpdate`: the neighbours of `source_pos` except `skip`, one per step.
     Multi {
         source_pos: BlockPos,
@@ -71,6 +78,12 @@ enum Step {
     Neighbor {
         pos: BlockPos,
         source: BlockId,
+    },
+    Full {
+        state: BlockState,
+        pos: BlockPos,
+        source: BlockId,
+        moved: bool,
     },
 }
 
@@ -174,6 +187,12 @@ impl Level {
                 let state = self.block(pos);
                 self.handle_neighbor_changed(state, pos, source, false);
             }
+            Some(Step::Full {
+                state,
+                pos,
+                source,
+                moved,
+            }) => self.handle_neighbor_changed(state, pos, source, moved),
             None => {}
         }
     }
@@ -201,6 +220,20 @@ fn next_step(update: &mut Update) -> (Option<Step>, bool) {
             false,
         ),
         Update::Simple { pos, source } => (Some(Step::Neighbor { pos, source }), false),
+        Update::Full {
+            state,
+            pos,
+            source,
+            moved,
+        } => (
+            Some(Step::Full {
+                state,
+                pos,
+                source,
+                moved,
+            }),
+            false,
+        ),
         Update::Multi {
             source_pos,
             source,
@@ -225,7 +258,7 @@ fn next_step(update: &mut Update) -> (Option<Step>, bool) {
 
 fn first_pos(update: &Update) -> BlockPos {
     match *update {
-        Update::Shape { pos, .. } | Update::Simple { pos, .. } => pos,
+        Update::Shape { pos, .. } | Update::Simple { pos, .. } | Update::Full { pos, .. } => pos,
         Update::Multi { source_pos, .. } => source_pos,
     }
 }

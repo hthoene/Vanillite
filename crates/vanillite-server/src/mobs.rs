@@ -7,13 +7,14 @@ use vanillite_base::{Aabb, BlockPos, ChunkPos, Vec3};
 use vanillite_config::{GameMode, WorldRules};
 use vanillite_data::entity::ids;
 use vanillite_game::entities::is_mob_kind;
-use vanillite_game::explosion::{self, Explosion, Interaction};
 use vanillite_game::level::Level;
+use vanillite_game::level::explosion::BlockInteraction;
 use vanillite_game::mob::spawn::{self, SpawnInput, SpawnTable, Spawner};
 use vanillite_game::mob::{
     self, Environment, MobContext, MobSettings, WorldAction, combat, projectile,
 };
 use vanillite_game::survival::blocks::BlockAccess;
+use vanillite_game::survival::damage::DamageSource;
 use vanillite_game::survival::rules::{Difficulty, Rule};
 use vanillite_world::entity::EntityId;
 
@@ -202,9 +203,10 @@ impl WorldMobs {
             entity.set_old_pos();
             let kind = entity.as_ref().kind();
             let pos = entity.as_ref().pos();
-            if kind == ids::FALLING_BLOCK {
+            if kind == ids::FALLING_BLOCK || kind == ids::TNT {
                 level.entities = ents;
-                vanillite_game::block::falling::tick_entity(level, id);
+                vanillite_game::entities::tick_entity(level, id, kind);
+                self.apply_explosion_hurts(level, survival, global, dimension);
                 ents = std::mem::take(&mut level.entities);
                 continue;
             }
@@ -246,16 +248,16 @@ impl WorldMobs {
                     projectile::tick_orb(level_ref, &mut ents, &mut env, &mut self.cx, id);
                 }
             }
+            if !self.cx.actions.is_empty() {
+                level.entities = ents;
+                self.apply_actions(level, survival, global, dimension);
+                ents = std::mem::take(&mut level.entities);
+            }
             if ents.mob(id).is_some_and(|m| m.removed) {
                 ents.despawn(id);
             }
             for d in std::mem::take(&mut self.cx.discarded) {
                 ents.despawn(d);
-            }
-            if !self.cx.actions.is_empty() {
-                level.entities = ents;
-                self.apply_actions(level, survival, global, dimension);
-                ents = std::mem::take(&mut level.entities);
             }
         }
         level.entities = ents;
@@ -275,25 +277,22 @@ impl WorldMobs {
         for action in std::mem::take(&mut self.cx.actions) {
             match action {
                 WorldAction::Explode(e) => {
-                    let no_blocks = NoBlocks;
-                    let raining = |_| false;
-                    let mut env = survival.env(state, &rules, &no_blocks, &raining, dimension);
-                    explosion::explode(
-                        level,
-                        &mut env,
-                        &mut self.cx,
-                        Explosion {
-                            source: e.source,
-                            center: e.pos,
-                            radius: e.radius,
-                            fire: e.fire,
-                            interaction: if e.mob {
-                                Interaction::Mob
-                            } else {
-                                Interaction::Tnt
-                            },
-                        },
-                    );
+                    // `Level.ExplosionInteraction.MOB`: `getDestroyType` with `mobGriefing`.
+                    let decay = if e.mob {
+                        Rule::MOB_EXPLOSION_DROP_DECAY
+                    } else {
+                        Rule::TNT_EXPLOSION_DROP_DECAY
+                    };
+                    let interaction = if e.mob && !rules.bool(Rule::MOB_GRIEFING) {
+                        BlockInteraction::Keep
+                    } else if rules.bool(decay) {
+                        BlockInteraction::DestroyWithDecay
+                    } else {
+                        BlockInteraction::Destroy
+                    };
+                    // `getIndirectSourceEntity`: a living source caused it itself.
+                    level.explode(e.source, e.source, e.pos, e.radius, interaction);
+                    self.apply_explosion_hurts(level, survival, global, dimension);
                 }
                 WorldAction::SetBlock(pos, block, flags) => {
                     level.set_block(pos, block, flags);
@@ -306,6 +305,56 @@ impl WorldMobs {
                 }
             }
         }
+        self.finish_removals(level);
+    }
+
+    /// `entity.hurtServer(explosion damage)` of the living entities the last explosions hit.
+    fn apply_explosion_hurts(
+        &mut self,
+        level: &mut Level,
+        survival: &mut WorldSurvival,
+        global: &Global,
+        dimension: &str,
+    ) {
+        if level.output().explosion_hurts.is_empty() {
+            return;
+        }
+        let state = &global.level;
+        let rules = state.rules().clone();
+        let hurts = std::mem::take(&mut level.output().explosion_hurts);
+        let no_blocks = NoBlocks;
+        let raining = |_| false;
+        let mut env = survival.env(state, &rules, &no_blocks, &raining, dimension);
+        let mut ents = std::mem::take(&mut level.entities);
+        for hurt in hurts {
+            // `damageSources().explosion(source, indirect)`.
+            let mut source = match (hurt.source, hurt.indirect) {
+                (Some(direct), Some(cause)) => {
+                    combat::entity_source(&ents, env.types.player_explosion, cause, direct)
+                }
+                (direct, _) => {
+                    let mut source = DamageSource::of(env.types.explosion);
+                    source.direct = direct;
+                    source.position = Some(
+                        direct
+                            .and_then(|d| ents.store.get(d))
+                            .map_or(hurt.center, |e| e.pos()),
+                    );
+                    source
+                }
+            };
+            source.position.get_or_insert(hurt.center);
+            combat::hurt(
+                level,
+                &mut ents,
+                &mut env,
+                &mut self.cx,
+                hurt.target,
+                source,
+                hurt.amount,
+            );
+        }
+        level.entities = ents;
         self.finish_removals(level);
     }
 

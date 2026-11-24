@@ -121,7 +121,7 @@ impl EntityChunks {
     /// Requests the entities of chunks that became live, adds those that arrived, and saves
     /// and removes the entities of chunks that unloaded.
     pub(crate) fn tick(&mut self, level: &mut Level) {
-        level.chunks.take_promoted(&mut self.scratch);
+        self.scratch.extend_from_slice(level.promoted_chunks());
         for pos in self.scratch.drain(..) {
             if !self.loaded.contains(&pos)
                 && self.pending.insert(pos)

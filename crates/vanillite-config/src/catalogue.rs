@@ -4,7 +4,7 @@
 //! `[worlds."<dimension>"]`. Both read their keys from the top level of `vanillite.toml`, so a
 //! group key must be unique across both sets. Performance knobs live under `performance.*`.
 
-use crate::rule::{DisabledOr, VanillaOr};
+use crate::rule::{DisabledOr, StorageLayout, VanillaOr};
 use crate::rules;
 
 rules! {
@@ -30,6 +30,16 @@ rules! {
             /// Ticks between autosaves. Vanilla saves every 5 minutes of game time.
             interval: VanillaOr<u32> = "interval", Setting, range = [20, 1_728_000],
                 vanilla = VanillaOr::Vanilla;
+        }
+        /// World storage.
+        storage: StorageRules = "storage" {
+            /// Folder layout of the dimensions: `"vanilla"` keeps every dimension in
+            /// `<level>/dimensions/` like Vanilla and Paper; `"spigot"` puts the nether into
+            /// `<level>_nether/` and the end into `<level>_the_end/` like Spigot and CraftBukkit,
+            /// so the world can be opened by Spigot without conversion. A world found in the
+            /// other layout is moved into this one once at startup.
+            layout: StorageLayout = "layout", Setting, restart = true,
+                vanilla = StorageLayout::Vanilla, spigot = StorageLayout::Spigot;
         }
         /// The watchdog that detects a hanging server. The hard limit is `max-tick-time` in
         /// `server.properties`.
@@ -104,6 +114,37 @@ rules! {
             /// the proxy (authenticated as usual). Off: they are refused.
             allow_direct_connections: bool = "allow-direct-connections", Setting, restart = true,
                 vanilla = false;
+        }
+        /// Bedrock Edition players (`vanillite-bedrock`): a RakNet listener on UDP that
+        /// translates Bedrock clients into virtual connections. The address is `server-ip`.
+        bedrock: BedrockRules = "bedrock" {
+            /// Accept Bedrock players.
+            enabled: bool = "enabled", Setting, restart = true, vanilla = false;
+            /// UDP port. Bedrock's default is 19132.
+            port: u16 = "port", Setting, range = [1, 65535], restart = true, vanilla = 19132;
+            /// Require an Xbox Live login. Off accepts any identity a client claims: only for
+            /// tests on closed networks.
+            online_mode: bool = "online-mode", Security, restart = true, vanilla = true;
+            /// Prefix of Bedrock players' Java names, so they never collide with Java accounts.
+            /// Bedrock players get the UUID `00000000-0000-0000-xxxx-xxxxxxxxxxxx` of their XUID
+            /// (like Floodgate); whitelist and operators use that UUID.
+            name_prefix: String = "name-prefix", Setting, restart = true,
+                vanilla = String::from(".");
+            /// Bedrock connections per IP address.
+            max_connections_per_ip: u32 = "max-connections-per-ip", Security,
+                range = [1, 1000], restart = true, vanilla = 8;
+            /// Packets per second a Bedrock client may send before it is kicked.
+            max_packets_per_second: u32 = "max-packets-per-second", Security,
+                range = [50, 100_000], restart = true, vanilla = 1000;
+            /// Largest chunk radius granted to Bedrock clients.
+            max_view_distance: u8 = "max-view-distance", Performance, range = [2, 32],
+                restart = true, vanilla = 12;
+            /// Translated chunk sections kept for all Bedrock players (each section is
+            /// translated once for every viewer). About 4 KiB each.
+            chunk_cache_sections: u32 = "chunk-cache-sections", Performance,
+                range = [0, 1_048_576], restart = true, vanilla = 16_384;
+            /// Threads of the Bedrock frontend.
+            threads: u16 = "threads", Performance, range = [1, 64], restart = true, vanilla = 2;
         }
         /// Chat. Spam thresholds are `chat-spam-threshold-seconds` and
         /// `command-spam-threshold-seconds` in `server.properties`.

@@ -203,7 +203,7 @@ pub struct Chunks {
     post_process: Vec<ChunkPos>,
     /// Chunks that passed the spawn step since the last [`Self::take_generated`].
     generated: Vec<ChunkPos>,
-    /// Chunks that became full (live) since the last [`Self::take_promoted`].
+    /// Chunks that became live since the last [`Chunks::take_promoted`].
     promoted: Vec<ChunkPos>,
     /// Full chunks that unloaded since the last [`Self::take_unloaded`].
     unloaded: Vec<ChunkPos>,
@@ -828,6 +828,46 @@ impl Chunks {
         self.fluid_ticks.add_container(pos, &fluids, self.game_time);
     }
 
+    /// Chunks that became live since the last call (the game loads their block entities).
+    pub fn take_promoted(&mut self, out: &mut Vec<ChunkPos>) {
+        out.append(&mut self.promoted);
+    }
+
+    /// Live chunks the next [`Chunks::tick`] unloads unless a ticket comes back meanwhile (the
+    /// game writes their block entities back first).
+    pub fn unloading_next_tick(&self, out: &mut Vec<ChunkPos>) {
+        let next = self.tick + 1;
+        out.extend(self.unload_candidates.iter().copied().filter(|pos| {
+            self.holders.get(pos).is_some_and(|holder| {
+                holder.level > MAX_LEVEL
+                    && holder.unload_at.is_some_and(|at| at <= next)
+                    && !holder.busy
+                    && holder
+                        .chunk
+                        .as_ref()
+                        .is_some_and(|c| c.status == ChunkStatus::Full)
+            })
+        }));
+    }
+
+    /// The stored block entities of a live chunk, for the game to write its live block
+    /// entities back; the chunk counts as changed.
+    pub fn block_entities_mut(
+        &mut self,
+        pos: ChunkPos,
+    ) -> Option<&mut Vec<vanillite_chunk::slots::BlockEntityData>> {
+        let holder = self.holders.get_mut(&pos)?;
+        if holder.busy {
+            return None;
+        }
+        let chunk = holder
+            .chunk
+            .as_mut()
+            .filter(|c| c.status == ChunkStatus::Full)?;
+        holder.dirty = true;
+        Some(&mut Arc::make_mut(chunk).block_entities)
+    }
+
     fn unload(&mut self) {
         let now = self.tick;
         let mut ready = Vec::new();
@@ -1082,6 +1122,16 @@ impl Chunks {
         self.fluid_ticks.has_scheduled(pos, fluid)
     }
 
+    /// The scheduled block ticks (read only).
+    pub fn block_ticks(&self) -> &LevelTicks {
+        &self.block_ticks
+    }
+
+    /// The scheduled fluid ticks (read only).
+    pub fn fluid_ticks(&self) -> &LevelTicks {
+        &self.fluid_ticks
+    }
+
     /// `getBlockTicks().willTickThisTick(pos, block)`.
     pub fn block_tick_runs_this_tick(&mut self, pos: BlockPos, block: u16) -> bool {
         self.block_ticks.will_tick_this_tick(pos, block)
@@ -1131,11 +1181,6 @@ impl Chunks {
     /// the mobs a fresh chunk starts with (`spawnMobsForChunkGeneration`).
     pub fn take_generated(&mut self, out: &mut Vec<ChunkPos>) {
         out.append(&mut self.generated);
-    }
-
-    /// Chunks that became full since the last call (their entities load now).
-    pub fn take_promoted(&mut self, out: &mut Vec<ChunkPos>) {
-        out.append(&mut self.promoted);
     }
 
     /// Full chunks that unloaded since the last call (their entities are saved now).

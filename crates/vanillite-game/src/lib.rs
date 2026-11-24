@@ -12,7 +12,6 @@
 pub mod block;
 pub mod commands;
 pub mod entities;
-pub mod explosion;
 pub mod inventory;
 pub mod item;
 pub mod item_entity;

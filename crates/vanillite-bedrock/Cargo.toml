@@ -1,0 +1,44 @@
+[package]
+name = "vanillite-bedrock"
+description = "Bedrock Edition frontend: RakNet, Xbox Live login, encryption and Bedrock <-> Java translation over virtual connections."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+vanillite-protocol.workspace = true
+vanillite-net.workspace = true
+vanillite-data.workspace = true
+aes.workspace = true
+base64 = "0.22"
+ctr = "0.9"
+flate2.workspace = true
+libdeflater.workspace = true
+log.workspace = true
+p384 = { version = "0.13", features = ["ecdsa", "ecdh", "pkcs8"] }
+rsa.workspace = true
+rustc-hash.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+ureq.workspace = true
+
+[dev-dependencies]
+vanillite-server.workspace = true
+
+# SEC-07: input-handling crate. Cargo cannot extend `[lints] workspace = true`,
+# so this repeats the workspace lints and adds the SEC-07 set.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "warn"
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+arithmetic_side_effects = "deny"
+as_conversions = "deny"

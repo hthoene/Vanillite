@@ -527,7 +527,6 @@ pub mod clientbound {
     }
 
     pub use super::entities::*;
-    pub use super::mobs::Explode;
     pub use super::survival::*;
 }
 

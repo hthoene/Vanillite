@@ -161,6 +161,9 @@ pub struct Connection {
     pub attacks: Vec<i32>,
     /// Digging, placing and item handling.
     pub play: Digging,
+    /// A virtual connection (test bot, Bedrock player). These have no chat session, so their
+    /// chat is accepted unsigned even when the server enforces secure chat.
+    pub is_virtual: bool,
 }
 
 impl std::fmt::Debug for Connection {
@@ -204,6 +207,7 @@ impl Connection {
         inbound: Receiver<Inbound>,
         pos: Vec3,
         memory_connection: bool,
+        is_virtual: bool,
         chat: &ChatSettings,
         inbox: Arc<Mutex<ChatInbox>>,
     ) -> Connection {
@@ -215,6 +219,7 @@ impl Connection {
             chat: PlayerChatState::new(chat, inbox),
             attacks: Vec::new(),
             play: Digging::new(),
+            is_virtual,
         }
     }
 

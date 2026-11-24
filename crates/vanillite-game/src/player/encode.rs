@@ -34,6 +34,8 @@ mod data_id {
     pub const ITEM_ENTITY_ITEM: u8 = 8;
     pub const HEALTH: u8 = 9;
     pub const PLAYER_MAIN_HAND: u8 = 15;
+    pub const TNT_FUSE: u8 = 8;
+    pub const TNT_BLOCK_STATE: u8 = 9;
     pub const PLAYER_MODE_CUSTOMISATION: u8 = 16;
     pub const PLAYER_ABSORPTION: u8 = 17;
     pub const PLAYER_SCORE: u8 = 18;
@@ -55,6 +57,7 @@ mod serializer {
     pub const INT: i32 = 1;
     pub const FLOAT: i32 = 3;
     pub const BOOLEAN: i32 = 8;
+    pub const BLOCK_STATE: i32 = 14;
     pub const OPTIONAL_BLOCK_STATE: i32 = 15;
     pub const POSE: i32 = 20;
     pub const COW_VARIANT: i32 = 23;
@@ -182,6 +185,26 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
                 serializer::BOOLEAN,
                 |o| {
                     o.push(u8::from(arrow.in_ground));
+                },
+            );
+        }
+    }
+    if entity.kind() == ids::TNT
+        && let Some(tnt) = entities.primed_tnt(entity.id())
+    {
+        if all || tnt.fuse != 80 {
+            item(&mut out, data_id::TNT_FUSE, serializer::INT, |o| {
+                write_varint(o, tnt.fuse);
+            });
+        }
+        let default = vanillite_data::block::ids::TNT.default_state();
+        if all || tnt.state != default {
+            item(
+                &mut out,
+                data_id::TNT_BLOCK_STATE,
+                serializer::BLOCK_STATE,
+                |o| {
+                    write_varint(o, i32::from(tnt.state.0));
                 },
             );
         }
