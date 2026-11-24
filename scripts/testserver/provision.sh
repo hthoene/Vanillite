@@ -403,6 +403,9 @@ set_prop max-players 10000
 set_prop level-type minecraft:flat
 set_prop generate-structures false
 set_prop spawn-protection 0
+# No mobs, like Vanillite so far: hostile mobs would kill the bots, which do not respawn.
+set_prop difficulty peaceful
+set_prop spawn-monsters false
 set_prop view-distance 10
 set_prop simulation-distance 10
 set_prop enable-rcon true

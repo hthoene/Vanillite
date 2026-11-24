@@ -65,7 +65,9 @@ pub const USAGE: &str = "usage:
       Writes target/loadtest/<time>/{vanillite,paper}.json, report.md and chart.svg, keeps
       results of clean checkouts under /opt/vanillite/bench/results on the test server and
       fails when p95 MSPT or RSS per player of a step is more than 10 % above the median of
-      the last 5 runs (--no-gate skips the check).";
+      the last 5 runs (--no-gate skips the check).
+  cargo xtask loadtest report <run.json>...
+      Writes report.md and chart.svg for earlier runs next to the first file.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
