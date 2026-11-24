@@ -135,6 +135,49 @@ impl ProtoChunk {
         }
     }
 
+    /// A chunk taken over from the chunk runtime between two stages: its sections, with the
+    /// world generation heightmaps computed from the blocks; with `terrain_done` (a chunk past
+    /// the terrain stage) the final heightmaps are primed too.
+    pub fn from_sections(
+        pos: ChunkPos,
+        min_y: i32,
+        sections: Vec<Section>,
+        terrain_done: bool,
+    ) -> Self {
+        assert!(min_y % 16 == 0 && !sections.is_empty(), "unaligned chunk");
+        let mut chunk = Self {
+            pos,
+            min_y,
+            sections,
+            heightmaps: [[min_y; 256]; 6],
+            terrain_done: false,
+            post_processing: Vec::new(),
+            block_entities: FxHashMap::default(),
+            block_ticks: ProtoTicks::default(),
+            fluid_ticks: ProtoTicks::default(),
+        };
+        chunk.prime(&[
+            WgHeightmap::WorldSurface.kind(),
+            WgHeightmap::OceanFloor.kind(),
+        ]);
+        if terrain_done {
+            chunk.finish_terrain();
+        }
+        chunk
+    }
+
+    /// Takes the sections out to hand them to the chunk runtime; the chunk keeps everything
+    /// else (heightmaps, block entities, ticks) and must get sections back with
+    /// [`Self::set_sections`] before it is used again.
+    pub fn take_sections(&mut self) -> Vec<Section> {
+        std::mem::take(&mut self.sections)
+    }
+
+    /// Puts the chunk's sections back (see [`Self::take_sections`]).
+    pub fn set_sections(&mut self, sections: Vec<Section>) {
+        self.sections = sections;
+    }
+
     /// The chunk position.
     pub fn pos(&self) -> ChunkPos {
         self.pos
@@ -236,21 +279,26 @@ impl ProtoChunk {
     /// world generation heightmaps.
     pub fn finish_terrain(&mut self) {
         self.terrain_done = true;
+        self.prime(&FINAL);
+    }
+
+    /// `Heightmap.primeHeightmaps` for `kinds`: each column's highest matching block.
+    fn prime(&mut self, kinds: &[HeightmapKind]) {
         let top = (self.highest_filled_section_index() + 1) * 16 + self.min_y;
         for column in 0..256 {
             let (x, z) = ((column & 15) as i32, (column >> 4) as i32);
-            for kind in FINAL {
+            for kind in kinds {
                 self.heightmaps[kind.id() as usize][column] = self.min_y;
             }
-            let mut remaining = FINAL.len();
-            let mut done = [false; 4];
+            let mut remaining = kinds.len();
+            let mut done = [false; 6];
             for y in (self.min_y..top).rev() {
                 let state = self.block(x, y, z);
                 if state == BlockState::AIR {
                     continue;
                 }
                 let flags = facts::block_flags(state.0);
-                for (i, kind) in FINAL.into_iter().enumerate() {
+                for (i, kind) in kinds.iter().enumerate() {
                     if !done[i] && kind.matches(flags) {
                         done[i] = true;
                         remaining -= 1;

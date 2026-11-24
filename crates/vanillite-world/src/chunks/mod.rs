@@ -582,7 +582,11 @@ impl Chunks {
                 if let Some(holder) = self.holders.get_mut(&pos)
                     && let Some(chunk) = holder.chunk.as_mut()
                 {
-                    Arc::make_mut(chunk).status = next;
+                    let chunk = Arc::make_mut(chunk);
+                    chunk.status = next;
+                    if next == ChunkStatus::Full {
+                        chunk.generation = None;
+                    }
                     holder.dirty = true;
                 }
                 self.wake(pos);

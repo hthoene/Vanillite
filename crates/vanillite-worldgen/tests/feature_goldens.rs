@@ -516,3 +516,105 @@ fn decoration_matches_vanilla() {
     }
     report("decorated areas", decorations.len(), &[], &failures);
 }
+
+/// The `chunk-generator` slot, driven like the chunk runtime drives it (biomes, terrain and
+/// features as separate steps on snapshots, the neighbours' changes taken back), decorates the
+/// first golden area like Vanilla.
+#[test]
+fn slot_decoration_matches_vanilla() {
+    use std::sync::Arc;
+    use vanillite_chunk::slots::{self, ChunkGenerator, ChunkStatus, Neighbours, WorldInfo};
+    use vanillite_worldgen::VanillaChunkGenerator;
+
+    let golden = common::golden("feature");
+    let area = &list(&golden["decorations"])[0];
+    let dimension = area["dimension"].as_str().expect("dimension");
+    let seed = int(&area["seed"]);
+    let (min_y, height) = (int(&area["min_y"]) as i32, int(&area["height"]) as i32);
+    let source = biome_source(dimension);
+    let has_sky_light = dimension == "minecraft:overworld";
+    let spec = DimensionSpec {
+        noise_settings: dimension,
+        biome_source: &source,
+        min_y,
+        height,
+        has_sky_light,
+    };
+    let generator = TerrainGenerator::new(common::packs(), spec, seed).expect("generator");
+    let world = WorldInfo {
+        dimension: dimension.to_owned(),
+        dir: std::env::temp_dir(),
+        min_y,
+        height: height as u32,
+        seed,
+        has_sky_light,
+        default_biome: generator.biomes().id_of("minecraft:plains").unwrap_or(0),
+        biomes: generator
+            .biomes()
+            .all()
+            .iter()
+            .map(|b| b.name.clone())
+            .collect(),
+        air: 0,
+    };
+    let slot = VanillaChunkGenerator::new(generator, world);
+    let center = ChunkPos::new(int(&area["x"]) as i32, int(&area["z"]) as i32);
+    let mut chunks: HashMap<ChunkPos, Arc<slots::ProtoChunk>> = HashMap::new();
+    let mut step = |status: ChunkStatus, radius: i32| {
+        for dz in -radius..=radius {
+            for dx in -radius..=radius {
+                let pos = ChunkPos::new(center.x + dx, center.z + dz);
+                let mut target = [chunks
+                    .get(&pos)
+                    .map_or_else(|| slot.new_chunk(pos), |c| (**c).clone())];
+                let mut neighbours: Vec<Arc<slots::ProtoChunk>> = chunks
+                    .iter()
+                    .filter(|(p, _)| {
+                        **p != pos && (p.x - pos.x).abs() <= 1 && (p.z - pos.z).abs() <= 1
+                    })
+                    .map(|(_, c)| Arc::clone(c))
+                    .collect();
+                slot.generate(status, &mut target, &mut Neighbours::new(&mut neighbours));
+                let [mut target] = target;
+                target.status = status;
+                for n in neighbours {
+                    chunks.insert(n.pos, n);
+                }
+                chunks.insert(pos, Arc::new(target));
+            }
+        }
+    };
+    step(ChunkStatus::Biomes, 3);
+    step(ChunkStatus::Terrain, 2);
+    step(ChunkStatus::Features, 1);
+
+    let mut diffs = Vec::new();
+    let mut index = 0;
+    for dz in -2..=2 {
+        for dx in -2..=2 {
+            let chunk = &chunks[&ChunkPos::new(center.x + dx, center.z + dz)];
+            let mut proto = chunk
+                .generation
+                .as_ref()
+                .and_then(|g| g.0.downcast_ref::<ProtoChunk>())
+                .expect("generation state")
+                .clone();
+            proto.set_sections(
+                chunk
+                    .chunk
+                    .sections()
+                    .iter()
+                    .map(|s| (**s).clone())
+                    .collect(),
+            );
+            Snapshot::of(&proto).diff(
+                &Snapshot::from_golden(&list(&area["chunks"])[index]),
+                proto.pos(),
+                min_y,
+                &mut diffs,
+            );
+            index += 1;
+        }
+    }
+    assert!(diffs.is_empty(), "{}", diffs.join("\n"));
+}
