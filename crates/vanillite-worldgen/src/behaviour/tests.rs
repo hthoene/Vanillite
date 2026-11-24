@@ -157,8 +157,8 @@ fn waterlogged_blocks_schedule_water() {
     with_region(-64, 384, |level| {
         let slab = state(r#"{"Name":"oak_slab","Properties":{"waterlogged":"true"}}"#);
         update_from_neighbour_shapes(level, slab, ORIGIN);
-        let water = state("water").block();
-        assert!(level.chunk(ORIGIN).fluid_ticks().has(water, ORIGIN));
+        // `Fluids.WATER`.
+        assert!(level.chunk(ORIGIN).fluid_ticks().has(2, ORIGIN));
         put(level, ORIGIN.below(), "stone");
         let sand = state("sand");
         update_shape(

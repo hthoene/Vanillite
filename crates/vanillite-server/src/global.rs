@@ -19,7 +19,7 @@ pub struct Global {
     /// Online players.
     pub players: PlayerList,
     /// Network entity ids of all worlds.
-    pub network_ids: NetworkIds,
+    pub network_ids: Arc<NetworkIds>,
     /// Secure chat and spam settings.
     pub chat: ChatSettings,
     /// Network ids of the chat types.
@@ -32,6 +32,8 @@ pub struct Global {
     pub(crate) commands: crate::commands::CommandDispatcher,
     /// `online-mode`.
     pub(crate) online_mode: bool,
+    /// Game time, clocks, game rules, weather and the survival registries.
+    pub(crate) level: crate::level::LevelState,
     /// The world seed (`/seed`).
     pub(crate) seed: i64,
     /// Entries of data-driven registries commands refer to (timelines, world clocks).

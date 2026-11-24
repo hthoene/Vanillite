@@ -28,6 +28,7 @@ vanillite-net = { path = "crates/vanillite-net", version = "0.1.0" }
 vanillite-plugin = { path = "crates/vanillite-plugin", version = "0.1.0" }
 vanillite-plugin-host = { path = "crates/vanillite-plugin-host", version = "0.1.0" }
 vanillite-protocol = { path = "crates/vanillite-protocol", version = "0.1.0" }
+vanillite-proxy = { path = "crates/vanillite-proxy", version = "0.1.0" }
 vanillite-server = { path = "crates/vanillite-server", version = "0.1.0" }
 vanillite-storage = { path = "crates/vanillite-storage", version = "0.1.0" }
 vanillite-test = { path = "crates/vanillite-test", version = "0.1.0" }

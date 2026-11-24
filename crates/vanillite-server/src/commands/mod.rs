@@ -8,6 +8,7 @@ mod dispatch;
 mod exec;
 mod select;
 mod source;
+mod survival;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -42,8 +43,6 @@ pub(crate) fn build_dispatcher(limits: vanillite_command::limits::Limits) -> Com
 pub(crate) struct Env<'a> {
     pub(crate) entities: &'a mut Entities,
     pub(crate) global: &'a Global,
-    /// Ticks the world has run (game time).
-    pub(crate) game_time: i64,
 }
 
 /// The permission level of a player: its operator level or 0.
@@ -173,7 +172,6 @@ pub(crate) fn run_player_command(
     global: &Global,
     id: EntityId,
     world: WorldId,
-    game_time: i64,
     command: &str,
     signed: Option<SignedCommand>,
 ) -> Option<Component> {
@@ -216,11 +214,7 @@ pub(crate) fn run_player_command(
         }
     };
     log::info!("{name} issued server command: /{command}");
-    let mut env = Env {
-        entities,
-        global,
-        game_time,
-    };
+    let mut env = Env { entities, global };
     match parse.finish(&global.commands) {
         Ok(parsed) => {
             if let Err(e) = dispatch::execute(&source, &mut env, &parsed, &signed_arguments) {
@@ -297,11 +291,9 @@ pub(crate) fn run_console_command(world: &mut ServerWorld, global: &Global, line
         pos: vanillite_base::Vec3::ZERO,
         rot: (0.0, 0.0),
     };
-    let game_time = i64::try_from(world.ticks()).unwrap_or(i64::MAX);
     let mut env = Env {
         entities: world.entities_mut(),
         global,
-        game_time,
     };
     match global.commands.parse_command(command, &source) {
         Ok(parsed) => {

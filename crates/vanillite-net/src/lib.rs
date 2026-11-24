@@ -15,18 +15,20 @@ mod outbound;
 mod player;
 pub mod services;
 mod status;
+pub mod velocity;
 
 pub use auth::{
     AuthResult, Authenticator, KeyPair, SessionServer, is_valid_player_name, server_hash,
 };
 pub use config::{NetConfig, RateLimit};
 pub use configuration::{ConfigurationData, json_to_nbt};
+pub use conn::rand_bytes;
+pub use limits::{ConnectionGuard, ConnectionLimiter};
 pub use outbound::Outbound;
 pub use player::{Joined, Latency};
 pub use status::{StatusCache, StatusInfo};
 pub use vanillite_protocol::{Inbound, SharedPacket};
 
-use limits::ConnectionLimiter;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::{Semaphore, mpsc};

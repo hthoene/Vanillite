@@ -1,7 +1,7 @@
 //! Chunk NBT (Vanilla's `SerializableChunkData`) to and from [`ProtoChunk`].
 //!
-//! Blocks, biomes, light, the status, block entities and the inhabited time are decoded; every
-//! other tag of the chunk (scheduled ticks, structures, post-processing, …) is kept as
+//! Blocks, biomes, light, the status, block entities, scheduled ticks, post-processing marks
+//! and the inhabited time are decoded; every other tag of the chunk (structures, …) is kept as
 //! [`ProtoChunk::extra`] and written back unchanged. Heightmaps are recomputed on load and
 //! written on save.
 //!
@@ -16,12 +16,12 @@ use vanillite_base::{BlockPos, ChunkPos};
 use vanillite_chunk::bits::{self, Word};
 use vanillite_chunk::container::{ContainerData, Strategy};
 use vanillite_chunk::light::{ChunkLight, LightNibbles, NIBBLE_BYTES};
-use vanillite_chunk::slots::{BlockEntityData, ChunkStatus, WorldInfo};
+use vanillite_chunk::slots::{BlockEntityData, ChunkStatus, SavedTick, WorldInfo};
 use vanillite_chunk::{
     Biomes, BlockStates, Chunk, HeightmapKind, PalettedContainer, ProtoChunk, Section, facts,
 };
 use vanillite_data::block::{BlockId, BlockState};
-use vanillite_data::registry::BLOCK_ENTITY_TYPE;
+use vanillite_data::registry::{BLOCK, BLOCK_ENTITY_TYPE, FLUID, Registry};
 use vanillite_data::version::DATA_VERSION;
 use vanillite_nbt::{Budget, Compound, List, Tag};
 
@@ -30,7 +30,7 @@ use vanillite_nbt::{Budget, Compound, List, Tag};
 pub const OLDEST_DATA_VERSION: i32 = 3953;
 
 /// Tags this module decodes; everything else goes to `extra`.
-const DECODED: [&str; 10] = [
+const DECODED: [&str; 13] = [
     "DataVersion",
     "xPos",
     "yPos",
@@ -41,6 +41,9 @@ const DECODED: [&str; 10] = [
     "isLightOn",
     "block_entities",
     "Heightmaps",
+    "block_ticks",
+    "fluid_ticks",
+    "PostProcessing",
 ];
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -180,6 +183,27 @@ impl Codec {
             }
         }
 
+        let block_ticks = read_ticks(root.get("block_ticks"), &BLOCK, pos);
+        let fluid_ticks = read_ticks(root.get("fluid_ticks"), &FLUID, pos);
+        let mut post_processing = Vec::new();
+        if let Some(Tag::List(list)) = root.get("PostProcessing") {
+            for (index, section) in list.0.iter().enumerate() {
+                let Tag::List(offsets) = section else {
+                    continue;
+                };
+                let section_y = min_section + index as i32;
+                for packed in offsets.0.iter().filter_map(Tag::as_i64) {
+                    // `ProtoChunk.unpackOffsetCoordinates`.
+                    let packed = packed as i32;
+                    post_processing.push(BlockPos::new(
+                        pos.x * 16 + (packed & 15),
+                        section_y * 16 + (packed >> 4 & 15),
+                        pos.z * 16 + (packed >> 8 & 15),
+                    ));
+                }
+            }
+        }
+
         for name in DECODED {
             root.remove(name);
         }
@@ -197,6 +221,9 @@ impl Codec {
             block_entities,
             inhabited_time,
             light_on,
+            block_ticks,
+            fluid_ticks,
+            post_processing,
             extra,
             generation: None,
         })
@@ -359,8 +386,75 @@ impl Codec {
             }
         }
         root.insert("block_entities", List(entities));
+        root.insert("block_ticks", write_ticks(&chunk.block_ticks, &BLOCK));
+        root.insert("fluid_ticks", write_ticks(&chunk.fluid_ticks, &FLUID));
+        if !chunk.post_processing.is_empty() {
+            let mut lists = vec![Vec::new(); (info.height / 16) as usize];
+            for pos in &chunk.post_processing {
+                if let Some(list) = usize::try_from((pos.y >> 4) - min_section)
+                    .ok()
+                    .and_then(|index| lists.get_mut(index))
+                {
+                    // `ProtoChunk.packOffsetCoordinates`.
+                    let packed = (pos.x & 15) | (pos.y & 15) << 4 | (pos.z & 15) << 8;
+                    list.push(Tag::Short(packed as i16));
+                }
+            }
+            root.insert(
+                "PostProcessing",
+                List(lists.into_iter().map(|l| Tag::List(List(l))).collect()),
+            );
+        }
         Ok(root)
     }
+}
+
+/// Reads a `block_ticks` or `fluid_ticks` list (`SavedTick` codec: `i`, `x`, `y`, `z`, `t`,
+/// `p`); ticks of unknown types or outside the chunk are dropped like Vanilla does.
+fn read_ticks(tag: Option<&Tag>, registry: &Registry, chunk: ChunkPos) -> Vec<SavedTick> {
+    let Some(Tag::List(list)) = tag else {
+        return Vec::new();
+    };
+    list.0
+        .iter()
+        .filter_map(Tag::as_compound)
+        .filter_map(|tick| {
+            let int = |name| {
+                tick.get(name)
+                    .and_then(Tag::as_i64)
+                    .and_then(|v| i32::try_from(v).ok())
+            };
+            let kind = registry.id(tick.get("i")?.as_str()?)?;
+            let pos = BlockPos::new(int("x")?, int("y")?, int("z")?);
+            // `TickPriority.byValue` clamps unknown values.
+            let priority = int("p").unwrap_or(0).clamp(-3, 3) as i8;
+            (pos.chunk() == chunk).then_some(SavedTick {
+                kind,
+                pos,
+                delay: int("t")?,
+                priority,
+            })
+        })
+        .collect()
+}
+
+fn write_ticks(ticks: &[SavedTick], registry: &Registry) -> List {
+    List(
+        ticks
+            .iter()
+            .filter_map(|tick| {
+                Some(Tag::Compound(
+                    Compound::new()
+                        .with("i", registry.name(tick.kind)?)
+                        .with("x", tick.pos.x)
+                        .with("y", tick.pos.y)
+                        .with("z", tick.pos.z)
+                        .with("t", tick.delay)
+                        .with("p", i32::from(tick.priority)),
+                ))
+            })
+            .collect(),
+    )
 }
 
 fn block_state_tag(id: u16) -> Tag {

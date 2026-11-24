@@ -55,12 +55,20 @@ pub enum CommandId {
     GameModeSelf,
     /// `gamemode <gamemode> <target>`.
     GameModeTargets,
+    /// `gamerule <rule>`: the index into [`RULES`](crate::survival::rules::RULES).
+    GameRuleQuery(u16),
+    /// `gamerule <rule> <value>`.
+    GameRuleSet(u16),
     /// `help`.
     Help,
     /// `help <command>`.
     HelpCommand,
     /// `kick <targets> [<reason>]`.
     Kick,
+    /// `kill`: the source.
+    KillSelf,
+    /// `kill <targets>`.
+    KillTargets,
     /// `list`.
     List,
     /// `list uuids`.
@@ -100,6 +108,12 @@ pub enum CommandId {
     TimeQueryRepetition,
     /// `time query gametime`.
     TimeQueryGameTime,
+    /// `weather clear [<duration>]`.
+    WeatherClear,
+    /// `weather rain [<duration>]`.
+    WeatherRain,
+    /// `weather thunder [<duration>]`.
+    WeatherThunder,
     /// `deop <targets>`.
     Deop,
     /// `op <targets>`.
@@ -123,14 +137,17 @@ pub enum CommandId {
 /// Registers all commands in Vanilla's registration order (`Commands` constructor).
 pub fn register(d: &mut Dispatcher<CommandId>) {
     players::register_game_mode(d);
+    world::register_game_rule(d);
     players::register_help(d);
     server::register_kick(d);
+    world::register_kill(d);
     players::register_list(d);
     players::register_msg(d);
     players::register_say(d);
     world::register_seed(d);
     players::register_teleport(d);
     world::register_time(d);
+    world::register_weather(d);
     server::register_deop(d);
     server::register_op(d);
     server::register_stop(d);

@@ -14,7 +14,9 @@ use vanillite_protocol::text::Component;
 use super::exec::{self, Destination, Profile, config_game_mode, format_list};
 use super::select::{self, Target};
 use super::source::CommandSource;
+use super::survival;
 use super::{Env, SignedArguments};
+use vanillite_game::survival::rules::Rule;
 
 fn missing(name: &str) -> CommandError {
     CommandError::new(
@@ -251,16 +253,6 @@ fn targets_single(
         .ok_or_else(|| CommandError::new("argument.entity.notfound.entity", vec![]))
 }
 
-/// A time subcommand we cannot run yet: there are no world clocks.
-fn clocks_missing() -> CommandError {
-    CommandError::new(
-        "command.exception",
-        vec![vanillite_command::Arg::Str(
-            "World clocks are not implemented yet".to_owned(),
-        )],
-    )
-}
-
 /// Executes a parsed command; errors are shown to the source by the caller.
 pub(crate) fn execute(
     source: &CommandSource,
@@ -349,33 +341,94 @@ pub(crate) fn execute(
             look_at(env, source, &local, parsed)?;
             Ok(count)
         }
-        CommandId::TimeQueryGameTime => Ok(exec::time_gametime(source, global, env.game_time)),
-        CommandId::TimeQueryTime => {
-            let clock = parsed
-                .args
-                .identifier("clock")
-                .map_or("minecraft:overworld", String::as_str);
-            Ok(exec::time_clock(source, global, clock, env.game_time))
-        }
-        CommandId::TimeQueryTimeline | CommandId::TimeQueryRepetition => {
-            let timeline = parsed
-                .args
-                .identifier("timeline")
-                .ok_or_else(|| missing("timeline"))?;
-            exec::time_timeline(
-                source,
-                global,
-                timeline,
-                env.game_time,
-                parsed.command == CommandId::TimeQueryRepetition,
-            )
-        }
-        CommandId::TimeSet
+        CommandId::TimeQueryGameTime => Ok(exec::time_gametime(
+            source,
+            global,
+            global.level.game_time(),
+        )),
+        CommandId::TimeQueryTime
+        | CommandId::TimeQueryTimeline
+        | CommandId::TimeQueryRepetition
+        | CommandId::TimeSet
         | CommandId::TimeSetMarker
         | CommandId::TimeAdd
         | CommandId::TimePause
         | CommandId::TimeResume
-        | CommandId::TimeRate => Err(clocks_missing()),
+        | CommandId::TimeRate => {
+            let clock = survival::clock(
+                source,
+                global,
+                parsed.args.identifier("clock").map(String::as_str),
+            )?;
+            match parsed.command {
+                CommandId::TimeQueryTime => Ok(survival::time_query(source, global, clock)),
+                CommandId::TimeQueryTimeline | CommandId::TimeQueryRepetition => {
+                    let timeline = parsed
+                        .args
+                        .identifier("timeline")
+                        .ok_or_else(|| missing("timeline"))?;
+                    survival::time_timeline(
+                        source,
+                        global,
+                        clock,
+                        timeline,
+                        parsed.command == CommandId::TimeQueryRepetition,
+                    )
+                }
+                CommandId::TimeSet => {
+                    let time = parsed.args.time("time").ok_or_else(|| missing("time"))?;
+                    survival::time_set(source, global, clock, *time)
+                }
+                CommandId::TimeSetMarker => {
+                    let marker = parsed
+                        .args
+                        .identifier("timemarker")
+                        .ok_or_else(|| missing("timemarker"))?;
+                    survival::time_set_marker(source, global, clock, marker)
+                }
+                CommandId::TimeAdd => {
+                    let time = parsed.args.time("time").ok_or_else(|| missing("time"))?;
+                    Ok(survival::time_add(source, global, clock, *time))
+                }
+                CommandId::TimePause => survival::time_pause(source, global, clock, true),
+                CommandId::TimeResume => survival::time_pause(source, global, clock, false),
+                _ => {
+                    let rate = parsed.args.float("rate").ok_or_else(|| missing("rate"))?;
+                    survival::time_rate(source, global, clock, *rate)
+                }
+            }
+        }
+        CommandId::GameRuleQuery(index) => Ok(survival::game_rule_query(
+            source,
+            global,
+            Rule(usize::from(index)),
+        )),
+        CommandId::GameRuleSet(index) => {
+            let rule = Rule(usize::from(index));
+            let value = match (parsed.args.bool("value"), parsed.args.int("value")) {
+                (Some(b), _) => i32::from(*b),
+                (None, Some(i)) => *i,
+                (None, None) => return Err(missing("value")),
+            };
+            survival::game_rule_set(source, global, rule, value)
+        }
+        CommandId::KillSelf | CommandId::KillTargets => {
+            let victims = if parsed.command == CommandId::KillSelf {
+                vec![self_target(env, source)?]
+            } else {
+                targets(env, source, selector_arg(parsed, "targets")?, false)?
+            };
+            Ok(survival::kill(source, env, &victims))
+        }
+        CommandId::WeatherClear | CommandId::WeatherRain | CommandId::WeatherThunder => {
+            let kind = match parsed.command {
+                CommandId::WeatherClear => survival::Weather::Clear,
+                CommandId::WeatherRain => survival::Weather::Rain,
+                _ => survival::Weather::Thunder,
+            };
+            let duration = parsed.args.time("duration").copied();
+            Ok(survival::weather(source, global, kind, duration))
+        }
         CommandId::Op => {
             let profiles = profiles(env, source, parsed)?;
             exec::op(source, global, &profiles)

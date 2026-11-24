@@ -186,8 +186,10 @@ impl Snapshot {
             heightmaps,
             post_processing,
             block_entities,
-            block_ticks: tick_hash(chunk.block_ticks().ticks()),
-            fluid_ticks: tick_hash(chunk.fluid_ticks().ticks()),
+            block_ticks: tick_hash(chunk.block_ticks().ticks(), |b| b.name()),
+            fluid_ticks: tick_hash(chunk.fluid_ticks().ticks(), |f| {
+                vanillite_data::registry::FLUID.name(f).unwrap_or("")
+            }),
         }
     }
 
@@ -267,11 +269,11 @@ fn block_entity(v: &Value) -> (i32, i32, i32, String) {
 }
 
 /// Count and hash of ticks as `FeatureGoldens.tickHash`: type name, x, y, z, priority.
-fn tick_hash(ticks: &[ProtoTick<vanillite_data::block::BlockId>]) -> (i64, i64) {
+fn tick_hash<T: Copy>(ticks: &[ProtoTick<T>], name: impl Fn(T) -> &'static str) -> (i64, i64) {
     let mut hash = 0_i64;
     for tick in ticks {
         for v in [
-            i64::from(java_string_hash(tick.kind.name())),
+            i64::from(java_string_hash(name(tick.kind))),
             i64::from(tick.pos.x),
             i64::from(tick.pos.y),
             i64::from(tick.pos.z),

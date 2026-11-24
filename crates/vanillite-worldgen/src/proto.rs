@@ -91,9 +91,9 @@ impl<T: Copy + Eq + std::hash::Hash> ProtoTicks<T> {
     }
 }
 
-/// Fluid ids for scheduled fluid ticks: `minecraft:water` or `minecraft:lava`, as the fluid's
-/// still/source block.
-pub type FluidTickKind = BlockId;
+/// The type of a scheduled fluid tick: the `minecraft:fluid` id of the ticking fluid (flowing and
+/// still fluids are different types, as in Vanilla).
+pub type FluidTickKind = u16;
 
 /// A chunk during generation.
 #[derive(Clone, Debug)]

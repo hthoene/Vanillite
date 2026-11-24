@@ -1267,8 +1267,11 @@ dependencies = [
  "vanillite-command",
  "vanillite-config",
  "vanillite-data",
+ "vanillite-datapack",
+ "vanillite-nbt",
  "vanillite-protocol",
  "vanillite-world",
+ "vanillite-worldgen",
 ]
 
 [[package]]
@@ -1305,6 +1308,7 @@ dependencies = [
  "rsa",
  "serde_json",
  "sha1",
+ "sha2",
  "tokio",
  "ureq",
  "vanillite-config",
@@ -1339,6 +1343,21 @@ dependencies = [
  "vanillite-data",
  "vanillite-macros",
  "vanillite-nbt",
+]
+
+[[package]]
+name = "vanillite-proxy"
+version = "0.1.0"
+dependencies = [
+ "ctrlc",
+ "env_logger",
+ "log",
+ "serde_json",
+ "tokio",
+ "toml",
+ "vanillite-net",
+ "vanillite-protocol",
+ "vanillite-server",
 ]
 
 [[package]]

@@ -11,8 +11,10 @@ use vanillite_protocol::text::{Component, Content};
 
 const OUR_COMMANDS: &[&str] = &[
     "gamemode",
+    "gamerule",
     "help",
     "kick",
+    "kill",
     "list",
     "msg",
     "tell",
@@ -22,6 +24,7 @@ const OUR_COMMANDS: &[&str] = &[
     "teleport",
     "tp",
     "time",
+    "weather",
     "deop",
     "op",
     "stop",

@@ -493,53 +493,6 @@ pub(crate) fn time_gametime(source: &CommandSource, global: &Global, game_time: 
     wrap_time(game_time)
 }
 
-/// `time query time`: the clock's total ticks. Without a world clock system the overworld
-/// clock runs with the game time.
-pub(crate) fn time_clock(source: &CommandSource, global: &Global, clock: &str, ticks: i64) -> i32 {
-    source.send_success(
-        global,
-        Component::translatable_args(
-            "commands.time.query.absolute",
-            vec![Arg::String(clock.to_owned()), Arg::Long(ticks)],
-        ),
-        false,
-    );
-    wrap_time(ticks)
-}
-
-/// `time query <timeline> [repetition]` for the day timeline (24000 ticks).
-pub(crate) fn time_timeline(
-    source: &CommandSource,
-    global: &Global,
-    timeline: &str,
-    ticks: i64,
-    repetition: bool,
-) -> Result<i32, CommandError> {
-    if timeline != "minecraft:day" {
-        return Err(CommandError::new(
-            "argument.resource.not_found",
-            vec![
-                vanillite_command::error::Arg::Str(timeline.to_owned()),
-                vanillite_command::error::Arg::Str("minecraft:timeline".to_owned()),
-            ],
-        ));
-    }
-    let (key, value) = if repetition {
-        ("commands.time.query.timeline.repetitions", ticks / 24_000)
-    } else {
-        ("commands.time.query.timeline", ticks % 24_000)
-    };
-    source.send_success(
-        global,
-        Component::translatable_args(
-            key,
-            vec![Arg::String(timeline.to_owned()), Arg::Long(value)],
-        ),
-        false,
-    );
-    Ok(wrap_time(value))
-}
-
 /// `say`: broadcast as `say_command`.
 pub(crate) fn say(source: &CommandSource, global: &Global, message: &ChatMessage) {
     let chat_type = ChatTypeBound {

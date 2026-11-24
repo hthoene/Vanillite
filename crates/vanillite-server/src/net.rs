@@ -240,6 +240,10 @@ impl NetState {
                 .unwrap_or(0)
                 .saturating_add(256)
                 .max(NetConfig::default().max_connections),
+            forwarding_secret: vanillite_net::velocity::Secret::new(
+                config.server.proxy.velocity_secret.as_bytes(),
+            ),
+            allow_direct_connections: config.server.proxy.allow_direct_connections,
             ..NetConfig::default()
         };
         let status = StatusInfo {

@@ -26,14 +26,20 @@ pub type Encoded = Vec<Arc<SharedPacket>>;
 /// Entity data ids (`EntityDataAccessor` ids of 26.3).
 mod data_id {
     pub const SHARED_FLAGS: u8 = 0;
+    pub const AIR_SUPPLY: u8 = 1;
     pub const POSE: u8 = 6;
+    pub const HEALTH: u8 = 9;
     pub const PLAYER_MAIN_HAND: u8 = 15;
     pub const PLAYER_MODE_CUSTOMISATION: u8 = 16;
+    pub const PLAYER_ABSORPTION: u8 = 17;
+    pub const PLAYER_SCORE: u8 = 18;
 }
 
 /// Entity data serializer ids (`EntityDataSerializers` registration order of 26.3).
 mod serializer {
     pub const BYTE: i32 = 0;
+    pub const INT: i32 = 1;
+    pub const FLOAT: i32 = 3;
     pub const POSE: i32 = 20;
     pub const HUMANOID_ARM: i32 = 42;
 }
@@ -71,15 +77,33 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
             o.push(flags);
         });
     }
+    let player = if entity.kind() == ids::PLAYER {
+        entities.player(entity.id())
+    } else {
+        None
+    };
+    if let Some(player) = player {
+        let air = player.survival.air;
+        if all || air != crate::survival::player::MAX_AIR {
+            item(&mut out, data_id::AIR_SUPPLY, serializer::INT, |o| {
+                write_varint(o, air);
+            });
+        }
+    }
     let pose = entity.pose();
     if all || pose != Pose::Standing {
         item(&mut out, data_id::POSE, serializer::POSE, |o| {
             write_varint(o, pose_id(pose));
         });
     }
-    if entity.kind() == ids::PLAYER
-        && let Some(player) = entities.player(entity.id())
-    {
+    if let Some(player) = player {
+        // `LivingEntity` defines the health as 1.0 and sets it to the maximum afterwards.
+        let health = player.survival.health;
+        if all || health != 1.0 {
+            item(&mut out, data_id::HEALTH, serializer::FLOAT, |o| {
+                o.extend_from_slice(&health.to_be_bytes());
+            });
+        }
         let hand = player.client.main_hand;
         if all || hand != MainHand::Right {
             item(
@@ -99,6 +123,21 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
                 serializer::BYTE,
                 |o| o.push(parts),
             );
+        }
+        let absorption = player.survival.absorption;
+        if all || absorption != 0.0 {
+            item(
+                &mut out,
+                data_id::PLAYER_ABSORPTION,
+                serializer::FLOAT,
+                |o| o.extend_from_slice(&absorption.to_be_bytes()),
+            );
+        }
+        let score = player.survival.score;
+        if all || score != 0 {
+            item(&mut out, data_id::PLAYER_SCORE, serializer::INT, |o| {
+                write_varint(o, score);
+            });
         }
     }
     if out.is_empty() {
@@ -132,7 +171,10 @@ pub fn encode_update(message: &Message, entities: &Entities) -> Option<Encoded> 
                 x_rot,
                 y_rot,
                 y_head_rot,
-                data: 0,
+                // `getAddEntityPacket` data: the block state of a falling block.
+                data: entities
+                    .falling_block(message.entity)
+                    .map_or(0, |f| i32::from(f.state.0)),
             });
             let data = entities
                 .store

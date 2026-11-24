@@ -76,6 +76,14 @@ rules! {
             max_redirect_depth: u32 = "max-redirect-depth", Security, range = [1, 1024],
                 vanilla = 64;
         }
+        /// Survival: time and weather.
+        survival: SurvivalRules = "performance.survival" {
+            /// Ticks between the game time packets every player gets (Vanilla: every second).
+            /// Clients run the clocks themselves in between; a longer interval saves traffic
+            /// with many players, the game time on the client may then lag behind a little.
+            time_sync_interval: u32 = "time-sync-interval", Performance, range = [1, 1200],
+                vanilla = 20;
+        }
         /// Development and test helpers. Never needed on a production server.
         debug: DebugRules = "debug" {
             /// In-process fake players (`TestBot`, `TestBot2`, ...) that join over virtual
@@ -83,6 +91,19 @@ rules! {
             /// single tester sees other players. Virtual connections need no authentication,
             /// so keep this at 0 outside test servers.
             test_bots: u8 = "test-bots", Setting, range = [0, 16], restart = true, vanilla = 0;
+        }
+        /// Player info forwarding from a proxy in front of the server (Velocity "modern"
+        /// forwarding, also used by `vanillite-proxy`).
+        proxy: ProxyRules = "proxy" {
+            /// Shared secret of modern forwarding (the proxy's `forwarding.secret`). Empty turns
+            /// forwarding off. With a secret, players' identities and addresses come from the
+            /// proxy, signed with it; `online-mode` then only applies to direct connections.
+            velocity_secret: String = "velocity-secret", Setting, restart = true,
+                vanilla = String::new();
+            /// With forwarding on, also accept players who connect directly instead of through
+            /// the proxy (authenticated as usual). Off: they are refused.
+            allow_direct_connections: bool = "allow-direct-connections", Setting, restart = true,
+                vanilla = false;
         }
         /// Chat. Spam thresholds are `chat-spam-threshold-seconds` and
         /// `command-spam-threshold-seconds` in `server.properties`.
@@ -177,6 +198,24 @@ rules! {
             /// Background chunk jobs (loads, generation steps, light) in flight per world. Higher
             /// values load faster with many players at the cost of memory for queued work.
             max_jobs: u16 = "max-jobs", Performance, range = [1, 4096], vanilla = 64;
+        }
+        /// World simulation: scheduled ticks, neighbour updates and light after block changes.
+        /// Work over a budget waits for the next tick.
+        simulation: SimulationRules = "performance.simulation" {
+            /// Scheduled block ticks run per tick.
+            max_block_ticks: u32 = "max-block-ticks", Performance, range = [1, 1_000_000],
+                vanilla = 65536;
+            /// Scheduled fluid ticks run per tick.
+            max_fluid_ticks: u32 = "max-fluid-ticks", Performance, range = [1, 1_000_000],
+                vanilla = 65536;
+            /// Chained neighbour and shape updates of one block change before the rest is
+            /// skipped; "vanilla" uses `max-chained-neighbor-updates` of server.properties.
+            max_chained_neighbor_updates: VanillaOr<u32> = "max-chained-neighbor-updates",
+                Performance, range = [1, 100_000_000], vanilla = VanillaOr::Vanilla;
+            /// Chunks whose light is recomputed per tick after block changes, each as one
+            /// background job over its 5 × 5 area. Lower values spread bursts over more ticks.
+            max_relights_per_tick: u32 = "max-relights-per-tick", Performance,
+                range = [1, 65536], vanilla = 1024;
         }
         /// Entity collisions.
         collisions: CollisionRules = "performance.collisions" {

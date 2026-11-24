@@ -12,7 +12,7 @@ use vanillite_data::block::{BLOCK_COUNT, BlockId, BlockState};
 /// A Vanilla block class with generation relevant behaviour (variants are named after the class
 /// without the `Block` suffix).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Class {
+pub enum Class {
     /// `Block`: no behaviour of its own.
     Plain,
     /// `AbstractBedBlock`.
@@ -1562,7 +1562,7 @@ fn table() -> &'static [Class] {
 
 /// The class of a block.
 #[inline]
-pub(crate) fn class_of_block(block: BlockId) -> Class {
+pub fn class_of_block(block: BlockId) -> Class {
     table()
         .get(usize::from(block.0))
         .copied()
@@ -1571,7 +1571,7 @@ pub(crate) fn class_of_block(block: BlockId) -> Class {
 
 /// The class of a state's block.
 #[inline]
-pub(crate) fn class_of(state: BlockState) -> Class {
+pub fn class_of(state: BlockState) -> Class {
     class_of_block(state.block())
 }
 

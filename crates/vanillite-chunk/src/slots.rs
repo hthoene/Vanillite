@@ -227,6 +227,20 @@ pub struct BlockEntityData {
     pub nbt: Arc<[u8]>,
 }
 
+/// A scheduled block or fluid tick as stored with its chunk (Vanilla's `SavedTick`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SavedTick {
+    /// Block id (`minecraft:block`) of a block tick, fluid id (`minecraft:fluid`) of a fluid
+    /// tick.
+    pub kind: u16,
+    /// Position in the world.
+    pub pos: BlockPos,
+    /// Ticks until it runs, relative to the game time it was saved at.
+    pub delay: i32,
+    /// `TickPriority` value (-3 extremely high ..= 3 extremely low).
+    pub priority: i8,
+}
+
 /// A chunk with everything stored with it: blocks, light, heightmaps, its generation status and
 /// the data the runtime does not interpret yet. One type serves generation (statuses before
 /// `Full`), storage and the live world (`Full`).
@@ -244,8 +258,16 @@ pub struct ProtoChunk {
     pub inhabited_time: i64,
     /// Whether the stored light is complete and trusted (`isLightOn`).
     pub light_on: bool,
-    /// The rest of the stored chunk (scheduled ticks, structures, post-processing, …) as binary
-    /// network NBT of a compound, written back unchanged. `None` for new chunks.
+    /// Scheduled block ticks of a chunk that is not live: a live chunk's ticks are run by the
+    /// world and put back here when it is saved.
+    pub block_ticks: Vec<SavedTick>,
+    /// Scheduled fluid ticks, like [`Self::block_ticks`].
+    pub fluid_ticks: Vec<SavedTick>,
+    /// Positions generation marked for post-processing (`PostProcessing`); the world handles
+    /// them when the chunk becomes live.
+    pub post_processing: Vec<BlockPos>,
+    /// The rest of the stored chunk (structures, …) as binary network NBT of a compound,
+    /// written back unchanged. `None` for new chunks.
     pub extra: Option<Arc<[u8]>>,
     /// What the chunk generator keeps between its steps while the chunk is generated; not
     /// stored, dropped when the chunk becomes `Full`.
@@ -273,6 +295,9 @@ impl ProtoChunk {
             block_entities: Vec::new(),
             inhabited_time: 0,
             light_on: false,
+            block_ticks: Vec::new(),
+            fluid_ticks: Vec::new(),
+            post_processing: Vec::new(),
             extra: None,
             generation: None,
         }

@@ -58,6 +58,12 @@ pub struct NetConfig {
     pub rate_limits: [RateLimit; Bucket::COUNT],
     /// Server brand sent in configuration. Default "vanillite".
     pub brand: String,
+    /// Secret of Velocity modern forwarding; with it, identities come from the proxy. Default
+    /// none (off).
+    pub forwarding_secret: Option<crate::velocity::Secret>,
+    /// With forwarding on, also accept clients that connect directly (they log in normally).
+    /// Default false: direct connections are refused (SEC-14).
+    pub allow_direct_connections: bool,
 }
 
 impl Default for NetConfig {
@@ -95,6 +101,8 @@ impl Default for NetConfig {
                 r(50.0, 200.0),
             ],
             brand: "vanillite".into(),
+            forwarding_secret: None,
+            allow_direct_connections: false,
         }
     }
 }

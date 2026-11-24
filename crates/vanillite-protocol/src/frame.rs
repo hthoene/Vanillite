@@ -222,6 +222,7 @@ pub struct FrameEncoder {
     threshold: Option<usize>,
     codec: Codec,
     scratch: Vec<u8>,
+    compressed: Vec<u8>,
 }
 
 impl FrameEncoder {
@@ -238,6 +239,11 @@ impl FrameEncoder {
     /// Sets the compression threshold (negative = off).
     pub fn set_compression(&mut self, threshold: i32) {
         self.threshold = usize::try_from(threshold).ok();
+    }
+
+    /// Sets the libdeflate level of outbound compression (1..=12).
+    pub fn set_compression_level(&mut self, level: i32) {
+        self.codec = Codec::new(level);
     }
 
     /// The compression threshold in use.
@@ -259,7 +265,13 @@ impl FrameEncoder {
     /// Frames and appends an encoded packet (`id` + body).
     pub fn body(&mut self, body: &[u8], out: &mut Vec<u8>) -> Result<()> {
         let start = out.len();
-        encode_frame(body, self.threshold, &mut self.codec, out)?;
+        encode_frame_with(
+            body,
+            self.threshold,
+            &mut self.codec,
+            &mut self.compressed,
+            out,
+        )?;
         self.encrypt_from(out, start);
         Ok(())
     }
@@ -286,6 +298,17 @@ pub fn encode_frame(
     codec: &mut Codec,
     out: &mut Vec<u8>,
 ) -> Result<()> {
+    encode_frame_with(body, threshold, codec, &mut Vec::new(), out)
+}
+
+/// [`encode_frame`] with a reusable buffer for the compressed body.
+fn encode_frame_with(
+    body: &[u8],
+    threshold: Option<usize>,
+    codec: &mut Codec,
+    compressed: &mut Vec<u8>,
+    out: &mut Vec<u8>,
+) -> Result<()> {
     if body.len() > compress::MAX_UNCOMPRESSED {
         return Err(Error::TooLong {
             what: "packet",
@@ -307,14 +330,14 @@ pub fn encode_frame(
             out.extend_from_slice(body);
         }
         Some(_) => {
-            let mut compressed = Vec::with_capacity(body.len() / 2);
-            codec.compress(body, &mut compressed)?;
+            compressed.clear();
+            codec.compress(body, compressed)?;
             let data_len = len_i32(body.len())?;
             let frame_len = varint_len(data_len).saturating_add(compressed.len());
             check_frame(frame_len)?;
             write_varint(out, len_i32(frame_len)?);
             write_varint(out, data_len);
-            out.extend_from_slice(&compressed);
+            out.extend_from_slice(compressed);
         }
     }
     Ok(())
