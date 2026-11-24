@@ -7,6 +7,7 @@
 //! JWT is signed with the client key. Nothing in the request is trusted before its signature
 //! chain is verified (SEC-02).
 
+use p384::elliptic_curve::Generate;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -15,7 +16,7 @@ use base64::Engine;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use p384::ecdsa::signature::{Signer, Verifier};
 use p384::pkcs8::{DecodePublicKey, EncodePublicKey};
-use rsa::BigUint;
+use rsa::BoxedUint;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -68,7 +69,7 @@ pub struct Identity {
 /// Signing keys of the authorization service (RSA, by key id).
 #[derive(Debug, Default)]
 pub struct TokenKeys {
-    keys: RwLock<HashMap<String, rsa::RsaPublicKey>>,
+    keys: RwLock<HashMap<String, rsa::PublicKey>>,
     fetched: RwLock<Option<Instant>>,
 }
 
@@ -90,9 +91,10 @@ impl TokenKeys {
             let (Ok(n), Ok(e)) = (URL_SAFE_NO_PAD.decode(n), URL_SAFE_NO_PAD.decode(e)) else {
                 continue;
             };
-            if let Ok(k) =
-                rsa::RsaPublicKey::new(BigUint::from_bytes_be(&n), BigUint::from_bytes_be(&e))
-            {
+            if let Ok(k) = rsa::PublicKey::new(
+                BoxedUint::from_be_slice_vartime(&n),
+                BoxedUint::from_be_slice_vartime(&e),
+            ) {
                 map.insert(kid.to_owned(), k);
             }
         }
@@ -106,7 +108,7 @@ impl TokenKeys {
         n
     }
 
-    fn get(&self, kid: &str) -> Option<rsa::RsaPublicKey> {
+    fn get(&self, kid: &str) -> Option<rsa::PublicKey> {
         self.keys.read().ok()?.get(kid).cloned()
     }
 
@@ -426,7 +428,7 @@ pub struct Handshake {
 
 /// Generates a server key and salt, derives the shared AES key and signs the handshake JWT.
 pub fn handshake(client: &p384::PublicKey) -> Result<Handshake, LoginError> {
-    let secret = p384::SecretKey::random(&mut rsa::rand_core::OsRng);
+    let secret = <p384::SecretKey as Generate>::generate();
     let public = secret.public_key();
     let salt: [u8; 16] = vanillite_net::rand_bytes();
     let shared = p384::ecdh::diffie_hellman(secret.to_nonzero_scalar(), client.as_affine());
@@ -533,7 +535,7 @@ mod tests {
 
     #[test]
     fn offline_request_verifies_offline_only() {
-        let secret = p384::SecretKey::random(&mut rsa::rand_core::OsRng);
+        let secret = <p384::SecretKey as Generate>::generate();
         let req = offline_request(&secret, "2535400000000001", "Some Tag");
         let keys = TokenKeys::default();
         let ok = verify(&req, &keys, false, now_secs()).unwrap();
@@ -552,8 +554,8 @@ mod tests {
 
     #[test]
     fn rejects_tampered_client_data() {
-        let secret = p384::SecretKey::random(&mut rsa::rand_core::OsRng);
-        let other = p384::SecretKey::random(&mut rsa::rand_core::OsRng);
+        let secret = <p384::SecretKey as Generate>::generate();
+        let other = <p384::SecretKey as Generate>::generate();
         let mut req = offline_request(&secret, "1", "A");
         // Replace the client data with one signed by another key.
         let data = sign_jwt(&other, &serde_json::json!({}));
@@ -566,14 +568,14 @@ mod tests {
 
     #[test]
     fn key_exchange_agrees() {
-        let client = p384::SecretKey::random(&mut rsa::rand_core::OsRng);
+        let client = <p384::SecretKey as Generate>::generate();
         let hs = handshake(&client.public_key()).unwrap();
         assert_eq!(client_key_from_handshake(&hs.jwt, &client).unwrap(), hs.key);
     }
 
     #[test]
     fn xbox_identities_map_like_floodgate() {
-        let secret = p384::SecretKey::random(&mut rsa::rand_core::OsRng);
+        let secret = <p384::SecretKey as Generate>::generate();
         let id = Identity {
             xuid: "2535428119340356".into(),
             gamertag: "A Very Long Gamertag".into(),

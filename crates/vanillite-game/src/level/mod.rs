@@ -197,6 +197,10 @@ pub struct LevelOutput {
     pub sounds: Vec<Sound>,
     /// Explosions.
     pub explosions: Vec<explosion::ExplosionEvent>,
+    /// Experience to award at a position (`ExperienceOrb.award`; orbs are not simulated yet).
+    pub experience: Vec<(vanillite_base::Vec3, i32)>,
+    /// Block entities whose client data changed (`sendBlockUpdated` of a block entity).
+    pub block_entity_updates: Vec<BlockPos>,
 }
 
 /// The game state of one world.
@@ -236,6 +240,11 @@ pub struct Level {
     rand_value: i32,
     game_time: i64,
     output: LevelOutput,
+    /// Menus blocks asked to open for the player that used them (`player.openMenu`); taken
+    /// by the player handlers.
+    menu_requests: Vec<crate::menu::container::MenuRequest>,
+    /// Sign editors blocks asked to open: player, position, front side.
+    sign_editors: Vec<(EntityId, BlockPos, bool)>,
     min_y: i32,
     max_y: i32,
 }
@@ -282,8 +291,51 @@ impl Level {
             rand_value: LegacyRandom::new(seed ^ 0x5DEE_CE66).next_int(),
             game_time: 0,
             output: LevelOutput::default(),
+            menu_requests: Vec::new(),
+            sign_editors: Vec::new(),
             min_y,
             max_y,
+        }
+    }
+
+    /// `player.openMenu(provider)` from block code: the player handlers open it.
+    pub fn request_menu(&mut self, request: crate::menu::container::MenuRequest) {
+        self.menu_requests.push(request);
+    }
+
+    /// The menus blocks asked to open since the last call.
+    pub fn take_menu_requests(&mut self) -> Vec<crate::menu::container::MenuRequest> {
+        std::mem::take(&mut self.menu_requests)
+    }
+
+    /// `player.openTextEdit(sign, side)` from block code.
+    pub fn request_sign_editor(&mut self, player: EntityId, pos: BlockPos, front: bool) {
+        self.sign_editors.push((player, pos, front));
+    }
+
+    /// The sign editors blocks asked to open since the last call.
+    pub fn take_sign_editors(&mut self) -> Vec<(EntityId, BlockPos, bool)> {
+        std::mem::take(&mut self.sign_editors)
+    }
+
+    /// `setChanged` + `sendBlockUpdated` of a block entity whose client data changed: the
+    /// clients near it get its data again.
+    pub fn block_entity_changed(&mut self, pos: BlockPos) {
+        self.block_entities.touch(pos.chunk());
+        self.output.block_entity_updates.push(pos);
+    }
+
+    /// `state.useItemOn(stack, level, player, hand, hit)` of the block at `pos`.
+    pub fn use_item_on(
+        &mut self,
+        pos: BlockPos,
+        context: &block::UseContext,
+        stack: &mut crate::item::ItemStack,
+    ) -> block::ItemInteraction {
+        let state = self.block(pos);
+        match self.behaviours.get(state.block()).use_item_on {
+            Some(f) => f(self, state, pos, context, stack),
+            None => block::ItemInteraction::TryWithEmptyHand,
         }
     }
 
@@ -593,7 +645,7 @@ impl Level {
         let new_block = state.block();
         let block_changed = old.block() != new_block;
         let moved = flags & update::MOVE_BY_PISTON != 0;
-        self.block_entity_removed(old, state, pos);
+        self.block_entity_removed(old, state, pos, flags);
         if (block_changed || block::is_rail(new_block)) && (flags & update::NEIGHBORS != 0 || moved)
         {
             self.affect_neighbors_after_removal(old, pos, moved);

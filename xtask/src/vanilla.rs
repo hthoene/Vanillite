@@ -222,7 +222,15 @@ pub(crate) fn download(url: &str, to: &Path) -> Result<()> {
 pub(crate) fn sha1_file(path: &Path) -> Result<String> {
     let mut file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut hasher = Sha1::new();
-    std::io::copy(&mut file, &mut hasher).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = std::io::Read::read(&mut file, &mut buf)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
     Ok(hasher
         .finalize()
         .iter()

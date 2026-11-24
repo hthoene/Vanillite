@@ -69,11 +69,13 @@ pub const USAGE: &str = "usage:
       Build and run the server in ./run (debug build; --release uses the release-fast profile).
   cargo xtask deploy [--port <port>] [--release]
       Build the server (release-fast; --release for the full release profile) and install it on
-      the test server as vanillite@<port>.service. <port> is 30001-30999, default 30001.
+      the test server as vanillite@<port>.service. <port> is 30003-30999, default 30003
+      (30001, 30002 and the proxy follow dev automatically).
       The SSH host is vanillite-test, or VANILLITE_TEST_HOST.
   cargo xtask testserver provision|status|logs|start|stop|restart [<port>]
       provision runs scripts/testserver/provision.sh on the test server (idempotent);
-      status lists the services and ports; the others act on vanillite@<port> (default 30001).
+      status lists the services, ports and the last auto-deploys; the others act on
+      vanillite@<port> (default 30001).
   cargo xtask docker [--push] [--in-docker] [--tag <tag>]...
       Build the server image (Dockerfile) for linux/amd64 and linux/arm64, tagged dev and the
       short commit hash, as $VANILLITE_IMAGE (default docker.hthoene.de/vanillite/vanillite).
@@ -89,13 +91,19 @@ pub const USAGE: &str = "usage:
       Start the image (default $VANILLITE_IMAGE:dev, see docker) like Pterodactyl's Wings does,
       with the egg's startup command and default variables (EULA accepted), on the Docker host
       of `docker`, and check that the server starts and answers a status ping on port 30950.
-  cargo xtask loadtest [--server vanillite|paper|both] [--steps 50,100,...] [--hold <s>]
-                       [--join-rate <per s>] [--chat <s>] [--view-distance <n>] [--release]
-                       [--no-deploy] [--no-gate]
+  cargo xtask loadtest [--server vanillite|paper|both] [--steps 50,100@<movement>,...]
+                       [--movement <movement>] [--hold <s>] [--join-rate <per s>] [--chat <s>]
+                       [--view-distance <n>] [--release] [--no-deploy] [--no-gate]
       Scaling benchmark: tools/loadbot bots (here) against vanillite@30901 (deployed from this
       checkout) and the Paper reference paper-loadtest on 30900, both offline mode on the test
       server and only running during the run. Steps default to 50,100,250,500,1000,2000,5000,
       each held 60 s; chat is off by default (--chat sets seconds between messages per bot).
+      Movement (default for all steps: --movement, per step: <players>@<movement>; counts
+      must not decrease): random (walk around the spawn) or straight:<speed>[:<turn s>],
+      straight flight at y 300 in a random direction per bot at <speed> blocks/s or a preset
+      (walk 4.317, sprint 5.612, elytra 33.5, boat 72.7), optionally turning every <turn s>.
+      E.g. --steps 50,50@straight:boat:30. Steps also report chunks/s received by the bots,
+      teleports (rejected moves) and the server's disk reads and read calls per player.
       Writes target/loadtest/<time>/{vanillite,paper}.json, report.md and chart.svg, keeps
       results of clean checkouts under /opt/vanillite/bench/results on the test server and
       fails when p95 MSPT or RSS per player of a step is more than 10 % above the median of

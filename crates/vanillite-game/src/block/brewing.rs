@@ -1,0 +1,212 @@
+//! Brewing stands (`BrewingStandBlockEntity`): slots 0–2 bottles, 3 the reagent, 4 the fuel.
+//! A brew takes 400 ticks and one use of fuel (blaze powder gives 20 uses); the recipes are the
+//! data driven `brewing` recipes of 26.3.
+
+use vanillite_base::BlockPos;
+use vanillite_data::block::BlockState;
+use vanillite_data::item::ids as items;
+use vanillite_nbt::{Compound, Tag};
+use vanillite_protocol::text::Component;
+use vanillite_worldgen::behaviour::StateExt;
+
+use crate::item::{self, ItemStack};
+use crate::level::{BlockEntity, Level};
+
+/// `LevelEvent.SOUND_BREWING_STAND_BREW`.
+const BREW_FINISHED: i32 = 1035;
+/// Uses of one blaze powder (`brewing/uses_default`).
+const FUEL_USES: i32 = 20;
+
+/// The data of a brewing stand block entity.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BrewingStand {
+    /// Bottles, reagent, fuel.
+    pub items: [ItemStack; 5],
+    /// `brewTime`: ticks left of the running brew.
+    pub brew_time: i32,
+    /// `totalBrewTime`.
+    pub total_brew_time: i32,
+    /// `fuel`: uses left.
+    pub fuel: i32,
+    /// `totalFuel`.
+    pub total_fuel: i32,
+    /// `speedMultiplier` of the fuel.
+    pub speed: f32,
+    /// The reagent item the running brew started with.
+    pub ingredient: u16,
+    /// `lastPotionCount`: which bottle slots were filled.
+    pub last_bottles: [bool; 3],
+    /// `CustomName`.
+    pub custom_name: Option<Component>,
+}
+
+impl Default for BrewingStand {
+    fn default() -> Self {
+        BrewingStand {
+            items: std::array::from_fn(|_| ItemStack::EMPTY),
+            brew_time: 0,
+            total_brew_time: 400,
+            fuel: 0,
+            total_fuel: FUEL_USES,
+            speed: 1.0,
+            ingredient: 0,
+            last_bottles: [false; 3],
+            custom_name: None,
+        }
+    }
+}
+
+/// `PotionIngredient.isPotionInput`: a bottle a brewing stand takes.
+pub fn is_potion_input(stack: &ItemStack) -> bool {
+    crate::player::play::game_data().is_some_and(|d| {
+        d.recipes.brewing.iter().any(|r| r.input.test(stack))
+            || d.item_in_tag(stack.item, "minecraft:brewing_potion_inputs")
+    })
+}
+
+/// `BrewingStandMenu.FuelSlot.mayPlaceItem`: the `brewing_fuel` component.
+pub fn is_fuel(stack: &ItemStack) -> bool {
+    item::item_id(stack) == items::BLAZE_POWDER
+}
+
+/// Whether the stack is a reagent of some brewing recipe.
+pub fn is_reagent(stack: &ItemStack) -> bool {
+    crate::player::play::game_data().is_some_and(|d| d.recipes.is_brewing_reagent(stack))
+}
+
+impl BrewingStand {
+    /// The menu's data slots.
+    pub fn data(&self, index: usize) -> i32 {
+        match index {
+            0 => self.brew_time,
+            1 => self.fuel,
+            2 => self.total_brew_time,
+            3 => self.total_fuel,
+            _ => 0,
+        }
+    }
+
+    /// `canPlaceItem`.
+    pub fn can_place_item(&self, slot: usize, stack: &ItemStack) -> bool {
+        match slot {
+            4 => is_fuel(stack),
+            3 => is_reagent(stack),
+            _ => is_potion_input(stack) && self.items.get(slot).is_some_and(ItemStack::is_empty),
+        }
+    }
+
+    /// Loads the stored fields.
+    pub fn load(&mut self, nbt: &Compound) {
+        let int = |k: &str| {
+            nbt.get(k)
+                .and_then(Tag::as_i64)
+                .and_then(|v| i32::try_from(v).ok())
+        };
+        self.custom_name = super::container::load_name(nbt);
+        super::container::load_items(nbt, &mut self.items);
+        self.brew_time = int("BrewTime").unwrap_or(0);
+        self.total_brew_time = int("total_brew_time").unwrap_or(400);
+        if self.brew_time > 0 {
+            self.ingredient = self.items[3].item;
+        }
+        self.fuel = int("Fuel").unwrap_or(0);
+        self.total_fuel = int("total_fuel").unwrap_or(FUEL_USES);
+        self.speed = match nbt.get("speed_multiplier") {
+            Some(Tag::Float(v)) => *v,
+            _ => 1.0,
+        };
+    }
+
+    /// Saves the stored fields.
+    pub fn save(&self, out: &mut Compound) {
+        super::container::save_name(&self.custom_name, out);
+        out.insert(
+            "BrewTime",
+            Tag::Short(i16::try_from(self.brew_time).unwrap_or(0)),
+        );
+        out.insert("total_brew_time", Tag::Int(self.total_brew_time));
+        super::container::save_items(&self.items, out);
+        out.insert("Fuel", Tag::Byte(i8::try_from(self.fuel).unwrap_or(0)));
+        out.insert("total_fuel", Tag::Int(self.total_fuel));
+        out.insert("speed_multiplier", Tag::Float(self.speed));
+    }
+}
+
+/// `BrewingStandBlockEntity.serverTick`.
+pub fn server_tick(level: &mut Level, pos: BlockPos, state: BlockState) {
+    let Some(data) = crate::player::play::game_data() else {
+        return;
+    };
+    let recipes = &data.recipes;
+    let Some(BlockEntity::BrewingStand(stand)) = level.block_entity_mut(pos) else {
+        return;
+    };
+    let mut changed = false;
+    if stand.fuel <= 0 && is_fuel(&stand.items[4]) {
+        stand.fuel = FUEL_USES;
+        stand.total_fuel = FUEL_USES;
+        stand.speed = 1.0;
+        stand.items[4].shrink(1);
+        changed = true;
+    }
+    let reagent = stand.items[3].clone();
+    let brewable = !reagent.is_empty()
+        && recipes.is_brewing_reagent(&reagent)
+        && stand.items[..3]
+            .iter()
+            .any(|b| recipes.brewing_for(b, &reagent).is_some());
+    let mut finished = false;
+    let mut remainder = None;
+    if stand.brew_time > 0 {
+        stand.brew_time -= 1;
+        if stand.brew_time == 0 && brewable {
+            // `doBrew`.
+            for slot in 0..3 {
+                if let Some(r) = recipes.brewing_for(&stand.items[slot], &reagent) {
+                    stand.items[slot] = r.output.clone();
+                }
+            }
+            let rest = crate::recipe::crafting_remainder(reagent.item);
+            stand.items[3].shrink(1);
+            if let Some(r) = rest {
+                if stand.items[3].is_empty() {
+                    stand.items[3] = ItemStack::new(r, 1);
+                } else {
+                    remainder = Some(ItemStack::new(r, 1));
+                }
+            }
+            finished = true;
+        } else if !brewable || reagent.item != stand.ingredient {
+            stand.brew_time = 0;
+        }
+        changed = true;
+    } else if brewable && stand.fuel > 0 {
+        let speed = if stand.speed > 0.0 { stand.speed } else { 1.0 };
+        stand.fuel -= 1;
+        #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
+        let time = (400.0 / speed).ceil() as i32;
+        stand.brew_time = time;
+        stand.total_brew_time = time;
+        stand.ingredient = reagent.item;
+        changed = true;
+    }
+    let bottles = [0, 1, 2].map(|i| !stand.items[i].is_empty());
+    let bottles_changed = bottles != stand.last_bottles;
+    stand.last_bottles = bottles;
+    if let Some(r) = remainder {
+        super::container::drop_item_stack(level, pos, r);
+    }
+    if finished {
+        level.level_event(None, BREW_FINISHED, pos, 0);
+    }
+    if changed {
+        super::container::set_changed(level, pos);
+    }
+    if bottles_changed {
+        let mut new = state;
+        for (i, has) in bottles.into_iter().enumerate() {
+            new = new.set_flag(&format!("has_bottle_{i}"), has);
+        }
+        level.set_block(pos, new, crate::level::update::CLIENTS);
+    }
+}

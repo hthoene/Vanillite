@@ -290,7 +290,7 @@ impl EntityTracker for ChunkTracker {
                 }
             }
             let is_viewer = pairing.viewers.contains_key(&id);
-            send_changes(entry, core, row, id, is_viewer, out);
+            send_changes(entry, core, row, id, is_viewer, input.update_scale, out);
         }
 
         // Viewers that moved to another section (or joined) re-check what they can see.
@@ -445,6 +445,7 @@ fn send_changes(
     row: usize,
     id: EntityId,
     is_viewer: bool,
+    update_scale: i32,
     out: &mut TrackerOutput,
 ) {
     let info = entry.kind.info();
@@ -458,7 +459,10 @@ fn send_changes(
         out.push(id, network_id, update, span);
     };
 
-    let interval = info.update_interval.max(1);
+    let interval = info
+        .update_interval
+        .max(1)
+        .saturating_mul(update_scale.max(1));
     if sync.tick_count.wrapping_rem(interval) == 0
         || flags.contains(EntityFlags::HAS_IMPULSE)
         || flags.contains(EntityFlags::DATA_DIRTY)
