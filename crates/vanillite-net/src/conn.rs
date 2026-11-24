@@ -666,8 +666,8 @@ fn kick(reason: Component) -> End {
 
 /// Random bytes from the OS.
 pub fn rand_bytes<const N: usize>() -> [u8; N] {
-    use rsa::rand_core::RngCore;
+    use rsa::rand_core::Rng;
     let mut b = [0u8; N];
-    rsa::rand_core::OsRng.fill_bytes(&mut b);
+    rsa::rand_core::UnwrapErr(getrandom::SysRng).fill_bytes(&mut b);
     b
 }

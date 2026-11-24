@@ -18,7 +18,7 @@ ctr = "0.9"
 flate2.workspace = true
 libdeflater.workspace = true
 log.workspace = true
-p384 = { version = "0.13", features = ["ecdsa", "ecdh", "pkcs8"] }
+p384 = { version = "0.14", features = ["ecdsa", "ecdh", "getrandom", "pkcs8"] }
 rsa.workspace = true
 rustc-hash.workspace = true
 serde_json.workspace = true

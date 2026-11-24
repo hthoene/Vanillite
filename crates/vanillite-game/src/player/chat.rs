@@ -7,7 +7,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use rsa::pkcs8::DecodePublicKey;
-use rsa::{Pkcs1v15Sign, RsaPublicKey};
+use rsa::{Pkcs1v15Sign, PublicKey};
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 use vanillite_protocol::chat::{
@@ -38,7 +38,7 @@ pub fn now_millis() -> i64 {
 /// Mojang's public keys that sign players' profile keys (`ServicesKeyType.PROFILE_KEY`).
 #[derive(Default)]
 pub struct ServicesKeys {
-    keys: Vec<RsaPublicKey>,
+    keys: Vec<PublicKey>,
 }
 
 impl std::fmt::Debug for ServicesKeys {
@@ -53,7 +53,7 @@ impl ServicesKeys {
         ServicesKeys {
             keys: keys
                 .into_iter()
-                .filter_map(|der| RsaPublicKey::from_public_key_der(der).ok())
+                .filter_map(|der| PublicKey::from_public_key_der(der).ok())
                 .collect(),
         }
     }
@@ -107,7 +107,7 @@ impl Default for ChatSettings {
 pub struct ChatSession {
     /// The data the client sent, forwarded to other players in the tab list.
     pub data: ChatSessionData,
-    key: RsaPublicKey,
+    key: PublicKey,
 }
 
 impl std::fmt::Debug for ChatSession {
@@ -140,7 +140,7 @@ impl ChatSession {
         if !keys.validate(&payload, &data.key_signature) {
             return Err(invalid());
         }
-        let key = RsaPublicKey::from_public_key_der(&data.public_key).map_err(|_| invalid())?;
+        let key = PublicKey::from_public_key_der(&data.public_key).map_err(|_| invalid())?;
         Ok(ChatSession { data, key })
     }
 
@@ -769,10 +769,10 @@ mod tests {
     /// A real chain: Mojang signs the profile key, the player signs messages.
     #[test]
     fn signed_chain_verifies_and_breaks() {
+        use rsa::PrivateKey;
         use rsa::pkcs8::EncodePublicKey;
-        use rsa::{RsaPrivateKey, rand_core::OsRng};
-        let mojang = RsaPrivateKey::new(&mut OsRng, 1024).unwrap();
-        let player = RsaPrivateKey::new(&mut OsRng, 2048).unwrap();
+        let mojang = PrivateKey::new(&mut getrandom::SysRng, 1024).unwrap();
+        let player = PrivateKey::new(&mut getrandom::SysRng, 2048).unwrap();
         let mojang_der = mojang.to_public_key().to_public_key_der().unwrap();
         let keys = ServicesKeys::from_der([mojang_der.as_bytes()]);
         let profile: u128 = 0x1234;
