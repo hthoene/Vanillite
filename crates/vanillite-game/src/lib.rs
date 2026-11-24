@@ -13,6 +13,7 @@ pub mod commands;
 pub mod enchant;
 pub mod entities;
 pub mod experience_orb;
+pub mod hooks;
 pub mod inventory;
 pub mod item;
 pub mod item_entity;

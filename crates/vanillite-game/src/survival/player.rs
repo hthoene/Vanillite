@@ -247,6 +247,8 @@ pub struct Env<'a> {
     pub raining_at: &'a dyn Fn(BlockPos) -> bool,
     pub random: &'a mut LegacyRandom,
     pub out: &'a mut Vec<Effect>,
+    /// Plugin hooks (damage).
+    pub hooks: &'a dyn crate::hooks::GameHooks,
 }
 
 impl std::fmt::Debug for Env<'_> {
@@ -529,6 +531,14 @@ pub fn hurt(
             Difficulty::Normal => {}
             Difficulty::Hard => damage = damage * 3.0 / 2.0,
         }
+    }
+    let uuid = entity.as_ref().uuid();
+    match env
+        .hooks
+        .entity_damage(uuid, "minecraft:player", &types.get(kind).id, damage)
+    {
+        Some(changed) => damage = changed,
+        None => return false,
     }
     if damage == 0.0 {
         return false;

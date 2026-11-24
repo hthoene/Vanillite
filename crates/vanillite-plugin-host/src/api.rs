@@ -1,0 +1,735 @@
+//! The host's C functions ([`abi::HostApi`]) and the per-call context.
+//!
+//! Every function catches panics of the host (a panic must not unwind into plugin code) and
+//! checks its pointers. Thread-safe functions resolve the calling plugin from its id;
+//! owner-bound functions read the [`CallCtx`] the host passed to the current callback.
+
+use std::ffi::c_void;
+use std::panic::{self, AssertUnwindSafe};
+use std::path::Path;
+use std::sync::{Arc, PoisonError};
+
+use vanillite_abi::{self as abi, Status, status};
+
+use crate::{Inner, Plugin, Text, WorldAccess};
+
+/// The table every plugin gets in `load`.
+pub(crate) static HOST_API: abi::HostApi = abi::HostApi {
+    size: abi::size_of::<abi::HostApi>(),
+    abi_major: abi::ABI_MAJOR,
+    abi_minor: abi::ABI_MINOR,
+    log,
+    data_dir,
+    config_load,
+    config_string,
+    config_int,
+    config_float,
+    config_bool,
+    server_rule,
+    online_players,
+    player_name,
+    player_world,
+    player_send_message,
+    player_kick,
+    player_has_permission,
+    broadcast_message,
+    world_name,
+    block_state_id,
+    run_command,
+    schedule,
+    cancel_task,
+    subscribe,
+    register_command,
+    set_permission_provider,
+    provide_chunk_generator,
+    owner_world,
+    block_get,
+    block_set,
+    player_position,
+};
+
+/// What a callback may touch: when the call runs on a world's owner, that world.
+pub(crate) struct CallCtx<'w> {
+    pub(crate) world: Option<&'w mut dyn WorldAccess>,
+}
+
+impl<'w> CallCtx<'w> {
+    pub(crate) fn new(world: Option<&'w mut dyn WorldAccess>) -> Self {
+        CallCtx { world }
+    }
+
+    /// The pointer handed to the plugin; valid while `self` is borrowed.
+    pub(crate) fn as_raw(&mut self) -> *mut abi::Context {
+        std::ptr::from_mut(self).cast()
+    }
+}
+
+/// The context of the current callback.
+///
+/// # Safety
+///
+/// `raw` must be null or come from [`CallCtx::as_raw`] of a context that is still borrowed by
+/// the running callback.
+unsafe fn ctx<'a>(raw: *mut abi::Context) -> Option<&'a mut CallCtx<'a>> {
+    // SAFETY: guaranteed by the caller.
+    unsafe { raw.cast::<CallCtx<'a>>().as_mut() }
+}
+
+/// Reborrows an optional world for one call.
+pub(crate) fn reborrow<'s>(
+    world: &'s mut Option<&mut dyn WorldAccess>,
+) -> Option<&'s mut dyn WorldAccess> {
+    match world {
+        Some(w) => Some(&mut **w),
+        None => None,
+    }
+}
+
+/// Runs `f`, turning a host panic into [`status::ERROR`].
+fn guard(f: impl FnOnce() -> Status) -> Status {
+    panic::catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|_| {
+        log::error!("A host function panicked; the call failed");
+        status::ERROR
+    })
+}
+
+/// Resolves the calling plugin and runs `f` with it.
+fn with(id: abi::PluginId, f: impl FnOnce(&Arc<Inner>, &Arc<Plugin>) -> Status) -> Status {
+    guard(|| match Inner::resolve(id) {
+        Some((inner, plugin)) => f(&inner, &plugin),
+        None => status::INVALID_ARGUMENT,
+    })
+}
+
+/// A borrowed ABI string as `&str`; `None` for invalid UTF-8.
+///
+/// # Safety
+///
+/// `s` must point to `s.len` readable bytes that outlive `'a`.
+pub(crate) unsafe fn str_checked<'a>(s: abi::Str) -> Option<&'a str> {
+    if s.len == 0 || s.ptr.is_null() {
+        return Some("");
+    }
+    // SAFETY: guaranteed by the caller.
+    std::str::from_utf8(unsafe { std::slice::from_raw_parts(s.ptr, s.len) }).ok()
+}
+
+/// A borrowed ABI string as `&str`; invalid UTF-8 becomes empty.
+///
+/// # Safety
+///
+/// As [`str_checked`].
+pub(crate) unsafe fn str<'a>(s: abi::Str) -> &'a str {
+    // SAFETY: guaranteed by the caller.
+    unsafe { str_checked(s) }.unwrap_or_default()
+}
+
+/// Writes a string into a caller buffer (see [`abi::StrBuf`]).
+fn write_str(out: *mut abi::StrBuf, s: &str) -> Status {
+    // SAFETY: the plugin passes a valid buffer record or null.
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return status::INVALID_ARGUMENT;
+    };
+    let n = s.len().min(out.cap);
+    if n > 0 && !out.ptr.is_null() {
+        // SAFETY: the buffer has `cap` writable bytes.
+        unsafe { std::ptr::copy_nonoverlapping(s.as_ptr(), out.ptr, n) };
+    }
+    out.len = s.len();
+    status::OK
+}
+
+/// Writes a value to an output pointer.
+fn write<T>(out: *mut T, value: T) -> Status {
+    if out.is_null() {
+        return status::INVALID_ARGUMENT;
+    }
+    // SAFETY: non-null; the plugin passes a valid output for the call.
+    unsafe { out.write(value) };
+    status::OK
+}
+
+fn text<'a>(s: abi::Str, format: u32) -> Option<Text<'a>> {
+    // SAFETY: the plugin's string is valid for the call.
+    let s = unsafe { str_checked(s) }?;
+    match format {
+        abi::text_format::PLAIN => Some(Text::Plain(s)),
+        abi::text_format::JSON => Some(Text::Json(s)),
+        _ => None,
+    }
+}
+
+/// The server, or `WRONG_PHASE` before it runs.
+macro_rules! server {
+    ($inner:expr) => {
+        match $inner.server() {
+            Some(server) => server,
+            None => return status::WRONG_PHASE,
+        }
+    };
+}
+
+unsafe extern "C" fn log(id: abi::PluginId, level: u32, message: abi::Str) {
+    let _ = with(id, |_, plugin| {
+        let level = match level {
+            abi::log_level::ERROR => log::Level::Error,
+            abi::log_level::WARN => log::Level::Warn,
+            abi::log_level::DEBUG => log::Level::Debug,
+            abi::log_level::TRACE => log::Level::Trace,
+            _ => log::Level::Info,
+        };
+        // SAFETY: the plugin's string is valid for the call.
+        let message = unsafe { str(message) };
+        log::log!(target: "vanillite::plugin", level, "[{}] {message}", plugin.id());
+        status::OK
+    });
+}
+
+unsafe extern "C" fn data_dir(id: abi::PluginId, out: *mut abi::StrBuf) -> Status {
+    with(id, |_, plugin| {
+        write_str(out, &plugin.data_dir.to_string_lossy())
+    })
+}
+
+/// Largest plugin config read.
+const MAX_CONFIG: u64 = 1024 * 1024;
+
+unsafe extern "C" fn config_load(id: abi::PluginId, defaults: abi::Str) -> Status {
+    with(id, |_, plugin| {
+        // SAFETY: the plugin's string is valid for the call.
+        let Some(defaults) = (unsafe { str_checked(defaults) }) else {
+            return status::INVALID_ARGUMENT;
+        };
+        let path = plugin.data_dir.join("config.toml");
+        if !path.exists()
+            && !defaults.is_empty()
+            && let Err(e) = std::fs::write(&path, defaults)
+        {
+            log::error!("[{}] Cannot write {}: {e}", plugin.id(), path.display());
+            return status::ERROR;
+        }
+        match read_config(&path) {
+            Ok(table) => {
+                *plugin.config.lock().unwrap_or_else(PoisonError::into_inner) = Some(table);
+                status::OK
+            }
+            Err(e) => {
+                log::error!("[{}] {}: {e}", plugin.id(), path.display());
+                status::INVALID_ARGUMENT
+            }
+        }
+    })
+}
+
+fn read_config(path: &Path) -> Result<toml::Table, String> {
+    use std::io::Read as _;
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(toml::Table::new()),
+        Err(e) => return Err(e.to_string()),
+    };
+    let mut text = String::new();
+    file.take(MAX_CONFIG)
+        .read_to_string(&mut text)
+        .map_err(|e| e.to_string())?;
+    text.parse().map_err(|e: toml::de::Error| e.to_string())
+}
+
+/// Looks up a dotted key in the plugin's config and converts it with `f`.
+fn config_value(
+    id: abi::PluginId,
+    key: abi::Str,
+    f: impl FnOnce(&toml::Value) -> Status,
+) -> Status {
+    with(id, |_, plugin| {
+        // SAFETY: the plugin's string is valid for the call.
+        let Some(key) = (unsafe { str_checked(key) }) else {
+            return status::INVALID_ARGUMENT;
+        };
+        let config = plugin.config.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(table) = config.as_ref() else {
+            return status::WRONG_PHASE;
+        };
+        let mut parts = key.split('.');
+        let first = parts.next().and_then(|k| table.get(k));
+        match parts.try_fold(first, |v, k| Some(v.and_then(|v| v.get(k)))) {
+            Some(Some(value)) => f(value),
+            _ => status::NOT_FOUND,
+        }
+    })
+}
+
+unsafe extern "C" fn config_string(
+    id: abi::PluginId,
+    key: abi::Str,
+    out: *mut abi::StrBuf,
+) -> Status {
+    config_value(id, key, |v| match v {
+        toml::Value::String(s) => write_str(out, s),
+        _ => status::INVALID_ARGUMENT,
+    })
+}
+
+unsafe extern "C" fn config_int(id: abi::PluginId, key: abi::Str, out: *mut i64) -> Status {
+    config_value(id, key, |v| match v {
+        toml::Value::Integer(i) => write(out, *i),
+        _ => status::INVALID_ARGUMENT,
+    })
+}
+
+unsafe extern "C" fn config_float(id: abi::PluginId, key: abi::Str, out: *mut f64) -> Status {
+    config_value(id, key, |v| match v {
+        toml::Value::Float(f) => write(out, *f),
+        toml::Value::Integer(i) => write(out, *i as f64),
+        _ => status::INVALID_ARGUMENT,
+    })
+}
+
+unsafe extern "C" fn config_bool(id: abi::PluginId, key: abi::Str, out: *mut u32) -> Status {
+    config_value(id, key, |v| match v {
+        toml::Value::Boolean(b) => write(out, u32::from(*b)),
+        _ => status::INVALID_ARGUMENT,
+    })
+}
+
+unsafe extern "C" fn server_rule(
+    id: abi::PluginId,
+    key: abi::Str,
+    out: *mut abi::StrBuf,
+) -> Status {
+    with(id, |inner, _| {
+        // SAFETY: the plugin's string is valid for the call.
+        let key = unsafe { str(key) };
+        match server!(inner).rule(key) {
+            Some(value) => write_str(out, &value),
+            None => status::NOT_FOUND,
+        }
+    })
+}
+
+unsafe extern "C" fn online_players(
+    id: abi::PluginId,
+    out: *mut abi::Uuid,
+    cap: usize,
+    count: *mut usize,
+) -> Status {
+    with(id, |inner, _| {
+        let players = server!(inner).online_players();
+        if !out.is_null() {
+            for (i, player) in players.iter().take(cap).enumerate() {
+                // SAFETY: the buffer has `cap` entries.
+                unsafe { out.add(i).write(abi::Uuid::from_u128(*player)) };
+            }
+        }
+        write(count, players.len())
+    })
+}
+
+unsafe extern "C" fn player_name(
+    id: abi::PluginId,
+    player: abi::Uuid,
+    out: *mut abi::StrBuf,
+) -> Status {
+    with(id, |inner, _| {
+        match server!(inner).player_name(player.to_u128()) {
+            Some(name) => write_str(out, &name),
+            None => status::NOT_FOUND,
+        }
+    })
+}
+
+unsafe extern "C" fn player_world(id: abi::PluginId, player: abi::Uuid, out: *mut u32) -> Status {
+    with(id, |inner, _| {
+        match server!(inner).player_world(player.to_u128()) {
+            Some(world) => write(out, world),
+            None => status::NOT_FOUND,
+        }
+    })
+}
+
+unsafe extern "C" fn player_send_message(
+    id: abi::PluginId,
+    player: abi::Uuid,
+    message: abi::Str,
+    format: u32,
+) -> Status {
+    with(id, |inner, _| {
+        let Some(text) = text(message, format) else {
+            return status::INVALID_ARGUMENT;
+        };
+        if server!(inner).send_message(player.to_u128(), text) {
+            status::OK
+        } else {
+            status::NOT_FOUND
+        }
+    })
+}
+
+unsafe extern "C" fn player_kick(
+    id: abi::PluginId,
+    player: abi::Uuid,
+    reason: abi::Str,
+    format: u32,
+) -> Status {
+    with(id, |inner, _| {
+        let Some(text) = text(reason, format) else {
+            return status::INVALID_ARGUMENT;
+        };
+        if server!(inner).kick(player.to_u128(), text) {
+            status::OK
+        } else {
+            status::NOT_FOUND
+        }
+    })
+}
+
+unsafe extern "C" fn player_has_permission(
+    id: abi::PluginId,
+    player: abi::Uuid,
+    node: abi::Str,
+    out: *mut u32,
+) -> Status {
+    with(id, |inner, _| {
+        // SAFETY: the plugin's string is valid for the call.
+        let node = unsafe { str(node) };
+        let operator = server!(inner).is_operator(player.to_u128());
+        write(
+            out,
+            u32::from(has_permission(inner, player.to_u128(), node, operator)),
+        )
+    })
+}
+
+/// The permission provider's answer, or the default (operators have every node).
+pub(crate) fn has_permission(inner: &Inner, player: u128, node: &str, operator: bool) -> bool {
+    let provider = inner
+        .permission
+        .read()
+        .unwrap_or_else(PoisonError::into_inner);
+    let Some(provider) = provider.as_ref() else {
+        return operator;
+    };
+    let Some(plugin) = inner.plugin(provider.plugin) else {
+        return operator;
+    };
+    let mut answer = abi::permission::UNDEFINED;
+    let s = plugin.call("permission check", || {
+        // SAFETY: the provider's function and user data are valid for the life of its library.
+        unsafe {
+            (provider.check)(
+                provider.user.0,
+                abi::Uuid::from_u128(player),
+                abi::Str::new(node),
+                &mut answer,
+            )
+        }
+    });
+    match (s, answer) {
+        (status::OK, abi::permission::ALLOW) => true,
+        (status::OK, abi::permission::DENY) => false,
+        _ => operator,
+    }
+}
+
+unsafe extern "C" fn broadcast_message(
+    id: abi::PluginId,
+    message: abi::Str,
+    format: u32,
+) -> Status {
+    with(id, |inner, _| {
+        let Some(text) = text(message, format) else {
+            return status::INVALID_ARGUMENT;
+        };
+        server!(inner).broadcast(text);
+        status::OK
+    })
+}
+
+unsafe extern "C" fn world_name(id: abi::PluginId, world: u32, out: *mut abi::StrBuf) -> Status {
+    with(id, |inner, _| match server!(inner).world_name(world) {
+        Some(name) => write_str(out, &name),
+        None => status::NOT_FOUND,
+    })
+}
+
+unsafe extern "C" fn block_state_id(id: abi::PluginId, state: abi::Str, out: *mut u32) -> Status {
+    with(id, |inner, _| {
+        // SAFETY: the plugin's string is valid for the call.
+        let state = unsafe { str(state) };
+        match server!(inner).block_state_id(state) {
+            Some(v) => write(out, v),
+            None => status::INVALID_ARGUMENT,
+        }
+    })
+}
+
+unsafe extern "C" fn run_command(id: abi::PluginId, command: abi::Str) -> Status {
+    with(id, |inner, plugin| {
+        // SAFETY: the plugin's string is valid for the call.
+        let Some(command) = (unsafe { str_checked(command) }) else {
+            return status::INVALID_ARGUMENT;
+        };
+        log::info!("[{}] runs the console command: {command}", plugin.id());
+        server!(inner).run_command(command);
+        status::OK
+    })
+}
+
+unsafe extern "C" fn schedule(
+    id: abi::PluginId,
+    spec: *const abi::TaskSpec,
+    out: *mut u64,
+) -> Status {
+    // SAFETY: the plugin passes a valid spec or null.
+    let Some(spec) = (unsafe { spec.as_ref() }) else {
+        return status::INVALID_ARGUMENT;
+    };
+    let drop_user = || {
+        if let Some(drop) = spec.drop {
+            // SAFETY: the plugin's drop function for its own user data.
+            unsafe { drop(spec.user) };
+        }
+    };
+    if (spec.size as usize) < size_of::<abi::TaskSpec>() {
+        drop_user();
+        return status::INVALID_ARGUMENT;
+    }
+    let result = with(id, |inner, plugin| {
+        match inner.tasks.schedule(inner, plugin, spec) {
+            Ok(task) => write(out, task),
+            Err(s) => s,
+        }
+    });
+    if result != status::OK {
+        drop_user();
+    }
+    result
+}
+
+unsafe extern "C" fn cancel_task(id: abi::PluginId, task: u64) -> Status {
+    with(id, |inner, plugin| {
+        inner.tasks.cancel(inner, plugin.local, task)
+    })
+}
+
+unsafe extern "C" fn subscribe(
+    id: abi::PluginId,
+    kind: u32,
+    priority: i32,
+    callback: abi::EventFn,
+    user: *mut c_void,
+) -> Status {
+    with(id, |inner, plugin| {
+        if !inner.may_register(plugin) {
+            return status::WRONG_PHASE;
+        }
+        inner
+            .events
+            .add(plugin.local, kind, priority, callback, user)
+    })
+}
+
+unsafe extern "C" fn register_command(id: abi::PluginId, spec: *const abi::CommandSpec) -> Status {
+    with(id, |inner, plugin| {
+        if !inner.may_register(plugin) {
+            return status::WRONG_PHASE;
+        }
+        // SAFETY: the plugin passes a valid spec or null.
+        let Some(spec) = (unsafe { spec.as_ref() }) else {
+            return status::INVALID_ARGUMENT;
+        };
+        inner.commands.register(inner, plugin, spec)
+    })
+}
+
+unsafe extern "C" fn set_permission_provider(
+    id: abi::PluginId,
+    check: abi::PermissionFn,
+    user: *mut c_void,
+) -> Status {
+    with(id, |inner, plugin| {
+        if !inner.may_register(plugin) {
+            return status::WRONG_PHASE;
+        }
+        let mut provider = inner
+            .permission
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(existing) = provider.as_ref()
+            && existing.plugin != plugin.local
+        {
+            let other = inner.plugin(existing.plugin).map(|p| p.id().to_owned());
+            log::error!(
+                "Plugin {} cannot become the permission provider: {} already is",
+                plugin.id(),
+                other.unwrap_or_default()
+            );
+            return status::ERROR;
+        }
+        *provider = Some(crate::PermissionProvider {
+            plugin: plugin.local,
+            check,
+            user: crate::SendPtr(user),
+        });
+        status::OK
+    })
+}
+
+unsafe extern "C" fn provide_chunk_generator(
+    id: abi::PluginId,
+    table: *const abi::ChunkGeneratorProvider,
+) -> Status {
+    with(id, |inner, plugin| {
+        if inner.is_reloading(plugin) {
+            // The slot was filled at startup; the old build's provider stays.
+            log::warn!(
+                "[{}] a new chunk generator takes effect after a restart",
+                plugin.id()
+            );
+            return status::OK;
+        }
+        if !inner.may_register(plugin) {
+            return status::WRONG_PHASE;
+        }
+        // SAFETY: the plugin passes a valid table or null.
+        let Some(table) = (unsafe { table.as_ref() }) else {
+            return status::INVALID_ARGUMENT;
+        };
+        if (table.size as usize) < size_of::<abi::ChunkGeneratorProvider>() {
+            return status::INVALID_ARGUMENT;
+        }
+        if !plugin
+            .manifest
+            .provides
+            .iter()
+            .any(|p| p == "chunk-generator")
+        {
+            log::error!(
+                "Plugin {} provides a chunk generator but does not declare it: add \
+                 provides = [\"chunk-generator\"] to its plugin.toml",
+                plugin.id()
+            );
+            return status::UNSUPPORTED;
+        }
+        if table.data_version != 0 && table.data_version != inner.settings.data_version {
+            log::error!(
+                "Plugin {}: its chunk generator is built for data version {}, this server has {}",
+                plugin.id(),
+                table.data_version,
+                inner.settings.data_version
+            );
+            return status::UNSUPPORTED;
+        }
+        let mut slot = inner
+            .generator
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some((other, _)) = slot.as_ref() {
+            let other = inner
+                .plugin(*other)
+                .map(|p| p.id().to_owned())
+                .unwrap_or_default();
+            log::error!(
+                "Slot chunk-generator is already filled by plugin {other}; plugin {} cannot replace it",
+                plugin.id()
+            );
+            return status::ERROR;
+        }
+        *slot = Some((plugin.local, *table));
+        status::OK
+    })
+}
+
+/// The owned world of a context, if it is `world`.
+fn owned<'a>(raw: *mut abi::Context, world: u32) -> Result<&'a mut dyn WorldAccess, Status> {
+    // SAFETY: the plugin passes the context of the running callback.
+    let ctx = unsafe { ctx(raw) }.ok_or(status::INVALID_ARGUMENT)?;
+    match ctx.world.as_deref_mut() {
+        Some(w) if w.id() == world => Ok(w),
+        _ => Err(status::WRONG_OWNER),
+    }
+}
+
+unsafe extern "C" fn owner_world(raw: *mut abi::Context, out: *mut u32) -> Status {
+    guard(|| {
+        // SAFETY: the plugin passes the context of the running callback.
+        let Some(ctx) = (unsafe { ctx(raw) }) else {
+            return status::INVALID_ARGUMENT;
+        };
+        match ctx.world.as_deref() {
+            Some(w) => write(out, w.id()),
+            None => status::NOT_FOUND,
+        }
+    })
+}
+
+unsafe extern "C" fn block_get(
+    raw: *mut abi::Context,
+    world: u32,
+    pos: abi::BlockPos,
+    out: *mut abi::StrBuf,
+) -> Status {
+    guard(|| match owned(raw, world) {
+        Ok(w) => match w.block([pos.x, pos.y, pos.z]) {
+            Some(state) => write_str(out, &state),
+            None => status::NOT_FOUND,
+        },
+        Err(s) => s,
+    })
+}
+
+unsafe extern "C" fn block_set(
+    raw: *mut abi::Context,
+    world: u32,
+    pos: abi::BlockPos,
+    state: abi::Str,
+) -> Status {
+    guard(|| match owned(raw, world) {
+        Ok(w) => {
+            // SAFETY: the plugin's string is valid for the call.
+            let Some(state) = (unsafe { str_checked(state) }) else {
+                return status::INVALID_ARGUMENT;
+            };
+            match w.set_block([pos.x, pos.y, pos.z], state) {
+                Ok(()) => status::OK,
+                Err(s) => s,
+            }
+        }
+        Err(s) => s,
+    })
+}
+
+unsafe extern "C" fn player_position(
+    raw: *mut abi::Context,
+    player: abi::Uuid,
+    out: *mut abi::Vec3,
+) -> Status {
+    guard(|| {
+        // SAFETY: the plugin passes the context of the running callback.
+        let Some(ctx) = (unsafe { ctx(raw) }) else {
+            return status::INVALID_ARGUMENT;
+        };
+        let Some(world) = ctx.world.as_deref() else {
+            return status::WRONG_OWNER;
+        };
+        match world.player_position(player.to_u128()) {
+            Some([x, y, z]) => write(out, abi::Vec3 { x, y, z }),
+            None => status::WRONG_OWNER,
+        }
+    })
+}
+
+/// A [`abi::ByteSinkFn`] that appends to the `Vec<u8>` behind `state`.
+pub(crate) unsafe extern "C" fn collect_bytes(state: *mut c_void, data: abi::Bytes) {
+    let _ = guard(|| {
+        // SAFETY: the host passes its own `Vec<u8>` as state for the call.
+        let Some(out) = (unsafe { state.cast::<Vec<u8>>().as_mut() }) else {
+            return status::INVALID_ARGUMENT;
+        };
+        if data.len > 0 && !data.ptr.is_null() {
+            // SAFETY: the plugin passes bytes valid for the call.
+            out.extend_from_slice(unsafe { std::slice::from_raw_parts(data.ptr, data.len) });
+        }
+        status::OK
+    });
+}

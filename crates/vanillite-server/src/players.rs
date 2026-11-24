@@ -569,6 +569,8 @@ impl WorldPlayers {
                     spectators: &spectators,
                     actor: Some((id, aabb)),
                 };
+                let hooks =
+                    crate::plugins::Hooks::of(&global.plugins, self.level.dimension.as_str());
                 let mut play = PlayContext {
                     level: &mut level,
                     inventory: &mut player.inventory,
@@ -579,6 +581,7 @@ impl WorldPlayers {
                     spawn_protected: &protected,
                     drops: &mut drops,
                     swings: &mut hands,
+                    hooks: &hooks,
                 };
                 let handled = player.connection.handle_packets(
                     &mut state,
@@ -825,6 +828,8 @@ impl WorldPlayers {
                 };
                 let mut drops = Vec::new();
                 let mut hands = Vec::new();
+                let hooks =
+                    crate::plugins::Hooks::of(&global.plugins, self.level.dimension.as_str());
                 let mut play = PlayContext {
                     level: &mut level,
                     inventory: &mut player.inventory,
@@ -835,6 +840,7 @@ impl WorldPlayers {
                     spawn_protected: &protected,
                     drops: &mut drops,
                     swings: &mut hands,
+                    hooks: &hooks,
                 };
                 player.connection.play.tick(&mut play, sink.as_ref());
             }
@@ -1029,6 +1035,12 @@ impl WorldPlayers {
             .players
             .broadcast_system(join::left_message(&name, uuid), false, Some(Uuid(uuid)));
         self.left.push(uuid);
+        let world = crate::server::DIMENSIONS
+            .iter()
+            .position(|d| *d == self.level.dimension.as_str())
+            .and_then(|i| u32::try_from(i).ok())
+            .unwrap_or(0);
+        global.plugins.player_leave(world, uuid, &name);
     }
 
     /// Queues the write of a player's data file; the fields this server does not handle stay

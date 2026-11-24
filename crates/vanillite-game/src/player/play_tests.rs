@@ -117,6 +117,7 @@ fn with_ctx(
     let mut drops = Vec::new();
     let mut swings = Vec::new();
     let mut ctx = PlayContext {
+        hooks: &crate::hooks::NoHooks,
         xp: None,
         recipe_book: None,
         level,
