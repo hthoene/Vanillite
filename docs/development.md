@@ -62,10 +62,37 @@ seeds are in `fuzz/seeds/<target>`; the growing corpus (`fuzz/corpus`) and crash
 A crash becomes a regular regression test next to the exploit tests in
 `crates/<crate>/tests/exploits.rs`, which name the SEC rule of the security research they cover.
 
+## Parity tests
+
+Vanillite is compared with the pinned Vanilla jar (architecture section 13). The Java harness in
+`tools/extractor/src/dev/vanillite/extractor/golden/` runs Vanilla in-process and records
+goldens; the Rust tests compare against them exactly.
+
+- **Data goldens** (`crates/vanillite-test/tests/data_goldens.rs`): registries, block state ids,
+  items, packet ids and the loaded Vanilla data pack (dynamic registries, tags).
+- **Scenario traces** (`crates/vanillite-test/scenarios/*.json`, format in
+  `crates/vanillite-test/src/scenario.rs`): a scenario runs tick by tick on Vanilla and in
+  Vanillite; blocks of a region, pending block and fluid ticks and entities must match in every
+  frame. Every scenario also runs serially and in parallel (verify mode). Tier `fast` goldens
+  are in the repository and run on every push; tier `bulk` goldens live in
+  `$VANILLITE_GOLDENS` (default `target/goldens`) and run nightly.
+- **World generation goldens** (`crates/vanillite-worldgen/tests/`).
+
+Every golden is keyed by Minecraft version, jar SHA-1, harness version
+(`tools/extractor/harness-version`, bump it when shared recording code changes) and the hash of
+its scenario or recorder source. A missing or stale golden fails; it is never skipped.
+
+| Command | What |
+|---|---|
+| `cargo xtask golden check` | Repository goldens are current (CI, no Java). |
+| `cargo xtask golden regen [--all] [--bulk] [<name>...]` | Record missing or stale goldens (JDK 25). |
+| `cargo xtask golden bless <scenario>...` | Accept Vanillite's trace for intended differences. |
+
 ## CI
 
 `.github/workflows/ci.yml` runs on every push and pull request: format, clippy, tests with codegen
-check and doc tests, and cargo-deny, as parallel jobs with a shared Rust cache written by `dev`.
-`.github/workflows/nightly.yml` runs the ignored bulk tests (with Java 25 and a goldens cache), a
+and golden checks and doc tests, and cargo-deny, as parallel jobs with a shared Rust cache written by `dev`.
+`.github/workflows/nightly.yml` records missing bulk goldens and runs the ignored bulk tests (with
+Java 25 and a goldens cache), a
 release build and the fuzz targets (`scripts/fuzz.sh`, corpus cached between nights) once a
 night.

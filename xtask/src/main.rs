@@ -3,7 +3,9 @@
 //! ```text
 //! cargo xtask vanilla update [<version>] [--jar <server.jar>]
 //! cargo xtask codegen [--check]
-//! cargo xtask golden regen [<PartGoldens>...]
+//! cargo xtask golden check
+//! cargo xtask golden regen [--all] [--bulk] [<name>...]
+//! cargo xtask golden bless <scenario>...
 //! cargo xtask dev [--release] [-- <server args>]
 //! cargo xtask deploy [--port <port>] [--release]
 //! cargo xtask testserver provision|status|logs|start|stop|restart [<port>]
@@ -32,10 +34,18 @@ pub const USAGE: &str = "usage:
   cargo xtask codegen [--check]
       Generate crates/vanillite-data/src/generated/ from data/vanilla/.
       --check fails if the committed files are not current.
-  cargo xtask golden regen [<PartGoldens>...]
-      Record the world generation parity goldens (all parts, or the named ones) into
-      crates/vanillite-worldgen/tests/goldens/ with the Java harness. Needs the unpacked jar of
-      `cargo xtask vanilla update` and a JDK.
+  cargo xtask golden check
+      Fail if a repository golden (worldgen, data, fast scenarios) is missing or stale: its key
+      (Minecraft version, jar SHA-1, tools/extractor/harness-version, source or scenario hash)
+      differs from the current one. No Java needed.
+  cargo xtask golden regen [--all] [--bulk] [<name>...]
+      Record the missing and stale goldens with the Java harness on the pinned jar (downloaded
+      and unpacked if needed; needs a JDK 25). --all records every repository golden, --bulk
+      also the bulk scenario goldens into $VANILLITE_GOLDENS (default target/goldens); names
+      (part like ChunkGoldens or chunk, or scenario) record just those.
+  cargo xtask golden bless <scenario>...|all
+      Run the scenarios in Vanillite and store their traces as the expected goldens in
+      crates/vanillite-test/goldens/blessed/ (intended differences, non-vanilla profiles).
   cargo xtask dev [--release] [-- <server args>]
       Build and run the server in ./run (debug build; --release uses the release-fast profile).
   cargo xtask deploy [--port <port>] [--release]
@@ -55,7 +65,9 @@ pub const USAGE: &str = "usage:
       Writes target/loadtest/<time>/{vanillite,paper}.json, report.md and chart.svg, keeps
       results of clean checkouts under /opt/vanillite/bench/results on the test server and
       fails when p95 MSPT or RSS per player of a step is more than 10 % above the median of
-      the last 5 runs (--no-gate skips the check).";
+      the last 5 runs (--no-gate skips the check).
+  cargo xtask loadtest report <run.json>...
+      Writes report.md and chart.svg for earlier runs next to the first file.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -64,7 +76,9 @@ fn main() -> ExitCode {
         ["vanilla", "update", rest @ ..] => vanilla_update(rest),
         ["codegen"] => codegen::run(&repo_root(), false),
         ["codegen", "--check"] => codegen::run(&repo_root(), true),
-        ["golden", "regen", parts @ ..] => golden::regen(&repo_root(), parts),
+        ["golden", "check"] => golden::check(&repo_root()),
+        ["golden", "regen", rest @ ..] => golden::regen(&repo_root(), rest),
+        ["golden", "bless", names @ ..] => golden::bless(&repo_root(), names),
         ["dev", rest @ ..] => devenv::dev(&repo_root(), rest),
         ["deploy", rest @ ..] => devenv::deploy(&repo_root(), rest),
         ["testserver", rest @ ..] => devenv::testserver(&repo_root(), rest),

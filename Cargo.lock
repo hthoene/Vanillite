@@ -1364,6 +1364,13 @@ dependencies = [
 name = "vanillite-test"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
+ "sha1",
+ "toml",
+ "vanillite-base",
+ "vanillite-chunk",
+ "vanillite-data",
+ "vanillite-datapack",
  "vanillite-server",
 ]
 

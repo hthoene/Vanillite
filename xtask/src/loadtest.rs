@@ -117,6 +117,9 @@ fn parse(args: &[&str]) -> Result<Options> {
 
 /// `cargo xtask loadtest [options]`.
 pub fn run(root: &Path, args: &[&str]) -> Result<()> {
+    if let ["report", files @ ..] = args {
+        return report(files);
+    }
     let o = parse(args)?;
     let host = std::env::var("VANILLITE_TEST_HOST").unwrap_or_else(|_| "vanillite-test".into());
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
@@ -202,6 +205,21 @@ pub fn run(root: &Path, args: &[&str]) -> Result<()> {
     }
 }
 
+/// `cargo xtask loadtest report <run.json>...`: the Markdown table and chart of earlier runs,
+/// written next to the first file.
+fn report(files: &[&str]) -> Result<()> {
+    let first = files.first().ok_or(crate::USAGE)?;
+    let runs = files
+        .iter()
+        .map(|f| crate::read_json(Path::new(f)))
+        .collect::<Result<Vec<_>>>()?;
+    let dir = Path::new(first).parent().unwrap_or(Path::new("."));
+    crate::write(&dir.join("report.md"), &markdown(&runs))?;
+    crate::write(&dir.join("chart.svg"), &svg(&runs))?;
+    println!("wrote {0}/report.md and {0}/chart.svg", dir.display());
+    Ok(())
+}
+
 /// One line of the server monitor, with its arrival time in seconds since the run start.
 #[derive(Debug, Clone)]
 enum Sample {
@@ -253,7 +271,10 @@ fn run_target(target: Target, o: &Options, host: &str, bin_dir: &Path) -> Result
     let d = Arc::clone(&data);
     std::thread::spawn(move || read_monitor(monitor_out, start, &d));
 
-    let mut bot = Command::new(bin_dir.join("loadbot"))
+    // One socket per bot: lift the soft limit of open files to the hard limit first.
+    let mut bot = Command::new("sh")
+        .args(["-c", "ulimit -n \"$(ulimit -Hn)\" && exec \"$0\" \"$@\""])
+        .arg(bin_dir.join("loadbot"))
         .args([
             "--host",
             HOST_IP,
@@ -480,12 +501,21 @@ fn aggregate(
     let join = samples("join_ms", ramp_start);
     let rtt = samples("rtt_ms", from);
     let last = reports.last().map(|r| r.1.clone()).unwrap_or_default();
-    let players = last["online"].as_u64().unwrap_or(0);
+    // Peak and mean of the bots online in the window (a crashing server drops them all).
+    let online: Vec<f64> = reports
+        .iter()
+        .filter_map(|r| r.1["online"].as_f64())
+        .collect();
+    let players = online.iter().copied().fold(0.0, f64::max) as u64;
+    let mean_online = mean(&online).unwrap_or(0.0);
     let bot_rate = |key: &str, per_bot: bool| -> Option<f64> {
         let (first, last) = (reports.first()?, reports.last()?);
         let dt = last.0 - first.0;
         let delta = last.1[key].as_u64()?.saturating_sub(first.1[key].as_u64()?) as f64;
-        let divisor = if per_bot { players.max(1) as f64 } else { 1.0 };
+        if per_bot && mean_online < 1.0 {
+            return None;
+        }
+        let divisor = if per_bot { mean_online } else { 1.0 };
         (dt > 0.0).then(|| delta / dt / divisor)
     };
     let mut errors = serde_json::Map::new();
@@ -659,11 +689,12 @@ fn markdown(runs: &[Value]) -> String {
     ));
     for run in runs {
         s.push_str(&format!(
-            "\n## {} ({})\n\nMSPT source: {}. Most players with p95 MSPT under 50 ms: {}.\n\n\
+            "\n## {} ({}, run {})\n\nMSPT source: {}. Most players with p95 MSPT under 50 ms: {}.\n\n\
              | Players | MSPT p50 | p95 | p99 | max | RSS MiB | RSS/player KiB | CPU % | Net out MB/s | Net in MB/s | Join p50/p95 ms | RTT p50/p95 ms | In KB/s per bot | Failed / dropped |\n\
              |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n",
             run["server"].as_str().unwrap_or("?"),
             run["profile"].as_str().unwrap_or("?"),
+            run["date"].as_str().unwrap_or("?"),
             run["steps"][0]["mspt"]["source"].as_str().unwrap_or("-"),
             run["max_players_under_50ms"],
         ));
@@ -705,7 +736,7 @@ fn svg(runs: &[Value]) -> String {
         ("RSS (MiB)", ["server", "rss_mib"], "MiB"),
         ("Network out (MB/s)", ["server", "net_tx_mbps"], "MB/s"),
     ];
-    let (pw, ph, left, top, gap) = (300.0, 220.0, 56.0, 64.0, 40.0);
+    let (pw, ph, left, top, gap) = (300.0, 220.0, 56.0, 84.0, 40.0);
     let width = left + 3.0 * pw + 2.0 * gap + 24.0;
     let height = top + ph + 72.0;
     let points = |run: &Value, path: [&str; 2]| -> Vec<(f64, f64)> {

@@ -1,0 +1,20 @@
+{
+  "description": "Setting and getting blocks with and without updates: inert blocks with properties, replaced and removed by actions.",
+  "tier": "fast",
+  "region": [[0, 0, 0], [5, 3, 5]],
+  "ticks": 4,
+  "setup": [
+    {"op": "fill", "from": [0, 0, 0], "to": [5, 0, 5], "block": "minecraft:stone"},
+    {"op": "set", "pos": [1, 1, 1], "block": "minecraft:oak_log[axis=x]"},
+    {"op": "set", "pos": [3, 1, 1], "block": "minecraft:glass"},
+    {"op": "set", "pos": [1, 1, 3], "block": "minecraft:white_wool"},
+    {"op": "set", "pos": [4, 2, 4], "block": "minecraft:oak_planks"}
+  ],
+  "actions": [
+    {"tick": 1, "op": "place", "pos": [3, 1, 3], "block": "minecraft:diamond_block"},
+    {"tick": 2, "op": "place", "pos": [1, 1, 1], "block": "minecraft:birch_log[axis=z]"},
+    {"tick": 2, "op": "set", "pos": [5, 3, 5], "block": "minecraft:cobblestone"},
+    {"tick": 3, "op": "place", "pos": [3, 1, 1], "block": "minecraft:air"},
+    {"tick": 4, "op": "fill", "from": [0, 3, 0], "to": [2, 3, 0], "block": "minecraft:bricks"}
+  ]
+}

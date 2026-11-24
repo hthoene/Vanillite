@@ -149,7 +149,7 @@ fn http_json(url: &str) -> Result<Value> {
     serde_json::from_slice(&body).map_err(|e| format!("{url}: {e}"))
 }
 
-fn download(url: &str, to: &Path) -> Result<()> {
+pub(crate) fn download(url: &str, to: &Path) -> Result<()> {
     let tmp = to.with_extension("part");
     let mut file = std::fs::File::create(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
     let mut reader = ureq::get(url)
@@ -163,7 +163,7 @@ fn download(url: &str, to: &Path) -> Result<()> {
     std::fs::rename(&tmp, to).map_err(|e| format!("{}: {e}", to.display()))
 }
 
-fn sha1_file(path: &Path) -> Result<String> {
+pub(crate) fn sha1_file(path: &Path) -> Result<String> {
     let mut file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut hasher = Sha1::new();
     std::io::copy(&mut file, &mut hasher).map_err(|e| format!("{}: {e}", path.display()))?;
