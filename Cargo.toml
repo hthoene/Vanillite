@@ -37,6 +37,8 @@ vanillite-worldgen = { path = "crates/vanillite-worldgen" }
 # External crates.
 bumpalo = { version = "3.20", features = ["collections"] }
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+ctrlc = { version = "3.5", features = ["termination"] }
+log = { version = "0.4", features = ["std"] }
 md5 = { package = "md-5", version = "0.10", default-features = false }
 rustc-hash = "2.1"
 serde_json = "1"

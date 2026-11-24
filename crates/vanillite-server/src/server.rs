@@ -1,0 +1,846 @@
+//! Startup, the tick loop (a port of Vanilla's `MinecraftServer.runServer`), world threads,
+//! global phases, autosave, config reload and shutdown.
+
+use std::collections::VecDeque;
+use std::fs::{self, File};
+use std::io::Write as _;
+use std::panic::{self, AssertUnwindSafe};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
+use std::{fmt, io};
+
+use vanillite_config::{Config, ConfigError, RuleSet, VANILLITE_FILE, VanillaOr};
+
+use crate::clock::Clock;
+use crate::compute::{Compute, ComputePool, Scheduler};
+use crate::global::Global;
+use crate::player_list::PlayerList;
+use crate::slot::{Origin, Slot, SlotError};
+use crate::tick_rate::{NANOS_PER_SECOND, TickRateManager};
+use crate::watchdog::{Heartbeat, WatchState, Watchdog};
+use crate::world::{ServerWorld, TickContext, WorldId, WorldTask};
+
+/// The dimensions of a server, in Vanilla's tick order.
+pub const DIMENSIONS: [&str; 3] = [
+    "minecraft:overworld",
+    "minecraft:the_nether",
+    "minecraft:the_end",
+];
+
+/// How far behind the server must be before "Can't keep up!" (plus 20 ticks).
+const OVERLOADED_THRESHOLD: u64 = NANOS_PER_SECOND;
+/// Minimum time between two "Can't keep up!" warnings (plus 100 ticks).
+const OVERLOADED_WARNING_INTERVAL: u64 = 10 * NANOS_PER_SECOND;
+/// Vanilla's autosave period in seconds of game time.
+const AUTOSAVE_SECONDS: f32 = 300.0;
+
+/// Work that runs on the server thread in the global pre-phase, with `&mut` to everything.
+pub type GlobalTask = Box<dyn FnOnce(&mut Server) + Send + 'static>;
+
+enum ServerMsg {
+    Console(String),
+    Global(GlobalTask),
+    Stop,
+    /// A task for a world owned by the server thread (sequential mode).
+    WorldTask(WorldId, WorldTask),
+    /// A world thread finished its tick (parallel mode).
+    WorldTicked(WorldId, Vec<(WorldId, WorldTask)>),
+    /// A world thread panicked.
+    WorldCrashed(WorldId),
+}
+
+enum WorldMsg {
+    Tick { tick: u64, runs_normally: bool },
+    Task(WorldTask),
+    Stop,
+}
+
+#[derive(Clone)]
+enum Route {
+    Server,
+    World(Sender<WorldMsg>),
+}
+
+/// Who owns the worlds.
+enum Worlds {
+    /// The server thread ticks all worlds one after another (exact Vanilla order).
+    Sequential(Vec<ServerWorld>),
+    /// Each world has its own thread; the server thread coordinates.
+    Parallel(Vec<WorldThread>),
+}
+
+struct WorldThread {
+    sender: Sender<WorldMsg>,
+    handle: JoinHandle<()>,
+}
+
+/// Configures and starts a server. Slots are filled here before startup; whatever is not
+/// filled gets the built-in implementation.
+#[derive(Debug)]
+pub struct ServerBuilder {
+    dir: PathBuf,
+    scheduler: Slot<dyn Scheduler>,
+}
+
+impl ServerBuilder {
+    /// A server running in `dir` (config files and worlds).
+    pub fn new(dir: impl Into<PathBuf>) -> ServerBuilder {
+        ServerBuilder {
+            dir: dir.into(),
+            scheduler: Slot::new("scheduler"),
+        }
+    }
+
+    /// Fills the `scheduler` slot with an embedded implementation.
+    pub fn scheduler(&mut self, scheduler: Box<dyn Scheduler>) -> Result<&mut Self, SlotError> {
+        self.scheduler.fill(scheduler, Origin::Embedded)?;
+        Ok(self)
+    }
+
+    /// Loads the configuration, starts the threads and creates the worlds.
+    pub fn start(self) -> Result<Server, StartError> {
+        let started = Instant::now();
+        log::info!("Starting Vanillite {}", env!("CARGO_PKG_VERSION"));
+        let dir = self.dir;
+        fs::create_dir_all(&dir).map_err(|e| StartError::io(&dir, e))?;
+        log::info!("Loading properties");
+        let config = Config::load(&dir)?;
+        log::info!("Using profile {}", config.profile);
+
+        let parallel = config.server.tick.parallel_dimensions;
+        let busy_tick_threads = if parallel { DIMENSIONS.len() } else { 1 };
+        let workers = match config.server.threads.compute {
+            0 => std::thread::available_parallelism()
+                .map_or(1, usize::from)
+                .saturating_sub(busy_tick_threads)
+                .max(1),
+            n => usize::from(n),
+        };
+        let (scheduler, origin) = match self.scheduler.take() {
+            Some(filled) => filled,
+            None => {
+                let pool = ComputePool::new(workers).map_err(|e| StartError::io(&dir, e))?;
+                (Box::new(pool) as Box<dyn Scheduler>, Origin::BuiltIn)
+            }
+        };
+        log::info!(
+            "Slot scheduler: {origin} ({} compute workers)",
+            scheduler.workers()
+        );
+        let compute = Compute::new(Arc::from(scheduler));
+
+        let level_name = config.properties.level_name.clone();
+        let session_lock = lock_world(&dir.join(&level_name))?;
+
+        let clock = Clock::new();
+        let max_players = usize::try_from(config.properties.max_players).unwrap_or(0);
+        let global = Arc::new(Global {
+            clock,
+            players: PlayerList::new(max_players),
+        });
+        let watch = Arc::new(WatchState::new(
+            config.server.watchdog.early_warning_after.get(),
+            config.server.watchdog.warning_interval,
+        ));
+        let heartbeat = Arc::new(Heartbeat::new("Server thread"));
+        watch.register(Arc::clone(&heartbeat));
+        let (sender, receiver) = mpsc::channel();
+
+        log::info!("Preparing level \"{level_name}\"");
+        let worlds: Vec<ServerWorld> = DIMENSIONS
+            .iter()
+            .zip(0u16..)
+            .map(|(dimension, index)| {
+                let rules = Arc::new(config.world_rules(dimension));
+                ServerWorld::new(WorldId(index), (*dimension).to_owned(), rules)
+            })
+            .collect();
+        let (worlds, routes) = if parallel {
+            log::info!("Dimensions tick in parallel");
+            let mut threads = Vec::with_capacity(worlds.len());
+            for world in worlds {
+                let heartbeat = Arc::new(Heartbeat::new(format!("World {}", world.dimension())));
+                watch.register(Arc::clone(&heartbeat));
+                threads.push(spawn_world_thread(
+                    world,
+                    &compute,
+                    &global,
+                    sender.clone(),
+                    heartbeat,
+                )?);
+            }
+            let routes = threads
+                .iter()
+                .map(|t| Route::World(t.sender.clone()))
+                .collect();
+            (Worlds::Parallel(threads), routes)
+        } else {
+            log::info!("Dimensions tick sequentially");
+            let routes = worlds.iter().map(|_| Route::Server).collect();
+            (Worlds::Sequential(worlds), routes)
+        };
+
+        let watchdog = Watchdog::start(Arc::clone(&watch), clock, config.properties.max_tick_time)
+            .map_err(|e| StartError::io(&dir, e))?;
+
+        let mut server = Server {
+            dir,
+            config,
+            compute,
+            global,
+            worlds,
+            routes,
+            sender,
+            receiver,
+            global_queue: VecDeque::new(),
+            tick_rate: TickRateManager::default(),
+            tick_count: 0,
+            next_tick: 0,
+            empty_ticks: 0,
+            ticks_until_autosave: 0,
+            average_tick_nanos: 0.0,
+            running: true,
+            heartbeat,
+            watch,
+            watchdog: Some(watchdog),
+            _session_lock: session_lock,
+        };
+        server.ticks_until_autosave = server.autosave_interval();
+        log::info!(
+            "Done ({:.3}s)! For help, type \"help\"",
+            started.elapsed().as_secs_f64()
+        );
+        Ok(server)
+    }
+}
+
+/// Holds `session.lock` of the world folder so no second server opens the same world.
+fn lock_world(level_dir: &Path) -> Result<File, StartError> {
+    fs::create_dir_all(level_dir).map_err(|e| StartError::io(level_dir, e))?;
+    let path = level_dir.join("session.lock");
+    let mut file = File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|e| StartError::io(&path, e))?;
+    match file.try_lock() {
+        Ok(()) => {}
+        Err(fs::TryLockError::WouldBlock) => return Err(StartError::WorldInUse(path)),
+        Err(fs::TryLockError::Error(e)) => return Err(StartError::io(&path, e)),
+    }
+    // Vanilla writes a snowman into the lock file.
+    file.set_len(0)
+        .and_then(|()| file.write_all("\u{2603}".as_bytes()))
+        .map_err(|e| StartError::io(&path, e))?;
+    Ok(file)
+}
+
+fn spawn_world_thread(
+    mut world: ServerWorld,
+    compute: &Compute,
+    global: &Arc<Global>,
+    server: Sender<ServerMsg>,
+    heartbeat: Arc<Heartbeat>,
+) -> Result<WorldThread, StartError> {
+    let (sender, receiver) = mpsc::channel::<WorldMsg>();
+    let name = format!("World {}", world.dimension());
+    let id = world.id();
+    let thread_compute = compute.clone();
+    let global = Arc::clone(global);
+    let body = move || {
+        let result = panic::catch_unwind(AssertUnwindSafe(|| {
+            world_loop(
+                &mut world,
+                &receiver,
+                &server,
+                &thread_compute,
+                &global,
+                &heartbeat,
+            );
+        }));
+        if result.is_err() {
+            let _ = server.send(ServerMsg::WorldCrashed(id));
+        }
+    };
+    let handle = compute
+        .scheduler()
+        .spawn_thread(name, Box::new(body))
+        .map_err(|e| StartError::Io(format!("cannot start a world thread: {e}")))?;
+    Ok(WorldThread { sender, handle })
+}
+
+/// The loop of a world thread: ticks on command and runs the world's tasks in between.
+fn world_loop(
+    world: &mut ServerWorld,
+    receiver: &Receiver<WorldMsg>,
+    server: &Sender<ServerMsg>,
+    compute: &Compute,
+    global: &Global,
+    heartbeat: &Heartbeat,
+) {
+    for msg in receiver {
+        heartbeat.enter(&global.clock);
+        match msg {
+            WorldMsg::Tick {
+                tick,
+                runs_normally,
+            } => {
+                let mut outbox = Vec::new();
+                let mut ctx = TickContext::new(
+                    world.id(),
+                    tick,
+                    runs_normally,
+                    compute,
+                    global,
+                    &mut outbox,
+                );
+                world.tick(&mut ctx);
+                let _ = server.send(ServerMsg::WorldTicked(world.id(), outbox));
+            }
+            WorldMsg::Task(task) => task(world),
+            WorldMsg::Stop => {
+                world.save(true);
+                heartbeat.leave();
+                return;
+            }
+        }
+        heartbeat.leave();
+    }
+}
+
+/// A handle to a running server, usable from any thread (console, network, signals).
+#[derive(Clone)]
+pub struct ServerHandle {
+    sender: Sender<ServerMsg>,
+    routes: Arc<[Route]>,
+}
+
+impl fmt::Debug for ServerHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ServerHandle")
+            .field("worlds", &self.routes.len())
+            .finish()
+    }
+}
+
+impl ServerHandle {
+    /// Asks the server to stop after the current tick.
+    pub fn stop(&self) {
+        let _ = self.sender.send(ServerMsg::Stop);
+    }
+
+    /// Queues a console command for the next global pre-phase.
+    pub fn console(&self, line: String) {
+        let _ = self.sender.send(ServerMsg::Console(line));
+    }
+
+    /// Queues work for the next global pre-phase.
+    pub fn run_global(&self, task: impl FnOnce(&mut Server) + Send + 'static) {
+        let _ = self.sender.send(ServerMsg::Global(Box::new(task)));
+    }
+
+    /// Runs work on a world between its ticks. Returns `false` for an unknown world or a
+    /// stopped server.
+    pub fn run_in_world(
+        &self,
+        world: WorldId,
+        task: impl FnOnce(&mut ServerWorld) + Send + 'static,
+    ) -> bool {
+        let task: WorldTask = Box::new(task);
+        match self.routes.get(world.index()) {
+            Some(Route::Server) => self.sender.send(ServerMsg::WorldTask(world, task)).is_ok(),
+            Some(Route::World(sender)) => sender.send(WorldMsg::Task(task)).is_ok(),
+            None => false,
+        }
+    }
+}
+
+/// A running server. [`Server::run`] runs the tick loop on the calling thread until stopped.
+pub struct Server {
+    dir: PathBuf,
+    config: Config,
+    compute: Compute,
+    global: Arc<Global>,
+    worlds: Worlds,
+    routes: Arc<[Route]>,
+    sender: Sender<ServerMsg>,
+    receiver: Receiver<ServerMsg>,
+    /// Console commands and global tasks waiting for the next global pre-phase.
+    global_queue: VecDeque<ServerMsg>,
+    tick_rate: TickRateManager,
+    tick_count: u64,
+    next_tick: u64,
+    empty_ticks: u64,
+    ticks_until_autosave: i64,
+    average_tick_nanos: f64,
+    running: bool,
+    heartbeat: Arc<Heartbeat>,
+    watch: Arc<WatchState>,
+    watchdog: Option<Watchdog>,
+    _session_lock: File,
+}
+
+impl fmt::Debug for Server {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Server")
+            .field("dir", &self.dir)
+            .field("tick_count", &self.tick_count)
+            .field("running", &self.running)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Server {
+    /// A handle for other threads.
+    pub fn handle(&self) -> ServerHandle {
+        ServerHandle {
+            sender: self.sender.clone(),
+            routes: Arc::clone(&self.routes),
+        }
+    }
+
+    /// The loaded configuration.
+    pub fn config(&self) -> &Config {
+        &self.config
+    }
+
+    /// Server-wide state.
+    pub fn global(&self) -> &Global {
+        &self.global
+    }
+
+    /// The compute pool.
+    pub fn compute(&self) -> &Compute {
+        &self.compute
+    }
+
+    /// The tick rate state (`/tick`).
+    pub fn tick_rate(&mut self) -> &mut TickRateManager {
+        &mut self.tick_rate
+    }
+
+    /// Ticks run since start.
+    pub fn tick_count(&self) -> u64 {
+        self.tick_count
+    }
+
+    /// The smoothed time of a server tick in milliseconds (MSPT).
+    pub fn average_tick_millis(&self) -> f64 {
+        self.average_tick_nanos / 1e6
+    }
+
+    /// Stops the server after the current tick.
+    pub fn stop(&mut self) {
+        self.running = false;
+    }
+
+    /// Runs the tick loop until the server is stopped, then shuts down.
+    pub fn run(mut self) {
+        let clock = self.global.clock;
+        self.next_tick = clock.now();
+        let mut last_overload_warning = self.next_tick;
+        while self.running {
+            let now = clock.now();
+            let this_tick = if self.tick_rate.is_sprinting()
+                && self.tick_rate.check_should_sprint_this_tick(now)
+            {
+                self.next_tick = now;
+                last_overload_warning = now;
+                0
+            } else {
+                let this_tick = self.tick_rate.nanos_per_tick();
+                let behind = now.saturating_sub(self.next_tick);
+                if behind > OVERLOADED_THRESHOLD + 20 * this_tick
+                    && self.next_tick.saturating_sub(last_overload_warning)
+                        >= OVERLOADED_WARNING_INTERVAL + 100 * this_tick
+                {
+                    let missed = behind / this_tick;
+                    log::warn!(
+                        "Can't keep up! Is the server overloaded? Running {}ms or {missed} ticks behind",
+                        behind / 1_000_000
+                    );
+                    self.next_tick += missed * this_tick;
+                    last_overload_warning = self.next_tick;
+                }
+                this_tick
+            };
+            let sprinting = this_tick == 0;
+            self.next_tick += this_tick;
+            self.watch
+                .next_tick
+                .store(self.next_tick, Ordering::Relaxed);
+            self.tick_server();
+            self.wait_until_next_tick(this_tick, sprinting);
+            if sprinting {
+                self.tick_rate.end_tick_work(clock.now());
+            }
+        }
+        self.shutdown();
+    }
+
+    /// Vanilla's `tickServer`: pause check, global pre-phase, world phase, global post-phase.
+    fn tick_server(&mut self) {
+        let clock = self.global.clock;
+        let started = clock.now();
+        self.heartbeat.enter(&clock);
+
+        let pause_seconds =
+            u64::try_from(self.config.properties.pause_when_empty_seconds).unwrap_or(0);
+        if pause_seconds > 0 {
+            if self.global.players.count() == 0 && !self.tick_rate.is_sprinting() {
+                self.empty_ticks += 1;
+            } else {
+                self.empty_ticks = 0;
+            }
+            let threshold = pause_seconds * 20;
+            if self.empty_ticks >= threshold {
+                if self.empty_ticks == threshold {
+                    log::info!("Server empty for {pause_seconds} seconds, pausing");
+                    self.autosave();
+                }
+                // The console stays responsive while paused, like Vanilla.
+                self.global_pre_phase();
+                self.heartbeat.leave();
+                return;
+            }
+        }
+
+        self.tick_count += 1;
+        self.tick_rate.tick();
+        self.global_pre_phase();
+        self.tick_worlds();
+        self.global_post_phase();
+
+        let elapsed = clock.now().saturating_sub(started) as f64;
+        self.average_tick_nanos = self.average_tick_nanos * 0.8 + elapsed * 0.2;
+        self.heartbeat.leave();
+    }
+
+    /// G1: console commands and global tasks, with `&mut` to everything because no world is
+    /// ticking. Accepted joins (bounded by `security.max-joins-per-tick`) are added here once
+    /// the network exists.
+    fn global_pre_phase(&mut self) {
+        while let Some(msg) = self.global_queue.pop_front() {
+            match msg {
+                ServerMsg::Console(line) => self.run_console_command(&line),
+                ServerMsg::Global(task) => task(self),
+                other => self.dispatch(other),
+            }
+        }
+    }
+
+    /// The world phase and the cross-world hand-offs of G2, applied in world order.
+    fn tick_worlds(&mut self) {
+        let tick = self.tick_count;
+        let runs_normally = self.tick_rate.runs_normally();
+        let mut outboxes: Vec<Vec<(WorldId, WorldTask)>> =
+            self.routes.iter().map(|_| Vec::new()).collect();
+        match &mut self.worlds {
+            Worlds::Sequential(worlds) => {
+                for (index, outbox) in outboxes.iter_mut().enumerate() {
+                    let (before, rest) = worlds.split_at_mut(index);
+                    let Some((world, after)) = rest.split_first_mut() else {
+                        break;
+                    };
+                    let mut ctx = TickContext::new(
+                        world.id(),
+                        tick,
+                        runs_normally,
+                        &self.compute,
+                        &self.global,
+                        outbox,
+                    )
+                    .with_others(before, after);
+                    world.tick(&mut ctx);
+                }
+            }
+            Worlds::Parallel(threads) => {
+                for thread in threads.iter() {
+                    let _ = thread.sender.send(WorldMsg::Tick {
+                        tick,
+                        runs_normally,
+                    });
+                }
+                let mut remaining = threads.len();
+                while remaining > 0 {
+                    let Ok(msg) = self.receiver.recv() else {
+                        break;
+                    };
+                    match msg {
+                        ServerMsg::WorldTicked(id, outbox) => {
+                            if let Some(slot) = outboxes.get_mut(id.index()) {
+                                *slot = outbox;
+                            }
+                            remaining -= 1;
+                        }
+                        ServerMsg::WorldCrashed(id) => {
+                            self.world_crashed(id);
+                            remaining -= 1;
+                        }
+                        other => self.global_queue.push_back(other),
+                    }
+                }
+            }
+        }
+        for (target, op) in outboxes.into_iter().flatten() {
+            self.run_in_world(target, op);
+        }
+    }
+
+    /// G2: player list and autosave.
+    fn global_post_phase(&mut self) {
+        // Player list maintenance (latency updates, idle kicks) comes with players.
+        self.ticks_until_autosave -= 1;
+        if self.ticks_until_autosave <= 0 {
+            self.autosave();
+        }
+    }
+
+    /// Runs messages between ticks until the next tick is due (Vanilla's `waitUntilNextTick`:
+    /// when the tick ran late, queued work may still use up to one tick length).
+    fn wait_until_next_tick(&mut self, this_tick: u64, sprinting: bool) {
+        let clock = self.global.clock;
+        if sprinting {
+            while let Ok(msg) = self.receiver.try_recv() {
+                self.dispatch(msg);
+            }
+            return;
+        }
+        let task_deadline = (clock.now() + this_tick).max(self.next_tick);
+        let mut may_have_delayed = true;
+        while self.running {
+            let now = clock.now();
+            let limit = if may_have_delayed {
+                task_deadline
+            } else {
+                self.next_tick
+            };
+            if now >= limit {
+                break;
+            }
+            match self.receiver.try_recv() {
+                Ok(msg) => self.dispatch(msg),
+                Err(TryRecvError::Disconnected) => break,
+                Err(TryRecvError::Empty) => {
+                    may_have_delayed = false;
+                    if now >= self.next_tick {
+                        break;
+                    }
+                    match self
+                        .receiver
+                        .recv_timeout(Duration::from_nanos(self.next_tick - now))
+                    {
+                        Ok(msg) => self.dispatch(msg),
+                        Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => break,
+                    }
+                }
+            }
+        }
+    }
+
+    /// Handles a message outside the world phase.
+    fn dispatch(&mut self, msg: ServerMsg) {
+        match msg {
+            ServerMsg::Stop => self.running = false,
+            ServerMsg::Console(_) | ServerMsg::Global(_) => self.global_queue.push_back(msg),
+            ServerMsg::WorldTask(id, task) => self.run_in_world(id, task),
+            ServerMsg::WorldCrashed(id) => self.world_crashed(id),
+            ServerMsg::WorldTicked(id, _) => {
+                log::warn!("Unexpected tick completion of world {}", id.0);
+            }
+        }
+    }
+
+    fn world_crashed(&mut self, id: WorldId) {
+        log::error!(
+            "The thread of world {} crashed; stopping the server",
+            DIMENSIONS.get(id.index()).copied().unwrap_or("?")
+        );
+        self.running = false;
+    }
+
+    /// Runs a task on a world: directly in sequential mode, between its ticks on its thread in
+    /// parallel mode.
+    fn run_in_world(&mut self, id: WorldId, task: WorldTask) {
+        match &mut self.worlds {
+            Worlds::Sequential(worlds) => match worlds.get_mut(id.index()) {
+                Some(world) => task(world),
+                None => log::warn!("Task for unknown world {} dropped", id.0),
+            },
+            Worlds::Parallel(threads) => match threads.get(id.index()) {
+                Some(thread) => {
+                    if thread.sender.send(WorldMsg::Task(task)).is_err() {
+                        log::warn!("Task for stopped world {} dropped", id.0);
+                    }
+                }
+                None => log::warn!("Task for unknown world {} dropped", id.0),
+            },
+        }
+    }
+
+    /// Console commands until the command system exists.
+    fn run_console_command(&mut self, line: &str) {
+        let command = line.trim().trim_start_matches('/');
+        match command {
+            "" => {}
+            "stop" => self.running = false,
+            "vanillite reload config" => self.reload_config(),
+            "help" => log::info!("Commands: stop, vanillite reload config"),
+            _ => log::warn!("Unknown or incomplete command: {command}"),
+        }
+    }
+
+    /// Reloads `vanillite.toml` and swaps the rules at this tick boundary. `server.properties`
+    /// is read at startup only, like Vanilla.
+    fn reload_config(&mut self) {
+        let mut new = match Config::load(&self.dir) {
+            Ok(config) => config,
+            Err(e) => {
+                log::error!("Reloading {VANILLITE_FILE} failed, keeping the old values: {e}");
+                return;
+            }
+        };
+        new.properties = self.config.properties.clone();
+        warn_restart_needed(&self.config.server, &new.server);
+        for dimension in DIMENSIONS {
+            warn_restart_needed(
+                &self.config.world_rules(dimension),
+                &new.world_rules(dimension),
+            );
+        }
+        self.watch.configure(
+            new.server.watchdog.early_warning_after.get(),
+            new.server.watchdog.warning_interval,
+        );
+        for (dimension, index) in DIMENSIONS.iter().zip(0u16..) {
+            let rules = Arc::new(new.world_rules(dimension));
+            self.run_in_world(WorldId(index), Box::new(move |w| w.set_rules(rules)));
+        }
+        self.config = new;
+        log::info!("Reloaded {VANILLITE_FILE}");
+    }
+
+    /// Ticks until the next autosave (Vanilla's `computeNextAutosaveInterval`).
+    fn autosave_interval(&self) -> i64 {
+        match self.config.server.autosave.interval {
+            VanillaOr::Value(ticks) => i64::from(ticks),
+            VanillaOr::Vanilla => {
+                let rate = if self.tick_rate.is_sprinting() {
+                    1e9 / (self.average_tick_nanos as f32 + 1.0)
+                } else {
+                    self.tick_rate.tick_rate()
+                };
+                ((rate * AUTOSAVE_SECONDS) as i64).max(100)
+            }
+        }
+    }
+
+    fn autosave(&mut self) {
+        self.ticks_until_autosave = self.autosave_interval();
+        log::debug!("Autosave started");
+        // Players are saved here once they exist.
+        for index in 0..self.routes.len() {
+            let Ok(id) = u16::try_from(index).map(WorldId) else {
+                break;
+            };
+            self.run_in_world(id, Box::new(|w| w.save(false)));
+        }
+        log::debug!("Autosave finished");
+    }
+
+    /// Vanilla's `stopServer`: save everything with flush, stop the threads, release the world.
+    fn shutdown(mut self) {
+        // Saving may take long; the watchdog must not kill the process now.
+        self.watch.next_tick.store(0, Ordering::Relaxed);
+        log::info!("Stopping server");
+        log::info!("Saving players");
+        log::info!("Saving worlds");
+        let level = &self.config.properties.level_name;
+        match self.worlds {
+            Worlds::Sequential(mut worlds) => {
+                for world in &mut worlds {
+                    log::info!("Saving chunks for level '{level}'/{}", world.dimension());
+                    world.save(true);
+                }
+            }
+            Worlds::Parallel(threads) => {
+                for (thread, dimension) in threads.iter().zip(DIMENSIONS) {
+                    log::info!("Saving chunks for level '{level}'/{dimension}");
+                    let _ = thread.sender.send(WorldMsg::Stop);
+                }
+                for thread in threads {
+                    let _ = thread.handle.join();
+                }
+            }
+        }
+        log::info!("All dimensions are saved");
+        self.compute.scheduler().shutdown();
+        if let Some(watchdog) = self.watchdog.take() {
+            watchdog.stop();
+        }
+    }
+}
+
+fn warn_restart_needed<R: RuleSet>(old: &R, new: &R) {
+    for info in R::RULES.iter().filter(|r| r.restart) {
+        if old.get(info.key) != new.get(info.key) {
+            log::warn!(
+                "{} changed; the new value takes effect after a restart",
+                info.key
+            );
+        }
+    }
+}
+
+/// The server could not start.
+#[derive(Debug)]
+pub enum StartError {
+    /// A configuration file is missing or invalid.
+    Config(ConfigError),
+    /// A file or thread operation failed.
+    Io(String),
+    /// Another server holds the world's `session.lock`.
+    WorldInUse(PathBuf),
+    /// A slot was filled twice.
+    Slot(SlotError),
+}
+
+impl StartError {
+    fn io(path: &Path, error: io::Error) -> StartError {
+        StartError::Io(format!("{}: {error}", path.display()))
+    }
+}
+
+impl fmt::Display for StartError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            StartError::Config(e) => write!(f, "invalid configuration: {e}"),
+            StartError::Io(e) => f.write_str(e),
+            StartError::WorldInUse(path) => write!(
+                f,
+                "the world is in use by another server ({} is locked)",
+                path.display()
+            ),
+            StartError::Slot(e) => e.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for StartError {}
+
+impl From<ConfigError> for StartError {
+    fn from(e: ConfigError) -> Self {
+        StartError::Config(e)
+    }
+}
+
+impl From<SlotError> for StartError {
+    fn from(e: SlotError) -> Self {
+        StartError::Slot(e)
+    }
+}
