@@ -131,6 +131,8 @@ pub mod ids {
     pub const RARITY: u16 = find("minecraft:rarity");
     pub const BUNDLE_CONTENTS: u16 = find("minecraft:bundle_contents");
     pub const DYE: u16 = find("minecraft:dye");
+    pub const INSTRUMENT: u16 = find("minecraft:instrument");
+    pub const OMINOUS_BOTTLE_AMPLIFIER: u16 = find("minecraft:ominous_bottle_amplifier");
 }
 
 /// Validates one component value: `data` must be exactly one value of the stream codec of

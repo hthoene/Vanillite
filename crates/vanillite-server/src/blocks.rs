@@ -38,7 +38,7 @@ pub(crate) fn game_data(packs: Option<&LoadedPacks>) -> GameData {
     };
     let tools = ToolTable::new(&|tag| tag_ids("minecraft:block", tag));
     let loot = LootTables::load(packs.roots());
-    log::info!("Loaded {} block loot tables", loot.len());
+    log::info!("Loaded {} loot tables", loot.len());
     let enchantments = packs
         .registry("minecraft:enchantment")
         .map(|r| {
@@ -130,6 +130,20 @@ pub(crate) fn game_data(packs: Option<&LoadedPacks>) -> GameData {
             })
             .unwrap_or_default(),
     };
+    let registry_tags = packs
+        .tagged_registries()
+        .map(|registry| {
+            let tags = packs
+                .tags(registry)
+                .map(|tags| {
+                    tags.keys()
+                        .map(|t| (t.clone(), packs.tag_ids(registry, t).unwrap_or_default()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            (registry.to_owned(), tags)
+        })
+        .collect();
     GameData {
         tools,
         loot,
@@ -138,6 +152,7 @@ pub(crate) fn game_data(packs: Option<&LoadedPacks>) -> GameData {
         recipes,
         enchanting,
         banner_patterns,
+        registry_tags,
     }
 }
 

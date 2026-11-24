@@ -466,6 +466,90 @@ impl Enchanting {
     }
 }
 
+/// `EnchantmentHelper.selectEnchantment(random, stack, cost, candidates)`: enchantments for an
+/// item at an enchanting cost, drawn by weight from the candidates (in their order) that fit
+/// the cost; nothing for items without `enchantable`.
+pub fn select_enchantment(
+    e: &Enchanting,
+    random: &mut dyn crate::loot::LootRandom,
+    stack: &ItemStack,
+    cost: i32,
+    candidates: &[u32],
+) -> Vec<(u32, i32)> {
+    let enchantable = e.enchantable(stack);
+    if enchantable <= 0 {
+        return Vec::new();
+    }
+    let mut cost = cost
+        .saturating_add(1)
+        .saturating_add(random.next_int(enchantable / 4 + 1))
+        .saturating_add(random.next_int(enchantable / 4 + 1));
+    let span = (random.next_float() + random.next_float() - 1.0) * 0.15;
+    // `Mth.clamp(Math.round(cost + cost * span), 1, MAX_VALUE)`.
+    #[allow(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss
+    )]
+    let rounded = (cost as f32 + cost as f32 * span + 0.5).floor() as i32;
+    cost = rounded.max(1);
+    let is_book = stack.item == vanillite_data::item::ids::BOOK.0;
+    // `getAvailableEnchantmentResults`.
+    let mut available: Vec<(u32, i32, i32)> = Vec::new();
+    for &id in candidates {
+        if !(is_book || e.is_primary(id, stack)) {
+            continue;
+        }
+        let Some(info) = e.get(id) else {
+            continue;
+        };
+        let mut level = info.max_level;
+        while level >= 1 {
+            if cost >= info.min_cost.at(level) && cost <= info.max_cost.at(level) {
+                available.push((id, level, info.weight));
+                break;
+            }
+            level -= 1;
+        }
+    }
+    // `WeightedRandom.getRandomItem`.
+    let pick = |random: &mut dyn crate::loot::LootRandom, list: &[(u32, i32, i32)]| {
+        let total = list
+            .iter()
+            .fold(0i32, |sum, &(_, _, w)| sum.saturating_add(w));
+        if total <= 0 {
+            return None;
+        }
+        let mut selection = random.next_int(total);
+        for &(id, level, weight) in list {
+            selection = selection.saturating_sub(weight);
+            if selection < 0 {
+                return Some((id, level));
+            }
+        }
+        None
+    };
+    let mut results: Vec<(u32, i32)> = Vec::new();
+    if !available.is_empty() {
+        if let Some(first) = pick(random, &available) {
+            results.push(first);
+        }
+        while random.next_int(50) <= cost {
+            if let Some(&(last, _)) = results.last() {
+                available.retain(|&(id, _, _)| e.compatible(last, id));
+            }
+            if available.is_empty() {
+                break;
+            }
+            if let Some(next) = pick(random, &available) {
+                results.push(next);
+            }
+            cost /= 2;
+        }
+    }
+    results
+}
+
 /// An `ItemEnchantments` value: `(enchantment id, level)` in insertion order.
 pub fn read(data: Option<&[u8]>) -> Vec<(u32, i32)> {
     let Some(data) = data else {

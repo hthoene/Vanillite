@@ -574,7 +574,12 @@ pub(super) fn direction_3d(d: Direction) -> i32 {
 }
 
 /// `DefaultDispenseItemBehavior.spawnItem(level, stack, 6, facing, dispensePosition)`.
-pub(super) fn spawn_dispensed(level: &mut Level, pos: BlockPos, facing: Direction, stack: ItemStack) {
+pub(super) fn spawn_dispensed(
+    level: &mut Level,
+    pos: BlockPos,
+    facing: Direction,
+    stack: ItemStack,
+) {
     let [dx, dy, dz] = facing.normal();
     let x = f64::from(pos.x) + 0.5 + 0.7 * f64::from(dx);
     let mut y = f64::from(pos.y) + 0.5 + 0.7 * f64::from(dy);
@@ -1065,6 +1070,7 @@ fn equip_sound(stack: &ItemStack) -> &'static str {
 /// `DispenserBlockEntity.getRandomSlot(level.getRandom())`: a random non-empty slot (one
 /// `nextInt` per non-empty slot), `None` if the dispenser is empty.
 pub fn dispense_slot(level: &mut Level, pos: BlockPos) -> Option<usize> {
+    super::chest_loot::unpack(level, pos, None);
     let filled: Vec<usize> = super::container::items(level, pos)?
         .iter()
         .enumerate()

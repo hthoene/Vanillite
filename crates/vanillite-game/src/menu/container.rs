@@ -336,7 +336,9 @@ impl ContainerView<'_> {
             let grid = self.menu.local.get(1..10).unwrap_or_default();
             let input = CraftingInput::of(3, 3, grid);
             d.recipes
-                .crafting_for_in(&input, &|m| crate::map::info(self.level, m).map(|i| i.scale))
+                .crafting_for_in(&input, &|m| {
+                    crate::map::info(self.level, m).map(|i| i.scale)
+                })
                 .map(|r| d.recipes.assemble(r, &input))
                 .unwrap_or_default()
         });
@@ -834,9 +836,9 @@ impl ContainerView<'_> {
         };
         let grid: Vec<ItemStack> = self.menu.local.get(1..10).unwrap_or_default().to_vec();
         let input = CraftingInput::of(3, 3, &grid);
-        let recipe = data
-            .recipes
-            .crafting_for_in(&input, &|m| crate::map::info(self.level, m).map(|i| i.scale));
+        let recipe = data.recipes.crafting_for_in(&input, &|m| {
+            crate::map::info(self.level, m).map(|i| i.scale)
+        });
         let remaining = data.recipes.remainders(recipe, &input);
         for y in 0..input.height {
             for x in 0..input.width {
@@ -880,6 +882,24 @@ pub fn open(
 ) {
     if inv.container.is_some() {
         close(inv, level, who, drops, Some(sink));
+    }
+    // `RandomizableContainerBlockEntity.canOpen`: spectators cannot open containers with a
+    // loot table; `createMenu` rolls the tables for the player (both halves of a chest).
+    let positions = match request.storage {
+        Storage::Block(p) => [Some(p), None],
+        Storage::Double(a, b) => [Some(a), Some(b)],
+        Storage::Ender(_) | Storage::Local => [None, None],
+    };
+    if who.spectator
+        && positions
+            .iter()
+            .flatten()
+            .any(|&p| crate::block::chest_loot::has_loot(level, p))
+    {
+        return;
+    }
+    for p in positions.into_iter().flatten() {
+        crate::block::chest_loot::unpack(level, p, request.player);
     }
     inv.container_counter = inv.container_counter % 100 + 1;
     let id = inv.container_counter;
