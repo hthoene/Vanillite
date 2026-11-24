@@ -906,4 +906,4 @@ fn lerp_discrete(alpha: f32, min: i32, max: i32) -> i32 {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

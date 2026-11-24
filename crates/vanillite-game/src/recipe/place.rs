@@ -610,3 +610,75 @@ fn test_clear_grid<S: MenuSlots + ?Sized>(s: &mut S, grid: &Grid) -> bool {
     }
     true
 }
+
+#[cfg(test)]
+mod tests {
+    use vanillite_data::item::ids as items;
+
+    use super::*;
+    use crate::recipe::book::RecipeRef;
+
+    fn crafting_ref(id: &str) -> RecipeRef {
+        let data = crate::menu::tests::install_data();
+        let d = data.recipes.book.displays(id);
+        data.recipes.book.entry(d[0]).unwrap().recipe
+    }
+
+    fn place_table(inv: &mut PlayerInventory, use_max: bool) -> bool {
+        let data = crate::menu::tests::install_data();
+        let placement = data
+            .recipes
+            .placement(crafting_ref("minecraft:crafting_table"))
+            .unwrap();
+        let input: Vec<usize> = (1..5).collect();
+        let grid = Grid {
+            width: 2,
+            height: 2,
+            clear: input.clone(),
+            account: input.clone(),
+            clear_content: (0..5).collect(),
+            input,
+            account_full: false,
+            suppress: false,
+            content_direct: true,
+        };
+        place(inv, &grid, &placement, false, use_max, false, &mut Vec::new())
+    }
+
+    #[test]
+    fn every_display_encodes() {
+        let data = crate::menu::tests::install_data();
+        let book = &data.recipes.book;
+        assert!(book.contains("minecraft:crafting_table"));
+        assert!(!book.contains("minecraft:repair_item"));
+        let mut id = 0;
+        while let Some(e) = book.wire_entry(id) {
+            let mut out = Vec::new();
+            vanillite_protocol::codec::Encode::encode(&e, &mut out);
+            assert!(!out.is_empty());
+            id += 1;
+        }
+        assert!(id > 1000, "{id} displays");
+    }
+
+    #[test]
+    fn places_and_ghosts_the_crafting_table() {
+        let mut inv = PlayerInventory::default();
+        inv.items[9] = ItemStack::new(items::OAK_PLANKS.0, 9);
+        assert!(!place_table(&mut inv, false));
+        assert!(inv.craft.iter().all(|s| s.item == items::OAK_PLANKS.0 && s.count == 1));
+        assert_eq!(inv.items[9].count, 5);
+        assert_eq!(inv.craft_result.item, items::CRAFTING_TABLE.0);
+        // The same recipe again with the maximum: the grid goes back first, then 2 each.
+        assert!(!place_table(&mut inv, true));
+        assert!(inv.craft.iter().all(|s| s.count == 2));
+        assert_eq!(inv.items[9].count, 1);
+        // Too few planks: a ghost recipe, the grid is emptied into the inventory.
+        let mut few = PlayerInventory::default();
+        few.items[0] = ItemStack::new(items::OAK_PLANKS.0, 3);
+        few.craft[0] = ItemStack::new(items::DIRT.0, 1);
+        assert!(place_table(&mut few, false));
+        assert!(few.craft.iter().all(ItemStack::is_empty));
+        assert_eq!(few.items[1].item, items::DIRT.0);
+    }
+}
