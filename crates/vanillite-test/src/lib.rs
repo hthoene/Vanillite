@@ -5,7 +5,8 @@
 //! - [`scenario`]: scenarios (`scenarios/*.json`), shared by the Java recorder and the runner.
 //! - [`trace`]: the tick-by-tick trace format both sides write, and its exact comparison.
 //! - [`world`]: the observation API a scenario world implements ([`world::ScenarioWorld`]) and
-//!   the flat stand-in world used until `World::headless` exists.
+//!   a flat stand-in world without mechanics.
+//! - [`game_world`]: the scenario world on the real simulation (a headless game level).
 //! - [`runner`]: runs a scenario serially and in parallel (verify mode) and compares the trace
 //!   with its golden.
 //! - [`golden`]: golden storage keyed by (Minecraft version, jar SHA-1, harness version,
@@ -14,6 +15,7 @@
 //! Goldens are recorded on the pinned Vanilla jar by `cargo xtask golden regen`; intended
 //! differences are accepted with `cargo xtask golden bless <scenario>`.
 
+pub mod game_world;
 pub mod golden;
 pub mod runner;
 pub mod scenario;

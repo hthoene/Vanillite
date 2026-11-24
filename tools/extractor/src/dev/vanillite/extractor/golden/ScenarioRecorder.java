@@ -155,16 +155,23 @@ public final class ScenarioRecorder {
         chunks.add(ChunkPos.pack(cx, cz));
       }
     }
-    for (int i = 0; ; i++) {
+    // Entities load asynchronously on the IO worker, which can be slow on a busy machine: wait
+    // by wall time, not by a number of warm-up ticks.
+    long deadline = System.nanoTime() + 60_000_000_000L;
+    while (true) {
       if (chunks.stream().allMatch(c -> level.shouldTickBlocksAt(c) && level.areEntitiesLoaded(c))) {
         return;
       }
-      if (i == 1000) {
+      if (System.nanoTime() > deadline) {
         throw new IllegalStateException("the scenario region does not become ticking");
       }
-      // Entities load asynchronously; give the IO worker a moment between warm-up ticks.
       server.step();
-      Thread.onSpinWait();
+      try {
+        Thread.sleep(1);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new IllegalStateException("interrupted while loading the scenario region", e);
+      }
     }
   }
 

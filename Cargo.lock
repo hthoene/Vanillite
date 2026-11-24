@@ -1389,7 +1389,10 @@ dependencies = [
  "vanillite-chunk",
  "vanillite-data",
  "vanillite-datapack",
+ "vanillite-game",
  "vanillite-server",
+ "vanillite-world",
+ "vanillite-worldgen",
 ]
 
 [[package]]
