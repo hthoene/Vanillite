@@ -14,7 +14,7 @@ use crate::{Result, read_json, write};
 
 /// Version facts from the inner jar's `version.json` plus the pinned download.
 pub struct VersionInfo {
-    id: String,
+    pub id: String,
     pub protocol: u64,
     data_version: u64,
     resource_pack: [u64; 2],

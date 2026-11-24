@@ -1472,6 +1472,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "vanillite-multiversion"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "serde_json",
+ "tokio",
+ "vanillite-nbt",
+ "vanillite-protocol",
+ "vanillite-server",
+]
+
+[[package]]
 name = "vanillite-nbt"
 version = "0.1.0"
 dependencies = [
@@ -1493,6 +1505,7 @@ dependencies = [
  "vanillite-config",
  "vanillite-data",
  "vanillite-datapack",
+ "vanillite-multiversion",
  "vanillite-nbt",
  "vanillite-protocol",
 ]
@@ -1535,6 +1548,7 @@ dependencies = [
  "tokio",
  "toml",
  "vanillite-bedrock",
+ "vanillite-multiversion",
  "vanillite-net",
  "vanillite-protocol",
  "vanillite-server",
@@ -1556,6 +1570,7 @@ dependencies = [
  "vanillite-datapack",
  "vanillite-game",
  "vanillite-light",
+ "vanillite-multiversion",
  "vanillite-nbt",
  "vanillite-net",
  "vanillite-plugin-host",

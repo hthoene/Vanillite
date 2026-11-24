@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
+use vanillite_multiversion::ClientboundHalf;
 use vanillite_protocol::compress::Codec;
 use vanillite_protocol::frame::{FrameEncoder, encode_body, encode_frame};
 use vanillite_protocol::{Packet, SharedPacket};
@@ -20,6 +21,8 @@ pub(crate) enum Out {
     Compression(i32),
     /// Encryption on from here (after the key exchange).
     Encryption([u8; 16]),
+    /// Translate every packet from here for a client of an older version.
+    Adapter(Box<ClientboundHalf>),
     /// Flush and close the connection.
     Close,
 }
@@ -111,11 +114,36 @@ pub(crate) async fn tcp_writer(
     let mut codec = Codec::new(compression_level);
     let mut buf = Vec::with_capacity(8192);
     let mut open = true;
+    let mut adapter: Option<Box<ClientboundHalf>> = None;
     while open {
         let Some(first) = rx.recv().await else { break };
         let mut next = Some(first);
         while let Some(msg) = next.take() {
             let consumed = match msg {
+                Out::Body(body) if adapter.is_some() => {
+                    if let Some(a) = adapter.as_mut() {
+                        match a.translate(&body) {
+                            Ok(Some(t)) => {
+                                if encoder.body(t, &mut buf).is_err() {
+                                    open = false;
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(e) => {
+                                log::debug!("multiversion: untranslatable packet: {e}");
+                            }
+                        }
+                    }
+                    body.len()
+                }
+                Out::Shared(p) if adapter.is_some() => {
+                    if let Some(t) = adapter.as_mut().and_then(|a| a.translate_shared(&p))
+                        && encoder.body(t, &mut buf).is_err()
+                    {
+                        open = false;
+                    }
+                    p.body().len()
+                }
                 Out::Body(body) => {
                     if encoder.body(&body, &mut buf).is_err() {
                         open = false;
@@ -148,6 +176,10 @@ pub(crate) async fn tcp_writer(
                     encoder.enable_encryption(&secret);
                     0
                 }
+                Out::Adapter(a) => {
+                    adapter = Some(a);
+                    0
+                }
                 Out::Close => {
                     open = false;
                     0
@@ -174,15 +206,38 @@ pub(crate) async fn virtual_writer(
     mut rx: mpsc::UnboundedReceiver<Out>,
     queued: Arc<AtomicUsize>,
 ) {
+    let mut adapter: Option<Box<ClientboundHalf>> = None;
     while let Some(msg) = rx.recv().await {
-        let body = match msg {
-            Out::Body(b) => b,
-            Out::Shared(p) => p.body().to_vec(),
+        let (body, queued_len) = match msg {
+            Out::Body(b) => match adapter.as_mut() {
+                Some(a) => {
+                    let n = b.len();
+                    let t = a.translate(&b).unwrap_or_else(|e| {
+                        log::debug!("multiversion: untranslatable packet: {e}");
+                        None
+                    });
+                    (t.map(<[u8]>::to_vec), n)
+                }
+                None => {
+                    let n = b.len();
+                    (Some(b), n)
+                }
+            },
+            Out::Shared(p) => match adapter.as_mut() {
+                Some(a) => (a.translate_shared(&p).map(<[u8]>::to_vec), p.body().len()),
+                None => (Some(p.body().to_vec()), p.body().len()),
+            },
+            Out::Adapter(a) => {
+                adapter = Some(a);
+                continue;
+            }
             Out::Compression(_) | Out::Encryption(_) => continue,
             Out::Close => break,
         };
-        queued.fetch_sub(body.len(), Ordering::Relaxed);
-        if tx.send(body).await.is_err() {
+        queued.fetch_sub(queued_len, Ordering::Relaxed);
+        if let Some(body) = body
+            && tx.send(body).await.is_err()
+        {
             break;
         }
     }

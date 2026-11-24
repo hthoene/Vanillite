@@ -1,0 +1,1210 @@
+//! Step 26.2 (protocol 776) ↔ 26.3 (protocol 777).
+//!
+//! Ids come from the generated tables ([`crate::generated::v26_2`]); this module rewrites the
+//! packets whose fields changed and the ones that carry registry ids. Everything else only gets
+//! its packet id rewritten. The wire formats on both sides are this step's own knowledge: it
+//! never uses the typed packets of `vanillite-protocol`, which follow the current version.
+
+use std::sync::{Arc, Mutex, PoisonError};
+
+use crate::chain::{ClientboundStep, ServerboundStep};
+use crate::chunk::{self, Kind};
+use crate::entity_data::{self, Tables};
+use crate::generated::v26_2 as g;
+use crate::io;
+use crate::items::{self, Maps};
+use crate::table::{PacketTable, Remap, similar};
+use crate::{Result, State};
+use g::new_configuration_clientbound as ncc;
+use g::new_play_clientbound as npc;
+use g::new_play_serverbound as nps;
+use g::old_configuration_serverbound as ocs;
+use g::old_play_serverbound as ops;
+use vanillite_protocol::Error;
+use vanillite_protocol::codec::{Reader, write_str, write_varint};
+use vanillite_protocol::components::Ref;
+
+/// Opens both halves of the step for one connection.
+pub(crate) fn open() -> (Box<dyn ClientboundStep>, Box<dyn ServerboundStep>) {
+    let shared = Arc::new(Mutex::new(Shared::default()));
+    (
+        Box::new(Clientbound {
+            shared: Arc::clone(&shared),
+            dynamic: Vec::new(),
+            dropped: Vec::new(),
+            refs: Vec::new(),
+        }),
+        Box::new(Serverbound {
+            shared,
+            pos: [0.0; 3],
+            rot: [0.0; 2],
+            interacted: false,
+        }),
+    )
+}
+
+/// State one half learns and the other needs.
+#[derive(Debug, Default)]
+struct Shared {
+    /// Teleports sent and not yet confirmed: id, position, rotation, relative flags.
+    teleports: Vec<(i32, [f64; 3], [f32; 2], i32)>,
+}
+
+/// The step's static registry tables, by registry name.
+struct StaticMaps;
+
+impl Maps for StaticMaps {
+    fn registry(&self, name: &str) -> Option<&'static Remap> {
+        static_remap(name)
+    }
+
+    fn component(&self, t: u16) -> Option<u16> {
+        // `swing_animation` was renamed `attack_animation` with the same codec.
+        if i32::from(t) == g::NEW_DATA_COMPONENT_TYPE_ATTACK_ANIMATION {
+            return u16::try_from(g::OLD_DATA_COMPONENT_TYPE_SWING_ANIMATION).ok();
+        }
+        g::DATA_COMPONENT_TYPE
+            .older(i32::from(t))
+            .and_then(|t| u16::try_from(t).ok())
+    }
+
+    fn convert(&self, t: u16, value: &[u8], out: &mut Vec<u8>) -> Option<Result<()>> {
+        (i32::from(t) == g::NEW_DATA_COMPONENT_TYPE_POT_DECORATIONS)
+            .then(|| pot_decorations(value, out))
+    }
+}
+
+/// `pot_decorations`: 26.3 has four optional item stack templates (back, left, right, front),
+/// 26.2 a list of item ids where brick is a plain side.
+fn pot_decorations(value: &[u8], out: &mut Vec<u8>) -> Result<()> {
+    let mut r = Reader::new(value);
+    let mut ids = [g::OLD_ITEM_BRICK; 4];
+    for id in &mut ids {
+        if r.u8()? != 0 {
+            *id = g::ITEM.older(r.varint()?).unwrap_or(g::OLD_ITEM_BRICK);
+            r.varint()?;
+            let mut skip = Vec::new();
+            items::patch_to_old(&mut r, &mut skip, &StaticMaps, &mut Vec::new())?;
+        }
+    }
+    let len = ids
+        .iter()
+        .rposition(|&i| i != g::OLD_ITEM_BRICK)
+        .map_or(0, |i| i.saturating_add(1));
+    io::write_len(out, len);
+    for id in ids.iter().take(len) {
+        write_varint(out, *id);
+    }
+    Ok(())
+}
+
+/// A component type of a 26.2 client in 26.3 numbering.
+fn component_to_new(t: i32) -> Option<i32> {
+    if t == g::OLD_DATA_COMPONENT_TYPE_SWING_ANIMATION {
+        return Some(g::NEW_DATA_COMPONENT_TYPE_ATTACK_ANIMATION);
+    }
+    g::DATA_COMPONENT_TYPE.newer(t)
+}
+
+fn static_remap(name: &str) -> Option<&'static Remap> {
+    Some(match name {
+        "minecraft:block" => &g::BLOCK,
+        "minecraft:item" => &g::ITEM,
+        "minecraft:entity_type" => &g::ENTITY_TYPE,
+        "minecraft:sound_event" => &g::SOUND_EVENT,
+        "minecraft:particle_type" => &g::PARTICLE_TYPE,
+        "minecraft:data_component_type" => &g::DATA_COMPONENT_TYPE,
+        "minecraft:command_argument_type" => &g::COMMAND_ARGUMENT_TYPE,
+        "minecraft:map_decoration_type" => &g::MAP_DECORATION_TYPE,
+        "minecraft:custom_stat" => &g::CUSTOM_STAT,
+        _ => return None,
+    })
+}
+
+/// Index of a data component type of the newer version.
+fn new_component(name: &str) -> u16 {
+    g::NEW_DATA_COMPONENT_TYPES
+        .iter()
+        .position(|e| *e == name)
+        .and_then(|i| u16::try_from(i).ok())
+        .unwrap_or(u16::MAX)
+}
+
+fn tables(maps: &dyn Maps) -> Tables<'_> {
+    Tables {
+        maps,
+        block_state: &g::BLOCK_STATE,
+        particle_type: &g::PARTICLE_TYPE,
+        particle_names: g::NEW_PARTICLE_TYPES,
+        profile_component: new_component("minecraft:profile"),
+        painting_component: new_component("minecraft:painting/variant"),
+    }
+}
+
+fn packets(state: State, clientbound: bool) -> Option<&'static PacketTable> {
+    Some(match (state, clientbound) {
+        (State::Login, true) => &g::LOGIN_CLIENTBOUND,
+        (State::Login, false) => &g::LOGIN_SERVERBOUND,
+        (State::Configuration, true) => &g::CONFIGURATION_CLIENTBOUND,
+        (State::Configuration, false) => &g::CONFIGURATION_SERVERBOUND,
+        (State::Play, true) => &g::PLAY_CLIENTBOUND,
+        (State::Play, false) => &g::PLAY_SERVERBOUND,
+        (State::Handshake | State::Status, _) => return None,
+    })
+}
+
+/// Global palette sizes: block states on both sides.
+fn block_kind() -> Kind {
+    Kind {
+        entries: 4096,
+        max_indirect: 8,
+        global_new: chunk::global_bits(g::BLOCK_STATE.to_old.len()),
+        global_old: chunk::global_bits(g::BLOCK_STATE.to_new.len()),
+    }
+}
+
+/// A dynamic registry as the client knows it: newer index → older index.
+#[derive(Debug)]
+struct Dynamic {
+    registry: String,
+    to_old: Vec<i32>,
+    old_len: usize,
+}
+
+#[derive(Debug)]
+struct Clientbound {
+    shared: Arc<Mutex<Shared>>,
+    /// Synchronised registries as sent in this connection's configuration.
+    dynamic: Vec<Dynamic>,
+    /// Registries whose data was not sent to the client (it does not synchronise them).
+    dropped: Vec<String>,
+    refs: Vec<Ref>,
+}
+
+impl Clientbound {
+    fn dynamic(&self, registry: &str) -> Option<&Dynamic> {
+        self.dynamic.iter().find(|d| d.registry == registry)
+    }
+
+    fn biome_kind(&self) -> Kind {
+        let (new, old) = self
+            .dynamic("minecraft:worldgen/biome")
+            .map_or((64, 64), |d| (d.to_old.len(), d.old_len));
+        Kind {
+            entries: 64,
+            max_indirect: 3,
+            global_new: chunk::global_bits(new),
+            global_old: chunk::global_bits(old),
+        }
+    }
+
+    fn biome_map(&self) -> impl Fn(i32) -> i32 + '_ {
+        let d = self.dynamic("minecraft:worldgen/biome");
+        move |id| match d {
+            Some(d) => usize::try_from(id)
+                .ok()
+                .and_then(|i| d.to_old.get(i))
+                .copied()
+                .unwrap_or(0),
+            None => id,
+        }
+    }
+}
+
+fn block_state_to_old(id: i32) -> i32 {
+    g::BLOCK_STATE.older(id).unwrap_or(0)
+}
+
+impl ClientboundStep for Clientbound {
+    fn translate(&mut self, state: State, body: &[u8], out: &mut Vec<u8>) -> Result<bool> {
+        let Some(table) = packets(state, true) else {
+            out.extend_from_slice(body);
+            return Ok(true);
+        };
+        let mut r = Reader::new(body);
+        let id = r.varint()?;
+        if state == State::Play && id == npc::SWING_ANIMATION {
+            // 26.2 shows swings through `animate`: 0 main hand, 3 off hand.
+            let entity = r.varint()?;
+            let hand = r.varint()?;
+            write_varint(out, g::old_play_clientbound::ANIMATE);
+            write_varint(out, entity);
+            out.push(if hand == 1 { 3 } else { 0 });
+            return Ok(true);
+        }
+        let Some(old_id) = table.older(id) else {
+            // A packet the older version does not have.
+            return Ok(false);
+        };
+        write_varint(out, old_id);
+        match state {
+            State::Configuration => self.configuration(id, &mut r, out),
+            State::Play => self.play(id, &mut r, out),
+            _ => {
+                out.extend_from_slice(r.take_rest());
+                Ok(true)
+            }
+        }
+    }
+
+    fn stateless(&self, state: State, id: i32) -> bool {
+        // Packets that change or read per-connection state; all others translate the same for
+        // every client of 26.2 (chunk biomes use the server's registries, the same for all).
+        !(state != State::Play
+            || id == npc::PLAYER_POSITION
+            || id == npc::LOGIN
+            || id == npc::RESPAWN
+            || id == npc::UPDATE_TAGS
+            || id == npc::START_CONFIGURATION)
+    }
+}
+
+impl Clientbound {
+    fn configuration(&mut self, id: i32, r: &mut Reader<'_>, out: &mut Vec<u8>) -> Result<bool> {
+        match id {
+            ncc::SELECT_KNOWN_PACKS => {
+                known_packs(r, out, g::NEXT_ID, g::ID)?;
+            }
+            ncc::REGISTRY_DATA => return self.registry_data(r, out),
+            ncc::UPDATE_TAGS => self.tags(r, out)?,
+            _ => out.extend_from_slice(r.take_rest()),
+        }
+        Ok(true)
+    }
+
+    /// `registry_data`: registries the older version does not synchronise are dropped; entries it
+    /// does not have built in are left out unless they come with their data. Later ids follow.
+    fn registry_data(&mut self, r: &mut Reader<'_>, out: &mut Vec<u8>) -> Result<bool> {
+        let registry = r.string(io::MAX_STRING)?.to_owned();
+        let Some((_, known)) = g::SYNCHRONIZED.iter().find(|(n, _)| *n == registry) else {
+            if !self.dropped.contains(&registry) {
+                self.dropped.push(registry);
+            }
+            return Ok(false);
+        };
+        let n = io::len(r, 1 << 16, 2)?;
+        let mut entries = Vec::new();
+        let mut names = Vec::with_capacity(n);
+        let mut kept = Vec::with_capacity(n);
+        for _ in 0..n {
+            let name = r.string(io::MAX_STRING)?.to_owned();
+            let start = r.rest();
+            let has_data = r.u8()? != 0;
+            if has_data {
+                let mut skip = Vec::new();
+                io::nbt(r, &mut skip)?;
+            }
+            let len = start.len().saturating_sub(r.remaining());
+            let keep = has_data || known.binary_search(&name.as_str()).is_ok();
+            if keep {
+                write_str(&mut entries, &name);
+                entries.extend_from_slice(start.get(..len).ok_or(Error::UnexpectedEnd)?);
+            }
+            kept.push(keep);
+            names.push(name);
+        }
+        let kept_names: Vec<&str> = names
+            .iter()
+            .zip(&kept)
+            .filter(|(_, k)| **k)
+            .map(|(n, _)| n.as_str())
+            .collect();
+        let mut to_old = Vec::with_capacity(n);
+        let mut next = 0i32;
+        for (name, keep) in names.iter().zip(&kept) {
+            if *keep {
+                to_old.push(next);
+                next = next.saturating_add(1);
+            } else {
+                let fallback = similar(name, kept_names.iter().copied())
+                    .and_then(|s| kept_names.iter().position(|k| *k == s))
+                    .and_then(|i| i32::try_from(i).ok())
+                    .unwrap_or(0);
+                to_old.push(fallback);
+            }
+        }
+        write_str(out, &registry);
+        io::write_len(out, kept_names.len());
+        out.extend_from_slice(&entries);
+        self.dynamic.retain(|d| d.registry != registry);
+        self.dynamic.push(Dynamic {
+            registry,
+            to_old,
+            old_len: kept_names.len(),
+        });
+        Ok(true)
+    }
+
+    /// `update_tags`: ids follow the older registries; registries it lacks are left out.
+    fn tags(&self, r: &mut Reader<'_>, out: &mut Vec<u8>) -> Result<()> {
+        let n = io::len(r, 1024, 2)?;
+        let mut body = Vec::new();
+        let mut kept = 0usize;
+        for _ in 0..n {
+            let registry = r.string(io::MAX_STRING)?.to_owned();
+            let remap = static_remap(&registry);
+            let dynamic = self.dynamic(&registry);
+            // A 26.2 client fails on tags of registries it does not know.
+            let known = !self.dropped.contains(&registry)
+                && (g::STATIC_REGISTRIES.contains(&registry.as_str())
+                    || g::SYNCHRONIZED.iter().any(|(n, _)| *n == registry));
+            let tags = io::len(r, 1 << 16, 2)?;
+            let mut list = Vec::new();
+            for _ in 0..tags {
+                io::string(r, &mut list)?;
+                let ids = io::len(r, 1 << 20, 1)?;
+                let mut mapped = Vec::with_capacity(ids);
+                for _ in 0..ids {
+                    let id = r.varint()?;
+                    let old = match (remap, dynamic) {
+                        (Some(m), _) => m.older(id),
+                        (None, Some(d)) => usize::try_from(id)
+                            .ok()
+                            .and_then(|i| d.to_old.get(i).copied()),
+                        (None, None) => Some(id),
+                    };
+                    // Entries the older version lacks leave the tag (fallbacks would add
+                    // unrelated entries to it).
+                    if let Some(old) = old
+                        && !is_fallback(remap, dynamic, id)
+                    {
+                        mapped.push(old);
+                    }
+                }
+                io::write_len(&mut list, mapped.len());
+                for id in mapped {
+                    write_varint(&mut list, id);
+                }
+            }
+            if known {
+                write_str(&mut body, &registry);
+                io::write_len(&mut body, tags);
+                body.extend_from_slice(&list);
+                kept = kept.saturating_add(1);
+            }
+        }
+        io::write_len(out, kept);
+        out.extend_from_slice(&body);
+        Ok(())
+    }
+
+    fn play(&mut self, id: i32, r: &mut Reader<'_>, out: &mut Vec<u8>) -> Result<bool> {
+        let maps = StaticMaps;
+        match id {
+            npc::LEVEL_CHUNK_WITH_LIGHT => {
+                io::bytes(r, out, 8)?;
+                chunk::heightmaps(r, out)?;
+                let len = io::len(r, 2_097_152, 1)?;
+                let data = r.take(len)?;
+                let mut sections = Vec::with_capacity(len);
+                chunk::sections(
+                    data,
+                    &mut sections,
+                    block_kind(),
+                    self.biome_kind(),
+                    &block_state_to_old,
+                    &self.biome_map(),
+                )?;
+                io::write_len(out, sections.len());
+                out.extend_from_slice(&sections);
+                // Block entities: packed xz, y, type, NBT.
+                let n = io::len(r, 1 << 16, 4)?;
+                io::write_len(out, n);
+                for _ in 0..n {
+                    io::bytes(r, out, 3)?;
+                    io::varint(r, out)?;
+                    io::nbt(r, out)?;
+                }
+                light_data(r, out)?;
+            }
+            npc::LIGHT_UPDATE => {
+                io::varint(r, out)?;
+                io::varint(r, out)?;
+                light_data(r, out)?;
+            }
+            npc::LOGIN => {
+                io::bytes(r, out, 5)?;
+                let n = io::len(r, 1024, 1)?;
+                io::write_len(out, n);
+                for _ in 0..n {
+                    io::string(r, out)?;
+                }
+                for _ in 0..3 {
+                    io::varint(r, out)?;
+                }
+                io::bytes(r, out, 3)?;
+                spawn_info(r, out)?;
+                out.extend_from_slice(r.take_rest());
+            }
+            npc::RESPAWN => {
+                spawn_info(r, out)?;
+                out.extend_from_slice(r.take_rest());
+            }
+            npc::ANIMATE => {
+                io::varint(r, out)?;
+                // 26.3: 0 wake up, 1 crit, 2 magic crit; 26.2: 2, 4, 5 (0 and 3 were swings).
+                let action = match r.u8()? {
+                    0 => 2,
+                    1 => 4,
+                    2 => 5,
+                    _ => return Ok(false),
+                };
+                out.push(action);
+            }
+            npc::ENTITY_EVENT => {
+                let head = r.take(4)?;
+                let event = r.u8()?;
+                // 71/72: boat sink and launch, new in 26.3.
+                if event == 71 || event == 72 {
+                    return Ok(false);
+                }
+                out.extend_from_slice(head);
+                out.push(event);
+            }
+            npc::EXPLODE => {
+                io::bytes(r, out, 24 + 4 + 4)?;
+                if io::boolean(r, out)? {
+                    io::bytes(r, out, 24)?;
+                }
+                let maps = StaticMaps;
+                let t = tables(&maps);
+                if !entity_data::particle(r, out, &t, &mut self.refs)? {
+                    // No such particle in 26.2: the plain explosion.
+                    write_varint(out, g::PARTICLE_TYPE.older(0).unwrap_or(0));
+                }
+                let mut sound_bytes = Vec::new();
+                sound(r, &mut sound_bytes)?;
+                let n = io::len(r, 1024, 2)?;
+                let mut list = Vec::new();
+                let mut kept = 0usize;
+                for _ in 0..n {
+                    let mut entry = Vec::new();
+                    let ok = entity_data::particle(r, &mut entry, &t, &mut self.refs)?;
+                    io::bytes(r, &mut entry, 8)?;
+                    io::varint(r, &mut entry)?;
+                    if ok {
+                        list.extend_from_slice(&entry);
+                        kept = kept.saturating_add(1);
+                    }
+                }
+                let play_sound = r.u8()? != 0;
+                if play_sound {
+                    out.extend_from_slice(&sound_bytes);
+                } else {
+                    write_varint(
+                        out,
+                        g::OLD_SOUND_EVENT_INTENTIONALLY_EMPTY.saturating_add(1),
+                    );
+                }
+                io::write_len(out, kept);
+                out.extend_from_slice(&list);
+            }
+            npc::UPDATE_ADVANCEMENTS => self.advancements(r, out)?,
+            npc::MERCHANT_OFFERS => {
+                let maps = StaticMaps;
+                io::varint(r, out)?;
+                let n = io::len(r, 1024, 4)?;
+                io::write_len(out, n);
+                for _ in 0..n {
+                    item_cost(r, out, &maps, &mut self.refs)?;
+                    items::stack_to_old(r, out, &maps, &mut self.refs)?;
+                    if io::boolean(r, out)? {
+                        item_cost(r, out, &maps, &mut self.refs)?;
+                    }
+                    io::bytes(r, out, 1 + 4 * 6)?;
+                }
+                out.extend_from_slice(r.take_rest());
+            }
+            // Recipe displays changed (tag slot displays) and new recipe property sets: not
+            // translated yet, so the 26.2 client gets no recipe book data instead of a broken
+            // one.
+            npc::RECIPE_BOOK_ADD | npc::UPDATE_RECIPES | npc::PLACE_GHOST_RECIPE => {
+                return Ok(false);
+            }
+            npc::CHUNKS_BIOMES => {
+                let n = io::len(r, 1024, 9)?;
+                io::write_len(out, n);
+                for _ in 0..n {
+                    io::bytes(r, out, 8)?;
+                    let len = io::len(r, 2_097_152, 1)?;
+                    let data = r.take(len)?;
+                    let mut sections = Vec::with_capacity(len);
+                    chunk::biome_sections(
+                        data,
+                        &mut sections,
+                        self.biome_kind(),
+                        &self.biome_map(),
+                    )?;
+                    io::write_len(out, sections.len());
+                    out.extend_from_slice(&sections);
+                }
+            }
+            npc::BLOCK_UPDATE => {
+                io::bytes(r, out, 8)?;
+                write_varint(out, block_state_to_old(r.varint()?));
+            }
+            npc::SECTION_BLOCKS_UPDATE => {
+                io::bytes(r, out, 8)?;
+                let n = io::len(r, 4096, 1)?;
+                io::write_len(out, n);
+                for _ in 0..n {
+                    let v = r.varlong()?;
+                    let state = i32::try_from(v >> 12).unwrap_or(0);
+                    let packed = (i64::from(block_state_to_old(state)) << 12) | (v & 0xfff);
+                    vanillite_protocol::codec::write_varlong(out, packed);
+                }
+            }
+            npc::BLOCK_EVENT => {
+                io::bytes(r, out, 10)?;
+                write_varint(out, g::BLOCK.older(r.varint()?).unwrap_or(0));
+            }
+            npc::LEVEL_EVENT => {
+                let mut event = r.i32()?;
+                match event {
+                    // Splash sounds (26.2 plays them with the particles), teleport trails and
+                    // mining progress (26.2 clients draw their own): new in 26.3.
+                    1053 | 1054 | 2015..=2020 => return Ok(false),
+                    // Destroy particles without sound: the nearest 26.2 event.
+                    2014 => event = 2001,
+                    _ => {}
+                }
+                out.extend_from_slice(&event.to_be_bytes());
+                io::bytes(r, out, 8)?;
+                let data = r.i32()?;
+                // 2001: block destroyed (particles and sound of a block state).
+                let data = if event == 2001 {
+                    block_state_to_old(data)
+                } else {
+                    data
+                };
+                out.extend_from_slice(&data.to_be_bytes());
+                io::bytes(r, out, 1)?;
+            }
+            npc::ADD_ENTITY => {
+                io::varint(r, out)?;
+                io::bytes(r, out, 16)?;
+                let kind = r.varint()?;
+                let Some(old) = g::ENTITY_TYPE.older(kind) else {
+                    // An entity type the client cannot show; later packets about it are ignored
+                    // by the client.
+                    return Ok(false);
+                };
+                write_varint(out, old);
+                io::bytes(r, out, 24)?;
+                lp_vec3(r, out)?;
+                io::bytes(r, out, 3)?;
+                let data = r.varint()?;
+                let falling_block = g::NEW_ENTITY_TYPES
+                    .get(usize::try_from(kind).unwrap_or(usize::MAX))
+                    == Some(&"minecraft:falling_block");
+                write_varint(
+                    out,
+                    if falling_block {
+                        block_state_to_old(data)
+                    } else {
+                        data
+                    },
+                );
+            }
+            npc::MOVE_ENTITY_POS | npc::MOVE_ENTITY_POS_ROT => {
+                // 26.3: properties (on ground, step count) and a VecDelta; 26.2: one delta.
+                io::varint(r, out)?;
+                let props = r.varint()?;
+                let on_ground = props & 1 != 0;
+                let steps = u32::from_ne_bytes(props.to_ne_bytes()) >> 1;
+                let mut delta = [0i32; 3];
+                let mut add = |r: &mut Reader<'_>| -> Result<()> {
+                    for d in &mut delta {
+                        *d = d.saturating_add(i32::from(r.i16()?));
+                    }
+                    Ok(())
+                };
+                if steps == 0 {
+                    add(r)?;
+                } else {
+                    for _ in 0..steps.min(1024) {
+                        r.varint()?;
+                        add(r)?;
+                    }
+                }
+                for d in delta {
+                    let d = i16::try_from(d.clamp(i32::from(i16::MIN), i32::from(i16::MAX)))
+                        .unwrap_or(0);
+                    out.extend_from_slice(&d.to_be_bytes());
+                }
+                if id == npc::MOVE_ENTITY_POS_ROT {
+                    io::bytes(r, out, 2)?;
+                }
+                out.push(u8::from(on_ground));
+            }
+            npc::MOVE_ENTITY_ROT => {
+                // 26.3: id, on ground, yaw, pitch; 26.2: id, yaw, pitch, on ground.
+                io::varint(r, out)?;
+                let on_ground = r.u8()?;
+                io::bytes(r, out, 2)?;
+                out.push(on_ground);
+            }
+            npc::ENTITY_POSITION_SYNC => {
+                // 26.3: a position path; 26.2: PositionMoveRotation (position, movement, rot).
+                io::varint(r, out)?;
+                let pos = match r.varint()? {
+                    0 => r.take(24)?,
+                    1 => {
+                        let n = io::len(r, 1024, 25)?;
+                        let mut last = r.rest().get(..24).ok_or(Error::UnexpectedEnd)?;
+                        for _ in 0..n {
+                            last = r.take(24)?;
+                            r.varint()?;
+                        }
+                        last
+                    }
+                    _ => return Err(Error::Invalid("position path")),
+                };
+                out.extend_from_slice(pos);
+                out.extend_from_slice(&[0; 24]);
+                io::bytes(r, out, 9)?;
+            }
+            npc::PLAYER_POSITION => {
+                let teleport = io::varint(r, out)?;
+                let mut pos = [0.0f64; 3];
+                for p in &mut pos {
+                    *p = r.f64()?;
+                    out.extend_from_slice(&p.to_be_bytes());
+                }
+                io::bytes(r, out, 24)?;
+                let mut rot = [0.0f32; 2];
+                for v in &mut rot {
+                    *v = r.f32()?;
+                    out.extend_from_slice(&v.to_be_bytes());
+                }
+                let relatives = r.i32()?;
+                out.extend_from_slice(&relatives.to_be_bytes());
+                let mut shared = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
+                if shared.teleports.len() >= 64 {
+                    shared.teleports.remove(0);
+                }
+                shared.teleports.push((teleport, pos, rot, relatives));
+            }
+            npc::SET_ENTITY_DATA => {
+                io::varint(r, out)?;
+                entity_data::entity_data(r, out, &tables(&maps))?;
+            }
+            npc::SET_EQUIPMENT => {
+                io::varint(r, out)?;
+                loop {
+                    let slot = r.u8()?;
+                    out.push(slot);
+                    items::stack_to_old(r, out, &maps, &mut self.refs)?;
+                    if slot & 0x80 == 0 {
+                        break;
+                    }
+                }
+            }
+            npc::CONTAINER_SET_CONTENT => {
+                io::varint(r, out)?;
+                io::varint(r, out)?;
+                let n = io::len(r, 1024, 1)?;
+                io::write_len(out, n);
+                for _ in 0..n {
+                    items::stack_to_old(r, out, &maps, &mut self.refs)?;
+                }
+                items::stack_to_old(r, out, &maps, &mut self.refs)?;
+            }
+            npc::CONTAINER_SET_SLOT => {
+                io::varint(r, out)?;
+                io::varint(r, out)?;
+                io::bytes(r, out, 2)?;
+                items::stack_to_old(r, out, &maps, &mut self.refs)?;
+            }
+            npc::SET_CURSOR_ITEM => items::stack_to_old(r, out, &maps, &mut self.refs)?,
+            npc::SET_PLAYER_INVENTORY => {
+                io::varint(r, out)?;
+                items::stack_to_old(r, out, &maps, &mut self.refs)?;
+            }
+            npc::SOUND | npc::SOUND_ENTITY => {
+                sound(r, out)?;
+                out.extend_from_slice(r.take_rest());
+            }
+            npc::LEVEL_PARTICLES => return self.level_particles(r, out),
+            npc::UPDATE_TAGS => self.tags(r, out)?,
+            npc::AWARD_STATS => award_stats(r, out)?,
+            npc::COMMANDS => commands(r, out)?,
+            _ => out.extend_from_slice(r.take_rest()),
+        }
+        Ok(true)
+    }
+
+    /// `level_particles`: 26.3 sends the particle first, per-axis speeds, a VarInt count and a
+    /// randomization type; 26.2 the particle last, one speed and an int count.
+    fn level_particles(&mut self, r: &mut Reader<'_>, out: &mut Vec<u8>) -> Result<bool> {
+        let maps = StaticMaps;
+        let mut particle = Vec::new();
+        if !entity_data::particle(r, &mut particle, &tables(&maps), &mut self.refs)? {
+            return Ok(false);
+        }
+        let flags = r.take(2)?;
+        let pos = r.take(24)?;
+        let mut dist = [r.f32()?, r.f32()?, r.f32()?];
+        let speed = [r.f32()?, r.f32()?, r.f32()?];
+        let count = r.varint()?;
+        r.varint()?;
+        // Count 0: one particle moving by dist * speed per axis; exact with speed 1.
+        let max_speed = if count == 0 {
+            for (d, s) in dist.iter_mut().zip(speed) {
+                *d *= s;
+            }
+            1.0
+        } else {
+            // Same speeds are exact; different ones (or the new spread modes) approximate.
+            speed.iter().copied().fold(0.0f32, f32::max)
+        };
+        out.extend_from_slice(flags);
+        out.extend_from_slice(pos);
+        for d in dist {
+            out.extend_from_slice(&d.to_be_bytes());
+        }
+        out.extend_from_slice(&max_speed.to_be_bytes());
+        out.extend_from_slice(&count.to_be_bytes());
+        out.extend_from_slice(&particle);
+        Ok(true)
+    }
+
+    /// `update_advancements`: 26.3 moved the display position from the display info to the
+    /// entry.
+    fn advancements(&mut self, r: &mut Reader<'_>, out: &mut Vec<u8>) -> Result<()> {
+        let maps = StaticMaps;
+        io::bytes(r, out, 1)?;
+        let n = io::len(r, 1 << 16, 2)?;
+        io::write_len(out, n);
+        for _ in 0..n {
+            io::string(r, out)?;
+            if io::boolean(r, out)? {
+                io::string(r, out)?;
+            }
+            let mut display = Vec::new();
+            let has_display = io::boolean(r, &mut display)?;
+            if has_display {
+                io::nbt(r, &mut display)?;
+                io::nbt(r, &mut display)?;
+                items::template_to_old(r, &mut display, &maps, &mut self.refs)?;
+                io::varint(r, &mut display)?;
+                let flags = r.i32()?;
+                display.extend_from_slice(&flags.to_be_bytes());
+                if flags & 1 != 0 {
+                    io::string(r, &mut display)?;
+                }
+            }
+            let mut rest = Vec::new();
+            // Requirements: a list of lists of strings; then the telemetry flag.
+            let groups = io::len(r, 1 << 16, 1)?;
+            io::write_len(&mut rest, groups);
+            for _ in 0..groups {
+                let k = io::len(r, 1 << 16, 1)?;
+                io::write_len(&mut rest, k);
+                for _ in 0..k {
+                    io::string(r, &mut rest)?;
+                }
+            }
+            io::bytes(r, &mut rest, 1)?;
+            let position = r.take(8)?;
+            out.extend_from_slice(&display);
+            if has_display {
+                out.extend_from_slice(position);
+            }
+            out.extend_from_slice(&rest);
+        }
+        out.extend_from_slice(r.take_rest());
+        Ok(())
+    }
+}
+
+/// Light data: the four section masks are byte arrays in 26.3 and long arrays in 26.2.
+fn light_data(r: &mut Reader<'_>, out: &mut Vec<u8>) -> Result<()> {
+    for _ in 0..4 {
+        let n = io::len(r, 1 << 16, 1)?;
+        let bytes = r.take(n)?;
+        io::write_len(out, n.div_ceil(8));
+        for chunk in bytes.chunks(8) {
+            let mut word = [0u8; 8];
+            for (w, b) in word.iter_mut().zip(chunk) {
+                *w = *b;
+            }
+            out.extend_from_slice(&u64::from_le_bytes(word).to_be_bytes());
+        }
+    }
+    out.extend_from_slice(r.take_rest());
+    Ok(())
+}
+
+/// `CommonPlayerSpawnInfo`: the previous game mode was a byte (-1 none) in 26.2 and is an
+/// optional VarInt (0 none, else id + 1) in 26.3; the game mode a VarInt of one byte.
+fn spawn_info(r: &mut Reader<'_>, out: &mut Vec<u8>) -> Result<()> {
+    io::varint(r, out)?;
+    io::string(r, out)?;
+    io::bytes(r, out, 8)?;
+    let mode = r.varint()?;
+    out.push(u8::try_from(mode).map_err(|_| Error::Invalid("game mode"))?);
+    let previous = r.varint()?;
+    let previous = if previous == 0 {
+        -1i8
+    } else {
+        i8::try_from(previous.saturating_sub(1)).map_err(|_| Error::Invalid("game mode"))?
+    };
+    out.extend_from_slice(&previous.to_be_bytes());
+    Ok(())
+}
+
+/// `ItemCost`: item id, count, exact component predicate.
+fn item_cost(
+    r: &mut Reader<'_>,
+    out: &mut Vec<u8>,
+    maps: &dyn Maps,
+    refs: &mut Vec<Ref>,
+) -> Result<()> {
+    write_varint(out, g::ITEM.older(r.varint()?).unwrap_or(1));
+    io::varint(r, out)?;
+    items::exact_to_old(r, out, maps, refs)
+}
+
+/// Whether `id` (newer) only maps to a fallback in the older version.
+fn is_fallback(remap: Option<&Remap>, dynamic: Option<&Dynamic>, id: i32) -> bool {
+    match (remap, dynamic) {
+        (Some(m), _) => m
+            .older(id)
+            .and_then(|old| m.newer(old))
+            .is_none_or(|back| back != id),
+        (None, Some(d)) => {
+            // Entries kept by name keep their order; a fallback repeats an earlier index.
+            let Ok(i) = usize::try_from(id) else {
+                return true;
+            };
+            let old = d.to_old.get(i).copied().unwrap_or(-1);
+            d.to_old.iter().take(i).any(|&o| o >= old)
+        }
+        (None, None) => false,
+    }
+}
+
+/// `SoundEvent` holder: newer registry ids become older ids, or the event by name.
+fn sound(r: &mut Reader<'_>, out: &mut Vec<u8>) -> Result<()> {
+    let id = r.varint()?;
+    if id == 0 {
+        write_varint(out, 0);
+        io::string(r, out)?;
+        if io::boolean(r, out)? {
+            io::bytes(r, out, 4)?;
+        }
+        return Ok(());
+    }
+    let new = id.saturating_sub(1);
+    match g::SOUND_EVENT.older(new) {
+        Some(old) => write_varint(out, old.saturating_add(1)),
+        None => {
+            let name = g::SOUND_EVENT_ADDED
+                .iter()
+                .find(|(i, _)| i32::from(*i) == new)
+                .map_or("minecraft:intentionally_empty", |(_, n)| *n);
+            write_varint(out, 0);
+            write_str(out, name);
+            out.push(0);
+        }
+    }
+    Ok(())
+}
+
+/// `award_stats`: (stat type, value id, amount); values of changed registries are rewritten,
+/// stats the older version lacks are left out.
+fn award_stats(r: &mut Reader<'_>, out: &mut Vec<u8>) -> Result<()> {
+    let types = g::NEW_STAT_TYPES;
+    let n = io::len(r, 1 << 16, 3)?;
+    let mut body = Vec::new();
+    let mut kept = 0usize;
+    for _ in 0..n {
+        let kind = r.varint()?;
+        let value = r.varint()?;
+        let amount = r.varint()?;
+        let registry = match types.get(usize::try_from(kind).unwrap_or(usize::MAX)) {
+            Some(&"minecraft:custom") => "minecraft:custom_stat",
+            Some(&"minecraft:mined") => "minecraft:block",
+            Some(&"minecraft:killed" | &"minecraft:killed_by") => "minecraft:entity_type",
+            Some(_) => "minecraft:item",
+            None => return Err(Error::Invalid("stat type")),
+        };
+        let old = match static_remap(registry) {
+            Some(m) if !is_fallback(Some(m), None, value) => m.older(value),
+            Some(_) => None,
+            None => Some(value),
+        };
+        if let Some(old) = old {
+            write_varint(&mut body, kind);
+            write_varint(&mut body, old);
+            write_varint(&mut body, amount);
+            kept = kept.saturating_add(1);
+        }
+    }
+    io::write_len(out, kept);
+    out.extend_from_slice(&body);
+    Ok(())
+}
+
+/// `commands`: argument parser ids follow the older registry; a parser the older version lacks
+/// becomes a greedy string (the client still completes the literal parts of the tree).
+fn commands(r: &mut Reader<'_>, out: &mut Vec<u8>) -> Result<()> {
+    const TYPE_MASK: u8 = 3;
+    const ARGUMENT: u8 = 2;
+    const LITERAL: u8 = 1;
+    const REDIRECT: u8 = 8;
+    const CUSTOM_SUGGESTIONS: u8 = 0x10;
+    let n = io::len(r, 1 << 20, 2)?;
+    io::write_len(out, n);
+    for _ in 0..n {
+        let flags = r.u8()?;
+        out.push(flags);
+        let children = io::len(r, 1 << 20, 1)?;
+        io::write_len(out, children);
+        for _ in 0..children {
+            io::varint(r, out)?;
+        }
+        if flags & REDIRECT != 0 {
+            io::varint(r, out)?;
+        }
+        match flags & TYPE_MASK {
+            LITERAL => io::string(r, out)?,
+            ARGUMENT => {
+                io::string(r, out)?;
+                let id = r.varint()?;
+                let name = usize::try_from(id)
+                    .ok()
+                    .and_then(|i| g::NEW_COMMAND_ARGUMENT_TYPES.get(i))
+                    .copied()
+                    .ok_or(Error::Invalid("argument type"))?;
+                let mut props = Vec::new();
+                parser_properties(name, r, &mut props)?;
+                match g::COMMAND_ARGUMENT_TYPE.older(id) {
+                    Some(old) => {
+                        write_varint(out, old);
+                        out.extend_from_slice(&props);
+                    }
+                    None => {
+                        write_varint(out, g::OLD_STRING_PARSER);
+                        write_varint(out, 2);
+                    }
+                }
+                if flags & CUSTOM_SUGGESTIONS != 0 {
+                    io::string(r, out)?;
+                }
+            }
+            _ => {}
+        }
+    }
+    io::varint(r, out)?;
+    Ok(())
+}
+
+/// Copies the properties of an argument parser (26.3 `ArgumentTypeInfos`).
+fn parser_properties(name: &str, r: &mut Reader<'_>, out: &mut Vec<u8>) -> Result<()> {
+    let bounds = |r: &mut Reader<'_>, out: &mut Vec<u8>, size: usize| -> Result<()> {
+        let f = r.u8()?;
+        out.push(f);
+        let n = usize::from(f & 1).saturating_add(usize::from((f >> 1) & 1));
+        io::bytes(r, out, size.saturating_mul(n))
+    };
+    match name {
+        "brigadier:float" | "brigadier:integer" => bounds(r, out, 4)?,
+        "brigadier:double" | "brigadier:long" => bounds(r, out, 8)?,
+        "brigadier:string" => {
+            io::varint(r, out)?;
+        }
+        "minecraft:entity" | "minecraft:score_holder" => io::bytes(r, out, 1)?,
+        "minecraft:time" => io::bytes(r, out, 4)?,
+        "minecraft:resource_or_tag"
+        | "minecraft:resource_or_tag_key"
+        | "minecraft:resource"
+        | "minecraft:resource_key"
+        | "minecraft:resource_selector" => io::string(r, out)?,
+        _ => {}
+    }
+    Ok(())
+}
+
+/// `LpVec3`: 1 byte for zero, else 6 bytes and a VarInt scale extension when bit 2 is set.
+fn lp_vec3(r: &mut Reader<'_>, out: &mut Vec<u8>) -> Result<()> {
+    let lowest = r.u8()?;
+    out.push(lowest);
+    if lowest == 0 {
+        return Ok(());
+    }
+    io::bytes(r, out, 5)?;
+    if lowest & 4 != 0 {
+        io::varint(r, out)?;
+    }
+    Ok(())
+}
+
+/// `select_known_packs`: the version of `minecraft:core` changes between `from` and `to`.
+fn known_packs(r: &mut Reader<'_>, out: &mut Vec<u8>, from: &str, to: &str) -> Result<()> {
+    let n = io::len(r, 64, 3)?;
+    io::write_len(out, n);
+    for _ in 0..n {
+        let namespace = r.string(io::MAX_STRING)?;
+        let id = r.string(io::MAX_STRING)?;
+        let version = r.string(io::MAX_STRING)?;
+        write_str(out, namespace);
+        write_str(out, id);
+        let core = namespace == "minecraft" && id == "core" && version == from;
+        write_str(out, if core { to } else { version });
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct Serverbound {
+    shared: Arc<Mutex<Shared>>,
+    /// The client's last reported position and rotation (for teleport confirmations).
+    pos: [f64; 3],
+    rot: [f32; 2],
+    /// The client interacted or dropped an item in this tick: its swing is not a punch.
+    interacted: bool,
+}
+
+impl ServerboundStep for Serverbound {
+    fn translate(&mut self, state: State, body: &[u8], out: &mut Vec<u8>) -> Result<bool> {
+        let Some(table) = packets(state, false) else {
+            out.extend_from_slice(body);
+            return Ok(true);
+        };
+        let mut r = Reader::new(body);
+        let id = r.varint()?;
+        if state == State::Play && id == ops::SWING {
+            // 26.3 clients send `punch` only for attack swings of the main hand; the server
+            // shows interaction swings itself.
+            if r.varint()? != 0 || self.interacted {
+                return Ok(false);
+            }
+            write_varint(out, nps::PUNCH);
+            return Ok(true);
+        }
+        let new_id = table
+            .newer(id)
+            .ok_or(Error::Invalid("packet unknown to the server's version"))?;
+        write_varint(out, new_id);
+        match state {
+            State::Configuration if id == ocs::SELECT_KNOWN_PACKS => {
+                known_packs(&mut r, out, g::ID, g::NEXT_ID)?;
+            }
+            State::Play => return self.play(id, &mut r, out),
+            _ => out.extend_from_slice(r.take_rest()),
+        }
+        Ok(true)
+    }
+}
+
+impl Serverbound {
+    fn play(&mut self, id: i32, r: &mut Reader<'_>, out: &mut Vec<u8>) -> Result<bool> {
+        match id {
+            ops::CLIENT_TICK_END => self.interacted = false,
+            ops::USE_ITEM | ops::USE_ITEM_ON => self.interacted = true,
+            ops::INTERACT => {
+                // Entity id, then the action: 1 is an attack (its swing is a punch).
+                let mut peek = r.clone();
+                peek.varint()?;
+                if peek.varint()? != 1 {
+                    self.interacted = true;
+                }
+            }
+            _ => {}
+        }
+        match id {
+            ops::PLAYER_ACTION => {
+                // 26.3 inserted CHANGE_DESTROY_DIRECTION at 1.
+                let action = r.varint()?;
+                if action == 3 || action == 4 {
+                    self.interacted = true;
+                }
+                write_varint(
+                    out,
+                    if action == 0 {
+                        0
+                    } else {
+                        action.saturating_add(1)
+                    },
+                );
+                out.extend_from_slice(r.take_rest());
+            }
+            ops::SIGN_UPDATE => {
+                // 26.2: position, front flag, 4 lines; 26.3: position, 4 lines, slot.
+                io::bytes(r, out, 8)?;
+                let front = r.u8()?;
+                for _ in 0..4 {
+                    io::string(r, out)?;
+                }
+                out.push(front);
+            }
+            ops::MOVE_PLAYER_POS | ops::MOVE_PLAYER_POS_ROT => {
+                for p in &mut self.pos {
+                    *p = r.f64()?;
+                    out.extend_from_slice(&p.to_be_bytes());
+                }
+                if id == ops::MOVE_PLAYER_POS_ROT {
+                    self.rotation(r, out)?;
+                }
+                out.extend_from_slice(r.take_rest());
+            }
+            ops::MOVE_PLAYER_ROT => {
+                self.rotation(r, out)?;
+                out.extend_from_slice(r.take_rest());
+            }
+            ops::ACCEPT_TELEPORTATION => {
+                // 26.3 also wants the position and rotation the client reached.
+                let teleport = io::varint(r, out)?;
+                let found = {
+                    let mut shared = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
+                    let i = shared.teleports.iter().position(|t| t.0 == teleport);
+                    i.map(|i| shared.teleports.remove(i))
+                };
+                let (pos, rot) = match found {
+                    Some((_, pos, rot, rel)) => {
+                        let mut p = pos;
+                        for (i, v) in p.iter_mut().enumerate() {
+                            if rel & (1 << i) != 0 {
+                                *v += self.pos.get(i).copied().unwrap_or(0.0);
+                            }
+                        }
+                        let mut o = rot;
+                        // Relative bits 3 (y rot) and 4 (x rot).
+                        if rel & (1 << 3) != 0 {
+                            o[0] += self.rot[0];
+                        }
+                        if rel & (1 << 4) != 0 {
+                            o[1] += self.rot[1];
+                        }
+                        (p, o)
+                    }
+                    None => (self.pos, self.rot),
+                };
+                self.pos = pos;
+                self.rot = rot;
+                for v in pos {
+                    out.extend_from_slice(&v.to_be_bytes());
+                }
+                for v in rot {
+                    out.extend_from_slice(&v.to_be_bytes());
+                }
+            }
+            ops::SET_CREATIVE_MODE_SLOT => {
+                io::bytes(r, out, 2)?;
+                items::untrusted_stack_to_new(r, out, &g::ITEM, &component_to_new)?;
+            }
+            _ => out.extend_from_slice(r.take_rest()),
+        }
+        Ok(true)
+    }
+
+    fn rotation(&mut self, r: &mut Reader<'_>, out: &mut Vec<u8>) -> Result<()> {
+        for v in &mut self.rot {
+            *v = r.f32()?;
+            out.extend_from_slice(&v.to_be_bytes());
+        }
+        Ok(())
+    }
+}

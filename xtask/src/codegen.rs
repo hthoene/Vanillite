@@ -71,11 +71,19 @@ pub fn run(root: &Path, check: bool) -> Result<()> {
             dynamic(&read_json(&data.join("dynamic_registries.json"))?)?,
         ),
     ];
+    let mv_out = root.join("crates/vanillite-multiversion/src/generated");
+    let mv_files = crate::multiversion::generate(root)?;
     if check {
         let mut stale = Vec::new();
         for (name, contents) in &files {
             if std::fs::read_to_string(out.join(name)).ok().as_deref() != Some(contents.as_str()) {
                 stale.push(*name);
+            }
+        }
+        for (name, contents) in &mv_files {
+            if std::fs::read_to_string(mv_out.join(name)).ok().as_deref() != Some(contents.as_str())
+            {
+                stale.push(name.as_str());
             }
         }
         if !stale.is_empty() {
@@ -92,7 +100,13 @@ pub fn run(root: &Path, check: bool) -> Result<()> {
         for (name, contents) in &files {
             crate::write(&out.join(name), contents)?;
         }
-        println!("codegen: wrote {}", out.display());
+        if mv_out.exists() {
+            std::fs::remove_dir_all(&mv_out).map_err(|e| format!("{}: {e}", mv_out.display()))?;
+        }
+        for (name, contents) in &mv_files {
+            crate::write(&mv_out.join(name), contents)?;
+        }
+        println!("codegen: wrote {} and {}", out.display(), mv_out.display());
     }
     Ok(())
 }

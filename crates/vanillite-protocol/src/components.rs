@@ -115,6 +115,8 @@ pub fn validate(type_id: u16, data: &[u8], registries: &dyn Registries) -> Resul
         r: Reader::new(data),
         registries,
         depth: 0,
+        refs: None,
+        len: data.len(),
     };
     v.value(type_id)?;
     if v.r.remaining() == 0 {
@@ -137,6 +139,63 @@ pub fn value_len(type_id: u16, data: &[u8]) -> Result<usize> {
         r: Reader::new(data),
         registries: &Unchecked,
         depth: 0,
+        refs: None,
+        len: data.len(),
+    };
+    v.value(type_id)?;
+    Ok(data.len().saturating_sub(v.r.remaining()))
+}
+
+/// A registry reference in a component value, found by [`registry_refs`] (for rewriting ids
+/// between versions). Offsets are byte positions in the value. Events are in reading order: a
+/// patch or component comes before the references inside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ref {
+    /// A registry id VarInt at `start..end`; `plus_one` for a holder (id + 1, 0 = direct).
+    Id {
+        registry: &'static str,
+        start: usize,
+        end: usize,
+        id: i32,
+        plus_one: bool,
+    },
+    /// A data component patch: its added and removed count VarInts; `end_event` is the index of
+    /// the first event after the patch.
+    Patch {
+        added: (usize, usize),
+        removed: (usize, usize),
+        end_event: usize,
+    },
+    /// An added component of a patch: its type VarInt at `start..type_end`, its value up to
+    /// `end`.
+    Component {
+        type_id: u16,
+        start: usize,
+        type_end: usize,
+        end: usize,
+    },
+    /// A removed component type of a patch at `start..end`.
+    Removed {
+        type_id: u16,
+        start: usize,
+        end: usize,
+    },
+}
+
+/// Like [`value_len`], and collects every registry reference of the value into `refs`.
+pub fn registry_refs(type_id: u16, data: &[u8], refs: &mut Vec<Ref>) -> Result<usize> {
+    struct Unchecked;
+    impl Registries for Unchecked {
+        fn size(&self, _: &str) -> Option<usize> {
+            Some(usize::MAX)
+        }
+    }
+    let mut v = Validator {
+        r: Reader::new(data),
+        registries: &Unchecked,
+        depth: 0,
+        refs: Some(refs),
+        len: data.len(),
     };
     v.value(type_id)?;
     Ok(data.len().saturating_sub(v.r.remaining()))
@@ -174,9 +233,32 @@ struct Validator<'a, 'r> {
     r: Reader<'a>,
     registries: &'r dyn Registries,
     depth: u32,
+    /// Collects registry references ([`registry_refs`]).
+    refs: Option<&'r mut Vec<Ref>>,
+    /// Length of the whole value (positions of references).
+    len: usize,
 }
 
 impl<'a> Validator<'a, '_> {
+    /// Position in the value.
+    fn pos(&self) -> usize {
+        self.len.saturating_sub(self.r.remaining())
+    }
+
+    /// Records a registry id read from `start` to here.
+    fn record(&mut self, registry: &'static str, start: usize, id: i32, plus_one: bool) {
+        let end = self.pos();
+        if let Some(refs) = self.refs.as_mut() {
+            refs.push(Ref::Id {
+                registry,
+                start,
+                end,
+                id,
+                plus_one,
+            });
+        }
+    }
+
     // ---- primitives -------------------------------------------------------------------------
 
     fn varint(&mut self) -> Result<i32> {
@@ -303,9 +385,12 @@ impl<'a> Validator<'a, '_> {
     }
 
     /// `ByteBufCodecs.registry` / `holderRegistry`: a VarInt id in the registry.
-    fn registry_id(&mut self, registry: &str) -> Result<usize> {
+    fn registry_id(&mut self, registry: &'static str) -> Result<usize> {
         let size = self.registry_size(registry)?;
-        usize::try_from(self.varint()?)
+        let start = self.pos();
+        let id = self.varint()?;
+        self.record(registry, start, id, false);
+        usize::try_from(id)
             .ok()
             .filter(|&id| id < size)
             .ok_or(Error::Invalid("registry id"))
@@ -314,13 +399,15 @@ impl<'a> Validator<'a, '_> {
     /// `ByteBufCodecs.holder`: VarInt 0 and a direct value, or a registry id plus one.
     fn holder(
         &mut self,
-        registry: &str,
+        registry: &'static str,
         direct: impl FnOnce(&mut Self) -> Result<()>,
     ) -> Result<()> {
+        let start = self.pos();
         let id = self.varint()?;
         if id == 0 {
             return direct(self);
         }
+        self.record(registry, start, id, true);
         let size = self.registry_size(registry)?;
         usize::try_from(id)
             .ok()
@@ -331,7 +418,7 @@ impl<'a> Validator<'a, '_> {
     }
 
     /// `ByteBufCodecs.holderSet`: VarInt 0 and a tag, or the number of ids plus one and the ids.
-    fn holder_set(&mut self, registry: &str) -> Result<()> {
+    fn holder_set(&mut self, registry: &'static str) -> Result<()> {
         let size = self.registry_size(registry)?;
         let n = self.varint()?;
         if n == 0 {
@@ -358,7 +445,10 @@ impl<'a> Validator<'a, '_> {
             return Err(Error::UnexpectedEnd);
         }
         for _ in 0..count {
-            usize::try_from(self.varint()?)
+            let start = self.pos();
+            let id = self.varint()?;
+            self.record(registry, start, id, false);
+            usize::try_from(id)
                 .ok()
                 .filter(|&id| id < size)
                 .ok_or(Error::Invalid("registry id"))?;
@@ -442,20 +532,70 @@ impl<'a> Validator<'a, '_> {
 
     /// `DataComponentPatch.STREAM_CODEC`: added values without delimiters, then removed types.
     fn patch(&mut self) -> Result<()> {
+        let p0 = self.pos();
         let added = self.r.len_prefix("added components", TYPE_COUNT, 1)?;
+        let p1 = self.pos();
         let removed = self.r.len_prefix("removed components", TYPE_COUNT, 1)?;
+        let p2 = self.pos();
+        let patch_event = self.refs.as_mut().map(|refs| {
+            refs.push(Ref::Patch {
+                added: (p0, p1),
+                removed: (p1, p2),
+                end_event: 0,
+            });
+            refs.len().saturating_sub(1)
+        });
         for _ in 0..added {
-            let t = self.component_type()?;
+            let start = self.pos();
+            let t = self.raw_component_type()?;
+            let type_end = self.pos();
+            let event = self.refs.as_mut().map(|refs| {
+                refs.push(Ref::Component {
+                    type_id: t,
+                    start,
+                    type_end,
+                    end: type_end,
+                });
+                refs.len().saturating_sub(1)
+            });
             self.value(t)?;
+            let end = self.pos();
+            if let (Some(refs), Some(i)) = (self.refs.as_mut(), event)
+                && let Some(Ref::Component { end: e, .. }) = refs.get_mut(i)
+            {
+                *e = end;
+            }
         }
         for _ in 0..removed {
-            self.component_type()?;
+            let start = self.pos();
+            let t = self.raw_component_type()?;
+            let end = self.pos();
+            if let Some(refs) = self.refs.as_mut() {
+                refs.push(Ref::Removed {
+                    type_id: t,
+                    start,
+                    end,
+                });
+            }
+        }
+        if let (Some(refs), Some(i)) = (self.refs.as_mut(), patch_event) {
+            let n = refs.len();
+            if let Some(Ref::Patch { end_event, .. }) = refs.get_mut(i) {
+                *end_event = n;
+            }
         }
         Ok(())
     }
 
     /// `DataComponentType.STREAM_CODEC`.
     fn component_type(&mut self) -> Result<u16> {
+        let start = self.pos();
+        let t = self.raw_component_type()?;
+        self.record("minecraft:data_component_type", start, i32::from(t), false);
+        Ok(t)
+    }
+
+    fn raw_component_type(&mut self) -> Result<u16> {
         u16::try_from(self.varint()?)
             .ok()
             .filter(|&t| usize::from(t) < TYPE_COUNT)
@@ -612,7 +752,7 @@ impl<'a> Validator<'a, '_> {
     }
 
     /// `TypedEntityData.streamCodec`: a type id, then the data as a compound.
-    fn typed_entity_data(&mut self, registry: &str) -> Result<()> {
+    fn typed_entity_data(&mut self, registry: &'static str) -> Result<()> {
         self.registry_id(registry)?;
         self.compound()
     }
