@@ -1,0 +1,12 @@
+[package]
+name = "vanillite-abi"
+description = "The stable C ABI for plugins and providers: `repr(C)` tables generated from one declarative API definition."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true

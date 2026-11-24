@@ -1,0 +1,45 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "xtask"]
+default-members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "Apache-2.0"
+authors = ["Hannes Thöne"]
+repository = "https://github.com/hthoene/Vanillite"
+
+[workspace.dependencies]
+# Internal crates.
+vanillite-abi = { path = "crates/vanillite-abi" }
+vanillite-base = { path = "crates/vanillite-base" }
+vanillite-chunk = { path = "crates/vanillite-chunk" }
+vanillite-command = { path = "crates/vanillite-command" }
+vanillite-config = { path = "crates/vanillite-config" }
+vanillite-data = { path = "crates/vanillite-data" }
+vanillite-datapack = { path = "crates/vanillite-datapack" }
+vanillite-game = { path = "crates/vanillite-game" }
+vanillite-light = { path = "crates/vanillite-light" }
+vanillite-macros = { path = "crates/vanillite-macros" }
+vanillite-nbt = { path = "crates/vanillite-nbt" }
+vanillite-net = { path = "crates/vanillite-net" }
+vanillite-plugin = { path = "crates/vanillite-plugin" }
+vanillite-plugin-host = { path = "crates/vanillite-plugin-host" }
+vanillite-protocol = { path = "crates/vanillite-protocol" }
+vanillite-server = { path = "crates/vanillite-server" }
+vanillite-storage = { path = "crates/vanillite-storage" }
+vanillite-test = { path = "crates/vanillite-test" }
+vanillite-world = { path = "crates/vanillite-world" }
+vanillite-worldgen = { path = "crates/vanillite-worldgen" }
+
+# Workspace-wide lints. Input-handling crates (SEC-07) repeat these in their own
+# `[lints]` tables and add the SEC-07 deny set, because Cargo cannot extend
+# `workspace = true`.
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "warn"

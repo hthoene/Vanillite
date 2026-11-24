@@ -1,0 +1,17 @@
+[package]
+name = "vanillite-world"
+description = "World runtime infrastructure: chunk map, tickets, chunk scheduler, block access and updates, scheduled ticks and the entity store. No gameplay."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+vanillite-chunk.workspace = true
+vanillite-datapack.workspace = true
+vanillite-config.workspace = true
+
+[lints]
+workspace = true

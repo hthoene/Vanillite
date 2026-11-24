@@ -1,0 +1,16 @@
+[package]
+name = "vanillite-storage"
+description = "Persistence providers: Anvil region files, entity, POI and player data, and world import."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+vanillite-chunk.workspace = true
+vanillite-nbt.workspace = true
+
+[lints]
+workspace = true

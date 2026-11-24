@@ -1,0 +1,16 @@
+[package]
+name = "vanillite-worldgen"
+description = "Vanilla world generation as a library: noise, density functions, biomes, surface rules, carvers, features and structures."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+vanillite-chunk.workspace = true
+vanillite-datapack.workspace = true
+
+[lints]
+workspace = true
