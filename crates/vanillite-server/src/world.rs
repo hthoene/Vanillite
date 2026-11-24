@@ -4,6 +4,8 @@ use std::fmt;
 use std::sync::Arc;
 
 use vanillite_config::WorldRules;
+use vanillite_game::entities::Entities;
+use vanillite_world::tracking::{EntityTracker, TrackerInput, TrackerOutput, Viewer};
 
 use crate::compute::Compute;
 use crate::global::Global;
@@ -26,13 +28,17 @@ pub type WorldTask = Box<dyn FnOnce(&mut ServerWorld) + Send + 'static>;
 /// One loaded world, owned by exactly one thread at a time: its world thread in parallel mode,
 /// the server thread in sequential mode.
 ///
-/// Today worlds are empty and only count ticks. The world runtime (`vanillite-world`) is owned
-/// here once it exists; its tick runs in [`ServerWorld::tick`].
+/// Today a world holds its entities and their tracker; chunks follow with the world runtime.
 pub struct ServerWorld {
     id: WorldId,
     dimension: String,
     rules: Arc<WorldRules>,
     ticks: u64,
+    entities: Entities,
+    tracker: Box<dyn EntityTracker>,
+    /// The tracker's result of the last tick.
+    entity_updates: TrackerOutput,
+    viewers: Vec<Viewer>,
 }
 
 impl fmt::Debug for ServerWorld {
@@ -41,18 +47,44 @@ impl fmt::Debug for ServerWorld {
             .field("id", &self.id)
             .field("dimension", &self.dimension)
             .field("ticks", &self.ticks)
+            .field("entities", &self.entities.store.len())
             .finish_non_exhaustive()
     }
 }
 
 impl ServerWorld {
-    pub(crate) fn new(id: WorldId, dimension: String, rules: Arc<WorldRules>) -> ServerWorld {
+    pub(crate) fn new(
+        id: WorldId,
+        dimension: String,
+        rules: Arc<WorldRules>,
+        tracker: Box<dyn EntityTracker>,
+    ) -> ServerWorld {
         ServerWorld {
             id,
             dimension,
             rules,
             ticks: 0,
+            entities: Entities::new(),
+            tracker,
+            entity_updates: TrackerOutput::default(),
+            viewers: Vec::new(),
         }
+    }
+
+    /// The entities of this world.
+    pub fn entities(&self) -> &Entities {
+        &self.entities
+    }
+
+    /// The entities of this world, mutably.
+    pub fn entities_mut(&mut self) -> &mut Entities {
+        &mut self.entities
+    }
+
+    /// What the entity tracker produced at the end of the last tick: encode each message
+    /// once and send it to its viewers ([`TrackerOutput::fan_out`]).
+    pub fn entity_updates(&self) -> &TrackerOutput {
+        &self.entity_updates
     }
 
     /// This world's id.
@@ -80,12 +112,42 @@ impl ServerWorld {
         self.rules = rules;
     }
 
-    /// One world tick in Vanilla's order (architecture 3.3). Empty worlds only count.
+    /// One world tick in Vanilla's order (architecture 3.3): the entities in tick order (no
+    /// behaviours yet), then entity tracking.
     pub(crate) fn tick(&mut self, ctx: &mut TickContext<'_>) {
         debug_assert_eq!(ctx.world, self.id);
         if ctx.runs_normally {
             self.ticks += 1;
+            let store = &mut self.entities.store;
+            let mut cursor = store.tick_cursor();
+            while let Some(id) = store.next_to_tick(&mut cursor) {
+                if let Some(mut entity) = store.get_mut(id) {
+                    entity.set_old_pos();
+                }
+            }
         }
+        self.track_entities();
+    }
+
+    /// Runs the entity tracker over this tick's state and resets the per-tick sync state.
+    fn track_entities(&mut self) {
+        self.viewers.clear();
+        self.viewers
+            .extend(self.entities.players.iter().map(|(entity, player)| Viewer {
+                entity,
+                view_center: player.chunk_view.center,
+                view_distance: player.chunk_view.view_distance,
+            }));
+        self.entity_updates.clear();
+        // Chunk sending is not wired yet: no chunk counts as pending.
+        let input = TrackerInput {
+            entities: &self.entities.store,
+            viewers: &self.viewers,
+            chunk_pending: &|_, _| false,
+        };
+        self.tracker.update(&input, &mut self.entity_updates);
+        self.entities.store.clear_removed();
+        self.entities.store.clear_sync_flags();
     }
 
     /// Saves the world. `flush` waits until everything is on disk (shutdown).

@@ -14,6 +14,8 @@ use std::time::{Duration, Instant};
 use std::{fmt, io};
 
 use vanillite_config::{Config, ConfigError, RuleSet, VANILLITE_FILE, VanillaOr};
+use vanillite_world::entity::NetworkIds;
+use vanillite_world::tracking::{ChunkTrackerProvider, EntityTrackerProvider, TrackerSettings};
 
 use crate::clock::Clock;
 use crate::compute::{Compute, ComputePool, Scheduler};
@@ -84,6 +86,7 @@ struct WorldThread {
 pub struct ServerBuilder {
     dir: PathBuf,
     scheduler: Slot<dyn Scheduler>,
+    entity_tracker: Slot<dyn EntityTrackerProvider>,
 }
 
 impl ServerBuilder {
@@ -92,12 +95,22 @@ impl ServerBuilder {
         ServerBuilder {
             dir: dir.into(),
             scheduler: Slot::new("scheduler"),
+            entity_tracker: Slot::new("entity-tracker"),
         }
     }
 
     /// Fills the `scheduler` slot with an embedded implementation.
     pub fn scheduler(&mut self, scheduler: Box<dyn Scheduler>) -> Result<&mut Self, SlotError> {
         self.scheduler.fill(scheduler, Origin::Embedded)?;
+        Ok(self)
+    }
+
+    /// Fills the `entity-tracker` slot with an embedded implementation.
+    pub fn entity_tracker(
+        &mut self,
+        provider: Box<dyn EntityTrackerProvider>,
+    ) -> Result<&mut Self, SlotError> {
+        self.entity_tracker.fill(provider, Origin::Embedded)?;
         Ok(self)
     }
 
@@ -132,6 +145,11 @@ impl ServerBuilder {
             scheduler.workers()
         );
         let compute = Compute::new(Arc::from(scheduler));
+        let (tracker_provider, origin) = self
+            .entity_tracker
+            .take()
+            .unwrap_or_else(|| (Box::new(ChunkTrackerProvider), Origin::BuiltIn));
+        log::info!("Slot entity-tracker: {origin}");
 
         let level_name = config.properties.level_name.clone();
         let session_lock = lock_world(&dir.join(&level_name))?;
@@ -141,6 +159,7 @@ impl ServerBuilder {
         let global = Arc::new(Global {
             clock,
             players: PlayerList::new(max_players),
+            network_ids: NetworkIds::new(),
         });
         let watch = Arc::new(WatchState::new(
             config.server.watchdog.early_warning_after.get(),
@@ -156,7 +175,16 @@ impl ServerBuilder {
             .zip(0u16..)
             .map(|(dimension, index)| {
                 let rules = Arc::new(config.world_rules(dimension));
-                ServerWorld::new(WorldId(index), (*dimension).to_owned(), rules)
+                let view_distance = rules
+                    .distances
+                    .view_distance
+                    .or(u8::try_from(config.properties.view_distance.clamp(2, 32)).unwrap_or(10));
+                let tracker = tracker_provider.create(&TrackerSettings::new(
+                    i32::from(view_distance),
+                    config.properties.entity_broadcast_range_percentage,
+                    &rules.tracking,
+                ));
+                ServerWorld::new(WorldId(index), (*dimension).to_owned(), rules, tracker)
             })
             .collect();
         let (worlds, routes) = if parallel {

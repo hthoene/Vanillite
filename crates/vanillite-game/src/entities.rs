@@ -1,0 +1,77 @@
+//! The entities of one world: the core store plus one kind store per entity kind.
+
+use vanillite_base::Vec3;
+use vanillite_data::entity::{EntityTypeId, ids};
+use vanillite_world::entity::{
+    Dense, EntityId, EntityStore, NetworkIds, NewEntity, Removed, Rotation,
+};
+
+use crate::player::PlayerData;
+
+/// All entities of a world. Kinds without own data yet only live in the core store.
+#[derive(Debug, Default)]
+pub struct Entities {
+    /// Core columns, tick order and section index.
+    pub store: EntityStore,
+    /// Player kind data.
+    pub players: Dense<PlayerData>,
+}
+
+impl Entities {
+    /// No entities.
+    pub fn new() -> Entities {
+        Entities::default()
+    }
+
+    /// Adds a player entity.
+    pub fn spawn_player(
+        &mut self,
+        network_ids: &NetworkIds,
+        uuid: u128,
+        pos: Vec3,
+        rot: Rotation,
+        data: PlayerData,
+    ) -> EntityId {
+        let mut new = NewEntity::new(ids::PLAYER, network_ids.next(), uuid, pos);
+        new.rot = rot;
+        let players = &mut self.players;
+        self.store.spawn(new, |id| players.push(id, data))
+    }
+
+    /// Removes an entity of any kind together with its kind data.
+    pub fn despawn(&mut self, id: EntityId) -> Option<Removed> {
+        let removed = self.store.despawn(id)?;
+        let moved = self.remove_kind_row(removed.kind, removed.kind_row);
+        if let Some(moved) = moved {
+            self.store.set_kind_row(moved, removed.kind_row);
+        }
+        Some(removed)
+    }
+
+    /// Removes a kind store row; returns the entity that moved into it.
+    fn remove_kind_row(&mut self, kind: EntityTypeId, row: u32) -> Option<EntityId> {
+        if kind == ids::PLAYER {
+            self.players.swap_remove(row).and_then(|(_, moved)| moved)
+        } else {
+            None
+        }
+    }
+
+    /// The player data of an entity, `None` if it is no (live) player.
+    pub fn player(&self, id: EntityId) -> Option<&PlayerData> {
+        let entity = self.store.get(id)?;
+        (entity.kind() == ids::PLAYER)
+            .then(|| self.players.get(entity.kind_row()))
+            .flatten()
+    }
+
+    /// The player data of an entity, mutably.
+    pub fn player_mut(&mut self, id: EntityId) -> Option<&mut PlayerData> {
+        let entity = self.store.get(id)?;
+        if entity.kind() != ids::PLAYER {
+            return None;
+        }
+        let row = entity.kind_row();
+        self.players.get_mut(row)
+    }
+}

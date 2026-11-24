@@ -1209,7 +1209,10 @@ dependencies = [
 name = "vanillite-game"
 version = "0.1.0"
 dependencies = [
+ "vanillite-base",
  "vanillite-command",
+ "vanillite-config",
+ "vanillite-data",
  "vanillite-protocol",
  "vanillite-world",
 ]
@@ -1293,6 +1296,7 @@ dependencies = [
  "vanillite-net",
  "vanillite-plugin-host",
  "vanillite-storage",
+ "vanillite-world",
  "vanillite-worldgen",
 ]
 
@@ -1315,8 +1319,11 @@ dependencies = [
 name = "vanillite-world"
 version = "0.1.0"
 dependencies = [
+ "rustc-hash",
+ "vanillite-base",
  "vanillite-chunk",
  "vanillite-config",
+ "vanillite-data",
  "vanillite-datapack",
 ]
 
