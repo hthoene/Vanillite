@@ -1,105 +1,92 @@
 //! Noise generators (`net.minecraft.world.level.levelgen.synth`): gradient (Perlin/simplex)
 //! noise, noise stacks, `NormalNoise` parameters and the legacy blended terrain noise.
 //!
-//! Every function keeps Java's operation order and `float`/`double` conversions, so values match
-//! Vanilla bit for bit.
+//! Ports `GradientNoise`, `PerlinNoise`, `SmearedPerlinNoise`, `SimplexNoise`, `NoiseStack`,
+//! `NormalNoise`, `LegacyFbmInitializer` and the noise part of `BlendedNoise`
+//! (`createFbmSet`, `createFbm`, `computeFbmRange`). Every function keeps Java's operation order
+//! and `float`/`double` conversions, so values match Vanilla bit for bit. `NoiseUtils` has no
+//! users in Vanilla outside debug output and is not ported.
+//!
+//! A [`Noise`] is a closed set of concrete kinds: the kind is matched once per call, and the
+//! batched [`Noise::add_to_volume`] loops run monomorphised inside.
 
-use serde_json::Value;
+mod blended;
+mod gradient;
+mod normal;
+mod perlin;
+mod simplex;
+mod stack;
 
-use crate::Error;
+pub use blended::{BlendedFbmSet, blended_fbm_set, blended_noise_range};
+pub use normal::{NormalNoise, Normalization};
+
 use crate::interval::Interval;
 use crate::random::AnyRandom;
 use crate::volume::DensityVolume;
+use perlin::{PerlinNoise, SmearedPerlinNoise};
+use simplex::SimplexNoise;
+use stack::{NoiseStack, Octave};
 
 /// A sampled noise (`net.minecraft.world.level.levelgen.synth.Noise`).
-#[derive(Debug)]
-pub struct Noise {
-    _todo: (),
+#[derive(Clone, Debug)]
+pub struct Noise(Kind);
+
+/// The noise kinds Vanilla instantiates.
+#[derive(Clone, Debug)]
+enum Kind {
+    /// A stack of Perlin octaves (`NormalNoise`, legacy nether biome noise).
+    Perlin(NoiseStack<PerlinNoise>),
+    /// A stack of smeared Perlin octaves (`BlendedNoise`).
+    SmearedPerlin(NoiseStack<SmearedPerlinNoise>),
+    /// A single simplex noise (end islands); boxed, it is much larger than a stack handle.
+    Simplex(Box<SimplexNoise>),
+}
+
+macro_rules! dispatch {
+    ($self:expr, $n:ident => $e:expr) => {
+        match &$self.0 {
+            Kind::Perlin($n) => $e,
+            Kind::SmearedPerlin($n) => $e,
+            Kind::Simplex($n) => $e,
+        }
+    };
 }
 
 impl Noise {
     /// `range()`.
     pub fn range(&self) -> Interval {
-        todo!()
+        dispatch!(self, n => n.range())
     }
 
     /// `get(x, y)`.
-    pub fn get2(&self, _x: f64, _y: f64) -> f32 {
-        todo!()
+    pub fn get2(&self, x: f64, y: f64) -> f32 {
+        dispatch!(self, n => n.get2(x, y))
     }
 
     /// `get(x, y, z)`.
-    pub fn get(&self, _x: f64, _y: f64, _z: f64) -> f32 {
-        todo!()
+    pub fn get(&self, x: f64, y: f64, z: f64) -> f32 {
+        dispatch!(self, n => n.get(x, y, z))
     }
 
-    /// `addToVolume(buffer, volume, xzScale, yScale, amplitude)`.
+    /// `addToVolume(buffer, volume, xzScale, yScale, amplitude)`: adds `amplitude` times the
+    /// noise at every point of `volume` (block coordinates scaled by `xz_scale`/`y_scale`) to
+    /// `buffer`, in the volume's index order. `buffer` must hold at least `volume.len()` values.
     pub fn add_to_volume(
         &self,
-        _buffer: &mut [f32],
-        _volume: &DensityVolume,
-        _xz_scale: f64,
-        _y_scale: f64,
-        _amplitude: f32,
+        buffer: &mut [f32],
+        volume: &DensityVolume,
+        xz_scale: f64,
+        y_scale: f64,
+        amplitude: f32,
     ) {
-        todo!()
-    }
-}
-
-/// `NormalNoise` parameters from `worldgen/noise` (`NormalNoise.Parameters`).
-#[derive(Debug)]
-pub struct NormalNoise {
-    _todo: (),
-}
-
-impl NormalNoise {
-    /// Parses a `worldgen/noise` entry.
-    pub fn from_json(_json: &Value) -> Result<Self, Error> {
-        todo!()
+        dispatch!(self, n => n.add_to_volume(buffer, volume, xz_scale, y_scale, amplitude));
     }
 
-    /// `range()`.
-    pub fn range(&self) -> Interval {
-        todo!()
-    }
-
-    /// `create(random)`.
-    pub fn create(&self, _random: &mut AnyRandom) -> Noise {
-        todo!()
-    }
-
-    /// `createForLegacyNetherBiome(random)`.
-    pub fn create_for_legacy_nether_biome(&self, _random: &mut AnyRandom) -> Noise {
-        todo!()
-    }
-}
-
-impl Noise {
     /// `new SimplexNoise(random, discardNoiseOffset)` (the end islands use it with `true`).
-    pub fn simplex(_random: &mut AnyRandom, _discard_noise_offset: bool) -> Noise {
-        todo!()
+    pub fn simplex(random: &mut AnyRandom, discard_noise_offset: bool) -> Noise {
+        Noise(Kind::Simplex(Box::new(SimplexNoise::new(
+            random,
+            discard_noise_offset,
+        ))))
     }
-}
-
-/// The three noise stacks of the legacy terrain noise (`BlendedNoise.FbmSet`).
-#[derive(Debug)]
-pub struct BlendedFbmSet {
-    pub min_limit: Noise,
-    pub max_limit: Noise,
-    pub main: Noise,
-}
-
-/// `BlendedNoise.createFbmSet(random)` for the given `y_scale` and smear parameters.
-pub fn blended_fbm_set(
-    _y_scale: f64,
-    _y_factor: f64,
-    _smear_scale_multiplier: f64,
-    _random: &mut AnyRandom,
-) -> BlendedFbmSet {
-    todo!()
-}
-
-/// `BlendedNoise.range()`.
-pub fn blended_noise_range(_y_scale: f64, _smear_scale_multiplier: f64) -> Interval {
-    todo!()
 }
