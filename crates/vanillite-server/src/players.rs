@@ -15,6 +15,8 @@ use vanillite_game::player::{
     Body, ChatContext, ChunkSource, ChunkView, ClientInformation, Connection, GameProfile, Handled,
     MoveContext, PacketSink, PlayerData, PlayerState, effective_view_distance,
 };
+use vanillite_game::survival::player::Survival;
+use vanillite_game::survival::rules::Rule;
 use vanillite_net::{Latency, Outbound};
 use vanillite_protocol::text::Component;
 use vanillite_protocol::{Inbound, SharedPacket};
@@ -88,6 +90,8 @@ pub(crate) struct WorldPlayers {
     left: Vec<u128>,
     /// Players with chat or command requests this tick.
     chatting: Vec<EntityId>,
+    /// Dead players that asked to respawn this tick.
+    respawns: Vec<EntityId>,
 }
 
 fn chunk_of(pos: Vec3) -> ChunkPos {
@@ -106,7 +110,18 @@ impl WorldPlayers {
             leaving: Vec::new(),
             left: Vec::new(),
             chatting: Vec::new(),
+            respawns: Vec::new(),
         }
+    }
+
+    /// The players that asked to respawn since the last call.
+    pub(crate) fn take_respawns(&mut self) -> Vec<EntityId> {
+        std::mem::take(&mut self.respawns)
+    }
+
+    /// The world's view distance in chunks.
+    pub(crate) fn view_distance(&self) -> i32 {
+        self.view_distance
     }
 
     /// `placeNewPlayer`: spawns the player and sends the join sequence. The player is already
@@ -117,7 +132,13 @@ impl WorldPlayers {
         global: &Global,
         world: crate::world::WorldId,
         arrival: Arrival,
+        weather: &[vanillite_protocol::packets::play::clientbound::GameEvent],
     ) {
+        let survival = arrival
+            .saved
+            .as_ref()
+            .map(|saved| Survival::load(&saved.other))
+            .unwrap_or_default();
         let (pos, rot, on_ground) = match &arrival.saved {
             Some(saved) => (
                 Vec3::new(saved.pos[0], saved.pos[1], saved.pos[2]),
@@ -147,6 +168,7 @@ impl WorldPlayers {
                 &global.chat,
                 Arc::clone(&arrival.inbox),
             ),
+            survival,
         };
         let id = entities.spawn_player(
             &global.network_ids,
@@ -175,13 +197,17 @@ impl WorldPlayers {
             pos.y,
             pos.z
         );
+        let immediate_respawn = global.level.rules().bool(Rule::IMMEDIATE_RESPAWN);
         join::send_login(
             sink.as_ref(),
             &self.level,
             network_id,
             player,
             global.chat.enforce_secure,
+            !immediate_respawn,
         );
+        sink.send(&crate::survival::change_difficulty(&global.level));
+        join::send_abilities(sink.as_ref(), player.game_mode);
         let Some(global_arc) = global.arc() else {
             return;
         };
@@ -213,7 +239,12 @@ impl WorldPlayers {
                 .players
                 .broadcast(&join::player_info_add([own]), Some(Uuid(arrival.uuid)));
         }
-        join::send_level_info(sink.as_ref(), &self.level);
+        join::send_level_info(
+            sink.as_ref(),
+            &self.level,
+            &crate::survival::full_time_sync(&global.level),
+            weather,
+        );
         connection
             .chunks
             .update_view(center, view_distance, sink.as_ref());
@@ -228,7 +259,6 @@ impl WorldPlayers {
         runs_normally: bool,
         global: &Global,
         world: crate::world::WorldId,
-        game_time: i64,
     ) {
         let ctx = MoveContext {
             runs_normally,
@@ -259,6 +289,7 @@ impl WorldPlayers {
                 shift_key_down: flags.contains(EntityFlags::CROUCHING),
                 sprinting: flags.contains(EntityFlags::SPRINTING),
                 client: None,
+                respawn: false,
             };
             let mut state = before.clone();
             match player
@@ -308,6 +339,9 @@ impl WorldPlayers {
                     });
                 player.client = client;
             }
+            if state.respawn {
+                self.respawns.push(id);
+            }
             if !player.connection.chat.requests.is_empty() {
                 self.chatting.push(id);
             }
@@ -325,7 +359,7 @@ impl WorldPlayers {
             }
         }
         for id in std::mem::take(&mut self.chatting) {
-            crate::chat::handle_requests(entities, global, id, world, game_time, &mut self.leaving);
+            crate::chat::handle_requests(entities, global, id, world, &mut self.leaving);
         }
         for (id, reason) in std::mem::take(&mut self.leaving) {
             self.leave(entities, global, id, reason);
@@ -474,6 +508,7 @@ impl WorldPlayers {
         data.on_ground = entity.flags().contains(EntityFlags::ON_GROUND);
         data.dimension = self.level.dimension.as_str().to_owned();
         data.game_mode = game_mode_id(player.game_mode);
+        player.survival.save(&mut data.other);
         if let Err(e) = self.store.save(entity.uuid(), &data) {
             log::error!("Failed to save player data of {}: {e}", player.profile.name);
         }

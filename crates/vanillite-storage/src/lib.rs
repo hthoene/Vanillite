@@ -48,6 +48,21 @@ pub fn read_level_dat(world_dir: &Path) -> io::Result<Option<Compound>> {
     read_gzip_nbt(&world_dir.join("level.dat"))
 }
 
+/// Writes `level.dat` like Vanilla: the previous file becomes `level.dat_old`, the new one is
+/// written through a temporary file.
+pub fn write_level_dat(world_dir: &Path, root: &Compound) -> io::Result<()> {
+    std::fs::create_dir_all(world_dir)?;
+    let mut raw = Vec::new();
+    vanillite_nbt::write::write_named("", root, &mut raw).map_err(io::Error::other)?;
+    let path = world_dir.join("level.dat");
+    let tmp = world_dir.join("level.dat_new");
+    std::fs::write(&tmp, Compression::Gzip.compress(&raw)?)?;
+    if path.exists() {
+        std::fs::copy(&path, world_dir.join("level.dat_old"))?;
+    }
+    std::fs::rename(&tmp, &path)
+}
+
 /// The file of Vanilla saved data `id` (e.g. `minecraft:world_gen_settings`) below `dir`:
 /// `<dir>/data/<namespace>/<path>.dat`.
 pub fn saved_data_path(dir: &Path, id: &str) -> PathBuf {

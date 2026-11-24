@@ -17,6 +17,7 @@ vanillite-world.workspace = true
 vanillite-worldgen.workspace = true
 vanillite-command.workspace = true
 vanillite-protocol.workspace = true
+vanillite-nbt.workspace = true
 log.workspace = true
 rsa.workspace = true
 sha1.workspace = true

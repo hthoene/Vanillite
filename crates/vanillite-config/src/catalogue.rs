@@ -76,6 +76,14 @@ rules! {
             max_redirect_depth: u32 = "max-redirect-depth", Security, range = [1, 1024],
                 vanilla = 64;
         }
+        /// Survival: time and weather.
+        survival: SurvivalRules = "performance.survival" {
+            /// Ticks between the game time packets every player gets (Vanilla: every second).
+            /// Clients run the clocks themselves in between; a longer interval saves traffic
+            /// with many players, the game time on the client may then lag behind a little.
+            time_sync_interval: u32 = "time-sync-interval", Performance, range = [1, 1200],
+                vanilla = 20;
+        }
         /// Development and test helpers. Never needed on a production server.
         debug: DebugRules = "debug" {
             /// In-process fake players (`TestBot`, `TestBot2`, ...) that join over virtual

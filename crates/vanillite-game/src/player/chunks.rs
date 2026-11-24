@@ -200,6 +200,14 @@ impl PlayerChunks {
         self.view = Some(next);
     }
 
+    /// Forgets the view and all pending chunks: the client dropped its level (respawn); the
+    /// next [`update_view`](Self::update_view) queues every chunk again.
+    pub fn reset(&mut self) {
+        self.view = None;
+        self.pending.clear();
+        self.sent.clear();
+    }
+
     /// `dropChunk`.
     fn drop_chunk(&mut self, pos: ChunkPos, sink: &dyn PacketSink) {
         if !self.pending.remove(&pos) {

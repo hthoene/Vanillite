@@ -1248,6 +1248,7 @@ dependencies = [
  "vanillite-config",
  "vanillite-data",
  "vanillite-datapack",
+ "vanillite-nbt",
  "vanillite-protocol",
  "vanillite-world",
  "vanillite-worldgen",
