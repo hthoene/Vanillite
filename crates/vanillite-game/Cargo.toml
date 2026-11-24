@@ -1,0 +1,17 @@
+[package]
+name = "vanillite-game"
+description = "Gameplay: the Vanilla level tick, block behaviours, entities, physics, items, inventories, players and commands."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+vanillite-world.workspace = true
+vanillite-command.workspace = true
+vanillite-protocol.workspace = true
+
+[lints]
+workspace = true

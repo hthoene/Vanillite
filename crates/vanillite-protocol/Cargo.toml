@@ -1,0 +1,28 @@
+[package]
+name = "vanillite-protocol"
+description = "Pure Minecraft Java protocol library without I/O: primitives, framing, codecs, packet sets and text components."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+vanillite-data.workspace = true
+vanillite-nbt.workspace = true
+vanillite-macros.workspace = true
+
+# SEC-07: input-handling crate. Cargo cannot extend `[lints] workspace = true`,
+# so this repeats the workspace lints and adds the SEC-07 set.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "warn"
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+arithmetic_side_effects = "deny"
+as_conversions = "deny"

@@ -1,0 +1,16 @@
+[package]
+name = "vanillite-plugin-host"
+description = "Native plugin host: loading and validation, event bus, handle tables, lifecycle, crash attribution and slot provider adapters."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+vanillite-game.workspace = true
+vanillite-abi.workspace = true
+
+[lints]
+workspace = true
