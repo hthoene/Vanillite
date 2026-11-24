@@ -69,6 +69,22 @@ pub const fn lceil(d: f64) -> i64 {
     if d > l as f64 { l.wrapping_add(1) } else { l }
 }
 
+/// Java `Math.round(double)`: rounds half up (towards positive infinity), saturates, NaN
+/// becomes 0. Differs from [`f64::round`] for negative halves (`-2.5` → `-2`).
+#[inline]
+pub fn java_round(d: f64) -> i64 {
+    let floor = d.floor();
+    // `d - floor` is exact for every finite double, so 0.49999999999999994 stays below 0.5.
+    let rounded = if d - floor >= 0.5 { floor + 1.0 } else { floor };
+    rounded as i64
+}
+
+/// `Mth.packDegrees(float)`: an angle as a protocol byte (256 steps per turn).
+#[inline]
+pub const fn pack_degrees(degrees: f32) -> i8 {
+    floor_f(degrees * 256.0 / 360.0) as i8
+}
+
 /// `Mth.clamp(double, double, double)`: `value < min ? min : Math.min(value, max)`.
 ///
 /// Unlike [`f64::clamp`] it never panics and keeps Java's NaN behaviour.

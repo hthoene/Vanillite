@@ -85,6 +85,28 @@ rules! {
             simulation_distance: VanillaOr<u8> = "simulation-distance", Performance,
                 range = [2, 32], vanilla = VanillaOr::Vanilla;
         }
+        /// Entity tracking: how far away players see entities. Ranges are in blocks and still
+        /// capped by the view distance. "vanilla" uses the entity type's own range scaled by
+        /// `entity-broadcast-range-percentage`. Entity types are grouped by their mob category:
+        /// `monster`, the animal categories (creatures, ambient and water mobs) and `misc`.
+        tracking: TrackingRules = "performance.entity-tracking" {
+            /// Tracking range of players.
+            player_range: VanillaOr<u16> = "player-range", Performance, range = [8, 512],
+                restart = true, vanilla = VanillaOr::Vanilla, paper = VanillaOr::Value(128),
+                spigot = VanillaOr::Value(128);
+            /// Tracking range of animals, ambient and water mobs.
+            animal_range: VanillaOr<u16> = "animal-range", Performance, range = [8, 512],
+                restart = true, vanilla = VanillaOr::Vanilla, paper = VanillaOr::Value(96),
+                spigot = VanillaOr::Value(96);
+            /// Tracking range of monsters.
+            monster_range: VanillaOr<u16> = "monster-range", Performance, range = [8, 512],
+                restart = true, vanilla = VanillaOr::Vanilla, paper = VanillaOr::Value(96),
+                spigot = VanillaOr::Value(96);
+            /// Tracking range of everything else (items, projectiles, vehicles, decorations).
+            misc_range: VanillaOr<u16> = "misc-range", Performance, range = [8, 512],
+                restart = true, vanilla = VanillaOr::Vanilla, paper = VanillaOr::Value(96),
+                spigot = VanillaOr::Value(96);
+        }
         /// Entity collisions.
         collisions: CollisionRules = "performance.collisions" {
             /// Entity collisions processed per entity and tick.
