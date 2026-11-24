@@ -212,6 +212,8 @@ enum Done {
     },
     /// An encode job submitted its records.
     Encoded {
+        /// Captured for the save round.
+        round: bool,
         chunks: Vec<Arc<ProtoChunk>>,
         errors: Vec<(ChunkPos, io::Error)>,
     },
@@ -257,6 +259,8 @@ pub struct Chunks {
     encoding: FxHashMap<ChunkPos, Arc<ProtoChunk>>,
     /// Encode jobs whose records are not submitted yet.
     encode_jobs: usize,
+    /// Encode jobs of the save round whose records are not submitted yet.
+    round_jobs: usize,
     /// Chunks changed since they were last captured, in change order.
     changed: Vec<ChunkPos>,
     /// The running save round.
@@ -342,6 +346,7 @@ impl Chunks {
             loads: FxHashMap::default(),
             encoding: FxHashMap::default(),
             encode_jobs: 0,
+            round_jobs: 0,
             changed: Vec::new(),
             round: None,
             commits: 0,
@@ -726,8 +731,13 @@ impl Chunks {
                     }
                 }
             }
-            Done::Encoded { chunks, errors } => {
+            Done::Encoded {
+                round,
+                chunks,
+                errors,
+            } => {
                 self.encode_jobs -= 1;
+                self.round_jobs -= usize::from(round);
                 self.uncommitted = true;
                 for (pos, e) in errors {
                     log::error!(
@@ -1100,13 +1110,13 @@ impl Chunks {
                 save.push(chunk);
             }
         }
-        self.save_chunks(save);
+        self.save_chunks(save, false);
     }
 
     // --- Saving --------------------------------------------------------------------------
 
     /// Encodes snapshots on the pool in jobs of about 1 ms; each job submits its records.
-    fn save_chunks(&mut self, chunks: Vec<Arc<ProtoChunk>>) {
+    fn save_chunks(&mut self, chunks: Vec<Arc<ProtoChunk>>, round: bool) {
         if chunks.is_empty() {
             return;
         }
@@ -1124,6 +1134,7 @@ impl Chunks {
             self.next_token += 1;
             let token = Token(self.next_token);
             self.encode_jobs += 1;
+            self.round_jobs += usize::from(round);
             self.slots.executor.spawn(
                 u32::from(MAX_LEVEL) + 1,
                 Box::new(move || {
@@ -1143,6 +1154,7 @@ impl Chunks {
                         store.submit(token, ops, Priority::Background, inbox);
                     }
                     let _ = tx.send(Done::Encoded {
+                        round,
                         chunks: batch,
                         errors,
                     });
@@ -1205,23 +1217,22 @@ impl Chunks {
                     captured += 1;
                     // Jobs are queued as they fill, so the budget covers queueing them too.
                     if batch.len() >= per_job {
-                        self.save_chunks(std::mem::take(&mut batch));
+                        self.save_chunks(std::mem::take(&mut batch), true);
                     }
                 }
                 if captured >= min && visited.is_multiple_of(8) && started.elapsed() >= budget {
                     break;
                 }
             }
-            self.save_chunks(batch);
+            self.save_chunks(batch, true);
         }
         let sealed =
-            self.round.as_ref().is_some_and(|r| r.pending.is_empty()) && self.encode_jobs == 0;
+            self.round.as_ref().is_some_and(|r| r.pending.is_empty()) && self.round_jobs == 0;
         if sealed {
             let waiters = self.round.take().map(|r| r.waiters).unwrap_or_default();
             self.commit(waiters);
         } else if self.round.is_none()
             && self.uncommitted
-            && self.encode_jobs == 0
             && !self.committing
             && self.tick.saturating_sub(self.last_commit) >= self.settings.save.commit_interval
         {
@@ -1268,7 +1279,7 @@ impl Chunks {
         for pos in pending {
             captured.extend(self.capture(pos));
         }
-        self.save_chunks(captured);
+        self.save_chunks(captured, true);
         // Every encode job submits its records first, so the commit covers them.
         self.wait_until(|chunks| chunks.encode_jobs == 0);
         let waiters = self.round.take().map(|r| r.waiters).unwrap_or_default();
