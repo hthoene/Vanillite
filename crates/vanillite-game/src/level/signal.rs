@@ -205,6 +205,22 @@ impl Level {
         });
     }
 
+    /// [`Self::neighbor_changed_state`] with the `movedByPiston` flag.
+    pub fn neighbor_changed_moved(
+        &mut self,
+        state: BlockState,
+        pos: BlockPos,
+        source: vanillite_data::block::BlockId,
+        moved: bool,
+    ) {
+        self.add_and_run(super::neighbors::Update::Full {
+            state,
+            pos,
+            source,
+            moved,
+        });
+    }
+
     /// `ComparatorBlockEntity.getOutputSignal()` of the comparator at `pos`.
     pub fn comparator_output(&self, pos: BlockPos) -> i32 {
         match self.block_entity(pos) {

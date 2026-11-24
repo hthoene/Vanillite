@@ -197,7 +197,6 @@ mod pistons {
     fn run(level: &mut Level, ticks: usize) {
         for _ in 0..ticks {
             tick(level);
-            level.tick_block_entities();
         }
     }
 
@@ -305,4 +304,79 @@ mod pistons {
         assert!(level.block(at(1)).is(ids::OBSIDIAN));
         let _ = update::ALL;
     }
+}
+
+#[test]
+fn powered_rails_carry_power_eight_rails_from_the_source() {
+    let mut level = flat_level();
+    let y = -60;
+    for x in 0..12 {
+        level.set_block_and_update(BlockPos::new(x, y, 0), ids::POWERED_RAIL.default_state());
+    }
+    assert_eq!(
+        level.block(BlockPos::new(5, y, 0)).value("shape"),
+        Some("east_west")
+    );
+    // A powered target block as the source (it emits its `power` to every side).
+    let source = BlockPos::new(-1, y, 0);
+    let target = |power: &str| ids::TARGET.default_state().with("power", power).unwrap();
+    level.set_block(source, target("15"), update::ALL | update::SKIP_ON_PLACE);
+    for x in 0..12 {
+        let state = level.block(BlockPos::new(x, y, 0));
+        assert_eq!(state.flag("powered"), x <= 8, "rail {x}: {state:?}");
+    }
+    // Removing the source turns the whole line off.
+    level.set_block(source, target("0"), update::ALL | update::SKIP_ON_PLACE);
+    for x in 0..12 {
+        assert!(
+            !level.block(BlockPos::new(x, y, 0)).flag("powered"),
+            "rail {x}"
+        );
+    }
+}
+
+#[test]
+fn rail_curves_towards_two_neighbours() {
+    let mut level = flat_level();
+    let y = -60;
+    let center = BlockPos::new(0, y, 0);
+    level.set_block_and_update(center, ids::RAIL.default_state());
+    level.set_block_and_update(BlockPos::new(1, y, 0), ids::RAIL.default_state());
+    assert_eq!(level.block(center).value("shape"), Some("east_west"));
+    level.set_block_and_update(BlockPos::new(0, y, 1), ids::RAIL.default_state());
+    assert_eq!(level.block(center).value("shape"), Some("south_east"));
+}
+
+#[test]
+fn tripwire_hooks_attach_over_string() {
+    let mut level = flat_level();
+    let y = -60;
+    level.set_block_and_update(BlockPos::new(-1, y, 0), ids::STONE.default_state());
+    level.set_block_and_update(BlockPos::new(5, y, 0), ids::STONE.default_state());
+    let hook = |facing: &str| {
+        ids::TRIPWIRE_HOOK
+            .default_state()
+            .with("facing", facing)
+            .unwrap()
+    };
+    let a = BlockPos::new(0, y, 0);
+    let b = BlockPos::new(4, y, 0);
+    level.set_block_and_update(a, hook("east"));
+    let state = level.block(a);
+    crate::block::tripwire::hook_set_placed_by(&mut level, a, state);
+    for x in 1..4 {
+        level.set_block_and_update(BlockPos::new(x, y, 0), ids::TRIPWIRE.default_state());
+    }
+    level.set_block_and_update(b, hook("west"));
+    let state = level.block(b);
+    crate::block::tripwire::hook_set_placed_by(&mut level, b, state);
+    assert!(level.block(a).flag("attached"), "{:?}", level.block(a));
+    assert!(level.block(b).flag("attached"), "{:?}", level.block(b));
+    for x in 1..4 {
+        assert!(
+            level.block(BlockPos::new(x, y, 0)).flag("attached"),
+            "string {x}"
+        );
+    }
+    assert!(!level.block(a).flag("powered"));
 }

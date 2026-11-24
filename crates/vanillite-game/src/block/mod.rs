@@ -12,8 +12,12 @@ pub mod falling;
 pub mod fluid;
 mod growth;
 pub mod piston;
+pub mod plate;
+pub mod rail;
 pub mod redstone;
+pub mod sensor;
 mod spread;
+pub mod tripwire;
 pub mod weather;
 
 use vanillite_base::{BlockPos, Direction, Vec3};
@@ -217,6 +221,10 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
     }
     redstone::fill(block, &mut b);
     piston::fill(block, &mut b);
+    rail::fill(block, &mut b);
+    plate::fill(block, &mut b);
+    tripwire::fill(block, &mut b);
+    sensor::fill(block, &mut b);
     b
 }
 

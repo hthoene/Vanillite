@@ -24,6 +24,8 @@ pub enum BlockEntity {
     },
     /// `PistonMovingBlockEntity`.
     MovingPiston(Box<MovingPiston>),
+    /// `DaylightDetectorBlockEntity` (no data; it ticks).
+    DaylightDetector,
 }
 
 /// `BlockEntityTicker.tick(level, pos, state, blockEntity)`: the block entity is looked up at
@@ -107,6 +109,7 @@ fn ticker_of(entity: &BlockEntity) -> Option<TickerFn> {
     match entity {
         BlockEntity::Comparator { .. } => None,
         BlockEntity::MovingPiston(_) => Some(crate::block::piston::moving_piston_tick),
+        BlockEntity::DaylightDetector => Some(crate::block::sensor::daylight_detector_tick),
     }
 }
 
@@ -116,6 +119,8 @@ pub fn new_block_entity(state: BlockState) -> Option<BlockEntity> {
     let block = state.block();
     if block == ids::COMPARATOR {
         Some(BlockEntity::Comparator { output: 0 })
+    } else if block == ids::DAYLIGHT_DETECTOR {
+        Some(crate::block::sensor::new_daylight_detector())
     } else {
         None
     }
@@ -127,6 +132,7 @@ fn is_valid(entity: &BlockEntity, state: BlockState) -> bool {
     match entity {
         BlockEntity::Comparator { .. } => state.block() == ids::COMPARATOR,
         BlockEntity::MovingPiston(_) => state.block() == ids::MOVING_PISTON,
+        BlockEntity::DaylightDetector => state.block() == ids::DAYLIGHT_DETECTOR,
     }
 }
 
