@@ -22,6 +22,7 @@ mod tick_rate;
 mod watchdog;
 mod world;
 mod world_setup;
+mod world_updates;
 
 pub use clock::Clock;
 pub use compute::{Compute, ComputePool, InlineScheduler, Job, Scheduler, Scope};

@@ -32,6 +32,8 @@ use vanillite_base::hash::{FxHashMap, FxHashSet};
 use vanillite_base::{BlockPos, ChunkPos};
 use vanillite_chunk::slots::{ChunkGenerator, ChunkStorage, LightEngine, Neighbours, WorldInfo};
 use vanillite_chunk::{BlockStateId, ChunkStatus, ProtoChunk};
+use vanillite_chunk::light::{ChunkLight, LightNibbles};
+use vanillite_chunk::packet::SectionMask;
 
 pub use levels::{
     BLOCK_TICKING_LEVEL, ENTITY_TICKING_LEVEL, FULL_LEVEL, LevelChange, MAX_LEVEL, TicketLevels,
@@ -86,6 +88,8 @@ pub struct ChunkSettings {
     pub max_jobs: usize,
     /// Simulation distance in chunks (2..=32): chunks this far from a player tick.
     pub simulation_distance: i32,
+    /// Chunks whose light is recomputed per tick after block changes; the rest waits.
+    pub max_relights: usize,
 }
 
 impl Default for ChunkSettings {
@@ -95,6 +99,7 @@ impl Default for ChunkSettings {
             unload_delay: 100,
             max_jobs: 64,
             simulation_distance: 10,
+            max_relights: 1024,
         }
     }
 }
@@ -177,7 +182,8 @@ pub struct Chunks {
     saving: FxHashMap<ChunkPos, Arc<ProtoChunk>>,
     unload_candidates: FxHashSet<ChunkPos>,
     relight: FxHashSet<ChunkPos>,
-    light_changes: FxHashSet<ChunkPos>,
+    /// Sections whose sky and block light changed, per full chunk.
+    light_changes: FxHashMap<ChunkPos, LightChange>,
     block_changes: Vec<BlockPos>,
     tick: u64,
     /// Simulation tickets and their levels.
@@ -232,7 +238,7 @@ impl Chunks {
             saving: FxHashMap::default(),
             unload_candidates: FxHashSet::default(),
             relight: FxHashSet::default(),
-            light_changes: FxHashSet::default(),
+            light_changes: FxHashMap::default(),
             block_changes: Vec::new(),
             tick: 0,
             simulation: TicketLevels::with_max(BLOCK_TICKING_LEVEL),
@@ -249,6 +255,11 @@ impl Chunks {
     /// What the slots know about this world.
     pub fn info(&self) -> &WorldInfo {
         &self.info
+    }
+
+    /// Chunks whose light is recomputed per tick (config reload).
+    pub fn set_max_relights(&mut self, max: usize) {
+        self.settings.max_relights = max;
     }
 
     /// The settings.
@@ -508,9 +519,13 @@ impl Chunks {
                     if let Some(holder) = self.holders.get_mut(&chunk.pos)
                         && let Some(current) = holder.chunk.as_mut()
                     {
-                        *Arc::make_mut(current).chunk.light_mut() = chunk.chunk.light().clone();
+                        let current = Arc::make_mut(current);
+                        let change = LightChange::between(current.chunk.light(), chunk.chunk.light());
+                        *current.chunk.light_mut() = chunk.chunk.light().clone();
                         holder.dirty = true;
-                        self.light_changes.insert(chunk.pos);
+                        if !change.is_empty() && current.status == ChunkStatus::Full {
+                            self.light_changes.entry(chunk.pos).or_default().add(&change);
+                        }
                     }
                 }
             }
@@ -558,7 +573,7 @@ impl Chunks {
             .merge_max(from.chunk.light());
         holder.dirty = true;
         if current.status == ChunkStatus::Full {
-            self.light_changes.insert(pos);
+            self.light_changes.insert(pos, LightChange::ALL);
         }
     }
 
@@ -1095,7 +1110,7 @@ impl Chunks {
     }
 
     /// Full chunks whose light changed since the last call (for light update packets).
-    pub fn take_light_changes(&mut self, out: &mut Vec<ChunkPos>) {
+    pub fn take_light_changes(&mut self, out: &mut Vec<(ChunkPos, LightChange)>) {
         out.extend(self.light_changes.drain());
     }
 
@@ -1104,7 +1119,16 @@ impl Chunks {
         if self.relight.is_empty() {
             return;
         }
-        let changed: Vec<ChunkPos> = self.relight.drain().collect();
+        let max = self.settings.max_relights.max(1);
+        let changed: Vec<ChunkPos> = if self.relight.len() <= max {
+            self.relight.drain().collect()
+        } else {
+            let some: Vec<ChunkPos> = self.relight.iter().copied().take(max).collect();
+            for pos in &some {
+                self.relight.remove(pos);
+            }
+            some
+        };
         for center in changed {
             let mut area = Vec::with_capacity(25);
             for dz in -2..=2 {
@@ -1146,4 +1170,52 @@ fn tick_check(
                     .as_ref()
                     .is_some_and(|c| c.status == ChunkStatus::Full)
         })
+}
+
+/// The light sections of a chunk that changed: bit `i` is light section `i` (one below the
+/// lowest block section first).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LightChange {
+    /// Changed sky light sections.
+    pub sky: SectionMask,
+    /// Changed block light sections.
+    pub block: SectionMask,
+}
+
+impl LightChange {
+    /// Every section changed.
+    pub const ALL: LightChange = LightChange {
+        sky: SectionMask([u64::MAX; 4]),
+        block: SectionMask([u64::MAX; 4]),
+    };
+
+    /// The sections that differ between two light states of a chunk.
+    pub fn between(old: &ChunkLight, new: &ChunkLight) -> LightChange {
+        let diff = |a: &[LightNibbles], b: &[LightNibbles]| {
+            let mut mask = SectionMask::default();
+            for index in 0..a.len().max(b.len()).min(256) {
+                if a.get(index) != b.get(index) {
+                    mask.set(index);
+                }
+            }
+            mask
+        };
+        LightChange {
+            sky: diff(old.sky(), new.sky()),
+            block: diff(old.block(), new.block()),
+        }
+    }
+
+    /// No section changed.
+    pub fn is_empty(&self) -> bool {
+        self.sky.is_empty() && self.block.is_empty()
+    }
+
+    /// Adds the sections of `other`.
+    pub fn add(&mut self, other: &LightChange) {
+        for i in 0..4 {
+            self.sky.0[i] |= other.sky.0[i];
+            self.block.0[i] |= other.block.0[i];
+        }
+    }
 }
