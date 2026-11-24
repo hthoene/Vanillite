@@ -18,6 +18,12 @@ impl Level {
         self.chunks.set_game_time(self.game_time);
     }
 
+    /// Sets the game time: all worlds run on the overworld's (`DerivedLevelData`).
+    pub fn set_game_time(&mut self, game_time: i64) {
+        self.game_time = game_time;
+        self.chunks.set_game_time(game_time);
+    }
+
     /// `blockTicks.tick(...)` and `fluidTicks.tick(...)`: the scheduled ticks due now, block
     /// ticks first.
     pub fn run_scheduled_ticks(&mut self) {

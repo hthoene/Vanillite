@@ -352,6 +352,12 @@ impl Level {
         self.handling_tick
     }
 
+    /// Sets `handlingTick`: `true` from the start of the world tick until its block events ran
+    /// (`ServerLevel.tick`), `false` while players' packets are handled.
+    pub fn set_handling_tick(&mut self, handling: bool) {
+        self.handling_tick = handling;
+    }
+
     /// Lowest block Y.
     pub fn min_y(&self) -> i32 {
         self.min_y

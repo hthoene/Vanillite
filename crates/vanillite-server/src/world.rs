@@ -6,7 +6,6 @@ use std::sync::Arc;
 use vanillite_base::ChunkPos;
 use vanillite_base::hash::FxHashMap;
 use vanillite_config::WorldRules;
-use vanillite_game::block::weather::Climate;
 use vanillite_game::entities::Entities;
 use vanillite_game::level::Level;
 use vanillite_world::chunks::{Chunks, TicketId};
@@ -59,6 +58,8 @@ pub struct ServerWorld {
     scratch: Vec<ChunkPos>,
     /// Player ids of the tick (block effects).
     player_scratch: Vec<vanillite_world::entity::EntityId>,
+    /// Weather, lightning and the players' survival.
+    pub(crate) survival: crate::survival::WorldSurvival,
 }
 
 impl fmt::Debug for ServerWorld {
@@ -80,10 +81,10 @@ impl ServerWorld {
         tracker: Box<dyn EntityTracker>,
         players: WorldPlayers,
         mut level: Level,
-        climate: Option<Climate>,
+        survival: crate::survival::WorldSurvival,
     ) -> ServerWorld {
-        if let Some(climate) = climate {
-            level.set_climate(Arc::new(climate));
+        if let Some(climate) = survival.climate() {
+            level.set_climate(Arc::clone(climate));
         }
         ServerWorld {
             id,
@@ -101,6 +102,7 @@ impl ServerWorld {
             player_tickets: FxHashMap::default(),
             scratch: Vec::new(),
             player_scratch: Vec::new(),
+            survival,
         }
     }
 
@@ -177,8 +179,9 @@ impl ServerWorld {
 
     /// Places a player that joined the server into this world.
     pub(crate) fn join_player(&mut self, global: &Global, arrival: crate::players::Arrival) {
+        let weather = self.survival.join_weather();
         self.players
-            .join(&mut self.level.entities, global, self.id, arrival);
+            .join(&mut self.level.entities, global, self.id, arrival, &weather);
     }
 
     /// This world's id.
@@ -226,13 +229,34 @@ impl ServerWorld {
             ctx.runs_normally,
             ctx.global,
             self.id,
-            i64::try_from(self.ticks).unwrap_or(i64::MAX),
         );
+        self.survival.moves(
+            &mut self.level.entities,
+            &self.level.chunks,
+            ctx.global,
+            &self.dimension,
+        );
+        for id in self.players.take_respawns() {
+            let view_distance = self.players.view_distance();
+            self.survival.respawn(
+                &mut self.level.entities,
+                ctx.global,
+                &self.players.level,
+                view_distance,
+                id,
+            );
+        }
         self.players_inside_blocks();
-        let level = &mut self.level;
+        self.level.set_handling_tick(true);
         if ctx.runs_normally {
-            level.tick_time();
+            // `advanceWeatherCycle`, then `tickTime`: the overworld advances the shared game
+            // time, every world runs on it.
+            self.survival.tick_level(&self.level.entities, ctx.global);
+            let level = &mut self.level;
+            level.set_game_time(ctx.global.level.game_time());
             level.run_scheduled_ticks();
+            self.survival
+                .tick_thunder(&mut self.level.entities, &self.level.chunks, ctx.global);
         }
         self.update_player_tickets();
         let level = &mut self.level;
@@ -242,12 +266,21 @@ impl ServerWorld {
             level.tick_chunks(&mut self.scratch);
             level.run_block_events();
         }
+        level.set_handling_tick(false);
         if ctx.runs_normally {
             self.ticks += 1;
             self.tick_entities();
             self.level.tick_block_entities();
         }
         self.players.tick_entities(&mut self.level.entities);
+        if ctx.runs_normally {
+            self.survival.tick_entities(
+                &mut self.level.entities,
+                &self.level.chunks,
+                ctx.global,
+                &self.dimension,
+            );
+        }
         let light = self.updates.light_changes();
         self.level.chunks.take_light_changes(light);
         self.packets.invalidate(&mut self.level.chunks, light);
@@ -258,6 +291,12 @@ impl ServerWorld {
         );
         self.track_entities();
         WorldPlayers::send_entity_updates(&self.level.entities, &self.entity_updates);
+        self.survival.do_tick(
+            &mut self.level.entities,
+            &self.level.chunks,
+            ctx.global,
+            &self.dimension,
+        );
         self.players
             .tick_connections(&mut self.level.entities, ctx.tick, ctx.global, self.id);
     }

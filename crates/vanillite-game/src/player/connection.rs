@@ -12,7 +12,7 @@ use vanillite_protocol::chat::{
 use vanillite_protocol::packets::common::ChatVisibility;
 use vanillite_protocol::packets::common::{ClientInfo, MainHand as WireMainHand};
 use vanillite_protocol::packets::play::clientbound::SystemChat;
-use vanillite_protocol::packets::play::serverbound::PlayerAction;
+use vanillite_protocol::packets::play::serverbound::{ClientCommandAction, PlayerAction};
 use vanillite_protocol::sets::ServerboundPlay;
 use vanillite_protocol::text::{Color, Component, NamedColor};
 
@@ -36,6 +36,8 @@ pub struct PlayerState {
     pub sprinting: bool,
     /// New client settings, when the client sent them.
     pub client: Option<ClientInformation>,
+    /// The client asked to respawn (`client_command` `PERFORM_RESPAWN`).
+    pub respawn: bool,
 }
 
 /// How handling a player's packets ended.
@@ -277,6 +279,12 @@ impl Connection {
                     .accept_teleport(&p, &mut state.body, ctx, sink)?;
             }
             ServerboundPlay::ClientTickEnd(_) => self.movement.client_tick_end(),
+            ServerboundPlay::ClientCommand(p) => {
+                // Statistics and game rule values come later.
+                if p.action == ClientCommandAction::PerformRespawn {
+                    state.respawn = true;
+                }
+            }
             ServerboundPlay::PlayerLoaded(_) => self.movement.mark_client_loaded(),
             ServerboundPlay::ChunkBatchReceived(p) => {
                 self.chunks.batch_received(p.desired_chunks_per_tick);

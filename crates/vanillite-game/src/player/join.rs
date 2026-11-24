@@ -126,6 +126,7 @@ pub fn send_login(
     entity_id: i32,
     player: &PlayerData,
     enforces_secure_chat: bool,
+    show_death_screen: bool,
 ) {
     sink.send(&Login {
         entity_id,
@@ -135,28 +136,66 @@ pub fn send_login(
         chunk_radius: level.view_distance,
         simulation_distance: level.simulation_distance,
         reduced_debug_info: false,
-        show_death_screen: true,
+        show_death_screen,
         do_limited_crafting: false,
-        spawn: SpawnInfo {
-            dimension_type: level.dimension_type,
-            dimension: level.dimension.clone(),
-            hashed_seed: level.hashed_seed,
-            game_mode: game_mode(player.game_mode),
-            previous_game_mode: player.previous_game_mode.map(game_mode),
-            is_debug: false,
-            is_flat: level.is_flat,
-            last_death_location: None,
-            portal_cooldown: 0,
-            sea_level: level.sea_level,
-        },
+        spawn: spawn_info(level, player),
         online_mode: level.online_mode,
         enforces_secure_chat,
     });
-    sink.send(&abilities(player.game_mode));
 }
 
-/// `sendLevelInfo`: spawn point and the request to wait for chunks.
-pub fn send_level_info(sink: &dyn PacketSink, level: &LevelInfo) {
+/// `createCommonSpawnInfo`.
+pub fn spawn_info(level: &LevelInfo, player: &PlayerData) -> SpawnInfo {
+    SpawnInfo {
+        dimension_type: level.dimension_type,
+        dimension: level.dimension.clone(),
+        hashed_seed: level.hashed_seed,
+        game_mode: game_mode(player.game_mode),
+        previous_game_mode: player.previous_game_mode.map(game_mode),
+        is_debug: false,
+        is_flat: level.is_flat,
+        last_death_location: player.survival.last_death.as_ref().and_then(|(dim, pos)| {
+            Some(GlobalPos {
+                dimension: Identifier::new(dim).ok()?,
+                pos: BlockPos {
+                    x: pos.x,
+                    y: pos.y,
+                    z: pos.z,
+                },
+            })
+        }),
+        portal_cooldown: 0,
+        sea_level: level.sea_level,
+    }
+}
+
+/// The player's abilities (`ClientboundPlayerAbilitiesPacket`).
+pub fn send_abilities(sink: &dyn PacketSink, mode: ConfigGameMode) {
+    sink.send(&abilities(mode));
+}
+
+/// `sendLevelInfo`: world border, clocks, spawn point, the weather and the request to wait for
+/// chunks.
+pub fn send_level_info(
+    sink: &dyn PacketSink,
+    level: &LevelInfo,
+    time: &vanillite_protocol::packets::play::clientbound::SetTime,
+    weather: &[GameEvent],
+) {
+    // TODO: `initialize_border` comes with the world border.
+    sink.send(time);
+    send_spawn_position(sink, level);
+    for event in weather {
+        sink.send(event);
+    }
+    sink.send(&GameEvent {
+        event: GameEvent::LEVEL_CHUNKS_LOAD_START,
+        param: 0.0,
+    });
+}
+
+/// `ClientboundSetDefaultSpawnPositionPacket` with the world's spawn.
+pub fn send_spawn_position(sink: &dyn PacketSink, level: &LevelInfo) {
     let (spawn, yaw) = level.spawn;
     sink.send(&SetDefaultSpawnPosition {
         pos: GlobalPos {
@@ -169,10 +208,6 @@ pub fn send_level_info(sink: &dyn PacketSink, level: &LevelInfo) {
         },
         yaw,
         pitch: 0.0,
-    });
-    sink.send(&GameEvent {
-        event: GameEvent::LEVEL_CHUNKS_LOAD_START,
-        param: 0.0,
     });
 }
 
