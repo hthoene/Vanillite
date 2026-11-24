@@ -54,6 +54,8 @@ jobs:
           tool: cargo-nextest
       - name: Generated code is current
         run: cargo xtask codegen --check
+      - name: Pterodactyl egg is current
+        run: cargo xtask egg --check
       - name: Parity goldens are current
         run: cargo xtask golden check
       - name: Tests

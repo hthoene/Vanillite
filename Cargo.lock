@@ -1647,6 +1647,7 @@ dependencies = [
  "sha1",
  "toml",
  "ureq",
+ "vanillite-config",
  "zip",
 ]
 

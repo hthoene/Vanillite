@@ -19,6 +19,7 @@
 | `cargo test --doc` | Doc tests (nextest does not run them). |
 | `cargo deny check` | Licences, advisories, duplicate and wildcard dependencies (`deny.toml`). |
 | `cargo xtask codegen --check` | Generated tables match `data/vanilla/`. |
+| `cargo xtask egg --check` | The Pterodactyl egg matches the configuration schema (`cargo xtask egg` regenerates it). |
 | `cargo xtask dev [--release] [-- <args>]` | Build and run the server in `./run`. |
 
 ## Build profiles
@@ -63,6 +64,16 @@ mkdir -p ~/.local/zig && curl -fsSL https://ziglang.org/download/0.14.1/zig-x86_
     | tar -xJ -C ~/.local/zig --strip-components=1   # then put ~/.local/zig on PATH
 scripts/docker/install-docker.sh --client   # Docker CLI and buildx
 ```
+
+### Pterodactyl egg
+
+`deploy/pterodactyl/egg-vanillite.json` is generated from the typed schema in `vanillite-config`:
+every `server.properties` key (`ServerProperties::INFO`, except those declared `panel = false`)
+and every `vanillite.toml` rule (except the `debug` group) becomes a variable named like its
+`VANILLITE_<KEY>` override, with the documentation, default, range or allowed values. After a
+change of the schema run `cargo xtask egg`; CI and the `egg` test of xtask fail while the
+committed egg is stale. `cargo xtask egg smoke [--image <ref>]` starts an image like Wings does
+(STARTUP, `/home/container`, UID 988, read-only root) and pings it.
 
 ## Fuzzing
 

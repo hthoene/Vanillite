@@ -42,3 +42,14 @@ volumes:
 The first start downloads the Vanilla server jar into `/data/cache`. The health check
 (`vanillite health`) sends a status ping. A bind-mounted `/data` must be writable by UID
 10001. Console commands go through `docker attach` (start the container with `-it` for that).
+
+## Pterodactyl
+
+[`deploy/pterodactyl/egg-vanillite.json`](deploy/pterodactyl/egg-vanillite.json) is an egg for
+[Pterodactyl](https://pterodactyl.io) with the image `thoenehannes/vanillite`. Import it in the
+admin panel under *Nests → Import Egg*, then create a server with it. The server's primary
+allocation is its port. Every `server.properties` key and every `vanillite.toml` rule is a
+variable on the *Startup* page; rule variables left empty keep the value of the selected profile
+(or of `vanillite.toml`). Set *Accept the Minecraft EULA* to `true`, or accept the EULA prompt
+in the console. Variables apply to the run and are not written to the files. The egg is
+generated from the configuration schema (`cargo xtask egg`), so re-import it after an update.
