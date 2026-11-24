@@ -11,12 +11,16 @@
 
 pub mod block;
 pub mod commands;
+pub mod enchant;
 pub mod entities;
+pub mod hooks;
 pub mod inventory;
 pub mod item;
 pub mod item_entity;
 pub mod level;
 pub mod loot;
+pub mod menu;
 pub mod mob;
 pub mod player;
+pub mod recipe;
 pub mod survival;

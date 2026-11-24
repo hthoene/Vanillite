@@ -26,7 +26,7 @@ pub mod level {
     pub const GAMEMASTERS: u8 = 2;
     /// Admins: kick, op, whitelist.
     pub const ADMINS: u8 = 3;
-    /// Owners: stop.
+    /// Owners: stop, save-all, save-off, save-on.
     pub const OWNERS: u8 = 4;
 }
 
@@ -53,6 +53,8 @@ pub mod suggest {
 /// arguments are read by name from `Parsed::args`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CommandId {
+    /// A command of a plugin: the plugin host's command key.
+    Plugin(u32),
     /// `gamemode <gamemode>` for the source.
     GameModeSelf,
     /// `gamemode <gamemode> <target>`.
@@ -122,6 +124,14 @@ pub enum CommandId {
     Deop,
     /// `op <targets>`.
     Op,
+    /// `save-all`.
+    SaveAll,
+    /// `save-all flush`.
+    SaveAllFlush,
+    /// `save-off`.
+    SaveOff,
+    /// `save-on`.
+    SaveOn,
     /// `stop`.
     Stop,
     /// `whitelist on`.
@@ -155,6 +165,9 @@ pub fn register(d: &mut Dispatcher<CommandId>) {
     world::register_weather(d);
     server::register_deop(d);
     server::register_op(d);
+    server::register_save_all(d);
+    server::register_save_off(d);
+    server::register_save_on(d);
     server::register_stop(d);
     server::register_whitelist(d);
 }

@@ -787,6 +787,62 @@ pub(crate) fn whitelist_reload(source: &CommandSource, global: &Global) -> i32 {
 }
 
 /// `StopCommand`.
+/// `SaveAllCommand`: saves everything, chunks also after `/save-off`; with `flush` the
+/// success message comes once everything is on disk.
+pub(crate) fn save_all(source: &CommandSource, global: &Global, flush: bool) -> i32 {
+    source.send_success(
+        global,
+        Component::translatable("commands.save.saving", vec![]),
+        false,
+    );
+    let Some(handle) = global.handle.get() else {
+        return 0;
+    };
+    let source = source.clone();
+    handle.run_global(move |server| {
+        server.save_everything(
+            flush,
+            true,
+            Some(Box::new(move || {
+                source.send_success(
+                    &source.global,
+                    Component::translatable("commands.save.success", vec![]),
+                    true,
+                );
+            })),
+        );
+    });
+    1
+}
+
+/// `SaveOnCommand` and `SaveOffCommand`.
+pub(crate) fn save_switch(
+    source: &CommandSource,
+    global: &Global,
+    on: bool,
+) -> Result<i32, CommandError> {
+    if global
+        .level
+        .auto_save
+        .swap(on, std::sync::atomic::Ordering::Relaxed)
+        == on
+    {
+        let key = if on {
+            "commands.save.alreadyOn"
+        } else {
+            "commands.save.alreadyOff"
+        };
+        return Err(CommandError::new(key, vec![]));
+    }
+    let key = if on {
+        "commands.save.enabled"
+    } else {
+        "commands.save.disabled"
+    };
+    source.send_success(global, Component::translatable(key, vec![]), true);
+    Ok(1)
+}
+
 pub(crate) fn stop(source: &CommandSource, global: &Global) -> i32 {
     source.send_success(
         global,

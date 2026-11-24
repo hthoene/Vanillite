@@ -1,6 +1,7 @@
 //! The proxy in front of two in-process Vanillite servers with modern forwarding: a player
 //! joins the first server, switches to the second with `/server` without reconnecting, and is
-//! sent back to the first when the second stops.
+//! sent back to the first when the second stops. Both servers are Vanillite, so the proxy
+//! relays them over the trusted pass-through link.
 
 #![allow(
     clippy::unwrap_used,
@@ -19,7 +20,7 @@ use vanillite_protocol::commands::NodeKind;
 use vanillite_protocol::packets::handshake::Intent;
 use vanillite_protocol::packets::play::clientbound::StartConfiguration;
 use vanillite_protocol::packets::play::serverbound::{
-    ChatCommand, ChunkBatchReceived, ConfigurationAcknowledged, KeepAlive,
+    ChatCommand, ChunkBatchReceived, CommandSuggestion, ConfigurationAcknowledged, KeepAlive,
 };
 use vanillite_protocol::sets::ClientboundPlay;
 use vanillite_proxy::{Proxy, ProxyConfig};
@@ -145,6 +146,22 @@ fn join_switch_and_fallback() {
         &tree.0.nodes[usize::try_from(c).unwrap()].kind,
         NodeKind::Literal(l) if l == "server"
     )));
+
+    // `/server` completes server names.
+    client
+        .send(&CommandSuggestion {
+            id: 7,
+            command: "/server ".to_owned(),
+        })
+        .unwrap();
+    let suggestions = until(&mut client, "suggestions", |p| {
+        matches!(p, ClientboundPlay::CommandSuggestions(_))
+    });
+    let Some(ClientboundPlay::CommandSuggestions(s)) = suggestions else {
+        panic!("expected suggestions");
+    };
+    let names: Vec<&str> = s.suggestions.iter().map(|s| s.text.as_str()).collect();
+    assert_eq!((s.id, s.start, s.length, names), (7, 8, 0, vec!["a", "b"]));
 
     // Switch to the second server without reconnecting.
     client

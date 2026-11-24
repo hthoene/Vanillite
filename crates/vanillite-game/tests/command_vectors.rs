@@ -28,6 +28,9 @@ const OUR_COMMANDS: &[&str] = &[
     "weather",
     "deop",
     "op",
+    "save-all",
+    "save-off",
+    "save-on",
     "stop",
     "whitelist",
 ];

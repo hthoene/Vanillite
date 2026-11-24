@@ -651,6 +651,46 @@
       "field_type": "text"
     },
     {
+      "name": "Backup: Interval",
+      "description": "Minutes between backups; disabled makes none. The first one is made one interval after the start. Range: 1 to 525600. Also accepts disabled. Empty: the profile's value (vanilla profile: disabled). vanillite.toml: backup.interval.",
+      "env_variable": "VANILLITE_BACKUP__INTERVAL",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|regex:/^(?!disabled[0-9])(disabled)?[0-9]*$/",
+      "field_type": "text"
+    },
+    {
+      "name": "Backup: Keep",
+      "description": "Backups kept; older ones are deleted after a new one is complete. 0 keeps all. Range: 0 to 10000. Empty: the profile's value (vanilla profile: 10). vanillite.toml: backup.keep.",
+      "env_variable": "VANILLITE_BACKUP__KEEP",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:0,10000",
+      "field_type": "text"
+    },
+    {
+      "name": "Backup: Directory",
+      "description": "Folder of the archives, relative to the server folder. Empty: the profile's value (vanilla profile: backups). vanillite.toml: backup.directory.",
+      "env_variable": "VANILLITE_BACKUP__DIRECTORY",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string",
+      "field_type": "text"
+    },
+    {
+      "name": "Backup: Compression Level",
+      "description": "Deflate level of the archives, 1 (fast) to 9 (small); 0 stores without compression. Region files are compressed already, so higher levels gain little. Range: 0 to 9. Empty: the profile's value (vanilla profile: 1). vanillite.toml: backup.compression-level.",
+      "env_variable": "VANILLITE_BACKUP__COMPRESSION_LEVEL",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:0,9",
+      "field_type": "text"
+    },
+    {
       "name": "Watchdog: Early Warning After",
       "description": "Seconds without a finished tick after which a first warning is logged. Range: 1 to 3600. Also accepts disabled. Empty: the profile's value (vanilla profile: 10). vanillite.toml: watchdog.early-warning-after.",
       "env_variable": "VANILLITE_WATCHDOG__EARLY_WARNING_AFTER",
@@ -798,6 +838,46 @@
       "user_viewable": true,
       "user_editable": true,
       "rules": "nullable|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Plugins: Enabled",
+      "description": "Load the plugins in `plugins/`. Empty: the profile's value (vanilla profile: true). vanillite.toml: plugins.enabled.",
+      "env_variable": "VANILLITE_PLUGINS__ENABLED",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Plugins: Safe Mode After Crash",
+      "description": "After a crash inside a plugin's code (a fatal signal or a watchdog kill), skip that plugin at the next starts until its library changes or `plugins/.crashed` is removed, so a supervisor (Docker, systemd) brings the server back. Empty: the profile's value (vanilla profile: true). vanillite.toml: plugins.safe-mode-after-crash.",
+      "env_variable": "VANILLITE_PLUGINS__SAFE_MODE_AFTER_CRASH",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Plugins: Development",
+      "description": "Development: the console command `vanillite plugin reload <id>` loads a new build of a plugin at runtime and moves its state. Old builds stay in memory. Not for production servers. Empty: the profile's value (vanilla profile: false). vanillite.toml: plugins.development.",
+      "env_variable": "VANILLITE_PLUGINS__DEVELOPMENT",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Plugins: Pins",
+      "description": "Pinned SHA-256 hashes of plugin libraries, `id=hex,id=hex`. A plugin whose library has another hash is refused. Empty: the profile's value (vanilla profile: ). vanillite.toml: plugins.pins.",
+      "env_variable": "VANILLITE_PLUGINS__PINS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string",
       "field_type": "text"
     },
     {
@@ -1038,6 +1118,26 @@
       "user_viewable": true,
       "user_editable": true,
       "rules": "nullable|string|regex:/^(?!vanilla[0-9])(vanilla)?[0-9]*$/",
+      "field_type": "text"
+    },
+    {
+      "name": "Entity Tracking: Overload Tick Millis",
+      "description": "Overload protection: while a world tick takes longer than this many milliseconds (smoothed), movement updates of tracked entities (position, rotation, head) are sent less often, up to `overload-max-interval-scale` times their Vanilla interval, and back at the Vanilla rate once ticks are fast again. Spawns, removals and entity data are never delayed. \"disabled\" keeps Vanilla's intervals: an overloaded server then slows down like Vanilla. Applies to every world. Range: 1 to 1000. Also accepts disabled. Empty: the profile's value (vanilla profile: disabled). vanillite.toml: performance.entity-tracking.overload-tick-millis.",
+      "env_variable": "VANILLITE_PERFORMANCE__ENTITY_TRACKING__OVERLOAD_TICK_MILLIS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|regex:/^(?!disabled[0-9])(disabled)?[0-9]*$/",
+      "field_type": "text"
+    },
+    {
+      "name": "Entity Tracking: Overload Max Interval Scale",
+      "description": "Largest factor on the movement update interval under overload. Applies to every world. Range: 1 to 20. Empty: the profile's value (vanilla profile: 4). vanillite.toml: performance.entity-tracking.overload-max-interval-scale.",
+      "env_variable": "VANILLITE_PERFORMANCE__ENTITY_TRACKING__OVERLOAD_MAX_INTERVAL_SCALE",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,20",
       "field_type": "text"
     },
     {
