@@ -6,8 +6,10 @@
 //! and set bit 128 of the compression id.
 
 use std::fs::{self, File, OpenOptions};
+use std::hash::{Hash, Hasher};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use vanillite_base::ChunkPos;
@@ -19,10 +21,24 @@ const HEADER_SECTORS: usize = 2;
 const MAX_SECTORS: usize = 255;
 const EXTERNAL: u8 = 128;
 
+/// Locks that keep a backup from copying a region file while a chunk is written into it, by
+/// file name (the same name in other dimensions only shares the lock).
+static GATES: [Mutex<()>; 64] = [const { Mutex::new(()) }; 64];
+
+/// Holds the backup lock of the region file `name` (e.g. `r.0.-1.mca`).
+pub fn gate(name: &str) -> MutexGuard<'static, ()> {
+    let mut hasher = std::hash::DefaultHasher::new();
+    name.hash(&mut hasher);
+    let index = (hasher.finish() % GATES.len() as u64) as usize;
+    GATES[index].lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// One open region file.
 #[derive(Debug)]
 pub struct RegionFile {
     file: File,
+    /// The file name, for [`gate`].
+    name: String,
     dir: PathBuf,
     offsets: [u32; 1024],
     timestamps: [u32; 1024],
@@ -56,6 +72,10 @@ impl RegionFile {
         };
         let mut region = RegionFile {
             file,
+            name: path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
             dir: path.parent().map(Path::to_path_buf).unwrap_or_default(),
             offsets: [0; 1024],
             timestamps: [0; 1024],
@@ -164,6 +184,7 @@ impl RegionFile {
         compression: Compression,
         data: &[u8],
     ) -> io::Result<()> {
+        let _gate = gate(&self.name);
         let index = slot(pos);
         let external_path = self.external_path(pos);
         let needed = (data.len() + 5).div_ceil(SECTOR);

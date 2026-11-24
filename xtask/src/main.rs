@@ -69,11 +69,13 @@ pub const USAGE: &str = "usage:
       Build and run the server in ./run (debug build; --release uses the release-fast profile).
   cargo xtask deploy [--port <port>] [--release]
       Build the server (release-fast; --release for the full release profile) and install it on
-      the test server as vanillite@<port>.service. <port> is 30001-30999, default 30001.
+      the test server as vanillite@<port>.service. <port> is 30003-30999, default 30003
+      (30001, 30002 and the proxy follow dev automatically).
       The SSH host is vanillite-test, or VANILLITE_TEST_HOST.
   cargo xtask testserver provision|status|logs|start|stop|restart [<port>]
       provision runs scripts/testserver/provision.sh on the test server (idempotent);
-      status lists the services and ports; the others act on vanillite@<port> (default 30001).
+      status lists the services, ports and the last auto-deploys; the others act on
+      vanillite@<port> (default 30001).
   cargo xtask docker [--push] [--in-docker] [--tag <tag>]...
       Build the server image (Dockerfile) for linux/amd64 and linux/arm64, tagged dev and the
       short commit hash, as $VANILLITE_IMAGE (default docker.hthoene.de/vanillite/vanillite).
