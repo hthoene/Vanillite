@@ -11,7 +11,8 @@ use vanillite_base::ChunkPos;
 use vanillite_base::math::java_string_hash;
 use vanillite_worldgen::proto::WgHeightmap;
 use vanillite_worldgen::{
-    DimensionSpec, NeighbourBiomes, ProtoChunk, TerrainGenerator, TerrainJob, TerrainStep,
+    DimensionSpec, NeighbourBiomes, ProtoChunk, ReferencedStarts, TerrainGenerator, TerrainJob,
+    TerrainStep,
 };
 
 fn biome_source(dimension: &str) -> Value {
@@ -150,6 +151,7 @@ fn chunks_match_vanilla() {
         let mut job = TerrainJob {
             chunk: area.swap_remove(4),
             neighbours,
+            structures: ReferencedStarts::empty(),
         };
         let mut step_failures = Vec::new();
         generator.generate_terrain_observed(&mut job, |step, chunk| {

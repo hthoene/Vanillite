@@ -1,0 +1,462 @@
+{
+  "description": "A piston pushing three blocks and retracting; a sticky piston moving a slime block that drags a neighbour along; 13 blocks (fails) and 12 blocks (moves) at the push limit; a sticky piston with a one-tick pulse spitting its block; quasi-connectivity: a piston powered from two blocks above only reacts when it gets a neighbour update.",
+  "tier": "fast",
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      17,
+      -58,
+      18
+    ]
+  ],
+  "ticks": 40,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        1
+      ],
+      "block": "minecraft:piston[extended=false,facing=east]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -60,
+        1
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        1
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -60,
+        1
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        4
+      ],
+      "block": "minecraft:sticky_piston[extended=false,facing=east]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -60,
+        4
+      ],
+      "block": "minecraft:slime_block"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -60,
+        5
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        4
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        8
+      ],
+      "block": "minecraft:piston[extended=false,facing=east]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -60,
+        8
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        8
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -60,
+        8
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        8
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -60,
+        8
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -60,
+        8
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        9,
+        -60,
+        8
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        10,
+        -60,
+        8
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        11,
+        -60,
+        8
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        12,
+        -60,
+        8
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        13,
+        -60,
+        8
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        14,
+        -60,
+        8
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        15,
+        -60,
+        8
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        10
+      ],
+      "block": "minecraft:piston[extended=false,facing=east]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -60,
+        10
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        10
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -60,
+        10
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        10
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -60,
+        10
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -60,
+        10
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        9,
+        -60,
+        10
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        10,
+        -60,
+        10
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        11,
+        -60,
+        10
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        12,
+        -60,
+        10
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        13,
+        -60,
+        10
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        14,
+        -60,
+        10
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        13
+      ],
+      "block": "minecraft:sticky_piston[extended=false,facing=east]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -60,
+        13
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        16
+      ],
+      "block": "minecraft:piston[extended=false,facing=east]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -60,
+        16
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        2,
+        -60,
+        0
+      ],
+      "block": "minecraft:redstone_block"
+    },
+    {
+      "tick": 10,
+      "op": "place",
+      "pos": [
+        2,
+        -60,
+        0
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        2,
+        -60,
+        3
+      ],
+      "block": "minecraft:redstone_block"
+    },
+    {
+      "tick": 12,
+      "op": "place",
+      "pos": [
+        2,
+        -60,
+        3
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        2,
+        -60,
+        9
+      ],
+      "block": "minecraft:redstone_block"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        2,
+        -60,
+        12
+      ],
+      "block": "minecraft:redstone_block"
+    },
+    {
+      "tick": 2,
+      "op": "place",
+      "pos": [
+        2,
+        -60,
+        12
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "tick": 3,
+      "op": "place",
+      "pos": [
+        2,
+        -58,
+        16
+      ],
+      "block": "minecraft:redstone_block"
+    },
+    {
+      "tick": 10,
+      "op": "place",
+      "pos": [
+        2,
+        -60,
+        17
+      ],
+      "block": "minecraft:stone"
+    }
+  ]
+}

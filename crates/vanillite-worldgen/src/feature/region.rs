@@ -12,6 +12,7 @@ use crate::biome::BiomeManager;
 use crate::proto::{FluidTickKind, ProtoChunk};
 use crate::random::AnyRandom;
 use crate::random_state::RandomState;
+use crate::structure::ReferencedStarts;
 
 /// `Block.UPDATE_*` flags of `setBlock`. Generation only looks at [`flags::KNOWN_SHAPE`].
 pub mod flags {
@@ -44,6 +45,9 @@ pub struct WorldGenRegion<'a> {
     random: AnyRandom,
     generation_context: WorldGenerationContext,
     has_sky_light: bool,
+    /// The structure starts the centre chunk references (Vanilla reads them through the
+    /// region's `StructureManager`).
+    structure_starts: ReferencedStarts,
 }
 
 impl<'a> WorldGenRegion<'a> {
@@ -78,10 +82,21 @@ impl<'a> WorldGenRegion<'a> {
             random,
             generation_context: WorldGenerationContext::new(min_y, height, sea_level),
             has_sky_light: true,
+            structure_starts: ReferencedStarts::empty(),
         }
     }
 
-    /// Sets the generator's `WorldGenerationContext` (by default the level's height range and
+    /// Sets the structure starts the centre chunk references.
+    pub fn set_structure_starts(&mut self, starts: ReferencedStarts) {
+        self.structure_starts = starts;
+    }
+
+    /// `StructureManager.startsForStructure(sectionPos, ...)` of the centre chunk: the starts it
+    /// references.
+    pub fn structure_starts(&self) -> &ReferencedStarts {
+        &self.structure_starts
+    }
+
     /// Sets whether the dimension has sky light (`dimensionType().hasSkyLight()`); default true.
     pub fn set_has_sky_light(&mut self, has_sky_light: bool) {
         self.has_sky_light = has_sky_light;
@@ -92,6 +107,7 @@ impl<'a> WorldGenRegion<'a> {
         self.has_sky_light
     }
 
+    /// Sets the generator's `WorldGenerationContext` (by default the level's height range and
     /// the sea level, which is right whenever the generator covers the whole level).
     pub fn set_generation_context(&mut self, context: WorldGenerationContext) {
         self.generation_context = context;
@@ -232,8 +248,8 @@ impl<'a> WorldGenRegion<'a> {
         self.is_within_write_zone(pos)
     }
 
-    /// `setBlock(pos, state, flags)`: writes the block and its heightmaps, creates or removes the
-    /// block entity placeholder and, unless `flags` has [`flags::KNOWN_SHAPE`], marks the
+    /// `setBlock(pos, state, flags)`: writes the block and its heightmaps, creates (unless a
+    /// block entity was already created there) or removes the block entity placeholder and, unless `flags` has [`flags::KNOWN_SHAPE`], marks the
     /// state's post-processing position. Returns `false` outside the write zone.
     pub fn set_block(&mut self, pos: BlockPos, state: BlockState, update_flags: i32) -> bool {
         if !self.ensure_can_write(pos) {
@@ -243,7 +259,12 @@ impl<'a> WorldGenRegion<'a> {
         let old = chunk.set_block(pos.x, pos.y, pos.z, state);
         let outside = chunk.is_outside(pos.y);
         if has_block_entity(state) {
-            if !outside {
+            // `ChunkAccess.setBlockEntityNbt`: the placeholder is only stored where no block
+            // entity was created yet (a created one stays, whatever the new block is).
+            let created = chunk.block_entity(pos).is_some_and(
+                |tag| !matches!(tag.get("id"), Some(Tag::String(id)) if id == "DUMMY"),
+            );
+            if !outside && !created {
                 let mut tag = Compound::new();
                 tag.insert("x", Tag::Int(pos.x));
                 tag.insert("y", Tag::Int(pos.y));
@@ -278,6 +299,15 @@ impl<'a> WorldGenRegion<'a> {
             return false;
         }
         self.set_block(pos, BlockState::AIR, flags::ALL)
+    }
+
+    /// `addFreshEntity(entity)`: stores the entity (its saved NBT with `id` and `Pos`, see
+    /// [`entity_tag`]) in the chunk holding its block position.
+    pub fn add_fresh_entity(&mut self, entity: Compound) -> bool {
+        let [x, _, z] = entity_pos(&entity);
+        let pos = BlockPos::new(x.floor() as i32, 0, z.floor() as i32);
+        self.chunk_mut(pos).add_entity(entity);
+        true
     }
 
     /// `ChunkAccess.markPosForPostProcessing(pos)` on the chunk holding `pos`.
@@ -336,4 +366,26 @@ impl std::fmt::Debug for WorldGenRegion<'_> {
             .field("radius", &self.radius)
             .finish_non_exhaustive()
     }
+}
+
+/// The saved NBT of a new entity of type `id` at `x, y, z` (`id` and `Pos`; generation only
+/// records what it needs of entities).
+pub fn entity_tag(id: &str, x: f64, y: f64, z: f64) -> Compound {
+    Compound::new().with("id", id).with(
+        "Pos",
+        vanillite_nbt::List(vec![Tag::Double(x), Tag::Double(y), Tag::Double(z)]),
+    )
+}
+
+/// The `Pos` of an entity tag (0, 0, 0 if missing).
+pub fn entity_pos(entity: &Compound) -> [f64; 3] {
+    let mut out = [0.0; 3];
+    if let Some(Tag::List(list)) = entity.get("Pos") {
+        for (slot, tag) in out.iter_mut().zip(&list.0) {
+            if let Tag::Double(v) = tag {
+                *slot = *v;
+            }
+        }
+    }
+    out
 }

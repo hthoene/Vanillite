@@ -109,6 +109,8 @@ pub(crate) struct Conn {
     keepalive: KeepAlive,
     vouched: Option<GameProfile>,
     guard: Option<ConnectionGuard>,
+    /// An in-process client that takes all chunks at once (Vanilla's `memoryConnection`).
+    memory: bool,
 }
 
 impl Conn {
@@ -133,12 +135,15 @@ impl Conn {
         rx: mpsc::Receiver<Vec<u8>>,
         out: Outbound,
         profile: GameProfile,
+        memory: bool,
     ) -> Self {
         let source = Source::Virtual {
             rx,
             max: State::Handshake.limits().max_uncompressed,
         };
-        Self::new(shared, addr, source, out, Some(profile), None)
+        let mut conn = Self::new(shared, addr, source, out, Some(profile), None);
+        conn.memory = memory;
+        conn
     }
 
     fn new(
@@ -168,6 +173,7 @@ impl Conn {
             },
             vouched,
             guard,
+            memory: false,
         }
     }
 
@@ -610,6 +616,7 @@ impl Conn {
             client_info,
             address: self.addr,
             is_virtual: self.vouched.is_some(),
+            memory: self.memory,
             inbound: rx,
             outbound: self.out.clone(),
             latency: self.keepalive.latency.clone(),

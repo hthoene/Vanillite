@@ -73,12 +73,34 @@ impl std::fmt::Debug for VirtualOpener {
 }
 
 impl VirtualOpener {
-    /// Opens a virtual connection for a vouched-for profile.
+    /// Opens a virtual connection for a vouched-for in-process client (all chunks at once).
     pub fn open(&self, profile: GameProfile, address: SocketAddr) -> VirtualConnection {
+        self.open_with(profile, address, true)
+    }
+
+    /// Opens a virtual connection for a vouched-for remote client (a Bedrock player): chunks
+    /// are paced by `chunk_batch_received` like for a TCP client.
+    pub fn open_remote(&self, profile: GameProfile, address: SocketAddr) -> VirtualConnection {
+        self.open_with(profile, address, false)
+    }
+
+    fn open_with(
+        &self,
+        profile: GameProfile,
+        address: SocketAddr,
+        memory: bool,
+    ) -> VirtualConnection {
         let (to_server, server_rx) = mpsc::channel(self.shared.config.max_inbound_packets.max(1));
         let (client_tx, from_server) = mpsc::channel(self.shared.config.max_inbound_packets.max(1));
         let (out, out_rx, queued) = Outbound::new(self.shared.config.max_outbound_bytes);
-        let conn = conn::Conn::virtual_(Arc::clone(&self.shared), address, server_rx, out, profile);
+        let conn = conn::Conn::virtual_(
+            Arc::clone(&self.shared),
+            address,
+            server_rx,
+            out,
+            profile,
+            memory,
+        );
         self.runtime
             .spawn(outbound::virtual_writer(client_tx, out_rx, queued));
         self.runtime.spawn(conn.run());

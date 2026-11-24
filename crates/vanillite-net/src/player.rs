@@ -20,6 +20,9 @@ pub struct Joined {
     pub address: SocketAddr,
     /// Whether this is a virtual connection (in-memory, Bedrock, proxy edge).
     pub is_virtual: bool,
+    /// An in-process client that takes all pending chunks at once (Vanilla's
+    /// `memoryConnection`). Virtual connections of remote clients (Bedrock) are not.
+    pub memory: bool,
     /// Validated play packets, bounded (SEC-17); drained by the world between ticks.
     pub inbound: std::sync::mpsc::Receiver<Inbound>,
     /// Packets to the client.

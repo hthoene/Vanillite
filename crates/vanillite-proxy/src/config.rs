@@ -59,6 +59,27 @@ login-timeout = 30
 read-timeout = 30
 # Seconds to connect and log in to a backend.
 connect-timeout = 5
+
+# Bedrock Edition players (vanillite-bedrock): a RakNet listener on UDP that translates Bedrock
+# clients into proxy connections. Backends get the Bedrock identity by forwarding.
+[bedrock]
+enabled = false
+# UDP address. Bedrock's default port is 19132.
+bind = "0.0.0.0:19132"
+# Require an Xbox Live login. Off accepts any identity a client claims: only for tests.
+online-mode = true
+# Prefix of Bedrock players' Java names, so they never collide with Java accounts.
+name-prefix = "."
+# Bedrock connections per IP address.
+max-connections-per-ip = 8
+# Packets per second a Bedrock client may send before it is kicked.
+max-packets-per-second = 1000
+# Largest chunk radius granted to Bedrock clients.
+max-view-distance = 12
+# Translated chunk sections kept for all Bedrock players (about 4 KiB each).
+chunk-cache-sections = 16384
+# Threads of the Bedrock frontend.
+threads = 2
 "#;
 
 /// Proxy settings.
@@ -92,6 +113,78 @@ pub struct ProxyConfig {
     pub permissions: BTreeMap<String, Vec<String>>,
     /// Limits.
     pub limits: Limits,
+    /// Bedrock frontend.
+    pub bedrock: Bedrock,
+}
+
+/// The Bedrock frontend (`[bedrock]`).
+#[derive(Debug, Clone)]
+pub struct Bedrock {
+    /// Accept Bedrock players. Default false.
+    pub enabled: bool,
+    /// UDP listen address. Default `0.0.0.0:19132`.
+    pub bind: SocketAddr,
+    /// Require an Xbox Live login. Default true.
+    pub online_mode: bool,
+    /// Prefix of Bedrock players' Java names. Default ".".
+    pub name_prefix: String,
+    /// Connections per IP address (1..=1000). Default 8.
+    pub max_connections_per_ip: u32,
+    /// Packets per second per client (50..=100000). Default 1000.
+    pub max_packets_per_second: u32,
+    /// Largest chunk radius (2..=32). Default 12.
+    pub max_view_distance: u8,
+    /// Translated sections cached (0..=1048576). Default 16384.
+    pub chunk_cache_sections: usize,
+    /// Frontend threads (1..=64). Default 2.
+    pub threads: usize,
+}
+
+impl Default for Bedrock {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind: SocketAddr::from(([0, 0, 0, 0], 19132)),
+            online_mode: true,
+            name_prefix: ".".to_owned(),
+            max_connections_per_ip: 8,
+            max_packets_per_second: 1000,
+            max_view_distance: 12,
+            chunk_cache_sections: 16_384,
+            threads: 2,
+        }
+    }
+}
+
+impl Bedrock {
+    fn parse(t: &mut Table) -> Result<Self, String> {
+        let d = Self::default();
+        let bind = string(t, "bind", "0.0.0.0:19132")?;
+        let bind = bind
+            .parse()
+            .map_err(|_| format!("bedrock.bind must be ip:port, got {bind:?}"))?;
+        let b = Self {
+            enabled: boolean(t, "enabled", d.enabled)?,
+            bind,
+            online_mode: boolean(t, "online-mode", d.online_mode)?,
+            name_prefix: string(t, "name-prefix", &d.name_prefix)?,
+            max_connections_per_ip: u32::try_from(int(t, "max-connections-per-ip", 8, 1, 1000)?)
+                .unwrap_or(8),
+            max_packets_per_second: u32::try_from(int(
+                t,
+                "max-packets-per-second",
+                1000,
+                50,
+                100_000,
+            )?)
+            .unwrap_or(1000),
+            max_view_distance: u8::try_from(int(t, "max-view-distance", 12, 2, 32)?).unwrap_or(12),
+            chunk_cache_sections: usize_of(int(t, "chunk-cache-sections", 16_384, 0, 1_048_576)?),
+            threads: usize_of(int(t, "threads", 2, 1, 64)?),
+        };
+        no_unknown(t, "bedrock")?;
+        Ok(b)
+    }
 }
 
 /// Limits against abuse (SEC-17, SEC-18).
@@ -145,6 +238,7 @@ impl Default for ProxyConfig {
                 read_timeout: Duration::from_secs(30),
                 connect_timeout: Duration::from_secs(5),
             },
+            bedrock: Bedrock::default(),
         }
     }
 }
@@ -276,6 +370,7 @@ impl ProxyConfig {
             connect_timeout: secs(int(&mut l, "connect-timeout", 5, 1, 120)?),
         };
         no_unknown(&l, "limits")?;
+        let bedrock = Bedrock::parse(&mut table(&mut t, "bedrock")?)?;
         let config = Self {
             bind,
             online_mode: boolean(&mut t, "online-mode", true)?,
@@ -300,6 +395,7 @@ impl ProxyConfig {
             forced_hosts,
             permissions,
             limits,
+            bedrock,
         };
         no_unknown(&t, "")?;
         config.check()?;

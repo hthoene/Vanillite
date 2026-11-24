@@ -273,6 +273,35 @@ impl<T: RuleValue> RuleValue for VanillaOr<T> {
     }
 }
 
+/// The folder layout of a world's dimensions (`storage.layout`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum StorageLayout {
+    /// Vanilla's (also Paper's): every dimension in `<level>/dimensions/<namespace>/<path>`.
+    #[default]
+    Vanilla,
+    /// Spigot's and CraftBukkit's: the nether in `<level>_nether/` and the end in
+    /// `<level>_the_end/`, each with its own `dimensions/` tree.
+    Spigot,
+}
+
+impl RuleValue for StorageLayout {
+    const SHAPE: ValueShape = ValueShape::of(ValueType::Text);
+    fn from_toml(value: &toml::Value) -> Result<Self, String> {
+        match value.as_str().map(str::trim) {
+            Some(s) if s.eq_ignore_ascii_case("vanilla") => Ok(StorageLayout::Vanilla),
+            Some(s) if s.eq_ignore_ascii_case("spigot") => Ok(StorageLayout::Spigot),
+            _ => Err(format!("expected \"vanilla\" or \"spigot\", found {value}")),
+        }
+    }
+    fn to_toml(&self) -> toml::Value {
+        let name = match self {
+            StorageLayout::Vanilla => "vanilla",
+            StorageLayout::Spigot => "spigot",
+        };
+        toml::Value::String(name.to_owned())
+    }
+}
+
 /// A value that is either switched off (written `"disabled"` or `false`) or set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum DisabledOr<T> {
