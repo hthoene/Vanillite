@@ -7,14 +7,18 @@
 //! replace entries before the world starts. Blocks whose class has no such behaviour have
 //! empty entries and cost nothing.
 
+pub mod bell;
 pub mod drops;
 pub mod falling;
 pub mod fluid;
 mod growth;
+pub mod lectern;
+pub mod note;
 pub mod piston;
 pub mod plate;
 pub mod rail;
 pub mod redstone;
+pub mod sculk;
 pub mod sensor;
 mod spread;
 pub mod tripwire;
@@ -225,6 +229,10 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
     plate::fill(block, &mut b);
     tripwire::fill(block, &mut b);
     sensor::fill(block, &mut b);
+    note::fill(block, &mut b);
+    bell::fill(block, &mut b);
+    lectern::fill(block, &mut b);
+    sculk::fill(block, &mut b);
     b
 }
 

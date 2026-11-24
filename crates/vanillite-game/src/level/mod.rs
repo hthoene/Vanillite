@@ -12,6 +12,7 @@
 //!   fluid ticks, random ticks, block events); entities tick in the world's entity phase.
 
 pub mod block_entity;
+pub mod game_event;
 mod neighbors;
 pub mod signal;
 mod tick;
@@ -176,7 +177,9 @@ pub struct Sound {
 /// `SoundSource.BLOCKS`.
 pub const SOUND_BLOCKS: u8 = 4;
 /// `SoundSource.NEUTRAL`.
-pub const SOUND_NEUTRAL: u8 = 7;
+pub const SOUND_NEUTRAL: u8 = 6;
+/// `SoundSource.RECORDS`.
+pub const SOUND_RECORDS: u8 = 2;
 
 /// What the world sends after a tick: changed blocks per section, block events, level events
 /// and sounds. Filled by the simulation, drained by the server.
@@ -223,8 +226,9 @@ pub struct Level {
     block_events: Vec<BlockEvent>,
     block_event_set: FxHashSet<BlockEvent>,
     random: LegacyRandom,
-    /// `threadSafeRandom`: seeds of sounds.
-    sound_random: LegacyRandom,
+    /// `soundSeedGenerator`: the seeds of sounds without an explicit seed; separate from the
+    /// level random so sounds do not shift the simulation's random sequence.
+    sound_seeds: LegacyRandom,
     /// `randValue` of `getBlockRandomPos`.
     rand_value: i32,
     game_time: i64,
@@ -271,7 +275,7 @@ impl Level {
             block_events: Vec::new(),
             block_event_set: FxHashSet::default(),
             random: LegacyRandom::new(seed),
-            sound_random: LegacyRandom::new(seed ^ 0x5EED_50D0),
+            sound_seeds: LegacyRandom::new(seed ^ 0x50_4E_44_53),
             rand_value: LegacyRandom::new(seed ^ 0x5DEE_CE66).next_int(),
             game_time: 0,
             output: LevelOutput::default(),
@@ -477,8 +481,7 @@ impl Level {
         }
     }
 
-    /// `playSound(except, pos, sound, source, volume, pitch)` at the block's centre, with a
-    /// seed from the level random.
+    /// `playSound(except, pos, sound, source, volume, pitch)` at the block's centre.
     pub fn play_block_sound(
         &mut self,
         except: Option<EntityId>,
@@ -509,8 +512,24 @@ impl Level {
         volume: f32,
         pitch: f32,
     ) {
-        // `threadSafeRandom`: sounds do not touch the level random.
-        let seed = self.sound_random.next_long();
+        let seed = self.sound_seeds.next_long();
+        self.play_seeded_sound(except, x, y, z, sound, source, volume, pitch, seed);
+    }
+
+    /// `playSeededSound(except, x, y, z, sound, source, volume, pitch, seed)`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn play_seeded_sound(
+        &mut self,
+        except: Option<EntityId>,
+        x: f64,
+        y: f64,
+        z: f64,
+        sound: u16,
+        source: u8,
+        volume: f32,
+        pitch: f32,
+        seed: i64,
+    ) {
         self.output.sounds.push(Sound {
             sound,
             source,

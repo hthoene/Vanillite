@@ -380,3 +380,99 @@ fn tripwire_hooks_attach_over_string() {
     }
     assert!(!level.block(a).flag("powered"));
 }
+
+#[test]
+fn note_block_plays_on_rising_signal() {
+    let mut level = flat_level();
+    let note = BlockPos::new(2, -60, 2);
+    level.set_block(note, ids::NOTE_BLOCK.default_state(), update::ALL);
+    level.output().block_events.clear();
+    // A powered lectern next to it gives a signal of 15.
+    let lectern = ids::LECTERN.default_state().set_flag("powered", true);
+    level.set_block(BlockPos::new(3, -60, 2), lectern, update::ALL);
+    assert!(level.block(note).flag("powered"));
+    tick(&mut level);
+    let events = &level.output().block_events;
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].pos, note);
+    assert_eq!(events[0].block, ids::NOTE_BLOCK);
+    assert_eq!(level.output().sounds.len(), 1);
+    // A steady signal does not play again.
+    level.output().block_events.clear();
+    tick(&mut level);
+    assert!(level.output().block_events.is_empty());
+}
+
+#[test]
+fn sculk_sensor_activates_after_the_vibration_travelled() {
+    let mut level = flat_level();
+    let sensor = BlockPos::new(0, -60, 0);
+    level.set_block(sensor, ids::SCULK_SENSOR.default_state(), update::ALL);
+    assert!(level.block_entity(sensor).is_some());
+    tick(&mut level);
+    // A block placed 8 blocks away: the vibration is selected the next tick and arrives 8 block
+    // entity ticks after the event (the selecting tick already travels one block).
+    let place = super::game_event::events().block_place;
+    level.game_event_at(None, place, BlockPos::new(8, -60, 0));
+    for i in 0..7 {
+        tick(&mut level);
+        assert_eq!(
+            level.block(sensor).value("sculk_sensor_phase"),
+            Some("inactive"),
+            "tick {i}"
+        );
+    }
+    tick(&mut level);
+    let state = level.block(sensor);
+    assert_eq!(state.value("sculk_sensor_phase"), Some("active"));
+    // `getRedstoneStrengthForDistance(8, 8)`: 15 - floor(15 / 8 * 8), at least 1.
+    assert_eq!(state.int("power"), Some(1));
+    assert_eq!(level.signal(sensor, vanillite_base::Direction::West), 1);
+    // `block_place` has frequency 13.
+    assert_eq!(
+        level.analog_output(state, sensor, vanillite_base::Direction::North),
+        13
+    );
+    // Active for 30 ticks, then 10 ticks of cooldown.
+    for _ in 0..30 {
+        tick(&mut level);
+    }
+    assert_eq!(
+        level.block(sensor).value("sculk_sensor_phase"),
+        Some("cooldown")
+    );
+    assert_eq!(level.block(sensor).int("power"), Some(0));
+    for _ in 0..10 {
+        tick(&mut level);
+    }
+    assert_eq!(
+        level.block(sensor).value("sculk_sensor_phase"),
+        Some("inactive")
+    );
+}
+
+#[test]
+fn wool_occludes_vibrations() {
+    let mut level = flat_level();
+    let sensor = BlockPos::new(0, -60, 0);
+    level.set_block(sensor, ids::SCULK_SENSOR.default_state(), update::ALL);
+    // A wool wall between the sensor and the event, high enough for every nudged line.
+    for y in -61..=-58 {
+        for z in -2..=2 {
+            level.set_block(
+                BlockPos::new(2, y, z),
+                ids::WHITE_WOOL.default_state(),
+                update::ALL,
+            );
+        }
+    }
+    let place = super::game_event::events().block_place;
+    level.game_event_at(None, place, BlockPos::new(4, -60, 0));
+    for _ in 0..10 {
+        tick(&mut level);
+    }
+    assert_eq!(
+        level.block(sensor).value("sculk_sensor_phase"),
+        Some("inactive")
+    );
+}

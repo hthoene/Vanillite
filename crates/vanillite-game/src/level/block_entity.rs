@@ -14,7 +14,11 @@ use vanillite_nbt::{Compound, Tag};
 use vanillite_worldgen::behaviour::StateExt;
 
 use super::Level;
+use super::game_event::{GameEventListeners, Listener};
+use crate::block::bell::Bell;
+use crate::block::lectern::Lectern;
 use crate::block::piston::MovingPiston;
+use crate::block::sculk::SculkSensor;
 
 /// The data of one block entity, by kind. Kinds whose behaviour does not exist yet have no
 /// variant; their blocks simply have no live block entity.
@@ -29,6 +33,12 @@ pub enum BlockEntity {
     MovingPiston(Box<MovingPiston>),
     /// `DaylightDetectorBlockEntity` (no data; it ticks).
     DaylightDetector,
+    /// `BellBlockEntity`.
+    Bell(Bell),
+    /// `LecternBlockEntity`.
+    Lectern(Lectern),
+    /// `SculkSensorBlockEntity` and `CalibratedSculkSensorBlockEntity`.
+    SculkSensor(Box<SculkSensor>),
 }
 
 /// `BlockEntityTicker.tick(level, pos, state, blockEntity)`: the block entity is looked up at
@@ -55,6 +65,8 @@ pub struct BlockEntities {
     /// `pendingBlockEntityTickers`.
     pending: Vec<(BlockPos, u32)>,
     next_ticker: u32,
+    /// Game event listeners, of block entities and (later) entities.
+    pub(super) listeners: GameEventListeners,
 }
 
 impl BlockEntities {
@@ -107,10 +119,20 @@ impl BlockEntities {
             }
             (false, _) => None,
         };
-        entries.insert(pos, Entry { entity, ticker });
+        let new_listener = listener_of(pos, &entity);
+        if let Some(old) = entries.insert(pos, Entry { entity, ticker })
+            && let Some(listener) = listener_of(pos, &old.entity)
+            && Some(listener) != new_listener
+        {
+            self.listeners.unregister(listener);
+        }
+        // `addGameEventListener`.
+        if let Some(listener) = new_listener {
+            self.listeners.register(listener);
+        }
     }
 
-    /// `removeBlockEntity(pos)`: the block entity and its ticker go.
+    /// `removeBlockEntity(pos)`: the block entity, its ticker and its game event listener go.
     pub fn remove(&mut self, pos: BlockPos) -> Option<BlockEntity> {
         let chunk = pos.chunk();
         let entries = self.chunks.get_mut(&chunk)?;
@@ -119,6 +141,9 @@ impl BlockEntities {
             self.chunks.remove(&chunk);
         }
         self.touched.insert(chunk);
+        if let Some(listener) = listener_of(pos, &removed.entity) {
+            self.listeners.unregister(listener);
+        }
         Some(removed.entity)
     }
 
@@ -132,7 +157,13 @@ impl BlockEntities {
 
     /// Drops the block entities of an unloaded chunk.
     fn remove_chunk(&mut self, chunk: ChunkPos) {
-        self.chunks.remove(&chunk);
+        if let Some(entries) = self.chunks.remove(&chunk) {
+            for (pos, entry) in entries {
+                if let Some(listener) = listener_of(pos, &entry.entity) {
+                    self.listeners.unregister(listener);
+                }
+            }
+        }
         self.touched.remove(&chunk);
     }
 }
@@ -140,9 +171,22 @@ impl BlockEntities {
 /// The ticker of a block entity kind (`EntityBlock.getTicker`).
 fn ticker_of(entity: &BlockEntity) -> Option<TickerFn> {
     match entity {
-        BlockEntity::Comparator { .. } => None,
+        BlockEntity::Comparator { .. } | BlockEntity::Lectern(_) => None,
         BlockEntity::MovingPiston(_) => Some(crate::block::piston::moving_piston_tick),
         BlockEntity::DaylightDetector => Some(crate::block::sensor::daylight_detector_tick),
+        BlockEntity::Bell(_) => Some(crate::block::bell::tick),
+        BlockEntity::SculkSensor(_) => Some(crate::block::sculk::tick_block_entity),
+    }
+}
+
+/// The game event listener of a block entity kind (`EntityBlock.getListener`).
+fn listener_of(pos: BlockPos, entity: &BlockEntity) -> Option<Listener> {
+    match entity {
+        BlockEntity::SculkSensor(sensor) => Some(Listener::Block {
+            pos,
+            radius: sensor.listener_radius(),
+        }),
+        _ => None,
     }
 }
 
@@ -154,6 +198,14 @@ pub fn new_block_entity(state: BlockState) -> Option<BlockEntity> {
         Some(BlockEntity::Comparator { output: 0 })
     } else if block == ids::DAYLIGHT_DETECTOR {
         Some(crate::block::sensor::new_daylight_detector())
+    } else if block == ids::BELL {
+        Some(BlockEntity::Bell(Bell::default()))
+    } else if block == ids::LECTERN {
+        Some(BlockEntity::Lectern(Lectern::default()))
+    } else if block == ids::SCULK_SENSOR || block == ids::CALIBRATED_SCULK_SENSOR {
+        Some(BlockEntity::SculkSensor(Box::new(SculkSensor::new(
+            block == ids::CALIBRATED_SCULK_SENSOR,
+        ))))
     } else {
         None
     }
@@ -166,6 +218,16 @@ fn is_valid(entity: &BlockEntity, state: BlockState) -> bool {
         BlockEntity::Comparator { .. } => state.block() == ids::COMPARATOR,
         BlockEntity::MovingPiston(_) => state.block() == ids::MOVING_PISTON,
         BlockEntity::DaylightDetector => state.block() == ids::DAYLIGHT_DETECTOR,
+        BlockEntity::Bell(_) => state.block() == ids::BELL,
+        BlockEntity::Lectern(_) => state.block() == ids::LECTERN,
+        BlockEntity::SculkSensor(sensor) => {
+            state.block()
+                == if sensor.calibrated {
+                    ids::CALIBRATED_SCULK_SENSOR
+                } else {
+                    ids::SCULK_SENSOR
+                }
+        }
     }
 }
 
