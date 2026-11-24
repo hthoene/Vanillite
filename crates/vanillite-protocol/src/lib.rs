@@ -28,7 +28,7 @@ pub mod text;
 pub mod types;
 
 pub use codec::{Decode, DecodeLimited, Encode, Error, Reader, Result};
-pub use shared::{Inbound, SharedPacket};
+pub use shared::{Inbound, InboundReceiver, InboundSender, SharedPacket, inbound_queue};
 pub use vanillite_data::version::{PROTOCOL_VERSION, VERSION_ID};
 pub use vanillite_macros::Packet;
 

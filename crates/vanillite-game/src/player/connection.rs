@@ -1,11 +1,11 @@
 //! A player's connection as the world sees it, and the play packet handlers of milestone 1
 //! (Vanilla's `ServerGamePacketListenerImpl`).
 
-use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::mpsc::TryRecvError;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use vanillite_base::Vec3;
-use vanillite_protocol::Inbound;
+use vanillite_protocol::InboundReceiver;
 use vanillite_protocol::chat::{
     ArgumentSignature, ChatSessionData, LastSeenUpdate, MessageSignature,
 };
@@ -149,7 +149,7 @@ pub struct ChatContext<'a> {
 pub struct Connection {
     /// Clientbound packets.
     pub sink: Arc<dyn PacketSink>,
-    inbound: Receiver<Inbound>,
+    inbound: InboundReceiver,
     /// Movement validation and teleports.
     pub movement: Movement,
     /// Chunk view and sending.
@@ -204,7 +204,7 @@ impl Connection {
     /// A connection for a player that joins at `pos`.
     pub fn new(
         sink: Arc<dyn PacketSink>,
-        inbound: Receiver<Inbound>,
+        inbound: InboundReceiver,
         pos: Vec3,
         memory_connection: bool,
         is_virtual: bool,

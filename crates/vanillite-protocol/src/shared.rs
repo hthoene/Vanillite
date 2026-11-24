@@ -1,5 +1,7 @@
 //! Packets encoded once for many receivers, and the inbound play packet envelope.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{self, TryRecvError};
 use std::sync::{Arc, OnceLock};
 
 use crate::Packet;
@@ -86,4 +88,58 @@ impl SharedPacket {
 pub struct Inbound {
     pub seq: u64,
     pub packet: ServerboundPlay,
+}
+
+/// Creates the queue of one connection's play packets for the world. At most `max` packets
+/// wait (SEC-17); the memory follows the packets that wait (blocks of a few dozen), not
+/// `max`, so thousands of idle connections stay small.
+pub fn inbound_queue(max: usize) -> (InboundSender, InboundReceiver) {
+    let (tx, rx) = mpsc::channel();
+    let queued = Arc::new(AtomicUsize::new(0));
+    (
+        InboundSender {
+            tx,
+            queued: Arc::clone(&queued),
+            max,
+        },
+        InboundReceiver { rx, queued },
+    )
+}
+
+/// The network side of an [`inbound_queue`].
+#[derive(Debug)]
+pub struct InboundSender {
+    tx: mpsc::Sender<Inbound>,
+    queued: Arc<AtomicUsize>,
+    max: usize,
+}
+
+impl InboundSender {
+    /// Queues a packet; gives it back if `max` packets wait or the receiver is gone.
+    pub fn try_send(&self, inbound: Inbound) -> Result<(), Inbound> {
+        if self.queued.fetch_add(1, Ordering::Relaxed) >= self.max {
+            self.queued.fetch_sub(1, Ordering::Relaxed);
+            return Err(inbound);
+        }
+        self.tx.send(inbound).map_err(|e| {
+            self.queued.fetch_sub(1, Ordering::Relaxed);
+            e.0
+        })
+    }
+}
+
+/// The world side of an [`inbound_queue`].
+#[derive(Debug)]
+pub struct InboundReceiver {
+    rx: mpsc::Receiver<Inbound>,
+    queued: Arc<AtomicUsize>,
+}
+
+impl InboundReceiver {
+    /// The next packet, like [`mpsc::Receiver::try_recv`].
+    pub fn try_recv(&self) -> Result<Inbound, TryRecvError> {
+        let inbound = self.rx.try_recv()?;
+        self.queued.fetch_sub(1, Ordering::Relaxed);
+        Ok(inbound)
+    }
 }

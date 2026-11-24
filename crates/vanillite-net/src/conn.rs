@@ -665,7 +665,7 @@ impl Conn {
 
     async fn play(&mut self, profile: GameProfile, client_info: ClientInfo) -> Result<()> {
         self.enter(State::Play, None);
-        let (tx, rx) = std::sync::mpsc::sync_channel(self.shared.config.max_inbound_packets);
+        let (tx, rx) = vanillite_protocol::inbound_queue(self.shared.config.max_inbound_packets);
         let joined = Joined {
             profile,
             client_info,
