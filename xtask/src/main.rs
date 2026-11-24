@@ -9,11 +9,13 @@
 //! cargo xtask dev [--release] [-- <server args>]
 //! cargo xtask deploy [--port <port>] [--release]
 //! cargo xtask testserver provision|status|logs|start|stop|restart [<port>]
+//! cargo xtask docker [--push] [--in-docker] [--tag <tag>]...
 //! cargo xtask loadtest [--server vanillite|paper|both] [--steps <n,...>] [--hold <s>] ...
 //! ```
 
 mod codegen;
 mod devenv;
+mod docker;
 mod golden;
 mod loadtest;
 mod normalize;
@@ -55,6 +57,13 @@ pub const USAGE: &str = "usage:
   cargo xtask testserver provision|status|logs|start|stop|restart [<port>]
       provision runs scripts/testserver/provision.sh on the test server (idempotent);
       status lists the services and ports; the others act on vanillite@<port> (default 30001).
+  cargo xtask docker [--push] [--in-docker] [--tag <tag>]...
+      Build the server image (Dockerfile) for linux/amd64 and linux/arm64, tagged dev and the
+      short commit hash, as $VANILLITE_IMAGE (default docker.hthoene.de/vanillite/vanillite).
+      The static binaries are cross-compiled here with cargo-zigbuild (--in-docker builds them
+      in the image instead). Builds on $DOCKER_HOST, the local engine, or else the test server
+      over SSH. --push logs in as $VANILLITE_REGISTRY_USER (default deploy) with the password
+      from $PRIVATE_DOCKER_REPO_KEY and pushes; without it the image is loaded into the engine.
   cargo xtask loadtest [--server vanillite|paper|both] [--steps 50,100,...] [--hold <s>]
                        [--join-rate <per s>] [--chat <s>] [--view-distance <n>] [--release]
                        [--no-deploy] [--no-gate]
@@ -82,6 +91,7 @@ fn main() -> ExitCode {
         ["dev", rest @ ..] => devenv::dev(&repo_root(), rest),
         ["deploy", rest @ ..] => devenv::deploy(&repo_root(), rest),
         ["testserver", rest @ ..] => devenv::testserver(&repo_root(), rest),
+        ["docker", rest @ ..] => docker::run_docker(&repo_root(), rest),
         ["loadtest", rest @ ..] => loadtest::run(&repo_root(), rest),
         _ => Err(USAGE.to_owned()),
     };

@@ -45,6 +45,25 @@ provisioned by `scripts/testserver/provision.sh`; every Vanillite server is a sy
 | `cargo xtask testserver logs [<port>]` | Follow the log. |
 | `cargo xtask testserver start\|stop\|restart [<port>]` | Control a server; stop also disables it. |
 
+## Docker image
+
+`Dockerfile` builds a static (musl, mimalloc) binary on an empty base for linux/amd64 and
+linux/arm64. `cargo xtask docker [--push]` cross-compiles both binaries here (fast, sccache) and
+builds the image on `$DOCKER_HOST`, the local engine, or else the test server over SSH (dev
+containers cannot run an engine); `--push` pushes `docker.hthoene.de/vanillite/vanillite` with
+the tags `dev` and the short commit hash (needs `PRIVATE_DOCKER_REPO_KEY`). Plain
+`docker build .` builds the binary inside the image instead.
+
+Host tools for the cross build:
+
+```sh
+rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+cargo install --locked cargo-zigbuild
+mkdir -p ~/.local/zig && curl -fsSL https://ziglang.org/download/0.14.1/zig-x86_64-linux-0.14.1.tar.xz \
+    | tar -xJ -C ~/.local/zig --strip-components=1   # then put ~/.local/zig on PATH
+scripts/docker/install-docker.sh --client   # Docker CLI and buildx
+```
+
 ## Fuzzing
 
 `fuzz/` holds the cargo-fuzz targets of the input decoders (crate `vanillite-fuzz`, its own
