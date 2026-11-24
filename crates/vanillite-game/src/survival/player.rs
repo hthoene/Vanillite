@@ -387,6 +387,11 @@ impl Survival {
         self.sent = Sent::default();
     }
 
+    /// Forces the next [`sync`](Self::sync) to send the experience (`lastSentExp = -1`).
+    pub fn resend_experience(&mut self) {
+        self.sent.exp = Sent::default().exp;
+    }
+
     /// `doTick`'s packets: `set_health` and `set_experience` when they changed.
     pub fn sync(&mut self, sink: &dyn crate::player::PacketSink) {
         let saturation_zero = self.food.saturation == 0.0;

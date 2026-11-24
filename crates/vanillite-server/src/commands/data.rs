@@ -301,7 +301,6 @@ pub(crate) fn store_number(
 }
 
 /// The error of a value that is no number (`commands.data.get.invalid`).
-#[expect(dead_code, reason = "used by /data")]
 pub(crate) fn not_numeric(path: &NbtPath) -> CommandError {
     CommandError::new(
         "commands.data.get.invalid",

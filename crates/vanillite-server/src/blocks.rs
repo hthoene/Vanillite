@@ -69,12 +69,67 @@ pub(crate) fn game_data(packs: Option<&LoadedPacks>) -> GameData {
         info.tags.insert(registry.to_owned(), tags);
     }
     vanillite_protocol::item::install_registries(info);
+    let enchantment_info = packs
+        .registry("minecraft:enchantment")
+        .map(|r| {
+            r.entries()
+                .iter()
+                .filter_map(|e| Some((e.id.clone(), enchantment_info(packs, e.json.get())?)))
+                .collect()
+        })
+        .unwrap_or_default();
     GameData {
         tools,
         loot,
         enchantments,
         item_tags,
+        enchantment_info,
     }
+}
+
+/// The entries of a holder set in JSON (`"#tag"`, an id or a list of ids) of `registry`.
+fn holder_set(
+    packs: &LoadedPacks,
+    registry: &str,
+    json: Option<&serde_json::Value>,
+) -> Vec<String> {
+    match json {
+        Some(serde_json::Value::String(s)) => match s.strip_prefix('#') {
+            Some(tag) => packs
+                .tags(registry)
+                .and_then(|t| t.get(tag))
+                .cloned()
+                .unwrap_or_default(),
+            None => vec![s.clone()],
+        },
+        Some(serde_json::Value::Array(list)) => list
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_owned))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// What `/enchant` reads of an enchantment definition.
+fn enchantment_info(
+    packs: &LoadedPacks,
+    json: &str,
+) -> Option<vanillite_game::player::play::EnchantmentInfo> {
+    let json: serde_json::Value = serde_json::from_str(json).ok()?;
+    let supported_items = holder_set(packs, "minecraft:item", json.get("supported_items"))
+        .iter()
+        .filter_map(|name| vanillite_data::registry::ITEM.id(name))
+        .collect();
+    Some(vanillite_game::player::play::EnchantmentInfo {
+        description: vanillite_protocol::text::Component::try_from_json(json.get("description")?)
+            .ok()?,
+        max_level: json
+            .get("max_level")
+            .and_then(serde_json::Value::as_i64)
+            .and_then(|v| i32::try_from(v).ok())?,
+        supported_items,
+        exclusive_set: holder_set(packs, "minecraft:enchantment", json.get("exclusive_set")),
+    })
 }
 
 /// A sound to send.

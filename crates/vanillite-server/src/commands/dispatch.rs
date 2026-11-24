@@ -165,7 +165,7 @@ fn require_player(source: &CommandSource) -> Result<(), CommandError> {
 }
 
 /// The source itself as a target.
-fn self_target(env: &Env<'_>, source: &CommandSource) -> Result<Target, CommandError> {
+pub(crate) fn self_target(env: &Env<'_>, source: &CommandSource) -> Result<Target, CommandError> {
     let own = source
         .entity
         .as_ref()
@@ -447,6 +447,18 @@ pub(crate) fn execute(
             super::execute::run_condition(condition, unless, &parsed.args, source, env)
         }
         CommandId::Scoreboard(op) => super::scores::run(op, &parsed.args, source, env),
+        CommandId::Attribute(op) => super::player_data::attribute(op, &parsed.args, source, env),
+        CommandId::Clear => super::items::clear(&parsed.args, source, env),
+        CommandId::Data(op) => super::data_cmd::run_data(op, &parsed.args, source, env),
+        CommandId::Enchant => super::items::enchant(&parsed.args, source, env),
+        CommandId::Experience { op, levels } => {
+            super::player_data::experience(op, levels, &parsed.args, source, env)
+        }
+        CommandId::Give => super::items::give(&parsed.args, source, env),
+        CommandId::Item(op) => super::items::item(op, &parsed.args, source, env),
+        CommandId::RecipeGive => super::player_data::recipe(true, &parsed.args, source, env),
+        CommandId::RecipeTake => super::player_data::recipe(false, &parsed.args, source, env),
+        CommandId::Tag(op) => super::data_cmd::run_tag(op, &parsed.args, source, env),
         // Redirect modifiers never end a command; the engine runs `function` and `return`.
         CommandId::Execute(_)
         | CommandId::ExecuteIfFunction

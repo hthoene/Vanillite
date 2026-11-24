@@ -329,7 +329,8 @@ fn parents(
     }
 }
 
-fn depth_of(tag: &Tag, depth: usize) -> bool {
+/// `NbtPath.isTooDeep`.
+pub(crate) fn depth_of(tag: &Tag, depth: usize) -> bool {
     if depth >= MAX_DEPTH {
         return true;
     }
@@ -451,33 +452,51 @@ fn numeric(tag: &Tag) -> Option<i64> {
 /// `CollectionTag.addTag(size, value)`.
 pub(crate) fn push_element(parent: &mut Tag, value: &Tag) -> bool {
     let len = collection_len(parent).unwrap_or(0);
-    insert_element(parent, len, value)
+    insert_element(parent, len, value) == Some(true)
 }
 
-/// `CollectionTag.addTag(index, value)`: arrays take matching numbers only.
-pub(crate) fn insert_element(parent: &mut Tag, index: usize, value: &Tag) -> bool {
-    match (parent, value) {
-        (Tag::List(l), v) => {
-            if index > l.0.len() {
-                return false;
-            }
-            l.0.insert(index, v.clone());
+/// `NumericTag.intValue` and `longValue` (Java's narrowing casts; floating values are floored
+/// or truncated and saturate).
+#[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
+fn java_numbers(tag: &Tag) -> Option<(i32, i64)> {
+    Some(match tag {
+        Tag::Byte(_) | Tag::Short(_) | Tag::Int(_) | Tag::Long(_) => {
+            let v = tag.as_i64()?;
+            (v as i32, v)
+        }
+        Tag::Float(v) => (v.floor() as i32, *v as i64),
+        Tag::Double(v) => (v.floor() as i32, *v as i64),
+        _ => return None,
+    })
+}
+
+/// `CollectionTag.addTag(index, value)`: `None` when `index` is past the end; arrays take
+/// numbers (converted like Vanilla's `NumericTag` values), lists any tag.
+#[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
+pub(crate) fn insert_element(parent: &mut Tag, index: usize, value: &Tag) -> Option<bool> {
+    if index > collection_len(parent)? {
+        return None;
+    }
+    let number = java_numbers(value);
+    Some(match (parent, number) {
+        (Tag::List(l), _) => {
+            l.0.insert(index, value.clone());
             true
         }
-        (Tag::ByteArray(a), Tag::Byte(v)) if index <= a.len() => {
-            a.insert(index, *v);
+        (Tag::ByteArray(a), Some((v, _))) => {
+            a.insert(index, v as i8);
             true
         }
-        (Tag::IntArray(a), Tag::Int(v)) if index <= a.len() => {
-            a.insert(index, *v);
+        (Tag::IntArray(a), Some((v, _))) => {
+            a.insert(index, v);
             true
         }
-        (Tag::LongArray(a), Tag::Long(v)) if index <= a.len() => {
-            a.insert(index, *v);
+        (Tag::LongArray(a), Some((_, v))) => {
+            a.insert(index, v);
             true
         }
         _ => false,
-    }
+    })
 }
 
 fn set_element(parent: &mut Tag, index: usize, value: &Tag) -> bool {
@@ -503,7 +522,6 @@ fn set_element(parent: &mut Tag, index: usize, value: &Tag) -> bool {
 }
 
 /// `NbtPath.getOrCreate` with `f` applied to each result; returns the sum of `f`.
-#[expect(dead_code, reason = "used by /data")]
 pub(crate) fn modify_or_create(
     path: &NbtPath,
     root: &mut Tag,
@@ -525,7 +543,6 @@ pub(crate) fn modify_or_create(
 }
 
 /// `NbtPath.remove`: the number of removed tags. Parents are not created.
-#[expect(dead_code, reason = "used by /data")]
 pub(crate) fn remove(path: &NbtPath, root: &mut Tag) -> usize {
     fn walk(nodes: &[PathNode], tag: &mut Tag) -> usize {
         match nodes {
@@ -544,7 +561,6 @@ pub(crate) fn remove(path: &NbtPath, root: &mut Tag) -> usize {
 }
 
 /// Applies `f` to the existing tags a node gets (no creation).
-#[expect(dead_code, reason = "used by /data")]
 fn for_existing(node: &PathNode, parent: &mut Tag, f: &mut dyn FnMut(&mut Tag)) -> Option<()> {
     match node {
         PathNode::Child(name) => f(parent_compound(parent)?.get_mut(name)?),
@@ -583,7 +599,6 @@ fn for_existing(node: &PathNode, parent: &mut Tag, f: &mut dyn FnMut(&mut Tag)) 
     Some(())
 }
 
-#[expect(dead_code, reason = "used by /data")]
 fn parent_compound(tag: &mut Tag) -> Option<&mut Compound> {
     match tag {
         Tag::Compound(c) => Some(c),
@@ -592,7 +607,6 @@ fn parent_compound(tag: &mut Tag) -> Option<&mut Compound> {
 }
 
 /// `removeTag` of the last node.
-#[expect(dead_code, reason = "used by /data")]
 fn remove_node(node: &PathNode, parent: &mut Tag) -> usize {
     match node {
         PathNode::Child(name) => parent_compound(parent)

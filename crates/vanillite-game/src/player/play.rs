@@ -32,6 +32,21 @@ pub struct GameData {
     pub enchantments: HashMap<String, u32>,
     /// Item tags: tag id → item ids.
     pub item_tags: HashMap<String, Vec<u16>>,
+    /// The definitions of the enchantments by name.
+    pub enchantment_info: HashMap<String, EnchantmentInfo>,
+}
+
+/// What `/enchant` reads of an enchantment (`Enchantment` and its `EnchantmentDefinition`).
+#[derive(Debug, Clone)]
+pub struct EnchantmentInfo {
+    /// `description`.
+    pub description: vanillite_protocol::text::Component,
+    /// `max_level`.
+    pub max_level: i32,
+    /// `supported_items`: item ids.
+    pub supported_items: Vec<u16>,
+    /// `exclusive_set`: enchantment names.
+    pub exclusive_set: Vec<String>,
 }
 
 static GAME_DATA: std::sync::OnceLock<std::sync::Arc<GameData>> = std::sync::OnceLock::new();

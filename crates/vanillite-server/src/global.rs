@@ -36,7 +36,8 @@ pub struct Global {
     pub(crate) level: crate::level::LevelState,
     /// The world seed (`/seed`).
     pub(crate) seed: i64,
-    /// Entries of data-driven registries commands refer to (timelines, world clocks).
+    /// Entries of data-driven registries commands refer to (timelines, world clocks,
+    /// enchantments).
     pub(crate) registries: std::collections::BTreeMap<String, Vec<String>>,
     /// Tool rules, loot tables and item data of the block and item handlers.
     pub(crate) game: Arc<vanillite_game::player::play::GameData>,
