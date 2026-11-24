@@ -232,7 +232,14 @@ fn nbt_to_json(tag: &vanillite_nbt::Tag) -> serde_json::Value {
 pub(crate) struct BuiltInGenerators {
     pub(crate) packs: Option<Arc<LoadedPacks>>,
     pub(crate) world_gen: WorldGen,
+    /// The noise generators made, by dimension, for the levels (`/locate`).
+    pub(crate) created: GeneratorsByDimension,
 }
+
+/// Terrain generators by dimension, shared with the levels.
+pub(crate) type GeneratorsByDimension = Arc<
+    std::sync::Mutex<vanillite_base::hash::FxHashMap<String, vanillite_game::level::Generation>>,
+>;
 
 impl ChunkGeneratorProvider for BuiltInGenerators {
     fn create(&self, world: &WorldInfo) -> Result<Arc<dyn ChunkGenerator>, String> {
@@ -264,10 +271,19 @@ impl ChunkGeneratorProvider for BuiltInGenerators {
         };
         let terrain =
             TerrainGenerator::new(packs, spec, self.world_gen.seed).map_err(|e| e.to_string())?;
-        Ok(Arc::new(
-            VanillaChunkGenerator::new(terrain, world.clone())
-                .with_structures(self.world_gen.generate_structures),
-        ))
+        let generator = VanillaChunkGenerator::new(terrain, world.clone())
+            .with_structures(self.world_gen.generate_structures);
+        self.created
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                world.dimension.clone(),
+                vanillite_game::level::Generation {
+                    terrain: generator.shared(),
+                    structures: generator.generates_structures(),
+                },
+            );
+        Ok(Arc::new(generator))
     }
 }
 

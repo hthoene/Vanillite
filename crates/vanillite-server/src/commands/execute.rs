@@ -518,7 +518,7 @@ pub(crate) fn summon(
         return Err(CommandError::new("commands.summon.invalidPosition", vec![]));
     }
     let path = id.strip_prefix("minecraft:").unwrap_or(id);
-    if env.global.level.difficulty == vanillite_game::survival::rules::Difficulty::Peaceful
+    if env.global.level.difficulty() == vanillite_game::survival::rules::Difficulty::Peaceful
         && NOT_IN_PEACEFUL.contains(&path)
     {
         return Err(CommandError::new("commands.summon.failed.peaceful", vec![]));

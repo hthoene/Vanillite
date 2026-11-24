@@ -205,6 +205,9 @@ impl vanillite_command::Source for CommandSource {
                 );
                 return;
             }
+            suggest::TICK_RATE => vec!["20".to_owned()],
+            suggest::TICK_STEP => vec!["1t".to_owned(), "1s".to_owned()],
+            suggest::TICK_SPRINT => vec!["60s".to_owned(), "1d".to_owned(), "3d".to_owned()],
             suggest::TIMELINES => {
                 builder.suggest_resource_ids(
                     self.registry_entries("minecraft:timeline")

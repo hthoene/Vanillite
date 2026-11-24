@@ -5,6 +5,8 @@
 //! required level (SEC-12).
 
 mod bans;
+mod blocks_cmd;
+mod border_cmd;
 mod chat_cmd;
 mod data;
 mod data_cmd;
@@ -15,6 +17,7 @@ mod exec;
 mod execute;
 pub(crate) mod functions;
 mod items;
+mod locate;
 mod nbt_ops;
 mod particle;
 mod player_data;
@@ -29,6 +32,7 @@ mod system_cmd;
 pub(crate) mod teams;
 mod text;
 mod tracker;
+mod world_cmd;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -46,6 +50,7 @@ pub(crate) use bans::ban_reason;
 pub(crate) use exec::permission_event;
 pub(crate) use sound::send_post_effects;
 pub(crate) use source::{CommandSource, SourceKind};
+pub(crate) use world_cmd::sprint_finished;
 
 use crate::global::Global;
 use crate::world::{ServerWorld, WorldId};

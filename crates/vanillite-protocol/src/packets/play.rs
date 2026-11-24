@@ -501,6 +501,8 @@ pub mod clientbound {
     }
 
     impl GameEvent {
+        /// Event id: the respawn block is missing or obstructed.
+        pub const NO_RESPAWN_BLOCK_AVAILABLE: u8 = 0;
         /// Event id: change game mode.
         pub const CHANGE_GAME_MODE: u8 = 3;
         /// Event id: the client should wait for level chunks.
@@ -526,10 +528,12 @@ pub mod clientbound {
 
     pub use super::entities::*;
     pub use super::hud::*;
+    pub use super::level::*;
     pub use super::survival::*;
 }
 
 mod hud;
+mod level;
 mod survival;
 
 /// Clientbound play packets with hand-written codecs (variable layouts).

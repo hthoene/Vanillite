@@ -149,6 +149,7 @@ impl WorldPlayers {
         world: crate::world::WorldId,
         arrival: Arrival,
         weather: &[vanillite_protocol::packets::play::clientbound::GameEvent],
+        state: &join::LevelPackets,
     ) {
         let survival = arrival
             .saved
@@ -275,6 +276,7 @@ impl WorldPlayers {
         join::send_level_info(
             sink.as_ref(),
             &self.level,
+            state,
             &crate::survival::full_time_sync(&global.level),
             weather,
         );
@@ -901,6 +903,17 @@ fn body_of(entities: &Entities, id: EntityId) -> Body {
             horizontal_collision: false,
             fall_flying: false,
         },
+    }
+}
+
+/// `GameType.byId` without a fallback.
+pub(crate) fn game_mode_by_id(id: i32) -> Option<GameMode> {
+    match id {
+        0 => Some(GameMode::Survival),
+        1 => Some(GameMode::Creative),
+        2 => Some(GameMode::Adventure),
+        3 => Some(GameMode::Spectator),
+        _ => None,
     }
 }
 

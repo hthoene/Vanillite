@@ -182,6 +182,8 @@ pub struct Survival {
     pub score: i32,
     /// `LastDeathLocation`: dimension and block position.
     pub last_death: Option<(String, BlockPos)>,
+    /// `respawn` (`ServerPlayer.RespawnConfig`): where the player respawns.
+    pub respawn: Option<RespawnConfig>,
     pub combat: CombatTracker,
     /// `tickCount`.
     pub tick_count: i32,
@@ -209,6 +211,7 @@ impl Default for Survival {
             xp: Experience::default(),
             score: 0,
             last_death: None,
+            respawn: None,
             combat: CombatTracker::default(),
             tick_count: 0,
             last_climbable: None,
@@ -216,6 +219,61 @@ impl Default for Survival {
             first_tick: true,
             sent: Sent::default(),
         }
+    }
+}
+
+/// `ServerPlayer.RespawnConfig`: a respawn position (`LevelData.RespawnData`) and whether it
+/// is kept without a bed or anchor there.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RespawnConfig {
+    /// `dimension`.
+    pub dimension: String,
+    /// `pos`.
+    pub pos: BlockPos,
+    /// `yaw`, wrapped to -180..180.
+    pub yaw: f32,
+    /// `pitch`, -90..90.
+    pub pitch: f32,
+    /// `forced`.
+    pub forced: bool,
+}
+
+impl RespawnConfig {
+    /// `RespawnConfig.CODEC`; `None` when a field is missing or out of range.
+    pub fn load(data: &Compound) -> Option<RespawnConfig> {
+        let (Some(Tag::String(dimension)), Some(Tag::IntArray(pos))) =
+            (data.get("dimension"), data.get("pos"))
+        else {
+            return None;
+        };
+        let [x, y, z] = pos.as_slice() else {
+            return None;
+        };
+        let yaw = float(data, "yaw").filter(|v| (-180.0..=180.0).contains(v))?;
+        let pitch = float(data, "pitch").filter(|v| (-90.0..=90.0).contains(v))?;
+        Some(RespawnConfig {
+            dimension: dimension.clone(),
+            pos: BlockPos::new(*x, *y, *z),
+            yaw,
+            pitch,
+            forced: matches!(data.get("forced"), Some(Tag::Byte(b)) if *b != 0),
+        })
+    }
+
+    /// The saved compound.
+    pub fn save(&self) -> Compound {
+        let mut out = Compound::with_capacity(5);
+        out.insert("dimension", Tag::String(self.dimension.clone()));
+        out.insert(
+            "pos",
+            Tag::IntArray(vec![self.pos.x, self.pos.y, self.pos.z]),
+        );
+        out.insert("yaw", Tag::Float(self.yaw));
+        out.insert("pitch", Tag::Float(self.pitch));
+        if self.forced {
+            out.insert("forced", Tag::Byte(1));
+        }
+        out
     }
 }
 
@@ -233,6 +291,8 @@ pub struct Env<'a> {
     pub dimension: &'a str,
     /// `Level.isRainingAt`.
     pub raining_at: &'a dyn Fn(BlockPos) -> bool,
+    /// The world border, where players take `outsideBorder` damage.
+    pub border: Option<&'a crate::level::border::WorldBorder>,
     pub random: &'a mut LegacyRandom,
     pub out: &'a mut Vec<Effect>,
 }
@@ -326,6 +386,9 @@ impl Survival {
         {
             s.last_death = Some((dim.clone(), BlockPos::new(*x, *y, *z)));
         }
+        if let Some(Tag::Compound(respawn)) = data.get("respawn") {
+            s.respawn = RespawnConfig::load(respawn);
+        }
         s
     }
 
@@ -363,6 +426,10 @@ impl Survival {
             loc.insert("pos", Tag::IntArray(vec![pos.x, pos.y, pos.z]));
             out.insert("LastDeathLocation", Tag::Compound(loc));
         }
+        out.remove("respawn");
+        if let Some(respawn) = &self.respawn {
+            out.insert("respawn", Tag::Compound(respawn.save()));
+        }
     }
 
     /// `restoreFrom` for a respawn after death: health, food and air start over; experience,
@@ -371,6 +438,7 @@ impl Survival {
     pub fn respawned(&self, keep_inventory: bool) -> Survival {
         let mut s = Survival {
             last_death: self.last_death.clone(),
+            respawn: self.respawn.clone(),
             ..Survival::default()
         };
         if keep_inventory {
@@ -811,8 +879,13 @@ pub fn do_tick(
         if !spectator && blocks::is_in_wall(env.blocks, env.facts, eye, dims.width) {
             let source = DamageSource::of(env.types.in_wall);
             hurt(entity, player, env, source, 1.0);
+        } else if let Some(amount) = env
+            .border
+            .and_then(|b| b.damage(pos.x, pos.z, f64::from(dims.width) / 2.0))
+        {
+            let source = DamageSource::of(env.types.outside_border);
+            hurt(entity, player, env, source, amount);
         }
-        // TODO(world border): `outOfBorder` damage once the world border exists.
         let eye_in_water = player.survival.fluids.eye_in_water
             && !env
                 .blocks

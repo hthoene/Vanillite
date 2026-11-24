@@ -146,7 +146,7 @@ pub(crate) fn difficulty(d: vanillite_config::Difficulty) -> Difficulty {
 /// `ClientboundChangeDifficultyPacket`.
 pub(crate) fn change_difficulty(level: &LevelState) -> ChangeDifficulty {
     ChangeDifficulty {
-        difficulty: level.difficulty.id(),
+        difficulty: level.difficulty().id(),
         locked: false,
     }
 }
@@ -269,11 +269,12 @@ impl WorldSurvival {
             facts: &level.block_facts,
             blocks,
             rules,
-            difficulty: level.difficulty,
+            difficulty: level.difficulty(),
             game_time: level.game_time(),
             min_y: self.min_y,
             dimension,
             raining_at,
+            border: None,
             random: &mut self.random,
             out: &mut self.effects,
         }
@@ -334,6 +335,7 @@ impl WorldSurvival {
         &mut self,
         entities: &mut Entities,
         chunks: &Chunks,
+        border: &vanillite_game::level::border::WorldBorder,
         global: &Global,
         dimension: &str,
     ) {
@@ -345,6 +347,7 @@ impl WorldSurvival {
         let mut removed = std::mem::take(&mut self.scratch);
         {
             let mut env = self.env(level, &rules, &blocks, &raining, dimension);
+            env.border = Some(border);
             let Entities { store, players, .. } = entities;
             for (id, data) in players.iter_mut() {
                 let Some(mut entity) = store.get_mut(id) else {
@@ -439,11 +442,12 @@ impl WorldSurvival {
             facts: &level.block_facts,
             blocks,
             rules: &rules,
-            difficulty: level.difficulty,
+            difficulty: level.difficulty(),
             game_time: level.game_time(),
             min_y: 0,
             dimension,
             raining_at: &raining,
+            border: None,
             random: &mut random,
             out: &mut out,
         };
@@ -815,8 +819,9 @@ impl WorldSurvival {
     pub(crate) fn respawn(
         &mut self,
         entities: &mut Entities,
+        chunks: &Chunks,
         global: &Global,
-        level_info: &join::LevelInfo,
+        (level_info, state): (&join::LevelInfo, &join::LevelPackets),
         server_view_distance: i32,
         id: EntityId,
     ) -> Option<EntityId> {
@@ -837,7 +842,19 @@ impl WorldSurvival {
         data.survival.reset_sent();
         data.connection.chunks.reset();
         let sink = Arc::clone(&data.connection.sink);
-        let (pos, yaw) = level_info.spawn;
+        // `findRespawnPositionAndUseSpawnBlock`: the player's own respawn position in this
+        // world; other worlds' positions need a dimension change, the world spawn stands in.
+        let own = data
+            .survival
+            .respawn
+            .as_ref()
+            .filter(|r| r.dimension == level_info.dimension.to_string());
+        let found = own.and_then(|r| forced_respawn(chunks, r));
+        let missing = own.is_some() && found.is_none();
+        if missing {
+            data.survival.respawn = None;
+        }
+        let (pos, yaw, pitch) = found.unwrap_or((level_info.spawn.0, level_info.spawn.1, 0.0));
         join::send_abilities(sink.as_ref(), data.game_mode);
         sink.send(&Respawn {
             spawn: join::spawn_info(level_info, &data),
@@ -847,14 +864,20 @@ impl WorldSurvival {
             pos,
             velocity: Vec3::ZERO,
             y_rot: yaw,
-            x_rot: 0.0,
+            x_rot: pitch,
             on_ground: false,
             horizontal_collision: false,
             fall_flying: false,
         };
         data.connection
             .movement
-            .teleport(&mut body, pos, yaw, 0.0, sink.as_ref());
+            .teleport(&mut body, pos, yaw, pitch, sink.as_ref());
+        if missing {
+            sink.send(&GameEvent {
+                event: GameEvent::NO_RESPAWN_BLOCK_AVAILABLE,
+                param: 0.0,
+            });
+        }
         join::send_spawn_position(sink.as_ref(), level_info);
         sink.send(&change_difficulty(level));
         sink.send(&SetExperience {
@@ -865,6 +888,7 @@ impl WorldSurvival {
         join::send_level_info(
             sink.as_ref(),
             level_info,
+            state,
             &full_time_sync(level),
             &self.join_weather(),
         );
@@ -883,7 +907,7 @@ impl WorldSurvival {
             pos,
             Rotation {
                 y_rot: yaw,
-                x_rot: 0.0,
+                x_rot: pitch,
                 y_head_rot: yaw,
             },
             data,
@@ -895,6 +919,27 @@ impl WorldSurvival {
         }
         Some(new)
     }
+}
+
+/// `ServerPlayer.findRespawnAndUseSpawnBlock` for a respawn position without a bed or anchor:
+/// a forced one where the block and the one above are free (`isPossibleToRespawnInThis`).
+fn forced_respawn(chunks: &Chunks, respawn: &player::RespawnConfig) -> Option<(Vec3, f32, f32)> {
+    let free = |pos: BlockPos| {
+        let state = chunks.block(pos).map_or(BlockState::AIR, BlockState);
+        !vanillite_game::block::is_solid(state) && !vanillite_game::block::is_liquid(state)
+    };
+    let pos = respawn.pos;
+    (respawn.forced && free(pos) && free(pos.offset(0, 1, 0))).then(|| {
+        (
+            Vec3::new(
+                f64::from(pos.x) + 0.5,
+                f64::from(pos.y) + 0.1,
+                f64::from(pos.z) + 0.5,
+            ),
+            respawn.yaw,
+            respawn.pitch,
+        )
+    })
 }
 
 /// `canSeeSky` from the heightmap.

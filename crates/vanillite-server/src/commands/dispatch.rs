@@ -504,6 +504,38 @@ pub(crate) fn execute(
         | CommandId::DebugStop
         | CommandId::SetIdleTimeout
         | CommandId::Transfer => super::system_cmd::run(parsed, source, env),
+        CommandId::SetBlock(mode) => super::blocks_cmd::set_block(mode, &parsed.args, source, env),
+        CommandId::Fill(mode) => super::blocks_cmd::fill(mode, &parsed.args, source, env),
+        CommandId::Clone {
+            filter,
+            mode,
+            strict,
+        } => super::blocks_cmd::clone((filter, mode, strict), &parsed.args, source, env),
+        CommandId::FillBiome => super::blocks_cmd::fill_biome(&parsed.args, source, env),
+        CommandId::ForceLoad(op) => super::world_cmd::force_load(op, &parsed.args, source, env),
+        CommandId::SetWorldSpawn => super::world_cmd::set_world_spawn(&parsed.args, source, env),
+        CommandId::SpawnPoint => {
+            let targets = if parsed.args.has("targets") {
+                targets(env, source, selector_arg(parsed, "targets")?, true)?
+            } else {
+                require_player(source)?;
+                vec![self_target(env, source)?]
+            };
+            super::world_cmd::spawn_point(&targets, &parsed.args, source, env)
+        }
+        CommandId::DifficultyQuery => Ok(super::world_cmd::difficulty_query(source, global)),
+        CommandId::DifficultySet(id) => super::world_cmd::difficulty_set(source, global, id),
+        CommandId::DefaultGameMode => {
+            super::world_cmd::default_game_mode(&parsed.args, source, env)
+        }
+        CommandId::SpreadPlayers => {
+            let targets = targets(env, source, selector_arg(parsed, "targets")?, false)?;
+            super::world_cmd::spread_players(targets, &parsed.args, source, env)
+        }
+        CommandId::Tick(op) => super::world_cmd::tick(op, &parsed.args, source, global),
+        CommandId::WorldBorder(op) => super::border_cmd::run(op, &parsed.args, source, env),
+        CommandId::Locate(op) => super::locate::locate(op, &parsed.args, source, env),
+        CommandId::Place(op) => super::locate::place(op, &parsed.args, source, env),
         // Redirect modifiers never end a command; the engine runs `function` and `return`.
         CommandId::Execute(_)
         | CommandId::ExecuteIfFunction

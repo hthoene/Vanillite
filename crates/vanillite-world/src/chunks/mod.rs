@@ -1072,6 +1072,71 @@ impl Chunks {
         }
     }
 
+    /// `getBlockTicks().copyAreaFrom(blockTicks, area, offset)` within this world: the block
+    /// ticks scheduled in the box `min..=max` again at `pos + offset`, after all others.
+    pub fn copy_block_ticks(&mut self, min: BlockPos, max: BlockPos, offset: BlockPos) {
+        let inside = |p: BlockPos| {
+            (min.x..=max.x).contains(&p.x)
+                && (min.y..=max.y).contains(&p.y)
+                && (min.z..=max.z).contains(&p.z)
+        };
+        let mut ticks: Vec<ScheduledTick> = Vec::new();
+        for cz in (min.z >> 4)..=(max.z >> 4) {
+            for cx in (min.x >> 4)..=(max.x >> 4) {
+                ticks.extend(
+                    self.block_ticks
+                        .ticks_in(ChunkPos::new(cx, cz))
+                        .filter(|t| inside(t.pos))
+                        .copied(),
+                );
+            }
+        }
+        let min_sub = ticks.iter().map(|t| t.sub_tick).min().unwrap_or(0);
+        let max_sub = ticks.iter().map(|t| t.sub_tick).max().unwrap_or(0);
+        for tick in ticks {
+            let pos = BlockPos::new(
+                tick.pos.x.saturating_add(offset.x),
+                tick.pos.y.saturating_add(offset.y),
+                tick.pos.z.saturating_add(offset.z),
+            );
+            let moved = ScheduledTick {
+                pos,
+                sub_tick: tick
+                    .sub_tick
+                    .saturating_sub(min_sub)
+                    .saturating_add(max_sub)
+                    .saturating_add(1),
+                ..tick
+            };
+            if self.block_ticks.schedule(moved) {
+                self.mark_dirty(pos.chunk());
+            }
+        }
+    }
+
+    /// Changes a full chunk in place (`/fillbiome`'s `fillBiomesFromNoise`): the chunk is saved
+    /// again and its cached packets are dropped. `None` if the chunk is not full.
+    pub fn modify_chunk<R>(
+        &mut self,
+        pos: ChunkPos,
+        f: impl FnOnce(&mut ProtoChunk) -> R,
+    ) -> Option<R> {
+        let holder = self.holders.get_mut(&pos)?;
+        if holder.busy {
+            return None;
+        }
+        let chunk = holder.chunk.as_mut()?;
+        if chunk.status != ChunkStatus::Full {
+            return None;
+        }
+        let result = f(Arc::make_mut(chunk));
+        holder.dirty = true;
+        // The packet cache drops chunks with block changes.
+        self.block_changes
+            .push(BlockPos::new(pos.x << 4, self.info.min_y, pos.z << 4));
+        Some(result)
+    }
+
     /// `scheduleTick(pos, block, delay, priority)`; `block` is a block id. Ignored outside live
     /// chunks or if the block already has a tick there. The sub-tick counter advances either
     /// way, as in Vanilla.

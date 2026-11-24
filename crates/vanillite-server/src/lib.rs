@@ -7,7 +7,9 @@
 
 mod access;
 mod blocks;
+mod border;
 mod chat;
+mod chunk_tickets;
 mod clock;
 mod command_state;
 mod commands;

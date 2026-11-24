@@ -70,6 +70,8 @@ pub struct ServerWorld {
     /// The dimension's saved data (`<dimension>/data/`: world border, chunk tickets, raids,
     /// ...); systems register here when they come.
     pub(crate) data: vanillite_storage::saved_data::SavedDataStore,
+    /// The saved chunk tickets of other types than `forced`, written back unchanged.
+    pub(crate) kept_tickets: Vec<vanillite_nbt::Tag>,
 }
 
 impl fmt::Debug for ServerWorld {
@@ -123,6 +125,7 @@ impl ServerWorld {
             player_scratch: Vec::new(),
             survival,
             data,
+            kept_tickets: Vec::new(),
         }
     }
 
@@ -200,8 +203,15 @@ impl ServerWorld {
     /// Places a player that joined the server into this world.
     pub(crate) fn join_player(&mut self, global: &Global, arrival: crate::players::Arrival) {
         let weather = self.survival.join_weather();
-        self.players
-            .join(&mut self.level.entities, global, self.id, arrival, &weather);
+        let state = crate::border::level_packets(&self.level.border, global);
+        self.players.join(
+            &mut self.level.entities,
+            global,
+            self.id,
+            arrival,
+            &weather,
+            &state,
+        );
     }
 
     /// This world's id.
@@ -263,10 +273,13 @@ impl ServerWorld {
         );
         for id in self.players.take_respawns() {
             let view_distance = self.players.view_distance();
+            let state = crate::border::level_packets(&self.level.border, ctx.global);
+            let level = &mut self.level;
             self.survival.respawn(
-                &mut self.level.entities,
+                &mut level.entities,
+                &level.chunks,
                 ctx.global,
-                &self.players.level,
+                (&self.players.level, &state),
                 view_distance,
                 id,
             );
@@ -280,7 +293,8 @@ impl ServerWorld {
         self.level.set_handling_tick(true);
         if ctx.runs_normally {
             // `advanceWeatherCycle`, then `tickTime`: the overworld advances the shared game
-            // time, every world runs on it.
+            // time, every world runs on it. The world border moves first.
+            self.level.border.tick();
             self.survival.tick_level(&self.level.entities, ctx.global);
             let level = &mut self.level;
             level.set_game_time(ctx.global.level.game_time());
@@ -328,6 +342,7 @@ impl ServerWorld {
         self.survival.do_tick(
             &mut self.level.entities,
             &self.level.chunks,
+            &self.level.border,
             ctx.global,
             &self.dimension,
         );
@@ -420,6 +435,13 @@ impl ServerWorld {
         log::debug!("Saving {} (flush: {flush})", self.dimension);
         self.players.save_all(&self.level.entities);
         if !skip_chunks {
+            if let Some(border) = self.level.border.take_dirty() {
+                self.data.write(crate::border::SAVED_DATA, border.to_nbt());
+            }
+            if self.level.forced.take_dirty() {
+                let tickets = crate::chunk_tickets::save(&self.level, &self.kept_tickets);
+                self.data.write(crate::chunk_tickets::SAVED_DATA, tickets);
+            }
             self.data.save();
             self.level.save(flush);
         }
