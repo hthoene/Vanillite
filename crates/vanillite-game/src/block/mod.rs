@@ -265,3 +265,18 @@ pub fn is_face_sturdy(state: BlockState, direction: Direction) -> bool {
 pub fn block_tags() -> &'static shared::BlockTags {
     &tags().blocks
 }
+
+/// The `minecraft:sound_event` id of `name` (without namespace, e.g. `block.lever.click`);
+/// 0 for unknown names.
+pub fn sound_id(name: &str) -> u16 {
+    let mut full = [0u8; 96];
+    let prefix = b"minecraft:";
+    let len = prefix.len() + name.len();
+    if len > full.len() {
+        return 0;
+    }
+    full[..prefix.len()].copy_from_slice(prefix);
+    full[prefix.len()..len].copy_from_slice(name.as_bytes());
+    let full = std::str::from_utf8(&full[..len]).unwrap_or_default();
+    vanillite_data::registry::SOUND_EVENT.id(full).unwrap_or(0)
+}
