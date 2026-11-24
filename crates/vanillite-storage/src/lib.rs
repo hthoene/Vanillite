@@ -37,7 +37,6 @@ use vanillite_base::ChunkPos;
 use vanillite_chunk::ProtoChunk;
 use vanillite_chunk::slots::{ChunkCodec, RecordMeta, WorldInfo};
 use vanillite_data::version::DATA_VERSION;
-use vanillite_nbt::Budget;
 
 pub use crate::chunk_nbt::Codec;
 pub use crate::compression::Compression;
@@ -92,11 +91,7 @@ impl ChunkCodec for AnvilCodec {
             )
         })?;
         let bytes = compression.decompress(data)?;
-        let root = vanillite_nbt::read::read_named(&mut bytes.as_slice(), &mut Budget::file())
-            .map_err(|e| {
-                io::Error::new(io::ErrorKind::InvalidData, format!("chunk {pos:?}: {e:?}"))
-            })?;
-        self.codec.read(pos, root)
+        self.codec.read_bytes(pos, &bytes)
     }
 
     fn encode(&self, chunk: &ProtoChunk) -> io::Result<(RecordMeta, Arc<[u8]>)> {

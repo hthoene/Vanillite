@@ -156,7 +156,7 @@ mod tests {
     }
 
     fn info(dimension: &str, dir: PathBuf) -> WorldInfo {
-        vanillite_chunk::facts::install_vanilla(&[], &[], 1);
+        vanillite_chunk::facts::install_vanilla(&[], &[], 65);
         let (min_y, height) = match dimension {
             "minecraft:overworld" => (-64, 384),
             _ => (0, 256),
