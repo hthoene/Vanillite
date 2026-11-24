@@ -5,13 +5,14 @@
 //! defaults, and the region's chunks plus one chunk around them forced (entity ticking). A
 //! step runs the simulation phases of `ServerLevel.tick` in Vanilla's order.
 
-use std::io;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use vanillite_base::{BlockPos, ChunkPos};
 use vanillite_chunk::ProtoChunk;
-use vanillite_chunk::slots::{ChunkStorage, FlatGenerator, LightEngine, Neighbours, WorldInfo};
+use vanillite_chunk::slots::{
+    FlatGenerator, LightEngine, Neighbours, NullCodec, NullStore, WorldInfo,
+};
 use vanillite_data::block::{BlockId, BlockState};
 use vanillite_game::block::Behaviours;
 use vanillite_game::level::{Level, LevelOutput, LevelSettings, update};
@@ -31,20 +32,6 @@ const FORCED_LEVEL: u8 = 31;
 /// Chunks around the origin that are forced: the recorder forces the scenario region's chunks
 /// and one more around them; every scenario region fits in this square.
 const FORCED_RADIUS: i32 = 3;
-
-struct NoStorage;
-
-impl ChunkStorage for NoStorage {
-    fn load(&self, positions: &[ChunkPos], out: &mut Vec<io::Result<Option<ProtoChunk>>>) {
-        out.extend(positions.iter().map(|_| Ok(None)));
-    }
-    fn save(&self, chunks: &[Arc<ProtoChunk>], out: &mut Vec<io::Result<()>>) {
-        out.extend(chunks.iter().map(|_| Ok(())));
-    }
-    fn flush(&self) -> io::Result<()> {
-        Ok(())
-    }
-}
 
 struct NoLight;
 
@@ -107,7 +94,8 @@ impl GameWorld {
             layers.extend(std::iter::repeat_n(state.0, *height as usize));
         }
         let slots = ChunkSlots {
-            storage: Arc::new(NoStorage),
+            store: Arc::new(NullStore),
+            codec: Arc::new(NullCodec),
             generator: Arc::new(FlatGenerator::new(&info, &layers)),
             light: Arc::new(NoLight),
             executor: Arc::new(InlineExecutor),

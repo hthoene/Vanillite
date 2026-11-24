@@ -1,12 +1,13 @@
 //! Deterministic simulation tests on a classic superflat world (grass at Y -61).
 
-use std::io;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use vanillite_base::{BlockPos, ChunkPos};
 use vanillite_chunk::ProtoChunk;
-use vanillite_chunk::slots::{ChunkStorage, FlatGenerator, LightEngine, Neighbours, WorldInfo};
+use vanillite_chunk::slots::{
+    FlatGenerator, LightEngine, Neighbours, NullCodec, NullStore, WorldInfo,
+};
 use vanillite_data::block::{BlockState, ids};
 use vanillite_world::chunks::{ChunkSettings, ChunkSlots, Chunks, InlineExecutor};
 use vanillite_world::entity::NetworkIds;
@@ -14,20 +15,6 @@ use vanillite_worldgen::behaviour::StateExt;
 
 use super::{Level, LevelSettings, update};
 use crate::block::Behaviours;
-
-struct NoStorage;
-
-impl ChunkStorage for NoStorage {
-    fn load(&self, positions: &[ChunkPos], out: &mut Vec<io::Result<Option<ProtoChunk>>>) {
-        out.extend(positions.iter().map(|_| Ok(None)));
-    }
-    fn save(&self, chunks: &[Arc<ProtoChunk>], out: &mut Vec<io::Result<()>>) {
-        out.extend(chunks.iter().map(|_| Ok(())));
-    }
-    fn flush(&self) -> io::Result<()> {
-        Ok(())
-    }
-}
 
 struct NoLight;
 
@@ -75,7 +62,8 @@ pub(crate) fn flat_level_with(behaviours: Behaviours) -> Level {
         air: BlockState::AIR.0,
     };
     let slots = ChunkSlots {
-        storage: Arc::new(NoStorage),
+        store: Arc::new(NullStore),
+        codec: Arc::new(NullCodec),
         generator: Arc::new(FlatGenerator::classic(&info)),
         light: Arc::new(NoLight),
         executor: Arc::new(InlineExecutor),

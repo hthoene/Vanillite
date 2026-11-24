@@ -5,8 +5,8 @@
 //! The chunk scheduler in `vanillite-world` drives the slots; the built-in implementations live
 //! in `vanillite-storage`, `vanillite-worldgen` and `vanillite-light`. All slot calls are batch
 //! shaped and run on the compute pool, so implementations are `Send + Sync` and shared per world.
+//! The storage slot is the asynchronous record store of [`crate::store`].
 
-use std::io;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
@@ -14,6 +14,12 @@ use vanillite_base::{BlockPos, ChunkPos};
 
 use crate::chunk::Chunk;
 use crate::facts::{BiomeId, BlockStateId};
+
+pub use crate::store::{
+    ChunkCodec, ChunkStore, ChunkStoreProvider, Completion, CompletionTarget, DimensionId,
+    NullCodec, NullStore, Priority, RecordKey, RecordMeta, RoundView, StoreOp, StoreResult, Stream,
+    Token,
+};
 
 /// Vanilla's `ChunkStatus`, in generation order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -483,24 +489,6 @@ pub trait LightEngine: Send + Sync {
 pub trait LightEngineProvider: Send + Sync {
     /// The light engine of one world.
     fn create(&self, world: &WorldInfo) -> Arc<dyn LightEngine>;
-}
-
-/// The `chunk-storage` slot: loads and saves chunks of one world.
-pub trait ChunkStorage: Send + Sync {
-    /// Loads a batch: one result per position, `Ok(None)` if the chunk was never saved.
-    fn load(&self, positions: &[ChunkPos], out: &mut Vec<io::Result<Option<ProtoChunk>>>);
-
-    /// Saves a batch; one result per chunk.
-    fn save(&self, chunks: &[Arc<ProtoChunk>], out: &mut Vec<io::Result<()>>);
-
-    /// Writes everything buffered to disk.
-    fn flush(&self) -> io::Result<()>;
-}
-
-/// Opens the storage of each world.
-pub trait ChunkStorageProvider: Send + Sync {
-    /// The storage of one world.
-    fn create(&self, world: &WorldInfo) -> io::Result<Arc<dyn ChunkStorage>>;
 }
 
 #[cfg(test)]

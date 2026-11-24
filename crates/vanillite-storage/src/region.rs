@@ -4,10 +4,15 @@
 //! and 1024 timestamps. A chunk starts with its length (4 bytes, including the compression byte)
 //! and its compression id; chunks above 255 sectors live in an external file `c.<x>.<z>.mcc`
 //! and set bit 128 of the compression id.
+//!
+//! A record is what follows the length: the compression id and the compressed chunk NBT. All IO
+//! is positional, so one open instance serves reads and writes without seeking. Sectors a write
+//! replaces stay reserved until the next [`RegionFile::sync`] (or [`RegionFile::release_freed`]):
+//! until the new header is durable, the old record on disk must not be overwritten.
 
 use std::fs::{self, File, OpenOptions};
 use std::hash::{Hash, Hasher};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -20,6 +25,10 @@ const SECTOR: usize = 4096;
 const HEADER_SECTORS: usize = 2;
 const MAX_SECTORS: usize = 255;
 const EXTERNAL: u8 = 128;
+/// Free sectors between two records that are still read in one go.
+const MAX_GAP_SECTORS: usize = 1;
+/// Largest single read of neighbouring records.
+const MAX_RUN_SECTORS: usize = 256;
 
 /// Locks that keep a backup from copying a region file while a chunk is written into it, by
 /// file name (the same name in other dimensions only shares the lock).
@@ -33,6 +42,46 @@ pub fn gate(name: &str) -> MutexGuard<'static, ()> {
     GATES[index].lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+#[cfg(unix)]
+fn read_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
+    std::os::unix::fs::FileExt::read_exact_at(file, buf, offset)
+}
+
+#[cfg(unix)]
+fn write_at(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
+    std::os::unix::fs::FileExt::write_all_at(file, buf, offset)
+}
+
+#[cfg(windows)]
+fn read_at(file: &File, mut buf: &mut [u8], mut offset: u64) -> io::Result<()> {
+    use std::os::windows::fs::FileExt;
+    while !buf.is_empty() {
+        match file.seek_read(buf, offset)? {
+            0 => return Err(io::ErrorKind::UnexpectedEof.into()),
+            n => {
+                buf = &mut buf[n..];
+                offset += n as u64;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn write_at(file: &File, mut buf: &[u8], mut offset: u64) -> io::Result<()> {
+    use std::os::windows::fs::FileExt;
+    while !buf.is_empty() {
+        match file.seek_write(buf, offset)? {
+            0 => return Err(io::ErrorKind::WriteZero.into()),
+            n => {
+                buf = &buf[n..];
+                offset += n as u64;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// One open region file.
 #[derive(Debug)]
 pub struct RegionFile {
@@ -43,11 +92,24 @@ pub struct RegionFile {
     offsets: [u32; 1024],
     timestamps: [u32; 1024],
     used: Vec<bool>,
+    /// Sectors of replaced records, free after the next sync.
+    freed: Vec<(usize, usize)>,
+}
+
+/// A read of [`RegionFile::read_many`].
+#[derive(Debug)]
+pub struct RecordRead {
+    /// Slot of the chunk in the region (`x & 31 + (z & 31) * 32`).
+    pub slot: usize,
+    /// Read along with a wanted record (read-ahead).
+    pub ahead: bool,
+    /// The record, `None` if the chunk is not stored.
+    pub record: io::Result<Option<Vec<u8>>>,
 }
 
 /// Index of a chunk in its region.
 #[inline]
-fn slot(pos: ChunkPos) -> usize {
+pub fn slot(pos: ChunkPos) -> usize {
     ((pos.x & 31) + (pos.z & 31) * 32) as usize
 }
 
@@ -80,18 +142,17 @@ impl RegionFile {
             offsets: [0; 1024],
             timestamps: [0; 1024],
             used: vec![true; HEADER_SECTORS],
+            freed: Vec::new(),
         };
         let len = region.file.metadata()?.len() as usize;
         if len < HEADER_SECTORS * SECTOR {
             // New or truncated: start with an empty header (Vanilla pads the same way).
             region.file.set_len((HEADER_SECTORS * SECTOR) as u64)?;
-            region.file.seek(SeekFrom::Start(0))?;
-            region.file.write_all(&[0; HEADER_SECTORS * SECTOR])?;
+            write_at(&region.file, &[0; HEADER_SECTORS * SECTOR], 0)?;
             return Ok(Some(region));
         }
         let mut header = vec![0u8; HEADER_SECTORS * SECTOR];
-        region.file.seek(SeekFrom::Start(0))?;
-        region.file.read_exact(&mut header)?;
+        read_at(&region.file, &mut header, 0)?;
         let sectors_in_file = len.div_ceil(SECTOR);
         for i in 0..1024 {
             let offset =
@@ -118,6 +179,11 @@ impl RegionFile {
         Ok(Some(region))
     }
 
+    /// The file name (`r.<x>.<z>.mca`).
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
     fn is_free(&self, start: usize, count: usize) -> bool {
         (start..start + count).all(|s| !self.used.get(s).copied().unwrap_or(false))
     }
@@ -142,48 +208,168 @@ impl RegionFile {
         self.dir.join(format!("c.{}.{}.mcc", pos.x, pos.z))
     }
 
+    /// The chunk position of `slot` in a region.
+    fn pos_of(slot: usize, region: (i32, i32)) -> ChunkPos {
+        ChunkPos::new(
+            region.0 * 32 + (slot & 31) as i32,
+            region.1 * 32 + (slot / 32) as i32,
+        )
+    }
+
+    /// Whether a chunk is stored, without reading it.
+    pub fn contains(&self, pos: ChunkPos) -> bool {
+        self.offsets[slot(pos)] != 0
+    }
+
     /// Reads the raw data of a chunk: its compression and the compressed bytes.
     pub fn read(&mut self, pos: ChunkPos) -> io::Result<Option<(Compression, Vec<u8>)>> {
-        let offset = self.offsets[slot(pos)];
-        if offset == 0 {
+        let Some(mut record) = self.read_record(pos)? else {
             return Ok(None);
+        };
+        let id = record.first().copied().unwrap_or(0);
+        let compression = Compression::from_id(id)
+            .ok_or_else(|| invalid(format!("chunk {pos:?}: unknown compression {id}")))?;
+        record.remove(0);
+        Ok(Some((compression, record)))
+    }
+
+    /// Reads the record of a chunk: its compression id and the compressed bytes.
+    pub fn read_record(&self, pos: ChunkPos) -> io::Result<Option<Vec<u8>>> {
+        let mut out = Vec::with_capacity(1);
+        self.read_many(pos.region(), &[slot(pos)], &[], &mut out);
+        out.pop().map_or(Ok(None), |r| r.record)
+    }
+
+    /// Reads the records of the `wanted` slots of region `region` with as few reads as
+    /// possible: records in neighbouring sectors are read together. Records of `ahead` that
+    /// lie next to a wanted one are read along (flagged `ahead`). Returns the number of reads.
+    pub fn read_many(
+        &self,
+        region: (i32, i32),
+        wanted: &[usize],
+        ahead: &[usize],
+        out: &mut Vec<RecordRead>,
+    ) -> usize {
+        // (start, count, slot, ahead)
+        let mut entries: Vec<(usize, usize, usize, bool)> = Vec::new();
+        for &slot in wanted {
+            let offset = self.offsets[slot & 1023];
+            if offset == 0 {
+                out.push(RecordRead {
+                    slot,
+                    ahead: false,
+                    record: Ok(None),
+                });
+            } else {
+                entries.push(((offset >> 8) as usize, (offset & 255) as usize, slot, false));
+            }
         }
-        let (start, count) = ((offset >> 8) as u64, (offset & 255) as usize);
-        let mut head = [0u8; 5];
-        self.file.seek(SeekFrom::Start(start * SECTOR as u64))?;
-        self.file.read_exact(&mut head)?;
-        let length = u32::from_be_bytes([head[0], head[1], head[2], head[3]]) as usize;
-        let id = head[4];
+        for &slot in ahead {
+            let offset = self.offsets[slot & 1023];
+            if offset != 0 && !wanted.contains(&slot) {
+                entries.push(((offset >> 8) as usize, (offset & 255) as usize, slot, true));
+            }
+        }
+        entries.sort_unstable_by_key(|e| e.0);
+        entries.dedup_by_key(|e| e.2);
+        let mut reads = 0;
+        let mut index = 0;
+        let mut buffer = Vec::new();
+        while index < entries.len() {
+            let run_start = entries[index].0;
+            let mut run_end = run_start + entries[index].1;
+            let mut end = index + 1;
+            while end < entries.len() {
+                let (start, count, ..) = entries[end];
+                if start > run_end + MAX_GAP_SECTORS
+                    || (start + count).max(run_end) - run_start > MAX_RUN_SECTORS
+                {
+                    break;
+                }
+                run_end = run_end.max(start + count);
+                end += 1;
+            }
+            let run = &entries[index..end];
+            index = end;
+            // Runs of read-ahead records only are not read.
+            if run.iter().all(|e| e.3) {
+                continue;
+            }
+            buffer.clear();
+            buffer.resize((run_end - run_start) * SECTOR, 0);
+            reads += 1;
+            let result = read_at(&self.file, &mut buffer, (run_start * SECTOR) as u64);
+            for &(start, count, slot, ahead) in run {
+                let record = match &result {
+                    Ok(()) => {
+                        let at = (start - run_start) * SECTOR;
+                        let pos = Self::pos_of(slot, region);
+                        self.parse(pos, &buffer[at..at + count * SECTOR], count)
+                            .map(Some)
+                    }
+                    Err(e) => Err(io::Error::new(e.kind(), e.to_string())),
+                };
+                // A damaged neighbour read ahead is simply not cached.
+                if ahead && record.is_err() {
+                    continue;
+                }
+                out.push(RecordRead {
+                    slot,
+                    ahead,
+                    record,
+                });
+            }
+        }
+        reads
+    }
+
+    /// The record in the sectors of a chunk.
+    fn parse(&self, pos: ChunkPos, sectors: &[u8], count: usize) -> io::Result<Vec<u8>> {
+        let length = u32::from_be_bytes([sectors[0], sectors[1], sectors[2], sectors[3]]) as usize;
+        let id = sectors[4];
         if length == 0 || length > count * SECTOR - 4 {
             return Err(invalid(format!(
                 "chunk {pos:?}: invalid length {length} for {count} sectors"
             )));
         }
-        let compression = Compression::from_id(id & !EXTERNAL)
-            .ok_or_else(|| invalid(format!("chunk {pos:?}: unknown compression {id}")))?;
-        let data = if id & EXTERNAL != 0 {
+        if id & EXTERNAL != 0 {
             let path = self.external_path(pos);
             let size = fs::metadata(&path)?.len() as usize;
             if size > MAX_DECOMPRESSED {
                 return Err(invalid(format!("{}: too large", path.display())));
             }
-            fs::read(path)?
+            let mut record = Vec::with_capacity(size + 1);
+            record.push(id & !EXTERNAL);
+            record.extend_from_slice(&fs::read(path)?);
+            Ok(record)
         } else {
-            let mut data = vec![0u8; length - 1];
-            self.file.read_exact(&mut data)?;
-            data
-        };
-        Ok(Some((compression, data)))
+            Ok(sectors[4..4 + length].to_vec())
+        }
     }
 
-    /// Writes the compressed data of a chunk. New sectors are written before the old ones are
-    /// freed, so a crash leaves the old version readable.
+    /// Writes the compressed data of a chunk.
     pub fn write(
         &mut self,
         pos: ChunkPos,
         compression: Compression,
         data: &[u8],
     ) -> io::Result<()> {
+        let mut record = Vec::with_capacity(data.len() + 1);
+        record.push(compression.id());
+        record.extend_from_slice(data);
+        self.write_record(pos, &record)
+    }
+
+    /// Writes the record of a chunk (compression id, then the compressed bytes). New sectors
+    /// are written before the header points to them, and the old ones stay reserved until the
+    /// next sync, so a crash leaves the old version readable.
+    pub fn write_record(&mut self, pos: ChunkPos, record: &[u8]) -> io::Result<()> {
+        let Some((&id, data)) = record.split_first() else {
+            return Err(invalid(format!("chunk {pos:?}: empty record")));
+        };
+        if id & EXTERNAL != 0 || Compression::from_id(id).is_none() {
+            return Err(invalid(format!("chunk {pos:?}: unknown compression {id}")));
+        }
         let _gate = gate(&self.name);
         let index = slot(pos);
         let external_path = self.external_path(pos);
@@ -192,9 +378,9 @@ impl RegionFile {
             let tmp = external_path.with_extension("mcc.tmp");
             fs::write(&tmp, data)?;
             fs::rename(&tmp, &external_path)?;
-            (compression.id() | EXTERNAL, &[])
+            (id | EXTERNAL, &[])
         } else {
-            (compression.id(), data)
+            (id, data)
         };
         let count = (body.len() + 5).div_ceil(SECTOR);
         let start = self.allocate(count);
@@ -203,33 +389,59 @@ impl RegionFile {
         buffer.push(id);
         buffer.extend_from_slice(body);
         buffer.resize(count * SECTOR, 0);
-        self.file.seek(SeekFrom::Start((start * SECTOR) as u64))?;
-        self.file.write_all(&buffer)?;
-
-        let old = self.offsets[index];
-        let offset = (start as u32) << 8 | count as u32;
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs() as u32);
-        self.offsets[index] = offset;
-        self.timestamps[index] = now;
-        self.file.seek(SeekFrom::Start((index * 4) as u64))?;
-        self.file.write_all(&offset.to_be_bytes())?;
-        self.file
-            .seek(SeekFrom::Start((SECTOR + index * 4) as u64))?;
-        self.file.write_all(&now.to_be_bytes())?;
-        if old != 0 {
-            self.mark((old >> 8) as usize, (old & 255) as usize, false);
+        if let Err(e) = write_at(&self.file, &buffer, (start * SECTOR) as u64) {
+            self.mark(start, count, false);
+            return Err(e);
         }
+        let offset = (start as u32) << 8 | count as u32;
+        self.set_entry(index, offset)?;
         if id & EXTERNAL == 0 && external_path.exists() {
             fs::remove_file(external_path)?;
         }
         Ok(())
     }
 
-    /// Flushes written data to the disk.
+    /// Removes a chunk.
+    pub fn delete(&mut self, pos: ChunkPos) -> io::Result<()> {
+        let _gate = gate(&self.name);
+        if self.offsets[slot(pos)] == 0 {
+            return Ok(());
+        }
+        self.set_entry(slot(pos), 0)?;
+        let external_path = self.external_path(pos);
+        if external_path.exists() {
+            fs::remove_file(external_path)?;
+        }
+        Ok(())
+    }
+
+    /// Points the header entry of `index` to `offset`; the old sectors wait for the next sync.
+    fn set_entry(&mut self, index: usize, offset: u32) -> io::Result<()> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as u32);
+        write_at(&self.file, &offset.to_be_bytes(), (index * 4) as u64)?;
+        write_at(&self.file, &now.to_be_bytes(), (SECTOR + index * 4) as u64)?;
+        let old = std::mem::replace(&mut self.offsets[index], offset);
+        self.timestamps[index] = now;
+        if old != 0 {
+            self.freed.push(((old >> 8) as usize, (old & 255) as usize));
+        }
+        Ok(())
+    }
+
+    /// Flushes written data to the disk and frees the sectors of replaced records.
     pub fn sync(&mut self) -> io::Result<()> {
-        self.file.sync_data()
+        self.file.sync_data()?;
+        self.release_freed();
+        Ok(())
+    }
+
+    /// Frees the sectors of replaced records without syncing (`sync-chunk-writes=false`).
+    pub fn release_freed(&mut self) {
+        for (start, count) in std::mem::take(&mut self.freed) {
+            self.mark(start, count, false);
+        }
     }
 }
 
@@ -263,6 +475,33 @@ mod tests {
         );
         assert_eq!(region.read(ChunkPos::new(3, 4)).unwrap().unwrap().1, big);
         assert_eq!(region.read(ChunkPos::new(5, 5)).unwrap(), None);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Neighbouring records come in one read; read-ahead takes only adjacent ones.
+    #[test]
+    fn neighbours_are_read_together() {
+        let dir = std::env::temp_dir().join(format!("vanillite-region-n-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("r.0.0.mca");
+        let _ = fs::remove_file(&path);
+        let mut region = RegionFile::open(&path, true).unwrap().unwrap();
+        for x in 0..8 {
+            region
+                .write(ChunkPos::new(x, 0), Compression::None, &vec![x as u8; 5000])
+                .unwrap();
+        }
+        let mut out = Vec::new();
+        let reads = region.read_many((0, 0), &[0, 1, 2], &[3, 5, 40], &mut out);
+        assert_eq!(reads, 1);
+        let mut slots: Vec<(usize, bool)> = out.iter().map(|r| (r.slot, r.ahead)).collect();
+        slots.sort_unstable();
+        assert_eq!(slots, [(0, false), (1, false), (2, false), (3, true)]);
+        for read in &out {
+            let record = read.record.as_ref().unwrap().as_ref().unwrap();
+            assert_eq!(record.len(), 5001);
+            assert_eq!(record[1], read.slot as u8);
+        }
         fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -20,7 +20,7 @@ use vanillite_chunk::slots::{self, ChunkGenerator, ChunkStatus, Neighbours, Worl
 use vanillite_data::block::BlockState;
 use vanillite_nbt::{Budget, Tag};
 use vanillite_storage::region::RegionFile;
-use vanillite_storage::{AnvilStorage, Compression};
+use vanillite_storage::{AnvilCodec, Compression};
 use vanillite_worldgen::{DimensionSpec, TerrainGenerator, VanillaChunkGenerator};
 
 fn env(name: &str) -> Option<String> {
@@ -200,17 +200,33 @@ fn compare_with_vanilla_world() {
         }
     }
 
-    let storage = AnvilStorage::new(&world, Compression::Deflate);
+    let storage = (
+        world.dir.clone(),
+        AnvilCodec::new(&world, Compression::Deflate),
+    );
     // A second Vanilla world instead of Vanillite's generation (how much two Vanilla runs differ).
     let other = env("VANILLITE_COMPARE_OTHER").map(|dir| {
-        AnvilStorage::new(
-            &WorldInfo {
-                dir: PathBuf::from(dir),
-                ..world.clone()
-            },
-            Compression::Deflate,
+        let info = WorldInfo {
+            dir: PathBuf::from(dir),
+            ..world.clone()
+        };
+        (
+            info.dir.clone(),
+            AnvilCodec::new(&info, Compression::Deflate),
         )
     });
+    let load = |(dir, codec): &(PathBuf, AnvilCodec), pos: ChunkPos| -> Option<slots::ProtoChunk> {
+        use vanillite_chunk::slots::{ChunkCodec, RecordMeta};
+        let (rx, rz) = pos.region();
+        let path = dir.join(format!("region/r.{rx}.{rz}.mca"));
+        let region = RegionFile::open(&path, false).expect("open")?;
+        let record = region.read_record(pos).expect("read")?;
+        Some(
+            codec
+                .decode(pos, &RecordMeta::default(), &record)
+                .expect("decode"),
+        )
+    };
     let mut pairs: BTreeMap<(String, String), u64> = BTreeMap::new();
     let (mut total, mut equal, mut compared, mut identical, mut skipped) = (0u64, 0u64, 0, 0, 0);
     let mut worst: Vec<(u64, ChunkPos)> = Vec::new();
@@ -225,14 +241,7 @@ fn compare_with_vanilla_world() {
                 skipped += 1;
                 continue;
             }
-            let mut out = Vec::new();
-            use vanillite_chunk::slots::ChunkStorage;
-            storage.load(&[pos], &mut out);
-            let vanilla = out
-                .pop()
-                .unwrap()
-                .expect("read")
-                .expect("chunk in Vanilla world");
+            let vanilla = load(&storage, pos).expect("chunk in Vanilla world");
             assert_eq!(
                 vanilla.status,
                 ChunkStatus::Full,
@@ -241,13 +250,7 @@ fn compare_with_vanilla_world() {
             let loaded;
             let ours = match &other {
                 Some(other) => {
-                    let mut out = Vec::new();
-                    other.load(&[pos], &mut out);
-                    loaded = out
-                        .pop()
-                        .unwrap()
-                        .expect("read")
-                        .expect("chunk in other world");
+                    loaded = load(other, pos).expect("chunk in other world");
                     &loaded
                 }
                 None => &*chunks[index(pos)],

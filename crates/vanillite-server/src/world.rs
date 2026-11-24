@@ -333,6 +333,11 @@ impl ServerWorld {
             },
         );
         self.effects.flush(&self.level.entities);
+        // Save rounds take only the time left in the tick (#47).
+        let left = ctx.deadline.saturating_sub(ctx.global.clock.now());
+        self.level
+            .chunks
+            .autosave_step(std::time::Duration::from_nanos(left));
     }
 
     /// `applyEffectsFromBlocks` after the players' moves: pressure plates, tripwire and other
@@ -403,10 +408,15 @@ impl ServerWorld {
         self.level.entities.store.clear_sync_flags();
     }
 
+    /// Runs `then` once the running save round of this world is committed.
+    pub(crate) fn when_saved(&mut self, then: vanillite_world::chunks::SavedCallback) {
+        self.level.chunks.when_saved(then);
+    }
+
     /// Saves the world like Vanilla (`saveEverything`): the players always, the chunks and the
     /// dimension's saved data unless `skip_chunks` (`/save-off`). `flush` waits until the
-    /// chunks are on disk (shutdown, `/save-all flush`); otherwise they are written in the
-    /// background.
+    /// chunks are written and committed (shutdown, `/save-all flush`); otherwise a save round
+    /// starts that captures them from the remaining time of the next ticks.
     pub(crate) fn save(&mut self, flush: bool, skip_chunks: bool) {
         log::debug!("Saving {} (flush: {flush})", self.dimension);
         self.players.save_all(&self.level.entities);
@@ -425,6 +435,8 @@ pub struct TickContext<'a> {
     pub tick: u64,
     /// Whether game elements run this tick (`false` while frozen).
     pub runs_normally: bool,
+    /// When the tick should end (clock nanoseconds); autosave uses the time left.
+    pub deadline: u64,
     /// The compute pool for parallel phases.
     pub compute: &'a Compute,
     /// Server-wide state.
@@ -455,6 +467,7 @@ impl<'a> TickContext<'a> {
         world: WorldId,
         tick: u64,
         runs_normally: bool,
+        deadline: u64,
         compute: &'a Compute,
         global: &'a Global,
         outbox: &'a mut Vec<(WorldId, WorldTask)>,
@@ -463,6 +476,7 @@ impl<'a> TickContext<'a> {
             world,
             tick,
             runs_normally,
+            deadline,
             compute,
             global,
             others: None,

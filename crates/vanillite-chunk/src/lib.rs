@@ -19,6 +19,7 @@ pub mod light;
 pub mod packet;
 pub mod section;
 pub mod slots;
+pub mod store;
 pub mod wire;
 
 #[cfg(test)]

@@ -4,11 +4,22 @@
 //! ([`Chunks::player_ticket_level`]).
 //!
 //! [`Chunks`] is owned by the world's thread. Everything slow runs as background jobs on the
-//! [`Executor`] (the compute pool): loading and saving through the `chunk-storage` slot,
-//! generation steps through `chunk-generator`, light through `light-engine`. Jobs get
-//! snapshots (`Arc<ProtoChunk>`, sections are `Arc`s too) and send their results back over a
-//! channel; [`Chunks::tick`] applies them on the world thread. A live (full) chunk is changed
-//! only by the world thread, copy-on-write if a job still holds a snapshot.
+//! [`Executor`] (the compute pool): decoding and encoding chunk records with the world's
+//! [`ChunkCodec`], generation steps through `chunk-generator`, light through `light-engine`.
+//! Jobs get snapshots (`Arc<ProtoChunk>`, sections are `Arc`s too) and send their results back
+//! over a channel; [`Chunks::tick`] applies them on the world thread. A live (full) chunk is
+//! changed only by the world thread, copy-on-write if a job still holds a snapshot.
+//!
+//! Records are read and written through the asynchronous `chunk-storage` slot
+//! ([`ChunkStore`], #47): requests carry a token, results arrive in this world's inbox. The
+//! store answers a load of a chunk whose save is still queued from the pending save
+//! (read-your-writes); only the short window while a snapshot is encoded is covered here.
+//!
+//! Saving runs in rounds ([`Chunks::start_save_round`]): the changed chunks are captured after
+//! the world tick from the tick's remaining time ([`Chunks::autosave_step`]), at least
+//! `min_chunks_per_tick` per tick, encoded on the pool in jobs of about 1 ms, and committed once
+//! all are submitted. Chunks that unload are saved at once and committed within the commit
+//! interval.
 //!
 //! Scheduling follows Vanilla's generation pyramid: a chunk's ticket level decides the status
 //! it must reach; a step runs once every chunk in its requirement radius has the required
@@ -26,13 +37,17 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::io;
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::time::{Duration, Instant};
 
 use vanillite_base::hash::{FxHashMap, FxHashSet};
 use vanillite_base::{BlockPos, ChunkPos};
 use vanillite_chunk::light::{ChunkLight, LightNibbles};
 use vanillite_chunk::packet::SectionMask;
-use vanillite_chunk::slots::{ChunkGenerator, ChunkStorage, LightEngine, Neighbours, WorldInfo};
+use vanillite_chunk::slots::{
+    ChunkCodec, ChunkGenerator, ChunkStore, Completion, CompletionTarget, DimensionId, LightEngine,
+    Neighbours, Priority, RecordKey, StoreOp, StoreResult, Token, WorldInfo,
+};
 use vanillite_chunk::{BlockStateId, ChunkStatus, ProtoChunk};
 
 pub use levels::{
@@ -61,8 +76,10 @@ impl Executor for InlineExecutor {
 /// The slots one world's chunks run on.
 #[derive(Clone)]
 pub struct ChunkSlots {
-    /// `chunk-storage`.
-    pub storage: Arc<dyn ChunkStorage>,
+    /// `chunk-storage`: the record store of this dimension.
+    pub store: Arc<dyn ChunkStore>,
+    /// Turns this world's records into chunks and back.
+    pub codec: Arc<dyn ChunkCodec>,
     /// `chunk-generator`.
     pub generator: Arc<dyn ChunkGenerator>,
     /// `light-engine`.
@@ -90,7 +107,42 @@ pub struct ChunkSettings {
     pub simulation_distance: i32,
     /// Chunks whose light is recomputed per tick after block changes; the rest waits.
     pub max_relights: usize,
+    /// Saving.
+    pub save: SaveSettings,
 }
+
+/// Tuning of saving (`storage.*`).
+#[derive(Clone, Copy, Debug)]
+pub struct SaveSettings {
+    /// This world's dimension in record keys.
+    pub dimension: DimensionId,
+    /// Most time of one tick spent capturing chunks of a save round; only the tick's remaining
+    /// time is used (`storage.autosave.tick-budget`).
+    pub tick_budget: Duration,
+    /// Chunks captured per tick even when the tick has no time left, so a round ends
+    /// (`storage.autosave.min-chunks-per-tick`).
+    pub min_chunks_per_tick: usize,
+    /// Ticks after which saves of unloaded chunks are committed (`storage.commit-interval`).
+    pub commit_interval: u64,
+    /// Bytes of saves waiting for IO above which no more saves are queued: chunks stay loaded
+    /// and rounds pause (`storage.max-pending-writes`).
+    pub max_backlog: usize,
+}
+
+impl Default for SaveSettings {
+    fn default() -> Self {
+        SaveSettings {
+            dimension: DimensionId(0),
+            tick_budget: Duration::from_micros(500),
+            min_chunks_per_tick: 16,
+            commit_interval: 30 * 20,
+            max_backlog: 64 << 20,
+        }
+    }
+}
+
+/// Runs once a save round is committed.
+pub type SavedCallback = Box<dyn FnOnce() + Send>;
 
 impl Default for ChunkSettings {
     fn default() -> Self {
@@ -100,6 +152,7 @@ impl Default for ChunkSettings {
             max_jobs: 64,
             simulation_distance: 10,
             max_relights: 1024,
+            save: SaveSettings::default(),
         }
     }
 }
@@ -116,8 +169,10 @@ struct Holder {
     level: u8,
     /// A job writes this chunk (load, generation step).
     busy: bool,
-    /// Changed since the last save.
+    /// Changed since the last save; set through [`Holder::touch`].
     dirty: bool,
+    /// The load request while the chunk is read.
+    loading: Option<Token>,
     /// Tick from which an unneeded chunk may be unloaded.
     unload_at: Option<u64>,
     /// Queued for a scheduling check.
@@ -127,6 +182,15 @@ struct Holder {
 impl Holder {
     fn status(&self) -> Option<ChunkStatus> {
         self.chunk.as_ref().map(|c| c.status)
+    }
+
+    /// Marks the chunk changed; the first change since the last save queues it for the next
+    /// save round.
+    fn touch(&mut self, pos: ChunkPos, changed: &mut Vec<ChunkPos>) {
+        if !self.dirty {
+            self.dirty = true;
+            changed.push(pos);
+        }
     }
 }
 
@@ -146,7 +210,11 @@ enum Done {
         center: ChunkPos,
         chunks: Vec<Arc<ProtoChunk>>,
     },
-    Saved(Vec<(Arc<ProtoChunk>, io::Result<()>)>),
+    /// An encode job submitted its records.
+    Encoded {
+        chunks: Vec<Arc<ProtoChunk>>,
+        errors: Vec<(ChunkPos, io::Error)>,
+    },
 }
 
 /// What a scheduling check of one chunk found.
@@ -178,8 +246,31 @@ pub struct Chunks {
     in_flight: usize,
     done_tx: Sender<Done>,
     done_rx: Receiver<Done>,
-    /// Saves in flight; a load of such a chunk takes this version.
-    saving: FxHashMap<ChunkPos, Arc<ProtoChunk>>,
+    /// This world's inbox for store results.
+    inbox_tx: CompletionTarget,
+    inbox: Receiver<Completion>,
+    next_token: u64,
+    /// Loads waiting for the store, by token.
+    loads: FxHashMap<Token, ChunkPos>,
+    /// Snapshots being encoded; a load of such a chunk takes this version. Once submitted,
+    /// the store answers loads from the pending write.
+    encoding: FxHashMap<ChunkPos, Arc<ProtoChunk>>,
+    /// Encode jobs whose records are not submitted yet.
+    encode_jobs: usize,
+    /// Chunks changed since they were last captured, in change order.
+    changed: Vec<ChunkPos>,
+    /// The running save round.
+    round: Option<SaveRound>,
+    /// Number of the last commit started.
+    commits: u64,
+    /// Callbacks waiting for a commit, by commit number.
+    commit_waiters: Vec<(u64, SavedCallback)>,
+    /// A commit is running.
+    committing: bool,
+    /// Records were submitted since the last commit started.
+    uncommitted: bool,
+    /// Tick of the last commit.
+    last_commit: u64,
     unload_candidates: FxHashSet<ChunkPos>,
     relight: FxHashSet<ChunkPos>,
     /// Sections whose sky and block light changed, per full chunk.
@@ -205,6 +296,13 @@ pub struct Chunks {
     promoted: Vec<ChunkPos>,
 }
 
+/// A save round: chunks changed before it started, captured from the ticks' remaining time.
+#[derive(Default)]
+struct SaveRound {
+    pending: std::collections::VecDeque<ChunkPos>,
+    waiters: Vec<SavedCallback>,
+}
+
 impl fmt::Debug for Chunks {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Chunks")
@@ -219,6 +317,7 @@ impl Chunks {
     /// The chunk runtime of a world.
     pub fn new(info: WorldInfo, settings: ChunkSettings, slots: ChunkSlots) -> Self {
         let (done_tx, done_rx) = mpsc::channel();
+        let (inbox_tx, inbox) = CompletionTarget::channel();
         Chunks {
             info,
             settings: ChunkSettings {
@@ -237,7 +336,19 @@ impl Chunks {
             in_flight: 0,
             done_tx,
             done_rx,
-            saving: FxHashMap::default(),
+            inbox_tx,
+            inbox,
+            next_token: 0,
+            loads: FxHashMap::default(),
+            encoding: FxHashMap::default(),
+            encode_jobs: 0,
+            changed: Vec::new(),
+            round: None,
+            commits: 0,
+            commit_waiters: Vec::new(),
+            committing: false,
+            uncommitted: false,
+            last_commit: 0,
             unload_candidates: FxHashSet::default(),
             relight: FxHashSet::default(),
             light_changes: FxHashMap::default(),
@@ -382,6 +493,12 @@ impl Chunks {
                 holder.level = change.new;
                 holder.unload_at = Some(self.tick + self.settings.unload_delay);
                 self.unload_candidates.insert(pos);
+                // A queued load nobody needs any more is dropped before IO and decoding.
+                if holder.chunk.is_none()
+                    && let Some(token) = holder.loading
+                {
+                    self.slots.store.cancel(token);
+                }
             }
         }
         self.level_changes = changes;
@@ -432,7 +549,77 @@ impl Chunks {
             any = true;
             self.apply_done(done);
         }
+        while let Ok(completion) = self.inbox.try_recv() {
+            any = true;
+            self.apply_completion(completion);
+        }
         any
+    }
+
+    /// Installs a result of the store.
+    fn apply_completion(&mut self, completion: Completion) {
+        match completion {
+            Completion::Op { token, result, .. } => {
+                let Some(pos) = self.loads.remove(&token) else {
+                    // A save.
+                    if let StoreResult::Failed(e) = result {
+                        log::error!("Couldn't save a chunk in {}: {e}", self.info.dimension);
+                    }
+                    return;
+                };
+                if let Some(holder) = self.holders.get_mut(&pos) {
+                    holder.loading = None;
+                }
+                match result {
+                    StoreResult::Record(meta, bytes) => {
+                        let codec = Arc::clone(&self.slots.codec);
+                        let tx = self.done_tx.clone();
+                        let level = self.holders.get(&pos).map_or(MAX_LEVEL, |h| h.level);
+                        self.slots.executor.spawn(
+                            u32::from(level),
+                            Box::new(move || {
+                                let chunk = codec.decode(pos, &meta, &bytes);
+                                let _ =
+                                    tx.send(Done::Loaded(pos, chunk.map(|c| Some(Box::new(c)))));
+                            }),
+                        );
+                    }
+                    StoreResult::Missing => self.apply_done(Done::Loaded(pos, Ok(None))),
+                    StoreResult::Failed(e) => self.apply_done(Done::Loaded(pos, Err(e))),
+                    StoreResult::Cancelled => {
+                        self.in_flight -= 1;
+                        if let Some(holder) = self.holders.get_mut(&pos) {
+                            holder.busy = false;
+                        }
+                        self.wake(pos);
+                    }
+                    StoreResult::Meta(_) | StoreResult::Done => {
+                        self.apply_done(Done::Loaded(
+                            pos,
+                            Err(io::Error::other("unexpected store result for a load")),
+                        ));
+                    }
+                }
+            }
+            Completion::Commit { round, result } => {
+                self.committing = false;
+                if let Err(e) = result {
+                    log::error!(
+                        "Couldn't commit saved chunks of {}: {e}",
+                        self.info.dimension
+                    );
+                }
+                let mut index = 0;
+                while index < self.commit_waiters.len() {
+                    if self.commit_waiters[index].0 <= round {
+                        let (_, then) = self.commit_waiters.swap_remove(index);
+                        then();
+                    } else {
+                        index += 1;
+                    }
+                }
+            }
+        }
     }
 
     fn apply_done(&mut self, done: Done) {
@@ -461,7 +648,9 @@ impl Chunks {
                 if let Some(holder) = self.holders.get_mut(&pos) {
                     holder.chunk = Some(Arc::new(chunk));
                     holder.busy = false;
-                    holder.dirty |= dirty;
+                    if dirty {
+                        holder.touch(pos, &mut self.changed);
+                    }
                     self.promote(pos);
                     self.wake(pos);
                 }
@@ -505,7 +694,7 @@ impl Chunks {
                         current.light_on = true;
                         current.status = ChunkStatus::Light;
                         holder.busy = false;
-                        holder.dirty = true;
+                        holder.touch(pos, &mut self.changed);
                     }
                     self.wake(pos);
                 }
@@ -526,8 +715,9 @@ impl Chunks {
                         let change =
                             LightChange::between(current.chunk.light(), chunk.chunk.light());
                         *current.chunk.light_mut() = chunk.chunk.light().clone();
-                        holder.dirty = true;
-                        if !change.is_empty() && current.status == ChunkStatus::Full {
+                        let full = current.status == ChunkStatus::Full;
+                        holder.touch(chunk.pos, &mut self.changed);
+                        if !change.is_empty() && full {
                             self.light_changes
                                 .entry(chunk.pos)
                                 .or_default()
@@ -536,22 +726,24 @@ impl Chunks {
                     }
                 }
             }
-            Done::Saved(results) => {
-                for (chunk, result) in results {
-                    if let Err(e) = result {
-                        log::error!(
-                            "Couldn't save chunk {}, {} in {}: {e}",
-                            chunk.pos.x,
-                            chunk.pos.z,
-                            self.info.dimension
-                        );
-                    }
+            Done::Encoded { chunks, errors } => {
+                self.encode_jobs -= 1;
+                self.uncommitted = true;
+                for (pos, e) in errors {
+                    log::error!(
+                        "Couldn't save chunk {}, {} in {}: {e}",
+                        pos.x,
+                        pos.z,
+                        self.info.dimension
+                    );
+                }
+                for chunk in chunks {
                     if self
-                        .saving
+                        .encoding
                         .get(&chunk.pos)
-                        .is_some_and(|saving| Arc::ptr_eq(saving, &chunk))
+                        .is_some_and(|encoding| Arc::ptr_eq(encoding, &chunk))
                     {
-                        self.saving.remove(&chunk.pos);
+                        self.encoding.remove(&chunk.pos);
                     }
                 }
             }
@@ -562,7 +754,7 @@ impl Chunks {
     fn put_back(&mut self, pos: ChunkPos, chunk: Arc<ProtoChunk>) {
         if let Some(holder) = self.holders.get_mut(&pos) {
             holder.chunk = Some(chunk);
-            holder.dirty = true;
+            holder.touch(pos, &mut self.changed);
         }
     }
 
@@ -578,8 +770,9 @@ impl Chunks {
             .chunk
             .light_mut()
             .merge_max(from.chunk.light());
-        holder.dirty = true;
-        if current.status == ChunkStatus::Full {
+        let full = current.status == ChunkStatus::Full;
+        holder.touch(pos, &mut self.changed);
+        if full {
             self.light_changes.insert(pos, LightChange::ALL);
         }
     }
@@ -665,25 +858,28 @@ impl Chunks {
         let Some(holder) = self.holders.get_mut(&pos) else {
             return Check::Done;
         };
-        if let Some(saving) = self.saving.get(&pos) {
-            // A pending save answers the load.
-            holder.chunk = Some(Arc::clone(saving));
-            holder.dirty = true;
+        if let Some(encoding) = self.encoding.get(&pos) {
+            // A save being encoded answers the load.
+            holder.chunk = Some(Arc::clone(encoding));
+            holder.touch(pos, &mut self.changed);
             self.wake(pos);
             return Check::Progress;
         }
         holder.busy = true;
         self.in_flight += 1;
-        let storage = Arc::clone(&self.slots.storage);
-        let tx = self.done_tx.clone();
-        self.slots.executor.spawn(
-            u32::from(holder.level),
-            Box::new(move || {
-                let mut out = Vec::with_capacity(1);
-                storage.load(&[pos], &mut out);
-                let result = out.pop().unwrap_or(Ok(None));
-                let _ = tx.send(Done::Loaded(pos, result.map(|c| c.map(Box::new))));
-            }),
+        self.next_token += 1;
+        let token = Token(self.next_token);
+        holder.loading = Some(token);
+        let priority = Priority::View(holder.level);
+        self.loads.insert(token, pos);
+        self.slots.store.submit(
+            token,
+            vec![StoreOp::Get(RecordKey::chunk(
+                self.settings.save.dimension,
+                pos,
+            ))],
+            priority,
+            self.inbox_tx.clone(),
         );
         Check::Progress
     }
@@ -699,7 +895,7 @@ impl Chunks {
                     if next == ChunkStatus::Full {
                         chunk.generation = None;
                     }
-                    holder.dirty = true;
+                    holder.touch(pos, &mut self.changed);
                 }
                 self.promote(pos);
                 self.wake(pos);
@@ -851,22 +1047,24 @@ impl Chunks {
         if holder.busy {
             return None;
         }
-        let chunk = holder
-            .chunk
-            .as_mut()
-            .filter(|c| c.status == ChunkStatus::Full)?;
-        holder.dirty = true;
-        Some(&mut Arc::make_mut(chunk).block_entities)
+        if holder.status() != Some(ChunkStatus::Full) {
+            return None;
+        }
+        holder.touch(pos, &mut self.changed);
+        Some(&mut Arc::make_mut(holder.chunk.as_mut()?).block_entities)
     }
 
     fn unload(&mut self) {
         let now = self.tick;
+        // Above the backlog limit changed chunks stay loaded until the IO threads caught up.
+        let save_allowed = self.slots.store.backlog() <= self.settings.save.max_backlog;
         let mut ready = Vec::new();
         for &pos in &self.unload_candidates {
             if let Some(holder) = self.holders.get(&pos)
                 && holder.level > MAX_LEVEL
                 && holder.unload_at.is_some_and(|at| at <= now)
                 && !holder.busy
+                && (save_allowed || !holder.dirty)
             {
                 ready.push(pos);
             }
@@ -907,58 +1105,193 @@ impl Chunks {
 
     // --- Saving --------------------------------------------------------------------------
 
+    /// Encodes snapshots on the pool in jobs of about 1 ms; each job submits its records.
     fn save_chunks(&mut self, chunks: Vec<Arc<ProtoChunk>>) {
         if chunks.is_empty() {
             return;
         }
         for chunk in &chunks {
-            self.saving.insert(chunk.pos, Arc::clone(chunk));
+            self.encoding.insert(chunk.pos, Arc::clone(chunk));
         }
-        let storage = Arc::clone(&self.slots.storage);
-        let tx = self.done_tx.clone();
-        for batch in chunks.chunks(64) {
+        let per_job = self.slots.codec.chunks_per_job().max(1);
+        let dimension = self.settings.save.dimension;
+        for batch in chunks.chunks(per_job) {
             let batch = batch.to_vec();
-            let storage = Arc::clone(&storage);
-            let tx = tx.clone();
+            let codec = Arc::clone(&self.slots.codec);
+            let store = Arc::clone(&self.slots.store);
+            let tx = self.done_tx.clone();
+            let inbox = self.inbox_tx.clone();
+            self.next_token += 1;
+            let token = Token(self.next_token);
+            self.encode_jobs += 1;
             self.slots.executor.spawn(
                 u32::from(MAX_LEVEL) + 1,
                 Box::new(move || {
-                    let mut out = Vec::with_capacity(batch.len());
-                    storage.save(&batch, &mut out);
-                    let _ = tx.send(Done::Saved(batch.into_iter().zip(out).collect()));
+                    let mut ops = Vec::with_capacity(batch.len());
+                    let mut errors = Vec::new();
+                    for chunk in &batch {
+                        match codec.encode(chunk) {
+                            Ok((meta, bytes)) => ops.push(StoreOp::Put {
+                                key: RecordKey::chunk(dimension, chunk.pos),
+                                meta,
+                                bytes,
+                            }),
+                            Err(e) => errors.push((chunk.pos, e)),
+                        }
+                    }
+                    if !ops.is_empty() {
+                        store.submit(token, ops, Priority::Background, inbox);
+                    }
+                    let _ = tx.send(Done::Encoded {
+                        chunks: batch,
+                        errors,
+                    });
                 }),
             );
         }
     }
 
-    /// Saves every changed chunk. With `flush` it waits until everything is on disk
-    /// (shutdown); otherwise the saves run in the background.
-    pub fn save_all(&mut self, flush: bool) {
-        let mut chunks = Vec::new();
-        for (&pos, holder) in &mut self.holders {
-            if holder.dirty
-                && !holder.busy
-                && let Some(chunk) = &mut holder.chunk
-            {
-                holder.dirty = false;
-                if chunk.status == ChunkStatus::Full {
-                    let chunk = Arc::make_mut(chunk);
-                    chunk.block_ticks = self.block_ticks.pack(pos, self.game_time);
-                    chunk.fluid_ticks = self.fluid_ticks.pack(pos, self.game_time);
-                }
-                chunks.push(Arc::clone(chunk));
-            }
+    /// Takes the snapshot of a changed chunk for saving; `None` if it is unchanged or a job
+    /// works on it (it is then saved in the next round).
+    fn capture(&mut self, pos: ChunkPos) -> Option<Arc<ProtoChunk>> {
+        let holder = self.holders.get_mut(&pos)?;
+        if !holder.dirty {
+            return None;
         }
-        self.save_chunks(chunks);
-        if flush {
-            while !self.saving.is_empty() || self.in_flight > 0 {
-                match self.done_rx.recv() {
-                    Ok(done) => self.apply_done(done),
-                    Err(_) => break,
+        if holder.busy {
+            self.changed.push(pos);
+            return None;
+        }
+        let chunk = holder.chunk.as_mut()?;
+        holder.dirty = false;
+        if chunk.status == ChunkStatus::Full {
+            let chunk = Arc::make_mut(chunk);
+            chunk.block_ticks = self.block_ticks.pack(pos, self.game_time);
+            chunk.fluid_ticks = self.fluid_ticks.pack(pos, self.game_time);
+        }
+        Some(Arc::clone(chunk))
+    }
+
+    /// Starts a save round (autosave, `/save-all`): every chunk changed so far is captured by
+    /// [`Chunks::autosave_step`] from the remaining time of the next ticks. A round that is
+    /// still running takes the new changes over. `then` runs once the round is committed.
+    pub fn start_save_round(&mut self, then: Option<SavedCallback>) {
+        let round = self.round.get_or_insert_with(SaveRound::default);
+        round.pending.extend(self.changed.drain(..));
+        round.waiters.extend(then);
+    }
+
+    /// Whether a save round is running.
+    pub fn save_round_running(&self) -> bool {
+        self.round.is_some()
+    }
+
+    /// Runs after the world tick, before the post-tick phase: captures chunks of the running
+    /// save round for at most `budget` (the tick's remaining time, capped by the tick budget),
+    /// but at least the minimum per tick; seals and commits the round once every chunk is
+    /// captured and submitted. Saves of unloaded chunks are committed every commit interval.
+    pub fn autosave_step(&mut self, budget: Duration) {
+        if self.round.is_some() && self.slots.store.backlog() <= self.settings.save.max_backlog {
+            let started = Instant::now();
+            let budget = budget.min(self.settings.save.tick_budget);
+            let min = self.settings.save.min_chunks_per_tick;
+            let mut captured = Vec::new();
+            let mut visited = 0usize;
+            while let Some(pos) = self.round.as_mut().and_then(|r| r.pending.pop_front()) {
+                visited += 1;
+                if let Some(chunk) = self.capture(pos) {
+                    captured.push(chunk);
+                }
+                if captured.len() >= min
+                    && visited.is_multiple_of(16)
+                    && started.elapsed() >= budget
+                {
+                    break;
                 }
             }
-            if let Err(e) = self.slots.storage.flush() {
-                log::error!("Couldn't flush chunks of {}: {e}", self.info.dimension);
+            self.save_chunks(captured);
+        }
+        let sealed =
+            self.round.as_ref().is_some_and(|r| r.pending.is_empty()) && self.encode_jobs == 0;
+        if sealed {
+            let waiters = self.round.take().map(|r| r.waiters).unwrap_or_default();
+            self.commit(waiters);
+        } else if self.round.is_none()
+            && self.uncommitted
+            && self.encode_jobs == 0
+            && !self.committing
+            && self.tick.saturating_sub(self.last_commit) >= self.settings.save.commit_interval
+        {
+            self.commit(Vec::new());
+        }
+    }
+
+    /// Commits everything submitted so far; `waiters` run when it is done.
+    fn commit(&mut self, waiters: Vec<SavedCallback>) {
+        self.commits += 1;
+        let round = self.commits;
+        self.committing = true;
+        self.uncommitted = false;
+        self.last_commit = self.tick;
+        self.commit_waiters
+            .extend(waiters.into_iter().map(|then| (round, then)));
+        self.slots.store.commit(round, self.inbox_tx.clone());
+    }
+
+    /// Runs `then` once the running save round is committed, at once if none runs.
+    pub fn when_saved(&mut self, then: SavedCallback) {
+        match &mut self.round {
+            Some(round) => round.waiters.push(then),
+            None => then(),
+        }
+    }
+
+    /// Saves every changed chunk. With `flush` everything is captured now, written and
+    /// committed before this returns (shutdown, `save-all flush`); otherwise a save round
+    /// starts and runs from the remaining time of the next ticks.
+    pub fn save_all(&mut self, flush: bool) {
+        self.start_save_round(None);
+        if !flush {
+            return;
+        }
+        // Jobs that write chunks finish first, so no changed chunk is busy.
+        self.wait_until(|chunks| chunks.in_flight == 0);
+        let pending: Vec<ChunkPos> = self
+            .round
+            .as_mut()
+            .map(|r| r.pending.drain(..).collect())
+            .unwrap_or_default();
+        let mut captured = Vec::with_capacity(pending.len());
+        for pos in pending {
+            captured.extend(self.capture(pos));
+        }
+        self.save_chunks(captured);
+        // Every encode job submits its records first, so the commit covers them.
+        self.wait_until(|chunks| chunks.encode_jobs == 0);
+        let waiters = self.round.take().map(|r| r.waiters).unwrap_or_default();
+        self.commit(waiters);
+        let round = self.commits;
+        let (tx, rx) = mpsc::channel();
+        self.commit_waiters.push((
+            round,
+            Box::new(move || {
+                let _ = tx.send(());
+            }),
+        ));
+        self.wait_until(|_| rx.try_recv().is_ok());
+    }
+
+    /// Applies results until `done` holds (blocking; flush and shutdown only).
+    fn wait_until(&mut self, mut done: impl FnMut(&Self) -> bool) {
+        loop {
+            self.drain_done();
+            if done(self) {
+                return;
+            }
+            match self.done_rx.recv_timeout(Duration::from_millis(1)) {
+                Ok(job) => self.apply_done(job),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return,
             }
         }
     }
@@ -1001,7 +1334,7 @@ impl Chunks {
             (pos.z & 15) as u32,
             state,
         )?;
-        holder.dirty = true;
+        holder.touch(chunk_pos, &mut self.changed);
         self.block_changes.push(pos);
         self.relight.insert(chunk_pos);
         Some(old)
@@ -1030,7 +1363,7 @@ impl Chunks {
                 && let Some(chunk) = holder.chunk.as_mut()
             {
                 let marks = std::mem::take(&mut Arc::make_mut(chunk).post_processing);
-                holder.dirty = true;
+                holder.touch(pos, &mut self.changed);
                 out.push((pos, marks));
             }
         }
@@ -1068,7 +1401,7 @@ impl Chunks {
 
     fn mark_dirty(&mut self, chunk: ChunkPos) {
         if let Some(holder) = self.holders.get_mut(&chunk) {
-            holder.dirty = true;
+            holder.touch(chunk, &mut self.changed);
         }
     }
 
