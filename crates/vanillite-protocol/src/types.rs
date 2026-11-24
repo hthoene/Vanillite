@@ -500,3 +500,124 @@ impl DecodeLimited for VarIntList {
         Ok(Self(v))
     }
 }
+
+/// A position or velocity of three doubles.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Vec3 {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+
+impl Vec3 {
+    /// A vector.
+    pub const fn new(x: f64, y: f64, z: f64) -> Self {
+        Self { x, y, z }
+    }
+}
+
+impl Encode for Vec3 {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.x.encode(out);
+        self.y.encode(out);
+        self.z.encode(out);
+    }
+}
+
+impl Decode for Vec3 {
+    fn decode(r: &mut Reader<'_>) -> Result<Self> {
+        Ok(Self {
+            x: r.f64()?,
+            y: r.f64()?,
+            z: r.f64()?,
+        })
+    }
+}
+
+/// A velocity in Vanilla's compact `LpVec3` form: 15 bits per axis scaled by a shared factor.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct LpVec3(pub Vec3);
+
+const LP_MAX: f64 = 1.717_986_918_3E10;
+const LP_MIN: f64 = 3.051_944_088_384_301E-5;
+
+// Float/integer conversions below follow Java's casts and `Math.round` exactly; the values are
+// clamped first, so they stay in range.
+#[allow(clippy::as_conversions)]
+impl Encode for LpVec3 {
+    fn encode(&self, out: &mut Vec<u8>) {
+        let sanitize = |v: f64| {
+            if v.is_nan() {
+                0.0
+            } else {
+                v.clamp(-LP_MAX, LP_MAX)
+            }
+        };
+        let (x, y, z) = (sanitize(self.0.x), sanitize(self.0.y), sanitize(self.0.z));
+        let len = x.abs().max(y.abs()).max(z.abs());
+        if len < LP_MIN {
+            out.push(0);
+            return;
+        }
+        let scale = len.ceil() as i64;
+        let partial = (scale & 3) != scale;
+        let markers = if partial { (scale & 3) | 4 } else { scale };
+        let pack = |v: f64| ((v / scale as f64 * 0.5 + 0.5) * 32766.0 + 0.5).floor() as i64;
+        let buffer =
+            markers | pack(x).wrapping_shl(3) | pack(y).wrapping_shl(18) | pack(z).wrapping_shl(33);
+        out.push(buffer as u8);
+        out.push(buffer.wrapping_shr(8) as u8);
+        out.extend_from_slice(&(buffer.wrapping_shr(16) as i32).to_be_bytes());
+        if partial {
+            write_varint(out, scale.wrapping_shr(2) as i32);
+        }
+    }
+}
+
+#[allow(clippy::as_conversions)]
+impl Decode for LpVec3 {
+    fn decode(r: &mut Reader<'_>) -> Result<Self> {
+        let lowest = r.u8()?;
+        if lowest == 0 {
+            return Ok(Self(Vec3::default()));
+        }
+        let middle = r.u8()?;
+        let highest = u64::from(r.i32()? as u32);
+        let buffer =
+            highest.wrapping_shl(16) | u64::from(middle).wrapping_shl(8) | u64::from(lowest);
+        let mut scale = u64::from(lowest & 3);
+        if lowest & 4 != 0 {
+            scale |= u64::from(r.varint()? as u32).wrapping_shl(2);
+        }
+        let unpack =
+            |v: u64| (((v & 32767) as f64).min(32766.0) * 2.0 / 32766.0 - 1.0) * scale as f64;
+        Ok(Self(Vec3::new(
+            unpack(buffer.wrapping_shr(3)),
+            unpack(buffer.wrapping_shr(18)),
+            unpack(buffer.wrapping_shr(33)),
+        )))
+    }
+}
+
+/// A dimension and a block position.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GlobalPos {
+    pub dimension: Identifier,
+    pub pos: BlockPos,
+}
+
+impl Encode for GlobalPos {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.dimension.encode(out);
+        self.pos.encode(out);
+    }
+}
+
+impl Decode for GlobalPos {
+    fn decode(r: &mut Reader<'_>) -> Result<Self> {
+        Ok(Self {
+            dimension: Identifier::decode(r)?,
+            pos: BlockPos::decode(r)?,
+        })
+    }
+}
