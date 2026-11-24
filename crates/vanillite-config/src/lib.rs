@@ -20,7 +20,8 @@ pub use properties::{
     Difficulty, GameMode, PropertyInfo, PropertyKind, RegionFileCompression, ServerProperties,
 };
 pub use rule::{
-    DisabledOr, Kind, Profile, RuleInfo, RuleSet, RuleValue, ValueShape, ValueType, VanillaOr,
+    DisabledOr, Kind, Profile, RuleInfo, RuleSet, RuleValue, StorageLayout, ValueShape, ValueType,
+    VanillaOr,
 };
 pub use toml;
 

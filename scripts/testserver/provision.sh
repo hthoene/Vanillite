@@ -11,6 +11,13 @@
 # - vanillite-proxy on 30010 (/opt/vanillite-proxy, vanillite-proxy.service, deployed with
 #   `ssh <host> vanillite-proxy-deploy < target/release-fast/vanillite-proxy`) in front of
 #   Vanillite 30001 and 30002 and a Paper with modern forwarding on 30011 (/opt/paper-proxy).
+# - Bedrock players on UDP 30019: the Bedrock frontend of Vanillite 30001 (`[bedrock]` set by the
+#   drop-in vanillite@30001.service.d/bedrock.conf), and on UDP 30020 the Bedrock frontend of
+#   the proxy (`[bedrock]` in /opt/vanillite-proxy/proxy.toml).
+# - vanillite-autodeploy (timer, every 2 minutes): builds every new green dev head in
+#   /opt/vanillite-build and deploys it to 30001, 30002 and the proxy on 30010, with a chat
+#   announcement and rollback; log in /var/log/vanillite-autodeploy.log. Manual deploys of a
+#   branch go to 30003-30099.
 # Only ports 30000-30999 are reachable by players.
 set -euo pipefail
 
@@ -36,7 +43,7 @@ write_if_changed() {
 echo "== packages"
 export DEBIAN_FRONTEND=noninteractive
 missing=()
-for pkg in openjdk-25-jre-headless curl rsync jq python3; do
+for pkg in openjdk-25-jre-headless curl rsync jq python3 git build-essential; do
     dpkg -s "$pkg" > /dev/null 2>&1 || missing+=("$pkg")
 done
 if [ ${#missing[@]} -gt 0 ]; then
@@ -148,8 +155,9 @@ echo "== vanillite (test servers, ports 30001-30999)"
 write_if_changed /etc/systemd/system/vanillite@.service <<'EOF'
 [Unit]
 Description=Vanillite test server on port %i
-After=network-online.target
+After=network-online.target vanillite-console@%i.socket
 Wants=network-online.target
+Requires=vanillite-console@%i.socket
 
 [Service]
 User=vanillite
@@ -157,6 +165,11 @@ Group=vanillite
 WorkingDirectory=/opt/vanillite/%i
 ExecStartPre=-/usr/local/bin/testserver-creative vanillite /opt/vanillite/%i
 ExecStart=/opt/vanillite/%i/vanillite
+# Console commands: `vanillite-console <port> <command>` writes into this FIFO.
+Sockets=vanillite-console@%i.socket
+StandardInput=socket
+StandardOutput=journal
+StandardError=journal
 Environment=RUST_BACKTRACE=1
 Restart=on-failure
 RestartSec=5
@@ -172,6 +185,28 @@ ReadWritePaths=/opt/vanillite/%i
 
 [Install]
 WantedBy=multi-user.target
+EOF
+
+# The console of an instance (its stdin) is a FIFO that systemd keeps open, so it never ends.
+write_if_changed /etc/systemd/system/vanillite-console@.socket <<'EOF'
+[Unit]
+Description=Console FIFO of Vanillite instance %i
+[Socket]
+ListenFIFO=/run/vanillite-console/%i
+SocketMode=0600
+RemoveOnStop=true
+Service=vanillite@%i.service
+EOF
+write_if_changed /usr/local/bin/vanillite-console 755 <<'EOF'
+#!/usr/bin/env bash
+# Usage: vanillite-console <port> <command...>
+# Runs a console command on a running Vanillite instance (e.g. `vanillite-console 30001 say hi`).
+# Installed by scripts/testserver/provision.sh.
+set -euo pipefail
+port=${1:?usage: vanillite-console <port> <command...>}
+shift
+systemctl is-active --quiet "vanillite@$port" || { echo "vanillite@$port is not running" >&2; exit 1; }
+printf '%s\n' "$*" > "/run/vanillite-console/$port"
 EOF
 
 echo "== creative players (/etc/vanillite-test/creative-players.json)"
@@ -337,11 +372,18 @@ write_if_changed /usr/local/bin/vanillite-deploy 755 <<'EOF'
 # this test setup needs into server.properties, copies Paper's whitelist and ops and (re)starts
 # vanillite@<port>.service. Port 30901 is the load test instance: offline mode without
 # whitelist, started but not enabled (`cargo xtask loadtest` stops it after the run).
+# 30001 and 30002 belong to vanillite-autodeploy (newest green dev), which sets
+# VANILLITE_DEPLOY_AUTO=1 and the MOTD in VANILLITE_DEPLOY_MOTD.
 # Installed by scripts/testserver/provision.sh.
 set -euo pipefail
 port=${1:?usage: vanillite-deploy <port> < binary}
 if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 30001 ] || [ "$port" -gt 30999 ]; then
     echo "port must be 30001-30999 (30000 is Paper)" >&2
+    exit 2
+fi
+if { [ "$port" = 30001 ] || [ "$port" = 30002 ]; } && [ "${VANILLITE_DEPLOY_AUTO:-}" != 1 ]; then
+    echo "30001 and 30002 run the newest green dev (vanillite-autodeploy): land on dev instead," >&2
+    echo "or test a branch on a port in 30003-30099 and stop it afterwards" >&2
     exit 2
 fi
 dir=/opt/vanillite/$port
@@ -372,6 +414,9 @@ if [ "$port" = 30901 ]; then
 else
     set_prop online-mode true
     set_prop white-list true
+fi
+if [ -n "${VANILLITE_DEPLOY_MOTD:-}" ]; then
+    set_prop motd "$VANILLITE_DEPLOY_MOTD"
 fi
 # The Minecraft EULA is accepted for this test server.
 echo "eula=true" > "$dir/eula.txt"
@@ -502,6 +547,14 @@ EnvironmentFile=/etc/vanillite-test/proxy-backend.env
 EOF
 done
 
+echo "== Bedrock (UDP 30019 in front of Vanillite 30001)"
+install -d /etc/systemd/system/vanillite@30001.service.d
+write_if_changed /etc/systemd/system/vanillite@30001.service.d/bedrock.conf <<'EOF'
+[Service]
+Environment=VANILLITE_BEDROCK__ENABLED=true
+Environment=VANILLITE_BEDROCK__PORT=30019
+EOF
+
 # Paper behind the proxy: offline mode in server.properties, identities from the proxy.
 install -d -o minecraft -g minecraft /opt/paper-proxy /opt/paper-proxy/config
 ln -sfn "$jar" /opt/paper-proxy/paper.jar
@@ -554,6 +607,11 @@ paper = "127.0.0.1:30011"
 [permissions]
 server = ["*"]
 glist = ["*"]
+
+# Bedrock players join the proxy's network on UDP 30020.
+[bedrock]
+enabled = true
+bind = "0.0.0.0:30020"
 EOF
 write_if_changed /etc/systemd/system/vanillite-proxy.service <<'EOF'
 [Unit]
@@ -581,8 +639,13 @@ write_if_changed /usr/local/bin/vanillite-proxy-deploy 755 <<'EOF'
 #!/usr/bin/env bash
 # Usage: vanillite-proxy-deploy < vanillite-proxy-binary
 # Installs the binary as /opt/vanillite-proxy/vanillite-proxy and (re)starts the proxy.
+# Only vanillite-autodeploy (VANILLITE_DEPLOY_AUTO=1) deploys here: the proxy follows dev.
 # Installed by scripts/testserver/provision.sh.
 set -euo pipefail
+if [ "${VANILLITE_DEPLOY_AUTO:-}" != 1 ]; then
+    echo "the proxy runs the newest green dev (vanillite-autodeploy): land on dev instead" >&2
+    exit 2
+fi
 dir=/opt/vanillite-proxy
 tmp=$(mktemp -p "$dir" .proxy.XXXXXX)
 cat > "$tmp"
@@ -596,6 +659,218 @@ sleep 1
 systemctl --no-pager --lines=10 status vanillite-proxy.service || true
 EOF
 
+echo "== auto-deploy of dev (vanillite-autodeploy: 30001, 30002, proxy 30010)"
+id vanillite-build > /dev/null 2>&1 \
+    || useradd --system --home-dir /opt/vanillite-build --create-home --shell /usr/sbin/nologin vanillite-build
+install -d -o vanillite-build -g vanillite-build /opt/vanillite-build
+if [ ! -x /opt/vanillite-build/.cargo/bin/rustup ]; then
+    curl -fsSL https://sh.rustup.rs | runuser -u vanillite-build -- env HOME=/opt/vanillite-build \
+        sh -s -- -y --quiet --no-modify-path --profile minimal --default-toolchain none
+fi
+install -d /var/lib/vanillite-autodeploy
+write_if_changed /usr/local/bin/vanillite-autodeploy 755 <<'EOF'
+#!/usr/bin/env bash
+# Usage: vanillite-autodeploy [run | status [<lines>]]
+# run (vanillite-autodeploy.timer, every 2 minutes): when the dev head on GitHub is new and its
+# CI checks passed, builds vanillite and vanillite-proxy (release-fast) in /opt/vanillite-build,
+# announces the restart in chat 10 s ahead, deploys 30001, 30002 and the proxy on 30010 (only
+# those whose binary changed) and rolls all of them back to the previous binaries if one does not
+# come up. A red, unbuildable or rolled back head is not tried again; the next dev head is.
+# Log: /var/log/vanillite-autodeploy.log. Installed by scripts/testserver/provision.sh.
+set -uo pipefail
+repo=https://github.com/hthoene/Vanillite.git
+api=https://api.github.com/repos/hthoene/Vanillite
+# CI checks of the dev head that must pass. cargo-deny is not one of them: it turns red on new
+# advisories without any code change.
+required='["Format", "Clippy", "Tests and codegen"]'
+ports=(30001 30002)
+declare -A motd=([30001]="Vanillite test: own worldgen" [30002]="Vanillite test: Paper world import")
+build=/opt/vanillite-build
+state=/var/lib/vanillite-autodeploy
+logfile=/var/log/vanillite-autodeploy.log
+start_timeout=120
+sha=
+
+log() {
+    printf '%s %s %s\n' "$(date '+%F %T')" "${sha:0:12}" "$*" | tee -a "$logfile"
+}
+
+case "${1:-run}" in
+    status)
+        echo "deployed: $(cat "$state/deployed" 2> /dev/null || echo none)"
+        tail -n "${2:-15}" "$logfile" 2> /dev/null
+        exit 0
+        ;;
+    run) ;;
+    *)
+        echo "usage: vanillite-autodeploy [run | status [<lines>]]" >&2
+        exit 2
+        ;;
+esac
+
+install -d "$state"
+exec 9> "$state/lock"
+flock -n 9 || exit 0
+
+sha=$(git ls-remote "$repo" refs/heads/dev | cut -f1)
+[ -n "$sha" ] || { echo "cannot read the dev head" >&2; exit 0; }
+deployed=$(cat "$state/deployed" 2> /dev/null)
+[ "$sha" = "$deployed" ] && exit 0
+[ "$sha" = "$(cat "$state/skipped" 2> /dev/null)" ] && exit 0
+
+verdict=$(curl -fsS -H 'Accept: application/vnd.github+json' \
+    "$api/commits/$sha/check-runs?per_page=100" | jq -r --argjson req "$required" '
+    [$req[] as $n | ([.check_runs[] | select(.name == $n)] | max_by(.id)) as $r
+        | if $r == null or $r.status != "completed" then "pending"
+          elif $r.conclusion == "success" then "success"
+          else "\($n): \($r.conclusion)" end]
+    | (map(select(. != "pending" and . != "success")) | join(", ")) as $red
+    | if $red != "" then "red (" + $red + ")"
+      elif any(.[]; . == "pending") then "pending" else "green" end')
+case "$verdict" in
+    green) ;;
+    pending | "")
+        echo "dev ${sha:0:12}: checks ${verdict:-unavailable}"
+        exit 0
+        ;;
+    *)
+        log "skipped: dev is $verdict"
+        echo "$sha" > "$state/skipped"
+        exit 0
+        ;;
+esac
+
+log "building"
+started=$SECONDS
+if ! runuser -u vanillite-build -- env HOME="$build" PATH="$build/.cargo/bin:/usr/bin:/bin" \
+    bash -ec '
+        cd "$HOME"
+        [ -d src/.git ] || git clone --quiet "$1" src
+        cd src
+        git fetch --quiet origin dev
+        git checkout --quiet --force --detach "$2"
+        rustup toolchain install --profile minimal > /dev/null
+        CARGO_TARGET_DIR="$HOME/target" cargo build --locked --profile release-fast \
+            -p vanillite -p vanillite-proxy
+    ' build "$repo" "$sha" > "$state/build.log" 2>&1; then
+    log "FAILED: build failed after $((SECONDS - started)) s, see $state/build.log"
+    tail -n 30 "$state/build.log"
+    echo "$sha" > "$state/skipped"
+    exit 1
+fi
+log "built in $((SECONDS - started)) s"
+server_bin=$build/target/release-fast/vanillite
+proxy_bin=$build/target/release-fast/vanillite-proxy
+
+changed=()
+for port in "${ports[@]}"; do
+    cmp -s "$server_bin" "/opt/vanillite/$port/vanillite" || changed+=("$port")
+done
+proxy_changed=false
+cmp -s "$proxy_bin" /opt/vanillite-proxy/vanillite-proxy || proxy_changed=true
+if [ ${#changed[@]} -eq 0 ] && ! $proxy_changed; then
+    echo "$sha" > "$state/deployed"
+    log "ok: binaries unchanged, nothing restarted"
+    exit 0
+fi
+
+# Restarting the proxy disconnects the players of every server behind it.
+msg="Restart in 10 seconds: update to dev ${sha:0:7}"
+if $proxy_changed; then
+    for port in "${ports[@]}"; do vanillite-console "$port" "say $msg" > /dev/null 2>&1; done
+    paper-rcon --port 25577 "say $msg" > /dev/null 2>&1
+else
+    for port in "${changed[@]}"; do vanillite-console "$port" "say $msg" > /dev/null 2>&1; done
+fi
+sleep 10
+
+# Installs a server binary (clean stop with save, start) and waits for "Done".
+deploy_server() { # <port> <binary> <commit label>
+    local port=$1 since
+    since=$(date '+%F %T')
+    VANILLITE_DEPLOY_AUTO=1 VANILLITE_DEPLOY_MOTD="${motd[$port]} - dev $3" \
+        vanillite-deploy "$port" < "$2" > /dev/null 2>&1 || return 1
+    for _ in $(seq "$start_timeout"); do
+        journalctl -q -u "vanillite@$port" --since "$since" -o cat | grep -q 'Done (' && return 0
+        sleep 1
+    done
+    return 1
+}
+deploy_proxy() { # <binary>
+    VANILLITE_DEPLOY_AUTO=1 vanillite-proxy-deploy < "$1" > /dev/null 2>&1 || return 1
+    for _ in $(seq 30); do
+        systemctl is-active --quiet vanillite-proxy && ss -Hltn 'sport = :30010' | grep -q . \
+            && return 0
+        sleep 1
+    done
+    return 1
+}
+
+failed=
+done_ports=()
+for port in "${changed[@]}"; do
+    cp -p "/opt/vanillite/$port/vanillite" "$state/prev-$port" 2> /dev/null || rm -f "$state/prev-$port"
+    done_ports+=("$port")
+    if ! deploy_server "$port" "$server_bin" "${sha:0:7}"; then
+        failed="vanillite@$port did not start within $start_timeout s"
+        journalctl -q -u "vanillite@$port" -n 30 -o cat --no-pager
+        break
+    fi
+done
+proxy_done=false
+if [ -z "$failed" ] && $proxy_changed; then
+    cp -p /opt/vanillite-proxy/vanillite-proxy "$state/prev-proxy" 2> /dev/null || rm -f "$state/prev-proxy"
+    proxy_done=true
+    if ! deploy_proxy "$proxy_bin"; then
+        failed="vanillite-proxy did not listen on 30010 within 30 s"
+        journalctl -q -u vanillite-proxy -n 30 -o cat --no-pager
+    fi
+fi
+
+if [ -n "$failed" ]; then
+    log "FAILED: $failed; rolling back to ${deployed:0:12}"
+    echo "$sha" > "$state/skipped"
+    for port in "${done_ports[@]}"; do
+        if [ -f "$state/prev-$port" ]; then
+            deploy_server "$port" "$state/prev-$port" "${deployed:0:7} (rollback)" \
+                || log "rollback of vanillite@$port did not start either"
+        fi
+    done
+    if $proxy_done && [ -f "$state/prev-proxy" ]; then
+        deploy_proxy "$state/prev-proxy" || log "rollback of vanillite-proxy did not start either"
+    fi
+    log "rolled back"
+    exit 1
+fi
+echo "$sha" > "$state/deployed"
+log "ok: deployed to ${changed[*]}$($proxy_changed && echo ' proxy')"
+EOF
+write_if_changed /etc/systemd/system/vanillite-autodeploy.service <<'EOF'
+[Unit]
+Description=Deploy the newest green dev to Vanillite 30001, 30002 and the proxy (vanillite-autodeploy)
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/vanillite-autodeploy run
+TimeoutStartSec=1h
+# The build must not slow down the running servers, nor take their memory.
+Nice=10
+CPUWeight=20
+IOWeight=20
+MemoryHigh=3G
+MemoryMax=3500M
+EOF
+write_if_changed /etc/systemd/system/vanillite-autodeploy.timer <<'EOF'
+[Unit]
+Description=Check for a new green dev every 2 minutes (vanillite-autodeploy)
+[Timer]
+OnCalendar=*:0/2
+AccuracySec=10s
+[Install]
+WantedBy=timers.target
+EOF
+
 systemctl daemon-reload
 systemctl enable --quiet paper.service paper-proxy.service
 systemctl is-active --quiet paper.service || systemctl start paper.service
@@ -606,6 +881,7 @@ for dir in /opt/vanillite/30[0-9][0-9][0-9]; do
     port=${dir##*/}
     [ "$port" = 30901 ] || systemctl enable --quiet --now "vanillite-creative@$port.path"
 done
+systemctl enable --quiet --now vanillite-autodeploy.timer
 
 echo "== players (whitelisted and OP 4 on Paper; copied into Vanillite instances on deploy)"
 for _ in $(seq 60); do

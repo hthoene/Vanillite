@@ -20,6 +20,9 @@ vanillite-datapack.workspace = true
 vanillite-nbt.workspace = true
 
 [dev-dependencies]
+# The structure goldens hold doubles in decimal (entity positions, NBT): parse them correctly
+# rounded, as Java wrote them (the default parser can be one ulp off for 17 digits).
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 # Reads Vanilla worlds in the comparison test.
 vanillite-storage.workspace = true
 

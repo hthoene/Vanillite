@@ -12,10 +12,12 @@
 //! a batch and complete batches asynchronously on its own threads.
 
 use std::cell::RefCell;
+use std::sync::{Arc, OnceLock};
 
 use serde_json::Value;
 use vanillite_base::ChunkPos;
-use vanillite_chunk::{BiomeId, Biomes, PalettedContainer};
+use vanillite_base::random::RandomSource;
+use vanillite_chunk::{BiomeId, Biomes, HeightmapKind, PalettedContainer, facts};
 use vanillite_data::block::{BlockId, BlockState};
 use vanillite_datapack::LoadedPacks;
 
@@ -26,23 +28,27 @@ use crate::biome::climate::ClimateSampler;
 use crate::biome::{BiomeManager, BiomeRegistry, BiomeResolver, BiomeSource};
 use crate::blocks::BlockSet;
 use crate::carver::{CarverId, CarverRegistry, carve_chunk};
-use crate::density::{DensityCompiler, FnId, Program, SamplerContext};
+use crate::density::{ContextSampler, DensityCompiler, FnId, Program, SamplerContext};
 use crate::feature::{FeatureSet, WorldGenRegion};
 use crate::material::MaterialSystem;
 use crate::proto::{ProtoChunk, WgHeightmap};
+use crate::random::WorldgenRandom;
 use crate::random_state::RandomState;
 use crate::settings::NoiseGeneratorSettings;
+use crate::spawn_finder::{SpawnTarget, find_spawn_chunk};
+use crate::structure::{
+    Beardifier, GenerationContext, LevelHeight, NeighbourStarts, PieceContext, ReferencedStarts,
+    StructureId, StructureRegistry, StructureStart, StructureState,
+};
+use crate::template::BoundingBox;
 use crate::volume::DensityVolume;
 
 /// A generation step of Vanilla's chunk pyramid that this crate implements.
-///
-/// Structure starts and structure references are not generated yet; they run as no-ops so a
-/// scheduler can already drive the full pyramid.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Stage {
-    /// `structure_starts`.
+    /// `structure_starts`: the structure starts whose start chunk this is.
     StructureStarts,
-    /// `structure_references`.
+    /// `structure_references`: the starts of the 17×17 chunks around that reach this chunk.
     StructureReferences,
     /// `biomes`: noise biomes from the climate functions.
     Biomes,
@@ -64,12 +70,27 @@ impl Stage {
     ];
 
     /// Chebyshev radius of neighbours that must have reached the previous stage
-    /// (`ChunkStep.addRequirement` of the previous status). Structure dependencies (radius 8 on
-    /// `structure_starts`) are left out while structures are not generated.
+    /// (`ChunkStep.addRequirement` of the previous status in `GENERATION_PYRAMID`). See
+    /// [`Self::requirements`] for all requirements, including the structure starts.
     pub const fn dependency_radius(self) -> u32 {
         match self {
-            Self::StructureStarts | Self::StructureReferences | Self::Biomes => 0,
+            Self::StructureStarts | Self::Biomes => 0,
+            Self::StructureReferences => 8,
             Self::Terrain | Self::Features => 1,
+        }
+    }
+
+    /// Every requirement of the stage (`ChunkStep.addRequirement(status, radius)` in Vanilla's
+    /// `GENERATION_PYRAMID`): the neighbours within the Chebyshev radius must have reached the
+    /// stage. Every stage after the starts needs the starts of radius 8: the references read
+    /// them, and the terrain (`Beardifier`) and features (structure placement) stages read the
+    /// starts the chunk references.
+    pub const fn requirements(self) -> &'static [(Stage, u32)] {
+        match self {
+            Self::StructureStarts => &[],
+            Self::StructureReferences | Self::Biomes => &[(Self::StructureStarts, 8)],
+            Self::Terrain => &[(Self::StructureStarts, 8), (Self::Biomes, 1)],
+            Self::Features => &[(Self::StructureStarts, 8), (Self::Terrain, 1)],
         }
     }
 
@@ -172,11 +193,14 @@ pub enum TerrainStep {
     Carvers,
 }
 
-/// One chunk of a terrain batch: the chunk (at [`Stage::Biomes`]) and its neighbours' biomes.
+/// One chunk of a terrain batch: the chunk (at [`Stage::Biomes`]), its neighbours' biomes and
+/// the structure starts it references (for the `Beardifier`; [`ReferencedStarts::empty`]
+/// without structures).
 #[derive(Debug)]
 pub struct TerrainJob {
     pub chunk: ProtoChunk,
     pub neighbours: NeighbourBiomes,
+    pub structures: ReferencedStarts,
 }
 
 /// Vanilla's `NoiseBasedChunkGenerator` with its `RandomState` for one dimension and seed.
@@ -202,9 +226,14 @@ pub struct TerrainGenerator {
     biome_carvers: Vec<Vec<CarverId>>,
     uncarvable: BlockSet,
     features: FeatureSet,
+    structures: StructureRegistry,
     grass_block: BlockId,
     mycelium: BlockId,
     dirt: BlockId,
+    /// The compiled `spawn_target` of the settings.
+    spawn_target: Vec<SpawnTarget>,
+    /// `getOrigin(randomState)`, computed on first use.
+    origin: OnceLock<ChunkPos>,
 }
 
 impl TerrainGenerator {
@@ -237,6 +266,17 @@ impl TerrainGenerator {
             weirdness: compiler.compile(&router.ridges),
         };
         let final_density = compiler.compile(&router.final_density);
+        let spawn_target = settings
+            .spawn_target
+            .iter()
+            .map(|point| {
+                point
+                    .parameters
+                    .iter()
+                    .map(|(function, parameter)| (compiler.compile(function), *parameter))
+                    .collect()
+            })
+            .collect();
         let aquifer = settings
             .aquifers
             .as_ref()
@@ -252,6 +292,9 @@ impl TerrainGenerator {
             &biome_source.possible_biomes(),
             WorldGenerationContext::for_settings(&settings, dimension.min_y, dimension.height),
         )?;
+
+        let structures =
+            StructureRegistry::load(packs, &biomes, &features, &biome_source.possible_biomes())?;
 
         let block = |name: &str| {
             BlockId::by_name(name).ok_or_else(|| Error::new(format!("unknown block {name}")))
@@ -275,10 +318,25 @@ impl TerrainGenerator {
             biome_carvers,
             uncarvable: BlockSet::from_tag(packs, "minecraft:uncarvable"),
             features,
+            structures,
             grass_block: block("minecraft:grass_block")?,
             mycelium: block("minecraft:mycelium")?,
             dirt: block("minecraft:dirt")?,
+            spawn_target,
+            origin: OnceLock::new(),
             random_state,
+        })
+    }
+
+    /// `getOrigin(randomState)`: the chunk `NoiseSpawnFinder` picks for the settings'
+    /// `spawn_target`, or chunk 0, 0 without one.
+    pub fn origin(&self) -> ChunkPos {
+        *self.origin.get_or_init(|| {
+            if self.spawn_target.is_empty() {
+                ChunkPos::new(0, 0)
+            } else {
+                find_spawn_chunk(&self.program, &self.spawn_target)
+            }
         })
     }
 
@@ -318,12 +376,52 @@ impl TerrainGenerator {
         &self.features
     }
 
-    /// Runs `stage` on every chunk of `batch` that needs no neighbours. Panics for
-    /// [`Stage::Terrain`] and [`Stage::Features`], which need neighbours (use
+    /// The parsed structures and structure sets.
+    pub fn structures(&self) -> &StructureRegistry {
+        &self.structures
+    }
+
+    /// The biome source.
+    pub fn biome_source(&self) -> &BiomeSource {
+        &self.biome_source
+    }
+
+    /// The climate functions of the biome source (`Climate.Sampler`).
+    pub fn climate(&self) -> &ClimateSampler {
+        &self.climate
+    }
+
+    /// `getSeaLevel()`.
+    pub fn sea_level(&self) -> i32 {
+        self.settings.sea_level
+    }
+
+    /// `getMinY()`: the noise settings' lowest Y.
+    pub fn min_y(&self) -> i32 {
+        self.settings.min_y
+    }
+
+    /// `getGenDepth()`: the noise settings' height.
+    pub fn gen_depth(&self) -> i32 {
+        self.settings.height
+    }
+
+    /// The `WorldGenerationContext` of the generator for a level height range.
+    pub fn generation_context(&self, level: LevelHeight) -> WorldGenerationContext {
+        WorldGenerationContext::for_settings(&self.settings, level.min_y, level.height)
+    }
+
+    /// Runs `stage` on every chunk of `batch` that needs no neighbours. Panics for the stages
+    /// that need neighbours (use [`Self::generate_structure_references`],
     /// [`Self::generate_terrain`] and [`Self::generate_features`]).
     pub fn generate(&self, stage: Stage, batch: &mut [ProtoChunk]) {
         match stage {
-            Stage::StructureStarts | Stage::StructureReferences => {}
+            Stage::StructureStarts => self.generate_structure_starts(batch),
+            Stage::StructureReferences => {
+                panic!(
+                    "the structure references stage needs neighbour starts: use generate_structure_references"
+                )
+            }
             Stage::Biomes => self.generate_biomes(batch),
             Stage::Terrain => {
                 panic!("the terrain stage needs neighbour biomes: use generate_terrain")
@@ -339,9 +437,232 @@ impl TerrainGenerator {
     /// past [`Stage::Terrain`]. Features write into the neighbours too, so two chunks whose
     /// areas overlap must not be decorated at the same time, and the order in which neighbouring
     /// chunks are decorated changes the result at chunk borders, exactly as in Vanilla.
-    pub fn generate_features(&self, area: [&mut ProtoChunk; 9]) {
+    ///
+    /// `structures` are the starts the middle chunk references ([`ReferencedStarts::collect`]);
+    /// their pieces are placed before the features of their decoration step. With
+    /// [`ReferencedStarts::empty`] this is decoration with structures disabled.
+    pub fn generate_features(&self, area: [&mut ProtoChunk; 9], structures: &ReferencedStarts) {
         let mut region = self.feature_region(area.into());
-        self.features.decorate(&mut region);
+        region.set_structure_starts(structures.clone());
+        let center = region.center();
+        let (min_y, height) = (region.min_y(), region.height());
+        self.features
+            .decorate(&mut region, &mut |region, random, decoration_seed, step| {
+                for (index, &structure) in self.structures.by_step(step).iter().enumerate() {
+                    random.set_feature_seed(decoration_seed, index as i32, step as i32);
+                    for start in structures.for_structure(structure) {
+                        // `getWritableArea(chunk)`, fresh for every start.
+                        let mut chunk_bb = writable_area(center, min_y, height);
+                        let mut ctx = PieceContext {
+                            level: region,
+                            random,
+                            generator: self,
+                        };
+                        start.place_in_chunk(&self.structures, &mut ctx, &mut chunk_bb, center);
+                    }
+                }
+            });
+    }
+
+    /// [`Stage::StructureStarts`] for a batch (`ChunkGenerator.createStructures` of fresh
+    /// chunks: no chunk has a start yet, so every start is generated).
+    pub fn generate_structure_starts(&self, batch: &mut [ProtoChunk]) {
+        for chunk in batch {
+            self.create_structures(chunk);
+        }
+    }
+
+    /// `createStructures(registryAccess, state, structureManager, chunk, templates, level)`.
+    fn create_structures(&self, chunk: &mut ProtoChunk) {
+        let state = StructureState::new(self);
+        let pos = chunk.pos();
+        let level = LevelHeight {
+            min_y: chunk.min_y(),
+            height: chunk.height(),
+        };
+        let seed = state.level_seed();
+        for &set_id in state.possible_structure_sets() {
+            let set = self.structures.set(set_id);
+            if set
+                .structures
+                .iter()
+                .any(|(id, _)| chunk.start_for_structure(*id).is_some())
+            {
+                continue;
+            }
+            if !set.placement.is_structure_chunk(&state, pos.x, pos.z) {
+                continue;
+            }
+            if let [(structure, _)] = set.structures.as_slice() {
+                self.try_generate_structure(*structure, chunk, level);
+                continue;
+            }
+            let mut options = set.structures.clone();
+            let mut random = WorldgenRandom::new(0);
+            random.set_large_feature_seed(seed, pos.x, pos.z);
+            let mut total: i32 = options.iter().map(|(_, weight)| weight).sum();
+            while !options.is_empty() {
+                let mut choice = random.random.next_int_bounded(total);
+                let mut index = 0;
+                for (_, weight) in &options {
+                    choice -= weight;
+                    if choice < 0 {
+                        break;
+                    }
+                    index += 1;
+                }
+                let (structure, weight) = options[index];
+                if self.try_generate_structure(structure, chunk, level) {
+                    break;
+                }
+                options.remove(index);
+                total -= weight;
+            }
+        }
+    }
+
+    /// `tryGenerateStructure(...)`: whether a valid start was generated and stored.
+    fn try_generate_structure(
+        &self,
+        id: StructureId,
+        chunk: &mut ProtoChunk,
+        level: LevelHeight,
+    ) -> bool {
+        let structure = self.structures.structure(id);
+        let pos = chunk.pos();
+        let references = chunk
+            .start_for_structure(id)
+            .map_or(0, |start| start.references());
+        let mut ctx = GenerationContext::new(self, pos, level, &structure.settings.biomes);
+        let Some(pieces) = structure.generate_pieces(&mut ctx) else {
+            return false;
+        };
+        let Some(start) = StructureStart::new(id, pos, references, pieces, |bb| {
+            structure.adjust_bounding_box(bb)
+        }) else {
+            return false;
+        };
+        chunk.set_start_for_structure(id, Arc::new(start));
+        true
+    }
+
+    /// [`Stage::StructureReferences`] for one chunk (`createReferences`): records every start
+    /// of the 17×17 chunks around it whose box reaches the chunk.
+    pub fn generate_structure_references(&self, chunk: &mut ProtoChunk, starts: &NeighbourStarts) {
+        let pos = chunk.pos();
+        debug_assert_eq!(starts.center(), pos, "starts of another chunk");
+        let (min_x, min_z) = (pos.min_block_x(), pos.min_block_z());
+        for (source, source_starts) in starts.iter() {
+            let key = source.as_long();
+            for (structure, start) in source_starts {
+                if start
+                    .bounding_box()
+                    .intersects_xz(min_x, min_z, min_x + 15, min_z + 15)
+                {
+                    chunk.add_reference(*structure, key);
+                }
+            }
+        }
+    }
+
+    /// `getBaseHeight(x, z, heightmap, heightAccessor, randomState)`: the first free Y above the
+    /// highest block of the noise column that matches the heightmap, or the level's lowest Y.
+    pub fn base_height(&self, x: i32, z: i32, heightmap: HeightmapKind, level: LevelHeight) -> i32 {
+        self.iterate_noise_column(level, x, z, None, Some(heightmap))
+            .unwrap_or(level.min_y)
+    }
+
+    /// `getFirstFreeHeight(...)`.
+    pub fn first_free_height(
+        &self,
+        x: i32,
+        z: i32,
+        heightmap: HeightmapKind,
+        level: LevelHeight,
+    ) -> i32 {
+        self.base_height(x, z, heightmap, level)
+    }
+
+    /// `getFirstOccupiedHeight(...)`.
+    pub fn first_occupied_height(
+        &self,
+        x: i32,
+        z: i32,
+        heightmap: HeightmapKind,
+        level: LevelHeight,
+    ) -> i32 {
+        self.base_height(x, z, heightmap, level) - 1
+    }
+
+    /// `getBaseColumn(x, z, heightAccessor, randomState)`: the column's blocks as the noise
+    /// step fills them (no surface, no carvers).
+    pub fn base_column(&self, x: i32, z: i32, level: LevelHeight) -> NoiseColumn {
+        let mut states = Vec::new();
+        let min_y = self.iterate_noise_column_into(level, x, z, &mut states);
+        NoiseColumn { min_y, states }
+    }
+
+    fn iterate_noise_column_into(
+        &self,
+        level: LevelHeight,
+        x: i32,
+        z: i32,
+        states: &mut Vec<BlockState>,
+    ) -> i32 {
+        self.iterate_noise_column(level, x, z, Some(states), None);
+        self.settings.min_y.max(level.min_y)
+    }
+
+    /// `iterateNoiseColumn(heightAccessor, randomState, x, z, column, tester)`: samples the
+    /// final density and the aquifer of one column top-down (a fresh `NoiseChunk` without
+    /// structures); fills `column` bottom-up and returns the first Y above the highest state
+    /// matching `tester`.
+    fn iterate_noise_column(
+        &self,
+        level: LevelHeight,
+        x: i32,
+        z: i32,
+        mut column: Option<&mut Vec<BlockState>>,
+        tester: Option<HeightmapKind>,
+    ) -> Option<i32> {
+        let min_y = self.settings.min_y.max(level.min_y);
+        let height = (self.settings.min_y + self.settings.height).min(level.max_y() + 1) - min_y;
+        if height <= 0 {
+            return None;
+        }
+        let volume = DensityVolume::new(1, height, 1, x, min_y, z);
+        if let Some(column) = column.as_deref_mut() {
+            column.clear();
+            column.resize(height as usize, BlockState::AIR);
+        }
+        let mut ctx = SamplerContext::new(true);
+        let mut aquifer = Aquifer::for_chunk(
+            self.aquifer.as_ref(),
+            &self.random_state,
+            &volume,
+            self.fluid_picker,
+            &self.program,
+            &mut ctx,
+        );
+        let mut density = vec![0.0_f32; volume.len()];
+        self.program
+            .sample_volume(&mut ctx, self.final_density, &mut density, &volume);
+        for y in (0..height).rev() {
+            let block_y = volume.block_y(y);
+            let value = density[volume.index(0, y, 0)];
+            let state = aquifer
+                .compute_substance(&self.program, &mut ctx, x, block_y, z, f64::from(value))
+                .unwrap_or(self.settings.default_block);
+            if let Some(column) = column.as_deref_mut() {
+                column[y as usize] = state;
+            }
+            if let Some(kind) = tester
+                && kind.matches(facts::block_flags(state.0))
+            {
+                return Some(block_y + 1);
+            }
+        }
+        None
     }
 
     /// The `WorldGenRegion` of the features stage over `chunks` (3×3, row-major, `dz` outer),
@@ -369,8 +690,15 @@ impl TerrainGenerator {
         let mut ctx = SamplerContext::new(true);
         for job in batch {
             ctx.reset();
+            self.bind_beardifier(&mut ctx, job.chunk.pos(), &job.structures);
             self.build_terrain(&mut job.chunk, &job.neighbours, &mut ctx, &mut |_, _| {});
         }
+    }
+
+    /// `Beardifier.forStructuresInChunk(structureManager, chunkPos)` bound to the context.
+    fn bind_beardifier(&self, ctx: &mut SamplerContext, pos: ChunkPos, starts: &ReferencedStarts) {
+        let beardifier = Beardifier::for_structures_in_chunk(&self.structures, starts, pos);
+        ctx.set_beardifier(beardifier.map(|b| Arc::new(b) as Arc<dyn ContextSampler>));
     }
 
     /// [`Stage::Terrain`] for one chunk, calling `observe` with the chunk after each step (for
@@ -381,6 +709,7 @@ impl TerrainGenerator {
         mut observe: impl FnMut(TerrainStep, &ProtoChunk),
     ) {
         let mut ctx = SamplerContext::new(true);
+        self.bind_beardifier(&mut ctx, job.chunk.pos(), &job.structures);
         self.build_terrain(&mut job.chunk, &job.neighbours, &mut ctx, &mut observe);
     }
 
@@ -557,4 +886,29 @@ impl TerrainGenerator {
             }
         });
     }
+}
+
+/// `NoiseColumn`: the blocks of one column as `getBaseColumn` returns them.
+#[derive(Clone, Debug)]
+pub struct NoiseColumn {
+    min_y: i32,
+    /// States bottom-up from `min_y`.
+    states: Vec<BlockState>,
+}
+
+impl NoiseColumn {
+    /// `getBlock(pos)`: air outside the column.
+    pub fn block(&self, y: i32) -> BlockState {
+        usize::try_from(y - self.min_y)
+            .ok()
+            .and_then(|i| self.states.get(i))
+            .copied()
+            .unwrap_or(BlockState::AIR)
+    }
+}
+
+/// `ChunkGenerator.getWritableArea(chunk)`: the chunk's columns from one above the lowest Y.
+fn writable_area(pos: ChunkPos, min_y: i32, height: i32) -> BoundingBox {
+    let (x, z) = (pos.min_block_x(), pos.min_block_z());
+    BoundingBox::new(x, min_y + 1, z, x + 15, min_y + height - 1, z + 15)
 }

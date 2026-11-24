@@ -89,6 +89,8 @@ pub(crate) struct Arrival {
     pub(crate) sink: Arc<dyn PacketSink>,
     pub(crate) inbound: Receiver<Inbound>,
     pub(crate) memory_connection: bool,
+    /// A virtual connection (test bot, Bedrock player): no chat session, chat is unsigned.
+    pub(crate) virtual_connection: bool,
     pub(crate) saved: Option<player_data::PlayerData>,
     pub(crate) address: String,
     pub(crate) inbox: Arc<Mutex<ChatInbox>>,
@@ -186,6 +188,7 @@ impl WorldPlayers {
                 arrival.inbound,
                 pos,
                 arrival.memory_connection,
+                arrival.virtual_connection,
                 &global.chat,
                 Arc::clone(&arrival.inbox),
             ),
@@ -730,33 +733,36 @@ impl WorldPlayers {
         self.left.push(uuid);
     }
 
-    /// Writes a player's data file.
+    /// Queues the write of a player's data file; the fields this server does not handle stay
+    /// as they are in the file.
     fn save_player(&self, entities: &Entities, id: EntityId) {
         let (Some(entity), Some(player)) = (entities.store.get(id), entities.player(id)) else {
             return;
         };
         let pos = entity.pos();
-        let mut data = match self.store.load(entity.uuid()) {
-            Ok(Some(data)) => data,
-            _ => player_data::PlayerData {
-                pos: [0.0; 3],
-                rotation: [0.0; 2],
-                on_ground: false,
-                dimension: String::new(),
-                game_mode: 0,
-                other: Default::default(),
-            },
-        };
-        data.pos = [pos.x, pos.y, pos.z];
-        data.rotation = [entity.rot().y_rot, entity.rot().x_rot];
-        data.on_ground = entity.flags().contains(EntityFlags::ON_GROUND);
-        data.dimension = self.level.dimension.as_str().to_owned();
-        data.game_mode = game_mode_id(player.game_mode);
-        player.inventory.save(&mut data.other);
-        player.survival.save(&mut data.other);
-        if let Err(e) = self.store.save(entity.uuid(), &data) {
-            log::error!("Failed to save player data of {}: {e}", player.profile.name);
-        }
+        let pos = [pos.x, pos.y, pos.z];
+        let rotation = [entity.rot().y_rot, entity.rot().x_rot];
+        let on_ground = entity.flags().contains(EntityFlags::ON_GROUND);
+        let dimension = self.level.dimension.as_str().to_owned();
+        let game_mode = game_mode_id(player.game_mode);
+        let mut survival = vanillite_nbt::Compound::new();
+        player.inventory.save(&mut survival);
+        player.survival.save(&mut survival);
+        // `Survival::save` removes the death location when there is none.
+        let has_death = survival.get("LastDeathLocation").is_some();
+        self.store.update(entity.uuid(), move |data| {
+            data.pos = pos;
+            data.rotation = rotation;
+            data.on_ground = on_ground;
+            data.dimension = dimension;
+            data.game_mode = game_mode;
+            if !has_death {
+                data.other.remove("LastDeathLocation");
+            }
+            for (key, tag) in survival.iter() {
+                data.other.insert(key, tag.clone());
+            }
+        });
     }
 
     /// Saves all players of this world.

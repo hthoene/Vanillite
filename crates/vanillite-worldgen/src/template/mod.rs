@@ -11,6 +11,7 @@
 //! [`StructureTemplate::entities`]) and DataFixerUpper upgrades of templates saved by older
 //! versions (the Vanilla pack only ships current data versions).
 
+pub mod block_entity;
 pub mod bounding_box;
 pub mod liquid;
 pub mod manager;

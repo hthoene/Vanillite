@@ -5,6 +5,7 @@ use vanillite_data::block::BlockState;
 use vanillite_datapack::LoadedPacks;
 
 use crate::Error;
+use crate::biome::climate::{Parameter, parameter_bounds};
 use crate::blocks::parse_block_state;
 use crate::density::{DensityFunction, DensityParser};
 
@@ -32,7 +33,14 @@ pub struct AquiferConfig {
     pub surface_level: DensityFunction,
 }
 
-/// `NoiseGeneratorSettings` (debug functions and spawn targets are not needed for generation).
+/// `SpawnTargetPoint`: climate intervals the spawn search aims for, per density function.
+#[derive(Clone, Debug)]
+pub struct SpawnTargetPoint {
+    /// `parameters`: each function with the interval its value should lie in.
+    pub parameters: Vec<(DensityFunction, Parameter)>,
+}
+
+/// `NoiseGeneratorSettings` (debug functions are not needed for generation).
 #[derive(Clone, Debug)]
 pub struct NoiseGeneratorSettings {
     /// `noise.min_y`.
@@ -47,6 +55,9 @@ pub struct NoiseGeneratorSettings {
     pub sea_level: i32,
     pub aquifers: Option<AquiferConfig>,
     pub legacy_random_source: bool,
+    /// `spawn_target`: where `NoiseSpawnFinder` looks for the dimension origin (empty: chunk
+    /// 0, 0).
+    pub spawn_target: Vec<SpawnTargetPoint>,
 }
 
 fn field<'v>(json: &'v Value, name: &str) -> Result<&'v Value, Error> {
@@ -59,6 +70,17 @@ fn int(json: &Value, name: &str) -> Result<i32, Error> {
         .as_i64()
         .and_then(|v| i32::try_from(v).ok())
         .ok_or_else(|| Error::new(format!("noise settings: {name} is not an int")))
+}
+
+/// An optional list field (missing: empty).
+fn list<'v>(json: &'v Value, name: &str) -> Result<&'v [Value], Error> {
+    match json.get(name) {
+        None => Ok(&[]),
+        Some(v) => v
+            .as_array()
+            .map(Vec::as_slice)
+            .ok_or_else(|| Error::new(format!("noise settings: {name} is not a list"))),
+    }
 }
 
 fn boolean(json: &Value, name: &str) -> Result<bool, Error> {
@@ -105,6 +127,27 @@ impl NoiseGeneratorSettings {
                 surface_level: df(a, "surface_level")?,
             }),
         };
+        let spawn_target = list(json, "spawn_target")?
+            .iter()
+            .map(|point| {
+                let entries = point
+                    .as_object()
+                    .ok_or_else(|| Error::new("noise settings: spawn target is not a map"))?;
+                let parameters = entries
+                    .iter()
+                    .map(|(function, bounds)| {
+                        let (min, max) = parameter_bounds(bounds).ok_or_else(|| {
+                            Error::new(format!("noise settings: invalid spawn target {bounds}"))
+                        })?;
+                        Ok((
+                            parser.parse(&Value::String(function.clone()))?,
+                            Parameter::span(min, max)?,
+                        ))
+                    })
+                    .collect::<Result<_, Error>>()?;
+                Ok(SpawnTargetPoint { parameters })
+            })
+            .collect::<Result<_, Error>>()?;
         let min_y = int(noise, "min_y")?;
         let height = int(noise, "height")?;
         if height % 16 != 0 || min_y % 16 != 0 || height < 0 {
@@ -122,6 +165,7 @@ impl NoiseGeneratorSettings {
             sea_level: int(json, "sea_level")?,
             aquifers,
             legacy_random_source: boolean(json, "legacy_random_source")?,
+            spawn_target,
         })
     }
 }

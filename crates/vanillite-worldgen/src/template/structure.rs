@@ -11,7 +11,7 @@ use super::bounding_box::BoundingBox;
 use super::liquid::{is_liquid_block_container, is_source, place_liquid};
 use super::settings::{StructurePlaceSettings, TemplateRandom};
 use super::transform::{
-    Mirror, Rotation, direction_by_name, mirror_state, rotate_state, transform,
+    Mirror, Rotation, direction_by_name, mirror_state, rotate_state, transform, transform_vec3,
 };
 use super::voxel::BitSetVoxelShape;
 use crate::Error;
@@ -166,7 +166,7 @@ pub struct StructureTemplate {
 }
 
 /// Randomizable container block entities: `placeInWorld` draws a loot table seed for them.
-const RANDOMIZABLE_CONTAINERS: [&str; 9] = [
+pub(crate) const RANDOMIZABLE_CONTAINERS: [&str; 9] = [
     "minecraft:chest",
     "minecraft:trapped_chest",
     "minecraft:dispenser",
@@ -662,8 +662,61 @@ impl StructureTemplate {
                 // `blockEntity.setChanged()` has no effect during generation.
             }
         }
-        // Entities (`placeEntities`) are out of scope for now.
+        if !settings.ignore_entities {
+            self.place_entities(level, position, settings);
+        }
         true
+    }
+
+    /// `placeEntities(level, position, mirror, rotation, pivot, boundingBox, finalizeEntities)`:
+    /// the template's entities whose block position is inside the box, with their `Pos` moved
+    /// into the world (`UUID` dropped). `finalizeSpawn` of mobs (with `finalizeEntities`) is not
+    /// run, so its draws from the level's random are not made either.
+    fn place_entities(
+        &self,
+        level: &mut WorldGenRegion<'_>,
+        position: BlockPos,
+        settings: &StructurePlaceSettings<'_>,
+    ) {
+        let (mirror, rotation, pivot) =
+            (settings.mirror, settings.rotation, settings.rotation_pivot);
+        for info in &self.entities {
+            let block_pos = transform(info.block_pos, mirror, rotation, pivot)
+                .offset(position.x, position.y, position.z);
+            if settings
+                .bounding_box
+                .is_some_and(|bb| !bb.is_inside(block_pos))
+            {
+                continue;
+            }
+            // `EntityType.create(tag)` fails without a known type.
+            if !matches!(info.nbt.get("id"), Some(Tag::String(_))) {
+                continue;
+            }
+            let relative = transform_vec3(info.pos, mirror, rotation, pivot);
+            let pos = Vec3::new(
+                relative.x + f64::from(position.x),
+                relative.y + f64::from(position.y),
+                relative.z + f64::from(position.z),
+            );
+            let mut tag = info.nbt.clone();
+            tag.insert(
+                "Pos",
+                List(vec![
+                    Tag::Double(pos.x),
+                    Tag::Double(pos.y),
+                    Tag::Double(pos.z),
+                ]),
+            );
+            tag.remove("UUID");
+            if tag.get("block_pos").is_some() {
+                tag.insert(
+                    "block_pos",
+                    Tag::IntArray(vec![block_pos.x, block_pos.y, block_pos.z]),
+                );
+            }
+            level.add_fresh_entity(tag);
+        }
     }
 }
 
@@ -694,6 +747,7 @@ fn load_block_entity(
             entity.insert(name, value.clone());
         }
     }
+    super::block_entity::normalize_loaded(kind, entity);
 }
 
 /// Whether the horizontal neighbours of `pos` are in chunks the region holds. Vanilla's region

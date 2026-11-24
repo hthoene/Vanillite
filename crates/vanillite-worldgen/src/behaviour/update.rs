@@ -1305,7 +1305,7 @@ fn wire_can_connect_up(level: &impl BlockLevel, pos: BlockPos) -> bool {
 }
 
 /// `BlockState.shouldRedstoneWireConnectTo(level, pos, direction)`.
-fn should_wire_connect_to(state: BlockState, direction: Option<Direction>) -> bool {
+pub fn should_wire_connect_to(state: BlockState, direction: Option<Direction>) -> bool {
     match class_of(state) {
         Class::RedstoneWire => true,
         Class::Repeater => {
@@ -1319,7 +1319,7 @@ fn should_wire_connect_to(state: BlockState, direction: Option<Direction>) -> bo
 }
 
 /// `RedstoneWireBlock.getConnectingSide(level, pos, direction, canConnectUp)`.
-fn wire_connecting_side(
+pub fn wire_connecting_side(
     level: &impl BlockLevel,
     pos: BlockPos,
     direction: Direction,
@@ -1349,7 +1349,11 @@ fn wire_connecting_side(
 }
 
 /// `RedstoneWireBlock.getConnectionState`.
-fn wire_connection_state(level: &impl BlockLevel, state: BlockState, pos: BlockPos) -> BlockState {
+pub fn wire_connection_state(
+    level: &impl BlockLevel,
+    state: BlockState,
+    pos: BlockPos,
+) -> BlockState {
     let is_dot = |s: BlockState| {
         HORIZONTAL
             .into_iter()

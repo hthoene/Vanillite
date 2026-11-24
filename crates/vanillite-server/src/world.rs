@@ -63,8 +63,13 @@ pub struct ServerWorld {
     /// The chunk ticket and simulation ticket of every player at its centre chunk.
     player_tickets: FxHashMap<EntityId, (ChunkPos, TicketId, TicketId)>,
     scratch: Vec<ChunkPos>,
+    /// Player ids of the tick (block effects).
+    player_scratch: Vec<vanillite_world::entity::EntityId>,
     /// Weather, lightning and the players' survival.
     pub(crate) survival: crate::survival::WorldSurvival,
+    /// The dimension's saved data (`<dimension>/data/`: world border, chunk tickets, raids,
+    /// ...); systems register here when they come.
+    pub(crate) data: vanillite_storage::saved_data::SavedDataStore,
 }
 
 impl fmt::Debug for ServerWorld {
@@ -79,6 +84,7 @@ impl fmt::Debug for ServerWorld {
 }
 
 impl ServerWorld {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         id: WorldId,
         dimension: String,
@@ -87,6 +93,7 @@ impl ServerWorld {
         players: WorldPlayers,
         mut level: Level,
         survival: crate::survival::WorldSurvival,
+        data: vanillite_storage::saved_data::SavedDataStore,
     ) -> ServerWorld {
         // Entity randoms are `RandomSource.create()`: seeded from the clock, not the world seed.
         let seed = std::time::SystemTime::now()
@@ -113,7 +120,9 @@ impl ServerWorld {
             effects: LevelEffects::default(),
             item_random: XoroshiroRandom::new(seed),
             scratch: Vec::new(),
+            player_scratch: Vec::new(),
             survival,
+            data,
         }
     }
 
@@ -262,6 +271,8 @@ impl ServerWorld {
                 id,
             );
         }
+        self.players_inside_blocks();
+        self.level.set_handling_tick(true);
         if ctx.runs_normally {
             // `advanceWeatherCycle`, then `tickTime`: the overworld advances the shared game
             // time, every world runs on it.
@@ -274,15 +285,17 @@ impl ServerWorld {
         }
         self.update_player_tickets();
         let level = &mut self.level;
-        level.chunks.tick();
+        level.tick_chunk_runtime();
         level.post_process();
         if ctx.runs_normally {
             level.tick_chunks(&mut self.scratch);
             level.run_block_events();
         }
+        level.set_handling_tick(false);
         if ctx.runs_normally {
             self.ticks += 1;
             self.tick_entities();
+            self.level.tick_block_entities();
         }
         self.players.tick_entities(&mut self.level.entities);
         if ctx.runs_normally {
@@ -322,6 +335,17 @@ impl ServerWorld {
         self.effects.flush(&self.level.entities);
     }
 
+    /// `applyEffectsFromBlocks` after the players' moves: pressure plates, tripwire and other
+    /// blocks they stand in react (`Entity.checkInsideBlocks`).
+    fn players_inside_blocks(&mut self) {
+        self.player_scratch.clear();
+        self.player_scratch
+            .extend(self.level.entities.players.iter().map(|(id, _)| id));
+        for &id in &self.player_scratch {
+            vanillite_game::block::plate::check_inside_blocks(&mut self.level, id);
+        }
+    }
+
     /// `entityTickList.forEach(tickNonPassenger)`: every entity in tick order; players move
     /// through their packets.
     fn tick_entities(&mut self) {
@@ -333,9 +357,7 @@ impl ServerWorld {
             };
             entity.set_old_pos();
             let kind = entity.as_ref().kind();
-            if kind == vanillite_data::entity::ids::FALLING_BLOCK {
-                vanillite_game::block::falling::tick_entity(level, id);
-            }
+            vanillite_game::entities::tick_entity(level, id, kind);
         }
         let min_y = level.min_y();
         crate::blocks::tick_items(
@@ -381,11 +403,17 @@ impl ServerWorld {
         self.level.entities.store.clear_sync_flags();
     }
 
-    /// Saves the world. `flush` waits until everything is on disk (shutdown).
-    pub(crate) fn save(&mut self, flush: bool) {
+    /// Saves the world like Vanilla (`saveEverything`): the players always, the chunks and the
+    /// dimension's saved data unless `skip_chunks` (`/save-off`). `flush` waits until the
+    /// chunks are on disk (shutdown, `/save-all flush`); otherwise they are written in the
+    /// background.
+    pub(crate) fn save(&mut self, flush: bool, skip_chunks: bool) {
         log::debug!("Saving {} (flush: {flush})", self.dimension);
         self.players.save_all(&self.level.entities);
-        self.level.chunks.save_all(flush);
+        if !skip_chunks {
+            self.data.save();
+            self.level.save(flush);
+        }
     }
 }
 
