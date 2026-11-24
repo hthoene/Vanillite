@@ -326,10 +326,16 @@ fn sin_table() -> &'static [f32; 65536] {
     TABLE.get_or_init(|| {
         let mut table = Box::new([0.0_f32; 65536]);
         for (i, v) in table.iter_mut().enumerate() {
-            *v = f64_to_f32((i as f64 * std::f64::consts::PI * 2.0 / 65536.0).sin());
+            // Vanilla: `(float) Math.sin(i / 10430.378350470453)`.
+            *v = f64_to_f32((i as f64 / SIN_SCALE).sin());
         }
         table
     })
+}
+
+/// Entry `index` (`0..65536`) of `Mth`'s sine table.
+pub fn sin_table_entry(index: usize) -> f32 {
+    sin_table()[index & 0xFFFF]
 }
 
 #[inline]

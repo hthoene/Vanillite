@@ -15,8 +15,8 @@ pub use xoroshiro::{Seed128, Xoroshiro128PlusPlus, XoroshiroPositionalFactory, X
 
 /// Vanilla's `nextFloat` multiplier: `5.9604645E-8F` (2⁻²⁴).
 pub(crate) const FLOAT_MULTIPLIER: f32 = 5.960_464_5E-8;
-/// Vanilla's `nextDouble` multiplier: the float literal `1.110223E-16F` widened to double.
-/// It is close to, but not exactly, 2⁻⁵³; Vanilla uses this value, so do we.
+/// Vanilla's `nextDouble` multiplier: the float literal `1.110223E-16F` widened to double, which
+/// is exactly 2⁻⁵³ (checked against Java's constant pool).
 pub(crate) const DOUBLE_MULTIPLIER: f64 = 1.110_223E-16_f32 as f64;
 
 /// Vanilla's `RandomSource` interface.
