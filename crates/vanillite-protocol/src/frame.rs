@@ -372,11 +372,48 @@ impl FrameEncoder {
         Ok(())
     }
 
+    /// Appends and encrypts a batch of frames built with [`encode_frame`] for `threshold`.
+    /// A batch for this connection's threshold is copied as a whole; any other is re-framed
+    /// packet by packet.
+    pub fn batch(
+        &mut self,
+        frames: &[u8],
+        threshold: Option<usize>,
+        out: &mut Vec<u8>,
+    ) -> Result<()> {
+        if threshold == self.threshold {
+            self.frame(frames, out);
+            return Ok(());
+        }
+        for_each_body(frames, threshold, |body| {
+            self.body(body, out).map(|()| true)
+        })
+    }
+
     fn encrypt_from(&mut self, out: &mut [u8], start: usize) {
         if let (Some(cipher), Some(tail)) = (self.cipher.as_mut(), out.get_mut(start..)) {
             cipher.encrypt(tail);
         }
     }
+}
+
+/// Calls `f` with every packet body of `frames`, frames built with [`encode_frame`] for
+/// `threshold`, until `f` returns false.
+pub fn for_each_body(
+    frames: &[u8],
+    threshold: Option<usize>,
+    mut f: impl FnMut(&[u8]) -> Result<bool>,
+) -> Result<()> {
+    let mut decoder = FrameDecoder::new();
+    decoder.set_limits(Limits::PLAY);
+    decoder.set_compression(threshold.and_then(|t| i32::try_from(t).ok()).unwrap_or(-1));
+    decoder.push(frames);
+    while let Some(body) = decoder.next_frame()? {
+        if !f(body)? {
+            break;
+        }
+    }
+    Ok(())
 }
 
 /// Builds a frame (length prefix, compression layer if `threshold` is set) for `body`.

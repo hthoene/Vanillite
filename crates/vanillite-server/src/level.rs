@@ -1,10 +1,11 @@
 //! The server's level data that all worlds share: the game time (`level.dat` `Time`), the world
 //! clocks, the game rules, the weather and the difficulty, with the registries survival needs
-//! (damage types, block facts). Saved like Vanilla's `SavedData` in
-//! `<world>/data/minecraft/{world_clocks,game_rules,weather}.dat`.
+//! (damage types, block facts). Saved like Vanilla 26.3: `level.dat` and the saved data
+//! `<world>/data/minecraft/{world_clocks,game_rules,weather}.dat`; other world-wide saved data
+//! is kept untouched until its system registers in [`LevelState::data`].
 
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use serde_json::Value;
@@ -17,12 +18,31 @@ use vanillite_game::survival::damage::{
 use vanillite_game::survival::rules::{Difficulty, GameRules};
 use vanillite_game::survival::weather::WeatherData;
 use vanillite_nbt::{Compound, Tag};
+use vanillite_storage::level_dat::{LevelData, Spawn};
+use vanillite_storage::saved_data::SavedDataStore;
+use vanillite_storage::writer::FileWriter;
 
 use crate::server::DIMENSIONS;
 
 const WORLD_CLOCKS: &str = "minecraft:world_clocks";
 const GAME_RULES: &str = "minecraft:game_rules";
 const WEATHER: &str = "minecraft:weather";
+
+/// The server brand recorded in `level.dat` (`ServerBrands`).
+const BRAND: &str = "vanillite";
+
+/// What `level.dat` gets from the server's settings.
+#[derive(Clone, Debug)]
+pub(crate) struct LevelSetup {
+    /// `level-name`.
+    pub(crate) level_name: String,
+    /// `gamemode`: the default game mode id.
+    pub(crate) game_type: i32,
+    /// `hardcore`, for a new world.
+    pub(crate) hardcore: bool,
+    /// The spawn the server uses when `level.dat` has none.
+    pub(crate) spawn: (vanillite_base::Vec3, f32),
+}
 
 /// Shared level data. Each lock is held only for short reads or a command's change.
 #[derive(Debug)]
@@ -39,7 +59,16 @@ pub struct LevelState {
     /// The default clock of each dimension (`DimensionType.defaultClock`), in [`DIMENSIONS`]
     /// order.
     pub default_clocks: [Option<usize>; 3],
-    dir: PathBuf,
+    /// `level.dat`.
+    level_data: Mutex<LevelData>,
+    /// The world-wide saved data (`<world>/data/`).
+    pub(crate) data: SavedDataStore,
+    /// The files of clocks, rules and weather as they were read: fields this server does not
+    /// know (rules of other servers, clocks of removed data packs) are written back.
+    loaded: [Compound; 3],
+    /// `false` after `/save-off`: autosaves skip the worlds' chunks (Vanilla's `noSave`).
+    pub(crate) auto_save: AtomicBool,
+    writer: FileWriter,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -52,44 +81,67 @@ impl LevelState {
         level_dir: &Path,
         packs: Option<&LoadedPacks>,
         difficulty: Difficulty,
+        setup: &LevelSetup,
+        writer: FileWriter,
     ) -> LevelState {
-        let level_dat = vanillite_storage::read_level_dat(level_dir)
+        let mut level_data = LevelData::read(level_dir)
             .unwrap_or_else(|e| {
-                log::error!("Cannot read level.dat: {e}");
+                log::error!("Cannot read level.dat, starting with a new one: {e}");
                 None
             })
-            .and_then(|mut root| match root.remove("Data") {
-                Some(Tag::Compound(data)) => Some(data),
-                _ => None,
-            })
-            .unwrap_or_default();
+            .unwrap_or_else(|| {
+                let mut new = LevelData::new(&setup.level_name);
+                new.hardcore = setup.hardcore;
+                new
+            });
+        level_data.add_brand(BRAND, true);
+        level_data.game_type = setup.game_type;
+        // Like `DedicatedServer.forceDifficulty`: `server.properties` decides.
+        level_data.difficulty = difficulty_name(difficulty).to_owned();
+        if level_data.spawn.is_none() {
+            let (pos, yaw) = setup.spawn;
+            #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+            let block = [pos.x, pos.y, pos.z].map(|v| v.floor() as i32);
+            level_data.spawn = Some(Spawn {
+                dimension: "minecraft:overworld".to_owned(),
+                pos: block,
+                yaw,
+                pitch: 0.0,
+            });
+        }
+        let data = SavedDataStore::new(level_dir, writer.clone());
         let read = |id: &str| {
-            vanillite_storage::read_saved_data(level_dir, id).unwrap_or_else(|e| {
+            data.read(id).unwrap_or_else(|e| {
                 log::error!("Cannot read {id}: {e}");
                 None
             })
         };
-        let game_time = level_dat.get("Time").and_then(Tag::as_i64).unwrap_or(0);
+        let game_time = level_data.game_time;
+        let legacy = &level_data.other;
 
         let mut clocks = packs.map(load_clocks).unwrap_or_default();
-        match read(WORLD_CLOCKS) {
-            Some(data) => clocks.load(&data),
+        let clocks_data = read(WORLD_CLOCKS);
+        match &clocks_data {
+            Some(data) => clocks.load(data),
             // Older worlds keep the day time in `level.dat` (`DayTimeToClockFix`).
             None => {
                 if let (Some(day), Some(i)) = (
-                    level_dat.get("DayTime").and_then(Tag::as_i64),
+                    legacy.get("DayTime").and_then(Tag::as_i64),
                     clocks.index("minecraft:overworld"),
                 ) {
                     clocks.set_total_ticks(i, day);
                 }
             }
         }
-        let rules = read(GAME_RULES)
-            .map(|data| GameRules::from_nbt(&data))
+        let rules_data = read(GAME_RULES);
+        let rules = rules_data
+            .as_ref()
+            .map(GameRules::from_nbt)
             .unwrap_or_default();
-        let weather = match read(WEATHER) {
-            Some(data) => WeatherData::load(&data),
-            None => WeatherData::load(&legacy_weather(&level_dat)),
+        let weather_data = read(WEATHER);
+        let weather = match &weather_data {
+            Some(data) => WeatherData::load(data),
+            None => WeatherData::load(&legacy_weather(legacy)),
         };
         let default_clocks = std::array::from_fn(|i| {
             let dimension = DIMENSIONS.get(i)?;
@@ -114,7 +166,11 @@ impl LevelState {
             damage_types,
             block_facts,
             default_clocks,
-            dir: level_dir.to_owned(),
+            level_data: Mutex::new(level_data),
+            data,
+            loaded: [clocks_data, rules_data, weather_data].map(Option::unwrap_or_default),
+            auto_save: AtomicBool::new(true),
+            writer,
         }
     }
 
@@ -143,33 +199,48 @@ impl LevelState {
         self.rules.write().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Saves the clocks, rules, weather and the game time.
+    /// The background writer of small files.
+    pub(crate) fn writer(&self) -> &FileWriter {
+        &self.writer
+    }
+
+    /// Queues the writes of `level.dat`, the clocks, rules and weather and of every
+    /// registered world-wide saved data (Vanilla saves these also with `/save-off`).
     pub(crate) fn save(&self) {
-        let clocks = self.clocks().save();
-        let rules = self.rules().to_nbt();
-        let weather = self.weather().save();
-        for (id, data) in [
-            (WORLD_CLOCKS, clocks),
-            (GAME_RULES, rules),
-            (WEATHER, weather),
-        ] {
-            if let Err(e) = vanillite_storage::write_saved_data(&self.dir, id, data) {
-                log::error!("Cannot save {id}: {e}");
+        let files = [
+            (WORLD_CLOCKS, self.clocks().save()),
+            (GAME_RULES, self.rules().to_nbt()),
+            (WEATHER, self.weather().save()),
+        ];
+        for ((id, data), loaded) in files.into_iter().zip(&self.loaded) {
+            let mut merged = loaded.clone();
+            for (key, tag) in data.iter() {
+                merged.insert(key, tag.clone());
             }
+            self.data.write(id, merged);
         }
-        let mut root = vanillite_storage::read_level_dat(&self.dir)
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        let mut data = match root.remove("Data") {
-            Some(Tag::Compound(data)) => data,
-            _ => Compound::new(),
+        self.data.save();
+        let level_data = {
+            let mut level_data = lock(&self.level_data);
+            level_data.game_time = self.game_time();
+            level_data.clone()
         };
-        data.insert("Time", Tag::Long(self.game_time()));
-        root.insert("Data", Tag::Compound(data));
-        if let Err(e) = vanillite_storage::write_level_dat(&self.dir, &root) {
-            log::error!("Cannot save level.dat: {e}");
-        }
+        let dir = self.data.dir().to_owned();
+        self.writer.submit(move || {
+            if let Err(e) = level_data.write(&dir) {
+                log::error!("Cannot save level.dat: {e}");
+            }
+        });
+    }
+}
+
+/// The name of a difficulty in `level.dat`.
+fn difficulty_name(difficulty: Difficulty) -> &'static str {
+    match difficulty {
+        Difficulty::Peaceful => "peaceful",
+        Difficulty::Easy => "easy",
+        Difficulty::Normal => "normal",
+        Difficulty::Hard => "hard",
     }
 }
 

@@ -704,8 +704,15 @@ impl FeatureSet {
         place_placed(&mut ctx, id, origin, biome_check.then_some(id))
     }
 
-    /// `applyBiomeDecoration` without structures: decorates the centre chunk of `level`.
-    pub fn decorate(&self, level: &mut WorldGenRegion<'_>) {
+    /// `applyBiomeDecoration`: decorates the centre chunk of `level`. Each decoration step
+    /// (at least the 11 of `GenerationStep.Decoration`) first calls
+    /// `structures(level, random, decorationSeed, step)`, which places the structures of the
+    /// step, then places the step's features.
+    pub fn decorate(
+        &self,
+        level: &mut WorldGenRegion<'_>,
+        structures: &mut dyn FnMut(&mut WorldGenRegion<'_>, &mut DecorationRandom, i64, usize),
+    ) {
         let center = level.center();
         let (origin_x, origin_z) = (center.min_block_x(), center.min_block_z());
         let origin = BlockPos::new(origin_x, level.min_y(), origin_z);
@@ -730,7 +737,12 @@ impl FeatureSet {
         }
 
         let mut indices: Vec<i32> = Vec::new();
-        for (step, features) in self.steps.iter().enumerate() {
+        let generation_steps = DECORATION_STEPS.max(self.steps.len());
+        for step in 0..generation_steps {
+            structures(level, &mut random, decoration_seed, step);
+            let Some(features) = self.steps.get(step) else {
+                continue;
+            };
             indices.clear();
             for &biome in &possible {
                 if let Some(list) = self.biome_steps[usize::from(biome)].get(step) {

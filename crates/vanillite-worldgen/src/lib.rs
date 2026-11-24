@@ -25,6 +25,8 @@ pub mod random;
 pub mod random_state;
 pub mod settings;
 pub mod slot;
+mod spawn_finder;
+pub mod structure;
 pub mod template;
 pub mod volume;
 
@@ -34,6 +36,7 @@ pub use generator::{
 pub use proto::ProtoChunk;
 pub use random_state::RandomState;
 pub use slot::VanillaChunkGenerator;
+pub use structure::{NeighbourStarts, ReferencedStarts};
 
 use std::fmt;
 

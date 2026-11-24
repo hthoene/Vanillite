@@ -5,6 +5,8 @@
 //! block (`sampleValue`). Both follow the Vanilla samplers line by line, including the places
 //! where the two paths compute differently (interpolation, short-circuits, cache cells).
 
+use std::sync::Arc;
+
 use vanillite_base::math::{floor_div, floor_mod};
 use vanillite_base::pos::BlockPos;
 
@@ -61,6 +63,8 @@ pub struct SamplerContext {
     slots: Vec<Vec<f32>>,
     /// Per-point spline coordinate values, as a stack.
     scratch: Vec<f32>,
+    /// The bound `beardifier` field, if any.
+    beardifier: Option<Arc<dyn ContextSampler>>,
 }
 
 impl SamplerContext {
@@ -115,16 +119,48 @@ impl SamplerContext {
         &mut self.cells[id]
     }
 
-    /// The value of a context-bound field (`ContextBoundSampler`) and of `blend_density`.
-    ///
-    /// This is the one place where `blend_alpha`, `blend_offset`, `beardifier` and
-    /// `blend_density` would read chunk data (old-chunk blending, structures). M1 binds nothing,
-    /// so every field yields its fallback and `blend_density` is the identity, as in Vanilla with
-    /// an empty `ContextMap` and an empty `Blender`.
-    #[inline]
-    fn context_field(&self, _field: ContextField, fallback: f32) -> f32 {
-        fallback
+    /// Binds the `beardifier` field (`Beardifier.CONTEXT_KEY`) for the chunk being generated;
+    /// `None` leaves the fallback (Vanilla's empty context, or `Beardifier.EMPTY`, which is
+    /// zero everywhere as well).
+    pub fn set_beardifier(&mut self, beardifier: Option<Arc<dyn ContextSampler>>) {
+        self.beardifier = beardifier;
     }
+
+    /// `sampleValue` of a context-bound field (`ContextBoundSampler`).
+    ///
+    /// Only `beardifier` can be bound; `blend_alpha` and `blend_offset` (old-chunk blending)
+    /// yield their fallbacks and `blend_density` is the identity, as in Vanilla with an empty
+    /// `Blender`.
+    #[inline]
+    fn context_value(&self, field: ContextField, fallback: f32, x: i32, y: i32, z: i32) -> f32 {
+        match (field, &self.beardifier) {
+            (ContextField::Beardifier, Some(beardifier)) => beardifier.sample_value(x, y, z),
+            _ => fallback,
+        }
+    }
+
+    /// `sampleVolume` of a context-bound field.
+    fn context_volume(
+        &self,
+        field: ContextField,
+        fallback: f32,
+        out: &mut [f32],
+        v: &DensityVolume,
+    ) {
+        match (field, &self.beardifier) {
+            (ContextField::Beardifier, Some(beardifier)) => beardifier.sample_volume(out, v),
+            _ => out.fill(fallback),
+        }
+    }
+}
+
+/// A sampler a context binds for a context-bound field (Vanilla's `DensitySampler` stored in
+/// the `SamplerContext` user fields), such as the structures' `Beardifier`.
+pub trait ContextSampler: Send + Sync + std::fmt::Debug {
+    /// `sampleValue(context, blockX, blockY, blockZ)`.
+    fn sample_value(&self, x: i32, y: i32, z: i32) -> f32;
+    /// `sampleVolume(context, outputBuffer, volume)`: fills `out` in the volume's index order.
+    fn sample_volume(&self, out: &mut [f32], volume: &DensityVolume);
 }
 
 /// Java `Math.pow`: unlike C's `pow`, a NaN exponent and `(±1) ^ ±∞` give NaN.
@@ -282,7 +318,7 @@ impl Program {
     fn value(&self, ctx: &mut SamplerContext, op: OpIndex, x: i32, y: i32, z: i32) -> f32 {
         match self.ops[op as usize] {
             Op::Constant { value } => value,
-            Op::ContextBound { field, fallback } => ctx.context_field(field, fallback),
+            Op::ContextBound { field, fallback } => ctx.context_value(field, fallback, x, y, z),
             Op::Noise {
                 noise,
                 xz_scale,
@@ -695,7 +731,7 @@ impl Program {
     fn volume(&self, ctx: &mut SamplerContext, op: OpIndex, out: &mut [f32], v: &DensityVolume) {
         match self.ops[op as usize] {
             Op::Constant { value } => out.fill(value),
-            Op::ContextBound { field, fallback } => out.fill(ctx.context_field(field, fallback)),
+            Op::ContextBound { field, fallback } => ctx.context_volume(field, fallback, out, v),
             Op::Noise {
                 noise,
                 xz_scale,

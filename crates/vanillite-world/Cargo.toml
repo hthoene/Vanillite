@@ -19,3 +19,10 @@ vanillite-config.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "tickets"
+harness = false

@@ -9,6 +9,10 @@
 //! Vanillite backends accept a trusted link (negotiated with the forwarding secret): they
 //! compress for the client's threshold, and the proxy passes their frames on unchanged instead
 //! of inflating and deflating every packet. Other backends keep the re-encoding relay.
+//!
+//! With `[bedrock]` enabled, the `vanillite-bedrock` frontend runs in the proxy: each Bedrock
+//! player becomes a virtual connection that the proxy logs in with the identity the frontend
+//! verified and forwards like a Java player.
 
 mod backend;
 mod client;
@@ -49,6 +53,8 @@ pub(crate) struct Shared {
     throttle: Mutex<HashMap<IpAddr, Instant>>,
     pub(crate) players: Mutex<HashMap<Uuid, Online>>,
     pub(crate) status: StatusCache,
+    /// Server list values of the Bedrock frontend.
+    bedrock_status: Arc<vanillite_bedrock::Status>,
     pub(crate) session_id: Uuid,
 }
 
@@ -81,6 +87,8 @@ impl Shared {
 
     /// Renders the server list status from the player table.
     pub(crate) fn update_status(&self, players: &HashMap<Uuid, Online>) {
+        self.bedrock_status
+            .set_online(u32::try_from(players.len()).unwrap_or(u32::MAX));
         self.status.update(&StatusInfo {
             description: Component::text(self.config.motd.clone()),
             max_players: self.config.max_players,
@@ -109,6 +117,7 @@ impl Shared {
 pub struct Proxy {
     runtime: tokio::runtime::Runtime,
     local_addr: SocketAddr,
+    bedrock: Option<vanillite_bedrock::Frontend>,
 }
 
 impl std::fmt::Debug for Proxy {
@@ -153,17 +162,27 @@ impl Proxy {
             throttle: Mutex::new(HashMap::new()),
             players: Mutex::new(HashMap::new()),
             status: StatusCache::new(&StatusInfo::default()),
+            bedrock_status: Arc::new(vanillite_bedrock::Status::new(
+                &config.motd,
+                u32::try_from(config.max_players).unwrap_or(0),
+            )),
             session_id: Uuid(u128::from_be_bytes(vanillite_net::rand_bytes())),
             config,
         });
         shared.update_status(&HashMap::new());
         let listener = runtime.block_on(tokio::net::TcpListener::bind(shared.config.bind))?;
         let local_addr = listener.local_addr()?;
+        let bedrock = if shared.config.bedrock.enabled {
+            Some(start_bedrock(&shared, runtime.handle().clone())?)
+        } else {
+            None
+        };
         runtime.spawn(accept_loop(listener, shared));
         log::info!("Proxy listening on {local_addr}");
         Ok(Self {
             runtime,
             local_addr,
+            bedrock,
         })
     }
 
@@ -172,11 +191,69 @@ impl Proxy {
         self.local_addr
     }
 
+    /// The UDP address of the Bedrock frontend, if it runs.
+    pub fn bedrock_addr(&self) -> Option<SocketAddr> {
+        self.bedrock
+            .as_ref()
+            .map(vanillite_bedrock::Frontend::local_addr)
+    }
+
     /// Closes all connections and stops.
     pub fn shutdown(self) {
+        if let Some(frontend) = self.bedrock {
+            frontend.shutdown();
+        }
         self.runtime
             .shutdown_timeout(std::time::Duration::from_secs(1));
     }
+}
+
+/// Starts the Bedrock frontend: each Bedrock player becomes a virtual connection that the proxy
+/// handles like a client after its login, with the identity the frontend verified.
+fn start_bedrock(
+    shared: &Arc<Shared>,
+    runtime: tokio::runtime::Handle,
+) -> std::io::Result<vanillite_bedrock::Frontend> {
+    let b = &shared.config.bedrock;
+    let config = vanillite_bedrock::BedrockConfig {
+        bind: b.bind,
+        online_mode: b.online_mode,
+        name_prefix: b.name_prefix.clone(),
+        world_name: shared.config.motd.clone(),
+        max_connections: u32::try_from(shared.config.limits.max_connections).unwrap_or(u32::MAX),
+        max_connections_per_ip: b.max_connections_per_ip,
+        max_packets_per_second: b.max_packets_per_second,
+        max_view_distance: b.max_view_distance,
+        chunk_cache_sections: b.chunk_cache_sections,
+        ..vanillite_bedrock::BedrockConfig::default()
+    };
+    let owner = Arc::clone(shared);
+    let connector: vanillite_bedrock::Connector = Arc::new(move |profile, address| {
+        let (to_server, from_client) = tokio::sync::mpsc::channel(256);
+        let (to_client, from_server) = tokio::sync::mpsc::channel(1024);
+        // The proxy's connection limits apply (SEC-18); a refused player sees its connection
+        // close at once.
+        if let Some(guard) = owner.limiter.admit(address.ip()) {
+            runtime.spawn(client::handle_virtual(
+                Arc::clone(&owner),
+                from_client,
+                to_client,
+                address,
+                guard,
+                profile,
+            ));
+        }
+        vanillite_net::VirtualConnection {
+            to_server,
+            from_server,
+        }
+    });
+    vanillite_bedrock::Frontend::start(
+        config,
+        connector,
+        Arc::clone(&shared.bedrock_status),
+        b.threads,
+    )
 }
 
 async fn accept_loop(listener: tokio::net::TcpListener, shared: Arc<Shared>) {

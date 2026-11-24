@@ -7,8 +7,17 @@
 //! [`GenerationState`] until it becomes `Full`; scheduled ticks and post-processing marks are
 //! also copied into the runtime's chunk after every step, where storage and the live world find
 //! them.
+//!
+//! Structure data is kept in the chunk's stored tags ([`slots::ProtoChunk::extra`]) as Vanilla
+//! saves it: `structures` (`starts` with their pieces, `References`) and the `entities` that
+//! generation added. Starts are shared between the chunks they reach, and pieces remember what
+//! they did while they were placed, so the generator keeps every start it made (or regenerated
+//! for a chunk from storage; starts are a function of the seed) by chunk.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
+
+use rustc_hash::FxHashMap;
+use vanillite_nbt::{Budget, Compound, List, Tag};
 
 use vanillite_base::{BlockPos, ChunkPos};
 use vanillite_chunk::slots::{
@@ -20,20 +29,42 @@ use vanillite_data::block::BlockId;
 use vanillite_data::registry::BLOCK_ENTITY_TYPE;
 
 use crate::proto::ProtoTick;
+use crate::structure::long_set::LongOpenHashSet;
+use crate::structure::start::ChunkStarts;
+use crate::structure::{NeighbourStarts, ReferencedStarts, StructureRegistry};
 use crate::{NeighbourBiomes, ProtoChunk, TerrainGenerator, TerrainJob};
+
+/// Chunks whose starts the generator keeps at most; beyond, it forgets them all and regenerates
+/// them when they are needed again.
+const MAX_KEPT_STARTS: usize = 1 << 18;
 
 /// Vanilla's `NoiseBasedChunkGenerator` in the `chunk-generator` slot.
 #[derive(Debug)]
 pub struct VanillaChunkGenerator {
     generator: TerrainGenerator,
     world: WorldInfo,
+    /// `WorldOptions.generateStructures`.
+    structures: bool,
+    /// The structure starts of chunks past `StructureStarts`, by chunk.
+    starts: Mutex<FxHashMap<ChunkPos, ChunkStarts>>,
 }
 
 impl VanillaChunkGenerator {
     /// The slot implementation for one world; `generator` must be built for the same dimension
-    /// height and biome registry as `world`.
+    /// height and biome registry as `world`. Structures are generated.
     pub fn new(generator: TerrainGenerator, world: WorldInfo) -> Self {
-        Self { generator, world }
+        Self {
+            generator,
+            world,
+            structures: true,
+            starts: Mutex::default(),
+        }
+    }
+
+    /// Whether structures are generated (`generate_structures` of the world).
+    pub fn with_structures(mut self, enabled: bool) -> Self {
+        self.structures = enabled;
+        self
     }
 
     /// The wrapped generator.
@@ -42,8 +73,32 @@ impl VanillaChunkGenerator {
     }
 }
 
+/// The generation state of a runtime chunk.
+fn state(chunk: &slots::ProtoChunk) -> Option<&ProtoChunk> {
+    chunk
+        .generation
+        .as_ref()
+        .and_then(|g| g.0.downcast_ref::<ProtoChunk>())
+}
+
+/// The stored tags of a chunk ([`slots::ProtoChunk::extra`]) as a compound.
+fn extra(chunk: &slots::ProtoChunk) -> Compound {
+    chunk
+        .extra
+        .as_ref()
+        .and_then(|bytes| {
+            vanillite_nbt::read::read_network(&mut &bytes[..], &mut Budget::file()).ok()
+        })
+        .and_then(|tag| match tag {
+            Some(Tag::Compound(c)) => Some(c),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
 /// The runtime's chunk as a proto chunk: its sections plus the generation state it carries, or
-/// (for chunks that come from storage) one derived from its blocks.
+/// (for chunks that come from storage) one derived from its blocks. Without the starts and
+/// references of chunks from storage; [`VanillaChunkGenerator::take`] adds them.
 fn take(chunk: &slots::ProtoChunk) -> ProtoChunk {
     let sections: Vec<Section> = chunk
         .chunk
@@ -143,6 +198,29 @@ fn put(chunk: &mut slots::ProtoChunk, mut proto: ProtoChunk) {
     chunk.generation = Some(GenerationState(Arc::new(proto)));
 }
 
+/// `packStructureData`: the chunk's `structures` tag.
+fn structure_data(registry: &StructureRegistry, proto: &ProtoChunk) -> Compound {
+    let mut starts = Compound::new();
+    for (structure, start) in proto.structure_starts() {
+        starts.insert(
+            registry.structure(*structure).name.as_str(),
+            start.create_tag(registry),
+        );
+    }
+    let mut references = Compound::new();
+    for (structure, set) in proto.structure_references() {
+        if !set.is_empty() {
+            references.insert(
+                registry.structure(*structure).name.as_str(),
+                set.iter().collect::<Vec<i64>>(),
+            );
+        }
+    }
+    Compound::new()
+        .with("starts", starts)
+        .with("References", references)
+}
+
 /// The biomes of the 3×3 chunks around `target`, which the runtime provides at
 /// [`ChunkStatus::Biomes`] or later.
 fn neighbour_biomes(target: &slots::ProtoChunk, neighbours: &Neighbours<'_>) -> NeighbourBiomes {
@@ -164,6 +242,135 @@ fn neighbour_biomes(target: &slots::ProtoChunk, neighbours: &Neighbours<'_>) -> 
             .collect()
     });
     NeighbourBiomes::new(target.chunk.min_section(), chunks)
+}
+
+impl VanillaChunkGenerator {
+    /// [`take`] plus the starts and references of a chunk from storage.
+    fn take(&self, chunk: &slots::ProtoChunk) -> ProtoChunk {
+        let mut proto = take(chunk);
+        if state(chunk).is_none() && chunk.status >= ChunkStatus::StructureStarts {
+            for (structure, start) in self.starts_of(chunk) {
+                proto.set_start_for_structure(structure, start);
+            }
+            if chunk.status >= ChunkStatus::StructureReferences {
+                self.read_references(chunk, &mut proto);
+            }
+        }
+        proto
+    }
+
+    /// [`put`] plus the chunk's structure data and generation entities in its stored tags.
+    fn put(&self, chunk: &mut slots::ProtoChunk, proto: ProtoChunk) {
+        let mut tags = extra(chunk);
+        tags.insert(
+            "structures",
+            structure_data(self.generator.structures(), &proto),
+        );
+        if !proto.entities().is_empty() {
+            let entities = proto
+                .entities()
+                .iter()
+                .cloned()
+                .map(Tag::Compound)
+                .collect();
+            tags.insert("entities", Tag::List(List(entities)));
+        }
+        let mut bytes = Vec::new();
+        if vanillite_nbt::write::write_network_compound(&tags, &mut bytes).is_ok() {
+            chunk.extra = Some(bytes.into());
+        }
+        put(chunk, proto);
+    }
+
+    /// `unpackStructureReferences`: the stored references of a chunk from storage.
+    fn read_references(&self, chunk: &slots::ProtoChunk, proto: &mut ProtoChunk) {
+        let tags = extra(chunk);
+        let Some(references) = tags
+            .get("structures")
+            .and_then(Tag::as_compound)
+            .and_then(|s| s.get("References"))
+            .and_then(Tag::as_compound)
+        else {
+            return;
+        };
+        let registry = self.generator.structures();
+        for (name, value) in references.iter() {
+            let (Some(structure), Tag::LongArray(keys)) = (registry.structure_id(name), value)
+            else {
+                continue;
+            };
+            let keys: Vec<i64> = keys
+                .iter()
+                .copied()
+                .filter(|&key| ChunkPos::from_long(key).chessboard_distance(chunk.pos) <= 8)
+                .collect();
+            if !keys.is_empty() {
+                proto.set_references(structure, LongOpenHashSet::from_array(&keys));
+            }
+        }
+    }
+
+    /// The structure starts of a chunk past `StructureStarts`: from its generation state, kept
+    /// from earlier, or regenerated (chunks from storage that saved starts).
+    fn starts_of(&self, chunk: &slots::ProtoChunk) -> ChunkStarts {
+        if !self.structures || chunk.status < ChunkStatus::StructureStarts {
+            return ChunkStarts::new();
+        }
+        if let Some(state) = state(chunk) {
+            return state.structure_starts().clone();
+        }
+        if let Some(starts) = self.kept_starts().get(&chunk.pos) {
+            return starts.clone();
+        }
+        let stored = extra(chunk)
+            .get("structures")
+            .and_then(Tag::as_compound)
+            .and_then(|s| s.get("starts"))
+            .and_then(Tag::as_compound)
+            .is_some_and(|starts| !starts.is_empty());
+        let starts = if stored {
+            let mut proto = self.generator.new_chunk(chunk.pos);
+            self.generator
+                .generate_structure_starts(std::slice::from_mut(&mut proto));
+            proto.structure_starts().clone()
+        } else {
+            ChunkStarts::new()
+        };
+        self.keep_starts(chunk.pos, starts)
+    }
+
+    fn kept_starts(&self) -> std::sync::MutexGuard<'_, FxHashMap<ChunkPos, ChunkStarts>> {
+        self.starts.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Keeps the starts of a chunk; returns the kept ones (another job may have been first).
+    fn keep_starts(&self, pos: ChunkPos, starts: ChunkStarts) -> ChunkStarts {
+        let mut kept = self.kept_starts();
+        if kept.len() >= MAX_KEPT_STARTS {
+            kept.clear();
+        }
+        kept.entry(pos).or_insert(starts).clone()
+    }
+
+    /// The start of `structure` in the chunk at `pos`, which is `target` or one of the
+    /// neighbours.
+    fn start_at(
+        &self,
+        target: &slots::ProtoChunk,
+        neighbours: &Neighbours<'_>,
+        pos: ChunkPos,
+        structure: crate::structure::StructureId,
+    ) -> Option<Arc<crate::structure::StructureStart>> {
+        let chunk = if pos == target.pos {
+            target
+        } else {
+            neighbours.get(pos)?
+        };
+        self.starts_of(chunk)
+            .into_iter()
+            .find(|(s, _)| *s == structure)
+            .map(|(_, start)| start)
+    }
 }
 
 impl ChunkGenerator for VanillaChunkGenerator {
@@ -190,17 +397,56 @@ impl ChunkGenerator for VanillaChunkGenerator {
                     );
                 }
             }
+            ChunkStatus::StructureStarts => {
+                for target in targets.iter_mut() {
+                    let mut proto = self.take(target);
+                    if self.structures {
+                        self.generator
+                            .generate_structure_starts(std::slice::from_mut(&mut proto));
+                        let starts = proto.structure_starts().clone();
+                        if !starts.is_empty() {
+                            self.keep_starts(target.pos, starts);
+                        }
+                    }
+                    self.put(target, proto);
+                }
+            }
+            ChunkStatus::StructureReferences => {
+                for target in targets.iter_mut() {
+                    let center = target.pos;
+                    let starts = NeighbourStarts::from_starts(center, |dx, dz| {
+                        let pos = ChunkPos::new(center.x + dx, center.z + dz);
+                        match (dx, dz) {
+                            (0, 0) => self.starts_of(target),
+                            _ => neighbours
+                                .get(pos)
+                                .map_or_else(ChunkStarts::new, |chunk| self.starts_of(chunk)),
+                        }
+                    });
+                    let mut proto = self.take(target);
+                    self.generator
+                        .generate_structure_references(&mut proto, &starts);
+                    self.put(target, proto);
+                }
+            }
             ChunkStatus::Terrain => {
                 let mut batch: Vec<TerrainJob> = targets
                     .iter()
-                    .map(|target| TerrainJob {
-                        chunk: take(target),
-                        neighbours: neighbour_biomes(target, neighbours),
+                    .map(|target| {
+                        let chunk = self.take(target);
+                        let structures = ReferencedStarts::collect_with(&chunk, |pos, s| {
+                            self.start_at(target, neighbours, pos, s)
+                        });
+                        TerrainJob {
+                            chunk,
+                            neighbours: neighbour_biomes(target, neighbours),
+                            structures,
+                        }
                     })
                     .collect();
                 self.generator.generate_terrain(&mut batch);
                 for (target, job) in targets.iter_mut().zip(batch) {
-                    put(target, job.chunk);
+                    self.put(target, job.chunk);
                 }
             }
             ChunkStatus::Features => {
@@ -209,8 +455,6 @@ impl ChunkGenerator for VanillaChunkGenerator {
                     self.decorate(target, neighbours);
                 }
             }
-            // Structure starts and references come with structures; until then these statuses
-            // leave the chunks as they are.
             _ => {}
         }
     }
@@ -226,21 +470,24 @@ impl VanillaChunkGenerator {
         let mut area: [ProtoChunk; 9] =
             std::array::from_fn(|i| {
                 if i == 4 {
-                    take(target)
+                    self.take(target)
                 } else {
-                    take(neighbours.get(positions[i]).unwrap_or_else(|| {
+                    self.take(neighbours.get(positions[i]).unwrap_or_else(|| {
                         panic!("features of {center:?} need {:?}", positions[i])
                     }))
                 }
             });
+        let structures = ReferencedStarts::collect_with(&area[4], |pos, s| {
+            self.start_at(target, neighbours, pos, s)
+        });
         let [a0, a1, a2, a3, a4, a5, a6, a7, a8] = &mut area;
         self.generator
-            .generate_features([a0, a1, a2, a3, a4, a5, a6, a7, a8]);
+            .generate_features([a0, a1, a2, a3, a4, a5, a6, a7, a8], &structures);
         for (i, proto) in area.into_iter().enumerate() {
             if i == 4 {
-                put(target, proto);
+                self.put(target, proto);
             } else if let Some(chunk) = neighbours.get_mut(positions[i]) {
-                put(chunk, proto);
+                self.put(chunk, proto);
             }
         }
     }

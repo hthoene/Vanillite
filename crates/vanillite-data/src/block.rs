@@ -246,6 +246,25 @@ impl BlockState {
         Some(Self(self.0 - old * stride + new * stride))
     }
 
+    /// Index of the value of `property` in Vanilla's value order (an integer property
+    /// `0..=15` reads as its value), without parsing.
+    #[inline]
+    pub fn value_index(self, property: &str) -> Option<u16> {
+        let (info, _, stride, count) = self.locate(property)?;
+        Some((self.0 - info.first_state) / stride % count)
+    }
+
+    /// This state with `property` set to the value at `index` in Vanilla's value order.
+    #[inline]
+    pub fn with_index(self, property: &str, index: u16) -> Option<Self> {
+        let (info, _, stride, count) = self.locate(property)?;
+        if index >= count {
+            return None;
+        }
+        let old = (self.0 - info.first_state) / stride % count;
+        Some(Self(self.0 - old * stride + index * stride))
+    }
+
     /// All properties of this state as `(name, value)`.
     pub fn properties(self) -> impl Iterator<Item = (&'static str, &'static str)> {
         let info = self.block().info();

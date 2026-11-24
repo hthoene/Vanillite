@@ -145,7 +145,14 @@ pub(crate) async fn run(
         address,
         secret: config.secret.clone(),
         compression_level: config.compression_level,
-        link_threshold: config.trusted_link.then_some(config.compression_threshold),
+        // The threshold the client link really uses: virtual connections never compress.
+        link_threshold: config.trusted_link.then(|| {
+            client_tx
+                .encoder
+                .threshold()
+                .and_then(|t| i32::try_from(t).ok())
+                .unwrap_or(-1)
+        }),
     });
     let now = Instant::now();
     let mut session = Session {

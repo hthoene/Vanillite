@@ -1,0 +1,85 @@
+{
+  "description": "A two-piston slime flying machine in the air: a sticky piston pushes the front half (slime, backward sticky piston, observer), the front observer fires the backward piston that pulls the rear half (sticky piston, slime, observer) after it. Started by placing a block in front of the rear observer; it flies east about one block per ten ticks.",
+  "tier": "fast",
+  "region": [
+    [
+      -3,
+      -56,
+      -1
+    ],
+    [
+      14,
+      -53,
+      1
+    ]
+  ],
+  "ticks": 80,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        0,
+        -55,
+        0
+      ],
+      "block": "minecraft:sticky_piston[extended=false,facing=east]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        0,
+        -54,
+        0
+      ],
+      "block": "minecraft:slime_block"
+    },
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -55,
+        0
+      ],
+      "block": "minecraft:slime_block"
+    },
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -54,
+        0
+      ],
+      "block": "minecraft:sticky_piston[extended=false,facing=west]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -55,
+        0
+      ],
+      "block": "minecraft:observer[facing=east,powered=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        -1,
+        -54,
+        0
+      ],
+      "block": "minecraft:observer[facing=west,powered=false]"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        -2,
+        -54,
+        0
+      ],
+      "block": "minecraft:stone"
+    }
+  ]
+}

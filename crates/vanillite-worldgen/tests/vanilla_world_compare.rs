@@ -3,9 +3,10 @@
 //!
 //! `VANILLITE_COMPARE_WORLD=<world>/dimensions/minecraft/overworld` (the folder with `region/`),
 //! `VANILLITE_COMPARE_SEED=<seed>`, `VANILLITE_COMPARE_AREA=x0,z0,x1,z1` (chunk coordinates,
-//! inclusive; every chunk of the area and one ring around it must be full in the Vanilla world).
-//! Chunks within one chunk of a structure reference are skipped as long as structures are not
-//! generated. Run with
+//! inclusive; every chunk of the area and one ring around it must be full in the Vanilla world),
+//! `VANILLITE_COMPARE_VERBOSE=<n>` (print the first n differing blocks of each chunk).
+//! Structures are generated unless `VANILLITE_COMPARE_STRUCTURES=0`; then chunks within one
+//! chunk of a structure start or reference in the Vanilla world are skipped. Run with
 //! `cargo test --release -p vanillite-worldgen --test vanilla_world_compare -- --ignored --nocapture`.
 
 mod common;
@@ -98,11 +99,13 @@ fn compare_with_vanilla_world() {
         biomes,
         air: 0,
     };
-    let generator = VanillaChunkGenerator::new(terrain, world.clone());
+    let structures = env("VANILLITE_COMPARE_STRUCTURES").as_deref() != Some("0");
+    let generator = VanillaChunkGenerator::new(terrain, world.clone()).with_structures(structures);
 
-    // Generated area: features for the compared area plus one ring, terrain one more, biomes
-    // one more.
-    let (gx0, gz0, gx1, gz1) = (x0 - 3, z0 - 3, x1 + 3, z1 + 3);
+    // Generated area: features for the compared area plus one ring, terrain one more,
+    // references for those, and structure starts and biomes 8 chunks further out.
+    const MARGIN: i32 = 11;
+    let (gx0, gz0, gx1, gz1) = (x0 - MARGIN, z0 - MARGIN, x1 + MARGIN, z1 + MARGIN);
     let width = (gx1 - gx0 + 1) as usize;
     let index = |p: ChunkPos| (p.z - gz0) as usize * width + (p.x - gx0) as usize;
     let mut chunks: Vec<Arc<slots::ProtoChunk>> = (gz0..=gz1)
@@ -130,8 +133,8 @@ fn compare_with_vanilla_world() {
                         part.iter()
                             .map(|&p| {
                                 let mut target = [slots::ProtoChunk::clone(&snapshot[index(p)])];
-                                let mut neighbours: Vec<Arc<slots::ProtoChunk>> = (-1..=1)
-                                    .flat_map(|dz| (-1..=1).map(move |dx| (dx, dz)))
+                                let mut neighbours: Vec<Arc<slots::ProtoChunk>> = (-8..=8)
+                                    .flat_map(|dz| (-8..=8).map(move |dx| (dx, dz)))
                                     .filter(|&(dx, dz)| {
                                         (dx, dz) != (0, 0)
                                             && (gx0..=gx1).contains(&(p.x + dx))
@@ -168,15 +171,17 @@ fn compare_with_vanilla_world() {
     };
     let generate = env("VANILLITE_COMPARE_OTHER").is_none();
     if generate {
-        step(&mut chunks, ChunkStatus::Biomes, 0);
-        step(&mut chunks, ChunkStatus::Terrain, 1);
+        step(&mut chunks, ChunkStatus::StructureStarts, 0);
+        step(&mut chunks, ChunkStatus::StructureReferences, 8);
+        step(&mut chunks, ChunkStatus::Biomes, 8);
+        step(&mut chunks, ChunkStatus::Terrain, 9);
         // Features one chunk at a time (they write into the 3×3 area), row by row.
-        for z in gz0 + 2..=gz1 - 2 {
-            for x in gx0 + 2..=gx1 - 2 {
+        for z in gz0 + MARGIN - 1..=gz1 - MARGIN + 1 {
+            for x in gx0 + MARGIN - 1..=gx1 - MARGIN + 1 {
                 let p = ChunkPos::new(x, z);
                 let mut target = [slots::ProtoChunk::clone(&chunks[index(p)])];
-                let mut neighbours: Vec<Arc<slots::ProtoChunk>> = (-1..=1)
-                    .flat_map(|dz| (-1..=1).map(move |dx| (dx, dz)))
+                let mut neighbours: Vec<Arc<slots::ProtoChunk>> = (-8..=8)
+                    .flat_map(|dz| (-8..=8).map(move |dx| (dx, dz)))
                     .filter(|&d| d != (0, 0))
                     .map(|(dx, dz)| Arc::clone(&chunks[index(ChunkPos::new(x + dx, z + dz))]))
                     .collect();
@@ -212,8 +217,10 @@ fn compare_with_vanilla_world() {
     for z in z0..=z1 {
         for x in x0..=x1 {
             let pos = ChunkPos::new(x, z);
-            if (-1..=1)
-                .any(|dz| (-1..=1).any(|dx| has_structures(&dir, ChunkPos::new(x + dx, z + dz))))
+            if !structures
+                && (-1..=1).any(|dz| {
+                    (-1..=1).any(|dx| has_structures(&dir, ChunkPos::new(x + dx, z + dz)))
+                })
             {
                 skipped += 1;
                 continue;
@@ -270,7 +277,9 @@ fn compare_with_vanilla_world() {
                                 format!("{}[{}]", st.block().name(), props.join(","))
                             };
                             *pairs.entry((name(sa), name(sb))).or_default() += 1;
-                            if diff <= 3 && env("VANILLITE_COMPARE_VERBOSE").is_some() {
+                            if env("VANILLITE_COMPARE_VERBOSE")
+                                .is_some_and(|n| diff <= n.parse().unwrap_or(3))
+                            {
                                 println!(
                                     "{pos:?} {} {} {}: ours {} vanilla {}",
                                     x * 16 + lx as i32,
@@ -302,7 +311,9 @@ fn compare_with_vanilla_world() {
     println!("most different chunks: {:?}", &worst[..worst.len().min(15)]);
     let mut pairs: Vec<_> = pairs.into_iter().collect();
     pairs.sort_by_key(|a| std::cmp::Reverse(a.1));
-    for ((ours, vanilla), n) in pairs.iter().take(40) {
+    for ((ours, vanilla), n) in pairs.iter().take(
+        env("VANILLITE_COMPARE_PAIRS").map_or(40, |n| n.parse().expect("VANILLITE_COMPARE_PAIRS")),
+    ) {
         println!("{n:8}  ours {ours}  vanilla {vanilla}");
     }
 }

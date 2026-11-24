@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use vanillite_base::BlockPos;
 use vanillite_base::hash::FxHashSet;
+use vanillite_base::slot_map::SlotKey;
 use vanillite_base::{ChunkPos, Vec3};
 use vanillite_config::{GameMode, WorldRules};
 use vanillite_game::entities::Entities;
@@ -25,6 +26,8 @@ use vanillite_game::player::{
 use vanillite_game::survival::player::Survival;
 use vanillite_game::survival::rules::Rule;
 use vanillite_net::{Latency, Outbound};
+use vanillite_protocol::compress::Codec;
+use vanillite_protocol::frame::encode_frame;
 use vanillite_protocol::packets::play::clientbound::{
     BlockChangedAck, SetEquipment, SetHeldSlot, SwingAnimation, TakeItemEntity,
 };
@@ -38,6 +41,7 @@ use vanillite_world::tracking::{EntityTracker, TrackerOutput};
 
 use crate::blocks::{LevelEffects, WorldLevel};
 
+use crate::compute::Compute;
 use crate::global::Global;
 use crate::player_list::Uuid;
 
@@ -45,6 +49,194 @@ use crate::player_list::Uuid;
 const PACKETS_PER_TICK: usize = 128;
 /// Ticks between latency updates of the tab list (Vanilla's `PlayerList.tick`).
 const LATENCY_UPDATE_TICKS: u64 = 600;
+
+/// Viewers per fan-out job at least: fewer are built on the world thread.
+const FAN_OUT_VIEWERS_PER_JOB: usize = 64;
+
+/// Encode once, one batch per viewer: the tracker's messages are encoded once into frames in
+/// an arena (adjacent messages with the same viewers merged into one run), the (run, viewer)
+/// pairs are sorted by viewer (counting sort, keeping message order), then each viewer's runs
+/// are copied into its own batch and queued as one entry. The copying runs in parallel on
+/// the compute pool over ranges of viewers. The buffers are kept between ticks.
+#[derive(Debug, Default)]
+pub(crate) struct FanOut {
+    /// Frames of this tick, built once for the viewers' compression threshold.
+    arena: Vec<u8>,
+    codec: Codec,
+    /// Runs: arena range and number of viewers of each.
+    runs: Vec<(u32, u32, usize)>,
+    /// Viewer slot by entity index (`u32::MAX` = no viewer).
+    slot_of: Vec<u32>,
+    /// The viewer slot of every (run, viewer) pair in run order (`u32::MAX` = none).
+    pair_slots: Vec<u32>,
+    /// Start of each viewer slot's part of `by_viewer`, then its end (prefix sums).
+    offsets: Vec<u32>,
+    /// Batch size of each viewer slot.
+    sizes: Vec<usize>,
+    /// Run indices grouped by viewer slot, each group in run order.
+    by_viewer: Vec<u32>,
+}
+
+impl FanOut {
+    fn run(&mut self, entities: &Entities, updates: &TrackerOutput, compute: &Compute) {
+        let messages = updates.messages();
+        if messages.is_empty() {
+            return;
+        }
+        let threshold = entities
+            .players
+            .iter()
+            .next()
+            .and_then(|(_, player)| player.connection.sink.frame_threshold());
+
+        // Viewer slots: the players of this world with their sinks.
+        let sinks: Vec<&Arc<dyn PacketSink>> = entities
+            .players
+            .iter()
+            .map(|(_, player)| &player.connection.sink)
+            .collect();
+        self.slot_of.fill(u32::MAX);
+        for (slot, (id, _)) in entities.players.iter().enumerate() {
+            let index = id.raw().index() as usize;
+            if self.slot_of.len() <= index {
+                self.slot_of.resize(index + 1, u32::MAX);
+            }
+            self.slot_of[index] = u32::try_from(slot).unwrap_or(u32::MAX);
+        }
+        let ids: Vec<EntityId> = entities.players.iter().map(|(id, _)| id).collect();
+        let slot = |viewer: &EntityId| -> u32 {
+            match self.slot_of.get(viewer.raw().index() as usize) {
+                Some(&s) if ids.get(s as usize) == Some(viewer) => s,
+                _ => u32::MAX,
+            }
+        };
+
+        // Encode once; count the runs and bytes of every viewer.
+        self.arena.clear();
+        self.runs.clear();
+        self.pair_slots.clear();
+        self.sizes.clear();
+        self.sizes.resize(sinks.len(), 0);
+        let mut counts = vec![0u32; sinks.len()];
+        let mut last: Option<&[EntityId]> = None;
+        for message in messages {
+            let Some(packets) = encode_update(message, entities) else {
+                continue;
+            };
+            let start = self.arena.len();
+            for packet in &packets {
+                let before = self.arena.len();
+                if encode_frame(packet.body(), threshold, &mut self.codec, &mut self.arena).is_err()
+                {
+                    self.arena.truncate(before);
+                }
+            }
+            let end = self.arena.len();
+            let (Ok(start32), Ok(end32)) = (u32::try_from(start), u32::try_from(end)) else {
+                break;
+            };
+            let viewers = updates.viewers_of(message);
+            // `PosRot` + `HeadRot` and the like share one viewer list: one copy per viewer.
+            if let (Some(prev), Some(run)) = (last, self.runs.last_mut())
+                && std::ptr::eq(prev, viewers)
+                && run.1 == start32
+            {
+                run.1 = end32;
+                let added = end - start;
+                let first = self.pair_slots.len() - viewers.len();
+                for &s in &self.pair_slots[first..] {
+                    if let Some(size) = self.sizes.get_mut(s as usize) {
+                        *size += added;
+                    }
+                }
+                continue;
+            }
+            self.runs.push((start32, end32, viewers.len()));
+            for viewer in viewers {
+                let s = slot(viewer);
+                self.pair_slots.push(s);
+                if let (Some(count), Some(size)) =
+                    (counts.get_mut(s as usize), self.sizes.get_mut(s as usize))
+                {
+                    *count += 1;
+                    *size += end - start;
+                }
+            }
+            last = Some(viewers);
+        }
+
+        // Counting sort of the pairs by viewer slot.
+        self.offsets.clear();
+        let mut total = 0u32;
+        for &count in &counts {
+            self.offsets.push(total);
+            total += count;
+        }
+        self.offsets.push(total);
+        if total == 0 {
+            return;
+        }
+        self.by_viewer.clear();
+        self.by_viewer.resize(total as usize, 0);
+        let mut next: Vec<u32> = self.offsets[..sinks.len()].to_vec();
+        let mut pairs = self.pair_slots.iter();
+        for (run, &(_, _, viewers)) in self.runs.iter().enumerate() {
+            let run = u32::try_from(run).unwrap_or(u32::MAX);
+            for &s in pairs.by_ref().take(viewers) {
+                if let Some(at) = next.get_mut(s as usize) {
+                    self.by_viewer[*at as usize] = run;
+                    *at += 1;
+                }
+            }
+        }
+
+        // Copy in parallel over ranges of viewers with about the same number of bytes.
+        let jobs = (compute.scheduler().workers() + 1)
+            .min(sinks.len().div_ceil(FAN_OUT_VIEWERS_PER_JOB))
+            .max(1);
+        let job = |range: std::ops::Range<usize>| {
+            for s in range {
+                let (Some(&from), Some(&to), Some(&size), Some(sink)) = (
+                    self.offsets.get(s),
+                    self.offsets.get(s + 1),
+                    self.sizes.get(s),
+                    sinks.get(s),
+                ) else {
+                    continue;
+                };
+                if size == 0 {
+                    continue;
+                }
+                let mut batch = Vec::with_capacity(size);
+                for &run in &self.by_viewer[from as usize..to as usize] {
+                    if let Some(&(a, b, _)) = self.runs.get(run as usize) {
+                        batch.extend_from_slice(&self.arena[a as usize..b as usize]);
+                    }
+                }
+                sink.send_batch(batch, threshold);
+            }
+        };
+        if jobs == 1 {
+            job(0..sinks.len());
+            return;
+        }
+        let per_job = (total as usize).div_ceil(jobs).max(1);
+        compute.scope(|scope| {
+            let job = &job;
+            let mut first = 0;
+            while first < sinks.len() {
+                let start_pairs = self.offsets[first] as usize;
+                let mut last = first + 1;
+                while last < sinks.len() && (self.offsets[last] as usize) < start_pairs + per_job {
+                    last += 1;
+                }
+                let range = first..last;
+                scope.spawn(move || job(range));
+                first = last;
+            }
+        });
+    }
+}
 
 /// A network connection as the game's packet sink.
 pub(crate) struct NetSink {
@@ -65,6 +257,14 @@ impl PacketSink for NetSink {
 
     fn send_shared(&self, packet: &Arc<SharedPacket>) -> bool {
         self.out.send_shared(packet)
+    }
+
+    fn send_batch(&self, frames: Vec<u8>, threshold: Option<usize>) -> bool {
+        self.out.send_batch(frames, threshold)
+    }
+
+    fn frame_threshold(&self) -> Option<usize> {
+        self.out.threshold()
     }
 
     fn close(&self) {
@@ -89,6 +289,8 @@ pub(crate) struct Arrival {
     pub(crate) sink: Arc<dyn PacketSink>,
     pub(crate) inbound: Receiver<Inbound>,
     pub(crate) memory_connection: bool,
+    /// A virtual connection (test bot, Bedrock player): no chat session, chat is unsigned.
+    pub(crate) virtual_connection: bool,
     pub(crate) saved: Option<player_data::PlayerData>,
     pub(crate) address: String,
     pub(crate) inbox: Arc<Mutex<ChatInbox>>,
@@ -186,6 +388,7 @@ impl WorldPlayers {
                 arrival.inbound,
                 pos,
                 arrival.memory_connection,
+                arrival.virtual_connection,
                 &global.chat,
                 Arc::clone(&arrival.inbox),
             ),
@@ -273,6 +476,7 @@ impl WorldPlayers {
         sink.send(&SetHeldSlot {
             slot: i32::try_from(player.inventory.selected).unwrap_or(0),
         });
+        sink.send_shared(&global.recipes_packet);
         player.inventory.send_all(sink.as_ref());
         for (last, slot) in player.last_equipment.iter_mut().zip(EQUIPMENT_SLOTS) {
             *last = player.inventory.equipment(slot).clone();
@@ -349,6 +553,7 @@ impl WorldPlayers {
                 let mut play = PlayContext {
                     level: &mut level,
                     inventory: &mut player.inventory,
+                    xp: Some(&mut player.survival.xp),
                     actor,
                     data: &global.game,
                     spawn_protected: &protected,
@@ -458,7 +663,7 @@ impl WorldPlayers {
             crate::chat::handle_requests(entities, global, id, world, &mut self.leaving);
         }
         for (id, reason) in std::mem::take(&mut self.leaving) {
-            self.leave(entities, global, id, reason);
+            self.leave(level, global, id, reason);
         }
     }
 
@@ -499,18 +704,15 @@ impl WorldPlayers {
             .is_some_and(|p| p.connection.chunks.is_pending(chunk))
     }
 
-    /// Sends the tracker's updates: each encoded once, then queued for all its viewers.
-    pub(crate) fn send_entity_updates(entities: &Entities, updates: &TrackerOutput) {
-        updates.fan_out(
-            |message| encode_update(message, entities),
-            |viewer, packets| {
-                if let Some(player) = entities.player(viewer) {
-                    for packet in packets {
-                        player.connection.sink.send_shared(packet);
-                    }
-                }
-            },
-        );
+    /// Sends the tracker's updates: each encoded once, then copied into one batch per viewer
+    /// and tick, which is queued as a single entry ([`FanOut`]).
+    pub(crate) fn send_entity_updates(
+        entities: &Entities,
+        updates: &TrackerOutput,
+        compute: &Compute,
+        fan_out: &mut FanOut,
+    ) {
+        fan_out.run(entities, updates, compute);
     }
 
     /// The connection tick (`ServerGamePacketListenerImpl.tick`) after the world tick.
@@ -579,6 +781,7 @@ impl WorldPlayers {
             .collect();
         let mut taken: Vec<(EntityId, EntityId, i32)> = Vec::new();
         let mut equipment: Vec<(EntityId, SetEquipment)> = Vec::new();
+        let experience = nearest_players(level, &players, &spectators);
         for (id, player) in players.iter_mut() {
             let sink = std::sync::Arc::clone(&player.connection.sink);
             if let Some(sequence) = player.connection.play.take_ack() {
@@ -605,6 +808,7 @@ impl WorldPlayers {
                 let mut play = PlayContext {
                     level: &mut level,
                     inventory: &mut player.inventory,
+                    xp: Some(&mut player.survival.xp),
                     actor,
                     data: &global.game,
                     spawn_protected: &protected,
@@ -641,7 +845,54 @@ impl WorldPlayers {
                     }
                 }
             }
-            player.inventory.broadcast_changes(sink.as_ref());
+            if player.inventory.container.is_some() {
+                // `containerMenu.broadcastChanges`, then `stillValid`.
+                use vanillite_game::menu::container as menus;
+                menus::with_view(
+                    &mut player.inventory,
+                    level,
+                    actor.pos,
+                    Some(&mut player.survival.xp),
+                    |view| {
+                        view.flush_result_updates(sink.as_ref());
+                        vanillite_game::menu::broadcast_changes(view, sink.as_ref());
+                    },
+                );
+                let in_range = |pos| actor.within_block_range(pos, 4.0);
+                if !menus::still_valid(&player.inventory, level, &in_range) {
+                    let who = menus::Opener {
+                        spectator: player.game_mode == GameMode::Spectator,
+                        infinite: player.game_mode == GameMode::Creative,
+                        disconnected: false,
+                    };
+                    let mut drops = Vec::new();
+                    menus::close(
+                        &mut player.inventory,
+                        level,
+                        who,
+                        &mut drops,
+                        Some(sink.as_ref()),
+                    );
+                    let mut world = WorldLevel {
+                        level: &mut *level,
+                        effects: &mut *blocks.effects,
+                        spectators: &spectators,
+                        actor: Some((id, aabb)),
+                    };
+                    for drop in drops {
+                        throw_item(&mut world, &actor, drop);
+                    }
+                }
+            } else {
+                player.inventory.broadcast_changes(sink.as_ref());
+            }
+            // Experience of furnace results and removed furnaces (orbs are not simulated:
+            // the nearest player within 8 blocks gets it).
+            for &(owner, amount) in &experience {
+                if owner == id {
+                    player.survival.xp.give_points(amount);
+                }
+            }
             // `detectEquipmentUpdates`.
             let mut changed = Vec::new();
             for (last, slot) in player.last_equipment.iter_mut().zip(EQUIPMENT_SLOTS) {
@@ -700,11 +951,12 @@ impl WorldPlayers {
     /// The player leaves: kicked with `reason`, or the connection is gone.
     fn leave(
         &mut self,
-        entities: &mut Entities,
+        level: &mut Level,
         global: &Global,
         id: EntityId,
         reason: Option<Box<Component>>,
     ) {
+        let entities = &mut level.entities;
         let Some(entity) = entities.store.get(id) else {
             return;
         };
@@ -721,6 +973,8 @@ impl WorldPlayers {
             None => log::info!("{name} lost connection: Disconnected"),
         }
         self.save_player(entities, id);
+        drop_menus_on_leave(level, id);
+        let entities = &mut level.entities;
         entities.despawn(id);
         // Vanilla's order: the message, the entity removal (sent by the tracker this tick),
         // then the tab list entry.
@@ -730,33 +984,36 @@ impl WorldPlayers {
         self.left.push(uuid);
     }
 
-    /// Writes a player's data file.
+    /// Queues the write of a player's data file; the fields this server does not handle stay
+    /// as they are in the file.
     fn save_player(&self, entities: &Entities, id: EntityId) {
         let (Some(entity), Some(player)) = (entities.store.get(id), entities.player(id)) else {
             return;
         };
         let pos = entity.pos();
-        let mut data = match self.store.load(entity.uuid()) {
-            Ok(Some(data)) => data,
-            _ => player_data::PlayerData {
-                pos: [0.0; 3],
-                rotation: [0.0; 2],
-                on_ground: false,
-                dimension: String::new(),
-                game_mode: 0,
-                other: Default::default(),
-            },
-        };
-        data.pos = [pos.x, pos.y, pos.z];
-        data.rotation = [entity.rot().y_rot, entity.rot().x_rot];
-        data.on_ground = entity.flags().contains(EntityFlags::ON_GROUND);
-        data.dimension = self.level.dimension.as_str().to_owned();
-        data.game_mode = game_mode_id(player.game_mode);
-        player.inventory.save(&mut data.other);
-        player.survival.save(&mut data.other);
-        if let Err(e) = self.store.save(entity.uuid(), &data) {
-            log::error!("Failed to save player data of {}: {e}", player.profile.name);
-        }
+        let pos = [pos.x, pos.y, pos.z];
+        let rotation = [entity.rot().y_rot, entity.rot().x_rot];
+        let on_ground = entity.flags().contains(EntityFlags::ON_GROUND);
+        let dimension = self.level.dimension.as_str().to_owned();
+        let game_mode = game_mode_id(player.game_mode);
+        let mut survival = vanillite_nbt::Compound::new();
+        player.inventory.save(&mut survival);
+        player.survival.save(&mut survival);
+        // `Survival::save` removes the death location when there is none.
+        let has_death = survival.get("LastDeathLocation").is_some();
+        self.store.update(entity.uuid(), move |data| {
+            data.pos = pos;
+            data.rotation = rotation;
+            data.on_ground = on_ground;
+            data.dimension = dimension;
+            data.game_mode = game_mode;
+            if !has_death {
+                data.other.remove("LastDeathLocation");
+            }
+            for (key, tag) in survival.iter() {
+                data.other.insert(key, tag.clone());
+            }
+        });
     }
 
     /// Saves all players of this world.
@@ -825,6 +1082,7 @@ fn actor_of(
     let eyes_in_water = !fluid.is_empty() && matches!(fluid.info().fluid, 1 | 2);
     let flags = entity.flags();
     Actor {
+        entity: Some(entity.id()),
         network_id: entity.network_id().0,
         uuid: entity.uuid(),
         pos,
@@ -882,4 +1140,62 @@ pub(crate) fn info_entry(arrival: &Arrival) -> InfoEntry {
         model_customisation: arrival.client.model_customisation,
         chat_session: None,
     }
+}
+
+/// `Player.remove` for a player that leaves: open menus close, what they held drops.
+fn drop_menus_on_leave(level: &mut Level, id: EntityId) {
+    let Some(pos) = level.entities.store.get(id).map(|e| e.pos()) else {
+        return;
+    };
+    let Some(player) = level.entities.player_mut(id) else {
+        return;
+    };
+    let spectator = player.game_mode == GameMode::Spectator;
+    let mut inv = std::mem::take(&mut player.inventory);
+    let mut drops = Vec::new();
+    vanillite_game::menu::container::close_on_leave(&mut inv, level, spectator, &mut drops);
+    if let Some(player) = level.entities.player_mut(id) {
+        player.inventory = inv;
+    }
+    let eye = vanillite_base::Vec3::new(pos.x, pos.y + 1.62 - 0.3, pos.z);
+    for drop in drops {
+        vanillite_game::block::drops::spawn_item(
+            level,
+            eye,
+            drop.stack,
+            vanillite_base::Vec3::new(0.0, 0.1, 0.0),
+            40,
+            None,
+        );
+    }
+}
+
+/// The player each experience award of the tick goes to: the nearest non-spectator within
+/// 8 blocks of where it was awarded (`ExperienceOrb` follows that player).
+fn nearest_players(
+    level: &mut Level,
+    players: &vanillite_world::entity::Dense<vanillite_game::player::PlayerData>,
+    spectators: &FxHashSet<EntityId>,
+) -> Vec<(EntityId, i32)> {
+    let awards = std::mem::take(&mut level.output().experience);
+    let mut out = Vec::with_capacity(awards.len());
+    for (at, amount) in awards {
+        let mut best: Option<(f64, EntityId)> = None;
+        for (id, _) in players.iter() {
+            if spectators.contains(&id) {
+                continue;
+            }
+            let Some(p) = level.entities.store.get(id).map(|e| e.pos()) else {
+                continue;
+            };
+            let d = (p.x - at.x).powi(2) + (p.y - at.y).powi(2) + (p.z - at.z).powi(2);
+            if d <= 64.0 && best.is_none_or(|(b, _)| d < b) {
+                best = Some((d, id));
+            }
+        }
+        if let Some((_, id)) = best {
+            out.push((id, amount));
+        }
+    }
+    out
 }

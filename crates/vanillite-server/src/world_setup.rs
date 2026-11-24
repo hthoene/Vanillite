@@ -2,7 +2,7 @@
 //! compute pool as the chunk runtime's executor, and chunk packets for the players.
 
 use std::cell::RefCell;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use vanillite_base::ChunkPos;
@@ -77,6 +77,8 @@ const WORLD_GEN_SETTINGS: &str = "minecraft:world_gen_settings";
 pub(crate) struct WorldGen {
     /// World seed.
     pub(crate) seed: i64,
+    /// `generate_structures`.
+    generate_structures: bool,
     /// The `generator` JSON of each dimension (`dimensions.<key>.generator`).
     generators: serde_json::Map<String, serde_json::Value>,
 }
@@ -113,6 +115,7 @@ impl WorldGen {
             // Without data packs (tests) there are no presets: the flat stand-in everywhere.
             return Ok(Self {
                 seed,
+                generate_structures: properties.generate_structures,
                 generators: serde_json::Map::new(),
             });
         };
@@ -149,7 +152,16 @@ impl WorldGen {
                 }
             }
         }
-        Self { seed, generators }
+        // Vanilla reads a missing or non-byte value as `true`.
+        let generate_structures = !matches!(
+            data.get("generate_structures"),
+            Some(vanillite_nbt::Tag::Byte(0))
+        );
+        Self {
+            seed,
+            generate_structures,
+            generators,
+        }
     }
 
     /// The generator JSON of a dimension.
@@ -252,15 +264,18 @@ impl ChunkGeneratorProvider for BuiltInGenerators {
         };
         let terrain =
             TerrainGenerator::new(packs, spec, self.world_gen.seed).map_err(|e| e.to_string())?;
-        Ok(Arc::new(VanillaChunkGenerator::new(terrain, world.clone())))
+        Ok(Arc::new(
+            VanillaChunkGenerator::new(terrain, world.clone())
+                .with_structures(self.world_gen.generate_structures),
+        ))
     }
 }
 
-/// The [`WorldInfo`] of a dimension; its height and sky light come from its dimension type
-/// (Vanilla's overworld values without data packs).
+/// The [`WorldInfo`] of a dimension stored in `dir`; its height and sky light come from its
+/// dimension type (Vanilla's overworld values without data packs).
 pub(crate) fn world_info(
     packs: Option<&LoadedPacks>,
-    world_dir: &Path,
+    dir: PathBuf,
     dimension: &str,
     seed: i64,
 ) -> Result<WorldInfo, StartError> {
@@ -297,7 +312,7 @@ pub(crate) fn world_info(
         .unwrap_or(0);
     Ok(WorldInfo {
         dimension: dimension.to_owned(),
-        dir: vanillite_storage::dimension_dir(world_dir, dimension),
+        dir,
         min_y,
         height,
         seed,
@@ -347,10 +362,20 @@ impl ChunkPackets {
         }
     }
 
-    /// The source over a world's chunks.
-    pub(crate) fn source<'a>(&'a self, chunks: &'a Chunks) -> WorldChunkSource<'a> {
+    /// Drops the packet of one chunk (its block entity data changed).
+    pub(crate) fn invalidate_chunk(&mut self, pos: ChunkPos) {
+        self.cache.get_mut().remove(&pos);
+    }
+
+    /// The source over a world's chunks and their live block entities.
+    pub(crate) fn source<'a>(
+        &'a self,
+        chunks: &'a Chunks,
+        block_entities: &'a vanillite_game::level::BlockEntities,
+    ) -> WorldChunkSource<'a> {
         WorldChunkSource {
             chunks,
+            block_entities,
             cache: &self.cache,
         }
     }
@@ -359,6 +384,7 @@ impl ChunkPackets {
 /// [`ChunkSource`] over the full chunks of a world.
 pub(crate) struct WorldChunkSource<'a> {
     chunks: &'a Chunks,
+    block_entities: &'a vanillite_game::level::BlockEntities,
     cache: &'a RefCell<FxHashMap<ChunkPos, Arc<SharedPacket>>>,
 }
 
@@ -368,17 +394,45 @@ impl ChunkSource for WorldChunkSource<'_> {
             return Some(Arc::clone(packet));
         }
         let chunk = self.chunks.chunk(pos)?;
-        // Block entities go out with their type only; the client creates them with default
-        // data (their update tags need the block entity port).
-        let block_entities: Vec<BlockEntityWire<'_>> = chunk
-            .block_entities
+        // Block entities go out with their update tag (`getUpdateTag`): live ones from the
+        // level, stored ones of kinds the level does not model with their type only.
+        let mut tags: Vec<(vanillite_base::BlockPos, u32, Vec<u8>)> = Vec::new();
+        for (bpos, entity) in self.block_entities.in_chunk(pos) {
+            let Some(id) = self.chunks.block(bpos) else {
+                continue;
+            };
+            let state = vanillite_data::block::BlockState(id);
+            let kind = state.block().info().block_entity;
+            if kind == u16::MAX {
+                continue;
+            }
+            let mut nbt = Vec::new();
+            match vanillite_game::level::block_entity::update_tag(entity) {
+                Some(tag) => {
+                    if vanillite_nbt::write::write_network_compound(&tag, &mut nbt).is_err() {
+                        nbt = vec![0];
+                    }
+                }
+                None => nbt.push(0),
+            }
+            tags.push((bpos, u32::from(kind), nbt));
+        }
+        for be in &chunk.block_entities {
+            if tags.iter().any(|(p, _, _)| *p == be.pos) {
+                continue;
+            }
+            if let Some(kind) = be.kind {
+                tags.push((be.pos, u32::from(kind), vec![0]));
+            }
+        }
+        let block_entities: Vec<BlockEntityWire<'_>> = tags
             .iter()
-            .filter_map(|be| {
+            .filter_map(|(bpos, kind, nbt)| {
                 Some(BlockEntityWire {
-                    packed_xz: (((be.pos.x & 15) << 4) | (be.pos.z & 15)) as u8,
-                    y: i16::try_from(be.pos.y).ok()?,
-                    type_id: u32::from(be.kind?),
-                    nbt: &[0],
+                    packed_xz: (((bpos.x & 15) << 4) | (bpos.z & 15)) as u8,
+                    y: i16::try_from(bpos.y).ok()?,
+                    type_id: *kind,
+                    nbt,
                 })
             })
             .collect();
@@ -428,6 +482,21 @@ pub(crate) fn level_settings(
     settings
 }
 
+/// The exploit switches of `exploits` (decision D1).
+pub(crate) fn exploit_settings(
+    rules: &vanillite_config::WorldRules,
+) -> vanillite_game::level::ExploitSettings {
+    let e = &rules.exploits;
+    vanillite_game::level::ExploitSettings {
+        tnt_duplication: e.tnt_duplication,
+        carpet_duplication: e.carpet_duplication,
+        rail_duplication: e.rail_duplication,
+        headless_pistons: e.headless_pistons,
+        break_unbreakable_blocks: e.break_unbreakable_blocks,
+        string_duplication: e.string_duplication,
+    }
+}
+
 /// Sets the budgets of `performance.simulation`; `vanilla_max_chained` is
 /// `max-chained-neighbor-updates` of `server.properties`.
 pub(crate) fn apply_simulation_rules(
@@ -442,6 +511,7 @@ pub(crate) fn apply_simulation_rules(
         vanillite_config::VanillaOr::Value(v) => i32::try_from(v).unwrap_or(i32::MAX),
         vanillite_config::VanillaOr::Vanilla => vanilla_max_chained,
     };
+    settings.exploits = exploit_settings(rules);
 }
 
 /// The biomes of a world for the simulation: the biome registry, the seed's biome manager and
