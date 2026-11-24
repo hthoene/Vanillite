@@ -1,0 +1,7 @@
+# Build context: sources only, plus host-built binaries for BINARY=prebuilt.
+.git
+target/*
+!target/docker
+fuzz
+run
+**/*.rs.bk
