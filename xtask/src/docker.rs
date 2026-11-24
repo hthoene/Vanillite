@@ -10,6 +10,9 @@ use crate::devenv::run;
 const DEFAULT_IMAGE: &str = "docker.hthoene.de/vanillite/vanillite";
 const DEFAULT_USER: &str = "deploy";
 const PASSWORD_ENV: &str = "PRIVATE_DOCKER_REPO_KEY";
+/// zig's clang turns off `evex512` for the x86-64 baseline, which breaks libdeflate's AVX-512
+/// functions; they are still only used when the CPU has AVX-512.
+const ZIG_X86_CFLAGS: (&str, &str) = ("CFLAGS_x86_64_unknown_linux_musl", "-mevex512");
 /// Docker platform architecture and Rust target of each image platform.
 const ARCHES: &[(&str, &str)] = &[
     ("amd64", "x86_64-unknown-linux-musl"),
@@ -131,7 +134,8 @@ fn build_binaries(root: &Path) -> Result<()> {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
     let mut cmd = Command::new(cargo);
     cmd.current_dir(root)
-        .args(["zigbuild", "--release", "--locked", "-p", "vanillite"]);
+        .args(["zigbuild", "--release", "--locked", "-p", "vanillite"])
+        .env(ZIG_X86_CFLAGS.0, ZIG_X86_CFLAGS.1);
     for (_, triple) in ARCHES {
         cmd.args(["--target", triple]);
     }

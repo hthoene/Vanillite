@@ -30,7 +30,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
       arm64) triple=aarch64-unknown-linux-musl ;; \
       *) echo "unsupported architecture ${TARGETARCH}" >&2; exit 1 ;; \
     esac \
-    && cargo zigbuild --release --locked -p vanillite --target "${triple}" \
+    # zig's clang turns off evex512 for the x86-64 baseline; libdeflate's AVX-512 code needs it.
+    && CFLAGS_x86_64_unknown_linux_musl=-mevex512 cargo zigbuild --release --locked -p vanillite --target "${triple}" \
     && mkdir -p /out && cp "target/${triple}/release/vanillite" /out/vanillite
 
 FROM scratch AS binary-build
