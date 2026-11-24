@@ -360,11 +360,13 @@ impl Connection {
                     vec![],
                 ))));
             }
-            // Cookies, custom payloads, pongs and resource packs come later.
+            // Keep-alives and ping requests are answered by the network task; cookies, custom
+            // payloads, pongs and resource packs come later.
             ServerboundPlay::CookieResponse(_)
             | ServerboundPlay::CustomClickAction(_)
             | ServerboundPlay::CustomPayload(_)
             | ServerboundPlay::KeepAlive(_)
+            | ServerboundPlay::PingRequest(_)
             | ServerboundPlay::Pong(_)
             | ServerboundPlay::ResourcePack(_)
             | ServerboundPlay::Unhandled { .. } => {}

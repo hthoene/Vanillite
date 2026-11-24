@@ -259,6 +259,16 @@ fn two_players_join_see_each_other_and_rejoin() {
 
     let mut a = connect(&opener, "Alice");
     let (x, y, z) = join(&mut a);
+    // The F3 debug ping is echoed with the same payload.
+    let time = 0x0123_4567_89ab_cdef;
+    a.send(&vanillite_protocol::packets::play::serverbound::PingRequest { time });
+    a.until("pong_response", |p| match p {
+        ClientboundPlay::PongResponse(r) => {
+            assert_eq!(r.time, time);
+            Some(())
+        }
+        _ => None,
+    });
     let mut b = connect(&opener, "Bob");
     join(&mut b);
 
