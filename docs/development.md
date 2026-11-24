@@ -45,9 +45,27 @@ provisioned by `scripts/testserver/provision.sh`; every Vanillite server is a sy
 | `cargo xtask testserver logs [<port>]` | Follow the log. |
 | `cargo xtask testserver start\|stop\|restart [<port>]` | Control a server; stop also disables it. |
 
+## Fuzzing
+
+`fuzz/` holds the cargo-fuzz targets of the input decoders (crate `vanillite-fuzz`, its own
+workspace, built with nightly): binary NBT, SNBT, inbound framing and decompression, the framing
+round trip, and one target per connection state for the serverbound packet decoders. Committed
+seeds are in `fuzz/seeds/<target>`; the growing corpus (`fuzz/corpus`) and crashes
+(`fuzz/artifacts`) are not committed.
+
+| Command | What |
+|---|---|
+| `scripts/fuzz.sh [seconds] [jobs]` | Build all targets once and run them in parallel (default 300 s each). |
+| `cargo +nightly fuzz run -O <target> fuzz/corpus/<target> fuzz/seeds/<target>` | Run one target. |
+| `cargo +nightly fuzz run -O <target> fuzz/artifacts/<target>/<file>` | Reproduce a crash. |
+
+A crash becomes a regular regression test next to the exploit tests in
+`crates/<crate>/tests/exploits.rs`, which name the SEC rule of the security research they cover.
+
 ## CI
 
 `.github/workflows/ci.yml` runs on every push and pull request: format, clippy, tests with codegen
 check and doc tests, and cargo-deny, as parallel jobs with a shared Rust cache written by `dev`.
 `.github/workflows/nightly.yml` runs the ignored bulk tests (with Java 25 and a goldens cache), a
-release build and the fuzz targets once a night.
+release build and the fuzz targets (`scripts/fuzz.sh`, corpus cached between nights) once a
+night.

@@ -64,6 +64,11 @@ impl Budget {
         self.charge(per_entry.checked_mul(count).ok_or(Error::BudgetExceeded)?)
     }
 
+    /// Estimated bytes still available.
+    fn remaining(&self) -> u64 {
+        self.quota.saturating_sub(self.usage)
+    }
+
     fn push(&mut self) -> Result<()> {
         if self.depth >= self.max_depth {
             return Err(Error::DepthExceeded);
@@ -266,8 +271,17 @@ impl<'b> Reader<'_, 'b> {
         }
         self.budget.charge_n(4, as_u64(n))?;
         let ty = tag_type(ty)?;
-        // The charge above bounds `n` by the quota; the remaining input bounds it further.
-        let mut items = Vec::with_capacity(n.min(self.input.len()));
+        // Reserve only what the remaining input can back and the remaining budget covers at the
+        // real element size: Vanilla charges 4 bytes per entry, a `Tag` takes more (SEC-03).
+        let affordable = self
+            .budget
+            .remaining()
+            .checked_div(as_u64(size_of::<Tag>()))
+            .unwrap_or(0);
+        let cap = n
+            .min(self.input.len())
+            .min(usize::try_from(affordable).unwrap_or(usize::MAX));
+        let mut items = Vec::with_capacity(cap);
         for _ in 0..n {
             items.push(match self.payload(ty)? {
                 Tag::Compound(c) => match c.as_list_wrapper() {
