@@ -43,25 +43,34 @@ COPY target/docker/${TARGETARCH}/vanillite /vanillite
 
 FROM binary-${BINARY} AS binary
 
-# The data folder, owned by the server user (an empty base has no mkdir).
+# The data folder, owned by the server user (an empty base has no mkdir), and the applets of a
+# static busybox for the entrypoint (Pterodactyl's STARTUP command). The busybox binary comes
+# from the target platform's image by COPY, so multi-arch builds need no emulation.
 FROM --platform=$BUILDPLATFORM busybox:stable-musl AS data
-RUN mkdir -p /rootfs/data /rootfs/tmp && chown 10001:10001 /rootfs/data && chmod 1777 /rootfs/tmp
+RUN mkdir -p /rootfs/data /rootfs/tmp /rootfs/bin && chown 10001:10001 /rootfs/data \
+    && chmod 1777 /rootfs/tmp \
+    && for applet in sh sed env; do ln -s busybox "/rootfs/bin/${applet}"; done
+
+FROM busybox:stable-musl AS busybox
 
 FROM scratch
 COPY --from=data /rootfs/ /
+COPY --from=busybox /bin/busybox /bin/busybox
 COPY --from=binary /vanillite /vanillite
+COPY --chmod=755 scripts/docker/entrypoint.sh /entrypoint.sh
 USER 10001:10001
 WORKDIR /data
 VOLUME /data
 EXPOSE 25565/tcp
 # Every key of vanillite.toml and server.properties can be set as VANILLITE_<KEY>, e.g.
 # VANILLITE_SERVER_PORT, VANILLITE_MOTD, VANILLITE_PERFORMANCE__TICK__PARALLEL_DIMENSIONS.
-# VANILLITE_EULA=true accepts the Minecraft EULA.
+# VANILLITE_EULA=true accepts the Minecraft EULA. An empty variable is ignored.
+# Pterodactyl: the egg deploy/pterodactyl/egg-vanillite.json (STARTUP, /home/container).
 ENV VANILLITE_LOG=info
 # The first start downloads the Vanilla jar and generates the spawn area.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5m --retries=3 \
     CMD ["/vanillite", "health", "--dir", "/data"]
 # SIGTERM saves all worlds and players, then exits; give it time (docker stop -t 60).
 STOPSIGNAL SIGTERM
-ENTRYPOINT ["/vanillite"]
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["run", "--dir", "/data"]

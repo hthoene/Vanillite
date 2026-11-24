@@ -7,7 +7,7 @@ use std::process::{Command, Stdio};
 use crate::Result;
 use crate::devenv::run;
 
-const DEFAULT_IMAGE: &str = "docker.hthoene.de/vanillite/vanillite";
+pub const DEFAULT_IMAGE: &str = "docker.hthoene.de/vanillite/vanillite";
 const DEFAULT_USER: &str = "deploy";
 const PASSWORD_ENV: &str = "PRIVATE_DOCKER_REPO_KEY";
 /// zig's clang turns off `evex512` for the x86-64 baseline, which breaks libdeflate's AVX-512
@@ -103,7 +103,7 @@ fn commit_tag(root: &Path) -> Result<String> {
 
 /// The Docker engine to build on: `DOCKER_HOST` if set, the local engine if it runs, else the
 /// test server over SSH (dev containers cannot run an engine themselves).
-fn docker_host() -> Option<String> {
+pub fn docker_host() -> Option<String> {
     if std::env::var_os("DOCKER_HOST").is_some() {
         return None;
     }
@@ -121,7 +121,7 @@ fn docker_host() -> Option<String> {
     Some(host)
 }
 
-fn docker(host: Option<&str>) -> Command {
+pub fn docker(host: Option<&str>) -> Command {
     let mut cmd = Command::new("docker");
     if let Some(host) = host {
         cmd.env("DOCKER_HOST", host);

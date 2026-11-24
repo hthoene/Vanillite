@@ -7,8 +7,39 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
+/// The type of a property's value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PropertyKind {
+    /// `true` or `false`.
+    Bool,
+    /// An integer.
+    Integer,
+    /// Free text.
+    Text,
+    /// One of these names.
+    Enum(&'static [&'static str]),
+}
+
+/// Static description of one property, for documentation and generated configuration panels.
+#[derive(Clone, Copy, Debug)]
+pub struct PropertyInfo {
+    /// The key in `server.properties`.
+    pub key: &'static str,
+    /// The documentation comment, one line per doc line.
+    pub doc: &'static str,
+    /// The type of the value.
+    pub kind: PropertyKind,
+    /// The values Vanilla accepts or clamps to (inclusive), if it limits them.
+    pub range: Option<(i64, i64)>,
+    /// Shown in generated configuration panels (the Pterodactyl egg). `false` for keys a panel
+    /// sets itself (address and port) and keys without effect in Vanillite.
+    pub panel: bool,
+}
+
 /// A type that can be the value of a property.
 pub trait PropertyValue: Sized {
+    /// The type of the value.
+    const KIND: PropertyKind;
     /// Parses the raw value. `None` if it is invalid.
     fn parse(raw: &str) -> Option<Self>;
     /// Renders the value as written to the file.
@@ -16,6 +47,7 @@ pub trait PropertyValue: Sized {
 }
 
 impl PropertyValue for bool {
+    const KIND: PropertyKind = PropertyKind::Bool;
     fn parse(raw: &str) -> Option<Self> {
         // Java's `Boolean.parseBoolean`: everything but "true" is false.
         Some(raw.trim().eq_ignore_ascii_case("true"))
@@ -28,6 +60,7 @@ impl PropertyValue for bool {
 macro_rules! number_property_value {
     ($($ty:ty),*) => {$(
         impl PropertyValue for $ty {
+            const KIND: PropertyKind = PropertyKind::Integer;
             fn parse(raw: &str) -> Option<Self> {
                 raw.trim().parse().ok()
             }
@@ -40,6 +73,7 @@ macro_rules! number_property_value {
 number_property_value!(u16, i32, i64);
 
 impl PropertyValue for String {
+    const KIND: PropertyKind = PropertyKind::Text;
     fn parse(raw: &str) -> Option<Self> {
         Some(raw.to_owned())
     }
@@ -72,6 +106,7 @@ macro_rules! named_enum {
         }
 
         impl PropertyValue for $name {
+            const KIND: PropertyKind = PropertyKind::Enum(&[$($text),*]);
             /// Accepts the name or Vanilla's numeric id, like Vanilla.
             fn parse(raw: &str) -> Option<Self> {
                 let raw = raw.trim();
@@ -102,8 +137,25 @@ named_enum! {
     RegionFileCompression { Deflate = "deflate", Lz4 = "lz4", None = "none" }
 }
 
+/// Picks a given value or the default. Internal to `properties!`.
+macro_rules! pick {
+    (; $default:expr) => {
+        $default
+    };
+    ($value:expr ; $default:expr) => {
+        $value
+    };
+}
+
+/// Declares the properties: `field: Type = "key", default[, range = [min, max]][, panel = false];`
 macro_rules! properties {
-    ($( $(#[doc = $doc:literal])* $field:ident: $ty:ty = $key:literal, $default:expr; )*) => {
+    ($(
+        $(#[doc = $doc:literal])*
+        $field:ident: $ty:ty = $key:literal, $default:expr
+            $(, range = [$min:expr, $max:expr])?
+            $(, panel = $panel:literal)?
+        ;
+    )*) => {
         /// The typed content of `server.properties`.
         #[derive(Clone, Debug, PartialEq)]
         pub struct ServerProperties {
@@ -119,6 +171,17 @@ macro_rules! properties {
         impl ServerProperties {
             /// Every key Vanillite knows, in declaration order.
             pub const KEYS: &'static [&'static str] = &[$($key),*];
+
+            /// Every key Vanillite knows with its description, in declaration order.
+            pub const INFO: &'static [PropertyInfo] = &[$(
+                PropertyInfo {
+                    key: $key,
+                    doc: concat!($($doc, "\n",)*),
+                    kind: <$ty as PropertyValue>::KIND,
+                    range: pick!($(Some(($min, $max)))? ; None),
+                    panel: pick!($($panel)? ; true),
+                },
+            )*];
 
             /// Reads the typed values from raw key/value pairs. Invalid values fall back to
             /// the default with a warning; missing keys take the default.
@@ -168,7 +231,7 @@ properties! {
     /// Show the code of conduct to joining players.
     enable_code_of_conduct: bool = "enable-code-of-conduct", false;
     /// Expose JMX beans (not applicable to Vanillite, kept for compatibility).
-    enable_jmx_monitoring: bool = "enable-jmx-monitoring", false;
+    enable_jmx_monitoring: bool = "enable-jmx-monitoring", false, panel = false;
     /// Enable the GameSpy4 query listener.
     enable_query: bool = "enable-query", false;
     /// Enable remote console access.
@@ -180,11 +243,12 @@ properties! {
     /// Kick players not on the whitelist when it is reloaded.
     enforce_whitelist: bool = "enforce-whitelist", false;
     /// Entity tracking range in percent of the default.
-    entity_broadcast_range_percentage: i32 = "entity-broadcast-range-percentage", 100;
+    entity_broadcast_range_percentage: i32 = "entity-broadcast-range-percentage", 100,
+        range = [10, 1000];
     /// Force players into the default game mode on join.
     force_gamemode: bool = "force-gamemode", false;
     /// Permission level of functions.
-    function_permission_level: i32 = "function-permission-level", 2;
+    function_permission_level: i32 = "function-permission-level", 2, range = [1, 4];
     /// Default game mode.
     gamemode: GameMode = "gamemode", GameMode::Survival;
     /// Generate structures in new chunks.
@@ -214,7 +278,7 @@ properties! {
     /// Milliseconds a single tick may take before the watchdog stops the server; -1 disables.
     max_tick_time: i64 = "max-tick-time", 60_000;
     /// Maximum world border radius.
-    max_world_size: i32 = "max-world-size", 29_999_984;
+    max_world_size: i32 = "max-world-size", 29_999_984, range = [1, 29_999_984];
     /// Message of the day in the server list.
     motd: String = "motd", "A Minecraft Server".to_owned();
     /// Packets larger than this many bytes are compressed; -1 disables compression.
@@ -222,7 +286,7 @@ properties! {
     /// Authenticate players with Mojang.
     online_mode: bool = "online-mode", true;
     /// Permission level of operators.
-    op_permission_level: i32 = "op-permission-level", 4;
+    op_permission_level: i32 = "op-permission-level", 4, range = [0, 4];
     /// Seconds without players after which the server stops ticking; 0 disables.
     pause_when_empty_seconds: i32 = "pause-when-empty-seconds", 60;
     /// Minutes of inactivity before a player is kicked; 0 disables.
@@ -230,13 +294,13 @@ properties! {
     /// Kick players whose IP differs from the one Mojang saw.
     prevent_proxy_connections: bool = "prevent-proxy-connections", false;
     /// Port of the query listener.
-    query_port: i32 = "query.port", 25565;
+    query_port: i32 = "query.port", 25565, range = [1, 65535];
     /// Maximum packets per second before a player is kicked; 0 disables.
     rate_limit: i32 = "rate-limit", 0;
     /// RCON password.
     rcon_password: String = "rcon.password", String::new();
     /// RCON port.
-    rcon_port: i32 = "rcon.port", 25575;
+    rcon_port: i32 = "rcon.port", 25575, range = [1, 65535];
     /// Compression of chunks in region files.
     region_file_compression: RegionFileCompression = "region-file-compression", RegionFileCompression::Deflate;
     /// Kick players who decline the resource pack.
@@ -250,11 +314,11 @@ properties! {
     /// Resource pack SHA-1.
     resource_pack_sha1: String = "resource-pack-sha1", String::new();
     /// Address to bind to; empty = all.
-    server_ip: String = "server-ip", String::new();
+    server_ip: String = "server-ip", String::new(), panel = false;
     /// Port to listen on.
-    server_port: u16 = "server-port", 25565;
+    server_port: u16 = "server-port", 25565, range = [1, 65535], panel = false;
     /// Simulation distance in chunks.
-    simulation_distance: i32 = "simulation-distance", 10;
+    simulation_distance: i32 = "simulation-distance", 10, range = [2, 32];
     /// Radius around the spawn only operators may build in.
     spawn_protection: i32 = "spawn-protection", 16;
     /// Seconds between status heartbeats to the management server; 0 disables.
@@ -262,13 +326,13 @@ properties! {
     /// Flush region files synchronously.
     sync_chunk_writes: bool = "sync-chunk-writes", true;
     /// Text filtering configuration.
-    text_filtering_config: String = "text-filtering-config", String::new();
+    text_filtering_config: String = "text-filtering-config", String::new(), panel = false;
     /// Text filtering protocol version.
-    text_filtering_version: i32 = "text-filtering-version", 0;
+    text_filtering_version: i32 = "text-filtering-version", 0, panel = false;
     /// Use epoll on Linux (Vanillite chooses its own I/O; kept for compatibility).
-    use_native_transport: bool = "use-native-transport", true;
+    use_native_transport: bool = "use-native-transport", true, panel = false;
     /// View distance in chunks.
-    view_distance: i32 = "view-distance", 10;
+    view_distance: i32 = "view-distance", 10, range = [2, 32];
     /// Only whitelisted players may join.
     white_list: bool = "white-list", false;
 }
