@@ -1081,6 +1081,26 @@
       "field_type": "text"
     },
     {
+      "name": "Entity Tracking: Overload Tick Millis",
+      "description": "Overload protection: while a world tick takes longer than this many milliseconds (smoothed), movement updates of tracked entities (position, rotation, head) are sent less often, up to `overload-max-interval-scale` times their Vanilla interval, and back at the Vanilla rate once ticks are fast again. Spawns, removals and entity data are never delayed. \"disabled\" keeps Vanilla's intervals: an overloaded server then slows down like Vanilla. Applies to every world. Range: 1 to 1000. Also accepts disabled. Empty: the profile's value (vanilla profile: disabled). vanillite.toml: performance.entity-tracking.overload-tick-millis.",
+      "env_variable": "VANILLITE_PERFORMANCE__ENTITY_TRACKING__OVERLOAD_TICK_MILLIS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|regex:/^(?!disabled[0-9])(disabled)?[0-9]*$/",
+      "field_type": "text"
+    },
+    {
+      "name": "Entity Tracking: Overload Max Interval Scale",
+      "description": "Largest factor on the movement update interval under overload. Applies to every world. Range: 1 to 20. Empty: the profile's value (vanilla profile: 4). vanillite.toml: performance.entity-tracking.overload-max-interval-scale.",
+      "env_variable": "VANILLITE_PERFORMANCE__ENTITY_TRACKING__OVERLOAD_MAX_INTERVAL_SCALE",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,20",
+      "field_type": "text"
+    },
+    {
       "name": "Movement: Too Fast Check",
       "description": "Players that move faster than Vanilla allows are teleported back (\"moved too quickly\"). Vanilla's `playerMovementCheck` game rule. Applies to every world. Empty: the profile's value (vanilla profile: true). vanillite.toml: movement.too-fast-check.",
       "env_variable": "VANILLITE_MOVEMENT__TOO_FAST_CHECK",

@@ -866,9 +866,6 @@ impl Server {
             };
             let sprinting = this_tick == 0;
             self.next_tick += this_tick;
-            self.watch
-                .next_tick
-                .store(self.next_tick, Ordering::Relaxed);
             self.tick_server();
             self.wait_until_next_tick(this_tick, sprinting);
             if sprinting {
@@ -883,6 +880,7 @@ impl Server {
         let clock = self.global.clock;
         let started = clock.now();
         self.heartbeat.enter(&clock);
+        self.watch.progress.store(started, Ordering::Relaxed);
 
         let pause_seconds =
             u64::try_from(self.config.properties.pause_when_empty_seconds).unwrap_or(0);
@@ -901,6 +899,7 @@ impl Server {
                 // The console stays responsive while paused, like Vanilla.
                 self.global_pre_phase();
                 self.heartbeat.leave();
+                self.watch.progress.store(clock.now(), Ordering::Relaxed);
                 return;
             }
         }
@@ -922,6 +921,7 @@ impl Server {
             }
         }
         self.heartbeat.leave();
+        self.watch.progress.store(clock.now(), Ordering::Relaxed);
     }
 
     /// G1: console commands and global tasks, with `&mut` to everything because no world is
@@ -1345,7 +1345,7 @@ impl Server {
     /// Vanilla's `stopServer`: save everything with flush, stop the threads, release the world.
     fn shutdown(mut self) {
         // Saving may take long; the watchdog must not kill the process now.
-        self.watch.next_tick.store(0, Ordering::Relaxed);
+        self.watch.progress.store(0, Ordering::Relaxed);
         log::info!("Stopping server");
         for player in self.global.players.snapshot() {
             player
