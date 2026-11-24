@@ -14,6 +14,7 @@ vanillite-config.workspace = true
 vanillite-data.workspace = true
 vanillite-datapack.workspace = true
 vanillite-nbt.workspace = true
+getrandom.workspace = true
 log.workspace = true
 rsa.workspace = true
 serde_json.workspace = true
