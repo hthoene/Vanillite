@@ -1331,7 +1331,11 @@ dependencies = [
 name = "vanillite-worldgen"
 version = "0.1.0"
 dependencies = [
+ "rustc-hash",
+ "serde_json",
+ "vanillite-base",
  "vanillite-chunk",
+ "vanillite-data",
  "vanillite-datapack",
 ]
 

@@ -3,6 +3,7 @@
 //! ```text
 //! cargo xtask vanilla update [<version>] [--jar <server.jar>]
 //! cargo xtask codegen [--check]
+//! cargo xtask golden regen [<PartGoldens>...]
 //! cargo xtask dev [--release] [-- <server args>]
 //! cargo xtask deploy [--port <port>] [--release]
 //! cargo xtask testserver provision|status|logs|start|stop|restart [<port>]
@@ -10,6 +11,7 @@
 
 mod codegen;
 mod devenv;
+mod golden;
 mod normalize;
 mod vanilla;
 
@@ -28,6 +30,10 @@ pub const USAGE: &str = "usage:
   cargo xtask codegen [--check]
       Generate crates/vanillite-data/src/generated/ from data/vanilla/.
       --check fails if the committed files are not current.
+  cargo xtask golden regen [<PartGoldens>...]
+      Record the world generation parity goldens (all parts, or the named ones) into
+      crates/vanillite-worldgen/tests/goldens/ with the Java harness. Needs the unpacked jar of
+      `cargo xtask vanilla update` and a JDK.
   cargo xtask dev [--release] [-- <server args>]
       Build and run the server in ./run (debug build; --release uses the release-fast profile).
   cargo xtask deploy [--port <port>] [--release]
@@ -45,6 +51,7 @@ fn main() -> ExitCode {
         ["vanilla", "update", rest @ ..] => vanilla_update(rest),
         ["codegen"] => codegen::run(&repo_root(), false),
         ["codegen", "--check"] => codegen::run(&repo_root(), true),
+        ["golden", "regen", parts @ ..] => golden::regen(&repo_root(), parts),
         ["dev", rest @ ..] => devenv::dev(&repo_root(), rest),
         ["deploy", rest @ ..] => devenv::deploy(&repo_root(), rest),
         ["testserver", rest @ ..] => devenv::testserver(&repo_root(), rest),

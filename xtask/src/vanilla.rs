@@ -107,7 +107,7 @@ pub fn update(root: &Path, version: Option<&str>, local_jar: Option<&Path>) -> R
 }
 
 /// `VANILLITE_JAVA_HOME`, then `JAVA_HOME`, then the tool on `PATH`.
-fn java_tool(name: &str) -> PathBuf {
+pub(crate) fn java_tool(name: &str) -> PathBuf {
     for var in ["VANILLITE_JAVA_HOME", "JAVA_HOME"] {
         if let Some(home) = std::env::var_os(var) {
             let tool = PathBuf::from(home).join("bin").join(name);
@@ -119,7 +119,7 @@ fn java_tool(name: &str) -> PathBuf {
     PathBuf::from(name)
 }
 
-fn run(cmd: &mut Command) -> Result<()> {
+pub(crate) fn run(cmd: &mut Command) -> Result<()> {
     let status = cmd
         .status()
         .map_err(|e| format!("{:?}: {e}", cmd.get_program()))?;
@@ -187,7 +187,7 @@ fn zip_entry(jar: &Path, name: &str) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
-fn remove_dir(dir: &Path) -> Result<()> {
+pub(crate) fn remove_dir(dir: &Path) -> Result<()> {
     match std::fs::remove_dir_all(dir) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -195,11 +195,11 @@ fn remove_dir(dir: &Path) -> Result<()> {
     }
 }
 
-fn collect_jars(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+pub(crate) fn collect_jars(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     collect_files(dir, "jar", out)
 }
 
-fn collect_files(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) -> Result<()> {
+pub(crate) fn collect_files(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) -> Result<()> {
     let entries = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     for entry in entries {
         let path = entry.map_err(|e| format!("{}: {e}", dir.display()))?.path();
