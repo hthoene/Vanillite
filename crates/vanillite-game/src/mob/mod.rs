@@ -6,6 +6,8 @@
 //! readable for blocks and light); what changes blocks (explosions, a sheep eating grass) is
 //! queued as a [`WorldAction`] and applied by the world right after that mob's tick.
 
+pub mod animal;
+pub mod attack;
 pub mod combat;
 pub mod goals;
 pub mod kinds;
@@ -16,6 +18,7 @@ pub mod path;
 pub mod physics;
 pub mod projectile;
 pub mod spawn;
+pub mod tame;
 
 use vanillite_base::random::{LegacyRandom, RandomSource};
 use vanillite_base::{Aabb, BlockPos, ChunkPos, Vec3};
@@ -179,6 +182,34 @@ pub struct MobData {
     pub xp_reward: i32,
     /// The last block position (`lastPos`).
     pub last_pos: BlockPos,
+    /// Wears a saddle (`EquipmentSlot.SADDLE`).
+    pub saddled: bool,
+    /// `ItemBasedSteering`: boosting, the ticks boosted and the boost length
+    /// (`DATA_BOOST_TIME`).
+    pub boosting: bool,
+    pub boost_time: i32,
+    pub boost_total: i32,
+    /// `getCustomName`, encoded as the `custom_name` component (network NBT).
+    pub custom_name: Option<Box<[u8]>>,
+    /// `TamableAnimal`: the owner's UUID, tame, ordered to sit, sitting pose.
+    pub owner: Option<u128>,
+    pub tame: bool,
+    pub order_to_sit: bool,
+    pub in_sitting_pose: bool,
+    /// `loveCause`: the player who fed it.
+    pub love_cause: Option<u128>,
+    /// `forcedAge` and `forcedAgeTimer` (babies fed to grow).
+    pub forced_age: i32,
+    pub forced_age_timer: i32,
+    /// A leash read from NBT, attached once its holder is there.
+    pub pending_leash: Option<LeashRef>,
+}
+
+/// What holds a leash in entity NBT (`leash`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LeashRef {
+    Entity(u128),
+    Knot(BlockPos),
 }
 
 impl MobData {
@@ -259,6 +290,19 @@ impl MobData {
             variant: 0,
             xp_reward: 0,
             last_pos: BlockPos::new(i32::MIN, i32::MIN, i32::MIN),
+            saddled: false,
+            boosting: false,
+            boost_time: 0,
+            boost_total: 0,
+            custom_name: None,
+            owner: None,
+            tame: false,
+            order_to_sit: false,
+            in_sitting_pose: false,
+            love_cause: None,
+            forced_age: 0,
+            forced_age_timer: 0,
+            pending_leash: None,
         };
         mob.ambient_sound_time = -kind.ambient_sound_interval();
         mob.egg_time = mob.random.next_int_bounded(6000) + 6000;

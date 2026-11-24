@@ -113,6 +113,9 @@ packet_set! {
     ServerboundPlay {
         AcceptTeleportation(play::serverbound::AcceptTeleportation),
         Attack(play::serverbound::Attack),
+        Interact(play::serverbound::Interact),
+        MoveVehicle(play::serverbound::MoveVehicle),
+        PaddleBoat(play::serverbound::PaddleBoat),
         ContainerClick(play::serverbound::ContainerClick),
         ContainerClose(play::serverbound::ContainerClose),
         PickItemFromBlock(play::serverbound::PickItemFromBlock),

@@ -57,6 +57,28 @@ pub(crate) fn game_data(packs: Option<&LoadedPacks>) -> GameData {
                 .collect()
         })
         .unwrap_or_default();
+    let entity_tags: HashMap<String, Vec<u16>> = packs
+        .tags("minecraft:entity_type")
+        .map(|tags| {
+            tags.keys()
+                .map(|t| (t.clone(), tag_ids("minecraft:entity_type", t)))
+                .collect()
+        })
+        .unwrap_or_default();
+    let enchants = vanillite_game::enchant::Enchantments {
+        list: packs
+            .registry("minecraft:enchantment")
+            .map(|r| {
+                r.entries()
+                    .iter()
+                    .map(|e| {
+                        let json = serde_json::from_str(e.json.get()).unwrap_or_default();
+                        vanillite_game::enchant::Enchantment::parse(&e.id, &json)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+    };
     let mut info = vanillite_protocol::item::RegistryInfo::default();
     for r in packs.registries() {
         info.sizes.insert(r.name.to_owned(), r.entries().len());
@@ -74,6 +96,9 @@ pub(crate) fn game_data(packs: Option<&LoadedPacks>) -> GameData {
         loot,
         enchantments,
         item_tags,
+        entity_tags,
+        enchants,
+        enderman_holdable: tag_ids("minecraft:block", "minecraft:enderman_holdable"),
     }
 }
 

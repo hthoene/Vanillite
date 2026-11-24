@@ -58,6 +58,10 @@ pub fn tick(t: &mut Tick<'_, '_>) {
     }
     // `tickHeadTurn` → `BodyRotationControl.clientTick`.
     nav::tick_body_rotation(t);
+    super::tame::tick_leash(t);
+    if !t.exists() {
+        return;
+    }
     kinds::after_tick(t);
 }
 
@@ -278,7 +282,14 @@ fn ai_step(t: &mut Tick<'_, '_>) {
     } else {
         t.mob().no_jump_delay = 0;
     }
-    if effective_ai {
+    // A mob its rider steers moves on the rider's client (`isControlledByLocalInstance`).
+    let steered = t
+        .ents
+        .riding
+        .passengers_of(t.id)
+        .first()
+        .is_some_and(|&p| crate::riding::controls(t.ents, p, t.id));
+    if effective_ai && !steered {
         let m = t.mob_ref();
         let input = Vec3::new(f64::from(m.xxa), f64::from(m.yya), f64::from(m.zza));
         travel(t, input);

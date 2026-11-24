@@ -32,6 +32,20 @@ pub struct GameData {
     pub enchantments: HashMap<String, u32>,
     /// Item tags: tag id → item ids.
     pub item_tags: HashMap<String, Vec<u16>>,
+    /// Entity type tags: tag id → entity type ids.
+    pub entity_tags: HashMap<String, Vec<u16>>,
+    /// The combat effects of the enchantments, by registry id.
+    pub enchants: crate::enchant::Enchantments,
+    /// `#minecraft:enderman_holdable` block ids.
+    pub enderman_holdable: Vec<u16>,
+}
+
+impl crate::predicate::EntityTags for GameData {
+    fn entity_in_tag(&self, kind: vanillite_data::entity::EntityTypeId, tag: &str) -> bool {
+        self.entity_tags
+            .get(tag)
+            .is_some_and(|v| v.contains(&kind.0))
+    }
 }
 
 static GAME_DATA: std::sync::OnceLock<std::sync::Arc<GameData>> = std::sync::OnceLock::new();
@@ -894,6 +908,7 @@ fn drop_resources(ctx: &mut PlayContext<'_>, state: BlockState, pos: BlockPos, t
             enchantment_level: &enchantment_level,
             item_in_tag: &item_in_tag,
             explosion_radius: None,
+            entity: None,
         };
         let mut rng = LevelRandom(&mut *ctx.level);
         data.loot.block_drops(&loot, &mut rng, &mut stacks);

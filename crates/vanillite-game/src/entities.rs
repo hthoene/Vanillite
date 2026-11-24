@@ -61,6 +61,68 @@ pub struct Entities {
     pub by_network_id: FxHashMap<i32, EntityId>,
     /// Primed TNT kind data.
     pub primed_tnts: Dense<PrimedTntData>,
+    /// Vehicles and their passengers.
+    pub riding: Riding,
+    /// Player entities by UUID (owners and leash holders are found by it).
+    pub players_by_uuid: FxHashMap<u128, EntityId>,
+    /// Leashed mobs and what holds them (`leashHolder`): a player, mob or leash knot.
+    pub leashes: FxHashMap<EntityId, EntityId>,
+    /// Boat kind data (every type of [`crate::vehicle::BoatKind`]).
+    pub boats: Dense<crate::vehicle::BoatData>,
+    /// Leash knot kind data (their position block).
+    pub knots: Dense<BlockPos>,
+}
+
+/// Who rides what (`Entity.vehicle`, `Entity.passengers`).
+#[derive(Debug, Default)]
+pub struct Riding {
+    vehicle: FxHashMap<EntityId, EntityId>,
+    passengers: FxHashMap<EntityId, Vec<EntityId>>,
+}
+
+impl Riding {
+    /// The vehicle `id` rides.
+    pub fn vehicle_of(&self, id: EntityId) -> Option<EntityId> {
+        self.vehicle.get(&id).copied()
+    }
+
+    /// The passengers of `id` in order (the first one controls).
+    pub fn passengers_of(&self, id: EntityId) -> &[EntityId] {
+        self.passengers.get(&id).map_or(&[], Vec::as_slice)
+    }
+
+    /// Adds `passenger` to `vehicle` (`addPassenger`); players come first.
+    pub fn add(&mut self, passenger: EntityId, vehicle: EntityId, is_player: bool) {
+        self.vehicle.insert(passenger, vehicle);
+        let list = self.passengers.entry(vehicle).or_default();
+        if is_player {
+            list.insert(0, passenger);
+        } else {
+            list.push(passenger);
+        }
+    }
+
+    /// Removes `passenger` from its vehicle (`removeVehicle`); returns the vehicle.
+    pub fn remove(&mut self, passenger: EntityId) -> Option<EntityId> {
+        let vehicle = self.vehicle.remove(&passenger)?;
+        if let Some(list) = self.passengers.get_mut(&vehicle) {
+            list.retain(|&p| p != passenger);
+            if list.is_empty() {
+                self.passengers.remove(&vehicle);
+            }
+        }
+        Some(vehicle)
+    }
+
+    /// The vehicles that have passengers.
+    pub fn vehicles(&self) -> Vec<EntityId> {
+        self.passengers.keys().copied().collect()
+    }
+
+    /// Whether anything rides anything.
+    pub fn is_empty(&self) -> bool {
+        self.vehicle.is_empty()
+    }
 }
 
 impl Entities {
@@ -93,7 +155,10 @@ impl Entities {
         let mut new = NewEntity::new(ids::PLAYER, network_id, uuid, pos);
         new.rot = rot;
         let players = &mut self.players;
-        self.store.spawn(new, |id| players.push(id, data))
+        let id = self.store.spawn(new, |id| players.push(id, data));
+        self.by_network_id.insert(network_id.0, id);
+        self.players_by_uuid.insert(uuid, id);
+        id
     }
 
     /// Adds an item entity (`new ItemEntity`): a random yaw like Vanilla's constructor.
@@ -217,7 +282,7 @@ impl Entities {
         self.orbs.get_mut(row)
     }
 
-    /// The entity with a network id, for mobs.
+    /// The entity with a network id: mobs, players, boats and leash knots.
     pub fn by_network_id(&self, network_id: i32) -> Option<EntityId> {
         self.by_network_id
             .get(&network_id)
@@ -251,8 +316,9 @@ impl Entities {
 
     /// Removes an entity of any kind together with its kind data.
     pub fn despawn(&mut self, id: EntityId) -> Option<Removed> {
+        self.unlink(id);
         let removed = self.store.despawn(id)?;
-        if is_mob_kind(removed.kind) {
+        if self.by_network_id.get(&removed.network_id.0) == Some(&id) {
             self.by_network_id.remove(&removed.network_id.0);
         }
         let moved = self.remove_kind_row(removed.kind, removed.kind_row);
@@ -268,12 +334,47 @@ impl Entities {
         if entity.kind() != ids::PLAYER {
             return None;
         }
+        let uuid = entity.uuid();
+        self.unlink(id);
         let removed = self.store.despawn(id)?;
+        if self.by_network_id.get(&removed.network_id.0) == Some(&id) {
+            self.by_network_id.remove(&removed.network_id.0);
+        }
+        if self.players_by_uuid.get(&uuid) == Some(&id) {
+            self.players_by_uuid.remove(&uuid);
+        }
         let (data, moved) = self.players.swap_remove(removed.kind_row)?;
         if let Some(moved) = moved {
             self.store.set_kind_row(moved, removed.kind_row);
         }
         Some((removed, data))
+    }
+
+    /// Drops the riding and leash links of a removed entity (`ejectPassengers`,
+    /// `removeVehicle`, `dropLeash`); clients learn it from the removal itself.
+    fn unlink(&mut self, id: EntityId) {
+        if self.riding.is_empty() && self.leashes.is_empty() {
+            return;
+        }
+        self.riding.remove(id);
+        let passengers: Vec<EntityId> = self.riding.passengers_of(id).to_vec();
+        for p in passengers {
+            self.riding.remove(p);
+        }
+        self.leashes.remove(&id);
+    }
+
+    /// The player entity with a UUID.
+    pub fn player_by_uuid(&self, uuid: u128) -> Option<EntityId> {
+        self.players_by_uuid
+            .get(&uuid)
+            .copied()
+            .filter(|&id| self.store.contains(id))
+    }
+
+    /// The vehicle `id` rides (`getVehicle`).
+    pub fn vehicle_of(&self, id: EntityId) -> Option<EntityId> {
+        self.riding.vehicle_of(id)
     }
 
     /// Removes a kind store row; returns the entity that moved into it.
@@ -296,6 +397,10 @@ impl Entities {
             self.primed_tnts
                 .swap_remove(row)
                 .and_then(|(_, moved)| moved)
+        } else if crate::vehicle::BoatKind::of(kind).is_some() {
+            self.boats.swap_remove(row).and_then(|(_, moved)| moved)
+        } else if kind == ids::LEASH_KNOT {
+            self.knots.swap_remove(row).and_then(|(_, moved)| moved)
         } else {
             None
         }
@@ -353,5 +458,25 @@ impl Entities {
         }
         let row = entity.kind_row();
         self.items.get_mut(row)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vanillite_base::slot_map::SlotMap;
+
+    #[test]
+    fn players_ride_in_front() {
+        let mut ids: SlotMap<EntityId, ()> = SlotMap::new();
+        let (v, mob, player) = (ids.insert(()), ids.insert(()), ids.insert(()));
+        let mut r = Riding::default();
+        r.add(mob, v, false);
+        r.add(player, v, true);
+        assert_eq!(r.passengers_of(v), &[player, mob]);
+        assert_eq!(r.remove(player), Some(v));
+        assert_eq!(r.passengers_of(v), &[mob]);
+        assert_eq!(r.remove(mob), Some(v));
+        assert!(r.is_empty());
     }
 }

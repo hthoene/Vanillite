@@ -36,6 +36,7 @@ pub fn drop_resources(
         enchantment_level: &|_| 0,
         item_in_tag: &item_in_tag,
         explosion_radius: None,
+        entity: None,
     };
     data.loot.block_drops(&loot, level.random(), &mut stacks);
     for stack in stacks {

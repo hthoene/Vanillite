@@ -109,6 +109,7 @@ impl Rule {
     pub const ADVANCE_TIME: Rule = Rule(0);
     pub const ADVANCE_WEATHER: Rule = Rule(1);
     pub const DROWNING_DAMAGE: Rule = Rule(7);
+    pub const ENTITY_DROPS: Rule = Rule(10);
     pub const FALL_DAMAGE: Rule = Rule(11);
     pub const FIRE_DAMAGE: Rule = Rule(12);
     pub const FREEZE_DAMAGE: Rule = Rule(15);
@@ -269,6 +270,7 @@ mod tests {
             (Rule::ADVANCE_TIME, "advance_time"),
             (Rule::ADVANCE_WEATHER, "advance_weather"),
             (Rule::DROWNING_DAMAGE, "drowning_damage"),
+            (Rule::ENTITY_DROPS, "entity_drops"),
             (Rule::FALL_DAMAGE, "fall_damage"),
             (Rule::FIRE_DAMAGE, "fire_damage"),
             (Rule::FREEZE_DAMAGE, "freeze_damage"),

@@ -140,6 +140,52 @@ pub enum Goal {
         aggro_time: i32,
         teleport_time: i32,
     },
+    /// `BreedGoal`.
+    Breed {
+        speed: f64,
+        partner: Option<EntityId>,
+        love_time: i32,
+    },
+    /// `TemptGoal` with the items that tempt.
+    Tempt {
+        speed: f64,
+        items: TemptItems,
+        player: Option<EntityId>,
+        calm_down: i32,
+    },
+    /// `SitWhenOrderedToGoal`.
+    SitWhenOrdered,
+    /// `EndermanLeaveBlockGoal`.
+    EndermanLeaveBlock,
+    /// `EndermanTakeBlockGoal`.
+    EndermanTakeBlock,
+    /// `FollowOwnerGoal`.
+    FollowOwner {
+        speed: f64,
+        start_distance: f32,
+        stop_distance: f32,
+        recalc: i32,
+    },
+    /// `OwnerHurtByTargetGoal`: attacks what hurt its owner.
+    OwnerHurtBy {
+        state: TargetState,
+        timestamp: i32,
+        found: Option<EntityId>,
+    },
+    /// `OwnerHurtTargetGoal`: attacks what its owner hurt.
+    OwnerHurt {
+        state: TargetState,
+        timestamp: i32,
+        found: Option<EntityId>,
+    },
+}
+
+/// The items of a [`Goal::Tempt`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TemptItems {
+    /// The animal's breeding food (`isFood`).
+    Food,
+    CarrotOnAStick,
 }
 
 impl Goal {
@@ -156,6 +202,10 @@ impl Goal {
             Goal::RestrictSun | Goal::FollowParent { .. } => 0,
             Goal::NearestTarget { .. } | Goal::HurtBy { .. } | Goal::EndermanStare { .. } => TARGET,
             Goal::EndermanFreeze { .. } => JUMP | MOVE,
+            Goal::Breed { .. } | Goal::Tempt { .. } | Goal::FollowOwner { .. } => MOVE | LOOK,
+            Goal::SitWhenOrdered => JUMP | MOVE,
+            Goal::EndermanLeaveBlock | Goal::EndermanTakeBlock => 0,
+            Goal::OwnerHurtBy { .. } | Goal::OwnerHurt { .. } => TARGET,
         }
     }
 
@@ -267,6 +317,49 @@ impl Goal {
             interval: reduced(10),
             found: None,
             spider: true,
+        }
+    }
+
+    pub fn breed(speed: f64) -> Goal {
+        Goal::Breed {
+            speed,
+            partner: None,
+            love_time: 0,
+        }
+    }
+
+    pub fn tempt(speed: f64, items: TemptItems) -> Goal {
+        Goal::Tempt {
+            speed,
+            items,
+            player: None,
+            calm_down: 0,
+        }
+    }
+
+    /// `FollowOwnerGoal(mob, speed, startDistance, stopDistance)`.
+    pub fn follow_owner(speed: f64, start_distance: f32, stop_distance: f32) -> Goal {
+        Goal::FollowOwner {
+            speed,
+            start_distance,
+            stop_distance,
+            recalc: 0,
+        }
+    }
+
+    pub fn owner_hurt_by() -> Goal {
+        Goal::OwnerHurtBy {
+            state: TargetState::new(false),
+            timestamp: 0,
+            found: None,
+        }
+    }
+
+    pub fn owner_hurt() -> Goal {
+        Goal::OwnerHurt {
+            state: TargetState::new(false),
+            timestamp: 0,
+            found: None,
         }
     }
 
@@ -564,6 +657,68 @@ fn nearest_player(
             continue;
         };
         let d = e.pos().distance_to_sqr(at);
+        if best.is_none_or(|(_, b)| d < b) {
+            best = Some((id, d));
+        }
+    }
+    t.cx.ids = candidates;
+    best.map(|(id, _)| id)
+}
+
+/// `TemptGoal.canUse`: the nearest player (not a spectator) within the tempt range holding a
+/// tempting item in either hand.
+fn tempting_player(t: &mut Tick<'_, '_>, items: TemptItems) -> Option<EntityId> {
+    // `minecraft:tempt_range` defaults to 10.
+    let range = 10.0;
+    let p = t.pos();
+    let at = Vec3::new(p.x, t.eye_y(), p.z);
+    let area = Aabb::new(
+        p.x - range,
+        p.y - range,
+        p.z - range,
+        p.x + range,
+        p.y + range,
+        p.z + range,
+    );
+    let mut candidates = std::mem::take(&mut t.cx.ids);
+    candidates.clear();
+    t.ents
+        .store
+        .for_each_in(&area, true, |id| candidates.push(id));
+    let kind = t.mob_ref().kind;
+    let mut best: Option<(EntityId, f64)> = None;
+    for &id in &candidates {
+        let Some(pd) = t.ents.player(id) else {
+            continue;
+        };
+        if pd.survival.is_dead_or_dying() || pd.game_mode == GameMode::Spectator {
+            continue;
+        }
+        let holds = [
+            crate::item::EquipmentSlot::MainHand,
+            crate::item::EquipmentSlot::OffHand,
+        ]
+        .iter()
+        .any(|&s| {
+            let stack = pd.inventory.equipment(s);
+            !stack.is_empty()
+                && match items {
+                    TemptItems::Food => super::animal::is_food(kind, stack.item),
+                    TemptItems::CarrotOnAStick => {
+                        stack.item == vanillite_data::item::ids::CARROT_ON_A_STICK.0
+                    }
+                }
+        });
+        if !holds {
+            continue;
+        }
+        let Some(e) = t.ents.store.get(id) else {
+            continue;
+        };
+        let d = e.pos().distance_to_sqr(at);
+        if d > range * range {
+            continue;
+        }
         if best.is_none_or(|(_, b)| d < b) {
             best = Some((id, d));
         }
@@ -873,6 +1028,44 @@ fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
                 _ => false,
             }
         }
+        Goal::Breed { partner, .. } => {
+            if t.mob_ref().in_love <= 0 {
+                return false;
+            }
+            *partner = super::animal::free_partner(t);
+            partner.is_some()
+        }
+        Goal::Tempt {
+            items,
+            player,
+            calm_down,
+            ..
+        } => {
+            if *calm_down > 0 {
+                *calm_down -= 1;
+                return false;
+            }
+            *player = tempting_player(t, *items);
+            player.is_some()
+        }
+        Goal::EndermanLeaveBlock => {
+            t.mob_ref().carried.is_some()
+                && t.env.rules.bool(Rule::MOB_GRIEFING)
+                && random_int(t, reduced(2000)) == 0
+        }
+        Goal::EndermanTakeBlock => {
+            t.mob_ref().carried.is_none()
+                && t.env.rules.bool(Rule::MOB_GRIEFING)
+                && random_int(t, reduced(20)) == 0
+        }
+        Goal::SitWhenOrdered => super::tame::sit_can_use(t),
+        Goal::FollowOwner { start_distance, .. } => super::tame::follow_can_use(t, *start_distance),
+        Goal::OwnerHurtBy {
+            timestamp, found, ..
+        } => super::tame::owner_hurt_by_can_use(t, *timestamp, found, true),
+        Goal::OwnerHurt {
+            timestamp, found, ..
+        } => super::tame::owner_hurt_by_can_use(t, *timestamp, found, false),
         Goal::NearestTarget {
             interval,
             found,
@@ -984,6 +1177,24 @@ fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
             };
             let d = distance_sqr(t, pos);
             (9.0..=256.0).contains(&d)
+        }
+        Goal::Breed {
+            partner, love_time, ..
+        } => {
+            partner.is_some_and(|p| {
+                t.ents.mob(p).is_some_and(|m| {
+                    m.is_alive() && m.in_love > 0 && !super::animal::is_panicking(m)
+                })
+            }) && *love_time < 60
+        }
+        Goal::Tempt { .. } => can_use(t, g),
+        Goal::EndermanLeaveBlock | Goal::EndermanTakeBlock => can_use(t, g),
+        Goal::SitWhenOrdered => t.mob_ref().order_to_sit,
+        Goal::FollowOwner { stop_distance, .. } => {
+            super::tame::follow_can_continue(t, *stop_distance)
+        }
+        Goal::OwnerHurtBy { state, .. } | Goal::OwnerHurt { state, .. } => {
+            target_can_continue(t, state)
         }
         Goal::NearestTarget { state, .. } | Goal::HurtBy { state, .. } => {
             target_can_continue(t, state)
@@ -1104,6 +1315,33 @@ fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
             t.mob().nav.stop();
         }
         Goal::FollowParent { recalc, .. } => *recalc = 0,
+        Goal::Breed { .. }
+        | Goal::Tempt { .. }
+        | Goal::EndermanLeaveBlock
+        | Goal::EndermanTakeBlock => {}
+        Goal::SitWhenOrdered => {
+            t.mob().nav.stop();
+            super::tame::set_in_sitting_pose(t, true);
+        }
+        Goal::FollowOwner { recalc, .. } => *recalc = 0,
+        Goal::OwnerHurtBy {
+            state,
+            timestamp,
+            found,
+        } => {
+            set_target(t, *found);
+            state.unseen_ticks = 0;
+            *timestamp = super::tame::owner_hurt_stamp(t, true);
+        }
+        Goal::OwnerHurt {
+            state,
+            timestamp,
+            found,
+        } => {
+            set_target(t, *found);
+            state.unseen_ticks = 0;
+            *timestamp = super::tame::owner_hurt_stamp(t, false);
+        }
         Goal::NearestTarget { state, found, .. } => {
             set_target(t, *found);
             state.unseen_ticks = 0;
@@ -1191,6 +1429,25 @@ fn stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
             projectile::stop_using_item(t);
         }
         Goal::EatBlock { tick } => *tick = 0,
+        Goal::Breed {
+            partner, love_time, ..
+        } => {
+            *partner = None;
+            *love_time = 0;
+        }
+        Goal::Tempt {
+            player, calm_down, ..
+        } => {
+            *player = None;
+            t.mob().nav.stop();
+            *calm_down = reduced(100);
+        }
+        Goal::SitWhenOrdered => super::tame::set_in_sitting_pose(t, false),
+        Goal::FollowOwner { .. } => t.mob().nav.stop(),
+        Goal::OwnerHurtBy { state, .. } | Goal::OwnerHurt { state, .. } => {
+            set_target(t, None);
+            state.target_mob = None;
+        }
         Goal::FollowParent { parent, .. } => *parent = None,
         Goal::NearestTarget { state, .. } | Goal::HurtBy { state, .. } => {
             set_target(t, None);
@@ -1262,6 +1519,44 @@ fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
                 }
             }
         }
+        Goal::Breed {
+            speed,
+            partner,
+            love_time,
+        } => {
+            let Some(p) = *partner else {
+                return;
+            };
+            let Some(o) = t.other(p) else {
+                return;
+            };
+            t.mob()
+                .look
+                .set_look_at(Vec3::new(o.pos.x, o.eye_y, o.pos.z), 10.0, 40.0);
+            nav::move_to_entity(t, o.pos, 0, *speed);
+            *love_time += 1;
+            if *love_time >= reduced(60) && distance_sqr(t, o.pos) < 9.0 {
+                let id = t.id;
+                super::animal::breed(t.level, t.ents, t.env, t.cx, id, p);
+            }
+        }
+        Goal::Tempt { speed, player, .. } => {
+            let Some(o) = player.and_then(|p| t.other(p)) else {
+                return;
+            };
+            // `getMaxHeadYRot() + 20`, `getMaxHeadXRot()`.
+            t.mob()
+                .look
+                .set_look_at(Vec3::new(o.pos.x, o.eye_y, o.pos.z), 95.0, 40.0);
+            if distance_sqr(t, o.pos) < 6.25 {
+                t.mob().nav.stop();
+            } else {
+                nav::move_to_entity(t, o.pos, 0, *speed);
+            }
+        }
+        Goal::EndermanLeaveBlock => kinds::enderman_leave_block(t),
+        Goal::EndermanTakeBlock => kinds::enderman_take_block(t),
+        Goal::FollowOwner { speed, recalc, .. } => super::tame::follow_tick(t, *speed, recalc),
         Goal::EndermanFreeze { target } => {
             if let Some(o) = target.and_then(|id| t.other(id)) {
                 nav::look_at(t, Vec3::new(o.pos.x, o.eye_y, o.pos.z));

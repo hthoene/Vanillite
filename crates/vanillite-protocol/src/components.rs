@@ -105,6 +105,8 @@ pub mod ids {
     pub const BLOCK_STATE: u16 = find("minecraft:block_state");
     pub const BLOCK_ENTITY_DATA: u16 = find("minecraft:block_entity_data");
     pub const CUSTOM_NAME: u16 = find("minecraft:custom_name");
+    pub const ATTRIBUTE_MODIFIERS: u16 = find("minecraft:attribute_modifiers");
+    pub const ENTITY_DATA: u16 = find("minecraft:entity_data");
 }
 
 /// Validates one component value: `data` must be exactly one value of the stream codec of

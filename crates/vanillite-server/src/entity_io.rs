@@ -176,8 +176,45 @@ impl EntityChunks {
                 new.velocity = v;
                 new.rot = Rotation::default();
                 level.entities.spawn_orb(new, orb);
-            } else if nbt::type_of(&tag).is_some_and(|t| t == ids::ARROW || t == ids::PLAYER) {
-                // Arrows of mobs despawn; players are stored apart.
+            } else if let Some((e, data)) = nbt::load_item(&tag) {
+                let id = level.entities.spawn_item(
+                    level.network_ids().next(),
+                    e.uuid,
+                    e.pos,
+                    e.velocity,
+                    e.rot.y_rot,
+                    data,
+                );
+                if let Some(mut ent) = level.entities.store.get_mut(id) {
+                    ent.set_flags(EntityFlags::ON_GROUND, e.on_ground);
+                }
+            } else if let Some((e, data)) = nbt::load_arrow(&tag) {
+                let mut new = NewEntity::new(ids::ARROW, level.network_ids().next(), e.uuid, e.pos);
+                new.velocity = e.velocity;
+                new.rot = e.rot;
+                level.entities.spawn_arrow(new, data);
+            } else if let Some((e, data)) = nbt::load_boat(&tag) {
+                let leash = match tag.get("leash") {
+                    Some(vanillite_nbt::Tag::Compound(c)) => {
+                        nbt::uuid_of(c).map(mob::LeashRef::Entity)
+                    }
+                    _ => None,
+                };
+                let network_ids = std::sync::Arc::clone(level.network_ids_arc());
+                let id = vanillite_game::vehicle::spawn_boat(
+                    &mut level.entities,
+                    &network_ids,
+                    e.uuid,
+                    e.pos,
+                    e.rot.y_rot,
+                    data,
+                );
+                if let Some(mut ent) = level.entities.store.get_mut(id) {
+                    ent.set_velocity(e.velocity);
+                }
+                let _ = leash;
+            } else if nbt::type_of(&tag).is_some_and(|t| t == ids::PLAYER || t == ids::LEASH_KNOT) {
+                // Players are stored apart; knots come back with their leashes.
             } else {
                 raw.push(tag);
             }
@@ -218,15 +255,39 @@ impl EntityChunks {
                 continue;
             }
             let kind = e.kind();
+            let ents = &level.entities;
+            let leash = ents.leashes.get(&id).and_then(|&h| {
+                if let Some(&pos) = ents.knots.get(ents.store.get(h)?.kind_row())
+                    && ents.store.get(h)?.kind() == ids::LEASH_KNOT
+                {
+                    return Some(mob::LeashRef::Knot(pos));
+                }
+                Some(mob::LeashRef::Entity(ents.store.get(h)?.uuid()))
+            });
             let tag = if is_mob_kind(kind) {
-                level
-                    .entities
-                    .mob(id)
-                    .filter(|m| m.is_alive())
-                    .map(|m| nbt::save_mob(&e, m))
+                ents.mob(id).filter(|m| m.is_alive()).map(|m| {
+                    if leash.is_some() {
+                        let mut m = m.clone();
+                        m.pending_leash = leash;
+                        nbt::save_mob(&e, &m)
+                    } else {
+                        nbt::save_mob(&e, m)
+                    }
+                })
             } else if kind == ids::EXPERIENCE_ORB {
-                level.entities.orb(id).map(|o| nbt::save_orb(&e, o))
+                ents.orb(id).map(|o| nbt::save_orb(&e, o))
             } else if kind == ids::ARROW {
+                ents.arrow(id).map(|a| {
+                    let owner = a.owner.and_then(|o| ents.store.get(o)).map(|o| o.uuid());
+                    nbt::save_arrow(&e, a, owner)
+                })
+            } else if kind == ids::ITEM {
+                ents.item(id)
+                    .filter(|d| !d.stack.is_empty())
+                    .map(|d| nbt::save_item(&e, d))
+            } else if let Some(b) = ents.boat(id) {
+                Some(nbt::save_boat(&e, b, leash))
+            } else if kind == ids::LEASH_KNOT {
                 None
             } else {
                 continue;

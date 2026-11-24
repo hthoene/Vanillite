@@ -11,6 +11,7 @@
 
 pub mod block;
 pub mod commands;
+pub mod enchant;
 pub mod entities;
 pub mod inventory;
 pub mod item;
@@ -19,4 +20,7 @@ pub mod level;
 pub mod loot;
 pub mod mob;
 pub mod player;
+pub mod predicate;
+pub mod riding;
 pub mod survival;
+pub mod vehicle;

@@ -9,7 +9,9 @@
 //! The damage of the living entities hit is queued in [`super::LevelOutput::explosion_hurts`]
 //! for the mob system, which applies it right after the explosion's tick step.
 //!
-//! Not ported: damage of non-living entities (items, end crystals), fire of fire explosions, the
+//! Items lose health and are destroyed, boats take damage like living entities.
+//!
+//! Not ported: damage of end crystals and other non-living entities, fire of fire explosions, the
 //! block reactions of `TRIGGER_BLOCK` explosions (wind charges) and the special damage
 //! calculators (wither skulls, wind charges, TNT that used a portal).
 
@@ -189,14 +191,41 @@ impl Level {
             let kind = entity.kind();
             let (pos, aabb) = (entity.pos(), entity.aabb());
             // `getEntities(..., NO_SPECTATORS)`.
-            let player = self.entities.player(id);
-            if player.is_some_and(|p| p.game_mode == vanillite_config::GameMode::Spectator) {
+            if self
+                .entities
+                .player(id)
+                .is_some_and(|p| p.game_mode == vanillite_config::GameMode::Spectator)
+            {
                 continue;
             }
             let dist = pos.distance_to_sqr(center).sqrt() / f64::from(double_radius);
             if dist > 1.0 {
                 continue;
             }
+            // `ExplosionDamageCalculator.getEntityDamageAmount`: living entities and boats
+            // through the mob system, items here (`ItemEntity.hurtServer`: health 5).
+            let is_boat = crate::vehicle::BoatKind::of(kind).is_some();
+            if kind == entity_ids::ITEM {
+                let double_radius = f64::from(double_radius);
+                let pow = (1.0 - dist) * f64::from(self.seen_percent(center, aabb));
+                #[allow(clippy::cast_possible_truncation)]
+                let amount = ((pow * pow + pow) / 2.0 * 7.0 * double_radius + 1.0) as f32;
+                let destroyed = self.entities.item_mut(id).is_some_and(|d| {
+                    // The nether star resists explosions (`damage_resistant`).
+                    if crate::item::item_id(&d.stack).name() == "minecraft:nether_star" {
+                        return false;
+                    }
+                    #[allow(clippy::cast_possible_truncation)]
+                    let health = (f32::from(d.health) - amount) as i16;
+                    d.health = health;
+                    health <= 0
+                });
+                if destroyed {
+                    self.entities.despawn(id);
+                    continue;
+                }
+            }
+            let player = self.entities.player(id);
             let mob = self.entities.mob(id);
             let eye = match mob {
                 Some(mob) => crate::mob::eye_height(mob),
@@ -210,8 +239,7 @@ impl Level {
             let direction = (origin - center).normalize();
             let seen = self.seen_percent(center, aabb);
             let exposure = f64::from(seen);
-            // `ExplosionDamageCalculator.getEntityDamageAmount` for the living entities.
-            if player.is_some() || mob.is_some_and(crate::mob::MobData::is_alive) {
+            if player.is_some() || mob.is_some_and(crate::mob::MobData::is_alive) || is_boat {
                 let double_radius = f64::from(double_radius);
                 let pow = (1.0 - dist) * exposure;
                 #[allow(clippy::cast_possible_truncation)]
