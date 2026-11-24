@@ -202,6 +202,7 @@ pub(super) fn register_summon(d: &mut Dispatcher<CommandId>) {
                     registry: "minecraft:entity_type",
                 },
             )
+            .suggests(suggest::SUMMONABLE_ENTITIES)
             .executes(CommandId::Summon)
             .then(
                 argument("pos", ArgumentType::Vec3 { center: true })

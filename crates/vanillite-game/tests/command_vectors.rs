@@ -21,6 +21,7 @@ const OUR_COMMANDS: &[&str] = &[
     "w",
     "say",
     "seed",
+    "summon",
     "teleport",
     "tp",
     "time",

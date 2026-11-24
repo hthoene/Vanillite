@@ -207,6 +207,7 @@ fn help_lines_like_vanilla() {
             "/w -> msg",
             "/say <message>",
             "/seed",
+            "/summon <entity> [<pos>]",
             "/teleport (<location>|<destination>|<targets>)",
             "/tp -> teleport",
             "/time (set|add|pause|resume|rate|query|of)",

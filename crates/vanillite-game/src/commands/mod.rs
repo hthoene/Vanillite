@@ -41,6 +41,8 @@ pub mod suggest {
     pub const WHITELIST_CANDIDATES: &str = "whitelist.candidates";
     /// Whitelisted names (`/whitelist remove`).
     pub const WHITELISTED: &str = "whitelist.names";
+    /// Entity types `/summon` accepts (a client-side provider).
+    pub const SUMMONABLE_ENTITIES: &str = "minecraft:summonable_entities";
     /// Time markers of the clock (`/time set <timemarker>`).
     pub const TIME_MARKERS: &str = "time.markers";
     /// Timelines of the clock (`/time query <timeline>`).
