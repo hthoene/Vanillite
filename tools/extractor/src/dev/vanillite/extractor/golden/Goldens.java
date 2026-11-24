@@ -20,6 +20,8 @@ import net.minecraft.server.Bootstrap;
  * JsonElement extract()} method; its output goes to {@code <out>/<part>.json}, where {@code
  * <part>} is the class name without the {@code Goldens} suffix in snake case.
  *
+ * <p>Parts in sub-packages are named relative to this package, e.g. {@code data.ItemsGoldens}.
+ *
  * <p>Usage: {@code java -cp <classes>:<server jar>:<libraries>
  * dev.vanillite.extractor.golden.Goldens <out> <PartGoldens>...}
  */
@@ -52,7 +54,8 @@ public final class Goldens {
   }
 
   private static String fileName(String part) {
-    String base = part.endsWith("Goldens") ? part.substring(0, part.length() - 7) : part;
+    String simple = part.substring(part.lastIndexOf('.') + 1);
+    String base = simple.endsWith("Goldens") ? simple.substring(0, simple.length() - 7) : simple;
     return base.replaceAll("([a-z0-9])([A-Z])", "$1_$2").toLowerCase() + ".json";
   }
 

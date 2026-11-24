@@ -1,0 +1,11 @@
+# Golden keys, written by `cargo xtask golden regen`. Do not edit.
+minecraft = "26.3"
+jar_sha1 = "33680f5f2ac32864d6d7cf5e56a705fdb3e05f4c"
+harness = 1
+
+[entries]
+block_states = "8234b37ec928954368cbbe3e909ed93d5a7e7868"
+data_pack = "7d8436c20133283f5798e33aa3ffb9e40a1e913f"
+items = "e16c1afe325cb51fc15cb2f1e3a207895ecb6866"
+packets = "f0df7cae01ee56792f65935ce1c0536155f00e39"
+registries = "a37fec1bd493056ffa2b7a99c6e1aa0612ca0da4"

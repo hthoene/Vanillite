@@ -1,0 +1,14 @@
+# Golden keys, written by `cargo xtask golden regen`. Do not edit.
+minecraft = "26.3"
+jar_sha1 = "33680f5f2ac32864d6d7cf5e56a705fdb3e05f4c"
+harness = 1
+
+[entries]
+aquifer = "f203cc0ab7042d4fabdc15a0f0e489e8e6806f94"
+base = "471df7783a34541d4a0f1541e7df14a826351c2c"
+biome = "4c0d02d32274e19c37396ed496b88443bf1d8af6"
+carver = "7a87a705760b8b38f2333dd5d815924061234a49"
+chunk = "8b521ca05b003632519aa4f097d1fa63bddcd832"
+density = "817c003e47f1a4241752ef4769c40ae92f7895e7"
+material = "27edee5a4caa8490fce526503b512fab8879ef5e"
+noise = "9dac12b20ddfebcc21d55fe0e96b1883f53c95ef"

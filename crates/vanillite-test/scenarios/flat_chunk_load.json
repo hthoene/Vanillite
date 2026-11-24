@@ -1,0 +1,6 @@
+{
+  "description": "Loading flat chunks: the classic layers across a chunk corner, unchanged over a few ticks.",
+  "tier": "fast",
+  "region": [[-3, -64, -3], [2, -59, 2]],
+  "ticks": 3
+}

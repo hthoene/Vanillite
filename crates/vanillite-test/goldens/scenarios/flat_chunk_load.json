@@ -1,0 +1,12 @@
+{"format":1,
+"region":[[-3,-64,-3],[2,-59,2]],
+"palette":[
+"minecraft:bedrock",
+"minecraft:dirt",
+"minecraft:grass_block[snowy=false]",
+"minecraft:air"],
+"frames":[
+{"tick":0,"blocks":[36,0,72,1,36,2,72,3],"block_ticks":[],"fluid_ticks":[],"entities":[]},
+{"tick":1,"changes":[],"block_ticks":[],"fluid_ticks":[],"entities":[]},
+{"tick":2,"changes":[],"block_ticks":[],"fluid_ticks":[],"entities":[]},
+{"tick":3,"changes":[],"block_ticks":[],"fluid_ticks":[],"entities":[]}]}

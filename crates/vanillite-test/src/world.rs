@@ -1,0 +1,198 @@
+//! The observation API of a scenario world, and the flat stand-in world.
+//!
+//! [`ScenarioWorld`] is what the runner needs from a world: set blocks with and without
+//! updates, step whole ticks and observe a region (blocks, pending ticks, entities). The world
+//! runtime's `World::headless` implements it once it exists; until then [`FlatWorld`] stands in:
+//! flat chunks on `vanillite-chunk` without any game mechanics, enough for the scenarios of what
+//! exists today (chunk loading, block set and get).
+
+use std::collections::HashMap;
+use std::sync::OnceLock;
+
+use vanillite_base::BlockPos;
+use vanillite_chunk::{Chunk, facts};
+use vanillite_data::block::{BlockId, BlockState, STATE_COUNT};
+
+use crate::scenario::WorldSpec;
+use crate::trace::{EntityObs, TickObs};
+
+/// How the world runs the parallel phases of a tick.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Execution {
+    /// Compute pool jobs run inline in submission order (test mode, section 3.7).
+    Serial,
+    /// Compute pool jobs run on worker threads.
+    Parallel,
+}
+
+/// A world a scenario runs in.
+pub trait ScenarioWorld {
+    /// Sets a block without neighbour or shape updates (Vanilla flags `UPDATE_CLIENTS |
+    /// UPDATE_KNOWN_SHAPE`).
+    fn set_block_raw(&mut self, pos: BlockPos, state: BlockState);
+    /// Sets a block with neighbour and shape updates (Vanilla `Level#setBlock` flags 3).
+    fn place_block(&mut self, pos: BlockPos, state: BlockState);
+    /// The block state at `pos`.
+    fn block(&self, pos: BlockPos) -> BlockState;
+    /// Runs one full world tick.
+    fn step(&mut self);
+    /// Pending block ticks inside `min..=max` in drain order (trigger tick, priority, sub-tick
+    /// order), delays relative to the current game time.
+    fn block_ticks(&self, min: BlockPos, max: BlockPos, out: &mut Vec<TickObs>);
+    /// Pending fluid ticks inside `min..=max`, like [`ScenarioWorld::block_ticks`].
+    fn fluid_ticks(&self, min: BlockPos, max: BlockPos, out: &mut Vec<TickObs>);
+    /// Entities whose block position is inside `min..=max`.
+    fn entities(&self, min: BlockPos, max: BlockPos, out: &mut Vec<EntityObs>);
+}
+
+/// Builds the world for a scenario.
+pub type WorldFactory = fn(&WorldSpec, Execution) -> Box<dyn ScenarioWorld>;
+
+/// Parses `name[key=value,...]`.
+pub fn parse_state(s: &str) -> Result<BlockState, String> {
+    let (name, props) = match s.split_once('[') {
+        Some((n, rest)) => (
+            n,
+            rest.strip_suffix(']')
+                .ok_or_else(|| format!("`{s}`: missing `]`"))?,
+        ),
+        None => (s, ""),
+    };
+    let mut state = BlockId::by_name(name)
+        .ok_or_else(|| format!("unknown block `{name}`"))?
+        .default_state();
+    for kv in props.split(',').filter(|p| !p.is_empty()) {
+        let (k, v) = kv
+            .split_once('=')
+            .ok_or_else(|| format!("`{s}`: bad property `{kv}`"))?;
+        state = state
+            .with(k.trim(), v.trim())
+            .ok_or_else(|| format!("`{s}`: no property {kv}"))?;
+    }
+    Ok(state)
+}
+
+/// `name[key=value,...]` with the properties sorted by name: the trace's state names.
+pub fn state_name(state: BlockState) -> String {
+    let mut props: Vec<_> = state.properties().collect();
+    let name = state.block().name();
+    if props.is_empty() {
+        return name.to_owned();
+    }
+    props.sort_unstable_by_key(|&(k, _)| k);
+    let inner: Vec<String> = props.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    format!("{name}[{}]", inner.join(","))
+}
+
+/// Installs the per-state chunk facts the stand-in needs (air, fluids, random ticks), once.
+fn install_facts() {
+    static DONE: OnceLock<()> = OnceLock::new();
+    DONE.get_or_init(|| {
+        let flags: Vec<u8> = (0..STATE_COUNT)
+            .map(|id| {
+                let state = BlockState(id as u16);
+                let mut f = 0;
+                if state.is_air() {
+                    f |= facts::AIR;
+                }
+                if state.random_ticks() {
+                    f |= facts::RANDOM_TICKING;
+                }
+                if !state.fluid_state().is_empty() {
+                    f |= facts::FLUID;
+                }
+                f
+            })
+            .collect();
+        facts::install(facts::Tables {
+            block_flags: Box::leak(flags.into_boxed_slice()),
+            biome_count: 1,
+        });
+    });
+}
+
+/// Overworld height range.
+const MIN_Y: i32 = -64;
+const HEIGHT: u32 = 384;
+
+/// Flat chunks generated on first access, without mechanics: blocks never change by
+/// themselves, nothing is scheduled, there are no entities. Stands in for `World::headless`.
+#[derive(Debug)]
+pub struct FlatWorld {
+    layers: Vec<BlockState>,
+    chunks: HashMap<(i32, i32), Chunk>,
+}
+
+impl FlatWorld {
+    /// A flat world of `spec`'s layers. The execution mode does not matter: nothing runs.
+    pub fn new(spec: &WorldSpec) -> Result<Self, String> {
+        install_facts();
+        let mut layers = Vec::new();
+        for (block, height) in &spec.layers {
+            let state = BlockId::by_name(block)
+                .ok_or_else(|| format!("unknown layer block `{block}`"))?
+                .default_state();
+            layers.extend(std::iter::repeat_n(state, *height as usize));
+        }
+        Ok(Self {
+            layers,
+            chunks: HashMap::new(),
+        })
+    }
+
+    /// [`WorldFactory`] of the stand-in.
+    pub fn factory(spec: &WorldSpec, _execution: Execution) -> Box<dyn ScenarioWorld> {
+        Box::new(Self::new(spec).unwrap_or_else(|e| panic!("{e}")))
+    }
+
+    fn chunk(&mut self, pos: BlockPos) -> &mut Chunk {
+        let layers = &self.layers;
+        self.chunks
+            .entry((pos.x >> 4, pos.z >> 4))
+            .or_insert_with(|| {
+                let mut chunk = Chunk::new(MIN_Y, HEIGHT, 0, BlockState::AIR.0);
+                for (i, state) in layers.iter().enumerate() {
+                    for z in 0..16 {
+                        for x in 0..16 {
+                            chunk.set_block(x, MIN_Y + i as i32, z, state.0);
+                        }
+                    }
+                }
+                chunk
+            })
+    }
+}
+
+impl ScenarioWorld for FlatWorld {
+    fn set_block_raw(&mut self, pos: BlockPos, state: BlockState) {
+        let chunk = self.chunk(pos);
+        chunk.set_block((pos.x & 15) as u32, pos.y, (pos.z & 15) as u32, state.0);
+    }
+
+    fn place_block(&mut self, pos: BlockPos, state: BlockState) {
+        // No block has behaviour here, so there is nothing to update.
+        self.set_block_raw(pos, state);
+    }
+
+    fn block(&self, pos: BlockPos) -> BlockState {
+        if let Some(chunk) = self.chunks.get(&(pos.x >> 4, pos.z >> 4)) {
+            return BlockState(
+                chunk
+                    .block((pos.x & 15) as u32, pos.y, (pos.z & 15) as u32)
+                    .unwrap_or(BlockState::AIR.0),
+            );
+        }
+        let layer = usize::try_from(pos.y - MIN_Y).ok();
+        layer
+            .and_then(|i| self.layers.get(i).copied())
+            .unwrap_or(BlockState::AIR)
+    }
+
+    fn step(&mut self) {}
+
+    fn block_ticks(&self, _: BlockPos, _: BlockPos, _: &mut Vec<TickObs>) {}
+
+    fn fluid_ticks(&self, _: BlockPos, _: BlockPos, _: &mut Vec<TickObs>) {}
+
+    fn entities(&self, _: BlockPos, _: BlockPos, _: &mut Vec<EntityObs>) {}
+}
