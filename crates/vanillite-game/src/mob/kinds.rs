@@ -34,6 +34,11 @@ pub enum Kind {
     Pig,
     Sheep,
     Chicken,
+    Guardian,
+    ElderGuardian,
+    Wither,
+    EnderDragon,
+    Warden,
 }
 
 /// Farm animal climate of a biome (`spawns_warm/cold_variant_farm_animals`).
@@ -47,7 +52,7 @@ pub enum FarmClimate {
 
 impl Kind {
     /// All kinds.
-    pub const ALL: [Kind; 9] = [
+    pub const ALL: [Kind; 14] = [
         Kind::Zombie,
         Kind::Skeleton,
         Kind::Creeper,
@@ -57,6 +62,11 @@ impl Kind {
         Kind::Pig,
         Kind::Sheep,
         Kind::Chicken,
+        Kind::Guardian,
+        Kind::ElderGuardian,
+        Kind::Wither,
+        Kind::EnderDragon,
+        Kind::Warden,
     ];
 
     /// The kind of an entity type, `None` for types without mob behaviour yet.
@@ -76,6 +86,11 @@ impl Kind {
             Kind::Pig => entity_ids::PIG,
             Kind::Sheep => entity_ids::SHEEP,
             Kind::Chicken => entity_ids::CHICKEN,
+            Kind::Guardian => entity_ids::GUARDIAN,
+            Kind::ElderGuardian => entity_ids::ELDER_GUARDIAN,
+            Kind::Wither => entity_ids::WITHER,
+            Kind::EnderDragon => entity_ids::ENDER_DRAGON,
+            Kind::Warden => entity_ids::WARDEN,
         }
     }
 
@@ -90,6 +105,11 @@ impl Kind {
             Kind::Pig => "pig",
             Kind::Sheep => "sheep",
             Kind::Chicken => "chicken",
+            Kind::Guardian => "guardian",
+            Kind::ElderGuardian => "elder_guardian",
+            Kind::Wither => "wither",
+            Kind::EnderDragon => "ender_dragon",
+            Kind::Warden => "warden",
         }
     }
 
@@ -105,6 +125,11 @@ impl Kind {
             Kind::Pig => "entity.minecraft.pig",
             Kind::Sheep => "entity.minecraft.sheep",
             Kind::Chicken => "entity.minecraft.chicken",
+            Kind::Guardian => "entity.minecraft.guardian",
+            Kind::ElderGuardian => "entity.minecraft.elder_guardian",
+            Kind::Wither => "entity.minecraft.wither",
+            Kind::EnderDragon => "entity.minecraft.ender_dragon",
+            Kind::Warden => "entity.minecraft.warden",
         }
     }
 
@@ -112,7 +137,15 @@ impl Kind {
     pub fn is_monster(self) -> bool {
         matches!(
             self,
-            Kind::Zombie | Kind::Skeleton | Kind::Creeper | Kind::Spider | Kind::Enderman
+            Kind::Zombie
+                | Kind::Skeleton
+                | Kind::Creeper
+                | Kind::Spider
+                | Kind::Enderman
+                | Kind::Guardian
+                | Kind::ElderGuardian
+                | Kind::Wither
+                | Kind::Warden
         )
     }
 
@@ -128,7 +161,15 @@ impl Kind {
 
     /// `#can_breathe_under_water` (the undead).
     pub fn breathes_underwater(self) -> bool {
-        matches!(self, Kind::Zombie | Kind::Skeleton)
+        matches!(
+            self,
+            Kind::Zombie
+                | Kind::Skeleton
+                | Kind::Wither
+                | Kind::Guardian
+                | Kind::ElderGuardian
+                | Kind::EnderDragon
+        )
     }
 
     /// `isSensitiveToWater`.
@@ -143,12 +184,18 @@ impl Kind {
 
     /// `EntityType.isAllowedInPeaceful`.
     pub fn allowed_in_peaceful(self) -> bool {
-        !self.is_monster()
+        !self.is_monster() || self == Kind::EnderDragon
     }
 
     /// `removeWhenFarAway`: animals stay.
     pub fn remove_when_far_away(self) -> bool {
-        self.is_monster()
+        self.is_monster() && !self.is_boss()
+    }
+
+    /// The bosses (`requiresCustomPersistence`, never despawn): wither, ender dragon and the
+    /// warden (`Warden.requiresCustomPersistence` while it has a target is treated as always).
+    pub fn is_boss(self) -> bool {
+        matches!(self, Kind::Wither | Kind::EnderDragon)
     }
 
     /// `setPathfindingMalus` of the kind.
@@ -170,7 +217,7 @@ impl Kind {
 
     /// `getSoundSource`.
     pub fn sound_source(self) -> SoundSource {
-        if self.is_monster() {
+        if self.is_monster() || self == Kind::EnderDragon {
             SoundSource::Hostile
         } else {
             SoundSource::Neutral
@@ -194,6 +241,11 @@ impl Kind {
             Kind::Pig => "minecraft:entity.pig.ambient",
             Kind::Sheep => "minecraft:entity.sheep.ambient",
             Kind::Chicken => "minecraft:entity.chicken.ambient",
+            Kind::Guardian => "minecraft:entity.guardian.ambient",
+            Kind::ElderGuardian => "minecraft:entity.elder_guardian.ambient",
+            Kind::Wither => "minecraft:entity.wither.ambient",
+            Kind::EnderDragon => "minecraft:entity.ender_dragon.ambient",
+            Kind::Warden => "minecraft:entity.warden.ambient",
         })
     }
 
@@ -209,6 +261,11 @@ impl Kind {
             Kind::Pig => "minecraft:entity.pig.hurt",
             Kind::Sheep => "minecraft:entity.sheep.hurt",
             Kind::Chicken => "minecraft:entity.chicken.hurt",
+            Kind::Guardian => "minecraft:entity.guardian.hurt",
+            Kind::ElderGuardian => "minecraft:entity.elder_guardian.hurt",
+            Kind::Wither => "minecraft:entity.wither.hurt",
+            Kind::EnderDragon => "minecraft:entity.ender_dragon.hurt",
+            Kind::Warden => "minecraft:entity.warden.hurt",
         }
     }
 
@@ -224,6 +281,11 @@ impl Kind {
             Kind::Pig => "minecraft:entity.pig.death",
             Kind::Sheep => "minecraft:entity.sheep.death",
             Kind::Chicken => "minecraft:entity.chicken.death",
+            Kind::Guardian => "minecraft:entity.guardian.death",
+            Kind::ElderGuardian => "minecraft:entity.elder_guardian.death",
+            Kind::Wither => "minecraft:entity.wither.death",
+            Kind::EnderDragon => "minecraft:entity.ender_dragon.death",
+            Kind::Warden => "minecraft:entity.warden.death",
         }
     }
 
@@ -250,6 +312,9 @@ impl Kind {
     pub fn base_experience_reward(self, random: &mut LegacyRandom) -> i32 {
         match self {
             Kind::Skeleton => 5 + 1 + random.next_int_bounded(3),
+            Kind::Guardian | Kind::ElderGuardian => 10,
+            Kind::Wither => 50,
+            Kind::EnderDragon => 0,
             _ if self.is_monster() => 5,
             _ => 1 + random.next_int_bounded(3),
         }
@@ -277,6 +342,10 @@ pub fn dimensions(kind: EntityTypeId, baby: bool) -> Dimensions {
 
 /// `registerGoals` of each kind.
 pub fn register_goals(m: &mut MobData) {
+    if super::boss::is_boss_kind(m.kind) {
+        super::boss::register_goals(m);
+        return;
+    }
     let g = &mut m.goals;
     let tg = &mut m.targets;
     match m.kind {
@@ -387,6 +456,7 @@ pub fn register_goals(m: &mut MobData) {
             g.add(stroll_prio + 2, Goal::random_look());
             m.nav.can_float = true;
         }
+        Kind::Guardian | Kind::ElderGuardian | Kind::Wither | Kind::EnderDragon | Kind::Warden => {}
     }
     // Goals are kept sorted by insertion like Vanilla's linked set; nothing to do here.
 }
@@ -518,6 +588,7 @@ pub fn play_ambient_sound(t: &mut Tick<'_, '_>) {
 /// Kind specific work before `LivingEntity.tick` (`Creeper.tick`'s fuse, using a bow).
 pub fn before_tick(t: &mut Tick<'_, '_>) {
     match t.mob_ref().kind {
+        k if super::boss::is_boss_kind(k) => super::boss::before_tick(t),
         Kind::Creeper if t.mob_ref().is_alive() => {
             let m = t.mob();
             m.old_swell = m.swell;
@@ -565,6 +636,10 @@ fn explode_creeper(t: &mut Tick<'_, '_>) {
 
 /// Kind specific work after `LivingEntity.tick` (`Spider.tick`'s climbing flag).
 pub fn after_tick(t: &mut Tick<'_, '_>) {
+    if super::boss::is_boss_kind(t.mob_ref().kind) {
+        super::boss::after_tick(t);
+        return;
+    }
     if t.mob_ref().kind == Kind::Spider {
         let climbing = t.mob_ref().horizontal_collision;
         if climbing != t.mob_ref().climbing {
@@ -577,6 +652,10 @@ pub fn after_tick(t: &mut Tick<'_, '_>) {
 /// Kind specific parts of `aiStep` (chicken flapping, animal ageing).
 pub fn ai_step(t: &mut Tick<'_, '_>) {
     let kind = t.mob_ref().kind;
+    if super::boss::is_boss_kind(kind) {
+        super::boss::ai_step(t);
+        return;
+    }
     if kind == Kind::Chicken {
         let v = t.velocity();
         if !t.on_ground() && v.y < 0.0 {
@@ -609,6 +688,10 @@ pub fn ai_step(t: &mut Tick<'_, '_>) {
 
 /// `customServerAiStep` (enderman teleports in daylight).
 pub fn custom_server_ai_step(t: &mut Tick<'_, '_>) {
+    if super::boss::is_boss_kind(t.mob_ref().kind) {
+        super::boss::custom_server_ai_step(t);
+        return;
+    }
     if t.mob_ref().kind != Kind::Enderman {
         return;
     }
@@ -968,6 +1051,9 @@ pub fn death_loot(m: &mut MobData, killed_by_player: bool) -> Vec<crate::item::I
             meat("minecraft:chicken", 1, 1, "minecraft:cooked_chicken"),
         ],
         Kind::Sheep => &[meat("minecraft:mutton", 1, 2, "minecraft:cooked_mutton")],
+        Kind::Guardian | Kind::ElderGuardian | Kind::Wither | Kind::EnderDragon | Kind::Warden => {
+            return super::boss::death_loot(m, killed_by_player);
+        }
     };
     let on_fire = m.is_on_fire();
     let mut out = Vec::new();

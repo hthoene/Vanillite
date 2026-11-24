@@ -11,6 +11,7 @@ use vanillite_base::hash::FxHashMap;
 
 use crate::item_entity::ItemData;
 use crate::mob::MobData;
+use crate::mob::boss::special::{SpecialData, is_special_kind};
 use crate::mob::projectile::{ArrowData, OrbData};
 use crate::player::PlayerData;
 
@@ -61,6 +62,8 @@ pub struct Entities {
     pub by_network_id: FxHashMap<i32, EntityId>,
     /// Primed TNT kind data.
     pub primed_tnts: Dense<PrimedTntData>,
+    /// Kind data of the bosses' non-living entities (skulls, crystals, fireballs, clouds).
+    pub specials: Dense<SpecialData>,
 }
 
 impl Entities {
@@ -162,6 +165,35 @@ impl Entities {
         self.store.spawn(new, |id| orbs.push(id, data))
     }
 
+    /// Adds a special entity (see [`crate::mob::boss::special`]).
+    pub fn spawn_special(&mut self, new: NewEntity, data: SpecialData) -> EntityId {
+        let network_id = new.network_id.0;
+        let specials = &mut self.specials;
+        let id = self.store.spawn(new, |id| specials.push(id, data));
+        // End crystals are attacked by players.
+        self.by_network_id.insert(network_id, id);
+        id
+    }
+
+    /// The special data of an entity.
+    pub fn special(&self, id: EntityId) -> Option<&SpecialData> {
+        let entity = self.store.get(id)?;
+        if !is_special_kind(entity.kind()) {
+            return None;
+        }
+        self.specials.get(entity.kind_row())
+    }
+
+    /// The special data of an entity, mutably.
+    pub fn special_mut(&mut self, id: EntityId) -> Option<&mut SpecialData> {
+        let entity = self.store.get(id)?;
+        if !is_special_kind(entity.kind()) {
+            return None;
+        }
+        let row = entity.kind_row();
+        self.specials.get_mut(row)
+    }
+
     /// The mob data of an entity.
     pub fn mob(&self, id: EntityId) -> Option<&MobData> {
         let entity = self.store.get(id)?;
@@ -252,7 +284,7 @@ impl Entities {
     /// Removes an entity of any kind together with its kind data.
     pub fn despawn(&mut self, id: EntityId) -> Option<Removed> {
         let removed = self.store.despawn(id)?;
-        if is_mob_kind(removed.kind) {
+        if is_mob_kind(removed.kind) || is_special_kind(removed.kind) {
             self.by_network_id.remove(&removed.network_id.0);
         }
         let moved = self.remove_kind_row(removed.kind, removed.kind_row);
@@ -292,6 +324,8 @@ impl Entities {
             self.orbs.swap_remove(row).and_then(|(_, moved)| moved)
         } else if is_mob_kind(kind) {
             self.mobs.swap_remove(row).and_then(|(_, moved)| moved)
+        } else if is_special_kind(kind) {
+            self.specials.swap_remove(row).and_then(|(_, moved)| moved)
         } else if kind == ids::TNT {
             self.primed_tnts
                 .swap_remove(row)

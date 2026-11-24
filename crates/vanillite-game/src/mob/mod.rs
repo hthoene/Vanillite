@@ -6,6 +6,7 @@
 //! readable for blocks and light); what changes blocks (explosions, a sheep eating grass) is
 //! queued as a [`WorldAction`] and applied by the world right after that mob's tick.
 
+pub mod boss;
 pub mod combat;
 pub mod goals;
 pub mod kinds;
@@ -179,6 +180,10 @@ pub struct MobData {
     pub xp_reward: i32,
     /// The last block position (`lastPos`).
     pub last_pos: BlockPos,
+    /// Active status effects (`activeEffects`).
+    pub effects: crate::effect::MobEffects,
+    /// The state of bosses and other kinds with their own machinery.
+    pub ext: boss::Ext,
 }
 
 impl MobData {
@@ -259,6 +264,8 @@ impl MobData {
             variant: 0,
             xp_reward: 0,
             last_pos: BlockPos::new(i32::MIN, i32::MIN, i32::MIN),
+            effects: crate::effect::MobEffects::default(),
+            ext: boss::new_ext(kind),
         };
         mob.ambient_sound_time = -kind.ambient_sound_interval();
         mob.egg_time = mob.random.next_int_bounded(6000) + 6000;

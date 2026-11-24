@@ -124,6 +124,13 @@ pub fn hurt_mob(
     if invulnerable_to(ents, env, target, kind) {
         return false;
     }
+    if ents.mob(target).is_some_and(|m| m.is_dead_or_dying()) {
+        return false;
+    }
+    let Some(amount) = super::boss::filter_hurt(level, ents, env, cx, target, &source, amount)
+    else {
+        return false;
+    };
     let Some(m) = ents.mob_mut(target) else {
         return false;
     };
@@ -235,6 +242,7 @@ pub fn hurt_mob(
     if let Some(m) = ents.mob_mut(target) {
         m.last_damage = Some((kind, env.game_time));
     }
+    super::boss::after_hurt(level, ents, env, cx, target, &source, true);
     true
 }
 
@@ -308,6 +316,10 @@ fn die(
         return;
     }
     m.dead = true;
+    super::boss::on_death(level, ents, env, cx, target);
+    let Some(m) = ents.mob_mut(target) else {
+        return;
+    };
     let killed_by_player = m.last_hurt_by_player_time > 0;
     let baby = m.baby;
     let kind = m.kind;

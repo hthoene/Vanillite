@@ -106,6 +106,48 @@ fn save_entity(core: &EntityRef<'_>, out: &mut Compound) {
     }
 }
 
+/// A special entity (see [`super::boss::special`]) as entity NBT; `None` when it is not
+/// saved (`shouldBeSaved`).
+pub fn save_special(
+    core: &EntityRef<'_>,
+    data: &super::boss::special::SpecialData,
+) -> Option<Compound> {
+    let mut out = Compound::new();
+    save_entity(core, &mut out);
+    super::boss::special::save(data, &mut out)?;
+    Some(out)
+}
+
+/// A special entity loaded from entity NBT: type, position, motion, rotation, UUID and data.
+pub fn load_special(
+    tag: &Compound,
+) -> Option<(
+    EntityTypeId,
+    Vec3,
+    Vec3,
+    Rotation,
+    u128,
+    super::boss::special::SpecialData,
+)> {
+    let kind = type_of(tag)?;
+    let data = super::boss::special::load(kind, tag)?;
+    let pos = vec3_of(tag, "Pos")?;
+    let velocity = vec3_of(tag, "Motion").unwrap_or(Vec3::ZERO);
+    let rot = match tag.get("Rotation") {
+        Some(Tag::List(l)) if l.0.len() == 2 => match (&l.0[0], &l.0[1]) {
+            (Tag::Float(y), Tag::Float(x)) if y.is_finite() && x.is_finite() => Rotation {
+                y_rot: *y,
+                x_rot: *x,
+                y_head_rot: *y,
+            },
+            _ => Rotation::default(),
+        },
+        _ => Rotation::default(),
+    };
+    let uuid = uuid_of(tag)?;
+    Some((kind, pos, velocity, rot, uuid, data))
+}
+
 /// A mob as entity NBT.
 pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
     let mut out = Compound::new();
@@ -122,6 +164,9 @@ pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
         out.insert("Silent", true);
     }
     out.insert("Health", m.health);
+    if let Some(effects) = m.effects.save() {
+        out.insert("active_effects", effects);
+    }
     out.insert("AbsorptionAmount", 0.0_f32);
     out.insert("FallFlying", false);
     out.insert("CanPickUpLoot", false);
@@ -148,6 +193,7 @@ pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
             }
             out.insert("ignited", m.ignited);
         }
+        _ if super::boss::is_boss_kind(m.kind) => super::boss::save(m, &mut out),
         Kind::Cow | Kind::Pig | Kind::Sheep | Kind::Chicken => {
             out.insert("Age", m.age);
             out.insert("ForcedAge", 0);
@@ -167,7 +213,7 @@ pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
                 }
             }
         }
-        Kind::Skeleton | Kind::Spider | Kind::Enderman => {}
+        _ => {}
     }
     out
 }
@@ -252,7 +298,9 @@ pub fn load_mob(tag: &Compound, seed: i64) -> Option<LoadedMob> {
             }
         }
         Kind::Skeleton | Kind::Spider | Kind::Enderman => {}
+        _ => super::boss::load(&mut m, tag),
     }
+    m.effects = crate::effect::MobEffects::load(tag.get("active_effects"));
     // A fresh random per loaded mob, like `Entity.random`.
     let _ = m.random.next_int();
     Some(LoadedMob {

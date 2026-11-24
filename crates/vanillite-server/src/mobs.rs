@@ -9,6 +9,7 @@ use vanillite_data::entity::ids;
 use vanillite_game::entities::is_mob_kind;
 use vanillite_game::level::Level;
 use vanillite_game::level::explosion::BlockInteraction;
+use vanillite_game::mob::boss::special::{self, is_special_kind};
 use vanillite_game::mob::spawn::{self, SpawnInput, SpawnTable, Spawner};
 use vanillite_game::mob::{
     self, Environment, MobContext, MobSettings, WorldAction, combat, projectile,
@@ -211,7 +212,8 @@ impl WorldMobs {
                 continue;
             }
             let is_mob = is_mob_kind(kind);
-            if !is_mob && kind != ids::ARROW && kind != ids::EXPERIENCE_ORB {
+            let is_special = is_special_kind(kind);
+            if !is_mob && !is_special && kind != ids::ARROW && kind != ids::EXPERIENCE_ORB {
                 continue;
             }
             let chunk = BlockPos::containing(pos.x, pos.y, pos.z).chunk();
@@ -242,6 +244,8 @@ impl WorldMobs {
                 let level_ref: &Level = level;
                 if is_mob {
                     mob::tick(level_ref, &mut ents, &mut env, &mut self.cx, id);
+                } else if is_special {
+                    special::tick(level_ref, &mut ents, &mut env, &mut self.cx, id);
                 } else if kind == ids::ARROW {
                     projectile::tick_arrow(level_ref, &mut ents, &mut env, &mut self.cx, id);
                 } else {

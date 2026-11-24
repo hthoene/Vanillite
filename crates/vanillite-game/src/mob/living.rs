@@ -162,6 +162,10 @@ fn base_tick(t: &mut Tick<'_, '_>) {
             t.mob().last_hurt_by_mob = None;
         }
     }
+    tick_effects(t);
+    if !t.exists() || t.mob_ref().removed {
+        return;
+    }
     // `Mob.baseTick`: the ambient sound.
     if t.mob_ref().is_alive() {
         let m = t.mob();
@@ -177,11 +181,54 @@ fn base_tick(t: &mut Tick<'_, '_>) {
 
 /// `LivingEntity.tickDeath`.
 fn tick_death(t: &mut Tick<'_, '_>) {
+    if super::boss::tick_death(t) {
+        return;
+    }
     t.mob().death_time += 1;
     if t.mob_ref().death_time >= 20 {
         let id = t.id;
         entity_event(t, id, event::POOF);
         t.mob().removed = true;
+    }
+}
+
+/// `tickEffects` on the server: what the active effects do this tick.
+pub fn tick_effects(t: &mut Tick<'_, '_>) {
+    if t.mob_ref().effects.is_empty() {
+        return;
+    }
+    let mut out = Vec::new();
+    {
+        let m = t.mob();
+        let (tick_count, health, max) = (m.tick_count, m.health, m.max_health());
+        m.effects.tick(tick_count, health, max, &mut out);
+    }
+    for e in out {
+        match e {
+            crate::effect::EffectTick::Magic(amount) => {
+                let source = DamageSource::of(t.env.types.magic);
+                hurt_self(t, source, amount);
+            }
+            crate::effect::EffectTick::Wither(amount) => {
+                let source = DamageSource::of(t.env.types.wither);
+                hurt_self(t, source, amount);
+            }
+            crate::effect::EffectTick::Heal(amount) => heal(t, amount),
+            crate::effect::EffectTick::Removed(_) | crate::effect::EffectTick::Refresh(_) => {}
+        }
+        if !t.exists() {
+            return;
+        }
+    }
+}
+
+/// `LivingEntity.heal(amount)`.
+pub fn heal(t: &mut Tick<'_, '_>, amount: f32) {
+    let m = t.mob();
+    if m.health > 0.0 {
+        let max = m.max_health();
+        m.health = (m.health + amount).clamp(0.0, max);
+        t.core_mut().mark_data_dirty();
     }
 }
 
@@ -237,6 +284,9 @@ fn ai_step(t: &mut Tick<'_, '_>) {
         let m = t.mob();
         m.xxa *= 0.98;
         m.zza *= 0.98;
+    }
+    if super::boss::ai_step_override(t) {
+        return;
     }
     let effective_ai = !t.mob_ref().no_ai;
     if t.mob_ref().is_dead_or_dying() {
@@ -413,6 +463,9 @@ pub fn on_climbable(t: &Tick<'_, '_>) -> bool {
 
 /// `LivingEntity.travel`.
 fn travel(t: &mut Tick<'_, '_>, input: Vec3) {
+    if super::boss::travel(t, input) {
+        return;
+    }
     let fluids = t.mob_ref().fluids;
     if fluids.in_water() || fluids.in_lava() {
         travel_in_fluid(t, input);

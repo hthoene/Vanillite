@@ -145,6 +145,8 @@ struct Sent {
     food: i32,
     saturation_zero: bool,
     exp: i32,
+    /// The active effects were sent (after joining or respawning).
+    effects: bool,
 }
 
 impl Default for Sent {
@@ -154,6 +156,7 @@ impl Default for Sent {
             food: -99_999_999,
             saturation_zero: false,
             exp: -99_999_999,
+            effects: false,
         }
     }
 }
@@ -193,6 +196,8 @@ pub struct Survival {
     pub attack_ticker: i32,
     /// `takeXpDelay`.
     pub take_xp_delay: i32,
+    /// Active status effects (`activeEffects`).
+    pub effects: crate::effect::MobEffects,
     first_tick: bool,
     sent: Sent,
 }
@@ -219,6 +224,7 @@ impl Default for Survival {
             fluids: FluidContact::default(),
             attack_ticker: 0,
             take_xp_delay: 0,
+            effects: crate::effect::MobEffects::default(),
             first_tick: true,
             sent: Sent::default(),
         }
@@ -325,6 +331,7 @@ impl Survival {
             seed: int(data, "XpSeed").unwrap_or(0),
         };
         s.score = int(data, "Score").unwrap_or(0);
+        s.effects = crate::effect::MobEffects::load(data.get("active_effects"));
         if let Some(Tag::Compound(loc)) = data.get("LastDeathLocation")
             && let (Some(Tag::String(dim)), Some(Tag::IntArray(pos))) =
                 (loc.get("dimension"), loc.get("pos"))
@@ -361,6 +368,14 @@ impl Survival {
         out.insert("XpTotal", Tag::Int(self.xp.total));
         out.insert("XpSeed", Tag::Int(self.xp.seed));
         out.insert("Score", Tag::Int(self.score));
+        match self.effects.save() {
+            Some(effects) => {
+                out.insert("active_effects", effects);
+            }
+            None => {
+                out.remove("active_effects");
+            }
+        }
         self.food.save(out);
         out.remove("LastDeathLocation");
         if let Some((dim, pos)) = &self.last_death {
@@ -894,6 +909,7 @@ pub fn do_tick(
         let alive = s.health > 0.0;
         s.combat.recheck_status(s.tick_count, alive);
     }
+    tick_effects(entity, player, env);
     // `Player.aiStep`: peaceful regeneration (`ServerPlayer.tickRegeneration`).
     if env.difficulty == Difficulty::Peaceful && env.rules.bool(Rule::NATURAL_HEALTH_REGENERATION) {
         if player.survival.tick_count % 20 == 0 && player.survival.health < MAX_HEALTH {
@@ -926,6 +942,97 @@ pub fn do_tick(
     let sink = std::sync::Arc::clone(&player.connection.sink);
     player.survival.sync(sink.as_ref());
     result
+}
+
+/// `tickEffects` of a player: what the active effects do, their expiry and the packets that
+/// keep the client's effects in sync.
+fn tick_effects(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mut Env<'_>) {
+    use crate::effect::EffectTick;
+    let network_id = entity.as_ref().network_id().0;
+    if !player.survival.sent.effects {
+        player.survival.sent.effects = true;
+        for e in player.survival.effects.iter() {
+            player
+                .connection
+                .sink
+                .send_shared(&e.update_packet(network_id, false));
+        }
+    }
+    if player.survival.effects.is_empty() {
+        return;
+    }
+    let mut out = Vec::new();
+    let s = &mut player.survival;
+    s.effects.tick(s.tick_count, s.health, MAX_HEALTH, &mut out);
+    for e in out {
+        match e {
+            EffectTick::Magic(amount) => {
+                hurt(
+                    entity,
+                    player,
+                    env,
+                    DamageSource::of(env.types.magic),
+                    amount,
+                );
+            }
+            EffectTick::Wither(amount) => {
+                hurt(
+                    entity,
+                    player,
+                    env,
+                    DamageSource::of(env.types.wither),
+                    amount,
+                );
+            }
+            EffectTick::Heal(amount) => heal(entity, player, amount),
+            EffectTick::Removed(e) => {
+                let packet = crate::effect::remove_packet(network_id, e.effect);
+                player.connection.sink.send_shared(&packet);
+            }
+            EffectTick::Refresh(e) => {
+                player
+                    .connection
+                    .sink
+                    .send_shared(&e.update_packet(network_id, false));
+            }
+        }
+    }
+}
+
+/// `addEffect` on a player: merges the effect and tells the client
+/// (`onEffectAdded` / `onEffectUpdated`). Returns whether it was added or changed.
+pub fn add_effect(
+    entity: &EntityMut<'_>,
+    player: &mut PlayerData,
+    effect: crate::effect::EffectInstance,
+) -> bool {
+    use crate::effect::Added;
+    let added = player.survival.effects.add(effect, true);
+    if matches!(added, Added::New | Added::Updated)
+        && let Some(e) = player.survival.effects.get(effect.effect)
+    {
+        let network_id = entity.as_ref().network_id().0;
+        player
+            .connection
+            .sink
+            .send_shared(&e.update_packet(network_id, added == Added::New));
+        true
+    } else {
+        false
+    }
+}
+
+/// `removeEffect` on a player.
+pub fn remove_effect(entity: &EntityMut<'_>, player: &mut PlayerData, effect: u16) -> bool {
+    if player.survival.effects.remove(effect).is_none() {
+        return false;
+    }
+    let network_id = entity.as_ref().network_id().0;
+    player
+        .connection
+        .sink
+        .send_shared(&crate::effect::remove_packet(network_id, effect));
+    true
 }
 
 /// `updateFluidInteraction`: the fluids around the player; touching water resets the fall
