@@ -3,7 +3,6 @@
 //! Loot tables and item entities are not ported yet: these are the seams the block and fluid
 //! code calls, and they drop nothing for now.
 
-use vanillite_worldgen::behaviour::{PosExt, StateExt};
 use vanillite_base::{BlockPos, Vec3};
 use vanillite_data::block::{BlockId, BlockState};
 use vanillite_world::entity::EntityId;

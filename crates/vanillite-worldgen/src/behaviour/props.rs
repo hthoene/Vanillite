@@ -186,7 +186,7 @@ impl StateExt for BlockState {
 
 /// `block.withPropertiesOf(state)`: the default state of `block` with every property of
 /// `state` that `block` also has.
-pub(crate) fn with_properties_of(block: BlockId, state: BlockState) -> BlockState {
+pub fn with_properties_of(block: BlockId, state: BlockState) -> BlockState {
     state
         .properties()
         .fold(block.default_state(), |result, (name, value)| {

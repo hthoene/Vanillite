@@ -6,7 +6,6 @@
 //! order they were added. Multi-neighbour updates run one neighbour per step, in
 //! `NeighborUpdater.UPDATE_ORDER` (west, east, down, up, north, south).
 
-use vanillite_worldgen::behaviour::{PosExt, StateExt};
 use vanillite_base::{BlockPos, Direction};
 use vanillite_data::block::{BlockId, BlockState, ids};
 

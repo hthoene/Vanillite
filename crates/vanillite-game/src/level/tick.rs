@@ -3,7 +3,6 @@
 
 use std::collections::VecDeque;
 
-use vanillite_worldgen::behaviour::{PosExt, StateExt};
 use vanillite_base::random::RandomSource;
 use vanillite_base::{BlockPos, ChunkPos};
 use vanillite_worldgen::behaviour as shared;

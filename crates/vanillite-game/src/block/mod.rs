@@ -14,7 +14,7 @@ mod growth;
 mod spread;
 pub mod weather;
 
-use vanillite_worldgen::behaviour::{PosExt, StateExt};
+use vanillite_worldgen::behaviour::StateExt;
 use vanillite_base::{BlockPos, Direction};
 use vanillite_data::block::{BLOCK_COUNT, BlockId, BlockState, flags, ids};
 use vanillite_worldgen::behaviour::{self as shared, Class, class_of_block, tags};
@@ -136,7 +136,8 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
         Class::Path => b.tick = Some(growth::path_tick),
         Class::Mushroom => b.random_tick = Some(spread::mushroom_random_tick),
         Class::SnowLayer => b.random_tick = Some(weather::snow_random_tick),
-        Class::Coral | Class::CoralPlant | Class::CoralFan | Class::CoralWallFan => {
+        Class::Coral => b.tick = Some(spread::coral_tick),
+        Class::CoralPlant | Class::CoralFan | Class::CoralWallFan => {
             b.on_place = Some(spread::coral_on_place);
             b.tick = Some(spread::coral_tick);
         }

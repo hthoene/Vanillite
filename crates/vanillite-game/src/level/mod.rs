@@ -17,7 +17,6 @@ pub mod update;
 
 use std::sync::Arc;
 
-use vanillite_worldgen::behaviour::{PosExt, StateExt};
 use vanillite_base::random::{LegacyRandom, RandomSource};
 use vanillite_base::{BlockPos, ChunkPos, Direction, SectionPos};
 use vanillite_base::hash::FxHashMap;
@@ -28,6 +27,7 @@ use vanillite_world::entity::{EntityId, NetworkIds};
 use vanillite_world::ticks::TickPriority;
 use vanillite_worldgen::behaviour::{self as shared, BlockLevel};
 
+use crate::block::weather::Climate;
 use crate::block::{self, Behaviours};
 use crate::entities::Entities;
 
@@ -60,6 +60,8 @@ pub struct LevelSettings {
     pub fast_lava: bool,
     /// The dimension has sky light.
     pub has_sky_light: bool,
+    /// The dimension's `water_evaporates` attribute (the Nether).
+    pub water_evaporates: bool,
 }
 
 impl Default for LevelSettings {
@@ -75,6 +77,7 @@ impl Default for LevelSettings {
             entity_drops: true,
             fast_lava: false,
             has_sky_light: true,
+            water_evaporates: false,
         }
     }
 }
@@ -129,6 +132,7 @@ pub struct Level {
     pub settings: LevelSettings,
     behaviours: Arc<Behaviours>,
     network_ids: Arc<NetworkIds>,
+    climate: Option<Arc<Climate>>,
     updater: NeighborUpdater,
     block_events: Vec<BlockEvent>,
     random: LegacyRandom,
@@ -168,6 +172,7 @@ impl Level {
             settings,
             behaviours,
             network_ids,
+            climate: None,
             block_events: Vec::new(),
             random: LegacyRandom::new(seed),
             rand_value: LegacyRandom::new(seed ^ 0x5DEE_CE66).next_int(),
@@ -183,6 +188,38 @@ impl Level {
         self.updater
             .set_max_chained(settings.max_chained_neighbor_updates);
         self.settings = settings;
+    }
+
+    /// Sets the world's biomes, for the biome dependent simulation (freezing).
+    pub fn set_climate(&mut self, climate: Arc<Climate>) {
+        self.climate = Some(climate);
+    }
+
+    /// The world's biomes, if known.
+    pub fn climate(&self) -> Option<&Climate> {
+        self.climate.as_deref()
+    }
+
+    /// `getBiome(pos)`: the noise biome the biome manager picks for `pos`; the default biome
+    /// outside live chunks.
+    pub fn biome(&self, pos: BlockPos) -> u16 {
+        let default = self.chunks.info().default_biome;
+        let Some(climate) = &self.climate else {
+            return default;
+        };
+        climate
+            .manager
+            .get_biome(pos.x, pos.y, pos.z, &mut |qx: i32, qy: i32, qz: i32| {
+                let Some(chunk) = self.chunks.chunk(ChunkPos::new(qx >> 2, qz >> 2)) else {
+                    return default;
+                };
+                // `LevelChunk.getNoiseBiome`: the quart Y is clamped to the chunk.
+                let sections = chunk.chunk.sections();
+                let min_quart = chunk.chunk.min_section() * 4;
+                let qy = qy.clamp(min_quart, min_quart + sections.len() as i32 * 4 - 1);
+                let index = (qy - min_quart) >> 2;
+                sections[index as usize].biome((qx & 3) as u32, (qy & 3) as u32, (qz & 3) as u32)
+            })
     }
 
     /// The block behaviours.
@@ -291,6 +328,12 @@ impl Level {
     pub fn raw_brightness(&self, pos: BlockPos) -> i32 {
         let (sky, block) = self.light(pos);
         sky.max(block)
+    }
+
+    /// `getMaxLocalRawBrightness(pos)`: like [`Self::raw_brightness`] with the sky darkened by
+    /// the time of day. The simulation has no day cycle yet, so this is the daytime value.
+    pub fn max_local_raw_brightness(&self, pos: BlockPos) -> i32 {
+        self.raw_brightness(pos)
     }
 
     // --- Scheduled ticks and events --------------------------------------------------------
