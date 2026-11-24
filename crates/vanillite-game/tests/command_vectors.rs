@@ -47,6 +47,16 @@ const OUR_COMMANDS: &[&str] = &[
     "save-on",
     "stop",
     "whitelist",
+    "attribute",
+    "clear",
+    "data",
+    "enchant",
+    "experience",
+    "xp",
+    "give",
+    "item",
+    "recipe",
+    "tag",
 ];
 
 struct TestSource {

@@ -5,20 +5,24 @@
 //! required level (SEC-12).
 
 mod data;
+mod data_cmd;
 mod dispatch;
 mod engine;
 mod entities_cmd;
 mod exec;
 mod execute;
 pub(crate) mod functions;
+mod items;
 mod nbt_ops;
 mod particle;
 mod response;
+mod player_data;
 mod scores;
 mod select;
 mod sound;
 mod source;
 mod survival;
+mod tracker;
 
 use std::collections::HashMap;
 use std::sync::Arc;

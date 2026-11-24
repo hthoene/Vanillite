@@ -11,6 +11,7 @@ use super::Env;
 use super::exec::format_list;
 use super::select;
 use super::source::CommandSource;
+use super::tracker::Tracker;
 
 /// A resolved score holder (`ScoreHolder`).
 #[derive(Clone, Debug)]
@@ -148,56 +149,6 @@ fn writable(env: &Env<'_>, args: &Args, name: &str) -> Result<String, CommandErr
         ));
     }
     Ok(id)
-}
-
-/// `CommandResponseTracker`.
-#[derive(Default)]
-struct Tracker {
-    total: i32,
-    count: i32,
-    only: Option<Holder>,
-    non_zero: i32,
-    only_non_zero: Option<Holder>,
-}
-
-impl Tracker {
-    fn track(&mut self, holder: &Holder, value: i32) {
-        self.total = self.total.wrapping_add(value);
-        self.count = self.count.saturating_add(1);
-        self.only = (self.count == 1).then(|| holder.clone());
-        if value != 0 {
-            self.non_zero = self.non_zero.saturating_add(1);
-            self.only_non_zero = (self.non_zero == 1).then(|| holder.clone());
-        }
-    }
-
-    /// The single element and the element count of `ANY` or `NON_ZERO`.
-    fn pick(&self, any: bool) -> (Option<&Holder>, i32) {
-        if any {
-            (self.only.as_ref(), self.count)
-        } else {
-            (self.only_non_zero.as_ref(), self.non_zero)
-        }
-    }
-
-    /// `sendFeedback`: `on_zero` fails when no element counts; the message is broadcast.
-    fn feedback(
-        &self,
-        source: &CommandSource,
-        env: &Env<'_>,
-        any: bool,
-        on_zero: Option<&'static str>,
-        message: impl FnOnce(Option<&Holder>, i32, i32) -> Component,
-    ) -> Result<i32, CommandError> {
-        let (single, count) = self.pick(any);
-        if count == 0
-            && let Some(key) = on_zero
-        {
-            return Err(CommandError::new(key, vec![]));
-        }
-        source.send_success(env.global, message(single, count, self.total), true);
-        Ok(self.total)
-    }
 }
 
 fn t(key: &str, args: Vec<Arg>) -> Component {
@@ -629,7 +580,7 @@ pub(crate) fn run(
             let targets = holders(args, "targets", source, env, true)?;
             let name = writable(env, args, "objective")?;
             let amount = args.int("score").copied().unwrap_or(0);
-            let mut tracker = Tracker::default();
+            let mut tracker = Tracker::<Holder>::default();
             {
                 let mut board = systems.scoreboard();
                 for holder in &targets {
@@ -645,7 +596,7 @@ pub(crate) fn run(
             }
             let objective = formatted(env, &name);
             match op {
-                S::Set => tracker.feedback(source, env, false, None, |one, n, _| match one {
+                S::Set => tracker.feedback(source, env, true, false, None, |one, n, _| match one {
                     Some(h) => t(
                         "commands.scoreboard.players.set.success.single",
                         vec![c(objective), c(h.display.clone()), Arg::Int(amount)],
@@ -657,7 +608,7 @@ pub(crate) fn run(
                 }),
                 _ => {
                     let key = if op == S::Add { "add" } else { "remove" };
-                    tracker.feedback(source, env, true, None, |one, n, total| match one {
+                    tracker.feedback(source, env, true, true, None, |one, n, total| match one {
                         Some(h) => t(
                             &format!("commands.scoreboard.players.{key}.success.single"),
                             vec![
@@ -677,7 +628,7 @@ pub(crate) fn run(
         }
         S::ResetAll => {
             let targets = holders(args, "targets", source, env, true)?;
-            let mut tracker = Tracker::default();
+            let mut tracker = Tracker::<Holder>::default();
             {
                 let mut board = systems.scoreboard();
                 for holder in &targets {
@@ -685,7 +636,7 @@ pub(crate) fn run(
                     tracker.track(holder, 1);
                 }
             }
-            tracker.feedback(source, env, false, None, |one, n, _| match one {
+            tracker.feedback(source, env, true, false, None, |one, n, _| match one {
                 Some(h) => t(
                     "commands.scoreboard.players.reset.all.single",
                     vec![c(h.display.clone())],
@@ -699,7 +650,7 @@ pub(crate) fn run(
         S::Reset => {
             let targets = holders(args, "targets", source, env, true)?;
             let name = objective(env, args, "objective")?;
-            let mut tracker = Tracker::default();
+            let mut tracker = Tracker::<Holder>::default();
             {
                 let mut board = systems.scoreboard();
                 for holder in &targets {
@@ -708,7 +659,7 @@ pub(crate) fn run(
                 }
             }
             let objective = formatted(env, &name);
-            tracker.feedback(source, env, false, None, |one, n, _| match one {
+            tracker.feedback(source, env, true, false, None, |one, n, _| match one {
                 Some(h) => t(
                     "commands.scoreboard.players.reset.specific.single",
                     vec![c(objective), c(h.display.clone())],
@@ -732,7 +683,7 @@ pub(crate) fn run(
                     vec![],
                 ));
             }
-            let mut tracker = Tracker::default();
+            let mut tracker = Tracker::<Holder>::default();
             {
                 let mut board = systems.scoreboard();
                 for holder in &targets {
@@ -747,8 +698,12 @@ pub(crate) fn run(
             tracker.feedback(
                 source,
                 env,
+                true,
                 false,
-                Some("commands.scoreboard.players.enable.failed"),
+                Some(CommandError::new(
+                    "commands.scoreboard.players.enable.failed",
+                    vec![],
+                )),
                 |one, n, _| match one {
                     Some(h) => t(
                         "commands.scoreboard.players.enable.success.single",
@@ -769,7 +724,7 @@ pub(crate) fn run(
             } else {
                 None
             };
-            let mut tracker = Tracker::default();
+            let mut tracker = Tracker::<Holder>::default();
             {
                 let mut board = systems.scoreboard();
                 for holder in &targets {
@@ -779,7 +734,7 @@ pub(crate) fn run(
             }
             let objective = formatted(env, &name);
             match display {
-                None => tracker.feedback(source, env, false, None, |one, n, _| match one {
+                None => tracker.feedback(source, env, true, false, None, |one, n, _| match one {
                     Some(h) => t(
                         "commands.scoreboard.players.display.name.clear.success.single",
                         vec![c(h.display.clone()), c(objective)],
@@ -789,16 +744,18 @@ pub(crate) fn run(
                         vec![Arg::Int(n), c(objective)],
                     ),
                 }),
-                Some(d) => tracker.feedback(source, env, false, None, |one, n, _| match one {
-                    Some(h) => t(
-                        "commands.scoreboard.players.display.name.set.success.single",
-                        vec![c(d), c(h.display.clone()), c(objective)],
-                    ),
-                    None => t(
-                        "commands.scoreboard.players.display.name.set.success.multiple",
-                        vec![c(d), Arg::Int(n), c(objective)],
-                    ),
-                }),
+                Some(d) => {
+                    tracker.feedback(source, env, true, false, None, |one, n, _| match one {
+                        Some(h) => t(
+                            "commands.scoreboard.players.display.name.set.success.single",
+                            vec![c(d), c(h.display.clone()), c(objective)],
+                        ),
+                        None => t(
+                            "commands.scoreboard.players.display.name.set.success.multiple",
+                            vec![c(d), Arg::Int(n), c(objective)],
+                        ),
+                    })
+                }
             }
         }
         S::PlayerFormatClear
@@ -809,7 +766,7 @@ pub(crate) fn run(
             let name = objective(env, args, "objective")?;
             let format = number_format(op, args);
             let set = format.is_some();
-            let mut tracker = Tracker::default();
+            let mut tracker = Tracker::<Holder>::default();
             {
                 let mut board = systems.scoreboard();
                 for holder in &targets {
@@ -819,7 +776,7 @@ pub(crate) fn run(
             }
             let objective = formatted(env, &name);
             let kind = if set { "set" } else { "clear" };
-            tracker.feedback(source, env, false, None, |one, n, _| match one {
+            tracker.feedback(source, env, true, false, None, |one, n, _| match one {
                 Some(h) => t(
                     &format!(
                         "commands.scoreboard.players.display.numberFormat.{kind}.success.single"
@@ -842,7 +799,7 @@ pub(crate) fn run(
             };
             let sources = holders(args, "source", source, env, true)?;
             let source_objective = objective(env, args, "sourceObjective")?;
-            let mut tracker = Tracker::default();
+            let mut tracker = Tracker::<Holder>::default();
             {
                 let mut board = systems.scoreboard();
                 for target in &targets {
@@ -878,7 +835,7 @@ pub(crate) fn run(
                 }
             }
             let objective = formatted(env, &target_objective);
-            tracker.feedback(source, env, true, None, |one, n, total| match one {
+            tracker.feedback(source, env, true, true, None, |one, n, total| match one {
                 Some(h) => t(
                     "commands.scoreboard.players.operation.success.single",
                     vec![c(objective), c(h.display.clone()), Arg::Int(total)],

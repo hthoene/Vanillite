@@ -11,7 +11,9 @@
 )]
 
 mod entities;
+mod data;
 mod execute;
+mod items;
 mod players;
 mod server;
 mod sound;
@@ -62,6 +64,10 @@ pub mod suggest {
     pub const BOSSBARS: &str = "bossbars";
     /// Stopwatch ids.
     pub const STOPWATCHES: &str = "stopwatches";
+    /// Tags of the `targets` entities (`tag <targets> remove`).
+    pub const ENTITY_TAGS: &str = "entity.tags";
+    /// Modifier ids of an attribute of the `target` entity (`attribute ... modifier`).
+    pub const ATTRIBUTE_MODIFIERS: &str = "attribute.modifiers";
     /// Entity types `summon` may create; the client answers it itself.
     pub const SUMMONABLE_ENTITIES: &str = "minecraft:summonable_entities";
     /// Sound event ids; the client answers it itself.
@@ -248,6 +254,100 @@ pub enum PostEffectOp {
     Remove,
 }
 
+/// The subcommands of `attribute`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AttributeOp {
+    /// `get [<scale>]`.
+    Get,
+    /// `base set <value>`.
+    BaseSet,
+    /// `base get [<scale>]`.
+    BaseGet,
+    /// `base reset`.
+    BaseReset,
+    /// `modifier add <id> <value> <operation>`.
+    ModifierAdd(ModifierOperation),
+    /// `modifier remove <id>`.
+    ModifierRemove,
+    /// `modifier value get <id> [<scale>]`.
+    ModifierValueGet,
+}
+
+/// `AttributeModifier.Operation`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ModifierOperation {
+    AddValue,
+    AddMultipliedBase,
+    AddMultipliedTotal,
+}
+
+/// The subcommands of `data` (the target kind is read from the arguments).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DataOp {
+    /// `merge <target> <nbt>`.
+    Merge,
+    /// `get <target> [<path> [<scale>]]`.
+    Get,
+    /// `remove <target> <path>`.
+    Remove,
+    /// `modify <target> <targetPath> <operation> <source>`.
+    Modify(ModifyOp, ModifySource),
+}
+
+/// How `data modify` changes the target path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ModifyOp {
+    /// `insert <index>`.
+    Insert,
+    Prepend,
+    Append,
+    Set,
+    Merge,
+}
+
+/// Where `data modify` takes its values from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ModifySource {
+    /// `from <source> [<sourcePath>]`.
+    From,
+    /// `string <source> [<sourcePath> [<start> [<end>]]]`.
+    String,
+    /// `compute (default|block <computePos>|entity <computeTarget>) (float|integer)
+    /// <provider>`.
+    Compute,
+    /// `value <value>`.
+    Value,
+}
+
+/// The subcommands of `experience`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ExperienceOp {
+    Add,
+    Set,
+    Query,
+}
+
+/// The subcommands of `item`; `with <item>` or `from <source>` is read from the arguments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ItemOp {
+    /// `replace`: the items in order, then nothing.
+    Replace,
+    /// `fill`: the items cycled.
+    Fill,
+    /// `override`: the items in order, then empty slots.
+    Override,
+    /// `modify <slots> <modifier>`.
+    Modify,
+}
+
+/// The subcommands of `tag`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TagOp {
+    Add,
+    Remove,
+    List,
+}
+
 /// What to execute. Variants that share a syntax with optional arguments say so; the
 /// arguments are read by name from `Parsed::args`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -391,18 +491,45 @@ pub enum CommandId {
     StopSound(Option<u8>),
     /// `summon <entity> [<pos> [<nbt>]]`.
     Summon,
+    /// `attribute <target> <attribute> ...`.
+    Attribute(AttributeOp),
+    /// `clear [<targets> [<item> [<maxCount>]]]`.
+    Clear,
+    /// `data ...`.
+    Data(DataOp),
+    /// `enchant <targets> <enchantment> [<level>]`.
+    Enchant,
+    /// `experience|xp ...`; `levels` for the `levels` unit.
+    Experience { op: ExperienceOp, levels: bool },
+    /// `give <targets> <item> [<count>]`.
+    Give,
+    /// `item ...`.
+    Item(ItemOp),
+    /// `recipe give <targets> (<recipe>|*)`.
+    RecipeGive,
+    /// `recipe take <targets> (<recipe>|*)`.
+    RecipeTake,
+    /// `tag <targets> ...`.
+    Tag(TagOp),
 }
 
 /// Registers all commands in Vanilla's registration order (`Commands` constructor).
 pub fn register(d: &mut Dispatcher<CommandId>) {
+    items::register_attribute(d);
     execute::register_execute(d);
     entities::register_bossbar(d);
+    items::register_clear(d);
     entities::register_damage(d);
+    data::register_data(d);
     entities::register_effect(d);
+    items::register_enchant(d);
+    items::register_experience(d);
     execute::register_function(d);
     players::register_game_mode(d);
     world::register_game_rule(d);
+    items::register_give(d);
     players::register_help(d);
+    items::register_item(d);
     server::register_kick(d);
     world::register_kill(d);
     players::register_list(d);
@@ -411,6 +538,7 @@ pub fn register(d: &mut Dispatcher<CommandId>) {
     sound::register_particle(d);
     sound::register_playsound(d);
     sound::register_posteffect(d);
+    items::register_recipe(d);
     execute::register_return(d);
     entities::register_ride(d);
     entities::register_rotate(d);
@@ -419,6 +547,7 @@ pub fn register(d: &mut Dispatcher<CommandId>) {
     world::register_seed(d);
     sound::register_stopsound(d);
     entities::register_summon(d);
+    data::register_tag(d);
     players::register_teleport(d);
     world::register_time(d);
     world::register_weather(d);
