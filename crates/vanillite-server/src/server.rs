@@ -20,11 +20,13 @@ use vanillite_world::tracking::{ChunkTrackerProvider, EntityTrackerProvider, Tra
 use crate::clock::Clock;
 use crate::compute::{Compute, ComputePool, Scheduler};
 use crate::global::Global;
-use crate::player_list::PlayerList;
+use crate::net::{NetState, VanillaPack};
+use crate::player_list::{PlayerEntry, PlayerList, Uuid};
 use crate::slot::{Origin, Slot, SlotError};
 use crate::tick_rate::{NANOS_PER_SECOND, TickRateManager};
 use crate::watchdog::{Heartbeat, WatchState, Watchdog};
 use crate::world::{ServerWorld, TickContext, WorldId, WorldTask};
+use vanillite_net::VirtualOpener;
 
 /// The dimensions of a server, in Vanilla's tick order.
 pub const DIMENSIONS: [&str; 3] = [
@@ -87,6 +89,8 @@ pub struct ServerBuilder {
     dir: PathBuf,
     scheduler: Slot<dyn Scheduler>,
     entity_tracker: Slot<dyn EntityTrackerProvider>,
+    vanilla_pack: VanillaPack,
+    network: bool,
 }
 
 impl ServerBuilder {
@@ -96,7 +100,22 @@ impl ServerBuilder {
             dir: dir.into(),
             scheduler: Slot::new("scheduler"),
             entity_tracker: Slot::new("entity-tracker"),
+            vanilla_pack: VanillaPack::default(),
+            network: true,
         }
+    }
+
+    /// Where the Vanilla data pack comes from (default: downloaded once into `cache/`).
+    pub fn vanilla_pack(&mut self, pack: VanillaPack) -> &mut Self {
+        self.vanilla_pack = pack;
+        self
+    }
+
+    /// Whether the network listens (default `true`). Without it the server only takes
+    /// virtual connections ([`Server::open_virtual`]); for tests.
+    pub fn network(&mut self, on: bool) -> &mut Self {
+        self.network = on;
+        self
     }
 
     /// Fills the `scheduler` slot with an embedded implementation.
@@ -152,7 +171,10 @@ impl ServerBuilder {
         log::info!("Slot entity-tracker: {origin}");
 
         let level_name = config.properties.level_name.clone();
-        let session_lock = lock_world(&dir.join(&level_name))?;
+        let level_dir = dir.join(&level_name);
+        let session_lock = lock_world(&level_dir)?;
+        let prepared = crate::net::prepare(&config, &dir, &level_dir, &self.vanilla_pack)?;
+        let mut world_players = prepared.worlds.into_iter();
 
         let clock = Clock::new();
         let max_players = usize::try_from(config.properties.max_players).unwrap_or(0);
@@ -184,9 +206,17 @@ impl ServerBuilder {
                     config.properties.entity_broadcast_range_percentage,
                     &rules.tracking,
                 ));
-                ServerWorld::new(WorldId(index), (*dimension).to_owned(), rules, tracker)
+                Ok(ServerWorld::new(
+                    WorldId(index),
+                    (*dimension).to_owned(),
+                    rules,
+                    tracker,
+                    world_players
+                        .next()
+                        .ok_or_else(|| StartError::Io("world setup missing".to_owned()))?,
+                ))
             })
-            .collect();
+            .collect::<Result<_, StartError>>()?;
         let (worlds, routes) = if parallel {
             log::info!("Dimensions tick in parallel");
             let mut threads = Vec::with_capacity(worlds.len());
@@ -212,6 +242,11 @@ impl ServerBuilder {
             (Worlds::Sequential(worlds), routes)
         };
 
+        let net = NetState::start(&config, prepared.configuration, self.network)?;
+        if !config.properties.online_mode {
+            log::warn!("**** SERVER IS RUNNING IN OFFLINE/INSECURE MODE!");
+        }
+
         let watchdog = Watchdog::start(Arc::clone(&watch), clock, config.properties.max_tick_time)
             .map_err(|e| StartError::io(&dir, e))?;
 
@@ -235,6 +270,8 @@ impl ServerBuilder {
             heartbeat,
             watch,
             watchdog: Some(watchdog),
+            net: Some(net),
+            level_dir,
             _session_lock: session_lock,
         };
         server.ticks_until_autosave = server.autosave_interval();
@@ -410,6 +447,8 @@ pub struct Server {
     heartbeat: Arc<Heartbeat>,
     watch: Arc<WatchState>,
     watchdog: Option<Watchdog>,
+    net: Option<NetState>,
+    level_dir: PathBuf,
     _session_lock: File,
 }
 
@@ -424,6 +463,17 @@ impl fmt::Debug for Server {
 }
 
 impl Server {
+    /// Opens in-memory connections for vouched-for profiles (architecture 14.1), from any
+    /// thread while the server runs; they log in like a client from the handshake on.
+    pub fn virtual_opener(&self) -> Option<VirtualOpener> {
+        self.net.as_ref().map(|n| n.network.virtual_opener())
+    }
+
+    /// The address the network listens on.
+    pub fn local_addr(&self) -> Option<std::net::SocketAddr> {
+        self.net.as_ref().map(|n| n.network.local_addr())
+    }
+
     /// A handle for other threads.
     pub fn handle(&self) -> ServerHandle {
         ServerHandle {
@@ -560,6 +610,74 @@ impl Server {
                 other => self.dispatch(other),
             }
         }
+        self.accept_joins();
+    }
+
+    /// Takes joined connections into the game, at most `security.max-joins-per-tick`.
+    fn accept_joins(&mut self) {
+        let max = self.config.server.security.max_joins_per_tick;
+        for _ in 0..max {
+            let Some(joined) = self.net.as_ref().and_then(NetState::next_join) else {
+                break;
+            };
+            self.accept(joined);
+        }
+    }
+
+    /// `PlayerList.placeNewPlayer`, global part: checks, player data, the player list; the
+    /// world part runs on the player's world.
+    fn accept(&mut self, joined: vanillite_net::Joined) {
+        let uuid = joined.profile.id.0;
+        let store = vanillite_storage::player_data::PlayerDataStore::new(&self.level_dir);
+        let saved = match store.load(uuid) {
+            Ok(saved) => saved,
+            Err(e) => {
+                log::error!("Failed to load player data of {}: {e}", joined.profile.name);
+                None
+            }
+        };
+        let properties = &self.config.properties;
+        let (arrival, sink) = crate::net::arrival(
+            joined,
+            saved,
+            properties.gamemode,
+            properties.force_gamemode,
+        );
+        let players = &self.global.players;
+        let refuse = if players.contains(Uuid(uuid)) {
+            // Vanilla kicks the older session; refusing the new one keeps a single owner of the
+            // player without a cross-world removal.
+            Some("multiplayer.disconnect.duplicate_login")
+        } else if players.count() >= players.max_players() {
+            Some("multiplayer.disconnect.server_full")
+        } else {
+            None
+        };
+        if let Some(key) = refuse {
+            sink.kick(vanillite_protocol::text::Component::translatable(
+                key,
+                vec![],
+            ));
+            return;
+        }
+        let world = arrival
+            .saved
+            .as_ref()
+            .and_then(|s| DIMENSIONS.iter().position(|d| *d == s.dimension))
+            .and_then(|i| u16::try_from(i).ok())
+            .map_or(WorldId(0), WorldId);
+        players.add(PlayerEntry {
+            uuid: Uuid(uuid),
+            name: arrival.profile.name.clone(),
+            world,
+            info: crate::players::info_entry(&arrival),
+            sink,
+        });
+        let global = Arc::clone(&self.global);
+        self.run_in_world(
+            world,
+            Box::new(move |w: &mut ServerWorld| w.join_player(&global, arrival)),
+        );
     }
 
     /// The world phase and the cross-world hand-offs of G2, applied in world order.
@@ -622,6 +740,10 @@ impl Server {
 
     /// G2: player list and autosave.
     fn global_post_phase(&mut self) {
+        let online = self.global.players.count();
+        if let Some(net) = self.net.as_mut() {
+            net.set_online(online);
+        }
         // Player list maintenance (latency updates, idle kicks) comes with players.
         self.ticks_until_autosave -= 1;
         if self.ticks_until_autosave <= 0 {
@@ -786,6 +908,14 @@ impl Server {
         // Saving may take long; the watchdog must not kill the process now.
         self.watch.next_tick.store(0, Ordering::Relaxed);
         log::info!("Stopping server");
+        for player in self.global.players.snapshot() {
+            player
+                .sink
+                .kick(vanillite_protocol::text::Component::translatable(
+                    "multiplayer.disconnect.server_shutdown",
+                    vec![],
+                ));
+        }
         log::info!("Saving players");
         log::info!("Saving worlds");
         let level = &self.config.properties.level_name;
@@ -807,6 +937,9 @@ impl Server {
             }
         }
         log::info!("All dimensions are saved");
+        if let Some(net) = self.net.take() {
+            net.network.shutdown();
+        }
         self.compute.scheduler().shutdown();
         if let Some(watchdog) = self.watchdog.take() {
             watchdog.stop();

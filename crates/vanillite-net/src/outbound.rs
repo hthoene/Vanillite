@@ -1,42 +1,13 @@
 //! The outbound side of a connection: an unbounded channel bounded by bytes (SEC-17) and the
 //! writer task that frames, compresses, encrypts and writes with one syscall per batch.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
-use vanillite_protocol::Packet;
 use vanillite_protocol::compress::Codec;
 use vanillite_protocol::frame::{FrameEncoder, encode_body, encode_frame};
-
-/// A packet encoded once for many receivers (broadcasts, configuration data). Its compressed
-/// frame is built by the first writer that needs it and reused by all others with the same
-/// compression threshold.
-#[derive(Debug)]
-pub struct SharedPacket {
-    body: Vec<u8>,
-    frame: OnceLock<(Option<usize>, Vec<u8>)>,
-}
-
-impl SharedPacket {
-    /// Wraps an encoded body (`id` + fields).
-    pub fn new(body: Vec<u8>) -> Self {
-        Self {
-            body,
-            frame: OnceLock::new(),
-        }
-    }
-
-    /// Encodes a packet.
-    pub fn of<P: Packet>(packet: &P) -> Arc<Self> {
-        Arc::new(Self::new(encode_body(packet)))
-    }
-
-    /// The encoded body.
-    pub fn body(&self) -> &[u8] {
-        &self.body
-    }
-}
+use vanillite_protocol::{Packet, SharedPacket};
 
 /// A message to a connection's writer.
 #[derive(Debug)]
@@ -109,7 +80,7 @@ impl Outbound {
 
     /// Queues a shared packet.
     pub fn send_shared(&self, packet: &Arc<SharedPacket>) -> bool {
-        self.push(Out::Shared(Arc::clone(packet)), packet.body.len())
+        self.push(Out::Shared(Arc::clone(packet)), packet.body().len())
     }
 
     pub(crate) fn control(&self, msg: Out) -> bool {
@@ -153,18 +124,21 @@ pub(crate) async fn tcp_writer(
                 }
                 Out::Shared(p) => {
                     let threshold = encoder.threshold();
-                    let cached = p.frame.get_or_init(|| {
+                    let cached = p.frame(threshold, |body| {
                         let mut f = Vec::new();
                         // An unencodable body yields an empty frame that is skipped below.
-                        let _ = encode_frame(&p.body, threshold, &mut codec, &mut f);
-                        (threshold, f)
+                        let _ = encode_frame(body, threshold, &mut codec, &mut f);
+                        f
                     });
-                    if cached.0 == threshold && !cached.1.is_empty() {
-                        encoder.frame(&cached.1, &mut buf);
-                    } else if encoder.body(&p.body, &mut buf).is_err() {
-                        open = false;
+                    match cached {
+                        Some(frame) if !frame.is_empty() => encoder.frame(frame, &mut buf),
+                        _ => {
+                            if encoder.body(p.body(), &mut buf).is_err() {
+                                open = false;
+                            }
+                        }
                     }
-                    p.body.len()
+                    p.body().len()
                 }
                 Out::Compression(t) => {
                     encoder.set_compression(t);
@@ -203,7 +177,7 @@ pub(crate) async fn virtual_writer(
     while let Some(msg) = rx.recv().await {
         let body = match msg {
             Out::Body(b) => b,
-            Out::Shared(p) => p.body.clone(),
+            Out::Shared(p) => p.body().to_vec(),
             Out::Compression(_) | Out::Encryption(_) => continue,
             Out::Close => break,
         };

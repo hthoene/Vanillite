@@ -1,4 +1,26 @@
-//! The player kind: what a player entity holds besides its core columns.
+//! The player kind: what a player entity holds besides its core columns, its connection, the
+//! play packet handlers, movement validation and chunk sending.
+
+// SEC-07: packet handler modules of the game deny the lints of the input-handling crates.
+#![deny(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions
+)]
+
+pub mod chunks;
+pub mod connection;
+pub mod encode;
+pub mod join;
+pub mod movement;
+pub mod sink;
+
+pub use chunks::{ChunkSource, PlayerChunks};
+pub use connection::{Connection, Handled, PlayerState, effective_view_distance};
+pub use movement::{Body, Kick, MoveContext, MoveRequest, Movement};
+pub use sink::PacketSink;
 
 use vanillite_base::ChunkPos;
 use vanillite_config::GameMode;
@@ -71,9 +93,8 @@ pub struct ChunkView {
     pub view_distance: i32,
 }
 
-/// The kind data of a player entity (`Dense<PlayerData>`). The network connection is added by
-/// the play handlers.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// The kind data of a player entity (`Dense<PlayerData>`).
+#[derive(Debug)]
 pub struct PlayerData {
     /// Profile with name and skin.
     pub profile: GameProfile,
@@ -85,6 +106,8 @@ pub struct PlayerData {
     pub client: ClientInformation,
     /// Loaded chunks on the client.
     pub chunk_view: ChunkView,
+    /// The connection to the client.
+    pub connection: Connection,
 }
 
 /// `Player.getDefaultDimensions(pose)`.

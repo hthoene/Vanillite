@@ -736,6 +736,15 @@ mod entities {
         pub on_ground: bool,
     }
 
+    /// `set_entity_motion`.
+    #[derive(Debug, Clone, PartialEq, Packet)]
+    #[packet(state = Play, dir = Clientbound, name = "set_entity_motion")]
+    pub struct SetEntityMotion {
+        #[field(varint)]
+        pub entity_id: i32,
+        pub movement: LpVec3,
+    }
+
     /// `set_entity_data`: metadata items encoded by the entity code, ending with `0xFF`.
     #[derive(Debug, Clone, PartialEq, Eq, Packet)]
     #[packet(state = Play, dir = Clientbound, name = "set_entity_data")]
