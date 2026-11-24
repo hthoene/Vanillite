@@ -35,7 +35,7 @@ impl Client {
     /// Connects and logs in offline as `gamertag` with `xuid`; returns after the resource pack
     /// handshake, before `start_game`.
     pub async fn connect(server: SocketAddr, xuid: &str, gamertag: &str) -> Result<Self, String> {
-        let socket = UdpSocket::bind("127.0.0.1:0")
+        let socket = UdpSocket::bind("0.0.0.0:0")
             .await
             .map_err(|e| e.to_string())?;
         let mtu: u16 = 1400;

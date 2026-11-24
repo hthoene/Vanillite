@@ -11,6 +11,8 @@
 # - vanillite-proxy on 30010 (/opt/vanillite-proxy, vanillite-proxy.service, deployed with
 #   `ssh <host> vanillite-proxy-deploy < target/release-fast/vanillite-proxy`) in front of
 #   Vanillite 30001 and 30002 and a Paper with modern forwarding on 30011 (/opt/paper-proxy).
+# - Bedrock players on UDP 30019: the Bedrock frontend of Vanillite 30001 (`[bedrock]` set by the
+#   drop-in vanillite@30001.service.d/bedrock.conf).
 # Only ports 30000-30999 are reachable by players.
 set -euo pipefail
 
@@ -501,6 +503,14 @@ for port in 30001 30002; do
 EnvironmentFile=/etc/vanillite-test/proxy-backend.env
 EOF
 done
+
+echo "== Bedrock (UDP 30019 in front of Vanillite 30001)"
+install -d /etc/systemd/system/vanillite@30001.service.d
+write_if_changed /etc/systemd/system/vanillite@30001.service.d/bedrock.conf <<'EOF'
+[Service]
+Environment=VANILLITE_BEDROCK__ENABLED=true
+Environment=VANILLITE_BEDROCK__PORT=30019
+EOF
 
 # Paper behind the proxy: offline mode in server.properties, identities from the proxy.
 install -d -o minecraft -g minecraft /opt/paper-proxy /opt/paper-proxy/config
