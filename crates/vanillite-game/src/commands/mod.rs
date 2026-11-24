@@ -10,10 +10,12 @@
     clippy::as_conversions
 )]
 
+mod blocks;
 mod execute;
 mod players;
 mod server;
 mod world;
+mod world_state;
 
 pub use vanillite_command::Dispatcher;
 
@@ -58,6 +60,14 @@ pub mod suggest {
     pub const BOSSBARS: &str = "bossbars";
     /// Stopwatch ids.
     pub const STOPWATCHES: &str = "stopwatches";
+    /// The default tick rate (`/tick rate`).
+    pub const TICK_RATE: &str = "tick.rate";
+    /// Step times (`/tick step`).
+    pub const TICK_STEP: &str = "tick.step";
+    /// Sprint times (`/tick sprint`).
+    pub const TICK_SPRINT: &str = "tick.sprint";
+    /// Structure templates (`/place template`).
+    pub const TEMPLATES: &str = "templates";
     /// Entity types `summon` may create; the client answers it itself.
     pub const SUMMONABLE_ENTITIES: &str = "minecraft:summonable_entities";
 }
@@ -209,6 +219,106 @@ pub enum ScoreboardOp {
     Operation,
 }
 
+/// How `setblock` places (`SetBlockCommand.Mode`, the `keep` filter and `strict`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SetBlockMode {
+    Replace,
+    Destroy,
+    Keep,
+    Strict,
+}
+
+/// How `fill` places (`FillCommand.Mode`, `strict`, and `keep`); `replace <filter>` is read
+/// from the arguments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FillMode {
+    Replace,
+    Outline,
+    Hollow,
+    Destroy,
+    Strict,
+    Keep,
+}
+
+/// `CloneCommands.Mode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CloneMode {
+    Normal,
+    Force,
+    Move,
+}
+
+/// Which source blocks `clone` copies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CloneFilter {
+    /// `replace` (the default).
+    All,
+    /// `masked`: all but air.
+    Masked,
+    /// `filtered <filter>`.
+    Filtered,
+}
+
+/// The subcommands of `forceload`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ForceLoadOp {
+    /// `add <from> [<to>]`.
+    Add,
+    /// `remove <from> [<to>]`.
+    Remove,
+    /// `remove all`.
+    RemoveAll,
+    /// `query`.
+    List,
+    /// `query <pos>`.
+    Query,
+}
+
+/// The subcommands of `locate`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LocateOp {
+    Structure,
+    Biome,
+    Poi,
+}
+
+/// The subcommands of `place`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PlaceOp {
+    Feature,
+    Jigsaw,
+    Structure,
+    Template,
+}
+
+/// The subcommands of `tick`; `step` with or without `<time>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TickOp {
+    Query,
+    Rate,
+    Step,
+    StepStop,
+    Sprint,
+    SprintStop,
+    Unfreeze,
+    Freeze,
+}
+
+/// The subcommands of `worldborder`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WorldBorderOp {
+    /// `add <distance> [<time>]`.
+    Add,
+    /// `set <distance> [<time>]`.
+    Set,
+    Center,
+    DamageAmount,
+    DamageBuffer,
+    Get,
+    WarningDistance,
+    WarningTime,
+}
+
 /// What to execute. Variants that share a syntax with optional arguments say so; the
 /// arguments are read by name from `Parsed::args`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -324,11 +434,53 @@ pub enum CommandId {
     ReturnRun,
     /// `scoreboard ...`.
     Scoreboard(ScoreboardOp),
+    /// `clone [from <sourceDimension>] <begin> <end> [to <targetDimension>] <destination>
+    /// [strict] [replace|masked|filtered <filter>] [force|move|normal]`.
+    Clone {
+        filter: CloneFilter,
+        mode: CloneMode,
+        strict: bool,
+    },
+    /// `defaultgamemode <gamemode>`.
+    DefaultGameMode,
+    /// `difficulty`.
+    DifficultyQuery,
+    /// `difficulty <difficulty>`: `Difficulty.getId`.
+    DifficultySet(u8),
+    /// `fill <from> <to> <block> [replace [<filter>]] [<mode>]`.
+    Fill(FillMode),
+    /// `fillbiome <from> <to> <biome> [replace <filter>]`.
+    FillBiome,
+    /// `forceload ...`.
+    ForceLoad(ForceLoadOp),
+    /// `locate ...`.
+    Locate(LocateOp),
+    /// `place ...`.
+    Place(PlaceOp),
+    /// `setblock <pos> <block> [<mode>]`.
+    SetBlock(SetBlockMode),
+    /// `spawnpoint [<targets> [<pos> [<rotation>]]]`.
+    SpawnPoint,
+    /// `setworldspawn [<pos> [<rotation>]]`.
+    SetWorldSpawn,
+    /// `spreadplayers <center> <spreadDistance> <maxRange> [under <maxHeight>] <respectTeams>
+    /// <targets>`.
+    SpreadPlayers,
+    /// `tick ...`.
+    Tick(TickOp),
+    /// `worldborder ...`.
+    WorldBorder(WorldBorderOp),
 }
 
 /// Registers all commands in Vanilla's registration order (`Commands` constructor).
 pub fn register(d: &mut Dispatcher<CommandId>) {
     execute::register_execute(d);
+    blocks::register_clone(d);
+    world_state::register_default_game_mode(d);
+    world_state::register_difficulty(d);
+    blocks::register_fill(d);
+    blocks::register_fill_biome(d);
+    world_state::register_force_load(d);
     execute::register_function(d);
     players::register_game_mode(d);
     world::register_game_rule(d);
@@ -336,14 +488,22 @@ pub fn register(d: &mut Dispatcher<CommandId>) {
     server::register_kick(d);
     world::register_kill(d);
     players::register_list(d);
+    world_state::register_locate(d);
     players::register_msg(d);
+    blocks::register_place(d);
     execute::register_return(d);
     players::register_say(d);
     execute::register_scoreboard(d);
     world::register_seed(d);
+    blocks::register_set_block(d);
+    world_state::register_spawn_point(d);
+    world_state::register_set_world_spawn(d);
+    world_state::register_spread_players(d);
     players::register_teleport(d);
+    world_state::register_tick(d);
     world::register_time(d);
     world::register_weather(d);
+    world_state::register_world_border(d);
     server::register_deop(d);
     server::register_op(d);
     server::register_save_all(d);

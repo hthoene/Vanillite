@@ -44,6 +44,12 @@ pub struct Global {
     pub(crate) spawn_protection: i32,
     /// Scoreboard, command storage, functions and tags.
     pub(crate) systems: crate::systems::GameSystems,
+    /// `/tick`'s state; the server loop reads it once per tick.
+    pub(crate) tick_rate: std::sync::Mutex<crate::tick_rate::TickRateManager>,
+    /// The durations of the last ticks (`/tick query`).
+    pub(crate) tick_times: std::sync::Mutex<crate::tick_rate::TickTimes>,
+    /// `force-gamemode`.
+    pub(crate) force_game_mode: bool,
     /// This value itself, for work handed to other worlds.
     pub(crate) this: Weak<Global>,
 }
@@ -64,6 +70,13 @@ impl Global {
         if let Some(handle) = self.handle.get() {
             handle.run_in_world(world, task);
         }
+    }
+
+    /// The tick rate state, locked for one read or change.
+    pub(crate) fn tick_rate(&self) -> std::sync::MutexGuard<'_, crate::tick_rate::TickRateManager> {
+        self.tick_rate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Asks the server to stop after the current tick (`/stop`).

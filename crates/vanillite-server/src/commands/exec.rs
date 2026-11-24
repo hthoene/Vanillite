@@ -30,7 +30,7 @@ pub(crate) fn config_game_mode(mode: ArgGameMode) -> GameMode {
 }
 
 /// `gameMode.<name>`.
-fn mode_component(mode: GameMode) -> Component {
+pub(crate) fn mode_component(mode: GameMode) -> Component {
     Component::translatable(format!("gameMode.{}", game_mode_name(mode)), vec![])
 }
 
@@ -78,6 +78,30 @@ fn apply_game_mode(
         return false;
     };
     set_game_mode(player, mode, broadcast)
+}
+
+/// `ServerPlayer.setGameMode` without feedback (`enforceGameTypeForPlayers`): whether the
+/// mode changed. Players of other worlds change between ticks.
+pub(crate) fn enforce_game_mode(
+    entities: &mut Entities,
+    global: &Global,
+    target: &Target,
+    mode: GameMode,
+) -> bool {
+    if target.game_mode == mode {
+        return false;
+    }
+    if target.entity.is_some() {
+        return apply_game_mode(entities, target.uuid, mode, || {
+            broadcast_game_mode(global, target.uuid, mode);
+        });
+    }
+    broadcast_game_mode(global, target.uuid, mode);
+    let uuid = target.uuid;
+    global.run_in_world(target.world, move |w| {
+        apply_game_mode(w.entities_mut(), uuid, mode, || {});
+    });
+    true
 }
 
 /// `GameModeCommand.setMode`.
@@ -167,7 +191,7 @@ fn wrap_degrees(v: f32) -> f32 {
 }
 
 /// `TeleportCommand.performTeleport` for a player in this world.
-fn teleport_local(
+pub(crate) fn teleport_local(
     entities: &mut Entities,
     target: &Target,
     pos: Vec3,

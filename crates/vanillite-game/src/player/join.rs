@@ -5,8 +5,9 @@ use vanillite_base::Vec3;
 use vanillite_config::GameMode as ConfigGameMode;
 use vanillite_protocol::chat::ChatSessionData;
 use vanillite_protocol::packets::play::clientbound::{
-    ChatSession, GameEvent, GameMode, Login, PlayerAbilities, PlayerInfoEntry, PlayerInfoRemove,
-    PlayerInfoUpdate, SetDefaultSpawnPosition, SpawnInfo, info_action,
+    ChatSession, GameEvent, GameMode, InitializeBorder, Login, PlayerAbilities, PlayerInfoEntry,
+    PlayerInfoRemove, PlayerInfoUpdate, SetDefaultSpawnPosition, SpawnInfo, TickingState,
+    TickingStep, info_action,
 };
 use vanillite_protocol::text::{ClickEvent, Color, Component, HoverEvent, NamedColor};
 use vanillite_protocol::types::{
@@ -174,15 +175,27 @@ pub fn send_abilities(sink: &dyn PacketSink, mode: ConfigGameMode) {
     sink.send(&abilities(mode));
 }
 
-/// `sendLevelInfo`: world border, clocks, spawn point, the weather and the request to wait for
-/// chunks.
+/// What `sendLevelInfo` sends of the world border and the server's tick state.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LevelPackets {
+    /// `ClientboundInitializeBorderPacket`.
+    pub border: InitializeBorder,
+    /// `ServerTickRateManager.updateJoiningPlayer`.
+    pub ticking: TickingState,
+    /// `ServerTickRateManager.updateJoiningPlayer`.
+    pub step: TickingStep,
+}
+
+/// `sendLevelInfo`: world border, clocks, spawn point, the weather, the request to wait for
+/// chunks and the tick state.
 pub fn send_level_info(
     sink: &dyn PacketSink,
     level: &LevelInfo,
+    state: &LevelPackets,
     time: &vanillite_protocol::packets::play::clientbound::SetTime,
     weather: &[GameEvent],
 ) {
-    // TODO: `initialize_border` comes with the world border.
+    sink.send(&state.border);
     sink.send(time);
     send_spawn_position(sink, level);
     for event in weather {
@@ -192,6 +205,8 @@ pub fn send_level_info(
         event: GameEvent::LEVEL_CHUNKS_LOAD_START,
         param: 0.0,
     });
+    sink.send(&state.ticking);
+    sink.send(&state.step);
 }
 
 /// `ClientboundSetDefaultSpawnPositionPacket` with the world's spawn.

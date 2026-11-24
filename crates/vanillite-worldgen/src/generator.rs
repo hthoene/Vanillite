@@ -521,6 +521,55 @@ impl TerrainGenerator {
         }
     }
 
+    /// The structure of `set_id` that `createStructures` starts in the chunk at `pos`, if any:
+    /// the set's placement, then its weighted pick, each pick tried with a full generation of
+    /// its pieces (`/locate`'s `getStructureGeneratingAt` without stored chunks).
+    pub fn structure_start_in(
+        &self,
+        state: &StructureState<'_>,
+        set_id: crate::structure::StructureSetId,
+        pos: ChunkPos,
+        level: LevelHeight,
+    ) -> Option<StructureId> {
+        let set = self.structures.set(set_id);
+        if !set.placement.is_structure_chunk(state, pos.x, pos.z) {
+            return None;
+        }
+        let valid = |id: StructureId| {
+            let structure = self.structures.structure(id);
+            let mut ctx = GenerationContext::new(self, pos, level, &structure.settings.biomes);
+            structure.generate_pieces(&mut ctx).is_some_and(|pieces| {
+                StructureStart::new(id, pos, 0, pieces, |bb| structure.adjust_bounding_box(bb))
+                    .is_some()
+            })
+        };
+        if let [(structure, _)] = set.structures.as_slice() {
+            return valid(*structure).then_some(*structure);
+        }
+        let mut options = set.structures.clone();
+        let mut random = WorldgenRandom::new(0);
+        random.set_large_feature_seed(state.level_seed(), pos.x, pos.z);
+        let mut total: i32 = options.iter().map(|(_, weight)| weight).sum();
+        while !options.is_empty() {
+            let mut choice = random.random.next_int_bounded(total);
+            let mut index = 0;
+            for (_, weight) in &options {
+                choice -= weight;
+                if choice < 0 {
+                    break;
+                }
+                index += 1;
+            }
+            let (structure, weight) = options[index];
+            if valid(structure) {
+                return Some(structure);
+            }
+            options.remove(index);
+            total -= weight;
+        }
+        None
+    }
+
     /// `tryGenerateStructure(...)`: whether a valid start was generated and stored.
     fn try_generate_structure(
         &self,

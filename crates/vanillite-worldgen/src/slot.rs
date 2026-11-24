@@ -41,7 +41,7 @@ const MAX_KEPT_STARTS: usize = 1 << 18;
 /// Vanilla's `NoiseBasedChunkGenerator` in the `chunk-generator` slot.
 #[derive(Debug)]
 pub struct VanillaChunkGenerator {
-    generator: TerrainGenerator,
+    generator: Arc<TerrainGenerator>,
     world: WorldInfo,
     /// `WorldOptions.generateStructures`.
     structures: bool,
@@ -54,7 +54,7 @@ impl VanillaChunkGenerator {
     /// height and biome registry as `world`. Structures are generated.
     pub fn new(generator: TerrainGenerator, world: WorldInfo) -> Self {
         Self {
-            generator,
+            generator: Arc::new(generator),
             world,
             structures: true,
             starts: Mutex::default(),
@@ -70,6 +70,16 @@ impl VanillaChunkGenerator {
     /// The wrapped generator.
     pub fn generator(&self) -> &TerrainGenerator {
         &self.generator
+    }
+
+    /// The wrapped generator, shared (for `/locate` on the world's thread).
+    pub fn shared(&self) -> Arc<TerrainGenerator> {
+        Arc::clone(&self.generator)
+    }
+
+    /// `WorldOptions.generateStructures`.
+    pub fn generates_structures(&self) -> bool {
+        self.structures
     }
 }
 

@@ -52,8 +52,8 @@ pub struct LevelState {
     clocks: Mutex<Clocks>,
     rules: RwLock<GameRules>,
     weather: Mutex<WeatherData>,
-    /// The difficulty of `server.properties`.
-    pub difficulty: Difficulty,
+    /// `Difficulty.getId` of the difficulty: `server.properties`', then `/difficulty`'s.
+    difficulty: std::sync::atomic::AtomicI32,
     pub damage_types: DamageTypes,
     pub block_facts: BlockFacts,
     /// The default clock of each dimension (`DimensionType.defaultClock`), in [`DIMENSIONS`]
@@ -162,7 +162,7 @@ impl LevelState {
             clocks: Mutex::new(clocks),
             rules: RwLock::new(rules),
             weather: Mutex::new(weather),
-            difficulty,
+            difficulty: std::sync::atomic::AtomicI32::new(difficulty.id()),
             damage_types,
             block_facts,
             default_clocks,
@@ -177,6 +177,43 @@ impl LevelState {
     /// The game time.
     pub fn game_time(&self) -> i64 {
         self.game_time.load(Ordering::Relaxed)
+    }
+
+    /// The difficulty (`WorldData.getDifficulty`).
+    pub fn difficulty(&self) -> Difficulty {
+        Difficulty::from_id(self.difficulty.load(Ordering::Relaxed))
+    }
+
+    /// `MinecraftServer.setDifficulty`: kept in `level.dat`; hardcore worlds stay hard.
+    pub(crate) fn set_difficulty(&self, difficulty: Difficulty) {
+        let mut data = lock(&self.level_data);
+        let difficulty = if data.hardcore {
+            Difficulty::Hard
+        } else {
+            difficulty
+        };
+        self.difficulty.store(difficulty.id(), Ordering::Relaxed);
+        data.difficulty = difficulty_name(difficulty).to_owned();
+    }
+
+    /// `level.dat`'s `GameType`: the default game mode id.
+    pub(crate) fn default_game_type(&self) -> i32 {
+        lock(&self.level_data).game_type
+    }
+
+    /// `setDefaultGameType`.
+    pub(crate) fn set_default_game_type(&self, game_type: i32) {
+        lock(&self.level_data).game_type = game_type;
+    }
+
+    /// `level.dat`'s `spawn` (`LevelData.RespawnData`).
+    pub(crate) fn spawn(&self) -> Option<Spawn> {
+        lock(&self.level_data).spawn.clone()
+    }
+
+    /// `setRespawnData`.
+    pub(crate) fn set_spawn(&self, spawn: Spawn) {
+        lock(&self.level_data).spawn = Some(spawn);
     }
 
     /// The clocks.

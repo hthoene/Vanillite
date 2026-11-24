@@ -4,17 +4,21 @@
 //! only offers and parses nodes the source may use, and every command node carries its
 //! required level (SEC-12).
 
+mod blocks_cmd;
+mod border_cmd;
 mod data;
 mod dispatch;
 mod engine;
 mod exec;
 mod execute;
 pub(crate) mod functions;
+mod locate;
 mod nbt_ops;
 mod scores;
 mod select;
 mod source;
 mod survival;
+mod world_cmd;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -30,6 +34,7 @@ use vanillite_world::entity::EntityId;
 
 pub(crate) use exec::permission_event;
 pub(crate) use source::{CommandSource, SourceKind};
+pub(crate) use world_cmd::sprint_finished;
 
 use crate::global::Global;
 use crate::world::{ServerWorld, WorldId};
