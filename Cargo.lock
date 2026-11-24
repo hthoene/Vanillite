@@ -1357,12 +1357,14 @@ dependencies = [
 name = "vanillite-worldgen"
 version = "0.1.0"
 dependencies = [
+ "libdeflater",
  "rustc-hash",
  "serde_json",
  "vanillite-base",
  "vanillite-chunk",
  "vanillite-data",
  "vanillite-datapack",
+ "vanillite-nbt",
 ]
 
 [[package]]

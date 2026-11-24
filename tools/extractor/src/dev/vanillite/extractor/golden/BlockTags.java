@@ -17,20 +17,22 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 import net.minecraft.core.Holder;
 import net.minecraft.core.MappedRegistry;
+import net.minecraft.core.Registry;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.Identifier;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.tags.TagKey;
 import net.minecraft.tags.TagLoader;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.material.Fluid;
 
 /**
- * Binds the Vanilla block tags from the server jar's data pack, which {@code Bootstrap} alone
- * leaves unbound (world generation tests {@code uncarvable} and {@code
- * blocks_motion_in_heightmap}).
+ * Binds the Vanilla block and fluid tags from the server jar's data pack, which {@code
+ * Bootstrap} alone leaves unbound (world generation tests {@code uncarvable} and {@code
+ * blocks_motion_in_heightmap}; features test fluid tags such as {@code water}).
  */
 final class BlockTags {
-  private static final String PREFIX = "data/minecraft/tags/block/";
   private static boolean bound;
 
   private BlockTags() {}
@@ -39,6 +41,14 @@ final class BlockTags {
     if (bound) {
       return;
     }
+    bind((MappedRegistry<Block>) BuiltInRegistries.BLOCK, Registries.BLOCK, "block");
+    bind((MappedRegistry<Fluid>) BuiltInRegistries.FLUID, Registries.FLUID, "fluid");
+    bound = true;
+  }
+
+  private static <T> void bind(MappedRegistry<T> registry, ResourceKey<? extends Registry<T>> key, String dir)
+      throws Exception {
+    String prefix = "data/minecraft/tags/" + dir + "/";
     Path jar = Path.of(Block.class.getProtectionDomain().getCodeSource().getLocation().toURI());
     Map<String, JsonElement> raw = new HashMap<>();
     try (ZipFile zip = new ZipFile(jar.toFile())) {
@@ -46,27 +56,24 @@ final class BlockTags {
       while (entries.hasMoreElements()) {
         ZipEntry entry = entries.nextElement();
         String name = entry.getName();
-        if (name.startsWith(PREFIX) && name.endsWith(".json")) {
-          String id = "minecraft:" + name.substring(PREFIX.length(), name.length() - 5);
+        if (name.startsWith(prefix) && name.endsWith(".json")) {
+          String id = "minecraft:" + name.substring(prefix.length(), name.length() - 5);
           try (InputStreamReader r = new InputStreamReader(zip.getInputStream(entry), StandardCharsets.UTF_8)) {
             raw.put(id, JsonParser.parseReader(r));
           }
         }
       }
     }
-    Map<TagKey<Block>, List<Holder<Block>>> tags = new HashMap<>();
+    Map<TagKey<T>, List<Holder<T>>> tags = new HashMap<>();
     Map<String, Set<String>> resolved = new HashMap<>();
     for (String id : raw.keySet()) {
-      List<Holder<Block>> holders = new ArrayList<>();
-      for (String block : resolve(id, raw, resolved)) {
-        BuiltInRegistries.BLOCK.get(Identifier.parse(block)).ifPresent(holders::add);
+      List<Holder<T>> holders = new ArrayList<>();
+      for (String entry : resolve(id, raw, resolved)) {
+        registry.get(Identifier.parse(entry)).ifPresent(holders::add);
       }
-      tags.put(TagKey.create(Registries.BLOCK, Identifier.parse(id)), holders);
+      tags.put(TagKey.create(key, Identifier.parse(id)), holders);
     }
-    ((MappedRegistry<Block>) BuiltInRegistries.BLOCK)
-        .prepareTagReload(new TagLoader.LoadResult<>(Registries.BLOCK, tags))
-        .apply();
-    bound = true;
+    registry.prepareTagReload(new TagLoader.LoadResult<>(key, tags)).apply();
   }
 
   private static Set<String> resolve(String id, Map<String, JsonElement> raw, Map<String, Set<String>> done) {
