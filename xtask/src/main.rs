@@ -1,3 +1,84 @@
 //! Repository tasks: Vanilla data update, code generation, golden tests and releases.
+//!
+//! ```text
+//! cargo xtask vanilla update [<version>] [--jar <server.jar>]
+//! cargo xtask codegen [--check]
+//! ```
 
-fn main() {}
+mod codegen;
+mod normalize;
+mod vanilla;
+
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+
+/// Errors are reported as text; xtask is a developer tool.
+pub type Result<T> = std::result::Result<T, String>;
+
+const USAGE: &str = "usage:
+  cargo xtask vanilla update [<version>] [--jar <server.jar>]
+      Download (or take) the server jar, verify its SHA-1, run Mojang's data generator and
+      tools/extractor, normalise into data/vanilla/, run codegen and print a change report.
+      <version> defaults to the latest release. Needs a JDK (JAVA_HOME or
+      VANILLITE_JAVA_HOME, else java/javac on PATH) of the version the jar asks for.
+  cargo xtask codegen [--check]
+      Generate crates/vanillite-data/src/generated/ from data/vanilla/.
+      --check fails if the committed files are not current.";
+
+fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let result = match args.as_slice() {
+        ["vanilla", "update", rest @ ..] => vanilla_update(rest),
+        ["codegen"] => codegen::run(&repo_root(), false),
+        ["codegen", "--check"] => codegen::run(&repo_root(), true),
+        _ => Err(USAGE.to_owned()),
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn vanilla_update(args: &[&str]) -> Result<()> {
+    let mut version = None;
+    let mut jar = None;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match *arg {
+            "--jar" => jar = Some(PathBuf::from(it.next().ok_or("--jar needs a path")?)),
+            v if !v.starts_with('-') && version.is_none() => version = Some(v.to_owned()),
+            _ => return Err(USAGE.to_owned()),
+        }
+    }
+    vanilla::update(&repo_root(), version.as_deref(), jar.as_deref())
+}
+
+/// The workspace root (the parent of the xtask crate).
+pub fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// Reads a file to a string with the path in the error.
+pub fn read(path: &Path) -> Result<String> {
+    std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Parses a JSON file.
+pub fn read_json(path: &Path) -> Result<serde_json::Value> {
+    serde_json::from_str(&read(path)?).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Writes a file, creating parent directories.
+pub fn write(path: &Path, contents: &str) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    std::fs::write(path, contents).map_err(|e| format!("{}: {e}", path.display()))
+}

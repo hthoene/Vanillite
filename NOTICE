@@ -2,3 +2,13 @@ Vanillite
 Copyright 2026 Hannes Thöne
 
 This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Vanilla data
+------------
+data/vanilla/ contains facts about Minecraft: Java Edition (identifiers, numeric protocol
+ids, block state properties, collision shapes, packet ids, default item components and
+similar values), extracted from Mojang's server jar and normalised for interoperability.
+The tables in crates/vanillite-data/src/generated/ are generated from them. Minecraft is a
+trademark of Mojang AB. Vanillite is not affiliated with or endorsed by Mojang or Microsoft.
+No Minecraft code, data pack contents, structures or assets are included: the server
+downloads Mojang's server jar on first start and reads the Vanilla data pack from it.
