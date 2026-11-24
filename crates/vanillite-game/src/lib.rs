@@ -15,6 +15,7 @@ pub mod entities;
 pub mod inventory;
 pub mod item;
 pub mod item_entity;
+pub mod item_nbt;
 pub mod level;
 pub mod loot;
 pub mod menu;
