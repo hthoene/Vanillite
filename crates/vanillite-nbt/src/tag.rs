@@ -253,4 +253,40 @@ impl Compound {
             _ => None,
         }
     }
+
+    /// Reorders the entries into the iteration order of a `java.util.HashMap` that got them in
+    /// the current order. Vanilla's `CompoundTag` is such a map, so codec output written by
+    /// Vanilla has this order on the wire.
+    pub fn sort_java_hash_order(&mut self) {
+        // Default capacity 16, doubled whenever the size exceeds 3/4 of it.
+        let mut capacity: u32 = 16;
+        while self.0.len()
+            > usize::try_from((capacity >> 2).saturating_mul(3)).unwrap_or(usize::MAX)
+        {
+            capacity = capacity.saturating_mul(2);
+        }
+        let mask = capacity.wrapping_sub(1);
+        // A stable sort keeps the insertion order inside a bucket, like the bucket lists.
+        self.0
+            .sort_by_key(|(name, _)| java_spread_hash(name) & mask);
+    }
+
+    /// Builder form of [`Compound::sort_java_hash_order`].
+    #[must_use]
+    pub fn in_java_hash_order(mut self) -> Self {
+        self.sort_java_hash_order();
+        self
+    }
+}
+
+/// `HashMap.hash(key)` of a `String`: `hashCode()` over UTF-16 code units, spread by
+/// `h ^ (h >>> 16)`.
+fn java_spread_hash(s: &str) -> u32 {
+    let mut buf = [0u16; 2];
+    let h = s.chars().fold(0u32, |h, c| {
+        c.encode_utf16(&mut buf).iter().fold(h, |h, &unit| {
+            h.wrapping_mul(31).wrapping_add(u32::from(unit))
+        })
+    });
+    h ^ (h >> 16)
 }

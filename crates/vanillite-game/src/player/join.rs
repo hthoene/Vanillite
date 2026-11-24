@@ -3,12 +3,15 @@
 
 use vanillite_base::Vec3;
 use vanillite_config::GameMode as ConfigGameMode;
+use vanillite_protocol::chat::ChatSessionData;
 use vanillite_protocol::packets::play::clientbound::{
-    GameEvent, GameMode, Login, PlayerAbilities, PlayerInfoEntry, PlayerInfoRemove,
-    PlayerInfoUpdate, SetDefaultSpawnPosition, SpawnInfo, SystemChat, info_action,
+    ChatSession, GameEvent, GameMode, Login, PlayerAbilities, PlayerInfoEntry, PlayerInfoRemove,
+    PlayerInfoUpdate, SetDefaultSpawnPosition, SpawnInfo, info_action,
 };
-use vanillite_protocol::text::{Color, Component, NamedColor};
-use vanillite_protocol::types::{BlockPos, GameProfile, GlobalPos, Identifier, Property, Uuid};
+use vanillite_protocol::text::{ClickEvent, Color, Component, HoverEvent, NamedColor};
+use vanillite_protocol::types::{
+    BlockPos, GameProfile, GlobalPos, Identifier, Property, RawBytes, Uuid,
+};
 
 use super::sink::PacketSink;
 use super::{GameProfile as Profile, PlayerData};
@@ -72,8 +75,58 @@ fn abilities(mode: ConfigGameMode) -> PlayerAbilities {
     }
 }
 
+/// `ServerPlayer.setGameMode`: changes the game mode and sends abilities, the game event and
+/// abilities again; `broadcast_tab_list` runs where Vanilla broadcasts the tab list update.
+/// Returns `false` when the player already is in that mode.
+pub fn set_game_mode(
+    player: &mut PlayerData,
+    mode: ConfigGameMode,
+    broadcast_tab_list: impl FnOnce(),
+) -> bool {
+    if player.game_mode == mode {
+        return false;
+    }
+    player.previous_game_mode = Some(player.game_mode);
+    player.game_mode = mode;
+    let sink = player.connection.sink.as_ref();
+    sink.send(&abilities(mode));
+    broadcast_tab_list();
+    sink.send(&GameEvent {
+        event: GameEvent::CHANGE_GAME_MODE,
+        param: game_mode_id(mode),
+    });
+    sink.send(&abilities(mode));
+    true
+}
+
+/// `GameType.getId` as the game event parameter.
+fn game_mode_id(mode: ConfigGameMode) -> f32 {
+    match mode {
+        ConfigGameMode::Survival => 0.0,
+        ConfigGameMode::Creative => 1.0,
+        ConfigGameMode::Adventure => 2.0,
+        ConfigGameMode::Spectator => 3.0,
+    }
+}
+
+/// `GameType.getName`, for `gameMode.<name>` translations.
+pub fn game_mode_name(mode: ConfigGameMode) -> &'static str {
+    match mode {
+        ConfigGameMode::Survival => "survival",
+        ConfigGameMode::Creative => "creative",
+        ConfigGameMode::Adventure => "adventure",
+        ConfigGameMode::Spectator => "spectator",
+    }
+}
+
 /// The first packets of a joining player, up to its abilities.
-pub fn send_login(sink: &dyn PacketSink, level: &LevelInfo, entity_id: i32, player: &PlayerData) {
+pub fn send_login(
+    sink: &dyn PacketSink,
+    level: &LevelInfo,
+    entity_id: i32,
+    player: &PlayerData,
+    enforces_secure_chat: bool,
+) {
     sink.send(&Login {
         entity_id,
         hardcore: level.hardcore,
@@ -97,7 +150,7 @@ pub fn send_login(sink: &dyn PacketSink, level: &LevelInfo, entity_id: i32, play
             sea_level: level.sea_level,
         },
         online_mode: level.online_mode,
-        enforces_secure_chat: false,
+        enforces_secure_chat,
     });
     sink.send(&abilities(player.game_mode));
 }
@@ -136,6 +189,8 @@ pub struct InfoEntry {
     pub latency: u32,
     /// Displayed skin parts.
     pub model_customisation: u8,
+    /// The player's chat session, once it sent one.
+    pub chat_session: Option<ChatSessionData>,
 }
 
 /// `ClientboundPlayerInfoUpdatePacket.createPlayerInitializing`.
@@ -168,7 +223,12 @@ pub fn player_info_add<'a>(players: impl IntoIterator<Item = &'a InfoEntry>) -> 
                         })
                         .collect(),
                 }),
-                chat_session: None,
+                chat_session: p.chat_session.as_ref().map(|s| ChatSession {
+                    session_id: s.session_id,
+                    expires_at: s.expires_at,
+                    public_key: RawBytes(s.public_key.clone()),
+                    key_signature: RawBytes(s.key_signature.clone()),
+                }),
                 game_mode: game_mode(p.game_mode),
                 listed: true,
                 latency: i32::try_from(p.latency).unwrap_or(i32::MAX),
@@ -187,20 +247,58 @@ pub fn player_info_remove(uuid: u128) -> PlayerInfoRemove {
     }
 }
 
-fn yellow_message(key: &str, name: &str) -> SystemChat {
-    SystemChat {
-        content: Component::translatable(key, vec![Component::text(name)])
-            .color(Color::Named(NamedColor::Yellow)),
-        overlay: false,
-    }
+/// `Player.getDisplayName()` of a player without team: the name, a click that suggests
+/// `/tell <name> `, the entity as hover and the name as insertion.
+pub fn display_name(name: &str, uuid: u128) -> Component {
+    Component::text(name)
+        .click(ClickEvent::SuggestCommand(format!("/tell {name} ")))
+        .hover(HoverEvent::ShowEntity {
+            id: "minecraft:player".into(),
+            uuid,
+            name: Some(Component::text(name)),
+        })
+        .insertion(name)
+}
+
+fn yellow_message(key: &str, name: &str, uuid: u128) -> Component {
+    Component::translatable(key, vec![display_name(name, uuid)])
+        .color(Color::Named(NamedColor::Yellow))
 }
 
 /// `multiplayer.player.joined`.
-pub fn joined_message(name: &str) -> SystemChat {
-    yellow_message("multiplayer.player.joined", name)
+pub fn joined_message(name: &str, uuid: u128) -> Component {
+    yellow_message("multiplayer.player.joined", name, uuid)
 }
 
 /// `multiplayer.player.left`.
-pub fn left_message(name: &str) -> SystemChat {
-    yellow_message("multiplayer.player.left", name)
+pub fn left_message(name: &str, uuid: u128) -> Component {
+    yellow_message("multiplayer.player.left", name, uuid)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+mod tests {
+    use vanillite_protocol::packets::play::clientbound::SystemChat;
+
+    /// The join and leave messages encode byte-exact like Vanilla 26.3 (captured when Bob
+    /// joined and was kicked).
+    #[test]
+    fn join_and_leave_messages_match_vanilla() {
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../vanillite-protocol/tests/vectors/text/"
+        );
+        let bob = 0xfaa5dca3_c3d4_354b_ae1b_dde9e5a14b3b;
+        for (file, message) in [
+            ("joined.bin", super::joined_message("Bob", bob)),
+            ("left.bin", super::left_message("Bob", bob)),
+        ] {
+            let vanilla = std::fs::read(format!("{dir}{file}")).unwrap();
+            let body = vanillite_protocol::frame::encode_body(&SystemChat {
+                content: message,
+                overlay: false,
+            });
+            assert_eq!(body, vanilla, "{file}");
+        }
+    }
 }

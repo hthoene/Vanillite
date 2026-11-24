@@ -203,6 +203,56 @@ pub mod serverbound {
         #[field(max_len = 32767)]
         pub command: String,
     }
+
+    /// `chat_command_signed`: a command with signatures of its message arguments.
+    #[derive(Debug, Clone, PartialEq, Eq, Packet)]
+    #[packet(state = Play, dir = Serverbound, name = "chat_command_signed", bucket = "command")]
+    pub struct ChatCommandSigned {
+        #[field(max_len = 32767)]
+        pub command: String,
+        /// Epoch milliseconds.
+        pub timestamp: i64,
+        pub salt: i64,
+        #[field(max_len = 8)]
+        pub argument_signatures: Vec<crate::chat::ArgumentSignature>,
+        pub last_seen: crate::chat::LastSeenUpdate,
+    }
+
+    /// `chat`: a chat message (max 256 characters), signed when the player has a chat session.
+    #[derive(Debug, Clone, PartialEq, Eq, Packet)]
+    #[packet(state = Play, dir = Serverbound, name = "chat", bucket = "chat")]
+    pub struct Chat {
+        #[field(max_len = 256)]
+        pub message: String,
+        /// Epoch milliseconds.
+        pub timestamp: i64,
+        pub salt: i64,
+        pub signature: Option<crate::chat::MessageSignature>,
+        pub last_seen: crate::chat::LastSeenUpdate,
+    }
+
+    /// `chat_ack`: the client advanced its last-seen window.
+    #[derive(Debug, Clone, PartialEq, Eq, Packet)]
+    #[packet(state = Play, dir = Serverbound, name = "chat_ack", bucket = "chat")]
+    pub struct ChatAck {
+        #[field(varint)]
+        pub offset: i32,
+    }
+
+    /// `chat_session_update`: the client's chat session with its profile key.
+    #[derive(Debug, Clone, PartialEq, Eq, Packet)]
+    #[packet(state = Play, dir = Serverbound, name = "chat_session_update", bucket = "chat")]
+    pub struct ChatSessionUpdate(pub crate::chat::ChatSessionData);
+
+    /// `command_suggestion`: tab completion of a command line (max 32500 characters).
+    #[derive(Debug, Clone, PartialEq, Eq, Packet)]
+    #[packet(state = Play, dir = Serverbound, name = "command_suggestion", bucket = "command")]
+    pub struct CommandSuggestion {
+        #[field(varint)]
+        pub id: i32,
+        #[field(max_len = 32500)]
+        pub command: String,
+    }
 }
 
 /// Clientbound play packets.
@@ -236,6 +286,130 @@ pub mod clientbound {
     #[derive(Debug, Clone, PartialEq, Eq, Packet)]
     #[packet(state = Play, dir = Clientbound, name = "chunk_batch_start")]
     pub struct ChunkBatchStart;
+
+    /// `player_chat`: a player's (possibly signed) chat message.
+    #[derive(Debug, Clone, PartialEq, Eq, Packet)]
+    #[packet(state = Play, dir = Clientbound, name = "player_chat")]
+    pub struct PlayerChat {
+        /// Messages this receiver got before.
+        #[field(varint)]
+        pub global_index: i32,
+        pub sender: crate::types::Uuid,
+        /// Index in the sender's message chain.
+        #[field(varint)]
+        pub index: i32,
+        pub signature: Option<crate::chat::MessageSignature>,
+        #[field(max_len = 256)]
+        pub content: String,
+        /// Epoch milliseconds.
+        pub timestamp: i64,
+        pub salt: i64,
+        #[field(max_len = 20)]
+        pub last_seen: Vec<crate::chat::PackedSignature>,
+        #[field(max_len = 2_097_152)]
+        pub unsigned_content: Option<Component>,
+        pub filter_mask: crate::chat::FilterMask,
+        pub chat_type: crate::chat::ChatTypeBound,
+    }
+
+    /// `disguised_chat`: an unsigned message shown with a chat type.
+    #[derive(Debug, Clone, PartialEq, Eq, Packet)]
+    #[packet(state = Play, dir = Clientbound, name = "disguised_chat")]
+    pub struct DisguisedChat {
+        #[field(max_len = 2_097_152)]
+        pub message: Component,
+        pub chat_type: crate::chat::ChatTypeBound,
+    }
+
+    /// `commands`: the command tree the player may use.
+    #[derive(Debug, Clone, PartialEq, Packet)]
+    #[packet(state = Play, dir = Clientbound, name = "commands")]
+    pub struct Commands(pub crate::commands::CommandTree);
+
+    /// One suggestion of `command_suggestions`.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Suggestion {
+        pub text: String,
+        pub tooltip: Option<Component>,
+    }
+
+    impl crate::codec::Encode for Suggestion {
+        fn encode(&self, out: &mut Vec<u8>) {
+            self.text.encode(out);
+            self.tooltip.encode(out);
+        }
+    }
+
+    impl crate::codec::Decode for Suggestion {
+        fn decode(r: &mut crate::codec::Reader<'_>) -> crate::codec::Result<Self> {
+            use crate::codec::DecodeLimited;
+            Ok(Self {
+                text: String::decode_limited(r, 32767)?,
+                tooltip: Option::<Component>::decode_limited(r, 2_097_152)?,
+            })
+        }
+    }
+
+    /// `command_suggestions`: the answer to `command_suggestion`.
+    #[derive(Debug, Clone, PartialEq, Eq, Packet)]
+    #[packet(state = Play, dir = Clientbound, name = "command_suggestions")]
+    pub struct CommandSuggestions {
+        #[field(varint)]
+        pub id: i32,
+        /// Start of the replaced range (characters).
+        #[field(varint)]
+        pub start: i32,
+        /// Length of the replaced range.
+        #[field(varint)]
+        pub length: i32,
+        #[field(max_len = 1 << 16)]
+        pub suggestions: Vec<Suggestion>,
+    }
+
+    /// `player_look_at`: turns the client's player towards a point or an entity.
+    #[derive(Debug, Clone, PartialEq, Packet)]
+    #[packet(state = Play, dir = Clientbound, name = "player_look_at")]
+    pub struct PlayerLookAt {
+        /// Anchor of the player (0 feet, 1 eyes).
+        #[field(varint)]
+        pub from_anchor: i32,
+        pub x: f64,
+        pub y: f64,
+        pub z: f64,
+        /// The entity to look at and its anchor, instead of the point.
+        pub entity: Option<LookAtEntity>,
+    }
+
+    /// The target entity of `player_look_at`.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct LookAtEntity {
+        pub entity_id: i32,
+        pub anchor: i32,
+    }
+
+    impl crate::codec::Encode for LookAtEntity {
+        fn encode(&self, out: &mut Vec<u8>) {
+            crate::codec::write_varint(out, self.entity_id);
+            crate::codec::write_varint(out, self.anchor);
+        }
+    }
+
+    impl crate::codec::Decode for LookAtEntity {
+        fn decode(r: &mut crate::codec::Reader<'_>) -> crate::codec::Result<Self> {
+            Ok(Self {
+                entity_id: r.varint()?,
+                anchor: r.varint()?,
+            })
+        }
+    }
+
+    /// `entity_event`: a one-byte event of an entity (here: permission levels 24..=28).
+    #[derive(Debug, Clone, PartialEq, Eq, Packet)]
+    #[packet(state = Play, dir = Clientbound, name = "entity_event")]
+    pub struct EntityEvent {
+        pub entity_id: i32,
+        pub event: i8,
+    }
 
     /// `chunk_batch_finished`.
     #[derive(Debug, Clone, PartialEq, Eq, Packet)]

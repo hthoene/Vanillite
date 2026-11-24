@@ -1,16 +1,24 @@
 //! A player's connection as the world sees it, and the play packet handlers of milestone 1
 //! (Vanilla's `ServerGamePacketListenerImpl`).
 
-use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use vanillite_base::Vec3;
 use vanillite_protocol::Inbound;
+use vanillite_protocol::chat::{
+    ArgumentSignature, ChatSessionData, LastSeenUpdate, MessageSignature,
+};
+use vanillite_protocol::packets::common::ChatVisibility;
 use vanillite_protocol::packets::common::{ClientInfo, MainHand as WireMainHand};
+use vanillite_protocol::packets::play::clientbound::SystemChat;
 use vanillite_protocol::packets::play::serverbound::PlayerAction;
 use vanillite_protocol::sets::ServerboundPlay;
-use vanillite_protocol::text::Component;
+use vanillite_protocol::text::{Color, Component, NamedColor};
 
+use super::chat::{
+    ChatInbox, ChatSession, ChatSettings, MessageChain, TickThrottler, is_chat_message_illegal,
+};
 use super::chunks::PlayerChunks;
 use super::movement::{Body, Kick, MoveContext, MoveRequest, Movement};
 use super::sink::PacketSink;
@@ -41,6 +49,95 @@ pub enum Handled {
     Kick(Box<Component>),
 }
 
+/// The signed part of a `chat_command_signed` packet.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SignedCommand {
+    /// Epoch milliseconds.
+    pub timestamp: i64,
+    /// Salt.
+    pub salt: i64,
+    /// Signatures of the message arguments.
+    pub signatures: Vec<ArgumentSignature>,
+    /// The signatures the client had seen.
+    pub last_seen: Vec<MessageSignature>,
+}
+
+/// A chat or command request of a player, handled by the server after the player's packets in
+/// packet order (Vanilla runs them on the server thread through `chatMessageChain`).
+#[derive(Clone, Debug)]
+pub enum ChatRequest {
+    /// A chat message; its last-seen update is already applied.
+    Chat {
+        /// The text (at most 256 characters, no illegal characters).
+        message: String,
+        /// Epoch milliseconds.
+        timestamp: i64,
+        /// Salt.
+        salt: i64,
+        /// The signature, if the client signed it.
+        signature: Option<MessageSignature>,
+        /// The signatures the client had seen.
+        last_seen: Vec<MessageSignature>,
+    },
+    /// A command without the leading slash.
+    Command {
+        /// The command line.
+        command: String,
+        /// Signature data of `chat_command_signed`.
+        signed: Option<SignedCommand>,
+    },
+    /// The player started a new, validated chat session; other players learn it through the
+    /// tab list.
+    Session(ChatSessionData),
+}
+
+/// A player's chat state.
+#[derive(Debug)]
+pub struct PlayerChatState {
+    /// The sender side: session and signed message chain.
+    pub chain: MessageChain,
+    /// The receiver side, shared with everyone who sends chat to this player.
+    pub inbox: Arc<Mutex<ChatInbox>>,
+    /// `chatSpamThrottler`.
+    pub chat_spam: TickThrottler,
+    /// `commandSpamThrottler`.
+    pub command_spam: TickThrottler,
+    /// The latest tab completion request (Vanilla answers the latest one, one per tick).
+    pub suggestion: Option<(i32, String)>,
+    /// Requests of this tick, in packet order.
+    pub requests: Vec<ChatRequest>,
+}
+
+impl PlayerChatState {
+    /// The state of a joining player with its receiver side.
+    pub fn new(settings: &ChatSettings, inbox: Arc<Mutex<ChatInbox>>) -> PlayerChatState {
+        PlayerChatState {
+            chain: MessageChain::default(),
+            inbox,
+            chat_spam: TickThrottler::new(20, settings.chat_spam_threshold),
+            command_spam: TickThrottler::new(20, settings.command_spam_threshold),
+            suggestion: None,
+            requests: Vec::new(),
+        }
+    }
+
+    /// Locks the receiver side.
+    pub fn inbox(&self) -> MutexGuard<'_, ChatInbox> {
+        self.inbox.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// What the chat handlers need from the server.
+#[derive(Clone, Copy, Debug)]
+pub struct ChatContext<'a> {
+    /// The player's UUID.
+    pub uuid: u128,
+    /// The player's name, for logs.
+    pub name: &'a str,
+    /// Server chat settings.
+    pub settings: &'a ChatSettings,
+}
+
 /// A player's connection: packet queues and per-connection protocol state.
 pub struct Connection {
     /// Clientbound packets.
@@ -50,6 +147,8 @@ pub struct Connection {
     pub movement: Movement,
     /// Chunk view and sending.
     pub chunks: PlayerChunks,
+    /// Chat and commands.
+    pub chat: PlayerChatState,
 }
 
 impl std::fmt::Debug for Connection {
@@ -57,6 +156,7 @@ impl std::fmt::Debug for Connection {
         f.debug_struct("Connection")
             .field("movement", &self.movement)
             .field("chunks", &self.chunks)
+            .field("chat", &self.chat)
             .finish_non_exhaustive()
     }
 }
@@ -79,6 +179,7 @@ impl From<&ClientInfo> for ClientInformation {
                 WireMainHand::Left => MainHand::Left,
                 WireMainHand::Right => MainHand::Right,
             },
+            chat_visibility: info.chat_visibility,
             allows_listing: info.allows_listing,
         }
     }
@@ -91,12 +192,15 @@ impl Connection {
         inbound: Receiver<Inbound>,
         pos: Vec3,
         memory_connection: bool,
+        chat: &ChatSettings,
+        inbox: Arc<Mutex<ChatInbox>>,
     ) -> Connection {
         Connection {
             sink,
             inbound,
             movement: Movement::new(pos),
             chunks: PlayerChunks::new(memory_connection),
+            chat: PlayerChatState::new(chat, inbox),
         }
     }
 
@@ -106,6 +210,7 @@ impl Connection {
         &mut self,
         state: &mut PlayerState,
         ctx: MoveContext<'_>,
+        chat: ChatContext<'_>,
         budget: usize,
     ) -> Handled {
         for _ in 0..budget {
@@ -114,7 +219,7 @@ impl Connection {
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => return Handled::Disconnected,
             };
-            if let Err(Kick(reason)) = self.handle(packet, state, ctx) {
+            if let Err(Kick(reason)) = self.handle(packet, state, ctx, chat) {
                 return Handled::Kick(reason);
             }
         }
@@ -130,6 +235,7 @@ impl Connection {
         packet: ServerboundPlay,
         state: &mut PlayerState,
         ctx: MoveContext<'_>,
+        chat: ChatContext<'_>,
     ) -> Result<(), Kick> {
         let sink = self.sink.as_ref();
         let mv =
@@ -176,7 +282,57 @@ impl Connection {
                 self.chunks.batch_received(p.desired_chunks_per_tick);
             }
             ServerboundPlay::ClientInformation(p) => {
-                state.client = Some(ClientInformation::from(&p.0));
+                let info = ClientInformation::from(&p.0);
+                self.chat.inbox().visibility = info.chat_visibility;
+                state.client = Some(info);
+            }
+            ServerboundPlay::Chat(p) => {
+                let last_seen = self.apply_last_seen(&p.last_seen, chat)?;
+                if self.accept_chat(&p.message, false)? {
+                    self.chat.requests.push(ChatRequest::Chat {
+                        message: p.message,
+                        timestamp: p.timestamp,
+                        salt: p.salt,
+                        signature: p.signature,
+                        last_seen,
+                    });
+                }
+            }
+            ServerboundPlay::ChatCommand(p) => {
+                if self.accept_chat(&p.command, true)? {
+                    self.chat.requests.push(ChatRequest::Command {
+                        command: p.command,
+                        signed: None,
+                    });
+                }
+            }
+            ServerboundPlay::ChatCommandSigned(p) => {
+                let last_seen = self.apply_last_seen(&p.last_seen, chat)?;
+                if self.accept_chat(&p.command, true)? {
+                    self.chat.requests.push(ChatRequest::Command {
+                        command: p.command,
+                        signed: Some(SignedCommand {
+                            timestamp: p.timestamp,
+                            salt: p.salt,
+                            signatures: p.argument_signatures,
+                            last_seen,
+                        }),
+                    });
+                }
+            }
+            ServerboundPlay::ChatAck(p) => {
+                let applied = self.chat.inbox().last_seen.apply_offset(p.offset);
+                if let Err(e) = applied {
+                    log::error!(
+                        "Failed to validate message acknowledgement offset from {}: {e}",
+                        chat.name
+                    );
+                    return Err(chat_validation_failed());
+                }
+            }
+            ServerboundPlay::ChatSessionUpdate(p) => self.update_chat_session(p.0, chat)?,
+            ServerboundPlay::CommandSuggestion(p) => {
+                self.chat.suggestion = Some((p.id, p.command));
             }
             ServerboundPlay::PlayerInput(p) => {
                 if self.movement.has_client_loaded() {
@@ -204,9 +360,8 @@ impl Connection {
                     vec![],
                 ))));
             }
-            // Commands, cookies, custom payloads, pongs and resource packs come later.
-            ServerboundPlay::ChatCommand(_)
-            | ServerboundPlay::CookieResponse(_)
+            // Cookies, custom payloads, pongs and resource packs come later.
+            ServerboundPlay::CookieResponse(_)
             | ServerboundPlay::CustomClickAction(_)
             | ServerboundPlay::CustomPayload(_)
             | ServerboundPlay::KeepAlive(_)
@@ -216,4 +371,90 @@ impl Connection {
         }
         Ok(())
     }
+
+    /// `unpackAndApplyLastSeen`: a broken acknowledgement kicks the player.
+    fn apply_last_seen(
+        &self,
+        update: &LastSeenUpdate,
+        chat: ChatContext<'_>,
+    ) -> Result<Vec<MessageSignature>, Kick> {
+        let applied = self.chat.inbox().last_seen.apply_update(update);
+        applied.map_err(|e| {
+            log::error!(
+                "Failed to validate message acknowledgements from {}: {e}",
+                chat.name
+            );
+            chat_validation_failed()
+        })
+    }
+
+    /// `tryHandleChat`: illegal characters kick; chat (not commands) is refused while the
+    /// player hides chat. Returns whether the request goes on.
+    fn accept_chat(&self, message: &str, is_command: bool) -> Result<bool, Kick> {
+        if is_chat_message_illegal(message) {
+            return Err(Kick(Box::new(Component::translatable(
+                "multiplayer.disconnect.illegal_characters",
+                vec![],
+            ))));
+        }
+        if !is_command && self.chat.inbox().visibility == ChatVisibility::Hidden {
+            self.sink.send(&SystemChat {
+                content: Component::translatable("chat.disabled.options", vec![])
+                    .color(Color::Named(NamedColor::Red)),
+                overlay: false,
+            });
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    /// `handleChatSessionUpdate`.
+    fn update_chat_session(
+        &mut self,
+        data: ChatSessionData,
+        chat: ChatContext<'_>,
+    ) -> Result<(), Kick> {
+        let old = self.chat.chain.session().map(|s| &s.data);
+        let same_key = old.is_some_and(|o| {
+            o.expires_at == data.expires_at
+                && o.public_key == data.public_key
+                && o.key_signature == data.key_signature
+        });
+        if same_key {
+            return Ok(());
+        }
+        if old.is_some_and(|o| data.expires_at < o.expires_at) {
+            return Err(Kick(Box::new(Component::translatable(
+                "multiplayer.disconnect.expired_public_key",
+                vec![],
+            ))));
+        }
+        if chat.settings.keys.is_empty() {
+            log::warn!(
+                "Ignoring chat session from {} due to missing Services public key",
+                chat.name
+            );
+            return Ok(());
+        }
+        match ChatSession::validate(data, chat.uuid, &chat.settings.keys) {
+            Ok(session) => {
+                let data = session.data.clone();
+                self.chat.chain.reset(session);
+                self.chat.requests.push(ChatRequest::Session(data));
+                Ok(())
+            }
+            Err(kick) => {
+                log::error!("Failed to validate profile key of {}", chat.name);
+                Err(kick)
+            }
+        }
+    }
+}
+
+/// `multiplayer.disconnect.chat_validation_failed`.
+fn chat_validation_failed() -> Kick {
+    Kick(Box::new(Component::translatable(
+        "multiplayer.disconnect.chat_validation_failed",
+        vec![],
+    )))
 }

@@ -13,6 +13,7 @@ mod conn;
 mod limits;
 mod outbound;
 mod player;
+pub mod services;
 mod status;
 
 pub use auth::{

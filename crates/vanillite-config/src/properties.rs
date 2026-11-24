@@ -156,6 +156,11 @@ properties! {
     broadcast_console_to_ops: bool = "broadcast-console-to-ops", true;
     /// Send RCON command output to operators.
     broadcast_rcon_to_ops: bool = "broadcast-rcon-to-ops", true;
+    /// Seconds of chat spam (each message counts one second, each tick takes 1/20 away) after
+    /// which non-operators are kicked; 0 disables.
+    chat_spam_threshold_seconds: i32 = "chat-spam-threshold-seconds", 10;
+    /// Like `chat-spam-threshold-seconds`, for commands.
+    command_spam_threshold_seconds: i32 = "command-spam-threshold-seconds", 10;
     /// Link shown as "report bug" in the client.
     bug_report_link: String = "bug-report-link", String::new();
     /// Difficulty of new worlds.
