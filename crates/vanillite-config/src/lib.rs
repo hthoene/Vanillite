@@ -7,6 +7,7 @@
 //! - Layers, lowest first: profile defaults → global keys → the world's section → environment
 //!   variables `VANILLITE_<KEY>` (dots become `__`, dashes `_`, e.g.
 //!   `VANILLITE_PERFORMANCE__TICK__PARALLEL_DIMENSIONS=false`; `VANILLITE_PROFILE` selects the profile).
+//!   An empty variable is ignored, so panels can leave a key at its profile or file value.
 //! - The result is plain structs ([`ServerRules`], [`WorldRules`]); hot paths read fields.
 //!   A reload builds a new [`Config`]; the server swaps it at a tick boundary.
 
@@ -15,8 +16,13 @@ pub mod properties;
 mod rule;
 
 pub use catalogue::*;
-pub use properties::{Difficulty, GameMode, RegionFileCompression, ServerProperties};
-pub use rule::{DisabledOr, Kind, Profile, RuleInfo, RuleSet, RuleValue, StorageLayout, VanillaOr};
+pub use properties::{
+    Difficulty, GameMode, PropertyInfo, PropertyKind, RegionFileCompression, ServerProperties,
+};
+pub use rule::{
+    DisabledOr, Kind, Profile, RuleInfo, RuleSet, RuleValue, StorageLayout, ValueShape, ValueType,
+    VanillaOr,
+};
 pub use toml;
 
 use std::collections::BTreeMap;
@@ -168,8 +174,15 @@ pub struct EnvOverrides {
 impl EnvOverrides {
     /// Reads the overrides of the current process.
     pub fn from_process() -> EnvOverrides {
+        Self::from_vars(std::env::vars())
+    }
+
+    /// Reads the overrides from `(name, value)` pairs. Empty values are ignored.
+    pub fn from_vars(vars: impl IntoIterator<Item = (String, String)>) -> EnvOverrides {
+        let vars: BTreeMap<String, String> =
+            vars.into_iter().filter(|(_, v)| !v.is_empty()).collect();
         let mut overrides = EnvOverrides {
-            profile: std::env::var("VANILLITE_PROFILE").ok(),
+            profile: vars.get("VANILLITE_PROFILE").cloned(),
             values: BTreeMap::new(),
         };
         let keys = ServerRules::RULES
@@ -177,8 +190,8 @@ impl EnvOverrides {
             .chain(WorldRules::RULES)
             .map(|r| r.key);
         for key in keys {
-            if let Ok(value) = std::env::var(env_name(key)) {
-                overrides.values.insert(key.to_owned(), value);
+            if let Some(value) = vars.get(&env_name(key)) {
+                overrides.values.insert(key.to_owned(), value.clone());
             }
         }
         overrides
@@ -249,7 +262,22 @@ fn load_properties(path: &Path) -> Result<ServerProperties, ConfigError> {
     if existing.as_deref() != Some(rendered.as_str()) {
         fs::write(path, rendered).map_err(|e| ConfigError::io(path, e))?;
     }
-    Ok(typed)
+    // `VANILLITE_<KEY>` (e.g. `VANILLITE_SERVER_PORT`) overrides a key for this run only; the
+    // file keeps its own value. An empty variable is ignored.
+    let mut overridden = false;
+    for key in ServerProperties::KEYS {
+        if let Ok(value) = std::env::var(env_name(key))
+            && !value.is_empty()
+        {
+            map.insert((*key).to_owned(), value);
+            overridden = true;
+        }
+    }
+    Ok(if overridden {
+        ServerProperties::from_map(&map)
+    } else {
+        typed
+    })
 }
 
 /// The `vanillite.toml` written on first start: the profile and every rule, commented out with

@@ -11,7 +11,7 @@ const DEFAULT_HOST: &str = "vanillite-test";
 const DEFAULT_PORT: u16 = 30001;
 const PORTS: std::ops::RangeInclusive<u16> = 30001..=30999;
 
-fn host() -> String {
+pub fn host() -> String {
     std::env::var("VANILLITE_TEST_HOST").unwrap_or_else(|_| DEFAULT_HOST.to_owned())
 }
 
