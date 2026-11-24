@@ -10,6 +10,7 @@
 
 pub mod chunk_nbt;
 pub mod compression;
+pub mod entities;
 pub mod import;
 pub mod player_data;
 pub mod region;

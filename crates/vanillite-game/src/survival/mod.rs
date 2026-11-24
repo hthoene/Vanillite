@@ -44,6 +44,11 @@ pub enum Effect {
     },
     /// A system message to every player of the server.
     Broadcast(Component),
+    /// To one player.
+    To {
+        player: EntityId,
+        packet: Arc<SharedPacket>,
+    },
 }
 
 /// The registry id of a sound event, `0` if unknown.

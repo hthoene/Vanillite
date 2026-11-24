@@ -1,0 +1,674 @@
+//! Mobs and animals (`Mob`, `PathfinderMob`, `Monster`, `Animal`): their kind data, the
+//! living entity tick in Vanilla's order (`Entity.baseTick`, `LivingEntity.aiStep`,
+//! `Mob.serverAiStep`), movement physics, path finding, goals, combat and natural spawning.
+//!
+//! A mob tick works on the world's [`Entities`] taken out of the [`Level`] (the level stays
+//! readable for blocks and light); what changes blocks (explosions, a sheep eating grass) is
+//! queued as a [`WorldAction`] and applied by the world right after that mob's tick.
+
+pub mod combat;
+pub mod goals;
+pub mod kinds;
+pub mod living;
+pub mod nav;
+pub mod nbt;
+pub mod path;
+pub mod physics;
+pub mod projectile;
+pub mod spawn;
+
+use vanillite_base::random::{LegacyRandom, RandomSource};
+use vanillite_base::{Aabb, BlockPos, ChunkPos, Vec3};
+use vanillite_data::block::BlockState;
+use vanillite_data::entity::{ATTRIBUTES, EntityTypeId};
+use vanillite_world::entity::{
+    EntityFlags, EntityId, EntityMut, EntityRef, NetworkIds, NewEntity, Rotation,
+};
+
+use crate::entities::Entities;
+use crate::level::Level;
+use crate::survival::blocks::FluidContact;
+use crate::survival::damage::DamageKind;
+use crate::survival::player::Env;
+
+pub use kinds::Kind;
+pub use vanillite_world::entity::Dimensions;
+
+/// The attribute values a mob uses (`AttributeMap` with the base values and the spawn
+/// modifiers folded in).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Attrs {
+    pub max_health: f64,
+    pub movement_speed: f64,
+    pub follow_range: f64,
+    pub attack_damage: f64,
+    pub attack_knockback: f64,
+    pub armor: f64,
+    pub armor_toughness: f64,
+    pub knockback_resistance: f64,
+    pub step_height: f64,
+    pub jump_strength: f64,
+    pub gravity: f64,
+    pub safe_fall_distance: f64,
+    pub fall_damage_multiplier: f64,
+    pub water_movement_efficiency: f64,
+    pub movement_efficiency: f64,
+    pub friction_modifier: f64,
+    pub air_drag_modifier: f64,
+    pub explosion_knockback_resistance: f64,
+}
+
+impl Attrs {
+    /// The default attribute values of an entity type.
+    pub fn of(kind: EntityTypeId) -> Attrs {
+        let info = kind.info();
+        let value = |name: &str| -> f64 {
+            let Some(id) = ATTRIBUTES.iter().position(|a| a.name == name) else {
+                return 0.0;
+            };
+            info.attributes
+                .iter()
+                .find(|(a, _)| usize::from(*a) == id)
+                .map_or(ATTRIBUTES[id].default, |&(_, v)| v)
+        };
+        Attrs {
+            max_health: value("minecraft:max_health"),
+            movement_speed: value("minecraft:movement_speed"),
+            follow_range: value("minecraft:follow_range"),
+            attack_damage: value("minecraft:attack_damage"),
+            attack_knockback: value("minecraft:attack_knockback"),
+            armor: value("minecraft:armor"),
+            armor_toughness: value("minecraft:armor_toughness"),
+            knockback_resistance: value("minecraft:knockback_resistance"),
+            step_height: value("minecraft:step_height"),
+            jump_strength: value("minecraft:jump_strength"),
+            gravity: value("minecraft:gravity"),
+            safe_fall_distance: value("minecraft:safe_fall_distance"),
+            fall_damage_multiplier: value("minecraft:fall_damage_multiplier"),
+            water_movement_efficiency: value("minecraft:water_movement_efficiency"),
+            movement_efficiency: value("minecraft:movement_efficiency"),
+            friction_modifier: value("minecraft:friction_modifier"),
+            air_drag_modifier: value("minecraft:air_drag_modifier"),
+            explosion_knockback_resistance: value("minecraft:explosion_knockback_resistance"),
+        }
+    }
+}
+
+/// The kind data of a mob (`Dense<MobData>`).
+#[derive(Clone, Debug)]
+pub struct MobData {
+    pub kind: Kind,
+    /// The entity's own random (`Entity.random`).
+    pub random: LegacyRandom,
+    pub attrs: Attrs,
+    pub health: f32,
+    pub tick_count: i32,
+    pub hurt_time: i32,
+    /// `invulnerableTime` / `damageCooldownTime`.
+    pub damage_cooldown: i32,
+    pub last_hurt: f32,
+    pub death_time: i32,
+    pub dead: bool,
+    /// Removed during its own tick (`isRemoved`); the world despawns it after the tick.
+    pub removed: bool,
+    pub no_action_time: i32,
+    pub fall_distance: f64,
+    pub fire_ticks: i32,
+    pub air: i32,
+    pub y_body_rot: f32,
+    pub speed: f32,
+    pub xxa: f32,
+    pub yya: f32,
+    pub zza: f32,
+    pub jumping: bool,
+    pub no_jump_delay: i32,
+    pub horizontal_collision: bool,
+    pub vertical_collision: bool,
+    pub fluids: FluidContact,
+    pub stuck_speed: Vec3,
+    /// The last damage and the game time it was taken (`lastDamageSource`, `lastDamageStamp`).
+    pub last_damage: Option<(DamageKind, i64)>,
+    pub last_hurt_by_player: Option<EntityId>,
+    pub last_hurt_by_player_time: i32,
+    pub last_hurt_by_mob: Option<EntityId>,
+    pub last_hurt_by_mob_time: i32,
+    pub last_hurt_mob: Option<EntityId>,
+    pub persistent: bool,
+    pub no_ai: bool,
+    pub silent: bool,
+    pub ambient_sound_time: i32,
+    pub target: Option<EntityId>,
+    pub aggressive: bool,
+    pub goals: goals::GoalSelector,
+    pub targets: goals::GoalSelector,
+    pub nav: nav::Navigation,
+    pub move_ctl: nav::MoveControl,
+    pub look: nav::LookControl,
+    pub jump: bool,
+    pub body: nav::BodyRotation,
+    /// `Sensing`: line of sight results of this tick.
+    pub seen: Vec<EntityId>,
+    pub unseen: Vec<EntityId>,
+    /// `AgeableMob.age`: negative for babies.
+    pub age: i32,
+    pub in_love: i32,
+    pub baby: bool,
+    // Kind specific state.
+    pub swell: i32,
+    pub old_swell: i32,
+    pub swell_dir: i32,
+    pub max_swell: i32,
+    pub explosion_radius: i32,
+    pub powered: bool,
+    pub ignited: bool,
+    /// Ticks the mob draws its bow (`useItemRemaining` counted up), `-1` when not using it.
+    pub using_item: i32,
+    pub sheep_color: u8,
+    pub sheared: bool,
+    pub eat_animation: i32,
+    pub egg_time: i32,
+    pub climbing: bool,
+    pub carried: Option<BlockState>,
+    pub creepy: bool,
+    pub stared_at: bool,
+    pub target_change_time: i32,
+    /// The path a melee goal computed in `canUse` for its `start`.
+    pub goal_path: Option<path::Path>,
+    /// Index into the `minecraft:*_variant` registry (pigs, cows, chickens); 0 = default.
+    pub variant: i32,
+    pub xp_reward: i32,
+    /// The last block position (`lastPos`).
+    pub last_pos: BlockPos,
+}
+
+impl MobData {
+    /// A fresh mob of `kind` (`EntityType.create` without `finalizeSpawn`).
+    pub fn new(kind: Kind, seed: i64) -> MobData {
+        let attrs = Attrs::of(kind.type_id());
+        #[allow(clippy::cast_possible_truncation)]
+        let health = attrs.max_health as f32;
+        let mut mob = MobData {
+            kind,
+            random: LegacyRandom::new(seed),
+            attrs,
+            health,
+            tick_count: 0,
+            hurt_time: 0,
+            damage_cooldown: 0,
+            last_hurt: 0.0,
+            death_time: 0,
+            dead: false,
+            removed: false,
+            no_action_time: 0,
+            fall_distance: 0.0,
+            fire_ticks: -1,
+            air: 300,
+            y_body_rot: 0.0,
+            speed: 0.0,
+            xxa: 0.0,
+            yya: 0.0,
+            zza: 0.0,
+            jumping: false,
+            no_jump_delay: 0,
+            horizontal_collision: false,
+            vertical_collision: false,
+            fluids: FluidContact::default(),
+            stuck_speed: Vec3::ZERO,
+            last_damage: None,
+            last_hurt_by_player: None,
+            last_hurt_by_player_time: 0,
+            last_hurt_by_mob: None,
+            last_hurt_by_mob_time: 0,
+            last_hurt_mob: None,
+            persistent: false,
+            no_ai: false,
+            silent: false,
+            ambient_sound_time: 0,
+            target: None,
+            aggressive: false,
+            goals: goals::GoalSelector::default(),
+            targets: goals::GoalSelector::default(),
+            nav: nav::Navigation::new(attrs.follow_range),
+            move_ctl: nav::MoveControl::default(),
+            look: nav::LookControl::default(),
+            jump: false,
+            body: nav::BodyRotation::default(),
+            seen: Vec::new(),
+            unseen: Vec::new(),
+            age: 0,
+            in_love: 0,
+            baby: false,
+            swell: 0,
+            old_swell: 0,
+            swell_dir: -1,
+            max_swell: 30,
+            explosion_radius: 3,
+            powered: false,
+            ignited: false,
+            using_item: -1,
+            sheep_color: 0,
+            sheared: false,
+            eat_animation: 0,
+            egg_time: 0,
+            climbing: false,
+            carried: None,
+            creepy: false,
+            stared_at: false,
+            target_change_time: 0,
+            goal_path: None,
+            variant: 0,
+            xp_reward: 0,
+            last_pos: BlockPos::new(i32::MIN, i32::MIN, i32::MIN),
+        };
+        mob.ambient_sound_time = -kind.ambient_sound_interval();
+        mob.egg_time = mob.random.next_int_bounded(6000) + 6000;
+        kinds::register_goals(&mut mob);
+        mob
+    }
+
+    /// `getMaxHealth`.
+    pub fn max_health(&self) -> f32 {
+        #[allow(clippy::cast_possible_truncation)]
+        let m = self.attrs.max_health as f32;
+        m
+    }
+
+    /// `isDeadOrDying`.
+    pub fn is_dead_or_dying(&self) -> bool {
+        self.health <= 0.0
+    }
+
+    /// `isAlive`.
+    pub fn is_alive(&self) -> bool {
+        !self.removed && self.health > 0.0
+    }
+
+    /// `isOnFire` on the server: burning ticks left.
+    pub fn is_on_fire(&self) -> bool {
+        self.fire_ticks > 0
+    }
+
+    /// `getLastDamageSource`: forgotten 40 ticks after the hit.
+    pub fn last_damage_source(&self, game_time: i64) -> Option<DamageKind> {
+        self.last_damage
+            .filter(|&(_, at)| game_time - at <= 40)
+            .map(|(k, _)| k)
+    }
+}
+
+/// The parts of the time of day and the weather mobs react to, for one world tick.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Environment {
+    /// `Level.getSkyDarken()`.
+    pub sky_darken: i32,
+    /// `EnvironmentAttributes.MONSTERS_BURN`.
+    pub monsters_burn: bool,
+    /// `isThundering`.
+    pub thundering: bool,
+    /// `isRaining`.
+    pub raining: bool,
+    /// The dimension has sky light.
+    pub has_sky_light: bool,
+    /// `monster_spawn_block_light_limit` of the dimension type.
+    pub monster_block_light_limit: i32,
+    /// `monster_spawn_light_level` of the dimension type as an inclusive range.
+    pub monster_light_test: (i32, i32),
+    /// `DimensionType.ambientLight`.
+    pub ambient_light: f32,
+}
+
+impl Default for Environment {
+    fn default() -> Self {
+        Environment {
+            sky_darken: 0,
+            monsters_burn: true,
+            thundering: false,
+            raining: false,
+            has_sky_light: true,
+            monster_block_light_limit: 0,
+            monster_light_test: (0, 7),
+            ambient_light: 0.0,
+        }
+    }
+}
+
+impl Environment {
+    /// `Level.isBrightOutside`.
+    pub fn is_bright_outside(&self) -> bool {
+        self.has_sky_light && self.sky_darken < 4
+    }
+}
+
+/// Performance knobs of the mob tick (`[mobs]` in the configuration).
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct MobSettings {
+    /// Path finding nodes all mobs of a world may visit per tick; `0` = unlimited (Vanilla).
+    pub path_nodes_per_tick: u32,
+    /// Mobs farther than this from every player run their AI only every 20th tick; `0` =
+    /// off (Vanilla).
+    pub activation_range: u32,
+}
+
+/// Explosion parameters (`Level.explode`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ExplosionRequest {
+    pub source: Option<EntityId>,
+    pub pos: Vec3,
+    pub radius: f32,
+    pub fire: bool,
+    /// `ExplosionInteraction.MOB`: blocks only break with `mobGriefing`.
+    pub mob: bool,
+}
+
+/// A change of the world a mob tick causes; applied right after that tick.
+#[derive(Clone, Debug, PartialEq)]
+pub enum WorldAction {
+    Explode(ExplosionRequest),
+    /// `setBlock(pos, state, flags)`.
+    SetBlock(BlockPos, BlockState, u32),
+    /// `destroyBlock(pos, drop)`.
+    DestroyBlock(BlockPos, bool),
+    /// `levelEvent(event, pos, data)`.
+    LevelEvent(i32, BlockPos, i32),
+}
+
+/// The mob state of a world besides the entities: search buffers, queued world changes and
+/// this tick's environment.
+#[derive(Debug, Default)]
+pub struct MobContext {
+    pub finder: path::PathFinder,
+    pub boxes: Vec<Aabb>,
+    pub actions: Vec<WorldAction>,
+    pub env: Environment,
+    pub settings: MobSettings,
+    /// Path nodes left this tick (`u64::MAX` = unlimited).
+    pub path_budget: u64,
+    pub ids: Vec<EntityId>,
+    /// The world has at least one player.
+    pub has_players: bool,
+    /// Entities to remove after the tick (`discard` of other entities).
+    pub discarded: Vec<EntityId>,
+}
+
+impl MobContext {
+    /// Resets the per-tick state.
+    pub fn begin_tick(&mut self, env: Environment, settings: MobSettings, has_players: bool) {
+        self.env = env;
+        self.settings = settings;
+        self.has_players = has_players;
+        self.path_budget = if settings.path_nodes_per_tick == 0 {
+            u64::MAX
+        } else {
+            u64::from(settings.path_nodes_per_tick)
+        };
+    }
+}
+
+/// `Mth.atan2(y, x)` in degrees as Vanilla computes it (`* 180.0F / (float)Math.PI`).
+pub fn atan2_deg(y: f64, x: f64) -> f64 {
+    y.atan2(x) * 180.0 / f64::from(std::f32::consts::PI)
+}
+
+fn fluid_ids(names: [&str; 2]) -> [u16; 2] {
+    names.map(|n| vanillite_data::registry::FLUID.id(n).unwrap_or(u16::MAX))
+}
+
+/// Whether a block holds water (`FluidTags.WATER`).
+pub fn is_water(state: BlockState) -> bool {
+    static IDS: std::sync::OnceLock<[u16; 2]> = std::sync::OnceLock::new();
+    let f = state.fluid_state();
+    !f.is_empty()
+        && IDS
+            .get_or_init(|| fluid_ids(["minecraft:water", "minecraft:flowing_water"]))
+            .contains(&f.info().fluid)
+}
+
+/// Whether a block holds lava (`FluidTags.LAVA`).
+pub fn is_lava(state: BlockState) -> bool {
+    static IDS: std::sync::OnceLock<[u16; 2]> = std::sync::OnceLock::new();
+    let f = state.fluid_state();
+    !f.is_empty()
+        && IDS
+            .get_or_init(|| fluid_ids(["minecraft:lava", "minecraft:flowing_lava"]))
+            .contains(&f.info().fluid)
+}
+
+/// `getEyeHeight` of a mob: the type's eye height, scaled for babies.
+pub fn eye_height(mob: &MobData) -> f64 {
+    let info = mob.kind.type_id().info();
+    let scale = if mob.baby { 0.5 } else { 1.0 };
+    f64::from(info.eye_height * scale)
+}
+
+/// Adds a mob to the entities (`addFreshEntity` without `finalizeSpawn`).
+pub fn spawn(
+    entities: &mut Entities,
+    network_ids: &NetworkIds,
+    uuid: u128,
+    pos: Vec3,
+    rot: Rotation,
+    mob: MobData,
+) -> EntityId {
+    let mut new = NewEntity::new(mob.kind.type_id(), network_ids.next(), uuid, pos);
+    new.rot = rot;
+    let baby = mob.baby;
+    let id = entities.spawn_mob(new, mob);
+    if baby && let Some(mut e) = entities.store.get_mut(id) {
+        let dims = kinds::dimensions(e.as_ref().kind(), true);
+        e.set_dims(dims);
+    }
+    id
+}
+
+/// A random UUID (`Mth.createInsecureUUID`).
+pub fn random_uuid(random: &mut impl RandomSource) -> u128 {
+    let most = random.next_long() as u64 & !0xF000 | 0x4000;
+    let least = random.next_long() as u64 & 0x3FFF_FFFF_FFFF_FFFF | 0x8000_0000_0000_0000;
+    (u128::from(most) << 64) | u128::from(least)
+}
+
+/// What one mob tick works on.
+pub struct Tick<'a, 'e> {
+    pub level: &'a Level,
+    pub ents: &'a mut Entities,
+    pub env: &'a mut Env<'e>,
+    pub cx: &'a mut MobContext,
+    pub id: EntityId,
+}
+
+impl std::fmt::Debug for Tick<'_, '_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Tick")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Tick<'_, '_> {
+    /// The ticking mob's data. Panics are impossible while the mob is alive in the store;
+    /// callers check [`Self::exists`] once at the start.
+    pub fn mob(&mut self) -> &mut MobData {
+        let row = self
+            .ents
+            .store
+            .get(self.id)
+            .map_or(u32::MAX, |e| e.kind_row());
+        self.ents
+            .mobs
+            .get_mut(row)
+            .expect("the ticking mob is in the mob store")
+    }
+
+    /// The ticking mob's data, read only.
+    pub fn mob_ref(&self) -> &MobData {
+        let row = self
+            .ents
+            .store
+            .get(self.id)
+            .map_or(u32::MAX, |e| e.kind_row());
+        self.ents
+            .mobs
+            .get(row)
+            .expect("the ticking mob is in the mob store")
+    }
+
+    /// Whether the ticking mob still exists.
+    pub fn exists(&self) -> bool {
+        self.ents.mob(self.id).is_some()
+    }
+
+    /// The ticking mob's core columns.
+    pub fn core(&self) -> EntityRef<'_> {
+        self.ents
+            .store
+            .get(self.id)
+            .expect("the ticking mob is in the store")
+    }
+
+    /// The ticking mob's core columns, mutably.
+    pub fn core_mut(&mut self) -> EntityMut<'_> {
+        self.ents
+            .store
+            .get_mut(self.id)
+            .expect("the ticking mob is in the store")
+    }
+
+    pub fn pos(&self) -> Vec3 {
+        self.core().pos()
+    }
+
+    pub fn velocity(&self) -> Vec3 {
+        self.core().velocity()
+    }
+
+    pub fn set_velocity(&mut self, v: Vec3) {
+        self.core_mut().set_velocity(v);
+    }
+
+    pub fn on_ground(&self) -> bool {
+        self.core().flags().contains(EntityFlags::ON_GROUND)
+    }
+
+    pub fn aabb(&self) -> Aabb {
+        self.core().aabb()
+    }
+
+    pub fn block_pos(&self) -> BlockPos {
+        let p = self.pos();
+        BlockPos::containing(p.x, p.y, p.z)
+    }
+
+    /// `getEyeY`.
+    pub fn eye_y(&self) -> f64 {
+        self.pos().y + eye_height(self.mob_ref())
+    }
+
+    pub fn game_time(&self) -> i64 {
+        self.env.game_time
+    }
+
+    /// Position and eye height of another living entity (player or mob).
+    pub fn other(&self, id: EntityId) -> Option<Other> {
+        let e = self.ents.store.get(id)?;
+        let eye = if let Some(m) = self.ents.mob(id) {
+            if !m.is_alive() {
+                return None;
+            }
+            eye_height(m)
+        } else {
+            let p = self.ents.player(id)?;
+            if p.survival.is_dead_or_dying() {
+                return None;
+            }
+            f64::from(e.kind().info().eye_height)
+                * f64::from(e.dims().height / e.kind().info().height.max(0.01))
+        };
+        Some(Other {
+            pos: e.pos(),
+            eye_y: e.pos().y + eye,
+            aabb: e.aabb(),
+            is_player: self.ents.player(id).is_some(),
+        })
+    }
+
+    /// The light level dependent value at the mob's eyes (`getLightLevelDependentMagicValue`).
+    pub fn light_magic_value(&self) -> f32 {
+        let p = self.pos();
+        let pos = BlockPos::containing(p.x, self.eye_y(), p.z);
+        if !self.level.is_loaded(pos) {
+            return 0.0;
+        }
+        light_magic_value(self.level, &self.cx.env, pos)
+    }
+}
+
+/// Another living entity as a mob sees it.
+#[derive(Clone, Copy, Debug)]
+pub struct Other {
+    pub pos: Vec3,
+    pub eye_y: f64,
+    pub aabb: Aabb,
+    pub is_player: bool,
+}
+
+/// `getMaxLocalRawBrightness(pos)` with the sky darkened by the time of day and the weather.
+pub fn max_local_raw_brightness(level: &Level, env: &Environment, pos: BlockPos) -> i32 {
+    let (sky, block) = level.light(pos);
+    (sky - env.sky_darken).max(block)
+}
+
+/// `LevelReader.getLightLevelDependentMagicValue(pos)`.
+pub fn light_magic_value(level: &Level, env: &Environment, pos: BlockPos) -> f32 {
+    #[allow(clippy::cast_precision_loss)]
+    let v = max_local_raw_brightness(level, env, pos) as f32 / 15.0;
+    let curved = v / (4.0 - 3.0 * v);
+    env.ambient_light + (1.0 - env.ambient_light) * curved
+}
+
+/// `canSeeSky(pos)`: no light blocking block above (the sky light at full strength).
+pub fn can_see_sky(level: &Level, pos: BlockPos) -> bool {
+    if pos.y >= level.max_y() {
+        return true;
+    }
+    let Some(c) = level.chunks.chunk(ChunkPos::new(pos.x >> 4, pos.z >> 4)) else {
+        return false;
+    };
+    let Some(heights) = c
+        .chunk
+        .heightmaps()
+        .get(vanillite_chunk::HeightmapKind::MotionBlocking)
+    else {
+        return false;
+    };
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap)]
+    let top = heights.get((pos.x & 15) as u32, (pos.z & 15) as u32) as i32 + c.chunk.min_y();
+    top <= pos.y
+}
+
+/// One mob tick (`ServerLevel.tickNonPassenger`: `tickCount++`, then `Mob.tick`), with the
+/// despawn check before it. `level.entities` is empty during the call; the entities are in
+/// `ents`.
+pub fn tick(
+    level: &Level,
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    cx: &mut MobContext,
+    id: EntityId,
+) {
+    let mut t = Tick {
+        level,
+        ents,
+        env,
+        cx,
+        id,
+    };
+    if !t.exists() {
+        return;
+    }
+    living::check_despawn(&mut t);
+    if t.mob_ref().removed {
+        return;
+    }
+    t.mob().tick_count += 1;
+    living::tick(&mut t);
+}

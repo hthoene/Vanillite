@@ -201,6 +201,12 @@ pub struct Chunks {
     sub_tick: i64,
     /// Live chunks with post-processing marks not handled yet.
     post_process: Vec<ChunkPos>,
+    /// Chunks that passed the spawn step since the last [`Self::take_generated`].
+    generated: Vec<ChunkPos>,
+    /// Chunks that became full (live) since the last [`Self::take_promoted`].
+    promoted: Vec<ChunkPos>,
+    /// Full chunks that unloaded since the last [`Self::take_unloaded`].
+    unloaded: Vec<ChunkPos>,
 }
 
 impl fmt::Debug for Chunks {
@@ -249,6 +255,9 @@ impl Chunks {
             game_time: 0,
             sub_tick: 0,
             post_process: Vec::new(),
+            generated: Vec::new(),
+            promoted: Vec::new(),
+            unloaded: Vec::new(),
         }
     }
 
@@ -697,6 +706,9 @@ impl Chunks {
                         chunk.generation = None;
                     }
                     holder.dirty = true;
+                    if next == ChunkStatus::Spawn {
+                        self.generated.push(pos);
+                    }
                 }
                 self.promote(pos);
                 self.wake(pos);
@@ -811,6 +823,7 @@ impl Chunks {
         if !chunk.post_processing.is_empty() {
             self.post_process.push(pos);
         }
+        self.promoted.push(pos);
         self.block_ticks.add_container(pos, &blocks, self.game_time);
         self.fluid_ticks.add_container(pos, &fluids, self.game_time);
     }
@@ -838,6 +851,7 @@ impl Chunks {
                 .as_mut()
                 .filter(|c| c.status == ChunkStatus::Full)
             {
+                self.unloaded.push(pos);
                 let blocks = self.block_ticks.remove_container(pos, self.game_time);
                 let fluids = self.fluid_ticks.remove_container(pos, self.game_time);
                 if holder.dirty {
@@ -1111,6 +1125,22 @@ impl Chunks {
     /// Scheduled block and fluid ticks of the live chunks.
     pub fn scheduled_ticks(&self) -> (usize, usize) {
         (self.block_ticks.count(), self.fluid_ticks.count())
+    }
+
+    /// Chunks that passed the spawn step (were generated, not loaded) since the last call, for
+    /// the mobs a fresh chunk starts with (`spawnMobsForChunkGeneration`).
+    pub fn take_generated(&mut self, out: &mut Vec<ChunkPos>) {
+        out.append(&mut self.generated);
+    }
+
+    /// Chunks that became full since the last call (their entities load now).
+    pub fn take_promoted(&mut self, out: &mut Vec<ChunkPos>) {
+        out.append(&mut self.promoted);
+    }
+
+    /// Full chunks that unloaded since the last call (their entities are saved now).
+    pub fn take_unloaded(&mut self, out: &mut Vec<ChunkPos>) {
+        out.append(&mut self.unloaded);
     }
 
     /// Full chunks whose light changed since the last call (for light update packets).

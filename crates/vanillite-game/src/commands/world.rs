@@ -192,6 +192,26 @@ pub(super) fn register_kill(d: &mut Dispatcher<CommandId>) {
     );
 }
 
+/// `SummonCommand`.
+pub(super) fn register_summon(d: &mut Dispatcher<CommandId>) {
+    d.register(
+        literal("summon").requires(level::GAMEMASTERS).then(
+            argument(
+                "entity",
+                ArgumentType::Resource {
+                    registry: "minecraft:entity_type",
+                },
+            )
+            .executes(CommandId::Summon)
+            .then(
+                argument("pos", ArgumentType::Vec3 { center: true })
+                    .executes(CommandId::Summon)
+                    .then(argument("nbt", ArgumentType::NbtCompound).executes(CommandId::Summon)),
+            ),
+        ),
+    );
+}
+
 /// `WeatherCommand`.
 pub(super) fn register_weather(d: &mut Dispatcher<CommandId>) {
     let kind = |name: &str, id: CommandId| {

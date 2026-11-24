@@ -1,0 +1,1442 @@
+//! Mob goals (`GoalSelector`, `WrappedGoal` and the goals of the common mobs).
+//!
+//! A goal is a small `Copy` value; the selector copies it out of its slot to run it with full
+//! access to the world and writes it back, so goals can hurt other entities without aliasing
+//! the mob's own data.
+
+use vanillite_base::random::RandomSource;
+use vanillite_base::{Aabb, BlockPos, Vec3};
+use vanillite_config::GameMode;
+use vanillite_world::entity::{EntityFlags, EntityId};
+
+use super::living::{self, has_line_of_sight};
+use super::path::{PathType, malus_of, path_type_static};
+use super::{Tick, combat, kinds, nav, projectile};
+use crate::survival::damage::tag;
+use crate::survival::rules::{Difficulty, Rule};
+
+/// `Goal.Flag` bits.
+pub mod flag {
+    pub const MOVE: u8 = 1;
+    pub const LOOK: u8 = 2;
+    pub const JUMP: u8 = 4;
+    pub const TARGET: u8 = 8;
+}
+
+/// `reducedTickDelay`.
+pub fn reduced(ticks: i32) -> i32 {
+    (ticks + 1) / 2
+}
+
+/// The shared state of target goals (`TargetGoal`).
+#[derive(Clone, Copy, Debug)]
+pub struct TargetState {
+    pub must_see: bool,
+    pub unseen_ticks: i32,
+    pub unseen_memory: i32,
+    pub target_mob: Option<EntityId>,
+}
+
+impl TargetState {
+    fn new(must_see: bool) -> TargetState {
+        TargetState {
+            must_see,
+            unseen_ticks: 0,
+            unseen_memory: 60,
+            target_mob: None,
+        }
+    }
+}
+
+/// Which melee goal (`MeleeAttackGoal` and its subclasses).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MeleeKind {
+    Plain,
+    Zombie,
+    Spider,
+}
+
+/// A goal with its state.
+#[derive(Clone, Copy, Debug)]
+pub enum Goal {
+    Float,
+    Panic {
+        speed: f64,
+        pos: Vec3,
+    },
+    Stroll {
+        speed: f64,
+        interval: i32,
+        probability: f32,
+        wanted: Vec3,
+    },
+    LookAtPlayer {
+        distance: f32,
+        probability: f32,
+        look_at: Option<EntityId>,
+        time: i32,
+    },
+    RandomLook {
+        rel_x: f64,
+        rel_z: f64,
+        time: i32,
+    },
+    Melee {
+        kind: MeleeKind,
+        speed: f64,
+        follow_unseen: bool,
+        pathed: Vec3,
+        recalc: i32,
+        attack_in: i32,
+        last_can_use: i64,
+        raise_arm: i32,
+    },
+    Swell,
+    Leap {
+        yd: f32,
+        target: Option<EntityId>,
+    },
+    FleeSun {
+        speed: f64,
+        wanted: Vec3,
+    },
+    RestrictSun,
+    Bow {
+        speed: f64,
+        interval_min: i32,
+        radius_sqr: f32,
+        attack_time: i32,
+        see_time: i32,
+        clockwise: bool,
+        backwards: bool,
+        strafing_time: i32,
+    },
+    EatBlock {
+        tick: i32,
+    },
+    FollowParent {
+        speed: f64,
+        parent: Option<EntityId>,
+        recalc: i32,
+    },
+    NearestTarget {
+        state: TargetState,
+        interval: i32,
+        found: Option<EntityId>,
+        /// `SpiderTargetGoal`: only in the dark.
+        spider: bool,
+    },
+    HurtBy {
+        state: TargetState,
+        timestamp: i32,
+        alert: bool,
+    },
+    EndermanFreeze {
+        target: Option<EntityId>,
+    },
+    EndermanStare {
+        state: TargetState,
+        pending: Option<EntityId>,
+        aggro_time: i32,
+        teleport_time: i32,
+    },
+}
+
+impl Goal {
+    /// The control flags the goal locks.
+    pub fn flags(&self) -> u8 {
+        use flag::*;
+        match self {
+            Goal::Float => JUMP,
+            Goal::Panic { .. } | Goal::Stroll { .. } | Goal::FleeSun { .. } | Goal::Swell => MOVE,
+            Goal::LookAtPlayer { .. } => LOOK,
+            Goal::RandomLook { .. } | Goal::Melee { .. } | Goal::Bow { .. } => MOVE | LOOK,
+            Goal::Leap { .. } => JUMP | MOVE,
+            Goal::EatBlock { .. } => MOVE | LOOK | JUMP,
+            Goal::RestrictSun | Goal::FollowParent { .. } => 0,
+            Goal::NearestTarget { .. } | Goal::HurtBy { .. } | Goal::EndermanStare { .. } => TARGET,
+            Goal::EndermanFreeze { .. } => JUMP | MOVE,
+        }
+    }
+
+    /// `requiresUpdateEveryTick`.
+    fn every_tick(&self) -> bool {
+        matches!(
+            self,
+            Goal::Float
+                | Goal::RandomLook { .. }
+                | Goal::Melee { .. }
+                | Goal::Swell
+                | Goal::Bow { .. }
+        )
+    }
+
+    /// `adjustedTickDelay`.
+    fn adjusted(&self, ticks: i32) -> i32 {
+        if self.every_tick() {
+            ticks
+        } else {
+            reduced(ticks)
+        }
+    }
+
+    // Constructors with Vanilla's defaults.
+
+    pub fn panic(speed: f64) -> Goal {
+        Goal::Panic {
+            speed,
+            pos: Vec3::ZERO,
+        }
+    }
+
+    /// `WaterAvoidingRandomStrollGoal(mob, speed)`.
+    pub fn stroll(speed: f64) -> Goal {
+        Goal::Stroll {
+            speed,
+            interval: 120,
+            probability: 0.001,
+            wanted: Vec3::ZERO,
+        }
+    }
+
+    /// `WaterAvoidingRandomStrollGoal(mob, speed, probability)`.
+    pub fn stroll_with(speed: f64, probability: f32) -> Goal {
+        Goal::Stroll {
+            speed,
+            interval: 120,
+            probability,
+            wanted: Vec3::ZERO,
+        }
+    }
+
+    pub fn look_at_player(distance: f32) -> Goal {
+        Goal::LookAtPlayer {
+            distance,
+            probability: 0.02,
+            look_at: None,
+            time: 0,
+        }
+    }
+
+    pub fn random_look() -> Goal {
+        Goal::RandomLook {
+            rel_x: 0.0,
+            rel_z: 0.0,
+            time: 0,
+        }
+    }
+
+    pub fn melee(kind: MeleeKind, speed: f64, follow_unseen: bool) -> Goal {
+        Goal::Melee {
+            kind,
+            speed,
+            follow_unseen,
+            pathed: Vec3::ZERO,
+            recalc: 0,
+            attack_in: 0,
+            last_can_use: i64::MIN / 2,
+            raise_arm: 0,
+        }
+    }
+
+    pub fn bow(speed: f64, interval_min: i32, radius: f32) -> Goal {
+        Goal::Bow {
+            speed,
+            interval_min,
+            radius_sqr: radius * radius,
+            attack_time: -1,
+            see_time: 0,
+            clockwise: false,
+            backwards: false,
+            strafing_time: -1,
+        }
+    }
+
+    pub fn nearest_player(must_see: bool) -> Goal {
+        Goal::NearestTarget {
+            state: TargetState::new(must_see),
+            interval: reduced(10),
+            found: None,
+            spider: false,
+        }
+    }
+
+    pub fn spider_target() -> Goal {
+        Goal::NearestTarget {
+            state: TargetState::new(true),
+            interval: reduced(10),
+            found: None,
+            spider: true,
+        }
+    }
+
+    pub fn hurt_by(alert: bool) -> Goal {
+        Goal::HurtBy {
+            state: TargetState::new(true),
+            timestamp: 0,
+            alert,
+        }
+    }
+}
+
+/// `WrappedGoal`: a goal with its priority and whether it runs.
+#[derive(Clone, Copy, Debug)]
+pub struct Slot {
+    pub priority: u8,
+    pub running: bool,
+    pub goal: Goal,
+}
+
+const NO_SLOT: u8 = u8::MAX;
+
+/// `GoalSelector`.
+#[derive(Clone, Debug)]
+pub struct GoalSelector {
+    pub slots: Vec<Slot>,
+    locked: [u8; 4],
+    disabled: u8,
+}
+
+impl Default for GoalSelector {
+    fn default() -> Self {
+        GoalSelector {
+            slots: Vec::new(),
+            locked: [NO_SLOT; 4],
+            disabled: 0,
+        }
+    }
+}
+
+impl GoalSelector {
+    /// `addGoal`.
+    pub fn add(&mut self, priority: u8, goal: Goal) {
+        self.slots.push(Slot {
+            priority,
+            running: false,
+            goal,
+        });
+    }
+}
+
+/// Which selector of a mob.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Which {
+    Goals,
+    Targets,
+}
+
+fn selector<'a>(t: &'a mut Tick<'_, '_>, which: Which) -> &'a mut GoalSelector {
+    let m = t.mob();
+    match which {
+        Which::Goals => &mut m.goals,
+        Which::Targets => &mut m.targets,
+    }
+}
+
+fn selector_ref<'a>(t: &'a Tick<'_, '_>, which: Which) -> &'a GoalSelector {
+    let m = t.mob_ref();
+    match which {
+        Which::Goals => &m.goals,
+        Which::Targets => &m.targets,
+    }
+}
+
+/// Runs `f` on the goal of slot `i` (copied out and written back).
+fn with_goal<R>(
+    t: &mut Tick<'_, '_>,
+    which: Which,
+    i: usize,
+    f: impl FnOnce(&mut Tick<'_, '_>, &mut Goal) -> R,
+) -> Option<R> {
+    let mut goal = selector_ref(t, which).slots.get(i)?.goal;
+    let r = f(t, &mut goal);
+    if t.exists()
+        && let Some(slot) = selector(t, which).slots.get_mut(i)
+    {
+        slot.goal = goal;
+    }
+    Some(r)
+}
+
+fn stop_slot(t: &mut Tick<'_, '_>, which: Which, i: usize) {
+    let running = selector_ref(t, which)
+        .slots
+        .get(i)
+        .is_some_and(|s| s.running);
+    if !running {
+        return;
+    }
+    if let Some(s) = selector(t, which).slots.get_mut(i) {
+        s.running = false;
+    }
+    with_goal(t, which, i, stop);
+}
+
+fn start_slot(t: &mut Tick<'_, '_>, which: Which, i: usize) {
+    let running = selector_ref(t, which)
+        .slots
+        .get(i)
+        .is_some_and(|s| s.running);
+    if running {
+        return;
+    }
+    if let Some(s) = selector(t, which).slots.get_mut(i) {
+        s.running = true;
+    }
+    with_goal(t, which, i, start);
+}
+
+/// `GoalSelector.tick`.
+pub fn tick_selector(t: &mut Tick<'_, '_>, which: Which) {
+    let n = selector_ref(t, which).slots.len();
+    for i in 0..n {
+        if !t.exists() {
+            return;
+        }
+        let (running, flags, disabled) = {
+            let s = selector_ref(t, which);
+            let slot = s.slots[i];
+            (slot.running, slot.goal.flags(), s.disabled)
+        };
+        if running {
+            let stop_it =
+                flags & disabled != 0 || !with_goal(t, which, i, can_continue).unwrap_or(false);
+            if stop_it {
+                stop_slot(t, which, i);
+            }
+        }
+    }
+    if !t.exists() {
+        return;
+    }
+    {
+        let s = selector(t, which);
+        for l in &mut s.locked {
+            if *l != NO_SLOT && !s.slots.get(usize::from(*l)).is_some_and(|x| x.running) {
+                *l = NO_SLOT;
+            }
+        }
+    }
+    for i in 0..n {
+        if !t.exists() {
+            return;
+        }
+        let (running, flags, priority, disabled, replaceable) = {
+            let s = selector_ref(t, which);
+            let slot = s.slots[i];
+            let flags = slot.goal.flags();
+            let replaceable = (0..4).all(|b| {
+                if flags & (1 << b) == 0 {
+                    return true;
+                }
+                let l = s.locked[b];
+                l == NO_SLOT
+                    || s.slots
+                        .get(usize::from(l))
+                        .is_none_or(|o| slot.priority < o.priority)
+            });
+            (slot.running, flags, slot.priority, s.disabled, replaceable)
+        };
+        let _ = priority;
+        if running || flags & disabled != 0 || !replaceable {
+            continue;
+        }
+        if !with_goal(t, which, i, can_use).unwrap_or(false) {
+            continue;
+        }
+        for b in 0..4 {
+            if flags & (1 << b) == 0 {
+                continue;
+            }
+            let current = selector_ref(t, which).locked[b];
+            if current != NO_SLOT {
+                stop_slot(t, which, usize::from(current));
+            }
+            selector(t, which).locked[b] = u8::try_from(i).unwrap_or(NO_SLOT);
+        }
+        start_slot(t, which, i);
+    }
+    tick_running(t, which, true);
+}
+
+/// `GoalSelector.tickRunningGoals`.
+pub fn tick_running(t: &mut Tick<'_, '_>, which: Which, force: bool) {
+    let n = selector_ref(t, which).slots.len();
+    for i in 0..n {
+        if !t.exists() || t.mob_ref().removed {
+            return;
+        }
+        let Some(slot) = selector_ref(t, which).slots.get(i).copied() else {
+            return;
+        };
+        if slot.running && (force || slot.goal.every_tick()) {
+            with_goal(t, which, i, tick);
+        }
+    }
+}
+
+// --- Helpers ----------------------------------------------------------------------------
+
+fn random_float(t: &mut Tick<'_, '_>) -> f32 {
+    t.mob().random.next_float()
+}
+
+fn random_int(t: &mut Tick<'_, '_>, bound: i32) -> i32 {
+    t.mob().random.next_int_bounded(bound.max(1))
+}
+
+fn distance_sqr(t: &Tick<'_, '_>, other: Vec3) -> f64 {
+    t.pos().distance_to_sqr(other)
+}
+
+/// `LivingEntity.canAttack(target)` and the combat part of `TargetingConditions.test`.
+fn can_attack(t: &Tick<'_, '_>, target: EntityId) -> bool {
+    if target == t.id {
+        return false;
+    }
+    if let Some(p) = t.ents.player(target) {
+        if t.env.difficulty == Difficulty::Peaceful {
+            return false;
+        }
+        return !p.survival.is_dead_or_dying()
+            && matches!(p.game_mode, GameMode::Survival | GameMode::Adventure);
+    }
+    t.ents.mob(target).is_some_and(super::MobData::is_alive)
+}
+
+/// `TargetingConditions.test` for a player target.
+fn test_player(
+    t: &mut Tick<'_, '_>,
+    target: EntityId,
+    combat: bool,
+    range: f64,
+    line_of_sight: bool,
+) -> bool {
+    let Some(p) = t.ents.player(target) else {
+        return false;
+    };
+    if p.survival.is_dead_or_dying() || p.game_mode == GameMode::Spectator {
+        return false;
+    }
+    if combat && !can_attack(t, target) {
+        return false;
+    }
+    let Some(e) = t.ents.store.get(target) else {
+        return false;
+    };
+    if range > 0.0 {
+        // `getVisibilityPercent`: sneaking players are seen at 80 %.
+        let modifier = if e.flags().contains(EntityFlags::CROUCHING) {
+            0.8
+        } else {
+            1.0
+        };
+        let visible = (range * modifier).max(2.0);
+        if t.pos().distance_to_sqr(e.pos()) > visible * visible {
+            return false;
+        }
+    }
+    !line_of_sight || has_line_of_sight(t, target)
+}
+
+/// `getNearestPlayer(conditions, mob, x, eyeY, z)` over the players within `range`.
+fn nearest_player(
+    t: &mut Tick<'_, '_>,
+    combat: bool,
+    range: f64,
+    line_of_sight: bool,
+) -> Option<EntityId> {
+    let p = t.pos();
+    let at = Vec3::new(p.x, t.eye_y(), p.z);
+    let r = range.max(2.0);
+    let area = Aabb::new(p.x - r, p.y - r, p.z - r, p.x + r, p.y + r, p.z + r);
+    let mut candidates = std::mem::take(&mut t.cx.ids);
+    candidates.clear();
+    t.ents
+        .store
+        .for_each_in(&area, true, |id| candidates.push(id));
+    let mut best: Option<(EntityId, f64)> = None;
+    for &id in &candidates {
+        if !test_player(t, id, combat, range, line_of_sight) {
+            continue;
+        }
+        let Some(e) = t.ents.store.get(id) else {
+            continue;
+        };
+        let d = e.pos().distance_to_sqr(at);
+        if best.is_none_or(|(_, b)| d < b) {
+            best = Some((id, d));
+        }
+    }
+    t.cx.ids = candidates;
+    best.map(|(id, _)| id)
+}
+
+fn other_pos(t: &Tick<'_, '_>, id: EntityId) -> Option<Vec3> {
+    t.other(id).map(|o| o.pos)
+}
+
+/// `Mob.isWithinMeleeAttackRange`.
+fn within_melee_range(t: &Tick<'_, '_>, target: EntityId) -> bool {
+    let Some(o) = t.other(target) else {
+        return false;
+    };
+    let reach = f64::from(2.04_f32).sqrt() - f64::from(0.6_f32);
+    t.aabb().inflate(reach, 0.0, reach).intersects(&o.aabb)
+}
+
+fn is_creative_or_spectator(t: &Tick<'_, '_>, id: EntityId) -> bool {
+    t.ents
+        .player(id)
+        .is_some_and(|p| matches!(p.game_mode, GameMode::Creative | GameMode::Spectator))
+}
+
+/// `getWalkTargetValue(pos)`.
+fn walk_target_value(t: &Tick<'_, '_>, pos: BlockPos) -> f64 {
+    kinds::walk_target_value(t.mob_ref().kind, t.level, &t.cx.env, pos)
+}
+
+/// `GoalUtils.hasMalus`.
+fn has_malus(t: &Tick<'_, '_>, pos: BlockPos) -> bool {
+    let kind = path_type_static(t.level, t.level.min_y(), pos.x, pos.y, pos.z);
+    malus_of(t.mob_ref().kind.malus(), kind) != 0.0
+}
+
+/// `PathNavigation.isStableDestination`: the block below renders solid.
+fn is_stable(t: &Tick<'_, '_>, pos: BlockPos) -> bool {
+    t.level
+        .block(BlockPos::new(pos.x, pos.y - 1, pos.z))
+        .has(vanillite_data::block::flags::SOLID_RENDER)
+}
+
+/// `RandomPos.generateRandomDirection`.
+fn random_direction(t: &mut Tick<'_, '_>, h: i32, v: i32) -> (i32, i32, i32) {
+    let x = random_int(t, 2 * h + 1) - h;
+    let y = random_int(t, 2 * v + 1) - v;
+    let z = random_int(t, 2 * h + 1) - h;
+    (x, y, z)
+}
+
+/// `RandomPos.generateRandomPosTowardDirection` (mobs here have no home).
+fn toward(t: &Tick<'_, '_>, dir: (i32, i32, i32)) -> BlockPos {
+    let p = t.pos();
+    BlockPos::containing(
+        f64::from(dir.0) + p.x,
+        f64::from(dir.1) + p.y,
+        f64::from(dir.2) + p.z,
+    )
+}
+
+/// `DefaultRandomPos.getPos(mob, h, v)`.
+fn default_random_pos(t: &mut Tick<'_, '_>, h: i32, v: i32) -> Option<Vec3> {
+    let mut best: Option<(BlockPos, f64)> = None;
+    for _ in 0..10 {
+        let dir = random_direction(t, h, v);
+        let pos = toward(t, dir);
+        if !t.level.in_height(pos.y) || !is_stable(t, pos) || has_malus(t, pos) {
+            continue;
+        }
+        let value = walk_target_value(t, pos);
+        if best.is_none_or(|(_, b)| value > b) {
+            best = Some((pos, value));
+        }
+    }
+    best.map(|(p, _)| bottom_center(p))
+}
+
+/// `LandRandomPos.getPos(mob, h, v)`.
+fn land_random_pos(t: &mut Tick<'_, '_>, h: i32, v: i32) -> Option<Vec3> {
+    let mut best: Option<(BlockPos, f64)> = None;
+    for _ in 0..10 {
+        let dir = random_direction(t, h, v);
+        let pos = toward(t, dir);
+        if !t.level.in_height(pos.y) || !is_stable(t, pos) {
+            continue;
+        }
+        // `movePosUpOutOfSolid`.
+        let mut pos = pos;
+        if nav::is_solid(t.level.block(pos)) {
+            let mut y = pos.y + 1;
+            while y <= t.level.max_y()
+                && nav::is_solid(t.level.block(BlockPos::new(pos.x, y, pos.z)))
+            {
+                y += 1;
+            }
+            pos = BlockPos::new(pos.x, y, pos.z);
+        }
+        if super::is_water(t.level.block(pos)) || has_malus(t, pos) {
+            continue;
+        }
+        let value = walk_target_value(t, pos);
+        if best.is_none_or(|(_, b)| value > b) {
+            best = Some((pos, value));
+        }
+    }
+    best.map(|(p, _)| bottom_center(p))
+}
+
+fn bottom_center(p: BlockPos) -> Vec3 {
+    Vec3::new(f64::from(p.x) + 0.5, f64::from(p.y), f64::from(p.z) + 0.5)
+}
+
+fn set_aggressive(t: &mut Tick<'_, '_>, on: bool) {
+    if t.mob_ref().aggressive != on {
+        t.mob().aggressive = on;
+        t.core_mut().mark_data_dirty();
+    }
+}
+
+fn set_target(t: &mut Tick<'_, '_>, target: Option<EntityId>) {
+    t.mob().target = target;
+}
+
+fn fluid_jump_threshold(t: &Tick<'_, '_>) -> f64 {
+    if super::eye_height(t.mob_ref()) < 0.4 {
+        0.0
+    } else {
+        0.4
+    }
+}
+
+// --- Goal behaviour -------------------------------------------------------------------------
+
+/// `canUse`.
+fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
+    match g {
+        Goal::Float => {
+            let f = t.mob_ref().fluids;
+            f.water_height > fluid_jump_threshold(t) || f.in_lava()
+        }
+        Goal::Panic { pos, .. } => {
+            let panics = t
+                .mob_ref()
+                .last_damage_source(t.game_time())
+                .is_some_and(|k| t.env.types.is(k, tag::PANIC_CAUSES));
+            if !panics {
+                return false;
+            }
+            match default_random_pos(t, 5, 4) {
+                Some(p) => {
+                    *pos = p;
+                    true
+                }
+                None => false,
+            }
+        }
+        Goal::Stroll {
+            interval,
+            probability,
+            wanted,
+            ..
+        } => {
+            if t.mob_ref().no_action_time >= 100 {
+                return false;
+            }
+            if random_int(t, reduced(*interval)) != 0 {
+                return false;
+            }
+            let pos = if t.mob_ref().fluids.in_water() {
+                land_random_pos(t, 15, 7).or_else(|| default_random_pos(t, 10, 7))
+            } else if random_float(t) >= *probability {
+                land_random_pos(t, 10, 7)
+            } else {
+                default_random_pos(t, 10, 7)
+            };
+            match pos {
+                Some(p) => {
+                    *wanted = p;
+                    true
+                }
+                None => false,
+            }
+        }
+        Goal::LookAtPlayer {
+            distance,
+            probability,
+            look_at,
+            ..
+        } => {
+            if random_float(t) >= *probability {
+                return false;
+            }
+            if t.mob_ref().target.is_some() {
+                *look_at = t.mob_ref().target;
+            }
+            *look_at = nearest_player(t, false, f64::from(*distance), true);
+            look_at.is_some()
+        }
+        Goal::RandomLook { .. } => random_float(t) < 0.02,
+        Goal::Melee {
+            kind, last_can_use, ..
+        } => {
+            let time = t.game_time();
+            if time - *last_can_use < 20 {
+                return false;
+            }
+            *last_can_use = time;
+            let Some(target) = t.mob_ref().target else {
+                return false;
+            };
+            let Some(pos) = other_pos(t, target) else {
+                return false;
+            };
+            let _ = kind;
+            let path = nav::create_path_to(t, BlockPos::containing(pos.x, pos.y, pos.z), 0);
+            let ok = path.is_some() || within_melee_range(t, target);
+            t.mob().goal_path = path;
+            ok
+        }
+        Goal::Swell => {
+            let m = t.mob_ref();
+            m.swell_dir > 0
+                || m.target.is_some_and(|target| {
+                    other_pos(t, target).is_some_and(|p| distance_sqr(t, p) < 9.0)
+                })
+        }
+        Goal::Leap { target, .. } => {
+            *target = t.mob_ref().target;
+            let Some(pos) = target.and_then(|id| other_pos(t, id)) else {
+                return false;
+            };
+            let d = distance_sqr(t, pos);
+            if !(4.0..=16.0).contains(&d) || !t.on_ground() {
+                return false;
+            }
+            random_int(t, reduced(5)) == 0
+        }
+        Goal::FleeSun { wanted, .. } => {
+            if t.mob_ref().target.is_some()
+                || !t.cx.env.is_bright_outside()
+                || !t.mob_ref().is_on_fire()
+                || !super::can_see_sky(t.level, t.block_pos())
+            {
+                return false;
+            }
+            let base = t.block_pos();
+            for _ in 0..10 {
+                let x = random_int(t, 20) - 10;
+                let y = random_int(t, 6) - 3;
+                let z = random_int(t, 20) - 10;
+                let pos = base.offset(x, y, z);
+                if !super::can_see_sky(t.level, pos) && walk_target_value(t, pos) < 0.0 {
+                    *wanted = bottom_center(pos);
+                    return true;
+                }
+            }
+            false
+        }
+        Goal::RestrictSun => t.cx.env.is_bright_outside(),
+        Goal::Bow { .. } => t.mob_ref().target.is_some(),
+        Goal::EatBlock { .. } => {
+            let chance = if t.mob_ref().baby { 50 } else { 1000 };
+            if random_int(t, g.adjusted(chance)) != 0 {
+                return false;
+            }
+            let pos = t.block_pos();
+            kinds::edible_for_sheep(t.level.block(pos))
+                || t.level
+                    .block(BlockPos::new(pos.x, pos.y - 1, pos.z))
+                    .block()
+                    == vanillite_data::block::ids::GRASS_BLOCK
+        }
+        Goal::FollowParent { parent, .. } => {
+            if t.mob_ref().age >= 0 {
+                return false;
+            }
+            let kind = t.mob_ref().kind;
+            let area = t.aabb().inflate(8.0, 4.0, 8.0);
+            let mut ids = std::mem::take(&mut t.cx.ids);
+            ids.clear();
+            t.ents.store.for_each_in(&area, false, |id| ids.push(id));
+            let mut closest: Option<(EntityId, f64)> = None;
+            for &id in &ids {
+                let Some(m) = t.ents.mob(id) else {
+                    continue;
+                };
+                if m.kind != kind || m.age < 0 || id == t.id {
+                    continue;
+                }
+                let Some(e) = t.ents.store.get(id) else {
+                    continue;
+                };
+                let d = distance_sqr(t, e.pos());
+                if closest.is_none_or(|(_, c)| d <= c) {
+                    closest = Some((id, d));
+                }
+            }
+            t.cx.ids = ids;
+            match closest {
+                Some((id, d)) if d >= 9.0 => {
+                    *parent = Some(id);
+                    true
+                }
+                _ => false,
+            }
+        }
+        Goal::NearestTarget {
+            interval,
+            found,
+            spider,
+            state,
+        } => {
+            if *spider && t.light_magic_value() >= 0.5 {
+                return false;
+            }
+            if *interval > 0 && random_int(t, *interval) != 0 {
+                return false;
+            }
+            let range = t.mob_ref().attrs.follow_range;
+            *found = nearest_player(t, true, range, state.must_see);
+            found.is_some()
+        }
+        Goal::HurtBy { timestamp, .. } => {
+            let m = t.mob_ref();
+            let (Some(by), stamp) = (m.last_hurt_by_mob, m.last_hurt_by_mob_time) else {
+                return false;
+            };
+            if stamp == *timestamp {
+                return false;
+            }
+            if t.ents.player(by).is_some() && t.env.rules.bool(Rule::UNIVERSAL_ANGER) {
+                return false;
+            }
+            // `HURT_BY_TARGETING` ignores line of sight and invisibility.
+            if t.ents.player(by).is_some() {
+                test_player(t, by, true, -1.0, false)
+            } else {
+                can_attack(t, by)
+            }
+        }
+        Goal::EndermanFreeze { target } => {
+            *target = t.mob_ref().target;
+            let Some(id) = *target else {
+                return false;
+            };
+            if t.ents.player(id).is_none() {
+                return false;
+            }
+            let Some(pos) = other_pos(t, id) else {
+                return false;
+            };
+            distance_sqr(t, pos) <= 256.0 && kinds::is_stared_at_by(t, id)
+        }
+        Goal::EndermanStare { pending, state, .. } => {
+            let range = t.mob_ref().attrs.follow_range;
+            let p = nearest_player(t, true, range, false);
+            *pending = p.filter(|&id| kinds::is_stared_at_by(t, id));
+            let _ = state;
+            pending.is_some()
+        }
+    }
+}
+
+/// `canContinueToUse`.
+fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
+    match g {
+        Goal::Float | Goal::RestrictSun => can_use(t, g),
+        Goal::Panic { .. } | Goal::Stroll { .. } | Goal::FleeSun { .. } => {
+            !t.mob_ref().nav.is_done()
+        }
+        Goal::LookAtPlayer {
+            distance,
+            look_at,
+            time,
+            ..
+        } => {
+            let Some(pos) = look_at.and_then(|id| other_pos(t, id)) else {
+                return false;
+            };
+            let d = f64::from(*distance);
+            distance_sqr(t, pos) <= d * d && *time > 0
+        }
+        Goal::RandomLook { time, .. } => *time >= 0,
+        Goal::Melee {
+            kind,
+            follow_unseen,
+            ..
+        } => {
+            if *kind == MeleeKind::Spider && t.light_magic_value() >= 0.5 && random_int(t, 100) == 0
+            {
+                set_target(t, None);
+                return false;
+            }
+            let Some(target) = t.mob_ref().target else {
+                return false;
+            };
+            if t.other(target).is_none() {
+                return false;
+            }
+            if !*follow_unseen {
+                return !t.mob_ref().nav.is_done();
+            }
+            !is_creative_or_spectator(t, target)
+        }
+        Goal::Swell => can_use(t, g),
+        Goal::Leap { .. } => !t.on_ground(),
+        Goal::Bow { .. } => t.mob_ref().target.is_some() || !t.mob_ref().nav.is_done(),
+        Goal::EatBlock { tick } => *tick > 0,
+        Goal::FollowParent { parent, .. } => {
+            if t.mob_ref().age >= 0 {
+                return false;
+            }
+            let Some(pos) = parent.and_then(|id| other_pos(t, id)) else {
+                return false;
+            };
+            let d = distance_sqr(t, pos);
+            (9.0..=256.0).contains(&d)
+        }
+        Goal::NearestTarget { state, .. } | Goal::HurtBy { state, .. } => {
+            target_can_continue(t, state)
+        }
+        Goal::EndermanFreeze { .. } => can_use(t, g),
+        Goal::EndermanStare {
+            state,
+            pending,
+            aggro_time,
+            ..
+        } => {
+            if pending.is_some() {
+                if let Some(id) = *pending
+                    && t.ents.player(id).is_some()
+                    && *aggro_time > 0
+                {
+                    // `EndermanLookForPlayerGoal`: still waiting to scream.
+                    return true;
+                }
+                return false;
+            }
+            target_can_continue(t, state)
+        }
+    }
+}
+
+/// `TargetGoal.canContinueToUse`.
+fn target_can_continue(t: &mut Tick<'_, '_>, state: &mut TargetState) -> bool {
+    let Some(target) = t.mob_ref().target.or(state.target_mob) else {
+        return false;
+    };
+    if !can_attack(t, target) {
+        return false;
+    }
+    let Some(pos) = other_pos(t, target) else {
+        return false;
+    };
+    let range = t.mob_ref().attrs.follow_range;
+    if distance_sqr(t, pos) > range * range {
+        return false;
+    }
+    if state.must_see {
+        if has_line_of_sight(t, target) {
+            state.unseen_ticks = 0;
+        } else {
+            state.unseen_ticks += 1;
+            if state.unseen_ticks > reduced(state.unseen_memory) {
+                return false;
+            }
+        }
+    }
+    set_target(t, Some(target));
+    true
+}
+
+/// `start`.
+fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
+    match g {
+        Goal::Panic { speed, pos } => {
+            nav::move_to_pos(t, *pos, *speed);
+        }
+        Goal::Stroll { speed, wanted, .. } => {
+            nav::move_to_pos(t, *wanted, *speed);
+        }
+        Goal::FleeSun { speed, wanted } => {
+            nav::move_to_pos(t, *wanted, *speed);
+        }
+        Goal::LookAtPlayer { time, .. } => {
+            let r = random_int(t, 40);
+            *time = reduced(40 + r);
+        }
+        Goal::RandomLook { rel_x, rel_z, time } => {
+            let rnd = std::f64::consts::TAU * t.mob().random.next_double();
+            *rel_x = rnd.cos();
+            *rel_z = rnd.sin();
+            *time = 20 + random_int(t, 20);
+        }
+        Goal::Melee {
+            speed,
+            recalc,
+            attack_in,
+            raise_arm,
+            ..
+        } => {
+            let path = t.mob().goal_path.take();
+            nav::move_to_path(t, path, *speed);
+            set_aggressive(t, true);
+            *recalc = 0;
+            *attack_in = 0;
+            *raise_arm = 0;
+        }
+        Goal::Swell => {
+            t.mob().nav.stop();
+        }
+        Goal::Leap { target, .. } => {
+            let Some(pos) = target.and_then(|id| other_pos(t, id)) else {
+                return;
+            };
+            let Goal::Leap { yd, .. } = *g else {
+                return;
+            };
+            let v = t.velocity();
+            let p = t.pos();
+            let mut d = Vec3::new(pos.x - p.x, 0.0, pos.z - p.z);
+            if d.length_sqr() > 1.0e-7 {
+                d = d.normalize() * 0.4 + v * 0.2;
+            }
+            t.set_velocity(Vec3::new(d.x, f64::from(yd), d.z));
+        }
+        Goal::RestrictSun => {
+            t.mob().nav.avoid_sun = true;
+        }
+        Goal::Bow { .. } => set_aggressive(t, true),
+        Goal::EatBlock { tick } => {
+            *tick = reduced(40);
+            let id = t.id;
+            living::entity_event(t, id, living::event::EAT_GRASS);
+            t.mob().nav.stop();
+        }
+        Goal::FollowParent { recalc, .. } => *recalc = 0,
+        Goal::NearestTarget { state, found, .. } => {
+            set_target(t, *found);
+            state.unseen_ticks = 0;
+        }
+        Goal::HurtBy {
+            state,
+            timestamp,
+            alert,
+        } => {
+            let by = t.mob_ref().last_hurt_by_mob;
+            set_target(t, by);
+            state.target_mob = by;
+            *timestamp = t.mob_ref().last_hurt_by_mob_time;
+            state.unseen_memory = 300;
+            if *alert && let Some(by) = by {
+                alert_others(t, by);
+            }
+            state.unseen_ticks = 0;
+        }
+        Goal::EndermanFreeze { .. } => {
+            t.mob().nav.stop();
+        }
+        Goal::EndermanStare {
+            aggro_time,
+            teleport_time,
+            ..
+        } => {
+            *aggro_time = reduced(5);
+            *teleport_time = 0;
+            kinds::set_creepy(t, true);
+        }
+        Goal::Float => {}
+    }
+}
+
+/// `HurtByTargetGoal.alertOthers` for mobs of the same kind.
+fn alert_others(t: &mut Tick<'_, '_>, by: EntityId) {
+    let range = t.mob_ref().attrs.follow_range;
+    let p = t.pos();
+    let area =
+        Aabb::new(p.x, p.y, p.z, p.x + 1.0, p.y + 1.0, p.z + 1.0).inflate(range, 10.0, range);
+    let kind = t.mob_ref().kind;
+    let mut ids = std::mem::take(&mut t.cx.ids);
+    ids.clear();
+    t.ents.store.for_each_in(&area, false, |id| ids.push(id));
+    for &id in &ids {
+        if id == t.id {
+            continue;
+        }
+        if let Some(m) = t.ents.mob_mut(id)
+            && m.kind == kind
+            && m.target.is_none()
+            && m.is_alive()
+        {
+            m.target = Some(by);
+        }
+    }
+    t.cx.ids = ids;
+}
+
+/// `stop`.
+fn stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
+    match g {
+        Goal::Stroll { .. } => t.mob().nav.stop(),
+        Goal::LookAtPlayer { look_at, .. } => *look_at = None,
+        Goal::Melee { .. } => {
+            if let Some(target) = t.mob_ref().target
+                && is_creative_or_spectator(t, target)
+            {
+                set_target(t, None);
+            }
+            set_aggressive(t, false);
+            t.mob().nav.stop();
+        }
+        Goal::Swell => {}
+        Goal::RestrictSun => t.mob().nav.avoid_sun = false,
+        Goal::Bow {
+            see_time,
+            attack_time,
+            ..
+        } => {
+            set_aggressive(t, false);
+            *see_time = 0;
+            *attack_time = -1;
+            projectile::stop_using_item(t);
+        }
+        Goal::EatBlock { tick } => *tick = 0,
+        Goal::FollowParent { parent, .. } => *parent = None,
+        Goal::NearestTarget { state, .. } | Goal::HurtBy { state, .. } => {
+            set_target(t, None);
+            state.target_mob = None;
+        }
+        Goal::EndermanStare { state, pending, .. } => {
+            *pending = None;
+            set_target(t, None);
+            state.target_mob = None;
+            kinds::set_creepy(t, false);
+        }
+        _ => {}
+    }
+}
+
+/// `tick`.
+fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
+    match g {
+        Goal::Float => {
+            if random_float(t) < 0.8 {
+                t.mob().jump = true;
+            }
+        }
+        Goal::LookAtPlayer { look_at, time, .. } => {
+            if let Some(o) = look_at.and_then(|id| t.other(id)) {
+                nav::look_at(t, Vec3::new(o.pos.x, o.eye_y, o.pos.z));
+                *time -= 1;
+            }
+        }
+        Goal::RandomLook { rel_x, rel_z, time } => {
+            *time -= 1;
+            let p = t.pos();
+            let at = Vec3::new(p.x + *rel_x, t.eye_y(), p.z + *rel_z);
+            nav::look_at(t, at);
+        }
+        Goal::Melee { .. } => melee_tick(t, g),
+        Goal::Swell => {
+            let target = t.mob_ref().target;
+            let dir = match target.and_then(|id| t.other(id).map(|o| (id, o))) {
+                Some((id, o)) => {
+                    if distance_sqr(t, o.pos) > 49.0 || !has_line_of_sight(t, id) {
+                        -1
+                    } else {
+                        1
+                    }
+                }
+                None => -1,
+            };
+            kinds::set_swell_dir(t, dir);
+        }
+        Goal::Bow { .. } => bow_tick(t, g),
+        Goal::EatBlock { tick } => {
+            *tick = (*tick - 1).max(0);
+            t.mob().eat_animation = *tick;
+            if *tick == reduced(4) {
+                kinds::eat_block(t);
+            }
+        }
+        Goal::FollowParent {
+            speed,
+            parent,
+            recalc,
+        } => {
+            *recalc -= 1;
+            if *recalc <= 0 {
+                *recalc = reduced(10);
+                if let Some(pos) = parent.and_then(|id| other_pos(t, id)) {
+                    nav::move_to_entity(t, pos, 1, *speed);
+                }
+            }
+        }
+        Goal::EndermanFreeze { target } => {
+            if let Some(o) = target.and_then(|id| t.other(id)) {
+                nav::look_at(t, Vec3::new(o.pos.x, o.eye_y, o.pos.z));
+            }
+        }
+        Goal::EndermanStare {
+            pending,
+            aggro_time,
+            state,
+            ..
+        } => {
+            if let Some(id) = *pending {
+                *aggro_time -= 1;
+                if *aggro_time <= 0 {
+                    // Screams and takes the player as its target.
+                    set_target(t, Some(id));
+                    state.target_mob = Some(id);
+                    *pending = None;
+                    kinds::play_sound(t, "minecraft:entity.enderman.stare", 2.5, 1.0);
+                } else if let Some(o) = t.other(id) {
+                    nav::look_at(t, Vec3::new(o.pos.x, o.eye_y, o.pos.z));
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn melee_tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
+    let Goal::Melee {
+        kind,
+        speed,
+        follow_unseen,
+        pathed,
+        recalc,
+        attack_in,
+        raise_arm,
+        ..
+    } = g
+    else {
+        return;
+    };
+    let Some(target) = t.mob_ref().target else {
+        return;
+    };
+    let Some(o) = t.other(target) else {
+        return;
+    };
+    t.mob()
+        .look
+        .set_look_at(Vec3::new(o.pos.x, o.eye_y, o.pos.z), 30.0, 30.0);
+    *recalc = (*recalc - 1).max(0);
+    let sees = *follow_unseen || has_line_of_sight(t, target);
+    if sees
+        && *recalc <= 0
+        && (*pathed == Vec3::ZERO
+            || o.pos.distance_to_sqr(*pathed) >= 1.0
+            || random_float(t) < 0.05)
+    {
+        *pathed = o.pos;
+        *recalc = 4 + random_int(t, 7);
+        let d = distance_sqr(t, o.pos);
+        if d > 1024.0 {
+            *recalc += 10;
+        } else if d > 256.0 {
+            *recalc += 5;
+        }
+        if !nav::move_to_entity(t, o.pos, 0, *speed) {
+            *recalc += 15;
+        }
+        // `adjustedTickDelay` of a goal that updates every tick.
+    }
+    *attack_in = (*attack_in - 1).max(0);
+    if *attack_in <= 0 && within_melee_range(t, target) && has_line_of_sight(t, target) {
+        *attack_in = 20;
+        combat::mob_attack(t, target);
+    }
+    if !t.exists() {
+        return;
+    }
+    if *kind == MeleeKind::Zombie {
+        *raise_arm += 1;
+        let up = *raise_arm >= 5 && *attack_in < 10;
+        set_aggressive(t, up);
+    }
+}
+
+fn bow_tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
+    let Goal::Bow {
+        speed,
+        interval_min,
+        radius_sqr,
+        attack_time,
+        see_time,
+        clockwise,
+        backwards,
+        strafing_time,
+    } = g
+    else {
+        return;
+    };
+    let Some(target) = t.mob_ref().target else {
+        return;
+    };
+    let Some(o) = t.other(target) else {
+        return;
+    };
+    let d = distance_sqr(t, o.pos);
+    let sees = has_line_of_sight(t, target);
+    if sees != (*see_time > 0) {
+        *see_time = 0;
+    }
+    if sees {
+        *see_time += 1;
+    } else {
+        *see_time -= 1;
+    }
+    let radius = f64::from(*radius_sqr);
+    if d <= radius && *see_time >= 20 {
+        t.mob().nav.stop();
+        *strafing_time += 1;
+    } else {
+        nav::move_to_entity(t, o.pos, 1, *speed);
+        *strafing_time = -1;
+    }
+    if *strafing_time >= 20 {
+        if random_float(t) < 0.3 {
+            *clockwise = !*clockwise;
+        }
+        if random_float(t) < 0.3 {
+            *backwards = !*backwards;
+        }
+        *strafing_time = 0;
+    }
+    if *strafing_time > -1 {
+        if d > radius * f64::from(0.75_f32) {
+            *backwards = false;
+        } else if d < radius * f64::from(0.25_f32) {
+            *backwards = true;
+        }
+        let fwd = if *backwards { -0.5 } else { 0.5 };
+        let right = if *clockwise { 0.5 } else { -0.5 };
+        t.mob().move_ctl.strafe(fwd, right);
+        kinds::look_at_entity(t, o, 30.0, 30.0);
+    } else {
+        t.mob()
+            .look
+            .set_look_at(Vec3::new(o.pos.x, o.eye_y, o.pos.z), 30.0, 30.0);
+    }
+    let using = t.mob_ref().using_item;
+    if using >= 0 {
+        if !sees && *see_time < -60 {
+            projectile::stop_using_item(t);
+        } else if sees && using >= 20 {
+            projectile::stop_using_item(t);
+            projectile::skeleton_shoot(t, target, bow_power(using));
+            *attack_time = *interval_min;
+        }
+    } else {
+        *attack_time -= 1;
+        if *attack_time <= 0 && *see_time >= -60 {
+            projectile::start_using_item(t);
+        }
+    }
+}
+
+/// `BowItem.getPowerForTime`.
+pub fn bow_power(ticks: i32) -> f32 {
+    #[allow(clippy::cast_precision_loss)]
+    let mut pow = ticks as f32 / 20.0;
+    pow = (pow * pow + pow * 2.0) / 3.0;
+    pow.min(1.0)
+}
+
+/// Whether the mob's path type at `pos` is walkable (`MoveControl.isWalkable`).
+pub fn walkable(t: &Tick<'_, '_>, pos: BlockPos) -> bool {
+    path_type_static(t.level, t.level.min_y(), pos.x, pos.y, pos.z) == PathType::Walkable
+}

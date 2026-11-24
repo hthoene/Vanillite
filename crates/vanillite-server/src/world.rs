@@ -58,6 +58,10 @@ pub struct ServerWorld {
     scratch: Vec<ChunkPos>,
     /// Weather, lightning and the players' survival.
     pub(crate) survival: crate::survival::WorldSurvival,
+    /// Mobs: their tick, the players' attacks and spawning.
+    pub(crate) mobs: crate::mobs::WorldMobs,
+    /// Loading and saving the entities of chunks.
+    entity_io: crate::entity_io::EntityChunks,
 }
 
 impl fmt::Debug for ServerWorld {
@@ -72,6 +76,7 @@ impl fmt::Debug for ServerWorld {
 }
 
 impl ServerWorld {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         id: WorldId,
         dimension: String,
@@ -80,6 +85,8 @@ impl ServerWorld {
         players: WorldPlayers,
         mut level: Level,
         survival: crate::survival::WorldSurvival,
+        mobs: crate::mobs::WorldMobs,
+        entity_io: crate::entity_io::EntityChunks,
     ) -> ServerWorld {
         if let Some(climate) = survival.climate() {
             level.set_climate(Arc::clone(climate));
@@ -100,6 +107,8 @@ impl ServerWorld {
             player_tickets: FxHashMap::default(),
             scratch: Vec::new(),
             survival,
+            mobs,
+            entity_io,
         }
     }
 
@@ -181,6 +190,23 @@ impl ServerWorld {
             .join(&mut self.level.entities, global, self.id, arrival, &weather);
     }
 
+    /// Spawns a mob like `/summon` (`finalizeSpawn` with the command reason).
+    pub(crate) fn summon(
+        &mut self,
+        kind: vanillite_game::mob::Kind,
+        pos: vanillite_base::Vec3,
+        global: &Global,
+    ) {
+        let difficulty = global.level.difficulty;
+        vanillite_game::mob::spawn::summon(
+            &mut self.level,
+            self.mobs.table(),
+            kind,
+            pos,
+            difficulty,
+        );
+    }
+
     /// This world's id.
     pub fn id(&self) -> WorldId {
         self.id
@@ -209,6 +235,7 @@ impl ServerWorld {
         self.level.chunks.set_max_relights(
             usize::try_from(rules.simulation.max_relights_per_tick).unwrap_or(usize::MAX),
         );
+        self.mobs.set_rules(&rules);
         self.rules = rules;
     }
 
@@ -230,6 +257,12 @@ impl ServerWorld {
         self.survival.moves(
             &mut self.level.entities,
             &self.level.chunks,
+            ctx.global,
+            &self.dimension,
+        );
+        self.mobs.attacks(
+            &mut self.level,
+            &mut self.survival,
             ctx.global,
             &self.dimension,
         );
@@ -256,14 +289,26 @@ impl ServerWorld {
         self.update_player_tickets();
         let level = &mut self.level;
         level.chunks.tick();
+        self.entity_io.tick(level);
         level.post_process();
         if ctx.runs_normally {
+            let spawn_point = (self.dimension == "minecraft:overworld").then(|| {
+                let (pos, _) = self.players.level.spawn;
+                vanillite_base::BlockPos::containing(pos.x, pos.y, pos.z)
+            });
+            self.mobs.spawn(
+                level,
+                &self.survival,
+                ctx.global,
+                &self.dimension,
+                spawn_point,
+            );
             level.tick_chunks(&mut self.scratch);
             level.run_block_events();
         }
         if ctx.runs_normally {
             self.ticks += 1;
-            self.tick_entities();
+            self.tick_entities(ctx.global);
         }
         self.players.tick_entities(&mut self.level.entities);
         if ctx.runs_normally {
@@ -296,19 +341,9 @@ impl ServerWorld {
 
     /// `entityTickList.forEach(tickNonPassenger)`: every entity in tick order; players move
     /// through their packets.
-    fn tick_entities(&mut self) {
-        let level = &mut self.level;
-        let mut cursor = level.entities.store.tick_cursor();
-        while let Some(id) = level.entities.store.next_to_tick(&mut cursor) {
-            let Some(mut entity) = level.entities.store.get_mut(id) else {
-                continue;
-            };
-            entity.set_old_pos();
-            let kind = entity.as_ref().kind();
-            if kind == vanillite_data::entity::ids::FALLING_BLOCK {
-                vanillite_game::block::falling::tick_entity(level, id);
-            }
-        }
+    fn tick_entities(&mut self, global: &Global) {
+        self.mobs
+            .tick_entities(&mut self.level, &mut self.survival, global, &self.dimension);
     }
 
     /// Runs the entity tracker over this tick's state and resets the per-tick sync state.
@@ -349,6 +384,7 @@ impl ServerWorld {
     pub(crate) fn save(&mut self, flush: bool) {
         log::debug!("Saving {} (flush: {flush})", self.dimension);
         self.players.save_all(&self.level.entities);
+        self.entity_io.save_all(&mut self.level, flush);
         self.level.chunks.save_all(flush);
     }
 }

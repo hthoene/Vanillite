@@ -112,6 +112,7 @@ packet_set! {
     /// Serverbound play packets (milestone 1 subset; other known ids decode as `Unhandled`).
     ServerboundPlay {
         AcceptTeleportation(play::serverbound::AcceptTeleportation),
+        Attack(play::serverbound::Attack),
         Chat(play::serverbound::Chat),
         ChatAck(play::serverbound::ChatAck),
         ChatCommand(play::serverbound::ChatCommand),

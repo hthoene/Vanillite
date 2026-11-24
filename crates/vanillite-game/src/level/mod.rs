@@ -235,6 +235,11 @@ impl Level {
         &self.network_ids
     }
 
+    /// The server-wide network id counter, shared.
+    pub fn network_ids_arc(&self) -> &Arc<NetworkIds> {
+        &self.network_ids
+    }
+
     /// The level random (`level.getRandom()`).
     pub fn random(&mut self) -> &mut LegacyRandom {
         &mut self.random
