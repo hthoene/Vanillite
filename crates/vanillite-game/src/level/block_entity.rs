@@ -39,8 +39,19 @@ pub enum BlockEntity {
     Lectern(Lectern),
     /// `SculkSensorBlockEntity` and `CalibratedSculkSensorBlockEntity`.
     SculkSensor(Box<SculkSensor>),
-    /// `HopperBlockEntity`: the transfer timing (its items come with containers).
-    Hopper(crate::block::hopper::Hopper),
+    /// `HopperBlockEntity`: its stacks and the transfer timing.
+    Hopper(Box<crate::block::hopper::Hopper>),
+    /// Chests, trapped chests, barrels, shulker boxes, dispensers and droppers.
+    Container(Box<crate::block::container::Container>),
+    /// `EnderChestBlockEntity`: the viewers of the lid (the stacks are the player's).
+    EnderChest {
+        /// Players that have it open.
+        openers: i32,
+    },
+    /// Furnaces, blast furnaces and smokers.
+    Furnace(Box<crate::block::furnace::Furnace>),
+    /// Brewing stands.
+    BrewingStand(Box<crate::block::brewing::BrewingStand>),
 }
 
 /// `BlockEntityTicker.tick(level, pos, state, blockEntity)`: the block entity is looked up at
@@ -173,7 +184,12 @@ impl BlockEntities {
 /// The ticker of a block entity kind (`EntityBlock.getTicker`).
 fn ticker_of(entity: &BlockEntity) -> Option<TickerFn> {
     match entity {
-        BlockEntity::Comparator { .. } | BlockEntity::Lectern(_) => None,
+        BlockEntity::Comparator { .. }
+        | BlockEntity::Lectern(_)
+        | BlockEntity::Container(_)
+        | BlockEntity::EnderChest { .. } => None,
+        BlockEntity::Furnace(_) => Some(crate::block::furnace::server_tick),
+        BlockEntity::BrewingStand(_) => Some(crate::block::brewing::server_tick),
         BlockEntity::MovingPiston(_) => Some(crate::block::piston::moving_piston_tick),
         BlockEntity::Hopper(_) => Some(crate::block::hopper::push_items_tick),
         BlockEntity::DaylightDetector => Some(crate::block::sensor::daylight_detector_tick),
@@ -210,9 +226,9 @@ pub fn new_block_entity(state: BlockState) -> Option<BlockEntity> {
             block == ids::CALIBRATED_SCULK_SENSOR,
         ))))
     } else if block == ids::HOPPER {
-        Some(BlockEntity::Hopper(crate::block::hopper::Hopper::default()))
+        Some(BlockEntity::Hopper(Box::default()))
     } else {
-        None
+        crate::block::container::new_block_entity(block)
     }
 }
 
@@ -234,6 +250,26 @@ fn is_valid(entity: &BlockEntity, state: BlockState) -> bool {
                 }
         }
         BlockEntity::Hopper(_) => state.block() == ids::HOPPER,
+        BlockEntity::Container(c) => {
+            use crate::block::container::{Kind, kind_of, size_of};
+            matches!(
+                kind_of(state.block()),
+                Some(
+                    k @ (Kind::Chest
+                    | Kind::TrappedChest
+                    | Kind::Barrel
+                    | Kind::ShulkerBox
+                    | Kind::Dispenser
+                    | Kind::Dropper)
+                ) if size_of(k) == c.items.len()
+            )
+        }
+        BlockEntity::EnderChest { .. } => state.block() == ids::ENDER_CHEST,
+        BlockEntity::Furnace(f) => {
+            crate::block::container::kind_of(state.block())
+                == Some(crate::block::container::Kind::Furnace(f.kind))
+        }
+        BlockEntity::BrewingStand(_) => state.block() == ids::BREWING_STAND,
     }
 }
 
@@ -264,9 +300,34 @@ impl Level {
 
     /// The block entity part of `LevelChunk.setBlockState` before `affectNeighborsAfterRemoval`:
     /// the old block's block entity goes when the block changes.
-    pub(super) fn block_entity_removed(&mut self, old: BlockState, new: BlockState, pos: BlockPos) {
+    pub(super) fn block_entity_removed(
+        &mut self,
+        old: BlockState,
+        new: BlockState,
+        pos: BlockPos,
+        flags: u32,
+    ) {
         if old.block() != new.block() && old.block().info().block_entity != u16::MAX {
+            let side_effects = flags & super::update::SKIP_BLOCK_ENTITY_SIDEEFFECTS == 0;
+            if side_effects {
+                // `preRemoveSideEffects`, while the block entity is still there.
+                if let Some(entity) = self.block_entities.get(pos).cloned() {
+                    crate::block::container::pre_remove_side_effects(self, pos, &entity);
+                    if let BlockEntity::Furnace(_) = entity {
+                        let xp = crate::block::furnace::pop_experience(self, pos);
+                        self.award_experience(crate::block::furnace::center(pos), xp);
+                    }
+                }
+            }
             self.block_entities.remove(pos);
+        }
+    }
+
+    /// `ExperienceOrb.award(level, pos, amount)`. Experience orbs are not simulated yet: the
+    /// amount is queued for the server, which gives it to the nearest player.
+    pub fn award_experience(&mut self, pos: vanillite_base::Vec3, amount: i32) {
+        if amount > 0 {
+            self.output().experience.push((pos, amount));
         }
     }
 
@@ -357,8 +418,17 @@ fn load(state: BlockState, nbt: &Compound) -> Option<BlockEntity> {
         return Some(BlockEntity::MovingPiston(Box::new(piston)));
     }
     let mut entity = new_block_entity(state)?;
-    if let BlockEntity::Comparator { output } = &mut entity {
-        *output = int("OutputSignal").unwrap_or(0);
+    match &mut entity {
+        BlockEntity::Comparator { output } => *output = int("OutputSignal").unwrap_or(0),
+        BlockEntity::Container(c) => c.load(nbt),
+        BlockEntity::Furnace(f) => f.load(nbt),
+        BlockEntity::BrewingStand(b) => b.load(nbt),
+        BlockEntity::Hopper(h) => {
+            h.custom_name = crate::block::container::load_name(nbt);
+            crate::block::container::load_items(nbt, &mut h.items);
+            h.cooldown_time = int("TransferCooldown").unwrap_or(-1);
+        }
+        _ => {}
     }
     Some(entity)
 }
@@ -388,6 +458,14 @@ fn save(entity: &BlockEntity, state: BlockState, pos: BlockPos) -> Compound {
             nbt.insert("progress", Tag::Float(piston.progress_o));
             nbt.insert("extending", Tag::Byte(i8::from(piston.extending)));
             nbt.insert("source", Tag::Byte(i8::from(piston.source)));
+        }
+        BlockEntity::Container(c) => c.save(&mut nbt),
+        BlockEntity::Furnace(f) => f.save(&mut nbt),
+        BlockEntity::BrewingStand(b) => b.save(&mut nbt),
+        BlockEntity::Hopper(h) => {
+            crate::block::container::save_name(&h.custom_name, &mut nbt);
+            crate::block::container::save_items(&h.items, &mut nbt);
+            nbt.insert("TransferCooldown", Tag::Int(h.cooldown_time));
         }
         _ => {}
     }

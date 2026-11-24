@@ -129,6 +129,77 @@ pub mod serverbound {
         pub container_id: i32,
     }
 
+    /// `container_button_click`: a button of a menu (enchanting options, stonecutter and loom
+    /// entries, lectern pages).
+    #[derive(Debug, Clone, PartialEq, Eq, Packet)]
+    #[packet(state = Play, dir = Serverbound, name = "container_button_click", bucket = "inventory")]
+    pub struct ContainerButtonClick {
+        #[field(varint)]
+        pub container_id: i32,
+        #[field(varint)]
+        pub button_id: i32,
+    }
+
+    /// `container_slot_state_changed`: a crafter slot was enabled or disabled.
+    #[derive(Debug, Clone, PartialEq, Eq, Packet)]
+    #[packet(
+        state = Play,
+        dir = Serverbound,
+        name = "container_slot_state_changed",
+        bucket = "inventory"
+    )]
+    pub struct ContainerSlotStateChanged {
+        #[field(varint)]
+        pub slot_id: i32,
+        #[field(varint)]
+        pub container_id: i32,
+        pub new_state: bool,
+    }
+
+    /// `rename_item`: the anvil's name field.
+    #[derive(Debug, Clone, PartialEq, Eq, Packet)]
+    #[packet(state = Play, dir = Serverbound, name = "rename_item", bucket = "inventory")]
+    pub struct RenameItem {
+        #[field(max_len = 32767)]
+        pub name: String,
+    }
+
+    /// `place_recipe`: a recipe clicked in the recipe book.
+    #[derive(Debug, Clone, PartialEq, Eq, Packet)]
+    #[packet(state = Play, dir = Serverbound, name = "place_recipe", bucket = "inventory")]
+    pub struct PlaceRecipe {
+        #[field(varint)]
+        pub container_id: i32,
+        /// `RecipeDisplayId`.
+        #[field(varint)]
+        pub recipe: i32,
+        pub use_max_items: bool,
+    }
+
+    /// `recipe_book_seen_recipe`.
+    #[derive(Debug, Clone, PartialEq, Eq, Packet)]
+    #[packet(state = Play, dir = Serverbound, name = "recipe_book_seen_recipe", bucket = "inventory")]
+    pub struct RecipeBookSeenRecipe {
+        #[field(varint)]
+        pub recipe: i32,
+    }
+
+    /// `recipe_book_change_settings`.
+    #[derive(Debug, Clone, PartialEq, Eq, Packet)]
+    #[packet(
+        state = Play,
+        dir = Serverbound,
+        name = "recipe_book_change_settings",
+        bucket = "inventory"
+    )]
+    pub struct RecipeBookChangeSettings {
+        /// `RecipeBookType` id: 0 crafting, 1 furnace, 2 blast furnace, 3 smoker.
+        #[field(varint)]
+        pub book_type: i32,
+        pub open: bool,
+        pub filtering: bool,
+    }
+
     /// `set_creative_mode_slot`: a stack from the creative inventory. The stack is decoded with
     /// the untrusted codec and every component value is validated
     /// ([`ItemStack::decode_untrusted`]) against the installed registries.
@@ -383,6 +454,147 @@ pub mod clientbound {
         pub data: i32,
         pub global: bool,
     }
+
+    /// `open_screen`: opens a menu.
+    #[derive(Debug, Clone, PartialEq, Eq, Packet)]
+    #[packet(state = Play, dir = Clientbound, name = "open_screen")]
+    pub struct OpenScreen {
+        #[field(varint)]
+        pub container_id: i32,
+        /// `minecraft:menu` id.
+        #[field(varint)]
+        pub menu: i32,
+        #[field(max_len = 2_097_152)]
+        pub title: crate::text::Component,
+    }
+
+    /// `container_set_data`: a data slot of a menu (progress bars, costs, selections).
+    #[derive(Debug, Clone, PartialEq, Eq, Packet)]
+    #[packet(state = Play, dir = Clientbound, name = "container_set_data")]
+    pub struct ContainerSetData {
+        #[field(varint)]
+        pub container_id: i32,
+        pub id: i16,
+        pub value: i16,
+    }
+
+    /// `container_close`: the server closes the open menu.
+    #[derive(Debug, Clone, PartialEq, Eq, Packet)]
+    #[packet(state = Play, dir = Clientbound, name = "container_close")]
+    pub struct ContainerCloseClientbound {
+        #[field(varint)]
+        pub container_id: i32,
+    }
+
+    /// `block_entity_data`: the client-visible data of a block entity as network NBT (one
+    /// compound tag, already encoded).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct BlockEntityData {
+        pub pos: BlockPos,
+        /// `minecraft:block_entity_type` id.
+        pub kind: i32,
+        /// The compound in network NBT (`TRUSTED_COMPOUND_TAG`).
+        pub nbt: Vec<u8>,
+    }
+
+    impl Encode for BlockEntityData {
+        fn encode(&self, out: &mut Vec<u8>) {
+            self.pos.encode(out);
+            write_varint(out, self.kind);
+            out.extend_from_slice(&self.nbt);
+        }
+    }
+
+    impl Decode for BlockEntityData {
+        fn decode(r: &mut Reader<'_>) -> Result<Self> {
+            let pos = BlockPos::decode(r)?;
+            let kind = r.varint()?;
+            Ok(BlockEntityData {
+                pos,
+                kind,
+                nbt: r.take_rest().to_vec(),
+            })
+        }
+    }
+
+    manual_packet!(
+        BlockEntityData,
+        Clientbound,
+        clientbound,
+        BLOCK_ENTITY_DATA,
+        "block_entity_data",
+        Default
+    );
+
+    /// One stonecutter entry of `update_recipes`: the input items and the result.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct StonecutterEntry {
+        /// Item ids the recipe takes (an `Ingredient`, sent as a direct holder set).
+        pub input: Vec<i32>,
+        /// The result (`SlotDisplay.ItemStackSlotDisplay` of an `ItemStackTemplate`).
+        pub result: ItemStack,
+    }
+
+    /// `update_recipes`: the recipe property sets (furnace inputs, smithing slots, brewing)
+    /// and the stonecutter recipes the client shows.
+    #[derive(Debug, Clone, PartialEq, Eq, Default)]
+    pub struct UpdateRecipes {
+        /// Property set id (e.g. `minecraft:furnace_input`) → item ids.
+        pub item_sets: Vec<(String, Vec<i32>)>,
+        /// Stonecutter recipes in recipe id order.
+        pub stonecutter: Vec<StonecutterEntry>,
+    }
+
+    /// `minecraft:slot_display` id of `item_stack`.
+    const SLOT_DISPLAY_ITEM_STACK: i32 = 5;
+
+    impl Encode for UpdateRecipes {
+        fn encode(&self, out: &mut Vec<u8>) {
+            write_len(out, self.item_sets.len());
+            for (key, items) in &self.item_sets {
+                key.encode(out);
+                write_len(out, items.len());
+                for item in items {
+                    write_varint(out, *item);
+                }
+            }
+            write_len(out, self.stonecutter.len());
+            for entry in &self.stonecutter {
+                // `ByteBufCodecs.holderSet`: size + 1, then the ids.
+                write_len(out, entry.input.len().saturating_add(1));
+                for item in &entry.input {
+                    write_varint(out, *item);
+                }
+                write_varint(out, SLOT_DISPLAY_ITEM_STACK);
+                // `ItemStackTemplate`: item, count, component patch.
+                let mut stack = Vec::new();
+                entry.result.encode(&mut stack);
+                let mut r = Reader::new(&stack);
+                let count = r.varint().unwrap_or(1);
+                let item = r.varint().unwrap_or(0);
+                write_varint(out, item);
+                write_varint(out, count);
+                out.extend_from_slice(r.take_rest());
+            }
+        }
+    }
+
+    impl Decode for UpdateRecipes {
+        fn decode(r: &mut Reader<'_>) -> Result<Self> {
+            // Only the test client reads it; the contents are skipped.
+            r.take_rest();
+            Ok(UpdateRecipes::default())
+        }
+    }
+
+    manual_packet!(
+        UpdateRecipes,
+        Clientbound,
+        clientbound,
+        UPDATE_RECIPES,
+        "update_recipes",
+        Default
+    );
 
     /// `set_held_slot`.
     #[derive(Debug, Clone, PartialEq, Eq, Packet)]

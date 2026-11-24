@@ -276,6 +276,7 @@ impl WorldPlayers {
         sink.send(&SetHeldSlot {
             slot: i32::try_from(player.inventory.selected).unwrap_or(0),
         });
+        sink.send_shared(&global.recipes_packet);
         player.inventory.send_all(sink.as_ref());
         for (last, slot) in player.last_equipment.iter_mut().zip(EQUIPMENT_SLOTS) {
             *last = player.inventory.equipment(slot).clone();
@@ -352,6 +353,7 @@ impl WorldPlayers {
                 let mut play = PlayContext {
                     level: &mut level,
                     inventory: &mut player.inventory,
+                    xp: Some(&mut player.survival.xp),
                     actor,
                     data: &global.game,
                     spawn_protected: &protected,
@@ -461,7 +463,7 @@ impl WorldPlayers {
             crate::chat::handle_requests(entities, global, id, world, &mut self.leaving);
         }
         for (id, reason) in std::mem::take(&mut self.leaving) {
-            self.leave(entities, global, id, reason);
+            self.leave(level, global, id, reason);
         }
     }
 
@@ -582,6 +584,7 @@ impl WorldPlayers {
             .collect();
         let mut taken: Vec<(EntityId, EntityId, i32)> = Vec::new();
         let mut equipment: Vec<(EntityId, SetEquipment)> = Vec::new();
+        let experience = nearest_players(level, &players, &spectators);
         for (id, player) in players.iter_mut() {
             let sink = std::sync::Arc::clone(&player.connection.sink);
             if let Some(sequence) = player.connection.play.take_ack() {
@@ -608,6 +611,7 @@ impl WorldPlayers {
                 let mut play = PlayContext {
                     level: &mut level,
                     inventory: &mut player.inventory,
+                    xp: Some(&mut player.survival.xp),
                     actor,
                     data: &global.game,
                     spawn_protected: &protected,
@@ -644,7 +648,54 @@ impl WorldPlayers {
                     }
                 }
             }
-            player.inventory.broadcast_changes(sink.as_ref());
+            if player.inventory.container.is_some() {
+                // `containerMenu.broadcastChanges`, then `stillValid`.
+                use vanillite_game::menu::container as menus;
+                menus::with_view(
+                    &mut player.inventory,
+                    level,
+                    actor.pos,
+                    Some(&mut player.survival.xp),
+                    |view| {
+                        view.flush_result_updates(sink.as_ref());
+                        vanillite_game::menu::broadcast_changes(view, sink.as_ref());
+                    },
+                );
+                let in_range = |pos| actor.within_block_range(pos, 4.0);
+                if !menus::still_valid(&player.inventory, level, &in_range) {
+                    let who = menus::Opener {
+                        spectator: player.game_mode == GameMode::Spectator,
+                        infinite: player.game_mode == GameMode::Creative,
+                        disconnected: false,
+                    };
+                    let mut drops = Vec::new();
+                    menus::close(
+                        &mut player.inventory,
+                        level,
+                        who,
+                        &mut drops,
+                        Some(sink.as_ref()),
+                    );
+                    let mut world = WorldLevel {
+                        level: &mut *level,
+                        effects: &mut *blocks.effects,
+                        spectators: &spectators,
+                        actor: Some((id, aabb)),
+                    };
+                    for drop in drops {
+                        throw_item(&mut world, &actor, drop);
+                    }
+                }
+            } else {
+                player.inventory.broadcast_changes(sink.as_ref());
+            }
+            // Experience of furnace results and removed furnaces (orbs are not simulated:
+            // the nearest player within 8 blocks gets it).
+            for &(owner, amount) in &experience {
+                if owner == id {
+                    player.survival.xp.give_points(amount);
+                }
+            }
             // `detectEquipmentUpdates`.
             let mut changed = Vec::new();
             for (last, slot) in player.last_equipment.iter_mut().zip(EQUIPMENT_SLOTS) {
@@ -703,11 +754,12 @@ impl WorldPlayers {
     /// The player leaves: kicked with `reason`, or the connection is gone.
     fn leave(
         &mut self,
-        entities: &mut Entities,
+        level: &mut Level,
         global: &Global,
         id: EntityId,
         reason: Option<Box<Component>>,
     ) {
+        let entities = &mut level.entities;
         let Some(entity) = entities.store.get(id) else {
             return;
         };
@@ -724,6 +776,8 @@ impl WorldPlayers {
             None => log::info!("{name} lost connection: Disconnected"),
         }
         self.save_player(entities, id);
+        drop_menus_on_leave(level, id);
+        let entities = &mut level.entities;
         entities.despawn(id);
         // Vanilla's order: the message, the entity removal (sent by the tracker this tick),
         // then the tab list entry.
@@ -831,6 +885,7 @@ fn actor_of(
     let eyes_in_water = !fluid.is_empty() && matches!(fluid.info().fluid, 1 | 2);
     let flags = entity.flags();
     Actor {
+        entity: Some(entity.id()),
         network_id: entity.network_id().0,
         uuid: entity.uuid(),
         pos,
@@ -888,4 +943,62 @@ pub(crate) fn info_entry(arrival: &Arrival) -> InfoEntry {
         model_customisation: arrival.client.model_customisation,
         chat_session: None,
     }
+}
+
+/// `Player.remove` for a player that leaves: open menus close, what they held drops.
+fn drop_menus_on_leave(level: &mut Level, id: EntityId) {
+    let Some(pos) = level.entities.store.get(id).map(|e| e.pos()) else {
+        return;
+    };
+    let Some(player) = level.entities.player_mut(id) else {
+        return;
+    };
+    let spectator = player.game_mode == GameMode::Spectator;
+    let mut inv = std::mem::take(&mut player.inventory);
+    let mut drops = Vec::new();
+    vanillite_game::menu::container::close_on_leave(&mut inv, level, spectator, &mut drops);
+    if let Some(player) = level.entities.player_mut(id) {
+        player.inventory = inv;
+    }
+    let eye = vanillite_base::Vec3::new(pos.x, pos.y + 1.62 - 0.3, pos.z);
+    for drop in drops {
+        vanillite_game::block::drops::spawn_item(
+            level,
+            eye,
+            drop.stack,
+            vanillite_base::Vec3::new(0.0, 0.1, 0.0),
+            40,
+            None,
+        );
+    }
+}
+
+/// The player each experience award of the tick goes to: the nearest non-spectator within
+/// 8 blocks of where it was awarded (`ExperienceOrb` follows that player).
+fn nearest_players(
+    level: &mut Level,
+    players: &vanillite_world::entity::Dense<vanillite_game::player::PlayerData>,
+    spectators: &FxHashSet<EntityId>,
+) -> Vec<(EntityId, i32)> {
+    let awards = std::mem::take(&mut level.output().experience);
+    let mut out = Vec::with_capacity(awards.len());
+    for (at, amount) in awards {
+        let mut best: Option<(f64, EntityId)> = None;
+        for (id, _) in players.iter() {
+            if spectators.contains(&id) {
+                continue;
+            }
+            let Some(p) = level.entities.store.get(id).map(|e| e.pos()) else {
+                continue;
+            };
+            let d = (p.x - at.x).powi(2) + (p.y - at.y).powi(2) + (p.z - at.z).powi(2);
+            if d <= 64.0 && best.is_none_or(|(b, _)| d < b) {
+                best = Some((d, id));
+            }
+        }
+        if let Some((_, id)) = best {
+            out.push((id, amount));
+        }
+    }
+    out
 }

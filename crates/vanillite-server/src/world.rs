@@ -63,10 +63,10 @@ pub struct ServerWorld {
     /// The chunk ticket and simulation ticket of every player at its centre chunk.
     player_tickets: FxHashMap<EntityId, (ChunkPos, TicketId, TicketId)>,
     scratch: Vec<ChunkPos>,
-    /// Player ids of the tick (block effects).
-    player_scratch: Vec<vanillite_world::entity::EntityId>,
     /// Weather, lightning and the players' survival.
     pub(crate) survival: crate::survival::WorldSurvival,
+    /// Player ids of the tick (block effects).
+    player_scratch: Vec<vanillite_world::entity::EntityId>,
     /// The dimension's saved data (`<dimension>/data/`: world border, chunk tickets, raids,
     /// ...); systems register here when they come.
     pub(crate) data: vanillite_storage::saved_data::SavedDataStore,
@@ -120,8 +120,8 @@ impl ServerWorld {
             effects: LevelEffects::default(),
             item_random: XoroshiroRandom::new(seed),
             scratch: Vec::new(),
-            player_scratch: Vec::new(),
             survival,
+            player_scratch: Vec::new(),
             data,
         }
     }

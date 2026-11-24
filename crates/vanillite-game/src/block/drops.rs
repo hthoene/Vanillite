@@ -29,6 +29,12 @@ pub fn drop_resources(
     };
     let mut stacks = Vec::new();
     let tool = ItemStack::EMPTY;
+    let entity = level.block_entity(pos).cloned();
+    let components = |id: u16| {
+        entity
+            .as_ref()
+            .and_then(|e| super::container::component(e, id))
+    };
     let item_in_tag = |item: u16, tag: &str| data.item_in_tag(item, tag);
     let loot = BlockLootContext {
         state,
@@ -36,6 +42,7 @@ pub fn drop_resources(
         enchantment_level: &|_| 0,
         item_in_tag: &item_in_tag,
         explosion_radius: None,
+        block_entity: Some(&components),
     };
     data.loot.block_drops(&loot, level.random(), &mut stacks);
     for stack in stacks {
@@ -68,7 +75,7 @@ pub fn spawn_block_item(level: &mut Level, pos: Vec3, block: BlockId) {
 }
 
 /// The velocity of `new ItemEntity(level, x, y, z, stack)`.
-fn default_velocity(level: &mut Level) -> Vec3 {
+pub(crate) fn default_velocity(level: &mut Level) -> Vec3 {
     let x = level.random().next_double() * 0.2 - 0.1;
     let z = level.random().next_double() * 0.2 - 0.1;
     Vec3::new(x, 0.2, z)
