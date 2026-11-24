@@ -117,6 +117,25 @@ fn snake(class: &str) -> String {
     s
 }
 
+/// Whether a part's golden exists: `<name>.json`, or the `<name>_*.json` files of a part that
+/// writes several.
+fn written(out: &Path) -> bool {
+    if out.exists() {
+        return true;
+    }
+    let (Some(dir), Some(stem)) = (out.parent(), out.file_stem().and_then(|s| s.to_str())) else {
+        return false;
+    };
+    let prefix = format!("{stem}_");
+    std::fs::read_dir(dir).is_ok_and(|files| {
+        files.flatten().any(|f| {
+            f.file_name()
+                .to_str()
+                .is_some_and(|n| n.starts_with(&prefix) && n.ends_with(".json"))
+        })
+    })
+}
+
 fn part_set(root: &Path, name: &'static str, sub: &str, out: &str) -> Result<Set> {
     let src = root.join(GOLDEN_SRC).join(sub);
     let dir = root.join(out);
@@ -274,7 +293,7 @@ fn stale(set: &Set, key: &Key) -> Result<(Vec<Entry>, Vec<String>)> {
     let stale = set
         .entries
         .iter()
-        .filter(|e| !current || entries.get(&e.name) != Some(&e.hash) || !e.out.exists())
+        .filter(|e| !current || entries.get(&e.name) != Some(&e.hash) || !written(&e.out))
         .cloned()
         .collect();
     let orphans = entries

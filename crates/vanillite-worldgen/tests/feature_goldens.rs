@@ -23,7 +23,7 @@ use vanillite_chunk::HeightmapKind;
 use vanillite_nbt::Tag;
 use vanillite_worldgen::proto::ProtoTick;
 use vanillite_worldgen::{
-    DimensionSpec, NeighbourBiomes, ProtoChunk, TerrainGenerator, TerrainJob,
+    DimensionSpec, NeighbourBiomes, ProtoChunk, ReferencedStarts, TerrainGenerator, TerrainJob,
 };
 
 /// The recorded heightmaps, in golden order.
@@ -105,6 +105,7 @@ fn terrain(generator: &TerrainGenerator, center: ChunkPos, radius: i32) -> Vec<P
             jobs.push(TerrainJob {
                 chunk: biomes[at(dx, dz)].clone(),
                 neighbours,
+                structures: ReferencedStarts::empty(),
             });
         }
     }
@@ -496,7 +497,7 @@ fn decoration_matches_vanilla() {
                     let region: [&mut ProtoChunk; 9] = region_chunks(&mut chunks, pos)
                         .try_into()
                         .expect("nine chunks");
-                    generator.generate_features(region);
+                    generator.generate_features(region, &ReferencedStarts::empty());
                 }));
                 if let Err(payload) = outcome {
                     diffs.push(format!(

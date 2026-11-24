@@ -42,6 +42,16 @@ impl Rotation {
         })
     }
 
+    /// `Rotation.LEGACY_CODEC`: the enum constant name (as structure piece NBT stores it).
+    pub fn legacy_name(self) -> &'static str {
+        match self {
+            Self::None => "NONE",
+            Self::Clockwise90 => "CLOCKWISE_90",
+            Self::Clockwise180 => "CLOCKWISE_180",
+            Self::Counterclockwise90 => "COUNTERCLOCKWISE_90",
+        }
+    }
+
     /// `Rotation.getRandom(random)`: `values()[nextInt(4)]`.
     pub fn random<R: RandomSource + ?Sized>(random: &mut R) -> Self {
         Self::ALL[random.next_int_bounded(4) as usize]
@@ -96,6 +106,15 @@ impl Mirror {
             "front_back" => Self::FrontBack,
             other => return Err(Error::new(format!("unknown mirror {other}"))),
         })
+    }
+
+    /// `Mirror.LEGACY_CODEC`: the enum constant name (as structure piece NBT stores it).
+    pub fn legacy_name(self) -> &'static str {
+        match self {
+            Self::None => "NONE",
+            Self::LeftRight => "LEFT_RIGHT",
+            Self::FrontBack => "FRONT_BACK",
+        }
     }
 
     /// `mirror(rotation, steps)` for segmented rotations.

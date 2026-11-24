@@ -77,6 +77,8 @@ const WORLD_GEN_SETTINGS: &str = "minecraft:world_gen_settings";
 pub(crate) struct WorldGen {
     /// World seed.
     pub(crate) seed: i64,
+    /// `generate_structures`.
+    generate_structures: bool,
     /// The `generator` JSON of each dimension (`dimensions.<key>.generator`).
     generators: serde_json::Map<String, serde_json::Value>,
 }
@@ -113,6 +115,7 @@ impl WorldGen {
             // Without data packs (tests) there are no presets: the flat stand-in everywhere.
             return Ok(Self {
                 seed,
+                generate_structures: properties.generate_structures,
                 generators: serde_json::Map::new(),
             });
         };
@@ -149,7 +152,16 @@ impl WorldGen {
                 }
             }
         }
-        Self { seed, generators }
+        // Vanilla reads a missing or non-byte value as `true`.
+        let generate_structures = !matches!(
+            data.get("generate_structures"),
+            Some(vanillite_nbt::Tag::Byte(0))
+        );
+        Self {
+            seed,
+            generate_structures,
+            generators,
+        }
     }
 
     /// The generator JSON of a dimension.
@@ -252,7 +264,10 @@ impl ChunkGeneratorProvider for BuiltInGenerators {
         };
         let terrain =
             TerrainGenerator::new(packs, spec, self.world_gen.seed).map_err(|e| e.to_string())?;
-        Ok(Arc::new(VanillaChunkGenerator::new(terrain, world.clone())))
+        Ok(Arc::new(
+            VanillaChunkGenerator::new(terrain, world.clone())
+                .with_structures(self.world_gen.generate_structures),
+        ))
     }
 }
 

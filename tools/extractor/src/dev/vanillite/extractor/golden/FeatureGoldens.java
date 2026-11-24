@@ -53,6 +53,8 @@ import net.minecraft.server.RegistryLayer;
 import net.minecraft.tags.TagLoader;
 import net.minecraft.util.RandomSource;
 import net.minecraft.util.datafix.DataFixers;
+import net.minecraft.world.Difficulty;
+import net.minecraft.world.DifficultyInstance;
 import net.minecraft.world.flag.FeatureFlagSet;
 import net.minecraft.world.flag.FeatureFlags;
 import net.minecraft.world.level.ChunkPos;
@@ -104,6 +106,7 @@ import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemp
 import net.minecraft.world.level.levelgen.structure.templatesystem.loader.ResourceManagerTemplateSource;
 import net.minecraft.world.level.material.Fluid;
 import net.minecraft.world.level.material.FluidState;
+import net.minecraft.world.level.storage.LevelData;
 import net.minecraft.world.ticks.ProtoChunkTicks;
 import net.minecraft.world.ticks.SavedTick;
 import net.minecraft.world.ticks.WorldGenTickAccess;
@@ -137,15 +140,15 @@ import net.minecraft.world.ticks.WorldGenTickAccess;
  * after, so the result depends on that order.
  */
 public final class FeatureGoldens {
-  private record Dimension(
+  record Dimension(
       String name, ResourceKey<NoiseGeneratorSettings> settings, ResourceKey<DimensionType> type,
       int minY, int height, int[] sampleYs) {}
 
-  private static final Dimension OVERWORLD = new Dimension("minecraft:overworld", NoiseGeneratorSettings.OVERWORLD,
+  static final Dimension OVERWORLD = new Dimension("minecraft:overworld", NoiseGeneratorSettings.OVERWORLD,
       BuiltinDimensionTypes.OVERWORLD, -64, 384, new int[] {70, 120, 0, -40});
-  private static final Dimension NETHER = new Dimension("minecraft:nether", NoiseGeneratorSettings.NETHER,
+  static final Dimension NETHER = new Dimension("minecraft:nether", NoiseGeneratorSettings.NETHER,
       BuiltinDimensionTypes.NETHER, 0, 256, new int[] {32, 64, 100});
-  private static final Dimension END = new Dimension("minecraft:end", NoiseGeneratorSettings.END,
+  static final Dimension END = new Dimension("minecraft:end", NoiseGeneratorSettings.END,
       BuiltinDimensionTypes.END, 0, 256, new int[] {64});
   private static final Dimension[] DIMENSIONS = {OVERWORLD, NETHER, END};
 
@@ -203,7 +206,7 @@ public final class FeatureGoldens {
     Heightmap.Types.WORLD_SURFACE, Heightmap.Types.OCEAN_FLOOR,
     Heightmap.Types.MOTION_BLOCKING, Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,
   };
-  private static final EnumSet<Heightmap.Types> FINAL_HEIGHTMAPS = EnumSet.of(
+  static final EnumSet<Heightmap.Types> FINAL_HEIGHTMAPS = EnumSet.of(
       Heightmap.Types.MOTION_BLOCKING, Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,
       Heightmap.Types.OCEAN_FLOOR, Heightmap.Types.WORLD_SURFACE);
 
@@ -212,14 +215,15 @@ public final class FeatureGoldens {
   // ---------------------------------------------------------------------------------------------
   // Shared state
 
-  private static HolderLookup.Provider lookup;
-  private static RegistryAccess registryAccess;
-  private static PalettedContainerFactory factory;
-  private static StructureTemplateManager templates;
+  static HolderLookup.Provider lookup;
+  static RegistryAccess registryAccess;
+  static ResourceManager resources;
+  static PalettedContainerFactory factory;
+  static StructureTemplateManager templates;
   private static final Map<String, World> WORLDS = new HashMap<>();
 
   /** A dimension with a seed: generator, random state and the fake server level. */
-  private static final class World {
+  static final class World {
     final Dimension dimension;
     final long seed;
     final NoiseGeneratorSettings settings;
@@ -254,7 +258,7 @@ public final class FeatureGoldens {
     }
   }
 
-  private static World world(Dimension dimension, long seed) throws Exception {
+  static World world(Dimension dimension, long seed) throws Exception {
     String key = dimension.name() + "/" + seed;
     World world = WORLDS.get(key);
     if (world == null) {
@@ -264,14 +268,26 @@ public final class FeatureGoldens {
     return world;
   }
 
-  public static JsonObject extract() throws Exception {
+  /** Loads the registries, the container factory and the template manager once. */
+  static void init() throws Exception {
+    if (registryAccess != null) {
+      return;
+    }
     BlockTags.bind();
-    ResourceManager resources = new MultiPackResourceManager(
+    resources = new MultiPackResourceManager(
         PackType.SERVER_DATA, List.of(ServerPacksSource.createVanillaPackSource().fullResources()));
     registryAccess = loadRegistries(resources);
     lookup = registryAccess;
     factory = ChunkGoldens.containerFactory(lookup);
     templates = templateManager(resources);
+    // Item components, as ReloadableServerResources binds them (structure block entities such as
+    // vaults create item stacks).
+    BuiltInRegistries.DATA_COMPONENT_INITIALIZERS.build(registryAccess)
+        .forEach(net.minecraft.core.component.DataComponentInitializers.PendingComponents::apply);
+  }
+
+  public static JsonObject extract() throws Exception {
+    init();
 
     JsonObject root = new JsonObject();
     long start = System.nanoTime();
@@ -677,7 +693,7 @@ public final class FeatureGoldens {
     return out;
   }
 
-  private static Method generatorMethod(String name, Class<?>... types) throws NoSuchMethodException {
+  static Method generatorMethod(String name, Class<?>... types) throws NoSuchMethodException {
     Method m = NoiseBasedChunkGenerator.class.getDeclaredMethod(name, types);
     m.setAccessible(true);
     return m;
@@ -707,7 +723,7 @@ public final class FeatureGoldens {
   }
 
   /** The chunks within {@code radius} of {@code center}, row-major ({@code z} outer). */
-  private static List<ProtoChunk> ordered(Map<Long, ProtoChunk> chunks, ChunkPos center, int radius) {
+  static List<ProtoChunk> ordered(Map<Long, ProtoChunk> chunks, ChunkPos center, int radius) {
     List<ProtoChunk> out = new ArrayList<>();
     for (int dz = -radius; dz <= radius; dz++) {
       for (int dx = -radius; dx <= radius; dx++) {
@@ -721,7 +737,7 @@ public final class FeatureGoldens {
   // Recording
 
   /** Per-section block hashes, final heightmap hashes and post-processing marks of a chunk. */
-  private static final class Snapshot {
+  static final class Snapshot {
     long[] sections;
     long[] heights;
     int[] postCount;
@@ -815,14 +831,14 @@ public final class FeatureGoldens {
 
   /** Count and hash (type name, x, y, z, priority, in scheduling order) of the block ticks. */
   @SuppressWarnings("unchecked")
-  private static long[] blockTicks(ProtoChunk chunk) {
+  static long[] blockTicks(ProtoChunk chunk) {
     return tickHash(((ProtoChunkTicks<Block>) chunk.getBlockTicks()).scheduledTicks(),
         t -> BuiltInRegistries.BLOCK.getKey(t).toString());
   }
 
   /** Count and hash of the fluid ticks, as {@link #blockTicks}. */
   @SuppressWarnings("unchecked")
-  private static long[] fluidTicks(ProtoChunk chunk) {
+  static long[] fluidTicks(ProtoChunk chunk) {
     return tickHash(((ProtoChunkTicks<Fluid>) chunk.getFluidTicks()).scheduledTicks(),
         t -> BuiltInRegistries.FLUID.getKey(t).toString());
   }
@@ -839,7 +855,7 @@ public final class FeatureGoldens {
     return new long[] {ticks.size(), hash};
   }
 
-  private static JsonArray array(long... values) {
+  static JsonArray array(long... values) {
     JsonArray a = new JsonArray();
     for (long v : values) {
       a.add(v);
@@ -858,7 +874,7 @@ public final class FeatureGoldens {
    * noise biomes, no light data. Entities are dropped ({@code addFreshEntity} keeps nothing). Anything else
    * Vanilla's region supports and the feature code does not use throws.
    */
-  private static final class Region implements InvocationHandler {
+  static final class Region implements InvocationHandler {
     final World world;
     final Map<Long, ProtoChunk> chunks;
     final ChunkPos center;
@@ -869,11 +885,26 @@ public final class FeatureGoldens {
     final WorldGenTickAccess<Block> blockTicks;
     final WorldGenTickAccess<Fluid> fluidTicks;
     LevelLightEngine lightEngine;
+    /** {@code WorldGenRegion}'s attribute system: the dimension and biome layers. */
+    net.minecraft.world.attribute.EnvironmentAttributeSystem environmentAttributes;
+    /**
+     * Vanilla's chunk access rule, or null for the rule of the feature goldens (any status within
+     * one chunk of the centre): the highest status a chunk may be requested at, by chessboard
+     * distance from the centre ({@code ChunkStep.directDependencies()} of the step).
+     */
+    final ChunkStatus[] dependencies;
+    /** The entities added with {@code addFreshEntity}, in order (not stored in the chunks). */
+    final List<net.minecraft.world.entity.Entity> entities = new ArrayList<>();
 
     Region(World world, Map<Long, ProtoChunk> chunks, ChunkPos center) {
+      this(world, chunks, center, null);
+    }
+
+    Region(World world, Map<Long, ProtoChunk> chunks, ChunkPos center, ChunkStatus[] dependencies) {
       this.world = world;
       this.chunks = chunks;
       this.center = center;
+      this.dependencies = dependencies;
       this.proxy = (WorldGenLevel) Proxy.newProxyInstance(
           WorldGenLevel.class.getClassLoader(), new Class<?>[] {WorldGenLevel.class}, this);
       this.biomeManager = new BiomeManager(proxy, BiomeManager.obfuscateSeed(world.seed));
@@ -904,7 +935,25 @@ public final class FeatureGoldens {
       return lightEngine;
     }
 
+    /** {@code WorldGenRegion.getChunk(x, z, status, true)}. */
+    ChunkAccess chunk(int x, int z, ChunkStatus status) {
+      if (dependencies == null) {
+        return chunk(x, z);
+      }
+      int distance = center.getChessboardDistance(x, z);
+      ChunkStatus allowed = distance < dependencies.length ? dependencies[distance] : null;
+      ChunkAccess chunk = allowed != null ? chunks.get(ChunkPos.pack(x, z)) : null;
+      if (chunk != null && status.isOrBefore(allowed)) {
+        return chunk;
+      }
+      throw new IllegalStateException("Requested chunk unavailable during world generation: [" + x + ", " + z
+          + "] at " + status + " while generating [" + center.x() + ", " + center.z() + "]");
+    }
+
     ChunkAccess chunk(int x, int z) {
+      if (dependencies != null) {
+        return chunk(x, z, ChunkStatus.EMPTY);
+      }
       if (Math.max(Math.abs(x - center.x()), Math.abs(z - center.z())) > 1) {
         throw new IllegalStateException("Requested chunk unavailable during world generation: [" + x + ", " + z
             + "] while generating [" + center.x() + ", " + center.z() + "]");
@@ -1001,11 +1050,12 @@ public final class FeatureGoldens {
             return chunk((int) args[0], (int) args[1]);
           }
           if (n == 4) {
-            return chunk((int) args[0], (int) args[1]);
+            return chunk((int) args[0], (int) args[1], (ChunkStatus) args[2]);
           }
           break;
         case "hasChunk":
-          return center.getChessboardDistance((int) args[0], (int) args[1]) < 9;
+          return center.getChessboardDistance((int) args[0], (int) args[1])
+              < (dependencies != null ? dependencies.length : 9);
         case "getBlockState":
           return chunk((BlockPos) args[0]).getBlockState((BlockPos) args[0]);
         case "getFluidState":
@@ -1042,6 +1092,7 @@ public final class FeatureGoldens {
           }
           break;
         case "addFreshEntity":
+          entities.add((net.minecraft.world.entity.Entity) args[0]);
           return true;
         case "removeBlock":
           return setBlock((BlockPos) args[0], Blocks.AIR.defaultBlockState(), 3);
@@ -1049,6 +1100,24 @@ public final class FeatureGoldens {
           return false;
         case "getLevel":
           return world.level;
+        case "getLevelData":
+          return world.level.getLevelData();
+        case "environmentAttributes":
+          if (environmentAttributes == null) {
+            environmentAttributes = net.minecraft.world.attribute.EnvironmentAttributeSystem.builder()
+                .addStaticLayers(proxy).build();
+          }
+          return environmentAttributes;
+        case "getCurrentDifficultyAt":
+          if (n == 1) {
+            BlockPos pos = (BlockPos) args[0];
+            if (!proxy.hasChunk(pos.getX() >> 4, pos.getZ() >> 4)) {
+              throw new RuntimeException("We are asking a region for a chunk out of bound");
+            }
+            return new DifficultyInstance(world.level.getDifficulty(), world.level.getOverworldClockTime(), 0L,
+                world.level.getMoonBrightness(pos));
+          }
+          break;
         case "registryAccess":
           return registryAccess;
         case "enabledFeatures":
@@ -1105,8 +1174,14 @@ public final class FeatureGoldens {
    * {@code getLevel()} of the harness region: a {@link ServerLevel} allocated without its
    * constructor; only the methods overridden here work.
    */
-  private static final class FakeLevel extends ServerLevel {
+  static final class FakeLevel extends ServerLevel {
     World world;
+    /**
+     * {@code structureManager()}: the server level's manager, which reads chunks anywhere (set by
+     * the structure goldens while they decorate; null otherwise).
+     */
+    StructureManager structures;
+    net.minecraft.world.attribute.EnvironmentAttributeSystem attributes;
     MinecraftServer server;
     FakeChunkCache chunkCache;
     int entityIds;
@@ -1126,12 +1201,24 @@ public final class FeatureGoldens {
       cache.generator = world.generator;
       cache.randomState = world.randomState;
       level.chunkCache = cache;
+      // Entity constructors read the field directly (getSeaLevel).
+      setField(ServerLevel.class, level, "chunkSource", cache);
       return level;
     }
 
     @Override
     public MinecraftServer getServer() {
       return server;
+    }
+
+    @Override
+    public String toString() {
+      return "FakeLevel[" + world.dimension.name() + "]";
+    }
+
+    @Override
+    public StructureManager structureManager() {
+      return structures;
     }
 
     @Override
@@ -1178,6 +1265,75 @@ public final class FeatureGoldens {
     public boolean isClientSide() {
       return false;
     }
+
+    /**
+     * Level data of a fresh dedicated server: difficulty {@code easy} (the default of {@code
+     * server.properties}), time 0.
+     */
+    @Override
+    public LevelData getLevelData() {
+      return new LevelData() {
+        @Override
+        public LevelData.RespawnData getRespawnData() {
+          return LevelData.RespawnData.DEFAULT;
+        }
+
+        @Override
+        public long getGameTime() {
+          return 0L;
+        }
+
+        @Override
+        public boolean isHardcore() {
+          return false;
+        }
+
+        @Override
+        public Difficulty getDifficulty() {
+          return Difficulty.EASY;
+        }
+
+        @Override
+        public boolean isDifficultyLocked() {
+          return false;
+        }
+      };
+    }
+
+    @Override
+    public Difficulty getDifficulty() {
+      return Difficulty.EASY;
+    }
+
+    /** The dimension's constant attributes only (entity brains read them while constructed). */
+    @Override
+    public net.minecraft.world.attribute.EnvironmentAttributeSystem environmentAttributes() {
+      if (attributes == null) {
+        attributes = net.minecraft.world.attribute.EnvironmentAttributeSystem.builder()
+            .addConstantLayer(world.dimensionType.attributes()).build();
+      }
+      return attributes;
+    }
+
+    @Override
+    public long getOverworldClockTime() {
+      return 0L;
+    }
+
+    /** The moon brightness at time 0 (full moon). */
+    @Override
+    public float getMoonBrightness(BlockPos pos) {
+      return DimensionType.MOON_BRIGHTNESS_PER_PHASE[0];
+    }
+
+    /**
+     * Sounds are not generation: the end city ship's item frame plays one when it gets its
+     * elytra ({@code ItemFrame.setItem}); the level's own sound seed random is not set here.
+     */
+    @Override
+    public void playSound(
+        net.minecraft.world.entity.Entity except, double x, double y, double z,
+        net.minecraft.sounds.SoundEvent sound, net.minecraft.sounds.SoundSource source, float volume, float pitch) {}
   }
 
   /** {@code getChunkSource()} of {@link FakeLevel}: the generator and random state. */
