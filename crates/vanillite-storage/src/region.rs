@@ -242,14 +242,15 @@ impl RegionFile {
 
     /// Reads the records of the `wanted` slots of region `region` with as few reads as
     /// possible: records in neighbouring sectors are read together. Records of `ahead` that
-    /// lie next to a wanted one are read along (flagged `ahead`). Returns the number of reads.
+    /// lie next to a wanted one are read along (flagged `ahead`). Returns the number of reads
+    /// and the bytes read.
     pub fn read_many(
         &self,
         region: (i32, i32),
         wanted: &[usize],
         ahead: &[usize],
         out: &mut Vec<RecordRead>,
-    ) -> usize {
+    ) -> (usize, usize) {
         // (start, count, slot, ahead)
         let mut entries: Vec<(usize, usize, usize, bool)> = Vec::new();
         for &slot in wanted {
@@ -272,7 +273,7 @@ impl RegionFile {
         }
         entries.sort_unstable_by_key(|e| e.0);
         entries.dedup_by_key(|e| e.2);
-        let mut reads = 0;
+        let (mut reads, mut bytes) = (0, 0);
         let mut index = 0;
         let mut buffer = Vec::new();
         while index < entries.len() {
@@ -298,6 +299,7 @@ impl RegionFile {
             buffer.clear();
             buffer.resize((run_end - run_start) * SECTOR, 0);
             reads += 1;
+            bytes += buffer.len();
             let result = read_at(&self.file, &mut buffer, (run_start * SECTOR) as u64);
             for &(start, count, slot, ahead) in run {
                 let record = match &result {
@@ -320,7 +322,7 @@ impl RegionFile {
                 });
             }
         }
-        reads
+        (reads, bytes)
     }
 
     /// The record in the sectors of a chunk.
@@ -492,7 +494,7 @@ mod tests {
                 .unwrap();
         }
         let mut out = Vec::new();
-        let reads = region.read_many((0, 0), &[0, 1, 2], &[3, 5, 40], &mut out);
+        let (reads, _) = region.read_many((0, 0), &[0, 1, 2], &[3, 5, 40], &mut out);
         assert_eq!(reads, 1);
         let mut slots: Vec<(usize, bool)> = out.iter().map(|r| (r.slot, r.ahead)).collect();
         slots.sort_unstable();

@@ -340,6 +340,8 @@ struct Shard {
 pub struct StoreStats {
     /// Read system calls on region files.
     pub reads: u64,
+    /// Bytes those reads returned.
+    pub bytes_read: u64,
     /// Records returned by those reads (wanted and read ahead).
     pub records_read: u64,
     /// Gets answered from the read-ahead cache.
@@ -355,6 +357,7 @@ pub struct StoreStats {
 #[derive(Default)]
 struct Counters {
     reads: AtomicU64,
+    bytes_read: AtomicU64,
     records_read: AtomicU64,
     cache_hits: AtomicU64,
     pending_hits: AtomicU64,
@@ -426,6 +429,7 @@ impl AnvilStore {
         let c = &self.inner.counters;
         StoreStats {
             reads: c.reads.load(Ordering::Relaxed),
+            bytes_read: c.bytes_read.load(Ordering::Relaxed),
             records_read: c.records_read.load(Ordering::Relaxed),
             cache_hits: c.cache_hits.load(Ordering::Relaxed),
             pending_hits: c.pending_hits.load(Ordering::Relaxed),
@@ -678,10 +682,14 @@ impl StoreInner {
                         ahead.sort_unstable();
                         ahead.dedup();
                     }
-                    let syscalls = region.read_many((fk.1, fk.2), &wanted, &ahead, &mut read);
+                    let (syscalls, bytes) =
+                        region.read_many((fk.1, fk.2), &wanted, &ahead, &mut read);
                     self.counters
                         .reads
                         .fetch_add(syscalls as u64, Ordering::Relaxed);
+                    self.counters
+                        .bytes_read
+                        .fetch_add(bytes as u64, Ordering::Relaxed);
                     let records = read
                         .iter()
                         .filter(|r| matches!(r.record, Ok(Some(_))))
