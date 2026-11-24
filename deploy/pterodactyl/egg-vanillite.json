@@ -761,6 +761,36 @@
       "field_type": "text"
     },
     {
+      "name": "Survival: Time Sync Interval",
+      "description": "Ticks between the game time packets every player gets (Vanilla: every second). Clients run the clocks themselves in between; a longer interval saves traffic with many players, the game time on the client may then lag behind a little. Range: 1 to 1200. Empty: the profile's value (vanilla profile: 20). vanillite.toml: performance.survival.time-sync-interval.",
+      "env_variable": "VANILLITE_PERFORMANCE__SURVIVAL__TIME_SYNC_INTERVAL",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,1200",
+      "field_type": "text"
+    },
+    {
+      "name": "Proxy: Velocity Secret",
+      "description": "Shared secret of modern forwarding (the proxy's `forwarding.secret`). Empty turns forwarding off. With a secret, players' identities and addresses come from the proxy, signed with it; `online-mode` then only applies to direct connections. Empty: the profile's value (vanilla profile: ). vanillite.toml: proxy.velocity-secret.",
+      "env_variable": "VANILLITE_PROXY__VELOCITY_SECRET",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string",
+      "field_type": "text"
+    },
+    {
+      "name": "Proxy: Allow Direct Connections",
+      "description": "With forwarding on, also accept players who connect directly instead of through the proxy (authenticated as usual). Off: they are refused. Empty: the profile's value (vanilla profile: false). vanillite.toml: proxy.allow-direct-connections.",
+      "env_variable": "VANILLITE_PROXY__ALLOW_DIRECT_CONNECTIONS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|in:true,false",
+      "field_type": "text"
+    },
+    {
       "name": "Chat: Max Pending Messages",
       "description": "Signed messages a player may have received without acknowledging them before it is kicked (`too_many_pending_chats`). Range: 64 to 65536. Empty: the profile's value (vanilla profile: 4096). vanillite.toml: chat.max-pending-messages.",
       "env_variable": "VANILLITE_CHAT__MAX_PENDING_MESSAGES",
@@ -968,6 +998,46 @@
       "user_viewable": true,
       "user_editable": true,
       "rules": "nullable|integer|between:1,4096",
+      "field_type": "text"
+    },
+    {
+      "name": "Simulation: Max Block Ticks",
+      "description": "Scheduled block ticks run per tick. Applies to every world. Range: 1 to 1000000. Empty: the profile's value (vanilla profile: 65536). vanillite.toml: performance.simulation.max-block-ticks.",
+      "env_variable": "VANILLITE_PERFORMANCE__SIMULATION__MAX_BLOCK_TICKS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,1000000",
+      "field_type": "text"
+    },
+    {
+      "name": "Simulation: Max Fluid Ticks",
+      "description": "Scheduled fluid ticks run per tick. Applies to every world. Range: 1 to 1000000. Empty: the profile's value (vanilla profile: 65536). vanillite.toml: performance.simulation.max-fluid-ticks.",
+      "env_variable": "VANILLITE_PERFORMANCE__SIMULATION__MAX_FLUID_TICKS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,1000000",
+      "field_type": "text"
+    },
+    {
+      "name": "Simulation: Max Chained Neighbor Updates",
+      "description": "Chained neighbour and shape updates of one block change before the rest is skipped; \"vanilla\" uses `max-chained-neighbor-updates` of server.properties. Applies to every world. Range: 1 to 100000000. Also accepts vanilla. Empty: the profile's value (vanilla profile: vanilla). vanillite.toml: performance.simulation.max-chained-neighbor-updates.",
+      "env_variable": "VANILLITE_PERFORMANCE__SIMULATION__MAX_CHAINED_NEIGHBOR_UPDATES",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|regex:/^(?!vanilla[0-9])(vanilla)?[0-9]*$/",
+      "field_type": "text"
+    },
+    {
+      "name": "Simulation: Max Relights Per Tick",
+      "description": "Chunks whose light is recomputed per tick after block changes, each as one background job over its 5 × 5 area. Lower values spread bursts over more ticks. Applies to every world. Range: 1 to 65536. Empty: the profile's value (vanilla profile: 1024). vanillite.toml: performance.simulation.max-relights-per-tick.",
+      "env_variable": "VANILLITE_PERFORMANCE__SIMULATION__MAX_RELIGHTS_PER_TICK",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,65536",
       "field_type": "text"
     },
     {

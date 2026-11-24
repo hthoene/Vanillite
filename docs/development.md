@@ -22,6 +22,21 @@
 | `cargo xtask egg --check` | The Pterodactyl egg matches the configuration schema (`cargo xtask egg` regenerates it). |
 | `cargo xtask dev [--release] [-- <args>]` | Build and run the server in `./run`. |
 
+## New Minecraft versions
+
+Vanillite targets only the newest Minecraft release, pinned in `data/vanilla/version.toml`. The
+nightly workflow runs `cargo xtask version check` and opens an issue when Mojang releases a newer
+version.
+
+| Command | What |
+|---|---|
+| `cargo xtask version check` | Fails if a newer release than the pinned one exists. |
+| `cargo xtask version update <id>` | Preview (any release, pre-release or snapshot): data, generated code, goldens and a test run in the worktree `target/version/<id>/tree/`, and the change report `target/version/<id>/change-report.md` (protocol, packet fields, registries, blocks, items, entities, data pack, goldens, failing tests, affected code areas). The pinned version stays. |
+| `cargo xtask version update <id> --final` | The switch itself (releases only): the same in this checkout; commit data, generated code and goldens. |
+
+Golden harness sources that do not compile against the new jar are left out (with what needs
+them) and named in the report; porting them is part of the switch.
+
 ## Build profiles
 
 | Profile | Use |

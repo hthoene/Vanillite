@@ -55,6 +55,21 @@ final class Blocks {
       b.addProperty("speed_factor", block.getSpeedFactor());
       b.addProperty("jump_factor", block.getJumpFactor());
       b.addProperty("dynamic_shape", block.hasDynamicShape());
+      Class<?> cls = block.getClass();
+      while (cls.isAnonymousClass()) {
+        cls = cls.getSuperclass();
+      }
+      b.addProperty("class", cls.getSimpleName());
+      net.minecraft.world.level.block.SoundType sound = block.defaultBlockState().getSoundType();
+      JsonObject snd = new JsonObject();
+      snd.addProperty("volume", sound.getVolume());
+      snd.addProperty("pitch", sound.getPitch());
+      snd.addProperty("break", BuiltInRegistries.SOUND_EVENT.getKey(sound.getBreakSound()).toString());
+      snd.addProperty("step", BuiltInRegistries.SOUND_EVENT.getKey(sound.getStepSound()).toString());
+      snd.addProperty("place", BuiltInRegistries.SOUND_EVENT.getKey(sound.getPlaceSound()).toString());
+      snd.addProperty("hit", BuiltInRegistries.SOUND_EVENT.getKey(sound.getHitSound()).toString());
+      snd.addProperty("fall", BuiltInRegistries.SOUND_EVENT.getKey(sound.getFallSound()).toString());
+      b.add("sound", snd);
       if (block.asItem() != Items.AIR) {
         b.addProperty("item", BuiltInRegistries.ITEM.getKey(block.asItem()).toString());
       }

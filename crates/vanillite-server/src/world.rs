@@ -12,9 +12,12 @@ use vanillite_world::chunks::{Chunks, TicketId};
 use vanillite_world::entity::EntityId;
 use vanillite_world::tracking::{EntityTracker, TrackerInput, TrackerOutput, Viewer};
 
+use vanillite_base::random::XoroshiroRandom;
+
+use crate::blocks::LevelEffects;
 use crate::compute::Compute;
 use crate::global::Global;
-use crate::players::WorldPlayers;
+use crate::players::{WorldBlocks, WorldPlayers};
 use crate::world_setup::ChunkPackets;
 use crate::world_updates::WorldUpdates;
 
@@ -52,6 +55,10 @@ pub struct ServerWorld {
     chunks_sent: Vec<(EntityId, ChunkPos)>,
     pub(crate) players: WorldPlayers,
     packets: ChunkPackets,
+    /// Sounds and crack progress of the player handlers.
+    effects: LevelEffects,
+    /// The random of the item entities (`Entity.random`).
+    item_random: XoroshiroRandom,
     updates: WorldUpdates,
     /// The chunk ticket and simulation ticket of every player at its centre chunk.
     player_tickets: FxHashMap<EntityId, (ChunkPos, TicketId, TicketId)>,
@@ -83,6 +90,11 @@ impl ServerWorld {
         mut level: Level,
         survival: crate::survival::WorldSurvival,
     ) -> ServerWorld {
+        // Entity randoms are `RandomSource.create()`: seeded from the clock, not the world seed.
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos() as i64)
+            ^ i64::from(id.0);
         if let Some(climate) = survival.climate() {
             level.set_climate(Arc::clone(climate));
         }
@@ -100,6 +112,8 @@ impl ServerWorld {
             packets: ChunkPackets::default(),
             updates: WorldUpdates::default(),
             player_tickets: FxHashMap::default(),
+            effects: LevelEffects::default(),
+            item_random: XoroshiroRandom::new(seed),
             scratch: Vec::new(),
             player_scratch: Vec::new(),
             survival,
@@ -224,12 +238,17 @@ impl ServerWorld {
     pub(crate) fn tick(&mut self, ctx: &mut TickContext<'_>) {
         debug_assert_eq!(ctx.world, self.id);
         self.players.handle_packets(
-            &mut self.level.entities,
+            &mut self.level,
             &self.rules,
             ctx.runs_normally,
             ctx.global,
             self.id,
+            &mut WorldBlocks {
+                effects: &mut self.effects,
+                tracker: &*self.tracker,
+            },
         );
+        self.effects.flush(&self.level.entities);
         self.survival.moves(
             &mut self.level.entities,
             &self.level.chunks,
@@ -297,8 +316,17 @@ impl ServerWorld {
             ctx.global,
             &self.dimension,
         );
-        self.players
-            .tick_connections(&mut self.level.entities, ctx.tick, ctx.global, self.id);
+        self.players.tick_connections(
+            &mut self.level,
+            ctx.tick,
+            ctx.global,
+            self.id,
+            &mut WorldBlocks {
+                effects: &mut self.effects,
+                tracker: &*self.tracker,
+            },
+        );
+        self.effects.flush(&self.level.entities);
     }
 
     /// `applyEffectsFromBlocks` after the players' moves: pressure plates, tripwire and other
@@ -325,6 +353,14 @@ impl ServerWorld {
             let kind = entity.as_ref().kind();
             vanillite_game::entities::tick_entity(level, id, kind);
         }
+        let min_y = level.min_y();
+        crate::blocks::tick_items(
+            &mut level.entities,
+            &level.chunks,
+            &mut self.item_random,
+            min_y,
+            i16::try_from(self.rules.items.despawn_ticks).unwrap_or(i16::MAX),
+        );
     }
 
     /// Runs the entity tracker over this tick's state and resets the per-tick sync state.

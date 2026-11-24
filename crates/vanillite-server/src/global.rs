@@ -38,6 +38,10 @@ pub struct Global {
     pub(crate) seed: i64,
     /// Entries of data-driven registries commands refer to (timelines, world clocks).
     pub(crate) registries: std::collections::BTreeMap<String, Vec<String>>,
+    /// Tool rules, loot tables and item data of the block and item handlers.
+    pub(crate) game: Arc<vanillite_game::player::play::GameData>,
+    /// `spawn-protection` radius in blocks.
+    pub(crate) spawn_protection: i32,
     /// This value itself, for work handed to other worlds.
     pub(crate) this: Weak<Global>,
 }

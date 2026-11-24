@@ -44,6 +44,15 @@ pub enum Effect {
     },
     /// A system message to every player of the server.
     Broadcast(Component),
+    /// A new item entity (a dropped stack): its UUID, position, motion, yaw and pickup delay.
+    DropItem {
+        uuid: u128,
+        pos: Vec3,
+        velocity: Vec3,
+        y_rot: f32,
+        pickup_delay: i16,
+        stack: crate::item::ItemStack,
+    },
 }
 
 /// The registry id of a sound event, `0` if unknown.

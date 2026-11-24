@@ -36,6 +36,12 @@ impl WorldUpdates {
         let mut output = std::mem::take(level.output());
         self.encode_chunks(level, &mut output);
         let entities = &level.entities;
+        // Vanilla sends level events when they happen, before the chunk holders broadcast the
+        // block changes of the tick.
+        for event in output.level_events.drain(..) {
+            let packet = level_event(event.event, event.pos, event.data);
+            send_near(entities, event.pos, event.source, &packet);
+        }
         if !self.per_chunk.is_empty() {
             for (_, player) in entities.players.iter() {
                 let chunks = &player.connection.chunks;
@@ -56,10 +62,6 @@ impl WorldUpdates {
         for event in output.block_events.drain(..) {
             let packet = block_event(event.pos, event.block.0, event.a, event.b);
             send_near(entities, event.pos, None, &packet);
-        }
-        for event in output.level_events.drain(..) {
-            let packet = level_event(event.event, event.pos, event.data);
-            send_near(entities, event.pos, event.source, &packet);
         }
         for explosion in output.explosions.drain(..) {
             send_explosion(entities, &explosion);

@@ -4,17 +4,21 @@
 use std::io::{self, Read, Write};
 use std::time::{Duration, Instant};
 
+use vanillite_data::entity::ids;
 use vanillite_protocol::chat::LastSeenUpdate;
 use vanillite_protocol::client::TestClient;
 use vanillite_protocol::codec::write_varint;
 use vanillite_protocol::commands::NodeKind;
+use vanillite_protocol::item::ItemStack;
 use vanillite_protocol::packets::handshake::Intent;
 use vanillite_protocol::packets::play::clientbound::GameMode;
 use vanillite_protocol::packets::play::serverbound::{
     AcceptTeleportation, Chat, ChatCommand, ChunkBatchReceived, ClientTickEnd, CommandSuggestion,
-    Input, MoveFlags, MovePlayerPos, PlayerInput, PlayerLoaded,
+    DigAction, Hand, Input, MoveFlags, MovePlayerPos, PlayerActionPacket, PlayerInput,
+    PlayerLoaded, SetCreativeModeSlot, UseItemOn,
 };
 use vanillite_protocol::sets::ClientboundPlay;
+use vanillite_protocol::types::BlockPos as WirePos;
 use vanillite_protocol::types::{GameProfile, Uuid};
 use vanillite_server::{ServerBuilder, VanillaPack, VirtualConnection, VirtualOpener};
 
@@ -356,6 +360,81 @@ fn two_players_join_see_each_other_and_rejoin() {
             .iter()
             .any(|e| e.id.0 == alice && e.game_mode == GameMode::Creative)
             .then_some(()),
+        _ => None,
+    });
+
+    // Alice takes stone from the creative inventory and places it; Bob sees the block.
+    a.send(&SetCreativeModeSlot {
+        slot: 36,
+        item: ItemStack::new(1, 64),
+    });
+    let below = WirePos {
+        x: (target.0.floor() as i32) + 2,
+        y: (target.1.floor() as i32) - 1,
+        z: target.2.floor() as i32,
+    };
+    a.send(&UseItemOn {
+        hand: Hand::MainHand,
+        pos: below,
+        face: 1,
+        cursor_x: 0.5,
+        cursor_y: 1.0,
+        cursor_z: 0.5,
+        inside: false,
+        world_border_hit: false,
+        sequence: 1,
+    });
+    a.until("place acknowledged", |p| match p {
+        ClientboundPlay::BlockChangedAck(ack) if ack.sequence == 1 => Some(()),
+        _ => None,
+    });
+    let placed = b.until("Alice's stone", |p| match p {
+        ClientboundPlay::BlockUpdate(u) if u.state == 1 => Some(u.pos),
+        _ => None,
+    });
+    assert!(
+        placed == below
+            || placed
+                == WirePos {
+                    y: below.y + 1,
+                    ..below
+                }
+    );
+    // She breaks it again (instantly in creative); Bob sees the particles and the air.
+    a.send(&PlayerActionPacket {
+        action: DigAction::StartDestroyBlock,
+        pos: placed,
+        direction: 1,
+        sequence: 2,
+    });
+    a.until("break acknowledged", |p| match p {
+        ClientboundPlay::BlockChangedAck(ack) if ack.sequence == 2 => Some(()),
+        _ => None,
+    });
+    let local = i64::from(((placed.x & 15) << 8) | ((placed.z & 15) << 4) | (placed.y & 15));
+    let (mut particles, mut air) = (false, false);
+    b.until("break particles and the broken stone", |p| {
+        match p {
+            ClientboundPlay::LevelEvent(e) if e.event == 2001 && e.pos == placed => {
+                particles = e.data == 1;
+            }
+            ClientboundPlay::BlockUpdate(u) if u.pos == placed => air = u.state == 0,
+            ClientboundPlay::SectionBlocksUpdate(u) => {
+                air |= u.changes.contains(&local);
+            }
+            _ => {}
+        }
+        (particles && air).then_some(())
+    });
+    // She drops one stone (Q); Bob sees the item entity.
+    a.send(&PlayerActionPacket {
+        action: DigAction::DropItem,
+        pos: WirePos { x: 0, y: 0, z: 0 },
+        direction: 0,
+        sequence: 0,
+    });
+    b.until("dropped item", |p| match p {
+        ClientboundPlay::AddEntity(e) if e.entity_type == i32::from(ids::ITEM.0) => Some(()),
         _ => None,
     });
 

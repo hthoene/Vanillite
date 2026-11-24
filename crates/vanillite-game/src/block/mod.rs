@@ -6,6 +6,9 @@
 //! [`Behaviours::vanilla`] fills the table from the Vanilla class of every block; a plugin may
 //! replace entries before the world starts. Blocks whose class has no such behaviour have
 //! empty entries and cost nothing.
+//!
+//! [`place`] has Vanilla-exact placement states, survival and replacement rules, and the
+//! blocks that placing or breaking one block adds or removes.
 
 pub mod bell;
 pub mod dispenser;
@@ -17,6 +20,7 @@ pub mod hopper;
 pub mod lectern;
 pub mod note;
 pub mod piston;
+pub mod place;
 pub mod plate;
 pub mod rail;
 pub mod redstone;
