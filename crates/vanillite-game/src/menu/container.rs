@@ -539,7 +539,11 @@ impl MenuSlots for ContainerView<'_> {
 
     fn may_pickup(&self, slot: usize) -> bool {
         match self.menu.source(slot) {
+            // Only the take button (with `mayBuild`) takes the book: Vanilla's slot would hand
+            // a modified client the book (in adventure mode too) and its swap shares the
+            // instance with the lectern.
             Some(Source::CrafterResult) => false,
+            Some(Source::Container(_)) if self.menu.kind == MenuKind::Lectern => false,
             Some(Source::Container(i))
                 if self.menu.kind.is_workstation()
                     && Some(i) == super::workstation::result_slot(self.menu.kind) =>
@@ -918,7 +922,8 @@ pub fn open(
         _ => Vec::new(),
     };
     let data = match kind {
-        MenuKind::Stonecutter | MenuKind::Loom => vec![-1],
+        // `DataSlot.standalone()` starts at 0; a changed input sets -1.
+        MenuKind::Stonecutter | MenuKind::Loom => vec![0],
         MenuKind::Anvil | MenuKind::Smithing => vec![0],
         MenuKind::Enchantment => vec![0, 0, 0, 0, -1, -1, -1, -1, -1, -1],
         _ => Vec::new(),

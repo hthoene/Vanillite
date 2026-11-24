@@ -120,15 +120,15 @@ pub(crate) fn install_data() -> &'static GameData {
     crate::player::play::game_data().expect("game data installed")
 }
 
-fn item(name: &str) -> u16 {
+pub(super) fn item(name: &str) -> u16 {
     ITEM.id(&format!("minecraft:{name}")).expect("item")
 }
 
-fn stack(name: &str, count: i32) -> ItemStack {
+pub(super) fn stack(name: &str, count: i32) -> ItemStack {
     ItemStack::new(item(name), count)
 }
 
-const SURVIVAL: ClickContext = ClickContext { infinite: false };
+pub(super) const SURVIVAL: ClickContext = ClickContext { infinite: false };
 
 // --- Recipes ---------------------------------------------------------------------------------
 
@@ -333,7 +333,7 @@ fn census(inv: &PlayerInventory, extra: &[ItemStack], drops: &[Drop]) -> Vec<(u1
     counts
 }
 
-fn random_click(rng: &mut XoroshiroRandom, slots: i32) -> (i16, i8, ContainerInput) {
+pub(super) fn random_click(rng: &mut XoroshiroRandom, slots: i32) -> (i16, i8, ContainerInput) {
     let inputs = [
         ContainerInput::Pickup,
         ContainerInput::QuickMove,
@@ -389,13 +389,13 @@ fn random_inventory_clicks_conserve_items() {
 }
 
 /// A flat level with a block at `pos`.
-fn level_with(pos: BlockPos, state: vanillite_data::block::BlockState) -> Level {
+pub(super) fn level_with(pos: BlockPos, state: vanillite_data::block::BlockState) -> Level {
     let mut level = crate::level::tests::flat_level();
     level.set_block(pos, state, update::ALL);
     level
 }
 
-fn request(
+pub(super) fn request(
     kind: MenuKind,
     storage: Storage,
     pos: BlockPos,
@@ -412,7 +412,7 @@ fn request(
 }
 
 /// A client that drops every packet.
-struct NullSink;
+pub(super) struct NullSink;
 
 impl crate::player::PacketSink for NullSink {
     fn send_body(&self, _: Vec<u8>) -> bool {
@@ -431,7 +431,7 @@ impl crate::player::PacketSink for NullSink {
 }
 
 /// Opens a menu without a client.
-fn open(inv: &mut PlayerInventory, level: &mut Level, request: MenuRequest) {
+pub(super) fn open(inv: &mut PlayerInventory, level: &mut Level, request: MenuRequest) {
     let sink = NullSink;
     let who = super::container::Opener {
         spectator: false,
