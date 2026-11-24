@@ -11,10 +11,13 @@
 //! blocks that placing or breaking one block adds or removes.
 
 pub mod bell;
+pub mod brewing;
+pub mod container;
 pub mod dispenser;
 pub mod drops;
 pub mod falling;
 pub mod fluid;
+pub mod furnace;
 mod growth;
 pub mod hopper;
 pub mod lectern;
@@ -243,6 +246,7 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
     tnt::fill(block, &mut b);
     dispenser::fill(block, &mut b);
     hopper::fill(block, &mut b);
+    container::fill(block, &mut b);
     b
 }
 

@@ -197,6 +197,8 @@ pub struct LevelOutput {
     pub sounds: Vec<Sound>,
     /// Explosions.
     pub explosions: Vec<explosion::ExplosionEvent>,
+    /// Experience to award at a position (`ExperienceOrb.award`; orbs are not simulated yet).
+    pub experience: Vec<(vanillite_base::Vec3, i32)>,
 }
 
 /// The game state of one world.
@@ -236,6 +238,9 @@ pub struct Level {
     rand_value: i32,
     game_time: i64,
     output: LevelOutput,
+    /// Menus blocks asked to open for the player that used them (`player.openMenu`); taken
+    /// by the player handlers.
+    menu_requests: Vec<crate::menu::container::MenuRequest>,
     min_y: i32,
     max_y: i32,
 }
@@ -282,9 +287,20 @@ impl Level {
             rand_value: LegacyRandom::new(seed ^ 0x5DEE_CE66).next_int(),
             game_time: 0,
             output: LevelOutput::default(),
+            menu_requests: Vec::new(),
             min_y,
             max_y,
         }
+    }
+
+    /// `player.openMenu(provider)` from block code: the player handlers open it.
+    pub fn request_menu(&mut self, request: crate::menu::container::MenuRequest) {
+        self.menu_requests.push(request);
+    }
+
+    /// The menus blocks asked to open since the last call.
+    pub fn take_menu_requests(&mut self) -> Vec<crate::menu::container::MenuRequest> {
+        std::mem::take(&mut self.menu_requests)
     }
 
     /// Replaces the rules and budgets (config reload between ticks).
@@ -593,7 +609,7 @@ impl Level {
         let new_block = state.block();
         let block_changed = old.block() != new_block;
         let moved = flags & update::MOVE_BY_PISTON != 0;
-        self.block_entity_removed(old, state, pos);
+        self.block_entity_removed(old, state, pos, flags);
         if (block_changed || block::is_rail(new_block)) && (flags & update::NEIGHBORS != 0 || moved)
         {
             self.affect_neighbors_after_removal(old, pos, moved);

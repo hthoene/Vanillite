@@ -69,11 +69,54 @@ pub(crate) fn game_data(packs: Option<&LoadedPacks>) -> GameData {
         info.tags.insert(registry.to_owned(), tags);
     }
     vanillite_protocol::item::install_registries(info);
+    let recipes = vanillite_game::recipe::Recipes::load(packs.roots(), &|tag| {
+        item_tags.get(tag).cloned().unwrap_or_default()
+    });
+    log::info!(
+        "Loaded {} crafting, {} cooking, {} stonecutter and {} smithing recipes",
+        recipes.crafting.len(),
+        recipes.cooking.len(),
+        recipes.stonecutting.len(),
+        recipes.smithing.len()
+    );
+    let entries: Vec<(String, serde_json::Value)> = packs
+        .registry("minecraft:enchantment")
+        .map(|r| {
+            r.entries()
+                .iter()
+                .map(|e| {
+                    let json = serde_json::from_str(e.json.get()).unwrap_or_default();
+                    (e.id.clone(), json)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut enchanting = vanillite_game::enchant::Enchanting::load(
+        &entries,
+        &|tag| item_tags.get(tag).cloned().unwrap_or_default(),
+        &|tag| {
+            packs
+                .tag_ids("minecraft:enchantment", tag)
+                .unwrap_or_default()
+        },
+    );
+    let names = |registry: &str| -> Vec<String> {
+        packs
+            .registry(registry)
+            .map(|r| r.entries().iter().map(|e| e.id.clone()).collect())
+            .unwrap_or_default()
+    };
+    enchanting.set_trims(
+        &names("minecraft:trim_material"),
+        &names("minecraft:trim_pattern"),
+    );
     GameData {
         tools,
         loot,
         enchantments,
         item_tags,
+        recipes,
+        enchanting,
     }
 }
 

@@ -275,6 +275,7 @@ impl ServerBuilder {
         let commands = crate::commands::build_dispatcher(command_limits(&config));
         let game = Arc::new(crate::blocks::game_data(packs.as_deref()));
         vanillite_game::player::play::install_game_data(Arc::clone(&game));
+        let recipes_packet = vanillite_protocol::SharedPacket::of(&game.recipes.update_packet());
         let level = crate::level::LevelState::load(
             &level_dir,
             packs.as_deref(),
@@ -299,6 +300,7 @@ impl ServerBuilder {
             seed: level_seed(&config.properties.level_seed),
             registries: prepared.registries.clone(),
             game,
+            recipes_packet,
             spawn_protection: config.properties.spawn_protection,
             this: this.clone(),
         });
