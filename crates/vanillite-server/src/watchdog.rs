@@ -95,6 +95,9 @@ impl WatchState {
                 ));
             }
         }
+        for (thread, plugin) in vanillite_plugin_host::crash::active_plugins() {
+            log(&format!("  thread {thread} is inside plugin {plugin}"));
+        }
     }
 }
 
@@ -160,6 +163,14 @@ fn check(state: &WatchState, clock: &Clock, hard_limit: Option<u64>, last_warnin
             0.05
         );
         state.report_busy(now, |line| log::error!("{line}"));
+        let plugins = vanillite_plugin_host::crash::record_crash();
+        if !plugins.is_empty() {
+            log::error!(
+                "The hang is attributed to plugin(s) {}; with plugins.safe-mode-after-crash \
+                 they are skipped at the next start",
+                plugins.join(", ")
+            );
+        }
         log::error!("Considering it to be crashed, server will forcibly shutdown.");
         std::process::exit(1);
     }

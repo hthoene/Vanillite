@@ -105,6 +105,24 @@ rules! {
             allow_direct_connections: bool = "allow-direct-connections", Setting, restart = true,
                 vanilla = false;
         }
+        /// Native plugins in `plugins/`: packages with a `plugin.toml` and a library built
+        /// against the plugin API. Plugins are trusted code with the server's rights.
+        plugins: PluginRules = "plugins" {
+            /// Load the plugins in `plugins/`.
+            enabled: bool = "enabled", Setting, restart = true, vanilla = true;
+            /// After a crash inside a plugin's code (a fatal signal or a watchdog kill), skip
+            /// that plugin at the next starts until its library changes or `plugins/.crashed`
+            /// is removed, so a supervisor (Docker, systemd) brings the server back.
+            safe_mode_after_crash: bool = "safe-mode-after-crash", Setting, restart = true,
+                vanilla = true;
+            /// Development: the console command `vanillite plugin reload <id>` loads a new
+            /// build of a plugin at runtime and moves its state. Old builds stay in memory.
+            /// Not for production servers.
+            development: bool = "development", Setting, restart = true, vanilla = false;
+            /// Pinned SHA-256 hashes of plugin libraries, `id=hex,id=hex`. A plugin whose
+            /// library has another hash is refused.
+            pins: String = "pins", Security, restart = true, vanilla = String::new();
+        }
         /// Chat. Spam thresholds are `chat-spam-threshold-seconds` and
         /// `command-spam-threshold-seconds` in `server.properties`.
         chat: ChatRules = "chat" {

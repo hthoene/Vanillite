@@ -137,6 +137,8 @@ pub struct PlayContext<'a> {
     pub drops: &'a mut Vec<Drop>,
     /// Hand swings other players must see.
     pub swings: &'a mut Vec<Hand>,
+    /// Plugin hooks (block breaking and placing).
+    pub hooks: &'a dyn crate::hooks::GameHooks,
 }
 
 impl std::fmt::Debug for PlayContext<'_> {
@@ -530,6 +532,10 @@ impl Digging {
         if block_action_restricted(ctx) {
             return false;
         }
+        if !ctx.hooks.block_break(ctx.actor.uuid, pos, state) {
+            block_update(sink, ctx.level, pos);
+            return false;
+        }
         // `playerWillDestroy`: break particles and sound for everyone else, and the other half
         // of double blocks.
         ctx.level.level_event(
@@ -738,6 +744,9 @@ impl Digging {
             return false;
         };
         if !ctx.level.is_unobstructed(state, target) {
+            return false;
+        }
+        if !ctx.hooks.block_place(ctx.actor.uuid, target, state) {
             return false;
         }
         if !ctx.level.set_block(target, state, update::ALL_IMMEDIATE) {

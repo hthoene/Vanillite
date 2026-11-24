@@ -42,6 +42,8 @@ pub struct Global {
     pub(crate) game: Arc<vanillite_game::player::play::GameData>,
     /// `spawn-protection` radius in blocks.
     pub(crate) spawn_protection: i32,
+    /// The plugins.
+    pub(crate) plugins: vanillite_plugin_host::PluginHost,
     /// This value itself, for work handed to other worlds.
     pub(crate) this: Weak<Global>,
 }

@@ -86,6 +86,13 @@ fn chat(
             return None;
         }
     };
+    if global.plugins.wants(vanillite_abi::event::PLAYER_CHAT)
+        && !global
+            .plugins
+            .player_chat(uuid, &name, &message.decorated_content().plain())
+    {
+        return None;
+    }
     let chat_type = ChatTypeBound {
         chat_type: global.chat_types.chat,
         name: display_name(&name, uuid),
