@@ -16,7 +16,7 @@ mod rule;
 
 pub use catalogue::*;
 pub use properties::{Difficulty, GameMode, RegionFileCompression, ServerProperties};
-pub use rule::{DisabledOr, Kind, Profile, RuleInfo, RuleSet, RuleValue, VanillaOr};
+pub use rule::{DisabledOr, Kind, Profile, RuleInfo, RuleSet, RuleValue, StorageLayout, VanillaOr};
 pub use toml;
 
 use std::collections::BTreeMap;
