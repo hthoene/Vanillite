@@ -943,13 +943,7 @@ pub fn component(entity: &BlockEntity, id: u16) -> Option<Box<[u8]>> {
     if id == ids::CONTAINER {
         // `ItemContainerContents.fromItems`: up to the last non-empty slot; nothing if empty
         // (the item's default).
-        let last = items.iter().rposition(|s| !s.is_empty())?;
-        let mut out = Vec::new();
-        vanillite_protocol::codec::write_varint(&mut out, i32::try_from(last + 1).ok()?);
-        for stack in items.get(..=last)? {
-            stack.encode(&mut out);
-        }
-        return Some(out.into_boxed_slice());
+        return vanillite_protocol::item::encode_container_contents(items);
     }
     None
 }
@@ -963,18 +957,9 @@ pub fn apply_item_components(level: &mut Level, pos: BlockPos, stack: &ItemStack
         <Component as vanillite_protocol::codec::DecodeLimited>::decode_limited(&mut r, 2_097_152)
             .ok()
     });
-    let contents: Option<Vec<ItemStack>> = stack.component(ids::CONTAINER).and_then(|bytes| {
-        let mut r = vanillite_protocol::codec::Reader::new(bytes);
-        let n = r.len_prefix("container", 256, 1).ok()?;
-        let mut items = Vec::with_capacity(n);
-        for _ in 0..n {
-            items.push(
-                ItemStack::decode_untrusted(&mut r, &vanillite_protocol::item::InstalledRegistries)
-                    .ok()?,
-            );
-        }
-        Some(items)
-    });
+    let contents: Option<Vec<ItemStack>> = stack
+        .component(ids::CONTAINER)
+        .and_then(|bytes| vanillite_protocol::item::decode_container_contents(bytes).ok());
     let (target_name, target_items): (&mut Option<Component>, &mut [ItemStack]) =
         match level.block_entity_mut(pos) {
             Some(BlockEntity::Container(c)) => (&mut c.custom_name, &mut c.items),

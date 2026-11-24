@@ -7,8 +7,10 @@
 //! - crafting: `crafting_shaped` (with the mirrored pattern), `crafting_shapeless`,
 //!   `crafting_transmute`, `crafting_imbue`, `crafting_dye`, `crafting_decorated_pot`,
 //!   `crafting_special_repairitem`, `crafting_special_bookcloning`,
-//!   `crafting_special_bannerduplicate`, `crafting_special_shielddecoration`. The firework and
-//!   map extending recipes are loaded but never match yet.
+//!   `crafting_special_bannerduplicate`, `crafting_special_shielddecoration`,
+//!   `crafting_special_mapextending` (with the level's maps, [`Recipes::crafting_for_in`]),
+//!   `crafting_special_firework_star`, `crafting_special_firework_star_fade` and
+//!   `crafting_special_firework_rocket`.
 //! - cooking: `smelting`, `blasting`, `smoking`, `campfire_cooking`.
 //! - `stonecutting`, `smithing_transform`, `smithing_trim`.
 //!
@@ -101,8 +103,51 @@ pub enum Crafting {
         material: Ingredient,
         result: ItemStack,
     },
-    /// Special recipes that need component logic not ported yet; they never match.
-    Unsupported,
+    /// `crafting_dye`.
+    Dye {
+        target: Ingredient,
+        dye: Ingredient,
+        result: TransmuteResult,
+    },
+    /// `crafting_special_bannerduplicate`.
+    BannerDuplicate {
+        banner: Ingredient,
+        result: TransmuteResult,
+    },
+    /// `crafting_special_shielddecoration`.
+    ShieldDecoration {
+        banner: Ingredient,
+        target: Ingredient,
+        result: TransmuteResult,
+    },
+    /// `crafting_special_mapextending`.
+    MapExtending {
+        map: Ingredient,
+        material: Ingredient,
+        result: TransmuteResult,
+    },
+    /// `crafting_special_firework_star`: shapes as `(FireworkExplosion.Shape id, ingredient)`.
+    FireworkStar {
+        shapes: Vec<(i32, Ingredient)>,
+        trail: Ingredient,
+        twinkle: Ingredient,
+        fuel: Ingredient,
+        dye: Ingredient,
+        result: ItemStack,
+    },
+    /// `crafting_special_firework_star_fade`.
+    FireworkStarFade {
+        target: Ingredient,
+        dye: Ingredient,
+        result: ItemStack,
+    },
+    /// `crafting_special_firework_rocket`.
+    FireworkRocket {
+        shell: Ingredient,
+        fuel: Ingredient,
+        star: Ingredient,
+        result: ItemStack,
+    },
 }
 
 /// A crafting recipe with its id.
@@ -575,14 +620,68 @@ impl Recipes {
                 material: ing("material")?,
                 result: res()?,
             })),
-            "crafting_dye"
-            | "crafting_special_bannerduplicate"
-            | "crafting_special_shielddecoration"
-            | "crafting_special_mapextending"
-            | "crafting_special_firework_star"
-            | "crafting_special_firework_star_fade"
-            | "crafting_special_firework_rocket" => {
-                self.crafting.push(crafting(Crafting::Unsupported));
+            "crafting_dye" => self.crafting.push(crafting(Crafting::Dye {
+                target: ing("target")?,
+                dye: ing("dye")?,
+                result: transmute_result(json)?,
+            })),
+            "crafting_special_bannerduplicate" => {
+                self.crafting.push(crafting(Crafting::BannerDuplicate {
+                    banner: ing("banner")?,
+                    result: transmute_result(json)?,
+                }));
+            }
+            "crafting_special_shielddecoration" => {
+                self.crafting.push(crafting(Crafting::ShieldDecoration {
+                    banner: ing("banner")?,
+                    target: ing("target")?,
+                    result: transmute_result(json)?,
+                }));
+            }
+            "crafting_special_mapextending" => {
+                self.crafting.push(crafting(Crafting::MapExtending {
+                    map: ing("map")?,
+                    material: ing("material")?,
+                    result: transmute_result(json)?,
+                }));
+            }
+            "crafting_special_firework_star" => {
+                let mut shapes = Vec::new();
+                let map = json
+                    .get("shapes")
+                    .and_then(Value::as_object)
+                    .ok_or("no shapes")?;
+                for (name, value) in map {
+                    let shape = FIREWORK_SHAPES
+                        .iter()
+                        .position(|s| s == name)
+                        .and_then(|i| i32::try_from(i).ok())
+                        .ok_or_else(|| format!("unknown firework shape {name}"))?;
+                    shapes.push((shape, ingredient(value, tag)?));
+                }
+                self.crafting.push(crafting(Crafting::FireworkStar {
+                    shapes,
+                    trail: ing("trail")?,
+                    twinkle: ing("twinkle")?,
+                    fuel: ing("fuel")?,
+                    dye: ing("dye")?,
+                    result: res()?,
+                }));
+            }
+            "crafting_special_firework_star_fade" => {
+                self.crafting.push(crafting(Crafting::FireworkStarFade {
+                    target: ing("target")?,
+                    dye: ing("dye")?,
+                    result: res()?,
+                }));
+            }
+            "crafting_special_firework_rocket" => {
+                self.crafting.push(crafting(Crafting::FireworkRocket {
+                    shell: ing("shell")?,
+                    fuel: ing("fuel")?,
+                    star: ing("star")?,
+                    result: res()?,
+                }));
             }
             "smelting" | "blasting" | "smoking" | "campfire_cooking" => {
                 let kind = match kind {
@@ -1023,7 +1122,177 @@ impl Crafting {
                 }
                 has_source && has_material
             }
-            Crafting::Unsupported => false,
+            Crafting::Dye { target, dye, .. } => {
+                if input.ingredient_count < 2 {
+                    return false;
+                }
+                let mut has_target = false;
+                let mut has_dyes = false;
+                for stack in input.non_empty() {
+                    if target.test(stack) {
+                        if has_target {
+                            return false;
+                        }
+                        has_target = true;
+                    } else {
+                        if !dye.test(stack) || crate::menu::dye_color(stack).is_none() {
+                            return false;
+                        }
+                        has_dyes = true;
+                    }
+                }
+                has_dyes && has_target
+            }
+            Crafting::BannerDuplicate { banner, .. } => {
+                if input.ingredient_count != 2 {
+                    return false;
+                }
+                let mut color = None;
+                let mut has_target = false;
+                let mut has_source = false;
+                for stack in input.non_empty() {
+                    let Some(c) = banner_color(stack).filter(|_| banner.test(stack)) else {
+                        return false;
+                    };
+                    if color.is_some_and(|x| x != c) {
+                        return false;
+                    }
+                    color = Some(c);
+                    let patterns = banner_layers(stack);
+                    if patterns > 6 {
+                        return false;
+                    }
+                    if patterns > 0 {
+                        if has_source {
+                            return false;
+                        }
+                        has_source = true;
+                    } else {
+                        if has_target {
+                            return false;
+                        }
+                        has_target = true;
+                    }
+                }
+                has_source && has_target
+            }
+            Crafting::ShieldDecoration { banner, target, .. } => {
+                if input.ingredient_count != 2 {
+                    return false;
+                }
+                let mut has_target = false;
+                let mut has_banner = false;
+                for stack in input.non_empty() {
+                    if banner.test(stack) && banner_color(stack).is_some() {
+                        if has_banner {
+                            return false;
+                        }
+                        has_banner = true;
+                    } else {
+                        if !target.test(stack) || has_target || banner_layers(stack) != 0 {
+                            return false;
+                        }
+                        has_target = true;
+                    }
+                }
+                has_target && has_banner
+            }
+            Crafting::MapExtending { map, material, .. } => {
+                // `ShapedRecipePattern.of('#' material, 'x' map, "###", "#x#", "###")`.
+                input.width == 3
+                    && input.height == 3
+                    && input.ingredient_count == 9
+                    && (0..3).all(|y| {
+                        (0..3).all(|x| {
+                            let ing = if x == 1 && y == 1 { map } else { material };
+                            ing.test(input.get(x, y))
+                        })
+                    })
+                    && filled_map(input).is_some()
+            }
+            Crafting::FireworkStar {
+                shapes,
+                trail,
+                twinkle,
+                fuel,
+                dye,
+                ..
+            } => {
+                if input.ingredient_count < 2 {
+                    return false;
+                }
+                let (mut has_fuel, mut has_dye, mut has_shape, mut has_trail, mut has_twinkle) =
+                    (false, false, false, false, false);
+                for stack in input.non_empty() {
+                    if twinkle.test(stack) {
+                        if has_twinkle {
+                            return false;
+                        }
+                        has_twinkle = true;
+                    } else if trail.test(stack) {
+                        if has_trail {
+                            return false;
+                        }
+                        has_trail = true;
+                    } else if fuel.test(stack) {
+                        if has_fuel {
+                            return false;
+                        }
+                        has_fuel = true;
+                    } else if dye.test(stack) && crate::menu::dye_color(stack).is_some() {
+                        has_dye = true;
+                    } else {
+                        if !shapes.iter().any(|(_, i)| i.test(stack)) || has_shape {
+                            return false;
+                        }
+                        has_shape = true;
+                    }
+                }
+                has_fuel && has_dye
+            }
+            Crafting::FireworkStarFade { target, dye, .. } => {
+                if input.ingredient_count < 2 {
+                    return false;
+                }
+                let mut has_dye = false;
+                let mut has_target = false;
+                for stack in input.non_empty() {
+                    if dye.test(stack) && crate::menu::dye_color(stack).is_some() {
+                        has_dye = true;
+                    } else {
+                        if !target.test(stack) || has_target {
+                            return false;
+                        }
+                        has_target = true;
+                    }
+                }
+                has_target && has_dye
+            }
+            Crafting::FireworkRocket {
+                shell, fuel, star, ..
+            } => {
+                if input.ingredient_count < 2 {
+                    return false;
+                }
+                let mut has_shell = false;
+                let mut fuels = 0;
+                for stack in input.non_empty() {
+                    if shell.test(stack) {
+                        if has_shell {
+                            return false;
+                        }
+                        has_shell = true;
+                    } else if fuel.test(stack) {
+                        fuels += 1;
+                        if fuels > 3 {
+                            return false;
+                        }
+                    } else if !star.test(stack) {
+                        return false;
+                    }
+                }
+                has_shell && fuels >= 1
+            }
         }
     }
 
@@ -1069,11 +1338,11 @@ impl Crafting {
             }
             Crafting::DecoratedPot { result, .. } => {
                 let mut out = result.clone();
-                // `PotDecorations`: back, left, right, front as optional item ids.
+                // `PotDecorations`: back, left, right, front as optional item stack templates
+                // of one item.
                 let mut bytes = Vec::new();
-                write_varint(&mut bytes, 4);
                 for (x, y) in [(1, 0), (0, 1), (2, 1), (1, 2)] {
-                    write_varint(&mut bytes, i32::from(input.get(x, y).item));
+                    input.get(x, y).with_count(1).encode_template_optional(&mut bytes);
                 }
                 out.patch_mut()
                     .set(components::POT_DECORATIONS, bytes.into_boxed_slice());
@@ -1123,9 +1392,307 @@ impl Crafting {
                     .set(components::WRITTEN_BOOK_CONTENT, copy.into_boxed_slice());
                 out
             }
-            Crafting::Unsupported => ItemStack::EMPTY,
+            Crafting::Dye {
+                target,
+                dye,
+                result,
+            } => {
+                let mut dyes = Vec::new();
+                let mut found: Option<&ItemStack> = None;
+                for stack in input.non_empty() {
+                    if target.test(stack) {
+                        if found.is_some() {
+                            return ItemStack::EMPTY;
+                        }
+                        found = Some(stack);
+                    } else {
+                        if !dye.test(stack) {
+                            return ItemStack::EMPTY;
+                        }
+                        dyes.push(crate::menu::dye_color(stack).unwrap_or(0));
+                    }
+                }
+                let Some(found) = found.filter(|_| !dyes.is_empty()) else {
+                    return ItemStack::EMPTY;
+                };
+                let current = found
+                    .component(components::DYED_COLOR)
+                    .and_then(|v| vanillite_protocol::codec::Reader::new(v).i32().ok());
+                let rgb = apply_dyes(current, &dyes);
+                let mut out = transmute(result, found, 0);
+                out.patch_mut()
+                    .set(components::DYED_COLOR, Box::new(rgb.to_be_bytes()));
+                out
+            }
+            Crafting::BannerDuplicate { result, .. } => input
+                .non_empty()
+                .find(|s| (1..=6).contains(&banner_layers(s)))
+                .map_or(ItemStack::EMPTY, |s| transmute(result, s, 0)),
+            Crafting::ShieldDecoration { banner, target, result } => {
+                let mut patterns = None;
+                let mut base = 0;
+                let mut found = &ItemStack::EMPTY;
+                for stack in input.non_empty() {
+                    if let Some(color) = banner_color(stack).filter(|_| banner.test(stack)) {
+                        patterns = stack.component(components::BANNER_PATTERNS);
+                        base = color;
+                    } else if target.test(stack) {
+                        found = stack;
+                    }
+                }
+                let mut out = transmute(result, found, 0);
+                match patterns {
+                    Some(p) => out
+                        .patch_mut()
+                        .set(components::BANNER_PATTERNS, p.to_vec().into_boxed_slice()),
+                    None => out.patch_mut().unset(components::BANNER_PATTERNS),
+                }
+                let mut color = Vec::with_capacity(1);
+                write_varint(&mut color, base);
+                out.patch_mut()
+                    .set(components::BASE_COLOR, color.into_boxed_slice());
+                out
+            }
+            Crafting::MapExtending { result, .. } => {
+                let Some(source) = filled_map(input) else {
+                    return ItemStack::EMPTY;
+                };
+                let mut out = transmute(result, source, 0);
+                crate::map::set_post_processing(&mut out, crate::map::PostProcessing::Scale);
+                out
+            }
+            Crafting::FireworkStar {
+                shapes,
+                trail,
+                twinkle,
+                dye,
+                result,
+                ..
+            } => {
+                let mut shape = 0;
+                let mut has_twinkle = false;
+                let mut has_trail = false;
+                let mut colors = Vec::new();
+                for stack in input.non_empty() {
+                    if let Some((s, _)) = shapes.iter().find(|(_, i)| i.test(stack)) {
+                        shape = *s;
+                    } else if twinkle.test(stack) {
+                        has_twinkle = true;
+                    } else if trail.test(stack) {
+                        has_trail = true;
+                    } else if dye.test(stack) {
+                        colors.push(firework_color(crate::menu::dye_color(stack).unwrap_or(0)));
+                    }
+                }
+                let mut out = result.clone();
+                let mut bytes = Vec::new();
+                write_explosion(&mut bytes, shape, &colors, &[], has_trail, has_twinkle);
+                out.patch_mut()
+                    .set(components::FIREWORK_EXPLOSION, bytes.into_boxed_slice());
+                out
+            }
+            Crafting::FireworkStarFade {
+                target,
+                dye,
+                result,
+            } => {
+                let mut colors = Vec::new();
+                let mut found = None;
+                for stack in &input.items {
+                    if dye.test(stack) {
+                        colors.push(firework_color(crate::menu::dye_color(stack).unwrap_or(0)));
+                    } else if target.test(stack) {
+                        found = Some(stack);
+                    }
+                }
+                let Some(found) = found.filter(|_| !colors.is_empty()) else {
+                    return ItemStack::EMPTY;
+                };
+                let mut out = found.clone();
+                out.item = result.item;
+                out.count = result.count;
+                let mut bytes = Vec::new();
+                match found
+                    .component(components::FIREWORK_EXPLOSION)
+                    .and_then(read_explosion)
+                {
+                    Some((shape, old_colors, _, trail, twinkle)) => {
+                        write_explosion(&mut bytes, shape, &old_colors, &colors, trail, twinkle);
+                    }
+                    None => write_explosion(&mut bytes, 0, &[], &colors, false, false),
+                }
+                out.patch_mut()
+                    .set(components::FIREWORK_EXPLOSION, bytes.into_boxed_slice());
+                out
+            }
+            Crafting::FireworkRocket {
+                fuel, star, result, ..
+            } => {
+                let mut fuels = 0;
+                let mut explosions: Vec<&[u8]> = Vec::new();
+                for stack in input.non_empty() {
+                    if fuel.test(stack) {
+                        fuels += 1;
+                    } else if star.test(stack)
+                        && let Some(e) = stack.component(components::FIREWORK_EXPLOSION)
+                    {
+                        explosions.push(e);
+                    }
+                }
+                let mut bytes = Vec::new();
+                write_varint(&mut bytes, fuels);
+                write_varint(&mut bytes, i32::try_from(explosions.len()).unwrap_or(0));
+                for e in explosions {
+                    bytes.extend_from_slice(e);
+                }
+                let mut out = result.clone();
+                out.patch_mut()
+                    .set(components::FIREWORKS, bytes.into_boxed_slice());
+                out
+            }
         }
     }
+}
+
+/// `FireworkExplosion.Shape` names by id.
+const FIREWORK_SHAPES: [&str; 5] = ["small_ball", "large_ball", "star", "creeper", "burst"];
+
+/// `DyeColor.getTextureDiffuseColor` (without alpha) by id.
+const DYE_DIFFUSE: [i32; 16] = [
+    16383998, 16351261, 13061821, 3847130, 16701501, 8439583, 15961002, 4673362, 10329495,
+    1481884, 8991416, 3949738, 8606770, 6192150, 11546150, 1908001,
+];
+/// `DyeColor.getFireworkColor` by id.
+const DYE_FIREWORK: [i32; 16] = [
+    15790320, 15435844, 12801229, 6719955, 14602026, 4312372, 14188952, 4408131, 11250603,
+    2651799, 8073150, 2437522, 5320730, 3887386, 11743532, 1973019,
+];
+
+fn firework_color(dye: i32) -> i32 {
+    usize::try_from(dye)
+        .ok()
+        .and_then(|i| DYE_FIREWORK.get(i))
+        .copied()
+        .unwrap_or(0)
+}
+
+/// `DyedItemColor.applyDyes(current, dyes)`.
+fn apply_dyes(current: Option<i32>, dyes: &[i32]) -> i32 {
+    let (mut red, mut green, mut blue, mut intensity, mut n) = (0i32, 0i32, 0i32, 0i32, 0i32);
+    let mut add = |rgb: i32| {
+        let (r, g, b) = ((rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255);
+        intensity += r.max(g).max(b);
+        red += r;
+        green += g;
+        blue += b;
+        n += 1;
+    };
+    if let Some(c) = current {
+        add(c);
+    }
+    for &d in dyes {
+        add(usize::try_from(d)
+            .ok()
+            .and_then(|i| DYE_DIFFUSE.get(i))
+            .copied()
+            .unwrap_or(0));
+    }
+    let n = n.max(1);
+    let (r, g, b) = (red / n, green / n, blue / n);
+    let average = intensity as f32 / n as f32;
+    let max = r.max(g).max(b) as f32;
+    let scale = |c: i32| (c as f32 * average / max) as i32;
+    (scale(r) << 16) | (scale(g) << 8) | scale(b)
+}
+
+/// The colour of a banner item (`BannerItem.getColor`), `None` for other items.
+fn banner_color(stack: &ItemStack) -> Option<i32> {
+    let block = item::item_id(stack).block()?;
+    if block.info().kind != vanillite_data::block::BlockKind::BannerBlock {
+        return None;
+    }
+    let name = block.name().strip_prefix("minecraft:")?.strip_suffix("_banner")?;
+    let color = ItemStack::new(
+        vanillite_data::registry::ITEM
+            .id(&format!("minecraft:{name}_dye"))
+            .unwrap_or(0),
+        1,
+    );
+    crate::menu::dye_color(&color)
+}
+
+/// Number of `banner_patterns` layers of a stack.
+fn banner_layers(stack: &ItemStack) -> usize {
+    stack
+        .component(components::BANNER_PATTERNS)
+        .and_then(|v| vanillite_protocol::codec::Reader::new(v).varint().ok())
+        .and_then(|n| usize::try_from(n).ok())
+        .unwrap_or(0)
+}
+
+/// `MapExtendingRecipe.findFilledMap`.
+fn filled_map(input: &CraftingInput) -> Option<&ItemStack> {
+    input
+        .items
+        .iter()
+        .find(|s| s.component(components::MAP_ID).is_some())
+}
+
+/// A `FireworkExplosion` value.
+fn write_explosion(
+    out: &mut Vec<u8>,
+    shape: i32,
+    colors: &[i32],
+    fades: &[i32],
+    trail: bool,
+    twinkle: bool,
+) {
+    write_varint(out, shape);
+    for list in [colors, fades] {
+        write_varint(out, i32::try_from(list.len()).unwrap_or(0));
+        for c in list {
+            out.extend_from_slice(&c.to_be_bytes());
+        }
+    }
+    out.push(u8::from(trail));
+    out.push(u8::from(twinkle));
+}
+
+/// Reads a `FireworkExplosion` value.
+#[allow(clippy::type_complexity)]
+fn read_explosion(value: &[u8]) -> Option<(i32, Vec<i32>, Vec<i32>, bool, bool)> {
+    let mut r = vanillite_protocol::codec::Reader::new(value);
+    let shape = r.varint().ok()?;
+    let mut lists = [Vec::new(), Vec::new()];
+    for list in &mut lists {
+        let n = r.len_prefix("colors", 1024, 4).ok()?;
+        for _ in 0..n {
+            list.push(r.i32().ok()?);
+        }
+    }
+    let trail = r.u8().ok()? != 0;
+    let twinkle = r.u8().ok()? != 0;
+    let [colors, fades] = lists;
+    Some((shape, colors, fades, trail, twinkle))
+}
+
+/// The `result` of a recipe whose result keeps the input's components (`TransmuteResult`).
+fn transmute_result(json: &Value) -> Result<TransmuteResult, String> {
+    let result = json.get("result").ok_or("no result")?;
+    Ok(match result {
+        Value::String(s) => TransmuteResult {
+            item: Some(item_id(s)?),
+            count: 1,
+        },
+        v => TransmuteResult {
+            item: v
+                .get("id")
+                .and_then(Value::as_str)
+                .map(item_id)
+                .transpose()?,
+            count: count_of(v),
+        },
+    })
 }
 
 /// `WrittenBookContent.tryCraftCopy`: the content one generation further, `None` past
