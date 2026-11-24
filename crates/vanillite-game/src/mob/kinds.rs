@@ -240,7 +240,11 @@ impl Kind {
 
     /// `getSoundVolume`.
     pub fn sound_volume(self) -> f32 {
-        if self == Kind::Cow { 0.4 } else { 1.0 }
+        match self {
+            Kind::Cow => 0.4,
+            Kind::EnderDragon => 5.0,
+            _ => 1.0,
+        }
     }
 
     /// `getAmbientSound`, `None` for silent kinds.
@@ -298,7 +302,8 @@ impl Kind {
             Kind::Guardian => "minecraft:entity.guardian.death",
             Kind::ElderGuardian => "minecraft:entity.elder_guardian.death",
             Kind::Wither => "minecraft:entity.wither.death",
-            Kind::EnderDragon => "minecraft:entity.ender_dragon.death",
+            // The dragon has no own death sound (`GENERIC_DEATH`).
+            Kind::EnderDragon => "minecraft:entity.generic.death",
             Kind::Warden => "minecraft:entity.warden.death",
         }
     }

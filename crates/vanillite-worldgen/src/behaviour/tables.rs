@@ -35,6 +35,8 @@ block_tags!(
     causes_periodic_geyser_eruptions,
     copper_chests,
     dampens_vibrations,
+    dragon_immune,
+    dragon_transparent,
     enables_bubble_column_drag_down,
     enables_bubble_column_push_up,
     fences,

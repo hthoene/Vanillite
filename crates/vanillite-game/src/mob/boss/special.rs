@@ -83,30 +83,48 @@ pub fn tick(
 
 /// The synched data of a special entity after the entity's own (ids from 8 on).
 pub fn entity_data(out: &mut Vec<u8>, data: &SpecialData, all: bool) {
-    if let SpecialData::WitherSkull(s) = data {
-        wither::skull_entity_data(out, s, all);
+    match data {
+        SpecialData::EndCrystal(_)
+        | SpecialData::DragonFireball(_)
+        | SpecialData::AreaEffectCloud(_) => dragon::crystal::entity_data(out, data, all),
+        SpecialData::WitherSkull(s) => wither::skull_entity_data(out, s, all),
+    }
+}
+
+/// `hurtServer` of a special entity (end crystals break; the others ignore hits).
+pub fn hurt(
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    cx: &mut MobContext,
+    id: EntityId,
+    source: &crate::survival::damage::DamageSource,
+) -> bool {
+    match ents.special(id) {
+        Some(SpecialData::EndCrystal(_)) => {
+            dragon::crystal::hurt_crystal(ents, env, cx, id, source)
+        }
+        _ => false,
     }
 }
 
 /// The entity NBT of a special entity's kind data; `None` when the entity is not saved.
 pub fn save(data: &SpecialData, out: &mut Compound) -> Option<()> {
-    if let SpecialData::WitherSkull(s) = data {
-        wither::save_skull(s, out);
+    match data {
+        SpecialData::EndCrystal(_)
+        | SpecialData::DragonFireball(_)
+        | SpecialData::AreaEffectCloud(_) => dragon::crystal::save(data, out),
+        SpecialData::WitherSkull(s) => {
+            wither::save_skull(s, out);
+            Some(())
+        }
     }
-    Some(())
 }
 
 /// Reads the kind data of a special entity of `kind`; `None` for other kinds.
 pub fn load(kind: EntityTypeId, tag: &Compound) -> Option<SpecialData> {
     if kind == ids::WITHER_SKULL {
         Some(SpecialData::WitherSkull(Box::new(wither::load_skull(tag))))
-    } else if kind == ids::END_CRYSTAL {
-        Some(SpecialData::EndCrystal(Box::default()))
-    } else if kind == ids::DRAGON_FIREBALL {
-        Some(SpecialData::DragonFireball(Box::default()))
-    } else if kind == ids::AREA_EFFECT_CLOUD {
-        Some(SpecialData::AreaEffectCloud(Box::default()))
     } else {
-        None
+        dragon::crystal::load(kind, tag)
     }
 }

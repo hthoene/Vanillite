@@ -259,6 +259,7 @@ pub fn after_hurt(
             guardian::after_hurt(level, ents, env, cx, target, source, took);
         }
         Kind::Wither => wither::after_hurt(level, ents, env, cx, target, source, took),
+        Kind::EnderDragon => dragon::after_hurt(level, ents, env, cx, target),
         Kind::Warden => warden::after_hurt(level, ents, env, cx, target, source, took),
         _ => {}
     }

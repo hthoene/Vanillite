@@ -380,6 +380,15 @@ pub enum WorldAction {
     DestroyBlock(BlockPos, bool),
     /// `levelEvent(event, pos, data)`.
     LevelEvent(i32, BlockPos, i32),
+    /// `explode(source, damageSource(source, indirect), pos, radius, interaction)` with
+    /// `ExplosionInteraction.BLOCK` (`blocks`) or `NONE`.
+    ExplodeWith {
+        source: Option<EntityId>,
+        indirect: Option<EntityId>,
+        pos: Vec3,
+        radius: f32,
+        blocks: bool,
+    },
 }
 
 /// The mob state of a world besides the entities: search buffers, queued world changes and
@@ -401,6 +410,10 @@ pub struct MobContext {
     /// The boss bars of entities (the wither's), by entity; see
     /// [`boss::wither::sweep_boss_bars`].
     pub boss_bars: vanillite_base::hash::FxHashMap<EntityId, crate::boss_bar::BossBar>,
+    /// The End fight as the dragon and the crystals see it; `None` outside the End.
+    pub dragon_fight: Option<boss::dragon::FightView>,
+    /// What the dragon and the crystals report to the fight, handled after each tick.
+    pub dragon_events: Vec<boss::dragon::DragonEvent>,
 }
 
 impl MobContext {
@@ -462,7 +475,13 @@ pub fn spawn(
     rot: Rotation,
     mob: MobData,
 ) -> EntityId {
-    let mut new = NewEntity::new(mob.kind.type_id(), network_ids.next(), uuid, pos);
+    // The dragon's eight parts take the ids after its own.
+    let network_id = if mob.kind == Kind::EnderDragon {
+        network_ids.next_block(9)
+    } else {
+        network_ids.next()
+    };
+    let mut new = NewEntity::new(mob.kind.type_id(), network_id, uuid, pos);
     new.rot = rot;
     let baby = mob.baby;
     let id = entities.spawn_mob(new, mob);

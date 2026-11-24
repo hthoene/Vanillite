@@ -151,6 +151,11 @@ impl EntityChunks {
         self.scratch.clear();
     }
 
+    /// Whether the entities of a chunk are in the world (`areEntitiesLoaded`).
+    pub(crate) fn is_loaded(&self, pos: ChunkPos) -> bool {
+        self.loaded.contains(&pos)
+    }
+
     /// Adds loaded entities to the world.
     fn add(&mut self, level: &mut Level, pos: ChunkPos, entities: Vec<Compound>) {
         let mut raw = Vec::new();
@@ -170,7 +175,9 @@ impl EntityChunks {
                     e.set_velocity(loaded.velocity);
                     e.set_flags(EntityFlags::ON_GROUND, loaded.on_ground);
                 }
-            } else if let Some((kind, p, v, rot, uuid, data)) = nbt::load_special(&tag) {
+            } else if let Some((kind, p, v, rot, uuid, data)) =
+                nbt::load_special(&tag, self.seed ^ level.game_time())
+            {
                 let mut new = NewEntity::new(kind, level.network_ids().next(), uuid, p);
                 new.velocity = v;
                 new.rot = rot;

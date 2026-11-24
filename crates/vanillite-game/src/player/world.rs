@@ -79,4 +79,9 @@ pub trait PlayLevel {
     fn placed_by(&mut self, pos: BlockPos, state: BlockState) {
         let _ = (pos, state);
     }
+    /// `EndCrystalItem.useOn` on the block at `on`: places an end crystal; whether it did.
+    fn use_end_crystal(&mut self, on: BlockPos) -> bool {
+        let _ = on;
+        false
+    }
 }

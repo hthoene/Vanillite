@@ -203,6 +203,13 @@ impl PlayLevel for WorldLevel<'_> {
         }
     }
 
+    fn use_end_crystal(&mut self, on: BlockPos) -> bool {
+        let seed = self.level.random().next_long();
+        let uuid =
+            vanillite_game::mob::random_uuid(&mut vanillite_base::random::LegacyRandom::new(seed));
+        vanillite_game::mob::boss::dragon::fight::use_end_crystal(self.level, uuid, on)
+    }
+
     fn is_unobstructed(&self, state: BlockState, pos: BlockPos) -> bool {
         let (dx, dy, dz) = (f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
         let store = &self.level.entities.store;
