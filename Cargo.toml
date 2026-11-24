@@ -44,6 +44,10 @@ rustc-hash = "2.1"
 serde_json = "1"
 sha1 = "0.10"
 toml = "1"
+
+# External crates: storage (vanillite-storage).
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+lz4_flex = { version = "0.11", default-features = false, features = ["safe-encode", "safe-decode"] }
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 

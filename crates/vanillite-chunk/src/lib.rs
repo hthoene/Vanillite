@@ -6,7 +6,8 @@
 //! stored as uniform or full nibble arrays, and heightmaps keep Vanilla's packed layout.
 //!
 //! The per-state facts the format needs (air, random ticking, fluids, heightmap predicates) and the
-//! size of the global palettes are installed once at startup with [`facts::install`].
+//! size of the global palettes are installed once at startup with [`facts::install_vanilla`].
+//! [`slots`] holds the generation, light and storage contracts (slots) around the format.
 
 pub mod bits;
 pub mod chunk;
@@ -17,6 +18,7 @@ pub mod layout;
 pub mod light;
 pub mod packet;
 pub mod section;
+pub mod slots;
 pub mod wire;
 
 #[cfg(test)]
@@ -29,4 +31,5 @@ pub use heightmap::{Heightmap, HeightmapKind, Heightmaps};
 pub use light::{ChunkLight, LightNibbles};
 pub use packet::{BlockEntityWire, SectionMask};
 pub use section::{Section, SectionSummary};
+pub use slots::{ChunkStatus, ProtoChunk, WorldInfo};
 pub use wire::DecodeError;

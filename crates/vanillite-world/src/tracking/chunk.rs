@@ -215,6 +215,12 @@ impl EntityTracker for ChunkTracker {
         self.moved.clear();
         self.forget_removed(store, out);
         self.sync_viewers(input);
+        // Chunks that reached a client make its entities pairable: check that viewer again.
+        for &(viewer, _) in input.chunks_sent {
+            if self.viewers.contains_key(&viewer) {
+                push_unique(&mut self.moved, viewer);
+            }
+        }
 
         let ChunkTracker {
             settings,

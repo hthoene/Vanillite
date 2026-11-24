@@ -7,6 +7,7 @@
 
 mod clock;
 pub mod compute;
+pub mod eula;
 mod global;
 mod net;
 mod player_list;
@@ -16,6 +17,7 @@ pub mod slot;
 mod tick_rate;
 mod watchdog;
 mod world;
+mod world_setup;
 
 pub use clock::Clock;
 pub use compute::{Compute, ComputePool, InlineScheduler, Job, Scheduler, Scope};

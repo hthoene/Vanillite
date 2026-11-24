@@ -72,6 +72,27 @@ impl LightNibbles {
         }
     }
 
+    /// Raises every level to at least the level of `other` at the same position.
+    pub fn merge_max(&mut self, other: &LightNibbles) {
+        match (&*self, other) {
+            (_, Self::Absent) => {}
+            (Self::Absent, _) => *self = other.clone(),
+            (Self::Uniform(a), Self::Uniform(b)) => *self = Self::Uniform((*a).max(*b)),
+            (Self::Uniform(15), _) => {}
+            (_, Self::Uniform(0)) => {}
+            (Self::Data(a), Self::Data(b)) if Arc::ptr_eq(a, b) => {}
+            _ => {
+                let theirs = other.to_bytes();
+                let mine = self.data_mut();
+                for (mine, theirs) in mine.iter_mut().zip(theirs) {
+                    let low = (*mine & 15).max(theirs & 15);
+                    let high = (*mine >> 4).max(theirs >> 4);
+                    *mine = high << 4 | low;
+                }
+            }
+        }
+    }
+
     /// The full array (materialised for uniform and absent layers).
     pub fn to_bytes(&self) -> [u8; NIBBLE_BYTES] {
         match self {
@@ -128,6 +149,19 @@ impl ChunkLight {
     #[inline]
     pub fn block(&self) -> &[LightNibbles] {
         &self.block
+    }
+
+    /// Raises every level of both light types to at least the level in `other` (same layout).
+    /// An absent sky layer counts as full sky light and stays absent.
+    pub fn merge_max(&mut self, other: &ChunkLight) {
+        for (mine, theirs) in self.sky.iter_mut().zip(other.sky.iter()) {
+            if *mine != LightNibbles::Absent {
+                mine.merge_max(theirs);
+            }
+        }
+        for (mine, theirs) in self.block.iter_mut().zip(other.block.iter()) {
+            mine.merge_max(theirs);
+        }
     }
 
     /// Block light layers, mutable.
