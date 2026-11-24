@@ -1049,6 +1049,16 @@
       "user_editable": true,
       "rules": "nullable|string|regex:/^(?!vanilla[0-9])(vanilla)?[0-9]*$/",
       "field_type": "text"
+    },
+    {
+      "name": "Items: Despawn Ticks",
+      "description": "Ticks an item lies on the ground before it despawns. Lower values keep fewer item entities around on busy servers. Applies to every world. Range: 20 to 32766. Empty: the profile's value (vanilla profile: 6000). vanillite.toml: performance.items.despawn-ticks.",
+      "env_variable": "VANILLITE_PERFORMANCE__ITEMS__DESPAWN_TICKS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:20,32766",
+      "field_type": "text"
     }
   ]
 }
