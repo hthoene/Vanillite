@@ -4,6 +4,7 @@
 //! - [`AnvilStorage`] is the built-in `chunk-storage` slot (architecture 9.3).
 //! - [`player_data`] reads and writes `players/data/<uuid>.dat`.
 //! - [`import`] moves older Vanilla and Spigot/Paper layouts into the 26.x layout.
+//! - [`layout`] places dimensions in Vanilla's or Spigot's folder layout.
 //!
 //! Stored files are untrusted input: decompression and NBT reads run under the file budgets
 //! (SEC-26), and errors are reported per chunk instead of panicking.
@@ -11,6 +12,7 @@
 pub mod chunk_nbt;
 pub mod compression;
 pub mod import;
+pub mod layout;
 pub mod player_data;
 pub mod region;
 
@@ -26,6 +28,7 @@ use vanillite_nbt::{Budget, Compound};
 
 pub use crate::chunk_nbt::Codec;
 pub use crate::compression::Compression;
+pub use crate::layout::WorldLayout;
 use crate::region::RegionFile;
 
 /// An open region file, shared by the jobs that use it.

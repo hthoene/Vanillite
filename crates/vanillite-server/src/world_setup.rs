@@ -2,7 +2,7 @@
 //! compute pool as the chunk runtime's executor, and chunk packets for the players.
 
 use std::cell::RefCell;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use vanillite_base::ChunkPos;
@@ -256,11 +256,11 @@ impl ChunkGeneratorProvider for BuiltInGenerators {
     }
 }
 
-/// The [`WorldInfo`] of a dimension; its height and sky light come from its dimension type
-/// (Vanilla's overworld values without data packs).
+/// The [`WorldInfo`] of a dimension stored in `dir`; its height and sky light come from its
+/// dimension type (Vanilla's overworld values without data packs).
 pub(crate) fn world_info(
     packs: Option<&LoadedPacks>,
-    world_dir: &Path,
+    dir: PathBuf,
     dimension: &str,
     seed: i64,
 ) -> Result<WorldInfo, StartError> {
@@ -297,7 +297,7 @@ pub(crate) fn world_info(
         .unwrap_or(0);
     Ok(WorldInfo {
         dimension: dimension.to_owned(),
-        dir: vanillite_storage::dimension_dir(world_dir, dimension),
+        dir,
         min_y,
         height,
         seed,

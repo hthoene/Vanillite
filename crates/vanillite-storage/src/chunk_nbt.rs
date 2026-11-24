@@ -30,7 +30,7 @@ use vanillite_nbt::{Budget, Compound, List, Tag};
 pub const OLDEST_DATA_VERSION: i32 = 3953;
 
 /// Tags this module decodes; everything else goes to `extra`.
-const DECODED: [&str; 13] = [
+pub(crate) const DECODED: [&str; 13] = [
     "DataVersion",
     "xPos",
     "yPos",

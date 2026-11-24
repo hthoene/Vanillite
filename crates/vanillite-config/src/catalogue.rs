@@ -4,7 +4,7 @@
 //! `[worlds."<dimension>"]`. Both read their keys from the top level of `vanillite.toml`, so a
 //! group key must be unique across both sets. Performance knobs live under `performance.*`.
 
-use crate::rule::{DisabledOr, VanillaOr};
+use crate::rule::{DisabledOr, StorageLayout, VanillaOr};
 use crate::rules;
 
 rules! {
@@ -30,6 +30,16 @@ rules! {
             /// Ticks between autosaves. Vanilla saves every 5 minutes of game time.
             interval: VanillaOr<u32> = "interval", Setting, range = [20, 1_728_000],
                 vanilla = VanillaOr::Vanilla;
+        }
+        /// World storage.
+        storage: StorageRules = "storage" {
+            /// Folder layout of the dimensions: `"vanilla"` keeps every dimension in
+            /// `<level>/dimensions/` like Vanilla and Paper; `"spigot"` puts the nether into
+            /// `<level>_nether/` and the end into `<level>_the_end/` like Spigot and CraftBukkit,
+            /// so the world can be opened by Spigot without conversion. A world found in the
+            /// other layout is moved into this one once at startup.
+            layout: StorageLayout = "layout", Setting, restart = true,
+                vanilla = StorageLayout::Vanilla, spigot = StorageLayout::Spigot;
         }
         /// The watchdog that detects a hanging server. The hard limit is `max-tick-time` in
         /// `server.properties`.

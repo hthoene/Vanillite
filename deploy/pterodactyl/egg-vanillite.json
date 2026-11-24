@@ -641,6 +641,16 @@
       "field_type": "text"
     },
     {
+      "name": "Storage: Layout",
+      "description": "Folder layout of the dimensions: `\"vanilla\"` keeps every dimension in `<level>/dimensions/` like Vanilla and Paper; `\"spigot\"` puts the nether into `<level>_nether/` and the end into `<level>_the_end/` like Spigot and CraftBukkit, so the world can be opened by Spigot without conversion. A world found in the other layout is moved into this one once at startup. Empty: the profile's value (vanilla profile: vanilla). vanillite.toml: storage.layout.",
+      "env_variable": "VANILLITE_STORAGE__LAYOUT",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string",
+      "field_type": "text"
+    },
+    {
       "name": "Watchdog: Early Warning After",
       "description": "Seconds without a finished tick after which a first warning is logged. Range: 1 to 3600. Also accepts disabled. Empty: the profile's value (vanilla profile: 10). vanillite.toml: watchdog.early-warning-after.",
       "env_variable": "VANILLITE_WATCHDOG__EARLY_WARNING_AFTER",
