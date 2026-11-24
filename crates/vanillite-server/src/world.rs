@@ -271,6 +271,11 @@ impl ServerWorld {
                 id,
             );
         }
+        if self.id.0 == 0 && ctx.runs_normally {
+            // `ServerFunctionManager.tick`: the data pack functions run as the server in the
+            // overworld before the clocks and the worlds tick.
+            crate::commands::tick_functions(&mut self.level, ctx.global, self.id);
+        }
         self.players_inside_blocks();
         self.level.set_handling_tick(true);
         if ctx.runs_normally {

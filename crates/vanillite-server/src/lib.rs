@@ -20,6 +20,7 @@ mod players;
 mod server;
 pub mod slot;
 mod survival;
+mod systems;
 mod test_bot;
 mod tick_rate;
 mod watchdog;

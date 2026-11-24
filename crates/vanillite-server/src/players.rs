@@ -458,10 +458,10 @@ impl WorldPlayers {
             }
         }
         for id in std::mem::take(&mut self.chatting) {
-            crate::chat::handle_requests(entities, global, id, world, &mut self.leaving);
+            crate::chat::handle_requests(level, global, id, world, &mut self.leaving);
         }
         for (id, reason) in std::mem::take(&mut self.leaving) {
-            self.leave(entities, global, id, reason);
+            self.leave(&mut level.entities, global, id, reason);
         }
     }
 

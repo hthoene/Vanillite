@@ -792,6 +792,7 @@ impl WorldSurvival {
         }
         let keep_all = false;
         let uuid = entities.store.get(id)?.uuid();
+        let tags = entities.tags_of(id).to_vec();
         let (removed, mut data) = entities.despawn_player(id)?;
         let keep_inventory = level.rules().bool(Rule::KEEP_INVENTORY)
             || data.game_mode == vanillite_config::GameMode::Spectator;
@@ -850,6 +851,7 @@ impl WorldSurvival {
             },
             data,
         );
+        entities.set_tags(new, tags);
         if let Some(mut entity) = entities.store.get_mut(new) {
             entity.set_flags(EntityFlags::ON_GROUND, false);
             entity.mark_data_dirty();

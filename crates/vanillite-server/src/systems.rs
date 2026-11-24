@@ -27,7 +27,13 @@ pub(crate) struct GameSystems {
     /// The Vanilla data pack, when loaded.
     pub(crate) vanilla_pack: Option<PathBuf>,
     spawn: Mutex<Vec3>,
+    /// Tags of the static and dynamic registries: registry → tag → entries.
+    tags: RwLock<Arc<RegistryTags>>,
 }
+
+/// Registry tags: registry name → tag id → resolved entry ids.
+pub(crate) type RegistryTags =
+    std::collections::BTreeMap<String, std::collections::BTreeMap<String, Vec<String>>>;
 
 impl std::fmt::Debug for GameSystems {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -47,7 +53,26 @@ impl GameSystems {
             level_dir,
             vanilla_pack,
             spawn: Mutex::new(Vec3::ZERO),
+            tags: RwLock::new(Arc::new(RegistryTags::new())),
         }
+    }
+
+    /// The registry tags.
+    pub(crate) fn tags(&self) -> Arc<RegistryTags> {
+        Arc::clone(&self.tags.read().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    /// Replaces the registry tags.
+    pub(crate) fn set_tags(&self, tags: RegistryTags) {
+        *self.tags.write().unwrap_or_else(PoisonError::into_inner) = Arc::new(tags);
+    }
+
+    /// Whether `entry` is in `#tag` of `registry`.
+    pub(crate) fn in_tag(&self, registry: &str, tag: &str, entry: &str) -> bool {
+        self.tags()
+            .get(registry)
+            .and_then(|t| t.get(tag))
+            .is_some_and(|e| e.iter().any(|e| e == entry))
     }
 
     /// The scoreboard.

@@ -49,6 +49,8 @@ pub struct Entities {
     pub falling_blocks: Dense<FallingBlockData>,
     /// Primed TNT kind data.
     pub primed_tnts: Dense<PrimedTntData>,
+    /// Entity tags (`Entity.tags`) of the entities that have any.
+    tags: std::collections::HashMap<EntityId, Vec<String>>,
 }
 
 impl Entities {
@@ -153,9 +155,51 @@ impl Entities {
         self.primed_tnts.get_mut(row)
     }
 
+    /// The tags of an entity (`entityTags`).
+    pub fn tags_of(&self, id: EntityId) -> &[String] {
+        self.tags.get(&id).map_or(&[], Vec::as_slice)
+    }
+
+    /// Replaces the tags of an entity.
+    pub fn set_tags(&mut self, id: EntityId, tags: Vec<String>) {
+        if tags.is_empty() {
+            self.tags.remove(&id);
+        } else if self.store.contains(id) {
+            self.tags.insert(id, tags);
+        }
+    }
+
+    /// `addTag`: false when the entity has it or already has 1024 tags.
+    pub fn add_tag(&mut self, id: EntityId, tag: &str) -> bool {
+        if !self.store.contains(id) {
+            return false;
+        }
+        let tags = self.tags.entry(id).or_default();
+        if tags.len() >= 1024 || tags.iter().any(|t| t == tag) {
+            return false;
+        }
+        tags.push(tag.to_owned());
+        true
+    }
+
+    /// `removeTag`.
+    pub fn remove_tag(&mut self, id: EntityId, tag: &str) -> bool {
+        let Some(tags) = self.tags.get_mut(&id) else {
+            return false;
+        };
+        let before = tags.len();
+        tags.retain(|t| t != tag);
+        let removed = tags.len() != before;
+        if tags.is_empty() {
+            self.tags.remove(&id);
+        }
+        removed
+    }
+
     /// Removes an entity of any kind together with its kind data.
     pub fn despawn(&mut self, id: EntityId) -> Option<Removed> {
         let removed = self.store.despawn(id)?;
+        self.tags.remove(&id);
         let moved = self.remove_kind_row(removed.kind, removed.kind_row);
         if let Some(moved) = moved {
             self.store.set_kind_row(moved, removed.kind_row);
@@ -170,6 +214,7 @@ impl Entities {
             return None;
         }
         let removed = self.store.despawn(id)?;
+        self.tags.remove(&id);
         let (data, moved) = self.players.swap_remove(removed.kind_row)?;
         if let Some(moved) = moved {
             self.store.set_kind_row(moved, removed.kind_row);

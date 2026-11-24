@@ -348,8 +348,25 @@ impl ServerBuilder {
             registries: prepared.registries.clone(),
             game,
             spawn_protection: config.properties.spawn_protection,
+            systems: crate::systems::GameSystems::new(
+                level_dir.clone(),
+                packs.as_deref().and_then(|p| p.roots().first().cloned()),
+                u8::try_from(config.properties.function_permission_level).unwrap_or(2),
+            ),
             this: this.clone(),
         });
+        if let Some(packs) = packs.as_deref() {
+            global.systems.set_tags(
+                packs
+                    .tagged_registries()
+                    .filter_map(|r| Some((r.to_owned(), packs.tags(r)?.clone())))
+                    .collect(),
+            );
+        }
+        global
+            .systems
+            .set_spawn(level_setup.spawn.0);
+        crate::commands::load_game_systems(&global);
         let watch = Arc::new(WatchState::new(
             config.server.watchdog.early_warning_after.get(),
             config.server.watchdog.warning_interval,

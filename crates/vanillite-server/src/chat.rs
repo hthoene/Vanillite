@@ -16,12 +16,13 @@ use crate::player_list::Uuid;
 /// Handles the queued chat requests of a player in order. Players to kick are added to
 /// `leaving`.
 pub(crate) fn handle_requests(
-    entities: &mut Entities,
+    level: &mut vanillite_game::level::Level,
     global: &Global,
     id: EntityId,
     world: crate::world::WorldId,
     leaving: &mut Vec<(EntityId, Option<Box<Component>>)>,
 ) {
+    let entities = &mut level.entities;
     let Some(uuid) = entities.store.get(id).map(|e| e.uuid()) else {
         return;
     };
@@ -44,14 +45,14 @@ pub(crate) fn handle_requests(
                     salt,
                     last_seen,
                 };
-                chat(entities, global, id, uuid, signature, body)
+                chat(&mut level.entities, global, id, uuid, signature, body)
             }
             ChatRequest::Session(data) => {
                 session(global, uuid, data);
                 None
             }
             ChatRequest::Command { command, signed } => {
-                crate::commands::run_player_command(entities, global, id, world, &command, signed)
+                crate::commands::run_player_command(level, global, id, world, &command, signed)
             }
         };
         if let Some(reason) = kicked {
