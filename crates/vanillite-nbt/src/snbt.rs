@@ -15,6 +15,7 @@ pub fn parse(input: &str) -> Result<Tag> {
         s: input,
         pos: 0,
         depth: 0,
+        max_depth: MAX_DEPTH,
     };
     let tag = p.value()?;
     p.ws();
@@ -22,6 +23,20 @@ pub fn parse(input: &str) -> Result<Tag> {
         return Err(p.err("trailing characters"));
     }
     Ok(tag)
+}
+
+/// Parses one SNBT value at the start of `input` and returns it with the number of bytes it
+/// used; what follows is left to the caller (command arguments). Nesting deeper than
+/// `max_depth` (at most the binary limit) is an error.
+pub fn parse_prefix(input: &str, max_depth: u32) -> Result<(Tag, usize)> {
+    let mut p = Parser {
+        s: input,
+        pos: 0,
+        depth: 0,
+        max_depth: max_depth.min(MAX_DEPTH),
+    };
+    let tag = p.value()?;
+    Ok((tag, p.pos))
 }
 
 /// Parses an SNBT compound.
@@ -39,6 +54,7 @@ struct Parser<'a> {
     s: &'a str,
     pos: usize,
     depth: u32,
+    max_depth: u32,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -115,7 +131,7 @@ impl Parser<'_> {
     }
 
     fn enter(&mut self) -> Result<()> {
-        if self.depth >= MAX_DEPTH {
+        if self.depth >= self.max_depth {
             return Err(Error::DepthExceeded);
         }
         self.depth = self.depth.saturating_add(1);

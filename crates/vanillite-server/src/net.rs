@@ -34,6 +34,8 @@ pub enum VanillaPack {
 pub(crate) struct Prepared {
     pub(crate) configuration: ConfigurationData,
     pub(crate) worlds: Vec<WorldPlayers>,
+    pub(crate) chat_types: crate::global::ChatTypes,
+    pub(crate) registries: std::collections::BTreeMap<String, Vec<String>>,
     /// The loaded data packs; `None` with [`VanillaPack::None`].
     pub(crate) packs: Option<LoadedPacks>,
     /// Seed and generators of the world.
@@ -166,9 +168,32 @@ pub(crate) fn prepare(
             WorldPlayers::new(level, PlayerDataStore::new(level_dir))
         })
         .collect();
+    let chat_type = |name: &str| {
+        i32::try_from(registry_index(packs.as_ref(), "minecraft:chat_type", name)).unwrap_or(0)
+    };
+    let chat_types = crate::global::ChatTypes {
+        chat: chat_type("minecraft:chat"),
+        say_command: chat_type("minecraft:say_command"),
+        msg_incoming: chat_type("minecraft:msg_command_incoming"),
+        msg_outgoing: chat_type("minecraft:msg_command_outgoing"),
+        emote_command: chat_type("minecraft:emote_command"),
+    };
+    let registries = ["minecraft:timeline", "minecraft:world_clock"]
+        .into_iter()
+        .map(|name| {
+            let entries = packs
+                .as_ref()
+                .and_then(|p| p.registry(name))
+                .map(|r| r.entries().iter().map(|e| e.id.to_string()).collect())
+                .unwrap_or_default();
+            (name.to_owned(), entries)
+        })
+        .collect();
     Ok(Prepared {
         configuration,
         worlds,
+        chat_types,
+        registries,
         packs,
         world_gen,
     })
@@ -189,6 +214,7 @@ impl NetState {
         config: &Config,
         configuration: ConfigurationData,
         listen: bool,
+        enforces_secure_chat: bool,
     ) -> Result<NetState, StartError> {
         let p = &config.properties;
         let ip: std::net::IpAddr = if p.server_ip.is_empty() {
@@ -209,11 +235,17 @@ impl NetState {
             prevent_proxy_connections: p.prevent_proxy_connections,
             compression_threshold: p.network_compression_threshold,
             accepts_transfers: p.accepts_transfers,
+            // Room for every allowed player plus logins in progress.
+            max_connections: usize::try_from(p.max_players)
+                .unwrap_or(0)
+                .saturating_add(256)
+                .max(NetConfig::default().max_connections),
             ..NetConfig::default()
         };
         let status = StatusInfo {
             description: Component::text(p.motd.clone()),
             max_players: p.max_players,
+            enforces_secure_chat,
             ..StatusInfo::default()
         };
         let (network, joins) = Network::start(net, status.clone(), configuration, None)
@@ -274,16 +306,21 @@ pub(crate) fn arrival(
             })
             .collect(),
     };
+    let client = ClientInformation::from(&joined.client_info);
+    let inbox = Arc::new(std::sync::Mutex::new(
+        vanillite_game::player::chat::ChatInbox::new(client.chat_visibility),
+    ));
     let arrival = Arrival {
         uuid: joined.profile.id.0,
         profile,
-        client: ClientInformation::from(&joined.client_info),
+        client,
         game_mode,
         sink: Arc::clone(&sink),
         inbound: joined.inbound,
         memory_connection: joined.is_virtual,
         saved,
         address: joined.address.to_string(),
+        inbox,
     };
     (arrival, sink)
 }

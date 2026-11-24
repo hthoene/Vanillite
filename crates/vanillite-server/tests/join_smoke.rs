@@ -4,12 +4,15 @@
 use std::io::{self, Read, Write};
 use std::time::{Duration, Instant};
 
+use vanillite_protocol::chat::LastSeenUpdate;
 use vanillite_protocol::client::TestClient;
 use vanillite_protocol::codec::write_varint;
+use vanillite_protocol::commands::NodeKind;
 use vanillite_protocol::packets::handshake::Intent;
+use vanillite_protocol::packets::play::clientbound::GameMode;
 use vanillite_protocol::packets::play::serverbound::{
-    AcceptTeleportation, ChunkBatchReceived, ClientTickEnd, Input, MoveFlags, MovePlayerPos,
-    PlayerInput, PlayerLoaded,
+    AcceptTeleportation, Chat, ChatCommand, ChunkBatchReceived, ClientTickEnd, CommandSuggestion,
+    Input, MoveFlags, MovePlayerPos, PlayerInput, PlayerLoaded,
 };
 use vanillite_protocol::sets::ClientboundPlay;
 use vanillite_protocol::types::{GameProfile, Uuid};
@@ -92,6 +95,8 @@ impl Write for Mem {
 struct Player {
     client: TestClient<Mem>,
     uuid: u128,
+    /// Root literals of the command tree the player got on joining.
+    commands: Vec<String>,
 }
 
 impl Player {
@@ -152,6 +157,7 @@ fn connect(opener: &VirtualOpener, name: &str) -> Player {
     Player {
         client,
         uuid: uuid.0,
+        commands: Vec::new(),
     }
 }
 
@@ -161,10 +167,28 @@ fn join(player: &mut Player) -> (f64, f64, f64) {
     player.until("login", |p| {
         matches!(p, ClientboundPlay::Login(_)).then_some(())
     });
+    let mut roots = Vec::new();
     let teleport = player.until("player_position", |p| match p {
+        ClientboundPlay::Commands(tree) => {
+            let nodes = &tree.0.nodes;
+            let root = usize::try_from(tree.0.root).ok().and_then(|i| nodes.get(i));
+            roots = root
+                .map(|r| {
+                    r.children
+                        .iter()
+                        .filter_map(|&c| match nodes.get(usize::try_from(c).ok()?)?.kind {
+                            NodeKind::Literal(ref name) => Some(name.clone()),
+                            _ => None,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            None
+        }
         ClientboundPlay::PlayerPosition(t) => Some(t.clone()),
         _ => None,
     });
+    player.commands = roots;
     let pos = teleport.change.position;
     player.send(&AcceptTeleportation {
         id: teleport.teleport_id,
@@ -181,6 +205,23 @@ fn join(player: &mut Player) -> (f64, f64, f64) {
     (pos.x, pos.y, pos.z)
 }
 
+/// `Some(())` for a system message with the translation key `key`.
+fn system_key(packet: &ClientboundPlay, key: &str) -> Option<()> {
+    let ClientboundPlay::SystemChat(chat) = packet else {
+        return None;
+    };
+    let mut stack = vec![&chat.content];
+    while let Some(c) = stack.pop() {
+        if let vanillite_protocol::text::Content::Translatable { key: k, .. } = &c.content
+            && k == key
+        {
+            return Some(());
+        }
+        stack.extend(c.extra.iter());
+    }
+    None
+}
+
 /// Waits until `viewer` sees an entity with `uuid` spawn and returns its network id.
 fn sees_spawn(viewer: &mut Player, uuid: u128) -> i32 {
     viewer.until("add_entity", |p| match p {
@@ -195,6 +236,15 @@ fn two_players_join_see_each_other_and_rejoin() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("server.properties"), "view-distance=2\n").unwrap();
+    // Alice is an operator.
+    std::fs::write(
+        dir.join("ops.json"),
+        format!(
+            r#"[{{"uuid":"{}","name":"Alice","level":4,"bypassesPlayerLimit":false}}]"#,
+            Uuid::offline("Alice")
+        ),
+    )
+    .unwrap();
     std::fs::write(dir.join("eula.txt"), "eula=true\n").unwrap();
     let start = |dir: &std::path::Path| {
         let mut builder = ServerBuilder::new(dir);
@@ -251,6 +301,88 @@ fn two_players_join_see_each_other_and_rejoin() {
     b.until("Alice sneaking", |p| match p {
         ClientboundPlay::SetEntityData(d) if d.entity_id == alice_id => {
             (d.items.0.windows(3).any(|w| w == [0, 0, 0x02])).then_some(())
+        }
+        _ => None,
+    });
+
+    // Alice chats; both get her (unsigned) message as player chat.
+    a.send(&Chat {
+        message: "hello world".to_owned(),
+        timestamp: 0,
+        salt: 0,
+        signature: None,
+        last_seen: LastSeenUpdate::default(),
+    });
+    let alice = a.uuid;
+    for viewer in [&mut b, &mut a] {
+        viewer.until("Alice's chat message", |p| match p {
+            ClientboundPlay::PlayerChat(c) if c.sender.0 == alice => {
+                (c.content == "hello world" && c.signature.is_none()).then_some(())
+            }
+            _ => None,
+        });
+    }
+
+    // The command tree follows the permission level.
+    assert!(a.commands.iter().any(|c| c == "gamemode"));
+    assert!(a.commands.iter().any(|c| c == "list"));
+    assert!(!b.commands.iter().any(|c| c == "gamemode"));
+    assert!(b.commands.iter().any(|c| c == "msg"));
+
+    // Alice (operator) changes her game mode: the game event to her, the tab list to Bob.
+    a.send(&ChatCommand {
+        command: "gamemode creative".to_owned(),
+    });
+    a.until("creative game event", |p| match p {
+        ClientboundPlay::GameEvent(e) if e.event == 3 && e.param == 1.0 => Some(()),
+        _ => None,
+    });
+    a.until("game mode feedback", |p| {
+        system_key(p, "commands.gamemode.success.self")
+    });
+    b.until("Alice creative in the tab list", |p| match p {
+        ClientboundPlay::PlayerInfoUpdate(u) => u
+            .entries
+            .iter()
+            .any(|e| e.id.0 == alice && e.game_mode == GameMode::Creative)
+            .then_some(()),
+        _ => None,
+    });
+
+    // Bob may not: the command is unknown to him (permission before parse, SEC-11).
+    b.send(&ChatCommand {
+        command: "gamemode creative".to_owned(),
+    });
+    b.until("unknown command error", |p| {
+        system_key(p, "command.unknown.command")
+    });
+    // Bob lists the players.
+    b.send(&ChatCommand {
+        command: "list".to_owned(),
+    });
+    b.until("player list", |p| system_key(p, "commands.list.players"));
+    // Alice says something; unsigned commands come as system messages with the say type.
+    a.send(&ChatCommand {
+        command: "say hi there".to_owned(),
+    });
+    b.until("say message", |p| match p {
+        ClientboundPlay::DisguisedChat(c) => (c.message.plain() == "hi there").then_some(()),
+        _ => None,
+    });
+    // Bob completes `/msg `: both names.
+    b.send(&CommandSuggestion {
+        id: 7,
+        command: "/msg ".to_owned(),
+    });
+    b.until("suggestions", |p| match p {
+        ClientboundPlay::CommandSuggestions(s) if s.id == 7 => {
+            let names: Vec<&str> = s.suggestions.iter().map(|s| s.text.as_str()).collect();
+            assert!(
+                names.contains(&"Alice") && names.contains(&"Bob"),
+                "{names:?}"
+            );
+            assert_eq!(s.start, 5);
+            Some(())
         }
         _ => None,
     });

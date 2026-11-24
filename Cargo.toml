@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "xtask"]
+members = ["crates/*", "tools/loadbot", "xtask"]
 default-members = ["crates/*"]
 
 [workspace.package]
@@ -42,7 +42,8 @@ log = { version = "0.4", features = ["std"] }
 md5 = { package = "md-5", version = "0.10", default-features = false }
 rustc-hash = "2.1"
 serde_json = "1"
-sha1 = "0.10"
+sha1 = { version = "0.10", features = ["oid"] }
+sha2 = { version = "0.10", features = ["oid"] }
 toml = "1"
 
 # External crates: storage (vanillite-storage).

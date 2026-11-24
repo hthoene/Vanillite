@@ -160,8 +160,8 @@ impl Movement {
         }
     }
 
-    /// `resetPosition`.
-    fn reset_position(&mut self, pos: Vec3) {
+    /// `resetPosition`: the movement checks start from `pos` (after a server-side teleport).
+    pub fn reset_position(&mut self, pos: Vec3) {
         self.first_good = pos;
         self.last_good = pos;
     }
@@ -181,8 +181,7 @@ impl Movement {
         self.received_position_this_tick = false;
     }
 
-    /// `teleport`: moves the player and waits for the client's confirmation; movement packets
-    /// are ignored until then.
+    /// `ServerGamePacketListenerImpl.teleport` to an absolute position and rotation.
     pub fn teleport(
         &mut self,
         body: &mut Body,
@@ -191,14 +190,61 @@ impl Movement {
         x_rot: f32,
         sink: &dyn PacketSink,
     ) {
+        self.teleport_relative(body, pos, y_rot, x_rot, 0, sink);
+    }
+
+    /// `ServerGamePacketListenerImpl.teleport` with [`relative`] bits: each flagged
+    /// coordinate or angle of `pos`, `y_rot` and `x_rot` is an offset from the current value.
+    /// The client gets the values as they are; the server applies them
+    /// (`PositionMoveRotation.calculateAbsolute`). The velocity is cleared except for the
+    /// relative delta components.
+    ///
+    /// [`relative`]: vanillite_protocol::packets::play::clientbound::relative
+    pub fn teleport_relative(
+        &mut self,
+        body: &mut Body,
+        pos: Vec3,
+        y_rot: f32,
+        x_rot: f32,
+        relatives: i32,
+        sink: &dyn PacketSink,
+    ) {
+        use vanillite_protocol::packets::play::clientbound::relative;
+        let rel = |flag: i32, current: f64, value: f64| {
+            if relatives & flag != 0 {
+                current + value
+            } else {
+                value
+            }
+        };
+        let rel_f = |flag: i32, current: f32, value: f32| {
+            if relatives & flag != 0 {
+                current + value
+            } else {
+                value
+            }
+        };
         self.awaiting_teleport_time = self.tick_count;
         self.awaiting_teleport = self.awaiting_teleport.wrapping_add(1);
         if self.awaiting_teleport == i32::MAX {
             self.awaiting_teleport = 0;
         }
-        body.pos = pos;
-        body.velocity = Vec3::ZERO;
-        snap_rotation(body, y_rot, x_rot);
+        let current = body.pos;
+        body.pos = Vec3::new(
+            rel(relative::X, current.x, pos.x),
+            rel(relative::Y, current.y, pos.y),
+            rel(relative::Z, current.z, pos.z),
+        );
+        body.velocity = Vec3::new(
+            rel(relative::DELTA_X, body.velocity.x, 0.0),
+            rel(relative::DELTA_Y, body.velocity.y, 0.0),
+            rel(relative::DELTA_Z, body.velocity.z, 0.0),
+        );
+        let (abs_y, abs_x) = (
+            rel_f(relative::Y_ROT, body.y_rot, y_rot),
+            rel_f(relative::X_ROT, body.x_rot, x_rot),
+        );
+        snap_rotation(body, abs_y, abs_x);
         self.awaiting_position = Some(body.pos);
         sink.send(&PlayerPosition {
             teleport_id: self.awaiting_teleport,
@@ -212,7 +258,7 @@ impl Movement {
                 y_rot,
                 x_rot,
             },
-            relatives: 0,
+            relatives,
         });
     }
 

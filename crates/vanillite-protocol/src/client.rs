@@ -97,6 +97,11 @@ impl<S: Read + Write> TestClient<S> {
         self.state
     }
 
+    /// Gives back the underlying stream (bytes the decoder already read are dropped).
+    pub fn into_stream(self) -> S {
+        self.stream
+    }
+
     /// The underlying stream.
     pub fn stream_mut(&mut self) -> &mut S {
         &mut self.stream
