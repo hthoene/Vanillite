@@ -7,5 +7,12 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
+[dependencies]
+serde_json = { workspace = true, features = ["preserve_order"] }
+sha1.workspace = true
+toml.workspace = true
+ureq.workspace = true
+zip.workspace = true
+
 [lints]
 workspace = true
