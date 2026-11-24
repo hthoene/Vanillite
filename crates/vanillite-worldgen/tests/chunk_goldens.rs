@@ -128,6 +128,7 @@ fn chunks_match_vanilla() {
                     biome_source: &source,
                     min_y: case["min_y"].as_i64().unwrap() as i32,
                     height: case["height"].as_i64().unwrap() as i32,
+                    has_sky_light: dimension == "minecraft:overworld",
                 };
                 TerrainGenerator::new(packs, spec, seed).expect("generator")
             });
@@ -169,4 +170,90 @@ fn chunks_match_vanilla() {
         failures.len(),
         failures.join("\n")
     );
+}
+
+/// The `chunk-generator` slot, driven like the chunk runtime drives it (biomes for the 3×3
+/// area, then terrain with the neighbours as snapshots), yields Vanilla's chunk.
+#[test]
+fn slot_chunk_matches_vanilla() {
+    use std::sync::Arc;
+    use vanillite_chunk::slots::{self, ChunkGenerator, ChunkStatus, Neighbours, WorldInfo};
+    use vanillite_worldgen::VanillaChunkGenerator;
+
+    let packs = common::packs();
+    let golden = common::golden("chunk");
+    let case = golden["chunks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["dimension"] == "minecraft:overworld" && c["seed"].as_i64() != Some(0))
+        .expect("an overworld case");
+    let seed = case["seed"].as_i64().unwrap();
+    let (min_y, height) = (
+        case["min_y"].as_i64().unwrap() as i32,
+        case["height"].as_i64().unwrap() as i32,
+    );
+    let source = biome_source("minecraft:overworld");
+    let spec = DimensionSpec {
+        noise_settings: "minecraft:overworld",
+        biome_source: &source,
+        min_y,
+        height,
+        has_sky_light: true,
+    };
+    let terrain = TerrainGenerator::new(packs, spec, seed).expect("generator");
+    let biomes: Arc<[String]> = terrain
+        .biomes()
+        .all()
+        .iter()
+        .map(|b| b.name.clone())
+        .collect();
+    let world = WorldInfo {
+        dimension: "minecraft:overworld".to_owned(),
+        dir: std::env::temp_dir(),
+        min_y,
+        height: height as u32,
+        seed,
+        has_sky_light: true,
+        default_biome: terrain.biomes().id_of("minecraft:plains").unwrap(),
+        biomes,
+        air: 0,
+    };
+    let generator = VanillaChunkGenerator::new(terrain, world);
+    let center = ChunkPos::new(
+        case["x"].as_i64().unwrap() as i32,
+        case["z"].as_i64().unwrap() as i32,
+    );
+    let mut area: Vec<slots::ProtoChunk> = (0..9)
+        .map(|i| generator.new_chunk(ChunkPos::new(center.x + i % 3 - 1, center.z + i / 3 - 1)))
+        .collect();
+    generator.generate(
+        ChunkStatus::Biomes,
+        &mut area,
+        &mut Neighbours::new(&mut []),
+    );
+    let mut target = [area.swap_remove(4)];
+    let mut snapshots: Vec<Arc<slots::ProtoChunk>> = area.into_iter().map(Arc::new).collect();
+    generator.generate(
+        ChunkStatus::Terrain,
+        &mut target,
+        &mut Neighbours::new(&mut snapshots),
+    );
+
+    let expected = case["carvers"]["sections"].as_array().unwrap();
+    let sections = target[0].chunk.sections();
+    assert_eq!(sections.len(), expected.len());
+    for (index, (section, expected)) in sections.iter().zip(expected).enumerate() {
+        let mut hash = 0_i64;
+        for y in 0..16 {
+            for z in 0..16 {
+                for x in 0..16 {
+                    hash = hash
+                        .wrapping_mul(31)
+                        .wrapping_add(i64::from(section.block(x, y, z)));
+                }
+            }
+        }
+        assert_eq!(hash, expected.as_i64().unwrap(), "section {index}");
+    }
 }

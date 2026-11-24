@@ -9,8 +9,14 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+vanillite-base.workspace = true
 vanillite-chunk.workspace = true
+vanillite-data.workspace = true
 vanillite-nbt.workspace = true
+flate2.workspace = true
+libdeflater.workspace = true
+log.workspace = true
+lz4_flex.workspace = true
 
 [lints]
 workspace = true

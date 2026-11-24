@@ -50,6 +50,9 @@ pub struct LoadedPacks {
     tags: BTreeMap<String, BTreeMap<String, Vec<String>>>,
     /// Problems that Vanilla logs and skips (for example tags with missing references).
     pub warnings: Vec<String>,
+    /// The pack directories in load order (each contains `data/`), for resources that are read
+    /// on demand instead of at load time, such as structure templates.
+    roots: Vec<PathBuf>,
 }
 
 impl LoadedPacks {
@@ -66,6 +69,13 @@ impl LoadedPacks {
     /// Tags of a registry: tag id → resolved entry ids.
     pub fn tags(&self, registry: &str) -> Option<&BTreeMap<String, Vec<String>>> {
         self.tags.get(registry)
+    }
+
+    /// The pack directories in load order (later packs override earlier ones). Resources that
+    /// are not loaded up front (structure templates `data/<ns>/structure/**.nbt`) are looked up
+    /// here, last pack first, like Vanilla's resource manager.
+    pub fn roots(&self) -> &[PathBuf] {
+        &self.roots
     }
 
     /// All registries that have tags.
@@ -129,6 +139,7 @@ pub fn load(packs: &[&Path]) -> Result<LoadedPacks, Error> {
         registries,
         tags: BTreeMap::new(),
         warnings: Vec::new(),
+        roots: packs.iter().map(|p| p.to_path_buf()).collect(),
     };
     let tagged: Vec<&'static str> = vanillite_data::registry::ALL
         .iter()

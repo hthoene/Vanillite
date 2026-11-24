@@ -132,6 +132,9 @@ pub struct TrackerInput<'a> {
     /// Whether a chunk inside a viewer's view has not been sent to that viewer yet
     /// (Vanilla's `chunkSender.isPending`); entities there stay invisible.
     pub chunk_pending: &'a dyn Fn(EntityId, ChunkPos) -> bool,
+    /// Chunks sent to viewers since the last update (Vanilla's `playerLoadedChunk`): entities
+    /// there may have become visible to that viewer.
+    pub chunks_sent: &'a [(EntityId, ChunkPos)],
 }
 
 impl fmt::Debug for TrackerInput<'_> {

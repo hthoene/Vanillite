@@ -13,6 +13,7 @@ mod conn;
 mod limits;
 mod outbound;
 mod player;
+pub mod services;
 mod status;
 
 pub use auth::{
@@ -20,9 +21,10 @@ pub use auth::{
 };
 pub use config::{NetConfig, RateLimit};
 pub use configuration::{ConfigurationData, json_to_nbt};
-pub use outbound::{Outbound, SharedPacket};
-pub use player::{Inbound, Joined, Latency};
+pub use outbound::Outbound;
+pub use player::{Joined, Latency};
 pub use status::{StatusCache, StatusInfo};
+pub use vanillite_protocol::{Inbound, SharedPacket};
 
 use limits::ConnectionLimiter;
 use std::net::SocketAddr;
@@ -53,6 +55,36 @@ pub struct VirtualConnection {
     pub to_server: mpsc::Sender<Vec<u8>>,
     /// Packets from the server.
     pub from_server: mpsc::Receiver<Vec<u8>>,
+}
+
+/// Opens virtual connections (Bedrock layer, proxies, tests). Cheap to clone.
+#[derive(Clone)]
+pub struct VirtualOpener {
+    runtime: tokio::runtime::Handle,
+    shared: Arc<Shared>,
+}
+
+impl std::fmt::Debug for VirtualOpener {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VirtualOpener").finish_non_exhaustive()
+    }
+}
+
+impl VirtualOpener {
+    /// Opens a virtual connection for a vouched-for profile.
+    pub fn open(&self, profile: GameProfile, address: SocketAddr) -> VirtualConnection {
+        let (to_server, server_rx) = mpsc::channel(self.shared.config.max_inbound_packets.max(1));
+        let (client_tx, from_server) = mpsc::channel(self.shared.config.max_inbound_packets.max(1));
+        let (out, out_rx, queued) = Outbound::new(self.shared.config.max_outbound_bytes);
+        let conn = conn::Conn::virtual_(Arc::clone(&self.shared), address, server_rx, out, profile);
+        self.runtime
+            .spawn(outbound::virtual_writer(client_tx, out_rx, queued));
+        self.runtime.spawn(conn.run());
+        VirtualConnection {
+            to_server,
+            from_server,
+        }
+    }
 }
 
 /// The running network pipeline.
@@ -132,16 +164,14 @@ impl Network {
 
     /// Opens a virtual connection for a vouched-for profile.
     pub fn open_virtual(&self, profile: GameProfile, address: SocketAddr) -> VirtualConnection {
-        let (to_server, server_rx) = mpsc::channel(self.shared.config.max_inbound_packets.max(1));
-        let (client_tx, from_server) = mpsc::channel(self.shared.config.max_inbound_packets.max(1));
-        let (out, out_rx, queued) = Outbound::new(self.shared.config.max_outbound_bytes);
-        let conn = conn::Conn::virtual_(Arc::clone(&self.shared), address, server_rx, out, profile);
-        self.runtime
-            .spawn(outbound::virtual_writer(client_tx, out_rx, queued));
-        self.runtime.spawn(conn.run());
-        VirtualConnection {
-            to_server,
-            from_server,
+        self.virtual_opener().open(profile, address)
+    }
+
+    /// A handle that opens virtual connections from any thread while the network runs.
+    pub fn virtual_opener(&self) -> VirtualOpener {
+        VirtualOpener {
+            runtime: self.runtime.handle().clone(),
+            shared: Arc::clone(&self.shared),
         }
     }
 

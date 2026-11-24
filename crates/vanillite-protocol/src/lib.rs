@@ -11,18 +11,22 @@
 // Lets `#[derive(Packet)]` refer to this crate by name from inside it.
 extern crate self as vanillite_protocol;
 
+pub mod chat;
 pub mod cipher;
 pub mod client;
 pub mod codec;
+pub mod commands;
 pub mod compress;
 pub mod frame;
 pub mod ids;
 pub mod packets;
 pub mod sets;
+pub mod shared;
 pub mod text;
 pub mod types;
 
 pub use codec::{Decode, DecodeLimited, Encode, Error, Reader, Result};
+pub use shared::{Inbound, SharedPacket};
 pub use vanillite_data::version::{PROTOCOL_VERSION, VERSION_ID};
 pub use vanillite_macros::Packet;
 

@@ -13,18 +13,26 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use std::{fmt, io};
 
-use vanillite_config::{Config, ConfigError, RuleSet, VANILLITE_FILE, VanillaOr};
+use vanillite_chunk::slots::{ChunkGeneratorProvider, ChunkStorageProvider, LightEngineProvider};
+use vanillite_config::{
+    Config, ConfigError, RegionFileCompression, RuleSet, VANILLITE_FILE, VanillaOr,
+};
+use vanillite_light::BfsLightEngineProvider;
+use vanillite_storage::{AnvilStorageProvider, Compression};
+use vanillite_world::chunks::{ChunkSettings, ChunkSlots, Chunks};
 use vanillite_world::entity::NetworkIds;
 use vanillite_world::tracking::{ChunkTrackerProvider, EntityTrackerProvider, TrackerSettings};
 
 use crate::clock::Clock;
 use crate::compute::{Compute, ComputePool, Scheduler};
 use crate::global::Global;
-use crate::player_list::PlayerList;
+use crate::net::{NetState, VanillaPack};
+use crate::player_list::{PlayerEntry, PlayerList, Uuid};
 use crate::slot::{Origin, Slot, SlotError};
 use crate::tick_rate::{NANOS_PER_SECOND, TickRateManager};
 use crate::watchdog::{Heartbeat, WatchState, Watchdog};
 use crate::world::{ServerWorld, TickContext, WorldId, WorldTask};
+use vanillite_net::VirtualOpener;
 
 /// The dimensions of a server, in Vanilla's tick order.
 pub const DIMENSIONS: [&str; 3] = [
@@ -87,6 +95,11 @@ pub struct ServerBuilder {
     dir: PathBuf,
     scheduler: Slot<dyn Scheduler>,
     entity_tracker: Slot<dyn EntityTrackerProvider>,
+    chunk_storage: Slot<dyn ChunkStorageProvider>,
+    chunk_generator: Slot<dyn ChunkGeneratorProvider>,
+    light_engine: Slot<dyn LightEngineProvider>,
+    vanilla_pack: VanillaPack,
+    network: bool,
 }
 
 impl ServerBuilder {
@@ -96,7 +109,25 @@ impl ServerBuilder {
             dir: dir.into(),
             scheduler: Slot::new("scheduler"),
             entity_tracker: Slot::new("entity-tracker"),
+            chunk_storage: Slot::new("chunk-storage"),
+            chunk_generator: Slot::new("chunk-generator"),
+            light_engine: Slot::new("light-engine"),
+            vanilla_pack: VanillaPack::default(),
+            network: true,
         }
+    }
+
+    /// Where the Vanilla data pack comes from (default: downloaded once into `cache/`).
+    pub fn vanilla_pack(&mut self, pack: VanillaPack) -> &mut Self {
+        self.vanilla_pack = pack;
+        self
+    }
+
+    /// Whether the network listens (default `true`). Without it the server only takes
+    /// virtual connections ([`Server::open_virtual`]); for tests.
+    pub fn network(&mut self, on: bool) -> &mut Self {
+        self.network = on;
+        self
     }
 
     /// Fills the `scheduler` slot with an embedded implementation.
@@ -114,6 +145,33 @@ impl ServerBuilder {
         Ok(self)
     }
 
+    /// Fills the `chunk-storage` slot with an embedded implementation.
+    pub fn chunk_storage(
+        &mut self,
+        provider: Box<dyn ChunkStorageProvider>,
+    ) -> Result<&mut Self, SlotError> {
+        self.chunk_storage.fill(provider, Origin::Embedded)?;
+        Ok(self)
+    }
+
+    /// Fills the `chunk-generator` slot with an embedded implementation.
+    pub fn chunk_generator(
+        &mut self,
+        provider: Box<dyn ChunkGeneratorProvider>,
+    ) -> Result<&mut Self, SlotError> {
+        self.chunk_generator.fill(provider, Origin::Embedded)?;
+        Ok(self)
+    }
+
+    /// Fills the `light-engine` slot with an embedded implementation.
+    pub fn light_engine(
+        &mut self,
+        provider: Box<dyn LightEngineProvider>,
+    ) -> Result<&mut Self, SlotError> {
+        self.light_engine.fill(provider, Origin::Embedded)?;
+        Ok(self)
+    }
+
     /// Loads the configuration, starts the threads and creates the worlds.
     pub fn start(self) -> Result<Server, StartError> {
         let started = Instant::now();
@@ -123,6 +181,9 @@ impl ServerBuilder {
         log::info!("Loading properties");
         let config = Config::load(&dir)?;
         log::info!("Using profile {}", config.profile);
+        if !crate::eula::check(&dir).map_err(|e| StartError::io(&dir, e))? {
+            return Err(StartError::Eula);
+        }
 
         let parallel = config.server.tick.parallel_dimensions;
         let busy_tick_threads = if parallel { DIMENSIONS.len() } else { 1 };
@@ -152,14 +213,68 @@ impl ServerBuilder {
         log::info!("Slot entity-tracker: {origin}");
 
         let level_name = config.properties.level_name.clone();
-        let session_lock = lock_world(&dir.join(&level_name))?;
+        let level_dir = dir.join(&level_name);
+        let session_lock = lock_world(&level_dir)?;
+        // Mojang's profile key signers are fetched while the data packs load.
+        let services_keys = (config.properties.online_mode && self.network).then(|| {
+            std::thread::spawn(|| {
+                vanillite_net::services::fetch_profile_keys(Duration::from_secs(10))
+            })
+        });
+        let prepared = crate::net::prepare(&config, &dir, &level_dir, &self.vanilla_pack)?;
+        let chat = chat_settings(&config, services_keys);
+        let mut world_players = prepared.worlds.into_iter();
+        let packs = prepared.packs.map(Arc::new);
+        let seed = prepared.world_gen.seed;
+        let slot = |name: &str, origin: &Origin| log::info!("Slot {name}: {origin}");
+        let (storage_provider, origin) = self.chunk_storage.take().unwrap_or_else(|| {
+            let compression = match config.properties.region_file_compression {
+                RegionFileCompression::Deflate => Compression::Deflate,
+                RegionFileCompression::Lz4 => Compression::Lz4,
+                RegionFileCompression::None => Compression::None,
+            };
+            (
+                Box::new(AnvilStorageProvider { compression }),
+                Origin::BuiltIn,
+            )
+        });
+        slot("chunk-storage", &origin);
+        let (generator_provider, origin) = self.chunk_generator.take().unwrap_or_else(|| {
+            let generators = crate::world_setup::BuiltInGenerators {
+                packs: packs.clone(),
+                world_gen: prepared.world_gen,
+            };
+            (Box::new(generators), Origin::BuiltIn)
+        });
+        slot("chunk-generator", &origin);
+        let (light_provider, origin) = self
+            .light_engine
+            .take()
+            .unwrap_or_else(|| (Box::new(BfsLightEngineProvider), Origin::BuiltIn));
+        slot("light-engine", &origin);
+        let executor = Arc::new(crate::world_setup::ComputeExecutor(compute.clone()));
 
         let clock = Clock::new();
         let max_players = usize::try_from(config.properties.max_players).unwrap_or(0);
-        let global = Arc::new(Global {
+        let commands = crate::commands::build_dispatcher(command_limits(&config));
+        let global = Arc::new_cyclic(|this| Global {
             clock,
             players: PlayerList::new(max_players),
             network_ids: NetworkIds::new(),
+            chat,
+            chat_types: prepared.chat_types,
+            access: crate::access::Access::load(
+                &dir,
+                config.properties.white_list,
+                config.properties.op_permission_level,
+                config.properties.enforce_whitelist,
+            ),
+            handle: std::sync::OnceLock::new(),
+            commands,
+            online_mode: config.properties.online_mode,
+            seed: level_seed(&config.properties.level_seed),
+            registries: prepared.registries.clone(),
+            this: this.clone(),
         });
         let watch = Arc::new(WatchState::new(
             config.server.watchdog.early_warning_after.get(),
@@ -170,23 +285,47 @@ impl ServerBuilder {
         let (sender, receiver) = mpsc::channel();
 
         log::info!("Preparing level \"{level_name}\"");
-        let worlds: Vec<ServerWorld> = DIMENSIONS
-            .iter()
-            .zip(0u16..)
-            .map(|(dimension, index)| {
-                let rules = Arc::new(config.world_rules(dimension));
-                let view_distance = rules
-                    .distances
-                    .view_distance
-                    .or(u8::try_from(config.properties.view_distance.clamp(2, 32)).unwrap_or(10));
-                let tracker = tracker_provider.create(&TrackerSettings::new(
-                    i32::from(view_distance),
-                    config.properties.entity_broadcast_range_percentage,
-                    &rules.tracking,
-                ));
-                ServerWorld::new(WorldId(index), (*dimension).to_owned(), rules, tracker)
-            })
-            .collect();
+        let mut worlds = Vec::with_capacity(DIMENSIONS.len());
+        for (dimension, index) in DIMENSIONS.iter().zip(0u16..) {
+            let rules = Arc::new(config.world_rules(dimension));
+            let view_distance = rules
+                .distances
+                .view_distance
+                .or(u8::try_from(config.properties.view_distance.clamp(2, 32)).unwrap_or(10));
+            let tracker = tracker_provider.create(&TrackerSettings::new(
+                i32::from(view_distance),
+                config.properties.entity_broadcast_range_percentage,
+                &rules.tracking,
+            ));
+            let info =
+                crate::world_setup::world_info(packs.as_deref(), &level_dir, dimension, seed)?;
+            let slots = ChunkSlots {
+                storage: storage_provider
+                    .create(&info)
+                    .map_err(|e| StartError::io(&info.dir, e))?,
+                generator: generator_provider
+                    .create(&info)
+                    .map_err(|e| StartError::Io(format!("chunk generator of {dimension}: {e}")))?,
+                light: light_provider.create(&info),
+                executor: Arc::clone(&executor) as _,
+            };
+            let settings = ChunkSettings {
+                view_distance: i32::from(view_distance),
+                unload_delay: u64::from(rules.chunks.unload_delay),
+                max_jobs: usize::from(rules.chunks.max_jobs),
+            };
+            let players = world_players
+                .next()
+                .ok_or_else(|| StartError::Io("world setup missing".to_owned()))?;
+            worlds.push(ServerWorld::new(
+                WorldId(index),
+                (*dimension).to_owned(),
+                rules,
+                tracker,
+                players,
+                Chunks::new(info, settings, slots),
+            ));
+        }
         let (worlds, routes) = if parallel {
             log::info!("Dimensions tick in parallel");
             let mut threads = Vec::with_capacity(worlds.len());
@@ -212,6 +351,16 @@ impl ServerBuilder {
             (Worlds::Sequential(worlds), routes)
         };
 
+        let net = NetState::start(
+            &config,
+            prepared.configuration,
+            self.network,
+            global.chat.enforce_secure,
+        )?;
+        if !config.properties.online_mode {
+            log::warn!("**** SERVER IS RUNNING IN OFFLINE/INSECURE MODE!");
+        }
+
         let watchdog = Watchdog::start(Arc::clone(&watch), clock, config.properties.max_tick_time)
             .map_err(|e| StartError::io(&dir, e))?;
 
@@ -231,13 +380,26 @@ impl ServerBuilder {
             empty_ticks: 0,
             ticks_until_autosave: 0,
             average_tick_nanos: 0.0,
+            tick_log: open_tick_log(),
             running: true,
             heartbeat,
             watch,
             watchdog: Some(watchdog),
+            net: Some(net),
+            test_bots: Vec::new(),
+            level_dir,
             _session_lock: session_lock,
         };
         server.ticks_until_autosave = server.autosave_interval();
+        let _ = server.global.handle.set(server.handle());
+        let bots = server.config.server.debug.test_bots;
+        if bots > 0
+            && let Some(opener) = server.virtual_opener()
+        {
+            log::warn!("Starting {bots} test bot(s) (debug.test-bots); not for production use");
+            server.test_bots = crate::test_bot::uuids(bots);
+            crate::test_bot::spawn(opener, bots);
+        }
         log::info!(
             "Done ({:.3}s)! For help, type \"help\"",
             started.elapsed().as_secs_f64()
@@ -247,6 +409,60 @@ impl ServerBuilder {
 }
 
 /// Holds `session.lock` of the world folder so no second server opens the same world.
+/// The world seed from `level-seed`: a number, else Java's hash of the text, 0 when empty
+/// (`WorldOptions.parseSeed`; the world runtime will store a random seed instead).
+fn level_seed(text: &str) -> i64 {
+    let text = text.trim();
+    if text.is_empty() {
+        return 0;
+    }
+    text.parse::<i64>()
+        .unwrap_or_else(|_| i64::from(vanillite_base::math::java_string_hash(text)))
+}
+
+/// The command parser limits from `vanillite.toml` (`commands.*`).
+fn command_limits(config: &Config) -> vanillite_command::limits::Limits {
+    let c = &config.server.commands;
+    let size = |v: u32| usize::try_from(v).unwrap_or(usize::MAX);
+    vanillite_command::limits::Limits {
+        max_command_length: size(c.max_command_length),
+        max_suggestion_input: size(c.max_suggestion_input),
+        max_suggestions: size(c.max_suggestions),
+        max_message_length: size(c.max_message_length),
+        max_nbt_depth: c.max_nbt_depth,
+        max_nbt_path_nodes: size(c.max_nbt_path_nodes),
+        max_selector_options: size(c.max_selector_options),
+        max_message_selectors: size(c.max_message_selectors),
+        max_redirect_depth: size(c.max_redirect_depth),
+    }
+}
+
+/// The chat settings: secure chat is enforced when `enforce-secure-profile` is on, the server
+/// runs in online mode and Mojang's keys could be fetched (`enforceSecureProfile`).
+fn chat_settings(
+    config: &Config,
+    services_keys: Option<JoinHandle<Result<Vec<Vec<u8>>, String>>>,
+) -> vanillite_game::player::chat::ChatSettings {
+    use vanillite_game::player::chat::{ChatSettings, ServicesKeys};
+    let keys = match services_keys.map(JoinHandle::join) {
+        Some(Ok(Ok(keys))) => ServicesKeys::from_der(keys.iter().map(Vec::as_slice)),
+        Some(Ok(Err(e))) => {
+            log::warn!("Failed to fetch Mojang's services keys, chat cannot be verified: {e}");
+            ServicesKeys::default()
+        }
+        Some(Err(_)) | None => ServicesKeys::default(),
+    };
+    let p = &config.properties;
+    ChatSettings {
+        enforce_secure: p.enforce_secure_profile && p.online_mode && !keys.is_empty(),
+        keys: Arc::new(keys),
+        chat_spam_threshold: p.chat_spam_threshold_seconds.saturating_mul(20),
+        command_spam_threshold: p.command_spam_threshold_seconds.saturating_mul(20),
+        max_pending_messages: usize::try_from(config.server.chat.max_pending_messages)
+            .unwrap_or(4096),
+    }
+}
+
 fn lock_world(level_dir: &Path) -> Result<File, StartError> {
     fs::create_dir_all(level_dir).map_err(|e| StartError::io(level_dir, e))?;
     let path = level_dir.join("session.lock");
@@ -406,10 +622,17 @@ pub struct Server {
     empty_ticks: u64,
     ticks_until_autosave: i64,
     average_tick_nanos: f64,
+    /// Load test tick log (`VANILLITE_TICK_LOG`): one line with the duration in nanoseconds per
+    /// tick. A stand-in for the metrics endpoint of architecture 3.8.
+    tick_log: Option<io::BufWriter<File>>,
     running: bool,
     heartbeat: Arc<Heartbeat>,
     watch: Arc<WatchState>,
     watchdog: Option<Watchdog>,
+    net: Option<NetState>,
+    /// UUIDs of the test bots this server started (`debug.test-bots`).
+    test_bots: Vec<u128>,
+    level_dir: PathBuf,
     _session_lock: File,
 }
 
@@ -424,6 +647,17 @@ impl fmt::Debug for Server {
 }
 
 impl Server {
+    /// Opens in-memory connections for vouched-for profiles (architecture 14.1), from any
+    /// thread while the server runs; they log in like a client from the handshake on.
+    pub fn virtual_opener(&self) -> Option<VirtualOpener> {
+        self.net.as_ref().map(|n| n.network.virtual_opener())
+    }
+
+    /// The address the network listens on.
+    pub fn local_addr(&self) -> Option<std::net::SocketAddr> {
+        self.net.as_ref().map(|n| n.network.local_addr())
+    }
+
     /// A handle for other threads.
     pub fn handle(&self) -> ServerHandle {
         ServerHandle {
@@ -546,6 +780,13 @@ impl Server {
 
         let elapsed = clock.now().saturating_sub(started) as f64;
         self.average_tick_nanos = self.average_tick_nanos * 0.8 + elapsed * 0.2;
+        if let Some(log) = &mut self.tick_log {
+            let written = writeln!(log, "{}", clock.now().saturating_sub(started));
+            if written.is_err() || (self.tick_count.is_multiple_of(20) && log.flush().is_err()) {
+                log::warn!("Cannot write the tick log, disabling it");
+                self.tick_log = None;
+            }
+        }
         self.heartbeat.leave();
     }
 
@@ -560,6 +801,80 @@ impl Server {
                 other => self.dispatch(other),
             }
         }
+        self.accept_joins();
+    }
+
+    /// Takes joined connections into the game, at most `security.max-joins-per-tick`.
+    fn accept_joins(&mut self) {
+        let max = self.config.server.security.max_joins_per_tick;
+        for _ in 0..max {
+            let Some(joined) = self.net.as_ref().and_then(NetState::next_join) else {
+                break;
+            };
+            self.accept(joined);
+        }
+    }
+
+    /// `PlayerList.placeNewPlayer`, global part: checks, player data, the player list; the
+    /// world part runs on the player's world.
+    fn accept(&mut self, joined: vanillite_net::Joined) {
+        let uuid = joined.profile.id.0;
+        let store = vanillite_storage::player_data::PlayerDataStore::new(&self.level_dir);
+        let saved = match store.load(uuid) {
+            Ok(saved) => saved,
+            Err(e) => {
+                log::error!("Failed to load player data of {}: {e}", joined.profile.name);
+                None
+            }
+        };
+        let properties = &self.config.properties;
+        let (arrival, sink) = crate::net::arrival(
+            joined,
+            saved,
+            properties.gamemode,
+            properties.force_gamemode,
+        );
+        let players = &self.global.players;
+        let access = &self.global.access;
+        // The server's own test bots come over virtual connections it opened itself.
+        let test_bot = arrival.memory_connection && self.test_bots.contains(&uuid);
+        let refuse = if !test_bot && !access.is_whitelisted(uuid) {
+            Some("multiplayer.disconnect.not_whitelisted")
+        } else if players.contains(Uuid(uuid)) {
+            // Vanilla kicks the older session; refusing the new one keeps a single owner of the
+            // player without a cross-world removal.
+            Some("multiplayer.disconnect.duplicate_login")
+        } else if players.count() >= players.max_players() && !access.bypasses_player_limit(uuid) {
+            Some("multiplayer.disconnect.server_full")
+        } else {
+            None
+        };
+        if let Some(key) = refuse {
+            sink.kick(vanillite_protocol::text::Component::translatable(
+                key,
+                vec![],
+            ));
+            return;
+        }
+        let world = arrival
+            .saved
+            .as_ref()
+            .and_then(|s| DIMENSIONS.iter().position(|d| *d == s.dimension))
+            .and_then(|i| u16::try_from(i).ok())
+            .map_or(WorldId(0), WorldId);
+        players.add(PlayerEntry {
+            uuid: Uuid(uuid),
+            name: arrival.profile.name.clone(),
+            world,
+            info: crate::players::info_entry(&arrival),
+            sink,
+            inbox: Arc::clone(&arrival.inbox),
+        });
+        let global = Arc::clone(&self.global);
+        self.run_in_world(
+            world,
+            Box::new(move |w: &mut ServerWorld| w.join_player(&global, arrival)),
+        );
     }
 
     /// The world phase and the cross-world hand-offs of G2, applied in world order.
@@ -622,6 +937,10 @@ impl Server {
 
     /// G2: player list and autosave.
     fn global_post_phase(&mut self) {
+        let online = self.global.players.count();
+        if let Some(net) = self.net.as_mut() {
+            net.set_online(online);
+        }
         // Player list maintenance (latency updates, idle kicks) comes with players.
         self.ticks_until_autosave -= 1;
         if self.ticks_until_autosave <= 0 {
@@ -711,16 +1030,22 @@ impl Server {
         }
     }
 
-    /// Console commands until the command system exists.
+    /// A console command: `vanillite reload config` here, everything else through the command
+    /// tree on the overworld.
     fn run_console_command(&mut self, line: &str) {
         let command = line.trim().trim_start_matches('/');
-        match command {
-            "" => {}
-            "stop" => self.running = false,
-            "vanillite reload config" => self.reload_config(),
-            "help" => log::info!("Commands: stop, vanillite reload config"),
-            _ => log::warn!("Unknown or incomplete command: {command}"),
+        if command == "vanillite reload config" {
+            self.reload_config();
+            return;
         }
+        let global = Arc::clone(&self.global);
+        let line = line.to_owned();
+        self.run_in_world(
+            WorldId(0),
+            Box::new(move |w: &mut ServerWorld| {
+                crate::commands::run_console_command(w, &global, &line);
+            }),
+        );
     }
 
     /// Reloads `vanillite.toml` and swaps the rules at this tick boundary. `server.properties`
@@ -786,6 +1111,14 @@ impl Server {
         // Saving may take long; the watchdog must not kill the process now.
         self.watch.next_tick.store(0, Ordering::Relaxed);
         log::info!("Stopping server");
+        for player in self.global.players.snapshot() {
+            player
+                .sink
+                .kick(vanillite_protocol::text::Component::translatable(
+                    "multiplayer.disconnect.server_shutdown",
+                    vec![],
+                ));
+        }
         log::info!("Saving players");
         log::info!("Saving worlds");
         let level = &self.config.properties.level_name;
@@ -807,6 +1140,9 @@ impl Server {
             }
         }
         log::info!("All dimensions are saved");
+        if let Some(net) = self.net.take() {
+            net.network.shutdown();
+        }
         self.compute.scheduler().shutdown();
         if let Some(watchdog) = self.watchdog.take() {
             watchdog.stop();
@@ -836,10 +1172,12 @@ pub enum StartError {
     WorldInUse(PathBuf),
     /// A slot was filled twice.
     Slot(SlotError),
+    /// The EULA is not accepted in `eula.txt`.
+    Eula,
 }
 
 impl StartError {
-    fn io(path: &Path, error: io::Error) -> StartError {
+    pub(crate) fn io(path: &Path, error: io::Error) -> StartError {
         StartError::Io(format!("{}: {error}", path.display()))
     }
 }
@@ -855,6 +1193,10 @@ impl fmt::Display for StartError {
                 path.display()
             ),
             StartError::Slot(e) => e.fmt(f),
+            StartError::Eula => f.write_str(
+                "you need to agree to the EULA in order to run the server; go to eula.txt for \
+                 more info (or set VANILLITE_EULA=true)",
+            ),
         }
     }
 }
@@ -870,5 +1212,20 @@ impl From<ConfigError> for StartError {
 impl From<SlotError> for StartError {
     fn from(e: SlotError) -> Self {
         StartError::Slot(e)
+    }
+}
+
+/// Opens the tick log named by `VANILLITE_TICK_LOG` (relative to the working directory), if set.
+fn open_tick_log() -> Option<io::BufWriter<File>> {
+    let path = std::env::var_os("VANILLITE_TICK_LOG")?;
+    match File::create(&path) {
+        Ok(file) => Some(io::BufWriter::new(file)),
+        Err(e) => {
+            log::warn!(
+                "Cannot create the tick log {}: {e}",
+                Path::new(&path).display()
+            );
+            None
+        }
     }
 }

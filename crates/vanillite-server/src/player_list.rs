@@ -1,7 +1,15 @@
 //! The list of online players.
 
 use std::fmt;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
+use vanillite_game::player::PacketSink;
+use vanillite_game::player::chat::{ChatInbox, ChatMessage};
+use vanillite_game::player::join::InfoEntry;
+use vanillite_protocol::chat::ChatTypeBound;
+use vanillite_protocol::packets::play::clientbound::SystemChat;
+use vanillite_protocol::text::Component;
+use vanillite_protocol::{Packet, SharedPacket};
 
 use crate::world::WorldId;
 
@@ -25,7 +33,7 @@ impl fmt::Display for Uuid {
 }
 
 /// One online player.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct PlayerEntry {
     /// The player's UUID.
     pub uuid: Uuid,
@@ -33,10 +41,33 @@ pub struct PlayerEntry {
     pub name: String,
     /// The world the player is in.
     pub world: WorldId,
+    /// The tab list entry (profile with skin, game mode, latency).
+    pub info: InfoEntry,
+    /// The player's connection, for messages to all players.
+    pub sink: Arc<dyn PacketSink>,
+    /// The receiver side of the player's chat.
+    pub inbox: Arc<Mutex<ChatInbox>>,
+}
+
+/// A player's connection with its chat inbox.
+pub type Receiver = (Arc<dyn PacketSink>, Arc<Mutex<ChatInbox>>);
+
+fn lock_inbox(inbox: &Mutex<ChatInbox>) -> MutexGuard<'_, ChatInbox> {
+    inbox.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+impl fmt::Debug for PlayerEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PlayerEntry")
+            .field("uuid", &self.uuid)
+            .field("name", &self.name)
+            .field("world", &self.world)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Online players in join order (Vanilla's order). Cold data behind a mutex: changed on join,
-/// quit and world change, read for the server list and the pause check.
+/// quit and world change, read for the server list, the tab list and messages to everyone.
 #[derive(Debug)]
 pub struct PlayerList {
     max_players: usize,
@@ -66,6 +97,11 @@ impl PlayerList {
         self.lock().len()
     }
 
+    /// Whether a player with this UUID is online.
+    pub fn contains(&self, uuid: Uuid) -> bool {
+        self.lock().iter().any(|p| p.uuid == uuid)
+    }
+
     /// Adds a player. Returns `false` if a player with that UUID is already online.
     pub fn add(&self, entry: PlayerEntry) -> bool {
         let mut players = self.lock();
@@ -90,8 +126,87 @@ impl PlayerList {
         }
     }
 
+    /// Updates a player's tab list entry.
+    pub fn update_info(&self, uuid: Uuid, update: impl FnOnce(&mut InfoEntry)) {
+        if let Some(player) = self.lock().iter_mut().find(|p| p.uuid == uuid) {
+            update(&mut player.info);
+        }
+    }
+
     /// A copy of the list.
     pub fn snapshot(&self) -> Vec<PlayerEntry> {
         self.lock().clone()
+    }
+
+    /// The tab list entries of all players, with current latencies.
+    pub fn info_entries(&self) -> Vec<InfoEntry> {
+        self.lock()
+            .iter()
+            .map(|p| InfoEntry {
+                latency: p.sink.latency_ms(),
+                ..p.info.clone()
+            })
+            .collect()
+    }
+
+    /// The connection and chat inbox of an online player.
+    pub fn connection(&self, uuid: Uuid) -> Option<Receiver> {
+        self.lock()
+            .iter()
+            .find(|p| p.uuid == uuid)
+            .map(|p| (Arc::clone(&p.sink), Arc::clone(&p.inbox)))
+    }
+
+    /// `broadcastSystemMessage`: a system message to every player that accepts it, encoded
+    /// once.
+    pub fn broadcast_system(&self, content: Component, overlay: bool, except: Option<Uuid>) {
+        let shared = SharedPacket::of(&SystemChat { content, overlay });
+        for (sink, inbox) in self.receivers(except) {
+            if lock_inbox(&inbox).accepts_system(overlay) {
+                sink.send_shared(&shared);
+            }
+        }
+    }
+
+    /// `broadcastChatMessage`: a chat message to every player that accepts chat. Players
+    /// with too many unacknowledged messages are kicked.
+    pub fn broadcast_chat(
+        &self,
+        message: &ChatMessage,
+        chat_type: &ChatTypeBound,
+        max_pending: usize,
+    ) {
+        for (sink, inbox) in self.receivers(None) {
+            let sent = lock_inbox(&inbox).send(message, chat_type, sink.as_ref(), max_pending);
+            if !sent {
+                sink.kick(Component::translatable(
+                    "multiplayer.disconnect.too_many_pending_chats",
+                    vec![],
+                ));
+            }
+        }
+    }
+
+    /// Connections and inboxes of all players, copied so no lock is held while sending.
+    fn receivers(&self, except: Option<Uuid>) -> Vec<Receiver> {
+        self.lock()
+            .iter()
+            .filter(|p| Some(p.uuid) != except)
+            .map(|p| (Arc::clone(&p.sink), Arc::clone(&p.inbox)))
+            .collect()
+    }
+
+    /// Sends a packet to every player except `except`. The packet is encoded once.
+    pub fn broadcast<P: Packet>(&self, packet: &P, except: Option<Uuid>) {
+        let shared = SharedPacket::of(packet);
+        let sinks: Vec<Arc<dyn PacketSink>> = self
+            .lock()
+            .iter()
+            .filter(|p| Some(p.uuid) != except)
+            .map(|p| Arc::clone(&p.sink))
+            .collect();
+        for sink in sinks {
+            sink.send_shared(&shared);
+        }
     }
 }

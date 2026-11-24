@@ -46,6 +46,52 @@ rules! {
             max_joins_per_tick: u32 = "max-joins-per-tick", Security, range = [1, 1000],
                 vanilla = 5;
         }
+        /// Limits of command parsing and tab completion (SEC-04, SEC-11).
+        commands: CommandRules = "commands" {
+            /// Longest command line that is parsed (Vanilla: the packet's 32767 characters).
+            max_command_length: u32 = "max-command-length", Security, range = [16, 32767],
+                vanilla = 32767;
+            /// Longest tab completion input; longer requests get no suggestions (Vanilla
+            /// accepts 32500 characters).
+            max_suggestion_input: u32 = "max-suggestion-input", Security, range = [16, 32500],
+                vanilla = 2048;
+            /// Suggestions per answer.
+            max_suggestions: u32 = "max-suggestions", Security, range = [1, 10000],
+                vanilla = 1000;
+            /// Characters of a message argument (`say`, `msg`, `kick`).
+            max_message_length: u32 = "max-message-length", Security, range = [16, 32767],
+                vanilla = 256;
+            /// Nesting depth of SNBT in arguments.
+            max_nbt_depth: u32 = "max-nbt-depth", Security, range = [1, 512], vanilla = 512;
+            /// Nodes of an NBT path.
+            max_nbt_path_nodes: u32 = "max-nbt-path-nodes", Security, range = [1, 4096],
+                vanilla = 256;
+            /// Options inside one entity selector `[...]`.
+            max_selector_options: u32 = "max-selector-options", Security, range = [1, 1024],
+                vanilla = 64;
+            /// Entity selectors inside one message argument.
+            max_message_selectors: u32 = "max-message-selectors", Security, range = [0, 256],
+                vanilla = 16;
+            /// Nested redirects followed while parsing one command.
+            max_redirect_depth: u32 = "max-redirect-depth", Security, range = [1, 1024],
+                vanilla = 64;
+        }
+        /// Development and test helpers. Never needed on a production server.
+        debug: DebugRules = "debug" {
+            /// In-process fake players (`TestBot`, `TestBot2`, ...) that join over virtual
+            /// connections, walk in a circle around the spawn and sneak now and then, so a
+            /// single tester sees other players. Virtual connections need no authentication,
+            /// so keep this at 0 outside test servers.
+            test_bots: u8 = "test-bots", Setting, range = [0, 16], restart = true, vanilla = 0;
+        }
+        /// Chat. Spam thresholds are `chat-spam-threshold-seconds` and
+        /// `command-spam-threshold-seconds` in `server.properties`.
+        chat: ChatRules = "chat" {
+            /// Signed messages a player may have received without acknowledging them before it
+            /// is kicked (`too_many_pending_chats`).
+            max_pending_messages: u32 = "max-pending-messages", Security,
+                range = [64, 65536], vanilla = 4096;
+        }
     }
 }
 
@@ -106,6 +152,31 @@ rules! {
             misc_range: VanillaOr<u16> = "misc-range", Performance, range = [8, 512],
                 restart = true, vanilla = VanillaOr::Vanilla, paper = VanillaOr::Value(96),
                 spigot = VanillaOr::Value(96);
+        }
+        /// Server-side checks of player movement (Vanilla's `ServerGamePacketListenerImpl`).
+        movement: MovementRules = "movement" {
+            /// Players that move faster than Vanilla allows are teleported back ("moved too
+            /// quickly"). Vanilla's `playerMovementCheck` game rule.
+            too_fast_check: bool = "too-fast-check", Security, vanilla = true;
+            /// The "moved too quickly" check also applies while gliding with an elytra.
+            /// Vanilla's `elytraMovementCheck` game rule.
+            elytra_too_fast_check: bool = "elytra-too-fast-check", Security, vanilla = true;
+            /// Players whose movement does not match the server's collision result are
+            /// teleported back ("moved wrongly"). Not enforced yet: it needs block collision
+            /// (milestone 3).
+            wrong_movement_check: bool = "wrong-movement-check", Security, vanilla = true;
+            /// Players floating in the air longer than Vanilla allows are kicked unless
+            /// `allow-flight` is on. Not enforced yet: it needs block collision (milestone 3).
+            flying_kick: bool = "flying-kick", Security, vanilla = true;
+        }
+        /// Chunk loading, generation and unloading.
+        chunks: ChunkRules = "performance.chunks" {
+            /// Ticks a chunk stays loaded after no player or ticket needs it, so walking back
+            /// does not load it again.
+            unload_delay: u16 = "unload-delay", Performance, range = [0, 6000], vanilla = 100;
+            /// Background chunk jobs (loads, generation steps, light) in flight per world. Higher
+            /// values load faster with many players at the cost of memory for queued work.
+            max_jobs: u16 = "max-jobs", Performance, range = [1, 4096], vanilla = 64;
         }
         /// Entity collisions.
         collisions: CollisionRules = "performance.collisions" {

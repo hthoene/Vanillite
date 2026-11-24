@@ -7,9 +7,11 @@
 //!
 //! All methods are statically dispatched; a generator is a few machine words.
 
+mod decoration;
 mod legacy;
 mod xoroshiro;
 
+pub use decoration::{DecorationPositional, DecorationRandom};
 pub use legacy::{LegacyPositionalFactory, LegacyRandom};
 pub use xoroshiro::{Seed128, Xoroshiro128PlusPlus, XoroshiroPositionalFactory, XoroshiroRandom};
 

@@ -90,14 +90,12 @@ pub fn read_array<const N: usize>(input: &mut &[u8]) -> Result<[u8; N], DecodeEr
     Ok(*head)
 }
 
-/// Appends a Java `BitSet` as written by `FriendlyByteBuf.writeBitSet` (trailing zero words dropped).
+/// Appends a Java `BitSet` as written by `ByteBufCodecs.BIT_SET`: a VarInt-prefixed byte array
+/// in `BitSet.toByteArray()` order (little-endian, trailing zero bytes dropped).
 pub fn write_bitset(out: &mut Vec<u8>, words: &[u64]) {
-    let len = words
-        .iter()
-        .rposition(|&w| w != 0)
-        .map_or(0, |last| last + 1);
+    let len = words.iter().rposition(|&w| w != 0).map_or(0, |last| {
+        last * 8 + 8 - (words[last].leading_zeros() / 8) as usize
+    });
     write_varint(out, len as u32);
-    for word in &words[..len] {
-        out.extend_from_slice(&word.to_be_bytes());
-    }
+    out.extend(words.iter().flat_map(|w| w.to_le_bytes()).take(len));
 }

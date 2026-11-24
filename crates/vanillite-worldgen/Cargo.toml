@@ -9,12 +9,15 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+# Gzip of structure template files (`data/<ns>/structure/**.nbt`).
+libdeflater.workspace = true
 rustc-hash.workspace = true
 serde_json.workspace = true
 vanillite-base.workspace = true
 vanillite-chunk.workspace = true
 vanillite-data.workspace = true
 vanillite-datapack.workspace = true
+vanillite-nbt.workspace = true
 
 [lints]
 workspace = true

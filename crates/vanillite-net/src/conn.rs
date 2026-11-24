@@ -5,7 +5,7 @@ use crate::Shared;
 use crate::auth::{AuthResult, is_valid_player_name, server_hash};
 use crate::limits::{ConnectionGuard, RateLimiter};
 use crate::outbound::{Out, Outbound};
-use crate::player::{Inbound, Joined, Latency};
+use crate::player::{Joined, Latency};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -13,6 +13,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
+use vanillite_protocol::Inbound;
 use vanillite_protocol::frame::FrameDecoder;
 use vanillite_protocol::packets::common::ClientInfo;
 use vanillite_protocol::packets::handshake::Intent;
@@ -228,6 +229,9 @@ impl Conn {
         self.source.set_state(state);
         self.deadline = timeout.and_then(|t| Instant::now().checked_add(t));
         self.keepalive.enabled = matches!(state, State::Configuration | State::Play);
+        // Like Vanilla's new packet listener per state: a keepalive of the previous state is
+        // not waited for any more.
+        self.keepalive.pending = None;
         self.keepalive.next = Instant::now();
     }
 
@@ -533,6 +537,9 @@ impl Conn {
                     self.out.send_shared(&data.tags);
                     self.out.send(&cfg::clientbound::FinishConfiguration);
                     finish_sent = true;
+                    // The client is in play after `finish_configuration`: a configuration
+                    // keepalive sent now would reach it as an unknown play packet.
+                    self.keepalive.enabled = false;
                 }
                 ServerboundConfiguration::FinishConfiguration(_) if finish_sent => return Ok(info),
                 ServerboundConfiguration::KeepAlive(k) => self.keepalive_answer(k.id)?,

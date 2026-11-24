@@ -1,14 +1,18 @@
 //! `ProtoChunk`: a chunk while it is being generated.
 //!
 //! Block and biome data live in [`vanillite_chunk::Section`]s, so a finished proto chunk turns
-//! into a [`vanillite_chunk::Chunk`] without copying. During generation only the two world
-//! generation heightmaps exist (`WORLD_SURFACE_WG`, `OCEAN_FLOOR_WG`), kept as plain `i32`s.
+//! into a [`vanillite_chunk::Chunk`] without copying. Heightmaps are kept as plain `i32`s: up to
+//! the terrain stage the two world generation heightmaps (`WORLD_SURFACE_WG`, `OCEAN_FLOOR_WG`)
+//! follow block changes; after it they are frozen and the four final heightmaps follow instead
+//! (`ChunkStatus.heightmapsAfter`).
 
 use std::sync::Arc;
 
-use vanillite_base::ChunkPos;
-use vanillite_chunk::{BiomeId, Chunk, ChunkLight, Section, facts};
-use vanillite_data::block::BlockState;
+use rustc_hash::{FxHashMap, FxHashSet};
+use vanillite_base::{BlockPos, ChunkPos};
+use vanillite_chunk::{BiomeId, Chunk, ChunkLight, HeightmapKind, Section, facts};
+use vanillite_data::block::{BlockId, BlockState};
+use vanillite_nbt::Compound;
 
 /// A world generation heightmap (`Heightmap.Types.*_WG`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -20,18 +24,76 @@ pub enum WgHeightmap {
 }
 
 impl WgHeightmap {
-    fn index(self) -> usize {
-        self as usize
-    }
-
-    fn matches(self, state: BlockState) -> bool {
-        let flags = facts::block_flags(state.0);
+    /// The heightmap type.
+    pub const fn kind(self) -> HeightmapKind {
         match self {
-            Self::WorldSurface => flags & facts::AIR == 0,
-            Self::OceanFloor => flags & facts::BLOCKS_MOTION != 0,
+            Self::WorldSurface => HeightmapKind::WorldSurfaceWg,
+            Self::OceanFloor => HeightmapKind::OceanFloorWg,
         }
     }
 }
+
+/// The heightmaps that follow block changes after the terrain stage (`Heightmap.Types` with
+/// `Usage.LIVE_WORLD` and `WORLDGEN`, in `EnumSet` order).
+const FINAL: [HeightmapKind; 4] = [
+    HeightmapKind::WorldSurface,
+    HeightmapKind::OceanFloor,
+    HeightmapKind::MotionBlocking,
+    HeightmapKind::MotionBlockingNoLeaves,
+];
+
+/// A tick scheduled during generation (`SavedTick` in `ProtoChunkTicks`): the delay is always 0.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ProtoTick<T> {
+    /// The block or fluid that ticks.
+    pub kind: T,
+    pub pos: BlockPos,
+    /// `TickPriority` value (-3 extremely high .. 3 extremely low).
+    pub priority: i8,
+}
+
+/// Ticks scheduled during generation, deduplicated by type and position (`ProtoChunkTicks`).
+#[derive(Clone, Debug)]
+pub struct ProtoTicks<T> {
+    ticks: Vec<ProtoTick<T>>,
+    unique: FxHashSet<(T, BlockPos)>,
+}
+
+impl<T> Default for ProtoTicks<T> {
+    fn default() -> Self {
+        Self {
+            ticks: Vec::new(),
+            unique: FxHashSet::default(),
+        }
+    }
+}
+
+impl<T: Copy + Eq + std::hash::Hash> ProtoTicks<T> {
+    /// `schedule(tick)`: ignored if a tick of the same type is already at the position.
+    pub fn schedule(&mut self, kind: T, pos: BlockPos, priority: i8) {
+        if self.unique.insert((kind, pos)) {
+            self.ticks.push(ProtoTick {
+                kind,
+                pos,
+                priority,
+            });
+        }
+    }
+
+    /// `hasScheduledTick(pos, type)`.
+    pub fn has(&self, kind: T, pos: BlockPos) -> bool {
+        self.unique.contains(&(kind, pos))
+    }
+
+    /// The ticks in scheduling order.
+    pub fn ticks(&self) -> &[ProtoTick<T>] {
+        &self.ticks
+    }
+}
+
+/// Fluid ids for scheduled fluid ticks: `minecraft:water` or `minecraft:lava`, as the fluid's
+/// still/source block.
+pub type FluidTickKind = BlockId;
 
 /// A chunk during generation.
 #[derive(Clone, Debug)]
@@ -39,10 +101,17 @@ pub struct ProtoChunk {
     pos: ChunkPos,
     min_y: i32,
     sections: Vec<Section>,
-    /// First free Y above the highest matching block per column (`x + z * 16`), per heightmap.
-    heightmaps: [[i32; 256]; 2],
+    /// First free Y above the highest matching block per column (`x + z * 16`), per heightmap,
+    /// indexed by [`HeightmapKind::id`].
+    heightmaps: [[i32; 256]; 6],
+    /// Whether the terrain stage is done: block changes update the final heightmaps from then on.
+    terrain_done: bool,
     /// Positions (`BlockPos.asLong` layout is not needed: x, y, z) marked for post-processing.
     post_processing: Vec<(i32, i32, i32)>,
+    /// Block entity data by position (`setBlockEntityNbt`, `DUMMY` placeholders included).
+    block_entities: FxHashMap<BlockPos, Compound>,
+    block_ticks: ProtoTicks<BlockId>,
+    fluid_ticks: ProtoTicks<FluidTickKind>,
 }
 
 impl ProtoChunk {
@@ -57,9 +126,56 @@ impl ProtoChunk {
             pos,
             min_y,
             sections: (0..height / 16).map(|_| Section::new(air, biome)).collect(),
-            heightmaps: [[min_y; 256]; 2],
+            heightmaps: [[min_y; 256]; 6],
+            terrain_done: false,
             post_processing: Vec::new(),
+            block_entities: FxHashMap::default(),
+            block_ticks: ProtoTicks::default(),
+            fluid_ticks: ProtoTicks::default(),
         }
+    }
+
+    /// A chunk taken over from the chunk runtime between two stages: its sections, with the
+    /// world generation heightmaps computed from the blocks; with `terrain_done` (a chunk past
+    /// the terrain stage) the final heightmaps are primed too.
+    pub fn from_sections(
+        pos: ChunkPos,
+        min_y: i32,
+        sections: Vec<Section>,
+        terrain_done: bool,
+    ) -> Self {
+        assert!(min_y % 16 == 0 && !sections.is_empty(), "unaligned chunk");
+        let mut chunk = Self {
+            pos,
+            min_y,
+            sections,
+            heightmaps: [[min_y; 256]; 6],
+            terrain_done: false,
+            post_processing: Vec::new(),
+            block_entities: FxHashMap::default(),
+            block_ticks: ProtoTicks::default(),
+            fluid_ticks: ProtoTicks::default(),
+        };
+        chunk.prime(&[
+            WgHeightmap::WorldSurface.kind(),
+            WgHeightmap::OceanFloor.kind(),
+        ]);
+        if terrain_done {
+            chunk.finish_terrain();
+        }
+        chunk
+    }
+
+    /// Takes the sections out to hand them to the chunk runtime; the chunk keeps everything
+    /// else (heightmaps, block entities, ticks) and must get sections back with
+    /// [`Self::set_sections`] before it is used again.
+    pub fn take_sections(&mut self) -> Vec<Section> {
+        std::mem::take(&mut self.sections)
+    }
+
+    /// Puts the chunk's sections back (see [`Self::take_sections`]).
+    pub fn set_sections(&mut self, sections: Vec<Section>) {
+        self.sections = sections;
     }
 
     /// The chunk position.
@@ -123,11 +239,21 @@ impl ProtoChunk {
         ))
     }
 
+    /// `getBlockState(pos)` with Vanilla's `VOID_AIR` outside the build height.
+    #[inline]
+    pub fn block_or_void(&self, x: i32, y: i32, z: i32) -> BlockState {
+        if self.is_outside(y) {
+            return void_air();
+        }
+        self.block(x, y, z)
+    }
+
     /// `ProtoChunk.setBlockState(pos, state)` before `INITIALIZE_LIGHT`: sets the block and
-    /// updates the world generation heightmaps. Returns the old state.
+    /// updates the heightmaps of the current status. Returns the old state (`VOID_AIR` outside
+    /// the build height).
     pub fn set_block(&mut self, x: i32, y: i32, z: i32, state: BlockState) -> BlockState {
         if self.is_outside(y) {
-            return BlockState::AIR;
+            return void_air();
         }
         let index = self.section_index(y);
         let section = &mut self.sections[index];
@@ -136,15 +262,59 @@ impl ProtoChunk {
         }
         let (lx, lz) = ((x & 15) as u32, (z & 15) as u32);
         let old = BlockState(section.set_block(lx, (y & 15) as u32, lz, state.0));
-        self.update_heightmap(
-            WgHeightmap::WorldSurface,
-            lx as usize,
-            y,
-            lz as usize,
-            state,
-        );
-        self.update_heightmap(WgHeightmap::OceanFloor, lx as usize, y, lz as usize, state);
+        let (lx, lz) = (lx as usize, lz as usize);
+        if self.terrain_done {
+            for kind in FINAL {
+                self.update_kind(kind, lx, y, lz, state);
+            }
+        } else {
+            self.update_kind(HeightmapKind::WorldSurfaceWg, lx, y, lz, state);
+            self.update_kind(HeightmapKind::OceanFloorWg, lx, y, lz, state);
+        }
         old
+    }
+
+    /// Ends the terrain stage: primes the final heightmaps from the blocks
+    /// (`Heightmap.primeHeightmaps`); from now on block changes update them instead of the
+    /// world generation heightmaps.
+    pub fn finish_terrain(&mut self) {
+        self.terrain_done = true;
+        self.prime(&FINAL);
+    }
+
+    /// `Heightmap.primeHeightmaps` for `kinds`: each column's highest matching block.
+    fn prime(&mut self, kinds: &[HeightmapKind]) {
+        let top = (self.highest_filled_section_index() + 1) * 16 + self.min_y;
+        for column in 0..256 {
+            let (x, z) = ((column & 15) as i32, (column >> 4) as i32);
+            for kind in kinds {
+                self.heightmaps[kind.id() as usize][column] = self.min_y;
+            }
+            let mut remaining = kinds.len();
+            let mut done = [false; 6];
+            for y in (self.min_y..top).rev() {
+                let state = self.block(x, y, z);
+                if state == BlockState::AIR {
+                    continue;
+                }
+                let flags = facts::block_flags(state.0);
+                for (i, kind) in kinds.iter().enumerate() {
+                    if !done[i] && kind.matches(flags) {
+                        done[i] = true;
+                        remaining -= 1;
+                        self.heightmaps[kind.id() as usize][column] = y + 1;
+                    }
+                }
+                if remaining == 0 {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Whether [`Self::finish_terrain`] ran.
+    pub fn terrain_done(&self) -> bool {
+        self.terrain_done
     }
 
     /// `LevelChunkSection.setBlockState` without heightmap updates (as `doFill` writes).
@@ -154,13 +324,22 @@ impl ProtoChunk {
         self.sections[index].set_block((x & 15) as u32, (y & 15) as u32, (z & 15) as u32, state.0);
     }
 
-    /// `getHeight(type, x, z)`: the highest matching block Y, or `min_y - 1`. Local x/z.
+    /// `getHeight(type, x, z)` of a world generation heightmap: the highest matching block Y,
+    /// or `min_y - 1`. Local x/z.
     #[inline]
     pub fn height_at(&self, map: WgHeightmap, x: usize, z: usize) -> i32 {
-        self.heightmaps[map.index()][x + z * 16] - 1
+        self.heightmap(map.kind(), x, z)
     }
 
-    /// `Heightmap.update(x, y, z, state)` with local x/z and world y.
+    /// `getHeight(type, x, z)`: the highest matching block Y, or `min_y - 1`. Local x/z. The
+    /// final heightmaps are only valid after [`Self::finish_terrain`].
+    #[inline]
+    pub fn heightmap(&self, kind: HeightmapKind, x: usize, z: usize) -> i32 {
+        self.heightmaps[kind.id() as usize][x + z * 16] - 1
+    }
+
+    /// `Heightmap.update(x, y, z, state)` of a world generation heightmap with local x/z and
+    /// world y.
     pub fn update_heightmap(
         &mut self,
         map: WgHeightmap,
@@ -169,25 +348,93 @@ impl ProtoChunk {
         z: usize,
         state: BlockState,
     ) {
+        self.update_kind(map.kind(), x, y, z, state);
+    }
+
+    fn update_kind(&mut self, kind: HeightmapKind, x: usize, y: i32, z: usize, state: BlockState) {
+        let index = kind.id() as usize;
         let column = x + z * 16;
-        let first_available = self.heightmaps[map.index()][column];
+        let first_available = self.heightmaps[index][column];
         if y <= first_available - 2 {
             return;
         }
-        if map.matches(state) {
+        if kind.matches(facts::block_flags(state.0)) {
             if y >= first_available {
-                self.heightmaps[map.index()][column] = y + 1;
+                self.heightmaps[index][column] = y + 1;
             }
         } else if first_available - 1 == y {
             let mut found = self.min_y;
             for below in (self.min_y..y).rev() {
-                if map.matches(self.block(x as i32, below, z as i32)) {
+                if kind.matches(facts::block_flags(self.block(x as i32, below, z as i32).0)) {
                     found = below + 1;
                     break;
                 }
             }
-            self.heightmaps[map.index()][column] = found;
+            self.heightmaps[index][column] = found;
         }
+    }
+
+    /// Block entity data at a position.
+    pub fn block_entity(&self, pos: BlockPos) -> Option<&Compound> {
+        self.block_entities.get(&pos)
+    }
+
+    /// Mutable block entity data at a position.
+    pub fn block_entity_mut(&mut self, pos: BlockPos) -> Option<&mut Compound> {
+        self.block_entities.get_mut(&pos)
+    }
+
+    /// `setBlockEntityNbt`: replaces the block entity data at a position.
+    pub fn set_block_entity(&mut self, pos: BlockPos, data: Compound) {
+        self.block_entities.insert(pos, data);
+    }
+
+    /// `removeBlockEntity(pos)`.
+    pub fn remove_block_entity(&mut self, pos: BlockPos) {
+        self.block_entities.remove(&pos);
+    }
+
+    /// All block entities.
+    pub fn block_entities(&self) -> &FxHashMap<BlockPos, Compound> {
+        &self.block_entities
+    }
+
+    /// Scheduled block ticks.
+    pub fn block_ticks(&self) -> &ProtoTicks<BlockId> {
+        &self.block_ticks
+    }
+
+    /// Scheduled block ticks, mutable.
+    pub fn block_ticks_mut(&mut self) -> &mut ProtoTicks<BlockId> {
+        &mut self.block_ticks
+    }
+
+    /// Scheduled fluid ticks.
+    pub fn fluid_ticks(&self) -> &ProtoTicks<FluidTickKind> {
+        &self.fluid_ticks
+    }
+
+    /// Scheduled fluid ticks, mutable.
+    pub fn fluid_ticks_mut(&mut self) -> &mut ProtoTicks<FluidTickKind> {
+        &mut self.fluid_ticks
+    }
+
+    /// Sets a block in its section only, as `BulkSectionAccess` writes (no heightmap updates).
+    #[inline]
+    pub fn set_block_in_section(
+        &mut self,
+        x: i32,
+        y: i32,
+        z: i32,
+        state: BlockState,
+    ) -> BlockState {
+        let index = self.section_index(y);
+        BlockState(self.sections[index].set_block(
+            (x & 15) as u32,
+            (y & 15) as u32,
+            (z & 15) as u32,
+            state.0,
+        ))
     }
 
     /// `markPosForPostProcessing(pos)`; positions outside the build height are ignored.
@@ -232,4 +479,15 @@ impl ProtoChunk {
             ChunkLight::new(count),
         )
     }
+}
+
+/// `Blocks.VOID_AIR.defaultBlockState()`.
+pub fn void_air() -> BlockState {
+    use std::sync::OnceLock;
+    static VOID_AIR: OnceLock<BlockState> = OnceLock::new();
+    *VOID_AIR.get_or_init(|| {
+        BlockId::by_name("minecraft:void_air")
+            .expect("void_air")
+            .default_state()
+    })
 }

@@ -3,12 +3,18 @@
 use std::fmt;
 use std::sync::Arc;
 
+use vanillite_base::ChunkPos;
+use vanillite_base::hash::FxHashMap;
 use vanillite_config::WorldRules;
 use vanillite_game::entities::Entities;
+use vanillite_world::chunks::{Chunks, TicketId};
+use vanillite_world::entity::EntityId;
 use vanillite_world::tracking::{EntityTracker, TrackerInput, TrackerOutput, Viewer};
 
 use crate::compute::Compute;
 use crate::global::Global;
+use crate::players::WorldPlayers;
+use crate::world_setup::ChunkPackets;
 
 /// A world (dimension) of this server: its index in Vanilla's tick order (overworld, nether,
 /// end, then others).
@@ -39,6 +45,13 @@ pub struct ServerWorld {
     /// The tracker's result of the last tick.
     entity_updates: TrackerOutput,
     viewers: Vec<Viewer>,
+    /// Chunks sent to players this tick, for the tracker.
+    chunks_sent: Vec<(EntityId, ChunkPos)>,
+    pub(crate) players: WorldPlayers,
+    chunks: Chunks,
+    packets: ChunkPackets,
+    /// The chunk ticket of every player: its centre chunk and the ticket.
+    player_tickets: FxHashMap<EntityId, (ChunkPos, TicketId)>,
 }
 
 impl fmt::Debug for ServerWorld {
@@ -58,6 +71,8 @@ impl ServerWorld {
         dimension: String,
         rules: Arc<WorldRules>,
         tracker: Box<dyn EntityTracker>,
+        players: WorldPlayers,
+        chunks: Chunks,
     ) -> ServerWorld {
         ServerWorld {
             id,
@@ -68,7 +83,49 @@ impl ServerWorld {
             tracker,
             entity_updates: TrackerOutput::default(),
             viewers: Vec::new(),
+            chunks_sent: Vec::new(),
+            players,
+            chunks,
+            packets: ChunkPackets::default(),
+            player_tickets: FxHashMap::default(),
         }
+    }
+
+    /// The chunks of this world.
+    pub fn chunks(&self) -> &Chunks {
+        &self.chunks
+    }
+
+    /// The chunks of this world, mutably (tickets, blocks).
+    pub fn chunks_mut(&mut self) -> &mut Chunks {
+        &mut self.chunks
+    }
+
+    /// Keeps every player's view loaded: one ticket at its centre chunk, moved when the
+    /// centre changes, removed when the player is gone.
+    fn update_player_tickets(&mut self) {
+        let level = self.chunks.player_ticket_level();
+        for (id, player) in self.entities.players.iter() {
+            let center = player.chunk_view.center;
+            match self.player_tickets.get(&id) {
+                Some(&(old, _)) if old == center => {}
+                _ => {
+                    let ticket = self.chunks.add_ticket(center, level);
+                    if let Some((_, old)) = self.player_tickets.insert(id, (center, ticket)) {
+                        self.chunks.remove_ticket(old);
+                    }
+                }
+            }
+        }
+        let entities = &self.entities;
+        let chunks = &mut self.chunks;
+        self.player_tickets.retain(|&id, &mut (_, ticket)| {
+            let alive = entities.player(id).is_some();
+            if !alive {
+                chunks.remove_ticket(ticket);
+            }
+            alive
+        });
     }
 
     /// The entities of this world.
@@ -85,6 +142,12 @@ impl ServerWorld {
     /// once and send it to its viewers ([`TrackerOutput::fan_out`]).
     pub fn entity_updates(&self) -> &TrackerOutput {
         &self.entity_updates
+    }
+
+    /// Places a player that joined the server into this world.
+    pub(crate) fn join_player(&mut self, global: &Global, arrival: crate::players::Arrival) {
+        self.players
+            .join(&mut self.entities, global, self.id, arrival);
     }
 
     /// This world's id.
@@ -112,10 +175,23 @@ impl ServerWorld {
         self.rules = rules;
     }
 
-    /// One world tick in Vanilla's order (architecture 3.3): the entities in tick order (no
-    /// behaviours yet), then entity tracking.
+    /// One world tick in Vanilla's order (architecture 3.3): the players' packets (Vanilla
+    /// handles them between ticks), the chunk source (player tickets, loading, generation,
+    /// unloading), the entities in tick order (no behaviours yet), chunk sending, entity
+    /// tracking and its updates, then the connection tick.
     pub(crate) fn tick(&mut self, ctx: &mut TickContext<'_>) {
         debug_assert_eq!(ctx.world, self.id);
+        self.players.handle_packets(
+            &mut self.entities,
+            &self.rules,
+            ctx.runs_normally,
+            ctx.global,
+            self.id,
+            i64::try_from(self.ticks).unwrap_or(i64::MAX),
+        );
+        self.update_player_tickets();
+        self.chunks.tick();
+        self.packets.invalidate(&mut self.chunks);
         if ctx.runs_normally {
             self.ticks += 1;
             let store = &mut self.entities.store;
@@ -126,7 +202,12 @@ impl ServerWorld {
                 }
             }
         }
+        self.players.tick_entities(&mut self.entities);
+        WorldPlayers::send_chunks(&mut self.entities, &self.packets.source(&self.chunks));
         self.track_entities();
+        WorldPlayers::send_entity_updates(&self.entities, &self.entity_updates);
+        self.players
+            .tick_connections(&mut self.entities, ctx.tick, ctx.global, self.id);
     }
 
     /// Runs the entity tracker over this tick's state and resets the per-tick sync state.
@@ -139,11 +220,19 @@ impl ServerWorld {
                 view_distance: player.chunk_view.view_distance,
             }));
         self.entity_updates.clear();
-        // Chunk sending is not wired yet: no chunk counts as pending.
+        self.chunks_sent.clear();
+        let mut sent = Vec::new();
+        for (entity, player) in self.entities.players.iter_mut() {
+            player.connection.chunks.take_sent(&mut sent);
+            self.chunks_sent
+                .extend(sent.drain(..).map(|pos| (entity, pos)));
+        }
+        let entities = &self.entities;
         let input = TrackerInput {
-            entities: &self.entities.store,
+            entities: &entities.store,
             viewers: &self.viewers,
-            chunk_pending: &|_, _| false,
+            chunk_pending: &|player, chunk| WorldPlayers::chunk_pending(entities, player, chunk),
+            chunks_sent: &self.chunks_sent,
         };
         self.tracker.update(&input, &mut self.entity_updates);
         self.entities.store.clear_removed();
@@ -153,6 +242,8 @@ impl ServerWorld {
     /// Saves the world. `flush` waits until everything is on disk (shutdown).
     pub(crate) fn save(&mut self, flush: bool) {
         log::debug!("Saving {} (flush: {flush})", self.dimension);
+        self.players.save_all(&self.entities);
+        self.chunks.save_all(flush);
     }
 }
 

@@ -9,11 +9,13 @@
 //! cargo xtask dev [--release] [-- <server args>]
 //! cargo xtask deploy [--port <port>] [--release]
 //! cargo xtask testserver provision|status|logs|start|stop|restart [<port>]
+//! cargo xtask loadtest [--server vanillite|paper|both] [--steps <n,...>] [--hold <s>] ...
 //! ```
 
 mod codegen;
 mod devenv;
 mod golden;
+mod loadtest;
 mod normalize;
 mod vanilla;
 
@@ -52,7 +54,18 @@ pub const USAGE: &str = "usage:
       The SSH host is vanillite-test, or VANILLITE_TEST_HOST.
   cargo xtask testserver provision|status|logs|start|stop|restart [<port>]
       provision runs scripts/testserver/provision.sh on the test server (idempotent);
-      status lists the services and ports; the others act on vanillite@<port> (default 30001).";
+      status lists the services and ports; the others act on vanillite@<port> (default 30001).
+  cargo xtask loadtest [--server vanillite|paper|both] [--steps 50,100,...] [--hold <s>]
+                       [--join-rate <per s>] [--chat <s>] [--view-distance <n>] [--release]
+                       [--no-deploy] [--no-gate]
+      Scaling benchmark: tools/loadbot bots (here) against vanillite@30901 (deployed from this
+      checkout) and the Paper reference paper-loadtest on 30900, both offline mode on the test
+      server and only running during the run. Steps default to 50,100,250,500,1000,2000,5000,
+      each held 60 s; chat is off by default (--chat sets seconds between messages per bot).
+      Writes target/loadtest/<time>/{vanillite,paper}.json, report.md and chart.svg, keeps
+      results of clean checkouts under /opt/vanillite/bench/results on the test server and
+      fails when p95 MSPT or RSS per player of a step is more than 10 % above the median of
+      the last 5 runs (--no-gate skips the check).";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -67,6 +80,7 @@ fn main() -> ExitCode {
         ["dev", rest @ ..] => devenv::dev(&repo_root(), rest),
         ["deploy", rest @ ..] => devenv::deploy(&repo_root(), rest),
         ["testserver", rest @ ..] => devenv::testserver(&repo_root(), rest),
+        ["loadtest", rest @ ..] => loadtest::run(&repo_root(), rest),
         _ => Err(USAGE.to_owned()),
     };
     match result {

@@ -1,10 +1,10 @@
 //! Pre-encoded data of the configuration phase. Registries, tags, feature flags and known packs
 //! are immutable during a server run, so they are encoded once and shared by every connection.
 
-use crate::outbound::SharedPacket;
 use std::sync::Arc;
 use vanillite_datapack::LoadedPacks;
 use vanillite_nbt::{Compound, List, Tag};
+use vanillite_protocol::SharedPacket;
 use vanillite_protocol::frame::encode_body;
 use vanillite_protocol::packets::common::{RegistryTags, TagEntries};
 use vanillite_protocol::packets::configuration::clientbound::{

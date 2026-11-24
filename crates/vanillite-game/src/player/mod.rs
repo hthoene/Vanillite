@@ -1,7 +1,34 @@
-//! The player kind: what a player entity holds besides its core columns.
+//! The player kind: what a player entity holds besides its core columns, its connection, the
+//! play packet handlers, movement validation and chunk sending.
+
+// SEC-07: packet handler modules of the game deny the lints of the input-handling crates.
+#![deny(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions
+)]
+
+pub mod chat;
+pub mod chunks;
+pub mod connection;
+pub mod encode;
+pub mod join;
+pub mod movement;
+pub mod sink;
+
+pub use chunks::{ChunkSource, PlayerChunks};
+pub use connection::{
+    ChatContext, ChatRequest, Connection, Handled, PlayerChatState, PlayerState, SignedCommand,
+    effective_view_distance,
+};
+pub use movement::{Body, Kick, MoveContext, MoveRequest, Movement};
+pub use sink::PacketSink;
 
 use vanillite_base::ChunkPos;
 use vanillite_config::GameMode;
+pub use vanillite_protocol::packets::common::ChatVisibility;
 use vanillite_world::entity::{Dimensions, Pose};
 
 /// One property of a game profile (`textures` carries the skin).
@@ -47,6 +74,8 @@ pub struct ClientInformation {
     pub main_hand: MainHand,
     /// Whether the player may be listed in the server list sample.
     pub allows_listing: bool,
+    /// Which chat the player wants to see.
+    pub chat_visibility: ChatVisibility,
 }
 
 impl Default for ClientInformation {
@@ -58,6 +87,7 @@ impl Default for ClientInformation {
             model_customisation: 0,
             main_hand: MainHand::Right,
             allows_listing: false,
+            chat_visibility: ChatVisibility::Full,
         }
     }
 }
@@ -71,9 +101,8 @@ pub struct ChunkView {
     pub view_distance: i32,
 }
 
-/// The kind data of a player entity (`Dense<PlayerData>`). The network connection is added by
-/// the play handlers.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// The kind data of a player entity (`Dense<PlayerData>`).
+#[derive(Debug)]
 pub struct PlayerData {
     /// Profile with name and skin.
     pub profile: GameProfile,
@@ -85,6 +114,8 @@ pub struct PlayerData {
     pub client: ClientInformation,
     /// Loaded chunks on the client.
     pub chunk_view: ChunkView,
+    /// The connection to the client.
+    pub connection: Connection,
 }
 
 /// `Player.getDefaultDimensions(pose)`.

@@ -9,15 +9,26 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+vanillite-base.workspace = true
+vanillite-chunk.workspace = true
 vanillite-config.workspace = true
+vanillite-data.workspace = true
+vanillite-datapack.workspace = true
 log.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
 vanillite-game.workspace = true
+vanillite-command.workspace = true
 vanillite-world.workspace = true
+vanillite-protocol.workspace = true
+vanillite-nbt.workspace = true
 vanillite-net.workspace = true
 vanillite-worldgen.workspace = true
 vanillite-light.workspace = true
 vanillite-storage.workspace = true
 vanillite-plugin-host.workspace = true
+
+[dev-dependencies]
 
 [lints]
 workspace = true
