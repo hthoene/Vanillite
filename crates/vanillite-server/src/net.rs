@@ -36,10 +36,13 @@ pub(crate) struct Prepared {
     pub(crate) worlds: Vec<WorldPlayers>,
     /// The loaded data packs; `None` with [`VanillaPack::None`].
     pub(crate) packs: Option<LoadedPacks>,
+    /// Seed and generators of the world.
+    pub(crate) world_gen: crate::world_setup::WorldGen,
 }
 
-/// Where new players spawn: `spawn` of `level.dat`, else on top of the flat stand-in world.
-fn world_spawn(level_dir: &Path) -> (Vec3, f32) {
+/// Where new players spawn: `spawn` of `level.dat`, else on top of the flat layers, or above
+/// the noise terrain (searching a spawn position like Vanilla is not ported yet).
+fn world_spawn(level_dir: &Path, is_flat: bool) -> (Vec3, f32) {
     let spawn = vanillite_storage::read_level_dat(level_dir)
         .ok()
         .flatten()
@@ -67,7 +70,9 @@ fn world_spawn(level_dir: &Path) -> (Vec3, f32) {
             yaw,
         ),
         // The classic flat layers end 4 blocks above the overworld's bottom (-64).
-        _ => (Vec3::new(0.5, -60.0, 0.5), 0.0),
+        _ if is_flat => (Vec3::new(0.5, -60.0, 0.5), 0.0),
+        // The top of the overworld; the player falls onto the terrain.
+        _ => (Vec3::new(0.5, 320.0, 0.5), 0.0),
     }
 }
 
@@ -113,8 +118,13 @@ pub(crate) fn prepare(
         ),
     };
     crate::world_setup::install_facts(packs.as_ref())?;
-    let spawn = world_spawn(level_dir);
-    let is_flat = !level_dir.join("level.dat").exists();
+    let world_gen = crate::world_setup::WorldGen::load_or_create(
+        level_dir,
+        &config.properties,
+        packs.as_ref(),
+    )?;
+    let is_flat = world_gen.is_flat();
+    let spawn = world_spawn(level_dir, is_flat);
 
     let properties = &config.properties;
     let levels: Vec<Identifier> = DIMENSIONS
@@ -143,8 +153,7 @@ pub(crate) fn prepare(
                     dimension,
                 ))
                 .unwrap_or(0),
-                // Vanilla sends the first 8 bytes of SHA-256(seed); not ported yet.
-                hashed_seed: 0,
+                hashed_seed: vanillite_worldgen::biome::obfuscate_seed(world_gen.seed),
                 is_flat,
                 sea_level: 63,
                 spawn,
@@ -161,6 +170,7 @@ pub(crate) fn prepare(
         configuration,
         worlds,
         packs,
+        world_gen,
     })
 }
 

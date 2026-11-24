@@ -62,6 +62,20 @@ impl ProtoChunk {
         }
     }
 
+    /// A chunk from sections that hold no blocks yet (status `biomes` or earlier), e.g. taken
+    /// over from the chunk runtime between two stages.
+    pub fn from_sections(pos: ChunkPos, min_y: i32, sections: Vec<Section>) -> Self {
+        assert!(min_y % 16 == 0 && !sections.is_empty(), "unaligned chunk");
+        debug_assert!(sections.iter().all(|s| s.summary().is_empty()));
+        Self {
+            pos,
+            min_y,
+            sections,
+            heightmaps: [[min_y; 256]; 2],
+            post_processing: Vec::new(),
+        }
+    }
+
     /// The chunk position.
     pub fn pos(&self) -> ChunkPos {
         self.pos

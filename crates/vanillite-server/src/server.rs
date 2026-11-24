@@ -13,9 +13,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use std::{fmt, io};
 
-use vanillite_chunk::slots::{
-    ChunkGeneratorProvider, ChunkStorageProvider, FlatGeneratorProvider, LightEngineProvider,
-};
+use vanillite_chunk::slots::{ChunkGeneratorProvider, ChunkStorageProvider, LightEngineProvider};
 use vanillite_config::{
     Config, ConfigError, RegionFileCompression, RuleSet, VANILLITE_FILE, VanillaOr,
 };
@@ -219,8 +217,8 @@ impl ServerBuilder {
         let session_lock = lock_world(&level_dir)?;
         let prepared = crate::net::prepare(&config, &dir, &level_dir, &self.vanilla_pack)?;
         let mut world_players = prepared.worlds.into_iter();
-        let packs = prepared.packs;
-        let seed = crate::world_setup::parse_seed(&config.properties.level_seed);
+        let packs = prepared.packs.map(Arc::new);
+        let seed = prepared.world_gen.seed;
         let slot = |name: &str, origin: &Origin| log::info!("Slot {name}: {origin}");
         let (storage_provider, origin) = self.chunk_storage.take().unwrap_or_else(|| {
             let compression = match config.properties.region_file_compression {
@@ -234,10 +232,13 @@ impl ServerBuilder {
             )
         });
         slot("chunk-storage", &origin);
-        let (generator_provider, origin) = self
-            .chunk_generator
-            .take()
-            .unwrap_or_else(|| (Box::new(FlatGeneratorProvider), Origin::BuiltIn));
+        let (generator_provider, origin) = self.chunk_generator.take().unwrap_or_else(|| {
+            let generators = crate::world_setup::BuiltInGenerators {
+                packs: packs.clone(),
+                world_gen: prepared.world_gen,
+            };
+            (Box::new(generators), Origin::BuiltIn)
+        });
         slot("chunk-generator", &origin);
         let (light_provider, origin) = self
             .light_engine
@@ -274,7 +275,8 @@ impl ServerBuilder {
                 config.properties.entity_broadcast_range_percentage,
                 &rules.tracking,
             ));
-            let info = crate::world_setup::world_info(packs.as_ref(), &level_dir, dimension, seed)?;
+            let info =
+                crate::world_setup::world_info(packs.as_deref(), &level_dir, dimension, seed)?;
             let slots = ChunkSlots {
                 storage: storage_provider
                     .create(&info)
@@ -1059,7 +1061,7 @@ pub enum StartError {
 }
 
 impl StartError {
-    fn io(path: &Path, error: io::Error) -> StartError {
+    pub(crate) fn io(path: &Path, error: io::Error) -> StartError {
         StartError::Io(format!("{}: {error}", path.display()))
     }
 }

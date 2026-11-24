@@ -13,9 +13,10 @@ use vanillite_protocol::packets::play::clientbound::LevelChunkWithLight;
 use vanillite_protocol::{Packet, SharedPacket};
 use vanillite_world::chunks::Chunks;
 
-use vanillite_chunk::slots::WorldInfo;
+use vanillite_chunk::slots::{ChunkGenerator, ChunkGeneratorProvider, FlatGenerator, WorldInfo};
 use vanillite_datapack::LoadedPacks;
 use vanillite_world::chunks::Executor;
+use vanillite_worldgen::{DimensionSpec, TerrainGenerator, VanillaChunkGenerator};
 
 use crate::compute::Compute;
 use crate::server::StartError;
@@ -43,18 +44,215 @@ pub(crate) fn install_facts(packs: Option<&LoadedPacks>) -> Result<(), StartErro
     Ok(())
 }
 
-/// `level-seed`: a number, or any other text hashed like Java's `String.hashCode`.
-pub(crate) fn parse_seed(text: &str) -> i64 {
+/// `level-seed`: a number, or any other text hashed like Java's `String.hashCode`; `None` if
+/// empty.
+pub(crate) fn parse_seed(text: &str) -> Option<i64> {
     let text = text.trim();
     if text.is_empty() {
-        return 0;
+        return None;
     }
-    text.parse::<i64>().unwrap_or_else(|_| {
+    Some(text.parse::<i64>().unwrap_or_else(|_| {
         let hash = text
             .encode_utf16()
             .fold(0i32, |h, c| h.wrapping_mul(31).wrapping_add(i32::from(c)));
         i64::from(hash)
-    })
+    }))
+}
+
+/// A seed for a new world without `level-seed` (`WorldOptions.randomSeed`).
+fn random_seed() -> i64 {
+    use std::hash::{BuildHasher, Hasher};
+    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    if let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        hasher.write_u128(now.as_nanos());
+    }
+    hasher.finish() as i64
+}
+
+/// Saved data id of Vanilla's `WorldGenSettings`.
+const WORLD_GEN_SETTINGS: &str = "minecraft:world_gen_settings";
+
+/// Vanilla's `WorldGenSettings` of a world: the seed and the generator of each dimension.
+#[derive(Debug, Clone)]
+pub(crate) struct WorldGen {
+    /// World seed.
+    pub(crate) seed: i64,
+    /// The `generator` JSON of each dimension (`dimensions.<key>.generator`).
+    generators: serde_json::Map<String, serde_json::Value>,
+}
+
+impl WorldGen {
+    /// Reads the world's `data/minecraft/world_gen_settings.dat` (Paper keeps it in the
+    /// overworld's folder). A new world gets its seed from `level-seed` (else a random one) and
+    /// its generators from the world preset of `level-type`, and the file is written.
+    pub(crate) fn load_or_create(
+        level_dir: &Path,
+        properties: &vanillite_config::ServerProperties,
+        packs: Option<&LoadedPacks>,
+    ) -> Result<Self, StartError> {
+        let overworld = vanillite_storage::dimension_dir(level_dir, "minecraft:overworld");
+        for dir in [level_dir, overworld.as_path()] {
+            let data = vanillite_storage::read_saved_data(dir, WORLD_GEN_SETTINGS)
+                .map_err(|e| StartError::io(dir, e))?;
+            if let Some(data) = data {
+                return Ok(Self::from_nbt(&data));
+            }
+        }
+        let seed = parse_seed(&properties.level_seed).unwrap_or_else(random_seed);
+        let preset = match properties.level_type.trim().to_lowercase().as_str() {
+            "" | "default" | "minecraft:default" => "minecraft:normal".to_owned(),
+            name if name.contains(':') => name.to_owned(),
+            name => format!("minecraft:{name}"),
+        };
+        let dimensions = packs
+            .and_then(|p| p.registry("minecraft:worldgen/world_preset"))
+            .and_then(|r| r.get(&preset))
+            .and_then(|entry| serde_json::from_str::<serde_json::Value>(entry.json.get()).ok())
+            .and_then(|json| json.get("dimensions").cloned());
+        let Some(serde_json::Value::Object(dimensions)) = dimensions else {
+            // Without data packs (tests) there are no presets: the flat stand-in everywhere.
+            return Ok(Self {
+                seed,
+                generators: serde_json::Map::new(),
+            });
+        };
+        let mut stems = vanillite_nbt::Compound::new();
+        for (key, stem) in &dimensions {
+            if let vanillite_nbt::Tag::Compound(stem) = json_to_nbt(stem) {
+                stems.insert(key.clone(), stem);
+            }
+        }
+        let data = vanillite_nbt::Compound::new()
+            .with("generate_structures", properties.generate_structures)
+            .with("bonus_chest", false)
+            .with("seed", seed)
+            .with("dimensions", stems);
+        vanillite_storage::write_saved_data(level_dir, WORLD_GEN_SETTINGS, data.clone())
+            .map_err(|e| StartError::io(level_dir, e))?;
+        log::info!("New world: preset {preset}, seed {seed}");
+        Ok(Self::from_nbt(&data))
+    }
+
+    fn from_nbt(data: &vanillite_nbt::Compound) -> Self {
+        let seed = data
+            .get("seed")
+            .and_then(vanillite_nbt::Tag::as_i64)
+            .unwrap_or(0);
+        let mut generators = serde_json::Map::new();
+        if let Some(dimensions) = data
+            .get("dimensions")
+            .and_then(vanillite_nbt::Tag::as_compound)
+        {
+            for (key, stem) in dimensions.iter() {
+                if let Some(generator) = stem.as_compound().and_then(|s| s.get("generator")) {
+                    generators.insert(key.to_owned(), nbt_to_json(generator));
+                }
+            }
+        }
+        Self { seed, generators }
+    }
+
+    /// The generator JSON of a dimension.
+    fn generator(&self, dimension: &str) -> Option<&serde_json::Value> {
+        self.generators.get(dimension)
+    }
+
+    /// Whether the overworld uses the flat generator (`is_flat` of the login packet).
+    pub(crate) fn is_flat(&self) -> bool {
+        self.generator("minecraft:overworld")
+            .is_none_or(|g| g.get("type").and_then(|t| t.as_str()) != Some("minecraft:noise"))
+    }
+}
+
+/// JSON as NBT the way Vanilla's codecs read it back: integers as `Int` (`Long` if too large),
+/// other numbers as `Double`, booleans as `Byte`; `null` becomes an empty compound.
+fn json_to_nbt(json: &serde_json::Value) -> vanillite_nbt::Tag {
+    use serde_json::Value;
+    use vanillite_nbt::Tag;
+    match json {
+        Value::Null => Tag::Compound(vanillite_nbt::Compound::new()),
+        Value::Bool(b) => Tag::from(*b),
+        Value::Number(n) => match n.as_i64() {
+            Some(v) => i32::try_from(v).map_or(Tag::Long(v), Tag::Int),
+            None => Tag::Double(n.as_f64().unwrap_or(0.0)),
+        },
+        Value::String(s) => Tag::String(s.clone()),
+        Value::Array(items) => {
+            Tag::List(vanillite_nbt::List(items.iter().map(json_to_nbt).collect()))
+        }
+        Value::Object(map) => {
+            let mut c = vanillite_nbt::Compound::with_capacity(map.len());
+            for (k, v) in map {
+                c.insert(k.clone(), json_to_nbt(v));
+            }
+            Tag::Compound(c)
+        }
+    }
+}
+
+/// NBT as JSON for the data-driven parsers (numbers stay numbers, `Byte` too).
+fn nbt_to_json(tag: &vanillite_nbt::Tag) -> serde_json::Value {
+    use serde_json::Value;
+    use vanillite_nbt::Tag;
+    match tag {
+        Tag::Byte(v) => Value::from(*v),
+        Tag::Short(v) => Value::from(*v),
+        Tag::Int(v) => Value::from(*v),
+        Tag::Long(v) => Value::from(*v),
+        Tag::Float(v) => Value::from(*v),
+        Tag::Double(v) => Value::from(*v),
+        Tag::String(s) => Value::String(s.clone()),
+        Tag::ByteArray(v) => v.iter().map(|&b| Value::from(b)).collect(),
+        Tag::IntArray(v) => v.iter().map(|&b| Value::from(b)).collect(),
+        Tag::LongArray(v) => v.iter().map(|&b| Value::from(b)).collect(),
+        Tag::List(list) => list.0.iter().map(nbt_to_json).collect(),
+        Tag::Compound(c) => Value::Object(
+            c.iter()
+                .map(|(k, v)| (k.to_owned(), nbt_to_json(v)))
+                .collect(),
+        ),
+    }
+}
+
+/// The built-in `chunk-generator` slot: Vanilla's noise generator for `minecraft:noise`
+/// dimensions, the classic flat layers for everything else.
+#[derive(Debug)]
+pub(crate) struct BuiltInGenerators {
+    pub(crate) packs: Option<Arc<LoadedPacks>>,
+    pub(crate) world_gen: WorldGen,
+}
+
+impl ChunkGeneratorProvider for BuiltInGenerators {
+    fn create(&self, world: &WorldInfo) -> Result<Arc<dyn ChunkGenerator>, String> {
+        let generator = self.world_gen.generator(&world.dimension);
+        let kind = generator
+            .and_then(|g| g.get("type"))
+            .and_then(|t| t.as_str());
+        let (Some(packs), Some(generator), Some("minecraft:noise")) =
+            (self.packs.as_deref(), generator, kind)
+        else {
+            if let Some(kind) = kind.filter(|k| *k != "minecraft:flat") {
+                log::warn!(
+                    "{}: generator {kind} is not supported, using flat",
+                    world.dimension
+                );
+            }
+            return Ok(Arc::new(FlatGenerator::classic(world)));
+        };
+        let noise_settings = generator
+            .get("settings")
+            .and_then(|s| s.as_str())
+            .ok_or("inline noise settings are not supported")?;
+        let spec = DimensionSpec {
+            noise_settings,
+            biome_source: generator.get("biome_source").ok_or("no biome source")?,
+            min_y: world.min_y,
+            height: i32::try_from(world.height).map_err(|e| e.to_string())?,
+        };
+        let terrain =
+            TerrainGenerator::new(packs, spec, self.world_gen.seed).map_err(|e| e.to_string())?;
+        Ok(Arc::new(VanillaChunkGenerator::new(terrain, world.clone())))
+    }
 }
 
 /// The [`WorldInfo`] of a dimension; its height and sky light come from its dimension type

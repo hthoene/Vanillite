@@ -120,6 +120,15 @@ impl NeighbourBiomes {
         }
     }
 
+    /// The biomes of the 3×3 chunks around a chunk: each chunk's biome containers, bottom
+    /// section first, in the order of [`Self::collect`]; `min_section` is the lowest section Y.
+    pub fn new(min_section: i32, chunks: [Vec<PalettedContainer<Biomes>>; 9]) -> Self {
+        Self {
+            min_section,
+            chunks,
+        }
+    }
+
     /// `ChunkAccess.getNoiseBiome` of the chunk containing the quart, for quarts of the 3×3
     /// area around `center`.
     fn noise_biome(&self, center: ChunkPos, quart_x: i32, quart_y: i32, quart_z: i32) -> BiomeId {

@@ -48,6 +48,41 @@ pub fn read_level_dat(world_dir: &Path) -> io::Result<Option<Compound>> {
     read_gzip_nbt(&world_dir.join("level.dat"))
 }
 
+/// The file of Vanilla saved data `id` (e.g. `minecraft:world_gen_settings`) below `dir`:
+/// `<dir>/data/<namespace>/<path>.dat`.
+pub fn saved_data_path(dir: &Path, id: &str) -> PathBuf {
+    let (namespace, path) = id.split_once(':').unwrap_or(("minecraft", id));
+    dir.join("data").join(namespace).join(format!("{path}.dat"))
+}
+
+/// Reads the `data` compound of saved data `id` below `dir`; `None` if there is none.
+pub fn read_saved_data(dir: &Path, id: &str) -> io::Result<Option<Compound>> {
+    let path = saved_data_path(dir, id);
+    Ok(
+        read_gzip_nbt(&path)?.map(|mut root| match root.remove("data") {
+            Some(vanillite_nbt::Tag::Compound(data)) => data,
+            _ => Compound::default(),
+        }),
+    )
+}
+
+/// Writes saved data `id` below `dir` like Vanilla (`DataVersion` and `data`), through a
+/// temporary file.
+pub fn write_saved_data(dir: &Path, id: &str, data: Compound) -> io::Result<()> {
+    let path = saved_data_path(dir, id);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let root = Compound::default()
+        .with("DataVersion", vanillite_data::version::DATA_VERSION)
+        .with("data", data);
+    let mut raw = Vec::new();
+    vanillite_nbt::write::write_named("", &root, &mut raw).map_err(io::Error::other)?;
+    let tmp = path.with_extension("dat_tmp");
+    std::fs::write(&tmp, Compression::Gzip.compress(&raw)?)?;
+    std::fs::rename(&tmp, &path)
+}
+
 pub(crate) fn read_gzip_nbt(path: &Path) -> io::Result<Option<Compound>> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
