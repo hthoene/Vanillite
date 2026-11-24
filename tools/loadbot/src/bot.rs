@@ -1,4 +1,5 @@
-//! One bot: login, configuration and the play loop (random walk, chat, latency probes).
+//! One bot: login, configuration and the play loop (random walk or straight flight, chat,
+//! latency probes).
 //!
 //! Incoming packets are framed and counted; only the few a client must answer are decoded.
 
@@ -8,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
-use tokio::sync::OwnedSemaphorePermit;
+use tokio::sync::{OwnedSemaphorePermit, watch};
 use vanillite_protocol::codec::{Encode, Reader, write_str, write_varint};
 use vanillite_protocol::frame::{FrameDecoder, FrameEncoder};
 use vanillite_protocol::ids;
@@ -27,10 +28,15 @@ use vanillite_protocol::sets::{ClientboundConfiguration, ClientboundLogin};
 use vanillite_protocol::types::Uuid;
 use vanillite_protocol::{Decode, Packet, State};
 
-use crate::{Config, Metrics};
+use crate::{Config, Metrics, Movement};
 
 /// Walking speed in blocks per tick (Vanilla's 4.317 blocks per second).
 const WALK_SPEED: f64 = 4.317 / 20.0;
+/// Cruise altitude of straight flight: above the highest overworld terrain, so no move
+/// collides with blocks.
+const FLIGHT_Y: f64 = 300.0;
+/// Climb or descent towards the cruise altitude in blocks per tick.
+const CLIMB_SPEED: f64 = 5.0;
 /// Seconds between latency probes (`ping_request`).
 const PROBE_INTERVAL: Duration = Duration::from_secs(5);
 /// Bytes read per `read` call.
@@ -43,9 +49,11 @@ pub async fn run(
     index: u64,
     config: Arc<Config>,
     metrics: Arc<Metrics>,
+    movement: watch::Receiver<Movement>,
     permit: OwnedSemaphorePermit,
 ) {
     let mut bot = Bot {
+        movement,
         name: format!("{}{index:05}", config.prefix),
         rng: Rng::new(config.seed ^ index.wrapping_mul(0x9E37_79B9_7F4A_7C15)),
         config,
@@ -69,6 +77,7 @@ pub async fn run(
 }
 
 struct Bot {
+    movement: watch::Receiver<Movement>,
     name: String,
     rng: Rng,
     config: Arc<Config>,
@@ -83,6 +92,7 @@ enum Action {
     Teleport(PlayerPosition),
     BatchFinished,
     Chunk,
+    Forget,
     Pong(i64),
     Disconnect(String),
     StartConfiguration,
@@ -110,6 +120,8 @@ impl Bot {
         let mut pos: Option<(f64, f64, f64)> = None;
         let mut home = (0.0, 0.0);
         let mut yaw: f64 = self.rng.next_f64() * 360.0;
+        let mut movement = *self.movement.borrow_and_update();
+        let mut next_turn = turn_deadline(movement);
         let mut tick = tokio::time::interval_at(
             tokio::time::Instant::now() + Duration::from_millis(self.rng.next_u64() % 50),
             Duration::from_millis(50),
@@ -151,13 +163,19 @@ impl Bot {
                                 })?;
                                 if pos.is_none() {
                                     home = (p.x, p.z);
+                                } else if *joined {
+                                    self.metrics.teleports.fetch_add(1, Ordering::Relaxed);
                                 }
                                 pos = Some((p.x, p.y, p.z));
                             }
                             Action::BatchFinished => conn.queue(&ChunkBatchReceived {
                                 desired_chunks_per_tick: 64.0,
                             })?,
+                            Action::Forget => {
+                                self.metrics.chunks_forgotten.fetch_add(1, Ordering::Relaxed);
+                            }
                             Action::Chunk => {
+                                self.metrics.chunks.fetch_add(1, Ordering::Relaxed);
                                 if !*joined && pos.is_some() {
                                     *joined = true;
                                     permit.take();
@@ -187,23 +205,49 @@ impl Bot {
                 }
                 _ = tick.tick(), if *joined => {
                     let Some((x, y, z)) = pos.as_mut() else { continue };
-                    // Random walk: drift the heading, turn back home outside the radius.
-                    let (dx, dz) = (*x - home.0, *z - home.1);
-                    if dx * dx + dz * dz > self.config.radius * self.config.radius {
-                        yaw = (-dx).atan2(dz).to_degrees() + 180.0 + self.rng.range(-30.0, 30.0);
-                    } else {
-                        yaw += self.rng.range(-15.0, 15.0);
+                    if self.movement.has_changed().unwrap_or(false) {
+                        movement = *self.movement.borrow_and_update();
+                        next_turn = turn_deadline(movement);
+                        home = (*x, *z);
+                        yaw = self.rng.next_f64() * 360.0;
                     }
+                    let speed = match movement {
+                        Movement::Random => {
+                            // Drift the heading, turn back home outside the radius.
+                            let (dx, dz) = (*x - home.0, *z - home.1);
+                            if dx * dx + dz * dz > self.config.radius * self.config.radius {
+                                yaw = (-dx).atan2(dz).to_degrees()
+                                    + 180.0
+                                    + self.rng.range(-30.0, 30.0);
+                            } else {
+                                yaw += self.rng.range(-15.0, 15.0);
+                            }
+                            WALK_SPEED
+                        }
+                        Movement::Straight { speed, turn } => {
+                            if let Some(at) = next_turn
+                                && tokio::time::Instant::now() >= at
+                            {
+                                next_turn = Some(at + Duration::from_secs_f64(turn));
+                                yaw = self.rng.next_f64() * 360.0;
+                            }
+                            *y += (FLIGHT_Y - *y).clamp(-CLIMB_SPEED, CLIMB_SPEED);
+                            speed / 20.0
+                        }
+                    };
                     let rad = yaw.to_radians();
-                    *x -= rad.sin() * WALK_SPEED;
-                    *z += rad.cos() * WALK_SPEED;
+                    *x -= rad.sin() * speed;
+                    *z += rad.cos() * speed;
                     conn.queue(&MovePlayerPosRot {
                         x: *x,
                         y: *y,
                         z: *z,
                         y_rot: (yaw.rem_euclid(360.0)) as f32,
                         x_rot: 0.0,
-                        flags: MoveFlags { on_ground: true, horizontal_collision: false },
+                        flags: MoveFlags {
+                            on_ground: movement == Movement::Random,
+                            horizontal_collision: false,
+                        },
                     })?;
                     conn.queue(&ClientTickEnd)?;
                     if let Some(every) = chat_every
@@ -223,6 +267,16 @@ impl Bot {
                 }
             }
         }
+    }
+}
+
+/// When straight flight turns next (`None`: never).
+fn turn_deadline(movement: Movement) -> Option<tokio::time::Instant> {
+    match movement {
+        Movement::Straight { turn, .. } if turn > 0.0 => {
+            Some(tokio::time::Instant::now() + Duration::from_secs_f64(turn))
+        }
+        _ => None,
     }
 }
 
@@ -466,6 +520,7 @@ impl Conn {
                 }
                 id::CHUNK_BATCH_FINISHED => Action::BatchFinished,
                 id::LEVEL_CHUNK_WITH_LIGHT => Action::Chunk,
+                id::FORGET_LEVEL_CHUNK => Action::Forget,
                 id::START_CONFIGURATION => Action::StartConfiguration,
                 id::DISCONNECT => Action::Disconnect(
                     vanillite_protocol::packets::play::clientbound::Disconnect::decode(&mut r)

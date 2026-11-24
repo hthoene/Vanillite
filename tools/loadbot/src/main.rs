@@ -3,11 +3,20 @@
 //! ```text
 //! loadbot --host <host> --port <port> [--join-rate <per s>] [--join-concurrency <n>]
 //!         [--radius <blocks>] [--chat-interval <s>] [--view-distance <chunks>]
-//!         [--prefix <name>] [--seed <n>]
+//!         [--prefix <name>] [--seed <n>] [--movement <spec>] [--check]
 //! ```
 //!
+//! Movement (`--movement`, see [`Movement::parse`]): `random` walks at walking speed within
+//! the radius around the point where the mode started; `straight:<speed>[:<turn s>]` flies
+//! straight in a random direction per bot at `<speed>` blocks per second (a number or a
+//! preset: `walk`, `sprint`, `elytra`, `boat`), turning to a new random direction every
+//! `<turn s>` seconds if given. Straight flight cruises at y = 300, above all overworld
+//! terrain, with `on_ground` false: the server needs `allow-flight=true`. `--check` only
+//! validates the arguments.
+//!
 //! Control on stdin, one command per line: `target <n>` raises the number of bots to `n`
-//! (bots join at the join rate), `quit` ends the process. Every second one JSON line with the
+//! (bots join at the join rate), `movement <spec>` switches the movement of all bots,
+//! `quit` ends the process. Every second one JSON line with the
 //! metrics of that second goes to stdout (see [`Metrics::report`]). Driven by
 //! `cargo xtask loadtest`.
 
@@ -38,6 +47,62 @@ pub struct Config {
     pub view_distance: i8,
     pub prefix: String,
     pub seed: u64,
+    /// Movement of the bots until a `movement` command changes it.
+    pub movement: Movement,
+}
+
+/// How the bots move once they are in the world.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Movement {
+    /// Random walk at walking speed within the radius around the point where it started.
+    Random,
+    /// Straight flight at `speed` blocks per second in a random direction per bot; a new
+    /// random direction every `turn` seconds (0 = never).
+    Straight { speed: f64, turn: f64 },
+}
+
+impl Movement {
+    /// Speed presets in blocks per second: walking, sprinting, elytra with rockets and a boat
+    /// on blue ice.
+    const PRESETS: [(&str, f64); 4] = [
+        ("walk", 4.317),
+        ("sprint", 5.612),
+        ("elytra", 33.5),
+        ("boat", 72.7),
+    ];
+    /// Highest speed: 7.5 blocks per tick plus the climb stays under Vanilla's "moved too
+    /// quickly" limit of 10 blocks per movement packet.
+    const MAX_SPEED: f64 = 150.0;
+
+    /// `random` or `straight:<speed or preset>[:<turn s>]`.
+    pub fn parse(spec: &str) -> Result<Self, String> {
+        let bad = || {
+            format!(
+                "movement {spec:?}: expected random or straight:<blocks per s|walk|sprint|\
+                 elytra|boat>[:<turn s>] with a speed up to {}",
+                Self::MAX_SPEED
+            )
+        };
+        let parts: Vec<&str> = spec.split(':').collect();
+        match parts.as_slice() {
+            ["random"] => Ok(Self::Random),
+            ["straight", speed, turn @ ..] if turn.len() <= 1 => {
+                let speed = Self::PRESETS
+                    .iter()
+                    .find(|(name, _)| name == speed)
+                    .map(|(_, v)| *v)
+                    .or_else(|| speed.parse().ok())
+                    .filter(|v: &f64| *v > 0.0 && *v <= Self::MAX_SPEED)
+                    .ok_or_else(bad)?;
+                let turn = match turn.first() {
+                    Some(t) => t.parse().ok().filter(|t: &f64| *t >= 0.0).ok_or_else(bad)?,
+                    None => 0.0,
+                };
+                Ok(Self::Straight { speed, turn })
+            }
+            _ => Err(bad()),
+        }
+    }
 }
 
 /// Counters shared by all bots; the reporter turns them into one JSON line per second.
@@ -47,6 +112,11 @@ pub struct Metrics {
     pub joined: AtomicU64,
     pub failed: AtomicU64,
     pub disconnected: AtomicU64,
+    /// Chunks received (`level_chunk_with_light`) and released (`forget_level_chunk`).
+    pub chunks: AtomicU64,
+    pub chunks_forgotten: AtomicU64,
+    /// Server teleports after the join (rubber-banding of rejected moves).
+    pub teleports: AtomicU64,
     pub bytes_in: AtomicU64,
     pub bytes_out: AtomicU64,
     pub packets_in: AtomicU64,
@@ -90,6 +160,9 @@ impl Metrics {
             "joined": load(&self.joined),
             "failed": load(&self.failed),
             "disconnected": load(&self.disconnected),
+            "chunks": load(&self.chunks),
+            "chunks_forgotten": load(&self.chunks_forgotten),
+            "teleports": load(&self.teleports),
             "bytes_in": load(&self.bytes_in),
             "bytes_out": load(&self.bytes_out),
             "packets_in": load(&self.packets_in),
@@ -119,7 +192,7 @@ fn process_cpu_ticks() -> u64 {
     field(11) + field(12)
 }
 
-fn parse_args() -> Result<Config, String> {
+fn parse_args() -> Result<(Config, bool), String> {
     let mut config = Config {
         host: "127.0.0.1".into(),
         port: 25565,
@@ -130,7 +203,9 @@ fn parse_args() -> Result<Config, String> {
         view_distance: 10,
         prefix: "bot".into(),
         seed: 1,
+        movement: Movement::Random,
     };
+    let mut check = false;
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -148,6 +223,8 @@ fn parse_args() -> Result<Config, String> {
             "--view-distance" => config.view_distance = value()?.parse().map_err(|e| bad(&e))?,
             "--prefix" => config.prefix = value()?.clone(),
             "--seed" => config.seed = value()?.parse().map_err(|e| bad(&e))?,
+            "--movement" => config.movement = Movement::parse(value()?)?,
+            "--check" => check = true,
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
@@ -157,12 +234,13 @@ fn parse_args() -> Result<Config, String> {
                     --join-concurrency positive"
             .into());
     }
-    Ok(config)
+    Ok((config, check))
 }
 
 fn main() {
     let config = match parse_args() {
-        Ok(c) => Arc::new(c),
+        Ok((_, true)) => return,
+        Ok((c, false)) => Arc::new(c),
         Err(e) => {
             eprintln!("loadbot: {e}");
             std::process::exit(2);
@@ -180,12 +258,14 @@ fn main() {
     };
     let metrics = Arc::new(Metrics::default());
     let (target_tx, target_rx) = watch::channel(0u64);
+    let (movement_tx, movement_rx) = watch::channel(config.movement);
     let start = Instant::now();
 
     runtime.spawn(spawner(
         Arc::clone(&config),
         Arc::clone(&metrics),
         target_rx.clone(),
+        movement_rx,
     ));
     let reporter_metrics = Arc::clone(&metrics);
     runtime.spawn(async move {
@@ -207,6 +287,12 @@ fn main() {
                 }
                 Err(e) => eprintln!("loadbot: target: {e}"),
             },
+            ["movement", spec] => match Movement::parse(spec) {
+                Ok(m) => {
+                    let _ = movement_tx.send(m);
+                }
+                Err(e) => eprintln!("loadbot: {e}"),
+            },
             ["quit"] => break,
             [] => {}
             _ => eprintln!("loadbot: unknown command {line:?}"),
@@ -218,7 +304,12 @@ fn main() {
 
 /// Starts bots until the target count is reached, at the join rate and with at most
 /// `join_concurrency` bots logging in at once.
-async fn spawner(config: Arc<Config>, metrics: Arc<Metrics>, mut target: watch::Receiver<u64>) {
+async fn spawner(
+    config: Arc<Config>,
+    metrics: Arc<Metrics>,
+    mut target: watch::Receiver<u64>,
+    movement: watch::Receiver<Movement>,
+) {
     let pending = Arc::new(Semaphore::new(config.join_concurrency));
     let mut interval = tokio::time::interval(Duration::from_secs_f64(1.0 / config.join_rate));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -239,6 +330,7 @@ async fn spawner(config: Arc<Config>, metrics: Arc<Metrics>, mut target: watch::
             index,
             Arc::clone(&config),
             Arc::clone(&metrics),
+            movement.clone(),
             permit,
         ));
     }

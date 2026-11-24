@@ -410,6 +410,8 @@ if [ "$port" = 30901 ]; then
     set_prop online-mode false
     set_prop white-list false
     set_prop max-players 10000
+    # Straight-flight bots (loadbot --movement straight:...) cruise above the terrain.
+    set_prop allow-flight true
     rm -f "$dir/tick.log"
 else
     set_prop online-mode true
@@ -467,6 +469,8 @@ set_prop max-players 10000
 set_prop level-type minecraft:flat
 set_prop generate-structures false
 set_prop spawn-protection 0
+# Straight-flight bots (loadbot --movement straight:...) cruise above the terrain.
+set_prop allow-flight true
 # No mobs, like Vanillite so far: hostile mobs would kill the bots, which do not respawn.
 set_prop difficulty peaceful
 set_prop spawn-monsters false
@@ -498,7 +502,8 @@ write_if_changed /usr/local/bin/vanillite-loadtest-monitor 755 <<'EOF'
 # Usage: vanillite-loadtest-monitor <unit>
 # Streams load test metrics of a systemd unit to stdout until the connection closes:
 #   H <clock ticks per second>
-#   S <rss KiB> <cpu ticks> <net rx bytes> <net tx bytes>   every second
+#   S <rss KiB> <cpu ticks> <net rx bytes> <net tx bytes> <read syscalls> <storage read bytes>
+#     <storage write bytes>                                  every second
 #   T <tick nanoseconds>                                     every tick (vanillite@<port>)
 #   Q <output of /tick query>                                every 5 s (paper-loadtest)
 # Installed by scripts/testserver/provision.sh.
@@ -520,13 +525,14 @@ case $unit in
 esac
 while sleep 1; do
     pid=$(systemctl show -p MainPID --value "$unit")
-    rss=0 cpu=0
+    rss=0 cpu=0 io="0 0 0"
     if [ "${pid:-0}" -gt 0 ] && [ -r "/proc/$pid/stat" ]; then
         rss=$(awk '/^VmRSS:/ { print $2 }' "/proc/$pid/status")
         cpu=$(sed 's/^.*) //' "/proc/$pid/stat" | awk '{ print $12 + $13 }')
+        io=$(awk '{ v[$1] = $2 } END { print v["syscr:"] + 0, v["read_bytes:"] + 0, v["write_bytes:"] + 0 }' "/proc/$pid/io" 2> /dev/null)
     fi
     net=$(awk -F'[: ]+' 'NR > 2 && $2 != "lo" { rx += $3; tx += $11 } END { print rx + 0, tx + 0 }' /proc/net/dev)
-    echo "S $rss $cpu $net"
+    echo "S $rss $cpu $net $io"
 done
 EOF
 install -d /opt/vanillite/bench/results
