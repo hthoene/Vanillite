@@ -92,7 +92,12 @@ impl Level {
     }
 
     /// `getControlInputSignal(pos, direction, onlyDiodes)`: a side input of a diode.
-    pub fn control_input_signal(&self, pos: BlockPos, direction: Direction, only_diodes: bool) -> i32 {
+    pub fn control_input_signal(
+        &self,
+        pos: BlockPos,
+        direction: Direction,
+        only_diodes: bool,
+    ) -> i32 {
         let state = self.block(pos);
         if only_diodes {
             if is_diode(state) {
@@ -150,9 +155,22 @@ impl Level {
         best
     }
 
+    /// `RedstoneWireBlock.getBlockSignal(level, pos)`: the best neighbour signal while wires
+    /// emit nothing.
+    pub fn wire_block_signal(&mut self, pos: BlockPos) -> i32 {
+        self.wire_signals = false;
+        let signal = self.best_neighbor_signal(pos);
+        self.wire_signals = true;
+        signal
+    }
+
     /// `updateNeighbourForOutputSignal(pos, block)`: comparators next to `pos`, or behind a
     /// conductor next to it, re-read their input.
-    pub fn update_neighbour_for_output_signal(&mut self, pos: BlockPos, source: vanillite_data::block::BlockId) {
+    pub fn update_neighbour_for_output_signal(
+        &mut self,
+        pos: BlockPos,
+        source: vanillite_data::block::BlockId,
+    ) {
         for direction in vanillite_worldgen::behaviour::HORIZONTAL {
             let mut neighbour = pos.relative(direction);
             if !self.is_loaded(neighbour) {

@@ -56,7 +56,7 @@ fn install_tags() {
 }
 
 /// A flat world with the chunks around the origin full and block ticking.
-fn flat_level() -> Level {
+pub(crate) fn flat_level() -> Level {
     vanillite_chunk::facts::install_vanilla(&[], &[], 1);
     install_tags();
     let info = WorldInfo {
@@ -101,7 +101,7 @@ fn flat_level() -> Level {
 }
 
 /// One tick of the simulation phases and falling block entities.
-fn tick(level: &mut Level) {
+pub(crate) fn tick(level: &mut Level) {
     level.tick_time();
     level.run_scheduled_ticks();
     level.chunks.tick();
@@ -113,6 +113,7 @@ fn tick(level: &mut Level) {
             falling::tick_entity(level, id);
         }
     }
+    level.tick_block_entities();
 }
 
 fn level_of(state: BlockState) -> Option<&'static str> {
