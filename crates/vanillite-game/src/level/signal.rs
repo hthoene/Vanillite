@@ -92,7 +92,12 @@ impl Level {
     }
 
     /// `getControlInputSignal(pos, direction, onlyDiodes)`: a side input of a diode.
-    pub fn control_input_signal(&self, pos: BlockPos, direction: Direction, only_diodes: bool) -> i32 {
+    pub fn control_input_signal(
+        &self,
+        pos: BlockPos,
+        direction: Direction,
+        only_diodes: bool,
+    ) -> i32 {
         let state = self.block(pos);
         if only_diodes {
             if is_diode(state) {
@@ -152,7 +157,11 @@ impl Level {
 
     /// `updateNeighbourForOutputSignal(pos, block)`: comparators next to `pos`, or behind a
     /// conductor next to it, re-read their input.
-    pub fn update_neighbour_for_output_signal(&mut self, pos: BlockPos, source: vanillite_data::block::BlockId) {
+    pub fn update_neighbour_for_output_signal(
+        &mut self,
+        pos: BlockPos,
+        source: vanillite_data::block::BlockId,
+    ) {
         for direction in vanillite_worldgen::behaviour::HORIZONTAL {
             let mut neighbour = pos.relative(direction);
             if !self.is_loaded(neighbour) {
@@ -184,6 +193,22 @@ impl Level {
             pos,
             source,
             moved: false,
+        });
+    }
+
+    /// [`Self::neighbor_changed_state`] with the `movedByPiston` flag.
+    pub fn neighbor_changed_moved(
+        &mut self,
+        state: BlockState,
+        pos: BlockPos,
+        source: vanillite_data::block::BlockId,
+        moved: bool,
+    ) {
+        self.add_and_run(super::neighbors::Update::Full {
+            state,
+            pos,
+            source,
+            moved,
         });
     }
 
