@@ -99,7 +99,7 @@ public final class NoiseGoldens {
     root.addProperty("amplitude", Goldens.bits(AMPLITUDE));
 
     JsonObject parameters = new JsonObject();
-    noises.listElements().forEach(holder -> parameters.add(holder.key().identifier().toString(), range(holder.value().range())));
+    noises.listElements().sorted(java.util.Comparator.comparing(holder -> holder.key().identifier().toString())).forEach(holder -> parameters.add(holder.key().identifier().toString(), range(holder.value().range())));
     root.add("parameter_ranges", parameters);
 
     JsonArray states = new JsonArray();

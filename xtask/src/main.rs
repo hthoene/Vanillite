@@ -3,9 +3,11 @@
 //! ```text
 //! cargo xtask vanilla update [<version>] [--jar <server.jar>]
 //! cargo xtask codegen [--check]
+//! cargo xtask golden regen [<PartGoldens>...]
 //! ```
 
 mod codegen;
+mod golden;
 mod normalize;
 mod vanilla;
 
@@ -23,7 +25,11 @@ const USAGE: &str = "usage:
       VANILLITE_JAVA_HOME, else java/javac on PATH) of the version the jar asks for.
   cargo xtask codegen [--check]
       Generate crates/vanillite-data/src/generated/ from data/vanilla/.
-      --check fails if the committed files are not current.";
+      --check fails if the committed files are not current.
+  cargo xtask golden regen [<PartGoldens>...]
+      Record the world generation parity goldens (all parts, or the named ones) into
+      crates/vanillite-worldgen/tests/goldens/ with the Java harness. Needs the unpacked jar of
+      `cargo xtask vanilla update` and a JDK.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -32,6 +38,7 @@ fn main() -> ExitCode {
         ["vanilla", "update", rest @ ..] => vanilla_update(rest),
         ["codegen"] => codegen::run(&repo_root(), false),
         ["codegen", "--check"] => codegen::run(&repo_root(), true),
+        ["golden", "regen", parts @ ..] => golden::regen(&repo_root(), parts),
         _ => Err(USAGE.to_owned()),
     };
     match result {

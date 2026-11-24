@@ -8,7 +8,6 @@ use common::{f32_bits, f64_bits, golden, packs};
 use serde_json::Value;
 use vanillite_base::random::RandomSource;
 use vanillite_worldgen::RandomState;
-use vanillite_worldgen::density::CompileContext;
 use vanillite_worldgen::interval::Interval;
 use vanillite_worldgen::noise::{Noise, blended_fbm_set, blended_noise_range};
 use vanillite_worldgen::random::AnyRandom;

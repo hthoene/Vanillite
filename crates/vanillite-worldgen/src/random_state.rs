@@ -9,7 +9,6 @@ use vanillite_base::random::{LegacyRandom, PositionalRandomFactory, RandomSource
 use vanillite_datapack::LoadedPacks;
 
 use crate::Error;
-use crate::density::CompileContext;
 use crate::noise::{Noise, NormalNoise};
 use crate::random::{AnyPositional, AnyRandom};
 
@@ -95,18 +94,15 @@ impl RandomState {
     pub fn random_factory(&self, name: &str) -> AnyPositional {
         self.random.with_hash_of(name).fork_positional()
     }
-}
 
-impl CompileContext for RandomState {
-    fn create_noise(&self, id: &str) -> Arc<Noise> {
-        self.noise(id)
-    }
-
-    fn noise_parameters(&self, id: &str) -> Option<&NormalNoise> {
+    /// The parameters of a `worldgen/noise` id.
+    pub fn noise_parameters(&self, id: &str) -> Option<&NormalNoise> {
         self.parameters.get(id)
     }
 
-    fn create_random(&self, id: &str) -> AnyRandom {
+    /// `CompileContext.createRandom(id)`: the legacy terrain noise seeds from the world seed,
+    /// everything else from the positional factory.
+    pub fn create_random(&self, id: &str) -> AnyRandom {
         if self.legacy && id == BLENDED_NOISE_SEED {
             AnyRandom::Legacy(LegacyRandom::new(self.seed))
         } else {
@@ -114,7 +110,8 @@ impl CompileContext for RandomState {
         }
     }
 
-    fn create_end_island_random(&self) -> LegacyRandom {
+    /// `CompileContext.createEndIslandRandom()`.
+    pub fn create_end_island_random(&self) -> LegacyRandom {
         LegacyRandom::new(self.seed)
     }
 }
