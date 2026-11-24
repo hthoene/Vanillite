@@ -46,6 +46,14 @@ macro_rules! packet_set {
                 }
             }
 
+            /// Encodes the packet as `id` + body (empty for unhandled packets).
+            pub fn encode_body(&self) -> Vec<u8> {
+                match self {
+                    $(Self::$variant(p) => crate::frame::encode_body(p),)*
+                    $(Self::$unhandled { .. } => Vec::new(),)?
+                }
+            }
+
             /// Vanilla name of the packet, for logs.
             pub fn name(&self) -> &'static str {
                 match self {
@@ -161,4 +169,43 @@ packet_set! {
         SelectKnownPacks(cfg::clientbound::SelectKnownPacks),
         CodeOfConduct(cfg::clientbound::CodeOfConduct),
     }
+}
+
+impl ClientboundPlay {
+    fn is_known(id: i32) -> bool {
+        usize::try_from(id).is_ok_and(|i| i < crate::ids::play::clientbound::NAMES.len())
+    }
+}
+
+packet_set! {
+    /// Clientbound play packets of milestone 1 (for the test client); others decode as
+    /// `Unhandled`.
+    ClientboundPlay {
+        AddEntity(play::clientbound::AddEntity),
+        BundleDelimiter(play::clientbound::BundleDelimiter),
+        ChunkBatchFinished(play::clientbound::ChunkBatchFinished),
+        ChunkBatchStart(play::clientbound::ChunkBatchStart),
+        Disconnect(play::clientbound::Disconnect),
+        EntityPositionSync(play::clientbound::EntityPositionSync),
+        ForgetLevelChunk(play::clientbound::ForgetLevelChunk),
+        GameEvent(play::clientbound::GameEvent),
+        KeepAlive(play::clientbound::KeepAlive),
+        LevelChunkWithLight(play::clientbound::LevelChunkWithLight),
+        Login(play::clientbound::Login),
+        MoveEntityPos(play::clientbound::MoveEntityPos),
+        MoveEntityPosRot(play::clientbound::MoveEntityPosRot),
+        MoveEntityRot(play::clientbound::MoveEntityRot),
+        PlayerAbilities(play::clientbound::PlayerAbilities),
+        PlayerInfoRemove(play::clientbound::PlayerInfoRemove),
+        PlayerInfoUpdate(play::clientbound::PlayerInfoUpdate),
+        PlayerPosition(play::clientbound::PlayerPosition),
+        RemoveEntities(play::clientbound::RemoveEntities),
+        RotateHead(play::clientbound::RotateHead),
+        SetChunkCacheCenter(play::clientbound::SetChunkCacheCenter),
+        SetDefaultSpawnPosition(play::clientbound::SetDefaultSpawnPosition),
+        SetEntityData(play::clientbound::SetEntityData),
+        SetEntityMotion(play::clientbound::SetEntityMotion),
+        SystemChat(play::clientbound::SystemChat),
+    }
+    unhandled Unhandled
 }

@@ -107,6 +107,22 @@ rules! {
                 restart = true, vanilla = VanillaOr::Vanilla, paper = VanillaOr::Value(96),
                 spigot = VanillaOr::Value(96);
         }
+        /// Server-side checks of player movement (Vanilla's `ServerGamePacketListenerImpl`).
+        movement: MovementRules = "movement" {
+            /// Players that move faster than Vanilla allows are teleported back ("moved too
+            /// quickly"). Vanilla's `playerMovementCheck` game rule.
+            too_fast_check: bool = "too-fast-check", Security, vanilla = true;
+            /// The "moved too quickly" check also applies while gliding with an elytra.
+            /// Vanilla's `elytraMovementCheck` game rule.
+            elytra_too_fast_check: bool = "elytra-too-fast-check", Security, vanilla = true;
+            /// Players whose movement does not match the server's collision result are
+            /// teleported back ("moved wrongly"). Not enforced yet: it needs block collision
+            /// (milestone 3).
+            wrong_movement_check: bool = "wrong-movement-check", Security, vanilla = true;
+            /// Players floating in the air longer than Vanilla allows are kicked unless
+            /// `allow-flight` is on. Not enforced yet: it needs block collision (milestone 3).
+            flying_kick: bool = "flying-kick", Security, vanilla = true;
+        }
         /// Entity collisions.
         collisions: CollisionRules = "performance.collisions" {
             /// Entity collisions processed per entity and tick.

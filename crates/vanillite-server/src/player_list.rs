@@ -1,7 +1,11 @@
 //! The list of online players.
 
 use std::fmt;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
+use vanillite_game::player::PacketSink;
+use vanillite_game::player::join::InfoEntry;
+use vanillite_protocol::{Packet, SharedPacket};
 
 use crate::world::WorldId;
 
@@ -25,7 +29,7 @@ impl fmt::Display for Uuid {
 }
 
 /// One online player.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct PlayerEntry {
     /// The player's UUID.
     pub uuid: Uuid,
@@ -33,10 +37,24 @@ pub struct PlayerEntry {
     pub name: String,
     /// The world the player is in.
     pub world: WorldId,
+    /// The tab list entry (profile with skin, game mode, latency).
+    pub info: InfoEntry,
+    /// The player's connection, for messages to all players.
+    pub sink: Arc<dyn PacketSink>,
+}
+
+impl fmt::Debug for PlayerEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PlayerEntry")
+            .field("uuid", &self.uuid)
+            .field("name", &self.name)
+            .field("world", &self.world)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Online players in join order (Vanilla's order). Cold data behind a mutex: changed on join,
-/// quit and world change, read for the server list and the pause check.
+/// quit and world change, read for the server list, the tab list and messages to everyone.
 #[derive(Debug)]
 pub struct PlayerList {
     max_players: usize,
@@ -66,6 +84,11 @@ impl PlayerList {
         self.lock().len()
     }
 
+    /// Whether a player with this UUID is online.
+    pub fn contains(&self, uuid: Uuid) -> bool {
+        self.lock().iter().any(|p| p.uuid == uuid)
+    }
+
     /// Adds a player. Returns `false` if a player with that UUID is already online.
     pub fn add(&self, entry: PlayerEntry) -> bool {
         let mut players = self.lock();
@@ -90,8 +113,40 @@ impl PlayerList {
         }
     }
 
+    /// Updates a player's tab list entry.
+    pub fn update_info(&self, uuid: Uuid, update: impl FnOnce(&mut InfoEntry)) {
+        if let Some(player) = self.lock().iter_mut().find(|p| p.uuid == uuid) {
+            update(&mut player.info);
+        }
+    }
+
     /// A copy of the list.
     pub fn snapshot(&self) -> Vec<PlayerEntry> {
         self.lock().clone()
+    }
+
+    /// The tab list entries of all players, with current latencies.
+    pub fn info_entries(&self) -> Vec<InfoEntry> {
+        self.lock()
+            .iter()
+            .map(|p| InfoEntry {
+                latency: p.sink.latency_ms(),
+                ..p.info.clone()
+            })
+            .collect()
+    }
+
+    /// Sends a packet to every player except `except`. The packet is encoded once.
+    pub fn broadcast<P: Packet>(&self, packet: &P, except: Option<Uuid>) {
+        let shared = SharedPacket::of(packet);
+        let sinks: Vec<Arc<dyn PacketSink>> = self
+            .lock()
+            .iter()
+            .filter(|p| Some(p.uuid) != except)
+            .map(|p| Arc::clone(&p.sink))
+            .collect();
+        for sink in sinks {
+            sink.send_shared(&shared);
+        }
     }
 }

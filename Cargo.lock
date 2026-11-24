@@ -1209,7 +1209,9 @@ dependencies = [
 name = "vanillite-game"
 version = "0.1.0"
 dependencies = [
+ "log",
  "vanillite-base",
+ "vanillite-chunk",
  "vanillite-command",
  "vanillite-config",
  "vanillite-data",
@@ -1290,11 +1292,16 @@ name = "vanillite-server"
 version = "0.1.0"
 dependencies = [
  "log",
+ "tokio",
+ "vanillite-base",
  "vanillite-config",
+ "vanillite-data",
+ "vanillite-datapack",
  "vanillite-game",
  "vanillite-light",
  "vanillite-net",
  "vanillite-plugin-host",
+ "vanillite-protocol",
  "vanillite-storage",
  "vanillite-world",
  "vanillite-worldgen",
@@ -1304,6 +1311,8 @@ dependencies = [
 name = "vanillite-storage"
 version = "0.1.0"
 dependencies = [
+ "libdeflater",
+ "log",
  "vanillite-chunk",
  "vanillite-nbt",
 ]
