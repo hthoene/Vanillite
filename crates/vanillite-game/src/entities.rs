@@ -194,6 +194,44 @@ impl Entities {
         self.specials.get_mut(row)
     }
 
+    /// `addEffect` on a living entity (player or mob): merges it and, for players, tells the
+    /// client. `can_be_affected` is the target's `canBeAffected` verdict (checked by the
+    /// caller for kinds with immunities). Returns whether it was added or changed.
+    pub fn add_effect(
+        &mut self,
+        id: EntityId,
+        effect: crate::effect::EffectInstance,
+        can_be_affected: bool,
+    ) -> bool {
+        use crate::effect::Added;
+        if !can_be_affected {
+            return false;
+        }
+        if let Some(m) = self.mob_mut(id) {
+            return matches!(m.effects.add(effect, true), Added::New | Added::Updated);
+        }
+        let Entities { store, players, .. } = self;
+        let Some(entity) = store.get_mut(id) else {
+            return false;
+        };
+        if entity.as_ref().kind() != ids::PLAYER {
+            return false;
+        }
+        let row = entity.as_ref().kind_row();
+        let Some(p) = players.get_mut(row) else {
+            return false;
+        };
+        crate::survival::player::add_effect(&entity, p, effect)
+    }
+
+    /// The active effects of a living entity (player or mob).
+    pub fn effects(&self, id: EntityId) -> Option<&crate::effect::MobEffects> {
+        if let Some(m) = self.mob(id) {
+            return Some(&m.effects);
+        }
+        self.player(id).map(|p| &p.survival.effects)
+    }
+
     /// The mob data of an entity.
     pub fn mob(&self, id: EntityId) -> Option<&MobData> {
         let entity = self.store.get(id)?;
