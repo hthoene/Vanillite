@@ -9,10 +9,10 @@ use vanillite_chunk::BiomeId;
 use vanillite_data::block::{BlockId, BlockState};
 use vanillite_datapack::LoadedPacks;
 
-use super::anchor::WorldGenerationContext;
 use super::context::MaterialRuleContext;
 use super::rules::MaterialRules;
 use crate::Error;
+use crate::anchor::WorldGenerationContext;
 use crate::biome::{BiomeData, BiomeRegistry};
 use crate::blocks::default_state;
 use crate::density::{DensityCompiler, DensityParser, FnId, Program, SamplerContext};
@@ -155,7 +155,7 @@ impl MaterialSystem {
 
     /// `new WorldGenerationContext(generator, chunk.getHeightAccessorForGeneration())`.
     pub fn generation_context(&self, chunk: &ProtoChunk) -> WorldGenerationContext {
-        WorldGenerationContext::new(
+        WorldGenerationContext::clamped(
             self.generator_min_y,
             self.generator_height,
             self.sea_level,
@@ -551,29 +551,23 @@ fn set_column_block(chunk: &mut ProtoChunk, x: i32, y: i32, z: i32, state: Block
 }
 
 /// `Biome.coldEnoughToSnow(pos, seaLevel)`.
-///
-/// Ported in [`crate::biome`]; delegate there when the modules are merged.
 pub(super) fn cold_enough_to_snow(
-    _biome: &BiomeData,
-    _x: i32,
-    _y: i32,
-    _z: i32,
-    _sea_level: i32,
+    biome: &BiomeData,
+    x: i32,
+    y: i32,
+    z: i32,
+    sea_level: i32,
 ) -> bool {
-    todo!("crate::biome: BiomeData::cold_enough_to_snow(&self, x, y, z, sea_level) -> bool")
+    biome.cold_enough_to_snow(x, y, z, sea_level)
 }
 
 /// `Biome.shouldMeltFrozenOceanIcebergSlightly(pos, seaLevel)`.
-///
-/// Ported in [`crate::biome`]; delegate there when the modules are merged.
 fn should_melt_frozen_ocean_iceberg_slightly(
-    _biome: &BiomeData,
-    _x: i32,
-    _y: i32,
-    _z: i32,
-    _sea_level: i32,
+    biome: &BiomeData,
+    x: i32,
+    y: i32,
+    z: i32,
+    sea_level: i32,
 ) -> bool {
-    todo!(
-        "crate::biome: BiomeData::should_melt_frozen_ocean_iceberg_slightly(&self, x, y, z, sea_level) -> bool"
-    )
+    biome.should_melt_frozen_ocean_iceberg_slightly(x, y, z, sea_level)
 }

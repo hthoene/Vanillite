@@ -12,9 +12,9 @@ use vanillite_base::math;
 use vanillite_base::random::{PositionalRandomFactory, RandomSource};
 use vanillite_chunk::BiomeId;
 
-use super::anchor::VerticalAnchor;
 use super::context::MaterialRuleContext;
 use super::system::cold_enough_to_snow;
+use crate::anchor::VerticalAnchor;
 
 /// Index of a condition in [`super::rules::MaterialRules::conditions`].
 pub(crate) type CondId = u32;

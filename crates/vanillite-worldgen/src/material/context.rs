@@ -3,8 +3,8 @@
 
 use vanillite_chunk::BiomeId;
 
-use super::anchor::{VerticalAnchor, WorldGenerationContext};
 use super::system::MaterialSystem;
+use crate::anchor::{VerticalAnchor, WorldGenerationContext};
 use crate::biome::BiomeRegistry;
 use crate::density::{Program, SamplerContext};
 use crate::mth::floor_f;

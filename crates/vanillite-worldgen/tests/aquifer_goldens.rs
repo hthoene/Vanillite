@@ -20,7 +20,6 @@ fn id(state: Option<BlockState>) -> i64 {
 }
 
 #[test]
-#[ignore = "needs density and noise ports"]
 fn aquifer_matches_vanilla() {
     let golden = common::golden("aquifer");
     let packs = common::packs();

@@ -12,12 +12,11 @@
 //!   vein densities into the context, and the tree is walked per block without allocating.
 //! - [`VerticalAnchor`] and [`WorldGenerationContext`] (`net.minecraft.world.level.levelgen`).
 
-mod anchor;
 mod condition;
 mod context;
 mod rule;
 mod rules;
 mod system;
 
-pub use anchor::{VerticalAnchor, WorldGenerationContext};
+pub use crate::anchor::{VerticalAnchor, WorldGenerationContext};
 pub use system::{CLAY_BAND_COUNT, MaterialSystem, generate_bands};

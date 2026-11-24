@@ -9,6 +9,7 @@ use vanillite_base::random::{LegacyRandom, PositionalRandomFactory, RandomSource
 use vanillite_datapack::LoadedPacks;
 
 use crate::Error;
+use crate::density::CompileContext;
 use crate::noise::{Noise, NormalNoise};
 use crate::random::{AnyPositional, AnyRandom};
 
@@ -113,5 +114,23 @@ impl RandomState {
     /// `CompileContext.createEndIslandRandom()`.
     pub fn create_end_island_random(&self) -> LegacyRandom {
         LegacyRandom::new(self.seed)
+    }
+}
+
+impl CompileContext for RandomState {
+    fn create_noise(&self, id: &str) -> Arc<Noise> {
+        self.noise(id)
+    }
+
+    fn noise_parameters(&self, id: &str) -> Option<&NormalNoise> {
+        RandomState::noise_parameters(self, id)
+    }
+
+    fn create_random(&self, id: &str) -> AnyRandom {
+        RandomState::create_random(self, id)
+    }
+
+    fn create_end_island_random(&self) -> LegacyRandom {
+        RandomState::create_end_island_random(self)
     }
 }

@@ -13,10 +13,10 @@ use serde_json::Value;
 use vanillite_chunk::BiomeId;
 use vanillite_datapack::LoadedPacks;
 
-use super::anchor::VerticalAnchor;
 use super::condition::{BiomeSet, CondId, Condition};
 use super::rule::{OreVein, Rule, RuleId};
 use crate::Error;
+use crate::anchor::{VerticalAnchor, codec_int};
 use crate::blocks::{parse_block_state, qualify};
 
 /// The `worldgen/material_rule` registry.
@@ -298,19 +298,6 @@ fn array<'v>(json: &'v Value, name: &str) -> Result<&'v [Value], Error> {
 
 fn int(json: &Value, name: &str) -> Result<i32, Error> {
     codec_int(field(json, name)?).ok_or_else(|| Error::new(format!("{name} is not an int")))
-}
-
-/// `Codec.INT` on a JSON number: Gson's `Number.intValue()`, which truncates fractions and keeps
-/// the low 32 bits of large integers. `None` for non-numbers and fractions beyond `i64`.
-pub(super) fn codec_int(json: &Value) -> Option<i32> {
-    if let Some(v) = json.as_i64() {
-        Some(v as i32)
-    } else if let Some(v) = json.as_u64() {
-        Some(v as i32)
-    } else {
-        let v = json.as_f64()?.trunc();
-        (v.abs() < 9.2e18).then_some(v as i64 as i32)
-    }
 }
 
 fn boolean(json: &Value, name: &str) -> Result<bool, Error> {

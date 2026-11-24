@@ -2,8 +2,7 @@
 //!
 //! Ports `net.minecraft.util.valueproviders` (`IntProvider`, `FloatProvider` and their
 //! implementations), `net.minecraft.util.random.WeightedList` (selection only),
-//! `net.minecraft.world.level.levelgen.heightproviders` (`HeightProvider`), `VerticalAnchor` and
-//! `WorldGenerationContext`.
+//! `net.minecraft.world.level.levelgen.heightproviders` (`HeightProvider`).
 //!
 //! Parsing follows the codecs: a bare number is a constant (`IntProviders.CODEC`,
 //! `FloatProviders.CODEC`), a bare vertical anchor is a constant height (`HeightProvider.CODEC`),
@@ -14,118 +13,7 @@ use vanillite_base::math::{clamp_f, clamp_i};
 use vanillite_base::random::RandomSource;
 
 use crate::Error;
-
-/// `WorldGenerationContext`: the vertical range providers resolve anchors against.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct WorldGenerationContext {
-    min_y: i32,
-    height: i32,
-    sea_level: i32,
-}
-
-impl WorldGenerationContext {
-    /// A context with the given generation range and sea level.
-    pub const fn new(min_gen_y: i32, gen_depth: i32, sea_level: i32) -> Self {
-        Self {
-            min_y: min_gen_y,
-            height: gen_depth,
-            sea_level,
-        }
-    }
-
-    /// `new WorldGenerationContext(generator, heightAccessor)`: the generator's range clamped to
-    /// the level's (`max` of the minimum Y, `min` of the heights).
-    pub fn for_generator(
-        generator_min_y: i32,
-        generator_gen_depth: i32,
-        sea_level: i32,
-        level_min_y: i32,
-        level_height: i32,
-    ) -> Self {
-        Self::new(
-            level_min_y.max(generator_min_y),
-            level_height.min(generator_gen_depth),
-            sea_level,
-        )
-    }
-
-    /// `getMinGenY()`.
-    pub const fn min_gen_y(&self) -> i32 {
-        self.min_y
-    }
-
-    /// `getGenDepth()`.
-    pub const fn gen_depth(&self) -> i32 {
-        self.height
-    }
-
-    /// `seaLevel()`.
-    pub const fn sea_level(&self) -> i32 {
-        self.sea_level
-    }
-}
-
-/// `VerticalAnchor`: a Y coordinate relative to the generation range or the sea level.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum VerticalAnchor {
-    /// `{"absolute": y}`.
-    Absolute(i32),
-    /// `{"above_bottom": offset}`.
-    AboveBottom(i32),
-    /// `{"below_top": offset}`.
-    BelowTop(i32),
-    /// `{"relative_to_sea_level": offset}`.
-    RelativeToSeaLevel(i32),
-}
-
-/// `DimensionType.MIN_Y`.
-const MIN_Y: i32 = -2032;
-/// `DimensionType.MAX_Y`.
-const MAX_Y: i32 = 2031;
-
-impl VerticalAnchor {
-    /// Parses `VerticalAnchor.CODEC`: an object with exactly one of the four keys.
-    pub fn from_json(json: &Value) -> Result<Self, Error> {
-        let map = json
-            .as_object()
-            .ok_or_else(|| Error::new(format!("vertical anchor: not an object: {json}")))?;
-        let mut found = None;
-        for (key, make) in [
-            ("absolute", Self::Absolute as fn(i32) -> Self),
-            ("above_bottom", Self::AboveBottom),
-            ("below_top", Self::BelowTop),
-            ("relative_to_sea_level", Self::RelativeToSeaLevel),
-        ] {
-            if let Some(value) = map.get(key) {
-                if found.is_some() {
-                    return Err(Error::new(format!("vertical anchor: ambiguous {json}")));
-                }
-                let v = int_value(value, key)?;
-                if !(MIN_Y..=MAX_Y).contains(&v) {
-                    return Err(Error::new(format!(
-                        "vertical anchor: {key} out of range: {v}"
-                    )));
-                }
-                found = Some(make(v));
-            }
-        }
-        found.ok_or_else(|| Error::new(format!("vertical anchor: no anchor in {json}")))
-    }
-
-    /// `resolveY(context)`.
-    pub const fn resolve_y(&self, context: &WorldGenerationContext) -> i32 {
-        match *self {
-            Self::Absolute(y) => y,
-            Self::AboveBottom(offset) => context.min_gen_y().wrapping_add(offset),
-            Self::BelowTop(offset) => context
-                .gen_depth()
-                .wrapping_sub(1)
-                .wrapping_add(context.min_gen_y())
-                .wrapping_sub(offset),
-            Self::RelativeToSeaLevel(offset) => context.sea_level().wrapping_add(offset),
-        }
-    }
-}
+pub use crate::anchor::{VerticalAnchor, WorldGenerationContext};
 
 /// `WeightedList`: entries picked with probability proportional to their weight.
 #[derive(Clone, Debug, PartialEq)]
@@ -587,9 +475,9 @@ impl HeightProvider {
     /// Parses `HeightProvider.CODEC`: a vertical anchor or a typed provider.
     pub fn from_json(json: &Value) -> Result<Self, Error> {
         if json.get("type").is_none() {
-            return Ok(Self::Constant(VerticalAnchor::from_json(json)?));
+            return Ok(Self::Constant(VerticalAnchor::parse(json)?));
         }
-        let anchor = |name: &str| VerticalAnchor::from_json(field(json, name)?);
+        let anchor = |name: &str| VerticalAnchor::parse(field(json, name)?);
         let inner = || -> Result<i32, Error> {
             match json.get("inner") {
                 None => Ok(1),

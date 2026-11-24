@@ -47,7 +47,7 @@ fn anchors_and_contexts() {
         .unwrap()
         .iter()
         .map(|c| {
-            let context = WorldGenerationContext::new(
+            let context = WorldGenerationContext::clamped(
                 int(&c["generator_min_y"]),
                 int(&c["generator_height"]),
                 int(&c["sea_level"]),
@@ -75,7 +75,6 @@ fn anchors_and_contexts() {
 }
 
 #[test]
-#[ignore = "needs the noise, density and biome modules"]
 fn column_helpers() {
     let packs = common::packs();
     let golden = common::golden("material");

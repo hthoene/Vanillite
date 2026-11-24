@@ -3,7 +3,6 @@
 
 use serde_json::Value;
 
-use super::rules::codec_int;
 use crate::Error;
 use crate::settings::NoiseGeneratorSettings;
 
@@ -22,10 +21,19 @@ pub struct WorldGenerationContext {
 }
 
 impl WorldGenerationContext {
+    /// A context with the given generation range and sea level.
+    pub const fn new(min_gen_y: i32, gen_depth: i32, sea_level: i32) -> Self {
+        Self {
+            min_y: min_gen_y,
+            height: gen_depth,
+            sea_level,
+        }
+    }
+
     /// `new WorldGenerationContext(generator, heightAccessor)`: the generator's range
     /// (`generator_min_y`, `generator_height`) clamped to the level's (`level_min_y`,
     /// `level_height`), and the generator's sea level.
-    pub const fn new(
+    pub const fn clamped(
         generator_min_y: i32,
         generator_height: i32,
         sea_level: i32,
@@ -49,12 +57,12 @@ impl WorldGenerationContext {
 
     /// The context of a noise based generator with `settings` for a level (chunk) from
     /// `level_min_y` spanning `level_height` blocks.
-    pub const fn for_generator(
+    pub const fn for_settings(
         settings: &NoiseGeneratorSettings,
         level_min_y: i32,
         level_height: i32,
     ) -> Self {
-        Self::new(
+        Self::clamped(
             settings.min_y,
             settings.height,
             settings.sea_level,
@@ -144,6 +152,19 @@ fn offset(json: &Value, name: &str) -> Result<i32, Error> {
         })
 }
 
+/// `Codec.INT` on a JSON number: Gson's `Number.intValue()`, which truncates fractions and keeps
+/// the low 32 bits of large integers. `None` for non-numbers and fractions beyond `i64`.
+pub(crate) fn codec_int(json: &Value) -> Option<i32> {
+    if let Some(v) = json.as_i64() {
+        Some(v as i32)
+    } else if let Some(v) = json.as_u64() {
+        Some(v as i32)
+    } else {
+        let v = json.as_f64()?.trunc();
+        (v.abs() < 9.2e18).then_some(v as i64 as i32)
+    }
+}
+
 /// `Codec.xor`: exactly one alternative must succeed.
 fn xor<T>(first: Result<T, Error>, second: Result<T, Error>) -> Result<T, Error> {
     match (first, second) {
@@ -163,7 +184,7 @@ mod tests {
 
     #[test]
     fn parses_and_resolves() {
-        let overworld = WorldGenerationContext::new(-64, 384, 63, -64, 384);
+        let overworld = WorldGenerationContext::clamped(-64, 384, 63, -64, 384);
         let cases = [
             (json!({"absolute": 30}), 30),
             (json!({"above_bottom": 5}), -59),
