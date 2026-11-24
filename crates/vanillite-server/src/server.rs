@@ -715,6 +715,15 @@ impl Server {
         self.net.as_ref().map(|n| n.network.virtual_opener())
     }
 
+    /// The UDP address of the Bedrock frontend, if it runs.
+    pub fn bedrock_addr(&self) -> Option<std::net::SocketAddr> {
+        self.net
+            .as_ref()?
+            .bedrock
+            .as_ref()
+            .map(|(f, _)| f.local_addr())
+    }
+
     /// The address the network listens on.
     pub fn local_addr(&self) -> Option<std::net::SocketAddr> {
         self.net.as_ref().map(|n| n.network.local_addr())
@@ -1224,7 +1233,7 @@ impl Server {
         self.global.level.save();
         log::info!("All dimensions are saved");
         if let Some(net) = self.net.take() {
-            net.network.shutdown();
+            net.shutdown();
         }
         self.compute.scheduler().shutdown();
         if let Some(watchdog) = self.watchdog.take() {

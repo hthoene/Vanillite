@@ -15,6 +15,7 @@ repository = "https://github.com/hthoene/Vanillite"
 # Internal crates.
 vanillite-abi = { path = "crates/vanillite-abi", version = "0.1.0" }
 vanillite-base = { path = "crates/vanillite-base", version = "0.1.0" }
+vanillite-bedrock = { path = "crates/vanillite-bedrock", version = "0.1.0" }
 vanillite-chunk = { path = "crates/vanillite-chunk", version = "0.1.0" }
 vanillite-command = { path = "crates/vanillite-command", version = "0.1.0" }
 vanillite-config = { path = "crates/vanillite-config", version = "0.1.0" }

@@ -801,6 +801,96 @@
       "field_type": "text"
     },
     {
+      "name": "Bedrock: Enabled",
+      "description": "Accept Bedrock players. Empty: the profile's value (vanilla profile: false). vanillite.toml: bedrock.enabled.",
+      "env_variable": "VANILLITE_BEDROCK__ENABLED",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Bedrock: Port",
+      "description": "UDP port. Bedrock's default is 19132. Range: 1 to 65535. Empty: the profile's value (vanilla profile: 19132). vanillite.toml: bedrock.port.",
+      "env_variable": "VANILLITE_BEDROCK__PORT",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,65535",
+      "field_type": "text"
+    },
+    {
+      "name": "Bedrock: Online Mode",
+      "description": "Require an Xbox Live login. Off accepts any identity a client claims: only for tests on closed networks. Empty: the profile's value (vanilla profile: true). vanillite.toml: bedrock.online-mode.",
+      "env_variable": "VANILLITE_BEDROCK__ONLINE_MODE",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Bedrock: Name Prefix",
+      "description": "Prefix of Bedrock players' Java names, so they never collide with Java accounts. Bedrock players get the UUID `00000000-0000-0000-xxxx-xxxxxxxxxxxx` of their XUID (like Floodgate); whitelist and operators use that UUID. Empty: the profile's value (vanilla profile: .). vanillite.toml: bedrock.name-prefix.",
+      "env_variable": "VANILLITE_BEDROCK__NAME_PREFIX",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string",
+      "field_type": "text"
+    },
+    {
+      "name": "Bedrock: Max Connections Per Ip",
+      "description": "Bedrock connections per IP address. Range: 1 to 1000. Empty: the profile's value (vanilla profile: 8). vanillite.toml: bedrock.max-connections-per-ip.",
+      "env_variable": "VANILLITE_BEDROCK__MAX_CONNECTIONS_PER_IP",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,1000",
+      "field_type": "text"
+    },
+    {
+      "name": "Bedrock: Max Packets Per Second",
+      "description": "Packets per second a Bedrock client may send before it is kicked. Range: 50 to 100000. Empty: the profile's value (vanilla profile: 1000). vanillite.toml: bedrock.max-packets-per-second.",
+      "env_variable": "VANILLITE_BEDROCK__MAX_PACKETS_PER_SECOND",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:50,100000",
+      "field_type": "text"
+    },
+    {
+      "name": "Bedrock: Max View Distance",
+      "description": "Largest chunk radius granted to Bedrock clients. Range: 2 to 32. Empty: the profile's value (vanilla profile: 12). vanillite.toml: bedrock.max-view-distance.",
+      "env_variable": "VANILLITE_BEDROCK__MAX_VIEW_DISTANCE",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:2,32",
+      "field_type": "text"
+    },
+    {
+      "name": "Bedrock: Chunk Cache Sections",
+      "description": "Translated chunk sections kept for all Bedrock players (each section is translated once for every viewer). About 4 KiB each. Range: 0 to 1048576. Empty: the profile's value (vanilla profile: 16384). vanillite.toml: bedrock.chunk-cache-sections.",
+      "env_variable": "VANILLITE_BEDROCK__CHUNK_CACHE_SECTIONS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:0,1048576",
+      "field_type": "text"
+    },
+    {
+      "name": "Bedrock: Threads",
+      "description": "Threads of the Bedrock frontend. Range: 1 to 64. Empty: the profile's value (vanilla profile: 2). vanillite.toml: bedrock.threads.",
+      "env_variable": "VANILLITE_BEDROCK__THREADS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,64",
+      "field_type": "text"
+    },
+    {
       "name": "Chat: Max Pending Messages",
       "description": "Signed messages a player may have received without acknowledging them before it is kicked (`too_many_pending_chats`). Range: 64 to 65536. Empty: the profile's value (vanilla profile: 4096). vanillite.toml: chat.max-pending-messages.",
       "env_variable": "VANILLITE_CHAT__MAX_PENDING_MESSAGES",

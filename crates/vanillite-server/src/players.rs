@@ -89,6 +89,8 @@ pub(crate) struct Arrival {
     pub(crate) sink: Arc<dyn PacketSink>,
     pub(crate) inbound: Receiver<Inbound>,
     pub(crate) memory_connection: bool,
+    /// A virtual connection (test bot, Bedrock player): no chat session, chat is unsigned.
+    pub(crate) virtual_connection: bool,
     pub(crate) saved: Option<player_data::PlayerData>,
     pub(crate) address: String,
     pub(crate) inbox: Arc<Mutex<ChatInbox>>,
@@ -186,6 +188,7 @@ impl WorldPlayers {
                 arrival.inbound,
                 pos,
                 arrival.memory_connection,
+                arrival.virtual_connection,
                 &global.chat,
                 Arc::clone(&arrival.inbox),
             ),

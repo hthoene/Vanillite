@@ -205,6 +205,8 @@ pub(crate) struct NetState {
     joins: Receiver<Joined>,
     status: StatusInfo,
     online: usize,
+    /// The Bedrock frontend (`bedrock.enabled`).
+    pub(crate) bedrock: Option<(vanillite_bedrock::Frontend, Arc<vanillite_bedrock::Status>)>,
 }
 
 impl NetState {
@@ -254,12 +256,26 @@ impl NetState {
         };
         let (network, joins) = Network::start(net, status.clone(), configuration, None)
             .map_err(|e| StartError::Io(format!("cannot listen on {ip}:{}: {e}", p.server_port)))?;
+        let bedrock = if config.server.bedrock.enabled {
+            Some(start_bedrock(config, &network, ip, listen)?)
+        } else {
+            None
+        };
         Ok(NetState {
             network,
             joins,
             status,
             online: 0,
+            bedrock,
         })
+    }
+
+    /// Stops the Bedrock frontend and the network.
+    pub(crate) fn shutdown(self) {
+        if let Some((frontend, _)) = self.bedrock {
+            frontend.shutdown();
+        }
+        self.network.shutdown();
     }
 
     /// The next joined connection.
@@ -273,8 +289,54 @@ impl NetState {
             self.online = online;
             self.status.online_players = i32::try_from(online).unwrap_or(i32::MAX);
             self.network.status().update(&self.status);
+            if let Some((_, status)) = &self.bedrock {
+                status.set_online(u32::try_from(online).unwrap_or(u32::MAX));
+            }
         }
     }
+}
+
+/// Starts the Bedrock frontend: each Bedrock player becomes a remote virtual connection.
+fn start_bedrock(
+    config: &Config,
+    network: &Network,
+    ip: std::net::IpAddr,
+    listen: bool,
+) -> Result<(vanillite_bedrock::Frontend, Arc<vanillite_bedrock::Status>), StartError> {
+    let b = &config.server.bedrock;
+    let p = &config.properties;
+    let bind = if listen {
+        (ip, b.port).into()
+    } else {
+        std::net::SocketAddr::from(([127, 0, 0, 1], 0))
+    };
+    let opener = network.virtual_opener();
+    let connector: vanillite_bedrock::Connector =
+        Arc::new(move |profile, address| opener.open_remote(profile, address));
+    let status = Arc::new(vanillite_bedrock::Status::new(
+        &p.motd,
+        u32::try_from(p.max_players).unwrap_or(0),
+    ));
+    let bedrock = vanillite_bedrock::BedrockConfig {
+        bind,
+        online_mode: b.online_mode,
+        name_prefix: b.name_prefix.clone(),
+        world_name: p.level_name.clone(),
+        max_connections: u32::try_from(p.max_players).unwrap_or(0).saturating_add(64),
+        max_connections_per_ip: b.max_connections_per_ip,
+        max_packets_per_second: b.max_packets_per_second,
+        max_view_distance: b.max_view_distance,
+        chunk_cache_sections: usize::try_from(b.chunk_cache_sections).unwrap_or(0),
+        ..vanillite_bedrock::BedrockConfig::default()
+    };
+    let frontend = vanillite_bedrock::Frontend::start(
+        bedrock,
+        connector,
+        Arc::clone(&status),
+        usize::from(b.threads),
+    )
+    .map_err(|e| StartError::Io(format!("cannot listen on UDP {bind} for Bedrock: {e}")))?;
+    Ok((frontend, status))
 }
 
 /// Turns a joined connection into an arrival for a world.
@@ -321,7 +383,8 @@ pub(crate) fn arrival(
         game_mode,
         sink: Arc::clone(&sink),
         inbound: joined.inbound,
-        memory_connection: joined.is_virtual,
+        memory_connection: joined.memory,
+        virtual_connection: joined.is_virtual,
         saved,
         address: joined.address.to_string(),
         inbox,
