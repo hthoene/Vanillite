@@ -97,6 +97,58 @@ pub fn run(root: &Path, check: bool) -> Result<()> {
     Ok(())
 }
 
+/// A `minecraft:tool` component as a `ToolInfo` literal.
+fn tool_info(t: &Value, block_ids: &HashMap<String, usize>) -> Result<String> {
+    let mut rules = Vec::new();
+    for r in arr(&t["rules"])? {
+        let blocks = match &r["blocks"] {
+            Value::String(s) if s.starts_with('#') => format!("BlockSet::Tag({:?})", &s[1..]),
+            v => {
+                let names = match v {
+                    Value::String(s) => vec![s.clone()],
+                    Value::Array(a) => a
+                        .iter()
+                        .map(|x| x.as_str().unwrap_or_default().to_owned())
+                        .collect(),
+                    _ => return Err("tool rule blocks".into()),
+                };
+                let ids = names
+                    .iter()
+                    .map(|n| {
+                        block_ids
+                            .get(n)
+                            .copied()
+                            .ok_or(format!("unknown block {n}"))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                format!("BlockSet::Blocks(&[{}])", join(&ids))
+            }
+        };
+        let speed = match r.get("speed").and_then(Value::as_f64) {
+            Some(v) => format!("Some({})", f32_of(&Value::from(v))),
+            None => "None".into(),
+        };
+        let correct = match r.get("correct_for_drops").and_then(Value::as_bool) {
+            Some(v) => format!("Some({v})"),
+            None => "None".into(),
+        };
+        rules.push(format!(
+            "ToolRule {{ blocks: {blocks}, speed: {speed}, correct_for_drops: {correct} }}"
+        ));
+    }
+    Ok(format!(
+        "ToolInfo {{ rules: &[{}], default_mining_speed: {}, damage_per_block: {}, can_destroy_blocks_in_creative: {} }}",
+        rules.join(", "),
+        f32_of(t.get("default_mining_speed").unwrap_or(&Value::from(1.0))),
+        t.get("damage_per_block")
+            .and_then(Value::as_u64)
+            .unwrap_or(1),
+        t.get("can_destroy_blocks_in_creative")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
+    ))
+}
+
 fn module_file() -> String {
     let mut s = String::from(HEADER);
     for m in [
@@ -175,6 +227,8 @@ fn blocks(data: &Path, regs: &Value) -> Result<String> {
     let shapes = arr(&read_json(&data.join("shapes.json"))?)?;
     let item_ids = ids(regs, "minecraft:item")?;
     let be_ids = ids(regs, "minecraft:block_entity_type")?;
+    let sound_ids = ids(regs, "minecraft:sound_event")?;
+    let mut sound_types: Vec<String> = Vec::new();
 
     let mut props: Vec<(String, Vec<String>)> = Vec::new();
     let mut prop_index: HashMap<(String, Vec<String>), usize> = HashMap::new();
@@ -214,7 +268,7 @@ fn blocks(data: &Path, regs: &Value) -> Result<String> {
             "    BlockInfo {{ name: {name:?}, first_state: {}, state_count: {count}, default_state: {}, \
              properties: &[{}], hardness: {}, blast_resistance: {}, friction: {}, speed_factor: {}, \
              jump_factor: {}, max_horizontal_offset: {}, max_vertical_offset: {}, dynamic_shape: {}, \
-             item: {}, block_entity: {} }},",
+             item: {}, block_entity: {}, kind: BlockKind::{}, sound: {} }},",
             num(&b["first_state"])?,
             num(&b["default_state"])?,
             join(&pidx),
@@ -228,6 +282,17 @@ fn blocks(data: &Path, regs: &Value) -> Result<String> {
             b["dynamic_shape"].as_bool().unwrap_or(false),
             opt_id("item", &item_ids)?,
             opt_id("block_entity", &be_ids)?,
+            camel(kind_of(b)),
+            {
+                let st = sound_type(&b["sound"], &sound_ids)?;
+                match sound_types.iter().position(|x| *x == st) {
+                    Some(i) => i,
+                    None => {
+                        sound_types.push(st);
+                        sound_types.len() - 1
+                    }
+                }
+            },
         );
         let facts = b["facts"].as_object().ok_or("block facts")?.clone();
         for _ in 0..count {
@@ -333,7 +398,25 @@ fn blocks(data: &Path, regs: &Value) -> Result<String> {
     }
 
     let mut o = String::from(HEADER);
-    o.push_str("\nuse crate::block::{BlockId, BlockInfo, PropertyInfo, StateMisc};\n\n");
+    o.push_str("\nuse crate::block::{BlockId, BlockInfo, PropertyInfo, SoundType, StateMisc};\n\n");
+    let mut kinds: Vec<String> = blocks.iter().map(|b| kind_of(b).to_owned()).collect();
+    kinds.sort();
+    kinds.dedup();
+    enum_def(
+        &mut o,
+        "The Java class of a block (`StairBlock`, `SlabBlock`, …).",
+        "BlockKind",
+        &kinds,
+    );
+    let _ = writeln!(
+        o,
+        "/// Distinct block sound types (`SoundType`) with sound event ids.\npub static SOUND_TYPES: [SoundType; {}] = [",
+        sound_types.len()
+    );
+    for t in &sound_types {
+        let _ = writeln!(o, "    {t},");
+    }
+    o.push_str("];\n\n");
     push_reactions.sort();
     enum_def(
         &mut o,
@@ -485,6 +568,32 @@ fn blocks(data: &Path, regs: &Value) -> Result<String> {
     Ok(o)
 }
 
+/// A block's `SoundType` as a literal with sound event ids.
+fn sound_type(s: &Value, sound_ids: &HashMap<String, usize>) -> Result<String> {
+    let id = |k: &str| -> Result<usize> {
+        let n = s[k].as_str().ok_or_else(|| format!("sound {k}"))?;
+        sound_ids
+            .get(n)
+            .copied()
+            .ok_or_else(|| format!("unknown sound event {n}"))
+    };
+    Ok(format!(
+        "SoundType {{ volume: {}, pitch: {}, break_sound: {}, step_sound: {}, place_sound: {}, hit_sound: {}, fall_sound: {} }}",
+        f32_of(&s["volume"]),
+        f32_of(&s["pitch"]),
+        id("break")?,
+        id("step")?,
+        id("place")?,
+        id("hit")?,
+        id("fall")?,
+    ))
+}
+
+/// The Java class of a block (`StairBlock`).
+fn kind_of(b: &Value) -> &str {
+    b["class"].as_str().unwrap_or("Block")
+}
+
 /// Emits a field-less enum whose variants are Vanilla's (snake case) names in CamelCase.
 fn enum_def(o: &mut String, doc: &str, name: &str, values: &[String]) {
     let _ = writeln!(
@@ -545,7 +654,7 @@ fn items(data: &Path, regs: &Value) -> Result<String> {
     let block_ids = ids(regs, "minecraft:block")?;
     let items = arr(&read_json(&data.join("items.json"))?)?;
     let mut o = String::from(HEADER);
-    o.push_str("\nuse crate::item::{ItemId, ItemInfo};\n\n");
+    o.push_str("\nuse crate::item::{BlockSet, ItemId, ItemInfo, ToolInfo, ToolRule};\n\n");
     let mut rarities: Vec<String> = items
         .iter()
         .map(|i| {
@@ -568,10 +677,26 @@ fn items(data: &Path, regs: &Value) -> Result<String> {
         "/// Items by id, with the default values of their core components.\npub static ITEMS: [ItemInfo; {}] = [",
         items.len()
     );
+    let mut tools: Vec<String> = Vec::new();
+    let mut item_lines = String::new();
     for it in &items {
         let name = it["name"].as_str().unwrap_or_default();
         let c = &it["components"];
         let rarity = camel(c["minecraft:rarity"].as_str().unwrap_or("common"));
+        let tool = match c.get("minecraft:tool") {
+            None => "u16::MAX".to_owned(),
+            Some(t) => {
+                let t = tool_info(t, &block_ids).map_err(|e| format!("{name}: {e}"))?;
+                let i = match tools.iter().position(|x| *x == t) {
+                    Some(i) => i,
+                    None => {
+                        tools.push(t);
+                        tools.len() - 1
+                    }
+                };
+                i.to_string()
+            }
+        };
         let block = match it.get("block").and_then(Value::as_str) {
             None => "u16::MAX".to_owned(),
             Some(b) => block_ids
@@ -579,12 +704,31 @@ fn items(data: &Path, regs: &Value) -> Result<String> {
                 .ok_or_else(|| format!("{name}: unknown block {b}"))?
                 .to_string(),
         };
+        // `EquipmentSlot` ordinal of the `minecraft:equippable` slot, 255 without the component.
+        let equip = match c["minecraft:equippable"]["slot"].as_str() {
+            None => 255,
+            Some(slot) => [
+                "mainhand", "offhand", "feet", "legs", "chest", "head", "body", "saddle",
+            ]
+            .iter()
+            .position(|s| *s == slot)
+            .ok_or_else(|| format!("{name}: unknown equipment slot {slot}"))?,
+        };
         let _ = writeln!(
-            o,
-            "    ItemInfo {{ name: {name:?}, max_stack_size: {}, max_damage: {}, rarity: Rarity::{rarity}, block: {block} }},",
+            item_lines,
+            "    ItemInfo {{ name: {name:?}, max_stack_size: {}, max_damage: {}, rarity: Rarity::{rarity}, block: {block}, tool: {tool}, equip_slot: {equip} }},",
             c["minecraft:max_stack_size"].as_u64().unwrap_or(1),
             c["minecraft:max_damage"].as_u64().unwrap_or(0),
         );
+    }
+    o.push_str(&item_lines);
+    let _ = writeln!(
+        o,
+        "];\n\n/// Distinct default `minecraft:tool` components.\npub static TOOLS: [ToolInfo; {}] = [",
+        tools.len()
+    );
+    for t in &tools {
+        let _ = writeln!(o, "    {t},");
     }
     o.push_str("];\n\n/// Item ids by name.\npub mod ids {\n    use super::ItemId;\n");
     for (id, it) in items.iter().enumerate() {

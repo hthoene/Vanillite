@@ -209,6 +209,10 @@ impl ChunkTracker {
 }
 
 impl EntityTracker for ChunkTracker {
+    fn seen_by(&self, entity: EntityId) -> &[EntityId] {
+        self.tracked.get(&entity).map_or(&[], |t| &t.seen_by)
+    }
+
     fn update(&mut self, input: &TrackerInput<'_>, out: &mut TrackerOutput) {
         let store = input.entities;
         let core = store.columns();
