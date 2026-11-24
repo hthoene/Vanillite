@@ -12,6 +12,9 @@ repository.workspace = true
 vanillite-data.workspace = true
 vanillite-nbt.workspace = true
 vanillite-macros.workspace = true
+aes.workspace = true
+libdeflater.workspace = true
+serde_json.workspace = true
 
 # SEC-07: input-handling crate. Cargo cannot extend `[lints] workspace = true`,
 # so this repeats the workspace lints and adds the SEC-07 set.

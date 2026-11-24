@@ -45,6 +45,13 @@ toml = "1"
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
+# External crates: network (vanillite-nbt, vanillite-protocol, vanillite-macros, vanillite-net).
+aes = "0.8"
+libdeflater = "1.26"
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }
+
 # Workspace-wide lints. Input-handling crates (SEC-07) repeat these in their own
 # `[lints]` tables and add the SEC-07 deny set, because Cargo cannot extend
 # `workspace = true`.
