@@ -14,7 +14,7 @@
 # - Bedrock players on UDP 30019: the Bedrock frontend of Vanillite 30001 (`[bedrock]` set by the
 #   drop-in vanillite@30001.service.d/bedrock.conf), and on UDP 30020 the Bedrock frontend of
 #   the proxy (`[bedrock]` in /opt/vanillite-proxy/proxy.toml).
-# - vanillite-autodeploy (timer, every 2 minutes): builds the newest green dev commit in
+# - vanillite-autodeploy (timer, every 30 minutes): builds the newest green dev commit in
 #   /opt/vanillite-build and deploys it to 30001, 30002 and the proxy on 30010, with a chat
 #   announcement and rollback; log in /var/log/vanillite-autodeploy.log. Manual deploys of a
 #   branch go to 30003-30099.
@@ -683,7 +683,7 @@ install -d /var/lib/vanillite-autodeploy
 write_if_changed /usr/local/bin/vanillite-autodeploy 755 <<'EOF'
 #!/usr/bin/env bash
 # Usage: vanillite-autodeploy [run | status [<lines>]]
-# run (vanillite-autodeploy.timer, every 2 minutes): takes the newest dev commit whose CI
+# run (vanillite-autodeploy.timer, every 30 minutes): takes the newest dev commit whose CI
 # workflow passed (dev lands often, so the head itself is often still running or cancelled); if
 # it is newer than the deployed one, builds vanillite and vanillite-proxy (release-fast) in
 # /opt/vanillite-build, announces the restart in chat 10 s ahead, deploys 30001, 30002 and the
@@ -864,9 +864,9 @@ MemoryMax=3500M
 EOF
 write_if_changed /etc/systemd/system/vanillite-autodeploy.timer <<'EOF'
 [Unit]
-Description=Check for a new green dev every 2 minutes (vanillite-autodeploy)
+Description=Check for a new green dev every 30 minutes (vanillite-autodeploy)
 [Timer]
-OnCalendar=*:0/2
+OnCalendar=*:0/30
 AccuracySec=10s
 [Install]
 WantedBy=timers.target
