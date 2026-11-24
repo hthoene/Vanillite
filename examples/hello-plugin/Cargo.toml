@@ -1,0 +1,19 @@
+[package]
+name = "vanillite-example-hello"
+description = "Example Vanillite plugin: a /hello command, a join message and a simple custom generator."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+vanillite-plugin.workspace = true
+
+[lints]
+workspace = true

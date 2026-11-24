@@ -28,6 +28,7 @@ vanillite-worldgen.workspace = true
 vanillite-light.workspace = true
 vanillite-storage.workspace = true
 vanillite-plugin-host.workspace = true
+vanillite-abi.workspace = true
 
 [dev-dependencies]
 
