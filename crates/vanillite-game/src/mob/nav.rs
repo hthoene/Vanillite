@@ -49,6 +49,8 @@ pub struct Navigation {
     pub can_float: bool,
     pub can_open_doors: bool,
     pub can_pass_doors: bool,
+    /// `WaterBoundPathNavigation` (guardians) instead of `GroundPathNavigation`.
+    pub water_bound: bool,
 }
 
 impl Navigation {
@@ -76,6 +78,7 @@ impl Navigation {
             can_float: false,
             can_open_doors: false,
             can_pass_doors: true,
+            water_bound: false,
         }
     }
 
@@ -100,6 +103,10 @@ impl Navigation {
 /// `canUpdatePath`: on the ground or in a liquid.
 fn can_update_path(t: &Tick<'_, '_>) -> bool {
     let m = t.mob_ref();
+    if m.nav.water_bound {
+        // `WaterBoundPathNavigation.canUpdatePath`: `isInLiquid`.
+        return m.fluids.in_water() || m.fluids.in_lava();
+    }
     t.on_ground() || m.fluids.in_water() || m.fluids.in_lava()
 }
 
@@ -107,6 +114,11 @@ fn can_update_path(t: &Tick<'_, '_>) -> bool {
 fn temp_mob_pos(t: &Tick<'_, '_>) -> Vec3 {
     let p = t.pos();
     let m = t.mob_ref();
+    if m.nav.water_bound {
+        // `WaterBoundPathNavigation.getTempMobPos`: `getY(0.5)`.
+        let height = f64::from(t.core().dims().height);
+        return Vec3::new(p.x, p.y + height * 0.5, p.z);
+    }
     let y = if m.fluids.in_water() && m.nav.can_float {
         let mut surface = vanillite_base::math::floor(p.y);
         let mut steps = 0;
@@ -180,6 +192,7 @@ fn create_path(t: &mut Tick<'_, '_>, target: BlockPos, reach_range: i32) -> Opti
         max_visited_nodes: m.nav.max_visited_nodes.min(budget),
         malus: m.kind.malus(),
         min_y: t.level.min_y(),
+        swim: m.nav.water_bound,
     };
     let path = t.cx.finder.find_path(t.level, &mob, &[target], search);
     let visited = t.cx.finder.take_visited();
@@ -229,6 +242,10 @@ pub fn is_solid(state: BlockState) -> bool {
 
 /// `GroundPathNavigation.createPath(pos, reachRange)`.
 pub fn create_path_to(t: &mut Tick<'_, '_>, pos: BlockPos, reach_range: i32) -> Option<Path> {
+    if t.mob_ref().nav.water_bound {
+        // `PathNavigation.createPath(pos, reachRange)`: no surface search.
+        return create_path(t, pos, reach_range);
+    }
     if !t.level.is_loaded(pos) {
         return None;
     }
@@ -361,6 +378,9 @@ pub fn tick(t: &mut Tick<'_, '_>) {
 
 /// `getGroundY`.
 fn ground_y(t: &Tick<'_, '_>, target: Vec3) -> f64 {
+    if t.mob_ref().nav.water_bound {
+        return target.y;
+    }
     let pos = BlockPos::containing(target.x, target.y, target.z);
     if t.level
         .block(BlockPos::new(pos.x, pos.y - 1, pos.z))
@@ -384,8 +404,13 @@ fn follow_the_path(t: &mut Tick<'_, '_>) {
     let mob_pos = temp_mob_pos(t);
     let width = t.core().dims().width;
     let pos = t.pos();
+    let height = f64::from(t.core().dims().height);
     let advance = {
+        let level = t.level;
         let nav = &mut t.mob().nav;
+        // `getMaxVerticalDistanceToWaypoint`.
+        let max_y = if nav.water_bound { 0.5 } else { 1.0 };
+        let water_bound = nav.water_bound;
         nav.max_distance_to_waypoint = if width > 0.75 {
             width / 2.0
         } else {
@@ -400,8 +425,14 @@ fn follow_the_path(t: &mut Tick<'_, '_>) {
         let max = f64::from(nav.max_distance_to_waypoint);
         let close = (pos.x - (f64::from(node.x) + 0.5)).abs() < max
             && (pos.z - (f64::from(node.z) + 0.5)).abs() < max
-            && (pos.y - f64::from(node.y)).abs() < 1.0;
-        close || can_cut_corner(node.kind) && should_target_next_node(path, mob_pos, width)
+            && (pos.y - f64::from(node.y)).abs() < max_y;
+        // `canMoveDirectly`: only water-bound navigation moves straight to the next node.
+        let direct = |from: Vec3, to: Vec3| {
+            water_bound
+                && super::physics::clip(level, from, Vec3::new(to.x, to.y + height * 0.5, to.z))
+                    .is_none()
+        };
+        close || can_cut_corner(node.kind) && should_target_next_node(path, mob_pos, width, direct)
     };
     if advance && let Some(path) = &mut t.mob().nav.path {
         path.next += 1;
@@ -411,7 +442,12 @@ fn follow_the_path(t: &mut Tick<'_, '_>) {
 
 /// `shouldTargetNextNodeInDirection` (ground navigation cannot move directly).
 #[allow(clippy::neg_cmp_op_on_partial_ord)]
-fn should_target_next_node(path: &Path, mob: Vec3, _width: f32) -> bool {
+fn should_target_next_node(
+    path: &Path,
+    mob: Vec3,
+    width: f32,
+    direct: impl Fn(Vec3, Vec3) -> bool,
+) -> bool {
     if path.next + 1 >= path.nodes.len() {
         return false;
     }
@@ -420,6 +456,9 @@ fn should_target_next_node(path: &Path, mob: Vec3, _width: f32) -> bool {
     let current = bottom(&path.nodes[path.next]);
     if mob.distance_to_sqr(current) >= 4.0 {
         return false;
+    }
+    if direct(mob, path.next_entity_pos(width)) {
+        return true;
     }
     let next = bottom(&path.nodes[path.next + 1]);
     let to_current = current - mob;
@@ -537,6 +576,13 @@ pub fn rotlerp(a: f32, b: f32, max: f32) -> f32 {
 
 /// `MoveControl.tick`.
 pub fn tick_move_control(t: &mut Tick<'_, '_>) {
+    if matches!(
+        t.mob_ref().kind,
+        super::Kind::Guardian | super::Kind::ElderGuardian
+    ) {
+        super::boss::guardian::tick_move_control(t);
+        return;
+    }
     let speed_attr = t.mob_ref().attrs.movement_speed;
     let ctl = t.mob_ref().move_ctl;
     match ctl.operation {
@@ -652,9 +698,10 @@ impl LookControl {
     }
 }
 
-/// `setLookAt(x, y, z)` with the mob's head speed (10) and pitch limit (40).
+/// `setLookAt(x, y, z)` with the mob's head speed (10) and pitch limit (`getMaxHeadXRot`).
 pub fn look_at(t: &mut Tick<'_, '_>, at: Vec3) {
-    t.mob().look.set_look_at(at, 10.0, 40.0);
+    let x_max = t.mob_ref().kind.max_head_x_rot();
+    t.mob().look.set_look_at(at, 10.0, x_max);
 }
 
 /// `LookControl.tick`.

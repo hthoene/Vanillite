@@ -90,6 +90,8 @@ pub struct Actor {
     pub permission_level: u8,
     /// Whether the player's eyes are in water.
     pub eyes_in_water: bool,
+    /// The status effects that change the mining speed.
+    pub dig: crate::inventory::DigEffects,
 }
 
 impl Actor {
@@ -301,6 +303,7 @@ fn destroy_progress(ctx: &PlayContext<'_>, state: BlockState) -> f32 {
         tool,
         state,
         efficiency,
+        ctx.actor.dig,
         submerged,
         ctx.actor.on_ground,
     );

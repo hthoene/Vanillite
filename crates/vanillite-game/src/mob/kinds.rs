@@ -151,7 +151,19 @@ impl Kind {
 
     /// `getAmbientSoundInterval`.
     pub fn ambient_sound_interval(self) -> i32 {
-        if self.is_monster() { 80 } else { 120 }
+        match self {
+            Kind::Guardian | Kind::ElderGuardian => 160,
+            _ if self.is_monster() => 80,
+            _ => 120,
+        }
+    }
+
+    /// `getMaxHeadXRot`: the pitch limit of `LookControl.setLookAt(x, y, z)`.
+    pub fn max_head_x_rot(self) -> f32 {
+        match self {
+            Kind::Guardian | Kind::ElderGuardian => 180.0,
+            _ => 40.0,
+        }
     }
 
     /// `#burn_in_daylight`.
@@ -207,7 +219,9 @@ impl Kind {
             (PathType::Water, 0.0),
         ];
         const ENDERMAN: &MalusTable = &[(PathType::Water, -1.0)];
+        const GUARDIAN: &MalusTable = &[(PathType::Water, 0.0)];
         match self {
+            Kind::Guardian | Kind::ElderGuardian => GUARDIAN,
             Kind::Cow | Kind::Pig | Kind::Sheep => ANIMAL,
             Kind::Chicken => CHICKEN,
             Kind::Enderman => ENDERMAN,
@@ -551,6 +565,12 @@ fn sheep_color(climate: FarmClimate, random: &mut LegacyRandom) -> u8 {
 /// `getWalkTargetValue(pos)` of a kind.
 pub fn walk_target_value(kind: Kind, level: &Level, env: &Environment, pos: BlockPos) -> f64 {
     let cost = f64::from(light_magic_value(level, env, pos) - 0.5);
+    if matches!(kind, Kind::Guardian | Kind::ElderGuardian) && super::is_water(level.block(pos)) {
+        // `Guardian.getWalkTargetValue`: water first, lit water preferred.
+        #[allow(clippy::cast_possible_truncation)]
+        let v = 10.0_f32 + cost as f32;
+        return f64::from(v);
+    }
     if kind.is_monster() {
         -cost
     } else if level.block(BlockPos::new(pos.x, pos.y - 1, pos.z)).block() == ids::GRASS_BLOCK {
@@ -578,6 +598,7 @@ pub fn play_ambient_sound(t: &mut Tick<'_, '_>) {
         Some("minecraft:entity.enderman.scream")
     } else {
         kind.ambient_sound()
+            .map(|s| super::boss::guardian::sound_variant(t.mob_ref(), s))
     };
     if let Some(sound) = sound {
         let id = t.id;

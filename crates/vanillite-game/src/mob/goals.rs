@@ -38,7 +38,7 @@ pub struct TargetState {
 }
 
 impl TargetState {
-    fn new(must_see: bool) -> TargetState {
+    pub(crate) fn new(must_see: bool) -> TargetState {
         TargetState {
             must_see,
             unseen_ticks: 0,
@@ -140,6 +140,8 @@ pub enum Goal {
         aggro_time: i32,
         teleport_time: i32,
     },
+    /// The goals of guardians (`super::boss::guardian`).
+    Guardian(super::boss::guardian::GuardianGoal),
 }
 
 impl Goal {
@@ -156,11 +158,15 @@ impl Goal {
             Goal::RestrictSun | Goal::FollowParent { .. } => 0,
             Goal::NearestTarget { .. } | Goal::HurtBy { .. } | Goal::EndermanStare { .. } => TARGET,
             Goal::EndermanFreeze { .. } => JUMP | MOVE,
+            Goal::Guardian(g) => g.flags(),
         }
     }
 
     /// `requiresUpdateEveryTick`.
     fn every_tick(&self) -> bool {
+        if let Goal::Guardian(g) = self {
+            return g.every_tick();
+        }
         matches!(
             self,
             Goal::Float
@@ -490,7 +496,7 @@ fn distance_sqr(t: &Tick<'_, '_>, other: Vec3) -> f64 {
 }
 
 /// `LivingEntity.canAttack(target)` and the combat part of `TargetingConditions.test`.
-fn can_attack(t: &Tick<'_, '_>, target: EntityId) -> bool {
+pub(crate) fn can_attack(t: &Tick<'_, '_>, target: EntityId) -> bool {
     if target == t.id {
         return false;
     }
@@ -505,7 +511,7 @@ fn can_attack(t: &Tick<'_, '_>, target: EntityId) -> bool {
 }
 
 /// `TargetingConditions.test` for a player target.
-fn test_player(
+pub(crate) fn test_player(
     t: &mut Tick<'_, '_>,
     target: EntityId,
     combat: bool,
@@ -686,7 +692,7 @@ fn set_aggressive(t: &mut Tick<'_, '_>, on: bool) {
     }
 }
 
-fn set_target(t: &mut Tick<'_, '_>, target: Option<EntityId>) {
+pub(crate) fn set_target(t: &mut Tick<'_, '_>, target: Option<EntityId>) {
     t.mob().target = target;
 }
 
@@ -927,6 +933,7 @@ fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
             let _ = state;
             pending.is_some()
         }
+        Goal::Guardian(g) => super::boss::guardian::goal_can_use(t, g),
     }
 }
 
@@ -1007,11 +1014,12 @@ fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
             }
             target_can_continue(t, state)
         }
+        Goal::Guardian(g) => super::boss::guardian::goal_can_continue(t, g),
     }
 }
 
 /// `TargetGoal.canContinueToUse`.
-fn target_can_continue(t: &mut Tick<'_, '_>, state: &mut TargetState) -> bool {
+pub(crate) fn target_can_continue(t: &mut Tick<'_, '_>, state: &mut TargetState) -> bool {
     let Some(target) = t.mob_ref().target.or(state.target_mob) else {
         return false;
     };
@@ -1136,6 +1144,7 @@ fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
             kinds::set_creepy(t, true);
         }
         Goal::Float => {}
+        Goal::Guardian(g) => super::boss::guardian::goal_start(t, g),
     }
 }
 
@@ -1202,6 +1211,7 @@ fn stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
             state.target_mob = None;
             kinds::set_creepy(t, false);
         }
+        Goal::Guardian(g) => super::boss::guardian::goal_stop(t, g),
         _ => {}
     }
 }
@@ -1286,6 +1296,7 @@ fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
                 }
             }
         }
+        Goal::Guardian(g) => super::boss::guardian::goal_tick(t, g),
         _ => {}
     }
 }

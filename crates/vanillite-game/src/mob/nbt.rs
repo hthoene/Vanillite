@@ -265,7 +265,10 @@ pub fn load_mob(tag: &Compound, seed: i64) -> Option<LoadedMob> {
     };
     m.hurt_time = int(tag, "HurtTime").unwrap_or(0);
     m.death_time = int(tag, "DeathTime").unwrap_or(0);
-    m.persistent = boolean(tag, "PersistenceRequired");
+    // Elder guardians are persistent from birth (`setPersistenceRequired`), also when
+    // generated monuments store them without the key.
+    m.persistent = boolean(tag, "PersistenceRequired")
+        || kind == Kind::ElderGuardian && tag.get("PersistenceRequired").is_none();
     m.no_ai = boolean(tag, "NoAI");
     m.silent = boolean(tag, "Silent");
     m.y_body_rot = y_rot;
