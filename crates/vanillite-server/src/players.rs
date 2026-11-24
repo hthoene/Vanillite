@@ -372,7 +372,21 @@ impl WorldPlayers {
             .as_ref()
             .map(|saved| PlayerInventory::load(&saved.other))
             .unwrap_or_default();
+        let recipe_book = match (
+            arrival
+                .saved
+                .as_ref()
+                .and_then(|saved| saved.other.get("recipeBook"))
+                .and_then(vanillite_nbt::Tag::as_compound),
+            vanillite_game::player::play::game_data(),
+        ) {
+            (Some(c), Some(d)) => {
+                vanillite_game::recipe::book::PlayerRecipeBook::load(c, &d.recipes.book)
+            }
+            _ => vanillite_game::recipe::book::PlayerRecipeBook::default(),
+        };
         let data = PlayerData {
+            recipe_book,
             inventory,
             last_equipment: std::array::from_fn(|_| ItemStack::EMPTY),
             profile: arrival.profile,
@@ -477,6 +491,11 @@ impl WorldPlayers {
             slot: i32::try_from(player.inventory.selected).unwrap_or(0),
         });
         sink.send_shared(&global.recipes_packet);
+        if let Some(d) = vanillite_game::player::play::game_data() {
+            let (settings, book) = player.recipe_book.initial(&d.recipes.book);
+            sink.send(&settings);
+            sink.send(&book);
+        }
         player.inventory.send_all(sink.as_ref());
         for (last, slot) in player.last_equipment.iter_mut().zip(EQUIPMENT_SLOTS) {
             *last = player.inventory.equipment(slot).clone();
@@ -554,6 +573,7 @@ impl WorldPlayers {
                     level: &mut level,
                     inventory: &mut player.inventory,
                     xp: Some(&mut player.survival.xp),
+                    recipe_book: Some(&mut player.recipe_book),
                     actor,
                     data: &global.game,
                     spawn_protected: &protected,
@@ -809,6 +829,7 @@ impl WorldPlayers {
                     level: &mut level,
                     inventory: &mut player.inventory,
                     xp: Some(&mut player.survival.xp),
+                    recipe_book: Some(&mut player.recipe_book),
                     actor,
                     data: &global.game,
                     spawn_protected: &protected,
@@ -1025,6 +1046,7 @@ impl WorldPlayers {
         let mut survival = vanillite_nbt::Compound::new();
         player.inventory.save(&mut survival);
         player.survival.save(&mut survival);
+        survival.insert("recipeBook", player.recipe_book.save());
         // `Survival::save` removes the death location when there is none.
         let has_death = survival.get("LastDeathLocation").is_some();
         self.store.update(entity.uuid(), move |data| {

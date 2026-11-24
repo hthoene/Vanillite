@@ -17,7 +17,9 @@
 //! Furnace fuels come from the items' `minecraft:cooking_fuel` burn time providers
 //! (`data/<ns>/context_int_provider/`), evaluated per furnace kind.
 
+pub mod book;
 mod fuel;
+pub mod place;
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -354,6 +356,8 @@ pub struct Recipes {
     pub brewing: Vec<Brewing>,
     /// Recipes that could not be loaded, with the reason.
     pub broken: Vec<String>,
+    /// The recipe book displays.
+    pub book: book::Book,
     /// The `smithing_template`, `smithing_base` and `smithing_addition` property sets.
     smithing_sets: (Vec<u16>, Vec<u16>, Vec<u16>),
     /// Fuels of normal furnaces by item id.
@@ -444,13 +448,17 @@ impl Recipes {
         });
         let mut recipes = Recipes::default();
         let mut unsupported = 0usize;
+        let mut info = HashMap::new();
         for (id, json) in parsed {
             if let Err(e) = recipes.add(&id, &json, tag) {
                 unsupported += 1;
                 log::debug!("recipe {id}: {e}");
                 recipes.broken.push(format!("{id}: {e}"));
+            } else {
+                info.insert(id, book::RecipeInfo::of(&json));
             }
         }
+        recipes.book = book::Book::build(&recipes, &info);
         if unsupported > 0 {
             log::warn!("{unsupported} recipes could not be loaded");
         }
@@ -786,6 +794,79 @@ impl Recipes {
             other => return Err(format!("unknown recipe type {other}")),
         }
         Ok(())
+    }
+
+    /// `Recipe.placementInfo()` with the shape (`None` for `NOT_PLACEABLE`).
+    pub fn placement(&self, r: book::RecipeRef) -> Option<place::Placement> {
+        let seq = |ingredients: Vec<Ingredient>| place::Placement {
+            slots: (0..ingredients.len()).map(Some).collect(),
+            ingredients,
+            shaped: None,
+        };
+        match r {
+            book::RecipeRef::Crafting(i) => match &self.crafting.get(i)?.kind {
+                Crafting::Shaped {
+                    width,
+                    height,
+                    cells,
+                    ingredients,
+                    ..
+                } => {
+                    let mut out = Vec::new();
+                    let mut slots = Vec::with_capacity(cells.len());
+                    for cell in cells.iter() {
+                        match cell.and_then(|c| ingredients.get(c)) {
+                            Some(ing) => {
+                                slots.push(Some(out.len()));
+                                out.push(ing.clone());
+                            }
+                            None => slots.push(None),
+                        }
+                    }
+                    Some(place::Placement {
+                        ingredients: out,
+                        slots,
+                        shaped: Some((*width, *height)),
+                    })
+                }
+                Crafting::Shapeless { ingredients, .. } => Some(seq(ingredients.clone())),
+                Crafting::Transmute {
+                    input,
+                    material,
+                    max,
+                    ..
+                } => {
+                    let mut list = vec![input.clone()];
+                    for _ in 0..*max {
+                        list.push(material.clone());
+                    }
+                    Some(seq(list))
+                }
+                Crafting::Imbue {
+                    source, material, ..
+                } => {
+                    let mut list = vec![material.clone(); 9];
+                    if let Some(c) = list.get_mut(4) {
+                        *c = source.clone();
+                    }
+                    Some(seq(list))
+                }
+                Crafting::Dye { target, dye, .. } => Some(seq(vec![target.clone(), dye.clone()])),
+                _ => None,
+            },
+            book::RecipeRef::Cooking(i) => Some(seq(vec![self.cooking.get(i)?.ingredient.clone()])),
+            // Stonecutter and smithing recipes have no recipe book menu.
+            book::RecipeRef::Stonecutting(_) | book::RecipeRef::Smithing(_) => None,
+        }
+    }
+
+    /// `recipeMatches` of a crafting recipe on a grid.
+    pub fn crafting_matches(&self, index: usize, input: &CraftingInput) -> bool {
+        input.ingredient_count > 0
+            && self
+                .crafting
+                .get(index)
+                .is_some_and(|r| r.kind.matches(input))
     }
 
     /// `getRecipeFor(CRAFTING, input)`: the first crafting recipe that matches, with its

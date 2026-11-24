@@ -137,6 +137,8 @@ pub struct PlayContext<'a> {
     pub inventory: &'a mut PlayerInventory,
     /// The player's experience (`None` in tests).
     pub xp: Option<&'a mut crate::survival::player::Experience>,
+    /// The player's recipe book (`None` in tests).
+    pub recipe_book: Option<&'a mut crate::recipe::book::PlayerRecipeBook>,
     /// The player.
     pub actor: Actor,
     /// Gameplay data.

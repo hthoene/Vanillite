@@ -118,6 +118,7 @@ fn with_ctx(
     let mut swings = Vec::new();
     let mut ctx = PlayContext {
         xp: None,
+        recipe_book: None,
         level,
         inventory: &mut inventory,
         actor: actor(game_mode),

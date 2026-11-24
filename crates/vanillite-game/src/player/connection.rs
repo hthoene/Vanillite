@@ -406,6 +406,17 @@ impl Connection {
                 play.inventory.broadcast_changes(self.sink.as_ref());
             }
             ServerboundPlay::ContainerClick(p) => self.container_click(p, play),
+            ServerboundPlay::PlaceRecipe(p) => self.place_recipe(&p, play),
+            ServerboundPlay::RecipeBookSeenRecipe(p) => {
+                if let Some(book) = play.recipe_book.as_deref_mut() {
+                    book.remove_highlight(&play.data.recipes.book, p.recipe);
+                }
+            }
+            ServerboundPlay::RecipeBookChangeSettings(p) => {
+                if let Some(book) = play.recipe_book.as_deref_mut() {
+                    book.set_settings(p.book_type, p.open, p.filtering);
+                }
+            }
             ServerboundPlay::ContainerClose(_) => {
                 // `doCloseContainer`: whatever menu is open (Vanilla does not check the id).
                 let infinite = play.actor.game_mode == vanillite_config::GameMode::Creative;
@@ -456,9 +467,6 @@ impl Connection {
             | ServerboundPlay::PingRequest(_)
             | ServerboundPlay::Pong(_)
             | ServerboundPlay::ResourcePack(_)
-            | ServerboundPlay::PlaceRecipe(_)
-            | ServerboundPlay::RecipeBookSeenRecipe(_)
-            | ServerboundPlay::RecipeBookChangeSettings(_)
             | ServerboundPlay::Unhandled { .. } => {}
         }
         Ok(())
@@ -549,6 +557,152 @@ impl Connection {
                 crate::menu::broadcast_changes(view, sink);
             }
         });
+    }
+
+    /// `handlePlaceRecipe`: a known recipe from the recipe book into the open crafting grid or
+    /// furnace; a ghost recipe when items are missing.
+    fn place_recipe(
+        &mut self,
+        p: &vanillite_protocol::packets::play::serverbound::PlaceRecipe,
+        play: &mut PlayContext<'_>,
+    ) {
+        use crate::menu::container::MenuKind;
+        use crate::recipe::book::RecipeRef;
+        use crate::recipe::place::{self, Grid};
+        let sink = self.sink.as_ref();
+        let actor = play.actor;
+        if actor.game_mode == vanillite_config::GameMode::Spectator {
+            return;
+        }
+        let recipes = &play.data.recipes;
+        let Some(entry) = recipes.book.entry(p.recipe) else {
+            return;
+        };
+        if !play
+            .recipe_book
+            .as_deref()
+            .is_some_and(|b| b.contains(&entry.id))
+        {
+            return;
+        }
+        let Some(placement) = recipes.placement(entry.recipe) else {
+            log::debug!("A player tried to place impossible recipe {}", entry.id);
+            return;
+        };
+        let creative = actor.game_mode == vanillite_config::GameMode::Creative;
+        let open_id = play
+            .inventory
+            .container
+            .as_ref()
+            .map_or(0, |m| m.state.container_id);
+        if open_id != p.container_id {
+            return;
+        }
+        let grid_of = |w: usize, h: usize, first: usize| {
+            let input: Vec<usize> = (first..first + w * h).collect();
+            let mut content = vec![0];
+            content.extend_from_slice(&input);
+            Grid {
+                width: w,
+                height: h,
+                clear: input.clone(),
+                account: input.clone(),
+                input,
+                clear_content: content,
+                account_full: false,
+                suppress: false,
+                content_direct: true,
+            }
+        };
+        let ghost = if play.inventory.container.is_none() {
+            let RecipeRef::Crafting(index) = entry.recipe else {
+                return;
+            };
+            let input = crate::recipe::CraftingInput::of(2, 2, &play.inventory.craft);
+            let matches = recipes.crafting_matches(index, &input);
+            let grid = grid_of(2, 2, 1);
+            let ghost = place::place(
+                &mut *play.inventory,
+                &grid,
+                &placement,
+                matches,
+                p.use_max_items,
+                creative,
+                play.drops,
+            );
+            play.inventory.flush_result_updates(sink);
+            ghost
+        } else {
+            let PlayContext {
+                level,
+                inventory,
+                drops,
+                xp,
+                ..
+            } = play;
+            let Some(level) = level.level_mut() else {
+                return;
+            };
+            let in_range = |pos| actor.within_block_range(pos, 4.0);
+            if !crate::menu::container::still_valid(inventory, level, &in_range) {
+                log::debug!("A player interacted with an invalid menu");
+                return;
+            }
+            crate::menu::container::with_view(
+                inventory,
+                level,
+                actor.pos,
+                xp.as_deref_mut(),
+                |view| {
+                    let (grid, matches) = match (view.menu.kind, entry.recipe) {
+                        (MenuKind::Crafting, RecipeRef::Crafting(index)) => {
+                            let cells = view.menu.local.get(1..10).unwrap_or_default();
+                            let input = crate::recipe::CraftingInput::of(3, 3, cells);
+                            let mut grid = grid_of(3, 3, 1);
+                            grid.suppress = true;
+                            (grid, recipes.crafting_matches(index, &input))
+                        }
+                        (MenuKind::Furnace(_), RecipeRef::Cooking(index)) => {
+                            let matches = recipes
+                                .cooking
+                                .get(index)
+                                .is_some_and(|r| r.ingredient.test(crate::menu::MenuSlots::item(view, 0)));
+                            let grid = Grid {
+                                width: 1,
+                                height: 1,
+                                input: vec![0],
+                                clear: vec![0, 2],
+                                clear_content: vec![0, 2],
+                                account: vec![0, 1, 2],
+                                account_full: true,
+                                suppress: false,
+                                content_direct: false,
+                            };
+                            (grid, matches)
+                        }
+                        _ => return false,
+                    };
+                    let ghost = place::place(
+                        view,
+                        &grid,
+                        &placement,
+                        matches,
+                        p.use_max_items,
+                        creative,
+                        drops,
+                    );
+                    view.flush_result_updates(sink);
+                    ghost
+                },
+            )
+            .unwrap_or(false)
+        };
+        if ghost && let Some(display) = recipes.book.display(p.recipe) {
+            sink.send(&vanillite_protocol::packets::play::clientbound::PlaceGhostRecipe {
+                container_id: p.container_id,
+                display,
+            });
+        }
     }
 
     /// `handleContainerButtonClick`.

@@ -125,6 +125,37 @@ pub struct PlayerData {
     pub last_equipment: [crate::item::ItemStack; 6],
     /// Health, food, air, fire, experience and the combat tracker.
     pub survival: crate::survival::player::Survival,
+    /// The recipes the player knows (`ServerRecipeBook`).
+    pub recipe_book: crate::recipe::book::PlayerRecipeBook,
+}
+
+impl PlayerData {
+    /// `ServerPlayer.awardRecipes`: unlocks recipes (by id, e.g. `minecraft:torch`) and tells
+    /// the client; the number of newly unlocked recipe displays. Unknown and special recipes
+    /// are skipped.
+    pub fn unlock_recipes(&mut self, ids: &[&str]) -> usize {
+        let Some(data) = play::game_data() else {
+            return 0;
+        };
+        let (n, packet) = self.recipe_book.unlock(&data.recipes.book, ids);
+        if let Some(packet) = packet {
+            self.connection.sink.send(&packet);
+        }
+        n
+    }
+
+    /// `ServerPlayer.resetRecipes`: locks recipes and tells the client; the number of removed
+    /// recipe displays.
+    pub fn lock_recipes(&mut self, ids: &[&str]) -> usize {
+        let Some(data) = play::game_data() else {
+            return 0;
+        };
+        let (n, packet) = self.recipe_book.lock(&data.recipes.book, ids);
+        if let Some(packet) = packet {
+            self.connection.sink.send(&packet);
+        }
+        n
+    }
 }
 
 /// `Player.getDefaultDimensions(pose)`.

@@ -23,6 +23,7 @@ pub mod frame;
 pub mod ids;
 pub mod item;
 pub mod packets;
+pub mod recipe_display;
 pub mod sets;
 pub mod shared;
 pub mod text;
