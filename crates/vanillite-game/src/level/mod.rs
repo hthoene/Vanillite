@@ -103,6 +103,10 @@ pub struct LevelSettings {
     pub water_evaporates: bool,
     /// Exploit switches (D1).
     pub exploits: ExploitSettings,
+    /// The difficulty is peaceful (set by the server every tick).
+    pub peaceful: bool,
+    /// `spawnWardens` game rule (set by the server every tick).
+    pub spawn_wardens: bool,
 }
 
 impl Default for LevelSettings {
@@ -120,6 +124,8 @@ impl Default for LevelSettings {
             has_sky_light: true,
             water_evaporates: false,
             exploits: ExploitSettings::default(),
+            peaceful: false,
+            spawn_wardens: true,
         }
     }
 }
@@ -177,6 +183,8 @@ pub struct Sound {
 
 /// `SoundSource.BLOCKS`.
 pub const SOUND_BLOCKS: u8 = 4;
+/// `SoundSource.HOSTILE`.
+pub const SOUND_HOSTILE: u8 = 5;
 /// `SoundSource.NEUTRAL`.
 pub const SOUND_NEUTRAL: u8 = 6;
 /// `SoundSource.RECORDS`.

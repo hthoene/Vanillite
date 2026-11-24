@@ -307,6 +307,7 @@ impl WorldMobs {
                 WorldAction::LevelEvent(event, pos, data) => {
                     level.level_event(None, event, pos, data);
                 }
+                WorldAction::Level(action) => action.apply(level),
             }
         }
         self.finish_removals(level);

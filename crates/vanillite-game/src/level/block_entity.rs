@@ -41,6 +41,10 @@ pub enum BlockEntity {
     SculkSensor(Box<SculkSensor>),
     /// `HopperBlockEntity`: the transfer timing (its items come with containers).
     Hopper(crate::block::hopper::Hopper),
+    /// `SculkShriekerBlockEntity`.
+    SculkShrieker(Box<crate::block::sculk_shrieker::Shrieker>),
+    /// `SculkCatalystBlockEntity` with its `SculkSpreader`.
+    SculkCatalyst(Box<crate::block::sculk_catalyst::Catalyst>),
 }
 
 /// `BlockEntityTicker.tick(level, pos, state, blockEntity)`: the block entity is looked up at
@@ -179,6 +183,8 @@ fn ticker_of(entity: &BlockEntity) -> Option<TickerFn> {
         BlockEntity::DaylightDetector => Some(crate::block::sensor::daylight_detector_tick),
         BlockEntity::Bell(_) => Some(crate::block::bell::tick),
         BlockEntity::SculkSensor(_) => Some(crate::block::sculk::tick_block_entity),
+        BlockEntity::SculkShrieker(_) => Some(crate::block::sculk_shrieker::tick_block_entity),
+        BlockEntity::SculkCatalyst(_) => Some(crate::block::sculk_catalyst::tick_block_entity),
     }
 }
 
@@ -188,6 +194,14 @@ fn listener_of(pos: BlockPos, entity: &BlockEntity) -> Option<Listener> {
         BlockEntity::SculkSensor(sensor) => Some(Listener::Block {
             pos,
             radius: sensor.listener_radius(),
+        }),
+        BlockEntity::SculkShrieker(_) => Some(Listener::Block {
+            pos,
+            radius: crate::block::sculk_shrieker::LISTENER_RADIUS,
+        }),
+        BlockEntity::SculkCatalyst(_) => Some(Listener::Block {
+            pos,
+            radius: crate::block::sculk_catalyst::LISTENER_RADIUS,
         }),
         _ => None,
     }
@@ -211,6 +225,10 @@ pub fn new_block_entity(state: BlockState) -> Option<BlockEntity> {
         ))))
     } else if block == ids::HOPPER {
         Some(BlockEntity::Hopper(crate::block::hopper::Hopper::default()))
+    } else if block == ids::SCULK_SHRIEKER {
+        Some(BlockEntity::SculkShrieker(Box::default()))
+    } else if block == ids::SCULK_CATALYST {
+        Some(BlockEntity::SculkCatalyst(Box::default()))
     } else {
         None
     }
@@ -234,6 +252,8 @@ fn is_valid(entity: &BlockEntity, state: BlockState) -> bool {
                 }
         }
         BlockEntity::Hopper(_) => state.block() == ids::HOPPER,
+        BlockEntity::SculkShrieker(_) => state.block() == ids::SCULK_SHRIEKER,
+        BlockEntity::SculkCatalyst(_) => state.block() == ids::SCULK_CATALYST,
     }
 }
 
@@ -266,6 +286,13 @@ impl Level {
     /// the old block's block entity goes when the block changes.
     pub(super) fn block_entity_removed(&mut self, old: BlockState, new: BlockState, pos: BlockPos) {
         if old.block() != new.block() && old.block().info().block_entity != u16::MAX {
+            // `preRemoveSideEffects`.
+            if matches!(
+                self.block_entities.get(pos),
+                Some(BlockEntity::SculkShrieker(_))
+            ) {
+                crate::block::sculk_shrieker::pre_remove(self, pos, old);
+            }
             self.block_entities.remove(pos);
         }
     }
@@ -357,8 +384,17 @@ fn load(state: BlockState, nbt: &Compound) -> Option<BlockEntity> {
         return Some(BlockEntity::MovingPiston(Box::new(piston)));
     }
     let mut entity = new_block_entity(state)?;
-    if let BlockEntity::Comparator { output } = &mut entity {
-        *output = int("OutputSignal").unwrap_or(0);
+    match &mut entity {
+        BlockEntity::Comparator { output } => *output = int("OutputSignal").unwrap_or(0),
+        BlockEntity::SculkSensor(sensor) => {
+            sensor.last_vibration_frequency = int("last_vibration_frequency").unwrap_or(0);
+            if let Some(Tag::Compound(l)) = nbt.get("listener") {
+                sensor.vibration = crate::block::sculk_vibration::VibrationData::load(l, |_| None);
+            }
+        }
+        BlockEntity::SculkShrieker(shrieker) => shrieker.load(nbt),
+        BlockEntity::SculkCatalyst(catalyst) => catalyst.load(nbt),
+        _ => {}
     }
     Some(entity)
 }
@@ -389,6 +425,15 @@ fn save(entity: &BlockEntity, state: BlockState, pos: BlockPos) -> Compound {
             nbt.insert("extending", Tag::Byte(i8::from(piston.extending)));
             nbt.insert("source", Tag::Byte(i8::from(piston.source)));
         }
+        BlockEntity::SculkSensor(sensor) => {
+            nbt.insert(
+                "last_vibration_frequency",
+                Tag::Int(sensor.last_vibration_frequency),
+            );
+            nbt.insert("listener", Tag::Compound(sensor.vibration.save(|_| None)));
+        }
+        BlockEntity::SculkShrieker(shrieker) => shrieker.save(&mut nbt),
+        BlockEntity::SculkCatalyst(catalyst) => catalyst.save(&mut nbt),
         _ => {}
     }
     nbt

@@ -189,7 +189,8 @@ impl Kind {
 
     /// `removeWhenFarAway`: animals stay.
     pub fn remove_when_far_away(self) -> bool {
-        self.is_monster() && !self.is_boss()
+        // `Warden.removeWhenFarAway`: never.
+        self.is_monster() && !self.is_boss() && self != Kind::Warden
     }
 
     /// The bosses (`requiresCustomPersistence`, never despawn): wither, ender dragon and the
@@ -207,7 +208,16 @@ impl Kind {
             (PathType::Water, 0.0),
         ];
         const ENDERMAN: &MalusTable = &[(PathType::Water, -1.0)];
+        const WARDEN: &MalusTable = &[
+            (PathType::UnpassableRail, 0.0),
+            (PathType::Damaging, 8.0),
+            (PathType::PowderSnow, 8.0),
+            (PathType::Lava, 8.0),
+            (PathType::Fire, 0.0),
+            (PathType::FireInNeighbor, 0.0),
+        ];
         match self {
+            Kind::Warden => WARDEN,
             Kind::Cow | Kind::Pig | Kind::Sheep => ANIMAL,
             Kind::Chicken => CHICKEN,
             Kind::Enderman => ENDERMAN,
@@ -226,7 +236,11 @@ impl Kind {
 
     /// `getSoundVolume`.
     pub fn sound_volume(self) -> f32 {
-        if self == Kind::Cow { 0.4 } else { 1.0 }
+        match self {
+            Kind::Cow => 0.4,
+            Kind::Warden => 4.0,
+            _ => 1.0,
+        }
     }
 
     /// `getAmbientSound`, `None` for silent kinds.
@@ -574,6 +588,10 @@ pub fn play_sound(t: &mut Tick<'_, '_>, sound: &str, volume: f32, pitch: f32) {
 /// `playAmbientSound`.
 pub fn play_ambient_sound(t: &mut Tick<'_, '_>) {
     let kind = t.mob_ref().kind;
+    if kind == Kind::Warden {
+        super::boss::warden::play_ambient_sound(t);
+        return;
+    }
     let sound = if kind == Kind::Enderman && t.mob_ref().creepy {
         Some("minecraft:entity.enderman.scream")
     } else {
