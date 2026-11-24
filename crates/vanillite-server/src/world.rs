@@ -58,6 +58,9 @@ pub struct ServerWorld {
     scratch: Vec<ChunkPos>,
     /// Weather, lightning and the players' survival.
     pub(crate) survival: crate::survival::WorldSurvival,
+    /// The dimension's saved data (`<dimension>/data/`: world border, chunk tickets, raids,
+    /// ...); systems register here when they come.
+    pub(crate) data: vanillite_storage::saved_data::SavedDataStore,
 }
 
 impl fmt::Debug for ServerWorld {
@@ -72,6 +75,7 @@ impl fmt::Debug for ServerWorld {
 }
 
 impl ServerWorld {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         id: WorldId,
         dimension: String,
@@ -80,6 +84,7 @@ impl ServerWorld {
         players: WorldPlayers,
         mut level: Level,
         survival: crate::survival::WorldSurvival,
+        data: vanillite_storage::saved_data::SavedDataStore,
     ) -> ServerWorld {
         if let Some(climate) = survival.climate() {
             level.set_climate(Arc::clone(climate));
@@ -100,6 +105,7 @@ impl ServerWorld {
             player_tickets: FxHashMap::default(),
             scratch: Vec::new(),
             survival,
+            data,
         }
     }
 
@@ -345,11 +351,17 @@ impl ServerWorld {
         self.level.entities.store.clear_sync_flags();
     }
 
-    /// Saves the world. `flush` waits until everything is on disk (shutdown).
-    pub(crate) fn save(&mut self, flush: bool) {
+    /// Saves the world like Vanilla (`saveEverything`): the players always, the chunks and the
+    /// dimension's saved data unless `skip_chunks` (`/save-off`). `flush` waits until the
+    /// chunks are on disk (shutdown, `/save-all flush`); otherwise they are written in the
+    /// background.
+    pub(crate) fn save(&mut self, flush: bool, skip_chunks: bool) {
         log::debug!("Saving {} (flush: {flush})", self.dimension);
         self.players.save_all(&self.level.entities);
-        self.level.chunks.save_all(flush);
+        if !skip_chunks {
+            self.data.save();
+            self.level.chunks.save_all(flush);
+        }
     }
 }
 

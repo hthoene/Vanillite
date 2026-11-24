@@ -4,14 +4,15 @@
 //! Only the fields the server keeps so far are read and written; unknown fields of an existing
 //! file are kept when it is saved again.
 
-use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
 
-use vanillite_nbt::{Budget, Compound, List, Tag};
+use vanillite_base::hash::FxHashMap;
+use vanillite_nbt::{Compound, List, Tag};
 
-/// Largest uncompressed player file that is read (untrusted file, SEC-26).
-const MAX_FILE_BYTES: usize = 16 << 20;
+use crate::files;
+use crate::writer::FileWriter;
 
 /// The persisted state of one player.
 #[derive(Clone, Debug, PartialEq)]
@@ -30,70 +31,116 @@ pub struct PlayerData {
     pub other: Compound,
 }
 
-/// Player data files of one world.
+impl Default for PlayerData {
+    fn default() -> Self {
+        PlayerData {
+            pos: [0.0; 3],
+            rotation: [0.0; 2],
+            on_ground: false,
+            dimension: "minecraft:overworld".to_owned(),
+            game_mode: 0,
+            other: Compound::new(),
+        }
+    }
+}
+
+/// Player data files of one world. With a [`FileWriter`], [`update`](Self::update) writes in
+/// the background; a load of a player with queued writes waits for them.
 #[derive(Clone, Debug)]
 pub struct PlayerDataStore {
     dir: PathBuf,
+    writer: Option<FileWriter>,
+    /// Queued writes per player.
+    pending: Arc<Mutex<FxHashMap<u128, u32>>>,
 }
 
 impl PlayerDataStore {
-    /// The store in `<level_dir>/players/data`.
+    /// The store in `<level_dir>/players/data`; writes run on the calling thread.
     pub fn new(level_dir: &Path) -> PlayerDataStore {
         PlayerDataStore {
             dir: level_dir.join("players").join("data"),
+            writer: None,
+            pending: Arc::default(),
         }
+    }
+
+    /// Writes through `writer` from now on.
+    #[must_use]
+    pub fn with_writer(mut self, writer: FileWriter) -> PlayerDataStore {
+        self.writer = Some(writer);
+        self
     }
 
     fn path(&self, uuid: u128) -> PathBuf {
         self.dir.join(format!("{}.dat", uuid_string(uuid)))
     }
 
-    /// Loads a player's data. `Ok(None)` if the player has none; a damaged file is an error.
+    /// Loads a player's data (from `<uuid>.dat_old` if `<uuid>.dat` is missing or damaged,
+    /// like Vanilla). `Ok(None)` if the player has none; a damaged file is an error.
     pub fn load(&self, uuid: u128) -> io::Result<Option<PlayerData>> {
-        let compressed = match fs::read(self.path(uuid)) {
-            Ok(bytes) => bytes,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(e),
-        };
-        let raw = gunzip(&compressed)?;
-        let root = vanillite_nbt::read::read_named(&mut raw.as_slice(), &mut Budget::file())
-            .map_err(io::Error::other)?;
-        Ok(Some(PlayerData::from_nbt(root)))
+        let queued = self
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains_key(&uuid);
+        if queued && let Some(writer) = &self.writer {
+            writer.flush();
+        }
+        Ok(files::read_gzip_nbt_or_old(&self.path(uuid))?.map(PlayerData::from_nbt))
     }
 
-    /// Saves a player's data like Vanilla: written to a temporary file, then moved in place.
+    /// Saves a player's data like Vanilla: atomically, the previous file kept as
+    /// `<uuid>.dat_old`.
     pub fn save(&self, uuid: u128, data: &PlayerData) -> io::Result<()> {
-        fs::create_dir_all(&self.dir)?;
-        let mut raw = Vec::new();
-        vanillite_nbt::write::write_named("", &data.to_nbt(), &mut raw)
-            .map_err(io::Error::other)?;
-        let mut compressor = libdeflater::Compressor::new(libdeflater::CompressionLvl::default());
-        let mut out = vec![0; compressor.gzip_compress_bound(raw.len())];
-        let n = compressor
-            .gzip_compress(&raw, &mut out)
-            .map_err(io::Error::other)?;
-        out.truncate(n);
-        let path = self.path(uuid);
-        let tmp = path.with_extension("dat_tmp");
-        fs::write(&tmp, &out)?;
-        fs::rename(&tmp, &path)
+        files::write_gzip_nbt(&self.path(uuid), &data.to_nbt(), true)
     }
-}
 
-fn gunzip(data: &[u8]) -> io::Result<Vec<u8>> {
-    // ISIZE, the last four bytes, is the uncompressed size modulo 2^32.
-    let size = data
-        .last_chunk::<4>()
-        .map(|b| u32::from_le_bytes(*b))
-        .and_then(|n| usize::try_from(n).ok())
-        .filter(|&n| n <= MAX_FILE_BYTES)
-        .ok_or_else(|| io::Error::other("player data file too large or truncated"))?;
-    let mut out = vec![0; size];
-    let n = libdeflater::Decompressor::new()
-        .gzip_decompress(data, &mut out)
-        .map_err(io::Error::other)?;
-    out.truncate(n);
-    Ok(out)
+    /// Changes a player's file: reads it (keeping the fields this server does not handle),
+    /// applies `change` and writes it, in the background when the store has a writer.
+    pub fn update(&self, uuid: u128, change: impl FnOnce(&mut PlayerData) + Send + 'static) {
+        let Some(writer) = &self.writer else {
+            self.apply(uuid, change);
+            return;
+        };
+        *self
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(uuid)
+            .or_default() += 1;
+        let store = PlayerDataStore {
+            writer: None,
+            ..self.clone()
+        };
+        writer.submit(move || {
+            store.apply(uuid, change);
+            let mut pending = store.pending.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(n) = pending.get_mut(&uuid) {
+                *n -= 1;
+                if *n == 0 {
+                    pending.remove(&uuid);
+                }
+            }
+        });
+    }
+
+    fn apply(&self, uuid: u128, change: impl FnOnce(&mut PlayerData)) {
+        let path = self.path(uuid);
+        let mut data = match files::read_gzip_nbt_or_old(&path) {
+            Ok(root) => root.map(PlayerData::from_nbt).unwrap_or_default(),
+            Err(e) => {
+                log::error!(
+                    "Player data {} is damaged, writing it anew: {e}",
+                    path.display()
+                );
+                PlayerData::default()
+            }
+        };
+        change(&mut data);
+        if let Err(e) = self.save(uuid, &data) {
+            log::error!("Failed to save player data {}: {e}", path.display());
+        }
+    }
 }
 
 /// UUID in Java's `UUID.toString()` form.

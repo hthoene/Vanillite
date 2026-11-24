@@ -1369,13 +1369,13 @@ name = "vanillite-storage"
 version = "0.1.0"
 dependencies = [
  "flate2",
- "libdeflater",
  "log",
  "lz4_flex",
  "vanillite-base",
  "vanillite-chunk",
  "vanillite-data",
  "vanillite-nbt",
+ "zip",
 ]
 
 [[package]]
