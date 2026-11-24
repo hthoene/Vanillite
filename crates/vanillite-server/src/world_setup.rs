@@ -456,7 +456,8 @@ pub(crate) fn apply_simulation_rules(
     settings.max_chained_neighbor_updates = match simulation.max_chained_neighbor_updates {
         vanillite_config::VanillaOr::Value(v) => i32::try_from(v).unwrap_or(i32::MAX),
         vanillite_config::VanillaOr::Vanilla => vanilla_max_chained,
-    };    settings.exploits = exploit_settings(rules);
+    };
+    settings.exploits = exploit_settings(rules);
 }
 
 /// The biomes of a world for the simulation: the biome registry, the seed's biome manager and

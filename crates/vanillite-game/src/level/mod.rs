@@ -216,6 +216,8 @@ pub struct Level {
     block_events: Vec<BlockEvent>,
     block_event_set: FxHashSet<BlockEvent>,
     random: LegacyRandom,
+    /// `threadSafeRandom`: seeds of sounds.
+    sound_random: LegacyRandom,
     /// `randValue` of `getBlockRandomPos`.
     rand_value: i32,
     game_time: i64,
@@ -259,6 +261,7 @@ impl Level {
             block_events: Vec::new(),
             block_event_set: FxHashSet::default(),
             random: LegacyRandom::new(seed),
+            sound_random: LegacyRandom::new(seed ^ 0x5EED_50D0),
             rand_value: LegacyRandom::new(seed ^ 0x5DEE_CE66).next_int(),
             game_time: 0,
             output: LevelOutput::default(),
@@ -490,7 +493,8 @@ impl Level {
         volume: f32,
         pitch: f32,
     ) {
-        let seed = self.random.next_long();
+        // `threadSafeRandom`: sounds do not touch the level random.
+        let seed = self.sound_random.next_long();
         self.output.sounds.push(Sound {
             sound,
             source,
