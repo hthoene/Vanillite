@@ -208,6 +208,10 @@ impl Entities {
             return false;
         }
         if let Some(m) = self.mob_mut(id) {
+            // `WitherBoss.addEffect` refuses every effect.
+            if m.kind == crate::mob::Kind::Wither {
+                return false;
+            }
             return matches!(m.effects.add(effect, true), Added::New | Added::Updated);
         }
         let Entities { store, players, .. } = self;

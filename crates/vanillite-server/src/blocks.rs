@@ -197,6 +197,12 @@ impl PlayLevel for WorldLevel<'_> {
         );
     }
 
+    fn placed_by(&mut self, pos: BlockPos, state: BlockState) {
+        if vanillite_game::mob::boss::wither::is_wither_skull(state) {
+            self.level.output().summon_checks.push(pos);
+        }
+    }
+
     fn is_unobstructed(&self, state: BlockState, pos: BlockPos) -> bool {
         let (dx, dy, dz) = (f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
         let store = &self.level.entities.store;

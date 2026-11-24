@@ -201,6 +201,9 @@ pub struct LevelOutput {
     pub explosion_hurts: Vec<explosion::ExplosionHurt>,
     /// Block entities whose client data changed (`ClientboundBlockEntityDataPacket`).
     pub block_entity_updates: Vec<BlockPos>,
+    /// Wither skeleton skulls players placed, for the wither's summon check
+    /// (`WitherSkullBlock.setPlacedBy`).
+    pub summon_checks: Vec<BlockPos>,
 }
 
 /// The game state of one world.

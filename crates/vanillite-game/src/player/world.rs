@@ -75,4 +75,8 @@ pub trait PlayLevel {
     fn level_mut(&mut self) -> Option<&mut crate::level::Level> {
         None
     }
+    /// `Block.setPlacedBy` of a block a player placed (the wither skull's summon check).
+    fn placed_by(&mut self, pos: BlockPos, state: BlockState) {
+        let _ = (pos, state);
+    }
 }

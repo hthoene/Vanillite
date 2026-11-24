@@ -142,6 +142,8 @@ pub enum Goal {
     },
     /// The goals of guardians (`super::boss::guardian`).
     Guardian(super::boss::guardian::GuardianGoal),
+    /// The wither's own goals.
+    Wither(super::boss::wither::WitherGoal),
 }
 
 impl Goal {
@@ -159,6 +161,7 @@ impl Goal {
             Goal::NearestTarget { .. } | Goal::HurtBy { .. } | Goal::EndermanStare { .. } => TARGET,
             Goal::EndermanFreeze { .. } => JUMP | MOVE,
             Goal::Guardian(g) => g.flags(),
+            Goal::Wither(g) => g.flags(),
         }
     }
 
@@ -174,7 +177,7 @@ impl Goal {
                 | Goal::Melee { .. }
                 | Goal::Swell
                 | Goal::Bow { .. }
-        )
+        ) || matches!(self, Goal::Wither(g) if g.every_tick())
     }
 
     /// `adjustedTickDelay`.
@@ -709,6 +712,7 @@ fn fluid_jump_threshold(t: &Tick<'_, '_>) -> f64 {
 /// `canUse`.
 fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
     match g {
+        Goal::Wither(w) => super::boss::wither::goal_can_use(t, w),
         Goal::Float => {
             let f = t.mob_ref().fluids;
             f.water_height > fluid_jump_threshold(t) || f.in_lava()
@@ -940,6 +944,7 @@ fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
 /// `canContinueToUse`.
 fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
     match g {
+        Goal::Wither(w) => super::boss::wither::goal_can_continue(t, w),
         Goal::Float | Goal::RestrictSun => can_use(t, g),
         Goal::Panic { .. } | Goal::Stroll { .. } | Goal::FleeSun { .. } => {
             !t.mob_ref().nav.is_done()
@@ -1050,6 +1055,7 @@ pub(crate) fn target_can_continue(t: &mut Tick<'_, '_>, state: &mut TargetState)
 /// `start`.
 fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
     match g {
+        Goal::Wither(w) => super::boss::wither::goal_start(t, w),
         Goal::Panic { speed, pos } => {
             nav::move_to_pos(t, *pos, *speed);
         }
@@ -1176,6 +1182,7 @@ fn alert_others(t: &mut Tick<'_, '_>, by: EntityId) {
 /// `stop`.
 fn stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
     match g {
+        Goal::Wither(w) => super::boss::wither::goal_stop(t, w),
         Goal::Stroll { .. } => t.mob().nav.stop(),
         Goal::LookAtPlayer { look_at, .. } => *look_at = None,
         Goal::Melee { .. } => {
@@ -1219,6 +1226,7 @@ fn stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
 /// `tick`.
 fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
     match g {
+        Goal::Wither(w) => super::boss::wither::goal_tick(t, w),
         Goal::Float => {
             if random_float(t) < 0.8 {
                 t.mob().jump = true;
