@@ -131,8 +131,10 @@ import net.minecraft.world.ticks.WorldGenTickAccess;
  * hashes, final heightmap hashes, post-processing marks) plus block entities and scheduled
  * ticks.
  *
- * <p>Part {@code decorations}: {@code applyBiomeDecoration} for the 3×3 chunks around a centre,
- * in row-major order, on 5×5 terrain chunks; records all 25 chunks.
+ * <p>Part {@code decorations}: {@code applyBiomeDecoration} for the chunks within {@code radius}
+ * of a centre, in row-major order (or its reverse), on terrain chunks one further out; records
+ * all of them. Features near chunk borders write into neighbours that are decorated before or
+ * after, so the result depends on that order.
  */
 public final class FeatureGoldens {
   private record Dimension(
@@ -150,7 +152,11 @@ public final class FeatureGoldens {
   /** World seed of the per placed feature part, in every dimension. */
   private static final long FEATURE_SEED = 0L;
 
-  private record DecorationArea(Dimension dimension, long seed, int x, int z) {}
+  private record DecorationArea(Dimension dimension, long seed, int x, int z, int radius, boolean reversed) {
+    DecorationArea(Dimension dimension, long seed, int x, int z) {
+      this(dimension, seed, x, z, 1, false);
+    }
+  }
 
   private static final DecorationArea[] DECORATIONS = {
     new DecorationArea(OVERWORLD, 0L, 0, 0),
@@ -158,6 +164,9 @@ public final class FeatureGoldens {
     new DecorationArea(NETHER, 42L, 0, 0),
     new DecorationArea(END, 1L, 0, 0),
     new DecorationArea(END, 1L, 100, 0),
+    // A forest with many overlapping trees and ore blobs across chunk borders, in both orders.
+    new DecorationArea(OVERWORLD, -578941029922802438L, -7, -12, 3, false),
+    new DecorationArea(OVERWORLD, -578941029922802438L, -7, -12, 3, true),
   };
 
   /**
@@ -573,10 +582,12 @@ public final class FeatureGoldens {
   private static JsonObject decoration(DecorationArea spec) throws Exception {
     World world = world(spec.dimension(), spec.seed());
     ChunkPos center = new ChunkPos(spec.x(), spec.z());
-    Map<Long, ProtoChunk> chunks = terrain(world, center, 2);
-    for (int dz = -1; dz <= 1; dz++) {
-      for (int dx = -1; dx <= 1; dx++) {
-        ChunkPos pos = new ChunkPos(center.x() + dx, center.z() + dz);
+    int radius = spec.radius();
+    Map<Long, ProtoChunk> chunks = terrain(world, center, radius + 1);
+    int sign = spec.reversed() ? -1 : 1;
+    for (int dz = -radius; dz <= radius; dz++) {
+      for (int dx = -radius; dx <= radius; dx++) {
+        ChunkPos pos = new ChunkPos(center.x() + sign * dx, center.z() + sign * dz);
         ProtoChunk chunk = chunks.get(pos.pack());
         Region region = new Region(world, chunks, pos);
         StructureManager structures = new StructureManager(region.proxy, new WorldOptions(spec.seed(), false, false), null);
@@ -591,8 +602,10 @@ public final class FeatureGoldens {
     o.addProperty("height", spec.dimension().height());
     o.addProperty("x", spec.x());
     o.addProperty("z", spec.z());
+    o.addProperty("radius", radius);
+    o.addProperty("reversed", spec.reversed());
     JsonArray list = new JsonArray();
-    for (ProtoChunk chunk : ordered(chunks, center, 2)) {
+    for (ProtoChunk chunk : ordered(chunks, center, radius + 1)) {
       JsonObject c = Snapshot.of(chunk).toJson();
       c.add("block_entities", blockEntities(chunk));
       long[] ticks = blockTicks(chunk);

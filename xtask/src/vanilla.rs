@@ -13,10 +13,56 @@ use crate::{Result, codegen};
 const MANIFEST: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
 
 pub fn update(root: &Path, version: Option<&str>, local_jar: Option<&Path>) -> Result<()> {
-    let manifest = http_json(MANIFEST)?;
+    let manifest = manifest()?;
+    let x = extract(root, &manifest, version, local_jar)?;
+    let out = root.join("data").join("vanilla");
+    let before = normalize::Snapshot::load(&out);
+    normalize::run(&x.generated.join("reports"), &x.extracted, &x.info, &out)?;
+    codegen::run(root, false)?;
+    let after = normalize::Snapshot::load(&out);
+
+    let report = normalize::change_report(&before, &after);
+    let report_path = x.work.join("change-report.md");
+    crate::write(&report_path, &report)?;
+    println!("{report}");
+    println!("change report: {}", report_path.display());
+    Ok(())
+}
+
+/// Mojang's version manifest.
+pub(crate) fn manifest() -> Result<Value> {
+    http_json(MANIFEST)
+}
+
+/// A version's server jar run through Mojang's data generator and our extractor, in
+/// `target/vanilla/<id>/`.
+pub(crate) struct Extracted {
+    /// `release`, `snapshot`, ... from the manifest.
+    pub kind: String,
+    pub release_time: String,
+    pub work: PathBuf,
+    /// The unbundled server jar (classes and the built-in data pack).
+    pub inner_jar: PathBuf,
+    /// Datagen output (`reports/`).
+    pub generated: PathBuf,
+    /// Extractor output.
+    pub extracted: PathBuf,
+    /// Whether Mojang published mappings (none since the jars are unobfuscated).
+    pub mappings: bool,
+    pub info: VersionInfo,
+}
+
+/// Downloads (or takes) the server jar of `version` (default: the latest release), verifies its
+/// SHA-1, fetches the mappings if there are any, and runs datagen and the extractor.
+pub(crate) fn extract(
+    root: &Path,
+    manifest: &Value,
+    version: Option<&str>,
+    local_jar: Option<&Path>,
+) -> Result<Extracted> {
     let id = match version {
         Some(v) => v.to_owned(),
-        None => str_at(&manifest, &["latest", "release"])?.to_owned(),
+        None => str_at(manifest, &["latest", "release"])?.to_owned(),
     };
     let entry = manifest["versions"]
         .as_array()
@@ -43,6 +89,17 @@ pub fn update(root: &Path, version: Option<&str>, local_jar: Option<&Path>) -> R
             "server.jar SHA-1 mismatch: expected {jar_sha1}, got {actual}"
         ));
     }
+    let mappings = match meta["downloads"]["server_mappings"]["url"].as_str() {
+        Some(url) => {
+            let file = work.join("server_mappings.txt");
+            if !file.exists() {
+                println!("downloading {url}");
+                download(url, &file)?;
+            }
+            true
+        }
+        None => false,
+    };
 
     // Mojang's data generator. The bundler also unpacks the inner jar and its libraries.
     let generated = work.join("generated");
@@ -67,11 +124,13 @@ pub fn update(root: &Path, version: Option<&str>, local_jar: Option<&Path>) -> R
         .collect::<Vec<_>>()
         .join(sep);
 
-    // Our extractor, compiled against exactly this jar.
+    // Our extractor, compiled against exactly this jar. The golden harness is left out: it uses
+    // much more of the game's API and must not stop the data of a new version.
     let classes = work.join("extractor-classes");
     remove_dir(&classes)?;
     let mut sources = Vec::new();
     collect_files(&root.join("tools/extractor/src"), "java", &mut sources)?;
+    sources.retain(|p| !p.components().any(|c| c.as_os_str() == "golden"));
     sources.sort();
     run(Command::new(java_tool("javac"))
         .args(["-encoding", "UTF-8", "-nowarn", "-d"])
@@ -91,19 +150,16 @@ pub fn update(root: &Path, version: Option<&str>, local_jar: Option<&Path>) -> R
     let version_json: Value = serde_json::from_slice(&zip_entry(&inner, "version.json")?)
         .map_err(|e| format!("version.json: {e}"))?;
     let info = VersionInfo::new(&version_json, jar_url, jar_sha1)?;
-
-    let out = root.join("data").join("vanilla");
-    let before = normalize::Snapshot::load(&out);
-    normalize::run(&generated.join("reports"), &extracted, &info, &out)?;
-    codegen::run(root, false)?;
-    let after = normalize::Snapshot::load(&out);
-
-    let report = normalize::change_report(&before, &after);
-    let report_path = work.join("change-report.md");
-    crate::write(&report_path, &report)?;
-    println!("{report}");
-    println!("change report: {}", report_path.display());
-    Ok(())
+    Ok(Extracted {
+        kind: entry["type"].as_str().unwrap_or_default().to_owned(),
+        release_time: entry["releaseTime"].as_str().unwrap_or_default().to_owned(),
+        work,
+        inner_jar: inner,
+        generated,
+        extracted,
+        mappings,
+        info,
+    })
 }
 
 /// `VANILLITE_JAVA_HOME`, then `JAVA_HOME`, then the tool on `PATH`.
@@ -130,7 +186,7 @@ pub(crate) fn run(cmd: &mut Command) -> Result<()> {
     }
 }
 
-fn str_at<'a>(v: &'a Value, path: &[&str]) -> Result<&'a str> {
+pub(crate) fn str_at<'a>(v: &'a Value, path: &[&str]) -> Result<&'a str> {
     path.iter()
         .fold(v, |v, k| &v[*k])
         .as_str()

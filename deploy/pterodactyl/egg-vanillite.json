@@ -1,0 +1,1074 @@
+{
+  "_comment": "DO NOT EDIT: generated from the vanillite-config schema by `cargo xtask egg`",
+  "meta": {
+    "version": "PTDL_v2",
+    "update_url": null
+  },
+  "exported_at": "2026-11-24T00:00:00+00:00",
+  "name": "Vanillite",
+  "author": "hthoene@users.noreply.github.com",
+  "description": "Vanillite: a Minecraft Java Edition server written in Rust that behaves like Vanilla in game; fast, multithreaded and low on RAM. Every server.properties and vanillite.toml setting is a variable. https://github.com/hthoene/Vanillite",
+  "features": [
+    "eula"
+  ],
+  "docker_images": {
+    "Vanillite": "thoenehannes/vanillite:latest"
+  },
+  "file_denylist": [],
+  "startup": "env VANILLITE_SERVER_PORT={{SERVER_PORT}} /vanillite run --dir /home/container",
+  "config": {
+    "files": "{}",
+    "startup": "{\"done\":\")! For help, type \"}",
+    "logs": "{}",
+    "stop": "stop"
+  },
+  "scripts": {
+    "installation": {
+      "script": "#!/bin/ash\n# Vanillite needs no installation: the image holds the server, and the first start downloads\n# Mojang's server jar for the Vanilla data into cache/.\nmkdir -p /mnt/server\necho \"Nothing to install.\"\n",
+      "container": "ghcr.io/pterodactyl/installers:alpine",
+      "entrypoint": "ash"
+    }
+  },
+  "variables": [
+    {
+      "name": "Accept the Minecraft EULA",
+      "description": "Set to true to accept the Minecraft EULA (https://aka.ms/MinecraftEULA). The server does not start before. The panel's EULA prompt writes eula.txt instead.",
+      "env_variable": "VANILLITE_EULA",
+      "default_value": "false",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Profile",
+      "description": "Preset of every vanillite.toml rule: vanilla (Vanilla behaviour), technical (Vanilla plus what technical players need), paper or spigot (their defaults). Rules set below or in vanillite.toml override the profile.",
+      "env_variable": "VANILLITE_PROFILE",
+      "default_value": "vanilla",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|in:vanilla,technical,paper,spigot",
+      "field_type": "text"
+    },
+    {
+      "name": "Log Level",
+      "description": "Console log level: error, warn, info, debug or trace.",
+      "env_variable": "VANILLITE_LOG",
+      "default_value": "info",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|in:error,warn,info,debug,trace",
+      "field_type": "text"
+    },
+    {
+      "name": "Accepts Transfers",
+      "description": "Accept transfers of players from other servers. server.properties: accepts-transfers.",
+      "env_variable": "VANILLITE_ACCEPTS_TRANSFERS",
+      "default_value": "false",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Allow Flight",
+      "description": "Allow flight in survival (otherwise flying players are kicked). server.properties: allow-flight.",
+      "env_variable": "VANILLITE_ALLOW_FLIGHT",
+      "default_value": "false",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Broadcast Console To Ops",
+      "description": "Send console command output to operators. server.properties: broadcast-console-to-ops.",
+      "env_variable": "VANILLITE_BROADCAST_CONSOLE_TO_OPS",
+      "default_value": "true",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Broadcast RCON To Ops",
+      "description": "Send RCON command output to operators. server.properties: broadcast-rcon-to-ops.",
+      "env_variable": "VANILLITE_BROADCAST_RCON_TO_OPS",
+      "default_value": "true",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Chat Spam Threshold Seconds",
+      "description": "Seconds of chat spam (each message counts one second, each tick takes 1/20 away) after which non-operators are kicked; 0 disables. server.properties: chat-spam-threshold-seconds.",
+      "env_variable": "VANILLITE_CHAT_SPAM_THRESHOLD_SECONDS",
+      "default_value": "10",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|integer",
+      "field_type": "text"
+    },
+    {
+      "name": "Command Spam Threshold Seconds",
+      "description": "Like `chat-spam-threshold-seconds`, for commands. server.properties: command-spam-threshold-seconds.",
+      "env_variable": "VANILLITE_COMMAND_SPAM_THRESHOLD_SECONDS",
+      "default_value": "10",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|integer",
+      "field_type": "text"
+    },
+    {
+      "name": "Bug Report Link",
+      "description": "Link shown as \"report bug\" in the client. server.properties: bug-report-link. Empty: the value in server.properties.",
+      "env_variable": "VANILLITE_BUG_REPORT_LINK",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string",
+      "field_type": "text"
+    },
+    {
+      "name": "Difficulty",
+      "description": "Difficulty of new worlds. server.properties: difficulty.",
+      "env_variable": "VANILLITE_DIFFICULTY",
+      "default_value": "easy",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|in:peaceful,easy,normal,hard",
+      "field_type": "text"
+    },
+    {
+      "name": "Enable Code Of Conduct",
+      "description": "Show the code of conduct to joining players. server.properties: enable-code-of-conduct.",
+      "env_variable": "VANILLITE_ENABLE_CODE_OF_CONDUCT",
+      "default_value": "false",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Enable Query",
+      "description": "Enable the GameSpy4 query listener. server.properties: enable-query.",
+      "env_variable": "VANILLITE_ENABLE_QUERY",
+      "default_value": "false",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Enable RCON",
+      "description": "Enable remote console access. server.properties: enable-rcon.",
+      "env_variable": "VANILLITE_ENABLE_RCON",
+      "default_value": "false",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Enable Status",
+      "description": "Answer server list pings. server.properties: enable-status.",
+      "env_variable": "VANILLITE_ENABLE_STATUS",
+      "default_value": "true",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Enforce Secure Profile",
+      "description": "Require chat signing keys from Mojang. server.properties: enforce-secure-profile.",
+      "env_variable": "VANILLITE_ENFORCE_SECURE_PROFILE",
+      "default_value": "true",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Enforce Whitelist",
+      "description": "Kick players not on the whitelist when it is reloaded. server.properties: enforce-whitelist.",
+      "env_variable": "VANILLITE_ENFORCE_WHITELIST",
+      "default_value": "false",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Entity Broadcast Range Percentage",
+      "description": "Entity tracking range in percent of the default. Range: 10 to 1000. server.properties: entity-broadcast-range-percentage.",
+      "env_variable": "VANILLITE_ENTITY_BROADCAST_RANGE_PERCENTAGE",
+      "default_value": "100",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|integer|between:10,1000",
+      "field_type": "text"
+    },
+    {
+      "name": "Force Gamemode",
+      "description": "Force players into the default game mode on join. server.properties: force-gamemode.",
+      "env_variable": "VANILLITE_FORCE_GAMEMODE",
+      "default_value": "false",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Function Permission Level",
+      "description": "Permission level of functions. Range: 1 to 4. server.properties: function-permission-level.",
+      "env_variable": "VANILLITE_FUNCTION_PERMISSION_LEVEL",
+      "default_value": "2",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|integer|between:1,4",
+      "field_type": "text"
+    },
+    {
+      "name": "Gamemode",
+      "description": "Default game mode. server.properties: gamemode.",
+      "env_variable": "VANILLITE_GAMEMODE",
+      "default_value": "survival",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|in:survival,creative,adventure,spectator",
+      "field_type": "text"
+    },
+    {
+      "name": "Generate Structures",
+      "description": "Generate structures in new chunks. server.properties: generate-structures.",
+      "env_variable": "VANILLITE_GENERATE_STRUCTURES",
+      "default_value": "true",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Generator Settings",
+      "description": "Settings of the flat and customised generators (JSON). server.properties: generator-settings. Empty: the value in server.properties.",
+      "env_variable": "VANILLITE_GENERATOR_SETTINGS",
+      "default_value": "{}",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string",
+      "field_type": "text"
+    },
+    {
+      "name": "Hardcore",
+      "description": "Hardcore mode. server.properties: hardcore.",
+      "env_variable": "VANILLITE_HARDCORE",
+      "default_value": "false",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Hide Online Players",
+      "description": "Hide the player sample in the server list. server.properties: hide-online-players.",
+      "env_variable": "VANILLITE_HIDE_ONLINE_PLAYERS",
+      "default_value": "false",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Initial Disabled Packs",
+      "description": "Data packs disabled when the world is created. server.properties: initial-disabled-packs. Empty: the value in server.properties.",
+      "env_variable": "VANILLITE_INITIAL_DISABLED_PACKS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string",
+      "field_type": "text"
+    },
+    {
+      "name": "Initial Enabled Packs",
+      "description": "Data packs enabled when the world is created. server.properties: initial-enabled-packs. Empty: the value in server.properties.",
+      "env_variable": "VANILLITE_INITIAL_ENABLED_PACKS",
+      "default_value": "vanilla",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string",
+      "field_type": "text"
+    },
+    {
+      "name": "Level Name",
+      "description": "World folder name. server.properties: level-name. Empty: the value in server.properties.",
+      "env_variable": "VANILLITE_LEVEL_NAME",
+      "default_value": "world",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string",
+      "field_type": "text"
+    },
+    {
+      "name": "Level Seed",
+      "description": "World seed; empty = random. server.properties: level-seed. Empty: the value in server.properties.",
+      "env_variable": "VANILLITE_LEVEL_SEED",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string",
+      "field_type": "text"
+    },
+    {
+      "name": "Level Type",
+      "description": "World preset of new worlds. server.properties: level-type. Empty: the value in server.properties.",
+      "env_variable": "VANILLITE_LEVEL_TYPE",
+      "default_value": "minecraft:normal",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string",
+      "field_type": "text"
+    },
+    {
+      "name": "Log IPs",
+      "description": "Log client IP addresses. server.properties: log-ips.",
+      "env_variable": "VANILLITE_LOG_IPS",
+      "default_value": "true",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Max Chained Neighbor Updates",
+      "description": "Maximum chained neighbour updates before skipping. server.properties: max-chained-neighbor-updates.",
+      "env_variable": "VANILLITE_MAX_CHAINED_NEIGHBOR_UPDATES",
+      "default_value": "1000000",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|integer",
+      "field_type": "text"
+    },
+    {
+      "name": "Max Players",
+      "description": "Maximum number of players. server.properties: max-players.",
+      "env_variable": "VANILLITE_MAX_PLAYERS",
+      "default_value": "20",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|integer",
+      "field_type": "text"
+    },
+    {
+      "name": "Max Tick Time",
+      "description": "Milliseconds a single tick may take before the watchdog stops the server; -1 disables. server.properties: max-tick-time.",
+      "env_variable": "VANILLITE_MAX_TICK_TIME",
+      "default_value": "60000",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|integer",
+      "field_type": "text"
+    },
+    {
+      "name": "Max World Size",
+      "description": "Maximum world border radius. Range: 1 to 29999984. server.properties: max-world-size.",
+      "env_variable": "VANILLITE_MAX_WORLD_SIZE",
+      "default_value": "29999984",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|integer|between:1,29999984",
+      "field_type": "text"
+    },
+    {
+      "name": "MOTD",
+      "description": "Message of the day in the server list. server.properties: motd. Empty: the value in server.properties.",
+      "env_variable": "VANILLITE_MOTD",
+      "default_value": "A Minecraft Server",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string",
+      "field_type": "text"
+    },
+    {
+      "name": "Network Compression Threshold",
+      "description": "Packets larger than this many bytes are compressed; -1 disables compression. server.properties: network-compression-threshold.",
+      "env_variable": "VANILLITE_NETWORK_COMPRESSION_THRESHOLD",
+      "default_value": "256",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|integer",
+      "field_type": "text"
+    },
+    {
+      "name": "Online Mode",
+      "description": "Authenticate players with Mojang. server.properties: online-mode.",
+      "env_variable": "VANILLITE_ONLINE_MODE",
+      "default_value": "true",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Op Permission Level",
+      "description": "Permission level of operators. Range: 0 to 4. server.properties: op-permission-level.",
+      "env_variable": "VANILLITE_OP_PERMISSION_LEVEL",
+      "default_value": "4",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|integer|between:0,4",
+      "field_type": "text"
+    },
+    {
+      "name": "Pause When Empty Seconds",
+      "description": "Seconds without players after which the server stops ticking; 0 disables. server.properties: pause-when-empty-seconds.",
+      "env_variable": "VANILLITE_PAUSE_WHEN_EMPTY_SECONDS",
+      "default_value": "60",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|integer",
+      "field_type": "text"
+    },
+    {
+      "name": "Player Idle Timeout",
+      "description": "Minutes of inactivity before a player is kicked; 0 disables. server.properties: player-idle-timeout.",
+      "env_variable": "VANILLITE_PLAYER_IDLE_TIMEOUT",
+      "default_value": "0",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|integer",
+      "field_type": "text"
+    },
+    {
+      "name": "Prevent Proxy Connections",
+      "description": "Kick players whose IP differs from the one Mojang saw. server.properties: prevent-proxy-connections.",
+      "env_variable": "VANILLITE_PREVENT_PROXY_CONNECTIONS",
+      "default_value": "false",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Query Port",
+      "description": "Port of the query listener. Range: 1 to 65535. server.properties: query.port.",
+      "env_variable": "VANILLITE_QUERY__PORT",
+      "default_value": "25565",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|integer|between:1,65535",
+      "field_type": "text"
+    },
+    {
+      "name": "Rate Limit",
+      "description": "Maximum packets per second before a player is kicked; 0 disables. server.properties: rate-limit.",
+      "env_variable": "VANILLITE_RATE_LIMIT",
+      "default_value": "0",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|integer",
+      "field_type": "text"
+    },
+    {
+      "name": "RCON Password",
+      "description": "RCON password. server.properties: rcon.password. Empty: the value in server.properties.",
+      "env_variable": "VANILLITE_RCON__PASSWORD",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string",
+      "field_type": "text"
+    },
+    {
+      "name": "RCON Port",
+      "description": "RCON port. Range: 1 to 65535. server.properties: rcon.port.",
+      "env_variable": "VANILLITE_RCON__PORT",
+      "default_value": "25575",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|integer|between:1,65535",
+      "field_type": "text"
+    },
+    {
+      "name": "Region File Compression",
+      "description": "Compression of chunks in region files. server.properties: region-file-compression.",
+      "env_variable": "VANILLITE_REGION_FILE_COMPRESSION",
+      "default_value": "deflate",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|in:deflate,lz4,none",
+      "field_type": "text"
+    },
+    {
+      "name": "Require Resource Pack",
+      "description": "Kick players who decline the resource pack. server.properties: require-resource-pack.",
+      "env_variable": "VANILLITE_REQUIRE_RESOURCE_PACK",
+      "default_value": "false",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Resource Pack",
+      "description": "Resource pack URL. server.properties: resource-pack. Empty: the value in server.properties.",
+      "env_variable": "VANILLITE_RESOURCE_PACK",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string",
+      "field_type": "text"
+    },
+    {
+      "name": "Resource Pack ID",
+      "description": "Resource pack UUID. server.properties: resource-pack-id. Empty: the value in server.properties.",
+      "env_variable": "VANILLITE_RESOURCE_PACK_ID",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string",
+      "field_type": "text"
+    },
+    {
+      "name": "Resource Pack Prompt",
+      "description": "Resource pack prompt (text component). server.properties: resource-pack-prompt. Empty: the value in server.properties.",
+      "env_variable": "VANILLITE_RESOURCE_PACK_PROMPT",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string",
+      "field_type": "text"
+    },
+    {
+      "name": "Resource Pack SHA-1",
+      "description": "Resource pack SHA-1. server.properties: resource-pack-sha1. Empty: the value in server.properties.",
+      "env_variable": "VANILLITE_RESOURCE_PACK_SHA1",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string",
+      "field_type": "text"
+    },
+    {
+      "name": "Simulation Distance",
+      "description": "Simulation distance in chunks. Range: 2 to 32. server.properties: simulation-distance.",
+      "env_variable": "VANILLITE_SIMULATION_DISTANCE",
+      "default_value": "10",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|integer|between:2,32",
+      "field_type": "text"
+    },
+    {
+      "name": "Spawn Protection",
+      "description": "Radius around the spawn only operators may build in. server.properties: spawn-protection.",
+      "env_variable": "VANILLITE_SPAWN_PROTECTION",
+      "default_value": "16",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|integer",
+      "field_type": "text"
+    },
+    {
+      "name": "Status Heartbeat Interval",
+      "description": "Seconds between status heartbeats to the management server; 0 disables. server.properties: status-heartbeat-interval.",
+      "env_variable": "VANILLITE_STATUS_HEARTBEAT_INTERVAL",
+      "default_value": "0",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|integer",
+      "field_type": "text"
+    },
+    {
+      "name": "Sync Chunk Writes",
+      "description": "Flush region files synchronously. server.properties: sync-chunk-writes.",
+      "env_variable": "VANILLITE_SYNC_CHUNK_WRITES",
+      "default_value": "true",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "View Distance",
+      "description": "View distance in chunks. Range: 2 to 32. server.properties: view-distance.",
+      "env_variable": "VANILLITE_VIEW_DISTANCE",
+      "default_value": "10",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|integer|between:2,32",
+      "field_type": "text"
+    },
+    {
+      "name": "White List",
+      "description": "Only whitelisted players may join. server.properties: white-list.",
+      "env_variable": "VANILLITE_WHITE_LIST",
+      "default_value": "false",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Tick: Parallel Dimensions",
+      "description": "Dimensions tick in parallel, each on its own thread (decision D2). Cross-dimension effects then apply at the end of the tick instead of immediately: an entity entering a portal from the overworld arrives one tick later, `execute in` other dimensions runs at the end of the tick. `false` gives exact Vanilla order. Empty: the profile's value (vanilla profile: true). vanillite.toml: performance.tick.parallel-dimensions.",
+      "env_variable": "VANILLITE_PERFORMANCE__TICK__PARALLEL_DIMENSIONS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Threads: Compute",
+      "description": "Worker threads of the compute pool (world generation, lighting, saving, parallel tick phases). 0 = number of cores minus the busy tick threads, at least 1. Range: 0 to 1024. Empty: the profile's value (vanilla profile: 0). vanillite.toml: performance.threads.compute.",
+      "env_variable": "VANILLITE_PERFORMANCE__THREADS__COMPUTE",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:0,1024",
+      "field_type": "text"
+    },
+    {
+      "name": "Autosave: Interval",
+      "description": "Ticks between autosaves. Vanilla saves every 5 minutes of game time. Range: 20 to 1728000. Also accepts vanilla. Empty: the profile's value (vanilla profile: vanilla). vanillite.toml: performance.autosave.interval.",
+      "env_variable": "VANILLITE_PERFORMANCE__AUTOSAVE__INTERVAL",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|regex:/^(?!vanilla[0-9])(vanilla)?[0-9]*$/",
+      "field_type": "text"
+    },
+    {
+      "name": "Storage: Layout",
+      "description": "Folder layout of the dimensions: `\"vanilla\"` keeps every dimension in `<level>/dimensions/` like Vanilla and Paper; `\"spigot\"` puts the nether into `<level>_nether/` and the end into `<level>_the_end/` like Spigot and CraftBukkit, so the world can be opened by Spigot without conversion. A world found in the other layout is moved into this one once at startup. Empty: the profile's value (vanilla profile: vanilla). vanillite.toml: storage.layout.",
+      "env_variable": "VANILLITE_STORAGE__LAYOUT",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string",
+      "field_type": "text"
+    },
+    {
+      "name": "Watchdog: Early Warning After",
+      "description": "Seconds without a finished tick after which a first warning is logged. Range: 1 to 3600. Also accepts disabled. Empty: the profile's value (vanilla profile: 10). vanillite.toml: watchdog.early-warning-after.",
+      "env_variable": "VANILLITE_WATCHDOG__EARLY_WARNING_AFTER",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|regex:/^(?!disabled[0-9])(disabled)?[0-9]*$/",
+      "field_type": "text"
+    },
+    {
+      "name": "Watchdog: Warning Interval",
+      "description": "Seconds between further warnings while the server hangs. Range: 1 to 3600. Empty: the profile's value (vanilla profile: 5). vanillite.toml: watchdog.warning-interval.",
+      "env_variable": "VANILLITE_WATCHDOG__WARNING_INTERVAL",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,3600",
+      "field_type": "text"
+    },
+    {
+      "name": "Security: Max Joins Per Tick",
+      "description": "Logins accepted into the game per tick. Protects the tick from join floods. Range: 1 to 1000. Empty: the profile's value (vanilla profile: 5). vanillite.toml: security.max-joins-per-tick.",
+      "env_variable": "VANILLITE_SECURITY__MAX_JOINS_PER_TICK",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,1000",
+      "field_type": "text"
+    },
+    {
+      "name": "Commands: Max Command Length",
+      "description": "Longest command line that is parsed (Vanilla: the packet's 32767 characters). Range: 16 to 32767. Empty: the profile's value (vanilla profile: 32767). vanillite.toml: commands.max-command-length.",
+      "env_variable": "VANILLITE_COMMANDS__MAX_COMMAND_LENGTH",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:16,32767",
+      "field_type": "text"
+    },
+    {
+      "name": "Commands: Max Suggestion Input",
+      "description": "Longest tab completion input; longer requests get no suggestions (Vanilla accepts 32500 characters). Range: 16 to 32500. Empty: the profile's value (vanilla profile: 2048). vanillite.toml: commands.max-suggestion-input.",
+      "env_variable": "VANILLITE_COMMANDS__MAX_SUGGESTION_INPUT",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:16,32500",
+      "field_type": "text"
+    },
+    {
+      "name": "Commands: Max Suggestions",
+      "description": "Suggestions per answer. Range: 1 to 10000. Empty: the profile's value (vanilla profile: 1000). vanillite.toml: commands.max-suggestions.",
+      "env_variable": "VANILLITE_COMMANDS__MAX_SUGGESTIONS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,10000",
+      "field_type": "text"
+    },
+    {
+      "name": "Commands: Max Message Length",
+      "description": "Characters of a message argument (`say`, `msg`, `kick`). Range: 16 to 32767. Empty: the profile's value (vanilla profile: 256). vanillite.toml: commands.max-message-length.",
+      "env_variable": "VANILLITE_COMMANDS__MAX_MESSAGE_LENGTH",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:16,32767",
+      "field_type": "text"
+    },
+    {
+      "name": "Commands: Max NBT Depth",
+      "description": "Nesting depth of SNBT in arguments. Range: 1 to 512. Empty: the profile's value (vanilla profile: 512). vanillite.toml: commands.max-nbt-depth.",
+      "env_variable": "VANILLITE_COMMANDS__MAX_NBT_DEPTH",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,512",
+      "field_type": "text"
+    },
+    {
+      "name": "Commands: Max NBT Path Nodes",
+      "description": "Nodes of an NBT path. Range: 1 to 4096. Empty: the profile's value (vanilla profile: 256). vanillite.toml: commands.max-nbt-path-nodes.",
+      "env_variable": "VANILLITE_COMMANDS__MAX_NBT_PATH_NODES",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,4096",
+      "field_type": "text"
+    },
+    {
+      "name": "Commands: Max Selector Options",
+      "description": "Options inside one entity selector `[...]`. Range: 1 to 1024. Empty: the profile's value (vanilla profile: 64). vanillite.toml: commands.max-selector-options.",
+      "env_variable": "VANILLITE_COMMANDS__MAX_SELECTOR_OPTIONS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,1024",
+      "field_type": "text"
+    },
+    {
+      "name": "Commands: Max Message Selectors",
+      "description": "Entity selectors inside one message argument. Range: 0 to 256. Empty: the profile's value (vanilla profile: 16). vanillite.toml: commands.max-message-selectors.",
+      "env_variable": "VANILLITE_COMMANDS__MAX_MESSAGE_SELECTORS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:0,256",
+      "field_type": "text"
+    },
+    {
+      "name": "Commands: Max Redirect Depth",
+      "description": "Nested redirects followed while parsing one command. Range: 1 to 1024. Empty: the profile's value (vanilla profile: 64). vanillite.toml: commands.max-redirect-depth.",
+      "env_variable": "VANILLITE_COMMANDS__MAX_REDIRECT_DEPTH",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,1024",
+      "field_type": "text"
+    },
+    {
+      "name": "Survival: Time Sync Interval",
+      "description": "Ticks between the game time packets every player gets (Vanilla: every second). Clients run the clocks themselves in between; a longer interval saves traffic with many players, the game time on the client may then lag behind a little. Range: 1 to 1200. Empty: the profile's value (vanilla profile: 20). vanillite.toml: performance.survival.time-sync-interval.",
+      "env_variable": "VANILLITE_PERFORMANCE__SURVIVAL__TIME_SYNC_INTERVAL",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,1200",
+      "field_type": "text"
+    },
+    {
+      "name": "Proxy: Velocity Secret",
+      "description": "Shared secret of modern forwarding (the proxy's `forwarding.secret`). Empty turns forwarding off. With a secret, players' identities and addresses come from the proxy, signed with it; `online-mode` then only applies to direct connections. Empty: the profile's value (vanilla profile: ). vanillite.toml: proxy.velocity-secret.",
+      "env_variable": "VANILLITE_PROXY__VELOCITY_SECRET",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string",
+      "field_type": "text"
+    },
+    {
+      "name": "Proxy: Allow Direct Connections",
+      "description": "With forwarding on, also accept players who connect directly instead of through the proxy (authenticated as usual). Off: they are refused. Empty: the profile's value (vanilla profile: false). vanillite.toml: proxy.allow-direct-connections.",
+      "env_variable": "VANILLITE_PROXY__ALLOW_DIRECT_CONNECTIONS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Chat: Max Pending Messages",
+      "description": "Signed messages a player may have received without acknowledging them before it is kicked (`too_many_pending_chats`). Range: 64 to 65536. Empty: the profile's value (vanilla profile: 4096). vanillite.toml: chat.max-pending-messages.",
+      "env_variable": "VANILLITE_CHAT__MAX_PENDING_MESSAGES",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:64,65536",
+      "field_type": "text"
+    },
+    {
+      "name": "Exploits: TNT Duplication",
+      "description": "TNT can be duplicated with pistons and slime or honey blocks. Applies to every world. Empty: the profile's value (vanilla profile: true). vanillite.toml: exploits.tnt-duplication.",
+      "env_variable": "VANILLITE_EXPLOITS__TNT_DUPLICATION",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Exploits: Carpet Duplication",
+      "description": "Carpets can be duplicated with pistons. Applies to every world. Empty: the profile's value (vanilla profile: true). vanillite.toml: exploits.carpet-duplication.",
+      "env_variable": "VANILLITE_EXPLOITS__CARPET_DUPLICATION",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Exploits: Rail Duplication",
+      "description": "Rails can be duplicated with pistons. Applies to every world. Empty: the profile's value (vanilla profile: true). vanillite.toml: exploits.rail-duplication.",
+      "env_variable": "VANILLITE_EXPLOITS__RAIL_DUPLICATION",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Exploits: Headless Pistons",
+      "description": "Pistons without a head can be created. Applies to every world. Empty: the profile's value (vanilla profile: true). vanillite.toml: exploits.headless-pistons.",
+      "env_variable": "VANILLITE_EXPLOITS__HEADLESS_PISTONS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Exploits: Break Unbreakable Blocks",
+      "description": "Bedrock and end portal frames can be broken with pistons and explosions. Applies to every world. Empty: the profile's value (vanilla profile: true). vanillite.toml: exploits.break-unbreakable-blocks.",
+      "env_variable": "VANILLITE_EXPLOITS__BREAK_UNBREAKABLE_BLOCKS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Exploits: Gravity Block Duplication",
+      "description": "Falling blocks can be duplicated through end portals. Applies to every world. Empty: the profile's value (vanilla profile: true). vanillite.toml: exploits.gravity-block-duplication.",
+      "env_variable": "VANILLITE_EXPLOITS__GRAVITY_BLOCK_DUPLICATION",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Exploits: String Duplication",
+      "description": "String can be duplicated with tripwire mechanics. Applies to every world. Empty: the profile's value (vanilla profile: true). vanillite.toml: exploits.string-duplication.",
+      "env_variable": "VANILLITE_EXPLOITS__STRING_DUPLICATION",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Exploits: Invulnerable End Crystals",
+      "description": "End crystals can be made invulnerable. Applies to every world. Empty: the profile's value (vanilla profile: true). vanillite.toml: exploits.invulnerable-end-crystals.",
+      "env_variable": "VANILLITE_EXPLOITS__INVULNERABLE_END_CRYSTALS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Distances: View Distance",
+      "description": "View distance in chunks; \"vanilla\" uses `view-distance` of server.properties. Applies to every world. Range: 2 to 32. Also accepts vanilla. Empty: the profile's value (vanilla profile: vanilla). vanillite.toml: performance.distances.view-distance.",
+      "env_variable": "VANILLITE_PERFORMANCE__DISTANCES__VIEW_DISTANCE",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|regex:/^(?!vanilla[0-9])(vanilla)?[0-9]*$/",
+      "field_type": "text"
+    },
+    {
+      "name": "Distances: Simulation Distance",
+      "description": "Simulation distance in chunks; \"vanilla\" uses `simulation-distance` of server.properties. Applies to every world. Range: 2 to 32. Also accepts vanilla. Empty: the profile's value (vanilla profile: vanilla). vanillite.toml: performance.distances.simulation-distance.",
+      "env_variable": "VANILLITE_PERFORMANCE__DISTANCES__SIMULATION_DISTANCE",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|regex:/^(?!vanilla[0-9])(vanilla)?[0-9]*$/",
+      "field_type": "text"
+    },
+    {
+      "name": "Entity Tracking: Player Range",
+      "description": "Tracking range of players. Applies to every world. Range: 8 to 512. Also accepts vanilla. Empty: the profile's value (vanilla profile: vanilla). vanillite.toml: performance.entity-tracking.player-range.",
+      "env_variable": "VANILLITE_PERFORMANCE__ENTITY_TRACKING__PLAYER_RANGE",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|regex:/^(?!vanilla[0-9])(vanilla)?[0-9]*$/",
+      "field_type": "text"
+    },
+    {
+      "name": "Entity Tracking: Animal Range",
+      "description": "Tracking range of animals, ambient and water mobs. Applies to every world. Range: 8 to 512. Also accepts vanilla. Empty: the profile's value (vanilla profile: vanilla). vanillite.toml: performance.entity-tracking.animal-range.",
+      "env_variable": "VANILLITE_PERFORMANCE__ENTITY_TRACKING__ANIMAL_RANGE",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|regex:/^(?!vanilla[0-9])(vanilla)?[0-9]*$/",
+      "field_type": "text"
+    },
+    {
+      "name": "Entity Tracking: Monster Range",
+      "description": "Tracking range of monsters. Applies to every world. Range: 8 to 512. Also accepts vanilla. Empty: the profile's value (vanilla profile: vanilla). vanillite.toml: performance.entity-tracking.monster-range.",
+      "env_variable": "VANILLITE_PERFORMANCE__ENTITY_TRACKING__MONSTER_RANGE",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|regex:/^(?!vanilla[0-9])(vanilla)?[0-9]*$/",
+      "field_type": "text"
+    },
+    {
+      "name": "Entity Tracking: Misc Range",
+      "description": "Tracking range of everything else (items, projectiles, vehicles, decorations). Applies to every world. Range: 8 to 512. Also accepts vanilla. Empty: the profile's value (vanilla profile: vanilla). vanillite.toml: performance.entity-tracking.misc-range.",
+      "env_variable": "VANILLITE_PERFORMANCE__ENTITY_TRACKING__MISC_RANGE",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|regex:/^(?!vanilla[0-9])(vanilla)?[0-9]*$/",
+      "field_type": "text"
+    },
+    {
+      "name": "Movement: Too Fast Check",
+      "description": "Players that move faster than Vanilla allows are teleported back (\"moved too quickly\"). Vanilla's `playerMovementCheck` game rule. Applies to every world. Empty: the profile's value (vanilla profile: true). vanillite.toml: movement.too-fast-check.",
+      "env_variable": "VANILLITE_MOVEMENT__TOO_FAST_CHECK",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Movement: Elytra Too Fast Check",
+      "description": "The \"moved too quickly\" check also applies while gliding with an elytra. Vanilla's `elytraMovementCheck` game rule. Applies to every world. Empty: the profile's value (vanilla profile: true). vanillite.toml: movement.elytra-too-fast-check.",
+      "env_variable": "VANILLITE_MOVEMENT__ELYTRA_TOO_FAST_CHECK",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Movement: Wrong Movement Check",
+      "description": "Players whose movement does not match the server's collision result are teleported back (\"moved wrongly\"). Not enforced yet: it needs block collision (milestone 3). Applies to every world. Empty: the profile's value (vanilla profile: true). vanillite.toml: movement.wrong-movement-check.",
+      "env_variable": "VANILLITE_MOVEMENT__WRONG_MOVEMENT_CHECK",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Movement: Flying Kick",
+      "description": "Players floating in the air longer than Vanilla allows are kicked unless `allow-flight` is on. Not enforced yet: it needs block collision (milestone 3). Applies to every world. Empty: the profile's value (vanilla profile: true). vanillite.toml: movement.flying-kick.",
+      "env_variable": "VANILLITE_MOVEMENT__FLYING_KICK",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Chunks: Unload Delay",
+      "description": "Ticks a chunk stays loaded after no player or ticket needs it, so walking back does not load it again. Applies to every world. Range: 0 to 6000. Empty: the profile's value (vanilla profile: 100). vanillite.toml: performance.chunks.unload-delay.",
+      "env_variable": "VANILLITE_PERFORMANCE__CHUNKS__UNLOAD_DELAY",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:0,6000",
+      "field_type": "text"
+    },
+    {
+      "name": "Chunks: Max Jobs",
+      "description": "Background chunk jobs (loads, generation steps, light) in flight per world. Higher values load faster with many players at the cost of memory for queued work. Applies to every world. Range: 1 to 4096. Empty: the profile's value (vanilla profile: 64). vanillite.toml: performance.chunks.max-jobs.",
+      "env_variable": "VANILLITE_PERFORMANCE__CHUNKS__MAX_JOBS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,4096",
+      "field_type": "text"
+    },
+    {
+      "name": "Simulation: Max Block Ticks",
+      "description": "Scheduled block ticks run per tick. Applies to every world. Range: 1 to 1000000. Empty: the profile's value (vanilla profile: 65536). vanillite.toml: performance.simulation.max-block-ticks.",
+      "env_variable": "VANILLITE_PERFORMANCE__SIMULATION__MAX_BLOCK_TICKS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,1000000",
+      "field_type": "text"
+    },
+    {
+      "name": "Simulation: Max Fluid Ticks",
+      "description": "Scheduled fluid ticks run per tick. Applies to every world. Range: 1 to 1000000. Empty: the profile's value (vanilla profile: 65536). vanillite.toml: performance.simulation.max-fluid-ticks.",
+      "env_variable": "VANILLITE_PERFORMANCE__SIMULATION__MAX_FLUID_TICKS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,1000000",
+      "field_type": "text"
+    },
+    {
+      "name": "Simulation: Max Chained Neighbor Updates",
+      "description": "Chained neighbour and shape updates of one block change before the rest is skipped; \"vanilla\" uses `max-chained-neighbor-updates` of server.properties. Applies to every world. Range: 1 to 100000000. Also accepts vanilla. Empty: the profile's value (vanilla profile: vanilla). vanillite.toml: performance.simulation.max-chained-neighbor-updates.",
+      "env_variable": "VANILLITE_PERFORMANCE__SIMULATION__MAX_CHAINED_NEIGHBOR_UPDATES",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|regex:/^(?!vanilla[0-9])(vanilla)?[0-9]*$/",
+      "field_type": "text"
+    },
+    {
+      "name": "Simulation: Max Relights Per Tick",
+      "description": "Chunks whose light is recomputed per tick after block changes, each as one background job over its 5 × 5 area. Lower values spread bursts over more ticks. Applies to every world. Range: 1 to 65536. Empty: the profile's value (vanilla profile: 1024). vanillite.toml: performance.simulation.max-relights-per-tick.",
+      "env_variable": "VANILLITE_PERFORMANCE__SIMULATION__MAX_RELIGHTS_PER_TICK",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,65536",
+      "field_type": "text"
+    },
+    {
+      "name": "Collisions: Max Entity Collisions",
+      "description": "Entity collisions processed per entity and tick. Applies to every world. Range: 0 to 1024. Also accepts vanilla. Empty: the profile's value (vanilla profile: vanilla). vanillite.toml: performance.collisions.max-entity-collisions.",
+      "env_variable": "VANILLITE_PERFORMANCE__COLLISIONS__MAX_ENTITY_COLLISIONS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|regex:/^(?!vanilla[0-9])(vanilla)?[0-9]*$/",
+      "field_type": "text"
+    },
+    {
+      "name": "Items: Despawn Ticks",
+      "description": "Ticks an item lies on the ground before it despawns. Lower values keep fewer item entities around on busy servers. Applies to every world. Range: 20 to 32766. Empty: the profile's value (vanilla profile: 6000). vanillite.toml: performance.items.despawn-ticks.",
+      "env_variable": "VANILLITE_PERFORMANCE__ITEMS__DESPAWN_TICKS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:20,32766",
+      "field_type": "text"
+    }
+  ]
+}

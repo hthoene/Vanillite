@@ -354,7 +354,29 @@ pub fn regen(root: &Path, args: &[&str]) -> Result<()> {
         return Ok(());
     }
 
-    let (classes, cp) = harness(root, &key)?;
+    let (classes, cp, broken) = harness(root, &key)?;
+    let broken_class = |c: &str| {
+        broken.files.iter().any(|f| {
+            f.file_stem()
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| c.rsplit('.').next() == Some(s))
+        })
+    };
+    let recorder_broken = broken_class("ScenarioRecorder");
+    let mut skipped = Vec::new();
+    for (_, todo) in &mut work {
+        todo.retain(|e| {
+            let ok = match &e.source {
+                Source::Part(c) => !broken_class(c),
+                Source::Scenario(_) => !recorder_broken,
+            };
+            if !ok {
+                skipped.push(e.name.clone());
+            }
+            ok
+        });
+    }
+    work.retain(|w| !w.1.is_empty());
     let work_dir = root.join("target/vanilla").join(&key.minecraft);
     let sep = if cfg!(windows) { ";" } else { ":" };
     let java = |main: &str| {
@@ -427,12 +449,36 @@ pub fn regen(root: &Path, args: &[&str]) -> Result<()> {
             write_keys(dir, &key, &entries)?;
         }
     }
+    if !skipped.is_empty() {
+        return Err(format!(
+            "harness sources that do not compile against {}: {}\nnot recorded ({}): {}\n\n{}",
+            key.minecraft,
+            broken
+                .files
+                .iter()
+                .filter_map(|f| f.file_name().and_then(|n| n.to_str()))
+                .collect::<Vec<_>>()
+                .join(", "),
+            skipped.len(),
+            skipped.join(", "),
+            broken.errors
+        ));
+    }
     check(root)
 }
 
+/// Harness sources left out because they do not compile against the jar, with javac's output.
+#[derive(Default)]
+struct Broken {
+    files: Vec<PathBuf>,
+    errors: String,
+}
+
 /// Compiles the extractor against the pinned jar (downloaded and unpacked if needed); returns
-/// the class directory and the jar class path.
-fn harness(root: &Path, key: &Key) -> Result<(PathBuf, String)> {
+/// the class directory, the jar class path and the sources left out. A source that does not
+/// compile (a new version changed the API it uses) is left out with everything that needs it,
+/// so the other goldens can still be recorded.
+fn harness(root: &Path, key: &Key) -> Result<(PathBuf, String, Broken)> {
     let work = root.join("target/vanilla").join(&key.minecraft);
     let inner = work
         .join("versions")
@@ -473,13 +519,45 @@ fn harness(root: &Path, key: &Key) -> Result<(PathBuf, String)> {
     let mut sources = Vec::new();
     collect_files(&root.join("tools/extractor/src"), "java", &mut sources)?;
     sources.sort();
-    run(Command::new(java_tool("javac"))
-        .args(["-encoding", "UTF-8", "-nowarn", "-d"])
-        .arg(&classes)
-        .arg("-cp")
-        .arg(&cp)
-        .args(&sources))?;
-    Ok((classes, cp))
+    let mut broken = Broken::default();
+    loop {
+        let out = Command::new(java_tool("javac"))
+            .args(["-encoding", "UTF-8", "-nowarn", "-Xmaxerrs", "1000", "-d"])
+            .arg(&classes)
+            .arg("-cp")
+            .arg(&cp)
+            .args(&sources)
+            .output()
+            .map_err(|e| format!("javac: {e}"))?;
+        if out.status.success() {
+            return Ok((classes, cp, broken));
+        }
+        let errors = String::from_utf8_lossy(&out.stderr).into_owned();
+        let failing: Vec<PathBuf> = errors
+            .lines()
+            .filter_map(|l| {
+                l.split_once(".java:")
+                    .map(|(f, _)| PathBuf::from(format!("{f}.java")))
+            })
+            .filter(|f| sources.contains(f))
+            .collect();
+        if failing.is_empty() {
+            return Err(format!("javac failed:\n{errors}"));
+        }
+        sources.retain(|s| !failing.contains(s));
+        for f in failing {
+            if !broken.files.contains(&f) {
+                broken.files.push(f);
+            }
+        }
+        for l in errors.lines() {
+            broken
+                .errors
+                .push_str(l.strip_prefix(&format!("{}/", root.display())).unwrap_or(l));
+            broken.errors.push('\n');
+        }
+        remove_dir(&classes)?;
+    }
 }
 
 /// `cargo xtask golden bless <scenario>...`: runs the scenarios in Vanillite and stores their

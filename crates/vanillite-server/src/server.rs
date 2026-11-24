@@ -273,6 +273,8 @@ impl ServerBuilder {
         let clock = Clock::new();
         let max_players = usize::try_from(config.properties.max_players).unwrap_or(0);
         let commands = crate::commands::build_dispatcher(command_limits(&config));
+        let game = Arc::new(crate::blocks::game_data(packs.as_deref()));
+        vanillite_game::player::play::install_game_data(Arc::clone(&game));
         let level = crate::level::LevelState::load(
             &level_dir,
             packs.as_deref(),
@@ -296,6 +298,8 @@ impl ServerBuilder {
             level,
             seed: level_seed(&config.properties.level_seed),
             registries: prepared.registries.clone(),
+            game,
+            spawn_protection: config.properties.spawn_protection,
             this: this.clone(),
         });
         let watch = Arc::new(WatchState::new(

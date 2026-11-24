@@ -9,9 +9,14 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+vanillite-config.workspace = true
 vanillite-server.workspace = true
 ctrlc.workspace = true
 log.workspace = true
+
+# musl's allocator is slow with many threads; the static (Docker) build uses mimalloc.
+[target.'cfg(target_env = "musl")'.dependencies]
+mimalloc = { version = "0.1", default-features = false }
 
 [lints]
 workspace = true

@@ -676,7 +676,7 @@ impl WorldSurvival {
     /// Sends what the survival logic produced to its receivers. Each receiver lookup visits
     /// the players near the source only: all players when there are few, else the chunks in
     /// range.
-    fn deliver(&mut self, entities: &Entities, global: &Global) {
+    fn deliver(&mut self, entities: &mut Entities, global: &Global) {
         if self.effects.is_empty() {
             return;
         }
@@ -747,8 +747,10 @@ impl WorldSurvival {
                         .players
                         .broadcast_system(message.clone(), false, None);
                 }
+                Effect::DropItem { .. } => {}
             }
         }
+        spawn_drops(&effects, entities, global);
     }
 
     /// The players of the chunks within `range` of `pos` (all players when that is fewer).
@@ -876,7 +878,7 @@ fn geometric(random: &mut LegacyRandom) -> f64 {
 }
 
 /// Effects of a command, delivered by looking at all players of the world.
-fn deliver_simple(effects: &[Effect], entities: &Entities, global: &Global) {
+fn deliver_simple(effects: &[Effect], entities: &mut Entities, global: &Global) {
     for effect in effects {
         match effect {
             Effect::Tracking {
@@ -923,6 +925,32 @@ fn deliver_simple(effects: &[Effect], entities: &Entities, global: &Global) {
                     .players
                     .broadcast_system(message.clone(), false, None);
             }
+            Effect::DropItem { .. } => {}
+        }
+    }
+    spawn_drops(effects, entities, global);
+}
+
+/// The item entities of [`Effect::DropItem`]s (`addFreshEntity`).
+fn spawn_drops(effects: &[Effect], entities: &mut Entities, global: &Global) {
+    for effect in effects {
+        if let Effect::DropItem {
+            uuid,
+            pos,
+            velocity,
+            y_rot,
+            pickup_delay,
+            stack,
+        } = effect
+        {
+            entities.spawn_item(
+                global.network_ids.next(),
+                *uuid,
+                *pos,
+                *velocity,
+                *y_rot,
+                vanillite_game::item_entity::ItemData::new(stack.clone(), *pickup_delay, None),
+            );
         }
     }
 }

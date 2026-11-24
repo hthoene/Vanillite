@@ -233,5 +233,12 @@ rules! {
             max_entity_collisions: VanillaOr<u32> = "max-entity-collisions", Performance,
                 range = [0, 1024], vanilla = VanillaOr::Vanilla, paper = VanillaOr::Value(8);
         }
+        /// Item entities (dropped items).
+        items: ItemRules = "performance.items" {
+            /// Ticks an item lies on the ground before it despawns. Lower values keep fewer
+            /// item entities around on busy servers.
+            despawn_ticks: u16 = "despawn-ticks", Performance, range = [20, 32766],
+                vanilla = 6000;
+        }
     }
 }

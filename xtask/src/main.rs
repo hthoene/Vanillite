@@ -2,6 +2,8 @@
 //!
 //! ```text
 //! cargo xtask vanilla update [<version>] [--jar <server.jar>]
+//! cargo xtask version check
+//! cargo xtask version update <version> [--final] [--bulk] [--no-test]
 //! cargo xtask codegen [--check]
 //! cargo xtask golden check
 //! cargo xtask golden regen [--all] [--bulk] [<name>...]
@@ -9,15 +11,20 @@
 //! cargo xtask dev [--release] [-- <server args>]
 //! cargo xtask deploy [--port <port>] [--release]
 //! cargo xtask testserver provision|status|logs|start|stop|restart [<port>]
+//! cargo xtask docker [--push] [--in-docker] [--tag <tag>]...
+//! cargo xtask egg [--check] | egg smoke [--image <ref>]
 //! cargo xtask loadtest [--server vanillite|paper|both] [--steps <n,...>] [--hold <s>] ...
 //! ```
 
 mod codegen;
 mod devenv;
+mod docker;
+mod egg;
 mod golden;
 mod loadtest;
 mod normalize;
 mod vanilla;
+mod version;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -31,6 +38,18 @@ pub const USAGE: &str = "usage:
       tools/extractor, normalise into data/vanilla/, run codegen and print a change report.
       <version> defaults to the latest release. Needs a JDK (JAVA_HOME or
       VANILLITE_JAVA_HOME, else java/javac on PATH) of the version the jar asks for.
+  cargo xtask version check
+      Compare the pinned version (data/vanilla/version.toml) with the latest release in Mojang's
+      version manifest; fails if a newer release exists (in GitHub Actions also sets the step
+      output `newer`).
+  cargo xtask version update <version> [--final] [--bulk] [--no-test]
+      Prepare the switch to another version (release, pre-release or snapshot): extract the
+      pinned and the new jar, regenerate data/vanilla and the generated code, record all
+      repository goldens (--bulk also the bulk goldens and runs the ignored tests) and run the
+      tests, all in the worktree target/version/<version>/tree, and write the change report
+      target/version/<version>/change-report.md (protocol, packet fields, registries, blocks,
+      items, entities, data pack, goldens, failing tests, affected code areas). --final does it
+      in this checkout instead (only for releases): the real switch. --no-test skips the tests.
   cargo xtask codegen [--check]
       Generate crates/vanillite-data/src/generated/ from data/vanilla/.
       --check fails if the committed files are not current.
@@ -55,6 +74,21 @@ pub const USAGE: &str = "usage:
   cargo xtask testserver provision|status|logs|start|stop|restart [<port>]
       provision runs scripts/testserver/provision.sh on the test server (idempotent);
       status lists the services and ports; the others act on vanillite@<port> (default 30001).
+  cargo xtask docker [--push] [--in-docker] [--tag <tag>]...
+      Build the server image (Dockerfile) for linux/amd64 and linux/arm64, tagged dev and the
+      short commit hash, as $VANILLITE_IMAGE (default docker.hthoene.de/vanillite/vanillite).
+      The static binaries are cross-compiled here with cargo-zigbuild (--in-docker builds them
+      in the image instead). Builds on $DOCKER_HOST, the local engine, or else the test server
+      over SSH. --push logs in as $VANILLITE_REGISTRY_USER (default deploy) with the password
+      from $PRIVATE_DOCKER_REPO_KEY and pushes; without it the image is loaded into the engine.
+  cargo xtask egg [--check]
+      Generate the Pterodactyl egg deploy/pterodactyl/egg-vanillite.json from the configuration
+      schema (server.properties keys and vanillite.toml rules) and check it against the egg
+      format. --check fails if the committed egg is not current.
+  cargo xtask egg smoke [--image <ref>]
+      Start the image (default $VANILLITE_IMAGE:dev, see docker) like Pterodactyl's Wings does,
+      with the egg's startup command and default variables (EULA accepted), on the Docker host
+      of `docker`, and check that the server starts and answers a status ping on port 30950.
   cargo xtask loadtest [--server vanillite|paper|both] [--steps 50,100,...] [--hold <s>]
                        [--join-rate <per s>] [--chat <s>] [--view-distance <n>] [--release]
                        [--no-deploy] [--no-gate]
@@ -74,6 +108,8 @@ fn main() -> ExitCode {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let result = match args.as_slice() {
         ["vanilla", "update", rest @ ..] => vanilla_update(rest),
+        ["version", "check"] => version::check(&repo_root()),
+        ["version", "update", rest @ ..] => version::update(&repo_root(), rest),
         ["codegen"] => codegen::run(&repo_root(), false),
         ["codegen", "--check"] => codegen::run(&repo_root(), true),
         ["golden", "check"] => golden::check(&repo_root()),
@@ -82,6 +118,8 @@ fn main() -> ExitCode {
         ["dev", rest @ ..] => devenv::dev(&repo_root(), rest),
         ["deploy", rest @ ..] => devenv::deploy(&repo_root(), rest),
         ["testserver", rest @ ..] => devenv::testserver(&repo_root(), rest),
+        ["docker", rest @ ..] => docker::run_docker(&repo_root(), rest),
+        ["egg", rest @ ..] => egg::run(&repo_root(), rest),
         ["loadtest", rest @ ..] => loadtest::run(&repo_root(), rest),
         _ => Err(USAGE.to_owned()),
     };

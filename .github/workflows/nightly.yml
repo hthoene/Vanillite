@@ -1,7 +1,7 @@
 name: Nightly
 
-# Bulk parity tests (ignored tests: chunk goldens by seed, large scenario runs), release build
-# and fuzzing. Runs on dev once a night and on demand.
+# Bulk parity tests (ignored tests: chunk goldens by seed, large scenario runs), release build,
+# fuzzing and the Minecraft version check. Runs on dev once a night and on demand.
 on:
   schedule:
     - cron: "0 2 * * *"
@@ -19,6 +19,36 @@ env:
   RUST_BACKTRACE: "1"
 
 jobs:
+  version-check:
+    name: Minecraft version check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: dev
+      - run: rustup toolchain install --profile minimal
+      - uses: Swatinem/rust-cache@v2
+      # Fails when Mojang released a newer version than data/vanilla/version.toml pins.
+      - id: check
+        run: cargo xtask version check
+      - name: Open an issue for the new release
+        if: failure() && steps.check.outputs.newer != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEWER: ${{ steps.check.outputs.newer }}
+        run: |
+          title="Minecraft $NEWER released: switch Vanillite to it"
+          open=$(gh issue list --state open --search "\"$title\" in:title" --json number --jq length)
+          if [ "$open" = "0" ]; then
+            gh issue create --title "$title" --body "Mojang released Minecraft $NEWER (found by the nightly \`cargo xtask version check\`).
+
+          1. \`cargo xtask version update $NEWER\` writes the change report (target/version/$NEWER/change-report.md) and tests the new data in a separate worktree.
+          2. Do the work the report lists, then switch with \`cargo xtask version update $NEWER --final\` and commit data, generated code and goldens."
+          fi
+
   bulk-tests:
     name: Bulk parity tests
     runs-on: ubuntu-latest
