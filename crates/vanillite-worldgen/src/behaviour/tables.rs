@@ -34,11 +34,13 @@ block_tags!(
     causes_continuous_geyser_eruptions,
     causes_periodic_geyser_eruptions,
     copper_chests,
+    dampens_vibrations,
     enables_bubble_column_drag_down,
     enables_bubble_column_push_up,
     fences,
     grows_crops,
     maintains_farmland,
+    occludes_vibration_signals,
     overrides_mushroom_light_requirement,
     prevents_nearby_leaf_decay,
     saplings,
@@ -76,7 +78,9 @@ block_tags!(
     supports_warped_fungus,
     supports_warped_roots,
     supports_wither_rose,
+    suppresses_bounce,
     unstable_bottom_center,
+    vibration_resonators,
     wall_post_override,
     walls,
     washed_away_by_fluids,
@@ -137,11 +141,58 @@ impl FluidTags {
     }
 }
 
+/// A set of game events (a resolved `minecraft:game_event` tag), one bit per registry id.
+#[derive(Clone, Debug, Default)]
+pub struct GameEventSet(Vec<u64>);
+
+impl GameEventSet {
+    fn from_tag(packs: &LoadedPacks, tag: &str) -> Self {
+        let registry = &vanillite_data::registry::GAME_EVENT;
+        let mut bits = vec![0u64; registry.len().div_ceil(64)];
+        if let Some(entries) = packs.tags("minecraft:game_event").and_then(|t| t.get(tag)) {
+            for entry in entries {
+                if let Some(id) = registry.id(entry) {
+                    bits[usize::from(id) / 64] |= 1 << (id % 64);
+                }
+            }
+        }
+        Self(bits)
+    }
+
+    /// `event.is(tag)` for a `minecraft:game_event` id.
+    #[inline]
+    pub fn contains(&self, event: u16) -> bool {
+        self.0
+            .get(usize::from(event) / 64)
+            .is_some_and(|word| word & (1 << (event % 64)) != 0)
+    }
+}
+
+/// The game event tags behaviour reads.
+#[derive(Debug, Default)]
+pub struct GameEventTags {
+    pub vibrations: GameEventSet,
+    pub ignore_vibrations_sneaking: GameEventSet,
+}
+
+impl GameEventTags {
+    fn load(packs: &LoadedPacks) -> Self {
+        Self {
+            vibrations: GameEventSet::from_tag(packs, "minecraft:vibrations"),
+            ignore_vibrations_sneaking: GameEventSet::from_tag(
+                packs,
+                "minecraft:ignore_vibrations_sneaking",
+            ),
+        }
+    }
+}
+
 /// Everything behaviour resolves from the data packs.
 #[derive(Debug, Default)]
 pub struct Tags {
     pub blocks: BlockTags,
     pub fluids: FluidTags,
+    pub game_events: GameEventTags,
 }
 
 static TAGS: OnceLock<Tags> = OnceLock::new();
@@ -153,6 +204,7 @@ pub fn init(packs: &LoadedPacks) {
     TAGS.get_or_init(|| Tags {
         blocks: BlockTags::load(packs),
         fluids: FluidTags::load(packs),
+        game_events: GameEventTags::load(packs),
     });
 }
 

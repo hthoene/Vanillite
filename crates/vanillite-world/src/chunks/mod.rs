@@ -201,6 +201,8 @@ pub struct Chunks {
     sub_tick: i64,
     /// Live chunks with post-processing marks not handled yet.
     post_process: Vec<ChunkPos>,
+    /// Chunks that became live since the last [`Chunks::take_promoted`].
+    promoted: Vec<ChunkPos>,
 }
 
 impl fmt::Debug for Chunks {
@@ -249,6 +251,7 @@ impl Chunks {
             game_time: 0,
             sub_tick: 0,
             post_process: Vec::new(),
+            promoted: Vec::new(),
         }
     }
 
@@ -806,6 +809,7 @@ impl Chunks {
             return;
         }
         let chunk = Arc::make_mut(chunk);
+        self.promoted.push(pos);
         let blocks = std::mem::take(&mut chunk.block_ticks);
         let fluids = std::mem::take(&mut chunk.fluid_ticks);
         if !chunk.post_processing.is_empty() {
@@ -813,6 +817,46 @@ impl Chunks {
         }
         self.block_ticks.add_container(pos, &blocks, self.game_time);
         self.fluid_ticks.add_container(pos, &fluids, self.game_time);
+    }
+
+    /// Chunks that became live since the last call (the game loads their block entities).
+    pub fn take_promoted(&mut self, out: &mut Vec<ChunkPos>) {
+        out.append(&mut self.promoted);
+    }
+
+    /// Live chunks the next [`Chunks::tick`] unloads unless a ticket comes back meanwhile (the
+    /// game writes their block entities back first).
+    pub fn unloading_next_tick(&self, out: &mut Vec<ChunkPos>) {
+        let next = self.tick + 1;
+        out.extend(self.unload_candidates.iter().copied().filter(|pos| {
+            self.holders.get(pos).is_some_and(|holder| {
+                holder.level > MAX_LEVEL
+                    && holder.unload_at.is_some_and(|at| at <= next)
+                    && !holder.busy
+                    && holder
+                        .chunk
+                        .as_ref()
+                        .is_some_and(|c| c.status == ChunkStatus::Full)
+            })
+        }));
+    }
+
+    /// The stored block entities of a live chunk, for the game to write its live block
+    /// entities back; the chunk counts as changed.
+    pub fn block_entities_mut(
+        &mut self,
+        pos: ChunkPos,
+    ) -> Option<&mut Vec<vanillite_chunk::slots::BlockEntityData>> {
+        let holder = self.holders.get_mut(&pos)?;
+        if holder.busy {
+            return None;
+        }
+        let chunk = holder
+            .chunk
+            .as_mut()
+            .filter(|c| c.status == ChunkStatus::Full)?;
+        holder.dirty = true;
+        Some(&mut Arc::make_mut(chunk).block_entities)
     }
 
     fn unload(&mut self) {
@@ -1066,6 +1110,16 @@ impl Chunks {
     /// `getFluidTicks().hasScheduledTick(pos, fluid)`.
     pub fn has_fluid_tick(&self, pos: BlockPos, fluid: u16) -> bool {
         self.fluid_ticks.has_scheduled(pos, fluid)
+    }
+
+    /// The scheduled block ticks (read only).
+    pub fn block_ticks(&self) -> &LevelTicks {
+        &self.block_ticks
+    }
+
+    /// The scheduled fluid ticks (read only).
+    pub fn fluid_ticks(&self) -> &LevelTicks {
+        &self.fluid_ticks
     }
 
     /// `getBlockTicks().willTickThisTick(pos, block)`.

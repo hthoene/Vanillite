@@ -1,0 +1,95 @@
+{
+  "description": "A wire on a block powers two pistons next to that block that both extend into the same space: the hash-set order of the wire's neighbour updates (DefaultRedstoneWireEvaluator) decides which piston's block event comes first and wins; then both retract.",
+  "tier": "fast",
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      8,
+      -58,
+      8
+    ]
+  ],
+  "ticks": 20,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -60,
+        4
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        4
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -59,
+        4
+      ],
+      "block": "minecraft:redstone_wire[east=side,north=none,power=0,south=none,west=side]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -59,
+        4
+      ],
+      "block": "minecraft:redstone_wire[east=side,north=none,power=0,south=none,west=side]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        5
+      ],
+      "block": "minecraft:piston[extended=false,facing=east]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -60,
+        4
+      ],
+      "block": "minecraft:piston[extended=false,facing=south]"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        2,
+        -59,
+        4
+      ],
+      "block": "minecraft:redstone_block"
+    },
+    {
+      "tick": 8,
+      "op": "place",
+      "pos": [
+        2,
+        -59,
+        4
+      ],
+      "block": "minecraft:air"
+    }
+  ]
+}
