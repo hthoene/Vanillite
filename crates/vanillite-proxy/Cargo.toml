@@ -14,6 +14,7 @@ vanillite-net.workspace = true
 vanillite-bedrock.workspace = true
 ctrlc.workspace = true
 env_logger.workspace = true
+flate2.workspace = true
 log.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

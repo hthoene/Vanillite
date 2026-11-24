@@ -1545,6 +1545,7 @@ version = "0.1.0"
 dependencies = [
  "ctrlc",
  "env_logger",
+ "flate2",
  "log",
  "serde_json",
  "tokio",
