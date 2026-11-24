@@ -169,7 +169,10 @@ pub enum ExecuteOp {
     Summon,
     On(Relation),
     /// `store result|success` (`result` = true).
-    Store { target: StoreTarget, result: bool },
+    Store {
+        target: StoreTarget,
+        result: bool,
+    },
 }
 
 /// The subcommands of `scoreboard`.

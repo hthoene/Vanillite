@@ -4,8 +4,14 @@
 //! only offers and parses nodes the source may use, and every command node carries its
 //! required level (SEC-12).
 
+mod data;
 mod dispatch;
+mod engine;
 mod exec;
+mod execute;
+pub(crate) mod functions;
+mod nbt_ops;
+mod scores;
 mod select;
 mod source;
 mod survival;
@@ -39,10 +45,47 @@ pub(crate) fn build_dispatcher(limits: vanillite_command::limits::Limits) -> Com
     dispatcher
 }
 
-/// What a command execution may touch: the source's world and the server.
+/// What a command execution may touch: the world it runs on and the server.
 pub(crate) struct Env<'a> {
-    pub(crate) entities: &'a mut Entities,
+    pub(crate) level: &'a mut vanillite_game::level::Level,
     pub(crate) global: &'a Global,
+    /// The world of `level`.
+    pub(crate) world: WorldId,
+}
+
+/// Loads the data pack functions once the server exists (`ServerFunctionLibrary.reload`).
+pub(crate) fn load_game_systems(global: &Global) {
+    let roots = functions::pack_roots(
+        global.systems.vanilla_pack.as_deref(),
+        &global.systems.level_dir,
+    );
+    global
+        .systems
+        .set_functions(functions::load(global, &roots));
+}
+
+/// `ServerFunctionManager.tick` on the overworld.
+pub(crate) fn tick_functions(
+    level: &mut vanillite_game::level::Level,
+    global: &Global,
+    world: WorldId,
+) {
+    let mut env = Env {
+        level,
+        global,
+        world,
+    };
+    functions::tick(&mut env);
+    // Scoreboard changes reach clients with the scoreboard packets; until then they are
+    // dropped each tick so they do not pile up.
+    drop(global.systems.scoreboard().take_events());
+}
+
+/// Runs a parsed line for a source in a new execution (`Commands.executeCommandInContext`).
+fn run_line(env: &mut Env<'_>, line: engine::Line, source: CommandSource) {
+    let mut engine = functions::new_engine(env.global);
+    engine.queue_command(line, source, engine::Callback::Empty);
+    engine.run(env);
 }
 
 /// The permission level of a player: its operator level or 0.
@@ -60,18 +103,21 @@ pub(crate) fn player_source(
     let entity = entities.store.get(id)?;
     let player = entities.player(id)?;
     let uuid = entity.uuid();
-    Some(CommandSource {
-        global: global.arc()?,
-        kind: SourceKind::Player {
+    let name = player.profile.name.clone();
+    let target = select::local(entities, world, id)?;
+    Some(CommandSource::new(
+        global.arc()?,
+        SourceKind::Player {
             uuid,
-            name: player.profile.name.clone(),
+            name,
             sink: Arc::clone(&player.connection.sink),
         },
-        level: permission_level(global, uuid),
+        permission_level(global, uuid),
         world,
-        pos: entity.pos(),
-        rot: (entity.rot().y_rot, entity.rot().x_rot),
-    })
+        entity.pos(),
+        (entity.rot().y_rot, entity.rot().x_rot),
+        Some(target.source_entity()),
+    ))
 }
 
 /// The tree packet for a source (`Commands.sendCommands`).
@@ -145,7 +191,7 @@ fn send_error(source: &CommandSource, global: &Global, error: &CommandError, com
 }
 
 /// The error message with Vanilla's primitive translation arguments.
-fn error_message(error: &CommandError) -> Component {
+pub(crate) fn error_message(error: &CommandError) -> Component {
     use vanillite_command::error::Arg as E;
     let args = error
         .args
@@ -168,13 +214,14 @@ pub(crate) type SignedArguments = HashMap<String, ChatMessage>;
 /// A player runs a command line (without the slash): `performUnsignedChatCommand` or
 /// `performSignedChatCommand`, then the spam check. Returns a kick reason.
 pub(crate) fn run_player_command(
-    entities: &mut Entities,
+    level: &mut vanillite_game::level::Level,
     global: &Global,
     id: EntityId,
     world: WorldId,
     command: &str,
     signed: Option<SignedCommand>,
 ) -> Option<Component> {
+    let entities = &mut level.entities;
     let source = player_source(entities, global, id, world)?;
     let uuid = source.uuid()?;
     let name = source.text_name().to_owned();
@@ -214,17 +261,23 @@ pub(crate) fn run_player_command(
         }
     };
     log::info!("{name} issued server command: /{command}");
-    let mut env = Env { entities, global };
+    let mut env = Env {
+        level,
+        global,
+        world,
+    };
     match parse.finish(&global.commands) {
         Ok(parsed) => {
-            if let Err(e) = dispatch::execute(&source, &mut env, &parsed, &signed_arguments) {
-                send_error(&source, global, &e, command);
-            }
+            let line = engine::Line {
+                parsed: Arc::new(parsed),
+                signed: Some(Arc::new(signed_arguments)),
+            };
+            run_line(&mut env, line, source);
         }
         Err(e) => send_error(&source, global, &e, command),
     }
     // `detectCommandRateSpam`.
-    let player = env.entities.player_mut(id)?;
+    let player = env.level.entities.player_mut(id)?;
     let spam = &mut player.connection.chat.command_spam;
     spam.increment();
     (!spam.is_under_threshold() && global.access.op_level(uuid).is_none())
@@ -283,23 +336,28 @@ pub(crate) fn run_console_command(world: &mut ServerWorld, global: &Global, line
     let Some(arc) = global.arc() else {
         return;
     };
-    let source = CommandSource {
-        global: arc,
-        kind: SourceKind::Console,
-        level: 4,
-        world: world.id(),
-        pos: vanillite_base::Vec3::ZERO,
-        rot: (0.0, 0.0),
-    };
+    let source = CommandSource::new(
+        arc,
+        SourceKind::Console,
+        4,
+        world.id(),
+        global.systems.spawn(),
+        (0.0, 0.0),
+        None,
+    );
+    let id = world.id();
     let mut env = Env {
-        entities: world.entities_mut(),
+        level: world.level_mut(),
         global,
+        world: id,
     };
     match global.commands.parse_command(command, &source) {
         Ok(parsed) => {
-            if let Err(e) = dispatch::execute(&source, &mut env, &parsed, &SignedArguments::new()) {
-                log::warn!("{}", error_message(&e).plain());
-            }
+            let line = engine::Line {
+                parsed: Arc::new(parsed),
+                signed: None,
+            };
+            run_line(&mut env, line, source);
         }
         Err(e) => {
             log::warn!("{}", error_message(&e).plain());

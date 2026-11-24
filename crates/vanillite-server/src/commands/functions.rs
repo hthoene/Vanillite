@@ -62,24 +62,24 @@ impl Function {
         &self,
         arguments: Option<&Compound>,
         global: &Global,
-    ) -> Result<Arc<Instantiated>, Component> {
+    ) -> Result<Arc<Instantiated>, Box<Component>> {
         let m = match &self.body {
             Body::Plain(i) => return Ok(Arc::clone(i)),
             Body::Macro(m) => m,
         };
         let Some(arguments) = arguments else {
-            return Err(Component::translatable_args(
+            return Err(Box::new(Component::translatable_args(
                 "commands.function.error.missing_arguments",
                 vec![Arg::String(self.id.to_string())],
-            ));
+            )));
         };
         let mut values = Vec::with_capacity(m.parameters.len());
         for p in &m.parameters {
             let Some(tag) = arguments.get(p) else {
-                return Err(Component::translatable_args(
+                return Err(Box::new(Component::translatable_args(
                     "commands.function.error.missing_argument",
                     vec![Arg::String(self.id.to_string()), Arg::String(p.clone())],
-                ));
+                )));
             };
             values.push(stringify(tag));
         }
@@ -104,7 +104,7 @@ impl Function {
                         command.push_str(segments.get(i).map_or("", String::as_str));
                         command.push_str(values.get(*var).map_or("", String::as_str));
                         if command.len() > MAX_LINE {
-                            return Err(Component::text("Command too long"));
+                            return Err(Box::new(Component::text("Command too long")));
                         }
                     }
                     if segments.len() > vars.len()
@@ -114,24 +114,20 @@ impl Function {
                     }
                     let parsed = source
                         .as_ref()
-                        .ok_or_else(|| Component::text("server stopped"))
+                        .ok_or_else(|| Box::new(Component::text("server stopped")))
                         .and_then(|s| {
-                            global
-                                .commands
-                                .parse_command(&command, s)
-                                .map_err(|e| {
-                                    Component::translatable_args(
-                                        "commands.function.error.parse",
-                                        vec![
-                                            Arg::String(self.id.to_string()),
-                                            Arg::String(command.clone()),
-                                            Arg::from(error_message(&e)),
-                                        ],
-                                    )
-                                })
+                            global.commands.parse_command(&command, s).map_err(|e| {
+                                Box::new(Component::translatable_args(
+                                    "commands.function.error.parse",
+                                    vec![
+                                        Arg::String(self.id.to_string()),
+                                        Arg::String(command.clone()),
+                                        Arg::from(error_message(&e)),
+                                    ],
+                                ))
+                            })
                         })?;
                     lines.push(Line {
-                        input: command.into(),
                         parsed: Arc::new(parsed),
                         signed: None,
                     });
@@ -303,7 +299,12 @@ pub(crate) fn load(global: &Global, roots: &[PathBuf]) -> FunctionLibrary {
 }
 
 /// `CommandFunction.fromLines`.
-fn compile(id: &str, text: &str, global: &Global, source: &CommandSource) -> Result<Function, String> {
+fn compile(
+    id: &str,
+    text: &str,
+    global: &Global,
+    source: &CommandSource,
+) -> Result<Function, String> {
     let raw: Vec<&str> = text.lines().collect();
     let mut plain: Vec<Line> = Vec::new();
     let mut macro_entries: Option<Vec<MacroEntry>> = None;
@@ -374,7 +375,6 @@ fn compile(id: &str, text: &str, global: &Global, source: &CommandSource) -> Res
                     )
                 })?;
                 let entry = Line {
-                    input: line.into(),
                     parsed: Arc::new(parsed),
                     signed: None,
                 };
@@ -540,7 +540,7 @@ fn resolve_tag(
     visiting.push(name.to_owned());
     let mut out: Vec<Arc<Function>> = Vec::new();
     let mut missing = Vec::new();
-    let mut add = |f: &Arc<Function>, out: &mut Vec<Arc<Function>>| {
+    let add = |f: &Arc<Function>, out: &mut Vec<Arc<Function>>| {
         if !out.iter().any(|o| Arc::ptr_eq(o, f)) {
             out.push(Arc::clone(f));
         }
@@ -595,18 +595,21 @@ pub(crate) fn resolve(
     };
     let library = global.systems.functions();
     if f.tag {
-        library
-            .tag(&f.id)
-            .cloned()
-            .ok_or_else(|| {
-                CommandError::new("arguments.function.tag.unknown", vec![ErrArg::Str(f.id.clone())])
-            })
+        library.tag(&f.id).cloned().ok_or_else(|| {
+            CommandError::new(
+                "arguments.function.tag.unknown",
+                vec![ErrArg::Str(f.id.clone())],
+            )
+        })
     } else {
         library
             .get(&f.id)
             .map(|f| vec![Arc::clone(f)])
             .ok_or_else(|| {
-                CommandError::new("arguments.function.unknown", vec![ErrArg::Str(f.id.clone())])
+                CommandError::new(
+                    "arguments.function.unknown",
+                    vec![ErrArg::Str(f.id.clone())],
+                )
             })
     }
 }

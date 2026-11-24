@@ -215,7 +215,11 @@ impl Compound {
 
     /// The value of `name`, mutably.
     pub fn get_mut(&mut self, name: &str) -> Option<&mut Tag> {
-        self.0.iter_mut().rev().find(|(n, _)| n == name).map(|(_, v)| v)
+        self.0
+            .iter_mut()
+            .rev()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v)
     }
 
     /// Removes and returns the value of `name`.

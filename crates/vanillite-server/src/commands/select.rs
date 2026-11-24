@@ -5,6 +5,7 @@
 //! the non-player entities of the source's world only.
 
 use vanillite_base::{Aabb, Vec3};
+use vanillite_command::Source as _;
 use vanillite_command::error::CommandError;
 use vanillite_command::selector::{AdvancementCheck, EntitySelector, Filter, Order};
 use vanillite_data::entity::{EntityTypeId, ids};
@@ -274,9 +275,7 @@ fn filter_matches(filter: &Filter, target: &Target, ctx: &Ctx<'_>) -> bool {
             systems.in_tag("minecraft:entity_type", tag, target.kind.name()) != *inverted
         }
         Filter::Tag { tag, inverted } => {
-            let tags = target
-                .entity
-                .map_or(&[][..], |id| ctx.entities.tags_of(id));
+            let tags = target.entity.map_or(&[][..], |id| ctx.entities.tags_of(id));
             let has = if tag.is_empty() {
                 tags.is_empty()
             } else {
@@ -462,7 +461,10 @@ pub(crate) fn optional(
     selector: &EntitySelector,
 ) -> Result<Vec<Target>, CommandError> {
     if selector.uses_selector && !source.allows_selectors() {
-        return Err(CommandError::new("argument.entity.selector.not_allowed", vec![]));
+        return Err(CommandError::new(
+            "argument.entity.selector.not_allowed",
+            vec![],
+        ));
     }
     Ok(select(selector, source, &env.level.entities, env.global))
 }

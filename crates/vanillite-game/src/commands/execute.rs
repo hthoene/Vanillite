@@ -3,8 +3,8 @@
 use vanillite_command::{ArgumentType, Builder, Dispatcher, NodeId, StringKind, argument, literal};
 
 use super::{
-    CommandId, CompareOp, DataKind, ExecuteCondition, ExecuteOp, NumType, Relation,
-    ScoreboardOp, StoreTarget, level, suggest,
+    CommandId, CompareOp, DataKind, ExecuteCondition, ExecuteOp, NumType, Relation, ScoreboardOp,
+    StoreTarget, level, suggest,
 };
 
 fn entities() -> ArgumentType {
@@ -80,23 +80,27 @@ fn add_conditionals(
         )
     };
     let mut l = literal_node
-        .then(literal("block").then(argument("pos", ArgumentType::BlockPos).then(conditional(
-            argument("block", ArgumentType::BlockPredicate),
-            execute,
-            C::Block,
-            unless,
-        ))))
-        .then(literal("biome").then(argument("pos", ArgumentType::BlockPos).then(conditional(
-            argument(
-                "biome",
-                ArgumentType::ResourceOrTag {
-                    registry: "minecraft:worldgen/biome",
-                },
-            ),
-            execute,
-            C::Biome,
-            unless,
-        ))))
+        .then(
+            literal("block").then(argument("pos", ArgumentType::BlockPos).then(conditional(
+                argument("block", ArgumentType::BlockPredicate),
+                execute,
+                C::Block,
+                unless,
+            ))),
+        )
+        .then(
+            literal("biome").then(argument("pos", ArgumentType::BlockPos).then(conditional(
+                argument(
+                    "biome",
+                    ArgumentType::ResourceOrTag {
+                        registry: "minecraft:worldgen/biome",
+                    },
+                ),
+                execute,
+                C::Biome,
+                unless,
+            ))),
+        )
         .then(literal("loaded").then(conditional(
             argument("pos", ArgumentType::BlockPos),
             execute,
@@ -134,8 +138,18 @@ fn add_conditionals(
                 argument("start", ArgumentType::BlockPos).then(
                     argument("end", ArgumentType::BlockPos).then(
                         argument("destination", ArgumentType::BlockPos)
-                            .then(conditional(literal("all"), execute, C::Blocks(false), unless))
-                            .then(conditional(literal("masked"), execute, C::Blocks(true), unless)),
+                            .then(conditional(
+                                literal("all"),
+                                execute,
+                                C::Blocks(false),
+                                unless,
+                            ))
+                            .then(conditional(
+                                literal("masked"),
+                                execute,
+                                C::Blocks(true),
+                                unless,
+                            )),
                     ),
                 ),
             ),
@@ -212,7 +226,9 @@ fn add_conditionals(
             }
         };
         literal(if slots_only { "slots" } else { "items" })
-            .then(literal("entity").then(argument("source", entities()).then(then(DataKind::Entity))))
+            .then(
+                literal("entity").then(argument("source", entities()).then(then(DataKind::Entity))),
+            )
             .then(
                 literal("block")
                     .then(argument("source", ArgumentType::BlockPos).then(then(DataKind::Block))),
@@ -221,7 +237,11 @@ fn add_conditionals(
     l.then(items(false)).then(items(true))
 }
 
-fn wrap_stores(literal_node: Builder<CommandId>, execute: NodeId, result: bool) -> Builder<CommandId> {
+fn wrap_stores(
+    literal_node: Builder<CommandId>,
+    execute: NodeId,
+    result: bool,
+) -> Builder<CommandId> {
     let store = |target: StoreTarget| exec(ExecuteOp::Store { target, result });
     let mut l = literal_node
         .then(
@@ -283,8 +303,14 @@ pub(super) fn register_execute(d: &mut Dispatcher<CommandId>) {
             .then(literal("run").redirect(Dispatcher::<CommandId>::ROOT))
             .then(add_conditionals(literal("if"), execute, false))
             .then(add_conditionals(literal("unless"), execute, true))
-            .then(literal("as").then(argument("targets", entities()).fork(execute, exec(ExecuteOp::As))))
-            .then(literal("at").then(argument("targets", entities()).fork(execute, exec(ExecuteOp::At))))
+            .then(
+                literal("as")
+                    .then(argument("targets", entities()).fork(execute, exec(ExecuteOp::As))),
+            )
+            .then(
+                literal("at")
+                    .then(argument("targets", entities()).fork(execute, exec(ExecuteOp::At))),
+            )
             .then(
                 literal("store")
                     .then(wrap_stores(literal("result"), execute, true))
@@ -296,13 +322,18 @@ pub(super) fn register_execute(d: &mut Dispatcher<CommandId>) {
                         argument("pos", ArgumentType::Vec3 { center: true })
                             .redirect_with(execute, exec(ExecuteOp::Positioned)),
                     )
-                    .then(literal("as").then(
-                        argument("targets", entities()).fork(execute, exec(ExecuteOp::PositionedAs)),
-                    ))
-                    .then(literal("over").then(
-                        argument("heightmap", ArgumentType::Heightmap)
-                            .redirect_with(execute, exec(ExecuteOp::PositionedOver)),
-                    )),
+                    .then(
+                        literal("as").then(
+                            argument("targets", entities())
+                                .fork(execute, exec(ExecuteOp::PositionedAs)),
+                        ),
+                    )
+                    .then(
+                        literal("over").then(
+                            argument("heightmap", ArgumentType::Heightmap)
+                                .redirect_with(execute, exec(ExecuteOp::PositionedOver)),
+                        ),
+                    ),
             )
             .then(
                 literal("rotated")
@@ -316,26 +347,37 @@ pub(super) fn register_execute(d: &mut Dispatcher<CommandId>) {
             )
             .then(
                 literal("facing")
-                    .then(literal("entity").then(argument("targets", entities()).then(
-                        argument("anchor", ArgumentType::EntityAnchor)
-                            .fork(execute, exec(ExecuteOp::FacingEntity)),
-                    )))
+                    .then(
+                        literal("entity").then(
+                            argument("targets", entities()).then(
+                                argument("anchor", ArgumentType::EntityAnchor)
+                                    .fork(execute, exec(ExecuteOp::FacingEntity)),
+                            ),
+                        ),
+                    )
                     .then(
                         argument("pos", ArgumentType::Vec3 { center: true })
                             .redirect_with(execute, exec(ExecuteOp::Facing)),
                     ),
             )
-            .then(literal("align").then(
-                argument("axes", ArgumentType::Swizzle).redirect_with(execute, exec(ExecuteOp::Align)),
-            ))
-            .then(literal("anchored").then(
-                argument("anchor", ArgumentType::EntityAnchor)
-                    .redirect_with(execute, exec(ExecuteOp::Anchored)),
-            ))
-            .then(literal("in").then(
-                argument("dimension", ArgumentType::Dimension)
-                    .redirect_with(execute, exec(ExecuteOp::In)),
-            ))
+            .then(
+                literal("align").then(
+                    argument("axes", ArgumentType::Swizzle)
+                        .redirect_with(execute, exec(ExecuteOp::Align)),
+                ),
+            )
+            .then(
+                literal("anchored").then(
+                    argument("anchor", ArgumentType::EntityAnchor)
+                        .redirect_with(execute, exec(ExecuteOp::Anchored)),
+                ),
+            )
+            .then(
+                literal("in").then(
+                    argument("dimension", ArgumentType::Dimension)
+                        .redirect_with(execute, exec(ExecuteOp::In)),
+                ),
+            )
             .then(
                 literal("summon").then(
                     argument(
@@ -463,19 +505,23 @@ pub(super) fn register_scoreboard(d: &mut Dispatcher<CommandId>) {
                     .then(
                         literal("modify").then(
                             argument("objective", ArgumentType::Objective)
-                                .then(literal("displayname").then(
-                                    argument("displayName", ArgumentType::Component)
-                                        .executes(sb(S::ObjectiveDisplayName)),
-                                ))
+                                .then(
+                                    literal("displayname").then(
+                                        argument("displayName", ArgumentType::Component)
+                                            .executes(sb(S::ObjectiveDisplayName)),
+                                    ),
+                                )
                                 .then(
                                     literal("rendertype")
                                         .then(literal("integer").executes(sb(S::RenderInteger)))
                                         .then(literal("hearts").executes(sb(S::RenderHearts))),
                                 )
-                                .then(literal("displayautoupdate").then(
-                                    argument("value", ArgumentType::Bool)
-                                        .executes(sb(S::DisplayAutoUpdate)),
-                                ))
+                                .then(
+                                    literal("displayautoupdate").then(
+                                        argument("value", ArgumentType::Bool)
+                                            .executes(sb(S::DisplayAutoUpdate)),
+                                    ),
+                                )
                                 .then(
                                     literal("numberformat")
                                         .executes(sb(S::ObjectiveFormatClear))
@@ -485,10 +531,12 @@ pub(super) fn register_scoreboard(d: &mut Dispatcher<CommandId>) {
                                 ),
                         ),
                     )
-                    .then(literal("remove").then(
-                        argument("objective", ArgumentType::Objective)
-                            .executes(sb(S::ObjectivesRemove)),
-                    ))
+                    .then(
+                        literal("remove").then(
+                            argument("objective", ArgumentType::Objective)
+                                .executes(sb(S::ObjectivesRemove)),
+                        ),
+                    )
                     .then(
                         literal("setdisplay").then(
                             argument("slot", ArgumentType::ScoreboardSlot)
@@ -509,29 +557,47 @@ pub(super) fn register_scoreboard(d: &mut Dispatcher<CommandId>) {
                                 .executes(sb(S::PlayersListTarget)),
                         ),
                     )
-                    .then(literal("set").then(
-                        argument("targets", holders()).suggests(suggest::SCORE_HOLDERS).then(
-                            argument("objective", ArgumentType::Objective)
-                                .then(argument("score", int(None)).executes(sb(S::Set))),
+                    .then(
+                        literal("set").then(
+                            argument("targets", holders())
+                                .suggests(suggest::SCORE_HOLDERS)
+                                .then(
+                                    argument("objective", ArgumentType::Objective)
+                                        .then(argument("score", int(None)).executes(sb(S::Set))),
+                                ),
                         ),
-                    ))
-                    .then(literal("get").then(
-                        argument("target", holder()).suggests(suggest::SCORE_HOLDERS).then(
-                            argument("objective", ArgumentType::Objective).executes(sb(S::Get)),
+                    )
+                    .then(
+                        literal("get").then(
+                            argument("target", holder())
+                                .suggests(suggest::SCORE_HOLDERS)
+                                .then(
+                                    argument("objective", ArgumentType::Objective)
+                                        .executes(sb(S::Get)),
+                                ),
                         ),
-                    ))
-                    .then(literal("add").then(
-                        argument("targets", holders()).suggests(suggest::SCORE_HOLDERS).then(
-                            argument("objective", ArgumentType::Objective)
-                                .then(argument("score", int(Some(0))).executes(sb(S::Add))),
+                    )
+                    .then(
+                        literal("add").then(
+                            argument("targets", holders())
+                                .suggests(suggest::SCORE_HOLDERS)
+                                .then(
+                                    argument("objective", ArgumentType::Objective)
+                                        .then(argument("score", int(Some(0))).executes(sb(S::Add))),
+                                ),
                         ),
-                    ))
-                    .then(literal("remove").then(
-                        argument("targets", holders()).suggests(suggest::SCORE_HOLDERS).then(
-                            argument("objective", ArgumentType::Objective)
-                                .then(argument("score", int(Some(0))).executes(sb(S::Remove))),
+                    )
+                    .then(
+                        literal("remove").then(
+                            argument("targets", holders())
+                                .suggests(suggest::SCORE_HOLDERS)
+                                .then(
+                                    argument("objective", ArgumentType::Objective).then(
+                                        argument("score", int(Some(0))).executes(sb(S::Remove)),
+                                    ),
+                                ),
                         ),
-                    ))
+                    )
                     .then(
                         literal("reset").then(
                             argument("targets", holders())
@@ -543,38 +609,46 @@ pub(super) fn register_scoreboard(d: &mut Dispatcher<CommandId>) {
                                 ),
                         ),
                     )
-                    .then(literal("enable").then(
-                        argument("targets", holders()).suggests(suggest::SCORE_HOLDERS).then(
-                            argument("objective", ArgumentType::Objective)
-                                .suggests(suggest::TRIGGER_OBJECTIVES)
-                                .executes(sb(S::Enable)),
+                    .then(
+                        literal("enable").then(
+                            argument("targets", holders())
+                                .suggests(suggest::SCORE_HOLDERS)
+                                .then(
+                                    argument("objective", ArgumentType::Objective)
+                                        .suggests(suggest::TRIGGER_OBJECTIVES)
+                                        .executes(sb(S::Enable)),
+                                ),
                         ),
-                    ))
+                    )
                     .then(
                         literal("display")
-                            .then(literal("name").then(
-                                argument("targets", holders())
-                                    .suggests(suggest::SCORE_HOLDERS)
-                                    .then(
-                                        argument("objective", ArgumentType::Objective)
-                                            .executes(sb(S::DisplayNameClear))
-                                            .then(
-                                                argument("name", ArgumentType::Component)
-                                                    .executes(sb(S::DisplayName)),
-                                            ),
-                                    ),
-                            ))
-                            .then(literal("numberformat").then(
-                                argument("targets", holders())
-                                    .suggests(suggest::SCORE_HOLDERS)
-                                    .then(
-                                        argument("objective", ArgumentType::Objective)
-                                            .executes(sb(S::PlayerFormatClear))
-                                            .then(pb)
-                                            .then(pf)
-                                            .then(ps),
-                                    ),
-                            )),
+                            .then(
+                                literal("name").then(
+                                    argument("targets", holders())
+                                        .suggests(suggest::SCORE_HOLDERS)
+                                        .then(
+                                            argument("objective", ArgumentType::Objective)
+                                                .executes(sb(S::DisplayNameClear))
+                                                .then(
+                                                    argument("name", ArgumentType::Component)
+                                                        .executes(sb(S::DisplayName)),
+                                                ),
+                                        ),
+                                ),
+                            )
+                            .then(
+                                literal("numberformat").then(
+                                    argument("targets", holders())
+                                        .suggests(suggest::SCORE_HOLDERS)
+                                        .then(
+                                            argument("objective", ArgumentType::Objective)
+                                                .executes(sb(S::PlayerFormatClear))
+                                                .then(pb)
+                                                .then(pf)
+                                                .then(ps),
+                                        ),
+                                ),
+                            ),
                     )
                     .then(
                         literal("operation").then(

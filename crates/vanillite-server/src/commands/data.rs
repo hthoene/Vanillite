@@ -5,7 +5,7 @@ use vanillite_base::{BlockPos, Vec3};
 use vanillite_command::coords::Coordinates;
 use vanillite_command::error::CommandError;
 use vanillite_command::nbt_path::NbtPath;
-use vanillite_command::{ArgValue, Args, Arg as ErrArg};
+use vanillite_command::{Arg as ErrArg, ArgValue, Args};
 use vanillite_data::entity::ids;
 use vanillite_game::entities::Entities;
 use vanillite_nbt::{Compound, List, Tag};
@@ -99,7 +99,11 @@ pub(crate) fn read(target: &DataTarget, env: &Env<'_>) -> Result<Compound, Comma
 }
 
 /// `DataAccessor.setData`.
-pub(crate) fn write(target: &DataTarget, env: &mut Env<'_>, data: Compound) -> Result<(), CommandError> {
+pub(crate) fn write(
+    target: &DataTarget,
+    env: &mut Env<'_>,
+    data: Compound,
+) -> Result<(), CommandError> {
     match target {
         DataTarget::Storage(id) => {
             env.global.systems.storage().insert(id.clone(), data);
@@ -124,12 +128,11 @@ pub(crate) fn read_source(
 pub(crate) fn single_tag(path: &NbtPath, root: &Tag) -> Result<Tag, CommandError> {
     let mut found = nbt_ops::get(path, root)?;
     if found.len() != 1 {
-        return Err(CommandError::new(
-            "commands.data.get.multiple",
-            vec![],
-        ));
+        return Err(CommandError::new("commands.data.get.multiple", vec![]));
     }
-    found.pop().ok_or_else(|| CommandError::new("commands.data.get.multiple", vec![]))
+    found
+        .pop()
+        .ok_or_else(|| CommandError::new("commands.data.get.multiple", vec![]))
 }
 
 /// A UUID as Vanilla's int array.
@@ -138,7 +141,11 @@ fn uuid_tag(uuid: u128) -> Tag {
 }
 
 fn vec3_list(v: Vec3) -> Tag {
-    Tag::List(List(vec![Tag::Double(v.x), Tag::Double(v.y), Tag::Double(v.z)]))
+    Tag::List(List(vec![
+        Tag::Double(v.x),
+        Tag::Double(v.y),
+        Tag::Double(v.z),
+    ]))
 }
 
 /// `Entity.saveWithoutId` for the data the server keeps for every entity, with the kind's own
@@ -179,7 +186,10 @@ pub(crate) fn entity_nbt(entities: &Entities, id: EntityId) -> Option<Compound> 
     } else if e.kind() == ids::ITEM
         && let Some(item) = entities.item(id)
     {
-        out.insert("Item", Tag::Compound(vanillite_game::inventory::stack_to_nbt(&item.stack)));
+        out.insert(
+            "Item",
+            Tag::Compound(vanillite_game::inventory::stack_to_nbt(&item.stack)),
+        );
         out.insert("Age", Tag::Short(item.age));
         out.insert("PickupDelay", Tag::Short(item.pickup_delay));
         if let Some(owner) = item.target {
@@ -233,7 +243,9 @@ pub(crate) fn apply_entity_nbt(
     };
     entities.set_tags(id, tags);
     if let Some(mut e) = entities.store.get_mut(id) {
-        if let Some(pos) = read_vec3(data.get("Pos")).filter(|p| p.x.is_finite() && p.y.is_finite() && p.z.is_finite()) {
+        if let Some(pos) = read_vec3(data.get("Pos"))
+            .filter(|p| p.x.is_finite() && p.y.is_finite() && p.z.is_finite())
+        {
             e.set_pos(pos);
         }
         if let Some(motion) = read_vec3(data.get("Motion")) {
@@ -266,7 +278,10 @@ pub(crate) fn apply_entity_nbt(
 }
 
 fn e_kind_is_item(entities: &Entities, id: EntityId) -> bool {
-    entities.store.get(id).is_some_and(|e| e.kind() == ids::ITEM)
+    entities
+        .store
+        .get(id)
+        .is_some_and(|e| e.kind() == ids::ITEM)
 }
 
 /// Writes a number at a path of a target (`execute store ... <path> <type> <scale>`).
@@ -286,6 +301,7 @@ pub(crate) fn store_number(
 }
 
 /// The error of a value that is no number (`commands.data.get.invalid`).
+#[expect(dead_code, reason = "used by /data")]
 pub(crate) fn not_numeric(path: &NbtPath) -> CommandError {
     CommandError::new(
         "commands.data.get.invalid",

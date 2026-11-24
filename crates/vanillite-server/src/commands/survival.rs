@@ -435,7 +435,7 @@ pub(crate) fn kill(source: &CommandSource, env: &mut Env<'_>, victims: &[Target]
             .unwrap_or("minecraft:overworld");
         match victim.entity {
             Some(id) if victim.world == source.world => {
-                WorldSurvival::kill(env.entities, None, global, dimension, id);
+                WorldSurvival::kill(&mut env.level.entities, None, global, dimension, id);
             }
             _ => {
                 let uuid = victim.uuid;

@@ -290,12 +290,25 @@ pub(crate) fn resolve_position(source: &CommandSource, coordinates: &Coordinates
                 forward.x * upv.y - forward.y * upv.x,
             );
             let leftv = Vec3::new(-leftv.x, -leftv.y, -leftv.z);
+            let origin = source.anchor_pos();
             Vec3::new(
-                source.pos.x + forward.x * forwards + upv.x * up + leftv.x * left,
-                source.pos.y + forward.y * forwards + upv.y * up + leftv.y * left,
-                source.pos.z + forward.z * forwards + upv.z * up + leftv.z * left,
+                origin.x + forward.x * forwards + upv.x * up + leftv.x * left,
+                origin.y + forward.y * forwards + upv.y * up + leftv.y * left,
+                origin.z + forward.z * forwards + upv.z * up + leftv.z * left,
             )
         }
+    }
+}
+
+/// `Coordinates.getRotation` as (`y_rot`, `x_rot`); local rotations are zero.
+#[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+pub(crate) fn resolve_rotation(source: &CommandSource, rotation: &Coordinates) -> (f32, f32) {
+    match rotation {
+        Coordinates::World([x, y, _]) => (
+            y.get(f64::from(source.rot.0)) as f32,
+            x.get(f64::from(source.rot.1)) as f32,
+        ),
+        Coordinates::Local(_) => (0.0, 0.0),
     }
 }
 

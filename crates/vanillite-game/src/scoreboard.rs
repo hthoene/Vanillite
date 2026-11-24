@@ -395,7 +395,9 @@ impl Team {
         if let Some(color) = self.color.and_then(named_color) {
             inner = inner.color(vanillite_protocol::text::Color::Named(color));
         }
-        Component::text("[").append(inner).append(Component::text("]"))
+        Component::text("[")
+            .append(inner)
+            .append(Component::text("]"))
     }
 
     /// `PlayerTeam.formatNameForTeam`: prefix, the name in the team colour, suffix.
@@ -542,7 +544,9 @@ impl Scoreboard {
 
     /// The objective in a display slot.
     pub fn display(&self, slot: u8) -> Option<&str> {
-        self.display.get(usize::from(slot)).and_then(Option::as_deref)
+        self.display
+            .get(usize::from(slot))
+            .and_then(Option::as_deref)
     }
 
     /// `setDisplayObjective`.
@@ -600,7 +604,11 @@ impl Scoreboard {
         value: i32,
         display: Option<&Component>,
     ) -> bool {
-        let Some(auto) = self.objectives.get(objective).map(|o| o.display_auto_update) else {
+        let Some(auto) = self
+            .objectives
+            .get(objective)
+            .map(|o| o.display_auto_update)
+        else {
             return false;
         };
         let (score, new) = self.score_entry(holder, objective);

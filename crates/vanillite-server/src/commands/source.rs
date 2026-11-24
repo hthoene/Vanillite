@@ -122,6 +122,40 @@ impl vanillite_command::Source for CommandSource {
                     .collect()
             }
             suggest::WHITELISTED => access.whitelisted_names(),
+            suggest::SCORE_HOLDERS => {
+                let mut names: Vec<String> = online.into_iter().map(|p| p.name).collect();
+                names.extend(
+                    self.global
+                        .systems
+                        .scoreboard()
+                        .holders()
+                        .filter(|h| !names.iter().any(|n| n == h))
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>(),
+                );
+                names
+            }
+            suggest::TRIGGER_OBJECTIVES => self
+                .global
+                .systems
+                .scoreboard()
+                .objectives()
+                .filter(|o| o.criteria == vanillite_game::scoreboard::CriteriaKind::Trigger)
+                .map(|o| o.name.clone())
+                .collect(),
+            suggest::FUNCTIONS => {
+                let library = self.global.systems.functions();
+                let tags: Vec<String> = library.tag_names().map(|t| format!("#{t}")).collect();
+                let names: Vec<&str> = library.names().collect();
+                builder.suggest_resource_ids(names.iter().copied());
+                builder.suggest_matching(tags.iter().map(String::as_str));
+                return;
+            }
+            suggest::STORAGE => {
+                let ids: Vec<String> = self.global.systems.storage().keys().cloned().collect();
+                builder.suggest_resource_ids(ids.iter().map(String::as_str));
+                return;
+            }
             suggest::TIMELINES => {
                 builder.suggest_resource_ids(
                     self.registry_entries("minecraft:timeline")
@@ -141,6 +175,52 @@ impl vanillite_command::Source for CommandSource {
             None => vanillite_data::registry::Registry::by_name(registry)
                 .is_none_or(|r| r.id(id).is_some()),
         }
+    }
+
+    fn registry_tags(&self, registry: &str) -> Vec<String> {
+        if registry == "minecraft:function" {
+            return self
+                .global
+                .systems
+                .functions()
+                .tag_names()
+                .map(str::to_owned)
+                .collect();
+        }
+        self.global
+            .systems
+            .tags()
+            .get(registry)
+            .map(|t| t.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    fn tag_entries(&self, registry: &str, tag: &str) -> Vec<String> {
+        self.global
+            .systems
+            .tags()
+            .get(registry)
+            .and_then(|t| t.get(tag))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn objective_names(&self) -> Vec<String> {
+        self.global
+            .systems
+            .scoreboard()
+            .objectives()
+            .map(|o| o.name.clone())
+            .collect()
+    }
+
+    fn team_names(&self) -> Vec<String> {
+        self.global
+            .systems
+            .scoreboard()
+            .teams()
+            .map(|t| t.name.clone())
+            .collect()
     }
 
     fn registry_entries(&self, registry: &str) -> Vec<String> {
@@ -175,6 +255,14 @@ impl CommandSource {
             anchor: Anchor::Feet,
             silent: false,
             callback: Callback::Empty,
+        }
+    }
+
+    /// `EntityAnchorArgument.Anchor.apply(source)`: the position, or the entity's eyes.
+    pub(crate) fn anchor_pos(&self) -> Vec3 {
+        match (self.anchor, &self.entity) {
+            (Anchor::Eyes, Some(e)) => self.pos + Vec3::new(0.0, e.eye_height, 0.0),
+            _ => self.pos,
         }
     }
 

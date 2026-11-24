@@ -235,18 +235,19 @@ impl WorldPlayers {
         let Some(global_arc) = global.arc() else {
             return;
         };
-        let source = crate::commands::CommandSource {
-            global: global_arc,
-            kind: crate::commands::SourceKind::Player {
+        let source = crate::commands::CommandSource::new(
+            global_arc,
+            crate::commands::SourceKind::Player {
                 uuid: arrival.uuid,
                 name: name.clone(),
                 sink: Arc::clone(&sink),
             },
-            level: crate::commands::permission_level(global, arrival.uuid),
+            crate::commands::permission_level(global, arrival.uuid),
             world,
             pos,
             rot,
-        };
+            None,
+        );
         crate::commands::send_permissions(global, sink.as_ref(), network_id, &source);
         global
             .players

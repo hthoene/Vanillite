@@ -10,6 +10,10 @@ use vanillite_protocol::packets::play::clientbound::CommandSuggestions;
 use vanillite_protocol::text::{Component, Content};
 
 const OUR_COMMANDS: &[&str] = &[
+    "execute",
+    "function",
+    "return",
+    "scoreboard",
     "gamemode",
     "gamerule",
     "help",

@@ -5,7 +5,7 @@ use vanillite_command::error::CommandError;
 use vanillite_command::selector::EntitySelector;
 use vanillite_command::values::Anchor;
 use vanillite_command::{GameProfileArg, Message, Parsed, Source as _};
-use vanillite_game::commands::CommandId;
+use vanillite_game::commands::{CommandId, ExecuteOp};
 use vanillite_game::player::chat::ChatMessage;
 use vanillite_game::player::join::display_name;
 use vanillite_protocol::packets::play::clientbound::{LookAtEntity, PlayerLookAt};
@@ -32,24 +32,9 @@ fn targets(
     env: &Env<'_>,
     source: &CommandSource,
     selector: &EntitySelector,
-    players_only: bool,
+    _players_only: bool,
 ) -> Result<Vec<Target>, CommandError> {
-    if selector.uses_selector && !source.allows_selectors() {
-        return Err(CommandError::new(
-            "argument.entity.selector.not_allowed",
-            vec![],
-        ));
-    }
-    let found = select::select(selector, source, env.entities, env.global);
-    if found.is_empty() {
-        let key = if players_only {
-            "argument.entity.notfound.player"
-        } else {
-            "argument.entity.notfound.entity"
-        };
-        return Err(CommandError::new(key, vec![]));
-    }
-    Ok(found)
+    select::many(env, source, selector)
 }
 
 fn selector_arg<'a>(
@@ -130,7 +115,7 @@ fn resolve_message(
     let mut out = Component::text(text.get(..first).unwrap_or(""));
     let mut previous = first;
     for part in &message.parts {
-        let names = select::select(&part.selector, source, env.entities, env.global)
+        let names = select::select(&part.selector, source, &env.level.entities, env.global)
             .into_iter()
             .map(|t| display_name(&t.name, t.uuid))
             .collect();
@@ -181,13 +166,17 @@ fn require_player(source: &CommandSource) -> Result<(), CommandError> {
 
 /// The source itself as a target.
 fn self_target(env: &Env<'_>, source: &CommandSource) -> Result<Target, CommandError> {
-    let uuid = source
-        .uuid()
+    let own = source
+        .entity
+        .as_ref()
         .ok_or_else(|| CommandError::new("permissions.requires.entity", vec![]))?;
-    select::online_players(env.entities, env.global, source.world)
-        .into_iter()
-        .find(|t| t.uuid == uuid)
-        .ok_or_else(|| CommandError::new("permissions.requires.entity", vec![]))
+    let found = match own.id.filter(|_| own.world == env.world) {
+        Some(id) => select::local(&env.level.entities, env.world, id),
+        None => select::online_players(&env.level.entities, env.global, source.world)
+            .into_iter()
+            .find(|t| t.uuid == own.uuid),
+    };
+    found.ok_or_else(|| CommandError::new("permissions.requires.entity", vec![]))
 }
 
 /// `LookAt.perform` for players: `player_look_at` from the eyes.
@@ -208,7 +197,7 @@ fn look_at(
         };
         let network_id = to
             .entity
-            .and_then(|id| env.entities.store.get(id))
+            .and_then(|id| env.level.entities.store.get(id))
             .map(|e| e.network_id().0);
         let pos = to.place.map_or(source.pos, |(p, _, _)| p);
         Some((
@@ -244,13 +233,7 @@ fn targets_single(
     source: &CommandSource,
     selector: &EntitySelector,
 ) -> Result<Target, CommandError> {
-    let mut found = targets(env, source, selector, false)?;
-    if found.len() > 1 {
-        return Err(CommandError::new("argument.entity.toomany", vec![]));
-    }
-    found
-        .pop()
-        .ok_or_else(|| CommandError::new("argument.entity.notfound.entity", vec![]))
+    select::single(env, source, selector)
 }
 
 /// Executes a parsed command; errors are shown to the source by the caller.
@@ -275,7 +258,7 @@ pub(crate) fn execute(
             };
             Ok(exec::game_mode(
                 source,
-                env.entities,
+                &mut env.level.entities,
                 global,
                 targets,
                 config_game_mode(*mode),
@@ -337,7 +320,13 @@ pub(crate) fn execute(
                     rotation: parsed.args.coordinates("rotation").copied(),
                 },
             };
-            let count = exec::teleport(source, env.entities, global, local.clone(), destination)?;
+            let count = exec::teleport(
+                source,
+                &mut env.level.entities,
+                global,
+                local.clone(),
+                destination,
+            )?;
             look_at(env, source, &local, parsed)?;
             Ok(count)
         }
@@ -454,5 +443,20 @@ pub(crate) fn execute(
             exec::whitelist_change(source, global, &profiles, false)
         }
         CommandId::WhitelistReload => Ok(exec::whitelist_reload(source, global)),
+        CommandId::Execute(ExecuteOp::Test { condition, unless }) => {
+            super::execute::run_condition(condition, unless, &parsed.args, source, env)
+        }
+        CommandId::Scoreboard(op) => super::scores::run(op, &parsed.args, source, env),
+        // Redirect modifiers never end a command; the engine runs `function` and `return`.
+        CommandId::Execute(_)
+        | CommandId::ExecuteIfFunction
+        | CommandId::ExecuteUnlessFunction
+        | CommandId::Function
+        | CommandId::FunctionWithArguments
+        | CommandId::FunctionWith
+        | CommandId::FunctionWithPath
+        | CommandId::ReturnValue
+        | CommandId::ReturnFail
+        | CommandId::ReturnRun => Err(CommandError::new("command.unknown.command", vec![])),
     }
 }

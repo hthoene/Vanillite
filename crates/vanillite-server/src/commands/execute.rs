@@ -62,7 +62,7 @@ pub(crate) fn store(store: &Store, env: &mut Env<'_>, success: bool, result: i32
         StoreKind::Score { holders, objective } => {
             let mut board = env.global.systems.scoreboard();
             for holder in holders {
-                board.set_score(holder, objective, value);
+                board.set_score(holder, objective, value, None);
             }
         }
         StoreKind::Data {
@@ -169,16 +169,13 @@ fn teleport_scale(from: WorldId, to: WorldId) -> f64 {
 /// The world of a dimension argument (`DimensionArgument.getDimension`).
 pub(crate) fn dimension(args: &Args, name: &str) -> Result<WorldId, CommandError> {
     let id = args.identifier(name).ok_or_else(|| missing(name))?;
-    crate::world_setup::DIMENSIONS
+    crate::server::DIMENSIONS
         .iter()
         .position(|d| d == id)
         .and_then(|i| u16::try_from(i).ok())
         .map(WorldId)
         .ok_or_else(|| {
-            CommandError::new(
-                "argument.dimension.invalid",
-                vec![ErrArg::Str(id.clone())],
-            )
+            CommandError::new("argument.dimension.invalid", vec![ErrArg::Str(id.clone())])
         })
 }
 
@@ -409,7 +406,10 @@ pub(crate) fn modify(
                 }
                 StoreTarget::Data(_, ty) => StoreKind::Data {
                     target: data::target(args, "target", source, env)?,
-                    path: args.nbt_path("path").ok_or_else(|| missing("path"))?.clone(),
+                    path: args
+                        .nbt_path("path")
+                        .ok_or_else(|| missing("path"))?
+                        .clone(),
                     ty,
                     scale: args.double("scale").copied().unwrap_or(1.0),
                 },

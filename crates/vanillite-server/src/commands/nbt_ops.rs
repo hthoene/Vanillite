@@ -1,9 +1,9 @@
 //! Reading and changing NBT along a path (Vanilla's `NbtPathArgument.NbtPath` and its nodes,
 //! `NbtUtils.compareNbt`).
 
+use vanillite_command::Arg as ErrArg;
 use vanillite_command::error::CommandError;
 use vanillite_command::nbt_path::{NbtPath, PathNode};
-use vanillite_command::Arg as ErrArg;
 use vanillite_nbt::{Compound, List, Tag};
 
 /// Vanilla's depth limit of data written with a path.
@@ -58,7 +58,10 @@ fn resolve_index(index: i32, len: usize) -> Option<usize> {
     } else {
         i64::from(index)
     };
-    (0..len).contains(&i).then(|| usize::try_from(i).ok()).flatten()
+    (0..len)
+        .contains(&i)
+        .then(|| usize::try_from(i).ok())
+        .flatten()
 }
 
 /// `getTag` of one node.
@@ -317,7 +320,10 @@ fn parents(
         [] | [_] => f(tag),
         [first, rest @ ..] => {
             let next = rest.first().map(preferred_parent);
-            let create = || next.clone().unwrap_or_else(|| Tag::Compound(Compound::new()));
+            let create = || {
+                next.clone()
+                    .unwrap_or_else(|| Tag::Compound(Compound::new()))
+            };
             each_or_create(first, tag, &create, &mut |child| parents(rest, child, f))
         }
     }
@@ -386,14 +392,18 @@ fn set_node(node: &PathNode, parent: &mut Tag, value: &Tag) -> usize {
                     l.0 = vec![value.clone(); len];
                     true
                 }
-                Tag::ByteArray(a) => numeric(value).and_then(|n| i8::try_from(n).ok()).is_some_and(|n| {
-                    a.iter_mut().for_each(|v| *v = n);
-                    true
-                }),
-                Tag::IntArray(a) => numeric(value).and_then(|n| i32::try_from(n).ok()).is_some_and(|n| {
-                    a.iter_mut().for_each(|v| *v = n);
-                    true
-                }),
+                Tag::ByteArray(a) => numeric(value)
+                    .and_then(|n| i8::try_from(n).ok())
+                    .is_some_and(|n| {
+                        a.iter_mut().for_each(|v| *v = n);
+                        true
+                    }),
+                Tag::IntArray(a) => numeric(value)
+                    .and_then(|n| i32::try_from(n).ok())
+                    .is_some_and(|n| {
+                        a.iter_mut().for_each(|v| *v = n);
+                        true
+                    }),
                 Tag::LongArray(a) => numeric(value).is_some_and(|n| {
                     a.iter_mut().for_each(|v| *v = n);
                     true
@@ -493,6 +503,7 @@ fn set_element(parent: &mut Tag, index: usize, value: &Tag) -> bool {
 }
 
 /// `NbtPath.getOrCreate` with `f` applied to each result; returns the sum of `f`.
+#[expect(dead_code, reason = "used by /data")]
 pub(crate) fn modify_or_create(
     path: &NbtPath,
     root: &mut Tag,
@@ -514,6 +525,7 @@ pub(crate) fn modify_or_create(
 }
 
 /// `NbtPath.remove`: the number of removed tags. Parents are not created.
+#[expect(dead_code, reason = "used by /data")]
 pub(crate) fn remove(path: &NbtPath, root: &mut Tag) -> usize {
     fn walk(nodes: &[PathNode], tag: &mut Tag) -> usize {
         match nodes {
@@ -532,6 +544,7 @@ pub(crate) fn remove(path: &NbtPath, root: &mut Tag) -> usize {
 }
 
 /// Applies `f` to the existing tags a node gets (no creation).
+#[expect(dead_code, reason = "used by /data")]
 fn for_existing(node: &PathNode, parent: &mut Tag, f: &mut dyn FnMut(&mut Tag)) -> Option<()> {
     match node {
         PathNode::Child(name) => f(parent_compound(parent)?.get_mut(name)?),
@@ -570,6 +583,7 @@ fn for_existing(node: &PathNode, parent: &mut Tag, f: &mut dyn FnMut(&mut Tag)) 
     Some(())
 }
 
+#[expect(dead_code, reason = "used by /data")]
 fn parent_compound(tag: &mut Tag) -> Option<&mut Compound> {
     match tag {
         Tag::Compound(c) => Some(c),
@@ -578,6 +592,7 @@ fn parent_compound(tag: &mut Tag) -> Option<&mut Compound> {
 }
 
 /// `removeTag` of the last node.
+#[expect(dead_code, reason = "used by /data")]
 fn remove_node(node: &PathNode, parent: &mut Tag) -> usize {
     match node {
         PathNode::Child(name) => parent_compound(parent)
@@ -587,7 +602,8 @@ fn remove_node(node: &PathNode, parent: &mut Tag) -> usize {
             let Some(c) = parent_compound(parent) else {
                 return 0;
             };
-            if matches!(c.get(name), Some(Tag::Compound(child)) if compound_matches(pattern, child)) {
+            if matches!(c.get(name), Some(Tag::Compound(child)) if compound_matches(pattern, child))
+            {
                 c.remove(name);
                 return 1;
             }

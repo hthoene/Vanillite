@@ -154,6 +154,8 @@ fn help_lines_like_vanilla() {
     assert_eq!(
         op,
         [
+            "/execute (run|if|unless|as|at|store|positioned|rotated|facing|align|anchored|in|summon|on)",
+            "/function <name> [<arguments>|with]",
             "/gamemode <gamemode> [<target>]",
             concat!(
                 "/gamerule (command_block_output|minecraft:command_block_output|",
@@ -209,7 +211,9 @@ fn help_lines_like_vanilla() {
             "/msg <targets> <message>",
             "/tell -> msg",
             "/w -> msg",
+            "/return (<value>|fail|run)",
             "/say <message>",
+            "/scoreboard (objectives|players)",
             "/seed",
             "/teleport (<location>|<destination>|<targets>)",
             "/tp -> teleport",

@@ -363,9 +363,7 @@ impl ServerBuilder {
                     .collect(),
             );
         }
-        global
-            .systems
-            .set_spawn(level_setup.spawn.0);
+        global.systems.set_spawn(level_setup.spawn.0);
         crate::commands::load_game_systems(&global);
         let watch = Arc::new(WatchState::new(
             config.server.watchdog.early_warning_after.get(),

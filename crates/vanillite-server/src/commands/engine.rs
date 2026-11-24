@@ -23,8 +23,6 @@ const MAX_QUEUE: usize = 10_000_000;
 /// A parsed command line ready to run.
 #[derive(Clone)]
 pub(crate) struct Line {
-    /// The text (for messages and the log).
-    pub(crate) input: Arc<str>,
     /// The parse result.
     pub(crate) parsed: Arc<Parsed<CommandId>>,
     /// Signed arguments of a player's command.
@@ -76,7 +74,7 @@ impl Callback {
                 acc.any.store(true, Ordering::Relaxed);
                 let _ = acc
                     .sum
-                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |s| {
+                    .try_update(Ordering::Relaxed, Ordering::Relaxed, |s| {
                         Some(s.wrapping_add(value))
                     });
             }
@@ -502,7 +500,10 @@ impl Engine {
                                 handle_error(
                                     &original,
                                     env,
-                                    &CommandError::new("command.forkLimit", vec![ErrArg::Int(limit)]),
+                                    &CommandError::new(
+                                        "command.forkLimit",
+                                        vec![ErrArg::Int(limit)],
+                                    ),
                                     mods.forked,
                                 );
                                 return;
@@ -534,12 +535,11 @@ impl Engine {
             }
             return;
         }
-        if mods.is_return {
-            if let Some(first) = sources.first() {
-                let returning =
-                    first.with_callback(Callback::chain(&first.callback, &frame.ret));
-                sources = vec![returning];
-            }
+        if mods.is_return
+            && let Some(first) = sources.first()
+        {
+            let returning = first.with_callback(Callback::chain(&first.callback, &frame.ret));
+            sources = vec![returning];
         }
         self.queue(
             frame,
@@ -615,7 +615,7 @@ impl Engine {
                                 "commands.execute.function.instantiationFailure",
                                 vec![
                                     ErrArg::Str(function.id.to_string()),
-                                    ErrArg::Component(Box::new(reason)),
+                                    ErrArg::Component(reason),
                                 ],
                             );
                             handle_error(&original, env, &e, mods.forked);
@@ -625,7 +625,8 @@ impl Engine {
                 let instantiated: Arc<[Arc<Instantiated>]> = instantiated.into();
                 let passed = Arc::new(Mutex::new(Vec::with_capacity(sources.len())));
                 for source in sources {
-                    let context = functions::function_sender(&source.with_callback(Callback::Empty));
+                    let context =
+                        functions::function_sender(&source.with_callback(Callback::Empty));
                     let output = Callback::Condition(Arc::new(Condition {
                         when_nonzero,
                         source,
@@ -726,7 +727,15 @@ impl Engine {
             )
         };
         source.send_success(env.global, message, true);
-        self.queue_functions(&found, arguments.as_ref(), source, &common, frame, mods, env)
+        self.queue_functions(
+            &found,
+            arguments.as_ref(),
+            source,
+            &common,
+            frame,
+            mods,
+            env,
+        )
     }
 
     /// `FunctionCommand.queueFunctions`.
@@ -751,15 +760,17 @@ impl Engine {
         };
         let mut calls = Vec::with_capacity(found.len());
         for function in found {
-            let instantiated = function.instantiate(arguments, env.global).map_err(|reason| {
-                CommandError::new(
-                    "commands.function.instantiationFailure",
-                    vec![
-                        ErrArg::Str(function.id.to_string()),
-                        ErrArg::Component(Box::new(reason)),
-                    ],
-                )
-            })?;
+            let instantiated = function
+                .instantiate(arguments, env.global)
+                .map_err(|reason| {
+                    CommandError::new(
+                        "commands.function.instantiationFailure",
+                        vec![
+                            ErrArg::Str(function.id.to_string()),
+                            ErrArg::Component(reason),
+                        ],
+                    )
+                })?;
             calls.push((function.id.to_string(), instantiated));
         }
         if mods.is_return {

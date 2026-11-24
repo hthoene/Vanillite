@@ -43,7 +43,11 @@ impl std::fmt::Debug for GameSystems {
 
 impl GameSystems {
     /// Empty systems; [`crate::commands::load_game_systems`] fills them once the server exists.
-    pub(crate) fn new(level_dir: PathBuf, vanilla_pack: Option<PathBuf>, function_level: u8) -> Self {
+    pub(crate) fn new(
+        level_dir: PathBuf,
+        vanilla_pack: Option<PathBuf>,
+        function_level: u8,
+    ) -> Self {
         GameSystems {
             scoreboard: Mutex::new(Scoreboard::new()),
             storage: Mutex::new(CommandStorage::new()),
@@ -77,7 +81,9 @@ impl GameSystems {
 
     /// The scoreboard.
     pub(crate) fn scoreboard(&self) -> MutexGuard<'_, Scoreboard> {
-        self.scoreboard.lock().unwrap_or_else(PoisonError::into_inner)
+        self.scoreboard
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Command storage.
@@ -87,18 +93,39 @@ impl GameSystems {
 
     /// The function library.
     pub(crate) fn functions(&self) -> Arc<FunctionLibrary> {
-        Arc::clone(&self.functions.read().unwrap_or_else(PoisonError::into_inner))
+        Arc::clone(
+            &self
+                .functions
+                .read()
+                .unwrap_or_else(PoisonError::into_inner),
+        )
     }
 
     /// Replaces the function library; the load functions run on the next tick.
     pub(crate) fn set_functions(&self, library: FunctionLibrary) {
-        *self.functions.write().unwrap_or_else(PoisonError::into_inner) = Arc::new(library);
+        *self
+            .functions
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = Arc::new(library);
         self.post_reload.store(true, Ordering::Release);
     }
 
     /// Whether the load functions are due; clears the flag.
     pub(crate) fn take_post_reload(&self) -> bool {
         self.post_reload.swap(false, Ordering::AcqRel)
+    }
+
+    /// Whether a command boss bar exists (`CustomBossEvents.get`); boss bars are not kept yet.
+    pub(crate) fn bossbar_exists(&self, _id: &str) -> bool {
+        false
+    }
+
+    /// Sets a command boss bar's value or maximum (`execute store bossbar`).
+    pub(crate) fn set_bossbar_value(&self, _id: &str, _max: bool, _value: i32) {}
+
+    /// The elapsed seconds of a stopwatch (`Stopwatches.get`); stopwatches are not kept yet.
+    pub(crate) fn stopwatch_seconds(&self, _id: &str) -> Option<f64> {
+        None
     }
 
     /// The overworld spawn (the server's command position).
