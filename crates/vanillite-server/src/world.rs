@@ -156,17 +156,17 @@ impl ServerWorld {
         let simulation = chunks.player_simulation_level();
         for (id, player) in self.level.entities.players.iter() {
             let center = player.chunk_view.center;
-            match self.player_tickets.get(&id) {
-                Some(&(old, _, _)) if old == center => {}
-                _ => {
+            match self.player_tickets.get_mut(&id) {
+                Some((old, _, _)) if *old == center => {}
+                Some((old, ticket, sim)) => {
+                    chunks.move_ticket(*ticket, center);
+                    chunks.move_simulation_ticket(*sim, center);
+                    *old = center;
+                }
+                None => {
                     let ticket = chunks.add_ticket(center, level);
                     let sim = chunks.add_simulation_ticket(center, simulation);
-                    if let Some((_, old, old_sim)) =
-                        self.player_tickets.insert(id, (center, ticket, sim))
-                    {
-                        chunks.remove_ticket(old);
-                        chunks.remove_simulation_ticket(old_sim);
-                    }
+                    self.player_tickets.insert(id, (center, ticket, sim));
                 }
             }
         }

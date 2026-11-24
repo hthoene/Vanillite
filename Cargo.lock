@@ -1615,6 +1615,7 @@ dependencies = [
 name = "vanillite-world"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "log",
  "rustc-hash",
  "vanillite-base",
