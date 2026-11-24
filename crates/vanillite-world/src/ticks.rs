@@ -239,6 +239,19 @@ impl LevelTicks {
         self.to_run_set.contains(&(kind, pos))
     }
 
+    /// The ticks scheduled in a chunk, unordered (observation, e.g. parity traces).
+    pub fn ticks_in(&self, chunk: ChunkPos) -> impl Iterator<Item = &ScheduledTick> {
+        self.containers
+            .get(&chunk)
+            .into_iter()
+            .flat_map(|c| c.queue.iter().map(|Reverse(Queued(t))| t))
+    }
+
+    /// `DRAIN_ORDER` key of a tick (trigger time, priority, sub-tick).
+    pub fn drain_order(tick: &ScheduledTick) -> (i64, TickPriority, i64) {
+        tick.drain_key()
+    }
+
     /// Number of scheduled ticks.
     pub fn count(&self) -> usize {
         self.containers.values().map(ChunkTicks::len).sum()

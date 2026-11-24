@@ -1068,6 +1068,16 @@ impl Chunks {
         self.fluid_ticks.has_scheduled(pos, fluid)
     }
 
+    /// The scheduled block ticks (read only).
+    pub fn block_ticks(&self) -> &LevelTicks {
+        &self.block_ticks
+    }
+
+    /// The scheduled fluid ticks (read only).
+    pub fn fluid_ticks(&self) -> &LevelTicks {
+        &self.fluid_ticks
+    }
+
     /// `getBlockTicks().willTickThisTick(pos, block)`.
     pub fn block_tick_runs_this_tick(&mut self, pos: BlockPos, block: u16) -> bool {
         self.block_ticks.will_tick_this_tick(pos, block)

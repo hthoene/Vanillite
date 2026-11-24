@@ -1349,7 +1349,11 @@ pub fn wire_connecting_side(
 }
 
 /// `RedstoneWireBlock.getConnectionState`.
-pub fn wire_connection_state(level: &impl BlockLevel, state: BlockState, pos: BlockPos) -> BlockState {
+pub fn wire_connection_state(
+    level: &impl BlockLevel,
+    state: BlockState,
+    pos: BlockPos,
+) -> BlockState {
     let is_dot = |s: BlockState| {
         HORIZONTAL
             .into_iter()
