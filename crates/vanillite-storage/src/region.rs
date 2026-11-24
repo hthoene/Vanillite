@@ -25,8 +25,9 @@ const SECTOR: usize = 4096;
 const HEADER_SECTORS: usize = 2;
 const MAX_SECTORS: usize = 255;
 const EXTERNAL: u8 = 128;
-/// Free sectors between two records that are still read in one go.
-const MAX_GAP_SECTORS: usize = 1;
+/// Free sectors between two records that are still read in one go: 32 KiB more per read cost
+/// less than a second read on IOPS-bound disks (#56 measurements).
+const MAX_GAP_SECTORS: usize = 8;
 /// Largest single read of neighbouring records.
 const MAX_RUN_SECTORS: usize = 256;
 
@@ -480,7 +481,7 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 
-    /// Neighbouring records come in one read; read-ahead takes only adjacent ones.
+    /// Neighbouring records come in one read; read-ahead takes only those near a wanted one.
     #[test]
     fn neighbours_are_read_together() {
         let dir = std::env::temp_dir().join(format!("vanillite-region-n-{}", std::process::id()));
@@ -498,7 +499,11 @@ mod tests {
         assert_eq!(reads, 1);
         let mut slots: Vec<(usize, bool)> = out.iter().map(|r| (r.slot, r.ahead)).collect();
         slots.sort_unstable();
-        assert_eq!(slots, [(0, false), (1, false), (2, false), (3, true)]);
+        // Slot 5 lies two sectors behind slot 3 (slot 4 between them is not wanted).
+        assert_eq!(
+            slots,
+            [(0, false), (1, false), (2, false), (3, true), (5, true)]
+        );
         for read in &out {
             let record = read.record.as_ref().unwrap().as_ref().unwrap();
             assert_eq!(record.len(), 5001);
