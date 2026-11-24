@@ -11,11 +11,13 @@
 //!   is bounded by [`Limits`] (SEC-04).
 
 pub mod argument;
+mod block_arg;
 pub mod bounds;
 pub mod coords;
 pub mod error;
 mod game_args;
 pub mod game_values;
+mod item_arg;
 pub mod limits;
 pub mod nbt_path;
 mod packet;

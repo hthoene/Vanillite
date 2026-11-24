@@ -620,7 +620,7 @@ impl ArgumentType {
                 let entries = ctx.source.registry_entries(registry);
                 b.suggest_resource_ids(entries.iter().map(String::as_str));
             }
-            _ => {}
+            _ => return crate::game_args::suggestions(self, b, ctx),
         }
         b.build()
     }
@@ -713,7 +713,9 @@ impl ArgumentType {
             Self::ItemSlots => Parser::plain("minecraft:item_slots"),
             Self::Function => Parser::plain("minecraft:function"),
             Self::Dimension => Parser::plain("minecraft:dimension"),
-            Self::ResourceOrTag { registry } => p("minecraft:resource_or_tag", registry_props(registry)),
+            Self::ResourceOrTag { registry } => {
+                p("minecraft:resource_or_tag", registry_props(registry))
+            }
             Self::ResourceOrTagKey { registry } => {
                 p("minecraft:resource_or_tag_key", registry_props(registry))
             }
@@ -738,7 +740,9 @@ impl ArgumentType {
 }
 
 fn registry_props(registry: &str) -> ParserProps {
-    ParserProps::Registry(Identifier::new(registry).unwrap_or_else(|_| Identifier::vanilla("empty")))
+    ParserProps::Registry(
+        Identifier::new(registry).unwrap_or_else(|_| Identifier::vanilla("empty")),
+    )
 }
 
 /// Java's `String.split(" ")`: trailing empty fields are dropped.
@@ -751,7 +755,7 @@ fn java_split(s: &str) -> Vec<&str> {
 }
 
 /// Suggestions of entity and game profile arguments (`EntityArgument.listSuggestions`).
-fn selector_suggestions(
+pub(crate) fn selector_suggestions(
     b: &SuggestionsBuilder<'_>,
     ctx: ParseCtx<'_>,
     _players_only: bool,

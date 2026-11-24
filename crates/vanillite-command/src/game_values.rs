@@ -165,13 +165,13 @@ pub enum ItemTest {
     Not(Box<ItemTest>),
 }
 
-/// `minecraft:item_predicate`: what the item must be and the tests, as alternatives (`|`) of
-/// conjunctions (`,`).
+/// `minecraft:item_predicate`: what the item must be and the tests: all conditions (`,`) must
+/// match, each condition is a list of alternatives (`|`) of which one must match.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ItemPredicateArg {
-    /// `*`, an item id or `#tag`.
+    /// An item id or `#tag`; `None` for `*`.
     pub item: Option<ResourceOrTag>,
-    /// Any of the inner lists must fully match; empty means no tests.
+    /// Every inner list must have a matching test; empty means no tests.
     pub tests: Vec<Vec<ItemTest>>,
 }
 
@@ -202,8 +202,9 @@ pub struct AngleArg {
     pub relative: bool,
 }
 
-/// `minecraft:team_color`: a `ChatFormatting` colour id (0..=15) or `reset` (`None`).
-pub type TeamColor = Option<u8>;
+/// `minecraft:team_color`: the id of a `TeamColor` (0 = black ..= 15 = white; 26.3 has no
+/// `reset` here).
+pub type TeamColor = u8;
 
 /// Game argument values that need their own variant in `ArgValue`.
 #[derive(Debug, Clone, PartialEq)]
