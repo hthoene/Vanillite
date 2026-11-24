@@ -444,12 +444,9 @@ impl ServerBuilder {
                 players,
                 level,
                 survival,
-<<<<<<< HEAD
                 mobs,
                 entity_io,
-=======
                 data,
->>>>>>> origin/dev
             ));
         }
         let (worlds, routes) = if parallel {
