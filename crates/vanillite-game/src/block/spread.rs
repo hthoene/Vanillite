@@ -12,13 +12,22 @@ use crate::level::{Level, update};
 /// `LightEngine.getLightDampeningInto(from, to, direction, to.getLightDampening())`.
 fn light_dampening_into(from: BlockState, to: BlockState, direction: Direction) -> i32 {
     let simple = i32::from(to.light_dampening());
-    let empty = |s: BlockState| !s.has(flags::CAN_OCCLUDE) || !s.has(flags::USE_SHAPE_FOR_LIGHT_OCCLUSION);
+    let empty =
+        |s: BlockState| !s.has(flags::CAN_OCCLUDE) || !s.has(flags::USE_SHAPE_FOR_LIGHT_OCCLUSION);
     let (from_empty, to_empty) = (empty(from), empty(to));
     if from_empty && to_empty {
         return simple;
     }
-    let from_shape = if from_empty { &[][..] } else { from.occlusion_shape() };
-    let to_shape = if to_empty { &[][..] } else { to.occlusion_shape() };
+    let from_shape = if from_empty {
+        &[][..]
+    } else {
+        from.occlusion_shape()
+    };
+    let to_shape = if to_empty {
+        &[][..]
+    } else {
+        to.occlusion_shape()
+    };
     if merged_face_occludes(from_shape, to_shape, direction) {
         16
     } else {
@@ -45,7 +54,11 @@ fn can_propagate(level: &Level, state: BlockState, pos: BlockPos) -> bool {
 
 /// `SpreadingSnowyBlock.randomTick` of grass blocks and mycelium: dies to dirt when covered,
 /// spreads to dirt nearby in the light.
-pub(super) fn spreading_snowy_dirt_random_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
+pub(super) fn spreading_snowy_dirt_random_tick(
+    level: &mut Level,
+    state: BlockState,
+    pos: BlockPos,
+) {
     let base = ids::DIRT;
     if !can_stay_alive(level, state, pos) {
         level.set_block_and_update(pos, base.default_state());
@@ -163,7 +176,13 @@ fn scan_for_water(level: &Level, state: BlockState, pos: BlockPos) -> bool {
 }
 
 /// `BaseCoralPlantTypeBlock.tryScheduleDieTick` on placement of coral plants and fans.
-pub(super) fn coral_on_place(level: &mut Level, state: BlockState, pos: BlockPos, _old: BlockState, _moved: bool) {
+pub(super) fn coral_on_place(
+    level: &mut Level,
+    state: BlockState,
+    pos: BlockPos,
+    _old: BlockState,
+    _moved: bool,
+) {
     if dead_coral(state.block()).is_some() && !scan_for_water(level, state, pos) {
         let delay = 60 + level.random().next_int_bounded(40);
         level.schedule_block_tick(pos, state.block(), delay);

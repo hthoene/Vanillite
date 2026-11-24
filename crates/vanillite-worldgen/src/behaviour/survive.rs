@@ -4,6 +4,7 @@
 use vanillite_base::{BlockPos, Direction};
 use vanillite_data::block::{BlockState, ids};
 
+use super::BlockLevel;
 use super::class::{Class, class_of};
 use super::geometry::{is_face_empty, is_face_full};
 use super::props::{HORIZONTAL, PosExt, StateExt, clockwise, counter_clockwise};
@@ -12,7 +13,6 @@ use super::{
     SupportType, can_attach_multiface, can_support_center, can_support_rigid_block, is_face_sturdy,
     is_solid, raw_brightness,
 };
-use super::BlockLevel;
 
 /// `state.canSurvive(level, pos)`.
 pub(crate) fn can_survive(level: &impl BlockLevel, state: BlockState, pos: BlockPos) -> bool {

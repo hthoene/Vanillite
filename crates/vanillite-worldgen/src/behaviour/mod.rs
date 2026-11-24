@@ -33,8 +33,8 @@ use crate::feature::region::WorldGenRegion;
 pub use class::{Class, class_of, class_of_block};
 pub use geometry::{is_full_block, merged_face_occludes};
 pub use props::{HORIZONTAL, PosExt, StateExt, UPDATE_SHAPE_ORDER, with_properties_of};
-pub use update::{concrete_of, touches_liquid};
 pub use tables::{BlockTags, FluidTags, Tags, init, tags};
+pub use update::{concrete_of, touches_liquid};
 
 /// What block behaviour reads from and schedules in a level (Vanilla's `LevelReader` plus
 /// `ScheduledTickAccess` and the level random, as far as shape updates and survival checks use

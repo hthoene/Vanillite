@@ -15,11 +15,14 @@ mod neighbors;
 mod tick;
 pub mod update;
 
+#[cfg(test)]
+mod tests;
+
 use std::sync::Arc;
 
+use vanillite_base::hash::FxHashMap;
 use vanillite_base::random::{LegacyRandom, RandomSource};
 use vanillite_base::{BlockPos, ChunkPos, Direction, SectionPos};
-use vanillite_base::hash::FxHashMap;
 use vanillite_data::block::{BlockId, BlockState};
 use vanillite_data::fluid::FluidState;
 use vanillite_world::chunks::Chunks;
@@ -295,7 +298,11 @@ impl Level {
         };
         let light = chunk.chunk.light();
         let index = (pos.y >> 4) - (chunk.chunk.min_section() - 1);
-        let (x, y, z) = ((pos.x & 15) as u32, (pos.y & 15) as u32, (pos.z & 15) as u32);
+        let (x, y, z) = (
+            (pos.x & 15) as u32,
+            (pos.y & 15) as u32,
+            (pos.z & 15) as u32,
+        );
         let Ok(index) = usize::try_from(index) else {
             return (0, 0);
         };
@@ -408,8 +415,7 @@ impl Level {
         let new_block = state.block();
         let block_changed = old.block() != new_block;
         let moved = flags & update::MOVE_BY_PISTON != 0;
-        if (block_changed || block::is_rail(new_block))
-            && (flags & update::NEIGHBORS != 0 || moved)
+        if (block_changed || block::is_rail(new_block)) && (flags & update::NEIGHBORS != 0 || moved)
         {
             self.affect_neighbors_after_removal(old, pos, moved);
         }
@@ -524,7 +530,13 @@ impl Level {
 
     /// `state.updateNeighbourShapes(level, pos, flags, limit)`: every neighbour in
     /// `UPDATE_SHAPE_ORDER` learns that `state` is now at `pos`.
-    pub fn update_neighbour_shapes(&mut self, state: BlockState, pos: BlockPos, flags: u32, limit: i32) {
+    pub fn update_neighbour_shapes(
+        &mut self,
+        state: BlockState,
+        pos: BlockPos,
+        flags: u32,
+        limit: i32,
+    ) {
         for direction in shared::UPDATE_SHAPE_ORDER {
             let neighbour = pos.relative(direction);
             self.neighbor_shape_changed(direction.opposite(), neighbour, pos, state, flags, limit);
@@ -586,7 +598,13 @@ impl Level {
     }
 
     /// `state.handleNeighborChanged(level, pos, block, orientation, movedByPiston)`.
-    fn handle_neighbor_changed(&mut self, state: BlockState, pos: BlockPos, source: BlockId, moved: bool) {
+    fn handle_neighbor_changed(
+        &mut self,
+        state: BlockState,
+        pos: BlockPos,
+        source: BlockId,
+        moved: bool,
+    ) {
         if let Some(f) = self.behaviours.get(state.block()).neighbor_changed {
             f(self, state, pos, source, moved);
         }

@@ -420,7 +420,11 @@ pub(crate) fn level_settings(
         has_sky_light: info.has_sky_light,
         ..vanillite_game::level::LevelSettings::default()
     };
-    apply_simulation_rules(&mut settings, rules, properties.max_chained_neighbor_updates);
+    apply_simulation_rules(
+        &mut settings,
+        rules,
+        properties.max_chained_neighbor_updates,
+    );
     settings
 }
 

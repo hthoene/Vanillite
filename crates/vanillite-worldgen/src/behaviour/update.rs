@@ -7,6 +7,7 @@
 use vanillite_base::{BlockPos, Direction};
 use vanillite_data::block::{BlockId, BlockState, INSTRUMENTS, flags, ids};
 
+use super::BlockLevel;
 use super::class::{Class, class_of};
 use super::geometry::{Rect, face_covers};
 use super::props::{
@@ -21,7 +22,6 @@ use super::survive::{
 };
 use super::tables::{can_burn, tags};
 use super::{SupportType, can_attach_multiface, is_face_sturdy};
-use super::BlockLevel;
 
 const AIR: BlockState = BlockState::AIR;
 /// `Fluids.WATER` (`minecraft:fluid` id).
@@ -623,11 +623,7 @@ fn water_tick_if_waterlogged(level: &mut impl BlockLevel, state: BlockState, pos
 }
 
 /// `!state.canSurvive(level, pos) ? AIR : state`.
-fn break_unless_survives(
-    level: &impl BlockLevel,
-    state: BlockState,
-    pos: BlockPos,
-) -> BlockState {
+fn break_unless_survives(level: &impl BlockLevel, state: BlockState, pos: BlockPos) -> BlockState {
     if can_survive(level, state, pos) {
         state
     } else {
@@ -1184,11 +1180,7 @@ pub(crate) fn vine_updated_state(
 }
 
 /// `NoteBlock.setInstrument`.
-fn note_block_instrument(
-    level: &impl BlockLevel,
-    state: BlockState,
-    pos: BlockPos,
-) -> BlockState {
+fn note_block_instrument(level: &impl BlockLevel, state: BlockState, pos: BlockPos) -> BlockState {
     let instrument = |s: BlockState| INSTRUMENTS[usize::from(s.misc().instrument)];
     // `NoteBlockInstrument.worksAboveNoteBlock`: mob heads and custom heads.
     let works_above = |name: &str| {
@@ -1357,11 +1349,7 @@ fn wire_connecting_side(
 }
 
 /// `RedstoneWireBlock.getConnectionState`.
-fn wire_connection_state(
-    level: &impl BlockLevel,
-    state: BlockState,
-    pos: BlockPos,
-) -> BlockState {
+fn wire_connection_state(level: &impl BlockLevel, state: BlockState, pos: BlockPos) -> BlockState {
     let is_dot = |s: BlockState| {
         HORIZONTAL
             .into_iter()
@@ -1420,7 +1408,11 @@ fn speleothem(
         return state;
     }
     if dir == tip.opposite() && !can_survive(level, state, pos) {
-        level.schedule_block_tick(pos, state.block(), if tip == Direction::Down { 2 } else { 1 });
+        level.schedule_block_tick(
+            pos,
+            state.block(),
+            if tip == Direction::Down { 2 } else { 1 },
+        );
         return state;
     }
     let merge = state.value("thickness") == Some("tip_merge");

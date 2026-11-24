@@ -131,7 +131,11 @@ pub fn encode_light_update_filtered(
 
 fn write_filtered_arrays(out: &mut Vec<u8>, layers: &[LightNibbles], mask: &SectionMask) {
     let sent = |index: usize, layer: &LightNibbles| mask.contains(index) && sends_array(layer);
-    let count = layers.iter().enumerate().filter(|(i, l)| sent(*i, l)).count();
+    let count = layers
+        .iter()
+        .enumerate()
+        .filter(|(i, l)| sent(*i, l))
+        .count();
     write_varint(out, count as u32);
     for (index, layer) in layers.iter().enumerate() {
         if !sent(index, layer) {

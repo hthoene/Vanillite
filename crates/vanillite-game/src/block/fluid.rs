@@ -8,11 +8,11 @@
 
 use std::sync::OnceLock;
 
-use vanillite_worldgen::behaviour::{PosExt, StateExt};
 use vanillite_base::hash::FxHashMap;
 use vanillite_base::{BlockPos, Direction};
 use vanillite_data::block::{BLOCK_COUNT, BLOCKS, BlockId, BlockState, PROPERTIES, ids};
 use vanillite_data::fluid::{FLUID_STATES, FluidState};
+use vanillite_worldgen::behaviour::{PosExt, StateExt};
 use vanillite_worldgen::behaviour::{is_full_block, merged_face_occludes};
 
 use super::{block_tags, drops, is_liquid, is_solid};
@@ -133,7 +133,12 @@ fn fluid_state(fluid: u16, amount: i32, falling: bool) -> FluidState {
         FLUID_STATES
             .iter()
             .enumerate()
-            .map(|(id, info)| ((info.fluid, info.amount, info.falling), FluidState(id as u8)))
+            .map(|(id, info)| {
+                (
+                    (info.fluid, info.amount, info.falling),
+                    FluidState(id as u8),
+                )
+            })
             .collect()
     });
     let amount = if matches!(fluid, WATER | LAVA) {
@@ -156,7 +161,13 @@ fn height(level: &Level, fluid: FluidState, pos: BlockPos) -> f32 {
 }
 
 /// `fluidState.canBeReplacedWith(level, pos, other, direction)`.
-fn can_be_replaced_with(level: &Level, fluid: FluidState, pos: BlockPos, other: u16, direction: Direction) -> bool {
+fn can_be_replaced_with(
+    level: &Level,
+    fluid: FluidState,
+    pos: BlockPos,
+    other: u16,
+    direction: Direction,
+) -> bool {
     let other_is_water = Kind::of(other) == Some(Kind::Water);
     match Kind::of(fluid.info().fluid) {
         None => true,
@@ -182,7 +193,14 @@ fn container(block: BlockId) -> Container {
         (0..BLOCK_COUNT)
             .map(|id| {
                 let block = BlockId(id as u16);
-                if [ids::KELP, ids::KELP_PLANT, ids::SEAGRASS, ids::TALL_SEAGRASS].contains(&block) {
+                if [
+                    ids::KELP,
+                    ids::KELP_PLANT,
+                    ids::SEAGRASS,
+                    ids::TALL_SEAGRASS,
+                ]
+                .contains(&block)
+                {
                     Container::Closed
                 } else if BLOCKS[id]
                     .properties
@@ -200,7 +218,8 @@ fn container(block: BlockId) -> Container {
 
 /// `canHoldAnyFluid(state)`.
 fn can_hold_any_fluid(state: BlockState) -> bool {
-    container(state.block()) != Container::None || block_tags().washed_away_by_fluids.contains(state)
+    container(state.block()) != Container::None
+        || block_tags().washed_away_by_fluids.contains(state)
 }
 
 /// `canHoldSpecificFluid(level, pos, state, fluid)`.
@@ -269,7 +288,12 @@ fn is_water_hole(kind: Kind, top: BlockState, bottom: BlockState) -> bool {
 }
 
 /// `canMaybePassThrough(level, sourcePos, sourceState, direction, testPos, testState, testFluid)`.
-fn can_maybe_pass_through(kind: Kind, source: BlockState, direction: Direction, test: BlockState) -> bool {
+fn can_maybe_pass_through(
+    kind: Kind,
+    source: BlockState,
+    direction: Direction,
+    test: BlockState,
+) -> bool {
     !kind.is_source_of(test.fluid_state())
         && can_hold_any_fluid(test)
         && can_pass_through_wall(direction, source, test)
@@ -336,7 +360,13 @@ pub fn tick(level: &mut Level, pos: BlockPos, state: BlockState, fluid: FluidSta
 }
 
 /// `getSpreadDelay`: lava rising in height waits four times as long three times in four.
-fn spread_delay(level: &mut Level, kind: Kind, pos: BlockPos, old: FluidState, new: FluidState) -> i32 {
+fn spread_delay(
+    level: &mut Level,
+    kind: Kind,
+    pos: BlockPos,
+    old: FluidState,
+    new: FluidState,
+) -> i32 {
     let delay = tick_delay(level, kind.source());
     if kind == Kind::Lava
         && !old.is_empty()
@@ -362,8 +392,13 @@ fn spread(level: &mut Level, kind: Kind, pos: BlockPos, state: BlockState, fluid
     if can_maybe_pass_through(kind, state, Direction::Down, below) {
         let new = new_liquid(level, kind, below_pos, below);
         let new_type = new.info().fluid;
-        if can_be_replaced_with(level, below.fluid_state(), below_pos, new_type, Direction::Down)
-            && can_hold_specific_fluid(below, new_type)
+        if can_be_replaced_with(
+            level,
+            below.fluid_state(),
+            below_pos,
+            new_type,
+            Direction::Down,
+        ) && can_hold_specific_fluid(below, new_type)
         {
             spread_to(level, kind, below_pos, below, Direction::Down, new);
             if source_neighbour_count(level, kind, pos) >= 3 {
@@ -386,7 +421,13 @@ fn source_neighbour_count(level: &Level, kind: Kind, pos: BlockPos) -> usize {
 }
 
 /// `spreadToSides(level, pos, fluidState, state)`.
-fn spread_to_sides(level: &mut Level, kind: Kind, pos: BlockPos, fluid: FluidState, state: BlockState) {
+fn spread_to_sides(
+    level: &mut Level,
+    kind: Kind,
+    pos: BlockPos,
+    fluid: FluidState,
+    state: BlockState,
+) {
     let mut amount = i32::from(fluid.info().amount) - kind.drop_off(level);
     if fluid.info().falling {
         amount = 7;
@@ -403,7 +444,12 @@ fn spread_to_sides(level: &mut Level, kind: Kind, pos: BlockPos, fluid: FluidSta
 
 /// `getSpread(level, pos, state)`: the directions towards the nearest holes with the fluid each
 /// gets, in `Direction` order (the iteration order of Vanilla's `EnumMap`).
-fn get_spread(level: &Level, kind: Kind, pos: BlockPos, state: BlockState) -> Vec<(Direction, FluidState)> {
+fn get_spread(
+    level: &Level,
+    kind: Kind,
+    pos: BlockPos,
+    state: BlockState,
+) -> Vec<(Direction, FluidState)> {
     let mut lowest = 1000;
     let mut result: Vec<(Direction, FluidState)> = Vec::with_capacity(4);
     let mut context: Option<SpreadContext> = None;
@@ -421,13 +467,27 @@ fn get_spread(level: &Level, kind: Kind, pos: BlockPos, state: BlockState) -> Ve
         let distance = if context.is_hole(level, kind, test_pos) {
             0
         } else {
-            slope_distance(level, kind, test_pos, 1, direction.opposite(), test, context)
+            slope_distance(
+                level,
+                kind,
+                test_pos,
+                1,
+                direction.opposite(),
+                test,
+                context,
+            )
         };
         if distance < lowest {
             result.clear();
         }
         if distance <= lowest {
-            if can_be_replaced_with(level, test.fluid_state(), test_pos, new.info().fluid, direction) {
+            if can_be_replaced_with(
+                level,
+                test.fluid_state(),
+                test_pos,
+                new.info().fluid,
+                direction,
+            ) {
                 result.push((direction, new));
             }
             lowest = distance;
@@ -464,7 +524,15 @@ fn slope_distance(
             return pass;
         }
         if pass < kind.slope_find_distance(level) {
-            let distance = slope_distance(level, kind, test_pos, pass + 1, direction.opposite(), test, context);
+            let distance = slope_distance(
+                level,
+                kind,
+                test_pos,
+                pass + 1,
+                direction.opposite(),
+                test,
+                context,
+            );
             lowest = lowest.min(distance);
         }
     }
@@ -472,7 +540,14 @@ fn slope_distance(
 }
 
 /// `spreadTo(level, pos, state, direction, target)` with `LavaFluid`'s stone rule.
-fn spread_to(level: &mut Level, kind: Kind, pos: BlockPos, state: BlockState, direction: Direction, target: FluidState) {
+fn spread_to(
+    level: &mut Level,
+    kind: Kind,
+    pos: BlockPos,
+    state: BlockState,
+    direction: Direction,
+    target: FluidState,
+) {
     if kind == Kind::Lava && direction == Direction::Down && Kind::Water.is_same(level.fluid(pos)) {
         if is_liquid(state) {
             level.set_block_and_update(pos, ids::STONE.default_state());
@@ -499,7 +574,12 @@ fn spread_to(level: &mut Level, kind: Kind, pos: BlockPos, state: BlockState, di
 }
 
 /// `SimpleWaterloggedBlock.placeLiquid`: a water source waterlogs the block.
-pub fn place_liquid(level: &mut Level, pos: BlockPos, state: BlockState, fluid: FluidState) -> bool {
+pub fn place_liquid(
+    level: &mut Level,
+    pos: BlockPos,
+    state: BlockState,
+    fluid: FluidState,
+) -> bool {
     if container(state.block()) != Container::Waterlogged
         || waterlogged(state)
         || fluid.info().fluid != WATER
@@ -530,12 +610,24 @@ pub fn waterlogged(state: BlockState) -> bool {
 pub fn random_tick(_level: &mut Level, _pos: BlockPos, _fluid: FluidState) {}
 
 /// `LiquidBlock.onPlace`.
-pub fn liquid_on_place(level: &mut Level, state: BlockState, pos: BlockPos, _old: BlockState, _moved: bool) {
+pub fn liquid_on_place(
+    level: &mut Level,
+    state: BlockState,
+    pos: BlockPos,
+    _old: BlockState,
+    _moved: bool,
+) {
     schedule_if_spreading(level, state, pos);
 }
 
 /// `LiquidBlock.neighborChanged`.
-pub fn liquid_neighbor_changed(level: &mut Level, state: BlockState, pos: BlockPos, _source: BlockId, _moved: bool) {
+pub fn liquid_neighbor_changed(
+    level: &mut Level,
+    state: BlockState,
+    pos: BlockPos,
+    _source: BlockId,
+    _moved: bool,
+) {
     schedule_if_spreading(level, state, pos);
 }
 
@@ -575,14 +667,26 @@ fn should_spread_liquid(level: &mut Level, state: BlockState, pos: BlockPos) -> 
 }
 
 /// `SpongeBlock.onPlace`.
-pub fn sponge_on_place(level: &mut Level, state: BlockState, pos: BlockPos, old: BlockState, _moved: bool) {
+pub fn sponge_on_place(
+    level: &mut Level,
+    state: BlockState,
+    pos: BlockPos,
+    old: BlockState,
+    _moved: bool,
+) {
     if !old.is(state.block()) {
         try_absorb_water(level, pos);
     }
 }
 
 /// `SpongeBlock.neighborChanged`.
-pub fn sponge_neighbor_changed(level: &mut Level, _state: BlockState, pos: BlockPos, _source: BlockId, _moved: bool) {
+pub fn sponge_neighbor_changed(
+    level: &mut Level,
+    _state: BlockState,
+    pos: BlockPos,
+    _source: BlockId,
+    _moved: bool,
+) {
     try_absorb_water(level, pos);
 }
 
@@ -646,7 +750,14 @@ fn absorb(level: &mut Level, start: BlockPos, pos: BlockPos) -> bool {
         level.set_block(pos, BlockState::AIR, update::ALL_IMMEDIATE);
         return true;
     }
-    if [ids::KELP, ids::KELP_PLANT, ids::SEAGRASS, ids::TALL_SEAGRASS].contains(&state.block()) {
+    if [
+        ids::KELP,
+        ids::KELP_PLANT,
+        ids::SEAGRASS,
+        ids::TALL_SEAGRASS,
+    ]
+    .contains(&state.block())
+    {
         drops::drop_resources(level, pos, state, None);
         level.set_block_and_update(pos, BlockState::AIR);
         return true;

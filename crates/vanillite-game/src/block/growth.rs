@@ -135,7 +135,10 @@ pub(super) fn stem_random_tick(level: &mut Level, state: BlockState, pos: BlockP
     };
     if level.block(target).is_air() && support.contains(below) {
         level.set_block_and_update(target, fruit.default_state());
-        level.set_block_and_update(pos, attached.default_state().set_direction("facing", direction));
+        level.set_block_and_update(
+            pos,
+            attached.default_state().set_direction("facing", direction),
+        );
     }
 }
 
@@ -307,9 +310,7 @@ pub(super) fn nether_wart_random_tick(level: &mut Level, state: BlockState, pos:
 /// `SweetBerryBushBlock.randomTick`.
 pub(super) fn sweet_berry_random_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
     let age = state.int("age").unwrap_or(3);
-    if age < 3
-        && level.random().next_int_bounded(5) == 0
-        && level.raw_brightness(pos.above()) >= 9
+    if age < 3 && level.random().next_int_bounded(5) == 0 && level.raw_brightness(pos.above()) >= 9
     {
         level.set_block(pos, state.set_int("age", age + 1), update::CLIENTS);
     }
@@ -346,8 +347,15 @@ pub(super) fn farmland_random_tick(level: &mut Level, state: BlockState, pos: Bl
     // `isRainingAt(pos.above())`: there is no weather yet.
     if !near_water(level, pos) {
         if moisture > 0 {
-            level.set_block(pos, state.set_int("moisture", moisture - 1), update::CLIENTS);
-        } else if !block_tags().maintains_farmland.contains(level.block(pos.above())) {
+            level.set_block(
+                pos,
+                state.set_int("moisture", moisture - 1),
+                update::CLIENTS,
+            );
+        } else if !block_tags()
+            .maintains_farmland
+            .contains(level.block(pos.above()))
+        {
             level.set_block_and_update(pos, ids::DIRT.default_state());
         }
     } else if moisture < 7 {
@@ -383,17 +391,18 @@ pub(super) fn budding_amethyst_random_tick(level: &mut Level, _state: BlockState
     let target = pos.relative(direction);
     let current = level.block(target);
     let facing_here = current.direction("facing") == Some(direction);
-    let next = if current.is_air() || current.is(ids::WATER) && current.fluid_state().info().amount == 8 {
-        Some(ids::SMALL_AMETHYST_BUD)
-    } else if current.is(ids::SMALL_AMETHYST_BUD) && facing_here {
-        Some(ids::MEDIUM_AMETHYST_BUD)
-    } else if current.is(ids::MEDIUM_AMETHYST_BUD) && facing_here {
-        Some(ids::LARGE_AMETHYST_BUD)
-    } else if current.is(ids::LARGE_AMETHYST_BUD) && facing_here {
-        Some(ids::AMETHYST_CLUSTER)
-    } else {
-        None
-    };
+    let next =
+        if current.is_air() || current.is(ids::WATER) && current.fluid_state().info().amount == 8 {
+            Some(ids::SMALL_AMETHYST_BUD)
+        } else if current.is(ids::SMALL_AMETHYST_BUD) && facing_here {
+            Some(ids::MEDIUM_AMETHYST_BUD)
+        } else if current.is(ids::MEDIUM_AMETHYST_BUD) && facing_here {
+            Some(ids::LARGE_AMETHYST_BUD)
+        } else if current.is(ids::LARGE_AMETHYST_BUD) && facing_here {
+            Some(ids::AMETHYST_CLUSTER)
+        } else {
+            None
+        };
     if let Some(next) = next {
         let waterlogged = current.fluid_state().info().fluid == fluid::WATER;
         let state = next
@@ -411,7 +420,10 @@ mod tests {
     #[test]
     fn crop_ages() {
         assert_eq!(crop_max_age(ids::WHEAT), 7);
-        assert_eq!(crop_state_for_age(ids::TORCHFLOWER_CROP, 2), ids::TORCHFLOWER.default_state());
+        assert_eq!(
+            crop_state_for_age(ids::TORCHFLOWER_CROP, 2),
+            ids::TORCHFLOWER.default_state()
+        );
         assert_eq!(crop_state_for_age(ids::WHEAT, 3).int("age"), Some(3));
     }
 }

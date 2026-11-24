@@ -11,7 +11,12 @@ use crate::level::Level;
 
 /// `Block.dropResources(state, level, pos, blockEntity, breaker, tool)`: the block's loot at
 /// `pos`, if the `doTileDrops` game rule allows.
-pub fn drop_resources(level: &mut Level, pos: BlockPos, state: BlockState, breaker: Option<EntityId>) {
+pub fn drop_resources(
+    level: &mut Level,
+    pos: BlockPos,
+    state: BlockState,
+    breaker: Option<EntityId>,
+) {
     if !level.settings.block_drops {
         return;
     }

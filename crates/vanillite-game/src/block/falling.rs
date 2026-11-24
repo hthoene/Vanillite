@@ -6,12 +6,12 @@
 //! 0.04 and drag 0.98 and becomes a block again where it lands, or drops as an item where it
 //! cannot.
 
-use vanillite_worldgen::behaviour::{PosExt, StateExt};
 use vanillite_base::{Aabb, BlockPos, Vec3};
 use vanillite_data::block::{BlockId, BlockState, ids};
 use vanillite_data::entity::ids as entity_ids;
 use vanillite_world::entity::{EntityFlags, EntityId, NewEntity};
 use vanillite_worldgen::behaviour::{self as shared, Class, class_of};
+use vanillite_worldgen::behaviour::{PosExt, StateExt};
 
 use super::{can_be_replaced, drops, fluid, is_fire};
 use crate::entities::FallingBlockData;
@@ -28,7 +28,13 @@ fn delay_after_place(state: BlockState) -> i32 {
 }
 
 /// `FallingBlock.onPlace`.
-pub fn on_place(level: &mut Level, state: BlockState, pos: BlockPos, _old: BlockState, _moved: bool) {
+pub fn on_place(
+    level: &mut Level,
+    state: BlockState,
+    pos: BlockPos,
+    _old: BlockState,
+    _moved: bool,
+) {
     level.schedule_block_tick(pos, state.block(), delay_after_place(state));
 }
 
@@ -40,7 +46,13 @@ pub fn tick(level: &mut Level, state: BlockState, pos: BlockPos) {
 }
 
 /// `BrushableBlock.onPlace`.
-pub fn brushable_on_place(level: &mut Level, state: BlockState, pos: BlockPos, _old: BlockState, _moved: bool) {
+pub fn brushable_on_place(
+    level: &mut Level,
+    state: BlockState,
+    pos: BlockPos,
+    _old: BlockState,
+    _moved: bool,
+) {
     level.schedule_block_tick(pos, state.block(), 2);
 }
 
@@ -53,7 +65,10 @@ pub fn brushable_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
 
 /// `FallingBlock.isFree(state)`.
 pub fn is_free(state: BlockState) -> bool {
-    state.is_air() || is_fire(state) || state.has(vanillite_data::block::flags::LIQUID) || can_be_replaced(state)
+    state.is_air()
+        || is_fire(state)
+        || state.has(vanillite_data::block::flags::LIQUID)
+        || can_be_replaced(state)
 }
 
 /// `FallingBlockEntity.fall(level, pos, state)`: the block becomes its fluid and an entity
@@ -61,7 +76,11 @@ pub fn is_free(state: BlockState) -> bool {
 pub fn fall(level: &mut Level, pos: BlockPos, state: BlockState, drop_item: bool) -> EntityId {
     let falling = state.with("waterlogged", "false").unwrap_or(state);
     let below = state.fluid_state().block_state();
-    let spawn_pos = Vec3::new(f64::from(pos.x) + 0.5, f64::from(pos.y), f64::from(pos.z) + 0.5);
+    let spawn_pos = Vec3::new(
+        f64::from(pos.x) + 0.5,
+        f64::from(pos.y),
+        f64::from(pos.z) + 0.5,
+    );
     level.set_block_and_update(pos, below);
     let uuid = level.new_uuid();
     let network_id = level.network_ids().next();
@@ -123,7 +142,8 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
     let stuck_in_water = concrete && fluid::is_water(level.fluid(block_pos));
     let mut removed = false;
     if !on_ground && !stuck_in_water {
-        if time > 100 && (block_pos.y <= level.min_y() || block_pos.y > level.max_y()) || time > 600 {
+        if time > 100 && (block_pos.y <= level.min_y() || block_pos.y > level.max_y()) || time > 600
+        {
             if data.drop_item && level.settings.entity_drops {
                 drops::spawn_block_item(level, new_pos, block);
             }
@@ -135,7 +155,8 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
         velocity = Vec3::new(velocity.x * 0.7, velocity.y * -0.5, velocity.z * 0.7);
         if !current.is(ids::MOVING_PISTON) {
             let may_replace = can_be_replaced_by_falling(current);
-            let would_continue = is_free(level.block(block_pos.below())) && (!concrete || !stuck_in_water);
+            let would_continue =
+                is_free(level.block(block_pos.below())) && (!concrete || !stuck_in_water);
             let would_survive = level.can_survive(data.state, block_pos) && !would_continue;
             level.entities.despawn(id);
             removed = true;
@@ -164,7 +185,11 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
     }
     if !removed && let Some(mut entity) = level.entities.store.get_mut(id) {
         // `getAirDrag()`.
-        entity.set_velocity(Vec3::new(velocity.x * 0.98, velocity.y * 0.98, velocity.z * 0.98));
+        entity.set_velocity(Vec3::new(
+            velocity.x * 0.98,
+            velocity.y * 0.98,
+            velocity.z * 0.98,
+        ));
         entity.set_flags(EntityFlags::PRECISE_POSITION, horizontal || vertical);
     }
 }
@@ -207,7 +232,11 @@ fn collide(level: &Level, aabb: Aabb, movement: Vec3) -> Vec3 {
     let mut aabb = aabb;
     let dy = collide_axis(level, &aabb, 1, movement.y);
     aabb = aabb.offset(0.0, dy, 0.0);
-    let (first, second) = if movement.x.abs() < movement.z.abs() { (2, 0) } else { (0, 2) };
+    let (first, second) = if movement.x.abs() < movement.z.abs() {
+        (2, 0)
+    } else {
+        (0, 2)
+    };
     let mut out = [0.0, dy, 0.0];
     for axis in [first, second] {
         let delta = collide_axis(level, &aabb, axis, [movement.x, 0.0, movement.z][axis]);
@@ -249,9 +278,9 @@ fn collide_axis(level: &Level, aabb: &Aabb, axis: usize, delta: f64) -> f64 {
                 for b in state.collision_shape() {
                     let box_min = [b[0] + origin[0], b[1] + origin[1], b[2] + origin[2]];
                     let box_max = [b[3] + origin[0], b[4] + origin[1], b[5] + origin[2]];
-                    let overlaps = (0..3).filter(|&a| a != axis).all(|a| {
-                        box_max[a] - EPSILON > min[a] && box_min[a] + EPSILON < max[a]
-                    });
+                    let overlaps = (0..3)
+                        .filter(|&a| a != axis)
+                        .all(|a| box_max[a] - EPSILON > min[a] && box_min[a] + EPSILON < max[a]);
                     if !overlaps {
                         continue;
                     }

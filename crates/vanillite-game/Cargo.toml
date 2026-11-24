@@ -22,5 +22,8 @@ rsa.workspace = true
 sha1.workspace = true
 sha2.workspace = true
 
+[dev-dependencies]
+vanillite-datapack.workspace = true
+
 [lints]
 workspace = true

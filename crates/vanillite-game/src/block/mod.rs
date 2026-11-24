@@ -14,9 +14,9 @@ mod growth;
 mod spread;
 pub mod weather;
 
-use vanillite_worldgen::behaviour::StateExt;
 use vanillite_base::{BlockPos, Direction};
 use vanillite_data::block::{BLOCK_COUNT, BlockId, BlockState, flags, ids};
+use vanillite_worldgen::behaviour::StateExt;
 use vanillite_worldgen::behaviour::{self as shared, Class, class_of_block, tags};
 
 use crate::level::Level;

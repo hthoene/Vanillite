@@ -63,7 +63,9 @@ impl WorldUpdates {
         }
         // Hand the emptied buffers back to the level.
         let reuse = level.output();
-        if reuse.changed.is_empty() && reuse.block_events.is_empty() && reuse.level_events.is_empty()
+        if reuse.changed.is_empty()
+            && reuse.block_events.is_empty()
+            && reuse.level_events.is_empty()
         {
             output.changed.clear();
             *reuse = output;
@@ -164,7 +166,10 @@ fn section_blocks_update(
     let mut body = Vec::with_capacity(16 + positions.len() * 4);
     write_varint(&mut body, ids::SECTION_BLOCKS_UPDATE);
     body.extend_from_slice(&section_pos_long(section).to_be_bytes());
-    write_varint(&mut body, i32::try_from(positions.len()).unwrap_or(i32::MAX));
+    write_varint(
+        &mut body,
+        i32::try_from(positions.len()).unwrap_or(i32::MAX),
+    );
     for &pos in positions {
         // `SectionPos.sectionRelativePos`.
         let relative = ((pos.x & 15) << 8) | ((pos.z & 15) << 4) | (pos.y & 15);
@@ -197,4 +202,3 @@ fn level_event(event: i32, pos: BlockPos, data: i32) -> Arc<SharedPacket> {
     body.push(0);
     Arc::new(SharedPacket::new(body))
 }
-

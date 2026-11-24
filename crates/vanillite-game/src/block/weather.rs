@@ -127,7 +127,11 @@ fn weathering_of(name: &str) -> Option<Weathering> {
         .skip(1)
         .find_map(|(age, prefix)| name.strip_prefix(prefix).map(|base| (age, base)))
         .unwrap_or((0, name));
-    let base = if base == "copper_block" { "copper" } else { base };
+    let base = if base == "copper_block" {
+        "copper"
+    } else {
+        base
+    };
     let named = |age: usize| {
         let name = match (age, base) {
             (0, "copper") => "copper_block".to_owned(),
@@ -146,8 +150,7 @@ fn weathering_of(name: &str) -> Option<Weathering> {
 
 /// Whether a block weathers (`WeatheringCopper` that is not oxidized yet).
 pub(super) fn weathers(block: BlockId) -> bool {
-    weathering(block).is_some_and(|w| w.next.is_some())
-        && block.default_state().random_ticks()
+    weathering(block).is_some_and(|w| w.next.is_some()) && block.default_state().random_ticks()
 }
 
 /// `ChangeOverTimeBlock.changeOverTime` of weathering copper.
@@ -201,14 +204,19 @@ mod tests {
 
     #[test]
     fn copper_weathers_in_four_ages() {
-        let next = |name: &str| {
-            weathering_of(name)
-                .and_then(|w| w.next)
-                .map(|b| b.name())
-        };
-        assert_eq!(next("minecraft:copper_block"), Some("minecraft:exposed_copper"));
-        assert_eq!(next("minecraft:exposed_copper"), Some("minecraft:weathered_copper"));
-        assert_eq!(next("minecraft:cut_copper_slab"), Some("minecraft:exposed_cut_copper_slab"));
+        let next = |name: &str| weathering_of(name).and_then(|w| w.next).map(|b| b.name());
+        assert_eq!(
+            next("minecraft:copper_block"),
+            Some("minecraft:exposed_copper")
+        );
+        assert_eq!(
+            next("minecraft:exposed_copper"),
+            Some("minecraft:weathered_copper")
+        );
+        assert_eq!(
+            next("minecraft:cut_copper_slab"),
+            Some("minecraft:exposed_cut_copper_slab")
+        );
         assert_eq!(next("minecraft:oxidized_copper"), None);
         assert!(weathering_of("minecraft:oxidized_copper").is_some());
         assert!(weathering_of("minecraft:waxed_copper_block").is_none());

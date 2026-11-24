@@ -17,9 +17,9 @@ use vanillite_chunk::slots::{ChunkGeneratorProvider, ChunkStorageProvider, Light
 use vanillite_config::{
     Config, ConfigError, RegionFileCompression, RuleSet, VANILLITE_FILE, VanillaOr,
 };
+use vanillite_game::level::Level;
 use vanillite_light::BfsLightEngineProvider;
 use vanillite_storage::{AnvilStorageProvider, Compression};
-use vanillite_game::level::Level;
 use vanillite_world::chunks::{ChunkSettings, ChunkSlots, Chunks};
 use vanillite_world::entity::NetworkIds;
 use vanillite_world::tracking::{ChunkTrackerProvider, EntityTrackerProvider, TrackerSettings};
@@ -226,6 +226,10 @@ impl ServerBuilder {
         let chat = chat_settings(&config, services_keys);
         let mut world_players = prepared.worlds.into_iter();
         let packs = prepared.packs.map(Arc::new);
+        // Block behaviour reads its tags in every world, also without the noise generator.
+        if let Some(packs) = packs.as_deref() {
+            vanillite_worldgen::behaviour::init(packs);
+        }
         let seed = prepared.world_gen.seed;
         let world_gen = prepared.world_gen.clone();
         let behaviours = Arc::new(vanillite_game::block::Behaviours::vanilla());
@@ -317,8 +321,7 @@ impl ServerBuilder {
                 unload_delay: u64::from(rules.chunks.unload_delay),
                 max_jobs: usize::from(rules.chunks.max_jobs),
                 simulation_distance: i32::from(rules.distances.simulation_distance.or(
-                    u8::try_from(config.properties.simulation_distance.clamp(2, 32))
-                        .unwrap_or(10),
+                    u8::try_from(config.properties.simulation_distance.clamp(2, 32)).unwrap_or(10),
                 )),
                 max_relights: usize::try_from(rules.simulation.max_relights_per_tick)
                     .unwrap_or(usize::MAX),

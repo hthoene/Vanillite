@@ -30,10 +30,10 @@ use std::sync::mpsc::{self, Receiver, Sender};
 
 use vanillite_base::hash::{FxHashMap, FxHashSet};
 use vanillite_base::{BlockPos, ChunkPos};
-use vanillite_chunk::slots::{ChunkGenerator, ChunkStorage, LightEngine, Neighbours, WorldInfo};
-use vanillite_chunk::{BlockStateId, ChunkStatus, ProtoChunk};
 use vanillite_chunk::light::{ChunkLight, LightNibbles};
 use vanillite_chunk::packet::SectionMask;
+use vanillite_chunk::slots::{ChunkGenerator, ChunkStorage, LightEngine, Neighbours, WorldInfo};
+use vanillite_chunk::{BlockStateId, ChunkStatus, ProtoChunk};
 
 pub use levels::{
     BLOCK_TICKING_LEVEL, ENTITY_TICKING_LEVEL, FULL_LEVEL, LevelChange, MAX_LEVEL, TicketLevels,
@@ -520,11 +520,15 @@ impl Chunks {
                         && let Some(current) = holder.chunk.as_mut()
                     {
                         let current = Arc::make_mut(current);
-                        let change = LightChange::between(current.chunk.light(), chunk.chunk.light());
+                        let change =
+                            LightChange::between(current.chunk.light(), chunk.chunk.light());
                         *current.chunk.light_mut() = chunk.chunk.light().clone();
                         holder.dirty = true;
                         if !change.is_empty() && current.status == ChunkStatus::Full {
-                            self.light_changes.entry(chunk.pos).or_default().add(&change);
+                            self.light_changes
+                                .entry(chunk.pos)
+                                .or_default()
+                                .add(&change);
                         }
                     }
                 }

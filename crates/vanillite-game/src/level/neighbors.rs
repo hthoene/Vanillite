@@ -164,7 +164,8 @@ impl Level {
                 if flags & update::SKIP_SHAPE_UPDATE_ON_WIRE == 0
                     || !current.block().eq(&ids::REDSTONE_WIRE)
                 {
-                    let new = self.update_shape(current, pos, direction, neighbour_pos, neighbour_state);
+                    let new =
+                        self.update_shape(current, pos, direction, neighbour_pos, neighbour_state);
                     self.update_or_destroy(current, new, pos, flags, limit);
                 }
             }
