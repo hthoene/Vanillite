@@ -247,6 +247,20 @@ pub struct ProtoChunk {
     /// The rest of the stored chunk (scheduled ticks, structures, post-processing, …) as binary
     /// network NBT of a compound, written back unchanged. `None` for new chunks.
     pub extra: Option<Arc<[u8]>>,
+    /// What the chunk generator keeps between its steps while the chunk is generated; not
+    /// stored, dropped when the chunk becomes `Full`.
+    pub generation: Option<GenerationState>,
+}
+
+/// Generator-private data of a chunk being generated (e.g. Vanilla's world generation
+/// heightmaps, block entity data and scheduled ticks), shared between snapshots.
+#[derive(Clone)]
+pub struct GenerationState(pub Arc<dyn std::any::Any + Send + Sync>);
+
+impl std::fmt::Debug for GenerationState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("GenerationState")
+    }
 }
 
 impl ProtoChunk {
@@ -260,6 +274,7 @@ impl ProtoChunk {
             inhabited_time: 0,
             light_on: false,
             extra: None,
+            generation: None,
         }
     }
 }

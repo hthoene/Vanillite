@@ -42,6 +42,13 @@ fn noises() -> &'static Noises {
     })
 }
 
+/// `Biome.BIOME_INFO_NOISE.get(x, z)`: the simplex noise seeded with `2345` (legacy random)
+/// that flower placement (`noise_based_count`, `noise_threshold_count`) and the frozen
+/// temperature modifier read.
+pub fn biome_info_noise(x: f64, z: f64) -> f32 {
+    noises().biome_info.get2(x, z)
+}
+
 /// `NoiseStack.get(x, y)` of `FROZEN_TEMPERATURE_NOISE`.
 fn frozen_temperature_noise(x: f64, z: f64) -> f32 {
     let mut value = 0.0f32;

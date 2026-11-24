@@ -248,6 +248,7 @@ impl ChunkGeneratorProvider for BuiltInGenerators {
             biome_source: generator.get("biome_source").ok_or("no biome source")?,
             min_y: world.min_y,
             height: i32::try_from(world.height).map_err(|e| e.to_string())?,
+            has_sky_light: world.has_sky_light,
         };
         let terrain =
             TerrainGenerator::new(packs, spec, self.world_gen.seed).map_err(|e| e.to_string())?;

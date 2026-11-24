@@ -128,6 +128,7 @@ fn chunks_match_vanilla() {
                     biome_source: &source,
                     min_y: case["min_y"].as_i64().unwrap() as i32,
                     height: case["height"].as_i64().unwrap() as i32,
+                    has_sky_light: dimension == "minecraft:overworld",
                 };
                 TerrainGenerator::new(packs, spec, seed).expect("generator")
             });
@@ -198,6 +199,7 @@ fn slot_chunk_matches_vanilla() {
         biome_source: &source,
         min_y,
         height,
+        has_sky_light: true,
     };
     let terrain = TerrainGenerator::new(packs, spec, seed).expect("generator");
     let biomes: Arc<[String]> = terrain

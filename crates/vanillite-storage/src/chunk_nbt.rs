@@ -198,6 +198,7 @@ impl Codec {
             inhabited_time,
             light_on,
             extra,
+            generation: None,
         })
     }
 
