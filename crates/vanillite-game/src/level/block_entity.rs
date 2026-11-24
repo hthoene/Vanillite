@@ -334,12 +334,9 @@ impl Level {
         }
     }
 
-    /// `ExperienceOrb.award(level, pos, amount)`. Experience orbs are not simulated yet: the
-    /// amount is queued for the server, which gives it to the nearest player.
+    /// `ExperienceOrb.award(level, pos, amount)`: experience orbs at `pos`.
     pub fn award_experience(&mut self, pos: vanillite_base::Vec3, amount: i32) {
-        if amount > 0 {
-            self.output().experience.push((pos, amount));
-        }
+        crate::experience_orb::award(self, pos, amount);
     }
 
     /// The block entity part of `LevelChunk.setBlockState` after `onPlace`: a block with a

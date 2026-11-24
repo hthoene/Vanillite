@@ -7,6 +7,7 @@ use vanillite_world::entity::{
     Dense, EntityId, EntityStore, NetworkId, NetworkIds, NewEntity, Removed, Rotation,
 };
 
+use crate::experience_orb::ExperienceOrbData;
 use crate::item_entity::ItemData;
 use crate::player::PlayerData;
 
@@ -49,6 +50,8 @@ pub struct Entities {
     pub falling_blocks: Dense<FallingBlockData>,
     /// Primed TNT kind data.
     pub primed_tnts: Dense<PrimedTntData>,
+    /// Experience orb kind data.
+    pub experience_orbs: Dense<ExperienceOrbData>,
 }
 
 impl Entities {
@@ -153,6 +156,30 @@ impl Entities {
         self.primed_tnts.get_mut(row)
     }
 
+    /// Adds an experience orb.
+    pub fn spawn_experience_orb(&mut self, new: NewEntity, data: ExperienceOrbData) -> EntityId {
+        let orbs = &mut self.experience_orbs;
+        self.store.spawn(new, |id| orbs.push(id, data))
+    }
+
+    /// The experience orb data of an entity.
+    pub fn experience_orb(&self, id: EntityId) -> Option<&ExperienceOrbData> {
+        let entity = self.store.get(id)?;
+        (entity.kind() == ids::EXPERIENCE_ORB)
+            .then(|| self.experience_orbs.get(entity.kind_row()))
+            .flatten()
+    }
+
+    /// The experience orb data of an entity, mutably.
+    pub fn experience_orb_mut(&mut self, id: EntityId) -> Option<&mut ExperienceOrbData> {
+        let entity = self.store.get(id)?;
+        if entity.kind() != ids::EXPERIENCE_ORB {
+            return None;
+        }
+        let row = entity.kind_row();
+        self.experience_orbs.get_mut(row)
+    }
+
     /// Removes an entity of any kind together with its kind data.
     pub fn despawn(&mut self, id: EntityId) -> Option<Removed> {
         let removed = self.store.despawn(id)?;
@@ -191,6 +218,10 @@ impl Entities {
             self.primed_tnts
                 .swap_remove(row)
                 .and_then(|(_, moved)| moved)
+        } else if kind == ids::EXPERIENCE_ORB {
+            self.experience_orbs
+                .swap_remove(row)
+                .and_then(|(_, moved)| moved)
         } else {
             None
         }
@@ -222,6 +253,8 @@ pub fn tick_entity(level: &mut crate::level::Level, id: EntityId, kind: EntityTy
         crate::block::falling::tick_entity(level, id);
     } else if kind == ids::TNT {
         crate::block::tnt::tick_entity(level, id);
+    } else if kind == ids::EXPERIENCE_ORB {
+        crate::experience_orb::tick_entity(level, id);
     }
 }
 
