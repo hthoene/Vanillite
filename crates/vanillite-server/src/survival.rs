@@ -747,7 +747,7 @@ impl WorldSurvival {
                         .players
                         .broadcast_system(message.clone(), false, None);
                 }
-                Effect::DropItem { .. } => {}
+                Effect::DropItem { .. } | Effect::Experience { .. } => {}
             }
         }
         spawn_drops(&effects, entities, global);
@@ -925,15 +925,28 @@ fn deliver_simple(effects: &[Effect], entities: &mut Entities, global: &Global) 
                     .players
                     .broadcast_system(message.clone(), false, None);
             }
-            Effect::DropItem { .. } => {}
+            Effect::DropItem { .. } | Effect::Experience { .. } => {}
         }
     }
     spawn_drops(effects, entities, global);
 }
 
-/// The item entities of [`Effect::DropItem`]s (`addFreshEntity`).
+/// The item entities of [`Effect::DropItem`]s (`addFreshEntity`) and the experience orbs of
+/// [`Effect::Experience`]s.
 fn spawn_drops(effects: &[Effect], entities: &mut Entities, global: &Global) {
     for effect in effects {
+        if let Effect::Experience { pos, amount } = effect {
+            vanillite_game::experience_orb::with_entity_random(|random| {
+                vanillite_game::experience_orb::award_in(
+                    entities,
+                    &global.network_ids,
+                    random,
+                    *pos,
+                    Vec3::default(),
+                    *amount,
+                );
+            });
+        }
         if let Effect::DropItem {
             uuid,
             pos,

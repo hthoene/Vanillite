@@ -177,6 +177,8 @@ pub struct Sound {
 
 /// `SoundSource.BLOCKS`.
 pub const SOUND_BLOCKS: u8 = 4;
+/// `SoundSource.PLAYERS`.
+pub const SOUND_PLAYERS: u8 = 7;
 /// `SoundSource.NEUTRAL`.
 pub const SOUND_NEUTRAL: u8 = 6;
 /// `SoundSource.RECORDS`.
@@ -197,8 +199,6 @@ pub struct LevelOutput {
     pub sounds: Vec<Sound>,
     /// Explosions.
     pub explosions: Vec<explosion::ExplosionEvent>,
-    /// Experience to award at a position (`ExperienceOrb.award`; orbs are not simulated yet).
-    pub experience: Vec<(vanillite_base::Vec3, i32)>,
     /// Block entities whose client data changed (`sendBlockUpdated` of a block entity).
     pub block_entity_updates: Vec<BlockPos>,
 }
@@ -415,6 +415,11 @@ impl Level {
     /// The server-wide network id counter.
     pub fn network_ids(&self) -> &NetworkIds {
         &self.network_ids
+    }
+
+    /// The entities, the network ids and the level random at once.
+    pub fn entity_parts(&mut self) -> (&mut Entities, &NetworkIds, &mut LegacyRandom) {
+        (&mut self.entities, &self.network_ids, &mut self.random)
     }
 
     /// The level random (`level.getRandom()`).
