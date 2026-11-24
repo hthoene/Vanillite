@@ -24,6 +24,13 @@ pub use chunk::{ChunkTracker, ChunkTrackerProvider};
 pub trait EntityTracker: Send {
     /// Computes this tick's visibility changes and movement updates. `out` is empty on entry.
     fn update(&mut self, input: &TrackerInput<'_>, out: &mut TrackerOutput);
+
+    /// The players that saw `entity` at the last update (Vanilla's `ServerEntity.seenBy`), for
+    /// packets about it (`sendToTrackingPlayers`): swings, item pickups, equipment.
+    fn seen_by(&self, entity: EntityId) -> &[EntityId] {
+        let _ = entity;
+        &[]
+    }
 }
 
 /// Creates the tracker of each world.

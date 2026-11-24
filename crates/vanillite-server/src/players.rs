@@ -5,12 +5,19 @@
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 
+use vanillite_base::BlockPos;
+use vanillite_base::hash::FxHashSet;
 use vanillite_base::{ChunkPos, Vec3};
 use vanillite_config::{GameMode, WorldRules};
 use vanillite_game::entities::Entities;
+use vanillite_game::inventory::{Drop, PlayerInventory};
+use vanillite_game::item::ItemStack;
+use vanillite_game::level::Level;
 use vanillite_game::player::chat::ChatInbox;
+use vanillite_game::player::encode::EQUIPMENT_SLOTS;
 use vanillite_game::player::encode::encode_update;
 use vanillite_game::player::join::{self, InfoEntry, LevelInfo};
+use vanillite_game::player::play::{Actor, PlayContext, throw_item};
 use vanillite_game::player::{
     Body, ChatContext, ChunkSource, ChunkView, ClientInformation, Connection, GameProfile, Handled,
     MoveContext, PacketSink, PlayerData, PlayerState, effective_view_distance,
@@ -18,11 +25,18 @@ use vanillite_game::player::{
 use vanillite_game::survival::player::Survival;
 use vanillite_game::survival::rules::Rule;
 use vanillite_net::{Latency, Outbound};
+use vanillite_protocol::packets::play::clientbound::{
+    BlockChangedAck, SetEquipment, SetHeldSlot, SwingAnimation, TakeItemEntity,
+};
+use vanillite_protocol::packets::play::serverbound::Hand;
 use vanillite_protocol::text::Component;
 use vanillite_protocol::{Inbound, SharedPacket};
 use vanillite_storage::player_data::{self, PlayerDataStore};
-use vanillite_world::entity::{EntityFlags, EntityId, Pose, Rotation};
-use vanillite_world::tracking::TrackerOutput;
+use vanillite_world::chunks::Chunks;
+use vanillite_world::entity::{EntityFlags, EntityId, EntityRef, Pose, Rotation};
+use vanillite_world::tracking::{EntityTracker, TrackerOutput};
+
+use crate::blocks::{LevelEffects, WorldLevel};
 
 use crate::global::Global;
 use crate::player_list::Uuid;
@@ -151,7 +165,14 @@ impl WorldPlayers {
         let view_distance = effective_view_distance(&arrival.client, self.view_distance);
         let sink = arrival.sink;
         let name = arrival.profile.name.clone();
+        let inventory = arrival
+            .saved
+            .as_ref()
+            .map(|saved| PlayerInventory::load(&saved.other))
+            .unwrap_or_default();
         let data = PlayerData {
+            inventory,
+            last_equipment: std::array::from_fn(|_| ItemStack::EMPTY),
             profile: arrival.profile,
             game_mode: arrival.game_mode,
             previous_game_mode: None,
@@ -248,38 +269,58 @@ impl WorldPlayers {
         connection
             .chunks
             .update_view(center, view_distance, sink.as_ref());
+        // `placeNewPlayer`: the selected slot, then `initInventoryMenu`.
+        sink.send(&SetHeldSlot {
+            slot: i32::try_from(player.inventory.selected).unwrap_or(0),
+        });
+        player.inventory.send_all(sink.as_ref());
+        for (last, slot) in player.last_equipment.iter_mut().zip(EQUIPMENT_SLOTS) {
+            *last = player.inventory.equipment(slot).clone();
+        }
     }
 
     /// Handles the queued packets of all players (Vanilla handles them between ticks), applies
     /// their effects to the entities and moves chunk views.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn handle_packets(
         &mut self,
-        entities: &mut Entities,
+        level: &mut Level,
         rules: &WorldRules,
         runs_normally: bool,
         global: &Global,
         world: crate::world::WorldId,
+        blocks: &mut WorldBlocks<'_>,
     ) {
         let ctx = MoveContext {
             runs_normally,
             rules: &rules.movement,
         };
-        let Entities { store, players, .. } = entities;
+        let protection = self.spawn_protection(global);
+        // The player kind data leaves the level while the packets are handled, so the block
+        // handlers can change the level (`setBlock` with its updates) meanwhile. Nothing in
+        // between adds or removes players.
+        let mut players = std::mem::take(&mut level.entities.players);
+        let spectators: FxHashSet<EntityId> = players
+            .iter()
+            .filter(|(_, p)| p.game_mode == GameMode::Spectator)
+            .map(|(id, _)| id)
+            .collect();
+        let mut swings: Vec<(EntityId, Hand)> = Vec::new();
         for (id, player) in players.iter_mut() {
-            let Some(mut entity) = store.get_mut(id) else {
+            let Some(entity) = level.entities.store.get(id) else {
                 continue;
             };
             let chat = ChatContext {
-                uuid: entity.as_ref().uuid(),
+                uuid: entity.uuid(),
                 name: &player.profile.name,
                 settings: &global.chat,
             };
-            let flags = entity.as_ref().flags();
-            let rot = entity.as_ref().rot();
+            let flags = entity.flags();
+            let rot = entity.rot();
             let before = PlayerState {
                 body: Body {
-                    pos: entity.as_ref().pos(),
-                    velocity: entity.as_ref().velocity(),
+                    pos: entity.pos(),
+                    velocity: entity.velocity(),
                     y_rot: rot.y_rot,
                     x_rot: rot.x_rot,
                     on_ground: flags.contains(EntityFlags::ON_GROUND),
@@ -292,14 +333,50 @@ impl WorldPlayers {
                 respawn: false,
             };
             let mut state = before.clone();
-            match player
-                .connection
-                .handle_packets(&mut state, ctx, chat, PACKETS_PER_TICK)
-            {
+            let mut actor = actor_of(&entity, player.game_mode, global, &level.chunks);
+            let op = actor.permission_level > 0;
+            let protected = |pos: BlockPos| protection.protects(pos, op);
+            let aabb = entity.aabb();
+            let mut drops: Vec<Drop> = Vec::new();
+            let mut hands: Vec<Hand> = Vec::new();
+            let handled = {
+                let mut level = WorldLevel {
+                    level: &mut *level,
+                    effects: &mut *blocks.effects,
+                    spectators: &spectators,
+                    actor: Some((id, aabb)),
+                };
+                let mut play = PlayContext {
+                    level: &mut level,
+                    inventory: &mut player.inventory,
+                    actor,
+                    data: &global.game,
+                    spawn_protected: &protected,
+                    drops: &mut drops,
+                    swings: &mut hands,
+                };
+                let handled = player.connection.handle_packets(
+                    &mut state,
+                    ctx,
+                    chat,
+                    &mut play,
+                    PACKETS_PER_TICK,
+                );
+                actor = play.actor;
+                for drop in drops {
+                    throw_item(&mut level, &actor, drop);
+                }
+                handled
+            };
+            swings.extend(hands.into_iter().map(|h| (id, h)));
+            match handled {
                 Handled::Ok => {}
                 Handled::Disconnected => self.leaving.push((id, None)),
                 Handled::Kick(reason) => self.leaving.push((id, Some(reason))),
             }
+            let Some(mut entity) = level.entities.store.get_mut(id) else {
+                continue;
+            };
             let body = state.body;
             if body.pos != before.body.pos {
                 entity.set_pos(body.pos);
@@ -358,11 +435,43 @@ impl WorldPlayers {
                 );
             }
         }
+        level.entities.players = players;
+        let entities = &mut level.entities;
+        // Hand swings go to the players that see the swinging one (`sendToTrackingPlayers`).
+        for (id, hand) in swings {
+            let Some(network_id) = entities.store.get(id).map(|e| e.network_id().0) else {
+                continue;
+            };
+            let packet = SharedPacket::of(&SwingAnimation {
+                entity_id: network_id,
+                hand,
+                kind: 1,
+                duration: 6,
+            });
+            for viewer in blocks.tracker.seen_by(id) {
+                if let Some(p) = entities.player(*viewer) {
+                    p.connection.sink.send_shared(&packet);
+                }
+            }
+        }
         for id in std::mem::take(&mut self.chatting) {
             crate::chat::handle_requests(entities, global, id, world, &mut self.leaving);
         }
         for (id, reason) in std::mem::take(&mut self.leaving) {
             self.leave(entities, global, id, reason);
+        }
+    }
+
+    /// Spawn protection of this world for this tick (`isUnderSpawnProtection`).
+    fn spawn_protection(&self, global: &Global) -> SpawnProtection {
+        let spawn = self.level.spawn.0;
+        SpawnProtection {
+            active: self.level.dimension.as_str() == "minecraft:overworld"
+                && global.spawn_protection > 0
+                && !global.access.ops().is_empty(),
+            x: vanillite_base::math::floor(spawn.x),
+            z: vanillite_base::math::floor(spawn.z),
+            radius: global.spawn_protection,
         }
     }
 
@@ -407,12 +516,13 @@ impl WorldPlayers {
     /// The connection tick (`ServerGamePacketListenerImpl.tick`) after the world tick.
     pub(crate) fn tick_connections(
         &mut self,
-        entities: &mut Entities,
+        level: &mut Level,
         tick: u64,
         global: &Global,
         world: crate::world::WorldId,
+        blocks: &mut WorldBlocks<'_>,
     ) {
-        crate::commands::answer_suggestions(entities, global, world);
+        crate::commands::answer_suggestions(&mut level.entities, global, world);
         for uuid in std::mem::take(&mut self.left) {
             if global.players.remove(Uuid(uuid)).is_some() {
                 global
@@ -420,6 +530,8 @@ impl WorldPlayers {
                     .broadcast(&join::player_info_remove(uuid), None);
             }
         }
+        self.tick_players(level, global, blocks);
+        let entities = &mut level.entities;
         let Entities { store, players, .. } = entities;
         for (id, player) in players.iter_mut() {
             if let Some(entity) = store.get(id) {
@@ -449,6 +561,138 @@ impl WorldPlayers {
                     ..join::player_info_add(&entries)
                 };
                 global.players.broadcast(&update, None);
+            }
+        }
+    }
+
+    /// `ServerGamePacketListenerImpl.tick` and `ServerPlayer.doTick` for blocks and items: the
+    /// block change acknowledgement, digging progress, item pickup, the inventory menu's
+    /// `broadcastChanges` and equipment changes for other players.
+    fn tick_players(&mut self, level: &mut Level, global: &Global, blocks: &mut WorldBlocks<'_>) {
+        let protection = self.spawn_protection(global);
+        // As in `handle_packets`: the players leave the level while it may change.
+        let mut players = std::mem::take(&mut level.entities.players);
+        let spectators: FxHashSet<EntityId> = players
+            .iter()
+            .filter(|(_, p)| p.game_mode == GameMode::Spectator)
+            .map(|(id, _)| id)
+            .collect();
+        let mut taken: Vec<(EntityId, EntityId, i32)> = Vec::new();
+        let mut equipment: Vec<(EntityId, SetEquipment)> = Vec::new();
+        for (id, player) in players.iter_mut() {
+            let sink = std::sync::Arc::clone(&player.connection.sink);
+            if let Some(sequence) = player.connection.play.take_ack() {
+                sink.send(&BlockChangedAck { sequence });
+            }
+            let Some(entity) = level.entities.store.get(id) else {
+                continue;
+            };
+            let actor = actor_of(&entity, player.game_mode, global, &level.chunks);
+            let aabb = entity.aabb();
+            let network_id = entity.network_id().0;
+            let uuid = entity.uuid();
+            let op = actor.permission_level > 0;
+            let protected = |pos: BlockPos| protection.protects(pos, op);
+            {
+                let mut level = WorldLevel {
+                    level: &mut *level,
+                    effects: &mut *blocks.effects,
+                    spectators: &spectators,
+                    actor: Some((id, aabb)),
+                };
+                let mut drops = Vec::new();
+                let mut hands = Vec::new();
+                let mut play = PlayContext {
+                    level: &mut level,
+                    inventory: &mut player.inventory,
+                    actor,
+                    data: &global.game,
+                    spawn_protected: &protected,
+                    drops: &mut drops,
+                    swings: &mut hands,
+                };
+                player.connection.play.tick(&mut play, sink.as_ref());
+            }
+            // `Player.aiStep` → `touch`: item entities in the box grown by (1, 0.5, 1).
+            if player.game_mode != GameMode::Spectator {
+                let Entities { store, items, .. } = &mut level.entities;
+                let reach = aabb.inflate(1.0, 0.5, 1.0);
+                let mut near = Vec::new();
+                store.for_each_in(&reach, false, |e| {
+                    if crate::blocks::is_item(store, e) {
+                        near.push(e);
+                    }
+                });
+                let infinite = player.game_mode == GameMode::Creative;
+                for item_id in near {
+                    let Some(row) = store.get(item_id).map(|e| e.kind_row()) else {
+                        continue;
+                    };
+                    let Some(item) = items.get_mut(row) else {
+                        continue;
+                    };
+                    let target_ok = item.target.is_none_or(|t| t == uuid);
+                    if item.pickup_delay != 0 || !target_ok || item.stack.is_empty() {
+                        continue;
+                    }
+                    let count = item.stack.count;
+                    if player.inventory.add(None, &mut item.stack, infinite) {
+                        taken.push((item_id, id, count));
+                    }
+                }
+            }
+            player.inventory.broadcast_changes(sink.as_ref());
+            // `detectEquipmentUpdates`.
+            let mut changed = Vec::new();
+            for (last, slot) in player.last_equipment.iter_mut().zip(EQUIPMENT_SLOTS) {
+                let now = player.inventory.equipment(slot);
+                if !vanillite_game::item::matches(last, now) {
+                    *last = now.clone();
+                    changed.push((slot.ordinal(), now.clone()));
+                }
+            }
+            if !changed.is_empty() {
+                equipment.push((
+                    id,
+                    SetEquipment {
+                        entity_id: network_id,
+                        slots: changed,
+                    },
+                ));
+            }
+        }
+        level.entities.players = players;
+        let entities = &mut level.entities;
+        for (id, packet) in equipment {
+            let packet = SharedPacket::of(&packet);
+            for viewer in blocks.tracker.seen_by(id) {
+                if let Some(p) = entities.player(*viewer) {
+                    p.connection.sink.send_shared(&packet);
+                }
+            }
+        }
+        for (item_id, player_id, count) in taken {
+            let (Some(item_net), Some(player_net)) = (
+                entities.store.get(item_id).map(|e| e.network_id().0),
+                entities.store.get(player_id).map(|e| e.network_id().0),
+            ) else {
+                continue;
+            };
+            let packet = SharedPacket::of(&TakeItemEntity {
+                item_id: item_net,
+                player_id: player_net,
+                amount: count,
+            });
+            for viewer in blocks.tracker.seen_by(item_id) {
+                if let Some(p) = entities.player(*viewer) {
+                    p.connection.sink.send_shared(&packet);
+                }
+            }
+            let empty = entities.item(item_id).is_none_or(|i| i.stack.is_empty());
+            if empty {
+                entities.despawn(item_id);
+            } else if let Some(mut e) = entities.store.get_mut(item_id) {
+                e.mark_data_dirty();
             }
         }
     }
@@ -508,6 +752,7 @@ impl WorldPlayers {
         data.on_ground = entity.flags().contains(EntityFlags::ON_GROUND);
         data.dimension = self.level.dimension.as_str().to_owned();
         data.game_mode = game_mode_id(player.game_mode);
+        player.inventory.save(&mut data.other);
         player.survival.save(&mut data.other);
         if let Err(e) = self.store.save(entity.uuid(), &data) {
             log::error!("Failed to save player data of {}: {e}", player.profile.name);
@@ -519,6 +764,78 @@ impl WorldPlayers {
         for (id, _) in entities.players.iter() {
             self.save_player(entities, id);
         }
+    }
+}
+
+/// What the block and item handling of a tick needs from the world.
+pub(crate) struct WorldBlocks<'a> {
+    pub(crate) effects: &'a mut LevelEffects,
+    pub(crate) tracker: &'a dyn EntityTracker,
+}
+
+/// `isUnderSpawnProtection` of one world for one tick.
+#[derive(Clone, Copy, Debug)]
+struct SpawnProtection {
+    /// Overworld, a radius above 0 and at least one operator.
+    active: bool,
+    x: i32,
+    z: i32,
+    radius: i32,
+}
+
+impl SpawnProtection {
+    /// Whether a non-operator may not change the block at `pos`.
+    fn protects(self, pos: BlockPos, op: bool) -> bool {
+        if !self.active || op {
+            return false;
+        }
+        let dx = pos.x.saturating_sub(self.x).saturating_abs();
+        let dz = pos.z.saturating_sub(self.z).saturating_abs();
+        dx.max(dz) <= self.radius
+    }
+}
+
+/// The acting player for the block and item handlers.
+fn actor_of(
+    entity: &EntityRef<'_>,
+    game_mode: GameMode,
+    global: &Global,
+    chunks: &Chunks,
+) -> Actor {
+    let pose = entity.pose();
+    // `Player.getDefaultDimensions(pose).eyeHeight()`.
+    // Eye heights are floats in Vanilla (`EntityDimensions.eyeHeight`).
+    let eye_height = f64::from(match pose {
+        Pose::Crouching => 1.27f32,
+        Pose::Swimming | Pose::FallFlying | Pose::SpinAttack => 0.4,
+        Pose::Sleeping | Pose::Dying => 0.2,
+        _ => 1.62,
+    });
+    let pos = entity.pos();
+    let eye = BlockPos::new(
+        vanillite_base::math::floor(pos.x),
+        vanillite_base::math::floor(pos.y + eye_height),
+        vanillite_base::math::floor(pos.z),
+    );
+    let fluid = chunks
+        .block(eye)
+        .map_or(vanillite_data::fluid::FluidState::EMPTY, |s| {
+            vanillite_data::block::BlockState(s).fluid_state()
+        });
+    let eyes_in_water = !fluid.is_empty() && matches!(fluid.info().fluid, 1 | 2);
+    let flags = entity.flags();
+    Actor {
+        network_id: entity.network_id().0,
+        uuid: entity.uuid(),
+        pos,
+        eye_height,
+        y_rot: entity.rot().y_rot,
+        x_rot: entity.rot().x_rot,
+        on_ground: flags.contains(EntityFlags::ON_GROUND),
+        sneaking: flags.contains(EntityFlags::CROUCHING),
+        game_mode,
+        permission_level: crate::commands::permission_level(global, entity.uuid()),
+        eyes_in_water,
     }
 }
 

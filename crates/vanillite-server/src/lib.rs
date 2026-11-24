@@ -6,6 +6,7 @@
 //! background and parallel-phase work; the watchdog watches the tick deadline.
 
 mod access;
+mod blocks;
 mod chat;
 mod clock;
 mod commands;
