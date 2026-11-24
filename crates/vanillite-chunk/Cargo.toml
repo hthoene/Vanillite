@@ -13,3 +13,10 @@ vanillite-data.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "chunk"
+harness = false
