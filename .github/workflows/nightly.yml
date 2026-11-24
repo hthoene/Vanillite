@@ -44,8 +44,10 @@ jobs:
           path: |
             target/vanilla
             target/goldens
-          key: goldens-${{ hashFiles('data/vanilla/**') }}
+          key: goldens-${{ hashFiles('data/vanilla/version.toml', 'tools/extractor/**', 'crates/vanillite-test/scenarios/**') }}
           restore-keys: goldens-
+      - name: Record missing bulk goldens
+        run: cargo xtask golden regen --bulk
       - name: All tests including ignored ones
         run: cargo nextest run --workspace --all-features --locked --profile nightly --run-ignored all --no-tests=warn
 

@@ -54,6 +54,8 @@ jobs:
           tool: cargo-nextest
       - name: Generated code is current
         run: cargo xtask codegen --check
+      - name: Parity goldens are current
+        run: cargo xtask golden check
       - name: Tests
         run: cargo nextest run --workspace --all-features --locked --profile ci --no-tests=warn
       - name: Doc tests
