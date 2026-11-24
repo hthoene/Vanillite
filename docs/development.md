@@ -54,8 +54,8 @@ provisioned by `scripts/testserver/provision.sh`; every Vanillite server is a sy
 `vanillite@<port>` in `/opt/vanillite/<port>`, with Paper's whitelist.
 
 **30001, 30002 and the proxy on 30010 always run the newest green dev.** `vanillite-autodeploy`
-(a systemd timer on the test server, every 2 minutes) builds every new dev head whose CI checks
-Format, Clippy and Tests passed (`release-fast`, in `/opt/vanillite-build`), announces the
+(a systemd timer on the test server, every 2 minutes) builds the newest dev commit whose CI
+workflow passed (`release-fast`, in `/opt/vanillite-build`), announces the
 restart in chat 10 seconds ahead, restarts the instances and rolls back to the previous binary
 if one does not start. The MOTD shows the deployed commit; the deploy log is
 `/var/log/vanillite-autodeploy.log` (`vanillite-autodeploy status`). Don't deploy branches to
