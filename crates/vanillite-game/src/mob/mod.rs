@@ -7,6 +7,7 @@
 //! queued as a [`WorldAction`] and applied by the world right after that mob's tick.
 
 pub mod boss;
+pub mod brain;
 pub mod combat;
 pub mod goals;
 pub mod kinds;
@@ -389,6 +390,8 @@ pub enum WorldAction {
         radius: f32,
         blocks: bool,
     },
+    /// Game events, listener moves and sculk catalyst charges.
+    Level(boss::warden::LevelAction),
 }
 
 /// The mob state of a world besides the entities: search buffers, queued world changes and

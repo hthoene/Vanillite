@@ -25,6 +25,9 @@ pub mod plate;
 pub mod rail;
 pub mod redstone;
 pub mod sculk;
+pub mod sculk_catalyst;
+pub mod sculk_shrieker;
+pub mod sculk_vibration;
 pub mod sensor;
 pub mod spawner;
 #[cfg(test)]
@@ -245,6 +248,8 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
     bell::fill(block, &mut b);
     lectern::fill(block, &mut b);
     sculk::fill(block, &mut b);
+    sculk_shrieker::fill(block, &mut b);
+    sculk_catalyst::fill(block, &mut b);
     tnt::fill(block, &mut b);
     dispenser::fill(block, &mut b);
     hopper::fill(block, &mut b);

@@ -863,6 +863,10 @@ fn push_entities(t: &mut Tick<'_, '_>) {
         let pow = (1.0 / dd).min(1.0);
         xa *= pow * f64::from(0.05_f32);
         za *= pow * f64::from(0.05_f32);
+        if t.mob_ref().kind == super::Kind::Warden {
+            // `Warden.doPush`.
+            super::boss::warden::do_push(t, other);
+        }
         if t.ents.mob(other).is_some()
             && let Some(mut e) = t.ents.store.get_mut(other)
         {

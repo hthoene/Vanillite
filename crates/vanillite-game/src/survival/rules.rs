@@ -129,6 +129,7 @@ impl Rule {
     pub const SPAWNER_BLOCKS_WORK: Rule = Rule(46);
     pub const SPAWN_MOBS: Rule = Rule(47);
     pub const SPAWN_MONSTERS: Rule = Rule(48);
+    pub const SPAWN_WARDENS: Rule = Rule(52);
     pub const TNT_EXPLOSION_DROP_DECAY: Rule = Rule(56);
     pub const UNIVERSAL_ANGER: Rule = Rule(57);
 

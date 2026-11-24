@@ -349,6 +349,24 @@ fn die(
     };
     let pos = e.pos();
     let network_id = e.network_id().0;
+    // `gameEvent(ENTITY_DIE)`: a sculk catalyst nearby takes the experience
+    // (`CatalystListener`, `skipDropExperience`); vibration listeners hear the death.
+    let consumed = crate::block::sculk_catalyst::catalyst_near(level, pos);
+    if consumed {
+        cx.actions.push(super::WorldAction::Level(
+            super::boss::warden::LevelAction::SculkDeath {
+                pos,
+                experience: reward,
+            },
+        ));
+    }
+    cx.actions.push(super::WorldAction::Level(
+        super::boss::warden::LevelAction::GameEvent {
+            event: crate::level::game_event::events().entity_die,
+            pos,
+            context: crate::level::game_event::GameEventContext::of(Some(target)),
+        },
+    ));
     // `dropAllDeathLoot`: the loot table, then the experience.
     if !baby && env.rules.bool(Rule::MOB_DROPS) {
         let loot = ents
@@ -375,7 +393,7 @@ fn die(
             });
         }
     }
-    if (killed_by_player && env.rules.bool(Rule::MOB_DROPS)) && reward > 0 {
+    if !consumed && (killed_by_player && env.rules.bool(Rule::MOB_DROPS)) && reward > 0 {
         award_experience(level, ents, cx, pos, reward);
     }
     env.out.push(Effect::Tracking {

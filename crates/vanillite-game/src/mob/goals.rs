@@ -654,7 +654,7 @@ fn default_random_pos(t: &mut Tick<'_, '_>, h: i32, v: i32) -> Option<Vec3> {
 }
 
 /// `LandRandomPos.getPos(mob, h, v)`.
-fn land_random_pos(t: &mut Tick<'_, '_>, h: i32, v: i32) -> Option<Vec3> {
+pub(crate) fn land_random_pos(t: &mut Tick<'_, '_>, h: i32, v: i32) -> Option<Vec3> {
     let mut best: Option<(BlockPos, f64)> = None;
     for _ in 0..10 {
         let dir = random_direction(t, h, v);

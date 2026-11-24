@@ -308,6 +308,14 @@ impl ServerWorld {
             );
         }
         self.players_inside_blocks();
+        // The rules block behaviour reads (sculk shriekers).
+        self.level.settings.peaceful =
+            ctx.global.level.difficulty == vanillite_game::survival::rules::Difficulty::Peaceful;
+        self.level.settings.spawn_wardens = ctx
+            .global
+            .level
+            .rules()
+            .bool(vanillite_game::survival::rules::Rule::SPAWN_WARDENS);
         self.level.set_handling_tick(true);
         if ctx.runs_normally {
             // `advanceWeatherCycle`, then `tickTime`: the overworld advances the shared game

@@ -198,6 +198,8 @@ pub struct Survival {
     pub take_xp_delay: i32,
     /// Active status effects (`activeEffects`).
     pub effects: crate::effect::MobEffects,
+    /// `wardenSpawnTracker`.
+    pub warden_spawn_tracker: crate::block::sculk_shrieker::WardenSpawnTracker,
     first_tick: bool,
     sent: Sent,
 }
@@ -225,6 +227,7 @@ impl Default for Survival {
             attack_ticker: 0,
             take_xp_delay: 0,
             effects: crate::effect::MobEffects::default(),
+            warden_spawn_tracker: crate::block::sculk_shrieker::WardenSpawnTracker::default(),
             first_tick: true,
             sent: Sent::default(),
         }
@@ -332,6 +335,9 @@ impl Survival {
         };
         s.score = int(data, "Score").unwrap_or(0);
         s.effects = crate::effect::MobEffects::load(data.get("active_effects"));
+        s.warden_spawn_tracker = crate::block::sculk_shrieker::WardenSpawnTracker::load(
+            data.get("warden_spawn_tracker"),
+        );
         if let Some(Tag::Compound(loc)) = data.get("LastDeathLocation")
             && let (Some(Tag::String(dim)), Some(Tag::IntArray(pos))) =
                 (loc.get("dimension"), loc.get("pos"))
@@ -368,6 +374,10 @@ impl Survival {
         out.insert("XpTotal", Tag::Int(self.xp.total));
         out.insert("XpSeed", Tag::Int(self.xp.seed));
         out.insert("Score", Tag::Int(self.score));
+        out.insert(
+            "warden_spawn_tracker",
+            Tag::Compound(self.warden_spawn_tracker.save()),
+        );
         match self.effects.save() {
             Some(effects) => {
                 out.insert("active_effects", effects);
@@ -392,6 +402,7 @@ impl Survival {
     pub fn respawned(&self, keep_inventory: bool) -> Survival {
         let mut s = Survival {
             last_death: self.last_death.clone(),
+            warden_spawn_tracker: self.warden_spawn_tracker,
             ..Survival::default()
         };
         if keep_inventory {
@@ -810,6 +821,8 @@ pub fn do_tick(
     {
         let s = &mut player.survival;
         s.tick_count = s.tick_count.wrapping_add(1);
+        // `ServerPlayer.tick`: `wardenSpawnTracker.tick()`.
+        s.warden_spawn_tracker.tick();
     }
     let id = entity.as_ref().id();
     // `Entity.baseTick`.
