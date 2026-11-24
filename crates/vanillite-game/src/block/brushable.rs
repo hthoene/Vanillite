@@ -133,16 +133,35 @@ pub fn brush_sound(state: BlockState) -> &'static str {
     }
 }
 
-/// `brush(gameTime, level, user, direction, brush)`: whether the brushing completed (the
-/// brush then loses durability).
+/// `BrushItem.onUseTick` once the brushing stroke lands on the brushable block at `pos`
+/// (hit face `face`): `BrushableBlockEntity.brush`, and one point of durability off the
+/// brush when the brushing completed. Returns whether it completed.
 pub fn brush(
     level: &mut Level,
+    game_time: i64,
+    player: EntityId,
+    pos: BlockPos,
+    face: Direction,
+    stack: &mut ItemStack,
+) -> bool {
+    // Player luck is 0 until the `luck` attribute exists.
+    let done = brush_block(level, game_time, pos, Some(player), 0.0, face);
+    if done {
+        super::hurt_item(level, stack, 1);
+    }
+    done
+}
+
+/// `BrushableBlockEntity.brush(gameTime, level, user, direction, brush)`: whether the
+/// brushing completed.
+pub fn brush_block(
+    level: &mut Level,
+    time: i64,
     pos: BlockPos,
     user: Option<EntityId>,
     luck: f32,
     direction: Direction,
 ) -> bool {
-    let time = level.game_time();
     let Some(BlockEntity::Brushable(b)) = level.block_entity_mut(pos) else {
         return false;
     };
