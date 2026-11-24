@@ -41,6 +41,22 @@ rules! {
             layout: StorageLayout = "layout", Setting, restart = true,
                 vanilla = StorageLayout::Vanilla, spigot = StorageLayout::Spigot;
         }
+        /// Automatic backups: zip archives of the world, made in the background from a fresh
+        /// save while the server runs. Vanilla has none.
+        backup: BackupRules = "backup" {
+            /// Minutes between backups; disabled makes none. The first one is made one interval
+            /// after the start.
+            interval: DisabledOr<u32> = "interval", Setting, range = [1, 525_600],
+                vanilla = DisabledOr::Disabled;
+            /// Backups kept; older ones are deleted after a new one is complete. 0 keeps all.
+            keep: u32 = "keep", Setting, range = [0, 10_000], vanilla = 10;
+            /// Folder of the archives, relative to the server folder.
+            directory: String = "directory", Setting, vanilla = "backups".to_owned();
+            /// Deflate level of the archives, 1 (fast) to 9 (small); 0 stores without
+            /// compression. Region files are compressed already, so higher levels gain little.
+            compression_level: u8 = "compression-level", Performance, range = [0, 9],
+                vanilla = 1;
+        }
         /// The watchdog that detects a hanging server. The hard limit is `max-tick-time` in
         /// `server.properties`.
         watchdog: WatchdogRules = "watchdog" {
