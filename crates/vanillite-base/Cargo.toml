@@ -8,5 +8,10 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 
+[dependencies]
+bumpalo.workspace = true
+md5.workspace = true
+rustc-hash.workspace = true
+
 [lints]
 workspace = true
