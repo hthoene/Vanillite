@@ -1,10 +1,6 @@
 //! Packet test vectors captured from a Vanilla 26.3 server (offline mode, flat world, two
 //! clients joining, walking, turning, sneaking and leaving): every captured body must decode
 //! with our play decoders and encode back to the same bytes.
-//!
-//! Text components are only decoded: the component model keeps text, translations and
-//! styles but not yet click and hover events, so Vanilla's join message does not re-encode
-//! byte for byte.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -28,7 +24,7 @@ fn captured_vanilla_packets_round_trip() {
             name,
             "{name}: decoded as another packet"
         );
-        if name != "system_chat" && packet.encode_body() != bytes {
+        if packet.encode_body() != bytes {
             failures.push(name);
         }
         count += 1;
