@@ -1195,21 +1195,24 @@ impl Chunks {
             let started = Instant::now();
             let budget = budget.min(self.settings.save.tick_budget);
             let min = self.settings.save.min_chunks_per_tick;
-            let mut captured = Vec::new();
-            let mut visited = 0usize;
+            let per_job = self.slots.codec.chunks_per_job().max(1);
+            let mut batch = Vec::with_capacity(per_job);
+            let (mut captured, mut visited) = (0usize, 0usize);
             while let Some(pos) = self.round.as_mut().and_then(|r| r.pending.pop_front()) {
                 visited += 1;
                 if let Some(chunk) = self.capture(pos) {
-                    captured.push(chunk);
+                    batch.push(chunk);
+                    captured += 1;
+                    // Jobs are queued as they fill, so the budget covers queueing them too.
+                    if batch.len() >= per_job {
+                        self.save_chunks(std::mem::take(&mut batch));
+                    }
                 }
-                if captured.len() >= min
-                    && visited.is_multiple_of(16)
-                    && started.elapsed() >= budget
-                {
+                if captured >= min && visited.is_multiple_of(8) && started.elapsed() >= budget {
                     break;
                 }
             }
-            self.save_chunks(captured);
+            self.save_chunks(batch);
         }
         let sealed =
             self.round.as_ref().is_some_and(|r| r.pending.is_empty()) && self.encode_jobs == 0;
