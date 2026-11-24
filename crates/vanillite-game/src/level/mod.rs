@@ -207,6 +207,11 @@ pub struct Level {
     updater: NeighborUpdater,
     /// Live block entities.
     pub block_entities: BlockEntities,
+    /// Reused buffers of the piston code.
+    pub(crate) pistons: crate::block::piston::Scratch,
+    /// `ServerLevel.handlingTick`: the simulation phases of the tick run (scheduled ticks to
+    /// block events).
+    handling_tick: bool,
     /// `RedstoneWireBlock.shouldSignal`: `false` while a wire computes its power.
     wire_signals: bool,
     /// `blockEvents`, a linked set: an event already queued is not queued again.
@@ -251,6 +256,8 @@ impl Level {
             network_ids,
             climate: None,
             block_entities: BlockEntities::default(),
+            pistons: crate::block::piston::Scratch::default(),
+            handling_tick: false,
             wire_signals: true,
             block_events: Vec::new(),
             block_event_set: FxHashSet::default(),
@@ -320,6 +327,12 @@ impl Level {
     /// The game time.
     pub fn game_time(&self) -> i64 {
         self.game_time
+    }
+
+    /// `ServerLevel.isHandlingTick()`: between the start of the tick and the end of the block
+    /// events.
+    pub fn is_handling_tick(&self) -> bool {
+        self.handling_tick
     }
 
     /// Lowest block Y.
@@ -696,11 +709,17 @@ impl Level {
                 continue;
             }
             let side = pos.relative(direction);
-            if self.block(side).is(vanillite_data::block::ids::REDSTONE_WIRE) {
+            if self
+                .block(side)
+                .is(vanillite_data::block::ids::REDSTONE_WIRE)
+            {
                 continue;
             }
             for wire in [side.offset(0, -1, 0), side.offset(0, 1, 0)] {
-                if self.block(wire).is(vanillite_data::block::ids::REDSTONE_WIRE) {
+                if self
+                    .block(wire)
+                    .is(vanillite_data::block::ids::REDSTONE_WIRE)
+                {
                     let neighbour = wire.relative(direction.opposite());
                     let neighbour_state = self.block(neighbour);
                     self.neighbor_shape_changed(
@@ -761,7 +780,11 @@ impl Level {
     }
 
     /// `state.useWithoutItem(level, pos, player, hitResult)` of the block at `pos`.
-    pub fn use_without_item(&mut self, pos: BlockPos, context: &block::UseContext) -> block::Interaction {
+    pub fn use_without_item(
+        &mut self,
+        pos: BlockPos,
+        context: &block::UseContext,
+    ) -> block::Interaction {
         let state = self.block(pos);
         match self.behaviours.get(state.block()).use_without_item {
             Some(f) => f(self, state, pos, context),
@@ -777,7 +800,13 @@ impl Level {
         }
     }
 
-    fn affect_neighbors_after_removal(&mut self, state: BlockState, pos: BlockPos, moved: bool) {
+    /// `state.affectNeighborsAfterRemoval(level, pos, movedByPiston)`.
+    pub(crate) fn affect_neighbors_after_removal(
+        &mut self,
+        state: BlockState,
+        pos: BlockPos,
+        moved: bool,
+    ) {
         if let Some(f) = self
             .behaviours
             .get(state.block())
