@@ -207,8 +207,25 @@ impl ServerWorld {
     /// Places a player that joined the server into this world.
     pub(crate) fn join_player(&mut self, global: &Global, arrival: crate::players::Arrival) {
         let weather = self.survival.join_weather();
+        let (uuid, name) = (arrival.uuid, arrival.profile.name.clone());
         self.players
             .join(&mut self.level.entities, global, self.id, arrival, &weather);
+        let plugins = global.plugins.clone();
+        plugins.player_join(&mut crate::plugins::PluginWorld(self), uuid, &name);
+    }
+
+    /// The UUIDs and positions of this world's players.
+    fn player_positions(&self) -> Vec<(u128, [f64; 3])> {
+        let entities = &self.level.entities;
+        entities
+            .players
+            .iter()
+            .filter_map(|(id, _)| {
+                let e = entities.store.get(id)?;
+                let pos = e.pos();
+                Some((e.uuid(), [pos.x, pos.y, pos.z]))
+            })
+            .collect()
     }
 
     /// This world's id.
@@ -250,6 +267,10 @@ impl ServerWorld {
     /// connection tick.
     pub(crate) fn tick(&mut self, ctx: &mut TickContext<'_>) {
         debug_assert_eq!(ctx.world, self.id);
+        let plugins = ctx.global.plugins.clone();
+        let positions = plugins
+            .wants(vanillite_abi::event::PLAYERS_MOVED)
+            .then(|| self.player_positions());
         let started = Instant::now();
         self.players.handle_packets(
             &mut self.level,
@@ -263,6 +284,18 @@ impl ServerWorld {
             },
         );
         self.effects.flush(&self.level.entities);
+        if let Some(before) = positions {
+            let moves: Vec<(u128, [f64; 3], [f64; 3])> = self
+                .player_positions()
+                .into_iter()
+                .filter_map(|(uuid, to)| {
+                    let (_, from) = before.iter().find(|(u, _)| *u == uuid)?;
+                    (*from != to).then_some((uuid, *from, to))
+                })
+                .collect();
+            plugins.players_moved(&mut crate::plugins::PluginWorld(self), &moves);
+        }
+        plugins.run_world_tasks(&mut crate::plugins::PluginWorld(self), ctx.tick);
         self.survival.moves(
             &mut self.level.entities,
             &self.level.chunks,

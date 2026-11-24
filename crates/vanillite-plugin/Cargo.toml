@@ -8,6 +8,7 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 
+# No dependencies besides the ABI: plugins build fast and do not share crates with the server.
 [dependencies]
 vanillite-abi.workspace = true
 

@@ -841,6 +841,46 @@
       "field_type": "text"
     },
     {
+      "name": "Plugins: Enabled",
+      "description": "Load the plugins in `plugins/`. Empty: the profile's value (vanilla profile: true). vanillite.toml: plugins.enabled.",
+      "env_variable": "VANILLITE_PLUGINS__ENABLED",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Plugins: Safe Mode After Crash",
+      "description": "After a crash inside a plugin's code (a fatal signal or a watchdog kill), skip that plugin at the next starts until its library changes or `plugins/.crashed` is removed, so a supervisor (Docker, systemd) brings the server back. Empty: the profile's value (vanilla profile: true). vanillite.toml: plugins.safe-mode-after-crash.",
+      "env_variable": "VANILLITE_PLUGINS__SAFE_MODE_AFTER_CRASH",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Plugins: Development",
+      "description": "Development: the console command `vanillite plugin reload <id>` loads a new build of a plugin at runtime and moves its state. Old builds stay in memory. Not for production servers. Empty: the profile's value (vanilla profile: false). vanillite.toml: plugins.development.",
+      "env_variable": "VANILLITE_PLUGINS__DEVELOPMENT",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Plugins: Pins",
+      "description": "Pinned SHA-256 hashes of plugin libraries, `id=hex,id=hex`. A plugin whose library has another hash is refused. Empty: the profile's value (vanilla profile: ). vanillite.toml: plugins.pins.",
+      "env_variable": "VANILLITE_PLUGINS__PINS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string",
+      "field_type": "text"
+    },
+    {
       "name": "Bedrock: Enabled",
       "description": "Accept Bedrock players. Empty: the profile's value (vanilla profile: false). vanillite.toml: bedrock.enabled.",
       "env_variable": "VANILLITE_BEDROCK__ENABLED",
