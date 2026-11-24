@@ -13,7 +13,7 @@ ARG BINARY=build
 
 FROM --platform=$BUILDPLATFORM rust:1.99.0-slim-bookworm AS build
 ARG ZIG_VERSION=0.14.1
-ARG ZIGBUILD_VERSION=0.20.1
+ARG ZIGBUILD_VERSION=0.24.1
 RUN apt-get update && apt-get install -y --no-install-recommends curl xz-utils ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-$(uname -m)-linux-${ZIG_VERSION}.tar.xz" \
