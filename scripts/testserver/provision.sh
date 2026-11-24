@@ -50,7 +50,7 @@ install -d -o vanillite -g vanillite /opt/vanillite
 # "creative": always in creative mode on every test server (see testserver-creative below).
 players='[
   {"uuid": "d97211d5-1155-4faa-95db-7ddec775418c", "name": "de_hannes"},
-  {"uuid": "997ddb16-a31a-43b1-8f10-dac13d1f6af6", "name": "Looxtastisch"},
+  {"uuid": "997ddb16-a31a-43b1-8f10-dac13d1f6af6", "name": "Looxtastisch", "creative": true},
   {"uuid": "759689da-4bf5-4370-8f27-08382b24bb63", "name": "Tiegertropfen119", "creative": true}
 ]'
 install -d /etc/vanillite-test
@@ -354,12 +354,14 @@ else
     set_prop online-mode true
     set_prop white-list true
 fi
+# The Minecraft EULA is accepted for this test server.
+echo "eula=true" > "$dir/eula.txt"
 for f in whitelist.json ops.json; do
     if [ -f "/opt/paper/$f" ]; then
         cp "/opt/paper/$f" "$dir/$f"
     fi
 done
-chown vanillite:vanillite "$props" "$dir"/*.json 2> /dev/null || true
+chown vanillite:vanillite "$props" "$dir/eula.txt" "$dir"/*.json 2> /dev/null || true
 
 if [ "$port" = 30901 ]; then
     systemctl restart "vanillite@$port"

@@ -27,6 +27,7 @@ use crate::biome::{BiomeManager, BiomeRegistry, BiomeResolver, BiomeSource};
 use crate::blocks::BlockSet;
 use crate::carver::{CarverId, CarverRegistry, carve_chunk};
 use crate::density::{DensityCompiler, FnId, Program, SamplerContext};
+use crate::feature::{FeatureSet, WorldGenRegion};
 use crate::material::MaterialSystem;
 use crate::proto::{ProtoChunk, WgHeightmap};
 use crate::random_state::RandomState;
@@ -35,7 +36,7 @@ use crate::volume::DensityVolume;
 
 /// A generation step of Vanilla's chunk pyramid that this crate implements.
 ///
-/// Structure starts, structure references and features are milestone 2; they run as no-ops so a
+/// Structure starts and structure references are not generated yet; they run as no-ops so a
 /// scheduler can already drive the full pyramid.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Stage {
@@ -93,6 +94,8 @@ pub struct DimensionSpec<'a> {
     pub min_y: i32,
     /// Number of block rows of the level (dimension type `height`).
     pub height: i32,
+    /// Whether the dimension has sky light (dimension type `has_skylight`).
+    pub has_sky_light: bool,
 }
 
 /// The noise biomes of a 3×3 chunk area around a chunk (row-major, `dz` outer, `dx` inner, the
@@ -173,6 +176,7 @@ pub struct TerrainGenerator {
     seed: i64,
     level_min_y: i32,
     level_height: i32,
+    has_sky_light: bool,
     settings: NoiseGeneratorSettings,
     random_state: RandomState,
     program: Program,
@@ -188,6 +192,7 @@ pub struct TerrainGenerator {
     /// Carvers per biome id.
     biome_carvers: Vec<Vec<CarverId>>,
     uncarvable: BlockSet,
+    features: FeatureSet,
     grass_block: BlockId,
     mycelium: BlockId,
     dirt: BlockId,
@@ -231,6 +236,14 @@ impl TerrainGenerator {
             MaterialSystem::new(packs, &settings, &random_state, &biomes, &mut compiler)?;
         let program = compiler.finish();
 
+        let features = FeatureSet::load(
+            packs,
+            &biomes,
+            &random_state,
+            &biome_source.possible_biomes(),
+            WorldGenerationContext::for_settings(&settings, dimension.min_y, dimension.height),
+        )?;
+
         let block = |name: &str| {
             BlockId::by_name(name).ok_or_else(|| Error::new(format!("unknown block {name}")))
         };
@@ -238,6 +251,7 @@ impl TerrainGenerator {
             seed,
             level_min_y: dimension.min_y,
             level_height: dimension.height,
+            has_sky_light: dimension.has_sky_light,
             fluid_picker: GlobalFluidPicker::from_settings(&settings),
             settings,
             program,
@@ -251,6 +265,7 @@ impl TerrainGenerator {
             carvers,
             biome_carvers,
             uncarvable: BlockSet::from_tag(packs, "minecraft:uncarvable"),
+            features,
             grass_block: block("minecraft:grass_block")?,
             mycelium: block("minecraft:mycelium")?,
             dirt: block("minecraft:dirt")?,
@@ -289,16 +304,45 @@ impl TerrainGenerator {
         ProtoChunk::new(pos, self.level_min_y, self.level_height, plains)
     }
 
+    /// The parsed features and their global order.
+    pub fn features(&self) -> &FeatureSet {
+        &self.features
+    }
+
     /// Runs `stage` on every chunk of `batch` that needs no neighbours. Panics for
-    /// [`Stage::Terrain`], which needs neighbour biomes (use [`Self::generate_terrain`]).
+    /// [`Stage::Terrain`] and [`Stage::Features`], which need neighbours (use
+    /// [`Self::generate_terrain`] and [`Self::generate_features`]).
     pub fn generate(&self, stage: Stage, batch: &mut [ProtoChunk]) {
         match stage {
-            Stage::StructureStarts | Stage::StructureReferences | Stage::Features => {}
+            Stage::StructureStarts | Stage::StructureReferences => {}
             Stage::Biomes => self.generate_biomes(batch),
             Stage::Terrain => {
                 panic!("the terrain stage needs neighbour biomes: use generate_terrain")
             }
+            Stage::Features => {
+                panic!("the features stage needs neighbour chunks: use generate_features")
+            }
         }
+    }
+
+    /// [`Stage::Features`] for one chunk (`applyBiomeDecoration`): `area` holds the 3×3 chunks
+    /// around it (row-major, `dz` outer, `dx` inner, the chunk to decorate in the middle), all
+    /// past [`Stage::Terrain`]. Features write into the neighbours too, so two chunks whose
+    /// areas overlap must not be decorated at the same time, and the order in which neighbouring
+    /// chunks are decorated changes the result at chunk borders, exactly as in Vanilla.
+    pub fn generate_features(&self, area: [&mut ProtoChunk; 9]) {
+        let mut region = self.feature_region(area.into());
+        self.features.decorate(&mut region);
+    }
+
+    /// The `WorldGenRegion` of the features stage over `chunks` (3×3, row-major, `dz` outer),
+    /// set up for this dimension.
+    pub fn feature_region<'a>(&self, chunks: Vec<&'a mut ProtoChunk>) -> WorldGenRegion<'a> {
+        let mut region =
+            WorldGenRegion::new(chunks, 1, 1, &self.random_state, self.settings.sea_level);
+        region.set_generation_context(self.features.env.context);
+        region.set_has_sky_light(self.has_sky_light);
+        region
     }
 
     /// [`Stage::Biomes`] for a batch (`ChunkGenerator.createBiomes`).
@@ -376,6 +420,7 @@ impl TerrainGenerator {
         );
         observe(TerrainStep::Surface, chunk);
         self.carve(chunk, &mut aquifer, ctx);
+        chunk.finish_terrain();
         observe(TerrainStep::Carvers, chunk);
     }
 

@@ -533,6 +533,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
+name = "lz4_flex"
+version = "0.11.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13591d77a9b6d941f7e6fcade7f9dfd9e801308752bde50c0a9bb5852778c22c"
+
+[[package]]
 name = "md-5"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1177,6 +1183,7 @@ name = "vanillite-chunk"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "vanillite-base",
  "vanillite-data",
 ]
 
@@ -1232,7 +1239,9 @@ dependencies = [
 name = "vanillite-light"
 version = "0.1.0"
 dependencies = [
+ "vanillite-base",
  "vanillite-chunk",
+ "vanillite-data",
 ]
 
 [[package]]
@@ -1301,13 +1310,16 @@ name = "vanillite-server"
 version = "0.1.0"
 dependencies = [
  "log",
+ "serde_json",
  "tokio",
  "vanillite-base",
+ "vanillite-chunk",
  "vanillite-config",
  "vanillite-data",
  "vanillite-datapack",
  "vanillite-game",
  "vanillite-light",
+ "vanillite-nbt",
  "vanillite-net",
  "vanillite-plugin-host",
  "vanillite-protocol",
@@ -1320,9 +1332,13 @@ dependencies = [
 name = "vanillite-storage"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "libdeflater",
  "log",
+ "lz4_flex",
+ "vanillite-base",
  "vanillite-chunk",
+ "vanillite-data",
  "vanillite-nbt",
 ]
 
@@ -1337,6 +1353,7 @@ dependencies = [
 name = "vanillite-world"
 version = "0.1.0"
 dependencies = [
+ "log",
  "rustc-hash",
  "vanillite-base",
  "vanillite-chunk",
@@ -1349,12 +1366,14 @@ dependencies = [
 name = "vanillite-worldgen"
 version = "0.1.0"
 dependencies = [
+ "libdeflater",
  "rustc-hash",
  "serde_json",
  "vanillite-base",
  "vanillite-chunk",
  "vanillite-data",
  "vanillite-datapack",
+ "vanillite-nbt",
 ]
 
 [[package]]
