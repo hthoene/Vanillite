@@ -21,6 +21,9 @@ const COMPLETE: &str = ".complete";
 /// extracting it first if needed.
 ///
 /// `local_jar` is used instead of a download when given; it must be the pinned jar too.
+///
+/// Safe to call from several processes at once (e.g. test binaries run in parallel): each
+/// works in its own temporary files, and the first complete pack to be renamed into place wins.
 pub fn ensure_vanilla_pack(cache_dir: &Path, local_jar: Option<&Path>) -> Result<PathBuf, Error> {
     let root = cache_dir.join("vanilla");
     let pack = root.join(SERVER_JAR_SHA1);
@@ -32,7 +35,7 @@ pub fn ensure_vanilla_pack(cache_dir: &Path, local_jar: Option<&Path>) -> Result
     let (jar, downloaded) = match local_jar {
         Some(p) => (p.to_path_buf(), false),
         None => {
-            let p = root.join(format!("server-{VERSION_ID}.jar"));
+            let p = root.join(format!("server-{VERSION_ID}.{}.jar", std::process::id()));
             download(SERVER_JAR_URL, &p)?;
             (p, true)
         }
@@ -49,7 +52,7 @@ pub fn ensure_vanilla_pack(cache_dir: &Path, local_jar: Option<&Path>) -> Result
         });
     }
 
-    let tmp = root.join(format!("{SERVER_JAR_SHA1}.tmp"));
+    let tmp = root.join(format!("{SERVER_JAR_SHA1}.{}.tmp", std::process::id()));
     if tmp.exists() {
         std::fs::remove_dir_all(&tmp).map_err(io_err(&tmp))?;
     }
@@ -63,12 +66,23 @@ pub fn ensure_vanilla_pack(cache_dir: &Path, local_jar: Option<&Path>) -> Result
     extract_data(&inner, &tmp)?;
     std::fs::remove_file(&inner).map_err(io_err(&inner))?;
     File::create(tmp.join(COMPLETE)).map_err(io_err(&tmp))?;
+    if downloaded {
+        let _ = std::fs::remove_file(&jar);
+    }
+    if pack.join(COMPLETE).exists() {
+        // Another process finished first.
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Ok(pack);
+    }
     if pack.exists() {
         std::fs::remove_dir_all(&pack).map_err(io_err(&pack))?;
     }
-    std::fs::rename(&tmp, &pack).map_err(io_err(&pack))?;
-    if downloaded {
-        let _ = std::fs::remove_file(&jar);
+    if let Err(e) = std::fs::rename(&tmp, &pack) {
+        let _ = std::fs::remove_dir_all(&tmp);
+        if pack.join(COMPLETE).exists() {
+            return Ok(pack);
+        }
+        return Err(io_err(&pack)(e));
     }
     Ok(pack)
 }
