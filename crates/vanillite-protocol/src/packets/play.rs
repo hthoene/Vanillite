@@ -253,6 +253,14 @@ pub mod serverbound {
         #[field(max_len = 32500)]
         pub command: String,
     }
+
+    /// `ping_request`: the client's debug ping (F3 network chart), answered with
+    /// `pong_response`.
+    #[derive(Debug, Clone, PartialEq, Eq, Packet)]
+    #[packet(state = Play, dir = Serverbound, name = "ping_request")]
+    pub struct PingRequest {
+        pub time: i64,
+    }
 }
 
 /// Clientbound play packets.
@@ -267,6 +275,13 @@ pub mod clientbound {
     #[derive(Debug, Clone, PartialEq, Eq, Packet)]
     #[packet(state = Play, dir = Clientbound, name = "start_configuration")]
     pub struct StartConfiguration;
+
+    /// `pong_response`: echoes the payload of a `ping_request`.
+    #[derive(Debug, Clone, PartialEq, Eq, Packet)]
+    #[packet(state = Play, dir = Clientbound, name = "pong_response")]
+    pub struct PongResponse {
+        pub time: i64,
+    }
 
     /// `bundle_delimiter`: packets between two delimiters are applied in one client tick.
     #[derive(Debug, Clone, PartialEq, Eq, Packet)]

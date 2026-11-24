@@ -587,6 +587,11 @@ impl Conn {
             self.rate(packet.cost())?;
             match packet {
                 ServerboundPlay::KeepAlive(k) => self.keepalive_answer(k.id)?,
+                // `handlePingRequest` answers on the network thread, like Vanilla.
+                ServerboundPlay::PingRequest(p) => {
+                    self.out
+                        .send(&play::clientbound::PongResponse { time: p.time });
+                }
                 ServerboundPlay::Unhandled { .. } => {}
                 packet => {
                     seq = seq.wrapping_add(1);
