@@ -96,7 +96,10 @@ fn extract_data(jar: &Path, dir: &Path) -> Result<(), Error> {
         let mut entry = zip
             .by_index(i)
             .map_err(|e| Error::Jar(jar.to_path_buf(), e.to_string()))?;
-        if entry.is_dir() || !entry.name().starts_with("data/") {
+        let name = entry
+            .name()
+            .map_err(|e| Error::Jar(jar.to_path_buf(), e.to_string()))?;
+        if entry.is_dir() || !name.starts_with("data/") {
             continue;
         }
         // `enclosed_name` rejects absolute paths and `..` components.
