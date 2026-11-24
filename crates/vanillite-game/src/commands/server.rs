@@ -1,4 +1,4 @@
-//! Syntax of the server commands: kick, op, deop, stop, whitelist.
+//! Syntax of the server commands: kick, op, deop, save-all, save-off, save-on, stop, whitelist.
 
 use vanillite_command::{ArgumentType, Dispatcher, argument, literal};
 
@@ -40,6 +40,34 @@ pub(super) fn register_op(d: &mut Dispatcher<CommandId>) {
                 .suggests(suggest::OP_CANDIDATES)
                 .executes(CommandId::Op),
         ),
+    );
+}
+
+/// `SaveAllCommand`.
+pub(super) fn register_save_all(d: &mut Dispatcher<CommandId>) {
+    d.register(
+        literal("save-all")
+            .requires(level::OWNERS)
+            .executes(CommandId::SaveAll)
+            .then(literal("flush").executes(CommandId::SaveAllFlush)),
+    );
+}
+
+/// `SaveOffCommand`.
+pub(super) fn register_save_off(d: &mut Dispatcher<CommandId>) {
+    d.register(
+        literal("save-off")
+            .requires(level::OWNERS)
+            .executes(CommandId::SaveOff),
+    );
+}
+
+/// `SaveOnCommand`.
+pub(super) fn register_save_on(d: &mut Dispatcher<CommandId>) {
+    d.register(
+        literal("save-on")
+            .requires(level::OWNERS)
+            .executes(CommandId::SaveOn),
     );
 }
 

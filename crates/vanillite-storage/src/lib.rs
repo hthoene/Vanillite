@@ -3,18 +3,26 @@
 //!
 //! - [`AnvilStorage`] is the built-in `chunk-storage` slot (architecture 9.3).
 //! - [`player_data`] reads and writes `players/data/<uuid>.dat`.
+//! - [`level_dat`] reads and writes `level.dat`, [`saved_data`] the files below `data/`.
+//! - [`writer`] writes small files in the background, [`files`] makes every write atomic.
+//! - [`backup`] archives a running world.
 //! - [`import`] moves older Vanilla and Spigot/Paper layouts into the 26.x layout.
 //! - [`layout`] places dimensions in Vanilla's or Spigot's folder layout.
 //!
 //! Stored files are untrusted input: decompression and NBT reads run under the file budgets
 //! (SEC-26), and errors are reported per chunk instead of panicking.
 
+pub mod backup;
 pub mod chunk_nbt;
 pub mod compression;
+pub mod files;
 pub mod import;
 pub mod layout;
+pub mod level_dat;
 pub mod player_data;
 pub mod region;
+pub mod saved_data;
+pub mod writer;
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -24,12 +32,13 @@ use vanillite_base::ChunkPos;
 use vanillite_base::hash::FxHashMap;
 use vanillite_chunk::ProtoChunk;
 use vanillite_chunk::slots::{ChunkStorage, ChunkStorageProvider, WorldInfo};
-use vanillite_nbt::{Budget, Compound};
+use vanillite_nbt::Budget;
 
 pub use crate::chunk_nbt::Codec;
 pub use crate::compression::Compression;
 pub use crate::layout::WorldLayout;
 use crate::region::RegionFile;
+pub use crate::saved_data::{read_saved_data, saved_data_path, write_saved_data};
 
 /// An open region file, shared by the jobs that use it.
 type SharedRegion = Arc<Mutex<RegionFile>>;
@@ -44,78 +53,6 @@ pub fn dimension_dir(world_dir: &Path, dimension: &str) -> PathBuf {
         .split_once(':')
         .unwrap_or(("minecraft", dimension));
     world_dir.join("dimensions").join(namespace).join(path)
-}
-
-/// Reads `level.dat` (gzip NBT); `None` if the world has none yet.
-pub fn read_level_dat(world_dir: &Path) -> io::Result<Option<Compound>> {
-    read_gzip_nbt(&world_dir.join("level.dat"))
-}
-
-/// Writes `level.dat` like Vanilla: the previous file becomes `level.dat_old`, the new one is
-/// written through a temporary file.
-pub fn write_level_dat(world_dir: &Path, root: &Compound) -> io::Result<()> {
-    std::fs::create_dir_all(world_dir)?;
-    let mut raw = Vec::new();
-    vanillite_nbt::write::write_named("", root, &mut raw).map_err(io::Error::other)?;
-    let path = world_dir.join("level.dat");
-    let tmp = world_dir.join("level.dat_new");
-    std::fs::write(&tmp, Compression::Gzip.compress(&raw)?)?;
-    if path.exists() {
-        std::fs::copy(&path, world_dir.join("level.dat_old"))?;
-    }
-    std::fs::rename(&tmp, &path)
-}
-
-/// The file of Vanilla saved data `id` (e.g. `minecraft:world_gen_settings`) below `dir`:
-/// `<dir>/data/<namespace>/<path>.dat`.
-pub fn saved_data_path(dir: &Path, id: &str) -> PathBuf {
-    let (namespace, path) = id.split_once(':').unwrap_or(("minecraft", id));
-    dir.join("data").join(namespace).join(format!("{path}.dat"))
-}
-
-/// Reads the `data` compound of saved data `id` below `dir`; `None` if there is none.
-pub fn read_saved_data(dir: &Path, id: &str) -> io::Result<Option<Compound>> {
-    let path = saved_data_path(dir, id);
-    Ok(
-        read_gzip_nbt(&path)?.map(|mut root| match root.remove("data") {
-            Some(vanillite_nbt::Tag::Compound(data)) => data,
-            _ => Compound::default(),
-        }),
-    )
-}
-
-/// Writes saved data `id` below `dir` like Vanilla (`DataVersion` and `data`), through a
-/// temporary file.
-pub fn write_saved_data(dir: &Path, id: &str, data: Compound) -> io::Result<()> {
-    let path = saved_data_path(dir, id);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let root = Compound::default()
-        .with("DataVersion", vanillite_data::version::DATA_VERSION)
-        .with("data", data);
-    let mut raw = Vec::new();
-    vanillite_nbt::write::write_named("", &root, &mut raw).map_err(io::Error::other)?;
-    let tmp = path.with_extension("dat_tmp");
-    std::fs::write(&tmp, Compression::Gzip.compress(&raw)?)?;
-    std::fs::rename(&tmp, &path)
-}
-
-pub(crate) fn read_gzip_nbt(path: &Path) -> io::Result<Option<Compound>> {
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e),
-    };
-    let raw = Compression::Gzip.decompress(&bytes)?;
-    vanillite_nbt::read::read_named(&mut raw.as_slice(), &mut Budget::file())
-        .map(Some)
-        .map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("{}: {e:?}", path.display()),
-            )
-        })
 }
 
 /// The built-in `chunk-storage` slot: Anvil region files in `<dimension>/region`.
