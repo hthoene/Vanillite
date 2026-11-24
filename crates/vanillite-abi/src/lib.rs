@@ -1,7 +1,7 @@
 //! The stable C ABI for plugins and providers: `repr(C)` tables generated from one declarative API definition.
 //!
 //! Everything that crosses the boundary between the server and a plugin library is declared
-//! here, once, with the [`abi!`] macro: plain C types (integers, floats, `repr(C)` records,
+//! here, once, with the `abi!` macro: plain C types (integers, floats, `repr(C)` records,
 //! `(ptr, len)` strings, function pointers), never Rust types such as `Box`, `Vec`, `String` or
 //! trait objects. Plugins therefore depend neither on the server's compiler version nor on its
 //! dependencies. Memory is freed by the side that allocated it.

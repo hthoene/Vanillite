@@ -13,7 +13,7 @@
 //!
 //! The server is reached through two narrow traits it implements: [`ServerAccess`]
 //! (thread-safe, server-wide) and [`WorldAccess`] (one world, borrowed by its owner for a
-//! call). Everything that crosses into plugin code goes through [`Plugin::call`]: the plugin
+//! call). Everything that crosses into plugin code goes through one guard: the plugin
 //! is recorded for crash reports, serialized plugins are locked, re-entrant calls are refused,
 //! and a contained panic disables the plugin.
 
