@@ -6,13 +6,20 @@
 //! Vanilla 26.3 evaluates density functions in `float` over whole volumes; the port keeps Java's
 //! operation order and `float`/`double` conversions everywhere.
 
+pub mod anchor;
+pub mod aquifer;
+pub mod biome;
 pub mod blocks;
+pub mod carver;
+pub mod density;
 pub mod interval;
+pub mod material;
 pub mod mth;
 pub mod noise;
 pub mod proto;
 pub mod random;
 pub mod random_state;
+pub mod settings;
 pub mod volume;
 
 pub use proto::ProtoChunk;
