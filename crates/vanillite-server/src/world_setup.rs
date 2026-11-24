@@ -77,6 +77,8 @@ const WORLD_GEN_SETTINGS: &str = "minecraft:world_gen_settings";
 pub(crate) struct WorldGen {
     /// World seed.
     pub(crate) seed: i64,
+    /// `generate_structures`.
+    generate_structures: bool,
     /// The `generator` JSON of each dimension (`dimensions.<key>.generator`).
     generators: serde_json::Map<String, serde_json::Value>,
 }
@@ -113,6 +115,7 @@ impl WorldGen {
             // Without data packs (tests) there are no presets: the flat stand-in everywhere.
             return Ok(Self {
                 seed,
+                generate_structures: properties.generate_structures,
                 generators: serde_json::Map::new(),
             });
         };
@@ -149,7 +152,16 @@ impl WorldGen {
                 }
             }
         }
-        Self { seed, generators }
+        // Vanilla reads a missing or non-byte value as `true`.
+        let generate_structures = !matches!(
+            data.get("generate_structures"),
+            Some(vanillite_nbt::Tag::Byte(0))
+        );
+        Self {
+            seed,
+            generate_structures,
+            generators,
+        }
     }
 
     /// The generator JSON of a dimension.
@@ -252,7 +264,10 @@ impl ChunkGeneratorProvider for BuiltInGenerators {
         };
         let terrain =
             TerrainGenerator::new(packs, spec, self.world_gen.seed).map_err(|e| e.to_string())?;
-        Ok(Arc::new(VanillaChunkGenerator::new(terrain, world.clone())))
+        Ok(Arc::new(
+            VanillaChunkGenerator::new(terrain, world.clone())
+                .with_structures(self.world_gen.generate_structures),
+        ))
     }
 }
 
@@ -428,6 +443,21 @@ pub(crate) fn level_settings(
     settings
 }
 
+/// The exploit switches of `exploits` (decision D1).
+pub(crate) fn exploit_settings(
+    rules: &vanillite_config::WorldRules,
+) -> vanillite_game::level::ExploitSettings {
+    let e = &rules.exploits;
+    vanillite_game::level::ExploitSettings {
+        tnt_duplication: e.tnt_duplication,
+        carpet_duplication: e.carpet_duplication,
+        rail_duplication: e.rail_duplication,
+        headless_pistons: e.headless_pistons,
+        break_unbreakable_blocks: e.break_unbreakable_blocks,
+        string_duplication: e.string_duplication,
+    }
+}
+
 /// Sets the budgets of `performance.simulation`; `vanilla_max_chained` is
 /// `max-chained-neighbor-updates` of `server.properties`.
 pub(crate) fn apply_simulation_rules(
@@ -442,6 +472,7 @@ pub(crate) fn apply_simulation_rules(
         vanillite_config::VanillaOr::Value(v) => i32::try_from(v).unwrap_or(i32::MAX),
         vanillite_config::VanillaOr::Vanilla => vanilla_max_chained,
     };
+    settings.exploits = exploit_settings(rules);
 }
 
 /// The biomes of a world for the simulation: the biome registry, the seed's biome manager and

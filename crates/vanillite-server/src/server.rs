@@ -319,6 +319,8 @@ impl ServerBuilder {
         let clock = Clock::new();
         let max_players = usize::try_from(config.properties.max_players).unwrap_or(0);
         let commands = crate::commands::build_dispatcher(command_limits(&config));
+        let game = Arc::new(crate::blocks::game_data(packs.as_deref()));
+        vanillite_game::player::play::install_game_data(Arc::clone(&game));
         let level = crate::level::LevelState::load(
             &level_dir,
             packs.as_deref(),
@@ -344,6 +346,8 @@ impl ServerBuilder {
             level,
             seed: level_seed(&config.properties.level_seed),
             registries: prepared.registries.clone(),
+            game,
+            spawn_protection: config.properties.spawn_protection,
             this: this.clone(),
         });
         let watch = Arc::new(WatchState::new(
@@ -769,6 +773,15 @@ impl Server {
     /// thread while the server runs; they log in like a client from the handshake on.
     pub fn virtual_opener(&self) -> Option<VirtualOpener> {
         self.net.as_ref().map(|n| n.network.virtual_opener())
+    }
+
+    /// The UDP address of the Bedrock frontend, if it runs.
+    pub fn bedrock_addr(&self) -> Option<std::net::SocketAddr> {
+        self.net
+            .as_ref()?
+            .bedrock
+            .as_ref()
+            .map(|(f, _)| f.local_addr())
     }
 
     /// The address the network listens on.
@@ -1370,7 +1383,7 @@ impl Server {
             let _ = backup.join();
         }
         if let Some(net) = self.net.take() {
-            net.network.shutdown();
+            net.shutdown();
         }
         self.compute.scheduler().shutdown();
         if let Some(watchdog) = self.watchdog.take() {

@@ -1,0 +1,185 @@
+{
+  "description": "A wire line of 15 with a corner and a step up onto a block, powered by a redstone block and unpowered again: power levels tick by tick, the lamp at its end and its delayed turn-off.",
+  "tier": "fast",
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      12,
+      -58,
+      6
+    ]
+  ],
+  "ticks": 30,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -60,
+        1
+      ],
+      "block": "minecraft:redstone_wire[east=side,north=none,power=0,south=none,west=side]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        1
+      ],
+      "block": "minecraft:redstone_wire[east=side,north=none,power=0,south=none,west=side]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -60,
+        1
+      ],
+      "block": "minecraft:redstone_wire[east=side,north=none,power=0,south=none,west=side]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        1
+      ],
+      "block": "minecraft:redstone_wire[east=side,north=none,power=0,south=none,west=side]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -60,
+        1
+      ],
+      "block": "minecraft:redstone_wire[east=side,north=none,power=0,south=none,west=side]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        1
+      ],
+      "block": "minecraft:redstone_wire[east=side,north=none,power=0,south=none,west=side]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -60,
+        1
+      ],
+      "block": "minecraft:redstone_wire[east=side,north=none,power=0,south=none,west=side]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -60,
+        1
+      ],
+      "block": "minecraft:redstone_wire[east=side,north=none,power=0,south=none,west=side]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        9,
+        -60,
+        1
+      ],
+      "block": "minecraft:redstone_wire[east=side,north=none,power=0,south=none,west=side]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        10,
+        -60,
+        1
+      ],
+      "block": "minecraft:redstone_wire[east=side,north=none,power=0,south=none,west=side]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        11,
+        -60,
+        1
+      ],
+      "block": "minecraft:redstone_wire[east=none,north=none,power=0,south=side,west=side]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        11,
+        -60,
+        2
+      ],
+      "block": "minecraft:redstone_wire[east=none,north=side,power=0,south=side,west=none]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        11,
+        -60,
+        3
+      ],
+      "block": "minecraft:redstone_wire[east=none,north=side,power=0,south=up,west=none]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        11,
+        -60,
+        4
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        11,
+        -59,
+        4
+      ],
+      "block": "minecraft:redstone_wire[east=none,north=side,power=0,south=side,west=none]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        11,
+        -59,
+        5
+      ],
+      "block": "minecraft:redstone_lamp[lit=false]"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        0,
+        -60,
+        1
+      ],
+      "block": "minecraft:redstone_block"
+    },
+    {
+      "tick": 20,
+      "op": "place",
+      "pos": [
+        0,
+        -60,
+        1
+      ],
+      "block": "minecraft:air"
+    }
+  ]
+}

@@ -1,0 +1,153 @@
+{
+  "description": "Repeaters with delays 1 to 4 in a row into a lamp, switched on and off; a repeater locked by a powered side repeater ignores its input until the lock goes away.",
+  "tier": "fast",
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      6,
+      -59,
+      6
+    ]
+  ],
+  "ticks": 50,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -60,
+        1
+      ],
+      "block": "minecraft:repeater[delay=1,facing=west,locked=false,powered=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        1
+      ],
+      "block": "minecraft:repeater[delay=2,facing=west,locked=false,powered=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -60,
+        1
+      ],
+      "block": "minecraft:repeater[delay=3,facing=west,locked=false,powered=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        1
+      ],
+      "block": "minecraft:repeater[delay=4,facing=west,locked=false,powered=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -60,
+        1
+      ],
+      "block": "minecraft:redstone_lamp[lit=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -60,
+        3
+      ],
+      "block": "minecraft:repeater[delay=1,facing=west,locked=false,powered=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        3
+      ],
+      "block": "minecraft:redstone_lamp[lit=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -60,
+        4
+      ],
+      "block": "minecraft:repeater[delay=1,facing=south,locked=false,powered=false]"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        0,
+        -60,
+        1
+      ],
+      "block": "minecraft:redstone_block"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        1,
+        -60,
+        5
+      ],
+      "block": "minecraft:redstone_block"
+    },
+    {
+      "tick": 6,
+      "op": "place",
+      "pos": [
+        0,
+        -60,
+        3
+      ],
+      "block": "minecraft:redstone_block"
+    },
+    {
+      "tick": 16,
+      "op": "place",
+      "pos": [
+        0,
+        -60,
+        1
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "tick": 20,
+      "op": "place",
+      "pos": [
+        1,
+        -60,
+        5
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "tick": 35,
+      "op": "place",
+      "pos": [
+        0,
+        -60,
+        3
+      ],
+      "block": "minecraft:air"
+    }
+  ]
+}

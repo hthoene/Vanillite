@@ -3,7 +3,7 @@
 //! The full default component set of every item is in `data/vanilla/items.json`; typed component
 //! structs are generated from it as gameplay needs them.
 
-pub use crate::generated::items::{ITEMS, Rarity, ids};
+pub use crate::generated::items::{ITEMS, Rarity, TOOLS, ids};
 
 use crate::block::BlockId;
 
@@ -21,6 +21,37 @@ pub struct ItemInfo {
     pub rarity: Rarity,
     /// Block placed by this item, or `u16::MAX`.
     pub block: u16,
+    /// Index into [`TOOLS`] of the default `minecraft:tool` component, or `u16::MAX`.
+    pub tool: u16,
+    /// `EquipmentSlot` ordinal (mainhand, offhand, feet, legs, chest, head, body, saddle) of the
+    /// default `minecraft:equippable` component, or 255.
+    pub equip_slot: u8,
+}
+
+/// The blocks a tool rule applies to.
+#[derive(Debug)]
+pub enum BlockSet {
+    /// A block tag id without `#`, e.g. `minecraft:mineable/pickaxe` (resolved at run time).
+    Tag(&'static str),
+    /// Block ids.
+    Blocks(&'static [u16]),
+}
+
+/// One rule of a `minecraft:tool` component.
+#[derive(Debug)]
+pub struct ToolRule {
+    pub blocks: BlockSet,
+    pub speed: Option<f32>,
+    pub correct_for_drops: Option<bool>,
+}
+
+/// A `minecraft:tool` component.
+#[derive(Debug)]
+pub struct ToolInfo {
+    pub rules: &'static [ToolRule],
+    pub default_mining_speed: f32,
+    pub damage_per_block: u32,
+    pub can_destroy_blocks_in_creative: bool,
 }
 
 impl ItemId {
@@ -39,6 +70,12 @@ impl ItemId {
     pub fn block(self) -> Option<BlockId> {
         let b = self.info().block;
         (b != u16::MAX).then_some(BlockId(b))
+    }
+
+    /// The default `minecraft:tool` component.
+    #[inline]
+    pub fn tool(self) -> Option<&'static ToolInfo> {
+        TOOLS.get(usize::from(self.info().tool))
     }
 
     /// Looks an item up by its registry name.

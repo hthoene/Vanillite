@@ -14,6 +14,9 @@ use vanillite_chunk::{BiomeId, Chunk, ChunkLight, HeightmapKind, Section, facts}
 use vanillite_data::block::{BlockId, BlockState};
 use vanillite_nbt::Compound;
 
+use crate::structure::start::ChunkStarts;
+use crate::structure::{LongOpenHashSet, StructureId, StructureStart};
+
 /// A world generation heightmap (`Heightmap.Types.*_WG`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WgHeightmap {
@@ -112,6 +115,14 @@ pub struct ProtoChunk {
     block_entities: FxHashMap<BlockPos, Compound>,
     block_ticks: ProtoTicks<BlockId>,
     fluid_ticks: ProtoTicks<FluidTickKind>,
+    /// `structureStarts`: the starts generated in this chunk, in insertion order.
+    structure_starts: ChunkStarts,
+    /// `structureReferences`: per structure, the start chunks (`ChunkPos.pack`) whose starts
+    /// reach this chunk, in order of the first reference.
+    structure_references: Vec<(StructureId, LongOpenHashSet)>,
+    /// `entities`: entities added during generation (structure mobs, template entities), as
+    /// their saved NBT (`id`, `Pos`, ...), in the order they were added.
+    entities: Vec<Compound>,
 }
 
 impl ProtoChunk {
@@ -132,6 +143,9 @@ impl ProtoChunk {
             block_entities: FxHashMap::default(),
             block_ticks: ProtoTicks::default(),
             fluid_ticks: ProtoTicks::default(),
+            structure_starts: Vec::new(),
+            structure_references: Vec::new(),
+            entities: Vec::new(),
         }
     }
 
@@ -155,6 +169,9 @@ impl ProtoChunk {
             block_entities: FxHashMap::default(),
             block_ticks: ProtoTicks::default(),
             fluid_ticks: ProtoTicks::default(),
+            structure_starts: Vec::new(),
+            structure_references: Vec::new(),
+            entities: Vec::new(),
         };
         chunk.prime(&[
             WgHeightmap::WorldSurface.kind(),
@@ -399,6 +416,16 @@ impl ProtoChunk {
         &self.block_entities
     }
 
+    /// `addEntity(tag)`: stores an entity added during generation.
+    pub fn add_entity(&mut self, entity: Compound) {
+        self.entities.push(entity);
+    }
+
+    /// The entities added during generation, in order.
+    pub fn entities(&self) -> &[Compound] {
+        &self.entities
+    }
+
     /// Scheduled block ticks.
     pub fn block_ticks(&self) -> &ProtoTicks<BlockId> {
         &self.block_ticks
@@ -468,6 +495,74 @@ impl ProtoChunk {
             (quart_z & 3) as u32,
             biome,
         );
+    }
+
+    /// `getStartForStructure(structure)`.
+    pub fn start_for_structure(&self, structure: StructureId) -> Option<&Arc<StructureStart>> {
+        self.structure_starts
+            .iter()
+            .find(|(s, _)| *s == structure)
+            .map(|(_, start)| start)
+    }
+
+    /// `setStartForStructure(structure, start)`: replaces an earlier start of the structure.
+    pub fn set_start_for_structure(&mut self, structure: StructureId, start: Arc<StructureStart>) {
+        match self
+            .structure_starts
+            .iter_mut()
+            .find(|(s, _)| *s == structure)
+        {
+            Some(entry) => entry.1 = start,
+            None => self.structure_starts.push((structure, start)),
+        }
+    }
+
+    /// `getAllStarts()`.
+    pub fn structure_starts(&self) -> &ChunkStarts {
+        &self.structure_starts
+    }
+
+    /// `addReferenceForStructure(structure, reference)`: `reference` is the start chunk's
+    /// `ChunkPos.pack`.
+    pub fn add_reference(&mut self, structure: StructureId, reference: i64) {
+        let index = match self
+            .structure_references
+            .iter()
+            .position(|(s, _)| *s == structure)
+        {
+            Some(index) => index,
+            None => {
+                self.structure_references
+                    .push((structure, LongOpenHashSet::new()));
+                self.structure_references.len() - 1
+            }
+        };
+        self.structure_references[index].1.insert(reference);
+    }
+
+    /// `setReferencesForStructure(structure, references)` (references read from storage).
+    pub fn set_references(&mut self, structure: StructureId, references: LongOpenHashSet) {
+        match self
+            .structure_references
+            .iter_mut()
+            .find(|(s, _)| *s == structure)
+        {
+            Some(entry) => entry.1 = references,
+            None => self.structure_references.push((structure, references)),
+        }
+    }
+
+    /// `getReferencesForStructure(structure)`.
+    pub fn references_for_structure(&self, structure: StructureId) -> Option<&LongOpenHashSet> {
+        self.structure_references
+            .iter()
+            .find(|(s, _)| *s == structure)
+            .map(|(_, references)| references)
+    }
+
+    /// `getAllReferences()`.
+    pub fn structure_references(&self) -> &[(StructureId, LongOpenHashSet)] {
+        &self.structure_references
     }
 
     /// The finished chunk; its heightmaps are primed from the blocks.

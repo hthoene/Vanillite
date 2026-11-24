@@ -23,7 +23,7 @@ use vanillite_chunk::HeightmapKind;
 use vanillite_nbt::Tag;
 use vanillite_worldgen::proto::ProtoTick;
 use vanillite_worldgen::{
-    DimensionSpec, NeighbourBiomes, ProtoChunk, TerrainGenerator, TerrainJob,
+    DimensionSpec, NeighbourBiomes, ProtoChunk, ReferencedStarts, TerrainGenerator, TerrainJob,
 };
 
 /// The recorded heightmaps, in golden order.
@@ -105,6 +105,7 @@ fn terrain(generator: &TerrainGenerator, center: ChunkPos, radius: i32) -> Vec<P
             jobs.push(TerrainJob {
                 chunk: biomes[at(dx, dz)].clone(),
                 neighbours,
+                structures: ReferencedStarts::empty(),
             });
         }
     }
@@ -473,23 +474,30 @@ fn decoration_matches_vanilla() {
         let generator = generators.get(area);
         let center = ChunkPos::new(int(&area["x"]) as i32, int(&area["z"]) as i32);
         let min_y = int(&area["min_y"]) as i32;
+        // Chunks within `radius` are decorated row by row, or in the reverse order.
+        let radius = area["radius"].as_i64().unwrap_or(1) as i32;
+        let sign = if area["reversed"].as_bool().unwrap_or(false) {
+            -1
+        } else {
+            1
+        };
         let label = format!(
-            "{} seed {} around chunk [{}, {}]",
+            "{} seed {} around chunk [{}, {}], radius {radius}, order {sign}",
             area["dimension"].as_str().unwrap_or_default(),
             int(&area["seed"]),
             center.x,
             center.z
         );
-        let mut chunks = terrain(generator, center, 2);
+        let mut chunks = terrain(generator, center, radius + 1);
         let mut diffs = Vec::new();
-        'decorate: for dz in -1..=1 {
-            for dx in -1..=1 {
-                let pos = ChunkPos::new(center.x + dx, center.z + dz);
+        'decorate: for dz in -radius..=radius {
+            for dx in -radius..=radius {
+                let pos = ChunkPos::new(center.x + sign * dx, center.z + sign * dz);
                 let outcome = catch_unwind(AssertUnwindSafe(|| {
                     let region: [&mut ProtoChunk; 9] = region_chunks(&mut chunks, pos)
                         .try_into()
                         .expect("nine chunks");
-                    generator.generate_features(region);
+                    generator.generate_features(region, &ReferencedStarts::empty());
                 }));
                 if let Err(payload) = outcome {
                     diffs.push(format!(

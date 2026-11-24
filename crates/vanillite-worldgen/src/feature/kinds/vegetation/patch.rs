@@ -6,11 +6,12 @@ use vanillite_base::random::RandomSource;
 use vanillite_base::{BlockPos, Direction};
 use vanillite_data::block::{BlockState, ids};
 
-use super::util::{JavaPosSet, with_bool};
+use super::util::with_bool;
 use crate::Error;
 use crate::behaviour::{SupportType, is_face_sturdy};
 use crate::blocks::BlockSet;
 use crate::carver::providers::IntProvider;
+use crate::feature::kinds::tree::java_set::JavaHashSet;
 use crate::feature::{
     BlockStateProvider, FeatureContext, FeatureParser, FeatureType, PlacedFeatureId, field,
     float_field, int_field,
@@ -72,10 +73,10 @@ impl PatchConfig {
         origin: BlockPos,
         x_radius: i32,
         z_radius: i32,
-    ) -> JavaPosSet {
+    ) -> JavaHashSet {
         let inwards = self.surface;
         let outwards = inwards.opposite();
-        let mut surface = JavaPosSet::default();
+        let mut surface = JavaHashSet::new();
         for dx in -x_radius..=x_radius {
             let is_x_edge = dx == -x_radius || dx == x_radius;
             for dz in -z_radius..=z_radius {
@@ -152,12 +153,10 @@ impl PatchConfig {
     fn distribute_vegetation(
         &self,
         ctx: &mut FeatureContext<'_, '_>,
-        surface: &JavaPosSet,
+        surface: &JavaHashSet,
         mut place: impl FnMut(&mut FeatureContext<'_, '_>, BlockPos),
     ) {
-        let mut order = Vec::new();
-        surface.iteration_order(&mut order);
-        for pos in order {
+        for pos in surface.iter() {
             if self.vegetation_chance > 0.0 && ctx.random.next_float() < self.vegetation_chance {
                 place(ctx, pos);
             }
@@ -230,21 +229,18 @@ impl WaterloggedVegetationPatchFeature {
         origin: BlockPos,
         x_radius: i32,
         z_radius: i32,
-    ) -> JavaPosSet {
+    ) -> JavaHashSet {
         let surface = self
             .config
             .place_ground_patch(ctx, origin, x_radius, z_radius);
-        let mut order = Vec::new();
-        surface.iteration_order(&mut order);
-        let mut water_surface = JavaPosSet::default();
-        for &pos in &order {
+        let mut water_surface = JavaHashSet::new();
+        for pos in surface.iter() {
             if !is_exposed(ctx, pos) {
                 water_surface.insert(pos);
             }
         }
-        water_surface.iteration_order(&mut order);
         let water = ids::WATER.default_state();
-        for &pos in &order {
+        for pos in water_surface.iter() {
             ctx.level.set_block(pos, water, 2);
         }
         water_surface

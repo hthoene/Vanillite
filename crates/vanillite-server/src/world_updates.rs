@@ -36,6 +36,12 @@ impl WorldUpdates {
         let mut output = std::mem::take(level.output());
         self.encode_chunks(level, &mut output);
         let entities = &level.entities;
+        // Vanilla sends level events when they happen, before the chunk holders broadcast the
+        // block changes of the tick.
+        for event in output.level_events.drain(..) {
+            let packet = level_event(event.event, event.pos, event.data);
+            send_near(entities, event.pos, event.source, &packet);
+        }
         if !self.per_chunk.is_empty() {
             for (_, player) in entities.players.iter() {
                 let chunks = &player.connection.chunks;
@@ -57,15 +63,32 @@ impl WorldUpdates {
             let packet = block_event(event.pos, event.block.0, event.a, event.b);
             send_near(entities, event.pos, None, &packet);
         }
-        for event in output.level_events.drain(..) {
-            let packet = level_event(event.event, event.pos, event.data);
-            send_near(entities, event.pos, event.source, &packet);
+        for explosion in output.explosions.drain(..) {
+            send_explosion(entities, &explosion);
+        }
+        for sound in output.sounds.drain(..) {
+            let packet = sound_packet(&sound);
+            // `SoundEvent.getRange(volume)`.
+            let range = if sound.volume > 1.0 {
+                16.0 * f64::from(sound.volume)
+            } else {
+                16.0
+            };
+            send_within(
+                entities,
+                (sound.x, sound.y, sound.z),
+                range,
+                sound.except,
+                &packet,
+            );
         }
         // Hand the emptied buffers back to the level.
         let reuse = level.output();
         if reuse.changed.is_empty()
             && reuse.block_events.is_empty()
             && reuse.level_events.is_empty()
+            && reuse.sounds.is_empty()
+            && reuse.explosions.is_empty()
         {
             output.changed.clear();
             *reuse = output;
@@ -118,7 +141,18 @@ fn send_near(
     except: Option<vanillite_world::entity::EntityId>,
     packet: &Arc<SharedPacket>,
 ) {
-    let (x, y, z) = (f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
+    let at = (f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
+    send_within(entities, at, EVENT_RANGE, except, packet);
+}
+
+/// `PlayerList.broadcast(except, x, y, z, range, dimension, packet)`.
+fn send_within(
+    entities: &Entities,
+    (x, y, z): (f64, f64, f64),
+    range: f64,
+    except: Option<vanillite_world::entity::EntityId>,
+    packet: &Arc<SharedPacket>,
+) {
     for (id, player) in entities.players.iter() {
         if Some(id) == except {
             continue;
@@ -128,7 +162,7 @@ fn send_near(
         };
         let p = entity.pos();
         let (dx, dy, dz) = (x - p.x, y - p.y, z - p.z);
-        if dx * dx + dy * dy + dz * dz < EVENT_RANGE * EVENT_RANGE {
+        if dx * dx + dy * dy + dz * dz < range * range {
             player.connection.sink.send_shared(packet);
         }
     }
@@ -189,6 +223,95 @@ fn block_event(pos: BlockPos, block: u16, a: i32, b: i32) -> Arc<SharedPacket> {
     body.push(a as u8);
     body.push(b as u8);
     write_varint(&mut body, i32::from(block));
+    Arc::new(SharedPacket::new(body))
+}
+
+/// `ServerLevel.explode`: the explosion packet to every player within 64 blocks of the centre,
+/// each with its own knockback.
+fn send_explosion(
+    entities: &Entities,
+    explosion: &vanillite_game::level::explosion::ExplosionEvent,
+) {
+    let center = explosion.center;
+    for (id, player) in entities.players.iter() {
+        let Some(entity) = entities.store.get(id) else {
+            continue;
+        };
+        if entity.pos().distance_to_sqr(center) >= 4096.0 {
+            continue;
+        }
+        let knockback = explosion
+            .hit_players
+            .iter()
+            .find(|(hit, _)| *hit == id)
+            .map(|(_, k)| *k);
+        player
+            .connection
+            .sink
+            .send_shared(&explode_packet(explosion, knockback));
+    }
+}
+
+/// `explode` (`ClientboundExplodePacket`) with Vanilla's default particles and sound.
+fn explode_packet(
+    explosion: &vanillite_game::level::explosion::ExplosionEvent,
+    knockback: Option<vanillite_base::Vec3>,
+) -> Arc<SharedPacket> {
+    use vanillite_data::registry::{PARTICLE_TYPE, SOUND_EVENT};
+    let particle = |name: &str| i32::from(PARTICLE_TYPE.id(name).unwrap_or(0));
+    let mut body = Vec::with_capacity(96);
+    write_varint(&mut body, ids::EXPLODE);
+    for v in [explosion.center.x, explosion.center.y, explosion.center.z] {
+        body.extend_from_slice(&v.to_be_bytes());
+    }
+    body.extend_from_slice(&explosion.radius.to_be_bytes());
+    body.extend_from_slice(&explosion.block_count.to_be_bytes());
+    match knockback {
+        Some(k) => {
+            body.push(1);
+            for v in [k.x, k.y, k.z] {
+                body.extend_from_slice(&v.to_be_bytes());
+            }
+        }
+        None => body.push(0),
+    }
+    // `isSmall() ? EXPLOSION : EXPLOSION_EMITTER` (simple particles without options).
+    let main = if explosion.small {
+        "minecraft:explosion"
+    } else {
+        "minecraft:explosion_emitter"
+    };
+    write_varint(&mut body, particle(main));
+    // `SoundEvents.GENERIC_EXPLODE` as a registry holder.
+    let sound = SOUND_EVENT
+        .id("minecraft:entity.generic.explode")
+        .unwrap_or(0);
+    write_varint(&mut body, i32::from(sound) + 1);
+    // `DEFAULT_EXPLOSION_BLOCK_PARTICLES`: poof (0.5, 1.0) and smoke (1.0, 1.0), weight 1.
+    write_varint(&mut body, 2);
+    for (name, scaling) in [("minecraft:poof", 0.5_f32), ("minecraft:smoke", 1.0_f32)] {
+        write_varint(&mut body, particle(name));
+        body.extend_from_slice(&scaling.to_be_bytes());
+        body.extend_from_slice(&1.0_f32.to_be_bytes());
+        write_varint(&mut body, 1);
+    }
+    // `playSound`: the source is not silent.
+    body.push(1);
+    Arc::new(SharedPacket::new(body))
+}
+
+/// `sound`: a registry sound event at a position.
+fn sound_packet(sound: &vanillite_game::level::Sound) -> Arc<SharedPacket> {
+    let mut body = Vec::with_capacity(40);
+    write_varint(&mut body, ids::SOUND);
+    write_varint(&mut body, i32::from(sound.sound) + 1);
+    write_varint(&mut body, i32::from(sound.source));
+    for v in [sound.x, sound.y, sound.z] {
+        body.extend_from_slice(&((v * 8.0) as i32).to_be_bytes());
+    }
+    body.extend_from_slice(&sound.volume.to_be_bytes());
+    body.extend_from_slice(&sound.pitch.to_be_bytes());
+    body.extend_from_slice(&sound.seed.to_be_bytes());
     Arc::new(SharedPacket::new(body))
 }
 

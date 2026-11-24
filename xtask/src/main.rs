@@ -2,6 +2,8 @@
 //!
 //! ```text
 //! cargo xtask vanilla update [<version>] [--jar <server.jar>]
+//! cargo xtask version check
+//! cargo xtask version update <version> [--final] [--bulk] [--no-test]
 //! cargo xtask codegen [--check]
 //! cargo xtask golden check
 //! cargo xtask golden regen [--all] [--bulk] [<name>...]
@@ -22,6 +24,7 @@ mod golden;
 mod loadtest;
 mod normalize;
 mod vanilla;
+mod version;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -35,6 +38,18 @@ pub const USAGE: &str = "usage:
       tools/extractor, normalise into data/vanilla/, run codegen and print a change report.
       <version> defaults to the latest release. Needs a JDK (JAVA_HOME or
       VANILLITE_JAVA_HOME, else java/javac on PATH) of the version the jar asks for.
+  cargo xtask version check
+      Compare the pinned version (data/vanilla/version.toml) with the latest release in Mojang's
+      version manifest; fails if a newer release exists (in GitHub Actions also sets the step
+      output `newer`).
+  cargo xtask version update <version> [--final] [--bulk] [--no-test]
+      Prepare the switch to another version (release, pre-release or snapshot): extract the
+      pinned and the new jar, regenerate data/vanilla and the generated code, record all
+      repository goldens (--bulk also the bulk goldens and runs the ignored tests) and run the
+      tests, all in the worktree target/version/<version>/tree, and write the change report
+      target/version/<version>/change-report.md (protocol, packet fields, registries, blocks,
+      items, entities, data pack, goldens, failing tests, affected code areas). --final does it
+      in this checkout instead (only for releases): the real switch. --no-test skips the tests.
   cargo xtask codegen [--check]
       Generate crates/vanillite-data/src/generated/ from data/vanilla/.
       --check fails if the committed files are not current.
@@ -93,6 +108,8 @@ fn main() -> ExitCode {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let result = match args.as_slice() {
         ["vanilla", "update", rest @ ..] => vanilla_update(rest),
+        ["version", "check"] => version::check(&repo_root()),
+        ["version", "update", rest @ ..] => version::update(&repo_root(), rest),
         ["codegen"] => codegen::run(&repo_root(), false),
         ["codegen", "--check"] => codegen::run(&repo_root(), true),
         ["golden", "check"] => golden::check(&repo_root()),

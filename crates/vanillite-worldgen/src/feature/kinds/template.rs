@@ -222,7 +222,9 @@ mod tests {
     use super::*;
     use crate::feature::{FeatureEnv, FeatureId};
     use crate::test_support::packs;
-    use crate::{DimensionSpec, NeighbourBiomes, ProtoChunk, TerrainGenerator, TerrainJob};
+    use crate::{
+        DimensionSpec, NeighbourBiomes, ProtoChunk, ReferencedStarts, TerrainGenerator, TerrainJob,
+    };
 
     /// Every `fossil` and `template` configuration in the pack, also those nested inline in
     /// other features.
@@ -256,6 +258,7 @@ mod tests {
                 jobs.push(TerrainJob {
                     chunk: biomes[at(dx, dz)].clone(),
                     neighbours,
+                    structures: ReferencedStarts::empty(),
                 });
             }
         }

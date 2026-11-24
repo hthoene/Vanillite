@@ -17,8 +17,8 @@ import net.minecraft.server.Bootstrap;
  *
  * <p>Boots the Vanilla registries of the unobfuscated server jar it is compiled against and dumps
  * the facts that Mojang's data generator does not report (per-state facts, shapes, entity type
- * facts, fluid states, dynamic registry lists). The output is raw JSON; {@code cargo xtask vanilla
- * update} normalises it into {@code data/vanilla/}.
+ * facts, fluid states, dynamic registry lists, packet fields). The output is raw JSON; {@code cargo
+ * xtask vanilla update} normalises it into {@code data/vanilla/}.
  *
  * <p>Usage: {@code java -cp <classes>:<server jar>:<libraries> dev.vanillite.extractor.Main <out>}
  */
@@ -27,7 +27,7 @@ public final class Main {
 
   private Main() {}
 
-  public static void main(String[] args) throws IOException {
+  public static void main(String[] args) throws Exception {
     if (args.length != 1) {
       System.err.println("usage: Main <output directory>");
       System.exit(2);
@@ -43,6 +43,7 @@ public final class Main {
     write(out.resolve("entities.json"), Entities.extract());
     write(out.resolve("items.json"), Items.extract());
     write(out.resolve("registries.json"), Registries.extract());
+    write(out.resolve("packet_fields.json"), Packets.extract());
     System.out.println("extractor: wrote " + out.toAbsolutePath());
   }
 

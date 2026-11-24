@@ -12,9 +12,12 @@ use vanillite_world::chunks::{Chunks, TicketId};
 use vanillite_world::entity::EntityId;
 use vanillite_world::tracking::{EntityTracker, TrackerInput, TrackerOutput, Viewer};
 
+use vanillite_base::random::XoroshiroRandom;
+
+use crate::blocks::LevelEffects;
 use crate::compute::Compute;
 use crate::global::Global;
-use crate::players::WorldPlayers;
+use crate::players::{WorldBlocks, WorldPlayers};
 use crate::world_setup::ChunkPackets;
 use crate::world_updates::WorldUpdates;
 
@@ -52,10 +55,16 @@ pub struct ServerWorld {
     chunks_sent: Vec<(EntityId, ChunkPos)>,
     pub(crate) players: WorldPlayers,
     packets: ChunkPackets,
+    /// Sounds and crack progress of the player handlers.
+    effects: LevelEffects,
+    /// The random of the item entities (`Entity.random`).
+    item_random: XoroshiroRandom,
     updates: WorldUpdates,
     /// The chunk ticket and simulation ticket of every player at its centre chunk.
     player_tickets: FxHashMap<EntityId, (ChunkPos, TicketId, TicketId)>,
     scratch: Vec<ChunkPos>,
+    /// Player ids of the tick (block effects).
+    player_scratch: Vec<vanillite_world::entity::EntityId>,
     /// Weather, lightning and the players' survival.
     pub(crate) survival: crate::survival::WorldSurvival,
     /// The dimension's saved data (`<dimension>/data/`: world border, chunk tickets, raids,
@@ -86,6 +95,11 @@ impl ServerWorld {
         survival: crate::survival::WorldSurvival,
         data: vanillite_storage::saved_data::SavedDataStore,
     ) -> ServerWorld {
+        // Entity randoms are `RandomSource.create()`: seeded from the clock, not the world seed.
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos() as i64)
+            ^ i64::from(id.0);
         if let Some(climate) = survival.climate() {
             level.set_climate(Arc::clone(climate));
         }
@@ -103,7 +117,10 @@ impl ServerWorld {
             packets: ChunkPackets::default(),
             updates: WorldUpdates::default(),
             player_tickets: FxHashMap::default(),
+            effects: LevelEffects::default(),
+            item_random: XoroshiroRandom::new(seed),
             scratch: Vec::new(),
+            player_scratch: Vec::new(),
             survival,
             data,
         }
@@ -227,12 +244,17 @@ impl ServerWorld {
     pub(crate) fn tick(&mut self, ctx: &mut TickContext<'_>) {
         debug_assert_eq!(ctx.world, self.id);
         self.players.handle_packets(
-            &mut self.level.entities,
+            &mut self.level,
             &self.rules,
             ctx.runs_normally,
             ctx.global,
             self.id,
+            &mut WorldBlocks {
+                effects: &mut self.effects,
+                tracker: &*self.tracker,
+            },
         );
+        self.effects.flush(&self.level.entities);
         self.survival.moves(
             &mut self.level.entities,
             &self.level.chunks,
@@ -249,6 +271,8 @@ impl ServerWorld {
                 id,
             );
         }
+        self.players_inside_blocks();
+        self.level.set_handling_tick(true);
         if ctx.runs_normally {
             // `advanceWeatherCycle`, then `tickTime`: the overworld advances the shared game
             // time, every world runs on it.
@@ -261,15 +285,17 @@ impl ServerWorld {
         }
         self.update_player_tickets();
         let level = &mut self.level;
-        level.chunks.tick();
+        level.tick_chunk_runtime();
         level.post_process();
         if ctx.runs_normally {
             level.tick_chunks(&mut self.scratch);
             level.run_block_events();
         }
+        level.set_handling_tick(false);
         if ctx.runs_normally {
             self.ticks += 1;
             self.tick_entities();
+            self.level.tick_block_entities();
         }
         self.players.tick_entities(&mut self.level.entities);
         if ctx.runs_normally {
@@ -296,8 +322,28 @@ impl ServerWorld {
             ctx.global,
             &self.dimension,
         );
-        self.players
-            .tick_connections(&mut self.level.entities, ctx.tick, ctx.global, self.id);
+        self.players.tick_connections(
+            &mut self.level,
+            ctx.tick,
+            ctx.global,
+            self.id,
+            &mut WorldBlocks {
+                effects: &mut self.effects,
+                tracker: &*self.tracker,
+            },
+        );
+        self.effects.flush(&self.level.entities);
+    }
+
+    /// `applyEffectsFromBlocks` after the players' moves: pressure plates, tripwire and other
+    /// blocks they stand in react (`Entity.checkInsideBlocks`).
+    fn players_inside_blocks(&mut self) {
+        self.player_scratch.clear();
+        self.player_scratch
+            .extend(self.level.entities.players.iter().map(|(id, _)| id));
+        for &id in &self.player_scratch {
+            vanillite_game::block::plate::check_inside_blocks(&mut self.level, id);
+        }
     }
 
     /// `entityTickList.forEach(tickNonPassenger)`: every entity in tick order; players move
@@ -311,10 +357,16 @@ impl ServerWorld {
             };
             entity.set_old_pos();
             let kind = entity.as_ref().kind();
-            if kind == vanillite_data::entity::ids::FALLING_BLOCK {
-                vanillite_game::block::falling::tick_entity(level, id);
-            }
+            vanillite_game::entities::tick_entity(level, id, kind);
         }
+        let min_y = level.min_y();
+        crate::blocks::tick_items(
+            &mut level.entities,
+            &level.chunks,
+            &mut self.item_random,
+            min_y,
+            i16::try_from(self.rules.items.despawn_ticks).unwrap_or(i16::MAX),
+        );
     }
 
     /// Runs the entity tracker over this tick's state and resets the per-tick sync state.
@@ -360,7 +412,7 @@ impl ServerWorld {
         self.players.save_all(&self.level.entities);
         if !skip_chunks {
             self.data.save();
-            self.level.chunks.save_all(flush);
+            self.level.save(flush);
         }
     }
 }

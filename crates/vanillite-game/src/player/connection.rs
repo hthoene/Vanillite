@@ -21,8 +21,13 @@ use super::chat::{
 };
 use super::chunks::PlayerChunks;
 use super::movement::{Body, Kick, MoveContext, MoveRequest, Movement};
+use super::play::{Digging, PlayContext};
 use super::sink::PacketSink;
 use super::{ClientInformation, MainHand};
+use crate::inventory::ClickContext;
+use vanillite_base::BlockPos;
+use vanillite_protocol::packets::play::clientbound::SetHeldSlot;
+use vanillite_protocol::packets::play::serverbound::{DigAction, Hand};
 
 /// The state of a player that its packets change. The caller copies it from the entity store
 /// and player data before handling packets and writes changed values back.
@@ -151,6 +156,11 @@ pub struct Connection {
     pub chunks: PlayerChunks,
     /// Chat and commands.
     pub chat: PlayerChatState,
+    /// Digging, placing and item handling.
+    pub play: Digging,
+    /// A virtual connection (test bot, Bedrock player). These have no chat session, so their
+    /// chat is accepted unsigned even when the server enforces secure chat.
+    pub is_virtual: bool,
 }
 
 impl std::fmt::Debug for Connection {
@@ -194,6 +204,7 @@ impl Connection {
         inbound: Receiver<Inbound>,
         pos: Vec3,
         memory_connection: bool,
+        is_virtual: bool,
         chat: &ChatSettings,
         inbox: Arc<Mutex<ChatInbox>>,
     ) -> Connection {
@@ -203,6 +214,8 @@ impl Connection {
             movement: Movement::new(pos),
             chunks: PlayerChunks::new(memory_connection),
             chat: PlayerChatState::new(chat, inbox),
+            play: Digging::new(),
+            is_virtual,
         }
     }
 
@@ -213,6 +226,7 @@ impl Connection {
         state: &mut PlayerState,
         ctx: MoveContext<'_>,
         chat: ChatContext<'_>,
+        play: &mut PlayContext<'_>,
         budget: usize,
     ) -> Handled {
         for _ in 0..budget {
@@ -221,7 +235,12 @@ impl Connection {
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => return Handled::Disconnected,
             };
-            if let Err(Kick(reason)) = self.handle(packet, state, ctx, chat) {
+            play.actor.pos = state.body.pos;
+            play.actor.y_rot = state.body.y_rot;
+            play.actor.x_rot = state.body.x_rot;
+            play.actor.on_ground = state.body.on_ground;
+            play.actor.sneaking = state.shift_key_down;
+            if let Err(Kick(reason)) = self.handle(packet, state, ctx, chat, play) {
                 return Handled::Kick(reason);
             }
         }
@@ -238,6 +257,7 @@ impl Connection {
         state: &mut PlayerState,
         ctx: MoveContext<'_>,
         chat: ChatContext<'_>,
+        play: &mut PlayContext<'_>,
     ) -> Result<(), Kick> {
         let sink = self.sink.as_ref();
         let mv =
@@ -361,6 +381,38 @@ impl Connection {
                     }
                 }
             }
+            ServerboundPlay::PlayerAction(p) => {
+                if self.movement.has_client_loaded() {
+                    self.handle_player_action(p, play);
+                }
+            }
+            ServerboundPlay::UseItemOn(p) => {
+                if self.movement.has_client_loaded() {
+                    self.play.use_item_on(play, &p, self.sink.as_ref());
+                }
+            }
+            ServerboundPlay::UseItem(p) => {
+                if self.movement.has_client_loaded() {
+                    self.play.use_item(p.sequence);
+                }
+            }
+            ServerboundPlay::Punch(_) => play.swings.push(Hand::MainHand),
+            ServerboundPlay::SetCarriedItem(p) => match usize::try_from(p.slot) {
+                Ok(slot) if slot < crate::inventory::HOTBAR => play.inventory.selected = slot,
+                _ => log::warn!("{} tried to set an invalid carried item", chat.name),
+            },
+            ServerboundPlay::SetCreativeModeSlot(p) => {
+                self.play.set_creative_slot(play, p.slot, p.item);
+                play.inventory.broadcast_changes(self.sink.as_ref());
+            }
+            ServerboundPlay::ContainerClick(p) => self.container_click(p, play),
+            ServerboundPlay::ContainerClose(p) => {
+                if p.container_id == 0 {
+                    let infinite = play.actor.game_mode == vanillite_config::GameMode::Creative;
+                    play.inventory.close(infinite, play.drops);
+                }
+            }
+            ServerboundPlay::PickItemFromBlock(p) => self.pick_item_from_block(p.pos, play),
             // The server never asks the client to reconfigure yet.
             ServerboundPlay::ConfigurationAcknowledged(_) => {
                 return Err(Kick(Box::new(Component::translatable(
@@ -380,6 +432,101 @@ impl Connection {
             | ServerboundPlay::Unhandled { .. } => {}
         }
         Ok(())
+    }
+
+    /// `handlePlayerAction`.
+    fn handle_player_action(
+        &mut self,
+        p: vanillite_protocol::packets::play::serverbound::PlayerActionPacket,
+        play: &mut PlayContext<'_>,
+    ) {
+        let spectator = play.actor.game_mode == vanillite_config::GameMode::Spectator;
+        match p.action {
+            DigAction::SwapItemWithOffhand => {
+                if !spectator {
+                    play.inventory.swap_hands();
+                }
+            }
+            DigAction::DropItem | DigAction::DropAllItems => {
+                self.play
+                    .drop_selected(play, p.action == DigAction::DropAllItems);
+                play.swings.push(Hand::MainHand);
+            }
+            DigAction::ReleaseUseItem | DigAction::Stab => {}
+            DigAction::StartDestroyBlock
+            | DigAction::ChangeDestroyDirection
+            | DigAction::AbortDestroyBlock
+            | DigAction::StopDestroyBlock => {
+                let pos = BlockPos::new(p.pos.x, p.pos.y, p.pos.z);
+                self.play.handle_action(
+                    play,
+                    p.action,
+                    pos,
+                    p.direction,
+                    p.sequence,
+                    self.sink.as_ref(),
+                );
+            }
+        }
+    }
+
+    /// `handleContainerClick` for the inventory menu.
+    fn container_click(
+        &mut self,
+        p: vanillite_protocol::packets::play::serverbound::ContainerClick,
+        play: &mut PlayContext<'_>,
+    ) {
+        if p.container_id != 0 {
+            return;
+        }
+        let sink = self.sink.as_ref();
+        if play.actor.game_mode == vanillite_config::GameMode::Spectator {
+            play.inventory.send_all(sink);
+            return;
+        }
+        // `isValidSlotIndex`: -1, -999 or a slot of the menu.
+        let valid = p.slot == -1
+            || p.slot == -999
+            || usize::try_from(p.slot).is_ok_and(|s| s < crate::inventory::MENU_SLOTS);
+        if !valid {
+            log::debug!("A player clicked invalid slot index {}", p.slot);
+            return;
+        }
+        let full_resync = p.state_id != play.inventory.state_id();
+        let ctx = ClickContext {
+            infinite: play.actor.game_mode == vanillite_config::GameMode::Creative,
+        };
+        play.inventory
+            .click(p.slot, p.button, p.input, ctx, play.drops);
+        play.inventory.receive_predictions(&p.changed, &p.carried);
+        if full_resync {
+            play.inventory.broadcast_full_state(sink);
+        } else {
+            play.inventory.broadcast_changes(sink);
+        }
+    }
+
+    /// `handlePickItemFromBlock` (middle click).
+    fn pick_item_from_block(
+        &mut self,
+        pos: vanillite_protocol::types::BlockPos,
+        play: &mut PlayContext<'_>,
+    ) {
+        let pos = BlockPos::new(pos.x, pos.y, pos.z);
+        if !play.actor.within_block_range(pos, 1.0) || !play.level.is_loaded(pos) {
+            return;
+        }
+        let state = play.level.block(pos);
+        let item = state.block().info().item;
+        if item == u16::MAX || item == 0 {
+            return;
+        }
+        let stack = crate::item::ItemStack::new(item, 1);
+        let infinite = play.actor.game_mode == vanillite_config::GameMode::Creative;
+        play.inventory.pick_item(stack, infinite);
+        let slot = i32::try_from(play.inventory.selected).unwrap_or(0);
+        self.sink.send(&SetHeldSlot { slot });
+        play.inventory.broadcast_changes(self.sink.as_ref());
     }
 
     /// `unpackAndApplyLastSeen`: a broken acknowledgement kicks the player.

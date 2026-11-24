@@ -20,9 +20,10 @@
 //! # Context-bound functions
 //!
 //! `blend_alpha`, `blend_offset` and `beardifier` read per-chunk data in Vanilla (old-chunk
-//! blending, structures) and `blend_density` applies the blender. M1 has neither, so they
-//! evaluate to their fallbacks (1, 0, 0) and the identity; `SamplerContext::context_field` in
-//! `exec.rs` is the one place where they would bind.
+//! blending, structures) and `blend_density` applies the blender. The terrain stage binds the
+//! structures' `Beardifier` with [`SamplerContext::set_beardifier`] (a [`ContextSampler`]);
+//! old-chunk blending is not ported, so `blend_alpha`/`blend_offset` evaluate to their
+//! fallbacks (1, 0) and `blend_density` is the identity.
 //!
 //! [`DensityVolume`]: crate::volume::DensityVolume
 
@@ -41,7 +42,7 @@ use crate::noise::{Noise, NormalNoise};
 use crate::random::AnyRandom;
 
 pub use compile::DensityCompiler;
-pub use exec::SamplerContext;
+pub use exec::{ContextSampler, SamplerContext};
 pub use function::{Axis, DensityFunction, DistanceMetric, RoundMode};
 pub use parse::DensityParser;
 pub use program::{ContextField, GradientTiling, IntervalSelectTable, Op, OpIndex, Program};
