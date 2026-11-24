@@ -500,3 +500,84 @@ fn two_players_join_see_each_other_and_rejoin() {
     thread.join().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Waits for the respawn packet into `dimension` and returns how much data the client keeps.
+fn respawns_in(player: &mut Player, dimension: &str) -> u8 {
+    player.until("respawn", |p| match p {
+        ClientboundPlay::Respawn(r) if r.spawn.dimension.to_string() == dimension => {
+            Some(r.data_to_keep)
+        }
+        _ => None,
+    })
+}
+
+/// Waits for the next teleport, accepts it and returns its position.
+fn teleported(player: &mut Player) -> (f64, f64, f64) {
+    let t = player.until("player_position", |p| match p {
+        ClientboundPlay::PlayerPosition(t) => Some(t.clone()),
+        _ => None,
+    });
+    let pos = t.change.position;
+    player.send(&AcceptTeleportation {
+        id: t.teleport_id,
+        x: pos.x,
+        y: pos.y,
+        z: pos.z,
+        y_rot: t.change.y_rot,
+        x_rot: t.change.x_rot,
+    });
+    (pos.x, pos.y, pos.z)
+}
+
+/// Puts an End portal block at `pos` of `world`.
+fn end_portal_at(handle: &vanillite_server::ServerHandle, world: u16, pos: (f64, f64, f64)) {
+    let pos = vanillite_base::BlockPos::containing(pos.0, pos.1, pos.2);
+    handle.run_in_world(vanillite_server::WorldId(world), move |w| {
+        let portal = vanillite_data::block::ids::END_PORTAL.default_state();
+        w.level_mut()
+            .set_block(pos, portal, vanillite_game::level::update::ALL);
+    });
+}
+
+#[test]
+fn players_travel_to_the_end_and_back_through_the_credits() {
+    let dir = std::env::temp_dir().join(format!("vanillite-end-trip-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("server.properties"), "view-distance=2\n").unwrap();
+    std::fs::write(dir.join("eula.txt"), "eula=true\n").unwrap();
+    let mut builder = ServerBuilder::new(&dir);
+    builder.vanilla_pack(VanillaPack::None).network(false);
+    let server = builder.start().expect("server starts");
+    let opener = server.virtual_opener().expect("network");
+    let handle = server.handle();
+    let thread = std::thread::spawn(move || server.run());
+
+    let mut p = connect(&opener, "Carol");
+    let start = join(&mut p);
+
+    // An End portal at the player's feet takes it onto the End's obsidian platform.
+    end_portal_at(&handle, 0, start);
+    assert_eq!(respawns_in(&mut p, "minecraft:the_end"), 3);
+    assert_eq!(teleported(&mut p), (100.5, 49.0, 0.5));
+
+    // The exit portal rolls the credits the first time; afterwards the player respawns in
+    // the overworld with everything it had.
+    end_portal_at(&handle, 2, (100.5, 49.0, 0.5));
+    p.until("credits", |packet| match packet {
+        ClientboundPlay::GameEvent(e) if e.event == 4 => Some(()),
+        _ => None,
+    });
+    p.send(
+        &vanillite_protocol::packets::play::serverbound::ClientCommand {
+            action:
+                vanillite_protocol::packets::play::serverbound::ClientCommandAction::PerformRespawn,
+        },
+    );
+    assert_eq!(respawns_in(&mut p, "minecraft:overworld"), 1);
+    teleported(&mut p);
+
+    handle.stop();
+    thread.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}

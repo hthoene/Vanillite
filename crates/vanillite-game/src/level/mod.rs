@@ -101,6 +101,9 @@ pub struct LevelSettings {
     pub has_sky_light: bool,
     /// The dimension's `water_evaporates` attribute (the Nether).
     pub water_evaporates: bool,
+    /// Fire lights nether portals here (`BaseFireBlock.inPortalDimension`: the Overworld and
+    /// the Nether).
+    pub portal_dimension: bool,
     /// Exploit switches (D1).
     pub exploits: ExploitSettings,
 }
@@ -119,6 +122,7 @@ impl Default for LevelSettings {
             fast_lava: false,
             has_sky_light: true,
             water_evaporates: false,
+            portal_dimension: true,
             exploits: ExploitSettings::default(),
         }
     }
@@ -201,6 +205,9 @@ pub struct LevelOutput {
     pub experience: Vec<(vanillite_base::Vec3, i32)>,
     /// Block entities whose client data changed (`sendBlockUpdated` of a block entity).
     pub block_entity_updates: Vec<BlockPos>,
+    /// Global level events (`globalLevelEvent`: event, position, data), heard by every player
+    /// of the server.
+    pub global_level_events: Vec<(i32, BlockPos, i32)>,
 }
 
 /// The game state of one world.
@@ -604,6 +611,11 @@ impl Level {
         });
     }
 
+    /// `globalLevelEvent(event, pos, data)`.
+    pub fn global_level_event(&mut self, event: i32, pos: BlockPos, data: i32) {
+        self.output.global_level_events.push((event, pos, data));
+    }
+
     /// `levelEvent(source, event, pos, data)`.
     pub fn level_event(&mut self, source: Option<EntityId>, event: i32, pos: BlockPos, data: i32) {
         self.output.level_events.push(LevelEvent {
@@ -942,6 +954,10 @@ impl BlockLevel for Level {
     #[inline]
     fn block(&self, pos: BlockPos) -> BlockState {
         Level::block(self, pos)
+    }
+
+    fn min_y(&self) -> i32 {
+        Level::min_y(self)
     }
 
     fn raw_brightness(&self, pos: BlockPos) -> i32 {

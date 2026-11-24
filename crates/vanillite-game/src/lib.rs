@@ -19,5 +19,6 @@ pub mod level;
 pub mod loot;
 pub mod menu;
 pub mod player;
+pub mod portal;
 pub mod recipe;
 pub mod survival;

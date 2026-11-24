@@ -32,10 +32,15 @@ impl WorldUpdates {
 
     /// Sends the light changes collected with [`Self::light_changes`] and the level's output,
     /// then clears both.
-    pub(crate) fn broadcast(&mut self, level: &mut Level) {
+    pub(crate) fn broadcast(&mut self, level: &mut Level, global: &crate::global::Global) {
         let mut output = std::mem::take(level.output());
         self.encode_chunks(level, &mut output);
         let entities = &level.entities;
+        // `globalLevelEvent`: every player of the server.
+        for (event, pos, data) in output.global_level_events.drain(..) {
+            let packet = Arc::new(level_event_packet(event, pos, data, true));
+            global.players.broadcast_shared(&packet, None);
+        }
         // Vanilla sends level events when they happen, before the chunk holders broadcast the
         // block changes of the tick.
         for event in output.level_events.drain(..) {
@@ -131,6 +136,7 @@ impl WorldUpdates {
             && reuse.level_events.is_empty()
             && reuse.sounds.is_empty()
             && reuse.explosions.is_empty()
+            && reuse.global_level_events.is_empty()
         {
             output.changed.clear();
             *reuse = output;
@@ -359,11 +365,21 @@ fn sound_packet(sound: &vanillite_game::level::Sound) -> Arc<SharedPacket> {
 
 /// `level_event` (not global).
 fn level_event(event: i32, pos: BlockPos, data: i32) -> Arc<SharedPacket> {
+    Arc::new(level_event_packet(event, pos, data, false))
+}
+
+/// `ClientboundLevelEventPacket`; `global` events are heard everywhere.
+pub(crate) fn level_event_packet(
+    event: i32,
+    pos: BlockPos,
+    data: i32,
+    global: bool,
+) -> SharedPacket {
     let mut body = Vec::with_capacity(20);
     write_varint(&mut body, ids::LEVEL_EVENT);
     body.extend_from_slice(&event.to_be_bytes());
     body.extend_from_slice(&block_pos_long(pos).to_be_bytes());
     body.extend_from_slice(&data.to_be_bytes());
-    body.push(0);
-    Arc::new(SharedPacket::new(body))
+    body.push(u8::from(global));
+    SharedPacket::new(body)
 }

@@ -108,6 +108,7 @@ pub struct Rule(pub usize);
 impl Rule {
     pub const ADVANCE_TIME: Rule = Rule(0);
     pub const ADVANCE_WEATHER: Rule = Rule(1);
+    pub const ALLOW_ENTERING_NETHER_USING_PORTALS: Rule = Rule(2);
     pub const DROWNING_DAMAGE: Rule = Rule(7);
     pub const FALL_DAMAGE: Rule = Rule(11);
     pub const FIRE_DAMAGE: Rule = Rule(12);
@@ -118,6 +119,8 @@ impl Rule {
     pub const MOB_GRIEFING: Rule = Rule(31);
     pub const NATURAL_HEALTH_REGENERATION: Rule = Rule(32);
     pub const PLAYER_MOVEMENT_CHECK: Rule = Rule(33);
+    pub const PLAYERS_NETHER_PORTAL_CREATIVE_DELAY: Rule = Rule(34);
+    pub const PLAYERS_NETHER_PORTAL_DEFAULT_DELAY: Rule = Rule(35);
     pub const PVP: Rule = Rule(38);
     pub const REDUCED_DEBUG_INFO: Rule = Rule(41);
     pub const RESPAWN_RADIUS: Rule = Rule(42);

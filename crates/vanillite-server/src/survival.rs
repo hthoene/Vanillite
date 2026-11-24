@@ -11,7 +11,9 @@ use vanillite_data::block::BlockState;
 use vanillite_data::entity::ids;
 use vanillite_game::block::weather::Climate;
 use vanillite_game::entities::Entities;
-use vanillite_game::player::{ChunkView, effective_view_distance, join};
+use vanillite_game::level::block_entity::{BlockEntities, BlockEntity};
+use vanillite_game::player::join;
+use vanillite_game::portal::PortalKind;
 use vanillite_game::survival::Effect;
 use vanillite_game::survival::blocks::BlockAccess;
 use vanillite_game::survival::player::{self, Env, TickResult};
@@ -19,11 +21,11 @@ use vanillite_game::survival::rules::{Difficulty, GameRules, Rule};
 use vanillite_game::survival::weather::{LevelWeather, WeatherPacket};
 use vanillite_protocol::SharedPacket;
 use vanillite_protocol::packets::play::clientbound::{
-    ChangeDifficulty, ClockUpdate, GameEvent, RemoveEntities, Respawn, SetExperience, SetTime,
+    ChangeDifficulty, ClockUpdate, GameEvent, RemoveEntities, SetTime,
 };
 use vanillite_protocol::types::VarIntList;
 use vanillite_world::chunks::Chunks;
-use vanillite_world::entity::{EntityFlags, EntityId, NewEntity, Rotation};
+use vanillite_world::entity::{EntityId, NewEntity};
 
 use crate::global::Global;
 use crate::level::LevelState;
@@ -39,6 +41,15 @@ impl BlockAccess for WorldBlocks<'_> {
     fn block_state(&self, pos: BlockPos) -> Option<BlockState> {
         self.0.block(pos).map(BlockState)
     }
+}
+
+/// What the players' tick asks of the world's portals.
+#[derive(Debug, Default)]
+pub(crate) struct PortalRequests {
+    /// Players that go through a portal now: the portal and the block it entered.
+    pub(crate) travels: Vec<(EntityId, PortalKind, BlockPos)>,
+    /// Gateways that took a player this tick and start their cooldown.
+    pub(crate) gateways: Vec<BlockPos>,
 }
 
 /// A lightning bolt (`LightningBolt`): its remaining life, flashes and the entities it hit.
@@ -263,6 +274,7 @@ impl WorldSurvival {
         blocks: &'a WorldBlocks<'a>,
         raining_at: &'a dyn Fn(BlockPos) -> bool,
         dimension: &'a str,
+        enter_gateway: &'a mut dyn FnMut(BlockPos) -> bool,
     ) -> Env<'a> {
         Env {
             types: &level.damage_types,
@@ -274,6 +286,7 @@ impl WorldSurvival {
             min_y: self.min_y,
             dimension,
             raining_at,
+            enter_gateway,
             random: &mut self.random,
             out: &mut self.effects,
         }
@@ -293,7 +306,8 @@ impl WorldSurvival {
         let blocks = WorldBlocks(chunks);
         let (weather, climate) = (self.weather, self.climate.clone());
         let raining = |pos| raining_at(chunks, climate.as_deref(), &weather, pos);
-        let mut env = self.env(level, &rules, &blocks, &raining, dimension);
+        let mut no_gateway = |_| false;
+        let mut env = self.env(level, &rules, &blocks, &raining, dimension, &mut no_gateway);
         let Entities { store, players, .. } = entities;
         for (id, data) in players.iter_mut() {
             if data.connection.movement.moves.is_empty() {
@@ -329,13 +343,17 @@ impl WorldSurvival {
     }
 
     /// `ServerPlayer.doTick` of every player, in the connection tick. Players whose death
-    /// animation ended disappear for the others.
+    /// animation ended or whose end credits started disappear for the others; players going
+    /// through portals and the gateways they entered go to `portals`.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn do_tick(
         &mut self,
         entities: &mut Entities,
         chunks: &Chunks,
+        block_entities: &BlockEntities,
         global: &Global,
         dimension: &str,
+        portals: &mut PortalRequests,
     ) {
         let level = &global.level;
         let rules = level.rules().clone();
@@ -344,14 +362,36 @@ impl WorldSurvival {
         let raining = |pos| raining_at(chunks, climate.as_deref(), &weather, pos);
         let mut removed = std::mem::take(&mut self.scratch);
         {
-            let mut env = self.env(level, &rules, &blocks, &raining, dimension);
+            // `EndGatewayBlock.entityInside`: a gateway takes a player unless it cools down,
+            // then starts its cooldown (applied after the tick, seen at once by the others).
+            let gateways = &mut portals.gateways;
+            let mut enter_gateway = |pos: BlockPos| {
+                let ready = matches!(
+                    block_entities.get(pos),
+                    Some(BlockEntity::EndGateway(gateway)) if !gateway.is_cooling_down()
+                ) && !gateways.contains(&pos);
+                if ready {
+                    gateways.push(pos);
+                }
+                ready
+            };
+            let mut env = self.env(
+                level,
+                &rules,
+                &blocks,
+                &raining,
+                dimension,
+                &mut enter_gateway,
+            );
             let Entities { store, players, .. } = entities;
             for (id, data) in players.iter_mut() {
                 let Some(mut entity) = store.get_mut(id) else {
                     continue;
                 };
-                if player::do_tick(&mut entity, data, &mut env) == TickResult::Remove {
-                    removed.push(id);
+                match player::do_tick(&mut entity, data, &mut env) {
+                    TickResult::Remove | TickResult::Credits => removed.push(id),
+                    TickResult::Portal(kind, entry) => portals.travels.push((id, kind, entry)),
+                    TickResult::Alive => {}
                 }
             }
         }
@@ -397,6 +437,7 @@ impl WorldSurvival {
             None => &no_blocks,
         };
         let raining = |_| false;
+        let mut no_gateway = |_| false;
         let mut env = Env {
             types: &level.damage_types,
             facts: &level.block_facts,
@@ -407,6 +448,7 @@ impl WorldSurvival {
             min_y: 0,
             dimension,
             raining_at: &raining,
+            enter_gateway: &mut no_gateway,
             random: &mut random,
             out: &mut out,
         };
@@ -611,7 +653,8 @@ impl WorldSurvival {
         let mut bolts = std::mem::take(&mut self.bolts);
         let mut hit = Vec::new();
         {
-            let mut env = self.env(level, &rules, &blocks, &raining, dimension);
+            let mut no_gateway = |_| false;
+            let mut env = self.env(level, &rules, &blocks, &raining, dimension, &mut no_gateway);
             bolts.retain_mut(|bolt| {
                 // TODO(#30): fire blocks (`spawnFire`) once blocks tick.
                 bolt.life -= 1;
@@ -771,90 +814,6 @@ impl WorldSurvival {
                 }
             }
         }
-    }
-
-    /// `PlayerList.respawn` for a dead player that asked for it: a new entity with the same
-    /// network id at the world spawn, the respawn packets and the world sent again.
-    pub(crate) fn respawn(
-        &mut self,
-        entities: &mut Entities,
-        global: &Global,
-        level_info: &join::LevelInfo,
-        server_view_distance: i32,
-        id: EntityId,
-    ) -> Option<EntityId> {
-        let level = &global.level;
-        let dead = entities
-            .player(id)
-            .is_some_and(|p| p.survival.is_dead_or_dying());
-        if !dead {
-            return None;
-        }
-        let keep_all = false;
-        let uuid = entities.store.get(id)?.uuid();
-        let (removed, mut data) = entities.despawn_player(id)?;
-        let keep_inventory = level.rules().bool(Rule::KEEP_INVENTORY)
-            || data.game_mode == vanillite_config::GameMode::Spectator;
-        data.survival = data.survival.respawned(keep_inventory);
-        data.survival.reset_sent();
-        data.connection.chunks.reset();
-        let sink = Arc::clone(&data.connection.sink);
-        let (pos, yaw) = level_info.spawn;
-        join::send_abilities(sink.as_ref(), data.game_mode);
-        sink.send(&Respawn {
-            spawn: join::spawn_info(level_info, &data),
-            data_to_keep: u8::from(keep_all),
-        });
-        let mut body = vanillite_game::player::Body {
-            pos,
-            velocity: Vec3::ZERO,
-            y_rot: yaw,
-            x_rot: 0.0,
-            on_ground: false,
-            horizontal_collision: false,
-            fall_flying: false,
-        };
-        data.connection
-            .movement
-            .teleport(&mut body, pos, yaw, 0.0, sink.as_ref());
-        join::send_spawn_position(sink.as_ref(), level_info);
-        sink.send(&change_difficulty(level));
-        sink.send(&SetExperience {
-            progress: data.survival.xp.progress,
-            level: data.survival.xp.level,
-            total: data.survival.xp.total,
-        });
-        join::send_level_info(
-            sink.as_ref(),
-            level_info,
-            &full_time_sync(level),
-            &self.join_weather(),
-        );
-        let view = ChunkView {
-            center: chunk_of(pos),
-            view_distance: effective_view_distance(&data.client, server_view_distance),
-        };
-        data.chunk_view = view;
-        data.connection
-            .chunks
-            .update_view(view.center, view.view_distance, sink.as_ref());
-        data.connection.movement.restart_client_load_timer();
-        let new = entities.spawn_player_as(
-            removed.network_id,
-            uuid,
-            pos,
-            Rotation {
-                y_rot: yaw,
-                x_rot: 0.0,
-                y_head_rot: yaw,
-            },
-            data,
-        );
-        if let Some(mut entity) = entities.store.get_mut(new) {
-            entity.set_flags(EntityFlags::ON_GROUND, false);
-            entity.mark_data_dirty();
-        }
-        Some(new)
     }
 }
 
