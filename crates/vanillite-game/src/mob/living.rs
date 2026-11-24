@@ -684,9 +684,89 @@ pub fn move_self(t: &mut Tick<'_, '_>, delta: Vec3) {
         }
         t.set_velocity(v);
     }
+    if t.mob_ref().kind != super::Kind::EnderDragon {
+        movement_emission(t, movement, effect_pos, effect_state);
+    }
     let factor = f64::from(block_speed_factor(t));
     let v = t.velocity();
     t.set_velocity(v.multiply(factor, 1.0, factor));
+}
+
+/// Queues `gameEvent(event, pos, Context.of(this mob, affected))`.
+fn post_game_event(t: &mut Tick<'_, '_>, event: u16, pos: Vec3, affected: Option<BlockState>) {
+    let context = crate::level::game_event::GameEventContext {
+        source: Some(t.id),
+        affected,
+    };
+    t.cx.actions.push(super::WorldAction::Level(
+        super::boss::warden::LevelAction::GameEvent {
+            event,
+            pos,
+            context,
+        },
+    ));
+}
+
+/// `Entity.applyMovementEmissionAndPlaySound`: the `STEP` and `SWIM` game events of a mob's
+/// move (the step sounds are not simulated).
+fn movement_emission(
+    t: &mut Tick<'_, '_>,
+    movement: Vec3,
+    effect_pos: BlockPos,
+    effect_state: BlockState,
+) {
+    #[allow(clippy::cast_possible_truncation)]
+    let (moved, horizontal) = (
+        (movement.length() * f64::from(0.6_f32)) as f32,
+        ((movement.x * movement.x + movement.z * movement.z).sqrt() * f64::from(0.6_f32)) as f32,
+    );
+    let supporting_pos = on_pos(t, 1.0e-5);
+    let supporting = t.level.block(supporting_pos);
+    let climbing = t.env.facts.is_climbable(supporting.block());
+    {
+        let m = t.mob();
+        m.move_dist += if climbing { moved } else { horizontal };
+        if m.move_dist <= m.next_step || supporting.is_air() {
+            return;
+        }
+    }
+    let on_ground = t.on_ground();
+    let pos = t.pos();
+    let steps = |t: &Tick<'_, '_>, st: BlockState| {
+        !st.is_air() && (on_ground || t.env.facts.is_climbable(st.block()))
+    };
+    let only_effect = supporting_pos == effect_pos;
+    let mut produced = false;
+    if steps(t, effect_state) {
+        produced = true;
+        if only_effect {
+            post_game_event(
+                t,
+                crate::level::game_event::events().step,
+                pos,
+                Some(effect_state),
+            );
+        }
+    }
+    if !only_effect && steps(t, supporting) {
+        produced = true;
+        post_game_event(
+            t,
+            crate::level::game_event::events().step,
+            pos,
+            Some(supporting),
+        );
+    }
+    let in_water = t.mob_ref().fluids.in_water();
+    let m = t.mob();
+    if produced || in_water {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+        let next = (m.move_dist as i32).saturating_add(1) as f32;
+        m.next_step = next;
+    }
+    if !produced && in_water {
+        post_game_event(t, crate::level::game_event::events().swim, pos, None);
+    }
 }
 
 /// `Mth.equal(double, double)`.
@@ -699,6 +779,13 @@ fn check_fall_damage(t: &mut Tick<'_, '_>, ya: f64, on_ground: bool, on_state: B
     if on_ground {
         let distance = t.mob_ref().fall_distance;
         if distance > 0.0 {
+            let pos = t.pos();
+            post_game_event(
+                t,
+                crate::level::game_event::events().hit_ground,
+                pos,
+                Some(on_state),
+            );
             let multiplier = match t.env.facts.landing(on_state) {
                 Landing::Fall(m) => Some(m),
                 Landing::Slime => None,

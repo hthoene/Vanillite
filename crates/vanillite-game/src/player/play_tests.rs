@@ -101,6 +101,7 @@ fn actor(game_mode: GameMode) -> Actor {
         permission_level: 0,
         eyes_in_water: false,
         dig: crate::inventory::DigEffects::default(),
+        entity: None,
     }
 }
 

@@ -183,6 +183,9 @@ pub struct MobData {
     pub last_pos: BlockPos,
     /// Active status effects (`activeEffects`).
     pub effects: crate::effect::MobEffects,
+    /// `moveDist` and `nextStep`: when the next step makes a vibration.
+    pub move_dist: f32,
+    pub next_step: f32,
     /// The state of bosses and other kinds with their own machinery.
     pub ext: boss::Ext,
 }
@@ -266,6 +269,8 @@ impl MobData {
             xp_reward: 0,
             last_pos: BlockPos::new(i32::MIN, i32::MIN, i32::MIN),
             effects: crate::effect::MobEffects::default(),
+            move_dist: 0.0,
+            next_step: 1.0,
             ext: boss::new_ext(kind),
         };
         mob.ambient_sound_time = -kind.ambient_sound_interval();

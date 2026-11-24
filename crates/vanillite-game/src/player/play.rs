@@ -94,6 +94,8 @@ pub struct Actor {
     pub eyes_in_water: bool,
     /// The status effects that change the mining speed.
     pub dig: crate::inventory::DigEffects,
+    /// The player's entity, the source of its game events (`None` in tests without one).
+    pub entity: Option<vanillite_world::entity::EntityId>,
 }
 
 impl Actor {
@@ -565,6 +567,12 @@ impl Digging {
                 );
             }
         }
+        ctx.level.game_event(
+            events_ids().block_destroy,
+            pos,
+            ctx.actor.entity,
+            Some(state),
+        );
         // `removeBlock`: the fluid of a waterlogged block stays.
         let replacement = state.fluid_state().block_state();
         let changed = ctx.level.set_block(pos, replacement, update::ALL);
@@ -836,6 +844,12 @@ impl Digging {
             (sound.volume + 1.0) / 2.0,
             sound.pitch * 0.8,
         );
+        ctx.level.game_event(
+            events_ids().block_place,
+            target,
+            ctx.actor.entity,
+            Some(placed),
+        );
         if !ctx.actor.creative() {
             let slot = match hand {
                 Hand::MainHand => ctx.inventory.selected_item_mut(),
@@ -1014,3 +1028,8 @@ pub fn block_pos_of(v: Vec3) -> BlockPos {
 #[cfg(test)]
 #[path = "play_tests.rs"]
 mod tests;
+
+/// The Vanilla game event ids.
+fn events_ids() -> &'static crate::level::game_event::GameEvents {
+    crate::level::game_event::events()
+}

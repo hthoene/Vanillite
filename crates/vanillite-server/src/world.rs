@@ -88,6 +88,26 @@ impl fmt::Debug for ServerWorld {
 }
 
 impl ServerWorld {
+    /// Posts the game events of the players' moves (steps, swimming, landing).
+    fn post_player_game_events(&mut self) {
+        let mut pending = Vec::new();
+        for (id, p) in self.level.entities.players.iter_mut() {
+            pending.extend(
+                p.survival
+                    .game_events
+                    .drain(..)
+                    .map(|(event, pos, affected)| (id, event, pos, affected)),
+            );
+        }
+        for (id, event, pos, affected) in pending {
+            let context = vanillite_game::level::game_event::GameEventContext {
+                source: Some(id),
+                affected,
+            };
+            self.level.game_event(event, pos, context);
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         id: WorldId,
@@ -291,6 +311,7 @@ impl ServerWorld {
             ctx.global,
             &self.dimension,
         );
+        self.post_player_game_events();
         self.mobs.attacks(
             &mut self.level,
             &mut self.survival,

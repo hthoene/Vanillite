@@ -203,6 +203,17 @@ impl PlayLevel for WorldLevel<'_> {
         }
     }
 
+    fn game_event(
+        &mut self,
+        event: u16,
+        pos: BlockPos,
+        source: Option<vanillite_world::entity::EntityId>,
+        affected: Option<BlockState>,
+    ) {
+        let context = vanillite_game::level::game_event::GameEventContext { source, affected };
+        self.level.game_event_block(event, pos, context);
+    }
+
     fn use_end_crystal(&mut self, on: BlockPos) -> bool {
         let seed = self.level.random().next_long();
         let uuid =

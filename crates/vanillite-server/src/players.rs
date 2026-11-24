@@ -856,6 +856,7 @@ fn actor_of(
         permission_level: crate::commands::permission_level(global, entity.uuid()),
         eyes_in_water,
         dig: vanillite_game::inventory::DigEffects::of(effects),
+        entity: Some(entity.id()),
     }
 }
 
