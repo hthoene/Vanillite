@@ -199,6 +199,11 @@ impl NetState {
             prevent_proxy_connections: p.prevent_proxy_connections,
             compression_threshold: p.network_compression_threshold,
             accepts_transfers: p.accepts_transfers,
+            // Room for every allowed player plus logins in progress.
+            max_connections: usize::try_from(p.max_players)
+                .unwrap_or(0)
+                .saturating_add(256)
+                .max(NetConfig::default().max_connections),
             ..NetConfig::default()
         };
         let status = StatusInfo {
