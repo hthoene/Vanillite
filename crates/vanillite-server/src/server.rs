@@ -264,6 +264,11 @@ impl ServerBuilder {
         let clock = Clock::new();
         let max_players = usize::try_from(config.properties.max_players).unwrap_or(0);
         let commands = crate::commands::build_dispatcher(command_limits(&config));
+        let level = crate::level::LevelState::load(
+            &level_dir,
+            packs.as_deref(),
+            crate::survival::difficulty(config.properties.difficulty),
+        );
         let global = Arc::new_cyclic(|this| Global {
             clock,
             players: PlayerList::new(max_players),
@@ -279,6 +284,7 @@ impl ServerBuilder {
             handle: std::sync::OnceLock::new(),
             commands,
             online_mode: config.properties.online_mode,
+            level,
             seed: level_seed(&config.properties.level_seed),
             registries: prepared.registries.clone(),
             this: this.clone(),
@@ -299,11 +305,13 @@ impl ServerBuilder {
                 .distances
                 .view_distance
                 .or(u8::try_from(config.properties.view_distance.clamp(2, 32)).unwrap_or(10));
-            let tracker = tracker_provider.create(&TrackerSettings::new(
+            let tracker_settings = TrackerSettings::new(
                 i32::from(view_distance),
                 config.properties.entity_broadcast_range_percentage,
                 &rules.tracking,
-            ));
+            );
+            let tracker = tracker_provider.create(&tracker_settings);
+            let player_range = tracker_settings.range(vanillite_data::entity::ids::PLAYER);
             let info =
                 crate::world_setup::world_info(packs.as_deref(), &level_dir, dimension, seed)?;
             let slots = ChunkSlots {
@@ -336,20 +344,31 @@ impl ServerBuilder {
             let players = world_players
                 .next()
                 .ok_or_else(|| StartError::Io("world setup missing".to_owned()))?;
+            let bounds = (info.min_y, info.height);
+            let mut level = Level::new(
+                Chunks::new(info, settings, slots),
+                level_settings,
+                Arc::clone(&behaviours),
+                Arc::clone(&global.network_ids),
+                seed,
+            );
+            level.set_game_time(global.level.game_time());
+            let survival = crate::survival::WorldSurvival::new(
+                dimension,
+                &global.level,
+                &players.level,
+                bounds,
+                player_range,
+                climate,
+            );
             worlds.push(ServerWorld::new(
                 WorldId(index),
                 (*dimension).to_owned(),
                 rules,
                 tracker,
                 players,
-                Level::new(
-                    Chunks::new(info, settings, slots),
-                    level_settings,
-                    Arc::clone(&behaviours),
-                    Arc::clone(&global.network_ids),
-                    seed,
-                ),
-                climate,
+                level,
+                survival,
             ));
         }
         let (worlds, routes) = if parallel {
@@ -801,6 +820,7 @@ impl Server {
         self.tick_count += 1;
         self.tick_rate.tick();
         self.global_pre_phase();
+        self.tick_clocks();
         self.tick_worlds();
         self.global_post_phase();
 
@@ -828,6 +848,21 @@ impl Server {
             }
         }
         self.accept_joins();
+    }
+
+    /// `tickChildren`'s clocks and the game time sync every second (by default).
+    fn tick_clocks(&mut self) {
+        let level = &self.global.level;
+        if self.tick_rate.runs_normally() {
+            let advance = level
+                .rules()
+                .bool(vanillite_game::survival::rules::Rule::ADVANCE_TIME);
+            level.clocks().tick(advance);
+        }
+        let interval = u64::from(self.config.server.survival.time_sync_interval.max(1));
+        if self.tick_count.is_multiple_of(interval) {
+            crate::survival::broadcast_all(&self.global, &crate::survival::game_time_sync(level));
+        }
     }
 
     /// Takes joined connections into the game, at most `security.max-joins-per-tick`.
@@ -1126,7 +1161,7 @@ impl Server {
     fn autosave(&mut self) {
         self.ticks_until_autosave = self.autosave_interval();
         log::debug!("Autosave started");
-        // Players are saved here once they exist.
+        self.global.level.save();
         for index in 0..self.routes.len() {
             let Ok(id) = u16::try_from(index).map(WorldId) else {
                 break;
@@ -1169,6 +1204,7 @@ impl Server {
                 }
             }
         }
+        self.global.level.save();
         log::info!("All dimensions are saved");
         if let Some(net) = self.net.take() {
             net.network.shutdown();

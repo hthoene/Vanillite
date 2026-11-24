@@ -90,6 +90,9 @@ pub struct Movement {
     awaiting_position: Option<Vec3>,
     awaiting_teleport_time: i32,
     client_loaded_timeout: i32,
+    waiting_for_respawn: bool,
+    /// Moves accepted since the caller took them last (for fall damage and exhaustion).
+    pub moves: Vec<crate::survival::player::MoveRecord>,
 }
 
 /// `Mth.wrapDegrees`.
@@ -140,12 +143,25 @@ impl Movement {
             awaiting_position: None,
             awaiting_teleport_time: 0,
             client_loaded_timeout: CLIENT_LOADED_TIMEOUT,
+            waiting_for_respawn: false,
+            moves: Vec::new(),
         }
+    }
+
+    /// `markClientUnloadedAfterDeath`: the client loads the world again after respawning.
+    pub fn mark_client_unloaded(&mut self) {
+        self.waiting_for_respawn = true;
+    }
+
+    /// `restartClientLoadTimerAfterRespawn`.
+    pub fn restart_client_load_timer(&mut self) {
+        self.waiting_for_respawn = false;
+        self.client_loaded_timeout = CLIENT_LOADED_TIMEOUT;
     }
 
     /// `hasClientLoaded`: `player_loaded` arrived or the timeout ran out.
     pub fn has_client_loaded(&self) -> bool {
-        self.client_loaded_timeout <= 0
+        !self.waiting_for_respawn && self.client_loaded_timeout <= 0
     }
 
     /// `player_loaded`.
@@ -418,6 +434,9 @@ impl Movement {
                 }
             }
         }
+        let from = body.pos;
+        let was_on_ground = body.on_ground;
+        let moved_upwards = target.y - self.last_good.y > 0.0;
         // TODO(milestone 3): `player.move` with block collision and the "moved wrongly" check
         // (`movement.wrong-movement-check`); without collision the move lands on the target.
         body.pos = Vec3::new(
@@ -429,5 +448,12 @@ impl Movement {
         body.on_ground = on_ground;
         body.horizontal_collision = horizontal_collision;
         self.last_good = body.pos;
+        self.moves.push(crate::survival::player::MoveRecord {
+            from,
+            to: body.pos,
+            was_on_ground,
+            on_ground,
+            moved_upwards,
+        });
     }
 }

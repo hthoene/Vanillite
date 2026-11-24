@@ -48,7 +48,19 @@ impl Entities {
         rot: Rotation,
         data: PlayerData,
     ) -> EntityId {
-        let mut new = NewEntity::new(ids::PLAYER, network_ids.next(), uuid, pos);
+        self.spawn_player_as(network_ids.next(), uuid, pos, rot, data)
+    }
+
+    /// Adds a player entity with a given network id (a respawned player keeps its id).
+    pub fn spawn_player_as(
+        &mut self,
+        network_id: vanillite_world::entity::NetworkId,
+        uuid: u128,
+        pos: Vec3,
+        rot: Rotation,
+        data: PlayerData,
+    ) -> EntityId {
+        let mut new = NewEntity::new(ids::PLAYER, network_id, uuid, pos);
         new.rot = rot;
         let players = &mut self.players;
         self.store.spawn(new, |id| players.push(id, data))
@@ -86,6 +98,20 @@ impl Entities {
             self.store.set_kind_row(moved, removed.kind_row);
         }
         Some(removed)
+    }
+
+    /// Removes a player entity and returns its player data (respawn moves it to a new entity).
+    pub fn despawn_player(&mut self, id: EntityId) -> Option<(Removed, PlayerData)> {
+        let entity = self.store.get(id)?;
+        if entity.kind() != ids::PLAYER {
+            return None;
+        }
+        let removed = self.store.despawn(id)?;
+        let (data, moved) = self.players.swap_remove(removed.kind_row)?;
+        if let Some(moved) = moved {
+            self.store.set_kind_row(moved, removed.kind_row);
+        }
+        Some((removed, data))
     }
 
     /// Removes a kind store row; returns the entity that moved into it.

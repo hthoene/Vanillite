@@ -116,6 +116,8 @@ pub struct PlayerData {
     pub chunk_view: ChunkView,
     /// The connection to the client.
     pub connection: Connection,
+    /// Health, food, air, fire, experience and the combat tracker.
+    pub survival: crate::survival::player::Survival,
 }
 
 /// `Player.getDefaultDimensions(pose)`.

@@ -20,7 +20,6 @@ pub(crate) fn handle_requests(
     global: &Global,
     id: EntityId,
     world: crate::world::WorldId,
-    game_time: i64,
     leaving: &mut Vec<(EntityId, Option<Box<Component>>)>,
 ) {
     let Some(uuid) = entities.store.get(id).map(|e| e.uuid()) else {
@@ -51,9 +50,9 @@ pub(crate) fn handle_requests(
                 session(global, uuid, data);
                 None
             }
-            ChatRequest::Command { command, signed } => crate::commands::run_player_command(
-                entities, global, id, world, game_time, &command, signed,
-            ),
+            ChatRequest::Command { command, signed } => {
+                crate::commands::run_player_command(entities, global, id, world, &command, signed)
+            }
         };
         if let Some(reason) = kicked {
             leaving.push((id, Some(Box::new(reason))));

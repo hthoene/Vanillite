@@ -244,6 +244,22 @@ pub mod serverbound {
     #[packet(state = Play, dir = Serverbound, name = "chat_session_update", bucket = "chat")]
     pub struct ChatSessionUpdate(pub crate::chat::ChatSessionData);
 
+    varint_enum! {
+        /// Action of `client_command`.
+        pub enum ClientCommandAction {
+            PerformRespawn,
+            RequestStats,
+            RequestGameRuleValues,
+        }
+    }
+
+    /// `client_command`: respawn after death, or a statistics request.
+    #[derive(Debug, Clone, PartialEq, Eq, Packet)]
+    #[packet(state = Play, dir = Serverbound, name = "client_command")]
+    pub struct ClientCommand {
+        pub action: ClientCommandAction,
+    }
+
     /// `command_suggestion`: tab completion of a command line (max 32500 characters).
     #[derive(Debug, Clone, PartialEq, Eq, Packet)]
     #[packet(state = Play, dir = Serverbound, name = "command_suggestion", bucket = "command")]
@@ -505,7 +521,10 @@ pub mod clientbound {
     }
 
     pub use super::entities::*;
+    pub use super::survival::*;
 }
+
+mod survival;
 
 /// Clientbound play packets with hand-written codecs (variable layouts).
 mod entities {

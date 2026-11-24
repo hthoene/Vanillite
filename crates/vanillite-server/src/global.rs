@@ -32,6 +32,8 @@ pub struct Global {
     pub(crate) commands: crate::commands::CommandDispatcher,
     /// `online-mode`.
     pub(crate) online_mode: bool,
+    /// Game time, clocks, game rules, weather and the survival registries.
+    pub(crate) level: crate::level::LevelState,
     /// The world seed (`/seed`).
     pub(crate) seed: i64,
     /// Entries of data-driven registries commands refer to (timelines, world clocks).
