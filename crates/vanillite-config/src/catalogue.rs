@@ -230,6 +230,17 @@ rules! {
             misc_range: VanillaOr<u16> = "misc-range", Performance, range = [8, 512],
                 restart = true, vanilla = VanillaOr::Vanilla, paper = VanillaOr::Value(96),
                 spigot = VanillaOr::Value(96);
+            /// Overload protection: while a world tick takes longer than this many
+            /// milliseconds (smoothed), movement updates of tracked entities (position,
+            /// rotation, head) are sent less often, up to `overload-max-interval-scale` times
+            /// their Vanilla interval, and back at the Vanilla rate once ticks are fast again.
+            /// Spawns, removals and entity data are never delayed. "disabled" keeps Vanilla's
+            /// intervals: an overloaded server then slows down like Vanilla.
+            overload_tick_millis: DisabledOr<u32> = "overload-tick-millis", Performance,
+                range = [1, 1000], vanilla = DisabledOr::Disabled;
+            /// Largest factor on the movement update interval under overload.
+            overload_max_interval_scale: u32 = "overload-max-interval-scale", Performance,
+                range = [1, 20], vanilla = 4;
         }
         /// Server-side checks of player movement (Vanilla's `ServerGamePacketListenerImpl`).
         movement: MovementRules = "movement" {

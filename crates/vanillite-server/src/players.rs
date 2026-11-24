@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use vanillite_base::BlockPos;
 use vanillite_base::hash::FxHashSet;
+use vanillite_base::slot_map::SlotKey;
 use vanillite_base::{ChunkPos, Vec3};
 use vanillite_config::{GameMode, WorldRules};
 use vanillite_game::entities::Entities;
@@ -25,6 +26,8 @@ use vanillite_game::player::{
 use vanillite_game::survival::player::Survival;
 use vanillite_game::survival::rules::Rule;
 use vanillite_net::{Latency, Outbound};
+use vanillite_protocol::compress::Codec;
+use vanillite_protocol::frame::encode_frame;
 use vanillite_protocol::packets::play::clientbound::{
     BlockChangedAck, SetEquipment, SetHeldSlot, SwingAnimation, TakeItemEntity,
 };
@@ -38,6 +41,7 @@ use vanillite_world::tracking::{EntityTracker, TrackerOutput};
 
 use crate::blocks::{LevelEffects, WorldLevel};
 
+use crate::compute::Compute;
 use crate::global::Global;
 use crate::player_list::Uuid;
 
@@ -45,6 +49,194 @@ use crate::player_list::Uuid;
 const PACKETS_PER_TICK: usize = 128;
 /// Ticks between latency updates of the tab list (Vanilla's `PlayerList.tick`).
 const LATENCY_UPDATE_TICKS: u64 = 600;
+
+/// Viewers per fan-out job at least: fewer are built on the world thread.
+const FAN_OUT_VIEWERS_PER_JOB: usize = 64;
+
+/// Encode once, one batch per viewer: the tracker's messages are encoded once into frames in
+/// an arena (adjacent messages with the same viewers merged into one run), the (run, viewer)
+/// pairs are sorted by viewer (counting sort, keeping message order), then each viewer's runs
+/// are copied into its own batch and queued as one entry. The copying runs in parallel on
+/// the compute pool over ranges of viewers. The buffers are kept between ticks.
+#[derive(Debug, Default)]
+pub(crate) struct FanOut {
+    /// Frames of this tick, built once for the viewers' compression threshold.
+    arena: Vec<u8>,
+    codec: Codec,
+    /// Runs: arena range and number of viewers of each.
+    runs: Vec<(u32, u32, usize)>,
+    /// Viewer slot by entity index (`u32::MAX` = no viewer).
+    slot_of: Vec<u32>,
+    /// The viewer slot of every (run, viewer) pair in run order (`u32::MAX` = none).
+    pair_slots: Vec<u32>,
+    /// Start of each viewer slot's part of `by_viewer`, then its end (prefix sums).
+    offsets: Vec<u32>,
+    /// Batch size of each viewer slot.
+    sizes: Vec<usize>,
+    /// Run indices grouped by viewer slot, each group in run order.
+    by_viewer: Vec<u32>,
+}
+
+impl FanOut {
+    fn run(&mut self, entities: &Entities, updates: &TrackerOutput, compute: &Compute) {
+        let messages = updates.messages();
+        if messages.is_empty() {
+            return;
+        }
+        let threshold = entities
+            .players
+            .iter()
+            .next()
+            .and_then(|(_, player)| player.connection.sink.frame_threshold());
+
+        // Viewer slots: the players of this world with their sinks.
+        let sinks: Vec<&Arc<dyn PacketSink>> = entities
+            .players
+            .iter()
+            .map(|(_, player)| &player.connection.sink)
+            .collect();
+        self.slot_of.fill(u32::MAX);
+        for (slot, (id, _)) in entities.players.iter().enumerate() {
+            let index = id.raw().index() as usize;
+            if self.slot_of.len() <= index {
+                self.slot_of.resize(index + 1, u32::MAX);
+            }
+            self.slot_of[index] = u32::try_from(slot).unwrap_or(u32::MAX);
+        }
+        let ids: Vec<EntityId> = entities.players.iter().map(|(id, _)| id).collect();
+        let slot = |viewer: &EntityId| -> u32 {
+            match self.slot_of.get(viewer.raw().index() as usize) {
+                Some(&s) if ids.get(s as usize) == Some(viewer) => s,
+                _ => u32::MAX,
+            }
+        };
+
+        // Encode once; count the runs and bytes of every viewer.
+        self.arena.clear();
+        self.runs.clear();
+        self.pair_slots.clear();
+        self.sizes.clear();
+        self.sizes.resize(sinks.len(), 0);
+        let mut counts = vec![0u32; sinks.len()];
+        let mut last: Option<&[EntityId]> = None;
+        for message in messages {
+            let Some(packets) = encode_update(message, entities) else {
+                continue;
+            };
+            let start = self.arena.len();
+            for packet in &packets {
+                let before = self.arena.len();
+                if encode_frame(packet.body(), threshold, &mut self.codec, &mut self.arena).is_err()
+                {
+                    self.arena.truncate(before);
+                }
+            }
+            let end = self.arena.len();
+            let (Ok(start32), Ok(end32)) = (u32::try_from(start), u32::try_from(end)) else {
+                break;
+            };
+            let viewers = updates.viewers_of(message);
+            // `PosRot` + `HeadRot` and the like share one viewer list: one copy per viewer.
+            if let (Some(prev), Some(run)) = (last, self.runs.last_mut())
+                && std::ptr::eq(prev, viewers)
+                && run.1 == start32
+            {
+                run.1 = end32;
+                let added = end - start;
+                let first = self.pair_slots.len() - viewers.len();
+                for &s in &self.pair_slots[first..] {
+                    if let Some(size) = self.sizes.get_mut(s as usize) {
+                        *size += added;
+                    }
+                }
+                continue;
+            }
+            self.runs.push((start32, end32, viewers.len()));
+            for viewer in viewers {
+                let s = slot(viewer);
+                self.pair_slots.push(s);
+                if let (Some(count), Some(size)) =
+                    (counts.get_mut(s as usize), self.sizes.get_mut(s as usize))
+                {
+                    *count += 1;
+                    *size += end - start;
+                }
+            }
+            last = Some(viewers);
+        }
+
+        // Counting sort of the pairs by viewer slot.
+        self.offsets.clear();
+        let mut total = 0u32;
+        for &count in &counts {
+            self.offsets.push(total);
+            total += count;
+        }
+        self.offsets.push(total);
+        if total == 0 {
+            return;
+        }
+        self.by_viewer.clear();
+        self.by_viewer.resize(total as usize, 0);
+        let mut next: Vec<u32> = self.offsets[..sinks.len()].to_vec();
+        let mut pairs = self.pair_slots.iter();
+        for (run, &(_, _, viewers)) in self.runs.iter().enumerate() {
+            let run = u32::try_from(run).unwrap_or(u32::MAX);
+            for &s in pairs.by_ref().take(viewers) {
+                if let Some(at) = next.get_mut(s as usize) {
+                    self.by_viewer[*at as usize] = run;
+                    *at += 1;
+                }
+            }
+        }
+
+        // Copy in parallel over ranges of viewers with about the same number of bytes.
+        let jobs = (compute.scheduler().workers() + 1)
+            .min(sinks.len().div_ceil(FAN_OUT_VIEWERS_PER_JOB))
+            .max(1);
+        let job = |range: std::ops::Range<usize>| {
+            for s in range {
+                let (Some(&from), Some(&to), Some(&size), Some(sink)) = (
+                    self.offsets.get(s),
+                    self.offsets.get(s + 1),
+                    self.sizes.get(s),
+                    sinks.get(s),
+                ) else {
+                    continue;
+                };
+                if size == 0 {
+                    continue;
+                }
+                let mut batch = Vec::with_capacity(size);
+                for &run in &self.by_viewer[from as usize..to as usize] {
+                    if let Some(&(a, b, _)) = self.runs.get(run as usize) {
+                        batch.extend_from_slice(&self.arena[a as usize..b as usize]);
+                    }
+                }
+                sink.send_batch(batch, threshold);
+            }
+        };
+        if jobs == 1 {
+            job(0..sinks.len());
+            return;
+        }
+        let per_job = (total as usize).div_ceil(jobs).max(1);
+        compute.scope(|scope| {
+            let job = &job;
+            let mut first = 0;
+            while first < sinks.len() {
+                let start_pairs = self.offsets[first] as usize;
+                let mut last = first + 1;
+                while last < sinks.len() && (self.offsets[last] as usize) < start_pairs + per_job {
+                    last += 1;
+                }
+                let range = first..last;
+                scope.spawn(move || job(range));
+                first = last;
+            }
+        });
+    }
+}
 
 /// A network connection as the game's packet sink.
 pub(crate) struct NetSink {
@@ -65,6 +257,14 @@ impl PacketSink for NetSink {
 
     fn send_shared(&self, packet: &Arc<SharedPacket>) -> bool {
         self.out.send_shared(packet)
+    }
+
+    fn send_batch(&self, frames: Vec<u8>, threshold: Option<usize>) -> bool {
+        self.out.send_batch(frames, threshold)
+    }
+
+    fn frame_threshold(&self) -> Option<usize> {
+        self.out.threshold()
     }
 
     fn close(&self) {
@@ -504,18 +704,15 @@ impl WorldPlayers {
             .is_some_and(|p| p.connection.chunks.is_pending(chunk))
     }
 
-    /// Sends the tracker's updates: each encoded once, then queued for all its viewers.
-    pub(crate) fn send_entity_updates(entities: &Entities, updates: &TrackerOutput) {
-        updates.fan_out(
-            |message| encode_update(message, entities),
-            |viewer, packets| {
-                if let Some(player) = entities.player(viewer) {
-                    for packet in packets {
-                        player.connection.sink.send_shared(packet);
-                    }
-                }
-            },
-        );
+    /// Sends the tracker's updates: each encoded once, then copied into one batch per viewer
+    /// and tick, which is queued as a single entry ([`FanOut`]).
+    pub(crate) fn send_entity_updates(
+        entities: &Entities,
+        updates: &TrackerOutput,
+        compute: &Compute,
+        fan_out: &mut FanOut,
+    ) {
+        fan_out.run(entities, updates, compute);
     }
 
     /// The connection tick (`ServerGamePacketListenerImpl.tick`) after the world tick.
