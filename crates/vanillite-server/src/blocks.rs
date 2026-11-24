@@ -151,6 +151,10 @@ pub(crate) struct WorldLevel<'a> {
 }
 
 impl PlayLevel for WorldLevel<'_> {
+    fn level_mut(&mut self) -> Option<&mut Level> {
+        Some(self.level)
+    }
+
     fn block(&self, pos: BlockPos) -> BlockState {
         self.level.block(pos)
     }
