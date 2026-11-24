@@ -45,3 +45,10 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+#[cfg(test)]
+extern crate self as vanillite_worldgen;
+
+#[cfg(test)]
+#[path = "../tests/common/mod.rs"]
+pub(crate) mod test_support;
