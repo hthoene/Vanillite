@@ -17,6 +17,7 @@ pub mod client;
 pub mod codec;
 pub mod commands;
 pub mod components;
+pub mod components_nbt;
 pub mod compress;
 pub mod frame;
 pub mod ids;

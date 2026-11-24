@@ -382,14 +382,35 @@ pub struct RegistryInfo {
     pub sizes: HashMap<String, usize>,
     /// Registry → its tag ids (without `#`).
     pub tags: HashMap<String, HashSet<String>>,
+    /// Dynamic registry → its entry names in id order (for saved item components).
+    pub names: HashMap<String, Vec<String>>,
 }
 
-static INSTALLED: OnceLock<RegistryInfo> = OnceLock::new();
+/// The installed information with the entry ids by name.
+#[derive(Debug)]
+struct Installed {
+    info: RegistryInfo,
+    ids: HashMap<String, HashMap<String, usize>>,
+}
+
+static INSTALLED: OnceLock<Installed> = OnceLock::new();
 
 /// Installs the registry information. Later calls are ignored: registries are frozen for the
 /// lifetime of the process.
 pub fn install_registries(info: RegistryInfo) {
-    let _ = INSTALLED.set(info);
+    let ids = info
+        .names
+        .iter()
+        .map(|(registry, names)| {
+            let by_name = names
+                .iter()
+                .enumerate()
+                .map(|(id, name)| (name.clone(), id))
+                .collect();
+            (registry.clone(), by_name)
+        })
+        .collect();
+    let _ = INSTALLED.set(Installed { info, ids });
 }
 
 /// Static registries plus the installed dynamic ones and tags.
@@ -400,13 +421,29 @@ impl Registries for InstalledRegistries {
     fn size(&self, registry: &str) -> Option<usize> {
         vanillite_data::registry::Registry::by_name(registry)
             .map(|r| r.len())
-            .or_else(|| INSTALLED.get()?.sizes.get(registry).copied())
+            .or_else(|| INSTALLED.get()?.info.sizes.get(registry).copied())
     }
 
     fn has_tag(&self, registry: &str, tag: &str) -> bool {
         INSTALLED
             .get()
-            .and_then(|i| i.tags.get(registry))
+            .and_then(|i| i.info.tags.get(registry))
             .is_some_and(|t| t.contains(tag))
+    }
+}
+
+impl crate::components_nbt::RegistryNames for InstalledRegistries {
+    fn entry_name(&self, registry: &str, id: usize) -> Option<&str> {
+        INSTALLED
+            .get()?
+            .info
+            .names
+            .get(registry)?
+            .get(id)
+            .map(String::as_str)
+    }
+
+    fn entry_id(&self, registry: &str, name: &str) -> Option<usize> {
+        INSTALLED.get()?.ids.get(registry)?.get(name).copied()
     }
 }

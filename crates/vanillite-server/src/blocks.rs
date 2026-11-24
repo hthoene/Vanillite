@@ -60,6 +60,10 @@ pub(crate) fn game_data(packs: Option<&LoadedPacks>) -> GameData {
     let mut info = vanillite_protocol::item::RegistryInfo::default();
     for r in packs.registries() {
         info.sizes.insert(r.name.to_owned(), r.entries().len());
+        info.names.insert(
+            r.name.to_owned(),
+            r.entries().iter().map(|e| e.id.clone()).collect(),
+        );
     }
     for registry in packs.tagged_registries() {
         let tags: HashSet<String> = packs
