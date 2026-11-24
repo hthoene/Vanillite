@@ -116,6 +116,8 @@ pub(crate) fn tick(level: &mut Level) {
         let kind = level.entities.store.get(id).map(|e| e.kind());
         if kind == Some(entity_ids::FALLING_BLOCK) {
             falling::tick_entity(level, id);
+        } else if kind == Some(entity_ids::TNT) {
+            crate::block::tnt::tick_entity(level, id);
         }
     }
     level.tick_block_entities();
@@ -475,4 +477,70 @@ fn wool_occludes_vibrations() {
         level.block(sensor).value("sculk_sensor_phase"),
         Some("inactive")
     );
+}
+
+/// A flat level where redstone blocks emit 15 to every side.
+fn powered_level() -> Level {
+    let mut level = flat_level();
+    let behaviours = Arc::get_mut(&mut level.behaviours).expect("unshared behaviours");
+    let mut redstone = *behaviours.get(ids::REDSTONE_BLOCK);
+    redstone.signal = Some(|_, _, _, _| 15);
+    behaviours.set(ids::REDSTONE_BLOCK, redstone);
+    level
+}
+
+#[test]
+fn signal_primes_tnt_and_it_explodes_after_80_ticks() {
+    let mut level = powered_level();
+    let tnt = BlockPos::new(4, -60, 4);
+    let other = BlockPos::new(6, -60, 4);
+    level.set_block(tnt, ids::TNT.default_state(), update::ALL);
+    level.set_block(other, ids::TNT.default_state(), update::ALL);
+    assert!(level.block(tnt).is(ids::TNT));
+    level.set_block(
+        BlockPos::new(3, -60, 4),
+        ids::REDSTONE_BLOCK.default_state(),
+        update::ALL,
+    );
+    assert!(level.block(tnt).is_air());
+    assert_eq!(level.entities.store.len(), 1);
+    for _ in 0..79 {
+        tick(&mut level);
+    }
+    assert_eq!(level.entities.store.len(), 1);
+    tick(&mut level);
+    // The first TNT exploded; the second one was primed by it with a short fuse.
+    assert_eq!(level.output().explosions.len(), 1);
+    assert!(level.output().explosions[0].block_count > 0);
+    assert!(level.block(other).is_air());
+    assert_eq!(level.entities.store.len(), 1);
+    let id = level.entities.store.columns().id[0];
+    let fuse = level.entities.primed_tnt(id).unwrap().fuse;
+    assert!((10..30).contains(&fuse), "short fuse {fuse}");
+    // The ground below the TNT is gone.
+    assert!(level.block(BlockPos::new(4, -61, 4)).is_air());
+}
+
+#[test]
+fn dispenser_triggers_and_fails_empty_and_hopper_locks() {
+    let mut level = powered_level();
+    let dispenser = BlockPos::new(2, -60, 2);
+    let hopper = BlockPos::new(2, -60, 4);
+    level.set_block(dispenser, ids::DISPENSER.default_state(), update::ALL);
+    level.set_block(hopper, ids::HOPPER.default_state(), update::ALL);
+    assert!(level.block_entity(hopper).is_some());
+    level.set_block(
+        BlockPos::new(2, -60, 3),
+        ids::REDSTONE_BLOCK.default_state(),
+        update::ALL,
+    );
+    assert_eq!(level.block(dispenser).value("triggered"), Some("true"));
+    assert_eq!(level.block(hopper).value("enabled"), Some("false"));
+    level.output().level_events.clear();
+    for _ in 0..4 {
+        tick(&mut level);
+    }
+    let events = &level.output().level_events;
+    assert_eq!(events.len(), 1);
+    assert_eq!((events[0].event, events[0].pos), (1001, dispenser));
 }

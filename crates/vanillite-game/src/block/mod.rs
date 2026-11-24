@@ -8,10 +8,12 @@
 //! empty entries and cost nothing.
 
 pub mod bell;
+pub mod dispenser;
 pub mod drops;
 pub mod falling;
 pub mod fluid;
 mod growth;
+pub mod hopper;
 pub mod lectern;
 pub mod note;
 pub mod piston;
@@ -21,6 +23,7 @@ pub mod redstone;
 pub mod sculk;
 pub mod sensor;
 mod spread;
+pub mod tnt;
 pub mod tripwire;
 pub mod weather;
 
@@ -233,6 +236,9 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
     bell::fill(block, &mut b);
     lectern::fill(block, &mut b);
     sculk::fill(block, &mut b);
+    tnt::fill(block, &mut b);
+    dispenser::fill(block, &mut b);
+    hopper::fill(block, &mut b);
     b
 }
 

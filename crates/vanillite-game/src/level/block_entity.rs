@@ -39,6 +39,8 @@ pub enum BlockEntity {
     Lectern(Lectern),
     /// `SculkSensorBlockEntity` and `CalibratedSculkSensorBlockEntity`.
     SculkSensor(Box<SculkSensor>),
+    /// `HopperBlockEntity`: the transfer timing (its items come with containers).
+    Hopper(crate::block::hopper::Hopper),
 }
 
 /// `BlockEntityTicker.tick(level, pos, state, blockEntity)`: the block entity is looked up at
@@ -173,6 +175,7 @@ fn ticker_of(entity: &BlockEntity) -> Option<TickerFn> {
     match entity {
         BlockEntity::Comparator { .. } | BlockEntity::Lectern(_) => None,
         BlockEntity::MovingPiston(_) => Some(crate::block::piston::moving_piston_tick),
+        BlockEntity::Hopper(_) => Some(crate::block::hopper::push_items_tick),
         BlockEntity::DaylightDetector => Some(crate::block::sensor::daylight_detector_tick),
         BlockEntity::Bell(_) => Some(crate::block::bell::tick),
         BlockEntity::SculkSensor(_) => Some(crate::block::sculk::tick_block_entity),
@@ -206,6 +209,8 @@ pub fn new_block_entity(state: BlockState) -> Option<BlockEntity> {
         Some(BlockEntity::SculkSensor(Box::new(SculkSensor::new(
             block == ids::CALIBRATED_SCULK_SENSOR,
         ))))
+    } else if block == ids::HOPPER {
+        Some(BlockEntity::Hopper(crate::block::hopper::Hopper::default()))
     } else {
         None
     }
@@ -228,6 +233,7 @@ fn is_valid(entity: &BlockEntity, state: BlockState) -> bool {
                     ids::SCULK_SENSOR
                 }
         }
+        BlockEntity::Hopper(_) => state.block() == ids::HOPPER,
     }
 }
 

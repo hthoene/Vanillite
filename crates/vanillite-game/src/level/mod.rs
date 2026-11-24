@@ -12,6 +12,7 @@
 //!   fluid ticks, random ticks, block events); entities tick in the world's entity phase.
 
 pub mod block_entity;
+pub mod explosion;
 pub mod game_event;
 mod neighbors;
 pub mod signal;
@@ -194,6 +195,8 @@ pub struct LevelOutput {
     pub level_events: Vec<LevelEvent>,
     /// Sounds.
     pub sounds: Vec<Sound>,
+    /// Explosions.
+    pub explosions: Vec<explosion::ExplosionEvent>,
 }
 
 /// The game state of one world.

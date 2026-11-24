@@ -28,12 +28,16 @@ mod data_id {
     pub const SHARED_FLAGS: u8 = 0;
     pub const POSE: u8 = 6;
     pub const PLAYER_MAIN_HAND: u8 = 15;
+    pub const TNT_FUSE: u8 = 8;
+    pub const TNT_BLOCK_STATE: u8 = 9;
     pub const PLAYER_MODE_CUSTOMISATION: u8 = 16;
 }
 
 /// Entity data serializer ids (`EntityDataSerializers` registration order of 26.3).
 mod serializer {
     pub const BYTE: i32 = 0;
+    pub const INT: i32 = 1;
+    pub const BLOCK_STATE: i32 = 14;
     pub const POSE: i32 = 20;
     pub const HUMANOID_ARM: i32 = 42;
 }
@@ -98,6 +102,26 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
                 data_id::PLAYER_MODE_CUSTOMISATION,
                 serializer::BYTE,
                 |o| o.push(parts),
+            );
+        }
+    }
+    if entity.kind() == ids::TNT
+        && let Some(tnt) = entities.primed_tnt(entity.id())
+    {
+        if all || tnt.fuse != 80 {
+            item(&mut out, data_id::TNT_FUSE, serializer::INT, |o| {
+                write_varint(o, tnt.fuse);
+            });
+        }
+        let default = vanillite_data::block::ids::TNT.default_state();
+        if all || tnt.state != default {
+            item(
+                &mut out,
+                data_id::TNT_BLOCK_STATE,
+                serializer::BLOCK_STATE,
+                |o| {
+                    write_varint(o, i32::from(tnt.state.0));
+                },
             );
         }
     }
