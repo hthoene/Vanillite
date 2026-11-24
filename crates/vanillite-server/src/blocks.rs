@@ -69,11 +69,27 @@ pub(crate) fn game_data(packs: Option<&LoadedPacks>) -> GameData {
         info.tags.insert(registry.to_owned(), tags);
     }
     vanillite_protocol::item::install_registries(info);
+    let trial_spawner_configs = packs
+        .registry("minecraft:trial_spawner")
+        .map(|r| {
+            r.entries()
+                .iter()
+                .filter_map(|e| {
+                    let json = serde_json::from_str::<serde_json::Value>(e.json.get()).ok()?;
+                    Some((
+                        e.id.clone(),
+                        vanillite_game::block::trial_spawner::TrialConfig::from_json(&json),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     GameData {
         tools,
         loot,
         enchantments,
         item_tags,
+        trial_spawner_configs,
     }
 }
 
@@ -108,6 +124,10 @@ pub(crate) struct WorldLevel<'a> {
 }
 
 impl PlayLevel for WorldLevel<'_> {
+    fn level_mut(&mut self) -> Option<&mut Level> {
+        Some(self.level)
+    }
+
     fn block(&self, pos: BlockPos) -> BlockState {
         self.level.block(pos)
     }

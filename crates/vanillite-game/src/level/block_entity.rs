@@ -41,6 +41,12 @@ pub enum BlockEntity {
     SculkSensor(Box<SculkSensor>),
     /// `HopperBlockEntity`: the transfer timing (its items come with containers).
     Hopper(crate::block::hopper::Hopper),
+    /// `SpawnerBlockEntity` (`BaseSpawner`).
+    Spawner(Box<crate::block::spawner::MobSpawner>),
+    /// `TrialSpawnerBlockEntity`.
+    TrialSpawner(Box<crate::block::trial_spawner::TrialSpawner>),
+    /// `VaultBlockEntity`.
+    Vault(Box<crate::block::vault::Vault>),
 }
 
 /// `BlockEntityTicker.tick(level, pos, state, blockEntity)`: the block entity is looked up at
@@ -179,6 +185,9 @@ fn ticker_of(entity: &BlockEntity) -> Option<TickerFn> {
         BlockEntity::DaylightDetector => Some(crate::block::sensor::daylight_detector_tick),
         BlockEntity::Bell(_) => Some(crate::block::bell::tick),
         BlockEntity::SculkSensor(_) => Some(crate::block::sculk::tick_block_entity),
+        BlockEntity::Spawner(_) => Some(crate::block::spawner::tick),
+        BlockEntity::TrialSpawner(_) => Some(crate::block::trial_spawner::tick),
+        BlockEntity::Vault(_) => Some(crate::block::vault::tick),
     }
 }
 
@@ -211,6 +220,12 @@ pub fn new_block_entity(state: BlockState) -> Option<BlockEntity> {
         ))))
     } else if block == ids::HOPPER {
         Some(BlockEntity::Hopper(crate::block::hopper::Hopper::default()))
+    } else if block == ids::SPAWNER {
+        Some(BlockEntity::Spawner(Box::default()))
+    } else if block == ids::TRIAL_SPAWNER {
+        Some(BlockEntity::TrialSpawner(Box::default()))
+    } else if block == ids::VAULT {
+        Some(BlockEntity::Vault(Box::default()))
     } else {
         None
     }
@@ -234,6 +249,9 @@ fn is_valid(entity: &BlockEntity, state: BlockState) -> bool {
                 }
         }
         BlockEntity::Hopper(_) => state.block() == ids::HOPPER,
+        BlockEntity::Spawner(_) => state.block() == ids::SPAWNER,
+        BlockEntity::TrialSpawner(_) => state.block() == ids::TRIAL_SPAWNER,
+        BlockEntity::Vault(_) => state.block() == ids::VAULT,
     }
 }
 
@@ -357,8 +375,14 @@ fn load(state: BlockState, nbt: &Compound) -> Option<BlockEntity> {
         return Some(BlockEntity::MovingPiston(Box::new(piston)));
     }
     let mut entity = new_block_entity(state)?;
-    if let BlockEntity::Comparator { output } = &mut entity {
-        *output = int("OutputSignal").unwrap_or(0);
+    match &mut entity {
+        BlockEntity::Comparator { output } => *output = int("OutputSignal").unwrap_or(0),
+        BlockEntity::Spawner(s) => **s = crate::block::spawner::MobSpawner::load(nbt),
+        BlockEntity::TrialSpawner(s) => {
+            **s = crate::block::trial_spawner::TrialSpawner::load(nbt);
+        }
+        BlockEntity::Vault(v) => **v = crate::block::vault::Vault::load(nbt),
+        _ => {}
     }
     Some(entity)
 }
@@ -389,9 +413,27 @@ fn save(entity: &BlockEntity, state: BlockState, pos: BlockPos) -> Compound {
             nbt.insert("extending", Tag::Byte(i8::from(piston.extending)));
             nbt.insert("source", Tag::Byte(i8::from(piston.source)));
         }
+        BlockEntity::Spawner(s) => s.save(&mut nbt, true),
+        BlockEntity::TrialSpawner(s) => s.save(&mut nbt),
+        BlockEntity::Vault(v) => v.save(&mut nbt),
         _ => {}
     }
     nbt
+}
+
+/// `getUpdateTag` of the block entity at `pos` with its type id, for the
+/// `block_entity_data` packet; `None` for kinds that send no update.
+pub fn update_tag(level: &Level, pos: BlockPos) -> Option<(u16, Compound)> {
+    let state = level.block(pos);
+    let tag = match level.block_entity(pos)? {
+        BlockEntity::Spawner(s) => crate::block::spawner::update_tag(s),
+        BlockEntity::TrialSpawner(s) => {
+            s.update_tag(crate::block::trial_spawner::TrialState::of(state))
+        }
+        BlockEntity::Vault(v) => v.update_tag(),
+        _ => return None,
+    };
+    Some((state.block().info().block_entity, tag))
 }
 
 /// `Direction.from3DDataValue`.

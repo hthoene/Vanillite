@@ -26,9 +26,14 @@ pub mod rail;
 pub mod redstone;
 pub mod sculk;
 pub mod sensor;
+pub mod spawner;
+#[cfg(test)]
+mod spawner_tests;
 mod spread;
 pub mod tnt;
+pub mod trial_spawner;
 pub mod tripwire;
+pub mod vault;
 pub mod weather;
 
 use vanillite_base::{BlockPos, Direction, Vec3};
@@ -243,6 +248,7 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
     tnt::fill(block, &mut b);
     dispenser::fill(block, &mut b);
     hopper::fill(block, &mut b);
+    spawner::fill(block, &mut b);
     b
 }
 

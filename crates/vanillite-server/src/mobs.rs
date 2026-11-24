@@ -194,6 +194,13 @@ impl WorldMobs {
         let has_players = !level.entities.players.is_empty();
         let env = environment(global, dimension, survival);
         self.cx.begin_tick(env, self.settings, has_players);
+        // What spawner blocks read when the block entities tick after the entities.
+        level.spawner_env = vanillite_game::block::spawner::SpawnerEnv {
+            env,
+            difficulty: state.difficulty,
+            spawner_blocks_work: rules.bool(Rule::SPAWNER_BLOCKS_WORK),
+            spawn_mobs: rules.bool(Rule::SPAWN_MOBS),
+        };
         let activation = f64::from(self.settings.activation_range);
         let mut cursor = level.entities.store.tick_cursor();
         let mut ents = std::mem::take(&mut level.entities);

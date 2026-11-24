@@ -32,6 +32,8 @@ pub struct GameData {
     pub enchantments: HashMap<String, u32>,
     /// Item tags: tag id → item ids.
     pub item_tags: HashMap<String, Vec<u16>>,
+    /// The `minecraft:trial_spawner` registry.
+    pub trial_spawner_configs: crate::block::trial_spawner::TrialConfigs,
 }
 
 static GAME_DATA: std::sync::OnceLock<std::sync::Arc<GameData>> = std::sync::OnceLock::new();
@@ -684,6 +686,25 @@ impl Digging {
             Hand::MainHand => ctx.inventory.selected_item().clone(),
             Hand::OffHand => ctx.inventory.offhand.clone(),
         };
+        // `VaultBlock.useItemOn`: an active vault takes the key, the use is consumed.
+        if !suppress_use
+            && state.block() == vanillite_data::block::ids::VAULT
+            && let Some(level) = ctx.level.level_mut()
+            && let Some(taken) =
+                crate::block::vault::use_item_on(level, pos, ctx.actor.uuid, &stack)
+        {
+            if taken && !ctx.actor.creative() {
+                let count = crate::block::vault::key_count(level, pos);
+                let slot = match hand {
+                    Hand::MainHand => ctx.inventory.selected_item_mut(),
+                    Hand::OffHand => Some(&mut ctx.inventory.offhand),
+                };
+                if let Some(slot) = slot {
+                    slot.shrink(count);
+                }
+            }
+            return true;
+        }
         if stack.is_empty() {
             return false;
         }

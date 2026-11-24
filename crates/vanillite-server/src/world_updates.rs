@@ -131,6 +131,29 @@ impl WorldUpdates {
             };
             self.per_chunk.entry(chunk).or_default().push(packet);
         }
+        // `broadcastBlockEntityIfNeeded`: the update tags of block entities whose client data
+        // changed.
+        for pos in output.block_entity_updates.drain(..) {
+            let chunk = pos.chunk();
+            if level.chunks.chunk(chunk).is_none() {
+                continue;
+            }
+            let Some((kind, tag)) = vanillite_game::level::block_entity::update_tag(level, pos)
+            else {
+                continue;
+            };
+            let mut body = Vec::with_capacity(64);
+            write_varint(&mut body, ids::BLOCK_ENTITY_DATA);
+            body.extend_from_slice(&block_pos_long(pos).to_be_bytes());
+            write_varint(&mut body, i32::from(kind));
+            if vanillite_nbt::write::write_network_compound(&tag, &mut body).is_err() {
+                continue;
+            }
+            self.per_chunk
+                .entry(chunk)
+                .or_default()
+                .push(Arc::new(SharedPacket::new(body)));
+        }
     }
 }
 

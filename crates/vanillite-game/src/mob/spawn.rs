@@ -598,7 +598,7 @@ pub fn check_spawn_rules(
 }
 
 /// `Monster.isDarkEnoughToSpawn`.
-fn is_dark_enough_to_spawn(
+pub fn is_dark_enough_to_spawn(
     level: &Level,
     env: &Environment,
     pos: BlockPos,

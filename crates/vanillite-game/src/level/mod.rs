@@ -199,6 +199,8 @@ pub struct LevelOutput {
     pub explosions: Vec<explosion::ExplosionEvent>,
     /// The damage of the living entities explosions hit, for the mob system.
     pub explosion_hurts: Vec<explosion::ExplosionHurt>,
+    /// Block entities whose client data changed (`ClientboundBlockEntityDataPacket`).
+    pub block_entity_updates: Vec<BlockPos>,
 }
 
 /// The game state of one world.
@@ -240,6 +242,10 @@ pub struct Level {
     output: LevelOutput,
     min_y: i32,
     max_y: i32,
+    /// The seed the level was created with (`getSeed`).
+    seed: i64,
+    /// What spawner blocks read of this tick's rules and sky (set by the world each tick).
+    pub spawner_env: crate::block::spawner::SpawnerEnv,
 }
 
 impl std::fmt::Debug for Level {
@@ -286,6 +292,22 @@ impl Level {
             output: LevelOutput::default(),
             min_y,
             max_y,
+            seed,
+            spawner_env: crate::block::spawner::SpawnerEnv::default(),
+        }
+    }
+
+    /// `getSeed`.
+    pub fn seed(&self) -> i64 {
+        self.seed
+    }
+
+    /// `sendBlockUpdated` of a block entity whose client data changed: the block and a
+    /// `block_entity_data` packet with its update tag go to the clients that see its chunk.
+    pub fn send_block_entity_updated(&mut self, pos: BlockPos) {
+        self.send_block_updated(pos);
+        if !self.output.block_entity_updates.contains(&pos) {
+            self.output.block_entity_updates.push(pos);
         }
     }
 

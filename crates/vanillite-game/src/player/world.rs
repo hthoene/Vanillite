@@ -70,4 +70,9 @@ pub trait PlayLevel {
     fn random_boolean(&mut self) -> bool;
     /// `nextInt(bound)` of the world's random source; `bound` is at least 1.
     fn random_int(&mut self, bound: i32) -> i32;
+    /// The simulated level, where block entities answer the player's use (vaults); `None` in
+    /// tests without one.
+    fn level_mut(&mut self) -> Option<&mut crate::level::Level> {
+        None
+    }
 }
