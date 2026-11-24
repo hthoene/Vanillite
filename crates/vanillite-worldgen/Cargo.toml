@@ -19,5 +19,9 @@ vanillite-data.workspace = true
 vanillite-datapack.workspace = true
 vanillite-nbt.workspace = true
 
+[dev-dependencies]
+# Reads Vanilla worlds in the comparison test.
+vanillite-storage.workspace = true
+
 [lints]
 workspace = true

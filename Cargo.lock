@@ -1466,6 +1466,7 @@ dependencies = [
  "vanillite-data",
  "vanillite-datapack",
  "vanillite-nbt",
+ "vanillite-storage",
 ]
 
 [[package]]

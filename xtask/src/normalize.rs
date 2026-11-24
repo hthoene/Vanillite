@@ -15,7 +15,7 @@ use crate::{Result, read_json, write};
 /// Version facts from the inner jar's `version.json` plus the pinned download.
 pub struct VersionInfo {
     id: String,
-    protocol: u64,
+    pub protocol: u64,
     data_version: u64,
     resource_pack: [u64; 2],
     data_pack: [u64; 2],
@@ -393,6 +393,9 @@ pub struct Snapshot {
     shapes: usize,
     items: BTreeMap<String, Value>,
     entities: BTreeMap<String, Value>,
+    attributes: BTreeMap<String, Value>,
+    dynamic_registries: Value,
+    fluid_states: Value,
     commands: Value,
     biome_parameters: Value,
 }
@@ -425,10 +428,49 @@ impl Snapshot {
             shapes: len("shapes.json"),
             items: by_name("items.json"),
             entities: by_name("entities.json"),
+            attributes: by_name("attributes.json"),
+            dynamic_registries: json("dynamic_registries.json"),
+            fluid_states: json("fluid_states.json"),
             commands: json("commands.json"),
             biome_parameters: json("biome_parameters/overworld.json"),
             states_diff: json("block_states.json"),
         }
+    }
+}
+
+impl Snapshot {
+    /// `data_version` of `version.toml`.
+    pub fn data_version(&self) -> &str {
+        self.version
+            .lines()
+            .find_map(|l| l.strip_prefix("data_version = "))
+            .unwrap_or_default()
+    }
+
+    /// (registry, entry) of every registry entry that `new` no longer has.
+    pub fn removed_entries(&self, new: &Snapshot) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        let Some(old) = self.registries.as_object() else {
+            return out;
+        };
+        for (reg, r) in old {
+            let entries = |v: Option<&Value>| -> Vec<String> {
+                v.and_then(|v| v["entries"].as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|e| e.as_str().map(str::to_owned))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+            let kept = entries(new.registries.get(reg));
+            for e in entries(Some(r)) {
+                if !kept.contains(&e) {
+                    out.push((reg.clone(), e));
+                }
+            }
+        }
+        out
     }
 }
 
@@ -481,10 +523,26 @@ pub fn change_report(old: &Snapshot, new: &Snapshot) -> String {
     map_diff(&mut r, &old.items, &new.items);
     r.push_str("\n## Entity types\n\n");
     map_diff(&mut r, &old.entities, &new.entities);
+    r.push_str("\n## Attributes\n\n");
+    map_diff(&mut r, &old.attributes, &new.attributes);
+    r.push_str("\n## Data-driven registries (load and sync order)\n\n");
+    any = false;
+    for group in ["world", "dimension", "reloadable", "synchronized"] {
+        let o = old.dynamic_registries.get(group);
+        let n = new.dynamic_registries.get(group);
+        if o != n {
+            any = true;
+            list_diff(&mut r, group, o, n);
+        }
+    }
+    if !any {
+        r.push_str("no changes\n");
+    }
     let _ = writeln!(
         r,
-        "\n## Other\n\n- per-state facts: {}\n- command tree: {}\n- overworld biome parameters: {}",
+        "\n## Other\n\n- per-state facts: {}\n- fluid states: {}\n- command tree: {}\n- overworld biome parameters: {}",
         changed(&old.states_diff, &new.states_diff),
+        changed(&old.fluid_states, &new.fluid_states),
         changed(&old.commands, &new.commands),
         changed(&old.biome_parameters, &new.biome_parameters)
     );
@@ -544,6 +602,36 @@ fn map_diff(r: &mut String, old: &BTreeMap<String, Value>, new: &BTreeMap<String
     let _ = writeln!(r, "- added ({}): {added:?}", added.len());
     let _ = writeln!(r, "- removed ({}): {removed:?}", removed.len());
     let _ = writeln!(r, "- changed ({}): {changed:?}", changed.len());
+    // Which fields changed, over all changed entries (components one level deeper).
+    let mut fields: BTreeMap<String, usize> = BTreeMap::new();
+    for k in &changed {
+        let (o, n) = (strip_id(&old[*k]), strip_id(&new[*k]));
+        let empty = Map::new();
+        let (o, n) = (
+            o.as_object().unwrap_or(&empty),
+            n.as_object().unwrap_or(&empty),
+        );
+        for f in union(o.keys(), n.keys()) {
+            let (a, b) = (o.get(&f), n.get(&f));
+            if a == b {
+                continue;
+            }
+            match (a.and_then(Value::as_object), b.and_then(Value::as_object)) {
+                (Some(a), Some(b)) if f == "components" || f == "facts" => {
+                    for c in union(a.keys(), b.keys()) {
+                        if a.get(&c) != b.get(&c) {
+                            *fields.entry(format!("{f}.{c}")).or_default() += 1;
+                        }
+                    }
+                }
+                _ => *fields.entry(f).or_default() += 1,
+            }
+        }
+    }
+    if !fields.is_empty() {
+        let list: Vec<String> = fields.iter().map(|(f, n)| format!("`{f}` ({n})")).collect();
+        let _ = writeln!(r, "- changed fields: {}", list.join(", "));
+    }
 }
 
 /// Ids shift whenever something is added; the report lists those as renumbering, not changes.
