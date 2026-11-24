@@ -31,7 +31,7 @@ use crate::region::RegionFile;
 /// An open region file, shared by the jobs that use it.
 type SharedRegion = Arc<Mutex<RegionFile>>;
 
-/// Region files kept open per world.
+/// Region files kept open per world while no job uses them; files in use stay open above it.
 const MAX_OPEN_REGIONS: usize = 256;
 
 /// The folder of a dimension inside a world folder (26.x layout):
@@ -121,7 +121,9 @@ pub struct AnvilStorage {
     dir: PathBuf,
     compression: Compression,
     codec: Codec,
+    /// Open region files; at most one instance per file, so jobs never write past each other.
     regions: Mutex<FxHashMap<(i32, i32), SharedRegion>>,
+    max_open: usize,
 }
 
 impl AnvilStorage {
@@ -132,6 +134,7 @@ impl AnvilStorage {
             compression,
             codec: Codec::new(world),
             regions: Mutex::new(FxHashMap::default()),
+            max_open: MAX_OPEN_REGIONS,
         }
     }
 
@@ -148,8 +151,11 @@ impl AnvilStorage {
         let Some(region) = RegionFile::open(&path, create)? else {
             return Ok(None);
         };
-        if regions.len() >= MAX_OPEN_REGIONS {
-            regions.clear();
+        if regions.len() >= self.max_open {
+            // Close only files no job holds: a job's handle must stay the one instance of its
+            // file (a second instance would allocate the same sectors). Handles are only cloned
+            // under this lock, so a count of 1 cannot grow while it is held.
+            regions.retain(|_, region| Arc::strong_count(region) > 1);
         }
         let region = Arc::new(Mutex::new(region));
         regions.insert(key, Arc::clone(&region));
@@ -234,5 +240,66 @@ impl Default for AnvilStorageProvider {
 impl ChunkStorageProvider for AnvilStorageProvider {
     fn create(&self, world: &WorldInfo) -> io::Result<Arc<dyn ChunkStorage>> {
         Ok(Arc::new(AnvilStorage::new(world, self.compression)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Many threads writing into more region files than stay open: every chunk reads back
+    /// intact (#50: evicting files in use opened a second instance that overwrote sectors).
+    #[test]
+    fn region_cache_keeps_one_instance_per_file() {
+        let dir = std::env::temp_dir().join(format!("vanillite-regions-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let info = WorldInfo {
+            dimension: "minecraft:overworld".to_owned(),
+            dir: dir.clone(),
+            min_y: 0,
+            height: 16,
+            seed: 0,
+            has_sky_light: true,
+            biomes: Arc::from(Vec::<String>::new()),
+            default_biome: Default::default(),
+            air: Default::default(),
+        };
+        let mut storage = AnvilStorage::new(&info, Compression::None);
+        storage.max_open = 4;
+        let (files, threads, per_file) = (64, 16, 24);
+        let data = |pos: ChunkPos| {
+            let tag = (pos.x as u8).wrapping_mul(31) ^ (pos.z as u8);
+            vec![tag; 3000 + (pos.x as usize & 7) * 1000]
+        };
+        let pos = |file: i32, i: i32| ChunkPos::new((file % 8) * 32 + i, (file / 8) * 32 + i);
+        std::thread::scope(|scope| {
+            for t in 0..threads {
+                let storage = &storage;
+                scope.spawn(move || {
+                    // Each file gets chunks from several threads, interleaved with other files.
+                    for i in 0..per_file {
+                        for file in (0..files).filter(|f| (f + i) % threads == t) {
+                            let pos = pos(file, i);
+                            let region = storage.region(pos, true).unwrap().unwrap();
+                            // A job holds its handle a while (compression, waiting for the lock).
+                            std::thread::sleep(std::time::Duration::from_millis(1));
+                            let mut region = region.lock().unwrap();
+                            region.write(pos, Compression::None, &data(pos)).unwrap();
+                        }
+                    }
+                });
+            }
+        });
+        drop(storage);
+        let storage = AnvilStorage::new(&info, Compression::None);
+        for file in 0..files {
+            for i in 0..per_file {
+                let pos = pos(file, i);
+                let region = storage.region(pos, false).unwrap().unwrap();
+                let read = region.lock().unwrap().read(pos).unwrap();
+                assert_eq!(read, Some((Compression::None, data(pos))), "chunk {pos:?}");
+            }
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
