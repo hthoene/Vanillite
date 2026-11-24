@@ -1,0 +1,95 @@
+name: Nightly
+
+# Bulk parity tests (ignored tests: chunk goldens by seed, large scenario runs), release build
+# and fuzzing. Runs on dev once a night and on demand.
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      fuzz_seconds:
+        description: Fuzzing time per target in seconds
+        default: "300"
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  bulk-tests:
+    name: Bulk parity tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: dev
+      - run: rustup toolchain install --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "25"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      # Bulk goldens and the Mojang jars are regenerated from the pinned jar when missing,
+      # never skipped; the cache only saves the time to regenerate them.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            target/vanilla
+            target/goldens
+          key: goldens-${{ hashFiles('data/vanilla/**') }}
+          restore-keys: goldens-
+      - name: All tests including ignored ones
+        run: cargo nextest run --workspace --all-features --locked --profile nightly --run-ignored all --no-tests=warn
+
+  release-build:
+    name: Release build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: dev
+      - run: rustup toolchain install --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
+      - run: cargo build --release --locked -p vanillite
+      - run: ls -l target/release/vanillite
+
+  fuzz:
+    name: Fuzzing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: dev
+      - run: rustup toolchain install nightly --profile minimal
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      # The corpus grows from night to night; every run saves it under a new key and restores
+      # the newest one.
+      - uses: actions/cache@v4
+        with:
+          path: fuzz/corpus
+          key: fuzz-corpus-${{ github.run_id }}
+          restore-keys: fuzz-corpus-
+      - name: Every fuzz target in parallel, each with the time budget
+        run: scripts/fuzz.sh "${{ inputs.fuzz_seconds || 300 }}"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-artifacts
+          path: |
+            fuzz/artifacts
+            fuzz/*.log

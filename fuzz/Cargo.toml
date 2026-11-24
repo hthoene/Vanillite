@@ -1,0 +1,86 @@
+# Fuzz targets for the input decoders (SEC-01..07). Not a member of the main workspace: it needs a
+# nightly toolchain and libFuzzer. Run with `cargo +nightly fuzz run <target>` from the repository
+# root; see `docs/development.md`.
+[package]
+name = "vanillite-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+vanillite-nbt = { path = "../crates/vanillite-nbt" }
+vanillite-protocol = { path = "../crates/vanillite-protocol" }
+
+# Its own workspace, so the main workspace never builds it.
+[workspace]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "nbt_read"
+path = "fuzz_targets/nbt_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "snbt_parse"
+path = "fuzz_targets/snbt_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "frame_decode"
+path = "fuzz_targets/frame_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "frame_roundtrip"
+path = "fuzz_targets/frame_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "packet_handshake"
+path = "fuzz_targets/packet_handshake.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "packet_status"
+path = "fuzz_targets/packet_status.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "packet_login"
+path = "fuzz_targets/packet_login.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "packet_configuration"
+path = "fuzz_targets/packet_configuration.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "packet_play"
+path = "fuzz_targets/packet_play.rs"
+test = false
+doc = false
+bench = false

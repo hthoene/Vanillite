@@ -9,7 +9,10 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+vanillite-config.workspace = true
+log.workspace = true
 vanillite-game.workspace = true
+vanillite-world.workspace = true
 vanillite-net.workspace = true
 vanillite-worldgen.workspace = true
 vanillite-light.workspace = true

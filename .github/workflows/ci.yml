@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # No debug info in CI builds: smaller caches, faster links.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup toolchain install --profile minimal --component rustfmt
+      - run: cargo fmt --all --check
+      - run: cargo fmt --check --manifest-path fuzz/Cargo.toml
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup toolchain install --profile minimal --component clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Only dev writes the cache; branches and PRs read it.
+          save-if: ${{ github.ref == 'refs/heads/dev' }}
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+  test:
+    name: Tests and codegen
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup toolchain install --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/dev' }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Generated code is current
+        run: cargo xtask codegen --check
+      - name: Tests
+        run: cargo nextest run --workspace --all-features --locked --profile ci --no-tests=warn
+      - name: Doc tests
+        run: cargo test --workspace --all-features --locked --doc
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: junit
+          path: target/nextest/ci/junit.xml
+
+  deny:
+    name: Dependencies (cargo-deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: EmbarkStudios/cargo-deny-action@v2
