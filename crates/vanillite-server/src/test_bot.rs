@@ -29,15 +29,26 @@ const SPEED: f64 = 0.2;
 const SNEAK_CYCLE: u64 = 200;
 const SNEAK_TICKS: u64 = 40;
 
+/// The name of bot `n` (1-based).
+fn name(n: u8) -> String {
+    if n == 1 {
+        "TestBot".to_owned()
+    } else {
+        format!("TestBot{n}")
+    }
+}
+
+/// The UUIDs of `count` bots; the server admits them without the whitelist because it opens
+/// their connections itself.
+pub(crate) fn uuids(count: u8) -> Vec<u128> {
+    (1..=count).map(|n| Uuid::offline(&name(n)).0).collect()
+}
+
 /// Starts `count` bots named `TestBot`, `TestBot2`, ... on their own threads. A bot ends when
 /// its connection closes.
 pub(crate) fn spawn(opener: VirtualOpener, count: u8) {
     for n in 1..=count {
-        let name = if n == 1 {
-            "TestBot".to_owned()
-        } else {
-            format!("TestBot{n}")
-        };
+        let name = name(n);
         let opener = opener.clone();
         let spawned = std::thread::Builder::new()
             .name(format!("Test bot {name}"))

@@ -384,6 +384,7 @@ impl ServerBuilder {
             watch,
             watchdog: Some(watchdog),
             net: Some(net),
+            test_bots: Vec::new(),
             level_dir,
             _session_lock: session_lock,
         };
@@ -394,6 +395,7 @@ impl ServerBuilder {
             && let Some(opener) = server.virtual_opener()
         {
             log::warn!("Starting {bots} test bot(s) (debug.test-bots); not for production use");
+            server.test_bots = crate::test_bot::uuids(bots);
             crate::test_bot::spawn(opener, bots);
         }
         log::info!(
@@ -626,6 +628,8 @@ pub struct Server {
     watch: Arc<WatchState>,
     watchdog: Option<Watchdog>,
     net: Option<NetState>,
+    /// UUIDs of the test bots this server started (`debug.test-bots`).
+    test_bots: Vec<u128>,
     level_dir: PathBuf,
     _session_lock: File,
 }
@@ -830,7 +834,9 @@ impl Server {
         );
         let players = &self.global.players;
         let access = &self.global.access;
-        let refuse = if !access.is_whitelisted(uuid) {
+        // The server's own test bots come over virtual connections it opened itself.
+        let test_bot = arrival.memory_connection && self.test_bots.contains(&uuid);
+        let refuse = if !test_bot && !access.is_whitelisted(uuid) {
             Some("multiplayer.disconnect.not_whitelisted")
         } else if players.contains(Uuid(uuid)) {
             // Vanilla kicks the older session; refusing the new one keeps a single owner of the
