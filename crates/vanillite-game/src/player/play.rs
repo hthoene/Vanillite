@@ -38,6 +38,8 @@ pub struct GameData {
     pub enchanting: crate::enchant::Enchanting,
     /// The `minecraft:banner_pattern` registry.
     pub banner_patterns: crate::menu::BannerPatterns,
+    /// The tags of the registries: registry → tag id (without `#`) → entry ids in tag order.
+    pub registry_tags: HashMap<String, HashMap<String, Vec<u32>>>,
 }
 
 static GAME_DATA: std::sync::OnceLock<std::sync::Arc<GameData>> = std::sync::OnceLock::new();
@@ -68,6 +70,31 @@ impl GameData {
     /// Whether an item is in an item tag.
     pub fn item_in_tag(&self, item: u16, tag: &str) -> bool {
         self.item_tags.get(tag).is_some_and(|v| v.contains(&item))
+    }
+
+    /// One holder set entry of `registry` (`"ns:id"` or `"#ns:tag"`) as entry ids, in tag
+    /// order; unknown entries give none.
+    pub fn holder_set(&self, registry: &str, entry: &str) -> Vec<u32> {
+        if let Some(tag) = entry.strip_prefix('#') {
+            return self
+                .registry_tags
+                .get(registry)
+                .and_then(|tags| tags.get(tag))
+                .cloned()
+                .unwrap_or_default();
+        }
+        if registry == "minecraft:enchantment" {
+            return self.enchantments.get(entry).copied().into_iter().collect();
+        }
+        if let Some(r) = vanillite_data::registry::Registry::by_name(registry) {
+            return r.id(entry).map(u32::from).into_iter().collect();
+        }
+        use vanillite_protocol::components_nbt::RegistryNames;
+        vanillite_protocol::item::InstalledRegistries
+            .entry_id(registry, entry)
+            .and_then(|id| u32::try_from(id).ok())
+            .into_iter()
+            .collect()
     }
 }
 
@@ -571,6 +598,19 @@ impl Digging {
                     i32::from(old.0),
                 );
             }
+        }
+        // `ShulkerBoxBlock.playerWillDestroy`: the loot table is rolled for the player (in
+        // creative by `isEmpty`, without the player).
+        if crate::block::container::kind_of(state.block())
+            == Some(crate::block::container::Kind::ShulkerBox)
+            && let Some(level) = ctx.level.level_mut()
+        {
+            let player = if ctx.actor.creative() {
+                None
+            } else {
+                ctx.actor.entity
+            };
+            crate::block::chest_loot::unpack(level, pos, player);
         }
         // The block entity as `playerDestroy` sees it (captured before the removal).
         let entity = ctx

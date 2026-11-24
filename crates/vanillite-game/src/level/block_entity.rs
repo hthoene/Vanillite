@@ -381,7 +381,14 @@ impl Level {
         {
             let side_effects = flags & super::update::SKIP_BLOCK_ENTITY_SIDEEFFECTS == 0;
             if side_effects {
-                // `preRemoveSideEffects`, while the block entity is still there.
+                // `preRemoveSideEffects`, while the block entity is still there:
+                // `Containers.dropContents` reads the stacks, which rolls a loot table first
+                // (shulker boxes drop nothing here).
+                if crate::block::container::kind_of(old.block())
+                    != Some(crate::block::container::Kind::ShulkerBox)
+                {
+                    crate::block::chest_loot::unpack(self, pos, None);
+                }
                 if let Some(entity) = self.block_entities.get(pos).cloned() {
                     crate::block::container::pre_remove_side_effects(self, pos, &entity);
                     if let BlockEntity::Lectern(lectern) = &entity {
@@ -510,7 +517,10 @@ fn load(state: BlockState, nbt: &Compound) -> Option<BlockEntity> {
         BlockEntity::Lectern(lectern) => lectern.load(nbt),
         BlockEntity::Hopper(h) => {
             h.custom_name = crate::block::container::load_name(nbt);
-            crate::block::container::load_items(nbt, &mut h.items);
+            (h.loot_table, h.loot_seed) = crate::block::chest_loot::load(nbt);
+            if h.loot_table.is_none() {
+                crate::block::container::load_items(nbt, &mut h.items);
+            }
             h.cooldown_time = int("TransferCooldown").unwrap_or(-1);
         }
         _ => {}
@@ -558,7 +568,9 @@ fn save(entity: &BlockEntity, state: BlockState, pos: BlockPos) -> Compound {
         BlockEntity::Lectern(lectern) => lectern.save(&mut nbt),
         BlockEntity::Hopper(h) => {
             crate::block::container::save_name(&h.custom_name, &mut nbt);
-            crate::block::container::save_items(&h.items, &mut nbt);
+            if !crate::block::chest_loot::save(h.loot_table.as_deref(), h.loot_seed, &mut nbt) {
+                crate::block::container::save_items(&h.items, &mut nbt);
+            }
             nbt.insert("TransferCooldown", Tag::Int(h.cooldown_time));
         }
         _ => {}
@@ -782,6 +794,12 @@ pub fn collect_component(entity: &BlockEntity, id: u16) -> Option<Box<[u8]>> {
                 Some(container_value(&crafter.items))
             } else if id == components::CUSTOM_NAME {
                 encode_name(crafter.custom_name.as_ref())
+            } else if id == components::CONTAINER_LOOT {
+                let table = crafter.loot_table.as_deref()?;
+                Some(crate::block::chest_loot::component(
+                    table,
+                    crafter.loot_seed,
+                ))
             } else {
                 None
             }
@@ -822,6 +840,13 @@ pub fn apply_components(level: &mut Level, pos: BlockPos, stack: &ItemStack) {
             }
             if let Some(items) = contents() {
                 copy_into(&items, &mut crafter.items);
+            }
+            if let Some((table, seed)) = stack
+                .component(components::CONTAINER_LOOT)
+                .and_then(crate::block::chest_loot::read_component)
+            {
+                crafter.loot_table = Some(table);
+                crafter.loot_seed = seed;
             }
         }
         _ => {

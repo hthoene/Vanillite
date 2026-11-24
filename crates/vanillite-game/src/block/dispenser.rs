@@ -1070,6 +1070,7 @@ fn equip_sound(stack: &ItemStack) -> &'static str {
 /// `DispenserBlockEntity.getRandomSlot(level.getRandom())`: a random non-empty slot (one
 /// `nextInt` per non-empty slot), `None` if the dispenser is empty.
 pub fn dispense_slot(level: &mut Level, pos: BlockPos) -> Option<usize> {
+    super::chest_loot::unpack(level, pos, None);
     let filled: Vec<usize> = super::container::items(level, pos)?
         .iter()
         .enumerate()

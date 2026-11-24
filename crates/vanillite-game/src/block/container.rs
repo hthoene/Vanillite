@@ -676,6 +676,33 @@ impl ContainerRef {
         }
     }
 
+    /// `getItem(slot)` of a `RandomizableContainer` first rolls the loot table of the block
+    /// entity holding the slot.
+    pub fn unpack(self, level: &mut Level, slot: usize) {
+        if let Some((p, _)) = self.locate(level, slot) {
+            super::chest_loot::unpack(level, p, None);
+        }
+    }
+
+    /// `isEmpty` with the loot tables it rolls (a double chest's second half only if the
+    /// first is empty).
+    pub fn is_empty_unpacking(self, level: &mut Level) -> bool {
+        match self {
+            ContainerRef::Block(p) => {
+                super::chest_loot::unpack(level, p, None);
+                ContainerRef::Block(p).is_empty(level)
+            }
+            ContainerRef::Double(a, b) => {
+                super::chest_loot::unpack(level, a, None);
+                if !ContainerRef::Block(a).is_empty(level) {
+                    return false;
+                }
+                super::chest_loot::unpack(level, b, None);
+                ContainerRef::Block(b).is_empty(level)
+            }
+        }
+    }
+
     /// `isEmpty`.
     pub fn is_empty(self, level: &Level) -> bool {
         (0..self.size(level)).all(|i| self.get(level, i).is_empty())
@@ -935,6 +962,15 @@ pub fn component(entity: &BlockEntity, id: u16) -> Option<Box<[u8]>> {
         BlockEntity::BrewingStand(b) => (&b.custom_name, &b.items),
         _ => return None,
     };
+    if id == ids::CONTAINER_LOOT {
+        // `RandomizableContainerBlockEntity.collectImplicitComponents`.
+        let (table, seed) = match entity {
+            BlockEntity::Container(c) => (c.loot_table.as_deref(), c.loot_seed),
+            BlockEntity::Hopper(h) => (h.loot_table.as_deref(), h.loot_seed),
+            _ => (None, 0),
+        };
+        return Some(super::chest_loot::component(table?, seed));
+    }
     if id == ids::CUSTOM_NAME {
         let mut out = Vec::new();
         name.as_ref()?.encode(&mut out);
@@ -960,6 +996,17 @@ pub fn apply_item_components(level: &mut Level, pos: BlockPos, stack: &ItemStack
     let contents: Option<Vec<ItemStack>> = stack
         .component(ids::CONTAINER)
         .and_then(|bytes| vanillite_protocol::item::decode_container_contents(bytes).ok());
+    let loot = stack
+        .component(ids::CONTAINER_LOOT)
+        .and_then(super::chest_loot::read_component);
+    if let Some((table, seed)) = loot {
+        // `RandomizableContainerBlockEntity.applyImplicitComponents`.
+        match level.block_entity_mut(pos) {
+            Some(BlockEntity::Container(c)) => (c.loot_table, c.loot_seed) = (Some(table), seed),
+            Some(BlockEntity::Hopper(h)) => (h.loot_table, h.loot_seed) = (Some(table), seed),
+            _ => {}
+        }
+    }
     let (target_name, target_items): (&mut Option<Component>, &mut [ItemStack]) =
         match level.block_entity_mut(pos) {
             Some(BlockEntity::Container(c)) => (&mut c.custom_name, &mut c.items),
@@ -1071,26 +1118,21 @@ pub fn save_name(name: &Option<Component>, out: &mut Compound) {
 }
 
 impl Container {
-    /// Loads the stored fields. A container whose loot table was not rolled yet keeps it
-    /// (chest loot is not generated yet); stacks stored next to it are kept as well.
+    /// Loads the stored fields: a container whose loot table was not rolled yet has no
+    /// stacks (`tryLoadLootTable`, else `loadAllItems`).
     pub fn load(&mut self, nbt: &Compound) {
         self.custom_name = load_name(nbt);
-        if let Some(Tag::String(table)) = nbt.get("LootTable") {
-            self.loot_table = Some(table.clone());
-            self.loot_seed = nbt.get("LootTableSeed").and_then(Tag::as_i64).unwrap_or(0);
+        (self.loot_table, self.loot_seed) = super::chest_loot::load(nbt);
+        if self.loot_table.is_none() {
+            load_items(nbt, &mut self.items);
         }
-        load_items(nbt, &mut self.items);
     }
 
-    /// Saves the stored fields.
+    /// Saves the stored fields (`trySaveLootTable`, else `saveAllItems`).
     pub fn save(&self, out: &mut Compound) {
         save_name(&self.custom_name, out);
-        if let Some(table) = &self.loot_table {
-            out.insert("LootTable", Tag::String(table.clone()));
-            if self.loot_seed != 0 {
-                out.insert("LootTableSeed", Tag::Long(self.loot_seed));
-            }
+        if !super::chest_loot::save(self.loot_table.as_deref(), self.loot_seed, out) {
+            save_items(&self.items, out);
         }
-        save_items(&self.items, out);
     }
 }

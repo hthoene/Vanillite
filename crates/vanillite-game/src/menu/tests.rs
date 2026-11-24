@@ -92,6 +92,20 @@ pub(crate) fn install_data() -> &'static GameData {
             .tags("minecraft:item")
             .map(|tags| tags.keys().map(|t| (t.clone(), tag(t))).collect())
             .unwrap_or_default();
+        let registry_tags = packs
+            .tagged_registries()
+            .map(|registry| {
+                let tags = packs
+                    .tags(registry)
+                    .map(|tags| {
+                        tags.keys()
+                            .map(|t| (t.clone(), packs.tag_ids(registry, t).unwrap_or_default()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                (registry.to_owned(), tags)
+            })
+            .collect();
         crate::player::play::install_game_data(Arc::new(GameData {
             loot: crate::loot::LootTables::empty(),
             recipes,
@@ -99,6 +113,7 @@ pub(crate) fn install_data() -> &'static GameData {
             enchantments,
             banner_patterns,
             item_tags,
+            registry_tags,
             ..GameData::default()
         }));
     });

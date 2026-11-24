@@ -883,6 +883,24 @@ pub fn open(
     if inv.container.is_some() {
         close(inv, level, who, drops, Some(sink));
     }
+    // `RandomizableContainerBlockEntity.canOpen`: spectators cannot open containers with a
+    // loot table; `createMenu` rolls the tables for the player (both halves of a chest).
+    let positions = match request.storage {
+        Storage::Block(p) => [Some(p), None],
+        Storage::Double(a, b) => [Some(a), Some(b)],
+        Storage::Ender(_) | Storage::Local => [None, None],
+    };
+    if who.spectator
+        && positions
+            .iter()
+            .flatten()
+            .any(|&p| crate::block::chest_loot::has_loot(level, p))
+    {
+        return;
+    }
+    for p in positions.into_iter().flatten() {
+        crate::block::chest_loot::unpack(level, p, request.player);
+    }
     inv.container_counter = inv.container_counter % 100 + 1;
     let id = inv.container_counter;
     let kind = request.menu;

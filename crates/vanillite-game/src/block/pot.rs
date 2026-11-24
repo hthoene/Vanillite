@@ -147,6 +147,11 @@ fn use_item_on(
     ctx: &UseContext,
     stack: &mut ItemStack,
 ) -> ItemInteraction {
+    if !matches!(level.block_entity(pos), Some(BlockEntity::DecoratedPot(_))) {
+        return ItemInteraction::Pass;
+    }
+    // `getTheItem` rolls the loot table first.
+    super::chest_loot::unpack(level, pos, None);
     let Some(BlockEntity::DecoratedPot(pot)) = level.block_entity(pos) else {
         return ItemInteraction::Pass;
     };
@@ -165,7 +170,6 @@ fn use_item_on(
         } else {
             pot.item.grow(1);
         }
-        pot.loot_table = None;
         pot.item.count as f32 / item::max_stack_size(&pot.item) as f32
     } else {
         0.0
