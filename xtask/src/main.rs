@@ -4,9 +4,13 @@
 //! cargo xtask vanilla update [<version>] [--jar <server.jar>]
 //! cargo xtask codegen [--check]
 //! cargo xtask golden regen [<PartGoldens>...]
+//! cargo xtask dev [--release] [-- <server args>]
+//! cargo xtask deploy [--port <port>] [--release]
+//! cargo xtask testserver provision|status|logs|start|stop|restart [<port>]
 //! ```
 
 mod codegen;
+mod devenv;
 mod golden;
 mod normalize;
 mod vanilla;
@@ -17,7 +21,7 @@ use std::process::ExitCode;
 /// Errors are reported as text; xtask is a developer tool.
 pub type Result<T> = std::result::Result<T, String>;
 
-const USAGE: &str = "usage:
+pub const USAGE: &str = "usage:
   cargo xtask vanilla update [<version>] [--jar <server.jar>]
       Download (or take) the server jar, verify its SHA-1, run Mojang's data generator and
       tools/extractor, normalise into data/vanilla/, run codegen and print a change report.
@@ -29,7 +33,16 @@ const USAGE: &str = "usage:
   cargo xtask golden regen [<PartGoldens>...]
       Record the world generation parity goldens (all parts, or the named ones) into
       crates/vanillite-worldgen/tests/goldens/ with the Java harness. Needs the unpacked jar of
-      `cargo xtask vanilla update` and a JDK.";
+      `cargo xtask vanilla update` and a JDK.
+  cargo xtask dev [--release] [-- <server args>]
+      Build and run the server in ./run (debug build; --release uses the release-fast profile).
+  cargo xtask deploy [--port <port>] [--release]
+      Build the server (release-fast; --release for the full release profile) and install it on
+      the test server as vanillite@<port>.service. <port> is 30001-30999, default 30001.
+      The SSH host is vanillite-test, or VANILLITE_TEST_HOST.
+  cargo xtask testserver provision|status|logs|start|stop|restart [<port>]
+      provision runs scripts/testserver/provision.sh on the test server (idempotent);
+      status lists the services and ports; the others act on vanillite@<port> (default 30001).";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -39,6 +52,9 @@ fn main() -> ExitCode {
         ["codegen"] => codegen::run(&repo_root(), false),
         ["codegen", "--check"] => codegen::run(&repo_root(), true),
         ["golden", "regen", parts @ ..] => golden::regen(&repo_root(), parts),
+        ["dev", rest @ ..] => devenv::dev(&repo_root(), rest),
+        ["deploy", rest @ ..] => devenv::deploy(&repo_root(), rest),
+        ["testserver", rest @ ..] => devenv::testserver(&repo_root(), rest),
         _ => Err(USAGE.to_owned()),
     };
     match result {

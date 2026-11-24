@@ -13,37 +13,49 @@ repository = "https://github.com/hthoene/Vanillite"
 
 [workspace.dependencies]
 # Internal crates.
-vanillite-abi = { path = "crates/vanillite-abi" }
-vanillite-base = { path = "crates/vanillite-base" }
-vanillite-chunk = { path = "crates/vanillite-chunk" }
-vanillite-command = { path = "crates/vanillite-command" }
-vanillite-config = { path = "crates/vanillite-config" }
-vanillite-data = { path = "crates/vanillite-data" }
-vanillite-datapack = { path = "crates/vanillite-datapack" }
-vanillite-game = { path = "crates/vanillite-game" }
-vanillite-light = { path = "crates/vanillite-light" }
-vanillite-macros = { path = "crates/vanillite-macros" }
-vanillite-nbt = { path = "crates/vanillite-nbt" }
-vanillite-net = { path = "crates/vanillite-net" }
-vanillite-plugin = { path = "crates/vanillite-plugin" }
-vanillite-plugin-host = { path = "crates/vanillite-plugin-host" }
-vanillite-protocol = { path = "crates/vanillite-protocol" }
-vanillite-server = { path = "crates/vanillite-server" }
-vanillite-storage = { path = "crates/vanillite-storage" }
-vanillite-test = { path = "crates/vanillite-test" }
-vanillite-world = { path = "crates/vanillite-world" }
-vanillite-worldgen = { path = "crates/vanillite-worldgen" }
+vanillite-abi = { path = "crates/vanillite-abi", version = "0.1.0" }
+vanillite-base = { path = "crates/vanillite-base", version = "0.1.0" }
+vanillite-chunk = { path = "crates/vanillite-chunk", version = "0.1.0" }
+vanillite-command = { path = "crates/vanillite-command", version = "0.1.0" }
+vanillite-config = { path = "crates/vanillite-config", version = "0.1.0" }
+vanillite-data = { path = "crates/vanillite-data", version = "0.1.0" }
+vanillite-datapack = { path = "crates/vanillite-datapack", version = "0.1.0" }
+vanillite-game = { path = "crates/vanillite-game", version = "0.1.0" }
+vanillite-light = { path = "crates/vanillite-light", version = "0.1.0" }
+vanillite-macros = { path = "crates/vanillite-macros", version = "0.1.0" }
+vanillite-nbt = { path = "crates/vanillite-nbt", version = "0.1.0" }
+vanillite-net = { path = "crates/vanillite-net", version = "0.1.0" }
+vanillite-plugin = { path = "crates/vanillite-plugin", version = "0.1.0" }
+vanillite-plugin-host = { path = "crates/vanillite-plugin-host", version = "0.1.0" }
+vanillite-protocol = { path = "crates/vanillite-protocol", version = "0.1.0" }
+vanillite-server = { path = "crates/vanillite-server", version = "0.1.0" }
+vanillite-storage = { path = "crates/vanillite-storage", version = "0.1.0" }
+vanillite-test = { path = "crates/vanillite-test", version = "0.1.0" }
+vanillite-world = { path = "crates/vanillite-world", version = "0.1.0" }
+vanillite-worldgen = { path = "crates/vanillite-worldgen", version = "0.1.0" }
 
 # External crates.
 bumpalo = { version = "3.20", features = ["collections"] }
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+ctrlc = { version = "3.5", features = ["termination"] }
+log = { version = "0.4", features = ["std"] }
 md5 = { package = "md-5", version = "0.10", default-features = false }
 rustc-hash = "2.1"
 serde_json = "1"
 sha1 = "0.10"
 toml = "1"
 ureq = { version = "3", default-features = false, features = ["rustls"] }
-zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+# External crates: network (vanillite-nbt, vanillite-protocol, vanillite-macros, vanillite-net).
+aes = "0.8"
+libdeflater = "1.26"
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }
+env_logger = { version = "0.11", default-features = false }
+rsa = "0.9"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "sync", "macros"] }
 
 # Workspace-wide lints. Input-handling crates (SEC-07) repeat these in their own
 # `[lints]` tables and add the SEC-07 deny set, because Cargo cannot extend
@@ -54,6 +66,39 @@ missing_debug_implementations = "warn"
 
 [workspace.lints.clippy]
 undocumented_unsafe_blocks = "warn"
+
+# Build profiles. See `docs/development.md` for when to use which.
+[profile.dev]
+# Line tables keep backtraces and debuggers useful at a fraction of the link time.
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
+
+[profile.dev.package."*"]
+# Dependencies are built once (and shared through sccache); optimise them so tests and
+# `cargo xtask dev` run at a useful speed.
+opt-level = 3
+debug = false
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "unwind"
+
+# Optimised build for quick iteration (test server deploys, local measurements):
+# close to release speed, a fraction of its build time.
+[profile.release-fast]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
+strip = false
+
+# Release code generation with symbols, for perf, flamegraphs and heaptrack.
+[profile.profiling]
+inherits = "release"
+debug = "line-tables-only"
+strip = false
 
 # World generation is bit-exact floating point work; its parity tests run optimised (section 10.3).
 [profile.dev.package.vanillite-worldgen]
