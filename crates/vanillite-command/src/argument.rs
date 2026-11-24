@@ -8,6 +8,7 @@ use vanillite_protocol::types::Identifier;
 use crate::bounds::{self, DoubleRange, IntRange};
 use crate::coords::{self, Coordinates};
 use crate::error::{Arg, CommandError};
+use crate::game_values::GameValue;
 use crate::limits::Limits;
 use crate::nbt_path::{self, NbtPath};
 use crate::parse::Args;
@@ -71,6 +72,80 @@ pub enum ArgumentType {
     IntRange,
     /// `minecraft:float_range`.
     FloatRange,
+    /// `minecraft:block_state`.
+    BlockState,
+    /// `minecraft:block_predicate`.
+    BlockPredicate,
+    /// `minecraft:item_stack`.
+    ItemStack,
+    /// `minecraft:item_predicate`.
+    ItemPredicate,
+    /// `minecraft:team_color`.
+    TeamColor,
+    /// `minecraft:hex_color`.
+    HexColor,
+    /// `minecraft:component`.
+    Component,
+    /// `minecraft:style`.
+    Style,
+    /// `minecraft:objective`.
+    Objective,
+    /// `minecraft:objective_criteria`.
+    ObjectiveCriteria,
+    /// `minecraft:operation`.
+    Operation,
+    /// `minecraft:particle`.
+    Particle,
+    /// `minecraft:angle`.
+    Angle,
+    /// `minecraft:scoreboard_slot`.
+    ScoreboardSlot,
+    /// `minecraft:score_holder`.
+    ScoreHolder { multiple: bool },
+    /// `minecraft:swizzle`.
+    Swizzle,
+    /// `minecraft:team`.
+    Team,
+    /// `minecraft:item_slot`.
+    ItemSlot,
+    /// `minecraft:item_slots`.
+    ItemSlots,
+    /// `minecraft:function`.
+    Function,
+    /// `minecraft:dimension`.
+    Dimension,
+    /// `minecraft:resource_or_tag` of a registry.
+    ResourceOrTag { registry: &'static str },
+    /// `minecraft:resource_or_tag_key` of a registry.
+    ResourceOrTagKey { registry: &'static str },
+    /// `minecraft:resource_key` of a registry.
+    ResourceKey { registry: &'static str },
+    /// `minecraft:resource_selector` of a registry.
+    ResourceSelector { registry: &'static str },
+    /// `minecraft:template_mirror`.
+    TemplateMirror,
+    /// `minecraft:template_rotation`.
+    TemplateRotation,
+    /// `minecraft:heightmap`.
+    Heightmap,
+    /// `minecraft:loot_table`.
+    LootTable,
+    /// `minecraft:loot_predicate`.
+    LootPredicate,
+    /// `minecraft:loot_modifier`.
+    LootModifier,
+    /// `minecraft:context_float_provider`.
+    ContextFloatProvider,
+    /// `minecraft:context_int_provider`.
+    ContextIntProvider,
+    /// `minecraft:slot_source`.
+    SlotSource,
+    /// `minecraft:dialog`.
+    Dialog,
+    /// `minecraft:feature`.
+    Feature,
+    /// `minecraft:swing_animation`.
+    SwingAnimation,
 }
 
 /// A part of a message that is an entity selector.
@@ -128,6 +203,8 @@ pub enum ArgValue {
     Anchor(Anchor),
     IntRange(IntRange),
     FloatRange(DoubleRange),
+    /// The game-specific argument types.
+    Game(GameValue),
 }
 
 /// What a parse needs besides the reader.
@@ -443,6 +520,7 @@ impl ArgumentType {
             }
             Self::IntRange => ArgValue::IntRange(bounds::read_int_range(r)?),
             Self::FloatRange => ArgValue::FloatRange(bounds::read_double_range(r)?),
+            _ => crate::game_args::parse(self, r, ctx)?,
         })
     }
 
@@ -605,17 +683,62 @@ impl ArgumentType {
             Self::Time { min } => p("minecraft:time", ParserProps::Time { min: *min }),
             Self::Uuid => Parser::plain("minecraft:uuid"),
             Self::Identifier => Parser::plain("minecraft:resource_location"),
-            Self::Resource { registry } => p(
-                "minecraft:resource",
-                ParserProps::Registry(
-                    Identifier::new(registry).unwrap_or_else(|_| Identifier::vanilla("empty")),
-                ),
-            ),
+            Self::Resource { registry } => p("minecraft:resource", registry_props(registry)),
             Self::EntityAnchor => Parser::plain("minecraft:entity_anchor"),
             Self::IntRange => Parser::plain("minecraft:int_range"),
             Self::FloatRange => Parser::plain("minecraft:float_range"),
+            Self::BlockState => Parser::plain("minecraft:block_state"),
+            Self::BlockPredicate => Parser::plain("minecraft:block_predicate"),
+            Self::ItemStack => Parser::plain("minecraft:item_stack"),
+            Self::ItemPredicate => Parser::plain("minecraft:item_predicate"),
+            Self::TeamColor => Parser::plain("minecraft:team_color"),
+            Self::HexColor => Parser::plain("minecraft:hex_color"),
+            Self::Component => Parser::plain("minecraft:component"),
+            Self::Style => Parser::plain("minecraft:style"),
+            Self::Objective => Parser::plain("minecraft:objective"),
+            Self::ObjectiveCriteria => Parser::plain("minecraft:objective_criteria"),
+            Self::Operation => Parser::plain("minecraft:operation"),
+            Self::Particle => Parser::plain("minecraft:particle"),
+            Self::Angle => Parser::plain("minecraft:angle"),
+            Self::ScoreboardSlot => Parser::plain("minecraft:scoreboard_slot"),
+            Self::ScoreHolder { multiple } => p(
+                "minecraft:score_holder",
+                ParserProps::ScoreHolder {
+                    multiple: *multiple,
+                },
+            ),
+            Self::Swizzle => Parser::plain("minecraft:swizzle"),
+            Self::Team => Parser::plain("minecraft:team"),
+            Self::ItemSlot => Parser::plain("minecraft:item_slot"),
+            Self::ItemSlots => Parser::plain("minecraft:item_slots"),
+            Self::Function => Parser::plain("minecraft:function"),
+            Self::Dimension => Parser::plain("minecraft:dimension"),
+            Self::ResourceOrTag { registry } => p("minecraft:resource_or_tag", registry_props(registry)),
+            Self::ResourceOrTagKey { registry } => {
+                p("minecraft:resource_or_tag_key", registry_props(registry))
+            }
+            Self::ResourceKey { registry } => p("minecraft:resource_key", registry_props(registry)),
+            Self::ResourceSelector { registry } => {
+                p("minecraft:resource_selector", registry_props(registry))
+            }
+            Self::TemplateMirror => Parser::plain("minecraft:template_mirror"),
+            Self::TemplateRotation => Parser::plain("minecraft:template_rotation"),
+            Self::Heightmap => Parser::plain("minecraft:heightmap"),
+            Self::LootTable => Parser::plain("minecraft:loot_table"),
+            Self::LootPredicate => Parser::plain("minecraft:loot_predicate"),
+            Self::LootModifier => Parser::plain("minecraft:loot_modifier"),
+            Self::ContextFloatProvider => Parser::plain("minecraft:context_float_provider"),
+            Self::ContextIntProvider => Parser::plain("minecraft:context_int_provider"),
+            Self::SlotSource => Parser::plain("minecraft:slot_source"),
+            Self::Dialog => Parser::plain("minecraft:dialog"),
+            Self::Feature => Parser::plain("minecraft:feature"),
+            Self::SwingAnimation => Parser::plain("minecraft:swing_animation"),
         }
     }
+}
+
+fn registry_props(registry: &str) -> ParserProps {
+    ParserProps::Registry(Identifier::new(registry).unwrap_or_else(|_| Identifier::vanilla("empty")))
 }
 
 /// Java's `String.split(" ")`: trailing empty fields are dropped.
