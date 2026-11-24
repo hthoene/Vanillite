@@ -704,34 +704,58 @@ impl Digging {
             !ctx.inventory.selected_item().is_empty() || !ctx.inventory.offhand.is_empty();
         let suppress_use = ctx.actor.sneaking && has_items;
         if !suppress_use {
-            // `useItemOn` is `TRY_WITH_EMPTY_HAND` for every block so far; then
-            // `useWithoutItem`, for the main hand only.
-            let has_use = ctx
-                .level
-                .level_mut()
-                .is_some_and(|l| l.behaviours().get(state.block()).use_without_item.is_some());
-            if has_use {
-                if hand == Hand::MainHand
-                    && let Some(player) = ctx.actor.entity
-                    && let Some(level) = ctx.level.level_mut()
-                {
-                    let use_ctx = crate::block::UseContext {
-                        player,
-                        may_build: ctx.actor.game_mode != GameMode::Adventure,
-                        yaw: ctx.actor.y_rot,
-                        face,
-                        hit,
-                    };
-                    let result = level.use_without_item(pos, &use_ctx);
-                    let requests = level.take_menu_requests();
-                    for request in requests {
-                        open_menu(ctx, request, sink);
+            // `state.useItemOn(stack, …)`, then `useWithoutItem` for the main hand when it
+            // tries with an empty hand.
+            let (has_use, has_item_use) = ctx.level.level_mut().map_or((false, false), |l| {
+                let b = l.behaviours().get(state.block());
+                (b.use_without_item.is_some(), b.use_item_on.is_some())
+            });
+            if (has_use || has_item_use)
+                && let Some(player) = ctx.actor.entity
+            {
+                let use_ctx = crate::block::UseContext {
+                    player,
+                    may_build: ctx.actor.game_mode != GameMode::Adventure,
+                    yaw: ctx.actor.y_rot,
+                    face,
+                    hit,
+                };
+                let mut held = match hand {
+                    Hand::MainHand => ctx.inventory.selected_item().clone(),
+                    Hand::OffHand => ctx.inventory.offhand.clone(),
+                };
+                let before = held.clone();
+                let item_use = match ctx.level.level_mut() {
+                    Some(level) if has_item_use => level.use_item_on(pos, &use_ctx, &mut held),
+                    _ => crate::block::ItemInteraction::TryWithEmptyHand,
+                };
+                let result = match item_use {
+                    crate::block::ItemInteraction::Done(result) => {
+                        if held != before && !ctx.actor.creative() {
+                            let slot = match hand {
+                                Hand::MainHand => ctx.inventory.selected_item_mut(),
+                                Hand::OffHand => Some(&mut ctx.inventory.offhand),
+                            };
+                            if let Some(slot) = slot {
+                                *slot = held;
+                            }
+                        }
+                        Some(result)
                     }
-                    match result {
-                        crate::block::Interaction::Success => return true,
-                        crate::block::Interaction::Consume => return false,
-                        crate::block::Interaction::Pass | crate::block::Interaction::Fail => {}
+                    crate::block::ItemInteraction::TryWithEmptyHand
+                        if hand == Hand::MainHand && has_use =>
+                    {
+                        ctx.level
+                            .level_mut()
+                            .map(|level| level.use_without_item(pos, &use_ctx))
                     }
+                    _ => None,
+                };
+                self.open_requested(ctx, sink);
+                match result {
+                    Some(crate::block::Interaction::Success) => return true,
+                    Some(crate::block::Interaction::Consume) => return false,
+                    _ => {}
                 }
             } else if has_use_action(state) {
                 // Blocks whose use is not implemented yet consume the click.
@@ -769,7 +793,31 @@ impl Digging {
         else {
             return false;
         };
-        self.place_block(ctx, hand, &stack, &place_ctx)
+        let placed = self.place_block(ctx, hand, &stack, &place_ctx);
+        self.open_requested(ctx, sink);
+        placed
+    }
+
+    /// Opens the menus and sign editors blocks asked for during a use.
+    fn open_requested(&mut self, ctx: &mut PlayContext<'_>, sink: &dyn PacketSink) {
+        let Some(level) = ctx.level.level_mut() else {
+            return;
+        };
+        let requests = level.take_menu_requests();
+        let editors = level.take_sign_editors();
+        for request in requests {
+            open_menu(ctx, request, sink);
+        }
+        for (player, pos, front) in editors {
+            if Some(player) == ctx.actor.entity {
+                sink.send(
+                    &vanillite_protocol::packets::play::clientbound::OpenSignEditor {
+                        pos: wire(pos),
+                        front,
+                    },
+                );
+            }
+        }
     }
 
     /// `BlockItem.place`.
@@ -847,6 +895,15 @@ impl Digging {
             crate::block::redstone::set_placed_by(level, placed, target);
             if placed.block() == vanillite_data::block::ids::TRIPWIRE_HOOK {
                 crate::block::tripwire::hook_set_placed_by(level, target, placed);
+            }
+            // `SignItem.updateCustomBlockEntityTag`: the editor of the front opens.
+            if crate::block::sign::is_sign(placed.block())
+                && stack.component(ids::BLOCK_ENTITY_DATA).is_none()
+                && let Some(player) = ctx.actor.entity
+                && let Some(crate::level::BlockEntity::Sign(sign)) = level.block_entity_mut(target)
+            {
+                sign.editor = Some(ctx.actor.uuid);
+                level.request_sign_editor(player, target, true);
             }
         }
         let sound = placed.block().sound();

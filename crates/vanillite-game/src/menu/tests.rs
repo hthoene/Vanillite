@@ -823,3 +823,39 @@ fn enchanting_table_enchants_with_lapis_and_levels() {
     assert_eq!(xp.level, 27);
     assert_ne!(xp.seed, 12345);
 }
+
+#[test]
+fn only_the_editor_writes_signs_and_wax_locks_them() {
+    install_data();
+    let pos = BlockPos::new(0, 0, 0);
+    let mut level = level_with(pos, blocks::OAK_SIGN.default_state());
+    let lines = [
+        "a\u{a7}cb".to_owned(),
+        String::new(),
+        String::new(),
+        String::new(),
+    ];
+    // Nobody may edit until the editor opened for a player.
+    crate::block::sign::update_text(&mut level, pos, 7, true, &lines);
+    let text = |level: &Level| match level.block_entity(pos) {
+        Some(BlockEntity::Sign(s)) => s.front.messages[0].plain(),
+        _ => panic!("no sign"),
+    };
+    assert_eq!(text(&level), "");
+    if let Some(BlockEntity::Sign(s)) = level.block_entity_mut(pos) {
+        s.editor = Some(7);
+    }
+    crate::block::sign::update_text(&mut level, pos, 8, true, &lines);
+    assert_eq!(text(&level), "", "another player");
+    crate::block::sign::update_text(&mut level, pos, 7, true, &lines);
+    assert_eq!(text(&level), "ab", "formatting codes are stripped");
+    // The lock is released; waxed signs stay as they are.
+    if let Some(BlockEntity::Sign(s)) = level.block_entity_mut(pos) {
+        assert_eq!(s.editor, None);
+        s.editor = Some(7);
+        s.waxed = true;
+    }
+    let other = ["c".to_owned(), String::new(), String::new(), String::new()];
+    crate::block::sign::update_text(&mut level, pos, 7, true, &other);
+    assert_eq!(text(&level), "ab");
+}

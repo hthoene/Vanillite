@@ -309,10 +309,15 @@ impl ServerWorld {
         let light = self.updates.light_changes();
         self.level.chunks.take_light_changes(light);
         self.packets.invalidate(&mut self.level.chunks, light);
+        for pos in &self.level.output().block_entity_updates {
+            self.packets.invalidate_chunk(pos.chunk());
+        }
         self.updates.broadcast(&mut self.level);
         WorldPlayers::send_chunks(
             &mut self.level.entities,
-            &self.packets.source(&self.level.chunks),
+            &self
+                .packets
+                .source(&self.level.chunks, &self.level.block_entities),
         );
         self.track_entities();
         WorldPlayers::send_entity_updates(&self.level.entities, &self.entity_updates);

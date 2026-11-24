@@ -117,6 +117,7 @@ packet_set! {
         ContainerButtonClick(play::serverbound::ContainerButtonClick),
         ContainerSlotStateChanged(play::serverbound::ContainerSlotStateChanged),
         RenameItem(play::serverbound::RenameItem),
+        SignUpdate(play::serverbound::SignUpdate),
         PlaceRecipe(play::serverbound::PlaceRecipe),
         RecipeBookSeenRecipe(play::serverbound::RecipeBookSeenRecipe),
         RecipeBookChangeSettings(play::serverbound::RecipeBookChangeSettings),
