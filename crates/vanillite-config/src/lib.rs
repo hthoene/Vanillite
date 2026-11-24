@@ -249,7 +249,20 @@ fn load_properties(path: &Path) -> Result<ServerProperties, ConfigError> {
     if existing.as_deref() != Some(rendered.as_str()) {
         fs::write(path, rendered).map_err(|e| ConfigError::io(path, e))?;
     }
-    Ok(typed)
+    // `VANILLITE_<KEY>` (e.g. `VANILLITE_SERVER_PORT`) overrides a key for this run only; the
+    // file keeps its own value.
+    let mut overridden = false;
+    for key in ServerProperties::KEYS {
+        if let Ok(value) = std::env::var(env_name(key)) {
+            map.insert((*key).to_owned(), value);
+            overridden = true;
+        }
+    }
+    Ok(if overridden {
+        ServerProperties::from_map(&map)
+    } else {
+        typed
+    })
 }
 
 /// The `vanillite.toml` written on first start: the profile and every rule, commented out with

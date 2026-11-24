@@ -1,5 +1,6 @@
 //! The Vanillite server binary: a thin CLI over `vanillite-server`.
 
+mod health;
 mod logger;
 
 use std::io::BufRead as _;
@@ -8,25 +9,37 @@ use std::process::ExitCode;
 
 use vanillite_server::ServerBuilder;
 
+// musl's allocator is slow with many threads; the static (Docker) build uses mimalloc.
+#[cfg(target_env = "musl")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 const USAGE: &str = "\
 Usage: vanillite [command] [options]
 
 Commands:
   run        Start the server (default)
+  health     Send a status ping to the local server; exit code 0 if it answers
   version    Print the version
 
-Options of run:
+Options of run and health:
   --dir <path>   Server folder with config files and worlds (default: current folder)
+
+Options of health:
+  --port <port>  Port to ping (default: VANILLITE_SERVER_PORT, else server-port of
+                 server.properties, else 25565)
 
 Environment:
   VANILLITE_LOG=<level>   error, warn, info (default), debug or trace
-  VANILLITE_<KEY>=<value> Overrides a key of vanillite.toml";
+  VANILLITE_<KEY>=<value> Overrides a key of vanillite.toml or server.properties
+                          (e.g. VANILLITE_SERVER_PORT, VANILLITE_MOTD)";
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     let command = args.next();
     match command.as_deref() {
         None | Some("run") => run(args),
+        Some("health") => health::run(args, USAGE),
         Some("version" | "--version" | "-V") => {
             println!("vanillite {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS

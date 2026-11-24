@@ -7,6 +7,7 @@
 #   user vanillite), deployed with `cargo xtask deploy` through /usr/local/bin/vanillite-deploy.
 # - Load test instances (`cargo xtask loadtest`), running only during a run: Paper in offline
 #   mode on 30900 (/opt/paper-loadtest, paper-loadtest.service) and Vanillite on 30901.
+# - Docker engine for `cargo xtask docker` (image builds over SSH).
 # Only ports 30000-30999 are reachable by players.
 set -euo pipefail
 
@@ -39,6 +40,19 @@ if [ ${#missing[@]} -gt 0 ]; then
     apt-get update -q
     apt-get install -y -q "${missing[@]}"
 fi
+
+# Docker engine with buildx: `cargo xtask docker` builds the image here over SSH.
+echo "== docker"
+if ! command -v docker > /dev/null; then
+    . /etc/os-release
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL "https://download.docker.com/linux/${ID}/gpg" | gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${ID} ${VERSION_CODENAME} stable" \
+        > /etc/apt/sources.list.d/docker.list
+    apt-get update -q
+    apt-get install -y -q docker-ce docker-ce-cli containerd.io docker-buildx-plugin
+fi
+systemctl enable --now docker > /dev/null
 
 echo "== users"
 id minecraft > /dev/null 2>&1 || useradd --system --home-dir /opt/paper --create-home --shell /usr/sbin/nologin minecraft
