@@ -241,6 +241,7 @@ impl ServerWorld {
         if ctx.runs_normally {
             self.ticks += 1;
             self.tick_entities();
+            self.level.tick_block_entities();
         }
         self.players.tick_entities(&mut self.level.entities);
         let light = self.updates.light_changes();

@@ -428,6 +428,21 @@ pub(crate) fn level_settings(
     settings
 }
 
+/// The exploit switches of `exploits` (decision D1).
+pub(crate) fn exploit_settings(
+    rules: &vanillite_config::WorldRules,
+) -> vanillite_game::level::ExploitSettings {
+    let e = &rules.exploits;
+    vanillite_game::level::ExploitSettings {
+        tnt_duplication: e.tnt_duplication,
+        carpet_duplication: e.carpet_duplication,
+        rail_duplication: e.rail_duplication,
+        headless_pistons: e.headless_pistons,
+        break_unbreakable_blocks: e.break_unbreakable_blocks,
+        string_duplication: e.string_duplication,
+    }
+}
+
 /// Sets the budgets of `performance.simulation`; `vanilla_max_chained` is
 /// `max-chained-neighbor-updates` of `server.properties`.
 pub(crate) fn apply_simulation_rules(
@@ -441,7 +456,7 @@ pub(crate) fn apply_simulation_rules(
     settings.max_chained_neighbor_updates = match simulation.max_chained_neighbor_updates {
         vanillite_config::VanillaOr::Value(v) => i32::try_from(v).unwrap_or(i32::MAX),
         vanillite_config::VanillaOr::Vanilla => vanilla_max_chained,
-    };
+    };    settings.exploits = exploit_settings(rules);
 }
 
 /// The biomes of a world for the simulation: the biome registry, the seed's biome manager and

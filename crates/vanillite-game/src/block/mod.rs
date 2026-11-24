@@ -11,10 +11,13 @@ pub mod drops;
 pub mod falling;
 pub mod fluid;
 mod growth;
+pub mod piston;
+pub mod redstone;
 mod spread;
 pub mod weather;
 
-use vanillite_base::{BlockPos, Direction};
+use vanillite_base::{BlockPos, Direction, Vec3};
+use vanillite_world::entity::EntityId;
 use vanillite_data::block::{BLOCK_COUNT, BlockId, BlockState, flags, ids};
 use vanillite_worldgen::behaviour::StateExt;
 use vanillite_worldgen::behaviour::{self as shared, Class, class_of_block, tags};
@@ -39,6 +42,45 @@ pub type NeighborFn = fn(&mut Level, BlockState, BlockPos, BlockId, bool);
 pub type TickFn = fn(&mut Level, BlockState, BlockPos);
 /// `triggerEvent(state, level, pos, b0, b1)`: whether the event goes to clients.
 pub type EventFn = fn(&mut Level, BlockState, BlockPos, i32, i32) -> bool;
+/// `getSignal` and `getDirectSignal(state, level, pos, direction)`: the signal `state` at `pos`
+/// emits towards the neighbour at `pos - direction`.
+pub type SignalFn = fn(&Level, BlockState, BlockPos, Direction) -> i32;
+/// `getAnalogOutputSignal(state, level, pos, direction)`: what a comparator facing away in
+/// `direction` reads.
+pub type AnalogFn = fn(&Level, BlockState, BlockPos, Direction) -> i32;
+/// `useWithoutItem(state, level, pos, player, hitResult)`.
+pub type UseFn = fn(&mut Level, BlockState, BlockPos, &UseContext) -> Interaction;
+/// `entityInside(state, level, pos, entity, effectApplier, isPrecise)`.
+pub type EntityInsideFn = fn(&mut Level, BlockState, BlockPos, EntityId);
+
+/// What a block learns about a player that uses it with an empty hand (or an item without a
+/// use of its own): `useWithoutItem`'s player and hit result.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UseContext {
+    /// The player.
+    pub player: EntityId,
+    /// `player.getAbilities().mayBuild`.
+    pub may_build: bool,
+    /// The player's yaw, for `player.getDirection()`.
+    pub yaw: f32,
+    /// The clicked face.
+    pub face: Direction,
+    /// The exact hit location.
+    pub hit: Vec3,
+}
+
+/// `InteractionResult` as far as block use goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Interaction {
+    /// `PASS`: the block does nothing; the item's own use runs.
+    Pass,
+    /// `SUCCESS`: the block reacted; the player swings their arm.
+    Success,
+    /// `CONSUME`: the block reacted without an arm swing.
+    Consume,
+    /// `FAIL`.
+    Fail,
+}
 
 /// The behaviour of one block.
 #[derive(Clone, Copy, Debug, Default)]
@@ -55,6 +97,16 @@ pub struct BlockBehaviour {
     pub random_tick: Option<TickFn>,
     /// `triggerEvent`.
     pub trigger_event: Option<EventFn>,
+    /// `getSignal`.
+    pub signal: Option<SignalFn>,
+    /// `getDirectSignal`.
+    pub direct_signal: Option<SignalFn>,
+    /// `getAnalogOutputSignal`.
+    pub analog_output: Option<AnalogFn>,
+    /// `useWithoutItem`.
+    pub use_without_item: Option<UseFn>,
+    /// `entityInside`.
+    pub entity_inside: Option<EntityInsideFn>,
 }
 
 /// The behaviour table of all blocks.
@@ -163,6 +215,8 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
     } else if weather::weathers(block) {
         b.random_tick = Some(weather::copper_random_tick);
     }
+    redstone::fill(block, &mut b);
+    piston::fill(block, &mut b);
     b
 }
 

@@ -61,11 +61,28 @@ impl WorldUpdates {
             let packet = level_event(event.event, event.pos, event.data);
             send_near(entities, event.pos, event.source, &packet);
         }
+        for sound in output.sounds.drain(..) {
+            let packet = sound_packet(&sound);
+            // `SoundEvent.getRange(volume)`.
+            let range = if sound.volume > 1.0 {
+                16.0 * f64::from(sound.volume)
+            } else {
+                16.0
+            };
+            send_within(
+                entities,
+                (sound.x, sound.y, sound.z),
+                range,
+                sound.except,
+                &packet,
+            );
+        }
         // Hand the emptied buffers back to the level.
         let reuse = level.output();
         if reuse.changed.is_empty()
             && reuse.block_events.is_empty()
             && reuse.level_events.is_empty()
+            && reuse.sounds.is_empty()
         {
             output.changed.clear();
             *reuse = output;
@@ -118,7 +135,18 @@ fn send_near(
     except: Option<vanillite_world::entity::EntityId>,
     packet: &Arc<SharedPacket>,
 ) {
-    let (x, y, z) = (f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
+    let at = (f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
+    send_within(entities, at, EVENT_RANGE, except, packet);
+}
+
+/// `PlayerList.broadcast(except, x, y, z, range, dimension, packet)`.
+fn send_within(
+    entities: &Entities,
+    (x, y, z): (f64, f64, f64),
+    range: f64,
+    except: Option<vanillite_world::entity::EntityId>,
+    packet: &Arc<SharedPacket>,
+) {
     for (id, player) in entities.players.iter() {
         if Some(id) == except {
             continue;
@@ -128,7 +156,7 @@ fn send_near(
         };
         let p = entity.pos();
         let (dx, dy, dz) = (x - p.x, y - p.y, z - p.z);
-        if dx * dx + dy * dy + dz * dz < EVENT_RANGE * EVENT_RANGE {
+        if dx * dx + dy * dy + dz * dz < range * range {
             player.connection.sink.send_shared(packet);
         }
     }
@@ -189,6 +217,21 @@ fn block_event(pos: BlockPos, block: u16, a: i32, b: i32) -> Arc<SharedPacket> {
     body.push(a as u8);
     body.push(b as u8);
     write_varint(&mut body, i32::from(block));
+    Arc::new(SharedPacket::new(body))
+}
+
+/// `sound`: a registry sound event at a position.
+fn sound_packet(sound: &vanillite_game::level::Sound) -> Arc<SharedPacket> {
+    let mut body = Vec::with_capacity(40);
+    write_varint(&mut body, ids::SOUND);
+    write_varint(&mut body, i32::from(sound.sound) + 1);
+    write_varint(&mut body, i32::from(sound.source));
+    for v in [sound.x, sound.y, sound.z] {
+        body.extend_from_slice(&((v * 8.0) as i32).to_be_bytes());
+    }
+    body.extend_from_slice(&sound.volume.to_be_bytes());
+    body.extend_from_slice(&sound.pitch.to_be_bytes());
+    body.extend_from_slice(&sound.seed.to_be_bytes());
     Arc::new(SharedPacket::new(body))
 }
 

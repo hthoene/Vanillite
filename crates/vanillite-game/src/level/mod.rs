@@ -11,7 +11,9 @@
 //! - [`Level::tick`] runs the world's simulation phases in Vanilla's order (scheduled block and
 //!   fluid ticks, random ticks, block events); entities tick in the world's entity phase.
 
+pub mod block_entity;
 mod neighbors;
+pub mod signal;
 mod tick;
 pub mod update;
 
@@ -20,7 +22,7 @@ mod tests;
 
 use std::sync::Arc;
 
-use vanillite_base::hash::FxHashMap;
+use vanillite_base::hash::{FxHashMap, FxHashSet};
 use vanillite_base::random::{LegacyRandom, RandomSource};
 use vanillite_base::{BlockPos, ChunkPos, Direction, SectionPos};
 use vanillite_data::block::{BlockId, BlockState};
@@ -28,16 +30,48 @@ use vanillite_data::fluid::FluidState;
 use vanillite_world::chunks::Chunks;
 use vanillite_world::entity::{EntityId, NetworkIds};
 use vanillite_world::ticks::TickPriority;
-use vanillite_worldgen::behaviour::{self as shared, BlockLevel};
+use vanillite_worldgen::behaviour::{self as shared, BlockLevel, StateExt};
 
 use crate::block::weather::Climate;
 use crate::block::{self, Behaviours};
 use crate::entities::Entities;
 
+pub use block_entity::{BlockEntities, BlockEntity};
 pub use neighbors::NeighborUpdater;
 
 /// Vanilla's update depth of `setBlock` (`Block.UPDATE_LIMIT`).
 pub const UPDATE_LIMIT: i32 = 512;
+
+/// Vanilla mechanics that are commonly called exploits (decision D1): `true` keeps Vanilla's
+/// behaviour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExploitSettings {
+    /// TNT duplication with pistons and slime or honey blocks.
+    pub tnt_duplication: bool,
+    /// Carpet duplication with pistons.
+    pub carpet_duplication: bool,
+    /// Rail duplication with pistons.
+    pub rail_duplication: bool,
+    /// Pistons without a head.
+    pub headless_pistons: bool,
+    /// Bedrock and end portal frames broken with pistons and explosions.
+    pub break_unbreakable_blocks: bool,
+    /// String duplication with tripwire mechanics.
+    pub string_duplication: bool,
+}
+
+impl Default for ExploitSettings {
+    fn default() -> Self {
+        ExploitSettings {
+            tnt_duplication: true,
+            carpet_duplication: true,
+            rail_duplication: true,
+            headless_pistons: true,
+            break_unbreakable_blocks: true,
+            string_duplication: true,
+        }
+    }
+}
 
 /// Rules and budgets of a world's simulation.
 #[derive(Clone, Debug)]
@@ -65,6 +99,8 @@ pub struct LevelSettings {
     pub has_sky_light: bool,
     /// The dimension's `water_evaporates` attribute (the Nether).
     pub water_evaporates: bool,
+    /// Exploit switches (D1).
+    pub exploits: ExploitSettings,
 }
 
 impl Default for LevelSettings {
@@ -81,12 +117,13 @@ impl Default for LevelSettings {
             fast_lava: false,
             has_sky_light: true,
             water_evaporates: false,
+            exploits: ExploitSettings::default(),
         }
     }
 }
 
 /// A block event (`BlockEventData`): run at the end of the tick, then sent to nearby players.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct BlockEvent {
     /// Position.
     pub pos: BlockPos,
@@ -112,8 +149,37 @@ pub struct LevelEvent {
     pub source: Option<EntityId>,
 }
 
-/// What the world sends after a tick: changed blocks per section, block events and level
-/// events. Filled by the simulation, drained by the server.
+/// A sound at a position (`playSound`, `ClientboundSoundPacket`), sent to players within its
+/// range.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Sound {
+    /// `minecraft:sound_event` id.
+    pub sound: u16,
+    /// `SoundSource` ordinal.
+    pub source: u8,
+    /// Position.
+    pub x: f64,
+    /// Position.
+    pub y: f64,
+    /// Position.
+    pub z: f64,
+    /// Volume; the range is `16 * max(volume, 1)` blocks.
+    pub volume: f32,
+    /// Pitch.
+    pub pitch: f32,
+    /// Seed of the client's random variation.
+    pub seed: i64,
+    /// The player that caused it and played it locally; it is not sent to them.
+    pub except: Option<EntityId>,
+}
+
+/// `SoundSource.BLOCKS`.
+pub const SOUND_BLOCKS: u8 = 4;
+/// `SoundSource.NEUTRAL`.
+pub const SOUND_NEUTRAL: u8 = 7;
+
+/// What the world sends after a tick: changed blocks per section, block events, level events
+/// and sounds. Filled by the simulation, drained by the server.
 #[derive(Debug, Default)]
 pub struct LevelOutput {
     /// Changed positions (`ChunkHolder.blockChanged`), deduplicated per section, in change
@@ -123,6 +189,8 @@ pub struct LevelOutput {
     pub block_events: Vec<BlockEvent>,
     /// Level events.
     pub level_events: Vec<LevelEvent>,
+    /// Sounds.
+    pub sounds: Vec<Sound>,
 }
 
 /// The game state of one world.
@@ -137,7 +205,13 @@ pub struct Level {
     network_ids: Arc<NetworkIds>,
     climate: Option<Arc<Climate>>,
     updater: NeighborUpdater,
+    /// Live block entities.
+    pub block_entities: BlockEntities,
+    /// `RedstoneWireBlock.shouldSignal`: `false` while a wire computes its power.
+    wire_signals: bool,
+    /// `blockEvents`, a linked set: an event already queued is not queued again.
     block_events: Vec<BlockEvent>,
+    block_event_set: FxHashSet<BlockEvent>,
     random: LegacyRandom,
     /// `randValue` of `getBlockRandomPos`.
     rand_value: i32,
@@ -176,7 +250,10 @@ impl Level {
             behaviours,
             network_ids,
             climate: None,
+            block_entities: BlockEntities::default(),
+            wire_signals: true,
             block_events: Vec::new(),
+            block_event_set: FxHashSet::default(),
             random: LegacyRandom::new(seed),
             rand_value: LegacyRandom::new(seed ^ 0x5DEE_CE66).next_int(),
             game_time: 0,
@@ -369,9 +446,58 @@ impl Level {
             .schedule_fluid_tick(pos, fluid, delay, TickPriority::NORMAL);
     }
 
-    /// `blockEvent(pos, block, a, b)`.
+    /// `blockEvent(pos, block, a, b)`: queued unless the same event is queued already.
     pub fn block_event(&mut self, pos: BlockPos, block: BlockId, a: i32, b: i32) {
-        self.block_events.push(BlockEvent { pos, block, a, b });
+        let event = BlockEvent { pos, block, a, b };
+        if self.block_event_set.insert(event) {
+            self.block_events.push(event);
+        }
+    }
+
+    /// `playSound(except, pos, sound, source, volume, pitch)` at the block's centre, with a
+    /// seed from the level random.
+    pub fn play_block_sound(
+        &mut self,
+        except: Option<EntityId>,
+        pos: BlockPos,
+        sound: u16,
+        source: u8,
+        volume: f32,
+        pitch: f32,
+    ) {
+        let (x, y, z) = (
+            f64::from(pos.x) + 0.5,
+            f64::from(pos.y) + 0.5,
+            f64::from(pos.z) + 0.5,
+        );
+        self.play_sound(except, x, y, z, sound, source, volume, pitch);
+    }
+
+    /// `playSound(except, x, y, z, sound, source, volume, pitch)`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn play_sound(
+        &mut self,
+        except: Option<EntityId>,
+        x: f64,
+        y: f64,
+        z: f64,
+        sound: u16,
+        source: u8,
+        volume: f32,
+        pitch: f32,
+    ) {
+        let seed = self.random.next_long();
+        self.output.sounds.push(Sound {
+            sound,
+            source,
+            x,
+            y,
+            z,
+            volume,
+            pitch,
+            seed,
+            except,
+        });
     }
 
     /// `levelEvent(source, event, pos, data)`.
@@ -415,6 +541,7 @@ impl Level {
         let new_block = state.block();
         let block_changed = old.block() != new_block;
         let moved = flags & update::MOVE_BY_PISTON != 0;
+        self.block_entity_removed(old, state, pos);
         if (block_changed || block::is_rail(new_block)) && (flags & update::NEIGHBORS != 0 || moved)
         {
             self.affect_neighbors_after_removal(old, pos, moved);
@@ -425,6 +552,9 @@ impl Level {
         if flags & update::SKIP_ON_PLACE == 0 {
             self.on_place(state, pos, old, moved);
         }
+        if self.block(pos).block() == new_block {
+            self.block_entity_placed(state, pos);
+        }
         // `Level.setBlock`.
         if self.block(pos) == state {
             if flags & update::CLIENTS != 0 {
@@ -432,10 +562,15 @@ impl Level {
             }
             if flags & update::NEIGHBORS != 0 {
                 self.update_neighbors_at(pos, old.block());
+                if Self::has_analog_output(state) {
+                    self.update_neighbour_for_output_signal(pos, new_block);
+                }
             }
             if flags & update::KNOWN_SHAPE == 0 && limit > 0 {
                 let neighbour_flags = flags & !(update::NEIGHBORS | update::SUPPRESS_DROPS);
+                self.update_indirect_neighbour_shapes(old, pos, neighbour_flags, limit - 1);
                 self.update_neighbour_shapes(state, pos, neighbour_flags, limit - 1);
+                self.update_indirect_neighbour_shapes(state, pos, neighbour_flags, limit - 1);
             }
         }
         true
@@ -543,6 +678,44 @@ impl Level {
         }
     }
 
+    /// `state.updateIndirectNeighbourShapes(level, pos, flags, limit)`: only redstone wire has
+    /// them (`RedstoneWireBlock.updateIndirectNeighbourShapes`): wire diagonally above and below
+    /// a connected side learns about the block next to it.
+    pub fn update_indirect_neighbour_shapes(
+        &mut self,
+        state: BlockState,
+        pos: BlockPos,
+        flags: u32,
+        limit: i32,
+    ) {
+        if !state.is(vanillite_data::block::ids::REDSTONE_WIRE) {
+            return;
+        }
+        for direction in shared::HORIZONTAL {
+            if state.value(shared_direction_name(direction)) == Some("none") {
+                continue;
+            }
+            let side = pos.relative(direction);
+            if self.block(side).is(vanillite_data::block::ids::REDSTONE_WIRE) {
+                continue;
+            }
+            for wire in [side.offset(0, -1, 0), side.offset(0, 1, 0)] {
+                if self.block(wire).is(vanillite_data::block::ids::REDSTONE_WIRE) {
+                    let neighbour = wire.relative(direction.opposite());
+                    let neighbour_state = self.block(neighbour);
+                    self.neighbor_shape_changed(
+                        direction.opposite(),
+                        wire,
+                        neighbour,
+                        neighbour_state,
+                        flags,
+                        limit,
+                    );
+                }
+            }
+        }
+    }
+
     /// `Block.updateOrDestroy(old, new, level, pos, flags, limit)`.
     pub fn update_or_destroy(
         &mut self,
@@ -584,6 +757,23 @@ impl Level {
     fn on_place(&mut self, state: BlockState, pos: BlockPos, old: BlockState, moved: bool) {
         if let Some(f) = self.behaviours.get(state.block()).on_place {
             f(self, state, pos, old, moved);
+        }
+    }
+
+    /// `state.useWithoutItem(level, pos, player, hitResult)` of the block at `pos`.
+    pub fn use_without_item(&mut self, pos: BlockPos, context: &block::UseContext) -> block::Interaction {
+        let state = self.block(pos);
+        match self.behaviours.get(state.block()).use_without_item {
+            Some(f) => f(self, state, pos, context),
+            None => block::Interaction::Pass,
+        }
+    }
+
+    /// `state.entityInside(level, pos, entity, ...)` of the block at `pos`.
+    pub fn entity_inside(&mut self, pos: BlockPos, entity: EntityId) {
+        let state = self.block(pos);
+        if let Some(f) = self.behaviours.get(state.block()).entity_inside {
+            f(self, state, pos, entity);
         }
     }
 
@@ -652,5 +842,21 @@ impl BlockLevel for Level {
 
     fn has_block_tick(&self, pos: BlockPos, block: BlockId) -> bool {
         self.chunks.has_block_tick(pos, block.0)
+    }
+
+    fn comparator_output(&self, pos: BlockPos) -> i32 {
+        Level::comparator_output(self, pos)
+    }
+}
+
+/// `direction.getSerializedName()` of a horizontal direction (the wire side properties).
+fn shared_direction_name(direction: Direction) -> &'static str {
+    match direction {
+        Direction::North => "north",
+        Direction::South => "south",
+        Direction::West => "west",
+        Direction::East => "east",
+        Direction::Up => "up",
+        Direction::Down => "down",
     }
 }

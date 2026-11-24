@@ -151,6 +151,8 @@ impl Level {
             let Some(event) = queue.pop_front() else {
                 break;
             };
+            // `removeFirst` of the linked set: the event may be queued again from now on.
+            self.block_event_set.remove(&event);
             if !self.is_block_ticking(event.pos.chunk()) {
                 reschedule.push(event);
                 continue;
@@ -166,6 +168,9 @@ impl Level {
                 self.output.block_events.push(event);
             }
         }
-        self.block_events = reschedule;
+        // `blockEvents.addAll(blockEventsToReschedule)`.
+        for event in reschedule {
+            self.block_event(event.pos, event.block, event.a, event.b);
+        }
     }
 }

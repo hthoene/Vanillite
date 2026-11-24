@@ -387,7 +387,7 @@ pub(crate) fn diode_can_survive_on(below: BlockState) -> bool {
 }
 
 /// `RedstoneWireBlock.canSurviveOn`.
-pub(crate) fn redstone_wire_can_survive_on(below: BlockState) -> bool {
+pub fn redstone_wire_can_survive_on(below: BlockState) -> bool {
     is_face_sturdy(below, Direction::Up, SupportType::Full) || below.is(ids::HOPPER)
 }
 
