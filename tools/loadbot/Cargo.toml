@@ -1,0 +1,16 @@
+[package]
+name = "loadbot"
+description = "Load bot: many headless offline-mode clients that join, walk and chat, for scaling benchmarks."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+vanillite-protocol.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

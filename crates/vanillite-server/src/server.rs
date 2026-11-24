@@ -266,6 +266,7 @@ impl ServerBuilder {
             empty_ticks: 0,
             ticks_until_autosave: 0,
             average_tick_nanos: 0.0,
+            tick_log: open_tick_log(),
             running: true,
             heartbeat,
             watch,
@@ -443,6 +444,9 @@ pub struct Server {
     empty_ticks: u64,
     ticks_until_autosave: i64,
     average_tick_nanos: f64,
+    /// Load test tick log (`VANILLITE_TICK_LOG`): one line with the duration in nanoseconds per
+    /// tick. A stand-in for the metrics endpoint of architecture 3.8.
+    tick_log: Option<io::BufWriter<File>>,
     running: bool,
     heartbeat: Arc<Heartbeat>,
     watch: Arc<WatchState>,
@@ -596,6 +600,13 @@ impl Server {
 
         let elapsed = clock.now().saturating_sub(started) as f64;
         self.average_tick_nanos = self.average_tick_nanos * 0.8 + elapsed * 0.2;
+        if let Some(log) = &mut self.tick_log {
+            let written = writeln!(log, "{}", clock.now().saturating_sub(started));
+            if written.is_err() || (self.tick_count.is_multiple_of(20) && log.flush().is_err()) {
+                log::warn!("Cannot write the tick log, disabling it");
+                self.tick_log = None;
+            }
+        }
         self.heartbeat.leave();
     }
 
@@ -1003,5 +1014,20 @@ impl From<ConfigError> for StartError {
 impl From<SlotError> for StartError {
     fn from(e: SlotError) -> Self {
         StartError::Slot(e)
+    }
+}
+
+/// Opens the tick log named by `VANILLITE_TICK_LOG` (relative to the working directory), if set.
+fn open_tick_log() -> Option<io::BufWriter<File>> {
+    let path = std::env::var_os("VANILLITE_TICK_LOG")?;
+    match File::create(&path) {
+        Ok(file) => Some(io::BufWriter::new(file)),
+        Err(e) => {
+            log::warn!(
+                "Cannot create the tick log {}: {e}",
+                Path::new(&path).display()
+            );
+            None
+        }
     }
 }

@@ -5,6 +5,8 @@
 # - Paper reference server on port 30000 (/opt/paper, paper.service, user minecraft).
 # - Vanillite test servers on ports 30001-30999 (/opt/vanillite/<port>, vanillite@<port>.service,
 #   user vanillite), deployed with `cargo xtask deploy` through /usr/local/bin/vanillite-deploy.
+# - Load test instances (`cargo xtask loadtest`), running only during a run: Paper in offline
+#   mode on 30900 (/opt/paper-loadtest, paper-loadtest.service) and Vanillite on 30901.
 # Only ports 30000-30999 are reachable by players.
 set -euo pipefail
 
@@ -30,7 +32,7 @@ write_if_changed() {
 echo "== packages"
 export DEBIAN_FRONTEND=noninteractive
 missing=()
-for pkg in openjdk-25-jre-headless curl rsync; do
+for pkg in openjdk-25-jre-headless curl rsync jq python3; do
     dpkg -s "$pkg" > /dev/null 2>&1 || missing+=("$pkg")
 done
 if [ ${#missing[@]} -gt 0 ]; then
@@ -42,6 +44,49 @@ echo "== users"
 id minecraft > /dev/null 2>&1 || useradd --system --home-dir /opt/paper --create-home --shell /usr/sbin/nologin minecraft
 id vanillite > /dev/null 2>&1 || useradd --system --home-dir /opt/vanillite --create-home --shell /usr/sbin/nologin vanillite
 install -d -o vanillite -g vanillite /opt/vanillite
+
+# Players who are whitelisted and OP level 4 on every test server. Paper's whitelist.json and
+# ops.json are the source; vanillite-deploy copies both into every Vanillite instance.
+players='[
+  {"uuid": "d97211d5-1155-4faa-95db-7ddec775418c", "name": "de_hannes"},
+  {"uuid": "997ddb16-a31a-43b1-8f10-dac13d1f6af6", "name": "Looxtastisch"},
+  {"uuid": "759689da-4bf5-4370-8f27-08382b24bb63", "name": "Tiegertropfen119"}
+]'
+
+echo "== rcon (paper-rcon [--port <port>] <command>, password in /root/.paper-rcon)"
+if [ ! -s /root/.paper-rcon ]; then
+    (umask 077 && head -c 24 /dev/urandom | base64 | tr -d '/+=' > /root/.paper-rcon)
+fi
+rcon_password=$(cat /root/.paper-rcon)
+write_if_changed /usr/local/bin/paper-rcon 755 <<'EOF'
+#!/usr/bin/env python3
+"""Sends one console command to a local Paper server via RCON.
+
+Usage: paper-rcon [--port <port>] <command...>  (25575: reference server, 25576: load test)
+Installed by scripts/testserver/provision.sh."""
+import socket, struct, sys
+args = sys.argv[1:]
+port = 25575
+if args[:1] == ["--port"]:
+    port, args = int(args[1]), args[2:]
+pw = open("/root/.paper-rcon").read().strip()
+def pkt(i, t, body):
+    b = body.encode() + b"\x00\x00"
+    return struct.pack("<iii", len(b) + 8, i, t) + b
+def recv(s):
+    n = struct.unpack("<i", s.recv(4))[0]
+    data = b""
+    while len(data) < n:
+        data += s.recv(n - len(data))
+    i, t = struct.unpack("<ii", data[:8])
+    return i, data[8:-2].decode(errors="replace")
+s = socket.create_connection(("127.0.0.1", port), timeout=5)
+s.sendall(pkt(1, 3, pw))
+if recv(s)[0] == -1:
+    sys.exit("RCON auth failed")
+s.sendall(pkt(2, 2, " ".join(args)))
+print(recv(s)[1])
+EOF
 
 echo "== paper (reference server, port 30000)"
 install -d -o minecraft -g minecraft /opt/paper
@@ -58,15 +103,12 @@ if [ ! -f /opt/paper/server.properties ]; then
     # Fresh install: the owner accepted the Minecraft EULA for this test machine.
     echo "eula=true" > /opt/paper/eula.txt
     printf 'server-port=30000\nonline-mode=true\nwhite-list=true\n' > /opt/paper/server.properties
-    cat > /opt/paper/whitelist.json <<'EOF'
-[
-  {
-    "uuid": "d97211d5-1155-4faa-95db-7ddec775418c",
-    "name": "de_hannes"
-  }
-]
-EOF
-    chown minecraft:minecraft /opt/paper/eula.txt /opt/paper/server.properties /opt/paper/whitelist.json
+    printf 'enable-rcon=true\nrcon.port=25575\nrcon.password=%s\n' "$rcon_password" \
+        >> /opt/paper/server.properties
+    echo "$players" | jq '[.[] | {uuid, name}]' > /opt/paper/whitelist.json
+    echo "$players" | jq '[.[] | {uuid, name, level: 4, bypassesPlayerLimit: false}]' \
+        > /opt/paper/ops.json
+    chown minecraft:minecraft /opt/paper/eula.txt /opt/paper/server.properties /opt/paper/*.json
 fi
 write_if_changed /etc/systemd/system/paper.service <<'EOF'
 [Unit]
@@ -114,8 +156,10 @@ write_if_changed /usr/local/bin/vanillite-deploy 755 <<'EOF'
 #!/usr/bin/env bash
 # Usage: vanillite-deploy <port> < vanillite-binary
 # Installs the binary from stdin as /opt/vanillite/<port>/vanillite, writes the Vanilla keys
-# this test setup needs into server.properties, copies Paper's whitelist and (re)starts
-# vanillite@<port>.service. Installed by scripts/testserver/provision.sh.
+# this test setup needs into server.properties, copies Paper's whitelist and ops and (re)starts
+# vanillite@<port>.service. Port 30901 is the load test instance: offline mode without
+# whitelist, started but not enabled (`cargo xtask loadtest` stops it after the run).
+# Installed by scripts/testserver/provision.sh.
 set -euo pipefail
 port=${1:?usage: vanillite-deploy <port> < binary}
 if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 30001 ] || [ "$port" -gt 30999 ]; then
@@ -142,20 +186,135 @@ set_prop() {
     fi
 }
 set_prop server-port "$port"
-set_prop online-mode true
-set_prop white-list true
-if [ -f /opt/paper/whitelist.json ]; then
-    cp /opt/paper/whitelist.json "$dir/whitelist.json"
+if [ "$port" = 30901 ]; then
+    set_prop online-mode false
+    set_prop white-list false
+    set_prop max-players 10000
+    rm -f "$dir/tick.log"
+else
+    set_prop online-mode true
+    set_prop white-list true
 fi
+for f in whitelist.json ops.json; do
+    if [ -f "/opt/paper/$f" ]; then
+        cp "/opt/paper/$f" "$dir/$f"
+    fi
+done
 chown vanillite:vanillite "$props" "$dir"/*.json 2> /dev/null || true
 
+if [ "$port" = 30901 ]; then
+    systemctl restart "vanillite@$port"
+    exit 0
+fi
 systemctl enable --quiet "vanillite@$port"
 systemctl restart "vanillite@$port"
 sleep 1
 systemctl --no-pager --lines=10 status "vanillite@$port" || true
 EOF
 
+echo "== load test instances (paper-loadtest on 30900, vanillite@30901)"
+install -d /etc/systemd/system/vanillite@30901.service.d
+write_if_changed /etc/systemd/system/vanillite@30901.service.d/loadtest.conf <<'EOF'
+[Service]
+# Tick durations for `cargo xtask loadtest`; the same memory limit as the Paper instance's heap.
+Environment=VANILLITE_TICK_LOG=tick.log
+MemoryMax=6G
+Restart=no
+EOF
+install -d -o minecraft -g minecraft /opt/paper-loadtest
+ln -sfn "$jar" /opt/paper-loadtest/paper.jar
+echo "eula=true" > /opt/paper-loadtest/eula.txt
+props=/opt/paper-loadtest/server.properties
+touch "$props"
+set_prop() {
+    if grep -q "^$1=" "$props"; then
+        sed -i "s|^$1=.*|$1=$2|" "$props"
+    else
+        echo "$1=$2" >> "$props"
+    fi
+}
+set_prop server-port 30900
+set_prop online-mode false
+set_prop white-list false
+set_prop enforce-secure-profile false
+set_prop max-players 10000
+set_prop level-type minecraft:flat
+set_prop generate-structures false
+set_prop spawn-protection 0
+set_prop view-distance 10
+set_prop simulation-distance 10
+set_prop enable-rcon true
+set_prop rcon.port 25576
+set_prop rcon.password "$rcon_password"
+# All bots connect from one address: no per-address connection throttle.
+if [ -f /opt/paper-loadtest/bukkit.yml ]; then
+    sed -i 's/^\(\s*connection-throttle:\).*/\1 -1/' /opt/paper-loadtest/bukkit.yml
+else
+    printf 'settings:\n  connection-throttle: -1\n' > /opt/paper-loadtest/bukkit.yml
+fi
+chown -R minecraft:minecraft /opt/paper-loadtest
+write_if_changed /etc/systemd/system/paper-loadtest.service <<'EOF'
+[Unit]
+Description=Paper load test reference (offline mode, port 30900, only during xtask loadtest)
+After=network-online.target
+[Service]
+User=minecraft
+WorkingDirectory=/opt/paper-loadtest
+ExecStart=/usr/bin/java -Xms1G -Xmx6G -jar paper.jar --nogui
+LimitNOFILE=65536
+EOF
+
+write_if_changed /usr/local/bin/vanillite-loadtest-monitor 755 <<'EOF'
+#!/usr/bin/env bash
+# Usage: vanillite-loadtest-monitor <unit>
+# Streams load test metrics of a systemd unit to stdout until the connection closes:
+#   H <clock ticks per second>
+#   S <rss KiB> <cpu ticks> <net rx bytes> <net tx bytes>   every second
+#   T <tick nanoseconds>                                     every tick (vanillite@<port>)
+#   Q <output of /tick query>                                every 5 s (paper-loadtest)
+# Installed by scripts/testserver/provision.sh.
+set -u
+unit=${1:?usage: vanillite-loadtest-monitor <unit>}
+trap 'kill $(jobs -p) 2> /dev/null' EXIT
+echo "H $(getconf CLK_TCK)"
+case $unit in
+    vanillite@*)
+        port=${unit#vanillite@}
+        port=${port%.service}
+        tail -n 0 -F "/opt/vanillite/$port/tick.log" 2> /dev/null | sed -u 's/^/T /' &
+        ;;
+    paper-loadtest*)
+        while sleep 5; do
+            echo "Q $(paper-rcon --port 25576 tick query 2> /dev/null | tr '\n' ' ')"
+        done &
+        ;;
+esac
+while sleep 1; do
+    pid=$(systemctl show -p MainPID --value "$unit")
+    rss=0 cpu=0
+    if [ "${pid:-0}" -gt 0 ] && [ -r "/proc/$pid/stat" ]; then
+        rss=$(awk '/^VmRSS:/ { print $2 }' "/proc/$pid/status")
+        cpu=$(sed 's/^.*) //' "/proc/$pid/stat" | awk '{ print $12 + $13 }')
+    fi
+    net=$(awk -F'[: ]+' 'NR > 2 && $2 != "lo" { rx += $3; tx += $11 } END { print rx + 0, tx + 0 }' /proc/net/dev)
+    echo "S $rss $cpu $net"
+done
+EOF
+install -d /opt/vanillite/bench/results
+
 systemctl daemon-reload
 systemctl enable --quiet paper.service
 systemctl is-active --quiet paper.service || systemctl start paper.service
+
+echo "== players (whitelisted and OP 4 on Paper; copied into Vanillite instances on deploy)"
+for _ in $(seq 60); do
+    paper-rcon list > /dev/null 2>&1 && break
+    sleep 2
+done
+echo "$players" | jq -r '.[].name' | while read -r name; do
+    jq -e --arg n "$name" 'any(.[]; .name == $n)' /opt/paper/whitelist.json > /dev/null \
+        || paper-rcon whitelist add "$name"
+    jq -e --arg n "$name" 'any(.[]; .name == $n and .level == 4)' /opt/paper/ops.json > /dev/null \
+        || paper-rcon op "$name"
+done
 echo "== done"
