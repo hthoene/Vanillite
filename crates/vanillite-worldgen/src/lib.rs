@@ -1,7 +1,8 @@
 //! Vanilla world generation as a library: noise, density functions, biomes, surface rules, carvers, features and structures.
 //!
 //! The crate generates terrain bit-exactly like Vanilla 26.3 for the same seed. It knows nothing
-//! about worlds or threads: the chunk scheduler and the parity tests call it per chunk.
+//! about worlds or threads: the chunk scheduler and the parity tests run the [`Stage`]s of a
+//! [`TerrainGenerator`] on batches of chunks.
 //!
 //! Vanilla 26.3 evaluates density functions in `float` over whole volumes; the port keeps Java's
 //! operation order and `float`/`double` conversions everywhere.
@@ -12,6 +13,7 @@ pub mod biome;
 pub mod blocks;
 pub mod carver;
 pub mod density;
+pub mod generator;
 pub mod interval;
 pub mod material;
 pub mod mth;
@@ -22,6 +24,9 @@ pub mod random_state;
 pub mod settings;
 pub mod volume;
 
+pub use generator::{
+    DimensionSpec, NeighbourBiomes, Stage, TerrainGenerator, TerrainJob, TerrainStep,
+};
 pub use proto::ProtoChunk;
 pub use random_state::RandomState;
 

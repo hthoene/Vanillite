@@ -54,3 +54,7 @@ missing_debug_implementations = "warn"
 
 [workspace.lints.clippy]
 undocumented_unsafe_blocks = "warn"
+
+# World generation is bit-exact floating point work; its parity tests run optimised (section 10.3).
+[profile.dev.package.vanillite-worldgen]
+opt-level = 3

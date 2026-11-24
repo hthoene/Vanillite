@@ -190,9 +190,11 @@ impl ProtoChunk {
         }
     }
 
-    /// `markPosForPostProcessing(pos)`.
+    /// `markPosForPostProcessing(pos)`; positions outside the build height are ignored.
     pub fn mark_post_processing(&mut self, x: i32, y: i32, z: i32) {
-        self.post_processing.push((x, y, z));
+        if !self.is_outside(y) {
+            self.post_processing.push((x, y, z));
+        }
     }
 
     /// Positions marked for post-processing, in marking order (duplicates possible).
