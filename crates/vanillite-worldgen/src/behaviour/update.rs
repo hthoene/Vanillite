@@ -982,12 +982,12 @@ fn bubble_column_can_occupy(state: BlockState) -> bool {
 }
 
 /// `ConcretePowderBlock.concrete`: the concrete a powder hardens to.
-fn concrete_of(state: BlockState) -> Option<BlockId> {
+pub fn concrete_of(state: BlockState) -> Option<BlockId> {
     BlockId::by_name(state.block().name().strip_suffix("_powder")?)
 }
 
 /// `ConcretePowderBlock.touchesLiquid`, including its reuse of the last tested position.
-fn touches_liquid(level: &impl BlockLevel, pos: BlockPos) -> bool {
+pub fn touches_liquid(level: &impl BlockLevel, pos: BlockPos) -> bool {
     let can_solidify = |s: BlockState| tags().fluids.water.contains(s.fluid_state());
     let mut test = pos;
     for direction in Direction::ALL {

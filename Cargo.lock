@@ -1249,6 +1249,7 @@ dependencies = [
  "vanillite-data",
  "vanillite-protocol",
  "vanillite-world",
+ "vanillite-worldgen",
 ]
 
 [[package]]

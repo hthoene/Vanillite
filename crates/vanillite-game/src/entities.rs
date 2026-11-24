@@ -1,12 +1,26 @@
 //! The entities of one world: the core store plus one kind store per entity kind.
 
-use vanillite_base::Vec3;
+use vanillite_base::{BlockPos, Vec3};
+use vanillite_data::block::BlockState;
 use vanillite_data::entity::{EntityTypeId, ids};
 use vanillite_world::entity::{
     Dense, EntityId, EntityStore, NetworkIds, NewEntity, Removed, Rotation,
 };
 
 use crate::player::PlayerData;
+
+/// The kind data of a `falling_block` (`FallingBlockEntity`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FallingBlockData {
+    /// The falling block.
+    pub state: BlockState,
+    /// Ticks since it started falling.
+    pub time: i32,
+    /// Whether it drops as an item where it cannot land (`dropItem`).
+    pub drop_item: bool,
+    /// Where it started falling (`DATA_START_POS`).
+    pub start: BlockPos,
+}
 
 /// All entities of a world. Kinds without own data yet only live in the core store.
 #[derive(Debug, Default)]
@@ -15,6 +29,8 @@ pub struct Entities {
     pub store: EntityStore,
     /// Player kind data.
     pub players: Dense<PlayerData>,
+    /// Falling block kind data.
+    pub falling_blocks: Dense<FallingBlockData>,
 }
 
 impl Entities {
@@ -38,6 +54,30 @@ impl Entities {
         self.store.spawn(new, |id| players.push(id, data))
     }
 
+    /// Adds a falling block entity.
+    pub fn spawn_falling_block(&mut self, new: NewEntity, data: FallingBlockData) -> EntityId {
+        let falling_blocks = &mut self.falling_blocks;
+        self.store.spawn(new, |id| falling_blocks.push(id, data))
+    }
+
+    /// The falling block data of an entity.
+    pub fn falling_block(&self, id: EntityId) -> Option<&FallingBlockData> {
+        let entity = self.store.get(id)?;
+        (entity.kind() == ids::FALLING_BLOCK)
+            .then(|| self.falling_blocks.get(entity.kind_row()))
+            .flatten()
+    }
+
+    /// The falling block data of an entity, mutably.
+    pub fn falling_block_mut(&mut self, id: EntityId) -> Option<&mut FallingBlockData> {
+        let entity = self.store.get(id)?;
+        if entity.kind() != ids::FALLING_BLOCK {
+            return None;
+        }
+        let row = entity.kind_row();
+        self.falling_blocks.get_mut(row)
+    }
+
     /// Removes an entity of any kind together with its kind data.
     pub fn despawn(&mut self, id: EntityId) -> Option<Removed> {
         let removed = self.store.despawn(id)?;
@@ -52,6 +92,10 @@ impl Entities {
     fn remove_kind_row(&mut self, kind: EntityTypeId, row: u32) -> Option<EntityId> {
         if kind == ids::PLAYER {
             self.players.swap_remove(row).and_then(|(_, moved)| moved)
+        } else if kind == ids::FALLING_BLOCK {
+            self.falling_blocks
+                .swap_remove(row)
+                .and_then(|(_, moved)| moved)
         } else {
             None
         }

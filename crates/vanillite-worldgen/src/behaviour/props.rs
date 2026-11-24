@@ -7,7 +7,7 @@ use vanillite_base::{BlockPos, Direction};
 use vanillite_data::block::{BlockId, BlockState};
 
 /// `Direction.Plane.HORIZONTAL` in Vanilla's order.
-pub(crate) const HORIZONTAL: [Direction; 4] = [
+pub const HORIZONTAL: [Direction; 4] = [
     Direction::North,
     Direction::East,
     Direction::South,
@@ -15,7 +15,7 @@ pub(crate) const HORIZONTAL: [Direction; 4] = [
 ];
 
 /// `BlockBehaviour.UPDATE_SHAPE_ORDER`: the order of `Block.updateFromNeighbourShapes`.
-pub(crate) const UPDATE_SHAPE_ORDER: [Direction; 6] = [
+pub const UPDATE_SHAPE_ORDER: [Direction; 6] = [
     Direction::West,
     Direction::East,
     Direction::North,
@@ -101,7 +101,7 @@ pub(crate) fn direction_by_name(name: &str) -> Option<Direction> {
 }
 
 /// `BlockPos.above()` and `below()`.
-pub(crate) trait PosExt {
+pub trait PosExt {
     fn above(self) -> Self;
     fn below(self) -> Self;
 }
@@ -119,7 +119,7 @@ impl PosExt for BlockPos {
 }
 
 /// Typed property access on block states.
-pub(crate) trait StateExt: Sized {
+pub trait StateExt: Sized {
     /// `state.is(block)`.
     fn is(self, block: BlockId) -> bool;
     /// A boolean property (`false` if the state does not have it, as `getValueOrElse`).

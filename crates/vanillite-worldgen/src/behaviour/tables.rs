@@ -40,6 +40,7 @@ block_tags!(
     maintains_farmland,
     overrides_mushroom_light_requirement,
     prevents_nearby_leaf_decay,
+    saplings,
     shulker_boxes,
     snow,
     soul_fire_base_blocks,
@@ -75,6 +76,7 @@ block_tags!(
     unstable_bottom_center,
     wall_post_override,
     walls,
+    washed_away_by_fluids,
     wooden_fences,
 );
 
