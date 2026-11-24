@@ -47,6 +47,8 @@ pub struct PlayerEntry {
     pub sink: Arc<dyn PacketSink>,
     /// The receiver side of the player's chat.
     pub inbox: Arc<Mutex<ChatInbox>>,
+    /// The remote IP address (`getIpAddress`), for IP bans.
+    pub ip: String,
 }
 
 /// A player's connection with its chat inbox.

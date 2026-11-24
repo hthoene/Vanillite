@@ -249,6 +249,8 @@ impl WorldPlayers {
             None,
         );
         crate::commands::send_permissions(global, sink.as_ref(), network_id, &source);
+        // `updateEntireScoreboard`: the teams.
+        crate::commands::teams::send_all(global, sink.as_ref());
         global
             .players
             .broadcast_system(join::joined_message(&name, arrival.uuid), false, None);

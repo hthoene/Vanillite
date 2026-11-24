@@ -87,4 +87,8 @@ pub struct ChatTypes {
     pub msg_outgoing: i32,
     /// `minecraft:emote_command`.
     pub emote_command: i32,
+    /// `minecraft:team_msg_command_incoming`.
+    pub team_msg_incoming: i32,
+    /// `minecraft:team_msg_command_outgoing`.
+    pub team_msg_outgoing: i32,
 }

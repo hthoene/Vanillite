@@ -284,6 +284,10 @@ impl ServerWorld {
             self.survival.tick_level(&self.level.entities, ctx.global);
             let level = &mut self.level;
             level.set_game_time(ctx.global.level.game_time());
+            if self.id.0 == 0 {
+                crate::commands::tick_scheduled(level, ctx.global, self.id);
+            }
+            let level = &mut self.level;
             level.run_scheduled_ticks();
             self.survival
                 .tick_thunder(&mut self.level.entities, &self.level.chunks, ctx.global);

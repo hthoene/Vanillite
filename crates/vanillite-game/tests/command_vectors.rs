@@ -36,6 +36,32 @@ const OUR_COMMANDS: &[&str] = &[
     "save-on",
     "stop",
     "whitelist",
+    "tellraw",
+    "title",
+    "me",
+    "teammsg",
+    "tm",
+    "trigger",
+    "team",
+    "random",
+    "schedule",
+    "stopwatch",
+    "ban",
+    "ban-ip",
+    "banlist",
+    "pardon",
+    "pardon-ip",
+    "setidletimeout",
+    "transfer",
+    "version",
+    "perf",
+    "jfr",
+    "debug",
+    "dialog",
+    "waypoint",
+    "fetchprofile",
+    "test",
+    "spectate",
 ];
 
 struct TestSource {
@@ -309,5 +335,10 @@ fn players_get_nothing_of_operator_commands() {
         assert!(d.suggest(input, &player).list.is_empty(), "{input}");
     }
     let root = d.suggest("/", &player);
-    assert_eq!(root.texts(), ["help", "list", "msg", "tell", "w"]);
+    assert_eq!(
+        root.texts(),
+        [
+            "help", "list", "me", "msg", "random", "teammsg", "tell", "tm", "trigger", "w"
+        ]
+    );
 }

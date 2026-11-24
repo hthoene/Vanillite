@@ -156,6 +156,55 @@ impl vanillite_command::Source for CommandSource {
                 builder.suggest_resource_ids(ids.iter().map(String::as_str));
                 return;
             }
+            suggest::TRIGGERS => {
+                let Some(e) = &self.entity else {
+                    return;
+                };
+                let holder = if e.is_player() {
+                    e.name.clone()
+                } else {
+                    crate::player_list::Uuid(e.uuid).to_string()
+                };
+                let board = self.global.systems.scoreboard();
+                board
+                    .objectives()
+                    .filter(|o| o.criteria == vanillite_game::scoreboard::CriteriaKind::Trigger)
+                    .filter(|o| board.score(&holder, &o.name).is_some_and(|s| !s.locked))
+                    .map(|o| o.name.clone())
+                    .collect()
+            }
+            suggest::RANDOM_SEQUENCES => self
+                .global
+                .systems
+                .random_sequences()
+                .ids()
+                .map(str::to_owned)
+                .collect(),
+            suggest::BANNED_PLAYERS => access.bans().into_iter().map(|b| b.name).collect(),
+            suggest::BANNED_IPS => access.ip_bans().into_iter().map(|b| b.ip).collect(),
+            suggest::SCHEDULED | suggest::STOPWATCHES => {
+                let ids: Vec<String> = if provider == suggest::SCHEDULED {
+                    let queue = self.global.systems.scheduled();
+                    queue
+                        .ids()
+                        .filter(|id| !id.starts_with('#'))
+                        .map(str::to_owned)
+                        .collect()
+                } else {
+                    let stopwatches = self.global.systems.stopwatches();
+                    stopwatches.ids().map(str::to_owned).collect()
+                };
+                builder.suggest_resource_ids(ids.iter().map(String::as_str));
+                return;
+            }
+            suggest::TEST_INSTANCES => {
+                builder.suggest_resource_ids(
+                    self.registry_entries("minecraft:test_instance")
+                        .iter()
+                        .map(String::as_str),
+                );
+                return;
+            }
             suggest::TIMELINES => {
                 builder.suggest_resource_ids(
                     self.registry_entries("minecraft:timeline")

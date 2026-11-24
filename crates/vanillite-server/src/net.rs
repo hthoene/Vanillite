@@ -163,18 +163,24 @@ pub(crate) fn prepare(
         msg_incoming: chat_type("minecraft:msg_command_incoming"),
         msg_outgoing: chat_type("minecraft:msg_command_outgoing"),
         emote_command: chat_type("minecraft:emote_command"),
+        team_msg_incoming: chat_type("minecraft:team_msg_command_incoming"),
+        team_msg_outgoing: chat_type("minecraft:team_msg_command_outgoing"),
     };
-    let registries = ["minecraft:timeline", "minecraft:world_clock"]
-        .into_iter()
-        .map(|name| {
-            let entries = packs
-                .as_ref()
-                .and_then(|p| p.registry(name))
-                .map(|r| r.entries().iter().map(|e| e.id.to_string()).collect())
-                .unwrap_or_default();
-            (name.to_owned(), entries)
-        })
-        .collect();
+    let registries = [
+        "minecraft:timeline",
+        "minecraft:world_clock",
+        "minecraft:dialog",
+    ]
+    .into_iter()
+    .map(|name| {
+        let entries = packs
+            .as_ref()
+            .and_then(|p| p.registry(name))
+            .map(|r| r.entries().iter().map(|e| e.id.to_string()).collect())
+            .unwrap_or_default();
+        (name.to_owned(), entries)
+    })
+    .collect();
     Ok(Prepared {
         configuration,
         worlds,

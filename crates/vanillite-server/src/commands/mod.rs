@@ -4,6 +4,8 @@
 //! only offers and parses nodes the source may use, and every command node carries its
 //! required level (SEC-12).
 
+mod bans;
+mod chat_cmd;
 mod data;
 mod dispatch;
 mod engine;
@@ -11,10 +13,15 @@ mod exec;
 mod execute;
 pub(crate) mod functions;
 mod nbt_ops;
+mod schedule;
 mod scores;
 mod select;
 mod source;
 mod survival;
+mod system_cmd;
+pub(crate) mod teams;
+mod text;
+mod tracker;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -28,6 +35,7 @@ use vanillite_protocol::packets::play::clientbound::{Commands, SystemChat};
 use vanillite_protocol::text::{Arg, ClickEvent, Color, Component, NamedColor};
 use vanillite_world::entity::EntityId;
 
+pub(crate) use bans::ban_reason;
 pub(crate) use exec::permission_event;
 pub(crate) use source::{CommandSource, SourceKind};
 
@@ -79,6 +87,20 @@ pub(crate) fn tick_functions(
     // Scoreboard changes reach clients with the scoreboard packets; until then they are
     // dropped each tick so they do not pile up.
     drop(global.systems.scoreboard().take_events());
+}
+
+/// The scheduled functions due now (`TimerQueue.tick` in the overworld's `tickTime`).
+pub(crate) fn tick_scheduled(
+    level: &mut vanillite_game::level::Level,
+    global: &Global,
+    world: WorldId,
+) {
+    let mut env = Env {
+        level,
+        global,
+        world,
+    };
+    schedule::tick(&mut env);
 }
 
 /// Runs a parsed line for a source in a new execution (`Commands.executeCommandInContext`).
