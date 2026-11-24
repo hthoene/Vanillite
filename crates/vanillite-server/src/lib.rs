@@ -5,7 +5,10 @@
 //! phases; in parallel mode every world has its own tick thread; one compute pool does all
 //! background and parallel-phase work; the watchdog watches the tick deadline.
 
+mod access;
+mod chat;
 mod clock;
+mod commands;
 pub mod compute;
 mod global;
 mod net;
@@ -13,6 +16,7 @@ mod player_list;
 mod players;
 mod server;
 pub mod slot;
+mod test_bot;
 mod tick_rate;
 mod watchdog;
 mod world;

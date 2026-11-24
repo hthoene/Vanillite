@@ -11,7 +11,10 @@ repository.workspace = true
 [dependencies]
 vanillite-config.workspace = true
 log.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
 vanillite-game.workspace = true
+vanillite-command.workspace = true
 vanillite-world.workspace = true
 vanillite-base.workspace = true
 vanillite-data.workspace = true
@@ -24,7 +27,6 @@ vanillite-storage.workspace = true
 vanillite-plugin-host.workspace = true
 
 [dev-dependencies]
-tokio.workspace = true
 
 [lints]
 workspace = true

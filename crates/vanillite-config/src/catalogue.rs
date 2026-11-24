@@ -46,6 +46,52 @@ rules! {
             max_joins_per_tick: u32 = "max-joins-per-tick", Security, range = [1, 1000],
                 vanilla = 5;
         }
+        /// Limits of command parsing and tab completion (SEC-04, SEC-11).
+        commands: CommandRules = "commands" {
+            /// Longest command line that is parsed (Vanilla: the packet's 32767 characters).
+            max_command_length: u32 = "max-command-length", Security, range = [16, 32767],
+                vanilla = 32767;
+            /// Longest tab completion input; longer requests get no suggestions (Vanilla
+            /// accepts 32500 characters).
+            max_suggestion_input: u32 = "max-suggestion-input", Security, range = [16, 32500],
+                vanilla = 2048;
+            /// Suggestions per answer.
+            max_suggestions: u32 = "max-suggestions", Security, range = [1, 10000],
+                vanilla = 1000;
+            /// Characters of a message argument (`say`, `msg`, `kick`).
+            max_message_length: u32 = "max-message-length", Security, range = [16, 32767],
+                vanilla = 256;
+            /// Nesting depth of SNBT in arguments.
+            max_nbt_depth: u32 = "max-nbt-depth", Security, range = [1, 512], vanilla = 512;
+            /// Nodes of an NBT path.
+            max_nbt_path_nodes: u32 = "max-nbt-path-nodes", Security, range = [1, 4096],
+                vanilla = 256;
+            /// Options inside one entity selector `[...]`.
+            max_selector_options: u32 = "max-selector-options", Security, range = [1, 1024],
+                vanilla = 64;
+            /// Entity selectors inside one message argument.
+            max_message_selectors: u32 = "max-message-selectors", Security, range = [0, 256],
+                vanilla = 16;
+            /// Nested redirects followed while parsing one command.
+            max_redirect_depth: u32 = "max-redirect-depth", Security, range = [1, 1024],
+                vanilla = 64;
+        }
+        /// Development and test helpers. Never needed on a production server.
+        debug: DebugRules = "debug" {
+            /// In-process fake players (`TestBot`, `TestBot2`, ...) that join over virtual
+            /// connections, walk in a circle around the spawn and sneak now and then, so a
+            /// single tester sees other players. Virtual connections need no authentication,
+            /// so keep this at 0 outside test servers.
+            test_bots: u8 = "test-bots", Setting, range = [0, 16], restart = true, vanilla = 0;
+        }
+        /// Chat. Spam thresholds are `chat-spam-threshold-seconds` and
+        /// `command-spam-threshold-seconds` in `server.properties`.
+        chat: ChatRules = "chat" {
+            /// Signed messages a player may have received without acknowledging them before it
+            /// is kicked (`too_many_pending_chats`).
+            max_pending_messages: u32 = "max-pending-messages", Security,
+                range = [64, 65536], vanilla = 4096;
+        }
     }
 }
 

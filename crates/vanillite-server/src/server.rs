@@ -173,15 +173,37 @@ impl ServerBuilder {
         let level_name = config.properties.level_name.clone();
         let level_dir = dir.join(&level_name);
         let session_lock = lock_world(&level_dir)?;
+        // Mojang's profile key signers are fetched while the data packs load.
+        let services_keys = (config.properties.online_mode && self.network).then(|| {
+            std::thread::spawn(|| {
+                vanillite_net::services::fetch_profile_keys(Duration::from_secs(10))
+            })
+        });
         let prepared = crate::net::prepare(&config, &dir, &level_dir, &self.vanilla_pack)?;
+        let chat = chat_settings(&config, services_keys);
         let mut world_players = prepared.worlds.into_iter();
 
         let clock = Clock::new();
         let max_players = usize::try_from(config.properties.max_players).unwrap_or(0);
-        let global = Arc::new(Global {
+        let commands = crate::commands::build_dispatcher(command_limits(&config));
+        let global = Arc::new_cyclic(|this| Global {
             clock,
             players: PlayerList::new(max_players),
             network_ids: NetworkIds::new(),
+            chat,
+            chat_types: prepared.chat_types,
+            access: crate::access::Access::load(
+                &dir,
+                config.properties.white_list,
+                config.properties.op_permission_level,
+                config.properties.enforce_whitelist,
+            ),
+            handle: std::sync::OnceLock::new(),
+            commands,
+            online_mode: config.properties.online_mode,
+            seed: level_seed(&config.properties.level_seed),
+            registries: prepared.registries.clone(),
+            this: this.clone(),
         });
         let watch = Arc::new(WatchState::new(
             config.server.watchdog.early_warning_after.get(),
@@ -242,7 +264,12 @@ impl ServerBuilder {
             (Worlds::Sequential(worlds), routes)
         };
 
-        let net = NetState::start(&config, prepared.configuration, self.network)?;
+        let net = NetState::start(
+            &config,
+            prepared.configuration,
+            self.network,
+            global.chat.enforce_secure,
+        )?;
         if !config.properties.online_mode {
             log::warn!("**** SERVER IS RUNNING IN OFFLINE/INSECURE MODE!");
         }
@@ -275,6 +302,14 @@ impl ServerBuilder {
             _session_lock: session_lock,
         };
         server.ticks_until_autosave = server.autosave_interval();
+        let _ = server.global.handle.set(server.handle());
+        let bots = server.config.server.debug.test_bots;
+        if bots > 0
+            && let Some(opener) = server.virtual_opener()
+        {
+            log::warn!("Starting {bots} test bot(s) (debug.test-bots); not for production use");
+            crate::test_bot::spawn(opener, bots);
+        }
         log::info!(
             "Done ({:.3}s)! For help, type \"help\"",
             started.elapsed().as_secs_f64()
@@ -284,6 +319,60 @@ impl ServerBuilder {
 }
 
 /// Holds `session.lock` of the world folder so no second server opens the same world.
+/// The world seed from `level-seed`: a number, else Java's hash of the text, 0 when empty
+/// (`WorldOptions.parseSeed`; the world runtime will store a random seed instead).
+fn level_seed(text: &str) -> i64 {
+    let text = text.trim();
+    if text.is_empty() {
+        return 0;
+    }
+    text.parse::<i64>()
+        .unwrap_or_else(|_| i64::from(vanillite_base::math::java_string_hash(text)))
+}
+
+/// The command parser limits from `vanillite.toml` (`commands.*`).
+fn command_limits(config: &Config) -> vanillite_command::limits::Limits {
+    let c = &config.server.commands;
+    let size = |v: u32| usize::try_from(v).unwrap_or(usize::MAX);
+    vanillite_command::limits::Limits {
+        max_command_length: size(c.max_command_length),
+        max_suggestion_input: size(c.max_suggestion_input),
+        max_suggestions: size(c.max_suggestions),
+        max_message_length: size(c.max_message_length),
+        max_nbt_depth: c.max_nbt_depth,
+        max_nbt_path_nodes: size(c.max_nbt_path_nodes),
+        max_selector_options: size(c.max_selector_options),
+        max_message_selectors: size(c.max_message_selectors),
+        max_redirect_depth: size(c.max_redirect_depth),
+    }
+}
+
+/// The chat settings: secure chat is enforced when `enforce-secure-profile` is on, the server
+/// runs in online mode and Mojang's keys could be fetched (`enforceSecureProfile`).
+fn chat_settings(
+    config: &Config,
+    services_keys: Option<JoinHandle<Result<Vec<Vec<u8>>, String>>>,
+) -> vanillite_game::player::chat::ChatSettings {
+    use vanillite_game::player::chat::{ChatSettings, ServicesKeys};
+    let keys = match services_keys.map(JoinHandle::join) {
+        Some(Ok(Ok(keys))) => ServicesKeys::from_der(keys.iter().map(Vec::as_slice)),
+        Some(Ok(Err(e))) => {
+            log::warn!("Failed to fetch Mojang's services keys, chat cannot be verified: {e}");
+            ServicesKeys::default()
+        }
+        Some(Err(_)) | None => ServicesKeys::default(),
+    };
+    let p = &config.properties;
+    ChatSettings {
+        enforce_secure: p.enforce_secure_profile && p.online_mode && !keys.is_empty(),
+        keys: Arc::new(keys),
+        chat_spam_threshold: p.chat_spam_threshold_seconds.saturating_mul(20),
+        command_spam_threshold: p.command_spam_threshold_seconds.saturating_mul(20),
+        max_pending_messages: usize::try_from(config.server.chat.max_pending_messages)
+            .unwrap_or(4096),
+    }
+}
+
 fn lock_world(level_dir: &Path) -> Result<File, StartError> {
     fs::create_dir_all(level_dir).map_err(|e| StartError::io(level_dir, e))?;
     let path = level_dir.join("session.lock");
@@ -644,11 +733,14 @@ impl Server {
             properties.force_gamemode,
         );
         let players = &self.global.players;
-        let refuse = if players.contains(Uuid(uuid)) {
+        let access = &self.global.access;
+        let refuse = if !access.is_whitelisted(uuid) {
+            Some("multiplayer.disconnect.not_whitelisted")
+        } else if players.contains(Uuid(uuid)) {
             // Vanilla kicks the older session; refusing the new one keeps a single owner of the
             // player without a cross-world removal.
             Some("multiplayer.disconnect.duplicate_login")
-        } else if players.count() >= players.max_players() {
+        } else if players.count() >= players.max_players() && !access.bypasses_player_limit(uuid) {
             Some("multiplayer.disconnect.server_full")
         } else {
             None
@@ -672,6 +764,7 @@ impl Server {
             world,
             info: crate::players::info_entry(&arrival),
             sink,
+            inbox: Arc::clone(&arrival.inbox),
         });
         let global = Arc::clone(&self.global);
         self.run_in_world(
@@ -833,16 +926,22 @@ impl Server {
         }
     }
 
-    /// Console commands until the command system exists.
+    /// A console command: `vanillite reload config` here, everything else through the command
+    /// tree on the overworld.
     fn run_console_command(&mut self, line: &str) {
         let command = line.trim().trim_start_matches('/');
-        match command {
-            "" => {}
-            "stop" => self.running = false,
-            "vanillite reload config" => self.reload_config(),
-            "help" => log::info!("Commands: stop, vanillite reload config"),
-            _ => log::warn!("Unknown or incomplete command: {command}"),
+        if command == "vanillite reload config" {
+            self.reload_config();
+            return;
         }
+        let global = Arc::clone(&self.global);
+        let line = line.to_owned();
+        self.run_in_world(
+            WorldId(0),
+            Box::new(move |w: &mut ServerWorld| {
+                crate::commands::run_console_command(w, &global, &line);
+            }),
+        );
     }
 
     /// Reloads `vanillite.toml` and swaps the rules at this tick boundary. `server.properties`

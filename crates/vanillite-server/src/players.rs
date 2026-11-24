@@ -2,17 +2,18 @@
 //! network layer hands over connections; the handlers themselves live in
 //! `vanillite_game::player`.
 
-use std::sync::Arc;
 use std::sync::mpsc::Receiver;
+use std::sync::{Arc, Mutex};
 
 use vanillite_base::{ChunkPos, Vec3};
 use vanillite_config::{GameMode, WorldRules};
 use vanillite_game::entities::Entities;
+use vanillite_game::player::chat::ChatInbox;
 use vanillite_game::player::encode::encode_update;
 use vanillite_game::player::join::{self, InfoEntry, LevelInfo};
 use vanillite_game::player::{
-    Body, ChunkSource, ChunkView, ClientInformation, Connection, GameProfile, Handled, MoveContext,
-    PacketSink, PlayerData, PlayerState, effective_view_distance,
+    Body, ChatContext, ChunkSource, ChunkView, ClientInformation, Connection, GameProfile, Handled,
+    MoveContext, PacketSink, PlayerData, PlayerState, effective_view_distance,
 };
 use vanillite_net::{Latency, Outbound};
 use vanillite_protocol::text::Component;
@@ -74,6 +75,7 @@ pub(crate) struct Arrival {
     pub(crate) memory_connection: bool,
     pub(crate) saved: Option<player_data::PlayerData>,
     pub(crate) address: String,
+    pub(crate) inbox: Arc<Mutex<ChatInbox>>,
 }
 
 /// The players' side of a world.
@@ -85,6 +87,8 @@ pub(crate) struct WorldPlayers {
     leaving: Vec<(EntityId, Option<Box<Component>>)>,
     /// Players that left this tick; their tab list entries go after the entity removal.
     left: Vec<u128>,
+    /// Players with chat or command requests this tick.
+    chatting: Vec<EntityId>,
 }
 
 fn chunk_of(pos: Vec3) -> ChunkPos {
@@ -107,12 +111,19 @@ impl WorldPlayers {
             store,
             leaving: Vec::new(),
             left: Vec::new(),
+            chatting: Vec::new(),
         }
     }
 
     /// `placeNewPlayer`: spawns the player and sends the join sequence. The player is already
     /// in the global player list.
-    pub(crate) fn join(&mut self, entities: &mut Entities, global: &Global, arrival: Arrival) {
+    pub(crate) fn join(
+        &mut self,
+        entities: &mut Entities,
+        global: &Global,
+        world: crate::world::WorldId,
+        arrival: Arrival,
+    ) {
         let (pos, rot, on_ground) = match &arrival.saved {
             Some(saved) => (
                 Vec3::new(saved.pos[0], saved.pos[1], saved.pos[2]),
@@ -139,6 +150,8 @@ impl WorldPlayers {
                 arrival.inbound,
                 pos,
                 arrival.memory_connection,
+                &global.chat,
+                Arc::clone(&arrival.inbox),
             ),
         };
         let id = entities.spawn_player(
@@ -168,8 +181,32 @@ impl WorldPlayers {
             pos.y,
             pos.z
         );
-        join::send_login(sink.as_ref(), &self.level, network_id, player);
-        global.players.broadcast(&join::joined_message(&name), None);
+        join::send_login(
+            sink.as_ref(),
+            &self.level,
+            network_id,
+            player,
+            global.chat.enforce_secure,
+        );
+        let Some(global_arc) = global.arc() else {
+            return;
+        };
+        let source = crate::commands::CommandSource {
+            global: global_arc,
+            kind: crate::commands::SourceKind::Player {
+                uuid: arrival.uuid,
+                name: name.clone(),
+                sink: Arc::clone(&sink),
+            },
+            level: crate::commands::permission_level(global, arrival.uuid),
+            world,
+            pos,
+            rot,
+        };
+        crate::commands::send_permissions(global, sink.as_ref(), network_id, &source);
+        global
+            .players
+            .broadcast_system(join::joined_message(&name, arrival.uuid), false, None);
         let connection = &mut player.connection;
         connection
             .movement
@@ -196,6 +233,8 @@ impl WorldPlayers {
         rules: &WorldRules,
         runs_normally: bool,
         global: &Global,
+        world: crate::world::WorldId,
+        game_time: i64,
     ) {
         let ctx = MoveContext {
             runs_normally,
@@ -205,6 +244,11 @@ impl WorldPlayers {
         for (id, player) in players.iter_mut() {
             let Some(mut entity) = store.get_mut(id) else {
                 continue;
+            };
+            let chat = ChatContext {
+                uuid: entity.as_ref().uuid(),
+                name: &player.profile.name,
+                settings: &global.chat,
             };
             let flags = entity.as_ref().flags();
             let rot = entity.as_ref().rot();
@@ -225,7 +269,7 @@ impl WorldPlayers {
             let mut state = before.clone();
             match player
                 .connection
-                .handle_packets(&mut state, ctx, PACKETS_PER_TICK)
+                .handle_packets(&mut state, ctx, chat, PACKETS_PER_TICK)
             {
                 Handled::Ok => {}
                 Handled::Disconnected => self.leaving.push((id, None)),
@@ -270,6 +314,9 @@ impl WorldPlayers {
                     });
                 player.client = client;
             }
+            if !player.connection.chat.requests.is_empty() {
+                self.chatting.push(id);
+            }
             let view = ChunkView {
                 center: chunk_of(body.pos),
                 view_distance: effective_view_distance(&player.client, self.view_distance),
@@ -282,6 +329,9 @@ impl WorldPlayers {
                     player.connection.sink.as_ref(),
                 );
             }
+        }
+        for id in std::mem::take(&mut self.chatting) {
+            crate::chat::handle_requests(entities, global, id, world, game_time, &mut self.leaving);
         }
         for (id, reason) in std::mem::take(&mut self.leaving) {
             self.leave(entities, global, id, reason);
@@ -327,7 +377,14 @@ impl WorldPlayers {
     }
 
     /// The connection tick (`ServerGamePacketListenerImpl.tick`) after the world tick.
-    pub(crate) fn tick_connections(&mut self, entities: &mut Entities, tick: u64, global: &Global) {
+    pub(crate) fn tick_connections(
+        &mut self,
+        entities: &mut Entities,
+        tick: u64,
+        global: &Global,
+        world: crate::world::WorldId,
+    ) {
+        crate::commands::answer_suggestions(entities, global, world);
         for uuid in std::mem::take(&mut self.left) {
             if global.players.remove(Uuid(uuid)).is_some() {
                 global
@@ -349,6 +406,8 @@ impl WorldPlayers {
                 };
                 player.connection.movement.tick(&body);
             }
+            player.connection.chat.chat_spam.tick();
+            player.connection.chat.command_spam.tick();
         }
         // `PlayerList.tick`: latencies for the tab list. The first world sends them for all.
         if tick.is_multiple_of(LATENCY_UPDATE_TICKS)
@@ -395,7 +454,7 @@ impl WorldPlayers {
         // then the tab list entry.
         global
             .players
-            .broadcast(&join::left_message(&name), Some(Uuid(uuid)));
+            .broadcast_system(join::left_message(&name, uuid), false, Some(Uuid(uuid)));
         self.left.push(uuid);
     }
 
@@ -475,5 +534,6 @@ pub(crate) fn info_entry(arrival: &Arrival) -> InfoEntry {
         game_mode: arrival.game_mode,
         latency: arrival.sink.latency_ms(),
         model_customisation: arrival.client.model_customisation,
+        chat_session: None,
     }
 }

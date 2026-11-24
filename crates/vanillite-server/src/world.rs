@@ -93,7 +93,8 @@ impl ServerWorld {
 
     /// Places a player that joined the server into this world.
     pub(crate) fn join_player(&mut self, global: &Global, arrival: crate::players::Arrival) {
-        self.players.join(&mut self.entities, global, arrival);
+        self.players
+            .join(&mut self.entities, global, self.id, arrival);
     }
 
     /// This world's id.
@@ -131,6 +132,8 @@ impl ServerWorld {
             &self.rules,
             ctx.runs_normally,
             ctx.global,
+            self.id,
+            i64::try_from(self.ticks).unwrap_or(i64::MAX),
         );
         if ctx.runs_normally {
             self.ticks += 1;
@@ -147,7 +150,7 @@ impl ServerWorld {
         self.track_entities();
         WorldPlayers::send_entity_updates(&self.entities, &self.entity_updates);
         self.players
-            .tick_connections(&mut self.entities, ctx.tick, ctx.global);
+            .tick_connections(&mut self.entities, ctx.tick, ctx.global, self.id);
     }
 
     /// Runs the entity tracker over this tick's state and resets the per-tick sync state.
