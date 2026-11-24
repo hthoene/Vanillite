@@ -607,7 +607,7 @@ impl MenuSlots for PlayerInventory {
     fn on_take(
         &mut self,
         slot: usize,
-        _taken: &ItemStack,
+        _taken: &mut ItemStack,
         ctx: ClickContext,
         drops: &mut Vec<Drop>,
     ) {

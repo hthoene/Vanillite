@@ -173,9 +173,7 @@ fn suck_in_items(level: &mut Level, pos: BlockPos) -> bool {
             }
             let rest = add_item(level, Some(source), me, stack.with_count(1), None);
             if rest.is_empty() {
-                if let Some(s) = source.get_mut(level, slot) {
-                    s.shrink(1);
-                }
+                source.remove_one(level, slot);
                 source.set_changed(level);
                 return true;
             }

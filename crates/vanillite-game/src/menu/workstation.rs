@@ -29,7 +29,8 @@ pub(super) fn result_slot(kind: MenuKind) -> Option<usize> {
     match kind {
         MenuKind::Stonecutter => Some(1),
         MenuKind::Anvil | MenuKind::Grindstone => Some(2),
-        MenuKind::Smithing => Some(3),
+        MenuKind::Smithing | MenuKind::Loom => Some(3),
+        MenuKind::CartographyTable => Some(2),
         _ => None,
     }
 }
@@ -41,6 +42,9 @@ pub(super) fn may_place(kind: MenuKind, i: usize, stack: &ItemStack) -> bool {
     }
     if result_slot(kind) == Some(i) {
         return false;
+    }
+    if matches!(kind, MenuKind::Loom | MenuKind::CartographyTable) {
+        return ContainerView::station_may_place(kind, i, stack);
     }
     let Some(d) = data() else {
         return matches!(kind, MenuKind::Stonecutter | MenuKind::Anvil);
@@ -164,6 +168,8 @@ impl ContainerView<'_> {
                 self.set_local(2, result);
             }
             MenuKind::Enchantment => self.enchantment_changed(),
+            MenuKind::Loom => self.loom_changed(),
+            MenuKind::CartographyTable => self.cartography_changed(),
             MenuKind::Smithing => {
                 self.smithing_result();
                 let has_error = !self.local(0).is_empty()
@@ -226,6 +232,7 @@ impl ContainerView<'_> {
     pub(super) fn workstation_button(&mut self, id: i32) -> bool {
         match self.menu.kind {
             MenuKind::Enchantment => self.enchant_button(id),
+            MenuKind::Loom => self.loom_button(id),
             MenuKind::Stonecutter => {
                 if self.menu.data.first() == Some(&id) {
                     return false;
@@ -548,8 +555,14 @@ impl ContainerView<'_> {
         if original.is_empty() {
             return ItemStack::EMPTY;
         }
-        let mut stack = original.clone();
         let kind = self.menu.kind;
+        if kind == MenuKind::Loom {
+            return self.loom_quick_move(index, ctx, drops);
+        }
+        if kind == MenuKind::CartographyTable {
+            return self.cartography_quick_move(index, ctx, drops);
+        }
+        let mut stack = original.clone();
         if kind == MenuKind::Enchantment {
             let moved = if index < 2 {
                 super::move_to(self, &mut stack, 2, 38, true)

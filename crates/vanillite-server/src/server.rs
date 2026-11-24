@@ -421,6 +421,7 @@ impl ServerBuilder {
                 seed,
             );
             level.set_game_time(global.level.game_time());
+            level.set_maps(Arc::clone(&global.level.maps));
             let survival = crate::survival::WorldSurvival::new(
                 dimension,
                 &global.level,

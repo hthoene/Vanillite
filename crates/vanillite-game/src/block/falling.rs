@@ -58,6 +58,7 @@ pub fn brushable_on_place(
 
 /// `BrushableBlock.tick`: falls without dropping an item.
 pub fn brushable_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
+    super::brushable::check_reset(level, pos);
     if is_free(level.block(pos.below())) && pos.y >= level.min_y() {
         fall(level, pos, state, false);
     }

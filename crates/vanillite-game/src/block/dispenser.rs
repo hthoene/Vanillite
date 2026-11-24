@@ -102,7 +102,7 @@ const DISPENSE_SUCCESS: i32 = 1000;
 const DISPENSE_ANIMATION: i32 = 2000;
 
 /// `Direction.get3DDataValue`.
-fn direction_3d(d: Direction) -> i32 {
+pub(super) fn direction_3d(d: Direction) -> i32 {
     match d {
         Direction::Down => 0,
         Direction::Up => 1,
@@ -114,7 +114,7 @@ fn direction_3d(d: Direction) -> i32 {
 }
 
 /// `DefaultDispenseItemBehavior.spawnItem(level, stack, 6, facing, dispensePosition)`.
-fn spawn_dispensed(
+pub(super) fn spawn_dispensed(
     level: &mut Level,
     pos: BlockPos,
     facing: Direction,

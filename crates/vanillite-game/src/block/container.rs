@@ -481,6 +481,9 @@ pub fn items(level: &Level, pos: BlockPos) -> Option<&[ItemStack]> {
         BlockEntity::Hopper(h) => Some(&h.items),
         BlockEntity::Furnace(f) => Some(&f.items),
         BlockEntity::BrewingStand(b) => Some(&b.items),
+        BlockEntity::DecoratedPot(p) => Some(std::slice::from_ref(&p.item)),
+        BlockEntity::ChiseledBookshelf(b) => Some(&b.items),
+        BlockEntity::Crafter(c) => Some(&c.items),
         _ => None,
     }
 }
@@ -492,6 +495,9 @@ pub fn items_mut(level: &mut Level, pos: BlockPos) -> Option<&mut [ItemStack]> {
         BlockEntity::Hopper(h) => Some(&mut h.items),
         BlockEntity::Furnace(f) => Some(&mut f.items),
         BlockEntity::BrewingStand(b) => Some(&mut b.items),
+        BlockEntity::DecoratedPot(p) => Some(std::slice::from_mut(&mut p.item)),
+        BlockEntity::ChiseledBookshelf(b) => Some(&mut b.items),
+        BlockEntity::Crafter(c) => Some(&mut c.items),
         _ => None,
     }
 }
@@ -638,8 +644,24 @@ impl ContainerRef {
         };
         if let Some(BlockEntity::Furnace(f)) = level.block_entity_mut(p) {
             f.set_item(i, stack);
+        } else if let Some(BlockEntity::ChiseledBookshelf(_)) = level.block_entity(p) {
+            super::bookshelf::set_item(level, p, i, stack);
+        } else if let Some(BlockEntity::Crafter(c)) = level.block_entity_mut(p) {
+            c.set_item(i, stack);
         } else if let Some(target) = items_mut(level, p).and_then(|items| items.get_mut(i)) {
             *target = stack;
+        }
+    }
+
+    /// `removeItem(slot, 1)`: one item of a slot (a bookshelf updates its state).
+    pub fn remove_one(self, level: &mut Level, slot: usize) {
+        let Some((p, i)) = self.locate(level, slot) else {
+            return;
+        };
+        if let Some(BlockEntity::ChiseledBookshelf(_)) = level.block_entity(p) {
+            super::bookshelf::remove_item(level, p, i);
+        } else if let Some(s) = items_mut(level, p).and_then(|items| items.get_mut(i)) {
+            s.shrink(1);
         }
     }
 
@@ -700,6 +722,10 @@ impl ContainerRef {
             Some(BlockEntity::Furnace(f)) => crate::player::play::game_data()
                 .is_some_and(|d| f.can_place_item(i, stack, &d.recipes)),
             Some(BlockEntity::BrewingStand(b)) => b.can_place_item(i, stack),
+            Some(BlockEntity::ChiseledBookshelf(b)) => {
+                super::bookshelf::accepts(stack) && b.items.get(i).is_some_and(ItemStack::is_empty)
+            }
+            Some(BlockEntity::Crafter(c)) => c.can_place_item(i, stack),
             Some(BlockEntity::Container(_))
                 if kind_of(level.block(p).block()) == Some(Kind::ShulkerBox) =>
             {
@@ -1018,6 +1044,14 @@ pub fn save_items(items: &[ItemStack], out: &mut Compound) {
     }
     if !list.0.is_empty() {
         out.insert("Items", list);
+    }
+}
+
+/// `ContainerHelper.saveAllItems(output, items, true)`: `Items` even when empty.
+pub fn save_items_always(items: &[ItemStack], out: &mut Compound) {
+    save_items(items, out);
+    if out.get("Items").is_none() {
+        out.insert("Items", List::new());
     }
 }
 

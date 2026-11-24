@@ -19,6 +19,9 @@ use crate::block::bell::Bell;
 use crate::block::lectern::Lectern;
 use crate::block::piston::MovingPiston;
 use crate::block::sculk::SculkSensor;
+use crate::item::ItemStack;
+use vanillite_protocol::components::ids as components;
+use vanillite_protocol::text::Component;
 
 /// The data of one block entity, by kind. Kinds whose behaviour does not exist yet have no
 /// variant; their blocks simply have no live block entity.
@@ -54,6 +57,20 @@ pub enum BlockEntity {
     BrewingStand(Box<crate::block::brewing::BrewingStand>),
     /// Signs and hanging signs.
     Sign(Box<crate::block::sign::Sign>),
+    /// Heads and skulls.
+    Skull(Box<crate::block::decor::Skull>),
+    /// Banners.
+    Banner(Box<crate::block::decor::Banner>),
+    /// Decorated pots.
+    DecoratedPot(Box<crate::block::pot::DecoratedPot>),
+    /// Chiseled bookshelves.
+    ChiseledBookshelf(Box<crate::block::bookshelf::Bookshelf>),
+    /// Campfires and soul campfires.
+    Campfire(Box<crate::block::campfire::Campfire>),
+    /// Suspicious sand and gravel.
+    Brushable(Box<crate::block::brushable::Brushable>),
+    /// Crafters.
+    Crafter(Box<crate::block::crafter::Crafter>),
 }
 
 /// `BlockEntityTicker.tick(level, pos, state, blockEntity)`: the block entity is looked up at
@@ -194,7 +211,14 @@ fn ticker_of(entity: &BlockEntity) -> Option<TickerFn> {
         BlockEntity::Comparator { .. }
         | BlockEntity::Lectern(_)
         | BlockEntity::Container(_)
-        | BlockEntity::EnderChest { .. } => None,
+        | BlockEntity::EnderChest { .. }
+        | BlockEntity::Skull(_)
+        | BlockEntity::Banner(_)
+        | BlockEntity::DecoratedPot(_)
+        | BlockEntity::ChiseledBookshelf(_)
+        | BlockEntity::Brushable(_) => None,
+        BlockEntity::Campfire(_) => Some(crate::block::campfire::tick),
+        BlockEntity::Crafter(_) => Some(crate::block::crafter::server_tick),
         BlockEntity::Furnace(_) => Some(crate::block::furnace::server_tick),
         BlockEntity::BrewingStand(_) => Some(crate::block::brewing::server_tick),
         BlockEntity::Sign(_) => Some(crate::block::sign::tick),
@@ -237,6 +261,25 @@ pub fn new_block_entity(state: BlockState) -> Option<BlockEntity> {
         Some(BlockEntity::Hopper(Box::default()))
     } else if crate::block::sign::is_sign(block) {
         Some(BlockEntity::Sign(Box::default()))
+    } else if block == ids::DECORATED_POT {
+        Some(BlockEntity::DecoratedPot(Box::default()))
+    } else if block == ids::CHISELED_BOOKSHELF {
+        Some(BlockEntity::ChiseledBookshelf(Box::default()))
+    } else if block == ids::CRAFTER {
+        Some(BlockEntity::Crafter(Box::new(
+            crate::block::crafter::Crafter {
+                triggered: state.value("triggered") == Some("true"),
+                ..Default::default()
+            },
+        )))
+    } else if crate::block::brushable::is_brushable(state) {
+        Some(BlockEntity::Brushable(Box::default()))
+    } else if crate::block::campfire::is_campfire(block) {
+        Some(BlockEntity::Campfire(Box::default()))
+    } else if crate::block::decor::is_skull(block) {
+        Some(BlockEntity::Skull(Box::default()))
+    } else if crate::block::decor::is_banner(block) {
+        Some(BlockEntity::Banner(Box::default()))
     } else {
         crate::block::container::new_block_entity(block)
     }
@@ -281,6 +324,13 @@ fn is_valid(entity: &BlockEntity, state: BlockState) -> bool {
         }
         BlockEntity::BrewingStand(_) => state.block() == ids::BREWING_STAND,
         BlockEntity::Sign(_) => crate::block::sign::is_sign(state.block()),
+        BlockEntity::Skull(_) => crate::block::decor::is_skull(state.block()),
+        BlockEntity::Banner(_) => crate::block::decor::is_banner(state.block()),
+        BlockEntity::DecoratedPot(_) => state.block() == ids::DECORATED_POT,
+        BlockEntity::ChiseledBookshelf(_) => state.block() == ids::CHISELED_BOOKSHELF,
+        BlockEntity::Campfire(_) => crate::block::campfire::is_campfire(state.block()),
+        BlockEntity::Brushable(_) => crate::block::brushable::is_brushable(state),
+        BlockEntity::Crafter(_) => state.block() == ids::CRAFTER,
     }
 }
 
@@ -324,6 +374,9 @@ impl Level {
                 // `preRemoveSideEffects`, while the block entity is still there.
                 if let Some(entity) = self.block_entities.get(pos).cloned() {
                     crate::block::container::pre_remove_side_effects(self, pos, &entity);
+                    if let BlockEntity::Lectern(lectern) = &entity {
+                        crate::block::lectern::drop_book(self, pos, old, lectern);
+                    }
                     if let BlockEntity::Furnace(_) = entity {
                         let xp = crate::block::furnace::pop_experience(self, pos);
                         self.award_experience(crate::block::furnace::center(pos), xp);
@@ -440,6 +493,14 @@ fn load(state: BlockState, nbt: &Compound) -> Option<BlockEntity> {
         BlockEntity::Furnace(f) => f.load(nbt),
         BlockEntity::BrewingStand(b) => b.load(nbt),
         BlockEntity::Sign(sign) => sign.load(nbt),
+        BlockEntity::Skull(skull) => skull.load(nbt),
+        BlockEntity::Banner(banner) => banner.load(nbt),
+        BlockEntity::DecoratedPot(pot) => pot.load(nbt),
+        BlockEntity::ChiseledBookshelf(shelf) => shelf.load(nbt),
+        BlockEntity::Campfire(campfire) => campfire.load(nbt),
+        BlockEntity::Brushable(b) => b.load(nbt),
+        BlockEntity::Crafter(c) => c.load(nbt),
+        BlockEntity::Lectern(lectern) => lectern.load(nbt),
         BlockEntity::Hopper(h) => {
             h.custom_name = crate::block::container::load_name(nbt);
             crate::block::container::load_items(nbt, &mut h.items);
@@ -480,6 +541,14 @@ fn save(entity: &BlockEntity, state: BlockState, pos: BlockPos) -> Compound {
         BlockEntity::Furnace(f) => f.save(&mut nbt),
         BlockEntity::BrewingStand(b) => b.save(&mut nbt),
         BlockEntity::Sign(sign) => sign.save(&mut nbt),
+        BlockEntity::Skull(skull) => skull.save(&mut nbt),
+        BlockEntity::Banner(banner) => banner.save(&mut nbt),
+        BlockEntity::DecoratedPot(pot) => pot.save(&mut nbt),
+        BlockEntity::ChiseledBookshelf(shelf) => shelf.save(&mut nbt),
+        BlockEntity::Campfire(campfire) => campfire.save(&mut nbt),
+        BlockEntity::Brushable(b) => b.save(&mut nbt),
+        BlockEntity::Crafter(c) => c.save(&mut nbt),
+        BlockEntity::Lectern(lectern) => lectern.save(&mut nbt),
         BlockEntity::Hopper(h) => {
             crate::block::container::save_name(&h.custom_name, &mut nbt);
             crate::block::container::save_items(&h.items, &mut nbt);
@@ -665,6 +734,153 @@ pub fn update_tag(entity: &BlockEntity) -> Option<Compound> {
             nbt.sort_java_hash_order();
             Some(nbt)
         }
+        BlockEntity::Skull(skull) => {
+            let mut nbt = Compound::new();
+            skull.save(&mut nbt);
+            Some(nbt)
+        }
+        BlockEntity::Banner(banner) => {
+            let mut nbt = Compound::new();
+            banner.save(&mut nbt);
+            Some(nbt)
+        }
+        BlockEntity::DecoratedPot(pot) => {
+            let mut nbt = Compound::new();
+            pot.save(&mut nbt);
+            Some(nbt)
+        }
+        BlockEntity::Campfire(campfire) => Some(campfire.update_tag()),
+        BlockEntity::Brushable(b) => Some(b.update_tag()),
         _ => None,
     }
+}
+
+// --- Components ------------------------------------------------------------------------------
+
+/// `BlockEntity.collectComponents`: the value of component `id` the block entity puts on the
+/// item it drops (loot `copy_components`), as a wire value.
+pub fn collect_component(entity: &BlockEntity, id: u16) -> Option<Box<[u8]>> {
+    match entity {
+        BlockEntity::Skull(skull) => skull.component(id),
+        BlockEntity::Banner(banner) => banner.component(id),
+        BlockEntity::DecoratedPot(pot) => pot.component(id),
+        BlockEntity::ChiseledBookshelf(shelf) => {
+            (id == components::CONTAINER).then(|| container_value(&shelf.items))
+        }
+        BlockEntity::Campfire(campfire) => {
+            (id == components::CONTAINER).then(|| container_value(&campfire.items))
+        }
+        BlockEntity::Crafter(crafter) => {
+            if id == components::CONTAINER {
+                Some(container_value(&crafter.items))
+            } else if id == components::CUSTOM_NAME {
+                encode_name(crafter.custom_name.as_ref())
+            } else {
+                None
+            }
+        }
+        _ => crate::block::container::component(entity, id),
+    }
+}
+
+/// `ItemContainerContents.fromItems`: always a value (empty contents are an empty list).
+fn container_value(items: &[ItemStack]) -> Box<[u8]> {
+    vanillite_protocol::item::encode_container_contents(items).unwrap_or_else(|| Box::new([0]))
+}
+
+/// `BlockEntity.applyComponentsFromItemStack` of a placed block item.
+pub fn apply_components(level: &mut Level, pos: BlockPos, stack: &ItemStack) {
+    let contents = || {
+        stack
+            .component(components::CONTAINER)
+            .and_then(|v| vanillite_protocol::item::decode_container_contents(v).ok())
+    };
+    match level.block_entity_mut(pos) {
+        Some(BlockEntity::Skull(skull)) => skull.apply(stack),
+        Some(BlockEntity::Banner(banner)) => banner.apply(stack),
+        Some(BlockEntity::DecoratedPot(pot)) => pot.apply(stack),
+        Some(BlockEntity::ChiseledBookshelf(shelf)) => {
+            if let Some(items) = contents() {
+                copy_into(&items, &mut shelf.items);
+            }
+        }
+        Some(BlockEntity::Campfire(campfire)) => {
+            if let Some(items) = contents() {
+                copy_into(&items, &mut campfire.items);
+            }
+        }
+        Some(BlockEntity::Crafter(crafter)) => {
+            if let Some(name) = decode_name(stack) {
+                crafter.custom_name = Some(name);
+            }
+            if let Some(items) = contents() {
+                copy_into(&items, &mut crafter.items);
+            }
+        }
+        _ => {
+            crate::block::container::apply_item_components(level, pos, stack);
+            return;
+        }
+    }
+    level.block_entities.touch(pos.chunk());
+    if level
+        .block_entity(pos)
+        .is_some_and(|e| update_tag(e).is_some())
+    {
+        level.output().block_entity_updates.push(pos);
+    }
+}
+
+/// `ItemContainerContents.copyInto`: slots in order, the rest emptied.
+fn copy_into(items: &[ItemStack], target: &mut [ItemStack]) {
+    for (i, slot) in target.iter_mut().enumerate() {
+        *slot = items.get(i).cloned().unwrap_or_default();
+    }
+}
+
+/// The `custom_name` component of a stack.
+pub fn decode_name(stack: &ItemStack) -> Option<Component> {
+    let bytes = stack.component(components::CUSTOM_NAME)?;
+    let mut r = vanillite_protocol::codec::Reader::new(bytes);
+    <Component as vanillite_protocol::codec::DecodeLimited>::decode_limited(&mut r, 2_097_152).ok()
+}
+
+/// A `custom_name` component value.
+pub fn encode_name(name: Option<&Component>) -> Option<Box<[u8]>> {
+    use vanillite_protocol::codec::Encode;
+    let mut out = Vec::new();
+    name?.encode(&mut out);
+    Some(out.into_boxed_slice())
+}
+
+/// Prefix of stored component values that have no persistent form (yet): their wire bytes.
+const WIRE_PREFIX: &str = "vanillite:";
+
+/// Stores a component value under `key` in its persistent form (or its wire bytes).
+pub fn save_component(out: &mut Compound, key: &str, type_id: u16, wire: &[u8]) {
+    match crate::item_nbt::component_to_nbt(type_id, wire) {
+        Some(tag) => out.insert(key, tag),
+        None => {
+            let bytes: Vec<i8> = wire.iter().map(|b| i8::from_ne_bytes([*b])).collect();
+            out.insert(format!("{WIRE_PREFIX}{key}"), Tag::ByteArray(bytes));
+        }
+    }
+}
+
+/// Reads what [`save_component`] stored; invalid values read as none.
+pub fn load_component(nbt: &Compound, key: &str, type_id: u16) -> Option<Box<[u8]>> {
+    if let Some(tag) = nbt.get(key) {
+        return crate::item_nbt::component_from_nbt(type_id, tag);
+    }
+    let Some(Tag::ByteArray(bytes)) = nbt.get(&format!("{WIRE_PREFIX}{key}")) else {
+        return None;
+    };
+    let wire: Vec<u8> = bytes.iter().map(|b| b.to_ne_bytes()[0]).collect();
+    vanillite_protocol::components::validate(
+        type_id,
+        &wire,
+        &vanillite_protocol::item::InstalledRegistries,
+    )
+    .ok()?;
+    Some(wire.into_boxed_slice())
 }

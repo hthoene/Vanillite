@@ -63,6 +63,8 @@ pub struct LevelState {
     level_data: Mutex<LevelData>,
     /// The world-wide saved data (`<world>/data/`).
     pub(crate) data: SavedDataStore,
+    /// The maps of all worlds (`data/minecraft/maps/`).
+    pub(crate) maps: std::sync::Arc<vanillite_game::map::Maps>,
     /// The files of clocks, rules and weather as they were read: fields this server does not
     /// know (rules of other servers, clocks of removed data packs) are written back.
     loaded: [Compound; 3],
@@ -167,6 +169,15 @@ impl LevelState {
             block_facts,
             default_clocks,
             level_data: Mutex::new(level_data),
+            maps: {
+                let dir = data.dir().to_owned();
+                std::sync::Arc::new(vanillite_game::map::Maps::new(Box::new(move |id| {
+                    vanillite_storage::saved_data::read_saved_data(&dir, id).unwrap_or_else(|e| {
+                        log::error!("Cannot read {id}: {e}");
+                        None
+                    })
+                })))
+            },
             data,
             loaded: [clocks_data, rules_data, weather_data].map(Option::unwrap_or_default),
             auto_save: AtomicBool::new(true),
@@ -218,6 +229,9 @@ impl LevelState {
                 merged.insert(key, tag.clone());
             }
             self.data.write(id, merged);
+        }
+        for (id, data) in self.maps.take_dirty() {
+            self.data.write(&id, data);
         }
         self.data.save();
         let level_data = {

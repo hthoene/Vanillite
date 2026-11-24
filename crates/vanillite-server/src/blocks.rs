@@ -110,6 +110,22 @@ pub(crate) fn game_data(packs: Option<&LoadedPacks>) -> GameData {
         &names("minecraft:trim_material"),
         &names("minecraft:trim_pattern"),
     );
+    let banner_patterns = vanillite_game::menu::BannerPatterns {
+        names: names("minecraft:banner_pattern"),
+        tags: packs
+            .tags("minecraft:banner_pattern")
+            .map(|tags| {
+                tags.keys()
+                    .map(|t| {
+                        let ids = packs
+                            .tag_ids("minecraft:banner_pattern", t)
+                            .unwrap_or_default();
+                        (t.clone(), ids)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+    };
     GameData {
         tools,
         loot,
@@ -117,6 +133,7 @@ pub(crate) fn game_data(packs: Option<&LoadedPacks>) -> GameData {
         item_tags,
         recipes,
         enchanting,
+        banner_patterns,
     }
 }
 

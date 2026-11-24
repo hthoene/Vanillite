@@ -118,6 +118,19 @@ pub mod ids {
     pub const TRIM: u16 = find("minecraft:trim");
     pub const CONTAINER_LOOT: u16 = find("minecraft:container_loot");
     pub const LOCK: u16 = find("minecraft:lock");
+    pub const PROFILE: u16 = find("minecraft:profile");
+    pub const NOTE_BLOCK_SOUND: u16 = find("minecraft:note_block_sound");
+    pub const MAP_ID: u16 = find("minecraft:map_id");
+    pub const MAP_POST_PROCESSING: u16 = find("minecraft:map_post_processing");
+    pub const MAP_DECORATIONS: u16 = find("minecraft:map_decorations");
+    pub const FIREWORKS: u16 = find("minecraft:fireworks");
+    pub const FIREWORK_EXPLOSION: u16 = find("minecraft:firework_explosion");
+    pub const WRITABLE_BOOK_CONTENT: u16 = find("minecraft:writable_book_content");
+    pub const PROVIDES_BANNER_PATTERNS: u16 = find("minecraft:provides_banner_patterns");
+    pub const ITEM_NAME: u16 = find("minecraft:item_name");
+    pub const RARITY: u16 = find("minecraft:rarity");
+    pub const BUNDLE_CONTENTS: u16 = find("minecraft:bundle_contents");
+    pub const DYE: u16 = find("minecraft:dye");
 }
 
 /// Validates one component value: `data` must be exactly one value of the stream codec of

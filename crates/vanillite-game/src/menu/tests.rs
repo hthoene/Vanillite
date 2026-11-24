@@ -72,11 +72,33 @@ pub(crate) fn install_data() -> &'static GameData {
             .zip(0u32..)
             .map(|((n, _), i)| (n.clone(), i))
             .collect();
+        let banner_patterns = crate::menu::BannerPatterns {
+            names: names("minecraft:banner_pattern"),
+            tags: packs
+                .tags("minecraft:banner_pattern")
+                .map(|tags| {
+                    tags.keys()
+                        .map(|t| {
+                            let ids = packs
+                                .tag_ids("minecraft:banner_pattern", t)
+                                .unwrap_or_default();
+                            (t.clone(), ids)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        };
+        let item_tags = packs
+            .tags("minecraft:item")
+            .map(|tags| tags.keys().map(|t| (t.clone(), tag(t))).collect())
+            .unwrap_or_default();
         crate::player::play::install_game_data(Arc::new(GameData {
             loot: crate::loot::LootTables::empty(),
             recipes,
             enchanting,
             enchantments,
+            banner_patterns,
+            item_tags,
             ..GameData::default()
         }));
     });
@@ -624,7 +646,7 @@ fn stonecutter_selects_and_cuts() {
             .iter()
             .position(|&r| data.recipes.stonecutting[r].result.item == item("stone_bricks"))
             .expect("stone bricks");
-        assert!(view.button(i32::try_from(index).unwrap()));
+        assert!(view.button(i32::try_from(index).unwrap(), &mut Vec::new()));
         assert_eq!(view.item(1).item, item("stone_bricks"));
         super::click(view, 1, 0, ContainerInput::Pickup, SURVIVAL, &mut drops);
         assert_eq!(view.menu.state.carried.item, item("stone_bricks"));
@@ -815,7 +837,7 @@ fn enchanting_table_enchants_with_lapis_and_levels() {
                 "clues {:?}",
                 view.menu.data
             );
-            assert!(view.button(2));
+            assert!(view.button(2, &mut Vec::new()));
             assert!(!super::workstation::crafting_enchantments(view.item(0)).is_empty());
             assert_eq!(view.item(1).count, 2);
         },

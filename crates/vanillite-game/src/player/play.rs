@@ -36,6 +36,8 @@ pub struct GameData {
     pub recipes: crate::recipe::Recipes,
     /// Enchantment data.
     pub enchanting: crate::enchant::Enchanting,
+    /// The `minecraft:banner_pattern` registry.
+    pub banner_patterns: crate::menu::BannerPatterns,
 }
 
 static GAME_DATA: std::sync::OnceLock<std::sync::Arc<GameData>> = std::sync::OnceLock::new();
@@ -805,8 +807,20 @@ impl Digging {
         };
         let requests = level.take_menu_requests();
         let editors = level.take_sign_editors();
+        let gives = level.take_player_gives();
         for request in requests {
             open_menu(ctx, request, sink);
+        }
+        for (player, mut stack) in gives {
+            if Some(player) == ctx.actor.entity {
+                let infinite = ctx.actor.creative();
+                if !ctx.inventory.add(None, &mut stack, infinite) {
+                    ctx.drops.push(Drop {
+                        stack,
+                        thrown: false,
+                    });
+                }
+            }
         }
         for (player, pos, front) in editors {
             if Some(player) == ctx.actor.entity {
@@ -891,8 +905,9 @@ impl Digging {
             && placed.block() == state.block()
         {
             // `BlockItem.updateCustomBlockEntityTag` and `Block.setPlacedBy`.
-            crate::block::container::apply_item_components(level, target, stack);
+            crate::level::block_entity::apply_components(level, target, stack);
             crate::block::redstone::set_placed_by(level, placed, target);
+            crate::block::crafter::set_placed_by(level, placed, target);
             if placed.block() == vanillite_data::block::ids::TRIPWIRE_HOOK {
                 crate::block::tripwire::hook_set_placed_by(level, target, placed);
             }
@@ -1036,7 +1051,8 @@ fn drop_resources(
         let data = ctx.data;
         let enchantment_level = |name: &str| data.enchantment_level(tool, name);
         let item_in_tag = |item: u16, tag: &str| data.item_in_tag(item, tag);
-        let components = |id: u16| entity.and_then(|e| crate::block::container::component(e, id));
+        let components =
+            |id: u16| entity.and_then(|e| crate::level::block_entity::collect_component(e, id));
         let loot = BlockLootContext {
             state,
             tool,

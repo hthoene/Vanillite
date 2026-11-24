@@ -427,6 +427,9 @@ impl Connection {
                 self.container_button(p.container_id, p.button_id, play)
             }
             ServerboundPlay::RenameItem(p) => self.rename_item(&p.name, play),
+            ServerboundPlay::ContainerSlotStateChanged(p) => {
+                self.container_slot_state(p.slot_id, p.container_id, p.new_state, play);
+            }
             ServerboundPlay::SignUpdate(p) => {
                 // `handleSignUpdate`: the editing player sets one side of a loaded sign.
                 let pos = BlockPos::new(p.pos.x, p.pos.y, p.pos.z);
@@ -453,7 +456,6 @@ impl Connection {
             | ServerboundPlay::PingRequest(_)
             | ServerboundPlay::Pong(_)
             | ServerboundPlay::ResourcePack(_)
-            | ServerboundPlay::ContainerSlotStateChanged(_)
             | ServerboundPlay::PlaceRecipe(_)
             | ServerboundPlay::RecipeBookSeenRecipe(_)
             | ServerboundPlay::RecipeBookChangeSettings(_)
@@ -566,6 +568,7 @@ impl Connection {
             level,
             inventory,
             xp,
+            drops,
             ..
         } = play;
         let Some(level) = level.level_mut() else {
@@ -576,10 +579,41 @@ impl Connection {
             log::debug!("A player interacted with an invalid menu");
             return;
         }
+        let may_build = actor.game_mode != vanillite_config::GameMode::Adventure;
         crate::menu::container::with_view(inventory, level, actor.pos, xp.as_deref_mut(), |view| {
-            if view.button(button) {
+            view.menu.may_build = may_build;
+            if view.button(button, drops) {
                 crate::menu::broadcast_changes(view, sink);
             }
+        });
+    }
+
+    /// `handleContainerSlotStateChanged`: a crafter slot is enabled or disabled.
+    fn container_slot_state(
+        &mut self,
+        slot: i32,
+        container_id: i32,
+        enabled: bool,
+        play: &mut PlayContext<'_>,
+    ) {
+        let actor = play.actor;
+        if actor.game_mode == vanillite_config::GameMode::Spectator
+            || play
+                .inventory
+                .container
+                .as_ref()
+                .is_none_or(|m| m.state.container_id != container_id)
+        {
+            return;
+        }
+        let PlayContext {
+            level, inventory, ..
+        } = play;
+        let Some(level) = level.level_mut() else {
+            return;
+        };
+        crate::menu::container::with_view(inventory, level, actor.pos, None, |view| {
+            view.crafter_slot_state(slot, enabled);
         });
     }
 
