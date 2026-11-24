@@ -153,6 +153,65 @@ pub fn decode(secret: &Secret, payload: &[u8]) -> Result<Forwarded, ForwardError
     })
 }
 
+/// Login plugin channel of the trusted link between a Vanillite proxy and a Vanillite backend.
+///
+/// After forwarding, the backend offers the link with a request of [`link_request`]; a proxy
+/// that knows it answers with [`link_answer`]: the compression threshold it uses towards its
+/// client, signed with the forwarding secret over the backend's fresh nonce. The backend then
+/// compresses with exactly that threshold, so the proxy relays its frames unchanged. Other
+/// proxies answer without payload and nothing changes.
+pub const LINK_CHANNEL: &str = "vanillite:proxy_link";
+/// Version of the link negotiation.
+pub const LINK_VERSION: u8 = 1;
+/// Length of the backend's nonce.
+const LINK_NONCE: usize = 16;
+
+/// The backend's link offer: the version, then a fresh random nonce.
+pub fn link_request(nonce: [u8; LINK_NONCE]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(LINK_NONCE.saturating_add(1));
+    out.push(LINK_VERSION);
+    out.extend_from_slice(&nonce);
+    out
+}
+
+fn link_mac(secret: &Secret, request: &[u8], data: &[u8]) -> [u8; 32] {
+    let mut message = Vec::with_capacity(
+        LINK_CHANNEL
+            .len()
+            .saturating_add(request.len())
+            .saturating_add(data.len()),
+    );
+    message.extend_from_slice(LINK_CHANNEL.as_bytes());
+    message.extend_from_slice(request);
+    message.extend_from_slice(data);
+    hmac_sha256(&secret.0, &message)
+}
+
+/// The proxy's answer to a link request: signature, version and `threshold` (-1 = no
+/// compression). `false` (nothing written) for a request of an unknown version.
+pub fn link_answer(secret: &Secret, request: &[u8], threshold: i32, out: &mut Vec<u8>) -> bool {
+    if request.len() != LINK_NONCE.saturating_add(1) || request.first() != Some(&LINK_VERSION) {
+        return false;
+    }
+    let mut data = vec![LINK_VERSION];
+    write_varint(&mut data, threshold);
+    out.extend_from_slice(&link_mac(secret, request, &data));
+    out.extend_from_slice(&data);
+    true
+}
+
+/// Verifies the proxy's answer to `request`; the threshold the proxy asked for.
+pub fn link_verify(secret: &Secret, request: &[u8], answer: &[u8]) -> Option<i32> {
+    let (signature, data) = answer.split_at_checked(SIGNATURE_LEN)?;
+    if !constant_time_eq(signature, &link_mac(secret, request, data)) {
+        return None;
+    }
+    let mut r = Reader::new(data);
+    let version = r.u8().ok()?;
+    let threshold = r.varint().ok()?;
+    (version == LINK_VERSION && threshold >= -1 && r.take_rest().is_empty()).then_some(threshold)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -179,6 +238,17 @@ mod tests {
         assert_eq!(
             decode(&Secret::new(b"other").unwrap(), &out),
             Err(ForwardError::Signature)
+        );
+
+        let request = link_request([7; 16]);
+        let mut answer = Vec::new();
+        assert!(link_answer(&secret, &request, 256, &mut answer));
+        assert_eq!(link_verify(&secret, &request, &answer), Some(256));
+        let other = link_request([8; 16]);
+        assert_eq!(link_verify(&secret, &other, &answer), None);
+        assert_eq!(
+            link_verify(&Secret::new(b"x").unwrap(), &request, &answer),
+            None
         );
     }
 }

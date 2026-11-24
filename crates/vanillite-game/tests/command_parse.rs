@@ -79,6 +79,10 @@ fn commands_resolve_like_vanilla() {
     assert_eq!(command("list uuids"), Some(CommandId::ListUuids));
     assert_eq!(command("help gamemode"), Some(CommandId::HelpCommand));
     assert_eq!(command("stop"), Some(CommandId::Stop));
+    assert_eq!(command("save-all"), Some(CommandId::SaveAll));
+    assert_eq!(command("save-all flush"), Some(CommandId::SaveAllFlush));
+    assert_eq!(command("save-off"), Some(CommandId::SaveOff));
+    assert_eq!(command("save-on"), Some(CommandId::SaveOn));
 }
 
 #[test]
@@ -213,6 +217,9 @@ fn help_lines_like_vanilla() {
             "/weather (clear|rain|thunder)",
             "/deop <targets>",
             "/op <targets>",
+            "/save-all [flush]",
+            "/save-off",
+            "/save-on",
             "/stop",
             "/whitelist (on|off|list|add|remove|reload)",
         ]

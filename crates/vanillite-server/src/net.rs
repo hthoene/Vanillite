@@ -45,27 +45,12 @@ pub(crate) struct Prepared {
 /// Where new players spawn: `spawn` of `level.dat`, else on top of the flat layers, or above
 /// the noise terrain (searching a spawn position like Vanilla is not ported yet).
 fn world_spawn(level_dir: &Path, is_flat: bool) -> (Vec3, f32) {
-    let spawn = vanillite_storage::read_level_dat(level_dir)
+    let spawn = vanillite_storage::level_dat::LevelData::read(level_dir)
         .ok()
         .flatten()
-        .and_then(|root| match root.get("Data") {
-            Some(vanillite_nbt::Tag::Compound(data)) => match data.get("spawn") {
-                Some(vanillite_nbt::Tag::Compound(spawn)) => Some(spawn.clone()),
-                _ => None,
-            },
-            _ => None,
-        });
-    let pos = spawn.as_ref().and_then(|s| match s.get("pos") {
-        Some(vanillite_nbt::Tag::IntArray(pos)) if pos.len() == 3 => Some(pos.clone()),
-        _ => None,
-    });
-    let yaw = spawn
-        .as_ref()
-        .and_then(|s| match s.get("yaw") {
-            Some(vanillite_nbt::Tag::Float(yaw)) => Some(*yaw),
-            _ => None,
-        })
-        .unwrap_or(0.0);
+        .and_then(|level| level.spawn);
+    let pos = spawn.as_ref().map(|s| s.pos.to_vec());
+    let yaw = spawn.as_ref().map_or(0.0, |s| s.yaw);
     match pos.as_deref() {
         Some(&[x, y, z]) => (
             Vec3::new(f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5),
@@ -91,6 +76,7 @@ pub(crate) fn prepare(
     dir: &Path,
     level_dir: &Path,
     pack: &VanillaPack,
+    player_store: &PlayerDataStore,
 ) -> Result<Prepared, StartError> {
     let packs = match pack {
         VanillaPack::None => None,
@@ -165,7 +151,7 @@ pub(crate) fn prepare(
                 hardcore: properties.hardcore,
                 online_mode: properties.online_mode,
             };
-            WorldPlayers::new(level, PlayerDataStore::new(level_dir))
+            WorldPlayers::new(level, player_store.clone())
         })
         .collect();
     let chat_type = |name: &str| {

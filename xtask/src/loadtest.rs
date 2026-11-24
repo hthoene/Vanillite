@@ -4,7 +4,8 @@
 //! reference `paper-loadtest` on 30900), only during the run. The bots run here. Per step of
 //! the player ramp the run records server MSPT, RSS, CPU and network throughput (from
 //! `vanillite-loadtest-monitor` on the test server) and the bots' join latency, round trip and
-//! traffic. Output: one JSON file per server, a Markdown table and an SVG chart. Results are
+//! traffic, and how fast chunks reach the bots and the disk is read. Every step can move the
+//! bots differently (random walk or straight flight, see `tools/loadbot`). Output: one JSON file per server, a Markdown table and an SVG chart. Results are
 //! kept on the test server; the regression gate compares with the median of the last 5 runs.
 
 use std::io::{BufRead, BufReader, Write as _};
@@ -57,6 +58,8 @@ impl Target {
 struct Options {
     targets: Vec<Target>,
     steps: Vec<u64>,
+    /// Bot movement per step (`tools/loadbot` movement spec).
+    movements: Vec<String>,
     hold: Duration,
     join_rate: f64,
     chat_interval: f64,
@@ -70,6 +73,7 @@ fn parse(args: &[&str]) -> Result<Options> {
     let mut o = Options {
         targets: vec![Target::Vanillite, Target::Paper],
         steps: DEFAULT_STEPS.to_vec(),
+        movements: Vec::new(),
         hold: Duration::from_secs(60),
         join_rate: 20.0,
         chat_interval: 0.0,
@@ -78,6 +82,8 @@ fn parse(args: &[&str]) -> Result<Options> {
         deploy: true,
         gate: true,
     };
+    let mut movement = "random";
+    let mut step_movements = vec![None; o.steps.len()];
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         let mut value = || it.next().copied().ok_or(format!("{arg} needs a value"));
@@ -92,11 +98,21 @@ fn parse(args: &[&str]) -> Result<Options> {
                 }
             }
             "--steps" => {
-                o.steps = value()?
+                (o.steps, step_movements) = value()?
                     .split(',')
-                    .map(|s| s.trim().parse().map_err(|e| format!("--steps: {e}")))
-                    .collect::<Result<_>>()?;
+                    .map(|s| {
+                        let (n, m) = s
+                            .trim()
+                            .split_once('@')
+                            .map_or((s.trim(), None), |(n, m)| (n, Some(m.to_owned())));
+                        let n: u64 = n.parse().map_err(|e| format!("--steps: {e}"))?;
+                        Ok((n, m))
+                    })
+                    .collect::<Result<Vec<(u64, Option<String>)>>>()?
+                    .into_iter()
+                    .unzip();
             }
+            "--movement" => movement = value()?,
             "--hold" => o.hold = Duration::from_secs_f64(num(value()?)?),
             "--join-rate" => o.join_rate = num(value()?)?,
             "--chat" => o.chat_interval = num(value()?)?,
@@ -109,9 +125,13 @@ fn parse(args: &[&str]) -> Result<Options> {
             _ => return Err(crate::USAGE.to_owned()),
         }
     }
-    if o.steps.is_empty() || o.steps.windows(2).any(|w| w[0] >= w[1]) {
-        return Err("--steps must be increasing".into());
+    if o.steps.is_empty() || o.steps.windows(2).any(|w| w[0] > w[1]) {
+        return Err("--steps must not decrease".into());
     }
+    o.movements = step_movements
+        .into_iter()
+        .map(|m| m.unwrap_or_else(|| movement.to_owned()))
+        .collect();
     Ok(o)
 }
 
@@ -129,6 +149,15 @@ pub fn run(root: &Path, args: &[&str]) -> Result<()> {
     }
     crate::devenv::run(Command::new(&cargo).current_dir(root).args(&build))?;
     let bin_dir = root.join("target").join(o.profile);
+    let mut specs = o.movements.clone();
+    specs.dedup();
+    for spec in &specs {
+        crate::devenv::run(Command::new(bin_dir.join("loadbot")).args([
+            "--movement",
+            spec,
+            "--check",
+        ]))?;
+    }
     let commit = git(root, &["rev-parse", "--short=12", "HEAD"])?;
     let dirty = !git(root, &["status", "--porcelain", "--untracked-files=no"])?.is_empty();
     let stamp = command_output(Command::new("date").args(["-u", "+%Y%m%dT%H%M%SZ"]))?;
@@ -158,7 +187,7 @@ pub fn run(root: &Path, args: &[&str]) -> Result<()> {
                 continue;
             }
         };
-        let run = json!({
+        let mut run = json!({
             "server": target.name(),
             "commit": commit,
             "dirty": dirty,
@@ -173,6 +202,10 @@ pub fn run(root: &Path, args: &[&str]) -> Result<()> {
             "max_players_under_50ms": max_players_under(&steps, 50.0),
             "steps": steps,
         });
+        // Runs that only walk randomly keep the settings of the runs before movement modes.
+        if o.movements.iter().any(|m| m != "random") {
+            run["settings"]["movement"] = json!(o.movements);
+        }
         let file = out_dir.join(format!("{}.json", target.name()));
         let text = serde_json::to_string_pretty(&run).map_err(|e| e.to_string())?;
         crate::write(&file, &text)?;
@@ -223,8 +256,9 @@ fn report(files: &[&str]) -> Result<()> {
 /// One line of the server monitor, with its arrival time in seconds since the run start.
 #[derive(Debug, Clone)]
 enum Sample {
-    /// RSS KiB, CPU ticks, net rx bytes, net tx bytes.
-    Stats(f64, [u64; 4]),
+    /// RSS KiB, CPU ticks, net rx bytes, net tx bytes, then from `/proc/<pid>/io` read
+    /// syscalls, bytes read from storage and bytes written to storage (0 from older monitors).
+    Stats(f64, [u64; 7]),
     /// A tick in nanoseconds (Vanillite).
     Tick(f64, u64),
     /// `/tick query` P50, P95, P99 in milliseconds (Paper, 100-tick windows).
@@ -326,7 +360,12 @@ fn ramp(
     // Let the monitor and the server settle.
     std::thread::sleep(Duration::from_secs(5));
     let mut steps = Vec::new();
-    for &n in &o.steps {
+    let mut movement = "";
+    for (&n, spec) in o.steps.iter().zip(&o.movements) {
+        if spec != movement {
+            movement = spec;
+            writeln!(bot_in, "movement {spec}").map_err(|e| format!("loadbot: {e}"))?;
+        }
         writeln!(bot_in, "target {n}").map_err(|e| format!("loadbot: {e}"))?;
         let ramp_start = now();
         let mut last_progress = (0u64, Instant::now());
@@ -353,12 +392,14 @@ fn ramp(
         let hold_end = now();
         let step = {
             let d = data.lock().map_err(|_| "poisoned")?;
-            aggregate(&d, target, n, ramp_start, hold_start, hold_end)
+            let mut step = aggregate(&d, target, n, ramp_start, hold_start, hold_end);
+            step["movement"] = json!(spec);
+            step
         };
         let players = step["players"].as_u64().unwrap_or(0);
         println!(
             "   {players:>5}/{n:<5} players: MSPT p50 {} p95 {} p99 {} ms, RSS {} MiB, CPU {} %, \
-             out {} MB/s, join p50 {} ms",
+             out {} MB/s, join p50 {} ms, {}: {} chunks/s, disk read {} MB/s, {} teleports",
             show(&step["mspt"]["p50"]),
             show(&step["mspt"]["p95"]),
             show(&step["mspt"]["p99"]),
@@ -366,6 +407,10 @@ fn ramp(
             show(&step["server"]["cpu_percent"]),
             show(&step["server"]["net_tx_mbps"]),
             show(&step["bots"]["join_ms_p50"]),
+            spec,
+            show(&step["bots"]["chunks_per_s"]),
+            show(&step["server"]["disk_read_mbps"]),
+            step["bots"]["teleports"],
         );
         let alive = step["server"]["rss_mib"].as_f64().unwrap_or(0.0) > 0.0;
         let reached = players * 100 >= n * 95;
@@ -392,8 +437,14 @@ fn read_monitor(out: impl std::io::Read, start: Instant, data: &Mutex<Collected>
             Some("H") => d.clock_ticks = words.next().and_then(|w| w.parse().ok()).unwrap_or(100),
             Some("S") => {
                 let v: Vec<u64> = words.filter_map(|w| w.parse().ok()).collect();
-                if let [rss, cpu, rx, tx] = v[..] {
-                    d.server.push(Sample::Stats(t, [rss, cpu, rx, tx]));
+                match v[..] {
+                    [rss, cpu, rx, tx] => {
+                        d.server.push(Sample::Stats(t, [rss, cpu, rx, tx, 0, 0, 0]));
+                    }
+                    [rss, cpu, rx, tx, syscr, read, write] => d
+                        .server
+                        .push(Sample::Stats(t, [rss, cpu, rx, tx, syscr, read, write])),
+                    _ => {}
                 }
             }
             Some("T") => {
@@ -429,7 +480,7 @@ fn aggregate(
     to: f64,
 ) -> Value {
     let inside = |t: f64| t >= from && t <= to;
-    let stats: Vec<(f64, [u64; 4])> = d
+    let stats: Vec<(f64, [u64; 7])> = d
         .server
         .iter()
         .filter_map(|s| match s {
@@ -531,6 +582,11 @@ fn aggregate(
         }
     }
     let field = |k: &str| last[k].as_u64().unwrap_or(0);
+    let delta = |k: &str| {
+        let first = reports.first().map_or(0, |r| r.1[k].as_u64().unwrap_or(0));
+        field(k).saturating_sub(first)
+    };
+    let per_player = |v: Option<f64>| v.filter(|_| players > 0).map(|v| v / players as f64);
     json!({
         "target": wanted,
         "players": players,
@@ -541,6 +597,11 @@ fn aggregate(
             "cpu_percent": round(rate(1, 100.0 / d.clock_ticks as f64)),
             "net_rx_mbps": round(rate(2, 1e-6)),
             "net_tx_mbps": round(rate(3, 1e-6)),
+            "read_syscalls_per_s": round(rate(4, 1.0)),
+            "read_syscalls_per_s_per_player": round(per_player(rate(4, 1.0))),
+            "disk_read_mbps": round(rate(5, 1e-6)),
+            "disk_read_kbps_per_player": round(per_player(rate(5, 1e-3))),
+            "disk_write_mbps": round(rate(6, 1e-6)),
         },
         "bots": {
             "join_ms_p50": round(pct(&join, 50.0)),
@@ -552,6 +613,10 @@ fn aggregate(
             "out_kbps_per_bot": round(bot_rate("bytes_out", true).map(|v| v / 1e3)),
             "packets_in_per_bot": round(bot_rate("packets_in", true)),
             "cpu_percent": round(bot_rate("cpu_ticks", false)),
+            "chunks_per_s": round(bot_rate("chunks", false)),
+            "chunks_per_s_per_bot": round(bot_rate("chunks", true)),
+            "chunks_forgotten_per_s": round(bot_rate("chunks_forgotten", false)),
+            "teleports": delta("teleports"),
             "failed": field("failed"),
             "disconnected": field("disconnected"),
         },
@@ -621,7 +686,7 @@ fn gate(host: &str, run: &Value) -> Result<Vec<String>> {
             let mut past: Vec<f64> = history
                 .iter()
                 .flat_map(|h| h["steps"].as_array().cloned().unwrap_or_default())
-                .filter(|s| s["target"] == step["target"])
+                .filter(|s| s["target"] == step["target"] && movement(s) == movement(step))
                 .filter_map(|s| s[path[0]][path[1]].as_f64())
                 .collect();
             past.sort_by(f64::total_cmp);
@@ -644,6 +709,11 @@ fn gate(host: &str, run: &Value) -> Result<Vec<String>> {
         if problems.is_empty() { "ok" } else { "FAILED" }
     );
     Ok(problems)
+}
+
+/// The movement of a step; steps from before movement modes walked randomly.
+fn movement(step: &Value) -> &str {
+    step["movement"].as_str().unwrap_or("random")
 }
 
 fn store(host: &str, run: &Value, path: &str) -> Result<()> {
@@ -711,6 +781,30 @@ fn markdown(runs: &[Value]) -> String {
                 show(&st["bots"]["rtt_ms_p50"]), show(&st["bots"]["rtt_ms_p95"]),
                 show(&st["bots"]["in_kbps_per_bot"]),
                 st["bots"]["failed"], st["bots"]["disconnected"],
+            ));
+        }
+        s.push_str(
+            "\nChunk loading (chunks: received by the bots; disk: the server process's storage \
+             I/O; read calls include socket reads):\n\n\
+             | Players | Movement | Chunks/s | Chunks/s per bot | Forgotten/s | Teleports | \
+             Disk read MB/s | Disk read KB/s per player | Read calls/s per player | \
+             Disk write MB/s | RSS/player KiB |\n\
+             |---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n",
+        );
+        for st in run["steps"].as_array().into_iter().flatten() {
+            s.push_str(&format!(
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                st["players"],
+                movement(st),
+                show(&st["bots"]["chunks_per_s"]),
+                show(&st["bots"]["chunks_per_s_per_bot"]),
+                show(&st["bots"]["chunks_forgotten_per_s"]),
+                show(&st["bots"]["teleports"]),
+                show(&st["server"]["disk_read_mbps"]),
+                show(&st["server"]["disk_read_kbps_per_player"]),
+                show(&st["server"]["read_syscalls_per_s_per_player"]),
+                show(&st["server"]["disk_write_mbps"]),
+                show(&st["server"]["rss_per_player_kib"]),
             ));
         }
         let errors: Vec<String> = run["steps"]

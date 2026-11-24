@@ -6,9 +6,9 @@ use std::fs::{self, File};
 use std::io::Write as _;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use std::{fmt, io};
@@ -19,6 +19,10 @@ use vanillite_config::{
 };
 use vanillite_game::level::Level;
 use vanillite_light::BfsLightEngineProvider;
+use vanillite_storage::backup::BackupSettings;
+use vanillite_storage::player_data::PlayerDataStore;
+use vanillite_storage::saved_data::SavedDataStore;
+use vanillite_storage::writer::FileWriter;
 use vanillite_storage::{AnvilStorageProvider, Compression, WorldLayout};
 use vanillite_world::chunks::{ChunkSettings, ChunkSlots, Chunks};
 use vanillite_world::entity::NetworkIds;
@@ -51,6 +55,36 @@ const AUTOSAVE_SECONDS: f32 = 300.0;
 
 /// Work that runs on the server thread in the global pre-phase, with `&mut` to everything.
 pub type GlobalTask = Box<dyn FnOnce(&mut Server) + Send + 'static>;
+
+/// Work that runs once a save of every world is done.
+pub type AfterSave = Box<dyn FnOnce() + Send + 'static>;
+
+/// Counts the worlds of a save down; the last one runs the follow-up.
+struct SaveDone {
+    remaining: AtomicUsize,
+    /// Waited for before the follow-up when the save flushes.
+    writer: Option<FileWriter>,
+    then: Mutex<Option<AfterSave>>,
+}
+
+impl SaveDone {
+    fn world_saved(&self) {
+        if self.remaining.fetch_sub(1, Ordering::AcqRel) != 1 {
+            return;
+        }
+        if let Some(writer) = &self.writer {
+            writer.flush();
+        }
+        let then = self
+            .then
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(then) = then {
+            then();
+        }
+    }
+}
 
 enum ServerMsg {
     Console(String),
@@ -225,14 +259,26 @@ impl ServerBuilder {
         for line in moved {
             log::warn!("storage.layout = {layout:?}: {line}");
         }
+        let writer = FileWriter::start().map_err(|e| StartError::io(&level_dir, e))?;
+        let player_store = PlayerDataStore::new(&level_dir).with_writer(writer.clone());
         // Mojang's profile key signers are fetched while the data packs load.
         let services_keys = (config.properties.online_mode && self.network).then(|| {
             std::thread::spawn(|| {
                 vanillite_net::services::fetch_profile_keys(Duration::from_secs(10))
             })
         });
-        let prepared = crate::net::prepare(&config, &dir, &level_dir, &self.vanilla_pack)?;
+        let prepared =
+            crate::net::prepare(&config, &dir, &level_dir, &self.vanilla_pack, &player_store)?;
         let chat = chat_settings(&config, services_keys);
+        let level_setup = crate::level::LevelSetup {
+            level_name: level_name.clone(),
+            game_type: crate::players::game_mode_id(config.properties.gamemode),
+            hardcore: config.properties.hardcore,
+            spawn: prepared
+                .worlds
+                .first()
+                .map_or((vanillite_base::Vec3::ZERO, 0.0), |w| w.level.spawn),
+        };
         let mut world_players = prepared.worlds.into_iter();
         let packs = prepared.packs.map(Arc::new);
         // Block behaviour reads its tags in every world, also without the noise generator.
@@ -275,10 +321,13 @@ impl ServerBuilder {
         let commands = crate::commands::build_dispatcher(command_limits(&config));
         let game = Arc::new(crate::blocks::game_data(packs.as_deref()));
         vanillite_game::player::play::install_game_data(Arc::clone(&game));
+        let recipes_packet = vanillite_protocol::SharedPacket::of(&game.recipes.update_packet());
         let level = crate::level::LevelState::load(
             &level_dir,
             packs.as_deref(),
             crate::survival::difficulty(config.properties.difficulty),
+            &level_setup,
+            writer.clone(),
         );
         let global = Arc::new_cyclic(|this| Global {
             clock,
@@ -299,6 +348,7 @@ impl ServerBuilder {
             seed: level_seed(&config.properties.level_seed),
             registries: prepared.registries.clone(),
             game,
+            recipes_packet,
             spawn_protection: config.properties.spawn_protection,
             this: this.clone(),
         });
@@ -362,6 +412,7 @@ impl ServerBuilder {
                 .next()
                 .ok_or_else(|| StartError::Io("world setup missing".to_owned()))?;
             let bounds = (info.min_y, info.height);
+            let data = SavedDataStore::new(info.dir.clone(), writer.clone());
             let mut level = Level::new(
                 Chunks::new(info, settings, slots),
                 level_settings,
@@ -386,6 +437,7 @@ impl ServerBuilder {
                 players,
                 level,
                 survival,
+                data,
             ));
         }
         let (worlds, routes) = if parallel {
@@ -449,9 +501,13 @@ impl ServerBuilder {
             watchdog: Some(watchdog),
             net: Some(net),
             test_bots: Vec::new(),
-            level_dir,
+            layout,
+            player_store,
+            next_backup: Instant::now(),
+            backup: None,
             _session_lock: session_lock,
         };
+        server.next_backup = server.backup_due_after();
         server.ticks_until_autosave = server.autosave_interval();
         let _ = server.global.handle.set(server.handle());
         let bots = server.config.server.debug.test_bots;
@@ -610,7 +666,7 @@ fn world_loop(
             }
             WorldMsg::Task(task) => task(world),
             WorldMsg::Stop => {
-                world.save(true);
+                world.save(true, false);
                 heartbeat.leave();
                 return;
             }
@@ -694,7 +750,13 @@ pub struct Server {
     net: Option<NetState>,
     /// UUIDs of the test bots this server started (`debug.test-bots`).
     test_bots: Vec<u128>,
-    level_dir: PathBuf,
+    layout: WorldLayout,
+    /// Player data files, written in the background.
+    player_store: PlayerDataStore,
+    /// When the next automatic backup is due.
+    next_backup: Instant,
+    /// The thread of the running or last backup.
+    backup: Option<JoinHandle<()>>,
     _session_lock: File,
 }
 
@@ -804,9 +866,6 @@ impl Server {
             };
             let sprinting = this_tick == 0;
             self.next_tick += this_tick;
-            self.watch
-                .next_tick
-                .store(self.next_tick, Ordering::Relaxed);
             self.tick_server();
             self.wait_until_next_tick(this_tick, sprinting);
             if sprinting {
@@ -821,6 +880,7 @@ impl Server {
         let clock = self.global.clock;
         let started = clock.now();
         self.heartbeat.enter(&clock);
+        self.watch.progress.store(started, Ordering::Relaxed);
 
         let pause_seconds =
             u64::try_from(self.config.properties.pause_when_empty_seconds).unwrap_or(0);
@@ -839,6 +899,7 @@ impl Server {
                 // The console stays responsive while paused, like Vanilla.
                 self.global_pre_phase();
                 self.heartbeat.leave();
+                self.watch.progress.store(clock.now(), Ordering::Relaxed);
                 return;
             }
         }
@@ -860,6 +921,7 @@ impl Server {
             }
         }
         self.heartbeat.leave();
+        self.watch.progress.store(clock.now(), Ordering::Relaxed);
     }
 
     /// G1: console commands and global tasks, with `&mut` to everything because no world is
@@ -906,8 +968,7 @@ impl Server {
     /// world part runs on the player's world.
     fn accept(&mut self, joined: vanillite_net::Joined) {
         let uuid = joined.profile.id.0;
-        let store = vanillite_storage::player_data::PlayerDataStore::new(&self.level_dir);
-        let saved = match store.load(uuid) {
+        let saved = match self.player_store.load(uuid) {
             Ok(saved) => saved,
             Err(e) => {
                 log::error!("Failed to load player data of {}: {e}", joined.profile.name);
@@ -1032,6 +1093,11 @@ impl Server {
         self.ticks_until_autosave -= 1;
         if self.ticks_until_autosave <= 0 {
             self.autosave();
+        }
+        if self.config.server.backup.interval.get().is_some() && Instant::now() >= self.next_backup
+        {
+            self.next_backup = self.backup_due_after();
+            self.start_backup();
         }
     }
 
@@ -1187,20 +1253,99 @@ impl Server {
     fn autosave(&mut self) {
         self.ticks_until_autosave = self.autosave_interval();
         log::debug!("Autosave started");
+        self.save_everything(false, false, None);
+    }
+
+    /// Vanilla's `saveEverything`: the players, `level.dat`, the saved data and the chunks of
+    /// every world; after `/save-off` the chunks only when `force`d. Each world saves between
+    /// its ticks; files are written in the background. `then` runs once every world has saved
+    /// (with `flush`: once everything is on disk).
+    pub(crate) fn save_everything(&mut self, flush: bool, force: bool, then: Option<AfterSave>) {
+        let skip_chunks = !force && !self.global.level.auto_save.load(Ordering::Relaxed);
         self.global.level.save();
+        let done = Arc::new(SaveDone {
+            remaining: AtomicUsize::new(self.routes.len()),
+            writer: flush.then(|| self.global.level.writer().clone()),
+            then: Mutex::new(then),
+        });
         for index in 0..self.routes.len() {
             let Ok(id) = u16::try_from(index).map(WorldId) else {
                 break;
             };
-            self.run_in_world(id, Box::new(|w| w.save(false)));
+            let done = Arc::clone(&done);
+            self.run_in_world(
+                id,
+                Box::new(move |w| {
+                    w.save(flush, skip_chunks);
+                    done.world_saved();
+                }),
+            );
         }
-        log::debug!("Autosave finished");
+    }
+
+    /// When the backup after one starting now is due.
+    fn backup_due_after(&self) -> Instant {
+        let minutes = self.config.server.backup.interval.get().unwrap_or(0);
+        Instant::now() + Duration::from_secs(u64::from(minutes) * 60)
+    }
+
+    /// Saves everything and archives the world on a background thread once the saves are
+    /// written (`backup.*`).
+    fn start_backup(&mut self) {
+        if self.backup.as_ref().is_some_and(|b| !b.is_finished()) {
+            log::warn!("Skipping a backup: the previous one is still running");
+            return;
+        }
+        let rules = &self.config.server.backup;
+        let settings = BackupSettings {
+            directory: self.dir.join(&rules.directory),
+            keep: rules.keep,
+            compression_level: rules.compression_level,
+        };
+        let level_name = self.config.properties.level_name.clone();
+        let mut sources: Vec<PathBuf> = Vec::new();
+        for dimension in DIMENSIONS {
+            let dir = self.layout.world_dir(&self.dir, &level_name, dimension);
+            if !sources.contains(&dir) {
+                sources.push(dir);
+            }
+        }
+        let (saved, wait) = mpsc::channel::<()>();
+        self.save_everything(
+            false,
+            false,
+            Some(Box::new(move || {
+                let _ = saved.send(());
+            })),
+        );
+        let writer = self.global.level.writer().clone();
+        let thread = std::thread::Builder::new()
+            .name("Backup".to_owned())
+            .spawn(move || {
+                // A crashed world drops the sender; the backup is made anyway.
+                let _ = wait.recv();
+                writer.flush();
+                log::info!("Backing up level '{level_name}'");
+                let started = Instant::now();
+                match vanillite_storage::backup::create_backup(&level_name, &sources, &settings) {
+                    Ok(path) => log::info!(
+                        "Backup saved to {} ({:.1}s)",
+                        path.display(),
+                        started.elapsed().as_secs_f64()
+                    ),
+                    Err(e) => log::error!("Backup of level '{level_name}' failed: {e}"),
+                }
+            });
+        match thread {
+            Ok(thread) => self.backup = Some(thread),
+            Err(e) => log::error!("Cannot start the backup thread: {e}"),
+        }
     }
 
     /// Vanilla's `stopServer`: save everything with flush, stop the threads, release the world.
     fn shutdown(mut self) {
         // Saving may take long; the watchdog must not kill the process now.
-        self.watch.next_tick.store(0, Ordering::Relaxed);
+        self.watch.progress.store(0, Ordering::Relaxed);
         log::info!("Stopping server");
         for player in self.global.players.snapshot() {
             player
@@ -1217,7 +1362,7 @@ impl Server {
             Worlds::Sequential(mut worlds) => {
                 for world in &mut worlds {
                     log::info!("Saving chunks for level '{level}'/{}", world.dimension());
-                    world.save(true);
+                    world.save(true, false);
                 }
             }
             Worlds::Parallel(threads) => {
@@ -1231,7 +1376,14 @@ impl Server {
             }
         }
         self.global.level.save();
+        self.global.level.writer().flush();
         log::info!("All dimensions are saved");
+        if let Some(backup) = self.backup.take()
+            && !backup.is_finished()
+        {
+            log::info!("Waiting for the running backup to finish");
+            let _ = backup.join();
+        }
         if let Some(net) = self.net.take() {
             net.shutdown();
         }

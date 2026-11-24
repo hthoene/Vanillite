@@ -139,6 +139,42 @@ impl FrameDecoder {
 
     /// The next complete packet (`id` + body, decompressed), or `None` if more bytes are needed.
     pub fn next_frame(&mut self) -> Result<Option<&[u8]>> {
+        match self.split()? {
+            None => Ok(None),
+            Some(Split::Plain { start, len }) => Ok(self.buf.get(start..start.saturating_add(len))),
+            Some(Split::Compressed { body, data_len, .. }) => {
+                let zlib = self.buf.get(body).unwrap_or_default();
+                self.codec.decompress(zlib, data_len, &mut self.inflated)?;
+                Ok(Some(&self.inflated))
+            }
+        }
+    }
+
+    /// The next complete frame without decompressing it, with the same checks as
+    /// [`FrameDecoder::next_frame`]: a relay passes compressed frames on unchanged when both
+    /// sides use the same threshold.
+    pub fn next_raw(&mut self) -> Result<Option<RawFrame<'_>>> {
+        Ok(match self.split()? {
+            None => None,
+            Some(Split::Plain { start, len }) => Some(RawFrame::Packet(
+                self.buf
+                    .get(start..start.saturating_add(len))
+                    .unwrap_or_default(),
+            )),
+            Some(Split::Compressed {
+                frame,
+                body,
+                data_len,
+            }) => Some(RawFrame::Compressed {
+                frame: self.buf.get(frame).unwrap_or_default(),
+                zlib: self.buf.get(body).unwrap_or_default(),
+                data_len,
+            }),
+        })
+    }
+
+    /// Takes the next complete frame off the buffer and checks its limits.
+    fn split(&mut self) -> Result<Option<Split>> {
         let avail = self.buf.get(self.pos..).unwrap_or_default();
         // Frame length: VarInt of at most 3 bytes.
         let mut len: usize = 0;
@@ -177,22 +213,28 @@ impl FrameDecoder {
         let frame_start = self.pos.saturating_add(header);
         self.pos = self.pos.saturating_add(end);
         let Some(threshold) = self.threshold else {
-            return Ok(self.buf.get(frame_start..frame_start.saturating_add(len)));
+            return Ok(Some(Split::Plain {
+                start: frame_start,
+                len,
+            }));
         };
         let mut r = crate::codec::Reader::new(frame);
         let data_len = usize::try_from(r.varint()?).map_err(|_| Error::NegativeLength)?;
         let body = r.rest();
+        let start = frame_start.saturating_add(frame.len().saturating_sub(body.len()));
+        let body_len = body.len();
         if data_len == 0 {
-            if body.len() > self.limits.max_uncompressed {
+            if body_len > self.limits.max_uncompressed {
                 return Err(Error::TooLong {
                     what: "packet",
-                    len: body.len(),
+                    len: body_len,
                     max: self.limits.max_uncompressed,
                 });
             }
-            let offset = frame.len().saturating_sub(body.len());
-            let start = frame_start.saturating_add(offset);
-            return Ok(self.buf.get(start..start.saturating_add(body.len())));
+            return Ok(Some(Split::Plain {
+                start,
+                len: body_len,
+            }));
         }
         if data_len < threshold {
             return Err(Error::BadFrame("compressed packet below threshold"));
@@ -204,9 +246,41 @@ impl FrameDecoder {
                 max: self.limits.max_uncompressed,
             });
         }
-        self.codec.decompress(body, data_len, &mut self.inflated)?;
-        Ok(Some(&self.inflated))
+        Ok(Some(Split::Compressed {
+            frame: frame_start..frame_start.saturating_add(len),
+            body: start..start.saturating_add(body_len),
+            data_len,
+        }))
     }
+}
+
+/// Where [`FrameDecoder::split`] found a frame in the buffer.
+enum Split {
+    Plain {
+        start: usize,
+        len: usize,
+    },
+    Compressed {
+        frame: std::ops::Range<usize>,
+        body: std::ops::Range<usize>,
+        data_len: usize,
+    },
+}
+
+/// A frame from [`FrameDecoder::next_raw`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RawFrame<'a> {
+    /// An uncompressed packet (`id` + body).
+    Packet(&'a [u8]),
+    /// A compressed packet as it was received.
+    Compressed {
+        /// The frame after its length prefix (data length, then the zlib stream).
+        frame: &'a [u8],
+        /// The zlib stream.
+        zlib: &'a [u8],
+        /// The length after decompression (checked against threshold and limits).
+        data_len: usize,
+    },
 }
 
 impl Default for FrameDecoder {
@@ -284,11 +358,62 @@ impl FrameEncoder {
         self.encrypt_from(out, start);
     }
 
+    /// Appends a frame received with [`FrameDecoder::next_raw`] (without its length prefix)
+    /// from a connection with the same compression threshold.
+    pub fn raw(&mut self, frame: &[u8], out: &mut Vec<u8>) -> Result<()> {
+        check_frame(frame.len())?;
+        let start = out.len();
+        write_varint(
+            out,
+            i32::try_from(frame.len()).map_err(|_| Error::BadFrame("frame too long"))?,
+        );
+        out.extend_from_slice(frame);
+        self.encrypt_from(out, start);
+        Ok(())
+    }
+
+    /// Appends and encrypts a batch of frames built with [`encode_frame`] for `threshold`.
+    /// A batch for this connection's threshold is copied as a whole; any other is re-framed
+    /// packet by packet.
+    pub fn batch(
+        &mut self,
+        frames: &[u8],
+        threshold: Option<usize>,
+        out: &mut Vec<u8>,
+    ) -> Result<()> {
+        if threshold == self.threshold {
+            self.frame(frames, out);
+            return Ok(());
+        }
+        for_each_body(frames, threshold, |body| {
+            self.body(body, out).map(|()| true)
+        })
+    }
+
     fn encrypt_from(&mut self, out: &mut [u8], start: usize) {
         if let (Some(cipher), Some(tail)) = (self.cipher.as_mut(), out.get_mut(start..)) {
             cipher.encrypt(tail);
         }
     }
+}
+
+/// Calls `f` with every packet body of `frames`, frames built with [`encode_frame`] for
+/// `threshold`, until `f` returns false.
+pub fn for_each_body(
+    frames: &[u8],
+    threshold: Option<usize>,
+    mut f: impl FnMut(&[u8]) -> Result<bool>,
+) -> Result<()> {
+    let mut decoder = FrameDecoder::new();
+    decoder.set_limits(Limits::PLAY);
+    decoder.set_compression(threshold.and_then(|t| i32::try_from(t).ok()).unwrap_or(-1));
+    decoder.push(frames);
+    while let Some(body) = decoder.next_frame()? {
+        if !f(body)? {
+            break;
+        }
+    }
+    Ok(())
 }
 
 /// Builds a frame (length prefix, compression layer if `threshold` is set) for `body`.

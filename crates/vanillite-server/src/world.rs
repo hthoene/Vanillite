@@ -2,10 +2,11 @@
 
 use std::fmt;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use vanillite_base::ChunkPos;
 use vanillite_base::hash::FxHashMap;
-use vanillite_config::WorldRules;
+use vanillite_config::{TrackingRules, WorldRules};
 use vanillite_game::entities::Entities;
 use vanillite_game::level::Level;
 use vanillite_world::chunks::{Chunks, TicketId};
@@ -17,7 +18,7 @@ use vanillite_base::random::XoroshiroRandom;
 use crate::blocks::LevelEffects;
 use crate::compute::Compute;
 use crate::global::Global;
-use crate::players::{WorldBlocks, WorldPlayers};
+use crate::players::{FanOut, WorldBlocks, WorldPlayers};
 use crate::world_setup::ChunkPackets;
 use crate::world_updates::WorldUpdates;
 
@@ -50,6 +51,10 @@ pub struct ServerWorld {
     tracker: Box<dyn EntityTracker>,
     /// The tracker's result of the last tick.
     entity_updates: TrackerOutput,
+    /// Buffers of the batched sending of `entity_updates`.
+    fan_out: FanOut,
+    /// Overload protection of the tracker.
+    overload: Overload,
     viewers: Vec<Viewer>,
     /// Chunks sent to players this tick, for the tracker.
     chunks_sent: Vec<(EntityId, ChunkPos)>,
@@ -63,10 +68,13 @@ pub struct ServerWorld {
     /// The chunk ticket and simulation ticket of every player at its centre chunk.
     player_tickets: FxHashMap<EntityId, (ChunkPos, TicketId, TicketId)>,
     scratch: Vec<ChunkPos>,
-    /// Player ids of the tick (block effects).
-    player_scratch: Vec<vanillite_world::entity::EntityId>,
     /// Weather, lightning and the players' survival.
     pub(crate) survival: crate::survival::WorldSurvival,
+    /// Player ids of the tick (block effects).
+    player_scratch: Vec<vanillite_world::entity::EntityId>,
+    /// The dimension's saved data (`<dimension>/data/`: world border, chunk tickets, raids,
+    /// ...); systems register here when they come.
+    pub(crate) data: vanillite_storage::saved_data::SavedDataStore,
 }
 
 impl fmt::Debug for ServerWorld {
@@ -81,6 +89,7 @@ impl fmt::Debug for ServerWorld {
 }
 
 impl ServerWorld {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         id: WorldId,
         dimension: String,
@@ -89,6 +98,7 @@ impl ServerWorld {
         players: WorldPlayers,
         mut level: Level,
         survival: crate::survival::WorldSurvival,
+        data: vanillite_storage::saved_data::SavedDataStore,
     ) -> ServerWorld {
         // Entity randoms are `RandomSource.create()`: seeded from the clock, not the world seed.
         let seed = std::time::SystemTime::now()
@@ -106,6 +116,8 @@ impl ServerWorld {
             level,
             tracker,
             entity_updates: TrackerOutput::default(),
+            fan_out: FanOut::default(),
+            overload: Overload::default(),
             viewers: Vec::new(),
             chunks_sent: Vec::new(),
             players,
@@ -115,8 +127,9 @@ impl ServerWorld {
             effects: LevelEffects::default(),
             item_random: XoroshiroRandom::new(seed),
             scratch: Vec::new(),
-            player_scratch: Vec::new(),
             survival,
+            player_scratch: Vec::new(),
+            data,
         }
     }
 
@@ -150,17 +163,17 @@ impl ServerWorld {
         let simulation = chunks.player_simulation_level();
         for (id, player) in self.level.entities.players.iter() {
             let center = player.chunk_view.center;
-            match self.player_tickets.get(&id) {
-                Some(&(old, _, _)) if old == center => {}
-                _ => {
+            match self.player_tickets.get_mut(&id) {
+                Some((old, _, _)) if *old == center => {}
+                Some((old, ticket, sim)) => {
+                    chunks.move_ticket(*ticket, center);
+                    chunks.move_simulation_ticket(*sim, center);
+                    *old = center;
+                }
+                None => {
                     let ticket = chunks.add_ticket(center, level);
                     let sim = chunks.add_simulation_ticket(center, simulation);
-                    if let Some((_, old, old_sim)) =
-                        self.player_tickets.insert(id, (center, ticket, sim))
-                    {
-                        chunks.remove_ticket(old);
-                        chunks.remove_simulation_ticket(old_sim);
-                    }
+                    self.player_tickets.insert(id, (center, ticket, sim));
                 }
             }
         }
@@ -237,6 +250,7 @@ impl ServerWorld {
     /// connection tick.
     pub(crate) fn tick(&mut self, ctx: &mut TickContext<'_>) {
         debug_assert_eq!(ctx.world, self.id);
+        let started = Instant::now();
         self.players.handle_packets(
             &mut self.level,
             &self.rules,
@@ -303,13 +317,23 @@ impl ServerWorld {
         let light = self.updates.light_changes();
         self.level.chunks.take_light_changes(light);
         self.packets.invalidate(&mut self.level.chunks, light);
+        for pos in &self.level.output().block_entity_updates {
+            self.packets.invalidate_chunk(pos.chunk());
+        }
         self.updates.broadcast(&mut self.level);
         WorldPlayers::send_chunks(
             &mut self.level.entities,
-            &self.packets.source(&self.level.chunks),
+            &self
+                .packets
+                .source(&self.level.chunks, &self.level.block_entities),
         );
         self.track_entities();
-        WorldPlayers::send_entity_updates(&self.level.entities, &self.entity_updates);
+        WorldPlayers::send_entity_updates(
+            &self.level.entities,
+            &self.entity_updates,
+            ctx.compute,
+            &mut self.fan_out,
+        );
         self.survival.do_tick(
             &mut self.level.entities,
             &self.level.chunks,
@@ -327,6 +351,8 @@ impl ServerWorld {
             },
         );
         self.effects.flush(&self.level.entities);
+        self.overload
+            .update(started.elapsed(), &self.rules.tracking, &self.dimension);
     }
 
     /// `applyEffectsFromBlocks` after the players' moves: pressure plates, tripwire and other
@@ -391,17 +417,85 @@ impl ServerWorld {
             viewers: &self.viewers,
             chunk_pending: &|player, chunk| WorldPlayers::chunk_pending(entities, player, chunk),
             chunks_sent: &self.chunks_sent,
+            update_scale: self.overload.scale,
         };
         self.tracker.update(&input, &mut self.entity_updates);
         self.level.entities.store.clear_removed();
         self.level.entities.store.clear_sync_flags();
     }
 
-    /// Saves the world. `flush` waits until everything is on disk (shutdown).
-    pub(crate) fn save(&mut self, flush: bool) {
+    /// Saves the world like Vanilla (`saveEverything`): the players always, the chunks and the
+    /// dimension's saved data unless `skip_chunks` (`/save-off`). `flush` waits until the
+    /// chunks are on disk (shutdown, `/save-all flush`); otherwise they are written in the
+    /// background.
+    pub(crate) fn save(&mut self, flush: bool, skip_chunks: bool) {
         log::debug!("Saving {} (flush: {flush})", self.dimension);
         self.players.save_all(&self.level.entities);
-        self.level.save(flush);
+        if !skip_chunks {
+            self.data.save();
+            self.level.save(flush);
+        }
+    }
+}
+
+/// Overload protection of the entity tracker (`performance.entity-tracking.overload-*`):
+/// scales the movement update intervals with the smoothed world tick time.
+#[derive(Debug)]
+struct Overload {
+    /// Smoothed world tick time in milliseconds.
+    average_millis: f64,
+    /// The factor on the update intervals (1 = Vanilla).
+    scale: i32,
+    /// Ticks since the scale last changed.
+    since_change: u32,
+}
+
+impl Default for Overload {
+    fn default() -> Overload {
+        Overload {
+            average_millis: 0.0,
+            scale: 1,
+            since_change: 0,
+        }
+    }
+}
+
+impl Overload {
+    /// Ticks between two steps of the scale.
+    const STEP_TICKS: u32 = 20;
+
+    fn update(&mut self, elapsed: Duration, rules: &TrackingRules, world: &str) {
+        let millis = elapsed.as_secs_f64() * 1000.0;
+        self.average_millis = self.average_millis * 0.9 + millis * 0.1;
+        self.since_change = self.since_change.saturating_add(1);
+        let Some(target) = rules.overload_tick_millis.get() else {
+            self.scale = 1;
+            return;
+        };
+        let max = i32::try_from(rules.overload_max_interval_scale)
+            .unwrap_or(1)
+            .max(1);
+        let target = f64::from(target);
+        let scale = if self.average_millis > target && self.scale < max {
+            self.scale + 1
+        } else if self.average_millis < target * 0.6 && self.scale > 1 {
+            self.scale - 1
+        } else {
+            self.scale.min(max)
+        };
+        if scale != self.scale && self.since_change >= Self::STEP_TICKS {
+            if scale > self.scale {
+                log::warn!(
+                    "{world} is overloaded ({:.1} ms per tick): entity movement updates are sent \
+                     every {scale}x their interval",
+                    self.average_millis
+                );
+            } else {
+                log::info!("{world}: entity movement updates every {scale}x their interval");
+            }
+            self.scale = scale;
+            self.since_change = 0;
+        }
     }
 }
 

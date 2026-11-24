@@ -21,6 +21,10 @@ max-players = 500
 # Compression threshold towards clients in bytes (-1 = off) and libdeflate level (1-12).
 compression-threshold = 256
 compression-level = 4
+# Offer Vanillite backends the trusted link: they compress for the client's threshold and the
+# proxy passes their packets on without inflating and deflating them. Other backends (Paper)
+# ignore the offer. Needs the forwarding secret.
+trusted-link = true
 # I/O threads (0 = number of cores).
 io-threads = 0
 # File with the secret shared with the backends (Velocity modern forwarding). Created with a
@@ -101,6 +105,8 @@ pub struct ProxyConfig {
     pub compression_threshold: i32,
     /// libdeflate level (1..=12). Default 4.
     pub compression_level: i32,
+    /// Offer Vanillite backends the trusted, pass-through link. Default true.
+    pub trusted_link: bool,
     /// I/O threads; 0 = cores. Default 0.
     pub io_threads: usize,
     /// Forwarding secret file. Default `forwarding.secret`.
@@ -228,6 +234,7 @@ impl Default for ProxyConfig {
             max_players: 500,
             compression_threshold: 256,
             compression_level: 4,
+            trusted_link: true,
             io_threads: 0,
             forwarding_secret_file: "forwarding.secret".to_owned(),
             secret: None,
@@ -397,6 +404,7 @@ impl ProxyConfig {
             .unwrap_or(256),
             compression_level: i32::try_from(int(&mut t, "compression-level", 4, 1, 12)?)
                 .unwrap_or(4),
+            trusted_link: boolean(&mut t, "trusted-link", true)?,
             io_threads: usize_of(int(&mut t, "io-threads", 0, 0, 1024)?),
             forwarding_secret_file: string(&mut t, "forwarding-secret-file", "forwarding.secret")?,
             secret: None,

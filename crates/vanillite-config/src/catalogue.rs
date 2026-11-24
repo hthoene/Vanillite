@@ -41,6 +41,22 @@ rules! {
             layout: StorageLayout = "layout", Setting, restart = true,
                 vanilla = StorageLayout::Vanilla, spigot = StorageLayout::Spigot;
         }
+        /// Automatic backups: zip archives of the world, made in the background from a fresh
+        /// save while the server runs. Vanilla has none.
+        backup: BackupRules = "backup" {
+            /// Minutes between backups; disabled makes none. The first one is made one interval
+            /// after the start.
+            interval: DisabledOr<u32> = "interval", Setting, range = [1, 525_600],
+                vanilla = DisabledOr::Disabled;
+            /// Backups kept; older ones are deleted after a new one is complete. 0 keeps all.
+            keep: u32 = "keep", Setting, range = [0, 10_000], vanilla = 10;
+            /// Folder of the archives, relative to the server folder.
+            directory: String = "directory", Setting, vanilla = "backups".to_owned();
+            /// Deflate level of the archives, 1 (fast) to 9 (small); 0 stores without
+            /// compression. Region files are compressed already, so higher levels gain little.
+            compression_level: u8 = "compression-level", Performance, range = [0, 9],
+                vanilla = 1;
+        }
         /// The watchdog that detects a hanging server. The hard limit is `max-tick-time` in
         /// `server.properties`.
         watchdog: WatchdogRules = "watchdog" {
@@ -224,6 +240,17 @@ rules! {
             misc_range: VanillaOr<u16> = "misc-range", Performance, range = [8, 512],
                 restart = true, vanilla = VanillaOr::Vanilla, paper = VanillaOr::Value(96),
                 spigot = VanillaOr::Value(96);
+            /// Overload protection: while a world tick takes longer than this many
+            /// milliseconds (smoothed), movement updates of tracked entities (position,
+            /// rotation, head) are sent less often, up to `overload-max-interval-scale` times
+            /// their Vanilla interval, and back at the Vanilla rate once ticks are fast again.
+            /// Spawns, removals and entity data are never delayed. "disabled" keeps Vanilla's
+            /// intervals: an overloaded server then slows down like Vanilla.
+            overload_tick_millis: DisabledOr<u32> = "overload-tick-millis", Performance,
+                range = [1, 1000], vanilla = DisabledOr::Disabled;
+            /// Largest factor on the movement update interval under overload.
+            overload_max_interval_scale: u32 = "overload-max-interval-scale", Performance,
+                range = [1, 20], vanilla = 4;
         }
         /// Server-side checks of player movement (Vanilla's `ServerGamePacketListenerImpl`).
         movement: MovementRules = "movement" {

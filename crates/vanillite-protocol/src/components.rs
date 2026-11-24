@@ -105,6 +105,19 @@ pub mod ids {
     pub const BLOCK_STATE: u16 = find("minecraft:block_state");
     pub const BLOCK_ENTITY_DATA: u16 = find("minecraft:block_entity_data");
     pub const CUSTOM_NAME: u16 = find("minecraft:custom_name");
+    pub const CONTAINER: u16 = find("minecraft:container");
+    pub const REPAIR_COST: u16 = find("minecraft:repair_cost");
+    pub const STORED_ENCHANTMENTS: u16 = find("minecraft:stored_enchantments");
+    pub const DYED_COLOR: u16 = find("minecraft:dyed_color");
+    pub const POTION_CONTENTS: u16 = find("minecraft:potion_contents");
+    pub const SUSPICIOUS_STEW_EFFECTS: u16 = find("minecraft:suspicious_stew_effects");
+    pub const BANNER_PATTERNS: u16 = find("minecraft:banner_patterns");
+    pub const BASE_COLOR: u16 = find("minecraft:base_color");
+    pub const POT_DECORATIONS: u16 = find("minecraft:pot_decorations");
+    pub const WRITTEN_BOOK_CONTENT: u16 = find("minecraft:written_book_content");
+    pub const TRIM: u16 = find("minecraft:trim");
+    pub const CONTAINER_LOOT: u16 = find("minecraft:container_loot");
+    pub const LOCK: u16 = find("minecraft:lock");
 }
 
 /// Validates one component value: `data` must be exactly one value of the stream codec of

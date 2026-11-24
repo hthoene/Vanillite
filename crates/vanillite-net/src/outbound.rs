@@ -7,7 +7,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 use vanillite_multiversion::ClientboundHalf;
 use vanillite_protocol::compress::Codec;
-use vanillite_protocol::frame::{FrameEncoder, encode_body, encode_frame};
+use vanillite_protocol::frame::{FrameEncoder, encode_body, encode_frame, for_each_body};
 use vanillite_protocol::{Packet, SharedPacket};
 
 /// A message to a connection's writer.
@@ -17,6 +17,8 @@ pub(crate) enum Out {
     Body(Vec<u8>),
     /// A shared packet.
     Shared(Arc<SharedPacket>),
+    /// Frames built with [`encode_frame`] for a compression threshold.
+    Batch(Vec<u8>, Option<usize>),
     /// Compression on from here (sent after `login_compression`).
     Compression(i32),
     /// Encryption on from here (after the key exchange).
@@ -34,7 +36,12 @@ pub struct Outbound {
     queued: Arc<AtomicUsize>,
     max_bytes: usize,
     closed: Arc<AtomicBool>,
+    /// The last compression threshold queued ([`NO_COMPRESSION`] = off).
+    threshold: Arc<AtomicUsize>,
 }
+
+/// [`Outbound::threshold`] value for compression off.
+const NO_COMPRESSION: usize = usize::MAX;
 
 impl Outbound {
     pub(crate) fn new(max_bytes: usize) -> (Self, mpsc::UnboundedReceiver<Out>, Arc<AtomicUsize>) {
@@ -46,6 +53,7 @@ impl Outbound {
                 queued: Arc::clone(&queued),
                 max_bytes,
                 closed: Arc::new(AtomicBool::new(false)),
+                threshold: Arc::new(AtomicUsize::new(NO_COMPRESSION)),
             },
             rx,
             queued,
@@ -81,12 +89,30 @@ impl Outbound {
         self.push(Out::Body(body), n)
     }
 
+    /// Queues many packets as one entry: frames built with [`encode_frame`] for `threshold`
+    /// (best this connection's, [`Outbound::threshold`]).
+    pub fn send_batch(&self, frames: Vec<u8>, threshold: Option<usize>) -> bool {
+        let n = frames.len();
+        self.push(Out::Batch(frames, threshold), n)
+    }
+
+    /// The compression threshold the connection's writer uses once everything queued so far
+    /// is written.
+    pub fn threshold(&self) -> Option<usize> {
+        let t = self.threshold.load(Ordering::Relaxed);
+        (t != NO_COMPRESSION).then_some(t)
+    }
+
     /// Queues a shared packet.
     pub fn send_shared(&self, packet: &Arc<SharedPacket>) -> bool {
         self.push(Out::Shared(Arc::clone(packet)), packet.body().len())
     }
 
     pub(crate) fn control(&self, msg: Out) -> bool {
+        if let Out::Compression(t) = msg {
+            let t = usize::try_from(t).unwrap_or(NO_COMPRESSION);
+            self.threshold.store(t, Ordering::Relaxed);
+        }
         self.push(msg, 0)
     }
 
@@ -150,6 +176,28 @@ pub(crate) async fn tcp_writer(
                     }
                     body.len()
                 }
+                Out::Batch(frames, threshold) if adapter.is_some() => {
+                    let res = for_each_body(&frames, threshold, |body| {
+                        if let Some(a) = adapter.as_mut() {
+                            match a.translate(body) {
+                                Ok(Some(t)) => encoder.body(t, &mut buf)?,
+                                Ok(None) => {}
+                                Err(e) => log::debug!("multiversion: untranslatable packet: {e}"),
+                            }
+                        }
+                        Ok(true)
+                    });
+                    if res.is_err() {
+                        open = false;
+                    }
+                    frames.len()
+                }
+                Out::Batch(frames, threshold) => {
+                    if encoder.batch(&frames, threshold, &mut buf).is_err() {
+                        open = false;
+                    }
+                    frames.len()
+                }
                 Out::Shared(p) => {
                     let threshold = encoder.threshold();
                     let cached = p.frame(threshold, |body| {
@@ -209,6 +257,31 @@ pub(crate) async fn virtual_writer(
     let mut adapter: Option<Box<ClientboundHalf>> = None;
     while let Some(msg) = rx.recv().await {
         let (body, queued_len) = match msg {
+            Out::Batch(frames, threshold) => {
+                queued.fetch_sub(frames.len(), Ordering::Relaxed);
+                let mut bodies = Vec::new();
+                if for_each_body(&frames, threshold, |body| {
+                    match adapter.as_mut() {
+                        Some(a) => match a.translate(body) {
+                            Ok(Some(t)) => bodies.push(t.to_vec()),
+                            Ok(None) => {}
+                            Err(e) => log::debug!("multiversion: untranslatable packet: {e}"),
+                        },
+                        None => bodies.push(body.to_vec()),
+                    }
+                    Ok(true)
+                })
+                .is_err()
+                {
+                    break;
+                }
+                for body in bodies {
+                    if tx.send(body).await.is_err() {
+                        return;
+                    }
+                }
+                continue;
+            }
             Out::Body(b) => match adapter.as_mut() {
                 Some(a) => {
                     let n = b.len();
