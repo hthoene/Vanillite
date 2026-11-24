@@ -2,10 +2,11 @@
 
 use std::fmt;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use vanillite_base::ChunkPos;
 use vanillite_base::hash::FxHashMap;
-use vanillite_config::WorldRules;
+use vanillite_config::{TrackingRules, WorldRules};
 use vanillite_game::entities::Entities;
 use vanillite_game::level::Level;
 use vanillite_world::chunks::{Chunks, TicketId};
@@ -17,7 +18,7 @@ use vanillite_base::random::XoroshiroRandom;
 use crate::blocks::LevelEffects;
 use crate::compute::Compute;
 use crate::global::Global;
-use crate::players::{WorldBlocks, WorldPlayers};
+use crate::players::{FanOut, WorldBlocks, WorldPlayers};
 use crate::world_setup::ChunkPackets;
 use crate::world_updates::WorldUpdates;
 
@@ -50,6 +51,10 @@ pub struct ServerWorld {
     tracker: Box<dyn EntityTracker>,
     /// The tracker's result of the last tick.
     entity_updates: TrackerOutput,
+    /// Buffers of the batched sending of `entity_updates`.
+    fan_out: FanOut,
+    /// Overload protection of the tracker.
+    overload: Overload,
     viewers: Vec<Viewer>,
     /// Chunks sent to players this tick, for the tracker.
     chunks_sent: Vec<(EntityId, ChunkPos)>,
@@ -111,6 +116,8 @@ impl ServerWorld {
             level,
             tracker,
             entity_updates: TrackerOutput::default(),
+            fan_out: FanOut::default(),
+            overload: Overload::default(),
             viewers: Vec::new(),
             chunks_sent: Vec::new(),
             players,
@@ -243,6 +250,7 @@ impl ServerWorld {
     /// connection tick.
     pub(crate) fn tick(&mut self, ctx: &mut TickContext<'_>) {
         debug_assert_eq!(ctx.world, self.id);
+        let started = Instant::now();
         self.players.handle_packets(
             &mut self.level,
             &self.rules,
@@ -315,7 +323,12 @@ impl ServerWorld {
             &self.packets.source(&self.level.chunks),
         );
         self.track_entities();
-        WorldPlayers::send_entity_updates(&self.level.entities, &self.entity_updates);
+        WorldPlayers::send_entity_updates(
+            &self.level.entities,
+            &self.entity_updates,
+            ctx.compute,
+            &mut self.fan_out,
+        );
         self.survival.do_tick(
             &mut self.level.entities,
             &self.level.chunks,
@@ -333,6 +346,8 @@ impl ServerWorld {
             },
         );
         self.effects.flush(&self.level.entities);
+        self.overload
+            .update(started.elapsed(), &self.rules.tracking, &self.dimension);
     }
 
     /// `applyEffectsFromBlocks` after the players' moves: pressure plates, tripwire and other
@@ -397,6 +412,7 @@ impl ServerWorld {
             viewers: &self.viewers,
             chunk_pending: &|player, chunk| WorldPlayers::chunk_pending(entities, player, chunk),
             chunks_sent: &self.chunks_sent,
+            update_scale: self.overload.scale,
         };
         self.tracker.update(&input, &mut self.entity_updates);
         self.level.entities.store.clear_removed();
@@ -413,6 +429,67 @@ impl ServerWorld {
         if !skip_chunks {
             self.data.save();
             self.level.save(flush);
+        }
+    }
+}
+
+/// Overload protection of the entity tracker (`performance.entity-tracking.overload-*`):
+/// scales the movement update intervals with the smoothed world tick time.
+#[derive(Debug)]
+struct Overload {
+    /// Smoothed world tick time in milliseconds.
+    average_millis: f64,
+    /// The factor on the update intervals (1 = Vanilla).
+    scale: i32,
+    /// Ticks since the scale last changed.
+    since_change: u32,
+}
+
+impl Default for Overload {
+    fn default() -> Overload {
+        Overload {
+            average_millis: 0.0,
+            scale: 1,
+            since_change: 0,
+        }
+    }
+}
+
+impl Overload {
+    /// Ticks between two steps of the scale.
+    const STEP_TICKS: u32 = 20;
+
+    fn update(&mut self, elapsed: Duration, rules: &TrackingRules, world: &str) {
+        let millis = elapsed.as_secs_f64() * 1000.0;
+        self.average_millis = self.average_millis * 0.9 + millis * 0.1;
+        self.since_change = self.since_change.saturating_add(1);
+        let Some(target) = rules.overload_tick_millis.get() else {
+            self.scale = 1;
+            return;
+        };
+        let max = i32::try_from(rules.overload_max_interval_scale)
+            .unwrap_or(1)
+            .max(1);
+        let target = f64::from(target);
+        let scale = if self.average_millis > target && self.scale < max {
+            self.scale + 1
+        } else if self.average_millis < target * 0.6 && self.scale > 1 {
+            self.scale - 1
+        } else {
+            self.scale.min(max)
+        };
+        if scale != self.scale && self.since_change >= Self::STEP_TICKS {
+            if scale > self.scale {
+                log::warn!(
+                    "{world} is overloaded ({:.1} ms per tick): entity movement updates are sent \
+                     every {scale}x their interval",
+                    self.average_millis
+                );
+            } else {
+                log::info!("{world}: entity movement updates every {scale}x their interval");
+            }
+            self.scale = scale;
+            self.since_change = 0;
         }
     }
 }
