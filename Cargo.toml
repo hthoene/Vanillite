@@ -15,6 +15,7 @@ repository = "https://github.com/hthoene/Vanillite"
 # Internal crates.
 vanillite-abi = { path = "crates/vanillite-abi", version = "0.1.0" }
 vanillite-base = { path = "crates/vanillite-base", version = "0.1.0" }
+vanillite-bedrock = { path = "crates/vanillite-bedrock", version = "0.1.0" }
 vanillite-chunk = { path = "crates/vanillite-chunk", version = "0.1.0" }
 vanillite-command = { path = "crates/vanillite-command", version = "0.1.0" }
 vanillite-config = { path = "crates/vanillite-config", version = "0.1.0" }
@@ -42,11 +43,11 @@ ctrlc = { version = "3.5", features = ["termination"] }
 libc = "0.2"
 libloading = "0.8"
 log = { version = "0.4", features = ["std"] }
-md5 = { package = "md-5", version = "0.10", default-features = false }
+md5 = { package = "md-5", version = "0.11", default-features = false }
 rustc-hash = "2.1"
 serde_json = "1"
-sha1 = { version = "0.10", features = ["oid"] }
-sha2 = { version = "0.10", features = ["oid"] }
+sha1 = { version = "0.11", features = ["oid"] }
+sha2 = { version = "0.11", features = ["oid"] }
 toml = "1"
 
 # External crates: storage (vanillite-storage).
@@ -62,7 +63,8 @@ proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full"] }
 env_logger = { version = "0.11", default-features = false }
-rsa = "0.9"
+rsa = { version = "0.10", features = ["pkcs1v15"] }
+getrandom = { version = "0.4", features = ["sys_rng"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "sync", "macros"] }
 
 # Workspace-wide lints. Input-handling crates (SEC-07) repeat these in their own

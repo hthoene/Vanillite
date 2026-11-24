@@ -438,6 +438,10 @@ pub(crate) fn execute(
             let profiles = profiles(env, source, parsed)?;
             exec::deop(source, global, &profiles)
         }
+        CommandId::SaveAll => Ok(exec::save_all(source, global, false)),
+        CommandId::SaveAllFlush => Ok(exec::save_all(source, global, true)),
+        CommandId::SaveOff => exec::save_switch(source, global, false),
+        CommandId::SaveOn => exec::save_switch(source, global, true),
         CommandId::Stop => Ok(exec::stop(source, global)),
         CommandId::WhitelistOn => exec::whitelist_switch(source, global, true),
         CommandId::WhitelistOff => exec::whitelist_switch(source, global, false),

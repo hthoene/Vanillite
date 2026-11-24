@@ -10,6 +10,7 @@ repository.workspace = true
 
 [dependencies]
 vanillite-base.workspace = true
+vanillite-bedrock.workspace = true
 vanillite-chunk.workspace = true
 vanillite-config.workspace = true
 vanillite-data.workspace = true

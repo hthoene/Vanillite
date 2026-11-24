@@ -10,16 +10,34 @@
 //! [`place`] has Vanilla-exact placement states, survival and replacement rules, and the
 //! blocks that placing or breaking one block adds or removes.
 
+pub mod bell;
+pub mod brewing;
+pub mod container;
+pub mod dispenser;
 pub mod drops;
 pub mod falling;
 pub mod fluid;
+pub mod furnace;
 mod growth;
+pub mod hopper;
+pub mod lectern;
+pub mod note;
+pub mod piston;
 pub mod place;
+pub mod plate;
+pub mod rail;
+pub mod redstone;
+pub mod sculk;
+pub mod sensor;
+pub mod sign;
 mod spread;
+pub mod tnt;
+pub mod tripwire;
 pub mod weather;
 
-use vanillite_base::{BlockPos, Direction};
+use vanillite_base::{BlockPos, Direction, Vec3};
 use vanillite_data::block::{BLOCK_COUNT, BlockId, BlockState, flags, ids};
+use vanillite_world::entity::EntityId;
 use vanillite_worldgen::behaviour::StateExt;
 use vanillite_worldgen::behaviour::{self as shared, Class, class_of_block, tags};
 
@@ -43,6 +61,65 @@ pub type NeighborFn = fn(&mut Level, BlockState, BlockPos, BlockId, bool);
 pub type TickFn = fn(&mut Level, BlockState, BlockPos);
 /// `triggerEvent(state, level, pos, b0, b1)`: whether the event goes to clients.
 pub type EventFn = fn(&mut Level, BlockState, BlockPos, i32, i32) -> bool;
+/// `getSignal` and `getDirectSignal(state, level, pos, direction)`: the signal `state` at `pos`
+/// emits towards the neighbour at `pos - direction`.
+pub type SignalFn = fn(&Level, BlockState, BlockPos, Direction) -> i32;
+/// `getAnalogOutputSignal(state, level, pos, direction)`: what a comparator facing away in
+/// `direction` reads.
+pub type AnalogFn = fn(&Level, BlockState, BlockPos, Direction) -> i32;
+/// `useWithoutItem(state, level, pos, player, hitResult)`.
+pub type UseFn = fn(&mut Level, BlockState, BlockPos, &UseContext) -> Interaction;
+/// `useItemOn(stack, state, level, pos, player, hand, hitResult)`: the stack is the one in
+/// the hand; a handler that uses items shrinks it (creative players keep theirs).
+pub type UseItemFn = fn(
+    &mut Level,
+    BlockState,
+    BlockPos,
+    &UseContext,
+    &mut crate::item::ItemStack,
+) -> ItemInteraction;
+/// `entityInside(state, level, pos, entity, effectApplier, isPrecise)`.
+pub type EntityInsideFn = fn(&mut Level, BlockState, BlockPos, EntityId);
+
+/// What a block learns about a player that uses it with an empty hand (or an item without a
+/// use of its own): `useWithoutItem`'s player and hit result.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UseContext {
+    /// The player.
+    pub player: EntityId,
+    /// `player.getAbilities().mayBuild`.
+    pub may_build: bool,
+    /// The player's yaw, for `player.getDirection()`.
+    pub yaw: f32,
+    /// The clicked face.
+    pub face: Direction,
+    /// The exact hit location.
+    pub hit: Vec3,
+}
+
+/// `InteractionResult` as far as block use goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Interaction {
+    /// `PASS`: the block does nothing; the item's own use runs.
+    Pass,
+    /// `SUCCESS`: the block reacted; the player swings their arm.
+    Success,
+    /// `CONSUME`: the block reacted without an arm swing.
+    Consume,
+    /// `FAIL`.
+    Fail,
+}
+
+/// What `useItemOn` did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ItemInteraction {
+    /// A result of its own (consumes the click unless it is `Pass` or `Fail`).
+    Done(Interaction),
+    /// `TRY_WITH_EMPTY_HAND`: `useWithoutItem` runs for the main hand.
+    TryWithEmptyHand,
+    /// `PASS`: the item's own use runs.
+    Pass,
+}
 
 /// The behaviour of one block.
 #[derive(Clone, Copy, Debug, Default)]
@@ -59,6 +136,18 @@ pub struct BlockBehaviour {
     pub random_tick: Option<TickFn>,
     /// `triggerEvent`.
     pub trigger_event: Option<EventFn>,
+    /// `getSignal`.
+    pub signal: Option<SignalFn>,
+    /// `getDirectSignal`.
+    pub direct_signal: Option<SignalFn>,
+    /// `getAnalogOutputSignal`.
+    pub analog_output: Option<AnalogFn>,
+    /// `useWithoutItem`.
+    pub use_without_item: Option<UseFn>,
+    /// `useItemOn` (`TRY_WITH_EMPTY_HAND` without an entry).
+    pub use_item_on: Option<UseItemFn>,
+    /// `entityInside`.
+    pub entity_inside: Option<EntityInsideFn>,
 }
 
 /// The behaviour table of all blocks.
@@ -167,6 +256,21 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
     } else if weather::weathers(block) {
         b.random_tick = Some(weather::copper_random_tick);
     }
+    redstone::fill(block, &mut b);
+    piston::fill(block, &mut b);
+    rail::fill(block, &mut b);
+    plate::fill(block, &mut b);
+    tripwire::fill(block, &mut b);
+    sensor::fill(block, &mut b);
+    note::fill(block, &mut b);
+    bell::fill(block, &mut b);
+    lectern::fill(block, &mut b);
+    sculk::fill(block, &mut b);
+    tnt::fill(block, &mut b);
+    dispenser::fill(block, &mut b);
+    hopper::fill(block, &mut b);
+    container::fill(block, &mut b);
+    sign::fill(block, &mut b);
     b
 }
 
@@ -214,4 +318,19 @@ pub fn is_face_sturdy(state: BlockState, direction: Direction) -> bool {
 /// The tags block behaviour resolved from the data packs.
 pub fn block_tags() -> &'static shared::BlockTags {
     &tags().blocks
+}
+
+/// The `minecraft:sound_event` id of `name` (without namespace, e.g. `block.lever.click`);
+/// 0 for unknown names.
+pub fn sound_id(name: &str) -> u16 {
+    let mut full = [0u8; 96];
+    let prefix = b"minecraft:";
+    let len = prefix.len() + name.len();
+    if len > full.len() {
+        return 0;
+    }
+    full[..prefix.len()].copy_from_slice(prefix);
+    full[prefix.len()..len].copy_from_slice(name.as_bytes());
+    let full = std::str::from_utf8(&full[..len]).unwrap_or_default();
+    vanillite_data::registry::SOUND_EVENT.id(full).unwrap_or(0)
 }

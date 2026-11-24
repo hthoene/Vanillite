@@ -73,12 +73,13 @@ fn chat(
 ) -> Option<Component> {
     let player = entities.player_mut(id)?;
     let name = player.profile.name.clone();
-    let unpacked =
-        player
-            .connection
-            .chat
-            .chain
-            .unpack(uuid, signature, body, global.chat.enforce_secure);
+    // Virtual connections (Bedrock players) cannot sign; their identity is vouched for.
+    let enforce = global.chat.enforce_secure && !player.connection.is_virtual;
+    let unpacked = player
+        .connection
+        .chat
+        .chain
+        .unpack(uuid, signature, body, enforce);
     let message = match unpacked {
         Ok(message) => message,
         Err(e) => {

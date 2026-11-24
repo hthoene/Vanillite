@@ -53,11 +53,20 @@ them) and named in the report; porting them is part of the switch.
 provisioned by `scripts/testserver/provision.sh`; every Vanillite server is a systemd unit
 `vanillite@<port>` in `/opt/vanillite/<port>`, with Paper's whitelist.
 
+**30001, 30002 and the proxy on 30010 always run the newest green dev.** `vanillite-autodeploy`
+(a systemd timer on the test server, every 2 minutes) builds the newest dev commit whose CI
+workflow passed (`release-fast`, in `/opt/vanillite-build`), announces the
+restart in chat 10 seconds ahead, restarts the instances and rolls back to the previous binary
+if one does not start. The MOTD shows the deployed commit; the deploy log is
+`/var/log/vanillite-autodeploy.log` (`vanillite-autodeploy status`). Don't deploy branches to
+these ports by hand: landing on dev is enough. For a test before landing, use a port in
+30003-30099 and stop it afterwards.
+
 | Command | What |
 |---|---|
 | `cargo xtask testserver provision` | Install or update users, units and the deploy helper (idempotent). |
-| `cargo xtask deploy [--port 30001] [--release]` | Build (`release-fast`, or `release`) and (re)start `vanillite@<port>`. |
-| `cargo xtask testserver status` | Services and listening ports. |
+| `cargo xtask deploy [--port 30003] [--release]` | Build (`release-fast`, or `release`) and (re)start `vanillite@<port>` (not 30001/30002). |
+| `cargo xtask testserver status` | Services, listening ports and the last auto-deploys. |
 | `cargo xtask testserver logs [<port>]` | Follow the log. |
 | `cargo xtask testserver start\|stop\|restart [<port>]` | Control a server; stop also disables it. |
 

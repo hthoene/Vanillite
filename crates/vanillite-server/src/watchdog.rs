@@ -40,8 +40,10 @@ impl Heartbeat {
 /// State the tick loop publishes for the watchdog.
 #[derive(Debug)]
 pub struct WatchState {
-    /// The deadline of the running tick (Vanilla's `nextTickTime`); 0 before the first tick.
-    pub next_tick: AtomicU64,
+    /// Clock time of the last tick start or end; 0 = nothing to watch (before the first tick,
+    /// during shutdown). An overloaded server that falls behind still makes progress; only a
+    /// tick that does not finish (or a server thread that never starts the next one) counts.
+    pub progress: AtomicU64,
     /// Nanoseconds after the deadline before the first warning; 0 = no early warnings.
     pub early_warning: AtomicU64,
     /// Nanoseconds between further warnings.
@@ -53,7 +55,7 @@ impl WatchState {
     /// New state with the given warning settings in seconds.
     pub fn new(early_warning_secs: Option<u32>, interval_secs: u32) -> WatchState {
         let state = WatchState {
-            next_tick: AtomicU64::new(0),
+            progress: AtomicU64::new(0),
             early_warning: AtomicU64::new(0),
             warning_interval: AtomicU64::new(0),
             heartbeats: Mutex::new(Vec::new()),
@@ -148,12 +150,12 @@ impl Watchdog {
 }
 
 fn check(state: &WatchState, clock: &Clock, hard_limit: Option<u64>, last_warning: &mut u64) {
-    let deadline = state.next_tick.load(Ordering::Relaxed);
+    let progress = state.progress.load(Ordering::Relaxed);
     let now = clock.now();
-    if deadline == 0 || now <= deadline {
+    if progress == 0 || now <= progress {
         return;
     }
-    let behind = now - deadline;
+    let behind = now - progress;
     if let Some(limit) = hard_limit
         && behind > limit
     {
