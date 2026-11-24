@@ -906,4 +906,6 @@ fn lerp_discrete(alpha: f32, min: i32, max: i32) -> i32 {
 }
 
 #[cfg(test)]
+mod fuzz_tests;
+#[cfg(test)]
 mod tests;

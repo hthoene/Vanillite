@@ -182,6 +182,7 @@ fn int(nbt: &Compound, key: &str) -> Option<i32> {
 /// Fills the crafter behaviours.
 pub(super) fn fill(block: BlockId, b: &mut BlockBehaviour) {
     if block == ids::CRAFTER {
+        b.use_without_item = Some(use_without_item);
         b.neighbor_changed = Some(neighbor_changed);
         b.tick = Some(tick);
         b.affect_neighbors_after_removal = Some(super::dispenser::container_removed);
@@ -190,6 +191,29 @@ pub(super) fn fill(block: BlockId, b: &mut BlockBehaviour) {
             _ => 0,
         });
     }
+}
+
+/// `CrafterBlock.useWithoutItem`: the crafter menu opens.
+fn use_without_item(
+    level: &mut Level,
+    _: BlockState,
+    pos: BlockPos,
+    ctx: &super::UseContext,
+) -> super::Interaction {
+    if let Some(BlockEntity::Crafter(c)) = level.block_entity(pos) {
+        let title = c.custom_name.clone().unwrap_or_else(|| {
+            vanillite_protocol::text::Component::translatable("container.crafter", vec![])
+        });
+        level.request_menu(crate::menu::container::MenuRequest {
+            player: Some(ctx.player),
+            menu: crate::menu::container::MenuKind::Crafter,
+            storage: crate::menu::container::Storage::Block(pos),
+            title,
+            pos,
+            block: ids::CRAFTER,
+        });
+    }
+    super::Interaction::Success
 }
 
 /// `CrafterBlock.neighborChanged`.

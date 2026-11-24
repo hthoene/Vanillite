@@ -88,6 +88,10 @@ pub enum Kind {
     BrewingStand,
     /// Enchanting tables (their block entity only animates the book).
     EnchantingTable,
+    /// Looms (no block entity).
+    Loom,
+    /// Cartography tables (no block entity).
+    CartographyTable,
 }
 
 /// The container kind of a block.
@@ -113,6 +117,8 @@ pub fn kind_of(block: BlockId) -> Option<Kind> {
         BlockKind::SmithingTableBlock => Kind::SmithingTable,
         BlockKind::BrewingStandBlock => Kind::BrewingStand,
         BlockKind::EnchantingTableBlock => Kind::EnchantingTable,
+        BlockKind::LoomBlock => Kind::Loom,
+        BlockKind::CartographyTableBlock => Kind::CartographyTable,
         _ => return None,
     })
 }
@@ -130,7 +136,9 @@ pub fn size_of(kind: Kind) -> usize {
         | Kind::Anvil
         | Kind::Grindstone
         | Kind::SmithingTable
-        | Kind::EnchantingTable => 0,
+        | Kind::EnchantingTable
+        | Kind::Loom
+        | Kind::CartographyTable => 0,
     }
 }
 
@@ -146,7 +154,9 @@ pub fn new_block_entity(block: BlockId) -> Option<BlockEntity> {
         | Kind::Anvil
         | Kind::Grindstone
         | Kind::SmithingTable
-        | Kind::EnchantingTable => return None,
+        | Kind::EnchantingTable
+        | Kind::Loom
+        | Kind::CartographyTable => return None,
         kind => BlockEntity::Container(Box::new(Container::new(size_of(kind)))),
     })
 }
@@ -388,6 +398,16 @@ pub fn menu_provider(level: &Level, state: BlockState, pos: BlockPos) -> Option<
             Storage::Local,
             title("container.upgrade"),
         )),
+        Kind::Loom => Some(request(
+            MenuKind::Loom,
+            Storage::Local,
+            title("container.loom"),
+        )),
+        Kind::CartographyTable => Some(request(
+            MenuKind::CartographyTable,
+            Storage::Local,
+            title("container.cartography_table"),
+        )),
     }
 }
 
@@ -524,6 +544,11 @@ pub fn pre_remove_side_effects(level: &mut Level, pos: BlockPos, entity: &BlockE
         BlockEntity::Hopper(h) => &h.items,
         BlockEntity::Furnace(f) => &f.items,
         BlockEntity::BrewingStand(b) => &b.items,
+        BlockEntity::Crafter(c) => &c.items,
+        // `CampfireBlockEntity.preRemoveSideEffects`; bookshelves and pots are containers.
+        BlockEntity::Campfire(c) => &c.items,
+        BlockEntity::ChiseledBookshelf(b) => &b.items,
+        BlockEntity::DecoratedPot(p) => std::slice::from_ref(&p.item),
         _ => return,
     };
     let items: Vec<ItemStack> = items.iter().filter(|s| !s.is_empty()).cloned().collect();

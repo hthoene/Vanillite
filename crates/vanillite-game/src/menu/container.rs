@@ -336,7 +336,9 @@ impl ContainerView<'_> {
             let grid = self.menu.local.get(1..10).unwrap_or_default();
             let input = CraftingInput::of(3, 3, grid);
             d.recipes
-                .crafting_for_in(&input, &|m| crate::map::info(self.level, m).map(|i| i.scale))
+                .crafting_for_in(&input, &|m| {
+                    crate::map::info(self.level, m).map(|i| i.scale)
+                })
                 .map(|r| d.recipes.assemble(r, &input))
                 .unwrap_or_default()
         });
@@ -537,7 +539,11 @@ impl MenuSlots for ContainerView<'_> {
 
     fn may_pickup(&self, slot: usize) -> bool {
         match self.menu.source(slot) {
+            // Only the take button (with `mayBuild`) takes the book: Vanilla's slot would hand
+            // a modified client the book (in adventure mode too) and its swap shares the
+            // instance with the lectern.
             Some(Source::CrafterResult) => false,
+            Some(Source::Container(_)) if self.menu.kind == MenuKind::Lectern => false,
             Some(Source::Container(i))
                 if self.menu.kind.is_workstation()
                     && Some(i) == super::workstation::result_slot(self.menu.kind) =>
@@ -834,9 +840,9 @@ impl ContainerView<'_> {
         };
         let grid: Vec<ItemStack> = self.menu.local.get(1..10).unwrap_or_default().to_vec();
         let input = CraftingInput::of(3, 3, &grid);
-        let recipe = data
-            .recipes
-            .crafting_for_in(&input, &|m| crate::map::info(self.level, m).map(|i| i.scale));
+        let recipe = data.recipes.crafting_for_in(&input, &|m| {
+            crate::map::info(self.level, m).map(|i| i.scale)
+        });
         let remaining = data.recipes.remainders(recipe, &input);
         for y in 0..input.height {
             for x in 0..input.width {
@@ -898,7 +904,8 @@ pub fn open(
         _ => Vec::new(),
     };
     let data = match kind {
-        MenuKind::Stonecutter | MenuKind::Loom => vec![-1],
+        // `DataSlot.standalone()` starts at 0; a changed input sets -1.
+        MenuKind::Stonecutter | MenuKind::Loom => vec![0],
         MenuKind::Anvil | MenuKind::Smithing => vec![0],
         MenuKind::Enchantment => vec![0, 0, 0, 0, -1, -1, -1, -1, -1, -1],
         _ => Vec::new(),
