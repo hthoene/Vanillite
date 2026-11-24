@@ -47,11 +47,15 @@ install -d -o vanillite -g vanillite /opt/vanillite
 
 # Players who are whitelisted and OP level 4 on every test server. Paper's whitelist.json and
 # ops.json are the source; vanillite-deploy copies both into every Vanillite instance.
+# "creative": always in creative mode on every test server (see testserver-creative below).
 players='[
   {"uuid": "d97211d5-1155-4faa-95db-7ddec775418c", "name": "de_hannes"},
   {"uuid": "997ddb16-a31a-43b1-8f10-dac13d1f6af6", "name": "Looxtastisch"},
-  {"uuid": "759689da-4bf5-4370-8f27-08382b24bb63", "name": "Tiegertropfen119"}
+  {"uuid": "759689da-4bf5-4370-8f27-08382b24bb63", "name": "Tiegertropfen119", "creative": true}
 ]'
+install -d /etc/vanillite-test
+echo "$players" | jq '[.[] | select(.creative) | {uuid, name}]' \
+    | write_if_changed /etc/vanillite-test/creative-players.json
 
 echo "== rcon (paper-rcon [--port <port>] <command>, password in /root/.paper-rcon)"
 if [ ! -s /root/.paper-rcon ]; then
@@ -134,6 +138,7 @@ Wants=network-online.target
 User=vanillite
 Group=vanillite
 WorkingDirectory=/opt/vanillite/%i
+ExecStartPre=-/usr/local/bin/testserver-creative vanillite /opt/vanillite/%i
 ExecStart=/opt/vanillite/%i/vanillite
 Environment=RUST_BACKTRACE=1
 Restart=on-failure
@@ -150,6 +155,160 @@ ReadWritePaths=/opt/vanillite/%i
 
 [Install]
 WantedBy=multi-user.target
+EOF
+
+echo "== creative players (/etc/vanillite-test/creative-players.json)"
+write_if_changed /usr/local/bin/testserver-creative 755 <<'EOF'
+#!/usr/bin/env python3
+"""Keeps the players in /etc/vanillite-test/creative-players.json in creative mode.
+
+Usage: testserver-creative paper              (Paper timer: gamemode creative for online ones)
+       testserver-creative vanillite <dir>    (Vanillite: player data, before the instance starts
+                                              and whenever the server writes player data)
+Installed by scripts/testserver/provision.sh."""
+import gzip, json, os, re, struct, subprocess, sys
+
+players = json.load(open("/etc/vanillite-test/creative-players.json"))
+
+def paper():
+    online = subprocess.run(["paper-rcon", "list"], capture_output=True, text=True).stdout
+    names = {n.strip() for n in online.partition(":")[2].split(",") if n.strip()}
+    for p in players:
+        if p["name"] in names:
+            subprocess.run(["paper-rcon", "gamemode", "creative", p["name"]], capture_output=True)
+
+# Minimal NBT reader and writer: tags as (type, value).
+def read_tag(b, i, t):
+    fixed = {1: ">b", 2: ">h", 3: ">i", 4: ">q", 5: ">f", 6: ">d"}
+    if t in fixed:
+        n = struct.calcsize(fixed[t])
+        return struct.unpack_from(fixed[t], b, i)[0], i + n
+    if t in (7, 11, 12):
+        n = struct.unpack_from(">i", b, i)[0]
+        f = {7: "b", 11: "i", 12: "q"}[t]
+        size = struct.calcsize(f)
+        return list(struct.unpack_from(">%d%s" % (n, f), b, i + 4)), i + 4 + n * size
+    if t == 8:
+        n = struct.unpack_from(">H", b, i)[0]
+        return b[i + 2:i + 2 + n], i + 2 + n
+    if t == 9:
+        et, n = struct.unpack_from(">bi", b, i)
+        i += 5
+        items = []
+        for _ in range(n):
+            v, i = read_tag(b, i, et)
+            items.append(v)
+        return (et, items), i
+    if t == 10:
+        c = {}
+        while b[i] != 0:
+            ct = b[i]
+            n = struct.unpack_from(">H", b, i + 1)[0]
+            name = b[i + 3:i + 3 + n]
+            v, i = read_tag(b, i + 3 + n, ct)
+            c[name] = (ct, v)
+        return c, i + 1
+    raise ValueError("bad tag type %d" % t)
+
+def write_tag(t, v):
+    fixed = {1: ">b", 2: ">h", 3: ">i", 4: ">q", 5: ">f", 6: ">d"}
+    if t in fixed:
+        return struct.pack(fixed[t], v)
+    if t in (7, 11, 12):
+        return struct.pack(">i%d%s" % (len(v), {7: "b", 11: "i", 12: "q"}[t]), len(v), *v)
+    if t == 8:
+        return struct.pack(">H", len(v)) + v
+    if t == 9:
+        et, items = v
+        return struct.pack(">bi", et, len(items)) + b"".join(write_tag(et, x) for x in items)
+    if t == 10:
+        out = b""
+        for name, (ct, cv) in v.items():
+            out += struct.pack(">bH", ct, len(name)) + name + write_tag(ct, cv)
+        return out + b"\x00"
+    raise ValueError("bad tag type %d" % t)
+
+def read_file(path):
+    b = gzip.decompress(open(path, "rb").read())
+    n = struct.unpack_from(">H", b, 1)[0]
+    return read_tag(b, 3 + n, 10)[0]
+
+def write_file(path, root):
+    tmp = path + ".creative-tmp"
+    with open(tmp, "wb") as f:
+        f.write(gzip.compress(b"\x0a\x00\x00" + write_tag(10, root)))
+    os.replace(tmp, path)
+
+def vanillite(dir):
+    props = open(os.path.join(dir, "server.properties")).read() if os.path.exists(
+        os.path.join(dir, "server.properties")) else ""
+    m = re.search(r"^level-name=(.*)$", props, re.M)
+    world = os.path.join(dir, m.group(1).strip() if m else "world")
+    if not os.path.exists(os.path.join(world, "level.dat")):
+        return
+    data = os.path.join(world, "players", "data")
+    os.makedirs(data, exist_ok=True)
+    for p in players:
+        path = os.path.join(data, p["uuid"] + ".dat")
+        if os.path.exists(path):
+            root = read_file(path)
+            if root.get(b"playerGameType") == (3, 1):
+                continue
+        else:
+            # Never joined: a new player at the world spawn, like the server would place it.
+            spawn = read_file(os.path.join(world, "level.dat"))[b"Data"][1].get(b"spawn", (10, {}))[1]
+            x, y, z = spawn.get(b"pos", (11, [0, 64, 0]))[1]
+            yaw = spawn.get(b"yaw", (5, 0.0))[1]
+            root = {
+                b"Pos": (9, (6, [x + 0.5, float(y), z + 0.5])),
+                b"Rotation": (9, (5, [yaw, 0.0])),
+                b"Dimension": (8, b"minecraft:overworld"),
+            }
+        root[b"playerGameType"] = (3, 1)
+        write_file(path, root)
+        print("creative:", p["name"], path)
+
+if sys.argv[1:2] == ["paper"]:
+    paper()
+elif sys.argv[1:2] == ["vanillite"] and len(sys.argv) == 3:
+    vanillite(sys.argv[2])
+else:
+    sys.exit(__doc__)
+EOF
+write_if_changed /etc/systemd/system/paper-creative.service <<'EOF'
+[Unit]
+Description=Keep the creative test players in creative mode on Paper (testserver-creative)
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/testserver-creative paper
+EOF
+write_if_changed /etc/systemd/system/paper-creative.timer <<'EOF'
+[Unit]
+Description=Run paper-creative.service every 15 seconds
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=15
+AccuracySec=1
+[Install]
+WantedBy=timers.target
+EOF
+# Vanillite overwrites a player's data when they leave: put creative back right after each write.
+write_if_changed /etc/systemd/system/vanillite-creative@.path <<'EOF'
+[Unit]
+Description=Watch the player data of Vanillite instance %i for creative test players
+[Path]
+PathChanged=/opt/vanillite/%i/world/players/data
+[Install]
+WantedBy=multi-user.target
+EOF
+write_if_changed /etc/systemd/system/vanillite-creative@.service <<'EOF'
+[Unit]
+Description=Keep the creative test players in creative mode on Vanillite instance %i
+[Service]
+Type=oneshot
+User=vanillite
+Group=vanillite
+ExecStart=/usr/local/bin/testserver-creative vanillite /opt/vanillite/%i
 EOF
 
 write_if_changed /usr/local/bin/vanillite-deploy 755 <<'EOF'
@@ -206,7 +365,8 @@ if [ "$port" = 30901 ]; then
     systemctl restart "vanillite@$port"
     exit 0
 fi
-systemctl enable --quiet "vanillite@$port"
+systemctl enable --quiet "vanillite@$port" "vanillite-creative@$port.path"
+systemctl start "vanillite-creative@$port.path"
 systemctl restart "vanillite@$port"
 sleep 1
 systemctl --no-pager --lines=10 status "vanillite@$port" || true
@@ -305,6 +465,11 @@ install -d /opt/vanillite/bench/results
 systemctl daemon-reload
 systemctl enable --quiet paper.service
 systemctl is-active --quiet paper.service || systemctl start paper.service
+systemctl enable --quiet --now paper-creative.timer
+for dir in /opt/vanillite/30[0-9][0-9][0-9]; do
+    port=${dir##*/}
+    [ "$port" = 30901 ] || systemctl enable --quiet --now "vanillite-creative@$port.path"
+done
 
 echo "== players (whitelisted and OP 4 on Paper; copied into Vanillite instances on deploy)"
 for _ in $(seq 60); do
