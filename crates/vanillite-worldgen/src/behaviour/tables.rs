@@ -84,6 +84,8 @@ block_tags!(
     wall_post_override,
     walls,
     washed_away_by_fluids,
+    wither_immune,
+    wither_summon_base_blocks,
     wooden_fences,
 );
 

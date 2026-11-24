@@ -9,6 +9,7 @@ use vanillite_data::entity::ids;
 use vanillite_game::entities::is_mob_kind;
 use vanillite_game::level::Level;
 use vanillite_game::level::explosion::BlockInteraction;
+use vanillite_game::mob::boss;
 use vanillite_game::mob::boss::special::{self, is_special_kind};
 use vanillite_game::mob::spawn::{self, SpawnInput, SpawnTable, Spawner};
 use vanillite_game::mob::{
@@ -191,6 +192,11 @@ impl WorldMobs {
         self.ticks += 1;
         let state = &global.level;
         let rules = state.rules().clone();
+        // `WitherSkullBlock.setPlacedBy` of the skulls players placed since the last tick.
+        for pos in std::mem::take(&mut level.output().summon_checks) {
+            let seed = self.seed ^ level.game_time() ^ i64::from(pos.x) << 32 ^ i64::from(pos.z);
+            boss::wither::check_spawn(level, pos, state.difficulty, seed);
+        }
         let has_players = !level.entities.players.is_empty();
         let env = environment(global, dimension, survival);
         self.cx.begin_tick(env, self.settings, has_players);
@@ -264,6 +270,7 @@ impl WorldMobs {
                 ents.despawn(d);
             }
         }
+        boss::wither::sweep_boss_bars(&mut self.cx, &ents, &mut survival.effects);
         level.entities = ents;
         survival.deliver(&mut level.entities, global);
     }
@@ -295,7 +302,14 @@ impl WorldMobs {
                         BlockInteraction::Destroy
                     };
                     // `getIndirectSourceEntity`: a living source caused it itself.
-                    level.explode(e.source, e.source, e.pos, e.radius, interaction);
+                    level.explode_with(
+                        e.source,
+                        e.indirect.or(e.source),
+                        e.pos,
+                        e.radius,
+                        interaction,
+                        e.resistance,
+                    );
                     self.apply_explosion_hurts(level, survival, global, dimension);
                 }
                 WorldAction::SetBlock(pos, block, flags) => {

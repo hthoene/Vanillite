@@ -70,4 +70,8 @@ pub trait PlayLevel {
     fn random_boolean(&mut self) -> bool;
     /// `nextInt(bound)` of the world's random source; `bound` is at least 1.
     fn random_int(&mut self, bound: i32) -> i32;
+    /// `Block.setPlacedBy` of a block a player placed (the wither skull's summon check).
+    fn placed_by(&mut self, pos: BlockPos, state: BlockState) {
+        let _ = (pos, state);
+    }
 }

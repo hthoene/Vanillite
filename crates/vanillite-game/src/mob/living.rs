@@ -795,7 +795,10 @@ fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
             }
         }
     }
-    if let Some(s) = stuck {
+    // `WitherBoss.makeStuckInBlock` does nothing.
+    if let Some(s) = stuck
+        && t.mob_ref().kind != super::Kind::Wither
+    {
         t.mob().fall_distance = 0.0;
         t.mob().stuck_speed = s;
     }
@@ -897,7 +900,9 @@ fn server_ai_step(t: &mut Tick<'_, '_>) {
     if !t.exists() || t.mob_ref().removed {
         return;
     }
-    nav::tick_move_control(t);
+    if !super::boss::move_control(t) {
+        nav::tick_move_control(t);
+    }
     nav::tick_look_control(t);
     let m = t.mob();
     m.jumping = m.jump;

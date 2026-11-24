@@ -149,6 +149,11 @@ pub fn ai_step_override(t: &mut Tick<'_, '_>) -> bool {
             dragon::ai_step(t);
             true
         }
+        Kind::Wither => {
+            // `WitherBoss.aiStep` before `super.aiStep()`.
+            wither::ai_step_before(t);
+            false
+        }
         _ => false,
     }
 }
@@ -173,6 +178,18 @@ pub fn custom_server_ai_step(t: &mut Tick<'_, '_>) {
     }
 }
 
+/// A kind's own `MoveControl.tick` (the wither's `FlyingMoveControl`): returns `true` when it
+/// replaced the ground move control.
+pub fn move_control(t: &mut Tick<'_, '_>) -> bool {
+    match t.mob_ref().kind {
+        Kind::Wither => {
+            wither::move_control(t);
+            true
+        }
+        _ => false,
+    }
+}
+
 /// A kind's own `travel(input)`: returns `true` when it moved the mob itself.
 pub fn travel(t: &mut Tick<'_, '_>, input: vanillite_base::Vec3) -> bool {
     match t.mob_ref().kind {
@@ -188,6 +205,7 @@ pub fn tick_death(t: &mut Tick<'_, '_>) -> bool {
     match t.mob_ref().kind {
         Kind::EnderDragon => dragon::tick_death(t),
         Kind::Warden => warden::tick_death(t),
+        Kind::Wither => wither::tick_death(t),
         _ => false,
     }
 }

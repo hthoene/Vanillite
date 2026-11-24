@@ -781,6 +781,9 @@ impl Digging {
             }
         }
         let placed = ctx.level.block(target);
+        if placed.block() == state.block() {
+            ctx.level.placed_by(target, placed);
+        }
         let sound = placed.block().sound();
         ctx.level.play_sound(
             Some(ctx.actor.network_id),

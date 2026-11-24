@@ -83,20 +83,23 @@ pub fn tick(
 
 /// The synched data of a special entity after the entity's own (ids from 8 on).
 pub fn entity_data(out: &mut Vec<u8>, data: &SpecialData, all: bool) {
-    let _ = (out, data, all);
+    if let SpecialData::WitherSkull(s) = data {
+        wither::skull_entity_data(out, s, all);
+    }
 }
 
 /// The entity NBT of a special entity's kind data; `None` when the entity is not saved.
 pub fn save(data: &SpecialData, out: &mut Compound) -> Option<()> {
-    let _ = (data, out);
+    if let SpecialData::WitherSkull(s) = data {
+        wither::save_skull(s, out);
+    }
     Some(())
 }
 
 /// Reads the kind data of a special entity of `kind`; `None` for other kinds.
 pub fn load(kind: EntityTypeId, tag: &Compound) -> Option<SpecialData> {
-    let _ = tag;
     if kind == ids::WITHER_SKULL {
-        Some(SpecialData::WitherSkull(Box::default()))
+        Some(SpecialData::WitherSkull(Box::new(wither::load_skull(tag))))
     } else if kind == ids::END_CRYSTAL {
         Some(SpecialData::EndCrystal(Box::default()))
     } else if kind == ids::DRAGON_FIREBALL {

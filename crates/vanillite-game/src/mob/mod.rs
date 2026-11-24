@@ -360,10 +360,14 @@ pub struct MobSettings {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ExplosionRequest {
     pub source: Option<EntityId>,
+    /// `getIndirectSourceEntity` when it is not `source` itself (a projectile's owner).
+    pub indirect: Option<EntityId>,
     pub pos: Vec3,
     pub radius: f32,
     /// `ExplosionInteraction.MOB`: blocks only break with `mobGriefing`.
     pub mob: bool,
+    /// The source's `getBlockExplosionResistance`.
+    pub resistance: crate::level::explosion::BlockResistance,
 }
 
 /// A change of the world a mob tick causes; applied right after that tick.
@@ -394,6 +398,9 @@ pub struct MobContext {
     pub has_players: bool,
     /// Entities to remove after the tick (`discard` of other entities).
     pub discarded: Vec<EntityId>,
+    /// The boss bars of entities (the wither's), by entity; see
+    /// [`boss::wither::sweep_boss_bars`].
+    pub boss_bars: vanillite_base::hash::FxHashMap<EntityId, crate::boss_bar::BossBar>,
 }
 
 impl MobContext {
