@@ -1,0 +1,280 @@
+//! A chunk column: sections, light and heightmaps.
+//!
+//! Sections are `Arc`s: a worker snapshots a section by cloning the `Arc`, a write copies only if
+//! a snapshot still holds the old version. Block entities, ticks and entities live in the world.
+
+use std::sync::Arc;
+
+use crate::facts::{self, BiomeId, BlockStateId};
+use crate::heightmap::{HeightmapKind, Heightmaps};
+use crate::light::ChunkLight;
+use crate::section::Section;
+
+/// Highest number of sections a dimension can have (4064 blocks).
+pub const MAX_SECTIONS: usize = 254;
+
+/// One chunk column.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Chunk {
+    min_section: i32,
+    sections: Box<[Arc<Section>]>,
+    light: ChunkLight,
+    heightmaps: Heightmaps,
+}
+
+impl Chunk {
+    /// An empty chunk (air, one biome) from `min_y` with `height` blocks; both multiples of 16.
+    /// It keeps the heightmaps of a live chunk. All empty sections share one allocation until
+    /// written.
+    pub fn new(min_y: i32, height: u32, biome: BiomeId, air: BlockStateId) -> Self {
+        assert!(
+            min_y % 16 == 0 && height.is_multiple_of(16),
+            "chunk bounds must be section aligned"
+        );
+        let count = (height / 16) as usize;
+        assert!(count <= MAX_SECTIONS, "too many sections");
+        let empty = Arc::new(Section::new(air, biome));
+        Self {
+            min_section: min_y >> 4,
+            sections: vec![empty; count].into_boxed_slice(),
+            light: ChunkLight::new(count),
+            heightmaps: Heightmaps::new(height, &HeightmapKind::LIVE),
+        }
+    }
+
+    /// A chunk from parts; the heightmaps are primed from the blocks.
+    pub fn from_sections(min_section: i32, sections: Vec<Arc<Section>>, light: ChunkLight) -> Self {
+        assert!(sections.len() <= MAX_SECTIONS, "too many sections");
+        assert_eq!(
+            light.len(),
+            sections.len() + 2,
+            "light needs sections + 2 layers"
+        );
+        let height = (sections.len() * 16) as u32;
+        let mut chunk = Self {
+            min_section,
+            sections: sections.into_boxed_slice(),
+            light,
+            heightmaps: Heightmaps::new(height, &HeightmapKind::LIVE),
+        };
+        chunk.prime_heightmaps();
+        chunk
+    }
+
+    /// Lowest block Y.
+    #[inline]
+    pub fn min_y(&self) -> i32 {
+        self.min_section * 16
+    }
+
+    /// Lowest section Y.
+    #[inline]
+    pub fn min_section(&self) -> i32 {
+        self.min_section
+    }
+
+    /// Height in blocks.
+    #[inline]
+    pub fn height(&self) -> u32 {
+        (self.sections.len() * 16) as u32
+    }
+
+    /// Sections from the bottom.
+    #[inline]
+    pub fn sections(&self) -> &[Arc<Section>] {
+        &self.sections
+    }
+
+    /// Section `index` for writing; copies it if a snapshot shares it. Writing blocks through
+    /// this skips the heightmaps; call [`prime_heightmaps`](Self::prime_heightmaps) afterwards.
+    #[inline]
+    pub fn section_mut(&mut self, index: usize) -> &mut Section {
+        Arc::make_mut(&mut self.sections[index])
+    }
+
+    /// Light.
+    #[inline]
+    pub fn light(&self) -> &ChunkLight {
+        &self.light
+    }
+
+    /// Light, mutable.
+    #[inline]
+    pub fn light_mut(&mut self) -> &mut ChunkLight {
+        &mut self.light
+    }
+
+    /// Heightmaps.
+    #[inline]
+    pub fn heightmaps(&self) -> &Heightmaps {
+        &self.heightmaps
+    }
+
+    /// Heightmaps, mutable.
+    #[inline]
+    pub fn heightmaps_mut(&mut self) -> &mut Heightmaps {
+        &mut self.heightmaps
+    }
+
+    #[inline]
+    fn section_index(&self, y: i32) -> Option<usize> {
+        usize::try_from((y >> 4) - self.min_section)
+            .ok()
+            .filter(|&index| index < self.sections.len())
+    }
+
+    /// Block state at local x/z (0..16) and world y; `None` outside the chunk's height.
+    #[inline]
+    pub fn block(&self, x: u32, y: i32, z: u32) -> Option<BlockStateId> {
+        let index = self.section_index(y)?;
+        Some(self.sections[index].block(x, (y & 15) as u32, z))
+    }
+
+    /// Sets a block state at local x/z and world y like `LevelChunk.setBlockState`: summary and
+    /// heightmaps follow. Returns the previous state, or `None` if nothing changed or y is outside.
+    pub fn set_block(
+        &mut self,
+        x: u32,
+        y: i32,
+        z: u32,
+        state: BlockStateId,
+    ) -> Option<BlockStateId> {
+        let index = self.section_index(y)?;
+        let local_y = (y & 15) as u32;
+        let section = &self.sections[index];
+        let state_flags = facts::block_flags(state);
+        if (section.summary().is_empty() && state_flags & facts::AIR != 0)
+            || section.block(x, local_y, z) == state
+        {
+            return None;
+        }
+        let old = Arc::make_mut(&mut self.sections[index]).set_block(x, local_y, z, state);
+        for kind in HeightmapKind::LIVE {
+            self.update_heightmap(kind, x, y, z, state_flags);
+        }
+        Some(old)
+    }
+
+    /// `Heightmap.update` for one column after a change at `y`.
+    fn update_heightmap(&mut self, kind: HeightmapKind, x: u32, y: i32, z: u32, flags: u8) {
+        let min_y = self.min_y();
+        let Some(map) = self.heightmaps.get(kind) else {
+            return;
+        };
+        let first_available = map.get(x, z) as i32 + min_y;
+        if y <= first_available - 2 {
+            return;
+        }
+        let new_height = if kind.matches(flags) {
+            if y < first_available {
+                return;
+            }
+            y + 1
+        } else if first_available - 1 == y {
+            self.highest_matching(kind, x, z, y - 1)
+                .map_or(min_y, |found| found + 1)
+        } else {
+            return;
+        };
+        if let Some(map) = self.heightmaps.get_mut(kind) {
+            map.set(x, z, (new_height - min_y) as u32);
+        }
+    }
+
+    /// Highest Y at or below `from` in column x/z whose block matches `kind`; skips empty sections.
+    fn highest_matching(&self, kind: HeightmapKind, x: u32, z: u32, from: i32) -> Option<i32> {
+        let top = self.section_index(from.min(self.min_y() + self.height() as i32 - 1))?;
+        for index in (0..=top).rev() {
+            let section = &self.sections[index];
+            if section.summary().is_empty() {
+                continue;
+            }
+            let base = (self.min_section + index as i32) * 16;
+            let start = if index == top {
+                (from - base) as u32
+            } else {
+                15
+            };
+            for local_y in (0..=start).rev() {
+                if kind.matches(facts::block_flags(section.block(x, local_y, z))) {
+                    return Some(base + local_y as i32);
+                }
+            }
+        }
+        None
+    }
+
+    /// Recomputes all kept heightmaps from the blocks (`Heightmap.primeHeightmaps`).
+    pub fn prime_heightmaps(&mut self) {
+        let min_y = self.min_y();
+        let top = min_y + self.height() as i32 - 1;
+        for kind in HeightmapKind::ALL {
+            if self.heightmaps.get(kind).is_none() {
+                continue;
+            }
+            for z in 0..16 {
+                for x in 0..16 {
+                    let height = self
+                        .highest_matching(kind, x, z, top)
+                        .map_or(min_y, |y| y + 1);
+                    if let Some(map) = self.heightmaps.get_mut(kind) {
+                        map.set(x, z, (height - min_y) as u32);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{self, AIR, FLOWER, LEAVES, STONE, WATER};
+
+    fn height(chunk: &Chunk, kind: HeightmapKind, x: u32, z: u32) -> i32 {
+        chunk.heightmaps().get(kind).unwrap().get(x, z) as i32 + chunk.min_y()
+    }
+
+    #[test]
+    fn heightmaps_follow_changes_and_match_priming() {
+        test_support::install();
+        let mut chunk = Chunk::new(-64, 384, 0, AIR);
+        let shared = Arc::clone(&chunk.sections()[0]);
+        assert_eq!(chunk.set_block(1, -64, 1, AIR), None);
+        assert_eq!(chunk.set_block(1, 10, 1, STONE), Some(AIR));
+        assert_eq!(chunk.set_block(1, 10, 1, STONE), None);
+        chunk.set_block(1, 11, 1, WATER);
+        chunk.set_block(1, 12, 1, LEAVES);
+        chunk.set_block(1, 13, 1, FLOWER);
+        assert_eq!(height(&chunk, HeightmapKind::WorldSurface, 1, 1), 14);
+        assert_eq!(height(&chunk, HeightmapKind::MotionBlocking, 1, 1), 13);
+        assert_eq!(
+            height(&chunk, HeightmapKind::MotionBlockingNoLeaves, 1, 1),
+            12
+        );
+        assert_eq!(height(&chunk, HeightmapKind::OceanFloor, 1, 1), 13);
+        assert_eq!(height(&chunk, HeightmapKind::WorldSurface, 0, 0), -64);
+
+        chunk.set_block(1, 13, 1, AIR);
+        chunk.set_block(1, 12, 1, AIR);
+        chunk.set_block(1, 11, 1, AIR);
+        assert_eq!(height(&chunk, HeightmapKind::WorldSurface, 1, 1), 11);
+        chunk.set_block(1, 10, 1, AIR);
+        assert_eq!(height(&chunk, HeightmapKind::WorldSurface, 1, 1), -64);
+
+        chunk.set_block(3, 200, 4, STONE);
+        chunk.set_block(3, -30, 4, WATER);
+        chunk.set_block(3, 200, 4, AIR);
+        let primed = {
+            let mut copy = chunk.clone();
+            copy.prime_heightmaps();
+            copy
+        };
+        assert_eq!(primed.heightmaps(), chunk.heightmaps());
+        assert_eq!(height(&chunk, HeightmapKind::MotionBlocking, 3, 4), -29);
+        assert_eq!(height(&chunk, HeightmapKind::OceanFloor, 3, 4), -64);
+        // Writes copied the shared empty section instead of changing it.
+        assert!(shared.summary().is_empty());
+        assert_eq!(chunk.block(1, 400, 1), None);
+    }
+}
