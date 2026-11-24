@@ -37,13 +37,42 @@ pub struct LevelChange {
     pub new: u8,
 }
 
+/// Level of block ticking chunks (`ChunkLevel.byStatus(BLOCK_TICKING)`).
+pub const BLOCK_TICKING_LEVEL: u8 = 32;
+/// Level of entity ticking chunks (`ChunkLevel.byStatus(ENTITY_TICKING)`).
+pub const ENTITY_TICKING_LEVEL: u8 = 31;
+
 /// The ticket levels of one world.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct TicketLevels {
     counts: FxHashMap<ChunkPos, Box<[u16; UNLOADED as usize]>>,
+    /// Levels above this are not tracked (they read as [`UNLOADED`]).
+    max: u8,
+}
+
+impl Default for TicketLevels {
+    fn default() -> Self {
+        TicketLevels::with_max(MAX_LEVEL)
+    }
 }
 
 impl TicketLevels {
+    /// Levels that track only chunks up to `max` (at most [`MAX_LEVEL`]): the simulation
+    /// distance needs levels up to [`BLOCK_TICKING_LEVEL`].
+    pub fn with_max(max: u8) -> Self {
+        TicketLevels {
+            counts: FxHashMap::default(),
+            max: max.min(MAX_LEVEL),
+        }
+    }
+
+    /// Every tracked chunk with its level.
+    pub fn iter(&self) -> impl Iterator<Item = (ChunkPos, u8)> + '_ {
+        self.counts
+            .iter()
+            .map(|(&pos, counts)| (pos, lowest(counts)))
+    }
+
     /// The level of a chunk.
     #[inline]
     pub fn level(&self, pos: ChunkPos) -> u8 {
@@ -63,10 +92,10 @@ impl TicketLevels {
     }
 
     fn apply(&mut self, center: ChunkPos, level: u8, add: bool, changes: &mut Vec<LevelChange>) {
-        if level > MAX_LEVEL {
+        if level > self.max {
             return;
         }
-        let reach = i32::from(MAX_LEVEL - level);
+        let reach = i32::from(self.max - level);
         for dz in -reach..=reach {
             for dx in -reach..=reach {
                 let pos = ChunkPos::new(center.x + dx, center.z + dz);

@@ -15,6 +15,10 @@
 //! status. Chunks waiting for a neighbour are parked on it and checked again only when it makes
 //! progress. Steps with a block write radius (features) take their neighbours exclusively;
 //! light results combine by maximum and need no exclusive access.
+//!
+//! Full chunks carry their scheduled block and fluid ticks in the world's [`LevelTicks`] while
+//! they are live; they go back into the chunk when it is saved or unloaded. Simulation tickets
+//! (Vanilla's `SimulationChunkTracker`) decide which chunks tick.
 
 pub mod levels;
 
@@ -29,7 +33,12 @@ use vanillite_base::{BlockPos, ChunkPos};
 use vanillite_chunk::slots::{ChunkGenerator, ChunkStorage, LightEngine, Neighbours, WorldInfo};
 use vanillite_chunk::{BlockStateId, ChunkStatus, ProtoChunk};
 
-pub use levels::{FULL_LEVEL, LevelChange, MAX_LEVEL, TicketLevels, required_status};
+pub use levels::{
+    BLOCK_TICKING_LEVEL, ENTITY_TICKING_LEVEL, FULL_LEVEL, LevelChange, MAX_LEVEL, TicketLevels,
+    required_status,
+};
+
+use crate::ticks::{LevelTicks, ScheduledTick, TickPriority};
 
 /// Runs background jobs; the server's compute pool, or inline in tests.
 pub trait Executor: Send + Sync {
@@ -75,6 +84,8 @@ pub struct ChunkSettings {
     pub unload_delay: u64,
     /// Background jobs (loads, generation steps, light) in flight at once.
     pub max_jobs: usize,
+    /// Simulation distance in chunks (2..=32): chunks this far from a player tick.
+    pub simulation_distance: i32,
 }
 
 impl Default for ChunkSettings {
@@ -83,6 +94,7 @@ impl Default for ChunkSettings {
             view_distance: 10,
             unload_delay: 100,
             max_jobs: 64,
+            simulation_distance: 10,
         }
     }
 }
@@ -168,6 +180,21 @@ pub struct Chunks {
     light_changes: FxHashSet<ChunkPos>,
     block_changes: Vec<BlockPos>,
     tick: u64,
+    /// Simulation tickets and their levels.
+    simulation: TicketLevels,
+    simulation_tickets: FxHashMap<TicketId, (ChunkPos, u8)>,
+    /// Level changes of the simulation tickets (not used, kept to reuse the buffer).
+    simulation_changes: Vec<LevelChange>,
+    /// Scheduled block ticks of the live chunks.
+    block_ticks: LevelTicks,
+    /// Scheduled fluid ticks of the live chunks.
+    fluid_ticks: LevelTicks,
+    /// The world's game time, for scheduling and saving ticks.
+    game_time: i64,
+    /// The level's sub-tick counter (`nextSubTickCount`).
+    sub_tick: i64,
+    /// Live chunks with post-processing marks not handled yet.
+    post_process: Vec<ChunkPos>,
 }
 
 impl fmt::Debug for Chunks {
@@ -188,6 +215,7 @@ impl Chunks {
             info,
             settings: ChunkSettings {
                 view_distance: settings.view_distance.clamp(2, 32),
+                simulation_distance: settings.simulation_distance.clamp(2, 32),
                 ..settings
             },
             slots,
@@ -207,6 +235,14 @@ impl Chunks {
             light_changes: FxHashSet::default(),
             block_changes: Vec::new(),
             tick: 0,
+            simulation: TicketLevels::with_max(BLOCK_TICKING_LEVEL),
+            simulation_tickets: FxHashMap::default(),
+            simulation_changes: Vec::new(),
+            block_ticks: LevelTicks::default(),
+            fluid_ticks: LevelTicks::default(),
+            game_time: 0,
+            sub_tick: 0,
+            post_process: Vec::new(),
         }
     }
 
@@ -253,6 +289,59 @@ impl Chunks {
     /// The level of a chunk.
     pub fn level(&self, pos: ChunkPos) -> u8 {
         self.levels.level(pos)
+    }
+
+    /// Adds a simulation ticket: chunks within `31 - level` of `pos` tick entities and random
+    /// ticks, one chunk further block ticks.
+    pub fn add_simulation_ticket(&mut self, pos: ChunkPos, level: u8) -> TicketId {
+        let id = TicketId(self.next_ticket);
+        self.next_ticket += 1;
+        self.simulation_tickets.insert(id, (pos, level));
+        self.simulation
+            .add(pos, level, &mut self.simulation_changes);
+        self.simulation_changes.clear();
+        id
+    }
+
+    /// Removes a simulation ticket.
+    pub fn remove_simulation_ticket(&mut self, id: TicketId) {
+        if let Some((pos, level)) = self.simulation_tickets.remove(&id) {
+            self.simulation
+                .remove(pos, level, &mut self.simulation_changes);
+            self.simulation_changes.clear();
+        }
+    }
+
+    /// The simulation ticket level that lets a player's surroundings tick
+    /// (`DistanceManager.getPlayerTicketLevel`).
+    pub fn player_simulation_level(&self) -> u8 {
+        (ENTITY_TICKING_LEVEL as i32 - self.settings.simulation_distance).max(0) as u8
+    }
+
+    /// Whether a chunk is full and loaded to block ticking (Vanilla's ticking chunk).
+    fn is_ticking_chunk(&self, pos: ChunkPos) -> bool {
+        self.holders.get(&pos).is_some_and(|h| {
+            h.level <= BLOCK_TICKING_LEVEL
+                && h.chunk
+                    .as_ref()
+                    .is_some_and(|c| c.status == ChunkStatus::Full)
+        })
+    }
+
+    /// Whether scheduled ticks run in a chunk (`isPositionTickingWithEntitiesLoaded`).
+    pub fn is_block_ticking(&self, pos: ChunkPos) -> bool {
+        tick_check(&self.holders, &self.simulation, pos)
+    }
+
+    /// The chunks that get random ticks this tick (`forEachBlockTickingChunk`: entity ticking
+    /// by simulation level and a ticking chunk).
+    pub fn random_ticking_chunks(&self, out: &mut Vec<ChunkPos>) {
+        out.extend(
+            self.simulation
+                .iter()
+                .filter(|&(pos, level)| level <= ENTITY_TICKING_LEVEL && self.is_ticking_chunk(pos))
+                .map(|(pos, _)| pos),
+        );
     }
 
     fn apply_level_changes(&mut self) {
@@ -359,6 +448,7 @@ impl Chunks {
                     holder.chunk = Some(Arc::new(chunk));
                     holder.busy = false;
                     holder.dirty |= dirty;
+                    self.promote(pos);
                     self.wake(pos);
                 }
             }
@@ -589,6 +679,7 @@ impl Chunks {
                     }
                     holder.dirty = true;
                 }
+                self.promote(pos);
                 self.wake(pos);
                 return;
             }
@@ -686,6 +777,25 @@ impl Chunks {
         }
     }
 
+    /// Makes a chunk that just became full live: its stored ticks move into the world's tick
+    /// queues and its post-processing marks wait for its neighbours.
+    fn promote(&mut self, pos: ChunkPos) {
+        let Some(chunk) = self.holders.get_mut(&pos).and_then(|h| h.chunk.as_mut()) else {
+            return;
+        };
+        if chunk.status != ChunkStatus::Full {
+            return;
+        }
+        let chunk = Arc::make_mut(chunk);
+        let blocks = std::mem::take(&mut chunk.block_ticks);
+        let fluids = std::mem::take(&mut chunk.fluid_ticks);
+        if !chunk.post_processing.is_empty() {
+            self.post_process.push(pos);
+        }
+        self.block_ticks.add_container(pos, &blocks, self.game_time);
+        self.fluid_ticks.add_container(pos, &fluids, self.game_time);
+    }
+
     fn unload(&mut self) {
         let now = self.tick;
         let mut ready = Vec::new();
@@ -701,9 +811,23 @@ impl Chunks {
         let mut save = Vec::new();
         for pos in ready {
             self.unload_candidates.remove(&pos);
-            let Some(holder) = self.holders.remove(&pos) else {
+            let Some(mut holder) = self.holders.remove(&pos) else {
                 continue;
             };
+            if let Some(chunk) = holder
+                .chunk
+                .as_mut()
+                .filter(|c| c.status == ChunkStatus::Full)
+            {
+                let blocks = self.block_ticks.remove_container(pos, self.game_time);
+                let fluids = self.fluid_ticks.remove_container(pos, self.game_time);
+                if holder.dirty {
+                    let chunk = Arc::make_mut(chunk);
+                    chunk.block_ticks = blocks;
+                    chunk.fluid_ticks = fluids;
+                }
+                self.post_process.retain(|&p| p != pos);
+            }
             if let Some(waiters) = self.waiters.remove(&pos) {
                 for waiter in waiters {
                     self.enqueue(waiter);
@@ -748,12 +872,17 @@ impl Chunks {
     /// (shutdown); otherwise the saves run in the background.
     pub fn save_all(&mut self, flush: bool) {
         let mut chunks = Vec::new();
-        for holder in self.holders.values_mut() {
+        for (&pos, holder) in &mut self.holders {
             if holder.dirty
                 && !holder.busy
-                && let Some(chunk) = &holder.chunk
+                && let Some(chunk) = &mut holder.chunk
             {
                 holder.dirty = false;
+                if chunk.status == ChunkStatus::Full {
+                    let chunk = Arc::make_mut(chunk);
+                    chunk.block_ticks = self.block_ticks.pack(pos, self.game_time);
+                    chunk.fluid_ticks = self.fluid_ticks.pack(pos, self.game_time);
+                }
                 chunks.push(Arc::clone(chunk));
             }
         }
@@ -820,6 +949,151 @@ impl Chunks {
         out.append(&mut self.block_changes);
     }
 
+    /// Live chunks whose post-processing marks can be handled now (their 3 × 3 area is full),
+    /// with the marks; the marks are removed from the chunks.
+    pub fn take_post_processing(&mut self, out: &mut Vec<(ChunkPos, Vec<BlockPos>)>) {
+        let mut index = 0;
+        while index < self.post_process.len() {
+            let pos = self.post_process[index];
+            let ready = (-1..=1).all(|dz| {
+                (-1..=1).all(|dx| self.chunk(ChunkPos::new(pos.x + dx, pos.z + dz)).is_some())
+            });
+            if !ready {
+                index += 1;
+                continue;
+            }
+            self.post_process.swap_remove(index);
+            if let Some(holder) = self.holders.get_mut(&pos)
+                && let Some(chunk) = holder.chunk.as_mut()
+            {
+                let marks = std::mem::take(&mut Arc::make_mut(chunk).post_processing);
+                holder.dirty = true;
+                out.push((pos, marks));
+            }
+        }
+    }
+
+    // --- Scheduled ticks -----------------------------------------------------------------
+
+    /// The game time ticks are scheduled and saved against.
+    pub fn game_time(&self) -> i64 {
+        self.game_time
+    }
+
+    /// Sets the game time (once per tick, by the world).
+    pub fn set_game_time(&mut self, game_time: i64) {
+        self.game_time = game_time;
+    }
+
+    fn new_tick(
+        &mut self,
+        pos: BlockPos,
+        kind: u16,
+        delay: i32,
+        priority: TickPriority,
+    ) -> ScheduledTick {
+        let sub_tick = self.sub_tick;
+        self.sub_tick += 1;
+        ScheduledTick {
+            kind,
+            pos,
+            trigger: self.game_time + i64::from(delay),
+            priority,
+            sub_tick,
+        }
+    }
+
+    fn mark_dirty(&mut self, chunk: ChunkPos) {
+        if let Some(holder) = self.holders.get_mut(&chunk) {
+            holder.dirty = true;
+        }
+    }
+
+    /// `scheduleTick(pos, block, delay, priority)`; `block` is a block id. Ignored outside live
+    /// chunks or if the block already has a tick there. The sub-tick counter advances either
+    /// way, as in Vanilla.
+    pub fn schedule_block_tick(
+        &mut self,
+        pos: BlockPos,
+        block: u16,
+        delay: i32,
+        priority: TickPriority,
+    ) {
+        let tick = self.new_tick(pos, block, delay, priority);
+        if self.block_ticks.schedule(tick) {
+            self.mark_dirty(pos.chunk());
+        }
+    }
+
+    /// `scheduleTick(pos, fluid, delay, priority)`; `fluid` is a fluid id.
+    pub fn schedule_fluid_tick(
+        &mut self,
+        pos: BlockPos,
+        fluid: u16,
+        delay: i32,
+        priority: TickPriority,
+    ) {
+        let tick = self.new_tick(pos, fluid, delay, priority);
+        if self.fluid_ticks.schedule(tick) {
+            self.mark_dirty(pos.chunk());
+        }
+    }
+
+    /// `getBlockTicks().hasScheduledTick(pos, block)`.
+    pub fn has_block_tick(&self, pos: BlockPos, block: u16) -> bool {
+        self.block_ticks.has_scheduled(pos, block)
+    }
+
+    /// `getFluidTicks().hasScheduledTick(pos, fluid)`.
+    pub fn has_fluid_tick(&self, pos: BlockPos, fluid: u16) -> bool {
+        self.fluid_ticks.has_scheduled(pos, fluid)
+    }
+
+    /// `getBlockTicks().willTickThisTick(pos, block)`.
+    pub fn block_tick_runs_this_tick(&mut self, pos: BlockPos, block: u16) -> bool {
+        self.block_ticks.will_tick_this_tick(pos, block)
+    }
+
+    /// Collects the block ticks due now (at most `max`) in Vanilla's order; run them with
+    /// [`Self::next_block_tick`].
+    pub fn collect_block_ticks(&mut self, max: usize) {
+        let mut drained = Vec::new();
+        let (holders, simulation) = (&self.holders, &self.simulation);
+        let ticking = |pos: ChunkPos| tick_check(holders, simulation, pos);
+        self.block_ticks
+            .collect(self.game_time, max, ticking, |pos| drained.push(pos));
+        for pos in drained {
+            self.mark_dirty(pos);
+        }
+    }
+
+    /// Collects the fluid ticks due now, like [`Self::collect_block_ticks`].
+    pub fn collect_fluid_ticks(&mut self, max: usize) {
+        let mut drained = Vec::new();
+        let (holders, simulation) = (&self.holders, &self.simulation);
+        let ticking = |pos: ChunkPos| tick_check(holders, simulation, pos);
+        self.fluid_ticks
+            .collect(self.game_time, max, ticking, |pos| drained.push(pos));
+        for pos in drained {
+            self.mark_dirty(pos);
+        }
+    }
+
+    /// The next collected block tick: position and block id.
+    pub fn next_block_tick(&mut self) -> Option<(BlockPos, u16)> {
+        self.block_ticks.next_to_run()
+    }
+
+    /// The next collected fluid tick: position and fluid id.
+    pub fn next_fluid_tick(&mut self) -> Option<(BlockPos, u16)> {
+        self.fluid_ticks.next_to_run()
+    }
+
+    /// Scheduled block and fluid ticks of the live chunks.
+    pub fn scheduled_ticks(&self) -> (usize, usize) {
+        (self.block_ticks.count(), self.fluid_ticks.count())
+    }
+
     /// Full chunks whose light changed since the last call (for light update packets).
     pub fn take_light_changes(&mut self, out: &mut Vec<ChunkPos>) {
         out.extend(self.light_changes.drain());
@@ -857,4 +1131,19 @@ impl Chunks {
             );
         }
     }
+}
+
+/// [`Chunks::is_block_ticking`] over the fields, for use while the tick queues are borrowed.
+fn tick_check(
+    holders: &FxHashMap<ChunkPos, Holder>,
+    simulation: &TicketLevels,
+    pos: ChunkPos,
+) -> bool {
+    simulation.level(pos) <= BLOCK_TICKING_LEVEL
+        && holders.get(&pos).is_some_and(|h| {
+            h.level <= BLOCK_TICKING_LEVEL
+                && h.chunk
+                    .as_ref()
+                    .is_some_and(|c| c.status == ChunkStatus::Full)
+        })
 }

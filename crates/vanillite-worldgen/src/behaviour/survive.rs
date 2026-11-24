@@ -12,10 +12,10 @@ use super::{
     SupportType, can_attach_multiface, can_support_center, can_support_rigid_block, is_face_sturdy,
     is_solid, raw_brightness,
 };
-use crate::feature::region::WorldGenRegion;
+use super::BlockLevel;
 
 /// `state.canSurvive(level, pos)`.
-pub(crate) fn can_survive(level: &WorldGenRegion<'_>, state: BlockState, pos: BlockPos) -> bool {
+pub(crate) fn can_survive(level: &impl BlockLevel, state: BlockState, pos: BlockPos) -> bool {
     let class = class_of(state);
     let t = &tags().blocks;
     match class {
@@ -237,13 +237,13 @@ pub(crate) fn can_survive(level: &WorldGenRegion<'_>, state: BlockState, pos: Bl
 
 /// The face of `pos` towards `direction` is sturdy (`isFaceSturdy` with `SupportType.FULL`).
 #[inline]
-fn sturdy_at(level: &WorldGenRegion<'_>, pos: BlockPos, direction: Direction) -> bool {
+fn sturdy_at(level: &impl BlockLevel, pos: BlockPos, direction: Direction) -> bool {
     is_face_sturdy(level.block(pos), direction, SupportType::Full)
 }
 
 /// `VegetationBlock.canSurvive`: `mayPlaceOn` the block below.
 fn vegetation_can_survive(
-    level: &WorldGenRegion<'_>,
+    level: &impl BlockLevel,
     class: Class,
     state: BlockState,
     pos: BlockPos,
@@ -255,7 +255,7 @@ fn vegetation_can_survive(
 /// `DoublePlantBlock.canSurvive`: the lower half like vegetation, the upper half on its lower
 /// half.
 fn double_plant_can_survive(
-    level: &WorldGenRegion<'_>,
+    level: &impl BlockLevel,
     class: Class,
     state: BlockState,
     pos: BlockPos,
@@ -268,14 +268,14 @@ fn double_plant_can_survive(
 }
 
 /// The block below is the lower half of the same double block.
-fn upper_half_on_lower(level: &WorldGenRegion<'_>, state: BlockState, pos: BlockPos) -> bool {
+fn upper_half_on_lower(level: &impl BlockLevel, state: BlockState, pos: BlockPos) -> bool {
     let below = level.block(pos.below());
     below.block() == state.block() && below.value("half") == Some("lower")
 }
 
 /// `VegetationBlock.mayPlaceOn(below, level, belowPos)` with the overrides of its subclasses.
 pub(crate) fn may_place_on(
-    level: &WorldGenRegion<'_>,
+    level: &impl BlockLevel,
     class: Class,
     state: BlockState,
     below: BlockState,
@@ -347,7 +347,7 @@ pub(crate) fn is_water_source(fluid: vanillite_data::fluid::FluidState) -> bool 
 }
 
 /// `FaceAttachedHorizontalDirectionalBlock.canAttach(level, pos, direction)`.
-pub(crate) fn can_attach(level: &WorldGenRegion<'_>, pos: BlockPos, direction: Direction) -> bool {
+pub(crate) fn can_attach(level: &impl BlockLevel, pos: BlockPos, direction: Direction) -> bool {
     sturdy_at(level, pos.relative(direction), direction.opposite())
 }
 
@@ -392,7 +392,7 @@ pub(crate) fn redstone_wire_can_survive_on(below: BlockState) -> bool {
 }
 
 /// `CactusBlock.canSurvive`.
-fn cactus_can_survive(level: &WorldGenRegion<'_>, pos: BlockPos) -> bool {
+fn cactus_can_survive(level: &impl BlockLevel, pos: BlockPos) -> bool {
     for direction in HORIZONTAL {
         let side = pos.relative(direction);
         if is_solid(level.block(side)) || tags().fluids.lava.contains(level.fluid(side)) {
@@ -407,7 +407,7 @@ fn cactus_can_survive(level: &WorldGenRegion<'_>, pos: BlockPos) -> bool {
 }
 
 /// `ChorusFlowerBlock.canSurvive`.
-fn chorus_flower_can_survive(level: &WorldGenRegion<'_>, pos: BlockPos) -> bool {
+fn chorus_flower_can_survive(level: &impl BlockLevel, pos: BlockPos) -> bool {
     let below = level.block(pos.below());
     if below.is(ids::CHORUS_PLANT) || tags().blocks.supports_chorus_flower.contains(below) {
         return true;
@@ -431,7 +431,7 @@ fn chorus_flower_can_survive(level: &WorldGenRegion<'_>, pos: BlockPos) -> bool 
 }
 
 /// `ChorusPlantBlock.canSurvive`.
-fn chorus_plant_can_survive(level: &WorldGenRegion<'_>, pos: BlockPos) -> bool {
+fn chorus_plant_can_survive(level: &impl BlockLevel, pos: BlockPos) -> bool {
     let supports = &tags().blocks.supports_chorus_plant;
     let below = level.block(pos.below());
     let above_or_below = !level.block(pos.above()).is_air() && !below.is_air();
@@ -451,7 +451,7 @@ fn chorus_plant_can_survive(level: &WorldGenRegion<'_>, pos: BlockPos) -> bool {
 }
 
 /// `FireBlock.isValidFireLocation`: a flammable block next to the position.
-fn is_valid_fire_location(level: &WorldGenRegion<'_>, pos: BlockPos) -> bool {
+fn is_valid_fire_location(level: &impl BlockLevel, pos: BlockPos) -> bool {
     Direction::ALL
         .into_iter()
         .any(|d| can_burn(level.block(pos.relative(d))))
@@ -485,7 +485,7 @@ pub(crate) fn growing_plant(
 }
 
 /// `GrowingPlantBlock.canSurvive`.
-fn growing_plant_can_survive(level: &WorldGenRegion<'_>, class: Class, pos: BlockPos) -> bool {
+fn growing_plant_can_survive(level: &impl BlockLevel, class: Class, pos: BlockPos) -> bool {
     let Some((growth, head, body)) = growing_plant(class) else {
         return true;
     };
@@ -501,7 +501,7 @@ fn growing_plant_can_survive(level: &WorldGenRegion<'_>, class: Class, pos: Bloc
 }
 
 /// `HangingMossBlock.canStayAtPosition`.
-pub(crate) fn hanging_moss_can_stay(level: &WorldGenRegion<'_>, pos: BlockPos) -> bool {
+pub(crate) fn hanging_moss_can_stay(level: &impl BlockLevel, pos: BlockPos) -> bool {
     let above = level.block(pos.above());
     can_attach_multiface(above, Direction::Up) || above.is(ids::PALE_HANGING_MOSS)
 }
@@ -512,7 +512,7 @@ pub(crate) fn multiface_has_face(state: BlockState, direction: Direction) -> boo
 }
 
 /// `MultifaceBlock.canSurvive`.
-fn multiface_can_survive(level: &WorldGenRegion<'_>, state: BlockState, pos: BlockPos) -> bool {
+fn multiface_can_survive(level: &impl BlockLevel, state: BlockState, pos: BlockPos) -> bool {
     let mut any = false;
     for direction in Direction::ALL {
         if multiface_has_face(state, direction) {
@@ -526,7 +526,7 @@ fn multiface_can_survive(level: &WorldGenRegion<'_>, state: BlockState, pos: Blo
 }
 
 /// `PistonHeadBlock.canSurvive`.
-fn piston_head_can_survive(level: &WorldGenRegion<'_>, state: BlockState, pos: BlockPos) -> bool {
+fn piston_head_can_survive(level: &impl BlockLevel, state: BlockState, pos: BlockPos) -> bool {
     let Some(facing) = state.direction("facing") else {
         return true;
     };
@@ -542,7 +542,7 @@ fn piston_head_can_survive(level: &WorldGenRegion<'_>, state: BlockState, pos: B
 }
 
 /// `ScaffoldingBlock.getDistance`.
-pub(crate) fn scaffolding_distance(level: &WorldGenRegion<'_>, pos: BlockPos) -> i32 {
+pub(crate) fn scaffolding_distance(level: &impl BlockLevel, pos: BlockPos) -> i32 {
     let below_pos = pos.below();
     let below = level.block(below_pos);
     let mut distance = 7;
@@ -564,7 +564,7 @@ pub(crate) fn scaffolding_distance(level: &WorldGenRegion<'_>, pos: BlockPos) ->
 }
 
 /// `SnowLayerBlock.canSurvive`.
-fn snow_layer_can_survive(level: &WorldGenRegion<'_>, pos: BlockPos) -> bool {
+fn snow_layer_can_survive(level: &impl BlockLevel, pos: BlockPos) -> bool {
     let t = &tags().blocks;
     let below = level.block(pos.below());
     if t.cannot_support_snow_layer.contains(below) {
@@ -582,7 +582,7 @@ pub(crate) fn is_speleothem_with_direction(state: BlockState, tip: Direction) ->
 
 /// `SpeleothemBlock.isValidSpeleothemPlacement`.
 fn is_valid_speleothem_placement(
-    level: &WorldGenRegion<'_>,
+    level: &impl BlockLevel,
     state: BlockState,
     pos: BlockPos,
     tip: Direction,
@@ -593,7 +593,7 @@ fn is_valid_speleothem_placement(
 }
 
 /// `SugarCaneBlock.canSurvive`.
-fn sugar_cane_can_survive(level: &WorldGenRegion<'_>, pos: BlockPos) -> bool {
+fn sugar_cane_can_survive(level: &impl BlockLevel, pos: BlockPos) -> bool {
     let below = level.block(pos.below());
     if below.is(ids::SUGAR_CANE) {
         return true;

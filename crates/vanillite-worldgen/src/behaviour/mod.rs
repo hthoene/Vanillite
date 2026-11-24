@@ -1,10 +1,11 @@
-//! Block behaviour that world generation needs: survival checks, post-processing marks, shape
-//! updates and face sturdiness (`BlockBehaviour`, `BlockState` and the
-//! `Block` subclasses of Vanilla 26.3).
+//! Block behaviour that world generation and the live world share: survival checks,
+//! post-processing marks, shape updates and face sturdiness (`BlockBehaviour`, `BlockState` and
+//! the `Block` subclasses of Vanilla 26.3).
 //!
 //! Every block maps to the Vanilla class that gives it its behaviour (a table derived from
 //! `Blocks.java`); the functions here dispatch on that class and read the level through
-//! [`WorldGenRegion`]. Block and fluid tags come from the data packs ([`init`]).
+//! [`BlockLevel`], which the generation region ([`WorldGenRegion`]) and the game's live level
+//! implement. Block and fluid tags come from the data packs ([`init`]).
 //!
 //! Not ported (the state is kept unchanged): `NetherPortalBlock.updateShape` (portal frame
 //! search), `BeehiveBlock.updateShape` (releases bees next to fire) and the block entity side
@@ -22,13 +23,100 @@ mod update;
 #[cfg(test)]
 mod tests;
 
+use vanillite_base::random::RandomSource;
 use vanillite_base::{BlockPos, Direction};
-use vanillite_data::block::{BlockState, flags, ids};
+use vanillite_data::block::{BlockId, BlockState, flags, ids};
+use vanillite_data::fluid::FluidState;
 
 use crate::feature::region::WorldGenRegion;
 use props::PosExt;
 
-pub use tables::init;
+pub use class::{Class, class_of, class_of_block};
+pub use tables::{Tags, init, tags};
+
+/// What block behaviour reads from and schedules in a level (Vanilla's `LevelReader` plus
+/// `ScheduledTickAccess` and the level random, as far as shape updates and survival checks use
+/// them): the generation region or the live world.
+pub trait BlockLevel {
+    /// `getBlockState(pos)`.
+    fn block(&self, pos: BlockPos) -> BlockState;
+
+    /// `getFluidState(pos)`.
+    #[inline]
+    fn fluid(&self, pos: BlockPos) -> FluidState {
+        self.block(pos).fluid_state()
+    }
+
+    /// `isEmptyBlock(pos)`: the block is air (any air).
+    #[inline]
+    fn is_empty_block(&self, pos: BlockPos) -> bool {
+        self.block(pos).is_air()
+    }
+
+    /// `getRawBrightness(pos, 0)`: the higher of sky and block light.
+    fn raw_brightness(&self, pos: BlockPos) -> i32;
+
+    /// `random.nextInt(bound)` of the level's random.
+    fn random_int(&mut self, bound: i32) -> i32;
+
+    /// `scheduleTick(pos, block, delay)`.
+    fn schedule_block_tick(&mut self, pos: BlockPos, block: BlockId, delay: i32);
+
+    /// `scheduleTick(pos, fluid, fluid.getTickDelay(level))`; `fluid` is a `minecraft:fluid`
+    /// id.
+    fn schedule_fluid_tick(&mut self, pos: BlockPos, fluid: u16);
+
+    /// `getBlockTicks().hasScheduledTick(pos, block)`.
+    fn has_block_tick(&self, pos: BlockPos, block: BlockId) -> bool;
+
+    /// `ComparatorBlockEntity.getOutputSignal()` of the comparator at `pos`.
+    fn comparator_output(&self, _pos: BlockPos) -> i32 {
+        0
+    }
+}
+
+impl BlockLevel for WorldGenRegion<'_> {
+    #[inline]
+    fn block(&self, pos: BlockPos) -> BlockState {
+        WorldGenRegion::block(self, pos)
+    }
+
+    /// Chunks in the features stage are not lit yet: the block light engine has no data (0) and
+    /// the sky light engine reports full light (15) for columns it has not seen. Dimensions
+    /// without sky light have no sky engine (0).
+    fn raw_brightness(&self, _pos: BlockPos) -> i32 {
+        if self.has_sky_light() { 15 } else { 0 }
+    }
+
+    fn random_int(&mut self, bound: i32) -> i32 {
+        self.random().next_int_bounded(bound)
+    }
+
+    /// Generation ticks are stored with delay 0 (`WorldGenTickAccess`).
+    fn schedule_block_tick(&mut self, pos: BlockPos, block: BlockId, _delay: i32) {
+        WorldGenRegion::schedule_block_tick(self, pos, block);
+    }
+
+    fn schedule_fluid_tick(&mut self, pos: BlockPos, fluid: u16) {
+        WorldGenRegion::schedule_fluid_tick(self, pos, fluid);
+    }
+
+    fn has_block_tick(&self, pos: BlockPos, block: BlockId) -> bool {
+        self.chunk(pos).block_ticks().has(block, pos)
+    }
+
+    /// From the block entity data.
+    fn comparator_output(&self, pos: BlockPos) -> i32 {
+        match self
+            .chunk(pos)
+            .block_entity(pos)
+            .and_then(|tag| tag.get("OutputSignal"))
+        {
+            Some(vanillite_nbt::Tag::Int(value)) => *value,
+            _ => 0,
+        }
+    }
+}
 
 /// `SupportType` of `isFaceSturdy`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,7 +127,7 @@ pub enum SupportType {
 }
 
 /// `state.canSurvive(level, pos)`.
-pub fn can_survive(level: &WorldGenRegion<'_>, state: BlockState, pos: BlockPos) -> bool {
+pub fn can_survive(level: &impl BlockLevel, state: BlockState, pos: BlockPos) -> bool {
     survive::can_survive(level, state, pos)
 }
 
@@ -47,7 +135,7 @@ pub fn can_survive(level: &WorldGenRegion<'_>, state: BlockState, pos: BlockPos)
 /// `setBlock`, for the blocks with a `postProcess` predicate in `Blocks` (mushrooms mark
 /// themselves, soul sand and magma blocks the block above).
 pub fn post_process_pos(
-    _level: &WorldGenRegion<'_>,
+    _level: &impl BlockLevel,
     state: BlockState,
     pos: BlockPos,
 ) -> Option<BlockPos> {
@@ -65,7 +153,7 @@ pub fn post_process_pos(
 /// state after its neighbour in `direction` changed. Ticks it schedules go to the region, the
 /// random it uses is the region's (`level.getRandom()`, as all generation callers pass).
 pub fn update_shape(
-    level: &mut WorldGenRegion<'_>,
+    level: &mut impl BlockLevel,
     state: BlockState,
     pos: BlockPos,
     direction: Direction,
@@ -78,7 +166,7 @@ pub fn update_shape(
 /// `Block.updateFromNeighbourShapes(state, level, pos)`: [`update_shape`] for all six
 /// directions in `UPDATE_SHAPE_ORDER` (west, east, north, south, down, up).
 pub fn update_from_neighbour_shapes(
-    level: &mut WorldGenRegion<'_>,
+    level: &mut impl BlockLevel,
     state: BlockState,
     pos: BlockPos,
 ) -> BlockState {
@@ -103,12 +191,12 @@ pub fn is_face_sturdy(state: BlockState, direction: Direction, support: SupportT
 }
 
 /// `Block.canSupportRigidBlock(level, pos)`: the top of the block at `pos` is rigid.
-pub fn can_support_rigid_block(level: &WorldGenRegion<'_>, pos: BlockPos) -> bool {
+pub fn can_support_rigid_block(level: &impl BlockLevel, pos: BlockPos) -> bool {
     is_face_sturdy(level.block(pos), Direction::Up, SupportType::Rigid)
 }
 
 /// `Block.canSupportCenter(level, pos, direction)`.
-pub fn can_support_center(level: &WorldGenRegion<'_>, pos: BlockPos, direction: Direction) -> bool {
+pub fn can_support_center(level: &impl BlockLevel, pos: BlockPos, direction: Direction) -> bool {
     let state = level.block(pos);
     if direction == Direction::Down && tables::tags().blocks.unstable_bottom_center.contains(state)
     {
@@ -131,15 +219,9 @@ pub fn is_collision_face_full(state: BlockState, direction: Direction) -> bool {
     geometry::is_face_full(state.collision_shape(), direction)
 }
 
-/// `level.getRawBrightness(pos, 0)` during generation.
-///
-/// Chunks in the features stage are not lit yet: the block light engine has no data (0) and
-/// the sky light engine reports full light (15) for columns it has not seen. Dimensions without
-/// sky light have no sky engine (0). The region does not carry the dimension type, so sky light
-/// is inferred from the build height: Vanilla's dimensions without sky light (the Nether and
-/// the End) are the ones starting at Y 0.
-pub fn raw_brightness(level: &WorldGenRegion<'_>, _pos: BlockPos) -> i32 {
-    if level.has_sky_light() { 15 } else { 0 }
+/// `level.getRawBrightness(pos, 0)`.
+pub fn raw_brightness(level: &impl BlockLevel, pos: BlockPos) -> i32 {
+    level.raw_brightness(pos)
 }
 
 /// `state.isSolid()` (the legacy "solid" flag).
