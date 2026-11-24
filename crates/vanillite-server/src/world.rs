@@ -71,6 +71,9 @@ pub struct ServerWorld {
     pub(crate) mobs: crate::mobs::WorldMobs,
     /// Loading and saving the entities of chunks.
     entity_io: crate::entity_io::EntityChunks,
+    /// The dimension's saved data (`<dimension>/data/`: world border, chunk tickets, raids,
+    /// ...); systems register here when they come.
+    pub(crate) data: vanillite_storage::saved_data::SavedDataStore,
 }
 
 impl fmt::Debug for ServerWorld {
@@ -96,6 +99,7 @@ impl ServerWorld {
         survival: crate::survival::WorldSurvival,
         mobs: crate::mobs::WorldMobs,
         entity_io: crate::entity_io::EntityChunks,
+        data: vanillite_storage::saved_data::SavedDataStore,
     ) -> ServerWorld {
         // Entity randoms are `RandomSource.create()`: seeded from the clock, not the world seed.
         let seed = std::time::SystemTime::now()
@@ -126,6 +130,7 @@ impl ServerWorld {
             survival,
             mobs,
             entity_io,
+            data,
         }
     }
 
@@ -435,12 +440,18 @@ impl ServerWorld {
         self.level.entities.store.clear_sync_flags();
     }
 
-    /// Saves the world. `flush` waits until everything is on disk (shutdown).
-    pub(crate) fn save(&mut self, flush: bool) {
+    /// Saves the world like Vanilla (`saveEverything`): the players always, the chunks and the
+    /// dimension's saved data unless `skip_chunks` (`/save-off`). `flush` waits until the
+    /// chunks are on disk (shutdown, `/save-all flush`); otherwise they are written in the
+    /// background.
+    pub(crate) fn save(&mut self, flush: bool, skip_chunks: bool) {
         log::debug!("Saving {} (flush: {flush})", self.dimension);
         self.players.save_all(&self.level.entities);
-        self.entity_io.save_all(&mut self.level, flush);
-        self.level.save(flush);
+        if !skip_chunks {
+            self.data.save();
+            self.entity_io.save_all(&mut self.level, flush);
+            self.level.save(flush);
+        }
     }
 }
 
