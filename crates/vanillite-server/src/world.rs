@@ -232,7 +232,7 @@ impl ServerWorld {
         }
         self.update_player_tickets();
         let level = &mut self.level;
-        level.chunks.tick();
+        level.tick_chunk_runtime();
         level.post_process();
         if ctx.runs_normally {
             level.tick_chunks(&mut self.scratch);
@@ -313,7 +313,7 @@ impl ServerWorld {
     pub(crate) fn save(&mut self, flush: bool) {
         log::debug!("Saving {} (flush: {flush})", self.dimension);
         self.players.save_all(&self.level.entities);
-        self.level.chunks.save_all(flush);
+        self.level.save(flush);
     }
 }
 

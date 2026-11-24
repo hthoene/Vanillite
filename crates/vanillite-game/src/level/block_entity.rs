@@ -6,9 +6,12 @@
 //! [`Level::tick_block_entities`] in Vanilla's order: in the order their tickers were added,
 //! tickers added during a tick run from the next tick on.
 
-use vanillite_base::BlockPos;
-use vanillite_base::hash::FxHashMap;
+use vanillite_base::hash::{FxHashMap, FxHashSet};
+use vanillite_base::{BlockPos, ChunkPos, Direction};
+use vanillite_chunk::slots::BlockEntityData;
 use vanillite_data::block::BlockState;
+use vanillite_nbt::{Compound, Tag};
+use vanillite_worldgen::behaviour::StateExt;
 
 use super::Level;
 use crate::block::piston::MovingPiston;
@@ -39,10 +42,13 @@ struct Entry {
     ticker: Option<u32>,
 }
 
-/// The block entities of a level.
+/// The block entities of a level, per chunk.
 #[derive(Debug, Default)]
 pub struct BlockEntities {
-    entries: FxHashMap<BlockPos, Entry>,
+    chunks: FxHashMap<ChunkPos, FxHashMap<BlockPos, Entry>>,
+    /// Chunks whose block entities changed in a way the stored list does not show yet
+    /// (removed or added ones); written back on save.
+    touched: FxHashSet<ChunkPos>,
     /// `blockEntityTickers`: positions and slot ids in tick order; a slot is live while the
     /// entry at its position still holds its id.
     tickers: Vec<(BlockPos, u32)>,
@@ -52,26 +58,34 @@ pub struct BlockEntities {
 }
 
 impl BlockEntities {
+    #[inline]
+    fn entry(&self, pos: BlockPos) -> Option<&Entry> {
+        self.chunks.get(&pos.chunk())?.get(&pos)
+    }
+
     /// The block entity at `pos`.
     #[inline]
     pub fn get(&self, pos: BlockPos) -> Option<&BlockEntity> {
-        self.entries.get(&pos).map(|e| &e.entity)
+        self.entry(pos).map(|e| &e.entity)
     }
 
     /// The block entity at `pos`, mutably.
     #[inline]
     pub fn get_mut(&mut self, pos: BlockPos) -> Option<&mut BlockEntity> {
-        self.entries.get_mut(&pos).map(|e| &mut e.entity)
+        self.chunks
+            .get_mut(&pos.chunk())?
+            .get_mut(&pos)
+            .map(|e| &mut e.entity)
     }
 
     /// Number of live block entities.
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.chunks.values().map(FxHashMap::len).sum()
     }
 
     /// Whether there are no live block entities.
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.chunks.is_empty()
     }
 
     /// `setBlockEntity` / `addAndRegisterBlockEntity`: replaces the block entity at `pos`; a
@@ -79,7 +93,10 @@ impl BlockEntities {
     /// Wrapper.rebind`) or gets a new one at the end of the tick order.
     pub fn insert(&mut self, pos: BlockPos, entity: BlockEntity) {
         let ticks = ticker_of(&entity).is_some();
-        let old_ticker = self.entries.get(&pos).and_then(|e| e.ticker);
+        let chunk = pos.chunk();
+        self.touched.insert(chunk);
+        let entries = self.chunks.entry(chunk).or_default();
+        let old_ticker = entries.get(&pos).and_then(|e| e.ticker);
         let ticker = match (ticks, old_ticker) {
             (true, Some(id)) => Some(id),
             (true, None) => {
@@ -90,17 +107,33 @@ impl BlockEntities {
             }
             (false, _) => None,
         };
-        self.entries.insert(pos, Entry { entity, ticker });
+        entries.insert(pos, Entry { entity, ticker });
     }
 
     /// `removeBlockEntity(pos)`: the block entity and its ticker go.
     pub fn remove(&mut self, pos: BlockPos) -> Option<BlockEntity> {
-        self.entries.remove(&pos).map(|e| e.entity)
+        let chunk = pos.chunk();
+        let entries = self.chunks.get_mut(&chunk)?;
+        let removed = entries.remove(&pos)?;
+        if entries.is_empty() {
+            self.chunks.remove(&chunk);
+        }
+        self.touched.insert(chunk);
+        Some(removed.entity)
     }
 
-    /// Positions of all block entities (unordered).
-    pub fn positions(&self) -> impl Iterator<Item = BlockPos> + '_ {
-        self.entries.keys().copied()
+    /// The block entities of a chunk.
+    pub fn in_chunk(&self, chunk: ChunkPos) -> impl Iterator<Item = (BlockPos, &BlockEntity)> {
+        self.chunks
+            .get(&chunk)
+            .into_iter()
+            .flat_map(|entries| entries.iter().map(|(&pos, e)| (pos, &e.entity)))
+    }
+
+    /// Drops the block entities of an unloaded chunk.
+    fn remove_chunk(&mut self, chunk: ChunkPos) {
+        self.chunks.remove(&chunk);
+        self.touched.remove(&chunk);
     }
 }
 
@@ -197,7 +230,7 @@ impl Level {
         while index < self.block_entities.tickers.len() {
             let (pos, id) = self.block_entities.tickers[index];
             index += 1;
-            let ticker = match self.block_entities.entries.get(&pos) {
+            let ticker = match self.block_entities.entry(pos) {
                 Some(entry) if entry.ticker == Some(id) => ticker_of(&entry.entity),
                 _ => continue,
             };
@@ -220,5 +253,240 @@ impl Level {
             }
         }
         self.block_entities.tickers.truncate(kept);
+    }
+}
+
+// --- Persistence -----------------------------------------------------------------------------
+
+/// Whether the live world models the block entity of `state` (its stored data is replaced by
+/// the live one on save).
+fn modelled(state: BlockState) -> bool {
+    use vanillite_data::block::ids;
+    state.is(ids::MOVING_PISTON) || new_block_entity(state).is_some()
+}
+
+/// `BlockEntity.loadWithComponents`: the live block entity of `state` from its stored data.
+fn load(state: BlockState, nbt: &Compound) -> Option<BlockEntity> {
+    use vanillite_data::block::ids;
+    let int = |name| match nbt.get(name) {
+        Some(Tag::Int(v)) => Some(*v),
+        _ => None,
+    };
+    if state.is(ids::MOVING_PISTON) {
+        let moved = match nbt.get("blockState") {
+            Some(Tag::Compound(c)) => read_block_state(c),
+            _ => BlockState::AIR,
+        };
+        let flag = |name| matches!(nbt.get(name), Some(Tag::Byte(v)) if *v != 0);
+        let progress = match nbt.get("progress") {
+            Some(Tag::Float(v)) => *v,
+            _ => 0.0,
+        };
+        let direction = direction_from_3d(int("facing").unwrap_or(0));
+        let mut piston = MovingPiston::new(moved, direction, flag("extending"), flag("source"));
+        piston.progress = progress;
+        piston.progress_o = progress;
+        return Some(BlockEntity::MovingPiston(Box::new(piston)));
+    }
+    let mut entity = new_block_entity(state)?;
+    if let BlockEntity::Comparator { output } = &mut entity {
+        *output = int("OutputSignal").unwrap_or(0);
+    }
+    Some(entity)
+}
+
+/// `BlockEntity.saveWithFullMetadata`: the stored data of a live block entity.
+fn save(entity: &BlockEntity, state: BlockState, pos: BlockPos) -> Compound {
+    let kind = if let BlockEntity::MovingPiston(_) = entity {
+        "minecraft:piston"
+    } else {
+        vanillite_data::registry::BLOCK_ENTITY_TYPE
+            .name(state.block().info().block_entity)
+            .unwrap_or("minecraft:empty")
+    };
+    let mut nbt = Compound::new();
+    nbt.insert("id", Tag::String(kind.to_owned()));
+    nbt.insert("x", Tag::Int(pos.x));
+    nbt.insert("y", Tag::Int(pos.y));
+    nbt.insert("z", Tag::Int(pos.z));
+    match entity {
+        BlockEntity::Comparator { output } => nbt.insert("OutputSignal", Tag::Int(*output)),
+        BlockEntity::MovingPiston(piston) => {
+            nbt.insert(
+                "blockState",
+                Tag::Compound(write_block_state(piston.moved_state)),
+            );
+            nbt.insert("facing", Tag::Int(direction_to_3d(piston.direction)));
+            nbt.insert("progress", Tag::Float(piston.progress_o));
+            nbt.insert("extending", Tag::Byte(i8::from(piston.extending)));
+            nbt.insert("source", Tag::Byte(i8::from(piston.source)));
+        }
+        _ => {}
+    }
+    nbt
+}
+
+/// `Direction.from3DDataValue`.
+fn direction_from_3d(value: i32) -> Direction {
+    match value.rem_euclid(6) {
+        0 => Direction::Down,
+        1 => Direction::Up,
+        2 => Direction::North,
+        3 => Direction::South,
+        4 => Direction::West,
+        _ => Direction::East,
+    }
+}
+
+/// `Direction.get3DDataValue`.
+fn direction_to_3d(direction: Direction) -> i32 {
+    match direction {
+        Direction::Down => 0,
+        Direction::Up => 1,
+        Direction::North => 2,
+        Direction::South => 3,
+        Direction::West => 4,
+        Direction::East => 5,
+    }
+}
+
+/// `NbtUtils.readBlockState`.
+fn read_block_state(c: &Compound) -> BlockState {
+    let Some(Tag::String(name)) = c.get("Name") else {
+        return BlockState::AIR;
+    };
+    let Some(block) = vanillite_data::block::BlockId::by_name(name) else {
+        return BlockState::AIR;
+    };
+    let mut state = block.default_state();
+    if let Some(Tag::Compound(props)) = c.get("Properties") {
+        for (key, value) in props.iter() {
+            if let Tag::String(value) = value {
+                state = state.with(key, value).unwrap_or(state);
+            }
+        }
+    }
+    state
+}
+
+/// `NbtUtils.writeBlockState`.
+fn write_block_state(state: BlockState) -> Compound {
+    let mut c = Compound::new();
+    c.insert("Name", Tag::String(state.block().name().to_owned()));
+    let mut props = Compound::new();
+    for (key, value) in state.properties() {
+        props.insert(key, Tag::String(value.to_owned()));
+    }
+    if !props.is_empty() {
+        c.insert("Properties", Tag::Compound(props));
+    }
+    c
+}
+
+impl Level {
+    /// Creates the live block entities of a chunk that became live from its stored data.
+    fn load_block_entities(&mut self, chunk: ChunkPos) {
+        let Some(stored) = self.chunks.chunk(chunk).map(|c| c.block_entities.clone()) else {
+            return;
+        };
+        for data in stored {
+            let state = self.block(data.pos);
+            if data.kind != Some(state.block().info().block_entity)
+                && !state.is(vanillite_data::block::ids::MOVING_PISTON)
+            {
+                continue;
+            }
+            let mut input = &data.nbt[..];
+            let mut budget = vanillite_nbt::Budget::file();
+            let Ok(Some(Tag::Compound(nbt))) =
+                vanillite_nbt::read::read_network(&mut input, &mut budget)
+            else {
+                continue;
+            };
+            if let Some(entity) = load(state, &nbt) {
+                self.block_entities.insert(data.pos, entity);
+            }
+        }
+        self.block_entities.touched.remove(&chunk);
+    }
+
+    /// Writes the live block entities of a chunk into its stored list: live ones replace
+    /// their stored data, stored data of modelled kinds without a live block entity and of
+    /// blocks that no longer have that block entity goes.
+    fn write_block_entities(&mut self, chunk: ChunkPos) {
+        let Some(stored) = self.chunks.chunk(chunk).map(|c| c.block_entities.clone()) else {
+            return;
+        };
+        let mut list: Vec<BlockEntityData> = stored
+            .into_iter()
+            .filter(|data| {
+                let state = self.block(data.pos);
+                data.kind == Some(state.block().info().block_entity) && !modelled(state)
+            })
+            .collect();
+        for (pos, entity) in self.block_entities.in_chunk(chunk) {
+            let state = self.block(pos);
+            let nbt = save(entity, state, pos);
+            let mut bytes = Vec::new();
+            if vanillite_nbt::write::write_network_compound(&nbt, &mut bytes).is_err() {
+                continue;
+            }
+            let kind = match nbt.get("id") {
+                Some(Tag::String(id)) => vanillite_data::registry::BLOCK_ENTITY_TYPE.id(id),
+                _ => None,
+            };
+            list.push(BlockEntityData {
+                pos,
+                kind,
+                nbt: bytes.into(),
+            });
+        }
+        let unchanged = self.chunks.chunk(chunk).is_some_and(|c| {
+            c.block_entities.len() == list.len()
+                && c.block_entities
+                    .iter()
+                    .zip(&list)
+                    .all(|(a, b)| a.pos == b.pos && a.kind == b.kind && a.nbt == b.nbt)
+        });
+        if !unchanged && let Some(target) = self.chunks.block_entities_mut(chunk) {
+            *target = list;
+        }
+        self.block_entities.touched.remove(&chunk);
+    }
+
+    /// The chunk runtime's tick (`Chunks::tick`) with the block entities of chunks that unload
+    /// written back first and those of chunks that became live loaded.
+    pub fn tick_chunk_runtime(&mut self) {
+        let mut chunks = std::mem::take(&mut self.chunk_scratch);
+        chunks.clear();
+        self.chunks.unloading_next_tick(&mut chunks);
+        for &chunk in &chunks {
+            self.write_block_entities(chunk);
+        }
+        self.chunks.tick();
+        for &chunk in &chunks {
+            if self.chunks.chunk(chunk).is_none() {
+                self.block_entities.remove_chunk(chunk);
+            }
+        }
+        chunks.clear();
+        self.chunks.take_promoted(&mut chunks);
+        for &chunk in &chunks {
+            self.load_block_entities(chunk);
+        }
+        self.chunk_scratch = chunks;
+    }
+
+    /// Saves the world's chunks with their live block entities written back. `flush` waits
+    /// until everything is on disk.
+    pub fn save(&mut self, flush: bool) {
+        let mut chunks: Vec<ChunkPos> = self.block_entities.chunks.keys().copied().collect();
+        chunks.extend(self.block_entities.touched.iter().copied());
+        chunks.sort_unstable_by_key(|c| (c.x, c.z));
+        chunks.dedup();
+        for chunk in chunks {
+            self.write_block_entities(chunk);
+        }
+        self.chunks.save_all(flush);
     }
 }

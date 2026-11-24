@@ -217,6 +217,8 @@ pub struct Level {
     /// `RedstoneTorchBlock.RECENT_TOGGLES` of this level: torch positions and when they turned
     /// off, oldest first.
     pub(crate) torch_toggles: Vec<(BlockPos, i64)>,
+    /// Scratch list of [`Level::tick_chunk_runtime`].
+    chunk_scratch: Vec<ChunkPos>,
     /// `blockEvents`, a linked set: an event already queued is not queued again.
     block_events: Vec<BlockEvent>,
     block_event_set: FxHashSet<BlockEvent>,
@@ -265,6 +267,7 @@ impl Level {
             handling_tick: false,
             wire_signals: true,
             torch_toggles: Vec::new(),
+            chunk_scratch: Vec::new(),
             block_events: Vec::new(),
             block_event_set: FxHashSet::default(),
             random: LegacyRandom::new(seed),
