@@ -13,6 +13,7 @@ use crate::block::{self, fluid};
 impl Level {
     /// `tickTime`: the game time advances.
     pub fn tick_time(&mut self) {
+        self.handling_tick = true;
         self.game_time += 1;
         self.chunks.set_game_time(self.game_time);
     }
@@ -172,5 +173,6 @@ impl Level {
         for event in reschedule {
             self.block_event(event.pos, event.block, event.a, event.b);
         }
+        self.handling_tick = false;
     }
 }

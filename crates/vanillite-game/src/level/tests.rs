@@ -57,6 +57,11 @@ fn install_tags() {
 
 /// A flat world with the chunks around the origin full and block ticking.
 pub(crate) fn flat_level() -> Level {
+    flat_level_with(Behaviours::vanilla())
+}
+
+/// [`flat_level`] with the given block behaviours.
+pub(crate) fn flat_level_with(behaviours: Behaviours) -> Level {
     vanillite_chunk::facts::install_vanilla(&[], &[], 1);
     install_tags();
     let info = WorldInfo {
@@ -94,7 +99,7 @@ pub(crate) fn flat_level() -> Level {
     Level::new(
         chunks,
         LevelSettings::default(),
-        Arc::new(Behaviours::vanilla()),
+        Arc::new(behaviours),
         Arc::new(NetworkIds::new()),
         0,
     )
@@ -164,4 +169,140 @@ fn sand_falls_as_entity_and_lands_on_the_ground() {
     }
     assert!(level.block(BlockPos::new(5, -60, 5)).is(ids::SAND));
     assert_eq!(level.entities.store.len(), 0);
+}
+
+mod pistons {
+    use vanillite_base::{BlockPos, Direction};
+    use vanillite_data::block::{BlockState, ids};
+    use vanillite_worldgen::behaviour::StateExt;
+
+    use super::{flat_level_with, tick};
+    use crate::block::{Behaviours, BlockBehaviour};
+    use crate::level::{Level, update};
+
+    /// Vanilla's behaviours with a redstone block that powers its neighbours (`PoweredBlock`),
+    /// independent of the redstone port.
+    fn level() -> Level {
+        let mut behaviours = Behaviours::vanilla();
+        behaviours.set(
+            ids::REDSTONE_BLOCK,
+            BlockBehaviour {
+                signal: Some(|_, _, _, _| 15),
+                ..*behaviours.get(ids::REDSTONE_BLOCK)
+            },
+        );
+        flat_level_with(behaviours)
+    }
+
+    fn run(level: &mut Level, ticks: usize) {
+        for _ in 0..ticks {
+            tick(level);
+            level.tick_block_entities();
+        }
+    }
+
+    fn piston(block: vanillite_data::block::BlockId, facing: Direction) -> BlockState {
+        block.default_state().set_direction("facing", facing)
+    }
+
+    const Y: i32 = -60;
+
+    fn at(x: i32) -> BlockPos {
+        BlockPos::new(x, Y, 0)
+    }
+
+    #[test]
+    fn piston_extends_and_retracts() {
+        let mut level = level();
+        level.set_block_and_update(at(0), piston(ids::PISTON, Direction::East));
+        level.set_block_and_update(at(1), ids::STONE.default_state());
+        let power = BlockPos::new(0, Y, 1);
+        level.set_block_and_update(power, ids::REDSTONE_BLOCK.default_state());
+        run(&mut level, 4);
+        assert!(level.block(at(0)).flag("extended"));
+        assert!(level.block(at(1)).is(ids::PISTON_HEAD));
+        assert!(level.block(at(2)).is(ids::STONE));
+        assert!(level.block_entities.is_empty());
+
+        level.set_block_and_update(power, BlockState::AIR);
+        run(&mut level, 4);
+        assert!(level.block(at(0)).is(ids::PISTON));
+        assert!(!level.block(at(0)).flag("extended"));
+        assert!(level.block(at(1)).is_air());
+        assert!(level.block(at(2)).is(ids::STONE));
+    }
+
+    #[test]
+    fn sticky_piston_pulls_back() {
+        let mut level = level();
+        level.set_block_and_update(at(0), piston(ids::STICKY_PISTON, Direction::East));
+        level.set_block_and_update(at(1), ids::STONE.default_state());
+        let power = BlockPos::new(0, Y, 1);
+        level.set_block_and_update(power, ids::REDSTONE_BLOCK.default_state());
+        run(&mut level, 4);
+        assert!(level.block(at(2)).is(ids::STONE));
+        level.set_block_and_update(power, BlockState::AIR);
+        run(&mut level, 4);
+        assert!(level.block(at(1)).is(ids::STONE));
+        assert!(level.block(at(2)).is_air());
+        assert!(level.block(at(0)).is(ids::STICKY_PISTON));
+    }
+
+    #[test]
+    fn pushes_twelve_blocks_but_not_thirteen() {
+        for (count, moves) in [(12, true), (13, false)] {
+            let mut level = level();
+            level.set_block_and_update(at(0), piston(ids::PISTON, Direction::East));
+            for x in 1..=count {
+                level.set_block_and_update(at(x), ids::STONE.default_state());
+            }
+            level.set_block_and_update(BlockPos::new(0, Y, 1), ids::REDSTONE_BLOCK.default_state());
+            run(&mut level, 4);
+            assert_eq!(level.block(at(0)).flag("extended"), moves, "{count} blocks");
+            assert_eq!(
+                level.block(at(count + 1)).is(ids::STONE),
+                moves,
+                "{count} blocks"
+            );
+        }
+    }
+
+    #[test]
+    fn slime_block_carries_its_neighbours() {
+        let mut level = level();
+        // In the air: a slime block on the ground would try to take the ground along.
+        let at = |x: i32| BlockPos::new(x, Y + 5, 0);
+        let y = Y + 5;
+        level.set_block_and_update(at(0), piston(ids::STICKY_PISTON, Direction::East));
+        level.set_block_and_update(at(1), ids::SLIME_BLOCK.default_state());
+        let above = BlockPos::new(1, y + 1, 0);
+        level.set_block_and_update(above, ids::STONE.default_state());
+        let side = BlockPos::new(1, y, -1);
+        level.set_block_and_update(side, ids::OAK_PLANKS.default_state());
+        let power = BlockPos::new(0, y, 1);
+        level.set_block_and_update(power, ids::REDSTONE_BLOCK.default_state());
+        run(&mut level, 4);
+        assert!(level.block(at(2)).is(ids::SLIME_BLOCK));
+        assert!(level.block(BlockPos::new(2, y + 1, 0)).is(ids::STONE));
+        assert!(level.block(BlockPos::new(2, y, -1)).is(ids::OAK_PLANKS));
+        assert!(level.block(above).is_air());
+        // Pulled back together.
+        level.set_block_and_update(power, BlockState::AIR);
+        run(&mut level, 4);
+        assert!(level.block(at(1)).is(ids::SLIME_BLOCK));
+        assert!(level.block(above).is(ids::STONE));
+        assert!(level.block(side).is(ids::OAK_PLANKS));
+    }
+
+    #[test]
+    fn obsidian_does_not_move() {
+        let mut level = level();
+        level.set_block_and_update(at(0), piston(ids::PISTON, Direction::East));
+        level.set_block_and_update(at(1), ids::OBSIDIAN.default_state());
+        level.set_block_and_update(BlockPos::new(0, Y, 1), ids::REDSTONE_BLOCK.default_state());
+        run(&mut level, 4);
+        assert!(!level.block(at(0)).flag("extended"));
+        assert!(level.block(at(1)).is(ids::OBSIDIAN));
+        let _ = update::ALL;
+    }
 }

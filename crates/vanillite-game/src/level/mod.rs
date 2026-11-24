@@ -207,6 +207,11 @@ pub struct Level {
     updater: NeighborUpdater,
     /// Live block entities.
     pub block_entities: BlockEntities,
+    /// Reused buffers of the piston code.
+    pub(crate) pistons: crate::block::piston::Scratch,
+    /// `ServerLevel.handlingTick`: the simulation phases of the tick run (scheduled ticks to
+    /// block events).
+    handling_tick: bool,
     /// `RedstoneWireBlock.shouldSignal`: `false` while a wire computes its power.
     wire_signals: bool,
     /// `RedstoneTorchBlock.RECENT_TOGGLES` of this level: torch positions and when they turned
@@ -256,6 +261,8 @@ impl Level {
             network_ids,
             climate: None,
             block_entities: BlockEntities::default(),
+            pistons: crate::block::piston::Scratch::default(),
+            handling_tick: false,
             wire_signals: true,
             torch_toggles: Vec::new(),
             block_events: Vec::new(),
@@ -327,6 +334,12 @@ impl Level {
     /// The game time.
     pub fn game_time(&self) -> i64 {
         self.game_time
+    }
+
+    /// `ServerLevel.isHandlingTick()`: between the start of the tick and the end of the block
+    /// events.
+    pub fn is_handling_tick(&self) -> bool {
+        self.handling_tick
     }
 
     /// Lowest block Y.
@@ -795,7 +808,13 @@ impl Level {
         }
     }
 
-    fn affect_neighbors_after_removal(&mut self, state: BlockState, pos: BlockPos, moved: bool) {
+    /// `state.affectNeighborsAfterRemoval(level, pos, movedByPiston)`.
+    pub(crate) fn affect_neighbors_after_removal(
+        &mut self,
+        state: BlockState,
+        pos: BlockPos,
+        moved: bool,
+    ) {
         if let Some(f) = self
             .behaviours
             .get(state.block())
