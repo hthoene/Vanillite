@@ -147,9 +147,17 @@ impl Entities {
     /// Adds a mob.
     pub fn spawn_mob(&mut self, new: NewEntity, data: MobData) -> EntityId {
         let network_id = new.network_id.0;
+        let parts = if data.kind == crate::mob::Kind::EnderDragon {
+            8
+        } else {
+            0
+        };
         let mobs = &mut self.mobs;
         let id = self.store.spawn(new, |id| mobs.push(id, data));
         self.by_network_id.insert(network_id, id);
+        for i in 1..=parts {
+            self.by_network_id.insert(network_id.wrapping_add(i), id);
+        }
         id
     }
 
@@ -208,6 +216,10 @@ impl Entities {
             return false;
         }
         if let Some(m) = self.mob_mut(id) {
+            // `EnderDragon.addEffect` refuses every effect.
+            if m.kind == crate::mob::Kind::EnderDragon {
+                return false;
+            }
             return matches!(m.effects.add(effect, true), Added::New | Added::Updated);
         }
         let Entities { store, players, .. } = self;
@@ -324,6 +336,12 @@ impl Entities {
         let removed = self.store.despawn(id)?;
         if is_mob_kind(removed.kind) || is_special_kind(removed.kind) {
             self.by_network_id.remove(&removed.network_id.0);
+            if removed.kind == ids::ENDER_DRAGON {
+                for i in 1..=8 {
+                    self.by_network_id
+                        .remove(&removed.network_id.0.wrapping_add(i));
+                }
+            }
         }
         let moved = self.remove_kind_row(removed.kind, removed.kind_row);
         if let Some(moved) = moved {

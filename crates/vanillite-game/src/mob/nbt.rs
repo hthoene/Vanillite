@@ -121,6 +121,7 @@ pub fn save_special(
 /// A special entity loaded from entity NBT: type, position, motion, rotation, UUID and data.
 pub fn load_special(
     tag: &Compound,
+    seed: i64,
 ) -> Option<(
     EntityTypeId,
     Vec3,
@@ -144,7 +145,11 @@ pub fn load_special(
         },
         _ => Rotation::default(),
     };
-    let uuid = uuid_of(tag)?;
+    // Generated entities (the pillars' crystals) have no UUID yet.
+    let uuid = uuid_of(tag).unwrap_or_else(|| {
+        let mut r = vanillite_base::random::LegacyRandom::new(seed);
+        super::random_uuid(&mut r)
+    });
     Some((kind, pos, velocity, rot, uuid, data))
 }
 

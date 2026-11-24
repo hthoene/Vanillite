@@ -211,7 +211,8 @@ impl Level {
             let seen = self.seen_percent(center, aabb);
             let exposure = f64::from(seen);
             // `ExplosionDamageCalculator.getEntityDamageAmount` for the living entities.
-            if player.is_some() || mob.is_some_and(crate::mob::MobData::is_alive) {
+            let crystal = kind == entity_ids::END_CRYSTAL;
+            if player.is_some() || crystal || mob.is_some_and(crate::mob::MobData::is_alive) {
                 let double_radius = f64::from(double_radius);
                 let pow = (1.0 - dist) * exposure;
                 #[allow(clippy::cast_possible_truncation)]

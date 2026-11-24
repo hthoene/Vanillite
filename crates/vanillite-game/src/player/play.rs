@@ -687,6 +687,21 @@ impl Digging {
         if stack.is_empty() {
             return false;
         }
+        if item::item_id(&stack) == vanillite_data::item::ids::END_CRYSTAL {
+            if !ctx.level.use_end_crystal(pos) {
+                return false;
+            }
+            if !ctx.actor.creative() {
+                let slot = match hand {
+                    Hand::MainHand => ctx.inventory.selected_item_mut(),
+                    Hand::OffHand => Some(&mut ctx.inventory.offhand),
+                };
+                if let Some(slot) = slot {
+                    slot.shrink(1);
+                }
+            }
+            return true;
+        }
         let Some(_block) = item::item_id(&stack).block() else {
             // Non-block items (buckets, tools on blocks, spawn eggs, ...) come later.
             return false;

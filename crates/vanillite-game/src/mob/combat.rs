@@ -84,6 +84,12 @@ pub fn hurt(
     if ents.mob(target).is_some() {
         return hurt_mob(level, ents, env, cx, target, source, amount);
     }
+    if ents.special(target).is_some() {
+        return super::boss::special::hurt(ents, env, cx, target, &source);
+    }
+    if ents.player(target).is_none() {
+        return false;
+    }
     let Entities { store, players, .. } = ents;
     let Some(mut entity) = store.get_mut(target) else {
         return false;
@@ -248,6 +254,9 @@ pub fn hurt_mob(
 
 /// `knockback(power, xd, zd)` of a mob.
 pub fn apply_knockback(ents: &mut Entities, target: EntityId, power: f64, xd: f64, zd: f64) {
+    if super::boss::dragon::ignores_knockback(ents, target) {
+        return;
+    }
     let Some(resistance) = ents.mob(target).map(|m| m.attrs.knockback_resistance) else {
         return;
     };
@@ -544,7 +553,15 @@ pub fn player_attack(
         player_sound(env, "minecraft:entity.player.attack.nodamage");
         return;
     }
-    let kb = if knockback_attack { 0.5_f32 } else { 0.0 };
+    // Dragon parts are not living entities: no knockback from the attack itself.
+    let part = ents
+        .mob(target)
+        .is_some_and(|m| m.kind == Kind::EnderDragon);
+    let kb = if knockback_attack && !part {
+        0.5_f32
+    } else {
+        0.0
+    };
     if kb > 0.0 {
         let rad = f64::from(y_rot) * std::f64::consts::PI / 180.0;
         let (sin, cos) = (

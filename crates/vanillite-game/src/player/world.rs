@@ -70,4 +70,9 @@ pub trait PlayLevel {
     fn random_boolean(&mut self) -> bool;
     /// `nextInt(bound)` of the world's random source; `bound` is at least 1.
     fn random_int(&mut self, bound: i32) -> i32;
+    /// `EndCrystalItem.useOn` on the block at `on`: places an end crystal; whether it did.
+    fn use_end_crystal(&mut self, on: BlockPos) -> bool {
+        let _ = on;
+        false
+    }
 }

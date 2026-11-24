@@ -199,6 +199,8 @@ pub struct LevelOutput {
     pub explosions: Vec<explosion::ExplosionEvent>,
     /// The damage of the living entities explosions hit, for the mob system.
     pub explosion_hurts: Vec<explosion::ExplosionHurt>,
+    /// An end crystal was placed: the End fight tries to respawn the dragon (`tryRespawn`).
+    pub try_dragon_respawn: bool,
 }
 
 /// The game state of one world.

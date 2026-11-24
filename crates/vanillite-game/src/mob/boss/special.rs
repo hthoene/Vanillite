@@ -83,27 +83,45 @@ pub fn tick(
 
 /// The synched data of a special entity after the entity's own (ids from 8 on).
 pub fn entity_data(out: &mut Vec<u8>, data: &SpecialData, all: bool) {
-    let _ = (out, data, all);
+    match data {
+        SpecialData::EndCrystal(_)
+        | SpecialData::DragonFireball(_)
+        | SpecialData::AreaEffectCloud(_) => dragon::crystal::entity_data(out, data, all),
+        SpecialData::WitherSkull(_) => {}
+    }
+}
+
+/// `hurtServer` of a special entity (end crystals break; the others ignore hits).
+pub fn hurt(
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    cx: &mut MobContext,
+    id: EntityId,
+    source: &crate::survival::damage::DamageSource,
+) -> bool {
+    match ents.special(id) {
+        Some(SpecialData::EndCrystal(_)) => {
+            dragon::crystal::hurt_crystal(ents, env, cx, id, source)
+        }
+        _ => false,
+    }
 }
 
 /// The entity NBT of a special entity's kind data; `None` when the entity is not saved.
 pub fn save(data: &SpecialData, out: &mut Compound) -> Option<()> {
-    let _ = (data, out);
-    Some(())
+    match data {
+        SpecialData::EndCrystal(_)
+        | SpecialData::DragonFireball(_)
+        | SpecialData::AreaEffectCloud(_) => dragon::crystal::save(data, out),
+        SpecialData::WitherSkull(_) => Some(()),
+    }
 }
 
 /// Reads the kind data of a special entity of `kind`; `None` for other kinds.
 pub fn load(kind: EntityTypeId, tag: &Compound) -> Option<SpecialData> {
-    let _ = tag;
     if kind == ids::WITHER_SKULL {
         Some(SpecialData::WitherSkull(Box::default()))
-    } else if kind == ids::END_CRYSTAL {
-        Some(SpecialData::EndCrystal(Box::default()))
-    } else if kind == ids::DRAGON_FIREBALL {
-        Some(SpecialData::DragonFireball(Box::default()))
-    } else if kind == ids::AREA_EFFECT_CLOUD {
-        Some(SpecialData::AreaEffectCloud(Box::default()))
     } else {
-        None
+        dragon::crystal::load(kind, tag)
     }
 }
