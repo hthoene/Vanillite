@@ -175,6 +175,13 @@ impl<C> Builder<C> {
         self
     }
 
+    /// Replaces each child by `f(child)`.
+    #[must_use]
+    pub fn map_children(mut self, f: impl Fn(Builder<C>) -> Builder<C>) -> Self {
+        self.children = self.children.into_iter().map(&f).collect();
+        self
+    }
+
     /// A custom suggestion provider the source answers.
     #[must_use]
     pub fn suggests(mut self, provider: &'static str) -> Self {

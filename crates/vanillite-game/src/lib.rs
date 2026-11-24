@@ -17,4 +17,5 @@ pub mod item_entity;
 pub mod level;
 pub mod loot;
 pub mod player;
+pub mod scoreboard;
 pub mod survival;

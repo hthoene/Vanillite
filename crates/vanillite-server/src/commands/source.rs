@@ -9,14 +9,19 @@ use vanillite_game::player::join::display_name;
 use vanillite_protocol::packets::play::clientbound::SystemChat;
 use vanillite_protocol::text::{Color, Component, NamedColor};
 
+use vanillite_command::values::Anchor;
+use vanillite_data::entity::EntityTypeId;
+use vanillite_world::entity::EntityId;
+
+use super::engine::Callback;
 use crate::global::Global;
 use crate::player_list::Uuid;
 use crate::world::WorldId;
 
-/// Who runs a command.
+/// Who gets the feedback of a command (Vanilla's `CommandSource`).
 #[derive(Clone)]
 pub(crate) enum SourceKind {
-    /// A player on this world.
+    /// A player.
     Player {
         uuid: u128,
         name: String,
@@ -24,9 +29,37 @@ pub(crate) enum SourceKind {
     },
     /// The server console.
     Console,
+    /// The server itself (functions of the game loop, scheduled functions): no feedback.
+    Server,
 }
 
-/// A command source.
+/// The entity a command runs as (`CommandSourceStack.entity`).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SourceEntity {
+    /// UUID.
+    pub(crate) uuid: u128,
+    /// The world the entity is in.
+    pub(crate) world: WorldId,
+    /// The entity, when it is in the world the command runs on.
+    pub(crate) id: Option<EntityId>,
+    /// Its type.
+    pub(crate) kind: EntityTypeId,
+    /// `getScoreboardName`/`getName`: the player name, else the custom name or the type name.
+    pub(crate) name: String,
+    /// Its display name.
+    pub(crate) display: Component,
+    /// Eye height above the feet.
+    pub(crate) eye_height: f64,
+}
+
+impl SourceEntity {
+    /// Whether it is a player.
+    pub(crate) fn is_player(&self) -> bool {
+        self.kind == vanillite_data::entity::ids::PLAYER
+    }
+}
+
+/// A command source (`CommandSourceStack`).
 #[derive(Clone)]
 pub(crate) struct CommandSource {
     /// The server, for suggestions.
@@ -40,6 +73,14 @@ pub(crate) struct CommandSource {
     pub(crate) pos: Vec3,
     /// Rotation (`y_rot`, `x_rot`).
     pub(crate) rot: (f32, f32),
+    /// The entity it runs as.
+    pub(crate) entity: Option<SourceEntity>,
+    /// `anchored`.
+    pub(crate) anchor: Anchor,
+    /// No feedback at all (`withSuppressedOutput`).
+    pub(crate) silent: bool,
+    /// Gets the result of the command (`execute store`, function results).
+    pub(crate) callback: Callback,
 }
 
 impl vanillite_command::Source for CommandSource {
@@ -113,32 +154,81 @@ impl vanillite_command::Source for CommandSource {
 }
 
 impl CommandSource {
-    /// The player's UUID, if a player runs the command.
-    pub(crate) fn uuid(&self) -> Option<u128> {
-        match &self.kind {
-            SourceKind::Player { uuid, .. } => Some(*uuid),
-            SourceKind::Console => None,
+    /// A source with the defaults of `CommandSourceStack`'s constructor.
+    pub(crate) fn new(
+        global: Arc<Global>,
+        kind: SourceKind,
+        level: u8,
+        world: WorldId,
+        pos: Vec3,
+        rot: (f32, f32),
+        entity: Option<SourceEntity>,
+    ) -> CommandSource {
+        CommandSource {
+            global,
+            kind,
+            level,
+            world,
+            pos,
+            rot,
+            entity,
+            anchor: Anchor::Feet,
+            silent: false,
+            callback: Callback::Empty,
         }
     }
 
-    /// `getDisplayName`: the player's display name or `Server`.
+    /// The player's UUID, if the source runs as a player (`getPlayer`).
+    pub(crate) fn uuid(&self) -> Option<u128> {
+        self.entity
+            .as_ref()
+            .filter(|e| e.is_player())
+            .map(|e| e.uuid)
+    }
+
+    /// The UUID of the player that gets the feedback.
+    pub(crate) fn receiver_uuid(&self) -> Option<u128> {
+        match &self.kind {
+            SourceKind::Player { uuid, .. } => Some(*uuid),
+            SourceKind::Console | SourceKind::Server => None,
+        }
+    }
+
+    /// `getDisplayName`: the entity's display name, the player's, or `Server`.
     pub(crate) fn display_name(&self) -> Component {
+        if let Some(e) = &self.entity {
+            return e.display.clone();
+        }
         match &self.kind {
             SourceKind::Player { uuid, name, .. } => display_name(name, *uuid),
-            SourceKind::Console => Component::text("Server"),
+            SourceKind::Console | SourceKind::Server => Component::text("Server"),
         }
     }
 
     /// `getTextName`.
     pub(crate) fn text_name(&self) -> &str {
+        if let Some(e) = &self.entity {
+            return &e.name;
+        }
         match &self.kind {
             SourceKind::Player { name, .. } => name,
-            SourceKind::Console => "Server",
+            SourceKind::Console | SourceKind::Server => "Server",
+        }
+    }
+
+    /// `withCallback`.
+    pub(crate) fn with_callback(&self, callback: Callback) -> CommandSource {
+        CommandSource {
+            callback,
+            ..self.clone()
         }
     }
 
     /// `sendSystemMessage`: to the player (if it accepts system messages) or the log.
     pub(crate) fn send_system(&self, global: &Global, message: Component) {
+        if self.silent {
+            return;
+        }
         match &self.kind {
             SourceKind::Player { uuid, sink, .. } => {
                 let accepts = global
@@ -158,6 +248,7 @@ impl CommandSource {
                 }
             }
             SourceKind::Console => log::info!("{}", message.plain()),
+            SourceKind::Server => {}
         }
     }
 
@@ -165,6 +256,9 @@ impl CommandSource {
     /// the other operators and the log (`broadcastToAdmins`; the game rules
     /// `sendCommandFeedback` and `logAdminCommands` are on, as by default).
     pub(crate) fn send_success(&self, global: &Global, message: Component, inform_admins: bool) {
+        if self.silent || matches!(self.kind, SourceKind::Server) {
+            return;
+        }
         self.send_system(global, message.clone());
         if !inform_admins {
             return;
@@ -173,7 +267,7 @@ impl CommandSource {
             Component::translatable("chat.type.admin", vec![self.display_name(), message])
                 .color(Color::Named(NamedColor::Gray))
                 .italic(true);
-        let own = self.uuid();
+        let own = self.receiver_uuid();
         for entry in global.players.snapshot() {
             if Some(entry.uuid.0) != own && global.access.op_level(entry.uuid.0).is_some() {
                 let accepts = entry

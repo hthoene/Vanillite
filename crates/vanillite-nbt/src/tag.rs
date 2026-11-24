@@ -213,6 +213,11 @@ impl Compound {
         self.0.iter().rev().find(|(n, _)| n == name).map(|(_, v)| v)
     }
 
+    /// The value of `name`, mutably.
+    pub fn get_mut(&mut self, name: &str) -> Option<&mut Tag> {
+        self.0.iter_mut().rev().find(|(n, _)| n == name).map(|(_, v)| v)
+    }
+
     /// Removes and returns the value of `name`.
     pub fn remove(&mut self, name: &str) -> Option<Tag> {
         let idx = self.0.iter().rposition(|(n, _)| n == name)?;
