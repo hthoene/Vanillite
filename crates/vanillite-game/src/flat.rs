@@ -132,3 +132,80 @@ impl ChunkSource for FlatWorld {
         Some(Arc::new(SharedPacket::new(body)))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+
+    use vanillite_protocol::codec::{Reader, Result};
+
+    use super::*;
+
+    /// Reads a `level_chunk_with_light` body (after the packet id) field by field like the 26.3
+    /// client's `ClientboundLevelChunkWithLightPacket.STREAM_CODEC`; returns the section count.
+    /// The client rejects bytes left over ("found N bytes extra").
+    fn read_chunk_packet(body: &[u8]) -> Result<usize> {
+        let mut r = Reader::new(body);
+        r.i32()?;
+        r.i32()?;
+        for _ in 0..r.varint()? {
+            r.varint()?;
+            let longs = usize::try_from(r.varint()?).unwrap();
+            r.take(longs * 8)?;
+        }
+        let size = usize::try_from(r.varint()?).unwrap();
+        let mut data = Reader::new(r.take(size)?);
+        let mut sections = 0;
+        while data.remaining() > 0 {
+            data.i16()?;
+            data.i16()?;
+            for (entries, max_palette_bits) in [(4096_usize, 8), (64, 3)] {
+                let bits = data.u8()?;
+                if bits == 0 {
+                    data.varint()?;
+                    continue;
+                }
+                if bits <= max_palette_bits {
+                    for _ in 0..data.varint()? {
+                        data.varint()?;
+                    }
+                }
+                let per_long = 64 / usize::from(bits);
+                data.take(entries.div_ceil(per_long) * 8)?;
+            }
+            sections += 1;
+        }
+        assert_eq!(r.varint()?, 0, "no block entities expected");
+        // Light masks are `ByteBufCodecs.BIT_SET`: VarInt-prefixed byte arrays.
+        for _ in 0..4 {
+            let len = usize::try_from(r.varint()?).unwrap();
+            r.take(len)?;
+        }
+        for _ in 0..2 {
+            for _ in 0..r.varint()? {
+                assert_eq!(r.varint()?, 2048);
+                r.take(2048)?;
+            }
+        }
+        r.finish(0)?;
+        Ok(sections)
+    }
+
+    #[test]
+    fn chunk_packet_reads_like_vanilla() {
+        let vanilla = include_bytes!(
+            "../../vanillite-protocol/tests/vectors/play/level_chunk_with_light.bin"
+        );
+        let mut r = Reader::new(vanilla);
+        r.varint().unwrap();
+        assert_eq!(read_chunk_packet(r.rest()).unwrap(), 24);
+
+        install_chunk_facts(64);
+        let packet = FlatWorld::new(0)
+            .chunk_packet(ChunkPos { x: 3, z: -2 })
+            .unwrap();
+        let mut r = Reader::new(packet.body());
+        r.varint().unwrap();
+        assert_eq!(read_chunk_packet(r.rest()).unwrap(), 24);
+    }
+}

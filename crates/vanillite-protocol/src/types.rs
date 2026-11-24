@@ -232,24 +232,22 @@ impl DecodeLimited for RawNbt {
     }
 }
 
-/// Java's `BitSet` as a VarInt-prefixed long array. The limit is in longs.
+/// Java's `BitSet` as `ByteBufCodecs.BIT_SET` writes it: a VarInt-prefixed byte array in
+/// `BitSet.toByteArray()` order (little-endian). The limit is in bytes.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct BitSet(pub Vec<i64>);
+pub struct BitSet(pub Vec<u8>);
 
 impl Encode for BitSet {
     fn encode(&self, out: &mut Vec<u8>) {
-        self.0.encode(out);
+        write_len(out, self.0.len());
+        out.extend_from_slice(&self.0);
     }
 }
 
 impl DecodeLimited for BitSet {
     fn decode_limited(r: &mut Reader<'_>, max: usize) -> Result<Self> {
-        let len = r.len_prefix("bit set", max, 8)?;
-        let mut v = Vec::with_capacity(len);
-        for _ in 0..len {
-            v.push(r.i64()?);
-        }
-        Ok(Self(v))
+        let len = r.len_prefix("bit set", max, 1)?;
+        Ok(Self(r.take(len)?.to_vec()))
     }
 }
 

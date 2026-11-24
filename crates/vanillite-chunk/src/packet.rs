@@ -225,13 +225,13 @@ mod tests {
         let mut read_mask = || {
             let len = read_varint(&mut input).unwrap();
             (0..len)
-                .map(|_| u64::from_be_bytes(read_array(&mut input).unwrap()))
+                .map(|_| read_u8(&mut input).unwrap())
                 .collect::<Vec<_>>()
         };
-        assert_eq!(read_mask(), [1 << 25]);
+        assert_eq!(read_mask(), [0, 0, 0, 1 << 1]);
         assert_eq!(read_mask(), [1 << 5]);
         assert_eq!(read_mask(), [1]);
-        assert_eq!(read_mask(), Vec::<u64>::new());
+        assert_eq!(read_mask(), Vec::<u8>::new());
         assert_eq!(read_varint(&mut input).unwrap(), 1);
         assert_eq!(read_varint(&mut input).unwrap(), 2048);
         assert!(input[..2048].iter().all(|&b| b == 0xff));
