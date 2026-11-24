@@ -12,6 +12,7 @@ repository.workspace = true
 vanillite-base.workspace = true
 vanillite-data.workspace = true
 rustc-hash.workspace = true
+log.workspace = true
 vanillite-chunk.workspace = true
 vanillite-datapack.workspace = true
 vanillite-config.workspace = true

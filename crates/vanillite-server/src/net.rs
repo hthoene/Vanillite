@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
+use vanillite_base::Vec3;
 use vanillite_config::Config;
 use vanillite_datapack::LoadedPacks;
-use vanillite_game::flat::{self, FlatWorld};
 use vanillite_game::player::join::LevelInfo;
 use vanillite_game::player::{ClientInformation, GameProfile, PacketSink, ProfileProperty};
 use vanillite_net::{ConfigurationData, Joined, NetConfig, Network, StatusInfo};
@@ -34,6 +34,41 @@ pub enum VanillaPack {
 pub(crate) struct Prepared {
     pub(crate) configuration: ConfigurationData,
     pub(crate) worlds: Vec<WorldPlayers>,
+    /// The loaded data packs; `None` with [`VanillaPack::None`].
+    pub(crate) packs: Option<LoadedPacks>,
+}
+
+/// Where new players spawn: `spawn` of `level.dat`, else on top of the flat stand-in world.
+fn world_spawn(level_dir: &Path) -> (Vec3, f32) {
+    let spawn = vanillite_storage::read_level_dat(level_dir)
+        .ok()
+        .flatten()
+        .and_then(|root| match root.get("Data") {
+            Some(vanillite_nbt::Tag::Compound(data)) => match data.get("spawn") {
+                Some(vanillite_nbt::Tag::Compound(spawn)) => Some(spawn.clone()),
+                _ => None,
+            },
+            _ => None,
+        });
+    let pos = spawn.as_ref().and_then(|s| match s.get("pos") {
+        Some(vanillite_nbt::Tag::IntArray(pos)) if pos.len() == 3 => Some(pos.clone()),
+        _ => None,
+    });
+    let yaw = spawn
+        .as_ref()
+        .and_then(|s| match s.get("yaw") {
+            Some(vanillite_nbt::Tag::Float(yaw)) => Some(*yaw),
+            _ => None,
+        })
+        .unwrap_or(0.0);
+    match pos.as_deref() {
+        Some(&[x, y, z]) => (
+            Vec3::new(f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5),
+            yaw,
+        ),
+        // The classic flat layers end 4 blocks above the overworld's bottom (-64).
+        _ => (Vec3::new(0.5, -60.0, 0.5), 0.0),
+    }
 }
 
 fn registry_index(packs: Option<&LoadedPacks>, registry: &str, entry: &str) -> usize {
@@ -77,17 +112,9 @@ pub(crate) fn prepare(
             },
         ),
     };
-    let biomes = packs
-        .as_ref()
-        .and_then(|p| p.registry("minecraft:worldgen/biome"))
-        .map_or(1, |r| r.entries().len());
-    flat::install_chunk_facts(u32::try_from(biomes).unwrap_or(1).max(1));
-    let plains = registry_index(
-        packs.as_ref(),
-        "minecraft:worldgen/biome",
-        "minecraft:plains",
-    );
-    let flat_world = Arc::new(FlatWorld::new(u16::try_from(plains).unwrap_or(0)));
+    crate::world_setup::install_facts(packs.as_ref())?;
+    let spawn = world_spawn(level_dir);
+    let is_flat = !level_dir.join("level.dat").exists();
 
     let properties = &config.properties;
     let levels: Vec<Identifier> = DIMENSIONS
@@ -116,40 +143,25 @@ pub(crate) fn prepare(
                     dimension,
                 ))
                 .unwrap_or(0),
-                // The seed belongs to the world runtime; the flat world has none.
+                // Vanilla sends the first 8 bytes of SHA-256(seed); not ported yet.
                 hashed_seed: 0,
-                is_flat: true,
+                is_flat,
                 sea_level: 63,
-                spawn: (flat_world.spawn(), 0.0),
+                spawn,
                 max_players: properties.max_players,
                 view_distance: i32::from(view_distance),
                 simulation_distance: i32::from(simulation_distance),
                 hardcore: properties.hardcore,
                 online_mode: properties.online_mode,
             };
-            WorldPlayers::new(
-                level,
-                Box::new(SharedFlat(Arc::clone(&flat_world))),
-                PlayerDataStore::new(level_dir),
-            )
+            WorldPlayers::new(level, PlayerDataStore::new(level_dir))
         })
         .collect();
     Ok(Prepared {
         configuration,
         worlds,
+        packs,
     })
-}
-
-/// The placeholder flat world, shared by all dimensions.
-struct SharedFlat(Arc<FlatWorld>);
-
-impl vanillite_game::player::ChunkSource for SharedFlat {
-    fn chunk_packet(
-        &self,
-        pos: vanillite_base::ChunkPos,
-    ) -> Option<Arc<vanillite_protocol::SharedPacket>> {
-        self.0.chunk_packet(pos)
-    }
 }
 
 /// The running network.

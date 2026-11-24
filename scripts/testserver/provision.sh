@@ -144,10 +144,12 @@ set_prop() {
 set_prop server-port "$port"
 set_prop online-mode true
 set_prop white-list true
+# The Minecraft EULA is accepted for this test server.
+echo "eula=true" > "$dir/eula.txt"
 if [ -f /opt/paper/whitelist.json ]; then
     cp /opt/paper/whitelist.json "$dir/whitelist.json"
 fi
-chown vanillite:vanillite "$props" "$dir"/*.json 2> /dev/null || true
+chown vanillite:vanillite "$props" "$dir/eula.txt" "$dir"/*.json 2> /dev/null || true
 
 systemctl enable --quiet "vanillite@$port"
 systemctl restart "vanillite@$port"
