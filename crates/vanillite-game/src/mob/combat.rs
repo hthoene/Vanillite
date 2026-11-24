@@ -224,7 +224,9 @@ pub fn hurt_mob(
         .is_some_and(super::MobData::is_dead_or_dying);
     if dead {
         if took_full {
-            let sound = ents.mob(target).map(|m| m.kind.death_sound());
+            let sound = ents
+                .mob(target)
+                .map(|m| super::boss::guardian::sound_variant(m, m.kind.death_sound()));
             if let Some(sound) = sound {
                 mob_sound(ents, env, target, sound);
             }
@@ -233,7 +235,7 @@ pub fn hurt_mob(
     } else if took_full {
         let sound = ents.mob_mut(target).map(|m| {
             m.ambient_sound_time = -m.kind.ambient_sound_interval();
-            m.kind.hurt_sound()
+            super::boss::guardian::sound_variant(m, m.kind.hurt_sound())
         });
         if let Some(sound) = sound {
             mob_sound(ents, env, target, sound);

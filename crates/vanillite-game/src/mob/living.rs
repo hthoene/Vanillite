@@ -263,6 +263,10 @@ fn fluid_jump_threshold(t: &Tick<'_, '_>) -> f64 {
 
 /// `LivingEntity.aiStep` with `Mob.aiStep`'s additions.
 fn ai_step(t: &mut Tick<'_, '_>) {
+    super::boss::ai_step_pre(t);
+    if !t.exists() || t.mob_ref().removed {
+        return;
+    }
     {
         let m = t.mob();
         if m.no_jump_delay > 0 {
@@ -430,7 +434,7 @@ fn modified_friction(friction: f32, modifier: f32) -> f32 {
 }
 
 /// `moveRelative(speed, input)`.
-fn move_relative(t: &mut Tick<'_, '_>, speed: f32, input: Vec3) {
+pub(crate) fn move_relative(t: &mut Tick<'_, '_>, speed: f32, input: Vec3) {
     let length = input.length_sqr();
     if length < 1.0e-7 {
         return;

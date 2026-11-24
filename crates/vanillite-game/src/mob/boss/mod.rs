@@ -153,6 +153,13 @@ pub fn ai_step_override(t: &mut Tick<'_, '_>) -> bool {
     }
 }
 
+/// The kind's `aiStep` override before it calls `super.aiStep()` (guardians flopping on land).
+pub fn ai_step_pre(t: &mut Tick<'_, '_>) {
+    if matches!(t.mob_ref().kind, Kind::Guardian | Kind::ElderGuardian) {
+        guardian::ai_step_pre(t);
+    }
+}
+
 /// The kind's additions to `aiStep` (after `LivingEntity.aiStep`).
 pub fn ai_step(t: &mut Tick<'_, '_>) {
     match t.mob_ref().kind {
