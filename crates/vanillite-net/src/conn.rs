@@ -6,6 +6,7 @@ use crate::auth::{AuthResult, is_valid_player_name, server_hash};
 use crate::limits::{ConnectionGuard, RateLimiter};
 use crate::outbound::{Out, Outbound};
 use crate::player::{Joined, Latency};
+use crate::velocity;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -414,6 +415,8 @@ impl Conn {
         let shared = Arc::clone(&self.shared);
         let profile = if let Some(profile) = self.vouched.clone() {
             profile
+        } else if let Some(profile) = self.forwarded(&hello.name).await? {
+            profile
         } else if let Some(keys) = shared.keys.as_ref() {
             let challenge: [u8; 4] = rand_bytes();
             self.out.send(&login::EncryptionRequest {
@@ -471,6 +474,48 @@ impl Conn {
             self.addr
         );
         Ok(profile)
+    }
+
+    /// Velocity modern forwarding: asks the proxy for the player's identity. `None` when
+    /// forwarding is off, or for a direct connection where those are allowed.
+    async fn forwarded(&mut self, name: &str) -> Result<Option<GameProfile>> {
+        let Some(secret) = self.shared.config.forwarding_secret.clone() else {
+            return Ok(None);
+        };
+        let transaction_id = i32::from_be_bytes(rand_bytes()) & i32::MAX;
+        self.out.send(&login::CustomQuery {
+            transaction_id,
+            channel: Identifier::new(velocity::CHANNEL)?,
+            payload: RawBytes(vec![velocity::MAX_VERSION]),
+        });
+        let ServerboundLogin::CustomQueryAnswer(answer) =
+            self.recv(ServerboundLogin::decode).await?
+        else {
+            return Err(Error::Invalid("expected forwarding answer").into());
+        };
+        if answer.transaction_id != transaction_id {
+            return Err(Error::Invalid("forwarding transaction").into());
+        }
+        let Some(payload) = answer.payload else {
+            // A Vanilla client does not understand the request.
+            return if self.shared.config.allow_direct_connections {
+                Ok(None)
+            } else {
+                Err(kick(Component::text(
+                    "This server only accepts connections through its proxy.",
+                )))
+            };
+        };
+        match velocity::decode(&secret, &payload.0) {
+            Ok(f) if f.profile.name == name && is_valid_player_name(&f.profile.name) => {
+                self.addr = SocketAddr::new(f.address, self.addr.port());
+                Ok(Some(f.profile))
+            }
+            Ok(_) | Err(_) => {
+                log::warn!("{}: invalid forwarding data", self.addr);
+                Err(kick(Component::text("Unable to verify player details.")))
+            }
+        }
     }
 
     async fn authenticate(&mut self, name: String, hash: String) -> Result<GameProfile> {
@@ -608,7 +653,7 @@ fn kick(reason: Component) -> End {
 }
 
 /// Random bytes from the OS.
-pub(crate) fn rand_bytes<const N: usize>() -> [u8; N] {
+pub fn rand_bytes<const N: usize>() -> [u8; N] {
     use rsa::rand_core::RngCore;
     let mut b = [0u8; N];
     rsa::rand_core::OsRng.fill_bytes(&mut b);

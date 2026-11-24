@@ -84,6 +84,19 @@ rules! {
             /// so keep this at 0 outside test servers.
             test_bots: u8 = "test-bots", Setting, range = [0, 16], restart = true, vanilla = 0;
         }
+        /// Player info forwarding from a proxy in front of the server (Velocity "modern"
+        /// forwarding, also used by `vanillite-proxy`).
+        proxy: ProxyRules = "proxy" {
+            /// Shared secret of modern forwarding (the proxy's `forwarding.secret`). Empty turns
+            /// forwarding off. With a secret, players' identities and addresses come from the
+            /// proxy, signed with it; `online-mode` then only applies to direct connections.
+            velocity_secret: String = "velocity-secret", Setting, restart = true,
+                vanilla = String::new();
+            /// With forwarding on, also accept players who connect directly instead of through
+            /// the proxy (authenticated as usual). Off: they are refused.
+            allow_direct_connections: bool = "allow-direct-connections", Setting, restart = true,
+                vanilla = false;
+        }
         /// Chat. Spam thresholds are `chat-spam-threshold-seconds` and
         /// `command-spam-threshold-seconds` in `server.properties`.
         chat: ChatRules = "chat" {

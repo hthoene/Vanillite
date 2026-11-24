@@ -7,6 +7,9 @@
 #   user vanillite), deployed with `cargo xtask deploy` through /usr/local/bin/vanillite-deploy.
 # - Load test instances (`cargo xtask loadtest`), running only during a run: Paper in offline
 #   mode on 30900 (/opt/paper-loadtest, paper-loadtest.service) and Vanillite on 30901.
+# - vanillite-proxy on 30010 (/opt/vanillite-proxy, vanillite-proxy.service, deployed with
+#   `ssh <host> vanillite-proxy-deploy < target/release-fast/vanillite-proxy`) in front of
+#   Vanillite 30001 and 30002 and a Paper with modern forwarding on 30011 (/opt/paper-proxy).
 # Only ports 30000-30999 are reachable by players.
 set -euo pipefail
 
@@ -162,7 +165,7 @@ write_if_changed /usr/local/bin/testserver-creative 755 <<'EOF'
 #!/usr/bin/env python3
 """Keeps the players in /etc/vanillite-test/creative-players.json in creative mode.
 
-Usage: testserver-creative paper              (Paper timer: gamemode creative for online ones)
+Usage: testserver-creative paper [<rcon port>] (Paper timer: gamemode creative for online ones)
        testserver-creative vanillite <dir>    (Vanillite: player data, before the instance starts
                                               and whenever the server writes player data)
 Installed by scripts/testserver/provision.sh."""
@@ -170,12 +173,13 @@ import gzip, json, os, re, struct, subprocess, sys
 
 players = json.load(open("/etc/vanillite-test/creative-players.json"))
 
-def paper():
-    online = subprocess.run(["paper-rcon", "list"], capture_output=True, text=True).stdout
+def paper(port):
+    rcon = ["paper-rcon"] + (["--port", port] if port else [])
+    online = subprocess.run(rcon + ["list"], capture_output=True, text=True).stdout
     names = {n.strip() for n in online.partition(":")[2].split(",") if n.strip()}
     for p in players:
         if p["name"] in names:
-            subprocess.run(["paper-rcon", "gamemode", "creative", p["name"]], capture_output=True)
+            subprocess.run(rcon + ["gamemode", "creative", p["name"]], capture_output=True)
 
 # Minimal NBT reader and writer: tags as (type, value).
 def read_tag(b, i, t):
@@ -268,8 +272,8 @@ def vanillite(dir):
         write_file(path, root)
         print("creative:", p["name"], path)
 
-if sys.argv[1:2] == ["paper"]:
-    paper()
+if sys.argv[1:2] == ["paper"] and len(sys.argv) <= 3:
+    paper(sys.argv[2] if len(sys.argv) == 3 else None)
 elif sys.argv[1:2] == ["vanillite"] and len(sys.argv) == 3:
     vanillite(sys.argv[2])
 else:
@@ -281,6 +285,7 @@ Description=Keep the creative test players in creative mode on Paper (testserver
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/testserver-creative paper
+ExecStart=-/usr/local/bin/testserver-creative paper 25577
 EOF
 write_if_changed /etc/systemd/system/paper-creative.timer <<'EOF'
 [Unit]
@@ -467,9 +472,121 @@ done
 EOF
 install -d /opt/vanillite/bench/results
 
+echo "== proxy (vanillite-proxy on 30010; Paper with modern forwarding on 30011)"
+if [ ! -s /etc/vanillite-test/forwarding.secret ]; then
+    (umask 077 && head -c 24 /dev/urandom | base64 | tr -d '/+=' > /etc/vanillite-test/forwarding.secret)
+fi
+secret=$(cat /etc/vanillite-test/forwarding.secret)
+# Vanillite 30001 and 30002 accept the proxy's players and still direct connections.
+printf 'VANILLITE_PROXY__VELOCITY_SECRET=%s\nVANILLITE_PROXY__ALLOW_DIRECT_CONNECTIONS=true\n' \
+    "$secret" | write_if_changed /etc/vanillite-test/proxy-backend.env 600
+for port in 30001 30002; do
+    install -d "/etc/systemd/system/vanillite@$port.service.d"
+    write_if_changed "/etc/systemd/system/vanillite@$port.service.d/proxy.conf" <<'EOF'
+[Service]
+EnvironmentFile=/etc/vanillite-test/proxy-backend.env
+EOF
+done
+
+# Paper behind the proxy: offline mode in server.properties, identities from the proxy.
+install -d -o minecraft -g minecraft /opt/paper-proxy /opt/paper-proxy/config
+ln -sfn "$jar" /opt/paper-proxy/paper.jar
+echo "eula=true" > /opt/paper-proxy/eula.txt
+props=/opt/paper-proxy/server.properties
+touch "$props"
+set_prop server-port 30011
+set_prop online-mode false
+set_prop white-list true
+set_prop enforce-whitelist true
+set_prop motd "Vanillite test: Paper behind the proxy"
+set_prop enable-rcon true
+set_prop rcon.port 25577
+set_prop rcon.password "$rcon_password"
+cp /opt/paper/whitelist.json /opt/paper/ops.json /opt/paper-proxy/
+global=/opt/paper-proxy/config/paper-global.yml
+[ -f "$global" ] || cp /opt/paper/config/paper-global.yml "$global"
+sed -i "/^  velocity:/,/^  [a-z]/{s/^    enabled: .*/    enabled: true/;s/^    online-mode: .*/    online-mode: true/;s/^    secret: .*/    secret: '$secret'/}" "$global"
+chown -R minecraft:minecraft /opt/paper-proxy
+write_if_changed /etc/systemd/system/paper-proxy.service <<'EOF'
+[Unit]
+Description=Paper behind vanillite-proxy (modern forwarding, port 30011)
+After=network-online.target
+[Service]
+User=minecraft
+WorkingDirectory=/opt/paper-proxy
+ExecStart=/usr/bin/java -Xms512M -Xmx1536M -jar paper.jar --nogui
+Restart=on-failure
+[Install]
+WantedBy=multi-user.target
+EOF
+
+install -d -o vanillite -g vanillite /opt/vanillite-proxy
+install -m 600 -o vanillite -g vanillite /etc/vanillite-test/forwarding.secret \
+    /opt/vanillite-proxy/forwarding.secret
+write_if_changed /opt/vanillite-proxy/proxy.toml <<'EOF'
+# vanillite-proxy on the test server. Installed by scripts/testserver/provision.sh.
+bind = "0.0.0.0:30010"
+online-mode = true
+motd = "Vanillite test: proxy (/server to switch)"
+max-players = 100
+forwarding-secret-file = "forwarding.secret"
+try = ["vanillite", "import", "paper"]
+
+[servers]
+vanillite = "127.0.0.1:30001"
+import = "127.0.0.1:30002"
+paper = "127.0.0.1:30011"
+
+[permissions]
+server = ["*"]
+glist = ["*"]
+EOF
+write_if_changed /etc/systemd/system/vanillite-proxy.service <<'EOF'
+[Unit]
+Description=vanillite-proxy on port 30010
+After=network-online.target
+[Service]
+User=vanillite
+Group=vanillite
+WorkingDirectory=/opt/vanillite-proxy
+ExecStart=/opt/vanillite-proxy/vanillite-proxy
+Environment=RUST_BACKTRACE=1
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+MemoryMax=1G
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/vanillite-proxy
+[Install]
+WantedBy=multi-user.target
+EOF
+write_if_changed /usr/local/bin/vanillite-proxy-deploy 755 <<'EOF'
+#!/usr/bin/env bash
+# Usage: vanillite-proxy-deploy < vanillite-proxy-binary
+# Installs the binary as /opt/vanillite-proxy/vanillite-proxy and (re)starts the proxy.
+# Installed by scripts/testserver/provision.sh.
+set -euo pipefail
+dir=/opt/vanillite-proxy
+tmp=$(mktemp -p "$dir" .proxy.XXXXXX)
+cat > "$tmp"
+[ -s "$tmp" ] || { rm -f "$tmp"; echo "no binary on stdin" >&2; exit 2; }
+chmod 755 "$tmp"
+chown vanillite:vanillite "$tmp"
+mv -f "$tmp" "$dir/vanillite-proxy"
+systemctl enable --quiet vanillite-proxy.service
+systemctl restart vanillite-proxy.service
+sleep 1
+systemctl --no-pager --lines=10 status vanillite-proxy.service || true
+EOF
+
 systemctl daemon-reload
-systemctl enable --quiet paper.service
+systemctl enable --quiet paper.service paper-proxy.service
 systemctl is-active --quiet paper.service || systemctl start paper.service
+# Picks up a changed forwarding secret or properties.
+systemctl restart paper-proxy.service
 systemctl enable --quiet --now paper-creative.timer
 for dir in /opt/vanillite/30[0-9][0-9][0-9]; do
     port=${dir##*/}
