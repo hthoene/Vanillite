@@ -2,8 +2,9 @@
 //! suffixes, hex and binary numerals, underscores, escapes, heterogeneous lists, typed arrays and
 //! the built-in operations `bool(x)` and `uuid(s)`.
 //!
-//! The parser is recursive descent with the same depth limit as binary NBT (SEC-04); callers
-//! bound the input length.
+//! The parser keeps open compounds, lists and operations on an explicit heap stack, so the call
+//! stack stays flat at any nesting; nesting has the same depth limit as binary NBT (SEC-04) and
+//! callers bound the input length.
 
 use crate::{Compound, Error, List, Result, Tag, read::MAX_DEPTH};
 use std::fmt::Write as _;
@@ -122,24 +123,148 @@ impl Parser<'_> {
     }
 
     fn value(&mut self) -> Result<Tag> {
+        let mut stack: Vec<Open> = Vec::new();
+        let mut done = self.start_value(&mut stack)?;
+        loop {
+            let Some(top) = stack.last_mut() else {
+                // Without an open container, `start_value` returned a finished value.
+                return done.ok_or_else(|| self.err("expected a value"));
+            };
+            if self.step(top, done.take())? {
+                done = self.start_value(&mut stack)?;
+            } else if let Some(open) = stack.pop() {
+                done = Some(self.close(open)?);
+            }
+        }
+    }
+
+    /// Starts a value: returns it if it holds no other values, otherwise opens its container on
+    /// the stack and returns `None`.
+    fn start_value(&mut self, stack: &mut Vec<Open>) -> Result<Option<Tag>> {
         self.ws();
         match self.peek() {
             None => Err(self.err("expected a value")),
-            Some(c) if can_start_number(c) => self.number(),
-            Some('"' | '\'') => Ok(Tag::String(self.quoted()?)),
+            Some(c) if can_start_number(c) => self.number().map(Some),
+            Some('"' | '\'') => Ok(Some(Tag::String(self.quoted()?))),
             Some('{') => {
                 self.enter()?;
-                let r = self.compound();
-                self.depth = self.depth.saturating_sub(1);
-                r.map(Tag::Compound)
+                self.bump();
+                stack.push(Open::Compound {
+                    compound: Compound::new(),
+                    key: String::new(),
+                });
+                Ok(None)
             }
             Some('[') => {
                 self.enter()?;
-                let r = self.list();
-                self.depth = self.depth.saturating_sub(1);
-                r
+                self.bump();
+                self.ws();
+                let array = match self.rest().as_bytes() {
+                    [b'B', b';', ..] => Some(Ty::Byte),
+                    [b'I', b';', ..] => Some(Ty::Int),
+                    [b'L', b';', ..] => Some(Ty::Long),
+                    _ => None,
+                };
+                if let Some(ty) = array {
+                    self.pos = self.pos.saturating_add(2);
+                    let tag = self.array(ty)?;
+                    self.depth = self.depth.saturating_sub(1);
+                    return Ok(Some(tag));
+                }
+                stack.push(Open::List(Vec::new()));
+                Ok(None)
             }
-            Some(_) => self.unquoted_or_builtin(),
+            Some(_) => {
+                let word = self.unquoted()?.to_owned();
+                if self.eat('(') {
+                    stack.push(Open::Call {
+                        name: word,
+                        args: Vec::new(),
+                    });
+                    return Ok(None);
+                }
+                Ok(Some(if word.eq_ignore_ascii_case("true") {
+                    Tag::Byte(1)
+                } else if word.eq_ignore_ascii_case("false") {
+                    Tag::Byte(0)
+                } else {
+                    Tag::String(word)
+                }))
+            }
+        }
+    }
+
+    /// Adds the finished child `value` (`None` right after opening) to `open` and reads up to the
+    /// next child. Returns whether a child follows; `false` means the container is closed.
+    fn step(&mut self, open: &mut Open, value: Option<Tag>) -> Result<bool> {
+        let (items, end, message) = match open {
+            Open::Compound { compound, key } => {
+                if let Some(value) = value {
+                    compound.insert(std::mem::take(key), value);
+                    if !self.eat(',') {
+                        self.expect('}', "expected '}'")?;
+                        return Ok(false);
+                    }
+                }
+                if self.eat('}') {
+                    return Ok(false);
+                }
+                self.ws();
+                let name = match self.peek() {
+                    Some('"' | '\'') => self.quoted()?,
+                    _ => self.unquoted()?.to_owned(),
+                };
+                if name.is_empty() {
+                    return Err(self.err("empty key"));
+                }
+                self.expect(':', "expected ':'")?;
+                *key = name;
+                return Ok(true);
+            }
+            Open::List(items) => (items, ']', "expected ']'"),
+            Open::Call { args, .. } => (args, ')', "expected ')'"),
+        };
+        if let Some(value) = value {
+            items.push(value);
+            if !self.eat(',') {
+                self.expect(end, message)?;
+                return Ok(false);
+            }
+        }
+        Ok(!self.eat(end))
+    }
+
+    /// Turns a closed container into its value.
+    fn close(&mut self, open: Open) -> Result<Tag> {
+        match open {
+            Open::Compound { compound, .. } => {
+                self.depth = self.depth.saturating_sub(1);
+                Ok(Tag::Compound(compound))
+            }
+            Open::List(items) => {
+                self.depth = self.depth.saturating_sub(1);
+                Ok(Tag::List(List(items)))
+            }
+            Open::Call { name, args } => self.call(&name, &args),
+        }
+    }
+
+    /// Applies a built-in operation.
+    fn call(&self, name: &str, args: &[Tag]) -> Result<Tag> {
+        match (name, args) {
+            ("bool", [arg]) => match arg {
+                Tag::Byte(_) | Tag::Short(_) | Tag::Int(_) | Tag::Long(_) => {
+                    Ok(Tag::from(arg.as_i64().is_some_and(|v| v != 0)))
+                }
+                Tag::Float(v) => Ok(Tag::from(*v != 0.0)),
+                Tag::Double(v) => Ok(Tag::from(*v != 0.0)),
+                _ => Err(self.err("expected a number or boolean")),
+            },
+            ("uuid", [Tag::String(s)]) => {
+                let u = parse_uuid(s).ok_or_else(|| self.err("expected a UUID string"))?;
+                Ok(Tag::IntArray(uuid_to_ints(u).to_vec()))
+            }
+            _ => Err(self.err("no such operation")),
         }
     }
 
@@ -152,97 +277,6 @@ impl Parser<'_> {
             return Err(self.err("expected an unquoted string"));
         }
         self.s.get(start..self.pos).ok_or(Error::UnexpectedEnd)
-    }
-
-    fn unquoted_or_builtin(&mut self) -> Result<Tag> {
-        let word = self.unquoted()?.to_owned();
-        if self.eat('(') {
-            let mut args = Vec::new();
-            loop {
-                if self.eat(')') {
-                    break;
-                }
-                args.push(self.value()?);
-                if !self.eat(',') {
-                    self.expect(')', "expected ')'")?;
-                    break;
-                }
-            }
-            return match (word.as_str(), args.as_slice()) {
-                ("bool", [arg]) => match arg {
-                    Tag::Byte(_) | Tag::Short(_) | Tag::Int(_) | Tag::Long(_) => {
-                        Ok(Tag::from(arg.as_i64().is_some_and(|v| v != 0)))
-                    }
-                    Tag::Float(v) => Ok(Tag::from(*v != 0.0)),
-                    Tag::Double(v) => Ok(Tag::from(*v != 0.0)),
-                    _ => Err(self.err("expected a number or boolean")),
-                },
-                ("uuid", [Tag::String(s)]) => {
-                    let u = parse_uuid(s).ok_or_else(|| self.err("expected a UUID string"))?;
-                    Ok(Tag::IntArray(uuid_to_ints(u).to_vec()))
-                }
-                _ => Err(self.err("no such operation")),
-            };
-        }
-        if word.eq_ignore_ascii_case("true") {
-            Ok(Tag::Byte(1))
-        } else if word.eq_ignore_ascii_case("false") {
-            Ok(Tag::Byte(0))
-        } else {
-            Ok(Tag::String(word))
-        }
-    }
-
-    fn compound(&mut self) -> Result<Compound> {
-        self.expect('{', "expected '{'")?;
-        let mut c = Compound::new();
-        loop {
-            if self.eat('}') {
-                return Ok(c);
-            }
-            self.ws();
-            let key = match self.peek() {
-                Some('"' | '\'') => self.quoted()?,
-                _ => self.unquoted()?.to_owned(),
-            };
-            if key.is_empty() {
-                return Err(self.err("empty key"));
-            }
-            self.expect(':', "expected ':'")?;
-            let value = self.value()?;
-            c.insert(key, value);
-            if !self.eat(',') {
-                self.expect('}', "expected '}'")?;
-                return Ok(c);
-            }
-        }
-    }
-
-    fn list(&mut self) -> Result<Tag> {
-        self.expect('[', "expected '['")?;
-        self.ws();
-        let rest = self.rest();
-        let array = match rest.as_bytes() {
-            [b'B', b';', ..] => Some(Ty::Byte),
-            [b'I', b';', ..] => Some(Ty::Int),
-            [b'L', b';', ..] => Some(Ty::Long),
-            _ => None,
-        };
-        if let Some(ty) = array {
-            self.pos = self.pos.saturating_add(2);
-            return self.array(ty);
-        }
-        let mut items = Vec::new();
-        loop {
-            if self.eat(']') {
-                return Ok(Tag::List(List(items)));
-            }
-            items.push(self.value()?);
-            if !self.eat(',') {
-                self.expect(']', "expected ']'")?;
-                return Ok(Tag::List(List(items)));
-            }
-        }
     }
 
     fn array(&mut self, ty: Ty) -> Result<Tag> {
@@ -543,6 +577,20 @@ impl Parser<'_> {
             _ => Tag::Long(i64::try_from(value).map_err(|_| bad())?),
         })
     }
+}
+
+/// A compound, list or operation call being parsed.
+enum Open {
+    Compound {
+        compound: Compound,
+        /// Key of the entry whose value is being parsed.
+        key: String,
+    },
+    List(Vec<Tag>),
+    Call {
+        name: String,
+        args: Vec<Tag>,
+    },
 }
 
 struct IntLiteral {
