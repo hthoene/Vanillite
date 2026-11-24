@@ -196,7 +196,12 @@ impl<'i> Picker<'i> {
         self.visited_item.fill(false);
     }
 
-    fn try_pick(&mut self, contents: &mut Stacked, capacity: i32, output: Option<&mut Vec<u16>>) -> bool {
+    fn try_pick(
+        &mut self,
+        contents: &mut Stacked,
+        capacity: i32,
+        output: Option<&mut Vec<u16>>,
+    ) -> bool {
         if capacity <= 0 {
             return true;
         }
@@ -403,7 +408,15 @@ pub fn place<S: MenuSlots + ?Sized>(
     creative: bool,
     drops: &mut Vec<Drop>,
 ) -> bool {
-    let ghost = place_inner(s, grid, recipe, matches_placed, use_max_items, creative, drops);
+    let ghost = place_inner(
+        s,
+        grid,
+        recipe,
+        matches_placed,
+        use_max_items,
+        creative,
+        drops,
+    );
     if grid.suppress
         && let Some(&first) = grid.input.first()
     {
@@ -441,7 +454,16 @@ fn place_inner<S: MenuSlots + ?Sized>(
         clear_grid(s, grid, creative, drops);
         return true;
     }
-    place_recipe(s, grid, recipe, &mut stacked, matches_placed, use_max_items, creative, drops);
+    place_recipe(
+        s,
+        grid,
+        recipe,
+        &mut stacked,
+        matches_placed,
+        use_max_items,
+        creative,
+        drops,
+    );
     false
 }
 
@@ -477,9 +499,7 @@ fn place_recipe<S: MenuSlots + ?Sized>(
                 smallest = stack.count;
             }
         }
-        if smallest != i32::MAX {
-            smallest += 1;
-        }
+        smallest = smallest.saturating_add(1);
         smallest
     } else {
         1
@@ -564,7 +584,12 @@ fn set_slot<S: MenuSlots + ?Sized>(s: &mut S, direct: bool, slot: usize, stack: 
 }
 
 /// `clearGrid`: the slots to clear go back into the inventory, then `clearCraftingContent`.
-fn clear_grid<S: MenuSlots + ?Sized>(s: &mut S, grid: &Grid, creative: bool, drops: &mut Vec<Drop>) {
+fn clear_grid<S: MenuSlots + ?Sized>(
+    s: &mut S,
+    grid: &Grid,
+    creative: bool,
+    drops: &mut Vec<Drop>,
+) {
     for &slot in &grid.clear {
         let stack = s.item(slot).clone();
         s.inventory().place_back(stack, creative, drops);
@@ -642,7 +667,15 @@ mod tests {
             suppress: false,
             content_direct: true,
         };
-        place(inv, &grid, &placement, false, use_max, false, &mut Vec::new())
+        place(
+            inv,
+            &grid,
+            &placement,
+            false,
+            use_max,
+            false,
+            &mut Vec::new(),
+        )
     }
 
     #[test]
@@ -666,7 +699,11 @@ mod tests {
         let mut inv = PlayerInventory::default();
         inv.items[9] = ItemStack::new(items::OAK_PLANKS.0, 9);
         assert!(!place_table(&mut inv, false));
-        assert!(inv.craft.iter().all(|s| s.item == items::OAK_PLANKS.0 && s.count == 1));
+        assert!(
+            inv.craft
+                .iter()
+                .all(|s| s.item == items::OAK_PLANKS.0 && s.count == 1)
+        );
         assert_eq!(inv.items[9].count, 5);
         assert_eq!(inv.craft_result.item, items::CRAFTING_TABLE.0);
         // The same recipe again with the maximum: the grid goes back first, then 2 each.

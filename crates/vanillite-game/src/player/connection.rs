@@ -599,7 +599,7 @@ impl Connection {
             return;
         }
         let grid_of = |w: usize, h: usize, first: usize| {
-            let input: Vec<usize> = (first..first + w * h).collect();
+            let input: Vec<usize> = (first..first.saturating_add(w.saturating_mul(h))).collect();
             let mut content = vec![0];
             content.extend_from_slice(&input);
             Grid {
@@ -663,10 +663,9 @@ impl Connection {
                             (grid, recipes.crafting_matches(index, &input))
                         }
                         (MenuKind::Furnace(_), RecipeRef::Cooking(index)) => {
-                            let matches = recipes
-                                .cooking
-                                .get(index)
-                                .is_some_and(|r| r.ingredient.test(crate::menu::MenuSlots::item(view, 0)));
+                            let matches = recipes.cooking.get(index).is_some_and(|r| {
+                                r.ingredient.test(crate::menu::MenuSlots::item(view, 0))
+                            });
                             let grid = Grid {
                                 width: 1,
                                 height: 1,
@@ -698,10 +697,12 @@ impl Connection {
             .unwrap_or(false)
         };
         if ghost && let Some(display) = recipes.book.display(p.recipe) {
-            sink.send(&vanillite_protocol::packets::play::clientbound::PlaceGhostRecipe {
-                container_id: p.container_id,
-                display,
-            });
+            sink.send(
+                &vanillite_protocol::packets::play::clientbound::PlaceGhostRecipe {
+                    container_id: p.container_id,
+                    display,
+                },
+            );
         }
     }
 

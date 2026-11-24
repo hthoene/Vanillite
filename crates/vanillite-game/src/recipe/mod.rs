@@ -1455,7 +1455,10 @@ impl Crafting {
                 // of one item.
                 let mut bytes = Vec::new();
                 for (x, y) in [(1, 0), (0, 1), (2, 1), (1, 2)] {
-                    input.get(x, y).with_count(1).encode_template_optional(&mut bytes);
+                    input
+                        .get(x, y)
+                        .with_count(1)
+                        .encode_template_optional(&mut bytes);
                 }
                 out.patch_mut()
                     .set(components::POT_DECORATIONS, bytes.into_boxed_slice());
@@ -1541,7 +1544,11 @@ impl Crafting {
                 .non_empty()
                 .find(|s| (1..=6).contains(&banner_layers(s)))
                 .map_or(ItemStack::EMPTY, |s| transmute(result, s, 0)),
-            Crafting::ShieldDecoration { banner, target, result } => {
+            Crafting::ShieldDecoration {
+                banner,
+                target,
+                result,
+            } => {
                 let mut patterns = None;
                 let mut base = 0;
                 let mut found = &ItemStack::EMPTY;
@@ -1672,13 +1679,13 @@ const FIREWORK_SHAPES: [&str; 5] = ["small_ball", "large_ball", "star", "creeper
 
 /// `DyeColor.getTextureDiffuseColor` (without alpha) by id.
 const DYE_DIFFUSE: [i32; 16] = [
-    16383998, 16351261, 13061821, 3847130, 16701501, 8439583, 15961002, 4673362, 10329495,
-    1481884, 8991416, 3949738, 8606770, 6192150, 11546150, 1908001,
+    16383998, 16351261, 13061821, 3847130, 16701501, 8439583, 15961002, 4673362, 10329495, 1481884,
+    8991416, 3949738, 8606770, 6192150, 11546150, 1908001,
 ];
 /// `DyeColor.getFireworkColor` by id.
 const DYE_FIREWORK: [i32; 16] = [
-    15790320, 15435844, 12801229, 6719955, 14602026, 4312372, 14188952, 4408131, 11250603,
-    2651799, 8073150, 2437522, 5320730, 3887386, 11743532, 1973019,
+    15790320, 15435844, 12801229, 6719955, 14602026, 4312372, 14188952, 4408131, 11250603, 2651799,
+    8073150, 2437522, 5320730, 3887386, 11743532, 1973019,
 ];
 
 fn firework_color(dye: i32) -> i32 {
@@ -1724,7 +1731,10 @@ fn banner_color(stack: &ItemStack) -> Option<i32> {
     if block.info().kind != vanillite_data::block::BlockKind::BannerBlock {
         return None;
     }
-    let name = block.name().strip_prefix("minecraft:")?.strip_suffix("_banner")?;
+    let name = block
+        .name()
+        .strip_prefix("minecraft:")?
+        .strip_suffix("_banner")?;
     let color = ItemStack::new(
         vanillite_data::registry::ITEM
             .id(&format!("minecraft:{name}_dye"))

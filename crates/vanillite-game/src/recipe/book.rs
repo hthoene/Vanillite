@@ -90,9 +90,7 @@ pub struct Book {
 }
 
 fn category(name: &str) -> i32 {
-    RECIPE_BOOK_CATEGORY
-        .id(name)
-        .map_or(0, |id| i32::from(id))
+    RECIPE_BOOK_CATEGORY.id(name).map_or(0, i32::from)
 }
 
 fn tag(i: &Ingredient) -> SlotDisplay {
@@ -131,7 +129,10 @@ impl Book {
                         height: i32::try_from(*height).unwrap_or(0),
                         ingredients: cells
                             .iter()
-                            .map(|c| c.and_then(|c| ingredients.get(c)).map_or(SlotDisplay::Empty, tag))
+                            .map(|c| {
+                                c.and_then(|c| ingredients.get(c))
+                                    .map_or(SlotDisplay::Empty, tag)
+                            })
                             .collect(),
                         result: stack(result),
                         station: table.clone(),
@@ -413,13 +414,21 @@ impl Book {
     pub fn display(&self, id: i32) -> Option<RecipeDisplay> {
         let e = self.entry(id)?;
         let mut display = e.display.clone();
-        if let (Some(pattern), RecipeDisplay::Smithing { base, addition, result, .. }) =
-            (&e.trim_pattern, &mut display)
+        if let (
+            Some(pattern),
+            RecipeDisplay::Smithing {
+                base,
+                addition,
+                result,
+                ..
+            },
+        ) = (&e.trim_pattern, &mut display)
         {
             let id = crate::player::play::game_data()
                 .and_then(|d| d.enchanting.trim_pattern(pattern))
                 .unwrap_or(0);
-            *result = SlotDisplay::SmithingTrim(Box::new(base.clone()), Box::new(addition.clone()), id);
+            *result =
+                SlotDisplay::SmithingTrim(Box::new(base.clone()), Box::new(addition.clone()), id);
         }
         Some(display)
     }
@@ -444,7 +453,10 @@ impl Book {
 const SETTINGS_KEYS: [(&str, &str); 4] = [
     ("isGuiOpen", "isFilteringCraftable"),
     ("isFurnaceGuiOpen", "isFurnaceFilteringCraftable"),
-    ("isBlastingFurnaceGuiOpen", "isBlastingFurnaceFilteringCraftable"),
+    (
+        "isBlastingFurnaceGuiOpen",
+        "isBlastingFurnaceFilteringCraftable",
+    ),
     ("isSmokerGuiOpen", "isSmokerFilteringCraftable"),
 ];
 
@@ -542,7 +554,10 @@ impl PlayerRecipeBook {
             }
         }
         let n = removed.len();
-        (n, (!removed.is_empty()).then_some(RecipeBookRemove { ids: removed }))
+        (
+            n,
+            (!removed.is_empty()).then_some(RecipeBookRemove { ids: removed }),
+        )
     }
 
     /// `sendInitialRecipeBook`: the settings and the whole book.
@@ -574,13 +589,14 @@ impl PlayerRecipeBook {
     /// `ServerRecipeBook.Packed` into the player file's `recipeBook` compound.
     pub fn save(&self) -> Compound {
         let mut c = Compound::new();
-        for ((open_key, filter_key), (open, filtering)) in SETTINGS_KEYS.iter().zip(self.settings)
-        {
+        for ((open_key, filter_key), (open, filtering)) in SETTINGS_KEYS.iter().zip(self.settings) {
             c.insert(*open_key, Tag::Byte(i8::from(open)));
             c.insert(*filter_key, Tag::Byte(i8::from(filtering)));
         }
         let list = |ids: &mut dyn Iterator<Item = &str>| {
-            Tag::List(vanillite_nbt::List(ids.map(|s| Tag::String(s.into())).collect()))
+            Tag::List(vanillite_nbt::List(
+                ids.map(|s| Tag::String(s.into())).collect(),
+            ))
         };
         c.insert("recipes", list(&mut self.known.iter().map(|s| &**s)));
         let mut highlight: Vec<&str> = self.highlight.iter().map(|s| &**s).collect();
@@ -598,7 +614,8 @@ impl PlayerRecipeBook {
         }
         let ids = |key: &str| -> Vec<String> {
             match c.get(key) {
-                Some(Tag::List(list)) => list.0
+                Some(Tag::List(list)) => list
+                    .0
                     .iter()
                     .filter_map(|t| match t {
                         Tag::String(s) => Some(s.to_string()),

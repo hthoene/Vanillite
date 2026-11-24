@@ -336,7 +336,9 @@ impl ContainerView<'_> {
             let grid = self.menu.local.get(1..10).unwrap_or_default();
             let input = CraftingInput::of(3, 3, grid);
             d.recipes
-                .crafting_for_in(&input, &|m| crate::map::info(self.level, m).map(|i| i.scale))
+                .crafting_for_in(&input, &|m| {
+                    crate::map::info(self.level, m).map(|i| i.scale)
+                })
                 .map(|r| d.recipes.assemble(r, &input))
                 .unwrap_or_default()
         });
@@ -834,9 +836,9 @@ impl ContainerView<'_> {
         };
         let grid: Vec<ItemStack> = self.menu.local.get(1..10).unwrap_or_default().to_vec();
         let input = CraftingInput::of(3, 3, &grid);
-        let recipe = data
-            .recipes
-            .crafting_for_in(&input, &|m| crate::map::info(self.level, m).map(|i| i.scale));
+        let recipe = data.recipes.crafting_for_in(&input, &|m| {
+            crate::map::info(self.level, m).map(|i| i.scale)
+        });
         let remaining = data.recipes.remainders(recipe, &input);
         for y in 0..input.height {
             for x in 0..input.width {

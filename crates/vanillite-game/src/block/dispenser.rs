@@ -574,7 +574,12 @@ pub(super) fn direction_3d(d: Direction) -> i32 {
 }
 
 /// `DefaultDispenseItemBehavior.spawnItem(level, stack, 6, facing, dispensePosition)`.
-pub(super) fn spawn_dispensed(level: &mut Level, pos: BlockPos, facing: Direction, stack: ItemStack) {
+pub(super) fn spawn_dispensed(
+    level: &mut Level,
+    pos: BlockPos,
+    facing: Direction,
+    stack: ItemStack,
+) {
     let [dx, dy, dz] = facing.normal();
     let x = f64::from(pos.x) + 0.5 + 0.7 * f64::from(dx);
     let mut y = f64::from(pos.y) + 0.5 + 0.7 * f64::from(dy);

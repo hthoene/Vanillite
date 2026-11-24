@@ -104,7 +104,9 @@ impl Encode for SlotDisplay {
                 // `ByteBufCodecs.holder`: a registry reference is id + 1.
                 write_varint(
                     out,
-                    i32::try_from(*pattern).unwrap_or(i32::MAX - 1).saturating_add(1),
+                    i32::try_from(*pattern)
+                        .unwrap_or(i32::MAX - 1)
+                        .saturating_add(1),
                 );
             }
             SlotDisplay::WithRemainder(input, remainder) => {
