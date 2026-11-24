@@ -234,6 +234,18 @@ impl Compound {
         self.0.iter().map(|(n, v)| (n.as_str(), v))
     }
 
+    /// The wrapped value if this compound is the `{"": value}` wrapper of a heterogeneous list
+    /// element, otherwise the compound itself.
+    pub(crate) fn into_list_wrapper(mut self) -> std::result::Result<Tag, Self> {
+        if self.as_list_wrapper().is_none() {
+            return Err(self);
+        }
+        match self.0.pop() {
+            Some((_, value)) => Ok(value),
+            None => Err(self),
+        }
+    }
+
     /// Whether this compound is the `{"": value}` wrapper of a heterogeneous list element.
     pub(crate) fn as_list_wrapper(&self) -> Option<&Tag> {
         match self.0.as_slice() {

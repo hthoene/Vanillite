@@ -180,9 +180,95 @@ impl<'b> Reader<'_, 'b> {
         Ok(s)
     }
 
+    /// Reads one value of type `ty`. Nesting is walked with an explicit stack on the heap, so the
+    /// call stack stays flat at any depth the budget allows (SEC-04).
     fn payload(&mut self, ty: TagType) -> Result<Tag> {
+        let depth = self.budget.depth;
+        let value = self.read_value(ty);
+        self.budget.depth = depth;
+        value
+    }
+
+    fn read_value(&mut self, mut ty: TagType) -> Result<Tag> {
+        let mut stack: Vec<Open> = Vec::new();
+        loop {
+            let mut done = match ty {
+                TagType::List => {
+                    self.budget.push()?;
+                    let (element, n) = self.list_header()?;
+                    // Reserve only what the remaining input can back and the remaining budget
+                    // covers at the real element size: Vanilla charges 4 bytes per entry, a `Tag`
+                    // takes more (SEC-03).
+                    let affordable = self
+                        .budget
+                        .remaining()
+                        .checked_div(as_u64(size_of::<Tag>()))
+                        .unwrap_or(0);
+                    let cap = n
+                        .min(self.input.len())
+                        .min(usize::try_from(affordable).unwrap_or(usize::MAX));
+                    stack.push(Open::List {
+                        element,
+                        remaining: n,
+                        items: Vec::with_capacity(cap),
+                    });
+                    None
+                }
+                TagType::Compound => {
+                    self.budget.push()?;
+                    self.budget.charge(48)?;
+                    stack.push(Open::Compound {
+                        compound: Compound::new(),
+                        name: String::new(),
+                    });
+                    None
+                }
+                _ => Some(self.leaf(ty)?),
+            };
+            // Hand finished values to their parents until one asks for its next child.
+            loop {
+                let top = match (done.take(), stack.last_mut()) {
+                    (Some(value), None) => return Ok(value),
+                    // An opened container is always on the stack.
+                    (None, None) => return Err(Error::UnexpectedEnd),
+                    (value, Some(top)) => {
+                        if let Some(value) = value {
+                            top.attach(value, self.budget)?;
+                        }
+                        top
+                    }
+                };
+                match top {
+                    Open::List {
+                        element, remaining, ..
+                    } => {
+                        if let Some(rest) = remaining.checked_sub(1) {
+                            *remaining = rest;
+                            ty = *element;
+                            break;
+                        }
+                    }
+                    Open::Compound { name, .. } => {
+                        let id = self.u8()?;
+                        if id != 0 {
+                            ty = tag_type(id)?;
+                            *name = self.string(28)?;
+                            break;
+                        }
+                    }
+                }
+                done = stack.pop().map(Open::finish);
+                self.budget.pop();
+            }
+        }
+    }
+
+    /// Reads a value that holds no other values.
+    fn leaf(&mut self, ty: TagType) -> Result<Tag> {
         Ok(match ty {
-            TagType::End => return Err(Error::InvalidTagType(0)),
+            TagType::End | TagType::List | TagType::Compound => {
+                return Err(Error::InvalidTagType(ty.id()));
+            }
             TagType::Byte => {
                 self.budget.charge(9)?;
                 Tag::Byte(self.i8()?)
@@ -247,22 +333,11 @@ impl<'b> Reader<'_, 'b> {
                 )
             }
             TagType::String => Tag::String(self.string(36)?),
-            TagType::List => {
-                self.budget.push()?;
-                let list = self.list();
-                self.budget.pop();
-                Tag::List(list?)
-            }
-            TagType::Compound => {
-                self.budget.push()?;
-                let compound = self.compound();
-                self.budget.pop();
-                Tag::Compound(compound?)
-            }
         })
     }
 
-    fn list(&mut self) -> Result<List> {
+    /// Reads a list header and charges it: the element type and the element count.
+    fn list_header(&mut self) -> Result<(TagType, usize)> {
         self.budget.charge(36)?;
         let ty = self.u8()?;
         let n = self.len()?;
@@ -270,49 +345,76 @@ impl<'b> Reader<'_, 'b> {
             return Err(Error::InvalidTagType(0));
         }
         self.budget.charge_n(4, as_u64(n))?;
-        let ty = tag_type(ty)?;
-        // Reserve only what the remaining input can back and the remaining budget covers at the
-        // real element size: Vanilla charges 4 bytes per entry, a `Tag` takes more (SEC-03).
-        let affordable = self
-            .budget
-            .remaining()
-            .checked_div(as_u64(size_of::<Tag>()))
-            .unwrap_or(0);
-        let cap = n
-            .min(self.input.len())
-            .min(usize::try_from(affordable).unwrap_or(usize::MAX));
-        let mut items = Vec::with_capacity(cap);
-        for _ in 0..n {
-            items.push(match self.payload(ty)? {
-                Tag::Compound(c) => match c.as_list_wrapper() {
-                    Some(inner) => inner.clone(),
-                    None => Tag::Compound(c),
-                },
-                other => other,
-            });
-        }
-        Ok(List(items))
+        Ok((tag_type(ty)?, n))
     }
 
-    fn compound(&mut self) -> Result<Compound> {
-        self.budget.charge(48)?;
-        let mut c = Compound::new();
-        loop {
-            let ty = self.u8()?;
-            if ty == 0 {
-                return Ok(c);
-            }
-            let ty = tag_type(ty)?;
-            let name = self.string(28)?;
-            let value = self.payload(ty)?;
-            self.budget.charge(36)?;
-            c.push_unchecked(name, value);
-        }
-    }
-
+    /// Validates one value of type `ty` without building it, with the same explicit stack as
+    /// [`Reader::payload`].
     fn skip(&mut self, ty: TagType) -> Result<()> {
+        let depth = self.budget.depth;
+        let result = self.skip_value(ty);
+        self.budget.depth = depth;
+        result
+    }
+
+    fn skip_value(&mut self, mut ty: TagType) -> Result<()> {
+        // The open containers: the element type and remaining count of a list, `None` for a
+        // compound.
+        let mut stack: Vec<Option<(TagType, usize)>> = Vec::new();
+        loop {
+            let mut finished = match ty {
+                TagType::List => {
+                    self.budget.push()?;
+                    stack.push(Some(self.list_header()?));
+                    false
+                }
+                TagType::Compound => {
+                    self.budget.push()?;
+                    self.budget.charge(48)?;
+                    stack.push(None);
+                    false
+                }
+                _ => {
+                    self.skip_leaf(ty)?;
+                    true
+                }
+            };
+            loop {
+                let Some(top) = stack.last_mut() else {
+                    return Ok(());
+                };
+                match top {
+                    Some((element, remaining)) => {
+                        if let Some(rest) = remaining.checked_sub(1) {
+                            *remaining = rest;
+                            ty = *element;
+                            break;
+                        }
+                    }
+                    None => {
+                        if finished {
+                            self.budget.charge(36)?;
+                        }
+                        let id = self.u8()?;
+                        if id != 0 {
+                            ty = tag_type(id)?;
+                            self.string(28)?;
+                            break;
+                        }
+                    }
+                }
+                stack.pop();
+                self.budget.pop();
+                finished = true;
+            }
+        }
+    }
+
+    fn skip_leaf(&mut self, ty: TagType) -> Result<()> {
         match ty {
-            TagType::End => return Err(Error::InvalidTagType(0)),
+            TagType::End | TagType::List | TagType::Compound => {
+                return Err(Error::InvalidTagType(ty.id()));
+            }
             TagType::Byte => self.take(1).map(drop)?,
             TagType::Short => self.take(2).map(drop)?,
             TagType::Int | TagType::Float => self.take(4).map(drop)?,
@@ -331,48 +433,46 @@ impl<'b> Reader<'_, 'b> {
             TagType::String => {
                 self.string(36)?;
             }
-            TagType::List => {
-                self.budget.push()?;
-                let r = self.skip_list();
-                self.budget.pop();
-                r?;
-            }
-            TagType::Compound => {
-                self.budget.push()?;
-                let r = self.skip_compound();
-                self.budget.pop();
-                r?;
+        }
+        Ok(())
+    }
+}
+
+/// A container being read.
+enum Open {
+    List {
+        element: TagType,
+        remaining: usize,
+        items: Vec<Tag>,
+    },
+    Compound {
+        compound: Compound,
+        /// Name of the entry whose value is being read.
+        name: String,
+    },
+}
+
+impl Open {
+    /// Adds a finished child value.
+    fn attach(&mut self, value: Tag, budget: &mut Budget) -> Result<()> {
+        match self {
+            // Elements of a mixed list arrive wrapped as {"": value}.
+            Self::List { items, .. } => items.push(match value {
+                Tag::Compound(c) => c.into_list_wrapper().unwrap_or_else(Tag::Compound),
+                other => other,
+            }),
+            Self::Compound { compound, name } => {
+                budget.charge(36)?;
+                compound.push_unchecked(std::mem::take(name), value);
             }
         }
         Ok(())
     }
 
-    fn skip_list(&mut self) -> Result<()> {
-        self.budget.charge(36)?;
-        let ty = self.u8()?;
-        let n = self.len()?;
-        if ty == 0 && n > 0 {
-            return Err(Error::InvalidTagType(0));
-        }
-        self.budget.charge_n(4, as_u64(n))?;
-        let ty = tag_type(ty)?;
-        for _ in 0..n {
-            self.skip(ty)?;
-        }
-        Ok(())
-    }
-
-    fn skip_compound(&mut self) -> Result<()> {
-        self.budget.charge(48)?;
-        loop {
-            let ty = self.u8()?;
-            if ty == 0 {
-                return Ok(());
-            }
-            let ty = tag_type(ty)?;
-            self.string(28)?;
-            self.skip(ty)?;
-            self.budget.charge(36)?;
+    fn finish(self) -> Tag {
+        match self {
+            Self::List { items, .. } => Tag::List(List(items)),
+            Self::Compound { compound, .. } => Tag::Compound(compound),
         }
     }
 }
