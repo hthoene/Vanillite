@@ -12,6 +12,7 @@ pub const VERSION: &str = "1.26.60";
 
 static BLOCKS: &[u8] = include_bytes!("../data/blocks.bin");
 static BIOMES: &str = include_str!("../data/biomes.txt");
+static SOUNDS: &str = include_str!("../data/sounds.txt");
 /// `block properties` of `start_game` (count + entries).
 pub static BLOCK_PROPERTIES: &[u8] = include_bytes!("../data/block_properties.bin");
 /// Body of `item_registry`.
@@ -95,6 +96,14 @@ pub fn biome_id(java: &str) -> u32 {
     .unwrap_or(1)
 }
 
+/// Bedrock sound name of a Java sound event.
+pub fn sound_name(java: &str) -> Option<&'static str> {
+    static MAP: OnceLock<FxHashMap<&'static str, &'static str>> = OnceLock::new();
+    MAP.get_or_init(|| SOUNDS.lines().filter_map(|l| l.split_once(' ')).collect())
+        .get(java)
+        .copied()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,6 +117,7 @@ mod tests {
         assert_ne!(b.entry(5463) & WATERLOGGED, 0);
         assert_eq!(b.entry(5464) & WATERLOGGED, 0);
         assert_eq!(biome_id("minecraft:plains"), 1);
+        assert!(sound_name("minecraft:block.stone.break").is_some());
         assert_eq!(
             biome_id("minecraft:the_void"),
             biome_id("minecraft:the_void")

@@ -16,7 +16,15 @@ Outputs (all little-endian, Bedrock network NBT where NBT is involved):
 - item_registry.bin: the body of `item_registry` (count + entries).
 - biome_definitions.bin: the body of `biome_definition_list`.
 - entity_identifiers.bin: the body of `available_actor_identifiers` (network NBT).
+- items.bin: u32 count, then per Java item id: i16 Bedrock item id, u16 Bedrock metadata (0/0 for
+  Java items without a Bedrock counterpart).
+- creative.bin: the body of `creative_content` (groups and items, Bedrock's creative order).
+- creative_java.bin: u32 count, then per creative item network id (1-based, in order): u16 Java
+  item id.
+- sounds.txt: `<java sound event> <bedrock sound name>` per line.
 """
+
+import base64
 
 import gzip
 import json
@@ -98,6 +106,30 @@ class BeReader:
         t = self.u8()
         self.string()
         return self.payload(t)
+
+
+class LeReader(BeReader):
+    """Little-endian (Bedrock disk) NBT."""
+
+    def i16(self):
+        return struct.unpack('<h', self.take(2))[0]
+
+    def i32(self):
+        return struct.unpack('<i', self.take(4))[0]
+
+    def i64(self):
+        return struct.unpack('<q', self.take(8))[0]
+
+    def string(self):
+        n = struct.unpack('<H', self.take(2))[0]
+        return self.take(n).decode('utf-8')
+
+    def payload(self, t):
+        if t == 5:
+            return ('f', struct.unpack('<f', self.take(4))[0])
+        if t == 6:
+            return ('d', struct.unpack('<d', self.take(8))[0])
+        return super().payload(t)
 
 
 def read_gz_nbt(path):
@@ -314,6 +346,82 @@ def main():
     for s in strings:
         out += net_string(s)
     open(os.path.join(out_dir, 'biome_definitions.bin'), 'wb').write(out)
+
+    # Items: Java item id -> Bedrock item id and metadata.
+    bedrock_item_ids = {item['name']: item['id'] for item in items}
+    item_map = json.load(open(os.path.join(mappings, 'items.json')))
+    java_items = [i['name'] for i in json.load(open(os.path.join(root, 'data', 'vanilla', 'items.json')))]
+    table = []
+    reverse = {}
+    unmapped = []
+    for java_id, name in enumerate(java_items):
+        m = item_map.get(name)
+        bid = bedrock_item_ids.get(m['bedrock_identifier']) if m else None
+        if bid is None:
+            if name != 'minecraft:air':
+                unmapped.append(name)
+            table.append((0, 0))
+            continue
+        meta = m.get('bedrock_data', 0)
+        table.append((bid, meta))
+        reverse.setdefault((bid, meta), java_id)
+    with open(os.path.join(out_dir, 'items.bin'), 'wb') as f:
+        f.write(struct.pack('<I', len(table)))
+        for bid, meta in table:
+            f.write(struct.pack('<hH', bid, meta))
+    print(f'items: {len(table)} Java items, unmapped: {unmapped}')
+
+    # Creative inventory: Bedrock's groups and order, items that have a Java counterpart.
+    creative = json.load(open(os.path.join(resources, f'creative_items.{version}.json')))
+
+    def block_rid(entry):
+        b64 = entry.get('block_state_b64')
+        if not b64:
+            return 0
+        tag = LeReader(base64.b64decode(b64)).root()
+        name = compound_get(tag, 'name')[1]
+        return runtime.get((name, canonical(compound_get(tag, 'states', ('c', [])))), 0)
+
+    def item_bytes(entry, count):
+        bid = bedrock_item_ids.get(entry['id'], 0)
+        out = zigzag32(bid)
+        if bid == 0:
+            return out + struct.pack('<H', 0) + varuint(0) + zigzag32(0) + varuint(0)
+        out += struct.pack('<H', count) + varuint(entry.get('damage', 0))
+        out += zigzag32(block_rid(entry))
+        user = struct.pack('<h', 0) + struct.pack('<I', 0) + struct.pack('<I', 0)
+        return out + varuint(len(user)) + user
+
+    categories = {'construction': 1, 'nature': 2, 'equipment': 3, 'items': 4}
+    groups = creative['groups']
+    out = bytearray(varuint(len(groups)))
+    for g in groups:
+        out += bytes([categories[g['category']]]) + net_string(g['name']) + item_bytes(g['icon'], 1)
+    entries = []
+    for entry in creative['items']:
+        if entry.get('nbt_b64'):
+            continue
+        bid = bedrock_item_ids.get(entry['id'])
+        java_id = reverse.get((bid, entry.get('damage', 0)))
+        if java_id is None:
+            continue
+        entries.append((entry, java_id))
+    out += varuint(len(entries))
+    for net_id, (entry, _) in enumerate(entries, 1):
+        out += varuint(net_id) + item_bytes(entry, 1) + varuint(entry['groupId'])
+    open(os.path.join(out_dir, 'creative.bin'), 'wb').write(out)
+    with open(os.path.join(out_dir, 'creative_java.bin'), 'wb') as f:
+        f.write(struct.pack('<I', len(entries)))
+        for _, java_id in entries:
+            f.write(struct.pack('<H', java_id))
+    print(f'creative: {len(entries)} of {len(creative["items"])} items')
+
+    # Sounds: Java sound event -> Bedrock sound name.
+    sounds = json.load(open(os.path.join(mappings, 'sounds.json')))
+    with open(os.path.join(out_dir, 'sounds.txt'), 'w') as f:
+        for name, v in sorted(sounds.items()):
+            if v.get('playsound_mapping'):
+                f.write(f"minecraft:{name} {v['playsound_mapping']}\n")
 
     # Entity identifiers: already network NBT.
     data = open(os.path.join(resources, 'entity_identifiers.dat'), 'rb').read()

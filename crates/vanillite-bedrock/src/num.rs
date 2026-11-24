@@ -31,3 +31,10 @@ pub fn floor_i32(v: f64) -> i32 {
 pub fn angle_deg(b: i8) -> f32 {
     f32::from(b) * (360.0 / 256.0)
 }
+
+/// `f32` -> `i32`, saturating (NaN becomes 0), rounding towards zero.
+#[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
+#[inline]
+pub fn f32_to_i32(v: f32) -> i32 {
+    v as i32
+}
