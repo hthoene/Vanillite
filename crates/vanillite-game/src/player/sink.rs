@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use vanillite_protocol::frame::encode_body;
+use vanillite_protocol::frame::{encode_body, for_each_body};
 use vanillite_protocol::packets::play::clientbound::Disconnect;
 use vanillite_protocol::text::Component;
 use vanillite_protocol::{Packet, SharedPacket};
@@ -15,6 +15,24 @@ pub trait PacketSink: Send + Sync {
     fn send_body(&self, body: Vec<u8>) -> bool;
     /// Queues a packet encoded once for many receivers.
     fn send_shared(&self, packet: &Arc<SharedPacket>) -> bool;
+    /// Queues many packets as one entry: frames built with
+    /// [`vanillite_protocol::frame::encode_frame`] for `threshold`, best the one of
+    /// [`PacketSink::frame_threshold`]. The default queues the bodies one by one.
+    fn send_batch(&self, frames: Vec<u8>, threshold: Option<usize>) -> bool {
+        let mut open = true;
+        let _ = for_each_body(&frames, threshold, |body| {
+            open = self.send_body(body.to_vec());
+            Ok(open)
+        });
+        open
+    }
+
+    /// The compression threshold batches for this sink are best framed with: then they are
+    /// written without re-framing.
+    fn frame_threshold(&self) -> Option<usize> {
+        None
+    }
+
     /// Flushes what is queued and closes the connection.
     fn close(&self);
     /// Whether the connection is closed.

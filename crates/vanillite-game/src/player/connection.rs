@@ -504,13 +504,37 @@ impl Connection {
                 play.inventory.broadcast_changes(self.sink.as_ref());
             }
             ServerboundPlay::ContainerClick(p) => self.container_click(p, play),
-            ServerboundPlay::ContainerClose(p) => {
-                if p.container_id == 0 {
-                    let infinite = play.actor.game_mode == vanillite_config::GameMode::Creative;
+            ServerboundPlay::ContainerClose(_) => {
+                // `doCloseContainer`: whatever menu is open (Vanilla does not check the id).
+                let infinite = play.actor.game_mode == vanillite_config::GameMode::Creative;
+                if play.inventory.container.is_some() {
+                    let who = crate::menu::container::Opener {
+                        spectator: play.actor.game_mode == vanillite_config::GameMode::Spectator,
+                        infinite,
+                        disconnected: false,
+                    };
+                    if let Some(level) = play.level.level_mut() {
+                        crate::menu::container::close(play.inventory, level, who, play.drops, None);
+                    }
+                } else {
                     play.inventory.close(infinite, play.drops);
                 }
             }
             ServerboundPlay::PickItemFromBlock(p) => self.pick_item_from_block(p.pos, play),
+            ServerboundPlay::ContainerButtonClick(p) => {
+                self.container_button(p.container_id, p.button_id, play)
+            }
+            ServerboundPlay::RenameItem(p) => self.rename_item(&p.name, play),
+            ServerboundPlay::SignUpdate(p) => {
+                // `handleSignUpdate`: the editing player sets one side of a loaded sign.
+                let pos = BlockPos::new(p.pos.x, p.pos.y, p.pos.z);
+                let uuid = play.actor.uuid;
+                if let Some(level) = play.level.level_mut()
+                    && level.is_loaded(pos)
+                {
+                    crate::block::sign::update_text(level, pos, uuid, p.front, &p.lines);
+                }
+            }
             // The server never asks the client to reconfigure yet.
             ServerboundPlay::ConfigurationAcknowledged(_) => {
                 return Err(Kick(Box::new(Component::translatable(
@@ -527,6 +551,10 @@ impl Connection {
             | ServerboundPlay::PingRequest(_)
             | ServerboundPlay::Pong(_)
             | ServerboundPlay::ResourcePack(_)
+            | ServerboundPlay::ContainerSlotStateChanged(_)
+            | ServerboundPlay::PlaceRecipe(_)
+            | ServerboundPlay::RecipeBookSeenRecipe(_)
+            | ServerboundPlay::RecipeBookChangeSettings(_)
             | ServerboundPlay::Unhandled { .. } => {}
         }
         Ok(())
@@ -573,12 +601,133 @@ impl Connection {
         }
     }
 
-    /// `handleContainerClick` for the inventory menu.
+    /// `handleContainerClick` for the open container menu.
+    fn container_menu_click(
+        &mut self,
+        p: vanillite_protocol::packets::play::serverbound::ContainerClick,
+        play: &mut PlayContext<'_>,
+    ) {
+        let sink = self.sink.as_ref();
+        let actor = play.actor;
+        let PlayContext {
+            level,
+            inventory,
+            drops,
+            xp,
+            ..
+        } = play;
+        let Some(level) = level.level_mut() else {
+            return;
+        };
+        if actor.game_mode == vanillite_config::GameMode::Spectator {
+            crate::menu::container::with_view(inventory, level, actor.pos, None, |view| {
+                crate::menu::send_all(view, sink);
+            });
+            return;
+        }
+        let in_range = |pos| actor.within_block_range(pos, 4.0);
+        if !crate::menu::container::still_valid(inventory, level, &in_range) {
+            log::debug!("A player interacted with an invalid menu");
+            return;
+        }
+        let ctx = ClickContext {
+            infinite: actor.game_mode == vanillite_config::GameMode::Creative,
+        };
+        crate::menu::container::with_view(inventory, level, actor.pos, xp.as_deref_mut(), |view| {
+            if !crate::menu::is_valid_slot_index(view, p.slot) {
+                log::debug!("A player clicked invalid slot index {}", p.slot);
+                return;
+            }
+            let full_resync = p.state_id != view.menu.state.state_id();
+            view.menu.state.suppress_remote = true;
+            crate::menu::click(view, p.slot, p.button, p.input, ctx, drops);
+            view.flush_result_updates(sink);
+            crate::menu::receive_predictions(&mut view.menu.state, &p.changed, &p.carried);
+            view.menu.state.suppress_remote = false;
+            if full_resync {
+                crate::menu::broadcast_full_state(view, sink);
+            } else {
+                crate::menu::broadcast_changes(view, sink);
+            }
+        });
+    }
+
+    /// `handleContainerButtonClick`.
+    fn container_button(&mut self, container_id: i32, button: i32, play: &mut PlayContext<'_>) {
+        let sink = self.sink.as_ref();
+        let actor = play.actor;
+        if actor.game_mode == vanillite_config::GameMode::Spectator
+            || play
+                .inventory
+                .container
+                .as_ref()
+                .is_none_or(|m| m.state.container_id != container_id)
+        {
+            return;
+        }
+        let PlayContext {
+            level,
+            inventory,
+            xp,
+            ..
+        } = play;
+        let Some(level) = level.level_mut() else {
+            return;
+        };
+        let in_range = |pos| actor.within_block_range(pos, 4.0);
+        if !crate::menu::container::still_valid(inventory, level, &in_range) {
+            log::debug!("A player interacted with an invalid menu");
+            return;
+        }
+        crate::menu::container::with_view(inventory, level, actor.pos, xp.as_deref_mut(), |view| {
+            if view.button(button) {
+                crate::menu::broadcast_changes(view, sink);
+            }
+        });
+    }
+
+    /// `handleRenameItem`: the anvil's name field.
+    fn rename_item(&mut self, name: &str, play: &mut PlayContext<'_>) {
+        let actor = play.actor;
+        let PlayContext {
+            level,
+            inventory,
+            xp,
+            ..
+        } = play;
+        let Some(level) = level.level_mut() else {
+            return;
+        };
+        if inventory
+            .container
+            .as_ref()
+            .is_none_or(|m| m.kind != crate::menu::container::MenuKind::Anvil)
+        {
+            return;
+        }
+        let in_range = |pos| actor.within_block_range(pos, 4.0);
+        if !crate::menu::container::still_valid(inventory, level, &in_range) {
+            log::debug!("A player interacted with an invalid menu");
+            return;
+        }
+        crate::menu::container::with_view(inventory, level, actor.pos, xp.as_deref_mut(), |view| {
+            view.menu.state.creative = actor.game_mode == vanillite_config::GameMode::Creative;
+            view.rename(name);
+        });
+    }
+
+    /// `handleContainerClick`: clicks go to the open menu with that id.
     fn container_click(
         &mut self,
         p: vanillite_protocol::packets::play::serverbound::ContainerClick,
         play: &mut PlayContext<'_>,
     ) {
+        if let Some(open) = &play.inventory.container {
+            if p.container_id == open.state.container_id {
+                self.container_menu_click(p, play);
+            }
+            return;
+        }
         if p.container_id != 0 {
             return;
         }
@@ -599,9 +748,12 @@ impl Connection {
         let ctx = ClickContext {
             infinite: play.actor.game_mode == vanillite_config::GameMode::Creative,
         };
+        play.inventory.menu.suppress_remote = true;
         play.inventory
             .click(p.slot, p.button, p.input, ctx, play.drops);
+        play.inventory.flush_result_updates(sink);
         play.inventory.receive_predictions(&p.changed, &p.carried);
+        play.inventory.menu.suppress_remote = false;
         if full_resync {
             play.inventory.broadcast_full_state(sink);
         } else {

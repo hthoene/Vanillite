@@ -59,6 +59,48 @@ impl WorldUpdates {
             }
             self.per_chunk.clear();
         }
+        // `sendBlockUpdated` of block entities: their data to the players tracking the chunk.
+        let mut sent: Vec<vanillite_base::BlockPos> = Vec::new();
+        for pos in output.block_entity_updates.drain(..) {
+            if sent.contains(&pos) {
+                continue;
+            }
+            sent.push(pos);
+            let Some(entity) = level.block_entity(pos) else {
+                continue;
+            };
+            let kind = level.block(pos).block().info().block_entity;
+            if kind == u16::MAX {
+                continue;
+            }
+            let mut nbt = Vec::new();
+            match vanillite_game::level::block_entity::update_tag(entity) {
+                Some(tag)
+                    if vanillite_nbt::write::write_network_compound(&tag, &mut nbt).is_ok() => {}
+                _ => nbt = vec![0],
+            }
+            let packet = SharedPacket::of(
+                &vanillite_protocol::packets::play::clientbound::BlockEntityData {
+                    pos: vanillite_protocol::types::BlockPos {
+                        x: pos.x,
+                        y: pos.y,
+                        z: pos.z,
+                    },
+                    kind: i32::from(kind),
+                    nbt,
+                },
+            );
+            let chunk = pos.chunk();
+            for (_, player) in entities.players.iter() {
+                let chunks = &player.connection.chunks;
+                if chunks
+                    .view()
+                    .is_some_and(|v| v.contains(chunk, true) && !chunks.is_pending(chunk))
+                {
+                    player.connection.sink.send_shared(&packet);
+                }
+            }
+        }
         for event in output.block_events.drain(..) {
             let packet = block_event(event.pos, event.block.0, event.a, event.b);
             send_near(entities, event.pos, None, &packet);

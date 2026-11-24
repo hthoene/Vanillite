@@ -142,6 +142,9 @@ pub struct TrackerInput<'a> {
     /// Chunks sent to viewers since the last update (Vanilla's `playerLoadedChunk`): entities
     /// there may have become visible to that viewer.
     pub chunks_sent: &'a [(EntityId, ChunkPos)],
+    /// Factor on every entity type's movement update interval (1 = Vanilla). Larger under
+    /// overload (`performance.entity-tracking.overload-tick-millis`).
+    pub update_scale: i32,
 }
 
 impl fmt::Debug for TrackerInput<'_> {
