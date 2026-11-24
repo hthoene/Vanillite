@@ -427,6 +427,16 @@ impl Connection {
                 self.container_button(p.container_id, p.button_id, play)
             }
             ServerboundPlay::RenameItem(p) => self.rename_item(&p.name, play),
+            ServerboundPlay::SignUpdate(p) => {
+                // `handleSignUpdate`: the editing player sets one side of a loaded sign.
+                let pos = BlockPos::new(p.pos.x, p.pos.y, p.pos.z);
+                let uuid = play.actor.uuid;
+                if let Some(level) = play.level.level_mut()
+                    && level.is_loaded(pos)
+                {
+                    crate::block::sign::update_text(level, pos, uuid, p.front, &p.lines);
+                }
+            }
             // The server never asks the client to reconfigure yet.
             ServerboundPlay::ConfigurationAcknowledged(_) => {
                 return Err(Kick(Box::new(Component::translatable(

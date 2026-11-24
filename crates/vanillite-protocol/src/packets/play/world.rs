@@ -156,6 +156,47 @@ pub mod serverbound {
         pub new_state: bool,
     }
 
+    /// `sign_update`: the four lines of one side of a sign. `front` is `SignTextSlot` (0 back,
+    /// 1 front).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct SignUpdate {
+        pub pos: BlockPos,
+        pub lines: [String; 4],
+        pub front: bool,
+    }
+
+    impl Encode for SignUpdate {
+        fn encode(&self, out: &mut Vec<u8>) {
+            self.pos.encode(out);
+            for line in &self.lines {
+                line.encode(out);
+            }
+            write_varint(out, i32::from(self.front));
+        }
+    }
+
+    impl Decode for SignUpdate {
+        fn decode(r: &mut Reader<'_>) -> Result<Self> {
+            let pos = BlockPos::decode(r)?;
+            let mut lines: [String; 4] = Default::default();
+            for line in &mut lines {
+                *line = r.string(384)?.to_owned();
+            }
+            // `ByteBufCodecs.idMapper`: unknown ids are the first value (back).
+            let front = r.varint()? == 1;
+            Ok(SignUpdate { pos, lines, front })
+        }
+    }
+
+    manual_packet!(
+        SignUpdate,
+        Serverbound,
+        serverbound,
+        SIGN_UPDATE,
+        "sign_update",
+        Interact
+    );
+
     /// `rename_item`: the anvil's name field.
     #[derive(Debug, Clone, PartialEq, Eq, Packet)]
     #[packet(state = Play, dir = Serverbound, name = "rename_item", bucket = "inventory")]
@@ -467,6 +508,38 @@ pub mod clientbound {
         #[field(max_len = 2_097_152)]
         pub title: crate::text::Component,
     }
+
+    /// `open_sign_editor`: the client opens the editor of one side of a sign.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct OpenSignEditor {
+        pub pos: BlockPos,
+        pub front: bool,
+    }
+
+    impl Encode for OpenSignEditor {
+        fn encode(&self, out: &mut Vec<u8>) {
+            self.pos.encode(out);
+            write_varint(out, i32::from(self.front));
+        }
+    }
+
+    impl Decode for OpenSignEditor {
+        fn decode(r: &mut Reader<'_>) -> Result<Self> {
+            Ok(OpenSignEditor {
+                pos: BlockPos::decode(r)?,
+                front: r.varint()? == 1,
+            })
+        }
+    }
+
+    manual_packet!(
+        OpenSignEditor,
+        Clientbound,
+        clientbound,
+        OPEN_SIGN_EDITOR,
+        "open_sign_editor",
+        Default
+    );
 
     /// `container_set_data`: a data slot of a menu (progress bars, costs, selections).
     #[derive(Debug, Clone, PartialEq, Eq, Packet)]
