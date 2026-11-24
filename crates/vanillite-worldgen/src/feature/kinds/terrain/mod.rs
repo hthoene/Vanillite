@@ -134,15 +134,10 @@ pub(crate) fn is_source(fluid: FluidState) -> bool {
     fluid.info().source
 }
 
-/// The fluid tick type of a non-empty fluid state (see [`crate::proto::FluidTickKind`]: ticks
-/// are keyed by the fluid's source block, so flowing and still fluids share one kind).
+/// The fluid tick type of a non-empty fluid state (see [`crate::proto::FluidTickKind`]).
 #[inline]
-pub(crate) fn fluid_tick_kind(fluid: FluidState) -> Option<BlockId> {
-    match fluid.info().fluid {
-        FLUID_FLOWING_WATER | FLUID_WATER => Some(ids::WATER),
-        FLUID_FLOWING_LAVA | FLUID_LAVA => Some(ids::LAVA),
-        _ => None,
-    }
+pub(crate) fn fluid_tick_kind(fluid: FluidState) -> Option<u16> {
+    (!fluid.is_empty()).then_some(fluid.info().fluid)
 }
 
 /// `level.scheduleTick(pos, fluidState.getType(), 0)` for a non-empty fluid state.

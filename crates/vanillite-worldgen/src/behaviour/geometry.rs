@@ -92,6 +92,37 @@ pub(crate) fn is_face_full(shape: Shape, direction: Direction) -> bool {
     face_covers(shape, direction, FULL)
 }
 
+/// `Shapes.mergedFaceOccludes(shape, occluder, direction)`: whether the face of `shape` towards
+/// `direction` and the opposite face of `occluder` together cover the whole face.
+pub fn merged_face_occludes(shape: Shape, occluder: Shape, direction: Direction) -> bool {
+    if is_full_block(shape) || is_full_block(occluder) {
+        return true;
+    }
+    let positive = matches!(
+        direction,
+        Direction::Up | Direction::South | Direction::East
+    );
+    let (first, second) = if positive {
+        (shape, occluder)
+    } else {
+        (occluder, shape)
+    };
+    let (up, down) = match axis(direction) {
+        Axis::X => (Direction::East, Direction::West),
+        Axis::Y => (Direction::Up, Direction::Down),
+        Axis::Z => (Direction::South, Direction::North),
+    };
+    let rects: Vec<Rect> = face_rects(first, up)
+        .chain(face_rects(second, down))
+        .collect();
+    covers(&rects, FULL)
+}
+
+/// Whether a shape is the full block (`shape == Shapes.block()`).
+pub fn is_full_block(shape: Shape) -> bool {
+    shape == [[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]
+}
+
 /// `shape.getFaceShape(direction).isEmpty()`.
 pub(crate) fn is_face_empty(shape: Shape, direction: Direction) -> bool {
     face_rects(shape, direction).next().is_none()

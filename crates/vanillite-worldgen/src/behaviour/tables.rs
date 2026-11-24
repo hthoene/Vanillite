@@ -13,8 +13,8 @@ macro_rules! block_tags {
     ($($field:ident),* $(,)?) => {
         /// The block tags behaviour reads, each named after its tag (`minecraft:<field>`).
         #[derive(Debug, Default)]
-        pub(crate) struct BlockTags {
-            $(pub(crate) $field: BlockSet,)*
+        pub struct BlockTags {
+            $(pub $field: BlockSet,)*
         }
 
         impl BlockTags {
@@ -37,9 +37,11 @@ block_tags!(
     enables_bubble_column_drag_down,
     enables_bubble_column_push_up,
     fences,
+    grows_crops,
     maintains_farmland,
     overrides_mushroom_light_requirement,
     prevents_nearby_leaf_decay,
+    saplings,
     shulker_boxes,
     snow,
     soul_fire_base_blocks,
@@ -62,9 +64,11 @@ block_tags!(
     supports_lily_pad,
     supports_mangrove_propagule,
     supports_melon_stem,
+    supports_melon_stem_fruit,
     supports_nether_sprouts,
     supports_nether_wart,
     supports_pumpkin_stem,
+    supports_pumpkin_stem_fruit,
     supports_small_dripleaf,
     supports_sugar_cane,
     supports_sugar_cane_adjacently,
@@ -75,12 +79,13 @@ block_tags!(
     unstable_bottom_center,
     wall_post_override,
     walls,
+    washed_away_by_fluids,
     wooden_fences,
 );
 
 /// A set of fluids (a resolved fluid tag), one bit per `minecraft:fluid` id.
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct FluidSet(u64);
+pub struct FluidSet(u64);
 
 impl FluidSet {
     fn from_tag(packs: &LoadedPacks, tag: &str) -> Self {
@@ -101,7 +106,7 @@ impl FluidSet {
 
     /// `fluidState.is(tag)`.
     #[inline]
-    pub(crate) fn contains(self, fluid: FluidState) -> bool {
+    pub fn contains(self, fluid: FluidState) -> bool {
         let id = fluid.info().fluid;
         id < 64 && self.0 & (1 << id) != 0
     }
@@ -109,13 +114,13 @@ impl FluidSet {
 
 /// The fluid tags behaviour reads.
 #[derive(Debug, Default)]
-pub(crate) struct FluidTags {
-    pub(crate) water: FluidSet,
-    pub(crate) lava: FluidSet,
-    pub(crate) bubble_column_can_occupy: FluidSet,
-    pub(crate) supports_frogspawn: FluidSet,
-    pub(crate) supports_lily_pad: FluidSet,
-    pub(crate) supports_sugar_cane_adjacently: FluidSet,
+pub struct FluidTags {
+    pub water: FluidSet,
+    pub lava: FluidSet,
+    pub bubble_column_can_occupy: FluidSet,
+    pub supports_frogspawn: FluidSet,
+    pub supports_lily_pad: FluidSet,
+    pub supports_sugar_cane_adjacently: FluidSet,
 }
 
 impl FluidTags {
@@ -134,9 +139,9 @@ impl FluidTags {
 
 /// Everything behaviour resolves from the data packs.
 #[derive(Debug, Default)]
-pub(crate) struct Tags {
-    pub(crate) blocks: BlockTags,
-    pub(crate) fluids: FluidTags,
+pub struct Tags {
+    pub blocks: BlockTags,
+    pub fluids: FluidTags,
 }
 
 static TAGS: OnceLock<Tags> = OnceLock::new();
@@ -152,7 +157,7 @@ pub fn init(packs: &LoadedPacks) {
 }
 
 /// The resolved tags; empty tags (as Vanilla treats unknown tags) before [`init`].
-pub(crate) fn tags() -> &'static Tags {
+pub fn tags() -> &'static Tags {
     static EMPTY: OnceLock<Tags> = OnceLock::new();
     TAGS.get()
         .unwrap_or_else(|| EMPTY.get_or_init(Tags::default))
@@ -418,7 +423,7 @@ const FLAMMABLE: &[&str] = &[
 
 /// `FireBlock.canBurn(state)`: whether fire can spread to the state (`igniteOdds > 0`, never
 /// for waterlogged states).
-pub(crate) fn can_burn(state: BlockState) -> bool {
+pub fn can_burn(state: BlockState) -> bool {
     static SET: OnceLock<BlockSet> = OnceLock::new();
     let set = SET.get_or_init(|| {
         let mut set = BlockSet::default();

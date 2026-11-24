@@ -102,6 +102,56 @@ pub fn encode_light_update(out: &mut Vec<u8>, x: i32, z: i32, light: &ChunkLight
     encode_light_data(out, light);
 }
 
+/// Appends the body of `light_update` with only the sections in the filters
+/// (`ClientboundLightUpdatePacketData` with changed-section filters).
+pub fn encode_light_update_filtered(
+    out: &mut Vec<u8>,
+    x: i32,
+    z: i32,
+    light: &ChunkLight,
+    sky: &SectionMask,
+    block: &SectionMask,
+) {
+    write_varint(out, x as u32);
+    write_varint(out, z as u32);
+    let filter = |layers: &[LightNibbles], filter: &SectionMask| {
+        let (data, empty) = masks(layers);
+        let and = |m: SectionMask| SectionMask(std::array::from_fn(|i| m.0[i] & filter.0[i]));
+        (and(data), and(empty))
+    };
+    let (sky_mask, empty_sky) = filter(light.sky(), sky);
+    let (block_mask, empty_block) = filter(light.block(), block);
+    wire::write_bitset(out, &sky_mask.0);
+    wire::write_bitset(out, &block_mask.0);
+    wire::write_bitset(out, &empty_sky.0);
+    wire::write_bitset(out, &empty_block.0);
+    write_filtered_arrays(out, light.sky(), &sky_mask);
+    write_filtered_arrays(out, light.block(), &block_mask);
+}
+
+fn write_filtered_arrays(out: &mut Vec<u8>, layers: &[LightNibbles], mask: &SectionMask) {
+    let sent = |index: usize, layer: &LightNibbles| mask.contains(index) && sends_array(layer);
+    let count = layers
+        .iter()
+        .enumerate()
+        .filter(|(i, l)| sent(*i, l))
+        .count();
+    write_varint(out, count as u32);
+    for (index, layer) in layers.iter().enumerate() {
+        if !sent(index, layer) {
+            continue;
+        }
+        write_varint(out, NIBBLE_BYTES as u32);
+        match layer {
+            LightNibbles::Data(data) => out.extend_from_slice(&data[..]),
+            LightNibbles::Uniform(level) => {
+                out.resize(out.len() + NIBBLE_BYTES, (level & 15) * 0x11);
+            }
+            LightNibbles::Absent => {}
+        }
+    }
+}
+
 fn light_size_hint(light: &ChunkLight) -> usize {
     let arrays = light
         .sky()

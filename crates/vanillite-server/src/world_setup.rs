@@ -328,12 +328,14 @@ pub(crate) struct ChunkPackets {
 
 impl ChunkPackets {
     /// Drops the packets of changed and unloaded chunks.
-    pub(crate) fn invalidate(&mut self, chunks: &mut Chunks) {
+    pub(crate) fn invalidate(
+        &mut self,
+        chunks: &mut Chunks,
+        light: &[(ChunkPos, vanillite_world::chunks::LightChange)],
+    ) {
         let cache = self.cache.get_mut();
-        let mut changed = Vec::new();
-        chunks.take_light_changes(&mut changed);
-        for pos in changed {
-            cache.remove(&pos);
+        for (pos, _) in light {
+            cache.remove(pos);
         }
         let mut blocks = Vec::new();
         chunks.take_block_changes(&mut blocks);
@@ -393,4 +395,82 @@ impl ChunkSource for WorldChunkSource<'_> {
         self.cache.borrow_mut().insert(pos, Arc::clone(&packet));
         Some(packet)
     }
+}
+
+/// The simulation settings of a world from its rules, `server.properties` and the
+/// `gameplay` attributes of its dimension type. Game rules keep Vanilla's defaults until
+/// game rules are stored.
+pub(crate) fn level_settings(
+    packs: Option<&LoadedPacks>,
+    info: &WorldInfo,
+    rules: &vanillite_config::WorldRules,
+    properties: &vanillite_config::ServerProperties,
+) -> vanillite_game::level::LevelSettings {
+    let attribute = |name: &str| {
+        packs
+            .and_then(|p| p.registry("minecraft:dimension_type"))
+            .and_then(|r| r.get(&info.dimension))
+            .and_then(|entry| serde_json::from_str::<serde_json::Value>(entry.json.get()).ok())
+            .and_then(|json| json.get("attributes")?.get(name)?.as_bool())
+            .unwrap_or(false)
+    };
+    let mut settings = vanillite_game::level::LevelSettings {
+        fast_lava: attribute("minecraft:gameplay/fast_lava"),
+        water_evaporates: attribute("minecraft:gameplay/water_evaporates"),
+        has_sky_light: info.has_sky_light,
+        ..vanillite_game::level::LevelSettings::default()
+    };
+    apply_simulation_rules(
+        &mut settings,
+        rules,
+        properties.max_chained_neighbor_updates,
+    );
+    settings
+}
+
+/// Sets the budgets of `performance.simulation`; `vanilla_max_chained` is
+/// `max-chained-neighbor-updates` of `server.properties`.
+pub(crate) fn apply_simulation_rules(
+    settings: &mut vanillite_game::level::LevelSettings,
+    rules: &vanillite_config::WorldRules,
+    vanilla_max_chained: i32,
+) {
+    let simulation = &rules.simulation;
+    settings.max_block_ticks = usize::try_from(simulation.max_block_ticks).unwrap_or(usize::MAX);
+    settings.max_fluid_ticks = usize::try_from(simulation.max_fluid_ticks).unwrap_or(usize::MAX);
+    settings.max_chained_neighbor_updates = match simulation.max_chained_neighbor_updates {
+        vanillite_config::VanillaOr::Value(v) => i32::try_from(v).unwrap_or(i32::MAX),
+        vanillite_config::VanillaOr::Vanilla => vanilla_max_chained,
+    };
+}
+
+/// The biomes of a world for the simulation: the biome registry, the seed's biome manager and
+/// the sea level of the dimension's generator (Vanilla's -63 for flat worlds). `None` without
+/// data packs.
+pub(crate) fn climate(
+    packs: Option<&LoadedPacks>,
+    world_gen: &WorldGen,
+    dimension: &str,
+) -> Option<vanillite_game::block::weather::Climate> {
+    let packs = packs?;
+    let biomes = match vanillite_worldgen::biome::BiomeRegistry::load(packs) {
+        Ok(biomes) => biomes,
+        Err(e) => {
+            log::warn!("{dimension}: biomes for the simulation: {e}");
+            return None;
+        }
+    };
+    let generator = world_gen.generator(dimension);
+    let sea_level = generator
+        .and_then(|g| g.get("settings")?.as_str())
+        .and_then(|id| packs.registry("minecraft:worldgen/noise_settings")?.get(id))
+        .and_then(|entry| serde_json::from_str::<serde_json::Value>(entry.json.get()).ok())
+        .and_then(|json| json.get("sea_level")?.as_i64())
+        .and_then(|v| i32::try_from(v).ok())
+        .unwrap_or(-63);
+    Some(vanillite_game::block::weather::Climate {
+        biomes,
+        manager: vanillite_worldgen::biome::BiomeManager::for_world_seed(world_gen.seed),
+        sea_level,
+    })
 }

@@ -234,7 +234,7 @@ impl WorldPlayers {
             runs_normally,
             rules: &rules.movement,
         };
-        let Entities { store, players } = entities;
+        let Entities { store, players, .. } = entities;
         for (id, player) in players.iter_mut() {
             let Some(mut entity) = store.get_mut(id) else {
                 continue;
@@ -386,7 +386,7 @@ impl WorldPlayers {
                     .broadcast(&join::player_info_remove(uuid), None);
             }
         }
-        let Entities { store, players } = entities;
+        let Entities { store, players, .. } = entities;
         for (id, player) in players.iter_mut() {
             if let Some(entity) = store.get(id) {
                 let body = Body {

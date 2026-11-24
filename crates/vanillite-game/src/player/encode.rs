@@ -132,7 +132,10 @@ pub fn encode_update(message: &Message, entities: &Entities) -> Option<Encoded> 
                 x_rot,
                 y_rot,
                 y_head_rot,
-                data: 0,
+                // `getAddEntityPacket` data: the block state of a falling block.
+                data: entities
+                    .falling_block(message.entity)
+                    .map_or(0, |f| i32::from(f.state.0)),
             });
             let data = entities
                 .store

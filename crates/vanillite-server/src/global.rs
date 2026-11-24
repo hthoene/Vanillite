@@ -19,7 +19,7 @@ pub struct Global {
     /// Online players.
     pub players: PlayerList,
     /// Network entity ids of all worlds.
-    pub network_ids: NetworkIds,
+    pub network_ids: Arc<NetworkIds>,
     /// Secure chat and spam settings.
     pub chat: ChatSettings,
     /// Network ids of the chat types.

@@ -70,6 +70,7 @@ pub fn place_liquid(
         waterlogged
     };
     level.set_block(pos, new_state, flags::ALL);
-    level.schedule_fluid_tick(pos, ids::WATER);
+    // `Fluids.WATER`.
+    level.schedule_fluid_tick(pos, 2);
     true
 }

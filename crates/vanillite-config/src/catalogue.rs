@@ -191,6 +191,24 @@ rules! {
             /// values load faster with many players at the cost of memory for queued work.
             max_jobs: u16 = "max-jobs", Performance, range = [1, 4096], vanilla = 64;
         }
+        /// World simulation: scheduled ticks, neighbour updates and light after block changes.
+        /// Work over a budget waits for the next tick.
+        simulation: SimulationRules = "performance.simulation" {
+            /// Scheduled block ticks run per tick.
+            max_block_ticks: u32 = "max-block-ticks", Performance, range = [1, 1_000_000],
+                vanilla = 65536;
+            /// Scheduled fluid ticks run per tick.
+            max_fluid_ticks: u32 = "max-fluid-ticks", Performance, range = [1, 1_000_000],
+                vanilla = 65536;
+            /// Chained neighbour and shape updates of one block change before the rest is
+            /// skipped; "vanilla" uses `max-chained-neighbor-updates` of server.properties.
+            max_chained_neighbor_updates: VanillaOr<u32> = "max-chained-neighbor-updates",
+                Performance, range = [1, 100_000_000], vanilla = VanillaOr::Vanilla;
+            /// Chunks whose light is recomputed per tick after block changes, each as one
+            /// background job over its 5 × 5 area. Lower values spread bursts over more ticks.
+            max_relights_per_tick: u32 = "max-relights-per-tick", Performance,
+                range = [1, 65536], vanilla = 1024;
+        }
         /// Entity collisions.
         collisions: CollisionRules = "performance.collisions" {
             /// Entity collisions processed per entity and tick.

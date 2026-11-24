@@ -17,6 +17,7 @@ use vanillite_chunk::slots::{ChunkGeneratorProvider, ChunkStorageProvider, Light
 use vanillite_config::{
     Config, ConfigError, RegionFileCompression, RuleSet, VANILLITE_FILE, VanillaOr,
 };
+use vanillite_game::level::Level;
 use vanillite_light::BfsLightEngineProvider;
 use vanillite_storage::{AnvilStorageProvider, Compression};
 use vanillite_world::chunks::{ChunkSettings, ChunkSlots, Chunks};
@@ -225,7 +226,13 @@ impl ServerBuilder {
         let chat = chat_settings(&config, services_keys);
         let mut world_players = prepared.worlds.into_iter();
         let packs = prepared.packs.map(Arc::new);
+        // Block behaviour reads its tags in every world, also without the noise generator.
+        if let Some(packs) = packs.as_deref() {
+            vanillite_worldgen::behaviour::init(packs);
+        }
         let seed = prepared.world_gen.seed;
+        let world_gen = prepared.world_gen.clone();
+        let behaviours = Arc::new(vanillite_game::block::Behaviours::vanilla());
         let slot = |name: &str, origin: &Origin| log::info!("Slot {name}: {origin}");
         let (storage_provider, origin) = self.chunk_storage.take().unwrap_or_else(|| {
             let compression = match config.properties.region_file_compression {
@@ -260,7 +267,7 @@ impl ServerBuilder {
         let global = Arc::new_cyclic(|this| Global {
             clock,
             players: PlayerList::new(max_players),
-            network_ids: NetworkIds::new(),
+            network_ids: Arc::new(NetworkIds::new()),
             chat,
             chat_types: prepared.chat_types,
             access: crate::access::Access::load(
@@ -313,7 +320,19 @@ impl ServerBuilder {
                 view_distance: i32::from(view_distance),
                 unload_delay: u64::from(rules.chunks.unload_delay),
                 max_jobs: usize::from(rules.chunks.max_jobs),
+                simulation_distance: i32::from(rules.distances.simulation_distance.or(
+                    u8::try_from(config.properties.simulation_distance.clamp(2, 32)).unwrap_or(10),
+                )),
+                max_relights: usize::try_from(rules.simulation.max_relights_per_tick)
+                    .unwrap_or(usize::MAX),
             };
+            let level_settings = crate::world_setup::level_settings(
+                packs.as_deref(),
+                &info,
+                &rules,
+                &config.properties,
+            );
+            let climate = crate::world_setup::climate(packs.as_deref(), &world_gen, dimension);
             let players = world_players
                 .next()
                 .ok_or_else(|| StartError::Io("world setup missing".to_owned()))?;
@@ -323,7 +342,14 @@ impl ServerBuilder {
                 rules,
                 tracker,
                 players,
-                Chunks::new(info, settings, slots),
+                Level::new(
+                    Chunks::new(info, settings, slots),
+                    level_settings,
+                    Arc::clone(&behaviours),
+                    Arc::clone(&global.network_ids),
+                    seed,
+                ),
+                climate,
             ));
         }
         let (worlds, routes) = if parallel {
@@ -1072,7 +1098,11 @@ impl Server {
         );
         for (dimension, index) in DIMENSIONS.iter().zip(0u16..) {
             let rules = Arc::new(new.world_rules(dimension));
-            self.run_in_world(WorldId(index), Box::new(move |w| w.set_rules(rules)));
+            let max_chained = new.properties.max_chained_neighbor_updates;
+            self.run_in_world(
+                WorldId(index),
+                Box::new(move |w| w.set_rules(rules, max_chained)),
+            );
         }
         self.config = new;
         log::info!("Reloaded {VANILLITE_FILE}");

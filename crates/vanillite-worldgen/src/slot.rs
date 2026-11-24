@@ -4,17 +4,22 @@
 //! a [`TerrainGenerator`] for the statuses they produce. Blocks and biomes live in the runtime's
 //! chunk between the steps; what else a [`ProtoChunk`] carries from the terrain stage on (world
 //! generation heightmaps, block entity data, scheduled ticks) stays with the chunk as its
-//! [`GenerationState`] until it becomes `Full`.
+//! [`GenerationState`] until it becomes `Full`; scheduled ticks and post-processing marks are
+//! also copied into the runtime's chunk after every step, where storage and the live world find
+//! them.
 
 use std::sync::Arc;
 
-use vanillite_base::ChunkPos;
+use vanillite_base::{BlockPos, ChunkPos};
 use vanillite_chunk::slots::{
-    self, BlockEntityData, ChunkGenerator, ChunkStatus, GenerationState, Neighbours, WorldInfo,
+    self, BlockEntityData, ChunkGenerator, ChunkStatus, GenerationState, Neighbours, SavedTick,
+    WorldInfo,
 };
 use vanillite_chunk::{Chunk, Section};
+use vanillite_data::block::BlockId;
 use vanillite_data::registry::BLOCK_ENTITY_TYPE;
 
+use crate::proto::ProtoTick;
 use crate::{NeighbourBiomes, ProtoChunk, TerrainGenerator, TerrainJob};
 
 /// Vanilla's `NoiseBasedChunkGenerator` in the `chunk-generator` slot.
@@ -56,12 +61,28 @@ fn take(chunk: &slots::ProtoChunk) -> ProtoChunk {
             proto.set_sections(sections);
             proto
         }
-        None => ProtoChunk::from_sections(
-            chunk.pos,
-            chunk.chunk.min_y(),
-            sections,
-            chunk.status >= ChunkStatus::Terrain,
-        ),
+        None => {
+            let mut proto = ProtoChunk::from_sections(
+                chunk.pos,
+                chunk.chunk.min_y(),
+                sections,
+                chunk.status >= ChunkStatus::Terrain,
+            );
+            for tick in &chunk.block_ticks {
+                proto
+                    .block_ticks_mut()
+                    .schedule(BlockId(tick.kind), tick.pos, tick.priority);
+            }
+            for tick in &chunk.fluid_ticks {
+                proto
+                    .fluid_ticks_mut()
+                    .schedule(tick.kind, tick.pos, tick.priority);
+            }
+            for pos in &chunk.post_processing {
+                proto.mark_post_processing(pos.x, pos.y, pos.z);
+            }
+            proto
+        }
     }
 }
 
@@ -93,6 +114,32 @@ fn put(chunk: &mut slots::ProtoChunk, mut proto: ProtoChunk) {
             nbt: nbt.into(),
         });
     }
+    // Generation ticks are stored with delay 0 (`ProtoChunkTicks`).
+    fn saved<T>(kind: u16, tick: &ProtoTick<T>) -> SavedTick {
+        SavedTick {
+            kind,
+            pos: tick.pos,
+            delay: 0,
+            priority: tick.priority,
+        }
+    }
+    chunk.block_ticks = proto
+        .block_ticks()
+        .ticks()
+        .iter()
+        .map(|t| saved(t.kind.0, t))
+        .collect();
+    chunk.fluid_ticks = proto
+        .fluid_ticks()
+        .ticks()
+        .iter()
+        .map(|t| saved(t.kind, t))
+        .collect();
+    chunk.post_processing = proto
+        .post_processing()
+        .iter()
+        .map(|&(x, y, z)| BlockPos::new(x, y, z))
+        .collect();
     chunk.generation = Some(GenerationState(Arc::new(proto)));
 }
 

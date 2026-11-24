@@ -1,13 +1,13 @@
 //! `BlockState.updateShape`: the `updateShape` overrides of every block class, with the ticks
-//! they schedule going to the [`WorldGenRegion`] and `level.getRandom()` as their random.
+//! they schedule going to the level ([`BlockLevel`]) and `level.getRandom()` as their random.
 //!
 //! Each class's chain of `super.updateShape` calls is spelled out; the base
 //! (`BlockBehaviour.updateShape`) returns the state unchanged.
 
-use vanillite_base::random::RandomSource;
 use vanillite_base::{BlockPos, Direction};
 use vanillite_data::block::{BlockId, BlockState, INSTRUMENTS, flags, ids};
 
+use super::BlockLevel;
 use super::class::{Class, class_of};
 use super::geometry::{Rect, face_covers};
 use super::props::{
@@ -22,13 +22,14 @@ use super::survive::{
 };
 use super::tables::{can_burn, tags};
 use super::{SupportType, can_attach_multiface, is_face_sturdy};
-use crate::feature::region::WorldGenRegion;
 
 const AIR: BlockState = BlockState::AIR;
+/// `Fluids.WATER` (`minecraft:fluid` id).
+const FLUID_WATER: u16 = 2;
 
 /// `state.updateShape(...)`.
 pub(crate) fn update_shape(
-    level: &mut WorldGenRegion<'_>,
+    level: &mut impl BlockLevel,
     state: BlockState,
     pos: BlockPos,
     dir: Direction,
@@ -194,7 +195,14 @@ pub(crate) fn update_shape(
 
         // Blocks that schedule a block tick to break or fall later.
         Class::Falling | Class::Anvil | Class::Brushable | Class::CreakingHeart => {
-            level.schedule_block_tick(pos, state.block());
+            // `getDelayAfterPlace()` of falling blocks (5 for the dragon egg), 2 for brushable
+            // blocks, 1 for the creaking heart.
+            let delay = match class {
+                Class::Falling | Class::Anvil if state.is(ids::DRAGON_EGG) => 5,
+                Class::Falling | Class::Anvil | Class::Brushable => 2,
+                _ => 1,
+            };
+            level.schedule_block_tick(pos, state.block(), delay);
             state
         }
         Class::Cactus | Class::SugarCane => {
@@ -215,22 +223,22 @@ pub(crate) fn update_shape(
         }
         Class::Scaffolding => {
             water_tick_if_waterlogged(level, state, pos);
-            level.schedule_block_tick(pos, state.block());
+            level.schedule_block_tick(pos, state.block(), 1);
             state
         }
         Class::ConcretePowder => match concrete_of(state) {
             Some(concrete) if touches_liquid(level, pos) => concrete.default_state(),
             _ => {
-                level.schedule_block_tick(pos, state.block());
+                level.schedule_block_tick(pos, state.block(), 2);
                 state
             }
         },
         Class::Observer => {
             if Some(dir) == state.direction("facing")
                 && !state.flag("powered")
-                && !level.chunk(pos).block_ticks().has(state.block(), pos)
+                && !level.has_block_tick(pos, state.block())
             {
-                level.schedule_block_tick(pos, state.block());
+                level.schedule_block_tick(pos, state.block(), 2);
             }
             state
         }
@@ -337,7 +345,7 @@ pub(crate) fn update_shape(
                     && !neighbour.is(ids::BUBBLE_COLUMN)
                     && bubble_column_can_occupy(neighbour)
             {
-                level.schedule_block_tick(pos, state.block());
+                level.schedule_block_tick(pos, state.block(), 5);
             }
             state
         }
@@ -362,7 +370,7 @@ pub(crate) fn update_shape(
         }
         Class::ChorusPlant => {
             if !can_survive(level, state, pos) {
-                level.schedule_block_tick(pos, state.block());
+                level.schedule_block_tick(pos, state.block(), 1);
                 return state;
             }
             let connect = neighbour.is(ids::CHORUS_PLANT)
@@ -466,7 +474,7 @@ pub(crate) fn update_shape(
         | Class::TwistingVinesPlant => growing_plant_body(level, class, state, pos, dir, neighbour),
         Class::HangingMoss => {
             if !hanging_moss_can_stay(level, pos) {
-                level.schedule_block_tick(pos, state.block());
+                level.schedule_block_tick(pos, state.block(), 1);
             }
             let below = level.block(pos.below());
             state.set_flag("tip", !below.is(state.block()))
@@ -482,14 +490,14 @@ pub(crate) fn update_shape(
             water_tick_if_waterlogged(level, state, pos);
             let distance = leaves_distance_at(neighbour) + 1;
             if distance != 1 || state.int("distance") != Some(distance) {
-                level.schedule_block_tick(pos, state.block());
+                level.schedule_block_tick(pos, state.block(), 1);
             }
             state
         }
         Class::Liquid => {
             let fluid = state.fluid_state();
             if fluid.info().source || neighbour.fluid_state().info().source {
-                level.schedule_fluid_tick(pos, fluid.block_state().block());
+                level.schedule_fluid_tick(pos, fluid.info().fluid);
             }
             if dir == Direction::Down
                 && tags().fluids.bubble_column_can_occupy.contains(fluid)
@@ -500,7 +508,7 @@ pub(crate) fn update_shape(
                 if t.enables_bubble_column_drag_down.contains(neighbour)
                     || t.enables_bubble_column_push_up.contains(neighbour)
                 {
-                    level.schedule_block_tick(pos, state.block());
+                    level.schedule_block_tick(pos, state.block(), 5);
                 }
             }
             state
@@ -603,23 +611,19 @@ pub(crate) fn update_shape(
 }
 
 /// `ticks.scheduleTick(pos, Fluids.WATER, ...)`.
-fn water_tick(level: &mut WorldGenRegion<'_>, pos: BlockPos) {
-    level.schedule_fluid_tick(pos, ids::WATER);
+fn water_tick(level: &mut impl BlockLevel, pos: BlockPos) {
+    level.schedule_fluid_tick(pos, FLUID_WATER);
 }
 
 /// The water tick of `SimpleWaterloggedBlock`s: `if (state.getValue(WATERLOGGED))`.
-fn water_tick_if_waterlogged(level: &mut WorldGenRegion<'_>, state: BlockState, pos: BlockPos) {
+fn water_tick_if_waterlogged(level: &mut impl BlockLevel, state: BlockState, pos: BlockPos) {
     if state.waterlogged() {
         water_tick(level, pos);
     }
 }
 
 /// `!state.canSurvive(level, pos) ? AIR : state`.
-fn break_unless_survives(
-    level: &WorldGenRegion<'_>,
-    state: BlockState,
-    pos: BlockPos,
-) -> BlockState {
+fn break_unless_survives(level: &impl BlockLevel, state: BlockState, pos: BlockPos) -> BlockState {
     if can_survive(level, state, pos) {
         state
     } else {
@@ -629,7 +633,7 @@ fn break_unless_survives(
 
 /// `condition && !state.canSurvive(level, pos) ? AIR : state`.
 fn break_if(
-    level: &WorldGenRegion<'_>,
+    level: &impl BlockLevel,
     state: BlockState,
     pos: BlockPos,
     condition: bool,
@@ -642,21 +646,20 @@ fn break_if(
 }
 
 /// `if (!state.canSurvive(level, pos)) ticks.scheduleTick(pos, this, 1)`.
-fn tick_unless_survives(level: &mut WorldGenRegion<'_>, state: BlockState, pos: BlockPos) {
+fn tick_unless_survives(level: &mut impl BlockLevel, state: BlockState, pos: BlockPos) {
     if !can_survive(level, state, pos) {
-        level.schedule_block_tick(pos, state.block());
+        level.schedule_block_tick(pos, state.block(), 1);
     }
 }
 
-/// `scheduleTick(pos, this, 60 + random.nextInt(40))` of corals: the delay is drawn from the
-/// region's random (generation ticks drop the delay, the draw stays).
-fn schedule_coral_die_tick(level: &mut WorldGenRegion<'_>, state: BlockState, pos: BlockPos) {
-    let _delay = 60 + level.random().next_int_bounded(40);
-    level.schedule_block_tick(pos, state.block());
+/// `scheduleTick(pos, this, 60 + random.nextInt(40))` of corals.
+fn schedule_coral_die_tick(level: &mut impl BlockLevel, state: BlockState, pos: BlockPos) {
+    let delay = 60 + level.random_int(40);
+    level.schedule_block_tick(pos, state.block(), delay);
 }
 
 /// `BaseCoralPlantTypeBlock.tryScheduleDieTick`.
-fn try_schedule_coral_die_tick(level: &mut WorldGenRegion<'_>, state: BlockState, pos: BlockPos) {
+fn try_schedule_coral_die_tick(level: &mut impl BlockLevel, state: BlockState, pos: BlockPos) {
     let has_water = state.waterlogged()
         || Direction::ALL
             .into_iter()
@@ -687,7 +690,7 @@ fn bed(state: BlockState, dir: Direction, neighbour: BlockState) -> BlockState {
 
 /// `BellBlock.updateShape`.
 fn bell(
-    level: &WorldGenRegion<'_>,
+    level: &impl BlockLevel,
     state: BlockState,
     pos: BlockPos,
     dir: Direction,
@@ -726,7 +729,7 @@ fn chest_can_connect_to(state: BlockState, other: BlockState) -> bool {
 
 /// `ChestBlock.updateShape`.
 fn chest(
-    level: &mut WorldGenRegion<'_>,
+    level: &mut impl BlockLevel,
     state: BlockState,
     pos: BlockPos,
     dir: Direction,
@@ -755,7 +758,7 @@ fn chest(
 
 /// `DoorBlock.updateShape`.
 fn door(
-    level: &WorldGenRegion<'_>,
+    level: &impl BlockLevel,
     state: BlockState,
     pos: BlockPos,
     dir: Direction,
@@ -774,7 +777,7 @@ fn door(
 
 /// `DoublePlantBlock.updateShape`.
 fn double_plant(
-    level: &WorldGenRegion<'_>,
+    level: &impl BlockLevel,
     state: BlockState,
     pos: BlockPos,
     dir: Direction,
@@ -852,7 +855,7 @@ const WALL_SIDES: [Rect; 4] = [
 
 /// `WallBlock.updateShape`.
 fn wall(
-    level: &mut WorldGenRegion<'_>,
+    level: &mut impl BlockLevel,
     state: BlockState,
     pos: BlockPos,
     dir: Direction,
@@ -921,7 +924,7 @@ fn wall_shape(state: BlockState, top: BlockState, sides: [bool; 4]) -> BlockStat
 }
 
 /// `StairBlock.getStairsShape`.
-fn stairs_shape(level: &WorldGenRegion<'_>, state: BlockState, pos: BlockPos) -> &'static str {
+fn stairs_shape(level: &impl BlockLevel, state: BlockState, pos: BlockPos) -> &'static str {
     let Some(facing) = state.direction("facing") else {
         return "straight";
     };
@@ -975,12 +978,12 @@ fn bubble_column_can_occupy(state: BlockState) -> bool {
 }
 
 /// `ConcretePowderBlock.concrete`: the concrete a powder hardens to.
-fn concrete_of(state: BlockState) -> Option<BlockId> {
+pub fn concrete_of(state: BlockState) -> Option<BlockId> {
     BlockId::by_name(state.block().name().strip_suffix("_powder")?)
 }
 
 /// `ConcretePowderBlock.touchesLiquid`, including its reuse of the last tested position.
-fn touches_liquid(level: &WorldGenRegion<'_>, pos: BlockPos) -> bool {
+pub fn touches_liquid(level: &impl BlockLevel, pos: BlockPos) -> bool {
     let can_solidify = |s: BlockState| tags().fluids.water.contains(s.fluid_state());
     let mut test = pos;
     for direction in Direction::ALL {
@@ -999,7 +1002,7 @@ fn touches_liquid(level: &WorldGenRegion<'_>, pos: BlockPos) -> bool {
 }
 
 /// `FireBlock.getStateWithAge`: `BaseFireBlock.getState` with the age kept for fire.
-fn fire_state_with_age(level: &WorldGenRegion<'_>, pos: BlockPos, age: i32) -> BlockState {
+fn fire_state_with_age(level: &impl BlockLevel, pos: BlockPos, age: i32) -> BlockState {
     let below_pos = pos.below();
     let below = level.block(below_pos);
     if tags().blocks.soul_fire_base_blocks.contains(below) {
@@ -1020,7 +1023,7 @@ fn fire_state_with_age(level: &WorldGenRegion<'_>, pos: BlockPos, age: i32) -> B
 
 /// `GrowingPlantHeadBlock.updateShape`.
 fn growing_plant_head(
-    level: &mut WorldGenRegion<'_>,
+    level: &mut impl BlockLevel,
     class: Class,
     state: BlockState,
     pos: BlockPos,
@@ -1041,7 +1044,7 @@ fn growing_plant_head(
     };
     if dir == growth.opposite() {
         if !can_survive(level, state, pos) {
-            level.schedule_block_tick(pos, head);
+            level.schedule_block_tick(pos, head, 1);
         } else {
             let ahead = level.block(pos.relative(growth));
             if ahead.is(head) || ahead.is(body) {
@@ -1061,7 +1064,7 @@ fn growing_plant_head(
 
 /// `GrowingPlantBodyBlock.updateShape`.
 fn growing_plant_body(
-    level: &mut WorldGenRegion<'_>,
+    level: &mut impl BlockLevel,
     class: Class,
     state: BlockState,
     pos: BlockPos,
@@ -1072,11 +1075,11 @@ fn growing_plant_body(
         return state;
     };
     if dir == growth.opposite() && !can_survive(level, state, pos) {
-        level.schedule_block_tick(pos, body);
+        level.schedule_block_tick(pos, body, 1);
     }
     if dir == growth && !neighbour.is(body) && !neighbour.is(head) {
         // `headBlock.getStateForPlacement(random)`, then `updateHeadAfterConvertedFromBody`.
-        let age = level.random().next_int_bounded(25);
+        let age = level.random_int(25);
         let head_state = head.default_state().set_int("age", age);
         return if class == Class::CaveVinesPlant {
             head_state.set_flag("berries", state.flag("berries"))
@@ -1103,7 +1106,7 @@ fn leaves_distance_at(state: BlockState) -> i32 {
 
 /// `MossyCarpetBlock.getUpdatedState(state, level, pos, false)`.
 fn mossy_carpet_updated_state(
-    level: &WorldGenRegion<'_>,
+    level: &impl BlockLevel,
     state: BlockState,
     pos: BlockPos,
 ) -> BlockState {
@@ -1148,7 +1151,7 @@ fn mossy_carpet_updated_state(
 
 /// `VineBlock.getUpdatedState`.
 pub(crate) fn vine_updated_state(
-    level: &WorldGenRegion<'_>,
+    level: &impl BlockLevel,
     state: BlockState,
     pos: BlockPos,
 ) -> BlockState {
@@ -1177,11 +1180,7 @@ pub(crate) fn vine_updated_state(
 }
 
 /// `NoteBlock.setInstrument`.
-fn note_block_instrument(
-    level: &WorldGenRegion<'_>,
-    state: BlockState,
-    pos: BlockPos,
-) -> BlockState {
+fn note_block_instrument(level: &impl BlockLevel, state: BlockState, pos: BlockPos) -> BlockState {
     let instrument = |s: BlockState| INSTRUMENTS[usize::from(s.misc().instrument)];
     // `NoteBlockInstrument.worksAboveNoteBlock`: mob heads and custom heads.
     let works_above = |name: &str| {
@@ -1209,7 +1208,7 @@ fn note_block_instrument(
 
 /// `PotentSulfurBlock.validBlockState` (without the geyser countdown reset of its block
 /// entity).
-fn potent_sulfur_state(level: &WorldGenRegion<'_>, state: BlockState, pos: BlockPos) -> BlockState {
+fn potent_sulfur_state(level: &impl BlockLevel, state: BlockState, pos: BlockPos) -> BlockState {
     const PROPERTY: &str = "potent_sulfur_state";
     if !is_water_source(level.fluid(pos.above())) {
         return state.set(PROPERTY, "dry");
@@ -1233,7 +1232,7 @@ fn potent_sulfur_state(level: &WorldGenRegion<'_>, state: BlockState, pos: Block
 
 /// `DiodeBlock.getAlternateSignal` of a repeater (`sideInputDiodesOnly`): the strongest
 /// signal a diode beside it outputs towards it.
-fn repeater_alternate_signal(level: &WorldGenRegion<'_>, pos: BlockPos, facing: Direction) -> i32 {
+fn repeater_alternate_signal(level: &impl BlockLevel, pos: BlockPos, facing: Direction) -> i32 {
     [clockwise(facing), counter_clockwise(facing)]
         .into_iter()
         .map(|side| {
@@ -1241,7 +1240,7 @@ fn repeater_alternate_signal(level: &WorldGenRegion<'_>, pos: BlockPos, facing: 
             let other = level.block(side_pos);
             let output = match class_of(other) {
                 Class::Repeater => 15,
-                Class::Comparator => comparator_output(level, side_pos),
+                Class::Comparator => level.comparator_output(side_pos),
                 _ => return 0,
             };
             // `DiodeBlock.getSignal`: `ownSignal` towards its facing.
@@ -1255,21 +1254,9 @@ fn repeater_alternate_signal(level: &WorldGenRegion<'_>, pos: BlockPos, facing: 
         .unwrap_or(0)
 }
 
-/// `ComparatorBlockEntity.getOutputSignal()` from the block entity data.
-fn comparator_output(level: &WorldGenRegion<'_>, pos: BlockPos) -> i32 {
-    match level
-        .chunk(pos)
-        .block_entity(pos)
-        .and_then(|tag| tag.get("OutputSignal"))
-    {
-        Some(vanillite_nbt::Tag::Int(value)) => *value,
-        _ => 0,
-    }
-}
-
 /// `RedstoneWireBlock.updateShape`.
 fn redstone_wire(
-    level: &WorldGenRegion<'_>,
+    level: &impl BlockLevel,
     state: BlockState,
     pos: BlockPos,
     dir: Direction,
@@ -1313,7 +1300,7 @@ fn wire_with_sides(state: BlockState, side: &str) -> BlockState {
 }
 
 /// `!level.getBlockState(pos.above()).isRedstoneConductor(level, pos)`.
-fn wire_can_connect_up(level: &WorldGenRegion<'_>, pos: BlockPos) -> bool {
+fn wire_can_connect_up(level: &impl BlockLevel, pos: BlockPos) -> bool {
     !level.block(pos.above()).has(flags::REDSTONE_CONDUCTOR)
 }
 
@@ -1333,7 +1320,7 @@ fn should_wire_connect_to(state: BlockState, direction: Option<Direction>) -> bo
 
 /// `RedstoneWireBlock.getConnectingSide(level, pos, direction, canConnectUp)`.
 fn wire_connecting_side(
-    level: &WorldGenRegion<'_>,
+    level: &impl BlockLevel,
     pos: BlockPos,
     direction: Direction,
     can_connect_up: bool,
@@ -1362,11 +1349,7 @@ fn wire_connecting_side(
 }
 
 /// `RedstoneWireBlock.getConnectionState`.
-fn wire_connection_state(
-    level: &WorldGenRegion<'_>,
-    state: BlockState,
-    pos: BlockPos,
-) -> BlockState {
+fn wire_connection_state(level: &impl BlockLevel, state: BlockState, pos: BlockPos) -> BlockState {
     let is_dot = |s: BlockState| {
         HORIZONTAL
             .into_iter()
@@ -1409,7 +1392,7 @@ fn wire_connection_state(
 
 /// `SpeleothemBlock.updateShape`.
 fn speleothem(
-    level: &mut WorldGenRegion<'_>,
+    level: &mut impl BlockLevel,
     state: BlockState,
     pos: BlockPos,
     dir: Direction,
@@ -1421,11 +1404,15 @@ fn speleothem(
     let Some(tip) = state.direction("vertical_direction") else {
         return state;
     };
-    if tip == Direction::Down && level.chunk(pos).block_ticks().has(state.block(), pos) {
+    if tip == Direction::Down && level.has_block_tick(pos, state.block()) {
         return state;
     }
     if dir == tip.opposite() && !can_survive(level, state, pos) {
-        level.schedule_block_tick(pos, state.block());
+        level.schedule_block_tick(
+            pos,
+            state.block(),
+            if tip == Direction::Down { 2 } else { 1 },
+        );
         return state;
     }
     let merge = state.value("thickness") == Some("tip_merge");
@@ -1437,7 +1424,7 @@ fn speleothem(
 
 /// `SpeleothemBlock.calculateSpeleothemThickness`.
 fn speleothem_thickness(
-    level: &WorldGenRegion<'_>,
+    level: &impl BlockLevel,
     state: BlockState,
     pos: BlockPos,
     tip: Direction,

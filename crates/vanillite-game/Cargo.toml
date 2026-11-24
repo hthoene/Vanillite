@@ -14,12 +14,16 @@ vanillite-chunk.workspace = true
 vanillite-config.workspace = true
 vanillite-data.workspace = true
 vanillite-world.workspace = true
+vanillite-worldgen.workspace = true
 vanillite-command.workspace = true
 vanillite-protocol.workspace = true
 log.workspace = true
 rsa.workspace = true
 sha1.workspace = true
 sha2.workspace = true
+
+[dev-dependencies]
+vanillite-datapack.workspace = true
 
 [lints]
 workspace = true
