@@ -791,10 +791,29 @@ impl Recipes {
     /// `getRecipeFor(CRAFTING, input)`: the first crafting recipe that matches, with its
     /// index.
     pub fn crafting_for(&self, input: &CraftingInput) -> Option<usize> {
+        self.crafting_for_in(input, &|_| None)
+    }
+
+    /// [`Self::crafting_for`] with the level's map data: `map_scale` is the scale of a filled
+    /// map's data (`MapItem.getSavedData(map, level).scale`), which `MapExtendingRecipe`
+    /// needs to be below [`crate::map::MAX_SCALE`].
+    pub fn crafting_for_in(
+        &self,
+        input: &CraftingInput,
+        map_scale: &dyn Fn(&ItemStack) -> Option<i8>,
+    ) -> Option<usize> {
         if input.ingredient_count == 0 {
             return None;
         }
-        self.crafting.iter().position(|r| r.kind.matches(input))
+        self.crafting.iter().position(|r| {
+            r.kind.matches(input)
+                && match r.kind {
+                    Crafting::MapExtending { .. } => filled_map(input)
+                        .and_then(map_scale)
+                        .is_some_and(|scale| scale < crate::map::MAX_SCALE),
+                    _ => true,
+                }
+        })
     }
 
     /// `assemble` of the crafting recipe `index`.
@@ -822,6 +841,19 @@ impl Recipes {
                         continue;
                     }
                     if item::item_id(stack) == vanillite_data::item::ids::WRITTEN_BOOK {
+                        *slot = stack.with_count(1);
+                    }
+                }
+                out
+            }
+            Some(CraftingRecipe {
+                kind: Crafting::BannerDuplicate { .. },
+                ..
+            }) => {
+                // `BannerDuplicateRecipe.getRemainingItems`: the banner with patterns stays.
+                let mut out = default_remainders(input);
+                for (slot, stack) in out.iter_mut().zip(&input.items) {
+                    if slot.is_empty() && banner_layers(stack) != 0 {
                         *slot = stack.with_count(1);
                     }
                 }

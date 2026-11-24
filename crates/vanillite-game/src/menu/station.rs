@@ -470,7 +470,9 @@ impl ContainerView<'_> {
         let result = game_data()
             .and_then(|d| {
                 d.recipes
-                    .crafting_for(&input)
+                    .crafting_for_in(&input, &|m| {
+                        crate::map::info(self.level, m).map(|i| i.scale)
+                    })
                     .map(|r| d.recipes.assemble(r, &input))
             })
             .unwrap_or_default();

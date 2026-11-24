@@ -336,7 +336,7 @@ impl ContainerView<'_> {
             let grid = self.menu.local.get(1..10).unwrap_or_default();
             let input = CraftingInput::of(3, 3, grid);
             d.recipes
-                .crafting_for(&input)
+                .crafting_for_in(&input, &|m| crate::map::info(self.level, m).map(|i| i.scale))
                 .map(|r| d.recipes.assemble(r, &input))
                 .unwrap_or_default()
         });
@@ -582,7 +582,11 @@ impl MenuSlots for ContainerView<'_> {
             {
                 self.workstation_take(ctx, drops);
             }
-            (MenuKind::Crafting, 0) => self.take_crafted(ctx, drops),
+            (MenuKind::Crafting, 0) => {
+                // `ResultSlot.checkTakeAchievements` → `onCraftedBy` → `onCraftedPostProcess`.
+                crate::map::on_crafted(self.level, taken);
+                self.take_crafted(ctx, drops);
+            }
             (MenuKind::Furnace(_), 2) => {
                 if let Storage::Block(pos) = self.menu.storage {
                     let xp = crate::block::furnace::pop_experience(self.level, pos);
@@ -665,6 +669,8 @@ impl MenuSlots for ContainerView<'_> {
             }
             MenuKind::Crafting => {
                 let moved = if index == 0 {
+                    // `item.onCraftedBy(stack, player)` before moving.
+                    crate::map::on_crafted(self.level, &mut stack);
                     let moved = super::move_to(self, &mut stack, 10, 46, true);
                     if moved {
                         self.on_quick_craft(index, original.count - stack.count);
@@ -828,7 +834,9 @@ impl ContainerView<'_> {
         };
         let grid: Vec<ItemStack> = self.menu.local.get(1..10).unwrap_or_default().to_vec();
         let input = CraftingInput::of(3, 3, &grid);
-        let recipe = data.recipes.crafting_for(&input);
+        let recipe = data
+            .recipes
+            .crafting_for_in(&input, &|m| crate::map::info(self.level, m).map(|i| i.scale));
         let remaining = data.recipes.remainders(recipe, &input);
         for y in 0..input.height {
             for x in 0..input.width {

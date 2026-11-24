@@ -261,11 +261,14 @@ fn tick(level: &mut Level, state: BlockState, pos: BlockPos) {
     let Some(data) = crate::player::play::game_data() else {
         return;
     };
-    let Some(recipe) = data.recipes.crafting_for(&input) else {
+    let Some(recipe) = data
+        .recipes
+        .crafting_for_in(&input, &|m| crate::map::info(level, m).map(|i| i.scale))
+    else {
         level.level_event(None, 1050, pos, 0);
         return;
     };
-    let result = data.recipes.assemble(recipe, &input);
+    let mut result = data.recipes.assemble(recipe, &input);
     if result.is_empty() {
         level.level_event(None, 1050, pos, 0);
         return;
@@ -275,6 +278,8 @@ fn tick(level: &mut Level, state: BlockState, pos: BlockPos) {
         c.crafting_ticks = 6;
     }
     level.set_block(pos, state.set_flag("crafting", true), 2);
+    // `onCraftedBySystem` → `onCraftedPostProcess`.
+    crate::map::on_crafted(level, &mut result);
     dispense_item(level, pos, state, result);
     for rest in remainders {
         if !rest.is_empty() {
