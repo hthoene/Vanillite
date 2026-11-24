@@ -245,6 +245,7 @@ fn two_players_join_see_each_other_and_rejoin() {
         ),
     )
     .unwrap();
+    std::fs::write(dir.join("eula.txt"), "eula=true\n").unwrap();
     let start = |dir: &std::path::Path| {
         let mut builder = ServerBuilder::new(dir);
         builder.vanilla_pack(VanillaPack::None).network(false);

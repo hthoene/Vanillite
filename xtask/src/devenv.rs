@@ -16,7 +16,7 @@ fn host() -> String {
 }
 
 /// Runs a command and fails if it does not succeed.
-fn run(cmd: &mut Command) -> Result<()> {
+pub fn run(cmd: &mut Command) -> Result<()> {
     let status = cmd.status().map_err(|e| format!("{cmd:?}: {e}"))?;
     if status.success() {
         Ok(())

@@ -169,6 +169,15 @@ rules! {
             /// `allow-flight` is on. Not enforced yet: it needs block collision (milestone 3).
             flying_kick: bool = "flying-kick", Security, vanilla = true;
         }
+        /// Chunk loading, generation and unloading.
+        chunks: ChunkRules = "performance.chunks" {
+            /// Ticks a chunk stays loaded after no player or ticket needs it, so walking back
+            /// does not load it again.
+            unload_delay: u16 = "unload-delay", Performance, range = [0, 6000], vanilla = 100;
+            /// Background chunk jobs (loads, generation steps, light) in flight per world. Higher
+            /// values load faster with many players at the cost of memory for queued work.
+            max_jobs: u16 = "max-jobs", Performance, range = [1, 4096], vanilla = 64;
+        }
         /// Entity collisions.
         collisions: CollisionRules = "performance.collisions" {
             /// Entity collisions processed per entity and tick.

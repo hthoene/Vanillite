@@ -10,6 +10,7 @@ mod chat;
 mod clock;
 mod commands;
 pub mod compute;
+pub mod eula;
 mod global;
 mod net;
 mod player_list;
@@ -20,6 +21,7 @@ mod test_bot;
 mod tick_rate;
 mod watchdog;
 mod world;
+mod world_setup;
 
 pub use clock::Clock;
 pub use compute::{Compute, ComputePool, InlineScheduler, Job, Scheduler, Scope};

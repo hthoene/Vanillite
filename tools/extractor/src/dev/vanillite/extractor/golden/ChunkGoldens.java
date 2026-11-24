@@ -99,7 +99,7 @@ public final class ChunkGoldens {
   }
 
   /** The biome registry in protocol order (identifier order), as Vanillite numbers biomes. */
-  private static PalettedContainerFactory containerFactory(HolderLookup.Provider lookup) {
+  static PalettedContainerFactory containerFactory(HolderLookup.Provider lookup) {
     List<Holder.Reference<Biome>> list = new ArrayList<>(lookup.lookupOrThrow(Registries.BIOME).listElements().toList());
     list.sort(Comparator.comparing((Holder.Reference<Biome> h) -> h.key().identifier().getPath())
         .thenComparing(h -> h.key().identifier().getNamespace()));
