@@ -81,7 +81,6 @@ pub(crate) struct Arrival {
 /// The players' side of a world.
 pub(crate) struct WorldPlayers {
     pub(crate) level: LevelInfo,
-    chunks: Box<dyn ChunkSource + Send>,
     store: PlayerDataStore,
     view_distance: i32,
     leaving: Vec<(EntityId, Option<Box<Component>>)>,
@@ -99,15 +98,10 @@ fn chunk_of(pos: Vec3) -> ChunkPos {
 }
 
 impl WorldPlayers {
-    pub(crate) fn new(
-        level: LevelInfo,
-        chunks: Box<dyn ChunkSource + Send>,
-        store: PlayerDataStore,
-    ) -> WorldPlayers {
+    pub(crate) fn new(level: LevelInfo, store: PlayerDataStore) -> WorldPlayers {
         WorldPlayers {
             view_distance: level.view_distance,
             level,
-            chunks,
             store,
             leaving: Vec::new(),
             left: Vec::new(),
@@ -346,12 +340,12 @@ impl WorldPlayers {
     }
 
     /// `ChunkMap.tick`: one chunk batch per player.
-    pub(crate) fn send_chunks(&mut self, entities: &mut Entities) {
+    pub(crate) fn send_chunks(entities: &mut Entities, source: &dyn ChunkSource) {
         for (_, player) in entities.players.iter_mut() {
             let connection = &mut player.connection;
             connection
                 .chunks
-                .send_next_chunks(self.chunks.as_ref(), connection.sink.as_ref());
+                .send_next_chunks(source, connection.sink.as_ref());
         }
     }
 

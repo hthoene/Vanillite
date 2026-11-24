@@ -6,17 +6,25 @@ use vanillite_datapack::LoadedPacks;
 
 use crate::Error;
 
-/// Parses a block state as `BlockState.CODEC` writes it: `"minecraft:stone"` or
-/// `{"Name": "minecraft:water", "Properties": {"level": "0"}}`.
+/// Parses a block state as `BlockState.CODEC` writes it: `"minecraft:stone"`,
+/// `{"id": "minecraft:water", "properties": {"level": "0"}}` (26.3's `FULL_CODEC`) or the older
+/// `{"Name": …, "Properties": {…}}`.
 pub fn parse_block_state(json: &Value) -> Result<BlockState, Error> {
     let (name, properties) = match json {
         Value::String(name) => (name.as_str(), None),
-        Value::Object(map) => (
-            map.get("Name")
-                .and_then(Value::as_str)
-                .ok_or_else(|| Error::new("block state without Name"))?,
-            map.get("Properties").and_then(Value::as_object),
-        ),
+        Value::Object(map) => {
+            let (name_key, properties_key) = if map.contains_key("id") {
+                ("id", "properties")
+            } else {
+                ("Name", "Properties")
+            };
+            (
+                map.get(name_key)
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| Error::new(format!("block state without id: {json}")))?,
+                map.get(properties_key).and_then(Value::as_object),
+            )
+        }
         _ => return Err(Error::new(format!("invalid block state {json}"))),
     };
     let name = qualify(name);
@@ -91,4 +99,38 @@ impl BlockSet {
             .get(index / 64)
             .is_some_and(|word| word & (1 << (index % 64)) != 0)
     }
+}
+
+/// Parses a `HolderSet<Block>`: `"minecraft:stone"`, `["minecraft:stone", ...]` or `"#tag"`.
+pub fn parse_block_set(packs: &LoadedPacks, json: &Value) -> Result<BlockSet, Error> {
+    let mut set = BlockSet::default();
+    let mut add = |name: &str| -> Result<(), Error> {
+        if let Some(tag) = name.strip_prefix('#') {
+            let tagged = BlockSet::from_tag(packs, &qualify(tag));
+            for (i, word) in tagged.bits.iter().enumerate() {
+                if set.bits.len() <= i {
+                    set.bits.resize(i + 1, 0);
+                }
+                set.bits[i] |= word;
+            }
+            return Ok(());
+        }
+        let name = qualify(name);
+        let block =
+            BlockId::by_name(&name).ok_or_else(|| Error::new(format!("unknown block {name}")))?;
+        set.insert(block);
+        Ok(())
+    };
+    match json {
+        Value::String(name) => add(name)?,
+        Value::Array(items) => {
+            for item in items {
+                add(item
+                    .as_str()
+                    .ok_or_else(|| Error::new(format!("invalid block {item}")))?)?;
+            }
+        }
+        other => return Err(Error::new(format!("invalid block set {other}"))),
+    }
+    Ok(set)
 }

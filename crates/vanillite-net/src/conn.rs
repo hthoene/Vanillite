@@ -229,6 +229,9 @@ impl Conn {
         self.source.set_state(state);
         self.deadline = timeout.and_then(|t| Instant::now().checked_add(t));
         self.keepalive.enabled = matches!(state, State::Configuration | State::Play);
+        // Like Vanilla's new packet listener per state: a keepalive of the previous state is
+        // not waited for any more.
+        self.keepalive.pending = None;
         self.keepalive.next = Instant::now();
     }
 
@@ -534,6 +537,9 @@ impl Conn {
                     self.out.send_shared(&data.tags);
                     self.out.send(&cfg::clientbound::FinishConfiguration);
                     finish_sent = true;
+                    // The client is in play after `finish_configuration`: a configuration
+                    // keepalive sent now would reach it as an unknown play packet.
+                    self.keepalive.enabled = false;
                 }
                 ServerboundConfiguration::FinishConfiguration(_) if finish_sent => return Ok(info),
                 ServerboundConfiguration::KeepAlive(k) => self.keepalive_answer(k.id)?,

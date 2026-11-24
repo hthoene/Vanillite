@@ -9,10 +9,12 @@
 
 pub mod anchor;
 pub mod aquifer;
+pub mod behaviour;
 pub mod biome;
 pub mod blocks;
 pub mod carver;
 pub mod density;
+pub mod feature;
 pub mod generator;
 pub mod interval;
 pub mod material;
@@ -22,6 +24,7 @@ pub mod proto;
 pub mod random;
 pub mod random_state;
 pub mod settings;
+pub mod template;
 pub mod volume;
 
 pub use generator::{

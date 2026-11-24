@@ -9,7 +9,9 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+vanillite-base.workspace = true
 vanillite-chunk.workspace = true
+vanillite-data.workspace = true
 
 [lints]
 workspace = true

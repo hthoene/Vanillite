@@ -109,6 +109,61 @@ pub fn biome_global_bits() -> u8 {
     installed().biome_bits
 }
 
+/// Installs the Vanilla tables: the per-state facts from `vanillite-data` plus the two heightmap
+/// block tags (`#minecraft:blocks_motion_in_heightmap` and `…_no_leaves`, as block registry ids)
+/// that come from the data packs. Returns `false` if tables were installed before.
+pub fn install_vanilla(
+    motion_blocking: &[u32],
+    motion_blocking_no_leaves: &[u32],
+    biome_count: u32,
+) -> bool {
+    use vanillite_data::block::BlockState;
+    use vanillite_data::block::{BLOCKS, STATE_COUNT, flags};
+
+    let mut in_tag = vec![0u8; BLOCKS.len()];
+    for (ids, flag) in [
+        (motion_blocking, BLOCKS_MOTION),
+        (motion_blocking_no_leaves, BLOCKS_MOTION_NO_LEAVES),
+    ] {
+        for &id in ids {
+            if let Some(entry) = usize::try_from(id).ok().and_then(|id| in_tag.get_mut(id)) {
+                *entry |= flag;
+            }
+        }
+    }
+    let table: Vec<u8> = (0..STATE_COUNT)
+        .map(|index| {
+            let state = BlockState(u16::try_from(index).unwrap_or(u16::MAX));
+            let mut value = in_tag[usize::from(state.block().0)];
+            if state.is_air() {
+                value |= AIR;
+            }
+            if state.random_ticks() {
+                value |= RANDOM_TICKING;
+            }
+            let fluid = state.fluid_state();
+            if !fluid.is_empty() {
+                value |= FLUID;
+                if fluid.info().random_ticks {
+                    value |= FLUID_RANDOM_TICKING;
+                }
+            }
+            let collision = state.collision_shape();
+            if state.block().info().dynamic_shape
+                || state.has(flags::LARGE_COLLISION_SHAPE)
+                || (!collision.is_empty() && !state.has(flags::COLLISION_FULL_BLOCK))
+            {
+                value |= SPECIAL_COLLISION;
+            }
+            value
+        })
+        .collect();
+    install(Tables {
+        block_flags: Box::leak(table.into_boxed_slice()),
+        biome_count,
+    })
+}
+
 /// `Mth.ceillog2`: bits needed for `count` distinct values (0 for 0 or 1).
 pub const fn ceil_log2(count: u32) -> u8 {
     if count <= 1 {

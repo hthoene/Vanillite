@@ -13,7 +13,15 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use std::{fmt, io};
 
-use vanillite_config::{Config, ConfigError, RuleSet, VANILLITE_FILE, VanillaOr};
+use vanillite_chunk::slots::{
+    ChunkGeneratorProvider, ChunkStorageProvider, FlatGeneratorProvider, LightEngineProvider,
+};
+use vanillite_config::{
+    Config, ConfigError, RegionFileCompression, RuleSet, VANILLITE_FILE, VanillaOr,
+};
+use vanillite_light::BfsLightEngineProvider;
+use vanillite_storage::{AnvilStorageProvider, Compression};
+use vanillite_world::chunks::{ChunkSettings, ChunkSlots, Chunks};
 use vanillite_world::entity::NetworkIds;
 use vanillite_world::tracking::{ChunkTrackerProvider, EntityTrackerProvider, TrackerSettings};
 
@@ -89,6 +97,9 @@ pub struct ServerBuilder {
     dir: PathBuf,
     scheduler: Slot<dyn Scheduler>,
     entity_tracker: Slot<dyn EntityTrackerProvider>,
+    chunk_storage: Slot<dyn ChunkStorageProvider>,
+    chunk_generator: Slot<dyn ChunkGeneratorProvider>,
+    light_engine: Slot<dyn LightEngineProvider>,
     vanilla_pack: VanillaPack,
     network: bool,
 }
@@ -100,6 +111,9 @@ impl ServerBuilder {
             dir: dir.into(),
             scheduler: Slot::new("scheduler"),
             entity_tracker: Slot::new("entity-tracker"),
+            chunk_storage: Slot::new("chunk-storage"),
+            chunk_generator: Slot::new("chunk-generator"),
+            light_engine: Slot::new("light-engine"),
             vanilla_pack: VanillaPack::default(),
             network: true,
         }
@@ -133,6 +147,33 @@ impl ServerBuilder {
         Ok(self)
     }
 
+    /// Fills the `chunk-storage` slot with an embedded implementation.
+    pub fn chunk_storage(
+        &mut self,
+        provider: Box<dyn ChunkStorageProvider>,
+    ) -> Result<&mut Self, SlotError> {
+        self.chunk_storage.fill(provider, Origin::Embedded)?;
+        Ok(self)
+    }
+
+    /// Fills the `chunk-generator` slot with an embedded implementation.
+    pub fn chunk_generator(
+        &mut self,
+        provider: Box<dyn ChunkGeneratorProvider>,
+    ) -> Result<&mut Self, SlotError> {
+        self.chunk_generator.fill(provider, Origin::Embedded)?;
+        Ok(self)
+    }
+
+    /// Fills the `light-engine` slot with an embedded implementation.
+    pub fn light_engine(
+        &mut self,
+        provider: Box<dyn LightEngineProvider>,
+    ) -> Result<&mut Self, SlotError> {
+        self.light_engine.fill(provider, Origin::Embedded)?;
+        Ok(self)
+    }
+
     /// Loads the configuration, starts the threads and creates the worlds.
     pub fn start(self) -> Result<Server, StartError> {
         let started = Instant::now();
@@ -142,6 +183,9 @@ impl ServerBuilder {
         log::info!("Loading properties");
         let config = Config::load(&dir)?;
         log::info!("Using profile {}", config.profile);
+        if !crate::eula::check(&dir).map_err(|e| StartError::io(&dir, e))? {
+            return Err(StartError::Eula);
+        }
 
         let parallel = config.server.tick.parallel_dimensions;
         let busy_tick_threads = if parallel { DIMENSIONS.len() } else { 1 };
@@ -182,6 +226,32 @@ impl ServerBuilder {
         let prepared = crate::net::prepare(&config, &dir, &level_dir, &self.vanilla_pack)?;
         let chat = chat_settings(&config, services_keys);
         let mut world_players = prepared.worlds.into_iter();
+        let packs = prepared.packs;
+        let seed = crate::world_setup::parse_seed(&config.properties.level_seed);
+        let slot = |name: &str, origin: &Origin| log::info!("Slot {name}: {origin}");
+        let (storage_provider, origin) = self.chunk_storage.take().unwrap_or_else(|| {
+            let compression = match config.properties.region_file_compression {
+                RegionFileCompression::Deflate => Compression::Deflate,
+                RegionFileCompression::Lz4 => Compression::Lz4,
+                RegionFileCompression::None => Compression::None,
+            };
+            (
+                Box::new(AnvilStorageProvider { compression }),
+                Origin::BuiltIn,
+            )
+        });
+        slot("chunk-storage", &origin);
+        let (generator_provider, origin) = self
+            .chunk_generator
+            .take()
+            .unwrap_or_else(|| (Box::new(FlatGeneratorProvider), Origin::BuiltIn));
+        slot("chunk-generator", &origin);
+        let (light_provider, origin) = self
+            .light_engine
+            .take()
+            .unwrap_or_else(|| (Box::new(BfsLightEngineProvider), Origin::BuiltIn));
+        slot("light-engine", &origin);
+        let executor = Arc::new(crate::world_setup::ComputeExecutor(compute.clone()));
 
         let clock = Clock::new();
         let max_players = usize::try_from(config.properties.max_players).unwrap_or(0);
@@ -214,31 +284,46 @@ impl ServerBuilder {
         let (sender, receiver) = mpsc::channel();
 
         log::info!("Preparing level \"{level_name}\"");
-        let worlds: Vec<ServerWorld> = DIMENSIONS
-            .iter()
-            .zip(0u16..)
-            .map(|(dimension, index)| {
-                let rules = Arc::new(config.world_rules(dimension));
-                let view_distance = rules
-                    .distances
-                    .view_distance
-                    .or(u8::try_from(config.properties.view_distance.clamp(2, 32)).unwrap_or(10));
-                let tracker = tracker_provider.create(&TrackerSettings::new(
-                    i32::from(view_distance),
-                    config.properties.entity_broadcast_range_percentage,
-                    &rules.tracking,
-                ));
-                Ok(ServerWorld::new(
-                    WorldId(index),
-                    (*dimension).to_owned(),
-                    rules,
-                    tracker,
-                    world_players
-                        .next()
-                        .ok_or_else(|| StartError::Io("world setup missing".to_owned()))?,
-                ))
-            })
-            .collect::<Result<_, StartError>>()?;
+        let mut worlds = Vec::with_capacity(DIMENSIONS.len());
+        for (dimension, index) in DIMENSIONS.iter().zip(0u16..) {
+            let rules = Arc::new(config.world_rules(dimension));
+            let view_distance = rules
+                .distances
+                .view_distance
+                .or(u8::try_from(config.properties.view_distance.clamp(2, 32)).unwrap_or(10));
+            let tracker = tracker_provider.create(&TrackerSettings::new(
+                i32::from(view_distance),
+                config.properties.entity_broadcast_range_percentage,
+                &rules.tracking,
+            ));
+            let info = crate::world_setup::world_info(packs.as_ref(), &level_dir, dimension, seed)?;
+            let slots = ChunkSlots {
+                storage: storage_provider
+                    .create(&info)
+                    .map_err(|e| StartError::io(&info.dir, e))?,
+                generator: generator_provider
+                    .create(&info)
+                    .map_err(|e| StartError::Io(format!("chunk generator of {dimension}: {e}")))?,
+                light: light_provider.create(&info),
+                executor: Arc::clone(&executor) as _,
+            };
+            let settings = ChunkSettings {
+                view_distance: i32::from(view_distance),
+                unload_delay: u64::from(rules.chunks.unload_delay),
+                max_jobs: usize::from(rules.chunks.max_jobs),
+            };
+            let players = world_players
+                .next()
+                .ok_or_else(|| StartError::Io("world setup missing".to_owned()))?;
+            worlds.push(ServerWorld::new(
+                WorldId(index),
+                (*dimension).to_owned(),
+                rules,
+                tracker,
+                players,
+                Chunks::new(info, settings, slots),
+            ));
+        }
         let (worlds, routes) = if parallel {
             log::info!("Dimensions tick in parallel");
             let mut threads = Vec::with_capacity(worlds.len());
@@ -293,6 +378,7 @@ impl ServerBuilder {
             empty_ticks: 0,
             ticks_until_autosave: 0,
             average_tick_nanos: 0.0,
+            tick_log: open_tick_log(),
             running: true,
             heartbeat,
             watch,
@@ -532,6 +618,9 @@ pub struct Server {
     empty_ticks: u64,
     ticks_until_autosave: i64,
     average_tick_nanos: f64,
+    /// Load test tick log (`VANILLITE_TICK_LOG`): one line with the duration in nanoseconds per
+    /// tick. A stand-in for the metrics endpoint of architecture 3.8.
+    tick_log: Option<io::BufWriter<File>>,
     running: bool,
     heartbeat: Arc<Heartbeat>,
     watch: Arc<WatchState>,
@@ -685,6 +774,13 @@ impl Server {
 
         let elapsed = clock.now().saturating_sub(started) as f64;
         self.average_tick_nanos = self.average_tick_nanos * 0.8 + elapsed * 0.2;
+        if let Some(log) = &mut self.tick_log {
+            let written = writeln!(log, "{}", clock.now().saturating_sub(started));
+            if written.is_err() || (self.tick_count.is_multiple_of(20) && log.flush().is_err()) {
+                log::warn!("Cannot write the tick log, disabling it");
+                self.tick_log = None;
+            }
+        }
         self.heartbeat.leave();
     }
 
@@ -1068,6 +1164,8 @@ pub enum StartError {
     WorldInUse(PathBuf),
     /// A slot was filled twice.
     Slot(SlotError),
+    /// The EULA is not accepted in `eula.txt`.
+    Eula,
 }
 
 impl StartError {
@@ -1087,6 +1185,10 @@ impl fmt::Display for StartError {
                 path.display()
             ),
             StartError::Slot(e) => e.fmt(f),
+            StartError::Eula => f.write_str(
+                "you need to agree to the EULA in order to run the server; go to eula.txt for \
+                 more info (or set VANILLITE_EULA=true)",
+            ),
         }
     }
 }
@@ -1102,5 +1204,20 @@ impl From<ConfigError> for StartError {
 impl From<SlotError> for StartError {
     fn from(e: SlotError) -> Self {
         StartError::Slot(e)
+    }
+}
+
+/// Opens the tick log named by `VANILLITE_TICK_LOG` (relative to the working directory), if set.
+fn open_tick_log() -> Option<io::BufWriter<File>> {
+    let path = std::env::var_os("VANILLITE_TICK_LOG")?;
+    match File::create(&path) {
+        Ok(file) => Some(io::BufWriter::new(file)),
+        Err(e) => {
+            log::warn!(
+                "Cannot create the tick log {}: {e}",
+                Path::new(&path).display()
+            );
+            None
+        }
     }
 }

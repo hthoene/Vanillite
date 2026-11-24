@@ -1,4 +1,4 @@
-//! Player data files: `<world>/playerdata/<uuid>.dat`, gzip-compressed named NBT in Vanilla's
+//! Player data files: `<world>/players/data/<uuid>.dat` (26.x layout), gzip-compressed named NBT in Vanilla's
 //! layout, so worlds stay interchangeable with Vanilla.
 //!
 //! Only the fields the server keeps so far are read and written; unknown fields of an existing
@@ -37,10 +37,10 @@ pub struct PlayerDataStore {
 }
 
 impl PlayerDataStore {
-    /// The store in `<level_dir>/playerdata`.
+    /// The store in `<level_dir>/players/data`.
     pub fn new(level_dir: &Path) -> PlayerDataStore {
         PlayerDataStore {
-            dir: level_dir.join("playerdata"),
+            dir: level_dir.join("players").join("data"),
         }
     }
 

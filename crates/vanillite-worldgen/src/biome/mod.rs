@@ -20,6 +20,7 @@ pub use climate::{
 pub use manager::{BiomeManager, obfuscate_seed};
 pub use preset::Preset;
 pub use source::{BiomeResolver, BiomeSource, fill_biomes_from_noise};
+pub use temperature::biome_info_noise;
 
 use serde_json::Value;
 use vanillite_chunk::BiomeId;

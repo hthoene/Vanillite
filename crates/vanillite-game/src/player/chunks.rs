@@ -122,6 +122,8 @@ pub struct PlayerChunks {
     unacknowledged_batches: i32,
     max_unacknowledged_batches: i32,
     scratch: Vec<ChunkPos>,
+    /// Chunks sent since the last [`PlayerChunks::take_sent`].
+    sent: Vec<ChunkPos>,
 }
 
 impl PlayerChunks {
@@ -137,6 +139,7 @@ impl PlayerChunks {
             unacknowledged_batches: 0,
             max_unacknowledged_batches: 1,
             scratch: Vec::new(),
+            sent: Vec::new(),
         }
     }
 
@@ -234,6 +237,7 @@ impl PlayerChunks {
         for &pos in &chosen {
             if let Some(packet) = source.chunk_packet(pos) {
                 self.pending.remove(&pos);
+                self.sent.push(pos);
                 packets.push(packet);
             }
         }
@@ -249,6 +253,11 @@ impl PlayerChunks {
         let count = i32::try_from(packets.len()).unwrap_or(i32::MAX);
         sink.send(&ChunkBatchFinished { batch_size: count });
         self.batch_quota -= f32::from(u16::try_from(count).unwrap_or(u16::MAX));
+    }
+
+    /// Moves the chunks sent since the last call to `out` (for entity tracking).
+    pub fn take_sent(&mut self, out: &mut Vec<ChunkPos>) {
+        out.append(&mut self.sent);
     }
 
     /// `onChunkBatchReceivedByClient`.
