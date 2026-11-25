@@ -6,7 +6,7 @@ use vanillite_base::{BlockPos, Vec3};
 use vanillite_data::block::BlockState;
 use vanillite_worldgen::behaviour::{Class, class_of};
 
-use super::path::{self, Path, PathMob, PathType, Search};
+use super::path::{self, Evaluator, Path, PathMob, PathType, Search};
 use super::{Tick, atan2_deg, can_see_sky, is_water};
 
 /// `Mth.degreesDifference`.
@@ -77,11 +77,30 @@ pub enum LookKind {
     Custom,
 }
 
+/// Kind specific differences of a navigation (the `PathNavigation` subclasses of single
+/// mobs).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NavVariant {
+    #[default]
+    Default,
+    /// `TurtlePathNavigation`: while travelling to water (`travelPos`), only water is a
+    /// stable destination.
+    Turtle { to_water: bool },
+    /// `FrogPathNavigation` with `FrogNodeEvaluator(true)`.
+    Frog,
+    /// `StriderPathNavigation`: lava is a stable destination.
+    Strider,
+    /// The bee's flying navigation: a block below is a stable destination.
+    Bee,
+}
+
 /// The state of a mob's `PathNavigation` (ground by default, see [`NavKind`]).
 #[derive(Clone, Debug)]
 pub struct Navigation {
     /// The navigation type.
     pub kind: NavKind,
+    /// Kind specific differences.
+    pub variant: NavVariant,
     pub path: Option<Path>,
     pub speed_modifier: f64,
     tick: i32,
@@ -98,11 +117,23 @@ pub struct Navigation {
     reach_range: i32,
     max_visited_nodes: i32,
     required_path_length: f32,
+    /// `maxVisitedNodesMultiplier` (bees search further for their hive).
+    pub max_visited_nodes_multiplier: f32,
+    /// `WallClimberNavigation.pathToPosition`.
+    path_to_position: Option<BlockPos>,
     pub is_stuck: bool,
     pub avoid_sun: bool,
     pub can_float: bool,
     pub can_open_doors: bool,
     pub can_pass_doors: bool,
+    /// `canWalkOverFences` (camels).
+    pub can_walk_over_fences: bool,
+    /// `canStandOnFluid(lava)` (striders).
+    pub stands_on_lava: bool,
+    /// `canPathToTargetsBelowSurface` (copper golems moving items).
+    pub can_path_below_surface: bool,
+    /// The navigation does not tick (a bee pollinating).
+    pub paused: bool,
 }
 
 impl Navigation {
@@ -110,6 +141,7 @@ impl Navigation {
     pub fn new(follow_range: f64) -> Navigation {
         Navigation {
             kind: NavKind::Ground,
+            variant: NavVariant::Default,
             path: None,
             speed_modifier: 0.0,
             tick: 0,
@@ -126,12 +158,27 @@ impl Navigation {
             reach_range: 0,
             max_visited_nodes: vanillite_base::math::floor(follow_range * 16.0),
             required_path_length: 16.0,
+            max_visited_nodes_multiplier: 1.0,
+            path_to_position: None,
             is_stuck: false,
             avoid_sun: false,
             can_float: false,
             can_open_doors: false,
             can_pass_doors: true,
+            can_walk_over_fences: false,
+            stands_on_lava: false,
+            can_path_below_surface: false,
+            paused: false,
         }
+    }
+
+    /// `setRequiredPathLength`: also recomputes the node limit from the larger of the follow
+    /// range and the length (`updatePathfinderMaxVisitedNodes`).
+    pub fn set_required_path_length(&mut self, length: f32, follow_range: f64) {
+        self.required_path_length = length;
+        #[allow(clippy::cast_possible_truncation)]
+        let max = (follow_range as f32).max(length);
+        self.max_visited_nodes = vanillite_base::math::floor(f64::from(max * 16.0));
     }
 
     /// `isDone`.
@@ -139,9 +186,37 @@ impl Navigation {
         self.path.as_ref().is_none_or(Path::is_done)
     }
 
+    /// `isInProgress`.
+    pub fn is_in_progress(&self) -> bool {
+        !self.is_done()
+    }
+
     /// `stop`.
     pub fn stop(&mut self) {
         self.path = None;
+    }
+
+    /// `getTargetPos`.
+    pub fn target_pos(&self) -> Option<BlockPos> {
+        self.target_pos
+    }
+
+    /// `canNavigateGround` (ground, wall climber and amphibious navigation).
+    pub fn can_navigate_ground(&self) -> bool {
+        matches!(
+            self.kind,
+            NavKind::Ground | NavKind::WallClimber | NavKind::Amphibious
+        )
+    }
+
+    /// `GoalUtils.hasGroundPathNavigation`: a `GroundPathNavigation` (doors).
+    pub fn is_ground(&self) -> bool {
+        matches!(self.kind, NavKind::Ground | NavKind::WallClimber)
+    }
+
+    /// `canFloat` of the node evaluator: water and amphibious navigation ignore `setCanFloat`.
+    pub fn floats(&self) -> bool {
+        self.can_float && !matches!(self.kind, NavKind::Water { .. } | NavKind::Amphibious)
     }
 
     fn reset_stuck_timeout(&mut self) {
@@ -152,25 +227,62 @@ impl Navigation {
     }
 }
 
-/// `PathNavigation.isStableDestination(pos)` of the mob's navigation: ground navigation
-/// needs a solid block below.
+/// `PathNavigation.isStableDestination(pos)` of the mob's navigation.
 pub fn is_stable_destination(t: &Tick<'_, '_>, pos: BlockPos) -> bool {
-    t.level
-        .block(BlockPos::new(pos.x, pos.y - 1, pos.z))
-        .has(vanillite_data::block::flags::SOLID_RENDER)
+    let nav = &t.mob_ref().nav;
+    let below = BlockPos::new(pos.x, pos.y - 1, pos.z);
+    let solid_below = || {
+        t.level
+            .block(below)
+            .has(vanillite_data::block::flags::SOLID_RENDER)
+    };
+    match (nav.kind, nav.variant) {
+        (NavKind::Water { .. }, _) => !t
+            .level
+            .block(pos)
+            .has(vanillite_data::block::flags::SOLID_RENDER),
+        (NavKind::Amphibious, NavVariant::Turtle { to_water: true }) => {
+            t.level.block(pos).block() == vanillite_data::block::ids::WATER
+        }
+        (NavKind::Amphibious, _) | (NavKind::Flying, NavVariant::Bee) => {
+            !t.level.block(below).is_air()
+        }
+        // `entityCanStandOn`: a full top face.
+        (NavKind::Flying, _) => t.level.block(pos).misc().sturdy_full & 2 != 0,
+        (_, NavVariant::Strider) => {
+            t.level.block(pos).block() == vanillite_data::block::ids::LAVA || solid_below()
+        }
+        _ => solid_below(),
+    }
 }
 
-/// `canUpdatePath`: on the ground or in a liquid.
+/// `canUpdatePath` of the navigation kind.
 fn can_update_path(t: &Tick<'_, '_>) -> bool {
     let m = t.mob_ref();
-    t.on_ground() || m.fluids.in_water() || m.fluids.in_lava()
+    let in_liquid = m.fluids.in_water() || m.fluids.in_lava();
+    let passenger = t.ents.vehicle_of(t.id).is_some();
+    match m.nav.kind {
+        NavKind::Ground | NavKind::WallClimber => t.on_ground() || in_liquid || passenger,
+        NavKind::Water { breaching } => breaching || in_liquid,
+        NavKind::Amphibious => true,
+        NavKind::Flying => m.nav.floats() && in_liquid || !passenger,
+        NavKind::None => false,
+    }
 }
 
-/// `getTempMobPos`.
+/// `getTempMobPos` of the navigation kind.
 fn temp_mob_pos(t: &Tick<'_, '_>) -> Vec3 {
     let p = t.pos();
     let m = t.mob_ref();
-    let y = if m.fluids.in_water() && m.nav.can_float {
+    match m.nav.kind {
+        NavKind::Water { .. } | NavKind::Amphibious => {
+            let height = f64::from(t.core().dims().height);
+            return Vec3::new(p.x, p.y + height * 0.5, p.z);
+        }
+        NavKind::Flying | NavKind::None => return p,
+        NavKind::Ground | NavKind::WallClimber => {}
+    }
+    let y = if m.fluids.in_water() && m.nav.floats() {
         let mut surface = vanillite_base::math::floor(p.y);
         let mut steps = 0;
         loop {
@@ -194,12 +306,30 @@ fn temp_mob_pos(t: &Tick<'_, '_>) -> Vec3 {
     Vec3::new(p.x, f64::from(y), p.z)
 }
 
+/// The sea level the shallow swimming of frogs measures against.
+const SEA_LEVEL: i32 = 63;
+
 /// The mob as the path finder sees it.
 fn path_mob(t: &Tick<'_, '_>) -> PathMob {
     let core = t.core();
     let dims = core.dims();
     let m = t.mob_ref();
+    let nav = &m.nav;
+    let frog = nav.variant == NavVariant::Frog;
+    let evaluator = match nav.kind {
+        NavKind::Water { breaching } => Evaluator::Swim { breaching },
+        NavKind::Amphibious => Evaluator::Amphibious {
+            prefers_shallow: frog,
+            frog,
+        },
+        NavKind::Flying => Evaluator::Fly,
+        NavKind::Ground | NavKind::WallClimber | NavKind::None => Evaluator::Walk,
+    };
     PathMob {
+        evaluator,
+        can_walk_over_fences: nav.can_walk_over_fences,
+        stands_on_lava: nav.stands_on_lava,
+        sea_level: SEA_LEVEL,
         pos: core.pos(),
         aabb: core.aabb(),
         width: dims.width,
@@ -209,9 +339,10 @@ fn path_mob(t: &Tick<'_, '_>) -> PathMob {
         max_up_step: m.attrs.step_height as f32,
         max_fall_distance: super::living::max_fall_distance(t),
         in_water: m.fluids.in_water(),
-        can_float: m.nav.can_float,
-        can_open_doors: m.nav.can_open_doors,
-        can_pass_doors: m.nav.can_pass_doors,
+        can_float: nav.floats(),
+        can_open_doors: nav.can_open_doors,
+        // `WaterBoundPathNavigation` cannot pass doors.
+        can_pass_doors: nav.can_pass_doors && !matches!(nav.kind, NavKind::Water { .. }),
     }
 }
 
@@ -237,14 +368,20 @@ fn create_path(t: &mut Tick<'_, '_>, target: BlockPos, reach_range: i32) -> Opti
     #[allow(clippy::cast_possible_truncation)]
     let max_len = (m.attrs.follow_range as f32).max(m.nav.required_path_length);
     let budget = i32::try_from(t.cx.path_budget).unwrap_or(i32::MAX);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+    let max_nodes = (m.nav.max_visited_nodes as f32 * m.nav.max_visited_nodes_multiplier) as i32;
     let search = Search {
         max_path_length: max_len,
         reach_range,
-        max_visited_nodes: m.nav.max_visited_nodes.min(budget),
+        max_visited_nodes: max_nodes.min(budget),
         malus: m.kind.malus(),
         min_y: t.level.min_y(),
     };
-    let path = t.cx.finder.find_path(t.level, &mob, &[target], search);
+    let mut random = m.random.clone();
+    let path =
+        t.cx.finder
+            .find_path(t.level, &mob, &[target], search, &mut random);
+    t.mob().random = random;
     let visited = t.cx.finder.take_visited();
     if t.cx.path_budget != u64::MAX {
         t.cx.path_budget = t.cx.path_budget.saturating_sub(visited);
@@ -290,12 +427,27 @@ pub fn is_solid(state: BlockState) -> bool {
     state.has(vanillite_data::block::flags::SOLID)
 }
 
-/// `GroundPathNavigation.createPath(pos, reachRange)`.
+/// `createPath(pos, reachRange)`: ground navigation paths to the surface of the column.
 pub fn create_path_to(t: &mut Tick<'_, '_>, pos: BlockPos, reach_range: i32) -> Option<Path> {
-    if !t.level.is_loaded(pos) {
+    let nav = &t.mob_ref().nav;
+    if nav.kind == NavKind::None {
         return None;
     }
-    let target = surface_position(t, pos);
+    let target = if nav.is_ground() {
+        if !t.level.is_loaded(pos) {
+            return None;
+        }
+        if nav.kind == NavKind::WallClimber {
+            t.mob().nav.path_to_position = Some(pos);
+        }
+        if t.mob_ref().nav.can_path_below_surface {
+            pos
+        } else {
+            surface_position(t, pos)
+        }
+    } else {
+        pos
+    };
     create_path(t, target, reach_range)
 }
 
@@ -333,16 +485,41 @@ pub fn move_to_pos(t: &mut Tick<'_, '_>, pos: Vec3, speed: f64) -> bool {
     move_to_path(t, path, speed)
 }
 
-/// `moveTo(entity, reachRange, speedModifier)`.
+/// `moveTo(entity, reachRange, speedModifier)`; a wall climber without a path climbs straight
+/// towards the entity.
 pub fn move_to_entity(t: &mut Tick<'_, '_>, target: Vec3, reach: i32, speed: f64) -> bool {
-    let path = create_path_to(t, BlockPos::containing(target.x, target.y, target.z), reach);
+    let block = BlockPos::containing(target.x, target.y, target.z);
+    let path = create_path_to(t, block, reach);
+    if path.is_none() && t.mob_ref().nav.kind == NavKind::WallClimber {
+        let nav = &mut t.mob().nav;
+        nav.path_to_position = Some(block);
+        nav.speed_modifier = speed;
+        return true;
+    }
     path.is_some() && move_to_path(t, path, speed)
 }
 
-/// `GroundPathNavigation.trimPath`: with `avoidSun`, the path ends before the first node under
-/// the open sky.
+/// `trimPath`: a node in a cauldron moves up (and the next with it); ground navigation with
+/// `avoidSun` ends the path before the first node under the open sky.
 fn trim_path(t: &mut Tick<'_, '_>) {
-    if !t.mob_ref().nav.avoid_sun {
+    {
+        let level = t.level;
+        let nav = &mut t.mob().nav;
+        if let Some(path) = &mut nav.path {
+            let n = path.nodes.len();
+            for i in 0..n {
+                let node = path.nodes[i];
+                let state = level.block(node.pos());
+                if is_cauldron(state) {
+                    path.nodes[i].y = node.y + 1;
+                    if i + 1 < n && node.y >= path.nodes[i + 1].y {
+                        path.nodes[i + 1].y = node.y + 1;
+                    }
+                }
+            }
+        }
+    }
+    if !t.mob_ref().nav.avoid_sun || !t.mob_ref().nav.is_ground() {
         return;
     }
     let p = t.pos();
@@ -356,6 +533,17 @@ fn trim_path(t: &mut Tick<'_, '_>) {
     {
         path.nodes.truncate(i);
     }
+}
+
+/// `#minecraft:cauldrons`.
+fn is_cauldron(state: BlockState) -> bool {
+    matches!(
+        state.block().name(),
+        "minecraft:cauldron"
+            | "minecraft:water_cauldron"
+            | "minecraft:lava_cauldron"
+            | "minecraft:powder_snow_cauldron"
+    )
 }
 
 /// `recomputePath`.
@@ -377,8 +565,16 @@ fn recompute_path(t: &mut Tick<'_, '_>) {
     nav.has_delayed_recomputation = false;
 }
 
-/// `PathNavigation.tick`.
+/// `PathNavigation.tick` of the mob's navigation kind.
 pub fn tick(t: &mut Tick<'_, '_>) {
+    let kind = t.mob_ref().nav.kind;
+    if kind == NavKind::None || t.mob_ref().nav.paused {
+        return;
+    }
+    if kind == NavKind::WallClimber && t.mob_ref().nav.is_done() {
+        wall_climber_idle(t);
+        return;
+    }
     t.mob().nav.tick += 1;
     if t.mob_ref().nav.has_delayed_recomputation {
         recompute_path(t);
@@ -389,6 +585,21 @@ pub fn tick(t: &mut Tick<'_, '_>) {
     let width = t.core().dims().width;
     if can_update_path(t) {
         follow_the_path(t);
+    } else if kind == NavKind::Flying {
+        // `FlyingPathNavigation.tick`: advance when inside the next node's block.
+        let b = t.block_pos();
+        let nav = &mut t.mob().nav;
+        if let Some(path) = &mut nav.path
+            && !path.is_done()
+        {
+            let pos = path.next_entity_pos(width);
+            if b.x == vanillite_base::math::floor(pos.x)
+                && b.y == vanillite_base::math::floor(pos.y)
+                && b.z == vanillite_base::math::floor(pos.z)
+            {
+                path.next += 1;
+            }
+        }
     } else {
         let mob_pos = temp_mob_pos(t);
         let on_ground = t.on_ground();
@@ -414,11 +625,39 @@ pub fn tick(t: &mut Tick<'_, '_>) {
         }
     };
     if let Some(target) = target {
-        let ground = ground_y(t, target);
+        let y = match kind {
+            NavKind::Ground | NavKind::WallClimber => ground_y(t, target),
+            _ => target.y,
+        };
         let speed = t.mob_ref().nav.speed_modifier;
         t.mob()
             .move_ctl
-            .set_wanted_position(Vec3::new(target.x, ground, target.z), speed);
+            .set_wanted_position(Vec3::new(target.x, y, target.z), speed);
+    }
+}
+
+/// `WallClimberNavigation.tick` without a path: climbs straight to `pathToPosition`.
+fn wall_climber_idle(t: &mut Tick<'_, '_>) {
+    let Some(to) = t.mob_ref().nav.path_to_position else {
+        return;
+    };
+    let p = t.pos();
+    let width = f64::from(t.core().dims().width);
+    let near = |b: BlockPos| {
+        let c = Vec3::new(
+            f64::from(b.x) + 0.5,
+            f64::from(b.y) + 0.5,
+            f64::from(b.z) + 0.5,
+        );
+        c.distance_to_sqr(p) < width * width
+    };
+    let above_column = BlockPos::containing(f64::from(to.x), p.y, f64::from(to.z));
+    if !near(to) && (p.y <= f64::from(to.y) || !near(above_column)) {
+        let speed = t.mob_ref().nav.speed_modifier;
+        let at = Vec3::new(f64::from(to.x), f64::from(to.y), f64::from(to.z));
+        t.mob().move_ctl.set_wanted_position(at, speed);
+    } else {
+        t.mob().nav.path_to_position = None;
     }
 }
 
@@ -436,10 +675,33 @@ fn ground_y(t: &Tick<'_, '_>, target: Vec3) -> f64 {
 }
 
 /// `canCutCorner`.
-fn can_cut_corner(kind: PathType) -> bool {
+fn can_cut_corner(nav: &Navigation, kind: PathType) -> bool {
+    if nav.variant == NavVariant::Frog && kind == PathType::WaterBorder {
+        return false;
+    }
     kind != PathType::FireInNeighbor
         && kind != PathType::DamagingInNeighbor
         && kind != PathType::WalkableDoor
+}
+
+/// `canMoveDirectly(start, stop)`: water, amphibious (in a liquid) and flying navigation move
+/// straight when nothing collides (`isClearForMovementBetween`).
+fn can_move_directly(t: &Tick<'_, '_>, start: Vec3, stop: Vec3) -> bool {
+    let m = t.mob_ref();
+    let fluids = match m.nav.kind {
+        NavKind::Water { .. } => false,
+        NavKind::Amphibious if m.fluids.in_water() || m.fluids.in_lava() => false,
+        NavKind::Flying => true,
+        _ => return false,
+    };
+    let height = f64::from(t.core().dims().height);
+    let to = Vec3::new(stop.x, stop.y + height * 0.5, stop.z);
+    let blocks = t.level as &dyn super::physics::Blocks;
+    if fluids {
+        super::physics::clip_fluids(blocks, start, to).is_none()
+    } else {
+        super::physics::clip(blocks, start, to).is_none()
+    }
 }
 
 /// `followThePath`.
@@ -447,7 +709,12 @@ fn follow_the_path(t: &mut Tick<'_, '_>) {
     let mob_pos = temp_mob_pos(t);
     let width = t.core().dims().width;
     let pos = t.pos();
-    let advance = {
+    let max_vertical = if matches!(t.mob_ref().nav.kind, NavKind::Water { .. }) {
+        0.5
+    } else {
+        1.0
+    };
+    let (close, cut, direct_to) = {
         let nav = &mut t.mob().nav;
         nav.max_distance_to_waypoint = if width > 0.75 {
             width / 2.0
@@ -463,18 +730,26 @@ fn follow_the_path(t: &mut Tick<'_, '_>) {
         let max = f64::from(nav.max_distance_to_waypoint);
         let close = (pos.x - (f64::from(node.x) + 0.5)).abs() < max
             && (pos.z - (f64::from(node.z) + 0.5)).abs() < max
-            && (pos.y - f64::from(node.y)).abs() < 1.0;
-        close || can_cut_corner(node.kind) && should_target_next_node(path, mob_pos, width)
+            && (pos.y - f64::from(node.y)).abs() < max_vertical;
+        (
+            close,
+            can_cut_corner(nav, node.kind),
+            path.next_entity_pos(width),
+        )
     };
+    let advance = close || cut && should_target_next_node(t, mob_pos, direct_to);
     if advance && let Some(path) = &mut t.mob().nav.path {
         path.next += 1;
     }
     do_stuck_detection(t, mob_pos);
 }
 
-/// `shouldTargetNextNodeInDirection` (ground navigation cannot move directly).
+/// `shouldTargetNextNodeInDirection`.
 #[allow(clippy::neg_cmp_op_on_partial_ord)]
-fn should_target_next_node(path: &Path, mob: Vec3, _width: f32) -> bool {
+fn should_target_next_node(t: &Tick<'_, '_>, mob: Vec3, next_entity_pos: Vec3) -> bool {
+    let Some(path) = &t.mob_ref().nav.path else {
+        return false;
+    };
     if path.next + 1 >= path.nodes.len() {
         return false;
     }
@@ -483,6 +758,9 @@ fn should_target_next_node(path: &Path, mob: Vec3, _width: f32) -> bool {
     let current = bottom(&path.nodes[path.next]);
     if mob.distance_to_sqr(current) >= 4.0 {
         return false;
+    }
+    if can_move_directly(t, mob, next_entity_pos) {
+        return true;
     }
     let next = bottom(&path.nodes[path.next + 1]);
     let to_current = current - mob;
@@ -602,8 +880,34 @@ pub fn rotlerp(a: f32, b: f32, max: f32) -> f32 {
 
 /// `MoveControl.tick`.
 pub fn tick_move_control(t: &mut Tick<'_, '_>) {
-    if t.mob_ref().move_ctl.kind == MoveKind::Custom && super::fam::move_control(t) {
-        return;
+    match t.mob_ref().move_ctl.kind {
+        MoveKind::Custom => {
+            if super::fam::move_control(t) {
+                return;
+            }
+        }
+        MoveKind::Flying { max_turn, hovers } => {
+            tick_flying_move_control(t, max_turn, hovers);
+            return;
+        }
+        MoveKind::SmoothSwimming {
+            max_turn_x,
+            max_turn_y,
+            in_water_speed,
+            outside_water_speed,
+            apply_gravity,
+        } => {
+            tick_smooth_swimming_move_control(
+                t,
+                max_turn_x,
+                max_turn_y,
+                in_water_speed,
+                outside_water_speed,
+                apply_gravity,
+            );
+            return;
+        }
+        MoveKind::Default => {}
     }
     let speed_attr = t.mob_ref().attrs.movement_speed;
     let ctl = t.mob_ref().move_ctl;
@@ -704,6 +1008,131 @@ pub fn tick_move_control(t: &mut Tick<'_, '_>) {
     }
 }
 
+/// `Mth.atan2(y, x) * 180.0F / (float) Math.PI` as a float (the controls' angle maths).
+#[allow(clippy::cast_possible_truncation)]
+fn atan2_deg_f(y: f64, x: f64) -> f32 {
+    (y.atan2(x) * f64::from(180.0_f32 / std::f32::consts::PI)) as f32
+}
+
+/// `FlyingMoveControl.tick`.
+fn tick_flying_move_control(t: &mut Tick<'_, '_>, max_turn: i32, hovers: bool) {
+    use vanillite_world::entity::EntityFlags;
+    let ctl = t.mob_ref().move_ctl;
+    if ctl.operation != Operation::MoveTo {
+        if !hovers {
+            t.core_mut().set_flags(EntityFlags::NO_GRAVITY, false);
+        }
+        let m = t.mob();
+        m.yya = 0.0;
+        m.zza = 0.0;
+        return;
+    }
+    t.mob().move_ctl.operation = Operation::Wait;
+    t.core_mut().set_flags(EntityFlags::NO_GRAVITY, true);
+    let p = t.pos();
+    let (xd, yd, zd) = (ctl.wanted.x - p.x, ctl.wanted.y - p.y, ctl.wanted.z - p.z);
+    let dd = xd * xd + yd * yd + zd * zd;
+    if dd < f64::from(2.500_000_3e-7_f32) {
+        let m = t.mob();
+        m.yya = 0.0;
+        m.zza = 0.0;
+        return;
+    }
+    let y_rot_d = atan2_deg_f(zd, xd) - 90.0;
+    let mut rot = t.core().rot();
+    rot.y_rot = rotlerp(rot.y_rot, y_rot_d, 90.0);
+    let attrs = t.mob_ref().attrs;
+    let base = if t.on_ground() {
+        attrs.movement_speed
+    } else {
+        attrs.flying_speed
+    };
+    #[allow(clippy::cast_possible_truncation)]
+    let speed = (ctl.speed_modifier * base) as f32;
+    // `Mob.setSpeed` also sets the forward input.
+    {
+        let m = t.mob();
+        m.speed = speed;
+        m.zza = speed;
+    }
+    let sd = (xd * xd + zd * zd).sqrt();
+    if yd.abs() > f64::from(1.0e-5_f32) || sd.abs() > f64::from(1.0e-5_f32) {
+        let x_rot_d = -atan2_deg_f(yd, sd);
+        #[allow(clippy::cast_precision_loss)]
+        let max = max_turn as f32;
+        rot.x_rot = rotlerp(rot.x_rot, x_rot_d, max);
+        t.mob().yya = if yd > 0.0 { speed } else { -speed };
+    }
+    t.core_mut().set_rot(rot);
+}
+
+/// `SmoothSwimmingMoveControl.tick`.
+fn tick_smooth_swimming_move_control(
+    t: &mut Tick<'_, '_>,
+    max_turn_x: i32,
+    max_turn_y: i32,
+    in_water_speed: f32,
+    outside_water_speed: f32,
+    apply_gravity: bool,
+) {
+    let in_water = t.mob_ref().fluids.in_water();
+    if apply_gravity && in_water {
+        let v = t.velocity();
+        t.set_velocity(Vec3::new(v.x, v.y + 0.005, v.z));
+    }
+    let ctl = t.mob_ref().move_ctl;
+    if ctl.operation != Operation::MoveTo || t.mob_ref().nav.is_done() {
+        let m = t.mob();
+        m.speed = 0.0;
+        m.xxa = 0.0;
+        m.yya = 0.0;
+        m.zza = 0.0;
+        return;
+    }
+    let p = t.pos();
+    let (xd, yd, zd) = (ctl.wanted.x - p.x, ctl.wanted.y - p.y, ctl.wanted.z - p.z);
+    let dd = xd * xd + yd * yd + zd * zd;
+    if dd < f64::from(2.500_000_3e-7_f32) {
+        t.mob().zza = 0.0;
+        return;
+    }
+    let y_rot_d = atan2_deg_f(zd, xd) - 90.0;
+    let mut rot = t.core().rot();
+    #[allow(clippy::cast_precision_loss)]
+    {
+        rot.y_rot = rotlerp(rot.y_rot, y_rot_d, max_turn_y as f32);
+    }
+    rot.y_head_rot = rot.y_rot;
+    t.mob().y_body_rot = rot.y_rot;
+    #[allow(clippy::cast_possible_truncation)]
+    let speed = (ctl.speed_modifier * t.mob_ref().attrs.movement_speed) as f32;
+    if in_water {
+        // `setSpeed` sets the forward input; it is overwritten below.
+        t.mob().speed = speed * in_water_speed;
+        let horizontal = (xd * xd + zd * zd).sqrt();
+        if yd.abs() > f64::from(1.0e-5_f32) || horizontal.abs() > f64::from(1.0e-5_f32) {
+            #[allow(clippy::cast_precision_loss)]
+            let max = max_turn_x as f32;
+            let x_rot_d = wrap_degrees_f(-atan2_deg_f(yd, horizontal)).clamp(-max, max);
+            rot.x_rot = rotate_towards(rot.x_rot, x_rot_d, 5.0);
+        }
+        let rad = rot.x_rot * (std::f32::consts::PI / 180.0);
+        let cos = vanillite_base::math::cos(f64::from(rad));
+        let sin = vanillite_base::math::sin(f64::from(rad));
+        let m = t.mob();
+        m.zza = cos * speed;
+        m.yya = -sin * speed;
+    } else {
+        let left = wrap_degrees_f(rot.y_rot - y_rot_d).abs();
+        let factor = 1.0 - ((left - 10.0) / 50.0).clamp(0.0, 1.0);
+        let m = t.mob();
+        let s = speed * outside_water_speed * factor;
+        m.speed = s;
+        m.zza = s;
+    }
+    t.core_mut().set_rot(rot);
+}
+
 /// `LookControl`.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct LookControl {
@@ -737,8 +1166,17 @@ pub fn look_at(t: &mut Tick<'_, '_>, at: Vec3) {
 
 /// `LookControl.tick`.
 pub fn tick_look_control(t: &mut Tick<'_, '_>) {
-    if t.mob_ref().look.kind == LookKind::Custom && super::fam::look_control(t) {
-        return;
+    match t.mob_ref().look.kind {
+        LookKind::Custom => {
+            if super::fam::look_control(t) {
+                return;
+            }
+        }
+        LookKind::SmoothSwimming { max_y_rot } => {
+            tick_smooth_swimming_look_control(t, max_y_rot);
+            return;
+        }
+        LookKind::Default => {}
     }
     let p = t.pos();
     let eye = t.eye_y();
@@ -767,6 +1205,47 @@ pub fn tick_look_control(t: &mut Tick<'_, '_>) {
     }
     if !t.mob_ref().nav.is_done() {
         rot.y_head_rot = rotate_if_necessary(rot.y_head_rot, body, 75.0);
+    }
+    t.core_mut().set_rot(rot);
+}
+
+/// `SmoothSwimmingLookControl.tick`: the head tilts 20° sideways and 10° down towards the
+/// target; the body follows the head beyond `max_y_rot`.
+fn tick_smooth_swimming_look_control(t: &mut Tick<'_, '_>, max_y_rot: i32) {
+    let p = t.pos();
+    let eye = t.eye_y();
+    let mut rot = t.core().rot();
+    let look = t.mob_ref().look;
+    if look.cooldown > 0 {
+        t.mob().look.cooldown -= 1;
+        let xd = look.wanted.x - p.x;
+        let yd = look.wanted.y - eye;
+        let zd = look.wanted.z - p.z;
+        let tiny = f64::from(1.0e-5_f32);
+        if zd.abs() > tiny || xd.abs() > tiny {
+            let y_rot_d = atan2_deg_f(zd, xd) - 90.0;
+            rot.y_head_rot = rotate_towards(rot.y_head_rot, y_rot_d + 20.0, look.y_max_rot_speed);
+        }
+        let sd = (xd * xd + zd * zd).sqrt();
+        if yd.abs() > tiny || sd.abs() > tiny {
+            let x_rot_d = -atan2_deg_f(yd, sd);
+            rot.x_rot = rotate_towards(rot.x_rot, x_rot_d + 10.0, look.x_max_rot_angle);
+        }
+    } else {
+        if t.mob_ref().nav.is_done() {
+            rot.x_rot = rotate_towards(rot.x_rot, 0.0, 5.0);
+        }
+        let body = t.mob_ref().y_body_rot;
+        rot.y_head_rot = rotate_towards(rot.y_head_rot, body, look.y_max_rot_speed);
+    }
+    let body = t.mob_ref().y_body_rot;
+    let diff = wrap_degrees_f(rot.y_head_rot - body);
+    #[allow(clippy::cast_precision_loss)]
+    let max = max_y_rot as f32;
+    if diff < -max {
+        t.mob().y_body_rot -= 4.0;
+    } else if diff > max {
+        t.mob().y_body_rot += 4.0;
     }
     t.core_mut().set_rot(rot);
 }

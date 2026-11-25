@@ -434,6 +434,9 @@ impl WorldMobs {
                 WorldAction::LevelEvent(event, pos, data) => {
                     level.level_event(None, event, pos, data);
                 }
+                WorldAction::SetDoorOpen(pos, open, source) => {
+                    vanillite_game::block::redstone::set_door_open(level, pos, open, source);
+                }
             }
         }
         self.finish_removals(level);

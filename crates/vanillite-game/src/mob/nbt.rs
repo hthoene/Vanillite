@@ -213,7 +213,7 @@ pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
     match m.kind {
         Kind::Zombie => {
             out.insert("IsBaby", m.baby);
-            out.insert("CanBreakDoors", false);
+            out.insert("CanBreakDoors", m.can_break_doors);
             out.insert("InWaterTime", -1);
             out.insert("DrownedConversionTime", -1);
         }
@@ -345,7 +345,10 @@ pub fn load_mob(tag: &Compound, seed: i64) -> Option<LoadedMob> {
         _ => None,
     };
     match kind {
-        Kind::Zombie => m.baby = boolean(tag, "IsBaby"),
+        Kind::Zombie => {
+            m.baby = boolean(tag, "IsBaby");
+            super::movement::set_can_break_doors(&mut m, boolean(tag, "CanBreakDoors"));
+        }
         Kind::Creeper => {
             m.max_swell = int(tag, "Fuse").unwrap_or(30);
             m.explosion_radius = int(tag, "ExplosionRadius").unwrap_or(3);

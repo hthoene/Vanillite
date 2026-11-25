@@ -58,6 +58,8 @@ pub enum CommonGoal {
         alert_same_type: bool,
         last_hurt: i32,
     },
+    /// The movement goals (strolling, swimming, flying, doors, ...) of `movement.rs`.
+    Move(super::movement::MoveGoal),
 }
 
 impl CommonGoal {
@@ -112,11 +114,23 @@ impl CommonGoal {
             CommonGoal::Avoid { .. } | CommonGoal::MoveTowardsRestriction { .. } => flag::MOVE,
             CommonGoal::Ranged { .. } => flag::MOVE | flag::LOOK,
             CommonGoal::ResetUniversalAnger { .. } => 0,
+            CommonGoal::Move(g) => g.flags(),
         }
     }
 
     pub fn every_tick(&self) -> bool {
-        matches!(self, CommonGoal::Ranged { .. })
+        match self {
+            CommonGoal::Move(g) => g.every_tick(),
+            _ => matches!(self, CommonGoal::Ranged { .. }),
+        }
+    }
+
+    /// `isInterruptable`.
+    pub fn interruptable(&self) -> bool {
+        match self {
+            CommonGoal::Move(g) => g.interruptable(),
+            _ => true,
+        }
     }
 }
 
@@ -374,6 +388,7 @@ fn anger_range(t: &Tick<'_, '_>) -> (i32, i32) {
 
 pub fn can_use(t: &mut Tick<'_, '_>, g: &mut CommonGoal) -> bool {
     match g {
+        CommonGoal::Move(m) => super::movement::can_use(t, m),
         CommonGoal::NearestAttackable {
             state,
             interval,
@@ -473,6 +488,7 @@ pub fn can_use(t: &mut Tick<'_, '_>, g: &mut CommonGoal) -> bool {
 
 pub fn can_continue(t: &mut Tick<'_, '_>, g: &mut CommonGoal) -> bool {
     match g {
+        CommonGoal::Move(m) => super::movement::can_continue(t, m),
         CommonGoal::NearestAttackable { state, .. } => target_can_continue(t, state),
         CommonGoal::Avoid { .. } | CommonGoal::MoveTowardsRestriction { .. } => {
             !t.mob_ref().nav.is_done()
@@ -487,6 +503,7 @@ pub fn can_continue(t: &mut Tick<'_, '_>, g: &mut CommonGoal) -> bool {
 
 pub fn start(t: &mut Tick<'_, '_>, g: &mut CommonGoal) {
     match g {
+        CommonGoal::Move(m) => super::movement::start(t, m),
         CommonGoal::NearestAttackable { state, found, .. } => {
             set_target(t, *found);
             state.unseen_ticks = 0;
@@ -534,6 +551,7 @@ pub fn start(t: &mut Tick<'_, '_>, g: &mut CommonGoal) {
 
 pub fn stop(t: &mut Tick<'_, '_>, g: &mut CommonGoal) {
     match g {
+        CommonGoal::Move(m) => super::movement::stop(t, m),
         CommonGoal::NearestAttackable { state, .. } => {
             set_target(t, None);
             state.target_mob = None;
@@ -555,6 +573,7 @@ pub fn stop(t: &mut Tick<'_, '_>, g: &mut CommonGoal) {
 
 pub fn tick(t: &mut Tick<'_, '_>, g: &mut CommonGoal) {
     match g {
+        CommonGoal::Move(m) => super::movement::tick(t, m),
         CommonGoal::Avoid {
             to_avoid,
             walk,

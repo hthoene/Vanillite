@@ -18,6 +18,7 @@ pub mod goals;
 pub mod kinds;
 pub mod living;
 pub mod missile;
+pub mod movement;
 pub mod nav;
 pub mod nbt;
 pub mod path;
@@ -52,6 +53,7 @@ pub use vanillite_world::entity::Dimensions;
 pub struct Attrs {
     pub max_health: f64,
     pub movement_speed: f64,
+    pub flying_speed: f64,
     pub follow_range: f64,
     pub attack_damage: f64,
     pub attack_knockback: f64,
@@ -86,6 +88,7 @@ impl Attrs {
         Attrs {
             max_health: value("minecraft:max_health"),
             movement_speed: value("minecraft:movement_speed"),
+            flying_speed: value("minecraft:flying_speed"),
             follow_range: value("minecraft:follow_range"),
             attack_damage: value("minecraft:attack_damage"),
             attack_knockback: value("minecraft:attack_knockback"),
@@ -476,6 +479,8 @@ pub enum WorldAction {
     DestroyBlock(BlockPos, bool),
     /// `levelEvent(event, pos, data)`.
     LevelEvent(i32, BlockPos, i32),
+    /// `DoorBlock.setOpen(mob, level, state, pos, open)`.
+    SetDoorOpen(BlockPos, bool, Option<EntityId>),
 }
 
 /// The mob state of a world besides the entities: search buffers, queued world changes and
