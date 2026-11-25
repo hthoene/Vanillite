@@ -21,6 +21,7 @@ pub mod missile;
 pub mod movement;
 pub mod nav;
 pub mod nbt;
+pub mod nearby;
 pub mod path;
 pub mod physics;
 pub mod projectile;
@@ -668,7 +669,7 @@ impl WorldAction {
                         damages_entities: false,
                         knockback: b.knockback,
                         wind_sound: Some(b.sound),
-                        ..Default::default()
+                        resistance: crate::level::explosion::BlockResistance::WindCharge,
                     },
                 );
             }

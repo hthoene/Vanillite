@@ -6,6 +6,8 @@
 //! background and parallel-phase work; the watchdog watches the tick deadline.
 
 mod access;
+mod admin;
+pub mod anti_xray;
 mod blocks;
 mod border;
 mod bossbars;

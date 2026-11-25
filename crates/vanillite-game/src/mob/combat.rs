@@ -90,6 +90,7 @@ pub fn hurt(
     if ents.player(target).is_none() {
         return false;
     }
+    let armor = super::attack::armor_effectiveness(ents, env.types, target, &source);
     let Entities { store, players, .. } = ents;
     let Some(mut entity) = store.get_mut(target) else {
         return false;
@@ -98,7 +99,7 @@ pub fn hurt(
     let Some(data) = players.get_mut(row) else {
         return false;
     };
-    player::hurt(&mut entity, data, env, source, amount)
+    player::hurt_with(&mut entity, data, env, source, amount, armor.as_deref())
 }
 
 /// `isInvulnerableTo` of a mob.
@@ -243,8 +244,16 @@ pub fn hurt_mob(
             e.set_flags(EntityFlags::HURT_MARKED, true);
         }
         if !types.is(kind, tag::NO_KNOCKBACK) {
+            // `getSourcePosition`: the explicit position, else the direct entity's (a thrown
+            // potion pushes away from where it splashed).
             let (xd, zd) = source
                 .position
+                .or_else(|| {
+                    source
+                        .direct
+                        .and_then(|d| ents.store.get(d))
+                        .map(|e| e.pos())
+                })
                 .map_or((0.0, 0.0), |p| (p.x - pos.x, p.z - pos.z));
             apply_knockback(ents, target, f64::from(0.4_f32), xd, zd);
         }
@@ -353,6 +362,7 @@ fn actually_hurt(
     damage: f32,
 ) {
     let types = env.types;
+    let effectiveness = super::attack::armor_effectiveness(ents, types, target, &source);
     let Some(m) = ents.mob_mut(target) else {
         return;
     };
@@ -360,7 +370,12 @@ fn actually_hurt(
     if !types.is(source.kind, tag::BYPASSES_ARMOR) {
         #[allow(clippy::cast_possible_truncation)]
         let (armor, toughness) = (m.attrs.armor as f32, m.attrs.armor_toughness as f32);
-        damage = crate::survival::combat::damage_after_absorb(damage, armor, toughness);
+        damage = crate::survival::combat::damage_after_absorb_with(
+            damage,
+            armor,
+            toughness,
+            effectiveness.as_deref(),
+        );
     }
     // `getDamageAfterMagicAbsorb`: Resistance.
     if !types.is(source.kind, tag::BYPASSES_EFFECTS) {
@@ -573,6 +588,9 @@ pub fn base_mob_attack(t: &mut super::Tick<'_, '_>, target: EntityId) -> bool {
             let v = t.velocity();
             t.set_velocity(v.multiply(0.6, 1.0, 0.6));
         }
+        // `EnchantmentHelper.doPostAttackEffects`: the target's equipment (Thorns); mobs
+        // hold no enchanted weapons.
+        super::attack::post_attack(t.level, t.ents, t.env, t.cx, target, &source, None);
         t.mob().last_hurt_mob = Some(target);
         kinds::after_attack(t, target);
     }

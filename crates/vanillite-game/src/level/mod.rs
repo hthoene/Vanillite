@@ -19,6 +19,8 @@ pub mod forced;
 pub mod game_event;
 mod neighbors;
 pub mod place;
+#[cfg(test)]
+pub(crate) use neighbors::STEPS as NEIGHBOR_STEPS;
 pub mod signal;
 mod tick;
 pub mod update;
@@ -341,6 +343,9 @@ pub struct Level {
     chunk_scratch: Vec<ChunkPos>,
     /// Scratch list of the visibility changes.
     visibility_scratch: Vec<vanillite_world::chunks::VisibilityChange>,
+    /// Chunks that became visible and load their entities in [`Level::tick_entity_manager`]
+    /// (`PersistentEntitySectionManager.loadingInbox`).
+    pending_entity_loads: Vec<ChunkPos>,
     /// The stored data live entities were loaded from: written back with their modelled
     /// fields replaced, so stored fields the game does not model are kept.
     entity_nbt: FxHashMap<EntityId, vanillite_nbt::Compound>,
@@ -422,6 +427,7 @@ impl Level {
             torch_toggles: Vec::new(),
             chunk_scratch: Vec::new(),
             visibility_scratch: Vec::new(),
+            pending_entity_loads: Vec::new(),
             entity_nbt: FxHashMap::default(),
             parked_entities: FxHashMap::default(),
             entity_chunks: FxHashSet::default(),
@@ -445,7 +451,7 @@ impl Level {
             seed,
             spawner_env: crate::block::spawner::SpawnerEnv::default(),
         };
-        // Chunks that are visible already load their entities.
+        // Chunks that are visible already queue their entities for the end of the first tick.
         level.apply_visibility();
         level
     }

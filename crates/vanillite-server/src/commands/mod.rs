@@ -418,6 +418,22 @@ pub fn run_command_on_level(
 }
 
 pub(crate) fn run_console_command(world: &mut ServerWorld, global: &Global, line: &str) {
+    run_server_command(world, global, line, SourceKind::Console);
+}
+
+/// An RCON command (`DedicatedServer.runCommand`), run on the overworld: its feedback.
+pub(crate) fn run_rcon_command(world: &mut ServerWorld, global: &Global, line: &str) -> String {
+    let buffer = Arc::new(std::sync::Mutex::new(String::new()));
+    run_server_command(world, global, line, SourceKind::Rcon(Arc::clone(&buffer)));
+    std::mem::take(
+        &mut *buffer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    )
+}
+
+/// A command of the console or RCON with the owner permission level.
+fn run_server_command(world: &mut ServerWorld, global: &Global, line: &str, kind: SourceKind) {
     let command = line.trim().trim_start_matches('/');
     if command.is_empty() {
         return;
@@ -427,7 +443,7 @@ pub(crate) fn run_console_command(world: &mut ServerWorld, global: &Global, line
     };
     let source = CommandSource::new(
         arc,
-        SourceKind::Console,
+        kind,
         4,
         world.id(),
         global.systems.spawn(),
@@ -449,14 +465,25 @@ pub(crate) fn run_console_command(world: &mut ServerWorld, global: &Global, line
             run_line(&mut env, line, source);
         }
         Err(e) => {
-            log::warn!("{}", error_message(&e).plain());
-            if let Some(context) = e.context() {
-                log::warn!(
+            let context = e.context().map(|context| {
+                format!(
                     "{}{}{}<--[HERE]",
                     if context.ellipsis { "..." } else { "" },
                     context.before,
                     context.after
-                );
+                )
+            });
+            if matches!(source.kind, SourceKind::Rcon(_)) {
+                // `Commands.performCommand`: both lines as failures of the source.
+                source.send_failure(global, error_message(&e));
+                if let Some(context) = context {
+                    source.send_failure(global, vanillite_protocol::text::Component::text(context));
+                }
+                return;
+            }
+            log::warn!("{}", error_message(&e).plain());
+            if let Some(context) = context {
+                log::warn!("{context}");
             }
         }
     }

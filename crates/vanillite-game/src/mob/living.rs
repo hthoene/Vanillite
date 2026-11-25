@@ -1470,6 +1470,13 @@ pub fn check_despawn(t: &mut Tick<'_, '_>) {
     let area = Aabb::new(p.x - r, p.y - r, p.z - r, p.x + r, p.y + r, p.z + r);
     let mut nearest = f64::MAX;
     t.ents.store.for_each_in(&area, true, |player| {
+        // `getNearestPlayer` skips spectators.
+        if t.ents
+            .player(player)
+            .is_some_and(|p| p.game_mode == vanillite_config::GameMode::Spectator)
+        {
+            return;
+        }
         if let Some(e) = t.ents.store.get(player) {
             let d = e.pos().distance_to_sqr(p);
             if d < nearest {

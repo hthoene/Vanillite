@@ -50,6 +50,9 @@ pub enum BlockResistance {
     DangerousWitherSkull,
     /// `MinecartTNT`: rails and the blocks under them have no resistance and do not break.
     TntMinecart,
+    /// `AbstractWindCharge.EXPLOSION_DAMAGE_CALCULATOR`: `#blocks_wind_charge_explosions` are
+    /// immune.
+    WindCharge,
 }
 
 /// An explosion for the clients (`ClientboundExplodePacket`), sent to players within 64 blocks.
@@ -215,6 +218,13 @@ impl Level {
                                 resistance = crate::mob::boss::wither::skull_block_resistance(
                                     true, state, resistance,
                                 );
+                            }
+                            if override_resistance == BlockResistance::WindCharge
+                                && crate::block::block_tags()
+                                    .blocks_wind_charge_explosions
+                                    .contains(state)
+                            {
+                                resistance = 3_600_000.0;
                             }
                             power -= (resistance + 0.3) * 0.3;
                         }

@@ -1,5 +1,6 @@
 //! The non-living entities of the bosses: wither skulls, end crystals and dragon fireballs
-//! (the dragon's breath clouds are [`crate::effect::cloud`]s). Their data lives in
+//! (the dragon's breath clouds are [`crate::effect::cloud`]s), and thrown potions
+//! ([`crate::effect::thrown`]). Their data lives in
 //! [`Entities::specials`]; they tick in the world's entity tick like mobs.
 
 use vanillite_data::entity::{EntityTypeId, ids};
@@ -18,11 +19,15 @@ pub enum SpecialData {
     WitherSkull(Box<wither::Skull>),
     EndCrystal(Box<dragon::Crystal>),
     DragonFireball(Box<dragon::Fireball>),
+    ThrownPotion(Box<crate::effect::thrown::ThrownPotion>),
 }
 
 /// Whether entities of `kind` carry [`SpecialData`].
 pub fn is_special_kind(kind: EntityTypeId) -> bool {
-    kind == ids::WITHER_SKULL || kind == ids::END_CRYSTAL || kind == ids::DRAGON_FIREBALL
+    kind == ids::WITHER_SKULL
+        || kind == ids::END_CRYSTAL
+        || kind == ids::DRAGON_FIREBALL
+        || crate::effect::thrown::is_thrown_potion(kind)
 }
 
 /// What one special entity tick works on (like [`crate::mob::Tick`]).
@@ -65,6 +70,7 @@ pub fn tick(
         SpecialData::WitherSkull(_) => wither::tick_skull,
         SpecialData::EndCrystal(_) => dragon::tick_crystal,
         SpecialData::DragonFireball(_) => dragon::tick_fireball,
+        SpecialData::ThrownPotion(_) => crate::effect::thrown::tick,
     };
     let mut t = SpecialTick {
         level,
@@ -76,6 +82,14 @@ pub fn tick(
     f(&mut t);
 }
 
+/// The owner a special entity's spawn packet names (`Projectile.getAddEntityPacket`).
+pub fn spawn_owner(data: &SpecialData) -> Option<EntityId> {
+    match data {
+        SpecialData::ThrownPotion(p) => p.owner,
+        _ => None,
+    }
+}
+
 /// The synched data of a special entity after the entity's own (ids from 8 on).
 pub fn entity_data(out: &mut Vec<u8>, data: &SpecialData, all: bool) {
     match data {
@@ -83,6 +97,7 @@ pub fn entity_data(out: &mut Vec<u8>, data: &SpecialData, all: bool) {
             dragon::crystal::entity_data(out, data, all)
         }
         SpecialData::WitherSkull(s) => wither::skull_entity_data(out, s, all),
+        SpecialData::ThrownPotion(p) => crate::effect::thrown::entity_data(out, p, all),
     }
 }
 
@@ -112,6 +127,10 @@ pub fn save(data: &SpecialData, out: &mut Compound) -> Option<()> {
             wither::save_skull(s, out);
             Some(())
         }
+        SpecialData::ThrownPotion(p) => {
+            crate::effect::thrown::save(p, out);
+            Some(())
+        }
     }
 }
 
@@ -119,6 +138,10 @@ pub fn save(data: &SpecialData, out: &mut Compound) -> Option<()> {
 pub fn load(kind: EntityTypeId, tag: &Compound) -> Option<SpecialData> {
     if kind == ids::WITHER_SKULL {
         Some(SpecialData::WitherSkull(Box::new(wither::load_skull(tag))))
+    } else if crate::effect::thrown::is_thrown_potion(kind) {
+        Some(SpecialData::ThrownPotion(Box::new(
+            crate::effect::thrown::load(kind, tag),
+        )))
     } else {
         dragon::crystal::load(kind, tag)
     }

@@ -209,7 +209,8 @@ pub struct Connection {
     /// A virtual connection (test bot, Bedrock player). These have no chat session, so their
     /// chat is accepted unsigned even when the server enforces secure chat.
     pub is_virtual: bool,
-    /// `ServerPlayer.lastActionTime`: the last packet that counts as player activity.
+    /// The last action of the player (`ServerPlayer.lastActionTime`), for
+    /// `player-idle-timeout`.
     pub last_action: std::time::Instant,
 }
 
@@ -267,8 +268,8 @@ impl Connection {
             entity_actions: Vec::new(),
             vehicle: VehicleInput::default(),
             play: Digging::new(),
-            is_virtual,
             last_action: std::time::Instant::now(),
+            is_virtual,
         }
     }
 
@@ -312,30 +313,46 @@ impl Connection {
         chat: ChatContext<'_>,
         play: &mut PlayContext<'_>,
     ) -> Result<(), Kick> {
-        // `resetLastActionTime` of the packets that show activity (moves count when they move
-        // the player).
-        if matches!(
-            packet,
-            ServerboundPlay::PlayerAction(_)
-                | ServerboundPlay::UseItemOn(_)
-                | ServerboundPlay::UseItem(_)
-                | ServerboundPlay::SetCarriedItem(_)
-                | ServerboundPlay::ChatCommandSigned(_)
-                | ServerboundPlay::Punch(_)
-                | ServerboundPlay::PlayerCommand(_)
-                | ServerboundPlay::Attack(_)
-                | ServerboundPlay::Interact(_)
-                | ServerboundPlay::ClientCommand(_)
-                | ServerboundPlay::ContainerClick(_)
-                | ServerboundPlay::PlaceRecipe(_)
-                | ServerboundPlay::ContainerButtonClick(_)
-                | ServerboundPlay::SignUpdate(_)
-        ) || matches!(packet, ServerboundPlay::PlayerInput(_))
-            && self.movement.has_client_loaded()
-        {
+        // `resetLastActionTime`: the packets that count as an action of the player.
+        let loaded = self.movement.has_client_loaded();
+        let acts = match &packet {
+            ServerboundPlay::PlayerInput(_)
+            | ServerboundPlay::PlayerAction(_)
+            | ServerboundPlay::UseItemOn(_)
+            | ServerboundPlay::UseItem(_) => loaded,
+            ServerboundPlay::SetCarriedItem(p) => {
+                usize::try_from(p.slot).is_ok_and(|s| s < crate::inventory::HOTBAR)
+            }
+            ServerboundPlay::Chat(_) => self.chat.inbox().visibility != ChatVisibility::Hidden,
+            ServerboundPlay::ChatCommand(_)
+            | ServerboundPlay::ChatCommandSigned(_)
+            | ServerboundPlay::Punch(_)
+            | ServerboundPlay::PlayerCommand(_)
+            | ServerboundPlay::Attack(_)
+            | ServerboundPlay::ClientCommand(_)
+            | ServerboundPlay::ContainerClick(_)
+            | ServerboundPlay::PlaceRecipe(_)
+            | ServerboundPlay::ContainerButtonClick(_)
+            | ServerboundPlay::SignUpdate(_) => true,
+            _ => false,
+        };
+        let pos_before = state.body.pos;
+        self.handle_packet(packet, state, ctx, chat, play)?;
+        // `handlePlayerKnownMovement`: a move of more than `sqrt(1e-5)` blocks.
+        if acts || state.body.pos.distance_to_sqr(pos_before) > 1.0e-5 {
             self.last_action = std::time::Instant::now();
         }
-        let before = state.body.pos;
+        Ok(())
+    }
+
+    fn handle_packet(
+        &mut self,
+        packet: ServerboundPlay,
+        state: &mut PlayerState,
+        ctx: MoveContext<'_>,
+        chat: ChatContext<'_>,
+        play: &mut PlayContext<'_>,
+    ) -> Result<(), Kick> {
         let sink = self.sink.as_ref();
         let mv =
             |pos: Option<(f64, f64, f64)>,
@@ -621,10 +638,6 @@ impl Connection {
             | ServerboundPlay::Pong(_)
             | ServerboundPlay::ResourcePack(_)
             | ServerboundPlay::Unhandled { .. } => {}
-        }
-        // `handlePlayerKnownMovement`: a real move counts as activity.
-        if state.body.pos.distance_to_sqr(before) > 1.0e-5 {
-            self.last_action = std::time::Instant::now();
         }
         Ok(())
     }
