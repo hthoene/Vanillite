@@ -376,7 +376,7 @@ fn mace_bonus(
 
 /// `causeExtraKnockback`: knocks the target back in the attacker's facing and slows the
 /// attacker; a hit player gets its new motion at once.
-fn extra_knockback(
+pub(crate) fn extra_knockback(
     ents: &mut Entities,
     env: &mut Env<'_>,
     attacker: EntityId,
