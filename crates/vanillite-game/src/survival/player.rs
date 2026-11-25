@@ -203,8 +203,8 @@ pub struct Survival {
     pub combat: CombatTracker,
     /// `tickCount`.
     pub tick_count: i32,
-    /// The `minecraft:time_since_rest` statistic (ticks alive since the last sleep or death).
-    pub time_since_rest: i32,
+    /// The entities on the player's shoulders.
+    pub shoulders: super::shoulder::Shoulders,
     /// `lastClimbablePos`'s fall location.
     pub last_climbable: Option<FallLocation>,
     /// The fluids around the player after the last update.
@@ -290,7 +290,7 @@ impl Default for Survival {
             respawn: None,
             combat: CombatTracker::default(),
             tick_count: 0,
-            time_since_rest: 0,
+            shoulders: super::shoulder::Shoulders::default(),
             last_climbable: None,
             fluids: FluidContact::default(),
             portal: crate::portal::PortalState::default(),
@@ -522,6 +522,7 @@ impl Survival {
         if let Some(Tag::Compound(respawn)) = data.get("respawn") {
             s.respawn = RespawnConfig::load(respawn);
         }
+        s.shoulders = super::shoulder::Shoulders::load(data);
         s
     }
 
@@ -578,6 +579,7 @@ impl Survival {
         if let Some(respawn) = &self.respawn {
             out.insert("respawn", Tag::Compound(respawn.save()));
         }
+        self.shoulders.save(out);
     }
 
     /// `restoreFrom` for a respawn after death: health, food and air start over; experience,
@@ -590,6 +592,7 @@ impl Survival {
             respawn: self.respawn.clone(),
             warden_spawn_tracker: self.warden_spawn_tracker,
             portal: self.portal.clone(),
+            shoulders: self.shoulders.clone(),
             ..Survival::default()
         };
         if keep_inventory {
@@ -768,6 +771,7 @@ pub fn hurt(
     if player.survival.is_dead_or_dying() {
         return false;
     }
+    super::shoulder::remove_entities(entity, player, env);
     if types.is(kind, tag::IS_FIRE)
         && player
             .survival
@@ -1226,8 +1230,6 @@ pub fn die(
     let network_id = entity.as_ref().network_id().0;
     let uuid = entity.as_ref().uuid();
     let id = entity.as_ref().id();
-    // `resetStat(TIME_SINCE_REST)`.
-    player.survival.time_since_rest = 0;
     let sink = std::sync::Arc::clone(&player.connection.sink);
     let mut broadcast = None;
     if env.rules.bool(Rule::SHOW_DEATH_MESSAGES) {
@@ -1244,6 +1246,7 @@ pub fn die(
             message: Component::empty(),
         });
     }
+    super::shoulder::remove_entities(entity, player, env);
     // `dropAllDeathLoot` → `dropEquipment` and `dropExperience`.
     if !env.rules.bool(Rule::KEEP_INVENTORY) && player.game_mode != GameMode::Spectator {
         let pos = entity.as_ref().pos();
@@ -1393,10 +1396,6 @@ pub fn do_tick(
     {
         let s = &mut player.survival;
         s.tick_count = s.tick_count.wrapping_add(1);
-        // `awardStat(TIME_SINCE_REST)` while alive (players cannot sleep yet).
-        if !s.is_dead_or_dying() {
-            s.time_since_rest = s.time_since_rest.saturating_add(1);
-        }
         // `ServerPlayer.tick`: `wardenSpawnTracker.tick()`.
         s.warden_spawn_tracker.tick();
     }
@@ -1548,6 +1547,8 @@ pub fn do_tick(
         }
     }
     player.survival.last_box = Some(entity.as_ref().aabb());
+    // `Player.aiStep`: `handleShoulderEntities`.
+    super::shoulder::handle(entity, player, env, false);
     // `FoodData.tick`.
     let s = &mut player.survival;
     let action = s.food.tick(

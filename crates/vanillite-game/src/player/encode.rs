@@ -43,6 +43,8 @@ mod data_id {
     pub const PLAYER_MODE_CUSTOMISATION: u8 = 16;
     pub const PLAYER_ABSORPTION: u8 = 17;
     pub const PLAYER_SCORE: u8 = 18;
+    pub const PLAYER_SHOULDER_LEFT: u8 = 19;
+    pub const PLAYER_SHOULDER_RIGHT: u8 = 20;
     pub const LIVING_FLAGS: u8 = 8;
     pub const MOB_FLAGS: u8 = 15;
     pub const KIND_16: u8 = 16;
@@ -288,6 +290,17 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
             item(&mut out, data_id::PLAYER_SCORE, serializer::INT, |o| {
                 write_varint(o, score);
             });
+        }
+        let shoulders = &player.survival.shoulders;
+        for (id, variant) in [
+            (data_id::PLAYER_SHOULDER_LEFT, shoulders.parrot_left()),
+            (data_id::PLAYER_SHOULDER_RIGHT, shoulders.parrot_right()),
+        ] {
+            if all || variant.is_some() {
+                item(&mut out, id, serializer::OPTIONAL_UNSIGNED_INT, |o| {
+                    write_varint(o, variant.map_or(0, |v| v.saturating_add(1)));
+                });
+            }
         }
     }
     if let Some(mob) = entities.mob(entity.id()) {

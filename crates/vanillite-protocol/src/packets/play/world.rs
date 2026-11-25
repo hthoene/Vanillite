@@ -562,6 +562,18 @@ pub mod clientbound {
         pub title: crate::text::Component,
     }
 
+    /// `mount_screen_open`: opens the inventory menu of a horse, llama, camel or nautilus.
+    #[derive(Debug, Clone, PartialEq, Eq, Packet)]
+    #[packet(state = Play, dir = Clientbound, name = "mount_screen_open")]
+    pub struct MountScreenOpen {
+        #[field(varint)]
+        pub container_id: i32,
+        /// Chest columns (three rows each).
+        #[field(varint)]
+        pub inventory_columns: i32,
+        pub entity_id: i32,
+    }
+
     /// `open_sign_editor`: the client opens the editor of one side of a sign.
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct OpenSignEditor {

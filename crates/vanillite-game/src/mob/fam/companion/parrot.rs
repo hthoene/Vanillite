@@ -1,6 +1,5 @@
 //! `Parrot`: taming with seeds, cookies poison it, flying wander to trees, following other
-//! mobs and imitating hostile mobs. Shoulder sitting needs the player's shoulder entity data
-//! and is not done yet.
+//! mobs, imitating hostile mobs and landing on its owner's shoulder.
 
 use vanillite_base::random::RandomSource;
 use vanillite_base::{BlockPos, Vec3};
@@ -27,12 +26,18 @@ pub enum Goal {
         following: Option<EntityId>,
         recalc: i32,
     },
+    /// `LandOnOwnersShoulderGoal`.
+    LandOnShoulder {
+        /// `isSittingOnShoulder`.
+        sitting: bool,
+    },
 }
 
 pub fn flags(g: &Goal) -> u8 {
     match g {
         Goal::Wander { .. } => flag::MOVE,
         Goal::FollowMob { .. } => flag::MOVE | flag::LOOK,
+        Goal::LandOnShoulder { .. } => 0,
     }
 }
 
@@ -58,7 +63,10 @@ pub fn register_goals(m: &mut MobData) {
             wanted: Vec3::ZERO,
         })),
     );
-    // 3: `LandOnOwnersShoulderGoal` needs the player's shoulder data (not available yet).
+    g.add(
+        3,
+        fam(FamGoal::Parrot(Goal::LandOnShoulder { sitting: false })),
+    );
     g.add(
         3,
         fam(FamGoal::Parrot(Goal::FollowMob {
@@ -122,6 +130,47 @@ pub fn imitated_sound(kind: Kind) -> Option<&'static str> {
         _ => return None,
     })
 }
+
+/// The sounds of `MOB_SOUND_MAP`, one per mob type (`getAmbient` imitates a random type).
+pub const IMITATED: [&str; 37] = [
+    "minecraft:entity.parrot.imitate.blaze",
+    "minecraft:entity.parrot.imitate.bogged",
+    "minecraft:entity.parrot.imitate.breeze",
+    "minecraft:entity.parrot.imitate.camel_husk",
+    "minecraft:entity.parrot.imitate.spider",
+    "minecraft:entity.parrot.imitate.spider",
+    "minecraft:entity.parrot.imitate.creaking",
+    "minecraft:entity.parrot.imitate.creeper",
+    "minecraft:entity.parrot.imitate.drowned",
+    "minecraft:entity.parrot.imitate.endermite",
+    "minecraft:entity.parrot.imitate.evoker",
+    "minecraft:entity.parrot.imitate.ghast",
+    "minecraft:entity.parrot.imitate.guardian",
+    "minecraft:entity.parrot.imitate.hoglin",
+    "minecraft:entity.parrot.imitate.husk",
+    "minecraft:entity.parrot.imitate.illusioner",
+    "minecraft:entity.parrot.imitate.magma_cube",
+    "minecraft:entity.parrot.imitate.parched",
+    "minecraft:entity.parrot.imitate.phantom",
+    "minecraft:entity.parrot.imitate.piglin",
+    "minecraft:entity.parrot.imitate.piglin_brute",
+    "minecraft:entity.parrot.imitate.pillager",
+    "minecraft:entity.parrot.imitate.ravager",
+    "minecraft:entity.parrot.imitate.shulker",
+    "minecraft:entity.parrot.imitate.silverfish",
+    "minecraft:entity.parrot.imitate.skeleton",
+    "minecraft:entity.parrot.imitate.slime",
+    "minecraft:entity.parrot.imitate.stray",
+    "minecraft:entity.parrot.imitate.vex",
+    "minecraft:entity.parrot.imitate.vindicator",
+    "minecraft:entity.parrot.imitate.witch",
+    "minecraft:entity.parrot.imitate.wither_skeleton",
+    "minecraft:entity.parrot.imitate.zoglin",
+    "minecraft:entity.parrot.imitate.zombie",
+    "minecraft:entity.parrot.imitate.zombie_horse",
+    "minecraft:entity.parrot.imitate.zombie_nautilus",
+    "minecraft:entity.parrot.imitate.zombie_villager",
+];
 
 /// `getAmbientSound` (the 1-in-1000 imitation is done in `ai_step`).
 pub fn ambient_sound(_m: &MobData) -> &'static str {
@@ -350,7 +399,54 @@ pub fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
             *following = found;
             found.is_some()
         }
+        Goal::LandOnShoulder { .. } => can_land_on_shoulder(t),
     }
+}
+
+/// `LandOnOwnersShoulderGoal.canUse`: the owner is a player here that is no spectator and not
+/// in water, the parrot is not ordered to sit and rode no shoulder for 100 ticks
+/// (`canSitOnShoulder`; `rideCooldownCounter` counts like `tickCount`).
+fn can_land_on_shoulder(t: &Tick<'_, '_>) -> bool {
+    let m = t.mob_ref();
+    let Some(owner) = crate::mob::tame::owner_of(t.ents, m) else {
+        return false;
+    };
+    let Some(p) = t.ents.player(owner) else {
+        return false;
+    };
+    let can_be_sat_on =
+        p.game_mode != vanillite_config::GameMode::Spectator && !p.survival.fluids.in_water();
+    !m.order_to_sit && can_be_sat_on && m.tick_count > 100
+}
+
+/// `ShoulderRidingEntity.setEntityOnShoulder` with `ServerPlayer.setEntityOnShoulder`: the
+/// parrot's NBT goes onto a free shoulder of a player on the ground, out of vehicles and
+/// water, and the parrot leaves the world.
+fn set_on_shoulder(t: &mut Tick<'_, '_>, owner: EntityId) -> bool {
+    let on_ground = t.ents.store.get(owner).is_some_and(|e| {
+        e.flags()
+            .contains(vanillite_world::entity::EntityFlags::ON_GROUND)
+    });
+    let riding = t.ents.vehicle_of(owner).is_some();
+    let Some(core) = t.ents.store.get(t.id) else {
+        return false;
+    };
+    let tag = crate::mob::nbt::save_mob(&core, t.mob_ref());
+    let game_time = t.game_time();
+    let Some(p) = t.ents.player_mut(owner) else {
+        return false;
+    };
+    if riding || !on_ground || p.survival.fluids.in_water() {
+        return false;
+    }
+    if !p.survival.shoulders.put(tag, game_time) {
+        return false;
+    }
+    if let Some(mut e) = t.ents.store.get_mut(owner) {
+        e.mark_data_dirty();
+    }
+    t.mob().removed = true;
+    true
 }
 
 pub fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
@@ -362,6 +458,7 @@ pub fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
             };
             !t.mob_ref().nav.is_done() && o.pos.distance_to_sqr(t.pos()) > 9.0
         }
+        Goal::LandOnShoulder { .. } => can_land_on_shoulder(t),
     }
 }
 
@@ -371,6 +468,7 @@ pub fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
             nav::move_to_pos(t, *wanted, *speed);
         }
         Goal::FollowMob { recalc, .. } => *recalc = 0,
+        Goal::LandOnShoulder { sitting } => *sitting = false,
     }
 }
 
@@ -381,10 +479,27 @@ pub fn stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
             *following = None;
             t.mob().nav.stop();
         }
+        Goal::LandOnShoulder { .. } => {}
     }
 }
 
 pub fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
+    if let Goal::LandOnShoulder { sitting } = g {
+        if *sitting || t.mob_ref().in_sitting_pose || t.ents.leashes.contains_key(&t.id) {
+            return;
+        }
+        let owner = crate::mob::tame::owner_of(t.ents, t.mob_ref());
+        if let Some(owner) = owner
+            && t.ents.player(owner).is_some()
+            && t.ents
+                .store
+                .get(owner)
+                .is_some_and(|e| e.aabb().intersects(&t.aabb()))
+        {
+            *sitting = set_on_shoulder(t, owner);
+        }
+        return;
+    }
     if let Goal::FollowMob { following, recalc } = g {
         if t.ents.leashes.contains_key(&t.id) {
             return;

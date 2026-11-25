@@ -363,11 +363,15 @@ pub fn equip_item_if_possible(
 
 /// Sends the mob's equipment to the players tracking it (`set_equipment` after a change).
 pub fn broadcast(t: &mut Tick<'_, '_>) {
-    let Some(e) = t.ents.store.get(t.id) else {
-        return;
-    };
-    let entity_id = e.network_id().0;
-    let m = t.mob_ref();
+    if let Some(effect) = tracking_update(t.ents, t.id) {
+        t.env.out.push(effect);
+    }
+}
+
+/// The `set_equipment` of a mob for the players tracking it.
+pub fn tracking_update(ents: &crate::entities::Entities, id: EntityId) -> Option<Effect> {
+    let entity_id = ents.store.get(id)?.network_id().0;
+    let m = ents.mob(id)?;
     let mut slots: Vec<(u8, ItemStack)> = SLOTS
         .iter()
         .map(|&s| (s.ordinal(), m.equipment.get(s).clone()))
@@ -375,14 +379,13 @@ pub fn broadcast(t: &mut Tick<'_, '_>) {
     if m.saddled {
         slots[usize::from(EquipmentSlot::Saddle.ordinal())].1 = stack("minecraft:saddle");
     }
-    let id = t.id;
-    t.env.out.push(Effect::Tracking {
+    Some(Effect::Tracking {
         entity: id,
         with_self: false,
         packet: SharedPacket::of(
             &vanillite_protocol::packets::play::clientbound::SetEquipment { entity_id, slots },
         ),
-    });
+    })
 }
 
 /// `spawnAtLocation(stack, yOffset)`: an item entity at the mob with the default motion.

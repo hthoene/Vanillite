@@ -474,11 +474,22 @@ impl WorldMobs {
                         );
                     }
                     EntityAction::OpenVehicleInventory => {
-                        // `openCustomInventoryScreen` of a chest boat the player rides.
-                        if let Some(v) = ents.vehicle_of(player)
-                            && ents.boat(v).is_some_and(|b| b.kind.chest)
-                        {
-                            minecart::open_container(&mut ents, &mut env, &mut self.cx, player, v);
+                        // `openCustomInventoryScreen` of a chest boat or mount the player
+                        // rides.
+                        if let Some(v) = ents.vehicle_of(player) {
+                            if ents.boat(v).is_some_and(|b| b.kind.chest) {
+                                minecart::open_container(
+                                    &mut ents,
+                                    &mut env,
+                                    &mut self.cx,
+                                    player,
+                                    v,
+                                );
+                            } else if let Some(request) =
+                                vanillite_game::menu::mount::request(&ents, v, player)
+                            {
+                                self.cx.menus.push(request);
+                            }
                         }
                     }
                 }
@@ -608,10 +619,9 @@ impl WorldMobs {
         use vanillite_game::mob::fam::illager::patrol::{self, PatrolInput};
         use vanillite_game::mob::fam::undead::phantom;
         let rest = |id: EntityId| {
-            level
-                .entities
-                .player(id)
-                .map_or(0, |p| p.survival.time_since_rest)
+            level.entities.player(id).map_or(0, |p| {
+                p.stats.get(vanillite_game::stats::custom::TIME_SINCE_REST)
+            })
         };
         let rests: Vec<(EntityId, i32)> = players.iter().map(|&(id, _)| (id, rest(id))).collect();
         let time_since_rest = |id: EntityId| rests.iter().find(|r| r.0 == id).map_or(0, |r| r.1);
@@ -706,6 +716,12 @@ impl WorldMobs {
     ) {
         self.ticks += 1;
         level.flush_poi_changes();
+        // `detectEquipmentUpdates` of the mobs whose equipment a menu changed.
+        for id in std::mem::take(&mut level.entities.equipment_updates) {
+            if let Some(e) = vanillite_game::mob::equipment::tracking_update(&level.entities, id) {
+                survival.effects.push(e);
+            }
+        }
         let state = &global.level;
         let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
         let rules = state.rules().clone();
