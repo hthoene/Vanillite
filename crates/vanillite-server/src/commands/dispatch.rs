@@ -243,6 +243,7 @@ pub(crate) fn execute(
 ) -> Result<i32, CommandError> {
     let global = env.global;
     match parsed.command {
+        CommandId::Plugin(command) => plugin_command(env, source, parsed, command),
         CommandId::GameModeSelf | CommandId::GameModeTargets => {
             let mode = parsed
                 .args
@@ -549,4 +550,63 @@ pub(crate) fn execute(
         | CommandId::ReturnRun
         | CommandId::DebugFunction => Err(CommandError::new("command.unknown.command", vec![])),
     }
+}
+
+/// The arguments of a plugin command: selectors resolved to players, coordinates to block
+/// positions; argument types plugins cannot declare are left out.
+pub(crate) fn plugin_args(
+    env: Option<&Env<'_>>,
+    source: &CommandSource,
+    args: &vanillite_command::Args,
+) -> Result<Vec<vanillite_plugin_host::Arg>, CommandError> {
+    use vanillite_command::ArgValue as V;
+    use vanillite_plugin_host::{Arg, ArgValue};
+    let mut out = Vec::new();
+    for a in args.iter() {
+        let value = match &a.value {
+            V::Bool(b) => ArgValue::Bool(*b),
+            V::Int(v) => ArgValue::Integer(i64::from(*v)),
+            V::Long(v) => ArgValue::Long(*v),
+            V::Float(v) => ArgValue::Float(f64::from(*v)),
+            V::Double(v) => ArgValue::Double(*v),
+            V::String(s) => ArgValue::Text(s.clone()),
+            V::Entity(selector) => match env {
+                Some(env) => ArgValue::Players(
+                    targets(env, source, selector, true)?
+                        .into_iter()
+                        .map(|t| t.uuid)
+                        .collect(),
+                ),
+                None => continue,
+            },
+            V::Coordinates(coordinates) => {
+                let pos = exec::resolve_position(source, coordinates);
+                ArgValue::Pos([
+                    vanillite_base::math::floor(pos.x),
+                    vanillite_base::math::floor(pos.y),
+                    vanillite_base::math::floor(pos.z),
+                ])
+            }
+            _ => continue,
+        };
+        out.push(Arg {
+            name: a.name.clone(),
+            value,
+        });
+    }
+    Ok(out)
+}
+
+/// Runs a plugin's command (no world access: the plugin schedules on the world for that).
+fn plugin_command(
+    env: &mut Env<'_>,
+    source: &CommandSource,
+    parsed: &Parsed<CommandId>,
+    command: u32,
+) -> Result<i32, CommandError> {
+    let args = plugin_args(Some(env), source, &parsed.args)?;
+    env.global
+        .plugins
+        .execute_command(command, &source.plugin_sender(), &parsed.input, &args, None)
+        .ok_or_else(|| CommandError::new("command.failed", vec![]))
 }

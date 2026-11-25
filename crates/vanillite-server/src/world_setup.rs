@@ -378,10 +378,20 @@ impl ChunkPackets {
         }
     }
 
-    /// The source over a world's chunks.
-    pub(crate) fn source<'a>(&'a self, chunks: &'a Chunks) -> WorldChunkSource<'a> {
+    /// Drops the packet of one chunk (its block entity data changed).
+    pub(crate) fn invalidate_chunk(&mut self, pos: ChunkPos) {
+        self.cache.get_mut().remove(&pos);
+    }
+
+    /// The source over a world's chunks and their live block entities.
+    pub(crate) fn source<'a>(
+        &'a self,
+        chunks: &'a Chunks,
+        block_entities: &'a vanillite_game::level::BlockEntities,
+    ) -> WorldChunkSource<'a> {
         WorldChunkSource {
             chunks,
+            block_entities,
             cache: &self.cache,
         }
     }
@@ -390,6 +400,7 @@ impl ChunkPackets {
 /// [`ChunkSource`] over the full chunks of a world.
 pub(crate) struct WorldChunkSource<'a> {
     chunks: &'a Chunks,
+    block_entities: &'a vanillite_game::level::BlockEntities,
     cache: &'a RefCell<FxHashMap<ChunkPos, Arc<SharedPacket>>>,
 }
 
@@ -399,17 +410,45 @@ impl ChunkSource for WorldChunkSource<'_> {
             return Some(Arc::clone(packet));
         }
         let chunk = self.chunks.chunk(pos)?;
-        // Block entities go out with their type only; the client creates them with default
-        // data (their update tags need the block entity port).
-        let block_entities: Vec<BlockEntityWire<'_>> = chunk
-            .block_entities
+        // Block entities go out with their update tag (`getUpdateTag`): live ones from the
+        // level, stored ones of kinds the level does not model with their type only.
+        let mut tags: Vec<(vanillite_base::BlockPos, u32, Vec<u8>)> = Vec::new();
+        for (bpos, entity) in self.block_entities.in_chunk(pos) {
+            let Some(id) = self.chunks.block(bpos) else {
+                continue;
+            };
+            let state = vanillite_data::block::BlockState(id);
+            let kind = state.block().info().block_entity;
+            if kind == u16::MAX {
+                continue;
+            }
+            let mut nbt = Vec::new();
+            match vanillite_game::level::block_entity::update_tag(entity) {
+                Some(tag) => {
+                    if vanillite_nbt::write::write_network_compound(&tag, &mut nbt).is_err() {
+                        nbt = vec![0];
+                    }
+                }
+                None => nbt.push(0),
+            }
+            tags.push((bpos, u32::from(kind), nbt));
+        }
+        for be in &chunk.block_entities {
+            if tags.iter().any(|(p, _, _)| *p == be.pos) {
+                continue;
+            }
+            if let Some(kind) = be.kind {
+                tags.push((be.pos, u32::from(kind), vec![0]));
+            }
+        }
+        let block_entities: Vec<BlockEntityWire<'_>> = tags
             .iter()
-            .filter_map(|be| {
+            .filter_map(|(bpos, kind, nbt)| {
                 Some(BlockEntityWire {
-                    packed_xz: (((be.pos.x & 15) << 4) | (be.pos.z & 15)) as u8,
-                    y: i16::try_from(be.pos.y).ok()?,
-                    type_id: u32::from(be.kind?),
-                    nbt: &[0],
+                    packed_xz: (((bpos.x & 15) << 4) | (bpos.z & 15)) as u8,
+                    y: i16::try_from(bpos.y).ok()?,
+                    type_id: *kind,
+                    nbt,
                 })
             })
             .collect();

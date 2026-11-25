@@ -1,0 +1,1077 @@
+//! Container blocks and their block entities (`BaseContainerBlockEntity` and its users):
+//! chests (single and double, trapped, copper), barrels, shulker boxes, ender chests,
+//! dispensers, droppers and the inventory of hoppers; furnaces are in [`super::furnace`].
+//!
+//! The stacks of a container live in its block entity ([`Container`], [`BlockEntity::Hopper`],
+//! [`BlockEntity::Furnace`]); [`items`] and [`items_mut`] reach them by position. Using a
+//! container block asks the level to open a menu ([`Level::request_menu`]); the player side
+//! ([`crate::menu::container`]) opens it and counts the viewers back here
+//! ([`start_open`], [`stop_open`]): lid block events, sounds, the barrel's `open` state and the
+//! trapped chest's signal follow the viewer count like Vanilla's `ContainerOpenersCounter`.
+
+use vanillite_base::random::RandomSource;
+use vanillite_base::{Aabb, BlockPos, Direction, Vec3};
+use vanillite_data::block::{BlockId, BlockKind, BlockState};
+use vanillite_nbt::{Compound, List, Tag};
+use vanillite_protocol::text::Component;
+use vanillite_worldgen::behaviour::{PosExt, StateExt};
+
+use super::{BlockBehaviour, Interaction, UseContext, sound_id};
+use crate::item::ItemStack;
+use crate::level::{BlockEntity, Level};
+use crate::menu::container::{MenuKind, MenuRequest, Storage};
+use crate::recipe::CookingKind;
+
+/// `SoundSource.BLOCKS`.
+const BLOCKS: u8 = 4;
+
+/// The stacks and name of a container block entity (`RandomizableContainerBlockEntity`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Container {
+    /// The stacks.
+    pub items: Box<[ItemStack]>,
+    /// `CustomName`.
+    pub custom_name: Option<Component>,
+    /// `LootTable`: the loot table that fills the container when it is first opened.
+    pub loot_table: Option<String>,
+    /// `LootTableSeed`.
+    pub loot_seed: i64,
+    /// Players that have it open (`ContainerOpenersCounter.openCount`).
+    pub openers: i32,
+}
+
+impl Container {
+    /// An empty container with `size` slots.
+    pub fn new(size: usize) -> Container {
+        Container {
+            items: vec![ItemStack::EMPTY; size].into_boxed_slice(),
+            custom_name: None,
+            loot_table: None,
+            loot_seed: 0,
+            openers: 0,
+        }
+    }
+}
+
+/// What kind of container a block is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    /// Chests and copper chests.
+    Chest,
+    /// Trapped chests.
+    TrappedChest,
+    /// Barrels.
+    Barrel,
+    /// Shulker boxes.
+    ShulkerBox,
+    /// Dispensers.
+    Dispenser,
+    /// Droppers.
+    Dropper,
+    /// Hoppers.
+    Hopper,
+    /// Ender chests (the stacks are the player's).
+    EnderChest,
+    /// Furnaces, blast furnaces, smokers.
+    Furnace(CookingKind),
+    /// Crafting tables (no block entity).
+    CraftingTable,
+    /// Stonecutters.
+    Stonecutter,
+    /// Anvils (all damage stages).
+    Anvil,
+    /// Grindstones.
+    Grindstone,
+    /// Smithing tables.
+    SmithingTable,
+    /// Brewing stands.
+    BrewingStand,
+    /// Enchanting tables (their block entity only animates the book).
+    EnchantingTable,
+}
+
+/// The container kind of a block.
+pub fn kind_of(block: BlockId) -> Option<Kind> {
+    Some(match block.info().kind {
+        BlockKind::ChestBlock
+        | BlockKind::CopperChestBlock
+        | BlockKind::WeatheringCopperChestBlock => Kind::Chest,
+        BlockKind::TrappedChestBlock => Kind::TrappedChest,
+        BlockKind::BarrelBlock => Kind::Barrel,
+        BlockKind::ShulkerBoxBlock => Kind::ShulkerBox,
+        BlockKind::DispenserBlock => Kind::Dispenser,
+        BlockKind::DropperBlock => Kind::Dropper,
+        BlockKind::HopperBlock => Kind::Hopper,
+        BlockKind::EnderChestBlock => Kind::EnderChest,
+        BlockKind::FurnaceBlock => Kind::Furnace(CookingKind::Smelting),
+        BlockKind::BlastFurnaceBlock => Kind::Furnace(CookingKind::Blasting),
+        BlockKind::SmokerBlock => Kind::Furnace(CookingKind::Smoking),
+        BlockKind::CraftingTableBlock => Kind::CraftingTable,
+        BlockKind::StonecutterBlock => Kind::Stonecutter,
+        BlockKind::AnvilBlock => Kind::Anvil,
+        BlockKind::GrindstoneBlock => Kind::Grindstone,
+        BlockKind::SmithingTableBlock => Kind::SmithingTable,
+        BlockKind::BrewingStandBlock => Kind::BrewingStand,
+        BlockKind::EnchantingTableBlock => Kind::EnchantingTable,
+        _ => return None,
+    })
+}
+
+/// Slots of a [`Container`] block entity kind.
+pub fn size_of(kind: Kind) -> usize {
+    match kind {
+        Kind::Chest | Kind::TrappedChest | Kind::Barrel | Kind::ShulkerBox | Kind::EnderChest => 27,
+        Kind::Dispenser | Kind::Dropper => 9,
+        Kind::Hopper => 5,
+        Kind::Furnace(_) => 3,
+        Kind::BrewingStand => 5,
+        Kind::CraftingTable
+        | Kind::Stonecutter
+        | Kind::Anvil
+        | Kind::Grindstone
+        | Kind::SmithingTable
+        | Kind::EnchantingTable => 0,
+    }
+}
+
+/// The new block entity of a container block (`newBlockEntity`).
+pub fn new_block_entity(block: BlockId) -> Option<BlockEntity> {
+    Some(match kind_of(block)? {
+        Kind::EnderChest => BlockEntity::EnderChest { openers: 0 },
+        Kind::Furnace(kind) => BlockEntity::Furnace(Box::new(super::furnace::Furnace::new(kind))),
+        Kind::BrewingStand => BlockEntity::BrewingStand(Box::default()),
+        Kind::Hopper
+        | Kind::CraftingTable
+        | Kind::Stonecutter
+        | Kind::Anvil
+        | Kind::Grindstone
+        | Kind::SmithingTable
+        | Kind::EnchantingTable => return None,
+        kind => BlockEntity::Container(Box::new(Container::new(size_of(kind)))),
+    })
+}
+
+/// Fills the behaviours of the container blocks.
+pub(super) fn fill(block: BlockId, b: &mut BlockBehaviour) {
+    let Some(kind) = kind_of(block) else {
+        return;
+    };
+    b.use_without_item = Some(use_without_item);
+    match kind {
+        Kind::Chest | Kind::TrappedChest | Kind::EnderChest | Kind::ShulkerBox => {
+            b.trigger_event = Some(trigger_event);
+        }
+        _ => {}
+    }
+    match kind {
+        Kind::Chest
+        | Kind::TrappedChest
+        | Kind::Barrel
+        | Kind::ShulkerBox
+        | Kind::Furnace(_)
+        | Kind::BrewingStand => {
+            b.affect_neighbors_after_removal = Some(super::dispenser::container_removed);
+            b.analog_output = Some(super::dispenser::container_signal);
+        }
+        _ => {}
+    }
+    if kind == Kind::TrappedChest {
+        b.signal = Some(trapped_chest_signal);
+        b.direct_signal = Some(trapped_chest_direct_signal);
+    }
+}
+
+/// `TrappedChestBlock.getSignal`: the number of viewers, at most 15.
+fn trapped_chest_signal(level: &Level, _: BlockState, pos: BlockPos, _: Direction) -> i32 {
+    match level.block_entity(pos) {
+        Some(BlockEntity::Container(c)) => c.openers.clamp(0, 15),
+        _ => 0,
+    }
+}
+
+/// `TrappedChestBlock.getDirectSignal`: only up.
+fn trapped_chest_direct_signal(
+    level: &Level,
+    state: BlockState,
+    pos: BlockPos,
+    d: Direction,
+) -> i32 {
+    if d == Direction::Up {
+        trapped_chest_signal(level, state, pos, d)
+    } else {
+        0
+    }
+}
+
+/// `triggerEvent(1, count)` of chests, ender chests and shulker boxes: the lid animation goes
+/// to the clients.
+fn trigger_event(level: &mut Level, _: BlockState, pos: BlockPos, a: i32, _: i32) -> bool {
+    a == 1 && level.block_entity(pos).is_some()
+}
+
+/// `useWithoutItem` of every container block: the menu opens (`player.openMenu`).
+fn use_without_item(
+    level: &mut Level,
+    state: BlockState,
+    pos: BlockPos,
+    context: &UseContext,
+) -> Interaction {
+    if let Some(request) = menu_provider(level, state, pos) {
+        level.request_menu(MenuRequest {
+            player: Some(context.player),
+            ..request
+        });
+    }
+    Interaction::Success
+}
+
+/// The text component of a translation key.
+fn title(key: &str) -> Component {
+    Component::translatable(key, vec![])
+}
+
+/// `getMenuProvider(state, level, pos)`: the menu a block opens, `None` if it cannot open
+/// now (blocked chests and shulker boxes). Spectators open menus through this directly.
+pub fn menu_provider(level: &Level, state: BlockState, pos: BlockPos) -> Option<MenuRequest> {
+    let kind = kind_of(state.block())?;
+    let named = |default: &str| -> Component {
+        match level.block_entity(pos) {
+            Some(BlockEntity::Container(c)) => c.custom_name.clone(),
+            Some(BlockEntity::Hopper(h)) => h.custom_name.clone(),
+            Some(BlockEntity::Furnace(f)) => f.custom_name.clone(),
+            Some(BlockEntity::BrewingStand(b)) => b.custom_name.clone(),
+            _ => None,
+        }
+        .unwrap_or_else(|| title(default))
+    };
+    let request = |menu: MenuKind, storage: Storage, title: Component| MenuRequest {
+        player: None,
+        menu,
+        storage,
+        title,
+        pos,
+        block: state.block(),
+    };
+    match kind {
+        Kind::Chest | Kind::TrappedChest => {
+            if !matches!(level.block_entity(pos), Some(BlockEntity::Container(_)))
+                || chest_blocked(level, pos)
+            {
+                return None;
+            }
+            match double_chest_partner(level, state, pos) {
+                Some(other) => {
+                    if chest_blocked(level, other) {
+                        return None;
+                    }
+                    // `FIRST` (the right half) holds slots 0–26.
+                    let right_first = state.value("type") == Some("right");
+                    let (first, second) = if right_first {
+                        (pos, other)
+                    } else {
+                        (other, pos)
+                    };
+                    let name = |p: BlockPos| match level.block_entity(p) {
+                        Some(BlockEntity::Container(c)) => c.custom_name.clone(),
+                        _ => None,
+                    };
+                    let title = name(first)
+                        .or_else(|| name(second))
+                        .unwrap_or_else(|| self::title("container.chestDouble"));
+                    Some(request(
+                        MenuKind::Generic { rows: 6 },
+                        Storage::Double(first, second),
+                        title,
+                    ))
+                }
+                None => Some(request(
+                    MenuKind::Generic { rows: 3 },
+                    Storage::Block(pos),
+                    named("container.chest"),
+                )),
+            }
+        }
+        Kind::Barrel => Some(request(
+            MenuKind::Generic { rows: 3 },
+            Storage::Block(pos),
+            named("container.barrel"),
+        )),
+        Kind::ShulkerBox => {
+            let Some(BlockEntity::Container(c)) = level.block_entity(pos) else {
+                return None;
+            };
+            if c.openers == 0 && shulker_lid_blocked(level, state, pos) {
+                return None;
+            }
+            Some(request(
+                MenuKind::ShulkerBox,
+                Storage::Block(pos),
+                named("container.shulkerBox"),
+            ))
+        }
+        Kind::Dispenser => Some(request(
+            MenuKind::Dispenser,
+            Storage::Block(pos),
+            named("container.dispenser"),
+        )),
+        Kind::Dropper => Some(request(
+            MenuKind::Dispenser,
+            Storage::Block(pos),
+            named("container.dropper"),
+        )),
+        Kind::Hopper => Some(request(
+            MenuKind::Hopper,
+            Storage::Block(pos),
+            named("container.hopper"),
+        )),
+        Kind::EnderChest => {
+            if !matches!(
+                level.block_entity(pos),
+                Some(BlockEntity::EnderChest { .. })
+            ) {
+                return None;
+            }
+            let above = pos.above();
+            if Level::is_redstone_conductor(level.block(above)) {
+                return None;
+            }
+            Some(request(
+                MenuKind::Generic { rows: 3 },
+                Storage::Ender(pos),
+                title("container.enderchest"),
+            ))
+        }
+        Kind::Furnace(cooking) => {
+            let key = match cooking {
+                CookingKind::Blasting => "container.blast_furnace",
+                CookingKind::Smoking => "container.smoker",
+                _ => "container.furnace",
+            };
+            Some(request(
+                MenuKind::Furnace(cooking),
+                Storage::Block(pos),
+                named(key),
+            ))
+        }
+        Kind::CraftingTable => Some(request(
+            MenuKind::Crafting,
+            Storage::Local,
+            title("container.crafting"),
+        )),
+        Kind::EnchantingTable => Some(request(
+            MenuKind::Enchantment,
+            Storage::Local,
+            title("container.enchant"),
+        )),
+        Kind::BrewingStand => Some(request(
+            MenuKind::BrewingStand,
+            Storage::Block(pos),
+            named("container.brewing"),
+        )),
+        Kind::Stonecutter => Some(request(
+            MenuKind::Stonecutter,
+            Storage::Local,
+            title("container.stonecutter"),
+        )),
+        Kind::Anvil => Some(request(
+            MenuKind::Anvil,
+            Storage::Local,
+            title("container.repair"),
+        )),
+        Kind::Grindstone => Some(request(
+            MenuKind::Grindstone,
+            Storage::Local,
+            title("container.grindstone_title"),
+        )),
+        Kind::SmithingTable => Some(request(
+            MenuKind::Smithing,
+            Storage::Local,
+            title("container.upgrade"),
+        )),
+    }
+}
+
+/// `Direction.getClockWise` (around Y).
+fn clockwise(d: Direction) -> Direction {
+    match d {
+        Direction::North => Direction::East,
+        Direction::East => Direction::South,
+        Direction::South => Direction::West,
+        Direction::West => Direction::North,
+        other => other,
+    }
+}
+
+/// `ChestBlock.isChestBlockedAt`: a redstone conductor above (cats are not checked).
+fn chest_blocked(level: &Level, pos: BlockPos) -> bool {
+    let above = pos.above();
+    Level::is_redstone_conductor(level.block(above))
+}
+
+/// The other half of a double chest (`ChestBlock.getConnectedBlockPos`), if it is there.
+pub fn double_chest_partner(level: &Level, state: BlockState, pos: BlockPos) -> Option<BlockPos> {
+    let kind = state.value("type")?;
+    if kind == "single" {
+        return None;
+    }
+    let facing = state.direction("facing")?;
+    let connected = if kind == "left" {
+        clockwise(facing)
+    } else {
+        clockwise(facing).opposite()
+    };
+    let other = pos.relative(connected);
+    let other_state = level.block(other);
+    (other_state.block() == state.block()
+        && other_state.value("type") != Some("single")
+        && other_state.value("type") != Some(kind)
+        && matches!(level.block_entity(other), Some(BlockEntity::Container(_))))
+    .then_some(other)
+}
+
+/// `ShulkerBoxBlock.canOpen` for a closed box: the half block the lid opens into must be
+/// free of block collisions.
+fn shulker_lid_blocked(level: &Level, state: BlockState, pos: BlockPos) -> bool {
+    let facing = state.direction("facing").unwrap_or(Direction::Up);
+    let [dx, dy, dz] = facing.normal();
+    let (x, y, z) = (f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
+    // `Shulker.getProgressDeltaAabb(1, facing, 0, 0.5)`: the block box moved 0–0.5 blocks
+    // in `facing`, minus the box itself, deflated by 1e-6.
+    let e = 1.0e-6;
+    let span = |d: i32| match d {
+        1 => (1.0, 1.5),
+        -1 => (-0.5, 0.0),
+        _ => (0.0, 1.0),
+    };
+    let (x0, x1) = span(dx);
+    let (y0, y1) = span(dy);
+    let (z0, z1) = span(dz);
+    let min = (x0, y0, z0);
+    let max = (x1, y1, z1);
+    let lid = Aabb::new(
+        x + min.0 + e,
+        y + min.1 + e,
+        z + min.2 + e,
+        x + max.0 - e,
+        y + max.1 - e,
+        z + max.2 - e,
+    );
+    let other = pos.relative(facing);
+    let other_state = level.block(other);
+    let (ox, oy, oz) = (f64::from(other.x), f64::from(other.y), f64::from(other.z));
+    other_state.collision_shape().iter().any(|b| {
+        Aabb::new(
+            b[0] + ox,
+            b[1] + oy,
+            b[2] + oz,
+            b[3] + ox,
+            b[4] + oy,
+            b[5] + oz,
+        )
+        .intersects(&lid)
+    })
+}
+
+// --- Stacks ----------------------------------------------------------------------------------
+
+/// The stacks of the container block entity at `pos`.
+pub fn items(level: &Level, pos: BlockPos) -> Option<&[ItemStack]> {
+    match level.block_entity(pos)? {
+        BlockEntity::Container(c) => Some(&c.items),
+        BlockEntity::Hopper(h) => Some(&h.items),
+        BlockEntity::Furnace(f) => Some(&f.items),
+        BlockEntity::BrewingStand(b) => Some(&b.items),
+        _ => None,
+    }
+}
+
+/// The stacks of the container block entity at `pos`, mutably.
+pub fn items_mut(level: &mut Level, pos: BlockPos) -> Option<&mut [ItemStack]> {
+    match level.block_entity_mut(pos)? {
+        BlockEntity::Container(c) => Some(&mut c.items),
+        BlockEntity::Hopper(h) => Some(&mut h.items),
+        BlockEntity::Furnace(f) => Some(&mut f.items),
+        BlockEntity::BrewingStand(b) => Some(&mut b.items),
+        _ => None,
+    }
+}
+
+/// `BlockEntity.setChanged`: comparators next to the container read it again.
+pub fn set_changed(level: &mut Level, pos: BlockPos) {
+    let state = level.block(pos);
+    if !state.is_air() {
+        level.update_neighbour_for_output_signal(pos, state.block());
+    }
+}
+
+/// `BlockEntity.preRemoveSideEffects` of containers: the stacks drop (`Containers
+/// .dropContents`); shulker boxes keep theirs (their item carries them); furnaces also pop
+/// the experience of their recipes.
+pub fn pre_remove_side_effects(level: &mut Level, pos: BlockPos, entity: &BlockEntity) {
+    let items: &[ItemStack] = match entity {
+        BlockEntity::Container(c) => {
+            if kind_of(level.block(pos).block()) == Some(Kind::ShulkerBox) {
+                return;
+            }
+            &c.items
+        }
+        BlockEntity::Hopper(h) => &h.items,
+        BlockEntity::Furnace(f) => &f.items,
+        BlockEntity::BrewingStand(b) => &b.items,
+        _ => return,
+    };
+    let items: Vec<ItemStack> = items.iter().filter(|s| !s.is_empty()).cloned().collect();
+    for stack in items {
+        drop_item_stack(level, pos, stack);
+    }
+}
+
+/// `Containers.dropItemStack` at the block: the stack splits into item entities of 10–30
+/// items.
+pub fn drop_item_stack(level: &mut Level, pos: BlockPos, mut stack: ItemStack) {
+    // `EntityTypes.ITEM` is 0.25 wide.
+    let size = 0.25;
+    let center_range = 1.0 - size;
+    let half = size / 2.0;
+    let xo = f64::from(pos.x) + level.random().next_double() * center_range + half;
+    let yo = f64::from(pos.y) + level.random().next_double() * center_range;
+    let zo = f64::from(pos.z) + level.random().next_double() * center_range + half;
+    while !stack.is_empty() {
+        let n = level.random().next_int_bounded(21) + 10;
+        let part = stack.split(n);
+        // `new ItemEntity(level, x, y, z, stack)` draws a velocity, replaced right after.
+        level.random().next_double();
+        level.random().next_double();
+        let triangle = |level: &mut Level, mode: f64| {
+            let a = level.random().next_double();
+            let b = level.random().next_double();
+            mode + 0.114_850_001_711_398_36 * (a - b)
+        };
+        let vx = triangle(level, 0.0);
+        let vy = triangle(level, 0.2);
+        let vz = triangle(level, 0.0);
+        super::drops::spawn_item(
+            level,
+            Vec3::new(xo, yo, zo),
+            part,
+            Vec3::new(vx, vy, vz),
+            0,
+            None,
+        );
+    }
+}
+
+// --- Container access (hoppers, droppers) ---------------------------------------------------
+
+/// A block container as `HopperBlockEntity.getContainerAt` sees it: one block entity or a
+/// double chest (`CompoundContainer`, first half first).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContainerRef {
+    /// One block entity.
+    Block(BlockPos),
+    /// Both halves of a double chest.
+    Double(BlockPos, BlockPos),
+}
+
+impl ContainerRef {
+    /// `getBlockContainer`: the container of the block at `pos` (a chest with its other
+    /// half, ignoring whether it is blocked).
+    pub fn at(level: &Level, pos: BlockPos) -> Option<ContainerRef> {
+        let state = level.block(pos);
+        items(level, pos)?;
+        if matches!(
+            kind_of(state.block()),
+            Some(Kind::Chest | Kind::TrappedChest)
+        ) && let Some(other) = double_chest_partner(level, state, pos)
+        {
+            return Some(if state.value("type") == Some("right") {
+                ContainerRef::Double(pos, other)
+            } else {
+                ContainerRef::Double(other, pos)
+            });
+        }
+        Some(ContainerRef::Block(pos))
+    }
+
+    fn locate(self, level: &Level, slot: usize) -> Option<(BlockPos, usize)> {
+        match self {
+            ContainerRef::Block(p) => Some((p, slot)),
+            ContainerRef::Double(a, b) => {
+                let first = items(level, a).map_or(0, <[ItemStack]>::len);
+                if slot < first {
+                    Some((a, slot))
+                } else {
+                    Some((b, slot - first))
+                }
+            }
+        }
+    }
+
+    /// `getContainerSize`.
+    pub fn size(self, level: &Level) -> usize {
+        match self {
+            ContainerRef::Block(p) => items(level, p).map_or(0, <[ItemStack]>::len),
+            ContainerRef::Double(a, b) => {
+                items(level, a).map_or(0, <[ItemStack]>::len)
+                    + items(level, b).map_or(0, <[ItemStack]>::len)
+            }
+        }
+    }
+
+    /// `getItem(slot)`.
+    pub fn get(self, level: &Level, slot: usize) -> ItemStack {
+        self.locate(level, slot)
+            .and_then(|(p, i)| items(level, p)?.get(i).cloned())
+            .unwrap_or_default()
+    }
+
+    /// The stack of a slot for in-place changes.
+    pub fn get_mut(self, level: &mut Level, slot: usize) -> Option<&mut ItemStack> {
+        let (p, i) = self.locate(level, slot)?;
+        items_mut(level, p)?.get_mut(i)
+    }
+
+    /// `setItem(slot, stack)` (a furnace's input restarts its cooking).
+    pub fn set(self, level: &mut Level, slot: usize, stack: ItemStack) {
+        let Some((p, i)) = self.locate(level, slot) else {
+            return;
+        };
+        if let Some(BlockEntity::Furnace(f)) = level.block_entity_mut(p) {
+            f.set_item(i, stack);
+        } else if let Some(target) = items_mut(level, p).and_then(|items| items.get_mut(i)) {
+            *target = stack;
+        }
+    }
+
+    /// `setChanged`.
+    pub fn set_changed(self, level: &mut Level) {
+        match self {
+            ContainerRef::Block(p) => set_changed(level, p),
+            ContainerRef::Double(a, b) => {
+                set_changed(level, a);
+                set_changed(level, b);
+            }
+        }
+    }
+
+    /// `isEmpty`.
+    pub fn is_empty(self, level: &Level) -> bool {
+        (0..self.size(level)).all(|i| self.get(level, i).is_empty())
+    }
+
+    /// The hopper at the position, if this is one.
+    pub fn hopper(self) -> Option<BlockPos> {
+        match self {
+            ContainerRef::Block(p) => Some(p),
+            ContainerRef::Double(..) => None,
+        }
+    }
+
+    /// `getSlotsForFace` (`WorldlyContainer`; all slots otherwise).
+    pub fn slots_for_face(self, level: &Level, face: Direction) -> Vec<usize> {
+        if let ContainerRef::Block(p) = self {
+            match level.block_entity(p) {
+                Some(BlockEntity::Furnace(_)) => {
+                    return match face {
+                        Direction::Up => vec![0],
+                        Direction::Down => vec![2, 1],
+                        _ => vec![1],
+                    };
+                }
+                Some(BlockEntity::BrewingStand(_)) => {
+                    return match face {
+                        Direction::Up => vec![3],
+                        Direction::Down => vec![0, 1, 2, 3],
+                        _ => vec![0, 1, 2, 4],
+                    };
+                }
+                _ => {}
+            }
+        }
+        (0..self.size(level)).collect()
+    }
+
+    /// `canPlaceItem` and `canPlaceItemThroughFace`.
+    pub fn can_place(self, level: &Level, slot: usize, stack: &ItemStack) -> bool {
+        let Some((p, i)) = self.locate(level, slot) else {
+            return false;
+        };
+        match level.block_entity(p) {
+            Some(BlockEntity::Furnace(f)) => crate::player::play::game_data()
+                .is_some_and(|d| f.can_place_item(i, stack, &d.recipes)),
+            Some(BlockEntity::BrewingStand(b)) => b.can_place_item(i, stack),
+            Some(BlockEntity::Container(_))
+                if kind_of(level.block(p).block()) == Some(Kind::ShulkerBox) =>
+            {
+                !crate::menu::container::is_shulker_box(stack)
+            }
+            _ => true,
+        }
+    }
+
+    /// `canTakeItem` and `canTakeItemThroughFace`.
+    pub fn can_take(self, level: &Level, slot: usize, stack: &ItemStack, face: Direction) -> bool {
+        let Some((p, i)) = self.locate(level, slot) else {
+            return false;
+        };
+        match level.block_entity(p) {
+            Some(BlockEntity::Furnace(_)) => {
+                let id = crate::item::item_id(stack);
+                face != Direction::Down
+                    || i != 1
+                    || id == vanillite_data::item::ids::WATER_BUCKET
+                    || id == vanillite_data::item::ids::BUCKET
+            }
+            Some(BlockEntity::BrewingStand(_)) => {
+                i != 3 || crate::item::item_id(stack) == vanillite_data::item::ids::GLASS_BOTTLE
+            }
+            _ => true,
+        }
+    }
+}
+
+// --- Viewers ---------------------------------------------------------------------------------
+
+/// `startOpen(player)`: one more viewer (spectators are not counted).
+pub fn start_open(level: &mut Level, pos: BlockPos, spectator: bool) {
+    if spectator {
+        return;
+    }
+    let state = level.block(pos);
+    match level.block_entity_mut(pos) {
+        Some(BlockEntity::Container(c)) => {
+            let previous = c.openers;
+            c.openers += 1;
+            let current = c.openers;
+            openers_changed(level, state, pos, previous, current);
+        }
+        Some(BlockEntity::EnderChest { openers }) => {
+            let previous = *openers;
+            *openers += 1;
+            let current = *openers;
+            openers_changed(level, state, pos, previous, current);
+        }
+        _ => {}
+    }
+}
+
+/// `stopOpen(player)`: one viewer less.
+pub fn stop_open(level: &mut Level, pos: BlockPos, spectator: bool) {
+    if spectator {
+        return;
+    }
+    let state = level.block(pos);
+    match level.block_entity_mut(pos) {
+        Some(BlockEntity::Container(c)) if c.openers > 0 => {
+            let previous = c.openers;
+            c.openers -= 1;
+            let current = c.openers;
+            openers_changed(level, state, pos, previous, current);
+        }
+        Some(BlockEntity::EnderChest { openers }) if *openers > 0 => {
+            let previous = *openers;
+            *openers -= 1;
+            let current = *openers;
+            openers_changed(level, state, pos, previous, current);
+        }
+        _ => {}
+    }
+}
+
+/// `onOpen` / `onClose` / `openerCountChanged` of the kinds that count viewers.
+fn openers_changed(
+    level: &mut Level,
+    state: BlockState,
+    pos: BlockPos,
+    previous: i32,
+    current: i32,
+) {
+    let Some(kind) = kind_of(state.block()) else {
+        return;
+    };
+    let opened = previous == 0 && current > 0;
+    let closed = previous > 0 && current == 0;
+    let events = crate::level::game_event::events();
+    if opened {
+        level.game_event_at(None, events.container_open, pos);
+    } else if closed {
+        level.game_event_at(None, events.container_close, pos);
+    }
+    match kind {
+        Kind::Chest | Kind::TrappedChest => {
+            if opened || closed {
+                chest_sound(level, state, pos, opened);
+            }
+            level.block_event(pos, state.block(), 1, current);
+            if kind == Kind::TrappedChest && previous != current {
+                level.update_neighbors_at(pos, state.block());
+                level.update_neighbors_at(pos.below(), state.block());
+            }
+        }
+        Kind::EnderChest => {
+            if opened || closed {
+                let sound = if opened {
+                    "block.ender_chest.open"
+                } else {
+                    "block.ender_chest.close"
+                };
+                let pitch = level.random().next_float() * 0.1 + 0.9;
+                level.play_block_sound(None, pos, sound_id(sound), BLOCKS, 0.5, pitch);
+            }
+            level.block_event(pos, state.block(), 1, current);
+        }
+        Kind::Barrel => {
+            if opened || closed {
+                let facing = state.direction("facing").unwrap_or(Direction::North);
+                let [dx, dy, dz] = facing.normal();
+                let sound = if opened {
+                    "block.barrel.open"
+                } else {
+                    "block.barrel.close"
+                };
+                let pitch = level.random().next_float() * 0.1 + 0.9;
+                level.play_sound(
+                    None,
+                    f64::from(pos.x) + 0.5 + f64::from(dx) / 2.0,
+                    f64::from(pos.y) + 0.5 + f64::from(dy) / 2.0,
+                    f64::from(pos.z) + 0.5 + f64::from(dz) / 2.0,
+                    sound_id(sound),
+                    BLOCKS,
+                    0.5,
+                    pitch,
+                );
+                level.set_block_and_update(pos, state.set_flag("open", opened));
+            }
+        }
+        Kind::ShulkerBox => {
+            level.block_event(pos, state.block(), 1, current);
+            if opened || closed {
+                let sound = if opened {
+                    "block.shulker_box.open"
+                } else {
+                    "block.shulker_box.close"
+                };
+                let pitch = level.random().next_float() * 0.1 + 0.9;
+                level.play_block_sound(None, pos, sound_id(sound), BLOCKS, 0.5, pitch);
+            }
+            if closed {
+                level.update_neighbors_at(pos, state.block());
+            }
+        }
+        _ => {}
+    }
+}
+
+/// `ChestBlockEntity.playSound`: once per double chest, between the halves.
+fn chest_sound(level: &mut Level, state: BlockState, pos: BlockPos, open: bool) {
+    let kind = state.value("type").unwrap_or("single");
+    if kind == "left" {
+        return;
+    }
+    let mut x = f64::from(pos.x) + 0.5;
+    let y = f64::from(pos.y) + 0.5;
+    let mut z = f64::from(pos.z) + 0.5;
+    if kind == "right"
+        && let Some(facing) = state.direction("facing")
+    {
+        let [dx, _, dz] = clockwise(facing).opposite().normal();
+        x += f64::from(dx) * 0.5;
+        z += f64::from(dz) * 0.5;
+    }
+    let name = state.block().name();
+    let base = if name.contains("copper_chest") {
+        if name.contains("weathered") {
+            "block.copper_chest_weathered"
+        } else if name.contains("oxidized") {
+            "block.copper_chest_oxidized"
+        } else {
+            "block.copper_chest"
+        }
+    } else {
+        "block.chest"
+    };
+    let sound = format!("{base}.{}", if open { "open" } else { "close" });
+    let pitch = level.random().next_float() * 0.1 + 0.9;
+    level.play_sound(None, x, y, z, sound_id(&sound), BLOCKS, 0.5, pitch);
+}
+
+// --- Components ----------------------------------------------------------------------------
+
+/// `BlockEntity.collectComponents` of containers: the component `id` the block entity puts on
+/// its item (`custom_name`, `container`), as a wire value.
+pub fn component(entity: &BlockEntity, id: u16) -> Option<Box<[u8]>> {
+    use vanillite_protocol::codec::Encode;
+    use vanillite_protocol::components::ids;
+    let (name, items): (&Option<Component>, &[ItemStack]) = match entity {
+        BlockEntity::Container(c) => (&c.custom_name, &c.items),
+        BlockEntity::Hopper(h) => (&h.custom_name, &h.items),
+        BlockEntity::Furnace(f) => (&f.custom_name, &f.items),
+        BlockEntity::BrewingStand(b) => (&b.custom_name, &b.items),
+        _ => return None,
+    };
+    if id == ids::CUSTOM_NAME {
+        let mut out = Vec::new();
+        name.as_ref()?.encode(&mut out);
+        return Some(out.into_boxed_slice());
+    }
+    if id == ids::CONTAINER {
+        // `ItemContainerContents.fromItems`: up to the last non-empty slot; nothing if empty
+        // (the item's default).
+        let last = items.iter().rposition(|s| !s.is_empty())?;
+        let mut out = Vec::new();
+        vanillite_protocol::codec::write_varint(&mut out, i32::try_from(last + 1).ok()?);
+        for stack in items.get(..=last)? {
+            stack.encode(&mut out);
+        }
+        return Some(out.into_boxed_slice());
+    }
+    None
+}
+
+/// `BlockEntity.applyComponentsFromItemStack` of containers (a placed block item): its
+/// `custom_name` and `container`.
+pub fn apply_item_components(level: &mut Level, pos: BlockPos, stack: &ItemStack) {
+    use vanillite_protocol::components::ids;
+    let name = stack.component(ids::CUSTOM_NAME).and_then(|bytes| {
+        let mut r = vanillite_protocol::codec::Reader::new(bytes);
+        <Component as vanillite_protocol::codec::DecodeLimited>::decode_limited(&mut r, 2_097_152)
+            .ok()
+    });
+    let contents: Option<Vec<ItemStack>> = stack.component(ids::CONTAINER).and_then(|bytes| {
+        let mut r = vanillite_protocol::codec::Reader::new(bytes);
+        let n = r.len_prefix("container", 256, 1).ok()?;
+        let mut items = Vec::with_capacity(n);
+        for _ in 0..n {
+            items.push(
+                ItemStack::decode_untrusted(&mut r, &vanillite_protocol::item::InstalledRegistries)
+                    .ok()?,
+            );
+        }
+        Some(items)
+    });
+    let (target_name, target_items): (&mut Option<Component>, &mut [ItemStack]) =
+        match level.block_entity_mut(pos) {
+            Some(BlockEntity::Container(c)) => (&mut c.custom_name, &mut c.items),
+            Some(BlockEntity::Hopper(h)) => (&mut h.custom_name, &mut h.items),
+            Some(BlockEntity::Furnace(f)) => (&mut f.custom_name, &mut f.items),
+            Some(BlockEntity::BrewingStand(b)) => (&mut b.custom_name, &mut b.items),
+            _ => return,
+        };
+    if name.is_some() {
+        *target_name = name;
+    }
+    if let Some(contents) = contents {
+        for (slot, stack) in target_items.iter_mut().zip(contents) {
+            *slot = stack;
+        }
+    }
+}
+
+/// `ShulkerBoxBlock.playerWillDestroy` for a creative player: a box with contents drops as
+/// an item with them.
+pub fn creative_shulker_drop(
+    level: &mut Level,
+    pos: BlockPos,
+    state: BlockState,
+    entity: &BlockEntity,
+) {
+    use vanillite_protocol::components::ids;
+    let BlockEntity::Container(c) = entity else {
+        return;
+    };
+    if kind_of(state.block()) != Some(Kind::ShulkerBox) || c.items.iter().all(ItemStack::is_empty) {
+        return;
+    }
+    let item = state.block().info().item;
+    if item == u16::MAX {
+        return;
+    }
+    let mut stack = ItemStack::new(item, 1);
+    for id in [ids::CUSTOM_NAME, ids::CONTAINER] {
+        if let Some(value) = component(entity, id) {
+            stack.patch_mut().set(id, value);
+        }
+    }
+    let velocity = super::drops::default_velocity(level);
+    super::drops::spawn_item(
+        level,
+        super::furnace::center(pos),
+        stack,
+        velocity,
+        10,
+        None,
+    );
+}
+
+// --- Persistence -----------------------------------------------------------------------------
+
+/// `ContainerHelper.saveAllItems`: the non-empty stacks with their slot.
+pub fn save_items(items: &[ItemStack], out: &mut Compound) {
+    let mut list = List::new();
+    for (i, stack) in items.iter().enumerate() {
+        if stack.is_empty() {
+            continue;
+        }
+        let mut c = crate::inventory::stack_to_nbt(stack);
+        c.insert("Slot", i8::try_from(i).unwrap_or(0));
+        list.0.push(Tag::Compound(c));
+    }
+    if !list.0.is_empty() {
+        out.insert("Items", list);
+    }
+}
+
+/// `ContainerHelper.loadAllItems`.
+pub fn load_items(nbt: &Compound, items: &mut [ItemStack]) {
+    let Some(Tag::List(list)) = nbt.get("Items") else {
+        return;
+    };
+    for tag in &list.0 {
+        let Some(c) = tag.as_compound() else {
+            continue;
+        };
+        let slot = c.get("Slot").and_then(Tag::as_i64).unwrap_or(-1);
+        // `Slot` is an unsigned byte.
+        let slot = slot & 255;
+        if let Some(target) = usize::try_from(slot).ok().and_then(|s| items.get_mut(s)) {
+            *target = crate::inventory::stack_from_nbt(c);
+        }
+    }
+}
+
+/// Reads `CustomName`.
+pub fn load_name(nbt: &Compound) -> Option<Component> {
+    nbt.get("CustomName").map(Component::from_nbt)
+}
+
+/// Writes `CustomName`.
+pub fn save_name(name: &Option<Component>, out: &mut Compound) {
+    if let Some(name) = name {
+        out.insert("CustomName", name.to_nbt());
+    }
+}
+
+impl Container {
+    /// Loads the stored fields. A container whose loot table was not rolled yet keeps it
+    /// (chest loot is not generated yet); stacks stored next to it are kept as well.
+    pub fn load(&mut self, nbt: &Compound) {
+        self.custom_name = load_name(nbt);
+        if let Some(Tag::String(table)) = nbt.get("LootTable") {
+            self.loot_table = Some(table.clone());
+            self.loot_seed = nbt.get("LootTableSeed").and_then(Tag::as_i64).unwrap_or(0);
+        }
+        load_items(nbt, &mut self.items);
+    }
+
+    /// Saves the stored fields.
+    pub fn save(&self, out: &mut Compound) {
+        save_name(&self.custom_name, out);
+        if let Some(table) = &self.loot_table {
+            out.insert("LootTable", Tag::String(table.clone()));
+            if self.loot_seed != 0 {
+                out.insert("LootTableSeed", Tag::Long(self.loot_seed));
+            }
+        }
+        save_items(&self.items, out);
+    }
+}

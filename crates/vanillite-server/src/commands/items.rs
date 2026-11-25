@@ -487,7 +487,7 @@ fn clear_player(
         }
     }
     inventory.craft.iter_mut().for_each(&mut take);
-    take(&mut inventory.carried);
+    take(&mut inventory.menu.carried);
     if !counting {
         sync_inventory(entities, id);
     }
@@ -590,7 +590,7 @@ fn slot_get(entities: &Entities, id: EntityId, slot: EntitySlot) -> ItemStack {
     let stack = match slot {
         EntitySlot::ItemEntity => entities.item(id).map(|i| &i.stack),
         EntitySlot::Inventory(i) => entities.player(id).map(|p| p.inventory.get(i)),
-        EntitySlot::Cursor => entities.player(id).map(|p| &p.inventory.carried),
+        EntitySlot::Cursor => entities.player(id).map(|p| &p.inventory.menu.carried),
         EntitySlot::Craft(i) => entities.player(id).and_then(|p| p.inventory.craft.get(i)),
     };
     stack.cloned().unwrap_or_default()
@@ -621,7 +621,7 @@ fn slot_set(entities: &mut Entities, id: EntityId, slot: EntitySlot, stack: Item
             inventory.get_mut(i)
         }
         EntitySlot::Inventory(i) => inventory.get_mut(i),
-        EntitySlot::Cursor => Some(&mut inventory.carried),
+        EntitySlot::Cursor => Some(&mut inventory.menu.carried),
         EntitySlot::Craft(i) => inventory.craft.get_mut(i),
         EntitySlot::ItemEntity => None,
     };

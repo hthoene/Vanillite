@@ -220,6 +220,8 @@ impl ServerBuilder {
             return Err(StartError::Eula);
         }
 
+        // Plugins load first: they register commands, events and slot providers.
+        let plugins = crate::plugins::load(&dir, &config);
         let parallel = config.server.tick.parallel_dimensions;
         let busy_tick_threads = if parallel { DIMENSIONS.len() } else { 1 };
         let workers = match config.server.threads.compute {
@@ -302,14 +304,35 @@ impl ServerBuilder {
         });
         slot("chunk-storage", &origin);
         let terrains = crate::world_setup::GeneratorsByDimension::default();
-        let (generator_provider, origin) = self.chunk_generator.take().unwrap_or_else(|| {
-            let generators = crate::world_setup::BuiltInGenerators {
-                packs: packs.clone(),
-                world_gen: prepared.world_gen,
-                created: Arc::clone(&terrains),
+        let built_in_generators = {
+            let packs = packs.clone();
+            let world_gen = prepared.world_gen;
+            let created = Arc::clone(&terrains);
+            move || -> Box<dyn ChunkGeneratorProvider> {
+                Box::new(crate::world_setup::BuiltInGenerators {
+                    packs,
+                    world_gen,
+                    created,
+                })
+            }
+        };
+        let (generator_provider, origin): (Box<dyn ChunkGeneratorProvider>, Origin) =
+            match self.chunk_generator.take() {
+                Some((embedded, origin)) => {
+                    if let Some((id, _)) = plugins.take_chunk_generator(built_in_generators) {
+                        return Err(StartError::Slot(SlotError {
+                            slot: "chunk-generator",
+                            existing: origin,
+                            rejected: Origin::Plugin(id),
+                        }));
+                    }
+                    (embedded, origin)
+                }
+                None => match plugins.take_chunk_generator(built_in_generators.clone()) {
+                    Some((id, provider)) => (Box::new(provider), Origin::Plugin(id)),
+                    None => (built_in_generators(), Origin::BuiltIn),
+                },
             };
-            (Box::new(generators), Origin::BuiltIn)
-        });
         slot("chunk-generator", &origin);
         let (light_provider, origin) = self
             .light_engine
@@ -320,9 +343,11 @@ impl ServerBuilder {
 
         let clock = Clock::new();
         let max_players = usize::try_from(config.properties.max_players).unwrap_or(0);
-        let commands = crate::commands::build_dispatcher(command_limits(&config));
+        let mut commands = crate::commands::build_dispatcher(command_limits(&config));
+        plugins.register_commands(&mut commands, vanillite_game::commands::CommandId::Plugin);
         let game = Arc::new(crate::blocks::game_data(packs.as_deref()));
         vanillite_game::player::play::install_game_data(Arc::clone(&game));
+        let recipes_packet = vanillite_protocol::SharedPacket::of(&game.recipes.update_packet());
         let level = crate::level::LevelState::load(
             &level_dir,
             packs.as_deref(),
@@ -349,6 +374,7 @@ impl ServerBuilder {
             seed: level_seed(&config.properties.level_seed),
             registries: prepared.registries.clone(),
             game,
+            recipes_packet,
             spawn_protection: config.properties.spawn_protection,
             systems: crate::systems::GameSystems::new(
                 level_dir.clone(),
@@ -358,8 +384,14 @@ impl ServerBuilder {
             tick_rate: std::sync::Mutex::new(TickRateManager::default()),
             tick_times: std::sync::Mutex::new(crate::tick_rate::TickTimes::default()),
             force_game_mode: config.properties.force_gamemode,
+            plugins,
             this: this.clone(),
         });
+        global
+            .plugins
+            .set_server(Arc::new(crate::plugins::Services::new(
+                &global, &compute, &config,
+            )));
         if let Some(packs) = packs.as_deref() {
             global.systems.set_tags(
                 packs
@@ -540,6 +572,7 @@ impl ServerBuilder {
         server.next_backup = server.backup_due_after();
         server.ticks_until_autosave = server.autosave_interval();
         let _ = server.global.handle.set(server.handle());
+        server.global.plugins.enable_all();
         let bots = server.config.server.debug.test_bots;
         if bots > 0
             && let Some(opener) = server.virtual_opener()
@@ -901,9 +934,6 @@ impl Server {
             };
             let sprinting = this_tick == 0;
             self.next_tick += this_tick;
-            self.watch
-                .next_tick
-                .store(self.next_tick, Ordering::Relaxed);
             self.tick_server();
             self.wait_until_next_tick(this_tick, sprinting);
             if sprinting {
@@ -918,6 +948,7 @@ impl Server {
         let clock = self.global.clock;
         let started = clock.now();
         self.heartbeat.enter(&clock);
+        self.watch.progress.store(started, Ordering::Relaxed);
 
         let pause_seconds =
             u64::try_from(self.config.properties.pause_when_empty_seconds).unwrap_or(0);
@@ -936,6 +967,7 @@ impl Server {
                 // The console stays responsive while paused, like Vanilla.
                 self.global_pre_phase();
                 self.heartbeat.leave();
+                self.watch.progress.store(clock.now(), Ordering::Relaxed);
                 return;
             }
         }
@@ -963,6 +995,7 @@ impl Server {
             }
         }
         self.heartbeat.leave();
+        self.watch.progress.store(clock.now(), Ordering::Relaxed);
     }
 
     /// G1: console commands and global tasks, with `&mut` to everything because no world is
@@ -976,6 +1009,7 @@ impl Server {
                 other => self.dispatch(other),
             }
         }
+        self.global.plugins.run_global_tasks(self.tick_count);
         self.accept_joins();
     }
 
@@ -1241,6 +1275,18 @@ impl Server {
     /// tree on the overworld.
     fn run_console_command(&mut self, line: &str) {
         let command = line.trim().trim_start_matches('/');
+        if let Some(id) = command.strip_prefix("vanillite plugin reload ") {
+            match self.global.plugins.reload(id.trim()) {
+                Ok(()) => {}
+                Err(e) => log::warn!("Reloading plugin {} failed: {e}", id.trim()),
+            }
+            return;
+        }
+        if command == "vanillite plugins" {
+            let plugins = self.global.plugins.plugins();
+            log::info!("Plugins ({}): {}", plugins.len(), plugins.join(", "));
+            return;
+        }
         if command == "vanillite reload config" {
             self.reload_config();
             return;
@@ -1400,8 +1446,9 @@ impl Server {
     /// Vanilla's `stopServer`: save everything with flush, stop the threads, release the world.
     fn shutdown(mut self) {
         // Saving may take long; the watchdog must not kill the process now.
-        self.watch.next_tick.store(0, Ordering::Relaxed);
+        self.watch.progress.store(0, Ordering::Relaxed);
         log::info!("Stopping server");
+        self.global.plugins.disable_all();
         for player in self.global.players.snapshot() {
             player
                 .sink

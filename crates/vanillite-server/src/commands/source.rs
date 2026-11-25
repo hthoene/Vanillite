@@ -97,13 +97,34 @@ impl vanillite_command::Source for CommandSource {
             .collect()
     }
 
+    fn has_permission_node(&self, node: &str) -> bool {
+        match &self.kind {
+            SourceKind::Player { uuid, .. } => {
+                let operator = self.global.access.op_level(*uuid).is_some();
+                self.global.plugins.has_permission(*uuid, node, operator)
+            }
+            SourceKind::Console | SourceKind::Server => true,
+        }
+    }
+
     fn suggest_custom(
         &self,
         provider: &str,
-        _args: &vanillite_command::Args,
+        args: &vanillite_command::Args,
         builder: &mut vanillite_command::SuggestionsBuilder<'_>,
     ) {
         use vanillite_game::commands::suggest;
+        if provider.starts_with(vanillite_plugin_host::SUGGEST_PREFIX) {
+            let args = super::dispatch::plugin_args(None, self, args).unwrap_or_default();
+            let list = self.global.plugins.suggest(
+                provider,
+                &self.plugin_sender(),
+                &args,
+                builder.remaining(),
+            );
+            builder.suggest_matching(list.iter().map(String::as_str));
+            return;
+        }
         let access = &self.global.access;
         let online = self.global.players.snapshot();
         let names: Vec<String> = match provider {
@@ -286,6 +307,15 @@ impl vanillite_command::Source for CommandSource {
 }
 
 impl CommandSource {
+    /// The source as a plugin command sender.
+    pub(crate) fn plugin_sender(&self) -> vanillite_plugin_host::Sender {
+        vanillite_plugin_host::Sender {
+            player: self.uuid(),
+            world: Some(u32::from(self.world.0)),
+            pos: [self.pos.x, self.pos.y, self.pos.z],
+        }
+    }
+
     /// A source with the defaults of `CommandSourceStack`'s constructor.
     pub(crate) fn new(
         global: Arc<Global>,

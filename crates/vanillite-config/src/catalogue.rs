@@ -131,6 +131,24 @@ rules! {
             allow_direct_connections: bool = "allow-direct-connections", Setting, restart = true,
                 vanilla = false;
         }
+        /// Native plugins in `plugins/`: packages with a `plugin.toml` and a library built
+        /// against the plugin API. Plugins are trusted code with the server's rights.
+        plugins: PluginRules = "plugins" {
+            /// Load the plugins in `plugins/`.
+            enabled: bool = "enabled", Setting, restart = true, vanilla = true;
+            /// After a crash inside a plugin's code (a fatal signal or a watchdog kill), skip
+            /// that plugin at the next starts until its library changes or `plugins/.crashed`
+            /// is removed, so a supervisor (Docker, systemd) brings the server back.
+            safe_mode_after_crash: bool = "safe-mode-after-crash", Setting, restart = true,
+                vanilla = true;
+            /// Development: the console command `vanillite plugin reload <id>` loads a new
+            /// build of a plugin at runtime and moves its state. Old builds stay in memory.
+            /// Not for production servers.
+            development: bool = "development", Setting, restart = true, vanilla = false;
+            /// Pinned SHA-256 hashes of plugin libraries, `id=hex,id=hex`. A plugin whose
+            /// library has another hash is refused.
+            pins: String = "pins", Security, restart = true, vanilla = String::new();
+        }
         /// Bedrock Edition players (`vanillite-bedrock`): a RakNet listener on UDP that
         /// translates Bedrock clients into virtual connections. The address is `server-ip`.
         bedrock: BedrockRules = "bedrock" {
@@ -230,6 +248,17 @@ rules! {
             misc_range: VanillaOr<u16> = "misc-range", Performance, range = [8, 512],
                 restart = true, vanilla = VanillaOr::Vanilla, paper = VanillaOr::Value(96),
                 spigot = VanillaOr::Value(96);
+            /// Overload protection: while a world tick takes longer than this many
+            /// milliseconds (smoothed), movement updates of tracked entities (position,
+            /// rotation, head) are sent less often, up to `overload-max-interval-scale` times
+            /// their Vanilla interval, and back at the Vanilla rate once ticks are fast again.
+            /// Spawns, removals and entity data are never delayed. "disabled" keeps Vanilla's
+            /// intervals: an overloaded server then slows down like Vanilla.
+            overload_tick_millis: DisabledOr<u32> = "overload-tick-millis", Performance,
+                range = [1, 1000], vanilla = DisabledOr::Disabled;
+            /// Largest factor on the movement update interval under overload.
+            overload_max_interval_scale: u32 = "overload-max-interval-scale", Performance,
+                range = [1, 20], vanilla = 4;
         }
         /// Server-side checks of player movement (Vanilla's `ServerGamePacketListenerImpl`).
         movement: MovementRules = "movement" {

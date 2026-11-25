@@ -294,6 +294,16 @@ impl Chunks {
         }
     }
 
+    /// Moves a ticket to `pos` (a player changing chunk): only the chunks whose level changes
+    /// are touched.
+    pub fn move_ticket(&mut self, id: TicketId, pos: ChunkPos) {
+        if let Some((from, level)) = self.tickets.get_mut(&id) {
+            self.levels
+                .shift(*from, pos, *level, &mut self.level_changes);
+            *from = pos;
+        }
+    }
+
     /// The ticket level that keeps a player's view full: Vanilla's view (`ChunkTrackingView`)
     /// reaches one chunk past the view distance.
     pub fn player_ticket_level(&self) -> u8 {
@@ -323,6 +333,16 @@ impl Chunks {
             self.simulation
                 .remove(pos, level, &mut self.simulation_changes);
             self.simulation_changes.clear();
+        }
+    }
+
+    /// Moves a simulation ticket to `pos`.
+    pub fn move_simulation_ticket(&mut self, id: TicketId, pos: ChunkPos) {
+        if let Some((from, level)) = self.simulation_tickets.get_mut(&id) {
+            self.simulation
+                .shift(*from, pos, *level, &mut self.simulation_changes);
+            self.simulation_changes.clear();
+            *from = pos;
         }
     }
 
@@ -371,7 +391,11 @@ impl Chunks {
                 holder.level = change.new;
                 holder.unload_at = None;
                 self.unload_candidates.remove(&pos);
-                if change.new < change.old {
+                // Only a new required status gives the chunk work: a full chunk moving
+                // closer to a player (level 25 to 24) needs no check.
+                if change.new < change.old
+                    && required_status(change.new) != required_status(change.old)
+                {
                     self.enqueue(pos);
                 }
             } else if let Some(holder) = self.holders.get_mut(&pos) {

@@ -263,6 +263,7 @@ impl WorldSurvival {
         blocks: &'a WorldBlocks<'a>,
         raining_at: &'a dyn Fn(BlockPos) -> bool,
         dimension: &'a str,
+        hooks: &'a dyn vanillite_game::hooks::GameHooks,
     ) -> Env<'a> {
         Env {
             types: &level.damage_types,
@@ -277,6 +278,7 @@ impl WorldSurvival {
             border: None,
             random: &mut self.random,
             out: &mut self.effects,
+            hooks,
         }
     }
 
@@ -294,7 +296,8 @@ impl WorldSurvival {
         let blocks = WorldBlocks(chunks);
         let (weather, climate) = (self.weather, self.climate.clone());
         let raining = |pos| raining_at(chunks, climate.as_deref(), &weather, pos);
-        let mut env = self.env(level, &rules, &blocks, &raining, dimension);
+        let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+        let mut env = self.env(level, &rules, &blocks, &raining, dimension, &hooks);
         let Entities { store, players, .. } = entities;
         for (id, data) in players.iter_mut() {
             if data.connection.movement.moves.is_empty() {
@@ -346,7 +349,8 @@ impl WorldSurvival {
         let raining = |pos| raining_at(chunks, climate.as_deref(), &weather, pos);
         let mut removed = std::mem::take(&mut self.scratch);
         {
-            let mut env = self.env(level, &rules, &blocks, &raining, dimension);
+            let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+            let mut env = self.env(level, &rules, &blocks, &raining, dimension, &hooks);
             env.border = Some(border);
             let Entities { store, players, .. } = entities;
             for (id, data) in players.iter_mut() {
@@ -437,7 +441,9 @@ impl WorldSurvival {
             None => &no_blocks,
         };
         let raining = |_| false;
+        let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
         let mut env = Env {
+            hooks: &hooks,
             types: &level.damage_types,
             facts: &level.block_facts,
             blocks,
@@ -652,7 +658,8 @@ impl WorldSurvival {
         let mut bolts = std::mem::take(&mut self.bolts);
         let mut hit = Vec::new();
         {
-            let mut env = self.env(level, &rules, &blocks, &raining, dimension);
+            let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+            let mut env = self.env(level, &rules, &blocks, &raining, dimension, &hooks);
             bolts.retain_mut(|bolt| {
                 // TODO(#30): fire blocks (`spawnFire`) once blocks tick.
                 bolt.life -= 1;

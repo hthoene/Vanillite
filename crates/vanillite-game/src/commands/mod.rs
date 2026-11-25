@@ -600,6 +600,8 @@ pub enum WorldBorderOp {
 /// arguments are read by name from `Parsed::args`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CommandId {
+    /// A command of a plugin: the plugin host's command key.
+    Plugin(u32),
     /// `gamemode <gamemode>` for the source.
     GameModeSelf,
     /// `gamemode <gamemode> <target>`.

@@ -1,0 +1,15 @@
+# Configuration of the Hello example plugin.
+
+[messages]
+# Sent to a player who joins; {name} is the player's name.
+join = "Welcome to Vanillite, {name}! Try /hello."
+# The answer of /hello; {name} is the greeted name.
+hello = "Hello, {name}!"
+
+[generator]
+# Replace the world generator (new chunks only) with flat stone and grass layers.
+enabled = false
+# The dimension it generates; the others keep the built-in generator.
+dimension = "minecraft:overworld"
+# Height of the grass surface.
+surface = 64

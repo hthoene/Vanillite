@@ -47,7 +47,7 @@ use vanillite_protocol::text::{Arg, ClickEvent, Color, Component, NamedColor};
 use vanillite_world::entity::EntityId;
 
 pub(crate) use bans::ban_reason;
-pub(crate) use exec::permission_event;
+pub(crate) use exec::{find_player, permission_event};
 pub(crate) use sound::send_post_effects;
 pub(crate) use source::{CommandSource, SourceKind};
 pub(crate) use world_cmd::sprint_finished;
@@ -295,6 +295,9 @@ pub(crate) fn run_player_command(
             }
         }
     };
+    if !global.plugins.player_command(uuid, &name, command) {
+        return None;
+    }
     log::info!("{name} issued server command: /{command}");
     let mut env = Env {
         level,
