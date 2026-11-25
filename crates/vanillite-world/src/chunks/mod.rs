@@ -43,6 +43,7 @@
 pub mod levels;
 pub mod simulation;
 
+use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::fmt;
 use std::io;
@@ -69,6 +70,9 @@ pub use levels::{
 use simulation::SimulationLevels;
 
 use crate::ticks::{LevelTicks, ScheduledTick, TickPriority};
+
+/// An empty slot of the chunk cache (`ChunkPos.INVALID_CHUNK_POS`).
+const NO_CHUNK: ChunkPos = ChunkPos::new(i32::MAX, i32::MAX);
 
 /// Runs background jobs; the server's compute pool, or inline in tests.
 pub trait Executor: Send + Sync {
@@ -436,6 +440,13 @@ pub struct Chunks {
     visibility_check: Vec<ChunkPos>,
     /// Visibility changes since the last [`Chunks::take_visibility_changes`].
     visibility_changes: Vec<VisibilityChange>,
+    /// The `unknown` tickets of synchronous loads ([`Chunks::load_now`]) with their ticks
+    /// left (`TicketType.UNKNOWN`: level 33, timeout 1).
+    unknown: FxHashMap<ChunkPos, (TicketId, Cell<i64>)>,
+    /// `ServerChunkCache.lastChunkPos`: the world thread's cache of the last four accessible
+    /// chunks it read, newest first. A read that hits it does not reset an `unknown` ticket.
+    /// Only kept while `unknown` tickets exist: a new one clears it.
+    chunk_cache: Cell<[ChunkPos; 4]>,
 }
 
 /// What the entities of a chunk do (Vanilla's `Visibility`, from the chunk's full status).
@@ -541,6 +552,8 @@ impl Chunks {
             visibility: FxHashMap::default(),
             visibility_check: Vec::new(),
             visibility_changes: Vec::new(),
+            unknown: FxHashMap::default(),
+            chunk_cache: Cell::new([NO_CHUNK; 4]),
         }
     }
 
@@ -704,6 +717,10 @@ impl Chunks {
     }
 
     fn apply_level_changes(&mut self) {
+        if !self.level_changes.is_empty() {
+            // `runDistanceManagerUpdates` clears the chunk cache after level changes.
+            self.chunk_cache.set([NO_CHUNK; 4]);
+        }
         // Moving a generation ticket reports more changes; apply them too.
         while !self.level_changes.is_empty() {
             let mut changes = std::mem::take(&mut self.level_changes);
@@ -808,6 +825,130 @@ impl Chunks {
         self.enqueue(pos);
     }
 
+    // --- Synchronous loads ---------------------------------------------------------------
+
+    /// Whether a chunk is accessible as a full chunk (ticket level up to full).
+    #[inline]
+    fn is_full_at(&self, pos: ChunkPos) -> bool {
+        self.holders
+            .get(&pos)
+            .is_some_and(|h| h.level <= FULL_LEVEL && h.status() == Some(ChunkStatus::Full))
+    }
+
+    /// A read of an accessible chunk on the world thread (`ServerChunkCache.getChunk`): unless
+    /// the chunk cache holds it, it goes into the cache and `reset` restarts its `unknown`
+    /// ticket. Only tracked while `unknown` tickets exist.
+    #[inline]
+    fn note_read(&self, pos: ChunkPos, reset: bool) {
+        if self.unknown.is_empty() {
+            return;
+        }
+        let mut cache = self.chunk_cache.get();
+        if cache.contains(&pos) {
+            return;
+        }
+        cache.copy_within(0..3, 1);
+        cache[0] = pos;
+        self.chunk_cache.set(cache);
+        if reset && let Some((_, left)) = self.unknown.get(&pos) {
+            left.set(1);
+        }
+    }
+
+    /// `ServerChunkCache.getChunkNow(x, z) != null`: whether the chunk is accessible, which
+    /// puts it into the chunk cache without touching tickets.
+    pub fn chunk_now(&self, pos: ChunkPos) -> bool {
+        let accessible = self.is_full_at(pos);
+        if accessible {
+            self.note_read(pos, false);
+        }
+        accessible
+    }
+
+    /// `ServerChunkCache.getChunk(x, z, FULL, true)` on the world thread, as `getBlockState`
+    /// and `setBlock` call it: a chunk that is not accessible gets an `unknown` ticket at
+    /// level 33 (timeout 1 tick, [`Chunks::purge_stale_tickets`]) and is loaded or generated
+    /// while the world thread waits (`managedBlock`). Returns whether it had to wait; the
+    /// chunks that became live are in [`Chunks::take_promoted`].
+    #[inline]
+    pub fn load_now(&mut self, pos: ChunkPos) -> bool {
+        if self.is_full_at(pos) {
+            self.note_read(pos, true);
+            return false;
+        }
+        self.load_blocking(pos);
+        true
+    }
+
+    #[cold]
+    fn load_blocking(&mut self, pos: ChunkPos) {
+        match self.unknown.get(&pos) {
+            Some((_, left)) => left.set(1),
+            None => {
+                let id = self.add_ticket(pos, FULL_LEVEL);
+                self.unknown.insert(pos, (id, Cell::new(1)));
+            }
+        }
+        // What waits for the next tick is wanted now.
+        for (at, chunk, entities) in std::mem::take(&mut self.loaded_between_ticks) {
+            self.apply_loaded(at, Ok(Some(chunk)), entities);
+        }
+        for at in std::mem::take(&mut self.due_next_tick) {
+            self.enqueue(at);
+        }
+        loop {
+            let mut progress = self.drain_done();
+            self.apply_level_changes();
+            if self.is_full_at(pos) {
+                break;
+            }
+            progress |= self.dispatch();
+            if progress {
+                continue;
+            }
+            if self.in_flight == 0 && self.check.is_empty() {
+                log::error!(
+                    "Couldn't load chunk {}, {} in {} synchronously",
+                    pos.x,
+                    pos.z,
+                    self.info.dimension
+                );
+                break;
+            }
+            match self.done_rx.recv_timeout(Duration::from_millis(1)) {
+                Ok(job) => self.apply_done(job),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        self.check_visibility();
+        // The ticket changed levels, which cleared the cache; the chunk goes in.
+        self.chunk_cache.set([NO_CHUNK; 4]);
+        self.note_read(pos, false);
+    }
+
+    /// `TicketStorage.purgeStaleTickets` for the `unknown` tickets of synchronous loads: each
+    /// counts down and goes once below zero, so a ticket lives through two purges. Runs once
+    /// per world tick at the start of the chunk source tick while the game runs normally.
+    pub fn purge_stale_tickets(&mut self) {
+        if self.unknown.is_empty() {
+            return;
+        }
+        let mut expired = Vec::new();
+        self.unknown.retain(|_, (id, left)| {
+            left.set(left.get() - 1);
+            if left.get() < 0 {
+                expired.push(*id);
+                false
+            } else {
+                true
+            }
+        });
+        for id in expired {
+            self.remove_ticket(id);
+        }
+    }
+
     // --- Tick ----------------------------------------------------------------------------
 
     /// Applies finished jobs and ticket changes, starts new jobs and unloads unneeded chunks.
@@ -831,6 +972,8 @@ impl Chunks {
         self.start_relights();
         self.unload();
         self.check_visibility();
+        // `ServerChunkCache.tick` ends with `clearCache`.
+        self.chunk_cache.set([NO_CHUNK; 4]);
     }
 
     /// The visibility of a chunk (`ChunkMap.onFullChunkStatusChange`): hidden unless it is
@@ -1954,7 +2097,15 @@ impl Chunks {
 
     /// The block state at `pos`, `None` outside full chunks and the build height.
     pub fn block(&self, pos: BlockPos) -> Option<BlockStateId> {
-        let chunk = self.chunk(pos.chunk())?;
+        let chunk_pos = pos.chunk();
+        let holder = self.holders.get(&chunk_pos)?;
+        let chunk = holder
+            .chunk
+            .as_ref()
+            .filter(|c| c.status == ChunkStatus::Full)?;
+        if holder.level <= FULL_LEVEL {
+            self.note_read(chunk_pos, true);
+        }
         chunk
             .chunk
             .block((pos.x & 15) as u32, pos.y, (pos.z & 15) as u32)

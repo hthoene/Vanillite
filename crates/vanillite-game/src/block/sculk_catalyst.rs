@@ -204,6 +204,17 @@ fn bloom(level: &mut Level, pos: BlockPos) {
     }
     level.set_block_and_update(pos, state.set("bloom", "true"));
     level.schedule_block_tick(pos, state.block(), PULSE_TICKS);
+    level.send_particles(
+        crate::level::particles::simple("minecraft:sculk_soul"),
+        vanillite_base::Vec3::new(
+            f64::from(pos.x) + 0.5,
+            f64::from(pos.y) + 1.15,
+            f64::from(pos.z) + 0.5,
+        ),
+        2,
+        vanillite_base::Vec3::new(0.2, 0.0, 0.2),
+        0.0,
+    );
     let pitch = 0.6 + level.random().next_float() * 0.4;
     let sound = sound_id("block.sculk_catalyst.bloom");
     level.play_block_sound(None, pos, sound, SOUND_BLOCKS, 2.0, pitch);

@@ -15,7 +15,7 @@ use crate::item::{EquipmentSlot, ItemStack};
 use crate::level::Level;
 use crate::mob::animal::Interaction;
 use crate::mob::equipment;
-use crate::mob::fam::{ExtraMob, Hurt, Relation, SpawnReason};
+use crate::mob::fam::{ExtraMob, GroupData, Hurt, Relation, SpawnReason};
 use crate::mob::goals::flag;
 use crate::mob::kinds::Kind;
 use crate::mob::{MobData, Tick, nav, randompos};
@@ -230,8 +230,14 @@ pub fn randomize_attributes(m: &mut MobData) {
 pub fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
     let chance = match m.kind {
         Kind::Horse => {
-            // `HorseGroupData(variant)`: a random variant and markings.
-            let variant = m.random.next_int_bounded(7);
+            // `HorseGroupData(variant)`: the group's coat, own markings.
+            let variant = if let GroupData::Horse(v) = ctx.group {
+                v
+            } else {
+                let v = m.random.next_int_bounded(7);
+                ctx.group = GroupData::Horse(v);
+                v
+            };
             let markings = m.random.next_int_bounded(5);
             m.variant = (variant & 0xFF) | ((markings << 8) & 0xFF00);
             0.05
@@ -767,7 +773,7 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
         return super::animal_interact(ix);
     }
     if tame && ix.sneaking {
-        // `openCustomInventoryScreen`: the mount inventory menu is not available yet.
+        open_inventory_screen(ix);
         return Interaction::Success;
     }
     if !ix.stack.is_empty() {
@@ -799,6 +805,13 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
         return Interaction::Success;
     }
     ride(ix)
+}
+
+/// `openCustomInventoryScreen`: the mount inventory menu.
+pub fn open_inventory_screen(ix: &mut Interact<'_, '_>) {
+    if let Some(request) = crate::menu::mount::request(ix.ents, ix.target, ix.player) {
+        ix.cx.menus.push(request);
+    }
 }
 
 /// `equipChest`.
@@ -1175,6 +1188,8 @@ pub fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
                         let m = t.mob();
                         m.tame = true;
                         m.owner = Some(o);
+                        let id = t.id;
+                        crate::mob::tame::award_tame(t.ents, id, passenger);
                     }
                     let id = t.id;
                     crate::mob::living::entity_event(t, id, 7);

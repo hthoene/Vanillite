@@ -163,6 +163,7 @@ fn use_item_on(
         && recipes().is_some_and(|r| r.recipes.is_cooking_input(CookingKind::Campfire, stack))
     {
         if place_food(level, pos, Some(ctx.player), stack) {
+            level.award_stat(ctx.player, crate::stats::custom::INTERACT_WITH_CAMPFIRE, 1);
             return ItemInteraction::Done(Interaction::Success);
         }
         return ItemInteraction::Done(Interaction::Consume);

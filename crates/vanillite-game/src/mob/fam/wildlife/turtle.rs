@@ -5,7 +5,7 @@ use vanillite_base::random::RandomSource;
 use vanillite_base::{BlockPos, Vec3};
 use vanillite_world::entity::Rotation;
 
-use super::{Goal, SEA_LEVEL, block_tags, bright_enough, closer_to_center, rotlerp, st, st_mut};
+use super::{Goal, block_tags, bright_enough, closer_to_center, rotlerp, st, st_mut};
 use crate::level::Level;
 use crate::mob::common::MoveToBlock;
 use crate::mob::fam::FamGoal;
@@ -80,7 +80,7 @@ fn on_sand(level: &Level, pos: BlockPos) -> bool {
 
 /// `Turtle.checkTurtleSpawnRules`: beaches up to 3 blocks above the sea.
 pub(super) fn spawn_rules(level: &Level, pos: BlockPos) -> bool {
-    pos.y < SEA_LEVEL + 4 && on_sand(level, pos) && bright_enough(level, pos)
+    pos.y < crate::mob::sea_level(level) + 4 && on_sand(level, pos) && bright_enough(level, pos)
 }
 
 /// `Turtle.getWalkTargetValue`: water (unless going home) and sand are best.
@@ -350,7 +350,7 @@ pub(super) fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
             let xt = r.next_int_bounded(1025) - 512;
             let mut yt = r.next_int_bounded(9) - 4;
             let zt = r.next_int_bounded(1025) - 512;
-            if f64::from(yt) + p.y > f64::from(SEA_LEVEL - 1) {
+            if f64::from(yt) + p.y > f64::from(t.cx.env.sea_level - 1) {
                 yt = 0;
             }
             st_mut(t.mob()).travel_pos = Some(BlockPos::containing(
@@ -391,6 +391,8 @@ fn set_laying_egg(t: &mut Tick<'_, '_>, on: bool) {
 
 /// `TurtleBreedGoal.breed`: the turtle carries an egg instead of a baby.
 fn breed(t: &mut Tick<'_, '_>, partner: vanillite_world::entity::EntityId) {
+    // The award comes first (`TurtleBreedGoal.breed`).
+    crate::mob::animal::award_breeding(t.ents, t.id, partner, None);
     st_mut(t.mob()).has_egg = true;
     for id in [t.id, partner] {
         if let Some(m) = t.ents.mob_mut(id) {

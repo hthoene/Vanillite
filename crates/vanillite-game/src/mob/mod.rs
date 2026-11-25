@@ -473,6 +473,13 @@ pub struct Environment {
     /// The time of the overworld day (ticks into the `minecraft:overworld` clock's day): the
     /// universal timelines (the villager schedules) follow it in every dimension.
     pub day_time: i64,
+    /// `EnvironmentAttributes.BEES_STAY_IN_HIVE`: the night of the `minecraft:day` timeline or
+    /// rain (any rain level).
+    pub bees_stay_in_hive: bool,
+    /// `EnvironmentAttributes.CREAKING_ACTIVE` (the overworld's `day` timeline at night).
+    pub creaking_active: bool,
+    /// `EnvironmentAttributes.TURTLE_EGG_HATCH_CHANCE` (the `day` timeline in the overworld).
+    pub turtle_egg_hatch_chance: f32,
 }
 
 impl Default for Environment {
@@ -492,8 +499,16 @@ impl Default for Environment {
             world_seed: 0,
             sea_level: 63,
             day_time: 6000,
+            bees_stay_in_hive: false,
+            creaking_active: false,
+            turtle_egg_hatch_chance: 0.002,
         }
     }
+}
+
+/// `Level.getSeaLevel`: the sea level of the level's generator (63 without one).
+pub fn sea_level(level: &crate::level::Level) -> i32 {
+    level.climate().map_or(63, |c| c.sea_level)
 }
 
 impl Environment {
@@ -505,16 +520,19 @@ impl Environment {
         sky += (4.0 - sky) * 0.527_343_75 * thunder;
         #[allow(clippy::cast_possible_truncation)]
         let sky_darken = (15.0 - sky) as i32;
-        let burn = !(12542..23460).contains(&day.rem_euclid(24000));
+        let night = (12542..23460).contains(&day.rem_euclid(24000));
         Environment {
             sky_darken,
-            monsters_burn: burn,
+            monsters_burn: !night,
+            bees_stay_in_hive: night || rain > 0.0,
+            creaking_active: (12600..23401).contains(&day.rem_euclid(24000)),
             thundering: thunder > 0.9,
             raining: rain > 0.2,
             has_sky_light: true,
             monster_block_light_limit: 0,
             monster_light_test: (0, 7),
             ambient_light: 0.0,
+            turtle_egg_hatch_chance: turtle_egg_hatch_chance(day),
             ..Environment::default()
         }
     }
@@ -522,6 +540,16 @@ impl Environment {
     /// `Level.isBrightOutside`.
     pub fn is_bright_outside(&self) -> bool {
         self.has_sky_light && self.sky_darken < 4
+    }
+}
+
+/// The `day` timeline's `gameplay/turtle_egg_hatch_chance` track at `ticks` of the day: 1 from
+/// 21062 to 21905 (constant ease), else the attribute's default 0.002.
+pub fn turtle_egg_hatch_chance(ticks: i64) -> f32 {
+    if (21062..21905).contains(&ticks.rem_euclid(24000)) {
+        1.0
+    } else {
+        0.002
     }
 }
 
@@ -578,6 +606,8 @@ pub struct ExplosionRequest {
     pub mob: bool,
     /// The source's `getBlockExplosionResistance` (the wither's skulls, primed TNT minecarts).
     pub resistance: crate::level::explosion::BlockResistance,
+    /// `fire`: blown up positions may catch fire (ghast fireballs with `mobGriefing`).
+    pub fire: bool,
 }
 
 /// A wind charge burst (`AbstractWindCharge.explode`): a knockback-only explosion that
@@ -621,6 +651,7 @@ impl ExplosionRequest {
             interaction,
             crate::level::explosion::ExplosionStyle {
                 resistance: self.resistance,
+                fire: self.fire,
                 ..Default::default()
             },
         );
@@ -660,6 +691,32 @@ pub enum WorldAction {
     RingBell(BlockPos, Option<EntityId>),
     /// `BoneMealItem.growCrop` on the block (a villager's bone meal).
     BoneMeal(BlockPos),
+    /// `ServerLevel.sendParticles`.
+    Particles(Box<crate::level::particles::LevelParticles>),
+    /// `BeehiveBlockEntity.addOccupant`: the bee, saved as `data` when it entered (its tick
+    /// discards it), moves into the hive at `hive`; `flower` is its saved flower.
+    EnterHive {
+        hive: BlockPos,
+        bee: EntityId,
+        data: Box<vanillite_nbt::Compound>,
+        flower: Option<BlockPos>,
+    },
+    /// `CreakingHeartBlockEntity.creakingHurt` of the heart at the position.
+    CreakingHurt(BlockPos),
+    /// `container.startOpen(user)` (`true`) or `stopOpen(user)` of a block container by a mob.
+    ContainerOpen(crate::block::container::ContainerRef, bool),
+    /// `setItem` of the given slots of a block container by a mob, then `setChanged`.
+    ContainerSlots(
+        crate::block::container::ContainerRef,
+        Vec<(usize, crate::item::ItemStack)>,
+    ),
+    /// `TurtleEggBlock.destroyEgg` of an entity stepping (randomness 100) or falling (3) on
+    /// turtle eggs; `can_destroy` is `canDestroyEgg`.
+    TrampleTurtleEgg {
+        pos: BlockPos,
+        can_destroy: bool,
+        randomness: i32,
+    },
 }
 
 impl WorldAction {
@@ -684,14 +741,49 @@ impl WorldAction {
             WorldAction::RingBell(pos, entity) => {
                 crate::block::bell::attempt_to_ring(level, entity, pos, None);
             }
+            WorldAction::EnterHive {
+                hive,
+                bee,
+                ref data,
+                flower,
+            } => crate::block::beehive::add_occupant(level, hive, bee, data, flower),
+            WorldAction::CreakingHurt(pos) => {
+                crate::block::creaking_heart::creaking_hurt(level, pos)
+            }
+            WorldAction::ContainerOpen(c, open) => {
+                let halves = match c {
+                    crate::block::container::ContainerRef::Block(p) => [Some(p), None],
+                    crate::block::container::ContainerRef::Double(a, b) => [Some(a), Some(b)],
+                    crate::block::container::ContainerRef::Entity(_) => [None, None],
+                };
+                for p in halves.into_iter().flatten() {
+                    if open {
+                        crate::block::container::start_open(level, p, false);
+                    } else {
+                        crate::block::container::stop_open(level, p, false);
+                    }
+                }
+            }
+            WorldAction::ContainerSlots(c, ref slots) => {
+                for (slot, stack) in slots {
+                    c.set(level, *slot, stack.clone());
+                }
+                c.set_changed(level);
+            }
             WorldAction::BoneMeal(pos) => {
                 let mut meal =
                     crate::item::ItemStack::new(vanillite_data::item::ids::BONE_MEAL.0, 1);
                 crate::block::bonemeal::grow_crop(level, pos, &mut meal);
             }
+            WorldAction::TrampleTurtleEgg {
+                pos,
+                can_destroy,
+                randomness,
+            } => crate::block::eggs::trample_turtle_egg(level, pos, can_destroy, randomness),
             WorldAction::SetDoorOpen(pos, open, source) => {
                 crate::block::redstone::set_door_open(level, pos, open, source);
             }
+            WorldAction::Particles(ref p) => level.send_particles_packet((**p).clone()),
             WorldAction::WindBurst(b) => {
                 // `ExplosionInteraction.TRIGGER` without damage (`damagesEntities` off).
                 level.explode_with(
@@ -705,6 +797,7 @@ impl WorldAction {
                         knockback: b.knockback,
                         wind_sound: Some(b.sound),
                         resistance: crate::level::explosion::BlockResistance::WindCharge,
+                        fire: false,
                     },
                 );
             }
@@ -745,6 +838,19 @@ pub struct MobContext {
 }
 
 impl MobContext {
+    /// `ServerLevel.sendParticles(particle, x, y, z, count, xDist, yDist, zDist, speed)`.
+    pub fn send_particles(
+        &mut self,
+        particle: crate::level::particles::Particle,
+        pos: Vec3,
+        count: i32,
+        dist: Vec3,
+        speed: f64,
+    ) {
+        let packet = crate::level::particles::packet(particle, pos, count, dist, speed);
+        self.actions.push(WorldAction::Particles(Box::new(packet)));
+    }
+
     /// Resets the per-tick state.
     pub fn begin_tick(&mut self, env: Environment, settings: MobSettings, has_players: bool) {
         self.env = env;

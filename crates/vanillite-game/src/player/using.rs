@@ -1,6 +1,6 @@
 //! Using an item over time (`LivingEntity.startUsingItem`, `updatingUsingItem`,
 //! `releaseUsingItem`, `completeUsingItem`) for players: eating and drinking, blocking with a
-//! shield, drawing a bow. The per-item behaviour is the `match` in [`on_use_tick`],
+//! shield, drawing a bow, loading and firing a crossbow. The per-item behaviour is the `match` in [`on_use_tick`],
 //! [`finish`] and [`release`].
 
 use vanillite_base::Vec3;
@@ -25,6 +25,8 @@ pub struct UsingItem {
     pub ticks: i32,
     /// `getUseDuration`.
     pub duration: i32,
+    /// The loading sounds a crossbow played.
+    pub crossbow: crate::crossbow::UseFlags,
 }
 
 /// Ticks a shield needs before it blocks (`block_delay_seconds` 0.25).
@@ -49,7 +51,7 @@ fn use_duration(ents: &Entities, player: EntityId, stack: &ItemStack) -> i32 {
     let id = item::item_id(stack);
     let info = id.info();
     let name = id.name();
-    if info.blocks_attacks || name == "minecraft:bow" {
+    if info.blocks_attacks || name == "minecraft:bow" || name == crate::crossbow::CROSSBOW {
         return 72000;
     }
     if name == "minecraft:brush" {
@@ -89,11 +91,27 @@ fn mark(ents: &mut Entities, player: EntityId) {
 }
 
 /// `startUsingItem(hand)` from `use_item`, when the held item is used over time. A bow needs
-/// arrows unless the player has infinite materials.
-pub fn start(ents: &mut Entities, _env: &mut Env<'_>, player: EntityId, hand: Hand) {
+/// arrows unless the player has infinite materials; a loaded crossbow fires instead
+/// (`CrossbowItem.use`), an empty one needs something to load.
+pub fn start(
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    network_ids: &vanillite_world::entity::NetworkIds,
+    player: EntityId,
+    hand: Hand,
+) {
     let stack = held(ents, player, hand);
     if stack.is_empty() {
         return;
+    }
+    if crate::crossbow::is_crossbow(&stack) {
+        if crate::crossbow::is_charged(&stack) {
+            crossbow_shoot(ents, env, network_ids, player, hand);
+            return;
+        }
+        if crossbow_projectile(ents, player).is_none() {
+            return;
+        }
     }
     let duration = use_duration(ents, player, &stack);
     if duration <= 0 {
@@ -120,6 +138,7 @@ pub fn start(ents: &mut Entities, _env: &mut Env<'_>, player: EntityId, hand: Ha
             item: stack.item,
             ticks: 0,
             duration,
+            crossbow: crate::crossbow::UseFlags::default(),
         });
     }
     mark(ents, player);
@@ -181,10 +200,15 @@ pub fn tick(ents: &mut Entities, env: &mut Env<'_>, player: EntityId) {
         return;
     }
     let ticks = u.ticks.saturating_add(1);
-    if let Some(p) = ents.player_mut(player)
-        && let Some(state) = p.survival.using_item.as_mut()
-    {
-        state.ticks = ticks;
+    if let Some(p) = ents.player_mut(player) {
+        // `ServerPlayer.updateUsingItem`: `USING_ITEM`.
+        p.advancements.trigger_item(
+            crate::advancements::trigger::TriggerKind::USING_ITEM,
+            &stack,
+        );
+        if let Some(state) = p.survival.using_item.as_mut() {
+            state.ticks = ticks;
+        }
     }
     if ticks == SHIELD_DELAY && item::item_id(&stack).info().blocks_attacks {
         // The blocking state becomes visible (`isBlocking`).
@@ -197,6 +221,11 @@ pub fn tick(ents: &mut Entities, env: &mut Env<'_>, player: EntityId) {
         if remaining <= 0 {
             stop(ents, player);
         }
+        return;
+    }
+    if crate::crossbow::is_crossbow(&stack) {
+        // `onUseTick` sees the ticks before this one's (`useItemRemaining` counts down after).
+        crossbow_use_tick(ents, env, player, u.hand, ticks.saturating_sub(1));
         return;
     }
     on_use_tick(ents, env, player, &stack, remaining);
@@ -509,10 +538,10 @@ fn finish(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, u: UsingItem
             crate::stats::Stat::of(crate::stats::StatType::Used, stack.item),
             1,
         );
-        p.advancements
-            .trigger(crate::advancements::trigger::Event::ConsumeItem(
-                stack.clone(),
-            ));
+        p.advancements.trigger_item(
+            crate::advancements::trigger::TriggerKind::CONSUME_ITEM,
+            &stack,
+        );
     }
     let remainder = match name {
         "minecraft:mushroom_stew"
@@ -573,6 +602,225 @@ fn find_arrow(ents: &Entities, player: EntityId) -> Option<usize> {
     (0..36).find(|&i| is_arrow(p.inventory.get(i)))
 }
 
+/// Where a player's crossbow load comes from (`Player.getProjectile`).
+enum Ammo {
+    Slot(usize),
+    /// `hasInfiniteMaterials` without ammo: a new arrow.
+    Free(ItemStack),
+}
+
+/// `Player.getProjectile(crossbow)`: an arrow or rocket in a hand (off hand first), else the
+/// first arrow of the inventory, else an arrow for creative players.
+fn crossbow_projectile(ents: &Entities, player: EntityId) -> Option<Ammo> {
+    let p = ents.player(player)?;
+    let off = crate::inventory::OFFHAND;
+    if crate::crossbow::is_held_projectile(p.inventory.get(off)) {
+        return Some(Ammo::Slot(off));
+    }
+    if crate::crossbow::is_held_projectile(p.inventory.selected_item()) {
+        return Some(Ammo::Slot(p.inventory.selected));
+    }
+    if let Some(i) = (0..36).find(|&i| crate::crossbow::is_arrow(p.inventory.get(i))) {
+        return Some(Ammo::Slot(i));
+    }
+    let arrow = vanillite_data::registry::ITEM.id("minecraft:arrow")?;
+    (p.game_mode == GameMode::Creative).then(|| Ammo::Free(ItemStack::new(arrow, 1)))
+}
+
+/// `CrossbowItem.onUseTick` of a player after `used` ticks: the loading sounds, and the load
+/// once fully drawn (`tryLoadProjectiles`).
+fn crossbow_use_tick(
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    player: EntityId,
+    hand: Hand,
+    used: i32,
+) {
+    let weapon = held(ents, player, hand);
+    let duration = crate::crossbow::charge_duration(&weapon, env.random);
+    let Some(mut flags) = ents
+        .player(player)
+        .and_then(|p| p.survival.using_item)
+        .map(|u| u.crossbow)
+    else {
+        return;
+    };
+    let stage = crate::crossbow::use_tick(&mut flags, used, duration);
+    if let Some(u) = ents
+        .player_mut(player)
+        .and_then(|p| p.survival.using_item.as_mut())
+    {
+        u.crossbow = flags;
+    }
+    let pos = ents.store.get(player).map_or(Vec3::ZERO, |e| e.pos());
+    let sounds = crate::crossbow::sounds(&weapon);
+    for (on, sound) in [
+        (stage.start_sound, sounds.start.as_deref()),
+        (stage.mid_sound, sounds.mid.as_deref()),
+    ] {
+        if on && let Some(sound) = sound {
+            let seed = crate::survival::sound_seed();
+            play_sound(
+                env.out,
+                None,
+                pos,
+                sound,
+                SoundSource::Players,
+                0.5,
+                1.0,
+                seed,
+            );
+        }
+    }
+    if stage.full
+        && !crate::crossbow::is_charged(&weapon)
+        && crossbow_load(ents, env, player, hand)
+        && let Some(sound) = sounds.end.as_deref()
+    {
+        let pitch = 1.0 / (env.random.next_float() * 0.5 + 1.0) + 0.2;
+        let seed = crate::survival::sound_seed();
+        play_sound(
+            env.out,
+            None,
+            pos,
+            sound,
+            SoundSource::Players,
+            1.0,
+            pitch,
+            seed,
+        );
+    }
+}
+
+/// `CrossbowItem.tryLoadProjectiles`: draws the projectiles into `charged_projectiles`.
+fn crossbow_load(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, hand: Hand) -> bool {
+    let i = hand_index(ents, player, hand);
+    let mut weapon = held(ents, player, hand);
+    let creative = ents
+        .player(player)
+        .is_some_and(|p| p.game_mode == GameMode::Creative);
+    let (mut projectile, slot) = match crossbow_projectile(ents, player) {
+        Some(Ammo::Slot(j)) => (
+            ents.player(player)
+                .map(|p| p.inventory.get(j).clone())
+                .unwrap_or_default(),
+            Some(j),
+        ),
+        Some(Ammo::Free(s)) => (s, None),
+        None => return false,
+    };
+    let drawn = crate::crossbow::draw(&weapon, &mut projectile, creative, env.random);
+    let Some(p) = ents.player_mut(player) else {
+        return false;
+    };
+    if let Some(j) = slot {
+        p.inventory.set(j, projectile);
+    }
+    if drawn.is_empty() {
+        return false;
+    }
+    crate::crossbow::set_charged(&mut weapon, &drawn);
+    p.inventory.set(i, weapon);
+    true
+}
+
+/// `CrossbowItem.performShooting` of a player (`use` with a loaded crossbow): critical arrows
+/// along the view, durability with Unbreaking.
+fn crossbow_shoot(
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    network_ids: &vanillite_world::entity::NetworkIds,
+    player: EntityId,
+    hand: Hand,
+) {
+    let i = hand_index(ents, player, hand);
+    let mut weapon = held(ents, player, hand);
+    let projectiles = crate::crossbow::charged(&weapon);
+    crate::crossbow::set_charged(&mut weapon, &[]);
+    if let Some(p) = ents.player_mut(player) {
+        p.inventory.set(i, weapon.clone());
+    }
+    if projectiles.is_empty() {
+        return;
+    }
+    let Some(e) = ents.store.get(player) else {
+        return;
+    };
+    let pos = e.pos();
+    let rot = e.rot();
+    let shooter = crate::crossbow::Shooter {
+        id: player,
+        pos,
+        eye_y: pos.y + 1.62 * f64::from(e.dims().height / 1.8),
+        x_rot: rot.x_rot,
+        y_rot: rot.y_rot,
+        player: true,
+        source: SoundSource::Players,
+    };
+    let creative = ents
+        .player(player)
+        .is_some_and(|p| p.game_mode == GameMode::Creative);
+    let power = crate::crossbow::shooting_power(&projectiles);
+    // The player's own random (`getRandom`) for the shot sounds.
+    let mut own = vanillite_base::random::LegacyRandom::new(crate::mob::new_entity_seed());
+    let random = &mut *env.random;
+    crate::crossbow::shoot(
+        ents,
+        network_ids,
+        env.out,
+        &mut own,
+        shooter,
+        &weapon,
+        &projectiles,
+        power,
+        1.0,
+        None,
+        |ents, amount| !creative && hurt_held(ents, random, player, i, amount),
+    );
+}
+
+/// `hurtAndBreak(amount)` of the stack in inventory slot `i` with Unbreaking; whether it
+/// broke.
+fn hurt_held(
+    ents: &mut Entities,
+    random: &mut vanillite_base::random::LegacyRandom,
+    player: EntityId,
+    i: usize,
+    amount: i32,
+) -> bool {
+    let Some(stack) = ents.player(player).map(|p| p.inventory.get(i).clone()) else {
+        return false;
+    };
+    if !item::is_damageable(&stack) {
+        return false;
+    }
+    let unbreaking = crate::player::play::game_data()
+        .map_or(0, |d| d.enchantment_level(&stack, "minecraft:unbreaking"));
+    let level = f32::from(i16::try_from(unbreaking.clamp(0, 255)).unwrap_or(0));
+    let mut points = amount;
+    if unbreaking > 0 {
+        for _ in 0..amount {
+            if random.next_float() < level / (level + 1.0) {
+                points = points.saturating_sub(1);
+            }
+        }
+    }
+    if points <= 0 {
+        return false;
+    }
+    let Some(s) = ents.player_mut(player).and_then(|p| p.inventory.get_mut(i)) else {
+        return false;
+    };
+    let d = item::damage(s).saturating_add(points);
+    if d >= item::max_damage(s) {
+        s.shrink(1);
+        true
+    } else {
+        item::set_damage(s, d);
+        false
+    }
+}
+
 /// `BowItem.getPowerForTime`.
 pub fn bow_power(ticks: i32) -> f32 {
     let f = f32::from(i16::try_from(ticks.clamp(0, 1000)).unwrap_or(0)) / 20.0;
@@ -589,8 +837,15 @@ pub fn release(
     let Some(u) = ents.player(player).and_then(|p| p.survival.using_item) else {
         return;
     };
-    stop(ents, player);
     let stack = held(ents, player, u.hand);
+    if stack.item == u.item && crate::crossbow::is_crossbow(&stack) {
+        // `useOnRelease`: one more `updatingUsingItem` (a crossbow loads when released just
+        // in time); `releaseUsing` itself changes nothing.
+        crossbow_use_tick(ents, env, player, u.hand, u.ticks);
+        stop(ents, player);
+        return;
+    }
+    stop(ents, player);
     if stack.item != u.item || item::item_id(&stack).name() != "minecraft:bow" {
         return;
     }
@@ -665,6 +920,12 @@ pub fn release(
         pitch,
         seed,
     );
+    if let Some(p) = ents.player_mut(player) {
+        p.stats.award(
+            crate::stats::Stat::of(crate::stats::StatType::Used, stack.item),
+            1,
+        );
+    }
     if !free
         && let Some(i) = arrow_slot
         && let Some(p) = ents.player_mut(player)
@@ -679,16 +940,18 @@ pub fn release(
         let level = f32::from(i16::try_from(unbreaking.clamp(0, 255)).unwrap_or(0));
         let keeps = unbreaking > 0 && env.random.next_float() >= 1.0 / (level + 1.0);
         let i = hand_index(ents, player, u.hand);
-        if !keeps
-            && let Some(p) = ents.player_mut(player)
-            && let Some(s) = p.inventory.get_mut(i)
-            && item::is_damageable(s)
-        {
-            let d = item::damage(s).saturating_add(1);
-            if d >= item::max_damage(s) {
-                s.shrink(1);
-            } else {
-                item::set_damage(s, d);
+        if !keeps && let Some(p) = ents.player_mut(player) {
+            let crate::player::PlayerData {
+                inventory,
+                advancements,
+                stats,
+                ..
+            } = p;
+            if let Some(s) = inventory.get_mut(i)
+                && item::is_damageable(s)
+            {
+                let d = item::damage(s).saturating_add(1);
+                crate::advancements::view::apply_damage(Some(advancements), Some(stats), s, d);
             }
         }
     }
@@ -713,6 +976,7 @@ mod tests {
             item: 1,
             ticks: 0,
             duration: 32,
+            crossbow: crate::crossbow::UseFlags::default(),
         };
         assert_eq!(living_flags(Some(u)), 3);
         assert_eq!(living_flags(None), 0);

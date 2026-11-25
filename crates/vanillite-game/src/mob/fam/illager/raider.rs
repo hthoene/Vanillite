@@ -139,14 +139,49 @@ pub fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
     }
 }
 
-/// `Raid.getOminousBannerInstance` without its patterns (the banner pattern registry is data
-/// driven): a white banner named "Ominous Banner", uncommon.
+/// The layers of the ominous banner (`Raid.getBannerComponentPatch`): pattern and dye colour.
+const OMINOUS_BANNER_LAYERS: [(&str, i32); 8] = [
+    ("rhombus", 9),
+    ("stripe_bottom", 8),
+    ("stripe_center", 7),
+    ("border", 8),
+    ("stripe_middle", 15),
+    ("half_horizontal", 8),
+    ("circle", 8),
+    ("border", 15),
+];
+
+/// `Raid.getOminousBannerInstance`: a white banner with the ominous patterns (`addIfRegistered`:
+/// patterns the loaded registry lacks are left out) hidden from the tooltip, named "Ominous
+/// Banner", uncommon.
 pub fn ominous_banner() -> ItemStack {
     let mut s = equipment::stack("minecraft:white_banner");
     if s.is_empty() {
         return s;
     }
     let reg = &vanillite_data::registry::DATA_COMPONENT_TYPE;
+    if let Some(data) = crate::player::play::game_data() {
+        for (name, color) in OMINOUS_BANNER_LAYERS {
+            let id = data
+                .banner_patterns
+                .names
+                .iter()
+                .position(|n| n.strip_prefix("minecraft:").unwrap_or(n) == name);
+            if let Some(id) = id.and_then(|i| u32::try_from(i).ok()) {
+                crate::menu::add_layer(&mut s, id, color);
+            }
+        }
+    }
+    if let (Some(display), Some(hidden)) = (
+        reg.id("minecraft:tooltip_display"),
+        reg.id("minecraft:banner_patterns"),
+    ) {
+        // `TooltipDisplay.DEFAULT.withHidden(BANNER_PATTERNS, true)`.
+        let mut value = vec![0u8];
+        vanillite_protocol::codec::write_varint(&mut value, 1);
+        vanillite_protocol::codec::write_varint(&mut value, i32::from(hidden));
+        s.patch_mut().set(display, value.into_boxed_slice());
+    }
     let mut name = Compound::new();
     name.insert("translate", "block.minecraft.ominous_banner");
     if let (Some(id), Some(value)) = (

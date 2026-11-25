@@ -270,6 +270,12 @@ impl GameWorld {
         level.settings.difficulty = difficulty;
         // The world starts at day time 0 unless the scenario sets one; time does not advance.
         let env = Environment::overworld(spec.time.unwrap_or(0), 0.0, 0.0);
+        // What spawner blocks and creaking hearts read when the block entities tick.
+        level.spawner_env = vanillite_game::block::spawner::SpawnerEnv {
+            env,
+            difficulty,
+            ..Default::default()
+        };
         let mut world = Self {
             level,
             spec: spec.clone(),
@@ -360,6 +366,8 @@ impl GameWorld {
         let has_players = !self.level.entities.players.is_empty();
         self.mobs
             .begin_tick(self.env, MobSettings::default(), has_players);
+        // What block entities (beehives) read of the world after the entities.
+        self.level.spawner_env.env = self.env;
         minecart::players_push(&mut self.level.entities);
         let mut cursor = self.level.entities.store.tick_cursor();
         while let Some(id) = self.level.entities.store.next_to_tick(&mut cursor) {
@@ -1035,6 +1043,7 @@ fn fam_goal_name(kind: Kind, goal: &FamGoal) -> &'static str {
         ("Wildlife", "Puff") => "PufferfishPuffGoal",
         ("Wildlife", "TurtleStroll") => "TurtleRandomStrollGoal",
         ("Wildlife", "BeeValidateFlower") => "ValidateFlowerGoal",
+        ("Wildlife", "BeeValidateHive") => "ValidateHiveGoal",
         (_, variant) => leak(if variant.ends_with("Goal") {
             variant.to_owned()
         } else {
@@ -1207,8 +1216,9 @@ fn apply_rules(
 }
 
 impl ScenarioWorld for GameWorld {
+    /// Like the recorder's `getChunkNow`, which puts the chunk into the chunk cache.
     fn is_loaded(&self, pos: BlockPos) -> bool {
-        self.level.is_loaded(pos)
+        self.level.is_loaded(pos) && self.level.chunks.chunk_now(pos.chunk())
     }
 
     fn set_forced(&mut self, chunks: &[ChunkPos], forced: bool) -> Result<(), String> {
@@ -1232,7 +1242,7 @@ impl ScenarioWorld for GameWorld {
     }
 
     /// `MinecraftServer.stopServer` (every chunk saved with its entities, block entities and
-    /// scheduled ticks, and the chunk tickets), then a new level on the saved chunks: the saved
+    /// scheduled ticks, the chunk tickets and the random sequences), then a new level on the saved chunks: the saved
     /// tickets come back and `prepareLevels` runs the chunk system until their chunks are full.
     /// The game time is kept like `level.dat` keeps it.
     fn restart(&mut self) -> Result<(), String> {
@@ -1250,8 +1260,29 @@ impl ScenarioWorld for GameWorld {
         );
         let tickets = vanillite_nbt::read::read_named(&mut bytes.as_slice(), budget)
             .map_err(|e| e.to_string())?;
+        // The server's random sequences (`random_sequences.dat`) the same way.
+        let sequences = vanillite_game::random_sequences::SAVED_DATA;
+        let saved = self
+            .level
+            .random_sequences()
+            .lock()
+            .map_err(|e| e.to_string())?
+            .to_nbt();
+        let mut bytes = Vec::new();
+        vanillite_nbt::write::write_named(sequences, &saved, &mut bytes)
+            .map_err(|e| e.to_string())?;
+        let budget = &mut vanillite_nbt::Budget::new(
+            vanillite_nbt::read::FILE_QUOTA,
+            vanillite_nbt::read::MAX_DEPTH,
+        );
+        let saved = vanillite_nbt::read::read_named(&mut bytes.as_slice(), budget)
+            .map_err(|e| e.to_string())?;
         let game_time = self.level.game_time();
         let (mut level, network_ids) = open_level(&self.spec, Arc::clone(&self.store))?;
+        level.spawner_env.env = self.env;
+        level.set_random_sequences(Arc::new(std::sync::Mutex::new(
+            vanillite_game::random_sequences::RandomSequences::load(self.spec.seed, &saved),
+        )));
         level.set_game_time(game_time);
         let Level { chunks, forced, .. } = &mut level;
         forced.load_tickets(chunks, &tickets);
@@ -1266,6 +1297,14 @@ impl ScenarioWorld for GameWorld {
             }
         }
         Err("the saved forced chunks do not load".to_owned())
+    }
+
+    fn bonemeal(&mut self, pos: BlockPos) -> Result<(), String> {
+        let bone_meal = vanillite_data::item::ItemId::by_name("minecraft:bone_meal")
+            .ok_or("no bone meal item")?;
+        let mut stack = vanillite_game::item::ItemStack::new(bone_meal.0, 1);
+        vanillite_game::block::bonemeal::grow_crop(&mut self.level, pos, &mut stack);
+        Ok(())
     }
 
     fn set_block_raw(&mut self, pos: BlockPos, state: BlockState) {
@@ -1288,6 +1327,7 @@ impl ScenarioWorld for GameWorld {
         let level = &mut self.level;
         level.tick_time();
         level.run_scheduled_ticks();
+        level.chunks.purge_stale_tickets();
         level.tick_chunk_runtime();
         level.post_process();
         let mut scratch = Vec::new();
@@ -1424,6 +1464,9 @@ impl ScenarioWorld for GameWorld {
             };
             combat::hurt(level, ents, env, cx, target, source, hurt.amount);
         });
+        // What the hurt queued (the death's game event reaches a sculk catalyst at once, like
+        // Vanilla's `gameEvent`).
+        self.apply_actions();
         self.finish_removals();
         self.spawn_drops();
         Ok(())

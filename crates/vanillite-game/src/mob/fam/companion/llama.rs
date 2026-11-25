@@ -11,7 +11,7 @@ use crate::entities::Entities;
 use crate::level::Level;
 use crate::mob::animal::Interaction;
 use crate::mob::common::{CommonGoal, TargetFilter};
-use crate::mob::fam::{Interact, SpawnReason};
+use crate::mob::fam::{GroupData, Interact, SpawnReason};
 use crate::mob::goals::{TargetState, flag, reduced};
 use crate::mob::kinds::Kind;
 use crate::mob::missile::{MissileData, MissileKind, MissileTick};
@@ -143,7 +143,13 @@ pub fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
     let max = if m.random.next_float() < 0.04 { 5 } else { 3 };
     let strength = 1 + m.random.next_int_bounded(max);
     st_mut(m).strength = strength.clamp(1, 5);
-    m.variant = m.random.next_int_bounded(4);
+    m.variant = if let GroupData::Llama(v) = ctx.group {
+        v
+    } else {
+        let v = m.random.next_int_bounded(4);
+        ctx.group = GroupData::Llama(v);
+        v
+    };
     let trader = m.kind == Kind::TraderLlama;
     if trader && ctx.reason == SpawnReason::Event {
         m.age = 0;

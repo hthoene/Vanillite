@@ -47,6 +47,9 @@ impl WorldUpdates {
             let packet = level_event(event.event, event.pos, event.data);
             send_near(entities, event.pos, event.source, &packet);
         }
+        for particles in output.particles.drain(..) {
+            send_particles(entities, &particles);
+        }
         if !self.per_chunk.is_empty() {
             for (_, player) in entities.players.iter() {
                 let chunks = &player.connection.chunks;
@@ -136,6 +139,7 @@ impl WorldUpdates {
             && reuse.block_events.is_empty()
             && reuse.level_events.is_empty()
             && reuse.sounds.is_empty()
+            && reuse.particles.is_empty()
             && reuse.explosions.is_empty()
             && reuse.global_level_events.is_empty()
         {
@@ -192,6 +196,35 @@ fn send_near(
 ) {
     let at = (f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
     send_within(entities, at, EVENT_RANGE, except, packet);
+}
+
+/// `ServerLevel.sendParticles`: to the players whose block centre is closer than 32 blocks
+/// (512 when the packet overrides the client's limiter).
+fn send_particles(
+    entities: &Entities,
+    particles: &vanillite_game::level::particles::LevelParticles,
+) {
+    let packet = SharedPacket::of(particles);
+    let range = if particles.override_limiter {
+        512.0
+    } else {
+        32.0
+    };
+    for (id, player) in entities.players.iter() {
+        let Some(entity) = entities.store.get(id) else {
+            continue;
+        };
+        // `BlockPos.closerToCenterThan`.
+        let p = entity.pos();
+        let (dx, dy, dz) = (
+            p.x.floor() + 0.5 - particles.x,
+            p.y.floor() + 0.5 - particles.y,
+            p.z.floor() + 0.5 - particles.z,
+        );
+        if dx * dx + dy * dy + dz * dz < range * range {
+            player.connection.sink.send_shared(&packet);
+        }
+    }
 }
 
 /// `PlayerList.broadcast(except, x, y, z, range, dimension, packet)`.
