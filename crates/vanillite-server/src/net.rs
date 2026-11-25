@@ -74,11 +74,8 @@ fn registry_index(packs: Option<&LoadedPacks>, registry: &str, entry: &str) -> u
         .unwrap_or(0)
 }
 
-/// Loads the data packs (the Vanilla pack from the cache in `dir`, downloaded once).
-pub(crate) fn load_packs(
-    pack: &VanillaPack,
-    dir: &Path,
-) -> Result<Option<LoadedPacks>, StartError> {
+/// The Vanilla data pack's root in the cache `cache` (downloaded once), if one is used.
+fn vanilla_root(pack: &VanillaPack, cache: &Path) -> Result<Option<PathBuf>, StartError> {
     Ok(match pack {
         VanillaPack::None => None,
         VanillaPack::Download | VanillaPack::Jar(_) => {
@@ -86,14 +83,25 @@ pub(crate) fn load_packs(
                 VanillaPack::Jar(jar) => Some(jar.as_path()),
                 _ => None,
             };
-            let cache = dir.join("cache");
-            let root = vanillite_datapack::vanilla::ensure_vanilla_pack(&cache, jar)
+            let root = vanillite_datapack::vanilla::ensure_vanilla_pack(cache, jar)
                 .map_err(|e| StartError::Io(format!("Vanilla data pack: {e}")))?;
-            let packs = vanillite_datapack::load(&[root.as_path()])
-                .map_err(|e| StartError::Io(format!("data packs: {e}")))?;
-            Some(packs)
+            Some(root)
         }
     })
+}
+
+/// Loads the Vanilla data pack alone (the Vanilla pack from the cache in `dir`, downloaded
+/// once).
+pub(crate) fn load_packs(
+    pack: &VanillaPack,
+    dir: &Path,
+) -> Result<Option<LoadedPacks>, StartError> {
+    let Some(root) = vanilla_root(pack, &dir.join("cache"))? else {
+        return Ok(None);
+    };
+    let packs = vanillite_datapack::load(&[root.as_path()])
+        .map_err(|e| StartError::Io(format!("data packs: {e}")))?;
+    Ok(Some(packs))
 }
 
 /// Selects and loads the data packs and prepares each world's players' side.
@@ -105,18 +113,7 @@ pub(crate) fn prepare(
     player_store: &PlayerDataStore,
 ) -> Result<Prepared, StartError> {
     let cache = dir.join("cache");
-    let vanilla = match pack {
-        VanillaPack::None => None,
-        VanillaPack::Download | VanillaPack::Jar(_) => {
-            let jar = match pack {
-                VanillaPack::Jar(jar) => Some(jar.as_path()),
-                _ => None,
-            };
-            let root = vanillite_datapack::vanilla::ensure_vanilla_pack(&cache, jar)
-                .map_err(|e| StartError::Io(format!("Vanilla data pack: {e}")))?;
-            Some(root)
-        }
-    };
+    let vanilla = vanilla_root(pack, &cache)?;
     let language = vanilla
         .as_deref()
         .map(|root| load_language(root, pack))

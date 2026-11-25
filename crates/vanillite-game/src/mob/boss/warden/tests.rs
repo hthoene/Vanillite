@@ -56,8 +56,6 @@ fn with_tick<R>(level: &mut Level, id: EntityId, f: impl FnOnce(&mut Tick<'_, '_
         let mut no_gateway = |_| false;
         let mut env = Env {
             hooks: &crate::hooks::NoHooks,
-            border: None,
-            display_name: &|name, _| vanillite_protocol::text::Component::text(name),
             types: &types,
             facts: &facts,
             blocks: &blocks,
@@ -70,6 +68,8 @@ fn with_tick<R>(level: &mut Level, id: EntityId, f: impl FnOnce(&mut Tick<'_, '_
             enter_gateway: &mut no_gateway,
             random: &mut random,
             out: &mut out,
+            border: None,
+            display_name: &|n: &str, _| vanillite_protocol::text::Component::text(n.to_owned()),
         };
         let mut t = Tick {
             level: level_ref,

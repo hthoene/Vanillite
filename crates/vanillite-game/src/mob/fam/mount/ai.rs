@@ -1609,7 +1609,7 @@ mod tests {
                 out: &mut out,
                 hooks: &hooks,
                 border: None,
-                display_name: &|name, _| vanillite_protocol::text::Component::text(name),
+                display_name: &|n: &str, _| vanillite_protocol::text::Component::text(n.to_owned()),
             };
             let mut cx = crate::mob::MobContext {
                 path_budget: u64::MAX,

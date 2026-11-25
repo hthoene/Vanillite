@@ -74,8 +74,6 @@ impl World {
         let mut no_gateway = |_| false;
         let mut env = Env {
             hooks: &crate::hooks::NoHooks,
-            border: None,
-            display_name: &|name, _| vanillite_protocol::text::Component::text(name),
             types: &self.types,
             facts: &self.facts,
             blocks: &NoBlocks,
@@ -88,6 +86,8 @@ impl World {
             enter_gateway: &mut no_gateway,
             random: &mut self.random,
             out: &mut self.out,
+            border: None,
+            display_name: &|n: &str, _| vanillite_protocol::text::Component::text(n.to_owned()),
         };
         let mut ents = std::mem::take(&mut self.level.entities);
         let r = f(&self.level, &mut ents, &mut env, &mut self.cx);
@@ -267,8 +267,6 @@ fn respawn_stages_take_604_ticks() {
         let mut no_gateway = |_| false;
         let mut env = Env {
             hooks: &crate::hooks::NoHooks,
-            border: None,
-            display_name: &|name, _| vanillite_protocol::text::Component::text(name),
             types,
             facts,
             blocks: &NoBlocks,
@@ -281,6 +279,8 @@ fn respawn_stages_take_604_ticks() {
             enter_gateway: &mut no_gateway,
             random,
             out,
+            border: None,
+            display_name: &|n: &str, _| vanillite_protocol::text::Component::text(n.to_owned()),
         };
         fight.tick_respawn(level, &mut env, cx);
         level.output().explosion_hurts.clear();

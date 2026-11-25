@@ -140,8 +140,6 @@ fn with_tick<R>(
     let mut no_gateway = |_| false;
     let mut env = Env {
         hooks: &crate::hooks::NoHooks,
-        border: None,
-        display_name: &|name, _| vanillite_protocol::text::Component::text(name),
         types: &types,
         facts: &facts,
         blocks: &NoBlocks,
@@ -154,6 +152,8 @@ fn with_tick<R>(
         enter_gateway: &mut no_gateway,
         random: &mut random,
         out: &mut out,
+        border: None,
+        display_name: &|n: &str, _| vanillite_protocol::text::Component::text(n.to_owned()),
     };
     let mut ents = std::mem::take(&mut level.entities);
     let r = {
@@ -237,8 +237,6 @@ fn skull_hit_withers_by_difficulty() {
         let mut no_gateway = |_| false;
         let mut env = Env {
             hooks: &crate::hooks::NoHooks,
-            border: None,
-            display_name: &|name, _| vanillite_protocol::text::Component::text(name),
             types: &types,
             facts: &facts,
             blocks: &NoBlocks,
@@ -251,6 +249,8 @@ fn skull_hit_withers_by_difficulty() {
             enter_gateway: &mut no_gateway,
             random: &mut random,
             out: &mut out,
+            border: None,
+            display_name: &|n: &str, _| vanillite_protocol::text::Component::text(n.to_owned()),
         };
         let mut ents = std::mem::take(&mut level.entities);
         {
@@ -328,8 +328,6 @@ fn powered_wither_ignores_arrows() {
         let mut no_gateway = |_| false;
         let mut env = Env {
             hooks: &crate::hooks::NoHooks,
-            border: None,
-            display_name: &|name, _| vanillite_protocol::text::Component::text(name),
             types: &types,
             facts: &facts,
             blocks: &NoBlocks,
@@ -342,6 +340,8 @@ fn powered_wither_ignores_arrows() {
             enter_gateway: &mut no_gateway,
             random: &mut random,
             out: &mut out,
+            border: None,
+            display_name: &|n: &str, _| vanillite_protocol::text::Component::text(n.to_owned()),
         };
         let mut ents = std::mem::take(&mut level.entities);
         let r = filter_hurt(level, &mut ents, &mut env, cx, wither, &source, 5.0);
