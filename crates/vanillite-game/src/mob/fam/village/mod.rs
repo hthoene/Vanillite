@@ -6,6 +6,7 @@
 //! counter, the 8 slot inventory) is [`Merchant`]; trading itself is in [`crate::trading`].
 
 pub mod ai;
+pub mod merchant;
 pub mod trader;
 pub mod villager;
 

@@ -24,4 +24,14 @@ pub enum NoGoal {}
 
 impl FamilyHooks for Hooks {
     type Goal = NoGoal;
+
+    fn interact(ix: &mut crate::mob::fam::Interact<'_, '_>) -> crate::mob::animal::Interaction {
+        super::merchant::interact(ix)
+    }
+}
+
+/// `Villager.getPlayerReputation`: the gossip about a player (`GossipContainer.getReputation`
+/// over every type).
+pub fn player_reputation(_m: &crate::mob::MobData, _player: u128) -> i32 {
+    0
 }
