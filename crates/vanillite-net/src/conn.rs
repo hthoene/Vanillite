@@ -752,7 +752,12 @@ impl Conn {
     /// resource pack, then joining (`finish_configuration`).
     fn next_task(&mut self, done: Task, info: &ClientInfo) -> Task {
         let config = &self.shared.config;
-        if done < Task::CodeOfConduct && !config.code_of_conduct.is_empty() {
+        // Clients of the multi-version layer older than 1.21.9 cannot show (or accept) it.
+        let shows_conduct = self
+            .adapter
+            .as_ref()
+            .is_none_or(|a| a.version().has_code_of_conduct());
+        if done < Task::CodeOfConduct && !config.code_of_conduct.is_empty() && shows_conduct {
             let text = config
                 .code_of_conduct
                 .get(&info.language.to_lowercase())

@@ -104,6 +104,7 @@ fn builds_and_uses_the_inventory(version: &'static Version) {
             yaw: 0.0,
             position: eye,
             head_yaw: 0.0,
+            move_vector: [0.0; 2],
             flags: 1 << input_flag::VERTICAL_COLLISION,
             tick,
             delta: [0.0; 3],
