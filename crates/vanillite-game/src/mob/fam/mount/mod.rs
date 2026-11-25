@@ -186,7 +186,11 @@ impl FamilyHooks for Hooks {
     fn ageable(kind: Kind) -> bool {
         matches!(
             kind,
-            Kind::Camel | Kind::CamelHusk | Kind::HappyGhast | Kind::Nautilus | Kind::ZombieNautilus
+            Kind::Camel
+                | Kind::CamelHusk
+                | Kind::HappyGhast
+                | Kind::Nautilus
+                | Kind::ZombieNautilus
         )
     }
 
@@ -337,9 +341,7 @@ impl FamilyHooks for Hooks {
             | Kind::Creaking
             | Kind::Allay
             | Kind::CopperGolem => 0.0,
-            Kind::Breeze => {
-                crate::mob::kinds::base_walk_target_value(true, level, env, pos)
-            }
+            Kind::Breeze => crate::mob::kinds::base_walk_target_value(true, level, env, pos),
             _ => crate::mob::kinds::base_walk_target_value(false, level, env, pos),
         }
     }
@@ -464,6 +466,7 @@ impl FamilyHooks for Hooks {
             Kind::HappyGhast => ghast::travel(t, input),
             Kind::Allay => allay::travel(t, input),
             Kind::Nautilus | Kind::ZombieNautilus => nautilus::travel(t, input),
+            Kind::Breeze => breeze::travel(t, input),
             _ => false,
         }
     }
@@ -570,10 +573,9 @@ impl FamilyHooks for Hooks {
     }
 
     fn pick_up_items(t: &mut Tick<'_, '_>) {
-        match t.mob_ref().kind {
-            Kind::Allay => allay::pick_up_items(t),
-            // The others never pick up loot.
-            _ => {}
+        // The others never pick up loot.
+        if t.mob_ref().kind == Kind::Allay {
+            allay::pick_up_items(t);
         }
     }
 
@@ -694,7 +696,10 @@ impl FamilyHooks for Hooks {
 
 /// Whether a missile kind belongs to this family.
 pub fn owns_missile(kind: MissileKind) -> bool {
-    matches!(kind, MissileKind::WindCharge | MissileKind::BreezeWindCharge)
+    matches!(
+        kind,
+        MissileKind::WindCharge | MissileKind::BreezeWindCharge
+    )
 }
 
 // --- Brain plug-ins (`brain::behavior::FamBehavior`, `brain::sensor::FamSensor`) ---------
@@ -702,11 +707,34 @@ pub fn owns_missile(kind: MissileKind) -> bool {
 use crate::mob::brain::behavior::Shape;
 use crate::mob::brain::{MemoryStatus, MemoryType};
 
-/// The family's brain behaviours.
+/// The family's brain behaviours (implemented in [`ai`]).
 #[derive(Clone, Copy, Debug)]
 pub enum Behavior {
-    /// Never runs (keeps the enum inhabited until the family has behaviours).
+    /// Never runs.
     Idle,
+    /// `CamelAi.RandomSitting(minimalPoseTimeSec)`.
+    CamelSitting { min_pose_ticks: i32 },
+    /// `GoAndGiveItemsToTarget` of allays.
+    GiveItems,
+    /// `StayCloseToTarget` of allays.
+    StayClose,
+    /// `ChargeAttack` of nautiluses.
+    Charge {
+        speed: f32,
+        zombie: bool,
+        start: Vec3,
+        velocity: Vec3,
+    },
+    /// The breeze's `Shoot`.
+    BreezeShoot,
+    /// The breeze's `LongJump`.
+    BreezeLongJump,
+    /// The breeze's `ShootWhenStuck`.
+    BreezeShootWhenStuck,
+    /// The breeze's `Slide`.
+    BreezeSlide,
+    /// The copper golem's `TransportItemsBetweenContainers` (its idle cooldown only).
+    GolemTransport,
 }
 
 /// The family's brain sensors.
@@ -714,36 +742,46 @@ pub enum Behavior {
 pub enum Sensor {
     /// Never ticks.
     Idle,
+    /// `BreezeAttackEntitySensor`.
+    BreezeAttackEntity,
 }
 
-pub fn sensor_scan_rate(_s: Sensor) -> i32 {
-    20
+pub fn sensor_scan_rate(s: Sensor) -> i32 {
+    ai::sensor_scan_rate(s)
 }
-pub fn sensor_requires(_s: &Sensor) -> &'static [MemoryType] {
-    &[]
+pub fn sensor_requires(s: &Sensor) -> &'static [MemoryType] {
+    ai::sensor_requires(s)
 }
-pub fn sensor_tick(_t: &mut Tick<'_, '_>, _s: Sensor) {}
-pub fn behavior_duration(_b: &Behavior) -> (i32, i32) {
-    (60, 60)
+pub fn sensor_tick(t: &mut Tick<'_, '_>, s: Sensor) {
+    ai::sensor_tick(t, s);
 }
-pub fn behavior_shape(_b: &Behavior) -> Shape {
-    Shape::OneShot
+pub fn behavior_duration(b: &Behavior) -> (i32, i32) {
+    ai::behavior_duration(b)
 }
-pub fn behavior_requirements(_b: &Behavior) -> &'static [(MemoryType, MemoryStatus)] {
-    &[]
+pub fn behavior_shape(b: &Behavior) -> Shape {
+    ai::behavior_shape(b)
 }
-pub fn behavior_no_timeout(_b: &Behavior) -> bool {
-    false
+pub fn behavior_requirements(b: &Behavior) -> &'static [(MemoryType, MemoryStatus)] {
+    ai::behavior_requirements(b)
 }
-pub fn behavior_check(_t: &mut Tick<'_, '_>, _b: &mut Behavior) -> bool {
-    true
+pub fn behavior_no_timeout(b: &Behavior) -> bool {
+    ai::behavior_no_timeout(b)
 }
-pub fn behavior_can_still_use(_t: &mut Tick<'_, '_>, _b: &mut Behavior, _now: i64) -> bool {
-    false
+pub fn behavior_check(t: &mut Tick<'_, '_>, b: &mut Behavior) -> bool {
+    ai::behavior_check(t, b)
 }
-pub fn behavior_start(_t: &mut Tick<'_, '_>, _b: &mut Behavior, _now: i64) {}
-pub fn behavior_tick(_t: &mut Tick<'_, '_>, _b: &mut Behavior, _now: i64) {}
-pub fn behavior_stop(_t: &mut Tick<'_, '_>, _b: &mut Behavior, _now: i64) {}
-pub fn behavior_trigger(_t: &mut Tick<'_, '_>, _b: &mut Behavior, _now: i64) -> bool {
-    false
+pub fn behavior_can_still_use(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) -> bool {
+    ai::behavior_can_still_use(t, b, now)
+}
+pub fn behavior_start(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) {
+    ai::behavior_start(t, b, now);
+}
+pub fn behavior_tick(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) {
+    ai::behavior_tick(t, b, now);
+}
+pub fn behavior_stop(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) {
+    ai::behavior_stop(t, b, now);
+}
+pub fn behavior_trigger(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) -> bool {
+    ai::behavior_trigger(t, b, now)
 }

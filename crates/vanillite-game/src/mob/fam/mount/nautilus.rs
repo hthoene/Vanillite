@@ -79,9 +79,7 @@ pub fn sound(m: &MobData, what: &str) -> &'static str {
         (Kind::ZombieNautilus, _, "hurt", true) => "minecraft:entity.zombie_nautilus.hurt",
         (Kind::ZombieNautilus, _, "hurt", false) => "minecraft:entity.zombie_nautilus.hurt_land",
         (Kind::ZombieNautilus, _, "death", true) => "minecraft:entity.zombie_nautilus.death",
-        (Kind::ZombieNautilus, _, "death", false) => {
-            "minecraft:entity.zombie_nautilus.death_land"
-        }
+        (Kind::ZombieNautilus, _, "death", false) => "minecraft:entity.zombie_nautilus.death_land",
         (Kind::ZombieNautilus, _, "dash", true) => "minecraft:entity.zombie_nautilus.dash",
         (Kind::ZombieNautilus, _, "dash", false) => "minecraft:entity.zombie_nautilus.dash_land",
         (Kind::ZombieNautilus, _, "dash_ready", true) => {
@@ -187,7 +185,15 @@ pub fn ai_step(t: &mut Tick<'_, '_>) {
             t.mob().air = 0;
             let kind = t.env.types.named("minecraft:dry_out");
             let id = t.id;
-            crate::mob::combat::hurt(t.level, t.ents, t.env, t.cx, id, DamageSource::of(kind), 2.0);
+            crate::mob::combat::hurt(
+                t.level,
+                t.ents,
+                t.env,
+                t.cx,
+                id,
+                DamageSource::of(kind),
+                2.0,
+            );
         }
     } else {
         t.mob().air = 300;
@@ -298,10 +304,14 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
         let name = crate::item::item_id(ix.stack).name();
         if name == "minecraft:saddle" && tame && !is_saddled(m) {
             if let Some(m) = ix.ents.mob_mut(ix.target) {
-                m.equipment.set(EquipmentSlot::Saddle, ix.stack.with_count(1));
+                m.equipment
+                    .set(EquipmentSlot::Saddle, ix.stack.with_count(1));
             }
             animal::use_item(ix.ents, ix.player, ix.hand);
-            let under = ix.ents.mob(ix.target).is_some_and(|m| m.fluids.eye_in_water);
+            let under = ix
+                .ents
+                .mob(ix.target)
+                .is_some_and(|m| m.fluids.eye_in_water);
             let s = if under {
                 "minecraft:item.nautilus_saddle_underwater_equip"
             } else {
@@ -423,6 +433,9 @@ mod tests {
         assert_eq!(sound(&m, "hurt"), "minecraft:entity.nautilus.hurt_land");
         m.fluids.eye_in_water = true;
         m.baby = true;
-        assert_eq!(sound(&m, "ambient"), "minecraft:entity.baby_nautilus.ambient");
+        assert_eq!(
+            sound(&m, "ambient"),
+            "minecraft:entity.baby_nautilus.ambient"
+        );
     }
 }

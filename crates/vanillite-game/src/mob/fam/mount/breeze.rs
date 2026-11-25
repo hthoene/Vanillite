@@ -2,8 +2,8 @@
 //! their brain (`BreezeAi` with `Shoot`, `LongJump`, `Slide`, `ShootWhenStuck`) is in
 //! [`super::ai`], their wind charges in [`super::wind`].
 
-use vanillite_base::random::RandomSource;
 use vanillite_base::Vec3;
+use vanillite_base::random::RandomSource;
 use vanillite_world::entity::Pose;
 
 use super::State;
@@ -17,6 +17,8 @@ pub struct Breeze {
     pub sound_tick: i32,
     /// `jumpTrailStartedTick`.
     pub jump_trail: i32,
+    /// `setDiscardFriction` during a long jump.
+    pub discard_friction: bool,
 }
 
 fn breeze_mut(m: &mut MobData) -> &mut Breeze {
@@ -104,4 +106,28 @@ pub fn within_inner_circle(t: &Tick<'_, '_>, target: Vec3) -> bool {
 /// `Breeze.canAttack`: players and iron golems only.
 pub fn can_attack_kind(t: &Tick<'_, '_>, id: vanillite_world::entity::EntityId) -> bool {
     t.ents.player(id).is_some() || t.ents.mob(id).is_some_and(|m| m.kind == Kind::IronGolem)
+}
+
+/// `setDiscardFriction`.
+pub fn set_discard_friction(m: &mut MobData, on: bool) {
+    breeze_mut(m).discard_friction = on;
+}
+
+/// `travelInAir` with `shouldDiscardFriction`: the long jump flies its parabola.
+pub fn travel(t: &mut Tick<'_, '_>, input: Vec3) -> bool {
+    let discard = matches!(super::state(t.mob_ref()), State::Breeze(b) if b.discard_friction);
+    let fluids = t.mob_ref().fluids;
+    if !discard || fluids.in_water() || fluids.in_lava() {
+        return false;
+    }
+    super::ghast::move_relative(t, 0.02, input);
+    let v = t.velocity();
+    crate::mob::living::move_self(t, v);
+    if !t.exists() {
+        return true;
+    }
+    let v = t.velocity();
+    let gravity = t.mob_ref().attrs.gravity;
+    t.set_velocity(Vec3::new(v.x, v.y - gravity, v.z));
+    true
 }

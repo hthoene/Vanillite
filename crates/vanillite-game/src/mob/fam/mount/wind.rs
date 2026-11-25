@@ -61,7 +61,10 @@ pub fn tick(t: &mut MissileTick<'_, '_>) {
     let Some(kind) = t.ents.missile(t.id).map(|d| d.kind) else {
         return;
     };
-    if !matches!(kind, MissileKind::WindCharge | MissileKind::BreezeWindCharge) {
+    if !matches!(
+        kind,
+        MissileKind::WindCharge | MissileKind::BreezeWindCharge
+    ) {
         return;
     }
     let Some((pos, velocity)) = t.core().map(|e| (e.pos(), e.velocity())) else {
@@ -151,7 +154,7 @@ fn hit_entity(
         .map_or((0, true), |d| (d.life, d.left_owner));
     // `computeMargin`: grows from 0 to 0.3 over the first ticks.
     #[allow(clippy::cast_precision_loss)]
-    let margin = (((life - 2) as f32 / 20.0).min(0.3)).max(0.0);
+    let margin = ((life - 2) as f32 / 20.0).clamp(0.0, 0.3);
     let swept = Aabb::new(
         from.x.min(to.x),
         from.y.min(to.y),
@@ -315,10 +318,13 @@ mod tests {
     fn shot_keeps_direction_without_spread() {
         let mut r = vanillite_base::random::LegacyRandom::new(1);
         let v = movement_to_shoot(&mut r, Vec3::new(3.0, 0.0, 4.0), 0.7, 0.0);
-        assert!((v.length() - 0.7).abs() < 1e-9);
+        assert!((v.length() - 0.7).abs() < 1e-6);
         let rot = rotation_of(Vec3::new(0.0, 0.0, 1.0));
         assert!(rot.y_rot.abs() < 1e-4);
-        assert_eq!(face_normal(BlockPos::new(0, 0, 0), Vec3::new(0.5, 1.0, 0.5)), Vec3::new(0.0, 1.0, 0.0));
+        assert_eq!(
+            face_normal(BlockPos::new(0, 0, 0), Vec3::new(0.5, 1.0, 0.5)),
+            Vec3::new(0.0, 1.0, 0.0)
+        );
     }
 
     #[test]

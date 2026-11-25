@@ -288,7 +288,13 @@ pub(crate) fn fill_held(
 }
 
 /// `hurtAndBreak(amount, player, hand)` of the stack in a hand.
-pub(crate) fn hurt_held(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, hand: Hand, amount: i32) {
+pub(crate) fn hurt_held(
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    player: EntityId,
+    hand: Hand,
+    amount: i32,
+) {
     if infinite(ents, player) {
         return;
     }

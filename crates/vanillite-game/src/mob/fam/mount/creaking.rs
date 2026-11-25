@@ -171,7 +171,9 @@ fn check_can_move(t: &mut Tick<'_, '_>) -> bool {
             if active {
                 return false;
             }
-            if t.other(p).is_some_and(|o| o.pos.distance_to_sqr(pos) < ACTIVATION_RANGE_SQR) {
+            if t.other(p)
+                .is_some_and(|o| o.pos.distance_to_sqr(pos) < ACTIVATION_RANGE_SQR)
+            {
                 activate(t, p);
                 return false;
             }
@@ -263,9 +265,7 @@ pub fn do_hurt_target(t: &mut Tick<'_, '_>, target: EntityId) -> bool {
 /// `hurtServer`: a heart-bound creaking only flinches (event 66) at living or projectile
 /// hits and players' damage, and tells its heart; other damage passes.
 pub fn hurt_filter(h: &mut Hurt<'_, '_>, amount: f32) -> Option<f32> {
-    let Some(m) = h.ents.mob(h.target) else {
-        return None;
-    };
+    let m = h.ents.mob(h.target)?;
     let c = creaking(m);
     let Some(_home) = c.home else {
         return Some(amount);

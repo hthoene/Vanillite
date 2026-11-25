@@ -161,7 +161,11 @@ fn apply_pose(t: &mut Tick<'_, '_>) {
     let sitting = is_sitting(t.mob_ref());
     let dims = dimensions(t.mob_ref());
     let mut e = t.core_mut();
-    e.set_pose(if sitting { Pose::Sitting } else { Pose::Standing });
+    e.set_pose(if sitting {
+        Pose::Sitting
+    } else {
+        Pose::Standing
+    });
     e.set_dims(dims);
     e.mark_data_dirty();
 }
@@ -211,7 +215,9 @@ pub fn can_change_pose(t: &Tick<'_, '_>) -> bool {
     let mut other = m.clone();
     camel_mut(&mut other).last_pose_change_tick = if is_sitting(m) { 0 } else { -1 };
     let dims = dimensions(&other);
-    let aabb = dims.bounding_box(t.pos()).inflate(-1.0e-7, -1.0e-7, -1.0e-7);
+    let aabb = dims
+        .bounding_box(t.pos())
+        .inflate(-1.0e-7, -1.0e-7, -1.0e-7);
     let mut scratch = Vec::new();
     crate::mob::physics::no_collision(t.level, &aabb, &mut scratch)
 }
@@ -219,6 +225,10 @@ pub fn can_change_pose(t: &Tick<'_, '_>) -> bool {
 /// `Camel.tick` after `LivingEntity.tick`: the dash ends on the ground, its cooldown runs
 /// out, sitting camels stand up in water.
 pub fn after_tick(t: &mut Tick<'_, '_>) {
+    // A camel loaded sitting gets its pose and box (`readAdditionalSaveData`).
+    if t.core().pose() != loaded_pose(t.mob_ref()) {
+        apply_pose(t);
+    }
     let on_ground = t.on_ground();
     let in_liquid = t.mob_ref().fluids.in_water() || t.mob_ref().fluids.in_lava();
     let passenger = t.ents.riding.vehicle_of(t.id).is_some();
@@ -334,7 +344,8 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
     // `ItemStack.interactLivingEntity`: saddles (`Equippable` with `#can_equip_saddle`).
     if name == "minecraft:saddle" && !baby && !is_saddled(m) {
         if let Some(m) = ix.ents.mob_mut(ix.target) {
-            m.equipment.set(EquipmentSlot::Saddle, ix.stack.with_count(1));
+            m.equipment
+                .set(EquipmentSlot::Saddle, ix.stack.with_count(1));
         }
         animal::use_item(ix.ents, ix.player, ix.hand);
         let s = if kind == Kind::CamelHusk {

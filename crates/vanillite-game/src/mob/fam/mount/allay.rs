@@ -34,13 +34,6 @@ pub struct Allay {
     /// `DATA_DANCING`.
     pub dancing: bool,
     pub jukebox_pos: Option<BlockPos>,
-    /// `LIKED_PLAYER` (kept here; the brain reads it).
-    pub liked_player: Option<u128>,
-    /// `ITEM_PICKUP_COOLDOWN_TICKS`.
-    pub pickup_cooldown: i32,
-    /// `LIKED_NOTEBLOCK_POSITION` and its cooldown.
-    pub liked_noteblock: Option<BlockPos>,
-    pub liked_noteblock_cooldown: i32,
 }
 
 /// The allay state of a mob.
@@ -157,8 +150,12 @@ pub fn custom_server_ai_step(t: &mut Tick<'_, '_>) {
 
 /// `hurtServer`: the liked player cannot hurt it.
 pub fn hurt_filter(h: &mut Hurt<'_, '_>, amount: f32) -> Option<f32> {
-    let liked = h.ents.mob(h.target).and_then(|m| allay(m).liked_player);
-    let cause = h.source.cause.and_then(|c| h.ents.store.get(c)).map(|e| e.uuid());
+    let liked = h.ents.mob(h.target).and_then(super::ai::liked_player);
+    let cause = h
+        .source
+        .cause
+        .and_then(|c| h.ents.store.get(c))
+        .map(|e| e.uuid());
     if liked.is_some() && liked == cause {
         return None;
     }
@@ -175,7 +172,8 @@ pub fn on_die(h: &mut Hurt<'_, '_>) {
     };
     let inv = std::mem::take(&mut allay_mut(m).inventory);
     let held = m.equipment.get(EquipmentSlot::MainHand).clone();
-    m.equipment.set(EquipmentSlot::MainHand, ItemStack::default());
+    m.equipment
+        .set(EquipmentSlot::MainHand, ItemStack::default());
     // The held item is guaranteed (`dropEquipment`), not by chance.
     m.equipment.set_drop_chance(EquipmentSlot::MainHand, 0.0);
     for stack in [inv, held] {
@@ -188,7 +186,11 @@ fn drop_at(env: &mut Env<'_>, pos: Vec3, stack: ItemStack) {
         return;
     }
     let r = &mut *env.random;
-    let velocity = Vec3::new(r.next_double() * 0.2 - 0.1, 0.2, r.next_double() * 0.2 - 0.1);
+    let velocity = Vec3::new(
+        r.next_double() * 0.2 - 0.1,
+        0.2,
+        r.next_double() * 0.2 - 0.1,
+    );
     let uuid = crate::mob::random_uuid(r);
     let y_rot = r.next_float() * 360.0;
     env.out.push(Effect::DropItem {
@@ -258,8 +260,7 @@ pub fn wants_to_pick_up(m: &MobData, rules: bool, stack: &ItemStack) -> bool {
 /// reach 1, 1, 1 and `InventoryCarrier.pickUpItem`.
 pub fn pick_up_items(t: &mut Tick<'_, '_>) {
     let m = t.mob_ref();
-    let a = allay(m);
-    if a.pickup_cooldown > 0
+    if super::ai::on_pickup_cooldown(m)
         || m.equipment.get(EquipmentSlot::MainHand).is_empty()
         || !m.is_alive()
         || m.dead
@@ -322,8 +323,9 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
     if held.is_empty() && !ix.stack.is_empty() {
         let uuid = ix.ents.store.get(ix.player).map(|e| e.uuid());
         if let Some(m) = ix.ents.mob_mut(ix.target) {
-            m.equipment.set(EquipmentSlot::MainHand, ix.stack.with_count(1));
-            allay_mut(m).liked_player = uuid;
+            m.equipment
+                .set(EquipmentSlot::MainHand, ix.stack.with_count(1));
+            super::ai::set_liked_player(m, uuid);
         }
         animal::use_item(ix.ents, ix.player, ix.hand);
         sound_for_player(ix, "minecraft:entity.allay.item_given");
@@ -337,10 +339,10 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
     if !held.is_empty() && main && ix.stack.is_empty() {
         let player_pos = ix.ents.store.get(ix.player).map(|e| e.pos());
         let inv = ix.ents.mob_mut(ix.target).map(|m| {
-            m.equipment.set(EquipmentSlot::MainHand, ItemStack::default());
-            let a = allay_mut(m);
-            a.liked_player = None;
-            std::mem::take(&mut a.inventory)
+            m.equipment
+                .set(EquipmentSlot::MainHand, ItemStack::default());
+            super::ai::set_liked_player(m, None);
+            std::mem::take(&mut allay_mut(m).inventory)
         });
         sound_for_player(ix, "minecraft:entity.allay.item_taken");
         if let (Some(inv), Some(p)) = (inv, player_pos) {
@@ -482,7 +484,8 @@ mod tests {
     fn wants_only_its_item() {
         let mut m = MobData::new(Kind::Allay, 1);
         assert!(!wants_to_pick_up(&m, true, &stack("minecraft:stone", 1)));
-        m.equipment.set(EquipmentSlot::MainHand, stack("minecraft:stone", 1));
+        m.equipment
+            .set(EquipmentSlot::MainHand, stack("minecraft:stone", 1));
         assert!(wants_to_pick_up(&m, true, &stack("minecraft:stone", 3)));
         assert!(!wants_to_pick_up(&m, true, &stack("minecraft:dirt", 3)));
         assert!(!wants_to_pick_up(&m, false, &stack("minecraft:stone", 3)));

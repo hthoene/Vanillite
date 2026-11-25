@@ -2,8 +2,8 @@
 //! axes scrape it back), turn into a statue when fully oxidized, lose their antenna item to
 //! shears and sort items between chests with their brain (in [`super::ai`]).
 
-use vanillite_base::random::RandomSource;
 use vanillite_base::BlockPos;
+use vanillite_base::random::RandomSource;
 use vanillite_nbt::{Compound, Tag};
 
 use super::State;
@@ -204,8 +204,7 @@ fn turn_to_statue(t: &mut Tick<'_, '_>) {
     if let Some(s) = state.with("facing", facing) {
         state = s;
     }
-    t.cx
-        .actions
+    t.cx.actions
         .push(WorldAction::SetBlock(pos, state, crate::level::update::ALL));
     // `dropPreservedEquipment`.
     let pos_v = t.pos();
@@ -263,7 +262,8 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
     if ix.stack.is_empty() && !held.is_empty() {
         let player_pos = ix.ents.store.get(ix.player).map_or(pos, |e| e.pos());
         if let Some(m) = ix.ents.mob_mut(ix.target) {
-            m.equipment.set(EquipmentSlot::MainHand, ItemStack::default());
+            m.equipment
+                .set(EquipmentSlot::MainHand, ItemStack::default());
         }
         super::allay::throw_item(
             ix.ents,
@@ -285,9 +285,16 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
         let antenna = ix
             .ents
             .mob_mut(ix.target)
-            .map(|m| std::mem::take(&mut m.equipment.items[usize::from(EquipmentSlot::Saddle.ordinal())]))
+            .map(|m| {
+                std::mem::take(&mut m.equipment.items[usize::from(EquipmentSlot::Saddle.ordinal())])
+            })
             .unwrap_or_default();
-        crate::mob::combat::mob_sound(ix.ents, ix.env, ix.target, "minecraft:entity.copper_golem.shear");
+        crate::mob::combat::mob_sound(
+            ix.ents,
+            ix.env,
+            ix.target,
+            "minecraft:entity.copper_golem.shear",
+        );
         drop_above(ix, pos, antenna);
         animal::hurt_held(ix.ents, ix.env, ix.player, ix.hand, 1);
         return Interaction::Success;

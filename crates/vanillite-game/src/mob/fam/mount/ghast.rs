@@ -260,7 +260,10 @@ fn player_above(t: &Tick<'_, '_>) -> bool {
         while let Some(v) = t.ents.vehicle_of(root) {
             root = v;
         }
-        if t.ents.mob(root).is_some_and(|m| m.kind == crate::mob::Kind::HappyGhast) {
+        if t.ents
+            .mob(root)
+            .is_some_and(|m| m.kind == crate::mob::Kind::HappyGhast)
+        {
             return;
         }
         if let Some(e) = t.ents.store.get(root)
@@ -417,8 +420,16 @@ fn can_reach(t: &Tick<'_, '_>, travel: Vec3) -> bool {
 
 /// Calls `f` for every block of a box (`BlockPos.betweenClosed`); stops at the first `false`.
 fn for_each_block(b: Aabb, mut f: impl FnMut(BlockPos) -> bool) -> bool {
-    let (x0, y0, z0) = (b.min_x.floor() as i32, b.min_y.floor() as i32, b.min_z.floor() as i32);
-    let (x1, y1, z1) = (b.max_x.floor() as i32, b.max_y.floor() as i32, b.max_z.floor() as i32);
+    let (x0, y0, z0) = (
+        b.min_x.floor() as i32,
+        b.min_y.floor() as i32,
+        b.min_z.floor() as i32,
+    );
+    let (x1, y1, z1) = (
+        b.max_x.floor() as i32,
+        b.max_y.floor() as i32,
+        b.max_z.floor() as i32,
+    );
     for x in x0..=x1 {
         for y in y0..=y1 {
             for z in z0..=z1 {
@@ -484,9 +495,7 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
         return Interaction::Pass;
     };
     if m.baby {
-        return animal::animal_interact(
-            ix.ents, ix.env, ix.player, ix.target, ix.hand, ix.stack,
-        );
+        return animal::animal_interact(ix.ents, ix.env, ix.player, ix.target, ix.hand, ix.stack);
     }
     let name = crate::item::item_id(ix.stack).name();
     if name.ends_with("_harness") && !harnessed(m) {
@@ -574,8 +583,7 @@ fn tempting_player(t: &Tick<'_, '_>) -> Option<EntityId> {
         let Some(pd) = t.ents.player(id) else {
             return;
         };
-        if pd.game_mode == vanillite_config::GameMode::Spectator || pd.survival.is_dead_or_dying()
-        {
+        if pd.game_mode == vanillite_config::GameMode::Spectator || pd.survival.is_dead_or_dying() {
             return;
         }
         let holds = [EquipmentSlot::MainHand, EquipmentSlot::OffHand]
