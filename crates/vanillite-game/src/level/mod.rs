@@ -741,6 +741,30 @@ impl Level {
         }
     }
 
+    /// `getBlockState(pos)` with the chunk loaded first like Vanilla: a chunk that is not
+    /// accessible is loaded or generated synchronously and stays accessible for a tick
+    /// ([`Level::load_chunk`]). [`Level::block`] reads without loading.
+    pub fn block_loading(&mut self, pos: BlockPos) -> BlockState {
+        if self.in_height(pos.y) {
+            self.load_chunk(pos.chunk());
+        }
+        self.block(pos)
+    }
+
+    /// `getChunk(x, z)` (`ServerChunkCache.getChunk(x, z, FULL, true)`): a chunk that is not
+    /// accessible gets a temporary `unknown` ticket and is loaded or generated while the
+    /// world thread waits; chunks that became live get their block entities.
+    #[inline]
+    pub fn load_chunk(&mut self, chunk: ChunkPos) {
+        if self.chunks.load_now(chunk) {
+            let mut promoted = Vec::new();
+            self.chunks.take_promoted(&mut promoted);
+            for chunk in promoted {
+                self.load_block_entities(chunk);
+            }
+        }
+    }
+
     /// `getFluidState(pos)`.
     #[inline]
     pub fn fluid(&self, pos: BlockPos) -> FluidState {
@@ -941,6 +965,8 @@ impl Level {
         if !self.in_height(pos.y) {
             return false;
         }
+        // `getChunkAt(pos)` loads the chunk.
+        self.load_chunk(pos.chunk());
         // `LevelChunk.setBlockState`.
         let Some(old) = self.chunks.set_block(pos, state.0).map(BlockState) else {
             return false;
