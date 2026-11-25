@@ -523,10 +523,10 @@ pub fn look_at_can_use(t: &mut Tick<'_, '_>, l: &mut LookAt) -> bool {
             continue;
         };
         let pos = e.pos();
-        let invisible = t.ents.mob(id).is_some_and(|m| {
-            m.effects
-                .has(super::super::super::effects::id::INVISIBILITY)
-        });
+        let invisible = t
+            .ents
+            .mob(id)
+            .is_some_and(|m| m.effects.has(crate::effect::id::INVISIBILITY));
         let visible = (d * if invisible { 0.07 } else { 1.0 }).max(2.0);
         if p.distance_to_sqr(pos) > visible * visible || !has_line_of_sight(t, id) {
             continue;

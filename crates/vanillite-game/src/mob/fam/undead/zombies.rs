@@ -9,6 +9,7 @@ use vanillite_nbt::{Compound, Tag};
 use vanillite_world::entity::{Dimensions, EntityFlags, EntityId};
 
 use super::{Goal, HurtBy, Melee, State, goal, level_event, sound, state, state_mut};
+use crate::effect as effects;
 use crate::item::{EquipmentSlot, ItemStack};
 use crate::level::Level;
 use crate::mob::animal::Interaction;
@@ -17,7 +18,7 @@ use crate::mob::equipment::{self, PickupRules};
 use crate::mob::fam::{ExtraMob, Hurt, Interact, Relation, SpawnContext, SpawnReason};
 use crate::mob::goals::{self, MeleeKind};
 use crate::mob::nav::{self, MoveKind, NavKind};
-use crate::mob::{Environment, Kind, MobData, Tick, effects, kinds, randompos};
+use crate::mob::{Environment, Kind, MobData, Tick, kinds, randompos};
 use crate::player::encode::{DataWriter, serializer};
 use crate::survival::rules::Difficulty;
 

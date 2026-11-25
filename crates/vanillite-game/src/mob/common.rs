@@ -195,7 +195,7 @@ pub fn test_combat(t: &mut Tick<'_, '_>, target: EntityId, range: f64, must_see:
         let invisible = t
             .ents
             .mob(target)
-            .is_some_and(|m| m.effects.has(super::effects::id::INVISIBILITY));
+            .is_some_and(|m| m.effects.has(crate::effect::id::INVISIBILITY));
         let modifier = if invisible { 0.07 } else { 1.0 };
         let visible = (range * modifier).max(2.0);
         if t.pos().distance_to_sqr(e.pos()) > visible * visible {

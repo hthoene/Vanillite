@@ -5,13 +5,13 @@ use vanillite_base::random::RandomSource;
 use vanillite_world::entity::EntityId;
 
 use super::super::super::common::{self, CommonGoal};
-use super::super::super::effects::id;
 use super::super::super::goals::Goal as MobGoal;
 use super::super::super::missile::{MissileData, MissileKind};
 use super::super::super::{MobData, Tick, living, missile, projectile};
 use super::potion::{self, Potion};
 use super::raider::{self, Ignore};
 use super::{Gate, Goal, dirty, fam, is_raider, look_at_player, sound, st, st_mut};
+use crate::effect::id;
 use crate::item::EquipmentSlot;
 use crate::survival::damage::{DamageSource, DamageTypes, tag};
 
@@ -68,7 +68,7 @@ pub fn ai_step_start(t: &mut Tick<'_, '_>) {
                 && crate::item::item_id(&held).name() == "minecraft:potion"
             {
                 for e in p.effects() {
-                    super::super::super::effects::add(t.mob(), e);
+                    crate::effect::add(t.mob(), e);
                 }
             }
             if let Some(speed) = speed {

@@ -1153,9 +1153,10 @@ impl LookControl {
     }
 }
 
-/// `setLookAt(x, y, z)` with the mob's head speed (10) and pitch limit (40).
+/// `setLookAt(x, y, z)` with the mob's head speed (10) and pitch limit (`getMaxHeadXRot`).
 pub fn look_at(t: &mut Tick<'_, '_>, at: Vec3) {
-    t.mob().look.set_look_at(at, 10.0, 40.0);
+    let x_max = t.mob_ref().kind.max_head_x_rot();
+    t.mob().look.set_look_at(at, 10.0, x_max);
 }
 
 /// `LookControl.tick`.

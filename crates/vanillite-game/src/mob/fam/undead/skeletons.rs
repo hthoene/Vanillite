@@ -7,11 +7,12 @@ use vanillite_nbt::{Compound, Tag};
 use vanillite_world::entity::{Dimensions, EntityId};
 
 use super::{Goal, Melee, State, goal, level_event, state, state_mut};
+use crate::effect as effects;
+use crate::effect::EffectInstance;
 use crate::item::{EquipmentSlot, ItemStack};
 use crate::level::Level;
 use crate::mob::animal::Interaction;
 use crate::mob::common::{self, CommonGoal};
-use crate::mob::effects::{self, EffectInstance};
 use crate::mob::equipment::{self, PickupRules};
 use crate::mob::fam::{Hurt, Interact, SpawnContext, SpawnReason};
 use crate::mob::goals::{self, MeleeKind};

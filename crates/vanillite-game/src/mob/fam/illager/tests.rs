@@ -13,7 +13,7 @@ use crate::survival::damage::{
 };
 use crate::survival::rules::Difficulty;
 
-const KINDS: [Kind; 11] = [
+const KINDS: [Kind; 10] = [
     Kind::Witch,
     Kind::Pillager,
     Kind::Vindicator,
@@ -21,7 +21,6 @@ const KINDS: [Kind; 11] = [
     Kind::Illusioner,
     Kind::Vex,
     Kind::Ravager,
-    Kind::Guardian,
     Kind::Ghast,
     Kind::Blaze,
     Kind::Shulker,
@@ -62,10 +61,6 @@ fn every_kind_has_goals_and_state() {
     assert!(has_goal(&MobData::new(Kind::Shulker, 1), |g| matches!(
         g,
         Goal::ShulkerPeek { .. }
-    )));
-    assert!(has_goal(&MobData::new(Kind::Guardian, 1), |g| matches!(
-        g,
-        Goal::GuardianAttack { .. }
     )));
     // Every raider patrols.
     for kind in [
@@ -275,10 +270,6 @@ fn synched_data_ids() {
     );
     assert_eq!(written_ids(&MobData::new(Kind::Ravager, 1), true), vec![16]);
     assert_eq!(written_ids(&MobData::new(Kind::Vex, 1), true), vec![16]);
-    assert_eq!(
-        written_ids(&MobData::new(Kind::Guardian, 1), true),
-        vec![16, 17]
-    );
     assert_eq!(written_ids(&MobData::new(Kind::Ghast, 1), true), vec![16]);
     assert_eq!(written_ids(&MobData::new(Kind::Blaze, 1), true), vec![16]);
     assert_eq!(
@@ -342,11 +333,9 @@ fn fireball_flight_and_bullet_shapes() {
 fn kind_properties() {
     let g = MobData::new(Kind::Ghast, 13);
     assert_eq!(Hooks::sound_volume(Kind::Ghast), 5.0);
-    assert_eq!(Hooks::ambient_sound_interval(Kind::Guardian), 160);
     assert_eq!(st(&g).explosion_power, 1);
     assert!(Hooks::fall_damage_immune(Kind::Blaze));
     assert!(Hooks::sensitive_to_water(Kind::Blaze));
-    assert!(Hooks::breathes_underwater(Kind::Guardian));
     let shulker = MobData::new(Kind::Shulker, 1);
     assert_eq!(Hooks::ambient_sound(&shulker), None);
     assert_eq!(

@@ -30,7 +30,7 @@ pub fn visibility_percent(t: &Tick<'_, '_>, id: EntityId) -> f64 {
         v *= 0.8;
     }
     if let Some(m) = t.ents.mob(id)
-        && m.effects.has(super::super::effects::id::INVISIBILITY)
+        && m.effects.has(crate::effect::id::INVISIBILITY)
     {
         let worn = [
             EquipmentSlot::Feet,

@@ -11,9 +11,9 @@ use vanillite_base::{BlockPos, Vec3};
 use vanillite_nbt::Compound;
 
 use super::{Goal, block_tags, st, st_mut};
+use crate::effect::id as effect;
 use crate::mob::animal::{Interaction, animal_interact, use_item};
 use crate::mob::common::{self, CommonGoal};
-use crate::mob::effects::id as effect;
 use crate::mob::fam::{FamGoal, Interact};
 use crate::mob::goals::{Goal as MobGoal, MeleeKind, TemptItems, reduced};
 use crate::mob::kinds::{self, Kind};

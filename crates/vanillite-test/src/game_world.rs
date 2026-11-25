@@ -365,10 +365,38 @@ impl GameWorld {
                     } else {
                         BlockInteraction::Destroy
                     };
-                    self.level
-                        .explode(e.source, e.source, e.pos, e.radius, interaction);
+                    self.level.explode_with(
+                        e.source,
+                        e.indirect.or(e.source),
+                        e.pos,
+                        e.radius,
+                        interaction,
+                        vanillite_game::level::explosion::ExplosionStyle {
+                            resistance: e.resistance,
+                            ..Default::default()
+                        },
+                    );
                     self.explosion_hurts();
                 }
+                WorldAction::ExplodeWith {
+                    source,
+                    indirect,
+                    pos,
+                    radius,
+                    blocks,
+                } => {
+                    let interaction = if !blocks {
+                        BlockInteraction::Keep
+                    } else if self.rules.bool(Rule::BLOCK_EXPLOSION_DROP_DECAY) {
+                        BlockInteraction::DestroyWithDecay
+                    } else {
+                        BlockInteraction::Destroy
+                    };
+                    self.level
+                        .explode(source, indirect, pos, radius, interaction);
+                    self.explosion_hurts();
+                }
+                WorldAction::Level(action) => action.apply(&mut self.level),
                 WorldAction::SetBlock(pos, block, flags) => {
                     self.level.set_block(pos, block, flags);
                 }
@@ -397,6 +425,7 @@ impl GameWorld {
                             damages_entities: false,
                             knockback: b.knockback,
                             wind_sound: Some(b.sound),
+                            ..Default::default()
                         },
                     );
                 }
@@ -710,6 +739,25 @@ fn goal_name(goal: &Goal) -> &'static str {
         Goal::OwnerHurt { .. } => "OwnerHurtTargetGoal",
         Goal::Common(c) => common_goal_name(c),
         Goal::Fam(f) => fam_goal_name(f),
+        Goal::Guardian(g) => {
+            use vanillite_game::mob::boss::guardian::GuardianGoal as Gg;
+            match g {
+                Gg::Attack { .. } => "GuardianAttackGoal",
+                Gg::MoveTowardsRestriction { .. } => "MoveTowardsRestrictionGoal",
+                Gg::Stroll { .. } => "RandomStrollGoal",
+                Gg::LookAtGuardian { .. } => "LookAtPlayerGoal",
+                Gg::Target { .. } => "NearestAttackableTargetGoal",
+            }
+        }
+        Goal::Wither(w) => {
+            use vanillite_game::mob::boss::wither::WitherGoal as Wg;
+            match w {
+                Wg::DoNothing => "WitherDoNothingGoal",
+                Wg::RangedAttack { .. } => "RangedAttackGoal",
+                Wg::RandomFly { .. } => "WaterAvoidingRandomFlyingGoal",
+                Wg::NearestLiving { .. } => "NearestAttackableTargetGoal",
+            }
+        }
     }
 }
 

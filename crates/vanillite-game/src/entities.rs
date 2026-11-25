@@ -11,6 +11,7 @@ use vanillite_base::hash::FxHashMap;
 
 use crate::item_entity::ItemData;
 use crate::mob::MobData;
+use crate::mob::boss::special::{SpecialData, is_special_kind};
 use crate::mob::projectile::{ArrowData, OrbData};
 use crate::player::PlayerData;
 
@@ -73,6 +74,8 @@ pub struct Entities {
     pub knots: Dense<BlockPos>,
     /// Projectile kind data besides arrows (every type of [`crate::mob::missile::MissileKind`]).
     pub missiles: Dense<crate::mob::missile::MissileData>,
+    /// Kind data of the bosses' non-living entities (skulls, crystals, fireballs, clouds).
+    pub specials: Dense<SpecialData>,
 }
 
 /// Who rides what (`Entity.vehicle`, `Entity.passengers`).
@@ -211,9 +214,17 @@ impl Entities {
     /// Adds a mob.
     pub fn spawn_mob(&mut self, new: NewEntity, data: MobData) -> EntityId {
         let network_id = new.network_id.0;
+        let parts = if data.kind == crate::mob::Kind::EnderDragon {
+            8
+        } else {
+            0
+        };
         let mobs = &mut self.mobs;
         let id = self.store.spawn(new, |id| mobs.push(id, data));
         self.by_network_id.insert(network_id, id);
+        for i in 1..=parts {
+            self.by_network_id.insert(network_id.wrapping_add(i), id);
+        }
         id
     }
 
@@ -256,6 +267,72 @@ impl Entities {
         }
         let row = entity.kind_row();
         self.missiles.get_mut(row)
+    }
+
+    /// Adds a special entity (see [`crate::mob::boss::special`]).
+    pub fn spawn_special(&mut self, new: NewEntity, data: SpecialData) -> EntityId {
+        let network_id = new.network_id.0;
+        let specials = &mut self.specials;
+        let id = self.store.spawn(new, |id| specials.push(id, data));
+        // End crystals are attacked by players.
+        self.by_network_id.insert(network_id, id);
+        id
+    }
+
+    /// The special data of an entity.
+    pub fn special(&self, id: EntityId) -> Option<&SpecialData> {
+        let entity = self.store.get(id)?;
+        if !is_special_kind(entity.kind()) {
+            return None;
+        }
+        self.specials.get(entity.kind_row())
+    }
+
+    /// The special data of an entity, mutably.
+    pub fn special_mut(&mut self, id: EntityId) -> Option<&mut SpecialData> {
+        let entity = self.store.get(id)?;
+        if !is_special_kind(entity.kind()) {
+            return None;
+        }
+        let row = entity.kind_row();
+        self.specials.get_mut(row)
+    }
+
+    /// `addEffect` on a living entity (player or mob): merges it and, for players, tells the
+    /// client. `can_be_affected` is the target's `canBeAffected` verdict (checked by the
+    /// caller for kinds with immunities). Returns whether it was added or changed.
+    pub fn add_effect(
+        &mut self,
+        id: EntityId,
+        effect: crate::effect::EffectInstance,
+        can_be_affected: bool,
+    ) -> bool {
+        if !can_be_affected {
+            return false;
+        }
+        if let Some(m) = self.mob_mut(id) {
+            return crate::effect::add(m, effect);
+        }
+        let Entities { store, players, .. } = self;
+        let Some(entity) = store.get_mut(id) else {
+            return false;
+        };
+        if entity.as_ref().kind() != ids::PLAYER {
+            return false;
+        }
+        let row = entity.as_ref().kind_row();
+        let Some(p) = players.get_mut(row) else {
+            return false;
+        };
+        crate::survival::player::add_effect(&entity, p, effect)
+    }
+
+    /// The active effects of a living entity (player or mob).
+    pub fn effects(&self, id: EntityId) -> Option<&crate::effect::MobEffects> {
+        if let Some(m) = self.mob(id) {
+            return Some(&m.effects);
+        }
+        self.player(id).map(|p| &p.survival.effects)
     }
 
     /// The mob data of an entity.
@@ -351,6 +428,12 @@ impl Entities {
         let removed = self.store.despawn(id)?;
         if self.by_network_id.get(&removed.network_id.0) == Some(&id) {
             self.by_network_id.remove(&removed.network_id.0);
+            if removed.kind == ids::ENDER_DRAGON {
+                for i in 1..=8 {
+                    self.by_network_id
+                        .remove(&removed.network_id.0.wrapping_add(i));
+                }
+            }
         }
         let moved = self.remove_kind_row(removed.kind, removed.kind_row);
         if let Some(moved) = moved {
@@ -426,6 +509,8 @@ impl Entities {
             self.mobs.swap_remove(row).and_then(|(_, moved)| moved)
         } else if crate::mob::missile::is_missile_kind(kind) {
             self.missiles.swap_remove(row).and_then(|(_, moved)| moved)
+        } else if is_special_kind(kind) {
+            self.specials.swap_remove(row).and_then(|(_, moved)| moved)
         } else if kind == ids::TNT {
             self.primed_tnts
                 .swap_remove(row)

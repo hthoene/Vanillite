@@ -25,10 +25,11 @@ use vanillite_protocol::packets::play::clientbound::SoundSource;
 use vanillite_world::entity::{Dimensions, EntityId};
 
 use super::{FamilyHooks, Hurt, Interact, SpawnContext, SpawnReason};
+use crate::effect as effects;
+use crate::effect::EffectInstance;
 use crate::level::Level;
 use crate::mob::animal::Interaction;
 use crate::mob::common::MoveToBlock;
-use crate::mob::effects::{self, EffectInstance};
 use crate::mob::kinds::{DefaultSound, Kind};
 use crate::mob::missile::{MissileData, MissileTick};
 use crate::mob::path::{MalusTable, PathType};
@@ -294,7 +295,10 @@ pub(crate) fn add_effect(
     amplifier: u8,
 ) {
     if let Some(m) = ents.mob_mut(target) {
-        effects::add(m, EffectInstance::new(effect, duration, amplifier));
+        effects::add(
+            m,
+            EffectInstance::new(effect, duration, i32::from(amplifier)),
+        );
     }
 }
 

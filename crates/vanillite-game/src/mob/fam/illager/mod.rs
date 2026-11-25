@@ -1,4 +1,4 @@
-//! Raiders (witch, pillager, vindicator, evoker, illusioner, ravager), vexes, guardians,
+//! Raiders (witch, pillager, vindicator, evoker, illusioner, ravager), vexes,
 //! ghasts, blazes and shulkers, with their projectiles (fireballs, shulker bullets, evoker
 //! fangs, thrown potions) and the pillager patrols.
 //!
@@ -8,7 +8,6 @@
 
 pub mod blaze;
 pub mod ghast;
-pub mod guardian;
 pub mod missiles;
 pub mod patrol;
 pub mod pillager;
@@ -82,10 +81,6 @@ pub struct State {
     pub attack_tick: i32,
     pub stunned_tick: i32,
     pub roar_tick: i32,
-    // Guardian.
-    pub moving: bool,
-    /// Network id of the beam target (`DATA_ID_ATTACK_TARGET`, 0 = none).
-    pub beam_target: i32,
     /// `randomStrollGoal.trigger()`.
     pub stroll_triggered: bool,
     // Ghast.
@@ -136,8 +131,6 @@ impl Default for State {
             attack_tick: 0,
             stunned_tick: 0,
             roar_tick: 0,
-            moving: false,
-            beam_target: 0,
             stroll_triggered: false,
             ghast_charging: false,
             explosion_power: 1,
@@ -219,8 +212,6 @@ pub enum Goal {
     VexRandomMove,
     /// `VexCopyOwnerTargetGoal`.
     VexCopyOwner(TargetState),
-    /// `GuardianAttackGoal`.
-    GuardianAttack { attack_time: i32 },
     /// `Ghast.RandomFloatAroundGoal`.
     GhastFloat,
     /// `Ghast.GhastLookGoal`.
@@ -331,14 +322,6 @@ impl FamilyHooks for Hooks {
 
     type Goal = Goal;
 
-    fn ambient_sound_interval(kind: Kind) -> i32 {
-        if kind == Kind::Guardian { 160 } else { 80 }
-    }
-
-    fn breathes_underwater(kind: Kind) -> bool {
-        kind == Kind::Guardian
-    }
-
     fn sensitive_to_water(kind: Kind) -> bool {
         kind == Kind::Blaze
     }
@@ -354,11 +337,9 @@ impl FamilyHooks for Hooks {
             (PathType::FireInNeighbor, 0.0),
             (PathType::Fire, 0.0),
         ];
-        const GUARDIAN: &MalusTable = &[(PathType::Water, 0.0)];
         const RAVAGER: &MalusTable = &[(PathType::Leaves, 0.0)];
         match kind {
             Kind::Blaze => BLAZE,
-            Kind::Guardian => GUARDIAN,
             Kind::Ravager => RAVAGER,
             _ => &[],
         }
@@ -370,9 +351,6 @@ impl FamilyHooks for Hooks {
 
     fn ambient_sound(m: &MobData) -> Option<&'static str> {
         match m.kind {
-            Kind::Guardian if !m.fluids.in_water() => {
-                Some("minecraft:entity.guardian.ambient_land")
-            }
             Kind::Shulker if st(m).peek == 0 => None,
             _ => Some(m.kind.default_sound(DefaultSound::Ambient)),
         }
@@ -380,22 +358,18 @@ impl FamilyHooks for Hooks {
 
     fn hurt_sound(m: &MobData) -> &'static str {
         match m.kind {
-            Kind::Guardian if !m.fluids.in_water() => "minecraft:entity.guardian.hurt_land",
             Kind::Shulker if st(m).peek == 0 => "minecraft:entity.shulker.hurt_closed",
             _ => m.kind.default_sound(DefaultSound::Hurt),
         }
     }
 
     fn death_sound(m: &MobData) -> &'static str {
-        match m.kind {
-            Kind::Guardian if !m.fluids.in_water() => "minecraft:entity.guardian.death_land",
-            _ => m.kind.default_sound(DefaultSound::Death),
-        }
+        m.kind.default_sound(DefaultSound::Death)
     }
 
     fn experience_reward(m: &mut MobData) -> i32 {
         let base = match m.kind {
-            Kind::Evoker | Kind::Guardian | Kind::Blaze => 10,
+            Kind::Evoker | Kind::Blaze => 10,
             Kind::Ravager => 20,
             Kind::Vex => 3,
             _ => 5,
@@ -419,10 +393,6 @@ impl FamilyHooks for Hooks {
     fn walk_target_value(kind: Kind, level: &Level, env: &Environment, pos: BlockPos) -> f64 {
         match kind {
             Kind::Pillager => 0.0,
-            Kind::Guardian if super::super::is_water(level.block(pos)) => {
-                let cost = f64::from(super::super::light_magic_value(level, env, pos) - 0.5);
-                10.0 + cost
-            }
             _ => super::super::kinds::base_walk_target_value(true, level, env, pos),
         }
     }
@@ -444,7 +414,6 @@ impl FamilyHooks for Hooks {
             Kind::Blaze => check_mob_spawn_rules(kind, level, pos, reason),
             Kind::Shulker => check_mob_spawn_rules(kind, level, pos, reason),
             Kind::Ghast => ghast::check_spawn_rules(kind, level, pos, random, reason),
-            Kind::Guardian => guardian::check_spawn_rules(level, pos, random, reason),
             _ => check_monster_spawn_rules(kind, level, env, pos, random, reason),
         }
     }
@@ -452,10 +421,6 @@ impl FamilyHooks for Hooks {
     fn init(m: &mut MobData) {
         m.ext = Ext::Illager(State::default());
         match m.kind {
-            Kind::Guardian => {
-                m.nav.kind = NavKind::Water { breaching: false };
-                m.move_ctl.kind = MoveKind::Custom;
-            }
             Kind::Vex => {
                 m.move_ctl.kind = MoveKind::Custom;
             }
@@ -479,7 +444,6 @@ impl FamilyHooks for Hooks {
             Kind::Evoker | Kind::Illusioner => spellcaster::register_goals(m),
             Kind::Ravager => ravager::register_goals(m),
             Kind::Vex => vex::register_goals(m),
-            Kind::Guardian => guardian::register_goals(m),
             Kind::Ghast => ghast::register_goals(m),
             Kind::Blaze => blaze::register_goals(m),
             Kind::Shulker => shulker::register_goals(m),
@@ -553,7 +517,6 @@ impl FamilyHooks for Hooks {
     fn ai_step_start(t: &mut Tick<'_, '_>) {
         match t.mob_ref().kind {
             Kind::Witch => witch::ai_step_start(t),
-            Kind::Guardian => guardian::ai_step_start(t),
             Kind::Blaze => blaze::ai_step_start(t),
             _ => {}
         }
@@ -599,10 +562,6 @@ impl FamilyHooks for Hooks {
                 vex::travel(t, input);
                 true
             }
-            Kind::Guardian if t.mob_ref().fluids.in_water() => {
-                guardian::travel_in_water(t, input);
-                true
-            }
             Kind::Shulker => {
                 t.set_velocity(Vec3::ZERO);
                 true
@@ -615,7 +574,6 @@ impl FamilyHooks for Hooks {
         match t.mob_ref().kind {
             Kind::Ghast => ghast::move_control(t),
             Kind::Vex => vex::move_control(t),
-            Kind::Guardian => guardian::move_control(t),
             _ => return false,
         }
         true
@@ -652,10 +610,6 @@ impl FamilyHooks for Hooks {
             Kind::Vex if h.source.kind == h.env.types.in_wall => None,
             Kind::Ghast => ghast::hurt_filter(h, amount),
             Kind::Shulker => shulker::hurt_filter(h, amount),
-            Kind::Guardian => {
-                guardian::thorns(h);
-                Some(amount)
-            }
             _ => Some(amount),
         }
     }
@@ -671,14 +625,8 @@ impl FamilyHooks for Hooks {
         let Some(kind) = h.ents.mob(h.target).map(|m| m.kind) else {
             return;
         };
-        match kind {
-            Kind::Shulker => shulker::after_hurt(h, amount),
-            Kind::Guardian => {
-                if let Some(m) = h.ents.mob_mut(h.target) {
-                    st_mut(m).stroll_triggered = true;
-                }
-            }
-            _ => {}
+        if kind == Kind::Shulker {
+            shulker::after_hurt(h, amount);
         }
     }
 
@@ -692,10 +640,6 @@ impl FamilyHooks for Hooks {
             Kind::Pillager => w.boolean(17, s.charging_crossbow, false),
             Kind::Evoker | Kind::Illusioner => w.byte(17, s.spell, 0),
             Kind::Vex => w.byte(16, s.vex_flags, 0),
-            Kind::Guardian => {
-                w.boolean(16, s.moving, false);
-                w.int(17, s.beam_target, 0);
-            }
             Kind::Ghast => w.boolean(16, s.ghast_charging, false),
             Kind::Blaze => w.byte(16, s.blaze_flags, 0),
             Kind::Shulker => {
@@ -832,7 +776,6 @@ impl FamilyHooks for Hooks {
             Goal::HoldGround { .. }
             | Goal::Crossbow(_)
             | Goal::SpellCasting
-            | Goal::GuardianAttack { .. }
             | Goal::BlazeAttack(_)
             | Goal::ShulkerAttack { .. } => MOVE | LOOK,
             Goal::HurtBy(_) | Goal::Target { .. } | Goal::VexCopyOwner(_) => TARGET,
@@ -846,7 +789,6 @@ impl FamilyHooks for Hooks {
             Goal::HoldGround { .. }
             | Goal::Crossbow(_)
             | Goal::VexCharge
-            | Goal::GuardianAttack { .. }
             | Goal::GhastLook
             | Goal::GhastShoot { .. }
             | Goal::BlazeAttack(_)
@@ -891,9 +833,6 @@ impl FamilyHooks for Hooks {
             Goal::VexCharge => vex::charge_can_use(t),
             Goal::VexRandomMove => vex::random_move_can_use(t),
             Goal::VexCopyOwner(_) => vex::copy_owner_can_use(t),
-            Goal::GuardianAttack { .. } => {
-                t.mob_ref().target.is_some_and(|id| t.other(id).is_some())
-            }
             Goal::GhastFloat => ghast::float_can_use(t),
             Goal::GhastLook => true,
             Goal::GhastShoot { .. } => t.mob_ref().target.is_some(),
@@ -916,7 +855,6 @@ impl FamilyHooks for Hooks {
             Goal::VexCharge => vex::charge_can_continue(t),
             Goal::VexRandomMove | Goal::GhastFloat => false,
             Goal::VexCopyOwner(state) => goals::target_can_continue(t, state),
-            Goal::GuardianAttack { .. } => guardian::attack_can_continue(t),
             Goal::ShulkerPeek { peek_time } => t.mob_ref().target.is_none() && *peek_time > 0,
             _ => Self::goal_can_use(t, g),
         }
@@ -951,7 +889,6 @@ impl FamilyHooks for Hooks {
             Goal::Spell(s) => spellcaster::start(t, s),
             Goal::VexCharge => vex::charge_start(t),
             Goal::VexCopyOwner(state) => vex::copy_owner_start(t, state),
-            Goal::GuardianAttack { attack_time } => guardian::attack_start(t, attack_time),
             Goal::GhastFloat => ghast::float_start(t),
             Goal::GhastShoot { charge_time } => *charge_time = 0,
             Goal::BlazeAttack(a) => a.attack_step = 0,
@@ -990,7 +927,6 @@ impl FamilyHooks for Hooks {
                 goals::set_target(t, None);
                 state.target_mob = None;
             }
-            Goal::GuardianAttack { .. } => guardian::attack_stop(t),
             Goal::GhastShoot { .. } => ghast::set_charging(t, false),
             Goal::BlazeAttack(a) => {
                 blaze::set_charged(t, false);
@@ -1016,7 +952,6 @@ impl FamilyHooks for Hooks {
             Goal::Spell(s) => spellcaster::tick(t, s),
             Goal::VexCharge => vex::charge_tick(t),
             Goal::VexRandomMove => vex::random_move_tick(t),
-            Goal::GuardianAttack { attack_time } => guardian::attack_tick(t, attack_time),
             Goal::GhastLook => ghast::face_movement_direction(t),
             Goal::GhastShoot { charge_time } => ghast::shoot_tick(t, charge_time),
             Goal::BlazeAttack(a) => blaze::attack_tick(t, a),

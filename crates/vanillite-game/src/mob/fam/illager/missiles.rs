@@ -12,7 +12,6 @@ use vanillite_data::block::ids;
 use vanillite_nbt::{Compound, Tag};
 use vanillite_world::entity::{EntityFlags, EntityId};
 
-use super::super::super::effects::{self, EffectInstance, id};
 use super::super::super::kinds::Kind;
 use super::super::super::missile::{MissileData, MissileKind, MissileTick};
 use super::super::super::physics::{self, Blocks};
@@ -20,6 +19,8 @@ use super::super::super::projectile::{lerp_rotation, segment_box};
 use super::super::super::{ExplosionRequest, WorldAction, atan2_deg, combat, is_water};
 use super::potion::{self, Potion};
 use super::{is_illager, st};
+use crate::effect as effects;
+use crate::effect::{EffectInstance, id};
 use crate::entities::Entities;
 use crate::level::Level;
 use crate::player::encode::DataWriter;
@@ -308,9 +309,11 @@ fn fireball_hit(t: &mut MissileTick<'_, '_>, d: &MissileData, hit: Hit, at: Vec3
         let radius = d.explosion_power as f32;
         t.cx.actions.push(WorldAction::Explode(ExplosionRequest {
             source: Some(me),
+            indirect: d.owner,
             pos: at,
             radius,
             mob: true,
+            resistance: crate::level::explosion::BlockResistance::Default,
         }));
     }
     discard(t);
@@ -768,7 +771,7 @@ fn instant(
         .ents
         .mob(target)
         .is_some_and(|m| !effects::can_be_affected(m, id::REGENERATION));
-    let amp = u32::from(effect.amplifier.min(20));
+    let amp = u32::try_from(effect.amplifier.clamp(0, 20)).unwrap_or(0);
     if harm == undead {
         #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
         let amount = (scale * f64::from(4u32 << amp) + 0.5) as i32 as f32;

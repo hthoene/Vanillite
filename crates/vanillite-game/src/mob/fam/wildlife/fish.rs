@@ -9,11 +9,11 @@ use vanillite_nbt::{Compound, Tag};
 use vanillite_world::entity::{EntityFlags, EntityId};
 
 use super::{Goal, SEA_LEVEL, add_effect, rotlerp, st, st_mut};
+use crate::effect::id as effect;
 use crate::item::ItemStack;
 use crate::level::Level;
 use crate::mob::animal::{Interaction, fill_held};
 use crate::mob::common::CommonGoal;
-use crate::mob::effects::id as effect;
 use crate::mob::fam::{Interact, SpawnContext};
 use crate::mob::goals::{self, Goal as MobGoal, reduced};
 use crate::mob::kinds::Kind;

@@ -47,6 +47,7 @@ pub enum SensorKind {
 pub enum FamSensor {
     Brainy(crate::mob::fam::brainy::Sensor),
     Mount(crate::mob::fam::mount::Sensor),
+    Warden(crate::mob::boss::warden::ai::Sensor),
 }
 
 /// A sensor with its countdown.
@@ -63,6 +64,9 @@ impl SensorState {
             SensorKind::Mob { scan_rate, .. } => scan_rate,
             SensorKind::Fam(FamSensor::Brainy(s)) => crate::mob::fam::brainy::sensor_scan_rate(s),
             SensorKind::Fam(FamSensor::Mount(s)) => crate::mob::fam::mount::sensor_scan_rate(s),
+            SensorKind::Fam(FamSensor::Warden(s)) => {
+                crate::mob::boss::warden::ai::sensor_scan_rate(s)
+            }
             _ => 20,
         };
         SensorState {
@@ -96,6 +100,7 @@ pub fn requires(kind: &SensorKind) -> &'static [MemoryType] {
         SensorKind::Mob { memory, .. } => mob_sensor_requires(*memory),
         SensorKind::Fam(FamSensor::Brainy(s)) => crate::mob::fam::brainy::sensor_requires(s),
         SensorKind::Fam(FamSensor::Mount(s)) => crate::mob::fam::mount::sensor_requires(s),
+        SensorKind::Fam(FamSensor::Warden(s)) => crate::mob::boss::warden::ai::sensor_requires(s),
     }
 }
 
@@ -151,6 +156,7 @@ pub fn tick(t: &mut Tick<'_, '_>, kind: SensorKind) {
         }
         SensorKind::Fam(FamSensor::Brainy(s)) => crate::mob::fam::brainy::sensor_tick(t, s),
         SensorKind::Fam(FamSensor::Mount(s)) => crate::mob::fam::mount::sensor_tick(t, s),
+        SensorKind::Fam(FamSensor::Warden(s)) => crate::mob::boss::warden::ai::sensor_tick(t, s),
     }
 }
 

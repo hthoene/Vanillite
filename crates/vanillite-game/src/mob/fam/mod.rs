@@ -8,6 +8,7 @@
 //! Dispatch is a `match` on [`Family`] with static calls: no dynamic dispatch on the hot path.
 //! A family keeps its kind state in [`Ext`] and its goals in [`FamGoal`].
 
+pub mod boss;
 pub mod brainy;
 pub mod companion;
 pub mod illager;
@@ -42,7 +43,7 @@ pub enum Family {
     Classic,
     /// Zombie and skeleton variants, small monsters, cubes, phantoms.
     Undead,
-    /// Raiders, vexes, guardians, ghasts, blazes, shulkers.
+    /// Raiders, vexes, ghasts, blazes, shulkers.
     Illager,
     /// Brain AI mobs: piglins, hoglins, goats, axolotls, frogs, armadillos, sniffers.
     Brainy,
@@ -53,6 +54,8 @@ pub enum Family {
     Companion,
     /// Bees, turtles, mooshrooms, striders, golems, bats, squids, dolphins, fish.
     Wildlife,
+    /// Guardians, the wither, the ender dragon and the warden (`crate::mob::boss`).
+    Boss,
 }
 
 /// Why a mob spawns (`EntitySpawnReason`).
@@ -568,6 +571,7 @@ macro_rules! by_family {
             Family::Mount => <mount::Hooks as FamilyHooks>::$f($($arg),*),
             Family::Companion => <companion::Hooks as FamilyHooks>::$f($($arg),*),
             Family::Wildlife => <wildlife::Hooks as FamilyHooks>::$f($($arg),*),
+            Family::Boss => <boss::Hooks as FamilyHooks>::$f($($arg),*),
         }
     };
 }
@@ -870,6 +874,7 @@ macro_rules! by_missile {
             Family::Mount => <mount::Hooks as FamilyHooks>::$f($($arg),*),
             Family::Companion => <companion::Hooks as FamilyHooks>::$f($($arg),*),
             Family::Wildlife => <wildlife::Hooks as FamilyHooks>::$f($($arg),*),
+            Family::Boss => <boss::Hooks as FamilyHooks>::$f($($arg),*),
         }
     };
 }

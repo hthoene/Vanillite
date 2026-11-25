@@ -111,7 +111,6 @@ kinds! {
     Illusioner "illusioner" ILLUSIONER Illager;
     Vex "vex" VEX Illager;
     Ravager "ravager" RAVAGER Illager;
-    Guardian "guardian" GUARDIAN Illager;
     Ghast "ghast" GHAST Illager;
     Blaze "blaze" BLAZE Illager;
     Shulker "shulker" SHULKER Illager;
@@ -163,6 +162,11 @@ kinds! {
     Salmon "salmon" SALMON Wildlife;
     Pufferfish "pufferfish" PUFFERFISH Wildlife;
     TropicalFish "tropical_fish" TROPICAL_FISH Wildlife;
+    Guardian "guardian" GUARDIAN Boss;
+    ElderGuardian "elder_guardian" ELDER_GUARDIAN Boss;
+    Wither "wither" WITHER Boss;
+    EnderDragon "ender_dragon" ENDER_DRAGON Boss;
+    Warden "warden" WARDEN Boss;
 }
 
 /// The default sounds of a kind (`minecraft:entity.<name>.<suffix>`).
@@ -247,6 +251,9 @@ impl Kind {
                 | Kind::Piglin
                 | Kind::PiglinBrute
                 | Kind::Guardian
+                | Kind::ElderGuardian
+                | Kind::Wither
+                | Kind::Warden
         ) || self.is_raider()
     }
 
@@ -271,6 +278,20 @@ impl Kind {
             self,
             Kind::Zombie | Kind::Skeleton | Kind::Creeper | Kind::Spider | Kind::Enderman
         )
+    }
+
+    /// `getMaxHeadXRot`: the pitch limit of `LookControl.setLookAt(x, y, z)`.
+    pub fn max_head_x_rot(self) -> f32 {
+        match self {
+            Kind::Guardian | Kind::ElderGuardian => 180.0,
+            _ => 40.0,
+        }
+    }
+
+    /// The bosses (`requiresCustomPersistence`, never despawn): the wither and the ender
+    /// dragon.
+    pub fn is_boss(self) -> bool {
+        matches!(self, Kind::Wither | Kind::EnderDragon)
     }
 
     /// `getAmbientSoundInterval`.
@@ -848,6 +869,10 @@ pub fn play_sound(t: &mut Tick<'_, '_>, sound: &str, volume: f32, pitch: f32) {
 
 /// `playAmbientSound`.
 pub fn play_ambient_sound(t: &mut Tick<'_, '_>) {
+    if t.mob_ref().kind == Kind::Warden {
+        super::boss::warden::play_ambient_sound(t);
+        return;
+    }
     if let Some(sound) = ambient_sound(t.mob_ref()) {
         let id = t.id;
         combat::mob_sound(t.ents, t.env, id, sound);
@@ -905,9 +930,11 @@ fn explode_creeper(t: &mut Tick<'_, '_>) {
     let id = t.id;
     t.cx.actions.push(WorldAction::Explode(ExplosionRequest {
         source: Some(id),
+        indirect: None,
         pos,
         radius,
         mob: true,
+        resistance: crate::level::explosion::BlockResistance::Default,
     }));
 }
 
@@ -1314,6 +1341,9 @@ const fn meat(item: &'static str, min: i32, max: i32, smelted: &'static str) -> 
 /// The items of `entities/<kind>` of the 26.3 loot tables without looting: one pool per
 /// entry. `killed_by_player`, `on_fire` and the sheep's wool decide the conditional parts.
 pub fn death_loot(m: &mut MobData, killed_by_player: bool) -> Vec<crate::item::ItemStack> {
+    if m.kind.family() == fam::Family::Boss {
+        return super::boss::death_loot(m, killed_by_player);
+    }
     let pools: &[Drop] = match m.kind {
         Kind::Zombie => &[drop("minecraft:rotten_flesh", 0, 2)],
         Kind::Skeleton => &[drop("minecraft:arrow", 0, 2), drop("minecraft:bone", 0, 2)],

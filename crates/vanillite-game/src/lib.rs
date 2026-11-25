@@ -10,7 +10,9 @@
 //! - [`mob`]: mobs and animals: physics, path finding, goals, combat and spawning.
 
 pub mod block;
+pub mod boss_bar;
 pub mod commands;
+pub mod effect;
 pub mod enchant;
 pub mod entities;
 pub mod hooks;

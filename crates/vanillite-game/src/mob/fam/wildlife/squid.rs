@@ -7,8 +7,8 @@ use vanillite_base::{BlockPos, Vec3};
 use vanillite_world::entity::Rotation;
 
 use super::{Goal, SEA_LEVEL, st, st_mut};
+use crate::effect::id as effect;
 use crate::level::Level;
-use crate::mob::effects::id as effect;
 use crate::mob::fam::{FamGoal, Hurt};
 use crate::mob::goals::{Goal as MobGoal, reduced};
 use crate::mob::kinds::Kind;

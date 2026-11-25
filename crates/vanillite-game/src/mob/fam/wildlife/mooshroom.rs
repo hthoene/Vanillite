@@ -8,10 +8,10 @@ use vanillite_protocol::packets::play::clientbound::SoundSource;
 use vanillite_world::entity::Rotation;
 
 use super::{st, st_mut};
+use crate::effect::id as effect;
 use crate::item::ItemStack;
 use crate::mob::MobData;
 use crate::mob::animal::{Interaction, animal_interact, fill_held, hurt_held, sound_at, use_item};
-use crate::mob::effects::id as effect;
 use crate::mob::fam::{Hurt, Interact};
 use crate::mob::goals::{Goal as MobGoal, TemptItems};
 use crate::mob::kinds::Kind;
@@ -267,7 +267,7 @@ pub(super) fn save(m: &MobData, out: &mut Compound) {
     let s = st(m);
     out.insert("Type", if s.variant == 1 { "brown" } else { "red" });
     if let Some((effect, duration)) = s.stew_effects
-        && let Some(name) = crate::mob::effects::id::name(effect)
+        && let Some(name) = crate::effect::id::name(effect)
     {
         let mut c = Compound::new();
         c.insert("id", name);

@@ -319,13 +319,9 @@ pub fn update_activity(t: &mut Tick<'_, '_>) {
             if let Some(z) = convert_to(t, Kind::Zoglin, true, false)
                 && let Some(m) = t.ents.mob_mut(z)
             {
-                crate::mob::effects::add(
+                crate::effect::add(
                     m,
-                    crate::mob::effects::EffectInstance::new(
-                        crate::mob::effects::id::NAUSEA,
-                        200,
-                        0,
-                    ),
+                    crate::effect::EffectInstance::new(crate::effect::id::NAUSEA, 200, 0),
                 );
             }
         }
@@ -372,7 +368,7 @@ pub fn ai_step(t: &mut Tick<'_, '_>) {
     let m = t.mob();
     let expected = if m.baby { 0.5 } else { 6.0 };
     #[allow(clippy::float_cmp)]
-    if m.attrs.attack_damage != expected && !m.effects.has(crate::mob::effects::id::STRENGTH) {
+    if m.attrs.attack_damage != expected && !m.effects.has(crate::effect::id::STRENGTH) {
         age_boundary(m);
     }
 }

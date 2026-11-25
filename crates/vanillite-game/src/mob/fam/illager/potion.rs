@@ -3,7 +3,7 @@
 use vanillite_protocol::codec::write_varint;
 use vanillite_protocol::components::ids;
 
-use super::super::super::effects::{EffectInstance, id};
+use crate::effect::{EffectInstance, id};
 use crate::item::ItemStack;
 
 /// A potion of the `minecraft:potion` registry that mobs use.

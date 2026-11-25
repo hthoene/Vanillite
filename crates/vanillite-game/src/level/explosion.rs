@@ -40,6 +40,16 @@ pub enum BlockInteraction {
     TriggerBlock,
 }
 
+/// The exploding entity's `getBlockExplosionResistance` override.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BlockResistance {
+    /// The block's and fluid's own resistance.
+    #[default]
+    Default,
+    /// `WitherSkull` (dangerous): at most 0.8 for blocks the wither can destroy.
+    DangerousWitherSkull,
+}
+
 /// An explosion for the clients (`ClientboundExplodePacket`), sent to players within 64 blocks.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExplosionEvent {
@@ -67,6 +77,8 @@ pub struct ExplosionStyle {
     pub knockback: f64,
     /// The wind charge burst sound, see [`ExplosionEvent::wind_sound`].
     pub wind_sound: Option<&'static str>,
+    /// The source's block resistance override.
+    pub resistance: BlockResistance,
 }
 
 impl Default for ExplosionStyle {
@@ -75,6 +87,7 @@ impl Default for ExplosionStyle {
             damages_entities: true,
             knockback: 1.0,
             wind_sound: None,
+            resistance: BlockResistance::Default,
         }
     }
 }
@@ -131,7 +144,7 @@ impl Level {
     ) -> usize {
         let context = super::game_event::GameEventContext::of(source);
         self.game_event(super::game_event::events().explode, center, context);
-        let mut targets = self.exploded_positions(center, radius);
+        let mut targets = self.exploded_positions(center, radius, style.resistance);
         let hit_players = self.hurt_entities(source, indirect, center, radius, style);
         if interaction != BlockInteraction::Keep {
             self.interact_with_blocks(&mut targets, indirect, interaction, radius);
@@ -150,7 +163,12 @@ impl Level {
 
     /// `calculateExplodedPositions`: the blocks the rays reach, in the iteration order of
     /// Vanilla's `HashSet<BlockPos>`.
-    fn exploded_positions(&mut self, center: Vec3, radius: f32) -> Vec<BlockPos> {
+    fn exploded_positions(
+        &mut self,
+        center: Vec3,
+        radius: f32,
+        override_resistance: BlockResistance,
+    ) -> Vec<BlockPos> {
         let mut seen = FxHashSet::default();
         let mut positions = Vec::new();
         for xx in 0..16 {
@@ -179,11 +197,16 @@ impl Level {
                         let fluid = state.fluid_state();
                         // `ExplosionDamageCalculator.getBlockExplosionResistance`.
                         if !(state.is_air() && fluid.is_empty()) {
-                            let resistance = state
+                            let mut resistance = state
                                 .block()
                                 .info()
                                 .blast_resistance
                                 .max(fluid.info().explosion_resistance);
+                            if override_resistance == BlockResistance::DangerousWitherSkull {
+                                resistance = crate::mob::boss::wither::skull_block_resistance(
+                                    true, state, resistance,
+                                );
+                            }
                             power -= (resistance + 0.3) * 0.3;
                         }
                         if power > 0.0 && seen.insert(pos) {
@@ -286,8 +309,13 @@ impl Level {
             let direction = (origin - center).normalize();
             let seen = self.seen_percent(center, aabb);
             let exposure = f64::from(seen);
+            // `ExplosionDamageCalculator.getEntityDamageAmount` for the living entities.
+            let crystal = kind == entity_ids::END_CRYSTAL;
             if style.damages_entities
-                && (player.is_some() || mob.is_some_and(crate::mob::MobData::is_alive) || is_boat)
+                && (player.is_some()
+                    || crystal
+                    || mob.is_some_and(crate::mob::MobData::is_alive)
+                    || is_boat)
             {
                 let double_radius = f64::from(double_radius);
                 let pow = (1.0 - dist) * exposure;

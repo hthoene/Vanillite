@@ -338,8 +338,8 @@ pub fn convert_to(
     new.hurt_time = old.hurt_time;
     new.y_body_rot = old.y_body_rot;
     new.last_hurt_by_player_time = old.last_hurt_by_player_time;
-    for e in &old.effects.active {
-        crate::mob::effects::add(&mut new, *e);
+    for e in old.effects.iter() {
+        crate::effect::add(&mut new, *e);
     }
     if old.baby {
         set_baby(&mut new, true);
@@ -805,10 +805,10 @@ pub fn living_cause(h: &Hurt<'_, '_>, source: &DamageSource) -> Option<EntityId>
 pub fn add_effect(
     ents: &mut crate::entities::Entities,
     target: EntityId,
-    effect: crate::mob::effects::EffectInstance,
+    effect: crate::effect::EffectInstance,
 ) {
     if let Some(m) = ents.mob_mut(target) {
-        crate::mob::effects::add(m, effect);
+        crate::effect::add(m, effect);
     }
 }
 

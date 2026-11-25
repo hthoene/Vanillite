@@ -259,6 +259,7 @@ pub enum Behavior {
 pub enum FamBehavior {
     Brainy(crate::mob::fam::brainy::Behavior),
     Mount(crate::mob::fam::mount::Behavior),
+    Warden(crate::mob::boss::warden::ai::Behavior),
 }
 
 /// How a behaviour runs.
@@ -625,6 +626,7 @@ fn fam_duration(b: &FamBehavior) -> (i32, i32) {
     match b {
         FamBehavior::Brainy(b) => crate::mob::fam::brainy::behavior_duration(b),
         FamBehavior::Mount(b) => crate::mob::fam::mount::behavior_duration(b),
+        FamBehavior::Warden(b) => crate::mob::boss::warden::ai::behavior_duration(b),
     }
 }
 
@@ -643,6 +645,7 @@ pub fn shape(b: &Behavior) -> Shape {
         | Behavior::RandomLookAround { .. } => Shape::Timed,
         Behavior::Fam(FamBehavior::Brainy(b)) => crate::mob::fam::brainy::behavior_shape(b),
         Behavior::Fam(FamBehavior::Mount(b)) => crate::mob::fam::mount::behavior_shape(b),
+        Behavior::Fam(FamBehavior::Warden(b)) => crate::mob::boss::warden::ai::behavior_shape(b),
         _ => Shape::OneShot,
     }
 }
@@ -770,6 +773,9 @@ pub fn requirements(b: &Behavior) -> &'static [(MemoryType, MemoryStatus)] {
         Behavior::Dismount { .. } => &[(M::RideTarget, S::Registered)],
         Behavior::Fam(FamBehavior::Brainy(b)) => crate::mob::fam::brainy::behavior_requirements(b),
         Behavior::Fam(FamBehavior::Mount(b)) => crate::mob::fam::mount::behavior_requirements(b),
+        Behavior::Fam(FamBehavior::Warden(b)) => {
+            crate::mob::boss::warden::ai::behavior_requirements(b)
+        }
     }
 }
 
@@ -1171,6 +1177,9 @@ fn no_timeout(b: &Behavior) -> bool {
         Behavior::CountDownCooldown(_) | Behavior::FollowTemptation { .. } => true,
         Behavior::Fam(FamBehavior::Brainy(b)) => crate::mob::fam::brainy::behavior_no_timeout(b),
         Behavior::Fam(FamBehavior::Mount(b)) => crate::mob::fam::mount::behavior_no_timeout(b),
+        Behavior::Fam(FamBehavior::Warden(b)) => {
+            crate::mob::boss::warden::ai::behavior_no_timeout(b)
+        }
         _ => false,
     }
 }
@@ -1442,6 +1451,7 @@ fn check_extra(t: &mut Tick<'_, '_>, b: &mut Behavior) -> bool {
         }
         Behavior::Fam(FamBehavior::Brainy(f)) => crate::mob::fam::brainy::behavior_check(t, f),
         Behavior::Fam(FamBehavior::Mount(f)) => crate::mob::fam::mount::behavior_check(t, f),
+        Behavior::Fam(FamBehavior::Warden(f)) => crate::mob::boss::warden::ai::behavior_check(t, f),
         _ => true,
     }
 }
@@ -1501,6 +1511,9 @@ fn can_still_use(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) -> bool {
         }
         Behavior::Fam(FamBehavior::Mount(f)) => {
             crate::mob::fam::mount::behavior_can_still_use(t, f, now)
+        }
+        Behavior::Fam(FamBehavior::Warden(f)) => {
+            crate::mob::boss::warden::ai::behavior_can_still_use(t, f, now)
         }
         _ => false,
     }
@@ -1577,6 +1590,9 @@ fn start(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) {
         }
         Behavior::Fam(FamBehavior::Brainy(f)) => crate::mob::fam::brainy::behavior_start(t, f, now),
         Behavior::Fam(FamBehavior::Mount(f)) => crate::mob::fam::mount::behavior_start(t, f, now),
+        Behavior::Fam(FamBehavior::Warden(f)) => {
+            crate::mob::boss::warden::ai::behavior_start(t, f, now)
+        }
         _ => {}
     }
 }
@@ -1704,6 +1720,9 @@ fn tick(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) {
         }
         Behavior::Fam(FamBehavior::Brainy(f)) => crate::mob::fam::brainy::behavior_tick(t, f, now),
         Behavior::Fam(FamBehavior::Mount(f)) => crate::mob::fam::mount::behavior_tick(t, f, now),
+        Behavior::Fam(FamBehavior::Warden(f)) => {
+            crate::mob::boss::warden::ai::behavior_tick(t, f, now)
+        }
         _ => {}
     }
 }
@@ -1745,6 +1764,9 @@ fn stop(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) {
         }
         Behavior::Fam(FamBehavior::Brainy(f)) => crate::mob::fam::brainy::behavior_stop(t, f, now),
         Behavior::Fam(FamBehavior::Mount(f)) => crate::mob::fam::mount::behavior_stop(t, f, now),
+        Behavior::Fam(FamBehavior::Warden(f)) => {
+            crate::mob::boss::warden::ai::behavior_stop(t, f, now)
+        }
         _ => {}
     }
 }
@@ -2503,6 +2525,9 @@ fn one_shot(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) -> bool {
             crate::mob::fam::brainy::behavior_trigger(t, f, now)
         }
         Behavior::Fam(FamBehavior::Mount(f)) => crate::mob::fam::mount::behavior_trigger(t, f, now),
+        Behavior::Fam(FamBehavior::Warden(f)) => {
+            crate::mob::boss::warden::ai::behavior_trigger(t, f, now)
+        }
         _ => false,
     }
 }

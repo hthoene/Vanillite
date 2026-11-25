@@ -84,6 +84,12 @@ pub fn hurt(
     if ents.mob(target).is_some() {
         return hurt_mob(level, ents, env, cx, target, source, amount);
     }
+    if ents.special(target).is_some() {
+        return super::boss::special::hurt(ents, env, cx, target, &source);
+    }
+    if ents.player(target).is_none() {
+        return false;
+    }
     let Entities { store, players, .. } = ents;
     let Some(mut entity) = store.get_mut(target) else {
         return false;
@@ -106,7 +112,7 @@ fn invulnerable_to(ents: &Entities, env: &Env<'_>, target: EntityId, kind: Damag
     };
     m.removed
         || types.is(kind, tag::IS_FIRE)
-            && (e.kind().info().fire_immune || m.effects.has(super::effects::id::FIRE_RESISTANCE))
+            && (e.kind().info().fire_immune || m.effects.has(crate::effect::id::FIRE_RESISTANCE))
         || types.is(kind, tag::IS_FALL) && m.kind.fall_damage_immune()
 }
 
@@ -125,6 +131,13 @@ pub fn hurt_mob(
     if invulnerable_to(ents, env, target, kind) {
         return false;
     }
+    if ents.mob(target).is_some_and(|m| m.is_dead_or_dying()) {
+        return false;
+    }
+    let Some(amount) = super::boss::filter_hurt(level, ents, env, cx, target, &source, amount)
+    else {
+        return false;
+    };
     let Some(m) = ents.mob_mut(target) else {
         return false;
     };
@@ -288,6 +301,9 @@ pub fn hurt_mob(
 
 /// `knockback(power, xd, zd)` of a mob.
 pub fn apply_knockback(ents: &mut Entities, target: EntityId, power: f64, xd: f64, zd: f64) {
+    if super::boss::dragon::ignores_knockback(ents, target) {
+        return;
+    }
     let Some(resistance) = ents.mob(target).map(|m| m.attrs.knockback_resistance) else {
         return;
     };
@@ -333,10 +349,10 @@ fn actually_hurt(
         damage = crate::survival::combat::damage_after_absorb(damage, armor, toughness);
     }
     // `getDamageAfterMagicAbsorb`: resistance, then the kind's own resistances.
-    if let Some(a) = m.effects.amplifier(super::effects::id::RESISTANCE)
+    if let Some(a) = m.effects.amplifier(crate::effect::id::RESISTANCE)
         && !types.is(source.kind, tag::BYPASSES_RESISTANCE)
     {
-        let level = (i32::from(a) + 1) * 5;
+        let level = (a + 1) * 5;
         #[allow(clippy::cast_precision_loss)]
         {
             damage = (damage * (25 - level) as f32 / 25.0).max(0.0);
@@ -399,6 +415,24 @@ fn die(
     };
     let pos = e.pos();
     let network_id = e.network_id().0;
+    // `gameEvent(ENTITY_DIE)`: a sculk catalyst nearby takes the experience
+    // (`CatalystListener`, `skipDropExperience`); vibration listeners hear the death.
+    let consumed = crate::block::sculk_catalyst::catalyst_near(level, pos);
+    if consumed {
+        cx.actions.push(super::WorldAction::Level(
+            super::boss::warden::LevelAction::SculkDeath {
+                pos,
+                experience: reward,
+            },
+        ));
+    }
+    cx.actions.push(super::WorldAction::Level(
+        super::boss::warden::LevelAction::GameEvent {
+            event: crate::level::game_event::events().entity_die,
+            pos,
+            context: crate::level::game_event::GameEventContext::of(Some(target)),
+        },
+    ));
     // `dropAllDeathLoot`: the loot table, then the experience.
     if !baby && env.rules.bool(Rule::MOB_DROPS) {
         let mut loot = table_loot(level, ents, env, target, &source)
@@ -436,7 +470,7 @@ fn die(
             });
         }
     }
-    if (killed_by_player && env.rules.bool(Rule::MOB_DROPS)) && reward > 0 {
+    if !consumed && (killed_by_player && env.rules.bool(Rule::MOB_DROPS)) && reward > 0 {
         award_experience(level, ents, env.random, pos, reward);
     }
     env.out.push(Effect::Tracking {

@@ -6,7 +6,6 @@ use vanillite_base::{BlockPos, Vec3};
 use vanillite_world::entity::{EntityId, Rotation};
 
 use super::super::super::common::{self, CommonGoal};
-use super::super::super::effects::{self, EffectInstance, id};
 use super::super::super::goals::{self, Goal as MobGoal};
 use super::super::super::kinds::{self, Kind};
 use super::super::super::missile::{self, MissileData, MissileKind};
@@ -16,6 +15,8 @@ use super::raider::{self, Ignore, LookFilter};
 use super::{
     Goal, dirty, fam, look_at_player, sound, st, st_mut, target_mobs, target_players, with_memory,
 };
+use crate::effect as effects;
+use crate::effect::{EffectInstance, id};
 use crate::survival::rules::{Difficulty, Rule};
 
 /// `SpellcasterIllager.IllagerSpell` ids.

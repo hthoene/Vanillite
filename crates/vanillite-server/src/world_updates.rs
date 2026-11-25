@@ -69,12 +69,13 @@ impl WorldUpdates {
             let Some(entity) = level.block_entity(pos) else {
                 continue;
             };
-            let kind = level.block(pos).block().info().block_entity;
+            let state = level.block(pos);
+            let kind = state.block().info().block_entity;
             if kind == u16::MAX {
                 continue;
             }
             let mut nbt = Vec::new();
-            match vanillite_game::level::block_entity::update_tag(entity) {
+            match vanillite_game::level::block_entity::update_tag(entity, state) {
                 Some(tag)
                     if vanillite_nbt::write::write_network_compound(&tag, &mut nbt).is_ok() => {}
                 _ => nbt = vec![0],

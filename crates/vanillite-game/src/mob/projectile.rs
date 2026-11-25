@@ -39,7 +39,7 @@ pub struct ArrowData {
     pub fire: bool,
     /// The effect of a tipped arrow (`Arrow.addEffect`; strays, bogged and parched shoot
     /// them), applied to the living entity it hurts.
-    pub effect: Option<super::effects::EffectInstance>,
+    pub effect: Option<crate::effect::EffectInstance>,
 }
 
 /// The kind data of an experience orb.
@@ -390,7 +390,7 @@ pub fn tick_arrow(
                 if let Some(effect) = a.effect
                     && let Some(m) = ents.mob_mut(target)
                 {
-                    super::effects::add(m, effect);
+                    crate::effect::add(m, effect);
                 }
                 // `doKnockback`: Punch pushes along the arrow's flight.
                 if a.knockback > 0.0 {

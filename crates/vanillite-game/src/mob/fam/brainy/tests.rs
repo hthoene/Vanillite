@@ -24,10 +24,11 @@ const KINDS: [Kind; 10] = [
 fn spawned(kind: Kind, seed: i64) -> MobData {
     let mut m = MobData::new(kind, seed);
     let mut ctx = SpawnContext::simple(Difficulty::Normal, SpawnReason::Natural);
+    // `finalizeSpawn` draws from the level random: one per seed here.
     kinds::finalize_spawn(
         &mut m,
         &mut ctx,
-        &mut vanillite_base::random::LegacyRandom::new(1),
+        &mut vanillite_base::random::LegacyRandom::new(seed),
     );
     m
 }

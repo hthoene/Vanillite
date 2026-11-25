@@ -253,6 +253,9 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
             });
         }
     }
+    if let Some(special) = entities.special(entity.id()) {
+        crate::mob::boss::special::entity_data(&mut out, special, all);
+    }
     if let Some(orb) = entities.orb(entity.id())
         && (all || orb.value != 0)
     {
@@ -329,6 +332,11 @@ pub struct DataWriter<'a> {
 }
 
 impl<'a> DataWriter<'a> {
+    /// The buffer and whether every value is written (encoders of their own).
+    pub fn parts(&mut self) -> (&mut Vec<u8>, bool) {
+        (self.out, self.all)
+    }
+
     /// A writer appending to `out` (`all`: every value, else only non-default ones).
     pub fn new(out: &'a mut Vec<u8>, all: bool) -> DataWriter<'a> {
         DataWriter { out, all }

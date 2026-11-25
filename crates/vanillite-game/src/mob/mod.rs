@@ -8,10 +8,10 @@
 
 pub mod animal;
 pub mod attack;
+pub mod boss;
 pub mod brain;
 pub mod combat;
 pub mod common;
-pub mod effects;
 pub mod equipment;
 pub mod fam;
 pub mod goals;
@@ -221,8 +221,10 @@ pub struct MobData {
     pub can_pick_up_loot: bool,
     /// `isLeftHanded`.
     pub left_handed: bool,
-    /// The active status effects.
-    pub effects: effects::Effects,
+    /// Active status effects (`activeEffects`).
+    pub effects: crate::effect::MobEffects,
+    /// The attributes before attribute effects, kept while one is active.
+    pub effect_base_attrs: Option<Attrs>,
     /// `PathfinderMob.restrictTo`: the home position and radius (`-1` = none).
     pub restrict_center: BlockPos,
     pub restrict_radius: i32,
@@ -239,6 +241,11 @@ pub struct MobData {
     pub anger_target: Option<u128>,
     /// `discardFriction` (long jumps of brain mobs).
     pub discard_friction: bool,
+    /// `moveDist` and `nextStep`: when the next step makes a vibration.
+    pub move_dist: f32,
+    pub next_step: f32,
+    /// The state of bosses and the other kinds with their own machinery.
+    pub boss: boss::Ext,
 }
 
 /// What holds a leash in entity NBT (`leash`).
@@ -342,7 +349,8 @@ impl MobData {
             equipment: equipment::Equipment::default(),
             can_pick_up_loot: false,
             left_handed: false,
-            effects: effects::Effects::default(),
+            effects: crate::effect::MobEffects::default(),
+            effect_base_attrs: None,
             restrict_center: BlockPos::new(0, 0, 0),
             restrict_radius: -1,
             brain: None,
@@ -352,6 +360,9 @@ impl MobData {
             anger_end: -1,
             anger_target: None,
             discard_friction: false,
+            move_dist: 0.0,
+            next_step: 1.0,
+            boss: boss::new_ext(kind),
         };
         // `Mob.ambientSoundTime` starts at 0; only playing a sound resets it to `-interval`.
         // `LivingEntity`'s constructor turns the entity to a random yaw (`setYRot(random.nextFloat()
@@ -531,10 +542,14 @@ pub struct MobSettings {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ExplosionRequest {
     pub source: Option<EntityId>,
+    /// `getIndirectSourceEntity` when it is not `source` itself (a projectile's owner).
+    pub indirect: Option<EntityId>,
     pub pos: Vec3,
     pub radius: f32,
     /// `ExplosionInteraction.MOB`: blocks only break with `mobGriefing`.
     pub mob: bool,
+    /// The source's `getBlockExplosionResistance`.
+    pub resistance: crate::level::explosion::BlockResistance,
 }
 
 /// A wind charge burst (`AbstractWindCharge.explode`): a knockback-only explosion that
@@ -565,6 +580,17 @@ pub enum WorldAction {
     SetDoorOpen(BlockPos, bool, Option<EntityId>),
     /// A wind charge burst.
     WindBurst(WindBurst),
+    /// `explode(source, damageSource(source, indirect), pos, radius, interaction)` with
+    /// `ExplosionInteraction.BLOCK` (`blocks`) or `NONE`.
+    ExplodeWith {
+        source: Option<EntityId>,
+        indirect: Option<EntityId>,
+        pos: Vec3,
+        radius: f32,
+        blocks: bool,
+    },
+    /// Game events, listener moves and sculk catalyst charges.
+    Level(boss::warden::LevelAction),
 }
 
 /// The mob state of a world besides the entities: search buffers, queued world changes and
@@ -583,6 +609,13 @@ pub struct MobContext {
     pub has_players: bool,
     /// Entities to remove after the tick (`discard` of other entities).
     pub discarded: Vec<EntityId>,
+    /// The boss bars of entities (the wither's), by entity; see
+    /// [`boss::wither::sweep_boss_bars`].
+    pub boss_bars: vanillite_base::hash::FxHashMap<EntityId, crate::boss_bar::BossBar>,
+    /// The End fight as the dragon and the crystals see it; `None` outside the End.
+    pub dragon_fight: Option<boss::dragon::FightView>,
+    /// What the dragon and the crystals report to the fight, handled after each tick.
+    pub dragon_events: Vec<boss::dragon::DragonEvent>,
 }
 
 impl MobContext {
@@ -659,7 +692,13 @@ pub fn spawn(
     rot: Rotation,
     mob: MobData,
 ) -> EntityId {
-    let mut new = NewEntity::new(mob.kind.type_id(), network_ids.next(), uuid, pos);
+    // The dragon's eight parts take the ids after its own.
+    let network_id = if mob.kind == Kind::EnderDragon {
+        network_ids.next_block(9)
+    } else {
+        network_ids.next()
+    };
+    let mut new = NewEntity::new(mob.kind.type_id(), network_id, uuid, pos);
     new.rot = rot;
     let dims = kinds::mob_dimensions(&mob);
     let id = entities.spawn_mob(new, mob);

@@ -33,7 +33,6 @@ impl LegacyRandom {
 
     /// The 48-bit state (`LegacyRandomSource.seed`): equal states give equal sequences. The
     /// parity traces compare it to find the first diverging random call.
-
     pub fn state(&self) -> i64 {
         self.seed
     }

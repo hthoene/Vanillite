@@ -183,6 +183,10 @@ pub enum Goal {
     Fam(super::fam::FamGoal),
     /// A goal many families share (`mob/common.rs`).
     Common(super::common::CommonGoal),
+    /// The goals of guardians (`super::boss::guardian`).
+    Guardian(super::boss::guardian::GuardianGoal),
+    /// The wither's own goals.
+    Wither(super::boss::wither::WitherGoal),
 }
 
 /// The items of a [`Goal::Tempt`].
@@ -215,6 +219,8 @@ impl Goal {
             Goal::OwnerHurtBy { .. } | Goal::OwnerHurt { .. } => TARGET,
             Goal::Fam(g) => super::fam::goal_flags(g),
             Goal::Common(g) => g.flags(),
+            Goal::Guardian(g) => g.flags(),
+            Goal::Wither(g) => g.flags(),
         }
     }
 
@@ -223,6 +229,8 @@ impl Goal {
         match self {
             Goal::Fam(g) => super::fam::goal_every_tick(g),
             Goal::Common(g) => g.every_tick(),
+            Goal::Guardian(g) => g.every_tick(),
+            Goal::Wither(g) => g.every_tick(),
             _ => matches!(
                 self,
                 Goal::Float
@@ -605,7 +613,7 @@ pub(super) fn distance_sqr(t: &Tick<'_, '_>, other: Vec3) -> f64 {
 }
 
 /// `LivingEntity.canAttack(target)` and the combat part of `TargetingConditions.test`.
-pub(super) fn can_attack(t: &Tick<'_, '_>, target: EntityId) -> bool {
+pub(crate) fn can_attack(t: &Tick<'_, '_>, target: EntityId) -> bool {
     if target == t.id {
         return false;
     }
@@ -620,7 +628,7 @@ pub(super) fn can_attack(t: &Tick<'_, '_>, target: EntityId) -> bool {
 }
 
 /// `TargetingConditions.test` for a player target.
-pub(super) fn test_player(
+pub(crate) fn test_player(
     t: &mut Tick<'_, '_>,
     target: EntityId,
     combat: bool,
@@ -781,7 +789,7 @@ fn default_random_pos(t: &mut Tick<'_, '_>, h: i32, v: i32) -> Option<Vec3> {
 }
 
 /// `LandRandomPos.getPos(mob, h, v)`.
-fn land_random_pos(t: &mut Tick<'_, '_>, h: i32, v: i32) -> Option<Vec3> {
+pub(crate) fn land_random_pos(t: &mut Tick<'_, '_>, h: i32, v: i32) -> Option<Vec3> {
     super::randompos::land_pos(t, h, v)
 }
 
@@ -796,7 +804,7 @@ pub(super) fn set_aggressive(t: &mut Tick<'_, '_>, on: bool) {
     }
 }
 
-pub(super) fn set_target(t: &mut Tick<'_, '_>, target: Option<EntityId>) {
+pub(crate) fn set_target(t: &mut Tick<'_, '_>, target: Option<EntityId>) {
     t.mob().target = target;
 }
 
@@ -815,6 +823,7 @@ pub(crate) fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
     match g {
         Goal::Fam(f) => super::fam::goal_can_use(t, f),
         Goal::Common(c) => super::common::can_use(t, c),
+        Goal::Wither(w) => super::boss::wither::goal_can_use(t, w),
         Goal::Float => {
             let f = t.mob_ref().fluids;
             f.water_height > fluid_jump_threshold(t) || f.in_lava()
@@ -1077,6 +1086,7 @@ pub(crate) fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
             let _ = state;
             pending.is_some()
         }
+        Goal::Guardian(g) => super::boss::guardian::goal_can_use(t, g),
     }
 }
 
@@ -1085,6 +1095,7 @@ pub(crate) fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
     match g {
         Goal::Fam(f) => super::fam::goal_can_continue(t, f),
         Goal::Common(c) => super::common::can_continue(t, c),
+        Goal::Wither(w) => super::boss::wither::goal_can_continue(t, w),
         Goal::Float | Goal::RestrictSun => can_use(t, g),
         Goal::Panic { .. } | Goal::Stroll { .. } | Goal::FleeSun { .. } => {
             !t.mob_ref().nav.is_done()
@@ -1177,11 +1188,12 @@ pub(crate) fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
             }
             target_can_continue(t, state)
         }
+        Goal::Guardian(g) => super::boss::guardian::goal_can_continue(t, g),
     }
 }
 
 /// `TargetGoal.canContinueToUse`.
-pub(super) fn target_can_continue(t: &mut Tick<'_, '_>, state: &mut TargetState) -> bool {
+pub(crate) fn target_can_continue(t: &mut Tick<'_, '_>, state: &mut TargetState) -> bool {
     let Some(target) = t.mob_ref().target.or(state.target_mob) else {
         return false;
     };
@@ -1214,6 +1226,7 @@ pub(crate) fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
     match g {
         Goal::Fam(f) => super::fam::goal_start(t, f),
         Goal::Common(c) => super::common::start(t, c),
+        Goal::Wither(w) => super::boss::wither::goal_start(t, w),
         Goal::Panic { speed, pos } => {
             nav::move_to_pos(t, *pos, *speed);
         }
@@ -1335,6 +1348,7 @@ pub(crate) fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
             kinds::set_creepy(t, true);
         }
         Goal::Float => {}
+        Goal::Guardian(g) => super::boss::guardian::goal_start(t, g),
     }
 }
 
@@ -1368,6 +1382,7 @@ pub(crate) fn stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
     match g {
         Goal::Fam(f) => super::fam::goal_stop(t, f),
         Goal::Common(c) => super::common::stop(t, c),
+        Goal::Wither(w) => super::boss::wither::goal_stop(t, w),
         Goal::Stroll { .. } => t.mob().nav.stop(),
         Goal::LookAtPlayer { look_at, .. } => *look_at = None,
         Goal::Melee { .. } => {
@@ -1422,6 +1437,7 @@ pub(crate) fn stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
             state.target_mob = None;
             kinds::set_creepy(t, false);
         }
+        Goal::Guardian(g) => super::boss::guardian::goal_stop(t, g),
         _ => {}
     }
 }
@@ -1431,6 +1447,7 @@ pub(crate) fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
     match g {
         Goal::Fam(f) => super::fam::goal_tick(t, f),
         Goal::Common(c) => super::common::tick(t, c),
+        Goal::Wither(w) => super::boss::wither::goal_tick(t, w),
         Goal::Float => {
             if random_float(t) < 0.8 {
                 t.mob().jump = true;
@@ -1546,6 +1563,7 @@ pub(crate) fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
                 }
             }
         }
+        Goal::Guardian(g) => super::boss::guardian::goal_tick(t, g),
         _ => {}
     }
 }
