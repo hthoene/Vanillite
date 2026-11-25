@@ -174,7 +174,7 @@ impl WorldMobs {
         let rules = state.rules().clone();
         let env = environment(global, dimension, survival, self.seed);
         let mut cx = vanillite_game::raid::RaidTick {
-            difficulty: state.difficulty,
+            difficulty: state.difficulty(),
             raids_rule: rules.bool(Rule::RAIDS),
             table: self.table.as_deref(),
             env,
@@ -259,6 +259,7 @@ impl WorldMobs {
         let no_blocks = NoBlocks;
         let raining = |_| false;
         let mut no_gateway = |_| false;
+        let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
         let mut env = survival.env(
             state,
             &rules,
@@ -267,6 +268,7 @@ impl WorldMobs {
             dimension,
             &mut no_gateway,
             &hooks,
+            &names,
         );
         if std::mem::take(&mut level.output().try_dragon_respawn) {
             fight.try_respawn(level);
@@ -309,6 +311,7 @@ impl WorldMobs {
         let no_blocks = NoBlocks;
         let raining = |_| false;
         let mut no_gateway = |_| false;
+        let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
         let mut env = survival.env(
             state,
             &rules,
@@ -317,6 +320,7 @@ impl WorldMobs {
             dimension,
             &mut no_gateway,
             &hooks,
+            &names,
         );
         for event in events {
             fight.handle(level, &mut env, &mut self.cx, event);
@@ -328,11 +332,6 @@ impl WorldMobs {
     /// Takes over changed rules (config reload).
     pub(crate) fn set_rules(&mut self, rules: &WorldRules) {
         self.settings = settings(rules);
-    }
-
-    /// The spawn settings of the biomes.
-    pub(crate) fn table(&self) -> Option<&SpawnTable> {
-        self.table.as_deref()
     }
 
     /// The attacks, interactions, entity item uses and vehicle input of the players since the
@@ -365,7 +364,7 @@ impl WorldMobs {
         let state = &global.level;
         let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
         let rules = state.rules().clone();
-        let difficulty = state.difficulty;
+        let difficulty = state.difficulty();
         let network_ids = std::sync::Arc::clone(level.network_ids_arc());
         let mut ents = std::mem::take(&mut level.entities);
         {
@@ -374,6 +373,7 @@ impl WorldMobs {
             let chunks = &level.chunks;
             let raining = move |pos| raining_at(chunks, climate.as_deref(), &weather, pos);
             let mut no_gateway = |_| false;
+            let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
             let mut env = survival.env(
                 state,
                 &rules,
@@ -382,6 +382,7 @@ impl WorldMobs {
                 dimension,
                 &mut no_gateway,
                 &hooks,
+                &names,
             );
             let level: &Level = level;
             for (player, action) in pending {
@@ -521,7 +522,7 @@ impl WorldMobs {
         let roll_siege = day_time(global) == Some(18000);
         let state = &global.level;
         let rules = state.rules().clone();
-        let difficulty = state.difficulty;
+        let difficulty = state.difficulty();
         let env = environment(global, dimension, survival, self.seed);
         // New chunks: their animals once they are live.
         level.chunks.take_generated(&mut self.scratch);
@@ -699,7 +700,7 @@ impl WorldMobs {
         // `WitherSkullBlock.setPlacedBy` of the skulls players placed since the last tick.
         for pos in std::mem::take(&mut level.output().summon_checks) {
             let seed = vanillite_game::mob::new_entity_seed();
-            boss::wither::check_spawn(level, pos, state.difficulty, seed);
+            boss::wither::check_spawn(level, pos, state.difficulty(), seed);
         }
         let has_players = !level.entities.players.is_empty();
         let env = environment(global, dimension, survival, self.seed);
@@ -707,7 +708,7 @@ impl WorldMobs {
         // What spawner blocks read when the block entities tick after the entities.
         level.spawner_env = vanillite_game::block::spawner::SpawnerEnv {
             env,
-            difficulty: state.difficulty,
+            difficulty: state.difficulty(),
             spawner_blocks_work: rules.bool(Rule::SPAWNER_BLOCKS_WORK),
             spawn_mobs: rules.bool(Rule::SPAWN_MOBS),
         };
@@ -782,6 +783,7 @@ impl WorldMobs {
                 let chunks = &level.chunks;
                 let raining = move |pos| raining_at(chunks, climate.as_deref(), &weather, pos);
                 let mut no_gateway = |_| false;
+                let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
                 let mut env = survival.env(
                     state,
                     &rules,
@@ -790,6 +792,7 @@ impl WorldMobs {
                     dimension,
                     &mut no_gateway,
                     &hooks,
+                    &names,
                 );
                 let level_ref: &Level = level;
                 if is_mob {
@@ -839,6 +842,7 @@ impl WorldMobs {
             let blocks = WorldBlocks(&level.chunks);
             let raining = |_| false;
             let mut no_gateway = |_| false;
+            let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
             let mut env = survival.env(
                 state,
                 &rules,
@@ -847,6 +851,7 @@ impl WorldMobs {
                 dimension,
                 &mut no_gateway,
                 &hooks,
+                &names,
             );
             let mut discarded = Vec::new();
             vanillite_game::player::using::tick_all(&mut ents, &mut env);
@@ -993,6 +998,7 @@ impl WorldMobs {
         let no_blocks = NoBlocks;
         let raining = |_| false;
         let mut no_gateway = |_| false;
+        let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
         let mut env = survival.env(
             state,
             &rules,
@@ -1001,6 +1007,7 @@ impl WorldMobs {
             dimension,
             &mut no_gateway,
             &hooks,
+            &names,
         );
         let mut ents = std::mem::take(&mut level.entities);
         for hurt in hurts {
@@ -1068,6 +1075,7 @@ impl WorldMobs {
         let no_blocks = NoBlocks;
         let raining = |_| false;
         let mut no_gateway = |_| false;
+        let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
         let mut env = survival.env(
             state,
             &rules,
@@ -1076,6 +1084,7 @@ impl WorldMobs {
             dimension,
             &mut no_gateway,
             &hooks,
+            &names,
         );
         let mut ents = std::mem::take(&mut level.entities);
         for (target, amount) in hurts {
@@ -1115,6 +1124,7 @@ impl WorldMobs {
             let no_blocks = NoBlocks;
             let raining = |_| false;
             let mut no_gateway = |_| false;
+            let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
             let mut env = survival.env(
                 state,
                 &rules,
@@ -1123,6 +1133,7 @@ impl WorldMobs {
                 dimension,
                 &mut no_gateway,
                 &hooks,
+                &names,
             );
             let source = DamageSource::of(env.types.lightning_bolt);
             for id in struck {

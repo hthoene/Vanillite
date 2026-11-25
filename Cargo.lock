@@ -1471,6 +1471,7 @@ dependencies = [
 name = "vanillite-datapack"
 version = "0.1.0"
 dependencies = [
+ "log",
  "serde_json",
  "sha1",
  "ureq",

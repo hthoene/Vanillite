@@ -16,6 +16,7 @@ fetch = ["dep:ureq"]
 [dependencies]
 vanillite-data.workspace = true
 vanillite-nbt.workspace = true
+log.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
 sha1.workspace = true
 ureq = { workspace = true, optional = true }

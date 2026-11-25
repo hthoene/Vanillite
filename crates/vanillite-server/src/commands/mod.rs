@@ -4,11 +4,37 @@
 //! only offers and parses nodes the source may use, and every command node carries its
 //! required level (SEC-12).
 
+mod advancement_cmd;
+mod bans;
+mod blocks_cmd;
+mod border_cmd;
+mod chat_cmd;
+mod data;
+mod data_cmd;
 mod dispatch;
+mod engine;
+mod entities_cmd;
 mod exec;
+mod execute;
+pub(crate) mod functions;
+mod items;
+mod locate;
+mod nbt_ops;
+mod pack_cmd;
+mod particle;
+mod player_data;
+mod response;
+mod schedule;
+mod scores;
 mod select;
+mod sound;
 mod source;
 mod survival;
+mod system_cmd;
+pub(crate) mod teams;
+mod text;
+mod tracker;
+mod world_cmd;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -22,8 +48,12 @@ use vanillite_protocol::packets::play::clientbound::{Commands, SystemChat};
 use vanillite_protocol::text::{Arg, ClickEvent, Color, Component, NamedColor};
 use vanillite_world::entity::EntityId;
 
+pub(crate) use bans::ban_reason;
 pub(crate) use exec::{find_player, permission_event};
+pub(crate) use player_data::add_experience;
+pub(crate) use sound::send_post_effects;
 pub(crate) use source::{CommandSource, SourceKind};
+pub(crate) use world_cmd::sprint_finished;
 
 use crate::global::Global;
 use crate::world::{ServerWorld, WorldId};
@@ -39,10 +69,68 @@ pub(crate) fn build_dispatcher(limits: vanillite_command::limits::Limits) -> Com
     dispatcher
 }
 
-/// What a command execution may touch: the source's world and the server.
+/// What a command execution may touch: the world it runs on and the server.
 pub(crate) struct Env<'a> {
-    pub(crate) entities: &'a mut Entities,
+    pub(crate) level: &'a mut vanillite_game::level::Level,
     pub(crate) global: &'a Global,
+    /// The world of `level`.
+    pub(crate) world: WorldId,
+}
+
+/// Loads the functions and advancements of the selected data packs once the server exists
+/// (`ServerFunctionLibrary.reload`, `ServerAdvancementManager`).
+pub(crate) fn load_game_systems(global: &Global, packs: &[vanillite_datapack::OpenedPack]) {
+    global.systems.set_functions(functions::load(global, packs));
+    global.systems.load(&global.level.data);
+    let roots: Vec<std::path::PathBuf> = packs.iter().flat_map(|p| p.layers.clone()).collect();
+    let files = functions::list(&roots, "advancement", ".json")
+        .into_iter()
+        .filter_map(|(id, file)| match std::fs::read_to_string(&file) {
+            Ok(text) => Some((id, text)),
+            Err(e) => {
+                log::error!("Couldn't read advancement {id}: {e}");
+                None
+            }
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    global
+        .systems
+        .set_advancements(vanillite_game::advancements::Advancements::load(&files));
+}
+
+/// `ServerFunctionManager.tick` on the overworld.
+pub(crate) fn tick_functions(
+    level: &mut vanillite_game::level::Level,
+    global: &Global,
+    world: WorldId,
+) {
+    let mut env = Env {
+        level,
+        global,
+        world,
+    };
+    functions::tick(&mut env);
+}
+
+/// The scheduled functions due now (`TimerQueue.tick` in the overworld's `tickTime`).
+pub(crate) fn tick_scheduled(
+    level: &mut vanillite_game::level::Level,
+    global: &Global,
+    world: WorldId,
+) {
+    let mut env = Env {
+        level,
+        global,
+        world,
+    };
+    schedule::tick(&mut env);
+}
+
+/// Runs a parsed line for a source in a new execution (`Commands.executeCommandInContext`).
+fn run_line(env: &mut Env<'_>, line: engine::Line, source: CommandSource) {
+    let mut engine = functions::new_engine(env.global);
+    engine.queue_command(line, source, engine::Callback::Empty);
+    engine.run(env);
 }
 
 /// The permission level of a player: its operator level or 0.
@@ -60,18 +148,21 @@ pub(crate) fn player_source(
     let entity = entities.store.get(id)?;
     let player = entities.player(id)?;
     let uuid = entity.uuid();
-    Some(CommandSource {
-        global: global.arc()?,
-        kind: SourceKind::Player {
+    let name = player.profile.name.clone();
+    let target = select::local(entities, world, id)?;
+    Some(CommandSource::new(
+        global.arc()?,
+        SourceKind::Player {
             uuid,
-            name: player.profile.name.clone(),
+            name,
             sink: Arc::clone(&player.connection.sink),
         },
-        level: permission_level(global, uuid),
+        permission_level(global, uuid),
         world,
-        pos: entity.pos(),
-        rot: (entity.rot().y_rot, entity.rot().x_rot),
-    })
+        entity.pos(),
+        (entity.rot().y_rot, entity.rot().x_rot),
+        Some(target.source_entity()),
+    ))
 }
 
 /// The tree packet for a source (`Commands.sendCommands`).
@@ -145,7 +236,7 @@ fn send_error(source: &CommandSource, global: &Global, error: &CommandError, com
 }
 
 /// The error message with Vanilla's primitive translation arguments.
-fn error_message(error: &CommandError) -> Component {
+pub(crate) fn error_message(error: &CommandError) -> Component {
     use vanillite_command::error::Arg as E;
     let args = error
         .args
@@ -168,13 +259,14 @@ pub(crate) type SignedArguments = HashMap<String, ChatMessage>;
 /// A player runs a command line (without the slash): `performUnsignedChatCommand` or
 /// `performSignedChatCommand`, then the spam check. Returns a kick reason.
 pub(crate) fn run_player_command(
-    entities: &mut Entities,
+    level: &mut vanillite_game::level::Level,
     global: &Global,
     id: EntityId,
     world: WorldId,
     command: &str,
     signed: Option<SignedCommand>,
 ) -> Option<Component> {
+    let entities = &mut level.entities;
     let source = player_source(entities, global, id, world)?;
     let uuid = source.uuid()?;
     let name = source.text_name().to_owned();
@@ -217,17 +309,23 @@ pub(crate) fn run_player_command(
         return None;
     }
     log::info!("{name} issued server command: /{command}");
-    let mut env = Env { entities, global };
+    let mut env = Env {
+        level,
+        global,
+        world,
+    };
     match parse.finish(&global.commands) {
         Ok(parsed) => {
-            if let Err(e) = dispatch::execute(&source, &mut env, &parsed, &signed_arguments) {
-                send_error(&source, global, &e, command);
-            }
+            let line = engine::Line {
+                parsed: Arc::new(parsed),
+                signed: Some(Arc::new(signed_arguments)),
+            };
+            run_line(&mut env, line, source);
         }
         Err(e) => send_error(&source, global, &e, command),
     }
     // `detectCommandRateSpam`.
-    let player = env.entities.player_mut(id)?;
+    let player = env.level.entities.player_mut(id)?;
     let spam = &mut player.connection.chat.command_spam;
     spam.increment();
     (!spam.is_under_threshold() && global.access.op_level(uuid).is_none())
@@ -286,23 +384,28 @@ pub(crate) fn run_console_command(world: &mut ServerWorld, global: &Global, line
     let Some(arc) = global.arc() else {
         return;
     };
-    let source = CommandSource {
-        global: arc,
-        kind: SourceKind::Console,
-        level: 4,
-        world: world.id(),
-        pos: vanillite_base::Vec3::ZERO,
-        rot: (0.0, 0.0),
-    };
+    let source = CommandSource::new(
+        arc,
+        SourceKind::Console,
+        4,
+        world.id(),
+        global.systems.spawn(),
+        (0.0, 0.0),
+        None,
+    );
+    let id = world.id();
     let mut env = Env {
-        entities: world.entities_mut(),
+        level: world.level_mut(),
         global,
+        world: id,
     };
     match global.commands.parse_command(command, &source) {
         Ok(parsed) => {
-            if let Err(e) = dispatch::execute(&source, &mut env, &parsed, &SignedArguments::new()) {
-                log::warn!("{}", error_message(&e).plain());
-            }
+            let line = engine::Line {
+                parsed: Arc::new(parsed),
+                signed: None,
+            };
+            run_line(&mut env, line, source);
         }
         Err(e) => {
             log::warn!("{}", error_message(&e).plain());

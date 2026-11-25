@@ -260,6 +260,26 @@ impl Style {
     pub fn is_empty(&self) -> bool {
         *self == Self::default()
     }
+
+    /// The NBT form (`Style.Serializer.CODEC`): a compound with the style fields.
+    pub fn to_nbt(&self) -> Tag {
+        let mut c = Compound::new();
+        style_to_nbt(self, &mut c);
+        Tag::Compound(c.in_java_hash_order())
+    }
+
+    /// Decodes a style from NBT (`Style.Serializer.CODEC`): a compound with the style fields.
+    pub fn try_from_nbt(tag: &Tag) -> Result<Self> {
+        let v = NbtIn(tag);
+        if !v.is_map() {
+            return Err(TextError("not a map"));
+        }
+        let mut style = decode_style(&v)?;
+        if let Some(e) = v.field("hover_event") {
+            style.hover_event = Some(decode_hover(&e, 1)?);
+        }
+        Ok(style)
+    }
 }
 
 /// An argument of a translatable component: a component or a primitive (`Number`, `Boolean`,

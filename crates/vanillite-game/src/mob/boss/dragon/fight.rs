@@ -16,6 +16,7 @@ use vanillite_worldgen::feature::kinds::end::{EndSpike, spikes_for_seed};
 
 use super::super::special::SpecialData;
 use super::{height, live};
+use crate::block::portal;
 use crate::boss_bar::BossBar;
 use crate::level::Level;
 use crate::level::explosion::BlockInteraction;
@@ -401,7 +402,7 @@ impl DragonFight {
         let mut y = top;
         while y >= level.min_y() {
             let c = BlockPos::new(self.origin.x, y - 3, self.origin.z);
-            if live::portal_frame_at(level, c) {
+            if portal::portal_frame_at(level, c) {
                 if self.exit_portal.is_none() {
                     self.exit_portal = Some(c);
                     self.dirty = true;
@@ -586,7 +587,7 @@ impl DragonFight {
         if let Some(index) = self.gateways.pop() {
             let pos = gateway_pos(index);
             level.level_event(None, 3000, pos, 0);
-            live::place_gateway(level, pos);
+            portal::place_end_gateway(level, pos, None, false);
             self.dirty = true;
         }
     }
@@ -612,7 +613,7 @@ impl DragonFight {
                 p
             }
         };
-        live::place_podium(level, at, active);
+        portal::place_podium(level, at, active);
     }
 
     /// Ids of the respawn crystals that still exist.
@@ -688,7 +689,7 @@ impl DragonFight {
             return;
         }
         while let Some(c) = self.find_exit_portal(level) {
-            for p in live::portal_box(c) {
+            for p in portal::portal_box(c) {
                 let b = level.block(p).block();
                 if b == ids::BEDROCK || b == ids::END_PORTAL {
                     level.set_block_and_update(p, ids::END_STONE.default_state());

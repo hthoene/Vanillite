@@ -84,6 +84,8 @@ pub struct ServerWorld {
     /// The dimension's saved data (`<dimension>/data/`: world border, chunk tickets, raids,
     /// ...); systems register here when they come.
     pub(crate) data: vanillite_storage::saved_data::SavedDataStore,
+    /// The saved chunk tickets of other types than `forced`, written back unchanged.
+    pub(crate) kept_tickets: Vec<vanillite_nbt::Tag>,
     /// Players arriving from other worlds or respawning, waiting for their destination.
     arrivals: Vec<travel::Waiting>,
     /// Players in End gateways waiting for the exit's chunks.
@@ -179,6 +181,7 @@ impl ServerWorld {
             mobs,
             player_scratch: Vec::new(),
             data,
+            kept_tickets: Vec::new(),
             arrivals: Vec::new(),
             gateway_waits: Vec::new(),
             portal_tickets: Vec::new(),
@@ -279,8 +282,15 @@ impl ServerWorld {
     pub(crate) fn join_player(&mut self, global: &Global, arrival: crate::players::Arrival) {
         let weather = self.survival.join_weather();
         let (uuid, name) = (arrival.uuid, arrival.profile.name.clone());
-        self.players
-            .join(&mut self.level.entities, global, self.id, arrival, &weather);
+        let state = crate::border::level_packets(&self.level.border, global);
+        self.players.join(
+            &mut self.level.entities,
+            global,
+            self.id,
+            arrival,
+            &weather,
+            &state,
+        );
         let plugins = global.plugins.clone();
         plugins.player_join(&mut crate::plugins::PluginWorld(self), uuid, &name);
     }
@@ -297,23 +307,6 @@ impl ServerWorld {
                 Some((e.uuid(), [pos.x, pos.y, pos.z]))
             })
             .collect()
-    }
-
-    /// Spawns a mob like `/summon` (`finalizeSpawn` with the command reason).
-    pub(crate) fn summon(
-        &mut self,
-        kind: vanillite_game::mob::Kind,
-        pos: vanillite_base::Vec3,
-        global: &Global,
-    ) {
-        let difficulty = global.level.difficulty;
-        vanillite_game::mob::spawn::summon(
-            &mut self.level,
-            self.mobs.table(),
-            kind,
-            pos,
-            difficulty,
-        );
     }
 
     /// This world's id.
@@ -414,10 +407,15 @@ impl ServerWorld {
             self.respawn(ctx, id);
         }
         self.tick_travel(ctx.global);
+        if self.id.0 == 0 && ctx.runs_normally {
+            // `ServerFunctionManager.tick`: the data pack functions run as the server in the
+            // overworld before the clocks and the worlds tick.
+            crate::commands::tick_functions(&mut self.level, ctx.global, self.id);
+        }
         self.players_inside_blocks();
         // The rules block behaviour reads (sculk shriekers).
         self.level.settings.peaceful =
-            ctx.global.level.difficulty == vanillite_game::survival::rules::Difficulty::Peaceful;
+            ctx.global.level.difficulty() == vanillite_game::survival::rules::Difficulty::Peaceful;
         self.level.settings.spawn_wardens = ctx
             .global
             .level
@@ -426,15 +424,20 @@ impl ServerWorld {
         self.level.set_handling_tick(true);
         if ctx.runs_normally {
             // `advanceWeatherCycle`, then `tickTime`: the overworld advances the shared game
-            // time, every world runs on it.
+            // time, every world runs on it. The world border moves first.
+            self.level.border.tick();
             self.survival.tick_level(&self.level.entities, ctx.global);
             self.level.set_weather(self.survival.weather);
             self.level
                 .settings
                 .apply_game_rules(&ctx.global.level.rules());
-            self.level.settings.difficulty = ctx.global.level.difficulty;
+            self.level.settings.difficulty = ctx.global.level.difficulty();
             let level = &mut self.level;
             level.set_game_time(ctx.global.level.game_time());
+            if self.id.0 == 0 {
+                crate::commands::tick_scheduled(level, ctx.global, self.id);
+            }
+            let level = &mut self.level;
             level.run_scheduled_ticks();
             // `raids.tick`.
             self.mobs.tick_raids(
@@ -521,6 +524,7 @@ impl ServerWorld {
         self.survival.do_tick(
             &mut self.level.entities,
             &self.level.chunks,
+            &self.level.border,
             &self.level.block_entities,
             ctx.global,
             &self.dimension,
@@ -533,7 +537,7 @@ impl ServerWorld {
                 .rules()
                 .bool(vanillite_game::survival::rules::Rule::RAIDS),
             self.dimension != "minecraft:the_nether",
-            ctx.global.level.difficulty,
+            ctx.global.level.difficulty(),
         );
         for pos in portals.gateways.drain(..) {
             let state = self.level.block(pos);
@@ -554,6 +558,7 @@ impl ServerWorld {
             },
         );
         self.effects.flush(&self.level.entities);
+        crate::scoreboard::flush(ctx.global);
         self.overload
             .update(started.elapsed(), &self.rules.tracking, &self.dimension);
         // Save rounds take only the time left in the tick (#47).
@@ -640,6 +645,13 @@ impl ServerWorld {
         log::debug!("Saving {} (flush: {flush})", self.dimension);
         self.players.save_all(&self.level.entities);
         if !skip_chunks {
+            if let Some(border) = self.level.border.take_dirty() {
+                self.data.write(crate::border::SAVED_DATA, border.to_nbt());
+            }
+            if self.level.forced.take_dirty() {
+                let tickets = crate::chunk_tickets::save(&self.level, &self.kept_tickets);
+                self.data.write(crate::chunk_tickets::SAVED_DATA, tickets);
+            }
             self.data.save();
             self.level.save(flush);
         }

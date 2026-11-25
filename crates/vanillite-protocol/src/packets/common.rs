@@ -247,6 +247,14 @@ macro_rules! common_clientbound {
             pub id: i32,
         }
 
+        /// `post_effects`: the post-processing shaders of the player (`/posteffect`).
+        #[derive(Debug, Clone, PartialEq, Eq, $crate::Packet)]
+        #[packet(state = $state, dir = Clientbound, name = "post_effects")]
+        pub struct PostEffects {
+            #[field(max_len = 1024)]
+            pub effects: Vec<$crate::types::Identifier>,
+        }
+
         /// `store_cookie`.
         #[derive(Debug, Clone, PartialEq, Eq, $crate::Packet)]
         #[packet(state = $state, dir = Clientbound, name = "store_cookie")]

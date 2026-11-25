@@ -60,6 +60,9 @@ fn add_player(level: &mut Level, pos: Vec3, game_mode: GameMode) -> EntityId {
         last_equipment: std::array::from_fn(|_| crate::item::ItemStack::EMPTY),
         survival: crate::survival::player::Survival::default(),
         recipe_book: crate::recipe::book::PlayerRecipeBook::default(),
+        post_effects: Vec::new(),
+        stats: crate::stats::StatsCounter::default(),
+        advancements: crate::advancements::PlayerAdvancements::load(Arc::default(), None),
     };
     let network_ids = Arc::clone(level.network_ids_arc());
     level

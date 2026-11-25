@@ -23,6 +23,7 @@ use vanillite_protocol::SharedPacket;
 use vanillite_protocol::packets::play::clientbound::{
     ChangeDifficulty, ClockUpdate, GameEvent, RemoveEntities, SetTime,
 };
+use vanillite_protocol::text::Component;
 use vanillite_protocol::types::VarIntList;
 use vanillite_world::chunks::Chunks;
 use vanillite_world::entity::{EntityId, NewEntity};
@@ -159,7 +160,7 @@ pub(crate) fn difficulty(d: vanillite_config::Difficulty) -> Difficulty {
 /// `ClientboundChangeDifficultyPacket`.
 pub(crate) fn change_difficulty(level: &LevelState) -> ChangeDifficulty {
     ChangeDifficulty {
-        difficulty: level.difficulty.id(),
+        difficulty: level.difficulty().id(),
         locked: false,
     }
 }
@@ -280,21 +281,24 @@ impl WorldSurvival {
         dimension: &'a str,
         enter_gateway: &'a mut dyn FnMut(BlockPos) -> bool,
         hooks: &'a dyn vanillite_game::hooks::GameHooks,
+        display_name: &'a dyn Fn(&str, u128) -> Component,
     ) -> Env<'a> {
         Env {
             types: &level.damage_types,
             facts: &level.block_facts,
             blocks,
             rules,
-            difficulty: level.difficulty,
+            difficulty: level.difficulty(),
             game_time: level.game_time(),
             min_y: self.min_y,
             dimension,
             raining_at,
+            border: None,
             enter_gateway,
             random: &mut self.random,
             out: &mut self.effects,
             hooks,
+            display_name,
         }
     }
 
@@ -314,6 +318,7 @@ impl WorldSurvival {
         let raining = |pos| raining_at(chunks, climate.as_deref(), &weather, pos);
         let mut no_gateway = |_| false;
         let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+        let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
         let mut env = self.env(
             level,
             &rules,
@@ -322,6 +327,7 @@ impl WorldSurvival {
             dimension,
             &mut no_gateway,
             &hooks,
+            &names,
         );
         let Entities { store, players, .. } = entities;
         for (id, data) in players.iter_mut() {
@@ -365,6 +371,7 @@ impl WorldSurvival {
         &mut self,
         entities: &mut Entities,
         chunks: &Chunks,
+        border: &vanillite_game::level::border::WorldBorder,
         block_entities: &BlockEntities,
         global: &Global,
         dimension: &str,
@@ -378,6 +385,7 @@ impl WorldSurvival {
         let mut removed = std::mem::take(&mut self.scratch);
         {
             let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+            let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
             // `EndGatewayBlock.entityInside`: a gateway takes a player unless it cools down,
             // then starts its cooldown (applied after the tick, seen at once by the others).
             let gateways = &mut portals.gateways;
@@ -399,7 +407,9 @@ impl WorldSurvival {
                 dimension,
                 &mut enter_gateway,
                 &hooks,
+                &names,
             );
+            env.border = Some(border);
             let Entities { store, players, .. } = entities;
             for (id, data) in players.iter_mut() {
                 let Some(mut entity) = store.get_mut(id) else {
@@ -426,6 +436,7 @@ impl WorldSurvival {
             }
         }
         self.scratch = removed;
+        crate::scoreboard::update_criteria(global, entities);
         self.deliver(entities, global);
     }
 
@@ -436,6 +447,43 @@ impl WorldSurvival {
         global: &Global,
         dimension: &str,
         id: EntityId,
+    ) -> bool {
+        Self::on_player(entities, chunks, global, dimension, id, player::kill)
+    }
+
+    /// Hurts a player (`/damage`, `hurtServer`) and delivers the effects at once.
+    pub(crate) fn hurt(
+        entities: &mut Entities,
+        chunks: Option<&Chunks>,
+        global: &Global,
+        dimension: &str,
+        id: EntityId,
+        source: vanillite_game::survival::damage::DamageSource,
+        amount: f32,
+    ) -> bool {
+        Self::on_player(
+            entities,
+            chunks,
+            global,
+            dimension,
+            id,
+            |entity, data, env| player::hurt(entity, data, env, source, amount),
+        )
+    }
+
+    /// Runs `f` on a player with a survival environment outside the tick (commands) and
+    /// delivers its effects at once.
+    fn on_player(
+        entities: &mut Entities,
+        chunks: Option<&Chunks>,
+        global: &Global,
+        dimension: &str,
+        id: EntityId,
+        f: impl FnOnce(
+            &mut vanillite_world::entity::EntityMut<'_>,
+            &mut vanillite_game::player::PlayerData,
+            &mut Env<'_>,
+        ) -> bool,
     ) -> bool {
         struct NoBlocks;
         impl BlockAccess for NoBlocks {
@@ -456,17 +504,20 @@ impl WorldSurvival {
         let raining = |_| false;
         let mut no_gateway = |_| false;
         let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+        let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
         let mut env = Env {
             hooks: &hooks,
+            display_name: &names,
             types: &level.damage_types,
             facts: &level.block_facts,
             blocks,
             rules: &rules,
-            difficulty: level.difficulty,
+            difficulty: level.difficulty(),
             game_time: level.game_time(),
             min_y: 0,
             dimension,
             raining_at: &raining,
+            border: None,
             enter_gateway: &mut no_gateway,
             random: &mut random,
             out: &mut out,
@@ -479,9 +530,9 @@ impl WorldSurvival {
         let Some(data) = players.get_mut(row) else {
             return false;
         };
-        let killed = player::kill(&mut entity, data, &mut env);
+        let done = f(&mut entity, data, &mut env);
         deliver_simple(&out, entities, global);
-        killed
+        done
     }
 
     /// `tickThunder` over the ticking chunks around the players, and the bolts' life.
@@ -675,6 +726,7 @@ impl WorldSurvival {
         {
             let mut no_gateway = |_| false;
             let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+            let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
             let mut env = self.env(
                 level,
                 &rules,
@@ -683,6 +735,7 @@ impl WorldSurvival {
                 dimension,
                 &mut no_gateway,
                 &hooks,
+                &names,
             );
             bolts.retain_mut(|bolt| {
                 // TODO(#30): fire blocks (`spawnFire`) once blocks tick.
@@ -827,6 +880,11 @@ impl WorldSurvival {
                         .players
                         .broadcast_system(message.clone(), false, None);
                 }
+                Effect::Died {
+                    victim,
+                    killer,
+                    message,
+                } => crate::scoreboard::died(global, entities, *victim, *killer, message.as_ref()),
                 Effect::To { player, packet } => {
                     if let Some(p) = entities.player(*player) {
                         p.connection.sink.send_shared(packet);
@@ -857,6 +915,30 @@ impl WorldSurvival {
             }
         }
     }
+}
+
+/// `ServerPlayer.findRespawnAndUseSpawnBlock` for a respawn position without a bed or anchor:
+/// a forced one where the block and the one above are free (`isPossibleToRespawnInThis`).
+pub(crate) fn forced_respawn(
+    chunks: &Chunks,
+    respawn: &player::RespawnConfig,
+) -> Option<(Vec3, f32, f32)> {
+    let free = |pos: BlockPos| {
+        let state = chunks.block(pos).map_or(BlockState::AIR, BlockState);
+        !vanillite_game::block::is_solid(state) && !vanillite_game::block::is_liquid(state)
+    };
+    let pos = respawn.pos;
+    (respawn.forced && free(pos) && free(pos.offset(0, 1, 0))).then(|| {
+        (
+            Vec3::new(
+                f64::from(pos.x) + 0.5,
+                f64::from(pos.y) + 0.1,
+                f64::from(pos.z) + 0.5,
+            ),
+            respawn.yaw,
+            respawn.pitch,
+        )
+    })
 }
 
 /// `canSeeSky` from the heightmap.
@@ -926,6 +1008,11 @@ fn deliver_simple(effects: &[Effect], entities: &mut Entities, global: &Global) 
                     .players
                     .broadcast_system(message.clone(), false, None);
             }
+            Effect::Died {
+                victim,
+                killer,
+                message,
+            } => crate::scoreboard::died(global, entities, *victim, *killer, message.as_ref()),
             Effect::To { player, packet } => {
                 if let Some(p) = entities.player(*player) {
                     p.connection.sink.send_shared(packet);

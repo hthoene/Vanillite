@@ -240,6 +240,11 @@ impl ToolTable {
         })
     }
 
+    /// Whether the stack has a `minecraft:tool` component.
+    pub fn is_tool(&self, stack: &ItemStack) -> bool {
+        self.tool(stack).is_some()
+    }
+
     /// `Tool.damagePerBlock`, 0 without a tool.
     pub fn damage_per_block(&self, stack: &ItemStack) -> u32 {
         self.tool(stack)
