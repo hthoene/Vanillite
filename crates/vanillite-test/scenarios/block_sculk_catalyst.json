@@ -1,0 +1,74 @@
+{
+  "description": "A player kills a zombie next to a sculk catalyst at night: the catalyst takes the experience as a sculk charge (no orbs drop), blooms, and the charge spreads sculk, veins, sensors and shriekers over the stone around it.",
+  "world": {
+    "seed": 9113,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:stone",
+        3
+      ]
+    ]
+  },
+  "time": 18000,
+  "difficulty": "normal",
+  "region": [
+    [
+      0,
+      -63,
+      0
+    ],
+    [
+      15,
+      -57,
+      15
+    ]
+  ],
+  "ticks": 120,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -60,
+        8
+      ],
+      "block": "minecraft:sculk_catalyst[bloom=false]"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        14.5,
+        -60.0,
+        14.5
+      ]
+    },
+    {
+      "name": "zombie",
+      "type": "minecraft:zombie",
+      "pos": [
+        5.5,
+        -60.0,
+        6.5
+      ],
+      "seed": 31,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "hurt",
+      "entity": "zombie",
+      "by": "steve",
+      "amount": 100
+    }
+  ],
+  "tier": "fast"
+}

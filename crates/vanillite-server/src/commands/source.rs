@@ -30,6 +30,8 @@ pub(crate) enum SourceKind {
     },
     /// The server console.
     Console,
+    /// A remote console (`RconConsoleSource`): the feedback is collected as the answer.
+    Rcon(Arc<std::sync::Mutex<String>>),
     /// The server itself (functions of the game loop, scheduled functions): no feedback.
     Server,
 }
@@ -104,7 +106,7 @@ impl vanillite_command::Source for CommandSource {
                 let operator = self.global.access.op_level(*uuid).is_some();
                 self.global.plugins.has_permission(*uuid, node, operator)
             }
-            SourceKind::Console | SourceKind::Server => true,
+            SourceKind::Console | SourceKind::Rcon(_) | SourceKind::Server => true,
         }
     }
 
@@ -392,7 +394,7 @@ impl CommandSource {
     pub(crate) fn receiver_uuid(&self) -> Option<u128> {
         match &self.kind {
             SourceKind::Player { uuid, .. } => Some(*uuid),
-            SourceKind::Console | SourceKind::Server => None,
+            SourceKind::Console | SourceKind::Rcon(_) | SourceKind::Server => None,
         }
     }
 
@@ -404,6 +406,7 @@ impl CommandSource {
         match &self.kind {
             SourceKind::Player { uuid, name, .. } => display_name(name, *uuid),
             SourceKind::Console | SourceKind::Server => Component::text("Server"),
+            SourceKind::Rcon(_) => Component::text("Rcon"),
         }
     }
 
@@ -415,6 +418,7 @@ impl CommandSource {
         match &self.kind {
             SourceKind::Player { name, .. } => name,
             SourceKind::Console | SourceKind::Server => "Server",
+            SourceKind::Rcon(_) => "Rcon",
         }
     }
 
@@ -449,13 +453,19 @@ impl CommandSource {
                     });
                 }
             }
-            SourceKind::Console => log::info!("{}", message.plain()),
+            SourceKind::Console => log::info!("{}", global.english(&message)),
+            // `RconConsoleSource.sendSystemMessage`: appended without a separator.
+            SourceKind::Rcon(buffer) => buffer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push_str(&global.english(&message)),
             SourceKind::Server => {}
         }
     }
 
     /// `sendSuccess`: feedback to the source (players only with the game rule
-    /// `send_command_feedback`) and, when `inform_admins`, a gray italic note to the other
+    /// `send_command_feedback`) and, when `inform_admins` and the source informs admins
+    /// (`broadcast-console-to-ops`, `broadcast-rcon-to-ops`), a gray italic note to the other
     /// operators (with `send_command_feedback`) and the log (with `log_admin_commands`)
     /// (`broadcastToAdmins`).
     pub(crate) fn send_success(&self, global: &Global, message: Component, inform_admins: bool) {
@@ -473,7 +483,12 @@ impl CommandSource {
         if feedback || !matches!(self.kind, SourceKind::Player { .. }) {
             self.send_system(global, message.clone());
         }
-        if !inform_admins {
+        let informs = match self.kind {
+            SourceKind::Console => global.broadcast_console_to_ops,
+            SourceKind::Rcon(_) => global.broadcast_rcon_to_ops,
+            SourceKind::Player { .. } | SourceKind::Server => true,
+        };
+        if !inform_admins || !informs {
             return;
         }
         let broadcast =
@@ -499,8 +514,9 @@ impl CommandSource {
                 }
             }
         }
-        if own.is_some() && log_admin {
-            log::info!("{}", broadcast.plain());
+        // Everything but the server itself (the console) is logged.
+        if log_admin && !matches!(self.kind, SourceKind::Console) {
+            log::info!("{}", global.english(&broadcast));
         }
     }
 

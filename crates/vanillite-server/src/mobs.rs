@@ -6,10 +6,13 @@ use std::sync::Arc;
 use vanillite_base::{Aabb, BlockPos, ChunkPos, Vec3};
 use vanillite_config::{GameMode, WorldRules};
 use vanillite_data::entity::ids;
+use vanillite_game::advancements::trigger::{Event, TriggerKind};
+use vanillite_game::advancements::view;
 use vanillite_game::entities::{Entities, is_mob_kind};
 use vanillite_game::item::ItemStack;
 use vanillite_game::level::Level;
 use vanillite_game::level::explosion::BlockInteraction;
+use vanillite_game::lightning::{self, StrikeInput};
 use vanillite_game::minecart::{self, MinecartKind};
 use vanillite_game::mob::boss;
 use vanillite_game::mob::boss::dragon::{self, fight::DragonFight};
@@ -72,6 +75,8 @@ pub(crate) struct WorldMobs {
     generated: Vec<(ChunkPos, u32)>,
     scratch: Vec<ChunkPos>,
     ticks: u64,
+    /// The entities the ticking lightning bolt strikes.
+    bolt_hits: Vec<EntityId>,
     /// The custom spawners of the overworld (`ServerLevel.customSpawners`).
     phantoms: vanillite_game::mob::fam::undead::phantom::PhantomSpawner,
     patrols: vanillite_game::mob::fam::illager::patrol::PatrolSpawner,
@@ -91,6 +96,7 @@ impl WorldMobs {
             generated: Vec::new(),
             scratch: Vec::new(),
             ticks: 0,
+            bolt_hits: Vec::new(),
             phantoms: Default::default(),
             patrols: Default::default(),
             cats: spawn::CatSpawner::default(),
@@ -294,6 +300,11 @@ impl WorldMobs {
                         let Some(target) = in_reach(&ents, player, entity) else {
                             continue;
                         };
+                        // `handleInteract`: the stack before the interaction for
+                        // `player_interacted_with_entity`.
+                        let interacted = TriggerKind::PLAYER_INTERACTED_WITH_ENTITY;
+                        let used = view::listens(&ents, player, interacted)
+                            .then(|| animal::held(&ents, player, hand));
                         let r = if ents
                             .store
                             .get(target)
@@ -312,6 +323,13 @@ impl WorldMobs {
                                 sneaking,
                             )
                         };
+                        if r.consumes()
+                            && let Some(used) = used
+                        {
+                            view::fire(&mut ents, player, interacted, |ents| {
+                                Event::EntityItem(interacted, view::snapshot(ents, target), used)
+                            });
+                        }
                         if r == animal::Interaction::Success
                             && let Some(p) = ents.player_mut(player)
                         {
@@ -396,13 +414,15 @@ impl WorldMobs {
         dimension: &str,
         spawn_point: Option<BlockPos>,
     ) {
+        let env = environment(global, dimension, survival, self.seed);
+        // What random ticks read of this tick's environment (turtle eggs).
+        level.spawner_env.env = env;
         let Some(table) = self.table.clone() else {
             return;
         };
         let state = &global.level;
         let rules = state.rules().clone();
         let difficulty = state.difficulty();
-        let env = environment(global, dimension, survival, self.seed);
         // New chunks: their animals once they are live.
         level.chunks.take_generated(&mut self.scratch);
         self.generated
@@ -425,9 +445,6 @@ impl WorldMobs {
             }
             self.generated = waiting;
         }
-        if !rules.bool(Rule::SPAWN_MOBS) {
-            return;
-        }
         let players: Vec<(EntityId, Vec3)> = level
             .entities
             .players
@@ -441,6 +458,10 @@ impl WorldMobs {
             spawn_enemies: difficulty != Difficulty::Peaceful && rules.bool(Rule::SPAWN_MONSTERS),
             difficulty,
             env,
+            thunder: StrikeInput {
+                spawn_mobs: rules.bool(Rule::SPAWN_MOBS),
+                clock_time: overworld_clock_time(global),
+            },
         };
         let persistent = level.game_time() % 400 == 0;
         spawn::tick(level, &table, &mut self.spawner, &input, persistent);
@@ -541,7 +562,12 @@ impl WorldMobs {
             let seed = vanillite_game::mob::new_entity_seed();
             boss::wither::check_spawn(level, pos, state.difficulty(), seed);
         }
-        let has_players = !level.entities.players.is_empty();
+        // `getNearestPlayer` skips spectators.
+        let has_players = level
+            .entities
+            .players
+            .iter()
+            .any(|(_, p)| p.game_mode != GameMode::Spectator);
         let env = environment(global, dimension, survival, self.seed);
         self.cx.begin_tick(env, self.settings, has_players);
         // What spawner blocks read when the block entities tick after the entities.
@@ -551,7 +577,6 @@ impl WorldMobs {
             spawner_blocks_work: rules.bool(Rule::SPAWNER_BLOCKS_WORK),
             spawn_mobs: rules.bool(Rule::SPAWN_MOBS),
         };
-        self.lightning_hits(level, survival, global, dimension);
         let activation = f64::from(self.settings.activation_range);
         minecart::players_push(&mut level.entities);
         let mut cursor = level.entities.store.tick_cursor();
@@ -563,6 +588,16 @@ impl WorldMobs {
             entity.set_old_pos();
             let kind = entity.as_ref().kind();
             let pos = entity.as_ref().pos();
+            if kind == ids::LIGHTNING_BOLT {
+                let chunk = BlockPos::containing(pos.x, pos.y, pos.z).chunk();
+                if !level.chunks.in_entity_ticking_range(chunk) {
+                    continue;
+                }
+                level.entities = ents;
+                self.tick_bolt(level, survival, global, dimension, id);
+                ents = std::mem::take(&mut level.entities);
+                continue;
+            }
             if kind == ids::FALLING_BLOCK || kind == ids::TNT {
                 let chunk = BlockPos::containing(pos.x, pos.y, pos.z).chunk();
                 if !level.chunks.in_entity_ticking_range(chunk) {
@@ -585,7 +620,7 @@ impl WorldMobs {
                 && !is_boat
                 && !is_minecart
                 && !is_missile
-                && kind != ids::ARROW
+                && !projectile::is_arrow_kind(kind)
                 && kind != ids::EXPERIENCE_ORB
                 && kind != ids::AREA_EFFECT_CLOUD
             {
@@ -642,7 +677,7 @@ impl WorldMobs {
                     vehicle::tick_boat(level_ref, &mut ents, &mut env, &mut self.cx, id);
                 } else if is_minecart {
                     minecart::tick(level_ref, &mut ents, &mut env, &mut self.cx, id);
-                } else if kind == ids::ARROW {
+                } else if projectile::is_arrow_kind(kind) {
                     projectile::tick_arrow(level_ref, &mut ents, &mut env, &mut self.cx, id);
                 } else if is_missile {
                     vanillite_game::mob::missile::tick(
@@ -676,7 +711,7 @@ impl WorldMobs {
         }
         boss::wither::sweep_boss_bars(&mut self.cx, &ents, &mut survival.effects);
         // `rideTick`: passengers follow their vehicles; leads of knots and loaded mobs.
-        riding::position_all_riders(&mut ents);
+        riding::ride_tick(&mut ents);
         {
             let blocks = WorldBlocks(&level.chunks);
             let raining = |_| false;
@@ -805,7 +840,8 @@ impl WorldMobs {
                             damages_entities: false,
                             knockback: b.knockback,
                             wind_sound: Some(b.sound),
-                            ..Default::default()
+                            resistance:
+                                vanillite_game::level::explosion::BlockResistance::WindCharge,
                         },
                     );
                 }
@@ -941,87 +977,48 @@ impl WorldMobs {
         self.finish_removals(level);
     }
 
-    /// `thunderHit` of the non-player entities lightning struck: mobs burn and take 5 damage,
-    /// creepers become charged, items and boats are hurt.
-    fn lightning_hits(
+    /// `LightningBolt.tick` and the `thunderHit` of the entities it strikes.
+    fn tick_bolt(
         &mut self,
         level: &mut Level,
         survival: &mut WorldSurvival,
         global: &Global,
         dimension: &str,
+        id: EntityId,
     ) {
-        if survival.struck.is_empty() {
-            return;
-        }
-        let struck = std::mem::take(&mut survival.struck);
-        let state = &global.level;
-        let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
-        let rules = state.rules().clone();
-        let mut ents = std::mem::take(&mut level.entities);
-        {
-            let no_blocks = NoBlocks;
-            let raining = |_| false;
-            let mut no_gateway = |_| false;
-            let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
-            let mut env = survival.env(
-                state,
-                &rules,
-                &no_blocks,
-                &raining,
-                dimension,
-                &mut no_gateway,
-                &hooks,
-                &names,
-            );
-            let source = DamageSource::of(env.types.lightning_bolt);
-            for id in struck {
-                if let Some(d) = ents.item_mut(id) {
-                    d.health -= 5;
-                    if d.health <= 0 {
-                        self.cx.discarded.push(id);
-                    }
-                    continue;
+        let mut hits = std::mem::take(&mut self.bolt_hits);
+        lightning::tick(level, id, &mut hits);
+        if !hits.is_empty() {
+            let state = &global.level;
+            let rules = state.rules().clone();
+            let mut ents = std::mem::take(&mut level.entities);
+            {
+                let blocks = WorldBlocks(&level.chunks);
+                let (weather, climate) = (survival.weather, survival.climate().cloned());
+                let chunks = &level.chunks;
+                let raining = move |pos| raining_at(chunks, climate.as_deref(), &weather, pos);
+                let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+                let mut no_gateway = |_| false;
+                let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
+                let mut env = survival.env(
+                    state,
+                    &rules,
+                    &blocks,
+                    &raining,
+                    dimension,
+                    &mut no_gateway,
+                    &hooks,
+                    &names,
+                );
+                for &target in &hits {
+                    lightning::thunder_hit(level, &mut ents, &mut env, &mut self.cx, target);
                 }
-                if ents.boat(id).is_some() || ents.minecart(id).is_some() {
-                    hurt_vehicle(&mut ents, &mut env, &mut self.cx, id, source, 5.0);
-                    continue;
-                }
-                let Some(kind) = ents.mob(id).filter(|m| m.is_alive()).map(|m| m.kind) else {
-                    continue;
-                };
-                if kind.family() != mob::Family::Classic {
-                    let mut h = vanillite_game::mob::fam::Hurt {
-                        level,
-                        ents: &mut ents,
-                        env: &mut env,
-                        cx: &mut self.cx,
-                        target: id,
-                        source,
-                    };
-                    if vanillite_game::mob::fam::thunder_hit(&mut h, kind) {
-                        continue;
-                    }
-                }
-                let Some(m) = ents.mob_mut(id) else {
-                    continue;
-                };
-                m.fire_ticks += 1;
-                if m.fire_ticks == 0 {
-                    m.fire_ticks = 160;
-                }
-                let creeper = m.kind == mob::Kind::Creeper;
-                if creeper {
-                    m.powered = true;
-                }
-                if let Some(mut e) = ents.store.get_mut(id) {
-                    e.mark_data_dirty();
-                }
-                combat::hurt(level, &mut ents, &mut env, &mut self.cx, id, source, 5.0);
             }
+            level.entities = ents;
+            self.finish_removals(level);
+            survival.deliver(&mut level.entities, global);
         }
-        level.entities = ents;
-        self.finish_removals(level);
-        survival.deliver(&mut level.entities, global);
+        self.bolt_hits = hits;
     }
 
     /// Despawns the entities removed outside their own tick.
@@ -1044,6 +1041,17 @@ fn distance_sqr_to_box(b: &Aabb, p: Vec3) -> f64 {
     let dy = (b.min_y - p.y).max(0.0).max(p.y - b.max_y);
     let dz = (b.min_z - p.z).max(0.0).max(p.z - b.max_z);
     dx * dx + dy * dy + dz * dz
+}
+
+/// `getOverworldClockTime`: the ticks of the overworld clock.
+fn overworld_clock_time(global: &Global) -> i64 {
+    global
+        .level
+        .clocks()
+        .clocks
+        .iter()
+        .find(|c| c.id == "minecraft:overworld")
+        .map_or(0, |c| c.total_ticks)
 }
 
 /// This tick's environment: sky darkness from the day time and the weather, whether monsters
@@ -1070,6 +1078,7 @@ fn environment(
             monster_light_test: if nether { (7, 7) } else { (0, 7) },
             ambient_light: if nether { 0.1 } else { 0.0 },
             has_ceiling: nether,
+            turtle_egg_hatch_chance: 0.002,
         };
     }
     let day = {
@@ -1238,8 +1247,8 @@ fn put_back(ents: &mut Entities, player: EntityId, hand: Hand, stack: ItemStack)
     }
 }
 
-/// `use_item` of the items that need entities: boats, the carrot on a stick, and items used
-/// over time.
+/// `use_item` of the items that need entities: boats, the carrot on a stick, thrown potions,
+/// and items used over time.
 fn use_item(
     level: &Level,
     ents: &mut Entities,
@@ -1253,9 +1262,10 @@ fn use_item(
     let creative = ents
         .player(player)
         .is_some_and(|p| p.game_mode == GameMode::Creative);
+    let item = stack.item;
     if name.ends_with("_boat") || name.ends_with("_raft") {
         let reach = if creative { 5.0 } else { 4.5 };
-        vehicle::use_boat_item(
+        if vehicle::use_boat_item(
             level,
             ents,
             network_ids,
@@ -1263,10 +1273,18 @@ fn use_item(
             &mut stack,
             creative,
             reach,
-        );
+        ) {
+            award_used(ents, player, item);
+        }
     } else if name == "minecraft:carrot_on_a_stick" || name == "minecraft:warped_fungus_on_a_stick"
     {
-        riding::boost(ents, env, player, &mut stack, creative);
+        // `FoodOnAStickItem.use` counts the use only when nothing was boosted.
+        if !riding::boost(ents, env, player, &mut stack, creative) {
+            award_used(ents, player, item);
+        }
+    } else if vanillite_game::effect::thrown::kind_of(&stack).is_some() {
+        vanillite_game::effect::thrown::throw(ents, env, network_ids, player, &mut stack, creative);
+        award_used(ents, player, item);
     } else {
         put_back(ents, player, hand, stack);
         vanillite_game::player::using::start(ents, env, player, hand);
@@ -1289,10 +1307,11 @@ fn use_item_on(
     difficulty: Difficulty,
 ) {
     let mut stack = take_held(ents, player, hand);
+    let before = stack.clone();
     let creative = ents
         .player(player)
         .is_some_and(|p| p.game_mode == GameMode::Creative);
-    if let Some(kind) = animal::spawn_egg_kind(&stack) {
+    let used = if let Some(kind) = animal::spawn_egg_kind(&stack) {
         animal::use_spawn_egg_on(
             level,
             ents,
@@ -1304,11 +1323,32 @@ fn use_item_on(
             &mut stack,
             creative,
             difficulty,
-        );
+        )
     } else if vanillite_game::item::item_id(&stack).name() == "minecraft:lead" {
-        tame::use_lead_on_fence(level, ents, env, player, pos);
+        tame::use_lead_on_fence(level, ents, env, player, pos)
     } else {
-        minecart::use_item_on(level, ents, network_ids, pos, &mut stack, creative);
-    }
+        minecart::use_item_on(level, ents, network_ids, pos, &mut stack, creative)
+    };
     put_back(ents, player, hand, stack);
+    if used && !before.is_empty() {
+        // `ItemStack.useOn` of a successful item interaction, then `ITEM_USED_ON_BLOCK` and
+        // `ANY_BLOCK_USE`.
+        award_used(ents, player, before.item);
+        if let Some(p) = ents.player_mut(player) {
+            use vanillite_game::advancements::trigger::Event;
+            p.advancements
+                .trigger(Event::ItemUsedOnBlock(pos, before.clone()));
+            p.advancements.trigger(Event::AnyBlockUse(pos, before));
+        }
+    }
+}
+
+/// `player.awardStat(Stats.ITEM_USED.get(item))`.
+fn award_used(ents: &mut Entities, player: EntityId, item: u16) {
+    if let Some(p) = ents.player_mut(player) {
+        p.stats.award(
+            vanillite_game::stats::Stat::of(vanillite_game::stats::StatType::Used, item),
+            1,
+        );
+    }
 }

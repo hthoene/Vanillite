@@ -21,6 +21,7 @@ pub mod missile;
 pub mod movement;
 pub mod nav;
 pub mod nbt;
+pub mod nearby;
 pub mod path;
 pub mod physics;
 pub mod projectile;
@@ -258,6 +259,15 @@ pub enum LeashRef {
     Knot(BlockPos),
 }
 
+/// `LivingEntity`'s constructor yaw: `random.nextFloat() * (float) (Math.PI * 2)`.
+const CONSTRUCTOR_YAW_SCALE: f32 = std::f32::consts::PI * 2.0;
+
+/// The yaw (and head yaw) `LivingEntity`'s constructor gives a mob created with `seed`: a
+/// mob placed with `snapTo(pos, yRot, xRot)` keeps it as its head yaw.
+pub fn constructor_y_rot(seed: i64) -> f32 {
+    LegacyRandom::new(seed).next_float() * CONSTRUCTOR_YAW_SCALE
+}
+
 impl MobData {
     /// A fresh mob of `kind` (`EntityType.create` without `finalizeSpawn`).
     pub fn new(kind: Kind, seed: i64) -> MobData {
@@ -370,12 +380,19 @@ impl MobData {
         };
         // `Mob.ambientSoundTime` starts at 0; only playing a sound resets it to `-interval`.
         // `LivingEntity`'s constructor turns the entity to a random yaw (`setYRot(random.nextFloat()
-        // * 2 PI)`); spawning sets the real rotation afterwards, but the draw stays.
-        let _ = mob.random.next_float();
-        if kind == Kind::Chicken {
-            mob.egg_time = mob.random.next_int_bounded(6000) + 6000;
+        // * 2 PI)`); spawning sets the real rotation afterwards, but the draw stays, and the
+        // cubes' move control keeps a direction from it.
+        let y_rot = mob.random.next_float() * CONSTRUCTOR_YAW_SCALE;
+        // The draws of field initializers (`eggTime`, `idleAnimationTimeout`).
+        match kind {
+            Kind::Chicken => mob.egg_time = mob.random.next_int_bounded(6000) + 6000,
+            Kind::Rabbit => {
+                let _ = mob.random.next_int_bounded(40);
+            }
+            _ => {}
         }
         kinds::register_goals(&mut mob);
+        fam::undead::cubes::construct_move_yaw(&mut mob, y_rot);
         mob
     }
 
@@ -451,6 +468,8 @@ pub struct Environment {
     pub world_seed: i64,
     /// `getSeaLevel`.
     pub sea_level: i32,
+    /// `EnvironmentAttributes.TURTLE_EGG_HATCH_CHANCE` (the `day` timeline in the overworld).
+    pub turtle_egg_hatch_chance: f32,
 }
 
 impl Default for Environment {
@@ -468,6 +487,7 @@ impl Default for Environment {
             surface_slime_chance: 0.0,
             world_seed: 0,
             sea_level: 63,
+            turtle_egg_hatch_chance: 0.002,
         }
     }
 }
@@ -491,6 +511,7 @@ impl Environment {
             monster_block_light_limit: 0,
             monster_light_test: (0, 7),
             ambient_light: 0.0,
+            turtle_egg_hatch_chance: turtle_egg_hatch_chance(day),
             ..Environment::default()
         }
     }
@@ -498,6 +519,16 @@ impl Environment {
     /// `Level.isBrightOutside`.
     pub fn is_bright_outside(&self) -> bool {
         self.has_sky_light && self.sky_darken < 4
+    }
+}
+
+/// The `day` timeline's `gameplay/turtle_egg_hatch_chance` track at `ticks` of the day: 1 from
+/// 21062 to 21905 (constant ease), else the attribute's default 0.002.
+pub fn turtle_egg_hatch_chance(ticks: i64) -> f32 {
+    if (21062..21905).contains(&ticks.rem_euclid(24000)) {
+        1.0
+    } else {
+        0.002
     }
 }
 
@@ -635,6 +666,13 @@ pub enum WorldAction {
     EntityInside(BlockPos, EntityId),
     /// A hopper minecart takes in an item (`MinecartHopper.tryConsumeItems`).
     HopperMinecart(EntityId),
+    /// `TurtleEggBlock.destroyEgg` of an entity stepping (randomness 100) or falling (3) on
+    /// turtle eggs; `can_destroy` is `canDestroyEgg`.
+    TrampleTurtleEgg {
+        pos: BlockPos,
+        can_destroy: bool,
+        randomness: i32,
+    },
 }
 
 impl WorldAction {
@@ -659,6 +697,11 @@ impl WorldAction {
                 }
             }
             WorldAction::HopperMinecart(id) => crate::minecart::hopper_suck(level, id),
+            WorldAction::TrampleTurtleEgg {
+                pos,
+                can_destroy,
+                randomness,
+            } => crate::block::eggs::trample_turtle_egg(level, pos, can_destroy, randomness),
             WorldAction::SetDoorOpen(pos, open, source) => {
                 crate::block::redstone::set_door_open(level, pos, open, source);
             }
@@ -674,7 +717,7 @@ impl WorldAction {
                         damages_entities: false,
                         knockback: b.knockback,
                         wind_sound: Some(b.sound),
-                        ..Default::default()
+                        resistance: crate::level::explosion::BlockResistance::WindCharge,
                     },
                 );
             }
@@ -742,6 +785,14 @@ pub fn view_vector(x_rot: f32, y_rot: f32) -> Vec3 {
     Vec3::new(f64::from(f3 * f4), f64::from(-f5), f64::from(f2 * f4))
 }
 
+/// `-((float) Mth.atan2(x, z)) * Mth.RAD_TO_DEG`: the yaw of a direction as the flying mobs
+/// compute it, a float product.
+pub fn direction_yaw(x: f64, z: f64) -> f32 {
+    #[allow(clippy::cast_possible_truncation)]
+    let a = vanillite_base::math::atan2(x, z) as f32;
+    -a * (180.0 / std::f32::consts::PI)
+}
+
 /// `Mth.atan2(y, x) * Mth.RAD_TO_DEG` (the float `57.295776F` widened to double), as every
 /// Vanilla entity rotation computes it.
 pub fn atan2_deg(y: f64, x: f64) -> f64 {
@@ -775,7 +826,7 @@ pub fn is_lava(state: BlockState) -> bool {
 /// `getEyeHeight` of a mob: the type's eye height, scaled for babies.
 pub fn eye_height(mob: &MobData) -> f64 {
     let info = mob.kind.type_id().info();
-    let scale = if mob.baby { 0.5 } else { 1.0 };
+    let scale = fam::size_scale(mob).unwrap_or(if mob.baby { 0.5 } else { 1.0 });
     f64::from(info.eye_height * scale)
 }
 
@@ -824,11 +875,38 @@ pub fn new_entity_seed() -> i64 {
     })
 }
 
+/// A seed for what Vanilla draws from a new entity's random before the entity gets its seed
+/// (`defineSynchedData` in the `Entity` constructor): unique, never from the seed stream.
+pub fn new_unique_seed() -> i64 {
+    ENTITY_SEEDS.with_borrow_mut(|(_, unique)| unique.next_long())
+}
+
 /// From now on (on this thread) new entities take their seeds from a legacy random seeded
 /// with `seed` in creation order (`None`: unique seeds again). For tick exact comparisons with
 /// Vanilla, whose recorder does the same.
 pub fn set_entity_seed_stream(seed: Option<i64>) {
     ENTITY_SEEDS.with_borrow_mut(|(stream, _)| *stream = seed.map(LegacyRandom::new));
+}
+
+thread_local! {
+    /// The seed of every shuffled behaviour list's own random in parity scenarios (see
+    /// [`set_parity_shuffle_seed`]).
+    static SHUFFLE_SEED: std::cell::Cell<Option<i64>> = const { std::cell::Cell::new(None) };
+}
+
+/// The seed of a new shuffled behaviour list's own random (`ShufflingList.random`, a
+/// `RandomSource.create()` of its own): unique, or the parity seed (on this thread).
+pub fn new_shuffle_seed() -> i64 {
+    SHUFFLE_SEED
+        .get()
+        .unwrap_or_else(|| ENTITY_SEEDS.with_borrow_mut(|(_, unique)| unique.next_long()))
+}
+
+/// From now on (on this thread) every new shuffled behaviour list seeds its random with
+/// `seed` (`None`: unique seeds). For tick exact comparisons with Vanilla, whose recorder
+/// does the same.
+pub fn set_parity_shuffle_seed(seed: Option<i64>) {
+    SHUFFLE_SEED.set(seed);
 }
 
 /// The UUID of a new entity (`Mth.createInsecureUUID` of its own fresh random): draws from no

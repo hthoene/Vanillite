@@ -1,0 +1,151 @@
+{
+  "description": "Mangrove propagules on mud grow like saplings by random ticks (without a light check) into mangrove trees; hanging propagules under mangrove leaves age to 4; cave vines grow down from a ceiling, some with glow berries.",
+  "world": {
+    "seed": 9112,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:stone",
+        3
+      ]
+    ]
+  },
+  "rules": {
+    "random_tick_speed": "1024"
+  },
+  "time": 6000,
+  "level_rng": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      23,
+      -44,
+      23
+    ]
+  ],
+  "ticks": 160,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -61,
+        0
+      ],
+      "to": [
+        23,
+        -61,
+        11
+      ],
+      "block": "minecraft:mud"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        4
+      ],
+      "block": "minecraft:mangrove_propagule[age=0,hanging=false,stage=0,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        16,
+        -60,
+        6
+      ],
+      "block": "minecraft:mangrove_propagule[age=4,hanging=false,stage=0,waterlogged=false]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        2,
+        -56,
+        16
+      ],
+      "to": [
+        8,
+        -56,
+        20
+      ],
+      "block": "minecraft:mangrove_leaves[distance=1,persistent=true,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -57,
+        17
+      ],
+      "block": "minecraft:mangrove_propagule[age=0,hanging=true,stage=0,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -57,
+        18
+      ],
+      "block": "minecraft:mangrove_propagule[age=2,hanging=true,stage=0,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -57,
+        19
+      ],
+      "block": "minecraft:mangrove_propagule[age=3,hanging=true,stage=0,waterlogged=false]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        14,
+        -48,
+        14
+      ],
+      "to": [
+        22,
+        -48,
+        22
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        15,
+        -49,
+        15
+      ],
+      "block": "minecraft:cave_vines[age=0,berries=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        18,
+        -49,
+        18
+      ],
+      "block": "minecraft:cave_vines[age=20,berries=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        21,
+        -49,
+        21
+      ],
+      "block": "minecraft:cave_vines[age=24,berries=true]"
+    }
+  ],
+  "tier": "fast"
+}

@@ -1,4 +1,4 @@
-abi 1.0
+abi 1.1
 type Status = i32
 type PluginId = u32
 type EntryFn = unsafeextern"C"fn()->*constPluginInfo
@@ -235,7 +235,7 @@ struct ChunkGeneratorProvider size=40 align=8
   create: GeneratorCreateFn @16
   generate: GeneratorRunFn @24
   destroy: GeneratorDestroyFn @32
-struct HostApi size=232 align=8
+struct HostApi size=240 align=8
   size: u32 @0
   abi_major: u16 @4
   abi_minor: u16 @6
@@ -267,3 +267,4 @@ struct HostApi size=232 align=8
   block_get: unsafeextern"C"fn(*mutContext,u32,BlockPos,*mutStrBuf)->Status @208
   block_set: unsafeextern"C"fn(*mutContext,u32,BlockPos,Str)->Status @216
   player_position: unsafeextern"C"fn(*mutContext,Uuid,*mutVec3)->Status @224
+  player_set_tab_list: unsafeextern"C"fn(PluginId,Uuid,Str,Str,u32)->Status @232

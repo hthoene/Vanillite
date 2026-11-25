@@ -43,7 +43,12 @@
 //!   Vanilla `setBlock` flags 3), `set` (without updates), `fill` (with updates), `force` and
 //!   `unforce` (`"chunks": [[x, z], ...]`: adds or removes forced tickets like `/forceload`,
 //!   then the chunk system runs without a game tick until every chunk is loaded, unloaded and
-//!   has its entities like its new ticket level says).
+//!   has its entities like its new ticket level says), `restart` (the server saves and stops,
+//!   then starts again on the saved world: the saved chunk tickets come back and their chunks
+//!   load before the next tick like `MinecraftServer.prepareLevels`; the rules, time and
+//!   difficulty are set again and the level random starts from the world seed; scenarios with
+//!   entities cannot restart), `bonemeal` (`"pos"`: bone meal used on the block,
+//!   `BoneMealItem.growCrop`).
 //!
 //! Positions in chunks that are not accessible (unloaded or above full level) are traced as
 //! the state [`UNLOADED`].
@@ -94,6 +99,10 @@
 //! the scenario matches Vanilla).
 //! - `hurt` action: `amount` damage to the entity `entity`, by `by` (player attack or mob
 //!   attack) or generic damage without `by`.
+//! - `lightning` action: the strike of `ServerLevel.tickThunder` in the column of `pos` (its y
+//!   does not matter) without the chance roll: the target (`findLightningTargetAround`: the
+//!   nearest lightning rod, a living entity under the open sky, or the column's top), then
+//!   `isRainingAt`, the skeleton trap and the bolt. Needs `"weather": "thunder"` (or rain).
 //! - `effect` action: `addEffect` on the entity `entity` with the mob effect `effect`,
 //!   `duration` ticks and `amplifier` (default 0).
 
@@ -162,10 +171,31 @@ pub enum OpKind {
     Unforce,
     /// Damage to a scenario entity ([`Op::hurt`]).
     Hurt,
+    /// A lightning strike in the column of `from` (an action).
+    Lightning,
+    /// Saves, stops and starts the server again (an action).
+    Restart,
     /// A status effect on a scenario entity ([`Op::effect`]).
     Effect,
+    /// Bone meal used on the block at `pos` (an action).
+    Bonemeal,
     /// A command run as the server at the origin ([`Op::command`]).
     Command,
+    /// A thrown splash or lingering potion ([`Op::throw_potion`]).
+    ThrowPotion,
+}
+
+/// The potion of a `throw_potion` action.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ThrowPotionOp {
+    /// `minecraft:splash_potion` or `minecraft:lingering_potion`.
+    pub item: String,
+    /// Potion id, e.g. `minecraft:strong_poison`.
+    pub potion: String,
+    pub pos: [f64; 3],
+    pub motion: [f64; 3],
+    /// Name of the thrower, if any.
+    pub by: Option<String>,
 }
 
 /// The status effect of an `effect` action.
@@ -247,6 +277,8 @@ pub struct Op {
     pub hurt: Option<Hurt>,
     /// The effect of an `effect` action.
     pub effect: Option<EffectOp>,
+    /// The potion of a `throw_potion` action.
+    pub throw_potion: Option<ThrowPotionOp>,
     /// The chunks of `force` and `unforce`.
     pub chunks: Vec<ChunkPos>,
     /// The command line of a `command` action.
@@ -507,10 +539,14 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
         Some("place") => OpKind::Place,
         Some("fill") => OpKind::Fill,
         Some("hurt") if action => OpKind::Hurt,
+        Some("lightning") if action => OpKind::Lightning,
         Some("effect") if action => OpKind::Effect,
+        Some("throw_potion") if action => OpKind::ThrowPotion,
         Some("force") if action => OpKind::Force,
         Some("unforce") if action => OpKind::Unforce,
         Some("command") if action => OpKind::Command,
+        Some("restart") if action => OpKind::Restart,
+        Some("bonemeal") if action => OpKind::Bonemeal,
         o => return Err(format!("unknown op {o:?}")),
     };
     if kind == OpKind::Command {
@@ -528,6 +564,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             block: String::new(),
             hurt: None,
             effect: None,
+            throw_potion: None,
             chunks: Vec::new(),
             command: Some(
                 v.get("command")
@@ -537,22 +574,24 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             ),
         });
     }
-    if matches!(kind, OpKind::Force | OpKind::Unforce) {
-        let chunks = v
-            .get("chunks")
-            .and_then(Value::as_array)
-            .ok_or("a chunk op needs chunks")?
-            .iter()
-            .map(|c| {
-                let c = |i: usize| {
-                    c.get(i)
-                        .and_then(Value::as_i64)
-                        .and_then(|v| i32::try_from(v).ok())
-                        .ok_or_else(|| format!("bad chunk {c:?}"))
-                };
-                Ok(ChunkPos::new(c(0)?, c(1)?))
-            })
-            .collect::<Result<_, String>>()?;
+    if matches!(kind, OpKind::Force | OpKind::Unforce | OpKind::Restart) {
+        let chunks = match v.get("chunks").and_then(Value::as_array) {
+            Some(_) if kind == OpKind::Restart => return Err("restart takes no chunks".to_owned()),
+            Some(list) => list
+                .iter()
+                .map(|c| {
+                    let c = |i: usize| {
+                        c.get(i)
+                            .and_then(Value::as_i64)
+                            .and_then(|v| i32::try_from(v).ok())
+                            .ok_or_else(|| format!("bad chunk {c:?}"))
+                    };
+                    Ok(ChunkPos::new(c(0)?, c(1)?))
+                })
+                .collect::<Result<_, String>>()?,
+            None if kind == OpKind::Restart => Vec::new(),
+            None => return Err("a chunk op needs chunks".to_owned()),
+        };
         let tick = v
             .get("tick")
             .and_then(Value::as_u64)
@@ -567,6 +606,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             block: String::new(),
             hurt: None,
             effect: None,
+            throw_potion: None,
             chunks,
             command: None,
         });
@@ -580,6 +620,27 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
     } else {
         0
     };
+    if kind == OpKind::ThrowPotion {
+        let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
+        return Ok(Op {
+            tick,
+            kind,
+            from: BlockPos::new(0, 0, 0),
+            to: BlockPos::new(0, 0, 0),
+            block: String::new(),
+            hurt: None,
+            effect: None,
+            throw_potion: Some(ThrowPotionOp {
+                item: s("item").ok_or("throw_potion needs an item")?,
+                potion: s("potion").ok_or("throw_potion needs a potion")?,
+                pos: vec3(v.get("pos"))?,
+                motion: vec3(v.get("motion"))?,
+                by: s("by"),
+            }),
+            chunks: Vec::new(),
+            command: None,
+        });
+    }
     if kind == OpKind::Effect {
         let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
         let int = |k: &str| {
@@ -600,6 +661,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
                 duration: int("duration").ok_or("effect needs a duration")?,
                 amplifier: int("amplifier").unwrap_or(0),
             }),
+            throw_potion: None,
             chunks: Vec::new(),
             command: None,
         });
@@ -623,6 +685,22 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
                     .ok_or("hurt needs an amount")? as f32,
             }),
             effect: None,
+            throw_potion: None,
+        });
+    }
+    if matches!(kind, OpKind::Bonemeal | OpKind::Lightning) {
+        let p = pos(v.get("pos"))?;
+        return Ok(Op {
+            tick,
+            kind,
+            from: p,
+            to: p,
+            block: String::new(),
+            hurt: None,
+            command: None,
+            effect: None,
+            throw_potion: None,
+            chunks: Vec::new(),
         });
     }
     let (from, to) = if kind == OpKind::Fill {
@@ -643,6 +721,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             .to_owned(),
         hurt: None,
         effect: None,
+        throw_potion: None,
         chunks: Vec::new(),
         command: None,
     })

@@ -27,6 +27,22 @@ pub fn tame(m: &mut MobData, owner: u128) {
     m.persistent = true;
 }
 
+/// The `tame_animal` trigger of `TamableAnimal.tame(player)` and
+/// `AbstractHorse.tameWithName(player)`.
+pub fn award_tame(ents: &mut Entities, animal: EntityId, player: EntityId) {
+    use crate::advancements::trigger::{Event, TriggerKind};
+    use crate::advancements::view;
+    if !view::listens(ents, player, TriggerKind::TAME_ANIMAL) {
+        return;
+    }
+    if let Some(e) = view::snapshot(ents, animal)
+        && let Some(p) = ents.player_mut(player)
+    {
+        p.advancements
+            .trigger(Event::Entity(TriggerKind::TAME_ANIMAL, e));
+    }
+}
+
 /// The owner entity of a tamed mob in this world (`getOwner`).
 pub fn owner_of(ents: &Entities, m: &MobData) -> Option<EntityId> {
     ents.player_by_uuid(m.owner?)
@@ -126,7 +142,7 @@ pub fn follow_tick(t: &mut Tick<'_, '_>, speed: f64, recalc: &mut i32) {
         if teleport {
             try_to_teleport_to_owner(t, o.pos);
         } else {
-            nav::move_to_entity(t, o.pos, 0, speed);
+            nav::move_to_entity(t, o.pos, 1, speed);
         }
     }
 }

@@ -1,0 +1,109 @@
+{
+  "description": "Pigs land on big dripleaves: the leaf turns unstable, tilts partially and fully after 10 ticks each (the pig falls through) and rights itself 100 ticks later; a redstone block next to the other leaf resets its tilt at once.",
+  "world": {
+    "seed": 9109,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:stone",
+        2
+      ],
+      [
+        "minecraft:clay",
+        1
+      ]
+    ]
+  },
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      9,
+      -56,
+      9
+    ]
+  ],
+  "ticks": 160,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        2
+      ],
+      "block": "minecraft:big_dripleaf_stem[facing=north,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -59,
+        2
+      ],
+      "block": "minecraft:big_dripleaf[facing=north,tilt=none,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -60,
+        7
+      ],
+      "block": "minecraft:big_dripleaf_stem[facing=east,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -59,
+        7
+      ],
+      "block": "minecraft:big_dripleaf[facing=east,tilt=none,waterlogged=false]"
+    }
+  ],
+  "entities": [
+    {
+      "name": "first",
+      "type": "minecraft:pig",
+      "pos": [
+        2.5,
+        -57.5,
+        2.5
+      ],
+      "seed": 21,
+      "finalize": false
+    },
+    {
+      "name": "second",
+      "type": "minecraft:pig",
+      "pos": [
+        7.5,
+        -57.5,
+        7.5
+      ],
+      "seed": 22,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 16,
+      "op": "place",
+      "pos": [
+        8,
+        -59,
+        7
+      ],
+      "block": "minecraft:redstone_block"
+    }
+  ],
+  "tier": "fast"
+}

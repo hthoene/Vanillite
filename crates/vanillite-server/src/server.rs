@@ -301,7 +301,13 @@ impl ServerBuilder {
         }
         let seed = prepared.world_gen.seed;
         let world_gen = prepared.world_gen.clone();
-        let behaviours = Arc::new(vanillite_game::block::Behaviours::vanilla());
+        let mut behaviours = vanillite_game::block::Behaviours::vanilla();
+        if config.server.redstone.implementation
+            == vanillite_config::RedstoneImplementation::AlternateCurrent
+        {
+            vanillite_game::block::redstone::alternate_current::install(&mut behaviours);
+        }
+        let behaviours = Arc::new(behaviours);
         let spawn_table = crate::world_setup::spawn_table(packs.as_deref()).map(Arc::new);
         if let Some(t) = &spawn_table {
             vanillite_game::mob::spawn::install_table(Arc::clone(t));
@@ -422,6 +428,11 @@ impl ServerBuilder {
             writer.clone(),
         );
         level.set_data_configuration(&pack_config, Some(&data_packs.features));
+        // `MinecraftServer.randomSequences`: shared by all worlds and `/random`, restored from
+        // the saved data with the game systems before the first tick.
+        let random_sequences = Arc::new(std::sync::Mutex::new(
+            vanillite_game::random_sequences::RandomSequences::new(seed),
+        ));
         let global = Arc::new_cyclic(|this| Global {
             clock,
             players: PlayerList::new(max_players),
@@ -446,11 +457,15 @@ impl ServerBuilder {
             systems: crate::systems::GameSystems::new(
                 level_dir.clone(),
                 u8::try_from(config.properties.function_permission_level).unwrap_or(2),
+                Arc::clone(&random_sequences),
             ),
             packs: data_packs.with_loaded(packs.clone()),
             tick_rate: std::sync::Mutex::new(TickRateManager::default()),
             tick_times: std::sync::Mutex::new(crate::tick_rate::TickTimes::default()),
             force_game_mode: config.properties.force_gamemode,
+            language: prepared.language,
+            broadcast_console_to_ops: config.properties.broadcast_console_to_ops,
+            broadcast_rcon_to_ops: config.properties.broadcast_rcon_to_ops,
             plugins,
             this: this.clone(),
         });
@@ -477,10 +492,6 @@ impl ServerBuilder {
 
         log::info!("Preparing level \"{level_name}\"");
         let mut worlds = Vec::with_capacity(DIMENSIONS.len());
-        // `MinecraftServer.randomSequences`: shared by all worlds (not saved yet).
-        let random_sequences = Arc::new(std::sync::Mutex::new(
-            vanillite_game::random_sequences::RandomSequences::new(seed),
-        ));
         let trees = crate::world_setup::tree_features(packs.as_deref(), seed);
         for (dimension, index) in DIMENSIONS.iter().zip(0u16..) {
             let rules = Arc::new(config.world_rules(dimension));
@@ -578,7 +589,7 @@ impl ServerBuilder {
                 player_range,
                 climate,
             );
-            let kept_tickets = crate::chunk_tickets::load(&data, &mut level);
+            let saved_tickets = crate::chunk_tickets::load(&data, &mut level);
             let mobs = crate::mobs::WorldMobs::new(spawn_table.clone(), seed, &rules);
             let mut world = ServerWorld::new(
                 WorldId(index),
@@ -591,9 +602,10 @@ impl ServerBuilder {
                 mobs,
                 data,
             );
-            world.kept_tickets = kept_tickets;
+            world.restore_tickets(saved_tickets);
             worlds.push(world);
         }
+        prepare_levels(&mut worlds);
         let (worlds, routes) = if parallel {
             log::info!("Dimensions tick in parallel");
             let mut threads = Vec::with_capacity(worlds.len());
@@ -627,6 +639,7 @@ impl ServerBuilder {
 
         let net = NetState::start(
             &config,
+            &dir,
             prepared.configuration,
             self.network,
             global.chat.enforce_secure,
@@ -671,6 +684,15 @@ impl ServerBuilder {
         server.next_backup = server.backup_due_after();
         server.ticks_until_autosave = server.autosave_interval();
         let _ = server.global.handle.set(server.handle());
+        if let Some(net) = &server.net {
+            crate::admin::start_rcon(
+                &server.config,
+                &net.network,
+                server.handle(),
+                &server.global,
+            );
+            crate::admin::start_query(&server.config, &net.network, Arc::clone(&net.query));
+        }
         server.global.plugins.enable_all();
         let bots = server.config.server.debug.test_bots;
         if bots > 0
@@ -1258,6 +1280,7 @@ impl Server {
             sink,
             inbox: Arc::clone(&arrival.inbox),
             ip,
+            allows_listing: arrival.client.allows_listing,
         });
         let global = Arc::clone(&self.global);
         self.run_in_world(
@@ -1330,8 +1353,27 @@ impl Server {
     /// G2: player list and autosave.
     fn global_post_phase(&mut self) {
         let online = self.global.players.count();
+        let properties = &self.config.properties;
         if let Some(net) = self.net.as_mut() {
             net.set_online(online);
+            // `rebuildServerStatus` every 5 seconds; the Query names every second.
+            let (sample_due, query_due) = (
+                self.tick_count.is_multiple_of(100),
+                self.tick_count.is_multiple_of(20),
+            );
+            if sample_due || (query_due && properties.enable_query) {
+                let players = self.global.players.snapshot();
+                if sample_due {
+                    let listed: Vec<(String, u128, bool)> = players
+                        .iter()
+                        .map(|p| (p.name.clone(), p.uuid.0, p.allows_listing))
+                        .collect();
+                    net.update_sample(&listed, properties.hide_online_players);
+                }
+                if properties.enable_query {
+                    net.query.set(players.into_iter().map(|p| p.name).collect());
+                }
+            }
         }
         // Player list maintenance (latency updates, idle kicks) comes with players.
         self.ticks_until_autosave -= 1;
@@ -1734,4 +1776,33 @@ fn open_tick_log() -> Option<io::BufWriter<File>> {
             None
         }
     }
+}
+
+/// `MinecraftServer.prepareLevels`: the chunks of the saved tickets (forced chunks, portal
+/// tickets) become full before the first tick, so forced chunks tick from the first tick on.
+fn prepare_levels(worlds: &mut [ServerWorld]) {
+    let mut waiting: Vec<&mut ServerWorld> = worlds
+        .iter_mut()
+        .filter(|w| w.has_saved_tickets())
+        .collect();
+    if waiting.is_empty() {
+        return;
+    }
+    let started = Instant::now();
+    let mut next_report = started + Duration::from_secs(5);
+    loop {
+        let pending: usize = waiting.iter_mut().map(|w| w.prepare_step()).sum();
+        if pending == 0 {
+            break;
+        }
+        if Instant::now() >= next_report {
+            log::info!("Loading the chunks of the saved chunk tickets: {pending} left");
+            next_report += Duration::from_secs(5);
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    log::info!(
+        "Loaded the chunks of the saved chunk tickets in {} ms",
+        started.elapsed().as_millis()
+    );
 }

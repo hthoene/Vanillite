@@ -909,6 +909,7 @@ fn node_copy(t: &Tick<'_, '_>, node: u16) -> Option<super::Node> {
         min_duration: n.min_duration,
         max_duration: n.max_duration,
         children: Vec::new(),
+        random: None,
     })
 }
 
@@ -952,20 +953,26 @@ fn status(t: &Tick<'_, '_>, node: u16) -> Status {
         .map_or(Status::Stopped, |n| n.status)
 }
 
-/// `ShufflingList.shuffle` with the level random.
+/// `ShufflingList.shuffle` with the list's own random.
 fn shuffle(t: &mut Tick<'_, '_>, node: u16) {
-    let (mut list, len) = children(t, node);
-    for c in &mut list[..len] {
-        let r = t.env.random.next_float();
+    if !alive(t) {
+        return;
+    }
+    let Some(n) = brain(t).nodes.get_mut(usize::from(node)) else {
+        return;
+    };
+    let Some(random) = n.random.as_deref_mut() else {
+        return;
+    };
+    for c in &mut n.children {
+        let r = random.next_float();
         #[allow(clippy::cast_precision_loss)]
-        let w = c.weight.max(1) as f32;
+        let w = c.weight as f32;
         c.rand_weight = -f64::from(r).powf(f64::from(1.0 / w));
     }
-    list[..len].sort_by(|a, b| a.rand_weight.total_cmp(&b.rand_weight));
-    write(t, node, |n| {
-        n.children.clear();
-        n.children.extend_from_slice(&list[..len]);
-    });
+    // `List.sort` is stable, like `sort_by`.
+    n.children
+        .sort_by(|a, b| a.rand_weight.total_cmp(&b.rand_weight));
 }
 
 /// `tryStart`.

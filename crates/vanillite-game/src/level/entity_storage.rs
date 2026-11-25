@@ -29,8 +29,9 @@ use crate::item_entity::ItemData;
 impl Level {
     /// Applies the visibility changes of the chunk runtime
     /// (`PersistentEntitySectionManager.updateChunkStatus`): a chunk that becomes visible
-    /// loads its stored entities, one that becomes hidden writes them back and removes them;
-    /// entity ticking chunks put their entities in the tick order.
+    /// queues its stored entities for [`Level::tick_entity_manager`], one that becomes hidden
+    /// writes them back and removes them; entity ticking chunks put their entities in the tick
+    /// order.
     pub(super) fn apply_visibility(&mut self) {
         let mut changes = std::mem::take(&mut self.visibility_scratch);
         self.chunks.take_visibility_changes(&mut changes);
@@ -38,16 +39,39 @@ impl Level {
             let pos = change.pos;
             let ticking = change.new == Visibility::Ticking;
             if change.new == Visibility::Hidden {
+                // A pending load completes before the unload (`storeChunkSections` waits for
+                // it), so stored entities are never overwritten.
+                if !self.chunks.entities_loaded(pos) {
+                    self.load_entities(pos);
+                }
                 self.write_entities(pos);
                 self.remove_entities(pos);
+                self.chunks.set_entities_loaded(pos, false);
             }
             self.entities.store.set_chunk_ticking(pos.x, pos.z, ticking);
             if change.old == Visibility::Hidden {
-                self.load_entities(pos);
+                self.pending_entity_loads.push(pos);
             }
         }
         changes.clear();
         self.visibility_scratch = changes;
+    }
+
+    /// `PersistentEntitySectionManager.tick` at the end of the level tick
+    /// (`processPendingLoads`): the chunks that became visible create their stored entities;
+    /// from then on their scheduled ticks run (`isPositionTickingWithEntitiesLoaded`).
+    pub fn tick_entity_manager(&mut self) {
+        let mut pending = std::mem::take(&mut self.pending_entity_loads);
+        for &pos in &pending {
+            if self.chunks.visibility(pos) != Visibility::Hidden
+                && !self.chunks.entities_loaded(pos)
+            {
+                self.load_entities(pos);
+                self.chunks.set_entities_loaded(pos, true);
+            }
+        }
+        pending.clear();
+        self.pending_entity_loads = pending;
     }
 
     /// Creates the stored entities of a chunk that became live (`addEntityWithoutEvent` in
@@ -130,7 +154,8 @@ impl Level {
             return true;
         }
         if let Some((e, data)) = crate::mob::nbt::load_arrow(&nbt) {
-            let mut new = NewEntity::new(ids::ARROW, self.network_ids().next(), e.uuid, e.pos);
+            let kind = crate::mob::projectile::arrow_of(&data.item).0;
+            let mut new = NewEntity::new(kind, self.network_ids().next(), e.uuid, e.pos);
             new.velocity = e.velocity;
             new.rot = e.rot;
             self.entities.spawn_arrow(new, data);
@@ -310,7 +335,7 @@ impl Level {
         if let Some(m) = ents.minecart(id) {
             return Some(crate::mob::nbt::save_minecart(&entity, m));
         }
-        if kind == ids::ARROW {
+        if crate::mob::projectile::is_arrow_kind(kind) {
             return ents.arrow(id).map(|a| {
                 let owner = a.owner.and_then(|o| ents.store.get(o)).map(|o| o.uuid());
                 crate::mob::nbt::save_arrow(&entity, a, owner)
@@ -461,7 +486,11 @@ impl Level {
         chunks.sort_unstable_by_key(|c| (c.x, c.z));
         chunks.dedup();
         for chunk in chunks {
-            if self.chunks.visibility(chunk) != Visibility::Hidden {
+            // Chunks whose entities are still loading keep their stored entities
+            // (`storeChunkSections` of a pending chunk).
+            if self.chunks.visibility(chunk) != Visibility::Hidden
+                && self.chunks.entities_loaded(chunk)
+            {
                 self.write_entities(chunk);
             }
         }

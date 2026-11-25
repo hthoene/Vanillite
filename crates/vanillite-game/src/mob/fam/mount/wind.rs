@@ -193,33 +193,9 @@ fn hit_entity(
     best.map(|(id, at, _)| (id, at))
 }
 
-/// The fraction of the segment where it enters the box (0 when it starts inside).
+/// Where the segment enters `b`, as a fraction (`AABB.clip`).
 fn segment_box(from: Vec3, to: Vec3, b: &Aabb) -> Option<f64> {
-    let d = to - from;
-    let mut t0: f64 = 0.0;
-    let mut t1: f64 = 1.0;
-    for (o, dir, lo, hi) in [
-        (from.x, d.x, b.min_x, b.max_x),
-        (from.y, d.y, b.min_y, b.max_y),
-        (from.z, d.z, b.min_z, b.max_z),
-    ] {
-        if dir.abs() < 1.0e-12 {
-            if o < lo || o > hi {
-                return None;
-            }
-            continue;
-        }
-        let (mut a, mut c) = ((lo - o) / dir, (hi - o) / dir);
-        if a > c {
-            std::mem::swap(&mut a, &mut c);
-        }
-        t0 = t0.max(a);
-        t1 = t1.min(c);
-        if t0 > t1 {
-            return None;
-        }
-    }
-    Some(t0)
+    crate::mob::projectile::segment_box(from, to, b)
 }
 
 /// `Projectile.checkLeftOwner`: once the owner's box no longer touches the charge's.

@@ -715,21 +715,22 @@ impl WorldPlayers {
                 handled
             };
             swings.extend(hands.into_iter().map(|h| (id, h)));
-            // `ServerGamePacketListenerImpl.tick`: `playerIdleTimeout` kicks idle players (not
-            // while the end credits show).
-            let idle = global.access.idle_timeout();
-            let handled = if matches!(handled, Handled::Ok)
-                && idle > 0
-                && !player.survival.portal.won_game
-                && player.connection.last_action.elapsed()
-                    > std::time::Duration::from_secs(u64::try_from(idle).unwrap_or(0) * 60)
-            {
-                Handled::Kick(Box::new(vanillite_protocol::text::Component::translatable(
-                    "multiplayer.disconnect.idling",
-                    vec![],
-                )))
-            } else {
-                handled
+            // `player-idle-timeout` (`ServerGamePacketListenerImpl.tick`; not while the end
+            // credits show).
+            let idle_minutes = u64::try_from(global.access.idle_timeout()).unwrap_or(0);
+            let handled = match handled {
+                Handled::Ok
+                    if idle_minutes > 0
+                        && !player.survival.portal.won_game
+                        && player.connection.last_action.elapsed()
+                            > std::time::Duration::from_secs(idle_minutes.saturating_mul(60)) =>
+                {
+                    Handled::Kick(Box::new(vanillite_protocol::text::Component::translatable(
+                        "multiplayer.disconnect.idling",
+                        vec![],
+                    )))
+                }
+                other => other,
             };
             match handled {
                 Handled::Ok => {}
@@ -943,6 +944,8 @@ impl WorldPlayers {
         let mut taken: Vec<(EntityId, EntityId, i32)> = Vec::new();
         let mut equipment: Vec<(EntityId, SetEquipment)> = Vec::new();
         let mut taken_orbs: Vec<(EntityId, EntityId)> = Vec::new();
+        // Picked up stacks with a thrower: the picker, the thrower's UUID and `getItem()`.
+        let mut thrown: Vec<(EntityId, u128, ItemStack)> = Vec::new();
         for (id, player) in players.iter_mut() {
             let sink = Arc::clone(&player.connection.sink);
             if let Some(sequence) = player.connection.play.take_ack() {
@@ -1014,8 +1017,16 @@ impl WorldPlayers {
                     }
                     let count = item.stack.count;
                     let kind = item.stack.item;
+                    let before = item.thrower.map(|t| (t, item.stack.clone()));
                     if player.inventory.add(None, &mut item.stack, infinite) {
                         taken.push((item_id, id, count));
+                        if let Some((thrower, mut stack)) = before {
+                            // `getItem()` after `take`: the rest, or the whole stack again.
+                            if !item.stack.is_empty() {
+                                stack = item.stack.clone();
+                            }
+                            thrown.push((id, thrower, stack));
+                        }
                         player
                             .stats
                             .award(Stat::of(StatType::PickedUp, kind), count);
@@ -1098,6 +1109,9 @@ impl WorldPlayers {
         }
         level.entities.players = players;
         let entities = &mut level.entities;
+        for (picker, thrower, stack) in thrown {
+            vanillite_game::mob::animal::item_picked_up(entities, picker, thrower, &stack);
+        }
         for (id, packet) in equipment {
             let packet = SharedPacket::of(&packet);
             for viewer in blocks.tracker.seen_by(id) {

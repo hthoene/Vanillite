@@ -82,14 +82,16 @@ pub(crate) fn flat_level_with(behaviours: Behaviours) -> Level {
     for _ in 0..4 {
         chunks.tick();
     }
-    assert!(chunks.is_block_ticking(center));
-    Level::new(
+    let mut level = Level::new(
         chunks,
         LevelSettings::default(),
         Arc::new(behaviours),
         Arc::new(NetworkIds::new()),
         0,
-    )
+    );
+    level.tick_entity_manager();
+    assert!(level.is_block_ticking(center));
+    level
 }
 
 /// One tick of the simulation phases and falling block entities.
@@ -108,6 +110,7 @@ pub(crate) fn tick(level: &mut Level) {
         }
     }
     level.tick_block_entities();
+    level.tick_entity_manager();
 }
 
 fn level_of(state: BlockState) -> Option<&'static str> {

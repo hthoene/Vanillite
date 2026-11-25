@@ -436,6 +436,14 @@ impl Particle {
     }
 }
 
+impl Decode for Particle {
+    fn decode(r: &mut Reader<'_>) -> Result<Self> {
+        let kind = r.varint()?;
+        let options = Particle::decode_options(kind, r)?;
+        Ok(Particle { kind, options })
+    }
+}
+
 /// `level_particles` (`ClientboundLevelParticlesPacket`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct LevelParticles {

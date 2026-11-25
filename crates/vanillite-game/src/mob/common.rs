@@ -645,7 +645,7 @@ pub fn tick(t: &mut Tick<'_, '_>, g: &mut CommonGoal) {
             if dist_sqr <= radius_sqr && *see_time >= 5 {
                 t.mob().nav.stop();
             } else {
-                nav::move_to_entity(t, o.pos, 0, *speed);
+                nav::move_to_entity(t, o.pos, 1, *speed);
             }
             let look = Vec3::new(o.pos.x, o.eye_y, o.pos.z);
             t.mob().look.set_look_at(look, 30.0, 30.0);

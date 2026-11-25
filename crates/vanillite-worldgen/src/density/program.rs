@@ -252,6 +252,17 @@ pub struct Program {
     pub(super) splines: Vec<SplineProgram>,
     pub(super) interval_selects: Vec<IntervalSelectTable>,
     pub(super) cache_cells: u32,
+    /// Per instruction: whether sampling it at only some points of a volume saves work, i.e.
+    /// it reads a noise or spline other than through an interpolation or slice.
+    pub(super) maskable: Vec<bool>,
+    /// Per cache cell: whether only the function given to [`Self::set_masked_cache_root`]
+    /// reads it, so its volume cache may hold values for only some points (no other function
+    /// samples it point by point and could see that cache).
+    pub(super) partial_cells: Vec<bool>,
+    /// Per instruction: whether it samples an input over another volume than its own
+    /// (interpolation, slices, surface search, `shift_b`), so its cache cells may end up
+    /// holding other volumes depending on the order of evaluation.
+    pub(super) other_volumes: Vec<bool>,
 }
 
 impl Program {
@@ -281,7 +292,283 @@ impl Program {
     }
 
     pub(super) fn push(&mut self, op: Op) -> OpIndex {
+        let maskable = self.is_maskable(&op);
+        let other_volumes = match op {
+            Op::Interpolated { .. }
+            | Op::SliceX { .. }
+            | Op::SliceY { .. }
+            | Op::SliceZ { .. }
+            | Op::SliceXz { .. }
+            | Op::FindTopSurface { .. }
+            | Op::ShiftB { .. } => true,
+            _ => {
+                let mut inputs = Vec::new();
+                self.inputs_of(&op, &mut inputs);
+                inputs.iter().any(|&input| {
+                    self.other_volumes
+                        .get(input as usize)
+                        .copied()
+                        .unwrap_or(true)
+                })
+            }
+        };
         self.ops.push(op);
+        self.maskable.push(maskable);
+        self.other_volumes.push(other_volumes);
         (self.ops.len() - 1) as OpIndex
+    }
+
+    /// Lets the volume caches of the cells only `root` reads hold partial volumes (sampled
+    /// where a branch of `root` needs them). Call it with the function that is only ever
+    /// sampled as whole volumes (the final density).
+    pub fn set_masked_cache_root(&mut self, root: super::FnId) {
+        let count = self.ops.len();
+        let mut from_root = vec![false; count];
+        let mut stack = vec![root.0];
+        let mut inputs = Vec::new();
+        while let Some(op) = stack.pop() {
+            if std::mem::replace(&mut from_root[op as usize], true) {
+                continue;
+            }
+            self.inputs(op, &mut inputs);
+            stack.append(&mut inputs);
+        }
+        let mut shared = vec![false; count];
+        let mut stack: Vec<OpIndex> = (0..count as OpIndex)
+            .filter(|&op| !from_root[op as usize])
+            .collect();
+        while let Some(op) = stack.pop() {
+            self.inputs(op, &mut inputs);
+            for input in inputs.drain(..) {
+                if !std::mem::replace(&mut shared[input as usize], true) {
+                    stack.push(input);
+                }
+            }
+        }
+        let mut partial = vec![true; self.cache_cells as usize];
+        let mut seen = vec![false; self.cache_cells as usize];
+        for (op, instruction) in self.ops.iter().enumerate() {
+            if let Op::Cached { cell, .. } = *instruction {
+                let cell = cell as usize;
+                if cell >= partial.len() {
+                    partial.resize(cell + 1, true);
+                    seen.resize(cell + 1, false);
+                }
+                seen[cell] = true;
+                partial[cell] &= from_root[op] && !shared[op];
+            }
+        }
+        for (partial, seen) in partial.iter_mut().zip(seen) {
+            *partial &= seen;
+        }
+        self.partial_cells = partial;
+    }
+
+    /// The instructions `op` reads.
+    fn inputs(&self, op: OpIndex, out: &mut Vec<OpIndex>) {
+        self.inputs_of(&self.ops[op as usize], out);
+    }
+
+    /// The instructions `op` reads.
+    fn inputs_of(&self, op: &Op, out: &mut Vec<OpIndex>) {
+        match *op {
+            Op::Constant { .. }
+            | Op::ContextBound { .. }
+            | Op::Noise { .. }
+            | Op::ShiftB { .. }
+            | Op::EndIslands { .. }
+            | Op::DistanceToPoint { .. }
+            | Op::Gradient { .. } => {}
+            Op::ShiftedNoiseXz {
+                shift_x, shift_z, ..
+            } => out.extend([shift_x, shift_z]),
+            Op::ShiftedNoiseXyz {
+                shift_x,
+                shift_y,
+                shift_z,
+                ..
+            } => out.extend([shift_x, shift_y, shift_z]),
+            Op::Add { left, right }
+            | Op::Sub { left, right }
+            | Op::Mul { left, right }
+            | Op::Div { left, right }
+            | Op::Min { left, right, .. }
+            | Op::Max { left, right, .. }
+            | Op::Round {
+                input: left,
+                multiple: right,
+                ..
+            }
+            | Op::Pow {
+                base: left,
+                exponent: right,
+            }
+            | Op::LerpConstFirst {
+                alpha: left,
+                second: right,
+                ..
+            }
+            | Op::LerpConstSecond {
+                alpha: left,
+                first: right,
+                ..
+            }
+            | Op::FindTopSurface {
+                density: left,
+                upper_bound: right,
+                ..
+            } => out.extend([left, right]),
+            Op::ConstAdd { input, .. }
+            | Op::ConstSub { input, .. }
+            | Op::ConstMul { input, .. }
+            | Op::ConstDiv { input, .. }
+            | Op::ConstMin { input, .. }
+            | Op::ConstMax { input, .. }
+            | Op::Abs { input }
+            | Op::Square { input }
+            | Op::Cube { input }
+            | Op::Sqrt { input }
+            | Op::LeakyRelu { input, .. }
+            | Op::Reciprocal { input }
+            | Op::Negate { input }
+            | Op::Squeeze { input }
+            | Op::Log { input }
+            | Op::Sign { input }
+            | Op::RoundToInteger { input, .. }
+            | Op::PowConstBase {
+                exponent: input, ..
+            }
+            | Op::PowConstExponent { base: input, .. }
+            | Op::Clamp { input, .. }
+            | Op::RangeChoiceConst { input, .. }
+            | Op::Cached { input, .. }
+            | Op::BlendDensity { input }
+            | Op::Interpolated { input, .. }
+            | Op::SliceX { input, .. }
+            | Op::SliceY { input, .. }
+            | Op::SliceZ { input, .. }
+            | Op::SliceXz { input, .. } => out.push(input),
+            Op::Lerp {
+                alpha,
+                first,
+                second,
+            } => out.extend([alpha, first, second]),
+            Op::RangeChoice {
+                input,
+                when_in_range,
+                when_out_of_range,
+                ..
+            } => out.extend([input, when_in_range, when_out_of_range]),
+            Op::IntervalSelectSingle {
+                input,
+                if_below,
+                if_above,
+                ..
+            } => out.extend([input, if_below, if_above]),
+            Op::IntervalSelect { input, table } => {
+                out.push(input);
+                out.extend_from_slice(&self.interval_selects[table as usize].functions);
+            }
+            Op::Spline { spline } => {
+                out.extend_from_slice(&self.splines[spline as usize].coordinates);
+            }
+        }
+    }
+
+    /// [`Self::maskable`] of a new instruction (unknown inputs count as maskable).
+    fn is_maskable(&self, op: &Op) -> bool {
+        let m = |input: OpIndex| self.maskable.get(input as usize).copied().unwrap_or(true);
+        match *op {
+            Op::Noise { .. }
+            | Op::ShiftedNoiseXz { .. }
+            | Op::ShiftedNoiseXyz { .. }
+            | Op::Spline { .. } => true,
+            Op::Constant { .. }
+            | Op::ContextBound { .. }
+            | Op::ShiftB { .. }
+            | Op::EndIslands { .. }
+            | Op::DistanceToPoint { .. }
+            | Op::Gradient { .. }
+            | Op::Interpolated { .. }
+            | Op::SliceX { .. }
+            | Op::SliceY { .. }
+            | Op::SliceZ { .. }
+            | Op::SliceXz { .. }
+            | Op::FindTopSurface { .. } => false,
+            Op::Add { left, right }
+            | Op::Sub { left, right }
+            | Op::Mul { left, right }
+            | Op::Div { left, right }
+            | Op::Min { left, right, .. }
+            | Op::Max { left, right, .. }
+            | Op::Round {
+                input: left,
+                multiple: right,
+                ..
+            }
+            | Op::Pow {
+                base: left,
+                exponent: right,
+            }
+            | Op::LerpConstFirst {
+                alpha: left,
+                second: right,
+                ..
+            }
+            | Op::LerpConstSecond {
+                alpha: left,
+                first: right,
+                ..
+            } => m(left) || m(right),
+            Op::ConstAdd { input, .. }
+            | Op::ConstSub { input, .. }
+            | Op::ConstMul { input, .. }
+            | Op::ConstDiv { input, .. }
+            | Op::ConstMin { input, .. }
+            | Op::ConstMax { input, .. }
+            | Op::Abs { input }
+            | Op::Square { input }
+            | Op::Cube { input }
+            | Op::Sqrt { input }
+            | Op::LeakyRelu { input, .. }
+            | Op::Reciprocal { input }
+            | Op::Negate { input }
+            | Op::Squeeze { input }
+            | Op::Log { input }
+            | Op::Sign { input }
+            | Op::RoundToInteger { input, .. }
+            | Op::PowConstBase {
+                exponent: input, ..
+            }
+            | Op::PowConstExponent { base: input, .. }
+            | Op::Clamp { input, .. }
+            | Op::RangeChoiceConst { input, .. }
+            | Op::Cached { input, .. }
+            | Op::BlendDensity { input } => m(input),
+            Op::Lerp {
+                alpha,
+                first,
+                second,
+            } => m(alpha) || m(first) || m(second),
+            Op::RangeChoice {
+                input,
+                when_in_range,
+                when_out_of_range,
+                ..
+            } => m(input) || m(when_in_range) || m(when_out_of_range),
+            Op::IntervalSelectSingle {
+                input,
+                if_below,
+                if_above,
+                ..
+            } => m(input) || m(if_below) || m(if_above),
+            Op::IntervalSelect { input, table } => {
+                m(input)
+                    || self
+                        .interval_selects
+                        .get(table as usize)
+                        .is_none_or(|t| t.functions.iter().any(|&f| m(f)))
+            }
+        }
     }
 }

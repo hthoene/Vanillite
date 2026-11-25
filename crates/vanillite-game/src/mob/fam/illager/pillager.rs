@@ -249,7 +249,7 @@ pub fn crossbow_tick(t: &mut Tick<'_, '_>, c: &mut Crossbow) {
             } else {
                 c.speed * 0.5
             };
-            nav::move_to_entity(t, o.pos, 0, speed);
+            nav::move_to_entity(t, o.pos, 1, speed);
             // `PATHFINDING_DELAY_RANGE`: 20 to 40 ticks.
             c.update_path_delay = t.mob().random.next_int_between_inclusive(20, 40);
         }
@@ -329,6 +329,7 @@ pub fn perform_crossbow_attack(t: &mut Tick<'_, '_>, target: EntityId) {
             uncertainty,
             Some(id),
             Some(&weapon),
+            &projectile::mob_arrow(None),
             false,
             0,
         );

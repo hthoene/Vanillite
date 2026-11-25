@@ -447,9 +447,25 @@ pub fn pick_up_items(
     t.cx.ids = found;
 }
 
-/// `take(entity, amount)` and the stack shrinking of `pickUpItem`: the pickup animation,
-/// then the item entity loses `amount` (and is discarded when empty).
+/// `onItemPickup`, `take(entity, amount)` and the stack shrinking of `pickUpItem`: the
+/// thrown item triggers, the pickup animation, then the item entity loses `amount` (and is
+/// discarded when empty).
 pub fn take(t: &mut Tick<'_, '_>, item: EntityId, amount: i32) {
+    let thrown = crate::advancements::trigger::TriggerKind::THROWN_ITEM_PICKED_UP_BY_ENTITY;
+    let ents = &*t.ents;
+    if let Some((thrower, stack)) = ents
+        .item(item)
+        .and_then(|d| d.thrower.map(|o| (o, d)))
+        .filter(|(o, _)| {
+            ents.players_by_uuid
+                .get(o)
+                .is_some_and(|&p| crate::advancements::view::listens(ents, p, thrown))
+        })
+        .map(|(o, d)| (o, d.stack.clone()))
+    {
+        let me = t.id;
+        super::animal::item_picked_up(t.ents, me, thrower, &stack);
+    }
     let (Some(item_net), Some(me)) = (
         t.ents.store.get(item).map(|e| e.network_id().0),
         t.ents.store.get(t.id).map(|e| e.network_id().0),

@@ -464,12 +464,15 @@ impl<'a> Grid<'a> {
         for y in 0..16 {
             for z in 0..16 {
                 let row = self.index(base_x, section * 16 + y, base_z + z);
-                for x in 0..16 {
-                    let level = buffer[row + x];
+                let levels = &buffer[row..row + 16];
+                // Nibble `(y << 8) | (z << 4) | x`: even x in the low half of a byte.
+                let out = &mut bytes[((y << 8) | (z << 4)) >> 1..][..8];
+                for (byte, &[low, high]) in out.iter_mut().zip(levels.as_chunks::<2>().0) {
+                    *byte = low | (high << 4);
+                }
+                for &level in levels {
                     min = min.min(level);
                     max = max.max(level);
-                    let nibble = (y << 8) | (z << 4) | x;
-                    bytes[nibble >> 1] |= level << ((nibble & 1) * 4);
                 }
             }
         }
