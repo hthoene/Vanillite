@@ -5,8 +5,9 @@ use vanillite_base::Vec3;
 use vanillite_config::GameMode as ConfigGameMode;
 use vanillite_protocol::chat::ChatSessionData;
 use vanillite_protocol::packets::play::clientbound::{
-    ChatSession, GameEvent, GameMode, Login, PlayerAbilities, PlayerInfoEntry, PlayerInfoRemove,
-    PlayerInfoUpdate, SetDefaultSpawnPosition, SpawnInfo, info_action,
+    ChatSession, GameEvent, GameMode, InitializeBorder, Login, PlayerAbilities, PlayerInfoEntry,
+    PlayerInfoRemove, PlayerInfoUpdate, SetDefaultSpawnPosition, SpawnInfo, TickingState,
+    TickingStep, info_action,
 };
 use vanillite_protocol::text::{ClickEvent, Color, Component, HoverEvent, NamedColor};
 use vanillite_protocol::types::{
@@ -174,15 +175,27 @@ pub fn send_abilities(sink: &dyn PacketSink, mode: ConfigGameMode) {
     sink.send(&abilities(mode));
 }
 
-/// `sendLevelInfo`: world border, clocks, spawn point, the weather and the request to wait for
-/// chunks.
+/// What `sendLevelInfo` sends of the world border and the server's tick state.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LevelPackets {
+    /// `ClientboundInitializeBorderPacket`.
+    pub border: InitializeBorder,
+    /// `ServerTickRateManager.updateJoiningPlayer`.
+    pub ticking: TickingState,
+    /// `ServerTickRateManager.updateJoiningPlayer`.
+    pub step: TickingStep,
+}
+
+/// `sendLevelInfo`: world border, clocks, spawn point, the weather, the request to wait for
+/// chunks and the tick state.
 pub fn send_level_info(
     sink: &dyn PacketSink,
     level: &LevelInfo,
+    state: &LevelPackets,
     time: &vanillite_protocol::packets::play::clientbound::SetTime,
     weather: &[GameEvent],
 ) {
-    // TODO: `initialize_border` comes with the world border.
+    sink.send(&state.border);
     sink.send(time);
     send_spawn_position(sink, level);
     for event in weather {
@@ -192,6 +205,8 @@ pub fn send_level_info(
         event: GameEvent::LEVEL_CHUNKS_LOAD_START,
         param: 0.0,
     });
+    sink.send(&state.ticking);
+    sink.send(&state.step);
 }
 
 /// `ClientboundSetDefaultSpawnPositionPacket` with the server's spawn (`getRespawnData`: in
@@ -286,29 +301,41 @@ pub fn player_info_remove(uuid: u128) -> PlayerInfoRemove {
 /// `Player.getDisplayName()` of a player without team: the name, a click that suggests
 /// `/tell <name> `, the entity as hover and the name as insertion.
 pub fn display_name(name: &str, uuid: u128) -> Component {
-    Component::text(name)
-        .click(ClickEvent::SuggestCommand(format!("/tell {name} ")))
-        .hover(HoverEvent::ShowEntity {
-            id: "minecraft:player".into(),
-            uuid,
-            name: Some(Component::text(name)),
-        })
-        .insertion(name)
+    team_display_name(None, name, uuid)
 }
 
-fn yellow_message(key: &str, name: &str, uuid: u128) -> Component {
-    Component::translatable(key, vec![display_name(name, uuid)])
-        .color(Color::Named(NamedColor::Yellow))
+/// `Player.getDisplayName()`: `PlayerTeam.formatNameForTeam` of the name, decorated by
+/// `decorateDisplayNameComponent`.
+pub fn team_display_name(
+    team: Option<&crate::scoreboard::Team>,
+    name: &str,
+    uuid: u128,
+) -> Component {
+    match team {
+        Some(team) => team.format_name(Component::text(name)),
+        None => Component::text(name),
+    }
+    .click(ClickEvent::SuggestCommand(format!("/tell {name} ")))
+    .hover(HoverEvent::ShowEntity {
+        id: "minecraft:player".into(),
+        uuid,
+        name: Some(Component::text(name)),
+    })
+    .insertion(name)
+}
+
+fn yellow_message(key: &str, display: Component) -> Component {
+    Component::translatable(key, vec![display]).color(Color::Named(NamedColor::Yellow))
 }
 
 /// `multiplayer.player.joined`.
-pub fn joined_message(name: &str, uuid: u128) -> Component {
-    yellow_message("multiplayer.player.joined", name, uuid)
+pub fn joined_message(display: Component) -> Component {
+    yellow_message("multiplayer.player.joined", display)
 }
 
 /// `multiplayer.player.left`.
-pub fn left_message(name: &str, uuid: u128) -> Component {
-    yellow_message("multiplayer.player.left", name, uuid)
+pub fn left_message(display: Component) -> Component {
+    yellow_message("multiplayer.player.left", display)
 }
 
 #[cfg(test)]
@@ -326,8 +353,14 @@ mod tests {
         );
         let bob = 0xfaa5dca3_c3d4_354b_ae1b_dde9e5a14b3b;
         for (file, message) in [
-            ("joined.bin", super::joined_message("Bob", bob)),
-            ("left.bin", super::left_message("Bob", bob)),
+            (
+                "joined.bin",
+                super::joined_message(super::display_name("Bob", bob)),
+            ),
+            (
+                "left.bin",
+                super::left_message(super::display_name("Bob", bob)),
+            ),
         ] {
             let vanilla = std::fs::read(format!("{dir}{file}")).unwrap();
             let body = vanillite_protocol::frame::encode_body(&SystemChat {

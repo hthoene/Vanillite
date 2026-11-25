@@ -10,6 +10,28 @@ use vanillite_protocol::packets::play::clientbound::CommandSuggestions;
 use vanillite_protocol::text::{Component, Content};
 
 const OUR_COMMANDS: &[&str] = &[
+    "advancement",
+    "execute",
+    "bossbar",
+    "damage",
+    "effect",
+    "clone",
+    "defaultgamemode",
+    "difficulty",
+    "fill",
+    "fillbiome",
+    "forceload",
+    "locate",
+    "place",
+    "setblock",
+    "spawnpoint",
+    "setworldspawn",
+    "spreadplayers",
+    "tick",
+    "worldborder",
+    "function",
+    "return",
+    "scoreboard",
     "gamemode",
     "gamerule",
     "help",
@@ -19,8 +41,15 @@ const OUR_COMMANDS: &[&str] = &[
     "msg",
     "tell",
     "w",
+    "swing",
+    "particle",
+    "playsound",
+    "posteffect",
+    "ride",
+    "rotate",
     "say",
     "seed",
+    "stopsound",
     "summon",
     "teleport",
     "tp",
@@ -33,6 +62,44 @@ const OUR_COMMANDS: &[&str] = &[
     "save-on",
     "stop",
     "whitelist",
+    "attribute",
+    "clear",
+    "data",
+    "enchant",
+    "experience",
+    "xp",
+    "give",
+    "item",
+    "recipe",
+    "tag",
+    "tellraw",
+    "title",
+    "me",
+    "teammsg",
+    "tm",
+    "trigger",
+    "team",
+    "random",
+    "schedule",
+    "stopwatch",
+    "ban",
+    "ban-ip",
+    "banlist",
+    "pardon",
+    "pardon-ip",
+    "setidletimeout",
+    "transfer",
+    "version",
+    "perf",
+    "jfr",
+    "debug",
+    "dialog",
+    "waypoint",
+    "fetchprofile",
+    "test",
+    "spectate",
+    "datapack",
+    "reload",
 ];
 
 struct TestSource {
@@ -306,5 +373,10 @@ fn players_get_nothing_of_operator_commands() {
         assert!(d.suggest(input, &player).list.is_empty(), "{input}");
     }
     let root = d.suggest("/", &player);
-    assert_eq!(root.texts(), ["help", "list", "msg", "tell", "w"]);
+    assert_eq!(
+        root.texts(),
+        [
+            "help", "list", "me", "msg", "random", "teammsg", "tell", "tm", "trigger", "w"
+        ]
+    );
 }

@@ -53,6 +53,10 @@ pub struct Node<C> {
     pub command: Option<C>,
     /// Parsing continues at this node's children instead of its own.
     pub redirect: Option<NodeId>,
+    /// What the redirect does to the source (Brigadier's `RedirectModifier`).
+    pub modifier: Option<C>,
+    /// The redirect forks: one source per result, errors of one do not stop the others.
+    pub forks: bool,
     /// Custom suggestion provider (sent as `minecraft:ask_server`).
     pub suggests: Option<&'static str>,
 }
@@ -84,6 +88,8 @@ pub struct Builder<C> {
     requirement: Requirement,
     command: Option<C>,
     redirect: Option<NodeId>,
+    modifier: Option<C>,
+    forks: bool,
     suggests: Option<&'static str>,
     children: Vec<Builder<C>>,
 }
@@ -108,6 +114,8 @@ impl<C> Builder<C> {
             requirement: Requirement::default(),
             command: None,
             redirect: None,
+            modifier: None,
+            forks: false,
             suggests: None,
             children: Vec::new(),
         }
@@ -148,6 +156,32 @@ impl<C> Builder<C> {
         self
     }
 
+    /// Continues parsing at another node's children; `modifier` changes the source on the way
+    /// (Brigadier's `redirect(target, modifier)`).
+    #[must_use]
+    pub fn redirect_with(mut self, target: NodeId, modifier: C) -> Self {
+        self.redirect = Some(target);
+        self.modifier = Some(modifier);
+        self
+    }
+
+    /// Continues parsing at another node's children; `modifier` turns one source into any
+    /// number of them (Brigadier's `fork`).
+    #[must_use]
+    pub fn fork(mut self, target: NodeId, modifier: C) -> Self {
+        self.redirect = Some(target);
+        self.modifier = Some(modifier);
+        self.forks = true;
+        self
+    }
+
+    /// Replaces each child by `f(child)`.
+    #[must_use]
+    pub fn map_children(mut self, f: impl Fn(Builder<C>) -> Builder<C>) -> Self {
+        self.children = self.children.into_iter().map(&f).collect();
+        self
+    }
+
     /// A custom suggestion provider the source answers.
     #[must_use]
     pub fn suggests(mut self, provider: &'static str) -> Self {
@@ -179,6 +213,8 @@ impl<C: Copy> Dispatcher<C> {
                 requirement: Requirement::default(),
                 command: None,
                 redirect: None,
+                modifier: None,
+                forks: false,
                 suggests: None,
             }],
             limits: Limits::default(),
@@ -225,6 +261,8 @@ impl<C: Copy> Dispatcher<C> {
             requirement,
             command,
             redirect,
+            modifier,
+            forks,
             suggests,
             children,
         } = builder;
@@ -250,6 +288,8 @@ impl<C: Copy> Dispatcher<C> {
                     requirement,
                     command,
                     redirect,
+                    modifier,
+                    forks,
                     suggests,
                 });
                 if let Some(p) = self.nodes.get_mut(parent.0) {

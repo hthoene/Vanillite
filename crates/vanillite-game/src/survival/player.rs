@@ -19,7 +19,14 @@ use super::food::{FoodAction, FoodData, exhaustion};
 use super::rules::{Difficulty, GameRules, Rule};
 use super::{Effect, play_sound};
 use crate::player::PlayerData;
-use crate::player::join::display_name;
+use crate::scoreboard::CriteriaKind;
+use crate::stats::custom;
+
+/// `Math.round(damage * 10.0F)` of the damage statistics, below `Float.MAX_VALUE / 10`.
+#[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+fn damage_stat(damage: f32) -> Option<i32> {
+    (damage < 3.402_823_5e37).then(|| (damage * 10.0).round() as i32)
+}
 
 /// `Attributes.MAX_HEALTH` of players.
 pub const MAX_HEALTH: f32 = 20.0;
@@ -191,6 +198,8 @@ pub struct Survival {
     pub score: i32,
     /// `LastDeathLocation`: dimension and block position.
     pub last_death: Option<(String, BlockPos)>,
+    /// `respawn` (`ServerPlayer.RespawnConfig`): where the player respawns.
+    pub respawn: Option<RespawnConfig>,
     pub combat: CombatTracker,
     /// `tickCount`.
     pub tick_count: i32,
@@ -232,6 +241,32 @@ pub struct Survival {
     pub last_main_hand_item: u16,
     first_tick: bool,
     sent: Sent,
+    recorded: Recorded,
+}
+
+/// `ServerPlayer.lastRecorded*`: the values the built-in score criteria got last.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Recorded {
+    health: f32,
+    food: i32,
+    air: i32,
+    armor: i32,
+    experience: i32,
+    level: i32,
+}
+
+impl Default for Recorded {
+    fn default() -> Self {
+        Recorded {
+            // Java's `Float.MIN_VALUE`.
+            health: f32::from_bits(1),
+            food: i32::MIN,
+            air: i32::MIN,
+            armor: i32::MIN,
+            experience: i32::MIN,
+            level: i32::MIN,
+        }
+    }
 }
 
 impl Default for Survival {
@@ -250,6 +285,7 @@ impl Default for Survival {
             xp: Experience::default(),
             score: 0,
             last_death: None,
+            respawn: None,
             combat: CombatTracker::default(),
             tick_count: 0,
             time_since_rest: 0,
@@ -272,7 +308,63 @@ impl Default for Survival {
             last_main_hand_item: 0,
             first_tick: true,
             sent: Sent::default(),
+            recorded: Recorded::default(),
         }
+    }
+}
+
+/// `ServerPlayer.RespawnConfig`: a respawn position (`LevelData.RespawnData`) and whether it
+/// is kept without a bed or anchor there.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RespawnConfig {
+    /// `dimension`.
+    pub dimension: String,
+    /// `pos`.
+    pub pos: BlockPos,
+    /// `yaw`, wrapped to -180..180.
+    pub yaw: f32,
+    /// `pitch`, -90..90.
+    pub pitch: f32,
+    /// `forced`.
+    pub forced: bool,
+}
+
+impl RespawnConfig {
+    /// `RespawnConfig.CODEC`; `None` when a field is missing or out of range.
+    pub fn load(data: &Compound) -> Option<RespawnConfig> {
+        let (Some(Tag::String(dimension)), Some(Tag::IntArray(pos))) =
+            (data.get("dimension"), data.get("pos"))
+        else {
+            return None;
+        };
+        let [x, y, z] = pos.as_slice() else {
+            return None;
+        };
+        let yaw = float(data, "yaw").filter(|v| (-180.0..=180.0).contains(v))?;
+        let pitch = float(data, "pitch").filter(|v| (-90.0..=90.0).contains(v))?;
+        Some(RespawnConfig {
+            dimension: dimension.clone(),
+            pos: BlockPos::new(*x, *y, *z),
+            yaw,
+            pitch,
+            forced: matches!(data.get("forced"), Some(Tag::Byte(b)) if *b != 0),
+        })
+    }
+
+    /// The saved compound.
+    pub fn save(&self) -> Compound {
+        let mut out = Compound::with_capacity(5);
+        out.insert("dimension", Tag::String(self.dimension.clone()));
+        out.insert(
+            "pos",
+            Tag::IntArray(vec![self.pos.x, self.pos.y, self.pos.z]),
+        );
+        out.insert("yaw", Tag::Float(self.yaw));
+        out.insert("pitch", Tag::Float(self.pitch));
+        if self.forced {
+            out.insert("forced", Tag::Byte(1));
+        }
+        out
     }
 }
 
@@ -290,6 +382,8 @@ pub struct Env<'a> {
     pub dimension: &'a str,
     /// `Level.isRainingAt`.
     pub raining_at: &'a dyn Fn(BlockPos) -> bool,
+    /// The world border, where players take `outsideBorder` damage.
+    pub border: Option<&'a crate::level::border::WorldBorder>,
     /// An End gateway at the position takes a player: `false` while it cools down, else it
     /// starts its cooldown (`TheEndGatewayBlockEntity.triggerCooldown`).
     pub enter_gateway: &'a mut dyn FnMut(BlockPos) -> bool,
@@ -297,6 +391,8 @@ pub struct Env<'a> {
     pub out: &'a mut Vec<Effect>,
     /// Plugin hooks (damage).
     pub hooks: &'a dyn crate::hooks::GameHooks,
+    /// `Player.getDisplayName` by name and UUID: the name in its team's format.
+    pub display_name: &'a dyn Fn(&str, u128) -> Component,
 }
 
 impl std::fmt::Debug for Env<'_> {
@@ -415,6 +511,9 @@ impl Survival {
         {
             s.last_death = Some((dim.clone(), BlockPos::new(*x, *y, *z)));
         }
+        if let Some(Tag::Compound(respawn)) = data.get("respawn") {
+            s.respawn = RespawnConfig::load(respawn);
+        }
         s
     }
 
@@ -463,6 +562,10 @@ impl Survival {
             loc.insert("pos", Tag::IntArray(vec![pos.x, pos.y, pos.z]));
             out.insert("LastDeathLocation", Tag::Compound(loc));
         }
+        out.remove("respawn");
+        if let Some(respawn) = &self.respawn {
+            out.insert("respawn", Tag::Compound(respawn.save()));
+        }
     }
 
     /// `restoreFrom` for a respawn after death: health, food and air start over; experience,
@@ -472,6 +575,7 @@ impl Survival {
         // `restoreFrom`: the portal state and the credits carry over.
         let mut s = Survival {
             last_death: self.last_death.clone(),
+            respawn: self.respawn.clone(),
             warden_spawn_tracker: self.warden_spawn_tracker,
             portal: self.portal.clone(),
             ..Survival::default()
@@ -513,6 +617,41 @@ impl Survival {
     /// (`resetSentInfo`).
     pub fn reset_sent(&mut self) {
         self.sent = Sent::default();
+    }
+
+    /// Forces the next [`sync`](Self::sync) to send the experience (`lastSentExp = -1`).
+    pub fn resend_experience(&mut self) {
+        self.sent.exp = Sent::default().exp;
+    }
+
+    /// `doTick`'s `updateScoreForCriteria`: the built-in criteria whose values changed since
+    /// the last call, with the new values (`Mth.ceil` of health with absorption, food, air,
+    /// armour, total experience and level).
+    pub fn changed_criteria(&mut self) -> Vec<(CriteriaKind, i32)> {
+        let mut out = Vec::new();
+        let r = &mut self.recorded;
+        let health = self.health + self.absorption;
+        if health != r.health {
+            r.health = health;
+            // `Mth.ceil`: the float's ceiling as an int, saturating like Java's cast.
+            #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+            out.push((CriteriaKind::Health, health.ceil() as i32));
+        }
+        // TODO(#27): the armour value of the equipment; it is 0 until armour exists.
+        let armor = 0;
+        for (kind, value, last) in [
+            (CriteriaKind::Food, self.food.food_level, &mut r.food),
+            (CriteriaKind::Air, self.air, &mut r.air),
+            (CriteriaKind::Armor, armor, &mut r.armor),
+            (CriteriaKind::Experience, self.xp.total, &mut r.experience),
+            (CriteriaKind::Level, self.xp.level, &mut r.level),
+        ] {
+            if value != *last {
+                *last = value;
+                out.push((kind, value));
+            }
+        }
+        out
     }
 
     /// `doTick`'s packets: `set_health` and `set_experience` when they changed.
@@ -822,6 +961,12 @@ fn actually_hurt(
     let s = &mut player.survival;
     let remaining = (damage - s.absorption).max(0.0);
     s.absorption -= damage - remaining;
+    let absorbed = damage - remaining;
+    if absorbed > 0.0
+        && let Some(v) = damage_stat(absorbed)
+    {
+        player.stats.award(custom::DAMAGE_ABSORBED, v);
+    }
     if remaining != 0.0 {
         let exhaustion = types.get(kind).exhaustion;
         cause_food_exhaustion(player, exhaustion);
@@ -839,6 +984,9 @@ fn actually_hurt(
             .record_damage(entry, s.tick_count, alive, source.cause.is_some());
         let health = s.health - remaining;
         set_health(entity, s, health);
+        if let Some(v) = damage_stat(remaining) {
+            player.stats.award(custom::DAMAGE_TAKEN, v);
+        }
     }
 }
 
@@ -1060,7 +1208,7 @@ pub fn die(
     entity: &mut EntityMut<'_>,
     player: &mut PlayerData,
     env: &mut Env<'_>,
-    _source: DamageSource,
+    source: DamageSource,
 ) {
     let network_id = entity.as_ref().network_id().0;
     let uuid = entity.as_ref().uuid();
@@ -1068,14 +1216,15 @@ pub fn die(
     // `resetStat(TIME_SINCE_REST)`.
     player.survival.time_since_rest = 0;
     let sink = std::sync::Arc::clone(&player.connection.sink);
+    let mut broadcast = None;
     if env.rules.bool(Rule::SHOW_DEATH_MESSAGES) {
-        let name = display_name(&player.profile.name, uuid);
+        let name = (env.display_name)(&player.profile.name, uuid);
         let message = player.survival.combat.death_message(env.types, name);
         sink.send(&PlayerCombatKill {
             player_id: network_id,
             message: message.clone(),
         });
-        env.out.push(Effect::Broadcast(message));
+        broadcast = Some(message);
     } else {
         sink.send(&PlayerCombatKill {
             player_id: network_id,
@@ -1104,6 +1253,12 @@ pub fn die(
             env.out.push(Effect::Experience { pos, amount });
         }
     }
+    // The kill credit is the damage's causing entity: nothing else credits kills yet.
+    env.out.push(Effect::Died {
+        victim: id,
+        killer: source.cause,
+        message: broadcast,
+    });
     env.out.push(Effect::Tracking {
         entity: id,
         with_self: true,
@@ -1120,6 +1275,9 @@ pub fn die(
     let alive = s.health > 0.0;
     s.combat.recheck_status(s.tick_count, alive);
     s.last_death = Some((env.dimension.to_owned(), block_pos(entity.as_ref().pos())));
+    player.stats.award(custom::DEATHS, 1);
+    player.stats.reset(custom::TIME_SINCE_DEATH);
+    player.stats.reset(custom::TIME_SINCE_REST);
     player.connection.movement.mark_client_unloaded();
 }
 
@@ -1282,8 +1440,13 @@ pub fn do_tick(
         if !spectator && blocks::is_in_wall(env.blocks, env.facts, eye, dims.width) {
             let source = DamageSource::of(env.types.in_wall);
             hurt(entity, player, env, source, 1.0);
+        } else if let Some(amount) = env
+            .border
+            .and_then(|b| b.damage(pos.x, pos.z, f64::from(dims.width) / 2.0))
+        {
+            let source = DamageSource::of(env.types.outside_border);
+            hurt(entity, player, env, source, amount);
         }
-        // TODO(world border): `outOfBorder` damage once the world border exists.
         let eye_in_water = player.survival.fluids.eye_in_water
             && !env
                 .blocks
@@ -1388,6 +1551,18 @@ pub fn do_tick(
             hurt(entity, player, env, source, 1.0);
         }
     }
+    // `ServerPlayer.doTick`'s time statistics; players never sleep yet.
+    let stats = &mut player.stats;
+    stats.award(custom::PLAY_TIME, 1);
+    stats.award(custom::TOTAL_WORLD_TIME, 1);
+    if player.survival.health > 0.0 {
+        stats.award(custom::TIME_SINCE_DEATH, 1);
+    }
+    // `isDiscrete`: the sneak key is held.
+    if entity.as_ref().flags().contains(EntityFlags::CROUCHING) {
+        stats.award(custom::CROUCH_TIME, 1);
+    }
+    stats.award(custom::TIME_SINCE_REST, 1);
     let sink = std::sync::Arc::clone(&player.connection.sink);
     player.survival.sync(sink.as_ref());
     result
@@ -1607,6 +1782,7 @@ pub fn on_move(
         } else {
             exhaustion::JUMP
         };
+        player.stats.award(custom::JUMP, 1);
         cause_food_exhaustion(player, cost);
     }
     let dy = mv.to.y - mv.from.y;
@@ -1618,7 +1794,7 @@ pub fn on_move(
         movement_emission(entity, player, env, mv, crouching);
     }
     update_climbable(entity, player, env);
-    movement_statistics(player, entity, mv);
+    movement_statistics(player, entity, env, mv);
 }
 
 /// `Entity.applyMovementEmissionAndPlaySound` for a player's move: the `STEP` and `SWIM`
@@ -1803,6 +1979,11 @@ fn cause_fall_damage(
     if Abilities::of(player.game_mode).mayfly {
         return;
     }
+    if fall_distance >= 2.0 {
+        #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+        let cm = (fall_distance * 100.0).round() as i32;
+        player.stats.award(custom::FALL_ONE_CM, cm);
+    }
     let safe = player.survival.effects.attribute(
         crate::effect::attribute::Attribute::SAFE_FALL_DISTANCE,
         SAFE_FALL_DISTANCE,
@@ -1824,9 +2005,14 @@ fn cause_fall_damage(
     }
 }
 
-/// `ServerPlayer.checkMovementStatistics`: the exhaustion of swimming, walking in water and
-/// sprinting.
-fn movement_statistics(player: &mut PlayerData, entity: &EntityMut<'_>, mv: MoveRecord) {
+/// `ServerPlayer.checkMovementStatistics`: the distance statistics and the exhaustion of
+/// swimming, walking in water and sprinting (players never ride yet).
+fn movement_statistics(
+    player: &mut PlayerData,
+    entity: &EntityMut<'_>,
+    env: &Env<'_>,
+    mv: MoveRecord,
+) {
     let (dx, dy, dz) = (
         mv.to.x - mv.from.x,
         mv.to.y - mv.from.y,
@@ -1843,20 +2029,51 @@ fn movement_statistics(player: &mut PlayerData, entity: &EntityMut<'_>, mv: Move
     let cost = |per_meter: f32, cm: i32| per_meter * cm as f32 * 0.01;
     let flags = entity.as_ref().flags();
     let fluids = player.survival.fluids;
-    if flags.contains(EntityFlags::SWIMMING) || fluids.eye_in_water {
-        let d = cm(dx * dx + dy * dy + dz * dz);
+    // `onClimbable`.
+    let climbable = player.game_mode != GameMode::Spectator
+        && env
+            .blocks
+            .block_state(block_pos(entity.as_ref().pos()))
+            .is_some_and(|s| env.facts.is_climbable(s.block()));
+    let in_fluid = |player: &mut PlayerData, stat, d: i32| {
         if d > 0 {
+            player.stats.award(stat, d);
             cause_food_exhaustion(player, cost(exhaustion::SWIM, d));
         }
+    };
+    if flags.contains(EntityFlags::SWIMMING) {
+        in_fluid(player, custom::SWIM_ONE_CM, cm(dx * dx + dy * dy + dz * dz));
+    } else if fluids.eye_in_water {
+        let d = cm(dx * dx + dy * dy + dz * dz);
+        in_fluid(player, custom::WALK_UNDER_WATER_ONE_CM, d);
     } else if fluids.in_water() {
-        let d = cm(dx * dx + dz * dz);
-        if d > 0 {
-            cause_food_exhaustion(player, cost(exhaustion::SWIM, d));
+        in_fluid(player, custom::WALK_ON_WATER_ONE_CM, cm(dx * dx + dz * dz));
+    } else if climbable {
+        if dy > 0.0 {
+            #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+            let up = (dy * 100.0).round() as i32;
+            player.stats.award(custom::CLIMB_ONE_CM, up);
         }
     } else if mv.on_ground {
         let d = cm(dx * dx + dz * dz);
-        if d > 0 && flags.contains(EntityFlags::SPRINTING) {
-            cause_food_exhaustion(player, cost(exhaustion::SPRINT, d));
+        if d > 0 {
+            if flags.contains(EntityFlags::SPRINTING) {
+                player.stats.award(custom::SPRINT_ONE_CM, d);
+                cause_food_exhaustion(player, cost(exhaustion::SPRINT, d));
+            } else if entity.as_ref().pose() == Pose::Crouching {
+                player.stats.award(custom::CROUCH_ONE_CM, d);
+            } else {
+                player.stats.award(custom::WALK_ONE_CM, d);
+            }
+        }
+    } else if flags.contains(EntityFlags::FALL_FLYING) {
+        player
+            .stats
+            .award(custom::AVIATE_ONE_CM, cm(dx * dx + dy * dy + dz * dz));
+    } else {
+        let d = cm(dx * dx + dz * dz);
+        if d > 25 {
+            player.stats.award(custom::FLY_ONE_CM, d);
         }
     }
 }

@@ -12,8 +12,10 @@
 //!   fluid ticks, random ticks, block events); entities tick in the world's entity phase.
 
 pub mod block_entity;
+pub mod border;
 mod entity_storage;
 pub mod explosion;
+pub mod forced;
 pub mod game_event;
 mod neighbors;
 pub mod signal;
@@ -285,6 +287,22 @@ pub struct LevelOutput {
     pub global_level_events: Vec<(i32, BlockPos, i32)>,
 }
 
+/// The terrain generator of a world (`getChunkSource().getGenerator()`).
+#[derive(Clone)]
+pub struct Generation {
+    pub terrain: Arc<vanillite_worldgen::generator::TerrainGenerator>,
+    /// `WorldOptions.generateStructures`.
+    pub structures: bool,
+}
+
+impl std::fmt::Debug for Generation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Generation")
+            .field("structures", &self.structures)
+            .finish_non_exhaustive()
+    }
+}
+
 /// The game state of one world.
 pub struct Level {
     /// Chunks, tickets, scheduled ticks.
@@ -301,6 +319,13 @@ pub struct Level {
     updater: NeighborUpdater,
     /// Live block entities.
     pub block_entities: BlockEntities,
+    /// The world border (`getWorldBorder`).
+    pub border: border::WorldBorder,
+    /// Force-loaded chunks (`getForceLoadedChunks`).
+    pub forced: forced::ForcedChunks,
+    /// The world's noise generator, for commands that ask it (`/locate`); `None` for other
+    /// generators.
+    pub generation: Option<Generation>,
     /// Reused buffers of the piston code.
     pub(crate) pistons: crate::block::piston::Scratch,
     /// `ServerLevel.handlingTick`: the simulation phases of the tick run (scheduled ticks to
@@ -387,6 +412,9 @@ impl Level {
             climate: None,
             tree_features: None,
             block_entities: BlockEntities::default(),
+            border: border::WorldBorder::default(),
+            forced: forced::ForcedChunks::default(),
+            generation: None,
             pistons: crate::block::piston::Scratch::default(),
             handling_tick: false,
             wire_signals: true,
@@ -1162,6 +1190,20 @@ impl Level {
         let state = self.block(pos);
         if let Some(f) = self.behaviours.get(state.block()).entity_inside {
             f(self, state, pos, entity);
+        }
+    }
+
+    /// `ServerLevel.updateNeighboursOnBlockSet(pos, oldState)`: the neighbour updates a command
+    /// skipped while placing (`setblock`, `fill`, `clone`).
+    pub fn update_neighbours_on_block_set(&mut self, pos: BlockPos, old: BlockState) {
+        let state = self.block(pos);
+        let block = state.block();
+        if old.block() != block {
+            self.affect_neighbors_after_removal(old, pos, false);
+        }
+        self.update_neighbors_at(pos, block);
+        if Self::has_analog_output(state) {
+            self.update_neighbour_for_output_signal(pos, block);
         }
     }
 

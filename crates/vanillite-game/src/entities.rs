@@ -61,6 +61,8 @@ pub struct Entities {
     pub by_network_id: FxHashMap<i32, EntityId>,
     /// Primed TNT kind data.
     pub primed_tnts: Dense<PrimedTntData>,
+    /// Entity tags (`Entity.tags`) of the entities that have any.
+    tags: std::collections::HashMap<EntityId, Vec<String>>,
     /// Area effect cloud kind data.
     pub clouds: Dense<crate::effect::cloud::CloudData>,
     /// Experience orb kind data.
@@ -415,6 +417,47 @@ impl Entities {
         self.primed_tnts.get_mut(row)
     }
 
+    /// The tags of an entity (`entityTags`).
+    pub fn tags_of(&self, id: EntityId) -> &[String] {
+        self.tags.get(&id).map_or(&[], Vec::as_slice)
+    }
+
+    /// Replaces the tags of an entity.
+    pub fn set_tags(&mut self, id: EntityId, tags: Vec<String>) {
+        if tags.is_empty() {
+            self.tags.remove(&id);
+        } else if self.store.contains(id) {
+            self.tags.insert(id, tags);
+        }
+    }
+
+    /// `addTag`: false when the entity has it or already has 1024 tags.
+    pub fn add_tag(&mut self, id: EntityId, tag: &str) -> bool {
+        if !self.store.contains(id) {
+            return false;
+        }
+        let tags = self.tags.entry(id).or_default();
+        if tags.len() >= 1024 || tags.iter().any(|t| t == tag) {
+            return false;
+        }
+        tags.push(tag.to_owned());
+        true
+    }
+
+    /// `removeTag`.
+    pub fn remove_tag(&mut self, id: EntityId, tag: &str) -> bool {
+        let Some(tags) = self.tags.get_mut(&id) else {
+            return false;
+        };
+        let before = tags.len();
+        tags.retain(|t| t != tag);
+        let removed = tags.len() != before;
+        if tags.is_empty() {
+            self.tags.remove(&id);
+        }
+        removed
+    }
+
     /// Adds an experience orb.
     pub fn spawn_experience_orb(&mut self, new: NewEntity, data: ExperienceOrbData) -> EntityId {
         let orbs = &mut self.experience_orbs;
@@ -443,6 +486,7 @@ impl Entities {
     pub fn despawn(&mut self, id: EntityId) -> Option<Removed> {
         self.unlink(id);
         let removed = self.store.despawn(id)?;
+        self.tags.remove(&id);
         if self.by_network_id.get(&removed.network_id.0) == Some(&id) {
             self.by_network_id.remove(&removed.network_id.0);
             if removed.kind == ids::ENDER_DRAGON {
@@ -468,6 +512,7 @@ impl Entities {
         let uuid = entity.uuid();
         self.unlink(id);
         let removed = self.store.despawn(id)?;
+        self.tags.remove(&id);
         if self.by_network_id.get(&removed.network_id.0) == Some(&id) {
             self.by_network_id.remove(&removed.network_id.0);
         }

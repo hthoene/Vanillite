@@ -704,7 +704,7 @@ fn direction_to_3d(direction: Direction) -> i32 {
 }
 
 /// `NbtUtils.readBlockState`.
-pub(crate) fn read_block_state(c: &Compound) -> BlockState {
+pub fn read_block_state(c: &Compound) -> BlockState {
     let Some(Tag::String(name)) = c.get("Name") else {
         return BlockState::AIR;
     };

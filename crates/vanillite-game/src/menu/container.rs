@@ -615,7 +615,7 @@ impl MenuSlots for ContainerView<'_> {
             (MenuKind::Crafting, 0) => {
                 // `ResultSlot.checkTakeAchievements` → `onCraftedBy` → `onCraftedPostProcess`.
                 crate::map::on_crafted(self.level, taken);
-                self.take_crafted(ctx, drops);
+                self.take_crafted(taken, ctx, drops);
             }
             (MenuKind::Furnace(_), 2) => {
                 if let Storage::Block(pos) = self.menu.storage {
@@ -894,7 +894,7 @@ impl ContainerView<'_> {
     }
 
     /// `ResultSlot.onTake` of the crafting table.
-    fn take_crafted(&mut self, ctx: ClickContext, drops: &mut Vec<Drop>) {
+    fn take_crafted(&mut self, taken: &ItemStack, ctx: ClickContext, drops: &mut Vec<Drop>) {
         let Some(data) = crate::player::play::game_data() else {
             return;
         };
@@ -903,6 +903,9 @@ impl ContainerView<'_> {
         let recipe = data.recipes.crafting_for_in(&input, &|m| {
             crate::map::info(self.level, m).map(|i| i.scale)
         });
+        self.inv
+            .crafted
+            .push(crate::inventory::crafted(taken, recipe, grid.clone()));
         let remaining = data.recipes.remainders(recipe, &input);
         for y in 0..input.height {
             for x in 0..input.width {

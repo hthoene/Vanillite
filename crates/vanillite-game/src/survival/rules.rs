@@ -130,6 +130,7 @@ impl Rule {
     pub const PVP: Rule = Rule(38);
     pub const REDUCED_DEBUG_INFO: Rule = Rule(41);
     pub const RESPAWN_RADIUS: Rule = Rule(42);
+    pub const SHOW_ADVANCEMENT_MESSAGES: Rule = Rule(44);
     pub const SHOW_DEATH_MESSAGES: Rule = Rule(45);
     pub const SPAWNER_BLOCKS_WORK: Rule = Rule(46);
     pub const SPAWN_MOBS: Rule = Rule(47);
@@ -295,6 +296,7 @@ mod tests {
             (Rule::PVP, "pvp"),
             (Rule::REDUCED_DEBUG_INFO, "reduced_debug_info"),
             (Rule::RESPAWN_RADIUS, "respawn_radius"),
+            (Rule::SHOW_ADVANCEMENT_MESSAGES, "show_advancement_messages"),
             (Rule::SHOW_DEATH_MESSAGES, "show_death_messages"),
             (Rule::SPAWN_MOBS, "spawn_mobs"),
         ] {

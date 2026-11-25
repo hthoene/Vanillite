@@ -44,6 +44,24 @@ impl Default for PlayerData {
     }
 }
 
+/// The JSON files Vanilla keeps per player next to the data files.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JsonFile {
+    /// `players/stats/<uuid>.json` (`ServerStatsCounter`).
+    Stats,
+    /// `players/advancements/<uuid>.json` (`PlayerAdvancements`).
+    Advancements,
+}
+
+impl JsonFile {
+    fn dir(self) -> &'static str {
+        match self {
+            JsonFile::Stats => "stats",
+            JsonFile::Advancements => "advancements",
+        }
+    }
+}
+
 /// Player data files of one world. With a [`FileWriter`], [`update`](Self::update) writes in
 /// the background; a load of a player with queued writes waits for them.
 #[derive(Clone, Debug)]
@@ -115,6 +133,61 @@ impl PlayerDataStore {
         writer.submit(move || {
             store.apply(uuid, change);
             let mut pending = store.pending.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(n) = pending.get_mut(&uuid) {
+                *n -= 1;
+                if *n == 0 {
+                    pending.remove(&uuid);
+                }
+            }
+        });
+    }
+
+    fn json_path(&self, kind: JsonFile, uuid: u128) -> PathBuf {
+        let players = self.dir.parent().unwrap_or(&self.dir);
+        players
+            .join(kind.dir())
+            .join(format!("{}.json", uuid_string(uuid)))
+    }
+
+    /// Reads a player's JSON file, after its queued writes; `Ok(None)` if it has none.
+    pub fn load_json(&self, kind: JsonFile, uuid: u128) -> io::Result<Option<String>> {
+        let queued = self
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains_key(&uuid);
+        if queued && let Some(writer) = &self.writer {
+            writer.flush();
+        }
+        match std::fs::read_to_string(self.json_path(kind, uuid)) {
+            Ok(text) => Ok(Some(text)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Writes a player's JSON file, in the background when the store has a writer.
+    pub fn save_json(&self, kind: JsonFile, uuid: u128, text: String) {
+        let path = self.json_path(kind, uuid);
+        let write = move || {
+            if let Err(e) = files::write_atomic(&path, text.as_bytes(), false) {
+                log::error!("Couldn't save {}: {e}", path.display());
+            }
+        };
+        let Some(writer) = &self.writer else {
+            write();
+            return;
+        };
+        *self
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(uuid)
+            .or_default() += 1;
+        let pending = Arc::clone(&self.pending);
+        writer.submit(move || {
+            write();
+            let mut pending = pending.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(n) = pending.get_mut(&uuid) {
                 *n -= 1;
                 if *n == 0 {
@@ -219,5 +292,36 @@ impl PlayerData {
         root.insert("Dimension", self.dimension.as_str());
         root.insert("playerGameType", self.game_mode);
         root
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn json_files_next_to_the_data() {
+        let dir = std::env::temp_dir().join(format!("vanillite-players-{}", std::process::id()));
+        let store = PlayerDataStore::new(&dir).with_writer(FileWriter::start().unwrap());
+        assert_eq!(store.load_json(JsonFile::Stats, 7).unwrap(), None);
+        store.save_json(JsonFile::Stats, 7, "{}".to_owned());
+        assert_eq!(
+            store.load_json(JsonFile::Stats, 7).unwrap().as_deref(),
+            Some("{}")
+        );
+        store.save_json(JsonFile::Advancements, 7, "[]".to_owned());
+        assert_eq!(
+            store
+                .load_json(JsonFile::Advancements, 7)
+                .unwrap()
+                .as_deref(),
+            Some("[]")
+        );
+        let file = dir
+            .join("players/advancements")
+            .join(format!("{}.json", uuid_string(7)));
+        assert!(file.is_file());
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

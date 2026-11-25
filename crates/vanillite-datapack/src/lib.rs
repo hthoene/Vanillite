@@ -10,12 +10,13 @@
 //! registries (including all worldgen settings) and the tags of every registry.
 
 mod loader;
+pub mod repository;
 pub mod vanilla;
 
 use std::fmt;
 use std::path::PathBuf;
 
-pub use loader::{DynamicRegistry, Entry, LoadedPacks, load};
+pub use loader::{DynamicRegistry, Entry, LoadedPacks, OpenedPack, load, load_opened};
 
 /// Errors of fetching and loading data packs.
 #[derive(Debug)]

@@ -61,6 +61,8 @@ pub(crate) struct Traveller {
     width: f32,
     height: f32,
     route: Route,
+    /// Its entity tags (`entityTags`), kept like `PlayerList.respawn` and `teleport` do.
+    tags: Vec<String>,
 }
 
 /// Where a traveller goes in its new world.
@@ -181,7 +183,19 @@ impl ServerWorld {
         if !keep_all && !player.survival.is_dead_or_dying() {
             return;
         }
-        self.send_away(ctx, id, OVERWORLD, Route::Respawn { keep_all });
+        // `findRespawnPositionAndUseSpawnBlock`: the world of the player's respawn position.
+        let target = player
+            .survival
+            .respawn
+            .as_ref()
+            .and_then(|r| {
+                crate::server::DIMENSIONS
+                    .iter()
+                    .position(|d| *d == r.dimension)
+            })
+            .and_then(|i| u16::try_from(i).ok())
+            .map_or(OVERWORLD, WorldId);
+        self.send_away(ctx, id, target, Route::Respawn { keep_all });
     }
 
     /// Removes the player `id` from this world and hands it to `target` (this world too).
@@ -218,6 +232,7 @@ impl ServerWorld {
         let (uuid, pos, velocity, rot) =
             (entity.uuid(), entity.pos(), entity.velocity(), entity.rot());
         let (width, height) = size(&entity.aabb());
+        let tags = self.level.entities.tags_of(id).to_vec();
         let (removed, data) = self.level.entities.despawn_player(id)?;
         Some(Traveller {
             uuid,
@@ -231,6 +246,7 @@ impl ServerWorld {
             width,
             height,
             route,
+            tags,
         })
     }
 
@@ -354,6 +370,23 @@ impl ServerWorld {
             }
         }
         drop(rules);
+        // A respawn position that is gone (`NO_RESPAWN_BLOCK_AVAILABLE`): cleared, the world
+        // spawn stands in.
+        let respawn_missing = keep_all.is_some()
+            && data
+                .survival
+                .respawn
+                .as_ref()
+                .is_some_and(|r| r.dimension == self.dimension)
+            && data
+                .survival
+                .respawn
+                .as_ref()
+                .and_then(|r| crate::survival::forced_respawn(&self.level.chunks, r))
+                .is_none();
+        if respawn_missing {
+            data.survival.respawn = None;
+        }
         data.survival.reset_sent();
         data.survival.teleported();
         data.connection.chunks.reset();
@@ -384,6 +417,12 @@ impl ServerWorld {
                 landing.relatives,
                 sink.as_ref(),
             );
+            if respawn_missing {
+                sink.send(&vanillite_protocol::packets::play::clientbound::GameEvent {
+                    event: vanillite_protocol::packets::play::clientbound::GameEvent::NO_RESPAWN_BLOCK_AVAILABLE,
+                    param: 0.0,
+                });
+            }
             join::send_spawn_position(sink.as_ref(), info);
             sink.send(&difficulty);
             sink.send(&SetExperience {
@@ -394,6 +433,7 @@ impl ServerWorld {
             join::send_level_info(
                 sink.as_ref(),
                 info,
+                &crate::border::level_packets(&self.level.border, global),
                 &crate::survival::full_time_sync(&global.level),
                 &self.survival.join_weather(),
             );
@@ -425,6 +465,7 @@ impl ServerWorld {
             uuid,
             network_id,
             data,
+            tags,
             ..
         } = traveller;
         let id = self.level.entities.spawn_player_as(
@@ -438,6 +479,7 @@ impl ServerWorld {
             },
             data,
         );
+        self.level.entities.set_tags(id, tags);
         if let Some(mut entity) = self.level.entities.store.get_mut(id) {
             entity.set_velocity(body.velocity);
             entity.set_flags(EntityFlags::ON_GROUND, false);
@@ -455,6 +497,7 @@ impl ServerWorld {
             join::send_level_info(
                 sink.as_ref(),
                 &self.players.level,
+                &crate::border::level_packets(&self.level.border, global),
                 &crate::survival::full_time_sync(&global.level),
                 &self.survival.join_weather(),
             );
@@ -592,6 +635,24 @@ impl ServerWorld {
                         | relative::X_ROT,
                     sound: true,
                     ticket: Some(containing(pos)),
+                })
+            }
+            Route::Respawn { .. }
+                if let Some((pos, y_rot, x_rot)) = traveller
+                    .data
+                    .survival
+                    .respawn
+                    .as_ref()
+                    .filter(|r| r.dimension == self.dimension)
+                    .and_then(|r| crate::survival::forced_respawn(&self.level.chunks, r)) =>
+            {
+                Some(Landing {
+                    pos,
+                    y_rot,
+                    x_rot,
+                    relatives: 0,
+                    sound: false,
+                    ticket: None,
                 })
             }
             Route::Spawn | Route::Respawn { .. } => {
