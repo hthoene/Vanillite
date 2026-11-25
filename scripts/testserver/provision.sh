@@ -5,8 +5,12 @@
 # - Paper reference server on port 30000 (/opt/paper, paper.service, user minecraft).
 # - Vanillite test servers on ports 30001-30999 (/opt/vanillite/<port>, vanillite@<port>.service,
 #   user vanillite), deployed with `cargo xtask deploy` through /usr/local/bin/vanillite-deploy.
-# - Load test instances (`cargo xtask loadtest`), running only during a run: Paper in offline
-#   mode on 30900 (/opt/paper-loadtest, paper-loadtest.service) and Vanillite on 30901.
+# - Benchmark instances (`cargo xtask loadtest` and `cargo xtask bench`), running only during a
+#   run, all offline mode with the settings of `vanillite-bench props`: Vanillite on 30901 and,
+#   taking turns on 30900, Paper (/opt/paper-loadtest), Vanilla (/opt/vanilla-loadtest),
+#   Pumpkin (/opt/pumpkin-loadtest) and the proxies Velocity (/opt/velocity-loadtest) and
+#   vanillite-proxy (/opt/vanillite/bench/proxy) in front of 30901. Controlled with
+#   /usr/local/bin/vanillite-bench.
 # - Docker engine for `cargo xtask docker` (image builds over SSH).
 # - vanillite-proxy on 30010 (/opt/vanillite-proxy, vanillite-proxy.service, deployed with
 #   `ssh <host> vanillite-proxy-deploy < target/release-fast/vanillite-proxy`) in front of
@@ -413,11 +417,8 @@ set_prop() {
 }
 set_prop server-port "$port"
 if [ "$port" = 30901 ]; then
-    set_prop online-mode false
-    set_prop white-list false
-    set_prop max-players 10000
-    # Straight-flight bots (loadbot --movement straight:...) cruise above the terrain.
-    set_prop allow-flight true
+    # The shared benchmark settings (seed, offline mode, distances), like the references.
+    vanillite-bench props vanillite
     rm -f "$dir/tick.log"
 else
     set_prop online-mode true
@@ -446,55 +447,58 @@ sleep 1
 systemctl --no-pager --lines=10 status "vanillite@$port" || true
 EOF
 
-echo "== load test instances (paper-loadtest on 30900, vanillite@30901)"
+echo "== benchmark instances (xtask loadtest and bench; running only during a run)"
+# Vanillite on 30901; the references take turns on 30900: Paper (paper-loadtest), Vanilla
+# (vanilla-loadtest), Pumpkin (pumpkin-loadtest), and as proxies in front of 30901 Velocity
+# (velocity-loadtest) and vanillite-proxy (vanillite-proxy-loadtest). All share the settings of
+# `vanillite-bench props` (same seed, world type, difficulty and distances).
+VANILLA_VERSION=26.3
+VANILLA_SHA1=33680f5f2ac32864d6d7cf5e56a705fdb3e05f4c
+PUMPKIN_TAG="0.2.2+26.3-26.60"
+PUMPKIN_SHA256=3755df414cdece664223388a93421c5c674682f5b9264387416b8a9074cd8d59
+VELOCITY_JAR=velocity-4.3.1-45.jar
+VELOCITY_SHA256=0844bcabdcdb4f5b875906fd4c3365bc1bb76918e42bc595ed88ad195258dd75
+CHUNKY_JAR=Chunky-Paper-1.5.66.jar
+CHUNKY_URL=https://cdn.modrinth.com/data/fALzjamp/versions/RBuKjN4k/Chunky-Paper-1.5.66.jar
+CHUNKY_SHA512=c67b14569b8624d8d4ca550f0a064703e144d388073b4c34a913c3bd34ea39351bef504542101d7f85b499b4de95c24d027a62ee64aad3f9a7051ae4bec80c52
+
+# Downloads $2 to $1 unless present and checks it with `<tool>sum -c` ($3: tool, $4: hash).
+fetch() {
+    local target=$1 url=$2 tool=$3 hash=$4
+    [ -f "$target" ] && return 0
+    curl -fsSL -o "$target.part" "$url"
+    echo "$hash  $target.part" | "${tool}sum" -c -
+    mv "$target.part" "$target"
+}
+
 install -d /etc/systemd/system/vanillite@30901.service.d
 write_if_changed /etc/systemd/system/vanillite@30901.service.d/loadtest.conf <<'EOF'
 [Service]
 # Tick durations for `cargo xtask loadtest`; the same memory limit as the Paper instance's heap.
 Environment=VANILLITE_TICK_LOG=tick.log
+# Accepts the benchmark proxies (modern forwarding) and still direct connections.
+EnvironmentFile=/etc/vanillite-test/proxy-backend.env
 MemoryMax=6G
 Restart=no
 EOF
-install -d -o minecraft -g minecraft /opt/paper-loadtest
+install -d -o vanillite -g vanillite /opt/vanillite/bench /opt/vanillite/bench/bin /opt/vanillite/bench/results
+
+install -d -o minecraft -g minecraft /opt/paper-loadtest /opt/paper-loadtest/plugins
 ln -sfn "$jar" /opt/paper-loadtest/paper.jar
-echo "eula=true" > /opt/paper-loadtest/eula.txt
-props=/opt/paper-loadtest/server.properties
-touch "$props"
-set_prop() {
-    if grep -q "^$1=" "$props"; then
-        sed -i "s|^$1=.*|$1=$2|" "$props"
-    else
-        echo "$1=$2" >> "$props"
-    fi
-}
-set_prop server-port 30900
-set_prop online-mode false
-set_prop white-list false
-set_prop enforce-secure-profile false
-set_prop max-players 10000
-set_prop level-type minecraft:flat
-set_prop generate-structures false
-set_prop spawn-protection 0
-# Straight-flight bots (loadbot --movement straight:...) cruise above the terrain.
-set_prop allow-flight true
-# No mobs, like Vanillite so far: hostile mobs would kill the bots, which do not respawn.
-set_prop difficulty peaceful
-set_prop spawn-monsters false
-set_prop view-distance 10
-set_prop simulation-distance 10
-set_prop enable-rcon true
-set_prop rcon.port 25576
-set_prop rcon.password "$rcon_password"
 # All bots connect from one address: no per-address connection throttle.
 if [ -f /opt/paper-loadtest/bukkit.yml ]; then
     sed -i 's/^\(\s*connection-throttle:\).*/\1 -1/' /opt/paper-loadtest/bukkit.yml
 else
     printf 'settings:\n  connection-throttle: -1\n' > /opt/paper-loadtest/bukkit.yml
 fi
-chown -R minecraft:minecraft /opt/paper-loadtest
+# The load test world was flat before the suite (#71): start over with the shared seed.
+if grep -q '^level-type=minecraft\\\?:flat' /opt/paper-loadtest/server.properties 2> /dev/null; then
+    rm -rf /opt/paper-loadtest/world*
+fi
+fetch "/opt/vanillite/bench/$CHUNKY_JAR" "$CHUNKY_URL" sha512 "$CHUNKY_SHA512"
 write_if_changed /etc/systemd/system/paper-loadtest.service <<'EOF'
 [Unit]
-Description=Paper load test reference (offline mode, port 30900, only during xtask loadtest)
+Description=Paper benchmark reference (offline mode, port 30900, only during xtask loadtest/bench)
 After=network-online.target
 [Service]
 User=minecraft
@@ -502,6 +506,576 @@ WorkingDirectory=/opt/paper-loadtest
 ExecStart=/usr/bin/java -Xms1G -Xmx6G -jar paper.jar --nogui
 LimitNOFILE=65536
 EOF
+
+install -d -o minecraft -g minecraft /opt/vanilla-loadtest
+fetch "/opt/vanilla-loadtest/server-$VANILLA_VERSION.jar" \
+    "https://piston-data.mojang.com/v1/objects/$VANILLA_SHA1/server.jar" sha1 "$VANILLA_SHA1"
+ln -sfn "server-$VANILLA_VERSION.jar" /opt/vanilla-loadtest/server.jar
+write_if_changed /etc/systemd/system/vanilla-loadtest.service <<'EOF'
+[Unit]
+Description=Vanilla benchmark reference (offline mode, port 30900, only during xtask bench)
+After=network-online.target
+[Service]
+User=minecraft
+WorkingDirectory=/opt/vanilla-loadtest
+ExecStart=/usr/bin/java -Xms1G -Xmx6G -jar server.jar --nogui
+LimitNOFILE=65536
+EOF
+
+install -d -o minecraft -g minecraft /opt/pumpkin-loadtest
+fetch "/opt/pumpkin-loadtest/pumpkin-$PUMPKIN_TAG" \
+    "https://github.com/Pumpkin-MC/Pumpkin/releases/download/${PUMPKIN_TAG/+/%2B}/pumpkin-X64-Linux" \
+    sha256 "$PUMPKIN_SHA256"
+chmod 755 "/opt/pumpkin-loadtest/pumpkin-$PUMPKIN_TAG"
+ln -sfn "pumpkin-$PUMPKIN_TAG" /opt/pumpkin-loadtest/pumpkin
+# Pumpkin's defaults with the benchmark settings (seed, port, offline, distances, peaceful), no
+# Bedrock listener, no telemetry and no update check.
+write_if_changed /opt/pumpkin-loadtest/pumpkin.toml <<'EOF'
+seed = "-578941029922802438"
+default_difficulty = "Peaceful"
+op_permission_level = 4
+allow_nether = true
+allow_end = true
+hardcore = false
+tps = 20.0
+default_gamemode = "Survival"
+force_gamemode = false
+scrub_ips = true
+use_favicon = true
+default_level_name = "world"
+allow_chat_reports = false
+white_list = false
+enforce_whitelist = false
+accepts_transfers = true
+spawn_protection = 0
+
+[logging]
+enabled = true
+level = "info"
+threads = false
+thread_ids = false
+target = false
+color = false
+timestamp = true
+timestamp_format = "[hour]:[minute]:[second]"
+file = "latest.log"
+
+[world]
+lighting = "default"
+autosave_ticks = 6000
+
+[networking.java]
+enabled = true
+address = "0.0.0.0:30900"
+encryption = false
+online_mode = false
+max_players = 10000
+view_distance = 10
+simulation_distance = 10
+keep_alive_time = 15
+motd = "Pumpkin benchmark reference"
+
+[networking.java.compression]
+enabled = true
+threshold = 256
+level = 4
+
+[networking.bedrock]
+enabled = false
+
+[networking.lan_broadcast]
+enabled = false
+
+[commands]
+use_console = true
+use_tty = false
+log_console = true
+broadcast_console_to_ops = true
+default_op_level = 0
+
+[update_checker]
+enabled = false
+
+[telemetry]
+enabled = false
+EOF
+chown -R minecraft:minecraft /opt/pumpkin-loadtest
+write_if_changed /etc/systemd/system/pumpkin-loadtest-console.socket <<'EOF'
+[Unit]
+Description=Console FIFO of the Pumpkin benchmark reference
+[Socket]
+ListenFIFO=/run/vanillite-console/pumpkin
+SocketUser=minecraft
+SocketMode=0600
+RemoveOnStop=true
+Service=pumpkin-loadtest.service
+EOF
+write_if_changed /etc/systemd/system/pumpkin-loadtest.service <<'EOF'
+[Unit]
+Description=Pumpkin benchmark reference (offline mode, port 30900, only during xtask bench)
+After=network-online.target pumpkin-loadtest-console.socket
+Requires=pumpkin-loadtest-console.socket
+[Service]
+User=minecraft
+WorkingDirectory=/opt/pumpkin-loadtest
+ExecStart=/opt/pumpkin-loadtest/pumpkin
+Sockets=pumpkin-loadtest-console.socket
+StandardInput=socket
+StandardOutput=journal
+StandardError=journal
+LimitNOFILE=65536
+MemoryMax=6G
+EOF
+
+install -d -o minecraft -g minecraft /opt/velocity-loadtest /opt/velocity-loadtest/plugins/bStats
+fetch "/opt/velocity-loadtest/$VELOCITY_JAR" \
+    "https://fill-data.papermc.io/v1/objects/$VELOCITY_SHA256/$VELOCITY_JAR" sha256 "$VELOCITY_SHA256"
+ln -sfn "$VELOCITY_JAR" /opt/velocity-loadtest/velocity.jar
+install -d /etc/vanillite-test
+if [ ! -s /etc/vanillite-test/forwarding.secret ]; then
+    (umask 077 && head -c 24 /dev/urandom | base64 | tr -d '/+=' > /etc/vanillite-test/forwarding.secret)
+fi
+install -m 600 /etc/vanillite-test/forwarding.secret /opt/velocity-loadtest/forwarding.secret
+printf 'enabled=false\n' > /opt/velocity-loadtest/plugins/bStats/config.txt
+write_if_changed /opt/velocity-loadtest/velocity.toml <<'EOF'
+# Velocity in front of the Vanillite benchmark instance 30901 (xtask bench proxy).
+# Installed by scripts/testserver/provision.sh.
+config-version = "2.9"
+bind = "0.0.0.0:30900"
+motd = "Velocity benchmark reference"
+show-max-players = 10000
+online-mode = false
+force-key-authentication = false
+prevent-client-proxy-connections = false
+player-info-forwarding-mode = "MODERN"
+forwarding-secret-file = "forwarding.secret"
+announce-forge = false
+kick-existing-players = false
+sample-players-in-ping = false
+enable-player-address-logging = false
+
+[servers]
+vanillite = "127.0.0.1:30901"
+try = ["vanillite"]
+
+[forced-hosts]
+
+[advanced]
+compression-threshold = 256
+compression-level = -1
+# All bots connect from one address.
+login-ratelimit = 0
+connection-timeout = 5000
+read-timeout = 30000
+haproxy-protocol = false
+tcp-fast-open = false
+bungee-plugin-message-channel = true
+show-ping-requests = false
+failover-on-unexpected-server-disconnect = true
+announce-proxy-commands = true
+log-command-executions = false
+log-player-connections = false
+accepts-transfers = false
+
+[query]
+enabled = false
+port = 30900
+map = "Velocity"
+show-plugins = false
+EOF
+chown -R minecraft:minecraft /opt/velocity-loadtest
+write_if_changed /etc/systemd/system/velocity-loadtest.service <<'EOF'
+[Unit]
+Description=Velocity benchmark reference in front of 30901 (port 30900, only during xtask bench)
+After=network-online.target
+[Service]
+User=minecraft
+WorkingDirectory=/opt/velocity-loadtest
+ExecStart=/usr/bin/java -Xms512M -Xmx2G -jar velocity.jar
+LimitNOFILE=65536
+EOF
+
+install -d -o vanillite -g vanillite /opt/vanillite/bench/proxy
+install -m 600 -o vanillite -g vanillite /etc/vanillite-test/forwarding.secret \
+    /opt/vanillite/bench/proxy/forwarding.secret
+write_if_changed /opt/vanillite/bench/proxy/proxy.toml <<'EOF'
+# vanillite-proxy in front of the Vanillite benchmark instance 30901 (xtask bench proxy).
+# Installed by scripts/testserver/provision.sh.
+bind = "0.0.0.0:30900"
+online-mode = false
+motd = "vanillite-proxy benchmark"
+max-players = 10000
+forwarding-secret-file = "forwarding.secret"
+try = ["vanillite"]
+
+[servers]
+vanillite = "127.0.0.1:30901"
+
+[limits]
+max-connections = 12000
+# All bots connect from one address.
+max-pending-per-ip = 1000
+login-interval-ms = 0
+EOF
+write_if_changed /etc/systemd/system/vanillite-proxy-loadtest.service <<'EOF'
+[Unit]
+Description=vanillite-proxy benchmark in front of 30901 (port 30900, only during xtask bench)
+After=network-online.target
+[Service]
+User=vanillite
+Group=vanillite
+WorkingDirectory=/opt/vanillite/bench/proxy
+ExecStart=/opt/vanillite/bench/bin/vanillite-proxy
+LimitNOFILE=65536
+MemoryMax=2G
+EOF
+
+write_if_changed /usr/local/bin/vanillite-bench 755 <<'EOF'
+#!/usr/bin/env bash
+# Usage: vanillite-bench <command> [<target>] ...   (driven by `cargo xtask bench`)
+# Targets: vanillite (vanillite@30901), paper, vanilla, pumpkin (30900), velocity and
+# vanillite-proxy (30900, in front of 30901).
+#   props <target>                 write the shared benchmark settings into server.properties
+#   reset <target>                 stop it and delete its world (fresh world with the shared seed)
+#   start <target> [<profile>]     start it (Vanillite: rule profile) and wait for a status ping;
+#                                  prints {"ready_s", "version", "protocol"}
+#   stop <target>                  clean stop (saves); prints {"stop_s"}
+#   cmds <target>                  console commands from stdin, one per line; prints
+#                                  {"sent", "failed", "errors"}; exit 3 when it has no console
+#   timed <target> <timeout s> <regex|-> <command...>
+#                                  runs a command and prints {"seconds"} until a log line matches
+#                                  (-: until RCON answers)
+#   cpu <target>                   prints {"cpu_s"}: CPU time of the server process so far
+#   chunks <target>                prints {"chunks"}: chunks in the overworld region files
+#   idle <target> <seconds>        prints {"rss_mib", "rss_max_mib", "cpu_percent"} over the time
+#   chunky on|off                  add or remove the Chunky plugin of paper-loadtest
+#   install <name>                 binary from stdin into /opt/vanillite/bench/bin/<name>
+#   pregen <radius> <threads> <repetitions>
+#                                  runs bin/chunk_bench (generate, save, load) and prints its JSON
+# Installed by scripts/testserver/provision.sh.
+set -euo pipefail
+seed=-578941029922802438
+cmd=${1:?usage: vanillite-bench <command> [<target>] ...}
+shift
+target=${1:-}
+
+unit_of() {
+    case $1 in
+        vanillite) echo vanillite@30901.service ;;
+        paper | vanilla | pumpkin | velocity | vanillite-proxy) echo "$1-loadtest.service" ;;
+        *) echo "unknown target $1" >&2; exit 2 ;;
+    esac
+}
+dir_of() {
+    case $1 in
+        vanillite) echo /opt/vanillite/30901 ;;
+        vanillite-proxy) echo /opt/vanillite/bench/proxy ;;
+        *) echo "/opt/$1-loadtest" ;;
+    esac
+}
+port_of() { [ "$1" = vanillite ] && echo 30901 || echo 30900; }
+rcon_of() {
+    case $1 in
+        paper) echo 25576 ;;
+        vanilla) echo 25578 ;;
+        *) echo "" ;;
+    esac
+}
+now() { date +%s.%N; }
+since() { awk -v a="$1" -v b="$(now)" 'BEGIN { printf "%.3f", b - a }'; }
+
+props() {
+    local file=$1 port=$2 rcon=$3
+    touch "$file"
+    set_prop() {
+        if grep -q "^$1=" "$file"; then
+            sed -i "s|^$1=.*|$1=$2|" "$file"
+        else
+            echo "$1=$2" >> "$file"
+        fi
+    }
+    set_prop server-port "$port"
+    set_prop online-mode false
+    set_prop white-list false
+    set_prop enforce-secure-profile false
+    set_prop max-players 10000
+    set_prop level-seed "$seed"
+    set_prop level-type minecraft:normal
+    set_prop generate-structures true
+    set_prop spawn-protection 0
+    # Straight-flight bots (loadbot --movement straight:...) cruise above the terrain.
+    set_prop allow-flight true
+    # No mobs spawn by themselves: hostile mobs would kill the bots, which do not respawn.
+    set_prop difficulty peaceful
+    set_prop view-distance 10
+    set_prop simulation-distance 10
+    # The world keeps ticking without players: idle numbers measure a running server.
+    set_prop pause-when-empty-seconds 0
+    if [ -n "$rcon" ]; then
+        set_prop enable-rcon true
+        set_prop rcon.port "$rcon"
+        set_prop rcon.password "$(cat /root/.paper-rcon)"
+    fi
+    echo "eula=true" > "$(dirname "$file")/eula.txt"
+}
+
+# Sends the lines of stdin to the console of $target; prints the JSON summary.
+send_cmds() {
+    local unit=$1 rcon=$2 fifo=$3
+    if [ -n "$rcon" ]; then
+        python3 -c '
+import json, socket, struct, sys
+port = int(sys.argv[1])
+pw = open("/root/.paper-rcon").read().strip()
+def pkt(i, t, body):
+    b = body.encode() + b"\x00\x00"
+    return struct.pack("<iii", len(b) + 8, i, t) + b
+def recv(s):
+    n = struct.unpack("<i", s.recv(4))[0]
+    data = b""
+    while len(data) < n:
+        data += s.recv(n - len(data))
+    return struct.unpack("<ii", data[:8]), data[8:-2].decode(errors="replace")
+s = socket.create_connection(("127.0.0.1", port), timeout=1800)
+s.sendall(pkt(1, 3, pw))
+if recv(s)[0][0] == -1:
+    sys.exit("RCON auth failed")
+sent, errors = 0, []
+bad = ("<--[HERE]", "unexpected error")
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    s.sendall(pkt(2, 2, line))
+    reply = recv(s)[1]
+    sent += 1
+    if any(b in reply for b in bad):
+        errors.append(line[:80] + ": " + reply[:160])
+print(json.dumps({"sent": sent, "failed": len(errors), "errors": errors[:5]}))
+' "$rcon"
+        return
+    fi
+    [ -p "$fifo" ] || { echo '{"sent": 0, "failed": 0, "errors": ["no console"]}'; exit 3; }
+    local start marker sent tmp
+    start=$(date '+%Y-%m-%d %H:%M:%S')
+    marker="bench-marker-$RANDOM$RANDOM"
+    # The commands, then an unknown command as a marker: its error line says that all of them
+    # ran (every server logs console errors).
+    tmp=$(mktemp)
+    grep . > "$tmp" || true
+    sent=$(wc -l < "$tmp")
+    { cat "$tmp"; echo "$marker"; } > "$fifo"
+    rm -f "$tmp"
+    for _ in $(seq 240); do
+        journalctl -q -u "$unit" --since "$start" -o cat | grep -q "$marker" && break
+        sleep 0.5
+    done
+    journalctl -q -u "$unit" --since "$start" -o cat \
+        | grep -E '<--\[HERE\]|unexpected error' | grep -v "$marker" \
+        | head -n 50 | jq -R -s --argjson sent "$sent" \
+            '(split("\n") | map(select(length > 0))) as $e
+             | {sent: $sent, failed: ($e | length), errors: ($e[:5] | map(.[:200]))}'
+}
+
+case $cmd in
+    props)
+        case $target in
+            vanillite | paper | vanilla)
+                props "$(dir_of "$target")/server.properties" "$(port_of "$target")" "$(rcon_of "$target")"
+                chown "$( [ "$target" = vanillite ] && echo vanillite || echo minecraft)": \
+                    "$(dir_of "$target")/server.properties" "$(dir_of "$target")/eula.txt"
+                ;;
+            *) ;; # Pumpkin and the proxies have their own configuration files.
+        esac
+        ;;
+    reset)
+        systemctl stop "$(unit_of "$target")" 2> /dev/null || true
+        "$0" props "$target"
+        rm -rf "$(dir_of "$target")"/world* "$(dir_of "$target")/tick.log"
+        ;;
+    start)
+        unit=$(unit_of "$target")
+        dropin=/run/systemd/system/vanillite@30901.service.d/bench-profile.conf
+        if [ "$target" = vanillite ]; then
+            if [ -n "${2:-}" ]; then
+                install -d "$(dirname "$dropin")"
+                printf '[Service]\nEnvironment=VANILLITE_PROFILE=%s\n' "$2" > "$dropin"
+            else
+                rm -f "$dropin"
+            fi
+            systemctl daemon-reload
+            rm -f /opt/vanillite/30901/tick.log
+        fi
+        t0=$(now)
+        systemctl start "$unit"
+        for _ in $(seq 3000); do
+            if status=$(python3 -c '
+import json, socket, struct, sys
+def varint(v):
+    out = b""
+    while True:
+        b = v & 0x7F
+        v >>= 7
+        out += bytes([b | (0x80 if v else 0)])
+        if not v:
+            return out
+def read_varint(s):
+    v, shift = 0, 0
+    while True:
+        b = s.recv(1)[0]
+        v |= (b & 0x7F) << shift
+        shift += 7
+        if not b & 0x80:
+            return v
+port = int(sys.argv[1])
+s = socket.create_connection(("127.0.0.1", port), timeout=2)
+host = b"127.0.0.1"
+hs = varint(0) + varint(0xFFFFFFFF) + varint(len(host)) + host + struct.pack(">H", port) + varint(1)
+s.sendall(varint(len(hs)) + hs + varint(1) + varint(0))
+read_varint(s)
+read_varint(s)
+n = read_varint(s)
+data = b""
+while len(data) < n:
+    data += s.recv(n - len(data))
+v = json.loads(data).get("version", {})
+print(json.dumps({"version": v.get("name"), "protocol": v.get("protocol")}))
+' "$(port_of "$target")" 2> /dev/null); then
+                echo "$status" | jq -c --argjson s "$(since "$t0")" '{ready_s: $s} + .'
+                exit 0
+            fi
+            systemctl is-active --quiet "$unit" || { echo "$unit stopped while starting" >&2; exit 1; }
+            sleep 0.1
+        done
+        echo "$unit did not answer a status ping within 300 s" >&2
+        exit 1
+        ;;
+    stop)
+        t0=$(now)
+        systemctl stop "$(unit_of "$target")"
+        jq -n -c --argjson s "$(since "$t0")" '{stop_s: $s}'
+        ;;
+    cmds)
+        fifo=
+        case $target in
+            vanillite) fifo=/run/vanillite-console/30901 ;;
+            pumpkin) fifo=/run/vanillite-console/pumpkin ;;
+        esac
+        send_cmds "$(unit_of "$target")" "$(rcon_of "$target")" "$fifo"
+        ;;
+    timed)
+        timeout=${2:?timeout}
+        regex=${3:?regex}
+        shift 3
+        unit=$(unit_of "$target")
+        rcon=$(rcon_of "$target")
+        start=$(date '+%Y-%m-%d %H:%M:%S')
+        if [ -n "$rcon" ]; then
+            t0=$(now)
+            echo "$*" | send_cmds "$unit" "$rcon" "" > /dev/null
+            # "-": RCON answers when the command has run.
+            if [ "$regex" = - ]; then
+                jq -n -c --argjson s "$(since "$t0")" '{seconds: $s}'
+                exit 0
+            fi
+        else
+            [ "$regex" != - ] || { echo "$target has no RCON: give a log regex" >&2; exit 2; }
+            fifo=/run/vanillite-console/$([ "$target" = vanillite ] && echo 30901 || echo "$target")
+            [ -p "$fifo" ] || { echo "$target has no console" >&2; exit 3; }
+            t0=$(now)
+            echo "$*" > "$fifo"
+        fi
+        deadline=$(awk -v a="$t0" -v t="$timeout" 'BEGIN { print a + t }')
+        while awk -v d="$deadline" -v n="$(now)" 'BEGIN { exit !(n < d) }'; do
+            if journalctl -q -u "$unit" --since "$start" -o cat | grep -qE "$regex"; then
+                jq -n -c --argjson s "$(since "$t0")" '{seconds: $s}'
+                exit 0
+            fi
+            sleep 0.1
+        done
+        echo "no log line matching $regex within $timeout s" >&2
+        exit 1
+        ;;
+    idle)
+        seconds=${2:?seconds}
+        unit=$(unit_of "$target")
+        pid=$(systemctl show -p MainPID --value "$unit")
+        [ "${pid:-0}" -gt 0 ] || { echo "$unit is not running" >&2; exit 1; }
+        hz=$(getconf CLK_TCK)
+        cpu() { sed 's/^.*) //' "/proc/$pid/stat" | awk '{ print $12 + $13 }'; }
+        c0=$(cpu)
+        sum=0 max=0
+        for _ in $(seq "$seconds"); do
+            rss=$(awk '/^VmRSS:/ { print $2 }' "/proc/$pid/status")
+            sum=$((sum + rss))
+            [ "$rss" -gt "$max" ] && max=$rss
+            sleep 1
+        done
+        c1=$(cpu)
+        jq -n -c --argjson sum "$sum" --argjson max "$max" --argjson n "$seconds" \
+            --argjson cpu "$((c1 - c0))" --argjson hz "$hz" \
+            '{rss_mib: ($sum / $n / 1024 * 100 | round / 100), rss_max_mib: ($max / 1024 * 100 | round / 100),
+              cpu_percent: ($cpu / $hz / $n * 100 * 100 | round / 100)}'
+        ;;
+    cpu)
+        pid=$(systemctl show -p MainPID --value "$(unit_of "$target")")
+        [ "${pid:-0}" -gt 0 ] || { echo "$target is not running" >&2; exit 1; }
+        sed 's/^.*) //' "/proc/$pid/stat" | awk -v hz="$(getconf CLK_TCK)" '{ printf "{\"cpu_s\": %.2f}\n", ($12 + $13) / hz }'
+        ;;
+    chunks)
+        # Chunks stored in the overworld region files (header entries in use).
+        python3 -c '
+import glob, json, sys
+n = 0
+for f in glob.glob(sys.argv[1] + "/world*/**/region/r.*.mca", recursive=True):
+    if "nether" in f or "the_end" in f or "DIM" in f:
+        continue
+    with open(f, "rb") as h:
+        head = h.read(4096)
+    n += sum(1 for i in range(0, len(head), 4) if head[i:i + 4] != b"\0\0\0\0")
+print(json.dumps({"chunks": n}))
+' "$(dir_of "$target")"
+        ;;
+    chunky)
+        case $target in
+            on) ln -sfn /opt/vanillite/bench/Chunky-Paper-*.jar /opt/paper-loadtest/plugins/Chunky.jar ;;
+            off) rm -f /opt/paper-loadtest/plugins/Chunky.jar ;;
+            *) echo "usage: vanillite-bench chunky on|off" >&2; exit 2 ;;
+        esac
+        ;;
+    install)
+        case $target in
+            vanillite-proxy | chunk_bench) ;;
+            *) echo "usage: vanillite-bench install vanillite-proxy|chunk_bench < binary" >&2; exit 2 ;;
+        esac
+        tmp=$(mktemp -p /opt/vanillite/bench/bin)
+        cat > "$tmp"
+        [ -s "$tmp" ] || { rm -f "$tmp"; echo "no binary on stdin" >&2; exit 2; }
+        chmod 755 "$tmp"
+        chown vanillite:vanillite "$tmp"
+        mv -f "$tmp" "/opt/vanillite/bench/bin/$target"
+        ;;
+    pregen)
+        radius=${1:?radius}
+        threads=${2:?threads}
+        reps=${3:-1}
+        work=/opt/vanillite/bench/pregen
+        install -d -o vanillite -g vanillite "$work"
+        for _ in $(seq "$reps"); do
+            runuser -u vanillite -- env VANILLITE_CACHE=/opt/vanillite/30901/cache \
+                /opt/vanillite/bench/bin/chunk_bench --radius "$radius" --threads "$threads" \
+                --pump --load --dir "$work/world" 2> /dev/null
+        done
+        rm -rf "$work/world"
+        ;;
+    *)
+        sed -n '2,/^# Installed/p' "$0" | sed 's/^# \{0,1\}//' >&2
+        exit 2
+        ;;
+esac
+EOF
+"/usr/local/bin/vanillite-bench" props paper
+"/usr/local/bin/vanillite-bench" props vanilla
 
 write_if_changed /usr/local/bin/vanillite-loadtest-monitor 755 <<'EOF'
 #!/usr/bin/env bash
@@ -511,7 +1085,7 @@ write_if_changed /usr/local/bin/vanillite-loadtest-monitor 755 <<'EOF'
 #   S <rss KiB> <cpu ticks> <net rx bytes> <net tx bytes> <read syscalls> <storage read bytes>
 #     <storage write bytes>                                  every second
 #   T <tick nanoseconds>                                     every tick (vanillite@<port>)
-#   Q <output of /tick query>                                every 5 s (paper-loadtest)
+#   Q <output of /tick query>                                every 5 s (paper/vanilla-loadtest)
 # Installed by scripts/testserver/provision.sh.
 set -u
 unit=${1:?usage: vanillite-loadtest-monitor <unit>}
@@ -523,9 +1097,11 @@ case $unit in
         port=${port%.service}
         tail -n 0 -F "/opt/vanillite/$port/tick.log" 2> /dev/null | sed -u 's/^/T /' &
         ;;
-    paper-loadtest*)
+    paper-loadtest* | vanilla-loadtest*)
+        rcon=25576
+        case $unit in vanilla-loadtest*) rcon=25578 ;; esac
         while sleep 5; do
-            echo "Q $(paper-rcon --port 25576 tick query 2> /dev/null | tr '\n' ' ')"
+            echo "Q $(paper-rcon --port "$rcon" tick query 2> /dev/null | tr '\n' ' ')"
         done &
         ;;
 esac
@@ -541,7 +1117,6 @@ while sleep 1; do
     echo "S $rss $cpu $net $io"
 done
 EOF
-install -d /opt/vanillite/bench/results
 
 echo "== proxy (vanillite-proxy on 30010; Paper with modern forwarding on 30011)"
 if [ ! -s /etc/vanillite-test/forwarding.secret ]; then
@@ -573,6 +1148,13 @@ ln -sfn "$jar" /opt/paper-proxy/paper.jar
 echo "eula=true" > /opt/paper-proxy/eula.txt
 props=/opt/paper-proxy/server.properties
 touch "$props"
+set_prop() {
+    if grep -q "^$1=" "$props"; then
+        sed -i "s|^$1=.*|$1=$2|" "$props"
+    else
+        echo "$1=$2" >> "$props"
+    fi
+}
 set_prop server-port 30011
 set_prop online-mode false
 set_prop white-list true
