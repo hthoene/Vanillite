@@ -1208,8 +1208,9 @@ fn apply_rules(
 }
 
 impl ScenarioWorld for GameWorld {
+    /// Like the recorder's `getChunkNow`, which puts the chunk into the chunk cache.
     fn is_loaded(&self, pos: BlockPos) -> bool {
-        self.level.is_loaded(pos)
+        self.level.is_loaded(pos) && self.level.chunks.chunk_now(pos.chunk())
     }
 
     fn set_forced(&mut self, chunks: &[ChunkPos], forced: bool) -> Result<(), String> {
@@ -1318,6 +1319,7 @@ impl ScenarioWorld for GameWorld {
         let level = &mut self.level;
         level.tick_time();
         level.run_scheduled_ticks();
+        level.chunks.purge_stale_tickets();
         level.tick_chunk_runtime();
         level.post_process();
         let mut scratch = Vec::new();

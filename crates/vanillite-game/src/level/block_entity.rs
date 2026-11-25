@@ -824,7 +824,7 @@ impl Level {
     }
 
     /// Creates the live block entities of a chunk that became live from its stored data.
-    fn load_block_entities(&mut self, chunk: ChunkPos) {
+    pub(super) fn load_block_entities(&mut self, chunk: ChunkPos) {
         let Some(stored) = self.chunks.chunk(chunk).map(|c| c.block_entities.clone()) else {
             return;
         };
