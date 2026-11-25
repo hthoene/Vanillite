@@ -550,6 +550,22 @@ pub(crate) fn climate(
     })
 }
 
+/// The trees saplings grow into, from the data packs; `None` without them.
+pub(crate) fn tree_features(
+    packs: Option<&LoadedPacks>,
+    seed: i64,
+) -> Option<Arc<vanillite_game::block::tree::TreeFeatures>> {
+    let packs = packs?;
+    let biomes = vanillite_worldgen::biome::BiomeRegistry::load(packs).ok()?;
+    match vanillite_game::block::tree::TreeFeatures::load(packs, &biomes, seed, -64, 384, 63) {
+        Ok(trees) => Some(Arc::new(trees)),
+        Err(e) => {
+            log::warn!("tree features: {e}");
+            None
+        }
+    }
+}
+
 /// The spawn settings of every biome from the data packs: `gameplay/natural_mob_spawns`,
 /// `gameplay/creature_world_gen_spawn_probability` and the farm animal climate tags. `None`
 /// without data packs.

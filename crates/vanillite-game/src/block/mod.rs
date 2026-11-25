@@ -33,6 +33,7 @@ pub mod sensor;
 pub mod sign;
 mod spread;
 pub mod tnt;
+pub mod tree;
 pub mod tripwire;
 pub mod weather;
 

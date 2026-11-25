@@ -20,8 +20,8 @@
 //! - results larger than the item's max stack size are split as `LootTable.createStackSplitter`.
 //!
 //! The context has no level and no entity, so:
-//! - `entity_properties` on `this` with an empty predicate holds (the breaker or the explosion
-//!   source is assumed present); any non-empty entity predicate is unsupported;
+//! - `entity_properties` on `this` with an empty predicate holds if the context has an entity
+//!   (the breaker or the explosion source); any non-empty entity predicate is unsupported;
 //! - `location_check` with only `block`/`fluid` predicates holds (the world is assumed
 //!   consistent, e.g. the other half of a double plant exists); other location predicates are
 //!   unsupported.
@@ -79,6 +79,8 @@ pub struct BlockLootContext<'a> {
     pub item_in_tag: &'a dyn Fn(u16, &str) -> bool,
     /// Explosion radius if destroyed by an explosion (None for players).
     pub explosion_radius: Option<f32>,
+    /// Whether the context has a `this` entity (the breaker, or the explosion's source).
+    pub this_entity: bool,
     /// The components of the broken block's block entity (`collectComponents`), by component
     /// type id, as wire values; `None` without a block entity.
     pub block_entity: Option<&'a dyn Fn(u16) -> Option<Box<[u8]>>>,
@@ -191,6 +193,15 @@ impl LootTables {
     /// logged).
     pub fn unsupported(&self) -> &[String] {
         &self.unsupported
+    }
+
+    /// The `random_sequence` of the loot table of `state`, if it has one.
+    pub fn block_sequence(&self, state: BlockState) -> Option<&str> {
+        let block = usize::from(state.block().0);
+        self.by_block
+            .get(block)
+            .and_then(|&i| self.tables.get(usize::try_from(i).ok()?))
+            .and_then(|t| t.sequence.as_deref())
     }
 
     /// Drops of breaking `ctx.state` (table `minecraft:blocks/<block path>`; no table → nothing).
@@ -395,6 +406,8 @@ pub(crate) fn read_files(
 struct Table {
     pools: Vec<Pool>,
     modifier: Option<Func>,
+    /// `random_sequence`: the named random the rolls draw from.
+    sequence: Option<Box<str>>,
 }
 
 #[derive(Debug)]
@@ -457,6 +470,8 @@ enum Cond {
     AnyOf(Box<[Cond]>),
     AllOf(Box<[Cond]>),
     SurvivesExplosion,
+    /// `entity_properties` on `this` with an empty predicate: the entity is present.
+    ThisEntity,
     RandomChance(FloatProvider),
     TableBonus {
         enchantment: Box<str>,
@@ -752,7 +767,15 @@ impl Parser<'_> {
             .map(|m| self.func(m))
             .transpose()
             .map_err(|e| format!("modifier: {e}"))?;
-        Ok(Table { pools, modifier })
+        let sequence = o
+            .get("random_sequence")
+            .map(|s| string(s).map(Box::from))
+            .transpose()?;
+        Ok(Table {
+            pools,
+            modifier,
+            sequence,
+        })
     }
 
     fn pool(&mut self, v: &Value) -> Res<Pool> {
@@ -931,7 +954,7 @@ impl Parser<'_> {
                         // Block loot has no other entity than `this`.
                         Cond::Const(false)
                     }
-                    Some(p) if object(p)?.is_empty() => Cond::Const(true),
+                    Some(p) if object(p)?.is_empty() => Cond::ThisEntity,
                     Some(p) => {
                         let keys: Vec<&str> = object(p)?.keys().map(String::as_str).collect();
                         self.unsupported(format!(
@@ -1577,6 +1600,7 @@ impl<'t> Eval<'t, '_> {
             Cond::Inverted(c) => !self.test(c),
             Cond::AnyOf(terms) => terms.iter().any(|c| self.test(c)),
             Cond::AllOf(terms) => terms.iter().all(|c| self.test(c)),
+            Cond::ThisEntity => self.ctx.this_entity,
             Cond::SurvivesExplosion => match self.ctx.explosion_radius {
                 Some(radius) => self.rng.next_float() <= 1.0 / radius,
                 None => true,
@@ -1895,6 +1919,7 @@ mod tests {
             enchantment_level: &level,
             item_in_tag: &in_tag,
             explosion_radius,
+            this_entity: true,
             block_entity: None,
         };
         let mut rng = XoroshiroRandom::new(seed);

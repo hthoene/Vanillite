@@ -105,12 +105,21 @@ impl BlockLevel for WorldGenRegion<'_> {
         self.random().next_int_bounded(bound)
     }
 
-    /// Generation ticks are stored with delay 0 (`WorldGenTickAccess`).
-    fn schedule_block_tick(&mut self, pos: BlockPos, block: BlockId, _delay: i32) {
+    /// Generation ticks are stored with delay 0 (`WorldGenTickAccess`); a live world gets the
+    /// delay.
+    fn schedule_block_tick(&mut self, pos: BlockPos, block: BlockId, delay: i32) {
+        if let Some(live) = self.live_level() {
+            return live.schedule_block_tick(pos, block, delay);
+        }
         WorldGenRegion::schedule_block_tick(self, pos, block);
     }
 
     fn schedule_fluid_tick(&mut self, pos: BlockPos, fluid: u16) {
+        if let Some(live) = self.live_level() {
+            // `Fluid.getTickDelay` of the overworld: water 5, lava 30.
+            let delay = if matches!(fluid, 3 | 4) { 30 } else { 5 };
+            return live.schedule_fluid_tick(pos, fluid, delay);
+        }
         WorldGenRegion::schedule_fluid_tick(self, pos, fluid);
     }
 

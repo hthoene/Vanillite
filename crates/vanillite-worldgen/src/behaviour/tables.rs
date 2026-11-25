@@ -42,6 +42,7 @@ block_tags!(
     enables_bubble_column_push_up,
     fences,
     fire,
+    flowers,
     grows_crops,
     maintains_farmland,
     nether_portal_frame,

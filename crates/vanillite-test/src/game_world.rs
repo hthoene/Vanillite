@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::{Map, Value, json};
-use vanillite_base::random::LegacyRandom;
+use vanillite_base::random::{LegacyRandom, RandomSource};
 use vanillite_base::{BlockPos, ChunkPos, Vec3};
 use vanillite_chunk::ProtoChunk;
 use vanillite_chunk::light::LightNibbles;
@@ -118,6 +118,8 @@ static PACK: OnceLock<(DamageTypes, BlockFacts)> = OnceLock::new();
 static BIOMES: OnceLock<vanillite_worldgen::biome::BiomeRegistry> = OnceLock::new();
 /// The biome ids by protocol id.
 static BIOME_NAMES: OnceLock<Arc<[String]>> = OnceLock::new();
+/// The trees saplings grow into (they do not depend on the seed).
+static TREES: OnceLock<Arc<vanillite_game::block::tree::TreeFeatures>> = OnceLock::new();
 
 /// Sea level of Vanilla's flat worlds (`FlatLevelSource.getSeaLevel`).
 const FLAT_SEA_LEVEL: i32 = -63;
@@ -154,9 +156,19 @@ fn install() {
             vanillite_server::load_damage_types(&packs),
             vanillite_server::load_block_facts(&packs),
         ));
-        let _ = BIOMES.set(
-            vanillite_worldgen::biome::BiomeRegistry::load(&packs).expect("Vanilla biomes"),
-        );
+        let _ = BIOMES
+            .set(vanillite_worldgen::biome::BiomeRegistry::load(&packs).expect("Vanilla biomes"));
+        let _ = TREES.set(Arc::new(
+            vanillite_game::block::tree::TreeFeatures::load(
+                &packs,
+                BIOMES.get().expect("biomes first"),
+                0,
+                MIN_Y,
+                HEIGHT as i32,
+                FLAT_SEA_LEVEL,
+            )
+            .expect("Vanilla tree features"),
+        ));
         let _ = BIOME_NAMES.set(
             packs
                 .registry("minecraft:worldgen/biome")
@@ -186,7 +198,13 @@ pub struct GameWorld {
     light: bool,
     /// Frames observe the level random.
     level_rng: bool,
+    /// The own random of item entities (not seeded per entity yet).
+    item_random: LegacyRandom,
+    item_scratch: vanillite_server::ItemScratch,
 }
+
+/// Ticks until an item entity despawns (`ItemEntity.LIFETIME`).
+const ITEM_LIFETIME: i16 = 6000;
 
 impl std::fmt::Debug for GameWorld {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -265,6 +283,7 @@ impl GameWorld {
             Arc::clone(&network_ids),
             spec.seed,
         );
+        level.set_tree_features(Arc::clone(TREES.get().expect("installed")));
         level.set_climate(Arc::new(Climate {
             biomes: BIOMES.get().expect("installed").clone(),
             manager: vanillite_worldgen::biome::BiomeManager::for_world_seed(spec.seed),
@@ -303,6 +322,8 @@ impl GameWorld {
             seed: spec.seed,
             light: spec.light,
             level_rng: spec.level_rng,
+            item_random: LegacyRandom::new(spec.seed),
+            item_scratch: vanillite_server::ItemScratch::default(),
         })
     }
 
@@ -376,6 +397,20 @@ impl GameWorld {
                     p.connection.movement.tick_client_load_timeout();
                     survival_player::tick_entity(p);
                 }
+                continue;
+            }
+            if kind == ids::ITEM {
+                let level = &mut self.level;
+                let random = &mut self.item_random;
+                vanillite_server::tick_item(
+                    &mut level.entities,
+                    &level.chunks,
+                    id,
+                    &mut || random.next_float(),
+                    MIN_Y,
+                    ITEM_LIFETIME,
+                    &mut self.item_scratch,
+                );
                 continue;
             }
             let is_mob = is_mob_kind(kind);
@@ -777,9 +812,9 @@ fn apply_rules(
                 | "mob_griefing"
                 | "mob_drops"
         );
-        let rule = Rule::by_name(name).filter(|_| supported).ok_or_else(|| {
-            format!("game rule {name} is not supported by the game world")
-        })?;
+        let rule = Rule::by_name(name)
+            .filter(|_| supported)
+            .ok_or_else(|| format!("game rule {name} is not supported by the game world"))?;
         let v = match value.as_str() {
             "true" => 1,
             "false" => 0,
@@ -900,7 +935,7 @@ impl ScenarioWorld for GameWorld {
     }
 
     /// Players, the level random reseeded with the world seed, then the other entities.
-    fn add_entities(&mut self, entities: &[EntitySpec], _entity_seed: i64) -> Result<(), String> {
+    fn add_entities(&mut self, entities: &[EntitySpec], entity_seed: i64) -> Result<(), String> {
         for (i, spec) in entities.iter().enumerate() {
             if spec.is_player() {
                 self.add_player(spec, i);
@@ -913,6 +948,7 @@ impl ScenarioWorld for GameWorld {
                 self.add_mob(spec, i)?;
             }
         }
+        self.level.set_entity_seed(entity_seed);
         Ok(())
     }
 

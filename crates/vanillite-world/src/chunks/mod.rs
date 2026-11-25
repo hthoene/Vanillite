@@ -1142,6 +1142,17 @@ impl Chunks {
         Some(old)
     }
 
+    /// How many block changes are recorded since the last [`Self::take_block_changes`].
+    pub fn block_change_count(&self) -> usize {
+        self.block_changes.len()
+    }
+
+    /// The block changes recorded after the first `start` (see [`Self::block_change_count`]),
+    /// without taking them.
+    pub fn block_changes_from(&self, start: usize) -> &[BlockPos] {
+        &self.block_changes[start.min(self.block_changes.len())..]
+    }
+
     /// Blocks changed since the last call, in change order (for block update packets).
     pub fn take_block_changes(&mut self, out: &mut Vec<BlockPos>) {
         out.append(&mut self.block_changes);

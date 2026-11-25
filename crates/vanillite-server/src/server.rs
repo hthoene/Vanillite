@@ -395,6 +395,11 @@ impl ServerBuilder {
 
         log::info!("Preparing level \"{level_name}\"");
         let mut worlds = Vec::with_capacity(DIMENSIONS.len());
+        // `MinecraftServer.randomSequences`: shared by all worlds (not saved yet).
+        let random_sequences = Arc::new(std::sync::Mutex::new(
+            vanillite_game::random_sequences::RandomSequences::new(seed),
+        ));
+        let trees = crate::world_setup::tree_features(packs.as_deref(), seed);
         for (dimension, index) in DIMENSIONS.iter().zip(0u16..) {
             let rules = Arc::new(config.world_rules(dimension));
             let view_distance = rules
@@ -460,6 +465,10 @@ impl ServerBuilder {
                 seed,
             );
             level.set_game_time(global.level.game_time());
+            level.set_random_sequences(Arc::clone(&random_sequences));
+            if let Some(trees) = &trees {
+                level.set_tree_features(Arc::clone(trees));
+            }
             let survival = crate::survival::WorldSurvival::new(
                 dimension,
                 &global.level,

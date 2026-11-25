@@ -264,6 +264,8 @@ pub struct Level {
     behaviours: Arc<Behaviours>,
     network_ids: Arc<NetworkIds>,
     climate: Option<Arc<Climate>>,
+    /// The trees saplings grow into.
+    tree_features: Option<Arc<crate::block::tree::TreeFeatures>>,
     updater: NeighborUpdater,
     /// Live block entities.
     pub block_entities: BlockEntities,
@@ -288,6 +290,11 @@ pub struct Level {
     sound_seeds: LegacyRandom,
     /// `randValue` of `getBlockRandomPos`.
     rand_value: i32,
+    /// The server's named random sequences (loot tables).
+    random_sequences: Arc<std::sync::Mutex<crate::random_sequences::RandomSequences>>,
+    /// The seeds of new entities' own randoms (`Entity.random`): the next `nextLong()` per
+    /// entity, in creation order (the parity contract of `ParityHooks`).
+    entity_seeds: LegacyRandom,
     /// Rain and thunder levels (`Level.rainLevel`, `thunderLevel`), set by the world's weather.
     weather: crate::survival::weather::LevelWeather,
     game_time: i64,
@@ -330,6 +337,7 @@ impl Level {
             behaviours,
             network_ids,
             climate: None,
+            tree_features: None,
             block_entities: BlockEntities::default(),
             pistons: crate::block::piston::Scratch::default(),
             handling_tick: false,
@@ -341,6 +349,10 @@ impl Level {
             random: LegacyRandom::new(seed),
             sound_seeds: LegacyRandom::new(seed ^ 0x50_4E_44_53),
             rand_value: LegacyRandom::new(seed ^ 0x5DEE_CE66).next_int(),
+            random_sequences: Arc::new(std::sync::Mutex::new(
+                crate::random_sequences::RandomSequences::new(seed),
+            )),
+            entity_seeds: LegacyRandom::new(seed),
             weather: crate::survival::weather::LevelWeather::default(),
             game_time: 0,
             output: LevelOutput::default(),
@@ -409,6 +421,16 @@ impl Level {
         self.climate.as_deref()
     }
 
+    /// Sets the tree features saplings grow into (none: saplings do not grow into trees).
+    pub fn set_tree_features(&mut self, trees: Arc<crate::block::tree::TreeFeatures>) {
+        self.tree_features = Some(trees);
+    }
+
+    /// The tree features saplings grow into.
+    pub fn tree_features(&self) -> Option<&Arc<crate::block::tree::TreeFeatures>> {
+        self.tree_features.as_ref()
+    }
+
     /// `getBiome(pos)`: the noise biome the biome manager picks for `pos`; the default biome
     /// outside live chunks.
     pub fn biome(&self, pos: BlockPos) -> u16 {
@@ -449,6 +471,21 @@ impl Level {
     /// The level random (`level.getRandom()`).
     pub fn random(&mut self) -> &mut LegacyRandom {
         &mut self.random
+    }
+
+    /// Shares the server's random sequences (every world of a server draws from the same).
+    pub fn set_random_sequences(
+        &mut self,
+        sequences: Arc<std::sync::Mutex<crate::random_sequences::RandomSequences>>,
+    ) {
+        self.random_sequences = sequences;
+    }
+
+    /// The server's random sequences.
+    pub fn random_sequences(
+        &self,
+    ) -> &Arc<std::sync::Mutex<crate::random_sequences::RandomSequences>> {
+        &self.random_sequences
     }
 
     /// Sets `randValue`, the LCG of random tick positions (parity scenarios start it from a
@@ -1037,6 +1074,17 @@ impl Level {
         if let Some(f) = self.behaviours.get(state.block()).neighbor_changed {
             f(self, state, pos, source, moved);
         }
+    }
+
+    /// Restarts the seeds of new entities' randoms from `seed`.
+    pub fn set_entity_seed(&mut self, seed: i64) {
+        self.entity_seeds = LegacyRandom::new(seed);
+    }
+
+    /// The own random of a new entity (`Entity.random`); every entity the level creates
+    /// takes one, in creation order.
+    pub fn new_entity_random(&mut self) -> LegacyRandom {
+        LegacyRandom::new(self.entity_seeds.next_long())
     }
 
     /// A random UUID for a new entity (`Mth.createInsecureUUID(entity.random)`): drawn from a

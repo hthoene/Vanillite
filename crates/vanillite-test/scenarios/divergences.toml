@@ -2,11 +2,6 @@
 # who fixes it. The check fails when the first difference moves (see `scenario.rs`); raise the
 # tick when a fix gets further, remove the entry when the scenario matches.
 
-[light_roofs]
-tick = 3
-cause = "snow layers that cannot survive break without an entity; the snow loot table needs entity_properties on `this`, which Vanillite's loot (loot.rs) always assumes present, so it drops snowballs where Vanilla drops nothing"
-owner = "gameplay-developer"
-
 [mob_creeper_explode]
 tick = 112
 cause = "explosion drops: Vanillite pops one item per block, Vanilla merges the drops into stacks (addOrAppendStack) and applies the explosion decay; the level random then differs. Also the knocked back mock player: Vanilla moves it on the server, the scenario world does not"

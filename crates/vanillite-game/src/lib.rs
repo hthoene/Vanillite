@@ -23,5 +23,6 @@ pub mod menu;
 pub mod mob;
 pub mod player;
 pub mod portal;
+pub mod random_sequences;
 pub mod recipe;
 pub mod survival;

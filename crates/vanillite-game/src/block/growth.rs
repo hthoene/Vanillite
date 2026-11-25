@@ -323,14 +323,15 @@ pub(super) fn is_sapling(block: BlockId) -> bool {
         && block.default_state().int("stage").is_some()
 }
 
-/// `SaplingBlock.randomTick`: the sapling advances to stage 1. Growing into a tree needs the
-/// tree features on the live world, which are not connected yet; a sapling at stage 1 stays.
+/// `SaplingBlock.randomTick` and `advanceTree`: the sapling advances to stage 1, then grows
+/// into a tree.
 pub(super) fn sapling_random_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
-    if level.max_local_raw_brightness(pos.above()) >= 9
-        && level.random().next_int_bounded(7) == 0
-        && state.int("stage") == Some(0)
-    {
-        level.set_block(pos, state.set_int("stage", 1), QUIET);
+    if level.max_local_raw_brightness(pos.above()) >= 9 && level.random().next_int_bounded(7) == 0 {
+        if state.int("stage") == Some(0) {
+            level.set_block(pos, state.set_int("stage", 1), QUIET);
+        } else {
+            super::tree::grow_tree(level, pos, state);
+        }
     }
 }
 

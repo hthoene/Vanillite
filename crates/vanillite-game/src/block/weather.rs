@@ -64,16 +64,19 @@ pub fn tick_precipitation(level: &mut Level, pos: BlockPos) {
     if !level.is_raining() {
         return;
     }
-    let max_height = level
-        .settings
-        .max_snow_accumulation_height;
+    let max_height = level.settings.max_snow_accumulation_height;
     if max_height > 0 && should_snow(level, top) {
         let state = level.block(top);
         if state.is(ids::SNOW) {
-            let layers: i32 = state.value("layers").and_then(|v| v.parse().ok()).unwrap_or(1);
+            let layers: i32 = state
+                .value("layers")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1);
             if layers < max_height.min(8) {
                 // `Block.pushEntitiesUp` moves entities in the way; scenario worlds have none.
-                let grown = state.with("layers", &(layers + 1).to_string()).unwrap_or(state);
+                let grown = state
+                    .with("layers", &(layers + 1).to_string())
+                    .unwrap_or(state);
                 level.set_block_and_update(top, grown);
             }
         } else {
@@ -132,9 +135,14 @@ fn handle_precipitation(
         } else {
             Precipitation::Snow
         };
-        let fill: i32 = state.value("level").and_then(|v| v.parse().ok()).unwrap_or(3);
+        let fill: i32 = state
+            .value("level")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3);
         if cauldron_fills(level, precipitation) && fill != 3 && precipitation == kind {
-            let new = state.with("level", &(fill + 1).to_string()).unwrap_or(state);
+            let new = state
+                .with("level", &(fill + 1).to_string())
+                .unwrap_or(state);
             level.set_block_and_update(pos, new);
             level.game_event_block(
                 block_change,
