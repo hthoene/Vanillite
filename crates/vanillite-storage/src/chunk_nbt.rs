@@ -36,8 +36,9 @@ use vanillite_nbt::{Budget, Compound, List, Tag, TagType};
 pub const OLDEST_DATA_VERSION: i32 = 3953;
 
 /// Tags this module decodes; everything else goes to `extra`.
-pub(crate) const DECODED: [&str; 13] = [
+pub(crate) const DECODED: [&str; 14] = [
     "DataVersion",
+    "LastUpdate",
     "xPos",
     "yPos",
     "zPos",
@@ -203,7 +204,7 @@ impl Codec {
         // computes untrusted light again.
         let mut light = ChunkLight::new(count);
         let (mut version, mut x, mut z, mut status) = (None, None, None, None);
-        let (mut light_on, mut inhabited_time) = (false, 0);
+        let (mut light_on, mut inhabited_time, mut last_update) = (false, 0, 0);
         let mut heightmaps: [Option<&'b [u8]>; 6] = [None; 6];
         let mut block_entities = Vec::new();
         let (mut block_ticks, mut fluid_ticks) = (Vec::new(), Vec::new());
@@ -227,6 +228,7 @@ impl Codec {
                 (b"Status", _) => status = c.str(ty)?,
                 (b"isLightOn", _) => light_on = c.int(ty)? == Some(1),
                 (b"InhabitedTime", _) => inhabited_time = c.int(ty)?.unwrap_or(0),
+                (b"LastUpdate", _) => last_update = c.int(ty)?.unwrap_or(0),
                 (b"sections", TagType::List) => {
                     let (element, n) = c.enter_list()?;
                     for _ in 0..n {
@@ -388,6 +390,7 @@ impl Codec {
             chunk,
             block_entities,
             inhabited_time,
+            last_update,
             light_on,
             block_ticks,
             fluid_ticks,
@@ -611,6 +614,7 @@ impl Codec {
         root.insert("zPos", chunk.pos.z);
         root.insert("Status", chunk.status.name());
         root.insert("InhabitedTime", chunk.inhabited_time);
+        root.insert("LastUpdate", chunk.last_update);
         // Vanilla writes the flag only when set.
         if chunk.light_on {
             root.insert("isLightOn", true);

@@ -737,7 +737,16 @@ impl ServerWorld {
             );
             data.connection.movement.restart_client_load_timer();
         } else {
-            // `ServerPlayer.teleport` to another dimension.
+            // `ServerPlayer.teleport` to another dimension; `triggerDimensionChangeTriggers`
+            // forgets the Nether entry outside the Nether.
+            if traveller.from != self.id {
+                let portal = &mut data.survival.portal;
+                if traveller.from == OVERWORLD && self.id == NETHER {
+                    portal.entered_nether_pos = Some(traveller.pos);
+                } else if self.id != NETHER {
+                    portal.entered_nether_pos = None;
+                }
+            }
             sink.send(&respawn);
             sink.send(&difficulty);
             data.connection.movement.teleport_relative(

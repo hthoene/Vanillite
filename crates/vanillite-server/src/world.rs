@@ -316,6 +316,12 @@ impl ServerWorld {
     pub(crate) fn join_player(&mut self, global: &Global, arrival: crate::players::Arrival) {
         let weather = self.survival.join_weather();
         let (uuid, name) = (arrival.uuid, arrival.profile.name.clone());
+        let vehicle = arrival
+            .saved
+            .as_ref()
+            .and_then(|saved| saved.other.get("RootVehicle"))
+            .and_then(vanillite_nbt::Tag::as_compound)
+            .cloned();
         let saved_pearls = arrival
             .saved
             .as_ref()
@@ -330,6 +336,12 @@ impl ServerWorld {
             &weather,
             &state,
         );
+        // `PrepareSpawnTask`: the player rides back in.
+        if let Some(vehicle) = vehicle
+            && let Some(id) = self.level.entities.player_by_uuid(uuid)
+        {
+            self.level.spawn_root_vehicle(id, &vehicle);
+        }
         let pearls = self.players.take_saved_pearls(uuid, saved_pearls.as_ref());
         self.load_pearls(global, pearls);
         let plugins = global.plugins.clone();
@@ -706,7 +718,7 @@ impl ServerWorld {
     /// starts that captures them from the remaining time of the next ticks.
     pub(crate) fn save(&mut self, flush: bool, skip_chunks: bool) {
         log::debug!("Saving {} (flush: {flush})", self.dimension);
-        self.players.save_all(&self.level.entities);
+        self.players.save_all(&self.level);
         if !skip_chunks {
             if let Some(border) = self.level.border.take_dirty() {
                 self.data.write(crate::border::SAVED_DATA, border.to_nbt());

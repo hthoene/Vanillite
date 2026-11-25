@@ -26,6 +26,8 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 const SCOREBOARD: &str = "minecraft:scoreboard";
 /// The saved data of the scheduled functions (`TimerQueue.TYPE`).
 const SCHEDULED_EVENTS: &str = "minecraft:scheduled_events";
+/// The saved data of the stopwatches (`Stopwatches.TYPE`).
+const STOPWATCHES: &str = "minecraft:stopwatches";
 /// The path of a namespace's command storage (`CommandStorage.Container.type`).
 const COMMAND_STORAGE: &str = "command_storage";
 
@@ -236,9 +238,9 @@ impl GameSystems {
         lock(&self.scoreboard_sync)
     }
 
-    /// Loads the scoreboard, the command storage, the scheduled functions and the random
-    /// sequences from the world's saved data (`ServerScoreboard.load`, `CommandStorage`,
-    /// `TimerQueue`, `RandomSequences`).
+    /// Loads the scoreboard, the command storage, the scheduled functions, the random
+    /// sequences and the stopwatches from the world's saved data (`ServerScoreboard.load`,
+    /// `CommandStorage`, `TimerQueue`, `RandomSequences`, `Stopwatches`).
     /// `legacy` reads the `level.dat` fields of worlds saved before the split into saved data
     /// (`LevelDatToSavedDataPreparationFix`, `LevelDatToSavedDataFileFix`).
     pub(crate) fn load(&self, data: &SavedDataStore, legacy: &dyn Fn(&str) -> Option<Tag>) {
@@ -253,6 +255,9 @@ impl GameSystems {
         }
         if let Some(c) = read(SCHEDULED_EVENTS).or_else(|| legacy_scheduled_events(legacy)) {
             *self.scheduled() = TimerQueue::from_nbt(&c);
+        }
+        if let Some(c) = read(STOPWATCHES) {
+            *self.stopwatches() = Stopwatches::from_nbt(&c);
         }
         if let Some(c) = read(vanillite_game::random_sequences::SAVED_DATA) {
             let mut sequences = self.random_sequences();
@@ -290,6 +295,10 @@ impl GameSystems {
         };
         if let Some(c) = scheduled {
             data.write(SCHEDULED_EVENTS, c);
+        }
+        let stopwatches = self.stopwatches().take_dirty_nbt();
+        if let Some(c) = stopwatches {
+            data.write(STOPWATCHES, c);
         }
         let sequences = {
             let mut sequences = self.random_sequences();

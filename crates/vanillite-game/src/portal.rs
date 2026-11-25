@@ -51,9 +51,10 @@ struct Process {
     inside_this_tick: bool,
 }
 
-/// The portal state of a player (`portalProcess`, `portalCooldown`, `seenCredits`, `wonGame`);
-/// other entities use the process and the cooldown with [`ENTITY_PORTAL_COOLDOWN`].
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// The portal state of a player (`portalProcess`, `portalCooldown`, `seenCredits`, `wonGame`,
+/// `enteredNetherPosition`); other entities use the process and the cooldown with
+/// [`ENTITY_PORTAL_COOLDOWN`].
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct PortalState {
     /// `portalCooldown`.
     pub cooldown: i32,
@@ -62,6 +63,8 @@ pub struct PortalState {
     pub seen_credits: bool,
     /// `wonGame`: the credits are showing; the player waits for its respawn.
     pub won_game: bool,
+    /// `enteredNetherPosition`: where the player left the overworld for the Nether.
+    pub entered_nether_pos: Option<Vec3>,
 }
 
 impl PortalState {
@@ -144,9 +147,17 @@ impl PortalState {
         self.cooldown <= 0 && self.process.is_none()
     }
 
-    /// Reads `PortalCooldown` and `seenCredits` of a player data file.
+    /// Reads `PortalCooldown`, `seenCredits` and `entered_nether_pos` of a player data file.
     pub fn load(data: &Compound) -> PortalState {
+        let entered_nether_pos = match data.get("entered_nether_pos") {
+            Some(Tag::List(list)) => match list.0.as_slice() {
+                [Tag::Double(x), Tag::Double(y), Tag::Double(z)] => Some(Vec3::new(*x, *y, *z)),
+                _ => None,
+            },
+            _ => None,
+        };
         PortalState {
+            entered_nether_pos,
             cooldown: match data.get("PortalCooldown") {
                 Some(Tag::Int(v)) => *v,
                 _ => 0,
@@ -157,10 +168,25 @@ impl PortalState {
         }
     }
 
-    /// Writes `PortalCooldown` and `seenCredits`.
+    /// Writes `PortalCooldown`, `seenCredits` and `entered_nether_pos`.
     pub fn save(&self, out: &mut Compound) {
         out.insert("PortalCooldown", Tag::Int(self.cooldown));
         out.insert("seenCredits", Tag::Byte(i8::from(self.seen_credits)));
+        match self.entered_nether_pos {
+            Some(v) => {
+                out.insert(
+                    "entered_nether_pos",
+                    Tag::List(vanillite_nbt::List(vec![
+                        Tag::Double(v.x),
+                        Tag::Double(v.y),
+                        Tag::Double(v.z),
+                    ])),
+                );
+            }
+            None => {
+                out.remove("entered_nether_pos");
+            }
+        }
     }
 }
 
