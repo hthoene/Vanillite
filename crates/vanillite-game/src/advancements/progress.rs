@@ -66,6 +66,9 @@ pub struct PlayerAdvancements {
     completed: Vec<u32>,
     /// The inventory as the listener last saw it (`lastSlots` of its slots).
     seen_inventory: Vec<ItemStack>,
+    /// Damage and deaths of the player whose triggers need the world's entities
+    /// ([`super::view::resolve_combat`]).
+    pub combat: Vec<super::view::PendingCombat>,
 }
 
 impl PlayerAdvancements {
@@ -83,6 +86,7 @@ impl PlayerAdvancements {
             events: Vec::new(),
             completed: Vec::new(),
             seen_inventory: Vec::new(),
+            combat: Vec::new(),
         };
         if let Some(json) = json {
             me.apply_json(json);

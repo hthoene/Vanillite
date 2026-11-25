@@ -775,14 +775,12 @@ impl Digging {
             return;
         }
         let new_damage = item::damage(tool).saturating_add(amount);
-        if new_damage >= item::max_damage(tool) {
-            let broken = tool.item;
-            tool.shrink(1);
-            // `onEquippedItemBroken`.
-            ctx.award_stat(Stat::of(StatType::Broken, broken), 1);
-        } else {
-            item::set_damage(tool, new_damage);
-        }
+        crate::advancements::view::apply_damage(
+            ctx.advancements.as_deref_mut(),
+            ctx.stats.as_deref_mut(),
+            tool,
+            new_damage,
+        );
     }
 
     /// `handleUseItemOn`.
@@ -1426,11 +1424,12 @@ fn hurt_and_break(ctx: &mut PlayContext<'_>, hand: Hand, amount: i32) {
         return;
     }
     let new_damage = item::damage(tool).saturating_add(damage);
-    if new_damage >= item::max_damage(tool) {
-        tool.shrink(1);
-    } else {
-        item::set_damage(tool, new_damage);
-    }
+    crate::advancements::view::apply_damage(
+        ctx.advancements.as_deref_mut(),
+        ctx.stats.as_deref_mut(),
+        tool,
+        new_damage,
+    );
 }
 
 /// `blockActionRestricted`: spectators never, adventure players only with `can_break`

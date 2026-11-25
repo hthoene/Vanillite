@@ -222,6 +222,7 @@ pub fn sync_player(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mu
     let network_id = entity.as_ref().network_id().0;
     let fx = &mut player.survival.effects;
     if fx.has_events() {
+        let mut changed = false;
         for event in fx.take_events() {
             match event {
                 EffectEvent::Update { instance, blend } => {
@@ -229,12 +230,30 @@ pub fn sync_player(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mu
                         .connection
                         .sink
                         .send(&update_packet(network_id, &instance, blend));
+                    // `onEffectAdded`: where Levitation started.
+                    if blend && instance.effect == MobEffect::LEVITATION {
+                        crate::advancements::tracking::levitation_started(
+                            player,
+                            entity.as_ref().pos(),
+                        );
+                    }
+                    changed = true;
+                }
+                EffectEvent::Resend(instance) => {
+                    player
+                        .connection
+                        .sink
+                        .send(&update_packet(network_id, &instance, false));
                 }
                 EffectEvent::Remove(effect) => {
                     player.connection.sink.send(&RemoveMobEffect {
                         entity_id: network_id,
                         effect: i32::from(effect.0),
                     });
+                    if effect == MobEffect::LEVITATION {
+                        player.survival.tracking.levitation = None;
+                    }
+                    changed = true;
                 }
                 EffectEvent::Sound(sound) => {
                     let seed = env.random.next_long();
@@ -250,6 +269,13 @@ pub fn sync_player(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mu
                     );
                 }
             }
+        }
+        // `EFFECTS_CHANGED` (the effect source is not known here).
+        if changed {
+            let kind = crate::advancements::trigger::TriggerKind::EFFECTS_CHANGED;
+            player.advancements.trigger_with(kind, || {
+                crate::advancements::trigger::Event::EffectsChanged(None)
+            });
         }
     }
     let fx = &mut player.survival.effects;

@@ -15,6 +15,7 @@
 pub mod award;
 pub mod predicate;
 mod progress;
+pub mod tracking;
 pub mod trigger;
 #[cfg(test)]
 mod vanilla_tests;

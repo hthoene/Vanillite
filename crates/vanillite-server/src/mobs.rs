@@ -709,7 +709,7 @@ impl WorldMobs {
         }
         boss::wither::sweep_boss_bars(&mut self.cx, &ents, &mut survival.effects);
         // `rideTick`: passengers follow their vehicles; leads of knots and loaded mobs.
-        riding::position_all_riders(&mut ents);
+        riding::ride_tick(&mut ents);
         {
             let blocks = WorldBlocks(&level.chunks);
             let raining = |_| false;
