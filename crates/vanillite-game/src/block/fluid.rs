@@ -610,9 +610,19 @@ pub fn waterlogged(state: BlockState) -> bool {
     state.value("waterlogged") == Some("true")
 }
 
-/// The random tick of fluids: only lava ticks randomly, to set fire; fire is not simulated yet,
-/// so lava leaves its surroundings alone.
-pub fn random_tick(_level: &mut Level, _pos: BlockPos, _fluid: FluidState) {}
+/// The random tick of fluids: only lava ticks randomly, to set fire (`LavaFluid.randomTick`).
+pub fn random_tick(level: &mut Level, pos: BlockPos, fluid: FluidState) {
+    let kind = fluid.info().fluid;
+    if kind == LAVA || kind == FLOWING_LAVA {
+        super::fire::lava_random_tick(level, pos, fluid);
+    }
+}
+
+/// `LiquidBlock.randomTick`: the fluid's random tick. The level then runs the fluid's random
+/// tick a second time (`ServerLevel.tickChunk`), as in Vanilla.
+pub fn liquid_random_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
+    random_tick(level, pos, state.fluid_state());
+}
 
 /// `LiquidBlock.onPlace`.
 pub fn liquid_on_place(
@@ -623,6 +633,7 @@ pub fn liquid_on_place(
     _moved: bool,
 ) {
     schedule_if_spreading(level, state, pos);
+    super::bubble::liquid_check(level, state, pos);
 }
 
 /// `LiquidBlock.neighborChanged`.
@@ -634,6 +645,7 @@ pub fn liquid_neighbor_changed(
     _moved: bool,
 ) {
     schedule_if_spreading(level, state, pos);
+    super::bubble::liquid_check(level, state, pos);
 }
 
 fn schedule_if_spreading(level: &mut Level, state: BlockState, pos: BlockPos) {

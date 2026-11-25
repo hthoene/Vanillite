@@ -1,0 +1,112 @@
+{
+  "description": "A zombie nautilus swims in a pool at night with a survival player in the water.",
+  "time": 18000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -56,
+      15
+    ]
+  ],
+  "ticks": 160,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -56,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -56,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -56,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -56,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        1,
+        -60,
+        1
+      ],
+      "to": [
+        14,
+        -57,
+        14
+      ],
+      "block": "minecraft:water"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        7.5,
+        -60.0,
+        12.5
+      ]
+    },
+    {
+      "name": "zombie_nautilus",
+      "type": "minecraft:zombie_nautilus",
+      "pos": [
+        7.5,
+        -59.0,
+        3.5
+      ],
+      "seed": 11,
+      "finalize": false
+    }
+  ],
+  "tier": "fast"
+}

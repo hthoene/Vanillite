@@ -700,14 +700,18 @@ impl MenuSlots for PlayerInventory {
     }
 }
 
-/// `Player.getDestroySpeed` without effects and attributes other than the enchantment-driven
-/// ones the caller passes: `efficiency` level, whether the player is in water without aqua
-/// affinity, and whether it stands on the ground.
+/// `Player.getDestroySpeed` without attributes other than the enchantment-driven ones the
+/// caller passes: `efficiency` level, the dig effects (Haste / Conduit Power amplification,
+/// Mining Fatigue amplifier), whether the player is in water without aqua affinity, and whether
+/// it stands on the ground.
+#[allow(clippy::too_many_arguments)]
 pub fn destroy_speed(
     tools: &ToolTable,
     stack: &ItemStack,
     state: vanillite_data::block::BlockState,
     efficiency: i32,
+    dig_speed: Option<i32>,
+    mining_fatigue: Option<i32>,
     submerged_penalty: bool,
     on_ground: bool,
 ) -> f32 {
@@ -719,6 +723,7 @@ pub fn destroy_speed(
         let bonus = bonus as f32;
         speed += bonus;
     }
+    speed = crate::player::play::dig_effects(speed, dig_speed, mining_fatigue);
     if submerged_penalty {
         speed *= 0.2;
     }

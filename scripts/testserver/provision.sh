@@ -505,6 +505,7 @@ User=minecraft
 WorkingDirectory=/opt/paper-loadtest
 ExecStart=/usr/bin/java -Xms1G -Xmx6G -jar paper.jar --nogui
 LimitNOFILE=65536
+SuccessExitStatus=143
 EOF
 
 install -d -o minecraft -g minecraft /opt/vanilla-loadtest
@@ -520,6 +521,7 @@ User=minecraft
 WorkingDirectory=/opt/vanilla-loadtest
 ExecStart=/usr/bin/java -Xms1G -Xmx6G -jar server.jar --nogui
 LimitNOFILE=65536
+SuccessExitStatus=143
 EOF
 
 install -d -o minecraft -g minecraft /opt/pumpkin-loadtest
@@ -693,6 +695,7 @@ User=minecraft
 WorkingDirectory=/opt/velocity-loadtest
 ExecStart=/usr/bin/java -Xms512M -Xmx2G -jar velocity.jar
 LimitNOFILE=65536
+SuccessExitStatus=143
 EOF
 
 install -d -o vanillite -g vanillite /opt/vanillite/bench/proxy
@@ -750,6 +753,9 @@ write_if_changed /usr/local/bin/vanillite-bench 755 <<'EOF'
 #   idle <target> <seconds>        prints {"rss_mib", "rss_max_mib", "cpu_percent"} over the time
 #   chunky on|off                  add or remove the Chunky plugin of paper-loadtest
 #   install <name>                 binary from stdin into /opt/vanillite/bench/bin/<name>
+#   lock <owner>                   waits for the benchmark lock (/run/vanillite-bench.lock), prints
+#                                  "busy <owner>" while another run holds it, then "locked", and
+#                                  holds it until stdin closes (xtask bench and loadtest take it)
 #   pregen <radius> <threads> <repetitions>
 #                                  runs bin/chunk_bench (generate, save, load) and prints its JSON
 # Installed by scripts/testserver/provision.sh.
@@ -866,7 +872,8 @@ print(json.dumps({"sent": sent, "failed": len(errors), "errors": errors[:5]}))
     sent=$(wc -l < "$tmp")
     { cat "$tmp"; echo "$marker"; } > "$fifo"
     rm -f "$tmp"
-    for _ in $(seq 240); do
+    local deadline=$((SECONDS + 300))
+    while [ "$SECONDS" -lt "$deadline" ]; do
         journalctl -q -u "$unit" --since "$start" -o cat | grep -q "$marker" && break
         sleep 0.5
     done
@@ -1035,6 +1042,17 @@ for f in glob.glob(sys.argv[1] + "/world*/**/region/r.*.mca", recursive=True):
     n += sum(1 for i in range(0, len(head), 4) if head[i:i + 4] != b"\0\0\0\0")
 print(json.dumps({"chunks": n}))
 ' "$(dir_of "$target")"
+        ;;
+    lock)
+        exec 9>> /run/vanillite-bench.lock
+        if ! flock -n 9; then
+            echo "busy $(cat /run/vanillite-bench.owner 2> /dev/null)"
+            flock 9
+        fi
+        echo "${target:-unknown} since $(date -u '+%Y-%m-%d %H:%M UTC')" > /run/vanillite-bench.owner
+        echo locked
+        # The lock (fd 9) lives as long as this process: until the caller closes stdin.
+        cat > /dev/null
         ;;
     chunky)
         case $target in

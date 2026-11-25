@@ -1,0 +1,91 @@
+{
+  "description": "Snow in a snowy biome: water at the surface freezes from the edge, snow layers pile up to the accumulation limit, cauldrons fill with powder snow, no snow next to bright light.",
+  "tier": "fast",
+  "world": {
+    "seed": 8301,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:stone",
+        3
+      ]
+    ],
+    "biome": "minecraft:snowy_plains"
+  },
+  "rules": {
+    "random_tick_speed": "480",
+    "max_snow_accumulation_height": "3"
+  },
+  "weather": "rain",
+  "time": 6000,
+  "level_rng": true,
+  "light": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -58,
+      15
+    ]
+  ],
+  "ticks": 80,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        2,
+        -61,
+        2
+      ],
+      "to": [
+        5,
+        -61,
+        5
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "op": "set",
+      "pos": [
+        10,
+        -60,
+        10
+      ],
+      "block": "minecraft:cauldron"
+    },
+    {
+      "op": "set",
+      "pos": [
+        12,
+        -60,
+        10
+      ],
+      "block": "minecraft:water_cauldron[level=1]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        14,
+        -60,
+        10
+      ],
+      "block": "minecraft:powder_snow_cauldron[level=1]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        10,
+        -60,
+        13
+      ],
+      "block": "minecraft:glowstone"
+    }
+  ]
+}

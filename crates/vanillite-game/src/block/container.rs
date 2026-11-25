@@ -92,6 +92,7 @@ pub enum Kind {
     Loom,
     /// Cartography tables (no block entity).
     CartographyTable,
+    Beacon,
 }
 
 /// The container kind of a block.
@@ -119,6 +120,7 @@ pub fn kind_of(block: BlockId) -> Option<Kind> {
         BlockKind::EnchantingTableBlock => Kind::EnchantingTable,
         BlockKind::LoomBlock => Kind::Loom,
         BlockKind::CartographyTableBlock => Kind::CartographyTable,
+        BlockKind::BeaconBlock => Kind::Beacon,
         _ => return None,
     })
 }
@@ -138,7 +140,8 @@ pub fn size_of(kind: Kind) -> usize {
         | Kind::SmithingTable
         | Kind::EnchantingTable
         | Kind::Loom
-        | Kind::CartographyTable => 0,
+        | Kind::CartographyTable
+        | Kind::Beacon => 0,
     }
 }
 
@@ -156,7 +159,8 @@ pub fn new_block_entity(block: BlockId) -> Option<BlockEntity> {
         | Kind::SmithingTable
         | Kind::EnchantingTable
         | Kind::Loom
-        | Kind::CartographyTable => return None,
+        | Kind::CartographyTable
+        | Kind::Beacon => return None,
         kind => BlockEntity::Container(Box::new(Container::new(size_of(kind)))),
     })
 }
@@ -250,6 +254,7 @@ pub fn menu_provider(level: &Level, state: BlockState, pos: BlockPos) -> Option<
             Some(BlockEntity::Hopper(h)) => h.custom_name.clone(),
             Some(BlockEntity::Furnace(f)) => f.custom_name.clone(),
             Some(BlockEntity::BrewingStand(b)) => b.custom_name.clone(),
+            Some(BlockEntity::Beacon(b)) => b.custom_name.clone(),
             _ => None,
         }
         .unwrap_or_else(|| title(default))
@@ -402,6 +407,11 @@ pub fn menu_provider(level: &Level, state: BlockState, pos: BlockPos) -> Option<
             MenuKind::Loom,
             Storage::Local,
             title("container.loom"),
+        )),
+        Kind::Beacon => Some(request(
+            MenuKind::Beacon,
+            Storage::Block(pos),
+            named("container.beacon"),
         )),
         Kind::CartographyTable => Some(request(
             MenuKind::CartographyTable,
@@ -1140,15 +1150,7 @@ pub fn creative_shulker_drop(
             stack.patch_mut().set(id, value);
         }
     }
-    let velocity = super::drops::default_velocity(level);
-    super::drops::spawn_item(
-        level,
-        super::furnace::center(pos),
-        stack,
-        velocity,
-        10,
-        None,
-    );
+    super::drops::spawn_item_moving(level, super::furnace::center(pos), stack, None, 10, None);
 }
 
 // --- Persistence -----------------------------------------------------------------------------

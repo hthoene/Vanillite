@@ -1,0 +1,98 @@
+{
+  "description": "An ocelot wanders and avoids a survival player by day.",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -58,
+      15
+    ]
+  ],
+  "ticks": 200,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -58,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -58,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -58,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -58,
+        15
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        7.5,
+        -60.0,
+        12.5
+      ]
+    },
+    {
+      "name": "ocelot",
+      "type": "minecraft:ocelot",
+      "pos": [
+        7.5,
+        -60.0,
+        7.5
+      ],
+      "seed": 11,
+      "finalize": false
+    }
+  ],
+  "tier": "fast"
+}

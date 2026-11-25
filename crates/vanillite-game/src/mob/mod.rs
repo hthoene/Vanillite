@@ -8,16 +8,25 @@
 
 pub mod animal;
 pub mod attack;
+pub mod boss;
+pub mod brain;
 pub mod combat;
+pub mod common;
+pub mod equipment;
+pub mod fam;
 pub mod goals;
 pub mod kinds;
 pub mod living;
+pub mod missile;
+pub mod movement;
 pub mod nav;
 pub mod nbt;
 pub mod path;
 pub mod physics;
 pub mod projectile;
+pub mod randompos;
 pub mod spawn;
+pub mod structures;
 pub mod tame;
 
 use vanillite_base::random::{LegacyRandom, RandomSource};
@@ -34,6 +43,7 @@ use crate::survival::blocks::FluidContact;
 use crate::survival::damage::DamageKind;
 use crate::survival::player::Env;
 
+pub use fam::Family;
 pub use kinds::Kind;
 pub use vanillite_world::entity::Dimensions;
 
@@ -43,6 +53,7 @@ pub use vanillite_world::entity::Dimensions;
 pub struct Attrs {
     pub max_health: f64,
     pub movement_speed: f64,
+    pub flying_speed: f64,
     pub follow_range: f64,
     pub attack_damage: f64,
     pub attack_knockback: f64,
@@ -77,6 +88,7 @@ impl Attrs {
         Attrs {
             max_health: value("minecraft:max_health"),
             movement_speed: value("minecraft:movement_speed"),
+            flying_speed: value("minecraft:flying_speed"),
             follow_range: value("minecraft:follow_range"),
             attack_damage: value("minecraft:attack_damage"),
             attack_knockback: value("minecraft:attack_knockback"),
@@ -182,6 +194,13 @@ pub struct MobData {
     pub xp_reward: i32,
     /// The last block position (`lastPos`).
     pub last_pos: BlockPos,
+    /// `activeEffects` with their attribute modifiers.
+    pub effects: crate::effect::ActiveEffects,
+    /// `getAbsorptionAmount`.
+    pub absorption: f32,
+    /// The attribute values without effect modifiers while modifiers are active; `attrs`
+    /// holds the modified values then.
+    pub base_attrs: Option<Box<Attrs>>,
     /// Wears a saddle (`EquipmentSlot.SADDLE`).
     pub saddled: bool,
     /// `ItemBasedSteering`: boosting, the ticks boosted and the boost length
@@ -203,6 +222,33 @@ pub struct MobData {
     pub forced_age_timer: i32,
     /// A leash read from NBT, attached once its holder is there.
     pub pending_leash: Option<LeashRef>,
+    /// The equipment slots and their drop chances.
+    pub equipment: equipment::Equipment,
+    /// `canPickUpLoot`.
+    pub can_pick_up_loot: bool,
+    /// `isLeftHanded`.
+    pub left_handed: bool,
+    /// `PathfinderMob.restrictTo`: the home position and radius (`-1` = none).
+    pub restrict_center: BlockPos,
+    pub restrict_radius: i32,
+    /// The brain of brain AI mobs (`Brain`), `None` for goal AI mobs.
+    pub brain: Option<Box<brain::Brain>>,
+    /// The state of a family kind.
+    pub ext: fam::Ext,
+    /// `Zombie.canBreakDoors` (and the other door breakers).
+    pub can_break_doors: bool,
+    /// `Chicken.isChickenJockey`.
+    pub chicken_jockey: bool,
+    /// `NeutralMob`: the game time the anger ends (`-1` = none) and whom it is angry at.
+    pub anger_end: i64,
+    pub anger_target: Option<u128>,
+    /// `discardFriction` (long jumps of brain mobs).
+    pub discard_friction: bool,
+    /// `moveDist` and `nextStep`: when the next step makes a vibration.
+    pub move_dist: f32,
+    pub next_step: f32,
+    /// The state of bosses and the other kinds with their own machinery.
+    pub boss: boss::Ext,
 }
 
 /// What holds a leash in entity NBT (`leash`).
@@ -289,6 +335,9 @@ impl MobData {
             goal_path: None,
             variant: 0,
             xp_reward: 0,
+            effects: crate::effect::ActiveEffects::default(),
+            absorption: 0.0,
+            base_attrs: None,
             last_pos: BlockPos::new(i32::MIN, i32::MIN, i32::MIN),
             saddled: false,
             boosting: false,
@@ -303,6 +352,21 @@ impl MobData {
             forced_age: 0,
             forced_age_timer: 0,
             pending_leash: None,
+            equipment: equipment::Equipment::default(),
+            can_pick_up_loot: false,
+            left_handed: false,
+            restrict_center: BlockPos::new(0, 0, 0),
+            restrict_radius: -1,
+            brain: None,
+            ext: fam::Ext::None,
+            can_break_doors: false,
+            chicken_jockey: false,
+            anger_end: -1,
+            anger_target: None,
+            discard_friction: false,
+            move_dist: 0.0,
+            next_step: 1.0,
+            boss: boss::new_ext(kind),
         };
         // `Mob.ambientSoundTime` starts at 0; only playing a sound resets it to `-interval`.
         // `LivingEntity`'s constructor turns the entity to a random yaw (`setYRot(random.nextFloat()
@@ -325,6 +389,20 @@ impl MobData {
     /// `isDeadOrDying`.
     pub fn is_dead_or_dying(&self) -> bool {
         self.health <= 0.0
+    }
+
+    /// `hasRestriction`.
+    pub fn has_restriction(&self) -> bool {
+        self.restrict_radius != -1
+    }
+
+    /// `isWithinRestriction(pos)`.
+    pub fn is_within_restriction(&self, pos: BlockPos) -> bool {
+        if self.restrict_radius == -1 {
+            return true;
+        }
+        let r = f64::from(self.restrict_radius);
+        self.restrict_center.dist_sqr(pos) < r * r
     }
 
     /// `isAlive`.
@@ -364,6 +442,15 @@ pub struct Environment {
     pub monster_light_test: (i32, i32),
     /// `DimensionType.ambientLight`.
     pub ambient_light: f32,
+    /// `DimensionType.hasCeiling`.
+    pub has_ceiling: bool,
+    /// `EnvironmentAttributes.SURFACE_SLIME_SPAWN_CHANCE` (the moon's brightness / 2 in the
+    /// overworld).
+    pub surface_slime_chance: f32,
+    /// The world seed (slime chunks).
+    pub world_seed: i64,
+    /// `getSeaLevel`.
+    pub sea_level: i32,
 }
 
 impl Default for Environment {
@@ -377,6 +464,10 @@ impl Default for Environment {
             monster_block_light_limit: 0,
             monster_light_test: (0, 7),
             ambient_light: 0.0,
+            has_ceiling: false,
+            surface_slime_chance: 0.0,
+            world_seed: 0,
+            sea_level: 63,
         }
     }
 }
@@ -400,6 +491,7 @@ impl Environment {
             monster_block_light_limit: 0,
             monster_light_test: (0, 7),
             ambient_light: 0.0,
+            ..Environment::default()
         }
     }
 
@@ -460,9 +552,22 @@ pub struct ExplosionRequest {
     pub radius: f32,
     /// `ExplosionInteraction.MOB`: blocks only break with `mobGriefing`.
     pub mob: bool,
-    /// A primed TNT minecart: rails and the blocks under them resist
-    /// (`MinecartTNT.getBlockExplosionResistance`, `shouldBlockExplode`).
-    pub rails_resist: bool,
+    /// The source's `getBlockExplosionResistance` (the wither's skulls, primed TNT minecarts).
+    pub resistance: crate::level::explosion::BlockResistance,
+}
+
+/// A wind charge burst (`AbstractWindCharge.explode`): a knockback-only explosion that
+/// triggers blocks instead of breaking them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WindBurst {
+    /// The exploding charge.
+    pub source: Option<EntityId>,
+    pub pos: Vec3,
+    pub radius: f32,
+    /// The knockback multiplier of the damage calculator.
+    pub knockback: f64,
+    /// The burst sound.
+    pub sound: &'static str,
 }
 
 impl ExplosionRequest {
@@ -484,14 +589,16 @@ impl ExplosionRequest {
             BlockInteraction::Destroy
         };
         // `getIndirectSourceEntity`: a living source caused it itself.
-        let indirect = self.indirect.or(self.source);
         level.explode_with(
             self.source,
-            indirect,
+            self.indirect.or(self.source),
             self.pos,
             self.radius,
             interaction,
-            self.rails_resist,
+            crate::level::explosion::ExplosionStyle {
+                resistance: self.resistance,
+                ..Default::default()
+            },
         );
     }
 }
@@ -506,6 +613,21 @@ pub enum WorldAction {
     DestroyBlock(BlockPos, bool),
     /// `levelEvent(event, pos, data)`.
     LevelEvent(i32, BlockPos, i32),
+    /// `DoorBlock.setOpen(mob, level, state, pos, open)`.
+    SetDoorOpen(BlockPos, bool, Option<EntityId>),
+    /// A wind charge burst.
+    WindBurst(WindBurst),
+    /// `explode(source, damageSource(source, indirect), pos, radius, interaction)` with
+    /// `ExplosionInteraction.BLOCK` (`blocks`) or `NONE`.
+    ExplodeWith {
+        source: Option<EntityId>,
+        indirect: Option<EntityId>,
+        pos: Vec3,
+        radius: f32,
+        blocks: bool,
+    },
+    /// Game events, listener moves and sculk catalyst charges.
+    Level(boss::warden::LevelAction),
     /// `entityInside` of the block at the position for the entity (`applyEffectsFromBlocks`).
     EntityInside(BlockPos, EntityId),
     /// A hopper minecart takes in an item (`MinecartHopper.tryConsumeItems`).
@@ -531,7 +653,28 @@ impl WorldAction {
                 }
             }
             WorldAction::HopperMinecart(id) => crate::minecart::hopper_suck(level, id),
-            WorldAction::Explode(_) => return false,
+            WorldAction::SetDoorOpen(pos, open, source) => {
+                crate::block::redstone::set_door_open(level, pos, open, source);
+            }
+            WorldAction::WindBurst(b) => {
+                // `ExplosionInteraction.TRIGGER` without damage (`damagesEntities` off).
+                level.explode_with(
+                    b.source,
+                    None,
+                    b.pos,
+                    b.radius,
+                    crate::level::explosion::BlockInteraction::TriggerBlock,
+                    crate::level::explosion::ExplosionStyle {
+                        damages_entities: false,
+                        knockback: b.knockback,
+                        wind_sound: Some(b.sound),
+                        ..Default::default()
+                    },
+                );
+            }
+            WorldAction::Explode(_) | WorldAction::ExplodeWith { .. } | WorldAction::Level(_) => {
+                return false;
+            }
         }
         true
     }
@@ -553,6 +696,13 @@ pub struct MobContext {
     pub has_players: bool,
     /// Entities to remove after the tick (`discard` of other entities).
     pub discarded: Vec<EntityId>,
+    /// The boss bars of entities (the wither's), by entity; see
+    /// [`boss::wither::sweep_boss_bars`].
+    pub boss_bars: vanillite_base::hash::FxHashMap<EntityId, crate::boss_bar::BossBar>,
+    /// The End fight as the dragon and the crystals see it; `None` outside the End.
+    pub dragon_fight: Option<boss::dragon::FightView>,
+    /// What the dragon and the crystals report to the fight, handled after each tick.
+    pub dragon_events: Vec<boss::dragon::DragonEvent>,
     /// Menus players opened at entities (chest boats, container minecarts), opened once the
     /// entities are back in the level.
     pub menus: Vec<crate::menu::container::MenuRequest>,
@@ -632,15 +782,73 @@ pub fn spawn(
     rot: Rotation,
     mob: MobData,
 ) -> EntityId {
-    let mut new = NewEntity::new(mob.kind.type_id(), network_ids.next(), uuid, pos);
+    // The dragon's eight parts take the ids after its own.
+    let network_id = if mob.kind == Kind::EnderDragon {
+        network_ids.next_block(9)
+    } else {
+        network_ids.next()
+    };
+    let mut new = NewEntity::new(mob.kind.type_id(), network_id, uuid, pos);
     new.rot = rot;
-    let baby = mob.baby;
+    let dims = kinds::mob_dimensions(&mob);
     let id = entities.spawn_mob(new, mob);
-    if baby && let Some(mut e) = entities.store.get_mut(id) {
-        let dims = kinds::dimensions(e.as_ref().kind(), true);
+    if let Some(mut e) = entities.store.get_mut(id)
+        && e.as_ref().dims() != dims
+    {
         e.set_dims(dims);
     }
     id
+}
+
+thread_local! {
+    /// The seeds of new entities: Vanilla gives every entity a fresh random
+    /// (`RandomSource.create()`), so creating one draws nothing from the level's or another
+    /// entity's random. The parity scenarios replace it with a stream (see
+    /// [`set_entity_seed_stream`]).
+    static ENTITY_SEEDS: std::cell::RefCell<(Option<LegacyRandom>, LegacyRandom)> =
+        std::cell::RefCell::new((None, LegacyRandom::new(crate::survival::sound_seed())));
+}
+
+/// The seed of a newly created entity's own random (the `Entity` constructor's
+/// `RandomSource.create()`).
+pub fn new_entity_seed() -> i64 {
+    ENTITY_SEEDS.with_borrow_mut(|(stream, unique)| match stream {
+        Some(s) => s.next_long(),
+        None => unique.next_long(),
+    })
+}
+
+/// From now on (on this thread) new entities take their seeds from a legacy random seeded
+/// with `seed` in creation order (`None`: unique seeds again). For tick exact comparisons with
+/// Vanilla, whose recorder does the same.
+pub fn set_entity_seed_stream(seed: Option<i64>) {
+    ENTITY_SEEDS.with_borrow_mut(|(stream, _)| *stream = seed.map(LegacyRandom::new));
+}
+
+/// The UUID of a new entity (`Mth.createInsecureUUID` of its own fresh random): draws from no
+/// game random.
+pub fn new_uuid() -> u128 {
+    crate::block::tnt::insecure_uuid()
+}
+
+/// The UUID, yaw and motion of a new item entity (`new ItemEntity(level, x, y, z, stack)`):
+/// the constructor draws `bobOffs`, the yaw and the motion from the item's own random, which takes its
+/// seed from the entity seed stream. Throws replace the motion afterwards.
+pub fn new_item_entity() -> (u128, f32, Vec3) {
+    let mut own = LegacyRandom::new(new_entity_seed());
+    // `bobOffs`, then the yaw.
+    let _bob = own.next_float();
+    let y_rot = own.next_float() * 360.0;
+    let x = own.next_double() * 0.2 - 0.1;
+    let z = own.next_double() * 0.2 - 0.1;
+    (new_uuid(), y_rot, Vec3::new(x, 0.2, z))
+}
+
+/// The UUID of a new entity that keeps no random of its own here (items): it still takes its
+/// seed from the entity seed stream, so the entities created after it get Vanilla's seeds.
+pub fn new_entity_uuid() -> u128 {
+    new_entity_seed();
+    new_uuid()
 }
 
 /// A random UUID (`Mth.createInsecureUUID`).
@@ -770,6 +978,7 @@ impl Tick<'_, '_> {
             pos: e.pos(),
             eye_y: e.pos().y + eye,
             aabb: e.aabb(),
+            height: e.dims().height,
             is_player: self.ents.player(id).is_some(),
         })
     }
@@ -791,6 +1000,8 @@ pub struct Other {
     pub pos: Vec3,
     pub eye_y: f64,
     pub aabb: Aabb,
+    /// `getBbHeight()`.
+    pub height: f32,
     pub is_player: bool,
 }
 

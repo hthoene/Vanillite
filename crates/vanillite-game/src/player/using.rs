@@ -224,7 +224,7 @@ fn on_use_tick(
             0.5
         };
         let pitch = (env.random.next_float() - env.random.next_float()) * 0.2 + 1.0;
-        let seed = env.random.next_long();
+        let seed = crate::survival::sound_seed();
         play_sound(
             env.out,
             Some(player),
@@ -258,7 +258,7 @@ fn finish(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, u: UsingItem
             can_always_eat: food.can_always_eat,
         });
         let pitch = env.random.next_float() * 0.1 + 0.9;
-        let seed = env.random.next_long();
+        let seed = crate::survival::sound_seed();
         play_sound(
             env.out,
             None,
@@ -271,7 +271,7 @@ fn finish(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, u: UsingItem
         );
     }
     if name == "minecraft:milk_bucket" || name == "minecraft:honey_bottle" {
-        let seed = env.random.next_long();
+        let seed = crate::survival::sound_seed();
         play_sound(
             env.out,
             Some(player),
@@ -403,7 +403,7 @@ pub fn release(
     );
     let pos = ents.store.get(player).map_or(Vec3::ZERO, |e| e.pos());
     let pitch = 1.0 / (env.random.next_float() * 0.4 + 1.2) + power * 0.5;
-    let seed = env.random.next_long();
+    let seed = crate::survival::sound_seed();
     play_sound(
         env.out,
         None,

@@ -131,6 +131,9 @@ impl Bot {
         // Spread: the point this bot flies to (picked when the mode starts).
         let mut goal: Option<(f64, f64)> = None;
         let mut loaded: HashSet<(i32, i32)> = HashSet::new();
+        // Full view: every chunk within the view distance (a circle) has arrived.
+        let mut full_view = false;
+        let view = i32::from(self.config.view_distance.max(1));
         let mut tick = tokio::time::interval_at(
             tokio::time::Instant::now() + Duration::from_millis(self.rng.next_u64() % 50),
             Duration::from_millis(50),
@@ -213,6 +216,21 @@ impl Bot {
                         self.metrics.joined.fetch_add(1, Ordering::Relaxed);
                         self.metrics.online.fetch_add(1, Ordering::Relaxed);
                         conn.queue(&PlayerLoaded)?;
+                    }
+                    if *joined
+                        && !full_view
+                        && let Some((x, _, z)) = pos
+                    {
+                        let (cx, cz) = ((x / 16.0).floor() as i32, (z / 16.0).floor() as i32);
+                        full_view = (-view..=view).all(|dz| {
+                            (-view..=view).all(|dx| {
+                                dx * dx + dz * dz > view * view
+                                    || loaded.contains(&(cx + dx, cz + dz))
+                            })
+                        });
+                        if full_view && let Ok(mut v) = self.metrics.full_view_ms.lock() {
+                            v.push(started.elapsed().as_secs_f64() * 1e3);
+                        }
                     }
                     conn.flush().await?;
                 }

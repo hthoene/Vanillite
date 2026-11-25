@@ -541,6 +541,7 @@ pub mod clientbound {
         pub head_y_rot: i8,
     }
 
+    pub use super::boss::*;
     pub use super::entities::*;
     pub use super::hud::*;
     pub use super::level::*;
@@ -552,6 +553,7 @@ pub mod clientbound {
     pub use super::survival::*;
 }
 
+mod boss;
 mod hud;
 mod level;
 mod mobs;

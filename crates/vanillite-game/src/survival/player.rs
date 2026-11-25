@@ -158,6 +158,8 @@ struct Sent {
     food: i32,
     saturation_zero: bool,
     exp: i32,
+    /// The active effects were sent (after joining or respawning).
+    effects: bool,
 }
 
 impl Default for Sent {
@@ -167,6 +169,7 @@ impl Default for Sent {
             food: -99_999_999,
             saturation_zero: false,
             exp: -99_999_999,
+            effects: false,
         }
     }
 }
@@ -200,6 +203,8 @@ pub struct Survival {
     pub combat: CombatTracker,
     /// `tickCount`.
     pub tick_count: i32,
+    /// The `minecraft:time_since_rest` statistic (ticks alive since the last sleep or death).
+    pub time_since_rest: i32,
     /// `lastClimbablePos`'s fall location.
     pub last_climbable: Option<FallLocation>,
     /// The fluids around the player after the last update.
@@ -214,6 +219,16 @@ pub struct Survival {
     pub take_xp_delay: i32,
     /// `lastLevelUpTime`: the tick of the last level-up sound.
     pub last_level_up_time: i32,
+    /// `activeEffects` with their attribute modifiers.
+    pub effects: crate::effect::ActiveEffects,
+    /// `wardenSpawnTracker`.
+    pub warden_spawn_tracker: crate::block::sculk_shrieker::WardenSpawnTracker,
+    /// `moveDist` and `nextStep`: when the next step makes a sound and a vibration.
+    pub move_dist: f32,
+    pub next_step: f32,
+    /// Game events of the player's moves (`STEP`, `SWIM`, `HIT_GROUND`) for the world to
+    /// post: event, position and the affected block.
+    pub game_events: Vec<(u16, Vec3, Option<vanillite_data::block::BlockState>)>,
     /// `lastHurtMob` with the tick it was hit (`lastHurtMobTimestamp`).
     pub last_hurt_mob: Option<(vanillite_world::entity::EntityId, i32)>,
     /// `lastHurtByMob` with the tick it hit (`lastHurtByMobTimestamp`).
@@ -273,6 +288,7 @@ impl Default for Survival {
             respawn: None,
             combat: CombatTracker::default(),
             tick_count: 0,
+            time_since_rest: 0,
             last_climbable: None,
             fluids: FluidContact::default(),
             portal: crate::portal::PortalState::default(),
@@ -280,6 +296,11 @@ impl Default for Survival {
             attack_ticker: 0,
             take_xp_delay: 0,
             last_level_up_time: 0,
+            effects: crate::effect::ActiveEffects::default(),
+            warden_spawn_tracker: crate::block::sculk_shrieker::WardenSpawnTracker::default(),
+            move_dist: 0.0,
+            next_step: 1.0,
+            game_events: Vec::new(),
             last_hurt_mob: None,
             last_hurt_by_mob: None,
             using_item: None,
@@ -428,7 +449,26 @@ impl Survival {
 
     /// `isHurt`.
     pub fn is_hurt(&self) -> bool {
-        self.health > 0.0 && self.health < MAX_HEALTH
+        self.health > 0.0 && self.health < self.max_health()
+    }
+
+    /// `getMaxHealth`: the base maximum with the effect modifiers (Health Boost).
+    #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+    pub fn max_health(&self) -> f32 {
+        if self.effects.modifiers.is_empty() {
+            return MAX_HEALTH;
+        }
+        self.effects.attribute(
+            crate::effect::attribute::Attribute::MAX_HEALTH,
+            f64::from(MAX_HEALTH),
+        ) as f32
+    }
+
+    /// `getMaxAbsorption`.
+    #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+    pub fn max_absorption(&self) -> f32 {
+        self.effects
+            .attribute(crate::effect::attribute::Attribute::MAX_ABSORPTION, 0.0) as f32
     }
 
     /// Reads the survival fields of a player data file.
@@ -437,10 +477,14 @@ impl Survival {
             food: FoodData::load(data),
             ..Survival::default()
         };
-        s.health = float(data, "Health")
-            .unwrap_or(MAX_HEALTH)
-            .clamp(0.0, MAX_HEALTH);
-        s.absorption = float(data, "AbsorptionAmount").unwrap_or(0.0).max(0.0);
+        // The effects (with their modifiers) first: Health Boost raises the maximum.
+        s.effects.load(data.get("active_effects"));
+        s.effects.resend_all();
+        let max = s.max_health();
+        s.health = float(data, "Health").unwrap_or(max).clamp(0.0, max);
+        s.absorption = float(data, "AbsorptionAmount")
+            .unwrap_or(0.0)
+            .clamp(0.0, s.max_absorption());
         s.air = int(data, "Air").unwrap_or(MAX_AIR);
         s.fire_ticks = int(data, "Fire").unwrap_or(0);
         s.fall_distance = match data.get("fall_distance") {
@@ -456,6 +500,9 @@ impl Survival {
             seed: int(data, "XpSeed").unwrap_or(0),
         };
         s.score = int(data, "Score").unwrap_or(0);
+        s.warden_spawn_tracker = crate::block::sculk_shrieker::WardenSpawnTracker::load(
+            data.get("warden_spawn_tracker"),
+        );
         s.portal = crate::portal::PortalState::load(data);
         if let Some(Tag::Compound(loc)) = data.get("LastDeathLocation")
             && let (Some(Tag::String(dim)), Some(Tag::IntArray(pos))) =
@@ -496,6 +543,16 @@ impl Survival {
         out.insert("XpTotal", Tag::Int(self.xp.total));
         out.insert("XpSeed", Tag::Int(self.xp.seed));
         out.insert("Score", Tag::Int(self.score));
+        out.insert(
+            "warden_spawn_tracker",
+            Tag::Compound(self.warden_spawn_tracker.save()),
+        );
+        match self.effects.save() {
+            Some(list) => out.insert("active_effects", list),
+            None => {
+                out.remove("active_effects");
+            }
+        }
         self.portal.save(out);
         self.food.save(out);
         out.remove("LastDeathLocation");
@@ -519,6 +576,7 @@ impl Survival {
         let mut s = Survival {
             last_death: self.last_death.clone(),
             respawn: self.respawn.clone(),
+            warden_spawn_tracker: self.warden_spawn_tracker,
             portal: self.portal.clone(),
             ..Survival::default()
         };
@@ -625,7 +683,7 @@ impl Survival {
 
 /// `setHealth`: clamped to `[0, max]`; marks the entity data dirty when it changed.
 fn set_health(entity: &mut EntityMut<'_>, s: &mut Survival, health: f32) {
-    let health = health.clamp(0.0, MAX_HEALTH);
+    let health = health.clamp(0.0, s.max_health());
     if health != s.health {
         s.health = health;
         entity.mark_data_dirty();
@@ -698,6 +756,14 @@ pub fn hurt(
     if player.survival.is_dead_or_dying() {
         return false;
     }
+    if types.is(kind, tag::IS_FIRE)
+        && player
+            .survival
+            .effects
+            .has(crate::effect::MobEffect::FIRE_RESISTANCE)
+    {
+        return false;
+    }
     let mut damage = amount;
     if source.scales_with_difficulty(types, source.cause_is_mob) {
         match env.difficulty {
@@ -755,7 +821,7 @@ pub fn hurt(
     if took_full && blocked {
         // `BlocksAttacks.onBlocked`: the shield sound instead of the damage event.
         let pitch = 0.8 + env.random.next_float() * 0.4;
-        let seed = env.random.next_long();
+        let seed = crate::survival::sound_seed();
         crate::survival::play_sound(
             env.out,
             None,
@@ -816,6 +882,23 @@ pub fn hurt(
     } else if took_full {
         player_sound(env, id, pos, types.get(kind).effects.sound());
     }
+    if !player.survival.effects.is_empty() {
+        // `onMobHurt` of the effects (Infested).
+        let e = entity.as_ref();
+        let look = crate::effect::living::view_vector(e.rot().x_rot, e.rot().y_rot);
+        let height = e.dims().height;
+        crate::experience_orb::with_entity_random(|random| {
+            crate::effect::living::on_hurt(
+                &player.survival.effects,
+                random,
+                env.random,
+                pos,
+                height,
+                look,
+                env.out,
+            );
+        });
+    }
     true
 }
 
@@ -864,6 +947,15 @@ fn actually_hurt(
         let protection = protection(entity, player, env, &source);
         if protection > 0.0 {
             damage = combat::damage_after_magic_absorb(damage, protection);
+        }
+    }
+    // `getDamageAfterMagicAbsorb`: Resistance (protection enchantments come with armour).
+    if !types.is(kind, tag::BYPASSES_EFFECTS) {
+        if !types.is(kind, tag::BYPASSES_RESISTANCE) {
+            damage = player.survival.effects.resistance_damage(damage);
+        }
+        if damage <= 0.0 {
+            damage = 0.0;
         }
     }
     let s = &mut player.survival;
@@ -1077,7 +1169,7 @@ fn apply_item_blocking(
         player.survival.using_item = None;
         player.survival.shield_disabled_until = player.survival.tick_count + ticks;
         entity.mark_data_dirty();
-        let seed = env.random.next_long();
+        let seed = crate::survival::sound_seed();
         crate::survival::play_sound(
             env.out,
             None,
@@ -1121,6 +1213,8 @@ pub fn die(
     let network_id = entity.as_ref().network_id().0;
     let uuid = entity.as_ref().uuid();
     let id = entity.as_ref().id();
+    // `resetStat(TIME_SINCE_REST)`.
+    player.survival.time_since_rest = 0;
     let sink = std::sync::Arc::clone(&player.connection.sink);
     let mut broadcast = None;
     if env.rules.bool(Rule::SHOW_DEATH_MESSAGES) {
@@ -1206,6 +1300,9 @@ fn drop_all(inventory: &mut crate::inventory::PlayerInventory, from: Vec3, env: 
         if stack.is_empty() || vanishing(&stack) {
             continue;
         }
+        // `new ItemEntity(level, x, y, z, stack)`; the throw replaces its motion. The throw
+        // draws from the player's own random in Vanilla, here from the level random.
+        let (uuid, y_rot, _) = crate::mob::new_item_entity();
         let pow = env.random.next_float() * 0.5;
         let dir = env.random.next_float() * std::f32::consts::TAU;
         let velocity = Vec3::new(
@@ -1213,9 +1310,6 @@ fn drop_all(inventory: &mut crate::inventory::PlayerInventory, from: Vec3, env: 
             f64::from(0.2f32),
             f64::from(vanillite_base::math::cos(f64::from(dir)) * pow),
         );
-        let uuid = (u128::from(env.random.next_long() as u64) << 64)
-            | u128::from(env.random.next_long() as u64);
-        let y_rot = env.random.next_float() * 360.0;
         env.out.push(Effect::DropItem {
             uuid,
             pos: from,
@@ -1286,6 +1380,12 @@ pub fn do_tick(
     {
         let s = &mut player.survival;
         s.tick_count = s.tick_count.wrapping_add(1);
+        // `awardStat(TIME_SINCE_REST)` while alive (players cannot sleep yet).
+        if !s.is_dead_or_dying() {
+            s.time_since_rest = s.time_since_rest.saturating_add(1);
+        }
+        // `ServerPlayer.tick`: `wardenSpawnTracker.tick()`.
+        s.warden_spawn_tracker.tick();
     }
     let id = entity.as_ref().id();
     // `Entity.baseTick`: `handlePortal` first.
@@ -1353,7 +1453,7 @@ pub fn do_tick(
                 .block_state(block_pos(eye))
                 .is_some_and(|s| env.facts.is_bubble_column(s));
         if eye_in_water {
-            if !abilities.invulnerable {
+            if !abilities.invulnerable && !player.survival.effects.has_water_breathing() {
                 let air = player.survival.air - 1;
                 set_air(entity, &mut player.survival, air);
                 if player.survival.air <= -20 {
@@ -1369,7 +1469,7 @@ pub fn do_tick(
                     let source = DamageSource::of(env.types.drown);
                     hurt(entity, player, env, source, 2.0);
                 }
-            } else if player.survival.air < MAX_AIR {
+            } else if player.survival.air < MAX_AIR && player.survival.effects.refills_air() {
                 let air = (player.survival.air + 4).min(MAX_AIR);
                 set_air(entity, &mut player.survival, air);
             }
@@ -1405,9 +1505,20 @@ pub fn do_tick(
         let alive = s.health > 0.0;
         s.combat.recheck_status(s.tick_count, alive);
     }
+    // `tickEffects`, with the effect packets, flags and attributes.
+    crate::effect::living::tick_player(entity, player, env);
+    {
+        // `aiStep`: Slow Falling and Levitation reset the fall distance.
+        let s = &mut player.survival;
+        if s.effects.has(crate::effect::MobEffect::SLOW_FALLING)
+            || s.effects.has(crate::effect::MobEffect::LEVITATION)
+        {
+            s.fall_distance = 0.0;
+        }
+    }
     // `Player.aiStep`: peaceful regeneration (`ServerPlayer.tickRegeneration`).
     if env.difficulty == Difficulty::Peaceful && env.rules.bool(Rule::NATURAL_HEALTH_REGENERATION) {
-        if player.survival.tick_count % 20 == 0 && player.survival.health < MAX_HEALTH {
+        if player.survival.tick_count % 20 == 0 && player.survival.is_hurt() {
             heal(entity, player, 1.0);
         }
         let s = &mut player.survival;
@@ -1679,8 +1790,87 @@ pub fn on_move(
     if mv.moved_upwards {
         player.survival.fall_distance = 0.0;
     }
+    if player.game_mode != GameMode::Spectator && !(mv.on_ground && crouching) {
+        movement_emission(entity, player, env, mv, crouching);
+    }
     update_climbable(entity, player, env);
     movement_statistics(player, entity, env, mv);
+}
+
+/// `Entity.applyMovementEmissionAndPlaySound` for a player's move: the `STEP` and `SWIM`
+/// game events (the step sounds are the client's own for players).
+fn movement_emission(
+    entity: &EntityMut<'_>,
+    player: &mut PlayerData,
+    env: &Env<'_>,
+    mv: MoveRecord,
+    crouching: bool,
+) {
+    let delta = mv.to - mv.from;
+    #[allow(clippy::cast_possible_truncation)]
+    let (moved, horizontal) = (
+        (delta.length() * f64::from(0.6_f32)) as f32,
+        ((delta.x * delta.x + delta.z * delta.z).sqrt() * f64::from(0.6_f32)) as f32,
+    );
+    let pos = mv.to;
+    let at = |dy: f64| {
+        BlockPos::new(
+            vanillite_base::math::floor(pos.x),
+            vanillite_base::math::floor(pos.y - dy),
+            vanillite_base::math::floor(pos.z),
+        )
+    };
+    // `getOnPos()` and `getOnPosLegacy()` from the feet (the supporting block search of
+    // `mainSupportingBlockPos` is approximated by the block below the feet).
+    let supporting_pos = at(1.0e-5);
+    let effect_pos = at(0.2);
+    let state = |p: BlockPos| env.blocks.block_state(p);
+    let Some(supporting) = state(supporting_pos) else {
+        return;
+    };
+    let climbing = env.facts.is_climbable(supporting.block());
+    let swimming = entity.as_ref().flags().contains(EntityFlags::SWIMMING);
+    let s = &mut player.survival;
+    s.move_dist += if climbing { moved } else { horizontal };
+    if s.move_dist <= s.next_step || supporting.is_air() {
+        return;
+    }
+    let step = |p: BlockPos, vibrate: bool, out: &mut Vec<_>| -> bool {
+        let Some(st) = state(p) else {
+            return false;
+        };
+        if st.is_air() {
+            return false;
+        }
+        let climbable = env.facts.is_climbable(st.block());
+        if (mv.on_ground || climbable || crouching && delta.y == 0.0) && !swimming {
+            if vibrate {
+                out.push((crate::level::game_event::events().step, pos, Some(st)));
+            }
+            true
+        } else {
+            false
+        }
+    };
+    let only_effect = supporting_pos == effect_pos;
+    let mut produced = step(effect_pos, only_effect, &mut s.game_events);
+    if !only_effect {
+        produced |= step(supporting_pos, true, &mut s.game_events);
+    }
+    if produced {
+        s.next_step = next_step(s.move_dist);
+    } else if s.fluids.in_water() {
+        s.next_step = next_step(s.move_dist);
+        s.game_events
+            .push((crate::level::game_event::events().swim, pos, None));
+    }
+}
+
+/// `Entity.nextStep`: `(int) moveDist + 1`.
+fn next_step(move_dist: f32) -> f32 {
+    #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+    let next = (move_dist as i32).saturating_add(1) as f32;
+    next
 }
 
 /// `onClimbable`: remembers the climbable block the player is in for the fall message.
@@ -1728,6 +1918,11 @@ fn check_fall_damage(
     if on_ground {
         let fall = player.survival.fall_distance;
         if fall > 0.0 {
+            player.survival.game_events.push((
+                crate::level::game_event::events().hit_ground,
+                pos,
+                Some(on_state),
+            ));
             match env.facts.landing(on_state) {
                 Landing::Fall(multiplier) => {
                     cause_fall_damage(entity, player, env, fall, multiplier, env.types.fall);
@@ -1762,7 +1957,12 @@ fn check_fall_damage(
 
 /// `calculateFallDamage`.
 pub fn fall_damage(fall_distance: f64, multiplier: f32) -> i32 {
-    let power = fall_distance + 1.0e-6 - SAFE_FALL_DISTANCE;
+    fall_damage_with(fall_distance, multiplier, SAFE_FALL_DISTANCE)
+}
+
+/// `calculateFallDamage` with the `safe_fall_distance` attribute value (Jump Boost raises it).
+pub fn fall_damage_with(fall_distance: f64, multiplier: f32, safe_fall_distance: f64) -> i32 {
+    let power = fall_distance + 1.0e-6 - safe_fall_distance;
     // `Mth.floor(double)`.
     vanillite_base::math::floor(power * f64::from(multiplier))
 }
@@ -1784,7 +1984,11 @@ fn cause_fall_damage(
         let cm = (fall_distance * 100.0).round() as i32;
         player.stats.award(custom::FALL_ONE_CM, cm);
     }
-    let damage = fall_damage(fall_distance, multiplier);
+    let safe = player.survival.effects.attribute(
+        crate::effect::attribute::Attribute::SAFE_FALL_DISTANCE,
+        SAFE_FALL_DISTANCE,
+    );
+    let damage = fall_damage_with(fall_distance, multiplier, safe);
     if damage > 0 {
         let id = entity.as_ref().id();
         let pos = entity.as_ref().pos();
