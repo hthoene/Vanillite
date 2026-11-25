@@ -415,6 +415,18 @@ fn die(
             amount: reward,
         });
     }
+    // `getKillCredit().awardKillScore(this, source)`: the player that hurt it last, else the
+    // last attacking mob.
+    let credit = ents.mob(target).and_then(|m| {
+        m.last_hurt_by_player
+            .filter(|_| m.last_hurt_by_player_time > 0)
+            .or(m.last_hurt_by_mob)
+    });
+    env.out.push(Effect::Died {
+        victim: target,
+        killer: credit.or(source.cause),
+        message: None,
+    });
     env.out.push(Effect::Tracking {
         entity: target,
         with_self: false,
