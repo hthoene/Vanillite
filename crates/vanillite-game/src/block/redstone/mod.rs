@@ -23,9 +23,25 @@ use vanillite_world::entity::EntityId;
 use vanillite_worldgen::behaviour::StateExt;
 
 use super::BlockBehaviour;
+
+/// Whether a block is a lightning rod of any copper stage (`#lightning_rods`).
+pub fn is_lightning_rod(state: BlockState) -> bool {
+    state.block().name().ends_with("lightning_rod")
+}
+
+/// `LightningRodBlock.onLightningStrike` if `pos` holds a lightning rod.
+pub fn strike_lightning_rod(level: &mut crate::level::Level, pos: BlockPos) {
+    let state = level.block(pos);
+    if is_lightning_rod(state) {
+        components::lightning_rod_strike(level, state, pos);
+    }
+}
 use crate::level::Level;
 
-pub use components::set_door_open;
+pub use components::{
+    button_explosion_hit, door_explosion_hit, fence_gate_explosion_hit, lever_pull, set_door_open,
+    trapdoor_explosion_hit,
+};
 pub use diode::set_placed_by;
 
 /// Fills the redstone behaviours of `block`.
@@ -83,6 +99,8 @@ pub(super) fn fill(block: BlockId, b: &mut BlockBehaviour) {
         b.signal = Some(components::powered_signal);
         b.direct_signal = Some(components::lightning_rod_direct_signal);
         b.tick = Some(components::lightning_rod_tick);
+        b.on_place = Some(components::lightning_rod_on_place);
+        b.affect_neighbors_after_removal = Some(components::lightning_rod_removal);
     } else if name.ends_with("_door") {
         b.neighbor_changed = Some(components::door_neighbor_changed);
         b.use_without_item = Some(components::door_use);
@@ -144,6 +162,11 @@ impl BlockSet {
         } else {
             wood("wooden")
         }
+    }
+
+    /// `canOpenByWindCharge`: everything but iron.
+    pub(crate) fn can_open_by_wind_charge(self) -> bool {
+        self.family != "iron"
     }
 
     /// `doorOpen` / `doorClose`.

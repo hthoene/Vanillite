@@ -5,7 +5,7 @@ use vanillite_base::random::RandomSource;
 use vanillite_base::{BlockPos, Vec3};
 use vanillite_world::entity::Rotation;
 
-use super::{Goal, SEA_LEVEL, block_tags, bright_enough, closer_to_center, rotlerp, st, st_mut};
+use super::{Goal, block_tags, bright_enough, closer_to_center, rotlerp, st, st_mut};
 use crate::level::Level;
 use crate::mob::common::MoveToBlock;
 use crate::mob::fam::FamGoal;
@@ -80,7 +80,7 @@ fn on_sand(level: &Level, pos: BlockPos) -> bool {
 
 /// `Turtle.checkTurtleSpawnRules`: beaches up to 3 blocks above the sea.
 pub(super) fn spawn_rules(level: &Level, pos: BlockPos) -> bool {
-    pos.y < SEA_LEVEL + 4 && on_sand(level, pos) && bright_enough(level, pos)
+    pos.y < crate::mob::sea_level(level) + 4 && on_sand(level, pos) && bright_enough(level, pos)
 }
 
 /// `Turtle.getWalkTargetValue`: water (unless going home) and sand are best.
@@ -132,26 +132,26 @@ pub(super) fn move_control(t: &mut Tick<'_, '_>) {
         let home = st(t.mob_ref()).home_pos;
         if !closer_to_center(home, t.pos(), 16.0) {
             let m = t.mob();
-            m.speed = (m.speed / 2.0).max(0.08);
+            set_speed(m, (m.speed / 2.0).max(0.08));
         }
         if t.mob_ref().baby {
             let m = t.mob();
-            m.speed = (m.speed / 3.0).max(0.06);
+            set_speed(m, (m.speed / 3.0).max(0.06));
         }
     } else if t.on_ground() {
         let m = t.mob();
-        m.speed = (m.speed / 2.0).max(0.06);
+        set_speed(m, (m.speed / 2.0).max(0.06));
     }
     let ctl = t.mob_ref().move_ctl;
     if ctl.operation != Operation::MoveTo || t.mob_ref().nav.is_done() {
-        t.mob().speed = 0.0;
+        set_speed(t.mob(), 0.0);
         return;
     }
     let p = t.pos();
     let (xd, mut yd, zd) = (ctl.wanted.x - p.x, ctl.wanted.y - p.y, ctl.wanted.z - p.z);
     let dd = (xd * xd + yd * yd + zd * zd).sqrt();
     if dd < f64::from(1.0e-5_f32) {
-        t.mob().speed = 0.0;
+        set_speed(t.mob(), 0.0);
         return;
     }
     yd /= dd;
@@ -164,10 +164,17 @@ pub(super) fn move_control(t: &mut Tick<'_, '_>) {
     let target = (ctl.speed_modifier * t.mob_ref().attrs.movement_speed) as f32;
     let m = t.mob();
     m.y_body_rot = y;
-    m.speed += 0.125 * (target - m.speed);
+    let s = m.speed + 0.125 * (target - m.speed);
+    set_speed(m, s);
     let speed = m.speed;
     let v = t.velocity();
     t.set_velocity(Vec3::new(v.x, v.y + f64::from(speed) * yd * 0.1, v.z));
+}
+
+/// `Mob.setSpeed`: the speed is also the forward input.
+fn set_speed(m: &mut crate::mob::MobData, speed: f32) {
+    m.speed = speed;
+    m.zza = speed;
 }
 
 /// `PanicGoal.lookForWater(level, mob, range)`: the closest water within the range.
@@ -343,7 +350,7 @@ pub(super) fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
             let xt = r.next_int_bounded(1025) - 512;
             let mut yt = r.next_int_bounded(9) - 4;
             let zt = r.next_int_bounded(1025) - 512;
-            if f64::from(yt) + p.y > f64::from(SEA_LEVEL - 1) {
+            if f64::from(yt) + p.y > f64::from(t.cx.env.sea_level - 1) {
                 yt = 0;
             }
             st_mut(t.mob()).travel_pos = Some(BlockPos::containing(
@@ -384,6 +391,8 @@ fn set_laying_egg(t: &mut Tick<'_, '_>, on: bool) {
 
 /// `TurtleBreedGoal.breed`: the turtle carries an egg instead of a baby.
 fn breed(t: &mut Tick<'_, '_>, partner: vanillite_world::entity::EntityId) {
+    // The award comes first (`TurtleBreedGoal.breed`).
+    crate::mob::animal::award_breeding(t.ents, t.id, partner, None);
     st_mut(t.mob()).has_egg = true;
     for id in [t.id, partner] {
         if let Some(m) = t.ents.mob_mut(id) {
@@ -416,7 +425,7 @@ pub(super) fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
             t.mob()
                 .look
                 .set_look_at(Vec3::new(o.pos.x, o.eye_y, o.pos.z), 10.0, 40.0);
-            nav::move_to_entity(t, o.pos, 0, *speed);
+            nav::move_to_entity(t, o.pos, 1, *speed);
             *love_time += 1;
             if *love_time >= reduced(60) && distance_sqr(t, o.pos) < 9.0 {
                 breed(t, p);

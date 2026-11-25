@@ -12,7 +12,7 @@ use crate::item::{EquipmentSlot, ItemStack};
 use crate::level::Level;
 use crate::mob::common::{CommonGoal, MoveToBlock, TargetFilter};
 use crate::mob::equipment;
-use crate::mob::fam::{Hurt, SpawnReason};
+use crate::mob::fam::{GroupData, Hurt, SpawnReason};
 use crate::mob::goals::{Goal as BaseGoal, TargetState, flag, reduced};
 use crate::mob::kinds::Kind;
 use crate::mob::{MobData, Tick, nav};
@@ -271,7 +271,13 @@ pub fn set_target_goals(m: &mut MobData) {
 /// `finalizeSpawn`: the variant of the biome (`#spawns_snow_foxes`), kits from the third of
 /// a group, the item in the mouth.
 pub fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
-    m.variant = i32::from(ctx.biome_is("minecraft:spawns_snow_foxes"));
+    let variant = i32::from(ctx.biome_is("minecraft:spawns_snow_foxes"));
+    m.variant = if let GroupData::Fox(v) = ctx.group {
+        v
+    } else {
+        ctx.group = GroupData::Fox(variant);
+        variant
+    };
     if ctx.group_index >= 2 {
         m.age = -24000;
         m.baby = true;
@@ -971,9 +977,10 @@ pub fn stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
                 set_flag(t, INTERESTED, true);
                 set_flag(t, CROUCHING, true);
                 t.mob().nav.stop();
+                // `getMaxHeadYRot`, `getMaxHeadXRot`.
                 t.mob()
                     .look
-                    .set_look_at(Vec3::new(o.pos.x, o.eye_y, o.pos.z), 10.0, 40.0);
+                    .set_look_at(Vec3::new(o.pos.x, o.eye_y, o.pos.z), 75.0, 40.0);
             } else {
                 set_flag(t, INTERESTED, false);
                 set_flag(t, CROUCHING, false);
@@ -1014,15 +1021,16 @@ pub fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
             let Some(o) = t.mob_ref().target.and_then(|id| t.other(id)) else {
                 return;
             };
+            // `getMaxHeadYRot`, `getMaxHeadXRot`.
             t.mob()
                 .look
-                .set_look_at(Vec3::new(o.pos.x, o.eye_y, o.pos.z), 10.0, 40.0);
+                .set_look_at(Vec3::new(o.pos.x, o.eye_y, o.pos.z), 75.0, 40.0);
             if o.pos.distance_to_sqr(t.pos()) <= 36.0 {
                 set_flag(t, INTERESTED, true);
                 set_flag(t, CROUCHING, true);
                 t.mob().nav.stop();
             } else {
-                nav::move_to_entity(t, o.pos, 0, 1.5);
+                nav::move_to_entity(t, o.pos, 1, 1.5);
             }
         }
         Goal::Pounce => {
@@ -1085,7 +1093,8 @@ pub fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
             }
             let p = t.pos();
             let at = Vec3::new(p.x + *rel_x, t.eye_y(), p.z + *rel_z);
-            t.mob().look.set_look_at(at, 10.0, 40.0);
+            // `getMaxHeadYRot`, `getMaxHeadXRot`.
+            t.mob().look.set_look_at(at, 75.0, 40.0);
         }
         _ => {}
     }

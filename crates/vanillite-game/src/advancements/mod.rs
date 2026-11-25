@@ -12,9 +12,14 @@
     clippy::as_conversions
 )]
 
+pub mod award;
 pub mod predicate;
 mod progress;
+pub mod tracking;
 pub mod trigger;
+#[cfg(test)]
+mod vanilla_tests;
+pub mod view;
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -862,22 +867,7 @@ mod tests {
             1,
         );
         progress.check_inventory(&inventory);
-        let empty = ItemStack::EMPTY;
-        let view = EntityView {
-            kind: "minecraft:player",
-            pos: vanillite_base::Vec3::ZERO,
-            on_ground: true,
-            on_fire: false,
-            crouching: false,
-            sprinting: false,
-            swimming: false,
-            flying: false,
-            fall_flying: false,
-            in_water: false,
-            equipment: [&empty; 7],
-            team: None,
-            player: None,
-        };
+        let view = EntityView::new("minecraft:player", vanillite_base::Vec3::ZERO);
         progress.process([], &TriggerContext::new(&Nowhere, &view, &inventory));
         assert!(progress.is_done(root));
         assert!(progress.take_completed().contains(&root));

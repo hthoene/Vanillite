@@ -41,6 +41,7 @@ pub fn register_goals(m: &mut MobData) {
     let g = &mut m.goals;
     let tg = &mut m.targets;
     g.add(4, raider::patrol());
+    raider::add_raider_goals(g);
     g.add(0, MobGoal::Float);
     g.add(1, avoid_creaking(1.0, 1.2));
     g.add(2, fam(Goal::HoldGround { radius_sqr: 100.0 }));
@@ -130,22 +131,10 @@ pub fn crossbow_can_continue(t: &mut Tick<'_, '_>) -> bool {
         && holds_crossbow(t.mob_ref())
 }
 
-/// `CrossbowItem.getChargeDuration`: 25 ticks, 5 less per Quick Charge level.
-fn charge_duration(m: &MobData) -> i32 {
-    let s = m.equipment.get(EquipmentSlot::MainHand);
-    let level = crate::player::play::game_data().map_or(0, |d| {
-        d.enchantments
-            .get("minecraft:quick_charge")
-            .map_or(0, |&q| {
-                crate::item::enchantments(s)
-                    .iter()
-                    .find(|x| x.0 == q)
-                    .map_or(0, |x| x.1)
-            })
-    });
-    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
-    let secs = (1.25 - 0.25 * level as f32).max(0.0);
-    vanillite_base::math::floor(f64::from(secs * 20.0))
+/// `CrossbowItem.getChargeDuration` of the crossbow in use.
+fn charge_duration(m: &mut MobData) -> i32 {
+    let s = m.equipment.get(crate::crossbow::mob_hand(m)).clone();
+    crate::crossbow::charge_duration(&s, &mut m.random)
 }
 
 fn set_charging(t: &mut Tick<'_, '_>, on: bool) {
@@ -162,64 +151,28 @@ pub fn crossbow_stop(t: &mut Tick<'_, '_>, c: &mut Crossbow) {
     if t.mob_ref().using_item >= 0 {
         projectile::stop_using_item(t);
         set_charging(t, false);
-        st_mut(t.mob()).crossbow_charged = false;
+        // `getUseItem().set(CHARGED_PROJECTILES, EMPTY)` runs on the empty use item after
+        // `stopUsingItem`: the crossbow keeps its load.
     }
 }
 
-/// `CrossbowItem.onUseTick` while the pillager loads: the loading sounds and the charge.
+/// `LivingEntity.updatingUsingItem` of a pillager using its crossbow: `onUseTick` sees the
+/// ticks used before this one.
 pub fn use_tick(t: &mut Tick<'_, '_>) {
     let using = t.mob_ref().using_item;
-    if using < 0 || !st(t.mob_ref()).charging_crossbow {
+    if using < 0 {
         return;
     }
-    #[allow(clippy::cast_precision_loss)]
-    let progress = using as f32 / charge_duration(t.mob_ref()).max(1) as f32;
-    let s = st_mut(t.mob());
-    if progress < 0.2 {
-        s.start_sound_played = false;
-        s.mid_sound_played = false;
-    }
-    if progress >= 0.2 && !s.start_sound_played {
-        s.start_sound_played = true;
-        sound_players(t, "minecraft:item.crossbow.loading_start");
-    }
-    let s = st_mut(t.mob());
-    if progress >= 0.5 && !s.mid_sound_played {
-        s.mid_sound_played = true;
-        sound_players(t, "minecraft:item.crossbow.loading_middle");
-    }
-    let s = st_mut(t.mob());
-    if progress >= 1.0 && !s.crossbow_charged {
-        s.crossbow_charged = true;
-        let pitch = 1.0 / (t.mob().random.next_float() * 0.5 + 1.0) + 0.2;
-        let pos = t.pos();
-        let seed = crate::survival::sound_seed();
-        crate::survival::play_sound(
-            t.env.out,
-            None,
-            pos,
-            "minecraft:item.crossbow.loading_end",
-            t.mob_ref().kind.sound_source(),
-            1.0,
-            pitch,
-            seed,
-        );
-    }
+    crossbow_use_tick(t, using - 1);
 }
 
-fn sound_players(t: &mut Tick<'_, '_>, name: &str) {
-    let pos = t.pos();
-    let seed = crate::survival::sound_seed();
-    crate::survival::play_sound(
-        t.env.out,
-        None,
-        pos,
-        name,
-        vanillite_protocol::packets::play::clientbound::SoundSource::Players,
-        0.5,
-        1.0,
-        seed,
-    );
+/// `CrossbowItem.onUseTick` after `used` ticks.
+fn crossbow_use_tick(t: &mut Tick<'_, '_>, used: i32) {
+    let mut flags = st(t.mob_ref()).crossbow_sounds;
+    crate::crossbow::mob_use_tick(t, &mut flags, used);
+    if t.exists() {
+        st_mut(t.mob()).crossbow_sounds = flags;
+    }
 }
 
 pub fn crossbow_tick(t: &mut Tick<'_, '_>, c: &mut Crossbow) {
@@ -249,7 +202,7 @@ pub fn crossbow_tick(t: &mut Tick<'_, '_>, c: &mut Crossbow) {
             } else {
                 c.speed * 0.5
             };
-            nav::move_to_entity(t, o.pos, 0, speed);
+            nav::move_to_entity(t, o.pos, 1, speed);
             // `PATHFINDING_DELAY_RANGE`: 20 to 40 ticks.
             c.update_path_delay = t.mob().random.next_int_between_inclusive(20, 40);
         }
@@ -273,10 +226,10 @@ pub fn crossbow_tick(t: &mut Tick<'_, '_>, c: &mut Crossbow) {
                 c.state = CrossbowState::Uncharged;
             }
             let pull = t.mob_ref().using_item;
-            if pull >= charge_duration(t.mob_ref()) {
-                // `releaseUsingItem`.
+            if pull >= charge_duration(t.mob()) {
+                // `releaseUsingItem`: one more use tick (the load), then the use stops.
+                crossbow_use_tick(t, pull);
                 projectile::stop_using_item(t);
-                st_mut(t.mob()).crossbow_charged = true;
                 c.state = CrossbowState::Charged;
                 c.attack_delay = 20 + t.mob().random.next_int_bounded(20);
                 set_charging(t, false);
@@ -297,58 +250,11 @@ pub fn crossbow_tick(t: &mut Tick<'_, '_>, c: &mut Crossbow) {
     }
 }
 
-/// `CrossbowAttackMob.performCrossbowAttack(mob, 1.6)`: the loaded arrow flies at the target.
-pub fn perform_crossbow_attack(t: &mut Tick<'_, '_>, target: EntityId) {
-    let holding = holds_crossbow(t.mob_ref());
-    if holding && st(t.mob_ref()).crossbow_charged {
-        st_mut(t.mob()).crossbow_charged = false;
-        let Some(o) = t.other(target) else {
-            return;
-        };
-        let p = t.pos();
-        let start = Vec3::new(p.x, t.eye_y() - f64::from(0.1_f32), p.z);
-        let xd = o.pos.x - p.x;
-        let target_y = o.aabb.min_y + (o.aabb.max_y - o.aabb.min_y) / 3.0;
-        let yd = target_y - start.y;
-        let zd = o.pos.z - p.z;
-        let dist = (xd * xd + zd * zd).sqrt();
-        let difficulty = t.env.difficulty;
-        #[allow(clippy::cast_precision_loss)]
-        let uncertainty = (14 - difficulty as i32 * 4) as f32;
-        let weapon = t.mob_ref().equipment.get(EquipmentSlot::MainHand).clone();
-        let id = t.id;
-        let network_ids = std::sync::Arc::clone(t.level.network_ids_arc());
-        let mut random = t.mob_ref().random.clone();
-        projectile::shoot_arrow(
-            t.ents,
-            &network_ids,
-            &mut random,
-            start,
-            Vec3::new(xd, yd + dist * 0.2, zd),
-            1.6,
-            uncertainty,
-            Some(id),
-            Some(&weapon),
-            &projectile::mob_arrow(None),
-            false,
-            0,
-        );
-        t.mob().random = random;
-        let p = t.pos();
-        let seed = crate::survival::sound_seed();
-        crate::survival::play_sound(
-            t.env.out,
-            None,
-            p,
-            "minecraft:item.crossbow.shoot",
-            t.mob_ref().kind.sound_source(),
-            1.0,
-            1.0,
-            seed,
-        );
-        // `hurtAndBreak(1)` of the crossbow.
-        super::super::super::living::hurt_equipment(t, EquipmentSlot::MainHand, 1);
-    }
+/// `CrossbowAttackMob.performCrossbowAttack(mob, 1.6)`: the loaded crossbow fires at the
+/// target.
+pub fn perform_crossbow_attack(t: &mut Tick<'_, '_>, _target: EntityId) {
+    let target = t.mob_ref().target;
+    crate::crossbow::mob_shoot(t, target, crate::crossbow::MOB_ARROW_POWER);
     // `onCrossbowAttackPerformed`.
     t.mob().no_action_time = 0;
     let _ = Difficulty::Peaceful;

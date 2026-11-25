@@ -70,7 +70,7 @@ pub fn direction_within_radians(
     max_radians: f64,
 ) -> Option<BlockPos> {
     let r = &mut t.mob().random;
-    let center = z_dir.atan2(x_dir) - half_pi();
+    let center = vanillite_base::math::atan2(z_dir, x_dir) - half_pi();
     let y_radians = center + f64::from(2.0 * r.next_float() - 1.0) * max_radians;
     let dist = (min_h + r.next_double().sqrt() * (max_h - min_h)) * sqrt_of_two();
     let xt = -dist * y_radians.sin();
@@ -128,7 +128,7 @@ pub fn is_restricted(t: &Tick<'_, '_>, restrict: bool, pos: BlockPos) -> bool {
 /// `GoalUtils.hasMalus`.
 pub fn has_malus(t: &Tick<'_, '_>, pos: BlockPos) -> bool {
     let kind = path_type_static(t.level, t.level.min_y(), pos.x, pos.y, pos.z);
-    malus_of(t.mob_ref().kind.malus(), kind) != 0.0
+    malus_of(super::kinds::mob_malus(t.mob_ref()), kind) != 0.0
 }
 
 /// `PathNavigation.isStableDestination` of the mob's navigation.

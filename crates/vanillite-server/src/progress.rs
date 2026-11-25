@@ -6,7 +6,7 @@
 use vanillite_base::BlockPos;
 use vanillite_config::GameMode;
 use vanillite_data::block::BlockState;
-use vanillite_game::advancements::predicate::{EntityView, World};
+use vanillite_game::advancements::predicate::{EffectView, EntityView, PlayerFacts, World};
 use vanillite_game::advancements::trigger::{Event, TriggerContext, TriggerKind};
 use vanillite_game::inventory::PlayerInventory;
 use vanillite_game::item::ItemStack;
@@ -55,7 +55,10 @@ impl World for LevelWorld<'_> {
 }
 
 /// A player as the entity predicates see it.
+#[allow(clippy::too_many_arguments)]
 fn player_view<'a>(
+    level: &Level,
+    id: EntityId,
     e: &EntityRef<'_>,
     inv: &'a PlayerInventory,
     survival: &Survival,
@@ -63,32 +66,49 @@ fn player_view<'a>(
     game_mode: GameMode,
     team: Option<String>,
 ) -> EntityView<'a> {
-    static EMPTY: ItemStack = ItemStack::EMPTY;
+    use std::borrow::Cow;
     let flags = e.flags();
     let [feet, legs, chest, head] = &inv.armor;
-    EntityView {
-        kind: "minecraft:player",
-        pos: e.pos(),
-        on_ground: flags.contains(EntityFlags::ON_GROUND),
-        on_fire: flags.contains(EntityFlags::ON_FIRE),
-        crouching: e.pose() == Pose::Crouching,
-        sprinting: flags.contains(EntityFlags::SPRINTING),
-        swimming: flags.contains(EntityFlags::SWIMMING),
-        flying: false,
-        fall_flying: flags.contains(EntityFlags::FALL_FLYING),
-        in_water: survival.fluids.in_water(),
-        equipment: [
-            head,
-            chest,
-            legs,
-            feet,
-            &EMPTY,
-            inv.selected_item(),
-            &inv.offhand,
-        ],
-        team,
-        player: Some((game_mode, survival.xp.level, stats)),
+    let mut v = EntityView::new("minecraft:player", e.pos());
+    v.on_ground = flags.contains(EntityFlags::ON_GROUND);
+    v.on_fire = flags.contains(EntityFlags::ON_FIRE);
+    v.crouching = e.pose() == Pose::Crouching;
+    v.sprinting = flags.contains(EntityFlags::SPRINTING);
+    v.swimming = flags.contains(EntityFlags::SWIMMING);
+    v.fall_flying = flags.contains(EntityFlags::FALL_FLYING);
+    v.in_water = survival.fluids.in_water();
+    v.equipment = [
+        Cow::Borrowed(head),
+        Cow::Borrowed(chest),
+        Cow::Borrowed(legs),
+        Cow::Borrowed(feet),
+        Cow::Owned(ItemStack::EMPTY),
+        Cow::Borrowed(inv.selected_item()),
+        Cow::Borrowed(&inv.offhand),
+    ];
+    v.team = team;
+    v.player = Some(PlayerFacts {
+        game_mode,
+        level: survival.xp.level,
+        stats: Some(stats),
+    });
+    v.effects = survival
+        .effects
+        .iter()
+        .map(|e| EffectView {
+            effect: e.effect,
+            amplifier: i32::from(e.amplifier),
+            duration: e.duration,
+            ambient: e.ambient,
+            visible: e.visible,
+        })
+        .collect();
+    if let Some(vehicle) = level.entities.riding.vehicle_of(id)
+        && let Some(view) = vanillite_game::advancements::view::snapshot(&level.entities, vehicle)
+    {
+        v.vehicle = Some(view);
     }
+    v
 }
 
 /// `onInsideBlock` of `checkInsideBlocks`: the non-air blocks the player's box is inside.
@@ -116,6 +136,23 @@ pub(crate) fn tick(level: &mut Level, global: &Global, world: WorldId, dimension
         .registries
         .get("minecraft:worldgen/biome")
         .unwrap_or(&no_biomes);
+    // Statistics, triggers and recipes block code awarded during the tick.
+    for (id, award) in level.take_player_awards() {
+        if let Some(player) = level.entities.player_mut(id) {
+            award.apply(player);
+        }
+    }
+    // `ServerPlayer.tick`'s distance triggers, and the damage and deaths of the tick whose
+    // triggers need the entities.
+    let ids: Vec<EntityId> = level.entities.players.iter().map(|(id, _)| id).collect();
+    for id in ids {
+        vanillite_game::advancements::tracking::tick(&mut level.entities, id);
+        vanillite_game::advancements::view::resolve_combat(
+            &mut level.entities,
+            &global.level.damage_types,
+            id,
+        );
+    }
     let mut players = std::mem::take(&mut level.entities.players);
     let mut scores = Vec::new();
     let mut rewards = Vec::new();
@@ -123,6 +160,9 @@ pub(crate) fn tick(level: &mut Level, global: &Global, world: WorldId, dimension
         let Some(entity) = level.entities.store.get(id) else {
             continue;
         };
+        for award in std::mem::take(&mut player.inventory.awards) {
+            award.apply(player);
+        }
         // `ResultSlot.checkTakeAchievements`.
         for crafted in std::mem::take(&mut player.inventory.crafted) {
             if !crafted.stack.is_empty() {
@@ -161,7 +201,9 @@ pub(crate) fn tick(level: &mut Level, global: &Global, world: WorldId, dimension
                 game_mode,
                 ..
             } = player;
-            let view = player_view(&entity, inventory, survival, stats, *game_mode, team);
+            let view = player_view(
+                level, id, &entity, inventory, survival, stats, *game_mode, team,
+            );
             let world = LevelWorld {
                 level,
                 dimension,
@@ -231,12 +273,72 @@ pub(crate) fn apply_scores(global: &Global, scores: Vec<PlayerScores>) {
     }
 }
 
-/// `AdvancementRewards.grant`'s loot: the loot tables have no `advancement_reward` context
-/// (`getRandomItems` for a player) yet, so nothing is given.
-fn give_loot(_level: &mut Level, _id: EntityId, _tables: &[String]) {}
+/// The loot of `AdvancementRewards.grant`: the tables rolled with the player as `this`
+/// (`ADVANCEMENT_REWARD`), each stack added to the inventory with a pickup sound or dropped
+/// for the player alone.
+fn give_loot(env: &mut Env<'_>, id: EntityId, tables: &[String]) {
+    if tables.is_empty() {
+        return;
+    }
+    let Some(pos) = env.level.entities.store.get(id).map(|e| e.pos()) else {
+        return;
+    };
+    let params = crate::commands::loot_cmd::Params {
+        origin: Some(pos),
+        this_entity: Some(id),
+        ..Default::default()
+    };
+    let mut stacks = Vec::new();
+    crate::commands::loot_cmd::with_context(env, params, |data, ctx, rng| {
+        for table in tables {
+            data.loot.roll(table, ctx, rng, &mut stacks);
+        }
+    });
+    let mut changed = false;
+    for mut stack in stacks {
+        let level = &mut *env.level;
+        let Some(player) = level.entities.player_mut(id) else {
+            return;
+        };
+        let infinite = player.game_mode == vanillite_config::GameMode::Creative;
+        if player.inventory.add(None, &mut stack, infinite) && stack.is_empty() {
+            use vanillite_base::random::RandomSource;
+            let r = level.random();
+            let pitch = ((r.next_float() - r.next_float()) * 0.7 + 1.0) * 2.0;
+            if let Some(sound) =
+                vanillite_data::registry::SOUND_EVENT.id("minecraft:entity.item.pickup")
+            {
+                level.play_sound(
+                    None,
+                    pos.x,
+                    pos.y,
+                    pos.z,
+                    sound,
+                    vanillite_game::level::SOUND_PLAYERS,
+                    0.2,
+                    pitch,
+                );
+            }
+            changed = true;
+        } else {
+            crate::commands::items::drop_for(level, id, stack);
+        }
+    }
+    if changed {
+        crate::commands::items::sync_inventory(&mut env.level.entities, id);
+    }
+}
 
-/// `ServerPlayer.awardRecipesByKey`: players have no recipe book yet, so nothing is unlocked.
-fn award_recipes(_level: &mut Level, _id: EntityId, _recipes: &[String]) {}
+/// `ServerPlayer.awardRecipesByKey`.
+fn award_recipes(level: &mut Level, id: EntityId, recipes: &[String]) {
+    if recipes.is_empty() {
+        return;
+    }
+    if let Some(player) = level.entities.player_mut(id) {
+        let ids: Vec<&str> = recipes.iter().map(String::as_str).collect();
+        player.unlock_recipes(&ids);
+    }
+}
 
 /// `AdvancementRewards.grant` and the chat announcement of the advancements a player of this
 /// world completed.
@@ -257,7 +359,7 @@ pub(crate) fn grant_rewards(env: &mut Env<'_>, id: EntityId) {
         };
         let rewards = &a.rewards;
         crate::commands::add_experience(env.level, id, rewards.experience, false);
-        give_loot(env.level, id, &rewards.loot);
+        give_loot(env, id, &rewards.loot);
         award_recipes(env.level, id, &rewards.recipes);
         if let Some(function) = &rewards.function {
             let library = global.systems.functions();
@@ -281,5 +383,32 @@ pub(crate) fn grant_rewards(env: &mut Env<'_>, id: EntityId) {
             );
             global.players.broadcast_system(message, false, None);
         }
+    }
+}
+
+/// `PlayerAdvancements.reload` of every online player after `/reload`: the progress kept for
+/// the advancements that still exist, sent again as a full update.
+pub(crate) fn reload_advancements(global: &Global) {
+    for index in 0..crate::server::DIMENSIONS.len() {
+        let Ok(index) = u16::try_from(index) else {
+            continue;
+        };
+        let Some(arc) = global.arc() else {
+            return;
+        };
+        global.run_in_world(WorldId(index), move |w| {
+            let set = arc.systems.advancements();
+            let entities = w.entities_mut();
+            let ids: Vec<EntityId> = entities.players.iter().map(|(id, _)| id).collect();
+            for id in ids {
+                if let Some(p) = entities.player_mut(id) {
+                    let saved = p.advancements.to_json();
+                    p.advancements = vanillite_game::advancements::PlayerAdvancements::load(
+                        std::sync::Arc::clone(&set),
+                        Some(&saved),
+                    );
+                }
+            }
+        });
     }
 }

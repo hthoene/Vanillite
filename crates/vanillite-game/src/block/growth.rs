@@ -338,6 +338,24 @@ pub(super) fn sapling_random_tick(level: &mut Level, state: BlockState, pos: Blo
     }
 }
 
+/// `MangrovePropaguleBlock.randomTick`: a standing propagule grows like a sapling (without the
+/// light check); a hanging one ages up to 4.
+pub(super) fn propagule_random_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
+    if !state.flag("hanging") {
+        if level.random().next_int_bounded(7) == 0 {
+            if state.int("stage") == Some(0) {
+                level.set_block(pos, state.set_int("stage", 1), QUIET);
+            } else {
+                super::tree::grow_tree(level, pos, state);
+            }
+        }
+    } else if let Some(age) = state.int("age")
+        && age != 4
+    {
+        level.set_block(pos, state.set_int("age", age + 1), update::CLIENTS);
+    }
+}
+
 /// `FarmlandBlock.tick`: turns to dirt if it cannot stay.
 pub(super) fn farmland_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
     if !level.can_survive(state, pos) {

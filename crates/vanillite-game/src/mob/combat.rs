@@ -10,6 +10,9 @@ use vanillite_world::entity::{EntityFlags, EntityId, Pose};
 
 use super::living::event;
 use super::{Kind, MobContext, kinds};
+use crate::advancements::predicate::EntityView;
+use crate::advancements::trigger::{Event, TriggerKind};
+use crate::advancements::view;
 use crate::entities::Entities;
 use crate::level::Level;
 use crate::survival::damage::{DamageKind, DamageSource, tag};
@@ -81,6 +84,7 @@ pub fn hurt(
     source: DamageSource,
     amount: f32,
 ) -> bool {
+    let source = with_projectile_motion(ents, source);
     if ents.mob(target).is_some() {
         return hurt_mob(level, ents, env, cx, target, source, amount);
     }
@@ -99,7 +103,42 @@ pub fn hurt(
     let Some(data) = players.get_mut(row) else {
         return false;
     };
-    player::hurt_with(&mut entity, data, env, source, amount, armor.as_deref())
+    let hurt = player::hurt_with(&mut entity, data, env, source, amount, armor.as_deref());
+    view::resolve_combat(ents, env.types, target);
+    hurt
+}
+
+/// The motion of a projectile that hits (arrows, tridents, fireballs, thrown items, …: every
+/// `Projectile` but potions and fireworks, which push away from their position), for the
+/// knockback direction.
+fn with_projectile_motion(ents: &Entities, mut source: DamageSource) -> DamageSource {
+    if source.projectile_motion.is_some() {
+        return source;
+    }
+    if let Some(e) = source.direct.and_then(|d| ents.store.get(d))
+        && matches!(
+            e.kind().name(),
+            "minecraft:arrow"
+                | "minecraft:spectral_arrow"
+                | "minecraft:trident"
+                | "minecraft:fireball"
+                | "minecraft:small_fireball"
+                | "minecraft:dragon_fireball"
+                | "minecraft:wither_skull"
+                | "minecraft:wind_charge"
+                | "minecraft:breeze_wind_charge"
+                | "minecraft:snowball"
+                | "minecraft:egg"
+                | "minecraft:ender_pearl"
+                | "minecraft:experience_bottle"
+                | "minecraft:llama_spit"
+                | "minecraft:shulker_bullet"
+                | "minecraft:fishing_bobber"
+        )
+    {
+        source.projectile_motion = Some(e.velocity());
+    }
+    source
 }
 
 /// `isInvulnerableTo` of a mob.
@@ -128,6 +167,7 @@ pub fn hurt_mob(
     source: DamageSource,
     amount: f32,
 ) -> bool {
+    let source = with_projectile_motion(ents, source);
     let kind = source.kind;
     let types = env.types;
     if invulnerable_to(ents, env, target, kind) {
@@ -244,17 +284,21 @@ pub fn hurt_mob(
             e.set_flags(EntityFlags::HURT_MARKED, true);
         }
         if !types.is(kind, tag::NO_KNOCKBACK) {
-            // `getSourcePosition`: the explicit position, else the direct entity's (a thrown
-            // potion pushes away from where it splashed).
-            let (xd, zd) = source
-                .position
-                .or_else(|| {
-                    source
-                        .direct
-                        .and_then(|d| ents.store.get(d))
-                        .map(|e| e.pos())
-                })
-                .map_or((0.0, 0.0), |p| (p.x - pos.x, p.z - pos.z));
+            // Against the projectile's motion, else away from `getSourcePosition`: the explicit
+            // position, else the direct entity's (a thrown potion pushes away from where it
+            // splashed).
+            let (xd, zd) = match source.projectile_motion {
+                Some(m) => (-m.x, -m.z),
+                None => source
+                    .position
+                    .or_else(|| {
+                        source
+                            .direct
+                            .and_then(|d| ents.store.get(d))
+                            .map(|e| e.pos())
+                    })
+                    .map_or((0.0, 0.0), |p| (p.x - pos.x, p.z - pos.z)),
+            };
             apply_knockback(ents, target, f64::from(0.4_f32), xd, zd);
         }
     }
@@ -319,6 +363,18 @@ pub fn hurt_mob(
         };
         super::fam::after_hurt(&mut h, mob_kind, damage);
     }
+    // `PLAYER_HURT_ENTITY` of the player that caused it.
+    if let Some(player) = source.cause.filter(|&c| ents.player(c).is_some()) {
+        let types = env.types;
+        view::fire(ents, player, TriggerKind::PLAYER_HURT_ENTITY, |ents| {
+            let victim = view::snapshot(ents, target)
+                .unwrap_or_else(|| Box::new(EntityView::new(mob_kind.name(), pos)));
+            Event::PlayerHurtEntity(
+                victim,
+                view::damage_event(ents, types, &source, damage, damage, false),
+            )
+        });
+    }
     true
 }
 
@@ -378,9 +434,12 @@ fn actually_hurt(
         );
     }
     // `getDamageAfterMagicAbsorb`: Resistance.
+    let mut resisted = 0.0;
     if !types.is(source.kind, tag::BYPASSES_EFFECTS) {
         if !types.is(source.kind, tag::BYPASSES_RESISTANCE) {
+            let before = damage;
             damage = m.effects.resistance_damage(damage);
+            resisted = before - damage;
         }
         if damage <= 0.0 {
             damage = 0.0;
@@ -390,6 +449,7 @@ fn actually_hurt(
     // Absorption takes the damage first.
     let remaining = (damage - m.absorption).max(0.0);
     m.absorption -= damage - remaining;
+    let absorbed = damage - remaining;
     let damage = remaining;
     if damage != 0.0 {
         m.health = (m.health - damage).max(0.0);
@@ -397,6 +457,49 @@ fn actually_hurt(
             e.mark_data_dirty();
         }
     }
+    // `DAMAGE_DEALT_RESISTED` and `DAMAGE_DEALT_ABSORBED` of the player that caused it.
+    if let Some(p) = source.cause.and_then(|c| ents.player_mut(c)) {
+        if let Some(v) = crate::survival::player::damage_stat(resisted) {
+            p.stats
+                .award(crate::stats::custom::DAMAGE_DEALT_RESISTED, v);
+        }
+        if let Some(v) = crate::survival::player::damage_stat(absorbed) {
+            p.stats
+                .award(crate::stats::custom::DAMAGE_DEALT_ABSORBED, v);
+        }
+    }
+}
+
+/// `resolveMobResponsibleForDamage` / `resolvePlayerResponsibleForDamage` without damage
+/// (`Creaking.blameSourceForDamage`): the responsible player, if any.
+pub fn blame(ents: &mut Entities, target: EntityId, source: &DamageSource) -> Option<EntityId> {
+    let cause = source.cause?;
+    let is_player = ents.player(cause).is_some();
+    let living = is_player || ents.mob(cause).is_some();
+    let m = ents.mob_mut(target)?;
+    if living {
+        m.last_hurt_by_mob = Some(cause);
+        m.last_hurt_by_mob_time = m.tick_count;
+    }
+    if is_player {
+        m.last_hurt_by_player = Some(cause);
+        m.last_hurt_by_player_time = 100;
+    }
+    is_player.then_some(cause)
+}
+
+/// `blameSourceForDamage(source)` and `die(source)` of a mob killed without damage (a
+/// creaking whose heart was broken).
+pub fn blame_and_die(
+    level: &Level,
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    cx: &mut MobContext,
+    target: EntityId,
+    source: DamageSource,
+) {
+    blame(ents, target, &source);
+    die(level, ents, env, cx, target, source);
 }
 
 /// `LivingEntity.die` of a mob.
@@ -450,6 +553,32 @@ fn die(
     // `gameEvent(ENTITY_DIE)`: a sculk catalyst nearby takes the experience
     // (`CatalystListener`, `skipDropExperience`); vibration listeners hear the death.
     let consumed = crate::block::sculk_catalyst::catalyst_near(level, pos);
+    if consumed && reward > 0 {
+        // `CatalystListener.tryAwardItSpreadsAdvancement`: the player that hurt it last, with
+        // the damage source before the killing blow (else a player attack).
+        let last = ents.mob(target).and_then(|m| {
+            m.last_hurt_by_mob
+                .filter(|&p| ents.player(p).is_some())
+                .map(|p| (p, m.last_damage_source(env.game_time)))
+        });
+        if let Some((player, last_kind)) = last {
+            let types = env.types;
+            let kind = TriggerKind::KILL_MOB_NEAR_SCULK_CATALYST;
+            view::fire(ents, player, kind, |ents| {
+                let blow = match last_kind {
+                    Some(k) => DamageSource::of(k),
+                    None => entity_source(ents, types.player_attack, player, player),
+                };
+                let victim = view::snapshot(ents, target)
+                    .unwrap_or_else(|| Box::new(EntityView::new(mob_kind.name(), pos)));
+                Event::Killed(
+                    kind,
+                    victim,
+                    Box::new(view::damage_view(ents, types, &blow)),
+                )
+            });
+        }
+    }
     if consumed {
         cx.actions.push(super::WorldAction::Level(
             super::boss::warden::LevelAction::SculkDeath {
@@ -505,6 +634,34 @@ fn die(
     if !consumed && (killed_by_player && env.rules.bool(Rule::MOB_DROPS)) && reward > 0 {
         award_experience(env, pos, reward);
     }
+    // `getKillCredit().awardKillScore(this, source)`: the player that hurt it last, else the
+    // last attacking mob.
+    let credit = ents.mob(target).and_then(|m| {
+        m.last_hurt_by_player
+            .filter(|_| m.last_hurt_by_player_time > 0)
+            .or(m.last_hurt_by_mob)
+    });
+    // `ServerPlayer.awardKillScore`: `PLAYER_KILLED_ENTITY` of the player with the credit.
+    if let Some(player) = credit
+        .or(source.cause)
+        .filter(|&k| k != target && ents.player(k).is_some())
+    {
+        let types = env.types;
+        view::fire(ents, player, TriggerKind::PLAYER_KILLED_ENTITY, |ents| {
+            let victim = view::snapshot(ents, target)
+                .unwrap_or_else(|| Box::new(EntityView::new(mob_kind.name(), pos)));
+            Event::Killed(
+                TriggerKind::PLAYER_KILLED_ENTITY,
+                victim,
+                Box::new(view::damage_view(ents, types, &source)),
+            )
+        });
+    }
+    env.out.push(Effect::Died {
+        victim: target,
+        killer: credit.or(source.cause),
+        message: None,
+    });
     env.out.push(Effect::Tracking {
         entity: target,
         with_self: false,
@@ -628,7 +785,7 @@ fn table_loot(
     let name = ents.store.get(target)?.kind().info().name;
     let (ns, path) = name.split_once(':').unwrap_or(("minecraft", name));
     let table = format!("{ns}:entities/{path}");
-    if !data.loot.has_table(&table) {
+    if !data.loot.contains(&table) {
         return None;
     }
     let this = super::attack::facts(ents, target)?;
@@ -657,7 +814,7 @@ fn table_loot(
             cause: attacker,
         }),
         types: env.types,
-        tags: data,
+        tags: &*data,
         attacker_enchantment_level: &ench_level,
     };
     let none = |_: &str| 0;

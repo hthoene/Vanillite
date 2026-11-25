@@ -18,7 +18,7 @@ use super::{
     target_mobs, target_players,
 };
 use crate::item::{EquipmentSlot, ItemStack};
-use crate::survival::rules::Rule;
+use crate::survival::rules::{Difficulty, Rule};
 
 /// `LongDistancePatrolGoal` state.
 #[derive(Clone, Copy, Debug)]
@@ -53,6 +53,8 @@ pub enum LookFilter {
     AnyMob,
     /// `Guardian.class`.
     Guardian,
+    /// One kind (`Strider.class`).
+    Kind(Kind),
 }
 
 /// `LookAtPlayerGoal(mob, Mob.class or Guardian.class, distance, probability)`.
@@ -137,14 +139,49 @@ pub fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
     }
 }
 
-/// `Raid.getOminousBannerInstance` without its patterns (the banner pattern registry is data
-/// driven): a white banner named "Ominous Banner", uncommon.
+/// The layers of the ominous banner (`Raid.getBannerComponentPatch`): pattern and dye colour.
+const OMINOUS_BANNER_LAYERS: [(&str, i32); 8] = [
+    ("rhombus", 9),
+    ("stripe_bottom", 8),
+    ("stripe_center", 7),
+    ("border", 8),
+    ("stripe_middle", 15),
+    ("half_horizontal", 8),
+    ("circle", 8),
+    ("border", 15),
+];
+
+/// `Raid.getOminousBannerInstance`: a white banner with the ominous patterns (`addIfRegistered`:
+/// patterns the loaded registry lacks are left out) hidden from the tooltip, named "Ominous
+/// Banner", uncommon.
 pub fn ominous_banner() -> ItemStack {
     let mut s = equipment::stack("minecraft:white_banner");
     if s.is_empty() {
         return s;
     }
     let reg = &vanillite_data::registry::DATA_COMPONENT_TYPE;
+    if let Some(data) = crate::player::play::game_data() {
+        for (name, color) in OMINOUS_BANNER_LAYERS {
+            let id = data
+                .banner_patterns
+                .names
+                .iter()
+                .position(|n| n.strip_prefix("minecraft:").unwrap_or(n) == name);
+            if let Some(id) = id.and_then(|i| u32::try_from(i).ok()) {
+                crate::menu::add_layer(&mut s, id, color);
+            }
+        }
+    }
+    if let (Some(display), Some(hidden)) = (
+        reg.id("minecraft:tooltip_display"),
+        reg.id("minecraft:banner_patterns"),
+    ) {
+        // `TooltipDisplay.DEFAULT.withHidden(BANNER_PATTERNS, true)`.
+        let mut value = vec![0u8];
+        vanillite_protocol::codec::write_varint(&mut value, 1);
+        vanillite_protocol::codec::write_varint(&mut value, i32::from(hidden));
+        s.patch_mut().set(display, value.into_boxed_slice());
+    }
     let mut name = Compound::new();
     name.insert("translate", "block.minecraft.ominous_banner");
     if let (Some(id), Some(value)) = (
@@ -172,13 +209,31 @@ pub fn is_johnny_name(encoded: &[u8]) -> bool {
 
 // --- Vindicator -----------------------------------------------------------------------------
 
-/// `Vindicator.registerGoals` (the raid door goals need a raid and never start).
+/// `Vindicator.registerGoals`.
 pub fn register_vindicator(m: &mut MobData) {
     let g = &mut m.goals;
     let tg = &mut m.targets;
     g.add(4, patrol());
+    add_raider_goals(g);
     g.add(0, MobGoal::Float);
     g.add(1, avoid_creaking(1.0, 1.2));
+    g.add(
+        2,
+        fam(Goal::RaidDoor {
+            inner: door_goal(super::super::super::movement::MoveGoal::break_door_seconds(
+                6,
+                |d| matches!(d, Difficulty::Normal | Difficulty::Hard),
+            )),
+            breaker: true,
+        }),
+    );
+    g.add(
+        3,
+        fam(Goal::RaidDoor {
+            inner: door_goal(super::super::super::movement::MoveGoal::open_door(false)),
+            breaker: false,
+        }),
+    );
     g.add(4, fam(Goal::HoldGround { radius_sqr: 100.0 }));
     g.add(5, MobGoal::melee(MeleeKind::Plain, 1.0, false));
     tg.add(1, hurt_by(Ignore::Raiders, true));
@@ -206,10 +261,13 @@ pub fn register_vindicator(m: &mut MobData) {
 /// `Vindicator.finalizeSpawn`: doors and the iron axe.
 pub fn finalize_vindicator(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
     m.nav.can_open_doors = true;
-    m.equipment.set(
-        EquipmentSlot::MainHand,
-        equipment::stack("minecraft:iron_axe"),
-    );
+    // `populateDefaultEquipmentSlots`: raiders of a raid get their axe from the raid buffs.
+    if st(m).raid.is_none() {
+        m.equipment.set(
+            EquipmentSlot::MainHand,
+            equipment::stack("minecraft:iron_axe"),
+        );
+    }
     equipment::populate_default_enchantments(m, ctx.special_multiplier);
 }
 
@@ -229,9 +287,9 @@ fn patrol_companions(t: &mut Tick<'_, '_>, out: &mut Vec<EntityId>) {
     t.ents.store.for_each_in(&area, false, |id| ids.push(id));
     for &id in &ids {
         if id != t.id
-            && t.ents
-                .mob(id)
-                .is_some_and(|m| is_raider(m.kind) && m.is_alive())
+            && t.ents.mob(id).is_some_and(|m| {
+                is_raider(m.kind) && m.is_alive() && !crate::raid::has_active_raid(t.ents, m)
+            })
         {
             out.push(id);
         }
@@ -326,7 +384,7 @@ pub fn hold_ground_can_use(t: &mut Tick<'_, '_>) -> bool {
     let by_player = m
         .last_hurt_by_mob
         .is_some_and(|by| t.ents.player(by).is_some());
-    st(m).patrolling && m.target.is_some() && !m.aggressive && !by_player
+    st(m).raid.is_none() && st(m).patrolling && m.target.is_some() && !m.aggressive && !by_player
 }
 
 /// The raiders within 8 blocks (`getNearbyEntities(Raider.class, shoutTargeting, ...)`).
@@ -496,6 +554,7 @@ fn looks_at(t: &Tick<'_, '_>, filter: LookFilter, id: EntityId) -> bool {
             && match filter {
                 LookFilter::AnyMob => true,
                 LookFilter::Guardian => m.kind == Kind::Guardian,
+                LookFilter::Kind(k) => m.kind == k,
             }
     })
 }
@@ -585,5 +644,436 @@ pub fn set_celebrating(t: &mut Tick<'_, '_>, on: bool) {
     if st(t.mob_ref()).celebrating != on {
         st_mut(t.mob()).celebrating = on;
         dirty(t);
+    }
+}
+
+// --- Raids -------------------------------------------------------------------------------------
+
+/// `Raider.registerGoals` after `PatrollingMonster`'s patrol goal: the banner, the way to the
+/// raid, moving through the village and the celebration.
+pub fn add_raider_goals(g: &mut goals::GoalSelector) {
+    g.add(1, fam(Goal::ObtainBanner { banner: None }));
+    g.add(
+        3,
+        fam(Goal::PathfindToRaid {
+            recruitment_tick: 0,
+        }),
+    );
+    g.add(4, fam(Goal::MoveThroughVillage(MoveThroughVillage::new())));
+    g.add(5, fam(Goal::Celebration));
+}
+
+/// The shared goal inside a movement goal constructor.
+fn door_goal(g: MobGoal) -> super::super::super::common::CommonGoal {
+    match g {
+        MobGoal::Common(c) => c,
+        _ => unreachable!("the door goals are shared goals"),
+    }
+}
+
+/// `Raider.aiStep` before `Mob.aiStep`: a raider that may join one joins the raid around it
+/// every second; raiders of a raid fighting players or golems are not idle.
+pub fn ai_step(t: &mut Tick<'_, '_>) {
+    if !t.mob_ref().is_alive() || !st(t.mob_ref()).can_join_raid {
+        return;
+    }
+    match st(t.mob_ref()).raid {
+        None => {
+            if t.env.game_time % 20 == 0
+                && let Some((id, raid)) = t
+                    .ents
+                    .raids
+                    .nearby_raid(t.block_pos(), crate::raid::VALID_RAID_RADIUS_SQR)
+                && crate::raid::can_join_raid(t.mob_ref())
+            {
+                let wave = raid.groups_spawned;
+                let me = t.id;
+                crate::raid::join_existing(t.ents, id, wave, me, t.env.out);
+            }
+        }
+        Some(_) => {
+            let fights = t.mob_ref().target.is_some_and(|target| {
+                t.ents.player(target).is_some()
+                    || t.ents
+                        .mob(target)
+                        .is_some_and(|m| m.kind == Kind::IronGolem)
+            });
+            if fights {
+                t.mob().no_action_time = 0;
+            }
+        }
+    }
+}
+
+/// `ItemStack.matches(stack, Raid.getOminousBannerInstance())`.
+pub fn is_ominous_banner(stack: &ItemStack) -> bool {
+    let banner = ominous_banner();
+    !stack.is_empty() && stack.same_item_same_components(&banner) && stack.count == banner.count
+}
+
+/// `Raider.pickUpItem` (`Pillager.pickUpItem` sends banners here): an ominous banner makes a
+/// raider of a raid without a leader its wave's leader; other items are equipped as usual.
+pub fn pick_up_item(t: &mut Tick<'_, '_>, item: EntityId) -> bool {
+    let Some(stack) = t.ents.item(item).map(|d| d.stack.clone()) else {
+        return false;
+    };
+    let active = crate::raid::has_active_raid(t.ents, t.mob_ref());
+    let wave = st(t.mob_ref()).wave;
+    let raid_id = st(t.mob_ref()).raid;
+    let has_leader = raid_id
+        .and_then(|id| t.ents.raids.get(id))
+        .is_some_and(|r| r.leader(wave).is_some());
+    if active && !has_leader && is_ominous_banner(&stack) {
+        let current = t.mob_ref().equipment.get(EquipmentSlot::Head).clone();
+        let chance = t.mob_ref().equipment.drop_chance(EquipmentSlot::Head);
+        if !current.is_empty() && (t.mob().random.next_float() - 0.1).max(0.0) < chance {
+            let pos = t.pos();
+            let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
+            t.env.out.push(crate::survival::Effect::DropItem {
+                uuid,
+                pos,
+                velocity,
+                y_rot,
+                pickup_delay: 10,
+                stack: current,
+            });
+        }
+        t.mob().equipment.set(EquipmentSlot::Head, stack.clone());
+        equipment::take(t, item, stack.count);
+        if !t.cx.discarded.contains(&item) {
+            t.cx.discarded.push(item);
+        }
+        let me = t.id;
+        if let Some(raid) = raid_id.and_then(|id| t.ents.raids.get_mut(id)) {
+            raid.leaders.retain(|l| l.0 != wave);
+            raid.leaders.push((wave, me));
+        }
+        // `Raid.setLeader`: the banner and its drop chance.
+        t.mob().equipment.set(EquipmentSlot::Head, ominous_banner());
+        t.mob().equipment.set_drop_chance(EquipmentSlot::Head, 2.0);
+        st_mut(t.mob()).patrol_leader = true;
+        return true;
+    }
+    // `Mob.pickUpItem`.
+    let rules = if t.mob_ref().kind == Kind::Pillager {
+        equipment::PickupRules {
+            wants: |_, s| crate::item::item_id(s).name().ends_with("_banner"),
+            preferred_weapon: Some("minecraft:pillager_preferred_weapons"),
+        }
+    } else {
+        equipment::PickupRules::default()
+    };
+    let equipped = equipment::equip_item_if_possible(t, &stack, &rules);
+    if equipped.is_empty() {
+        return false;
+    }
+    equipment::take(t, item, equipped.count);
+    true
+}
+
+/// `ObtainRaidLeaderBannerGoal.cannotPickUpBanner`.
+fn cannot_pick_up_banner(t: &Tick<'_, '_>) -> bool {
+    let m = t.mob_ref();
+    let Some(raid) = crate::raid::current_raid(t.ents, m).filter(|r| r.is_active()) else {
+        return true;
+    };
+    if raid.is_over() || !crate::raid::can_be_leader(m.kind) {
+        return true;
+    }
+    if is_ominous_banner(m.equipment.get(EquipmentSlot::Head)) {
+        return true;
+    }
+    raid.leader(st(m).wave)
+        .is_some_and(|l| t.ents.mob(l).is_some_and(MobData::is_alive))
+}
+
+pub fn banner_can_use(t: &mut Tick<'_, '_>, banner: &mut Option<EntityId>) -> bool {
+    if cannot_pick_up_banner(t) {
+        return false;
+    }
+    let range = t.mob_ref().attrs.follow_range;
+    let area = t.aabb().inflate(range, 8.0, range);
+    let mut ids = std::mem::take(&mut t.cx.ids);
+    ids.clear();
+    t.ents.store.for_each_in(&area, false, |id| ids.push(id));
+    let now = t.env.game_time;
+    let old = std::mem::take(&mut st_mut(t.mob()).banner_cache);
+    let mut cache = Vec::new();
+    let mut found = false;
+    for &id in &ids {
+        let allowed = t.ents.item(id).is_some_and(|d| {
+            d.pickup_delay <= 0 && !t.cx.discarded.contains(&id) && is_ominous_banner(&d.stack)
+        });
+        if !allowed {
+            continue;
+        }
+        let until = old.iter().find(|c| c.0 == id).map_or(i64::MIN, |c| c.1);
+        if now < until {
+            cache.push((id, until));
+            continue;
+        }
+        let Some(pos) = t.ents.store.get(id).map(|e| e.pos()) else {
+            continue;
+        };
+        let path = nav::create_path_to(t, BlockPos::containing(pos.x, pos.y, pos.z), 1);
+        if let Some(path) = path.filter(|p| p.reached) {
+            t.mob().goal_path = Some(path);
+            *banner = Some(id);
+            found = true;
+            break;
+        }
+        cache.push((id, now + 600));
+    }
+    t.cx.ids = ids;
+    st_mut(t.mob()).banner_cache = if found { old } else { cache };
+    found
+}
+
+pub fn banner_can_continue(t: &mut Tick<'_, '_>, banner: &Option<EntityId>) -> bool {
+    let Some(id) = *banner else {
+        return false;
+    };
+    if t.ents.item(id).is_none() || t.cx.discarded.contains(&id) {
+        return false;
+    }
+    let done = t.mob_ref().nav.path.as_ref().is_none_or(|p| p.is_done());
+    !done && !cannot_pick_up_banner(t)
+}
+
+pub fn banner_start(t: &mut Tick<'_, '_>) {
+    let path = t.mob().goal_path.take();
+    nav::move_to_path(t, path, 1.15);
+}
+
+pub fn banner_tick(t: &mut Tick<'_, '_>, banner: &mut Option<EntityId>) {
+    let Some(id) = *banner else {
+        return;
+    };
+    let Some(pos) = t.ents.store.get(id).map(|e| e.pos()) else {
+        return;
+    };
+    if pos.distance_to_sqr(t.pos()) < 1.414 * 1.414 {
+        pick_up_item(t, id);
+    }
+}
+
+/// `hasControllingPassenger`.
+fn has_controlling_passenger(t: &Tick<'_, '_>) -> bool {
+    t.ents
+        .riding
+        .passengers_of(t.id)
+        .first()
+        .is_some_and(|&p| crate::riding::controls(t.ents, p, t.id))
+}
+
+/// `hasActiveRaid() && !getCurrentRaid().isOver()`: the raid id.
+fn ongoing_raid(t: &Tick<'_, '_>) -> Option<i32> {
+    let id = st(t.mob_ref()).raid?;
+    let raid = t.ents.raids.get(id)?;
+    (raid.is_active() && !raid.is_over()).then_some(id)
+}
+
+pub fn pathfind_can_use(t: &mut Tick<'_, '_>) -> bool {
+    t.mob_ref().target.is_none()
+        && !has_controlling_passenger(t)
+        && ongoing_raid(t).is_some()
+        && !t.ents.poi.is_village(t.block_pos())
+}
+
+pub fn pathfind_can_continue(t: &mut Tick<'_, '_>) -> bool {
+    ongoing_raid(t).is_some() && !t.ents.poi.is_village(t.block_pos())
+}
+
+pub fn pathfind_tick(t: &mut Tick<'_, '_>, recruitment_tick: &mut i32) {
+    let Some(raid_id) = st(t.mob_ref()).raid else {
+        return;
+    };
+    let Some((center, wave)) = t
+        .ents
+        .raids
+        .get(raid_id)
+        .filter(|r| r.is_active())
+        .map(|r| (r.center, r.groups_spawned))
+    else {
+        return;
+    };
+    if t.mob_ref().tick_count > *recruitment_tick {
+        *recruitment_tick = t.mob_ref().tick_count + 20;
+        // `recruitNearby`.
+        let area = t.aabb().inflate(16.0, 16.0, 16.0);
+        let mut ids = std::mem::take(&mut t.cx.ids);
+        ids.clear();
+        t.ents.store.for_each_in(&area, false, |id| ids.push(id));
+        let recruits: Vec<EntityId> = ids
+            .iter()
+            .copied()
+            .filter(|&id| {
+                t.ents.mob(id).is_some_and(|m| {
+                    super::is_raider(m.kind)
+                        && !crate::raid::has_active_raid(t.ents, m)
+                        && crate::raid::can_join_raid(m)
+                })
+            })
+            .collect();
+        t.cx.ids = ids;
+        for id in recruits {
+            crate::raid::join_existing(t.ents, raid_id, wave, id, t.env.out);
+        }
+    }
+    if t.mob_ref().nav.is_done() {
+        let towards = randompos::bottom_center(center);
+        if let Some(p) = randompos::default_pos_towards(t, 15, 4, towards, randompos::half_pi()) {
+            nav::move_to_pos(t, p, 1.0);
+        }
+    }
+}
+
+/// `RaiderMoveThroughVillageGoal` state: the home it walks to and the last homes it reached.
+#[derive(Clone, Copy, Debug)]
+pub struct MoveThroughVillage {
+    pub poi: BlockPos,
+    pub visited: [BlockPos; 3],
+    pub visited_len: u8,
+    pub stuck: bool,
+}
+
+impl MoveThroughVillage {
+    pub fn new() -> MoveThroughVillage {
+        MoveThroughVillage {
+            poi: BlockPos::ZERO,
+            visited: [BlockPos::ZERO; 3],
+            visited_len: 0,
+            stuck: false,
+        }
+    }
+
+    fn visited(&self) -> &[BlockPos] {
+        &self.visited[..usize::from(self.visited_len)]
+    }
+}
+
+impl Default for MoveThroughVillage {
+    fn default() -> Self {
+        MoveThroughVillage::new()
+    }
+}
+
+/// `BlockPos.closerToCenterThan(pos, dist)`.
+fn closer_to_center(p: BlockPos, pos: Vec3, dist: f64) -> bool {
+    let c = Vec3::new(
+        f64::from(p.x) + 0.5,
+        f64::from(p.y) + 0.5,
+        f64::from(p.z) + 0.5,
+    );
+    c.distance_to_sqr(pos) < dist * dist
+}
+
+pub fn move_through_can_use(t: &mut Tick<'_, '_>, v: &mut MoveThroughVillage) -> bool {
+    // `updateVisited`.
+    if v.visited_len > 2 {
+        v.visited.copy_within(1.., 0);
+        v.visited_len -= 1;
+    }
+    if ongoing_raid(t).is_none() {
+        return false;
+    }
+    let visited: Vec<BlockPos> = v.visited().to_vec();
+    let pos = t.block_pos();
+    let mut random = std::mem::replace(
+        &mut t.mob().random,
+        vanillite_base::random::LegacyRandom::new(0),
+    );
+    let home = t.ents.poi.get_random(
+        |ty| ty == crate::poi::PoiType::Home,
+        |p| !visited.contains(&p),
+        crate::poi::Occupancy::Any,
+        pos,
+        48,
+        &mut random,
+    );
+    t.mob().random = random;
+    let Some(home) = home else {
+        return false;
+    };
+    v.poi = home;
+    t.mob_ref().target.is_none()
+}
+
+pub fn move_through_can_continue(t: &mut Tick<'_, '_>, v: &MoveThroughVillage) -> bool {
+    if t.mob_ref().nav.is_done() {
+        return false;
+    }
+    let width = f64::from(t.core().dims().width);
+    t.mob_ref().target.is_none() && !closer_to_center(v.poi, t.pos(), width + 1.0) && !v.stuck
+}
+
+pub fn move_through_start(t: &mut Tick<'_, '_>, v: &mut MoveThroughVillage) {
+    t.mob().no_action_time = 0;
+    let p = v.poi;
+    nav::move_to_pos(
+        t,
+        Vec3::new(f64::from(p.x), f64::from(p.y), f64::from(p.z)),
+        1.05,
+    );
+    v.stuck = false;
+}
+
+pub fn move_through_stop(t: &mut Tick<'_, '_>, v: &mut MoveThroughVillage) {
+    if closer_to_center(v.poi, t.pos(), 1.0) {
+        let n = usize::from(v.visited_len);
+        if n < v.visited.len() {
+            v.visited[n] = v.poi;
+            v.visited_len += 1;
+        }
+    }
+}
+
+pub fn move_through_tick(t: &mut Tick<'_, '_>, v: &mut MoveThroughVillage) {
+    if !t.mob_ref().nav.is_done() {
+        return;
+    }
+    let towards = randompos::bottom_center(v.poi);
+    let next = randompos::default_pos_towards(t, 16, 7, towards, std::f64::consts::PI / 10.0)
+        .or_else(|| randompos::default_pos_towards(t, 8, 7, towards, randompos::half_pi()));
+    match next {
+        Some(p) => {
+            nav::move_to_pos(t, p, 1.05);
+        }
+        None => v.stuck = true,
+    }
+}
+
+pub fn celebration_can_use(t: &mut Tick<'_, '_>) -> bool {
+    let m = t.mob_ref();
+    m.is_alive()
+        && m.target.is_none()
+        && crate::raid::current_raid(t.ents, m).is_some_and(crate::raid::Raid::is_loss)
+}
+
+/// `Raider.getCelebrateSound`.
+fn celebrate_sound(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Pillager => "minecraft:entity.pillager.celebrate",
+        Kind::Vindicator => "minecraft:entity.vindicator.celebrate",
+        Kind::Evoker => "minecraft:entity.evoker.celebrate",
+        Kind::Illusioner => "minecraft:entity.illusioner.ambient",
+        Kind::Witch => "minecraft:entity.witch.celebrate",
+        _ => "minecraft:entity.ravager.celebrate",
+    }
+}
+
+pub fn celebration_tick(t: &mut Tick<'_, '_>) {
+    if !t.mob_ref().silent && t.mob().random.next_int_bounded(goals::reduced(100).max(1)) == 0 {
+        // `makeSound`: the voice pitch of an adult.
+        let r = &mut t.mob().random;
+        let pitch = (r.next_float() - r.next_float()) * 0.2 + 1.0;
+        let sound = celebrate_sound(t.mob_ref().kind);
+        let volume = crate::mob::fam::mob_sound_volume(t.mob_ref());
+        super::super::super::kinds::play_sound(t, sound, volume, pitch);
+    }
+    if t.ents.vehicle_of(t.id).is_none()
+        && t.mob().random.next_int_bounded(goals::reduced(50).max(1)) == 0
+    {
+        t.mob().jump = true;
     }
 }

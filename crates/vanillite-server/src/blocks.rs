@@ -166,15 +166,6 @@ pub fn game_data(packs: Option<&LoadedPacks>) -> GameData {
                 .collect()
         })
         .unwrap_or_default();
-    let enchantment_info = packs
-        .registry("minecraft:enchantment")
-        .map(|r| {
-            r.entries()
-                .iter()
-                .filter_map(|e| Some((e.id.clone(), enchantment_info(packs, e.json.get())?)))
-                .collect()
-        })
-        .unwrap_or_default();
     let mut enchanting = vanillite_game::enchant::Enchanting::load(
         &entries,
         &|tag| item_tags.get(tag).cloned().unwrap_or_default(),
@@ -194,6 +185,19 @@ pub fn game_data(packs: Option<&LoadedPacks>) -> GameData {
         &names("minecraft:trim_material"),
         &names("minecraft:trim_pattern"),
     );
+    let jukebox_songs = packs
+        .registry("minecraft:jukebox_song")
+        .map(|r| {
+            r.entries()
+                .iter()
+                .map(|e| {
+                    let json =
+                        serde_json::from_str::<serde_json::Value>(e.json.get()).unwrap_or_default();
+                    vanillite_game::block::jukebox::JukeboxSong::from_json(&e.id, &json)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let banner_patterns = vanillite_game::menu::BannerPatterns {
         names: names("minecraft:banner_pattern"),
         tags: packs
@@ -224,7 +228,42 @@ pub fn game_data(packs: Option<&LoadedPacks>) -> GameData {
             (registry.to_owned(), tags)
         })
         .collect();
+    let json_entries = |registry: &str| -> Vec<(String, serde_json::Value)> {
+        packs
+            .registry(registry)
+            .map(|r| {
+                r.entries()
+                    .iter()
+                    .map(|e| {
+                        let json = serde_json::from_str(e.json.get()).unwrap_or_default();
+                        (e.id.clone(), json)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let trades = vanillite_game::trading::data::TradeData::load(
+        &json_entries("minecraft:villager_trade"),
+        &json_entries("minecraft:trade_set"),
+        &|tag| {
+            packs
+                .tag_ids("minecraft:villager_trade", tag)
+                .unwrap_or_default()
+        },
+        &|id| {
+            packs
+                .registry("minecraft:villager_trade")
+                .and_then(|r| r.id_of(id))
+                .and_then(|i| u32::try_from(i).ok())
+        },
+    );
+    log::info!(
+        "Loaded {} villager trades in {} trade sets",
+        trades.trades.len(),
+        trades.sets.len()
+    );
     GameData {
+        trades,
         tools,
         loot,
         enchantments,
@@ -233,59 +272,14 @@ pub fn game_data(packs: Option<&LoadedPacks>) -> GameData {
         entity_tags,
         enchants,
         enderman_holdable: tag_ids("minecraft:block", "minecraft:enderman_holdable"),
-        enchantment_info,
         block_tags,
         recipes,
         enchanting,
         banner_patterns,
         registry_tags,
         instruments,
+        jukebox_songs,
     }
-}
-
-/// The entries of a holder set in JSON (`"#tag"`, an id or a list of ids) of `registry`.
-fn holder_set(
-    packs: &LoadedPacks,
-    registry: &str,
-    json: Option<&serde_json::Value>,
-) -> Vec<String> {
-    match json {
-        Some(serde_json::Value::String(s)) => match s.strip_prefix('#') {
-            Some(tag) => packs
-                .tags(registry)
-                .and_then(|t| t.get(tag))
-                .cloned()
-                .unwrap_or_default(),
-            None => vec![s.clone()],
-        },
-        Some(serde_json::Value::Array(list)) => list
-            .iter()
-            .filter_map(|v| v.as_str().map(str::to_owned))
-            .collect(),
-        _ => Vec::new(),
-    }
-}
-
-/// What `/enchant` reads of an enchantment definition.
-fn enchantment_info(
-    packs: &LoadedPacks,
-    json: &str,
-) -> Option<vanillite_game::player::play::EnchantmentInfo> {
-    let json: serde_json::Value = serde_json::from_str(json).ok()?;
-    let supported_items = holder_set(packs, "minecraft:item", json.get("supported_items"))
-        .iter()
-        .filter_map(|name| vanillite_data::registry::ITEM.id(name))
-        .collect();
-    Some(vanillite_game::player::play::EnchantmentInfo {
-        description: vanillite_protocol::text::Component::try_from_json(json.get("description")?)
-            .ok()?,
-        max_level: json
-            .get("max_level")
-            .and_then(serde_json::Value::as_i64)
-            .and_then(|v| i32::try_from(v).ok())?,
-        supported_items,
-        exclusive_set: holder_set(packs, "minecraft:enchantment", json.get("exclusive_set")),
-    })
 }
 
 /// A sound to send.

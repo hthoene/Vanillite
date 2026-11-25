@@ -244,12 +244,18 @@ pub fn check_spawn_rules(
 
 // --- Setup ------------------------------------------------------------------------------
 
+/// `CubeMobMoveControl`'s constructor: its direction is `180 * yRot / PI` of the yaw the
+/// `LivingEntity` constructor rolled (radians taken as degrees).
+pub fn construct_move_yaw(m: &mut MobData, y_rot: f32) {
+    if cs(m).is_some() {
+        cs_mut(m).move_yaw = 180.0 * y_rot / std::f32::consts::PI;
+    }
+}
+
 pub fn init(m: &mut MobData) {
     cs_mut(m);
     m.nav.kind = NavKind::Ground;
     m.move_ctl.kind = MoveKind::Custom;
-    let y_rot = m.y_body_rot;
-    cs_mut(m).move_yaw = 180.0 * y_rot / std::f32::consts::PI;
     set_size(m, 1, true);
     if m.kind == Kind::SulfurCube {
         // A fresh sulfur cube is not a baby until it spawns as one.
@@ -379,16 +385,61 @@ pub fn ai_step(t: &mut Tick<'_, '_>) {
     touch_damage(t);
 }
 
-/// `playerTouch` and `push(IronGolem)`: players and iron golems touching a cube that can
-/// deal damage get hurt (`dealDamage`).
-fn touch_damage(t: &mut Tick<'_, '_>) {
-    let m = t.mob_ref();
+/// `isDealsDamage` of a living cube.
+fn deals_damage(m: &MobData) -> bool {
     let can_deal = if m.kind == Kind::MagmaCube {
         !m.no_ai
     } else {
         !is_tiny(m) && !m.no_ai
     };
-    if !can_deal || !m.is_alive() {
+    can_deal && m.is_alive()
+}
+
+/// `Player.touch` → `AbstractCubeMob.playerTouch` for a player the server moves itself
+/// (`Survival::simulate_movement`), at the end of its `aiStep`: the cubes in its box grown by
+/// (1, 0.5, 1) that deal damage hurt it. The cubes hurt the other players in their own tick
+/// ([`touch_damage`]).
+pub fn player_touch(
+    level: &Level,
+    ents: &mut crate::entities::Entities,
+    env: &mut crate::survival::player::Env<'_>,
+    cx: &mut crate::mob::MobContext,
+    player: EntityId,
+) {
+    let Some(area) = ents
+        .store
+        .get(player)
+        .map(|e| e.aabb().inflate(1.0, 0.5, 1.0))
+    else {
+        return;
+    };
+    let mut cubes = Vec::new();
+    ents.store.for_each_in(&area, false, |id| {
+        if ents
+            .mob(id)
+            .is_some_and(|m| matches!(m.kind, Kind::Slime | Kind::MagmaCube))
+        {
+            cubes.push(id);
+        }
+    });
+    for cube in cubes {
+        let mut t = Tick {
+            level,
+            ents: &mut *ents,
+            env: &mut *env,
+            cx: &mut *cx,
+            id: cube,
+        };
+        if t.exists() && deals_damage(t.mob_ref()) {
+            deal_damage(&mut t, player);
+        }
+    }
+}
+
+/// `playerTouch` and `push(IronGolem)`: players and iron golems touching a cube that can
+/// deal damage get hurt (`dealDamage`).
+fn touch_damage(t: &mut Tick<'_, '_>) {
+    if !deals_damage(t.mob_ref()) {
         return;
     }
     let aabb = t.aabb();
@@ -403,7 +454,11 @@ fn touch_damage(t: &mut Tick<'_, '_>) {
         let Some(e) = t.ents.store.get(id) else {
             continue;
         };
-        let touches = if t.ents.player(id).is_some() {
+        let touches = if let Some(p) = t.ents.player(id) {
+            if p.survival.simulate_movement {
+                // It touches the cube in its own tick ([`player_touch`]).
+                continue;
+            }
             // `Player.touch` uses the player's box grown by (1, 0.5, 1).
             e.aabb().inflate(1.0, 0.5, 1.0).intersects(&aabb)
         } else {
@@ -697,9 +752,22 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
         let block =
             std::mem::take(&mut m.equipment.items[usize::from(EquipmentSlot::Body.ordinal())]);
         cs_mut(m).pickup_timer = 100;
+        let sheared = crate::advancements::trigger::TriggerKind::PLAYER_SHEARED_EQUIPMENT;
+        let award =
+            crate::advancements::view::listens(ix.ents, ix.player, sheared).then(|| block.clone());
         super::drop_item(ix.env, pos + Vec3::new(0.0, height, 0.0), block);
         play(ix, pos, "minecraft:entity.sulfur_cube.eject");
         crate::mob::animal::hurt_held(ix.ents, ix.env, ix.player, ix.hand, 1);
+        if let Some(stack) = award {
+            let target = ix.target;
+            crate::advancements::view::fire(ix.ents, ix.player, sheared, |ents| {
+                crate::advancements::trigger::Event::EntityItem(
+                    sheared,
+                    crate::advancements::view::snapshot(ents, target),
+                    stack,
+                )
+            });
+        }
         if let Some(mut e) = ix.ents.store.get_mut(ix.target) {
             e.mark_data_dirty();
         }
@@ -774,6 +842,7 @@ fn bucket(ix: &mut Interact<'_, '_>, pos: Vec3) -> Interaction {
         stack.patch_mut().set(id, bytes);
     }
     play(ix, pos, "minecraft:item.bucket.fill_sulfur_cube");
+    crate::mob::animal::filled_bucket(ix.ents, ix.player, &stack);
     crate::mob::animal::fill_held(ix.ents, ix.env, ix.player, ix.hand, stack);
     if let Some(m) = ix.ents.mob_mut(ix.target) {
         m.removed = true;

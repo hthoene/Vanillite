@@ -1,0 +1,110 @@
+{
+  "description": "An allay hears a note block played by a redstone block and stays close to it.",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -55,
+      15
+    ]
+  ],
+  "ticks": 200,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -60,
+        13
+      ],
+      "block": "minecraft:note_block[instrument=harp,note=0,powered=false]"
+    }
+  ],
+  "entities": [
+    {
+      "name": "allay",
+      "type": "minecraft:allay",
+      "pos": [
+        7.5,
+        -59.0,
+        2.5
+      ],
+      "seed": 11,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 10,
+      "op": "place",
+      "pos": [
+        8,
+        -60,
+        13
+      ],
+      "block": "minecraft:redstone_block"
+    }
+  ],
+  "tier": "fast"
+}

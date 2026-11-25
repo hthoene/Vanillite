@@ -13,6 +13,7 @@ pub mod copper_golem;
 pub mod creaking;
 pub mod ghast;
 pub mod nautilus;
+pub mod transport;
 pub mod wind;
 
 use vanillite_base::random::LegacyRandom;
@@ -433,12 +434,24 @@ impl FamilyHooks for Hooks {
             Kind::HappyGhast => ghast::after_tick(t),
             Kind::Nautilus | Kind::ZombieNautilus => nautilus::after_tick(t),
             Kind::CopperGolem => copper_golem::after_tick(t),
+            Kind::Allay => allay::after_tick(t),
             _ => {}
+        }
+    }
+
+    fn is_immobile(m: &MobData) -> bool {
+        matches!(m.kind, Kind::Camel | Kind::CamelHusk) && camel::is_immobile(m)
+    }
+
+    fn ai_step_start(t: &mut Tick<'_, '_>) {
+        if matches!(t.mob_ref().kind, Kind::Camel | Kind::CamelHusk) {
+            camel::ai_step_start(t);
         }
     }
 
     fn ai_step(t: &mut Tick<'_, '_>) {
         match t.mob_ref().kind {
+            Kind::Camel | Kind::CamelHusk => camel::ai_step(t),
             Kind::HappyGhast => ghast::ai_step(t),
             Kind::Allay => allay::ai_step(t),
             Kind::Creaking => creaking::ai_step(t),
@@ -733,8 +746,8 @@ pub enum Behavior {
     BreezeShootWhenStuck,
     /// The breeze's `Slide`.
     BreezeSlide,
-    /// The copper golem's `TransportItemsBetweenContainers` (its idle cooldown only).
-    GolemTransport,
+    /// The copper golem's `TransportItemsBetweenContainers`.
+    GolemTransport(transport::Transport),
 }
 
 /// The family's brain sensors.

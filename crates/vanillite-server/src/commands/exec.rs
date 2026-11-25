@@ -190,7 +190,7 @@ fn wrap_degrees(v: f32) -> f32 {
     }
 }
 
-/// `TeleportCommand.performTeleport` for a player in this world.
+/// `TeleportCommand.performTeleport` for an entity in this world.
 pub(crate) fn teleport_local(
     entities: &mut Entities,
     target: &Target,
@@ -241,6 +241,33 @@ pub(crate) fn teleport_local(
         fall_flying: flags.contains(EntityFlags::FALL_FLYING),
     };
     let Some(player) = entities.player_mut(id) else {
+        // `Entity.teleportTo` in the same level, then `performTeleport`'s motion and ground.
+        let y_rot = if relatives & relative::Y_ROT != 0 {
+            rot.y_rot + y
+        } else {
+            y
+        };
+        let x_rot = if relatives & relative::X_ROT != 0 {
+            rot.x_rot + x
+        } else {
+            x
+        };
+        if let Some(mut entity) = entities.store.get_mut(id) {
+            entity.set_pos(pos);
+            entity.set_rot(Rotation {
+                y_rot,
+                x_rot,
+                y_head_rot: y_rot,
+            });
+            if !flags.contains(EntityFlags::FALL_FLYING) {
+                let v = entity.as_ref().velocity();
+                entity.set_velocity(Vec3::new(v.x, 0.0, v.z));
+                entity.set_flags(EntityFlags::ON_GROUND, true);
+            }
+        }
+        if let Some(mob) = entities.mob_mut(id) {
+            mob.nav.stop();
+        }
         return Ok(());
     };
     let sink = std::sync::Arc::clone(&player.connection.sink);
@@ -367,26 +394,20 @@ fn relatives(coordinates: &Coordinates, rotation: Option<&Coordinates>) -> i32 {
     bits
 }
 
-/// `TeleportCommand.teleportToEntity` / `teleportToPos` for players in this world.
+/// `TeleportCommand.teleportToEntity` / `teleportToPos`. The destination is in the source's
+/// world, or the destination entity's. Targets in another world move there on their world's
+/// thread (players travel like through a portal); a destination entity of another world is
+/// looked up on its thread, and the feedback follows from there.
 pub(crate) fn teleport(
     source: &CommandSource,
-    entities: &mut Entities,
-    global: &Global,
+    env: &mut super::Env<'_>,
     targets: Vec<Target>,
     destination: Destination,
 ) -> Result<i32, CommandError> {
+    let global = env.global;
     let count = i32::try_from(targets.len()).unwrap_or(i32::MAX);
     match &destination {
         Destination::Entity(to) => {
-            let Some((pos, y_rot, x_rot)) = to.place else {
-                return Err(CommandError::new(
-                    "commands.teleport.invalidPosition",
-                    vec![],
-                ));
-            };
-            for target in &targets {
-                teleport_local(entities, target, pos, 0, y_rot, x_rot)?;
-            }
             let message = match targets.as_slice() {
                 [one] => Component::translatable(
                     "commands.teleport.success.entity.single",
@@ -400,6 +421,48 @@ pub(crate) fn teleport(
                     vec![Arg::Int(count), Arg::from(display_name(&to.name, to.uuid))],
                 ),
             };
+            let Some((pos, y_rot, x_rot)) = to.place else {
+                // The destination is in another world: its place is read there.
+                let (uuid, world, source) = (to.uuid, to.world, source.clone());
+                super::entities_cmd::on_level(env, world, move |level, global, _| {
+                    let Some(place) = super::select::find_uuid(&level.entities, uuid)
+                        .and_then(|id| level.entities.store.get(id))
+                        .map(|e| (e.pos(), e.rot()))
+                    else {
+                        source.send_failure(
+                            global,
+                            Component::translatable("commands.teleport.invalidPosition", vec![]),
+                        );
+                        return;
+                    };
+                    let (pos, rot) = place;
+                    if !in_spawnable_bounds(pos) {
+                        source.send_failure(
+                            global,
+                            Component::translatable("commands.teleport.invalidPosition", vec![]),
+                        );
+                        return;
+                    }
+                    for target in &targets {
+                        move_to_world(global, target, world, pos, Some((rot.y_rot, rot.x_rot)));
+                    }
+                    source.send_success(global, message, true);
+                });
+                return Ok(count);
+            };
+            for target in &targets {
+                if target.entity.is_some() {
+                    teleport_local(&mut env.level.entities, target, pos, 0, y_rot, x_rot)?;
+                } else {
+                    if !in_spawnable_bounds(pos) {
+                        return Err(CommandError::new(
+                            "commands.teleport.invalidPosition",
+                            vec![],
+                        ));
+                    }
+                    move_to_world(global, target, env.world, pos, Some((y_rot, x_rot)));
+                }
+            }
             source.send_success(global, message, true);
         }
         Destination::Position {
@@ -416,11 +479,21 @@ pub(crate) fn teleport(
             });
             let bits = relatives(coordinates, rotation.as_ref());
             for target in &targets {
+                if target.entity.is_none() {
+                    if !in_spawnable_bounds(pos) {
+                        return Err(CommandError::new(
+                            "commands.teleport.invalidPosition",
+                            vec![],
+                        ));
+                    }
+                    move_to_world(global, target, source.world, pos, rot);
+                    continue;
+                }
                 let (y_rot, x_rot) = match rot {
                     Some(r) => r,
                     None => target.place.map_or((0.0, 0.0), |(_, y, x)| (y, x)),
                 };
-                teleport_local(entities, target, pos, bits, y_rot, x_rot)?;
+                teleport_local(&mut env.level.entities, target, pos, bits, y_rot, x_rot)?;
             }
             let coords = [pos.x, pos.y, pos.z].map(|v| Arg::String(format_double(v)));
             let message = match targets.as_slice() {
@@ -442,6 +515,24 @@ pub(crate) fn teleport(
         }
     }
     Ok(count)
+}
+
+/// Moves a target of another world than the command's to `world` on the target's world
+/// thread (`Entity.teleportTo(level, ...)`).
+fn move_to_world(
+    global: &Global,
+    target: &Target,
+    world: WorldId,
+    pos: Vec3,
+    rotation: Option<(f32, f32)>,
+) {
+    let Some(global_arc) = global.arc() else {
+        return;
+    };
+    let uuid = target.uuid;
+    global.run_in_world(target.world, move |w| {
+        w.teleport_to_world(&global_arc, uuid, world, pos, rotation);
+    });
 }
 
 /// `ComponentUtils.formatList` with `, ` in gray.

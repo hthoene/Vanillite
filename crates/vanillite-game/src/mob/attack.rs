@@ -23,22 +23,12 @@ use crate::survival::player::{self, Env};
 use crate::survival::{Effect, play_sound};
 
 /// Entity type tags when no data packs are loaded.
-struct NoTags;
-
-impl EntityTags for NoTags {
-    fn entity_in_tag(&self, _: vanillite_data::entity::EntityTypeId, _: &str) -> bool {
-        false
-    }
-}
-
-static NO_ENCHANTS: Enchantments = Enchantments { list: Vec::new() };
-
-/// The loaded enchantments and entity tags (empty without data packs).
-pub fn combat_data() -> (&'static Enchantments, &'static dyn EntityTags) {
-    match crate::player::play::game_data() {
-        Some(d) => (&d.enchants, d),
-        None => (&NO_ENCHANTS, &NoTags),
-    }
+/// The loaded game data with the enchantments and entity tags (empty without data packs).
+pub fn combat_data() -> std::sync::Arc<crate::player::play::GameData> {
+    static EMPTY: std::sync::OnceLock<std::sync::Arc<crate::player::play::GameData>> =
+        std::sync::OnceLock::new();
+    crate::player::play::game_data()
+        .unwrap_or_else(|| std::sync::Arc::clone(EMPTY.get_or_init(Default::default)))
 }
 
 /// The facts predicates test of a living entity.
@@ -71,6 +61,7 @@ pub fn facts(ents: &Entities, id: EntityId) -> Option<EntityFacts> {
         }),
         sheep_color: sheep.map(|s| s.0),
         sheared: sheep.is_some_and(|s| s.1),
+        villager_variant: None,
     })
 }
 
@@ -190,7 +181,8 @@ pub fn player_attack(
     let weapon = p.inventory.selected_item().clone();
     let fall_distance = p.survival.fall_distance;
     let in_water = p.survival.fluids.in_water();
-    let (enchants, tags) = combat_data();
+    let combat = combat_data();
+    let (enchants, tags): (&Enchantments, &dyn EntityTags) = (&combat.enchants, &*combat);
 
     let base = player_attribute(ents, attacker, "minecraft:attack_damage", 1.0, 0.0, 2048.0);
     #[allow(clippy::cast_possible_truncation)]
@@ -238,6 +230,7 @@ pub fn player_attack(
                 .is_some_and(|d| d.item_in_tag(weapon.item, "minecraft:swords"))
     };
     let old_movement = ents.store.get(target).map(|e| e.velocity());
+    let old_health = living_health(ents, target);
     let hurt = combat::hurt(level, ents, env, cx, target, source, total);
     if !hurt {
         player_sound(env, ppos, "minecraft:entity.player.attack.nodamage");
@@ -294,9 +287,40 @@ pub fn player_attack(
     }
     post_attack(level, ents, env, cx, target, &source, Some(&weapon));
     hurt_weapon(ents, env, attacker, &weapon);
+    // `damageStatsAndHearts`: `DAMAGE_DEALT` of the health the living target lost,
+    // then dark hearts for more than one heart of damage.
+    if let (Some(old), Some(now)) = (old_health, living_health(ents, target)) {
+        let damage = old - now;
+        if let Some(p) = ents.player_mut(attacker) {
+            #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+            let v = (damage * 10.0).round() as i32;
+            p.stats.award(crate::stats::custom::DAMAGE_DEALT, v);
+        }
+        if damage > 2.0
+            && let Some(e) = ents.store.get(target)
+        {
+            let (pos, height) = (e.pos(), f64::from(e.dims().height));
+            #[allow(clippy::cast_possible_truncation)]
+            let count = (f64::from(damage) * 0.5) as i32;
+            cx.send_particles(
+                crate::level::particles::simple("minecraft:damage_indicator"),
+                Vec3::new(pos.x, pos.y + height * 0.5, pos.z),
+                count,
+                Vec3::new(0.1, 0.0, 0.1),
+                0.2,
+            );
+        }
+    }
     if let Some(p) = ents.player_mut(attacker) {
         player::cause_food_exhaustion(p, 0.1);
     }
+}
+
+/// `LivingEntity.getHealth` of a mob or player.
+fn living_health(ents: &Entities, id: EntityId) -> Option<f32> {
+    ents.mob(id)
+        .map(|m| m.health)
+        .or_else(|| ents.player(id).map(|p| p.survival.health))
 }
 
 /// `sendToTrackingPlayersAndSelf(new ClientboundAnimatePacket(entity, action))`.
@@ -340,7 +364,8 @@ fn mace_bonus(
     } else {
         22.0 + f - 8.0
     };
-    let (enchants, tags) = combat_data();
+    let combat = combat_data();
+    let (enchants, tags): (&Enchantments, &dyn EntityTags) = (&combat.enchants, &*combat);
     let ecx = damage_context(ents, env.types, tags, target, source);
     #[allow(clippy::cast_possible_truncation)]
     let per_block = enchants.modify_fall_based_damage(weapon, &ecx, env.random, 0.0) * f as f32;
@@ -366,7 +391,13 @@ fn extra_knockback(
             f64::from(vanillite_base::math::sin(rad)),
             f64::from(vanillite_base::math::cos(rad)),
         );
-        combat::knock_living(ents, env, target, f64::from(amount), sin, -cos);
+        // Dragon parts are not living entities: they only take the hit, no knockback.
+        if !ents
+            .mob(target)
+            .is_some_and(|m| m.kind == super::Kind::EnderDragon)
+        {
+            combat::knock_living(ents, env, target, f64::from(amount), sin, -cos);
+        }
         if let Some(mut e) = ents.store.get_mut(attacker) {
             let v = e.as_ref().velocity();
             e.set_velocity(v.multiply(0.6, 1.0, 0.6));
@@ -439,7 +470,8 @@ fn sweep_attack(
         .player(attacker)
         .map(|p| p.inventory.selected_item().clone())
         .unwrap_or_default();
-    let (enchants, tags) = combat_data();
+    let combat = combat_data();
+    let (enchants, tags): (&Enchantments, &dyn EntityTags) = (&combat.enchants, &*combat);
     for id in near {
         if id == attacker || id == target || !is_alive(ents, id) {
             continue;
@@ -467,6 +499,20 @@ fn sweep_attack(
             post_attack(level, ents, env, cx, id, source, Some(&weapon));
         }
     }
+    let rad = f64::from(y_rot * super::DEG_TO_RAD);
+    let dx = -f64::from(vanillite_base::math::sin(rad));
+    let dz = f64::from(vanillite_base::math::cos(rad));
+    let height = ents
+        .store
+        .get(attacker)
+        .map_or(0.0, |e| f64::from(e.dims().height));
+    cx.send_particles(
+        crate::level::particles::simple("minecraft:sweep_attack"),
+        Vec3::new(ppos.x + dx, ppos.y + height * 0.5, ppos.z + dz),
+        0,
+        Vec3::new(dx, 0.0, dz),
+        0.0,
+    );
 }
 
 /// `EnchantmentHelper.doPostAttackEffectsWithItemSource`: the post attack effects of the
@@ -483,7 +529,8 @@ pub fn post_attack(
     source: &DamageSource,
     weapon: Option<&ItemStack>,
 ) {
-    let (enchants, tags) = combat_data();
+    let combat = combat_data();
+    let (enchants, tags): (&Enchantments, &dyn EntityTags) = (&combat.enchants, &*combat);
     // `runIterationOnEquipment` of the victim (`EquipmentSlot` order).
     for (slot, stack) in equipment(ents, victim) {
         let effects = {
@@ -659,7 +706,9 @@ fn hurt_equipment(
         return;
     }
     let data = crate::player::play::game_data();
-    let unbreaking = data.map_or(0, |d| d.enchantment_level(&stack, "minecraft:unbreaking"));
+    let unbreaking = data
+        .as_ref()
+        .map_or(0, |d| d.enchantment_level(&stack, "minecraft:unbreaking"));
     let armor = data.is_some_and(|d| d.item_in_tag(stack.item, "minecraft:enchantable/armor"));
     #[allow(clippy::cast_precision_loss)]
     let level = unbreaking.max(0) as f32;
@@ -690,17 +739,20 @@ fn hurt_equipment(
         EquipmentSlot::Head => 39,
         EquipmentSlot::Body | EquipmentSlot::Saddle => return,
     };
-    let Some(s) = p.inventory.get_mut(index) else {
+    let crate::player::PlayerData {
+        inventory,
+        advancements,
+        stats,
+        ..
+    } = p;
+    let Some(s) = inventory.get_mut(index) else {
         return;
     };
     let d = item::damage(s).saturating_add(damage);
-    if d >= item::max_damage(s) {
-        s.shrink(1);
-        if let Some(pos) = pos {
-            player_sound(env, pos, "minecraft:entity.item.break");
-        }
-    } else {
-        item::set_damage(s, d);
+    if crate::advancements::view::apply_damage(Some(advancements), Some(stats), s, d)
+        && let Some(pos) = pos
+    {
+        player_sound(env, pos, "minecraft:entity.item.break");
     }
 }
 
@@ -720,7 +772,8 @@ pub fn armor_effectiveness<'t>(
         .inventory
         .selected_item()
         .clone();
-    let (enchants, tags) = combat_data();
+    let combat = combat_data();
+    let (enchants, tags): (&Enchantments, &dyn EntityTags) = (&combat.enchants, &*combat);
     if !enchants
         .of(&weapon)
         .any(|(e, _)| !e.armor_effectiveness.is_empty())
@@ -728,9 +781,28 @@ pub fn armor_effectiveness<'t>(
         return None;
     }
     let ecx = damage_context(ents, types, tags, victim, source);
+    let facts = (
+        ecx.this,
+        ecx.attacker,
+        ecx.direct_attacker,
+        ecx.attacking_player,
+        ecx.source,
+    );
     Some(Box::new(move |fraction| {
+        let (this, attacker, direct_attacker, attacking_player, source) = facts;
+        let ecx = crate::enchant::EnchantContext {
+            types,
+            tags: &*combat,
+            this,
+            attacker,
+            direct_attacker,
+            attacking_player,
+            source,
+        };
         crate::experience_orb::with_entity_random(|r| {
-            enchants.modify_armor_effectiveness(&weapon, &ecx, r, fraction)
+            combat
+                .enchants
+                .modify_armor_effectiveness(&weapon, &ecx, r, fraction)
         })
     }))
 }
@@ -771,20 +843,23 @@ fn hurt_weapon(ents: &mut Entities, env: &mut Env<'_>, attacker: EntityId, weapo
     if p.game_mode == vanillite_config::GameMode::Creative || amount == 0 {
         return;
     }
-    let Some(tool) = p.inventory.selected_item_mut() else {
+    let crate::player::PlayerData {
+        inventory,
+        advancements,
+        stats,
+        ..
+    } = p;
+    let Some(tool) = inventory.selected_item_mut() else {
         return;
     };
     if !item::is_damageable(tool) {
         return;
     }
     let new_damage = item::damage(tool).saturating_add(amount);
-    if new_damage >= item::max_damage(tool) {
-        tool.shrink(1);
-        if let Some(pos) = pos {
-            player_sound(env, pos, "minecraft:entity.item.break");
-        }
-    } else {
-        item::set_damage(tool, new_damage);
+    if crate::advancements::view::apply_damage(Some(advancements), Some(stats), tool, new_damage)
+        && let Some(pos) = pos
+    {
+        player_sound(env, pos, "minecraft:entity.item.break");
     }
 }
 

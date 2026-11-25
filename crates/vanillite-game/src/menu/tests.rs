@@ -20,7 +20,7 @@ use crate::player::play::GameData;
 use crate::recipe::{CookingKind, CraftingInput, Recipes};
 
 /// Installs gameplay data with the Vanilla recipes and item tags (once per test binary).
-pub(crate) fn install_data() -> &'static GameData {
+pub(crate) fn install_data() -> std::sync::Arc<GameData> {
     static DONE: OnceLock<()> = OnceLock::new();
     DONE.get_or_init(|| {
         let cache = std::env::var_os("VANILLITE_CACHE").map_or_else(
@@ -106,7 +106,23 @@ pub(crate) fn install_data() -> &'static GameData {
                 (registry.to_owned(), tags)
             })
             .collect();
+        let trades = crate::trading::data::TradeData::load(
+            &registry("minecraft:villager_trade"),
+            &registry("minecraft:trade_set"),
+            &|t| {
+                packs
+                    .tag_ids("minecraft:villager_trade", t)
+                    .unwrap_or_default()
+            },
+            &|id| {
+                packs
+                    .registry("minecraft:villager_trade")
+                    .and_then(|r| r.id_of(id))
+                    .and_then(|i| u32::try_from(i).ok())
+            },
+        );
         crate::player::play::install_game_data(Arc::new(GameData {
+            trades,
             loot: crate::loot::LootTables::empty(),
             recipes,
             enchanting,

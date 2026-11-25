@@ -7,6 +7,8 @@
 //! [`broadcast_changes`] and [`send_all`] are its synchronisation with the client.
 
 pub mod container;
+pub mod merchant;
+pub mod mount;
 mod station;
 mod workstation;
 
@@ -161,6 +163,9 @@ pub trait MenuSlots {
     fn set_item(&mut self, slot: usize, stack: ItemStack);
     /// `Slot.setChanged`.
     fn set_changed(&mut self, _slot: usize) {}
+    /// What a slot does in `setByPlayer` before it sets the stack (`ArmorSlot`: the owner's
+    /// `onEquipItem`).
+    fn before_set_by_player(&mut self, _slot: usize, _stack: &ItemStack) {}
     /// `Slot.mayPlace`.
     fn may_place(&self, _slot: usize, _stack: &ItemStack) -> bool {
         true
@@ -229,6 +234,7 @@ pub trait MenuSlots {
 
 /// `Slot.setByPlayer(stack)` = `set`: the container's `setItem`, then `setChanged`.
 pub fn set_by_player<S: MenuSlots + ?Sized>(s: &mut S, slot: usize, stack: ItemStack) {
+    s.before_set_by_player(slot, &stack);
     s.set_item(slot, stack);
     s.set_changed(slot);
 }
@@ -1010,5 +1016,7 @@ fn lerp_discrete(alpha: f32, min: i32, max: i32) -> i32 {
 
 #[cfg(test)]
 mod fuzz_tests;
+#[cfg(test)]
+mod merchant_tests;
 #[cfg(test)]
 pub(crate) mod tests;

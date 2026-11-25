@@ -11,7 +11,7 @@ use super::select::Target;
 use super::source::CommandSource;
 use crate::global::Global;
 use crate::server::DIMENSIONS;
-use crate::survival::{WorldSurvival, broadcast_all, clock_update, full_time_sync};
+use crate::survival::{broadcast_all, clock_update, full_time_sync};
 
 fn error(key: &'static str, args: Vec<ErrArg>) -> CommandError {
     CommandError::new(key, args)
@@ -429,37 +429,25 @@ pub(crate) fn game_rule_set(
 pub(crate) fn kill(source: &CommandSource, env: &mut Env<'_>, victims: &[Target]) -> i32 {
     let global = env.global;
     for victim in victims {
-        let dimension = DIMENSIONS
-            .get(victim.world.index())
-            .copied()
-            .unwrap_or("minecraft:overworld");
         match victim.entity {
-            Some(id) if victim.world == source.world => {
-                WorldSurvival::kill(&mut env.level.entities, None, global, dimension, id);
+            Some(id) if victim.world == env.world => {
+                let dimension = DIMENSIONS
+                    .get(victim.world.index())
+                    .copied()
+                    .unwrap_or("minecraft:overworld");
+                super::entities_cmd::kill_any(env.level, global, dimension, id);
             }
             _ => {
                 let uuid = victim.uuid;
-                let Some(arc) = global.arc() else {
-                    continue;
-                };
-                global.run_in_world(victim.world, move |world| {
-                    let id = world
-                        .entities()
-                        .players
-                        .iter()
-                        .map(|(id, _)| id)
-                        .find(|&id| {
-                            world
-                                .entities()
-                                .store
-                                .get(id)
-                                .is_some_and(|e| e.uuid() == uuid)
-                        });
-                    if let Some(id) = id {
-                        let dimension = world.dimension().to_owned();
-                        WorldSurvival::kill(world.entities_mut(), None, &arc, &dimension, id);
-                    }
-                });
+                super::entities_cmd::on_level(
+                    env,
+                    victim.world,
+                    move |level, global, dimension| {
+                        if let Some(id) = super::select::find_uuid(&level.entities, uuid) {
+                            super::entities_cmd::kill_any(level, global, dimension, id);
+                        }
+                    },
+                );
             }
         }
     }

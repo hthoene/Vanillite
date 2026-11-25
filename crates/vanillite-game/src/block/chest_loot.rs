@@ -100,6 +100,7 @@ pub fn unpack(level: &mut Level, pos: BlockPos, player: Option<EntityId>) {
         return;
     };
     let mut items = items;
+    generated_loot(level, player, &table);
     let origin = super::furnace::center(pos);
     fill(level, &table, seed, origin, 0.0, player, &mut items);
     if let Some((_, _, slots)) = level.block_entity_mut(pos).and_then(loot_parts) {
@@ -108,6 +109,21 @@ pub fn unpack(level: &mut Level, pos: BlockPos, player: Option<EntityId>) {
         }
     }
     level.block_entities.touch(pos.chunk());
+}
+
+/// `CriteriaTriggers.GENERATE_LOOT` when a player unpacks the loot table `table`.
+pub fn generated_loot(level: &mut Level, player: Option<EntityId>, table: &str) {
+    let is_player = |p: &EntityId| {
+        level
+            .entities
+            .store
+            .get(*p)
+            .is_some_and(|e| e.kind() == vanillite_data::entity::ids::PLAYER)
+    };
+    if let Some(player) = player.filter(is_player) {
+        let event = crate::advancements::trigger::Event::GenerateLoot(table.to_owned());
+        level.trigger(player, event);
+    }
 }
 
 /// `LootTable.fill(container, params, seed)` of the table `table` for a container at `origin`.
@@ -196,8 +212,8 @@ fn with_context(
     };
     if seed != 0 {
         let mut rng = LegacyRandom::new(seed);
-        f(data, &ctx, &mut rng);
+        f(&data, &ctx, &mut rng);
     } else {
-        f(data, &ctx, level.random());
+        f(&data, &ctx, level.random());
     }
 }

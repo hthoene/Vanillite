@@ -113,6 +113,8 @@ pub struct PlayerInventory {
     pub crafted: Vec<Crafted>,
     /// The selected item of a bundle: its contents key and index ([`crate::bundle`]).
     pub bundle_selection: Option<(u64, i32)>,
+    /// Statistics and triggers menus awarded since the server last took them.
+    pub awards: Vec<crate::advancements::award::Award>,
 }
 
 impl Default for PlayerInventory {
@@ -131,6 +133,7 @@ impl Default for PlayerInventory {
             result_updates: Vec::new(),
             crafted: Vec::new(),
             bundle_selection: None,
+            awards: Vec::new(),
         }
     }
 }
@@ -399,7 +402,7 @@ impl PlayerInventory {
 
     /// `Slot.mayPickup` of the armour slots: a stack with Curse of Binding stays unless the
     /// player is in creative.
-    fn armor_locked(&self, stack: &ItemStack) -> bool {
+    pub(crate) fn armor_locked(&self, stack: &ItemStack) -> bool {
         !self.menu.creative
             && crate::player::play::game_data()
                 .is_some_and(|d| d.enchantment_level(stack, "minecraft:binding_curse") > 0)

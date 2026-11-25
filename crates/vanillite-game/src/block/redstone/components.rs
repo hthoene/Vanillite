@@ -296,6 +296,46 @@ pub(super) fn lightning_rod_direct_signal(
     }
 }
 
+/// `LightningRodBlock.onLightningStrike`: a pulse of 8 ticks into the block it stands on or
+/// hangs from.
+pub(super) fn lightning_rod_strike(level: &mut Level, state: BlockState, pos: BlockPos) {
+    level.set_block_and_update(pos, state.set_flag("powered", true));
+    let direction = facing(state);
+    level.update_neighbors_at(pos.relative(direction.opposite()), state.block());
+    level.schedule_block_tick(pos, state.block(), 8);
+    let axis = match direction {
+        Direction::West | Direction::East => 0,
+        Direction::Down | Direction::Up => 1,
+        Direction::North | Direction::South => 2,
+    };
+    level.level_event(None, 3002, pos, axis);
+}
+
+/// `LightningRodBlock.onPlace`: a powered rod that became another block (a copper stage)
+/// ends its pulse itself.
+pub(super) fn lightning_rod_on_place(
+    level: &mut Level,
+    state: BlockState,
+    pos: BlockPos,
+    old: BlockState,
+    _: bool,
+) {
+    if old.block() != state.block()
+        && powered(state)
+        && !level.chunks.has_block_tick(pos, state.block().0)
+    {
+        level.schedule_block_tick(pos, state.block(), 8);
+    }
+}
+
+/// `LightningRodBlock.affectNeighborsAfterRemoval`.
+pub(super) fn lightning_rod_removal(level: &mut Level, state: BlockState, pos: BlockPos, _: bool) {
+    if powered(state) {
+        let direction = facing(state);
+        level.update_neighbors_at(pos.relative(direction.opposite()), state.block());
+    }
+}
+
 /// `LightningRodBlock.tick`: the pulse of a strike ends.
 pub(super) fn lightning_rod_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
     let new = state.set_flag("powered", false);
@@ -484,6 +524,61 @@ pub(super) fn fence_gate_neighbor_changed(
             pos,
             None,
         );
+    }
+}
+
+/// `TrapDoorBlock.onExplosionHit` of an explosion that triggers blocks (wind charges):
+/// `toggle` unless powered or iron.
+pub fn trapdoor_explosion_hit(level: &mut Level, state: BlockState, pos: BlockPos) {
+    if !BlockSet::of(state.block()).can_open_by_wind_charge() || powered(state) {
+        return;
+    }
+    let new = state.set_flag("open", !state.flag("open"));
+    level.set_block(pos, new, update::CLIENTS);
+    if new.waterlogged() {
+        BlockLevel::schedule_fluid_tick(level, pos, WATER);
+    }
+    trapdoor_sound(level, state, pos, new.flag("open"), None);
+}
+
+/// `DoorBlock.onExplosionHit` of an explosion that triggers blocks: the lower half toggles
+/// the door unless powered or iron.
+pub fn door_explosion_hit(level: &mut Level, state: BlockState, pos: BlockPos) {
+    if is_lower(state) && BlockSet::of(state.block()).can_open_by_wind_charge() && !powered(state) {
+        set_door_open(level, pos, !state.flag("open"), None);
+    }
+}
+
+/// `FenceGateBlock.onExplosionHit` of an explosion that triggers blocks.
+pub fn fence_gate_explosion_hit(level: &mut Level, state: BlockState, pos: BlockPos) {
+    if powered(state) {
+        return;
+    }
+    let open = state.flag("open");
+    level.set_block_and_update(pos, state.set_flag("open", !open));
+    let sound = BlockSet::of(state.block()).fence_gate_sound(!open);
+    let pitch = door_pitch(level);
+    level.play_block_sound(None, pos, sound, SOUND_BLOCKS, 1.0, pitch);
+    let events = crate::level::game_event::events();
+    let event = if open {
+        events.block_close
+    } else {
+        events.block_open
+    };
+    level.game_event_block(
+        event,
+        pos,
+        crate::level::game_event::GameEventContext {
+            source: None,
+            affected: Some(state),
+        },
+    );
+}
+
+/// `ButtonBlock.onExplosionHit` of an explosion that triggers blocks.
+pub fn button_explosion_hit(level: &mut Level, state: BlockState, pos: BlockPos) {
+    if !powered(state) {
+        button_press(level, state, pos, None);
     }
 }
 

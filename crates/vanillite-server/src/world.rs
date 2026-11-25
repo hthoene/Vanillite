@@ -146,6 +146,11 @@ impl ServerWorld {
         if dimension == "minecraft:the_end" {
             mobs.init_dragon_fight(&data, &mut level);
         }
+        mobs.init_raids(&data, &mut level);
+        // `MinecraftServer.customSpawners`: the wandering trader spawner of the overworld.
+        if dimension == "minecraft:overworld" {
+            mobs.init_trader_spawner(&data);
+        }
         // Entity randoms are `RandomSource.create()`: seeded from the clock, not the world seed.
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -441,8 +446,13 @@ impl ServerWorld {
             }
             let level = &mut self.level;
             level.run_scheduled_ticks();
-            self.survival
-                .tick_thunder(&mut self.level.entities, &self.level.chunks, ctx.global);
+            // `raids.tick`.
+            self.mobs.tick_raids(
+                &mut self.level,
+                &mut self.survival,
+                ctx.global,
+                &self.dimension,
+            );
         }
         self.update_player_tickets();
         let level = &mut self.level;
@@ -453,6 +463,10 @@ impl ServerWorld {
                 .auto_save
                 .load(std::sync::atomic::Ordering::Relaxed),
         );
+        if ctx.runs_normally {
+            // `ServerChunkCache.tick`: tickets that time out go first.
+            level.chunks.purge_stale_tickets();
+        }
         level.tick_chunk_runtime();
         level.post_process();
         if ctx.runs_normally {
@@ -484,12 +498,7 @@ impl ServerWorld {
         }
         self.players.tick_entities(&mut self.level.entities);
         if ctx.runs_normally {
-            self.survival.tick_entities(
-                &mut self.level.entities,
-                &self.level.chunks,
-                ctx.global,
-                &self.dimension,
-            );
+            self.survival.tick_entities(&mut self.level.entities);
         }
         // `entityManager.tick()`: entities of chunks that became visible this tick load now.
         self.level.tick_entity_manager();
@@ -517,6 +526,10 @@ impl ServerWorld {
             &mut self.fan_out,
         );
         let mut portals = std::mem::take(&mut self.portal_requests);
+        // The omen effects see the village and raids at the players (they tick without the
+        // level); raid omens that ran out start their raids right after the players' ticks.
+        self.level.flush_poi_changes();
+        vanillite_game::raid::update_omen_views(&mut self.level.entities);
         self.survival.do_tick(
             &mut self.level.entities,
             &self.level.chunks,
@@ -525,6 +538,15 @@ impl ServerWorld {
             ctx.global,
             &self.dimension,
             &mut portals,
+        );
+        vanillite_game::raid::start_pending_raids(
+            &mut self.level.entities,
+            ctx.global
+                .level
+                .rules()
+                .bool(vanillite_game::survival::rules::Rule::RAIDS),
+            self.dimension != "minecraft:the_nether",
+            ctx.global.level.difficulty(),
         );
         for pos in portals.gateways.drain(..) {
             let state = self.level.block(pos);

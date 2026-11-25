@@ -47,9 +47,12 @@ impl Level {
                 self.write_entities(pos);
                 self.remove_entities(pos);
                 self.chunks.set_entities_loaded(pos, false);
+                self.write_poi(pos);
+                self.entities.poi.unload_chunk(pos);
             }
             self.entities.store.set_chunk_ticking(pos.x, pos.z, ticking);
             if change.old == Visibility::Hidden {
+                self.load_poi(pos);
                 self.pending_entity_loads.push(pos);
             }
         }
@@ -106,7 +109,9 @@ impl Level {
         self.entity_chunks.contains(&chunk)
     }
 
-    fn load_entity(&mut self, nbt: Compound) -> bool {
+    /// `EntityType.loadEntityRecursive` + `addFreshEntity` of stored entity data (a modelled
+    /// kind); whether an entity was added.
+    pub fn load_entity(&mut self, nbt: Compound) -> bool {
         let seed = uuid_of(&nbt, "UUID").map_or(0, |uuid| uuid as i64) ^ self.game_time();
         if let Some(loaded) = crate::mob::nbt::load_mob(&nbt, seed) {
             let network_ids = Arc::clone(self.network_ids_arc());
@@ -122,6 +127,8 @@ impl Level {
                 e.set_velocity(loaded.velocity);
                 e.set_flags(EntityFlags::ON_GROUND, loaded.on_ground);
             }
+            // `Raider.readAdditionalSaveData`: back into its raid.
+            crate::raid::rejoin_loaded(&mut self.entities, id);
             return true;
         }
         if let Some((kind, pos, velocity, rot, uuid, data)) =
@@ -311,7 +318,7 @@ impl Level {
 
     /// `Entity.save`: the stored data of a live entity of a modelled kind, `None` for players
     /// and kinds that are not saved.
-    fn save_entity(&self, id: EntityId) -> Option<Compound> {
+    pub fn save_entity(&self, id: EntityId) -> Option<Compound> {
         let entity = self.entities.store.get(id)?;
         let kind = entity.kind();
         let ents = &self.entities;
@@ -471,6 +478,58 @@ impl Level {
         self.entity_chunks.remove(&chunk);
     }
 
+    /// Loads the POI of a chunk that became live and checks them against its blocks
+    /// (`PoiManager.checkConsistencyWithBlocks` of every section).
+    pub(super) fn load_poi(&mut self, chunk: ChunkPos) {
+        self.flush_poi_changes();
+        let Some(c) = self.chunks.chunk(chunk) else {
+            return;
+        };
+        let stored = c.poi.as_deref().and_then(|bytes| {
+            match vanillite_nbt::read::read_network(&mut &bytes[..], &mut Budget::file()) {
+                Ok(Some(Tag::Compound(root))) => Some(root),
+                _ => {
+                    log::warn!("Unreadable POI of chunk {}, {}", chunk.x, chunk.z);
+                    None
+                }
+            }
+        });
+        let min = c.chunk.min_section();
+        let blocks: Vec<SectionBlocks<'_>> = c
+            .chunk
+            .sections()
+            .iter()
+            .map(|s| SectionBlocks(s))
+            .collect();
+        let mut iter = blocks.iter().enumerate().map(|(i, s)| {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+            let y = min + i as i32;
+            (y, s as &dyn crate::poi::ChunkSectionBlocks)
+        });
+        self.entities.poi.load_chunk(chunk, stored, &mut iter);
+    }
+
+    /// Writes the POI of a live chunk back into its stored record if they changed.
+    pub(super) fn write_poi(&mut self, chunk: ChunkPos) {
+        if !self.entities.poi.is_dirty(chunk) {
+            return;
+        }
+        let bytes = self.entities.poi.save_chunk(chunk).and_then(|root| {
+            let mut bytes = Vec::new();
+            vanillite_nbt::write::write_network_compound(&root, &mut bytes).ok()?;
+            Some(Arc::<[u8]>::from(bytes))
+        });
+        self.chunks.set_stored_poi(chunk, bytes);
+    }
+
+    /// Writes the changed POI of every live chunk back (before a save).
+    pub(super) fn write_all_poi(&mut self) {
+        self.flush_poi_changes();
+        for chunk in self.entities.poi.dirty_chunks() {
+            self.write_poi(chunk);
+        }
+    }
+
     /// Writes the entities of every chunk that has or had entities back (before a save).
     pub(super) fn write_all_entities(&mut self) {
         let mut chunks: Vec<ChunkPos> = self.entity_chunks.iter().copied().collect();
@@ -605,5 +664,20 @@ fn uuid_of(nbt: &Compound, name: &str) -> Option<u128> {
                 .fold(0u128, |acc, &part| acc << 32 | u128::from(part as u32)),
         ),
         _ => None,
+    }
+}
+
+/// A chunk section as the POI manager scans it.
+struct SectionBlocks<'a>(&'a vanillite_chunk::Section);
+
+impl crate::poi::ChunkSectionBlocks for SectionBlocks<'_> {
+    fn may_have_poi(&self) -> bool {
+        self.0
+            .blocks()
+            .may_contain(|v| crate::poi::PoiType::has_poi(vanillite_data::block::BlockState(v)))
+    }
+
+    fn state(&self, x: u32, y: u32, z: u32) -> vanillite_data::block::BlockState {
+        vanillite_data::block::BlockState(self.0.block(x, y, z))
     }
 }
