@@ -93,6 +93,10 @@ debug = false
 [profile.dev.package.vanillite-worldgen]
 opt-level = 3
 
+[profile.dev.package.vanillite-light]
+# The parity scenarios light their chunks; unoptimised lighting would dominate their time.
+opt-level = 3
+
 [profile.release]
 lto = "fat"
 codegen-units = 1

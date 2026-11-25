@@ -71,6 +71,20 @@ pub enum Effect {
     },
 }
 
+/// The seed of a sound (`Level.soundSeedGenerator`, a random of its own that Vanilla never
+/// seeds): sounds draw nothing from the level's or an entity's random.
+pub fn sound_seed() -> i64 {
+    use vanillite_base::random::{LegacyRandom, RandomSource};
+    thread_local! {
+        static SEEDS: std::cell::RefCell<LegacyRandom> = std::cell::RefCell::new(LegacyRandom::new(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos() as i64),
+        ));
+    }
+    SEEDS.with_borrow_mut(RandomSource::next_long)
+}
+
 /// The registry id of a sound event, `0` if unknown.
 pub fn sound_event(name: &str) -> SoundEvent {
     SoundEvent(
