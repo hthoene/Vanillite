@@ -702,7 +702,7 @@ impl Conn {
                 ServerboundPlay::Unhandled { .. } => {}
                 packet => {
                     seq = seq.wrapping_add(1);
-                    if tx.try_send(Inbound { seq, packet }).is_err() {
+                    if !tx.try_send(Inbound { seq, packet }) {
                         // The world is not draining this connection fast enough (SEC-17).
                         return Err(kick(Component::translatable(
                             "disconnect.exceeded_packet_rate",

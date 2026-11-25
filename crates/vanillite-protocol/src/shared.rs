@@ -115,16 +115,18 @@ pub struct InboundSender {
 }
 
 impl InboundSender {
-    /// Queues a packet; gives it back if `max` packets wait or the receiver is gone.
-    pub fn try_send(&self, inbound: Inbound) -> Result<(), Inbound> {
+    /// Queues a packet. Returns false (and drops it) if `max` packets wait or the receiver is
+    /// gone.
+    pub fn try_send(&self, inbound: Inbound) -> bool {
         if self.queued.fetch_add(1, Ordering::Relaxed) >= self.max {
             self.queued.fetch_sub(1, Ordering::Relaxed);
-            return Err(inbound);
+            return false;
         }
-        self.tx.send(inbound).map_err(|e| {
+        if self.tx.send(inbound).is_err() {
             self.queued.fetch_sub(1, Ordering::Relaxed);
-            e.0
-        })
+            return false;
+        }
+        true
     }
 }
 
@@ -141,5 +143,44 @@ impl InboundReceiver {
         let inbound = self.rx.try_recv()?;
         self.queued.fetch_sub(1, Ordering::Relaxed);
         Ok(inbound)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn packet(seq: u64) -> Inbound {
+        Inbound {
+            seq,
+            packet: ServerboundPlay::Unhandled { id: 0 },
+        }
+    }
+
+    #[test]
+    fn inbound_queue_never_holds_more_than_max() {
+        let (tx, rx) = inbound_queue(2);
+        assert!(tx.try_send(packet(1)));
+        assert!(tx.try_send(packet(2)));
+        assert!(!tx.try_send(packet(3)));
+        assert_eq!(rx.try_recv().map(|i| i.seq), Ok(1));
+        assert!(tx.try_send(packet(4)));
+        assert!(!tx.try_send(packet(5)));
+        assert_eq!(rx.try_recv().map(|i| i.seq), Ok(2));
+        assert_eq!(rx.try_recv().map(|i| i.seq), Ok(4));
+        assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
+    }
+
+    #[test]
+    fn inbound_queue_reports_disconnect() {
+        let (tx, rx) = inbound_queue(4);
+        assert!(tx.try_send(packet(1)));
+        drop(tx);
+        assert_eq!(rx.try_recv().map(|i| i.seq), Ok(1));
+        assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
+
+        let (tx, rx) = inbound_queue(4);
+        drop(rx);
+        assert!(!tx.try_send(packet(1)));
     }
 }
