@@ -83,6 +83,9 @@ pub struct Entities {
     pub missiles: Dense<crate::mob::missile::MissileData>,
     /// Minecart kind data (every type of [`crate::minecart::MinecartKind`]).
     pub minecarts: Dense<crate::minecart::MinecartData>,
+    /// The portal state (`portalProcess`, `portalCooldown`) of the entities besides players
+    /// that are in a portal or cool down after one; players keep theirs in their data.
+    pub portals: FxHashMap<EntityId, crate::portal::PortalState>,
     /// The points of interest of the world's live chunks (`ServerLevel.getPoiManager`): here,
     /// so mob ticks can claim and release tickets while the entities are out of the level.
     pub poi: crate::poi::PoiManager,
@@ -534,6 +537,9 @@ impl Entities {
     pub fn despawn(&mut self, id: EntityId) -> Option<Removed> {
         self.unlink(id);
         let removed = self.store.despawn(id)?;
+        if !self.portals.is_empty() {
+            self.portals.remove(&id);
+        }
         self.tags.remove(&id);
         if self.by_network_id.get(&removed.network_id.0) == Some(&id) {
             self.by_network_id.remove(&removed.network_id.0);

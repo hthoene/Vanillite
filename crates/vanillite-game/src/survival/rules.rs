@@ -122,6 +122,7 @@ impl Rule {
     pub const COMMAND_BLOCKS_WORK: Rule = Rule(5);
     pub const COMMAND_BLOCK_OUTPUT: Rule = Rule(6);
     pub const DROWNING_DAMAGE: Rule = Rule(7);
+    pub const ENDER_PEARLS_VANISH_ON_DEATH: Rule = Rule(9);
     pub const ENTITY_DROPS: Rule = Rule(10);
     pub const FALL_DAMAGE: Rule = Rule(11);
     pub const FIRE_DAMAGE: Rule = Rule(12);

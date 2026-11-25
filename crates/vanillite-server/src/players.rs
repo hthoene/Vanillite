@@ -14,6 +14,7 @@ use vanillite_game::entities::Entities;
 use vanillite_game::inventory::{Drop, PlayerInventory};
 use vanillite_game::item::ItemStack;
 use vanillite_game::level::Level;
+use vanillite_game::mob::fam::wildlife::ender_pearl;
 use vanillite_game::player::chat::ChatInbox;
 use vanillite_game::player::encode::EQUIPMENT_SLOTS;
 use vanillite_game::player::encode::encode_update;
@@ -40,6 +41,9 @@ use vanillite_world::entity::{EntityFlags, EntityId, EntityRef, Pose, Rotation};
 use vanillite_world::tracking::{EntityTracker, TrackerOutput};
 
 use crate::blocks::{LevelEffects, WorldLevel};
+
+/// `ServerPlayer.ENDER_PEARLS_TAG`.
+const PEARLS_TAG: &str = "ender_pearls";
 
 use crate::compute::Compute;
 use crate::global::Global;
@@ -623,6 +627,8 @@ impl WorldPlayers {
             elytra_movement_check,
         };
         let protection = self.spawn_protection(global);
+        let dimension_name = self.level.dimension.clone();
+        let dimension_name = dimension_name.as_str();
         // The player kind data leaves the level while the packets are handled, so the block
         // handlers can change the level (`setBlock` with its updates) meanwhile. Nothing in
         // between adds or removes players.
@@ -679,6 +685,7 @@ impl WorldPlayers {
                     effects: &mut *blocks.effects,
                     spectators: &spectators,
                     actor: Some((id, aabb)),
+                    dimension: dimension_name,
                 };
                 let hooks =
                     crate::plugins::Hooks::of(&global.plugins, self.level.dimension.as_str());
@@ -938,6 +945,8 @@ impl WorldPlayers {
     /// `broadcastChanges` and equipment changes for other players.
     fn tick_players(&mut self, level: &mut Level, global: &Global, blocks: &mut WorldBlocks<'_>) {
         let protection = self.spawn_protection(global);
+        let dimension_name = self.level.dimension.clone();
+        let dimension_name = dimension_name.as_str();
         // As in `handle_packets`: the players leave the level while it may change.
         let mut players = std::mem::take(&mut level.entities.players);
         let spectators: FxHashSet<EntityId> = players
@@ -976,6 +985,7 @@ impl WorldPlayers {
                     effects: &mut *blocks.effects,
                     spectators: &spectators,
                     actor: Some((id, aabb)),
+                    dimension: dimension_name,
                 };
                 let mut drops = Vec::new();
                 let mut hands = Vec::new();
@@ -1050,6 +1060,17 @@ impl WorldPlayers {
                     &mut taken_orbs,
                 );
             }
+            // `Inventory.tick` of maps and lodestone compasses, and the map updates.
+            {
+                let owner = vanillite_game::carried::Owner {
+                    uuid,
+                    pos: actor.pos,
+                    y_rot: actor.y_rot,
+                    dimension: dimension_name,
+                    has_ceiling: dimension_name == "minecraft:the_nether",
+                };
+                vanillite_game::carried::tick(level, owner, player);
+            }
             let sink = &player.connection.sink;
             if player.inventory.container.is_some() {
                 // `containerMenu.broadcastChanges`, then `stillValid`.
@@ -1085,6 +1106,7 @@ impl WorldPlayers {
                         effects: &mut *blocks.effects,
                         spectators: &spectators,
                         actor: Some((id, aabb)),
+                        dimension: dimension_name,
                     };
                     for drop in drops {
                         throw_item(&mut world, &actor, drop);
@@ -1201,6 +1223,15 @@ impl WorldPlayers {
             None => log::info!("{name} lost connection: Disconnected"),
         }
         self.save_player(entities, id);
+        self.store_pearls(level, global, uuid);
+        if let Some(p) = level.entities.player_mut(id) {
+            let mut carried = std::mem::take(&mut p.survival.carried_maps);
+            if let Some(maps) = level.maps() {
+                for map in carried.drain(..) {
+                    maps.with(map, |d| d.carrier_gone(uuid));
+                }
+            }
+        }
         drop_menus_on_leave(level, id);
         let entities = &mut level.entities;
         entities.despawn(id);
@@ -1218,6 +1249,78 @@ impl WorldPlayers {
             .and_then(|i| u32::try_from(i).ok())
             .unwrap_or(0);
         global.plugins.player_leave(world, uuid, &name);
+    }
+
+    /// `saveEnderPearls` and the removal of a leaving player's ender pearls: those of this
+    /// world go into its data file now, the other worlds add theirs when they get the request.
+    fn store_pearls(&self, level: &mut Level, global: &Global, uuid: u128) {
+        let dimension = self.level.dimension.as_str().to_owned();
+        let pearls = ender_pearl::take_owned(&mut level.entities, uuid, &dimension);
+        self.store.update(uuid, move |data| {
+            if pearls.is_empty() {
+                data.other.remove(PEARLS_TAG);
+            } else {
+                let list = pearls
+                    .into_iter()
+                    .map(vanillite_nbt::Tag::Compound)
+                    .collect();
+                data.other.insert(
+                    PEARLS_TAG,
+                    vanillite_nbt::Tag::List(vanillite_nbt::List(list)),
+                );
+            }
+        });
+        for (i, other) in crate::server::DIMENSIONS.iter().enumerate() {
+            if *other == dimension.as_str() {
+                continue;
+            }
+            let Ok(index) = u16::try_from(i) else {
+                continue;
+            };
+            global.run_in_world(crate::world::WorldId(index), move |world| {
+                world.add_pearls_of(uuid);
+            });
+        }
+    }
+
+    /// The ender pearls of a player that left another world: removed here, added to its data
+    /// file.
+    pub(crate) fn add_pearls(&self, level: &mut Level, uuid: u128) {
+        let dimension = self.level.dimension.as_str();
+        let pearls = ender_pearl::take_owned(&mut level.entities, uuid, dimension);
+        if pearls.is_empty() {
+            return;
+        }
+        self.store.update(uuid, move |data| {
+            let mut list = match data.other.remove(PEARLS_TAG) {
+                Some(vanillite_nbt::Tag::List(list)) => list.0,
+                _ => Vec::new(),
+            };
+            list.extend(pearls.into_iter().map(vanillite_nbt::Tag::Compound));
+            data.other.insert(
+                PEARLS_TAG,
+                vanillite_nbt::Tag::List(vanillite_nbt::List(list)),
+            );
+        });
+    }
+
+    /// Takes the ender pearls out of a joining player's data (`loadAndSpawnEnderPearls`): they
+    /// return to their worlds and live there until the player leaves again.
+    pub(crate) fn take_saved_pearls(
+        &self,
+        uuid: u128,
+        saved: Option<&vanillite_nbt::Tag>,
+    ) -> Vec<vanillite_nbt::Compound> {
+        let Some(vanillite_nbt::Tag::List(list)) = saved else {
+            return Vec::new();
+        };
+        self.store.update(uuid, |data| {
+            data.other.remove(PEARLS_TAG);
+        });
+        list.0
+            .iter()
+            .filter_map(|t| t.as_compound().cloned())
+            .collect()
     }
 
     /// Queues the write of a player's data file; the fields this server does not handle stay
@@ -1271,6 +1374,8 @@ impl WorldPlayers {
             if !has_effects {
                 data.other.remove("active_effects");
             }
+            // The pearls live in their worlds while the player is online.
+            data.other.remove(PEARLS_TAG);
             for (key, tag) in survival.iter() {
                 data.other.insert(key, tag.clone());
             }

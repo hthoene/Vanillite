@@ -167,6 +167,9 @@ packet_set! {
         JigsawGenerate(play::serverbound::JigsawGenerate),
         SetTestBlock(play::serverbound::SetTestBlock),
         TestInstanceBlockAction(play::serverbound::TestInstanceBlockAction),
+        EditBook(play::serverbound::EditBook),
+        SelectBundleItem(play::serverbound::SelectBundleItem),
+        PickItemFromEntity(play::serverbound::PickItemFromEntity),
         PlayerAbilities(play::serverbound::PlayerAbilitiesServerbound),
         ChangeDifficulty(play::serverbound::ChangeDifficultyServerbound),
         LockDifficulty(play::serverbound::LockDifficulty),
@@ -286,6 +289,9 @@ packet_set! {
         UpdateMobEffect(play::clientbound::UpdateMobEffect),
         RemoveMobEffect(play::clientbound::RemoveMobEffect),
         SystemChat(play::clientbound::SystemChat),
+        OpenBook(play::clientbound::OpenBook),
+        MapItemData(play::clientbound::MapItemData),
+        Cooldown(play::clientbound::Cooldown),
     }
     unhandled Unhandled
 }

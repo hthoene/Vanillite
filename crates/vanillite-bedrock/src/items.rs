@@ -4,7 +4,136 @@
 use vanillite_data::item::ItemId;
 use vanillite_protocol::item::ItemStack;
 
+use vanillite_protocol::components::ids;
+
 use crate::io::{self, Reader, Result};
+
+/// The entries of a little-endian NBT compound (Bedrock item user data), without the end tag.
+#[derive(Debug, Default)]
+struct Nbt(Vec<u8>);
+
+/// Bedrock NBT strings are length-prefixed with a `u16`.
+fn nbt_str(out: &mut Vec<u8>, s: &str) {
+    let mut end = s.len().min(usize::from(u16::MAX));
+    while !s.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    let s = s.get(..end).unwrap_or("");
+    out.extend_from_slice(&u16::try_from(s.len()).unwrap_or(0).to_le_bytes());
+    out.extend_from_slice(s.as_bytes());
+}
+
+impl Nbt {
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    fn head(&mut self, kind: u8, name: &str) {
+        self.0.push(kind);
+        nbt_str(&mut self.0, name);
+    }
+
+    fn byte(&mut self, name: &str, v: u8) {
+        self.head(1, name);
+        self.0.push(v);
+    }
+
+    fn int(&mut self, name: &str, v: i32) {
+        self.head(3, name);
+        self.0.extend_from_slice(&v.to_le_bytes());
+    }
+
+    fn long(&mut self, name: &str, v: i64) {
+        self.head(4, name);
+        self.0.extend_from_slice(&v.to_le_bytes());
+    }
+
+    fn string(&mut self, name: &str, v: &str) {
+        self.head(8, name);
+        nbt_str(&mut self.0, v);
+    }
+
+    /// `pages`: a list of `{photoname: "", text}` compounds.
+    fn pages<'a>(&mut self, pages: impl ExactSizeIterator<Item = String> + 'a) {
+        self.head(9, "pages");
+        self.0.push(10);
+        self.0
+            .extend_from_slice(&i32::try_from(pages.len()).unwrap_or(0).to_le_bytes());
+        for text in pages {
+            let mut page = Nbt::default();
+            page.string("photoname", "");
+            page.string("text", &text);
+            self.0.extend_from_slice(&page.0);
+            self.0.push(0);
+        }
+    }
+}
+
+/// Most pages a book shows on Bedrock (Java written books hold at most 100 pages too).
+const MAX_PAGES: usize = 100;
+
+/// Reads a `Filterable<String>` and returns the raw string.
+fn filterable_string(r: &mut vanillite_protocol::codec::Reader<'_>) -> Option<String> {
+    let raw = r.string(32767).ok()?.to_owned();
+    if r.u8().ok()? != 0 {
+        r.string(32767).ok()?;
+    }
+    Some(raw)
+}
+
+/// The pages of `writable_book_content` (raw text).
+pub fn writable_pages(stack: &ItemStack) -> Vec<String> {
+    let Some(value) = stack.component(ids::WRITABLE_BOOK_CONTENT) else {
+        return Vec::new();
+    };
+    let mut r = vanillite_protocol::codec::Reader::new(value);
+    let Ok(n) = r.len_prefix("book pages", MAX_PAGES, 2) else {
+        return Vec::new();
+    };
+    (0..n).map_while(|_| filterable_string(&mut r)).collect()
+}
+
+/// The Bedrock book tags of a writable or written book.
+fn book_tags(nbt: &mut Nbt, stack: &ItemStack) {
+    use vanillite_protocol::codec::DecodeLimited;
+    use vanillite_protocol::text::Component;
+    if stack.component(ids::WRITABLE_BOOK_CONTENT).is_some() {
+        nbt.pages(writable_pages(stack).into_iter());
+        return;
+    }
+    let Some(value) = stack.component(ids::WRITTEN_BOOK_CONTENT) else {
+        return;
+    };
+    // `WrittenBookContent`: filterable title, author, generation, filterable component pages.
+    let mut r = vanillite_protocol::codec::Reader::new(value);
+    let (Some(title), Ok(author), Ok(generation)) = (
+        filterable_string(&mut r),
+        r.string(32767).map(str::to_owned),
+        r.varint(),
+    ) else {
+        return;
+    };
+    let Ok(n) = r.len_prefix("book pages", 1 << 16, 2) else {
+        return;
+    };
+    let mut pages = Vec::with_capacity(n.min(MAX_PAGES));
+    for _ in 0..n {
+        let Ok(page) = Component::decode_limited(&mut r, 2_097_152) else {
+            break;
+        };
+        if r.u8().is_ok_and(|f| f != 0) && Component::decode_limited(&mut r, 2_097_152).is_err() {
+            break;
+        }
+        if pages.len() < MAX_PAGES {
+            pages.push(page.plain());
+        }
+    }
+    nbt.pages(pages.into_iter());
+    nbt.string("title", &title);
+    nbt.string("author", &author);
+    nbt.int("generation", generation);
+    nbt.string("xuid", "");
+}
 
 /// The item tables of one palette ([`crate::data::Palette::items`]).
 #[derive(Debug)]
@@ -103,22 +232,34 @@ impl Items {
         vanillite_protocol::codec::Reader::new(raw).varint().ok()
     }
 
-    /// The user data of a stack (NBT with the damage of tools).
+    /// The user data of a stack: NBT with the damage of tools, the `map_uuid` of filled maps
+    /// and the pages, title and author of books.
     fn write_user_data(&self, out: &mut Vec<u8>, stack: &ItemStack) {
-        match self.damage(stack).filter(|&d| d > 0) {
-            Some(d) => {
-                let mut user = Vec::with_capacity(24);
-                user.extend_from_slice(&(-1i16).to_le_bytes());
-                user.push(1);
-                user.extend_from_slice(&[0x0a, 0, 0, 3, 6, 0]);
-                user.extend_from_slice(b"Damage");
-                user.extend_from_slice(&d.to_le_bytes());
-                user.push(0);
-                user.extend_from_slice(&[0; 8]);
-                io::write_bytes(out, &user);
-            }
-            None => io::write_bytes(out, &[0; 10]),
+        let mut nbt = Nbt::default();
+        if let Some(d) = self.damage(stack).filter(|&d| d > 0) {
+            nbt.int("Damage", d);
         }
+        book_tags(&mut nbt, stack);
+        if let Some(id) = stack
+            .component(ids::MAP_ID)
+            .and_then(|v| vanillite_protocol::codec::Reader::new(v).varint().ok())
+        {
+            nbt.long("map_uuid", i64::from(id));
+            nbt.int("map_name_index", id);
+            nbt.byte("map_display_players", 1);
+        }
+        if nbt.is_empty() {
+            io::write_bytes(out, &[0; 10]);
+            return;
+        }
+        let mut user = Vec::with_capacity(nbt.0.len().saturating_add(16));
+        user.extend_from_slice(&(-1i16).to_le_bytes());
+        user.push(1);
+        user.extend_from_slice(&[0x0a, 0, 0]);
+        user.extend_from_slice(&nbt.0);
+        user.push(0);
+        user.extend_from_slice(&[0; 8]);
+        io::write_bytes(out, &user);
     }
 
     /// Bedrock id, metadata and block runtime id of a stack; `None` for empty stacks.

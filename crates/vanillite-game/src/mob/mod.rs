@@ -889,6 +889,12 @@ pub struct MobContext {
     /// Menus players opened at entities (chest boats, container minecarts), opened once the
     /// entities are back in the level.
     pub menus: Vec<crate::menu::container::MenuRequest>,
+    /// End gateways that took an entity this tick: they start their cooldown after the
+    /// entities' tick ([`crate::block::portal::trigger_gateway_cooldown`]).
+    pub gateways: Vec<BlockPos>,
+    /// What the entities' tick asks of the world: chunk tickets, gateway exits to load, ender
+    /// pearl owners to bring over.
+    pub travel: Vec<crate::portal::TravelRequest>,
 }
 
 impl MobContext {

@@ -491,6 +491,7 @@ impl ServerBuilder {
             let _ = global.systems.mob_spawns.set(Arc::clone(table));
         }
         crate::commands::load_game_systems(&global, &opened_packs);
+        crate::commands::install_map_explorer(&global);
         let watch = Arc::new(WatchState::new(
             config.server.watchdog.early_warning_after.get(),
             config.server.watchdog.warning_interval,
