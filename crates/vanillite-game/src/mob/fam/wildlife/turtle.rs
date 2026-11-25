@@ -132,26 +132,26 @@ pub(super) fn move_control(t: &mut Tick<'_, '_>) {
         let home = st(t.mob_ref()).home_pos;
         if !closer_to_center(home, t.pos(), 16.0) {
             let m = t.mob();
-            m.speed = (m.speed / 2.0).max(0.08);
+            set_speed(m, (m.speed / 2.0).max(0.08));
         }
         if t.mob_ref().baby {
             let m = t.mob();
-            m.speed = (m.speed / 3.0).max(0.06);
+            set_speed(m, (m.speed / 3.0).max(0.06));
         }
     } else if t.on_ground() {
         let m = t.mob();
-        m.speed = (m.speed / 2.0).max(0.06);
+        set_speed(m, (m.speed / 2.0).max(0.06));
     }
     let ctl = t.mob_ref().move_ctl;
     if ctl.operation != Operation::MoveTo || t.mob_ref().nav.is_done() {
-        t.mob().speed = 0.0;
+        set_speed(t.mob(), 0.0);
         return;
     }
     let p = t.pos();
     let (xd, mut yd, zd) = (ctl.wanted.x - p.x, ctl.wanted.y - p.y, ctl.wanted.z - p.z);
     let dd = (xd * xd + yd * yd + zd * zd).sqrt();
     if dd < f64::from(1.0e-5_f32) {
-        t.mob().speed = 0.0;
+        set_speed(t.mob(), 0.0);
         return;
     }
     yd /= dd;
@@ -164,10 +164,17 @@ pub(super) fn move_control(t: &mut Tick<'_, '_>) {
     let target = (ctl.speed_modifier * t.mob_ref().attrs.movement_speed) as f32;
     let m = t.mob();
     m.y_body_rot = y;
-    m.speed += 0.125 * (target - m.speed);
+    let s = m.speed + 0.125 * (target - m.speed);
+    set_speed(m, s);
     let speed = m.speed;
     let v = t.velocity();
     t.set_velocity(Vec3::new(v.x, v.y + f64::from(speed) * yd * 0.1, v.z));
+}
+
+/// `Mob.setSpeed`: the speed is also the forward input.
+fn set_speed(m: &mut crate::mob::MobData, speed: f32) {
+    m.speed = speed;
+    m.zza = speed;
 }
 
 /// `PanicGoal.lookForWater(level, mob, range)`: the closest water within the range.
@@ -416,7 +423,7 @@ pub(super) fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
             t.mob()
                 .look
                 .set_look_at(Vec3::new(o.pos.x, o.eye_y, o.pos.z), 10.0, 40.0);
-            nav::move_to_entity(t, o.pos, 0, *speed);
+            nav::move_to_entity(t, o.pos, 1, *speed);
             *love_time += 1;
             if *love_time >= reduced(60) && distance_sqr(t, o.pos) < 9.0 {
                 breed(t, p);

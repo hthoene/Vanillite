@@ -67,11 +67,11 @@ pub fn face_movement_direction(t: &mut Tick<'_, '_>) {
     let y_rot = match t.mob_ref().target.and_then(|id| t.other(id)) {
         None => {
             let v = t.velocity();
-            Some(-(v.x.atan2(v.z) as f32) * (180.0 / std::f32::consts::PI))
+            Some(-(vanillite_base::math::atan2(v.x, v.z) as f32) * (180.0 / std::f32::consts::PI))
         }
         Some(o) if o.pos.distance_to_sqr(p) < 4096.0 => {
             let (xd, zd) = (o.pos.x - p.x, o.pos.z - p.z);
-            Some(-(xd.atan2(zd) as f32) * (180.0 / std::f32::consts::PI))
+            Some(-(vanillite_base::math::atan2(xd, zd) as f32) * (180.0 / std::f32::consts::PI))
         }
         Some(_) => None,
     };
@@ -224,7 +224,8 @@ pub fn shoot_tick(t: &mut Tick<'_, '_>, charge_time: &mut i32) {
             let mut d = MissileData::new(MissileKind::Fireball);
             d.explosion_power = st(t.mob_ref()).explosion_power;
             d.item = super::super::super::equipment::stack("minecraft:fire_charge");
-            let dir = Vec3::new(xd, yd, zd).normalize();
+            // `new LargeFireball(level, ghast, direction.normalize(), power)` normalizes again.
+            let dir = Vec3::new(xd, yd, zd).normalize().normalize();
             let velocity = dir * d.acceleration;
             let start = Vec3::new(p.x + view.x * 4.0, p.y + half_h + 0.5, p.z + view.z * 4.0);
             let rot = t.core().rot();

@@ -46,29 +46,14 @@ pub struct GameData {
     pub recipes: crate::recipe::Recipes,
     /// Enchantment data.
     pub enchanting: crate::enchant::Enchanting,
+    /// The `minecraft:trial_spawner` registry.
+    pub trial_spawner_configs: crate::block::trial_spawner::TrialConfigs,
     /// The `minecraft:banner_pattern` registry.
     pub banner_patterns: crate::menu::BannerPatterns,
     /// The tags of the registries: registry → tag id (without `#`) → entry ids in tag order.
     pub registry_tags: HashMap<String, HashMap<String, Vec<u32>>>,
-    /// The `minecraft:trial_spawner` registry.
-    pub trial_spawner_configs: crate::block::trial_spawner::TrialConfigs,
     /// The `minecraft:villager_trade` and `minecraft:trade_set` registries.
     pub trades: crate::trading::data::TradeData,
-    /// The definitions of the enchantments by name.
-    pub enchantment_info: HashMap<String, EnchantmentInfo>,
-}
-
-/// What `/enchant` reads of an enchantment (`Enchantment` and its `EnchantmentDefinition`).
-#[derive(Debug, Clone)]
-pub struct EnchantmentInfo {
-    /// `description`.
-    pub description: vanillite_protocol::text::Component,
-    /// `max_level`.
-    pub max_level: i32,
-    /// `supported_items`: item ids.
-    pub supported_items: Vec<u16>,
-    /// `exclusive_set`: enchantment names.
-    pub exclusive_set: Vec<String>,
 }
 
 impl crate::predicate::EntityTags for GameData {
@@ -79,17 +64,24 @@ impl crate::predicate::EntityTags for GameData {
     }
 }
 
-static GAME_DATA: std::sync::OnceLock<std::sync::Arc<GameData>> = std::sync::OnceLock::new();
+static GAME_DATA: std::sync::RwLock<Option<std::sync::Arc<GameData>>> =
+    std::sync::RwLock::new(None);
 
 /// Installs the gameplay data for code that has no player context (block drops of the level
-/// simulation). Data packs are frozen for the process: later calls are ignored.
+/// simulation); `/reload` installs the reloaded data the same way.
 pub fn install_game_data(data: std::sync::Arc<GameData>) {
-    let _ = GAME_DATA.set(data);
+    *GAME_DATA
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(data);
 }
 
-/// The installed gameplay data, if any.
-pub fn game_data() -> Option<&'static GameData> {
-    GAME_DATA.get().map(|d| &**d)
+/// The installed gameplay data, if any. Callers keep the returned data for one operation, so
+/// a reload never changes the data in the middle of it.
+pub fn game_data() -> Option<std::sync::Arc<GameData>> {
+    GAME_DATA
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
 }
 
 impl GameData {
@@ -960,21 +952,6 @@ impl Digging {
         if stack.is_empty() {
             return false;
         }
-        if item::item_id(&stack) == vanillite_data::item::ids::END_CRYSTAL {
-            if !ctx.level.use_end_crystal(pos) {
-                return false;
-            }
-            if !ctx.actor.creative() {
-                let slot = match hand {
-                    Hand::MainHand => ctx.inventory.selected_item_mut(),
-                    Hand::OffHand => Some(&mut ctx.inventory.offhand),
-                };
-                if let Some(slot) = slot {
-                    slot.shrink(1);
-                }
-            }
-            return true;
-        }
         let used = item::item_id(&stack);
         if used == vanillite_data::item::ids::FLINT_AND_STEEL
             || used == vanillite_data::item::ids::ENDER_EYE
@@ -988,6 +965,21 @@ impl Digging {
             } else {
                 use_ender_eye(ctx, hand, pos)
             };
+        }
+        if used == vanillite_data::item::ids::END_CRYSTAL {
+            if !ctx.level.use_end_crystal(pos) {
+                return false;
+            }
+            if !ctx.actor.creative() {
+                let slot = match hand {
+                    Hand::MainHand => ctx.inventory.selected_item_mut(),
+                    Hand::OffHand => Some(&mut ctx.inventory.offhand),
+                };
+                if let Some(slot) = slot {
+                    slot.shrink(1);
+                }
+            }
+            return true;
         }
         let Some(_block) = item::item_id(&stack).block() else {
             // Non-block items (buckets, tools on blocks, spawn eggs, ...) come later.

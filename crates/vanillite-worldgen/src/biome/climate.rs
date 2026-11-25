@@ -228,14 +228,29 @@ pub(crate) fn distance(space: &[Parameter; 7], target: &[i64; 7]) -> i64 {
 ///
 /// The carvers of every chunk look up the biomes of the 17 × 17 chunks around it with an
 /// uncached resolver, so each column is sampled by up to 289 chunks. The climate is a pure
-/// function of the position; only the R-tree search depends on the order of the queries, so the
-/// cache stores climates, not biomes. Sharded so threads rarely meet; a full shard is cleared.
+/// function of the position; the R-tree search result depends on the query order only through
+/// its hint (the previous result), so with the climate the cache keeps the last searches as
+/// (hint, result) pairs: neighbouring chunks query the columns in the same order and mostly
+/// repeat them. Sharded so threads rarely meet; a full shard is cleared.
 pub struct ClimateCache {
     shards: Box<[Mutex<ClimateShard>]>,
 }
 
-/// Climates by quart column.
-type ClimateShard = FxHashMap<(i32, i32), TargetPoint>;
+/// Climates and recent searches by quart column.
+type ClimateShard = FxHashMap<(i32, i32), ClimateEntry>;
+
+/// A cached column: its climate and its last two searches as `(hint + 1 or 0, result)`
+/// (`u32::MAX` hints mark unused slots).
+#[derive(Clone, Copy)]
+struct ClimateEntry {
+    target: TargetPoint,
+    searches: [(u32, u32); 2],
+}
+
+/// The memo key of a search hint.
+fn hint_key(hint: Option<u32>) -> u32 {
+    hint.map_or(0, |h| h.wrapping_add(1))
+}
 
 impl ClimateCache {
     const SHARDS: usize = 32;
@@ -249,32 +264,48 @@ impl ClimateCache {
         }
     }
 
-    /// The climate of column `(quart_x, quart_z)`, from `sample` if it is not cached yet.
-    pub fn get_or_insert_with(
+    /// The R-tree search result for column `(quart_x, quart_z)` with hint `hint`: `search`
+    /// of the column's climate (from `sample` if it is not cached yet), unless the same search
+    /// is cached. Both callbacks must be pure.
+    pub fn search_at(
         &self,
         quart_x: i32,
         quart_z: i32,
+        hint: Option<u32>,
         sample: impl FnOnce() -> TargetPoint,
-    ) -> TargetPoint {
+        search: impl FnOnce(&TargetPoint, Option<u32>) -> u32,
+    ) -> u32 {
         let hash = (quart_x as u32 as u64)
             .wrapping_mul(0x9E37_79B9_7F4A_7C15)
             .wrapping_add((quart_z as u32 as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F));
         let shard = &self.shards[(hash >> 59) as usize % Self::SHARDS];
         let key = (quart_x, quart_z);
-        if let Some(target) = shard
+        let hint_key = hint_key(hint);
+        let cached = shard
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .get(&key)
-        {
-            return *target;
-        }
-        let target = sample();
+            .copied();
+        let target = match cached {
+            Some(entry) => {
+                if let Some(&(_, result)) = entry.searches.iter().find(|s| s.0 == hint_key) {
+                    return result;
+                }
+                entry.target
+            }
+            None => sample(),
+        };
+        let result = search(&target, hint);
         let mut map = shard.lock().unwrap_or_else(PoisonError::into_inner);
-        if map.len() >= Self::MAX_PER_SHARD {
+        if map.len() >= Self::MAX_PER_SHARD && !map.contains_key(&key) {
             map.clear();
         }
-        map.insert(key, target);
-        target
+        let entry = map.entry(key).or_insert(ClimateEntry {
+            target,
+            searches: [(u32::MAX, 0); 2],
+        });
+        entry.searches = [(hint_key, result), entry.searches[0]];
+        result
     }
 }
 
@@ -358,6 +389,18 @@ impl<T> ParameterList<T> {
     /// `values()`.
     pub fn values(&self) -> &[(ParameterPoint, T)] {
         &self.values
+    }
+
+    /// `tree.search(target, hint)`: the index of the closest value, the search starting from
+    /// the leaf `hint` (a previous result).
+    pub fn search_index(&self, target: &TargetPoint, hint: Option<u32>) -> u32 {
+        self.tree
+            .search(&target.to_parameter_array(), hint.map(|i| i as usize)) as u32
+    }
+
+    /// The value at `index` (a [`Self::search_index`] result).
+    pub fn value_at(&self, index: u32) -> &T {
+        &self.values[index as usize].1
     }
 
     /// `findValue(target)`: the value of the closest entry (R-tree search).

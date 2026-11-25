@@ -134,15 +134,12 @@ pub(super) fn snow_ranged_attack(t: &mut Tick<'_, '_>, target: EntityId) {
     let yd = o.eye_y - f64::from(1.1_f32);
     let zd = o.pos.z - p.z;
     let yo = (xd * xd + zd * zd).sqrt() * f64::from(0.2_f32);
-    let (velocity, rot) = super::snowball::shoot(
-        &mut *t.env.random,
-        Vec3::new(xd, yd + yo - start.y, zd),
-        1.6,
-        12.0,
-    );
+    let mut own = crate::mob::missile::new_projectile_random();
+    let (velocity, rot) =
+        super::snowball::shoot(&mut own, Vec3::new(xd, yd + yo - start.y, zd), 1.6, 12.0);
     let mut data = MissileData::new(MissileKind::Snowball);
     data.item = crate::mob::equipment::stack("minecraft:snowball");
-    crate::mob::missile::spawn_from(t, start, velocity, rot, data);
+    crate::mob::missile::spawn_shot(t, start, velocity, rot, data);
     let r = t.mob().random.next_float();
     kinds::play_sound(
         t,

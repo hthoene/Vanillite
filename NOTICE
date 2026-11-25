@@ -21,3 +21,10 @@ mappings (https://github.com/GeyserMC/mappings) and Bedrock resources of Geyser
 Copyright (c) 2019-2026 GeyserMC (http://geysermc.org), including the replacement blocks and
 items for older Bedrock releases from Geyser's conversion tables. See
 crates/vanillite-bedrock/data/README.md.
+
+Alternate Current
+-----------------
+crates/vanillite-game/src/block/redstone/alternate_current.rs implements the redstone wire
+algorithm of Alternate Current by Space Walker
+(https://github.com/SpaceWalkerRS/alternate-current), licensed under the MIT License,
+Copyright (c) 2022 Space Walker. The code is written anew; no code was copied.

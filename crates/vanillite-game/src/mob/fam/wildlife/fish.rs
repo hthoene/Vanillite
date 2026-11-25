@@ -73,7 +73,7 @@ fn is_schooling(kind: Kind) -> bool {
 }
 
 /// `AbstractFish.registerGoals` and the kinds' additions.
-pub(super) fn register_goals(m: &mut MobData) {
+pub(crate) fn register_goals(m: &mut MobData) {
     let kind = m.kind;
     let g = &mut m.goals;
     g.add(0, MobGoal::panic(1.25));
@@ -118,35 +118,37 @@ fn non_spectator_player(t: &Tick<'_, '_>, id: EntityId) -> bool {
         .is_some_and(|p| p.game_mode != GameMode::Spectator)
 }
 
-/// `finalizeSpawn` of salmon (size) and tropical fish (variant).
-pub(super) fn finalize_spawn(m: &mut MobData, _ctx: &mut SpawnContext<'_>) {
-    match m.kind {
-        Kind::Salmon => {
-            // Weighted: small 30, medium 50, large 15.
-            let roll = m.random.next_int_bounded(95);
-            st_mut(m).variant = if roll < 30 {
-                0
-            } else if roll < 80 {
-                1
-            } else {
-                2
-            };
-        }
-        Kind::TropicalFish => {
-            let variant = if m.random.next_float() < 0.9 {
-                let i = usize::try_from(m.random.next_int_bounded(22)).unwrap_or(0);
-                common_variant(i)
-            } else {
-                st_mut(m).is_school = false;
-                let p = usize::try_from(m.random.next_int_bounded(12)).unwrap_or(0);
-                let base = m.random.next_int_bounded(16);
-                let color = m.random.next_int_bounded(16);
-                pack_variant(PATTERNS[p], base, color)
-            };
-            st_mut(m).variant = variant;
-        }
-        _ => {}
+/// `Salmon.finalizeSpawn`: the size from the salmon's own random (weighted: small 30, medium
+/// 50, large 15).
+pub(super) fn finalize_spawn_own(m: &mut MobData) {
+    if m.kind == Kind::Salmon {
+        let roll = m.random.next_int_bounded(95);
+        st_mut(m).variant = if roll < 30 {
+            0
+        } else if roll < 80 {
+            1
+        } else {
+            2
+        };
     }
+}
+
+/// `finalizeSpawn` of tropical fish (variant).
+pub(super) fn finalize_spawn(m: &mut MobData, _ctx: &mut SpawnContext<'_>) {
+    if m.kind != Kind::TropicalFish {
+        return;
+    }
+    let variant = if m.random.next_float() < 0.9 {
+        let i = usize::try_from(m.random.next_int_bounded(22)).unwrap_or(0);
+        common_variant(i)
+    } else {
+        st_mut(m).is_school = false;
+        let p = usize::try_from(m.random.next_int_bounded(12)).unwrap_or(0);
+        let base = m.random.next_int_bounded(16);
+        let color = m.random.next_int_bounded(16);
+        pack_variant(PATTERNS[p], base, color)
+    };
+    st_mut(m).variant = variant;
 }
 
 /// `WaterAnimal.checkSurfaceWaterAnimalSpawnRules`: within 13 blocks below the sea level, in
@@ -203,7 +205,9 @@ pub(super) fn move_control(t: &mut Tick<'_, '_>) {
         let target = (ctl.speed_modifier * t.mob_ref().attrs.movement_speed) as f32;
         let speed = t.mob_ref().speed;
         let speed = speed + 0.125 * (target - speed);
-        t.mob().speed = speed;
+        let m = t.mob();
+        m.speed = speed;
+        m.zza = speed;
         let p = t.pos();
         let (xd, yd, zd) = (ctl.wanted.x - p.x, ctl.wanted.y - p.y, ctl.wanted.z - p.z);
         if yd != 0.0 {
@@ -225,7 +229,9 @@ pub(super) fn move_control(t: &mut Tick<'_, '_>) {
             t.mob().y_body_rot = y;
         }
     } else {
-        t.mob().speed = 0.0;
+        let m = t.mob();
+        m.speed = 0.0;
+        m.zza = 0.0;
     }
 }
 
@@ -467,7 +473,7 @@ pub(super) fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
             *recalc = reduced(10);
             // `pathToLeader`.
             if let Some(o) = st(t.mob_ref()).leader.and_then(|l| t.other(l)) {
-                nav::move_to_entity(t, o.pos, 0, 1.0);
+                nav::move_to_entity(t, o.pos, 1, 1.0);
             }
         }
     }

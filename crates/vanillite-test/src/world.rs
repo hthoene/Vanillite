@@ -56,6 +56,12 @@ pub trait ScenarioWorld {
         Err("this world has no chunk tickets".to_owned())
     }
 
+    /// Saves the world, drops everything in memory and loads it again like a server restart:
+    /// the saved chunk tickets come back and their chunks load before the next tick.
+    fn restart(&mut self) -> Result<(), String> {
+        Err("this world cannot restart".to_owned())
+    }
+
     /// The settled light inside `min..=max` in y, z, x order as `sky << 4 | block`: the levels
     /// a client sees. Worlds without a light engine leave `out` empty.
     fn light(&mut self, min: BlockPos, max: BlockPos, out: &mut Vec<u8>) {
@@ -79,9 +85,21 @@ pub trait ScenarioWorld {
     fn hurt(&mut self, hurt: &Hurt) -> Result<(), String> {
         Err(format!("this world cannot hurt `{}`", hurt.entity))
     }
+    /// Runs a `lightning` action in the column of `column`.
+    fn lightning(&mut self, column: BlockPos) -> Result<(), String> {
+        Err(format!("this world has no lightning ({column:?})"))
+    }
     /// Runs an `effect` action.
     fn effect(&mut self, effect: &crate::scenario::EffectOp) -> Result<(), String> {
         Err(format!("this world has no effects for `{}`", effect.entity))
+    }
+    /// Runs a `command` action: the line as the server at the origin of the overworld.
+    fn command(&mut self, line: &str) -> Result<(), String> {
+        Err(format!("this world runs no commands (`{line}`)"))
+    }
+    /// Runs a `throw_potion` action.
+    fn throw_potion(&mut self, potion: &crate::scenario::ThrowPotionOp) -> Result<(), String> {
+        Err(format!("this world cannot throw `{}`", potion.potion))
     }
 }
 

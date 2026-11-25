@@ -14,6 +14,7 @@ use crate::player_list::Uuid;
 use vanillite_base::{Aabb, BlockPos, ChunkPos, Vec3};
 use vanillite_config::GameMode;
 use vanillite_game::block::portal as portal_blocks;
+use vanillite_game::level::forced::SavedTickets;
 use vanillite_game::player::{Body, ChunkView, PlayerData, effective_view_distance, join};
 use vanillite_game::portal::{self, EntryPortal, PortalKind};
 use vanillite_game::survival::rules::Rule;
@@ -38,6 +39,16 @@ const END_DIMENSION: &str = "minecraft:the_end";
 
 /// `TicketType.PORTAL`: ticks a portal ticket keeps the chunks around an arrival loaded.
 const PORTAL_TICKET_TICKS: u64 = 300;
+
+/// A portal ticket (load and simulation) with the tick it expires (`TicketType.PORTAL`).
+#[derive(Debug)]
+pub(crate) struct PortalTicket {
+    until: u64,
+    pos: ChunkPos,
+    level: u8,
+    load: TicketId,
+    simulation: TicketId,
+}
 
 /// `ClientboundRespawnPacket.KEEP_ALL_DATA`: what the client keeps on a dimension change.
 const KEEP_ALL_DATA: u8 = 3;
@@ -82,6 +93,9 @@ enum Route {
     Respawn { keep_all: bool },
     /// Back to where it came from: its destination had no place for it.
     Back,
+    /// `/tp` and `/teleport` into this world (`TeleportCommand.performTeleport`): to an exact
+    /// place, without motion.
+    Command { pos: Vec3, y_rot: f32, x_rot: f32 },
 }
 
 /// A traveller waiting for the chunks around its destination.
@@ -195,7 +209,100 @@ impl ServerWorld {
             })
             .and_then(|i| u16::try_from(i).ok())
             .map_or(OVERWORLD, WorldId);
+        // `remove(KILLED)` → `triggerOnDeathMobEffects`: a dead player's Wind Charged bursts.
+        let wind = !keep_all
+            && player
+                .survival
+                .effects
+                .has(vanillite_game::effect::MobEffect::WIND_CHARGED);
+        if wind && let Some(e) = self.level.entities.store.get(id) {
+            let (pos, height) = (e.pos(), e.dims().height);
+            let (center, radius) = vanillite_game::experience_orb::with_entity_random(|r| {
+                vanillite_game::effect::living::wind_burst(pos, height, r)
+            });
+            self.level.explode_with(
+                Some(id),
+                None,
+                center,
+                radius,
+                vanillite_game::level::explosion::BlockInteraction::TriggerBlock,
+                vanillite_game::level::explosion::ExplosionStyle {
+                    damages_entities: false,
+                    knockback: vanillite_game::effect::living::WIND_CHARGED_KNOCKBACK,
+                    wind_sound: Some(vanillite_game::effect::living::WIND_CHARGED_SOUND),
+                    resistance: vanillite_game::level::explosion::BlockResistance::WindCharge,
+                },
+            );
+        }
         self.send_away(ctx, id, target, Route::Respawn { keep_all });
+    }
+
+    /// `Entity.teleportTo(level, ...)` of `/tp` and `/teleport` into another world: a player
+    /// travels like through a portal, another entity moves as its saved data (without its
+    /// passengers) and is added there. `rotation` `None` keeps the entity's own. The motion is
+    /// dropped, like `TeleportCommand.performTeleport` does.
+    pub(crate) fn teleport_to_world(
+        &mut self,
+        global: &Global,
+        uuid: u128,
+        target: WorldId,
+        pos: Vec3,
+        rotation: Option<(f32, f32)>,
+    ) {
+        let entities = &mut self.level.entities;
+        let Some(id) = crate::commands::find_uuid(entities, uuid) else {
+            return;
+        };
+        let Some(entity) = entities.store.get(id) else {
+            return;
+        };
+        let rot = entity.rot();
+        let (y_rot, x_rot) = rotation.unwrap_or((rot.y_rot, rot.x_rot));
+        let (y_rot, x_rot) = (
+            vanillite_base::math::wrap_degrees_f(y_rot),
+            vanillite_base::math::wrap_degrees_f(x_rot),
+        );
+        if entity.kind() == vanillite_data::entity::ids::PLAYER {
+            let Some(mut traveller) = self.take_player(id, Route::Command { pos, y_rot, x_rot })
+            else {
+                return;
+            };
+            traveller.velocity = Vec3::new(0.0, 0.0, 0.0);
+            if target == self.id {
+                self.arrive(global, traveller);
+                return;
+            }
+            global.players.set_world(Uuid(traveller.uuid), target);
+            if let Some(global_arc) = global.arc() {
+                global.run_in_world(target, move |world: &mut ServerWorld| {
+                    world.arrive(&global_arc, traveller);
+                });
+            }
+            return;
+        }
+        let Some(mut nbt) = self.level.save_entity(id) else {
+            return;
+        };
+        self.level.entities.despawn(id);
+        use vanillite_nbt::{List, Tag};
+        nbt.insert(
+            "Pos",
+            Tag::List(List(vec![
+                Tag::Double(pos.x),
+                Tag::Double(pos.y),
+                Tag::Double(pos.z),
+            ])),
+        );
+        nbt.insert("Motion", Tag::List(List(vec![Tag::Double(0.0); 3])));
+        nbt.insert(
+            "Rotation",
+            Tag::List(List(vec![Tag::Float(y_rot), Tag::Float(x_rot)])),
+        );
+        nbt.insert("OnGround", Tag::Byte(1));
+        nbt.remove("Passengers");
+        global.run_in_world(target, move |world: &mut ServerWorld| {
+            world.level.load_entity(nbt);
+        });
     }
 
     /// Removes the player `id` from this world and hands it to `target` (this world too).
@@ -261,6 +368,13 @@ impl ServerWorld {
                 portal::END_SPAWN_POINT.chunk(),
                 portal::PORTAL_TICKET_RADIUS,
             )),
+            Route::Command { pos, .. } => Some((
+                ChunkPos::new(
+                    vanillite_base::math::floor(pos.x) >> 4,
+                    vanillite_base::math::floor(pos.z) >> 4,
+                ),
+                1,
+            )),
             Route::Spawn | Route::Respawn { .. } | Route::Back => None,
         };
         let area = area.map(|(center, radius)| {
@@ -288,14 +402,16 @@ impl ServerWorld {
         self.gateway_waits = waits;
         let now = self.ticks;
         let chunks = &mut self.level.chunks;
-        self.portal_tickets.retain(|&(until, ticket, simulation)| {
-            let keep = now < until;
+        let before = self.portal_tickets.len();
+        self.portal_tickets.retain(|t| {
+            let keep = now < t.until;
             if !keep {
-                chunks.remove_ticket(ticket);
-                chunks.remove_simulation_ticket(simulation);
+                chunks.remove_ticket(t.load);
+                chunks.remove_simulation_ticket(t.simulation);
             }
             keep
         });
+        self.tickets_dirty |= self.portal_tickets.len() != before;
     }
 
     fn place_arrivals(&mut self, global: &Global) {
@@ -359,6 +475,20 @@ impl ServerWorld {
         }
         let rules = global.level.rules();
         let data = &mut traveller.data;
+        // `triggerDimensionChangeTriggers`: `changed_dimension` from the world it left.
+        if traveller.from != self.id
+            && let (Some(from), Some(to)) = (
+                crate::server::DIMENSIONS.get(traveller.from.index()),
+                crate::server::DIMENSIONS.get(self.id.index()),
+            )
+        {
+            data.advancements.trigger(
+                vanillite_game::advancements::trigger::Event::ChangedDimension(
+                    (*from).to_owned(),
+                    (*to).to_owned(),
+                ),
+            );
+        }
         if let Some(keep_all) = keep_all {
             // `restoreFrom`: everything stays after the credits, else what death keeps.
             if keep_all {
@@ -666,6 +796,14 @@ impl ServerWorld {
                     ticket: None,
                 })
             }
+            &Route::Command { pos, y_rot, x_rot } => Some(Landing {
+                pos,
+                y_rot,
+                x_rot,
+                relatives: 0,
+                sound: false,
+                ticket: None,
+            }),
             Route::Back => Some(Landing {
                 pos: traveller.pos,
                 y_rot: traveller.y_rot,
@@ -681,11 +819,50 @@ impl ServerWorld {
     /// ticks.
     fn place_portal_ticket(&mut self, pos: BlockPos) {
         let level = FULL_LEVEL - u8::try_from(portal::PORTAL_TICKET_RADIUS).unwrap_or(0);
+        self.add_portal_ticket(pos.chunk(), level, PORTAL_TICKET_TICKS);
+    }
+
+    /// Adds a portal ticket that expires after `ticks`.
+    fn add_portal_ticket(&mut self, pos: ChunkPos, level: u8, ticks: u64) {
         let chunks = &mut self.level.chunks;
-        let ticket = chunks.add_ticket(pos.chunk(), level);
-        let simulation = chunks.add_simulation_ticket(pos.chunk(), level);
-        self.portal_tickets
-            .push((self.ticks + PORTAL_TICKET_TICKS, ticket, simulation));
+        let load = chunks.add_ticket(pos, level);
+        let simulation = chunks.add_simulation_ticket(pos, level);
+        self.portal_tickets.push(PortalTicket {
+            until: self.ticks + ticks,
+            pos,
+            level,
+            load,
+            simulation,
+        });
+        self.tickets_dirty = true;
+    }
+
+    /// Restores the saved chunk tickets besides the forced ones (`activateAllDeactivatedTickets`).
+    pub(crate) fn restore_tickets(&mut self, saved: SavedTickets) {
+        for t in &saved.portal {
+            self.add_portal_ticket(t.pos, t.level, u64::try_from(t.ticks_left).unwrap_or(0));
+        }
+        self.kept_tickets = saved.kept;
+        // Loading is not a change.
+        self.tickets_dirty = false;
+    }
+
+    /// The saved chunk tickets besides the forced ones, with the portal tickets' remaining
+    /// ticks.
+    pub(crate) fn saved_tickets(&self) -> SavedTickets {
+        let portal = self
+            .portal_tickets
+            .iter()
+            .map(|t| vanillite_game::level::forced::PortalTicket {
+                pos: t.pos,
+                level: t.level,
+                ticks_left: i64::try_from(t.until.saturating_sub(self.ticks)).unwrap_or(i64::MAX),
+            })
+            .collect();
+        SavedTickets {
+            portal,
+            kept: self.kept_tickets.clone(),
+        }
     }
 
     /// `EndGatewayBlock.getPortalDestination`: the player moves to the gateway's exit once the

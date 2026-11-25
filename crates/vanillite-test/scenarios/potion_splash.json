@@ -1,0 +1,156 @@
+{
+  "description": "Thrown splash potions in a fenced pen at noon: strong poison lands between a cow and a pig (the effect duration falls off with the distance between the potion's box and each mob's box), harming lands next to the sheep (instant damage scaled by distance); the potions' flight, the poison ticks and the health per tick show the falloff.",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      23,
+      -57,
+      23
+    ]
+  ],
+  "ticks": 200,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        23,
+        -60,
+        0
+      ],
+      "block": "minecraft:oak_fence"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        23
+      ],
+      "to": [
+        23,
+        -60,
+        23
+      ],
+      "block": "minecraft:oak_fence"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -60,
+        23
+      ],
+      "block": "minecraft:oak_fence"
+    },
+    {
+      "op": "fill",
+      "from": [
+        23,
+        -60,
+        0
+      ],
+      "to": [
+        23,
+        -60,
+        23
+      ],
+      "block": "minecraft:oak_fence"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        12.5,
+        -60.0,
+        12.5
+      ]
+    },
+    {
+      "name": "cow",
+      "type": "minecraft:cow",
+      "pos": [
+        5.5,
+        -60.0,
+        5.5
+      ],
+      "seed": 6,
+      "finalize": false
+    },
+    {
+      "name": "pig",
+      "type": "minecraft:pig",
+      "pos": [
+        8.5,
+        -60.0,
+        5.5
+      ],
+      "seed": 7,
+      "finalize": false
+    },
+    {
+      "name": "sheep",
+      "type": "minecraft:sheep",
+      "pos": [
+        18.5,
+        -60.0,
+        18.5
+      ],
+      "seed": 9,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 5,
+      "op": "throw_potion",
+      "item": "minecraft:splash_potion",
+      "potion": "minecraft:strong_poison",
+      "pos": [
+        6.75,
+        -57.5,
+        5.5
+      ],
+      "motion": [
+        0.0,
+        0.1,
+        0.0
+      ],
+      "by": "steve"
+    },
+    {
+      "tick": 30,
+      "op": "throw_potion",
+      "item": "minecraft:splash_potion",
+      "potion": "minecraft:harming",
+      "pos": [
+        18.5,
+        -58.0,
+        16.5
+      ],
+      "motion": [
+        0.05,
+        0.0,
+        0.0
+      ],
+      "by": "steve"
+    }
+  ]
+}

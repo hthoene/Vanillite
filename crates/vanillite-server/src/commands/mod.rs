@@ -8,6 +8,7 @@ mod advancement_cmd;
 mod bans;
 mod blocks_cmd;
 mod border_cmd;
+mod bossbar_cmd;
 mod chat_cmd;
 mod data;
 mod data_cmd;
@@ -17,13 +18,13 @@ mod entities_cmd;
 mod exec;
 mod execute;
 pub(crate) mod functions;
-mod items;
+pub(crate) mod items;
 mod locate;
+pub(crate) mod loot_cmd;
 mod nbt_ops;
 mod pack_cmd;
 mod particle;
 mod player_data;
-mod response;
 mod schedule;
 mod scores;
 mod select;
@@ -51,6 +52,7 @@ use vanillite_world::entity::EntityId;
 pub(crate) use bans::ban_reason;
 pub(crate) use exec::{find_player, permission_event};
 pub(crate) use player_data::add_experience;
+pub(crate) use select::find_uuid;
 pub(crate) use sound::send_post_effects;
 pub(crate) use source::{CommandSource, SourceKind};
 pub(crate) use world_cmd::sprint_finished;
@@ -81,7 +83,16 @@ pub(crate) struct Env<'a> {
 /// (`ServerFunctionLibrary.reload`, `ServerAdvancementManager`).
 pub(crate) fn load_game_systems(global: &Global, packs: &[vanillite_datapack::OpenedPack]) {
     global.systems.set_functions(functions::load(global, packs));
-    global.systems.load(&global.level.data);
+    global
+        .systems
+        .load(&global.level.data, &|key| global.level.legacy(key));
+    global.systems.set_advancements(load_advancements(packs));
+}
+
+/// The advancements of the packs (`ServerAdvancementManager.apply`).
+pub(crate) fn load_advancements(
+    packs: &[vanillite_datapack::OpenedPack],
+) -> vanillite_game::advancements::Advancements {
     let roots: Vec<std::path::PathBuf> = packs.iter().flat_map(|p| p.layers.clone()).collect();
     let files = functions::list(&roots, "advancement", ".json")
         .into_iter()
@@ -93,9 +104,7 @@ pub(crate) fn load_game_systems(global: &Global, packs: &[vanillite_datapack::Op
             }
         })
         .collect::<std::collections::BTreeMap<_, _>>();
-    global
-        .systems
-        .set_advancements(vanillite_game::advancements::Advancements::load(&files));
+    vanillite_game::advancements::Advancements::load(&files)
 }
 
 /// `ServerFunctionManager.tick` on the overworld.
@@ -376,7 +385,55 @@ fn collect_signed_arguments(
 }
 
 /// A console command, run on the overworld.
+/// Runs a command line as the server (permission level 4) at `pos` in the overworld on
+/// `level`, outside a running server (parity scenarios): the execution is the console's;
+/// a line that does not parse is an error.
+pub fn run_command_on_level(
+    global: &Global,
+    level: &mut vanillite_game::level::Level,
+    pos: vanillite_base::Vec3,
+    line: &str,
+) -> Result<(), String> {
+    let arc = global.arc().ok_or("the server is gone")?;
+    let world = WorldId(0);
+    let source = CommandSource::new(arc, SourceKind::Console, 4, world, pos, (0.0, 0.0), None);
+    let parsed = global
+        .commands
+        .parse_command(line.trim().trim_start_matches('/'), &source)
+        .map_err(|e| error_message(&e).plain())?;
+    let mut env = Env {
+        level,
+        global,
+        world,
+    };
+    run_line(
+        &mut env,
+        engine::Line {
+            parsed: Arc::new(parsed),
+            signed: None,
+        },
+        source,
+    );
+    Ok(())
+}
+
 pub(crate) fn run_console_command(world: &mut ServerWorld, global: &Global, line: &str) {
+    run_server_command(world, global, line, SourceKind::Console);
+}
+
+/// An RCON command (`DedicatedServer.runCommand`), run on the overworld: its feedback.
+pub(crate) fn run_rcon_command(world: &mut ServerWorld, global: &Global, line: &str) -> String {
+    let buffer = Arc::new(std::sync::Mutex::new(String::new()));
+    run_server_command(world, global, line, SourceKind::Rcon(Arc::clone(&buffer)));
+    std::mem::take(
+        &mut *buffer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    )
+}
+
+/// A command of the console or RCON with the owner permission level.
+fn run_server_command(world: &mut ServerWorld, global: &Global, line: &str, kind: SourceKind) {
     let command = line.trim().trim_start_matches('/');
     if command.is_empty() {
         return;
@@ -386,7 +443,7 @@ pub(crate) fn run_console_command(world: &mut ServerWorld, global: &Global, line
     };
     let source = CommandSource::new(
         arc,
-        SourceKind::Console,
+        kind,
         4,
         world.id(),
         global.systems.spawn(),
@@ -408,14 +465,25 @@ pub(crate) fn run_console_command(world: &mut ServerWorld, global: &Global, line
             run_line(&mut env, line, source);
         }
         Err(e) => {
-            log::warn!("{}", error_message(&e).plain());
-            if let Some(context) = e.context() {
-                log::warn!(
+            let context = e.context().map(|context| {
+                format!(
                     "{}{}{}<--[HERE]",
                     if context.ellipsis { "..." } else { "" },
                     context.before,
                     context.after
-                );
+                )
+            });
+            if matches!(source.kind, SourceKind::Rcon(_)) {
+                // `Commands.performCommand`: both lines as failures of the source.
+                source.send_failure(global, error_message(&e));
+                if let Some(context) = context {
+                    source.send_failure(global, vanillite_protocol::text::Component::text(context));
+                }
+                return;
+            }
+            log::warn!("{}", error_message(&e).plain());
+            if let Some(context) = context {
+                log::warn!("{context}");
             }
         }
     }

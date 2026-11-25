@@ -231,12 +231,72 @@ pub(crate) fn apply_scores(global: &Global, scores: Vec<PlayerScores>) {
     }
 }
 
-/// `AdvancementRewards.grant`'s loot: the loot tables have no `advancement_reward` context
-/// (`getRandomItems` for a player) yet, so nothing is given.
-fn give_loot(_level: &mut Level, _id: EntityId, _tables: &[String]) {}
+/// The loot of `AdvancementRewards.grant`: the tables rolled with the player as `this`
+/// (`ADVANCEMENT_REWARD`), each stack added to the inventory with a pickup sound or dropped
+/// for the player alone.
+fn give_loot(env: &mut Env<'_>, id: EntityId, tables: &[String]) {
+    if tables.is_empty() {
+        return;
+    }
+    let Some(pos) = env.level.entities.store.get(id).map(|e| e.pos()) else {
+        return;
+    };
+    let params = crate::commands::loot_cmd::Params {
+        origin: Some(pos),
+        this_entity: Some(id),
+        ..Default::default()
+    };
+    let mut stacks = Vec::new();
+    crate::commands::loot_cmd::with_context(env, params, |data, ctx, rng| {
+        for table in tables {
+            data.loot.roll(table, ctx, rng, &mut stacks);
+        }
+    });
+    let mut changed = false;
+    for mut stack in stacks {
+        let level = &mut *env.level;
+        let Some(player) = level.entities.player_mut(id) else {
+            return;
+        };
+        let infinite = player.game_mode == vanillite_config::GameMode::Creative;
+        if player.inventory.add(None, &mut stack, infinite) && stack.is_empty() {
+            use vanillite_base::random::RandomSource;
+            let r = level.random();
+            let pitch = ((r.next_float() - r.next_float()) * 0.7 + 1.0) * 2.0;
+            if let Some(sound) =
+                vanillite_data::registry::SOUND_EVENT.id("minecraft:entity.item.pickup")
+            {
+                level.play_sound(
+                    None,
+                    pos.x,
+                    pos.y,
+                    pos.z,
+                    sound,
+                    vanillite_game::level::SOUND_PLAYERS,
+                    0.2,
+                    pitch,
+                );
+            }
+            changed = true;
+        } else {
+            crate::commands::items::drop_for(level, id, stack);
+        }
+    }
+    if changed {
+        crate::commands::items::sync_inventory(&mut env.level.entities, id);
+    }
+}
 
-/// `ServerPlayer.awardRecipesByKey`: players have no recipe book yet, so nothing is unlocked.
-fn award_recipes(_level: &mut Level, _id: EntityId, _recipes: &[String]) {}
+/// `ServerPlayer.awardRecipesByKey`.
+fn award_recipes(level: &mut Level, id: EntityId, recipes: &[String]) {
+    if recipes.is_empty() {
+        return;
+    }
+    if let Some(player) = level.entities.player_mut(id) {
+        let ids: Vec<&str> = recipes.iter().map(String::as_str).collect();
+        player.unlock_recipes(&ids);
+    }
+}
 
 /// `AdvancementRewards.grant` and the chat announcement of the advancements a player of this
 /// world completed.
@@ -257,7 +317,7 @@ pub(crate) fn grant_rewards(env: &mut Env<'_>, id: EntityId) {
         };
         let rewards = &a.rewards;
         crate::commands::add_experience(env.level, id, rewards.experience, false);
-        give_loot(env.level, id, &rewards.loot);
+        give_loot(env, id, &rewards.loot);
         award_recipes(env.level, id, &rewards.recipes);
         if let Some(function) = &rewards.function {
             let library = global.systems.functions();
@@ -281,5 +341,32 @@ pub(crate) fn grant_rewards(env: &mut Env<'_>, id: EntityId) {
             );
             global.players.broadcast_system(message, false, None);
         }
+    }
+}
+
+/// `PlayerAdvancements.reload` of every online player after `/reload`: the progress kept for
+/// the advancements that still exist, sent again as a full update.
+pub(crate) fn reload_advancements(global: &Global) {
+    for index in 0..crate::server::DIMENSIONS.len() {
+        let Ok(index) = u16::try_from(index) else {
+            continue;
+        };
+        let Some(arc) = global.arc() else {
+            return;
+        };
+        global.run_in_world(WorldId(index), move |w| {
+            let set = arc.systems.advancements();
+            let entities = w.entities_mut();
+            let ids: Vec<EntityId> = entities.players.iter().map(|(id, _)| id).collect();
+            for id in ids {
+                if let Some(p) = entities.player_mut(id) {
+                    let saved = p.advancements.to_json();
+                    p.advancements = vanillite_game::advancements::PlayerAdvancements::load(
+                        std::sync::Arc::clone(&set),
+                        Some(&saved),
+                    );
+                }
+            }
+        });
     }
 }

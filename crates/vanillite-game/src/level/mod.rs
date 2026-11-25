@@ -18,6 +18,9 @@ pub mod explosion;
 pub mod forced;
 pub mod game_event;
 mod neighbors;
+pub mod place;
+#[cfg(test)]
+pub(crate) use neighbors::STEPS as NEIGHBOR_STEPS;
 pub mod signal;
 mod tick;
 pub mod update;
@@ -277,14 +280,14 @@ pub struct LevelOutput {
     pub experience: Vec<(vanillite_base::Vec3, i32)>,
     /// Block entities whose client data changed (`sendBlockUpdated` of a block entity).
     pub block_entity_updates: Vec<BlockPos>,
+    /// Global level events (`globalLevelEvent`: event, position, data), heard by every player
+    /// of the server.
+    pub global_level_events: Vec<(i32, BlockPos, i32)>,
     /// Wither skeleton skulls players placed, for the wither's summon check
     /// (`WitherSkullBlock.setPlacedBy`).
     pub summon_checks: Vec<BlockPos>,
     /// An end crystal was placed: the End fight tries to respawn the dragon (`tryRespawn`).
     pub try_dragon_respawn: bool,
-    /// Global level events (`globalLevelEvent`: event, position, data), heard by every player
-    /// of the server.
-    pub global_level_events: Vec<(i32, BlockPos, i32)>,
 }
 
 /// The terrain generator of a world (`getChunkSource().getGenerator()`).
@@ -340,6 +343,9 @@ pub struct Level {
     chunk_scratch: Vec<ChunkPos>,
     /// Scratch list of the visibility changes.
     visibility_scratch: Vec<vanillite_world::chunks::VisibilityChange>,
+    /// Chunks that became visible and load their entities in [`Level::tick_entity_manager`]
+    /// (`PersistentEntitySectionManager.loadingInbox`).
+    pending_entity_loads: Vec<ChunkPos>,
     /// The stored data live entities were loaded from: written back with their modelled
     /// fields replaced, so stored fields the game does not model are kept.
     entity_nbt: FxHashMap<EntityId, vanillite_nbt::Compound>,
@@ -428,6 +434,7 @@ impl Level {
             torch_toggles: Vec::new(),
             chunk_scratch: Vec::new(),
             visibility_scratch: Vec::new(),
+            pending_entity_loads: Vec::new(),
             entity_nbt: FxHashMap::default(),
             parked_entities: FxHashMap::default(),
             entity_chunks: FxHashSet::default(),
@@ -453,7 +460,7 @@ impl Level {
             poi_changes: Vec::new(),
         };
         level.entities.poi = crate::poi::PoiManager::new_live();
-        // Chunks that are visible already load their entities.
+        // Chunks that are visible already queue their entities for the end of the first tick.
         level.apply_visibility();
         level
     }

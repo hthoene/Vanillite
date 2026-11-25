@@ -2,9 +2,8 @@
 //!
 //! `locate structure` searches like `ChunkGenerator.findNearestMapStructure` and `locate biome`
 //! like `BiomeSource.findClosestBiome3d`. Points of interest are not tracked, so `locate poi`
-//! finds nothing. `place` checks its arguments and positions like Vanilla, but features,
-//! structures, jigsaw pieces and templates only generate into chunks being generated, not
-//! into the live world, so it then fails with Vanilla's failure message.
+//! finds nothing. `place` generates on a copy of the live chunks and replays the result on the
+//! world (`vanillite_game::level::place`).
 
 use std::time::Instant;
 
@@ -466,14 +465,37 @@ fn closest_biome(
     })
 }
 
-/// `place ...`: arguments and positions as Vanilla checks them; the generation itself cannot
-/// write into the live world yet (see the module comment).
+/// The packs and the terrain generator `place` generates with.
+fn generation(
+    env: &Env<'_>,
+) -> Option<(
+    std::sync::Arc<vanillite_datapack::LoadedPacks>,
+    std::sync::Arc<TerrainGenerator>,
+)> {
+    let packs = env.global.packs.loaded()?;
+    let generator = env.level.generation.as_ref()?;
+    Some((
+        std::sync::Arc::clone(packs),
+        std::sync::Arc::clone(&generator.terrain),
+    ))
+}
+
+/// The random of a placement (`level.getRandom()`).
+fn placement_random(env: &mut Env<'_>) -> vanillite_base::random::DecorationRandom {
+    use vanillite_base::random::RandomSource;
+    vanillite_base::random::DecorationRandom::new(env.level.random().next_long())
+}
+
+/// `PlaceCommand`: generates on a copy of the live chunks around the placement and replays it
+/// on the world.
 pub(super) fn place(
     op: PlaceOp,
     args: &Args,
     source: &CommandSource,
     env: &mut Env<'_>,
 ) -> Result<i32, CommandError> {
+    use vanillite_game::level::place::PlaceArea;
+    use vanillite_worldgen::place as wgp;
     this_world(source, env)?;
     let pos_arg = match op {
         PlaceOp::Jigsaw => "position",
@@ -485,48 +507,246 @@ pub(super) fn place(
         source_block(source)
     };
     // `checkLoaded` over the chunks the placement starts in.
-    let check = |min: ChunkPos, max: ChunkPos| {
+    let check = |env: &Env<'_>, min: ChunkPos, max: ChunkPos| {
         let loaded = (min.x..=max.x).all(|x| {
             (min.z..=max.z).all(|z| env.level.chunks.chunk(ChunkPos::new(x, z)).is_some())
         });
         if loaded { Ok(()) } else { Err(not_loaded()) }
     };
     let chunk = pos.chunk();
-    let failed = |key: &'static str| Err(CommandError::new(key, vec![]));
+    let coords = || vec![Arg::Int(pos.x), Arg::Int(pos.y), Arg::Int(pos.z)];
+    let height = LevelHeight {
+        min_y: env.level.min_y(),
+        height: env.level.max_y() - env.level.min_y() + 1,
+    };
     match op {
         PlaceOp::Feature => {
-            check(
+            let (id, inline) = super::loot_cmd::resource_or_inline(args, "feature")?;
+            let around = (
                 ChunkPos::new(chunk.x.saturating_sub(1), chunk.z.saturating_sub(1)),
                 ChunkPos::new(chunk.x.saturating_add(1), chunk.z.saturating_add(1)),
-            )?;
-            failed("commands.place.feature.failed")
+            );
+            check(env, around.0, around.1)?;
+            let failed = || CommandError::new("commands.place.feature.failed", vec![]);
+            let (packs, generator) = generation(env).ok_or_else(failed)?;
+            let definition = match (&id, inline) {
+                (Some(id), _) => serde_json::Value::String(id.clone()),
+                (None, Some(json)) => json,
+                (None, None) => return Err(missing("feature")),
+            };
+            let feature =
+                wgp::CommandFeature::load(&generator, &packs, &definition).map_err(|e| {
+                    CommandError::new(
+                        "argument.resource_or_id.failed_to_parse",
+                        vec![ErrArg::Str(e.to_string())],
+                    )
+                })?;
+            let mut random = placement_random(env);
+            let mut area = PlaceArea::copy(env.level, &generator, around.0, around.1);
+            let placed = area.run(&generator, |region| feature.place(region, &mut random, pos));
+            area.apply(env.level);
+            if !placed {
+                return Err(failed());
+            }
+            let message = match id {
+                Some(id) => {
+                    let mut a = vec![Arg::String(id)];
+                    a.extend(coords());
+                    Component::translatable_args("commands.place.feature.success", a)
+                }
+                None => {
+                    Component::translatable_args("commands.place.feature.success.inline", coords())
+                }
+            };
+            source.send_success(env.global, message, true);
+            Ok(1)
         }
         PlaceOp::Jigsaw => {
-            check(chunk, chunk)?;
-            failed("commands.place.jigsaw.failed")
+            let pool = args.identifier("pool").ok_or_else(|| missing("pool"))?;
+            let target = args.identifier("target").ok_or_else(|| missing("target"))?;
+            let max_depth = args.int("max_depth").copied().unwrap_or(1);
+            let failed = || CommandError::new("commands.place.jigsaw.failed", vec![]);
+            let (packs, generator) = generation(env).ok_or_else(failed)?;
+            if !wgp::has_entry(&packs, "minecraft:worldgen/template_pool", pool) {
+                return Err(CommandError::new(
+                    "commands.place.jigsaw.invalid",
+                    vec![ErrArg::Str(pool.clone())],
+                ));
+            }
+            check(env, chunk, chunk)?;
+            let pieces =
+                wgp::jigsaw_pieces(&generator, &packs, pool, target, max_depth, pos, height)
+                    .map_err(|e| {
+                        log::warn!("place jigsaw {pool}: {e}");
+                        failed()
+                    })?;
+            let Some(mut pieces) = pieces else {
+                return Err(failed());
+            };
+            let (min, max) = pieces_chunks(&pieces).unwrap_or((chunk, chunk));
+            let mut random = placement_random(env);
+            let mut area = PlaceArea::copy(env.level, &generator, min, max);
+            area.run(&generator, |region| {
+                wgp::place_jigsaw(&generator, &mut pieces, region, &mut random, pos);
+            });
+            area.apply(env.level);
+            source.send_success(
+                env.global,
+                Component::translatable_args("commands.place.jigsaw.success", coords()),
+                true,
+            );
+            Ok(1)
         }
         PlaceOp::Structure => {
             let id = args
                 .identifier("structure")
                 .ok_or_else(|| missing("structure"))?;
-            let known = env
-                .level
-                .generation
-                .as_ref()
-                .is_some_and(|g| g.terrain.structures().structure_id(id).is_some());
-            if !known {
-                return Err(CommandError::new(
+            let invalid = || {
+                CommandError::new(
                     "commands.place.structure.invalid",
                     vec![ErrArg::Str(id.clone())],
-                ));
-            }
-            failed("commands.place.structure.failed")
+                )
+            };
+            let (_, generator) = generation(env).ok_or_else(invalid)?;
+            let structure = generator
+                .structures()
+                .structure_id(id)
+                .ok_or_else(invalid)?;
+            let start = wgp::structure_start(&generator, structure, chunk, height)
+                .ok_or_else(|| CommandError::new("commands.place.structure.failed", vec![]))?;
+            let bb = start.bounding_box();
+            let min = ChunkPos::new(bb.min_x() >> 4, bb.min_z() >> 4);
+            let max = ChunkPos::new(bb.max_x() >> 4, bb.max_z() >> 4);
+            check(env, min, max)?;
+            let mut random = placement_random(env);
+            let mut area = PlaceArea::copy(env.level, &generator, min, max);
+            area.run(&generator, |region| {
+                wgp::place_structure(&generator, &start, region, &mut random, (min, max));
+            });
+            area.apply(env.level);
+            let mut a = vec![Arg::String(id.clone())];
+            a.extend(coords());
+            source.send_success(
+                env.global,
+                Component::translatable_args("commands.place.structure.success", a),
+                true,
+            );
+            Ok(1)
         }
-        PlaceOp::Template => {
-            check(chunk, chunk)?;
-            failed("commands.place.template.failed")
-        }
+        PlaceOp::Template => place_template(args, source, env, pos, false),
+        PlaceOp::TemplateStrict => place_template(args, source, env, pos, true),
     }
+}
+
+/// The chunks (min and max corner) the pieces' boxes cover.
+fn pieces_chunks(
+    pieces: &[Box<dyn vanillite_worldgen::structure::piece::StructurePiece>],
+) -> Option<(ChunkPos, ChunkPos)> {
+    let mut boxes = pieces.iter().map(|p| *p.bounding_box());
+    let first = boxes.next()?;
+    let (mut min, mut max) = (
+        (first.min_x(), first.min_z()),
+        (first.max_x(), first.max_z()),
+    );
+    for b in boxes {
+        min = (min.0.min(b.min_x()), min.1.min(b.min_z()));
+        max = (max.0.max(b.max_x()), max.1.max(b.max_z()));
+    }
+    Some((
+        ChunkPos::new(min.0 >> 4, min.1 >> 4),
+        ChunkPos::new(max.0 >> 4, max.1 >> 4),
+    ))
+}
+
+/// `PlaceCommand.placeTemplate`.
+fn place_template(
+    args: &Args,
+    source: &CommandSource,
+    env: &mut Env<'_>,
+    pos: BlockPos,
+    strict: bool,
+) -> Result<i32, CommandError> {
+    use vanillite_game::level::place::PlaceArea;
+    use vanillite_worldgen::template::{
+        Mirror, Rotation, StructurePlaceSettings, StructureProcessor,
+        manager::StructureTemplateManager,
+    };
+    let id = args
+        .identifier("template")
+        .ok_or_else(|| missing("template"))?;
+    let invalid = || {
+        CommandError::new(
+            "commands.place.template.invalid",
+            vec![ErrArg::Str(id.clone())],
+        )
+    };
+    let (packs, generator) = generation(env).ok_or_else(invalid)?;
+    let template = StructureTemplateManager::new(&packs)
+        .get(id)
+        .ok()
+        .flatten()
+        .ok_or_else(invalid)?;
+    let rotation = args
+        .string("rotation")
+        .and_then(|r| Rotation::from_name(r).ok())
+        .unwrap_or_default();
+    let mirror = args
+        .string("mirror")
+        .and_then(|m| Mirror::from_name(m).ok())
+        .unwrap_or_default();
+    let integrity = args.float("integrity").copied().unwrap_or(1.0);
+    let seed = args.int("seed").copied().unwrap_or(0);
+    let size = template.size();
+    let end = BlockPos::new(
+        pos.x.saturating_add(size.x),
+        pos.y.saturating_add(size.y),
+        pos.z.saturating_add(size.z),
+    );
+    let (min, max) = (pos.chunk(), end.chunk());
+    let loaded = (min.x..=max.x)
+        .all(|x| (min.z..=max.z).all(|z| env.level.chunks.chunk(ChunkPos::new(x, z)).is_some()));
+    if !loaded {
+        return Err(not_loaded());
+    }
+    let mut settings = StructurePlaceSettings::new()
+        .with_mirror(mirror)
+        .with_rotation(rotation);
+    settings.known_shape = strict;
+    let rot = [StructureProcessor::BlockRot {
+        rottable_blocks: None,
+        integrity,
+    }];
+    if integrity < 1.0 {
+        settings.clear_processors();
+        settings.add_processors(&rot);
+        settings = settings.with_placement_random();
+    }
+    // `StructureBlockEntity.createRandom(seed)`: the time for seed 0.
+    let seed = if seed == 0 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(0))
+    } else {
+        i64::from(seed)
+    };
+    let mut random = vanillite_base::random::LegacyRandom::new(seed);
+    let flags = 2 | if strict { 816 } else { 0 };
+    let mut area = PlaceArea::copy(env.level, &generator, min, max);
+    let placed = area.run(&generator, |region| {
+        template.place_in_world(region, pos, pos, &settings, &mut random, flags)
+    });
+    area.apply(env.level);
+    if !placed {
+        return Err(CommandError::new("commands.place.template.failed", vec![]));
+    }
+    let mut a = vec![Arg::from(Component::translatable(id.clone(), vec![]))];
+    a.extend([Arg::Int(pos.x), Arg::Int(pos.y), Arg::Int(pos.z)]);
+    source.send_success(
+        env.global,
+        Component::translatable_args("commands.place.template.success", a),
+        true,
+    );
+    Ok(1)
 }
 
 #[cfg(test)]

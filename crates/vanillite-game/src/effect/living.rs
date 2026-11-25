@@ -535,13 +535,18 @@ pub fn add_to_player(ents: &mut Entities, player: EntityId, new: EffectInstance)
 /// packets, flags, attributes and the sound follow with the entity's next tick. Returns
 /// whether the effect changed.
 pub fn add_detached(ents: &mut Entities, id: EntityId, new: EffectInstance) -> bool {
+    !new.effect.is_instantaneous() && add_queued(ents, id, new)
+}
+
+/// `addEffect` from a command (`/effect give`) on a player or mob of this world, with
+/// `canBeAffected`: like [`add_detached`], but instantaneous effects are kept too and apply
+/// with the entity's next effect tick (`InstantenousMobEffect.shouldApplyEffectTickThisTick`).
+/// Returns whether the effect changed.
+pub fn add_queued(ents: &mut Entities, id: EntityId, new: EffectInstance) -> bool {
     let Some(kind) = ents.store.get(id).map(|e| e.kind()) else {
         return false;
     };
-    if new.effect.is_instantaneous()
-        || !super::can_be_affected(kind, new.effect)
-        || super::refuses_all_effects(kind)
-    {
+    if !super::can_be_affected(kind, new.effect) || super::refuses_all_effects(kind) {
         return false;
     }
     if let Some(m) = ents.mob_mut(id) {
@@ -636,8 +641,8 @@ pub fn apply_potion_to_entity(
 }
 
 /// `LivingEntity.remove(KILLED)` → `triggerOnDeathMobEffects`: Oozing spawns slimes, Weaving
-/// spreads cobwebs, then the effects are gone. Wind Charged's burst needs wind charge
-/// explosions, which the explosion code does not have yet.
+/// spreads cobwebs, Wind Charged bursts (`WindChargedMobEffect.onMobRemoved`), then the
+/// effects are gone.
 pub fn on_mob_killed(t: &mut Tick<'_, '_>) {
     if t.mob_ref().effects.is_empty() {
         return;
@@ -684,9 +689,35 @@ pub fn on_mob_killed(t: &mut Tick<'_, '_>) {
             MobEffect::WEAVING if t.env.rules.bool(crate::survival::rules::Rule::MOB_GRIEFING) => {
                 spread_cobwebs(t, pos);
             }
+            MobEffect::WIND_CHARGED => {
+                let (center, radius) = wind_burst(pos, t.core().dims().height, &mut t.mob().random);
+                t.cx.actions
+                    .push(WorldAction::WindBurst(crate::mob::WindBurst {
+                        source: Some(t.id),
+                        pos: center,
+                        radius,
+                        knockback: WIND_CHARGED_KNOCKBACK,
+                        sound: WIND_CHARGED_SOUND,
+                    }));
+            }
             _ => {}
         }
     }
+}
+
+/// The knockback multiplier of a Wind Charged burst (`AbstractWindCharge.EXPLOSION_DAMAGE_CALCULATOR`).
+pub const WIND_CHARGED_KNOCKBACK: f64 = 1.22;
+/// The sound of a Wind Charged burst (`SoundEvents.BREEZE_WIND_CHARGE_BURST`).
+pub const WIND_CHARGED_SOUND: &str = "minecraft:entity.breeze.wind_burst";
+
+/// The centre (half the entity's height up) and strength (3 to 5, from the entity's random)
+/// of a Wind Charged burst (`WindChargedMobEffect.onMobRemoved`).
+pub fn wind_burst(pos: Vec3, height: f32, random: &mut LegacyRandom) -> (Vec3, f32) {
+    let strength = 3.0 + random.next_float() * 2.0;
+    (
+        Vec3::new(pos.x, pos.y + f64::from(height / 2.0), pos.z),
+        strength,
+    )
 }
 
 /// `WeavingMobEffect.spawnCobwebsRandomlyAround`.

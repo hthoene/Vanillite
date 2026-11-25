@@ -43,6 +43,9 @@ impl ServerAccess for FakeServer {
     fn kick(&self, _: u128, _: Text<'_>) -> bool {
         true
     }
+    fn set_tab_list(&self, _: u128, _: Text<'_>, _: Text<'_>) -> bool {
+        true
+    }
     fn broadcast(&self, _: Text<'_>) {}
     fn is_operator(&self, _: u128) -> bool {
         false
