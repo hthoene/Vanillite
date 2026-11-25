@@ -44,6 +44,11 @@ pub fn entity_event(t: &mut Tick<'_, '_>, id: EntityId, event: i8) {
 
 /// `Mob.tick` (with the kind specific parts before and after `LivingEntity.tick`).
 pub fn tick(t: &mut Tick<'_, '_>) {
+    // `Entity.baseTick`: `computeSpeed`.
+    let pos = t.pos();
+    let m = t.mob();
+    m.known_speed = pos - m.last_known_pos.unwrap_or(pos);
+    m.last_known_pos = Some(pos);
     kinds::before_tick(t);
     if t.mob_ref().removed {
         return;
@@ -51,6 +56,19 @@ pub fn tick(t: &mut Tick<'_, '_>) {
     base_tick(t);
     if t.mob_ref().removed {
         return;
+    }
+    // `updatingUsingItem` of the zombies' spears.
+    if matches!(
+        t.mob_ref().kind,
+        super::Kind::Zombie
+            | super::Kind::Husk
+            | super::Kind::ZombieVillager
+            | super::Kind::ZombifiedPiglin
+    ) {
+        super::fam::undead::zombies::spear_use_tick(t);
+        if !t.exists() || t.mob_ref().removed {
+            return;
+        }
     }
     ai_step(t);
     if t.mob_ref().removed || !t.exists() {

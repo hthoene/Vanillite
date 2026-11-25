@@ -39,6 +39,7 @@ pub mod random_sequences;
 pub mod recipe;
 pub mod riding;
 pub mod scoreboard;
+pub mod spear;
 pub mod stats;
 pub mod survival;
 pub mod trading;

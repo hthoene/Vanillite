@@ -73,6 +73,8 @@ pub enum EntityAction {
     /// `player_command` `OPEN_INVENTORY` while riding: the vehicle's inventory opens
     /// (`HasCustomInventoryScreen`: chest boats).
     OpenVehicleInventory,
+    /// `player_action` `STAB`: a jab with the piercing weapon in the main hand.
+    Stab,
 }
 
 /// What a player sends to steer its vehicle.
@@ -622,7 +624,11 @@ impl Connection {
                     self.entity_actions.push(EntityAction::ReleaseUseItem);
                 }
             }
-            DigAction::Stab => {}
+            DigAction::Stab => {
+                if self.entity_actions.len() < 16 {
+                    self.entity_actions.push(EntityAction::Stab);
+                }
+            }
             DigAction::StartDestroyBlock
             | DigAction::ChangeDestroyDirection
             | DigAction::AbortDestroyBlock
