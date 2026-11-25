@@ -105,6 +105,11 @@ impl Stat {
         Stat::of(StatType::Custom, value)
     }
 
+    /// A `minecraft:custom` statistic by its name, e.g. `minecraft:eat_cake_slice`.
+    pub fn custom_named(name: &str) -> Stat {
+        Stat::custom(StatType::Custom.registry().id(name).unwrap_or(0))
+    }
+
     /// `Stat.buildName`: `minecraft.custom:minecraft.jump`.
     pub fn name(self) -> String {
         let value = self.kind.registry().name(self.value).unwrap_or("");

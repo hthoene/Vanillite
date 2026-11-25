@@ -1,0 +1,230 @@
+{
+  "description": "Buckets fill and empty water, lava and powder snow cauldrons; bottles take and add water; a water cauldron washes dye off leather, the last pattern off a banner and the colour off a shulker box.",
+  "tier": "fast",
+  "level_rng": true,
+  "player_state": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -57,
+      15
+    ]
+  ],
+  "ticks": 14,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        6
+      ],
+      "block": "minecraft:cauldron"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -60,
+        6
+      ],
+      "block": "minecraft:water_cauldron[level=3]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -60,
+        6
+      ],
+      "block": "minecraft:cauldron"
+    },
+    {
+      "op": "set",
+      "pos": [
+        9,
+        -60,
+        6
+      ],
+      "block": "minecraft:powder_snow_cauldron[level=3]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        10,
+        -60,
+        6
+      ],
+      "block": "minecraft:water_cauldron[level=3]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        10
+      ],
+      "block": "minecraft:cauldron"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        8.5,
+        -60,
+        8.5
+      ],
+      "rot": [
+        0,
+        0
+      ],
+      "seed": 1
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        6,
+        -60,
+        6
+      ],
+      "item": "minecraft:water_bucket"
+    },
+    {
+      "tick": 2,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        7,
+        -60,
+        6
+      ],
+      "item": "minecraft:bucket"
+    },
+    {
+      "tick": 3,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        8,
+        -60,
+        6
+      ],
+      "item": "minecraft:lava_bucket"
+    },
+    {
+      "tick": 4,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        8,
+        -60,
+        6
+      ],
+      "item": "minecraft:bucket"
+    },
+    {
+      "tick": 5,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        9,
+        -60,
+        6
+      ],
+      "item": "minecraft:bucket"
+    },
+    {
+      "tick": 6,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        10,
+        -60,
+        6
+      ],
+      "item": "minecraft:glass_bottle",
+      "count": 2
+    },
+    {
+      "tick": 7,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        10,
+        -60,
+        6
+      ],
+      "item": "minecraft:potion",
+      "components": "{\"minecraft:potion_contents\":{potion:\"minecraft:water\"}}"
+    },
+    {
+      "tick": 8,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        10,
+        -60,
+        6
+      ],
+      "item": "minecraft:leather_helmet",
+      "components": "{\"minecraft:dyed_color\":16711680}"
+    },
+    {
+      "tick": 9,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        10,
+        -60,
+        6
+      ],
+      "item": "minecraft:white_banner",
+      "components": "{\"minecraft:banner_patterns\":[{pattern:\"minecraft:stripe_bottom\",color:\"red\"},{pattern:\"minecraft:border\",color:\"blue\"}]}"
+    },
+    {
+      "tick": 10,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        10,
+        -60,
+        6
+      ],
+      "item": "minecraft:red_shulker_box"
+    },
+    {
+      "tick": 11,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        10,
+        -60,
+        6
+      ],
+      "item": "minecraft:red_shulker_box"
+    },
+    {
+      "tick": 12,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        6,
+        -60,
+        10
+      ],
+      "item": "minecraft:potion",
+      "components": "{\"minecraft:potion_contents\":{potion:\"minecraft:water\"}}"
+    }
+  ]
+}

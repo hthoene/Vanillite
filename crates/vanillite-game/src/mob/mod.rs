@@ -15,6 +15,7 @@ pub mod common;
 pub mod equipment;
 pub mod fam;
 pub mod goals;
+pub mod golem_build;
 pub mod kinds;
 pub mod living;
 pub mod missile;
@@ -649,6 +650,8 @@ pub enum WorldAction {
     EntityInside(BlockPos, EntityId),
     /// A hopper minecart takes in an item (`MinecartHopper.tryConsumeItems`).
     HopperMinecart(EntityId),
+    /// A burning mob in a water or powder snow cauldron takes a level of it.
+    BurningInCauldron(BlockPos),
 }
 
 impl WorldAction {
@@ -670,6 +673,9 @@ impl WorldAction {
                 }
             }
             WorldAction::HopperMinecart(id) => crate::minecart::hopper_suck(level, id),
+            WorldAction::BurningInCauldron(pos) => {
+                crate::block::cauldron::burning_inside(level, pos)
+            }
             WorldAction::SetDoorOpen(pos, open, source) => {
                 crate::block::redstone::set_door_open(level, pos, open, source);
             }

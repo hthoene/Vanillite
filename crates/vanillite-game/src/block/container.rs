@@ -559,6 +559,7 @@ pub fn pre_remove_side_effects(level: &mut Level, pos: BlockPos, entity: &BlockE
         BlockEntity::Campfire(c) => &c.items,
         BlockEntity::ChiseledBookshelf(b) => &b.items,
         BlockEntity::DecoratedPot(p) => std::slice::from_ref(&p.item),
+        BlockEntity::Shelf(s) => &s.items,
         _ => return,
     };
     let items: Vec<ItemStack> = items.iter().filter(|s| !s.is_empty()).cloned().collect();

@@ -793,6 +793,22 @@ impl GameWorld {
                 p.survival.health,
                 p.survival.death_time,
             );
+            if self.spec.player_state {
+                let hand = |s: &vanillite_game::item::ItemStack| {
+                    json!([vanillite_game::item::item_id(s).name(), s.count])
+                };
+                d.insert(
+                    "food".into(),
+                    json!([p.survival.food.food_level, bits(p.survival.food.saturation)]),
+                );
+                d.insert(
+                    "hands".into(),
+                    json!([
+                        hand(p.inventory.selected_item()),
+                        hand(&p.inventory.offhand)
+                    ]),
+                );
+            }
         }
         if ents.minecart(id).is_some() {
             d.insert("rot".into(), json!([bits(rot.y_rot), bits(rot.x_rot)]));
@@ -1436,6 +1452,172 @@ impl ScenarioWorld for GameWorld {
             Vec3::ZERO,
             line,
         )?;
+        self.finish_removals();
+        self.spawn_drops();
+        Ok(())
+    }
+
+    /// `ServerPlayerGameMode.useItemOn` (through `handleUseItemOn`) or `START_DESTROY_BLOCK`
+    /// of a scenario player, on the real packet handlers.
+    fn player_use(&mut self, click: &crate::scenario::PlayerUse) -> Result<(), String> {
+        use vanillite_game::player::play::{Actor, PlayContext};
+        use vanillite_protocol::packets::play::serverbound::{DigAction, Hand, UseItemOn};
+        let id = self.named(&click.entity)?;
+        let face: u8 = match click.face.as_str() {
+            "down" => 0,
+            "up" => 1,
+            "north" => 2,
+            "south" => 3,
+            "west" => 4,
+            "east" => 5,
+            other => return Err(format!("unknown face {other}")),
+        };
+        let stack = match &click.item {
+            Some(item) if item == "minecraft:air" => Some(vanillite_game::item::ItemStack::EMPTY),
+            Some(item) => {
+                let mut c = vanillite_nbt::Compound::new();
+                c.insert("id", vanillite_nbt::Tag::String(item.clone()));
+                c.insert("count", vanillite_nbt::Tag::Int(click.count));
+                if let Some(snbt) = &click.components {
+                    let components =
+                        vanillite_nbt::snbt::parse_compound(snbt).map_err(|e| e.to_string())?;
+                    c.insert("components", vanillite_nbt::Tag::Compound(components));
+                }
+                Some(vanillite_game::item_nbt::stack_from_nbt(&c))
+            }
+            None => None,
+        };
+        let data = vanillite_game::player::play::game_data().ok_or("no game data")?;
+        let (pos, rot, row, network_id, uuid, on_ground) = {
+            let e = self
+                .level
+                .entities
+                .store
+                .get(id)
+                .ok_or("the player is gone")?;
+            (
+                e.pos(),
+                e.rot(),
+                e.kind_row(),
+                e.network_id(),
+                e.uuid(),
+                e.flags()
+                    .contains(vanillite_world::entity::EntityFlags::ON_GROUND),
+            )
+        };
+        let mut players = std::mem::take(&mut self.level.entities.players);
+        let result = (|| {
+            let player = players.get_mut(row).ok_or("no player data")?;
+            if let Some(food) = click.food {
+                player.survival.food.food_level = food;
+            }
+            if let Some(stack) = stack {
+                if click.offhand {
+                    player.inventory.offhand = stack;
+                } else {
+                    let slot = player.inventory.selected;
+                    player.inventory.set(slot, stack);
+                }
+            }
+            let actor = Actor {
+                entity: Some(id),
+                network_id: network_id.0,
+                uuid,
+                pos,
+                eye_height: if click.sneak { 1.27 } else { 1.62 },
+                y_rot: rot.y_rot,
+                x_rot: rot.x_rot,
+                on_ground,
+                sneaking: click.sneak,
+                game_mode: player.game_mode,
+                permission_level: 0,
+                eyes_in_water: false,
+                dig_speed: None,
+                mining_fatigue: None,
+            };
+            let mut effects = vanillite_server::LevelEffects::default();
+            let spectators = vanillite_base::hash::FxHashSet::default();
+            let aabb = self
+                .level
+                .entities
+                .store
+                .get(id)
+                .map(|e| e.aabb())
+                .ok_or("the player is gone")?;
+            let mut world = vanillite_server::WorldLevel {
+                level: &mut self.level,
+                effects: &mut effects,
+                spectators: &spectators,
+                actor: Some((id, aabb)),
+            };
+            let mut drops = Vec::new();
+            let mut swings = Vec::new();
+            let protected = |_: BlockPos| false;
+            let hooks = vanillite_game::hooks::NoHooks;
+            let mut ctx = PlayContext {
+                level: &mut world,
+                inventory: &mut player.inventory,
+                xp: Some(&mut player.survival.xp),
+                food: Some(&mut player.survival.food),
+                recipe_book: Some(&mut player.recipe_book),
+                actor,
+                data: &data,
+                spawn_protected: &protected,
+                drops: &mut drops,
+                swings: &mut swings,
+                hooks: &hooks,
+                stats: Some(&mut player.stats),
+                advancements: Some(&mut player.advancements),
+            };
+            let at = click.pos;
+            let wire = vanillite_protocol::types::BlockPos {
+                x: at.x,
+                y: at.y,
+                z: at.z,
+            };
+            if click.attack {
+                player.connection.play.handle_action(
+                    &mut ctx,
+                    DigAction::StartDestroyBlock,
+                    at,
+                    face,
+                    0,
+                    &NoSink,
+                );
+            } else {
+                let [hx, hy, hz] = click.hit.unwrap_or(match face {
+                    0 => [0.5, 0.0, 0.5],
+                    1 => [0.5, 1.0, 0.5],
+                    2 => [0.5, 0.5, 0.0],
+                    3 => [0.5, 0.5, 1.0],
+                    4 => [0.0, 0.5, 0.5],
+                    _ => [1.0, 0.5, 0.5],
+                });
+                let packet = UseItemOn {
+                    hand: if click.offhand {
+                        Hand::OffHand
+                    } else {
+                        Hand::MainHand
+                    },
+                    pos: wire,
+                    face: i32::from(face),
+                    cursor_x: hx as f32,
+                    cursor_y: hy as f32,
+                    cursor_z: hz as f32,
+                    inside: false,
+                    world_border_hit: false,
+                    sequence: 0,
+                };
+                player
+                    .connection
+                    .play
+                    .use_item_on(&mut ctx, &packet, &NoSink);
+            }
+            Ok::<(), String>(())
+        })();
+        self.level.entities.players = players;
+        result?;
+        self.apply_actions();
         self.finish_removals();
         self.spawn_drops();
         Ok(())

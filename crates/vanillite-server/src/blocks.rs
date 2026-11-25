@@ -208,6 +208,19 @@ pub fn game_data(packs: Option<&LoadedPacks>) -> GameData {
         enchanting,
         banner_patterns,
         registry_tags,
+        compostables: vanillite_game::block::composter::load_providers(packs.roots()),
+        jukebox_songs: packs
+            .registry("minecraft:jukebox_song")
+            .map(|r| {
+                r.entries()
+                    .iter()
+                    .map(|e| {
+                        let json = serde_json::from_str(e.json.get()).unwrap_or_default();
+                        vanillite_game::block::jukebox::Song::parse(&e.id, &json)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
     }
 }
 
@@ -226,19 +239,20 @@ struct SoundEffect {
 /// Sounds and crack progress of the player handlers, sent once the players are back in the
 /// level. Block changes and level events go through the level's output.
 #[derive(Debug, Default)]
-pub(crate) struct LevelEffects {
+pub struct LevelEffects {
     progress: Vec<(i32, BlockPos, i32)>,
     sounds: Vec<SoundEffect>,
 }
 
 /// [`PlayLevel`] over a world's [`Level`] while its players are handled.
-pub(crate) struct WorldLevel<'a> {
-    pub(crate) level: &'a mut Level,
-    pub(crate) effects: &'a mut LevelEffects,
+#[allow(missing_debug_implementations)]
+pub struct WorldLevel<'a> {
+    pub level: &'a mut Level,
+    pub effects: &'a mut LevelEffects,
     /// Players in spectator mode (they never block building).
-    pub(crate) spectators: &'a FxHashSet<EntityId>,
+    pub spectators: &'a FxHashSet<EntityId>,
     /// The acting player with its current box (its stored position may lag behind).
-    pub(crate) actor: Option<(EntityId, Aabb)>,
+    pub actor: Option<(EntityId, Aabb)>,
 }
 
 impl PlayLevel for WorldLevel<'_> {
@@ -299,7 +313,8 @@ impl PlayLevel for WorldLevel<'_> {
         volume: f32,
         pitch: f32,
     ) {
-        let seed = self.level.random().next_long();
+        // `Level.playSound` seeds from `threadSafeRandom`, never from the level random.
+        let seed = vanillite_game::survival::sound_seed();
         self.effects.sounds.push(SoundEffect {
             except,
             pos,

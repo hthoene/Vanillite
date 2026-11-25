@@ -8,9 +8,11 @@ use vanillite_data::block::{BlockId, BlockState, ids};
 use vanillite_world::entity::EntityId;
 use vanillite_worldgen::behaviour::{PosExt, StateExt};
 
-use super::{BlockBehaviour, Interaction, UseContext, sound_id};
+use super::{BlockBehaviour, Interaction, ItemInteraction, UseContext, sound_id};
+use crate::item::ItemStack;
 use crate::level::game_event::events;
 use crate::level::{Level, SOUND_RECORDS};
+use crate::stats::Stat;
 
 /// Fills the note block behaviours.
 pub(super) fn fill(block: BlockId, b: &mut BlockBehaviour) {
@@ -18,6 +20,28 @@ pub(super) fn fill(block: BlockId, b: &mut BlockBehaviour) {
         b.neighbor_changed = Some(neighbor_changed);
         b.trigger_event = Some(trigger_event);
         b.use_without_item = Some(use_without_item);
+        b.use_item_on = Some(use_item_on);
+        b.attack = Some(|level, state, pos, player| {
+            play_note(level, Some(player), state, pos);
+            level.award_stat(player, Stat::custom_named("minecraft:play_noteblock"));
+        });
+    }
+}
+
+/// `NoteBlock.useItemOn`: a mob head held against the top is placed instead of tuning.
+fn use_item_on(
+    _: &mut Level,
+    _: BlockState,
+    _: BlockPos,
+    context: &UseContext,
+    stack: &mut ItemStack,
+) -> ItemInteraction {
+    let top_instrument = crate::player::play::game_data()
+        .is_some_and(|d| d.item_in_tag(stack.item, "minecraft:noteblock_top_instruments"));
+    if top_instrument && context.face == vanillite_base::Direction::Up {
+        ItemInteraction::Pass
+    } else {
+        ItemInteraction::TryWithEmptyHand
     }
 }
 
@@ -69,15 +93,11 @@ fn use_without_item(
     let state = state.with_index("note", (note + 1) % 25).unwrap_or(state);
     level.set_block_and_update(pos, state);
     play_note(level, Some(context.player), state, pos);
+    level.award_stat(
+        context.player,
+        Stat::custom_named("minecraft:tune_noteblock"),
+    );
     Interaction::Success
-}
-
-/// `NoteBlock.attack`: a player hitting the block plays it.
-pub fn attack(level: &mut Level, pos: BlockPos, player: EntityId) {
-    let state = level.block(pos);
-    if state.is(ids::NOTE_BLOCK) {
-        play_note(level, Some(player), state, pos);
-    }
 }
 
 /// `NoteBlock.triggerEvent`: the sound, with the note's pitch for tunable instruments.

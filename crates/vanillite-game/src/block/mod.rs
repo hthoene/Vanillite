@@ -17,8 +17,11 @@ pub mod bookshelf;
 pub mod brewing;
 pub mod brushable;
 mod bubble;
+pub mod cake;
 pub mod campfire;
+pub mod cauldron;
 pub mod chest_loot;
+pub mod composter;
 pub mod container;
 pub mod crafter;
 pub mod decor;
@@ -31,6 +34,8 @@ pub mod fluid;
 pub mod furnace;
 mod growth;
 pub mod hopper;
+pub mod interact;
+pub mod jukebox;
 pub mod lectern;
 pub mod note;
 pub mod piston;
@@ -102,6 +107,24 @@ pub type UseItemFn = fn(
 ) -> ItemInteraction;
 /// `entityInside(state, level, pos, entity, effectApplier, isPrecise)`.
 pub type EntityInsideFn = fn(&mut Level, BlockState, BlockPos, EntityId);
+/// `attack(state, level, pos, player)`: a player starts to break the block.
+pub type AttackFn = fn(&mut Level, BlockState, BlockPos, EntityId);
+
+/// What a block does to the player that used it; the player handlers apply it after the use
+/// (the player's data is not part of the level).
+#[derive(Clone, Debug, PartialEq)]
+pub enum PlayerEffect {
+    /// `player.awardStat(stat, count)`.
+    Stat(crate::stats::Stat, i32),
+    /// `player.getFoodData().eat(nutrition, saturation)`.
+    Eat(i32, f32),
+    /// `ItemUtils.createFilledResult` for a creative player: the stack goes into the inventory
+    /// unless it already holds the same item and components.
+    GiveIfMissing(crate::item::ItemStack),
+    /// `player.setItemInHand(hand, stack)` of the used hand, also for creative players (whose
+    /// held stack does not change otherwise).
+    SetHand(crate::item::ItemStack),
+}
 
 /// What a block learns about a player that uses it with an empty hand (or an item without a
 /// use of its own): `useWithoutItem`'s player and hit result.
@@ -117,6 +140,12 @@ pub struct UseContext {
     pub face: Direction,
     /// The exact hit location.
     pub hit: Vec3,
+    /// `player.hasInfiniteMaterials()` (creative).
+    pub infinite: bool,
+    /// `player.canEat(false)`: invulnerable or hungry.
+    pub can_eat: bool,
+    /// `player.canUseGameMasterBlocks()`: creative with operator permission level 2.
+    pub game_master: bool,
 }
 
 /// `InteractionResult` as far as block use goes.
@@ -170,6 +199,8 @@ pub struct BlockBehaviour {
     pub use_item_on: Option<UseItemFn>,
     /// `entityInside`.
     pub entity_inside: Option<EntityInsideFn>,
+    /// `attack`.
+    pub attack: Option<AttackFn>,
 }
 
 /// The behaviour table of all blocks.
@@ -274,6 +305,9 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
     if block == ids::FIRE {
         b.tick = Some(fire::tick);
     }
+    if block == ids::CARVED_PUMPKIN || block == ids::JACK_O_LANTERN {
+        b.on_place = Some(crate::mob::golem_build::pumpkin_on_place);
+    }
     if block == ids::GRASS_BLOCK || block == ids::MYCELIUM {
         b.random_tick = Some(spread::spreading_snowy_dirt_random_tick);
     } else if block == ids::CRIMSON_NYLIUM || block == ids::WARPED_NYLIUM {
@@ -324,6 +358,11 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
     pot::fill(block, &mut b);
     bookshelf::fill(block, &mut b);
     campfire::fill(block, &mut b);
+    cake::fill(block, &mut b);
+    cauldron::fill(block, &mut b);
+    composter::fill(block, &mut b);
+    jukebox::fill(block, &mut b);
+    interact::fill(block, &mut b);
     crafter::fill(block, &mut b);
     portal::fill(block, &mut b);
     b

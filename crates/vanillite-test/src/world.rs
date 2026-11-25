@@ -98,6 +98,10 @@ pub trait ScenarioWorld {
         Err(format!("this world runs no commands (`{line}`)"))
     }
     /// Runs a `throw_potion` action.
+    fn player_use(&mut self, _click: &crate::scenario::PlayerUse) -> Result<(), String> {
+        Err("this world has no players".to_owned())
+    }
+
     fn throw_potion(&mut self, potion: &crate::scenario::ThrowPotionOp) -> Result<(), String> {
         Err(format!("this world cannot throw `{}`", potion.potion))
     }

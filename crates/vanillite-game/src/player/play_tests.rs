@@ -127,6 +127,7 @@ fn with_ctx(
     let mut ctx = PlayContext {
         hooks: &crate::hooks::NoHooks,
         xp: None,
+        food: None,
         recipe_book: None,
         level,
         inventory: &mut inventory,

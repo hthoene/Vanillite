@@ -160,6 +160,8 @@ public final class ScenarioRecorder {
 
       timeAndDifficulty(server, level, scenario);
       entities = new ScenarioEntities(server, level);
+      entities.playerState =
+          scenario.has("player_state") && scenario.get("player_state").getAsBoolean();
       JsonArray specs = scenario.has("entities") ? scenario.getAsJsonArray("entities") : new JsonArray();
       // Players join first; then the level random starts from the world seed and the mobs come.
       for (int i = 0; i < specs.size(); i++) {
@@ -228,6 +230,8 @@ public final class ScenarioRecorder {
                         action.get("command").getAsString());
               } else if (op.equals("throw_potion")) {
                 entities.throwPotion(action);
+              } else if (op.equals("use") || op.equals("attack")) {
+                entities.use(action, op.equals("attack"));
               } else {
                 apply(level, action, true);
               }
