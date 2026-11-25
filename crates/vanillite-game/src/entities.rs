@@ -71,6 +71,8 @@ pub struct Entities {
     pub boats: Dense<crate::vehicle::BoatData>,
     /// Leash knot kind data (their position block).
     pub knots: Dense<BlockPos>,
+    /// Projectile kind data besides arrows (every type of [`crate::mob::missile::MissileKind`]).
+    pub missiles: Dense<crate::mob::missile::MissileData>,
 }
 
 /// Who rides what (`Entity.vehicle`, `Entity.passengers`).
@@ -225,6 +227,35 @@ impl Entities {
     pub fn spawn_orb(&mut self, new: NewEntity, data: OrbData) -> EntityId {
         let orbs = &mut self.orbs;
         self.store.spawn(new, |id| orbs.push(id, data))
+    }
+
+    /// Adds a projectile of the missile store.
+    pub fn spawn_missile(
+        &mut self,
+        new: NewEntity,
+        data: crate::mob::missile::MissileData,
+    ) -> EntityId {
+        let missiles = &mut self.missiles;
+        self.store.spawn(new, |id| missiles.push(id, data))
+    }
+
+    /// The missile data of an entity.
+    pub fn missile(&self, id: EntityId) -> Option<&crate::mob::missile::MissileData> {
+        let entity = self.store.get(id)?;
+        if !crate::mob::missile::is_missile_kind(entity.kind()) {
+            return None;
+        }
+        self.missiles.get(entity.kind_row())
+    }
+
+    /// The missile data of an entity, mutably.
+    pub fn missile_mut(&mut self, id: EntityId) -> Option<&mut crate::mob::missile::MissileData> {
+        let entity = self.store.get(id)?;
+        if !crate::mob::missile::is_missile_kind(entity.kind()) {
+            return None;
+        }
+        let row = entity.kind_row();
+        self.missiles.get_mut(row)
     }
 
     /// The mob data of an entity.
@@ -393,6 +424,8 @@ impl Entities {
             self.orbs.swap_remove(row).and_then(|(_, moved)| moved)
         } else if is_mob_kind(kind) {
             self.mobs.swap_remove(row).and_then(|(_, moved)| moved)
+        } else if crate::mob::missile::is_missile_kind(kind) {
+            self.missiles.swap_remove(row).and_then(|(_, moved)| moved)
         } else if kind == ids::TNT {
             self.primed_tnts
                 .swap_remove(row)

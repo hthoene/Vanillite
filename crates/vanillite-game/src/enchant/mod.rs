@@ -13,6 +13,8 @@ use serde_json::Value;
 use vanillite_data::registry::ITEM;
 use vanillite_protocol::codec::{Reader, write_varint};
 
+use vanillite_base::random::RandomSource;
+
 use crate::item::ItemStack;
 
 /// `Enchantment.Cost`: `base + per_level_above_first * (level - 1)`.
@@ -66,6 +68,8 @@ pub struct Enchanting {
     pub list: Vec<Info>,
     /// `#minecraft:in_enchanting_table` in tag order.
     pub table: Vec<u32>,
+    /// `#minecraft:on_mob_spawn_equipment` in tag order.
+    pub mob_spawn: Vec<u32>,
     enchantable: HashMap<u16, i32>,
     repairable: HashMap<u16, Vec<u16>>,
     /// Item → `trim_material` registry id (`provides_trim_material`).
@@ -155,6 +159,7 @@ impl Enchanting {
             })
             .collect();
         let table = table.clone();
+        let mob_spawn = enchantment_tag("minecraft:on_mob_spawn_equipment");
         let named = |n: &str| ITEM.id(&format!("minecraft:{n}"));
         let enchantable = items::ENCHANTABLE
             .iter()
@@ -170,6 +175,7 @@ impl Enchanting {
         Enchanting {
             list,
             table,
+            mob_spawn,
             enchantable,
             repairable,
             trim_materials: HashMap::new(),
@@ -244,6 +250,107 @@ impl Enchanting {
             return 0;
         }
         self.enchantable.get(&stack.item).copied().unwrap_or(0)
+    }
+
+    /// `EnchantmentHelper.selectEnchantment(random, stack, cost, source)`.
+    pub fn select(
+        &self,
+        random: &mut impl RandomSource,
+        stack: &ItemStack,
+        cost: i32,
+        source: &[u32],
+    ) -> Vec<(u32, i32)> {
+        let mut results = Vec::new();
+        let value = self.enchantable(stack);
+        if value <= 0 {
+            return results;
+        }
+        let mut cost = cost
+            + 1
+            + random.next_int_bounded(value / 4 + 1)
+            + random.next_int_bounded(value / 4 + 1);
+        let span = (random.next_float() + random.next_float() - 1.0) * 0.15;
+        #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+        {
+            cost = ((cost as f32 + cost as f32 * span).round() as i32).max(1);
+        }
+        // `getAvailableEnchantmentResults`.
+        let is_book = stack.item == vanillite_data::item::ids::BOOK.0;
+        let mut available: Vec<(u32, i32, i32)> = Vec::new();
+        for &id in source {
+            if !(is_book || self.is_primary(id, stack)) {
+                continue;
+            }
+            let Some(e) = self.get(id) else {
+                continue;
+            };
+            for level in (1..=e.max_level).rev() {
+                if cost >= e.min_cost.at(level) && cost <= e.max_cost.at(level) {
+                    available.push((id, level, e.weight));
+                    break;
+                }
+            }
+        }
+        let pick = |random: &mut dyn FnMut(i32) -> i32, list: &[(u32, i32, i32)]| {
+            let total: i32 = list.iter().map(|e| e.2).sum();
+            if total <= 0 {
+                return None;
+            }
+            let mut roll = random(total);
+            for e in list {
+                roll -= e.2;
+                if roll < 0 {
+                    return Some((e.0, e.1));
+                }
+            }
+            None
+        };
+        if available.is_empty() {
+            return results;
+        }
+        if let Some(r) = pick(&mut |n| random.next_int_bounded(n), &available) {
+            results.push(r);
+        }
+        while random.next_int_bounded(50) <= cost {
+            if let Some(&(last, _)) = results.last() {
+                available.retain(|e| self.compatible(last, e.0));
+            }
+            if available.is_empty() {
+                break;
+            }
+            if let Some(r) = pick(&mut |n| random.next_int_bounded(n), &available) {
+                results.push(r);
+            }
+            cost /= 2;
+        }
+        results
+    }
+
+    /// `enchantItemFromProvider(stack, MOB_SPAWN_EQUIPMENT, difficulty, random)`
+    /// (`EnchantmentsByCostWithDifficulty(#on_mob_spawn_equipment, 5, 17)`).
+    pub fn enchant_mob_spawn_equipment(
+        &self,
+        stack: &mut ItemStack,
+        special_multiplier: f32,
+        random: &mut impl RandomSource,
+    ) {
+        #[allow(clippy::cast_possible_truncation)]
+        let span = (special_multiplier * 17.0) as i32;
+        let cost = random.next_int_between_inclusive(5, 5 + span);
+        let source = self.mob_spawn.clone();
+        let chosen = self.select(random, stack, cost, &source);
+        if chosen.is_empty() {
+            return;
+        }
+        let id = vanillite_protocol::components::ids::ENCHANTMENTS;
+        let mut list = read(stack.component(id));
+        for (e, level) in chosen {
+            match list.iter_mut().find(|x| x.0 == e) {
+                Some(x) => x.1 = x.1.max(level),
+                None => list.push((e, level)),
+            }
+        }
+        stack.patch_mut().set(id, write(&list));
     }
 
     /// `ItemStack.isValidRepairItem(addition)`: the `repairable` component.

@@ -109,6 +109,23 @@ pub fn pos_of(tag: &Compound) -> Option<Vec3> {
 }
 
 /// `Entity.saveWithoutId` plus the id: the common entity keys.
+/// The `Entity` part of entity NBT in a new compound.
+pub fn save_entity_base(core: &EntityRef<'_>) -> Compound {
+    let mut out = Compound::new();
+    save_entity(core, &mut out);
+    out
+}
+
+/// The `Entity` part of entity NBT.
+pub fn load_entity_base(tag: &Compound) -> Option<LoadedEntity> {
+    load_entity(tag)
+}
+
+/// A UUID int array under `key`.
+pub fn uuid_key_of(tag: &Compound, key: &str) -> Option<u128> {
+    uuid_key(tag, key)
+}
+
 fn save_entity(core: &EntityRef<'_>, out: &mut Compound) {
     let name = core.kind().info().name;
     out.insert(
@@ -152,9 +169,15 @@ pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
     out.insert("Health", m.health);
     out.insert("AbsorptionAmount", 0.0_f32);
     out.insert("FallFlying", false);
-    out.insert("CanPickUpLoot", false);
+    out.insert("CanPickUpLoot", m.can_pick_up_loot);
     out.insert("PersistenceRequired", m.persistent);
-    out.insert("LeftHanded", false);
+    out.insert("LeftHanded", m.left_handed);
+    if m.has_restriction() {
+        out.insert("home_radius", m.restrict_radius);
+        let c = m.restrict_center;
+        out.insert("home_pos", vec![c.x, c.y, c.z]);
+    }
+    super::effects::save(m, &mut out);
     if m.no_ai {
         out.insert("NoAI", true);
     }
@@ -163,13 +186,15 @@ pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
     {
         out.insert("CustomName", tag);
     }
-    if m.saddled {
-        let mut saddle = Compound::new();
-        saddle.insert("id", "minecraft:saddle");
-        saddle.insert("count", 1);
-        let mut equipment = Compound::new();
-        equipment.insert("saddle", saddle);
-        out.insert("equipment", equipment);
+    {
+        let mut equipment = m.equipment.clone();
+        if m.saddled {
+            equipment.set(
+                crate::item::EquipmentSlot::Saddle,
+                super::equipment::stack("minecraft:saddle"),
+            );
+        }
+        super::equipment::save_equipment(&equipment, &mut out);
     }
     if let Some(owner) = m.owner {
         out.insert("Owner", uuid_ints(owner));
@@ -226,6 +251,7 @@ pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
             }
         }
         Kind::Skeleton | Kind::Spider | Kind::Enderman => {}
+        _ => super::fam::save(m, &mut out),
     }
     out
 }
@@ -282,12 +308,30 @@ pub fn load_mob(tag: &Compound, seed: i64) -> Option<LoadedMob> {
     m.silent = boolean(tag, "Silent");
     m.y_body_rot = y_rot;
     m.custom_name = tag.get("CustomName").and_then(tag_component);
-    m.saddled = match tag.get("equipment") {
-        Some(Tag::Compound(eq)) => {
-            matches!(eq.get("saddle"), Some(Tag::Compound(s)) if s.get("id").and_then(Tag::as_str) == Some("minecraft:saddle"))
+    super::equipment::load(&mut m, tag);
+    {
+        use crate::item::EquipmentSlot;
+        let saddle = m.equipment.get(EquipmentSlot::Saddle);
+        // The classic pig keeps its saddle in `saddled`; family mobs in the slot.
+        m.saddled = m.kind == Kind::Pig
+            && !saddle.is_empty()
+            && crate::item::item_id(saddle).name() == "minecraft:saddle";
+        if m.saddled {
+            m.equipment
+                .set(EquipmentSlot::Saddle, crate::item::ItemStack::default());
         }
-        _ => false,
-    };
+    }
+    m.can_pick_up_loot = boolean(tag, "CanPickUpLoot");
+    m.left_handed = boolean(tag, "LeftHanded");
+    if let Some(r) = int(tag, "home_radius")
+        && r >= 0
+        && let Some(Tag::IntArray(v)) = tag.get("home_pos")
+        && v.len() == 3
+    {
+        m.restrict_radius = r;
+        m.restrict_center = vanillite_base::BlockPos::new(v[0], v[1], v[2]);
+    }
+    super::effects::load(&mut m, tag);
     m.owner = uuid_key(tag, "Owner");
     m.tame = m.owner.is_some();
     m.order_to_sit = boolean(tag, "Sitting");
@@ -330,6 +374,7 @@ pub fn load_mob(tag: &Compound, seed: i64) -> Option<LoadedMob> {
             }
         }
         Kind::Skeleton | Kind::Spider | Kind::Enderman => {}
+        _ => super::fam::load(&mut m, tag),
     }
     // A fresh random per loaded mob, like `Entity.random`.
     let _ = m.random.next_int();

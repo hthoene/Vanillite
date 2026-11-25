@@ -313,7 +313,13 @@ impl WorldMobs {
             }
             let is_mob = is_mob_kind(kind);
             let is_boat = BoatKind::of(kind).is_some();
-            if !is_mob && !is_boat && kind != ids::ARROW && kind != ids::EXPERIENCE_ORB {
+            let is_missile = vanillite_game::mob::missile::is_missile_kind(kind);
+            if !is_mob
+                && !is_boat
+                && !is_missile
+                && kind != ids::ARROW
+                && kind != ids::EXPERIENCE_ORB
+            {
                 continue;
             }
             let chunk = BlockPos::containing(pos.x, pos.y, pos.z).chunk();
@@ -348,6 +354,14 @@ impl WorldMobs {
                     vehicle::tick_boat(level_ref, &mut ents, &mut env, &mut self.cx, id);
                 } else if kind == ids::ARROW {
                     projectile::tick_arrow(level_ref, &mut ents, &mut env, &mut self.cx, id);
+                } else if is_missile {
+                    vanillite_game::mob::missile::tick(
+                        level_ref,
+                        &mut ents,
+                        &mut env,
+                        &mut self.cx,
+                        id,
+                    );
                 } else {
                     projectile::tick_orb(level_ref, &mut ents, &mut env, &mut self.cx, id);
                 }

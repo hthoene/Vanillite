@@ -112,7 +112,11 @@ fn base_tick(t: &mut Tick<'_, '_>) {
                 .is_bubble_column(t.level.block(BlockPos::containing(p.x, t.eye_y(), p.z)))
         };
         if eye_in_water && !bubble {
-            if !t.mob_ref().kind.breathes_underwater() {
+            let effects = &t.mob_ref().effects;
+            let water_breathing = effects.has(super::effects::id::WATER_BREATHING)
+                || effects.has(super::effects::id::CONDUIT_POWER)
+                || effects.has(super::effects::id::BREATH_OF_THE_NAUTILUS);
+            if !t.mob_ref().kind.breathes_underwater() && !water_breathing {
                 t.mob().air -= 1;
                 if t.mob_ref().air <= -20 {
                     t.mob().air = 0;
@@ -165,6 +169,22 @@ fn base_tick(t: &mut Tick<'_, '_>) {
         if t.other(by).is_none() || expired {
             t.mob().last_hurt_by_mob = None;
         }
+    }
+    // `tickEffects`.
+    if !t.mob_ref().effects.is_empty() {
+        let r = super::effects::tick(t.mob());
+        if r.magic > 0.0 {
+            let source = DamageSource::of(t.env.types.magic);
+            hurt_self(t, source, r.magic);
+        }
+        if r.wither > 0.0 && t.exists() {
+            let source = DamageSource::of(t.env.types.wither);
+            hurt_self(t, source, r.wither);
+        }
+        if !t.exists() {
+            return;
+        }
+        t.core_mut().mark_data_dirty();
     }
     // `Mob.baseTick`: the ambient sound.
     if t.mob_ref().is_alive() {
@@ -315,11 +335,46 @@ fn ai_step(t: &mut Tick<'_, '_>) {
         return;
     }
     if t.mob_ref().kind.burns_in_daylight() && is_sun_burn_tick(t) {
-        // `igniteForSeconds(8)`.
-        let m = t.mob();
-        m.fire_ticks = m.fire_ticks.max(160);
+        // `burnUndead`: a helmet takes the sun (and wears), else `igniteForSeconds(8)`.
+        let head = crate::item::EquipmentSlot::Head;
+        let helmet = t.mob_ref().equipment.get(head).clone();
+        if helmet.is_empty() {
+            let m = t.mob();
+            m.fire_ticks = m.fire_ticks.max(160);
+        } else if crate::item::is_damageable(&helmet) {
+            let amount = t.mob().random.next_int_bounded(2);
+            hurt_equipment(t, head, amount);
+        }
+    }
+    // `Mob.aiStep`'s looting.
+    if t.mob_ref().kind.family() == super::Family::Classic {
+        let rules = super::equipment::PickupRules::default();
+        super::equipment::pick_up_items(t, &rules, None, (1.0, 0.0, 1.0));
+    } else {
+        super::fam::pick_up_items(t);
+    }
+    if !t.exists() {
+        return;
     }
     kinds::ai_step(t);
+}
+
+/// `hurtAndBreak(amount, mob, slot)` of a mob's equipment (without Unbreaking).
+pub fn hurt_equipment(t: &mut Tick<'_, '_>, slot: crate::item::EquipmentSlot, amount: i32) {
+    let mut s = t.mob_ref().equipment.get(slot).clone();
+    if amount <= 0 || !crate::item::is_damageable(&s) {
+        return;
+    }
+    let d = crate::item::damage(&s) + amount;
+    if d >= crate::item::max_damage(&s) {
+        s = crate::item::ItemStack::default();
+        let sound = "minecraft:entity.item.break";
+        super::kinds::play_sound(t, sound, 0.8, 0.8);
+    } else {
+        crate::item::set_damage(&mut s, d);
+    }
+    t.mob().equipment.set(slot, s);
+    super::equipment::broadcast(t);
 }
 
 /// `Mob.jumpInLiquid`.
@@ -424,6 +479,9 @@ pub fn on_climbable(t: &Tick<'_, '_>) -> bool {
 
 /// `LivingEntity.travel`.
 fn travel(t: &mut Tick<'_, '_>, input: Vec3) {
+    if t.mob_ref().kind.family() != super::Family::Classic && super::fam::travel(t, input) {
+        return;
+    }
     let fluids = t.mob_ref().fluids;
     if fluids.in_water() || fluids.in_lava() {
         travel_in_fluid(t, input);
@@ -436,7 +494,13 @@ fn gravity(t: &Tick<'_, '_>) -> f64 {
     if t.core().flags().contains(EntityFlags::NO_GRAVITY) {
         0.0
     } else {
-        t.mob_ref().attrs.gravity
+        // `getEffectiveGravity`: slow falling caps the gravity while falling.
+        let g = t.mob_ref().attrs.gravity;
+        if t.velocity().y <= 0.0 && t.mob_ref().effects.has(super::effects::id::SLOW_FALLING) {
+            g.min(0.01)
+        } else {
+            g
+        }
     }
 }
 
@@ -485,7 +549,13 @@ fn travel_in_air(t: &mut Tick<'_, '_>, input: Vec3) {
         movement.y = 0.2;
     }
     let mut y = movement.y;
-    if t.level.is_loaded(below) {
+    if let Some(a) = t
+        .mob_ref()
+        .effects
+        .amplifier(super::effects::id::LEVITATION)
+    {
+        y += (0.05 * (f64::from(a) + 1.0) - movement.y) * 0.2;
+    } else if t.level.is_loaded(below) {
         y -= gravity(t);
     } else if t.pos().y > f64::from(t.level.min_y()) {
         y = -0.1;

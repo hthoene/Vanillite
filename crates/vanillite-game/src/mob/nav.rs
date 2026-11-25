@@ -25,9 +25,63 @@ fn rotate_towards(from: f32, to: f32, max: f32) -> f32 {
     from + degrees_difference(from, to).clamp(-max, max)
 }
 
-/// The state of a mob's `GroundPathNavigation`.
+/// Which `PathNavigation` a mob uses.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NavKind {
+    /// `GroundPathNavigation`.
+    #[default]
+    Ground,
+    /// `WallClimberNavigation` (spiders).
+    WallClimber,
+    /// `WaterBoundPathNavigation` (fish, squids, dolphins, guardians); `breaching` lets
+    /// dolphins path through the surface.
+    Water { breaching: bool },
+    /// `AmphibiousPathNavigation` (turtles, axolotls, frogs, drowned).
+    Amphibious,
+    /// `FlyingPathNavigation` (bees, parrots, allays, vexes).
+    Flying,
+    /// No path navigation: the mob steers itself (ghasts, phantoms, slimes).
+    None,
+}
+
+/// Which `MoveControl` a mob uses.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum MoveKind {
+    /// `MoveControl`.
+    #[default]
+    Default,
+    /// `FlyingMoveControl(mob, maxTurn, hoversInPlace)`.
+    Flying { max_turn: i32, hovers: bool },
+    /// `SmoothSwimmingMoveControl(mob, maxTurnX, maxTurnY, inWaterSpeedModifier,
+    /// outsideWaterSpeedModifier, applyGravity)`.
+    SmoothSwimming {
+        max_turn_x: i32,
+        max_turn_y: i32,
+        in_water_speed: f32,
+        outside_water_speed: f32,
+        apply_gravity: bool,
+    },
+    /// The family's own control (`FamilyHooks::move_control`).
+    Custom,
+}
+
+/// Which `LookControl` a mob uses.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LookKind {
+    /// `LookControl`.
+    #[default]
+    Default,
+    /// `SmoothSwimmingLookControl(mob, maxYRotFromCenter)`.
+    SmoothSwimming { max_y_rot: i32 },
+    /// The family's own control (`FamilyHooks::look_control`).
+    Custom,
+}
+
+/// The state of a mob's `PathNavigation` (ground by default, see [`NavKind`]).
 #[derive(Clone, Debug)]
 pub struct Navigation {
+    /// The navigation type.
+    pub kind: NavKind,
     pub path: Option<Path>,
     pub speed_modifier: f64,
     tick: i32,
@@ -55,6 +109,7 @@ impl Navigation {
     /// The navigation of a mob with the base follow range `follow_range`.
     pub fn new(follow_range: f64) -> Navigation {
         Navigation {
+            kind: NavKind::Ground,
             path: None,
             speed_modifier: 0.0,
             tick: 0,
@@ -95,6 +150,14 @@ impl Navigation {
         self.timeout_limit = 0.0;
         self.is_stuck = false;
     }
+}
+
+/// `PathNavigation.isStableDestination(pos)` of the mob's navigation: ground navigation
+/// needs a solid block below.
+pub fn is_stable_destination(t: &Tick<'_, '_>, pos: BlockPos) -> bool {
+    t.level
+        .block(BlockPos::new(pos.x, pos.y - 1, pos.z))
+        .has(vanillite_data::block::flags::SOLID_RENDER)
 }
 
 /// `canUpdatePath`: on the ground or in a liquid.
@@ -492,6 +555,8 @@ pub enum Operation {
 /// `MoveControl`.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MoveControl {
+    /// The control type.
+    pub kind: MoveKind,
     pub wanted: Vec3,
     pub speed_modifier: f64,
     pub strafe_forwards: f32,
@@ -537,6 +602,9 @@ pub fn rotlerp(a: f32, b: f32, max: f32) -> f32 {
 
 /// `MoveControl.tick`.
 pub fn tick_move_control(t: &mut Tick<'_, '_>) {
+    if t.mob_ref().move_ctl.kind == MoveKind::Custom && super::fam::move_control(t) {
+        return;
+    }
     let speed_attr = t.mob_ref().attrs.movement_speed;
     let ctl = t.mob_ref().move_ctl;
     match ctl.operation {
@@ -639,6 +707,8 @@ pub fn tick_move_control(t: &mut Tick<'_, '_>) {
 /// `LookControl`.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct LookControl {
+    /// The control type.
+    pub kind: LookKind,
     pub wanted: Vec3,
     pub y_max_rot_speed: f32,
     pub x_max_rot_angle: f32,
@@ -667,6 +737,9 @@ pub fn look_at(t: &mut Tick<'_, '_>, at: Vec3) {
 
 /// `LookControl.tick`.
 pub fn tick_look_control(t: &mut Tick<'_, '_>) {
+    if t.mob_ref().look.kind == LookKind::Custom && super::fam::look_control(t) {
+        return;
+    }
     let p = t.pos();
     let eye = t.eye_y();
     let mut rot = t.core().rot();

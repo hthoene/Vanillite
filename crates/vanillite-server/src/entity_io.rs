@@ -188,6 +188,16 @@ impl EntityChunks {
                 if let Some(mut ent) = level.entities.store.get_mut(id) {
                     ent.set_flags(EntityFlags::ON_GROUND, e.on_ground);
                 }
+            } else if let Some((e, data)) = vanillite_game::mob::missile::load(&tag) {
+                let mut new = NewEntity::new(
+                    data.kind.type_id(),
+                    level.network_ids().next(),
+                    e.uuid,
+                    e.pos,
+                );
+                new.velocity = e.velocity;
+                new.rot = e.rot;
+                level.entities.spawn_missile(new, data);
             } else if let Some((e, data)) = nbt::load_arrow(&tag) {
                 let mut new = NewEntity::new(ids::ARROW, level.network_ids().next(), e.uuid, e.pos);
                 new.velocity = e.velocity;
@@ -281,6 +291,9 @@ impl EntityChunks {
                     let owner = a.owner.and_then(|o| ents.store.get(o)).map(|o| o.uuid());
                     nbt::save_arrow(&e, a, owner)
                 })
+            } else if let Some(d) = ents.missile(id) {
+                let owner = d.owner.and_then(|o| ents.store.get(o)).map(|o| o.uuid());
+                Some(vanillite_game::mob::missile::save(&e, d, owner))
             } else if kind == ids::ITEM {
                 ents.item(id)
                     .filter(|d| !d.stack.is_empty())

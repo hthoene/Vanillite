@@ -16,25 +16,164 @@ use super::{
     Environment, ExplosionRequest, MobContext, MobData, Other, Tick, WorldAction, atan2_deg,
     combat, light_magic_value, nav,
 };
+use super::{equipment, fam};
 use crate::entities::Entities;
 use crate::level::Level;
 use crate::survival::damage::DamageSource;
 use crate::survival::player::Env;
 use crate::survival::rules::{Difficulty, Rule};
 
-/// The mob kinds with behaviour.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Kind {
-    Zombie,
-    Skeleton,
-    Creeper,
-    Spider,
-    Enderman,
-    Cow,
-    Pig,
-    Sheep,
-    Chicken,
+/// Declares every mob kind with its name, entity type and family.
+macro_rules! kinds {
+    ($($kind:ident $name:literal $id:ident $family:ident;)*) => {
+        /// The mob kinds with behaviour.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+        pub enum Kind {
+            $($kind,)*
+        }
+
+        impl Kind {
+            /// All kinds.
+            pub const ALL: &[Kind] = &[$(Kind::$kind,)*];
+
+            /// The entity type.
+            pub fn type_id(self) -> EntityTypeId {
+                match self {
+                    $(Kind::$kind => entity_ids::$id,)*
+                }
+            }
+
+            /// The id without namespace (`zombie`).
+            pub fn name(self) -> &'static str {
+                match self {
+                    $(Kind::$kind => $name,)*
+                }
+            }
+
+            /// `entity.minecraft.<name>`.
+            pub fn translation_key(self) -> &'static str {
+                match self {
+                    $(Kind::$kind => concat!("entity.minecraft.", $name),)*
+                }
+            }
+
+            /// The family that implements the kind.
+            pub fn family(self) -> Family {
+                match self {
+                    $(Kind::$kind => Family::$family,)*
+                }
+            }
+
+            /// `minecraft:entity.<name>.<suffix>`: the default ambient, hurt and death sounds.
+            pub fn default_sound(self, sound: DefaultSound) -> &'static str {
+                match (self, sound) {
+                    $(
+                        (Kind::$kind, DefaultSound::Ambient) => concat!("minecraft:entity.", $name, ".ambient"),
+                        (Kind::$kind, DefaultSound::Hurt) => concat!("minecraft:entity.", $name, ".hurt"),
+                        (Kind::$kind, DefaultSound::Death) => concat!("minecraft:entity.", $name, ".death"),
+                    )*
+                }
+            }
+        }
+    };
 }
+
+kinds! {
+    Zombie "zombie" ZOMBIE Classic;
+    Skeleton "skeleton" SKELETON Classic;
+    Creeper "creeper" CREEPER Classic;
+    Spider "spider" SPIDER Classic;
+    Enderman "enderman" ENDERMAN Classic;
+    Cow "cow" COW Classic;
+    Pig "pig" PIG Classic;
+    Sheep "sheep" SHEEP Classic;
+    Chicken "chicken" CHICKEN Classic;
+    Husk "husk" HUSK Undead;
+    Drowned "drowned" DROWNED Undead;
+    ZombieVillager "zombie_villager" ZOMBIE_VILLAGER Undead;
+    ZombifiedPiglin "zombified_piglin" ZOMBIFIED_PIGLIN Undead;
+    Giant "giant" GIANT Undead;
+    Stray "stray" STRAY Undead;
+    Bogged "bogged" BOGGED Undead;
+    Parched "parched" PARCHED Undead;
+    WitherSkeleton "wither_skeleton" WITHER_SKELETON Undead;
+    CaveSpider "cave_spider" CAVE_SPIDER Undead;
+    Silverfish "silverfish" SILVERFISH Undead;
+    Endermite "endermite" ENDERMITE Undead;
+    Slime "slime" SLIME Undead;
+    MagmaCube "magma_cube" MAGMA_CUBE Undead;
+    SulfurCube "sulfur_cube" SULFUR_CUBE Undead;
+    Phantom "phantom" PHANTOM Undead;
+    Witch "witch" WITCH Illager;
+    Pillager "pillager" PILLAGER Illager;
+    Vindicator "vindicator" VINDICATOR Illager;
+    Evoker "evoker" EVOKER Illager;
+    Illusioner "illusioner" ILLUSIONER Illager;
+    Vex "vex" VEX Illager;
+    Ravager "ravager" RAVAGER Illager;
+    Guardian "guardian" GUARDIAN Illager;
+    Ghast "ghast" GHAST Illager;
+    Blaze "blaze" BLAZE Illager;
+    Shulker "shulker" SHULKER Illager;
+    Piglin "piglin" PIGLIN Brainy;
+    PiglinBrute "piglin_brute" PIGLIN_BRUTE Brainy;
+    Hoglin "hoglin" HOGLIN Brainy;
+    Zoglin "zoglin" ZOGLIN Brainy;
+    Goat "goat" GOAT Brainy;
+    Axolotl "axolotl" AXOLOTL Brainy;
+    Frog "frog" FROG Brainy;
+    Tadpole "tadpole" TADPOLE Brainy;
+    Armadillo "armadillo" ARMADILLO Brainy;
+    Sniffer "sniffer" SNIFFER Brainy;
+    Camel "camel" CAMEL Mount;
+    CamelHusk "camel_husk" CAMEL_HUSK Mount;
+    HappyGhast "happy_ghast" HAPPY_GHAST Mount;
+    Nautilus "nautilus" NAUTILUS Mount;
+    ZombieNautilus "zombie_nautilus" ZOMBIE_NAUTILUS Mount;
+    Allay "allay" ALLAY Mount;
+    CopperGolem "copper_golem" COPPER_GOLEM Mount;
+    Breeze "breeze" BREEZE Mount;
+    Creaking "creaking" CREAKING Mount;
+    Horse "horse" HORSE Companion;
+    Donkey "donkey" DONKEY Companion;
+    Mule "mule" MULE Companion;
+    SkeletonHorse "skeleton_horse" SKELETON_HORSE Companion;
+    ZombieHorse "zombie_horse" ZOMBIE_HORSE Companion;
+    Llama "llama" LLAMA Companion;
+    TraderLlama "trader_llama" TRADER_LLAMA Companion;
+    Wolf "wolf" WOLF Companion;
+    Cat "cat" CAT Companion;
+    Ocelot "ocelot" OCELOT Companion;
+    Parrot "parrot" PARROT Companion;
+    Fox "fox" FOX Companion;
+    Panda "panda" PANDA Companion;
+    PolarBear "polar_bear" POLAR_BEAR Companion;
+    Rabbit "rabbit" RABBIT Companion;
+    Bee "bee" BEE Wildlife;
+    Turtle "turtle" TURTLE Wildlife;
+    Mooshroom "mooshroom" MOOSHROOM Wildlife;
+    Strider "strider" STRIDER Wildlife;
+    SnowGolem "snow_golem" SNOW_GOLEM Wildlife;
+    IronGolem "iron_golem" IRON_GOLEM Wildlife;
+    Bat "bat" BAT Wildlife;
+    Squid "squid" SQUID Wildlife;
+    GlowSquid "glow_squid" GLOW_SQUID Wildlife;
+    Dolphin "dolphin" DOLPHIN Wildlife;
+    Cod "cod" COD Wildlife;
+    Salmon "salmon" SALMON Wildlife;
+    Pufferfish "pufferfish" PUFFERFISH Wildlife;
+    TropicalFish "tropical_fish" TROPICAL_FISH Wildlife;
+}
+
+/// The default sounds of a kind (`minecraft:entity.<name>.<suffix>`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DefaultSound {
+    Ambient,
+    Hurt,
+    Death,
+}
+
+pub use super::fam::Family;
 
 /// Farm animal climate of a biome (`spawns_warm/cold_variant_farm_animals`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -46,75 +185,43 @@ pub enum FarmClimate {
 }
 
 impl Kind {
-    /// All kinds.
-    pub const ALL: [Kind; 9] = [
-        Kind::Zombie,
-        Kind::Skeleton,
-        Kind::Creeper,
-        Kind::Spider,
-        Kind::Enderman,
-        Kind::Cow,
-        Kind::Pig,
-        Kind::Sheep,
-        Kind::Chicken,
-    ];
-
     /// The kind of an entity type, `None` for types without mob behaviour yet.
     pub fn of(t: EntityTypeId) -> Option<Kind> {
-        Kind::ALL.into_iter().find(|k| k.type_id() == t)
+        static BY_TYPE: std::sync::OnceLock<Vec<Option<Kind>>> = std::sync::OnceLock::new();
+        BY_TYPE
+            .get_or_init(|| {
+                let mut v = Vec::new();
+                for &k in Kind::ALL {
+                    let i = usize::from(k.type_id().0);
+                    if v.len() <= i {
+                        v.resize(i + 1, None);
+                    }
+                    v[i] = Some(k);
+                }
+                v
+            })
+            .get(usize::from(t.0))
+            .copied()
+            .flatten()
     }
 
-    /// The entity type.
-    pub fn type_id(self) -> EntityTypeId {
-        match self {
-            Kind::Zombie => entity_ids::ZOMBIE,
-            Kind::Skeleton => entity_ids::SKELETON,
-            Kind::Creeper => entity_ids::CREEPER,
-            Kind::Spider => entity_ids::SPIDER,
-            Kind::Enderman => entity_ids::ENDERMAN,
-            Kind::Cow => entity_ids::COW,
-            Kind::Pig => entity_ids::PIG,
-            Kind::Sheep => entity_ids::SHEEP,
-            Kind::Chicken => entity_ids::CHICKEN,
-        }
+    fn classic(self) -> bool {
+        self.family() == Family::Classic
     }
 
-    fn name(self) -> &'static str {
-        match self {
-            Kind::Zombie => "zombie",
-            Kind::Skeleton => "skeleton",
-            Kind::Creeper => "creeper",
-            Kind::Spider => "spider",
-            Kind::Enderman => "enderman",
-            Kind::Cow => "cow",
-            Kind::Pig => "pig",
-            Kind::Sheep => "sheep",
-            Kind::Chicken => "chicken",
-        }
-    }
-
-    /// `entity.minecraft.<name>`.
-    pub fn translation_key(self) -> &'static str {
-        match self {
-            Kind::Zombie => "entity.minecraft.zombie",
-            Kind::Skeleton => "entity.minecraft.skeleton",
-            Kind::Creeper => "entity.minecraft.creeper",
-            Kind::Spider => "entity.minecraft.spider",
-            Kind::Enderman => "entity.minecraft.enderman",
-            Kind::Cow => "entity.minecraft.cow",
-            Kind::Pig => "entity.minecraft.pig",
-            Kind::Sheep => "entity.minecraft.sheep",
-            Kind::Chicken => "entity.minecraft.chicken",
-        }
-    }
-
-    /// A monster (`Monster`), else an animal.
     /// `AgeableMob`: animals grow up and breed.
     pub fn ageable(self) -> bool {
+        if !self.classic() {
+            return fam::ageable(self);
+        }
         matches!(self, Kind::Cow | Kind::Pig | Kind::Sheep | Kind::Chicken)
     }
 
+    /// A monster (`Monster` or `Enemy`), else an animal.
     pub fn is_monster(self) -> bool {
+        if !self.classic() {
+            return fam::is_monster(self);
+        }
         matches!(
             self,
             Kind::Zombie | Kind::Skeleton | Kind::Creeper | Kind::Spider | Kind::Enderman
@@ -123,36 +230,57 @@ impl Kind {
 
     /// `getAmbientSoundInterval`.
     pub fn ambient_sound_interval(self) -> i32 {
+        if !self.classic() {
+            return fam::ambient_sound_interval(self);
+        }
         if self.is_monster() { 80 } else { 120 }
     }
 
     /// `#burn_in_daylight`.
     pub fn burns_in_daylight(self) -> bool {
+        if !self.classic() {
+            return fam::burns_in_daylight(self);
+        }
         matches!(self, Kind::Zombie | Kind::Skeleton)
     }
 
     /// `#can_breathe_under_water` (the undead).
     pub fn breathes_underwater(self) -> bool {
+        if !self.classic() {
+            return fam::breathes_underwater(self);
+        }
         matches!(self, Kind::Zombie | Kind::Skeleton)
     }
 
     /// `isSensitiveToWater`.
     pub fn sensitive_to_water(self) -> bool {
+        if !self.classic() {
+            return fam::sensitive_to_water(self);
+        }
         self == Kind::Enderman
     }
 
     /// `#fall_damage_immune` and `Chicken.causeFallDamage`.
     pub fn fall_damage_immune(self) -> bool {
+        if !self.classic() {
+            return fam::fall_damage_immune(self);
+        }
         self == Kind::Chicken
     }
 
     /// `EntityType.isAllowedInPeaceful`.
     pub fn allowed_in_peaceful(self) -> bool {
+        if !self.classic() {
+            return fam::allowed_in_peaceful(self);
+        }
         !self.is_monster()
     }
 
     /// `removeWhenFarAway`: animals stay.
     pub fn remove_when_far_away(self) -> bool {
+        if !self.classic() {
+            return fam::remove_when_far_away(self);
+        }
         self.is_monster()
     }
 
@@ -169,12 +297,16 @@ impl Kind {
             Kind::Cow | Kind::Pig | Kind::Sheep => ANIMAL,
             Kind::Chicken => CHICKEN,
             Kind::Enderman => ENDERMAN,
+            _ if !self.classic() => fam::malus(self),
             _ => &[],
         }
     }
 
     /// `getSoundSource`.
     pub fn sound_source(self) -> SoundSource {
+        if !self.classic() {
+            return fam::sound_source(self);
+        }
         if self.is_monster() {
             SoundSource::Hostile
         } else {
@@ -184,52 +316,28 @@ impl Kind {
 
     /// `getSoundVolume`.
     pub fn sound_volume(self) -> f32 {
+        if !self.classic() {
+            return fam::sound_volume(self);
+        }
         if self == Kind::Cow { 0.4 } else { 1.0 }
     }
 
-    /// `getAmbientSound`, `None` for silent kinds.
+    /// `getAmbientSound` of the kind without state, `None` for silent kinds.
     pub fn ambient_sound(self) -> Option<&'static str> {
-        Some(match self {
-            Kind::Zombie => "minecraft:entity.zombie.ambient",
-            Kind::Skeleton => "minecraft:entity.skeleton.ambient",
-            Kind::Creeper => return None,
-            Kind::Spider => "minecraft:entity.spider.ambient",
-            Kind::Enderman => "minecraft:entity.enderman.ambient",
-            Kind::Cow => "minecraft:entity.cow.ambient",
-            Kind::Pig => "minecraft:entity.pig.ambient",
-            Kind::Sheep => "minecraft:entity.sheep.ambient",
-            Kind::Chicken => "minecraft:entity.chicken.ambient",
-        })
+        match self {
+            Kind::Creeper => None,
+            _ => Some(self.default_sound(DefaultSound::Ambient)),
+        }
     }
 
-    /// `getHurtSound`.
+    /// `getHurtSound` of the kind without state.
     pub fn hurt_sound(self) -> &'static str {
-        match self {
-            Kind::Zombie => "minecraft:entity.zombie.hurt",
-            Kind::Skeleton => "minecraft:entity.skeleton.hurt",
-            Kind::Creeper => "minecraft:entity.creeper.hurt",
-            Kind::Spider => "minecraft:entity.spider.hurt",
-            Kind::Enderman => "minecraft:entity.enderman.hurt",
-            Kind::Cow => "minecraft:entity.cow.hurt",
-            Kind::Pig => "minecraft:entity.pig.hurt",
-            Kind::Sheep => "minecraft:entity.sheep.hurt",
-            Kind::Chicken => "minecraft:entity.chicken.hurt",
-        }
+        self.default_sound(DefaultSound::Hurt)
     }
 
-    /// `getDeathSound`.
+    /// `getDeathSound` of the kind without state.
     pub fn death_sound(self) -> &'static str {
-        match self {
-            Kind::Zombie => "minecraft:entity.zombie.death",
-            Kind::Skeleton => "minecraft:entity.skeleton.death",
-            Kind::Creeper => "minecraft:entity.creeper.death",
-            Kind::Spider => "minecraft:entity.spider.death",
-            Kind::Enderman => "minecraft:entity.enderman.death",
-            Kind::Cow => "minecraft:entity.cow.death",
-            Kind::Pig => "minecraft:entity.pig.death",
-            Kind::Sheep => "minecraft:entity.sheep.death",
-            Kind::Chicken => "minecraft:entity.chicken.death",
-        }
+        self.default_sound(DefaultSound::Death)
     }
 
     /// `getFallSounds().small()`.
@@ -263,8 +371,53 @@ impl Kind {
     /// `Kind` by its id (`minecraft:zombie`).
     pub fn by_name(name: &str) -> Option<Kind> {
         let name = name.strip_prefix("minecraft:").unwrap_or(name);
-        Kind::ALL.into_iter().find(|k| k.name() == name)
+        Kind::ALL.iter().copied().find(|k| k.name() == name)
     }
+}
+
+/// The state dependent sounds of a mob (`getAmbientSound`, `getHurtSound`, `getDeathSound`).
+pub fn ambient_sound(m: &MobData) -> Option<&'static str> {
+    if !m.kind.classic() {
+        return fam::ambient_sound(m);
+    }
+    if m.kind == Kind::Enderman && m.creepy {
+        return Some("minecraft:entity.enderman.scream");
+    }
+    m.kind.ambient_sound()
+}
+
+/// `getHurtSound` of a mob.
+pub fn hurt_sound(m: &MobData) -> &'static str {
+    if m.kind.classic() {
+        m.kind.hurt_sound()
+    } else {
+        fam::hurt_sound(m)
+    }
+}
+
+/// `getDeathSound` of a mob.
+pub fn death_sound(m: &MobData) -> &'static str {
+    if m.kind.classic() {
+        m.kind.death_sound()
+    } else {
+        fam::death_sound(m)
+    }
+}
+
+/// `getBaseExperienceReward` of a mob.
+pub fn experience_reward(m: &mut MobData) -> i32 {
+    if m.kind.classic() {
+        let kind = m.kind;
+        kind.base_experience_reward(&mut m.random)
+    } else {
+        fam::experience_reward(m)
+    }
+}
+
+/// The dimensions of a mob: its family's when they depend on state, else the type's (babies
+/// at half size).
+pub fn mob_dimensions(m: &MobData) -> Dimensions {
+    fam::dimensions(m).unwrap_or_else(|| dimensions(m.kind.type_id(), m.baby))
 }
 
 /// The dimensions of a mob type (babies at half size).
@@ -282,6 +435,11 @@ pub fn dimensions(kind: EntityTypeId, baby: bool) -> Dimensions {
 
 /// `registerGoals` of each kind.
 pub fn register_goals(m: &mut MobData) {
+    if !m.kind.classic() {
+        fam::init(m);
+        fam::register_goals(m);
+        return;
+    }
     let g = &mut m.goals;
     let tg = &mut m.targets;
     match m.kind {
@@ -414,27 +572,50 @@ pub fn register_goals(m: &mut MobData) {
             }
             m.nav.can_float = true;
         }
+        _ => {}
     }
     // Goals are kept sorted by insertion like Vanilla's linked set; nothing to do here.
 }
 
 /// `finalizeSpawn`: the random spawn bonus, babies, colours and variants.
-pub fn finalize_spawn(
-    m: &mut MobData,
-    difficulty: Difficulty,
-    climate: FarmClimate,
-    group_index: u32,
-) {
+pub fn finalize_spawn(m: &mut MobData, ctx: &mut fam::SpawnContext<'_>) {
     // `Mob.finalizeSpawn`: follow range bonus and left-handedness.
     let bonus = m.random.triangle(0.0, 0.114_850_000_000_000_01);
     m.attrs.follow_range *= 1.0 + bonus;
-    let _left_handed = m.random.next_float() < 0.05;
+    m.left_handed = m.random.next_float() < 0.05;
+    if !m.kind.classic() {
+        fam::finalize_spawn(m, ctx);
+        return;
+    }
+    let (difficulty, climate, group_index) = (ctx.difficulty, ctx.climate, ctx.group_index);
     match m.kind {
         Kind::Zombie => {
-            let _pick_up = m.random.next_float() < 0.55 * special_multiplier(difficulty);
+            m.can_pick_up_loot = m.random.next_float() < 0.55 * ctx.special_multiplier;
             if m.random.next_float() < 0.05 {
                 m.baby = true;
+                zombie_chicken_jockey(m, ctx);
             }
+            m.can_break_doors = m.random.next_float() < ctx.special_multiplier * 0.1;
+            // `populateDefaultEquipmentSlots`: armour, then a sword, spear or shovel.
+            equipment::populate_default_armor(m, difficulty, ctx.special_multiplier);
+            let chance = if difficulty == Difficulty::Hard {
+                0.05
+            } else {
+                0.01
+            };
+            if m.random.next_float() < chance {
+                let weapon = match m.random.next_int_bounded(6) {
+                    0 => "minecraft:iron_sword",
+                    1 => "minecraft:iron_spear",
+                    _ => "minecraft:iron_shovel",
+                };
+                m.equipment.set(
+                    crate::item::EquipmentSlot::MainHand,
+                    equipment::stack(weapon),
+                );
+            }
+            equipment::populate_default_enchantments(m, ctx.special_multiplier);
+            halloween_head(m);
             m.attrs.knockback_resistance += m.random.next_double() * f64::from(0.05_f32);
             let range_bonus = m.random.next_double() * 0.2 * 1.0;
             if range_bonus > 1.0 {
@@ -442,7 +623,15 @@ pub fn finalize_spawn(
             }
         }
         Kind::Skeleton => {
-            let _pick_up = m.random.next_float() < 0.55 * special_multiplier(difficulty);
+            // `populateDefaultEquipmentSlots`: armour and the bow.
+            equipment::populate_default_armor(m, difficulty, ctx.special_multiplier);
+            m.equipment.set(
+                crate::item::EquipmentSlot::MainHand,
+                equipment::stack("minecraft:bow"),
+            );
+            equipment::populate_default_enchantments(m, ctx.special_multiplier);
+            m.can_pick_up_loot = m.random.next_float() < 0.55 * ctx.special_multiplier;
+            halloween_head(m);
             if difficulty == Difficulty::Hard {
                 for slot in &mut m.goals.slots {
                     if let Goal::Bow { interval_min, .. } = &mut slot.goal {
@@ -469,12 +658,69 @@ pub fn finalize_spawn(
     }
 }
 
-fn special_multiplier(difficulty: Difficulty) -> f32 {
-    // `DifficultyInstance.getSpecialMultiplier` with the clamped effective difficulty of a
-    // fresh world.
-    match difficulty {
-        Difficulty::Hard => 0.25,
-        _ => 0.0,
+/// `Zombie.finalizeSpawn`'s chicken jockey of a baby: 5 % ride a free chicken nearby, else
+/// 5 % a new chicken.
+pub fn zombie_chicken_jockey(m: &mut MobData, ctx: &mut fam::SpawnContext<'_>) {
+    if m.random.next_float() < 0.05 {
+        let p = ctx.pos;
+        let center = Vec3::new(f64::from(p.x) + 0.5, f64::from(p.y), f64::from(p.z) + 0.5);
+        let area = vanillite_base::Aabb::new(
+            center.x - 0.3 - 5.0,
+            center.y - 3.0,
+            center.z - 0.3 - 5.0,
+            center.x + 0.3 + 5.0,
+            center.y + 1.95 + 3.0,
+            center.z + 0.3 + 5.0,
+        );
+        if let Some(level) = ctx.level {
+            let ents = &level.entities;
+            let mut found = None;
+            ents.store.for_each_in(&area, false, |id| {
+                if found.is_none()
+                    && ents.mob(id).is_some_and(|c| c.kind == Kind::Chicken)
+                    && ents.riding.passengers_of(id).is_empty()
+                {
+                    found = Some(id);
+                }
+            });
+            if let Some(chicken) = found {
+                ctx.ride = Some(chicken);
+            }
+        }
+    } else if m.random.next_float() < 0.05 {
+        let seed = m.random.next_long();
+        let mut chicken = MobData::new(Kind::Chicken, seed);
+        let mut inner = fam::SpawnContext {
+            reason: fam::SpawnReason::Jockey,
+            extra: Vec::new(),
+            ride: None,
+            ..*ctx
+        };
+        finalize_spawn(&mut chicken, &mut inner);
+        chicken.chicken_jockey = true;
+        ctx.extra.push(fam::ExtraMob {
+            mob: chicken,
+            offset: Vec3::ZERO,
+            relation: fam::Relation::CarriesIt,
+        });
+    }
+}
+
+/// The pumpkin heads of Halloween (`SpecialDates.isHalloween`): 25 % without a helmet, 10 %
+/// of them a jack o'lantern; they never drop.
+pub fn halloween_head(m: &mut MobData) {
+    use crate::item::EquipmentSlot;
+    if m.equipment.get(EquipmentSlot::Head).is_empty()
+        && fam::is_halloween()
+        && m.random.next_float() < 0.25
+    {
+        let head = if m.random.next_float() < 0.1 {
+            "minecraft:jack_o_lantern"
+        } else {
+            "minecraft:carved_pumpkin"
+        };
+        m.equipment.set(EquipmentSlot::Head, equipment::stack(head));
+        m.equipment.set_drop_chance(EquipmentSlot::Head, 0.0);
     }
 }
 
@@ -507,8 +753,18 @@ fn sheep_color(climate: FarmClimate, random: &mut LegacyRandom) -> u8 {
 
 /// `getWalkTargetValue(pos)` of a kind.
 pub fn walk_target_value(kind: Kind, level: &Level, env: &Environment, pos: BlockPos) -> f64 {
+    fam::walk_target_value(kind, level, env, pos)
+}
+
+/// `Monster.getWalkTargetValue` (`monster`) or `Animal.getWalkTargetValue`.
+pub fn base_walk_target_value(
+    monster: bool,
+    level: &Level,
+    env: &Environment,
+    pos: BlockPos,
+) -> f64 {
     let cost = f64::from(light_magic_value(level, env, pos) - 0.5);
-    if kind.is_monster() {
+    if monster {
         -cost
     } else if level.block(BlockPos::new(pos.x, pos.y - 1, pos.z)).block() == ids::GRASS_BLOCK {
         10.0
@@ -530,13 +786,7 @@ pub fn play_sound(t: &mut Tick<'_, '_>, sound: &str, volume: f32, pitch: f32) {
 
 /// `playAmbientSound`.
 pub fn play_ambient_sound(t: &mut Tick<'_, '_>) {
-    let kind = t.mob_ref().kind;
-    let sound = if kind == Kind::Enderman && t.mob_ref().creepy {
-        Some("minecraft:entity.enderman.scream")
-    } else {
-        kind.ambient_sound()
-    };
-    if let Some(sound) = sound {
+    if let Some(sound) = ambient_sound(t.mob_ref()) {
         let id = t.id;
         combat::mob_sound(t.ents, t.env, id, sound);
     }
@@ -544,6 +794,10 @@ pub fn play_ambient_sound(t: &mut Tick<'_, '_>) {
 
 /// Kind specific work before `LivingEntity.tick` (`Creeper.tick`'s fuse, using a bow).
 pub fn before_tick(t: &mut Tick<'_, '_>) {
+    if !t.mob_ref().kind.classic() {
+        fam::before_tick(t);
+        return;
+    }
     match t.mob_ref().kind {
         Kind::Creeper if t.mob_ref().is_alive() => {
             let m = t.mob();
@@ -592,6 +846,10 @@ fn explode_creeper(t: &mut Tick<'_, '_>) {
 
 /// Kind specific work after `LivingEntity.tick` (`Spider.tick`'s climbing flag).
 pub fn after_tick(t: &mut Tick<'_, '_>) {
+    if !t.mob_ref().kind.classic() {
+        fam::after_tick(t);
+        return;
+    }
     if t.mob_ref().kind == Kind::Spider {
         let climbing = t.mob_ref().horizontal_collision;
         if climbing != t.mob_ref().climbing {
@@ -610,7 +868,7 @@ pub fn ai_step(t: &mut Tick<'_, '_>) {
             t.set_velocity(v.multiply(1.0, 0.6, 1.0));
         }
     }
-    if !kind.is_monster() && t.mob_ref().is_alive() {
+    if kind.ageable() && t.mob_ref().is_alive() {
         // `AgeableMob.aiStep` and `Animal.aiStep`.
         let m = t.mob();
         if m.age < 0 {
@@ -637,15 +895,22 @@ pub fn ai_step(t: &mut Tick<'_, '_>) {
         let baby = m.age < 0;
         if baby != m.baby {
             m.baby = baby;
-            let kind_type = t.core().kind();
-            t.core_mut().set_dims(dimensions(kind_type, baby));
+            let dims = mob_dimensions(t.mob_ref());
+            t.core_mut().set_dims(dims);
             t.core_mut().mark_data_dirty();
         }
+    }
+    if !kind.classic() {
+        fam::ai_step(t);
     }
 }
 
 /// `customServerAiStep` (enderman teleports in daylight).
 pub fn custom_server_ai_step(t: &mut Tick<'_, '_>) {
+    if !t.mob_ref().kind.classic() {
+        fam::custom_server_ai_step(t);
+        return;
+    }
     if t.mob_ref().kind != Kind::Enderman {
         return;
     }
@@ -665,6 +930,10 @@ pub fn custom_server_ai_step(t: &mut Tick<'_, '_>) {
 
 /// `Creeper.causeFallDamage`: a fall shortens the fuse.
 pub fn on_fall_damage(t: &mut Tick<'_, '_>, distance: f64) {
+    if !t.mob_ref().kind.classic() {
+        fam::on_fall_damage(t, distance);
+        return;
+    }
     if t.mob_ref().kind == Kind::Creeper {
         let m = t.mob();
         #[allow(clippy::cast_possible_truncation)]
@@ -678,6 +947,10 @@ pub fn on_fall_damage(t: &mut Tick<'_, '_>, distance: f64) {
 
 /// `Zombie.doHurtTarget`: a burning zombie sets its target on fire.
 pub fn after_attack(t: &mut Tick<'_, '_>, target: EntityId) {
+    if !t.mob_ref().kind.classic() {
+        fam::after_attack(t, target);
+        return;
+    }
     if t.mob_ref().kind != Kind::Zombie || !t.mob_ref().is_on_fire() {
         return;
     }
@@ -922,7 +1195,7 @@ pub fn after_hurt(
 
 /// Whether the ticking mob has its living flag "using item" (skeletons drawing their bow).
 pub fn living_flags(m: &MobData) -> u8 {
-    u8::from(m.using_item >= 0)
+    fam::living_flags(m)
 }
 
 /// The wool of each sheep colour (`DyeColor` order).
@@ -1007,6 +1280,7 @@ pub fn death_loot(m: &mut MobData, killed_by_player: bool) -> Vec<crate::item::I
             meat("minecraft:chicken", 1, 1, "minecraft:cooked_chicken"),
         ],
         Kind::Sheep => &[meat("minecraft:mutton", 1, 2, "minecraft:cooked_mutton")],
+        _ => &[],
     };
     let on_fire = m.is_on_fire();
     let mut out = Vec::new();

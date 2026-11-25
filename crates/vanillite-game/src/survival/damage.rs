@@ -139,6 +139,13 @@ pub struct DamageTypes {
     pub arrow: DamageKind,
     pub explosion: DamageKind,
     pub player_explosion: DamageKind,
+    pub magic: DamageKind,
+    pub indirect_magic: DamageKind,
+    pub wither: DamageKind,
+    pub mob_projectile: DamageKind,
+    pub sting: DamageKind,
+    pub thorns: DamageKind,
+    pub freeze: DamageKind,
 }
 
 /// The built-in types of Vanilla 26.3 with their values, for servers without data packs (tests).
@@ -227,6 +234,13 @@ impl DamageTypes {
             arrow: find("minecraft:arrow"),
             explosion: find("minecraft:explosion"),
             player_explosion: find("minecraft:player_explosion"),
+            magic: find("minecraft:magic"),
+            indirect_magic: find("minecraft:indirect_magic"),
+            wither: find("minecraft:wither"),
+            mob_projectile: find("minecraft:mob_projectile"),
+            sting: find("minecraft:sting"),
+            thorns: find("minecraft:thorns"),
+            freeze: find("minecraft:freeze"),
             types,
         }
     }
@@ -248,6 +262,17 @@ impl DamageTypes {
                     },
                 )
                 .collect(),
+        )
+    }
+
+    /// The kind of a damage type by id (`minecraft:fireball`); the first type when unknown.
+    pub fn named(&self, id: &str) -> DamageKind {
+        DamageKind(
+            self.types
+                .iter()
+                .position(|t| t.id == id)
+                .and_then(|i| u16::try_from(i).ok())
+                .unwrap_or(0),
         )
     }
 

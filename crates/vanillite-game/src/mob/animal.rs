@@ -50,6 +50,9 @@ pub fn food_tag(kind: Kind) -> Option<&'static str> {
 
 /// `Animal.isFood(item)`.
 pub fn is_food(kind: Kind, item: u16) -> bool {
+    if kind.family() != super::Family::Classic {
+        return super::fam::is_food(kind, item);
+    }
     food_tag(kind).is_some_and(|tag| {
         crate::player::play::game_data().is_some_and(|d| d.item_in_tag(item, tag))
     })
@@ -154,6 +157,12 @@ pub fn breed(
     child.variant = if pick { va } else { vb };
     if kind == Kind::Sheep {
         child.sheep_color = offspring_color(ca, cb, pick);
+    }
+    if kind.family() != super::Family::Classic
+        && let (Some(a), Some(b)) = (ents.mob(parent), ents.mob(partner))
+    {
+        let mut random = vanillite_base::random::LegacyRandom::new(env.random.next_long());
+        super::fam::breed_offspring(a, b, &mut child, &mut random);
     }
     child.age = -24000;
     child.baby = true;
@@ -424,6 +433,20 @@ fn mob_interact(
         return r;
     }
     let kind = ents.mob(target).map_or(Kind::Zombie, |m| m.kind);
+    if kind.family() != super::Family::Classic {
+        let mut ix = super::fam::Interact {
+            level,
+            ents,
+            env,
+            cx: _cx,
+            player,
+            target,
+            hand,
+            sneaking,
+            stack,
+        };
+        return super::fam::interact(&mut ix, kind);
+    }
     match kind {
         Kind::Cow if name == "minecraft:bucket" && !ents.mob(target).is_some_and(|m| m.baby) => {
             // `AbstractCow.mobInteract`: the milk sound is the player's own.
@@ -793,7 +816,11 @@ pub fn use_spawn_egg_on(
     let below_face = spawn_pos != pos && face == vanillite_base::Direction::Up;
     let seed = env.random.next_long();
     let mut m = MobData::new(kind, seed);
-    kinds::finalize_spawn(&mut m, difficulty, kinds::FarmClimate::Temperate, 0);
+    let mut ctx =
+        super::fam::SpawnContext::simple(difficulty, super::fam::SpawnReason::SpawnItemUse);
+    ctx.pos = spawn_pos;
+    ctx.level = Some(level);
+    kinds::finalize_spawn(&mut m, &mut ctx);
     if let Some(name) = stack.component(vanillite_protocol::components::ids::CUSTOM_NAME) {
         m.custom_name = Some(name.into());
         m.persistent = true;

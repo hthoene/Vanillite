@@ -105,7 +105,8 @@ fn invulnerable_to(ents: &Entities, env: &Env<'_>, target: EntityId, kind: Damag
         return true;
     };
     m.removed
-        || types.is(kind, tag::IS_FIRE) && e.kind().info().fire_immune
+        || types.is(kind, tag::IS_FIRE)
+            && (e.kind().info().fire_immune || m.effects.has(super::effects::id::FIRE_RESISTANCE))
         || types.is(kind, tag::IS_FALL) && m.kind.fall_damage_immune()
 }
 
@@ -130,11 +131,30 @@ pub fn hurt_mob(
     if m.is_dead_or_dying() {
         return false;
     }
-    if m.kind == Kind::Enderman && types.is(kind, tag::IS_PROJECTILE) {
+    let mob_kind = m.kind;
+    let mut amount = amount;
+    if mob_kind == Kind::Enderman && types.is(kind, tag::IS_PROJECTILE) {
         // `EnderMan.hurtServer`: projectiles make it teleport instead.
         kinds::enderman_dodge(level, ents, env, cx, target);
         return false;
     }
+    if mob_kind.family() != super::Family::Classic {
+        let mut h = super::fam::Hurt {
+            level,
+            ents,
+            env,
+            cx,
+            target,
+            source,
+        };
+        match super::fam::hurt_filter(&mut h, mob_kind, amount) {
+            Some(a) => amount = a,
+            None => return false,
+        }
+    }
+    let Some(m) = ents.mob_mut(target) else {
+        return false;
+    };
     m.no_action_time = 0;
     let mut damage = amount.max(0.0);
     if !damage.is_finite() {
@@ -212,12 +232,27 @@ pub fn hurt_mob(
             apply_knockback(ents, target, 0.4, xd, zd);
         }
     }
+    if mob_kind.family() == super::Family::Classic {
+        if mob_kind == Kind::Enderman {
+            kinds::after_hurt(level, ents, env, target, source);
+        }
+    } else {
+        let mut h = super::fam::Hurt {
+            level,
+            ents,
+            env,
+            cx,
+            target,
+            source,
+        };
+        super::fam::after_hurt(&mut h, mob_kind, damage);
+    }
     let dead = ents
         .mob(target)
         .is_some_and(super::MobData::is_dead_or_dying);
     if dead {
         if took_full {
-            let sound = ents.mob(target).map(|m| m.kind.death_sound());
+            let sound = ents.mob(target).map(kinds::death_sound);
             if let Some(sound) = sound {
                 mob_sound(ents, env, target, sound);
             }
@@ -226,7 +261,7 @@ pub fn hurt_mob(
     } else if took_full {
         let sound = ents.mob_mut(target).map(|m| {
             m.ambient_sound_time = -m.kind.ambient_sound_interval();
-            m.kind.hurt_sound()
+            kinds::hurt_sound(m)
         });
         if let Some(sound) = sound {
             mob_sound(ents, env, target, sound);
@@ -284,6 +319,17 @@ fn actually_hurt(
         let (armor, toughness) = (m.attrs.armor as f32, m.attrs.armor_toughness as f32);
         damage = crate::survival::combat::damage_after_absorb(damage, armor, toughness);
     }
+    // `getDamageAfterMagicAbsorb`: resistance, then the kind's own resistances.
+    if let Some(a) = m.effects.amplifier(super::effects::id::RESISTANCE)
+        && !types.is(source.kind, tag::BYPASSES_RESISTANCE)
+    {
+        let level = (i32::from(a) + 1) * 5;
+        #[allow(clippy::cast_precision_loss)]
+        {
+            damage = (damage * (25 - level) as f32 / 25.0).max(0.0);
+        }
+    }
+    damage = super::fam::absorb(m, &source, env, damage);
     if damage != 0.0 {
         m.health = (m.health - damage).max(0.0);
         if let Some(mut e) = ents.store.get_mut(target) {
@@ -308,10 +354,24 @@ fn die(
         return;
     }
     m.dead = true;
+    let mob_kind = m.kind;
+    if mob_kind.family() != super::Family::Classic {
+        let mut h = super::fam::Hurt {
+            level,
+            ents,
+            env,
+            cx,
+            target,
+            source,
+        };
+        super::fam::on_die(&mut h, mob_kind);
+    }
+    let Some(m) = ents.mob_mut(target) else {
+        return;
+    };
     let killed_by_player = m.last_hurt_by_player_time > 0;
     let baby = m.baby;
-    let kind = m.kind;
-    let mut reward = kind.base_experience_reward(&mut m.random);
+    let mut reward = kinds::experience_reward(m);
     if baby {
         reward = 0;
     }
@@ -334,8 +394,10 @@ fn die(
                     .map(|m| kinds::death_loot(m, killed_by_player))
             })
             .unwrap_or_default();
-        // `dropCustomDeathLoot` / `dropEquipment`: the saddle and the enderman's block.
+        // `dropCustomDeathLoot` / `dropEquipment`: the equipment, the saddle and the
+        // enderman's block.
         if let Some(m) = ents.mob_mut(target) {
+            super::equipment::death_drops(m, killed_by_player, &mut loot);
             if m.saddled
                 && let Some(saddle) = vanillite_data::registry::ITEM.id("minecraft:saddle")
             {
@@ -433,6 +495,16 @@ pub fn mob_sound(ents: &mut Entities, env: &mut Env<'_>, id: EntityId, sound: &s
 
 /// `Mob.doHurtTarget`: a melee hit with the mob's attack damage.
 pub fn mob_attack(t: &mut super::Tick<'_, '_>, target: EntityId) -> bool {
+    if t.mob_ref().kind.family() != super::Family::Classic
+        && let Some(r) = super::fam::do_hurt_target(t, target)
+    {
+        return r;
+    }
+    base_mob_attack(t, target)
+}
+
+/// `Mob.doHurtTarget` itself (families call it from their override).
+pub fn base_mob_attack(t: &mut super::Tick<'_, '_>, target: EntityId) -> bool {
     #[allow(clippy::cast_possible_truncation)]
     let damage = t.mob_ref().attrs.attack_damage as f32;
     let source = entity_source(t.ents, t.env.types.mob_attack, t.id, t.id);

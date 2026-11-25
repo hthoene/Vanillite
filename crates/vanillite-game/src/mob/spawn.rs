@@ -10,6 +10,7 @@ use vanillite_data::block::{BlockState, flags, ids};
 use vanillite_data::entity::EntityTypeId;
 use vanillite_world::entity::{EntityId, Rotation};
 
+use super::fam::{ExtraMob, Relation, SpawnContext, SpawnReason};
 use super::kinds::{self, FarmClimate, Kind};
 use super::physics;
 use super::{Environment, MobData, max_local_raw_brightness, random_uuid};
@@ -105,10 +106,39 @@ pub struct SpawnEntry {
 /// The spawn settings of one biome.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BiomeSpawns {
+    /// The biome id (`minecraft:plains`).
+    pub name: Box<str>,
+    /// The biome tags that contain the biome (`minecraft:is_forest`), sorted.
+    pub tags: Vec<Box<str>>,
     pub by_category: [Vec<SpawnEntry>; 7],
+    /// `spawn_costs` (`MobSpawnCost`): charge and energy budget by entity type.
+    pub spawn_costs: Vec<(EntityTypeId, f64, f64)>,
     /// `creature_world_gen_spawn_probability`.
     pub creature_probability: f32,
     pub climate: FarmClimate,
+    /// The base temperature of the biome.
+    pub temperature: f32,
+}
+
+impl BiomeSpawns {
+    /// `biome.is(tag)`, with or without the `minecraft:` namespace.
+    pub fn is(&self, tag: &str) -> bool {
+        let tag = tag.strip_prefix('#').unwrap_or(tag);
+        if tag.contains(':') {
+            self.tags.binary_search_by(|t| (**t).cmp(tag)).is_ok()
+        } else {
+            let full = format!("minecraft:{tag}");
+            self.tags.binary_search_by(|t| (**t).cmp(&*full)).is_ok()
+        }
+    }
+
+    /// The spawn cost of an entity type (`getMobSpawnCost`).
+    pub fn spawn_cost(&self, t: EntityTypeId) -> Option<(f64, f64)> {
+        self.spawn_costs
+            .iter()
+            .find(|c| c.0 == t)
+            .map(|&(_, charge, budget)| (charge, budget))
+    }
 }
 
 /// The spawn settings of every biome, by protocol id.
@@ -118,7 +148,8 @@ pub struct SpawnTable {
 }
 
 impl SpawnTable {
-    fn biome(&self, id: u16) -> Option<&BiomeSpawns> {
+    /// The spawn settings of a biome by protocol id.
+    pub fn biome(&self, id: u16) -> Option<&BiomeSpawns> {
         self.biomes.get(usize::from(id))
     }
 }
@@ -382,13 +413,19 @@ fn spawn_category_for_chunk(
             if !valid_position_for_mob(level, input, &mob, pos_v, nearest) {
                 continue;
             }
-            let climate = table
-                .biome(level.biome(pos))
-                .map_or(FarmClimate::Temperate, |b| b.climate);
-            kinds::finalize_spawn(&mut mob, input.difficulty, climate, group_index);
+            let extra = finalize(
+                level,
+                Some(table),
+                &input.env,
+                &mut mob,
+                pos,
+                input.difficulty,
+                group_index,
+                SpawnReason::Natural,
+            );
             group_index += 1;
             cluster += 1;
-            add_mob(level, mob, pos_v, y_rot);
+            add_mob_with(level, mob, pos_v, y_rot, extra);
             state.counts[category.index()] += 1;
             players_near(input, chunk, &mut spawner.near);
             for &i in &spawner.near {
@@ -399,6 +436,69 @@ fn spawn_category_for_chunk(
             }
         }
     }
+}
+
+/// Builds the spawn context at `pos` and runs `finalizeSpawn`; returns the mobs that spawn
+/// with it (jockeys).
+#[allow(clippy::too_many_arguments)]
+pub fn finalize(
+    level: &Level,
+    table: Option<&SpawnTable>,
+    env: &Environment,
+    mob: &mut MobData,
+    pos: BlockPos,
+    difficulty: Difficulty,
+    group_index: u32,
+    reason: SpawnReason,
+) -> Vec<ExtraMob> {
+    let biome = table.and_then(|t| t.biome(level.biome(pos)));
+    let mut ctx = SpawnContext {
+        difficulty,
+        special_multiplier: super::fam::special_multiplier(difficulty),
+        effective_difficulty: super::fam::effective_difficulty(difficulty),
+        climate: biome.map_or(FarmClimate::Temperate, |b| b.climate),
+        group_index,
+        reason,
+        biome,
+        pos,
+        level: Some(level),
+        env: *env,
+        extra: Vec::new(),
+        ride: None,
+    };
+    kinds::finalize_spawn(mob, &mut ctx);
+    if let Some(vehicle) = ctx.ride {
+        ctx.extra.push(ExtraMob {
+            mob: MobData::new(Kind::Chicken, 0),
+            offset: Vec3::ZERO,
+            relation: Relation::Existing(vehicle),
+        });
+    }
+    ctx.extra
+}
+
+/// Adds a finished mob and the mobs spawned with it (`addFreshEntityWithPassengers`).
+pub fn add_mob_with(
+    level: &mut Level,
+    mob: MobData,
+    pos: Vec3,
+    y_rot: f32,
+    extra: Vec<ExtraMob>,
+) -> EntityId {
+    let id = add_mob(level, mob, pos, y_rot);
+    for e in extra {
+        if let Relation::Existing(vehicle) = e.relation {
+            level.entities.riding.add(id, vehicle, false);
+            continue;
+        }
+        let other = add_mob(level, e.mob, pos + e.offset, y_rot);
+        match e.relation {
+            Relation::RidesIt => level.entities.riding.add(other, id, false),
+            Relation::CarriesIt => level.entities.riding.add(id, other, false),
+            Relation::Beside | Relation::Existing(_) => {}
+        }
+    }
+    id
 }
 
 /// Adds a finished mob to the level (`addFreshEntityWithPassengers`).
@@ -478,7 +578,14 @@ fn valid_position_for_type(
     };
     let mut random =
         LegacyRandom::new(i64::from(pos.x) ^ (i64::from(pos.z) << 20) ^ level.game_time());
-    if !check_spawn_rules(level, &input.env, kind, pos, &mut random, false) {
+    if !check_spawn_rules(
+        level,
+        &input.env,
+        kind,
+        pos,
+        &mut random,
+        SpawnReason::Natural,
+    ) {
         return false;
     }
     let dims = super::Dimensions::of(entry.type_id);
@@ -573,16 +680,29 @@ fn valid_empty_spawn_block(state: BlockState, type_id: EntityTypeId) -> bool {
     !dangerous
 }
 
-/// The spawn rules (`SpawnPlacements.checkSpawnRules`) of a kind; `chunk_generation`
-/// ignores the light requirements of animals.
+/// The spawn rules (`SpawnPlacements.checkSpawnRules`) of a kind.
 pub fn check_spawn_rules(
     level: &Level,
     env: &Environment,
     kind: Kind,
     pos: BlockPos,
     random: &mut LegacyRandom,
-    chunk_generation: bool,
+    reason: SpawnReason,
 ) -> bool {
+    super::fam::check_spawn_rules(kind, level, env, pos, random, reason)
+}
+
+/// `Monster.checkMonsterSpawnRules` for monsters, `Animal.checkAnimalSpawnRules` for the
+/// others (chunk generation ignores the light requirements of animals).
+pub fn default_spawn_rules(
+    kind: Kind,
+    level: &Level,
+    env: &Environment,
+    pos: BlockPos,
+    random: &mut LegacyRandom,
+    reason: SpawnReason,
+) -> bool {
+    let chunk_generation = reason == SpawnReason::ChunkGeneration;
     let below = level.block(BlockPos::new(pos.x, pos.y - 1, pos.z));
     if kind.is_monster() {
         // `Monster.checkMonsterSpawnRules`.
@@ -672,7 +792,6 @@ pub fn spawn_for_chunk_generation(
         return;
     }
     let probability = b.creature_probability;
-    let climate = b.climate;
     // `WorldgenRandom.setDecorationSeed(seed, minX, minZ)` on a fresh random.
     let mut random = LegacyRandom::new(seed);
     let a = random.next_long() | 1;
@@ -709,7 +828,14 @@ pub fn spawn_for_chunk_generation(
                     let mut scratch = Vec::new();
                     let block = BlockPos::containing(fx, f64::from(pos.y), fz);
                     let rules = Kind::of(entry.type_id).is_some_and(|k| {
-                        check_spawn_rules(level, env, k, block, &mut random, true)
+                        check_spawn_rules(
+                            level,
+                            env,
+                            k,
+                            block,
+                            &mut random,
+                            SpawnReason::ChunkGeneration,
+                        )
                     });
                     if physics::no_collision(level, &aabb, &mut scratch) && rules {
                         let kind = Kind::of(entry.type_id);
@@ -719,9 +845,18 @@ pub fn spawn_for_chunk_generation(
                             if kinds::walk_target_value(kind, level, env, block) >= 0.0
                                 && !physics::contains_any_liquid(level, &aabb)
                             {
-                                kinds::finalize_spawn(&mut mob, difficulty, climate, group_index);
+                                let extra = finalize(
+                                    level,
+                                    Some(table),
+                                    env,
+                                    &mut mob,
+                                    block,
+                                    difficulty,
+                                    group_index,
+                                    SpawnReason::ChunkGeneration,
+                                );
                                 group_index += 1;
-                                add_mob(level, mob, at, y_rot);
+                                add_mob_with(level, mob, at, y_rot, extra);
                                 success = true;
                             }
                         }
@@ -749,12 +884,19 @@ pub fn summon(
     let seed = level.random().next_long();
     let mut mob = MobData::new(kind, seed);
     let block = BlockPos::containing(pos.x, pos.y, pos.z);
-    let climate = table
-        .and_then(|t| t.biome(level.biome(block)))
-        .map_or(FarmClimate::Temperate, |b| b.climate);
-    kinds::finalize_spawn(&mut mob, difficulty, climate, 0);
+    let env = Environment::default();
+    let extra = finalize(
+        level,
+        table,
+        &env,
+        &mut mob,
+        block,
+        difficulty,
+        0,
+        SpawnReason::Command,
+    );
     let y_rot = level.random().next_float() * 360.0;
-    add_mob(level, mob, pos, y_rot)
+    add_mob_with(level, mob, pos, y_rot, extra)
 }
 
 /// Counts the mobs per kind (for `/vanillite` style statistics and tests).

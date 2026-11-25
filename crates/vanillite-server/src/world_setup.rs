@@ -560,6 +560,21 @@ pub(crate) fn spawn_table(
             .tag_ids("minecraft:worldgen/biome", name)
             .unwrap_or_default()
     };
+    // The tags of every biome, by protocol id.
+    let mut biome_tags: Vec<Vec<Box<str>>> = vec![Vec::new(); registry.entries().len()];
+    if let Some(all) = packs.tags("minecraft:worldgen/biome") {
+        for name in all.keys() {
+            for id in tag(name) {
+                if let Some(list) = usize::try_from(id).ok().and_then(|i| biome_tags.get_mut(i)) {
+                    list.push(name.as_str().into());
+                }
+            }
+        }
+    }
+    for list in &mut biome_tags {
+        list.sort();
+        list.dedup();
+    }
     let warm = tag("minecraft:spawns_warm_variant_farm_animals");
     let cold = tag("minecraft:spawns_cold_variant_farm_animals");
     // An attribute value, directly or as the `argument` of a modifier.
@@ -573,6 +588,13 @@ pub(crate) fn spawn_table(
         let json: serde_json::Value = serde_json::from_str(entry.json.get()).unwrap_or_default();
         let attrs = json.get("attributes").cloned().unwrap_or_default();
         let mut b = BiomeSpawns {
+            name: entry.id.as_str().into(),
+            tags: biome_tags.get(index).cloned().unwrap_or_default(),
+            #[allow(clippy::cast_possible_truncation)]
+            temperature: json
+                .get("temperature")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(0.5) as f32,
             creature_probability: 0.1,
             climate: if warm.contains(&id) {
                 FarmClimate::Warm
@@ -592,6 +614,20 @@ pub(crate) fn spawn_table(
             #[allow(clippy::cast_possible_truncation)]
             {
                 b.creature_probability = p as f32;
+            }
+        }
+        if let Some(costs) = attribute(&attrs, "minecraft:gameplay/natural_mob_spawns")
+            .and_then(|s| s.get("spawn_costs"))
+            .and_then(serde_json::Value::as_object)
+        {
+            for (name, cost) in costs {
+                let Some(type_id) = vanillite_data::entity::EntityTypeId::by_name(name) else {
+                    continue;
+                };
+                let num = |k: &str| cost.get(k).and_then(serde_json::Value::as_f64);
+                if let (Some(charge), Some(budget)) = (num("charge"), num("energy_budget")) {
+                    b.spawn_costs.push((type_id, charge, budget));
+                }
             }
         }
         if let Some(by) = attribute(&attrs, "minecraft:gameplay/natural_mob_spawns")

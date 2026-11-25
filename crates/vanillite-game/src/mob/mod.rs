@@ -8,15 +8,22 @@
 
 pub mod animal;
 pub mod attack;
+pub mod brain;
 pub mod combat;
+pub mod common;
+pub mod effects;
+pub mod equipment;
+pub mod fam;
 pub mod goals;
 pub mod kinds;
 pub mod living;
+pub mod missile;
 pub mod nav;
 pub mod nbt;
 pub mod path;
 pub mod physics;
 pub mod projectile;
+pub mod randompos;
 pub mod spawn;
 pub mod tame;
 
@@ -34,6 +41,7 @@ use crate::survival::blocks::FluidContact;
 use crate::survival::damage::DamageKind;
 use crate::survival::player::Env;
 
+pub use fam::Family;
 pub use kinds::Kind;
 pub use vanillite_world::entity::Dimensions;
 
@@ -203,6 +211,28 @@ pub struct MobData {
     pub forced_age_timer: i32,
     /// A leash read from NBT, attached once its holder is there.
     pub pending_leash: Option<LeashRef>,
+    /// The equipment slots and their drop chances.
+    pub equipment: equipment::Equipment,
+    /// `canPickUpLoot`.
+    pub can_pick_up_loot: bool,
+    /// `isLeftHanded`.
+    pub left_handed: bool,
+    /// The active status effects.
+    pub effects: effects::Effects,
+    /// `PathfinderMob.restrictTo`: the home position and radius (`-1` = none).
+    pub restrict_center: BlockPos,
+    pub restrict_radius: i32,
+    /// The brain of brain AI mobs (`Brain`), `None` for goal AI mobs.
+    pub brain: Option<Box<brain::Brain>>,
+    /// The state of a family kind.
+    pub ext: fam::Ext,
+    /// `Zombie.canBreakDoors` (and the other door breakers).
+    pub can_break_doors: bool,
+    /// `Chicken.isChickenJockey`.
+    pub chicken_jockey: bool,
+    /// `NeutralMob`: the game time the anger ends (`-1` = none) and whom it is angry at.
+    pub anger_end: i64,
+    pub anger_target: Option<u128>,
 }
 
 /// What holds a leash in entity NBT (`leash`).
@@ -303,6 +333,18 @@ impl MobData {
             forced_age: 0,
             forced_age_timer: 0,
             pending_leash: None,
+            equipment: equipment::Equipment::default(),
+            can_pick_up_loot: false,
+            left_handed: false,
+            effects: effects::Effects::default(),
+            restrict_center: BlockPos::new(0, 0, 0),
+            restrict_radius: -1,
+            brain: None,
+            ext: fam::Ext::None,
+            can_break_doors: false,
+            chicken_jockey: false,
+            anger_end: -1,
+            anger_target: None,
         };
         mob.ambient_sound_time = -kind.ambient_sound_interval();
         mob.egg_time = mob.random.next_int_bounded(6000) + 6000;
@@ -320,6 +362,20 @@ impl MobData {
     /// `isDeadOrDying`.
     pub fn is_dead_or_dying(&self) -> bool {
         self.health <= 0.0
+    }
+
+    /// `hasRestriction`.
+    pub fn has_restriction(&self) -> bool {
+        self.restrict_radius != -1
+    }
+
+    /// `isWithinRestriction(pos)`.
+    pub fn is_within_restriction(&self, pos: BlockPos) -> bool {
+        if self.restrict_radius == -1 {
+            return true;
+        }
+        let r = f64::from(self.restrict_radius);
+        self.restrict_center.dist_sqr(pos) < r * r
     }
 
     /// `isAlive`.
@@ -494,10 +550,11 @@ pub fn spawn(
 ) -> EntityId {
     let mut new = NewEntity::new(mob.kind.type_id(), network_ids.next(), uuid, pos);
     new.rot = rot;
-    let baby = mob.baby;
+    let dims = kinds::mob_dimensions(&mob);
     let id = entities.spawn_mob(new, mob);
-    if baby && let Some(mut e) = entities.store.get_mut(id) {
-        let dims = kinds::dimensions(e.as_ref().kind(), true);
+    if let Some(mut e) = entities.store.get_mut(id)
+        && e.as_ref().dims() != dims
+    {
         e.set_dims(dims);
     }
     id
