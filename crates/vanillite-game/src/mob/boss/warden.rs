@@ -6,7 +6,7 @@
 //! the section of its eyes; the registration follows the warden after each of its ticks (as a
 //! [`LevelAction`]) and is dropped lazily once the warden is gone.
 
-mod ai;
+pub mod ai;
 pub mod anger;
 
 use vanillite_base::random::RandomSource;
@@ -23,12 +23,13 @@ use crate::effect::{EffectInstance, MobEffect};
 use crate::entities::Entities;
 use crate::level::Level;
 use crate::level::game_event::{GameEventContext, Listener, containing};
-use crate::mob::brain::{Brain, Memories, MemoryType as M, MemoryValue, PositionTracker};
+use crate::mob::brain::{Brain, MemValue, MemoryType as M, Tracker};
+
+/// The warden's memories: its brain.
+type Memories = Brain;
 use crate::mob::{Kind, MobContext, MobData, Tick, WorldAction};
 use crate::survival::damage::{DamageSource, tag};
 use crate::survival::player::Env;
-
-pub use ai::{Behave, Sense};
 
 /// `Warden.VibrationUser.GAME_EVENT_LISTENER_RANGE`.
 const LISTENER_RANGE: i32 = 16;
@@ -54,8 +55,6 @@ const DISTURBANCE_EXPIRY: i64 = 100;
 /// The kind state.
 #[derive(Debug, Default)]
 pub struct State {
-    /// The brain (`WardenAi`).
-    pub brain: Brain<Behave, Sense>,
     /// `angerManagement`.
     pub anger: AngerManagement,
     /// `vibrationData`.
@@ -67,10 +66,9 @@ pub struct State {
 }
 
 impl Clone for State {
-    /// Kind states are cloned only for copies of a whole mob (tests); the brain starts over.
+    /// Kind states are cloned only for copies of a whole mob (tests).
     fn clone(&self) -> Self {
         State {
-            brain: Brain::default(),
             anger: self.anger.clone(),
             vibration: self.vibration,
             listener: None,
@@ -124,11 +122,11 @@ impl LevelAction {
 }
 
 fn state(ents: &Entities, id: EntityId) -> Option<&State> {
-    ents.mob(id)?.ext.warden()
+    ents.mob(id)?.boss.warden()
 }
 
 fn state_mut(ents: &mut Entities, id: EntityId) -> Option<&mut State> {
-    ents.mob_mut(id)?.ext.warden_mut()
+    ents.mob_mut(id)?.boss.warden_mut()
 }
 
 /// Runs `f` with the warden's memories taken out of its brain (outside the brain tick, where
@@ -138,10 +136,10 @@ fn with_memories<R>(
     id: EntityId,
     f: impl FnOnce(&mut Entities, &mut Memories) -> R,
 ) -> Option<R> {
-    let mut mem = std::mem::take(&mut state_mut(ents, id)?.brain.memories);
+    let mut mem = ents.mob_mut(id)?.brain.take()?;
     let r = f(ents, &mut mem);
-    if let Some(s) = state_mut(ents, id) {
-        s.brain.memories = mem;
+    if let Some(m) = ents.mob_mut(id) {
+        m.brain = Some(mem);
     }
     Some(r)
 }
@@ -150,10 +148,8 @@ fn with_memories<R>(
 pub fn register_goals(m: &mut MobData) {
     m.nav.can_float = true;
     let delay = m.random.next_int_bounded(3);
-    let random = &mut m.random;
-    let brain = ai::make_brain(|bound| random.next_int_bounded(bound.max(1)));
-    if let Some(s) = m.ext.warden_mut() {
-        s.brain = brain;
+    ai::make_brain(m);
+    if let Some(s) = m.boss.warden_mut() {
         s.anger = AngerManagement::new(delay);
     }
 }
@@ -231,7 +227,7 @@ fn play_sound(
     if m.silent {
         return;
     }
-    let seed = m.random.next_long();
+    let seed = crate::survival::sound_seed();
     let source = m.kind.sound_source();
     crate::survival::play_sound(env.out, None, pos, sound, source, volume, pitch, seed);
 }
@@ -256,19 +252,19 @@ fn entity_event(ents: &Entities, env: &mut Env<'_>, id: EntityId, event: i8) {
 /// `WardenAi.setDigCooldown`.
 pub fn set_dig_cooldown(mem: &mut Memories) {
     if mem.has(M::DigCooldown) {
-        mem.set_with_expiry(M::DigCooldown, MemoryValue::Unit, DIGGING_COOLDOWN);
+        mem.set_with_expiry(M::DigCooldown, MemValue::Unit, DIGGING_COOLDOWN);
     }
 }
 
 /// `SonicBoom.setCooldown`.
 pub fn set_sonic_boom_cooldown(mem: &mut Memories, cooldown: i64) {
-    mem.set_with_expiry(M::SonicBoomCooldown, MemoryValue::Unit, cooldown);
+    mem.set_with_expiry(M::SonicBoomCooldown, MemValue::Unit, cooldown);
 }
 
 /// `setAttackTarget(target)`.
 pub fn set_attack_target(mem: &mut Memories, target: EntityId) {
     mem.erase(M::RoarTarget);
-    mem.set(M::AttackTarget, MemoryValue::Entity(target));
+    mem.set(M::AttackTarget, MemValue::Entity(target));
     mem.erase(M::CantReachWalkTargetSince);
     set_sonic_boom_cooldown(mem, 200);
 }
@@ -322,15 +318,15 @@ pub fn set_disturbance_location(ents: &Entities, id: EntityId, mem: &mut Memorie
         return;
     }
     set_dig_cooldown(mem);
-    mem.set_with_expiry(M::SniffCooldown, MemoryValue::Unit, DISTURBANCE_EXPIRY);
+    mem.set_with_expiry(M::SniffCooldown, MemValue::Unit, DISTURBANCE_EXPIRY);
     mem.set_with_expiry(
         M::LookTarget,
-        MemoryValue::Tracker(PositionTracker::Block(pos)),
+        MemValue::Look(Tracker::block(pos)),
         DISTURBANCE_EXPIRY,
     );
     mem.set_with_expiry(
         M::DisturbanceLocation,
-        MemoryValue::Pos(pos),
+        MemValue::Pos(pos),
         DISTURBANCE_EXPIRY,
     );
     mem.erase(M::WalkTarget);
@@ -392,7 +388,7 @@ pub fn before_tick(t: &mut Tick<'_, '_>) {
 /// `VibrationSystem.Ticker.tick` of the warden.
 fn tick_vibrations(t: &mut Tick<'_, '_>) {
     let time = t.game_time();
-    let Some(s) = t.mob().ext.warden_mut() else {
+    let Some(s) = t.mob().boss.warden_mut() else {
         return;
     };
     s.vibration.try_select(time);
@@ -413,7 +409,7 @@ fn tick_vibrations(t: &mut Tick<'_, '_>) {
         .filter(|&e| t.ents.store.get(e).is_some());
     let distance = crate::level::game_event::dist_sqr(origin, destination).sqrt() as f32;
     on_receive_vibration(t, origin, source, owner, distance);
-    if let Some(s) = t.mob().ext.warden_mut() {
+    if let Some(s) = t.mob().boss.warden_mut() {
         s.vibration.current = None;
     }
 }
@@ -433,7 +429,7 @@ fn on_receive_vibration(
     let my_pos = t.pos();
     let Tick { ents, env, .. } = t;
     with_memories(ents, id, |ents, mem| {
-        mem.set_with_expiry(M::VibrationCooldown, MemoryValue::Unit, 40);
+        mem.set_with_expiry(M::VibrationCooldown, MemValue::Unit, 40);
         entity_event(ents, env, id, 61);
         let pitch = voice_pitch(ents, id);
         play_sound(
@@ -459,7 +455,7 @@ fn on_receive_vibration(
                     increase_anger_at(ents, env, id, mem, Some(owner), PROJECTILE_ANGER, true);
                 }
             }
-            mem.set_with_expiry(M::RecentProjectile, MemoryValue::Unit, 100);
+            mem.set_with_expiry(M::RecentProjectile, MemValue::Unit, 100);
         } else {
             increase_anger_at(ents, env, id, mem, source, DEFAULT_ANGER, true);
         }
@@ -501,9 +497,9 @@ pub(crate) fn handle_game_event(
     let ents = &level.entities;
     let Some(m) = ents.mob(id) else { return };
     let cooldown = m
-        .ext
-        .warden()
-        .is_some_and(|s| s.brain.memories.has(M::VibrationCooldown));
+        .brain
+        .as_deref()
+        .is_some_and(|b| b.has(M::VibrationCooldown));
     if m.no_ai || m.is_dead_or_dying() || cooldown || is_digging_or_emerging(ents, id) {
         return;
     }
@@ -538,7 +534,7 @@ pub fn after_tick(t: &mut Tick<'_, '_>) {
     let p = t.pos();
     let section = BlockPos::containing(p.x, p.y + EYE_HEIGHT, p.z).section();
     let id = t.id;
-    let Some(s) = t.mob().ext.warden_mut() else {
+    let Some(s) = t.mob().boss.warden_mut() else {
         return;
     };
     let wanted = Listener::Entity {
@@ -564,15 +560,13 @@ pub fn ai_step(t: &mut Tick<'_, '_>) {
 /// `customServerAiStep`: the brain, the darkness pulse, the anger tick and the activity.
 pub fn custom_server_ai_step(t: &mut Tick<'_, '_>) {
     let id = t.id;
-    let Some(mut brain) = t
-        .mob()
-        .ext
-        .warden_mut()
-        .map(|s| std::mem::take(&mut s.brain))
-    else {
+    if t.mob_ref().brain.is_none() {
         return;
-    };
-    brain.tick(t);
+    }
+    crate::mob::brain::tick(t);
+    if !t.exists() || t.mob_ref().brain.is_none() {
+        return;
+    }
     let tick_count = t.mob_ref().tick_count;
     let network_id = t.core().network_id().0;
     if (tick_count.wrapping_add(network_id)) % 120 == 0 {
@@ -581,10 +575,11 @@ pub fn custom_server_ai_step(t: &mut Tick<'_, '_>) {
     }
     if tick_count % 20 == 0 {
         tick_anger(t.ents, id);
-        sync_client_anger(t, &brain.memories);
+        sync_client_anger(t);
     }
     // `WardenAi.updateActivity`.
     use crate::mob::brain::Activity as A;
+    let brain = crate::mob::brain::brain(t);
     brain.set_active_activity_to_first_valid(&[
         A::Emerge,
         A::Dig,
@@ -594,13 +589,8 @@ pub fn custom_server_ai_step(t: &mut Tick<'_, '_>) {
         A::Sniff,
         A::Idle,
     ]);
-    let attack = target(&brain.memories);
-    if let Some(m) = t.ents.mob_mut(id) {
-        m.target = attack;
-        if let Some(s) = m.ext.warden_mut() {
-            s.brain = brain;
-        }
-    }
+    let attack = target(brain);
+    t.mob().target = attack;
 }
 
 /// `angerManagement.tick(level, canTargetEntity)`.
@@ -634,10 +624,11 @@ fn tick_anger(ents: &mut Entities, id: EntityId) {
 }
 
 /// `syncClientAngerLevel`.
-fn sync_client_anger(t: &mut Tick<'_, '_>, mem: &Memories) {
+fn sync_client_anger(t: &mut Tick<'_, '_>) {
     let id = t.id;
-    let anger = state(t.ents, id).map_or(0, |s| s.anger.active_anger(target(mem)));
-    if let Some(s) = t.mob().ext.warden_mut()
+    let attack = t.mob_ref().brain.as_deref().and_then(target);
+    let anger = state(t.ents, id).map_or(0, |s| s.anger.active_anger(attack));
+    if let Some(s) = t.mob().boss.warden_mut()
         && s.client_anger != anger
     {
         s.client_anger = anger;
@@ -670,7 +661,7 @@ pub fn do_push(t: &mut Tick<'_, '_>, other: EntityId) {
         if mem.has(M::TouchCooldown) {
             return;
         }
-        mem.set_with_expiry(M::TouchCooldown, MemoryValue::Unit, 20);
+        mem.set_with_expiry(M::TouchCooldown, MemValue::Unit, 20);
         increase_anger_at(ents, env, id, mem, Some(other), DEFAULT_ANGER, true);
         if let Some(p) = other_pos {
             set_disturbance_location(ents, id, mem, BlockPos::containing(p.x, p.y, p.z));
@@ -763,7 +754,6 @@ pub fn entity_data(out: &mut Vec<u8>, s: &State, all: bool) {
 pub fn save(s: &State, out: &mut Compound) {
     out.insert("anger", Tag::Compound(s.anger.save()));
     out.insert("listener", Tag::Compound(s.vibration.save(|_| None)));
-    out.insert("Brain", Tag::Compound(s.brain.memories.save()));
 }
 
 /// `readAdditionalSaveData`.
@@ -773,9 +763,6 @@ pub fn load(s: &mut State, tag: &Compound) {
     }
     if let Some(Tag::Compound(l)) = tag.get("listener") {
         s.vibration = VibrationData::load(l, |_| None);
-    }
-    if let Some(Tag::Compound(b)) = tag.get("Brain") {
-        s.brain.memories.load(b);
     }
 }
 
@@ -825,7 +812,7 @@ fn possible_spawn_position(level: &Level, search: BlockPos, range_y: i32) -> Opt
 
 /// Creates the warden at `pos` if its box is free (`checkSpawnObstruction`).
 fn spawn_emerging(level: &mut Level, pos: BlockPos) -> bool {
-    let mut m = MobData::new(Kind::Warden, level.random().next_long());
+    let mut m = MobData::new(Kind::Warden, crate::mob::new_entity_seed());
     let yaw = (level.random().next_float() * 360.0 + 180.0).rem_euclid(360.0) - 180.0;
     let at = Vec3::new(
         f64::from(pos.x) + 0.5,
@@ -848,20 +835,20 @@ fn spawn_emerging(level: &mut Level, pos: BlockPos) -> bool {
     {
         return false;
     }
-    // `Mob.finalizeSpawn` (follow range bonus, left handedness) after the warden's own part.
-    let bonus = m.random.triangle(0.0, 0.114_850_000_000_000_01);
+    // `Mob.finalizeSpawn` (follow range bonus, left handedness, from the level random) after
+    // the warden's own part.
+    let bonus = level.random().triangle(0.0, 0.114_850_000_000_000_01);
     m.attrs.follow_range *= 1.0 + bonus;
-    let _left_handed = m.random.next_float() < 0.05;
-    if let Some(s) = m.ext.warden_mut() {
-        let mem = &mut s.brain.memories;
-        mem.set_with_expiry(M::DigCooldown, MemoryValue::Unit, DIGGING_COOLDOWN);
+    m.left_handed = level.random().next_float() < 0.05;
+    if let Some(mem) = m.brain.as_deref_mut() {
+        mem.set_with_expiry(M::DigCooldown, MemValue::Unit, DIGGING_COOLDOWN);
         mem.set_with_expiry(
             M::IsEmerging,
-            MemoryValue::Unit,
+            MemValue::Unit,
             i64::from(ai::EMERGE_DURATION),
         );
     }
-    let uuid = level.new_uuid();
+    let uuid = crate::mob::new_uuid();
     let network_ids = std::sync::Arc::clone(level.network_ids_arc());
     let id = crate::mob::spawn(
         &mut level.entities,

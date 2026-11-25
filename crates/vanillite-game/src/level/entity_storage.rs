@@ -135,6 +135,18 @@ impl Level {
             self.entities.spawn_arrow(new, data);
             return true;
         }
+        if let Some((e, data)) = crate::mob::missile::load(&nbt) {
+            let mut new = NewEntity::new(
+                data.kind.type_id(),
+                self.network_ids().next(),
+                e.uuid,
+                e.pos,
+            );
+            new.velocity = e.velocity;
+            new.rot = e.rot;
+            self.entities.spawn_missile(new, data);
+            return true;
+        }
         if let Some((e, data)) = crate::mob::nbt::load_boat(&nbt) {
             let network_ids = Arc::clone(self.network_ids_arc());
             let id = crate::vehicle::spawn_boat(
@@ -302,6 +314,10 @@ impl Level {
                 let owner = a.owner.and_then(|o| ents.store.get(o)).map(|o| o.uuid());
                 crate::mob::nbt::save_arrow(&entity, a, owner)
             });
+        }
+        if let Some(d) = ents.missile(id) {
+            let owner = d.owner.and_then(|o| ents.store.get(o)).map(|o| o.uuid());
+            return Some(crate::mob::missile::save(&entity, d, owner));
         }
         if kind == ids::EXPERIENCE_ORB {
             return self

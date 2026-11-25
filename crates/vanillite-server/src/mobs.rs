@@ -72,6 +72,10 @@ pub(crate) struct WorldMobs {
     generated: Vec<(ChunkPos, u32)>,
     scratch: Vec<ChunkPos>,
     ticks: u64,
+    /// The custom spawners of the overworld (`ServerLevel.customSpawners`).
+    phantoms: vanillite_game::mob::fam::undead::phantom::PhantomSpawner,
+    patrols: vanillite_game::mob::fam::illager::patrol::PatrolSpawner,
+    cats: spawn::CatSpawner,
 }
 
 impl WorldMobs {
@@ -87,6 +91,9 @@ impl WorldMobs {
             generated: Vec::new(),
             scratch: Vec::new(),
             ticks: 0,
+            phantoms: Default::default(),
+            patrols: Default::default(),
+            cats: spawn::CatSpawner::default(),
         }
     }
 
@@ -269,9 +276,9 @@ impl WorldMobs {
                         let Some(target) = in_reach(&ents, player, network_id) else {
                             continue;
                         };
-                        // The hit goes to the dragon through the part.
+                        // The part the player hit takes the damage (`EnderDragon.hurt(part)`).
                         if let Some(i) = dragon::part_of(&ents, target, network_id)
-                            && let Some(s) = ents.mob_mut(target).and_then(|m| m.ext.dragon_mut())
+                            && let Some(s) = ents.mob_mut(target).and_then(|m| m.boss.dragon_mut())
                         {
                             s.hit_part = Some(i);
                         }
@@ -363,6 +370,9 @@ impl WorldMobs {
                     );
                 }
                 riding::paddle_boat(&mut ents, player, input.paddles.0, input.paddles.1);
+                if let Some(strength) = input.jump {
+                    riding::riding_jump(&mut ents, &mut env, player, strength);
+                }
                 // `wantsToStopRiding`: sneaking gets a player off its vehicle.
                 if input.input.shift && ents.vehicle_of(player).is_some() {
                     riding::stop_riding(&mut ents, &mut env, player);
@@ -391,7 +401,7 @@ impl WorldMobs {
         let state = &global.level;
         let rules = state.rules().clone();
         let difficulty = state.difficulty;
-        let env = environment(global, dimension, survival);
+        let env = environment(global, dimension, survival, self.seed);
         // New chunks: their animals once they are live.
         level.chunks.take_generated(&mut self.scratch);
         self.generated
@@ -433,6 +443,83 @@ impl WorldMobs {
         };
         let persistent = level.game_time() % 400 == 0;
         spawn::tick(level, &table, &mut self.spawner, &input, persistent);
+        if dimension == "minecraft:overworld" {
+            self.custom_spawners(
+                level,
+                &table,
+                &rules,
+                input.spawn_enemies,
+                difficulty,
+                env,
+                &players,
+            );
+        }
+    }
+
+    /// `tickCustomSpawners`: phantoms, patrols and cats (the wandering trader is #60).
+    #[allow(clippy::too_many_arguments)]
+    fn custom_spawners(
+        &mut self,
+        level: &mut Level,
+        table: &SpawnTable,
+        rules: &vanillite_game::survival::rules::GameRules,
+        spawn_enemies: bool,
+        difficulty: Difficulty,
+        env: Environment,
+        players: &[(EntityId, Vec3)],
+    ) {
+        use vanillite_game::mob::fam::illager::patrol::{self, PatrolInput};
+        use vanillite_game::mob::fam::undead::phantom;
+        let rest = |id: EntityId| {
+            level
+                .entities
+                .player(id)
+                .map_or(0, |p| p.survival.time_since_rest)
+        };
+        let rests: Vec<(EntityId, i32)> = players.iter().map(|&(id, _)| (id, rest(id))).collect();
+        let time_since_rest = |id: EntityId| rests.iter().find(|r| r.0 == id).map_or(0, |r| r.1);
+        phantom::phantom_spawner_tick(
+            &mut self.phantoms,
+            level,
+            &env,
+            difficulty,
+            rules.bool(Rule::SPAWN_PHANTOMS),
+            spawn_enemies,
+            &time_since_rest,
+        );
+        let patrol_players: Vec<(Vec3, bool)> = level
+            .entities
+            .players
+            .iter()
+            .filter_map(|(id, p)| {
+                let e = level.entities.store.get(id)?;
+                Some((e.pos(), p.game_mode == GameMode::Spectator))
+            })
+            .collect();
+        let no_village = |_| false;
+        let can_patrol = |level: &Level, pos: BlockPos| {
+            table.biome(level.biome(pos)).is_none_or(|b| b.patrol_spawn)
+        };
+        let input = PatrolInput {
+            enabled: spawn_enemies && rules.bool(Rule::SPAWN_PATROLS),
+            difficulty,
+            env,
+            players: &patrol_players,
+            table: Some(table),
+            close_to_village: &no_village,
+            can_patrol_spawn: &can_patrol,
+        };
+        patrol::patrol_spawner_tick(level, &mut self.patrols, &input);
+        let ids: Vec<EntityId> = players.iter().map(|p| p.0).collect();
+        spawn::cat_spawner_tick(
+            level,
+            Some(table),
+            &mut self.cats,
+            &mut self.spawner.structures,
+            &env,
+            difficulty,
+            &ids,
+        );
     }
 
     /// `entityTickList.forEach(tickNonPassenger)`: falling blocks, mobs, arrows and orbs in
@@ -450,11 +537,11 @@ impl WorldMobs {
         let rules = state.rules().clone();
         // `WitherSkullBlock.setPlacedBy` of the skulls players placed since the last tick.
         for pos in std::mem::take(&mut level.output().summon_checks) {
-            let seed = self.seed ^ level.game_time() ^ i64::from(pos.x) << 32 ^ i64::from(pos.z);
+            let seed = vanillite_game::mob::new_entity_seed();
             boss::wither::check_spawn(level, pos, state.difficulty, seed);
         }
         let has_players = !level.entities.players.is_empty();
-        let env = environment(global, dimension, survival);
+        let env = environment(global, dimension, survival, self.seed);
         self.cx.begin_tick(env, self.settings, has_players);
         // What spawner blocks read when the block entities tick after the entities.
         level.spawner_env = vanillite_game::block::spawner::SpawnerEnv {
@@ -491,10 +578,12 @@ impl WorldMobs {
             let is_special = is_special_kind(kind);
             let is_boat = BoatKind::of(kind).is_some();
             let is_minecart = MinecartKind::of(kind).is_some();
+            let is_missile = vanillite_game::mob::missile::is_missile_kind(kind);
             if !is_mob
                 && !is_special
                 && !is_boat
                 && !is_minecart
+                && !is_missile
                 && !projectile::is_arrow_kind(kind)
                 && kind != ids::EXPERIENCE_ORB
                 && kind != ids::AREA_EFFECT_CLOUD
@@ -552,6 +641,14 @@ impl WorldMobs {
                     minecart::tick(level_ref, &mut ents, &mut env, &mut self.cx, id);
                 } else if projectile::is_arrow_kind(kind) {
                     projectile::tick_arrow(level_ref, &mut ents, &mut env, &mut self.cx, id);
+                } else if is_missile {
+                    vanillite_game::mob::missile::tick(
+                        level_ref,
+                        &mut ents,
+                        &mut env,
+                        &mut self.cx,
+                        id,
+                    );
                 } else if kind == ids::AREA_EFFECT_CLOUD {
                     vanillite_game::effect::cloud::tick(
                         level_ref,
@@ -652,8 +749,61 @@ impl WorldMobs {
                     self.apply_explosion_hurts(level, survival, global, dimension);
                 }
                 WorldAction::Explode(e) => {
-                    e.run(level, rules);
+                    // `Level.ExplosionInteraction.MOB`: `getDestroyType` with `mobGriefing`.
+                    let decay = if e.mob {
+                        Rule::MOB_EXPLOSION_DROP_DECAY
+                    } else {
+                        Rule::TNT_EXPLOSION_DROP_DECAY
+                    };
+                    let interaction = if e.mob && !rules.bool(Rule::MOB_GRIEFING) {
+                        BlockInteraction::Keep
+                    } else if rules.bool(decay) {
+                        BlockInteraction::DestroyWithDecay
+                    } else {
+                        BlockInteraction::Destroy
+                    };
+                    // `getIndirectSourceEntity`: a living source caused it itself.
+                    level.explode_with(
+                        e.source,
+                        e.indirect.or(e.source),
+                        e.pos,
+                        e.radius,
+                        interaction,
+                        vanillite_game::level::explosion::ExplosionStyle {
+                            resistance: e.resistance,
+                            ..Default::default()
+                        },
+                    );
                     self.apply_explosion_hurts(level, survival, global, dimension);
+                }
+                WorldAction::SetBlock(pos, block, flags) => {
+                    level.set_block(pos, block, flags);
+                }
+                WorldAction::DestroyBlock(pos, drop) => {
+                    level.destroy_block(pos, drop, None);
+                }
+                WorldAction::LevelEvent(event, pos, data) => {
+                    level.level_event(None, event, pos, data);
+                }
+                WorldAction::SetDoorOpen(pos, open, source) => {
+                    vanillite_game::block::redstone::set_door_open(level, pos, open, source);
+                }
+                WorldAction::WindBurst(b) => {
+                    // `ExplosionInteraction.TRIGGER` without damage (`damagesEntities` off).
+                    level.explode_with(
+                        b.source,
+                        None,
+                        b.pos,
+                        b.radius,
+                        BlockInteraction::TriggerBlock,
+                        vanillite_game::level::explosion::ExplosionStyle {
+                            damages_entities: false,
+                            knockback: b.knockback,
+                            wind_sound: Some(b.sound),
+                            resistance:
+                                vanillite_game::level::explosion::BlockResistance::WindCharge,
+                        },
+                    );
                 }
                 WorldAction::Level(action) => action.apply(level),
                 other => {
@@ -797,12 +947,12 @@ impl WorldMobs {
         }
         let struck = std::mem::take(&mut survival.struck);
         let state = &global.level;
+        let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
         let rules = state.rules().clone();
         let mut ents = std::mem::take(&mut level.entities);
         {
             let no_blocks = NoBlocks;
             let raining = |_| false;
-            let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
             let mut no_gateway = |_| false;
             let mut env = survival.env(
                 state,
@@ -826,12 +976,25 @@ impl WorldMobs {
                     hurt_vehicle(&mut ents, &mut env, &mut self.cx, id, source, 5.0);
                     continue;
                 }
+                let Some(kind) = ents.mob(id).filter(|m| m.is_alive()).map(|m| m.kind) else {
+                    continue;
+                };
+                if kind.family() != mob::Family::Classic {
+                    let mut h = vanillite_game::mob::fam::Hurt {
+                        level,
+                        ents: &mut ents,
+                        env: &mut env,
+                        cx: &mut self.cx,
+                        target: id,
+                        source,
+                    };
+                    if vanillite_game::mob::fam::thunder_hit(&mut h, kind) {
+                        continue;
+                    }
+                }
                 let Some(m) = ents.mob_mut(id) else {
                     continue;
                 };
-                if !m.is_alive() {
-                    continue;
-                }
                 m.fire_ticks += 1;
                 if m.fire_ticks == 0 {
                     m.fire_ticks = 160;
@@ -875,11 +1038,19 @@ fn distance_sqr_to_box(b: &Aabb, p: Vec3) -> f64 {
 
 /// This tick's environment: sky darkness from the day time and the weather, whether monsters
 /// burn, and the dimension's monster light rules.
-fn environment(global: &Global, dimension: &str, survival: &WorldSurvival) -> Environment {
+fn environment(
+    global: &Global,
+    dimension: &str,
+    survival: &WorldSurvival,
+    seed: i64,
+) -> Environment {
     let overworld = dimension == "minecraft:overworld";
     let nether = dimension == "minecraft:the_nether";
     if !overworld {
         return Environment {
+            surface_slime_chance: 0.0,
+            world_seed: seed,
+            sea_level: if nether { 32 } else { 0 },
             sky_darken: if nether { 0 } else { 11 },
             monsters_burn: false,
             thundering: false,
@@ -888,6 +1059,7 @@ fn environment(global: &Global, dimension: &str, survival: &WorldSurvival) -> En
             monster_block_light_limit: if nether { 15 } else { 0 },
             monster_light_test: if nether { (7, 7) } else { (0, 7) },
             ambient_light: if nether { 0.1 } else { 0.0 },
+            has_ceiling: nether,
         };
     }
     let day = {
@@ -901,11 +1073,29 @@ fn environment(global: &Global, dimension: &str, survival: &WorldSurvival) -> En
     }
     .unwrap_or(6000);
     let w = survival.weather;
-    Environment::overworld(day, w.rain(), w.thunder())
+    // The `minecraft:moon` timeline: the surface slime chance is half the moon's brightness.
+    let moon = {
+        let clocks = global.level.clocks();
+        clocks.timeline("minecraft:moon").and_then(|t| {
+            clocks
+                .clocks
+                .get(t.clock)
+                .map(|c| t.current_ticks(c.total_ticks))
+        })
+    }
+    .unwrap_or(0);
+    const MOON_BRIGHTNESS: [f32; 8] = [1.0, 0.75, 0.5, 0.25, 0.0, 0.25, 0.5, 0.75];
+    let phase = usize::try_from((moon / 24000).rem_euclid(8)).unwrap_or(0);
+    Environment {
+        surface_slime_chance: MOON_BRIGHTNESS[phase] * 0.5,
+        world_seed: seed,
+        ..Environment::overworld(day, w.rain(), w.thunder())
+    }
 }
 
 /// The entity with `network_id` if `player` can reach it (`isWithinEntityInteractionRange`:
 /// 3 blocks plus 3 from the eyes to its box).
+/// A dragon part (`getEntityOrPart`) is reached by its own box; the hit goes to the dragon.
 fn in_reach(ents: &Entities, player: EntityId, network_id: i32) -> Option<EntityId> {
     let target = ents.by_network_id(network_id)?;
     if target == player {
@@ -913,11 +1103,10 @@ fn in_reach(ents: &Entities, player: EntityId, network_id: i32) -> Option<Entity
     }
     let pe = ents.store.get(player)?;
     let te = ents.store.get(target)?;
-    // A dragon part (`getEntityOrPart`): the part's box.
     let target_box = match dragon::part_of(ents, target, network_id) {
         Some(i) => ents
             .mob(target)
-            .and_then(|m| m.ext.dragon())
+            .and_then(|m| m.boss.dragon())
             .map_or(te.aabb(), |s| s.part_box(i)),
         None => te.aabb(),
     };
@@ -1059,14 +1248,14 @@ fn use_item(
         vehicle::use_boat_item(
             level,
             ents,
-            env,
             network_ids,
             player,
             &mut stack,
             creative,
             reach,
         );
-    } else if name == "minecraft:carrot_on_a_stick" {
+    } else if name == "minecraft:carrot_on_a_stick" || name == "minecraft:warped_fungus_on_a_stick"
+    {
         riding::boost(ents, env, player, &mut stack, creative);
     } else if vanillite_game::effect::thrown::kind_of(&stack).is_some() {
         vanillite_game::effect::thrown::throw(ents, env, network_ids, player, &mut stack, creative);

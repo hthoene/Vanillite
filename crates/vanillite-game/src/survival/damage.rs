@@ -66,9 +66,10 @@ pub mod tag {
     pub const IS_EXPLOSION: u32 = 1 << 16;
     pub const IS_PROJECTILE: u32 = 1 << 17;
     pub const BYPASSES_SHIELD: u32 = 1 << 18;
+    pub const PANIC_ENVIRONMENTAL_CAUSES: u32 = 1 << 19;
 
     /// Tag names and their bits.
-    pub const NAMES: [(&str, u32); 19] = [
+    pub const NAMES: [(&str, u32); 20] = [
         ("minecraft:is_fall", IS_FALL),
         ("minecraft:is_fire", IS_FIRE),
         ("minecraft:is_drowning", IS_DROWNING),
@@ -94,6 +95,10 @@ pub mod tag {
         ("minecraft:is_explosion", IS_EXPLOSION),
         ("minecraft:is_projectile", IS_PROJECTILE),
         ("minecraft:bypasses_shield", BYPASSES_SHIELD),
+        (
+            "minecraft:panic_environmental_causes",
+            PANIC_ENVIRONMENTAL_CAUSES,
+        ),
     ];
 }
 
@@ -142,11 +147,13 @@ pub struct DamageTypes {
     pub magic: DamageKind,
     pub indirect_magic: DamageKind,
     pub wither: DamageKind,
+    pub mob_projectile: DamageKind,
+    pub sting: DamageKind,
+    pub thorns: DamageKind,
+    pub freeze: DamageKind,
     pub wither_skull: DamageKind,
     pub dragon_breath: DamageKind,
     pub sonic_boom: DamageKind,
-    pub thorns: DamageKind,
-    pub mob_projectile: DamageKind,
     pub fireworks: DamageKind,
     pub fly_into_wall: DamageKind,
 }
@@ -240,11 +247,13 @@ impl DamageTypes {
             magic: find("minecraft:magic"),
             indirect_magic: find("minecraft:indirect_magic"),
             wither: find("minecraft:wither"),
+            mob_projectile: find("minecraft:mob_projectile"),
+            sting: find("minecraft:sting"),
+            thorns: find("minecraft:thorns"),
+            freeze: find("minecraft:freeze"),
             wither_skull: find("minecraft:wither_skull"),
             dragon_breath: find("minecraft:dragon_breath"),
             sonic_boom: find("minecraft:sonic_boom"),
-            thorns: find("minecraft:thorns"),
-            mob_projectile: find("minecraft:mob_projectile"),
             fireworks: find("minecraft:fireworks"),
             fly_into_wall: find("minecraft:fly_into_wall"),
             types,
@@ -278,6 +287,17 @@ impl DamageTypes {
             .position(|t| t.id == id)
             .and_then(|i| u16::try_from(i).ok())
             .map(DamageKind)
+    }
+
+    /// The kind of a damage type by id (`minecraft:fireball`); the first type when unknown.
+    pub fn named(&self, id: &str) -> DamageKind {
+        DamageKind(
+            self.types
+                .iter()
+                .position(|t| t.id == id)
+                .and_then(|i| u16::try_from(i).ok())
+                .unwrap_or(0),
+        )
     }
 
     /// The type of a kind.

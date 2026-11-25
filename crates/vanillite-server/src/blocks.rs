@@ -57,6 +57,19 @@ pub fn game_data(packs: Option<&LoadedPacks>) -> GameData {
                 .collect()
         })
         .unwrap_or_default();
+    let block_tags: HashMap<String, Vec<u16>> = packs
+        .tags("minecraft:block")
+        .map(|tags| {
+            tags.keys()
+                .map(|t| {
+                    let mut ids = tag_ids("minecraft:block", t);
+                    ids.sort_unstable();
+                    ids.dedup();
+                    (t.clone(), ids)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let entity_tags: HashMap<String, Vec<u16>> = packs
         .tags("minecraft:entity_type")
         .map(|tags| {
@@ -190,6 +203,7 @@ pub fn game_data(packs: Option<&LoadedPacks>) -> GameData {
         entity_tags,
         enchants,
         enderman_holdable: tag_ids("minecraft:block", "minecraft:enderman_holdable"),
+        block_tags,
         recipes,
         enchanting,
         banner_patterns,
@@ -385,6 +399,13 @@ impl PlayLevel for WorldLevel<'_> {
     fn random_int(&mut self, bound: i32) -> i32 {
         self.level.random().next_int_bounded(bound.max(1))
     }
+
+    fn random_sequences(
+        &self,
+    ) -> Option<std::sync::Arc<std::sync::Mutex<vanillite_game::random_sequences::RandomSequences>>>
+    {
+        Some(std::sync::Arc::clone(self.level.random_sequences()))
+    }
 }
 
 /// Players near `pos` within `range` blocks (by their feet position), except `except`.
@@ -493,63 +514,91 @@ pub(crate) fn tick_items(
     if ids.is_empty() {
         return;
     }
-    let block = |p: BlockPos| BlockState(chunks.block(p).unwrap_or(0));
-    let mut scratch = Vec::new();
-    let mut gone = Vec::new();
-    let mut near = Vec::new();
+    let mut scratch = ItemScratch::default();
     for id in ids {
-        let Entities { store, items, .. } = entities;
-        let Some(entity) = store.get(id) else {
+        // Only items in the tick order (entity ticking chunk) and in entity ticking range.
+        let Some(pos) = entities.store.get(id).map(|e| e.pos()) else {
             continue;
         };
-        // Only items in the tick order (entity ticking chunk) and in entity ticking range.
-        let pos = entity.pos();
         let chunk = vanillite_base::ChunkPos::new(
             vanillite_base::math::floor(pos.x) >> 4,
             vanillite_base::math::floor(pos.z) >> 4,
         );
-        if !store.is_ticking(id) || !chunks.in_entity_ticking_range(chunk) {
+        if !entities.store.is_ticking(id) || !chunks.in_entity_ticking_range(chunk) {
             continue;
         }
-        let row = entity.kind_row();
-        let input = item_entity::TickInput {
-            pos: entity.pos(),
-            velocity: entity.velocity(),
-            on_ground: entity.flags().contains(EntityFlags::ON_GROUND),
-            network_id: entity.network_id().0,
+        tick_item(
+            entities,
+            chunks,
+            id,
+            &mut || random.next_float(),
             min_y,
             lifetime,
-        };
-        let Some(data) = items.get_mut(row) else {
-            continue;
-        };
-        let ticked = item_entity::tick(
-            data,
-            input,
-            &block,
-            &mut || random.next_float(),
             &mut scratch,
         );
-        if ticked.discard {
-            gone.push(id);
-            continue;
-        }
-        let rate = if ticked.moved_block { 2 } else { 40 };
-        let merge = data.tick_count.is_multiple_of(rate) && data.is_mergable(lifetime);
-        if let Some(mut e) = store.get_mut(id) {
-            e.set_pos(ticked.pos);
-            e.set_velocity(ticked.velocity);
-            e.set_flags(EntityFlags::ON_GROUND, ticked.on_ground);
-            if ticked.needs_sync {
-                e.set_flags(EntityFlags::HAS_IMPULSE, true);
-            }
-        }
-        if merge {
-            merge_with_neighbours(entities, id, lifetime, &mut near, &mut gone);
+    }
+}
+
+/// Reused buffers of [`tick_item`].
+#[derive(Debug, Default)]
+pub struct ItemScratch {
+    boxes: Vec<vanillite_base::Aabb>,
+    near: Vec<EntityId>,
+    gone: Vec<EntityId>,
+}
+
+/// `ItemEntity.tick` of one item entity: movement, merging with its neighbours, despawning.
+/// `random_float` is the item's own random.
+pub fn tick_item(
+    entities: &mut Entities,
+    chunks: &Chunks,
+    id: EntityId,
+    random_float: &mut dyn FnMut() -> f32,
+    min_y: i32,
+    lifetime: i16,
+    scratch: &mut ItemScratch,
+) {
+    let block = |p: BlockPos| BlockState(chunks.block(p).unwrap_or(0));
+    scratch.gone.clear();
+    let Entities { store, items, .. } = entities;
+    let Some(entity) = store.get(id) else {
+        return;
+    };
+    if entity.kind() != entity_ids::ITEM {
+        return;
+    }
+    let row = entity.kind_row();
+    let input = item_entity::TickInput {
+        pos: entity.pos(),
+        velocity: entity.velocity(),
+        on_ground: entity.flags().contains(EntityFlags::ON_GROUND),
+        network_id: entity.network_id().0,
+        min_y,
+        lifetime,
+    };
+    let Some(data) = items.get_mut(row) else {
+        return;
+    };
+    let ticked = item_entity::tick(data, input, &block, random_float, &mut scratch.boxes);
+    if ticked.discard {
+        entities.despawn(id);
+        return;
+    }
+    let rate = if ticked.moved_block { 2 } else { 40 };
+    let merge = data.tick_count.is_multiple_of(rate) && data.is_mergable(lifetime);
+    if let Some(mut e) = store.get_mut(id) {
+        e.set_pos(ticked.pos);
+        e.set_velocity(ticked.velocity);
+        e.set_flags(EntityFlags::ON_GROUND, ticked.on_ground);
+        if ticked.needs_sync {
+            e.set_flags(EntityFlags::HAS_IMPULSE, true);
         }
     }
-    for id in gone {
-        entities.despawn(id);
+    if merge {
+        merge_with_neighbours(entities, id, lifetime, &mut scratch.near, &mut scratch.gone);
+    }
+    for &gone in &scratch.gone {
+        entities.despawn(gone);
     }
 }
 

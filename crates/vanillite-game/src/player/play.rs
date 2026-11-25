@@ -38,6 +38,8 @@ pub struct GameData {
     pub enchants: crate::enchant::Enchantments,
     /// `#minecraft:enderman_holdable` block ids.
     pub enderman_holdable: Vec<u16>,
+    /// Block tags: tag id → sorted block ids.
+    pub block_tags: HashMap<String, Vec<u16>>,
     /// Recipes.
     pub recipes: crate::recipe::Recipes,
     /// Enchantment data.
@@ -81,6 +83,13 @@ impl GameData {
             .into_iter()
             .find(|(e, _)| *e == id)
             .map_or(0, |(_, level)| level)
+    }
+
+    /// Whether a block (by block id) is in a block tag.
+    pub fn block_in_tag(&self, block: u16, tag: &str) -> bool {
+        self.block_tags
+            .get(tag)
+            .is_some_and(|v| v.binary_search(&block).is_ok())
     }
 
     /// Whether an item is in an item tag.
@@ -1356,8 +1365,23 @@ fn drop_resources(
             entity: None,
             block_entity: Some(&components),
         };
-        let mut rng = LevelRandom(&mut *ctx.level);
-        data.loot.block_drops(&loot, &mut rng, &mut stacks);
+        // `LootContext.Builder.create`: the table's random sequence, else the level random.
+        match (
+            data.loot.block_sequence(state),
+            ctx.level.random_sequences(),
+        ) {
+            (Some(key), Some(sequences)) => {
+                let mut sequences = sequences
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                data.loot
+                    .block_drops(&loot, sequences.get(key), &mut stacks);
+            }
+            _ => {
+                let mut rng = LevelRandom(&mut *ctx.level);
+                data.loot.block_drops(&loot, &mut rng, &mut stacks);
+            }
+        }
     }
     for stack in stacks {
         pop_resource(ctx.level, pos, stack);
@@ -1380,6 +1404,10 @@ impl crate::loot::LootRandom for LevelRandom<'_> {
 /// `Block.popResource`.
 pub fn pop_resource(level: &mut dyn PlayLevel, pos: BlockPos, stack: ItemStack) {
     if stack.is_empty() {
+        return;
+    }
+    if let Some(level) = level.level_mut() {
+        crate::block::drops::pop_resource(level, pos, stack);
         return;
     }
     let half_height = 0.125;

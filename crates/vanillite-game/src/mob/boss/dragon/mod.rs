@@ -159,14 +159,14 @@ impl State {
 /// The dragon state of the ticking mob.
 pub(crate) fn st<'a>(t: &'a mut Tick<'_, '_>) -> &'a mut State {
     t.mob()
-        .ext
+        .boss
         .dragon_mut()
         .expect("an ender dragon has dragon state")
 }
 
 pub(crate) fn st_ref<'a>(t: &'a Tick<'_, '_>) -> &'a State {
     t.mob_ref()
-        .ext
+        .boss
         .dragon()
         .expect("an ender dragon has dragon state")
 }
@@ -794,7 +794,7 @@ pub fn filter_hurt(
     let cause_is_player = source.cause.is_some_and(|c| ents.player(c).is_some());
     let m = ents.mob_mut(target)?;
     let health = m.health;
-    let s = m.ext.dragon_mut()?;
+    let s = m.boss.dragon_mut()?;
     let part = s.hit_part.take().unwrap_or(BODY);
     if s.phase == Phase::Dying {
         return None;
@@ -849,7 +849,7 @@ pub fn after_hurt(
         return;
     };
     let (health, max) = (m.health, m.max_health());
-    let Some(s) = m.ext.dragon_mut() else {
+    let Some(s) = m.boss.dragon_mut() else {
         return;
     };
     if s.phase.is_sitting() {
@@ -882,7 +882,7 @@ pub fn on_death(
     };
     // `die` only marks the dragon dead through `handleKillingBlow`, which it overrides.
     m.dead = false;
-    let sitting = m.ext.dragon().is_some_and(|s| s.phase.is_sitting());
+    let sitting = m.boss.dragon().is_some_and(|s| s.phase.is_sitting());
     if !sitting {
         m.health = 1.0;
         let mut t = Tick {
@@ -899,14 +899,14 @@ pub fn on_death(
 /// Whether knockback leaves the dragon alone (`knockback` while sitting).
 pub fn ignores_knockback(ents: &Entities, id: EntityId) -> bool {
     ents.mob(id)
-        .and_then(|m| m.ext.dragon())
+        .and_then(|m| m.boss.dragon())
         .is_some_and(|s| s.phase.is_sitting())
 }
 
 /// The part a network id names (`dragon id + 1 ..= + 8`), if `target` is a dragon.
 pub fn part_of(ents: &Entities, target: EntityId, network_id: i32) -> Option<usize> {
     let e = ents.store.get(target)?;
-    ents.mob(target)?.ext.dragon()?;
+    ents.mob(target)?.boss.dragon()?;
     let i = network_id.checked_sub(e.network_id().0)?.checked_sub(1)?;
     usize::try_from(i).ok().filter(|&i| i < 8)
 }
@@ -937,11 +937,11 @@ pub fn on_crystal_destroyed(
     };
     let nearest = ents
         .mob(dragon)
-        .and_then(|m| m.ext.dragon())
+        .and_then(|m| m.boss.dragon())
         .and_then(|s| s.nearest_crystal);
     if nearest == Some(crystal) {
         if let Some(m) = ents.mob_mut(dragon)
-            && let Some(s) = m.ext.dragon_mut()
+            && let Some(s) = m.boss.dragon_mut()
         {
             s.hit_part = Some(HEAD);
         }
@@ -971,7 +971,7 @@ pub fn on_crystal_destroyed(
 /// A fresh dragon of the fight at `origin` (`EnderDragonFight.createNewDragon`).
 pub fn new_dragon(seed: i64, origin: BlockPos) -> crate::mob::MobData {
     let mut m = crate::mob::MobData::new(crate::mob::Kind::EnderDragon, seed);
-    if let Some(s) = m.ext.dragon_mut() {
+    if let Some(s) = m.boss.dragon_mut() {
         s.fight_origin = origin;
         s.in_fight = true;
         phase::set_phase_in(s, Phase::HoldingPattern, &mut Vec::new());

@@ -95,7 +95,7 @@ impl World {
 
     fn spawn_dragon(&mut self, pos: Vec3, phase: Phase) -> EntityId {
         let mut m = MobData::new(Kind::EnderDragon, 3);
-        if let Some(s) = m.ext.dragon_mut() {
+        if let Some(s) = m.boss.dragon_mut() {
             phase::set_phase_in(s, phase, &mut Vec::new());
         }
         let ids = std::sync::Arc::clone(self.level.network_ids_arc());
@@ -181,7 +181,7 @@ fn crystals_heal_within_range() {
             "crystal at x {crystal_x}: {}",
             m.health
         );
-        assert_eq!(m.ext.dragon().unwrap().nearest_crystal.is_some(), heals);
+        assert_eq!(m.boss.dragon().unwrap().nearest_crystal.is_some(), heals);
     }
 }
 
@@ -195,7 +195,7 @@ fn hover_phase_holds_position() {
     let p = w.level.entities.store.get(dragon).unwrap().pos();
     assert!(p.distance_to_sqr(Vec3::new(0.5, 100.0, 0.5)) < 4.0, "{p:?}");
     // The parts follow the body.
-    let s = w.level.entities.mob(dragon).unwrap().ext.dragon().unwrap();
+    let s = w.level.entities.mob(dragon).unwrap().boss.dragon().unwrap();
     assert!(s.parts[HEAD].distance_to_sqr(p) < 100.0);
 }
 
@@ -212,7 +212,7 @@ fn killing_blow_starts_the_dying_phase() {
     let m = w.level.entities.mob(dragon).unwrap();
     assert_eq!(m.health, 1.0);
     assert!(!m.dead);
-    assert_eq!(m.ext.dragon().unwrap().phase, Phase::Dying);
+    assert_eq!(m.boss.dragon().unwrap().phase, Phase::Dying);
 }
 
 #[test]

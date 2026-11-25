@@ -1,0 +1,156 @@
+{
+  "description": "Lava spreads slowly with random delays; lava meeting water makes cobblestone and stone, water on a lava source makes obsidian, lava over soul soil next to blue ice makes basalt.",
+  "tier": "fast",
+  "world": {
+    "seed": 8301,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:stone",
+        3
+      ]
+    ]
+  },
+  "time": 6000,
+  "level_rng": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      12,
+      -57,
+      12
+    ]
+  ],
+  "ticks": 260,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        12,
+        -60,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -61,
+        9
+      ],
+      "block": "minecraft:soul_soil"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -61,
+        9
+      ],
+      "block": "minecraft:soul_soil"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -60,
+        10
+      ],
+      "block": "minecraft:blue_ice"
+    },
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -61,
+        8
+      ],
+      "block": "minecraft:air"
+    }
+  ],
+  "actions": [
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        2,
+        -60,
+        2
+      ],
+      "block": "minecraft:lava"
+    },
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        6,
+        -60,
+        2
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        10,
+        -60,
+        3
+      ],
+      "block": "minecraft:lava"
+    },
+    {
+      "op": "place",
+      "tick": 60,
+      "pos": [
+        10,
+        -58,
+        3
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        1,
+        -60,
+        9
+      ],
+      "block": "minecraft:lava"
+    },
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        8,
+        -60,
+        8
+      ],
+      "block": "minecraft:lava"
+    },
+    {
+      "op": "place",
+      "tick": 90,
+      "pos": [
+        8,
+        -58,
+        8
+      ],
+      "block": "minecraft:water"
+    }
+  ]
+}

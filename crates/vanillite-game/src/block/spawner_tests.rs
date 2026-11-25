@@ -37,7 +37,7 @@ impl PacketSink for NullSink {
 }
 
 fn add_player(level: &mut Level, pos: Vec3, game_mode: GameMode) -> EntityId {
-    let (_tx, inbound) = vanillite_protocol::inbound_queue(64);
+    let (_tx, inbound) = vanillite_protocol::inbound_queue(16);
     let data = PlayerData {
         profile: crate::player::GameProfile::default(),
         game_mode,

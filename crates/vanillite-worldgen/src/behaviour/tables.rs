@@ -28,6 +28,9 @@ macro_rules! block_tags {
 }
 
 block_tags!(
+    armadillo_spawnable_on,
+    axolotls_spawnable_on,
+    blocks_lava_fire_spread,
     beehives,
     blocks_wind_charge_explosions,
     campfires,
@@ -48,17 +51,29 @@ block_tags!(
     enables_bubble_column_push_up,
     fences,
     fire,
+    flowers,
+    frog_prefer_jump_to,
+    frogs_spawnable_on,
+    goats_spawnable_on,
     grows_crops,
+    hoglin_repellents,
+    infiniburn_end,
+    infiniburn_nether,
+    infiniburn_overworld,
     maintains_farmland,
     nether_portal_frame,
     nylium,
     occludes_vibration_signals,
     overrides_mushroom_light_requirement,
+    piglin_repellents,
     prevents_nearby_leaf_decay,
     saplings,
     sculk_growth_inhibitors,
     sculk_replaceable,
     shulker_boxes,
+    sniffer_diggable_block,
+    sniffer_egg_hatch_boost,
+    snaps_goat_horn,
     snow,
     soul_fire_base_blocks,
     speleothems,
@@ -101,6 +116,13 @@ block_tags!(
     wither_immune,
     wither_summon_base_blocks,
     wooden_fences,
+    // Mob behaviour (#59).
+    bats_spawnable_on,
+    bee_attractive,
+    bee_growables,
+    mooshrooms_spawnable_on,
+    sand,
+    strider_warm_blocks,
 );
 
 /// A set of fluids (a resolved fluid tag), one bit per `minecraft:fluid` id.

@@ -83,6 +83,7 @@ pub fn fall(level: &mut Level, pos: BlockPos, state: BlockState, drop_item: bool
         f64::from(pos.z) + 0.5,
     );
     level.set_block_and_update(pos, below);
+    // The entity takes its own random (not drawn from at creation) with its UUID.
     let uuid = level.new_uuid();
     let network_id = level.network_ids().next();
     let new = NewEntity::new(entity_ids::FALLING_BLOCK, network_id, uuid, spawn_pos);
@@ -185,8 +186,8 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
         }
     }
     if !removed && let Some(mut entity) = level.entities.store.get_mut(id) {
-        // `getAirDrag()`: a float.
-        let drag = f64::from(0.98f32);
+        // `scale(getAirDrag())`: the float 0.98F widened to double.
+        let drag = f64::from(0.98_f32);
         entity.set_velocity(Vec3::new(
             velocity.x * drag,
             velocity.y * drag,

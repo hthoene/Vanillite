@@ -1,0 +1,89 @@
+{
+  "description": "A happy ghast floats around a walled area by day.",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      23,
+      -45,
+      23
+    ]
+  ],
+  "ticks": 200,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        23,
+        -58,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        23
+      ],
+      "to": [
+        23,
+        -58,
+        23
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -58,
+        23
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        23,
+        -60,
+        0
+      ],
+      "to": [
+        23,
+        -58,
+        23
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "entities": [
+    {
+      "name": "happy_ghast",
+      "type": "minecraft:happy_ghast",
+      "pos": [
+        7.5,
+        -55.0,
+        7.5
+      ],
+      "seed": 11,
+      "finalize": false
+    }
+  ],
+  "tier": "fast"
+}

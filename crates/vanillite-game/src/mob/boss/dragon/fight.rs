@@ -16,6 +16,7 @@ use vanillite_worldgen::feature::kinds::end::{EndSpike, spikes_for_seed};
 
 use super::super::special::SpecialData;
 use super::{height, live};
+use crate::block::portal;
 use crate::boss_bar::BossBar;
 use crate::level::Level;
 use crate::level::explosion::BlockInteraction;
@@ -401,7 +402,7 @@ impl DragonFight {
         let mut y = top;
         while y >= level.min_y() {
             let c = BlockPos::new(self.origin.x, y - 3, self.origin.z);
-            if live::portal_frame_at(level, c) {
+            if portal::portal_frame_at(level, c) {
                 if self.exit_portal.is_none() {
                     self.exit_portal = Some(c);
                     self.dirty = true;
@@ -469,10 +470,10 @@ impl DragonFight {
     }
 
     /// `createNewDragon`: a dragon in its holding pattern 128 above the origin.
-    fn create_new_dragon(&mut self, level: &mut Level, env: &mut Env<'_>) -> Option<EntityId> {
+    fn create_new_dragon(&mut self, level: &mut Level, _env: &mut Env<'_>) -> Option<EntityId> {
         let yaw = level.random().next_float() * 360.0;
-        let seed = env.random.next_long();
-        let uuid = random_uuid(env.random);
+        let seed = crate::mob::new_entity_seed();
+        let uuid = crate::mob::new_uuid();
         let mob = super::new_dragon(seed, self.origin);
         let pos = Vec3::new(
             f64::from(self.origin.x),
@@ -586,7 +587,7 @@ impl DragonFight {
         if let Some(index) = self.gateways.pop() {
             let pos = gateway_pos(index);
             level.level_event(None, 3000, pos, 0);
-            live::place_gateway(level, pos);
+            portal::place_end_gateway(level, pos, None, false);
             self.dirty = true;
         }
     }
@@ -612,7 +613,7 @@ impl DragonFight {
                 p
             }
         };
-        live::place_podium(level, at, active);
+        portal::place_podium(level, at, active);
     }
 
     /// Ids of the respawn crystals that still exist.
@@ -688,7 +689,7 @@ impl DragonFight {
             return;
         }
         while let Some(c) = self.find_exit_portal(level) {
-            for p in live::portal_box(c) {
+            for p in portal::portal_box(c) {
                 let b = level.block(p).block();
                 if b == ids::BEDROCK || b == ids::END_PORTAL {
                     level.set_block_and_update(p, ids::END_STONE.default_state());

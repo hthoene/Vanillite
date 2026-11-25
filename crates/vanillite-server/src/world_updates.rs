@@ -325,36 +325,32 @@ fn explode_packet(
         None => body.push(0),
     }
     // `isSmall() ? EXPLOSION : EXPLOSION_EMITTER` (simple particles without options).
-    // Wind bursts: `GUST_EMITTER_SMALL` / `GUST_EMITTER_LARGE`, `BREEZE_WIND_CHARGE_BURST`
-    // and no block particles.
-    let main = match (explosion.wind, explosion.small) {
-        (false, true) => "minecraft:explosion",
-        (false, false) => "minecraft:explosion_emitter",
+    let main = match (explosion.wind_sound.is_some(), explosion.small) {
         (true, true) => "minecraft:gust_emitter_small",
         (true, false) => "minecraft:gust_emitter_large",
+        (false, true) => "minecraft:explosion",
+        (false, false) => "minecraft:explosion_emitter",
     };
     write_varint(&mut body, particle(main));
-    // `SoundEvents.GENERIC_EXPLODE` as a registry holder.
+    // `SoundEvents.GENERIC_EXPLODE` (or the wind burst) as a registry holder.
     let sound = SOUND_EVENT
-        .id(if explosion.wind {
-            "minecraft:entity.breeze.wind_burst"
-        } else {
-            "minecraft:entity.generic.explode"
-        })
+        .id(explosion
+            .wind_sound
+            .unwrap_or("minecraft:entity.generic.explode"))
         .unwrap_or(0);
     write_varint(&mut body, i32::from(sound) + 1);
-    // `DEFAULT_EXPLOSION_BLOCK_PARTICLES`: poof (0.5, 1.0) and smoke (1.0, 1.0), weight 1.
-    let block_particles: &[(&str, f32)] = if explosion.wind {
-        &[]
+    if explosion.wind_sound.is_some() {
+        // Wind charges have no block particles (`WeightedList.of()`).
+        write_varint(&mut body, 0);
     } else {
-        &[("minecraft:poof", 0.5), ("minecraft:smoke", 1.0)]
-    };
-    write_varint(&mut body, i32::try_from(block_particles.len()).unwrap_or(0));
-    for &(name, scaling) in block_particles {
-        write_varint(&mut body, particle(name));
-        body.extend_from_slice(&scaling.to_be_bytes());
-        body.extend_from_slice(&1.0_f32.to_be_bytes());
-        write_varint(&mut body, 1);
+        // `DEFAULT_EXPLOSION_BLOCK_PARTICLES`: poof (0.5, 1.0) and smoke (1.0, 1.0), weight 1.
+        write_varint(&mut body, 2);
+        for (name, scaling) in [("minecraft:poof", 0.5_f32), ("minecraft:smoke", 1.0_f32)] {
+            write_varint(&mut body, particle(name));
+            body.extend_from_slice(&scaling.to_be_bytes());
+            body.extend_from_slice(&1.0_f32.to_be_bytes());
+            write_varint(&mut body, 1);
+        }
     }
     // `playSound`: the source is not silent.
     body.push(1);

@@ -206,7 +206,7 @@ pub fn set_phase(t: &mut Tick<'_, '_>, phase: Phase) {
 /// The dragon's random and state together.
 fn parts<'a>(t: &'a mut Tick<'_, '_>) -> (&'a mut LegacyRandom, &'a mut State) {
     let m = t.mob();
-    let s = m.ext.dragon_mut().expect("dragon state");
+    let s = m.boss.dragon_mut().expect("dragon state");
     (&mut m.random, s)
 }
 

@@ -654,16 +654,24 @@ pub fn on_mob_killed(t: &mut Tick<'_, '_>) {
             }
             MobEffect::WIND_CHARGED => {
                 let (center, radius) = wind_burst(pos, t.core().dims().height, &mut t.mob().random);
-                t.cx.actions.push(WorldAction::WindBurst {
-                    source: Some(t.id),
-                    pos: center,
-                    radius,
-                });
+                t.cx.actions
+                    .push(WorldAction::WindBurst(crate::mob::WindBurst {
+                        source: Some(t.id),
+                        pos: center,
+                        radius,
+                        knockback: WIND_CHARGED_KNOCKBACK,
+                        sound: WIND_CHARGED_SOUND,
+                    }));
             }
             _ => {}
         }
     }
 }
+
+/// The knockback multiplier of a Wind Charged burst (`AbstractWindCharge.EXPLOSION_DAMAGE_CALCULATOR`).
+pub const WIND_CHARGED_KNOCKBACK: f64 = 1.22;
+/// The sound of a Wind Charged burst (`SoundEvents.BREEZE_WIND_CHARGE_BURST`).
+pub const WIND_CHARGED_SOUND: &str = "minecraft:entity.breeze.wind_burst";
 
 /// The centre (half the entity's height up) and strength (3 to 5, from the entity's random)
 /// of a Wind Charged burst (`WindChargedMobEffect.onMobRemoved`).
@@ -802,4 +810,18 @@ pub fn apply_mob_effect(
         Some(e) => add_to_entity(level, ents, env, cx, target, e),
         None => false,
     }
+}
+
+/// `addEffect` on a mob when only its data is at hand (another mob's attack, its own
+/// conversion), with `canBeAffected`; like [`add_detached`], the packets, attributes and the
+/// sound follow with the mob's next tick. Returns whether the effect changed.
+pub fn add_to_mob(m: &mut crate::mob::MobData, new: EffectInstance) -> bool {
+    let kind = m.kind.type_id();
+    if new.effect.is_instantaneous()
+        || !super::can_be_affected(kind, new.effect)
+        || super::refuses_all_effects(kind)
+    {
+        return false;
+    }
+    active::add(&mut BareMobHost { m, kind }, new)
 }

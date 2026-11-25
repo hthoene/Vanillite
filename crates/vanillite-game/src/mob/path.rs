@@ -6,6 +6,7 @@ use std::sync::OnceLock;
 
 use vanillite_base::hash::FxHashMap;
 use vanillite_base::math::floor;
+use vanillite_base::random::{LegacyRandom, RandomSource};
 use vanillite_base::{Aabb, BlockPos, Vec3};
 use vanillite_data::block::{BlockState, STATE_COUNT, flags, ids};
 use vanillite_worldgen::behaviour::{Class, class_of_block};
@@ -96,8 +97,8 @@ impl PathType {
     }
 }
 
-/// `BlockBehaviour.isPathfindable(state, LAND)`.
-pub fn is_pathfindable_land(state: BlockState) -> bool {
+/// Blocks that are never pathfindable (`isPathfindable` returns `false` for every type).
+fn never_pathfindable(state: BlockState) -> bool {
     let block = state.block();
     match class_of_block(block) {
         Class::AbstractBed
@@ -140,40 +141,93 @@ pub fn is_pathfindable_land(state: BlockState) -> bool {
         | Class::ShelfMushroom
         | Class::WallHangingSign
         | Class::Stair
-        | Class::Speleothem
-        | Class::Slab
-        | Class::CopperGolemStatue
-        | Class::Shelf => false,
-        Class::Door | Class::FenceGate | Class::TrapDoor => state.value("open") == Some("true"),
-        Class::Liquid => !block.name().ends_with("lava"),
-        Class::SnowLayer => state
-            .value("layers")
-            .and_then(|l| l.parse::<u8>().ok())
-            .is_some_and(|l| l < 5),
-        _ => {
-            let name = block.name();
-            if matches!(
-                name,
-                "minecraft:brewing_stand"
-                    | "minecraft:enchanting_table"
-                    | "minecraft:cauldron"
-                    | "minecraft:water_cauldron"
-                    | "minecraft:lava_cauldron"
-                    | "minecraft:powder_snow_cauldron"
-                    | "minecraft:composter"
-                    | "minecraft:dragon_egg"
-                    | "minecraft:mud"
-                    | "minecraft:soul_sand"
-                    | "minecraft:respawn_anchor"
-            ) {
-                return false;
-            }
-            if block == ids::POWDER_SNOW {
-                return true;
-            }
-            !state.has(flags::COLLISION_FULL_BLOCK)
-        }
+        | Class::Speleothem => true,
+        _ => matches!(
+            block.name(),
+            "minecraft:brewing_stand"
+                | "minecraft:enchanting_table"
+                | "minecraft:cauldron"
+                | "minecraft:water_cauldron"
+                | "minecraft:lava_cauldron"
+                | "minecraft:powder_snow_cauldron"
+                | "minecraft:composter"
+                | "minecraft:dragon_egg"
+                | "minecraft:mud"
+                | "minecraft:soul_sand"
+                | "minecraft:respawn_anchor"
+                | "minecraft:dried_ghast"
+                | "minecraft:sniffer_egg"
+        ),
     }
+}
+
+/// `BlockBehaviour.isPathfindable(state, LAND)`.
+pub fn is_pathfindable_land(state: BlockState) -> bool {
+    is_pathfindable(state, Computation::Land)
+}
+
+/// `PathComputationType`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Computation {
+    Land,
+    Water,
+    Air,
+}
+
+/// `BlockBehaviour.isPathfindable(state, type)`, uncached.
+fn compute_pathfindable(state: BlockState, ty: Computation) -> bool {
+    if never_pathfindable(state) {
+        return false;
+    }
+    let block = state.block();
+    let open = state.value("open") == Some("true");
+    let water = super::is_water(state);
+    let full = state.has(flags::COLLISION_FULL_BLOCK);
+    match class_of_block(block) {
+        Class::Door | Class::FenceGate => ty != Computation::Water && open,
+        Class::TrapDoor => match ty {
+            Computation::Water => state.value("waterlogged") == Some("true"),
+            _ => open,
+        },
+        Class::Liquid => !block.name().ends_with("lava"),
+        Class::Slab | Class::Shelf | Class::CopperGolemStatue => ty == Computation::Water && water,
+        Class::SnowLayer => {
+            ty == Computation::Land
+                && state
+                    .value("layers")
+                    .and_then(|l| l.parse::<u8>().ok())
+                    .is_some_and(|l| l < 5)
+        }
+        _ if block == ids::POWDER_SNOW => true,
+        _ => match ty {
+            Computation::Water => water,
+            // `VegetationBlock`: without collision it is pathfindable through the air.
+            Computation::Air => state.collision_shape().is_empty() || !full,
+            Computation::Land => !full,
+        },
+    }
+}
+
+/// `isPathfindable(state, type)`, from a table of every state.
+pub fn is_pathfindable(state: BlockState, ty: Computation) -> bool {
+    static TABLE: OnceLock<Vec<u8>> = OnceLock::new();
+    let table = TABLE.get_or_init(|| {
+        (0..STATE_COUNT)
+            .map(|s| {
+                let state = BlockState(u16::try_from(s).unwrap_or(0));
+                u8::from(compute_pathfindable(state, Computation::Land))
+                    | (u8::from(compute_pathfindable(state, Computation::Water)) << 1)
+                    | (u8::from(compute_pathfindable(state, Computation::Air)) << 2)
+            })
+            .collect()
+    });
+    let bits = table.get(usize::from(state.0)).copied().unwrap_or(0);
+    let bit = match ty {
+        Computation::Land => 1,
+        Computation::Water => 2,
+        Computation::Air => 4,
+    };
+    bits & bit != 0
 }
 
 /// `WalkNodeEvaluator.getPathTypeFromState`, uncached.
@@ -238,7 +292,7 @@ fn compute_state_type(state: BlockState) -> PathType {
     {
         return PathType::Fence;
     }
-    if !is_pathfindable_land(state) {
+    if !compute_pathfindable(state, Computation::Land) {
         return PathType::Blocked;
     }
     if super::is_water(state) {
@@ -328,111 +382,32 @@ pub fn floor_level(blocks: &dyn Blocks, pos: BlockPos) -> f64 {
     f64::from(below.y) + top.unwrap_or(0.0)
 }
 
-/// `SwimNodeEvaluator.getPathTypeOfMob`.
-fn swim_type_of_mob(eval: &Eval<'_>, x: i32, y: i32, z: i32) -> PathType {
-    let blocks = eval.blocks;
-    let mut last = BlockPos::new(x, y, z);
-    for xx in x..x + eval.entity_width {
-        for yy in y..y + eval.entity_height {
-            for zz in z..z + eval.entity_depth {
-                let pos = BlockPos::new(xx, yy, zz);
-                last = pos;
-                let state = blocks.state(pos);
-                let fluid = state.fluid_state();
-                let below = blocks.state(BlockPos::new(xx, yy - 1, zz));
-                if fluid.is_empty() && is_pathfindable_water(below) && state.is_air() {
-                    return PathType::Breach;
-                }
-                if !is_water(state) {
-                    return PathType::Blocked;
-                }
-            }
-        }
-    }
-    if is_pathfindable_water(blocks.state(last)) {
-        PathType::Water
-    } else {
-        PathType::Blocked
-    }
-}
-
-/// `BlockState.isPathfindable(PathComputationType.WATER)`.
-pub fn is_pathfindable_water(state: BlockState) -> bool {
-    match class_of_block(state.block()) {
-        Class::AbstractBed
-        | Class::BambooStalk
-        | Class::Skull
-        | Class::WallSkull
-        | Class::Anvil
-        | Class::CandleCake
-        | Class::Cake
-        | Class::Azalea
-        | Class::Cocoa
-        | Class::Campfire
-        | Class::EndPortalFrame
-        | Class::Bell
-        | Class::Cactus
-        | Class::EnderChest
-        | Class::Farmland
-        | Class::FlowerPot
-        | Class::Grindstone
-        | Class::ChorusPlant
-        | Class::Chest
-        | Class::CopperChest
-        | Class::Lantern
-        | Class::Fence
-        | Class::IronBars
-        | Class::Chain
-        | Class::Conduit
-        | Class::Hopper
-        | Class::DecoratedPot
-        | Class::Path
-        | Class::HeavyCore
-        | Class::Rod
-        | Class::LightningRod
-        | Class::SculkSensor
-        | Class::CalibratedSculkSensor
-        | Class::SeaPickle
-        | Class::Stonecutter
-        | Class::Lectern
-        | Class::Wall
-        | Class::ShelfMushroom
-        | Class::WallHangingSign
-        | Class::Stair
-        | Class::Speleothem
-        | Class::Door
-        | Class::FenceGate
-        | Class::SnowLayer => false,
-        Class::TrapDoor => state.value("waterlogged") == Some("true"),
-        Class::Liquid => !state.block().name().ends_with("lava"),
-        _ => {
-            if matches!(
-                state.block().name(),
-                "minecraft:brewing_stand"
-                    | "minecraft:enchanting_table"
-                    | "minecraft:cauldron"
-                    | "minecraft:water_cauldron"
-                    | "minecraft:lava_cauldron"
-                    | "minecraft:powder_snow_cauldron"
-                    | "minecraft:composter"
-                    | "minecraft:dragon_egg"
-                    | "minecraft:mud"
-                    | "minecraft:soul_sand"
-                    | "minecraft:respawn_anchor"
-            ) {
-                return false;
-            }
-            if state.block() == ids::POWDER_SNOW {
-                return true;
-            }
-            is_water(state)
-        }
-    }
+/// The node evaluator of a search (`NodeEvaluator` subclasses).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Evaluator {
+    /// `WalkNodeEvaluator`.
+    #[default]
+    Walk,
+    /// `SwimNodeEvaluator(allowBreaching)`.
+    Swim { breaching: bool },
+    /// `FlyNodeEvaluator`.
+    Fly,
+    /// `AmphibiousNodeEvaluator(prefersShallowSwimming)`; `frog` is the frog's evaluator
+    /// (`#frog_prefer_jump_to` blocks count as open, the start in water is the box bottom).
+    Amphibious { prefers_shallow: bool, frog: bool },
 }
 
 /// What the path finder needs to know about the mob.
 #[derive(Clone, Copy, Debug)]
 pub struct PathMob {
+    /// The node evaluator.
+    pub evaluator: Evaluator,
+    /// `canWalkOverFences`.
+    pub can_walk_over_fences: bool,
+    /// `canStandOnFluid(lava)` (striders).
+    pub stands_on_lava: bool,
+    /// `level.getSeaLevel()` (shallow swimming).
+    pub sea_level: i32,
     pub pos: Vec3,
     pub aabb: Aabb,
     pub width: f32,
@@ -453,6 +428,31 @@ pub type MalusTable = [(PathType, f32)];
 impl PathMob {
     fn block_pos(&self) -> BlockPos {
         BlockPos::containing(self.pos.x, self.pos.y, self.pos.z)
+    }
+
+    /// A walking mob with the defaults of `Mob` (tests and simple callers).
+    pub fn walking(pos: Vec3, aabb: Aabb, width: f32, height: f32) -> PathMob {
+        PathMob {
+            evaluator: Evaluator::Walk,
+            can_walk_over_fences: false,
+            stands_on_lava: false,
+            sea_level: 63,
+            pos,
+            aabb,
+            width,
+            height,
+            on_ground: true,
+            max_up_step: 0.6,
+            max_fall_distance: 3,
+            in_water: false,
+            can_float: false,
+            can_open_doors: false,
+            can_pass_doors: true,
+        }
+    }
+
+    fn amphibious(&self) -> bool {
+        matches!(self.evaluator, Evaluator::Amphibious { .. })
     }
 }
 
@@ -615,8 +615,6 @@ pub struct Search<'a> {
     pub max_visited_nodes: i32,
     pub malus: &'a MalusTable,
     pub min_y: i32,
-    /// `SwimNodeEvaluator` (water-bound navigation) instead of the `WalkNodeEvaluator`.
-    pub swim: bool,
 }
 
 struct Eval<'a> {
@@ -750,12 +748,14 @@ impl PathFinder {
     // --- Search (`PathFinder.findPath`) ---------------------------------------------------
 
     /// `PathFinder.findPath` to the nearest of `targets`: `None` without a start node.
+    /// `random` is the mob's random (the flying start node candidates of small mobs).
     pub fn find_path(
         &mut self,
         blocks: &dyn Blocks,
         mob: &PathMob,
         targets: &[BlockPos],
         search: Search<'_>,
+        random: &mut LegacyRandom,
     ) -> Option<Path> {
         self.nodes.clear();
         self.index.clear();
@@ -772,11 +772,27 @@ impl PathFinder {
             entity_height: h,
             entity_depth: w,
         };
-        let from = if search.swim {
-            self.swim_start(&eval)
-        } else {
-            self.start(&eval)?
-        };
+        let from = match mob.evaluator {
+            Evaluator::Walk => self.start(&eval),
+            Evaluator::Swim { .. } => {
+                let b = mob.aabb;
+                Some(self.node(floor(b.min_x), floor(b.min_y + 0.5), floor(b.min_z)))
+            }
+            Evaluator::Fly => Some(self.fly_start(&eval, random)),
+            Evaluator::Amphibious { frog, .. } => {
+                if mob.in_water {
+                    let b = mob.aabb;
+                    let y = if frog {
+                        floor(b.min_y)
+                    } else {
+                        floor(b.min_y + 0.5)
+                    };
+                    Some(self.start_node(&eval, floor(b.min_x), y, floor(b.min_z)))
+                } else {
+                    self.start(&eval)
+                }
+            }
+        }?;
         let mut tgts: Vec<Target> = targets
             .iter()
             .map(|&pos| Target {
@@ -847,11 +863,7 @@ impl PathFinder {
             if self.n(current).distance_to(fx, fy, fz) >= max_len {
                 continue;
             }
-            let count_n = if eval.search.swim {
-                self.swim_neighbors(eval, &mut neighbors, current)
-            } else {
-                self.neighbors(eval, &mut neighbors, current)
-            };
+            let count_n = self.neighbors(eval, &mut neighbors, current);
             for &neighbor in neighbors.iter().take(count_n) {
                 let (cx, cy, cz) = {
                     let c = self.n(current);
@@ -938,18 +950,49 @@ impl PathFinder {
         }
     }
 
-    // --- `WalkNodeEvaluator` ----------------------------------------------------------------
+    // --- Node evaluators -------------------------------------------------------------------
 
+    /// `getPathfindingMalus` with the amphibious evaluator's overrides (`prepare` sets water
+    /// to 0, walkable to 6 and the water border to 4).
     fn malus(eval: &Eval<'_>, t: PathType) -> f32 {
+        if eval.mob.amphibious() {
+            match t {
+                PathType::Water => return 0.0,
+                PathType::Walkable => return 6.0,
+                PathType::WaterBorder => return 4.0,
+                _ => {}
+            }
+        }
         malus_of(eval.search.malus, t)
     }
+
+    /// `getNeighbors` of the search's evaluator.
+    fn neighbors(&mut self, eval: &Eval<'_>, out: &mut [u32; 32], pos: u32) -> usize {
+        match eval.mob.evaluator {
+            Evaluator::Walk => self.walk_neighbors(eval, out, pos),
+            Evaluator::Swim { breaching } => self.swim_neighbors(eval, out, pos, breaching),
+            Evaluator::Fly => self.fly_neighbors(eval, out, pos),
+            Evaluator::Amphibious {
+                prefers_shallow, ..
+            } => self.amphibious_neighbors(eval, out, pos, prefers_shallow),
+        }
+    }
+
+    // --- `WalkNodeEvaluator` ----------------------------------------------------------------
 
     fn start(&mut self, eval: &Eval<'_>) -> Option<u32> {
         let mob = eval.mob;
         let blocks = eval.blocks;
         let mut start_y = floor(mob.pos.y);
         let at = |y: i32| BlockPos::containing(mob.pos.x, f64::from(y), mob.pos.z);
-        if eval.mob.can_float && mob.in_water {
+        let stands = |state: BlockState| mob.stands_on_lava && super::is_lava(state);
+        if stands(blocks.state(at(start_y))) {
+            // `canStandOnFluid`: the start is on top of the fluid.
+            while stands(blocks.state(at(start_y))) {
+                start_y += 1;
+            }
+            start_y -= 1;
+        } else if eval.mob.can_float && mob.in_water {
             while is_water(blocks.state(at(start_y))) {
                 start_y += 1;
             }
@@ -996,21 +1039,31 @@ impl PathFinder {
 
     fn can_start_at(&mut self, eval: &Eval<'_>, x: i32, y: i32, z: i32) -> bool {
         let t = self.cached_type(eval, x, y, z);
+        if eval.mob.evaluator == Evaluator::Fly {
+            return Self::malus(eval, t) >= 0.0;
+        }
         t != PathType::Open && Self::malus(eval, t) >= 0.0
     }
 
-    fn neighbors(&mut self, eval: &Eval<'_>, out: &mut [u32; 32], pos: u32) -> usize {
+    /// The jump size of `getNeighbors`: the step height when the block above is passable.
+    fn jump_size(&mut self, eval: &Eval<'_>, px: i32, py: i32, pz: i32) -> i32 {
+        let above = self.cached_type(eval, px, py + 1, pz);
+        let current = self.cached_type(eval, px, py, pz);
+        if Self::malus(eval, above) >= 0.0 && current != PathType::StickyHoney {
+            floor(f64::from(eval.mob.max_up_step.max(1.0)))
+        } else {
+            0
+        }
+    }
+
+    fn walk_neighbors(&mut self, eval: &Eval<'_>, out: &mut [u32; 32], pos: u32) -> usize {
         let (px, py, pz) = {
             let n = self.n(pos);
             (n.x, n.y, n.z)
         };
         let mut p = 0;
-        let mut jump_size = 0;
-        let above = self.cached_type(eval, px, py + 1, pz);
+        let jump_size = self.jump_size(eval, px, py, pz);
         let current = self.cached_type(eval, px, py, pz);
-        if Self::malus(eval, above) >= 0.0 && current != PathType::StickyHoney {
-            jump_size = floor(f64::from(eval.mob.max_up_step.max(1.0)));
-        }
         let height = self.floor_level(eval, BlockPos::new(px, py, pz));
         // `Direction.Plane.HORIZONTAL`: north, east, south, west; 2D data values are
         // south 0, west 1, north 2, east 3.
@@ -1095,8 +1148,9 @@ impl PathFinder {
         !n.closed && n.kind != PathType::WalkableDoor && n.cost_malus >= 0.0
     }
 
+    /// `getFloorLevel`: the middle of floatable water for floating or amphibious mobs.
     fn floor_level(&self, eval: &Eval<'_>, pos: BlockPos) -> f64 {
-        if eval.mob.can_float && is_water(eval.blocks.state(pos)) {
+        if (eval.mob.can_float || eval.mob.amphibious()) && is_water(eval.blocks.state(pos)) {
             f64::from(pos.y) + 0.5
         } else {
             floor_level(eval.blocks, pos)
@@ -1139,19 +1193,20 @@ impl PathFinder {
         {
             best = None;
         }
-        if t == PathType::Walkable {
+        let amphibious = eval.mob.amphibious();
+        if t == PathType::Walkable || (amphibious && t == PathType::Water) {
             return best;
         }
         let best_blocked = best.is_none_or(|b| self.n(b).cost_malus < 0.0);
         if best_blocked
             && jump_size > 0
-            && t != PathType::Fence
+            && (t != PathType::Fence || eval.mob.can_walk_over_fences)
             && t != PathType::UnpassableRail
             && t != PathType::Trapdoor
             && t != PathType::PowderSnow
         {
             best = self.try_jump_on(eval, x, y, z, jump_size, node_height, dir, current);
-        } else if t == PathType::Water && !eval.mob.can_float {
+        } else if !amphibious && t == PathType::Water && !eval.mob.can_float {
             best = self.try_first_non_water_below(eval, x, y, z, best);
         } else if t == PathType::Open {
             best = Some(self.try_first_ground_below(eval, x, y, z));
@@ -1289,7 +1344,10 @@ impl PathFinder {
         );
         let size = (xs + ys + zs) / 3.0;
         let steps = vanillite_base::math::ceil(delta.length() / size).max(1);
-        delta = delta * (1.0 / f64::from(steps));
+        // `delta.scale(1.0F / steps)`: a float factor.
+        #[allow(clippy::cast_precision_loss)]
+        let factor = f64::from(1.0_f32 / steps as f32);
+        delta = delta * factor;
         for _ in 1..=steps {
             bb = bb.offset(delta.x, delta.y, delta.z);
             if self.has_collisions(eval, bb) {
@@ -1316,113 +1374,45 @@ impl PathFinder {
         c
     }
 
-    // --- `SwimNodeEvaluator` -----------------------------------------------------------------
-
-    /// `SwimNodeEvaluator.getStart`.
-    fn swim_start(&mut self, eval: &Eval<'_>) -> u32 {
-        let b = eval.mob.aabb;
-        self.node(floor(b.min_x), floor(b.min_y + 0.5), floor(b.min_z))
-    }
-
-    /// `SwimNodeEvaluator.getNeighbors` (without breaching).
-    fn swim_neighbors(&mut self, eval: &Eval<'_>, out: &mut [u32; 32], pos: u32) -> usize {
-        let (px, py, pz) = {
-            let n = self.n(pos);
-            (n.x, n.y, n.z)
-        };
-        // `Direction.values()`: down, up, north, south, west, east.
-        const DIRS: [(i32, i32, i32); 6] = [
-            (0, -1, 0),
-            (0, 1, 0),
-            (0, 0, -1),
-            (0, 0, 1),
-            (-1, 0, 0),
-            (1, 0, 0),
-        ];
-        let mut found = [NONE; 6];
-        let mut p = 0;
-        for (i, &(dx, dy, dz)) in DIRS.iter().enumerate() {
-            let node = self.swim_accepted_node(eval, px + dx, py + dy, pz + dz);
-            found[i] = node;
-            if node != NONE && !self.n(node).closed {
-                out[p] = node;
-                p += 1;
-            }
-        }
-        // `Direction.Plane.HORIZONTAL` (north, east, south, west) with the clockwise one.
-        const HORIZONTAL: [(usize, usize, i32, i32); 4] =
-            [(2, 5, 0, -1), (5, 3, 1, 0), (3, 4, 0, 1), (4, 2, -1, 0)];
-        for &(a, b, dx, dz) in &HORIZONTAL {
-            let has_malus = |n: u32| n != NONE && self.n(n).cost_malus >= 0.0;
-            if has_malus(found[a]) && has_malus(found[b]) {
-                let (cx, cz) = (DIRS[b].0, DIRS[b].2);
-                let diag = self.swim_accepted_node(eval, px + dx + cx, py, pz + dz + cz);
-                if diag != NONE && !self.n(diag).closed {
-                    out[p] = diag;
-                    p += 1;
-                }
-            }
-        }
-        p
-    }
-
-    /// `SwimNodeEvaluator.findAcceptedNode`: water nodes only.
-    fn swim_accepted_node(&mut self, eval: &Eval<'_>, x: i32, y: i32, z: i32) -> u32 {
-        let t = self.cached_swim_type(eval, x, y, z);
-        if t != PathType::Water {
-            return NONE;
-        }
-        let cost = Self::malus(eval, t);
-        if cost < 0.0 {
-            return NONE;
-        }
-        let i = self.node(x, y, z);
-        let fluid_empty = eval
-            .blocks
-            .state(BlockPos::new(x, y, z))
-            .fluid_state()
-            .is_empty();
-        let n = self.nm(i);
-        n.kind = t;
-        n.cost_malus = n.cost_malus.max(cost);
-        if fluid_empty {
-            n.cost_malus += 8.0;
-        }
-        i
-    }
-
-    fn cached_swim_type(&mut self, eval: &Eval<'_>, x: i32, y: i32, z: i32) -> PathType {
-        let k = key(x, y, z);
-        if let Some(&t) = self.types.get(&k) {
-            return t;
-        }
-        let t = swim_type_of_mob(eval, x, y, z);
-        self.types.insert(k, t);
-        t
-    }
-
     fn cached_type(&mut self, eval: &Eval<'_>, x: i32, y: i32, z: i32) -> PathType {
         let k = key(x, y, z);
         if let Some(&t) = self.types.get(&k) {
             return t;
         }
-        let t = Self::type_of_mob(eval, x, y, z);
+        let t = match eval.mob.evaluator {
+            Evaluator::Swim { .. } => Self::swim_type_of_mob(eval, x, y, z),
+            _ => Self::type_of_mob(eval, x, y, z),
+        };
         self.types.insert(k, t);
         t
     }
 
-    /// `getPathTypeOfMob`.
-    fn type_of_mob(eval: &Eval<'_>, x: i32, y: i32, z: i32) -> PathType {
-        let mut kinds: [Option<PathType>; 8] = [None; 8];
-        let mut count = 0usize;
-        let mut overflow = Vec::new();
+    /// `getPathType(context, x, y, z)` of one block for the search's evaluator.
+    fn block_type(eval: &Eval<'_>, x: i32, y: i32, z: i32) -> PathType {
         let blocks = eval.blocks;
         let min_y = eval.search.min_y;
+        match eval.mob.evaluator {
+            Evaluator::Fly => fly_path_type(blocks, min_y, eval.mob.block_pos(), x, y, z),
+            Evaluator::Amphibious { frog, .. } => {
+                if frog && is_frog_jump_target(blocks.state(BlockPos::new(x, y - 1, z))) {
+                    PathType::Open
+                } else {
+                    amphibious_path_type(blocks, min_y, x, y, z)
+                }
+            }
+            _ => path_type_static(blocks, min_y, x, y, z),
+        }
+    }
+
+    /// `getPathTypeOfMob`.
+    fn type_of_mob(eval: &Eval<'_>, x: i32, y: i32, z: i32) -> PathType {
+        // An `EnumSet`: a bit per type, iterated in declaration order.
+        let mut set: u32 = 0;
         let mob_pos = eval.mob.block_pos();
         for dx in 0..eval.entity_width {
             for dy in 0..eval.entity_height {
                 for dz in 0..eval.entity_depth {
-                    let mut t = path_type_static(blocks, min_y, x + dx, y + dy, z + dz);
+                    let mut t = Self::block_type(eval, x + dx, y + dy, z + dz);
                     if t == PathType::DoorWoodClosed
                         && eval.mob.can_open_doors
                         && eval.mob.can_pass_doors
@@ -1433,42 +1423,33 @@ impl PathFinder {
                         t = PathType::Blocked;
                     }
                     if t == PathType::Rail
-                        && path_type_static(blocks, min_y, mob_pos.x, mob_pos.y, mob_pos.z)
-                            != PathType::Rail
-                        && path_type_static(blocks, min_y, mob_pos.x, mob_pos.y - 1, mob_pos.z)
+                        && Self::block_type(eval, mob_pos.x, mob_pos.y, mob_pos.z) != PathType::Rail
+                        && Self::block_type(eval, mob_pos.x, mob_pos.y - 1, mob_pos.z)
                             != PathType::Rail
                     {
                         t = PathType::UnpassableRail;
                     }
-                    let seen =
-                        kinds.iter().take(count).any(|k| *k == Some(t)) || overflow.contains(&t);
-                    if !seen {
-                        if count < kinds.len() {
-                            kinds[count] = Some(t);
-                            count += 1;
-                        } else {
-                            overflow.push(t);
-                        }
-                    }
+                    set |= 1 << (t as u32);
                 }
             }
         }
-        let mut set: Vec<PathType> = kinds.iter().take(count).flatten().copied().collect();
-        set.extend(overflow);
-        // `EnumSet` iterates in declaration order.
-        set.sort_by_key(|t| *t as u8);
-        if set.len() == 1 {
-            return set[0];
+        if set.count_ones() == 1 {
+            return PathType::from_u8(u8::try_from(set.trailing_zeros()).unwrap_or(0));
         }
-        if set.contains(&PathType::Fence) {
+        let has = |t: PathType| set & (1 << (t as u32)) != 0;
+        if has(PathType::Fence) {
             return PathType::Fence;
         }
-        if set.contains(&PathType::UnpassableRail) {
+        if has(PathType::UnpassableRail) {
             return PathType::UnpassableRail;
         }
         let mut highest_type = PathType::Blocked;
         let mut highest = Self::malus(eval, highest_type);
-        for &t in &set {
+        let mut rest = set;
+        while rest != 0 {
+            let bit = rest.trailing_zeros();
+            rest &= rest - 1;
+            let t = PathType::from_u8(u8::try_from(bit).unwrap_or(0));
             let m = Self::malus(eval, t);
             if m < 0.0 {
                 return t;
@@ -1478,7 +1459,7 @@ impl PathFinder {
                 highest_type = t;
             }
         }
-        let current = path_type_static(blocks, min_y, x, y, z);
+        let current = Self::block_type(eval, x, y, z);
         if eval.entity_width > 1 {
             let cheaper = Self::malus(eval, current) < highest;
             let cap = cheaper && Self::malus(eval, PathType::BigMobsCloseToDanger) < highest;
@@ -1493,6 +1474,404 @@ impl PathFinder {
             highest_type
         }
     }
+
+    // --- `AmphibiousNodeEvaluator` ----------------------------------------------------------
+
+    fn amphibious_neighbors(
+        &mut self,
+        eval: &Eval<'_>,
+        out: &mut [u32; 32],
+        pos: u32,
+        prefers_shallow: bool,
+    ) -> usize {
+        let mut count = self.walk_neighbors(eval, out, pos);
+        let (px, py, pz) = {
+            let n = self.n(pos);
+            (n.x, n.y, n.z)
+        };
+        let jump_size = self.jump_size(eval, px, py, pz);
+        let current = self.cached_type(eval, px, py, pz);
+        let height = self.floor_level(eval, BlockPos::new(px, py, pz));
+        let up = self.find_accepted_node(
+            eval,
+            px,
+            py + 1,
+            pz,
+            (jump_size - 1).max(0),
+            height,
+            (0, 0),
+            current,
+        );
+        let down =
+            self.find_accepted_node(eval, px, py - 1, pz, jump_size, height, (0, 0), current);
+        let vertical_valid = |s: &Self, n: Option<u32>| {
+            n.is_some_and(|n| s.neighbor_valid(n, pos) && s.n(n).kind == PathType::Water)
+        };
+        if vertical_valid(self, up)
+            && let Some(up) = up
+        {
+            out[count] = up;
+            count += 1;
+        }
+        if vertical_valid(self, down)
+            && current != PathType::Trapdoor
+            && let Some(down) = down
+        {
+            out[count] = down;
+            count += 1;
+        }
+        if prefers_shallow {
+            let limit = eval.mob.sea_level - 10;
+            for &n in out.iter().take(count) {
+                let node = self.nm(n);
+                if node.kind == PathType::Water && node.y < limit {
+                    node.cost_malus += 1.0;
+                }
+            }
+        }
+        count
+    }
+
+    // --- `SwimNodeEvaluator` ----------------------------------------------------------------
+
+    fn swim_neighbors(
+        &mut self,
+        eval: &Eval<'_>,
+        out: &mut [u32; 32],
+        pos: u32,
+        breaching: bool,
+    ) -> usize {
+        let (px, py, pz) = {
+            let n = self.n(pos);
+            (n.x, n.y, n.z)
+        };
+        // `Direction.values()`: down, up, north, south, west, east.
+        const DIRS: [(i32, i32, i32); 6] = [
+            (0, -1, 0),
+            (0, 1, 0),
+            (0, 0, -1),
+            (0, 0, 1),
+            (-1, 0, 0),
+            (1, 0, 0),
+        ];
+        let mut nodes = [NONE; 6];
+        let mut count = 0;
+        for (i, &(dx, dy, dz)) in DIRS.iter().enumerate() {
+            let node = self.swim_accepted(eval, px + dx, py + dy, pz + dz, breaching);
+            nodes[i] = node.unwrap_or(NONE);
+            if let Some(n) = node
+                && !self.n(n).closed
+            {
+                out[count] = n;
+                count += 1;
+            }
+        }
+        let has_malus = |s: &Self, n: u32| n != NONE && s.n(n).cost_malus >= 0.0;
+        // `Direction.Plane.HORIZONTAL` (north, east, south, west) with the clockwise next.
+        const HORIZONTAL: [(usize, usize); 4] = [(2, 5), (5, 3), (3, 4), (4, 2)];
+        for &(a, b) in &HORIZONTAL {
+            if has_malus(self, nodes[a]) && has_malus(self, nodes[b]) {
+                let (ax, az) = (DIRS[a].0 + DIRS[b].0, DIRS[a].2 + DIRS[b].2);
+                if let Some(d) = self.swim_accepted(eval, px + ax, py, pz + az, breaching)
+                    && !self.n(d).closed
+                {
+                    out[count] = d;
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
+    /// `SwimNodeEvaluator.findAcceptedNode`.
+    fn swim_accepted(
+        &mut self,
+        eval: &Eval<'_>,
+        x: i32,
+        y: i32,
+        z: i32,
+        breaching: bool,
+    ) -> Option<u32> {
+        let t = self.cached_type(eval, x, y, z);
+        if !(breaching && t == PathType::Breach || t == PathType::Water) {
+            return None;
+        }
+        let cost = Self::malus(eval, t);
+        if cost < 0.0 {
+            return None;
+        }
+        let i = self.node_cost_to_max(x, y, z, t, cost);
+        if eval
+            .blocks
+            .state(BlockPos::new(x, y, z))
+            .fluid_state()
+            .is_empty()
+        {
+            self.nm(i).cost_malus += 8.0;
+        }
+        Some(i)
+    }
+
+    /// `SwimNodeEvaluator.getPathTypeOfMob`.
+    fn swim_type_of_mob(eval: &Eval<'_>, x: i32, y: i32, z: i32) -> PathType {
+        let blocks = eval.blocks;
+        let mut last = BlockPos::new(x, y, z);
+        for xx in x..x + eval.entity_width {
+            for yy in y..y + eval.entity_height {
+                for zz in z..z + eval.entity_depth {
+                    let pos = BlockPos::new(xx, yy, zz);
+                    last = pos;
+                    let state = blocks.state(pos);
+                    let fluid = state.fluid_state();
+                    let below = blocks.state(BlockPos::new(xx, yy - 1, zz));
+                    if fluid.is_empty()
+                        && is_pathfindable(below, Computation::Water)
+                        && state.is_air()
+                    {
+                        return PathType::Breach;
+                    }
+                    if !is_water(state) {
+                        return PathType::Blocked;
+                    }
+                }
+            }
+        }
+        if is_pathfindable(blocks.state(last), Computation::Water) {
+            PathType::Water
+        } else {
+            PathType::Blocked
+        }
+    }
+
+    // --- `FlyNodeEvaluator` -----------------------------------------------------------------
+
+    /// `FlyNodeEvaluator.getStart`.
+    fn fly_start(&mut self, eval: &Eval<'_>, random: &mut LegacyRandom) -> u32 {
+        let mob = eval.mob;
+        let start_y = if mob.can_float && mob.in_water {
+            let mut y = floor(mob.pos.y);
+            while eval
+                .blocks
+                .state(BlockPos::containing(mob.pos.x, f64::from(y), mob.pos.z))
+                .block()
+                == ids::WATER
+            {
+                y += 1;
+            }
+            y
+        } else {
+            floor(mob.pos.y + 0.5)
+        };
+        let start = BlockPos::containing(mob.pos.x, f64::from(start_y), mob.pos.z);
+        if !self.can_start_at(eval, start.x, start.y, start.z) {
+            let b = mob.aabb;
+            let (xs, ys, zs) = (b.max_x - b.min_x, b.max_y - b.min_y, b.max_z - b.min_z);
+            let block_y = floor(mob.pos.y);
+            if (xs + ys + zs) / 3.0 >= 1.0 {
+                for (x, z) in [
+                    (b.min_x, b.min_z),
+                    (b.min_x, b.max_z),
+                    (b.max_x, b.min_z),
+                    (b.max_x, b.max_z),
+                ] {
+                    let p = BlockPos::containing(x, f64::from(block_y), z);
+                    if self.can_start_at(eval, p.x, p.y, p.z) {
+                        return self.start_node(eval, p.x, p.y, p.z);
+                    }
+                }
+            } else {
+                // `BlockPos.randomBetweenClosed(random, 10, ...)` over the box grown to 1.1.
+                let pad = |size: f64| (f64::from(1.1_f32) - size).max(0.0);
+                let grown = b.inflate(pad(xs), pad(ys), pad(zs));
+                let (x0, y0, z0) = (floor(grown.min_x), floor(grown.min_y), floor(grown.min_z));
+                let (x1, y1, z1) = (floor(grown.max_x), floor(grown.max_y), floor(grown.max_z));
+                for _ in 0..10 {
+                    let x = x0 + random.next_int_bounded(x1 - x0 + 1);
+                    let y = y0 + random.next_int_bounded(y1 - y0 + 1);
+                    let z = z0 + random.next_int_bounded(z1 - z0 + 1);
+                    if self.can_start_at(eval, x, y, z) {
+                        return self.start_node(eval, x, y, z);
+                    }
+                }
+            }
+        }
+        self.start_node(eval, start.x, start.y, start.z)
+    }
+
+    /// `FlyNodeEvaluator.findAcceptedNode`.
+    fn fly_accepted(&mut self, eval: &Eval<'_>, x: i32, y: i32, z: i32) -> u32 {
+        let t = self.cached_type(eval, x, y, z);
+        let cost = Self::malus(eval, t);
+        if cost < 0.0 {
+            return NONE;
+        }
+        let i = self.node_cost_to_max(x, y, z, t, cost);
+        if t == PathType::Walkable {
+            self.nm(i).cost_malus += 1.0;
+        }
+        i
+    }
+
+    fn fly_neighbors(&mut self, eval: &Eval<'_>, out: &mut [u32; 32], pos: u32) -> usize {
+        let (px, py, pz) = {
+            let n = self.n(pos);
+            (n.x, n.y, n.z)
+        };
+        let mut count = 0;
+        let open = |s: &Self, n: u32| n != NONE && !s.n(n).closed;
+        let malus = |s: &Self, n: u32| n != NONE && s.n(n).cost_malus >= 0.0;
+        let a = |s: &mut Self, dx: i32, dy: i32, dz: i32| {
+            s.fly_accepted(eval, px + dx, py + dy, pz + dz)
+        };
+        let south = a(self, 0, 0, 1);
+        let west = a(self, -1, 0, 0);
+        let east = a(self, 1, 0, 0);
+        let north = a(self, 0, 0, -1);
+        let up = a(self, 0, 1, 0);
+        let down = a(self, 0, -1, 0);
+        for n in [south, west, east, north, up, down] {
+            if open(self, n) {
+                out[count] = n;
+                count += 1;
+            }
+        }
+        let south_up = a(self, 0, 1, 1);
+        let west_up = a(self, -1, 1, 0);
+        let east_up = a(self, 1, 1, 0);
+        let north_up = a(self, 0, 1, -1);
+        let south_down = a(self, 0, -1, 1);
+        let west_down = a(self, -1, -1, 0);
+        let east_down = a(self, 1, -1, 0);
+        let north_down = a(self, 0, -1, -1);
+        // The candidates are accepted in Vanilla's order, interleaved with the next lookup.
+        let push = |s: &Self, n: u32, ok: bool, out: &mut [u32; 32], count: &mut usize| {
+            if open(s, n) && ok {
+                out[*count] = n;
+                *count += 1;
+            }
+        };
+        // Vanilla looks each node up right before testing it; a lookup only touches its own
+        // node, so looking them up first gives the same nodes.
+        let checks = [
+            (south_up, malus(self, south) && malus(self, up)),
+            (west_up, malus(self, west) && malus(self, up)),
+            (east_up, malus(self, east) && malus(self, up)),
+            (north_up, malus(self, north) && malus(self, up)),
+            (south_down, malus(self, south) && malus(self, down)),
+            (west_down, malus(self, west) && malus(self, down)),
+            (east_down, malus(self, east) && malus(self, down)),
+            (north_down, malus(self, north) && malus(self, down)),
+        ];
+        for (n, ok) in checks {
+            push(self, n, ok, out, &mut count);
+        }
+        let north_east = a(self, 1, 0, -1);
+        let south_east = a(self, 1, 0, 1);
+        let north_west = a(self, -1, 0, -1);
+        let south_west = a(self, -1, 0, 1);
+        let checks = [
+            (north_east, malus(self, north) && malus(self, east)),
+            (south_east, malus(self, south) && malus(self, east)),
+            (north_west, malus(self, north) && malus(self, west)),
+            (south_west, malus(self, south) && malus(self, west)),
+        ];
+        for (n, ok) in checks {
+            push(self, n, ok, out, &mut count);
+        }
+        let corners = [
+            (1, 1, -1, north_east, north, east, up, north_up, east_up),
+            (1, 1, 1, south_east, south, east, up, south_up, east_up),
+            (-1, 1, -1, north_west, north, west, up, north_up, west_up),
+            (-1, 1, 1, south_west, south, west, up, south_up, west_up),
+            (
+                1, -1, -1, north_east, north, east, down, north_down, east_down,
+            ),
+            (
+                1, -1, 1, south_east, south, east, down, south_down, east_down,
+            ),
+            (
+                -1, -1, -1, north_west, north, west, down, north_down, west_down,
+            ),
+            (
+                -1, -1, 1, south_west, south, west, down, south_down, west_down,
+            ),
+        ];
+        for (dx, dy, dz, diag, h1, h2, v, v1, v2) in corners {
+            let n = a(self, dx, dy, dz);
+            let ok = malus(self, diag)
+                && malus(self, h1)
+                && malus(self, h2)
+                && malus(self, v)
+                && malus(self, v1)
+                && malus(self, v2);
+            push(self, n, ok, out, &mut count);
+        }
+        count
+    }
+}
+
+/// `FlyNodeEvaluator.getPathType` of one block.
+pub fn fly_path_type(
+    blocks: &dyn Blocks,
+    min_y: i32,
+    mob_pos: BlockPos,
+    x: i32,
+    y: i32,
+    z: i32,
+) -> PathType {
+    let mut t = state_type(blocks.state(BlockPos::new(x, y, z)));
+    if t == PathType::Open && y > min_y {
+        let below = BlockPos::new(x, y - 1, z);
+        t = match state_type(blocks.state(below)) {
+            PathType::Fire | PathType::Lava => PathType::Fire,
+            PathType::Damaging => PathType::Damaging,
+            PathType::Cocoa => PathType::Cocoa,
+            PathType::Fence => {
+                if below == mob_pos {
+                    PathType::Open
+                } else {
+                    PathType::Fence
+                }
+            }
+            PathType::Walkable | PathType::Open | PathType::Water => PathType::Open,
+            _ => PathType::Walkable,
+        };
+    }
+    if t == PathType::Walkable || t == PathType::Open {
+        t = check_neighbour_blocks(blocks, x, y, z, t);
+    }
+    t
+}
+
+/// `AmphibiousNodeEvaluator.getPathType` of one block: water next to a blocked block is its
+/// border.
+pub fn amphibious_path_type(blocks: &dyn Blocks, min_y: i32, x: i32, y: i32, z: i32) -> PathType {
+    if state_type(blocks.state(BlockPos::new(x, y, z))) == PathType::Water {
+        const DIRS: [(i32, i32, i32); 6] = [
+            (0, -1, 0),
+            (0, 1, 0),
+            (0, 0, -1),
+            (0, 0, 1),
+            (-1, 0, 0),
+            (1, 0, 0),
+        ];
+        for (dx, dy, dz) in DIRS {
+            if state_type(blocks.state(BlockPos::new(x + dx, y + dy, z + dz))) == PathType::Blocked
+            {
+                return PathType::WaterBorder;
+            }
+        }
+        return PathType::Water;
+    }
+    path_type_static(blocks, min_y, x, y, z)
+}
+
+/// `#minecraft:frog_prefer_jump_to`.
+fn is_frog_jump_target(state: BlockState) -> bool {
+    matches!(
+        state.block().name(),
+        "minecraft:lily_pad" | "minecraft:big_dripleaf"
+    )
 }
 
 #[cfg(test)]
@@ -1510,48 +1889,90 @@ mod tests {
         }
     }
 
-    fn mob(pos: Vec3) -> PathMob {
-        PathMob {
-            pos,
-            aabb: Aabb::new(
-                pos.x - 0.3,
-                pos.y,
-                pos.z - 0.3,
-                pos.x + 0.3,
-                pos.y + 1.95,
-                pos.z + 0.3,
-            ),
-            width: 0.6,
-            height: 1.95,
-            on_ground: true,
-            max_up_step: 0.6,
-            max_fall_distance: 3,
-            in_water: false,
-            can_float: false,
-            can_open_doors: false,
-            can_pass_doors: true,
+    /// A pool: water from y 60 to 63 for x in 0..10, z in -3..=3, stone around and below.
+    struct Pool;
+    impl Blocks for Pool {
+        fn state(&self, pos: BlockPos) -> BlockState {
+            let inside = (0..10).contains(&pos.x) && (-3..=3).contains(&pos.z);
+            if inside && (60..=63).contains(&pos.y) {
+                ids::WATER.default_state()
+            } else if pos.y < 64 {
+                ids::STONE.default_state()
+            } else {
+                BlockState::AIR
+            }
         }
+    }
+
+    /// A gap: ground at y 63 for x <= 2 and x >= 8, nothing in between down to the void.
+    struct Gap;
+    impl Blocks for Gap {
+        fn state(&self, pos: BlockPos) -> BlockState {
+            if pos.y == 63 && (pos.x <= 2 || pos.x >= 8) {
+                ids::STONE.default_state()
+            } else {
+                BlockState::AIR
+            }
+        }
+    }
+
+    /// A wall at x = 3 with a closed oak door at z = 0.
+    struct Door;
+    impl Blocks for Door {
+        fn state(&self, pos: BlockPos) -> BlockState {
+            if pos.y < 64 {
+                return ids::STONE.default_state();
+            }
+            if pos.x == 3 && pos.y <= 66 {
+                if pos.z == 0 && pos.y <= 65 {
+                    let door = ids::OAK_DOOR.default_state();
+                    let half = if pos.y == 64 { "lower" } else { "upper" };
+                    return door.with("half", half).unwrap_or(door);
+                }
+                return ids::STONE.default_state();
+            }
+            BlockState::AIR
+        }
+    }
+
+    fn mob(pos: Vec3) -> PathMob {
+        let aabb = Aabb::new(
+            pos.x - 0.3,
+            pos.y,
+            pos.z - 0.3,
+            pos.x + 0.3,
+            pos.y + 1.95,
+            pos.z + 0.3,
+        );
+        PathMob::walking(pos, aabb, 0.6, 1.95)
+    }
+
+    fn search(malus: &MalusTable) -> Search<'_> {
+        Search {
+            max_path_length: 16.0,
+            reach_range: 0,
+            max_visited_nodes: 512,
+            malus,
+            min_y: -64,
+        }
+    }
+
+    fn find(blocks: &dyn Blocks, mob: &PathMob, to: BlockPos, malus: &MalusTable) -> Path {
+        let mut finder = PathFinder::new();
+        let mut random = LegacyRandom::new(1);
+        finder
+            .find_path(blocks, mob, &[to], search(malus), &mut random)
+            .unwrap_or_else(|| panic!("no start"))
     }
 
     #[test]
     fn finds_a_path_over_a_step() {
-        let mut finder = PathFinder::new();
-        let search = Search {
-            max_path_length: 16.0,
-            reach_range: 0,
-            max_visited_nodes: 256,
-            malus: &[],
-            min_y: -64,
-            swim: false,
-        };
-        let path = finder
-            .find_path(
-                &Flat,
-                &mob(Vec3::new(0.5, 64.0, 0.5)),
-                &[BlockPos::new(6, 64, 0)],
-                search,
-            )
-            .unwrap_or_else(|| panic!("no start"));
+        let path = find(
+            &Flat,
+            &mob(Vec3::new(0.5, 64.0, 0.5)),
+            BlockPos::new(6, 64, 0),
+            &[],
+        );
         assert!(path.reached);
         assert_eq!(
             path.nodes.first().map(PathNode::pos),
@@ -1565,90 +1986,133 @@ mod tests {
         assert!(path.nodes.iter().any(|n| n.y == 65));
     }
 
-    /// A pool of water from y 60 to 63 within 8 blocks, with a stone wall at x = 3 up to
-    /// y 62.
-    struct Pool;
-    impl Blocks for Pool {
-        fn state(&self, pos: BlockPos) -> BlockState {
-            let inside = pos.x.abs() <= 8 && pos.z.abs() <= 8;
-            if pos.x == 3 && (60..63).contains(&pos.y) && inside {
-                ids::STONE.default_state()
-            } else if inside && (60..64).contains(&pos.y) {
-                ids::WATER.default_state()
-            } else if pos.y >= 64 {
-                BlockState::AIR
-            } else {
-                ids::STONE.default_state()
-            }
-        }
-    }
-
-    #[test]
-    fn swims_over_a_wall_and_stays_in_water() {
-        let mut finder = PathFinder::new();
-        let search = Search {
-            max_path_length: 16.0,
-            reach_range: 0,
-            max_visited_nodes: 480,
-            malus: &[(PathType::Water, 0.0)],
-            min_y: -64,
-            swim: true,
-        };
-        let pos = Vec3::new(0.5, 61.0, 0.5);
-        let guardian = PathMob {
-            aabb: Aabb::new(
-                pos.x - 0.425,
-                pos.y,
-                pos.z - 0.425,
-                pos.x + 0.425,
-                pos.y + 0.85,
-                pos.z + 0.425,
-            ),
-            width: 0.85,
-            height: 0.85,
-            in_water: true,
-            ..mob(pos)
-        };
-        let path = finder
-            .find_path(&Pool, &guardian, &[BlockPos::new(6, 61, 0)], search)
-            .unwrap_or_else(|| panic!("no start"));
-        assert!(path.reached);
-        assert!(path.nodes.iter().skip(1).all(|n| n.kind == PathType::Water));
-        assert!(path.nodes.iter().any(|n| n.y == 63));
-        assert_eq!(
-            path.nodes.last().map(PathNode::pos),
-            Some(BlockPos::new(6, 61, 0))
-        );
-    }
-
-    #[test]
-    fn swim_path_types() {
-        let mob = mob(Vec3::new(0.5, 61.0, 0.5));
-        let search = Search {
-            max_path_length: 16.0,
-            reach_range: 0,
-            max_visited_nodes: 64,
-            malus: &[],
-            min_y: -64,
-            swim: true,
-        };
-        let eval = Eval {
-            blocks: &Pool,
-            mob: &mob,
-            search,
-            entity_width: 1,
-            entity_height: 1,
-            entity_depth: 1,
-        };
-        assert_eq!(swim_type_of_mob(&eval, 0, 61, 0), PathType::Water);
-        assert_eq!(swim_type_of_mob(&eval, 3, 61, 0), PathType::Blocked);
-        assert_eq!(swim_type_of_mob(&eval, 0, 64, 0), PathType::Breach);
-    }
-
     #[test]
     fn walkable_ground_and_open_air() {
         assert_eq!(path_type_static(&Flat, -64, 0, 64, 0), PathType::Walkable);
         assert_eq!(path_type_static(&Flat, -64, 0, 66, 0), PathType::Open);
         assert_eq!(path_type_static(&Flat, -64, 0, 63, 0), PathType::Blocked);
+    }
+
+    #[test]
+    fn fish_swim_through_water_only() {
+        let pos = Vec3::new(1.5, 61.0, 0.5);
+        let aabb = Aabb::new(
+            pos.x - 0.25,
+            pos.y,
+            pos.z - 0.25,
+            pos.x + 0.25,
+            pos.y + 0.3,
+            pos.z + 0.25,
+        );
+        let mut fish = PathMob::walking(pos, aabb, 0.5, 0.3);
+        fish.evaluator = Evaluator::Swim { breaching: false };
+        fish.in_water = true;
+        fish.can_pass_doors = false;
+        let path = find(&Pool, &fish, BlockPos::new(8, 61, 0), &[]);
+        assert!(path.reached);
+        assert!(
+            path.nodes
+                .iter()
+                .all(|n| (60..=63).contains(&n.y) && is_water(Pool.state(n.pos())))
+        );
+        // Out of the water is never a node.
+        let out = find(&Pool, &fish, BlockPos::new(8, 66, 0), &[]);
+        assert!(!out.reached);
+        assert!(out.nodes.iter().all(|n| n.y <= 63));
+    }
+
+    #[test]
+    fn dolphins_breach_the_surface() {
+        assert_eq!(
+            PathFinder::swim_type_of_mob(
+                &Eval {
+                    blocks: &Pool,
+                    mob: &mob(Vec3::new(1.5, 61.0, 0.5)),
+                    search: search(&[]),
+                    entity_width: 1,
+                    entity_height: 1,
+                    entity_depth: 1,
+                },
+                1,
+                64,
+                0
+            ),
+            PathType::Breach
+        );
+    }
+
+    #[test]
+    fn flyers_cross_a_gap() {
+        let pos = Vec3::new(1.5, 64.0, 0.5);
+        let aabb = Aabb::new(
+            pos.x - 0.25,
+            pos.y,
+            pos.z - 0.25,
+            pos.x + 0.25,
+            pos.y + 0.9,
+            pos.z + 0.25,
+        );
+        let mut parrot = PathMob::walking(pos, aabb, 0.5, 0.9);
+        parrot.evaluator = Evaluator::Fly;
+        let path = find(&Gap, &parrot, BlockPos::new(9, 64, 0), &[]);
+        assert!(path.reached);
+        // A walker cannot: the gap is deeper than its fall distance.
+        let walker = find(&Gap, &mob(pos), BlockPos::new(9, 64, 0), &[]);
+        assert!(!walker.reached);
+    }
+
+    #[test]
+    fn amphibious_mobs_walk_into_the_water_and_swim() {
+        let pos = Vec3::new(12.5, 64.0, 0.5);
+        let aabb = Aabb::new(
+            pos.x - 0.6,
+            pos.y,
+            pos.z - 0.6,
+            pos.x + 0.6,
+            pos.y + 0.4,
+            pos.z + 0.6,
+        );
+        let mut turtle = PathMob::walking(pos, aabb, 1.2, 0.4);
+        turtle.evaluator = Evaluator::Amphibious {
+            prefers_shallow: false,
+            frog: false,
+        };
+        let path = find(&Pool, &turtle, BlockPos::new(3, 61, 0), &[]);
+        assert!(path.reached);
+        assert!(path.nodes.iter().any(|n| n.y < 63));
+        // The amphibious evaluator treats water as free.
+        let walker = find(&Pool, &mob(pos), BlockPos::new(3, 61, 0), &[]);
+        assert!(!walker.reached);
+    }
+
+    #[test]
+    fn doors_need_opening() {
+        let pos = Vec3::new(1.5, 64.0, 0.5);
+        let closed = find(&Door, &mob(pos), BlockPos::new(5, 64, 0), &[]);
+        assert!(!closed.reached);
+        let mut villager = mob(pos);
+        villager.can_open_doors = true;
+        let open = find(&Door, &villager, BlockPos::new(5, 64, 0), &[]);
+        assert!(open.reached);
+        assert!(
+            open.nodes
+                .iter()
+                .any(|n| n.pos() == BlockPos::new(3, 64, 0) && n.kind == PathType::WalkableDoor)
+        );
+    }
+
+    #[test]
+    fn pathfindable_by_type() {
+        let water = ids::WATER.default_state();
+        assert!(is_pathfindable(water, Computation::Water));
+        assert!(is_pathfindable(BlockState::AIR, Computation::Air));
+        assert!(!is_pathfindable(
+            ids::STONE.default_state(),
+            Computation::Air
+        ));
+        assert!(!is_pathfindable(
+            ids::OAK_DOOR.default_state(),
+            Computation::Water
+        ));
     }
 }

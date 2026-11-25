@@ -187,7 +187,8 @@ const SCENARIOS: &[Scenario] = &[
     Scenario {
         name: "pregen",
         title: "World pre-generation",
-        what: "Generate the 101 × 101 chunks (10 201) around 0, 0 on 4 cores, median of 3 runs. \
+        what: "Generate the 101 × 101 chunks (10 201) around 0, 0 on 4 cores (Vanillite also on \
+               1 and 2 threads), median of 3 runs. \
                Vanillite: the chunk pipeline benchmark (`chunk_bench`: generation, light, \
                storage, then loading the same chunks from disk). Paper: the Chunky plugin \
                (radius 800, square) in the running server.",
@@ -213,8 +214,11 @@ const SCENARIOS: &[Scenario] = &[
         title: "Flying players: chunk delivery",
         what: "Bots fly straight at y 300 in random directions, first 50 with elytra speed \
                (33.5 blocks/s), then 100 at boat speed (72.7 blocks/s): new terrain is \
-               generated and sent all the time. Holes: chunks within 2 chunks of a bot that it \
-               does not have, sampled every 5 s.",
+               generated and sent all the time; the movement check game rule is off on every \
+               server. Holes: chunks within 2 chunks of a bot that it does not have, sampled \
+               every 5 s. Full view: from connecting until every chunk within the view distance \
+               (circle) is there. Server CPU per chunk: CPU time of the server process divided \
+               by the chunks the bots received.",
         servers: WORLD_SERVERS,
         headline: ("holes near players at 100 boats", "%", Better::Lower),
         kind: Kind::Players {
@@ -405,6 +409,7 @@ fn suite(root: &Path, args: &[&str]) -> Result<()> {
         bin_dir: root.join("target/release-fast"),
         versions: BTreeMap::new(),
     };
+    let _lock = loadtest::Lock::take(&ctx.host, &format!("xtask bench from {}", root.display()))?;
     prepare(&ctx, &scenarios, deploy)?;
 
     let out_dir = root.join("target/bench").join(&stamp);
@@ -639,6 +644,19 @@ fn players(
     hold: u64,
 ) -> Result<Value> {
     fresh_start(ctx, server, target, profile)?;
+    if steps
+        .iter()
+        .any(|s| s.1.starts_with("straight") || s.1.starts_with("spread"))
+        && !matches!(target, Target::Velocity | Target::VanilliteProxy)
+    {
+        // Fast flight is not a cheat here: no server teleports the bots back. A server
+        // without the rule flies them anyway or rejects; the teleports column shows it.
+        let _ = commands(
+            &ctx.host,
+            target,
+            &["gamerule player_movement_check false".to_owned()],
+        )?;
+    }
     let o = options(steps, settle, hold);
     let mut session = Session::open(&ctx.host, target, &ctx.bin_dir, &o, &[])?;
     let measured = loadtest::ramp(&o, &mut session);
@@ -694,6 +712,14 @@ fn compact_step(step: &Value) -> Value {
         "rtt_ms_p95": pick(&["bots", "rtt_ms_p95"]),
         "chunks_per_s_per_bot": pick(&["bots", "chunks_per_s_per_bot"]),
         "near_missing_percent": pick(&["bots", "near_missing_percent"]),
+        "full_view_ms_p50": pick(&["bots", "full_view_ms_p50"]),
+        "full_view_ms_p95": pick(&["bots", "full_view_ms_p95"]),
+        "teleports": pick(&["bots", "teleports"]),
+        // Server CPU per chunk the bots received: steadier than wall time on a busy machine.
+        "cpu_ms_per_chunk": match (step["server"]["cpu_percent"].as_f64(), step["bots"]["chunks_per_s"].as_f64()) {
+            (Some(cpu), Some(chunks)) if chunks > 0.0 => round(Some(cpu * 10.0 / chunks)),
+            _ => Value::Null,
+        },
         "failed": pick(&["bots", "failed"]),
         "disconnected": pick(&["bots", "disconnected"]),
     })
@@ -813,9 +839,14 @@ fn save(ctx: &mut Ctx, server: &str, target: Target) -> Result<Value> {
         &["timed", target.name(), "600", regex, "save-all", "flush"],
     )?;
     let chunks = bench_json(&ctx.host, &["chunks", target.name()])?;
+    let per_s = match (chunks["chunks"].as_f64(), saved["seconds"].as_f64()) {
+        (Some(c), Some(s)) if s > 0.0 => round(Some(c / s)),
+        _ => Value::Null,
+    };
     Ok(json!({
         "save_s": saved["seconds"],
         "chunks_on_disk": chunks["chunks"],
+        "chunks_on_disk_per_save_s": per_s,
         "flight_chunks_per_s": flown["bots"]["chunks_per_s"],
         "flight_mspt_p95": flown["mspt"]["p95"],
     }))
@@ -827,14 +858,27 @@ fn pregen(ctx: &mut Ctx, target: Target) -> Result<Value> {
     let chunks = f64::from((2 * RADIUS + 1).pow(2));
     match target {
         Target::Vanillite => {
-            let out = bench_cmd(
-                &ctx.host,
-                &["pregen", &RADIUS.to_string(), "4", &REPS.to_string()],
-            )?;
-            let lines: Vec<Value> = out
-                .lines()
-                .filter_map(|l| serde_json::from_str(l).ok())
-                .collect();
+            let mut scaling = Map::new();
+            let mut lines: Vec<Value> = Vec::new();
+            for threads in ["1", "2", "4"] {
+                let out = bench_cmd(
+                    &ctx.host,
+                    &["pregen", &RADIUS.to_string(), threads, &REPS.to_string()],
+                )?;
+                lines = out
+                    .lines()
+                    .filter_map(|l| serde_json::from_str(l).ok())
+                    .collect();
+                let rate = median(
+                    lines
+                        .iter()
+                        .filter(|l| l["phase"] == "generate")
+                        .filter_map(|l| l["full_per_s"].as_f64())
+                        .collect(),
+                );
+                scaling.insert(threads.to_owned(), round(rate));
+            }
+            // The 4-thread runs (the last ones) give the headline.
             let phase = |name: &str, key: &str| -> Vec<f64> {
                 lines
                     .iter()
@@ -848,6 +892,7 @@ fn pregen(ctx: &mut Ctx, target: Target) -> Result<Value> {
                 .collect();
             Ok(json!({
                 "method": "chunk_bench --radius 50 --threads 4 --pump --load",
+                "chunks_per_s_by_threads": scaling,
                 "runs": phase("generate", "full_per_s").len(),
                 "chunks_per_s": round(median(phase("generate", "full_per_s"))),
                 "first_chunk_ms": round(median(phase("generate", "first_ms"))),
@@ -1476,6 +1521,7 @@ fn details(name: &str, sc: &Value) -> String {
             &[
                 "Server",
                 "Chunks/s",
+                "Chunks/s with 1 / 2 threads",
                 "CPU ms per chunk",
                 "First chunk ms",
                 "Peak RSS MiB",
@@ -1489,6 +1535,11 @@ fn details(name: &str, sc: &Value) -> String {
                     vec![
                         format!("{}{}", display(id), status(r)),
                         num(&r["chunks_per_s"]),
+                        format!(
+                            "{} / {}",
+                            num(&r["chunks_per_s_by_threads"]["1"]),
+                            num(&r["chunks_per_s_by_threads"]["2"])
+                        ),
                         num(&r["cpu_ms_per_chunk"]),
                         num(&r["first_chunk_ms"]),
                         num(&r["peak_rss_mib"]),
@@ -1505,6 +1556,7 @@ fn details(name: &str, sc: &Value) -> String {
                 "Server",
                 "save-all flush s",
                 "Chunks on disk after",
+                "Chunks on disk / save s",
                 "Chunks/s to the bots while flying",
                 "MSPT p95 while flying",
             ],
@@ -1516,6 +1568,7 @@ fn details(name: &str, sc: &Value) -> String {
                         format!("{}{}", display(id), status(r)),
                         num(&r["save_s"]),
                         num(&r["chunks_on_disk"]),
+                        num(&r["chunks_on_disk_per_save_s"]),
                         num(&r["flight_chunks_per_s"]),
                         num(&r["flight_mspt_p95"]),
                     ]
@@ -1532,22 +1585,9 @@ fn details(name: &str, sc: &Value) -> String {
                     let r = &sc["results"][*id];
                     let steps = r["steps"].as_array().cloned().unwrap_or_default();
                     if steps.is_empty() {
-                        return vec![vec![
-                            format!("{}{}", display(id), status(r)),
-                            "–".into(),
-                            "–".into(),
-                            "–".into(),
-                            "–".into(),
-                            "–".into(),
-                            "–".into(),
-                            "–".into(),
-                            "–".into(),
-                            "–".into(),
-                            "–".into(),
-                            "–".into(),
-                            "–".into(),
-                            "–".into(),
-                        ]];
+                        let mut row = vec![format!("{}{}", display(id), status(r))];
+                        row.extend(std::iter::repeat_n("–".to_owned(), 16));
+                        return vec![row];
                     }
                     steps
                         .iter()
@@ -1571,7 +1611,10 @@ fn details(name: &str, sc: &Value) -> String {
                                 format!("{} / {}", num(&st["ramp_s"]), num(&st["join_ms_p95"])),
                                 num(&st["rtt_ms_p95"]),
                                 num(&st["chunks_per_s_per_bot"]),
+                                num(&st["cpu_ms_per_chunk"]),
+                                num(&st["full_view_ms_p95"]),
                                 num(&st["near_missing_percent"]),
+                                num(&st["teleports"]),
                             ]
                         })
                         .collect()
@@ -1592,7 +1635,10 @@ fn details(name: &str, sc: &Value) -> String {
                     "Join: ramp s / p95 ms",
                     "RTT p95 ms",
                     "Chunks/s per bot",
+                    "Server CPU ms per chunk",
+                    "Full view p95 ms",
                     "Holes near players %",
+                    "Teleports",
                 ],
                 rows,
             );

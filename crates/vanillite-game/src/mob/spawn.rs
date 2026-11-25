@@ -10,9 +10,10 @@ use vanillite_data::block::{BlockState, flags, ids};
 use vanillite_data::entity::EntityTypeId;
 use vanillite_world::entity::{EntityId, Rotation};
 
+use super::fam::{ExtraMob, Relation, SpawnContext, SpawnReason};
 use super::kinds::{self, FarmClimate, Kind};
 use super::physics;
-use super::{Environment, MobData, max_local_raw_brightness, random_uuid};
+use super::{Environment, MobData, max_local_raw_brightness};
 use crate::level::Level;
 use crate::survival::rules::Difficulty;
 
@@ -105,22 +106,78 @@ pub struct SpawnEntry {
 /// The spawn settings of one biome.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BiomeSpawns {
+    /// The biome id (`minecraft:plains`).
+    pub name: Box<str>,
+    /// The biome tags that contain the biome (`minecraft:is_forest`), sorted.
+    pub tags: Vec<Box<str>>,
     pub by_category: [Vec<SpawnEntry>; 7],
+    /// `spawn_costs` (`MobSpawnCost`): charge and energy budget by entity type.
+    pub spawn_costs: Vec<(EntityTypeId, f64, f64)>,
     /// `creature_world_gen_spawn_probability`.
     pub creature_probability: f32,
     pub climate: FarmClimate,
+    /// The base temperature of the biome.
+    pub temperature: f32,
+    /// `minecraft:gameplay/can_pillager_patrol_spawn`.
+    pub patrol_spawn: bool,
 }
 
-/// The spawn settings of every biome, by protocol id.
+impl BiomeSpawns {
+    /// `biome.is(tag)`, with or without the `minecraft:` namespace.
+    pub fn is(&self, tag: &str) -> bool {
+        let tag = tag.strip_prefix('#').unwrap_or(tag);
+        if tag.contains(':') {
+            self.tags.binary_search_by(|t| (**t).cmp(tag)).is_ok()
+        } else {
+            let full = format!("minecraft:{tag}");
+            self.tags.binary_search_by(|t| (**t).cmp(&*full)).is_ok()
+        }
+    }
+
+    /// The spawn cost of an entity type (`getMobSpawnCost`).
+    pub fn spawn_cost(&self, t: EntityTypeId) -> Option<(f64, f64)> {
+        self.spawn_costs
+            .iter()
+            .find(|c| c.0 == t)
+            .map(|&(_, charge, budget)| (charge, budget))
+    }
+}
+
+/// The spawn settings of every biome, by protocol id, and the structures' spawn overrides.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SpawnTable {
     pub biomes: Vec<BiomeSpawns>,
+    /// `Structure.spawnOverrides` by structure id and category.
+    pub structures: FxHashMap<Box<str>, [Option<StructureOverride>; 7]>,
+}
+
+/// `StructureSpawnOverride`: the spawns inside a structure (its pieces or its whole box).
+#[derive(Clone, Debug, PartialEq)]
+pub struct StructureOverride {
+    /// `bounding_box: piece` (else `full`).
+    pub piece: bool,
+    pub spawns: Vec<SpawnEntry>,
 }
 
 impl SpawnTable {
-    fn biome(&self, id: u16) -> Option<&BiomeSpawns> {
+    /// The spawn settings of a biome by protocol id.
+    pub fn biome(&self, id: u16) -> Option<&BiomeSpawns> {
         self.biomes.get(usize::from(id))
     }
+}
+
+/// The spawn table of the loaded data packs for code without a world's table at hand (spawn
+/// rules that check the biome); data packs are frozen for the process.
+static INSTALLED: std::sync::OnceLock<std::sync::Arc<SpawnTable>> = std::sync::OnceLock::new();
+
+/// Installs the process' spawn table (later calls are ignored).
+pub fn install_table(table: std::sync::Arc<SpawnTable>) {
+    let _ = INSTALLED.set(table);
+}
+
+/// The spawn settings of the biome at `pos`, `None` without data packs.
+pub fn biome_at(level: &Level, pos: BlockPos) -> Option<&'static BiomeSpawns> {
+    INSTALLED.get()?.biome(level.biome(pos))
 }
 
 /// `WeightedList.getRandom`.
@@ -180,13 +237,102 @@ fn chunk_center_distance_sqr(chunk: ChunkPos, pos: Vec3) -> f64 {
     dx * dx + dz * dz
 }
 
-/// The players close enough to `chunk` for spawning (`getPlayersCloseForSpawning`).
-fn players_near(input: &SpawnInput<'_>, chunk: ChunkPos, out: &mut Vec<usize>) {
+/// The players in cells of 8 × 8 chunks (128 blocks): the spawner's player queries look at
+/// the 3 × 3 cells around a chunk instead of every player.
+#[derive(Debug, Default)]
+struct PlayerGrid {
+    cells: FxHashMap<(i32, i32), Vec<usize>>,
+}
+
+impl PlayerGrid {
+    fn build(&mut self, players: &[(EntityId, Vec3)]) {
+        for v in self.cells.values_mut() {
+            v.clear();
+        }
+        for (i, (_, p)) in players.iter().enumerate() {
+            let c = BlockPos::containing(p.x, p.y, p.z).chunk();
+            self.cells.entry((c.x >> 3, c.z >> 3)).or_default().push(i);
+        }
+        self.cells.retain(|_, v| !v.is_empty());
+    }
+
+    /// Calls `f` with the players whose cell is next to `chunk`'s.
+    fn around(&self, chunk: ChunkPos, mut f: impl FnMut(usize)) {
+        let (cx, cz) = (chunk.x >> 3, chunk.z >> 3);
+        for dx in -1..=1 {
+            for dz in -1..=1 {
+                if let Some(list) = self.cells.get(&(cx + dx, cz + dz)) {
+                    for &i in list {
+                        f(i);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The players close enough to `chunk` for spawning (`getPlayersCloseForSpawning`), in
+/// player order.
+fn players_near(input: &SpawnInput<'_>, grid: &PlayerGrid, chunk: ChunkPos, out: &mut Vec<usize>) {
     out.clear();
-    for (i, (_, p)) in input.players.iter().enumerate() {
-        if chunk_center_distance_sqr(chunk, *p) < 16384.0 {
+    grid.around(chunk, |i| {
+        if chunk_center_distance_sqr(chunk, input.players[i].1) < 16384.0 {
             out.push(i);
         }
+    });
+    out.sort_unstable();
+}
+
+/// The nearest player to a position (`getNearestPlayer(x, y, z, -1, false)`), from the cells
+/// around it; `None` when no player is within 128 blocks of its chunk cell neighbourhood.
+fn nearest_player_distance(input: &SpawnInput<'_>, grid: &PlayerGrid, at: Vec3) -> Option<f64> {
+    let chunk = BlockPos::containing(at.x, at.y, at.z).chunk();
+    let mut best: Option<f64> = None;
+    grid.around(chunk, |i| {
+        let d = input.players[i].1.distance_to_sqr(at);
+        if best.is_none_or(|b| d < b) {
+            best = Some(d);
+        }
+    });
+    if best.is_none() {
+        // Farther players still count for the distance checks.
+        best = input
+            .players
+            .iter()
+            .map(|(_, p)| p.distance_to_sqr(at))
+            .min_by(f64::total_cmp);
+    }
+    best
+}
+
+/// `PotentialCalculator`: the charges of the mobs with a spawn cost.
+#[derive(Debug, Default)]
+struct Potential {
+    charges: Vec<(BlockPos, f64)>,
+}
+
+impl Potential {
+    fn add(&mut self, pos: BlockPos, charge: f64) {
+        if charge != 0.0 {
+            self.charges.push((pos, charge));
+        }
+    }
+
+    /// `getPotentialEnergyChange`.
+    fn energy_change(&self, pos: BlockPos, charge: f64) -> f64 {
+        if charge == 0.0 {
+            return 0.0;
+        }
+        let mut sum = 0.0;
+        for &(p, c) in &self.charges {
+            let d = p.dist_sqr(pos);
+            sum += if d == 0.0 {
+                f64::INFINITY
+            } else {
+                c / d.sqrt()
+            };
+        }
+        sum * charge
     }
 }
 
@@ -196,200 +342,51 @@ pub struct Spawner {
     chunks: Vec<ChunkPos>,
     seen: FxHashSet<ChunkPos>,
     near: Vec<usize>,
+    grid: PlayerGrid,
+    potential: Potential,
+    /// Parsed structure data of chunks.
+    pub structures: super::structures::StructureIndex,
     /// Chunks that passed the spawn step and wait for their animals.
     pub generated: Vec<ChunkPos>,
-    /// Structure spawn overrides (ocean monuments) by chunk.
-    pub structures: StructureSpawns,
 }
 
-/// The emptied spawn lists of an ocean monument (axolotls, underground water creatures).
-const NO_SPAWNS: &[SpawnEntry] = &[];
-
-/// The structure starts with spawn overrides that chunks reference, read from the chunks'
-/// stored structure data and cached per chunk (`StructureManager.getStructureAt` for the
-/// `full` bounding boxes of ocean monuments).
-#[derive(Debug, Default)]
-pub struct StructureSpawns {
-    cache: FxHashMap<ChunkPos, CachedChunk>,
-}
-
-/// The monuments a chunk references.
-#[derive(Debug)]
-struct CachedChunk {
-    /// The chunk's stored data the boxes were read from.
-    data: Option<std::sync::Arc<[u8]>>,
-    /// Every referenced start chunk was available.
-    complete: bool,
-    /// The monuments' bounding boxes (`min_x, min_y, min_z, max_x, max_y, max_z`).
-    boxes: Vec<[i32; 6]>,
-}
-
-/// Most chunks kept in [`StructureSpawns`] before it starts over.
-const STRUCTURE_CACHE_LIMIT: usize = 4096;
-
-fn chunk_tags(
+/// The spawn cost of a type at a position (`getRoughBiome(pos).getMobSpawnCost(type)`).
+fn spawn_cost(
     level: &Level,
-    chunk: ChunkPos,
-) -> Option<(std::sync::Arc<[u8]>, vanillite_nbt::Compound)> {
-    let c = level.chunks.chunk(chunk)?;
-    let bytes = c.extra.clone()?;
-    let tag = vanillite_nbt::read::read_network(
-        &mut &bytes[..],
-        &mut vanillite_nbt::read::Budget::file(),
-    )
-    .ok()??;
-    match tag {
-        vanillite_nbt::Tag::Compound(c) => Some((bytes, c)),
-        _ => None,
-    }
-}
-
-impl StructureSpawns {
-    /// Whether `pos` is inside the bounding box of an ocean monument its chunk references.
-    pub fn in_monument(&mut self, level: &Level, pos: BlockPos) -> bool {
-        let chunk = pos.chunk();
-        let extra = level.chunks.chunk(chunk).and_then(|c| c.extra.clone());
-        let fresh = match self.cache.get(&chunk) {
-            Some(cached) => {
-                cached.complete
-                    && match (&cached.data, &extra) {
-                        (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
-                        (None, None) => true,
-                        _ => false,
-                    }
-            }
-            None => false,
-        };
-        if !fresh {
-            if self.cache.len() >= STRUCTURE_CACHE_LIMIT {
-                self.cache.clear();
-            }
-            let (complete, boxes) = monument_boxes(level, chunk);
-            self.cache.insert(
-                chunk,
-                CachedChunk {
-                    data: extra,
-                    complete,
-                    boxes,
-                },
-            );
-        }
-        self.cache.get(&chunk).is_some_and(|c| {
-            c.boxes.iter().any(|b| {
-                (b[0]..=b[3]).contains(&pos.x)
-                    && (b[1]..=b[4]).contains(&pos.y)
-                    && (b[2]..=b[5]).contains(&pos.z)
-            })
-        })
-    }
-}
-
-/// The bounding boxes of the monuments `chunk` references; `false` when a start chunk was
-/// not available.
-fn monument_boxes(level: &Level, chunk: ChunkPos) -> (bool, Vec<[i32; 6]>) {
-    use vanillite_nbt::Tag;
-    const NAME: &str = "minecraft:monument";
-    let Some((_, tags)) = chunk_tags(level, chunk) else {
-        return (true, Vec::new());
-    };
-    let Some(Tag::LongArray(refs)) = tags
-        .get("structures")
-        .and_then(Tag::as_compound)
-        .and_then(|s| s.get("References"))
-        .and_then(Tag::as_compound)
-        .and_then(|r| r.get(NAME))
-    else {
-        return (true, Vec::new());
-    };
-    let mut complete = true;
-    let mut boxes = Vec::new();
-    for &key in refs {
-        let start_chunk = ChunkPos::from_long(key);
-        let Some((_, start_tags)) = chunk_tags(level, start_chunk) else {
-            complete = false;
-            continue;
-        };
-        let Some(start) = start_tags
-            .get("structures")
-            .and_then(Tag::as_compound)
-            .and_then(|s| s.get("starts"))
-            .and_then(Tag::as_compound)
-            .and_then(|s| s.get(NAME))
-            .and_then(Tag::as_compound)
-        else {
-            continue;
-        };
-        boxes.extend(start_box(start));
-    }
-    (complete, boxes)
-}
-
-/// The bounding box of a stored structure start (`StructureStart.getBoundingBox`): the box
-/// around all its pieces' `BB`s.
-fn start_box(start: &vanillite_nbt::Compound) -> Option<[i32; 6]> {
-    use vanillite_nbt::Tag;
-    let Some(Tag::List(children)) = start.get("Children") else {
-        return None;
-    };
-    let mut bb: Option<[i32; 6]> = None;
-    for child in &children.0 {
-        let Some(Tag::IntArray(b)) = child.as_compound().and_then(|c| c.get("BB")) else {
-            continue;
-        };
-        let [x0, y0, z0, x1, y1, z1] = b.as_slice() else {
-            continue;
-        };
-        bb = Some(match bb {
-            None => [*x0, *y0, *z0, *x1, *y1, *z1],
-            Some(o) => [
-                o[0].min(*x0),
-                o[1].min(*y0),
-                o[2].min(*z0),
-                o[3].max(*x1),
-                o[4].max(*y1),
-                o[5].max(*z1),
-            ],
-        });
-    }
-    bb
-}
-
-/// `ChunkGenerator.getMobsAt` (via `NaturalSpawner.mobsAt`): the structure override inside an
-/// ocean monument, else the biome's list.
-fn mobs_at<'t>(
-    level: &Level,
-    table: &'t SpawnTable,
-    structures: &mut StructureSpawns,
-    category: Category,
+    table: &SpawnTable,
+    t: EntityTypeId,
     pos: BlockPos,
-) -> Option<&'t [SpawnEntry]> {
-    if matches!(
-        category,
-        Category::Monster | Category::Axolotls | Category::UndergroundWaterCreature
-    ) && structures.in_monument(level, pos)
-    {
-        return Some(if category == Category::Monster {
-            monument_monsters()
-        } else {
-            NO_SPAWNS
-        });
-    }
+) -> Option<(f64, f64)> {
     table
-        .biome(level.biome(pos))
-        .map(|b| b.by_category[category.index()].as_slice())
+        .biome(rough_biome(level, pos))
+        .and_then(|b| b.spawn_cost(t))
 }
 
-/// The guardians of an ocean monument: weight 1, 2 to 4.
-fn monument_monsters() -> &'static [SpawnEntry] {
-    static ENTRIES: std::sync::OnceLock<[SpawnEntry; 1]> = std::sync::OnceLock::new();
-    ENTRIES.get_or_init(|| {
-        [SpawnEntry {
-            type_id: vanillite_data::entity::ids::GUARDIAN,
-            weight: 1,
-            min: 2,
-            max: 4,
-        }]
-    })
+/// `getRoughBiome`: the noise biome of the quart position without the biome zoom.
+fn rough_biome(level: &Level, pos: BlockPos) -> u16 {
+    let default = level.chunks.info().default_biome;
+    let Some(c) = level.chunks.chunk(pos.chunk()) else {
+        return default;
+    };
+    let sections = c.chunk.sections();
+    let min_quart = c.chunk.min_section() * 4;
+    let len = i32::try_from(sections.len()).unwrap_or(0);
+    let qy = (pos.y >> 2).clamp(min_quart, min_quart + len * 4 - 1);
+    let index = usize::try_from((qy - min_quart) >> 2).unwrap_or(0);
+    #[allow(clippy::cast_sign_loss)]
+    sections[index].biome(
+        ((pos.x >> 2) & 3) as u32,
+        (qy & 3) as u32,
+        ((pos.z >> 2) & 3) as u32,
+    )
+}
+
+/// Whether a mob counts for the caps (`!isPersistenceRequired && !requiresCustomPersistence`).
+fn counts_for_caps(level: &Level, id: EntityId, m: &MobData) -> bool {
+    !m.persistent
+        && !super::fam::requires_custom_persistence(m)
+        && level.entities.riding.vehicle_of(id).is_none()
+        && !level.entities.leashes.contains_key(&id)
 }
 
 /// `ServerChunkCache.tickChunks`' spawning: counts, caps and one attempt per category and
@@ -404,6 +401,7 @@ pub fn tick(
     if input.players.is_empty() {
         return;
     }
+    spawner.grid.build(input.players);
     // `getNaturalSpawnChunkCount`: chunks within 8 of a player chunk.
     spawner.seen.clear();
     for (_, p) in input.players {
@@ -421,9 +419,11 @@ pub fn tick(
             counts: vec![[0; 7]; input.players.len()],
         },
     };
-    // `createState`: the non-persistent mobs per category, globally and per player.
+    spawner.potential.charges.clear();
+    // `createState`: the non-persistent mobs per category, globally and per player, and the
+    // charges of the mobs with a spawn cost.
     for (id, m) in level.entities.mobs.iter() {
-        if m.persistent {
+        if !counts_for_caps(level, id, m) {
             continue;
         }
         let Some(e) = level.entities.store.get(id) else {
@@ -433,12 +433,16 @@ pub fn tick(
             continue;
         };
         let pos = e.pos();
-        let chunk = BlockPos::containing(pos.x, pos.y, pos.z).chunk();
+        let block = BlockPos::containing(pos.x, pos.y, pos.z);
+        let chunk = block.chunk();
         if level.chunks.chunk(chunk).is_none() {
             continue;
         }
+        if let Some((charge, _)) = spawn_cost(level, table, e.kind(), block) {
+            spawner.potential.add(block, charge);
+        }
         state.counts[c.index()] += 1;
-        players_near(input, chunk, &mut spawner.near);
+        players_near(input, &spawner.grid, chunk, &mut spawner.near);
         for &i in &spawner.near {
             state.local.counts[i][c.index()] += 1;
         }
@@ -453,15 +457,21 @@ pub fn tick(
         .collect();
     // `collectSpawningChunks`: ticking chunks with a player within 128 blocks, shuffled.
     spawner.chunks.clear();
-    spawner
-        .chunks
-        .extend(spawner.seen.iter().copied().filter(|&c| {
-            level.is_block_ticking(c)
-                && input
-                    .players
-                    .iter()
-                    .any(|(_, p)| chunk_center_distance_sqr(c, *p) < 16384.0)
-        }));
+    {
+        let grid = &spawner.grid;
+        spawner
+            .chunks
+            .extend(spawner.seen.iter().copied().filter(|&c| {
+                if !level.is_block_ticking(c) {
+                    return false;
+                }
+                let mut any = false;
+                grid.around(c, |i| {
+                    any |= chunk_center_distance_sqr(c, input.players[i].1) < 16384.0;
+                });
+                any
+            }));
+    }
     spawner.chunks.sort_by_key(|c| (c.x, c.z));
     let n = spawner.chunks.len();
     for i in (1..n).rev() {
@@ -480,7 +490,7 @@ pub fn tick(
     for &chunk in &chunks {
         for &c in &categories {
             // `canSpawnForCategoryLocal`.
-            players_near(input, chunk, &mut spawner.near);
+            players_near(input, &spawner.grid, chunk, &mut spawner.near);
             let local_ok = spawner
                 .near
                 .iter()
@@ -492,6 +502,91 @@ pub fn tick(
         }
     }
     spawner.chunks = chunks;
+}
+
+/// The nether fortress enemies (`NetherFortressStructure.FORTRESS_ENEMIES`).
+fn fortress_enemies() -> &'static [SpawnEntry] {
+    use vanillite_data::entity::ids as e;
+    static LIST: std::sync::OnceLock<[SpawnEntry; 5]> = std::sync::OnceLock::new();
+    LIST.get_or_init(|| {
+        let entry = |type_id, weight, min, max| SpawnEntry {
+            type_id,
+            weight,
+            min,
+            max,
+        };
+        [
+            entry(e::BLAZE, 10, 2, 3),
+            entry(e::ZOMBIFIED_PIGLIN, 5, 4, 4),
+            entry(e::WITHER_SKELETON, 8, 5, 5),
+            entry(e::SKELETON, 2, 5, 5),
+            entry(e::MAGMA_CUBE, 3, 4, 4),
+        ]
+    })
+}
+
+/// `NaturalSpawner.mobsAt`: the fortress enemies on nether bricks in a fortress, a
+/// structure's spawn override, else the biome's list.
+fn mobs_at<'t>(
+    level: &Level,
+    table: &'t SpawnTable,
+    index: &mut super::structures::StructureIndex,
+    category: Category,
+    pos: BlockPos,
+) -> &'t [SpawnEntry] {
+    let mut fortress = false;
+    let mut overridden: Option<&'t [SpawnEntry]> = None;
+    let below_bricks = category == Category::Monster
+        && level
+            .block(BlockPos::new(pos.x, pos.y - 1, pos.z))
+            .block()
+            .name()
+            == "minecraft:nether_bricks";
+    if !table.structures.is_empty() || below_bricks {
+        index.structures_at(level, pos, |name, in_piece, in_box| {
+            if below_bricks && name == "minecraft:fortress" && in_box {
+                fortress = true;
+            }
+            if overridden.is_none()
+                && let Some(o) = table
+                    .structures
+                    .get(name)
+                    .and_then(|o| o[category.index()].as_ref())
+                && (if o.piece { in_piece } else { in_box })
+            {
+                overridden = Some(&o.spawns);
+            }
+        });
+    }
+    if fortress {
+        return fortress_enemies();
+    }
+    if let Some(list) = overridden {
+        return list;
+    }
+    table
+        .biome(level.biome(pos))
+        .map_or(&[], |b| &b.by_category[category.index()])
+}
+
+/// `Mob.getMaxSpawnClusterSize`.
+pub fn max_spawn_cluster_size(kind: Kind) -> i32 {
+    match kind {
+        Kind::Wolf => 8,
+        Kind::Horse
+        | Kind::Donkey
+        | Kind::Mule
+        | Kind::SkeletonHorse
+        | Kind::ZombieHorse
+        | Kind::Llama
+        | Kind::TraderLlama
+        | Kind::Camel
+        | Kind::CamelHusk => 6,
+        Kind::Ghast | Kind::HappyGhast | Kind::Pillager => 1,
+        Kind::Cod | Kind::Pufferfish | Kind::TropicalFish => 8,
+        Kind::Salmon => 5,
+        _ => 4,
+    }
 }
 
 /// `spawnCategoryForChunk` and `spawnCategoryForPosition`.
@@ -523,6 +618,7 @@ fn spawn_category_for_chunk(
         #[allow(clippy::cast_possible_truncation)]
         let mut max = (level.random().next_float() * 4.0).ceil() as i32;
         let mut group_index = 0u32;
+        let mut group_size = 0;
         let mut ll = 0;
         while ll < max {
             ll += 1;
@@ -531,22 +627,23 @@ fn spawn_category_for_chunk(
             let pos = BlockPos::new(x, y, z);
             let (xx, zz) = (f64::from(x) + 0.5, f64::from(z) + 0.5);
             let at = Vec3::new(xx, f64::from(y), zz);
-            let Some(nearest) = input
-                .players
-                .iter()
-                .map(|(_, p)| p.distance_to_sqr(at))
-                .min_by(f64::total_cmp)
-            else {
+            let Some(nearest) = nearest_player_distance(input, &spawner.grid, at) else {
                 continue;
             };
             if !right_distance(level, input, chunk, pos, nearest) {
                 continue;
             }
             if current.is_none() {
-                let Some(list) = mobs_at(level, table, &mut spawner.structures, category, pos)
-                else {
+                // `getRandomSpawnMobAt`: most water ambient spawns fail in some biomes.
+                if category == Category::WaterAmbient
+                    && table
+                        .biome(level.biome(pos))
+                        .is_some_and(|b| b.is("minecraft:reduced_water_ambient_spawns"))
+                    && level.random().next_float() < 0.98
+                {
                     break;
-                };
+                }
+                let list = mobs_at(level, table, &mut spawner.structures, category, pos);
                 let Some(entry) = pick(list, level.random()) else {
                     break;
                 };
@@ -558,52 +655,151 @@ fn spawn_category_for_chunk(
             let Some(entry) = current else {
                 break;
             };
-            if !valid_position_for_type(
-                level,
-                table,
-                &mut spawner.structures,
-                input,
-                category,
-                entry,
-                pos,
-                nearest,
-            ) {
+            if !valid_position_for_type(level, table, spawner, input, category, entry, pos, nearest)
+            {
+                continue;
+            }
+            // `SpawnState.canSpawn`: the spawn cost's energy budget.
+            let cost = spawn_cost(level, table, entry.type_id, pos);
+            if let Some((charge, budget)) = cost
+                && spawner.potential.energy_change(pos, charge) > budget
+            {
                 continue;
             }
             let Some(kind) = Kind::of(entry.type_id) else {
-                // Mobs without behaviour yet do not spawn; the attempt ends like a failed
+                // Types without behaviour yet do not spawn; the attempt ends like a failed
                 // creation in Vanilla.
                 return;
             };
-            let seed = level.random().next_long();
+            let seed = crate::mob::new_entity_seed();
             let mut mob = MobData::new(kind, seed);
             let y_rot = level.random().next_float() * 360.0;
             let pos_v = Vec3::new(xx, f64::from(y), zz);
             if !valid_position_for_mob(level, input, &mob, pos_v, nearest) {
                 continue;
             }
-            let climate = table
-                .biome(level.biome(pos))
-                .map_or(FarmClimate::Temperate, |b| b.climate);
-            kinds::finalize_spawn(&mut mob, input.difficulty, climate, group_index);
+            let extra = with_level_random(level, |level, random| {
+                finalize(
+                    level,
+                    Some(table),
+                    &input.env,
+                    &mut mob,
+                    pos,
+                    input.difficulty,
+                    group_index,
+                    SpawnReason::Natural,
+                    random,
+                )
+            });
             group_index += 1;
             cluster += 1;
-            add_mob(level, mob, pos_v, y_rot);
+            group_size += 1;
+            let group_reached = super::fam::is_max_group_size_reached(&mob, group_size);
+            add_mob_with(level, mob, pos_v, y_rot, extra);
+            // `afterSpawn`: the charge, the counts.
+            spawner.potential.add(pos, cost.map_or(0.0, |c| c.0));
             state.counts[category.index()] += 1;
-            players_near(input, chunk, &mut spawner.near);
+            players_near(input, &spawner.grid, chunk, &mut spawner.near);
             for &i in &spawner.near {
                 state.local.counts[i][category.index()] += 1;
             }
-            if cluster >= 4 {
+            if cluster >= max_spawn_cluster_size(kind) {
                 return;
+            }
+            if group_reached {
+                break;
             }
         }
     }
 }
 
+/// Runs `f` with the level and its random taken out of it (`finalizeSpawn` reads the level
+/// and draws from its random).
+pub fn with_level_random<R>(
+    level: &mut Level,
+    f: impl FnOnce(&Level, &mut LegacyRandom) -> R,
+) -> R {
+    let mut random = std::mem::replace(level.random(), LegacyRandom::new(0));
+    let out = f(level, &mut random);
+    *level.random() = random;
+    out
+}
+
+/// Builds the spawn context at `pos` and runs `finalizeSpawn`; returns the mobs that spawn
+/// with it (jockeys).
+#[allow(clippy::too_many_arguments)]
+pub fn finalize(
+    level: &Level,
+    table: Option<&SpawnTable>,
+    env: &Environment,
+    mob: &mut MobData,
+    pos: BlockPos,
+    difficulty: Difficulty,
+    group_index: u32,
+    reason: SpawnReason,
+    random: &mut LegacyRandom,
+) -> Vec<ExtraMob> {
+    let biome = table.and_then(|t| t.biome(level.biome(pos)));
+    let mut ctx = SpawnContext {
+        difficulty,
+        special_multiplier: super::fam::special_multiplier(difficulty),
+        effective_difficulty: super::fam::effective_difficulty(difficulty),
+        climate: biome.map_or(FarmClimate::Temperate, |b| b.climate),
+        group_index,
+        reason,
+        biome,
+        pos,
+        level: Some(level),
+        env: *env,
+        extra: Vec::new(),
+        ride: None,
+    };
+    kinds::finalize_spawn(mob, &mut ctx, random);
+    if let Some(vehicle) = ctx.ride {
+        ctx.extra.push(ExtraMob {
+            mob: MobData::new(Kind::Chicken, 0),
+            offset: Vec3::ZERO,
+            relation: Relation::Existing(vehicle),
+        });
+    }
+    ctx.extra
+}
+
+/// Adds a finished mob and the mobs spawned with it (`addFreshEntityWithPassengers`).
+pub fn add_mob_with(
+    level: &mut Level,
+    mob: MobData,
+    pos: Vec3,
+    y_rot: f32,
+    extra: Vec<ExtraMob>,
+) -> EntityId {
+    let id = add_mob(level, mob, pos, y_rot);
+    let mut spawned = Vec::with_capacity(extra.len());
+    for e in extra {
+        if let Relation::Existing(vehicle) = e.relation {
+            level.entities.riding.add(id, vehicle, false);
+            spawned.push(vehicle);
+            continue;
+        }
+        let other = add_mob(level, e.mob, pos + e.offset, y_rot);
+        spawned.push(other);
+        match e.relation {
+            Relation::RidesExtra(i) => {
+                if let Some(&vehicle) = spawned.get(i) {
+                    level.entities.riding.add(other, vehicle, false);
+                }
+            }
+            Relation::RidesIt => level.entities.riding.add(other, id, false),
+            Relation::CarriesIt => level.entities.riding.add(id, other, false),
+            Relation::Beside | Relation::Existing(_) => {}
+        }
+    }
+    id
+}
+
 /// Adds a finished mob to the level (`addFreshEntityWithPassengers`).
 pub fn add_mob(level: &mut Level, mut mob: MobData, pos: Vec3, y_rot: f32) -> EntityId {
-    let uuid = random_uuid(&mut mob.random);
+    let uuid = crate::mob::new_uuid();
     mob.y_body_rot = y_rot;
     let rot = Rotation {
         y_rot,
@@ -649,7 +845,7 @@ fn right_distance(
 fn valid_position_for_type(
     level: &Level,
     table: &SpawnTable,
-    structures: &mut StructureSpawns,
+    spawner: &mut Spawner,
     input: &SpawnInput<'_>,
     category: Category,
     entry: SpawnEntry,
@@ -665,7 +861,7 @@ fn valid_position_for_type(
         return false;
     }
     // `canSpawnMobAt`: the entry is still in the list there.
-    if !mobs_at(level, table, structures, category, pos).is_some_and(|l| l.contains(&entry)) {
+    if !mobs_at(level, table, &mut spawner.structures, category, pos).contains(&entry) {
         return false;
     }
     if !spawn_position_ok(level, entry.type_id, pos) {
@@ -676,12 +872,14 @@ fn valid_position_for_type(
     };
     let mut random =
         LegacyRandom::new(i64::from(pos.x) ^ (i64::from(pos.z) << 20) ^ level.game_time());
-    let rules = if super::boss::guardian::is_guardian(kind) {
-        super::boss::guardian::check_spawn_rules(level, pos, input.difficulty, &mut random)
-    } else {
-        check_spawn_rules(level, &input.env, kind, pos, &mut random, false)
-    };
-    if !rules {
+    if !check_spawn_rules(
+        level,
+        &input.env,
+        kind,
+        pos,
+        &mut random,
+        SpawnReason::Natural,
+    ) {
         return false;
     }
     let dims = super::Dimensions::of(entry.type_id);
@@ -694,6 +892,92 @@ fn valid_position_for_type(
     physics::no_collision(level, &aabb, &mut scratch)
 }
 
+/// `Mob.checkSpawnRules` of a fresh mob: pathfinder mobs need a walk target value of at
+/// least 0 (`PathfinderMob`), the others always pass.
+pub fn mob_check_spawn_rules(
+    level: &Level,
+    env: &Environment,
+    mob: &MobData,
+    pos: BlockPos,
+) -> bool {
+    let pathfinder = !matches!(
+        mob.kind,
+        Kind::Slime | Kind::MagmaCube | Kind::SulfurCube | Kind::Ghast | Kind::Phantom | Kind::Bat
+    );
+    !pathfinder || kinds::walk_target_value(mob.kind, level, env, pos) >= 0.0
+}
+
+/// `Mob.checkSpawnObstruction` with the kinds' overrides (water mobs only need room).
+pub fn check_spawn_obstruction(level: &Level, env: &Environment, mob: &MobData, pos: Vec3) -> bool {
+    let aabb = kinds::mob_dimensions(mob).bounding_box(pos);
+    let liquid = || physics::contains_any_liquid(level, &aabb);
+    match mob.kind {
+        Kind::Squid
+        | Kind::GlowSquid
+        | Kind::Dolphin
+        | Kind::Cod
+        | Kind::Salmon
+        | Kind::Pufferfish
+        | Kind::TropicalFish
+        | Kind::Nautilus
+        | Kind::ZombieNautilus
+        | Kind::Axolotl
+        | Kind::Guardian
+        | Kind::Strider
+        | Kind::Drowned => true,
+        Kind::Ravager | Kind::ZombifiedPiglin => !liquid(),
+        Kind::Ocelot => {
+            if liquid() {
+                return false;
+            }
+            let block = BlockPos::containing(pos.x, pos.y, pos.z);
+            if block.y < env.sea_level {
+                return false;
+            }
+            let below = level.block(BlockPos::new(block.x, block.y - 1, block.z));
+            below.block() == ids::GRASS_BLOCK || in_block_tag(below, "minecraft:leaves")
+        }
+        Kind::IronGolem => {
+            let block = BlockPos::containing(pos.x, pos.y, pos.z);
+            let below = level.block(BlockPos::new(block.x, block.y - 1, block.z));
+            if !below.has(flags::COLLISION_FULL_BLOCK) && below.collision_shape().is_empty() {
+                return false;
+            }
+            let t = mob.kind.type_id();
+            (1..3).all(|i| {
+                let s = level.block(BlockPos::new(block.x, block.y + i, block.z));
+                valid_empty_spawn_block(s, t)
+            }) && {
+                let s = level.block(block);
+                !s.has(flags::COLLISION_FULL_BLOCK)
+                    && !s.has(flags::SIGNAL_SOURCE)
+                    && valid_empty_spawn_block_ignoring_fluid(s, t)
+            }
+        }
+        _ => !liquid(),
+    }
+}
+
+/// `isValidEmptySpawnBlock` with an empty fluid state.
+fn valid_empty_spawn_block_ignoring_fluid(state: BlockState, type_id: EntityTypeId) -> bool {
+    let name = state.block().name();
+    if name.contains("rail") {
+        return false;
+    }
+    let fire_immune = type_id.info().fire_immune;
+    let dangerous = (!fire_immune
+        && (state.block() == ids::FIRE
+            || state.block() == ids::SOUL_FIRE
+            || state.block() == ids::MAGMA_BLOCK
+            || state.block() == ids::LAVA_CAULDRON
+            || name.ends_with("campfire")))
+        || state.block() == ids::WITHER_ROSE
+        || state.block() == ids::SWEET_BERRY_BUSH
+        || state.block() == ids::CACTUS
+        || state.block() == ids::POWDER_SNOW;
+    !dangerous
+}
+
 /// `isValidPositionForMob`.
 fn valid_position_for_mob(
     level: &Level,
@@ -704,42 +988,109 @@ fn valid_position_for_mob(
 ) -> bool {
     let category = Category::of(mob.kind.type_id()).unwrap_or(Category::Monster);
     let despawn = f64::from(category.despawn_distance());
-    if nearest > despawn * despawn && mob.kind.remove_when_far_away() {
+    if nearest > despawn * despawn && super::fam::remove_when_far_away_mob(mob, nearest) {
         return false;
     }
-    // `checkSpawnRules`: the walk target value at the position is not negative.
     let block = BlockPos::containing(pos.x, pos.y, pos.z);
-    if kinds::walk_target_value(mob.kind, level, &input.env, block) < 0.0 {
-        return false;
-    }
-    // `checkSpawnObstruction`: no liquid in the box (guardians: no blocking entity).
-    if super::boss::guardian::is_guardian(mob.kind) {
-        return true;
-    }
-    let aabb = super::Dimensions::of(mob.kind.type_id()).bounding_box(pos);
-    !physics::contains_any_liquid(level, &aabb)
+    mob_check_spawn_rules(level, &input.env, mob, block)
+        && check_spawn_obstruction(level, &input.env, mob, pos)
+}
+/// `SpawnPlacementType`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Placement {
+    OnGround,
+    InWater,
+    InLava,
+    NoRestrictions,
 }
 
-/// `SpawnPlacementTypes.ON_GROUND.isSpawnPositionOk`.
-pub fn spawn_position_ok(level: &Level, type_id: EntityTypeId, pos: BlockPos) -> bool {
-    if type_id == vanillite_data::entity::ids::GUARDIAN
-        || type_id == vanillite_data::entity::ids::ELDER_GUARDIAN
+/// `SpawnPlacements`: the placement type and heightmap of an entity type (unregistered types
+/// have no restrictions).
+pub fn placement(t: EntityTypeId) -> (Placement, HeightmapKind) {
+    use vanillite_data::entity::ids as e;
+    let no_leaves = HeightmapKind::MotionBlockingNoLeaves;
+    let p = if [
+        e::AXOLOTL,
+        e::COD,
+        e::DOLPHIN,
+        e::DROWNED,
+        e::GUARDIAN,
+        e::PUFFERFISH,
+        e::SALMON,
+        e::SQUID,
+        e::TROPICAL_FISH,
+        e::GLOW_SQUID,
+        e::NAUTILUS,
+        e::ELDER_GUARDIAN,
+    ]
+    .contains(&t)
     {
-        // `SpawnPlacementTypes.IN_WATER`.
-        return super::boss::guardian::in_water_spawn_position_ok(level, pos);
-    }
-    let below = BlockPos::new(pos.x, pos.y - 1, pos.z);
+        Placement::InWater
+    } else if t == e::STRIDER {
+        Placement::InLava
+    } else if [
+        e::EVOKER,
+        e::FOX,
+        e::ILLUSIONER,
+        e::PANDA,
+        e::PHANTOM,
+        e::SHULKER,
+        e::TRADER_LLAMA,
+        e::VEX,
+        e::VINDICATOR,
+        e::WARDEN,
+    ]
+    .contains(&t)
+        || !Kind::of(t).is_some_and(registered_placement)
+    {
+        Placement::NoRestrictions
+    } else {
+        Placement::OnGround
+    };
+    let heightmap = if t == e::OCELOT || t == e::PARROT {
+        HeightmapKind::MotionBlocking
+    } else {
+        no_leaves
+    };
+    (p, heightmap)
+}
+
+/// Whether a kind has a `SpawnPlacements` entry (the others have no restrictions).
+fn registered_placement(k: Kind) -> bool {
+    !matches!(
+        k,
+        Kind::ZombieNautilus | Kind::CopperGolem | Kind::Allay | Kind::Sniffer | Kind::Tadpole
+    )
+}
+
+/// `SpawnPlacements.isSpawnPositionOk` by the type's placement.
+pub fn spawn_position_ok(level: &Level, type_id: EntityTypeId, pos: BlockPos) -> bool {
     let above = BlockPos::new(pos.x, pos.y + 1, pos.z);
-    if !valid_spawn_floor(level.block(below), type_id) {
-        return false;
+    match placement(type_id).0 {
+        Placement::NoRestrictions => true,
+        Placement::InWater => {
+            super::is_water(level.block(pos)) && !level.block(above).has(flags::REDSTONE_CONDUCTOR)
+        }
+        Placement::InLava => super::is_lava(level.block(pos)),
+        Placement::OnGround => {
+            let below = BlockPos::new(pos.x, pos.y - 1, pos.z);
+            if !is_valid_spawn(level, level.block(below), type_id) {
+                return false;
+            }
+            valid_empty_spawn_block(level.block(pos), type_id)
+                && valid_empty_spawn_block(level.block(above), type_id)
+        }
     }
-    valid_empty_spawn_block(level.block(pos), type_id)
-        && valid_empty_spawn_block(level.block(above), type_id)
+}
+
+/// `BlockState.isValidSpawn(level, pos, type)` with the light check of the block below.
+pub fn is_valid_spawn(_level: &Level, state: BlockState, type_id: EntityTypeId) -> bool {
+    valid_spawn_floor(state, type_id)
 }
 
 /// `BlockState.isValidSpawn` for a mob: a sturdy top face that is not too bright, except
 /// the blocks that never let mobs spawn on them.
-fn valid_spawn_floor(state: BlockState, type_id: EntityTypeId) -> bool {
+pub fn valid_spawn_floor(state: BlockState, type_id: EntityTypeId) -> bool {
     let name = state.block().name();
     if name.ends_with("glass")
         || name.ends_with("glass_pane")
@@ -759,7 +1110,7 @@ fn valid_spawn_floor(state: BlockState, type_id: EntityTypeId) -> bool {
 }
 
 /// `NaturalSpawner.isValidEmptySpawnBlock`.
-fn valid_empty_spawn_block(state: BlockState, type_id: EntityTypeId) -> bool {
+pub fn valid_empty_spawn_block(state: BlockState, type_id: EntityTypeId) -> bool {
     if state.has(flags::COLLISION_FULL_BLOCK) || state.has(flags::SIGNAL_SOURCE) {
         return false;
     }
@@ -785,27 +1136,111 @@ fn valid_empty_spawn_block(state: BlockState, type_id: EntityTypeId) -> bool {
     !dangerous
 }
 
-/// The spawn rules (`SpawnPlacements.checkSpawnRules`) of a kind; `chunk_generation`
-/// ignores the light requirements of animals.
+/// The spawn rules (`SpawnPlacements.checkSpawnRules`) of a kind.
 pub fn check_spawn_rules(
     level: &Level,
     env: &Environment,
     kind: Kind,
     pos: BlockPos,
     random: &mut LegacyRandom,
-    chunk_generation: bool,
+    reason: SpawnReason,
+) -> bool {
+    super::fam::check_spawn_rules(kind, level, env, pos, random, reason)
+}
+
+/// `Monster.checkMonsterSpawnRules` for monsters, `Animal.checkAnimalSpawnRules` for the
+/// others.
+pub fn default_spawn_rules(
+    kind: Kind,
+    level: &Level,
+    env: &Environment,
+    pos: BlockPos,
+    random: &mut LegacyRandom,
+    reason: SpawnReason,
+) -> bool {
+    if kind.is_monster() {
+        check_monster_spawn_rules(kind, level, env, pos, random, reason)
+    } else {
+        check_animal_spawn_rules(kind, level, env, pos, reason)
+    }
+}
+
+/// `EntitySpawnReason.isSpawner`.
+pub fn is_spawner(reason: SpawnReason) -> bool {
+    matches!(reason, SpawnReason::Spawner | SpawnReason::TrialSpawner)
+}
+
+/// `Mob.checkMobSpawnRules`: a valid spawn block below (spawners ignore it).
+pub fn check_mob_spawn_rules(
+    kind: Kind,
+    level: &Level,
+    pos: BlockPos,
+    reason: SpawnReason,
+) -> bool {
+    let below = BlockPos::new(pos.x, pos.y - 1, pos.z);
+    is_spawner(reason) || is_valid_spawn(level, level.block(below), kind.type_id())
+}
+
+/// `Monster.checkMonsterSpawnRules`: dark enough (trial spawners ignore light) and the mob
+/// rules.
+pub fn check_monster_spawn_rules(
+    kind: Kind,
+    level: &Level,
+    env: &Environment,
+    pos: BlockPos,
+    random: &mut LegacyRandom,
+    reason: SpawnReason,
+) -> bool {
+    (reason == SpawnReason::TrialSpawner || is_dark_enough_to_spawn(level, env, pos, random))
+        && check_mob_spawn_rules(kind, level, pos, reason)
+}
+
+/// `Monster.checkAnyLightMonsterSpawnRules`.
+pub fn check_any_light_monster_spawn_rules(
+    kind: Kind,
+    level: &Level,
+    pos: BlockPos,
+    reason: SpawnReason,
+) -> bool {
+    check_mob_spawn_rules(kind, level, pos, reason)
+}
+
+/// `Monster.checkSurfaceMonstersSpawnRules`: the monster rules under the open sky.
+pub fn check_surface_monsters_spawn_rules(
+    kind: Kind,
+    level: &Level,
+    env: &Environment,
+    pos: BlockPos,
+    random: &mut LegacyRandom,
+    reason: SpawnReason,
+) -> bool {
+    check_monster_spawn_rules(kind, level, env, pos, random, reason)
+        && (is_spawner(reason) || super::can_see_sky(level, pos))
+}
+
+/// `Animal.checkAnimalSpawnRules`: `#animals_spawnable_on` below and bright enough
+/// (`isBrightEnoughToSpawn`; chunk generation ignores the light).
+pub fn check_animal_spawn_rules(
+    _kind: Kind,
+    level: &Level,
+    _env: &Environment,
+    pos: BlockPos,
+    reason: SpawnReason,
 ) -> bool {
     let below = level.block(BlockPos::new(pos.x, pos.y - 1, pos.z));
-    if kind.is_monster() {
-        // `Monster.checkMonsterSpawnRules`.
-        is_dark_enough_to_spawn(level, env, pos, random) && valid_spawn_floor(below, kind.type_id())
-    } else {
-        // `Animal.checkAnimalSpawnRules`: grass below and bright enough.
-        let bright = chunk_generation || {
-            let (sky, block) = level.light(pos);
-            sky.max(block) > 8
-        };
-        below.block() == ids::GRASS_BLOCK && bright
+    let bright = reason == SpawnReason::ChunkGeneration || {
+        let (sky, block) = level.light(pos);
+        sky.max(block) > 8
+    };
+    in_block_tag(below, "minecraft:animals_spawnable_on") && bright
+}
+
+/// Whether a block is in a block tag of the data packs (`false` without data packs, except
+/// the grass block for `#animals_spawnable_on`).
+pub fn in_block_tag(state: BlockState, tag: &str) -> bool {
+    match crate::player::play::game_data() {
+        Some(d) if d.block_tags.contains_key(tag) => d.block_in_tag(state.block().0, tag),
+        _ => tag == "minecraft:animals_spawnable_on" && state.block() == ids::GRASS_BLOCK,
     }
 }
 
@@ -836,7 +1271,12 @@ pub fn is_dark_enough_to_spawn(
     brightness <= random.next_int_between_inclusive(lo, hi)
 }
 
-fn surface_y(level: &Level, kind: HeightmapKind, x: i32, z: i32) -> i32 {
+/// `getHeight(heightmap, x, z)`: the first free y of a column.
+pub fn heightmap_y(level: &Level, kind: HeightmapKind, x: i32, z: i32) -> i32 {
+    surface_y(level, kind, x, z)
+}
+
+pub fn surface_y(level: &Level, kind: HeightmapKind, x: i32, z: i32) -> i32 {
     let Some(c) = level.chunks.chunk(ChunkPos::new(x >> 4, z >> 4)) else {
         return level.min_y();
     };
@@ -849,14 +1289,36 @@ fn surface_y(level: &Level, kind: HeightmapKind, x: i32, z: i32) -> i32 {
 }
 
 /// `getTopNonCollidingPos` for ground mobs.
-fn top_non_colliding(level: &Level, x: i32, z: i32) -> BlockPos {
-    let y = surface_y(level, HeightmapKind::MotionBlockingNoLeaves, x, z);
+fn top_non_colliding(
+    level: &Level,
+    env: &Environment,
+    type_id: EntityTypeId,
+    x: i32,
+    z: i32,
+) -> BlockPos {
+    let (placement, heightmap) = placement(type_id);
+    let y = surface_y(level, heightmap, x, z);
     let mut pos = BlockPos::new(x, y, z);
-    if level.settings.has_sky_light {
-        // `dimensionType().hasCeiling()` is false for the overworld.
+    if env.has_ceiling {
+        loop {
+            pos = BlockPos::new(x, pos.y - 1, z);
+            if level.block(pos).is_air() || pos.y <= level.min_y() {
+                break;
+            }
+        }
+        loop {
+            pos = BlockPos::new(x, pos.y - 1, z);
+            if !(level.block(pos).is_air() && pos.y > level.min_y()) {
+                break;
+            }
+        }
     }
-    while pos.y > level.min_y() + 1 && level.block(BlockPos::new(x, pos.y - 1, z)).is_air() {
-        pos = BlockPos::new(x, pos.y - 1, z);
+    // `adjustSpawnPosition` of `ON_GROUND`: onto a pathfindable block below.
+    if placement == Placement::OnGround {
+        let below = BlockPos::new(x, pos.y - 1, z);
+        if super::path::is_pathfindable_land(level.block(below)) {
+            return below;
+        }
     }
     pos
 }
@@ -884,7 +1346,6 @@ pub fn spawn_for_chunk_generation(
         return;
     }
     let probability = b.creature_probability;
-    let climate = b.climate;
     // `WorldgenRandom.setDecorationSeed(seed, minX, minZ)` on a fresh random.
     let mut random = LegacyRandom::new(seed);
     let a = random.next_long() | 1;
@@ -909,7 +1370,7 @@ pub fn spawn_for_chunk_generation(
             let mut attempts = 0;
             while !success && attempts < 4 {
                 attempts += 1;
-                let pos = top_non_colliding(level, x, z);
+                let pos = top_non_colliding(level, env, entry.type_id, x, z);
                 if entry.type_id.info().summonable && spawn_position_ok(level, entry.type_id, pos) {
                     let width = f64::from(entry.type_id.info().width);
                     let fx =
@@ -921,19 +1382,38 @@ pub fn spawn_for_chunk_generation(
                     let mut scratch = Vec::new();
                     let block = BlockPos::containing(fx, f64::from(pos.y), fz);
                     let rules = Kind::of(entry.type_id).is_some_and(|k| {
-                        check_spawn_rules(level, env, k, block, &mut random, true)
+                        check_spawn_rules(
+                            level,
+                            env,
+                            k,
+                            block,
+                            &mut random,
+                            SpawnReason::ChunkGeneration,
+                        )
                     });
                     if physics::no_collision(level, &aabb, &mut scratch) && rules {
                         let kind = Kind::of(entry.type_id);
                         let y_rot = random.next_float() * 360.0;
                         if let Some(kind) = kind {
-                            let mut mob = MobData::new(kind, random.next_long());
-                            if kinds::walk_target_value(kind, level, env, block) >= 0.0
-                                && !physics::contains_any_liquid(level, &aabb)
+                            let mut mob = MobData::new(kind, crate::mob::new_entity_seed());
+                            if mob_check_spawn_rules(level, env, &mob, block)
+                                && check_spawn_obstruction(level, env, &mob, at)
                             {
-                                kinds::finalize_spawn(&mut mob, difficulty, climate, group_index);
+                                let extra = finalize(
+                                    level,
+                                    Some(table),
+                                    env,
+                                    &mut mob,
+                                    block,
+                                    difficulty,
+                                    group_index,
+                                    SpawnReason::ChunkGeneration,
+                                    // `WorldGenRegion.getRandom()` is a positional random of
+                                    // the region; this one is distribution equal.
+                                    &mut random,
+                                );
                                 group_index += 1;
-                                add_mob(level, mob, at, y_rot);
+                                add_mob_with(level, mob, at, y_rot, extra);
                                 success = true;
                             }
                         }
@@ -958,15 +1438,123 @@ pub fn summon(
     pos: Vec3,
     difficulty: Difficulty,
 ) -> EntityId {
-    let seed = level.random().next_long();
+    let seed = crate::mob::new_entity_seed();
     let mut mob = MobData::new(kind, seed);
     let block = BlockPos::containing(pos.x, pos.y, pos.z);
-    let climate = table
-        .and_then(|t| t.biome(level.biome(block)))
-        .map_or(FarmClimate::Temperate, |b| b.climate);
-    kinds::finalize_spawn(&mut mob, difficulty, climate, 0);
+    let env = Environment::default();
+    let extra = with_level_random(level, |level, random| {
+        finalize(
+            level,
+            table,
+            &env,
+            &mut mob,
+            block,
+            difficulty,
+            0,
+            SpawnReason::Command,
+            random,
+        )
+    });
     let y_rot = level.random().next_float() * 360.0;
-    add_mob(level, mob, pos, y_rot)
+    add_mob_with(level, mob, pos, y_rot, extra)
+}
+
+/// `CatSpawner`'s state.
+#[derive(Debug, Default)]
+pub struct CatSpawner {
+    next_tick: i32,
+}
+
+/// `CatSpawner.tick`: every minute a cat may spawn 8–24 blocks from a random player, in a
+/// swamp hut (`#cats_spawn_in`, a black persistent cat when none is within 16 blocks).
+/// Villages (`isCloseToVillage`, more than four occupied homes) need POIs (#60).
+pub fn cat_spawner_tick(
+    level: &mut Level,
+    table: Option<&SpawnTable>,
+    spawner: &mut CatSpawner,
+    structures: &mut super::structures::StructureIndex,
+    env: &Environment,
+    difficulty: Difficulty,
+    players: &[EntityId],
+) {
+    spawner.next_tick -= 1;
+    if spawner.next_tick > 0 {
+        return;
+    }
+    spawner.next_tick = 1200;
+    if players.is_empty() {
+        return;
+    }
+    // `getRandomPlayer`.
+    let i = level
+        .random()
+        .next_int_bounded(i32::try_from(players.len()).unwrap_or(i32::MAX));
+    let Some(p) = usize::try_from(i)
+        .ok()
+        .and_then(|i| players.get(i))
+        .and_then(|&id| level.entities.store.get(id))
+        .map(|e| e.pos())
+    else {
+        return;
+    };
+    let r = level.random();
+    let x = (8 + r.next_int_bounded(24)) * if r.next_boolean() { -1 } else { 1 };
+    let z = (8 + r.next_int_bounded(24)) * if r.next_boolean() { -1 } else { 1 };
+    let base = BlockPos::containing(p.x, p.y, p.z);
+    let pos = BlockPos::new(base.x + x, base.y, base.z + z);
+    let loaded = (-10..=10).step_by(10).all(|dx| {
+        (-10..=10)
+            .step_by(10)
+            .all(|dz| level.is_loaded(BlockPos::new(pos.x + dx, pos.y, pos.z + dz)))
+    });
+    if !loaded || !spawn_position_ok(level, vanillite_data::entity::ids::CAT, pos) {
+        return;
+    }
+    let mut in_hut = false;
+    structures.structures_at(level, pos, |name, in_piece, _| {
+        in_hut |= in_piece && name == "minecraft:swamp_hut";
+    });
+    if !in_hut {
+        return;
+    }
+    // `spawnInHut`: no cat within 16 × 8 × 16.
+    let area = vanillite_base::Aabb::new(
+        f64::from(pos.x) - 16.0,
+        f64::from(pos.y) - 8.0,
+        f64::from(pos.z) - 16.0,
+        f64::from(pos.x) + 17.0,
+        f64::from(pos.y) + 9.0,
+        f64::from(pos.z) + 17.0,
+    );
+    let mut cats = false;
+    let ents = &level.entities;
+    ents.store.for_each_in(&area, false, |id| {
+        cats |= ents.mob(id).is_some_and(|m| m.kind == Kind::Cat);
+    });
+    if cats {
+        return;
+    }
+    let seed = crate::mob::new_entity_seed();
+    let mut cat = MobData::new(Kind::Cat, seed);
+    let extra = with_level_random(level, |level, random| {
+        let extra = finalize(
+            level,
+            table,
+            env,
+            &mut cat,
+            pos,
+            difficulty,
+            0,
+            SpawnReason::Natural,
+            random,
+        );
+        // The variant's spawn conditions (in a witch hut) with the level random.
+        cat.variant = super::fam::companion::feline::pick_cat_variant(random, true, false);
+        extra
+    });
+    cat.persistent = true;
+    let at = Vec3::new(f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
+    add_mob_with(level, cat, at, 0.0, extra);
 }
 
 /// Counts the mobs per kind (for `/vanillite` style statistics and tests).
@@ -976,32 +1564,4 @@ pub fn count_by_kind(level: &Level) -> FxHashMap<Kind, usize> {
         *out.entry(m.kind).or_insert(0) += 1;
     }
     out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use vanillite_nbt::{Compound, List, Tag};
-
-    #[test]
-    fn a_start_box_covers_all_pieces() {
-        let piece = |bb: Vec<i32>| Tag::Compound(Compound::new().with("BB", bb));
-        let start = Compound::new().with(
-            "Children",
-            Tag::List(List(vec![
-                piece(vec![0, 39, 0, 57, 61, 57]),
-                piece(vec![-3, 30, 5, 10, 70, 6]),
-            ])),
-        );
-        assert_eq!(start_box(&start), Some([-3, 30, 0, 57, 70, 57]));
-        assert_eq!(start_box(&Compound::new()), None);
-    }
-
-    #[test]
-    fn monuments_override_the_monster_list() {
-        let list = monument_monsters();
-        assert_eq!(list.len(), 1);
-        assert_eq!(list[0].type_id, vanillite_data::entity::ids::GUARDIAN);
-        assert_eq!((list[0].weight, list[0].min, list[0].max), (1, 2, 4));
-    }
 }

@@ -10,7 +10,7 @@ use vanillite_protocol::packets::play::clientbound::SoundSource;
 use vanillite_world::entity::{EntityFlags, EntityId, NewEntity, Rotation};
 
 use super::physics::{self, Blocks};
-use super::{MobContext, Tick, atan2_deg, combat, random_uuid};
+use super::{MobContext, Tick, atan2_deg, combat};
 use crate::entities::Entities;
 use crate::level::Level;
 use crate::survival::play_sound;
@@ -37,7 +37,8 @@ pub struct ArrowData {
     pub tick_count: i32,
     /// `pickup`: 0 disallowed, 1 allowed, 2 creative only.
     pub pickup: u8,
-    pub random_seed: i64,
+    /// The state of its own random ([`LegacyRandom::state`]).
+    pub random_state: i64,
     /// The knockback of the weapon's enchantments (Punch).
     pub knockback: f32,
     /// Burning (Flame): sets what it hits on fire for 5 seconds.
@@ -57,7 +58,7 @@ impl ArrowData {
         owner: Option<EntityId>,
         base_damage: f64,
         pickup: u8,
-        random_seed: i64,
+        random_state: i64,
         item: crate::item::ItemStack,
     ) -> ArrowData {
         ArrowData {
@@ -71,7 +72,7 @@ impl ArrowData {
             last_state: None,
             tick_count: 0,
             pickup,
-            random_seed,
+            random_state,
             knockback: 0.0,
             fire: false,
             item,
@@ -126,7 +127,7 @@ pub fn stop_using_item(t: &mut Tick<'_, '_>) {
 }
 
 /// `Projectile.getMovementToShoot` and `shoot`: the velocity and rotation of a shot.
-pub(crate) fn shoot(
+pub fn shoot(
     random: &mut LegacyRandom,
     dir: Vec3,
     power: f32,
@@ -167,11 +168,12 @@ pub fn shoot_arrow(
     crit: bool,
     pickup: u8,
 ) -> EntityId {
-    let (velocity, rot) = shoot(random, dir, power, uncertainty);
-    let seed = random.next_long();
-    let uuid = random_uuid(random);
+    // The arrow's own random (its constructor), then `shoot` draws the spread from it.
+    let mut own = LegacyRandom::new(crate::mob::new_entity_seed());
+    let uuid = crate::mob::new_uuid();
+    let (velocity, rot) = shoot(&mut own, dir, power, uncertainty);
     let (kind, item) = arrow_of(ammo);
-    let mut data = ArrowData::shot(owner, 2.0, pickup, seed, item);
+    let mut data = ArrowData::shot(owner, 2.0, pickup, own.state(), item);
     data.crit = crit;
     if let Some(w) = weapon {
         let (enchants, tags) = super::attack::combat_data();
@@ -211,38 +213,45 @@ pub fn skeleton_shoot(t: &mut Tick<'_, '_>, target: EntityId, power: f32) {
         return;
     };
     let p = t.pos();
-    let start = Vec3::new(p.x, t.eye_y() - 0.1, p.z);
+    // `getEyeY() - 0.1F`.
+    let start = Vec3::new(p.x, t.eye_y() - f64::from(0.1_f32), p.z);
     let difficulty = t.env.difficulty;
     let id = t.id;
     let m = t.mob();
-    // `setBaseDamageFromMob`.
+    // The arrow's own random (its constructor); `setBaseDamageFromMob` and `shoot` draw from
+    // it, not from the skeleton's.
+    let mut own = LegacyRandom::new(super::new_entity_seed());
     #[allow(clippy::cast_precision_loss)]
-    let base_damage = f64::from(power) * 2.0
-        + m.random
-            .triangle(f64::from(difficulty as i32) * 0.11, 0.574_25);
+    let base_damage =
+        f64::from(power) * 2.0 + own.triangle(f64::from(difficulty as i32) * 0.11, 0.574_25);
     let xd = o.pos.x - p.x;
-    let target_y = o.aabb.min_y + (o.aabb.max_y - o.aabb.min_y) / 3.0;
+    // `target.getY(0.3333333333333333)`.
+    let target_y = o.pos.y + f64::from(o.height) * 0.333_333_333_333_333_3;
     let yd = target_y - start.y;
     let zd = o.pos.z - p.z;
     let dist = (xd * xd + zd * zd).sqrt();
     #[allow(clippy::cast_precision_loss)]
     let uncertainty = (14 - difficulty as i32 * 4) as f32;
     let (velocity, rot) = shoot(
-        &mut m.random,
+        &mut own,
         Vec3::new(xd, yd + dist * f64::from(0.2_f32), zd),
         1.6,
         uncertainty,
     );
-    let seed = m.random.next_long();
-    let uuid = random_uuid(&mut m.random);
+    let uuid = crate::mob::new_uuid();
     let crit = false;
-    let shooter = t.core().kind();
+    // `getArrow` of the skeleton kinds: tipped arrows and the wither skeleton's fire.
+    let (effect, fire) = super::fam::undead::skeleton_arrow(m.kind);
     let mut new = NewEntity::new(entity_ids::ARROW, t.level.network_ids().next(), uuid, start);
     new.velocity = velocity;
     new.rot = rot;
     new.flags = EntityFlags::HAS_IMPULSE;
-    let mut data = ArrowData::shot(Some(id), base_damage, 0, seed, mob_arrow(shooter));
+    if fire {
+        new.flags.set(EntityFlags::ON_FIRE, true);
+    }
+    let mut data = ArrowData::shot(Some(id), base_damage, 0, own.state(), mob_arrow(effect));
     data.crit = crit;
+    data.fire = fire;
     t.ents.spawn_arrow(new, data);
     let m = t.mob();
     let pitch = 1.0 / (m.random.next_float() * 0.4 + 0.8);
@@ -250,23 +259,16 @@ pub fn skeleton_shoot(t: &mut Tick<'_, '_>, target: EntityId, power: f32) {
     let _ = Difficulty::Peaceful;
 }
 
-/// The arrow a skeleton type shoots (`AbstractSkeleton.getArrow`): strays add Slowness
-/// (`Stray.getArrow`), bogged Poison (`Bogged.getArrow`) to a plain arrow's potion.
-fn mob_arrow(shooter: vanillite_data::entity::EntityTypeId) -> crate::item::ItemStack {
-    use crate::effect::{EffectInstance, MobEffect, potion::PotionContents};
+/// The arrow a skeleton type shoots (`AbstractSkeleton.getArrow`): `Arrow.addEffect` puts the
+/// effect of strays, bogged and parched into a plain arrow's potion.
+pub(crate) fn mob_arrow(effect: Option<crate::effect::EffectInstance>) -> crate::item::ItemStack {
+    use crate::effect::potion::PotionContents;
     let mut item = crate::item::ItemStack::new(
         vanillite_data::registry::ITEM
             .id("minecraft:arrow")
             .unwrap_or(0),
         1,
     );
-    let effect = if shooter == entity_ids::STRAY {
-        Some(EffectInstance::new(MobEffect::SLOWNESS, 600, 0))
-    } else if shooter == entity_ids::BOGGED {
-        Some(EffectInstance::new(MobEffect::POISON, 100, 0))
-    } else {
-        None
-    };
     if let Some(e) = effect {
         let contents = PotionContents {
             custom_effects: vec![e],
@@ -298,7 +300,7 @@ pub fn tick_arrow(
     let mut velocity = e.velocity();
     let mut rot = e.rot();
     let (kind, network_id) = (e.kind(), e.network_id().0);
-    let mut random = LegacyRandom::new(a.random_seed);
+    let mut random = LegacyRandom::from_state(a.random_state);
     a.tick_count += 1;
     let block_pos = BlockPos::containing(pos.x, pos.y, pos.z);
     let state = level.block(block_pos);
@@ -346,15 +348,17 @@ pub fn tick_arrow(
         a.in_ground_time += 1;
     } else {
         a.in_ground_time = 0;
+        // The step and the rotation use the motion from the start of the tick.
+        let movement = velocity;
         let in_water = super::is_water(state);
         if in_water {
             velocity = velocity * f64::from(0.6_f32);
         }
         #[allow(clippy::cast_possible_truncation)]
-        let y_rot = atan2_deg(velocity.x, velocity.z) as f32;
-        let hd = (velocity.x * velocity.x + velocity.z * velocity.z).sqrt();
+        let y_rot = atan2_deg(movement.x, movement.z) as f32;
+        let hd = (movement.x * movement.x + movement.z * movement.z).sqrt();
         #[allow(clippy::cast_possible_truncation)]
-        let x_rot = atan2_deg(velocity.y, hd) as f32;
+        let x_rot = atan2_deg(movement.y, hd) as f32;
         rot.x_rot = lerp_rotation(rot.x_rot, x_rot);
         rot.y_rot = lerp_rotation(rot.y_rot, y_rot);
         // `checkLeftOwner`.
@@ -370,10 +374,12 @@ pub fn tick_arrow(
             });
             a.left_owner = !still_inside;
         }
-        let to = pos + velocity;
+        let to = pos + movement;
         let block_hit = physics::clip(level as &dyn Blocks, pos, to);
         let end = block_hit.map_or(to, |(_, p)| p);
-        // `findHitEntities`: the first living entity whose box (grown by 0.3) the path hits.
+        // `findHitEntities`: the hit entity nearest to the arrow (`computeMargin`).
+        #[allow(clippy::cast_precision_loss)]
+        let margin = ((a.tick_count - 2) as f32 / 20.0).clamp(0.0, 0.3);
         let area = e
             .aabb()
             .expand_towards(velocity.x, velocity.y, velocity.z)
@@ -397,9 +403,20 @@ pub fn tick_arrow(
             let Some(oe) = ents.store.get(other) else {
                 return;
             };
-            let grown = oe.aabb().inflate(0.3, 0.3, 0.3);
-            if let Some(t) = segment_box(pos, end, &grown) {
-                let hit = pos + (end - pos) * t;
+            // `ProjectileUtil.getManyEntityHitResult`: the exact box, else the box grown by
+            // the margin when the way from there to its centre is free.
+            let bb = oe.aabb();
+            let hit = aabb_clip(&bb, pos, end).or_else(|| {
+                if margin <= 0.0 {
+                    return None;
+                }
+                let m = f64::from(margin);
+                let outside = aabb_clip(&bb.inflate(m, m, m), pos, end)?;
+                let towards = physics::clip(level as &dyn Blocks, outside, bb.center())
+                    .map_or(bb.center(), |(_, p)| p);
+                aabb_clip(&bb, outside, towards).map(|_| outside)
+            });
+            if let Some(hit) = hit {
                 let d = pos.distance_to_sqr(oe.pos());
                 if best.is_none_or(|(_, bd, _)| d < bd) {
                     best = Some((other, d, hit));
@@ -474,8 +491,11 @@ pub fn tick_arrow(
                 );
                 discard = true;
             } else {
-                // Deflected (`ProjectileDeflection.REVERSE`).
-                velocity = velocity * -0.2;
+                // Deflected (`deflect(ProjectileDeflection.REVERSE, ..., 0.2)`): back at half
+                // the power, turned by 170° to 190°.
+                let turn = 170.0 + random.next_float() * 20.0;
+                velocity = velocity * -0.1;
+                rot.y_rot += turn;
                 if velocity.length_sqr() < 1.0e-7 {
                     discard = true;
                 }
@@ -515,13 +535,14 @@ pub fn tick_arrow(
             pos = to;
         }
         if !super::is_water(level.block(BlockPos::containing(pos.x, pos.y, pos.z))) {
-            velocity = velocity * 0.99;
+            // `applyInertia(0.99F)`.
+            velocity = velocity * f64::from(0.99_f32);
         }
         if !a.in_ground {
             velocity.y -= 0.05;
         }
     }
-    a.random_seed = random.next_long();
+    a.random_state = random.state();
     // `Arrow.tick`: a tipped arrow in the ground for 600 ticks loses its potion.
     if kind == entity_ids::ARROW
         && a.in_ground
@@ -561,7 +582,7 @@ pub fn tick_arrow(
 }
 
 /// `Projectile.lerpRotation`.
-fn lerp_rotation(old: f32, new: f32) -> f32 {
+pub fn lerp_rotation(old: f32, new: f32) -> f32 {
     let mut old = old;
     while new - old < -180.0 {
         old -= 360.0;
@@ -573,7 +594,7 @@ fn lerp_rotation(old: f32, new: f32) -> f32 {
 }
 
 /// Where the segment enters `b`, as a fraction of the segment.
-pub(crate) fn segment_box(from: Vec3, to: Vec3, b: &Aabb) -> Option<f64> {
+pub fn segment_box(from: Vec3, to: Vec3, b: &Aabb) -> Option<f64> {
     if b.contains(from.x, from.y, from.z) {
         return Some(0.0);
     }
@@ -601,4 +622,107 @@ pub(crate) fn segment_box(from: Vec3, to: Vec3, b: &Aabb) -> Option<f64> {
         }
     }
     Some(t0)
+}
+
+/// `AABB.clip(from, to)`: where the way from `from` to `to` enters the box; nothing when it
+/// starts inside.
+pub fn aabb_clip(b: &Aabb, from: Vec3, to: Vec3) -> Option<Vec3> {
+    let (dx, dy, dz) = (to.x - from.x, to.y - from.y, to.z - from.z);
+    let mut scale = 1.0;
+    let mut hit = false;
+    #[allow(clippy::too_many_arguments)]
+    let mut clip_point = |da: f64,
+                          db: f64,
+                          dc: f64,
+                          point: f64,
+                          (min_b, max_b): (f64, f64),
+                          (min_c, max_c): (f64, f64),
+                          (fa, fb, fc): (f64, f64, f64)| {
+        let s = (point - fa) / da;
+        let pb = fb + s * db;
+        let pc = fc + s * dc;
+        if 0.0 < s
+            && s < scale
+            && min_b - 1.0e-7 < pb
+            && pb < max_b + 1.0e-7
+            && min_c - 1.0e-7 < pc
+            && pc < max_c + 1.0e-7
+        {
+            scale = s;
+            hit = true;
+        }
+    };
+    let yz = (from.x, from.y, from.z);
+    if dx > 1.0e-7 {
+        clip_point(
+            dx,
+            dy,
+            dz,
+            b.min_x,
+            (b.min_y, b.max_y),
+            (b.min_z, b.max_z),
+            yz,
+        );
+    } else if dx < -1.0e-7 {
+        clip_point(
+            dx,
+            dy,
+            dz,
+            b.max_x,
+            (b.min_y, b.max_y),
+            (b.min_z, b.max_z),
+            yz,
+        );
+    }
+    let zx = (from.y, from.z, from.x);
+    if dy > 1.0e-7 {
+        clip_point(
+            dy,
+            dz,
+            dx,
+            b.min_y,
+            (b.min_z, b.max_z),
+            (b.min_x, b.max_x),
+            zx,
+        );
+    } else if dy < -1.0e-7 {
+        clip_point(
+            dy,
+            dz,
+            dx,
+            b.max_y,
+            (b.min_z, b.max_z),
+            (b.min_x, b.max_x),
+            zx,
+        );
+    }
+    let xy = (from.z, from.x, from.y);
+    if dz > 1.0e-7 {
+        clip_point(
+            dz,
+            dx,
+            dy,
+            b.min_z,
+            (b.min_x, b.max_x),
+            (b.min_y, b.max_y),
+            xy,
+        );
+    } else if dz < -1.0e-7 {
+        clip_point(
+            dz,
+            dx,
+            dy,
+            b.max_z,
+            (b.min_x, b.max_x),
+            (b.min_y, b.max_y),
+            xy,
+        );
+    }
+    hit.then(|| {
+        Vec3::new(
+            from.x + scale * dx,
+            from.y + scale * dy,
+            from.z + scale * dz,
+        )
+    })
 }

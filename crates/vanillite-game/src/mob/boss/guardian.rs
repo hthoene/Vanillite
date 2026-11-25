@@ -165,18 +165,18 @@ pub fn register_goals(m: &mut MobData) {
             found: None,
         }),
     );
-    m.nav.water_bound = true;
+    m.nav.kind = crate::mob::nav::NavKind::Water { breaching: false };
     if elder {
         m.persistent = true;
     }
 }
 
 fn state(t: &Tick<'_, '_>) -> State {
-    t.mob_ref().ext.guardian().cloned().unwrap_or_default()
+    t.mob_ref().boss.guardian().cloned().unwrap_or_default()
 }
 
 fn state_mut<'a>(t: &'a mut Tick<'_, '_>) -> Option<&'a mut State> {
-    t.mob().ext.guardian_mut()
+    t.mob().boss.guardian_mut()
 }
 
 /// `setActiveAttackTarget(entityId)`.
@@ -840,7 +840,7 @@ pub fn filter_hurt(
 ) -> Option<f32> {
     let moving = ents
         .mob(target)
-        .and_then(|m| m.ext.guardian())
+        .and_then(|m| m.boss.guardian())
         .is_some_and(|s| s.moving);
     if let Some(attacker) = source.direct
         && thorns_apply(
@@ -1128,7 +1128,7 @@ mod tests {
             "minecraft:entity.elder_guardian.hurt_land"
         );
         assert!(m.persistent);
-        assert!(m.nav.water_bound);
+        assert!(matches!(m.nav.kind, crate::mob::nav::NavKind::Water { .. }));
         let g = MobData::new(Kind::Guardian, 1);
         assert!(!g.persistent);
     }

@@ -1150,15 +1150,7 @@ pub fn creative_shulker_drop(
             stack.patch_mut().set(id, value);
         }
     }
-    let velocity = super::drops::default_velocity(level);
-    super::drops::spawn_item(
-        level,
-        super::furnace::center(pos),
-        stack,
-        velocity,
-        10,
-        None,
-    );
+    super::drops::spawn_item_moving(level, super::furnace::center(pos), stack, None, 10, None);
 }
 
 // --- Persistence -----------------------------------------------------------------------------

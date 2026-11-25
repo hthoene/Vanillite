@@ -194,6 +194,8 @@ pub struct Survival {
     pub combat: CombatTracker,
     /// `tickCount`.
     pub tick_count: i32,
+    /// The `minecraft:time_since_rest` statistic (ticks alive since the last sleep or death).
+    pub time_since_rest: i32,
     /// `lastClimbablePos`'s fall location.
     pub last_climbable: Option<FallLocation>,
     /// The fluids around the player after the last update.
@@ -250,6 +252,7 @@ impl Default for Survival {
             last_death: None,
             combat: CombatTracker::default(),
             tick_count: 0,
+            time_since_rest: 0,
             last_climbable: None,
             fluids: FluidContact::default(),
             portal: crate::portal::PortalState::default(),
@@ -692,7 +695,7 @@ pub fn hurt_with(
     if took_full && blocked {
         // `BlocksAttacks.onBlocked`: the shield sound instead of the damage event.
         let pitch = 0.8 + env.random.next_float() * 0.4;
-        let seed = env.random.next_long();
+        let seed = crate::survival::sound_seed();
         crate::survival::play_sound(
             env.out,
             None,
@@ -1032,7 +1035,7 @@ fn apply_item_blocking(
         player.survival.using_item = None;
         player.survival.shield_disabled_until = player.survival.tick_count + ticks;
         entity.mark_data_dirty();
-        let seed = env.random.next_long();
+        let seed = crate::survival::sound_seed();
         crate::survival::play_sound(
             env.out,
             None,
@@ -1076,6 +1079,8 @@ pub fn die(
     let network_id = entity.as_ref().network_id().0;
     let uuid = entity.as_ref().uuid();
     let id = entity.as_ref().id();
+    // `resetStat(TIME_SINCE_REST)`.
+    player.survival.time_since_rest = 0;
     let sink = std::sync::Arc::clone(&player.connection.sink);
     if env.rules.bool(Rule::SHOW_DEATH_MESSAGES) {
         let name = display_name(&player.profile.name, uuid);
@@ -1151,6 +1156,9 @@ fn drop_all(inventory: &mut crate::inventory::PlayerInventory, from: Vec3, env: 
         if stack.is_empty() || vanishing(&stack) {
             continue;
         }
+        // `new ItemEntity(level, x, y, z, stack)`; the throw replaces its motion. The throw
+        // draws from the player's own random in Vanilla, here from the level random.
+        let (uuid, y_rot, _) = crate::mob::new_item_entity();
         let pow = env.random.next_float() * 0.5;
         let dir = env.random.next_float() * std::f32::consts::TAU;
         let velocity = Vec3::new(
@@ -1158,9 +1166,6 @@ fn drop_all(inventory: &mut crate::inventory::PlayerInventory, from: Vec3, env: 
             f64::from(0.2f32),
             f64::from(vanillite_base::math::cos(f64::from(dir)) * pow),
         );
-        let uuid = (u128::from(env.random.next_long() as u64) << 64)
-            | u128::from(env.random.next_long() as u64);
-        let y_rot = env.random.next_float() * 360.0;
         env.out.push(Effect::DropItem {
             uuid,
             pos: from,
@@ -1231,6 +1236,10 @@ pub fn do_tick(
     {
         let s = &mut player.survival;
         s.tick_count = s.tick_count.wrapping_add(1);
+        // `awardStat(TIME_SINCE_REST)` while alive (players cannot sleep yet).
+        if !s.is_dead_or_dying() {
+            s.time_since_rest = s.time_since_rest.saturating_add(1);
+        }
         // `ServerPlayer.tick`: `wardenSpawnTracker.tick()`.
         s.warden_spawn_tracker.tick();
     }
