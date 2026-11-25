@@ -317,10 +317,10 @@ fn finish(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, u: UsingItem
             crate::stats::Stat::of(crate::stats::StatType::Used, stack.item),
             1,
         );
-        p.advancements
-            .trigger(crate::advancements::trigger::Event::ConsumeItem(
-                stack.clone(),
-            ));
+        p.advancements.trigger_item(
+            crate::advancements::trigger::TriggerKind::CONSUME_ITEM,
+            &stack,
+        );
     }
     let remainder = match name {
         "minecraft:mushroom_stew"

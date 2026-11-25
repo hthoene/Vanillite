@@ -6,7 +6,7 @@
 use vanillite_base::BlockPos;
 use vanillite_config::GameMode;
 use vanillite_data::block::BlockState;
-use vanillite_game::advancements::predicate::{EntityView, World};
+use vanillite_game::advancements::predicate::{EffectView, EntityView, PlayerFacts, World};
 use vanillite_game::advancements::trigger::{Event, TriggerContext, TriggerKind};
 use vanillite_game::inventory::PlayerInventory;
 use vanillite_game::item::ItemStack;
@@ -56,6 +56,8 @@ impl World for LevelWorld<'_> {
 
 /// A player as the entity predicates see it.
 fn player_view<'a>(
+    level: &Level,
+    id: EntityId,
     e: &EntityRef<'_>,
     inv: &'a PlayerInventory,
     survival: &Survival,
@@ -63,32 +65,49 @@ fn player_view<'a>(
     game_mode: GameMode,
     team: Option<String>,
 ) -> EntityView<'a> {
-    static EMPTY: ItemStack = ItemStack::EMPTY;
+    use std::borrow::Cow;
     let flags = e.flags();
     let [feet, legs, chest, head] = &inv.armor;
-    EntityView {
-        kind: "minecraft:player",
-        pos: e.pos(),
-        on_ground: flags.contains(EntityFlags::ON_GROUND),
-        on_fire: flags.contains(EntityFlags::ON_FIRE),
-        crouching: e.pose() == Pose::Crouching,
-        sprinting: flags.contains(EntityFlags::SPRINTING),
-        swimming: flags.contains(EntityFlags::SWIMMING),
-        flying: false,
-        fall_flying: flags.contains(EntityFlags::FALL_FLYING),
-        in_water: survival.fluids.in_water(),
-        equipment: [
-            head,
-            chest,
-            legs,
-            feet,
-            &EMPTY,
-            inv.selected_item(),
-            &inv.offhand,
-        ],
-        team,
-        player: Some((game_mode, survival.xp.level, stats)),
+    let mut v = EntityView::new("minecraft:player", e.pos());
+    v.on_ground = flags.contains(EntityFlags::ON_GROUND);
+    v.on_fire = flags.contains(EntityFlags::ON_FIRE);
+    v.crouching = e.pose() == Pose::Crouching;
+    v.sprinting = flags.contains(EntityFlags::SPRINTING);
+    v.swimming = flags.contains(EntityFlags::SWIMMING);
+    v.fall_flying = flags.contains(EntityFlags::FALL_FLYING);
+    v.in_water = survival.fluids.in_water();
+    v.equipment = [
+        Cow::Borrowed(head),
+        Cow::Borrowed(chest),
+        Cow::Borrowed(legs),
+        Cow::Borrowed(feet),
+        Cow::Owned(ItemStack::EMPTY),
+        Cow::Borrowed(inv.selected_item()),
+        Cow::Borrowed(&inv.offhand),
+    ];
+    v.team = team;
+    v.player = Some(PlayerFacts {
+        game_mode,
+        level: survival.xp.level,
+        stats: Some(stats),
+    });
+    v.effects = survival
+        .effects
+        .iter()
+        .map(|e| EffectView {
+            effect: e.effect,
+            amplifier: i32::from(e.amplifier),
+            duration: e.duration,
+            ambient: e.ambient,
+            visible: e.visible,
+        })
+        .collect();
+    if let Some(vehicle) = level.entities.riding.vehicle_of(id)
+        && let Some(view) = vanillite_game::advancements::view::snapshot(&level.entities, vehicle)
+    {
+        v.vehicle = Some(view);
     }
+    v
 }
 
 /// `onInsideBlock` of `checkInsideBlocks`: the non-air blocks the player's box is inside.
@@ -161,7 +180,9 @@ pub(crate) fn tick(level: &mut Level, global: &Global, world: WorldId, dimension
                 game_mode,
                 ..
             } = player;
-            let view = player_view(&entity, inventory, survival, stats, *game_mode, team);
+            let view = player_view(
+                level, id, &entity, inventory, survival, stats, *game_mode, team,
+            );
             let world = LevelWorld {
                 level,
                 dimension,

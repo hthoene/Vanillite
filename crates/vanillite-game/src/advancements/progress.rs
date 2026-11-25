@@ -363,6 +363,28 @@ impl PlayerAdvancements {
         }
     }
 
+    /// Queues the event `make` builds if anything listens for `kind` (the event is only built
+    /// then).
+    pub fn trigger_with(&mut self, kind: TriggerKind, make: impl FnOnce() -> Event) {
+        if self.listens(kind) {
+            let event = make();
+            debug_assert_eq!(event.kind(), kind);
+            self.events.push(event);
+        }
+    }
+
+    /// An [`Event::Item`] trigger (`consume_item`, `filled_bucket`, `used_totem`,
+    /// `shot_crossbow`, `using_item`) with a copy of `stack`.
+    pub fn trigger_item(&mut self, kind: TriggerKind, stack: &ItemStack) {
+        self.trigger_with(kind, || Event::Item(kind, stack.clone()));
+    }
+
+    /// A data-less trigger (`slept_in_bed`, `hero_of_the_village`, `voluntary_exile`,
+    /// `avoid_vibration`, `started_riding`).
+    pub fn trigger_player(&mut self, kind: TriggerKind) {
+        self.trigger_with(kind, || Event::Player(kind));
+    }
+
     /// `ContainerListener.slotChanged` of the inventory: `inventory_changed` for every slot of
     /// the inventory that changed since the last call.
     pub fn check_inventory(&mut self, inventory: &PlayerInventory) {
