@@ -262,6 +262,9 @@ pub struct LootTables {
     predicates: Vec<Cond>,
     /// Named item modifiers (`data/<ns>/item_modifier/`), referenced by index.
     modifiers: Vec<Func>,
+    /// Predicate and item modifier indices by id.
+    predicate_ids: HashMap<String, u32>,
+    modifier_ids: HashMap<String, u32>,
     /// Files that failed to parse, with the reason.
     broken: Vec<String>,
     /// Unsupported features met while parsing, with the first file using each.
@@ -269,9 +272,9 @@ pub struct LootTables {
 }
 
 impl LootTables {
-    /// Loads every `data/<ns>/loot_table/<kind>/**.json` of [`LOADED_KINDS`] of the packs in
-    /// `roots` (each root contains `data/`; later roots override earlier ones). Broken tables
-    /// are logged and skipped.
+    /// Loads every `data/<ns>/loot_table/**.json` of the packs in `roots` (each root contains
+    /// `data/`; later roots override earlier ones), like the reloadable `loot_table` registry.
+    /// Broken tables are logged and skipped.
     pub fn load(roots: &[PathBuf]) -> LootTables {
         let mut table_files = BTreeMap::new();
         let mut predicate_files = BTreeMap::new();
@@ -289,16 +292,9 @@ impl LootTables {
                 .collect();
             namespaces.sort();
             for (ns, path) in namespaces {
-                for kind in LOADED_KINDS {
-                    collect_json(
-                        &path.join("loot_table").join(kind),
-                        &format!("{ns}:{kind}/"),
-                        &mut table_files,
-                    );
-                }
                 collect_json(
-                    &path.join("loot_table/entities"),
-                    &format!("{ns}:entities/"),
+                    &path.join("loot_table"),
+                    &format!("{ns}:"),
                     &mut table_files,
                 );
                 collect_json(
@@ -476,6 +472,145 @@ impl LootTables {
         }
     }
 
+    /// A parser that resolves the named predicates and item modifiers of this set.
+    fn parser(&self) -> Parser<'_> {
+        Parser {
+            predicates: &self.predicate_ids,
+            modifiers: &self.modifier_ids,
+            unsupported: Vec::new(),
+        }
+    }
+
+    /// `LootTable.getRandomItems` of an inline table (`ResourceOrIdArgument` with a value).
+    pub fn roll_inline(
+        &self,
+        json: &Value,
+        ctx: &LootContext<'_>,
+        rng: &mut dyn LootRandom,
+        out: &mut Vec<ItemStack>,
+    ) -> Result<(), String> {
+        let table = self.parser().table(json)?;
+        let mut eval = Eval {
+            tables: self,
+            ctx,
+            rng,
+            out,
+            post: Vec::new(),
+            depth: 0,
+        };
+        eval.table(&table);
+        Ok(())
+    }
+
+    /// Whether the named predicate is loaded.
+    pub fn has_predicate(&self, id: &str) -> bool {
+        self.predicate_ids.contains_key(id)
+    }
+
+    /// Whether the named item modifier is loaded.
+    pub fn has_modifier(&self, id: &str) -> bool {
+        self.modifier_ids.contains_key(id)
+    }
+
+    /// `LootItemCondition.test` of a named predicate (`None`: unknown) or, with `inline`, of
+    /// an inline predicate (a list is `all_of`).
+    pub fn test_predicate(
+        &self,
+        id: Option<&str>,
+        inline: Option<&Value>,
+        ctx: &LootContext<'_>,
+        rng: &mut dyn LootRandom,
+    ) -> Result<bool, String> {
+        let owned;
+        let cond = match (id, inline) {
+            (Some(id), _) => {
+                let i = *self
+                    .predicate_ids
+                    .get(id)
+                    .ok_or_else(|| format!("unknown predicate {id}"))?;
+                self.predicates
+                    .get(usize::try_from(i).unwrap_or(usize::MAX))
+                    .ok_or_else(|| format!("unknown predicate {id}"))?
+            }
+            (None, Some(Value::Array(list))) => {
+                let mut parser = self.parser();
+                let all = list
+                    .iter()
+                    .map(|c| parser.cond(c))
+                    .collect::<Res<Vec<_>>>()?;
+                owned = Cond::AllOf(all.into());
+                &owned
+            }
+            (None, Some(v)) => {
+                owned = self.parser().cond(v)?;
+                &owned
+            }
+            (None, None) => return Err("no predicate".to_owned()),
+        };
+        let mut out = Vec::new();
+        let mut eval = Eval {
+            tables: self,
+            ctx,
+            rng,
+            out: &mut out,
+            post: Vec::new(),
+            depth: 0,
+        };
+        Ok(eval.test(cond))
+    }
+
+    /// `LootItemFunction.apply` of a named item modifier or, with `inline`, of an inline one
+    /// (a list is a `sequence`).
+    pub fn modify(
+        &self,
+        id: Option<&str>,
+        inline: Option<&Value>,
+        stack: &mut ItemStack,
+        ctx: &LootContext<'_>,
+        rng: &mut dyn LootRandom,
+    ) -> Result<(), String> {
+        let owned;
+        let func = match (id, inline) {
+            (Some(id), _) => {
+                let i = *self
+                    .modifier_ids
+                    .get(id)
+                    .ok_or_else(|| format!("unknown item modifier {id}"))?;
+                self.modifiers
+                    .get(usize::try_from(i).unwrap_or(usize::MAX))
+                    .ok_or_else(|| format!("unknown item modifier {id}"))?
+            }
+            (None, Some(Value::Array(list))) => {
+                let mut parser = self.parser();
+                let all = list
+                    .iter()
+                    .map(|f| parser.func(f))
+                    .collect::<Res<Vec<_>>>()?;
+                owned = Func {
+                    condition: None,
+                    kind: FuncKind::Sequence(all.into()),
+                };
+                &owned
+            }
+            (None, Some(v)) => {
+                owned = self.parser().func(v)?;
+                &owned
+            }
+            (None, None) => return Err("no item modifier".to_owned()),
+        };
+        let mut out = Vec::new();
+        let mut eval = Eval {
+            tables: self,
+            ctx,
+            rng,
+            out: &mut out,
+            post: Vec::new(),
+            depth: 0,
+        };
+        eval.apply(func, stack);
+        Ok(())
+    }
+
     /// Builds the set from parsed JSON files: `(id, file content or read error)`.
     fn from_files(
         tables: Vec<(String, Result<Value, String>)>,
@@ -597,6 +732,8 @@ impl LootTables {
             by_block,
             predicates: parsed_predicates,
             modifiers: parsed_modifiers,
+            predicate_ids,
+            modifier_ids,
             broken,
             unsupported,
         }

@@ -20,6 +20,7 @@ mod execute;
 pub(crate) mod functions;
 mod items;
 mod locate;
+mod loot_cmd;
 mod nbt_ops;
 mod pack_cmd;
 mod particle;

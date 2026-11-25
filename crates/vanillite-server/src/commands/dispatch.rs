@@ -459,6 +459,9 @@ pub(crate) fn execute(
         | CommandId::EffectGive { .. } => {
             super::entities_cmd::run(parsed.command, &parsed.args, source, env)
         }
+        CommandId::Loot { target, source: from } => {
+            super::loot_cmd::run(target, from, &parsed.args, source, env)
+        }
         CommandId::Bossbar(op) => super::bossbar_cmd::run(op, &parsed.args, source, env),
         CommandId::Particle { force } => super::particle::run(force, &parsed.args, source, env),
         CommandId::PlaySound(index) => super::sound::play_sound(index, &parsed.args, source, env),

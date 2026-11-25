@@ -86,7 +86,7 @@ pub(crate) fn on_player(
 }
 
 /// `containerMenu.broadcastChanges` of a player.
-fn sync_inventory(entities: &mut Entities, id: EntityId) {
+pub(crate) fn sync_inventory(entities: &mut Entities, id: EntityId) {
     if let Some(player) = entities.player_mut(id) {
         let sink = std::sync::Arc::clone(&player.connection.sink);
         player.inventory.broadcast_changes(sink.as_ref());
@@ -301,7 +301,7 @@ impl ItemInput {
     }
 
     /// `createItemStack(count)`.
-    fn create(&self, count: i32) -> Result<ItemStack, CommandError> {
+    pub(crate) fn create(&self, count: i32) -> Result<ItemStack, CommandError> {
         let max = item::max_stack_size(&self.stack);
         if count > max {
             return Err(error(
@@ -362,7 +362,7 @@ fn drop_for(level: &mut Level, id: EntityId, stack: ItemStack) {
 }
 
 /// `GiveCommand.giveItem` for one player: stacks into the inventory, the rest dropped.
-fn give_to(level: &mut Level, id: EntityId, prototype: &ItemStack, count: i32, max: i32) {
+pub(crate) fn give_to(level: &mut Level, id: EntityId, prototype: &ItemStack, count: i32, max: i32) {
     let mut remaining = count;
     while remaining > 0 {
         let size = max.min(remaining).max(1);
@@ -428,7 +428,16 @@ pub(crate) fn give(
 /// The items an item predicate accepts (`None`: all). Predicates with component tests are
 /// not supported.
 fn accepted_items(args: &Args, env: &Env<'_>) -> Result<Option<Vec<u16>>, CommandError> {
-    let Some(GameValue::ItemPredicate(predicate)) = args.game("item") else {
+    accepted_items_of(args, "item", env)
+}
+
+/// [`accepted_items`] of the item predicate argument `name`.
+pub(crate) fn accepted_items_of(
+    args: &Args,
+    name: &str,
+    env: &Env<'_>,
+) -> Result<Option<Vec<u16>>, CommandError> {
+    let Some(GameValue::ItemPredicate(predicate)) = args.game(name) else {
         return Ok(None);
     };
     let ItemPredicateArg { item, tests } = predicate.as_ref();
@@ -560,7 +569,7 @@ pub(crate) fn clear(
 /// A slot of an entity (`SlotProvider.getSlot`): player inventory indices 0–40, the cursor,
 /// the crafting grid, or the stack of an item entity.
 #[derive(Clone, Copy, Debug)]
-enum EntitySlot {
+pub(crate) enum EntitySlot {
     Inventory(usize),
     Cursor,
     Craft(usize),
@@ -568,7 +577,7 @@ enum EntitySlot {
 }
 
 /// The slot `index` of an entity, if it has it. Mobs keep no equipment yet.
-fn entity_slot(entities: &Entities, id: EntityId, index: i32) -> Option<EntitySlot> {
+pub(crate) fn entity_slot(entities: &Entities, id: EntityId, index: i32) -> Option<EntitySlot> {
     let kind = entities.store.get(id)?.kind();
     if kind == entity_ids::ITEM {
         return (index == 0).then_some(EntitySlot::ItemEntity);
@@ -597,7 +606,7 @@ fn slot_get(entities: &Entities, id: EntityId, slot: EntitySlot) -> ItemStack {
 }
 
 /// `SlotAccess.set`: armour slots below the head take only their own armour.
-fn slot_set(entities: &mut Entities, id: EntityId, slot: EntitySlot, stack: ItemStack) -> bool {
+pub(crate) fn slot_set(entities: &mut Entities, id: EntityId, slot: EntitySlot, stack: ItemStack) -> bool {
     if let EntitySlot::ItemEntity = slot {
         return entities.item_mut(id).is_some_and(|i| {
             i.stack = stack;
@@ -641,6 +650,57 @@ fn slot_range(args: &Args, name: &str) -> Result<(String, Vec<i32>), CommandErro
         Some(GameValue::SlotSource(SlotSourceArg::Source(_))) => Err(unsupported()),
         _ => Err(missing(name)),
     }
+}
+
+/// The stacks of the selected slots of an item accessor (`getSlots(...).itemCopies()`):
+/// entities `source` or the container at block `source`, slots `slots`.
+pub(crate) fn selected_stacks(
+    block: bool,
+    args: &Args,
+    source: &CommandSource,
+    env: &Env<'_>,
+) -> Result<Vec<ItemStack>, CommandError> {
+    let (_, slots) = slot_range(args, "slots")?;
+    if block {
+        let c = args.coordinates("source").ok_or_else(|| missing("source"))?;
+        let p = super::exec::resolve_position(source, c);
+        let pos = vanillite_base::BlockPos::containing(p.x, p.y, p.z);
+        if !env.level.is_loaded(pos) {
+            return Err(error("argument.pos.unloaded", vec![]));
+        }
+        let Some(container) = vanillite_game::block::container::ContainerRef::at(env.level, pos)
+        else {
+            return Err(error(
+                "commands.item.source.not_a_container",
+                vec![ErrArg::Int(pos.x), ErrArg::Int(pos.y), ErrArg::Int(pos.z)],
+            ));
+        };
+        let container = match container {
+            vanillite_game::block::container::ContainerRef::Double(..) => {
+                vanillite_game::block::container::ContainerRef::Block(pos)
+            }
+            other => other,
+        };
+        let size = container.size(env.level);
+        return Ok(slots
+            .iter()
+            .filter_map(|&i| usize::try_from(i).ok().filter(|&i| i < size))
+            .map(|i| container.get(env.level, i))
+            .collect());
+    }
+    let selector = args.selector("source").ok_or_else(|| missing("source"))?;
+    let targets = select::optional(env, source, selector)?;
+    let entities = &env.level.entities;
+    Ok(targets
+        .iter()
+        .filter_map(|t| t.entity)
+        .flat_map(|id| {
+            slots
+                .iter()
+                .filter_map(move |&i| entity_slot(entities, id, i))
+                .map(move |slot| slot_get(entities, id, slot))
+        })
+        .collect())
 }
 
 /// The entities of an item accessor; a block must be loaded and is never a container (block
@@ -703,8 +763,7 @@ pub(crate) fn item(
     let targets = item_entities(args, "target", source, env, true)?;
     let (slots_name, slots) = slot_range(args, "slots")?;
     if op == ItemOp::Modify {
-        // Loot item modifiers do not exist yet.
-        return Err(unsupported());
+        return modify_items(&targets, &slots_name, &slots, args, source, env);
     }
     let (items, known) = if args.has("item") {
         let input = ItemInput::of(args, "item", env)?;
@@ -731,9 +790,15 @@ pub(crate) fn item(
                 vec![ErrArg::Str(source_name)],
             ));
         }
-        if args.has("modifier") {
-            return Err(unsupported());
-        }
+        let items = if args.has("modifier") {
+            let modifier = super::loot_cmd::resource_or_inline(args, "modifier")?;
+            items
+                .iter()
+                .map(|i| super::loot_cmd::apply_modifier(env, source, &modifier, i))
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            items
+        };
         (items, None)
     };
     let mut provider = Provider {
@@ -817,6 +882,68 @@ pub(crate) fn item(
             },
         ),
     }
+}
+
+/// `ItemCommands.modifyItems` on entities: the modifier on every non-empty selected slot.
+fn modify_items(
+    targets: &[Target],
+    slots_name: &str,
+    slots: &[i32],
+    args: &Args,
+    source: &CommandSource,
+    env: &mut Env<'_>,
+) -> Result<i32, CommandError> {
+    let modifier = super::loot_cmd::resource_or_inline(args, "modifier")?;
+    let mut selected = 0usize;
+    let mut tracker = Tracker::<Component>::default();
+    for target in targets {
+        let Some(id) = target.entity else {
+            continue;
+        };
+        let here: Vec<EntitySlot> = slots
+            .iter()
+            .filter_map(|&i| entity_slot(&env.level.entities, id, i))
+            .collect();
+        let mut changed = 0i32;
+        for slot in here {
+            let stack = slot_get(&env.level.entities, id, slot);
+            if stack.is_empty() {
+                continue;
+            }
+            selected = selected.saturating_add(1);
+            let result = super::loot_cmd::apply_modifier(env, source, &modifier, &stack)?;
+            if slot_set(&mut env.level.entities, id, slot, result) {
+                changed = changed.saturating_add(1);
+            }
+        }
+        if changed > 0 {
+            sync_inventory(&mut env.level.entities, id);
+        }
+        tracker.track(&target.display(), changed);
+    }
+    if selected == 0 {
+        return Err(error(
+            "commands.item.target.no_such_slot",
+            vec![ErrArg::Str(slots_name.to_owned())],
+        ));
+    }
+    tracker.feedback(
+        source,
+        env,
+        true,
+        false,
+        Some(error("commands.item.target.failed", vec![])),
+        |one, n, total| match one {
+            Some(entity) => Component::translatable_args(
+                "commands.item.entity.modify.success.single",
+                vec![Arg::Int(total), Arg::from(entity.clone())],
+            ),
+            None => Component::translatable_args(
+                "commands.item.entity.modify.success.multiple",
+                vec![Arg::Int(n)],
+            ),
+        },
+    )
 }
 
 // --- enchant ------------------------------------------------------------------------------------
