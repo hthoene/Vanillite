@@ -1,0 +1,173 @@
+{
+  "description": "Ice and snow layers melt next to bright block light and stay away from it, frosted ice melts age by age, lit redstone ore goes dark.",
+  "tier": "fast",
+  "world": {
+    "seed": 8301,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:stone",
+        3
+      ]
+    ]
+  },
+  "rules": {
+    "random_tick_speed": "2048"
+  },
+  "time": 6000,
+  "level_rng": true,
+  "light": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      11,
+      -58,
+      11
+    ]
+  ],
+  "ticks": 140,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        4
+      ],
+      "block": "minecraft:glowstone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -60,
+        4
+      ],
+      "block": "minecraft:ice"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -60,
+        4
+      ],
+      "block": "minecraft:ice"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        3
+      ],
+      "block": "minecraft:snow[layers=2]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        5
+      ],
+      "block": "minecraft:packed_ice"
+    },
+    {
+      "op": "set",
+      "pos": [
+        10,
+        -60,
+        10
+      ],
+      "block": "minecraft:ice"
+    },
+    {
+      "op": "set",
+      "pos": [
+        10,
+        -60,
+        8
+      ],
+      "block": "minecraft:snow[layers=1]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -59,
+        4
+      ],
+      "block": "minecraft:frosted_ice[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -59,
+        4
+      ],
+      "block": "minecraft:frosted_ice[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -59,
+        4
+      ],
+      "block": "minecraft:frosted_ice[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -60,
+        7
+      ],
+      "block": "minecraft:redstone_ore[lit=true]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -60,
+        2
+      ],
+      "block": "minecraft:sea_lantern"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -59,
+        2
+      ],
+      "block": "minecraft:ice"
+    },
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -59,
+        2
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        2
+      ],
+      "block": "minecraft:snow[layers=8]"
+    }
+  ]
+}

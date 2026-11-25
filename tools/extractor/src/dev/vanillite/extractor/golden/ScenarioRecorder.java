@@ -129,6 +129,18 @@ public final class ScenarioRecorder {
         }
       }
 
+      if (scenario.has("weather")) {
+        String weather = scenario.get("weather").getAsString();
+        boolean thunder = weather.equals("thunder");
+        if (!thunder && !weather.equals("rain") && !weather.equals("clear")) {
+          throw new IllegalArgumentException("unknown weather " + weather);
+        }
+        boolean rain = !weather.equals("clear");
+        // Full rain (and thunder) at once instead of the client fade of 0.01 per tick.
+        server.setWeatherParameters(0, rain ? 1_000_000 : 0, rain, thunder);
+        level.setRainLevel(rain ? 1.0F : 0.0F);
+        level.setThunderLevel(thunder ? 1.0F : 0.0F);
+      }
       if (scenario.has("time")) {
         server.command("time set " + scenario.get("time").getAsLong());
       }
@@ -145,6 +157,11 @@ public final class ScenarioRecorder {
         }
       }
       level.getRandom().setSeed(seed);
+      // The LCG of random tick positions starts from the seed too (Vanilla seeds it from a
+      // thread-local random).
+      Field randValue = net.minecraft.world.level.Level.class.getDeclaredField("randValue");
+      randValue.setAccessible(true);
+      randValue.setInt(level, (int) seed);
       for (int i = 0; i < specs.size(); i++) {
         JsonObject spec = specs.get(i).getAsJsonObject();
         if (!spec.get("type").getAsString().equals("minecraft:player")) {
@@ -154,7 +171,8 @@ public final class ScenarioRecorder {
       ParityHooks.startStream(scenario.has("entity_seed") ? scenario.get("entity_seed").getAsLong() : seed);
 
       boolean light = scenario.has("light") && scenario.get("light").getAsBoolean();
-      Trace trace = new Trace(min, max, entities, light);
+      boolean levelRng = scenario.has("level_rng") && scenario.get("level_rng").getAsBoolean();
+      Trace trace = new Trace(min, max, entities, light, levelRng);
       trace.frame(level, 0, true);
       int ticks = scenario.get("ticks").getAsInt();
       JsonArray actions = scenario.has("actions") ? scenario.getAsJsonArray("actions") : null;
@@ -282,14 +300,16 @@ public final class ScenarioRecorder {
     private final List<String> paletteOrder = new ArrayList<>();
     private final List<String> frames = new ArrayList<>();
     private final boolean light;
+    private final boolean levelRng;
     private int[] last;
     private final ScenarioEntities names;
 
-    Trace(BlockPos min, BlockPos max, ScenarioEntities names, boolean light) {
+    Trace(BlockPos min, BlockPos max, ScenarioEntities names, boolean light, boolean levelRng) {
       this.min = min;
       this.max = max;
       this.names = names;
       this.light = light;
+      this.levelRng = levelRng;
     }
 
     private int index(String state) {
@@ -361,7 +381,7 @@ public final class ScenarioRecorder {
       ticks(sb, level, level.getFluidTicks(), f -> BuiltInRegistries.FLUID.getKey(f).toString());
       sb.append(",\"entities\":");
       entities(sb, level);
-      if (names.hasEntities()) {
+      if (names.hasEntities() || levelRng) {
         sb.append(",\"level_rng\":").append(ScenarioEntities.state(level.getRandom()));
       }
       if (light) {

@@ -344,8 +344,7 @@ pub(super) fn farmland_tick(level: &mut Level, state: BlockState, pos: BlockPos)
 /// `FarmlandBlock.randomTick`: moisture from water within 4 blocks, dries out to dirt.
 pub(super) fn farmland_random_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
     let moisture = state.int("moisture").unwrap_or(0);
-    // `isRainingAt(pos.above())`: there is no weather yet.
-    if !near_water(level, pos) {
+    if !near_water(level, pos) && !level.is_raining_at(pos.above()) {
         if moisture > 0 {
             level.set_block(
                 pos,

@@ -26,6 +26,7 @@ use vanillite_chunk::slots::{
 use vanillite_data::block::{BlockId, BlockState};
 use vanillite_data::entity::{EntityTypeId, ids};
 use vanillite_game::block::Behaviours;
+use vanillite_game::block::weather::Climate;
 use vanillite_game::entities::{Entities, is_mob_kind};
 use vanillite_game::item_entity::ItemData;
 use vanillite_game::level::explosion::BlockInteraction;
@@ -44,6 +45,7 @@ use vanillite_game::survival::blocks::{BlockAccess, BlockFacts};
 use vanillite_game::survival::damage::{DamageSource, DamageTypes};
 use vanillite_game::survival::player::{self as survival_player, Env};
 use vanillite_game::survival::rules::{Difficulty, GameRules, Rule};
+use vanillite_game::survival::weather::LevelWeather;
 use vanillite_protocol::SharedPacket;
 use vanillite_world::chunks::{ChunkSettings, ChunkSlots, Chunks, InlineExecutor};
 use vanillite_world::entity::{EntityId, NetworkIds, Rotation};
@@ -112,13 +114,19 @@ impl BlockAccess for ChunkBlocks<'_> {
 
 /// Damage types and block facts of the Vanilla data pack.
 static PACK: OnceLock<(DamageTypes, BlockFacts)> = OnceLock::new();
+/// The biomes of the Vanilla data pack (temperatures, precipitation).
+static BIOMES: OnceLock<vanillite_worldgen::biome::BiomeRegistry> = OnceLock::new();
+/// The biome ids by protocol id.
+static BIOME_NAMES: OnceLock<Arc<[String]>> = OnceLock::new();
+
+/// Sea level of Vanilla's flat worlds (`FlatLevelSource.getSeaLevel`).
+const FLAT_SEA_LEVEL: i32 = -63;
 
 /// Installs the chunk facts and the block tags behaviour reads from the Vanilla data pack
 /// (extracted into `$VANILLITE_CACHE`, default `<workspace>/target/vanilla-cache`), once.
 fn install() {
     static DONE: OnceLock<()> = OnceLock::new();
     DONE.get_or_init(|| {
-        vanillite_chunk::facts::install_vanilla(&[], &[], 1);
         let cache = std::env::var_os("VANILLITE_CACHE").map_or_else(
             || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/vanilla-cache"),
             PathBuf::from,
@@ -127,11 +135,34 @@ fn install() {
         let pack = vanillite_datapack::vanilla::ensure_vanilla_pack(&cache, jar.as_deref())
             .expect("Vanilla data pack (set VANILLITE_SERVER_JAR for an offline copy)");
         let packs = vanillite_datapack::load(&[pack.as_path()]).expect("load Vanilla data pack");
+        // The heightmap tags and the biome count, as the server installs them.
+        let tag = |name: &str| {
+            packs
+                .tag_ids("minecraft:block", name)
+                .expect("Vanilla heightmap block tag")
+        };
+        let biomes = packs
+            .registry("minecraft:worldgen/biome")
+            .map_or(1, |r| r.entries().len());
+        vanillite_chunk::facts::install_vanilla(
+            &tag("minecraft:blocks_motion_in_heightmap"),
+            &tag("minecraft:blocks_motion_in_heightmap_no_leaves"),
+            u32::try_from(biomes).unwrap_or(u32::MAX),
+        );
         vanillite_worldgen::behaviour::init(&packs);
         let _ = PACK.set((
             vanillite_server::load_damage_types(&packs),
             vanillite_server::load_block_facts(&packs),
         ));
+        let _ = BIOMES.set(
+            vanillite_worldgen::biome::BiomeRegistry::load(&packs).expect("Vanilla biomes"),
+        );
+        let _ = BIOME_NAMES.set(
+            packs
+                .registry("minecraft:worldgen/biome")
+                .map(|r| r.entries().iter().map(|e| e.id.clone()).collect())
+                .expect("Vanilla biome registry"),
+        );
         // Loot tables and item tags (block drops), as the server installs them.
         vanillite_game::player::play::install_game_data(Arc::new(vanillite_server::game_data(
             Some(&packs),
@@ -153,6 +184,8 @@ pub struct GameWorld {
     seed: i64,
     /// Runs the light engine (scenarios that observe light).
     light: bool,
+    /// Frames observe the level random.
+    level_rng: bool,
 }
 
 impl std::fmt::Debug for GameWorld {
@@ -166,6 +199,12 @@ impl GameWorld {
     /// parallel execution are the same.
     pub fn new(spec: &WorldSpec) -> Result<Self, String> {
         install();
+        let biomes = Arc::clone(BIOME_NAMES.get().expect("installed"));
+        let default_biome = biomes
+            .iter()
+            .position(|b| *b == spec.biome)
+            .and_then(|i| u16::try_from(i).ok())
+            .ok_or_else(|| format!("unknown biome `{}`", spec.biome))?;
         let info = WorldInfo {
             dimension: "minecraft:overworld".to_owned(),
             dir: std::env::temp_dir(),
@@ -173,8 +212,8 @@ impl GameWorld {
             height: HEIGHT,
             seed: spec.seed,
             has_sky_light: true,
-            biomes: Arc::from([spec.biome.clone()]),
-            default_biome: 0,
+            biomes,
+            default_biome,
             air: BlockState::AIR.0,
         };
         let mut layers = Vec::new();
@@ -219,13 +258,30 @@ impl GameWorld {
         let mut rules = GameRules::default();
         apply_rules(&mut settings, &mut rules, &spec.rules)?;
         let network_ids = Arc::new(NetworkIds::new());
-        let level = Level::new(
+        let mut level = Level::new(
             chunks,
             settings,
             Arc::new(Behaviours::vanilla()),
             Arc::clone(&network_ids),
             spec.seed,
         );
+        level.set_climate(Arc::new(Climate {
+            biomes: BIOMES.get().expect("installed").clone(),
+            manager: vanillite_worldgen::biome::BiomeManager::for_world_seed(spec.seed),
+            sea_level: FLAT_SEA_LEVEL,
+        }));
+        let (rain, thunder) = match spec.weather.as_str() {
+            "clear" => (0.0, 0.0),
+            "rain" => (1.0, 0.0),
+            "thunder" => (1.0, 1.0),
+            w => return Err(format!("unknown weather `{w}`")),
+        };
+        level.set_weather(LevelWeather {
+            rain_level: rain,
+            o_rain_level: rain,
+            thunder_level: thunder,
+            o_thunder_level: thunder,
+        });
         let difficulty = match spec.difficulty.as_str() {
             "peaceful" => Difficulty::Peaceful,
             "easy" => Difficulty::Easy,
@@ -246,6 +302,7 @@ impl GameWorld {
             names: Vec::new(),
             seed: spec.seed,
             light: spec.light,
+            level_rng: spec.level_rng,
         })
     }
 
@@ -271,7 +328,7 @@ impl GameWorld {
         let r = {
             let level = &self.level;
             let blocks = ChunkBlocks(&level.chunks);
-            let raining = |_| false;
+            let raining = |pos| level.is_raining_at(pos);
             let mut no_gateway = |_| false;
             let mut env = Env {
                 types,
@@ -704,32 +761,33 @@ fn apply_rules(
     }
     for (name, value) in rules {
         let bad = || format!("game rule {name}: bad value `{value}`");
-        if let Some(rule) = Rule::by_name(name) {
-            let v = match value.as_str() {
-                "true" => 1,
-                "false" => 0,
-                v => v.parse().map_err(|_| bad())?,
-            };
-            game_rules.set(rule, v);
-        }
-        match name.as_str() {
-            "random_tick_speed" => settings.random_tick_speed = value.parse().map_err(|_| bad())?,
-            "water_source_conversion" => {
-                settings.water_source_conversion = value.parse().map_err(|_| bad())?;
-            }
-            "lava_source_conversion" => {
-                settings.lava_source_conversion = value.parse().map_err(|_| bad())?;
-            }
-            "block_drops" => settings.block_drops = value.parse().map_err(|_| bad())?,
-            "entity_drops" => settings.entity_drops = value.parse().map_err(|_| bad())?,
-            "spawn_mobs" | "advance_time" | "advance_weather" | "mob_griefing" | "mob_drops" => {}
-            _ => {
-                return Err(format!(
-                    "game rule {name} is not supported by the game world"
-                ));
-            }
-        }
+        let supported = matches!(
+            name.as_str(),
+            "random_tick_speed"
+                | "water_source_conversion"
+                | "lava_source_conversion"
+                | "block_drops"
+                | "entity_drops"
+                | "max_snow_accumulation_height"
+                | "fire_spread_radius_around_player"
+                | "spread_vines"
+                | "spawn_mobs"
+                | "advance_time"
+                | "advance_weather"
+                | "mob_griefing"
+                | "mob_drops"
+        );
+        let rule = Rule::by_name(name).filter(|_| supported).ok_or_else(|| {
+            format!("game rule {name} is not supported by the game world")
+        })?;
+        let v = match value.as_str() {
+            "true" => 1,
+            "false" => 0,
+            v => v.parse().map_err(|_| bad())?,
+        };
+        game_rules.set(rule, v);
     }
+    settings.apply_game_rules(game_rules);
     Ok(())
 }
 
@@ -849,6 +907,7 @@ impl ScenarioWorld for GameWorld {
             }
         }
         *self.level.random() = LegacyRandom::new(self.seed);
+        self.level.set_rand_value(self.seed as i32);
         for (i, spec) in entities.iter().enumerate() {
             if !spec.is_player() {
                 self.add_mob(spec, i)?;
@@ -858,7 +917,7 @@ impl ScenarioWorld for GameWorld {
     }
 
     fn level_rng(&mut self) -> Option<i64> {
-        (!self.names.is_empty()).then(|| self.level.random().state())
+        (self.level_rng || !self.names.is_empty()).then(|| self.level.random().state())
     }
 
     fn hurt(&mut self, hurt: &Hurt) -> Result<(), String> {

@@ -27,6 +27,7 @@
 //! (Vanilla's `SimulationChunkTracker`) decide which chunks tick.
 
 pub mod levels;
+pub mod simulation;
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -46,6 +47,8 @@ pub use levels::{
     BLOCK_TICKING_LEVEL, ENTITY_TICKING_LEVEL, FULL_LEVEL, LevelChange, MAX_LEVEL, TicketLevels,
     required_status,
 };
+
+use simulation::SimulationLevels;
 
 use crate::ticks::{LevelTicks, ScheduledTick, TickPriority};
 
@@ -230,10 +233,8 @@ pub struct Chunks {
     block_changes: Vec<BlockPos>,
     tick: u64,
     /// Simulation tickets and their levels.
-    simulation: TicketLevels,
+    simulation: SimulationLevels,
     simulation_tickets: FxHashMap<TicketId, (ChunkPos, u8)>,
-    /// Level changes of the simulation tickets (not used, kept to reuse the buffer).
-    simulation_changes: Vec<LevelChange>,
     /// Scheduled block ticks of the live chunks.
     block_ticks: LevelTicks,
     /// Scheduled fluid ticks of the live chunks.
@@ -296,9 +297,8 @@ impl Chunks {
             light_changes: FxHashMap::default(),
             block_changes: Vec::new(),
             tick: 0,
-            simulation: TicketLevels::with_max(BLOCK_TICKING_LEVEL),
+            simulation: SimulationLevels::default(),
             simulation_tickets: FxHashMap::default(),
-            simulation_changes: Vec::new(),
             block_ticks: LevelTicks::default(),
             fluid_ticks: LevelTicks::default(),
             game_time: 0,
@@ -398,27 +398,29 @@ impl Chunks {
         let id = TicketId(self.next_ticket);
         self.next_ticket += 1;
         self.simulation_tickets.insert(id, (pos, level));
-        self.simulation
-            .add(pos, level, &mut self.simulation_changes);
-        self.simulation_changes.clear();
+        self.simulation.add_ticket(pos, level);
+        self.simulation.run_updates();
         id
     }
 
     /// Removes a simulation ticket.
     pub fn remove_simulation_ticket(&mut self, id: TicketId) {
         if let Some((pos, level)) = self.simulation_tickets.remove(&id) {
-            self.simulation
-                .remove(pos, level, &mut self.simulation_changes);
-            self.simulation_changes.clear();
+            self.simulation.remove_ticket(pos, level);
+            self.simulation.run_updates();
         }
     }
 
-    /// Moves a simulation ticket to `pos`.
+    /// Moves a simulation ticket to `pos`: like a player changing chunks in Vanilla
+    /// (`ChunkMap.move`), the old ticket goes, the new one comes, then the levels update.
     pub fn move_simulation_ticket(&mut self, id: TicketId, pos: ChunkPos) {
         if let Some((from, level)) = self.simulation_tickets.get_mut(&id) {
-            self.simulation
-                .shift(*from, pos, *level, &mut self.simulation_changes);
-            self.simulation_changes.clear();
+            if *from == pos {
+                return;
+            }
+            self.simulation.remove_ticket(*from, *level);
+            self.simulation.add_ticket(pos, *level);
+            self.simulation.run_updates();
             *from = pos;
         }
     }
@@ -445,7 +447,7 @@ impl Chunks {
     }
 
     /// The chunks that get random ticks this tick (`forEachBlockTickingChunk`: entity ticking
-    /// by simulation level and a ticking chunk).
+    /// by simulation level and a ticking chunk), in Vanilla's order.
     pub fn random_ticking_chunks(&self, out: &mut Vec<ChunkPos>) {
         out.extend(
             self.simulation
@@ -1369,7 +1371,7 @@ impl Chunks {
 /// [`Chunks::is_block_ticking`] over the fields, for use while the tick queues are borrowed.
 fn tick_check(
     holders: &FxHashMap<ChunkPos, Holder>,
-    simulation: &TicketLevels,
+    simulation: &SimulationLevels,
     pos: ChunkPos,
 ) -> bool {
     simulation.level(pos) <= BLOCK_TICKING_LEVEL
