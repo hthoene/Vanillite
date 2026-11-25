@@ -83,6 +83,9 @@ enum Route {
     /// Through a nether portal (`NetherPortalBlock.getPortalDestination`): the closest exit
     /// portal to `approx` within the search radius, or a new one.
     NetherPortal {
+        /// The entity's position scaled to this world (`getTeleportationScale`).
+        scaled: Vec3,
+        /// `scaled` clamped to this world's border, set on arrival.
         approx: BlockPos,
         to_nether: bool,
         entry: EntryPortal,
@@ -171,7 +174,8 @@ impl ServerWorld {
                 // `DimensionType.getTeleportationScale`.
                 let scale = from.coordinate_scale / to.coordinate_scale;
                 let route = Route::NetherPortal {
-                    approx: portal::scaled_exit(pos, scale),
+                    scaled: Vec3::new(pos.x * scale, pos.y, pos.z * scale),
+                    approx: BlockPos::new(0, 0, 0),
                     to_nether: target == NETHER,
                     entry: portal::entry_portal(&self.level, entry, pos, width, height),
                 };
@@ -345,7 +349,9 @@ impl ServerWorld {
             (entity.uuid(), entity.pos(), entity.velocity(), entity.rot());
         let (width, height) = size(&entity.aabb());
         let tags = self.level.entities.tags_of(id).to_vec();
-        let (removed, data) = self.level.entities.despawn_player(id)?;
+        let (removed, mut data) = self.level.entities.despawn_player(id)?;
+        // The camera entity stays behind (`setCamera(this)` of the transition).
+        data.connection.camera = None;
         Some(Traveller {
             uuid,
             network_id: removed.network_id,
@@ -364,7 +370,14 @@ impl ServerWorld {
 
     /// A traveller reached this world: it waits here until the chunks its destination needs
     /// are loaded.
-    pub(crate) fn arrive(&mut self, global: &Global, traveller: Traveller) {
+    pub(crate) fn arrive(&mut self, global: &Global, mut traveller: Traveller) {
+        if let Route::NetherPortal { scaled, approx, .. } = &mut traveller.route {
+            // `newWorldBorder.clampToBounds`.
+            *approx = self
+                .level
+                .border
+                .clamp_to_bounds(scaled.x, scaled.y, scaled.z);
+        }
         let area = match &traveller.route {
             Route::NetherPortal {
                 approx, to_nether, ..
@@ -825,6 +838,12 @@ impl ServerWorld {
             .connection
             .chunks
             .update_view(view.center, view.view_distance, sink.as_ref());
+        // `handleClientCommand(PERFORM_RESPAWN)`: a hardcore death respawns as a spectator.
+        if keep_all == Some(false) && self.players.level.hardcore {
+            join::set_game_mode(player, GameMode::Spectator, || {
+                crate::commands::exec::broadcast_game_mode(global, uuid, GameMode::Spectator);
+            });
+        }
         if let Some(pos) = landing.ticket {
             self.place_portal_ticket(pos);
         }
@@ -870,6 +889,7 @@ impl ServerWorld {
                 approx,
                 to_nether,
                 entry,
+                ..
             } => {
                 let level = &mut self.level;
                 // `getExitPortal`.
@@ -966,7 +986,7 @@ impl ServerWorld {
                 })
             }
             Route::Spawn | Route::Respawn { .. } => {
-                let (pos, yaw) = self.players.level.spawn;
+                let (pos, yaw) = super::effective_spawn(&self.level, self.players.level.spawn);
                 Some(Landing {
                     pos,
                     y_rot: yaw,

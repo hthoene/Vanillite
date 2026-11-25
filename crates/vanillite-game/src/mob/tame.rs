@@ -381,6 +381,20 @@ pub fn leash_interact(
             }
         }
         if any {
+            // `gameEvent(ENTITY_ACTION, blockPosition(), Context.of(player))`.
+            if let Some(p) = ents.store.get(target).map(|e| e.pos()) {
+                let b = BlockPos::containing(p.x, p.y, p.z);
+                crate::survival::game_event(
+                    env.out,
+                    crate::level::game_event::events().entity_action,
+                    Vec3::new(
+                        f64::from(b.x) + 0.5,
+                        f64::from(b.y) + 0.5,
+                        f64::from(b.z) + 0.5,
+                    ),
+                    Some(player),
+                );
+            }
             entity_sound(ents, env, target, "minecraft:item.lead.tied");
             return Interaction::Success;
         }
@@ -397,6 +411,9 @@ pub fn leash_interact(
     let name = crate::item::item_id(&stack).name();
     if name == "minecraft:shears" && leash_holder(ents, target).is_some() && !sneaking {
         drop_leash(ents, env, target, true);
+        // `dropAllLeashConnections`.
+        let event = crate::level::game_event::events().shear;
+        super::animal::entity_game_event(ents, env, target, event, Some(player));
         entity_sound(ents, env, target, "minecraft:item.shears.snip");
         return Interaction::Success;
     }
@@ -408,6 +425,8 @@ pub fn leash_interact(
             .player(player)
             .is_some_and(|p| p.game_mode == GameMode::Creative);
         drop_leash(ents, env, target, !creative);
+        let event = crate::level::game_event::events().entity_interact;
+        super::animal::entity_game_event(ents, env, target, event, Some(player));
         entity_sound(ents, env, target, "minecraft:item.lead.untied");
         return Interaction::Success;
     }

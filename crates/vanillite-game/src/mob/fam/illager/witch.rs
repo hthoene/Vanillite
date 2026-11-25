@@ -83,6 +83,9 @@ pub fn ai_step_start(t: &mut Tick<'_, '_>) {
                     crate::effect::living::add_to_mob(t.mob(), e);
                 }
             }
+            let at = t.pos();
+            let drink = crate::level::game_event::events().drink;
+            crate::mob::living::post_game_event(t, drink, at, None);
             if let Some(speed) = speed {
                 t.mob().attrs.movement_speed = speed;
             }
@@ -238,6 +241,7 @@ pub fn perform_ranged_attack(t: &mut Tick<'_, '_>, target: EntityId) {
                 stack,
                 left_owner: false,
                 tick_count: 0,
+                has_been_shot: false,
             },
         )),
     );

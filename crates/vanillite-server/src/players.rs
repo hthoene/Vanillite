@@ -630,6 +630,7 @@ impl WorldPlayers {
         world: crate::world::WorldId,
         blocks: &mut WorldBlocks<'_>,
     ) {
+        let border = level.border.clone();
         let (movement_check, elytra_movement_check) = {
             use vanillite_game::survival::rules::Rule;
             let game_rules = global.level.rules();
@@ -641,10 +642,12 @@ impl WorldPlayers {
         let ctx = MoveContext {
             runs_normally,
             rules: &rules.movement,
+            border: Some(&border),
+            no_wrong_move_check: false,
             movement_check,
             elytra_movement_check,
         };
-        let protection = self.spawn_protection(global);
+        let protection = self.spawn_protection(global, level);
         let dimension_name = self.level.dimension.clone();
         let dimension_name = dimension_name.as_str();
         // The player kind data leaves the level while the packets are handled, so the block
@@ -724,7 +727,13 @@ impl WorldPlayers {
                 };
                 let handled = player.connection.handle_packets(
                     &mut state,
-                    ctx,
+                    MoveContext {
+                        no_wrong_move_check: matches!(
+                            player.game_mode,
+                            GameMode::Spectator | GameMode::Creative
+                        ),
+                        ..ctx
+                    },
                     chat,
                     &mut play,
                     PACKETS_PER_TICK,
@@ -856,8 +865,8 @@ impl WorldPlayers {
     }
 
     /// Spawn protection of this world for this tick (`isUnderSpawnProtection`).
-    fn spawn_protection(&self, global: &Global) -> SpawnProtection {
-        let spawn = self.level.spawn.0;
+    fn spawn_protection(&self, global: &Global, level: &Level) -> SpawnProtection {
+        let spawn = crate::world::effective_spawn(level, self.level.spawn).0;
         SpawnProtection {
             active: self.level.dimension.as_str() == "minecraft:overworld"
                 && global.spawn_protection > 0
@@ -873,6 +882,7 @@ impl WorldPlayers {
         for (_, player) in entities.players.iter_mut() {
             player.connection.movement.tick_client_load_timeout();
         }
+        crate::spectator::tick(entities);
     }
 
     /// `ChunkMap.tick`: one chunk batch per player.
@@ -962,7 +972,7 @@ impl WorldPlayers {
     /// block change acknowledgement, digging progress, item pickup, the inventory menu's
     /// `broadcastChanges` and equipment changes for other players.
     fn tick_players(&mut self, level: &mut Level, global: &Global, blocks: &mut WorldBlocks<'_>) {
-        let protection = self.spawn_protection(global);
+        let protection = self.spawn_protection(global, level);
         let dimension_name = self.level.dimension.clone();
         let dimension_name = dimension_name.as_str();
         // As in `handle_packets`: the players leave the level while it may change.

@@ -30,6 +30,7 @@ mod progress;
 mod scoreboard;
 mod server;
 pub mod slot;
+mod spectator;
 mod survival;
 mod systems;
 mod test_bot;

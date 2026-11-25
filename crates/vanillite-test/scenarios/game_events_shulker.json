@@ -1,0 +1,15 @@
+{
+  "description": "A shulker on the floor four blocks from a sculk sensor is hurt: the entity_damage game event (and the shulker's container_open/close peeks) activate the sensor after the vibration's travel time.",
+  "tier": "fast",
+  "region": [[0, -61, 0], [8, -58, 6]],
+  "ticks": 38,
+  "setup": [
+    {"op": "set", "pos": [2, -60, 2], "block": "minecraft:sculk_sensor"}
+  ],
+  "entities": [
+    {"name": "shulker", "type": "minecraft:shulker", "pos": [6.5, -60.0, 2.5], "seed": 7, "finalize": false}
+  ],
+  "actions": [
+    {"tick": 20, "op": "hurt", "entity": "shulker", "amount": 2}
+  ]
+}

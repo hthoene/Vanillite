@@ -76,6 +76,11 @@ pub trait PlayLevel {
     ) -> Option<std::sync::Arc<std::sync::Mutex<crate::random_sequences::RandomSequences>>> {
         None
     }
+    /// `WorldBorder.isWithinBounds(pos)` of this world: the border part of
+    /// `ServerLevel.mayInteract`.
+    fn within_border(&self, _pos: BlockPos) -> bool {
+        true
+    }
     /// The level itself, for gameplay that works on block entities and block behaviours
     /// (block use, containers); `None` in tests without a level.
     /// The world's dimension.

@@ -35,6 +35,8 @@ pub struct ThrownPotion {
     pub left_owner: bool,
     /// `tickCount`.
     pub tick_count: i32,
+    /// `hasBeenShot`: the `PROJECTILE_SHOOT` game event was posted.
+    pub has_been_shot: bool,
 }
 
 /// Whether `kind` is a thrown potion.
@@ -115,6 +117,7 @@ pub fn throw(
             stack: potion,
             left_owner: false,
             tick_count: 0,
+            has_been_shot: false,
         })),
     );
     if !infinite {
@@ -173,6 +176,14 @@ pub fn tick(t: &mut SpecialTick<'_, '_>) {
         p.owner = found;
     }
     p.tick_count = p.tick_count.saturating_add(1);
+    // `Projectile.tick`: the first tick posts `PROJECTILE_SHOOT` from the thrower.
+    if !std::mem::replace(&mut p.has_been_shot, true) {
+        let owner = p.owner;
+        crate::mob::missile::shoot_event(t.env.out, pos, owner);
+    }
+    let Some(p) = thrown_mut(t.ents, id) else {
+        return;
+    };
     let (owner, left_owner, tick_count) = (p.owner, p.left_owner, p.tick_count);
     if !t.level.is_loaded(BlockPos::containing(pos.x, pos.y, pos.z)) {
         return;
@@ -255,7 +266,7 @@ pub fn tick(t: &mut SpecialTick<'_, '_>) {
     } else {
         None
     };
-    on_hit(t, new_box, m, hit_entity.map(|(e, _)| e), block);
+    on_hit(t, new_box, m, hit_entity.map(|(e, _)| e), block, new_pos);
 }
 
 /// The face of block `b` a segment from `from` entered it through at `at`.
@@ -286,12 +297,15 @@ fn on_hit(
     margin: f32,
     hit_entity: Option<EntityId>,
     block: Option<(BlockPos, Direction)>,
+    at: Vec3,
 ) {
     let id = t.id;
     let Some(SpecialData::ThrownPotion(p)) = t.ents.special(id) else {
         return;
     };
     let (owner, stack) = (p.owner, p.stack.clone());
+    // `super.onHit`: the land game event comes first.
+    crate::mob::missile::land_event(t.env.out, t.level, id, block.map(|(b, _)| b), at);
     if let Some((pos, face)) = block
         && PotionContents::of_stack(&stack).is_water()
     {
@@ -398,7 +412,7 @@ pub fn save(p: &ThrownPotion, out: &mut Compound) {
         );
     }
     out.insert("LeftOwner", p.left_owner);
-    out.insert("HasBeenShot", true);
+    out.insert("HasBeenShot", p.has_been_shot);
     out.insert(
         "Item",
         Tag::Compound(crate::item_nbt::stack_to_nbt(&p.stack)),
@@ -438,5 +452,9 @@ pub fn load(kind: EntityTypeId, tag: &Compound) -> ThrownPotion {
             .and_then(Tag::as_i64)
             .is_some_and(|v| v != 0),
         tick_count: 0,
+        has_been_shot: tag
+            .get("HasBeenShot")
+            .and_then(Tag::as_i64)
+            .is_some_and(|v| v != 0),
     }
 }

@@ -9,6 +9,7 @@ use vanillite_data::block::{BlockState, flags, ids};
 use vanillite_worldgen::behaviour::StateExt;
 
 use crate::level::Level;
+use crate::level::border::WorldBorder;
 
 /// `Shapes.EPSILON`.
 const EPSILON: f64 = 1.0e-7;
@@ -17,6 +18,10 @@ const EPSILON: f64 = 1.0e-7;
 pub trait Blocks {
     /// `getBlockState(pos)`.
     fn state(&self, pos: BlockPos) -> BlockState;
+    /// `getWorldBorder`, which entities collide with; `None` without one (tests).
+    fn border(&self) -> Option<&WorldBorder> {
+        None
+    }
 }
 
 impl Blocks for Level {
@@ -24,6 +29,28 @@ impl Blocks for Level {
     fn state(&self, pos: BlockPos) -> BlockState {
         self.block(pos)
     }
+
+    #[inline]
+    fn border(&self) -> Option<&WorldBorder> {
+        Some(&self.border)
+    }
+}
+
+/// The world border's part of `Entity.collectColliders`: when the entity of `entity` box is
+/// inside and close to the border for a move through `area` (`isInsideCloseToBorder`), the
+/// border's collision shape (everything outside the block-aligned border box) as four boxes.
+pub fn border_boxes(border: &WorldBorder, entity: &Aabb, area: &Aabb, out: &mut Vec<Aabb>) {
+    let x = (entity.min_x + entity.max_x) / 2.0;
+    let z = (entity.min_z + entity.max_z) / 2.0;
+    if !border.is_inside_close_to_border(x, z, area.max_x - area.min_x, area.max_z - area.min_z) {
+        return;
+    }
+    let (min_x, min_z, max_x, max_z) = border.collision_box();
+    let inf = f64::INFINITY;
+    out.push(Aabb::new(-inf, -inf, -inf, min_x, inf, inf));
+    out.push(Aabb::new(max_x, -inf, -inf, inf, inf, inf));
+    out.push(Aabb::new(min_x, -inf, -inf, max_x, inf, min_z));
+    out.push(Aabb::new(min_x, -inf, max_z, max_x, inf, inf));
 }
 
 /// Appends the collision boxes (world coordinates) of the blocks around `area`, like
@@ -225,6 +252,9 @@ pub fn collide_for(
         scratch.clear();
         let area = aabb.expand_towards(movement.x, movement.y, movement.z);
         block_boxes_for(blocks, &area, scratch, lava_bottom);
+        if let Some(border) = blocks.border() {
+            border_boxes(border, &aabb, &area, scratch);
+        }
         collide_with_shapes(movement, aabb, scratch)
     };
     let x_collision = movement.x != step.x;
@@ -243,6 +273,9 @@ pub fn collide_for(
         }
         scratch.clear();
         block_boxes_for(blocks, &area, scratch, lava_bottom);
+        if let Some(border) = blocks.border() {
+            border_boxes(border, &aabb, &area, scratch);
+        }
         // `(float)movementStep.y`.
         #[allow(clippy::cast_possible_truncation)]
         let skip = step.y as f32;

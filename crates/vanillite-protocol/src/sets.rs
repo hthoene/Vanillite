@@ -116,6 +116,7 @@ packet_set! {
         Interact(play::serverbound::Interact),
         MoveVehicle(play::serverbound::MoveVehicle),
         PaddleBoat(play::serverbound::PaddleBoat),
+        SpectatorAction(play::serverbound::SpectatorAction),
         ContainerClick(play::serverbound::ContainerClick),
         ContainerClose(play::serverbound::ContainerClose),
         ContainerButtonClick(play::serverbound::ContainerButtonClick),

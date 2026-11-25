@@ -1154,7 +1154,12 @@ pub fn move_self(t: &mut Tick<'_, '_>, delta: Vec3) {
 }
 
 /// Queues `gameEvent(event, pos, Context.of(this mob, affected))`.
-fn post_game_event(t: &mut Tick<'_, '_>, event: u16, pos: Vec3, affected: Option<BlockState>) {
+pub(crate) fn post_game_event(
+    t: &mut Tick<'_, '_>,
+    event: u16,
+    pos: Vec3,
+    affected: Option<BlockState>,
+) {
     let context = crate::level::game_event::GameEventContext {
         source: Some(t.id),
         affected,

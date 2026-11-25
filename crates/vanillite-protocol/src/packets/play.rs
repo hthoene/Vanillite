@@ -17,7 +17,7 @@ pub mod serverbound {
         BlockEntityTagQuery, ChangeDifficultyServerbound, ChangeGameMode, EntityTagQuery,
         GameRuleEntry, LockDifficulty, PlayerAbilitiesServerbound, SetGameRule, TeleportToEntity,
     };
-    pub use super::mobs::{Attack, Interact, MoveVehicle, PaddleBoat};
+    pub use super::mobs::{Attack, Interact, MoveVehicle, PaddleBoat, SpectatorAction};
 
     /// `configuration_acknowledged`: the client entered configuration again.
     #[derive(Debug, Clone, PartialEq, Eq, Packet)]

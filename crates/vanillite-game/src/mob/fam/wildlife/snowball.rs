@@ -39,8 +39,9 @@ fn can_hit(t: &MissileTick<'_, '_>, id: EntityId, owner: Option<EntityId>, left:
 pub(super) enum Flight {
     /// It flew on.
     Miss,
-    /// It hit an entity (`Some`) or a block (`None`) and stands where it hit.
-    Hit(Option<EntityId>),
+    /// It hit an entity (`Some`) or a block (`None`) and stands where it hit; with the
+    /// `PROJECTILE_LAND` place: the block that was hit, if any, and the hit location.
+    Hit(Option<EntityId>, Option<vanillite_base::BlockPos>, Vec3),
     /// It is gone (below the world).
     Gone,
 }
@@ -145,8 +146,8 @@ pub(super) fn fly(t: &mut MissileTick<'_, '_>) -> Flight {
         return Flight::Gone;
     }
     match (hit, block_hit) {
-        (Some((target, _)), _) => Flight::Hit(Some(target)),
-        (None, Some(_)) => Flight::Hit(None),
+        (Some((target, _)), _) => Flight::Hit(Some(target), None, new_pos),
+        (None, Some((block, at))) => Flight::Hit(None, Some(block), at),
         (None, None) => Flight::Miss,
     }
 }
@@ -176,7 +177,7 @@ pub(super) fn tick(t: &mut MissileTick<'_, '_>) {
         _ => return,
     }
     let owner = d.owner;
-    let Flight::Hit(target) = fly(t) else {
+    let Flight::Hit(target, block, at) = fly(t) else {
         return;
     };
     if let Some(target) = target {
@@ -188,6 +189,7 @@ pub(super) fn tick(t: &mut MissileTick<'_, '_>) {
         };
         crate::mob::combat::hurt(t.level, t.ents, t.env, t.cx, target, source, damage);
     }
+    crate::mob::missile::land_event(t.env.out, t.level, t.id, block, at);
     // `onHit`: the break particles (entity event 3) and gone.
     if let Some(e) = t.ents.store.get(t.id) {
         let network_id = e.network_id().0;

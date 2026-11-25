@@ -297,6 +297,38 @@ fn wire(pos: BlockPos) -> WirePos {
     }
 }
 
+/// `ServerPlayer.sendSpawnProtectionMessage`.
+fn spawn_protection_message(sink: &dyn PacketSink, pos: BlockPos) {
+    use vanillite_protocol::text::{Arg, Color, Component, NamedColor};
+    sink.send(
+        &vanillite_protocol::packets::play::clientbound::SystemChat {
+            content: Component::translatable_args(
+                "build.spawn_protection",
+                vec![Arg::String(format!("{}, {}, {}", pos.x, pos.y, pos.z))],
+            )
+            .color(Color::Named(NamedColor::Red)),
+            overlay: true,
+        },
+    );
+}
+
+/// `ServerPlayer.sendBuildLimitMessage`.
+fn build_limit_message(sink: &dyn PacketSink, too_high: bool, limit: i32) {
+    use vanillite_protocol::text::{Arg, Color, Component, NamedColor};
+    let key = if too_high {
+        "build.tooHigh"
+    } else {
+        "build.tooLow"
+    };
+    sink.send(
+        &vanillite_protocol::packets::play::clientbound::SystemChat {
+            content: Component::translatable_args(key, vec![Arg::Int(limit)])
+                .color(Color::Named(NamedColor::Red)),
+            overlay: true,
+        },
+    );
+}
+
 fn block_update(sink: &dyn PacketSink, level: &dyn PlayLevel, pos: BlockPos) {
     sink.send(&BlockUpdate {
         pos: wire(pos),
@@ -564,6 +596,11 @@ impl Digging {
         match action {
             DigAction::StartDestroyBlock => {
                 if (ctx.spawn_protected)(pos) {
+                    spawn_protection_message(sink, pos);
+                    return;
+                }
+                if !ctx.level.within_border(pos) {
+                    block_update(sink, ctx.level, pos);
                     return;
                 }
                 if !ctx.level.is_loaded(pos) {
@@ -854,9 +891,19 @@ impl Digging {
             log::warn!("Rejecting UseItemOnPacket: location too far away from hit block {pos:?}");
             return;
         }
-        if pos.y <= ctx.level.max_y() && pos.y >= ctx.level.min_y() {
-            if (ctx.spawn_protected)(pos) || !ctx.level.is_loaded(pos) {
-                // Spawn protection: nothing happens.
+        let (min_y, max_y) = (ctx.level.min_y(), ctx.level.max_y());
+        if pos.y > max_y {
+            build_limit_message(sink, true, max_y);
+        } else if pos.y < min_y {
+            build_limit_message(sink, false, min_y);
+        } else {
+            if (ctx.spawn_protected)(pos) {
+                spawn_protection_message(sink, pos);
+            } else if !ctx.level.is_loaded(pos) {
+                // Not loaded yet: nothing happens.
+            } else if !ctx.level.within_border(pos) {
+                // `mayInteract` refuses: Vanilla answers with the build limit message.
+                build_limit_message(sink, true, max_y);
             } else if self.use_item_on_block(ctx, p.hand, pos, face, hit, p.inside, sink) {
                 // Vanilla 26.3 swings twice for a successful use (two branches of
                 // `handleUseItemOn` both call `swingAndResetAttackStrength`).
