@@ -25,7 +25,7 @@ use vanillite_world::tracking::Viewer;
 
 use super::Env;
 use super::exec::{resolve_position, resolve_rotation};
-use super::response::Tracker;
+use super::tracker::Tracker;
 use super::select::{self, Target};
 use super::source::CommandSource;
 use crate::global::Global;
@@ -482,7 +482,7 @@ fn swing(
     } else {
         Hand::MainHand
     };
-    let mut tracker = Tracker::new();
+    let mut tracker = Tracker::default();
     for target in targets {
         // Living entities are the kinds with attributes.
         if target.kind.info().attributes.is_empty() {
@@ -500,9 +500,9 @@ fn swing(
             });
             send_to_viewers(entities, id, true, &packet);
         });
-        tracker.track(target, true);
+        tracker.track(&target, i32::from(true));
     }
-    tracker.feedback(
+    tracker.messages(
         source,
         env.global,
         || CommandError::new("commands.swing.failed.notliving", vec![]),

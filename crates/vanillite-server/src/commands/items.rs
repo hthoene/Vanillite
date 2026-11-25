@@ -883,10 +883,11 @@ pub(crate) fn enchant(
         .ok_or_else(|| missing("enchantment"))?
         .clone();
     let game = std::sync::Arc::clone(&env.global.game);
-    let (Some(&id), Some(info)) = (
-        game.enchantments.get(&name),
-        game.enchantment_info.get(&name),
-    ) else {
+    let Some((id, info)) = game
+        .enchantments
+        .get(&name)
+        .and_then(|&id| Some((id, game.enchanting.get(id)?)))
+    else {
         return Err(error(
             "argument.resource.not_found",
             vec![
@@ -950,21 +951,11 @@ pub(crate) fn enchant(
             .component(component)
             .map(read_enchantments)
             .unwrap_or_default();
-        let compatible = existing.iter().all(|&(other, _)| {
-            let other_name = game
-                .enchantments
-                .iter()
-                .find(|(_, v)| **v == other)
-                .map(|(k, _)| k.as_str())
-                .unwrap_or("");
-            other != id
-                && !info.exclusive_set.iter().any(|e| e == other_name)
-                && !game
-                    .enchantment_info
-                    .get(other_name)
-                    .is_some_and(|o| o.exclusive_set.contains(&name))
-        });
-        if !info.supported_items.contains(&stack.item) || !compatible {
+        // `EnchantmentHelper.isEnchantmentCompatible` and `canEnchant`.
+        let compatible = existing
+            .iter()
+            .all(|&(other, _)| game.enchanting.compatible(other, id));
+        if !game.enchanting.can_enchant(id, stack) || !compatible {
             if single {
                 return Err(error(
                     "commands.enchant.failed.incompatible",
@@ -990,7 +981,11 @@ pub(crate) fn enchant(
         }
         tracker.track(&display, 1);
     }
-    let full = full_name(env, &name, &info.description, info.max_level, level);
+    let description = info
+        .description
+        .clone()
+        .unwrap_or_else(|| Component::text(""));
+    let full = full_name(env, &name, &description, info.max_level, level);
     tracker.feedback(
         source,
         env,

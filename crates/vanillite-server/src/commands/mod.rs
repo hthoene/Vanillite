@@ -23,7 +23,6 @@ mod nbt_ops;
 mod pack_cmd;
 mod particle;
 mod player_data;
-mod response;
 mod schedule;
 mod scores;
 mod select;

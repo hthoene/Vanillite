@@ -44,27 +44,12 @@ pub struct GameData {
     pub recipes: crate::recipe::Recipes,
     /// Enchantment data.
     pub enchanting: crate::enchant::Enchanting,
-    /// The definitions of the enchantments by name.
-    pub enchantment_info: HashMap<String, EnchantmentInfo>,
     /// The `minecraft:trial_spawner` registry.
     pub trial_spawner_configs: crate::block::trial_spawner::TrialConfigs,
     /// The `minecraft:banner_pattern` registry.
     pub banner_patterns: crate::menu::BannerPatterns,
     /// The tags of the registries: registry → tag id (without `#`) → entry ids in tag order.
     pub registry_tags: HashMap<String, HashMap<String, Vec<u32>>>,
-}
-
-/// What `/enchant` reads of an enchantment (`Enchantment` and its `EnchantmentDefinition`).
-#[derive(Debug, Clone)]
-pub struct EnchantmentInfo {
-    /// `description`.
-    pub description: vanillite_protocol::text::Component,
-    /// `max_level`.
-    pub max_level: i32,
-    /// `supported_items`: item ids.
-    pub supported_items: Vec<u16>,
-    /// `exclusive_set`: enchantment names.
-    pub exclusive_set: Vec<String>,
 }
 
 impl crate::predicate::EntityTags for GameData {
