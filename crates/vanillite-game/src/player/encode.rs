@@ -328,7 +328,12 @@ pub struct DataWriter<'a> {
     all: bool,
 }
 
-impl DataWriter<'_> {
+impl<'a> DataWriter<'a> {
+    /// A writer appending to `out` (`all`: every value, else only non-default ones).
+    pub fn new(out: &'a mut Vec<u8>, all: bool) -> DataWriter<'a> {
+        DataWriter { out, all }
+    }
+
     /// An item with a custom encoding; `is_default` skips it when pairing.
     pub fn raw(
         &mut self,
@@ -415,7 +420,8 @@ fn mob_data(out: &mut Vec<u8>, mob: &crate::mob::MobData, all: bool) {
             o.extend_from_slice(&mob.health.to_be_bytes());
         });
     }
-    let flags = u8::from(mob.no_ai) | (u8::from(mob.aggressive) << 2);
+    let flags =
+        u8::from(mob.no_ai) | (u8::from(mob.left_handed) << 1) | (u8::from(mob.aggressive) << 2);
     if all || flags != 0 {
         item(out, data_id::MOB_FLAGS, serializer::BYTE, |o| o.push(flags));
     }

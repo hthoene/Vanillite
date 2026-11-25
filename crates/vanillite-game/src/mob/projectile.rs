@@ -64,7 +64,12 @@ pub fn stop_using_item(t: &mut Tick<'_, '_>) {
 }
 
 /// `Projectile.getMovementToShoot` and `shoot`: the velocity and rotation of a shot.
-fn shoot(random: &mut LegacyRandom, dir: Vec3, power: f32, uncertainty: f32) -> (Vec3, Rotation) {
+pub fn shoot(
+    random: &mut LegacyRandom,
+    dir: Vec3,
+    power: f32,
+    uncertainty: f32,
+) -> (Vec3, Rotation) {
     let spread = 0.017_227_5 * f64::from(uncertainty);
     let n = dir.normalize();
     let v = Vec3::new(
@@ -450,7 +455,7 @@ pub fn tick_arrow(
 }
 
 /// `Projectile.lerpRotation`.
-fn lerp_rotation(old: f32, new: f32) -> f32 {
+pub fn lerp_rotation(old: f32, new: f32) -> f32 {
     let mut old = old;
     while new - old < -180.0 {
         old -= 360.0;
@@ -462,7 +467,7 @@ fn lerp_rotation(old: f32, new: f32) -> f32 {
 }
 
 /// Where the segment enters `b`, as a fraction of the segment.
-fn segment_box(from: Vec3, to: Vec3, b: &Aabb) -> Option<f64> {
+pub fn segment_box(from: Vec3, to: Vec3, b: &Aabb) -> Option<f64> {
     if b.contains(from.x, from.y, from.z) {
         return Some(0.0);
     }

@@ -354,6 +354,8 @@ pub trait FamilyHooks {
     fn before_tick(_t: &mut Tick<'_, '_>) {}
     /// Work after `LivingEntity.tick`.
     fn after_tick(_t: &mut Tick<'_, '_>) {}
+    /// The kind's `aiStep` override before it calls `super.aiStep()`.
+    fn ai_step_start(_t: &mut Tick<'_, '_>) {}
     /// The kind's additions at the end of `aiStep`.
     fn ai_step(_t: &mut Tick<'_, '_>) {}
     /// `customServerAiStep` (runs after the goals and navigation).
@@ -369,6 +371,10 @@ pub trait FamilyHooks {
     }
     /// The kind's own `LookControl.tick` (with [`super::nav::LookKind::Custom`]).
     fn look_control(_t: &mut Tick<'_, '_>) -> bool {
+        false
+    }
+    /// `isImmobile` besides being dead (a roaring or stunned ravager): no AI and no input.
+    fn is_immobile(_m: &MobData) -> bool {
         false
     }
     /// `causeFallDamage` additions (the fall distance).
@@ -618,6 +624,9 @@ pub fn before_tick(t: &mut Tick<'_, '_>) {
 pub fn after_tick(t: &mut Tick<'_, '_>) {
     by_family!(t.mob_ref().kind, (), after_tick(t));
 }
+pub fn ai_step_start(t: &mut Tick<'_, '_>) {
+    by_family!(t.mob_ref().kind, (), ai_step_start(t));
+}
 pub fn ai_step(t: &mut Tick<'_, '_>) {
     by_family!(t.mob_ref().kind, (), ai_step(t));
 }
@@ -632,6 +641,9 @@ pub fn move_control(t: &mut Tick<'_, '_>) -> bool {
 }
 pub fn look_control(t: &mut Tick<'_, '_>) -> bool {
     by_family!(t.mob_ref().kind, false, look_control(t))
+}
+pub fn is_immobile(m: &MobData) -> bool {
+    by_family!(m.kind, false, is_immobile(m))
 }
 pub fn on_fall_damage(t: &mut Tick<'_, '_>, distance: f64) {
     by_family!(t.mob_ref().kind, (), on_fall_damage(t, distance));

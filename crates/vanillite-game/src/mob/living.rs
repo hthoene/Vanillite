@@ -240,6 +240,13 @@ fn fluid_jump_threshold(t: &Tick<'_, '_>) -> f64 {
 
 /// `LivingEntity.aiStep` with `Mob.aiStep`'s additions.
 fn ai_step(t: &mut Tick<'_, '_>) {
+    // The kind's `aiStep` override before it calls `super.aiStep()`.
+    if t.mob_ref().kind.family() != super::Family::Classic {
+        super::fam::ai_step_start(t);
+        if !t.exists() || t.mob_ref().removed {
+            return;
+        }
+    }
     {
         let m = t.mob();
         if m.no_jump_delay > 0 {
@@ -263,7 +270,8 @@ fn ai_step(t: &mut Tick<'_, '_>) {
         m.zza *= 0.98;
     }
     let effective_ai = !t.mob_ref().no_ai;
-    if t.mob_ref().is_dead_or_dying() {
+    // `isImmobile`: dead or held by the kind (a stunned ravager).
+    if t.mob_ref().is_dead_or_dying() || super::fam::is_immobile(t.mob_ref()) {
         let m = t.mob();
         m.jumping = false;
         m.xxa = 0.0;
@@ -446,7 +454,7 @@ fn modified_friction(friction: f32, modifier: f32) -> f32 {
 }
 
 /// `moveRelative(speed, input)`.
-fn move_relative(t: &mut Tick<'_, '_>, speed: f32, input: Vec3) {
+pub fn move_relative(t: &mut Tick<'_, '_>, speed: f32, input: Vec3) {
     let length = input.length_sqr();
     if length < 1.0e-7 {
         return;

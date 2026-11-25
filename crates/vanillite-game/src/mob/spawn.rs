@@ -634,7 +634,7 @@ pub fn spawn_position_ok(level: &Level, type_id: EntityTypeId, pos: BlockPos) ->
 
 /// `BlockState.isValidSpawn` for a mob: a sturdy top face that is not too bright, except
 /// the blocks that never let mobs spawn on them.
-fn valid_spawn_floor(state: BlockState, type_id: EntityTypeId) -> bool {
+pub fn valid_spawn_floor(state: BlockState, type_id: EntityTypeId) -> bool {
     let name = state.block().name();
     if name.ends_with("glass")
         || name.ends_with("glass_pane")
@@ -654,7 +654,7 @@ fn valid_spawn_floor(state: BlockState, type_id: EntityTypeId) -> bool {
 }
 
 /// `NaturalSpawner.isValidEmptySpawnBlock`.
-fn valid_empty_spawn_block(state: BlockState, type_id: EntityTypeId) -> bool {
+pub fn valid_empty_spawn_block(state: BlockState, type_id: EntityTypeId) -> bool {
     if state.has(flags::COLLISION_FULL_BLOCK) || state.has(flags::SIGNAL_SOURCE) {
         return false;
     }
@@ -718,7 +718,7 @@ pub fn default_spawn_rules(
 }
 
 /// `Monster.isDarkEnoughToSpawn`.
-fn is_dark_enough_to_spawn(
+pub fn is_dark_enough_to_spawn(
     level: &Level,
     env: &Environment,
     pos: BlockPos,
@@ -744,7 +744,7 @@ fn is_dark_enough_to_spawn(
     brightness <= random.next_int_between_inclusive(lo, hi)
 }
 
-fn surface_y(level: &Level, kind: HeightmapKind, x: i32, z: i32) -> i32 {
+pub fn surface_y(level: &Level, kind: HeightmapKind, x: i32, z: i32) -> i32 {
     let Some(c) = level.chunks.chunk(ChunkPos::new(x >> 4, z >> 4)) else {
         return level.min_y();
     };
