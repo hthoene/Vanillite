@@ -126,6 +126,8 @@ fn with_ctx(
         spawn_protected: &|_| false,
         drops: &mut drops,
         swings: &mut swings,
+        stats: None,
+        advancements: None,
     };
     f(&mut ctx);
     inventory

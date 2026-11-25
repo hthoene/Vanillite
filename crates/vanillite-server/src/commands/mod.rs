@@ -4,6 +4,7 @@
 //! only offers and parses nodes the source may use, and every command node carries its
 //! required level (SEC-12).
 
+mod advancement_cmd;
 mod bans;
 mod blocks_cmd;
 mod border_cmd;
@@ -49,6 +50,7 @@ use vanillite_world::entity::EntityId;
 
 pub(crate) use bans::ban_reason;
 pub(crate) use exec::{find_player, permission_event};
+pub(crate) use player_data::add_experience;
 pub(crate) use sound::send_post_effects;
 pub(crate) use source::{CommandSource, SourceKind};
 pub(crate) use world_cmd::sprint_finished;
@@ -75,11 +77,25 @@ pub(crate) struct Env<'a> {
     pub(crate) world: WorldId,
 }
 
-/// Loads the functions of the selected data packs once the server exists
-/// (`ServerFunctionLibrary.reload`).
+/// Loads the functions and advancements of the selected data packs once the server exists
+/// (`ServerFunctionLibrary.reload`, `ServerAdvancementManager`).
 pub(crate) fn load_game_systems(global: &Global, packs: &[vanillite_datapack::OpenedPack]) {
     global.systems.set_functions(functions::load(global, packs));
     global.systems.load(&global.level.data);
+    let roots: Vec<std::path::PathBuf> = packs.iter().flat_map(|p| p.layers.clone()).collect();
+    let files = functions::list(&roots, "advancement", ".json")
+        .into_iter()
+        .filter_map(|(id, file)| match std::fs::read_to_string(&file) {
+            Ok(text) => Some((id, text)),
+            Err(e) => {
+                log::error!("Couldn't read advancement {id}: {e}");
+                None
+            }
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    global
+        .systems
+        .set_advancements(vanillite_game::advancements::Advancements::load(&files));
 }
 
 /// `ServerFunctionManager.tick` on the overworld.

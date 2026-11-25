@@ -49,7 +49,7 @@ fn single(
 // --- experience ---------------------------------------------------------------------------------
 
 /// `giveExperiencePoints` / `giveExperienceLevels` of `ServerPlayer`.
-fn add_experience(level: &mut Level, id: EntityId, amount: i32, levels: bool) {
+pub(crate) fn add_experience(level: &mut Level, id: EntityId, amount: i32, levels: bool) {
     let Some(player) = level.entities.player_mut(id) else {
         return;
     };

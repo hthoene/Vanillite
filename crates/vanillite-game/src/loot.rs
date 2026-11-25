@@ -1240,7 +1240,7 @@ impl Parser<'_> {
 }
 
 /// The values of `block`'s property `name`, in Vanilla's order.
-fn property_values(block: BlockId, name: &str) -> Option<&'static [&'static str]> {
+pub(crate) fn property_values(block: BlockId, name: &str) -> Option<&'static [&'static str]> {
     block
         .info()
         .properties
@@ -1253,13 +1253,13 @@ fn property_values(block: BlockId, name: &str) -> Option<&'static [&'static str]
 /// A property value as the property compares it: integers numerically, booleans false < true,
 /// enums by declaration order. `None` if `value` is not a value of the property.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum PropertyKey {
+pub(crate) enum PropertyKey {
     Int(i64),
     Bool(bool),
     Index(usize),
 }
 
-fn property_key(values: &[&str], value: &str) -> Option<PropertyKey> {
+pub(crate) fn property_key(values: &[&str], value: &str) -> Option<PropertyKey> {
     if (value == "true" || value == "false") && values.contains(&value) {
         return Some(PropertyKey::Bool(value == "true"));
     }

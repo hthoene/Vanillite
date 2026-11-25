@@ -10,6 +10,7 @@ use vanillite_base::hash::FxHashSet;
 use vanillite_base::slot_map::SlotKey;
 use vanillite_base::{ChunkPos, Vec3};
 use vanillite_config::{GameMode, WorldRules};
+use vanillite_game::advancements::PlayerAdvancements;
 use vanillite_game::entities::Entities;
 use vanillite_game::inventory::{Drop, PlayerInventory};
 use vanillite_game::item::ItemStack;
@@ -23,6 +24,7 @@ use vanillite_game::player::{
     Body, ChatContext, ChunkSource, ChunkView, ClientInformation, Connection, GameProfile, Handled,
     MoveContext, PacketSink, PlayerData, PlayerState, effective_view_distance,
 };
+use vanillite_game::stats::{Stat, StatType, StatsCounter, custom};
 use vanillite_game::survival::player::Survival;
 use vanillite_game::survival::rules::Rule;
 use vanillite_net::{Latency, Outbound};
@@ -34,7 +36,7 @@ use vanillite_protocol::packets::play::clientbound::{
 use vanillite_protocol::packets::play::serverbound::Hand;
 use vanillite_protocol::text::Component;
 use vanillite_protocol::{Inbound, SharedPacket};
-use vanillite_storage::player_data::{self, PlayerDataStore};
+use vanillite_storage::player_data::{self, JsonFile, PlayerDataStore};
 use vanillite_world::chunks::Chunks;
 use vanillite_world::entity::{EntityFlags, EntityId, EntityRef, Pose, Rotation};
 use vanillite_world::tracking::{EntityTracker, TrackerOutput};
@@ -292,6 +294,10 @@ pub(crate) struct Arrival {
     /// A virtual connection (test bot, Bedrock player): no chat session, chat is unsigned.
     pub(crate) virtual_connection: bool,
     pub(crate) saved: Option<player_data::PlayerData>,
+    /// The statistics file.
+    pub(crate) stats: Option<String>,
+    /// The advancements file.
+    pub(crate) advancements: Option<String>,
     pub(crate) address: String,
     pub(crate) inbox: Arc<Mutex<ChatInbox>>,
 }
@@ -378,7 +384,22 @@ impl WorldPlayers {
             .as_ref()
             .map(|saved| load_post_effects(&saved.other))
             .unwrap_or_default();
+        let mut stats = match arrival.stats.as_deref().map(StatsCounter::from_json) {
+            Some(Ok(stats)) => stats,
+            Some(Err(e)) => {
+                log::error!("Couldn't parse statistics of {name}: {e}");
+                StatsCounter::default()
+            }
+            None => StatsCounter::default(),
+        };
+        stats.mark_all_dirty();
+        let advancements = PlayerAdvancements::load(
+            global.systems.advancements(),
+            arrival.advancements.as_deref(),
+        );
         let data = PlayerData {
+            stats,
+            advancements,
             inventory,
             last_equipment: std::array::from_fn(|_| ItemStack::EMPTY),
             profile: arrival.profile,
@@ -578,6 +599,8 @@ impl WorldPlayers {
                     drops: &mut drops,
                     swings: &mut hands,
                     hooks: &hooks,
+                    stats: Some(&mut player.stats),
+                    advancements: Some(&mut player.advancements),
                 };
                 let handled = player.connection.handle_packets(
                     &mut state,
@@ -588,6 +611,14 @@ impl WorldPlayers {
                 );
                 actor = play.actor;
                 for drop in drops {
+                    // `ServerPlayer.drop` of a stack thrown from the hand.
+                    if drop.thrown && !drop.stack.is_empty() {
+                        let item = drop.stack.item;
+                        player
+                            .stats
+                            .award(Stat::of(StatType::Dropped, item), drop.stack.count);
+                        player.stats.award(custom::DROP, 1);
+                    }
                     throw_item(&mut level, &actor, drop);
                 }
                 handled
@@ -753,6 +784,7 @@ impl WorldPlayers {
             }
         }
         self.tick_players(level, global, blocks);
+        crate::progress::tick(level, global, world, self.level.dimension.as_str());
         let entities = &mut level.entities;
         let Entities { store, players, .. } = entities;
         for (id, player) in players.iter_mut() {
@@ -837,6 +869,8 @@ impl WorldPlayers {
                     drops: &mut drops,
                     swings: &mut hands,
                     hooks: &hooks,
+                    stats: Some(&mut player.stats),
+                    advancements: Some(&mut player.advancements),
                 };
                 player.connection.play.tick(&mut play, sink.as_ref());
             }
@@ -863,8 +897,12 @@ impl WorldPlayers {
                         continue;
                     }
                     let count = item.stack.count;
+                    let kind = item.stack.item;
                     if player.inventory.add(None, &mut item.stack, infinite) {
                         taken.push((item_id, id, count));
+                        player
+                            .stats
+                            .award(Stat::of(StatType::PickedUp, kind), count);
                     }
                 }
             }
@@ -984,10 +1022,13 @@ impl WorldPlayers {
             return;
         };
         let uuid = entity.uuid();
-        let Some(player) = entities.player(id) else {
+        let Some(player) = entities.player_mut(id) else {
             return;
         };
+        player.stats.award(custom::LEAVE_GAME, 1);
         let name = player.profile.name.clone();
+        let changes = player.stats.take_score_changes();
+        crate::progress::apply_scores(global, vec![(name.clone(), uuid, changes)]);
         match reason {
             Some(reason) => {
                 log::info!("{name} lost connection: {}", reason.plain());
@@ -1040,6 +1081,12 @@ impl WorldPlayers {
                     .collect(),
             )),
         );
+        // `PlayerList.save`: the statistics and advancements files with the data.
+        let uuid = entity.uuid();
+        self.store
+            .save_json(JsonFile::Stats, uuid, player.stats.to_json());
+        self.store
+            .save_json(JsonFile::Advancements, uuid, player.advancements.to_json());
         // `Survival::save` removes the death location when there is none.
         let has_death = survival.get("LastDeathLocation").is_some();
         self.store.update(entity.uuid(), move |data| {

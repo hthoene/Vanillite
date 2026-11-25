@@ -127,6 +127,10 @@ pub struct PlayerData {
     pub survival: crate::survival::player::Survival,
     /// `ServerPlayer.postEffects` (`/posteffect`), saved as `post_effects`.
     pub post_effects: Vec<String>,
+    /// Statistics (`ServerStatsCounter`).
+    pub stats: crate::stats::StatsCounter,
+    /// Advancement progress (`PlayerAdvancements`).
+    pub advancements: crate::advancements::PlayerAdvancements,
 }
 
 /// `Player.getDefaultDimensions(pose)`.

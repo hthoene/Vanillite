@@ -174,6 +174,7 @@ fn help_lines_like_vanilla() {
     assert_eq!(
         op,
         [
+            "/advancement (grant|revoke)",
             "/attribute <target> <attribute> (get|base|modifier)",
             "/execute (run|if|unless|as|at|store|positioned|rotated|facing|align|anchored|in|summon|on)",
             "/bossbar (add|remove|list|set|get)",

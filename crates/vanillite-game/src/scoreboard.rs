@@ -105,7 +105,7 @@ pub fn color_id(name: &str) -> Option<u8> {
 }
 
 impl CriteriaKind {
-    /// By name (`ObjectiveCriteria.byName`); stat criteria are checked by the caller.
+    /// By name (`ObjectiveCriteria.byName`), statistics as `<type>:<value>`.
     pub fn by_name(name: &str) -> Option<Self> {
         Some(match name {
             "dummy" => Self::Dummy,
@@ -126,10 +126,8 @@ impl CriteriaKind {
                 if let Some(c) = name.strip_prefix("killedByTeam.") {
                     return color_id(c).map(Self::KilledByTeam);
                 }
-                if name.contains(':') {
-                    return Some(Self::Stat(name.to_owned()));
-                }
-                return None;
+                // A statistic of a known type and value, under its canonical name.
+                return crate::stats::Stat::by_criteria_name(name).map(|s| Self::Stat(s.name()));
             }
         })
     }

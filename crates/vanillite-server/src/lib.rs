@@ -22,6 +22,7 @@ mod packs;
 mod player_list;
 mod players;
 mod plugins;
+mod progress;
 mod scoreboard;
 mod server;
 pub mod slot;

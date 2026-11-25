@@ -244,6 +244,9 @@ pub(crate) fn execute(
     let global = env.global;
     match parsed.command {
         CommandId::Plugin(command) => plugin_command(env, source, parsed, command),
+        CommandId::Advancement { grant, mode } => {
+            super::advancement_cmd::advancement(grant, mode, &parsed.args, source, env)
+        }
         CommandId::GameModeSelf | CommandId::GameModeTargets => {
             let mode = parsed
                 .args

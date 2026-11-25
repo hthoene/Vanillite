@@ -246,6 +246,13 @@ impl vanillite_command::Source for CommandSource {
                         .collect()
                 }
             }
+            suggest::ADVANCEMENT_CRITERIA => {
+                let set = self.global.systems.advancements();
+                args.identifier("advancement")
+                    .and_then(|id| set.get(set.index(id)?))
+                    .map(|a| a.criteria.iter().map(|c| c.name.clone()).collect())
+                    .unwrap_or_default()
+            }
             suggest::TICK_RATE => vec!["20".to_owned()],
             suggest::TICK_STEP => vec!["1t".to_owned(), "1s".to_owned()],
             suggest::TICK_SPRINT => vec!["60s".to_owned(), "1d".to_owned(), "3d".to_owned()],
@@ -317,6 +324,10 @@ impl vanillite_command::Source for CommandSource {
     }
 
     fn registry_entries(&self, registry: &str) -> Vec<String> {
+        if registry == "minecraft:advancement" {
+            let set = self.global.systems.advancements();
+            return set.iter().map(|(_, a)| a.id.clone()).collect();
+        }
         match self.global.registries.get(registry) {
             Some(entries) => entries.clone(),
             None => vanillite_data::registry::Registry::by_name(registry)
