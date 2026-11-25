@@ -174,7 +174,7 @@ pub fn spawn_from(
     rot: Rotation,
     mut data: MissileData,
 ) -> EntityId {
-    let uuid = super::random_uuid(t.env.random);
+    let uuid = crate::mob::new_entity_uuid();
     if data.owner.is_none() {
         data.owner = Some(t.id);
     }

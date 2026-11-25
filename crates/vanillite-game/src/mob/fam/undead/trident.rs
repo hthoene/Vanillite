@@ -47,7 +47,7 @@ fn set_in_ground_time(d: &mut MissileData, v: i32) {
 }
 
 fn sound(t: &mut MissileTick<'_, '_>, pos: Vec3, s: &str, volume: f32, pitch: f32) {
-    let seed = t.env.random.next_long();
+    let seed = crate::survival::sound_seed();
     play_sound(
         t.env.out,
         None,

@@ -199,7 +199,7 @@ pub fn perform_ranged_attack(t: &mut Tick<'_, '_>, target: EntityId) {
     }
     let mut data = MissileData::new(MissileKind::SplashPotion);
     data.item = potion::stack("minecraft:splash_potion", chosen);
-    let start = Vec3::new(p.x, t.eye_y() - 0.1, p.z);
+    let start = Vec3::new(p.x, t.eye_y() - f64::from(0.1_f32), p.z);
     let power = if dist <= 2.0 { 0.45 } else { 0.75 };
     let (velocity, rot) = projectile::shoot(
         &mut t.mob().random,

@@ -45,7 +45,11 @@ fn finalize_spawn_is_deterministic_per_seed() {
         let run = || {
             let mut m = MobData::new(kind, 42);
             let mut ctx = SpawnContext::simple(Difficulty::Normal, SpawnReason::Natural);
-            crate::mob::kinds::finalize_spawn(&mut m, &mut ctx);
+            crate::mob::kinds::finalize_spawn(
+                &mut m,
+                &mut ctx,
+                &mut vanillite_base::random::LegacyRandom::new(1),
+            );
             (
                 m.variant,
                 m.attrs.max_health.to_bits(),
@@ -141,7 +145,11 @@ fn nbt_round_trips() {
     for kind in KINDS {
         let mut m = MobData::new(kind, 11);
         let mut ctx = SpawnContext::simple(Difficulty::Normal, SpawnReason::Natural);
-        crate::mob::kinds::finalize_spawn(&mut m, &mut ctx);
+        crate::mob::kinds::finalize_spawn(
+            &mut m,
+            &mut ctx,
+            &mut vanillite_base::random::LegacyRandom::new(1),
+        );
         m.tame = matches!(kind, Kind::Horse | Kind::Wolf);
         st_mut(&mut m).temper = 17;
         st_mut(&mut m).collar = 3;

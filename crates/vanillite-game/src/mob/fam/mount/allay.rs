@@ -2,7 +2,6 @@
 //! one slot inventory and bring them to the player (or a liked note block), heal over time,
 //! dance and duplicate with amethyst shards. Their brain is in [`super::ai`].
 
-use vanillite_base::random::RandomSource;
 use vanillite_base::{BlockPos, Vec3};
 use vanillite_nbt::{Compound, List, Tag};
 use vanillite_world::entity::EntityId;
@@ -185,14 +184,7 @@ fn drop_at(env: &mut Env<'_>, pos: Vec3, stack: ItemStack) {
     if stack.is_empty() {
         return;
     }
-    let r = &mut *env.random;
-    let velocity = Vec3::new(
-        r.next_double() * 0.2 - 0.1,
-        0.2,
-        r.next_double() * 0.2 - 0.1,
-    );
-    let uuid = crate::mob::random_uuid(r);
-    let y_rot = r.next_float() * 360.0;
+    let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
     env.out.push(Effect::DropItem {
         uuid,
         pos,
@@ -222,13 +214,10 @@ pub fn throw_item(
     let pos = e.pos();
     let eye = ents.mob(thrower).map_or(0.0, crate::mob::eye_height);
     let from = Vec3::new(pos.x, pos.y + eye - f64::from(hand_y), pos.z);
-    // `new ItemEntity(...)`: its random motion and yaw, replaced by the throw.
-    let r = &mut *env.random;
-    let _ = (r.next_double(), r.next_double());
-    let y_rot = r.next_float() * 360.0;
+    // `new ItemEntity(...)`: its random motion is replaced by the throw.
     let dir = (target - pos).normalize();
     let v = Vec3::new(dir.x * velocity.x, dir.y * velocity.y, dir.z * velocity.z);
-    let uuid = crate::mob::random_uuid(r);
+    let (uuid, y_rot, _) = crate::mob::new_item_entity();
     env.out.push(Effect::DropItem {
         uuid,
         pos: from,
@@ -375,7 +364,7 @@ fn sound_for_player(ix: &mut Interact<'_, '_>, sound: &str) {
     let Some(pos) = ix.ents.store.get(ix.target).map(|e| e.pos()) else {
         return;
     };
-    let seed = ix.env.random.next_long();
+    let seed = crate::survival::sound_seed();
     crate::survival::play_sound(
         ix.env.out,
         Some(ix.player),
@@ -414,7 +403,7 @@ fn duplicate(ix: &mut Interact<'_, '_>) {
     let Some(pos) = ix.ents.store.get(ix.target).map(|e| e.pos()) else {
         return;
     };
-    let seed = ix.env.random.next_long();
+    let seed = crate::mob::new_entity_seed();
     let mut child = MobData::new(Kind::Allay, seed);
     child.persistent = true;
     allay_mut(&mut child).duplication_cooldown = DUPLICATION_COOLDOWN_TICKS;
@@ -424,7 +413,7 @@ fn duplicate(ix: &mut Interact<'_, '_>) {
     if let Some(mut e) = ix.ents.store.get_mut(ix.target) {
         e.mark_data_dirty();
     }
-    let uuid = crate::mob::random_uuid(ix.env.random);
+    let uuid = crate::mob::new_uuid();
     crate::mob::spawn(
         ix.ents,
         ix.level.network_ids(),

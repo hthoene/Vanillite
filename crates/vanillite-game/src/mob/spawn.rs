@@ -13,7 +13,7 @@ use vanillite_world::entity::{EntityId, Rotation};
 use super::fam::{ExtraMob, Relation, SpawnContext, SpawnReason};
 use super::kinds::{self, FarmClimate, Kind};
 use super::physics;
-use super::{Environment, MobData, max_local_raw_brightness, random_uuid};
+use super::{Environment, MobData, max_local_raw_brightness};
 use crate::level::Level;
 use crate::survival::rules::Difficulty;
 
@@ -671,23 +671,26 @@ fn spawn_category_for_chunk(
                 // creation in Vanilla.
                 return;
             };
-            let seed = level.random().next_long();
+            let seed = crate::mob::new_entity_seed();
             let mut mob = MobData::new(kind, seed);
             let y_rot = level.random().next_float() * 360.0;
             let pos_v = Vec3::new(xx, f64::from(y), zz);
             if !valid_position_for_mob(level, input, &mob, pos_v, nearest) {
                 continue;
             }
-            let extra = finalize(
-                level,
-                Some(table),
-                &input.env,
-                &mut mob,
-                pos,
-                input.difficulty,
-                group_index,
-                SpawnReason::Natural,
-            );
+            let extra = with_level_random(level, |level, random| {
+                finalize(
+                    level,
+                    Some(table),
+                    &input.env,
+                    &mut mob,
+                    pos,
+                    input.difficulty,
+                    group_index,
+                    SpawnReason::Natural,
+                    random,
+                )
+            });
             group_index += 1;
             cluster += 1;
             group_size += 1;
@@ -710,6 +713,18 @@ fn spawn_category_for_chunk(
     }
 }
 
+/// Runs `f` with the level and its random taken out of it (`finalizeSpawn` reads the level
+/// and draws from its random).
+pub fn with_level_random<R>(
+    level: &mut Level,
+    f: impl FnOnce(&Level, &mut LegacyRandom) -> R,
+) -> R {
+    let mut random = std::mem::replace(level.random(), LegacyRandom::new(0));
+    let out = f(level, &mut random);
+    *level.random() = random;
+    out
+}
+
 /// Builds the spawn context at `pos` and runs `finalizeSpawn`; returns the mobs that spawn
 /// with it (jockeys).
 #[allow(clippy::too_many_arguments)]
@@ -722,6 +737,7 @@ pub fn finalize(
     difficulty: Difficulty,
     group_index: u32,
     reason: SpawnReason,
+    random: &mut LegacyRandom,
 ) -> Vec<ExtraMob> {
     let biome = table.and_then(|t| t.biome(level.biome(pos)));
     let mut ctx = SpawnContext {
@@ -738,7 +754,7 @@ pub fn finalize(
         extra: Vec::new(),
         ride: None,
     };
-    kinds::finalize_spawn(mob, &mut ctx);
+    kinds::finalize_spawn(mob, &mut ctx, random);
     if let Some(vehicle) = ctx.ride {
         ctx.extra.push(ExtraMob {
             mob: MobData::new(Kind::Chicken, 0),
@@ -783,7 +799,7 @@ pub fn add_mob_with(
 
 /// Adds a finished mob to the level (`addFreshEntityWithPassengers`).
 pub fn add_mob(level: &mut Level, mut mob: MobData, pos: Vec3, y_rot: f32) -> EntityId {
-    let uuid = random_uuid(&mut mob.random);
+    let uuid = crate::mob::new_uuid();
     mob.y_body_rot = y_rot;
     let rot = Rotation {
         y_rot,
@@ -1379,7 +1395,7 @@ pub fn spawn_for_chunk_generation(
                         let kind = Kind::of(entry.type_id);
                         let y_rot = random.next_float() * 360.0;
                         if let Some(kind) = kind {
-                            let mut mob = MobData::new(kind, random.next_long());
+                            let mut mob = MobData::new(kind, crate::mob::new_entity_seed());
                             if mob_check_spawn_rules(level, env, &mob, block)
                                 && check_spawn_obstruction(level, env, &mob, at)
                             {
@@ -1392,6 +1408,9 @@ pub fn spawn_for_chunk_generation(
                                     difficulty,
                                     group_index,
                                     SpawnReason::ChunkGeneration,
+                                    // `WorldGenRegion.getRandom()` is a positional random of
+                                    // the region; this one is distribution equal.
+                                    &mut random,
                                 );
                                 group_index += 1;
                                 add_mob_with(level, mob, at, y_rot, extra);
@@ -1419,20 +1438,23 @@ pub fn summon(
     pos: Vec3,
     difficulty: Difficulty,
 ) -> EntityId {
-    let seed = level.random().next_long();
+    let seed = crate::mob::new_entity_seed();
     let mut mob = MobData::new(kind, seed);
     let block = BlockPos::containing(pos.x, pos.y, pos.z);
     let env = Environment::default();
-    let extra = finalize(
-        level,
-        table,
-        &env,
-        &mut mob,
-        block,
-        difficulty,
-        0,
-        SpawnReason::Command,
-    );
+    let extra = with_level_random(level, |level, random| {
+        finalize(
+            level,
+            table,
+            &env,
+            &mut mob,
+            block,
+            difficulty,
+            0,
+            SpawnReason::Command,
+            random,
+        )
+    });
     let y_rot = level.random().next_float() * 360.0;
     add_mob_with(level, mob, pos, y_rot, extra)
 }
@@ -1512,19 +1534,24 @@ pub fn cat_spawner_tick(
     if cats {
         return;
     }
-    let seed = level.random().next_long();
+    let seed = crate::mob::new_entity_seed();
     let mut cat = MobData::new(Kind::Cat, seed);
-    let extra = finalize(
-        level,
-        table,
-        env,
-        &mut cat,
-        pos,
-        difficulty,
-        0,
-        SpawnReason::Natural,
-    );
-    cat.variant = super::fam::companion::feline::pick_cat_variant(&mut cat.random, true, false);
+    let extra = with_level_random(level, |level, random| {
+        let extra = finalize(
+            level,
+            table,
+            env,
+            &mut cat,
+            pos,
+            difficulty,
+            0,
+            SpawnReason::Natural,
+            random,
+        );
+        // The variant's spawn conditions (in a witch hut) with the level random.
+        cat.variant = super::fam::companion::feline::pick_cat_variant(random, true, false);
+        extra
+    });
     cat.persistent = true;
     let at = Vec3::new(f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
     add_mob_with(level, cat, at, 0.0, extra);

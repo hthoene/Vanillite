@@ -241,7 +241,7 @@ pub fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
         Kind::ZombieHorse => {
             if ctx.reason == SpawnReason::Natural {
                 // A zombie with an iron spear rides it.
-                let seed = m.random.next_long();
+                let seed = crate::mob::new_entity_seed();
                 let mut zombie = MobData::new(Kind::Zombie, seed);
                 let mut inner = SpawnContext {
                     reason: SpawnReason::Natural,
@@ -249,7 +249,7 @@ pub fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
                     ride: None,
                     ..*ctx
                 };
-                crate::mob::kinds::finalize_spawn(&mut zombie, &mut inner);
+                crate::mob::kinds::finalize_spawn(&mut zombie, &mut inner, &mut m.random);
                 zombie.equipment.set(
                     EquipmentSlot::MainHand,
                     equipment::stack("minecraft:iron_spear"),
@@ -450,14 +450,7 @@ pub fn on_die(h: &mut Hurt<'_, '_>) {
 
 /// An item entity at `pos` with the default random motion (`spawnAtLocation`).
 pub fn drop_item(env: &mut crate::survival::player::Env<'_>, pos: Vec3, stack: ItemStack) {
-    let r = &mut *env.random;
-    let velocity = Vec3::new(
-        r.next_double() * 0.2 - 0.1,
-        0.2,
-        r.next_double() * 0.2 - 0.1,
-    );
-    let uuid = crate::mob::random_uuid(r);
-    let y_rot = r.next_float() * 360.0;
+    let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
     env.out.push(Effect::DropItem {
         uuid,
         pos,
@@ -1218,10 +1211,10 @@ fn skeleton_trap(t: &mut Tick<'_, '_>) {
     let pos = t.pos();
     let network_ids = std::sync::Arc::clone(t.level.network_ids_arc());
     let spawn_skeleton = |t: &mut Tick<'_, '_>, horse: EntityId| {
-        let seed = t.mob().random.next_long();
+        let seed = crate::mob::new_entity_seed();
         let mut sk = MobData::new(Kind::Skeleton, seed);
         let mut ctx = SpawnContext::simple(difficulty, SpawnReason::Triggered);
-        crate::mob::kinds::finalize_spawn(&mut sk, &mut ctx);
+        crate::mob::kinds::finalize_spawn(&mut sk, &mut ctx, t.env.random);
         sk.persistent = true;
         sk.damage_cooldown = 60;
         if sk.equipment.get(EquipmentSlot::Head).is_empty() {
@@ -1242,17 +1235,17 @@ fn skeleton_trap(t: &mut Tick<'_, '_>) {
             sk.equipment.set(slot, s);
         }
         let hp = t.ents.store.get(horse).map_or(pos, |e| e.pos());
-        let uuid = crate::mob::random_uuid(&mut sk.random);
+        let uuid = crate::mob::new_uuid();
         let id = crate::mob::spawn(t.ents, &network_ids, uuid, hp, Rotation::default(), sk);
         t.ents.riding.add(id, horse, false);
     };
     let me = t.id;
     spawn_skeleton(t, me);
     for _ in 0..3 {
-        let seed = t.mob().random.next_long();
+        let seed = crate::mob::new_entity_seed();
         let mut horse = MobData::new(Kind::SkeletonHorse, seed);
         let mut ctx = SpawnContext::simple(difficulty, SpawnReason::Triggered);
-        crate::mob::kinds::finalize_spawn(&mut horse, &mut ctx);
+        crate::mob::kinds::finalize_spawn(&mut horse, &mut ctx, t.env.random);
         horse.damage_cooldown = 60;
         horse.persistent = true;
         horse.tame = true;
@@ -1260,7 +1253,7 @@ fn skeleton_trap(t: &mut Tick<'_, '_>) {
         horse.baby = false;
         let dx = t.mob().random.triangle(0.0, 1.1485);
         let dz = t.mob().random.triangle(0.0, 1.1485);
-        let uuid = crate::mob::random_uuid(&mut horse.random);
+        let uuid = crate::mob::new_uuid();
         let id = crate::mob::spawn(t.ents, &network_ids, uuid, pos, Rotation::default(), horse);
         if let Some(mut e) = t.ents.store.get_mut(id) {
             e.set_velocity(Vec3::new(dx, 0.0, dz));

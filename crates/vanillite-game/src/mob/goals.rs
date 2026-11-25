@@ -1502,7 +1502,7 @@ pub(crate) fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
             *love_time += 1;
             if *love_time >= reduced(60) && distance_sqr(t, o.pos) < 9.0 {
                 let id = t.id;
-                super::animal::breed(t.level, t.ents, t.env, t.cx, id, p);
+                super::animal::breed(t.level, t.ents, t.env, id, p);
             }
         }
         Goal::Tempt { speed, player, .. } => {

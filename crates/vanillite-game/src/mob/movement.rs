@@ -802,7 +802,7 @@ fn block_sound(
         f64::from(pos.y) + 0.5,
         f64::from(pos.z) + 0.5,
     );
-    let seed = t.env.random.next_long();
+    let seed = crate::survival::sound_seed();
     crate::survival::play_sound(t.env.out, None, at, sound, source, volume, pitch, seed);
 }
 

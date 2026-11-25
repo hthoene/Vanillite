@@ -129,7 +129,7 @@ pub(super) fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
     // `AbstractCow.mobInteract`: milk.
     if name == "minecraft:bucket" && !baby {
         if let Some(pos) = ix.ents.store.get(ix.player).map(|e| e.pos()) {
-            let seed = ix.env.random.next_long();
+            let seed = crate::survival::sound_seed();
             crate::survival::play_sound(
                 ix.env.out,
                 None,
@@ -169,7 +169,7 @@ fn shear(ix: &mut Interact<'_, '_>) {
     let (pos, rot, height) = (e.pos(), e.rot(), f64::from(e.dims().height));
     // `convertTo(COW, ConversionParams.single(...))`: the cow keeps the name, age, health and
     // flags.
-    let seed = ix.env.random.next_long();
+    let seed = crate::mob::new_entity_seed();
     let mut cow = MobData::new(Kind::Cow, seed);
     cow.custom_name = m.custom_name.clone();
     cow.no_ai = m.no_ai;
@@ -188,7 +188,7 @@ fn shear(ix: &mut Interact<'_, '_>) {
         m.removed = true;
     }
     ix.cx.discarded.push(ix.target);
-    let uuid = crate::mob::random_uuid(ix.env.random);
+    let uuid = crate::mob::new_uuid();
     crate::mob::spawn(
         ix.ents,
         ix.level.network_ids(),
@@ -202,14 +202,7 @@ fn shear(ix: &mut Interact<'_, '_>) {
     );
     // `shearing/mooshroom`: five mushrooms of its colour, one item entity each.
     for _ in 0..5 {
-        let r = &mut *ix.env.random;
-        let velocity = Vec3::new(
-            r.next_double() * 0.2 - 0.1,
-            0.2,
-            r.next_double() * 0.2 - 0.1,
-        );
-        let uuid = crate::mob::random_uuid(r);
-        let y_rot = r.next_float() * 360.0;
+        let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
         let stack: ItemStack = crate::mob::equipment::stack(mushroom);
         ix.env.out.push(Effect::DropItem {
             uuid,
@@ -230,7 +223,7 @@ pub(super) fn thunder_hit(h: &mut Hurt<'_, '_>) {
     let s = st_mut(m);
     s.variant = if s.variant == 1 { 0 } else { 1 };
     let silent = m.silent;
-    let seed = m.random.next_long();
+    let seed = crate::survival::sound_seed();
     let pos = h.ents.store.get(h.target).map(|e| e.pos());
     if let Some(mut e) = h.ents.store.get_mut(h.target) {
         e.mark_data_dirty();

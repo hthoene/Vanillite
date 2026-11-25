@@ -572,7 +572,7 @@ pub fn hurt(
     if took_full && blocked {
         // `BlocksAttacks.onBlocked`: the shield sound instead of the damage event.
         let pitch = 0.8 + env.random.next_float() * 0.4;
-        let seed = env.random.next_long();
+        let seed = crate::survival::sound_seed();
         crate::survival::play_sound(
             env.out,
             None,
@@ -885,7 +885,7 @@ fn apply_item_blocking(
         player.survival.using_item = None;
         player.survival.shield_disabled_until = player.survival.tick_count + ticks;
         entity.mark_data_dirty();
-        let seed = env.random.next_long();
+        let seed = crate::survival::sound_seed();
         crate::survival::play_sound(
             env.out,
             None,
@@ -1001,6 +1001,9 @@ fn drop_all(inventory: &mut crate::inventory::PlayerInventory, from: Vec3, env: 
         if stack.is_empty() || vanishing(&stack) {
             continue;
         }
+        // `new ItemEntity(level, x, y, z, stack)`; the throw replaces its motion. The throw
+        // draws from the player's own random in Vanilla, here from the level random.
+        let (uuid, y_rot, _) = crate::mob::new_item_entity();
         let pow = env.random.next_float() * 0.5;
         let dir = env.random.next_float() * std::f32::consts::TAU;
         let velocity = Vec3::new(
@@ -1008,9 +1011,6 @@ fn drop_all(inventory: &mut crate::inventory::PlayerInventory, from: Vec3, env: 
             f64::from(0.2f32),
             f64::from(vanillite_base::math::cos(f64::from(dir)) * pow),
         );
-        let uuid = (u128::from(env.random.next_long() as u64) << 64)
-            | u128::from(env.random.next_long() as u64);
-        let y_rot = env.random.next_float() * 360.0;
         env.out.push(Effect::DropItem {
             uuid,
             pos: from,

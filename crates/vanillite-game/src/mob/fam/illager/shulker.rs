@@ -509,9 +509,9 @@ fn hit_by_bullet(h: &mut Hurt<'_, '_>) {
     if h.env.random.next_float() < failure {
         return;
     }
-    let mut baby = MobData::new(Kind::Shulker, h.env.random.next_long());
+    let mut baby = MobData::new(Kind::Shulker, crate::mob::new_entity_seed());
     st_mut(&mut baby).color = color;
-    let uuid = super::super::super::random_uuid(h.env.random);
+    let uuid = crate::mob::new_uuid();
     super::super::super::spawn(
         h.ents,
         h.level.network_ids(),

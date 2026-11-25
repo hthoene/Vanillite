@@ -671,6 +671,57 @@ pub fn spawn(
     id
 }
 
+thread_local! {
+    /// The seeds of new entities: Vanilla gives every entity a fresh random
+    /// (`RandomSource.create()`), so creating one draws nothing from the level's or another
+    /// entity's random. The parity scenarios replace it with a stream (see
+    /// [`set_entity_seed_stream`]).
+    static ENTITY_SEEDS: std::cell::RefCell<(Option<LegacyRandom>, LegacyRandom)> =
+        std::cell::RefCell::new((None, LegacyRandom::new(crate::survival::sound_seed())));
+}
+
+/// The seed of a newly created entity's own random (the `Entity` constructor's
+/// `RandomSource.create()`).
+pub fn new_entity_seed() -> i64 {
+    ENTITY_SEEDS.with_borrow_mut(|(stream, unique)| match stream {
+        Some(s) => s.next_long(),
+        None => unique.next_long(),
+    })
+}
+
+/// From now on (on this thread) new entities take their seeds from a legacy random seeded
+/// with `seed` in creation order (`None`: unique seeds again). For tick exact comparisons with
+/// Vanilla, whose recorder does the same.
+pub fn set_entity_seed_stream(seed: Option<i64>) {
+    ENTITY_SEEDS.with_borrow_mut(|(stream, _)| *stream = seed.map(LegacyRandom::new));
+}
+
+/// The UUID of a new entity (`Mth.createInsecureUUID` of its own fresh random): draws from no
+/// game random.
+pub fn new_uuid() -> u128 {
+    crate::block::tnt::insecure_uuid()
+}
+
+/// The UUID, yaw and motion of a new item entity (`new ItemEntity(level, x, y, z, stack)`):
+/// the constructor draws `bobOffs`, the yaw and the motion from the item's own random, which takes its
+/// seed from the entity seed stream. Throws replace the motion afterwards.
+pub fn new_item_entity() -> (u128, f32, Vec3) {
+    let mut own = LegacyRandom::new(new_entity_seed());
+    // `bobOffs`, then the yaw.
+    let _bob = own.next_float();
+    let y_rot = own.next_float() * 360.0;
+    let x = own.next_double() * 0.2 - 0.1;
+    let z = own.next_double() * 0.2 - 0.1;
+    (new_uuid(), y_rot, Vec3::new(x, 0.2, z))
+}
+
+/// The UUID of a new entity that keeps no random of its own here (items): it still takes its
+/// seed from the entity seed stream, so the entities created after it get Vanilla's seeds.
+pub fn new_entity_uuid() -> u128 {
+    new_entity_seed();
+    new_uuid()
+}
+
 /// A random UUID (`Mth.createInsecureUUID`).
 pub fn random_uuid(random: &mut impl RandomSource) -> u128 {
     let most = random.next_long() as u64 & !0xF000 | 0x4000;
@@ -798,6 +849,7 @@ impl Tick<'_, '_> {
             pos: e.pos(),
             eye_y: e.pos().y + eye,
             aabb: e.aabb(),
+            height: e.dims().height,
             is_player: self.ents.player(id).is_some(),
         })
     }
@@ -819,6 +871,8 @@ pub struct Other {
     pub pos: Vec3,
     pub eye_y: f64,
     pub aabb: Aabb,
+    /// `getBbHeight()`.
+    pub height: f32,
     pub is_player: bool,
 }
 

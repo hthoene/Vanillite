@@ -1664,7 +1664,7 @@ fn tick(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) {
             lock_gaze_and_walk_to_each_other(t, partner, *speed, *close);
             if closer_than(t, partner, 3.0) && now >= *spawn_at {
                 if !crate::mob::fam::brainy::custom_breed(t, partner) {
-                    crate::mob::animal::breed(t.level, t.ents, t.env, t.cx, t.id, partner);
+                    crate::mob::animal::breed(t.level, t.ents, t.env, t.id, partner);
                 }
                 if alive(t) {
                     brain(t).erase(M::BreedTarget);

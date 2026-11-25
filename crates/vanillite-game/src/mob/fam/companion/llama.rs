@@ -167,7 +167,7 @@ pub fn spit(t: &mut Tick<'_, '_>, target: EntityId, _power: f32) {
         p.z + (width + 1.0) * 0.5 * body.cos(),
     );
     let xd = o.pos.x - p.x;
-    let yd = o.pos.y + (o.aabb.max_y - o.aabb.min_y) * 0.333_333_333_333_333_3 - start.y;
+    let yd = o.pos.y + f64::from(o.height) * 0.333_333_333_333_333_3 - start.y;
     let zd = o.pos.z - p.z;
     let yo = (xd * xd + zd * zd).sqrt() * f64::from(0.2_f32);
     let dir = Vec3::new(xd, yd + yo, zd);

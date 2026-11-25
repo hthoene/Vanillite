@@ -133,7 +133,7 @@ pub fn sound_at(
     let Some(pos) = ents.store.get(id).map(|e| e.pos()) else {
         return;
     };
-    let seed = env.random.next_long();
+    let seed = crate::survival::sound_seed();
     play_sound(env.out, None, pos, sound, source, 1.0, pitch, seed);
 }
 
@@ -142,7 +142,6 @@ pub fn breed(
     level: &Level,
     ents: &mut Entities,
     env: &mut Env<'_>,
-    cx: &mut MobContext,
     parent: EntityId,
     partner: EntityId,
 ) {
@@ -155,7 +154,7 @@ pub fn breed(
     let Some(pos) = ents.store.get(parent).map(|e| e.pos()) else {
         return;
     };
-    let seed = env.random.next_long();
+    let seed = crate::mob::new_entity_seed();
     let child_kind = match (ents.mob(parent), ents.mob(partner)) {
         (Some(a), Some(b)) if kind.family() != super::Family::Classic => {
             super::fam::offspring_kind(a, b)
@@ -179,7 +178,7 @@ pub fn breed(
     }
     child.age = -24000;
     child.baby = true;
-    let uuid = super::random_uuid(env.random);
+    let uuid = crate::mob::new_uuid();
     super::spawn(
         ents,
         level.network_ids(),
@@ -201,7 +200,7 @@ pub fn breed(
         let xp = ents
             .mob_mut(parent)
             .map_or(1, |m| m.random.next_int_bounded(7) + 1);
-        combat::award_experience(level, ents, cx, pos, xp);
+        combat::award_experience(level, ents, env.random, pos, xp);
     }
 }
 
@@ -288,12 +287,12 @@ pub fn fill_held(
         *s = filled;
     } else if !p.inventory.add(None, &mut filled, false) {
         // `drop(filled, false)`: it falls in front of the player.
-        let r = &mut *env.random;
+        let (uuid, y_rot, _) = crate::mob::new_item_entity();
         env.out.push(Effect::DropItem {
-            uuid: super::random_uuid(r),
+            uuid,
             pos: pos + Vec3::new(0.0, 1.32, 0.0),
             velocity: Vec3::new(0.0, 0.1, 0.0),
-            y_rot: r.next_float() * 360.0,
+            y_rot,
             pickup_delay: 40,
             stack: filled,
         });
@@ -337,7 +336,7 @@ pub fn hurt_held(
     if d >= item::max_damage(s) {
         s.shrink(1);
         if let Some(pos) = pos {
-            let seed = env.random.next_long();
+            let seed = crate::survival::sound_seed();
             play_sound(
                 env.out,
                 None,
@@ -441,7 +440,7 @@ fn mob_interact(
     if let Some(egg_kind) = spawn_egg_kind(stack) {
         let own = ents.mob(target).map(|m| m.kind);
         if own == Some(egg_kind) && ents.mob(target).is_some_and(|m| m.kind.ageable()) {
-            spawn_offspring(level, ents, env, player, target, hand, egg_kind);
+            spawn_offspring(level, ents, player, target, hand, egg_kind);
             return Interaction::Success;
         }
         return Interaction::Pass;
@@ -470,7 +469,7 @@ fn mob_interact(
         Kind::Cow if name == "minecraft:bucket" && !ents.mob(target).is_some_and(|m| m.baby) => {
             // `AbstractCow.mobInteract`: the milk sound is the player's own.
             if let Some(pos) = ents.store.get(player).map(|e| e.pos()) {
-                let seed = env.random.next_long();
+                let seed = crate::survival::sound_seed();
                 play_sound(
                     env.out,
                     None,
@@ -647,17 +646,12 @@ fn shear_sheep(ents: &mut Entities, env: &mut Env<'_>, target: EntityId) {
             f64::from((r.next_float() - r.next_float()) * 0.1),
         );
         // `spawnAtLocation(stack, 1.0F)`: an item one block up with the default motion.
-        let er = &mut *env.random;
-        let velocity = Vec3::new(
-            er.next_double() * 0.2 - 0.1,
-            0.2,
-            er.next_double() * 0.2 - 0.1,
-        ) + extra;
+        let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
         env.out.push(Effect::DropItem {
-            uuid: super::random_uuid(er),
+            uuid,
             pos: pos + Vec3::new(0.0, 1.0, 0.0),
-            velocity,
-            y_rot: er.next_float() * 360.0,
+            velocity: velocity + extra,
+            y_rot,
             pickup_delay: 10,
             stack: ItemStack::new(item, 1),
         });
@@ -716,16 +710,12 @@ fn unequip_saddle(ents: &mut Entities, env: &mut Env<'_>, target: EntityId) {
         return;
     };
     if let Some(saddle) = vanillite_data::registry::ITEM.id("minecraft:saddle") {
-        let r = &mut *env.random;
+        let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
         env.out.push(Effect::DropItem {
-            uuid: super::random_uuid(r),
+            uuid,
             pos: pos + Vec3::new(0.0, 1.0, 0.0),
-            velocity: Vec3::new(
-                r.next_double() * 0.2 - 0.1,
-                0.2,
-                r.next_double() * 0.2 - 0.1,
-            ),
-            y_rot: r.next_float() * 360.0,
+            velocity,
+            y_rot,
             pickup_delay: 10,
             stack: ItemStack::new(saddle, 1),
         });
@@ -792,7 +782,6 @@ pub fn spawn_egg_kind(stack: &ItemStack) -> Option<Kind> {
 fn spawn_offspring(
     level: &Level,
     ents: &mut Entities,
-    env: &mut Env<'_>,
     player: EntityId,
     target: EntityId,
     hand: Hand,
@@ -801,7 +790,7 @@ fn spawn_offspring(
     let Some(pos) = ents.store.get(target).map(|e| e.pos()) else {
         return;
     };
-    let seed = env.random.next_long();
+    let seed = crate::mob::new_entity_seed();
     let mut child = MobData::new(kind, seed);
     child.age = -24000;
     child.baby = true;
@@ -813,7 +802,7 @@ fn spawn_offspring(
     if let Some(name) = stack.component(vanillite_protocol::components::ids::CUSTOM_NAME) {
         child.custom_name = Some(name.into());
     }
-    let uuid = super::random_uuid(env.random);
+    let uuid = crate::mob::new_uuid();
     super::spawn(
         ents,
         level.network_ids(),
@@ -860,13 +849,13 @@ pub fn use_spawn_egg_on(
         pos.relative(face)
     };
     let below_face = spawn_pos != pos && face == vanillite_base::Direction::Up;
-    let seed = env.random.next_long();
+    let seed = crate::mob::new_entity_seed();
     let mut m = MobData::new(kind, seed);
     let mut ctx =
         super::fam::SpawnContext::simple(difficulty, super::fam::SpawnReason::SpawnItemUse);
     ctx.pos = spawn_pos;
     ctx.level = Some(level);
-    kinds::finalize_spawn(&mut m, &mut ctx);
+    kinds::finalize_spawn(&mut m, &mut ctx, env.random);
     if let Some(name) = stack.component(vanillite_protocol::components::ids::CUSTOM_NAME) {
         m.custom_name = Some(name.into());
         m.persistent = true;
@@ -884,7 +873,7 @@ pub fn use_spawn_egg_on(
         x_rot: 0.0,
         y_head_rot: yaw,
     };
-    let uuid = super::random_uuid(env.random);
+    let uuid = crate::mob::new_uuid();
     m.y_body_rot = yaw;
     super::spawn(ents, network_ids, uuid, p, rot, m);
     if !infinite {

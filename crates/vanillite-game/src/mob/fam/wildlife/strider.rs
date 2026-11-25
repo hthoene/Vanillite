@@ -75,7 +75,7 @@ pub(super) fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
         return;
     }
     if m.random.next_int_bounded(30) == 0 && ctx.difficulty != Difficulty::Peaceful {
-        let seed = m.random.next_long();
+        let seed = crate::mob::new_entity_seed();
         let mut rider = MobData::new(Kind::ZombifiedPiglin, seed);
         let mut inner = SpawnContext {
             reason: SpawnReason::Jockey,
@@ -83,7 +83,7 @@ pub(super) fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
             ride: None,
             ..*ctx
         };
-        kinds::finalize_spawn(&mut rider, &mut inner);
+        kinds::finalize_spawn(&mut rider, &mut inner, &mut m.random);
         rider.equipment.set(
             EquipmentSlot::MainHand,
             equipment::stack("minecraft:warped_fungus_on_a_stick"),
@@ -97,7 +97,7 @@ pub(super) fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
             relation: Relation::RidesIt,
         });
     } else if m.random.next_int_bounded(10) == 0 {
-        let seed = m.random.next_long();
+        let seed = crate::mob::new_entity_seed();
         let mut rider = MobData::new(Kind::Strider, seed);
         rider.age = -24000;
         rider.baby = true;
@@ -107,7 +107,7 @@ pub(super) fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
             ride: None,
             ..*ctx
         };
-        kinds::finalize_spawn(&mut rider, &mut inner);
+        kinds::finalize_spawn(&mut rider, &mut inner, &mut m.random);
         ctx.extra.push(ExtraMob {
             mob: rider,
             offset: Vec3::ZERO,

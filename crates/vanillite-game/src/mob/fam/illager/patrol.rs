@@ -129,7 +129,7 @@ fn spawn_member(level: &mut Level, input: &PatrolInput<'_>, pos: BlockPos, leade
     ) {
         return false;
     }
-    let seed = level.random().next_long();
+    let seed = crate::mob::new_entity_seed();
     let mut mob = MobData::new(Kind::Pillager, seed);
     if leader {
         // `setPatrolLeader(true)` and `findPatrolTarget()` before the position is set: the
@@ -145,16 +145,19 @@ fn spawn_member(level: &mut Level, input: &PatrolInput<'_>, pos: BlockPos, leade
         s.patrol_target = Some(BlockPos::new(dx, 0, dz));
     }
     let at = Vec3::new(f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
-    let extra = spawn::finalize(
-        level,
-        input.table,
-        &input.env,
-        &mut mob,
-        pos,
-        input.difficulty,
-        0,
-        SpawnReason::Patrol,
-    );
+    let extra = spawn::with_level_random(level, |level, random| {
+        spawn::finalize(
+            level,
+            input.table,
+            &input.env,
+            &mut mob,
+            pos,
+            input.difficulty,
+            0,
+            SpawnReason::Patrol,
+            random,
+        )
+    });
     let y_rot = level.random().next_float() * 360.0;
     spawn::add_mob_with(level, mob, at, y_rot, extra);
     true

@@ -658,18 +658,21 @@ pub fn phantom_spawner_tick(
         }
         let group = 1 + level.random().next_int_bounded(difficulty as i32 + 1);
         for _ in 0..group {
-            let seed = level.random().next_long();
+            let seed = crate::mob::new_entity_seed();
             let mut mob = MobData::new(Kind::Phantom, seed);
-            let extra = crate::mob::spawn::finalize(
-                level,
-                None,
-                env,
-                &mut mob,
-                at,
-                difficulty,
-                0,
-                SpawnReason::Natural,
-            );
+            let extra = crate::mob::spawn::with_level_random(level, |level, random| {
+                crate::mob::spawn::finalize(
+                    level,
+                    None,
+                    env,
+                    &mut mob,
+                    at,
+                    difficulty,
+                    0,
+                    SpawnReason::Natural,
+                    random,
+                )
+            });
             let p = Vec3::new(f64::from(at.x), f64::from(at.y), f64::from(at.z));
             crate::mob::spawn::add_mob_with(level, mob, p, 0.0, extra);
             spawned += 1;

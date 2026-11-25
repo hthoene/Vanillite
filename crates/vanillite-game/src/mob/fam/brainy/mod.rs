@@ -136,12 +136,11 @@ pub fn sound_at(
     volume: f32,
     pitch: f32,
 ) {
-    use vanillite_base::random::RandomSource;
     if t.mob_ref().silent {
         return;
     }
     let pos = t.pos();
-    let seed = t.env.random.next_long();
+    let seed = crate::survival::sound_seed();
     crate::survival::play_sound(t.env.out, None, pos, sound, source, volume, pitch, seed);
 }
 
@@ -241,7 +240,7 @@ pub fn convert_to(
                 .contains(vanillite_world::entity::EntityFlags::ON_GROUND),
         )
     };
-    let uuid = crate::mob::random_uuid(t.env.random);
+    let uuid = crate::mob::new_uuid();
     let id = crate::mob::spawn(t.ents, t.level.network_ids(), uuid, pos, rot, new);
     if let Some(mut e) = t.ents.store.get_mut(id) {
         e.set_velocity(velocity);
@@ -284,7 +283,7 @@ pub fn finalize_child_from_breeding(t: &mut Tick<'_, '_>, partner: EntityId) {
     if t.env.rules.bool(crate::survival::rules::Rule::MOB_DROPS) {
         let xp = t.mob().random.next_int_bounded(7) + 1;
         let pos = t.pos();
-        crate::mob::combat::award_experience(t.level, t.ents, t.cx, pos, xp);
+        crate::mob::combat::award_experience(t.level, t.ents, t.env.random, pos, xp);
     }
 }
 
@@ -339,9 +338,9 @@ pub fn gift_loot(t: &mut Tick<'_, '_>, table: &str) -> Vec<ItemStack> {
         block_entity: None,
     };
     let mut out = Vec::new();
-    let mut random = t.mob_ref().random.clone();
-    data.loot.table_drops(table, &ctx, &mut random, &mut out);
-    t.mob().random = random;
+    // The table's random sequence, else the level random.
+    data.loot
+        .roll_table(t.level, table, &ctx, t.env.random, &mut out);
     out
 }
 

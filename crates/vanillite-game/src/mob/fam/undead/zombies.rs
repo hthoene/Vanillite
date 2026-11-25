@@ -288,6 +288,10 @@ pub fn init(m: &mut MobData) {
 pub fn register_goals(m: &mut MobData) {
     let g = &mut m.goals;
     let tg = &mut m.targets;
+    if m.kind != Kind::Giant {
+        // `Zombie.registerGoals` before `addBehaviourGoals`, for every zombie.
+        g.add(4, crate::mob::movement::MoveGoal::zombie_turtle_egg());
+    }
     match m.kind {
         Kind::Giant => {}
         Kind::Drowned => {
@@ -579,15 +583,15 @@ fn husk_finalize(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
         EquipmentSlot::MainHand,
         equipment::stack("minecraft:iron_spear"),
     );
-    let mut camel = MobData::new(Kind::CamelHusk, m.random.next_long());
-    let mut parched = MobData::new(Kind::Parched, m.random.next_long());
+    let mut camel = MobData::new(Kind::CamelHusk, crate::mob::new_entity_seed());
+    let mut parched = MobData::new(Kind::Parched, crate::mob::new_entity_seed());
     for mob in [&mut camel, &mut parched] {
         let mut inner = SpawnContext {
             extra: Vec::new(),
             ride: None,
             ..*ctx
         };
-        kinds::finalize_spawn(mob, &mut inner);
+        kinds::finalize_spawn(mob, &mut inner, &mut m.random);
     }
     let base = ctx.extra.len();
     ctx.extra.push(ExtraMob {
@@ -618,7 +622,7 @@ fn drowned_finalize(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
         && !m.baby
         && !ctx.biome_is("minecraft:more_frequent_drowned_spawns")
     {
-        let mut nautilus = MobData::new(Kind::ZombieNautilus, m.random.next_long());
+        let mut nautilus = MobData::new(Kind::ZombieNautilus, crate::mob::new_entity_seed());
         if ctx.reason == SpawnReason::Structure {
             nautilus.persistent = true;
         }
@@ -627,7 +631,7 @@ fn drowned_finalize(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
             ride: None,
             ..*ctx
         };
-        kinds::finalize_spawn(&mut nautilus, &mut inner);
+        kinds::finalize_spawn(&mut nautilus, &mut inner, &mut m.random);
         ctx.extra.push(ExtraMob {
             mob: nautilus,
             offset: Vec3::ZERO,
@@ -876,9 +880,9 @@ pub fn drowned_throw_trident(t: &mut Tick<'_, '_>, target: EntityId, _power: f32
         ItemStack::new(items::TRIDENT.0, 1)
     };
     let p = t.pos();
-    let start = Vec3::new(p.x, t.eye_y() - 0.1, p.z);
+    let start = Vec3::new(p.x, t.eye_y() - f64::from(0.1_f32), p.z);
     let xd = o.pos.x - p.x;
-    let target_y = o.aabb.min_y + (o.aabb.max_y - o.aabb.min_y) / 3.0;
+    let target_y = o.pos.y + f64::from(o.height) * 0.333_333_333_333_333_3;
     let yd = target_y - start.y;
     let zd = o.pos.z - p.z;
     let dist = (xd * xd + zd * zd).sqrt();
@@ -1076,7 +1080,7 @@ pub fn reinforcements(h: &mut Hurt<'_, '_>) {
     if f64::from(m.random.next_float()) >= chance {
         return;
     }
-    let mut new = MobData::new(kind, m.random.next_long());
+    let mut new = MobData::new(kind, crate::mob::new_entity_seed());
     let (x, y, z) = (
         vanillite_base::math::floor(pos.x),
         vanillite_base::math::floor(pos.y),
@@ -1112,9 +1116,9 @@ pub fn reinforcements(h: &mut Hurt<'_, '_>) {
         let mut ctx = SpawnContext::simple(h.env.difficulty, SpawnReason::Reinforcement);
         ctx.pos = spawn;
         ctx.level = Some(h.level);
-        kinds::finalize_spawn(&mut new, &mut ctx);
+        kinds::finalize_spawn(&mut new, &mut ctx, h.env.random);
         zs_mut(&mut new).reinforcement -= 0.05;
-        let uuid = crate::mob::random_uuid(h.env.random);
+        let uuid = crate::mob::new_uuid();
         let y_rot = 0.0;
         let id = crate::mob::spawn(
             h.ents,
@@ -1627,7 +1631,11 @@ mod tests {
         let run = || {
             let mut m = MobData::new(Kind::Husk, 42);
             let mut ctx = SpawnContext::simple(Difficulty::Hard, SpawnReason::Command);
-            kinds::finalize_spawn(&mut m, &mut ctx);
+            kinds::finalize_spawn(
+                &mut m,
+                &mut ctx,
+                &mut vanillite_base::random::LegacyRandom::new(1),
+            );
             (
                 m.baby,
                 m.equipment.clone(),
@@ -1642,7 +1650,11 @@ mod tests {
     fn zombified_piglins_hold_gold() {
         let mut m = MobData::new(Kind::ZombifiedPiglin, 3);
         let mut ctx = SpawnContext::simple(Difficulty::Normal, SpawnReason::Command);
-        kinds::finalize_spawn(&mut m, &mut ctx);
+        kinds::finalize_spawn(
+            &mut m,
+            &mut ctx,
+            &mut vanillite_base::random::LegacyRandom::new(1),
+        );
         let name = crate::item::item_id(m.equipment.get(EquipmentSlot::MainHand)).name();
         assert!(name.starts_with("minecraft:golden_"), "{name}");
         assert_eq!(zs(&m).map(|z| z.reinforcement), Some(0.0));

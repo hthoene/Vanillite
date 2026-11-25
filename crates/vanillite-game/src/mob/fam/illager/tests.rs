@@ -86,22 +86,38 @@ fn every_kind_has_goals_and_state() {
 fn finalize_spawn_equips_weapons() {
     let mut ctx = SpawnContext::simple(Difficulty::Normal, SpawnReason::Natural);
     let mut p = MobData::new(Kind::Pillager, 1);
-    super::super::super::kinds::finalize_spawn(&mut p, &mut ctx);
+    super::super::super::kinds::finalize_spawn(
+        &mut p,
+        &mut ctx,
+        &mut vanillite_base::random::LegacyRandom::new(1),
+    );
     let main = p.equipment.get(EquipmentSlot::MainHand);
     assert_eq!(crate::item::item_id(main).name(), "minecraft:crossbow");
 
     let mut v = MobData::new(Kind::Vindicator, 2);
-    super::super::super::kinds::finalize_spawn(&mut v, &mut ctx);
+    super::super::super::kinds::finalize_spawn(
+        &mut v,
+        &mut ctx,
+        &mut vanillite_base::random::LegacyRandom::new(1),
+    );
     let main = v.equipment.get(EquipmentSlot::MainHand);
     assert_eq!(crate::item::item_id(main).name(), "minecraft:iron_axe");
     assert!(v.nav.can_open_doors);
 
     let mut x = MobData::new(Kind::Vex, 3);
-    super::super::super::kinds::finalize_spawn(&mut x, &mut ctx);
+    super::super::super::kinds::finalize_spawn(
+        &mut x,
+        &mut ctx,
+        &mut vanillite_base::random::LegacyRandom::new(1),
+    );
     assert_eq!(x.equipment.drop_chance(EquipmentSlot::MainHand), 0.0);
 
     let mut i = MobData::new(Kind::Illusioner, 4);
-    super::super::super::kinds::finalize_spawn(&mut i, &mut ctx);
+    super::super::super::kinds::finalize_spawn(
+        &mut i,
+        &mut ctx,
+        &mut vanillite_base::random::LegacyRandom::new(1),
+    );
     let main = i.equipment.get(EquipmentSlot::MainHand);
     assert_eq!(crate::item::item_id(main).name(), "minecraft:bow");
 }
@@ -113,7 +129,11 @@ fn captains_carry_the_banner() {
     for seed in 0..400 {
         let mut p = MobData::new(Kind::Vindicator, seed);
         let mut ctx = SpawnContext::simple(Difficulty::Normal, SpawnReason::Natural);
-        super::super::super::kinds::finalize_spawn(&mut p, &mut ctx);
+        super::super::super::kinds::finalize_spawn(
+            &mut p,
+            &mut ctx,
+            &mut vanillite_base::random::LegacyRandom::new(1),
+        );
         if st(&p).patrol_leader {
             let head = p.equipment.get(EquipmentSlot::Head);
             assert_eq!(crate::item::item_id(head).name(), "minecraft:white_banner");
@@ -127,7 +147,11 @@ fn captains_carry_the_banner() {
     for seed in 0..200 {
         let mut w = MobData::new(Kind::Ravager, seed);
         let mut ctx = SpawnContext::simple(Difficulty::Normal, SpawnReason::Natural);
-        super::super::super::kinds::finalize_spawn(&mut w, &mut ctx);
+        super::super::super::kinds::finalize_spawn(
+            &mut w,
+            &mut ctx,
+            &mut vanillite_base::random::LegacyRandom::new(1),
+        );
         assert!(!st(&w).patrol_leader);
     }
 }
@@ -136,12 +160,20 @@ fn captains_carry_the_banner() {
 fn patrol_spawns_make_patrollers_and_witches_stay_out_of_raids() {
     let mut p = MobData::new(Kind::Pillager, 4);
     let mut ctx = SpawnContext::simple(Difficulty::Hard, SpawnReason::Patrol);
-    super::super::super::kinds::finalize_spawn(&mut p, &mut ctx);
+    super::super::super::kinds::finalize_spawn(
+        &mut p,
+        &mut ctx,
+        &mut vanillite_base::random::LegacyRandom::new(1),
+    );
     assert!(st(&p).patrolling);
     assert!(st(&p).can_join_raid);
     let mut w = MobData::new(Kind::Witch, 5);
     let mut ctx = SpawnContext::simple(Difficulty::Hard, SpawnReason::Natural);
-    super::super::super::kinds::finalize_spawn(&mut w, &mut ctx);
+    super::super::super::kinds::finalize_spawn(
+        &mut w,
+        &mut ctx,
+        &mut vanillite_base::random::LegacyRandom::new(1),
+    );
     assert!(!st(&w).can_join_raid);
 }
 

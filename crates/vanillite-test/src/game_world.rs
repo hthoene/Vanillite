@@ -27,7 +27,10 @@ use vanillite_game::entities::{Entities, is_mob_kind};
 use vanillite_game::item_entity::ItemData;
 use vanillite_game::level::explosion::BlockInteraction;
 use vanillite_game::level::{Level, LevelOutput, LevelSettings, update};
+use vanillite_game::mob::common::CommonGoal;
+use vanillite_game::mob::fam::FamGoal;
 use vanillite_game::mob::goals::{Goal, MeleeKind, Slot};
+use vanillite_game::mob::movement::{MoveGoal, RemoveSounds};
 use vanillite_game::mob::{
     self, Environment, Kind, MobContext, MobData, MobSettings, WorldAction, combat, kinds,
     projectile,
@@ -375,6 +378,28 @@ impl GameWorld {
                 WorldAction::LevelEvent(event, pos, data) => {
                     self.level.level_event(None, event, pos, data);
                 }
+                WorldAction::SetDoorOpen(pos, open, source) => {
+                    vanillite_game::block::redstone::set_door_open(
+                        &mut self.level,
+                        pos,
+                        open,
+                        source,
+                    );
+                }
+                WorldAction::WindBurst(b) => {
+                    self.level.explode_with(
+                        b.source,
+                        None,
+                        b.pos,
+                        b.radius,
+                        BlockInteraction::TriggerBlock,
+                        vanillite_game::level::explosion::ExplosionStyle {
+                            damages_entities: false,
+                            knockback: b.knockback,
+                            wind_sound: Some(b.sound),
+                        },
+                    );
+                }
             }
         }
         self.finish_removals();
@@ -527,7 +552,20 @@ impl GameWorld {
             .ok_or_else(|| format!("{}: no mob behaviour in Vanillite", spec.kind))?;
         let mut m = MobData::new(kind, spec.seed);
         if spec.finalize {
-            kinds::finalize_spawn(&mut m, self.difficulty, kinds::FarmClimate::Temperate, 0);
+            // `finalizeSpawn(level, difficulty, COMMAND, null)` with the level random.
+            let pos = BlockPos::containing(spec.pos[0], spec.pos[1], spec.pos[2]);
+            let mut random = std::mem::replace(self.level.random(), LegacyRandom::new(0));
+            {
+                let mut ctx = vanillite_game::mob::fam::SpawnContext::simple(
+                    self.difficulty,
+                    vanillite_game::mob::fam::SpawnReason::Command,
+                );
+                ctx.pos = pos;
+                ctx.level = Some(&self.level);
+                ctx.env = self.env;
+                kinds::finalize_spawn(&mut m, &mut ctx, &mut random);
+            }
+            *self.level.random() = random;
         }
         if let Some(baby) = spec.baby {
             m.baby = baby;
@@ -662,7 +700,68 @@ fn goal_name(goal: &Goal) -> &'static str {
         Goal::HurtBy { .. } => "HurtByTargetGoal",
         Goal::EndermanFreeze { .. } => "EndermanFreezeWhenLookedAt",
         Goal::EndermanStare { .. } => "EndermanLookForPlayerGoal",
+        Goal::Breed { .. } => "BreedGoal",
+        Goal::Tempt { .. } => "TemptGoal",
+        Goal::SitWhenOrdered => "SitWhenOrderedToGoal",
+        Goal::EndermanLeaveBlock => "EndermanLeaveBlockGoal",
+        Goal::EndermanTakeBlock => "EndermanTakeBlockGoal",
+        Goal::FollowOwner { .. } => "FollowOwnerGoal",
+        Goal::OwnerHurtBy { .. } => "OwnerHurtByTargetGoal",
+        Goal::OwnerHurt { .. } => "OwnerHurtTargetGoal",
+        Goal::Common(c) => common_goal_name(c),
+        Goal::Fam(f) => fam_goal_name(f),
     }
+}
+
+/// The Vanilla class of a goal many families share.
+fn common_goal_name(goal: &CommonGoal) -> &'static str {
+    match goal {
+        CommonGoal::NearestAttackable { .. } => "NearestAttackableTargetGoal",
+        CommonGoal::Avoid { .. } => "AvoidEntityGoal",
+        CommonGoal::Ranged { .. } => "RangedAttackGoal",
+        CommonGoal::MoveTowardsRestriction { .. } => "MoveTowardsRestrictionGoal",
+        CommonGoal::ResetUniversalAnger { .. } => "ResetUniversalAngerTargetGoal",
+        CommonGoal::Move(m) => match m {
+            MoveGoal::RemoveBlock {
+                sounds: RemoveSounds::ZombieEgg,
+                ..
+            } => "ZombieAttackTurtleEggGoal",
+            MoveGoal::RemoveBlock { .. } => "RemoveBlockGoal",
+            MoveGoal::OpenDoor { .. } => "OpenDoorGoal",
+            MoveGoal::BreakDoor { .. } => "BreakDoorGoal",
+            MoveGoal::BreathAir => "BreathAirGoal",
+            MoveGoal::TryFindLiquid { .. } => "TryFindWaterGoal",
+            MoveGoal::ClimbOnTopOfPowderSnow => "ClimbOnTopOfPowderSnowGoal",
+            _ => "RandomStrollGoal",
+        },
+    }
+}
+
+/// The Vanilla class of a family goal: its variant name (`SpiderTarget` → `SpiderTargetGoal`)
+/// until the families map their goals one by one.
+fn fam_goal_name(goal: &FamGoal) -> &'static str {
+    use std::collections::HashMap;
+    static NAMES: Mutex<Option<HashMap<String, &'static str>>> = Mutex::new(None);
+    let debug = format!("{goal:?}");
+    // `Undead(SpiderTarget(...))`: the second identifier is the family goal's variant.
+    let inner = debug
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|s| !s.is_empty())
+        .nth(1)
+        .unwrap_or("Unknown")
+        .to_owned();
+    let mut names = NAMES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let names = names.get_or_insert_with(HashMap::new);
+    names.entry(inner.clone()).or_insert_with(|| {
+        let name = if inner.ends_with("Goal") {
+            inner
+        } else {
+            format!("{inner}Goal")
+        };
+        Box::leak(name.into_boxed_str())
+    })
 }
 
 /// `PathType.name()`: `WalkableDoor` → `WALKABLE_DOOR`.
@@ -814,7 +913,7 @@ impl ScenarioWorld for GameWorld {
     }
 
     /// Players, the level random reseeded with the world seed, then the other entities.
-    fn add_entities(&mut self, entities: &[EntitySpec], _entity_seed: i64) -> Result<(), String> {
+    fn add_entities(&mut self, entities: &[EntitySpec], entity_seed: i64) -> Result<(), String> {
         for (i, spec) in entities.iter().enumerate() {
             if spec.is_player() {
                 self.add_player(spec, i);
@@ -826,6 +925,8 @@ impl ScenarioWorld for GameWorld {
                 self.add_mob(spec, i)?;
             }
         }
+        // The entities created from now on take their seeds from the scenario's stream.
+        vanillite_game::mob::set_entity_seed_stream(Some(entity_seed));
         Ok(())
     }
 

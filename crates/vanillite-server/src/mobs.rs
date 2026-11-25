@@ -892,7 +892,6 @@ fn use_item(
         vehicle::use_boat_item(
             level,
             ents,
-            env,
             network_ids,
             player,
             &mut stack,

@@ -193,7 +193,7 @@ pub fn use_tick(t: &mut Tick<'_, '_>) {
         s.crossbow_charged = true;
         let pitch = 1.0 / (t.mob().random.next_float() * 0.5 + 1.0) + 0.2;
         let pos = t.pos();
-        let seed = t.mob().random.next_long();
+        let seed = crate::survival::sound_seed();
         crate::survival::play_sound(
             t.env.out,
             None,
@@ -209,7 +209,7 @@ pub fn use_tick(t: &mut Tick<'_, '_>) {
 
 fn sound_players(t: &mut Tick<'_, '_>, name: &str) {
     let pos = t.pos();
-    let seed = t.mob().random.next_long();
+    let seed = crate::survival::sound_seed();
     crate::survival::play_sound(
         t.env.out,
         None,
@@ -306,7 +306,7 @@ pub fn perform_crossbow_attack(t: &mut Tick<'_, '_>, target: EntityId) {
             return;
         };
         let p = t.pos();
-        let start = Vec3::new(p.x, t.eye_y() - 0.1, p.z);
+        let start = Vec3::new(p.x, t.eye_y() - f64::from(0.1_f32), p.z);
         let xd = o.pos.x - p.x;
         let target_y = o.aabb.min_y + (o.aabb.max_y - o.aabb.min_y) / 3.0;
         let yd = target_y - start.y;
@@ -334,7 +334,7 @@ pub fn perform_crossbow_attack(t: &mut Tick<'_, '_>, target: EntityId) {
         );
         t.mob().random = random;
         let p = t.pos();
-        let seed = t.mob().random.next_long();
+        let seed = crate::survival::sound_seed();
         crate::survival::play_sound(
             t.env.out,
             None,

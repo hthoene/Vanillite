@@ -463,7 +463,7 @@ fn set_tadpole_age(t: &mut Tick<'_, '_>, age: i32) {
         };
         if let Some(m) = t.ents.mob_mut(frog) {
             let mut ctx = SpawnContext::simple(t.env.difficulty, super::SpawnReason::Conversion);
-            crate::mob::kinds::finalize_spawn(m, &mut ctx);
+            crate::mob::kinds::finalize_spawn(m, &mut ctx, t.env.random);
             m.persistent = true;
             m.baby = false;
             m.age = 0;
@@ -805,12 +805,12 @@ fn eat_entity(t: &mut Tick<'_, '_>) {
                 _ => "minecraft:ochre_froglight",
             };
             if let Some(p) = bh::entity_pos(t, target) {
-                let uuid = crate::mob::random_uuid(t.env.random);
+                let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
                 t.env.out.push(crate::survival::Effect::DropItem {
                     uuid,
                     pos: p,
-                    velocity: Vec3::new(0.0, 0.2, 0.0),
-                    y_rot: 0.0,
+                    velocity,
+                    y_rot,
                     pickup_delay: 10,
                     stack: crate::mob::equipment::stack(light),
                 });

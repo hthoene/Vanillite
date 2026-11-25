@@ -253,18 +253,18 @@ fn summon_vexes(t: &mut Tick<'_, '_>) {
         let r = &mut t.mob().random;
         let (dx, dz) = (-2 + r.next_int_bounded(5), -2 + r.next_int_bounded(5));
         let pos = BlockPos::new(here.x + dx, here.y + 1, here.z + dz);
-        let seed = t.mob().random.next_long();
+        let seed = crate::mob::new_entity_seed();
         let mut vex = MobData::new(Kind::Vex, seed);
         let mut ctx = SpawnContext::simple(t.env.difficulty, SpawnReason::MobSummoned);
         ctx.pos = pos;
-        kinds::finalize_spawn(&mut vex, &mut ctx);
+        kinds::finalize_spawn(&mut vex, &mut ctx, t.env.random);
         let life = 20 * (30 + t.mob().random.next_int_bounded(90));
         let s = st_mut(&mut vex);
         s.owner = owner_uuid;
         s.owner_id = Some(owner_id);
         s.bound_origin = Some(pos);
         s.life_ticks = Some(life);
-        let uuid = super::super::super::random_uuid(t.env.random);
+        let uuid = crate::mob::new_uuid();
         // `snapTo(pos)`: the bottom centre of the block.
         let at = Vec3::new(
             f64::from(pos.x) + 0.5,

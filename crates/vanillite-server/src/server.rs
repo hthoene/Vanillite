@@ -397,6 +397,8 @@ impl ServerBuilder {
 
         log::info!("Preparing level \"{level_name}\"");
         let mut worlds = Vec::with_capacity(DIMENSIONS.len());
+        // Vanilla's dimensions share the overworld's loot random sequences.
+        let mut random_sequences = None;
         for (dimension, index) in DIMENSIONS.iter().zip(0u16..) {
             let rules = Arc::new(config.world_rules(dimension));
             let view_distance = rules
@@ -458,6 +460,10 @@ impl ServerBuilder {
                 seed,
             );
             level.set_game_time(global.level.game_time());
+            match &random_sequences {
+                Some(shared) => level.set_random_sequences(Arc::clone(shared)),
+                None => random_sequences = Some(Arc::clone(level.random_sequences())),
+            }
             let survival = crate::survival::WorldSurvival::new(
                 dimension,
                 &global.level,

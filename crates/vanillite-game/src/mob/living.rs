@@ -534,6 +534,11 @@ fn ai_step(t: &mut Tick<'_, '_>) {
             return;
         }
     }
+    // `Monster.updateNoActionTime` (`Raider`: always).
+    let kind = t.mob_ref().kind;
+    if kind.extends_monster() && (kind.is_raider() || t.light_magic_value() > 0.5) {
+        t.mob().no_action_time += 2;
+    }
     {
         let m = t.mob();
         if m.no_jump_delay > 0 {

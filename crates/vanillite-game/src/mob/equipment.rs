@@ -392,14 +392,7 @@ pub fn spawn_at_location(t: &mut Tick<'_, '_>, stack: ItemStack, y_offset: f64) 
     }
     let p = t.pos();
     let pos = Vec3::new(p.x, p.y + y_offset, p.z);
-    let r = &mut *t.env.random;
-    let velocity = Vec3::new(
-        r.next_double() * 0.2 - 0.1,
-        0.2,
-        r.next_double() * 0.2 - 0.1,
-    );
-    let uuid = super::random_uuid(r);
-    let y_rot = r.next_float() * 360.0;
+    let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
     t.env.out.push(Effect::DropItem {
         uuid,
         pos,

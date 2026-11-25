@@ -12,7 +12,7 @@ pub mod skeletons;
 pub mod trident;
 pub mod zombies;
 
-use vanillite_base::random::{LegacyRandom, RandomSource};
+use vanillite_base::random::LegacyRandom;
 use vanillite_base::{BlockPos, Vec3};
 use vanillite_nbt::Compound;
 use vanillite_protocol::packets::play::clientbound::SoundSource;
@@ -328,7 +328,7 @@ pub fn convert_to(
     if t.mob_ref().removed {
         return None;
     }
-    let seed = t.mob().random.next_long();
+    let seed = crate::mob::new_entity_seed();
     let mut new = MobData::new(kind, seed);
     let old = t.mob_ref();
     if keep_equipment {
@@ -364,7 +364,7 @@ pub fn convert_to(
         let e = t.core();
         (e.pos(), e.velocity(), e.rot(), e.flags())
     };
-    let uuid = crate::mob::random_uuid(&mut t.mob().random);
+    let uuid = crate::mob::new_uuid();
     let vehicle = t.ents.vehicle_of(t.id);
     let id = crate::mob::spawn(t.ents, t.level.network_ids(), uuid, pos, rot, new);
     if let Some(mut e) = t.ents.store.get_mut(id) {
@@ -397,8 +397,8 @@ pub fn spawn_extras(
             spawned.push(vehicle);
             continue;
         }
-        let mut mob = e.mob;
-        let uuid = crate::mob::random_uuid(&mut mob.random);
+        let mob = e.mob;
+        let uuid = crate::mob::new_uuid();
         let rot = rotation(mob.y_body_rot);
         let other = crate::mob::spawn(ents, level.network_ids(), uuid, pos + e.offset, rot, mob);
         spawned.push(other);
@@ -420,14 +420,7 @@ pub fn drop_item(env: &mut Env<'_>, pos: Vec3, stack: crate::item::ItemStack) {
     if stack.is_empty() {
         return;
     }
-    let r = &mut *env.random;
-    let velocity = Vec3::new(
-        r.next_double() * 0.2 - 0.1,
-        0.2,
-        r.next_double() * 0.2 - 0.1,
-    );
-    let uuid = crate::mob::random_uuid(r);
-    let y_rot = r.next_float() * 360.0;
+    let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
     env.out.push(crate::survival::Effect::DropItem {
         uuid,
         pos,
@@ -439,7 +432,11 @@ pub fn drop_item(env: &mut Env<'_>, pos: Vec3, stack: crate::item::ItemStack) {
 }
 
 /// The items of a loot table without entity or block conditions (shearing tables).
-pub fn simple_table_loot(table: &str, random: &mut LegacyRandom) -> Vec<crate::item::ItemStack> {
+pub fn simple_table_loot(
+    level: &crate::level::Level,
+    table: &str,
+    random: &mut LegacyRandom,
+) -> Vec<crate::item::ItemStack> {
     let mut out = Vec::new();
     let Some(data) = crate::player::play::game_data() else {
         return out;
@@ -459,7 +456,7 @@ pub fn simple_table_loot(table: &str, random: &mut LegacyRandom) -> Vec<crate::i
         entity: None,
         block_entity: None,
     };
-    data.loot.table_drops(table, &ctx, random, &mut out);
+    data.loot.roll_table(level, table, &ctx, random, &mut out);
     out
 }
 

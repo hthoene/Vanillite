@@ -2,7 +2,7 @@
 //! `load` with the keys of 26.3), as stored in the `entities/` region files.
 
 use vanillite_base::Vec3;
-use vanillite_base::random::RandomSource;
+use vanillite_base::random::{LegacyRandom, RandomSource};
 use vanillite_data::entity::{EntityTypeId, ids};
 use vanillite_nbt::{Compound, List, Tag};
 use vanillite_world::entity::{EntityFlags, EntityRef, Rotation};
@@ -433,7 +433,7 @@ pub fn load_orb(tag: &Compound) -> Option<(Vec3, Vec3, u128, OrbData)> {
             age: int(tag, "Age").unwrap_or(0),
             tick_count: 0,
             following: None,
-            random_seed: i64::from(int(tag, "Value").unwrap_or(1)) ^ (uuid as i64),
+            random_state: LegacyRandom::new(crate::mob::new_entity_seed()).state(),
         },
     ))
 }
@@ -571,7 +571,7 @@ pub fn load_arrow(tag: &Compound) -> Option<(LoadedEntity, super::projectile::Ar
             last_state: None,
             tick_count: 0,
             pickup: u8::try_from(int(tag, "pickup").unwrap_or(0).clamp(0, 2)).unwrap_or(0),
-            random_seed: e.uuid as i64,
+            random_state: LegacyRandom::new(crate::mob::new_entity_seed()).state(),
             knockback: 0.0,
             fire: int(tag, "Fire").is_some_and(|f| f > 0),
             effect: None,

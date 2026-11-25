@@ -285,7 +285,7 @@ pub fn sound(ix: &mut Interact<'_, '_>, sound: &str, volume: f32, pitch: f32) {
         return;
     }
     let source = m.kind.sound_source();
-    let seed = m.random.next_long();
+    let seed = crate::survival::sound_seed();
     crate::survival::play_sound(ix.env.out, None, pos, sound, source, volume, pitch, seed);
 }
 

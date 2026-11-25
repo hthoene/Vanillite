@@ -24,7 +24,11 @@ const KINDS: [Kind; 10] = [
 fn spawned(kind: Kind, seed: i64) -> MobData {
     let mut m = MobData::new(kind, seed);
     let mut ctx = SpawnContext::simple(Difficulty::Normal, SpawnReason::Natural);
-    kinds::finalize_spawn(&mut m, &mut ctx);
+    kinds::finalize_spawn(
+        &mut m,
+        &mut ctx,
+        &mut vanillite_base::random::LegacyRandom::new(1),
+    );
     m
 }
 
@@ -149,7 +153,11 @@ fn synched_data_uses_the_class_ids() {
 fn frog_variant_follows_the_biome() {
     let mut m = MobData::new(Kind::Frog, 1);
     let mut ctx = SpawnContext::simple(Difficulty::Normal, SpawnReason::Natural);
-    kinds::finalize_spawn(&mut m, &mut ctx);
+    kinds::finalize_spawn(
+        &mut m,
+        &mut ctx,
+        &mut vanillite_base::random::LegacyRandom::new(1),
+    );
     assert_eq!(state(&m).variant, 1, "temperate without a biome");
 }
 

@@ -175,7 +175,7 @@ pub fn register_goals(m: &mut MobData) {
         goals::Goal::Common(CommonGoal::nearest(10, true, common::iron_golem)),
     );
     tg.add(
-        5,
+        3,
         goals::Goal::Common(CommonGoal::nearest(10, true, common::baby_turtle_on_land)),
     );
     g.add(
@@ -418,7 +418,7 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
     };
     let pos = e.pos();
     let height = f64::from(e.dims().height);
-    let seed = ix.env.random.next_long();
+    let seed = crate::survival::sound_seed();
     crate::survival::play_sound(
         ix.env.out,
         None,
@@ -429,10 +429,10 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
         1.0,
         seed,
     );
+    let drops = super::simple_table_loot(ix.level, "minecraft:shearing/bogged", ix.env.random);
     let Some(m) = ix.ents.mob_mut(ix.target) else {
         return Interaction::Success;
     };
-    let drops = super::simple_table_loot("minecraft:shearing/bogged", &mut m.random);
     ss_mut(m).sheared = true;
     for stack in drops {
         super::drop_item(ix.env, pos + Vec3::new(0.0, height, 0.0), stack);
@@ -547,7 +547,11 @@ mod tests {
         for kind in [Kind::Stray, Kind::Bogged, Kind::Parched] {
             let mut m = MobData::new(kind, 11);
             let mut ctx = SpawnContext::simple(Difficulty::Hard, SpawnReason::Command);
-            kinds::finalize_spawn(&mut m, &mut ctx);
+            kinds::finalize_spawn(
+                &mut m,
+                &mut ctx,
+                &mut vanillite_base::random::LegacyRandom::new(1),
+            );
             assert!(m.equipment.holds(vanillite_data::item::ids::BOW.0));
             let interval = m.goals.slots.iter().find_map(|s| match s.goal {
                 goals::Goal::Bow { interval_min, .. } => Some(interval_min),
@@ -562,7 +566,11 @@ mod tests {
     fn wither_skeletons_fight_with_swords() {
         let mut m = MobData::new(Kind::WitherSkeleton, 5);
         let mut ctx = SpawnContext::simple(Difficulty::Normal, SpawnReason::Command);
-        kinds::finalize_spawn(&mut m, &mut ctx);
+        kinds::finalize_spawn(
+            &mut m,
+            &mut ctx,
+            &mut vanillite_base::random::LegacyRandom::new(1),
+        );
         assert_eq!(m.attrs.attack_damage, 4.0);
         assert!(
             !m.goals

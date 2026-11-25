@@ -163,15 +163,18 @@ pub fn init(m: &mut MobData) {
     }
 }
 
+/// `!armadillo.isScared()`.
 fn armadillo(t: &Tick<'_, '_>, id: EntityId) -> bool {
-    common::mob_of(t, id, Kind::Armadillo)
+    t.ents.mob(id).is_some_and(|m| {
+        m.kind == Kind::Armadillo && !crate::mob::fam::brainy::armadillo::is_scared(m)
+    })
 }
 
 pub fn register_goals(m: &mut MobData) {
     let g = &mut m.goals;
     let tg = &mut m.targets;
     match m.kind {
-        Kind::CaveSpider => {
+        Kind::CaveSpider | Kind::Spider => {
             // `Spider.registerGoals`.
             g.add(1, goals::Goal::Float);
             g.add(

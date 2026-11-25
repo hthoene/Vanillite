@@ -395,7 +395,7 @@ pub fn bucket_or_feed(ix: &mut Interact<'_, '_>) -> Interaction {
             )
         };
         if let Some(pos) = ix.ents.store.get(ix.target).map(|e| e.pos()) {
-            let seed = ix.env.random.next_long();
+            let seed = crate::survival::sound_seed();
             crate::survival::play_sound(
                 ix.env.out,
                 None,

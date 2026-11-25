@@ -346,14 +346,7 @@ fn drop_above(ix: &mut Interact<'_, '_>, pos: vanillite_base::Vec3, stack: ItemS
     if stack.is_empty() {
         return;
     }
-    let r = &mut *ix.env.random;
-    let velocity = vanillite_base::Vec3::new(
-        r.next_double() * 0.2 - 0.1,
-        0.2,
-        r.next_double() * 0.2 - 0.1,
-    );
-    let uuid = crate::mob::random_uuid(r);
-    let y_rot = r.next_float() * 360.0;
+    let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
     ix.env.out.push(crate::survival::Effect::DropItem {
         uuid,
         pos: vanillite_base::Vec3::new(pos.x, pos.y + 1.5, pos.z),
@@ -369,7 +362,7 @@ fn level_event(ix: &mut Interact<'_, '_>, event: i32, pos: BlockPos) {
 }
 
 fn block_sound(ix: &mut Interact<'_, '_>, pos: BlockPos, sound: &str) {
-    let seed = ix.env.random.next_long();
+    let seed = crate::survival::sound_seed();
     crate::survival::play_sound(
         ix.env.out,
         None,

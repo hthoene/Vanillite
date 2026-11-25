@@ -874,7 +874,7 @@ pub fn behavior_start(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) {
             }
             set_pose(t, Pose::Inhaling);
             let pos = t.pos();
-            let seed = t.env.random.next_long();
+            let seed = crate::survival::sound_seed();
             crate::survival::play_sound(
                 t.env.out,
                 None,
@@ -1057,7 +1057,7 @@ fn throw_to(t: &mut Tick<'_, '_>, target: Vec3) {
         ];
         let i = usize::try_from(t.env.random.next_int_bounded(16)).unwrap_or(0);
         let pos = t.pos();
-        let seed = t.env.random.next_long();
+        let seed = crate::survival::sound_seed();
         crate::survival::play_sound(
             t.env.out,
             None,

@@ -134,7 +134,7 @@ impl Level {
         let mut targets = self.exploded_positions(center, radius);
         let hit_players = self.hurt_entities(source, indirect, center, radius, style);
         if interaction != BlockInteraction::Keep {
-            self.interact_with_blocks(&mut targets, indirect, interaction);
+            self.interact_with_blocks(&mut targets, indirect, interaction, radius);
         }
         let count = targets.len();
         self.output.explosions.push(ExplosionEvent {
@@ -328,22 +328,41 @@ impl Level {
         targets: &mut [BlockPos],
         indirect: Option<EntityId>,
         interaction: BlockInteraction,
+        radius: f32,
     ) {
         // `Util.shuffle(targetBlocks, level.random)`.
         for i in (2..=targets.len()).rev() {
             let swap = self.random.next_int_bounded(i as i32) as usize;
             targets.swap(i - 1, swap);
         }
-        let mut dropped: Vec<(BlockPos, BlockState)> = Vec::new();
+        // `StackCollector`s: the drops merged into stacks of up to 16 (`addOrAppendStack`).
+        let mut stacks: Vec<(BlockPos, crate::item::ItemStack)> = Vec::new();
+        let mut loot = Vec::new();
+        let decay = (interaction == BlockInteraction::DestroyWithDecay).then_some(radius);
         for &pos in targets.iter() {
             // `Block.onExplosionHit`.
             let state = self.block(pos);
             if state.is_air() || interaction == BlockInteraction::TriggerBlock {
                 continue;
             }
-            // `dropFromExplosion`: everything but TNT.
+            // `dropFromExplosion`: everything but TNT; the loot is rolled block by block.
             if !state.is(ids::TNT) {
-                dropped.push((pos, state));
+                loot.clear();
+                drops::explosion_loot(self, pos, state, decay, &mut loot);
+                for mut stack in loot.drain(..) {
+                    for (_, collected) in &mut stacks {
+                        if crate::item_entity::are_mergable(collected, &stack) {
+                            *collected =
+                                crate::item_entity::merge_stacks_max(collected, &mut stack, 16);
+                        }
+                        if stack.is_empty() {
+                            break;
+                        }
+                    }
+                    if !stack.is_empty() {
+                        stacks.push((pos, stack));
+                    }
+                }
             }
             self.set_block(pos, BlockState::AIR, update::ALL);
             // `wasExploded`.
@@ -351,9 +370,11 @@ impl Level {
                 tnt::was_exploded(self, pos, indirect);
             }
         }
-        // The drops (`Block.popResource` of the merged stacks).
-        for (pos, state) in dropped {
-            drops::drop_resources(self, pos, state, None);
+        // `Block.popResource` of the merged stacks.
+        if self.settings.block_drops {
+            for (pos, stack) in stacks {
+                drops::pop_resource(self, pos, stack);
+            }
         }
     }
 

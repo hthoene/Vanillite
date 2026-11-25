@@ -281,6 +281,60 @@ impl LootTables {
         eval.table(table);
     }
 
+    /// [`Self::block_drops`] with the table's random sequence of `level`
+    /// (`LootContext.Builder.create(randomSequence)`), else with `fallback` (the level random).
+    pub fn roll_block(
+        &self,
+        level: &crate::level::Level,
+        ctx: &BlockLootContext<'_>,
+        fallback: &mut dyn LootRandom,
+        out: &mut Vec<ItemStack>,
+    ) {
+        match self.block_random_sequence(ctx.state) {
+            Some(key) => level.with_random_sequence(key, |r| self.block_drops(ctx, r, out)),
+            None => self.block_drops(ctx, fallback, out),
+        }
+    }
+
+    /// [`Self::table_drops`] with the table's random sequence of `level`, else with
+    /// `fallback` (the level random).
+    pub fn roll_table(
+        &self,
+        level: &crate::level::Level,
+        table: &str,
+        ctx: &BlockLootContext<'_>,
+        fallback: &mut dyn LootRandom,
+        out: &mut Vec<ItemStack>,
+    ) {
+        match self.random_sequence(table) {
+            Some(key) => {
+                level.with_random_sequence(key, |r| self.table_drops(table, ctx, r, out));
+            }
+            None => self.table_drops(table, ctx, fallback, out),
+        }
+    }
+
+    /// The `random_sequence` of the block's table.
+    pub fn block_random_sequence(&self, state: BlockState) -> Option<&str> {
+        if !state.is_valid() {
+            return None;
+        }
+        self.by_block
+            .get(usize::from(state.block().0))
+            .and_then(|&i| self.tables.get(usize::try_from(i).ok()?))?
+            .random_sequence
+            .as_deref()
+    }
+
+    /// The `random_sequence` of the table `table`.
+    pub fn random_sequence(&self, table: &str) -> Option<&str> {
+        self.by_name
+            .get(table)
+            .and_then(|&i| self.tables.get(usize::try_from(i).ok()?))?
+            .random_sequence
+            .as_deref()
+    }
+
     /// Whether a table with this id is loaded.
     pub fn has_table(&self, table: &str) -> bool {
         self.by_name.contains_key(table)
@@ -458,6 +512,8 @@ pub(crate) fn read_files(
 struct Table {
     pools: Vec<Pool>,
     modifier: Option<Func>,
+    /// `random_sequence`: the named random the table rolls with.
+    random_sequence: Option<Box<str>>,
 }
 
 #[derive(Debug)]
@@ -861,7 +917,15 @@ impl Parser<'_> {
             .map(|m| self.func(m))
             .transpose()
             .map_err(|e| format!("modifier: {e}"))?;
-        Ok(Table { pools, modifier })
+        let random_sequence = o
+            .get("random_sequence")
+            .and_then(Value::as_str)
+            .map(Into::into);
+        Ok(Table {
+            pools,
+            modifier,
+            random_sequence,
+        })
     }
 
     fn pool(&mut self, v: &Value) -> Res<Pool> {

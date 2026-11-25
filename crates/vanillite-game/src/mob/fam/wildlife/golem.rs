@@ -173,14 +173,7 @@ pub(super) fn drop_at(ix: &mut Interact<'_, '_>, pos: Vec3, item: &str, count: i
     if stack.is_empty() {
         return;
     }
-    let r = &mut *ix.env.random;
-    let velocity = Vec3::new(
-        r.next_double() * 0.2 - 0.1,
-        0.2,
-        r.next_double() * 0.2 - 0.1,
-    );
-    let uuid = crate::mob::random_uuid(r);
-    let y_rot = r.next_float() * 360.0;
+    let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
     ix.env.out.push(crate::survival::Effect::DropItem {
         uuid,
         pos,

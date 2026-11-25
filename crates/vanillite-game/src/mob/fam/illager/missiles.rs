@@ -536,7 +536,7 @@ fn bullet_hit(t: &mut MissileTick<'_, '_>, d: &MissileData, hit: Hit) {
         }
         Hit::Block(..) => {
             let pos = t.ents.store.get(me).map_or(Vec3::ZERO, |e| e.pos());
-            let seed = t.env.random.next_long();
+            let seed = crate::survival::sound_seed();
             crate::survival::play_sound(
                 t.env.out,
                 None,

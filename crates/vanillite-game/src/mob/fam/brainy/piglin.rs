@@ -1289,8 +1289,7 @@ fn throw_items(t: &mut Tick<'_, '_>, items: Vec<ItemStack>, target: Vec3) {
         let d = Vec3::new(aim.x - p.x, aim.y - p.y, aim.z - p.z).normalize();
         let v = f64::from(0.3_f32);
         let velocity = Vec3::new(d.x * v, d.y * v, d.z * v);
-        let uuid = crate::mob::random_uuid(t.env.random);
-        let y_rot = t.env.random.next_float() * 360.0;
+        let (uuid, y_rot, _) = crate::mob::new_item_entity();
         t.env.out.push(Effect::DropItem {
             uuid,
             pos: start,
@@ -1347,9 +1346,9 @@ fn barter_items(t: &mut Tick<'_, '_>) -> Vec<ItemStack> {
         block_entity: None,
     };
     let mut out = Vec::new();
-    let mut random = t.mob_ref().random.clone();
-    data.loot.table_drops(table, &ctx, &mut random, &mut out);
-    t.mob().random = random;
+    // The table's random sequence, else the level random.
+    data.loot
+        .roll_table(t.level, table, &ctx, t.env.random, &mut out);
     out
 }
 
@@ -1454,10 +1453,10 @@ pub fn shoot_crossbow(t: &mut Tick<'_, '_>, target: EntityId, _power: f32) {
         return;
     };
     let p = t.pos();
-    let start = Vec3::new(p.x, t.eye_y() - 0.1, p.z);
+    let start = Vec3::new(p.x, t.eye_y() - f64::from(0.1_f32), p.z);
     let (xd, zd) = (o.pos.x - p.x, o.pos.z - p.z);
     let dist = (xd * xd + zd * zd).sqrt();
-    let target_y = o.aabb.min_y + (o.aabb.max_y - o.aabb.min_y) * 0.333_333_333_333_333_3;
+    let target_y = o.pos.y + f64::from(o.height) * 0.333_333_333_333_333_3;
     let yd = target_y - start.y + dist * f64::from(0.2_f32);
     #[allow(clippy::cast_precision_loss)]
     let uncertainty = (14 - t.env.difficulty as i32 * 4) as f32;

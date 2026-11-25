@@ -218,6 +218,51 @@ impl Kind {
     }
 
     /// A monster (`Monster` or `Enemy`), else an animal.
+    /// The kind's class extends `Monster` (its `aiStep` runs `updateNoActionTime`).
+    pub fn extends_monster(self) -> bool {
+        matches!(
+            self,
+            Kind::Zombie
+                | Kind::Husk
+                | Kind::Drowned
+                | Kind::ZombieVillager
+                | Kind::ZombifiedPiglin
+                | Kind::Giant
+                | Kind::Skeleton
+                | Kind::Stray
+                | Kind::Bogged
+                | Kind::Parched
+                | Kind::WitherSkeleton
+                | Kind::Creeper
+                | Kind::Spider
+                | Kind::CaveSpider
+                | Kind::Enderman
+                | Kind::Endermite
+                | Kind::Silverfish
+                | Kind::Blaze
+                | Kind::Vex
+                | Kind::Breeze
+                | Kind::Creaking
+                | Kind::Zoglin
+                | Kind::Piglin
+                | Kind::PiglinBrute
+                | Kind::Guardian
+        ) || self.is_raider()
+    }
+
+    /// `Raider`: illagers, witches and ravagers.
+    pub fn is_raider(self) -> bool {
+        matches!(
+            self,
+            Kind::Pillager
+                | Kind::Vindicator
+                | Kind::Evoker
+                | Kind::Illusioner
+                | Kind::Witch
+                | Kind::Ravager
+        )
+    }
+
     pub fn is_monster(self) -> bool {
         if !self.classic() {
             return fam::is_monster(self);
@@ -443,14 +488,12 @@ pub fn register_goals(m: &mut MobData) {
     let g = &mut m.goals;
     let tg = &mut m.targets;
     match m.kind {
-        Kind::Zombie => {
-            g.add(4, super::movement::MoveGoal::zombie_turtle_egg());
-            g.add(8, Goal::look_at_player(8.0));
-            g.add(8, Goal::random_look());
-            g.add(3, Goal::melee(MeleeKind::Zombie, 1.0, false));
-            g.add(7, Goal::stroll(1.0));
-            tg.add(1, Goal::hurt_by(true));
-            tg.add(2, Goal::nearest_player(true));
+        // `Zombie.registerGoals`/`addBehaviourGoals` and `Spider.registerGoals`, shared with
+        // the other zombies and the cave spider.
+        Kind::Zombie => fam::undead::zombies::register_goals(m),
+        Kind::Spider => {
+            m.nav.kind = super::nav::NavKind::WallClimber;
+            fam::undead::arthropods::register_goals(m);
         }
         Kind::Skeleton => {
             g.add(2, Goal::RestrictSun);
@@ -461,41 +504,58 @@ pub fn register_goals(m: &mut MobData) {
                     wanted: Vec3::ZERO,
                 },
             );
+            g.add(
+                3,
+                Goal::Common(super::common::CommonGoal::avoid(
+                    |t, id| super::common::mob_of(t, id, Kind::Wolf),
+                    6.0,
+                    1.0,
+                    1.2,
+                )),
+            );
             g.add(5, Goal::stroll(1.0));
             g.add(6, Goal::look_at_player(8.0));
             g.add(6, Goal::random_look());
             tg.add(1, Goal::hurt_by(false));
             tg.add(2, Goal::nearest_player(true));
+            tg.add(
+                3,
+                Goal::Common(super::common::CommonGoal::nearest(
+                    10,
+                    true,
+                    super::common::iron_golem,
+                )),
+            );
+            tg.add(
+                3,
+                Goal::Common(super::common::CommonGoal::nearest(
+                    10,
+                    true,
+                    super::common::baby_turtle_on_land,
+                )),
+            );
             // `reassessWeaponGoal`: skeletons hold a bow.
             g.add(4, Goal::bow(1.0, 40, 15.0));
         }
         Kind::Creeper => {
             g.add(1, Goal::Float);
             g.add(2, Goal::Swell);
+            for kind in [Kind::Ocelot, Kind::Cat] {
+                let filter: super::common::TargetFilter = match kind {
+                    Kind::Ocelot => |t, id| super::common::mob_of(t, id, Kind::Ocelot),
+                    _ => |t, id| super::common::mob_of(t, id, Kind::Cat),
+                };
+                g.add(
+                    3,
+                    Goal::Common(super::common::CommonGoal::avoid(filter, 6.0, 1.0, 1.2)),
+                );
+            }
             g.add(4, Goal::melee(MeleeKind::Plain, 1.0, false));
             g.add(5, Goal::stroll(0.8));
             g.add(6, Goal::look_at_player(8.0));
             g.add(6, Goal::random_look());
             tg.add(1, Goal::nearest_player(true));
             tg.add(2, Goal::hurt_by(false));
-            m.nav.can_float = true;
-        }
-        Kind::Spider => {
-            m.nav.kind = super::nav::NavKind::WallClimber;
-            g.add(1, Goal::Float);
-            g.add(
-                3,
-                Goal::Leap {
-                    yd: 0.4,
-                    target: None,
-                },
-            );
-            g.add(4, Goal::melee(MeleeKind::Spider, 1.0, true));
-            g.add(5, Goal::stroll(0.8));
-            g.add(6, Goal::look_at_player(8.0));
-            g.add(6, Goal::random_look());
-            tg.add(1, Goal::hurt_by(false));
-            tg.add(2, Goal::spider_target());
             m.nav.can_float = true;
         }
         Kind::Enderman => {
@@ -522,6 +582,19 @@ pub fn register_goals(m: &mut MobData) {
                 },
             );
             tg.add(2, Goal::hurt_by(false));
+            tg.add(
+                3,
+                Goal::Common(super::common::CommonGoal::nearest(10, true, |t, id| {
+                    super::common::mob_of(t, id, Kind::Endermite)
+                })),
+            );
+            tg.add(
+                4,
+                Goal::Common(super::common::CommonGoal::ResetUniversalAnger {
+                    alert_same_type: false,
+                    last_hurt: 0,
+                }),
+            );
             m.nav.can_float = true;
         }
         Kind::Cow | Kind::Pig | Kind::Sheep | Kind::Chicken => {
@@ -579,8 +652,20 @@ pub fn register_goals(m: &mut MobData) {
     // Goals are kept sorted by insertion like Vanilla's linked set; nothing to do here.
 }
 
-/// `finalizeSpawn`: the random spawn bonus, babies, colours and variants.
-pub fn finalize_spawn(m: &mut MobData, ctx: &mut fam::SpawnContext<'_>) {
+/// `finalizeSpawn`: the random spawn bonus, babies, colours and variants. Vanilla draws them
+/// from the level's random (`ServerLevelAccessor.getRandom()`), passed as `random`: while it
+/// runs, the mob's `random` is that random.
+pub fn finalize_spawn(
+    m: &mut MobData,
+    ctx: &mut fam::SpawnContext<'_>,
+    random: &mut vanillite_base::random::LegacyRandom,
+) {
+    std::mem::swap(&mut m.random, random);
+    finalize_spawn_inner(m, ctx);
+    std::mem::swap(&mut m.random, random);
+}
+
+fn finalize_spawn_inner(m: &mut MobData, ctx: &mut fam::SpawnContext<'_>) {
     if m.kind == Kind::CaveSpider {
         // `CaveSpider.finalizeSpawn` calls no `super`: not even `Mob.finalizeSpawn`.
         return;
@@ -665,7 +750,7 @@ pub fn zombie_chicken_jockey(m: &mut MobData, ctx: &mut fam::SpawnContext<'_>) {
             }
         }
     } else if m.random.next_float() < 0.05 {
-        let seed = m.random.next_long();
+        let seed = crate::mob::new_entity_seed();
         let mut chicken = MobData::new(Kind::Chicken, seed);
         let mut inner = fam::SpawnContext {
             reason: fam::SpawnReason::Jockey,
@@ -673,7 +758,7 @@ pub fn zombie_chicken_jockey(m: &mut MobData, ctx: &mut fam::SpawnContext<'_>) {
             ride: None,
             ..*ctx
         };
-        finalize_spawn(&mut chicken, &mut inner);
+        finalize_spawn(&mut chicken, &mut inner, &mut m.random);
         chicken.chicken_jockey = true;
         ctx.extra.push(fam::ExtraMob {
             mob: chicken,
@@ -1113,7 +1198,6 @@ fn teleport_to(
     }
     if let Some(m) = ents.mob_mut(id) {
         m.nav.stop();
-        m.target_change_time = m.tick_count;
     }
     let seed = crate::survival::sound_seed();
     crate::survival::play_sound(
@@ -1158,19 +1242,17 @@ pub fn after_hurt(
     id: EntityId,
     source: DamageSource,
 ) {
-    let Some(m) = ents.mob_mut(id) else {
-        return;
-    };
-    if m.kind != Kind::Enderman || !m.is_alive() {
-        return;
-    }
     let living_cause = source
         .cause
         .is_some_and(|c| ents.mob(c).is_some() || ents.player(c).is_some());
     let Some(m) = ents.mob_mut(id) else {
         return;
     };
-    if !living_cause && m.random.next_int_bounded(10) != 0 {
+    if m.kind != Kind::Enderman {
+        return;
+    }
+    // `teleport()` does nothing for a dead enderman.
+    if !living_cause && m.random.next_int_bounded(10) != 0 && m.is_alive() {
         teleport_randomly(level, ents, env, id);
     }
 }

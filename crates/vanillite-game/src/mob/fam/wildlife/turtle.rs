@@ -396,7 +396,7 @@ fn breed(t: &mut Tick<'_, '_>, partner: vanillite_world::entity::EntityId) {
     if t.env.rules.bool(Rule::MOB_DROPS) {
         let xp = t.mob().random.next_int_bounded(7) + 1;
         let pos = t.pos();
-        crate::mob::combat::award_experience(t.level, t.ents, t.cx, pos, xp);
+        crate::mob::combat::award_experience(t.level, t.ents, t.env.random, pos, xp);
     }
 }
 
@@ -434,7 +434,7 @@ pub(super) fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
             } else if counter > 200 {
                 let pitch = 0.9 + t.env.random.next_float() * 0.2;
                 let pos = t.pos();
-                let seed = t.env.random.next_long();
+                let seed = crate::survival::sound_seed();
                 crate::survival::play_sound(
                     t.env.out,
                     None,

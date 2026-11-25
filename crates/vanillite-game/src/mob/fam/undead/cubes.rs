@@ -476,7 +476,7 @@ fn split(t: &mut Tick<'_, '_>) {
         let xd = ((i % 2) as f32 - 0.5) * offset;
         #[allow(clippy::cast_precision_loss)]
         let zd = ((i / 2) as f32 - 0.5) * offset;
-        let seed = t.mob().random.next_long();
+        let seed = crate::mob::new_entity_seed();
         let old = t.mob_ref();
         let mut new = MobData::new(kind, seed);
         for e in &old.effects.active {
@@ -495,7 +495,7 @@ fn split(t: &mut Tick<'_, '_>) {
         let y_rot = t.mob().random.next_float() * 360.0;
         new.y_body_rot = y_rot;
         let at = Vec3::new(pos.x + f64::from(xd), pos.y + 0.5, pos.z + f64::from(zd));
-        let uuid = crate::mob::random_uuid(&mut t.mob().random);
+        let uuid = crate::mob::new_uuid();
         crate::mob::spawn(
             t.ents,
             t.level.network_ids(),
@@ -665,7 +665,7 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
                 m.forced_age_timer = 40;
             }
             let pos = ix.ents.store.get(ix.target).map_or(Vec3::ZERO, |e| e.pos());
-            let seed = ix.env.random.next_long();
+            let seed = crate::survival::sound_seed();
             crate::survival::play_sound(
                 ix.env.out,
                 None,
@@ -727,7 +727,7 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
 }
 
 fn play(ix: &mut Interact<'_, '_>, pos: Vec3, s: &str) {
-    let seed = ix.env.random.next_long();
+    let seed = crate::survival::sound_seed();
     crate::survival::play_sound(
         ix.env.out,
         None,
@@ -1032,6 +1032,7 @@ fn look_at(t: &mut Tick<'_, '_>, id: EntityId) {
             pos: e.pos(),
             eye_y: e.pos().y + f64::from(e.dims().height) / 2.0,
             aabb: e.aabb(),
+            height: e.dims().height,
             is_player: false,
         };
         kinds::look_at_entity(t, o, 10.0, 10.0);
@@ -1123,7 +1124,11 @@ mod tests {
         for seed in 0..32 {
             let mut m = MobData::new(Kind::Slime, seed);
             let mut ctx = SpawnContext::simple(Difficulty::Hard, SpawnReason::Command);
-            kinds::finalize_spawn(&mut m, &mut ctx);
+            kinds::finalize_spawn(
+                &mut m,
+                &mut ctx,
+                &mut vanillite_base::random::LegacyRandom::new(1),
+            );
             assert!(matches!(size(&m), 1 | 2 | 4), "{}", size(&m));
         }
     }
@@ -1152,7 +1157,11 @@ mod tests {
     fn sulfur_cubes_are_size_two_adults() {
         let mut m = MobData::new(Kind::SulfurCube, 1);
         let mut ctx = SpawnContext::simple(Difficulty::Normal, SpawnReason::Command);
-        kinds::finalize_spawn(&mut m, &mut ctx);
+        kinds::finalize_spawn(
+            &mut m,
+            &mut ctx,
+            &mut vanillite_base::random::LegacyRandom::new(1),
+        );
         assert_eq!(size(&m), 2);
         assert!(!m.baby);
         assert_eq!(m.health, 8.0);

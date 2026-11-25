@@ -62,7 +62,11 @@ fn finalize_spawn_rolls_variants_like_the_seed() {
     let roll = |kind, seed| {
         let mut m = MobData::new(kind, seed);
         let mut ctx = SpawnContext::simple(Difficulty::Normal, SpawnReason::Natural);
-        crate::mob::kinds::finalize_spawn(&mut m, &mut ctx);
+        crate::mob::kinds::finalize_spawn(
+            &mut m,
+            &mut ctx,
+            &mut vanillite_base::random::LegacyRandom::new(1),
+        );
         st(&m).variant
     };
     for seed in 0..50 {

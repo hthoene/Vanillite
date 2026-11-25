@@ -15,9 +15,12 @@ pub mod block_entity;
 pub mod explosion;
 pub mod game_event;
 mod neighbors;
+mod random_sequences;
 pub mod signal;
 mod tick;
 pub mod update;
+
+pub use random_sequences::{RandomSequences, SharedRandomSequences};
 
 #[cfg(test)]
 pub(crate) mod tests;
@@ -235,6 +238,8 @@ pub struct Level {
     block_events: Vec<BlockEvent>,
     block_event_set: FxHashSet<BlockEvent>,
     random: LegacyRandom,
+    /// The loot tables' named randoms (shared by the server's levels).
+    random_sequences: SharedRandomSequences,
     /// `soundSeedGenerator`: the seeds of sounds without an explicit seed; separate from the
     /// level random so sounds do not shift the simulation's random sequence.
     sound_seeds: LegacyRandom,
@@ -289,6 +294,9 @@ impl Level {
             block_events: Vec::new(),
             block_event_set: FxHashSet::default(),
             random: LegacyRandom::new(seed),
+            random_sequences: std::sync::Arc::new(std::sync::Mutex::new(RandomSequences::new(
+                seed,
+            ))),
             sound_seeds: LegacyRandom::new(seed ^ 0x50_4E_44_53),
             rand_value: LegacyRandom::new(seed ^ 0x5DEE_CE66).next_int(),
             game_time: 0,
@@ -398,6 +406,25 @@ impl Level {
     /// The level random (`level.getRandom()`).
     pub fn random(&mut self) -> &mut LegacyRandom {
         &mut self.random
+    }
+
+    /// `getRandomSequence(key)`: runs `f` with the named random of loot tables.
+    pub fn with_random_sequence<R>(
+        &self,
+        key: &str,
+        f: impl FnOnce(&mut vanillite_base::random::XoroshiroRandom) -> R,
+    ) -> R {
+        random_sequences::with_sequence(&self.random_sequences, key, f)
+    }
+
+    /// The random sequences, to share them with the server's other levels.
+    pub fn random_sequences(&self) -> &SharedRandomSequences {
+        &self.random_sequences
+    }
+
+    /// Uses the random sequences of another level (Vanilla's levels share the overworld's).
+    pub fn set_random_sequences(&mut self, shared: SharedRandomSequences) {
+        self.random_sequences = shared;
     }
 
     /// The game time.
@@ -931,6 +958,8 @@ impl Level {
     /// random of its own, as Vanilla's entities draw it from theirs, so spawning entities does
     /// not shift the level random.
     pub fn new_uuid(&mut self) -> u128 {
+        // A new entity: it takes its seed like Vanilla's constructor.
+        crate::mob::new_entity_seed();
         let most = self.sound_seeds.next_long() as u64;
         let least = self.sound_seeds.next_long() as u64;
         // Version 4, IETF variant.

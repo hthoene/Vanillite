@@ -1078,8 +1078,17 @@ fn drop_resources(
             entity: None,
             block_entity: Some(&components),
         };
-        let mut rng = LevelRandom(&mut *ctx.level);
-        data.loot.block_drops(&loot, &mut rng, &mut stacks);
+        // The table's random sequence, else the level random.
+        let sequence = data.loot.block_random_sequence(state);
+        match (sequence, ctx.level.level_mut()) {
+            (Some(key), Some(level)) => {
+                level.with_random_sequence(key, |r| data.loot.block_drops(&loot, r, &mut stacks));
+            }
+            _ => {
+                let mut rng = LevelRandom(&mut *ctx.level);
+                data.loot.block_drops(&loot, &mut rng, &mut stacks);
+            }
+        }
     }
     for stack in stacks {
         pop_resource(ctx.level, pos, stack);
@@ -1102,6 +1111,10 @@ impl crate::loot::LootRandom for LevelRandom<'_> {
 /// `Block.popResource`.
 pub fn pop_resource(level: &mut dyn PlayLevel, pos: BlockPos, stack: ItemStack) {
     if stack.is_empty() {
+        return;
+    }
+    if let Some(level) = level.level_mut() {
+        crate::block::drops::pop_resource(level, pos, stack);
         return;
     }
     let half_height = 0.125;

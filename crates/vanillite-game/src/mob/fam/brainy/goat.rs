@@ -274,7 +274,7 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
             "minecraft:entity.goat.milk"
         };
         if let Some(pos) = ix.ents.store.get(ix.player).map(|e| e.pos()) {
-            let seed = ix.env.random.next_long();
+            let seed = crate::survival::sound_seed();
             crate::survival::play_sound(
                 ix.env.out,
                 None,
@@ -300,7 +300,7 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
         };
         if let Some(pos) = ix.ents.store.get(ix.target).map(|e| e.pos()) {
             let pitch = 0.8 + ix.env.random.next_float() * 0.4;
-            let seed = ix.env.random.next_long();
+            let seed = crate::survival::sound_seed();
             crate::survival::play_sound(
                 ix.env.out,
                 None,
@@ -861,13 +861,13 @@ fn drop_horn(t: &mut Tick<'_, '_>) -> bool {
     let dy = f64::from(0.3 + r.next_float() * 0.4);
     let dz = f64::from(-0.2 + r.next_float() * 0.4);
     let pos = t.pos();
-    let uuid = crate::mob::random_uuid(t.env.random);
+    let (uuid, y_rot, _) = crate::mob::new_item_entity();
     let stack = crate::mob::equipment::stack("minecraft:goat_horn");
     t.env.out.push(crate::survival::Effect::DropItem {
         uuid,
         pos,
         velocity: Vec3::new(dx, dy, dz),
-        y_rot: 0.0,
+        y_rot,
         pickup_delay: 0,
         stack,
     });

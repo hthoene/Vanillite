@@ -293,18 +293,12 @@ pub fn before_tick(t: &mut Tick<'_, '_>) {
         let head = head_block(t);
         let items = super::gift_loot(t, "minecraft:gameplay/sniffer_digging");
         for stack in items {
-            let uuid = crate::mob::random_uuid(t.env.random);
-            let r = &mut *t.env.random;
-            let velocity = Vec3::new(
-                r.next_double() * 0.2 - 0.1,
-                0.2,
-                r.next_double() * 0.2 - 0.1,
-            );
+            let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
             t.env.out.push(crate::survival::Effect::DropItem {
                 uuid,
                 pos: Vec3::new(f64::from(head.x), f64::from(head.y), f64::from(head.z)),
                 velocity,
-                y_rot: 0.0,
+                y_rot,
                 pickup_delay: 10,
                 stack,
             });
@@ -332,19 +326,13 @@ pub fn spawn_child_from_breeding(t: &mut Tick<'_, '_>, partner: EntityId) {
     let r = &mut t.mob().random;
     let pitch = (r.next_float() - r.next_float()) * 0.2 + 0.5;
     crate::mob::kinds::play_sound(t, "minecraft:entity.sniffer.egg_plop", 1.0, pitch);
-    let uuid = crate::mob::random_uuid(t.env.random);
+    let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
     let pos = t.pos();
-    let r = &mut *t.env.random;
-    let velocity = Vec3::new(
-        r.next_double() * 0.2 - 0.1,
-        0.2,
-        r.next_double() * 0.2 - 0.1,
-    );
     t.env.out.push(crate::survival::Effect::DropItem {
         uuid,
         pos,
         velocity,
-        y_rot: 0.0,
+        y_rot,
         pickup_delay: 10,
         stack: crate::mob::equipment::stack("minecraft:sniffer_egg"),
     });
@@ -364,7 +352,7 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
         && let Some(pos) = ix.ents.store.get(ix.target).map(|e| e.pos())
     {
         let pitch = 0.8 + ix.env.random.next_float() * 0.4;
-        let seed = ix.env.random.next_long();
+        let seed = crate::survival::sound_seed();
         crate::survival::play_sound(
             ix.env.out,
             None,

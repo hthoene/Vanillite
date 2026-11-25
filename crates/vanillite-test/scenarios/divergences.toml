@@ -4,25 +4,15 @@
 
 [mob_creeper_explode]
 tick = 112
-cause = "explosion drops: Vanillite pops one item per block, Vanilla merges the drops into stacks (addOrAppendStack) and applies the explosion decay; the level random then differs. Also the knocked back mock player: Vanilla moves it on the server, the scenario world does not"
-owner = "gameplay-developer #30"
-
-[mob_enderman_teleport]
-tick = 1
-cause = "the enderman lacks EndermanTakeBlockGoal/EndermanLeaveBlockGoal and the endermite target goal (2 random draws per goal selection in Vanilla); it does not teleport when hurt"
-owner = "gameplay-developer #30"
+cause = "the knocked back mock player: Vanilla moves it on the server, the scenario world does not. The explosion, its drops (merged stacks, explosion decay, the loot random sequences) and the item's own random match; item entities do not tick in the scenario world yet"
+owner = "tooling-developer #65"
 
 [mob_skeleton_shoot]
-tick = 0
-cause = "finalizeSpawn draws from the mob's random; Vanilla draws Mob.finalizeSpawn, the equipment, its enchantments and canPickUpLoot from the level random (ServerLevelAccessor.getRandom); arrows take their random from the shooter instead of their own"
-owner = "gameplay-developer #30"
-
-[mob_spider_climb]
-tick = 1
-cause = "the spider lacks the iron golem SpiderTargetGoal (1 random draw per goal selection in Vanilla)"
-owner = "gameplay-developer #30"
+tick = 147
+cause = "the knocked back mock player: Vanilla moves it on the server, the scenario world does not (the skeleton then aims at another position)"
+owner = "tooling-developer #65"
 
 [mob_zombie_chase]
-tick = 1
-cause = "the zombie lacks the target goals for villagers, iron golems and turtles and ZombieAttackTurtleEggGoal (4 random draws per goal selection in Vanilla)"
-owner = "gameplay-developer #30"
+tick = 169
+cause = "the knocked back mock player: Vanilla moves it on the server, the scenario world does not (the zombie then looks at another position)"
+owner = "tooling-developer #65"

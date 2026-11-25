@@ -23,8 +23,17 @@ impl LegacyRandom {
         }
     }
 
+    /// A random with the 48-bit `state` of [`Self::state`] (no scrambling).
+    pub fn from_state(state: i64) -> Self {
+        LegacyRandom {
+            seed: state & MASK,
+            gaussian: Gaussian::default(),
+        }
+    }
+
     /// The 48-bit state (`LegacyRandomSource.seed`): equal states give equal sequences. The
     /// parity traces compare it to find the first diverging random call.
+
     pub fn state(&self) -> i64 {
         self.seed
     }
