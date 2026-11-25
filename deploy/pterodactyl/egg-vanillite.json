@@ -721,6 +721,66 @@
       "field_type": "text"
     },
     {
+      "name": "Admin: RCON Bind",
+      "description": "Address RCON listens on. Vanilla listens on `server-ip` (all interfaces when empty); Vanillite listens on the loopback interface unless this is changed. Empty = `server-ip` like Vanilla. Empty: the profile's value (vanilla profile: 127.0.0.1). vanillite.toml: admin.rcon-bind.",
+      "env_variable": "VANILLITE_ADMIN__RCON_BIND",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string",
+      "field_type": "text"
+    },
+    {
+      "name": "Admin: RCON Min Password Length",
+      "description": "Shortest `rcon.password` accepted; with a shorter one RCON stays off (Vanilla only refuses an empty password). Range: 1 to 1024. Empty: the profile's value (vanilla profile: 8). vanillite.toml: admin.rcon-min-password-length.",
+      "env_variable": "VANILLITE_ADMIN__RCON_MIN_PASSWORD_LENGTH",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,1024",
+      "field_type": "text"
+    },
+    {
+      "name": "Admin: RCON Max Failed Logins",
+      "description": "Failed RCON logins per IP address and minute; after that, connections of the address are closed at once until the minute is over (Vanilla: no limit). Range: 1 to 10000. Empty: the profile's value (vanilla profile: 5). vanillite.toml: admin.rcon-max-failed-logins.",
+      "env_variable": "VANILLITE_ADMIN__RCON_MAX_FAILED_LOGINS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,10000",
+      "field_type": "text"
+    },
+    {
+      "name": "Admin: RCON Max Connections",
+      "description": "RCON connections open at the same time (Vanilla: no limit). Range: 1 to 1024. Empty: the profile's value (vanilla profile: 16). vanillite.toml: admin.rcon-max-connections.",
+      "env_variable": "VANILLITE_ADMIN__RCON_MAX_CONNECTIONS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,1024",
+      "field_type": "text"
+    },
+    {
+      "name": "Admin: Query Bind",
+      "description": "Address Query listens on. Vanilla listens on `server-ip`; Vanillite listens on the loopback interface unless this is changed (set `0.0.0.0` for public server lists). Empty = `server-ip` like Vanilla. Empty: the profile's value (vanilla profile: 127.0.0.1). vanillite.toml: admin.query-bind.",
+      "env_variable": "VANILLITE_ADMIN__QUERY_BIND",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string",
+      "field_type": "text"
+    },
+    {
+      "name": "Admin: Query Max Packets Per Second",
+      "description": "Query packets answered per IP address and second; more are dropped (Vanilla: no limit). Keeps the UDP listener from being used for reflection. Range: 1 to 10000. Empty: the profile's value (vanilla profile: 20). vanillite.toml: admin.query-max-packets-per-second.",
+      "env_variable": "VANILLITE_ADMIN__QUERY_MAX_PACKETS_PER_SECOND",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,10000",
+      "field_type": "text"
+    },
+    {
       "name": "Commands: Max Command Length",
       "description": "Longest command line that is parsed (Vanilla: the packet's 32767 characters). Range: 16 to 32767. Empty: the profile's value (vanilla profile: 32767). vanillite.toml: commands.max-command-length.",
       "env_variable": "VANILLITE_COMMANDS__MAX_COMMAND_LENGTH",
