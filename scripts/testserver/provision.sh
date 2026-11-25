@@ -150,7 +150,8 @@ After=network-online.target
 User=minecraft
 WorkingDirectory=/opt/paper
 ExecStart=/usr/bin/java -Xms1G -Xmx4G -jar paper.jar --nogui
-Restart=on-failure
+Restart=always
+RestartSec=5
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -175,7 +176,7 @@ StandardInput=socket
 StandardOutput=journal
 StandardError=journal
 Environment=RUST_BACKTRACE=1
-Restart=on-failure
+Restart=always
 RestartSec=5
 KillSignal=SIGTERM
 TimeoutStopSec=60
@@ -1194,7 +1195,8 @@ After=network-online.target
 User=minecraft
 WorkingDirectory=/opt/paper-proxy
 ExecStart=/usr/bin/java -Xms512M -Xmx1536M -jar paper.jar --nogui
-Restart=on-failure
+Restart=always
+RestartSec=5
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -1235,7 +1237,7 @@ Group=vanillite
 WorkingDirectory=/opt/vanillite-proxy
 ExecStart=/opt/vanillite-proxy/vanillite-proxy
 Environment=RUST_BACKTRACE=1
-Restart=on-failure
+Restart=always
 RestartSec=5
 LimitNOFILE=65536
 MemoryMax=1G
