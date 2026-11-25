@@ -226,6 +226,7 @@ fn teleport_local(
         .teleport_relative(&mut body, wire, y, x, relatives, sink.as_ref());
     // `ServerPlayer.teleport` resets the movement checks to the new position.
     player.connection.movement.reset_position(body.pos);
+    player.survival.teleported();
     if let Some(mut entity) = entities.store.get_mut(id) {
         entity.set_pos(body.pos);
         entity.set_rot(Rotation {

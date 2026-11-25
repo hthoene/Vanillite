@@ -820,6 +820,20 @@ impl Digging {
             }
             return true;
         }
+        let used = item::item_id(&stack);
+        if used == vanillite_data::item::ids::FLINT_AND_STEEL
+            || used == vanillite_data::item::ids::ENDER_EYE
+        {
+            // `ItemStack.useOn`: adventure players cannot build.
+            if ctx.actor.game_mode == GameMode::Adventure {
+                return false;
+            }
+            return if used == vanillite_data::item::ids::FLINT_AND_STEEL {
+                self.use_flint_and_steel(ctx, hand, pos, face)
+            } else {
+                use_ender_eye(ctx, hand, pos)
+            };
+        }
         let Some(_block) = item::item_id(&stack).block() else {
             // Non-block items (buckets, tools on blocks, spawn eggs, ...) come later.
             return false;
@@ -869,6 +883,57 @@ impl Digging {
                 );
             }
         }
+    }
+
+    /// `FlintAndSteelItem.useOn`: lights a campfire, candle or candle cake, or places fire
+    /// against the clicked face (lighting a nether portal frame).
+    fn use_flint_and_steel(
+        &mut self,
+        ctx: &mut PlayContext<'_>,
+        hand: Hand,
+        pos: BlockPos,
+        face: Direction,
+    ) -> bool {
+        let state = ctx.level.block(pos);
+        let lightable = can_light(state);
+        let target = if lightable { pos } else { relative(pos, face) };
+        if !lightable {
+            // `BaseFireBlock.canBePlacedAt`.
+            let reader = LevelReader(&*ctx.level);
+            let fire = place::fire_state(&reader, target);
+            let forward = place::horizontal_direction_of(ctx.actor.y_rot);
+            let placeable = ctx.level.block(target).is_air()
+                && (place::can_survive(fire, target, &reader)
+                    || ctx.level.lights_portal(target, forward));
+            if !placeable {
+                return false;
+            }
+        }
+        let pitch = ctx.level.random_float() * 0.4 + 0.8;
+        let sound = vanillite_data::registry::SOUND_EVENT
+            .id("minecraft:item.flintandsteel.use")
+            .unwrap_or(0);
+        ctx.level.play_sound(
+            Some(ctx.actor.network_id),
+            Vec3::new(
+                f64::from(target.x) + 0.5,
+                f64::from(target.y) + 0.5,
+                f64::from(target.z) + 0.5,
+            ),
+            sound,
+            SoundSource::Blocks,
+            1.0,
+            pitch,
+        );
+        let new_state = if lightable {
+            state.with("lit", "true").unwrap_or(state)
+        } else {
+            place::fire_state(&LevelReader(&*ctx.level), target)
+        };
+        ctx.level
+            .set_block(target, new_state, update::ALL_IMMEDIATE);
+        hurt_and_break(ctx, hand, 1);
+        true
     }
 
     /// `BlockItem.place`.
@@ -1059,6 +1124,84 @@ fn open_menu(
         disconnected: false,
     };
     crate::menu::container::open(ctx.inventory, level, request, who, ctx.drops, sink);
+}
+
+/// `CampfireBlock.canLight`, `CandleBlock.canLight` and `CandleCakeBlock.canLight`: an unlit
+/// (and, for campfires and candles, dry) one.
+fn can_light(state: BlockState) -> bool {
+    let blocks = &vanillite_worldgen::behaviour::tags().blocks;
+    let unlit = state.value("lit") == Some("false");
+    let dry = state.value("waterlogged") == Some("false");
+    if blocks.campfires.contains(state) || blocks.candles.contains(state) {
+        unlit && dry
+    } else {
+        blocks.candle_cakes.contains(state) && unlit
+    }
+}
+
+/// `EnderEyeItem.useOn`: an eye into an empty End portal frame.
+fn use_ender_eye(ctx: &mut PlayContext<'_>, hand: Hand, pos: BlockPos) -> bool {
+    let state = ctx.level.block(pos);
+    if state.block() != vanillite_data::block::ids::END_PORTAL_FRAME
+        || state.value("eye") != Some("false")
+    {
+        return false;
+    }
+    let filled = state.with("eye", "true").unwrap_or(state);
+    // `Block.pushEntitiesUp` comes with entity collisions.
+    ctx.level.set_block(pos, filled, update::CLIENTS);
+    if !ctx.actor.creative() {
+        let slot = match hand {
+            Hand::MainHand => ctx.inventory.selected_item_mut(),
+            Hand::OffHand => Some(&mut ctx.inventory.offhand),
+        };
+        if let Some(slot) = slot {
+            slot.shrink(1);
+        }
+    }
+    // The comparators, the eye's particles and sound (1503), then the portal.
+    ctx.level.end_portal_frame_filled(pos);
+    true
+}
+
+/// `ItemStack.hurtAndBreak(amount, player, hand)`: the item in `hand` loses durability (the
+/// unbreaking enchantment may save each point); creative players' items do not.
+fn hurt_and_break(ctx: &mut PlayContext<'_>, hand: Hand, amount: i32) {
+    if ctx.actor.creative() {
+        return;
+    }
+    let stack = match hand {
+        Hand::MainHand => ctx.inventory.selected_item().clone(),
+        Hand::OffHand => ctx.inventory.offhand.clone(),
+    };
+    if stack.is_empty() || !item::is_damageable(&stack) {
+        return;
+    }
+    let unbreaking = ctx.data.enchantment_level(&stack, "minecraft:unbreaking");
+    let mut damage: i32 = 0;
+    for _ in 0..amount {
+        #[allow(clippy::as_conversions)]
+        let chance = 1.0 / (unbreaking.max(0) as f32 + 1.0);
+        if unbreaking <= 0 || ctx.level.random_float() < chance {
+            damage = damage.saturating_add(1);
+        }
+    }
+    let slot = match hand {
+        Hand::MainHand => ctx.inventory.selected_item_mut(),
+        Hand::OffHand => Some(&mut ctx.inventory.offhand),
+    };
+    let Some(tool) = slot else {
+        return;
+    };
+    if damage == 0 {
+        return;
+    }
+    let new_damage = item::damage(tool).saturating_add(damage);
+    if new_damage >= item::max_damage(tool) {
+        tool.shrink(1);
+    } else {
+        item::set_damage(tool, new_damage);
+    }
 }
 
 /// `blockActionRestricted`: spectators never, adventure players only with `can_break`

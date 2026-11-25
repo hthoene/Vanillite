@@ -175,6 +175,20 @@ impl PlayLevel for WorldLevel<'_> {
         self.level.block(pos)
     }
 
+    fn lights_portal(&self, pos: BlockPos, forward: vanillite_base::Direction) -> bool {
+        vanillite_game::block::portal::lights_portal(self.level, pos, forward)
+    }
+
+    fn end_portal_frame_filled(&mut self, pos: BlockPos) {
+        use vanillite_game::block::portal;
+        self.level
+            .update_neighbour_for_output_signal(pos, vanillite_data::block::ids::END_PORTAL_FRAME);
+        self.level.level_event(None, 1503, pos, 0);
+        if let Some(corner) = portal::find_end_portal(self.level, pos) {
+            portal::open_end_portal(self.level, corner);
+        }
+    }
+
     fn is_loaded(&self, pos: BlockPos) -> bool {
         self.level.is_loaded(pos)
     }

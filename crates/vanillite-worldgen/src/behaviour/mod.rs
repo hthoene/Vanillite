@@ -7,14 +7,14 @@
 //! [`BlockLevel`], which the generation region ([`WorldGenRegion`]) and the game's live level
 //! implement. Block and fluid tags come from the data packs ([`init`]).
 //!
-//! Not ported (the state is kept unchanged): `NetherPortalBlock.updateShape` (portal frame
-//! search), `BeehiveBlock.updateShape` (releases bees next to fire) and the block entity side
+//! Not ported (the state is kept unchanged): `BeehiveBlock.updateShape` (releases bees next to fire) and the block entity side
 //! effect of `PotentSulfurBlock.updateShape` (geyser countdown reset). Shapes are the
 //! precomputed ones of an empty level without the random offset of offset blocks (bamboo,
 //! pointed dripstone, …), as everywhere in generation.
 
 mod class;
 mod geometry;
+mod portal;
 mod props;
 mod survive;
 mod tables;
@@ -32,6 +32,7 @@ use crate::feature::region::WorldGenRegion;
 
 pub use class::{Class, class_of, class_of_block};
 pub use geometry::{is_full_block, merged_face_occludes};
+pub use portal::{HorizontalAxis, MAX_PORTAL_SIZE, PortalShape, is_frame, relative_n};
 pub use props::{HORIZONTAL, PosExt, StateExt, UPDATE_SHAPE_ORDER, with_properties_of};
 pub use survive::redstone_wire_can_survive_on;
 pub use tables::{BlockTags, FluidTags, Tags, init, tags};
@@ -46,6 +47,12 @@ pub use update::{
 pub trait BlockLevel {
     /// `getBlockState(pos)`.
     fn block(&self, pos: BlockPos) -> BlockState;
+
+    /// `getMinY()`: the lowest block row. Without bounds, reads below the level are void air,
+    /// which stops every search there as well.
+    fn min_y(&self) -> i32 {
+        i32::MIN
+    }
 
     /// `getFluidState(pos)`.
     #[inline]

@@ -19,6 +19,8 @@
 //!   relative to the game time of the frame.
 //! - Entities: `[type, x, y, z, dx, dy, dz]`, doubles as IEEE bit patterns (signed 64-bit), so
 //!   the comparison is exact. Their order is not significant.
+//! - Light (scenarios with `"light": true`): `"light":[count,level,...]` in every frame, run-length
+//!   pairs over the region in y, z, x order; a level is `sky << 4 | block` as a client sees it.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -68,6 +70,8 @@ pub struct Frame {
     pub block_ticks: Vec<TickObs>,
     pub fluid_ticks: Vec<TickObs>,
     pub entities: Vec<EntityObs>,
+    /// `sky << 4 | block` per block of the region, y, z, x order; empty if not observed.
+    pub light: Vec<u8>,
 }
 
 /// A recorded scenario run.
@@ -181,12 +185,28 @@ impl Trace {
                 return Err(format!("frame {tick}: blocks do not match the region"));
             }
             last.clone_from(&blocks);
+            let mut light = Vec::new();
+            if let Some(runs) = f.get("light").and_then(Value::as_array) {
+                for pair in runs.chunks(2) {
+                    let count = pair[0].as_u64().ok_or("light run count")? as usize;
+                    let level = pair
+                        .get(1)
+                        .and_then(Value::as_u64)
+                        .and_then(|l| u8::try_from(l).ok())
+                        .ok_or("light run level")?;
+                    light.extend(std::iter::repeat_n(level, count));
+                }
+                if light.len() != volume {
+                    return Err(format!("frame {tick}: light does not match the region"));
+                }
+            }
             trace.frames.push(Frame {
                 tick,
                 blocks,
                 block_ticks: ticks(f.get("block_ticks"))?,
                 fluid_ticks: ticks(f.get("fluid_ticks"))?,
                 entities: entities(f.get("entities"))?,
+                light,
             });
         }
         Ok(trace)
@@ -275,7 +295,21 @@ impl Trace {
                     m[2]
                 );
             }
-            s.push_str("]}");
+            s.push(']');
+            if !f.light.is_empty() {
+                s.push_str(",\"light\":[");
+                let mut run = 0;
+                for (i, &level) in f.light.iter().enumerate() {
+                    run += 1;
+                    if f.light.get(i + 1) != Some(&level) {
+                        let sep = if run == i + 1 { "" } else { "," };
+                        let _ = write!(s, "{sep}{run},{level}");
+                        run = 0;
+                    }
+                }
+                s.push(']');
+            }
+            s.push('}');
         }
         s.push_str("]}\n");
         s
@@ -328,6 +362,26 @@ impl Trace {
                     "tick {t} entities: {:?}, expected {:?}",
                     a.entities, e.entities
                 ));
+            }
+            if !e.light.is_empty() && a.light.len() != e.light.len() {
+                out.push(format!("tick {t}: light not observed"));
+            }
+            if a.light.len() == e.light.len() {
+                for (i, (&el, &al)) in e.light.iter().zip(&a.light).enumerate() {
+                    if el != al && out.len() < limit {
+                        let p = self.pos_of(i);
+                        out.push(format!(
+                            "tick {t} light {},{},{}: sky {} block {}, expected sky {} block {}",
+                            p.x,
+                            p.y,
+                            p.z,
+                            al >> 4,
+                            al & 15,
+                            el >> 4,
+                            el & 15
+                        ));
+                    }
+                }
             }
             if out.len() >= limit {
                 break;

@@ -16,6 +16,12 @@
 //! progress. Steps with a block write radius (features) take their neighbours exclusively;
 //! light results combine by maximum and need no exclusive access.
 //!
+//! Between ticks the owner may call [`Chunks::pump`] when the runtime's waker
+//! ([`Chunks::set_waker`]) reports finished jobs: it applies them and starts the next steps right
+//! away instead of at the next tick, so the workers never wait for the tick. Everything that
+//! changes the live world (chunks becoming full, tickets, unloading) still happens in
+//! [`Chunks::tick`].
+//!
 //! Full chunks carry their scheduled block and fluid ticks in the world's [`LevelTicks`] while
 //! they are live; they go back into the chunk when it is saved or unloaded. Simulation tickets
 //! (Vanilla's `SimulationChunkTracker`) decide which chunks tick.
@@ -25,8 +31,9 @@ pub mod levels;
 use std::collections::BTreeSet;
 use std::fmt;
 use std::io;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, OnceLock};
 
 use vanillite_base::hash::{FxHashMap, FxHashSet};
 use vanillite_base::{BlockPos, ChunkPos};
@@ -55,6 +62,36 @@ pub struct InlineExecutor;
 impl Executor for InlineExecutor {
     fn spawn(&self, _: u32, job: Box<dyn FnOnce() + Send>) {
         job();
+    }
+}
+
+/// Called from a worker when a job of the runtime finished and no wake is pending; the owner
+/// then calls [`Chunks::pump`] on its thread. Must not block.
+pub type Waker = Arc<dyn Fn() + Send + Sync>;
+
+/// The pending-wake flag and the owner's waker, shared with the jobs.
+#[derive(Default)]
+struct WakeState {
+    pending: AtomicBool,
+    waker: OnceLock<Waker>,
+}
+
+/// The jobs' end of the result channel: sends and wakes the owner once per pump.
+#[derive(Clone)]
+struct DoneSender {
+    tx: Sender<Done>,
+    wake: Arc<WakeState>,
+}
+
+impl DoneSender {
+    fn send(&self, done: Done) {
+        // A dropped runtime does not want results any more.
+        if self.tx.send(done).is_ok()
+            && let Some(waker) = self.wake.waker.get()
+            && !self.wake.pending.swap(true, Ordering::AcqRel)
+        {
+            waker();
+        }
     }
 }
 
@@ -176,8 +213,14 @@ pub struct Chunks {
     /// Chunks parked on a neighbour.
     waiters: FxHashMap<ChunkPos, Vec<ChunkPos>>,
     in_flight: usize,
-    done_tx: Sender<Done>,
+    done_tx: DoneSender,
     done_rx: Receiver<Done>,
+    /// Inside [`Chunks::pump`]: nothing becomes full and no loaded full chunk goes live.
+    between_ticks: bool,
+    /// Loaded full chunks that arrived between ticks; they go live in the next tick.
+    loaded_between_ticks: Vec<(ChunkPos, Box<ProtoChunk>)>,
+    /// Chunks whose next step (spawn, full) waits for the next tick.
+    due_next_tick: FxHashSet<ChunkPos>,
     /// Saves in flight; a load of such a chunk takes this version.
     saving: FxHashMap<ChunkPos, Arc<ProtoChunk>>,
     unload_candidates: FxHashSet<ChunkPos>,
@@ -239,8 +282,14 @@ impl Chunks {
             check: BTreeSet::new(),
             waiters: FxHashMap::default(),
             in_flight: 0,
-            done_tx,
+            done_tx: DoneSender {
+                tx: done_tx,
+                wake: Arc::default(),
+            },
             done_rx,
+            between_ticks: false,
+            loaded_between_ticks: Vec::new(),
+            due_next_tick: FxHashSet::default(),
             saving: FxHashMap::default(),
             unload_candidates: FxHashSet::default(),
             relight: FxHashSet::default(),
@@ -259,6 +308,28 @@ impl Chunks {
             promoted: Vec::new(),
             unloaded: Vec::new(),
         }
+    }
+
+    /// Sets the waker that asks the owner to call [`Chunks::pump`] between ticks (once; later
+    /// calls are ignored). Without a waker, finished jobs are applied in [`Chunks::tick`].
+    pub fn set_waker(&mut self, waker: Waker) {
+        let _ = self.done_tx.wake.waker.set(waker);
+    }
+
+    /// Applies finished jobs and starts the next steps between ticks. Chunks only make progress
+    /// towards full here: steps to [`ChunkStatus::Spawn`] and [`ChunkStatus::Full`] and loaded
+    /// full chunks wait for the next [`Chunks::tick`], so the live world only changes in ticks
+    /// (light of full chunks excepted, it is sent with the next tick's light changes).
+    pub fn pump(&mut self) {
+        self.done_tx.wake.pending.store(false, Ordering::Release);
+        self.between_ticks = true;
+        for _ in 0..1024 {
+            let progress = self.drain_done() | self.dispatch();
+            if !progress {
+                break;
+            }
+        }
+        self.between_ticks = false;
     }
 
     /// What the slots know about this world.
@@ -444,6 +515,12 @@ impl Chunks {
     /// With an inline executor this runs until nothing can make progress.
     pub fn tick(&mut self) {
         self.tick += 1;
+        for (pos, chunk) in std::mem::take(&mut self.loaded_between_ticks) {
+            self.apply_loaded(pos, Ok(Some(chunk)));
+        }
+        for pos in std::mem::take(&mut self.due_next_tick) {
+            self.enqueue(pos);
+        }
         for _ in 0..1024 {
             let mut progress = self.drain_done();
             self.apply_level_changes();
@@ -460,41 +537,57 @@ impl Chunks {
         let mut any = false;
         while let Ok(done) = self.done_rx.try_recv() {
             any = true;
-            self.apply_done(done);
+            match done {
+                Done::Loaded(pos, Ok(Some(chunk)))
+                    if self.between_ticks
+                        && chunk.status == ChunkStatus::Full
+                        && chunk.light_on =>
+                {
+                    // The job is done; the chunk stays busy until it goes live.
+                    self.in_flight -= 1;
+                    self.loaded_between_ticks.push((pos, chunk));
+                }
+                done => self.apply_done(done),
+            }
         }
         any
+    }
+
+    /// A finished load: the chunk (or a new one) goes into its holder.
+    fn apply_loaded(&mut self, pos: ChunkPos, result: io::Result<Option<Box<ProtoChunk>>>) {
+        let mut chunk = match result {
+            Ok(Some(chunk)) => *chunk,
+            Ok(None) => self.slots.generator.new_chunk(pos),
+            Err(e) => {
+                log::error!(
+                    "Couldn't load chunk {}, {} in {}: {e}; generating it again",
+                    pos.x,
+                    pos.z,
+                    self.info.dimension
+                );
+                self.slots.generator.new_chunk(pos)
+            }
+        };
+        let mut dirty = chunk.status == ChunkStatus::Empty;
+        // Stored light that is not trusted is computed again (Vanilla: `isLightOn`).
+        if chunk.status > ChunkStatus::Features && !chunk.light_on {
+            chunk.status = ChunkStatus::Features;
+            dirty = true;
+        }
+        if let Some(holder) = self.holders.get_mut(&pos) {
+            holder.chunk = Some(Arc::new(chunk));
+            holder.busy = false;
+            holder.dirty |= dirty;
+            self.promote(pos);
+            self.wake(pos);
+        }
     }
 
     fn apply_done(&mut self, done: Done) {
         match done {
             Done::Loaded(pos, result) => {
                 self.in_flight -= 1;
-                let mut chunk = match result {
-                    Ok(Some(chunk)) => *chunk,
-                    Ok(None) => self.slots.generator.new_chunk(pos),
-                    Err(e) => {
-                        log::error!(
-                            "Couldn't load chunk {}, {} in {}: {e}; generating it again",
-                            pos.x,
-                            pos.z,
-                            self.info.dimension
-                        );
-                        self.slots.generator.new_chunk(pos)
-                    }
-                };
-                let mut dirty = chunk.status == ChunkStatus::Empty;
-                // Stored light that is not trusted is computed again (Vanilla: `isLightOn`).
-                if chunk.status > ChunkStatus::Features && !chunk.light_on {
-                    chunk.status = ChunkStatus::Features;
-                    dirty = true;
-                }
-                if let Some(holder) = self.holders.get_mut(&pos) {
-                    holder.chunk = Some(Arc::new(chunk));
-                    holder.busy = false;
-                    holder.dirty |= dirty;
-                    self.promote(pos);
-                    self.wake(pos);
-                }
+                self.apply_loaded(pos, result);
             }
             Done::Stepped {
                 status,
@@ -657,6 +750,10 @@ impl Chunks {
         let Some(next) = chunk.status.next() else {
             return Check::Done;
         };
+        if self.between_ticks && matches!(next, ChunkStatus::Spawn | ChunkStatus::Full) {
+            self.due_next_tick.insert(pos);
+            return Check::Done;
+        }
         // Requirements by radius.
         let radius = next.requirement_radius() as i32;
         for dz in -radius..=radius {
@@ -712,7 +809,7 @@ impl Chunks {
                 let mut out = Vec::with_capacity(1);
                 storage.load(&[pos], &mut out);
                 let result = out.pop().unwrap_or(Ok(None));
-                let _ = tx.send(Done::Loaded(pos, result.map(|c| c.map(Box::new))));
+                tx.send(Done::Loaded(pos, result.map(|c| c.map(Box::new))));
             }),
         );
         Check::Progress
@@ -782,7 +879,7 @@ impl Chunks {
                     Box::new(move || {
                         let mut targets = vec![target];
                         light.initialize_light(&mut targets);
-                        let _ = tx.send(Done::Stepped {
+                        tx.send(Done::Stepped {
                             status: next,
                             targets,
                             written: Vec::new(),
@@ -798,7 +895,7 @@ impl Chunks {
                         let mut targets = vec![target];
                         let mut neighbours = neighbours;
                         light.light_chunks(&mut targets, &mut Neighbours::new(&mut neighbours));
-                        let _ = tx.send(Done::Lit {
+                        tx.send(Done::Lit {
                             targets,
                             neighbours,
                         });
@@ -821,7 +918,7 @@ impl Chunks {
                             .into_iter()
                             .filter(|n| written.contains(&n.pos))
                             .collect();
-                        let _ = tx.send(Done::Stepped {
+                        tx.send(Done::Stepped {
                             status: next,
                             targets,
                             written,
@@ -959,7 +1056,7 @@ impl Chunks {
                 Box::new(move || {
                     let mut out = Vec::with_capacity(batch.len());
                     storage.save(&batch, &mut out);
-                    let _ = tx.send(Done::Saved(batch.into_iter().zip(out).collect()));
+                    tx.send(Done::Saved(batch.into_iter().zip(out).collect()));
                 }),
             );
         }
@@ -1037,7 +1134,9 @@ impl Chunks {
         )?;
         holder.dirty = true;
         self.block_changes.push(pos);
-        self.relight.insert(chunk_pos);
+        if self.slots.light.changes_light(old, state) {
+            self.relight.insert(chunk_pos);
+        }
         Some(old)
     }
 
@@ -1217,6 +1316,13 @@ impl Chunks {
         out.extend(self.light_changes.drain());
     }
 
+    /// Recomputes the light around changed chunks now and applies the results that are done:
+    /// with an inline executor, all of them (scenario worlds observe settled light).
+    pub fn flush_light(&mut self) {
+        self.start_relights();
+        self.drain_done();
+    }
+
     /// Starts light recomputation around changed chunks whose 5 × 5 area is loaded.
     fn start_relights(&mut self) {
         if self.relight.is_empty() {
@@ -1250,7 +1356,7 @@ impl Chunks {
                 Box::new(move || {
                     let mut area = area;
                     light.relight(&[center], &mut Neighbours::new(&mut area));
-                    let _ = tx.send(Done::Relit {
+                    tx.send(Done::Relit {
                         center,
                         chunks: area,
                     });

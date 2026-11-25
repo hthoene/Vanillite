@@ -232,6 +232,10 @@ impl NetState {
                 config.server.proxy.velocity_secret.as_bytes(),
             ),
             allow_direct_connections: config.server.proxy.allow_direct_connections,
+            multiversion: vanillite_multiversion::Accepted::parse(
+                &config.server.multiversion.versions,
+            )
+            .map_err(|e| StartError::Io(format!("vanillite.toml multiversion.versions: {e}")))?,
             ..NetConfig::default()
         };
         let status = StatusInfo {

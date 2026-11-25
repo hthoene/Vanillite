@@ -64,6 +64,7 @@ fn with_tick<R>(level: &mut Level, id: EntityId, f: impl FnOnce(&mut Tick<'_, '_
             min_y: level_ref.min_y(),
             dimension: "minecraft:overworld",
             raining_at: &raining,
+            enter_gateway: &mut |_| false,
             random: &mut random,
             out: &mut out,
         };

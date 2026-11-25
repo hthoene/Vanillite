@@ -22,7 +22,7 @@ rules! {
         /// Thread counts.
         threads: ThreadRules = "performance.threads" {
             /// Worker threads of the compute pool (world generation, lighting, saving, parallel
-            /// tick phases). 0 = number of cores minus the busy tick threads, at least 1.
+            /// tick phases). 0 = number of cores minus one (the tick threads), at least 1.
             compute: u16 = "compute", Setting, range = [0, 1024], restart = true, vanilla = 0;
         }
         /// Saving.
@@ -130,6 +130,17 @@ rules! {
             /// the proxy (authenticated as usual). Off: they are refused.
             allow_direct_connections: bool = "allow-direct-connections", Setting, restart = true,
                 vanilla = false;
+        }
+        /// Clients of older Minecraft versions (`vanillite-multiversion`): their packets are
+        /// translated to the server's version and back, like with ViaVersion.
+        multiversion: MultiversionRules = "multiversion" {
+            /// Older versions whose clients may join: `"all"` (every version this build
+            /// translates, currently 1.20.5 to 26.2), `"none"`, or a comma-separated list of
+            /// releases such as `"1.21.4, 26.2"` (a release accepts every release of its
+            /// protocol). Clients of the server's own version are not translated and pay
+            /// nothing.
+            versions: String = "versions", Setting, restart = true,
+                vanilla = String::from("all");
         }
         /// Native plugins in `plugins/`: packages with a `plugin.toml` and a library built
         /// against the plugin API. Plugins are trusted code with the server's rights.

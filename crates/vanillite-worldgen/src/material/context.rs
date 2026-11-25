@@ -48,6 +48,8 @@ pub(super) struct MaterialRuleContext<'a> {
     min_surface_level: i32,
     biome: Option<BiomeId>,
     pub(super) block_y: i32,
+    /// Index of the current block in `expected_volume`, if it is inside.
+    block_index: Option<usize>,
     pub(super) water_height: i32,
     pub(super) stone_depth_below: i32,
     pub(super) stone_depth_above: i32,
@@ -118,6 +120,7 @@ impl<'a> MaterialRuleContext<'a> {
             min_surface_level: 0,
             biome: None,
             block_y: 0,
+            block_index: None,
             water_height: 0,
             stone_depth_below: 0,
             stone_depth_above: 0,
@@ -152,6 +155,9 @@ impl<'a> MaterialRuleContext<'a> {
         self.last_update_y += 1;
         self.biome = None;
         self.block_y = block_y;
+        self.block_index = self
+            .expected_volume
+            .index_of_block(self.block_x, block_y, self.block_z);
         self.water_height = water_height;
         self.stone_depth_below = stone_depth_below;
         self.stone_depth_above = stone_depth_above;
@@ -227,7 +233,7 @@ impl<'a> MaterialRuleContext<'a> {
     /// outside it.
     pub(super) fn prefilled_density(&mut self, vein: usize, which: usize) -> f32 {
         let (x, y, z) = (self.block_x, self.block_y, self.block_z);
-        match self.expected_volume.index_of_block(x, y, z) {
+        match self.block_index {
             Some(index) => self.ore_densities[vein][which][index],
             None => {
                 let fns = &self.system.ore_vein_fns[vein];
