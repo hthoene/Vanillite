@@ -774,7 +774,7 @@ fn instant(
         .ents
         .mob(target)
         .is_some_and(|m| effects::inverted_heal_and_harm(m.kind.type_id()));
-    let amp = u32::try_from(effect.amplifier.clamp(0, 20)).unwrap_or(0);
+    let amp = u32::from(effect.amplifier.min(20));
     if harm == undead {
         #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
         let amount = (scale * f64::from(4u32 << amp) + 0.5) as i32 as f32;
