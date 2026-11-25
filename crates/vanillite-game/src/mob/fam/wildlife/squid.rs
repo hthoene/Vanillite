@@ -34,6 +34,8 @@ pub(super) fn glow_squid_rules(level: &Level, pos: BlockPos) -> bool {
 }
 
 const PI: f32 = std::f32::consts::PI;
+/// `Mth.RAD_TO_DEG` (`180.0F / (float) Math.PI`).
+const RAD_TO_DEG: f32 = 180.0 / PI;
 
 /// `Squid.aiStep` after `super.aiStep()`: the tentacle cycle drives the movement.
 pub(super) fn ai_step(t: &mut Tick<'_, '_>) {
@@ -73,13 +75,14 @@ pub(super) fn ai_step(t: &mut Tick<'_, '_>) {
         }
         let v = t.velocity();
         let horizontal = (v.x * v.x + v.z * v.z).sqrt();
+        // `-((float) Mth.atan2(x, z)) * RAD_TO_DEG`: a float product.
         #[allow(clippy::cast_possible_truncation)]
-        let target_y = -(crate::mob::atan2_deg(v.x, v.z) as f32);
+        let target_y = -(vanillite_base::math::atan2(v.x, v.z) as f32) * RAD_TO_DEG;
         let m = t.mob();
         m.y_body_rot += (target_y - m.y_body_rot) * 0.1;
         let body = m.y_body_rot;
         #[allow(clippy::cast_possible_truncation)]
-        let target_x = -(crate::mob::atan2_deg(horizontal, v.y) as f32);
+        let target_x = -(vanillite_base::math::atan2(horizontal, v.y) as f32) * RAD_TO_DEG;
         let s = st_mut(m);
         s.x_body_rot += (target_x - s.x_body_rot) * 0.1;
         let rot = t.core().rot();
@@ -104,6 +107,10 @@ pub(super) fn ai_step(t: &mut Tick<'_, '_>) {
             s.dark_ticks -= 1;
             t.core_mut().mark_data_dirty();
         }
+        // `GlowSquid.aiStep`: the glow particle's position (`getRandomX/Y/Z`), the client's
+        // particle, the server's draws.
+        let r = &mut t.mob().random;
+        let _ = (r.next_double(), r.next_double(), r.next_double());
     }
 }
 

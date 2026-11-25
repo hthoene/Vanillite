@@ -32,6 +32,7 @@ block_tags!(
     axolotls_spawnable_on,
     blocks_lava_fire_spread,
     beehives,
+    blocks_wind_charge_explosions,
     campfires,
     candle_cakes,
     candles,

@@ -241,6 +241,11 @@ impl LevelState {
         data.difficulty = difficulty_name(difficulty).to_owned();
     }
 
+    /// A field of `level.dat` the server does not model (fields of older versions).
+    pub(crate) fn legacy(&self, key: &str) -> Option<Tag> {
+        lock(&self.level_data).other.get(key).cloned()
+    }
+
     /// `level.dat`'s `GameType`: the default game mode id.
     pub(crate) fn default_game_type(&self) -> i32 {
         lock(&self.level_data).game_type

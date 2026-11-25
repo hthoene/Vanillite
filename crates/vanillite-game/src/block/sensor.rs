@@ -6,6 +6,7 @@
 
 use vanillite_base::{BlockPos, Direction, Vec3};
 use vanillite_data::block::{BlockId, BlockState, ids};
+use vanillite_world::entity::EntityId;
 use vanillite_worldgen::behaviour::StateExt;
 
 use super::{BlockBehaviour, Interaction, UseContext};
@@ -31,15 +32,17 @@ fn own_power(_level: &Level, state: BlockState, _pos: BlockPos, _direction: Dire
 
 // --- TargetBlock -------------------------------------------------------------------------
 
-/// `onProjectileHit`: the projectile code calls this when a projectile hits a target block at
-/// `hit` on `face`; `arrow` is `projectile instanceof AbstractArrow`. Returns the output
-/// strength (for the advancement trigger).
+/// `onProjectileHit`: the projectile code calls this when `projectile` hits a target block at
+/// `hit` on `face`; `arrow` is `projectile instanceof AbstractArrow`. A player owner gets the
+/// `target_hit` statistic and trigger. Returns the output strength.
 pub fn target_projectile_hit(
     level: &mut Level,
     pos: BlockPos,
     face: Direction,
     hit: Vec3,
     arrow: bool,
+    projectile: EntityId,
+    owner: Option<EntityId>,
 ) -> i32 {
     let state = level.block(pos);
     if !state.is(ids::TARGET) {
@@ -50,6 +53,20 @@ pub fn target_projectile_hit(
     if !level.chunks.has_block_tick(pos, ids::TARGET.0) {
         level.set_block_and_update(pos, with_power(state, strength));
         level.schedule_block_tick(pos, ids::TARGET, duration);
+    }
+    let owner = owner.filter(|&o| {
+        level
+            .entities
+            .store
+            .get(o)
+            .is_some_and(|e| e.kind() == vanillite_data::entity::ids::PLAYER)
+    });
+    if let Some(owner) = owner {
+        level.award_stat(owner, crate::stats::custom::TARGET_HIT, 1);
+        if let Some(view) = crate::advancements::view::snapshot(&level.entities, projectile) {
+            let event = crate::advancements::trigger::Event::TargetHit(view, strength);
+            level.trigger(owner, event);
+        }
     }
     strength
 }

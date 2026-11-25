@@ -212,10 +212,15 @@ pub fn tick(ents: &mut Entities, env: &mut Env<'_>, player: EntityId) {
         return;
     }
     let ticks = u.ticks.saturating_add(1);
-    if let Some(p) = ents.player_mut(player)
-        && let Some(state) = p.survival.using_item.as_mut()
-    {
-        state.ticks = ticks;
+    if let Some(p) = ents.player_mut(player) {
+        // `ServerPlayer.updateUsingItem`: `USING_ITEM`.
+        p.advancements.trigger_item(
+            crate::advancements::trigger::TriggerKind::USING_ITEM,
+            &stack,
+        );
+        if let Some(state) = p.survival.using_item.as_mut() {
+            state.ticks = ticks;
+        }
     }
     if ticks == SHIELD_DELAY && item::item_id(&stack).info().blocks_attacks {
         // The blocking state becomes visible (`isBlocking`).
@@ -498,7 +503,35 @@ fn finish(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, u: UsingItem
             seed,
         );
     }
-    if name == "minecraft:milk_bucket" || name == "minecraft:honey_bottle" {
+    // The consumable listeners and `on_consume_effects`: potions, stew effects, golden
+    // apples, milk, honey.
+    {
+        let Entities { store, players, .. } = &mut *ents;
+        if let Some(mut entity) = store.get_mut(player)
+            && let Some(data) = players.get_mut(entity.as_ref().kind_row())
+        {
+            let mut host = crate::effect::living::PlayerHost {
+                entity: &mut entity,
+                player: data,
+                env: &mut *env,
+            };
+            let mut roll = || crate::experience_orb::with_entity_random(|r| r.next_float());
+            crate::effect::consume::on_consume(
+                &stack,
+                vanillite_data::entity::ids::PLAYER,
+                &mut host,
+                &mut roll,
+                Some(player),
+            );
+        }
+    }
+    if matches!(
+        name,
+        "minecraft:milk_bucket"
+            | "minecraft:honey_bottle"
+            | "minecraft:potion"
+            | "minecraft:ominous_bottle"
+    ) {
         let seed = crate::survival::sound_seed();
         play_sound(
             env.out,
@@ -509,6 +542,17 @@ fn finish(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, u: UsingItem
             0.5,
             env.random.next_float() * 0.1 + 0.9,
             seed,
+        );
+    }
+    // `Consumable.onConsume`: the use statistic and `consume_item`.
+    if let Some(p) = ents.player_mut(player) {
+        p.stats.award(
+            crate::stats::Stat::of(crate::stats::StatType::Used, stack.item),
+            1,
+        );
+        p.advancements.trigger_item(
+            crate::advancements::trigger::TriggerKind::CONSUME_ITEM,
+            &stack,
         );
     }
     let remainder = match name {
@@ -550,11 +594,17 @@ fn finish(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, u: UsingItem
     }
 }
 
-/// The first arrow in the inventory (`getProjectile`): off hand, main hand, then the slots.
+/// The first arrow (`#arrows`: arrows, tipped and spectral arrows) in the inventory
+/// (`getProjectile`): off hand, main hand, then the slots.
 fn find_arrow(ents: &Entities, player: EntityId) -> Option<usize> {
     let p = ents.player(player)?;
-    let arrow = vanillite_data::registry::ITEM.id("minecraft:arrow")?;
-    let is_arrow = |s: &ItemStack| s.item == arrow && !s.is_empty();
+    let is_arrow = |s: &ItemStack| {
+        !s.is_empty()
+            && matches!(
+                item::item_id(s).name(),
+                "minecraft:arrow" | "minecraft:tipped_arrow" | "minecraft:spectral_arrow"
+            )
+    };
     if is_arrow(p.inventory.get(crate::inventory::OFFHAND)) {
         return Some(crate::inventory::OFFHAND);
     }
@@ -617,8 +667,8 @@ fn crossbow_use_tick(
     let pos = ents.store.get(player).map_or(Vec3::ZERO, |e| e.pos());
     let sounds = crate::crossbow::sounds(&weapon);
     for (on, sound) in [
-        (stage.start_sound, sounds.start),
-        (stage.mid_sound, sounds.mid),
+        (stage.start_sound, sounds.start.as_deref()),
+        (stage.mid_sound, sounds.mid.as_deref()),
     ] {
         if on && let Some(sound) = sound {
             let seed = crate::survival::sound_seed();
@@ -637,7 +687,7 @@ fn crossbow_use_tick(
     if stage.full
         && !crate::crossbow::is_charged(&weapon)
         && crossbow_load(ents, env, player, hand)
-        && let Some(sound) = sounds.end
+        && let Some(sound) = sounds.end.as_deref()
     {
         let pitch = 1.0 / (env.random.next_float() * 0.5 + 1.0) + 0.2;
         let seed = crate::survival::sound_seed();
@@ -824,6 +874,19 @@ pub fn release(
     if arrow_slot.is_none() && !creative {
         return;
     }
+    // Creative players without arrows shoot a plain one.
+    let ammo = arrow_slot
+        .and_then(|i| ents.player(player).map(|p| p.inventory.get(i).clone()))
+        .unwrap_or_else(|| {
+            ItemStack::new(
+                vanillite_data::registry::ITEM
+                    .id("minecraft:arrow")
+                    .unwrap_or(0),
+                1,
+            )
+        });
+    // Infinity (`ammo_use`) only saves plain arrows.
+    let infinity = infinity && item::item_id(&ammo).name() == "minecraft:arrow";
     let Some(e) = ents.store.get(player) else {
         return;
     };
@@ -852,6 +915,7 @@ pub fn release(
         1.0,
         Some(player),
         Some(&stack),
+        &ammo,
         power >= 1.0,
         pickup,
     );
@@ -868,6 +932,12 @@ pub fn release(
         pitch,
         seed,
     );
+    if let Some(p) = ents.player_mut(player) {
+        p.stats.award(
+            crate::stats::Stat::of(crate::stats::StatType::Used, stack.item),
+            1,
+        );
+    }
     if !free
         && let Some(i) = arrow_slot
         && let Some(p) = ents.player_mut(player)
@@ -882,16 +952,18 @@ pub fn release(
         let level = f32::from(i16::try_from(unbreaking.clamp(0, 255)).unwrap_or(0));
         let keeps = unbreaking > 0 && env.random.next_float() >= 1.0 / (level + 1.0);
         let i = hand_index(ents, player, u.hand);
-        if !keeps
-            && let Some(p) = ents.player_mut(player)
-            && let Some(s) = p.inventory.get_mut(i)
-            && item::is_damageable(s)
-        {
-            let d = item::damage(s).saturating_add(1);
-            if d >= item::max_damage(s) {
-                s.shrink(1);
-            } else {
-                item::set_damage(s, d);
+        if !keeps && let Some(p) = ents.player_mut(player) {
+            let crate::player::PlayerData {
+                inventory,
+                advancements,
+                stats,
+                ..
+            } = p;
+            if let Some(s) = inventory.get_mut(i)
+                && item::is_damageable(s)
+            {
+                let d = item::damage(s).saturating_add(1);
+                crate::advancements::view::apply_damage(Some(advancements), Some(stats), s, d);
             }
         }
     }

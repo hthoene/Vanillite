@@ -178,10 +178,15 @@ pub fn ambient_sound(_m: &MobData) -> &'static str {
 }
 
 /// `Parrot.aiStep`: imitating nearby hostiles, the slow fall while flapping.
-pub fn ai_step(t: &mut Tick<'_, '_>) {
-    if t.mob().random.next_int_bounded(400) == 0 {
+/// `Parrot.aiStep` before `super.aiStep()`: now and then it imitates a mob nearby (with the
+/// level's random).
+pub fn ai_step_start(t: &mut Tick<'_, '_>) {
+    if t.env.random.next_int_bounded(400) == 0 {
         imitate_nearby(t);
     }
+}
+
+pub fn ai_step(t: &mut Tick<'_, '_>) {
     let v = t.velocity();
     if !t.on_ground() && v.y < 0.0 {
         t.set_velocity(v.multiply(1.0, 0.6, 1.0));
@@ -193,7 +198,7 @@ pub fn ai_step(t: &mut Tick<'_, '_>) {
 
 /// `imitateNearbyMobs`: half the time a sound of a random imitable mob within 20 blocks.
 fn imitate_nearby(t: &mut Tick<'_, '_>) {
-    if !t.mob_ref().is_alive() || t.mob_ref().silent || t.mob().random.next_int_bounded(2) != 0 {
+    if !t.mob_ref().is_alive() || t.mob_ref().silent || t.env.random.next_int_bounded(2) != 0 {
         return;
     }
     let area = t.aabb().inflate(20.0, 20.0, 20.0);
@@ -210,7 +215,7 @@ fn imitate_nearby(t: &mut Tick<'_, '_>) {
     });
     if !ids.is_empty() {
         let n = i32::try_from(ids.len()).unwrap_or(i32::MAX);
-        let i = usize::try_from(t.mob().random.next_int_bounded(n)).unwrap_or(0);
+        let i = usize::try_from(t.env.random.next_int_bounded(n)).unwrap_or(0);
         let chosen = ids[i];
         let sound = t
             .ents
@@ -219,7 +224,7 @@ fn imitate_nearby(t: &mut Tick<'_, '_>) {
             .and_then(|m| imitated_sound(m.kind));
         if let Some(s) = sound {
             let pitch = {
-                let r = &mut t.mob().random;
+                let r = &mut *t.env.random;
                 (r.next_float() - r.next_float()) * 0.2 + 1.0
             };
             crate::mob::kinds::play_sound(t, s, 0.7, pitch);
@@ -254,6 +259,8 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
             if let (Some(m), Some(o)) = (ix.ents.mob_mut(ix.target), owner) {
                 super::tame_by(m, o);
             }
+            let (target, player) = (ix.target, ix.player);
+            crate::mob::tame::award_tame(ix.ents, target, player);
             event(ix, 7);
         } else {
             event(ix, 6);
@@ -518,7 +525,7 @@ pub fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
         let p = t.pos();
         let d = p.distance_to_sqr(o.pos);
         if d > 9.0 {
-            nav::move_to_entity(t, o.pos, 0, 1.0);
+            nav::move_to_entity(t, o.pos, 1, 1.0);
         } else {
             t.mob().nav.stop();
             if d <= 3.0 {

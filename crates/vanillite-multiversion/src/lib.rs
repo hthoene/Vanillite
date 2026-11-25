@@ -74,6 +74,14 @@ pub const SUPPORTED: &[Version] = &[
     version(g::v1_20_6::ID, g::v1_20_6::PROTOCOL, &["1.20.5", "1.20.6"]),
 ];
 
+impl Version {
+    /// Whether the client knows `code_of_conduct` (1.21.9 on). An older client never answers
+    /// it, so the server must not wait for its acceptance.
+    pub fn has_code_of_conduct(&self) -> bool {
+        self.protocol >= step::V1_21_9
+    }
+}
+
 const fn version(id: &'static str, protocol: i32, names: &'static [&'static str]) -> Version {
     Version {
         id,

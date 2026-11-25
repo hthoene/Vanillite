@@ -1020,6 +1020,11 @@ fn deposit_target(t: &mut Tick<'_, '_>) -> Option<Tracker> {
         }
         brain::brain(t).erase(M::LikedNoteblockPosition);
     }
+    liked_player_near(t).map(|id| Tracker::entity(id, true))
+}
+
+/// `AllayAi.getLikedPlayer`: the liked player within 64 blocks in survival or creative.
+fn liked_player_near(t: &Tick<'_, '_>) -> Option<EntityId> {
     let uuid = brain_ref(t).uuid(M::LikedPlayer)?;
     let id = t.ents.player_by_uuid(uuid)?;
     let p = t.ents.player(id)?;
@@ -1032,7 +1037,7 @@ fn deposit_target(t: &mut Tick<'_, '_>) -> Option<Tracker> {
         .store
         .get(id)
         .is_some_and(|e| e.pos().distance_to_sqr(t.pos()) < 64.0 * 64.0);
-    (mode_ok && close).then(|| Tracker::entity(id, true))
+    (mode_ok && close).then_some(id)
 }
 
 /// `AllayAi.throwItem`: one item towards the target, the throw sound now and then.
@@ -1047,6 +1052,19 @@ fn throw_to(t: &mut Tick<'_, '_>, target: Vec3) {
         one
     };
     let id = t.id;
+    // `ALLAY_DROP_ITEM_ON_BLOCK` for the liked player, at the block below the target.
+    let drop_kind = crate::advancements::trigger::TriggerKind::ALLAY_DROP_ITEM_ON_BLOCK;
+    if let Some(player) = liked_player_near(t)
+        && crate::advancements::view::listens(t.ents, player, drop_kind)
+        && let Some(p) = t.ents.player_mut(player)
+    {
+        let below = crate::player::play::block_pos_of(target).offset(0, -1, 0);
+        p.advancements
+            .trigger(crate::advancements::trigger::Event::AllayDropItemOnBlock(
+                below,
+                stack.clone(),
+            ));
+    }
     super::allay::throw_item(
         t.ents,
         t.env,
@@ -1209,10 +1227,11 @@ fn breeze_shoot_tick(t: &mut Tick<'_, '_>) {
     );
     #[allow(clippy::cast_precision_loss)]
     let uncertainty = (5 - t.env.difficulty as i32 * 4) as f32;
-    let velocity = super::wind::movement_to_shoot(t.env.random, dir, 0.7, uncertainty);
+    let mut own = crate::mob::missile::new_projectile_random();
+    let velocity = super::wind::movement_to_shoot(&mut own, dir, 0.7, uncertainty);
     let rot = super::wind::rotation_of(velocity);
     let data = super::wind::new_charge(crate::mob::missile::MissileKind::BreezeWindCharge);
-    crate::mob::missile::spawn_from(t, Vec3::new(p.x, firing, p.z), velocity, rot, data);
+    crate::mob::missile::spawn_shot(t, Vec3::new(p.x, firing, p.z), velocity, rot, data);
     crate::mob::kinds::play_sound(t, "minecraft:entity.breeze.shoot", 1.5, 1.0);
 }
 
@@ -1596,6 +1615,7 @@ mod tests {
         let mut out = Vec::new();
         let raining = |_| false;
         let hooks = crate::hooks::NoHooks;
+        let names = |name: &str, _| vanillite_protocol::text::Component::text(name);
         {
             let blocks = LevelBlocks(level);
             let mut env = crate::survival::player::Env {
@@ -1608,12 +1628,12 @@ mod tests {
                 min_y: level.min_y(),
                 dimension: "minecraft:overworld",
                 raining_at: &raining,
+                border: None,
+                display_name: &names,
                 enter_gateway: &mut |_| false,
                 random: &mut random,
                 out: &mut out,
                 hooks: &hooks,
-                border: None,
-                display_name: &|n: &str, _| vanillite_protocol::text::Component::text(n.to_owned()),
             };
             let mut cx = crate::mob::MobContext {
                 path_budget: u64::MAX,

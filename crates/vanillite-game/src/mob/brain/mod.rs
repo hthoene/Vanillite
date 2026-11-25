@@ -16,7 +16,7 @@ pub mod sensing;
 pub mod sensor;
 
 use vanillite_base::BlockPos;
-use vanillite_base::random::RandomSource;
+use vanillite_base::random::{LegacyRandom, RandomSource};
 use vanillite_world::entity::EntityId;
 
 pub use behavior::{Behavior, Spec, Status};
@@ -126,6 +126,8 @@ pub struct Node {
     pub max_duration: i32,
     /// Children of gates and sequences: node index, weight and the shuffle key.
     pub children: Vec<Child>,
+    /// The own random of a shuffled gate (`ShufflingList.random`).
+    pub random: Option<Box<LegacyRandom>>,
 }
 
 /// A child of a gate (`ShufflingList.WeightedEntry`).
@@ -319,6 +321,11 @@ impl Brain {
     fn add_spec(&mut self, s: Spec) -> u16 {
         let (behavior, min, max, children) = s.into_parts();
         let idx = u16::try_from(self.nodes.len()).unwrap_or(u16::MAX);
+        let random = matches!(
+            behavior,
+            Behavior::Gate { shuffled: true, .. } | Behavior::TriggerGate { shuffled: true, .. }
+        )
+        .then(|| Box::new(LegacyRandom::new(crate::mob::new_shuffle_seed())));
         self.nodes.push(Node {
             behavior,
             status: Status::Stopped,
@@ -326,6 +333,7 @@ impl Brain {
             min_duration: min,
             max_duration: max,
             children: Vec::new(),
+            random,
         });
         let mut list = Vec::with_capacity(children.len());
         for (child, weight) in children {

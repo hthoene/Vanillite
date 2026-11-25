@@ -57,6 +57,8 @@ pub trait ServerAccess: Send + Sync {
     fn send_message(&self, player: u128, text: Text<'_>) -> bool;
     /// Disconnects a player; `false` when offline.
     fn kick(&self, player: u128, reason: Text<'_>) -> bool;
+    /// Sets the header and footer of a player's player list; `false` when offline.
+    fn set_tab_list(&self, player: u128, header: Text<'_>, footer: Text<'_>) -> bool;
     /// Sends a system message to everyone and the log.
     fn broadcast(&self, text: Text<'_>);
     /// Whether a player is an operator.

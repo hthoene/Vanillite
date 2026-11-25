@@ -40,9 +40,10 @@ pub struct Global {
     /// enchantments).
     pub(crate) registries: std::collections::BTreeMap<String, Vec<String>>,
     /// Tool rules, loot tables and item data of the block and item handlers.
-    pub(crate) game: Arc<vanillite_game::player::play::GameData>,
+    /// The game data at start; [`Global::game`] gives the current one.
+    pub(crate) game_at_start: Arc<vanillite_game::player::play::GameData>,
     /// `ClientboundUpdateRecipesPacket` of the loaded recipes, encoded once.
-    pub(crate) recipes_packet: Arc<vanillite_protocol::SharedPacket>,
+    pub(crate) recipes_packet: std::sync::RwLock<Arc<vanillite_protocol::SharedPacket>>,
     /// `spawn-protection` radius in blocks.
     pub(crate) spawn_protection: i32,
     /// Scoreboard, command storage, functions and tags.
@@ -53,6 +54,12 @@ pub struct Global {
     pub(crate) tick_rate: std::sync::Mutex<crate::tick_rate::TickRateManager>,
     /// The durations of the last ticks (`/tick query`).
     pub(crate) tick_times: std::sync::Mutex<crate::tick_rate::TickTimes>,
+    /// Vanilla's English translations, for texts of the console and RCON.
+    pub(crate) language: std::collections::HashMap<String, String>,
+    /// `broadcast-console-to-ops`.
+    pub(crate) broadcast_console_to_ops: bool,
+    /// `broadcast-rcon-to-ops`.
+    pub(crate) broadcast_rcon_to_ops: bool,
     /// `force-gamemode`.
     pub(crate) force_game_mode: bool,
     /// The plugins.
@@ -62,6 +69,11 @@ pub struct Global {
 }
 
 impl Global {
+    /// The current game data (loot tables, recipes, tags), replaced by `/reload`.
+    pub(crate) fn game(&self) -> Arc<vanillite_game::player::play::GameData> {
+        vanillite_game::player::play::game_data().unwrap_or_else(|| Arc::clone(&self.game_at_start))
+    }
+
     /// A shared reference to this value (for tasks on other worlds).
     pub fn arc(&self) -> Option<Arc<Global>> {
         self.this.upgrade()
@@ -84,6 +96,11 @@ impl Global {
         self.tick_rate
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// `Component.getString` in English, as the console and RCON show texts.
+    pub(crate) fn english(&self, text: &vanillite_protocol::text::Component) -> String {
+        text.to_string_in(&|key| self.language.get(key).cloned())
     }
 
     /// Asks the server to stop after the current tick (`/stop`).

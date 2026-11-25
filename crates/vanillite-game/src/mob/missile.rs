@@ -172,9 +172,46 @@ pub fn spawn_from(
     pos: Vec3,
     velocity: Vec3,
     rot: Rotation,
-    mut data: MissileData,
+    data: MissileData,
 ) -> EntityId {
     let uuid = crate::mob::new_entity_uuid();
+    spawn_owned(t, uuid, pos, velocity, rot, data)
+}
+
+/// `ProjectileUtil.computeMargin`: how much the boxes of the entities a projectile may hit
+/// grow, from 0 in its first two ticks to 0.3 after eight.
+pub fn margin(life: i32) -> f64 {
+    #[allow(clippy::cast_precision_loss)]
+    let m = ((life - 2) as f32 / 20.0).clamp(0.0, 0.3);
+    f64::from(m)
+}
+
+/// The own random of a projectile a mob is about to shoot (`Entity.random`, seeded like every
+/// new entity): `Projectile.shoot` draws its spread from it. Spawn the projectile with
+/// [`spawn_shot`] then.
+pub fn new_projectile_random() -> vanillite_base::random::LegacyRandom {
+    vanillite_base::random::LegacyRandom::new(crate::mob::new_entity_seed())
+}
+
+/// [`spawn_from`] for a projectile that took its seed in [`new_projectile_random`].
+pub fn spawn_shot(
+    t: &mut Tick<'_, '_>,
+    pos: Vec3,
+    velocity: Vec3,
+    rot: Rotation,
+    data: MissileData,
+) -> EntityId {
+    spawn_owned(t, crate::mob::new_uuid(), pos, velocity, rot, data)
+}
+
+fn spawn_owned(
+    t: &mut Tick<'_, '_>,
+    uuid: u128,
+    pos: Vec3,
+    velocity: Vec3,
+    rot: Rotation,
+    mut data: MissileData,
+) -> EntityId {
     if data.owner.is_none() {
         data.owner = Some(t.id);
     }

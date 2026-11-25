@@ -274,6 +274,7 @@ impl NextSeed for LegacyRandom {
 /// ends and experience drops.
 pub fn finalize_child_from_breeding(t: &mut Tick<'_, '_>, partner: EntityId) {
     use vanillite_base::random::RandomSource;
+    crate::mob::animal::award_breeding(t.ents, t.id, partner, None);
     for id in [t.id, partner] {
         if let Some(m) = t.ents.mob_mut(id) {
             m.age = 6000;
@@ -324,7 +325,7 @@ pub fn gift_loot(t: &mut Tick<'_, '_>, table: &str) -> Vec<ItemStack> {
         last_damage_player: None,
         source: None,
         types: t.env.types,
-        tags: data,
+        tags: &*data,
         attacker_enchantment_level: &none_level,
     };
     let none = |_: &str| 0;
@@ -630,6 +631,34 @@ impl FamilyHooks for Hooks {
             Kind::Sniffer => sniffer::before_tick(t),
             Kind::Piglin => piglin::before_tick(t),
             _ => {}
+        }
+    }
+
+    fn register_goals(m: &mut MobData) {
+        // A tadpole is an `AbstractFish`: the fish goals besides its brain.
+        if m.kind == Kind::Tadpole {
+            super::wildlife::fish::register_goals(m);
+        }
+    }
+
+    fn travel(t: &mut Tick<'_, '_>, input: Vec3) -> bool {
+        // `travelInWater` of axolotls and frogs (their own speed, no sinking) and of tadpoles
+        // (`AbstractFish`: slow, sinking without a target).
+        let kind = t.mob_ref().kind;
+        if !t.mob_ref().fluids.in_water() {
+            return false;
+        }
+        match kind {
+            Kind::Axolotl | Kind::Frog => {
+                let speed = t.mob_ref().speed;
+                super::wildlife::water_travel(t, input, speed, false);
+                true
+            }
+            Kind::Tadpole => {
+                super::wildlife::water_travel(t, input, 0.01, true);
+                true
+            }
+            _ => false,
         }
     }
 

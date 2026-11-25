@@ -270,10 +270,11 @@ pub fn init(m: &mut MobData) {
             m.move_ctl.kind = MoveKind::Custom;
         }
         Kind::ZombieVillager => {
-            // `initializeZombieVillagerData`: plains, a random profession, level 1.
+            // `initializeZombieVillagerData`: plains, a random profession, level 1. It runs in
+            // `defineSynchedData`, inside the `Entity` constructor, before the entity's random
+            // gets its seed: the draw is not from the mob's random.
             let professions = vanillite_data::registry::VILLAGER_PROFESSION.entries.len();
-            let p = m
-                .random
+            let p = vanillite_base::random::LegacyRandom::new(crate::mob::new_unique_seed())
                 .next_int_bounded(i32::try_from(professions).unwrap_or(1).max(1));
             let plains = vanillite_data::registry::VILLAGER_TYPE
                 .id("minecraft:plains")
@@ -1089,7 +1090,10 @@ pub fn move_control(t: &mut Tick<'_, '_>) -> bool {
         }
         let ctl = t.mob_ref().move_ctl;
         if ctl.operation != nav::Operation::MoveTo || t.mob_ref().nav.is_done() {
-            t.mob().speed = 0.0;
+            // `setSpeed(0)`: also the forward input.
+            let m = t.mob();
+            m.speed = 0.0;
+            m.zza = 0.0;
             return true;
         }
         let p = t.pos();
@@ -1105,7 +1109,9 @@ pub fn move_control(t: &mut Tick<'_, '_>) -> bool {
         #[allow(clippy::cast_possible_truncation)]
         let target_speed = (ctl.speed_modifier * t.mob_ref().attrs.movement_speed) as f32;
         let speed = t.mob_ref().speed + 0.125 * (target_speed - t.mob_ref().speed);
-        t.mob().speed = speed;
+        let m = t.mob();
+        m.speed = speed;
+        m.zza = speed;
         let s = f64::from(speed);
         let v = t.velocity();
         t.set_velocity(Vec3::new(

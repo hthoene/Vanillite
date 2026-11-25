@@ -65,6 +65,12 @@ impl Update {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Update steps run on this thread, for measurements in tests.
+    pub(crate) static STEPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 /// What one step of an update does.
 enum Step {
     Shape {
@@ -163,6 +169,8 @@ impl Level {
     }
 
     fn run_step(&mut self, step: Option<Step>) {
+        #[cfg(test)]
+        STEPS.with(|s| s.set(s.get() + 1));
         match step {
             Some(Step::Shape {
                 direction,
@@ -173,7 +181,7 @@ impl Level {
                 limit,
             }) => {
                 // `NeighborUpdater.executeShapeUpdate`.
-                let current = self.block(pos);
+                let current = self.block_loading(pos);
                 if flags & update::SKIP_SHAPE_UPDATE_ON_WIRE == 0
                     || !current.block().eq(&ids::REDSTONE_WIRE)
                 {
@@ -184,7 +192,7 @@ impl Level {
             }
             Some(Step::Neighbor { pos, source }) => {
                 // `NeighborUpdater.executeUpdate`.
-                let state = self.block(pos);
+                let state = self.block_loading(pos);
                 self.handle_neighbor_changed(state, pos, source, false);
             }
             Some(Step::Full {

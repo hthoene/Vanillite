@@ -203,7 +203,7 @@ fn json_to_nbt(json: &serde_json::Value) -> vanillite_nbt::Tag {
 }
 
 /// NBT as JSON for the data-driven parsers (numbers stay numbers, `Byte` too).
-fn nbt_to_json(tag: &vanillite_nbt::Tag) -> serde_json::Value {
+pub(crate) fn nbt_to_json(tag: &vanillite_nbt::Tag) -> serde_json::Value {
     use serde_json::Value;
     use vanillite_nbt::Tag;
     match tag {
@@ -355,23 +355,69 @@ impl Executor for ComputeExecutor {
 #[derive(Debug, Default)]
 pub(crate) struct ChunkPackets {
     cache: RefCell<FxHashMap<ChunkPos, Arc<SharedPacket>>>,
+    /// `anticheat.anti-xray`, `None` when disabled.
+    anti_xray: Option<crate::anti_xray::AntiXray>,
+    /// Block changes of the tick, for Anti-Xray.
+    changes: Vec<vanillite_base::BlockPos>,
 }
 
 impl ChunkPackets {
-    /// Drops the packets of changed and unloaded chunks.
+    /// Applies the world's `anticheat.anti-xray` rules; changed rules drop every packet.
+    pub(crate) fn set_anti_xray(
+        &mut self,
+        rules: &vanillite_config::AntiXrayRules,
+        dimension: &str,
+    ) {
+        let same = match &self.anti_xray {
+            Some(current) => current.built_from(rules),
+            None => rules.engine_mode == vanillite_config::AntiXrayMode::Disabled,
+        };
+        if !same {
+            self.anti_xray = crate::anti_xray::AntiXray::new(rules, dimension);
+            self.cache.get_mut().clear();
+        }
+    }
+
+    /// Drops the packets of changed and unloaded chunks. With Anti-Xray, the masked blocks
+    /// around changed blocks are added to `changed` (the tick's block updates), and changes at a
+    /// chunk border also drop the neighbour's packet (its blocks may now be exposed).
     pub(crate) fn invalidate(
         &mut self,
         chunks: &mut Chunks,
         light: &[(ChunkPos, vanillite_world::chunks::LightChange)],
+        changed: &mut FxHashMap<vanillite_base::SectionPos, Vec<vanillite_base::BlockPos>>,
     ) {
         let cache = self.cache.get_mut();
         for (pos, _) in light {
             cache.remove(pos);
         }
-        let mut blocks = Vec::new();
-        chunks.take_block_changes(&mut blocks);
-        for pos in blocks {
+        let blocks = &mut self.changes;
+        blocks.clear();
+        chunks.take_block_changes(blocks);
+        for pos in blocks.iter() {
             cache.remove(&pos.chunk());
+        }
+        if let Some(anti_xray) = &self.anti_xray {
+            for pos in blocks.iter() {
+                let chunk = pos.chunk();
+                let dx = match pos.x & 15 {
+                    0 => -1,
+                    15 => 1,
+                    _ => 0,
+                };
+                let dz = match pos.z & 15 {
+                    0 => -1,
+                    15 => 1,
+                    _ => 0,
+                };
+                if dx != 0 {
+                    cache.remove(&ChunkPos::new(chunk.x.wrapping_add(dx), chunk.z));
+                }
+                if dz != 0 {
+                    cache.remove(&ChunkPos::new(chunk.x, chunk.z.wrapping_add(dz)));
+                }
+            }
+            anti_xray.reveal(chunks, blocks, changed);
         }
         if cache.len() > 4096 {
             cache.retain(|pos, _| chunks.chunk(*pos).is_some());
@@ -393,6 +439,7 @@ impl ChunkPackets {
             chunks,
             block_entities,
             cache: &self.cache,
+            anti_xray: self.anti_xray.as_ref(),
         }
     }
 }
@@ -402,6 +449,7 @@ pub(crate) struct WorldChunkSource<'a> {
     chunks: &'a Chunks,
     block_entities: &'a vanillite_game::level::BlockEntities,
     cache: &'a RefCell<FxHashMap<ChunkPos, Arc<SharedPacket>>>,
+    anti_xray: Option<&'a crate::anti_xray::AntiXray>,
 }
 
 impl ChunkSource for WorldChunkSource<'_> {
@@ -441,6 +489,33 @@ impl ChunkSource for WorldChunkSource<'_> {
                 tags.push((be.pos, u32::from(kind), vec![0]));
             }
         }
+        // Anti-Xray: one check per chunk; masked sections are copies.
+        let masked = self
+            .anti_xray
+            .and_then(|anti_xray| anti_xray.mask(self.chunks, pos, &chunk.chunk));
+        if let Some(sections) = &masked {
+            // Block entities of masked blocks would give them away.
+            let min_section = chunk.chunk.min_section();
+            tags.retain(|(bpos, _, _)| {
+                let index = usize::try_from((bpos.y >> 4).wrapping_sub(min_section)).ok();
+                match (
+                    index.and_then(|i| sections.get(i)),
+                    index.and_then(|i| chunk.chunk.sections().get(i)),
+                ) {
+                    (Some(sent), Some(real)) => {
+                        Arc::ptr_eq(sent, real) || {
+                            let (x, y, z) = (
+                                (bpos.x & 15) as u32,
+                                (bpos.y & 15) as u32,
+                                (bpos.z & 15) as u32,
+                            );
+                            sent.block(x, y, z) == real.block(x, y, z)
+                        }
+                    }
+                    _ => true,
+                }
+            });
+        }
         let block_entities: Vec<BlockEntityWire<'_>> = tags
             .iter()
             .filter_map(|(bpos, kind, nbt)| {
@@ -454,11 +529,12 @@ impl ChunkSource for WorldChunkSource<'_> {
             .collect();
         let mut body = Vec::with_capacity(16 * 1024);
         vanillite_protocol::codec::write_varint(&mut body, LevelChunkWithLight::ID);
-        vanillite_chunk::packet::encode_chunk_with_light(
+        vanillite_chunk::packet::encode_chunk_with_sections(
             &mut body,
             pos.x,
             pos.z,
             &chunk.chunk,
+            masked.as_deref().unwrap_or(chunk.chunk.sections()),
             &block_entities,
         );
         let packet = Arc::new(SharedPacket::new(body));

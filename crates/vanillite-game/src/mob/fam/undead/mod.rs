@@ -92,7 +92,8 @@ impl Melee {
             pathed: Vec3::ZERO,
             recalc: 0,
             attack_in: 0,
-            last_can_use: i64::MIN / 2,
+            // `lastCanUseCheck` starts at 0: no attack in a world's first 20 ticks.
+            last_can_use: 0,
             raise_arm: 0,
         }
     }
@@ -588,6 +589,14 @@ impl FamilyHooks for Hooks {
         by_group!(m.kind, dimensions(m), None)
     }
 
+    fn size_scale(m: &MobData) -> Option<f32> {
+        matches!(m.kind, Kind::Slime | Kind::MagmaCube | Kind::SulfurCube).then(|| {
+            #[allow(clippy::cast_precision_loss)]
+            let s = cubes::size(m) as f32 * if m.baby { 0.5 } else { 1.0 };
+            s
+        })
+    }
+
     fn walk_target_value(kind: Kind, level: &Level, env: &Environment, pos: BlockPos) -> f64 {
         match kind {
             Kind::Slime | Kind::MagmaCube | Kind::SulfurCube | Kind::Phantom => 0.0,
@@ -805,15 +814,13 @@ pub fn living_cause(h: &Hurt<'_, '_>, source: &DamageSource) -> Option<EntityId>
         .filter(|&c| h.ents.mob(c).is_some() || h.ents.player(c).is_some())
 }
 
-/// Adds an effect to a living target: mobs now, players with the effect system of #74.
+/// Adds an effect to a living target (mob or player).
 pub fn add_effect(
     ents: &mut crate::entities::Entities,
     target: EntityId,
     effect: crate::effect::EffectInstance,
 ) {
-    if let Some(m) = ents.mob_mut(target) {
-        crate::effect::living::add_to_mob(m, effect);
-    }
+    crate::effect::living::add_detached(ents, target, effect);
 }
 
 /// The effective difficulty as an integer (`(int) difficulty.getEffectiveDifficulty()`).

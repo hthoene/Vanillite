@@ -198,6 +198,8 @@ packet_set! {
         UpdateTags(cfg::clientbound::UpdateTags),
         SelectKnownPacks(cfg::clientbound::SelectKnownPacks),
         CodeOfConduct(cfg::clientbound::CodeOfConduct),
+        ResourcePackPush(cfg::clientbound::ResourcePackPush),
+        ServerLinks(cfg::clientbound::ServerLinks),
     }
 }
 

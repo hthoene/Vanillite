@@ -375,7 +375,7 @@ pub fn ai_step(t: &mut Tick<'_, '_>) {
         let dot = ((dir.dot(aim) as f32 + 0.5) / 1.5).max(0.0);
         if xdd.abs() > 1.0e-5 || zdd.abs() > 1.0e-5 {
             #[allow(clippy::cast_possible_truncation)]
-            let atan = xdd.atan2(zdd) as f32;
+            let atan = vanillite_base::math::atan2(xdd, zdd) as f32;
             let y_rot_d = vanillite_base::math::wrap_degrees_f(
                 180.0 - atan * (180.0 / std::f32::consts::PI) - y_rot(t),
             )

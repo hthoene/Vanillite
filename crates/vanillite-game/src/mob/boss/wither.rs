@@ -317,6 +317,11 @@ pub fn check_spawn(
         },
         m,
     );
+    // `SUMMONED_ENTITY` for the players within 50 blocks of the wither's box.
+    if let Some(b) = level.entities.store.get(id).map(|e| e.aabb()) {
+        let near = crate::mob::animal::players_in(&level.entities, &b.inflate(50.0, 50.0, 50.0));
+        crate::mob::animal::award_summoned(&mut level.entities, &near, id);
+    }
     // `CarvedPumpkinBlock.updatePatternBlocks`.
     for x in 0..3 {
         for y in 0..3 {
@@ -785,7 +790,7 @@ fn direction_within_radians(
     zd: f64,
     max_radians: f64,
 ) -> Option<(i32, i32, i32)> {
-    let center = zd.atan2(xd) - f64::from(std::f32::consts::FRAC_PI_2);
+    let center = vanillite_base::math::atan2(zd, xd) - f64::from(std::f32::consts::FRAC_PI_2);
     let y_radians = center + f64::from(2.0 * random.next_float() - 1.0) * max_radians;
     let dist = vanillite_base::math::lerp(random.next_double().sqrt(), 0.0, max_dist)
         * std::f64::consts::SQRT_2;
@@ -1526,35 +1531,9 @@ fn can_hit(ents: &Entities, skull: &Skull, id: EntityId, other: EntityId) -> boo
             .is_some_and(|s| matches!(s, SpecialData::EndCrystal(_)))
 }
 
-/// Where the segment enters `b`, as a fraction of the segment.
+/// Where the segment enters `b`, as a fraction (`AABB.clip`).
 fn segment_box(from: Vec3, to: Vec3, b: &Aabb) -> Option<f64> {
-    if b.contains(from.x, from.y, from.z) {
-        return Some(0.0);
-    }
-    let d = to - from;
-    let mut t_min: f64 = 0.0;
-    let mut t_max: f64 = 1.0;
-    for (o, dd, lo, hi) in [
-        (from.x, d.x, b.min_x, b.max_x),
-        (from.y, d.y, b.min_y, b.max_y),
-        (from.z, d.z, b.min_z, b.max_z),
-    ] {
-        if dd.abs() < 1.0e-12 {
-            if o < lo || o > hi {
-                return None;
-            }
-        } else {
-            let a = (lo - o) / dd;
-            let c = (hi - o) / dd;
-            let (a, c) = if a < c { (a, c) } else { (c, a) };
-            t_min = t_min.max(a);
-            t_max = t_max.min(c);
-            if t_min > t_max {
-                return None;
-            }
-        }
-    }
-    Some(t_min)
+    crate::mob::projectile::segment_box(from, to, b)
 }
 
 /// `WitherSkull.tick` (`AbstractHurtingProjectile.tick`).

@@ -696,6 +696,8 @@ impl Cx<'_, '_> {
                 }
                 out.extend_from_slice(r.take_rest());
             }
+            // 1.21.4 wrote the same doubles and floats through `Vec3.STREAM_CODEC`.
+            Cb::MoveVehicle => out.extend_from_slice(r.take_rest()),
             Cb::ProjectilePower if self.at(V1_21) => return Ok(Some(false)),
             Cb::UpdateAdvancements | Cb::UpdateRecipes | Cb::PlaceGhostRecipe => {
                 // The newest step translates them for its own version only.

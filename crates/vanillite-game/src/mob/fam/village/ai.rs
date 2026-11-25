@@ -1848,8 +1848,7 @@ pub fn behavior_tick(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) {
             if now >= *next_cycle && closer_to_center(p, t.pos(), 1.0) {
                 let has =
                     v::count_item(&state(t.mob_ref()).merchant.inventory, items::BONE_MEAL.0) > 0;
-                let valid = crop_growing(t.level.block(p))
-                    || crate::block::bonemeal::is_valid_target(t.level, p, t.level.block(p));
+                let valid = crop_growing(t.level.block(p));
                 if has && valid {
                     v::remove_item_type(
                         &mut state_mut(t.mob()).merchant.inventory,

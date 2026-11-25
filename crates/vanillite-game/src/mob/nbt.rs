@@ -638,10 +638,13 @@ pub fn save_arrow(
     }
     out.insert("HasBeenShot", true);
     out.insert("LeftOwner", a.left_owner);
-    let mut item = Compound::new();
-    item.insert("id", "minecraft:arrow");
-    item.insert("count", 1);
-    out.insert("item", item);
+    out.insert("item", crate::item_nbt::stack_to_nbt(&a.item));
+    if let Some(w) = a.weapon.as_ref().filter(|w| !w.is_empty()) {
+        out.insert("weapon", crate::item_nbt::stack_to_nbt(w));
+    }
+    if core.kind() == ids::SPECTRAL_ARROW {
+        out.insert("Duration", a.spectral_duration);
+    }
     out
 }
 
@@ -656,9 +659,25 @@ fn hit_sound(a: &super::projectile::ArrowData) -> &'static str {
 
 /// An arrow from entity NBT (its owner is not resolved).
 pub fn load_arrow(tag: &Compound) -> Option<(LoadedEntity, super::projectile::ArrowData)> {
-    if type_of(tag)? != ids::ARROW {
+    let kind = type_of(tag)?;
+    if !super::projectile::is_arrow_kind(kind) {
         return None;
     }
+    // The pickup item; a missing one is the kind's default item.
+    let item = match tag.get("item") {
+        Some(Tag::Compound(c)) => crate::item_nbt::stack_from_nbt(c),
+        _ => crate::item::ItemStack::default(),
+    };
+    let item = if item.is_empty() {
+        let name = if kind == ids::SPECTRAL_ARROW {
+            "minecraft:spectral_arrow"
+        } else {
+            "minecraft:arrow"
+        };
+        crate::item::ItemStack::new(vanillite_data::registry::ITEM.id(name).unwrap_or(0), 1)
+    } else {
+        item
+    };
     let e = load_entity(tag)?;
     let damage = match tag.get("damage") {
         Some(Tag::Double(d)) if d.is_finite() => *d,
@@ -680,7 +699,9 @@ pub fn load_arrow(tag: &Compound) -> Option<(LoadedEntity, super::projectile::Ar
             random_state: LegacyRandom::new(crate::mob::new_entity_seed()).state(),
             knockback: 0.0,
             fire: int(tag, "Fire").is_some_and(|f| f > 0),
-            effect: None,
+            item,
+            in_ground_time: 0,
+            spectral_duration: int(tag, "Duration").unwrap_or(200),
             pierce_level: u8::try_from(int(tag, "PierceLevel").unwrap_or(0).clamp(0, 127))
                 .unwrap_or(0),
             pierced: Vec::new(),
@@ -688,6 +709,10 @@ pub fn load_arrow(tag: &Compound) -> Option<(LoadedEntity, super::projectile::Ar
                 tag.get("SoundEvent"),
                 Some(Tag::String(s)) if s.as_str() == "minecraft:item.crossbow.hit"
             ),
+            weapon: match tag.get("weapon") {
+                Some(Tag::Compound(c)) => Some(crate::item_nbt::stack_from_nbt(c)),
+                _ => None,
+            },
         },
     ))
 }
