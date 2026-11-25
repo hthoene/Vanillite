@@ -948,7 +948,7 @@ fn valid_position_for_mob(
 ) -> bool {
     let category = Category::of(mob.kind.type_id()).unwrap_or(Category::Monster);
     let despawn = f64::from(category.despawn_distance());
-    if nearest > despawn * despawn && mob.kind.remove_when_far_away() {
+    if nearest > despawn * despawn && super::fam::remove_when_far_away_mob(mob, nearest) {
         return false;
     }
     let block = BlockPos::containing(pos.x, pos.y, pos.z);

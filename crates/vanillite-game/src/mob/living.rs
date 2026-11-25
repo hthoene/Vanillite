@@ -958,7 +958,13 @@ pub fn check_despawn(t: &mut Tick<'_, '_>) {
     if !t.cx.has_players {
         return;
     }
-    let persistent = t.mob_ref().persistent;
+    // `isPersistenceRequired || requiresCustomPersistence` (a passenger or leashed).
+    let persistent = t.mob_ref().persistent
+        || super::fam::requires_custom_persistence(t.mob_ref())
+        || t.ents.riding.vehicle_of(t.id).is_some()
+        || t.ents.leashes.contains_key(&t.id);
+    let category = super::spawn::Category::of(t.core().kind());
+    let despawn = f64::from(category.map_or(128, super::spawn::Category::despawn_distance));
     let p = t.pos();
     let r = 128.0;
     let area = Aabb::new(p.x - r, p.y - r, p.z - r, p.x + r, p.y + r, p.z + r);
@@ -971,8 +977,8 @@ pub fn check_despawn(t: &mut Tick<'_, '_>) {
             }
         }
     });
-    let far_away_ok = t.mob_ref().kind.remove_when_far_away();
-    if !persistent && nearest > 128.0 * 128.0 && far_away_ok {
+    let far_away_ok = super::fam::remove_when_far_away_mob(t.mob_ref(), nearest);
+    if !persistent && nearest > despawn * despawn && far_away_ok {
         t.mob().removed = true;
         return;
     }

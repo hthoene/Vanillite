@@ -276,6 +276,11 @@ pub trait FamilyHooks {
     fn remove_when_far_away(kind: Kind) -> bool {
         Self::is_monster(kind)
     }
+    /// `removeWhenFarAway(distSqr)` with the mob's state (tamed cats, fish from buckets,
+    /// patrols); defaults to the kind's.
+    fn remove_when_far_away_mob(m: &MobData, _dist_sqr: f64) -> bool {
+        Self::remove_when_far_away(m.kind)
+    }
     /// `requiresCustomPersistence` (tamed, from a bucket, ...).
     fn requires_custom_persistence(_m: &MobData) -> bool {
         false
@@ -548,6 +553,17 @@ pub fn allowed_in_peaceful(kind: Kind) -> bool {
 }
 pub fn remove_when_far_away(kind: Kind) -> bool {
     by_family!(kind, false, remove_when_far_away(kind))
+}
+pub fn remove_when_far_away_mob(m: &MobData, dist_sqr: f64) -> bool {
+    by_family!(
+        m.kind,
+        if m.kind == Kind::Chicken {
+            m.chicken_jockey
+        } else {
+            m.kind.remove_when_far_away()
+        },
+        remove_when_far_away_mob(m, dist_sqr)
+    )
 }
 pub fn requires_custom_persistence(m: &MobData) -> bool {
     by_family!(m.kind, false, requires_custom_persistence(m))

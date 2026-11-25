@@ -246,6 +246,7 @@ pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
                     out.insert("variant", variant_name(m.variant));
                     if m.kind == Kind::Chicken {
                         out.insert("EggLayTime", m.egg_time);
+                        out.insert("IsChickenJockey", m.chicken_jockey);
                     }
                 }
             }
@@ -371,6 +372,7 @@ pub fn load_mob(tag: &Compound, seed: i64) -> Option<LoadedMob> {
                 {
                     m.egg_time = t;
                 }
+                m.chicken_jockey = kind == Kind::Chicken && boolean(tag, "IsChickenJockey");
             }
         }
         Kind::Skeleton | Kind::Spider | Kind::Enderman => {}
