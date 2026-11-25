@@ -101,6 +101,10 @@ pub struct LevelSettings {
     pub fire_spread_radius: i32,
     /// `spread_vines` game rule.
     pub spread_vines: bool,
+    /// The server's difficulty (`level.getDifficulty()`).
+    pub difficulty: crate::survival::rules::Difficulty,
+    /// The dimension's `infiniburn` tag.
+    pub infiniburn: crate::block::fire::Infiniburn,
     /// The dimension's `fast_lava` attribute (the Nether).
     pub fast_lava: bool,
     /// The dimension has sky light.
@@ -128,6 +132,8 @@ impl Default for LevelSettings {
             max_snow_accumulation_height: 1,
             fire_spread_radius: 128,
             spread_vines: true,
+            difficulty: crate::survival::rules::Difficulty::Normal,
+            infiniburn: crate::block::fire::Infiniburn::Overworld,
             fast_lava: false,
             has_sky_light: true,
             water_evaporates: false,

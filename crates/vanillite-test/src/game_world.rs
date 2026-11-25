@@ -154,9 +154,8 @@ fn install() {
             vanillite_server::load_damage_types(&packs),
             vanillite_server::load_block_facts(&packs),
         ));
-        let _ = BIOMES.set(
-            vanillite_worldgen::biome::BiomeRegistry::load(&packs).expect("Vanilla biomes"),
-        );
+        let _ = BIOMES
+            .set(vanillite_worldgen::biome::BiomeRegistry::load(&packs).expect("Vanilla biomes"));
         let _ = BIOME_NAMES.set(
             packs
                 .registry("minecraft:worldgen/biome")
@@ -289,6 +288,7 @@ impl GameWorld {
             "hard" => Difficulty::Hard,
             d => return Err(format!("unknown difficulty `{d}`")),
         };
+        level.settings.difficulty = difficulty;
         // The world starts at day time 0 unless the scenario sets one; time does not advance.
         let env = Environment::overworld(spec.time.unwrap_or(0), 0.0, 0.0);
         Ok(Self {
@@ -777,9 +777,9 @@ fn apply_rules(
                 | "mob_griefing"
                 | "mob_drops"
         );
-        let rule = Rule::by_name(name).filter(|_| supported).ok_or_else(|| {
-            format!("game rule {name} is not supported by the game world")
-        })?;
+        let rule = Rule::by_name(name)
+            .filter(|_| supported)
+            .ok_or_else(|| format!("game rule {name} is not supported by the game world"))?;
         let v = match value.as_str() {
             "true" => 1,
             "false" => 0,
