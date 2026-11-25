@@ -2,7 +2,7 @@
 //! near players, the spawn rules of each mob, the animals of freshly generated chunks
 //! (`spawnMobsForChunkGeneration`) and spawning a mob by command.
 
-use vanillite_base::hash::{FxHashMap, FxHashSet};
+use vanillite_base::hash::FxHashMap;
 use vanillite_base::random::{LegacyRandom, RandomSource};
 use vanillite_base::{BlockPos, ChunkPos, Vec3};
 use vanillite_chunk::HeightmapKind;
@@ -12,6 +12,7 @@ use vanillite_world::entity::{EntityId, Rotation};
 
 use super::fam::{ExtraMob, Relation, SpawnContext, SpawnReason};
 use super::kinds::{self, FarmClimate, Kind};
+use super::nearby::{CloseForSpawning, NearbyPlayers};
 use super::physics;
 use super::{Environment, MobData, max_local_raw_brightness};
 use crate::level::Level;
@@ -208,10 +209,32 @@ pub struct SpawnInput<'a> {
     pub env: Environment,
 }
 
-/// Per-player mob counts (`LocalMobCapCalculator.MobCounts`).
+/// Per-player mob counts (`LocalMobCapCalculator.MobCounts`), by [`NearbyPlayers`] slot.
 #[derive(Debug, Default)]
 struct LocalCaps {
     counts: Vec<[i32; 7]>,
+    /// The number of players below the cap per category (counts only grow during a tick).
+    below: [usize; 7],
+}
+
+impl LocalCaps {
+    /// `addMob` for one player.
+    fn add(&mut self, slot: u32, c: Category, n: i32) {
+        let count = &mut self.counts[slot as usize][c.index()];
+        let max = c.max_per_chunk();
+        if *count < max && *count + n >= max {
+            self.below[c.index()] -= 1;
+        }
+        *count += n;
+    }
+
+    /// `canSpawn` for the players close to a chunk.
+    fn can_spawn(&self, c: Category, near: &[u32]) -> bool {
+        self.below[c.index()] > 0
+            && near
+                .iter()
+                .any(|&s| self.counts[s as usize][c.index()] < c.max_per_chunk())
+    }
 }
 
 /// `NaturalSpawner.SpawnState` of one tick.
@@ -227,82 +250,6 @@ impl SpawnState {
         let max = c.max_per_chunk() * self.spawnable_chunks / 289;
         self.counts[c.index()] < max
     }
-}
-
-fn chunk_center_distance_sqr(chunk: ChunkPos, pos: Vec3) -> f64 {
-    let x = f64::from(chunk.x) * 16.0 + 8.0;
-    let z = f64::from(chunk.z) * 16.0 + 8.0;
-    let dx = x - pos.x;
-    let dz = z - pos.z;
-    dx * dx + dz * dz
-}
-
-/// The players in cells of 8 × 8 chunks (128 blocks): the spawner's player queries look at
-/// the 3 × 3 cells around a chunk instead of every player.
-#[derive(Debug, Default)]
-struct PlayerGrid {
-    cells: FxHashMap<(i32, i32), Vec<usize>>,
-}
-
-impl PlayerGrid {
-    fn build(&mut self, players: &[(EntityId, Vec3)]) {
-        for v in self.cells.values_mut() {
-            v.clear();
-        }
-        for (i, (_, p)) in players.iter().enumerate() {
-            let c = BlockPos::containing(p.x, p.y, p.z).chunk();
-            self.cells.entry((c.x >> 3, c.z >> 3)).or_default().push(i);
-        }
-        self.cells.retain(|_, v| !v.is_empty());
-    }
-
-    /// Calls `f` with the players whose cell is next to `chunk`'s.
-    fn around(&self, chunk: ChunkPos, mut f: impl FnMut(usize)) {
-        let (cx, cz) = (chunk.x >> 3, chunk.z >> 3);
-        for dx in -1..=1 {
-            for dz in -1..=1 {
-                if let Some(list) = self.cells.get(&(cx + dx, cz + dz)) {
-                    for &i in list {
-                        f(i);
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// The players close enough to `chunk` for spawning (`getPlayersCloseForSpawning`), in
-/// player order.
-fn players_near(input: &SpawnInput<'_>, grid: &PlayerGrid, chunk: ChunkPos, out: &mut Vec<usize>) {
-    out.clear();
-    grid.around(chunk, |i| {
-        if chunk_center_distance_sqr(chunk, input.players[i].1) < 16384.0 {
-            out.push(i);
-        }
-    });
-    out.sort_unstable();
-}
-
-/// The nearest player to a position (`getNearestPlayer(x, y, z, -1, false)`), from the cells
-/// around it; `None` when no player is within 128 blocks of its chunk cell neighbourhood.
-fn nearest_player_distance(input: &SpawnInput<'_>, grid: &PlayerGrid, at: Vec3) -> Option<f64> {
-    let chunk = BlockPos::containing(at.x, at.y, at.z).chunk();
-    let mut best: Option<f64> = None;
-    grid.around(chunk, |i| {
-        let d = input.players[i].1.distance_to_sqr(at);
-        if best.is_none_or(|b| d < b) {
-            best = Some(d);
-        }
-    });
-    if best.is_none() {
-        // Farther players still count for the distance checks.
-        best = input
-            .players
-            .iter()
-            .map(|(_, p)| p.distance_to_sqr(at))
-            .min_by(f64::total_cmp);
-    }
-    best
 }
 
 /// `PotentialCalculator`: the charges of the mobs with a spawn cost.
@@ -340,9 +287,9 @@ impl Potential {
 #[derive(Debug, Default)]
 pub struct Spawner {
     chunks: Vec<ChunkPos>,
-    seen: FxHashSet<ChunkPos>,
-    near: Vec<usize>,
-    grid: PlayerGrid,
+    nearby: NearbyPlayers,
+    close: CloseForSpawning,
+    mob_chunks: FxHashMap<ChunkPos, [i32; 7]>,
     potential: Potential,
     /// Parsed structure data of chunks.
     pub structures: super::structures::StructureIndex,
@@ -401,25 +348,20 @@ pub fn tick(
     if input.players.is_empty() {
         return;
     }
-    spawner.grid.build(input.players);
-    // `getNaturalSpawnChunkCount`: chunks within 8 of a player chunk.
-    spawner.seen.clear();
-    for (_, p) in input.players {
-        let c = BlockPos::containing(p.x, p.y, p.z).chunk();
-        for dx in -8..=8 {
-            for dz in -8..=8 {
-                spawner.seen.insert(ChunkPos::new(c.x + dx, c.z + dz));
-            }
-        }
-    }
+    spawner.nearby.update(input.players);
+    spawner.close.clear();
+    let slots = spawner.nearby.slot_count();
     let mut state = SpawnState {
-        spawnable_chunks: i32::try_from(spawner.seen.len()).unwrap_or(i32::MAX),
+        // `getNaturalSpawnChunkCount`: chunks within 8 of a player chunk.
+        spawnable_chunks: i32::try_from(spawner.nearby.chunk_count()).unwrap_or(i32::MAX),
         counts: [0; 7],
         local: LocalCaps {
-            counts: vec![[0; 7]; input.players.len()],
+            counts: vec![[0; 7]; slots],
+            below: [input.players.len(); 7],
         },
     };
     spawner.potential.charges.clear();
+    spawner.mob_chunks.clear();
     // `createState`: the non-persistent mobs per category, globally and per player, and the
     // charges of the mobs with a spawn cost.
     for (id, m) in level.entities.mobs.iter() {
@@ -442,9 +384,22 @@ pub fn tick(
             spawner.potential.add(block, charge);
         }
         state.counts[c.index()] += 1;
-        players_near(input, &spawner.grid, chunk, &mut spawner.near);
-        for &i in &spawner.near {
-            state.local.counts[i][c.index()] += 1;
+        spawner.mob_chunks.entry(chunk).or_insert([0; 7])[c.index()] += 1;
+    }
+    // The local counts by chunk: the sums do not depend on the order.
+    for (&chunk, counts) in &spawner.mob_chunks {
+        let mut present = [(Category::Monster, 0); 7];
+        let mut len = 0;
+        for c in Category::ALL {
+            if counts[c.index()] != 0 {
+                present[len] = (c, counts[c.index()]);
+                len += 1;
+            }
+        }
+        for &slot in spawner.close.get(&spawner.nearby, chunk) {
+            for &(c, n) in &present[..len] {
+                state.local.add(slot, c, n);
+            }
         }
     }
     let categories: Vec<Category> = Category::ALL
@@ -458,19 +413,12 @@ pub fn tick(
     // `collectSpawningChunks`: ticking chunks with a player within 128 blocks, shuffled.
     spawner.chunks.clear();
     {
-        let grid = &spawner.grid;
-        spawner
-            .chunks
-            .extend(spawner.seen.iter().copied().filter(|&c| {
-                if !level.is_block_ticking(c) {
-                    return false;
-                }
-                let mut any = false;
-                grid.around(c, |i| {
-                    any |= chunk_center_distance_sqr(c, input.players[i].1) < 16384.0;
-                });
-                any
-            }));
+        let nearby = &spawner.nearby;
+        spawner.chunks.extend(
+            nearby
+                .chunks()
+                .filter(|&c| level.is_block_ticking(c) && nearby.any_close_for_spawning(c)),
+        );
     }
     spawner.chunks.sort_by_key(|c| (c.x, c.z));
     let n = spawner.chunks.len();
@@ -490,12 +438,8 @@ pub fn tick(
     for &chunk in &chunks {
         for &c in &categories {
             // `canSpawnForCategoryLocal`.
-            players_near(input, &spawner.grid, chunk, &mut spawner.near);
-            let local_ok = spawner
-                .near
-                .iter()
-                .any(|&i| state.local.counts[i][c.index()] < c.max_per_chunk());
-            if !local_ok {
+            let near = spawner.close.get(&spawner.nearby, chunk);
+            if !state.local.can_spawn(c, near) {
                 continue;
             }
             spawn_category_for_chunk(level, table, spawner, input, &mut state, c, chunk);
@@ -627,9 +571,9 @@ fn spawn_category_for_chunk(
             let pos = BlockPos::new(x, y, z);
             let (xx, zz) = (f64::from(x) + 0.5, f64::from(z) + 0.5);
             let at = Vec3::new(xx, f64::from(y), zz);
-            let Some(nearest) = nearest_player_distance(input, &spawner.grid, at) else {
-                continue;
-            };
+            // `getNearestPlayer`: only compared with 24 (`isRightDistanceToPlayerAndSpawnPoint`
+            // rejects closer positions) and the despawn distances up to 128.
+            let nearest = spawner.nearby.nearest_distance_sqr(at, 576.0);
             if !right_distance(level, input, chunk, pos, nearest) {
                 continue;
             }
@@ -699,9 +643,8 @@ fn spawn_category_for_chunk(
             // `afterSpawn`: the charge, the counts.
             spawner.potential.add(pos, cost.map_or(0.0, |c| c.0));
             state.counts[category.index()] += 1;
-            players_near(input, &spawner.grid, chunk, &mut spawner.near);
-            for &i in &spawner.near {
-                state.local.counts[i][category.index()] += 1;
+            for &slot in spawner.close.get(&spawner.nearby, chunk) {
+                state.local.add(slot, category, 1);
             }
             if cluster >= max_spawn_cluster_size(kind) {
                 return;

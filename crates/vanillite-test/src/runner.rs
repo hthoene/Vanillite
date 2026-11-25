@@ -57,15 +57,20 @@ fn apply(
     if let Some(effect) = &op.effect {
         return world.effect(effect);
     }
+    if let Some(potion) = &op.throw_potion {
+        return world.throw_potion(potion);
+    }
     let updates = match op.kind {
         OpKind::Set => false,
         OpKind::Place => true,
         OpKind::Fill => action,
         OpKind::Hurt => return Err("hurt without its damage".to_owned()),
         OpKind::Effect => return Err("effect without its effect".to_owned()),
+        OpKind::ThrowPotion => return Err("throw_potion without its potion".to_owned()),
         OpKind::Force | OpKind::Unforce => {
             return world.set_forced(&op.chunks, op.kind == OpKind::Force);
         }
+        OpKind::Restart => return world.restart(),
     };
     let state = parse_state(&op.block)?;
     let (a, b) = (op.from, op.to);

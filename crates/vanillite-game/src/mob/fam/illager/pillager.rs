@@ -329,6 +329,7 @@ pub fn perform_crossbow_attack(t: &mut Tick<'_, '_>, target: EntityId) {
             uncertainty,
             Some(id),
             Some(&weapon),
+            &projectile::mob_arrow(None),
             false,
             0,
         );

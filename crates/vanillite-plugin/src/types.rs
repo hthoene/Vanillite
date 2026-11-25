@@ -114,6 +114,14 @@ impl Text {
         ))
     }
 
+    /// The text as a JSON text component.
+    pub(crate) fn to_json(&self) -> String {
+        match self {
+            Text::Plain(s) => format!("\"{}\"", escape_json(s)),
+            Text::Json(s) => s.clone(),
+        }
+    }
+
     pub(crate) fn parts(&self) -> (&str, u32) {
         match self {
             Text::Plain(s) => (s, abi::text_format::PLAIN),

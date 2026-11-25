@@ -3,13 +3,14 @@
 
 use std::sync::Arc;
 
-use vanillite_base::math::{floor, java_min};
+use vanillite_base::math::{floor, floor_div, java_min};
 use vanillite_base::random::{PositionalRandomFactory, RandomSource};
 use vanillite_chunk::BiomeId;
 use vanillite_data::block::{BlockId, BlockState};
 use vanillite_datapack::LoadedPacks;
 
 use super::context::MaterialRuleContext;
+use super::rule::{FoldedRules, YBoundsInput};
 use super::rules::MaterialRules;
 use crate::Error;
 use crate::anchor::WorldGenerationContext;
@@ -34,6 +35,37 @@ pub(super) struct OreVeinFns {
     pub density: FnId,
     pub richness: FnId,
     pub filler_gap: FnId,
+    /// `[min, max)` block Y outside of which the density is a constant `<= 0` (the third
+    /// value), so the vein never places a block and its richness is never read there.
+    pub y_range: Option<(i32, i32, f32)>,
+}
+
+impl OreVeinFns {
+    /// The part of `expected` the densities are prefilled on (`None` when empty): its Y extent
+    /// is cut to the vein's Y range, widened to multiples of `y_period` so interpolation sees
+    /// the same cells.
+    pub(super) fn prefill_volume(
+        &self,
+        expected: &DensityVolume,
+        y_period: i32,
+    ) -> Option<DensityVolume> {
+        let Some((min, max, _)) = self.y_range else {
+            return Some(*expected);
+        };
+        let end = expected.min_y + expected.size_y;
+        let from = expected.min_y.max(floor_div(min, y_period) * y_period);
+        let to = end.min((floor_div(max - 1, y_period) + 1) * y_period);
+        (to > from).then(|| {
+            DensityVolume::new(
+                expected.size_x,
+                to - from,
+                expected.size_z,
+                expected.min_x,
+                from,
+                expected.min_z,
+            )
+        })
+    }
 }
 
 /// The surface builder of one world's noise settings (`MaterialSystem`) together with its
@@ -61,6 +93,10 @@ pub struct MaterialSystem {
     surface_noise: Arc<Noise>,
     surface_secondary_noise: Arc<Noise>,
     pub(super) rules: MaterialRules,
+    /// `rules` with no biome condition folded, for `topMaterial`.
+    unfolded: FoldedRules,
+    /// `rules.biome_folds(None)`.
+    no_biome_folds: Vec<Option<bool>>,
     /// Noise instances of `rules.noises`.
     pub(super) noises: Vec<Arc<Noise>>,
     /// Random factories of `rules.random_names`.
@@ -69,6 +105,8 @@ pub struct MaterialSystem {
     pub(super) ore_vein_fns: Vec<OreVeinFns>,
     /// `getOrCreateRandomFactory("minecraft:ore")`.
     pub(super) ore_random: AnyPositional,
+    /// [`Program::interpolation_y_period`] of the program the ore veins are compiled into.
+    pub(super) ore_y_period: i32,
     eroded_badlands: Option<BiomeId>,
     frozen_ocean: Option<BiomeId>,
     deep_frozen_ocean: Option<BiomeId>,
@@ -102,9 +140,21 @@ impl MaterialSystem {
                     density: compile(&vein.density)?,
                     richness: compile(&vein.richness)?,
                     filler_gap: compile(&vein.filler_gap)?,
+                    y_range: None,
                 })
             })
-            .collect::<Result<_, Error>>()?;
+            .collect::<Result<Vec<_>, Error>>()?;
+        let program = compiler.program();
+        let ore_vein_fns = ore_vein_fns
+            .into_iter()
+            .map(|fns| OreVeinFns {
+                y_range: program
+                    .y_range_choice(fns.density)
+                    .filter(|&(_, _, outside)| outside <= 0.0),
+                ..fns
+            })
+            .collect();
+        let ore_y_period = program.interpolation_y_period();
         let preliminary_surface = compiler.compile(&settings.router.chunk_surface_level);
         let noise_random = *random_state.random();
         let noise = |id: &str| random_state.noise(id);
@@ -132,7 +182,10 @@ impl MaterialSystem {
                 .map(|name| random_state.random_factory(name))
                 .collect(),
             ore_vein_fns,
+            ore_y_period,
             ore_random: random_state.random_factory("minecraft:ore"),
+            unfolded: FoldedRules::new(&rules, &rules.biome_folds(None), None),
+            no_biome_folds: rules.biome_folds(None),
             rules,
             eroded_badlands: biomes.id_of("minecraft:eroded_badlands"),
             frozen_ocean: biomes.id_of("minecraft:frozen_ocean"),
@@ -196,17 +249,27 @@ impl MaterialSystem {
             noise_volume.min_y,
             noise_volume.min_z,
         );
+        let generation = self.generation_context(chunk);
+        let biome_folds = self.rules.biome_folds(Some(possible_biomes));
+        let rules = FoldedRules::new(
+            &self.rules,
+            &biome_folds,
+            Some(&YBoundsInput {
+                generation: &generation,
+                ore_veins: &self.ore_vein_fns,
+            }),
+        );
         let mut context = MaterialRuleContext::compile(
             self,
             program,
             samplers,
             biomes,
             biome_at,
-            self.generation_context(chunk),
+            generation,
             narrowed_volume,
-            Some(possible_biomes),
+            &rules,
+            biome_folds,
         );
-        let root = self.rules.root;
 
         for x in 0..16 {
             for z in 0..16 {
@@ -252,7 +315,7 @@ impl MaterialSystem {
                         context.update_y(stone_above_depth, stone_below_depth, water_height, y);
                         if y >= min_y
                             && y <= max_y
-                            && let Some(state) = context.try_apply(root, block_x, y, block_z)
+                            && let Some(state) = context.try_apply(block_x, y, block_z)
                         {
                             set_column_block(chunk, block_x, y, block_z, state);
                         }
@@ -301,7 +364,8 @@ impl MaterialSystem {
             biome_at,
             self.generation_context(chunk),
             DensityVolume::new(1, 1, 1, x, y, z),
-            None,
+            &self.unfolded,
+            self.no_biome_folds.clone(),
         );
         let (local_x, local_z) = ((x & 15) as usize, (z & 15) as usize);
         let gradient_x = surface_gradient_x(chunk, local_x, local_z);
@@ -309,7 +373,7 @@ impl MaterialSystem {
         context.update_xz(x, z, gradient_x, gradient_z);
         let water_height = if under_fluid { y + 1 } else { i32::MIN };
         context.update_y(1, 1, water_height, y);
-        context.try_apply(self.rules.root, x, y, z)
+        context.try_apply(x, y, z)
     }
 
     /// `getSurfaceDepth(x, z)`: the depth of the surface layer of a column.
