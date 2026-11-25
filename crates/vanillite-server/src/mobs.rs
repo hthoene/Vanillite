@@ -468,11 +468,22 @@ impl WorldMobs {
                         );
                     }
                     EntityAction::OpenVehicleInventory => {
-                        // `openCustomInventoryScreen` of a chest boat the player rides.
-                        if let Some(v) = ents.vehicle_of(player)
-                            && ents.boat(v).is_some_and(|b| b.kind.chest)
-                        {
-                            minecart::open_container(&mut ents, &mut env, &mut self.cx, player, v);
+                        // `openCustomInventoryScreen` of a chest boat or mount the player
+                        // rides.
+                        if let Some(v) = ents.vehicle_of(player) {
+                            if ents.boat(v).is_some_and(|b| b.kind.chest) {
+                                minecart::open_container(
+                                    &mut ents,
+                                    &mut env,
+                                    &mut self.cx,
+                                    player,
+                                    v,
+                                );
+                            } else if let Some(request) =
+                                vanillite_game::menu::mount::request(&ents, v, player)
+                            {
+                                self.cx.menus.push(request);
+                            }
                         }
                     }
                 }
@@ -694,6 +705,12 @@ impl WorldMobs {
     ) {
         self.ticks += 1;
         level.flush_poi_changes();
+        // `detectEquipmentUpdates` of the mobs whose equipment a menu changed.
+        for id in std::mem::take(&mut level.entities.equipment_updates) {
+            if let Some(e) = vanillite_game::mob::equipment::tracking_update(&level.entities, id) {
+                survival.effects.push(e);
+            }
+        }
         let state = &global.level;
         let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
         let rules = state.rules().clone();

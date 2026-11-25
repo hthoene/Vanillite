@@ -10,7 +10,9 @@
 use vanillite_base::{BlockPos, Vec3};
 use vanillite_data::block::BlockId;
 use vanillite_data::item::ids as items;
-use vanillite_protocol::packets::play::clientbound::{ContainerCloseClientbound, OpenScreen};
+use vanillite_protocol::packets::play::clientbound::{
+    ContainerCloseClientbound, MountScreenOpen, OpenScreen,
+};
 use vanillite_protocol::text::Component;
 use vanillite_world::entity::EntityId;
 
@@ -66,6 +68,13 @@ pub enum MenuKind {
     /// `merchant`: two payment slots and the result of a villager's or wandering trader's
     /// offer (the menu's own slots).
     Merchant,
+    /// The inventory of a horse, llama, camel or nautilus (`HorseInventoryMenu`,
+    /// `NautilusInventoryMenu`): saddle, body armour, then the chest columns (three rows each).
+    /// It has no `minecraft:menu` type: `mount_screen_open` opens it.
+    Mount {
+        /// `inventoryColumns`.
+        columns: u8,
+    },
 }
 
 impl MenuKind {
@@ -99,6 +108,7 @@ impl MenuKind {
             MenuKind::Lectern => "minecraft:lectern",
             MenuKind::Beacon => "minecraft:beacon",
             MenuKind::Merchant => "minecraft:merchant",
+            MenuKind::Mount { .. } => return -1,
         };
         vanillite_data::registry::MENU.id(name).map_or(0, i32::from)
     }
@@ -119,6 +129,7 @@ impl MenuKind {
             MenuKind::CartographyTable => 3,
             MenuKind::Crafter => 9,
             MenuKind::Lectern | MenuKind::Beacon => 1,
+            MenuKind::Mount { columns } => 2 + usize::from(columns) * 3,
         }
     }
 
@@ -168,6 +179,8 @@ pub enum Storage {
     /// The merchant (villager or wandering trader) of a merchant menu; the slots are the
     /// menu's own.
     Merchant(EntityId),
+    /// The mount of a mount inventory menu: its saddle and body slots and its chest.
+    Mount(EntityId),
 }
 
 /// A menu a block asks to open (`MenuProvider`).
@@ -283,7 +296,9 @@ impl ContainerMenu {
         match self.storage {
             Storage::Block(p) | Storage::Ender(p) => [Some(p), None],
             Storage::Double(a, b) => [Some(a), Some(b)],
-            Storage::Local | Storage::Entity(_) | Storage::Merchant(_) => [None, None],
+            Storage::Local | Storage::Entity(_) | Storage::Merchant(_) | Storage::Mount(_) => {
+                [None, None]
+            }
         }
     }
 }
@@ -331,6 +346,7 @@ impl ContainerView<'_> {
             }
             Storage::Ender(_) => self.inv.ender_chest.get(i).unwrap_or(empty),
             Storage::Local | Storage::Merchant(_) => self.menu.local.get(i).unwrap_or(empty),
+            Storage::Mount(id) => self.mount_item(id, i),
             Storage::Entity(id) => self
                 .level
                 .entities
@@ -356,6 +372,7 @@ impl ContainerView<'_> {
             Storage::Ender(_) => self.inv.ender_chest.get_mut(i),
             Storage::Local | Storage::Merchant(_) => self.menu.local.get_mut(i),
             Storage::Entity(id) => self.level.entities.container_items_mut(id)?.get_mut(i),
+            Storage::Mount(id) => self.mount_item_mut(id, i),
         }
     }
 
@@ -481,6 +498,10 @@ impl MenuSlots for ContainerView<'_> {
                     self.merchant_set_item(i, stack);
                     return;
                 }
+                if let Storage::Mount(id) = self.menu.storage {
+                    self.mount_set_item(id, i, stack);
+                    return;
+                }
                 if let Some(target) = self.container_item_mut(i) {
                     *target = stack;
                 }
@@ -498,6 +519,14 @@ impl MenuSlots for ContainerView<'_> {
         }
     }
 
+    fn before_set_by_player(&mut self, slot: usize, stack: &ItemStack) {
+        if let (Storage::Mount(id), Some(Source::Container(i))) =
+            (self.menu.storage, self.menu.source(slot))
+        {
+            self.mount_before_set_by_player(id, i, stack);
+        }
+    }
+
     fn set_changed(&mut self, slot: usize) {
         if let Some(Source::Container(i)) = self.menu.source(slot)
             && self.menu.kind.is_workstation()
@@ -512,7 +541,11 @@ impl MenuSlots for ContainerView<'_> {
                     blocks::set_changed(self.level, a);
                     blocks::set_changed(self.level, b);
                 }
-                Storage::Ender(_) | Storage::Local | Storage::Entity(_) | Storage::Merchant(_) => {}
+                Storage::Ender(_)
+                | Storage::Local
+                | Storage::Entity(_)
+                | Storage::Merchant(_)
+                | Storage::Mount(_) => {}
             }
             if self.menu.kind == MenuKind::Crafter {
                 self.crafter_changed();
@@ -580,6 +613,10 @@ impl MenuSlots for ContainerView<'_> {
             // `BeaconMenu.PaymentSlot`.
             MenuKind::Beacon => crate::player::play::game_data()
                 .is_some_and(|d| d.item_in_tag(stack.item, "minecraft:beacon_payment_items")),
+            MenuKind::Mount { .. } => match self.menu.storage {
+                Storage::Mount(id) => self.mount_may_place(id, i, stack),
+                _ => false,
+            },
             MenuKind::BrewingStand => match i {
                 0..=2 => crate::block::brewing::is_potion_input(stack),
                 3 => crate::block::brewing::is_reagent(stack),
@@ -594,7 +631,8 @@ impl MenuSlots for ContainerView<'_> {
             (MenuKind::BrewingStand, Some(Source::Container(0..=2)))
             | (MenuKind::Enchantment, Some(Source::Container(0)))
             | (MenuKind::Lectern, Some(Source::Container(0)))
-            | (MenuKind::Beacon, Some(Source::Container(0))) => 1,
+            | (MenuKind::Beacon, Some(Source::Container(0)))
+            | (MenuKind::Mount { .. }, Some(Source::Container(0..=1))) => 1,
             _ => super::CONTAINER_MAX,
         }
     }
@@ -606,6 +644,9 @@ impl MenuSlots for ContainerView<'_> {
             // instance with the lectern.
             Some(Source::CrafterResult) => false,
             Some(Source::Container(_)) if self.menu.kind == MenuKind::Lectern => false,
+            Some(Source::Container(i)) if matches!(self.menu.kind, MenuKind::Mount { .. }) => {
+                self.mount_may_pickup(i)
+            }
             Some(Source::Container(2)) if self.menu.kind == MenuKind::Merchant => {
                 self.merchant_may_pickup_result()
             }
@@ -701,6 +742,7 @@ impl MenuSlots for ContainerView<'_> {
         match self.menu.kind {
             MenuKind::Lectern => ItemStack::EMPTY,
             MenuKind::Merchant => self.merchant_quick_move(index, ctx, drops),
+            MenuKind::Mount { .. } => self.mount_quick_move(index, ctx, drops),
             MenuKind::Beacon => {
                 let payment_free = self.item(0).is_empty();
                 let moved = if index == 0 {
@@ -1006,9 +1048,11 @@ pub fn open(
     let positions = match request.storage {
         Storage::Block(p) => [Some(p), None],
         Storage::Double(a, b) => [Some(a), Some(b)],
-        Storage::Ender(_) | Storage::Local | Storage::Entity(_) | Storage::Merchant(_) => {
-            [None, None]
-        }
+        Storage::Ender(_)
+        | Storage::Local
+        | Storage::Entity(_)
+        | Storage::Merchant(_)
+        | Storage::Mount(_) => [None, None],
     };
     if who.spectator
         && positions
@@ -1068,11 +1112,26 @@ pub fn open(
     for pos in menu.viewed().into_iter().flatten() {
         blocks::start_open(level, pos, who.spectator);
     }
-    sink.send(&OpenScreen {
-        container_id: id,
-        menu: kind.type_id(),
-        title: request.title,
-    });
+    if let Storage::Mount(mount) = request.storage {
+        // `openHorseInventory` / `openNautilusInventory`.
+        let MenuKind::Mount { columns } = kind else {
+            return;
+        };
+        let Some(entity_id) = level.entities.store.get(mount).map(|e| e.network_id().0) else {
+            return;
+        };
+        sink.send(&MountScreenOpen {
+            container_id: id,
+            inventory_columns: i32::from(columns),
+            entity_id,
+        });
+    } else {
+        sink.send(&OpenScreen {
+            container_id: id,
+            menu: kind.type_id(),
+            title: request.title,
+        });
+    }
     inv.container = Some(Box::new(menu));
     with_view(inv, level, Vec3::default(), None, |view| {
         if view.menu.kind == MenuKind::Crafter {
@@ -1318,6 +1377,22 @@ pub fn still_valid(
         }
         Storage::Entity(id) => {
             level.entities.container_items(id).is_some()
+                && level
+                    .entities
+                    .store
+                    .get(id)
+                    .is_some_and(|e| in_entity_range(&e.aabb()))
+        }
+        // `AbstractMountInventoryMenu.stillValid`: the mount's inventory is the one the menu
+        // shows (no chest equipped or removed since), it is alive and close enough.
+        Storage::Mount(id) => {
+            let MenuKind::Mount { columns } = menu.kind else {
+                return false;
+            };
+            level
+                .entities
+                .mob(id)
+                .is_some_and(|m| m.is_alive() && super::mount::columns(m) == columns)
                 && level
                     .entities
                     .store

@@ -759,7 +759,7 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
         return super::animal_interact(ix);
     }
     if tame && ix.sneaking {
-        // `openCustomInventoryScreen`: the mount inventory menu is not available yet.
+        open_inventory_screen(ix);
         return Interaction::Success;
     }
     if !ix.stack.is_empty() {
@@ -791,6 +791,13 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
         return Interaction::Success;
     }
     ride(ix)
+}
+
+/// `openCustomInventoryScreen`: the mount inventory menu.
+pub fn open_inventory_screen(ix: &mut Interact<'_, '_>) {
+    if let Some(request) = crate::menu::mount::request(ix.ents, ix.target, ix.player) {
+        ix.cx.menus.push(request);
+    }
 }
 
 /// `equipChest`.

@@ -88,6 +88,9 @@ pub struct Entities {
     pub poi: crate::poi::PoiManager,
     /// The raids of the world (`ServerLevel.getRaids`), next to the POI for the same reason.
     pub raids: crate::raid::Raids,
+    /// Mobs whose equipment a menu changed: the next tick sends it to the players tracking
+    /// them (`LivingEntity.detectEquipmentUpdates`).
+    pub equipment_updates: Vec<EntityId>,
 }
 
 /// Who rides what (`Entity.vehicle`, `Entity.passengers`).

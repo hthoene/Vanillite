@@ -279,7 +279,7 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
     }
     let tame = m.tame;
     if tame && ix.sneaking {
-        // `openCustomInventoryScreen`: the mount inventory menu is not there yet.
+        crate::mob::fam::companion::horse::open_inventory_screen(ix);
         return Interaction::Success;
     }
     let food = is_food(m, ix.stack.item);
