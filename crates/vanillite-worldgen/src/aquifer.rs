@@ -217,6 +217,32 @@ fn similarity(distance_sqr1: i32, distance_sqr2: i32) -> f64 {
     1.0 - f64::from(distance_sqr2.wrapping_sub(distance_sqr1)) / 25.0
 }
 
+/// Inserts a cell into the sorted top four (`distance_sqr` ascending, `closest` alongside);
+/// ties go in front (`>=`), like Vanilla. Unrolled: this runs 12 times per fluid block.
+#[inline(always)]
+fn insert_closest(
+    distance_sqr: &mut [i32; 4],
+    closest: &mut [usize; 4],
+    new_distance: i32,
+    index: usize,
+) {
+    let [d0, d1, d2, d3] = *distance_sqr;
+    let [c0, c1, c2, _] = *closest;
+    if d0 >= new_distance {
+        *distance_sqr = [new_distance, d0, d1, d2];
+        *closest = [index, c0, c1, c2];
+    } else if d1 >= new_distance {
+        *distance_sqr = [d0, new_distance, d1, d2];
+        *closest = [c0, index, c1, c2];
+    } else if d2 >= new_distance {
+        *distance_sqr = [d0, d1, new_distance, d2];
+        *closest = [c0, c1, index, c2];
+    } else if d3 >= new_distance {
+        distance_sqr[3] = new_distance;
+        closest[3] = index;
+    }
+}
+
 /// `FLOWING_UPDATE_SIMULARITY`.
 const FLOWING_UPDATE_SIMILARITY: f64 = 1.0 - (144 - 100) as f64 / 25.0;
 
@@ -297,6 +323,10 @@ pub struct NoiseBasedAquifer {
     /// `surfaceLevelCache`, keyed by `ChunkPos.pack(quantizedX, quantizedZ)`.
     surface_level_cache: FxHashMap<i64, i32>,
     lava: BlockState,
+    /// The grid anchor of the last fluid block and its 12 cells in search order: their centres
+    /// and indices.
+    anchor: Option<(i32, i32, i32)>,
+    anchor_cells: [(i32, i32, i32, usize); 12],
 }
 
 impl NoiseBasedAquifer {
@@ -333,6 +363,8 @@ impl NoiseBasedAquifer {
             grid_size_z,
             surface_level_cache: FxHashMap::default(),
             lava: ids::LAVA.default_state(),
+            anchor: None,
+            anchor_cells: [(0, 0, 0, 0); 12],
         };
         let max_surface = aquifer.max_surface_level(
             program,
@@ -421,7 +453,9 @@ impl NoiseBasedAquifer {
         state.block() == block
     }
 
-    /// `computeSubstance(blockX, blockY, blockZ, density)`.
+    /// `computeSubstance(blockX, blockY, blockZ, density)`: solid blocks return here, the rest
+    /// (much rarer, and much more work) in [`Self::compute_fluid_substance`].
+    #[inline]
     fn compute_substance(
         &mut self,
         program: &Program,
@@ -435,6 +469,20 @@ impl NoiseBasedAquifer {
             self.should_schedule_fluid_update = false;
             return None;
         }
+        self.compute_fluid_substance(program, ctx, block_x, block_y, block_z, density)
+    }
+
+    /// `computeSubstance` of a block that is not solid by its density.
+    #[inline(never)]
+    fn compute_fluid_substance(
+        &mut self,
+        program: &Program,
+        ctx: &mut SamplerContext,
+        block_x: i32,
+        block_y: i32,
+        block_z: i32,
+        density: f64,
+    ) -> Option<BlockState> {
         let global_fluid = self.fluid_picker.compute_fluid(block_x, block_y, block_z);
         if block_y > self.skip_sampling_above_y {
             self.should_schedule_fluid_update = false;
@@ -445,47 +493,25 @@ impl NoiseBasedAquifer {
             return Some(self.lava);
         }
 
-        let x_anchor = grid_x(block_x + -5);
-        let y_anchor = grid_y(block_y + 1);
-        let z_anchor = grid_z(block_z + -5);
+        let anchor = (
+            grid_x(block_x + -5),
+            grid_y(block_y + 1),
+            grid_z(block_z + -5),
+        );
+        if self.anchor != Some(anchor) {
+            self.set_anchor(anchor);
+        }
         let mut distance_sqr = [i32::MAX; 4];
         let mut closest = [0_usize; 4];
-        for x1 in 0..=1 {
-            for y1 in -1..=1 {
-                for z1 in 0..=1 {
-                    let spaced_x = x_anchor + x1;
-                    let spaced_y = y_anchor + y1;
-                    let spaced_z = z_anchor + z1;
-                    let index = self.index(spaced_x, spaced_y, spaced_z);
-                    let existing = self.location_cache[index];
-                    let location = if existing != NO_LOCATION {
-                        existing
-                    } else {
-                        let mut random = self.positional.at(spaced_x, spaced_y, spaced_z);
-                        let lx = from_grid_x(spaced_x, random.next_int_bounded(10));
-                        let ly = from_grid_y(spaced_y, random.next_int_bounded(9));
-                        let lz = from_grid_z(spaced_z, random.next_int_bounded(10));
-                        let location = BlockPos::new(lx, ly, lz).as_long();
-                        self.location_cache[index] = location;
-                        location
-                    };
-                    let pos = BlockPos::from_long(location);
-                    let dx = pos.x.wrapping_sub(block_x);
-                    let dy = pos.y.wrapping_sub(block_y);
-                    let dz = pos.z.wrapping_sub(block_z);
-                    let new_distance = dx
-                        .wrapping_mul(dx)
-                        .wrapping_add(dy.wrapping_mul(dy))
-                        .wrapping_add(dz.wrapping_mul(dz));
-                    // Insert into the sorted top four; ties go in front (`>=`), like Vanilla.
-                    if let Some(slot) = distance_sqr.iter().position(|&d| d >= new_distance) {
-                        distance_sqr.copy_within(slot..3, slot + 1);
-                        closest.copy_within(slot..3, slot + 1);
-                        distance_sqr[slot] = new_distance;
-                        closest[slot] = index;
-                    }
-                }
-            }
+        for &(x, y, z, index) in &self.anchor_cells {
+            let dx = x.wrapping_sub(block_x);
+            let dy = y.wrapping_sub(block_y);
+            let dz = z.wrapping_sub(block_z);
+            let new_distance = dx
+                .wrapping_mul(dx)
+                .wrapping_add(dy.wrapping_mul(dy))
+                .wrapping_add(dz.wrapping_mul(dz));
+            insert_closest(&mut distance_sqr, &mut closest, new_distance, index);
         }
 
         let status1 = self.aquifer_status(program, ctx, closest[0]);
@@ -581,6 +607,38 @@ impl NoiseBasedAquifer {
             true
         };
         Some(fluid_state)
+    }
+
+    /// Moves to grid anchor `(x_anchor, y_anchor, z_anchor)`: the centres of its 12 cells
+    /// (`aquiferLocationCache`, computed on first use) in Vanilla's search order.
+    fn set_anchor(&mut self, (x_anchor, y_anchor, z_anchor): (i32, i32, i32)) {
+        let mut cell = 0;
+        for x1 in 0..=1 {
+            for y1 in -1..=1 {
+                for z1 in 0..=1 {
+                    let spaced_x = x_anchor + x1;
+                    let spaced_y = y_anchor + y1;
+                    let spaced_z = z_anchor + z1;
+                    let index = self.index(spaced_x, spaced_y, spaced_z);
+                    let existing = self.location_cache[index];
+                    let location = if existing != NO_LOCATION {
+                        existing
+                    } else {
+                        let mut random = self.positional.at(spaced_x, spaced_y, spaced_z);
+                        let lx = from_grid_x(spaced_x, random.next_int_bounded(10));
+                        let ly = from_grid_y(spaced_y, random.next_int_bounded(9));
+                        let lz = from_grid_z(spaced_z, random.next_int_bounded(10));
+                        let location = BlockPos::new(lx, ly, lz).as_long();
+                        self.location_cache[index] = location;
+                        location
+                    };
+                    let pos = BlockPos::from_long(location);
+                    self.anchor_cells[cell] = (pos.x, pos.y, pos.z, index);
+                    cell += 1;
+                }
+            }
+        }
+        self.anchor = Some((x_anchor, y_anchor, z_anchor));
     }
 
     /// `calculatePressure(…)`: how strongly a barrier separates two aquifer cells at the block.

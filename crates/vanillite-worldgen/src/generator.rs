@@ -182,6 +182,9 @@ impl NeighbourBiomes {
     }
 }
 
+/// What [`TerrainGenerator::generate_terrain_observed`] calls after each terrain step.
+type Observer<'a> = &'a mut dyn FnMut(TerrainStep, &ProtoChunk);
+
 /// The three steps of [`Stage::Terrain`], in order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TerrainStep {
@@ -285,7 +288,9 @@ impl TerrainGenerator {
             .map(|config| AquiferFunctions::compile(config, &mut compiler));
         let material =
             MaterialSystem::new(packs, &settings, &random_state, &biomes, &mut compiler)?;
-        let program = compiler.finish();
+        let mut program = compiler.finish();
+        // The final density is only sampled as whole volumes.
+        program.set_masked_cache_root(final_density);
 
         let features = FeatureSet::load(
             packs,
@@ -739,12 +744,19 @@ impl TerrainGenerator {
     /// context is reused across the batch; it is reset per chunk, as Vanilla creates a fresh
     /// `NoiseChunk` per chunk.
     pub fn generate_terrain(&self, batch: &mut [TerrainJob]) {
-        let mut ctx = SamplerContext::new(true);
-        for job in batch {
-            ctx.reset();
-            self.bind_beardifier(&mut ctx, job.chunk.pos(), &job.structures);
-            self.build_terrain(&mut job.chunk, &job.neighbours, &mut ctx, &mut |_, _| {});
+        thread_local! {
+            /// The terrain sampling context of this thread: reset per chunk, it keeps its
+            /// buffer pool warm across chunks.
+            static CONTEXT: RefCell<SamplerContext> = RefCell::new(SamplerContext::new(true));
         }
+        CONTEXT.with_borrow_mut(|ctx| {
+            for job in batch {
+                ctx.reset();
+                self.bind_beardifier(ctx, job.chunk.pos(), &job.structures);
+                self.build_terrain(&mut job.chunk, &job.neighbours, ctx, None);
+            }
+            ctx.set_beardifier(None);
+        });
     }
 
     /// `ChunkGeneratorStructureState.ensureStructuresGenerated`: computes the ring positions of
@@ -776,17 +788,30 @@ impl TerrainGenerator {
     ) {
         let mut ctx = SamplerContext::new(true);
         self.bind_beardifier(&mut ctx, job.chunk.pos(), &job.structures);
-        self.build_terrain(&mut job.chunk, &job.neighbours, &mut ctx, &mut observe);
+        self.build_terrain(
+            &mut job.chunk,
+            &job.neighbours,
+            &mut ctx,
+            Some(&mut observe),
+        );
     }
 
-    /// `buildTerrain` for one chunk with a fresh caching context `ctx`.
+    /// `buildTerrain` for one chunk with a fresh caching context `ctx`; `observe` sees the
+    /// chunk after each step. The blocks are built in the chunk's dense buffer.
     fn build_terrain(
         &self,
         chunk: &mut ProtoChunk,
         neighbours: &NeighbourBiomes,
         ctx: &mut SamplerContext,
-        observe: &mut dyn FnMut(TerrainStep, &ProtoChunk),
+        mut observe: Option<Observer<'_>>,
     ) {
+        let mut observe = |step: TerrainStep, chunk: &mut ProtoChunk| {
+            if let Some(observe) = observe.as_mut() {
+                chunk.end_dense();
+                observe(step, chunk);
+                chunk.begin_dense();
+            }
+        };
         // `NoiseSettings.clampToHeightAccessor`.
         let min_y = self.settings.min_y.max(chunk.min_y());
         let height = (self.settings.min_y + self.settings.height).min(chunk.max_y() + 1) - min_y;
@@ -805,6 +830,7 @@ impl TerrainGenerator {
             &self.program,
             ctx,
         );
+        chunk.begin_dense();
         self.fill_from_noise(chunk, &volume, &mut aquifer, ctx);
         observe(TerrainStep::Noise, chunk);
 
@@ -825,7 +851,9 @@ impl TerrainGenerator {
         observe(TerrainStep::Surface, chunk);
         self.carve(chunk, &mut aquifer, ctx);
         chunk.finish_terrain();
+        chunk.end_dense();
         observe(TerrainStep::Carvers, chunk);
+        chunk.end_dense();
     }
 
     /// `doFill`: the final density over the chunk volume, turned into blocks by the aquifer.
@@ -844,6 +872,8 @@ impl TerrainGenerator {
             let block_z = volume.block_z(z);
             for x in 0..volume.size_x {
                 let block_x = volume.block_x(x);
+                // Below the first block a heightmap matches, its updates change nothing.
+                let (mut surface_done, mut ocean_floor_done) = (false, false);
                 for y in (0..volume.size_y).rev() {
                     let block_y = volume.block_y(y);
                     let value = density[volume.index(x, y, z)];
@@ -862,8 +892,23 @@ impl TerrainGenerator {
                     }
                     chunk.set_block_raw(block_x, block_y, block_z, state);
                     let (lx, lz) = (x as usize, z as usize);
-                    chunk.update_heightmap(WgHeightmap::OceanFloor, lx, block_y, lz, state);
-                    chunk.update_heightmap(WgHeightmap::WorldSurface, lx, block_y, lz, state);
+                    if !(surface_done && ocean_floor_done) {
+                        let flags = facts::block_flags(state.0);
+                        if !ocean_floor_done {
+                            chunk.update_heightmap(WgHeightmap::OceanFloor, lx, block_y, lz, state);
+                            ocean_floor_done = WgHeightmap::OceanFloor.kind().matches(flags);
+                        }
+                        if !surface_done {
+                            chunk.update_heightmap(
+                                WgHeightmap::WorldSurface,
+                                lx,
+                                block_y,
+                                lz,
+                                state,
+                            );
+                            surface_done = WgHeightmap::WorldSurface.kind().matches(flags);
+                        }
+                    }
                     if aquifer.should_schedule_fluid_update() && !state.fluid_state().is_empty() {
                         chunk.mark_post_processing(block_x, block_y, block_z);
                     }

@@ -170,6 +170,21 @@ pub enum OpKind {
     Effect,
     /// Bone meal used on the block at `pos` (an action).
     Bonemeal,
+    /// A thrown splash or lingering potion ([`Op::throw_potion`]).
+    ThrowPotion,
+}
+
+/// The potion of a `throw_potion` action.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ThrowPotionOp {
+    /// `minecraft:splash_potion` or `minecraft:lingering_potion`.
+    pub item: String,
+    /// Potion id, e.g. `minecraft:strong_poison`.
+    pub potion: String,
+    pub pos: [f64; 3],
+    pub motion: [f64; 3],
+    /// Name of the thrower, if any.
+    pub by: Option<String>,
 }
 
 /// The status effect of an `effect` action.
@@ -251,6 +266,8 @@ pub struct Op {
     pub hurt: Option<Hurt>,
     /// The effect of an `effect` action.
     pub effect: Option<EffectOp>,
+    /// The potion of a `throw_potion` action.
+    pub throw_potion: Option<ThrowPotionOp>,
     /// The chunks of `force` and `unforce`.
     pub chunks: Vec<ChunkPos>,
 }
@@ -510,6 +527,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
         Some("fill") => OpKind::Fill,
         Some("hurt") if action => OpKind::Hurt,
         Some("effect") if action => OpKind::Effect,
+        Some("throw_potion") if action => OpKind::ThrowPotion,
         Some("force") if action => OpKind::Force,
         Some("unforce") if action => OpKind::Unforce,
         Some("restart") if action => OpKind::Restart,
@@ -548,6 +566,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             block: String::new(),
             hurt: None,
             effect: None,
+            throw_potion: None,
             chunks,
         });
     }
@@ -560,6 +579,26 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
     } else {
         0
     };
+    if kind == OpKind::ThrowPotion {
+        let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
+        return Ok(Op {
+            tick,
+            kind,
+            from: BlockPos::new(0, 0, 0),
+            to: BlockPos::new(0, 0, 0),
+            block: String::new(),
+            hurt: None,
+            effect: None,
+            throw_potion: Some(ThrowPotionOp {
+                item: s("item").ok_or("throw_potion needs an item")?,
+                potion: s("potion").ok_or("throw_potion needs a potion")?,
+                pos: vec3(v.get("pos"))?,
+                motion: vec3(v.get("motion"))?,
+                by: s("by"),
+            }),
+            chunks: Vec::new(),
+        });
+    }
     if kind == OpKind::Effect {
         let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
         let int = |k: &str| {
@@ -580,6 +619,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
                 duration: int("duration").ok_or("effect needs a duration")?,
                 amplifier: int("amplifier").unwrap_or(0),
             }),
+            throw_potion: None,
             chunks: Vec::new(),
         });
     }
@@ -601,6 +641,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
                     .ok_or("hurt needs an amount")? as f32,
             }),
             effect: None,
+            throw_potion: None,
         });
     }
     if kind == OpKind::Bonemeal {
@@ -613,6 +654,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             block: String::new(),
             hurt: None,
             effect: None,
+            throw_potion: None,
             chunks: Vec::new(),
         });
     }
@@ -634,6 +676,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             .to_owned(),
         hurt: None,
         effect: None,
+        throw_potion: None,
         chunks: Vec::new(),
     })
 }

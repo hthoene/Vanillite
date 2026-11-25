@@ -94,6 +94,10 @@ pub trait ScenarioWorld {
     fn effect(&mut self, effect: &crate::scenario::EffectOp) -> Result<(), String> {
         Err(format!("this world has no effects for `{}`", effect.entity))
     }
+    /// Runs a `throw_potion` action.
+    fn throw_potion(&mut self, potion: &crate::scenario::ThrowPotionOp) -> Result<(), String> {
+        Err(format!("this world cannot throw `{}`", potion.potion))
+    }
 }
 
 /// Builds the world for a scenario.

@@ -156,6 +156,34 @@ impl Server {
         })
     }
 
+    /// Sets the header and footer of a player's player list (tab list). Empty text removes
+    /// them. Needs a host with ABI 1.1.
+    pub fn set_tab_list(
+        &self,
+        player: Uuid,
+        header: impl Into<Text>,
+        footer: impl Into<Text>,
+    ) -> Result<(), Error> {
+        let (mut header, mut footer) = (header.into(), footer.into());
+        // One format for both: plain text becomes JSON when the other one is JSON.
+        if matches!(header, Text::Json(_)) != matches!(footer, Text::Json(_)) {
+            header = Text::Json(header.to_json());
+            footer = Text::Json(footer.to_json());
+        }
+        let (h, format) = header.parts();
+        let (f, _) = footer.parts();
+        // SAFETY: valid host function and strings.
+        Error::check(unsafe {
+            (self.api().player_set_tab_list)(
+                self.host.id,
+                player.to_abi(),
+                abi::Str::new(h),
+                abi::Str::new(f),
+                format,
+            )
+        })
+    }
+
     /// Whether a player has a permission node. Without a permission plugin, operators have
     /// every node and other players none.
     pub fn has_permission(&self, player: Uuid, node: &str) -> bool {

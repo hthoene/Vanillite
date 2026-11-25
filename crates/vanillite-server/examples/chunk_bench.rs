@@ -4,12 +4,15 @@
 //!
 //! ```text
 //! cargo run --profile release-fast -p vanillite-server --example chunk_bench -- \
-//!     --radius 16 --threads 4 [--tick-ms 50] [--pump] [--seed N] [--dir /tmp/bench] [--load]
+//!     --radius 16 --threads 4 [--tick-ms 50] [--pump] [--seed N] [--dir /tmp/bench] [--load] \\
+//!     [--anti-xray]
 //! ```
 //!
 //! `--tick-ms` is the world tick interval: the runtime applies results and starts jobs once per
 //! tick, as on a server. `--load` saves the generated chunks and then measures loading them
-//! from disk into a fresh runtime. Output is one JSON object per phase on stdout.
+//! from disk into a fresh runtime. `--anti-xray` measures encoding the chunk packets of the
+//! generated chunks without Anti-Xray and in its `hide` and `obfuscate` modes (Paper's lists).
+//! Output is one JSON object per phase on stdout.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -168,6 +171,7 @@ struct Args {
     load: bool,
     max_jobs: usize,
     pump: bool,
+    anti_xray: bool,
 }
 
 fn args() -> Args {
@@ -179,6 +183,7 @@ fn args() -> Args {
         dir: std::env::temp_dir().join("vanillite-chunk-bench"),
         load: false,
         pump: false,
+        anti_xray: false,
         max_jobs: ChunkSettings::default().max_jobs,
     };
     let mut it = std::env::args().skip(1);
@@ -193,6 +198,7 @@ fn args() -> Args {
             "--max-jobs" => a.max_jobs = value().parse().expect("max jobs"),
             "--load" => a.load = true,
             "--pump" => a.pump = true,
+            "--anti-xray" => a.anti_xray = true,
             other => panic!("unknown flag {other}"),
         }
     }
@@ -424,6 +430,9 @@ fn main() {
     let cpu = cpu_ms();
     let times = run(&mut chunks, a.radius, a.tick, wake);
     report("generate", &a, &chunks, &timings, times, cpu_ms() - cpu);
+    if a.anti_xray {
+        anti_xray(&chunks, a.radius - 1);
+    }
     if a.load {
         let save = Instant::now();
         chunks.save_all(true);
@@ -449,5 +458,59 @@ fn main() {
         let cpu = cpu_ms();
         let times = run(&mut chunks, a.radius, a.tick, wake);
         report("load", &a, &chunks, &timings, times, cpu_ms() - cpu);
+    }
+}
+
+/// Encodes the chunk packet of every full chunk within `radius` without Anti-Xray and in its
+/// modes, single-threaded, and reports time and size per chunk.
+fn anti_xray(chunks: &Chunks, radius: i32) {
+    use vanillite_config::{AntiXrayMode, Profile, RuleSet, WorldRules};
+    let positions: Vec<ChunkPos> = (-radius..=radius)
+        .flat_map(|x| (-radius..=radius).map(move |z| ChunkPos::new(x, z)))
+        .filter(|p| chunks.chunk(*p).is_some())
+        .collect();
+    let mut rules = WorldRules::for_profile(Profile::Paper).anti_xray;
+    for mode in [
+        AntiXrayMode::Disabled,
+        AntiXrayMode::Hide,
+        AntiXrayMode::Obfuscate,
+    ] {
+        rules.engine_mode = mode;
+        let engine = vanillite_server::anti_xray::AntiXray::new(&rules, "minecraft:overworld");
+        let mut bytes = 0usize;
+        let mut body = Vec::new();
+        let rounds = 3;
+        let start = Instant::now();
+        for _ in 0..rounds {
+            for &pos in &positions {
+                let Some(chunk) = chunks.chunk(pos) else {
+                    continue;
+                };
+                body.clear();
+                let masked = engine
+                    .as_ref()
+                    .and_then(|e| e.mask(chunks, pos, &chunk.chunk));
+                vanillite_chunk::packet::encode_chunk_with_sections(
+                    &mut body,
+                    pos.x,
+                    pos.z,
+                    &chunk.chunk,
+                    masked.as_deref().unwrap_or(chunk.chunk.sections()),
+                    &[],
+                );
+                bytes += body.len();
+            }
+        }
+        let n = (positions.len() * rounds).max(1);
+        println!(
+            "{}",
+            serde_json::json!({
+                "phase": "anti-xray",
+                "mode": format!("{mode:?}").to_lowercase(),
+                "chunks": positions.len(),
+                "us_per_chunk": start.elapsed().as_secs_f64() * 1e6 / n as f64,
+                "bytes_per_chunk": bytes / n,
+            })
+        );
     }
 }
