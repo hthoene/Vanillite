@@ -8,7 +8,6 @@ use vanillite_base::random::RandomSource;
 use vanillite_base::{BlockPos, Vec3};
 use vanillite_config::GameMode;
 use vanillite_nbt::{Compound, List, Tag};
-use vanillite_protocol::packets::play::clientbound::SoundSource;
 use vanillite_world::entity::EntityId;
 
 use super::hoglin::with_other;
@@ -1448,45 +1447,22 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
 
 // --- Ranged weapons ----------------------------------------------------------------------
 
-/// `performRangedAttack` → `performCrossbowAttack(body, 1.6)`: one arrow at the target.
-pub fn shoot_crossbow(t: &mut Tick<'_, '_>, target: EntityId, _power: f32) {
-    let Some(o) = t.other(target) else {
-        return;
-    };
-    let p = t.pos();
-    let start = Vec3::new(p.x, t.eye_y() - f64::from(0.1_f32), p.z);
-    let (xd, zd) = (o.pos.x - p.x, o.pos.z - p.z);
-    let dist = (xd * xd + zd * zd).sqrt();
-    let target_y = o.pos.y + f64::from(o.height) * 0.333_333_333_333_333_3;
-    let yd = target_y - start.y + dist * f64::from(0.2_f32);
-    #[allow(clippy::cast_precision_loss)]
-    let uncertainty = (14 - t.env.difficulty as i32 * 4) as f32;
-    let weapon = t.mob_ref().equipment.get(EquipmentSlot::MainHand).clone();
-    let id = t.id;
-    let network_ids = t.level.network_ids();
-    let mut random = t.mob_ref().random.clone();
-    crate::mob::projectile::shoot_arrow(
-        t.ents,
-        network_ids,
-        &mut random,
-        start,
-        Vec3::new(xd, yd, zd),
-        1.6,
-        uncertainty,
-        Some(id),
-        Some(&weapon),
-        false,
-        0,
-    );
-    t.mob().random = random;
-    super::sound_at(
-        t,
-        "minecraft:item.crossbow.shoot",
-        SoundSource::Hostile,
-        1.0,
-        1.0,
-    );
+/// `performRangedAttack` → `performCrossbowAttack(body, 1.6)`: the loaded crossbow fires at
+/// the target of the brain (`AbstractPiglin.getTarget`).
+pub fn shoot_crossbow(t: &mut Tick<'_, '_>, _target: EntityId, _power: f32) {
+    let target = brain_ref(t).entity(M::AttackTarget);
+    crate::crossbow::mob_shoot(t, target, crate::crossbow::MOB_ARROW_POWER);
+    // `onCrossbowAttackPerformed`.
     t.mob().no_action_time = 0;
+}
+
+/// `CrossbowItem.onUseTick` after `used` ticks of the crossbow.
+fn crossbow_use_tick(t: &mut Tick<'_, '_>, used: i32) {
+    let mut flags = state(t.mob_ref()).crossbow_sounds;
+    crate::crossbow::mob_use_tick(t, &mut flags, used);
+    if t.exists() {
+        state_mut(t.mob()).crossbow_sounds = flags;
+    }
 }
 
 /// `LivingEntity.updatingUsingItem`: the crossbow or spear use counts up.
@@ -1494,6 +1470,9 @@ pub fn before_tick(t: &mut Tick<'_, '_>) {
     let m = t.mob();
     if m.using_item >= 0 {
         m.using_item += 1;
+        // `onUseTick` sees the ticks used before this one.
+        let used = m.using_item - 1;
+        crossbow_use_tick(t, used);
     }
 }
 
@@ -1714,8 +1693,15 @@ pub fn tick(b: &mut Behavior, t: &mut Tick<'_, '_>, _now: i64) {
                     if t.mob_ref().using_item < 0 {
                         *state = 0;
                     }
-                    // `CrossbowItem.getChargeDuration`: 1.25 s.
-                    if t.mob_ref().using_item >= 25 {
+                    let pull = t.mob_ref().using_item;
+                    let weapon = t
+                        .mob_ref()
+                        .equipment
+                        .get(crate::crossbow::mob_hand(t.mob_ref()));
+                    let weapon = weapon.clone();
+                    if pull >= crate::crossbow::charge_duration(&weapon, &mut t.mob().random) {
+                        // `releaseUsingItem`: one more use tick (the load), then it stops.
+                        crossbow_use_tick(t, pull);
                         crate::mob::projectile::stop_using_item(t);
                         *state = 2;
                         *delay = 20 + t.mob().random.next_int_bounded(20);

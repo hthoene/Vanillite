@@ -1457,7 +1457,7 @@ fn use_item(
         riding::boost(ents, env, player, &mut stack, creative);
     } else {
         put_back(ents, player, hand, stack);
-        vanillite_game::player::using::start(ents, env, player, hand);
+        vanillite_game::player::using::start(ents, env, network_ids, player, hand);
         return;
     }
     put_back(ents, player, hand, stack);
