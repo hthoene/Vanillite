@@ -79,6 +79,10 @@ pub trait ScenarioWorld {
     fn hurt(&mut self, hurt: &Hurt) -> Result<(), String> {
         Err(format!("this world cannot hurt `{}`", hurt.entity))
     }
+    /// Runs a `lightning` action in the column of `column`.
+    fn lightning(&mut self, column: BlockPos) -> Result<(), String> {
+        Err(format!("this world has no lightning ({column:?})"))
+    }
 }
 
 /// Builds the world for a scenario.

@@ -702,6 +702,7 @@ fn cause_fall_damage(t: &mut Tick<'_, '_>, distance: f64, multiplier: f32) {
 fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
     let inside = inside_blocks(t.env.blocks, t.env.facts, t.aabb());
     let fire_immune = t.core().kind().info().fire_immune;
+    let previous_fire = t.mob_ref().fire_ticks;
     if let Some(damage) = inside.fire
         && !fire_immune
     {
@@ -729,11 +730,23 @@ fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
     if !t.exists() {
         return;
     }
-    if inside.water {
-        let m = t.mob();
-        if m.fire_ticks > 0 {
-            m.fire_ticks = 0;
-        }
+    // `isInRain`: the feet's block or the column at the top of the box.
+    let p = t.pos();
+    let feet = BlockPos::containing(p.x, p.y, p.z);
+    let in_rain = (t.env.raining_at)(feet)
+        || (t.env.raining_at)(BlockPos::containing(
+            f64::from(feet.x),
+            t.aabb().max_y,
+            f64::from(feet.z),
+        ));
+    let m = t.mob();
+    if (inside.water || in_rain) && m.fire_ticks > 0 {
+        // `clearFire`.
+        m.fire_ticks = 0;
+    }
+    // Not burning and not ignited this tick: `-getFireImmuneTicks()`.
+    if m.fire_ticks <= 0 && m.fire_ticks <= previous_fire {
+        m.fire_ticks = -1;
     }
     // Cobwebs and sweet berry bushes slow the next move (`makeStuckInBlock`).
     let b = t.aabb().inflate(-1.0e-5, -1.0e-5, -1.0e-5);

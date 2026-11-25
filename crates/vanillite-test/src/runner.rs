@@ -59,6 +59,7 @@ fn apply(
         OpKind::Place => true,
         OpKind::Fill => action,
         OpKind::Hurt => return Err("hurt without its damage".to_owned()),
+        OpKind::Lightning => return world.lightning(op.from),
         OpKind::Force | OpKind::Unforce => {
             return world.set_forced(&op.chunks, op.kind == OpKind::Force);
         }

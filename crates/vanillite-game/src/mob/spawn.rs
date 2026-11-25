@@ -149,6 +149,9 @@ pub struct SpawnInput<'a> {
     pub spawn_enemies: bool,
     pub difficulty: Difficulty,
     pub env: Environment,
+    /// The `spawn_mobs` rule and the clock for lightning (`tickThunder` runs in every spawning
+    /// chunk, whether mobs spawn or not).
+    pub thunder: crate::lightning::StrikeInput,
 }
 
 /// Per-player mob counts (`LocalMobCapCalculator.MobCounts`).
@@ -200,8 +203,8 @@ pub struct Spawner {
     pub generated: Vec<ChunkPos>,
 }
 
-/// `ServerChunkCache.tickChunks`' spawning: counts, caps and one attempt per category and
-/// chunk near players.
+/// `ServerChunkCache.tickChunks`' spawning chunks: counts, caps, and per shuffled chunk near
+/// players the thunder (`tickThunder`) and one attempt per category.
 pub fn tick(
     level: &mut Level,
     table: &SpawnTable,
@@ -221,6 +224,18 @@ pub fn tick(
                 spawner.seen.insert(ChunkPos::new(c.x + dx, c.z + dz));
             }
         }
+    }
+    if !input.thunder.spawn_mobs {
+        // No categories: only the shuffled chunks and their thunder.
+        collect_spawning_chunks(level, spawner, input);
+        let chunks = std::mem::take(&mut spawner.chunks);
+        for &chunk in &chunks {
+            if level.chunks.in_entity_ticking_range(chunk) {
+                crate::lightning::tick_thunder(level, chunk, input.thunder);
+            }
+        }
+        spawner.chunks = chunks;
+        return;
     }
     let mut state = SpawnState {
         spawnable_chunks: i32::try_from(spawner.seen.len()).unwrap_or(i32::MAX),
@@ -259,7 +274,31 @@ pub fn tick(
                 && state.can_spawn_global(*c)
         })
         .collect();
-    // `collectSpawningChunks`: ticking chunks with a player within 128 blocks, shuffled.
+    collect_spawning_chunks(level, spawner, input);
+    let chunks = std::mem::take(&mut spawner.chunks);
+    for &chunk in &chunks {
+        if level.chunks.in_entity_ticking_range(chunk) {
+            crate::lightning::tick_thunder(level, chunk, input.thunder);
+        }
+        for &c in &categories {
+            // `canSpawnForCategoryLocal`.
+            players_near(input, chunk, &mut spawner.near);
+            let local_ok = spawner
+                .near
+                .iter()
+                .any(|&i| state.local.counts[i][c.index()] < c.max_per_chunk());
+            if !local_ok {
+                continue;
+            }
+            spawn_category_for_chunk(level, table, spawner, input, &mut state, c, chunk);
+        }
+    }
+    spawner.chunks = chunks;
+}
+
+/// `collectSpawningChunks`: ticking chunks with a player within 128 blocks, shuffled with the
+/// level random (`Util.shuffle`).
+fn collect_spawning_chunks(level: &mut Level, spawner: &mut Spawner, input: &SpawnInput<'_>) {
     spawner.chunks.clear();
     spawner
         .chunks
@@ -281,25 +320,6 @@ pub fn tick(
         .unwrap_or(0);
         spawner.chunks.swap(i, j);
     }
-    if categories.is_empty() {
-        return;
-    }
-    let chunks = std::mem::take(&mut spawner.chunks);
-    for &chunk in &chunks {
-        for &c in &categories {
-            // `canSpawnForCategoryLocal`.
-            players_near(input, chunk, &mut spawner.near);
-            let local_ok = spawner
-                .near
-                .iter()
-                .any(|&i| state.local.counts[i][c.index()] < c.max_per_chunk());
-            if !local_ok {
-                continue;
-            }
-            spawn_category_for_chunk(level, table, spawner, input, &mut state, c, chunk);
-        }
-    }
-    spawner.chunks = chunks;
 }
 
 /// `spawnCategoryForChunk` and `spawnCategoryForPosition`.

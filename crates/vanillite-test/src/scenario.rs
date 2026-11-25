@@ -91,6 +91,10 @@
 //! the scenario matches Vanilla).
 //! - `hurt` action: `amount` damage to the entity `entity`, by `by` (player attack or mob
 //!   attack) or generic damage without `by`.
+//! - `lightning` action: the strike of `ServerLevel.tickThunder` in the column of `pos` (its y
+//!   does not matter) without the chance roll: the target (`findLightningTargetAround`: the
+//!   nearest lightning rod, a living entity under the open sky, or the column's top), then
+//!   `isRainingAt`, the skeleton trap and the bolt. Needs `"weather": "thunder"` (or rain).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -157,6 +161,8 @@ pub enum OpKind {
     Unforce,
     /// Damage to a scenario entity ([`Op::hurt`]).
     Hurt,
+    /// A lightning strike in the column of `from` (an action).
+    Lightning,
 }
 
 /// The damage of a `hurt` action.
@@ -483,6 +489,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
         Some("place") => OpKind::Place,
         Some("fill") => OpKind::Fill,
         Some("hurt") if action => OpKind::Hurt,
+        Some("lightning") if action => OpKind::Lightning,
         Some("force") if action => OpKind::Force,
         Some("unforce") if action => OpKind::Unforce,
         o => return Err(format!("unknown op {o:?}")),
@@ -545,6 +552,18 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
                     .and_then(Value::as_f64)
                     .ok_or("hurt needs an amount")? as f32,
             }),
+        });
+    }
+    if kind == OpKind::Lightning {
+        let p = pos(v.get("pos"))?;
+        return Ok(Op {
+            tick,
+            kind,
+            from: p,
+            to: p,
+            block: String::new(),
+            hurt: None,
+            chunks: Vec::new(),
         });
     }
     let (from, to) = if kind == OpKind::Fill {

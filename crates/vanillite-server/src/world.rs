@@ -398,8 +398,6 @@ impl ServerWorld {
             let level = &mut self.level;
             level.set_game_time(ctx.global.level.game_time());
             level.run_scheduled_ticks();
-            self.survival
-                .tick_thunder(&mut self.level.entities, &self.level.chunks, ctx.global);
         }
         self.update_player_tickets();
         let level = &mut self.level;
@@ -435,12 +433,7 @@ impl ServerWorld {
         }
         self.players.tick_entities(&mut self.level.entities);
         if ctx.runs_normally {
-            self.survival.tick_entities(
-                &mut self.level.entities,
-                &self.level.chunks,
-                ctx.global,
-                &self.dimension,
-            );
+            self.survival.tick_entities(&mut self.level.entities);
         }
         let light = self.updates.light_changes();
         self.level.chunks.take_light_changes(light);
