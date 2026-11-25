@@ -492,6 +492,15 @@ impl WorldPlayers {
         );
         crate::commands::send_permissions(global, sink.as_ref(), network_id, &source);
         crate::scoreboard::send_all(global, sink.as_ref(), arrival.uuid);
+        // `CustomBossEvents.onPlayerConnect`.
+        let mut bars = Vec::new();
+        global
+            .systems
+            .bossbars()
+            .player_connected(arrival.uuid, &mut bars);
+        for (_, packet) in bars {
+            sink.send_shared(&packet);
+        }
         global.players.broadcast_system(
             join::joined_message(crate::scoreboard::display_name(global, &name, arrival.uuid)),
             false,
@@ -803,6 +812,7 @@ impl WorldPlayers {
         crate::commands::answer_suggestions(&mut level.entities, global, world);
         for uuid in std::mem::take(&mut self.left) {
             crate::scoreboard::left(global, uuid);
+            global.systems.bossbars().player_disconnected(uuid);
             if global.players.remove(Uuid(uuid)).is_some() {
                 global
                     .players

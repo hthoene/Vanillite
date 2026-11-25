@@ -8,6 +8,7 @@
 mod access;
 mod blocks;
 mod border;
+mod bossbars;
 mod chat;
 mod chunk_tickets;
 mod clock;

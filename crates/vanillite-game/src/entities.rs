@@ -303,6 +303,36 @@ impl Entities {
         crate::survival::player::add_effect(&entity, p, effect)
     }
 
+    /// `removeEffect` on a living entity (player or mob); whether it had the effect.
+    pub fn remove_effect(&mut self, id: EntityId, effect: u16) -> bool {
+        if let Some(m) = self.mob_mut(id) {
+            return m.effects.remove(effect).is_some();
+        }
+        let Entities { store, players, .. } = self;
+        let Some(entity) = store.get_mut(id) else {
+            return false;
+        };
+        if entity.as_ref().kind() != ids::PLAYER {
+            return false;
+        }
+        let Some(p) = players.get_mut(entity.as_ref().kind_row()) else {
+            return false;
+        };
+        crate::survival::player::remove_effect(&entity, p, effect)
+    }
+
+    /// `removeAllEffects` on a living entity (player or mob); whether it had any.
+    pub fn clear_effects(&mut self, id: EntityId) -> bool {
+        let effects: Vec<u16> = match self.effects(id) {
+            Some(e) if !e.is_empty() => e.iter().map(|e| e.effect).collect(),
+            _ => return false,
+        };
+        for effect in effects {
+            self.remove_effect(id, effect);
+        }
+        true
+    }
+
     /// The active effects of a living entity (player or mob).
     pub fn effects(&self, id: EntityId) -> Option<&crate::effect::MobEffects> {
         if let Some(m) = self.mob(id) {

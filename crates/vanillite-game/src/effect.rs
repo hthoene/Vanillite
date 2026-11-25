@@ -58,6 +58,44 @@ effect_ids! {
     raid_omen = "minecraft:raid_omen",
 }
 
+/// `MobEffect.isInstantaneous`: the `InstantenousMobEffect` kinds.
+pub fn is_instantaneous(effect: u16) -> bool {
+    matches!(
+        name(effect),
+        Some("minecraft:instant_health" | "minecraft:instant_damage" | "minecraft:saturation")
+    )
+}
+
+/// `LivingEntity.canBeAffected` with the overrides of spiders (poison), wither skeletons and
+/// the wither (wither), the parched (weakness) and nautili (poison); `in_tag` tests the
+/// entity type tags.
+pub fn can_be_affected(
+    kind: vanillite_data::entity::EntityTypeId,
+    effect: u16,
+    in_tag: &dyn Fn(&str) -> bool,
+) -> bool {
+    let effect_name = name(effect).unwrap_or("");
+    let refused = match kind.name() {
+        "minecraft:spider" | "minecraft:cave_spider" | "minecraft:nautilus"
+        | "minecraft:zombie_nautilus" => "minecraft:poison",
+        "minecraft:wither_skeleton" | "minecraft:wither" => "minecraft:wither",
+        "minecraft:parched" => "minecraft:weakness",
+        _ => "",
+    };
+    if effect_name == refused {
+        return false;
+    }
+    if in_tag("minecraft:immune_to_infested") {
+        effect_name != "minecraft:infested"
+    } else if in_tag("minecraft:immune_to_oozing") {
+        effect_name != "minecraft:oozing"
+    } else if in_tag("minecraft:ignores_poison_and_regen") {
+        effect_name != "minecraft:regeneration" && effect_name != "minecraft:poison"
+    } else {
+        true
+    }
+}
+
 /// Infinite duration (`MobEffectInstance.INFINITE_DURATION`).
 pub const INFINITE: i32 = -1;
 

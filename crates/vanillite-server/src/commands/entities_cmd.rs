@@ -141,22 +141,191 @@ pub(crate) fn run(
         CommandId::Rotate => rotate(args, source, env),
         CommandId::Damage => damage(args, source, env),
         CommandId::Swing { offhand } => swing(offhand, args, source, env),
-        CommandId::EffectClear | CommandId::EffectGive { .. } => {
-            // The targets resolve like Vanilla's; mob effects do not exist yet.
-            match args.selector("targets") {
-                Some(s) => drop(select::many(env, source, s)?),
-                None => drop(own_entity(source, env)?),
-            }
-            Err(CommandError::new("command.failed", vec![]))
-        }
-        CommandId::Bossbar(_) => {
-            // Boss bars do not exist yet.
-            if let Some(s) = args.selector("targets") {
-                select::many(env, source, s)?;
-            }
-            Err(CommandError::new("command.failed", vec![]))
-        }
+        CommandId::EffectClear => effect_clear(args, source, env),
+        CommandId::EffectGive { infinite } => effect_give(infinite, args, source, env),
         _ => Err(CommandError::new("command.unknown.command", vec![])),
+    }
+}
+
+/// The `effect` argument: a `minecraft:mob_effect` id.
+fn effect_arg(args: &Args) -> Result<(u16, Component), CommandError> {
+    let name = args.identifier("effect").ok_or_else(|| missing("effect"))?;
+    let effect = vanillite_game::effect::id(name);
+    if effect == u16::MAX {
+        return Err(CommandError::new(
+            "argument.resource.not_found",
+            vec![
+                ErrArg::Str(name.clone()),
+                ErrArg::Str("minecraft:mob_effect".to_owned()),
+            ],
+        ));
+    }
+    // `MobEffect.getDisplayName`.
+    let key = format!("effect.{}", name.replace(':', "."));
+    Ok((effect, Component::translatable(key, vec![])))
+}
+
+/// Whether a target is a `LivingEntity`.
+fn is_living(target: &Target) -> bool {
+    !target.kind.info().attributes.is_empty()
+}
+
+/// `canBeAffected` of a target's kind.
+fn can_be_affected(env: &Env<'_>, target: &Target, effect: u16) -> bool {
+    let game = &env.global.game;
+    vanillite_game::effect::can_be_affected(target.kind, effect, &|tag| {
+        game.entity_tags
+            .get(tag)
+            .is_some_and(|v| v.contains(&target.kind.0))
+    })
+}
+
+/// `EffectCommands.giveEffect`.
+fn effect_give(
+    infinite: bool,
+    args: &Args,
+    source: &CommandSource,
+    env: &mut Env<'_>,
+) -> Result<i32, CommandError> {
+    let targets = select::many(env, source, selector(args, "targets")?)?;
+    let (effect, effect_name) = effect_arg(args)?;
+    let amplifier = args.int("amplifier").copied().unwrap_or(0);
+    let particles = !args.bool("hideParticles").copied().unwrap_or(false);
+    // `computeDurationInTicks`.
+    let duration = if infinite {
+        vanillite_game::effect::INFINITE
+    } else {
+        match args.int("seconds").copied() {
+            Some(s) if vanillite_game::effect::is_instantaneous(effect) => s,
+            Some(s) => s.saturating_mul(20),
+            None if vanillite_game::effect::is_instantaneous(effect) => 1,
+            None => 600,
+        }
+    };
+    let instance = vanillite_game::effect::EffectInstance::with_flags(
+        effect, duration, amplifier, false, particles,
+    );
+    let mut tracker = Tracker::<Component>::default();
+    for target in &targets {
+        if !is_living(target) {
+            continue;
+        }
+        let affected = can_be_affected(env, target, effect);
+        let changed = match target.entity {
+            Some(id) => env.level.entities.add_effect(id, instance, affected),
+            // An entity of another world: applied on its world's thread; counted as changed.
+            None => {
+                on_entity(env, target, move |entities, id, _, _| {
+                    entities.add_effect(id, instance, affected);
+                });
+                affected
+            }
+        };
+        tracker.track(&target.display(), i32::from(changed));
+    }
+    tracker.messages(
+        source,
+        env.global,
+        || CommandError::new("commands.effect.give.failed", vec![]),
+        |entity| {
+            Component::translatable_args(
+                "commands.effect.give.success.single",
+                vec![
+                    Arg::from(effect_name.clone()),
+                    Arg::from(entity.clone()),
+                    Arg::Int(duration / 20),
+                ],
+            )
+        },
+        |count| {
+            Component::translatable_args(
+                "commands.effect.give.success.multiple",
+                vec![
+                    Arg::from(effect_name.clone()),
+                    Arg::Int(count),
+                    Arg::Int(duration / 20),
+                ],
+            )
+        },
+    )
+}
+
+/// `EffectCommands.clearEffects` and `clearEffect`.
+fn effect_clear(
+    args: &Args,
+    source: &CommandSource,
+    env: &mut Env<'_>,
+) -> Result<i32, CommandError> {
+    let targets = match args.selector("targets") {
+        Some(s) => select::many(env, source, s)?,
+        None => vec![own_entity(source, env)?],
+    };
+    let effect = if args.has("effect") {
+        Some(effect_arg(args)?)
+    } else {
+        None
+    };
+    let mut tracker = Tracker::<Component>::default();
+    for target in &targets {
+        if !is_living(target) {
+            continue;
+        }
+        let only = effect.as_ref().map(|(e, _)| *e);
+        let changed = match target.entity {
+            Some(id) => {
+                let entities = &mut env.level.entities;
+                match only {
+                    Some(e) => entities.remove_effect(id, e),
+                    None => entities.clear_effects(id),
+                }
+            }
+            None => {
+                on_entity(env, target, move |entities, id, _, _| {
+                    match only {
+                        Some(e) => entities.remove_effect(id, e),
+                        None => entities.clear_effects(id),
+                    };
+                });
+                true
+            }
+        };
+        tracker.track(&target.display(), i32::from(changed));
+    }
+    match effect {
+        Some((_, name)) => tracker.messages(
+            source,
+            env.global,
+            || CommandError::new("commands.effect.clear.specific.failed", vec![]),
+            |entity| {
+                Component::translatable_args(
+                    "commands.effect.clear.specific.success.single",
+                    vec![Arg::from(name.clone()), Arg::from(entity.clone())],
+                )
+            },
+            |count| {
+                Component::translatable_args(
+                    "commands.effect.clear.specific.success.multiple",
+                    vec![Arg::from(name.clone()), Arg::Int(count)],
+                )
+            },
+        ),
+        None => tracker.messages(
+            source,
+            env.global,
+            || CommandError::new("commands.effect.clear.everything.failed", vec![]),
+            |entity| {
+                Component::translatable(
+                    "commands.effect.clear.everything.success.single",
+                    vec![entity.clone()],
+                )
+            },
+            |count| {
+                Component::translatable_args(
+                    "commands.effect.clear.everything.success.multiple",
+                    vec![Arg::Int(count)],
+                )
+            },
+        ),
     }
 }
 

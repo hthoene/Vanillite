@@ -136,6 +136,7 @@ pub(crate) struct GameSystems {
     stopwatches: Mutex<Stopwatches>,
     profiling: Mutex<Profiling>,
     waypoints: Mutex<std::collections::BTreeMap<u128, WaypointIcon>>,
+    bossbars: Mutex<crate::bossbars::CustomBossEvents>,
 }
 
 /// Registry tags: registry name → tag id → resolved entry ids.
@@ -168,6 +169,7 @@ impl GameSystems {
             stopwatches: Mutex::default(),
             profiling: Mutex::default(),
             waypoints: Mutex::default(),
+            bossbars: Mutex::default(),
         }
     }
 
@@ -244,6 +246,16 @@ impl GameSystems {
             *self.scheduled() = TimerQueue::from_nbt(&c);
         }
         *self.storage() = CommandStorage::load(data);
+        if let Some(c) = read(crate::bossbars::SAVED_DATA) {
+            let mut random = vanillite_base::random::LegacyRandom::new(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| i64::try_from(d.as_nanos() % (1 << 62)).unwrap_or(0)),
+            );
+            *self.bossbars() = crate::bossbars::CustomBossEvents::load(&c, &mut || {
+                vanillite_game::mob::random_uuid(&mut random)
+            });
+        }
     }
 
     /// Writes what changed since the last save (`storeToSaveDataIfDirty`, `setDirty`).
@@ -264,6 +276,9 @@ impl GameSystems {
         }
         for (id, c) in self.storage().take_dirty() {
             data.write(&id, c);
+        }
+        if let Some(c) = self.bossbars().take_dirty() {
+            data.write(crate::bossbars::SAVED_DATA, c);
         }
     }
 
@@ -314,13 +329,33 @@ impl GameSystems {
         self.post_reload.swap(false, Ordering::AcqRel)
     }
 
-    /// Whether a command boss bar exists (`CustomBossEvents.get`); boss bars are not kept yet.
-    pub(crate) fn bossbar_exists(&self, _id: &str) -> bool {
-        false
+    /// The command boss bars (`MinecraftServer.getCustomBossEvents`).
+    pub(crate) fn bossbars(&self) -> MutexGuard<'_, crate::bossbars::CustomBossEvents> {
+        lock(&self.bossbars)
     }
 
-    /// Sets a command boss bar's value or maximum (`execute store bossbar`).
-    pub(crate) fn set_bossbar_value(&self, _id: &str, _max: bool, _value: i32) {}
+    /// Whether a command boss bar exists (`CustomBossEvents.get`).
+    pub(crate) fn bossbar_exists(&self, id: &str) -> bool {
+        self.bossbars().get(id).is_some()
+    }
+
+    /// Sets a command boss bar's value or maximum (`execute store bossbar`); the packets of the
+    /// change go to `out`.
+    pub(crate) fn set_bossbar_value(
+        &self,
+        id: &str,
+        max: bool,
+        value: i32,
+        out: &mut crate::bossbars::Outbox,
+    ) {
+        if let Some(e) = self.bossbars().get_mut(id) {
+            if max {
+                e.set_max(value, out);
+            } else {
+                e.set_value(value, out);
+            }
+        }
+    }
 
     /// The elapsed seconds of a stopwatch (`Stopwatches.get`, `Stopwatch.elapsedSeconds`).
     pub(crate) fn stopwatch_seconds(&self, id: &str) -> Option<f64> {

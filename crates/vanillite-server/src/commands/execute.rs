@@ -76,7 +76,9 @@ pub(crate) fn store(store: &Store, env: &mut Env<'_>, success: bool, result: i32
             let _ = data::store_number(target, path, tag, env);
         }
         StoreKind::Bossbar { id, max } => {
-            env.global.systems.set_bossbar_value(id, *max, value);
+            let mut out = Vec::new();
+            env.global.systems.set_bossbar_value(id, *max, value, &mut out);
+            crate::bossbars::send(env.global, out);
         }
     }
 }
