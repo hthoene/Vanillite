@@ -452,8 +452,6 @@ impl ServerWorld {
             }
             let level = &mut self.level;
             level.run_scheduled_ticks();
-            self.survival
-                .tick_thunder(&mut self.level.entities, &self.level.chunks, ctx.global);
         }
         self.update_player_tickets();
         let level = &mut self.level;
@@ -496,13 +494,10 @@ impl ServerWorld {
         }
         self.players.tick_entities(&mut self.level.entities);
         if ctx.runs_normally {
-            self.survival.tick_entities(
-                &mut self.level.entities,
-                &self.level.chunks,
-                ctx.global,
-                &self.dimension,
-            );
+            self.survival.tick_entities(&mut self.level.entities);
         }
+        // `entityManager.tick()`: entities of chunks that became visible this tick load now.
+        self.level.tick_entity_manager();
         let light = self.updates.light_changes();
         self.level.chunks.take_light_changes(light);
         let mut changed = std::mem::take(&mut self.level.output().changed);

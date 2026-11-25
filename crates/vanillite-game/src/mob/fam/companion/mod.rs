@@ -632,7 +632,7 @@ impl FamilyHooks for Hooks {
             k if is_horse(k) => horse::ambient_sound(m),
             Kind::Wolf => wolf::ambient_sound(m),
             Kind::Cat => feline::cat_ambient_sound(m),
-            Kind::Ocelot => None,
+            Kind::Ocelot => Some("minecraft:entity.ocelot.ambient"),
             Kind::Parrot => Some(parrot::ambient_sound(m)),
             Kind::Fox => fox::ambient_sound(m),
             Kind::Panda => panda::ambient_sound(m),
@@ -813,6 +813,16 @@ impl FamilyHooks for Hooks {
         }
     }
 
+    fn is_immobile(m: &MobData) -> bool {
+        is_horse(m.kind) && horse::is_immobile(m)
+    }
+    fn ai_step_start(t: &mut Tick<'_, '_>) {
+        match t.mob_ref().kind {
+            k if is_horse(k) => horse::ai_step_start(t),
+            Kind::Parrot => parrot::ai_step_start(t),
+            _ => {}
+        }
+    }
     fn ai_step(t: &mut Tick<'_, '_>) {
         match t.mob_ref().kind {
             k if is_horse(k) => horse::ai_step(t),

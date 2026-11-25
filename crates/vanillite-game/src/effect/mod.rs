@@ -21,6 +21,7 @@ pub mod consume;
 pub mod instance;
 pub mod living;
 pub mod potion;
+pub mod thrown;
 
 pub use active::{ActiveEffects, EffectEvent, EffectHost, HurtKind};
 pub use instance::EffectInstance;

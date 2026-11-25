@@ -29,7 +29,13 @@ import net.minecraft.server.level.FullChunkStatus;
 import net.minecraft.server.level.ServerChunkCache;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ThreadedLevelLightEngine;
+import net.minecraft.tags.BlockTags;
+import net.minecraft.world.DifficultyInstance;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntitySpawnReason;
+import net.minecraft.world.entity.EntityTypes;
+import net.minecraft.world.entity.LightningBolt;
+import net.minecraft.world.entity.animal.equine.SkeletonHorse;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.LightLayer;
@@ -38,6 +44,7 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.Property;
 import net.minecraft.world.level.entity.EntityTypeTest;
 import net.minecraft.world.level.entity.PersistentEntitySectionManager;
+import net.minecraft.world.level.gamerules.GameRules;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.ticks.LevelChunkTicks;
 import net.minecraft.world.ticks.LevelTicks;
@@ -134,6 +141,9 @@ public final class ScenarioRecorder {
       BlockPos min = pos(region.get(0));
       BlockPos max = pos(region.get(1));
       loadRegion(server, level, min, max);
+      // The warm-up takes as many ticks as the chunks need to load: the scenario starts at game
+      // time 0 instead, like Vanillite's new level (camels count their pose time from it).
+      server.getWorldData().overworldData().setGameTime(0);
       Area area = new Area(min, max);
 
       // The setup may draw from the level random (blocks that schedule a random delay when
@@ -204,8 +214,12 @@ public final class ScenarioRecorder {
                 entities.hurt(action);
               } else if (op.equals("use_item")) {
                 entities.useItem(action);
-              } else if (action.get("op").getAsString().equals("effect")) {
+              } else if (op.equals("lightning")) {
+                strike(level, pos(action.get("pos")));
+              } else if (op.equals("effect")) {
                 entities.effect(action);
+              } else if (op.equals("throw_potion")) {
+                entities.throwPotion(action);
               } else {
                 apply(level, action, true);
               }
@@ -369,6 +383,39 @@ public final class ScenarioRecorder {
       }
     }
     return null;
+  }
+
+  /**
+   * The {@code lightning} action: the strike of {@code ServerLevel.tickThunder} in the column of
+   * {@code column}, without its chance roll and the random column.
+   */
+  private static void strike(ServerLevel level, BlockPos column) throws Exception {
+    Method find = ServerLevel.class.getDeclaredMethod("findLightningTargetAround", BlockPos.class);
+    find.setAccessible(true);
+    BlockPos pos = (BlockPos) find.invoke(level, column);
+    if (!level.isRainingAt(pos)) {
+      return;
+    }
+    DifficultyInstance difficulty = level.getCurrentDifficultyAt(pos);
+    boolean isTrap =
+        level.getGameRules().get(GameRules.SPAWN_MOBS)
+            && level.getRandom().nextDouble() < difficulty.getEffectiveDifficulty() * 0.01
+            && !level.getBlockState(pos.below()).is(BlockTags.LIGHTNING_RODS);
+    if (isTrap) {
+      SkeletonHorse horse = EntityTypes.SKELETON_HORSE.create(level, EntitySpawnReason.EVENT);
+      if (horse != null) {
+        horse.setTrap(true);
+        horse.setAge(0);
+        horse.setPos(pos.getX(), pos.getY(), pos.getZ());
+        level.addFreshEntity(horse);
+      }
+    }
+    LightningBolt bolt = EntityTypes.LIGHTNING_BOLT.create(level, EntitySpawnReason.EVENT);
+    if (bolt != null) {
+      bolt.snapTo(Vec3.atBottomCenterOf(pos));
+      bolt.setVisualOnly(isTrap);
+      level.addFreshEntity(bolt);
+    }
   }
 
   private static void apply(ServerLevel level, JsonObject op, boolean action) throws Exception {

@@ -86,6 +86,8 @@ pub struct Entities {
     /// The portal state (`portalProcess`, `portalCooldown`) of the entities besides players
     /// that are in a portal or cool down after one; players keep theirs in their data.
     pub portals: FxHashMap<EntityId, crate::portal::PortalState>,
+    /// Lightning bolt kind data.
+    pub bolts: Dense<crate::lightning::LightningData>,
 }
 
 /// Who rides what (`Entity.vehicle`, `Entity.passengers`).
@@ -345,7 +347,7 @@ impl Entities {
     /// The arrow data of an entity.
     pub fn arrow(&self, id: EntityId) -> Option<&ArrowData> {
         let entity = self.store.get(id)?;
-        (entity.kind() == ids::ARROW)
+        crate::mob::projectile::is_arrow_kind(entity.kind())
             .then(|| self.arrows.get(entity.kind_row()))
             .flatten()
     }
@@ -353,7 +355,7 @@ impl Entities {
     /// The arrow data of an entity, mutably.
     pub fn arrow_mut(&mut self, id: EntityId) -> Option<&mut ArrowData> {
         let entity = self.store.get(id)?;
-        if entity.kind() != ids::ARROW {
+        if !crate::mob::projectile::is_arrow_kind(entity.kind()) {
             return None;
         }
         let row = entity.kind_row();
@@ -485,6 +487,26 @@ impl Entities {
         self.experience_orbs.get_mut(row)
     }
 
+    /// Adds a lightning bolt.
+    pub fn spawn_bolt(
+        &mut self,
+        new: NewEntity,
+        data: crate::lightning::LightningData,
+    ) -> EntityId {
+        let bolts = &mut self.bolts;
+        self.store.spawn(new, |id| bolts.push(id, data))
+    }
+
+    /// The lightning bolt data of an entity, mutably.
+    pub fn bolt_mut(&mut self, id: EntityId) -> Option<&mut crate::lightning::LightningData> {
+        let entity = self.store.get(id)?;
+        if entity.kind() != ids::LIGHTNING_BOLT {
+            return None;
+        }
+        let row = entity.kind_row();
+        self.bolts.get_mut(row)
+    }
+
     /// Removes an entity of any kind together with its kind data.
     pub fn despawn(&mut self, id: EntityId) -> Option<Removed> {
         self.unlink(id);
@@ -569,7 +591,7 @@ impl Entities {
             self.falling_blocks
                 .swap_remove(row)
                 .and_then(|(_, moved)| moved)
-        } else if kind == ids::ARROW {
+        } else if crate::mob::projectile::is_arrow_kind(kind) {
             self.arrows.swap_remove(row).and_then(|(_, moved)| moved)
         } else if is_mob_kind(kind) {
             self.mobs.swap_remove(row).and_then(|(_, moved)| moved)
@@ -593,6 +615,8 @@ impl Entities {
             self.knots.swap_remove(row).and_then(|(_, moved)| moved)
         } else if crate::minecart::MinecartKind::of(kind).is_some() {
             self.minecarts.swap_remove(row).and_then(|(_, moved)| moved)
+        } else if kind == ids::LIGHTNING_BOLT {
+            self.bolts.swap_remove(row).and_then(|(_, moved)| moved)
         } else {
             None
         }

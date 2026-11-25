@@ -95,6 +95,10 @@
 //! the scenario matches Vanilla).
 //! - `hurt` action: `amount` damage to the entity `entity`, by `by` (player attack or mob
 //!   attack) or generic damage without `by`.
+//! - `lightning` action: the strike of `ServerLevel.tickThunder` in the column of `pos` (its y
+//!   does not matter) without the chance roll: the target (`findLightningTargetAround`: the
+//!   nearest lightning rod, a living entity under the open sky, or the column's top), then
+//!   `isRainingAt`, the skeleton trap and the bolt. Needs `"weather": "thunder"` (or rain).
 //! - `effect` action: `addEffect` on the entity `entity` with the mob effect `effect`,
 //!   `duration` ticks and `amplifier` (default 0).
 //! - `use_item` action: the player `entity` gets `count` (default 1) of the item `item` in its
@@ -165,12 +169,16 @@ pub enum OpKind {
     Unforce,
     /// Damage to a scenario entity ([`Op::hurt`]).
     Hurt,
+    /// A lightning strike in the column of `from` (an action).
+    Lightning,
     /// Saves, stops and starts the server again (an action).
     Restart,
     /// A status effect on a scenario entity ([`Op::effect`]).
     Effect,
     /// A player uses an item ([`Op::use_item`]).
     UseItem,
+    /// A thrown splash or lingering potion ([`Op::throw_potion`]).
+    ThrowPotion,
 }
 
 /// The item use of a `use_item` action.
@@ -181,6 +189,19 @@ pub struct UseItemOp {
     /// Item id, e.g. `minecraft:ender_pearl`.
     pub item: String,
     pub count: i32,
+}
+
+/// The potion of a `throw_potion` action.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ThrowPotionOp {
+    /// `minecraft:splash_potion` or `minecraft:lingering_potion`.
+    pub item: String,
+    /// Potion id, e.g. `minecraft:strong_poison`.
+    pub potion: String,
+    pub pos: [f64; 3],
+    pub motion: [f64; 3],
+    /// Name of the thrower, if any.
+    pub by: Option<String>,
 }
 
 /// The status effect of an `effect` action.
@@ -264,6 +285,8 @@ pub struct Op {
     pub effect: Option<EffectOp>,
     /// The item use of a `use_item` action.
     pub use_item: Option<UseItemOp>,
+    /// The potion of a `throw_potion` action.
+    pub throw_potion: Option<ThrowPotionOp>,
     /// The chunks of `force` and `unforce`.
     pub chunks: Vec<ChunkPos>,
 }
@@ -522,8 +545,10 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
         Some("place") => OpKind::Place,
         Some("fill") => OpKind::Fill,
         Some("hurt") if action => OpKind::Hurt,
+        Some("lightning") if action => OpKind::Lightning,
         Some("effect") if action => OpKind::Effect,
         Some("use_item") if action => OpKind::UseItem,
+        Some("throw_potion") if action => OpKind::ThrowPotion,
         Some("force") if action => OpKind::Force,
         Some("unforce") if action => OpKind::Unforce,
         Some("restart") if action => OpKind::Restart,
@@ -562,6 +587,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             hurt: None,
             effect: None,
             use_item: None,
+            throw_potion: None,
             chunks,
         });
     }
@@ -574,6 +600,27 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
     } else {
         0
     };
+    if kind == OpKind::ThrowPotion {
+        let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
+        return Ok(Op {
+            tick,
+            kind,
+            from: BlockPos::new(0, 0, 0),
+            to: BlockPos::new(0, 0, 0),
+            block: String::new(),
+            hurt: None,
+            effect: None,
+            throw_potion: Some(ThrowPotionOp {
+                item: s("item").ok_or("throw_potion needs an item")?,
+                potion: s("potion").ok_or("throw_potion needs a potion")?,
+                pos: vec3(v.get("pos"))?,
+                motion: vec3(v.get("motion"))?,
+                by: s("by"),
+            }),
+            use_item: None,
+            chunks: Vec::new(),
+        });
+    }
     if kind == OpKind::Effect {
         let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
         let int = |k: &str| {
@@ -595,6 +642,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
                 amplifier: int("amplifier").unwrap_or(0),
             }),
             use_item: None,
+            throw_potion: None,
             chunks: Vec::new(),
         });
     }
@@ -617,6 +665,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
                     .and_then(|n| i32::try_from(n).ok())
                     .unwrap_or(1),
             }),
+            throw_potion: None,
             chunks: Vec::new(),
         });
     }
@@ -638,7 +687,23 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
                     .ok_or("hurt needs an amount")? as f32,
             }),
             effect: None,
+            throw_potion: None,
             use_item: None,
+        });
+    }
+    if kind == OpKind::Lightning {
+        let p = pos(v.get("pos"))?;
+        return Ok(Op {
+            tick,
+            kind,
+            from: p,
+            to: p,
+            block: String::new(),
+            hurt: None,
+            effect: None,
+            throw_potion: None,
+            use_item: None,
+            chunks: Vec::new(),
         });
     }
     let (from, to) = if kind == OpKind::Fill {
@@ -660,6 +725,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
         hurt: None,
         effect: None,
         use_item: None,
+        throw_potion: None,
         chunks: Vec::new(),
     })
 }

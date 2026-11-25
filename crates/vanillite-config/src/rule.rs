@@ -302,6 +302,39 @@ impl RuleValue for StorageLayout {
     }
 }
 
+/// The redstone wire implementation (`performance.redstone.implementation`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum RedstoneImplementation {
+    /// Vanilla's wire: tick-exact, with Vanilla's update order and redundant updates.
+    #[default]
+    Vanilla,
+    /// An implementation after Alternate Current (MIT): every wire network is computed in one
+    /// pass and each neighbour is updated at most once per change.
+    AlternateCurrent,
+}
+
+impl RuleValue for RedstoneImplementation {
+    const SHAPE: ValueShape = ValueShape::of(ValueType::Text);
+    fn from_toml(value: &toml::Value) -> Result<Self, String> {
+        match value.as_str().map(str::trim) {
+            Some(s) if s.eq_ignore_ascii_case("vanilla") => Ok(RedstoneImplementation::Vanilla),
+            Some(s) if s.eq_ignore_ascii_case("alternate-current") => {
+                Ok(RedstoneImplementation::AlternateCurrent)
+            }
+            _ => Err(format!(
+                "expected \"vanilla\" or \"alternate-current\", found {value}"
+            )),
+        }
+    }
+    fn to_toml(&self) -> toml::Value {
+        let name = match self {
+            RedstoneImplementation::Vanilla => "vanilla",
+            RedstoneImplementation::AlternateCurrent => "alternate-current",
+        };
+        toml::Value::String(name.to_owned())
+    }
+}
+
 /// The format of the chunk, entity and POI files of a world (`storage.world-format`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum WorldFormat {

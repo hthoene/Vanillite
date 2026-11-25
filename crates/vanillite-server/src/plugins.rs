@@ -182,6 +182,20 @@ impl ServerAccess for Services {
         true
     }
 
+    fn set_tab_list(&self, player: u128, header: Text<'_>, footer: Text<'_>) -> bool {
+        let Some(global) = self.global.upgrade() else {
+            return false;
+        };
+        let Some((sink, _)) = global.players.connection(Uuid(player)) else {
+            return false;
+        };
+        sink.send(&vanillite_protocol::packets::play::clientbound::TabList {
+            header: component(header),
+            footer: component(footer),
+        });
+        true
+    }
+
     fn broadcast(&self, text: Text<'_>) {
         if let Some(global) = self.global.upgrade() {
             let content = component(text);

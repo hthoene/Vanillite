@@ -49,6 +49,8 @@ pub struct PlayerEntry {
     pub inbox: Arc<Mutex<ChatInbox>>,
     /// The remote IP address (`getIpAddress`), for IP bans.
     pub ip: String,
+    /// The client allows being listed in the server list sample (`allowsListing`).
+    pub allows_listing: bool,
 }
 
 /// A player's connection with its chat inbox.

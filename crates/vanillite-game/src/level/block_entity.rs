@@ -855,15 +855,18 @@ impl Level {
         self.chunk_scratch = chunks;
     }
 
-    /// The chunks that became live in the last [`Level::tick_chunk_runtime`] (the entity
-    /// storage loads their entities).
+    /// The chunks that became live in the last [`Level::tick_chunk_runtime`].
     pub fn promoted_chunks(&self) -> &[ChunkPos] {
         &self.chunk_scratch
     }
 
     /// Saves the world's chunks with their live block entities written back. `flush` waits
-    /// until everything is on disk.
+    /// until everything is on disk and first completes the pending entity loads
+    /// (`PersistentEntitySectionManager.saveAll`).
     pub fn save(&mut self, flush: bool) {
+        if flush {
+            self.tick_entity_manager();
+        }
         let mut chunks: Vec<ChunkPos> = self.block_entities.chunks.keys().copied().collect();
         chunks.extend(self.block_entities.touched.iter().copied());
         chunks.sort_unstable_by_key(|c| (c.x, c.z));

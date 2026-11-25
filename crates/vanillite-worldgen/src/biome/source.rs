@@ -329,11 +329,16 @@ impl Resolver<'_> {
         let BiomeSource::MultiNoise(list) = self.source else {
             return self.noise_biome(quart_x, 0, quart_z);
         };
-        let target = climates.get_or_insert_with(quart_x, quart_z, || {
-            self.sampler
-                .sample(self.program, &mut self.ctx, quart_x, 0, quart_z)
-        });
-        *list.find_value(&target, &mut self.cache)
+        let (sampler, program, ctx) = (self.sampler, self.program, &mut self.ctx);
+        let index = climates.search_at(
+            quart_x,
+            quart_z,
+            self.cache.0,
+            || sampler.sample(program, ctx, quart_x, 0, quart_z),
+            |target, hint| list.search_index(target, hint),
+        );
+        self.cache.0 = Some(index);
+        *list.value_at(index)
     }
 }
 

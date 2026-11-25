@@ -210,6 +210,31 @@ impl ServerWorld {
             })
             .and_then(|i| u16::try_from(i).ok())
             .map_or(OVERWORLD, WorldId);
+        // `remove(KILLED)` → `triggerOnDeathMobEffects`: a dead player's Wind Charged bursts.
+        let wind = !keep_all
+            && player
+                .survival
+                .effects
+                .has(vanillite_game::effect::MobEffect::WIND_CHARGED);
+        if wind && let Some(e) = self.level.entities.store.get(id) {
+            let (pos, height) = (e.pos(), e.dims().height);
+            let (center, radius) = vanillite_game::experience_orb::with_entity_random(|r| {
+                vanillite_game::effect::living::wind_burst(pos, height, r)
+            });
+            self.level.explode_with(
+                Some(id),
+                None,
+                center,
+                radius,
+                vanillite_game::level::explosion::BlockInteraction::TriggerBlock,
+                vanillite_game::level::explosion::ExplosionStyle {
+                    damages_entities: false,
+                    knockback: vanillite_game::effect::living::WIND_CHARGED_KNOCKBACK,
+                    wind_sound: Some(vanillite_game::effect::living::WIND_CHARGED_SOUND),
+                    resistance: vanillite_game::level::explosion::BlockResistance::WindCharge,
+                },
+            );
+        }
         self.send_away(ctx, id, target, Route::Respawn { keep_all });
     }
 

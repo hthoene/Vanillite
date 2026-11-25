@@ -309,7 +309,8 @@ pub fn tick(
         };
         v = Vec3::new(v.x * m, v.y + rise, v.z * m);
     } else {
-        v = Vec3::new(v.x, v.y - 0.04, v.z);
+        // `applyGravity`: `add(0, -0.04, 0)`, which turns Java's -0.0 into 0.0.
+        v = Vec3::new(v.x + 0.0, v.y - 0.04, v.z + 0.0);
     }
     let half = 0.125;
     let height = 0.25;
@@ -352,14 +353,16 @@ pub fn tick(
         };
         out.pos = moved.pos;
         out.on_ground = moved.hit_y && v.y < 0.0;
+        // `restituteMovementAfterCollisions` without bounciness: `-v * 0.0` keeps Java's signed
+        // zeros.
         if moved.hit_x {
-            v.x = 0.0;
+            v.x = -v.x * 0.0;
         }
         if moved.hit_z {
-            v.z = 0.0;
+            v.z = -v.z * 0.0;
         }
         if moved.hit_y {
-            v.y = 0.0;
+            v.y = -v.y * 0.0;
         }
         // `getAirDrag()` and the ground friction are floats, widened to double.
         let air_drag = 0.98_f32;

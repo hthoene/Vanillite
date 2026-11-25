@@ -75,10 +75,8 @@ pub(super) fn fly(t: &mut MissileTick<'_, '_>) -> Flight {
     if let Some((_, at)) = block_hit {
         to = at;
     }
-    // `ProjectileUtil.computeMargin`.
-    #[allow(clippy::cast_precision_loss)]
-    let margin = f64::from((((life - 2) as f32) / 20.0).clamp(0.0, 0.3));
     let search = expand_towards(aabb, v).inflate(1.0, 1.0, 1.0);
+    let m = crate::mob::missile::margin(life);
     let mut found = std::mem::take(&mut t.cx.ids);
     found.clear();
     t.ents
@@ -93,7 +91,7 @@ pub(super) fn fly(t: &mut MissileTick<'_, '_>) -> Flight {
             continue;
         };
         // `AABB.clip`: nothing when the segment starts inside the box.
-        let b = e.aabb().inflate(margin, margin, margin);
+        let b = e.aabb().inflate(m, m, m);
         if b.contains(pos.x, pos.y, pos.z) {
             continue;
         }

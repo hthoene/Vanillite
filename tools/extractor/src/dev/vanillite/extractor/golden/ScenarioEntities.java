@@ -210,6 +210,37 @@ final class ScenarioEntities {
             effect, action.get("duration").getAsInt(), amplifier));
   }
 
+  /**
+   * The {@code throw_potion} action: a splash or lingering potion ({@code item}) of {@code
+   * potion} at {@code pos} flying with {@code motion}, thrown by the named {@code by} if given.
+   */
+  void throwPotion(JsonObject action) {
+    var item =
+        BuiltInRegistries.ITEM.getValue(Identifier.parse(action.get("item").getAsString()));
+    var potion =
+        BuiltInRegistries.POTION
+            .get(Identifier.parse(action.get("potion").getAsString()))
+            .orElseThrow();
+    var stack = net.minecraft.world.item.alchemy.PotionContents.createItemStack(item, potion);
+    JsonArray p = action.getAsJsonArray("pos");
+    JsonArray m = action.getAsJsonArray("motion");
+    double x = p.get(0).getAsDouble();
+    double y = p.get(1).getAsDouble();
+    double z = p.get(2).getAsDouble();
+    net.minecraft.world.entity.projectile.throwableitemprojectile.AbstractThrownPotion thrown =
+        item == net.minecraft.world.item.Items.LINGERING_POTION
+            ? new net.minecraft.world.entity.projectile.throwableitemprojectile
+                .ThrownLingeringPotion(level, x, y, z, stack)
+            : new net.minecraft.world.entity.projectile.throwableitemprojectile
+                .ThrownSplashPotion(level, x, y, z, stack);
+    if (action.has("by")) {
+      thrown.setOwner(byName.get(action.get("by").getAsString()));
+    }
+    thrown.setDeltaMovement(
+        m.get(0).getAsDouble(), m.get(1).getAsDouble(), m.get(2).getAsDouble());
+    level.addFreshEntity(thrown);
+  }
+
   private String nameOf(Entity e) {
     String n = names.get(e);
     return n != null ? n : BuiltInRegistries.ENTITY_TYPE.getKey(e.getType()).toString();

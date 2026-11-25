@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use rustc_hash::FxHashMap;
-use vanillite_protocol::codec::Reader as JReader;
+use vanillite_protocol::codec::{Decode, Reader as JReader};
 use vanillite_protocol::item::ItemStack;
 use vanillite_protocol::packets::play::clientbound::{self as pcb, GameMode};
 use vanillite_protocol::packets::play::serverbound::{self as psb, DigAction, Hand};
@@ -186,7 +186,16 @@ impl Session {
                 let Some(java) = self.java_entity(target) else {
                     return;
                 };
-                if action == 1 {
+                if action == 0 {
+                    // Use on the entity: mount, trade, feed, leash, ...
+                    let sneaking = self.world.as_ref().is_some_and(|w| w.sneaking);
+                    self.java_send(&psb::Interact {
+                        entity_id: java,
+                        hand: Hand::MainHand,
+                        location: vanillite_protocol::types::LpVec3::default(),
+                        using_secondary_action: sneaking,
+                    });
+                } else if action == 1 {
                     // `attack` (Java 26.3): the target's entity id.
                     let mut body = Vec::with_capacity(8);
                     vanillite_protocol::codec::write_varint(
@@ -214,6 +223,9 @@ impl Session {
     /// `interact`: opening the inventory needs the server's answer.
     pub(super) fn interact(&mut self, body: &[u8]) -> crate::io::Result<()> {
         let (kind, _target) = bp::read_interact(body)?;
+        if kind == 3 {
+            self.leave_vehicle();
+        }
         if kind == 6 {
             let Some(w) = &self.world else {
                 return Ok(());
@@ -374,9 +386,7 @@ impl Session {
             head_yaw: angle_deg(e.y_head_rot),
             kind: Kind::Actor,
             java_type: u16::try_from(e.entity_type).unwrap_or(u16::MAX),
-            flags: 0,
-            name: None,
-            baby: false,
+            ..Entity::default()
         };
         let kind = u16::try_from(e.entity_type)
             .ok()
@@ -451,6 +461,13 @@ impl Session {
 
     pub(super) fn remove_entities(&mut self, ids: &[i32]) {
         for &e in ids {
+            if self
+                .world
+                .as_ref()
+                .is_some_and(|w| w.passengers.contains_key(&e))
+            {
+                self.java_passengers(e, Vec::new());
+            }
             let known = self
                 .world
                 .as_mut()
@@ -474,24 +491,20 @@ impl Session {
             .cloned()
             .or_else(|| {
                 own.then_some(Entity {
-                    pos: [0.0; 3],
-                    yaw: 0.0,
-                    pitch: 0.0,
-                    head_yaw: 0.0,
                     kind: Kind::Player,
-                    java_type: 0,
-                    flags: 0,
-                    name: None,
-                    baby: false,
+                    ..Entity::default()
                 })
             })
         else {
             return;
         };
-        let tnt = vanillite_data::registry::Registry::by_name("minecraft:entity_type")
-            .and_then(|r| r.name(e.java_type))
-            == Some("minecraft:tnt");
-        let data = entity::read_data(&d.items.0, e.kind == Kind::PendingItem, tnt);
+        let java_name = if e.kind == Kind::Player {
+            "minecraft:player"
+        } else {
+            java_type_name(e.java_type)
+        };
+        let tnt = java_name == "minecraft:tnt";
+        let data = entity::read_data(&d.items.0, java_name);
         let runtime = self.actor(d.entity_id);
         if e.kind == Kind::PendingItem {
             let Some(item) = data.item.filter(|i| !i.is_empty()) else {
@@ -511,51 +524,77 @@ impl Session {
             self.send(id::ADD_ITEM_ACTOR, &body);
             return;
         }
-        let mut flags = e.flags;
-        let mut changed = false;
+        let mut next = e.clone();
         if let Some(f) = data.flags {
-            changed |= f != flags;
-            flags = f;
+            next.flags = f;
         }
-        let mut name = e.name.clone();
         if let Some(n) = data.custom_name {
-            changed |= n != name;
-            name = n;
+            next.name = n;
         }
-        let mut baby = e.baby;
         if let Some(b) = data.baby {
-            changed |= b != baby;
-            baby = b;
+            next.baby = b;
         }
+        if let Some(w) = data.wool {
+            next.wool = w;
+        }
+        let changed = next.flags != e.flags
+            || next.name != e.name
+            || next.baby != e.baby
+            || next.wool != e.wool;
         if let Some(w) = &mut self.world
             && let Some(ent) = w.entities.get_mut(&d.entity_id)
         {
-            ent.flags = flags;
-            ent.name.clone_from(&name);
-            ent.baby = baby;
+            *ent = next.clone();
         }
-        if !changed && data.fuse.is_none() {
+        if !changed && data.fuse.is_none() && data.effect_color.is_none() && data.villager.is_none()
+        {
             return;
         }
         let player = e.kind == Kind::Player;
-        let mut fl = base_flags(flags, player);
-        if baby {
-            fl |= 1i64.wrapping_shl(meta::FLAG_BABY);
-        }
-        if tnt {
-            fl |= 1i64.wrapping_shl(meta::FLAG_IGNITED);
-        }
+        let fl = actor_flags(&next, player, tnt);
         let mut m = bp::Metadata::default().long(meta::FLAGS, fl);
+        if own {
+            // The own player: only the flags Bedrock shows to itself.
+            self.send(id::SET_ACTOR_DATA, &bp::set_actor_data(runtime, &m));
+            return;
+        }
+        let villager = data.villager.map(entity::villager_variants);
+        if let Some((profession, _)) = villager {
+            m = m.int(meta::VARIANT, profession);
+        }
+        if java_name == "minecraft:sheep" {
+            m = m.byte(meta::COLOR, next.wool & 0x0f);
+        }
+        if !player && let Some(n) = &next.name {
+            m = m.string(meta::NAME, n);
+        }
+        if let Some(c) = data.effect_color {
+            m = m.int(meta::EFFECT_COLOR, c);
+        }
+        if let Some((_, region)) = villager {
+            m = m.int(meta::MARK_VARIANT, region);
+        }
         if let Some(fuse) = data.fuse {
             m = m.int(meta::FUSE, fuse);
         }
-        if !player && let Some(n) = &name {
-            m = m.string(meta::NAME, n);
-        }
-        if own {
-            // The own player: only the flags Bedrock shows to itself.
-            m = bp::Metadata::default().long(meta::FLAGS, fl);
-        }
+        self.send(id::SET_ACTOR_DATA, &bp::set_actor_data(runtime, &m));
+    }
+
+    /// Sends the flags of a known entity again (after a change outside its entity data).
+    pub(super) fn send_actor_flags(&mut self, java: i32) {
+        let Some(e) = self
+            .world
+            .as_ref()
+            .and_then(|w| w.entities.get(&java))
+            .filter(|e| matches!(e.kind, Kind::Actor | Kind::Player))
+            .cloned()
+        else {
+            return;
+        };
+        let tnt = java_type_name(e.java_type) == "minecraft:tnt";
+        let m =
+            bp::Metadata::default().long(meta::FLAGS, actor_flags(&e, e.kind == Kind::Player, tnt));
+        let runtime = self.actor(java);
         self.send(id::SET_ACTOR_DATA, &bp::set_actor_data(runtime, &m));
     }
 
@@ -573,6 +612,18 @@ impl Session {
             .is_some_and(|w| w.entities.contains_key(&e.entity_id))
         {
             return;
+        }
+        // 7: the saddle slot (Bedrock shows it as a flag).
+        if let Some((_, saddle)) = e.slots.iter().rev().find(|(slot, _)| *slot == 7) {
+            let saddled = !saddle.is_empty();
+            let changed = self
+                .world
+                .as_mut()
+                .and_then(|w| w.entities.get_mut(&e.entity_id))
+                .is_some_and(|ent| std::mem::replace(&mut ent.saddled, saddled) != saddled);
+            if changed {
+                self.send_actor_flags(e.entity_id);
+            }
         }
         let runtime = self.actor(e.entity_id);
         let items = self.version.palette.items();
@@ -872,6 +923,10 @@ impl Session {
             .collect();
         w.entities.clear();
         w.cracking.clear();
+        w.passengers.clear();
+        w.vehicle = None;
+        w.predicted_vehicle = None;
+        w.merchant = None;
         let bosses: Vec<i64> = w.bosses.drain().map(|(_, b)| b.0).collect();
         let changed = w.layout.dimension != layout.dimension || switch;
         if changed {
@@ -962,38 +1017,179 @@ impl Session {
                 self.send(id::SET_TITLE, &bp::set_title(i32::from(reset), "", [0; 3]));
             }
             ids::BOSS_EVENT => self.java_boss(&mut r),
-            ids::UPDATE_MOB_EFFECT | ids::REMOVE_MOB_EFFECT => {
-                let (Ok(entity), Ok(effect)) = (r.varint(), r.varint()) else {
-                    return;
-                };
-                let Some(bedrock) = u16::try_from(effect)
-                    .ok()
-                    .and_then(|e| {
-                        vanillite_data::registry::Registry::by_name("minecraft:mob_effect")?.name(e)
-                    })
-                    .and_then(entity::effect_id)
-                else {
-                    return;
-                };
-                let runtime = self.actor(entity);
-                if packet == ids::REMOVE_MOB_EFFECT {
-                    self.send(
-                        id::MOB_EFFECT,
-                        &bp::mob_effect(runtime, 3, bedrock, 0, false, 0),
-                    );
-                    return;
+            ids::SET_PASSENGERS => {
+                if let Ok(p) = pcb::SetPassengers::decode(&mut r) {
+                    self.java_passengers(p.vehicle, p.passengers.0);
                 }
-                let (Ok(amplifier), Ok(duration), Ok(flags)) = (r.varint(), r.varint(), r.u8())
-                else {
-                    return;
-                };
-                self.send(
-                    id::MOB_EFFECT,
-                    &bp::mob_effect(runtime, 1, bedrock, amplifier, flags & 2 != 0, duration),
-                );
+            }
+            ids::MOVE_VEHICLE => {
+                if let Ok(m) = pcb::MoveVehicleBack::decode(&mut r) {
+                    self.java_move_vehicle(&m);
+                }
+            }
+            ids::LEVEL_PARTICLES => {
+                if let Ok(p) = pcb::LevelParticles::decode(&mut r) {
+                    self.java_particles(&p);
+                }
+            }
+            ids::RESOURCE_PACK_PUSH => {
+                if let Ok(p) = pcb::ResourcePackPush::decode(&mut r) {
+                    use vanillite_protocol::packets::common::ResourcePackAction as A;
+                    for action in [A::Accepted, A::SuccessfullyLoaded] {
+                        self.java_send(&psb::ResourcePack { id: p.id, action });
+                    }
+                }
+            }
+            ids::EXPLODE => self.java_explode(&mut r),
+            ids::SOUND_ENTITY => self.java_entity_sound(&mut r),
+            ids::OPEN_SCREEN => self.java_open_screen(&mut r),
+            ids::MERCHANT_OFFERS => self.java_merchant_offers(&mut r),
+            ids::CONTAINER_CLOSE => {
+                if let Ok(container) = r.varint() {
+                    self.java_container_closed(container);
+                }
             }
             _ => {}
         }
+    }
+
+    /// `update_mob_effect` (`Some((amplifier, duration, flags))`) or `remove_mob_effect`.
+    pub(super) fn java_mob_effect(
+        &mut self,
+        entity: i32,
+        effect: i32,
+        update: Option<(i32, i32, u8)>,
+    ) {
+        let Some(bedrock) = u16::try_from(effect)
+            .ok()
+            .and_then(|e| {
+                vanillite_data::registry::Registry::by_name("minecraft:mob_effect")?.name(e)
+            })
+            .and_then(entity::effect_id)
+        else {
+            return;
+        };
+        let runtime = self.actor(entity);
+        let body = match update {
+            None => bp::mob_effect(runtime, 3, bedrock, 0, false, 0),
+            Some((amplifier, duration, flags)) => {
+                bp::mob_effect(runtime, 1, bedrock, amplifier, flags & 2 != 0, duration)
+            }
+        };
+        self.send(id::MOB_EFFECT, &body);
+    }
+
+    /// The Bedrock dimension the player is in.
+    fn dimension(&self) -> u8 {
+        self.world
+            .as_ref()
+            .and_then(|w| u8::try_from(w.layout.dimension).ok())
+            .unwrap_or(0)
+    }
+
+    /// `level_particles`: vanilla Bedrock particle effects, at most 8 per packet spread over the
+    /// packet's distribution box.
+    fn java_particles(&mut self, p: &pcb::LevelParticles) {
+        let Some(name) = u16::try_from(p.particle.kind)
+            .ok()
+            .and_then(|k| vanillite_data::registry::PARTICLE_TYPE.name(k))
+            .and_then(crate::data::particle_name)
+        else {
+            return;
+        };
+        let dimension = self.dimension();
+        let n = p.count.clamp(1, 8);
+        let dist = [p.x_dist, p.y_dist, p.z_dist].map(|d| d.clamp(0.0, 16.0));
+        let mut seed = u32::try_from((p.x.to_bits() ^ p.z.to_bits()) & 0xffff_ffff).unwrap_or(0);
+        for i in 0..n {
+            let mut pos = [p.x, p.y, p.z].map(f32_of);
+            if p.count > 0 && i > 0 {
+                for (v, d) in pos.iter_mut().zip(dist) {
+                    seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    let unit = f32_of(f64::from(seed >> 8) / f64::from(1u32 << 24)) * 2.0 - 1.0;
+                    *v += unit * d;
+                }
+            }
+            self.send(
+                id::SPAWN_PARTICLE_EFFECT,
+                &bp::spawn_particle_effect(dimension, pos, name),
+            );
+        }
+    }
+
+    /// `explode`: the explosion's particle and sound, and the knockback of the own player.
+    fn java_explode(&mut self, r: &mut JReader<'_>) {
+        let (Ok(x), Ok(y), Ok(z), Ok(_radius), Ok(_blocks)) =
+            (r.f64(), r.f64(), r.f64(), r.f32(), r.i32())
+        else {
+            return;
+        };
+        let knockback = match r.u8() {
+            Ok(0) => None,
+            Ok(_) => match (r.f64(), r.f64(), r.f64()) {
+                (Ok(a), Ok(b), Ok(c)) => Some([a, b, c]),
+                _ => return,
+            },
+            Err(_) => return,
+        };
+        let pos = [x, y, z].map(f32_of);
+        if let Ok(p) = vanillite_protocol::packets::play::clientbound::Particle::decode(r)
+            && let Some(name) = u16::try_from(p.kind)
+                .ok()
+                .and_then(|k| vanillite_data::registry::PARTICLE_TYPE.name(k))
+                .and_then(crate::data::particle_name)
+        {
+            let dimension = self.dimension();
+            self.send(
+                id::SPAWN_PARTICLE_EFFECT,
+                &bp::spawn_particle_effect(dimension, pos, name),
+            );
+        }
+        self.send(
+            id::LEVEL_SOUND_EVENT,
+            &bp::level_sound_event("explode", pos, -1),
+        );
+        if let Some(k) = knockback
+            && let Some(w) = &self.world
+        {
+            let own = rid(w.entity_id);
+            self.send(id::SET_ACTOR_MOTION, &bp::set_actor_motion(own, f3(k)));
+        }
+    }
+
+    /// `sound_entity`: a sound at an entity.
+    fn java_entity_sound(&mut self, r: &mut JReader<'_>) {
+        let (Ok(sound), Ok(_source), Ok(entity), Ok(volume), Ok(pitch)) = (
+            pcb::SoundEvent::decode(r),
+            r.varint(),
+            r.varint(),
+            r.f32(),
+            r.f32(),
+        ) else {
+            return;
+        };
+        let Some(pos) = self.world.as_ref().and_then(|w| {
+            if entity == w.java_id {
+                Some(w.pos)
+            } else {
+                w.entities.get(&entity).map(|e| e.pos)
+            }
+        }) else {
+            return;
+        };
+        let Some(name) = u16::try_from(sound.0)
+            .ok()
+            .and_then(|i| {
+                vanillite_data::registry::Registry::by_name("minecraft:sound_event")?.name(i)
+            })
+            .and_then(crate::data::sound_name)
+        else {
+            return;
+        };
+        self.send(
+            id::PLAY_SOUND,
+            &bp::play_sound(name, f3(pos), volume, pitch, self.version),
+        );
     }
 
     fn java_boss(&mut self, r: &mut JReader<'_>) {
@@ -1152,6 +1348,30 @@ impl Session {
             &bp::move_player(rid, f3(eye), pitch, yaw, yaw, move_mode::TELEPORT, false, 0),
         );
     }
+}
+
+/// The Java name of an entity type id ("" when unknown).
+pub(super) fn java_type_name(id: u16) -> &'static str {
+    vanillite_data::registry::Registry::by_name("minecraft:entity_type")
+        .and_then(|r| r.name(id))
+        .unwrap_or("")
+}
+
+/// All Bedrock flags of a known entity.
+fn actor_flags(e: &Entity, player: bool, tnt: bool) -> i64 {
+    let mut fl = base_flags(e.flags, player);
+    for (on, flag) in [
+        (e.baby, meta::FLAG_BABY),
+        (tnt, meta::FLAG_IGNITED),
+        (e.saddled, meta::FLAG_SADDLED),
+        (e.wool & 0x10 != 0, meta::FLAG_SHEARED),
+        (e.riding, meta::FLAG_RIDING),
+    ] {
+        if on {
+            fl |= 1i64.wrapping_shl(flag);
+        }
+    }
+    fl
 }
 
 /// The Bedrock flags of an entity from its Java shared flags.

@@ -169,9 +169,16 @@ Adding a mob:
    moves earlier (a regression) and asks to raise the tick when it moves later. Editing that
    file needs no new recording.
 
-Scenario players are mock players: they join on a connection nobody reads, do not move by
-themselves and load no chunks (the region's chunks are the world). Their server-side motion is
-not compared.
+Scenario players are mock players: they join on a connection nobody reads and load no chunks
+(the region's chunks are the world). No client moves them, so the server does, in Vanilla as in
+Vanillite (`Survival::simulate_movement`): knockback, pushes and explosions move them with
+gravity, friction and collisions. Their motion is not compared, their position and body yaw
+are.
+
+The recorder makes Vanilla's other hidden state fixed as well: every scenario starts at game
+time 0, and every shuffled behaviour list (`ShufflingList`, the brains' `RunOne` gates) seeds its
+own random with the same constant (`ParityHooks.SHUFFLE_SEED`), as Vanillite's scenario world
+does.
 
 ## CI
 

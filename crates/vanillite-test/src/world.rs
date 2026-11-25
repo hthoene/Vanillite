@@ -89,9 +89,17 @@ pub trait ScenarioWorld {
     fn use_item(&mut self, op: &crate::scenario::UseItemOp) -> Result<(), String> {
         Err(format!("this world cannot use items for `{}`", op.entity))
     }
+    /// Runs a `lightning` action in the column of `column`.
+    fn lightning(&mut self, column: BlockPos) -> Result<(), String> {
+        Err(format!("this world has no lightning ({column:?})"))
+    }
     /// Runs an `effect` action.
     fn effect(&mut self, effect: &crate::scenario::EffectOp) -> Result<(), String> {
         Err(format!("this world has no effects for `{}`", effect.entity))
+    }
+    /// Runs a `throw_potion` action.
+    fn throw_potion(&mut self, potion: &crate::scenario::ThrowPotionOp) -> Result<(), String> {
+        Err(format!("this world cannot throw `{}`", potion.potion))
     }
 }
 
