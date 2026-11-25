@@ -18,6 +18,7 @@ pub mod explosion;
 pub mod forced;
 pub mod game_event;
 mod neighbors;
+pub mod place;
 #[cfg(test)]
 pub(crate) use neighbors::STEPS as NEIGHBOR_STEPS;
 pub mod signal;
@@ -279,14 +280,14 @@ pub struct LevelOutput {
     pub experience: Vec<(vanillite_base::Vec3, i32)>,
     /// Block entities whose client data changed (`sendBlockUpdated` of a block entity).
     pub block_entity_updates: Vec<BlockPos>,
+    /// Global level events (`globalLevelEvent`: event, position, data), heard by every player
+    /// of the server.
+    pub global_level_events: Vec<(i32, BlockPos, i32)>,
     /// Wither skeleton skulls players placed, for the wither's summon check
     /// (`WitherSkullBlock.setPlacedBy`).
     pub summon_checks: Vec<BlockPos>,
     /// An end crystal was placed: the End fight tries to respawn the dragon (`tryRespawn`).
     pub try_dragon_respawn: bool,
-    /// Global level events (`globalLevelEvent`: event, position, data), heard by every player
-    /// of the server.
-    pub global_level_events: Vec<(i32, BlockPos, i32)>,
 }
 
 /// The terrain generator of a world (`getChunkSource().getGenerator()`).

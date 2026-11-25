@@ -725,8 +725,19 @@ impl TerrainGenerator {
     /// The `WorldGenRegion` of the features stage over `chunks` (3×3, row-major, `dz` outer),
     /// set up for this dimension.
     pub fn feature_region<'a>(&self, chunks: Vec<&'a mut ProtoChunk>) -> WorldGenRegion<'a> {
-        let mut region =
-            WorldGenRegion::new(chunks, 1, 1, &self.random_state, self.settings.sea_level);
+        self.region(chunks, 1)
+    }
+
+    /// A `WorldGenRegion` over `chunks` (`2 * radius + 1` square, row-major, `dz` outer) that
+    /// may write anywhere in it, set up for this dimension.
+    pub fn region<'a>(&self, chunks: Vec<&'a mut ProtoChunk>, radius: i32) -> WorldGenRegion<'a> {
+        let mut region = WorldGenRegion::new(
+            chunks,
+            radius,
+            radius,
+            &self.random_state,
+            self.settings.sea_level,
+        );
         region.set_generation_context(self.features.env.context);
         region.set_has_sky_light(self.has_sky_light);
         region

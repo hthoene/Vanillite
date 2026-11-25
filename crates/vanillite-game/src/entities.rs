@@ -83,6 +83,8 @@ pub struct Entities {
     pub missiles: Dense<crate::mob::missile::MissileData>,
     /// Minecart kind data (every type of [`crate::minecart::MinecartKind`]).
     pub minecarts: Dense<crate::minecart::MinecartData>,
+    /// Lightning bolt kind data.
+    pub bolts: Dense<crate::lightning::LightningData>,
 }
 
 /// Who rides what (`Entity.vehicle`, `Entity.passengers`).
@@ -312,6 +314,15 @@ impl Entities {
         can_be_affected && crate::effect::living::add_detached(self, id, effect)
     }
 
+    /// The active effects of a living entity (player or mob), mutably (`removeEffect`,
+    /// `removeAllEffects`); the packets and attributes follow with the entity's next tick.
+    pub fn effects_mut(&mut self, id: EntityId) -> Option<&mut crate::effect::ActiveEffects> {
+        if self.mob(id).is_some() {
+            return self.mob_mut(id).map(|m| &mut m.effects);
+        }
+        self.player_mut(id).map(|p| &mut p.survival.effects)
+    }
+
     /// The active effects of a living entity (player or mob).
     pub fn effects(&self, id: EntityId) -> Option<&crate::effect::ActiveEffects> {
         if let Some(m) = self.mob(id) {
@@ -482,6 +493,26 @@ impl Entities {
         self.experience_orbs.get_mut(row)
     }
 
+    /// Adds a lightning bolt.
+    pub fn spawn_bolt(
+        &mut self,
+        new: NewEntity,
+        data: crate::lightning::LightningData,
+    ) -> EntityId {
+        let bolts = &mut self.bolts;
+        self.store.spawn(new, |id| bolts.push(id, data))
+    }
+
+    /// The lightning bolt data of an entity, mutably.
+    pub fn bolt_mut(&mut self, id: EntityId) -> Option<&mut crate::lightning::LightningData> {
+        let entity = self.store.get(id)?;
+        if entity.kind() != ids::LIGHTNING_BOLT {
+            return None;
+        }
+        let row = entity.kind_row();
+        self.bolts.get_mut(row)
+    }
+
     /// Removes an entity of any kind together with its kind data.
     pub fn despawn(&mut self, id: EntityId) -> Option<Removed> {
         self.unlink(id);
@@ -587,6 +618,8 @@ impl Entities {
             self.knots.swap_remove(row).and_then(|(_, moved)| moved)
         } else if crate::minecart::MinecartKind::of(kind).is_some() {
             self.minecarts.swap_remove(row).and_then(|(_, moved)| moved)
+        } else if kind == ids::LIGHTNING_BOLT {
+            self.bolts.swap_remove(row).and_then(|(_, moved)| moved)
         } else {
             None
         }

@@ -432,7 +432,7 @@ pub(super) fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
         }
         Goal::DolphinMoveToItem { cooldown } => {
             if let Some((_, pos)) = first_item(t) {
-                nav::move_to_entity(t, pos, 0, f64::from(1.2_f32));
+                nav::move_to_entity(t, pos, 1, f64::from(1.2_f32));
                 kinds::play_sound(t, "minecraft:entity.dolphin.play", 1.0, 1.0);
             }
             *cooldown = 0;
@@ -491,7 +491,7 @@ pub(super) fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
             if t.pos().distance_to_sqr(o.pos) < 6.25 {
                 t.mob().nav.stop();
             } else {
-                nav::move_to_entity(t, o.pos, 0, *speed);
+                nav::move_to_entity(t, o.pos, 1, *speed);
             }
         }
         Goal::DolphinJump { breached, .. } => {
@@ -510,13 +510,13 @@ pub(super) fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
             } else if v.length() > f64::from(1.0e-5_f32) {
                 let h = (v.x * v.x + v.z * v.z).sqrt();
                 #[allow(clippy::cast_possible_truncation)]
-                let x = ((-v.y).atan2(h) * 180.0 / f64::from(std::f32::consts::PI)) as f32;
+                let x = ((-v.y).atan2(h) * f64::from(57.295_776_f32)) as f32;
                 t.core_mut().set_rot(Rotation { x_rot: x, ..rot });
             }
         }
         Goal::DolphinMoveToItem { .. } => {
             if let Some((_, pos)) = first_item(t) {
-                nav::move_to_entity(t, pos, 0, f64::from(1.2_f32));
+                nav::move_to_entity(t, pos, 1, f64::from(1.2_f32));
             }
         }
         Goal::DolphinPlayWithItems { .. } => {

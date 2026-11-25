@@ -3,7 +3,10 @@
 //! A ticket of level `L` at a chunk gives every chunk at Chebyshev distance `d` the level
 //! `L + d`; a chunk's level is the lowest one any ticket gives it. Levels up to 33 mean a full
 //! chunk, 34 to 44 a generation status (the pyramid around full chunks), above 44 the chunk is
-//! not needed. Each chunk keeps a histogram of the levels its tickets give it, so adding or
+//! not needed. Tickets reach only up to [`MAX_TICKET_LEVEL`]: what the game reads (full chunks
+//! and the ring around them that light needs). Levels 35 to 44 come only from generation
+//! tickets the scheduler places at chunks that really must be generated (#47 D3), so already
+//! generated terrain keeps no pyramid in memory. Each chunk keeps a histogram of the levels its tickets give it, so adding or
 //! removing a ticket costs one update per chunk in its reach and never rescans other tickets.
 
 use vanillite_base::ChunkPos;
@@ -15,6 +18,9 @@ use vanillite_chunk::slots::RADIUS_AROUND_FULL;
 pub const FULL_LEVEL: u8 = 33;
 /// Highest level of a loaded chunk (`ChunkLevel.MAX_LEVEL`).
 pub const MAX_LEVEL: u8 = FULL_LEVEL + RADIUS_AROUND_FULL as u8;
+/// Highest level a ticket gives (`FULL_LEVEL + 1`): full chunks and the ring of chunks around
+/// them that light reads. Everything above exists only to generate missing chunks.
+pub const MAX_TICKET_LEVEL: u8 = FULL_LEVEL + 1;
 /// The level of chunks no ticket reaches.
 pub const UNLOADED: u8 = MAX_LEVEL + 1;
 

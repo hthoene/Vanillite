@@ -23,22 +23,12 @@ use crate::survival::player::{self, Env};
 use crate::survival::{Effect, play_sound};
 
 /// Entity type tags when no data packs are loaded.
-struct NoTags;
-
-impl EntityTags for NoTags {
-    fn entity_in_tag(&self, _: vanillite_data::entity::EntityTypeId, _: &str) -> bool {
-        false
-    }
-}
-
-static NO_ENCHANTS: Enchantments = Enchantments { list: Vec::new() };
-
-/// The loaded enchantments and entity tags (empty without data packs).
-pub fn combat_data() -> (&'static Enchantments, &'static dyn EntityTags) {
-    match crate::player::play::game_data() {
-        Some(d) => (&d.enchants, d),
-        None => (&NO_ENCHANTS, &NoTags),
-    }
+/// The loaded game data with the enchantments and entity tags (empty without data packs).
+pub fn combat_data() -> std::sync::Arc<crate::player::play::GameData> {
+    static EMPTY: std::sync::OnceLock<std::sync::Arc<crate::player::play::GameData>> =
+        std::sync::OnceLock::new();
+    crate::player::play::game_data()
+        .unwrap_or_else(|| std::sync::Arc::clone(EMPTY.get_or_init(Default::default)))
 }
 
 /// The facts predicates test of a living entity.
@@ -190,7 +180,8 @@ pub fn player_attack(
     let weapon = p.inventory.selected_item().clone();
     let fall_distance = p.survival.fall_distance;
     let in_water = p.survival.fluids.in_water();
-    let (enchants, tags) = combat_data();
+    let combat = combat_data();
+    let (enchants, tags): (&Enchantments, &dyn EntityTags) = (&combat.enchants, &*combat);
 
     let base = player_attribute(ents, attacker, "minecraft:attack_damage", 1.0, 0.0, 2048.0);
     #[allow(clippy::cast_possible_truncation)]
@@ -340,7 +331,8 @@ fn mace_bonus(
     } else {
         22.0 + f - 8.0
     };
-    let (enchants, tags) = combat_data();
+    let combat = combat_data();
+    let (enchants, tags): (&Enchantments, &dyn EntityTags) = (&combat.enchants, &*combat);
     let ecx = damage_context(ents, env.types, tags, target, source);
     #[allow(clippy::cast_possible_truncation)]
     let per_block = enchants.modify_fall_based_damage(weapon, &ecx, env.random, 0.0) * f as f32;
@@ -366,7 +358,13 @@ fn extra_knockback(
             f64::from(vanillite_base::math::sin(rad)),
             f64::from(vanillite_base::math::cos(rad)),
         );
-        combat::knock_living(ents, env, target, f64::from(amount), sin, -cos);
+        // Dragon parts are not living entities: they only take the hit, no knockback.
+        if !ents
+            .mob(target)
+            .is_some_and(|m| m.kind == super::Kind::EnderDragon)
+        {
+            combat::knock_living(ents, env, target, f64::from(amount), sin, -cos);
+        }
         if let Some(mut e) = ents.store.get_mut(attacker) {
             let v = e.as_ref().velocity();
             e.set_velocity(v.multiply(0.6, 1.0, 0.6));
@@ -439,7 +437,8 @@ fn sweep_attack(
         .player(attacker)
         .map(|p| p.inventory.selected_item().clone())
         .unwrap_or_default();
-    let (enchants, tags) = combat_data();
+    let combat = combat_data();
+    let (enchants, tags): (&Enchantments, &dyn EntityTags) = (&combat.enchants, &*combat);
     for id in near {
         if id == attacker || id == target || !is_alive(ents, id) {
             continue;
@@ -483,7 +482,8 @@ pub fn post_attack(
     source: &DamageSource,
     weapon: Option<&ItemStack>,
 ) {
-    let (enchants, tags) = combat_data();
+    let combat = combat_data();
+    let (enchants, tags): (&Enchantments, &dyn EntityTags) = (&combat.enchants, &*combat);
     // `runIterationOnEquipment` of the victim (`EquipmentSlot` order).
     for (slot, stack) in equipment(ents, victim) {
         let effects = {
@@ -659,7 +659,9 @@ fn hurt_equipment(
         return;
     }
     let data = crate::player::play::game_data();
-    let unbreaking = data.map_or(0, |d| d.enchantment_level(&stack, "minecraft:unbreaking"));
+    let unbreaking = data
+        .as_ref()
+        .map_or(0, |d| d.enchantment_level(&stack, "minecraft:unbreaking"));
     let armor = data.is_some_and(|d| d.item_in_tag(stack.item, "minecraft:enchantable/armor"));
     #[allow(clippy::cast_precision_loss)]
     let level = unbreaking.max(0) as f32;
@@ -720,7 +722,8 @@ pub fn armor_effectiveness<'t>(
         .inventory
         .selected_item()
         .clone();
-    let (enchants, tags) = combat_data();
+    let combat = combat_data();
+    let (enchants, tags): (&Enchantments, &dyn EntityTags) = (&combat.enchants, &*combat);
     if !enchants
         .of(&weapon)
         .any(|(e, _)| !e.armor_effectiveness.is_empty())
@@ -728,9 +731,28 @@ pub fn armor_effectiveness<'t>(
         return None;
     }
     let ecx = damage_context(ents, types, tags, victim, source);
+    let facts = (
+        ecx.this,
+        ecx.attacker,
+        ecx.direct_attacker,
+        ecx.attacking_player,
+        ecx.source,
+    );
     Some(Box::new(move |fraction| {
+        let (this, attacker, direct_attacker, attacking_player, source) = facts;
+        let ecx = crate::enchant::EnchantContext {
+            types,
+            tags: &*combat,
+            this,
+            attacker,
+            direct_attacker,
+            attacking_player,
+            source,
+        };
         crate::experience_orb::with_entity_random(|r| {
-            enchants.modify_armor_effectiveness(&weapon, &ecx, r, fraction)
+            combat
+                .enchants
+                .modify_armor_effectiveness(&weapon, &ecx, r, fraction)
         })
     }))
 }

@@ -7,6 +7,8 @@ import java.lang.classfile.ClassTransform;
 import java.lang.classfile.CodeTransform;
 import java.lang.classfile.MethodModel;
 import java.lang.classfile.MethodTransform;
+import java.lang.classfile.Opcode;
+import java.lang.classfile.instruction.InvokeInstruction;
 import java.lang.classfile.instruction.ReturnInstruction;
 import java.lang.constant.ClassDesc;
 import java.lang.constant.ConstantDescs;
@@ -28,6 +30,9 @@ import java.security.ProtectionDomain;
  *       reseeds the new entity's random from the scenario's entity seed stream (the subclass
  *       constructors run after it and see the seeded random). Vanillite seeds new entities from
  *       the same stream.
+ *   <li>the {@code ShufflingList} constructors take their random from {@link
+ *       ParityHooks#shuffleRandom()}: in a scenario every shuffled behaviour list starts from the
+ *       same seed, as in Vanillite's scenario world.
  * </ul>
  *
  * <p>Only Vanilla's randomness changes; no game logic does.
@@ -51,6 +56,7 @@ public final class ParityAgent {
               return switch (name) {
                 case "net/minecraft/world/level/levelgen/RandomSupport" -> uniqueSeed(bytes);
                 case "net/minecraft/world/entity/Entity" -> entityCreated(bytes);
+                case "net/minecraft/world/entity/ai/behavior/ShufflingList" -> shuffleRandom(bytes);
                 default -> null;
               };
             } catch (RuntimeException e) {
@@ -88,6 +94,29 @@ public final class ParityAgent {
                             b.with(e);
                           }
                         })));
+    return cf.transformClass(model, t);
+  }
+
+  /** {@code ShufflingList.<init>}: {@code RandomSource.create()} → {@code ParityHooks.shuffleRandom()}. */
+  private static byte[] shuffleRandom(byte[] bytes) {
+    ClassFile cf = ClassFile.of();
+    ClassModel model = cf.parse(bytes);
+    ClassDesc random = ClassDesc.of("net.minecraft.util.RandomSource");
+    ClassTransform t =
+        ClassTransform.transformingMethods(
+            (MethodModel m) -> m.methodName().equalsString(ConstantDescs.INIT_NAME),
+            MethodTransform.transformingCode(
+                (b, e) -> {
+                  if (e instanceof InvokeInstruction i
+                      && i.opcode() == Opcode.INVOKESTATIC
+                      && i.owner().asSymbol().equals(random)
+                      && i.name().equalsString("create")
+                      && i.typeSymbol().parameterCount() == 0) {
+                    b.invokestatic(HOOKS, "shuffleRandom", MethodTypeDesc.of(random));
+                  } else {
+                    b.with(e);
+                  }
+                }));
     return cf.transformClass(model, t);
   }
 

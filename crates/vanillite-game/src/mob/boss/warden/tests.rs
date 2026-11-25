@@ -54,6 +54,7 @@ fn with_tick<R>(level: &mut Level, id: EntityId, f: impl FnOnce(&mut Tick<'_, '_
         let level_ref: &Level = level;
         let blocks = LevelBlocks(level_ref);
         let mut no_gateway = |_| false;
+        let names = |name: &str, _| vanillite_protocol::text::Component::text(name);
         let mut env = Env {
             hooks: &crate::hooks::NoHooks,
             types: &types,
@@ -65,11 +66,11 @@ fn with_tick<R>(level: &mut Level, id: EntityId, f: impl FnOnce(&mut Tick<'_, '_
             min_y: level_ref.min_y(),
             dimension: "minecraft:overworld",
             raining_at: &raining,
+            border: None,
             enter_gateway: &mut no_gateway,
+            display_name: &names,
             random: &mut random,
             out: &mut out,
-            border: None,
-            display_name: &|n: &str, _| vanillite_protocol::text::Component::text(n.to_owned()),
         };
         let mut t = Tick {
             level: level_ref,

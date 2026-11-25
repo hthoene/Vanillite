@@ -6,12 +6,12 @@ Minecraft: Bedrock Edition releases (`src/version.rs`). Formats are described in
 - `26_40/`: Bedrock 1.26.40-1.26.45 (network protocols 2168 and 2169)
 - `26_50/`: Bedrock 1.26.50-1.26.52 (protocol 2193)
 - `26_60/`: Bedrock 1.26.60-1.26.66 (protocol 2225)
-- top level: biomes, sounds and entity identifiers, shared by all releases
+- top level: biomes, sounds, particles and entity identifiers, shared by all releases
 
 Sources (MIT licence, Copyright (c) 2019-2026 GeyserMC, http://geysermc.org):
 
 - https://github.com/GeyserMC/mappings at 6e7d6c55736f8363535434d02b0391f202e9b399
-  (`blocks.nbt`, `biomes.json`, `items.json`, `sounds.json`)
+  (`blocks.nbt`, `biomes.json`, `items.json`, `sounds.json`, `particles.json`)
 - https://github.com/GeyserMC/Geyser at d2cf20058c6c875f7036deb6f6c59e0c39775199:
   `core/src/main/resources/bedrock` (`block_palette.<v>.nbt`, `data_driven_blocks.<v>.nbt`,
   `runtime_item_states.<v>.json`, `item_components.<v>.nbt`, `creative_items.<v>.json`,

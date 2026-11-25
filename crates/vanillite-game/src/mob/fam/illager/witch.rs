@@ -2,11 +2,10 @@
 
 use vanillite_base::Vec3;
 use vanillite_base::random::RandomSource;
-use vanillite_world::entity::EntityId;
+use vanillite_world::entity::{EntityId, NewEntity};
 
 use super::super::super::common::{self, CommonGoal};
 use super::super::super::goals::Goal as MobGoal;
-use super::super::super::missile::{MissileData, MissileKind};
 use super::super::super::{MobData, Tick, living, missile, projectile};
 use super::potion::{self, Potion};
 use super::raider::{self, Ignore};
@@ -197,18 +196,38 @@ pub fn perform_ranged_attack(t: &mut Tick<'_, '_>, target: EntityId) {
     } else if dist <= 3.0 && !has(MobEffect::WEAKNESS) && t.mob().random.next_float() < 0.25 {
         chosen = Potion::Weakness;
     }
-    let mut data = MissileData::new(MissileKind::SplashPotion);
-    data.item = potion::stack("minecraft:splash_potion", chosen);
+    // `spawnProjectileUsingShoot(ThrownSplashPotion::new, ...)`: a thrown potion (with its
+    // splash effects), its spread from its own random.
+    let stack = potion::stack("minecraft:splash_potion", chosen);
     let start = Vec3::new(p.x, t.eye_y() - f64::from(0.1_f32), p.z);
     let power = if dist <= 2.0 { 0.45 } else { 0.75 };
-    let (velocity, rot) = projectile::shoot(
-        &mut t.mob().random,
-        Vec3::new(xd, yd + dist * 0.2, zd),
-        power,
-        8.0,
+    let mut own = missile::new_projectile_random();
+    let (velocity, rot) =
+        projectile::shoot(&mut own, Vec3::new(xd, yd + dist * 0.2, zd), power, 8.0);
+    let kind = crate::effect::thrown::kind_of(&stack)
+        .unwrap_or(vanillite_data::entity::ids::SPLASH_POTION);
+    let mut new = NewEntity::new(
+        kind,
+        t.level.network_ids().next(),
+        crate::mob::new_uuid(),
+        start,
     );
-    // `shootFromRotation` adds the shooter's motion only for players.
-    missile::spawn_from(t, start, velocity, rot, data);
+    new.velocity = velocity;
+    new.rot = rot;
+    let owner_uuid = t.core().uuid();
+    let owner = t.id;
+    t.ents.spawn_special(
+        new,
+        crate::mob::boss::special::SpecialData::ThrownPotion(Box::new(
+            crate::effect::thrown::ThrownPotion {
+                owner: Some(owner),
+                owner_uuid: Some(owner_uuid),
+                stack,
+                left_owner: false,
+                tick_count: 0,
+            },
+        )),
+    );
     if !t.mob_ref().silent {
         let pitch = 0.8 + t.mob().random.next_float() * 0.4;
         sound(t, "minecraft:entity.witch.throw", 1.0, pitch);

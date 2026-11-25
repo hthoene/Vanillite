@@ -85,9 +85,17 @@ pub trait ScenarioWorld {
     fn hurt(&mut self, hurt: &Hurt) -> Result<(), String> {
         Err(format!("this world cannot hurt `{}`", hurt.entity))
     }
+    /// Runs a `lightning` action in the column of `column`.
+    fn lightning(&mut self, column: BlockPos) -> Result<(), String> {
+        Err(format!("this world has no lightning ({column:?})"))
+    }
     /// Runs an `effect` action.
     fn effect(&mut self, effect: &crate::scenario::EffectOp) -> Result<(), String> {
         Err(format!("this world has no effects for `{}`", effect.entity))
+    }
+    /// Runs a `command` action: the line as the server at the origin of the overworld.
+    fn command(&mut self, line: &str) -> Result<(), String> {
+        Err(format!("this world runs no commands (`{line}`)"))
     }
     /// Runs a `throw_potion` action.
     fn throw_potion(&mut self, potion: &crate::scenario::ThrowPotionOp) -> Result<(), String> {

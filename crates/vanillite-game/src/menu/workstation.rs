@@ -20,7 +20,7 @@ fn increased_repair_cost(base: i32) -> i32 {
     base.saturating_mul(2).saturating_add(1)
 }
 
-fn data() -> Option<&'static crate::player::play::GameData> {
+fn data() -> Option<std::sync::Arc<crate::player::play::GameData>> {
     crate::player::play::game_data()
 }
 

@@ -126,7 +126,7 @@ pub fn follow_tick(t: &mut Tick<'_, '_>, speed: f64, recalc: &mut i32) {
         if teleport {
             try_to_teleport_to_owner(t, o.pos);
         } else {
-            nav::move_to_entity(t, o.pos, 0, speed);
+            nav::move_to_entity(t, o.pos, 1, speed);
         }
     }
 }

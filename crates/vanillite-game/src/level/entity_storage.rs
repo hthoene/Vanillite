@@ -106,7 +106,9 @@ impl Level {
         self.entity_chunks.contains(&chunk)
     }
 
-    fn load_entity(&mut self, nbt: Compound) -> bool {
+    /// `EntityType.loadEntityRecursive` + `addFreshEntity` of stored entity data (a modelled
+    /// kind); whether an entity was added.
+    pub fn load_entity(&mut self, nbt: Compound) -> bool {
         let seed = uuid_of(&nbt, "UUID").map_or(0, |uuid| uuid as i64) ^ self.game_time();
         if let Some(loaded) = crate::mob::nbt::load_mob(&nbt, seed) {
             let network_ids = Arc::clone(self.network_ids_arc());
@@ -311,7 +313,7 @@ impl Level {
 
     /// `Entity.save`: the stored data of a live entity of a modelled kind, `None` for players
     /// and kinds that are not saved.
-    fn save_entity(&self, id: EntityId) -> Option<Compound> {
+    pub fn save_entity(&self, id: EntityId) -> Option<Compound> {
         let entity = self.entities.store.get(id)?;
         let kind = entity.kind();
         let ents = &self.entities;

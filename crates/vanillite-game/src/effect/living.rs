@@ -503,13 +503,18 @@ pub fn add_to_player(ents: &mut Entities, player: EntityId, new: EffectInstance)
 /// packets, flags, attributes and the sound follow with the entity's next tick. Returns
 /// whether the effect changed.
 pub fn add_detached(ents: &mut Entities, id: EntityId, new: EffectInstance) -> bool {
+    !new.effect.is_instantaneous() && add_queued(ents, id, new)
+}
+
+/// `addEffect` from a command (`/effect give`) on a player or mob of this world, with
+/// `canBeAffected`: like [`add_detached`], but instantaneous effects are kept too and apply
+/// with the entity's next effect tick (`InstantenousMobEffect.shouldApplyEffectTickThisTick`).
+/// Returns whether the effect changed.
+pub fn add_queued(ents: &mut Entities, id: EntityId, new: EffectInstance) -> bool {
     let Some(kind) = ents.store.get(id).map(|e| e.kind()) else {
         return false;
     };
-    if new.effect.is_instantaneous()
-        || !super::can_be_affected(kind, new.effect)
-        || super::refuses_all_effects(kind)
-    {
+    if !super::can_be_affected(kind, new.effect) || super::refuses_all_effects(kind) {
         return false;
     }
     if let Some(m) = ents.mob_mut(id) {

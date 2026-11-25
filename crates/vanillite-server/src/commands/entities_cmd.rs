@@ -11,6 +11,8 @@ use vanillite_command::error::{Arg as ErrArg, CommandError};
 use vanillite_command::selector::EntitySelector;
 use vanillite_command::values::Anchor;
 use vanillite_game::commands::CommandId;
+use vanillite_game::effect::MobEffect;
+use vanillite_game::effect::living::add_queued;
 use vanillite_game::entities::Entities;
 use vanillite_game::survival::damage::DamageSource;
 use vanillite_nbt::Compound;
@@ -25,9 +27,9 @@ use vanillite_world::tracking::Viewer;
 
 use super::Env;
 use super::exec::{resolve_position, resolve_rotation};
-use super::response::Tracker;
 use super::select::{self, Target};
 use super::source::CommandSource;
+use super::tracker::Tracker;
 use crate::global::Global;
 use crate::server::DIMENSIONS;
 use crate::survival::WorldSurvival;
@@ -128,35 +130,197 @@ pub(crate) fn run(
         CommandId::RideMount => {
             let target = select::single(env, source, selector(args, "target")?)?;
             let vehicle = select::single(env, source, selector(args, "vehicle")?)?;
-            ride_mount(&target, &vehicle)
+            ride_mount(source, env, &target, &vehicle)
         }
         CommandId::RideDismount => {
             let target = select::single(env, source, selector(args, "target")?)?;
-            // Nothing rides yet: `getVehicle()` is always null.
-            Err(CommandError::new(
-                "commands.ride.not_riding",
-                vec![component(target.display())],
-            ))
+            ride_dismount(source, env, &target)
         }
         CommandId::Rotate => rotate(args, source, env),
         CommandId::Damage => damage(args, source, env),
         CommandId::Swing { offhand } => swing(offhand, args, source, env),
-        CommandId::EffectClear | CommandId::EffectGive { .. } => {
-            // The targets resolve like Vanilla's; mob effects do not exist yet.
-            match args.selector("targets") {
-                Some(s) => drop(select::many(env, source, s)?),
-                None => drop(own_entity(source, env)?),
-            }
-            Err(CommandError::new("command.failed", vec![]))
-        }
-        CommandId::Bossbar(_) => {
-            // Boss bars do not exist yet.
-            if let Some(s) = args.selector("targets") {
-                select::many(env, source, s)?;
-            }
-            Err(CommandError::new("command.failed", vec![]))
-        }
+        CommandId::EffectClear => effect_clear(args, source, env),
+        CommandId::EffectGive { infinite } => effect_give(infinite, args, source, env),
         _ => Err(CommandError::new("command.unknown.command", vec![])),
+    }
+}
+
+/// The `effect` argument: a `minecraft:mob_effect` id.
+fn effect_arg(args: &Args) -> Result<(MobEffect, Component), CommandError> {
+    let name = args.identifier("effect").ok_or_else(|| missing("effect"))?;
+    let Some(effect) = vanillite_data::registry::MOB_EFFECT
+        .id(name)
+        .and_then(|id| MobEffect::from_id(i32::from(id)))
+    else {
+        return Err(CommandError::new(
+            "argument.resource.not_found",
+            vec![
+                ErrArg::Str(name.clone()),
+                ErrArg::Str("minecraft:mob_effect".to_owned()),
+            ],
+        ));
+    };
+    // `MobEffect.getDisplayName`.
+    let key = format!("effect.{}", name.replace(':', "."));
+    Ok((effect, Component::translatable(key, vec![])))
+}
+
+/// Whether a target is a `LivingEntity`.
+fn is_living(target: &Target) -> bool {
+    !target.kind.info().attributes.is_empty()
+}
+
+/// `EffectCommands.giveEffect`.
+fn effect_give(
+    infinite: bool,
+    args: &Args,
+    source: &CommandSource,
+    env: &mut Env<'_>,
+) -> Result<i32, CommandError> {
+    let targets = select::many(env, source, selector(args, "targets")?)?;
+    let (effect, effect_name) = effect_arg(args)?;
+    let amplifier = args.int("amplifier").copied().unwrap_or(0);
+    let particles = !args.bool("hideParticles").copied().unwrap_or(false);
+    // `computeDurationInTicks`.
+    let duration = if infinite {
+        vanillite_game::effect::instance::INFINITE
+    } else {
+        match args.int("seconds").copied() {
+            Some(s) if effect.is_instantaneous() => s,
+            Some(s) => s.saturating_mul(20),
+            None if effect.is_instantaneous() => 1,
+            None => 600,
+        }
+    };
+    let instance = vanillite_game::effect::EffectInstance::with_flags(
+        effect, duration, amplifier, false, particles, particles,
+    );
+    let mut tracker = Tracker::<Component>::default();
+    for target in &targets {
+        if !is_living(target) {
+            continue;
+        }
+        let changed = match target.entity {
+            Some(id) => add_queued(&mut env.level.entities, id, instance.clone()),
+            // An entity of another world: applied on its world's thread; counted as changed
+            // when its kind can be affected.
+            None => {
+                let instance = instance.clone();
+                on_entity(env, target, move |entities, id, _, _| {
+                    add_queued(entities, id, instance);
+                });
+                vanillite_game::effect::can_be_affected(target.kind, effect)
+                    && !vanillite_game::effect::refuses_all_effects(target.kind)
+            }
+        };
+        tracker.track(&target.display(), i32::from(changed));
+    }
+    tracker.messages(
+        source,
+        env.global,
+        || CommandError::new("commands.effect.give.failed", vec![]),
+        |entity| {
+            Component::translatable_args(
+                "commands.effect.give.success.single",
+                vec![
+                    Arg::from(effect_name.clone()),
+                    Arg::from(entity.clone()),
+                    Arg::Int(duration / 20),
+                ],
+            )
+        },
+        |count| {
+            Component::translatable_args(
+                "commands.effect.give.success.multiple",
+                vec![
+                    Arg::from(effect_name.clone()),
+                    Arg::Int(count),
+                    Arg::Int(duration / 20),
+                ],
+            )
+        },
+    )
+}
+
+/// `removeEffect` (with `only`) or `removeAllEffects` on a living entity; whether it had it.
+fn remove_effects(
+    entities: &mut vanillite_game::entities::Entities,
+    id: vanillite_world::entity::EntityId,
+    only: Option<MobEffect>,
+) -> bool {
+    entities.effects_mut(id).is_some_and(|fx| match only {
+        Some(e) => fx.remove(e),
+        None => fx.clear(),
+    })
+}
+
+/// `EffectCommands.clearEffects` and `clearEffect`.
+fn effect_clear(
+    args: &Args,
+    source: &CommandSource,
+    env: &mut Env<'_>,
+) -> Result<i32, CommandError> {
+    let targets = match args.selector("targets") {
+        Some(s) => select::many(env, source, s)?,
+        None => vec![own_entity(source, env)?],
+    };
+    let effect = if args.has("effect") {
+        Some(effect_arg(args)?)
+    } else {
+        None
+    };
+    let mut tracker = Tracker::<Component>::default();
+    for target in &targets {
+        if !is_living(target) {
+            continue;
+        }
+        let only = effect.as_ref().map(|(e, _)| *e);
+        let changed = match target.entity {
+            Some(id) => remove_effects(&mut env.level.entities, id, only),
+            None => {
+                on_entity(env, target, move |entities, id, _, _| {
+                    remove_effects(entities, id, only);
+                });
+                true
+            }
+        };
+        tracker.track(&target.display(), i32::from(changed));
+    }
+    match effect {
+        Some((_, name)) => tracker.messages(
+            source,
+            env.global,
+            || CommandError::new("commands.effect.clear.specific.failed", vec![]),
+            |entity| {
+                Component::translatable_args(
+                    "commands.effect.clear.specific.success.single",
+                    vec![Arg::from(name.clone()), Arg::from(entity.clone())],
+                )
+            },
+            |count| {
+                Component::translatable_args(
+                    "commands.effect.clear.specific.success.multiple",
+                    vec![Arg::from(name.clone()), Arg::Int(count)],
+                )
+            },
+        ),
+        None => tracker.messages(
+            source,
+            env.global,
+            || CommandError::new("commands.effect.clear.everything.failed", vec![]),
+            |entity| {
+                Component::translatable(
+                    "commands.effect.clear.everything.success.single",
+                    vec![entity.clone()],
+                )
+            },
+            |count| {
+                Component::translatable_args(
+                    "commands.effect.clear.everything.success.multiple",
+                    vec![Arg::Int(count)],
+                )
+            },
+        ),
     }
 }
 
@@ -177,19 +341,87 @@ fn summon(args: &Args, source: &CommandSource, env: &mut Env<'_>) -> Result<i32,
     Ok(1)
 }
 
-/// `RideCommand.mount`. Nothing rides yet, so no target already rides and no mount succeeds.
-fn ride_mount(target: &Target, vehicle: &Target) -> Result<i32, CommandError> {
+/// The dimension id of a world.
+fn dimension_of(world: crate::world::WorldId) -> &'static str {
+    DIMENSIONS
+        .get(world.index())
+        .copied()
+        .unwrap_or("minecraft:overworld")
+}
+
+/// The display name of the entity with this id (`getDisplayName`).
+fn display_of(env: &Env<'_>, id: EntityId) -> Option<Component> {
+    select::local(&env.level.entities, env.world, id).map(|t| t.display())
+}
+
+/// `RideCommand.mount`.
+fn ride_mount(
+    source: &CommandSource,
+    env: &mut Env<'_>,
+    target: &Target,
+    vehicle: &Target,
+) -> Result<i32, CommandError> {
+    let (Some(t), Some(v)) = (target.entity, vehicle.entity) else {
+        // Entities of another world: checked and mounted on their world's thread.
+        if vehicle.is_player() {
+            return Err(CommandError::new(
+                "commands.ride.mount.failure.cant_ride_players",
+                vec![],
+            ));
+        }
+        if target.world != vehicle.world {
+            return Err(CommandError::new(
+                "commands.ride.mount.failure.wrong_dimension",
+                vec![],
+            ));
+        }
+        let (tu, vu) = (target.uuid, vehicle.uuid);
+        on_level(env, target.world, move |level, global, dimension| {
+            let (Some(t), Some(v)) = (
+                select::find_uuid(&level.entities, tu),
+                select::find_uuid(&level.entities, vu),
+            ) else {
+                return;
+            };
+            if level.entities.vehicle_of(t).is_none() {
+                WorldSurvival::with_entities(level, global, dimension, |_, ents, e, _| {
+                    vanillite_game::riding::start_riding(ents, e, t, v, true)
+                });
+            }
+        });
+        source.send_success(
+            env.global,
+            Component::translatable(
+                "commands.ride.mount.success",
+                vec![target.display(), vehicle.display()],
+            ),
+            true,
+        );
+        return Ok(1);
+    };
+    if let Some(current) = env.level.entities.vehicle_of(t) {
+        let current = display_of(env, current).unwrap_or_else(|| Component::text(""));
+        return Err(CommandError::new(
+            "commands.ride.already_riding",
+            vec![component(target.display()), component(current)],
+        ));
+    }
     if vehicle.is_player() {
         return Err(CommandError::new(
             "commands.ride.mount.failure.cant_ride_players",
             vec![],
         ));
     }
-    if target.uuid == vehicle.uuid {
-        return Err(CommandError::new(
-            "commands.ride.mount.failure.loop",
-            vec![],
-        ));
+    // `getSelfAndPassengers().anyMatch(e -> e == vehicle)`.
+    let mut stack = vec![t];
+    while let Some(e) = stack.pop() {
+        if e == v {
+            return Err(CommandError::new(
+                "commands.ride.mount.failure.loop",
+                vec![],
+            ));
+        }
+        stack.extend_from_slice(env.level.entities.riding.passengers_of(e));
     }
     if target.world != vehicle.world {
         return Err(CommandError::new(
@@ -197,10 +429,123 @@ fn ride_mount(target: &Target, vehicle: &Target) -> Result<i32, CommandError> {
             vec![],
         ));
     }
-    Err(CommandError::new(
-        "commands.ride.mount.failure.generic",
-        vec![component(target.display()), component(vehicle.display())],
-    ))
+    let dimension = dimension_of(env.world);
+    let mounted =
+        WorldSurvival::with_entities(env.level, env.global, dimension, |_, ents, e, _| {
+            vanillite_game::riding::start_riding(ents, e, t, v, true)
+        });
+    if !mounted {
+        return Err(CommandError::new(
+            "commands.ride.mount.failure.generic",
+            vec![component(target.display()), component(vehicle.display())],
+        ));
+    }
+    source.send_success(
+        env.global,
+        Component::translatable(
+            "commands.ride.mount.success",
+            vec![target.display(), vehicle.display()],
+        ),
+        true,
+    );
+    Ok(1)
+}
+
+/// `hurtServer` of a player or a mob; non-living entities take no damage here.
+pub(crate) fn hurt_any(
+    level: &mut vanillite_game::level::Level,
+    global: &Global,
+    dimension: &str,
+    id: EntityId,
+    source: DamageSource,
+    amount: f32,
+) -> bool {
+    if level.entities.mob(id).is_some() {
+        return WorldSurvival::with_entities(level, global, dimension, |level, ents, e, cx| {
+            vanillite_game::mob::combat::hurt_mob(level, ents, e, cx, id, source, amount)
+        });
+    }
+    WorldSurvival::hurt(
+        &mut level.entities,
+        Some(&level.chunks),
+        global,
+        dimension,
+        id,
+        source,
+        amount,
+    )
+}
+
+/// `Entity.kill`: living entities take `genericKill` damage, the others are removed.
+pub(crate) fn kill_any(
+    level: &mut vanillite_game::level::Level,
+    global: &Global,
+    dimension: &str,
+    id: EntityId,
+) {
+    if level.entities.player(id).is_some() {
+        WorldSurvival::kill(
+            &mut level.entities,
+            Some(&level.chunks),
+            global,
+            dimension,
+            id,
+        );
+    } else if level.entities.mob(id).is_some() {
+        let source = DamageSource::of(global.level.damage_types.generic_kill);
+        hurt_any(level, global, dimension, id, source, f32::MAX);
+    } else {
+        level.entities.despawn(id);
+    }
+}
+
+/// Runs `f` on the level of another world on its thread, without waiting.
+pub(crate) fn on_level(
+    env: &Env<'_>,
+    world: crate::world::WorldId,
+    f: impl FnOnce(&mut vanillite_game::level::Level, &Global, &str) + Send + 'static,
+) {
+    let Some(global) = env.global.arc() else {
+        return;
+    };
+    env.global.run_in_world(world, move |w| {
+        let dimension = w.dimension().to_owned();
+        f(w.level_mut(), &global, &dimension);
+    });
+}
+
+/// `RideCommand.dismount`.
+fn ride_dismount(
+    source: &CommandSource,
+    env: &mut Env<'_>,
+    target: &Target,
+) -> Result<i32, CommandError> {
+    let Some(t) = target.entity else {
+        return Err(CommandError::new(
+            "commands.ride.not_riding",
+            vec![component(target.display())],
+        ));
+    };
+    let Some(vehicle) = env.level.entities.vehicle_of(t) else {
+        return Err(CommandError::new(
+            "commands.ride.not_riding",
+            vec![component(target.display())],
+        ));
+    };
+    let vehicle_name = display_of(env, vehicle).unwrap_or_else(|| Component::text(""));
+    let dimension = dimension_of(env.world);
+    WorldSurvival::with_entities(env.level, env.global, dimension, |_, ents, e, _| {
+        vanillite_game::riding::stop_riding(ents, e, t);
+    });
+    source.send_success(
+        env.global,
+        Component::translatable(
+            "commands.ride.dismount.success",
+            vec![target.display(), vehicle_name],
+        ),
+        true,
+    );
+    Ok(1)
 }
 
 /// How `rotate` turns an entity.
@@ -413,6 +758,7 @@ fn damage(args: &Args, source: &CommandSource, env: &mut Env<'_>) -> Result<i32,
             .is_some_and(|t| vanillite_game::mob::Kind::by_name(t.kind.name()).is_some()),
         cause_name: None,
         disable_shield_seconds: 0.0,
+        projectile_motion: None,
     };
     if !target.is_player() {
         return Err(CommandError::new("commands.damage.invulnerable", vec![]));
@@ -423,15 +769,7 @@ fn damage(args: &Args, source: &CommandSource, env: &mut Env<'_>) -> Result<i32,
                 .get(target.world.index())
                 .copied()
                 .unwrap_or("minecraft:overworld");
-            WorldSurvival::hurt(
-                &mut env.level.entities,
-                None,
-                env.global,
-                dimension,
-                id,
-                damage_source,
-                amount,
-            )
+            hurt_any(env.level, env.global, dimension, id, damage_source, amount)
         }
         None => {
             // Entity ids of this world mean nothing in the target's world.
@@ -440,9 +778,13 @@ fn damage(args: &Args, source: &CommandSource, env: &mut Env<'_>) -> Result<i32,
                 direct: None,
                 ..damage_source
             };
-            on_entity(env, &target, move |entities, id, global, dimension| {
-                WorldSurvival::hurt(entities, None, global, dimension, id, remote, amount);
-            })
+            let uuid = target.uuid;
+            on_level(env, target.world, move |level, global, dimension| {
+                if let Some(id) = select::find_uuid(&level.entities, uuid) {
+                    hurt_any(level, global, dimension, id, remote, amount);
+                }
+            });
+            true
         }
     };
     if !hurt {
@@ -482,7 +824,7 @@ fn swing(
     } else {
         Hand::MainHand
     };
-    let mut tracker = Tracker::new();
+    let mut tracker = Tracker::default();
     for target in targets {
         // Living entities are the kinds with attributes.
         if target.kind.info().attributes.is_empty() {
@@ -500,9 +842,9 @@ fn swing(
             });
             send_to_viewers(entities, id, true, &packet);
         });
-        tracker.track(target, true);
+        tracker.track(&target, i32::from(true));
     }
-    tracker.feedback(
+    tracker.messages(
         source,
         env.global,
         || CommandError::new("commands.swing.failed.notliving", vec![]),
