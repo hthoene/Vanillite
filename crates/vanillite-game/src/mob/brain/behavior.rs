@@ -93,7 +93,10 @@ pub enum Behavior {
         tired: bool,
     },
     /// `SetWalkTargetFromAttackTargetIfTargetOutOfReach(speed)`.
-    WalkToAttackTarget { speed: f32 },
+    WalkToAttackTarget {
+        speed: f32,
+        speed_fn: Option<fn(&Tick<'_, '_>) -> f32>,
+    },
     /// `MeleeAttack.create(condition, cooldown)`.
     MeleeAttack { cond: Option<Cond>, cooldown: i32 },
     /// `SetEntityLookTarget.create(predicate, maxDist)`.
@@ -121,6 +124,7 @@ pub enum Behavior {
         cond: Option<Cond>,
         speed: f32,
         close: i32,
+        speed_fn: Option<fn(&Tick<'_, '_>) -> f32>,
     },
     /// `DoNothing(min, max)`.
     DoNothing,
@@ -130,6 +134,8 @@ pub enum Behavior {
         mode: PanicMode,
         /// The damage type tag bits that cause panic.
         causes: u32,
+        /// Run before `start` (`ArmadilloPanic`, the sniffer's reset).
+        on_start: Option<fn(&mut Tick<'_, '_>)>,
     },
     /// `AnimalMakeLove(partner, speed, closeEnough)`.
     AnimalMakeLove {
@@ -137,12 +143,15 @@ pub enum Behavior {
         speed: f32,
         close: i32,
         spawn_at: i64,
+        on_start: Option<fn(&mut Tick<'_, '_>)>,
     },
     /// `FollowTemptation(speed, closeEnough, lookInTheEyes)`.
     FollowTemptation {
         speed: fn(&Tick<'_, '_>) -> f32,
         close: f64,
         look_eyes: bool,
+        close_fn: Option<fn(&Tick<'_, '_>) -> f64>,
+        on_start: Option<fn(&mut Tick<'_, '_>)>,
     },
     /// `BabyFollowAdult.create(range, speed, memory, targetEye)`.
     BabyFollowAdult {
@@ -151,6 +160,7 @@ pub enum Behavior {
         speed: f32,
         memory: MemoryType,
         target_eye: bool,
+        speed_fn: Option<fn(&Tick<'_, '_>) -> f32>,
     },
     /// `BecomePassiveIfMemoryPresent.create(memory, duration)`.
     BecomePassive { memory: MemoryType, duration: i32 },
@@ -199,6 +209,46 @@ pub enum Behavior {
         max_yaw: f32,
         min_pitch: f32,
         max_pitch: f32,
+    },
+    /// `StrollToPoi.create(memory, speed, closeEnough, maxDistance)`.
+    StrollToPoi {
+        memory: MemoryType,
+        speed: f32,
+        close: i32,
+        max_dist: i32,
+        next_ok: i64,
+    },
+    /// `StrollAroundPoi.create(memory, speed, maxDistance)`.
+    StrollAroundPoi {
+        memory: MemoryType,
+        speed: f32,
+        max_dist: i32,
+        next_ok: i64,
+    },
+    /// `InteractWith.of(type, range, memory, speed, stopDistance)`.
+    InteractWith {
+        filter: EntityPred,
+        range: i32,
+        memory: MemoryType,
+        speed: f32,
+        stop: i32,
+    },
+    /// `SetLookAndInteract.create(type, range)`.
+    SetLookAndInteract { filter: EntityPred, range: i32 },
+    /// `GoToTargetLocation.create(memory, closeEnough, speed)`.
+    GoToTargetLocation {
+        memory: MemoryType,
+        close: i32,
+        speed: f32,
+    },
+    /// `BackUpIfTooClose.create(distance, strafeSpeed)`.
+    BackUpIfTooClose { distance: i32, speed: f32 },
+    /// `Mount.create(speed)`.
+    Mount { speed: f32 },
+    /// `DismountOrSkipMounting.create(maxDist, dontRideIf)`.
+    Dismount {
+        max_dist: i32,
+        dont_ride_if: fn(&mut Tick<'_, '_>, EntityId) -> bool,
     },
     /// A family behaviour.
     Fam(FamBehavior),
@@ -251,6 +301,44 @@ impl Spec {
             min,
             max,
             children: Vec::new(),
+        }
+    }
+
+    /// The behaviour value, to adjust its parameters.
+    pub fn behavior_mut(&mut self) -> Option<&mut Behavior> {
+        Some(&mut self.behavior)
+    }
+
+    /// Sets the duration of a timed behaviour.
+    pub fn set_duration(&mut self, min: i32, max: i32) {
+        self.min = min;
+        self.max = max;
+    }
+
+    /// Sets the start hook of `AnimalPanic`, `AnimalMakeLove` or `FollowTemptation`.
+    pub fn set_on_start(&mut self, f: fn(&mut Tick<'_, '_>)) {
+        match &mut self.behavior {
+            Behavior::AnimalPanic { on_start, .. }
+            | Behavior::AnimalMakeLove { on_start, .. }
+            | Behavior::FollowTemptation { on_start, .. } => *on_start = Some(f),
+            _ => {}
+        }
+    }
+
+    /// Sets the close enough distance function of `FollowTemptation`.
+    pub fn set_close_fn(&mut self, f: fn(&Tick<'_, '_>) -> f64) {
+        if let Behavior::FollowTemptation { close_fn, .. } = &mut self.behavior {
+            *close_fn = Some(f);
+        }
+    }
+
+    /// Sets the speed function of the walking behaviours.
+    pub fn set_speed_fn(&mut self, f: fn(&Tick<'_, '_>) -> f32) {
+        match &mut self.behavior {
+            Behavior::WalkToAttackTarget { speed_fn, .. }
+            | Behavior::WalkToLookTarget { speed_fn, .. }
+            | Behavior::BabyFollowAdult { speed_fn, .. } => *speed_fn = Some(f),
+            _ => {}
         }
     }
 
@@ -362,7 +450,10 @@ impl Spec {
         })
     }
     pub fn walk_to_attack_target(speed: f32) -> Spec {
-        Spec::of(Behavior::WalkToAttackTarget { speed })
+        Spec::of(Behavior::WalkToAttackTarget {
+            speed,
+            speed_fn: None,
+        })
     }
     pub fn melee(cooldown: i32) -> Spec {
         Spec::of(Behavior::MeleeAttack {
@@ -403,6 +494,7 @@ impl Spec {
             cond: None,
             speed,
             close,
+            speed_fn: None,
         })
     }
     pub fn do_nothing(min: i32, max: i32) -> Spec {
@@ -414,6 +506,7 @@ impl Spec {
                 speed,
                 mode: PanicMode::Land,
                 causes: tag::PANIC_CAUSES,
+                on_start: None,
             },
             100,
             120,
@@ -426,6 +519,7 @@ impl Spec {
                 speed,
                 close,
                 spawn_at: 0,
+                on_start: None,
             },
             110,
             110,
@@ -436,6 +530,8 @@ impl Spec {
             speed,
             close,
             look_eyes,
+            close_fn: None,
+            on_start: None,
         })
     }
     pub fn baby_follow_adult(min: i32, max: i32, speed: f32) -> Spec {
@@ -445,6 +541,7 @@ impl Spec {
             speed,
             memory: M::NearestVisibleAdult,
             target_eye: false,
+            speed_fn: None,
         })
     }
     pub fn become_passive(memory: MemoryType, duration: i32) -> Spec {
@@ -650,6 +747,27 @@ pub fn requirements(b: &Behavior) -> &'static [(MemoryType, MemoryStatus)] {
             (M::LookTarget, S::ValueAbsent),
             (M::GazeCooldownTicks, S::ValueAbsent),
         ],
+        Behavior::StrollToPoi { .. }
+        | Behavior::StrollAroundPoi { .. }
+        | Behavior::InteractWith { .. }
+        | Behavior::GoToTargetLocation { .. } => dynamic_requirements(b),
+        Behavior::SetLookAndInteract { .. } => &[
+            (M::LookTarget, S::Registered),
+            (M::InteractionTarget, S::ValueAbsent),
+            (M::NearestVisibleLivingEntities, S::ValuePresent),
+        ],
+        Behavior::BackUpIfTooClose { .. } => &[
+            (M::WalkTarget, S::ValueAbsent),
+            (M::LookTarget, S::Registered),
+            (M::AttackTarget, S::ValuePresent),
+            (M::NearestVisibleLivingEntities, S::ValuePresent),
+        ],
+        Behavior::Mount { .. } => &[
+            (M::LookTarget, S::Registered),
+            (M::WalkTarget, S::ValueAbsent),
+            (M::RideTarget, S::ValuePresent),
+        ],
+        Behavior::Dismount { .. } => &[(M::RideTarget, S::Registered)],
         Behavior::Fam(FamBehavior::Brainy(b)) => crate::mob::fam::brainy::behavior_requirements(b),
         Behavior::Fam(FamBehavior::Mount(b)) => crate::mob::fam::mount::behavior_requirements(b),
     }
@@ -663,7 +781,11 @@ fn dynamic_requirements(b: &Behavior) -> &'static [(MemoryType, MemoryStatus)] {
             present(memory)
         }
         Behavior::CopyMemoryWithExpiry { source, target, .. } => copy_requirements(source, target),
-        Behavior::WalkAwayFrom { memory, .. } => away_requirements(memory),
+        Behavior::WalkAwayFrom { memory, .. }
+        | Behavior::StrollToPoi { memory, .. }
+        | Behavior::StrollAroundPoi { memory, .. } => away_requirements(memory),
+        Behavior::InteractWith { memory, .. } => interact_requirements(memory),
+        Behavior::GoToTargetLocation { memory, .. } => location_requirements(memory),
         _ => &[],
     }
 }
@@ -692,6 +814,44 @@ fn passive_requirements(m: MemoryType) -> &'static [(MemoryType, MemoryStatus)] 
                     (M::AttackTarget, S::Registered),
                     (M::Pacified, S::ValueAbsent),
                     (m, S::ValuePresent),
+                ]
+            })
+            .collect()
+    });
+    &t[m as usize]
+}
+
+fn interact_requirements(m: MemoryType) -> &'static [(MemoryType, MemoryStatus)] {
+    static TABLE: std::sync::OnceLock<Vec<[(MemoryType, MemoryStatus); 4]>> =
+        std::sync::OnceLock::new();
+    let t = TABLE.get_or_init(|| {
+        MemoryType::ALL
+            .iter()
+            .map(|&m| {
+                [
+                    (m, S::Registered),
+                    (M::LookTarget, S::Registered),
+                    (M::WalkTarget, S::ValueAbsent),
+                    (M::NearestVisibleLivingEntities, S::ValuePresent),
+                ]
+            })
+            .collect()
+    });
+    &t[m as usize]
+}
+
+fn location_requirements(m: MemoryType) -> &'static [(MemoryType, MemoryStatus)] {
+    static TABLE: std::sync::OnceLock<Vec<[(MemoryType, MemoryStatus); 4]>> =
+        std::sync::OnceLock::new();
+    let t = TABLE.get_or_init(|| {
+        MemoryType::ALL
+            .iter()
+            .map(|&m| {
+                [
+                    (m, S::ValuePresent),
+                    (M::AttackTarget, S::ValueAbsent),
+                    (M::WalkTarget, S::ValueAbsent),
+                    (M::LookTarget, S::Registered),
                 ]
             })
             .collect()
@@ -937,6 +1097,9 @@ pub fn do_stop(t: &mut Tick<'_, '_>, node: u16, now: i64) {
         Shape::OneShot | Shape::Idle => {}
         Shape::Timed => {
             let mut b = n.behavior;
+            if alive(t) {
+                brain(t).stop_timed_out = now > n.end;
+            }
             stop(t, &mut b, now);
             write(t, node, |x| x.behavior = b);
         }
@@ -1351,7 +1514,10 @@ fn start(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) {
             let path = t.mob().goal_path.take();
             nav::move_to_path(t, path, f64::from(speed));
         }
-        Behavior::AnimalPanic { .. } => {
+        Behavior::AnimalPanic { on_start, .. } => {
+            if let Some(f) = on_start {
+                f(t);
+            }
             let b = brain(t);
             b.set(M::IsPanicking, MemValue::Bool(true));
             b.erase(M::WalkTarget);
@@ -1362,7 +1528,11 @@ fn start(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) {
             speed,
             close,
             spawn_at,
+            on_start,
         } => {
+            if let Some(f) = on_start {
+                f(t);
+            }
             let Some(p) = find_breed_partner(t, *partner) else {
                 return;
             };
@@ -1373,6 +1543,9 @@ fn start(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) {
             let d = 60 + t.mob().random.next_int_bounded(50);
             *spawn_at = now + i64::from(d);
         }
+        Behavior::FollowTemptation {
+            on_start: Some(f), ..
+        } => f(t),
         Behavior::RandomLookAround {
             min,
             max,
@@ -1490,7 +1663,9 @@ fn tick(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) {
             };
             lock_gaze_and_walk_to_each_other(t, partner, *speed, *close);
             if closer_than(t, partner, 3.0) && now >= *spawn_at {
-                crate::mob::animal::breed(t.level, t.ents, t.env, t.cx, t.id, partner);
+                if !crate::mob::fam::brainy::custom_breed(t, partner) {
+                    crate::mob::animal::breed(t.level, t.ents, t.env, t.cx, t.id, partner);
+                }
                 if alive(t) {
                     brain(t).erase(M::BreedTarget);
                 }
@@ -1501,12 +1676,15 @@ fn tick(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) {
             speed,
             close,
             look_eyes,
+            close_fn,
+            ..
         } => {
             let Some(player) = brain_ref(t).entity(M::TemptingPlayer) else {
                 return;
             };
             brain(t).set(M::LookTarget, MemValue::Look(Tracker::entity(player, true)));
-            if dist_sqr(t, player) < *close * *close {
+            let close = close_fn.map_or(*close, |f| f(t));
+            if dist_sqr(t, player) < close * close {
                 brain(t).erase(M::WalkTarget);
             } else {
                 let s = speed(t);
@@ -1704,7 +1882,11 @@ fn can_mate(t: &Tick<'_, '_>, other: EntityId) -> bool {
     let Some(o) = t.ents.mob(other) else {
         return false;
     };
-    other != t.id && o.kind == me.kind && me.in_love > 0 && o.in_love > 0
+    other != t.id
+        && o.kind == me.kind
+        && me.in_love > 0
+        && o.in_love > 0
+        && crate::mob::fam::brainy::can_mate(me, o)
 }
 
 /// `AnimalMakeLove.findValidBreedPartner`.
@@ -1759,7 +1941,8 @@ fn one_shot(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) -> bool {
             }
             true
         }
-        Behavior::WalkToAttackTarget { speed } => {
+        Behavior::WalkToAttackTarget { speed, speed_fn } => {
+            let speed = &speed_fn.map_or(*speed, |f| f(t));
             let Some(target) = brain_ref(t).entity(M::AttackTarget) else {
                 return false;
             };
@@ -1867,10 +2050,16 @@ fn one_shot(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) -> bool {
             );
             true
         }
-        Behavior::WalkToLookTarget { cond, speed, close } => {
+        Behavior::WalkToLookTarget {
+            cond,
+            speed,
+            close,
+            speed_fn,
+        } => {
             if cond.is_some_and(|c| !c(t)) {
                 return false;
             }
+            let speed = &speed_fn.map_or(*speed, |f| f(t));
             let Some(look) = brain_ref(t).look_target() else {
                 return false;
             };
@@ -1890,10 +2079,12 @@ fn one_shot(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) -> bool {
             speed,
             memory,
             target_eye,
+            speed_fn,
         } => {
             if !t.mob_ref().baby {
                 return false;
             }
+            let speed = &speed_fn.map_or(*speed, |f| f(t));
             let Some(adult) = brain_ref(t).entity(*memory) else {
                 return false;
             };
@@ -2131,6 +2322,181 @@ fn one_shot(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) -> bool {
                 );
             }
             *next_ok = now + 40;
+            true
+        }
+        Behavior::StrollToPoi {
+            memory,
+            speed,
+            close,
+            max_dist,
+            next_ok,
+        } => {
+            let Some(MemValue::GlobalPos(g)) = brain_ref(t).get(*memory).cloned() else {
+                return false;
+            };
+            let c = g.pos;
+            let center = Vec3::new(
+                f64::from(c.x) + 0.5,
+                f64::from(c.y) + 0.5,
+                f64::from(c.z) + 0.5,
+            );
+            let max = f64::from(*max_dist);
+            if *g.dimension != *t.env.dimension || center.distance_to_sqr(t.pos()) >= max * max {
+                return false;
+            }
+            if now <= *next_ok {
+                return true;
+            }
+            brain(t).set(
+                M::WalkTarget,
+                MemValue::Walk(WalkTarget::block(c, *speed, *close)),
+            );
+            *next_ok = now + 80;
+            true
+        }
+        Behavior::StrollAroundPoi {
+            memory,
+            speed,
+            max_dist,
+            next_ok,
+        } => {
+            let Some(MemValue::GlobalPos(g)) = brain_ref(t).get(*memory).cloned() else {
+                return false;
+            };
+            let c = g.pos;
+            let center = Vec3::new(
+                f64::from(c.x) + 0.5,
+                f64::from(c.y) + 0.5,
+                f64::from(c.z) + 0.5,
+            );
+            let max = f64::from(*max_dist);
+            if *g.dimension != *t.env.dimension || center.distance_to_sqr(t.pos()) >= max * max {
+                return false;
+            }
+            if now <= *next_ok {
+                return true;
+            }
+            let p = randompos::land_pos(t, 8, 6);
+            brain(t).set_opt(
+                M::WalkTarget,
+                p.map(|p| MemValue::Walk(WalkTarget::at(p, *speed, 1))),
+            );
+            *next_ok = now + 180;
+            true
+        }
+        Behavior::InteractWith {
+            filter,
+            range,
+            memory,
+            speed,
+            stop,
+        } => {
+            let filter = *filter;
+            let r_sqr = f64::from(*range * *range);
+            if sensing::visible_find_closest(t, filter).is_none() {
+                return false;
+            }
+            if let Some(id) =
+                sensing::visible_find_closest(t, |t, id| dist_sqr(t, id) <= r_sqr && filter(t, id))
+            {
+                let b = brain(t);
+                b.set(*memory, MemValue::Entity(id));
+                b.set(M::LookTarget, MemValue::Look(Tracker::entity(id, true)));
+                b.set(
+                    M::WalkTarget,
+                    MemValue::Walk(WalkTarget::entity(id, *speed, *stop)),
+                );
+            }
+            true
+        }
+        Behavior::SetLookAndInteract { filter, range } => {
+            let filter = *filter;
+            let r_sqr = f64::from(*range * *range);
+            let Some(id) =
+                sensing::visible_find_closest(t, |t, id| dist_sqr(t, id) <= r_sqr && filter(t, id))
+            else {
+                return false;
+            };
+            let b = brain(t);
+            b.set(M::InteractionTarget, MemValue::Entity(id));
+            b.set(M::LookTarget, MemValue::Look(Tracker::entity(id, true)));
+            true
+        }
+        Behavior::GoToTargetLocation {
+            memory,
+            close,
+            speed,
+        } => {
+            let Some(loc) = brain_ref(t).pos(*memory) else {
+                return false;
+            };
+            let me = t.block_pos();
+            let c = f64::from(*close);
+            if loc.dist_sqr(me) >= c * c {
+                let r = &mut *t.env.random;
+                let dx = r.next_int_bounded(3) - 1;
+                let dz = r.next_int_bounded(3) - 1;
+                let near = BlockPos::new(loc.x + dx, loc.y, loc.z + dz);
+                set_walk_and_look(t, Tracker::block(near), *speed, *close);
+            }
+            true
+        }
+        Behavior::BackUpIfTooClose { distance, speed } => {
+            let Some(target) = brain_ref(t).entity(M::AttackTarget) else {
+                return false;
+            };
+            if !(closer_than(t, target, f64::from(*distance))
+                && sensing::visible_contains(t, target))
+            {
+                return false;
+            }
+            brain(t).set(M::LookTarget, MemValue::Look(Tracker::entity(target, true)));
+            t.mob().move_ctl.strafe(-*speed, 0.0);
+            let rot = t.core().rot();
+            let mut r = rot;
+            r.y_rot = nav::rotate_if_necessary(rot.y_rot, rot.y_head_rot, 0.0);
+            t.core_mut().set_rot(r);
+            true
+        }
+        Behavior::Mount { speed } => {
+            if t.ents.riding.vehicle_of(t.id).is_some() {
+                return false;
+            }
+            let Some(vehicle) = brain_ref(t).entity(M::RideTarget) else {
+                return false;
+            };
+            if closer_than(t, vehicle, 1.0) {
+                let me = t.id;
+                t.ents.riding.add(me, vehicle, false);
+            } else {
+                let b = brain(t);
+                b.set(
+                    M::LookTarget,
+                    MemValue::Look(Tracker::entity(vehicle, true)),
+                );
+                b.set(
+                    M::WalkTarget,
+                    MemValue::Walk(WalkTarget::entity(vehicle, *speed, 1)),
+                );
+            }
+            true
+        }
+        Behavior::Dismount {
+            max_dist,
+            dont_ride_if,
+        } => {
+            let current = t.ents.riding.vehicle_of(t.id);
+            let target = brain_ref(t).entity(M::RideTarget);
+            let Some(vehicle) = current.or(target) else {
+                return false;
+            };
+            let valid = is_alive(t, vehicle) && closer_than(t, vehicle, f64::from(*max_dist));
+            if valid && !dont_ride_if(t, vehicle) {
+                return false;
+            }
+            let me = t.id;
+            t.ents.riding.remove(me);
+            brain(t).erase(M::RideTarget);
             true
         }
         Behavior::Fam(FamBehavior::Brainy(f)) => {

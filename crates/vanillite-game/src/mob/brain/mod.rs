@@ -161,6 +161,8 @@ pub struct Brain {
     pub schedule: Option<Schedule>,
     last_schedule_update: i64,
     running: Vec<u16>,
+    /// Whether the behaviour being stopped timed out (`Behavior.timedOut` in `stop`).
+    pub stop_timed_out: bool,
 }
 
 impl Default for Brain {
@@ -178,6 +180,7 @@ impl Default for Brain {
             schedule: None,
             last_schedule_update: -9999,
             running: Vec::new(),
+            stop_timed_out: false,
         }
     }
 }
@@ -762,9 +765,7 @@ pub fn stop_all(t: &mut Tick<'_, '_>) {
         return;
     }
     let now = t.game_time();
-    let n = brain_ref(t).nodes.len();
     let tops: Vec<u16> = brain_ref(t).by_priority.iter().map(|e| e.2).collect();
-    let _ = n;
     for node in tops {
         if brain_ref(t).nodes[usize::from(node)].status == Status::Running {
             behavior::do_stop(t, node, now);
@@ -892,4 +893,4 @@ pub fn load(brain: &mut Brain, tag: &vanillite_nbt::Compound) {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

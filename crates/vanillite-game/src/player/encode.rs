@@ -328,6 +328,13 @@ pub struct DataWriter<'a> {
     all: bool,
 }
 
+impl<'a> DataWriter<'a> {
+    /// A writer appending to `out` (`all`: every value, else the non-default ones).
+    pub fn new(out: &'a mut Vec<u8>, all: bool) -> DataWriter<'a> {
+        DataWriter { out, all }
+    }
+}
+
 impl DataWriter<'_> {
     /// An item with a custom encoding; `is_default` skips it when pairing.
     pub fn raw(
