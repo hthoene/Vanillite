@@ -66,9 +66,10 @@ pub mod tag {
     pub const IS_EXPLOSION: u32 = 1 << 16;
     pub const IS_PROJECTILE: u32 = 1 << 17;
     pub const BYPASSES_SHIELD: u32 = 1 << 18;
+    pub const PANIC_ENVIRONMENTAL_CAUSES: u32 = 1 << 19;
 
     /// Tag names and their bits.
-    pub const NAMES: [(&str, u32); 19] = [
+    pub const NAMES: [(&str, u32); 20] = [
         ("minecraft:is_fall", IS_FALL),
         ("minecraft:is_fire", IS_FIRE),
         ("minecraft:is_drowning", IS_DROWNING),
@@ -94,6 +95,10 @@ pub mod tag {
         ("minecraft:is_explosion", IS_EXPLOSION),
         ("minecraft:is_projectile", IS_PROJECTILE),
         ("minecraft:bypasses_shield", BYPASSES_SHIELD),
+        (
+            "minecraft:panic_environmental_causes",
+            PANIC_ENVIRONMENTAL_CAUSES,
+        ),
     ];
 }
 

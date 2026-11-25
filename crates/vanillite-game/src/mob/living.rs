@@ -898,6 +898,11 @@ fn travel_in_air(t: &mut Tick<'_, '_>, input: Vec3) {
     let air_drag = modified_friction(0.91, drag_modifier);
     let friction = block_friction * air_drag;
     let vertical = modified_friction(0.98, drag_modifier);
+    if t.mob_ref().discard_friction {
+        // `shouldDiscardFriction` (long jumps).
+        t.set_velocity(Vec3::new(movement.x, y, movement.z));
+        return;
+    }
     t.set_velocity(Vec3::new(
         movement.x * f64::from(friction),
         y * f64::from(vertical),

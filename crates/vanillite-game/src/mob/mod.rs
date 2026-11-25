@@ -237,6 +237,8 @@ pub struct MobData {
     /// `NeutralMob`: the game time the anger ends (`-1` = none) and whom it is angry at.
     pub anger_end: i64,
     pub anger_target: Option<u128>,
+    /// `discardFriction` (long jumps of brain mobs).
+    pub discard_friction: bool,
 }
 
 /// What holds a leash in entity NBT (`leash`).
@@ -349,6 +351,7 @@ impl MobData {
             chicken_jockey: false,
             anger_end: -1,
             anger_target: None,
+            discard_friction: false,
         };
         mob.ambient_sound_time = -kind.ambient_sound_interval();
         mob.egg_time = mob.random.next_int_bounded(6000) + 6000;

@@ -44,6 +44,7 @@ fn fly_panic(speed: f32, fly_height: i32) -> Spec {
             speed,
             mode: PanicMode::Fly(fly_height),
             causes: tag::PANIC_CAUSES,
+            on_start: None,
         },
         100,
         120,
@@ -58,6 +59,7 @@ fn follow_adult(min: i32, max: i32, speed: f32, memory: M, target_eye: bool) -> 
         speed,
         memory,
         target_eye,
+        speed_fn: None,
     })
 }
 

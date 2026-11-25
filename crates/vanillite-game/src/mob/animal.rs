@@ -530,6 +530,33 @@ fn mob_interact(
 }
 
 /// `Animal.mobInteract`: food makes adults fall in love and babies grow faster.
+/// `ItemUtils.createFilledResult` for the family kinds: the held item becomes `item`.
+pub fn fill_held_pub(ix: &mut super::fam::Interact<'_, '_>, item: &str) {
+    if let Some(id) = vanillite_data::registry::ITEM.id(item) {
+        fill_held(ix.ents, ix.env, ix.player, ix.hand, ItemStack::new(id, 1));
+    }
+}
+
+/// `stack.consume(1, player)` for the family kinds (creative players keep it).
+pub fn use_held_pub(ix: &mut super::fam::Interact<'_, '_>) {
+    use_item(ix.ents, ix.player, ix.hand);
+}
+
+/// `hurtAndBreak(amount, player, hand)` of the held item for the family kinds.
+pub fn hurt_held_pub(ix: &mut super::fam::Interact<'_, '_>, amount: i32) {
+    hurt_held(ix.ents, ix.env, ix.player, ix.hand, amount);
+}
+
+/// Whether the interacting player keeps its items (creative).
+pub fn infinite_pub(ents: &Entities, player: EntityId) -> bool {
+    infinite(ents, player)
+}
+
+/// `Animal.mobInteract` for the family kinds: feeding, love mode and growing babies.
+pub fn animal_interact_pub(ix: &mut super::fam::Interact<'_, '_>) -> Interaction {
+    animal_interact(ix.ents, ix.env, ix.player, ix.target, ix.hand, ix.stack)
+}
+
 pub fn animal_interact(
     ents: &mut Entities,
     env: &mut Env<'_>,
