@@ -98,6 +98,10 @@
 //! the scenario matches Vanilla).
 //! - `hurt` action: `amount` damage to the entity `entity`, by `by` (player attack or mob
 //!   attack) or generic damage without `by`.
+//! - `lightning` action: the strike of `ServerLevel.tickThunder` in the column of `pos` (its y
+//!   does not matter) without the chance roll: the target (`findLightningTargetAround`: the
+//!   nearest lightning rod, a living entity under the open sky, or the column's top), then
+//!   `isRainingAt`, the skeleton trap and the bolt. Needs `"weather": "thunder"` (or rain).
 //! - `effect` action: `addEffect` on the entity `entity` with the mob effect `effect`,
 //!   `duration` ticks and `amplifier` (default 0).
 
@@ -166,6 +170,8 @@ pub enum OpKind {
     Unforce,
     /// Damage to a scenario entity ([`Op::hurt`]).
     Hurt,
+    /// A lightning strike in the column of `from` (an action).
+    Lightning,
     /// Saves, stops and starts the server again (an action).
     Restart,
     /// A status effect on a scenario entity ([`Op::effect`]).
@@ -530,6 +536,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
         Some("place") => OpKind::Place,
         Some("fill") => OpKind::Fill,
         Some("hurt") if action => OpKind::Hurt,
+        Some("lightning") if action => OpKind::Lightning,
         Some("effect") if action => OpKind::Effect,
         Some("throw_potion") if action => OpKind::ThrowPotion,
         Some("force") if action => OpKind::Force,
@@ -675,6 +682,20 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             }),
             effect: None,
             throw_potion: None,
+        });
+    }
+    if kind == OpKind::Lightning {
+        let p = pos(v.get("pos"))?;
+        return Ok(Op {
+            tick,
+            kind,
+            from: p,
+            to: p,
+            block: String::new(),
+            hurt: None,
+            effect: None,
+            throw_potion: None,
+            chunks: Vec::new(),
         });
     }
     let (from, to) = if kind == OpKind::Fill {

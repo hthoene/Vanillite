@@ -619,7 +619,7 @@ fn direction_within_radians(
     z_dir: f64,
     max_radians: f64,
 ) -> Option<(i32, i32, i32)> {
-    let center = z_dir.atan2(x_dir) - f64::from(std::f32::consts::FRAC_PI_2);
+    let center = vanillite_base::math::atan2(z_dir, x_dir) - f64::from(std::f32::consts::FRAC_PI_2);
     let y_radians = center + f64::from(2.0 * random.next_float() - 1.0) * max_radians;
     let dist = vanillite_base::math::lerp(random.next_double().sqrt(), 0.0, max_horizontal)
         * f64::from(std::f32::consts::SQRT_2);

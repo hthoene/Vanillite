@@ -70,7 +70,7 @@ pub fn direction_within_radians(
     max_radians: f64,
 ) -> Option<BlockPos> {
     let r = &mut t.mob().random;
-    let center = z_dir.atan2(x_dir) - half_pi();
+    let center = vanillite_base::math::atan2(z_dir, x_dir) - half_pi();
     let y_radians = center + f64::from(2.0 * r.next_float() - 1.0) * max_radians;
     let dist = (min_h + r.next_double().sqrt() * (max_h - min_h)) * sqrt_of_two();
     let xt = -dist * y_radians.sin();

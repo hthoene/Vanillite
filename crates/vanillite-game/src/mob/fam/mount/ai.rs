@@ -1205,10 +1205,11 @@ fn breeze_shoot_tick(t: &mut Tick<'_, '_>) {
     );
     #[allow(clippy::cast_precision_loss)]
     let uncertainty = (5 - t.env.difficulty as i32 * 4) as f32;
-    let velocity = super::wind::movement_to_shoot(t.env.random, dir, 0.7, uncertainty);
+    let mut own = crate::mob::missile::new_projectile_random();
+    let velocity = super::wind::movement_to_shoot(&mut own, dir, 0.7, uncertainty);
     let rot = super::wind::rotation_of(velocity);
     let data = super::wind::new_charge(crate::mob::missile::MissileKind::BreezeWindCharge);
-    crate::mob::missile::spawn_from(t, Vec3::new(p.x, firing, p.z), velocity, rot, data);
+    crate::mob::missile::spawn_shot(t, Vec3::new(p.x, firing, p.z), velocity, rot, data);
     crate::mob::kinds::play_sound(t, "minecraft:entity.breeze.shoot", 1.5, 1.0);
 }
 

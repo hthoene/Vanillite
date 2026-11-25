@@ -14,7 +14,7 @@ use crate::mob::animal::{self, Interaction};
 use crate::mob::fam::{FamGoal, Interact};
 use crate::mob::goals;
 use crate::mob::nav::{LookKind, MoveKind, NavKind, Operation};
-use crate::mob::{MobData, Tick, atan2_deg};
+use crate::mob::{MobData, Tick};
 use crate::player::encode::DataWriter;
 
 /// `BABY_SCALE`.
@@ -66,6 +66,9 @@ fn ghast_mut(m: &mut MobData) -> &mut HappyGhast {
 
 pub fn init(m: &mut MobData) {
     ghast_mut(m);
+    // `LivingEntity`'s constructor makes the brain (its sensors draw their start delays) for
+    // adults too; only ghastlings use it.
+    super::ai::happy_ghast_brain(m);
     setup_for_age(m);
 }
 
@@ -80,7 +83,9 @@ fn setup_for_age(m: &mut MobData) {
         m.nav.kind = NavKind::Flying;
         m.nav.can_float = true;
         m.nav.can_open_doors = false;
-        super::ai::happy_ghast_brain(m);
+        if m.brain.is_none() {
+            super::ai::happy_ghast_brain(m);
+        }
     } else {
         m.move_ctl.kind = MoveKind::Custom;
         m.look.kind = LookKind::Custom;
@@ -171,12 +176,13 @@ pub fn travel(t: &mut Tick<'_, '_>, input: Vec3) -> bool {
 /// `LivingEntity.travelFlying(input, speed)`: water and lava slow down, air keeps 91 %.
 pub fn fly(t: &mut Tick<'_, '_>, input: Vec3, speed: f32) {
     let fluids = t.mob_ref().fluids;
+    // `scale(0.8F)`, `scale(0.5)`, `scale(0.91F)`: the floats widened.
     let drag = if fluids.in_water() {
-        0.8
+        f64::from(0.8_f32)
     } else if fluids.in_lava() {
         0.5
     } else {
-        0.91
+        f64::from(0.91_f32)
     };
     move_relative(t, speed, input);
     let v = t.velocity();
@@ -445,26 +451,33 @@ fn for_each_block(b: Aabb, mut f: impl FnMut(BlockPos) -> bool) -> bool {
 /// `HappyGhastLookControl`: square to the grid while standing still, else face the look
 /// target or the movement (`Ghast.faceMovementDirection`).
 pub fn look_control(t: &mut Tick<'_, '_>) -> bool {
-    let rot = t.core().rot();
+    let mut rot = t.core().rot();
     if on_still_timeout(t.mob_ref()) {
         let close = wrap_degrees_90(rot.y_rot);
-        let y = rot.y_rot - close;
-        set_y_rot(t, y);
+        rot.y_rot -= close;
+        rot.y_head_rot = rot.y_rot;
+        t.core_mut().set_rot(rot);
         return true;
     }
     if t.mob_ref().look.cooldown > 0 {
         t.mob().look.cooldown -= 1;
         let w = t.mob_ref().look.wanted;
         let p = t.pos();
-        #[allow(clippy::cast_possible_truncation)]
-        let y = -(atan2_deg(w.x - p.x, w.z - p.z) as f32);
-        set_y_rot(t, y);
+        set_y_rot(t, crate::mob::direction_yaw(w.x - p.x, w.z - p.z));
         return true;
     }
-    let v = t.velocity();
-    #[allow(clippy::cast_possible_truncation)]
-    let y = -(atan2_deg(v.x, v.z) as f32);
-    set_y_rot(t, y);
+    // `Ghast.faceMovementDirection`: the yaw and body, not the head.
+    let p = t.pos();
+    let towards = match t.mob_ref().target.and_then(|id| t.other(id)) {
+        None => Some(t.velocity()),
+        Some(o) if o.pos.distance_to_sqr(p) < 4096.0 => Some(o.pos - p),
+        Some(_) => None,
+    };
+    if let Some(d) = towards {
+        rot.y_rot = crate::mob::direction_yaw(d.x, d.z);
+        t.core_mut().set_rot(rot);
+        t.mob().y_body_rot = rot.y_rot;
+    }
     true
 }
 

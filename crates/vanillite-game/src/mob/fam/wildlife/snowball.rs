@@ -81,6 +81,7 @@ pub(super) fn tick(t: &mut MissileTick<'_, '_>) {
         to = at;
     }
     let search = expand_towards(aabb, v).inflate(1.0, 1.0, 1.0);
+    let m = crate::mob::missile::margin(t.ents.missile(t.id).map_or(0, |d| d.life));
     let mut found = std::mem::take(&mut t.cx.ids);
     found.clear();
     t.ents
@@ -94,7 +95,7 @@ pub(super) fn tick(t: &mut MissileTick<'_, '_>) {
         let Some(e) = t.ents.store.get(id) else {
             continue;
         };
-        let b = e.aabb().inflate(0.3, 0.3, 0.3);
+        let b = e.aabb().inflate(m, m, m);
         if let Some(f) = segment_box(pos, to, &b)
             && hit.is_none_or(|(_, best)| f < best)
         {

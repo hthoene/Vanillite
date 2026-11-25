@@ -41,7 +41,12 @@ fn every_kind_builds_a_brain_with_its_default_activity() {
         assert!(b.is_active(Activity::Core), "{kind:?}");
         assert!(b.is_active(Activity::Idle), "{kind:?}");
         assert!(!b.nodes.is_empty(), "{kind:?}");
-        assert!(m.goals.slots.is_empty(), "{kind:?} uses no goals");
+        // A tadpole is an `AbstractFish`: it has the fish goals besides its brain.
+        assert_eq!(
+            m.goals.slots.is_empty(),
+            kind != Kind::Tadpole,
+            "{kind:?} uses no goals"
+        );
     }
 }
 
