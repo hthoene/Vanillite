@@ -552,7 +552,16 @@ pub fn move_vehicle(
         0.0
     };
     let was_on_ground = v.flags().contains(EntityFlags::ON_GROUND);
-    let moved = physics::collide(level, old_box, delta, step, was_on_ground, &mut cx.boxes);
+    let on_lava = ents.mob(vehicle).is_some_and(|m| m.nav.stands_on_lava);
+    let moved = physics::collide_for(
+        level,
+        old_box,
+        delta,
+        step,
+        was_on_ground,
+        &mut cx.boxes,
+        on_lava,
+    );
     let mut err = target - (old + moved);
     if err.y > -0.5 && err.y < 0.5 {
         err.y = 0.0;

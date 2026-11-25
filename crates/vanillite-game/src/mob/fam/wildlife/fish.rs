@@ -8,7 +8,7 @@ use vanillite_config::GameMode;
 use vanillite_nbt::{Compound, Tag};
 use vanillite_world::entity::{EntityFlags, EntityId};
 
-use super::{Goal, SEA_LEVEL, add_effect, rotlerp, st, st_mut};
+use super::{Goal, add_effect, rotlerp, st, st_mut};
 use crate::effect::MobEffect;
 use crate::item::ItemStack;
 use crate::level::Level;
@@ -119,7 +119,7 @@ fn non_spectator_player(t: &Tick<'_, '_>, id: EntityId) -> bool {
 }
 
 /// `finalizeSpawn` of salmon (size) and tropical fish (variant).
-pub(super) fn finalize_spawn(m: &mut MobData, _ctx: &mut SpawnContext<'_>) {
+pub(super) fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
     match m.kind {
         Kind::Salmon => {
             // Weighted: small 30, medium 50, large 15.
@@ -133,9 +133,13 @@ pub(super) fn finalize_spawn(m: &mut MobData, _ctx: &mut SpawnContext<'_>) {
             };
         }
         Kind::TropicalFish => {
-            let variant = if m.random.next_float() < 0.9 {
+            let variant = if let crate::mob::fam::GroupData::TropicalFish(v) = ctx.group {
+                v
+            } else if m.random.next_float() < 0.9 {
                 let i = usize::try_from(m.random.next_int_bounded(22)).unwrap_or(0);
-                common_variant(i)
+                let v = common_variant(i);
+                ctx.group = crate::mob::fam::GroupData::TropicalFish(v);
+                v
             } else {
                 st_mut(m).is_school = false;
                 let p = usize::try_from(m.random.next_int_bounded(12)).unwrap_or(0);
@@ -152,8 +156,9 @@ pub(super) fn finalize_spawn(m: &mut MobData, _ctx: &mut SpawnContext<'_>) {
 /// `WaterAnimal.checkSurfaceWaterAnimalSpawnRules`: within 13 blocks below the sea level, in
 /// water with water above.
 pub(super) fn surface_water_rules(level: &Level, pos: BlockPos) -> bool {
-    pos.y >= SEA_LEVEL - 13
-        && pos.y <= SEA_LEVEL
+    let sea_level = crate::mob::sea_level(level);
+    pos.y >= sea_level - 13
+        && pos.y <= sea_level
         && is_water(level.block(BlockPos::new(pos.x, pos.y - 1, pos.z)))
         && level.block(BlockPos::new(pos.x, pos.y + 1, pos.z)).block()
             == vanillite_data::block::ids::WATER

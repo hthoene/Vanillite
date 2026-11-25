@@ -6,7 +6,7 @@ use vanillite_base::random::RandomSource;
 use vanillite_base::{BlockPos, Vec3};
 use vanillite_world::entity::Rotation;
 
-use super::{Goal, SEA_LEVEL, st, st_mut};
+use super::{Goal, st, st_mut};
 use crate::effect::MobEffect;
 use crate::level::Level;
 use crate::mob::fam::{FamGoal, Hurt};
@@ -28,7 +28,7 @@ pub(super) fn register_goals(m: &mut MobData) {
 
 /// `GlowSquid.checkGlowSquidSpawnRules`: deep, dark water.
 pub(super) fn glow_squid_rules(level: &Level, pos: BlockPos) -> bool {
-    pos.y <= SEA_LEVEL - 33
+    pos.y <= crate::mob::sea_level(level) - 33
         && level.raw_brightness(pos) == 0
         && level.block(pos).block() == vanillite_data::block::ids::WATER
 }

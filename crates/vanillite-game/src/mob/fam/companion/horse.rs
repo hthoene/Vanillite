@@ -15,7 +15,7 @@ use crate::item::{EquipmentSlot, ItemStack};
 use crate::level::Level;
 use crate::mob::animal::Interaction;
 use crate::mob::equipment;
-use crate::mob::fam::{ExtraMob, Hurt, Relation, SpawnReason};
+use crate::mob::fam::{ExtraMob, GroupData, Hurt, Relation, SpawnReason};
 use crate::mob::goals::flag;
 use crate::mob::kinds::Kind;
 use crate::mob::{MobData, Tick, nav, randompos};
@@ -232,8 +232,14 @@ pub fn randomize_attributes(m: &mut MobData) {
 pub fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
     let chance = match m.kind {
         Kind::Horse => {
-            // `HorseGroupData(variant)`: a random variant and markings.
-            let variant = m.random.next_int_bounded(7);
+            // `HorseGroupData(variant)`: the group's coat, own markings.
+            let variant = if let GroupData::Horse(v) = ctx.group {
+                v
+            } else {
+                let v = m.random.next_int_bounded(7);
+                ctx.group = GroupData::Horse(v);
+                v
+            };
             let markings = m.random.next_int_bounded(5);
             m.variant = (variant & 0xFF) | ((markings << 8) & 0xFF00);
             0.05

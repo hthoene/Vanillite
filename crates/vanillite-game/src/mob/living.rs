@@ -1031,7 +1031,16 @@ pub fn move_self(t: &mut Tick<'_, '_>, delta: Vec3) {
     let step = t.mob_ref().attrs.step_height as f32;
     let on_ground = t.on_ground();
     let aabb = t.aabb();
-    let movement = physics::collide(t.level, aabb, delta, step, on_ground, &mut t.cx.boxes);
+    let on_lava = t.mob_ref().nav.stands_on_lava;
+    let movement = physics::collide_for(
+        t.level,
+        aabb,
+        delta,
+        step,
+        on_ground,
+        &mut t.cx.boxes,
+        on_lava,
+    );
     let length = movement.length_sqr();
     if length > 1.0e-7 || delta.length_sqr() - length < 1.0e-7 {
         let p = t.pos();

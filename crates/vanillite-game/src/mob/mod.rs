@@ -479,6 +479,11 @@ impl Default for Environment {
     }
 }
 
+/// `Level.getSeaLevel`: the sea level of the level's generator (63 without one).
+pub fn sea_level(level: &crate::level::Level) -> i32 {
+    level.climate().map_or(63, |c| c.sea_level)
+}
+
 impl Environment {
     /// The overworld at `day` ticks of the day (the `minecraft:day` timeline) with the rain and
     /// thunder levels of the weather: sky darkness, whether monsters burn.

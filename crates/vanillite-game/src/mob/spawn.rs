@@ -10,7 +10,7 @@ use vanillite_data::block::{BlockState, flags, ids};
 use vanillite_data::entity::EntityTypeId;
 use vanillite_world::entity::{EntityId, Rotation};
 
-use super::fam::{ExtraMob, Relation, SpawnContext, SpawnReason};
+use super::fam::{ExtraMob, GroupData, Relation, SpawnContext, SpawnReason};
 use super::kinds::{self, FarmClimate, Kind};
 use super::physics;
 use super::{Environment, MobData, max_local_raw_brightness};
@@ -618,6 +618,7 @@ fn spawn_category_for_chunk(
         #[allow(clippy::cast_possible_truncation)]
         let mut max = (level.random().next_float() * 4.0).ceil() as i32;
         let mut group_index = 0u32;
+        let mut group = GroupData::None;
         let mut group_size = 0;
         let mut ll = 0;
         while ll < max {
@@ -679,7 +680,7 @@ fn spawn_category_for_chunk(
                 continue;
             }
             let extra = with_level_random(level, |level, random| {
-                finalize(
+                finalize_in_group(
                     level,
                     Some(table),
                     &input.env,
@@ -687,6 +688,7 @@ fn spawn_category_for_chunk(
                     pos,
                     input.difficulty,
                     group_index,
+                    &mut group,
                     SpawnReason::Natural,
                     random,
                 )
@@ -739,6 +741,36 @@ pub fn finalize(
     reason: SpawnReason,
     random: &mut LegacyRandom,
 ) -> Vec<ExtraMob> {
+    let mut group = GroupData::None;
+    finalize_in_group(
+        level,
+        table,
+        env,
+        mob,
+        pos,
+        difficulty,
+        group_index,
+        &mut group,
+        reason,
+        random,
+    )
+}
+
+/// [`finalize`] of a member of a spawn group: `group` is the `SpawnGroupData` the earlier
+/// members left and is updated for the next one.
+#[allow(clippy::too_many_arguments)]
+pub fn finalize_in_group(
+    level: &Level,
+    table: Option<&SpawnTable>,
+    env: &Environment,
+    mob: &mut MobData,
+    pos: BlockPos,
+    difficulty: Difficulty,
+    group_index: u32,
+    group: &mut GroupData,
+    reason: SpawnReason,
+    random: &mut LegacyRandom,
+) -> Vec<ExtraMob> {
     let biome = table.and_then(|t| t.biome(level.biome(pos)));
     let mut ctx = SpawnContext {
         difficulty,
@@ -746,6 +778,7 @@ pub fn finalize(
         effective_difficulty: super::fam::effective_difficulty(difficulty),
         climate: biome.map_or(FarmClimate::Temperate, |b| b.climate),
         group_index,
+        group: *group,
         reason,
         biome,
         pos,
@@ -755,6 +788,7 @@ pub fn finalize(
         ride: None,
     };
     kinds::finalize_spawn(mob, &mut ctx, random);
+    *group = ctx.group;
     if let Some(vehicle) = ctx.ride {
         ctx.extra.push(ExtraMob {
             mob: MobData::new(Kind::Chicken, 0),
@@ -1365,6 +1399,7 @@ pub fn spawn_for_chunk_generation(
         let mut z = zo + random.next_int_bounded(16);
         let (start_x, start_z) = (x, z);
         let mut group_index = 0;
+        let mut group = GroupData::None;
         for _ in 0..count {
             let mut success = false;
             let mut attempts = 0;
@@ -1399,7 +1434,7 @@ pub fn spawn_for_chunk_generation(
                             if mob_check_spawn_rules(level, env, &mob, block)
                                 && check_spawn_obstruction(level, env, &mob, at)
                             {
-                                let extra = finalize(
+                                let extra = finalize_in_group(
                                     level,
                                     Some(table),
                                     env,
@@ -1407,6 +1442,7 @@ pub fn spawn_for_chunk_generation(
                                     block,
                                     difficulty,
                                     group_index,
+                                    &mut group,
                                     SpawnReason::ChunkGeneration,
                                     // `WorldGenRegion.getRandom()` is a positional random of
                                     // the region; this one is distribution equal.

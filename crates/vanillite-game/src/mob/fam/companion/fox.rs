@@ -12,7 +12,7 @@ use crate::item::{EquipmentSlot, ItemStack};
 use crate::level::Level;
 use crate::mob::common::{CommonGoal, MoveToBlock, TargetFilter};
 use crate::mob::equipment;
-use crate::mob::fam::{Hurt, SpawnReason};
+use crate::mob::fam::{GroupData, Hurt, SpawnReason};
 use crate::mob::goals::{Goal as BaseGoal, TargetState, flag, reduced};
 use crate::mob::kinds::Kind;
 use crate::mob::{MobData, Tick, nav};
@@ -271,7 +271,13 @@ pub fn set_target_goals(m: &mut MobData) {
 /// `finalizeSpawn`: the variant of the biome (`#spawns_snow_foxes`), kits from the third of
 /// a group, the item in the mouth.
 pub fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
-    m.variant = i32::from(ctx.biome_is("minecraft:spawns_snow_foxes"));
+    let variant = i32::from(ctx.biome_is("minecraft:spawns_snow_foxes"));
+    m.variant = if let GroupData::Fox(v) = ctx.group {
+        v
+    } else {
+        ctx.group = GroupData::Fox(variant);
+        variant
+    };
     if ctx.group_index >= 2 {
         m.age = -24000;
         m.baby = true;

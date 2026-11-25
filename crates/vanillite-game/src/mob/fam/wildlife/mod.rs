@@ -37,9 +37,6 @@ use crate::mob::{Environment, MobData, Tick};
 use crate::player::encode::DataWriter;
 use crate::survival::damage::DamageSource;
 
-/// The sea level of the overworld (`getSeaLevel`), the dimension of the water mobs.
-pub(crate) const SEA_LEVEL: i32 = 63;
-
 /// The family's hooks.
 #[derive(Debug)]
 pub struct Hooks;

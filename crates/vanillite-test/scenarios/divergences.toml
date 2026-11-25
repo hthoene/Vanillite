@@ -293,9 +293,9 @@ cause = "the first arrow comes one tick late: Vanilla shoots on tick 28 (2 draws
 owner = "gameplay-developer #59"
 
 [mob_strider_lava]
-tick = 1
-cause = "the strider floats up in lava faster (motion y 0.04, Vanilla 0.0108) and draws 4 numbers from its random (Vanilla 5)"
-owner = "gameplay-developer #59"
+tick = 65
+cause = "from tick 65 the strider draws one number less from its random than Vanilla on goal ticks (the stroll or look goal after the first look around)"
+owner = "gameplay-developer #81"
 
 [mob_sulfur_cube_wander]
 tick = 1

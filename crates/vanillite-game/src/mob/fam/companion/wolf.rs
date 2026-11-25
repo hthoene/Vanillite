@@ -14,7 +14,7 @@ use crate::item::EquipmentSlot;
 use crate::level::Level;
 use crate::mob::animal::Interaction;
 use crate::mob::common::{CommonGoal, TargetFilter};
-use crate::mob::fam::{Hurt, SpawnReason};
+use crate::mob::fam::{GroupData, Hurt, SpawnReason};
 use crate::mob::goals::{flag, reduced};
 use crate::mob::kinds::Kind;
 use crate::mob::{MobData, Tick};
@@ -165,7 +165,13 @@ pub fn random_sound_variant(r: &mut LegacyRandom) -> u8 {
 
 /// `finalizeSpawn`: the pack variant of the biome, a random sound variant, babies.
 pub fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
-    m.variant = variant_for(ctx);
+    m.variant = if let GroupData::Wolf(v) = ctx.group {
+        v
+    } else {
+        let v = variant_for(ctx);
+        ctx.group = GroupData::Wolf(v);
+        v
+    };
     st_mut(m).sound_variant = random_sound_variant(&mut m.random);
     super::ageable_group(m, ctx, true, 0.05);
 }

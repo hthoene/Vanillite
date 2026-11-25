@@ -8,7 +8,7 @@ use vanillite_world::entity::EntityId;
 use super::{G, Goal as FamGoal, MeleeKind, SpawnContext, TemptItems, common, fam, st, st_mut};
 use crate::level::Level;
 use crate::mob::common::{CommonGoal, MoveToBlock, TargetFilter};
-use crate::mob::fam::SpawnReason;
+use crate::mob::fam::{GroupData, SpawnReason};
 use crate::mob::goals::flag;
 use crate::mob::kinds::Kind;
 use crate::mob::nav::MoveKind;
@@ -150,7 +150,13 @@ pub fn random_variant(ctx: &SpawnContext<'_>, r: &mut LegacyRandom) -> i32 {
 
 /// `finalizeSpawn`: the biome variant, kits after the first of a group.
 pub fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
-    m.variant = random_variant(ctx, &mut m.random);
+    let variant = random_variant(ctx, &mut m.random);
+    m.variant = if let GroupData::Rabbit(v) = ctx.group {
+        v
+    } else {
+        ctx.group = GroupData::Rabbit(variant);
+        variant
+    };
     super::ageable_group(m, ctx, true, 1.0);
 }
 
