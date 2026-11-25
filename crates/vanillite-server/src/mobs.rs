@@ -57,6 +57,24 @@ impl vanillite_storage::saved_data::SavedData for FightData {
     }
 }
 
+/// The raids' saved data (`minecraft:raids`): the last state the raids wrote, taken by the
+/// next save.
+#[derive(Debug, Default)]
+struct RaidsData(std::sync::Mutex<Option<vanillite_nbt::Compound>>);
+
+impl vanillite_storage::saved_data::SavedData for RaidsData {
+    fn id(&self) -> &str {
+        "minecraft:raids"
+    }
+
+    fn save(&self) -> Option<vanillite_nbt::Compound> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
+}
+
 /// The mob state of one world.
 #[derive(Debug)]
 pub(crate) struct WorldMobs {
@@ -76,6 +94,8 @@ pub(crate) struct WorldMobs {
     phantoms: vanillite_game::mob::fam::undead::phantom::PhantomSpawner,
     patrols: vanillite_game::mob::fam::illager::patrol::PatrolSpawner,
     cats: spawn::CatSpawner,
+    siege: vanillite_game::raid::siege::VillageSiege,
+    raids_data: Option<Arc<RaidsData>>,
 }
 
 impl WorldMobs {
@@ -94,6 +114,60 @@ impl WorldMobs {
             phantoms: Default::default(),
             patrols: Default::default(),
             cats: spawn::CatSpawner::default(),
+            siege: Default::default(),
+            raids_data: None,
+        }
+    }
+
+    /// Loads the dimension's raids from their saved data (`Raids.TYPE`).
+    pub(crate) fn init_raids(
+        &mut self,
+        data: &vanillite_storage::saved_data::SavedDataStore,
+        level: &mut Level,
+    ) {
+        match data.read("minecraft:raids") {
+            Ok(Some(saved)) => level.entities.raids = vanillite_game::raid::Raids::load(&saved),
+            Ok(None) => {}
+            Err(e) => log::error!("Could not read the raids: {e}"),
+        }
+        let store = Arc::new(RaidsData::default());
+        data.register(Arc::clone(&store) as _);
+        self.raids_data = Some(store);
+    }
+
+    /// `Raids.tick` (after the scheduled ticks, before the chunks), then the raids' changed
+    /// state goes to their saved data.
+    pub(crate) fn tick_raids(
+        &mut self,
+        level: &mut Level,
+        survival: &mut WorldSurvival,
+        global: &Global,
+        dimension: &str,
+    ) {
+        level.flush_poi_changes();
+        if level.entities.raids.raids.is_empty() && !level.entities.raids.dirty {
+            return;
+        }
+        let state = &global.level;
+        let rules = state.rules().clone();
+        let env = environment(global, dimension, survival, self.seed);
+        let mut cx = vanillite_game::raid::RaidTick {
+            difficulty: state.difficulty,
+            raids_rule: rules.bool(Rule::RAIDS),
+            table: self.table.as_deref(),
+            env,
+            out: &mut survival.effects,
+        };
+        vanillite_game::raid::Raids::tick(level, &mut cx);
+        survival.deliver(&mut level.entities, global);
+        if let Some(data) = &self.raids_data
+            && std::mem::take(&mut level.entities.raids.dirty)
+        {
+            *data
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some(level.entities.raids.save());
         }
     }
 
@@ -398,6 +472,7 @@ impl WorldMobs {
         let Some(table) = self.table.clone() else {
             return;
         };
+        let roll_siege = day_time(global) == Some(18000);
         let state = &global.level;
         let rules = state.rules().clone();
         let difficulty = state.difficulty;
@@ -452,11 +527,12 @@ impl WorldMobs {
                 difficulty,
                 env,
                 &players,
+                roll_siege,
             );
         }
     }
 
-    /// `tickCustomSpawners`: phantoms, patrols and cats (the wandering trader is #60).
+    /// `tickCustomSpawners`: phantoms, patrols, cats and zombie sieges.
     #[allow(clippy::too_many_arguments)]
     fn custom_spawners(
         &mut self,
@@ -467,6 +543,7 @@ impl WorldMobs {
         difficulty: Difficulty,
         env: Environment,
         players: &[(EntityId, Vec3)],
+        roll_siege: bool,
     ) {
         level.flush_poi_changes();
         use vanillite_game::mob::fam::illager::patrol::{self, PatrolInput};
@@ -497,7 +574,6 @@ impl WorldMobs {
                 Some((e.pos(), p.game_mode == GameMode::Spectator))
             })
             .collect();
-        let no_village = |_| false;
         let can_patrol = |level: &Level, pos: BlockPos| {
             table.biome(level.biome(pos)).is_none_or(|b| b.patrol_spawn)
         };
@@ -507,7 +583,6 @@ impl WorldMobs {
             env,
             players: &patrol_players,
             table: Some(table),
-            close_to_village: &no_village,
             can_patrol_spawn: &can_patrol,
         };
         patrol::patrol_spawner_tick(level, &mut self.patrols, &input);
@@ -520,6 +595,17 @@ impl WorldMobs {
             &env,
             difficulty,
             &ids,
+        );
+        vanillite_game::raid::siege::tick(
+            level,
+            &mut self.siege,
+            &vanillite_game::raid::siege::SiegeInput {
+                spawn_enemies,
+                difficulty,
+                env,
+                at_roll_marker: roll_siege,
+                table: Some(table),
+            },
         );
     }
 
@@ -1036,6 +1122,17 @@ fn distance_sqr_to_box(b: &Aabb, p: Vec3) -> f64 {
     let dy = (b.min_y - p.y).max(0.0).max(p.y - b.max_y);
     let dz = (b.min_z - p.z).max(0.0).max(p.z - b.max_z);
     dx * dx + dy * dy + dz * dz
+}
+
+/// The overworld day time (`minecraft:day` timeline) within the day.
+fn day_time(global: &Global) -> Option<i64> {
+    let clocks = global.level.clocks();
+    clocks.timeline("minecraft:day").and_then(|t| {
+        clocks
+            .clocks
+            .get(t.clock)
+            .map(|c| t.current_ticks(c.total_ticks).rem_euclid(24000))
+    })
 }
 
 /// This tick's environment: sky darkness from the day time and the weather, whether monsters

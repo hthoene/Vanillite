@@ -281,6 +281,20 @@ pub enum Goal {
     BeeGoToKnownFlower { travelling: i32 },
     /// `ValidateFlowerGoal` (its cooldown is rolled at construction).
     BeeValidateFlower { cooldown: i32, last_validate: i64 },
+    /// `GolemRandomStrollInVillageGoal(0.6)` and (`back`) `MoveBackToVillageGoal(0.6, false)`.
+    GolemStroll {
+        back: bool,
+        speed: f64,
+        interval: i32,
+        wanted: Vec3,
+    },
+    /// `OfferFlowerGoal`.
+    OfferFlower { target: Option<EntityId>, tick: i32 },
+    /// `DefendVillageTargetGoal`: `candidate` is `potentialTarget`, kept between checks.
+    DefendVillage {
+        state: crate::mob::goals::TargetState,
+        candidate: Option<EntityId>,
+    },
 }
 
 /// `Goal.Flag` bits.
@@ -1133,7 +1147,10 @@ impl FamilyHooks for Hooks {
             | Goal::TurtleStroll { .. }
             | Goal::BeePollinate { .. }
             | Goal::BeeWander
-            | Goal::BeeGoToKnownFlower { .. } => MOVE,
+            | Goal::BeeGoToKnownFlower { .. }
+            | Goal::GolemStroll { .. } => MOVE,
+            Goal::OfferFlower { .. } => MOVE | LOOK,
+            Goal::DefendVillage { .. } => flag::TARGET,
             Goal::DolphinSwimToTreasure { .. }
             | Goal::DolphinSwimWithPlayer { .. }
             | Goal::BreathAir
@@ -1171,7 +1188,10 @@ impl FamilyHooks for Hooks {
             | Goal::DolphinJump { .. }
             | Goal::DolphinMoveToItem { .. }
             | Goal::DolphinPlayWithItems { .. } => dolphin::can_use(t, g),
-            Goal::MoveTowardsTarget { .. } => golem::can_use(t, g),
+            Goal::MoveTowardsTarget { .. }
+            | Goal::GolemStroll { .. }
+            | Goal::OfferFlower { .. }
+            | Goal::DefendVillage { .. } => golem::can_use(t, g),
             Goal::TurtlePanic { .. }
             | Goal::TurtleBreed { .. }
             | Goal::TurtleLayEgg(_)
@@ -1202,7 +1222,10 @@ impl FamilyHooks for Hooks {
             | Goal::DolphinJump { .. }
             | Goal::DolphinMoveToItem { .. }
             | Goal::DolphinPlayWithItems { .. } => dolphin::can_continue(t, g),
-            Goal::MoveTowardsTarget { .. } => golem::can_continue(t, g),
+            Goal::MoveTowardsTarget { .. }
+            | Goal::GolemStroll { .. }
+            | Goal::OfferFlower { .. }
+            | Goal::DefendVillage { .. } => golem::can_continue(t, g),
             Goal::TurtlePanic { .. }
             | Goal::TurtleBreed { .. }
             | Goal::TurtleLayEgg(_)
@@ -1230,7 +1253,10 @@ impl FamilyHooks for Hooks {
             | Goal::DolphinJump { .. }
             | Goal::DolphinMoveToItem { .. }
             | Goal::DolphinPlayWithItems { .. } => dolphin::start(t, g),
-            Goal::MoveTowardsTarget { .. } => golem::start(t, g),
+            Goal::MoveTowardsTarget { .. }
+            | Goal::GolemStroll { .. }
+            | Goal::OfferFlower { .. }
+            | Goal::DefendVillage { .. } => golem::start(t, g),
             Goal::TurtlePanic { .. }
             | Goal::TurtleBreed { .. }
             | Goal::TurtleLayEgg(_)
@@ -1257,6 +1283,9 @@ impl FamilyHooks for Hooks {
             | Goal::DolphinMoveToItem { .. }
             | Goal::DolphinPlayWithItems { .. } => dolphin::stop(t, g),
             Goal::MoveTowardsTarget { target, .. } => *target = None,
+            Goal::GolemStroll { .. } | Goal::OfferFlower { .. } | Goal::DefendVillage { .. } => {
+                golem::stop(t, g);
+            }
             Goal::TurtleGoHome { .. } | Goal::TurtleTravel { .. } | Goal::TurtleBreed { .. } => {
                 turtle::stop(t, g);
             }
@@ -1288,6 +1317,7 @@ impl FamilyHooks for Hooks {
             Goal::BeePollinate { .. } | Goal::BeeGrowCrop | Goal::BeeGoToKnownFlower { .. } => {
                 bee::tick(t, g)
             }
+            Goal::OfferFlower { .. } => golem::tick(t, g),
             _ => {}
         }
     }

@@ -1465,9 +1465,10 @@ pub struct CatSpawner {
     next_tick: i32,
 }
 
-/// `CatSpawner.tick`: every minute a cat may spawn 8–24 blocks from a random player, in a
-/// swamp hut (`#cats_spawn_in`, a black persistent cat when none is within 16 blocks).
-/// Villages (`isCloseToVillage`, more than four occupied homes) need POIs (#60).
+/// `CatSpawner.tick`: every minute a cat may spawn 8–24 blocks from a random player: in a
+/// village (`isCloseToVillage(pos, 2)`, more than four occupied homes within 48 blocks and fewer
+/// than five cats) or in a swamp hut (`#cats_spawn_in`, a black persistent cat when none is
+/// within 16 blocks).
 pub fn cat_spawner_tick(
     level: &mut Level,
     table: Option<&SpawnTable>,
@@ -1510,6 +1511,35 @@ pub fn cat_spawner_tick(
     if !loaded || !spawn_position_ok(level, vanillite_data::entity::ids::CAT, pos) {
         return;
     }
+    if level.entities.poi.is_close_to_village(pos, 2) {
+        // `spawnInVillage`.
+        let homes = level.entities.poi.count_in_range(
+            |t| t == crate::poi::PoiType::Home,
+            pos,
+            48,
+            crate::poi::Occupancy::IsOccupied,
+        );
+        if homes <= 4 {
+            return;
+        }
+        let area = vanillite_base::Aabb::new(
+            f64::from(pos.x) - 48.0,
+            f64::from(pos.y) - 8.0,
+            f64::from(pos.z) - 48.0,
+            f64::from(pos.x) + 49.0,
+            f64::from(pos.y) + 9.0,
+            f64::from(pos.z) + 49.0,
+        );
+        let mut cats = 0;
+        let ents = &level.entities;
+        ents.store.for_each_in(&area, false, |id| {
+            cats += usize::from(ents.mob(id).is_some_and(|m| m.kind == Kind::Cat));
+        });
+        if cats < 5 {
+            spawn_cat(level, table, env, difficulty, pos, false);
+        }
+        return;
+    }
     let mut in_hut = false;
     structures.structures_at(level, pos, |name, in_piece, _| {
         in_hut |= in_piece && name == "minecraft:swamp_hut";
@@ -1534,8 +1564,23 @@ pub fn cat_spawner_tick(
     if cats {
         return;
     }
+    spawn_cat(level, table, env, difficulty, pos, true);
+}
+
+/// `CatSpawner.spawnCat(pos, level, makePersistent)`: black in swamp huts, else a random
+/// variant (all black only under a full moon).
+fn spawn_cat(
+    level: &mut Level,
+    table: Option<&SpawnTable>,
+    env: &Environment,
+    difficulty: Difficulty,
+    pos: BlockPos,
+    in_hut: bool,
+) {
     let seed = crate::mob::new_entity_seed();
     let mut cat = MobData::new(Kind::Cat, seed);
+    // The moon's brightness is at least 0.9 at full moon only (surface slime chance 0.5).
+    let full_moon = env.surface_slime_chance >= 0.45;
     let extra = with_level_random(level, |level, random| {
         let extra = finalize(
             level,
@@ -1548,11 +1593,13 @@ pub fn cat_spawner_tick(
             SpawnReason::Natural,
             random,
         );
-        // The variant's spawn conditions (in a witch hut) with the level random.
-        cat.variant = super::fam::companion::feline::pick_cat_variant(random, true, false);
+        // The variant's spawn conditions with the level random.
+        cat.variant = super::fam::companion::feline::pick_cat_variant(random, in_hut, full_moon);
         extra
     });
-    cat.persistent = true;
+    if in_hut {
+        cat.persistent = true;
+    }
     let at = Vec3::new(f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
     add_mob_with(level, cat, at, 0.0, extra);
 }

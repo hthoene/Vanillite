@@ -230,6 +230,8 @@ pub struct Survival {
     pub shield_disabled_until: i32,
     /// The item in the main hand at the last tick (`lastItemInMainHand`).
     pub last_main_hand_item: u16,
+    /// `raidOmenPosition` and what the omen effects see of villages and raids.
+    pub raid_omen: crate::raid::PlayerOmen,
     first_tick: bool,
     sent: Sent,
 }
@@ -270,6 +272,7 @@ impl Default for Survival {
             using_item: None,
             shield_disabled_until: 0,
             last_main_hand_item: 0,
+            raid_omen: crate::raid::PlayerOmen::default(),
             first_tick: true,
             sent: Sent::default(),
         }
@@ -408,6 +411,11 @@ impl Survival {
             data.get("warden_spawn_tracker"),
         );
         s.portal = crate::portal::PortalState::load(data);
+        if let Some(Tag::IntArray(v)) = data.get("raid_omen_position")
+            && let [x, y, z] = v.as_slice()
+        {
+            s.raid_omen.position = Some(BlockPos::new(*x, *y, *z));
+        }
         if let Some(Tag::Compound(loc)) = data.get("LastDeathLocation")
             && let (Some(Tag::String(dim)), Some(Tag::IntArray(pos))) =
                 (loc.get("dimension"), loc.get("pos"))
@@ -456,6 +464,10 @@ impl Survival {
         }
         self.portal.save(out);
         self.food.save(out);
+        out.remove("raid_omen_position");
+        if let Some(p) = self.raid_omen.position {
+            out.insert("raid_omen_position", Tag::IntArray(vec![p.x, p.y, p.z]));
+        }
         out.remove("LastDeathLocation");
         if let Some((dim, pos)) = &self.last_death {
             let mut loc = Compound::with_capacity(2);

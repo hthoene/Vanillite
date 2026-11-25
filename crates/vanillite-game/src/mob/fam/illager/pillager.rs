@@ -41,6 +41,7 @@ pub fn register_goals(m: &mut MobData) {
     let g = &mut m.goals;
     let tg = &mut m.targets;
     g.add(4, raider::patrol());
+    raider::add_raider_goals(g);
     g.add(0, MobGoal::Float);
     g.add(1, avoid_creaking(1.0, 1.2));
     g.add(2, fam(Goal::HoldGround { radius_sqr: 100.0 }));

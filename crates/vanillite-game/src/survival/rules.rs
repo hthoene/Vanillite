@@ -128,6 +128,7 @@ impl Rule {
     pub const PLAYERS_NETHER_PORTAL_CREATIVE_DELAY: Rule = Rule(34);
     pub const PLAYERS_NETHER_PORTAL_DEFAULT_DELAY: Rule = Rule(35);
     pub const PVP: Rule = Rule(38);
+    pub const RAIDS: Rule = Rule(39);
     pub const REDUCED_DEBUG_INFO: Rule = Rule(41);
     pub const RESPAWN_RADIUS: Rule = Rule(42);
     pub const SHOW_DEATH_MESSAGES: Rule = Rule(45);
