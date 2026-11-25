@@ -258,6 +258,18 @@ impl ServerWorld {
         self.id
     }
 
+    /// Lets finished chunk jobs wake this world between ticks: `wake` must queue a
+    /// [`ServerWorld::pump_chunks`] task for the world's owner.
+    pub(crate) fn set_chunk_waker(&mut self, wake: vanillite_world::chunks::Waker) {
+        self.level.chunks.set_waker(wake);
+    }
+
+    /// Applies finished chunk jobs and starts the next generation steps between ticks
+    /// ([`vanillite_world::chunks::Chunks::pump`]).
+    pub(crate) fn pump_chunks(&mut self) {
+        self.level.chunks.pump();
+    }
+
     /// The dimension key, e.g. `minecraft:overworld`.
     pub fn dimension(&self) -> &str {
         &self.dimension

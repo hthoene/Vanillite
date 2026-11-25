@@ -392,6 +392,11 @@ pub trait ChunkGenerator: Send + Sync {
         targets: &mut [ProtoChunk],
         neighbours: &mut Neighbours<'_>,
     );
+
+    /// Precomputes what the first steps would otherwise compute on demand (Vanilla's
+    /// `ensureStructuresGenerated` when a level loads). Runs once as a background job when the
+    /// world starts; `generate` must work without it.
+    fn prepare(&self) {}
 }
 
 /// Creates the generator of each world.

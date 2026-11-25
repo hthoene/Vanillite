@@ -223,11 +223,12 @@ impl ServerBuilder {
         // Plugins load first: they register commands, events and slot providers.
         let plugins = crate::plugins::load(&dir, &config);
         let parallel = config.server.tick.parallel_dimensions;
-        let busy_tick_threads = if parallel { DIMENSIONS.len() } else { 1 };
+        // One core stays with the tick threads: dimensions without players sleep between their
+        // ticks, so they do not take a core each (Vanilla: cores minus the server thread).
         let workers = match config.server.threads.compute {
             0 => std::thread::available_parallelism()
                 .map_or(1, usize::from)
-                .saturating_sub(busy_tick_threads)
+                .saturating_sub(1)
                 .max(1),
             n => usize::from(n),
         };
@@ -425,6 +426,10 @@ impl ServerBuilder {
                 light: light_provider.create(&info),
                 executor: Arc::clone(&executor) as _,
             };
+            let generator = Arc::clone(&slots.generator);
+            slots
+                .executor
+                .spawn(0, Box::new(move || generator.prepare()));
             let settings = ChunkSettings {
                 view_distance: i32::from(view_distance),
                 unload_delay: u64::from(rules.chunks.unload_delay),
@@ -498,6 +503,12 @@ impl ServerBuilder {
             (Worlds::Parallel(threads), routes)
         } else {
             log::info!("Dimensions tick sequentially");
+            for world in &mut worlds {
+                let (wake, id) = (sender.clone(), world.id());
+                world.set_chunk_waker(Arc::new(move || {
+                    let _ = wake.send(ServerMsg::WorldTask(id, Box::new(ServerWorld::pump_chunks)));
+                }));
+            }
             let routes = worlds.iter().map(|_| Route::Server).collect();
             (Worlds::Sequential(worlds), routes)
         };
@@ -649,6 +660,10 @@ fn spawn_world_thread(
     heartbeat: Arc<Heartbeat>,
 ) -> Result<WorldThread, StartError> {
     let (sender, receiver) = mpsc::channel::<WorldMsg>();
+    let wake = sender.clone();
+    world.set_chunk_waker(Arc::new(move || {
+        let _ = wake.send(WorldMsg::Task(Box::new(ServerWorld::pump_chunks)));
+    }));
     let name = format!("World {}", world.dimension());
     let id = world.id();
     let thread_compute = compute.clone();

@@ -4,6 +4,10 @@
 //! Climate values are floats quantized to `long`s (`value * 10000`, truncated); every comparison
 //! and distance works on the quantized values with Java's wrapping `long` arithmetic.
 
+use std::fmt;
+use std::sync::{Mutex, PoisonError};
+
+use rustc_hash::FxHashMap;
 use serde_json::Value;
 
 use super::rtree::RTree;
@@ -218,6 +222,69 @@ pub(crate) fn distance(space: &[Parameter; 7], target: &[i64; 7]) -> i64 {
         distance = distance.wrapping_add(d.wrapping_mul(d));
     }
     distance
+}
+
+/// Sampled climates of quart columns at quart y 0, shared by all threads of one generator.
+///
+/// The carvers of every chunk look up the biomes of the 17 × 17 chunks around it with an
+/// uncached resolver, so each column is sampled by up to 289 chunks. The climate is a pure
+/// function of the position; only the R-tree search depends on the order of the queries, so the
+/// cache stores climates, not biomes. Sharded so threads rarely meet; a full shard is cleared.
+pub struct ClimateCache {
+    shards: Box<[Mutex<FxHashMap<(i32, i32), TargetPoint>>]>,
+}
+
+impl ClimateCache {
+    const SHARDS: usize = 32;
+    /// Columns per shard before it is cleared (about 2 MiB for all shards).
+    const MAX_PER_SHARD: usize = 1024;
+
+    /// An empty cache.
+    pub fn new() -> Self {
+        Self {
+            shards: (0..Self::SHARDS).map(|_| Mutex::default()).collect(),
+        }
+    }
+
+    /// The climate of column `(quart_x, quart_z)`, from `sample` if it is not cached yet.
+    pub fn get_or_insert_with(
+        &self,
+        quart_x: i32,
+        quart_z: i32,
+        sample: impl FnOnce() -> TargetPoint,
+    ) -> TargetPoint {
+        let hash = (quart_x as u32 as u64)
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            .wrapping_add((quart_z as u32 as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F));
+        let shard = &self.shards[(hash >> 59) as usize % Self::SHARDS];
+        let key = (quart_x, quart_z);
+        if let Some(target) = shard
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&key)
+        {
+            return *target;
+        }
+        let target = sample();
+        let mut map = shard.lock().unwrap_or_else(PoisonError::into_inner);
+        if map.len() >= Self::MAX_PER_SHARD {
+            map.clear();
+        }
+        map.insert(key, target);
+        target
+    }
+}
+
+impl Default for ClimateCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Debug for ClimateCache {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ClimateCache").finish_non_exhaustive()
+    }
 }
 
 /// `Climate.TargetPoint`: a sampled, quantized climate.
