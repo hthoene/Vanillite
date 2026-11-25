@@ -61,6 +61,7 @@ pub fn facts(ents: &Entities, id: EntityId) -> Option<EntityFacts> {
         }),
         sheep_color: sheep.map(|s| s.0),
         sheared: sheep.is_some_and(|s| s.1),
+        villager_variant: None,
     })
 }
 
@@ -286,13 +287,29 @@ pub fn player_attack(
     }
     post_attack(level, ents, env, cx, target, &source, Some(&weapon));
     hurt_weapon(ents, env, attacker, &weapon);
-    // `damageStatsAndHearts`: `DAMAGE_DEALT` of the health the living target lost.
-    if let (Some(old), Some(now)) = (old_health, living_health(ents, target))
-        && let Some(p) = ents.player_mut(attacker)
-    {
-        #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
-        let v = ((old - now) * 10.0).round() as i32;
-        p.stats.award(crate::stats::custom::DAMAGE_DEALT, v);
+    // `damageStatsAndHearts`: `DAMAGE_DEALT` of the health the living target lost,
+    // then dark hearts for more than one heart of damage.
+    if let (Some(old), Some(now)) = (old_health, living_health(ents, target)) {
+        let damage = old - now;
+        if let Some(p) = ents.player_mut(attacker) {
+            #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+            let v = (damage * 10.0).round() as i32;
+            p.stats.award(crate::stats::custom::DAMAGE_DEALT, v);
+        }
+        if damage > 2.0
+            && let Some(e) = ents.store.get(target)
+        {
+            let (pos, height) = (e.pos(), f64::from(e.dims().height));
+            #[allow(clippy::cast_possible_truncation)]
+            let count = (f64::from(damage) * 0.5) as i32;
+            cx.send_particles(
+                crate::level::particles::simple("minecraft:damage_indicator"),
+                Vec3::new(pos.x, pos.y + height * 0.5, pos.z),
+                count,
+                Vec3::new(0.1, 0.0, 0.1),
+                0.2,
+            );
+        }
     }
     if let Some(p) = ents.player_mut(attacker) {
         player::cause_food_exhaustion(p, 0.1);
@@ -482,6 +499,20 @@ fn sweep_attack(
             post_attack(level, ents, env, cx, id, source, Some(&weapon));
         }
     }
+    let rad = f64::from(y_rot * super::DEG_TO_RAD);
+    let dx = -f64::from(vanillite_base::math::sin(rad));
+    let dz = f64::from(vanillite_base::math::cos(rad));
+    let height = ents
+        .store
+        .get(attacker)
+        .map_or(0.0, |e| f64::from(e.dims().height));
+    cx.send_particles(
+        crate::level::particles::simple("minecraft:sweep_attack"),
+        Vec3::new(ppos.x + dx, ppos.y + height * 0.5, ppos.z + dz),
+        0,
+        Vec3::new(dx, 0.0, dz),
+        0.0,
+    );
 }
 
 /// `EnchantmentHelper.doPostAttackEffectsWithItemSource`: the post attack effects of the

@@ -18,6 +18,7 @@ pub mod explosion;
 pub mod forced;
 pub mod game_event;
 mod neighbors;
+pub mod particles;
 pub mod place;
 #[cfg(test)]
 pub(crate) use neighbors::STEPS as NEIGHBOR_STEPS;
@@ -133,6 +134,8 @@ pub struct LevelSettings {
     pub peaceful: bool,
     /// `spawnWardens` game rule (set by the server every tick).
     pub spawn_wardens: bool,
+    /// `mobGriefing` game rule (`MOB_GRIEFING`).
+    pub mob_griefing: bool,
 }
 
 impl Default for LevelSettings {
@@ -159,6 +162,7 @@ impl Default for LevelSettings {
             exploits: ExploitSettings::default(),
             peaceful: false,
             spawn_wardens: true,
+            mob_griefing: true,
         }
     }
 }
@@ -191,6 +195,9 @@ impl LevelSettings {
         }
         if let Some(v) = get("spread_vines") {
             self.spread_vines = v != 0;
+        }
+        if let Some(v) = get("mob_griefing") {
+            self.mob_griefing = v != 0;
         }
     }
 }
@@ -270,6 +277,8 @@ pub struct LevelOutput {
     pub level_events: Vec<LevelEvent>,
     /// Sounds.
     pub sounds: Vec<Sound>,
+    /// Server particles (`sendParticles`).
+    pub particles: Vec<particles::LevelParticles>,
     /// Explosions.
     pub explosions: Vec<explosion::ExplosionEvent>,
     /// The damage of the living entities explosions hit, for the mob system.
@@ -388,6 +397,13 @@ pub struct Level {
     seed: i64,
     /// What spawner blocks read of this tick's rules and sky (set by the world each tick).
     pub spawner_env: crate::block::spawner::SpawnerEnv,
+    /// POI changes of block changes made while the entities (with the POI manager) were out
+    /// of the level; applied by [`Level::flush_poi_changes`].
+    poi_changes: Vec<(
+        BlockPos,
+        Option<crate::poi::PoiType>,
+        Option<crate::poi::PoiType>,
+    )>,
 }
 
 impl std::fmt::Debug for Level {
@@ -454,7 +470,9 @@ impl Level {
             max_y,
             seed,
             spawner_env: crate::block::spawner::SpawnerEnv::default(),
+            poi_changes: Vec::new(),
         };
+        level.entities.poi = crate::poi::PoiManager::new_live();
         // Chunks that are visible already queue their entities for the end of the first tick.
         level.apply_visibility();
         level
@@ -1027,8 +1045,34 @@ impl Level {
                 self.update_neighbour_shapes(state, pos, neighbour_flags, limit - 1);
                 self.update_indirect_neighbour_shapes(state, pos, neighbour_flags, limit - 1);
             }
+            // `updatePOIOnBlockStateChange`.
+            let (old_poi, new_poi) = (
+                crate::poi::PoiType::of_state(old),
+                crate::poi::PoiType::of_state(state),
+            );
+            if old_poi != new_poi {
+                self.poi_changes.push((pos, old_poi, new_poi));
+                self.flush_poi_changes();
+            }
         }
         true
+    }
+
+    /// Applies the POI changes of block changes to the POI manager (`remove`, then `add`, as
+    /// the server tasks of `updatePOIOnBlockStateChange` run); kept while the entities are out
+    /// of the level.
+    pub fn flush_poi_changes(&mut self) {
+        if self.poi_changes.is_empty() || !self.entities.poi.live {
+            return;
+        }
+        for (pos, old, new) in std::mem::take(&mut self.poi_changes) {
+            if old.is_some() {
+                self.entities.poi.remove(pos);
+            }
+            if let Some(ty) = new {
+                self.entities.poi.add(pos, ty);
+            }
+        }
     }
 
     /// `removeBlock(pos, movedByPiston)`: the block becomes the fluid it holds.
@@ -1205,6 +1249,9 @@ impl Level {
         neighbour_pos: BlockPos,
         neighbour_state: BlockState,
     ) -> BlockState {
+        if block::beehive::is_beehive(state.block()) {
+            block::beehive::neighbour_changed_shape(self, pos, state, neighbour_pos);
+        }
         shared::update_shape(self, state, pos, direction, neighbour_pos, neighbour_state)
     }
 

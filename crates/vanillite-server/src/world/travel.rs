@@ -231,6 +231,7 @@ impl ServerWorld {
                     knockback: vanillite_game::effect::living::WIND_CHARGED_KNOCKBACK,
                     wind_sound: Some(vanillite_game::effect::living::WIND_CHARGED_SOUND),
                     resistance: vanillite_game::level::explosion::BlockResistance::WindCharge,
+                    fire: false,
                 },
             );
         }

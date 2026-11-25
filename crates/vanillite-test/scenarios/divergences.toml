@@ -7,6 +7,11 @@ tick = 1
 cause = "stroll target: Vanilla takes `AirAndWaterRandomPos` (36 draws of the allay's random), Vanillite `DefaultRandomPos` (30)"
 owner = "architect #101"
 
+[mob_allay_noteblock]
+tick = 1
+cause = "brain: the allay's random and the level random differ from tick 1 (RunOne/GateBehavior (ShufflingList.shuffle) draws its weights from the level random; Vanilla's ShufflingList has its own random), as in mob_allay_fly; the note block plays on tick 10"
+owner = "gameplay-developer #81"
+
 [mob_armadillo_scared]
 tick = 40
 cause = "the hit on tick 40: Vanilla knocks the armadillo back horizontally (motion -0.023, 0.314, -0.217), Vanillite only lifts it"
@@ -27,6 +32,11 @@ tick = 1
 cause = "Vanilla runs `BeeGrowCropGoal.canBeeUse` and starts `BeeWanderGoal` with `HoverRandomPos` (41 draws of the bee's random), Vanillite starts no goal (4 draws)"
 owner = "architect #101"
 
+[mob_bee_hive]
+tick = 1
+cause = "same start as mob_bee_fly: ValidateFlowerGoal and ValidateHiveGoal do not start on tick 1 (the game world's game time is below their cooldown) and the bee random takes one draw more; finding, entering and leaving the hive happen on Vanilla's ticks"
+owner = "gameplay-developer #81"
+
 [mob_breeze_attack]
 tick = 16
 cause = "head yaw on tick 16: Vanilla keeps the head on the body yaw (9.67), Vanillite turns it to -0.33 (look control of the breeze)"
@@ -46,6 +56,11 @@ owner = "architect #101"
 tick = 45
 cause = "random draws of the cod differ from tick 45 on (not analysed yet)"
 owner = "architect #101"
+
+[mob_copper_golem_chest]
+tick = 1
+cause = "brain: the golem's random and the level random differ from tick 1 (RunOne/GateBehavior (ShufflingList.shuffle) draws its weights from the level random; Vanilla's ShufflingList has its own random), as in mob_copper_golem_wander"
+owner = "gameplay-developer #81"
 
 [mob_copper_golem_wander]
 tick = 90
@@ -143,9 +158,9 @@ cause = "the shulker bullet draws 3 numbers from the level random when it is sho
 owner = "architect #101"
 
 [mob_strider_lava]
-tick = 1
-cause = "the strider floats up in lava faster on tick 1 (motion y 0.04, Vanilla 0.0108)"
-owner = "architect #101"
+tick = 65
+cause = "from tick 65 the strider draws one number less from its random than Vanilla on goal ticks (the stroll or look goal after the first look around)"
+owner = "gameplay-developer #81"
 
 [mob_tadpole_swim]
 tick = 1
@@ -156,6 +171,31 @@ owner = "architect #101"
 tick = 45
 cause = "random draws of the tropical fish differ from tick 45 on (not analysed yet)"
 owner = "architect #101"
+
+[mob_villager_bed]
+tick = 2
+cause = "not investigated yet: the brain lists shuffle with their own random since #101; the first difference moved here from tick 1"
+owner = "gameplay-developer #60"
+
+[mob_villager_panic]
+tick = 186
+cause = "not investigated yet: the brain lists shuffle with their own random since #101; the first difference moved here from tick 1"
+owner = "gameplay-developer #60"
+
+[mob_villager_workstation]
+tick = 89
+cause = "not investigated yet: the brain lists shuffle with their own random since #101; the first difference moved here from tick 1"
+owner = "gameplay-developer #60"
+
+[mob_villager_zombie]
+tick = 6
+cause = "not investigated yet: the brain lists shuffle with their own random since #101; the first difference moved here from tick 1"
+owner = "gameplay-developer #60"
+
+[mob_wandering_trader_wander]
+tick = 94
+cause = "the trader draws another count of its own random on tick 94 (a goal start, not investigated)"
+owner = "gameplay-developer #60"
 
 [mob_witch_potions]
 tick = 147

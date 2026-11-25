@@ -14,6 +14,7 @@ pub mod damage;
 pub mod food;
 pub mod player;
 pub mod rules;
+pub mod shoulder;
 pub mod weather;
 
 use std::sync::Arc;
@@ -75,6 +76,13 @@ pub enum Effect {
         pos: Vec3,
         y_rot: f32,
         velocity: Vec3,
+    },
+    /// An entity from a player's shoulder back in the world (`respawnEntityOnShoulder`): its
+    /// NBT, the position and the player that becomes its owner.
+    RespawnShoulder {
+        tag: Box<vanillite_nbt::Compound>,
+        pos: Vec3,
+        owner: u128,
     },
 }
 
