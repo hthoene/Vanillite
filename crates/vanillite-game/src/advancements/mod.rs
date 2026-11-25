@@ -15,6 +15,8 @@
 pub mod predicate;
 mod progress;
 pub mod trigger;
+#[cfg(test)]
+mod vanilla_tests;
 pub mod view;
 
 use std::collections::{BTreeMap, HashMap};
