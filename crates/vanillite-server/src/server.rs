@@ -20,7 +20,7 @@ use vanillite_config::{Config, ConfigError, RuleSet, VANILLITE_FILE, VanillaOr};
 use vanillite_game::level::Level;
 use vanillite_light::BfsLightEngineProvider;
 use vanillite_storage::backup::BackupSettings;
-use vanillite_storage::player_data::PlayerDataStore;
+use vanillite_storage::player_data::{JsonFile, PlayerDataStore};
 use vanillite_storage::saved_data::SavedDataStore;
 use vanillite_storage::writer::FileWriter;
 use vanillite_storage::{
@@ -290,14 +290,28 @@ impl ServerBuilder {
         };
         let mut world_players = prepared.worlds.into_iter();
         let packs = prepared.packs.map(Arc::new);
+        let crate::packs::Selected {
+            packs: data_packs,
+            config: pack_config,
+            opened: opened_packs,
+        } = prepared.selected;
         // Block behaviour reads its tags in every world, also without the noise generator.
         if let Some(packs) = packs.as_deref() {
             vanillite_worldgen::behaviour::init(packs);
         }
         let seed = prepared.world_gen.seed;
         let world_gen = prepared.world_gen.clone();
-        let behaviours = Arc::new(vanillite_game::block::Behaviours::vanilla());
+        let mut behaviours = vanillite_game::block::Behaviours::vanilla();
+        if config.server.redstone.implementation
+            == vanillite_config::RedstoneImplementation::AlternateCurrent
+        {
+            vanillite_game::block::redstone::alternate_current::install(&mut behaviours);
+        }
+        let behaviours = Arc::new(behaviours);
         let spawn_table = crate::world_setup::spawn_table(packs.as_deref()).map(Arc::new);
+        if let Some(t) = &spawn_table {
+            vanillite_game::mob::spawn::install_table(Arc::clone(t));
+        }
         let slot = |name: &str, origin: &Origin| log::info!("Slot {name}: {origin}");
         let compression = crate::world_format::anvil_compression(&config);
         let world_format = if format_plan.convert_to.is_some() {
@@ -324,6 +338,13 @@ impl ServerBuilder {
             format_plan.format
         };
         let own_level = i32::from(config.server.storage.compression_level);
+        let upgrades = match world_format {
+            WorldFormat::Vanillite => {
+                vanillite_storage::upgrade::Upgrades::load(&dir.join(&level_name))
+                    .map_err(|e| StartError::Io(format!("world \"{level_name}\": {e}")))?
+            }
+            WorldFormat::Anvil => vanillite_storage::upgrade::Upgrades::none(),
+        };
         let storage_rules = &config.server.storage;
         let io = IoPool::new(usize::from(storage_rules.io_threads))
             .map_err(|e| StartError::Io(format!("cannot start the storage IO threads: {e}")))?;
@@ -353,12 +374,18 @@ impl ServerBuilder {
             max_backlog: (storage_rules.max_pending_writes as usize) << 20,
         };
         slot("chunk-storage", &origin);
+        let terrains = crate::world_setup::GeneratorsByDimension::default();
         log::info!("World format: {}", world_format.name());
         let built_in_generators = {
             let packs = packs.clone();
             let world_gen = prepared.world_gen;
+            let created = Arc::clone(&terrains);
             move || -> Box<dyn ChunkGeneratorProvider> {
-                Box::new(crate::world_setup::BuiltInGenerators { packs, world_gen })
+                Box::new(crate::world_setup::BuiltInGenerators {
+                    packs,
+                    world_gen,
+                    created,
+                })
             }
         };
         let (generator_provider, origin): (Box<dyn ChunkGeneratorProvider>, Origin) =
@@ -400,6 +427,7 @@ impl ServerBuilder {
             &level_setup,
             writer.clone(),
         );
+        level.set_data_configuration(&pack_config, Some(&data_packs.features));
         let global = Arc::new_cyclic(|this| Global {
             clock,
             players: PlayerList::new(max_players),
@@ -421,6 +449,17 @@ impl ServerBuilder {
             game,
             recipes_packet,
             spawn_protection: config.properties.spawn_protection,
+            systems: crate::systems::GameSystems::new(
+                level_dir.clone(),
+                u8::try_from(config.properties.function_permission_level).unwrap_or(2),
+            ),
+            packs: data_packs.with_loaded(packs.clone()),
+            tick_rate: std::sync::Mutex::new(TickRateManager::default()),
+            tick_times: std::sync::Mutex::new(crate::tick_rate::TickTimes::default()),
+            force_game_mode: config.properties.force_gamemode,
+            language: prepared.language,
+            broadcast_console_to_ops: config.properties.broadcast_console_to_ops,
+            broadcast_rcon_to_ops: config.properties.broadcast_rcon_to_ops,
             plugins,
             this: this.clone(),
         });
@@ -429,6 +468,14 @@ impl ServerBuilder {
             .set_server(Arc::new(crate::plugins::Services::new(
                 &global, &compute, &config,
             )));
+        if let Some(packs) = packs.as_deref() {
+            global.systems.set_tags(crate::packs::registry_tags(packs));
+        }
+        global.systems.set_spawn(level_setup.spawn.0);
+        if let Some(table) = &spawn_table {
+            let _ = global.systems.mob_spawns.set(Arc::clone(table));
+        }
+        crate::commands::load_game_systems(&global, &opened_packs);
         let watch = Arc::new(WatchState::new(
             config.server.watchdog.early_warning_after.get(),
             config.server.watchdog.warning_interval,
@@ -439,6 +486,11 @@ impl ServerBuilder {
 
         log::info!("Preparing level \"{level_name}\"");
         let mut worlds = Vec::with_capacity(DIMENSIONS.len());
+        // `MinecraftServer.randomSequences`: shared by all worlds (not saved yet).
+        let random_sequences = Arc::new(std::sync::Mutex::new(
+            vanillite_game::random_sequences::RandomSequences::new(seed),
+        ));
+        let trees = crate::world_setup::tree_features(packs.as_deref(), seed);
         for (dimension, index) in DIMENSIONS.iter().zip(0u16..) {
             let rules = Arc::new(config.world_rules(dimension));
             let view_distance = rules
@@ -464,7 +516,9 @@ impl ServerBuilder {
                     .map_err(|e| StartError::io(&info.dir, e))?,
                 codec: match world_format {
                     WorldFormat::Anvil => Arc::new(AnvilCodec::new(&info, compression)),
-                    WorldFormat::Vanillite => Arc::new(OwnCodec::new(&info, own_level)),
+                    WorldFormat::Vanillite => Arc::new(
+                        OwnCodec::new(&info, own_level).with_upgrades(Arc::clone(&upgrades)),
+                    ),
                 },
                 generator: generator_provider
                     .create(&info)
@@ -510,6 +564,21 @@ impl ServerBuilder {
                 seed,
             );
             level.set_game_time(global.level.game_time());
+            level.generation = terrains
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(*dimension)
+                .cloned();
+            level.border = crate::border::load(
+                &data,
+                global.level.game_time(),
+                config.properties.max_world_size,
+            );
+            level.set_random_sequences(Arc::clone(&random_sequences));
+            if let Some(trees) = &trees {
+                level.set_tree_features(Arc::clone(trees));
+            }
+            level.set_maps(Arc::clone(&global.level.maps));
             let survival = crate::survival::WorldSurvival::new(
                 dimension,
                 &global.level,
@@ -518,8 +587,9 @@ impl ServerBuilder {
                 player_range,
                 climate,
             );
+            let saved_tickets = crate::chunk_tickets::load(&data, &mut level);
             let mobs = crate::mobs::WorldMobs::new(spawn_table.clone(), seed, &rules);
-            worlds.push(ServerWorld::new(
+            let mut world = ServerWorld::new(
                 WorldId(index),
                 (*dimension).to_owned(),
                 rules,
@@ -529,8 +599,11 @@ impl ServerBuilder {
                 survival,
                 mobs,
                 data,
-            ));
+            );
+            world.restore_tickets(saved_tickets);
+            worlds.push(world);
         }
+        prepare_levels(&mut worlds);
         let (worlds, routes) = if parallel {
             log::info!("Dimensions tick in parallel");
             let mut threads = Vec::with_capacity(worlds.len());
@@ -564,6 +637,7 @@ impl ServerBuilder {
 
         let net = NetState::start(
             &config,
+            &dir,
             prepared.configuration,
             self.network,
             global.chat.enforce_secure,
@@ -585,7 +659,6 @@ impl ServerBuilder {
             sender,
             receiver,
             global_queue: VecDeque::new(),
-            tick_rate: TickRateManager::default(),
             tick_count: 0,
             next_tick: 0,
             empty_ticks: 0,
@@ -609,6 +682,15 @@ impl ServerBuilder {
         server.next_backup = server.backup_due_after();
         server.ticks_until_autosave = server.autosave_interval();
         let _ = server.global.handle.set(server.handle());
+        if let Some(net) = &server.net {
+            crate::admin::start_rcon(
+                &server.config,
+                &net.network,
+                server.handle(),
+                &server.global,
+            );
+            crate::admin::start_query(&server.config, &net.network, Arc::clone(&net.query));
+        }
         server.global.plugins.enable_all();
         let bots = server.config.server.debug.test_bots;
         if bots > 0
@@ -840,7 +922,6 @@ pub struct Server {
     receiver: Receiver<ServerMsg>,
     /// Console commands and global tasks waiting for the next global pre-phase.
     global_queue: VecDeque<ServerMsg>,
-    tick_rate: TickRateManager,
     tick_count: u64,
     next_tick: u64,
     empty_ticks: u64,
@@ -888,6 +969,11 @@ impl Server {
         self.net.as_ref().map(|n| n.network.virtual_opener())
     }
 
+    /// The network, while it runs.
+    pub(crate) fn network(&self) -> Option<&vanillite_net::Network> {
+        self.net.as_ref().map(|n| &n.network)
+    }
+
     /// The UDP address of the Bedrock frontend, if it runs.
     pub fn bedrock_addr(&self) -> Option<std::net::SocketAddr> {
         self.net
@@ -926,8 +1012,8 @@ impl Server {
     }
 
     /// The tick rate state (`/tick`).
-    pub fn tick_rate(&mut self) -> &mut TickRateManager {
-        &mut self.tick_rate
+    pub fn tick_rate(&self) -> std::sync::MutexGuard<'_, TickRateManager> {
+        self.global.tick_rate()
     }
 
     /// Ticks run since start.
@@ -952,14 +1038,20 @@ impl Server {
         let mut last_overload_warning = self.next_tick;
         while self.running {
             let now = clock.now();
-            let this_tick = if self.tick_rate.is_sprinting()
-                && self.tick_rate.check_should_sprint_this_tick(now)
-            {
+            let (sprint_tick, finished, nanos_per_tick) = {
+                let mut rate = self.global.tick_rate();
+                let sprint = rate.is_sprinting() && rate.check_should_sprint_this_tick(now);
+                (sprint, rate.take_finished_sprint(), rate.nanos_per_tick())
+            };
+            if let Some(report) = finished {
+                crate::commands::sprint_finished(&self.global, &report);
+            }
+            let this_tick = if sprint_tick {
                 self.next_tick = now;
                 last_overload_warning = now;
                 0
             } else {
-                let this_tick = self.tick_rate.nanos_per_tick();
+                let this_tick = nanos_per_tick;
                 let behind = now.saturating_sub(self.next_tick);
                 if behind > OVERLOADED_THRESHOLD + 20 * this_tick
                     && self.next_tick.saturating_sub(last_overload_warning)
@@ -980,7 +1072,7 @@ impl Server {
             self.tick_server();
             self.wait_until_next_tick(this_tick, sprinting);
             if sprinting {
-                self.tick_rate.end_tick_work(clock.now());
+                self.global.tick_rate().end_tick_work(clock.now());
             }
         }
         self.shutdown();
@@ -996,7 +1088,7 @@ impl Server {
         let pause_seconds =
             u64::try_from(self.config.properties.pause_when_empty_seconds).unwrap_or(0);
         if pause_seconds > 0 {
-            if self.global.players.count() == 0 && !self.tick_rate.is_sprinting() {
+            if self.global.players.count() == 0 && !self.global.tick_rate().is_sprinting() {
                 self.empty_ticks += 1;
             } else {
                 self.empty_ticks = 0;
@@ -1018,13 +1110,19 @@ impl Server {
         }
 
         self.tick_count += 1;
-        self.tick_rate.tick();
+        self.global.tick_rate().tick();
         self.global_pre_phase();
         self.tick_clocks();
         self.tick_worlds();
         self.global_post_phase();
 
-        let elapsed = clock.now().saturating_sub(started) as f64;
+        let elapsed_nanos = clock.now().saturating_sub(started);
+        self.global
+            .tick_times
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .record(self.tick_count, elapsed_nanos);
+        let elapsed = elapsed_nanos as f64;
         self.average_tick_nanos = self.average_tick_nanos * 0.8 + elapsed * 0.2;
         if let Some(log) = &mut self.tick_log {
             let written = writeln!(log, "{}", clock.now().saturating_sub(started));
@@ -1055,7 +1153,7 @@ impl Server {
     /// `tickChildren`'s clocks and the game time sync every second (by default).
     fn tick_clocks(&mut self) {
         let level = &self.global.level;
-        if self.tick_rate.runs_normally() {
+        if self.global.tick_rate().runs_normally() {
             let advance = level
                 .rules()
                 .bool(vanillite_game::survival::rules::Rule::ADVANCE_TIME);
@@ -1114,6 +1212,8 @@ impl Server {
     /// world part runs on the player's world.
     fn accept(&mut self, joined: vanillite_net::Joined) {
         let uuid = joined.profile.id.0;
+        // `ServerPlayer.getIpAddress`.
+        let ip = joined.address.ip().to_string();
         let saved = match self.player_store.load(uuid) {
             Ok(saved) => saved,
             Err(e) => {
@@ -1122,30 +1222,48 @@ impl Server {
             }
         };
         let properties = &self.config.properties;
-        let (arrival, sink) = crate::net::arrival(
-            joined,
-            saved,
-            properties.gamemode,
-            properties.force_gamemode,
-        );
+        // `getDefaultGameType`: `level.dat`'s game type, which `/defaultgamemode` changes.
+        let default_mode = crate::players::game_mode_by_id(self.global.level.default_game_type())
+            .unwrap_or(properties.gamemode);
+        let (mut arrival, sink) =
+            crate::net::arrival(joined, saved, default_mode, properties.force_gamemode);
         let players = &self.global.players;
         let access = &self.global.access;
         // The server's own test bots come over virtual connections it opened itself.
         let test_bot = arrival.memory_connection && self.test_bots.contains(&uuid);
-        let refuse = if !test_bot && !access.is_whitelisted(uuid) {
-            Some("multiplayer.disconnect.not_whitelisted")
+        use vanillite_protocol::text::Component;
+        let refuse = if let Some(reason) = crate::commands::ban_reason(access, uuid, None) {
+            Some(reason)
+        } else if !test_bot && !access.is_whitelisted(uuid) {
+            Some(Component::translatable(
+                "multiplayer.disconnect.not_whitelisted",
+                vec![],
+            ))
+        } else if let Some(reason) = crate::commands::ban_reason(access, uuid, Some(&ip)) {
+            Some(reason)
         } else if players.count() >= players.max_players() && !access.bypasses_player_limit(uuid) {
-            Some("multiplayer.disconnect.server_full")
+            Some(Component::translatable(
+                "multiplayer.disconnect.server_full",
+                vec![],
+            ))
         } else {
             None
         };
-        if let Some(key) = refuse {
-            sink.kick(vanillite_protocol::text::Component::translatable(
-                key,
-                vec![],
-            ));
+        if let Some(reason) = refuse {
+            sink.kick(reason);
             return;
         }
+        // `PlayerList.getPlayerStats` and `getPlayerAdvancements`.
+        let name = arrival.profile.name.clone();
+        let json = |kind| match self.player_store.load_json(kind, uuid) {
+            Ok(text) => text,
+            Err(e) => {
+                log::error!("Couldn't read {kind:?} of {name}: {e}");
+                None
+            }
+        };
+        arrival.stats = json(JsonFile::Stats);
+        arrival.advancements = json(JsonFile::Advancements);
         let world = arrival
             .saved
             .as_ref()
@@ -1159,6 +1277,8 @@ impl Server {
             info: crate::players::info_entry(&arrival),
             sink,
             inbox: Arc::clone(&arrival.inbox),
+            ip,
+            allows_listing: arrival.client.allows_listing,
         });
         let global = Arc::clone(&self.global);
         self.run_in_world(
@@ -1170,7 +1290,7 @@ impl Server {
     /// The world phase and the cross-world hand-offs of G2, applied in world order.
     fn tick_worlds(&mut self) {
         let tick = self.tick_count;
-        let runs_normally = self.tick_rate.runs_normally();
+        let runs_normally = self.global.tick_rate().runs_normally();
         let deadline = self.next_tick;
         let mut outboxes: Vec<Vec<(WorldId, WorldTask)>> =
             self.routes.iter().map(|_| Vec::new()).collect();
@@ -1231,8 +1351,27 @@ impl Server {
     /// G2: player list and autosave.
     fn global_post_phase(&mut self) {
         let online = self.global.players.count();
+        let properties = &self.config.properties;
         if let Some(net) = self.net.as_mut() {
             net.set_online(online);
+            // `rebuildServerStatus` every 5 seconds; the Query names every second.
+            let (sample_due, query_due) = (
+                self.tick_count.is_multiple_of(100),
+                self.tick_count.is_multiple_of(20),
+            );
+            if sample_due || (query_due && properties.enable_query) {
+                let players = self.global.players.snapshot();
+                if sample_due {
+                    let listed: Vec<(String, u128, bool)> = players
+                        .iter()
+                        .map(|p| (p.name.clone(), p.uuid.0, p.allows_listing))
+                        .collect();
+                    net.update_sample(&listed, properties.hide_online_players);
+                }
+                if properties.enable_query {
+                    net.query.set(players.into_iter().map(|p| p.name).collect());
+                }
+            }
         }
         // Player list maintenance (latency updates, idle kicks) comes with players.
         self.ticks_until_autosave -= 1;
@@ -1397,10 +1536,11 @@ impl Server {
         match self.config.server.autosave.interval {
             VanillaOr::Value(ticks) => i64::from(ticks),
             VanillaOr::Vanilla => {
-                let rate = if self.tick_rate.is_sprinting() {
+                let tick_rate = self.global.tick_rate();
+                let rate = if tick_rate.is_sprinting() {
                     1e9 / (self.average_tick_nanos as f32 + 1.0)
                 } else {
-                    self.tick_rate.tick_rate()
+                    tick_rate.tick_rate()
                 };
                 ((rate * AUTOSAVE_SECONDS) as i64).max(100)
             }
@@ -1419,6 +1559,7 @@ impl Server {
     /// (with `flush`: once everything is on disk).
     pub(crate) fn save_everything(&mut self, flush: bool, force: bool, then: Option<AfterSave>) {
         let skip_chunks = !force && !self.global.level.auto_save.load(Ordering::Relaxed);
+        self.global.systems.save(&self.global.level.data);
         self.global.level.save();
         let done = Arc::new(SaveDone {
             remaining: AtomicUsize::new(self.routes.len()),
@@ -1534,6 +1675,7 @@ impl Server {
                 }
             }
         }
+        self.global.systems.save(&self.global.level.data);
         self.global.level.save();
         self.global.level.writer().flush();
         self.io.shutdown();
@@ -1632,4 +1774,33 @@ fn open_tick_log() -> Option<io::BufWriter<File>> {
             None
         }
     }
+}
+
+/// `MinecraftServer.prepareLevels`: the chunks of the saved tickets (forced chunks, portal
+/// tickets) become full before the first tick, so forced chunks tick from the first tick on.
+fn prepare_levels(worlds: &mut [ServerWorld]) {
+    let mut waiting: Vec<&mut ServerWorld> = worlds
+        .iter_mut()
+        .filter(|w| w.has_saved_tickets())
+        .collect();
+    if waiting.is_empty() {
+        return;
+    }
+    let started = Instant::now();
+    let mut next_report = started + Duration::from_secs(5);
+    loop {
+        let pending: usize = waiting.iter_mut().map(|w| w.prepare_step()).sum();
+        if pending == 0 {
+            break;
+        }
+        if Instant::now() >= next_report {
+            log::info!("Loading the chunks of the saved chunk tickets: {pending} left");
+            next_report += Duration::from_secs(5);
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    log::info!(
+        "Loaded the chunks of the saved chunk tickets in {} ms",
+        started.elapsed().as_millis()
+    );
 }

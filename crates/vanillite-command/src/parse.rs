@@ -131,6 +131,14 @@ impl Args {
     accessor!(/// A float range.
         float_range -> DoubleRange, FloatRange);
 
+    /// A game argument value.
+    pub fn game(&self, name: &str) -> Option<&crate::game_values::GameValue> {
+        match self.get(name)? {
+            ArgValue::Game(v) => Some(v),
+            _ => None,
+        }
+    }
+
     /// An entity selector.
     pub fn selector(&self, name: &str) -> Option<&EntitySelector> {
         match self.get(name)? {
@@ -165,6 +173,10 @@ pub(crate) struct Context<C> {
     pub(crate) command: Option<C>,
     pub(crate) child: Option<Box<Context<C>>>,
     pub(crate) range: Range,
+    /// The modifier of the redirect into `child`.
+    pub(crate) modifier: Option<C>,
+    /// Whether the redirect into `child` forks.
+    pub(crate) forks: bool,
 }
 
 impl<C> Context<C> {
@@ -176,21 +188,14 @@ impl<C> Context<C> {
             command: None,
             child: None,
             range: Range::at(start),
+            modifier: None,
+            forks: false,
         }
     }
 
     fn with_node(&mut self, node: NodeId, range: Range) {
         self.nodes.push((node, range));
         self.range = Range::encompassing(self.range, range);
-    }
-
-    /// The innermost context (after redirects).
-    pub(crate) fn last(&self) -> &Context<C> {
-        let mut c = self;
-        while let Some(child) = &c.child {
-            c = child;
-        }
-        c
     }
 }
 
@@ -210,6 +215,18 @@ struct Partial<C> {
     errors: Vec<(NodeId, CommandError)>,
 }
 
+/// One context of a parsed command chain (Brigadier's `ContextChain` stage): the arguments
+/// read before a redirect and what the redirect does with the source.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Stage<C> {
+    /// The arguments of this stage.
+    pub args: Args,
+    /// The redirect modifier; `None` passes the source on unchanged.
+    pub modifier: Option<C>,
+    /// Whether the modifier forks.
+    pub forks: bool,
+}
+
 /// A successfully parsed command.
 #[derive(Debug, Clone)]
 pub struct Parsed<C> {
@@ -217,6 +234,9 @@ pub struct Parsed<C> {
     pub command: C,
     /// Its arguments (of the innermost context after redirects).
     pub args: Args,
+    /// The contexts before the last one, outermost first (`execute` subcommands); empty for
+    /// a command without redirects.
+    pub stages: Vec<Stage<C>>,
     /// The command line.
     pub input: String,
     /// Signable arguments as (name, raw text), like Vanilla's `SignableCommand`.
@@ -281,12 +301,22 @@ impl<C: Copy> ParseResults<C> {
             return Err(CommandError::new(key, vec![]).at(&reader));
         }
         let signable = self.signable_arguments(dispatcher);
-        let last = self.context.last();
-        match last.command {
+        let mut stages = Vec::new();
+        let mut c = self.context;
+        while let Some(child) = c.child {
+            stages.push(Stage {
+                args: c.args,
+                modifier: c.modifier,
+                forks: c.forks,
+            });
+            c = *child;
+        }
+        match c.command {
             Some(command) => Ok(Parsed {
                 command,
-                args: last.args.clone(),
-                input: self.input.clone(),
+                args: c.args,
+                stages,
+                input: self.input,
                 signable,
             }),
             None => Err(CommandError::unknown_command(&reader)),
@@ -451,6 +481,8 @@ impl<C: Copy> Dispatcher<C> {
                         errors.push((child, CommandError::unknown_command(&reader)));
                         continue;
                     }
+                    context.modifier = child_node.modifier;
+                    context.forks = child_node.forks;
                     let child_context = Context::new(redirect, reader.cursor());
                     let parse = self.parse_nodes(
                         redirect,

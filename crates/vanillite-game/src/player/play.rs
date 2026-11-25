@@ -14,12 +14,14 @@ use vanillite_protocol::packets::play::serverbound::{DigAction, Hand};
 use vanillite_protocol::types::BlockPos as WirePos;
 
 use super::sink::PacketSink;
+use crate::advancements::trigger::Event;
 use crate::block::place::{self, BlockReader, PlaceContext};
 use crate::inventory::{Drop, PlayerInventory};
 use crate::item::{self, ItemStack, ToolTable};
 use crate::level::update;
 use crate::loot::{BlockLootContext, LootTables};
 use crate::player::world::{PlayLevel, SoundSource, events};
+use crate::stats::{Stat, StatType, custom};
 
 /// Static gameplay data the handlers read: tool rules, loot tables and enchantment ids.
 #[derive(Debug, Default)]
@@ -38,10 +40,33 @@ pub struct GameData {
     pub enchants: crate::enchant::Enchantments,
     /// `#minecraft:enderman_holdable` block ids.
     pub enderman_holdable: Vec<u16>,
+    /// Block tags: tag id → sorted block ids.
+    pub block_tags: HashMap<String, Vec<u16>>,
     /// Recipes.
     pub recipes: crate::recipe::Recipes,
     /// Enchantment data.
     pub enchanting: crate::enchant::Enchanting,
+    /// The `minecraft:banner_pattern` registry.
+    pub banner_patterns: crate::menu::BannerPatterns,
+    /// The tags of the registries: registry → tag id (without `#`) → entry ids in tag order.
+    pub registry_tags: HashMap<String, HashMap<String, Vec<u32>>>,
+    /// The definitions of the enchantments by name.
+    pub enchantment_info: HashMap<String, EnchantmentInfo>,
+    /// The `minecraft:trial_spawner` registry.
+    pub trial_spawner_configs: crate::block::trial_spawner::TrialConfigs,
+}
+
+/// What `/enchant` reads of an enchantment (`Enchantment` and its `EnchantmentDefinition`).
+#[derive(Debug, Clone)]
+pub struct EnchantmentInfo {
+    /// `description`.
+    pub description: vanillite_protocol::text::Component,
+    /// `max_level`.
+    pub max_level: i32,
+    /// `supported_items`: item ids.
+    pub supported_items: Vec<u16>,
+    /// `exclusive_set`: enchantment names.
+    pub exclusive_set: Vec<String>,
 }
 
 impl crate::predicate::EntityTags for GameData {
@@ -77,9 +102,41 @@ impl GameData {
             .map_or(0, |(_, level)| level)
     }
 
+    /// Whether a block (by block id) is in a block tag.
+    pub fn block_in_tag(&self, block: u16, tag: &str) -> bool {
+        self.block_tags
+            .get(tag)
+            .is_some_and(|v| v.binary_search(&block).is_ok())
+    }
+
     /// Whether an item is in an item tag.
     pub fn item_in_tag(&self, item: u16, tag: &str) -> bool {
         self.item_tags.get(tag).is_some_and(|v| v.contains(&item))
+    }
+
+    /// One holder set entry of `registry` (`"ns:id"` or `"#ns:tag"`) as entry ids, in tag
+    /// order; unknown entries give none.
+    pub fn holder_set(&self, registry: &str, entry: &str) -> Vec<u32> {
+        if let Some(tag) = entry.strip_prefix('#') {
+            return self
+                .registry_tags
+                .get(registry)
+                .and_then(|tags| tags.get(tag))
+                .cloned()
+                .unwrap_or_default();
+        }
+        if registry == "minecraft:enchantment" {
+            return self.enchantments.get(entry).copied().into_iter().collect();
+        }
+        if let Some(r) = vanillite_data::registry::Registry::by_name(registry) {
+            return r.id(entry).map(u32::from).into_iter().collect();
+        }
+        use vanillite_protocol::components_nbt::RegistryNames;
+        vanillite_protocol::item::InstalledRegistries
+            .entry_id(registry, entry)
+            .and_then(|id| u32::try_from(id).ok())
+            .into_iter()
+            .collect()
     }
 }
 
@@ -110,6 +167,10 @@ pub struct Actor {
     pub permission_level: u8,
     /// Whether the player's eyes are in water.
     pub eyes_in_water: bool,
+    /// `MobEffectUtil.getDigSpeedAmplification` when Haste or Conduit Power is active.
+    pub dig_speed: Option<i32>,
+    /// The amplifier of Mining Fatigue, if active.
+    pub mining_fatigue: Option<i32>,
 }
 
 impl Actor {
@@ -157,6 +218,8 @@ pub struct PlayContext<'a> {
     pub inventory: &'a mut PlayerInventory,
     /// The player's experience (`None` in tests).
     pub xp: Option<&'a mut crate::survival::player::Experience>,
+    /// The player's recipe book (`None` in tests).
+    pub recipe_book: Option<&'a mut crate::recipe::book::PlayerRecipeBook>,
     /// The player.
     pub actor: Actor,
     /// Gameplay data.
@@ -169,6 +232,26 @@ pub struct PlayContext<'a> {
     pub swings: &'a mut Vec<Hand>,
     /// Plugin hooks (block breaking and placing).
     pub hooks: &'a dyn crate::hooks::GameHooks,
+    /// The player's statistics (`None` in tests).
+    pub stats: Option<&'a mut crate::stats::StatsCounter>,
+    /// The player's advancements (`None` in tests).
+    pub advancements: Option<&'a mut crate::advancements::PlayerAdvancements>,
+}
+
+impl PlayContext<'_> {
+    /// `ServerPlayer.awardStat`.
+    pub fn award_stat(&mut self, stat: Stat, count: i32) {
+        if let Some(stats) = self.stats.as_deref_mut() {
+            stats.award(stat, count);
+        }
+    }
+
+    /// Fires a criterion trigger of the player.
+    pub fn trigger(&mut self, event: Event) {
+        if let Some(advancements) = self.advancements.as_deref_mut() {
+            advancements.trigger(event);
+        }
+    }
 }
 
 impl std::fmt::Debug for PlayContext<'_> {
@@ -333,11 +416,30 @@ fn destroy_progress(ctx: &PlayContext<'_>, state: BlockState) -> f32 {
         tool,
         state,
         efficiency,
+        ctx.actor.dig_speed,
+        ctx.actor.mining_fatigue,
         submerged,
         ctx.actor.on_ground,
     );
     let modifier = if correct { 30.0 } else { 100.0 };
     player_speed / speed / modifier
+}
+
+/// `Player.getDestroySpeed`'s effect part: Haste / Conduit Power speed it up by 20 % per level,
+/// Mining Fatigue slows it to `0.3^(level)`.
+pub fn dig_effects(speed: f32, dig_speed: Option<i32>, fatigue: Option<i32>) -> f32 {
+    let mut speed = speed;
+    if let Some(amplification) = dig_speed {
+        #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
+        let factor = 1.0 + (amplification as f32 + 1.0) * 0.2;
+        speed *= factor;
+    }
+    if let Some(amplifier) = fatigue {
+        #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+        let scale = 0.3_f64.powi(amplifier.saturating_add(1)) as f32;
+        speed *= scale;
+    }
+    speed
 }
 
 /// `(int)(progress * 10.0F)`.
@@ -596,6 +698,19 @@ impl Digging {
                 );
             }
         }
+        // `ShulkerBoxBlock.playerWillDestroy`: the loot table is rolled for the player (in
+        // creative by `isEmpty`, without the player).
+        if crate::block::container::kind_of(state.block())
+            == Some(crate::block::container::Kind::ShulkerBox)
+            && let Some(level) = ctx.level.level_mut()
+        {
+            let player = if ctx.actor.creative() {
+                None
+            } else {
+                ctx.actor.entity
+            };
+            crate::block::chest_loot::unpack(level, pos, player);
+        }
         // The block entity as `playerDestroy` sees it (captured before the removal).
         let entity = ctx
             .level
@@ -608,6 +723,12 @@ impl Digging {
             // `ShulkerBoxBlock.playerWillDestroy`: a creative player still gets a filled box.
             crate::block::container::creative_shulker_drop(level, pos, state, entity);
         }
+        ctx.level.game_event(
+            events_ids().block_destroy,
+            pos,
+            ctx.actor.entity,
+            Some(state),
+        );
         // `removeBlock`: the fluid of a waterlogged block stays.
         let replacement = state.fluid_state().block_state();
         let changed = ctx.level.set_block(pos, replacement, update::ALL);
@@ -618,16 +739,24 @@ impl Digging {
             || ctx.data.tools.is_correct_for_drops(&tool, state);
         self.mine_block(ctx, state);
         if changed && correct {
+            // `Block.playerDestroy`.
+            ctx.award_stat(Stat::of(StatType::Mined, state.block().0), 1);
             drop_resources(ctx, state, pos, &tool, entity.as_ref());
         }
         true
     }
 
-    /// `ItemStack.mineBlock`: tools lose durability.
+    /// `ItemStack.mineBlock`: tools count as used and lose durability.
     fn mine_block(&mut self, ctx: &mut PlayContext<'_>, state: BlockState) {
+        let tool = ctx.inventory.selected_item();
+        if !ctx.data.tools.is_tool(tool) {
+            return;
+        }
+        let used = tool.item;
+        ctx.award_stat(Stat::of(StatType::Used, used), 1);
         let damage = {
             let tool = ctx.inventory.selected_item();
-            if tool.is_empty() || state.misc().destroy_speed == 0.0 {
+            if state.misc().destroy_speed == 0.0 {
                 return;
             }
             ctx.data.tools.damage_per_block(tool)
@@ -655,7 +784,10 @@ impl Digging {
         }
         let new_damage = item::damage(tool).saturating_add(amount);
         if new_damage >= item::max_damage(tool) {
+            let broken = tool.item;
             tool.shrink(1);
+            // `onEquippedItemBroken`.
+            ctx.award_stat(Stat::of(StatType::Broken, broken), 1);
         } else {
             item::set_damage(tool, new_damage);
         }
@@ -757,7 +889,7 @@ impl Digging {
                     Some(level) if has_item_use => level.use_item_on(pos, &use_ctx, &mut held),
                     _ => crate::block::ItemInteraction::TryWithEmptyHand,
                 };
-                let result = match item_use {
+                let (result, item_used) = match item_use {
                     crate::block::ItemInteraction::Done(result) => {
                         if held != before && !ctx.actor.creative() {
                             let slot = match hand {
@@ -768,22 +900,32 @@ impl Digging {
                                 *slot = held;
                             }
                         }
-                        Some(result)
+                        (Some(result), true)
                     }
                     crate::block::ItemInteraction::TryWithEmptyHand
                         if hand == Hand::MainHand && has_use =>
                     {
-                        ctx.level
+                        let used = ctx
+                            .level
                             .level_mut()
-                            .map(|level| level.use_without_item(pos, &use_ctx))
+                            .map(|level| level.use_without_item(pos, &use_ctx));
+                        (used, false)
                     }
-                    _ => None,
+                    _ => (None, false),
                 };
                 self.open_requested(ctx, sink);
-                match result {
-                    Some(crate::block::Interaction::Success) => return true,
-                    Some(crate::block::Interaction::Consume) => return false,
-                    _ => {}
+                if let Some(
+                    result @ (crate::block::Interaction::Success
+                    | crate::block::Interaction::Consume),
+                ) = result
+                {
+                    ctx.trigger(if item_used {
+                        Event::ItemUsedOnBlock(pos, before)
+                    } else {
+                        Event::DefaultBlockUse(pos)
+                    });
+                    any_block_use(ctx, hand, pos);
+                    return result == crate::block::Interaction::Success;
                 }
             } else if has_use_action(state) {
                 // Blocks whose use is not implemented yet consume the click.
@@ -794,8 +936,42 @@ impl Digging {
             Hand::MainHand => ctx.inventory.selected_item().clone(),
             Hand::OffHand => ctx.inventory.offhand.clone(),
         };
+        // `VaultBlock.useItemOn`: an active vault takes the key, the use is consumed.
+        if !suppress_use
+            && state.block() == vanillite_data::block::ids::VAULT
+            && let Some(level) = ctx.level.level_mut()
+            && let Some(taken) =
+                crate::block::vault::use_item_on(level, pos, ctx.actor.uuid, &stack)
+        {
+            if taken && !ctx.actor.creative() {
+                let count = crate::block::vault::key_count(level, pos);
+                let slot = match hand {
+                    Hand::MainHand => ctx.inventory.selected_item_mut(),
+                    Hand::OffHand => Some(&mut ctx.inventory.offhand),
+                };
+                if let Some(slot) = slot {
+                    slot.shrink(count);
+                }
+            }
+            return true;
+        }
         if stack.is_empty() {
             return false;
+        }
+        if item::item_id(&stack) == vanillite_data::item::ids::END_CRYSTAL {
+            if !ctx.level.use_end_crystal(pos) {
+                return false;
+            }
+            if !ctx.actor.creative() {
+                let slot = match hand {
+                    Hand::MainHand => ctx.inventory.selected_item_mut(),
+                    Hand::OffHand => Some(&mut ctx.inventory.offhand),
+                };
+                if let Some(slot) = slot {
+                    slot.shrink(1);
+                }
+            }
+            return true;
         }
         let used = item::item_id(&stack);
         if used == vanillite_data::item::ids::FLINT_AND_STEEL
@@ -837,6 +1013,12 @@ impl Digging {
         };
         let placed = self.place_block(ctx, hand, &stack, &place_ctx);
         self.open_requested(ctx, sink);
+        if placed {
+            // `ItemStack.useOn` of a successful item interaction.
+            ctx.award_stat(Stat::of(StatType::Used, stack.item), 1);
+            ctx.trigger(Event::ItemUsedOnBlock(pos, stack));
+            any_block_use(ctx, hand, pos);
+        }
         placed
     }
 
@@ -847,8 +1029,20 @@ impl Digging {
         };
         let requests = level.take_menu_requests();
         let editors = level.take_sign_editors();
+        let gives = level.take_player_gives();
         for request in requests {
             open_menu(ctx, request, sink);
+        }
+        for (player, mut stack) in gives {
+            if Some(player) == ctx.actor.entity {
+                let infinite = ctx.actor.creative();
+                if !ctx.inventory.add(None, &mut stack, infinite) {
+                    ctx.drops.push(Drop {
+                        stack,
+                        thrown: false,
+                    });
+                }
+            }
         }
         for (player, pos, front) in editors {
             if Some(player) == ctx.actor.entity {
@@ -945,6 +1139,7 @@ impl Digging {
         if !ctx.level.set_block(target, state, update::ALL_IMMEDIATE) {
             return false;
         }
+        ctx.trigger(Event::PlacedBlock(target, stack.clone()));
         if ctx.level.block(target).block() == state.block() {
             if let Some(updated) = apply_block_state_component(stack, state) {
                 ctx.level.set_block(target, updated, update::CLIENTS);
@@ -987,8 +1182,9 @@ impl Digging {
             && placed.block() == state.block()
         {
             // `BlockItem.updateCustomBlockEntityTag` and `Block.setPlacedBy`.
-            crate::block::container::apply_item_components(level, target, stack);
+            crate::level::block_entity::apply_components(level, target, stack);
             crate::block::redstone::set_placed_by(level, placed, target);
+            crate::block::crafter::set_placed_by(level, placed, target);
             if placed.block() == vanillite_data::block::ids::TRIPWIRE_HOOK {
                 crate::block::tripwire::hook_set_placed_by(level, target, placed);
             }
@@ -1002,6 +1198,9 @@ impl Digging {
                 level.request_sign_editor(player, target, true);
             }
         }
+        if placed.block() == state.block() {
+            ctx.level.placed_by(target, placed);
+        }
         let sound = placed.block().sound();
         ctx.level.play_sound(
             Some(ctx.actor.network_id),
@@ -1014,6 +1213,12 @@ impl Digging {
             SoundSource::Blocks,
             (sound.volume + 1.0) / 2.0,
             sound.pitch * 0.8,
+        );
+        ctx.level.game_event(
+            events_ids().block_place,
+            target,
+            ctx.actor.entity,
+            Some(placed),
         );
         if !ctx.actor.creative() {
             let slot = match hand {
@@ -1077,6 +1282,44 @@ impl Digging {
     }
 }
 
+/// `ANY_BLOCK_USE` after a use that consumed the click, with the stack now in the hand.
+fn any_block_use(ctx: &mut PlayContext<'_>, hand: Hand, pos: BlockPos) {
+    let held = match hand {
+        Hand::MainHand => ctx.inventory.selected_item().clone(),
+        Hand::OffHand => ctx.inventory.offhand.clone(),
+    };
+    ctx.trigger(Event::AnyBlockUse(pos, held));
+}
+
+/// The statistic a block awards when it opens its menu (`getOpenChestStat`,
+/// `INTERACT_WITH_*`, `INSPECT_*`).
+fn open_stat(block: vanillite_data::block::BlockId) -> Option<Stat> {
+    let name = block.name().strip_prefix("minecraft:").unwrap_or("");
+    Some(match name {
+        "trapped_chest" => custom::TRIGGER_TRAPPED_CHEST,
+        "ender_chest" => custom::OPEN_ENDERCHEST,
+        "barrel" => custom::OPEN_BARREL,
+        "dispenser" => custom::INSPECT_DISPENSER,
+        "dropper" => custom::INSPECT_DROPPER,
+        "hopper" => custom::INSPECT_HOPPER,
+        "crafting_table" => custom::INTERACT_WITH_CRAFTING_TABLE,
+        "furnace" => custom::INTERACT_WITH_FURNACE,
+        "blast_furnace" => custom::INTERACT_WITH_BLAST_FURNACE,
+        "smoker" => custom::INTERACT_WITH_SMOKER,
+        "stonecutter" => custom::INTERACT_WITH_STONECUTTER,
+        "anvil" | "chipped_anvil" | "damaged_anvil" => custom::INTERACT_WITH_ANVIL,
+        "grindstone" => custom::INTERACT_WITH_GRINDSTONE,
+        "smithing_table" => custom::INTERACT_WITH_SMITHING_TABLE,
+        "brewing_stand" => custom::INTERACT_WITH_BREWINGSTAND,
+        "cartography_table" => custom::INTERACT_WITH_CARTOGRAPHY_TABLE,
+        "loom" => custom::INTERACT_WITH_LOOM,
+        "beacon" => custom::INTERACT_WITH_BEACON,
+        _ if name.ends_with("shulker_box") => custom::OPEN_SHULKER_BOX,
+        _ if name == "chest" || name.ends_with("copper_chest") => custom::OPEN_CHEST,
+        _ => return None,
+    })
+}
+
 /// `ServerPlayer.openMenu` for a menu a block asked for.
 fn open_menu(
     ctx: &mut PlayContext<'_>,
@@ -1091,7 +1334,12 @@ fn open_menu(
         infinite: ctx.actor.creative(),
         disconnected: false,
     };
+    // Spectators open menus without using the block, so without its statistic.
+    let stat = open_stat(request.block).filter(|_| !who.spectator);
     crate::menu::container::open(ctx.inventory, level, request, who, ctx.drops, sink);
+    if let Some(stat) = stat {
+        ctx.award_stat(stat, 1);
+    }
 }
 
 /// `CampfireBlock.canLight`, `CandleBlock.canLight` and `CandleCakeBlock.canLight`: an unlit
@@ -1182,7 +1430,10 @@ fn block_action_restricted(ctx: &PlayContext<'_>) -> bool {
 }
 
 /// `BlockItem.updateBlockStateFromTag`: the `block_state` component sets properties.
-fn apply_block_state_component(stack: &ItemStack, state: BlockState) -> Option<BlockState> {
+pub(crate) fn apply_block_state_component(
+    stack: &ItemStack,
+    state: BlockState,
+) -> Option<BlockState> {
     let data = stack.component(ids::BLOCK_STATE)?;
     let mut r = Reader::new(data);
     let n = r.varint().ok()?;
@@ -1210,7 +1461,8 @@ fn drop_resources(
         let data = ctx.data;
         let enchantment_level = |name: &str| data.enchantment_level(tool, name);
         let item_in_tag = |item: u16, tag: &str| data.item_in_tag(item, tag);
-        let components = |id: u16| entity.and_then(|e| crate::block::container::component(e, id));
+        let components =
+            |id: u16| entity.and_then(|e| crate::level::block_entity::collect_component(e, id));
         let loot = BlockLootContext {
             state,
             tool,
@@ -1221,8 +1473,23 @@ fn drop_resources(
             entity: None,
             block_entity: Some(&components),
         };
-        let mut rng = LevelRandom(&mut *ctx.level);
-        data.loot.block_drops(&loot, &mut rng, &mut stacks);
+        // `LootContext.Builder.create`: the table's random sequence, else the level random.
+        match (
+            data.loot.block_sequence(state),
+            ctx.level.random_sequences(),
+        ) {
+            (Some(key), Some(sequences)) => {
+                let mut sequences = sequences
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                data.loot
+                    .block_drops(&loot, sequences.get(key), &mut stacks);
+            }
+            _ => {
+                let mut rng = LevelRandom(&mut *ctx.level);
+                data.loot.block_drops(&loot, &mut rng, &mut stacks);
+            }
+        }
     }
     for stack in stacks {
         pop_resource(ctx.level, pos, stack);
@@ -1245,6 +1512,10 @@ impl crate::loot::LootRandom for LevelRandom<'_> {
 /// `Block.popResource`.
 pub fn pop_resource(level: &mut dyn PlayLevel, pos: BlockPos, stack: ItemStack) {
     if stack.is_empty() {
+        return;
+    }
+    if let Some(level) = level.level_mut() {
+        crate::block::drops::pop_resource(level, pos, stack);
         return;
     }
     let half_height = 0.125;
@@ -1298,3 +1569,8 @@ pub fn block_pos_of(v: Vec3) -> BlockPos {
 #[cfg(test)]
 #[path = "play_tests.rs"]
 mod tests;
+
+/// The Vanilla game event ids.
+fn events_ids() -> &'static crate::level::game_event::GameEvents {
+    crate::level::game_event::events()
+}

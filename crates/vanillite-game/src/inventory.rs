@@ -74,6 +74,15 @@ fn armor_slot(menu_slot: usize) -> Option<EquipmentSlot> {
     }
 }
 
+/// A result taken from a crafting grid (`ResultSlot.checkTakeAchievements`): the taken stack,
+/// the recipe and the grid it was crafted from.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Crafted {
+    pub stack: ItemStack,
+    pub recipe: Option<String>,
+    pub ingredients: Vec<ItemStack>,
+}
+
 /// A player's inventory and its inventory menu.
 #[derive(Clone, Debug)]
 pub struct PlayerInventory {
@@ -100,6 +109,8 @@ pub struct PlayerInventory {
     /// Result slots of the crafting grid to send (`slotChangedCraftingGrid` sends them right
     /// away, in this order).
     pub(crate) result_updates: Vec<ItemStack>,
+    /// Crafting results taken since the server last took them (statistics and triggers).
+    pub crafted: Vec<Crafted>,
 }
 
 impl Default for PlayerInventory {
@@ -116,6 +127,7 @@ impl Default for PlayerInventory {
             container: None,
             container_counter: 0,
             result_updates: Vec::new(),
+            crafted: Vec::new(),
         }
     }
 }
@@ -420,12 +432,14 @@ impl PlayerInventory {
 
     /// `ResultSlot.onTake`: one of every ingredient is used up; remainders stay in the grid or
     /// go to the inventory.
-    fn take_crafted(&mut self, ctx: ClickContext, drops: &mut Vec<Drop>) {
+    fn take_crafted(&mut self, taken: &ItemStack, ctx: ClickContext, drops: &mut Vec<Drop>) {
         let Some(data) = crate::player::play::game_data() else {
             return;
         };
         let input = crate::recipe::CraftingInput::of(2, 2, &self.craft);
         let recipe = data.recipes.crafting_for(&input);
+        self.crafted
+            .push(crafted(taken, recipe, self.craft.to_vec()));
         let remaining = data.recipes.remainders(recipe, &input);
         for y in 0..input.height {
             for x in 0..input.width {
@@ -499,6 +513,22 @@ impl PlayerInventory {
     pub fn broadcast_full_state(&mut self, sink: &dyn PacketSink) {
         self.flush_result_updates(sink);
         menu::broadcast_full_state(self, sink);
+    }
+}
+
+/// `ResultSlot.checkTakeAchievements` of crafting recipe `recipe` from `grid`.
+pub(crate) fn crafted(taken: &ItemStack, recipe: Option<usize>, grid: Vec<ItemStack>) -> Crafted {
+    let recipe = recipe.and_then(|i| {
+        crate::player::play::game_data()?
+            .recipes
+            .crafting
+            .get(i)
+            .map(|r| r.id.clone())
+    });
+    Crafted {
+        stack: taken.clone(),
+        recipe,
+        ingredients: grid,
     }
 }
 
@@ -607,12 +637,12 @@ impl MenuSlots for PlayerInventory {
     fn on_take(
         &mut self,
         slot: usize,
-        _taken: &ItemStack,
+        taken: &mut ItemStack,
         ctx: ClickContext,
         drops: &mut Vec<Drop>,
     ) {
         if slot == 0 {
-            self.take_crafted(ctx, drops);
+            self.take_crafted(taken, ctx, drops);
         }
     }
 
@@ -670,14 +700,18 @@ impl MenuSlots for PlayerInventory {
     }
 }
 
-/// `Player.getDestroySpeed` without effects and attributes other than the enchantment-driven
-/// ones the caller passes: `efficiency` level, whether the player is in water without aqua
-/// affinity, and whether it stands on the ground.
+/// `Player.getDestroySpeed` without attributes other than the enchantment-driven ones the
+/// caller passes: `efficiency` level, the dig effects (Haste / Conduit Power amplification,
+/// Mining Fatigue amplifier), whether the player is in water without aqua affinity, and whether
+/// it stands on the ground.
+#[allow(clippy::too_many_arguments)]
 pub fn destroy_speed(
     tools: &ToolTable,
     stack: &ItemStack,
     state: vanillite_data::block::BlockState,
     efficiency: i32,
+    dig_speed: Option<i32>,
+    mining_fatigue: Option<i32>,
     submerged_penalty: bool,
     on_ground: bool,
 ) -> f32 {
@@ -689,6 +723,7 @@ pub fn destroy_speed(
         let bonus = bonus as f32;
         speed += bonus;
     }
+    speed = crate::player::play::dig_effects(speed, dig_speed, mining_fatigue);
     if submerged_penalty {
         speed *= 0.2;
     }
@@ -702,10 +737,6 @@ pub fn destroy_speed(
 
 use vanillite_nbt::{Compound, List, Tag};
 
-/// Key of a stack's component patch in saved data: the patch in the delimited wire form.
-/// Vanilla readers ignore it and see the item and count.
-const PATCH_KEY: &str = "vanillite:patch";
-
 /// Equipment keys of Vanilla's `equipment` compound with their inventory index.
 const EQUIPMENT_KEYS: [(&str, usize); 5] = [
     ("feet", 36),
@@ -715,59 +746,7 @@ const EQUIPMENT_KEYS: [(&str, usize); 5] = [
     ("offhand", OFFHAND),
 ];
 
-/// A stack as saved NBT (`ItemStack.CODEC`: id, count and the patch).
-pub fn stack_to_nbt(stack: &ItemStack) -> Compound {
-    let mut c = Compound::new();
-    c.insert(
-        "id",
-        vanillite_data::registry::ITEM
-            .name(stack.item)
-            .unwrap_or("minecraft:air"),
-    );
-    c.insert("count", stack.count);
-    if stack.patch().is_some() {
-        let mut bytes = Vec::new();
-        stack.encode_untrusted(&mut bytes);
-        // Drop the count and item id: only the patch is stored.
-        let mut r = vanillite_protocol::codec::Reader::new(&bytes);
-        if r.varint().is_ok() && r.varint().is_ok() {
-            let patch: Vec<i8> = r
-                .take_rest()
-                .iter()
-                .map(|b| i8::from_ne_bytes([*b]))
-                .collect();
-            c.insert(PATCH_KEY, patch);
-        }
-    }
-    c
-}
-
-/// A stack from saved NBT.
-pub fn stack_from_nbt(c: &Compound) -> ItemStack {
-    let Some(id) = c
-        .get("id")
-        .and_then(Tag::as_str)
-        .and_then(|n| vanillite_data::registry::ITEM.id(n))
-    else {
-        return ItemStack::EMPTY;
-    };
-    let count = c
-        .get("count")
-        .and_then(Tag::as_i64)
-        .and_then(|v| i32::try_from(v).ok())
-        .unwrap_or(1);
-    let plain = ItemStack::new(id, count.clamp(1, 99));
-    let Some(Tag::ByteArray(patch)) = c.get(PATCH_KEY) else {
-        return plain;
-    };
-    let mut bytes = Vec::with_capacity(patch.len() + 8);
-    vanillite_protocol::codec::write_varint(&mut bytes, plain.count);
-    vanillite_protocol::codec::write_varint(&mut bytes, i32::from(id));
-    bytes.extend(patch.iter().map(|b| b.to_ne_bytes()[0]));
-    let mut r = vanillite_protocol::codec::Reader::new(&bytes);
-    ItemStack::decode_untrusted(&mut r, &vanillite_protocol::item::InstalledRegistries)
-        .unwrap_or(plain)
-}
+pub use crate::item_nbt::{stack_from_nbt, stack_to_nbt};
 
 impl PlayerInventory {
     /// Writes Vanilla's `Inventory`, `SelectedItemSlot` and `equipment` into `out`.

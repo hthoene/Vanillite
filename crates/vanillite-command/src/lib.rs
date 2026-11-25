@@ -11,9 +11,13 @@
 //!   is bounded by [`Limits`] (SEC-04).
 
 pub mod argument;
+mod block_arg;
 pub mod bounds;
 pub mod coords;
 pub mod error;
+mod game_args;
+pub mod game_values;
+mod item_arg;
 pub mod limits;
 pub mod nbt_path;
 mod packet;
@@ -30,8 +34,9 @@ pub mod values;
 
 pub use argument::{ArgValue, ArgumentType, GameProfileArg, Message, MessagePart};
 pub use error::{Arg, CommandError, ErrorContext};
+pub use game_values::*;
 pub use limits::Limits;
-pub use parse::{Args, ParseResults, Parsed};
+pub use parse::{Args, ParseResults, Parsed, Stage};
 pub use source::Source;
 pub use suggestion::{Suggestion, Suggestions, SuggestionsBuilder};
 pub use tree::{Builder, Dispatcher, Node, NodeId, NodeKind, Requirement, argument, literal};

@@ -54,4 +54,39 @@ pub trait Source {
     fn registry_tags(&self, _registry: &str) -> Vec<String> {
         Vec::new()
     }
+
+    /// Whether a registry has a tag (its full id without `#`); tag arguments check it at parse
+    /// time.
+    fn tag_exists(&self, registry: &str, tag: &str) -> bool {
+        self.registry_tags(registry)
+            .iter()
+            .any(|t| t == tag || tag.strip_prefix("minecraft:") == Some(t.as_str()))
+    }
+
+    /// The entries of a tag, for block predicate suggestions (properties of the tagged blocks).
+    fn tag_entries(&self, _registry: &str, _tag: &str) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Names of the scoreboard objectives, for suggestions.
+    fn objective_names(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Names of the teams, for suggestions.
+    fn team_names(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Identifiers of the loaded dimensions, for suggestions.
+    fn dimension_names(&self) -> Vec<String> {
+        [
+            "minecraft:overworld",
+            "minecraft:the_end",
+            "minecraft:the_nether",
+        ]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect()
+    }
 }

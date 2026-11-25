@@ -6,9 +6,14 @@
 //! background and parallel-phase work; the watchdog watches the tick deadline.
 
 mod access;
+mod admin;
+pub mod anti_xray;
 mod blocks;
+mod border;
 mod chat;
+mod chunk_tickets;
 mod clock;
+mod command_state;
 mod commands;
 pub mod compute;
 pub mod eula;
@@ -16,12 +21,16 @@ mod global;
 mod level;
 mod mobs;
 mod net;
+mod packs;
 mod player_list;
 mod players;
 mod plugins;
+mod progress;
+mod scoreboard;
 mod server;
 pub mod slot;
 mod survival;
+mod systems;
 mod test_bot;
 mod tick_rate;
 mod watchdog;
@@ -30,7 +39,7 @@ mod world_format;
 mod world_setup;
 mod world_updates;
 
-pub use blocks::game_data;
+pub use blocks::{ItemScratch, ItemSettings, game_data, tick_item};
 pub use clock::Clock;
 pub use compute::{Compute, ComputePool, InlineScheduler, Job, Scheduler, Scope};
 pub use global::Global;
@@ -43,4 +52,4 @@ pub use tick_rate::TickRateManager;
 pub use vanillite_net::{VirtualConnection, VirtualOpener};
 pub use watchdog::{Heartbeat, WatchState, Watchdog};
 pub use world::{ServerWorld, TickContext, WorldId, WorldTask};
-pub use world_format::{convert_world, export_world};
+pub use world_format::{convert_world, export_world, upgrade_world};

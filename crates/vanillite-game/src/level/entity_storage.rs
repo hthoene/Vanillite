@@ -29,8 +29,9 @@ use crate::item_entity::ItemData;
 impl Level {
     /// Applies the visibility changes of the chunk runtime
     /// (`PersistentEntitySectionManager.updateChunkStatus`): a chunk that becomes visible
-    /// loads its stored entities, one that becomes hidden writes them back and removes them;
-    /// entity ticking chunks put their entities in the tick order.
+    /// queues its stored entities for [`Level::tick_entity_manager`], one that becomes hidden
+    /// writes them back and removes them; entity ticking chunks put their entities in the tick
+    /// order.
     pub(super) fn apply_visibility(&mut self) {
         let mut changes = std::mem::take(&mut self.visibility_scratch);
         self.chunks.take_visibility_changes(&mut changes);
@@ -38,16 +39,39 @@ impl Level {
             let pos = change.pos;
             let ticking = change.new == Visibility::Ticking;
             if change.new == Visibility::Hidden {
+                // A pending load completes before the unload (`storeChunkSections` waits for
+                // it), so stored entities are never overwritten.
+                if !self.chunks.entities_loaded(pos) {
+                    self.load_entities(pos);
+                }
                 self.write_entities(pos);
                 self.remove_entities(pos);
+                self.chunks.set_entities_loaded(pos, false);
             }
             self.entities.store.set_chunk_ticking(pos.x, pos.z, ticking);
             if change.old == Visibility::Hidden {
-                self.load_entities(pos);
+                self.pending_entity_loads.push(pos);
             }
         }
         changes.clear();
         self.visibility_scratch = changes;
+    }
+
+    /// `PersistentEntitySectionManager.tick` at the end of the level tick
+    /// (`processPendingLoads`): the chunks that became visible create their stored entities;
+    /// from then on their scheduled ticks run (`isPositionTickingWithEntitiesLoaded`).
+    pub fn tick_entity_manager(&mut self) {
+        let mut pending = std::mem::take(&mut self.pending_entity_loads);
+        for &pos in &pending {
+            if self.chunks.visibility(pos) != Visibility::Hidden
+                && !self.chunks.entities_loaded(pos)
+            {
+                self.load_entities(pos);
+                self.chunks.set_entities_loaded(pos, true);
+            }
+        }
+        pending.clear();
+        self.pending_entity_loads = pending;
     }
 
     /// Creates the stored entities of a chunk that became live (`addEntityWithoutEvent` in
@@ -77,6 +101,11 @@ impl Level {
 
     /// `EntityType.loadEntityRecursive`: creates a live entity of a modelled kind; `false` for
     /// kinds the game does not model.
+    /// Whether the entities of a chunk are in the world (`areEntitiesLoaded`).
+    pub fn entities_loaded(&self, chunk: ChunkPos) -> bool {
+        self.entity_chunks.contains(&chunk)
+    }
+
     fn load_entity(&mut self, nbt: Compound) -> bool {
         let seed = uuid_of(&nbt, "UUID").map_or(0, |uuid| uuid as i64) ^ self.game_time();
         if let Some(loaded) = crate::mob::nbt::load_mob(&nbt, seed) {
@@ -95,17 +124,51 @@ impl Level {
             }
             return true;
         }
+        if let Some((kind, pos, velocity, rot, uuid, data)) =
+            crate::mob::nbt::load_special(&nbt, seed)
+        {
+            let mut new = NewEntity::new(kind, self.network_ids().next(), uuid, pos);
+            new.velocity = velocity;
+            new.rot = rot;
+            self.entities.spawn_special(new, data);
+            return true;
+        }
+        if let Some((pos, uuid, cloud)) = crate::mob::nbt::load_cloud(&nbt) {
+            let radius = cloud.radius;
+            let new = NewEntity::new(ids::AREA_EFFECT_CLOUD, self.network_ids().next(), uuid, pos);
+            let id = self.entities.spawn_cloud(new, cloud);
+            if let Some(mut e) = self.entities.store.get_mut(id) {
+                e.set_dims(vanillite_world::entity::Dimensions {
+                    width: radius * 2.0,
+                    height: 0.5,
+                });
+            }
+            return true;
+        }
         if let Some((pos, velocity, uuid, orb)) = crate::mob::nbt::load_orb(&nbt) {
             let mut new = NewEntity::new(ids::EXPERIENCE_ORB, self.network_ids().next(), uuid, pos);
             new.velocity = velocity;
-            self.entities.spawn_orb(new, orb);
+            self.entities.spawn_experience_orb(new, orb);
             return true;
         }
         if let Some((e, data)) = crate::mob::nbt::load_arrow(&nbt) {
-            let mut new = NewEntity::new(ids::ARROW, self.network_ids().next(), e.uuid, e.pos);
+            let kind = crate::mob::projectile::arrow_of(&data.item).0;
+            let mut new = NewEntity::new(kind, self.network_ids().next(), e.uuid, e.pos);
             new.velocity = e.velocity;
             new.rot = e.rot;
             self.entities.spawn_arrow(new, data);
+            return true;
+        }
+        if let Some((e, data)) = crate::mob::missile::load(&nbt) {
+            let mut new = NewEntity::new(
+                data.kind.type_id(),
+                self.network_ids().next(),
+                e.uuid,
+                e.pos,
+            );
+            new.velocity = e.velocity;
+            new.rot = e.rot;
+            self.entities.spawn_missile(new, data);
             return true;
         }
         if let Some((e, data)) = crate::mob::nbt::load_boat(&nbt) {
@@ -270,17 +333,27 @@ impl Level {
         if let Some(m) = ents.minecart(id) {
             return Some(crate::mob::nbt::save_minecart(&entity, m));
         }
-        if kind == ids::ARROW {
+        if crate::mob::projectile::is_arrow_kind(kind) {
             return ents.arrow(id).map(|a| {
                 let owner = a.owner.and_then(|o| ents.store.get(o)).map(|o| o.uuid());
                 crate::mob::nbt::save_arrow(&entity, a, owner)
             });
         }
+        if let Some(d) = ents.missile(id) {
+            let owner = d.owner.and_then(|o| ents.store.get(o)).map(|o| o.uuid());
+            return Some(crate::mob::missile::save(&entity, d, owner));
+        }
         if kind == ids::EXPERIENCE_ORB {
             return self
                 .entities
-                .orb(id)
+                .experience_orb(id)
                 .map(|o| crate::mob::nbt::save_orb(&entity, o));
+        }
+        if let Some(s) = ents.special(id) {
+            return crate::mob::nbt::save_special(&entity, s);
+        }
+        if let Some(c) = ents.cloud(id) {
+            return Some(crate::mob::nbt::save_cloud(&entity, c));
         }
         if kind != ids::ITEM && kind != ids::FALLING_BLOCK && kind != ids::TNT {
             return None;
@@ -411,7 +484,11 @@ impl Level {
         chunks.sort_unstable_by_key(|c| (c.x, c.z));
         chunks.dedup();
         for chunk in chunks {
-            if self.chunks.visibility(chunk) != Visibility::Hidden {
+            // Chunks whose entities are still loading keep their stored entities
+            // (`storeChunkSections` of a pending chunk).
+            if self.chunks.visibility(chunk) != Visibility::Hidden
+                && self.chunks.entities_loaded(chunk)
+            {
                 self.write_entities(chunk);
             }
         }

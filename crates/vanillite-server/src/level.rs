@@ -61,8 +61,8 @@ pub struct LevelState {
     clocks: Mutex<Clocks>,
     rules: RwLock<GameRules>,
     weather: Mutex<WeatherData>,
-    /// The difficulty of `server.properties`.
-    pub difficulty: Difficulty,
+    /// `Difficulty.getId` of the difficulty: `server.properties`', then `/difficulty`'s.
+    difficulty: std::sync::atomic::AtomicI32,
     pub damage_types: DamageTypes,
     pub block_facts: BlockFacts,
     /// The default clock of each dimension (`DimensionType.defaultClock`), in [`DIMENSIONS`]
@@ -74,6 +74,8 @@ pub struct LevelState {
     level_data: Mutex<LevelData>,
     /// The world-wide saved data (`<world>/data/`).
     pub(crate) data: SavedDataStore,
+    /// The maps of all worlds (`data/minecraft/maps/`).
+    pub(crate) maps: std::sync::Arc<vanillite_game::map::Maps>,
     /// The files of clocks, rules and weather as they were read: fields this server does not
     /// know (rules of other servers, clocks of removed data packs) are written back.
     loaded: [Compound; 3],
@@ -195,12 +197,21 @@ impl LevelState {
             clocks: Mutex::new(clocks),
             rules: RwLock::new(rules),
             weather: Mutex::new(weather),
-            difficulty,
+            difficulty: std::sync::atomic::AtomicI32::new(difficulty.id()),
             dimension_types,
             damage_types,
             block_facts,
             default_clocks,
             level_data: Mutex::new(level_data),
+            maps: {
+                let dir = data.dir().to_owned();
+                std::sync::Arc::new(vanillite_game::map::Maps::new(Box::new(move |id| {
+                    vanillite_storage::saved_data::read_saved_data(&dir, id).unwrap_or_else(|e| {
+                        log::error!("Cannot read {id}: {e}");
+                        None
+                    })
+                })))
+            },
             data,
             loaded: [clocks_data, rules_data, weather_data].map(Option::unwrap_or_default),
             auto_save: AtomicBool::new(true),
@@ -211,6 +222,64 @@ impl LevelState {
     /// The game time.
     pub fn game_time(&self) -> i64 {
         self.game_time.load(Ordering::Relaxed)
+    }
+
+    /// The difficulty (`WorldData.getDifficulty`).
+    pub fn difficulty(&self) -> Difficulty {
+        Difficulty::from_id(self.difficulty.load(Ordering::Relaxed))
+    }
+
+    /// `MinecraftServer.setDifficulty`: kept in `level.dat`; hardcore worlds stay hard.
+    pub(crate) fn set_difficulty(&self, difficulty: Difficulty) {
+        let mut data = lock(&self.level_data);
+        let difficulty = if data.hardcore {
+            Difficulty::Hard
+        } else {
+            difficulty
+        };
+        self.difficulty.store(difficulty.id(), Ordering::Relaxed);
+        data.difficulty = difficulty_name(difficulty).to_owned();
+    }
+
+    /// `level.dat`'s `GameType`: the default game mode id.
+    pub(crate) fn default_game_type(&self) -> i32 {
+        lock(&self.level_data).game_type
+    }
+
+    /// `setDefaultGameType`.
+    pub(crate) fn set_default_game_type(&self, game_type: i32) {
+        lock(&self.level_data).game_type = game_type;
+    }
+
+    /// `level.dat`'s `spawn` (`LevelData.RespawnData`).
+    pub(crate) fn spawn(&self) -> Option<Spawn> {
+        lock(&self.level_data).spawn.clone()
+    }
+
+    /// `setRespawnData`.
+    pub(crate) fn set_spawn(&self, spawn: Spawn) {
+        lock(&self.level_data).spawn = Some(spawn);
+    }
+
+    /// `getDataConfiguration().dataPacks().getDisabled()`.
+    pub(crate) fn disabled_packs(&self) -> Vec<String> {
+        lock(&self.level_data)
+            .data_packs()
+            .map(|(_, disabled)| disabled)
+            .unwrap_or_default()
+    }
+
+    /// `setDataConfiguration`: `level.dat`'s `DataPacks` and, when given, `enabled_features`.
+    pub(crate) fn set_data_configuration(
+        &self,
+        packs: &vanillite_datapack::repository::DataPackConfig,
+        features: Option<&[String]>,
+    ) {
+        let mut data = lock(&self.level_data);
+        data.set_data_packs(&packs.enabled, &packs.disabled);
+        if let Some(features) = features {
+            data.set_enabled_features(features);
+        }
     }
 
     /// The clocks.
@@ -252,6 +321,9 @@ impl LevelState {
                 merged.insert(key, tag.clone());
             }
             self.data.write(id, merged);
+        }
+        for (id, data) in self.maps.take_dirty() {
+            self.data.write(&id, data);
         }
         self.data.save();
         let level_data = {

@@ -8,6 +8,7 @@
 //! experiments (`redstone_experiments`) are off by default in 26.3, so only the default wire
 //! evaluator exists.
 
+pub mod alternate_current;
 mod components;
 mod diode;
 mod torch;
@@ -24,6 +25,7 @@ use vanillite_worldgen::behaviour::StateExt;
 use super::BlockBehaviour;
 use crate::level::Level;
 
+pub use components::set_door_open;
 pub use diode::set_placed_by;
 
 /// Fills the redstone behaviours of `block`.

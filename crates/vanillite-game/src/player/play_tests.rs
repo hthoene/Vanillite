@@ -107,6 +107,8 @@ fn actor(game_mode: GameMode) -> Actor {
         game_mode,
         permission_level: 0,
         eyes_in_water: false,
+        dig_speed: None,
+        mining_fatigue: None,
     }
 }
 
@@ -125,6 +127,7 @@ fn with_ctx(
     let mut ctx = PlayContext {
         hooks: &crate::hooks::NoHooks,
         xp: None,
+        recipe_book: None,
         level,
         inventory: &mut inventory,
         actor: actor(game_mode),
@@ -132,6 +135,8 @@ fn with_ctx(
         spawn_protected: &|_| false,
         drops: &mut drops,
         swings: &mut swings,
+        stats: None,
+        advancements: None,
     };
     f(&mut ctx);
     inventory

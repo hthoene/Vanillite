@@ -96,12 +96,14 @@ fn short_fuse(level: &mut Level) -> i32 {
 
 /// `new PrimedTnt(level, x, y, z, owner)` and `addFreshEntity`: the constructor draws the
 /// launch direction from the level random; `fuse` then replaces the default fuse.
-fn spawn_primed(
+pub(crate) fn spawn_primed(
     level: &mut Level,
     at: Vec3,
     owner: Option<EntityId>,
     fuse: Option<fn(&mut Level) -> i32>,
 ) -> EntityId {
+    // The entity takes its own random (not drawn from at creation).
+    let _ = level.new_entity_random();
     let rot = level.random().next_double() * f64::from(std::f32::consts::TAU);
     let velocity = Vec3::new(-rot.sin() * 0.02, f64::from(0.2_f32), -rot.cos() * 0.02);
     let fuse = fuse.map_or(DEFAULT_FUSE, |f| f(level));

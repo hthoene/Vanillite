@@ -7,7 +7,10 @@
 //! [`broadcast_changes`] and [`send_all`] are its synchronisation with the client.
 
 pub mod container;
+mod station;
 mod workstation;
+
+pub use station::{BannerPatterns, add_layer, dye_color};
 
 use vanillite_protocol::packets::play::clientbound::{
     ContainerSetContent, ContainerSetData, ContainerSetSlot, SetCursorItem,
@@ -189,7 +192,7 @@ pub trait MenuSlots {
     fn on_take(
         &mut self,
         slot: usize,
-        _taken: &ItemStack,
+        _taken: &mut ItemStack,
         _ctx: ClickContext,
         _drops: &mut Vec<Drop>,
     ) {
@@ -265,8 +268,8 @@ pub fn safe_take<S: MenuSlots + ?Sized>(
     drops: &mut Vec<Drop>,
 ) -> ItemStack {
     match try_remove(s, slot, amount, max_amount) {
-        Some(taken) => {
-            s.on_take(slot, &taken, ctx, drops);
+        Some(mut taken) => {
+            s.on_take(slot, &mut taken, ctx, drops);
             taken
         }
         None => ItemStack::EMPTY,
@@ -386,7 +389,8 @@ pub fn finish_quick_move<S: MenuSlots + ?Sized>(
     if same_count {
         return ItemStack::EMPTY;
     }
-    s.on_take(slot, &stack, ctx, drops);
+    let mut taken = stack;
+    s.on_take(slot, &mut taken, ctx, drops);
     original.clone()
 }
 
@@ -647,9 +651,11 @@ fn pickup<S: MenuSlots + ?Sized>(
             } else {
                 (clicked.count + 1) / 2
             };
-            if let Some(taken) = try_remove(s, index, amount, i32::MAX) {
+            if let Some(mut taken) = try_remove(s, index, amount, i32::MAX) {
                 s.state().carried = taken.clone();
-                s.on_take(index, &taken, ctx, drops);
+                s.on_take(index, &mut taken, ctx, drops);
+                // `onTake` changed the carried stack itself (map post-processing).
+                s.state().carried = taken;
             }
         } else if s.may_place(index, &carried) {
             if clicked.same_item_same_components(&carried) {
@@ -663,9 +669,9 @@ fn pickup<S: MenuSlots + ?Sized>(
             }
         } else if clicked.same_item_same_components(&carried) {
             let space = item::max_stack_size(&carried) - carried.count;
-            if let Some(taken) = try_remove(s, index, clicked.count, space) {
+            if let Some(mut taken) = try_remove(s, index, clicked.count, space) {
                 s.state().carried.grow(taken.count);
-                s.on_take(index, &taken, ctx, drops);
+                s.on_take(index, &mut taken, ctx, drops);
             }
         }
     }
@@ -689,7 +695,9 @@ fn swap<S: MenuSlots + ?Sized>(
             s.inventory().set(source_index, target.clone());
             s.on_swap_craft(index, target.count);
             set_by_player(s, index, ItemStack::EMPTY);
-            s.on_take(index, &target, ctx, drops);
+            let mut taken = target;
+            s.on_take(index, &mut taken, ctx, drops);
+            s.inventory().set(source_index, taken);
         }
     } else if target.is_empty() {
         if s.may_place(index, &source) {
@@ -709,8 +717,8 @@ fn swap<S: MenuSlots + ?Sized>(
             let part = source.split(max);
             s.inventory().set(source_index, source);
             set_by_player(s, index, part);
-            s.on_take(index, &target, ctx, drops);
             let mut rest = target;
+            s.on_take(index, &mut rest, ctx, drops);
             if !s.inventory().add(None, &mut rest, ctx.infinite) || !rest.is_empty() {
                 drops.push(Drop {
                     stack: rest,
@@ -720,7 +728,9 @@ fn swap<S: MenuSlots + ?Sized>(
         } else {
             s.inventory().set(source_index, target.clone());
             set_by_player(s, index, source);
-            s.on_take(index, &target, ctx, drops);
+            let mut taken = target;
+            s.on_take(index, &mut taken, ctx, drops);
+            s.inventory().set(source_index, taken);
         }
     }
 }
@@ -896,4 +906,6 @@ fn lerp_discrete(alpha: f32, min: i32, max: i32) -> i32 {
 }
 
 #[cfg(test)]
-mod tests;
+mod fuzz_tests;
+#[cfg(test)]
+pub(crate) mod tests;

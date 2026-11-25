@@ -8,6 +8,7 @@
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use sha1::{Digest, Sha1};
 use vanillite_data::version::{SERVER_JAR_SHA1, SERVER_JAR_URL, VERSION_ID};
@@ -16,43 +17,43 @@ use crate::{Error, io_err};
 
 /// Marks a completely extracted pack.
 const COMPLETE: &str = ".complete";
+/// Vanilla's English translations inside the pack directory (`Language.loadDefault`).
+pub const LANGUAGE_FILE: &str = "assets/minecraft/lang/en_us.json";
 
 /// Returns the directory of the extracted Vanilla data pack (it contains `data/minecraft/`),
 /// extracting it first if needed.
 ///
 /// `local_jar` is used instead of a download when given; it must be the pinned jar too.
 ///
-/// Safe to call from several processes at once (e.g. test binaries run in parallel): each
-/// works in its own temporary files, and the first complete pack to be renamed into place wins.
+/// Safe to call from several processes and threads at once (e.g. tests run in parallel): each
+/// call works in its own temporary files, and the first complete pack to be renamed into place
+/// wins.
 pub fn ensure_vanilla_pack(cache_dir: &Path, local_jar: Option<&Path>) -> Result<PathBuf, Error> {
+    static CALLS: AtomicU64 = AtomicU64::new(0);
     let root = cache_dir.join("vanilla");
     let pack = root.join(SERVER_JAR_SHA1);
     if pack.join(COMPLETE).exists() {
         return Ok(pack);
     }
+    // Unique per process and call, so parallel callers never share a temporary file.
+    let unique = format!(
+        "{}-{}",
+        std::process::id(),
+        CALLS.fetch_add(1, Ordering::Relaxed)
+    );
     std::fs::create_dir_all(&root).map_err(io_err(&root))?;
 
     let (jar, downloaded) = match local_jar {
         Some(p) => (p.to_path_buf(), false),
         None => {
-            let p = root.join(format!("server-{VERSION_ID}.{}.jar", std::process::id()));
+            let p = root.join(format!("server-{VERSION_ID}.{unique}.jar"));
             download(SERVER_JAR_URL, &p)?;
             (p, true)
         }
     };
-    let actual = sha1_hex(&jar)?;
-    if actual != SERVER_JAR_SHA1 {
-        if downloaded {
-            let _ = std::fs::remove_file(&jar);
-        }
-        return Err(Error::Checksum {
-            path: jar,
-            expected: SERVER_JAR_SHA1,
-            actual,
-        });
-    }
+    check_jar(&jar, downloaded)?;
 
-    let tmp = root.join(format!("{SERVER_JAR_SHA1}.{}.tmp", std::process::id()));
+    let tmp = root.join(format!("{SERVER_JAR_SHA1}.{unique}.tmp"));
     if tmp.exists() {
         std::fs::remove_dir_all(&tmp).map_err(io_err(&tmp))?;
     }
@@ -74,7 +75,7 @@ pub fn ensure_vanilla_pack(cache_dir: &Path, local_jar: Option<&Path>) -> Result
         let _ = std::fs::remove_dir_all(&tmp);
         return Ok(pack);
     }
-    if pack.exists() {
+    if pack.exists() && !pack.join(COMPLETE).exists() {
         std::fs::remove_dir_all(&pack).map_err(io_err(&pack))?;
     }
     if let Err(e) = std::fs::rename(&tmp, &pack) {
@@ -87,7 +88,61 @@ pub fn ensure_vanilla_pack(cache_dir: &Path, local_jar: Option<&Path>) -> Result
     Ok(pack)
 }
 
-fn open_zip(jar: &Path) -> Result<zip::ZipArchive<File>, Error> {
+/// Checks the pinned SHA-1 of a server jar; a downloaded jar that fails is removed.
+fn check_jar(jar: &Path, downloaded: bool) -> Result<(), Error> {
+    let actual = sha1_hex(jar)?;
+    if actual != SERVER_JAR_SHA1 {
+        if downloaded {
+            let _ = std::fs::remove_file(jar);
+        }
+        return Err(Error::Checksum {
+            path: jar.to_path_buf(),
+            expected: SERVER_JAR_SHA1,
+            actual,
+        });
+    }
+    Ok(())
+}
+
+/// Returns Vanilla's `en_us.json` of the extracted pack at `pack`, extracting it from the
+/// server jar first if a pack of an older Vanillite lacks it (`local_jar` or a download).
+pub fn ensure_language(pack: &Path, local_jar: Option<&Path>) -> Result<PathBuf, Error> {
+    let file = pack.join(LANGUAGE_FILE);
+    if file.exists() {
+        return Ok(file);
+    }
+    let root = pack.parent().unwrap_or(pack);
+    let (jar, downloaded) = match local_jar {
+        Some(p) => (p.to_path_buf(), false),
+        None => {
+            let p = root.join(format!("server-{VERSION_ID}.{}.jar", std::process::id()));
+            download(SERVER_JAR_URL, &p)?;
+            (p, true)
+        }
+    };
+    check_jar(&jar, downloaded)?;
+    let inner = root.join(format!("inner-{VERSION_ID}.{}.jar", std::process::id()));
+    let copied = copy_entry(
+        &jar,
+        &format!("META-INF/versions/{VERSION_ID}/server-{VERSION_ID}.jar"),
+        &inner,
+    );
+    if downloaded {
+        let _ = std::fs::remove_file(&jar);
+    }
+    copied?;
+    let tmp = file.with_extension(format!("{}.tmp", std::process::id()));
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent).map_err(io_err(parent))?;
+    }
+    let extracted = copy_entry(&inner, LANGUAGE_FILE, &tmp);
+    let _ = std::fs::remove_file(&inner);
+    extracted?;
+    std::fs::rename(&tmp, &file).map_err(io_err(&file))?;
+    Ok(file)
+}
+
+pub(crate) fn open_zip(jar: &Path) -> Result<zip::ZipArchive<File>, Error> {
     let file = File::open(jar).map_err(io_err(jar))?;
     zip::ZipArchive::new(file).map_err(|e| Error::Jar(jar.to_path_buf(), e.to_string()))
 }
@@ -103,7 +158,8 @@ fn copy_entry(jar: &Path, name: &str, to: &Path) -> Result<(), Error> {
     out.flush().map_err(io_err(to))
 }
 
-/// Extracts every file under `data/` of the inner server jar into `dir`.
+/// Extracts every file under `data/` and the English translations of the inner server jar into
+/// `dir`.
 fn extract_data(jar: &Path, dir: &Path) -> Result<(), Error> {
     let mut zip = open_zip(jar)?;
     for i in 0..zip.len() {
@@ -113,7 +169,7 @@ fn extract_data(jar: &Path, dir: &Path) -> Result<(), Error> {
         let name = entry
             .name()
             .map_err(|e| Error::Jar(jar.to_path_buf(), e.to_string()))?;
-        if entry.is_dir() || !name.starts_with("data/") {
+        if entry.is_dir() || !(name.starts_with("data/") || name == LANGUAGE_FILE) {
             continue;
         }
         // `enclosed_name` rejects absolute paths and `..` components.

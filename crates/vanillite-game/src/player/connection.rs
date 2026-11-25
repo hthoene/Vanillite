@@ -1,18 +1,20 @@
 //! A player's connection as the world sees it, and the play packet handlers of milestone 1
 //! (Vanilla's `ServerGamePacketListenerImpl`).
 
-use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::mpsc::TryRecvError;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use vanillite_base::Vec3;
-use vanillite_protocol::Inbound;
+use vanillite_protocol::InboundReceiver;
 use vanillite_protocol::chat::{
     ArgumentSignature, ChatSessionData, LastSeenUpdate, MessageSignature,
 };
 use vanillite_protocol::packets::common::ChatVisibility;
 use vanillite_protocol::packets::common::{ClientInfo, MainHand as WireMainHand};
 use vanillite_protocol::packets::play::clientbound::SystemChat;
-use vanillite_protocol::packets::play::serverbound::{ClientCommandAction, PlayerAction};
+use vanillite_protocol::packets::play::serverbound::{
+    ClientCommandAction, PlayerAction, SeenAdvancementsAction,
+};
 use vanillite_protocol::sets::ServerboundPlay;
 use vanillite_protocol::text::{Color, Component, NamedColor};
 
@@ -190,7 +192,7 @@ pub struct ChatContext<'a> {
 pub struct Connection {
     /// Clientbound packets.
     pub sink: Arc<dyn PacketSink>,
-    inbound: Receiver<Inbound>,
+    inbound: InboundReceiver,
     /// Movement validation and teleports.
     pub movement: Movement,
     /// Chunk view and sending.
@@ -207,6 +209,9 @@ pub struct Connection {
     /// A virtual connection (test bot, Bedrock player). These have no chat session, so their
     /// chat is accepted unsigned even when the server enforces secure chat.
     pub is_virtual: bool,
+    /// The last action of the player (`ServerPlayer.lastActionTime`), for
+    /// `player-idle-timeout`.
+    pub last_action: std::time::Instant,
 }
 
 impl std::fmt::Debug for Connection {
@@ -247,7 +252,7 @@ impl Connection {
     /// A connection for a player that joins at `pos`.
     pub fn new(
         sink: Arc<dyn PacketSink>,
-        inbound: Receiver<Inbound>,
+        inbound: InboundReceiver,
         pos: Vec3,
         memory_connection: bool,
         is_virtual: bool,
@@ -263,6 +268,7 @@ impl Connection {
             entity_actions: Vec::new(),
             vehicle: VehicleInput::default(),
             play: Digging::new(),
+            last_action: std::time::Instant::now(),
             is_virtual,
         }
     }
@@ -300,6 +306,46 @@ impl Connection {
     }
 
     fn handle(
+        &mut self,
+        packet: ServerboundPlay,
+        state: &mut PlayerState,
+        ctx: MoveContext<'_>,
+        chat: ChatContext<'_>,
+        play: &mut PlayContext<'_>,
+    ) -> Result<(), Kick> {
+        // `resetLastActionTime`: the packets that count as an action of the player.
+        let loaded = self.movement.has_client_loaded();
+        let acts = match &packet {
+            ServerboundPlay::PlayerInput(_)
+            | ServerboundPlay::PlayerAction(_)
+            | ServerboundPlay::UseItemOn(_)
+            | ServerboundPlay::UseItem(_) => loaded,
+            ServerboundPlay::SetCarriedItem(p) => {
+                usize::try_from(p.slot).is_ok_and(|s| s < crate::inventory::HOTBAR)
+            }
+            ServerboundPlay::Chat(_) => self.chat.inbox().visibility != ChatVisibility::Hidden,
+            ServerboundPlay::ChatCommand(_)
+            | ServerboundPlay::ChatCommandSigned(_)
+            | ServerboundPlay::Punch(_)
+            | ServerboundPlay::PlayerCommand(_)
+            | ServerboundPlay::Attack(_)
+            | ServerboundPlay::ClientCommand(_)
+            | ServerboundPlay::ContainerClick(_)
+            | ServerboundPlay::PlaceRecipe(_)
+            | ServerboundPlay::ContainerButtonClick(_)
+            | ServerboundPlay::SignUpdate(_) => true,
+            _ => false,
+        };
+        let pos_before = state.body.pos;
+        self.handle_packet(packet, state, ctx, chat, play)?;
+        // `handlePlayerKnownMovement`: a move of more than `sqrt(1e-5)` blocks.
+        if acts || state.body.pos.distance_to_sqr(pos_before) > 1.0e-5 {
+            self.last_action = std::time::Instant::now();
+        }
+        Ok(())
+    }
+
+    fn handle_packet(
         &mut self,
         packet: ServerboundPlay,
         state: &mut PlayerState,
@@ -347,10 +393,26 @@ impl Connection {
                     .accept_teleport(&p, &mut state.body, ctx, sink)?;
             }
             ServerboundPlay::ClientTickEnd(_) => self.movement.client_tick_end(),
-            ServerboundPlay::ClientCommand(p) => {
-                // Statistics and game rule values come later.
-                if p.action == ClientCommandAction::PerformRespawn {
-                    state.respawn = true;
+            ServerboundPlay::ClientCommand(p) => match p.action {
+                ClientCommandAction::PerformRespawn => state.respawn = true,
+                // `sendStats`.
+                ClientCommandAction::RequestStats => {
+                    if let Some(stats) = play.stats.as_deref_mut() {
+                        sink.send(&stats.award_packet());
+                    }
+                }
+                // Game rule values come later.
+                ClientCommandAction::RequestGameRuleValues => {}
+            },
+            ServerboundPlay::SeenAdvancements(p) => {
+                // `handleSeenAdvancements`: an opened tab of a known advancement.
+                if p.0.action == SeenAdvancementsAction::OpenedTab
+                    && let Some(tab) = &p.0.tab
+                    && let Some(advancements) = play.advancements.as_deref_mut()
+                    && advancements.advancements().index(tab.as_str()).is_some()
+                    && let Some(packet) = advancements.select_tab(Some(tab.as_str()))
+                {
+                    sink.send(&packet);
                 }
             }
             ServerboundPlay::PlayerLoaded(_) => self.movement.mark_client_loaded(),
@@ -513,6 +575,17 @@ impl Connection {
                 play.inventory.broadcast_changes(self.sink.as_ref());
             }
             ServerboundPlay::ContainerClick(p) => self.container_click(p, play),
+            ServerboundPlay::PlaceRecipe(p) => self.place_recipe(&p, play),
+            ServerboundPlay::RecipeBookSeenRecipe(p) => {
+                if let Some(book) = play.recipe_book.as_deref_mut() {
+                    book.remove_highlight(&play.data.recipes.book, p.recipe);
+                }
+            }
+            ServerboundPlay::RecipeBookChangeSettings(p) => {
+                if let Some(book) = play.recipe_book.as_deref_mut() {
+                    book.set_settings(p.book_type, p.open, p.filtering);
+                }
+            }
             ServerboundPlay::ContainerClose(_) => {
                 // `doCloseContainer`: whatever menu is open (Vanilla does not check the id).
                 let infinite = play.actor.game_mode == vanillite_config::GameMode::Creative;
@@ -534,6 +607,10 @@ impl Connection {
                 self.container_button(p.container_id, p.button_id, play)
             }
             ServerboundPlay::RenameItem(p) => self.rename_item(&p.name, play),
+            ServerboundPlay::SetBeacon(p) => self.set_beacon(p.primary, p.secondary, play),
+            ServerboundPlay::ContainerSlotStateChanged(p) => {
+                self.container_slot_state(p.slot_id, p.container_id, p.new_state, play);
+            }
             ServerboundPlay::SignUpdate(p) => {
                 // `handleSignUpdate`: the editing player sets one side of a loaded sign.
                 let pos = BlockPos::new(p.pos.x, p.pos.y, p.pos.z);
@@ -560,10 +637,6 @@ impl Connection {
             | ServerboundPlay::PingRequest(_)
             | ServerboundPlay::Pong(_)
             | ServerboundPlay::ResourcePack(_)
-            | ServerboundPlay::ContainerSlotStateChanged(_)
-            | ServerboundPlay::PlaceRecipe(_)
-            | ServerboundPlay::RecipeBookSeenRecipe(_)
-            | ServerboundPlay::RecipeBookChangeSettings(_)
             | ServerboundPlay::Unhandled { .. } => {}
         }
         Ok(())
@@ -663,6 +736,155 @@ impl Connection {
         });
     }
 
+    /// `handlePlaceRecipe`: a known recipe from the recipe book into the open crafting grid or
+    /// furnace; a ghost recipe when items are missing.
+    fn place_recipe(
+        &mut self,
+        p: &vanillite_protocol::packets::play::serverbound::PlaceRecipe,
+        play: &mut PlayContext<'_>,
+    ) {
+        use crate::menu::container::MenuKind;
+        use crate::recipe::book::RecipeRef;
+        use crate::recipe::place::{self, Grid};
+        let sink = self.sink.as_ref();
+        let actor = play.actor;
+        if actor.game_mode == vanillite_config::GameMode::Spectator {
+            return;
+        }
+        let recipes = &play.data.recipes;
+        let Some(entry) = recipes.book.entry(p.recipe) else {
+            return;
+        };
+        if !play
+            .recipe_book
+            .as_deref()
+            .is_some_and(|b| b.contains(&entry.id))
+        {
+            return;
+        }
+        let Some(placement) = recipes.placement(entry.recipe) else {
+            log::debug!("A player tried to place impossible recipe {}", entry.id);
+            return;
+        };
+        let creative = actor.game_mode == vanillite_config::GameMode::Creative;
+        let open_id = play
+            .inventory
+            .container
+            .as_ref()
+            .map_or(0, |m| m.state.container_id);
+        if open_id != p.container_id {
+            return;
+        }
+        let grid_of = |w: usize, h: usize, first: usize| {
+            let input: Vec<usize> = (first..first.saturating_add(w.saturating_mul(h))).collect();
+            let mut content = vec![0];
+            content.extend_from_slice(&input);
+            Grid {
+                width: w,
+                height: h,
+                clear: input.clone(),
+                account: input.clone(),
+                input,
+                clear_content: content,
+                account_full: false,
+                suppress: false,
+                content_direct: true,
+            }
+        };
+        let ghost = if play.inventory.container.is_none() {
+            let RecipeRef::Crafting(index) = entry.recipe else {
+                return;
+            };
+            let input = crate::recipe::CraftingInput::of(2, 2, &play.inventory.craft);
+            let matches = recipes.crafting_matches(index, &input);
+            let grid = grid_of(2, 2, 1);
+            let ghost = place::place(
+                &mut *play.inventory,
+                &grid,
+                &placement,
+                matches,
+                p.use_max_items,
+                creative,
+                play.drops,
+            );
+            play.inventory.flush_result_updates(sink);
+            ghost
+        } else {
+            let PlayContext {
+                level,
+                inventory,
+                drops,
+                xp,
+                ..
+            } = play;
+            let Some(level) = level.level_mut() else {
+                return;
+            };
+            let in_range = |pos| actor.within_block_range(pos, 4.0);
+            if !crate::menu::container::still_valid(inventory, level, &in_range, &|b| {
+                actor.within_entity_range(b, 4.0)
+            }) {
+                log::debug!("A player interacted with an invalid menu");
+                return;
+            }
+            crate::menu::container::with_view(
+                inventory,
+                level,
+                actor.pos,
+                xp.as_deref_mut(),
+                |view| {
+                    let (grid, matches) = match (view.menu.kind, entry.recipe) {
+                        (MenuKind::Crafting, RecipeRef::Crafting(index)) => {
+                            let cells = view.menu.local.get(1..10).unwrap_or_default();
+                            let input = crate::recipe::CraftingInput::of(3, 3, cells);
+                            let mut grid = grid_of(3, 3, 1);
+                            grid.suppress = true;
+                            (grid, recipes.crafting_matches(index, &input))
+                        }
+                        (MenuKind::Furnace(_), RecipeRef::Cooking(index)) => {
+                            let matches = recipes.cooking.get(index).is_some_and(|r| {
+                                r.ingredient.test(crate::menu::MenuSlots::item(view, 0))
+                            });
+                            let grid = Grid {
+                                width: 1,
+                                height: 1,
+                                input: vec![0],
+                                clear: vec![0, 2],
+                                clear_content: vec![0, 2],
+                                account: vec![0, 1, 2],
+                                account_full: true,
+                                suppress: false,
+                                content_direct: false,
+                            };
+                            (grid, matches)
+                        }
+                        _ => return false,
+                    };
+                    let ghost = place::place(
+                        view,
+                        &grid,
+                        &placement,
+                        matches,
+                        p.use_max_items,
+                        creative,
+                        drops,
+                    );
+                    view.flush_result_updates(sink);
+                    ghost
+                },
+            )
+            .unwrap_or(false)
+        };
+        if ghost && let Some(display) = recipes.book.display(p.recipe) {
+            sink.send(
+                &vanillite_protocol::packets::play::clientbound::PlaceGhostRecipe {
+                    container_id: p.container_id,
+                    display,
+                },
+            );
+        }
+    }
+
     /// `handleContainerButtonClick`.
     fn container_button(&mut self, container_id: i32, button: i32, play: &mut PlayContext<'_>) {
         let sink = self.sink.as_ref();
@@ -680,6 +902,7 @@ impl Connection {
             level,
             inventory,
             xp,
+            drops,
             ..
         } = play;
         let Some(level) = level.level_mut() else {
@@ -692,10 +915,74 @@ impl Connection {
             log::debug!("A player interacted with an invalid menu");
             return;
         }
+        let may_build = actor.game_mode != vanillite_config::GameMode::Adventure;
         crate::menu::container::with_view(inventory, level, actor.pos, xp.as_deref_mut(), |view| {
-            if view.button(button) {
+            view.menu.may_build = may_build;
+            if view.button(button, drops) {
                 crate::menu::broadcast_changes(view, sink);
             }
+        });
+    }
+
+    /// `handleContainerSlotStateChanged`: a crafter slot is enabled or disabled.
+    fn container_slot_state(
+        &mut self,
+        slot: i32,
+        container_id: i32,
+        enabled: bool,
+        play: &mut PlayContext<'_>,
+    ) {
+        let actor = play.actor;
+        if actor.game_mode == vanillite_config::GameMode::Spectator
+            || play
+                .inventory
+                .container
+                .as_ref()
+                .is_none_or(|m| m.state.container_id != container_id)
+        {
+            return;
+        }
+        let PlayContext {
+            level, inventory, ..
+        } = play;
+        let Some(level) = level.level_mut() else {
+            return;
+        };
+        crate::menu::container::with_view(inventory, level, actor.pos, None, |view| {
+            view.crafter_slot_state(slot, enabled);
+        });
+    }
+
+    /// `handleSetBeaconPacket`: the powers of the open beacon menu.
+    fn set_beacon(
+        &mut self,
+        primary: Option<i32>,
+        secondary: Option<i32>,
+        play: &mut PlayContext<'_>,
+    ) {
+        let actor = play.actor;
+        let PlayContext {
+            level, inventory, ..
+        } = play;
+        let Some(level) = level.level_mut() else {
+            return;
+        };
+        if inventory
+            .container
+            .as_ref()
+            .is_none_or(|m| m.kind != crate::menu::container::MenuKind::Beacon)
+        {
+            return;
+        }
+        let in_range = |pos| actor.within_block_range(pos, 4.0);
+        if !crate::menu::container::still_valid(inventory, level, &in_range, &|b| {
+            actor.within_entity_range(b, 4.0)
+        }) {
+            log::debug!("A player interacted with an invalid menu");
+            return;
+        }
+        crate::menu::container::with_view(inventory, level, actor.pos, None, |view| {
+            view.update_beacon(primary, secondary);
         });
     }
 

@@ -323,6 +323,39 @@ impl RuleValue for StorageLayout {
     }
 }
 
+/// The redstone wire implementation (`performance.redstone.implementation`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum RedstoneImplementation {
+    /// Vanilla's wire: tick-exact, with Vanilla's update order and redundant updates.
+    #[default]
+    Vanilla,
+    /// An implementation after Alternate Current (MIT): every wire network is computed in one
+    /// pass and each neighbour is updated at most once per change.
+    AlternateCurrent,
+}
+
+impl RuleValue for RedstoneImplementation {
+    const SHAPE: ValueShape = ValueShape::of(ValueType::Text);
+    fn from_toml(value: &toml::Value) -> Result<Self, String> {
+        match value.as_str().map(str::trim) {
+            Some(s) if s.eq_ignore_ascii_case("vanilla") => Ok(RedstoneImplementation::Vanilla),
+            Some(s) if s.eq_ignore_ascii_case("alternate-current") => {
+                Ok(RedstoneImplementation::AlternateCurrent)
+            }
+            _ => Err(format!(
+                "expected \"vanilla\" or \"alternate-current\", found {value}"
+            )),
+        }
+    }
+    fn to_toml(&self) -> toml::Value {
+        let name = match self {
+            RedstoneImplementation::Vanilla => "vanilla",
+            RedstoneImplementation::AlternateCurrent => "alternate-current",
+        };
+        toml::Value::String(name.to_owned())
+    }
+}
+
 /// The format of the chunk, entity and POI files of a world (`storage.world-format`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum WorldFormat {
@@ -348,6 +381,75 @@ impl RuleValue for WorldFormat {
         let name = match self {
             WorldFormat::Vanillite => "vanillite",
             WorldFormat::Anvil => "anvil",
+        };
+        toml::Value::String(name.to_owned())
+    }
+}
+
+/// A list of strings (block ids, …), written as a TOML array or as one comma-separated string
+/// (for environment variables and panels).
+impl RuleValue for Vec<String> {
+    const SHAPE: ValueShape = ValueShape::of(ValueType::Text);
+    fn from_toml(value: &toml::Value) -> Result<Self, String> {
+        match value {
+            toml::Value::Array(items) => items
+                .iter()
+                .map(|item| {
+                    item.as_str()
+                        .map(|s| s.trim().to_owned())
+                        .ok_or_else(|| format!("expected a list of strings, found {item}"))
+                })
+                .collect(),
+            toml::Value::String(s) => Ok(s
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .collect()),
+            _ => Err(format!("expected a list of strings, found {value}")),
+        }
+    }
+    fn to_toml(&self) -> toml::Value {
+        toml::Value::Array(self.iter().cloned().map(toml::Value::String).collect())
+    }
+}
+
+/// How hidden blocks are kept from clients (`anticheat.anti-xray.engine-mode`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum AntiXrayMode {
+    /// Clients get the real blocks (Vanilla).
+    #[default]
+    Disabled,
+    /// Hidden blocks that touch no transparent block are sent as the dimension's base stone.
+    Hide,
+    /// Hidden and replacement blocks that touch no transparent block are sent as random hidden
+    /// blocks, so the client sees fake ores everywhere.
+    Obfuscate,
+}
+
+impl RuleValue for AntiXrayMode {
+    const SHAPE: ValueShape = ValueShape::of(ValueType::Text);
+    fn from_toml(value: &toml::Value) -> Result<Self, String> {
+        match value {
+            toml::Value::Boolean(false) => Ok(AntiXrayMode::Disabled),
+            toml::Value::String(s) => match s.trim().to_ascii_lowercase().as_str() {
+                "disabled" => Ok(AntiXrayMode::Disabled),
+                "hide" => Ok(AntiXrayMode::Hide),
+                "obfuscate" => Ok(AntiXrayMode::Obfuscate),
+                _ => Err(format!(
+                    "expected \"disabled\", \"hide\" or \"obfuscate\", found {value}"
+                )),
+            },
+            _ => Err(format!(
+                "expected \"disabled\", \"hide\" or \"obfuscate\", found {value}"
+            )),
+        }
+    }
+    fn to_toml(&self) -> toml::Value {
+        let name = match self {
+            AntiXrayMode::Disabled => "disabled",
+            AntiXrayMode::Hide => "hide",
+            AntiXrayMode::Obfuscate => "obfuscate",
         };
         toml::Value::String(name.to_owned())
     }

@@ -616,6 +616,11 @@ impl Session {
 
     pub(super) fn java_container_content(&mut self, c: pcb::ContainerSetContent) {
         if c.container_id != 0 {
+            if self.merchant_state(c.container_id, c.state_id) {
+                for (i, stack) in c.items.into_iter().enumerate() {
+                    self.merchant_inventory_slot(i, stack);
+                }
+            }
             return;
         }
         self.inv.state_id = c.state_id;
@@ -628,6 +633,11 @@ impl Session {
 
     pub(super) fn java_container_slot(&mut self, c: pcb::ContainerSetSlot) {
         if c.container_id != 0 {
+            if self.merchant_state(c.container_id, c.state_id)
+                && let Ok(i) = usize::try_from(c.slot)
+            {
+                self.merchant_inventory_slot(i, c.item);
+            }
             return;
         }
         self.inv.state_id = c.state_id;
@@ -635,6 +645,22 @@ impl Session {
             && self.inv.put(Target::Menu(i), c.item)
         {
             self.send_slot(i);
+        }
+    }
+
+    /// Slot `i` of an open merchant menu: its player inventory part (after the 3 trade slots)
+    /// goes into the mirror.
+    pub(super) fn merchant_inventory_slot(&mut self, i: usize, stack: ItemStack) {
+        let Some(k) = i.checked_sub(3) else {
+            return;
+        };
+        // Main inventory then hotbar, in the order of the inventory menu (slots 9-44).
+        if k >= 36 {
+            return;
+        }
+        let menu = k.saturating_add(9);
+        if self.inv.put(Target::Menu(menu), stack) {
+            self.send_slot(menu);
         }
     }
 

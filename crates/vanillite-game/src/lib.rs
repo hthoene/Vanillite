@@ -1,5 +1,6 @@
 //! Gameplay: the Vanilla level tick, block behaviours, entities, physics, items, inventories, players and commands.
 //!
+//! - [`advancements`] and [`stats`]: advancements and statistics of the players.
 //! - [`block`]: block behaviours: fluids, falling blocks, growth and spreading; placement rules.
 //! - [`level`]: the game state of a world and Vanilla's level operations (`setBlock`, neighbour
 //!   and shape updates, scheduled and random ticks).
@@ -9,23 +10,32 @@
 //! - [`survival`]: health, damage, hunger, death, clocks, weather and game rules.
 //! - [`mob`]: mobs and animals: physics, path finding, goals, combat and spawning.
 
+pub mod advancements;
 pub mod block;
+pub mod boss_bar;
 pub mod commands;
+pub mod effect;
 pub mod enchant;
 pub mod entities;
+pub mod experience_orb;
 pub mod hooks;
 pub mod inventory;
 pub mod item;
 pub mod item_entity;
+pub mod item_nbt;
 pub mod level;
 pub mod loot;
+pub mod map;
 pub mod menu;
 pub mod minecart;
 pub mod mob;
 pub mod player;
 pub mod portal;
 pub mod predicate;
+pub mod random_sequences;
 pub mod recipe;
 pub mod riding;
+pub mod scoreboard;
+pub mod stats;
 pub mod survival;
 pub mod vehicle;

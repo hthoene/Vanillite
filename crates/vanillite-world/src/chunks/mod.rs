@@ -38,6 +38,7 @@
 //! (Vanilla's `SimulationChunkTracker`) decide which chunks tick.
 
 pub mod levels;
+pub mod simulation;
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -61,6 +62,8 @@ pub use levels::{
     BLOCK_TICKING_LEVEL, ENTITY_TICKING_LEVEL, FULL_LEVEL, LevelChange, MAX_LEVEL, TicketLevels,
     required_status,
 };
+
+use simulation::SimulationLevels;
 
 use crate::ticks::{LevelTicks, ScheduledTick, TickPriority};
 
@@ -219,6 +222,9 @@ struct Holder {
     unload_at: Option<u64>,
     /// Queued for a scheduling check.
     queued: bool,
+    /// The chunk's stored entities are live (`ChunkLoadStatus.LOADED`); set by the entity
+    /// storage at the end of the level tick, required for scheduled ticks.
+    entities_loaded: bool,
 }
 
 impl Holder {
@@ -381,10 +387,8 @@ pub struct Chunks {
     block_changes: Vec<BlockPos>,
     tick: u64,
     /// Simulation tickets and their levels.
-    simulation: TicketLevels,
+    simulation: SimulationLevels,
     simulation_tickets: FxHashMap<TicketId, (ChunkPos, u8)>,
-    /// Level changes of the simulation tickets (not used, kept to reuse the buffer).
-    simulation_changes: Vec<LevelChange>,
     /// Scheduled block ticks of the live chunks.
     block_ticks: LevelTicks,
     /// Scheduled fluid ticks of the live chunks.
@@ -497,9 +501,8 @@ impl Chunks {
             light_changes: FxHashMap::default(),
             block_changes: Vec::new(),
             tick: 0,
-            simulation: TicketLevels::with_max(BLOCK_TICKING_LEVEL),
+            simulation: SimulationLevels::default(),
             simulation_tickets: FxHashMap::default(),
-            simulation_changes: Vec::new(),
             block_ticks: LevelTicks::default(),
             fluid_ticks: LevelTicks::default(),
             game_time: 0,
@@ -602,27 +605,29 @@ impl Chunks {
         let id = TicketId(self.next_ticket);
         self.next_ticket += 1;
         self.simulation_tickets.insert(id, (pos, level));
-        self.simulation
-            .add(pos, level, &mut self.simulation_changes);
-        self.simulation_changes.clear();
+        self.simulation.add_ticket(pos, level);
+        self.simulation.run_updates();
         id
     }
 
     /// Removes a simulation ticket.
     pub fn remove_simulation_ticket(&mut self, id: TicketId) {
         if let Some((pos, level)) = self.simulation_tickets.remove(&id) {
-            self.simulation
-                .remove(pos, level, &mut self.simulation_changes);
-            self.simulation_changes.clear();
+            self.simulation.remove_ticket(pos, level);
+            self.simulation.run_updates();
         }
     }
 
-    /// Moves a simulation ticket to `pos`.
+    /// Moves a simulation ticket to `pos`: like a player changing chunks in Vanilla
+    /// (`ChunkMap.move`), the old ticket goes, the new one comes, then the levels update.
     pub fn move_simulation_ticket(&mut self, id: TicketId, pos: ChunkPos) {
         if let Some((from, level)) = self.simulation_tickets.get_mut(&id) {
-            self.simulation
-                .shift(*from, pos, *level, &mut self.simulation_changes);
-            self.simulation_changes.clear();
+            if *from == pos {
+                return;
+            }
+            self.simulation.remove_ticket(*from, *level);
+            self.simulation.add_ticket(pos, *level);
+            self.simulation.run_updates();
             *from = pos;
         }
     }
@@ -648,8 +653,20 @@ impl Chunks {
         tick_check(&self.holders, &self.simulation, pos)
     }
 
+    /// Whether the stored entities of a chunk are live (`areEntitiesLoaded`).
+    pub fn entities_loaded(&self, pos: ChunkPos) -> bool {
+        self.holders.get(&pos).is_some_and(|h| h.entities_loaded)
+    }
+
+    /// Marks the stored entities of a loaded chunk live or not (`ChunkLoadStatus`).
+    pub fn set_entities_loaded(&mut self, pos: ChunkPos, loaded: bool) {
+        if let Some(holder) = self.holders.get_mut(&pos) {
+            holder.entities_loaded = loaded;
+        }
+    }
+
     /// The chunks that get random ticks this tick (`forEachBlockTickingChunk`: entity ticking
-    /// by simulation level and a ticking chunk).
+    /// by simulation level and a ticking chunk), in Vanilla's order.
     pub fn random_ticking_chunks(&self, out: &mut Vec<ChunkPos>) {
         out.extend(
             self.simulation
@@ -798,6 +815,15 @@ impl Chunks {
             && self.check.is_empty()
             && self.unload_candidates.is_empty()
             && self.visibility_changes.is_empty()
+    }
+
+    /// The chunks whose ticket level asks for a full chunk that is not full yet
+    /// (`ChunkLoadCounter.pendingChunks`); ticket changes count from the next [`Chunks::tick`].
+    pub fn pending_full(&self) -> usize {
+        self.holders
+            .values()
+            .filter(|h| h.level <= FULL_LEVEL && h.status() != Some(ChunkStatus::Full))
+            .count()
     }
 
     /// Whether a chunk is accessible as a full chunk (`hasChunk`: level up to full).
@@ -1351,7 +1377,8 @@ impl Chunks {
     }
 
     /// Makes a chunk that just became full live: its stored ticks move into the world's tick
-    /// queues and its post-processing marks wait for its neighbours.
+    /// queues (and the chunk is saved again for them) and its post-processing marks wait for
+    /// its neighbours.
     fn promote(&mut self, pos: ChunkPos) {
         let Some(chunk) = self.holders.get_mut(&pos).and_then(|h| h.chunk.as_mut()) else {
             return;
@@ -1367,8 +1394,14 @@ impl Chunks {
             self.post_process.push(pos);
         }
         self.promoted.push(pos);
+        // Stored ticks hold delays relative to the save; the next save writes them anew from
+        // the game time then, even if nothing else changes (the new `LevelChunk` is unsaved).
+        let ticks = !blocks.is_empty() || !fluids.is_empty();
         self.block_ticks.add_container(pos, &blocks, self.game_time);
         self.fluid_ticks.add_container(pos, &fluids, self.game_time);
+        if ticks {
+            self.mark_dirty(pos);
+        }
     }
 
     /// Chunks that became live since the last call (the game loads their block entities).
@@ -1774,6 +1807,17 @@ impl Chunks {
         Some(old)
     }
 
+    /// How many block changes are recorded since the last [`Self::take_block_changes`].
+    pub fn block_change_count(&self) -> usize {
+        self.block_changes.len()
+    }
+
+    /// The block changes recorded after the first `start` (see [`Self::block_change_count`]),
+    /// without taking them.
+    pub fn block_changes_from(&self, start: usize) -> &[BlockPos] {
+        &self.block_changes[start.min(self.block_changes.len())..]
+    }
+
     /// Blocks changed since the last call, in change order (for block update packets).
     pub fn take_block_changes(&mut self, out: &mut Vec<BlockPos>) {
         out.append(&mut self.block_changes);
@@ -1837,6 +1881,71 @@ impl Chunks {
         if let Some(holder) = self.holders.get_mut(&chunk) {
             holder.touch(chunk, &mut self.changed);
         }
+    }
+
+    /// `getBlockTicks().copyAreaFrom(blockTicks, area, offset)` within this world: the block
+    /// ticks scheduled in the box `min..=max` again at `pos + offset`, after all others.
+    pub fn copy_block_ticks(&mut self, min: BlockPos, max: BlockPos, offset: BlockPos) {
+        let inside = |p: BlockPos| {
+            (min.x..=max.x).contains(&p.x)
+                && (min.y..=max.y).contains(&p.y)
+                && (min.z..=max.z).contains(&p.z)
+        };
+        let mut ticks: Vec<ScheduledTick> = Vec::new();
+        for cz in (min.z >> 4)..=(max.z >> 4) {
+            for cx in (min.x >> 4)..=(max.x >> 4) {
+                ticks.extend(
+                    self.block_ticks
+                        .ticks_in(ChunkPos::new(cx, cz))
+                        .filter(|t| inside(t.pos))
+                        .copied(),
+                );
+            }
+        }
+        let min_sub = ticks.iter().map(|t| t.sub_tick).min().unwrap_or(0);
+        let max_sub = ticks.iter().map(|t| t.sub_tick).max().unwrap_or(0);
+        for tick in ticks {
+            let pos = BlockPos::new(
+                tick.pos.x.saturating_add(offset.x),
+                tick.pos.y.saturating_add(offset.y),
+                tick.pos.z.saturating_add(offset.z),
+            );
+            let moved = ScheduledTick {
+                pos,
+                sub_tick: tick
+                    .sub_tick
+                    .saturating_sub(min_sub)
+                    .saturating_add(max_sub)
+                    .saturating_add(1),
+                ..tick
+            };
+            if self.block_ticks.schedule(moved) {
+                self.mark_dirty(pos.chunk());
+            }
+        }
+    }
+
+    /// Changes a full chunk in place (`/fillbiome`'s `fillBiomesFromNoise`): the chunk is saved
+    /// again and its cached packets are dropped. `None` if the chunk is not full.
+    pub fn modify_chunk<R>(
+        &mut self,
+        pos: ChunkPos,
+        f: impl FnOnce(&mut ProtoChunk) -> R,
+    ) -> Option<R> {
+        let holder = self.holders.get_mut(&pos)?;
+        if holder.busy {
+            return None;
+        }
+        let chunk = holder.chunk.as_mut()?;
+        if chunk.status != ChunkStatus::Full {
+            return None;
+        }
+        let result = f(Arc::make_mut(chunk));
+        holder.dirty = true;
+        // The packet cache drops chunks with block changes.
+        self.block_changes
+            .push(BlockPos::new(pos.x << 4, self.info.min_y, pos.z << 4));
+        Some(result)
     }
 
     /// `scheduleTick(pos, block, delay, priority)`; `block` is a block id. Ignored outside live
@@ -2022,12 +2131,13 @@ fn load_result(result: StoreResult) -> io::Result<Option<(RecordMeta, Arc<[u8]>)
 /// [`Chunks::is_block_ticking`] over the fields, for use while the tick queues are borrowed.
 fn tick_check(
     holders: &FxHashMap<ChunkPos, Holder>,
-    simulation: &TicketLevels,
+    simulation: &SimulationLevels,
     pos: ChunkPos,
 ) -> bool {
     simulation.level(pos) <= BLOCK_TICKING_LEVEL
         && holders.get(&pos).is_some_and(|h| {
-            h.level <= BLOCK_TICKING_LEVEL
+            h.entities_loaded
+                && h.level <= BLOCK_TICKING_LEVEL
                 && h.chunk
                     .as_ref()
                     .is_some_and(|c| c.status == ChunkStatus::Full)

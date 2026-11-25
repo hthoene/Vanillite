@@ -38,7 +38,7 @@ pub fn game_data(packs: Option<&LoadedPacks>) -> GameData {
     };
     let tools = ToolTable::new(&|tag| tag_ids("minecraft:block", tag));
     let loot = LootTables::load(packs.roots());
-    log::info!("Loaded {} block loot tables", loot.len());
+    log::info!("Loaded {} loot tables", loot.len());
     let enchantments = packs
         .registry("minecraft:enchantment")
         .map(|r| {
@@ -54,6 +54,19 @@ pub fn game_data(packs: Option<&LoadedPacks>) -> GameData {
         .map(|tags| {
             tags.keys()
                 .map(|t| (t.clone(), tag_ids("minecraft:item", t)))
+                .collect()
+        })
+        .unwrap_or_default();
+    let block_tags: HashMap<String, Vec<u16>> = packs
+        .tags("minecraft:block")
+        .map(|tags| {
+            tags.keys()
+                .map(|t| {
+                    let mut ids = tag_ids("minecraft:block", t);
+                    ids.sort_unstable();
+                    ids.dedup();
+                    (t.clone(), ids)
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -82,6 +95,10 @@ pub fn game_data(packs: Option<&LoadedPacks>) -> GameData {
     let mut info = vanillite_protocol::item::RegistryInfo::default();
     for r in packs.registries() {
         info.sizes.insert(r.name.to_owned(), r.entries().len());
+        info.names.insert(
+            r.name.to_owned(),
+            r.entries().iter().map(|e| e.id.clone()).collect(),
+        );
     }
     for registry in packs.tagged_registries() {
         let tags: HashSet<String> = packs
@@ -91,6 +108,21 @@ pub fn game_data(packs: Option<&LoadedPacks>) -> GameData {
         info.tags.insert(registry.to_owned(), tags);
     }
     vanillite_protocol::item::install_registries(info);
+    let trial_spawner_configs = packs
+        .registry("minecraft:trial_spawner")
+        .map(|r| {
+            r.entries()
+                .iter()
+                .filter_map(|e| {
+                    let json = serde_json::from_str::<serde_json::Value>(e.json.get()).ok()?;
+                    Some((
+                        e.id.clone(),
+                        vanillite_game::block::trial_spawner::TrialConfig::from_json(&json),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let recipes = vanillite_game::recipe::Recipes::load(packs.roots(), &|tag| {
         item_tags.get(tag).cloned().unwrap_or_default()
     });
@@ -113,6 +145,15 @@ pub fn game_data(packs: Option<&LoadedPacks>) -> GameData {
                 .collect()
         })
         .unwrap_or_default();
+    let enchantment_info = packs
+        .registry("minecraft:enchantment")
+        .map(|r| {
+            r.entries()
+                .iter()
+                .filter_map(|e| Some((e.id.clone(), enchantment_info(packs, e.json.get())?)))
+                .collect()
+        })
+        .unwrap_or_default();
     let mut enchanting = vanillite_game::enchant::Enchanting::load(
         &entries,
         &|tag| item_tags.get(tag).cloned().unwrap_or_default(),
@@ -132,17 +173,97 @@ pub fn game_data(packs: Option<&LoadedPacks>) -> GameData {
         &names("minecraft:trim_material"),
         &names("minecraft:trim_pattern"),
     );
+    let banner_patterns = vanillite_game::menu::BannerPatterns {
+        names: names("minecraft:banner_pattern"),
+        tags: packs
+            .tags("minecraft:banner_pattern")
+            .map(|tags| {
+                tags.keys()
+                    .map(|t| {
+                        let ids = packs
+                            .tag_ids("minecraft:banner_pattern", t)
+                            .unwrap_or_default();
+                        (t.clone(), ids)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+    };
+    let registry_tags = packs
+        .tagged_registries()
+        .map(|registry| {
+            let tags = packs
+                .tags(registry)
+                .map(|tags| {
+                    tags.keys()
+                        .map(|t| (t.clone(), packs.tag_ids(registry, t).unwrap_or_default()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            (registry.to_owned(), tags)
+        })
+        .collect();
     GameData {
         tools,
         loot,
         enchantments,
         item_tags,
+        trial_spawner_configs,
         entity_tags,
         enchants,
         enderman_holdable: tag_ids("minecraft:block", "minecraft:enderman_holdable"),
+        enchantment_info,
+        block_tags,
         recipes,
         enchanting,
+        banner_patterns,
+        registry_tags,
     }
+}
+
+/// The entries of a holder set in JSON (`"#tag"`, an id or a list of ids) of `registry`.
+fn holder_set(
+    packs: &LoadedPacks,
+    registry: &str,
+    json: Option<&serde_json::Value>,
+) -> Vec<String> {
+    match json {
+        Some(serde_json::Value::String(s)) => match s.strip_prefix('#') {
+            Some(tag) => packs
+                .tags(registry)
+                .and_then(|t| t.get(tag))
+                .cloned()
+                .unwrap_or_default(),
+            None => vec![s.clone()],
+        },
+        Some(serde_json::Value::Array(list)) => list
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_owned))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// What `/enchant` reads of an enchantment definition.
+fn enchantment_info(
+    packs: &LoadedPacks,
+    json: &str,
+) -> Option<vanillite_game::player::play::EnchantmentInfo> {
+    let json: serde_json::Value = serde_json::from_str(json).ok()?;
+    let supported_items = holder_set(packs, "minecraft:item", json.get("supported_items"))
+        .iter()
+        .filter_map(|name| vanillite_data::registry::ITEM.id(name))
+        .collect();
+    Some(vanillite_game::player::play::EnchantmentInfo {
+        description: vanillite_protocol::text::Component::try_from_json(json.get("description")?)
+            .ok()?,
+        max_level: json
+            .get("max_level")
+            .and_then(serde_json::Value::as_i64)
+            .and_then(|v| i32::try_from(v).ok())?,
+        supported_items,
+        exclusive_set: holder_set(packs, "minecraft:enchantment", json.get("exclusive_set")),
+    })
 }
 
 /// A sound to send.
@@ -263,6 +384,30 @@ impl PlayLevel for WorldLevel<'_> {
         );
     }
 
+    fn placed_by(&mut self, pos: BlockPos, state: BlockState) {
+        if vanillite_game::mob::boss::wither::is_wither_skull(state) {
+            self.level.output().summon_checks.push(pos);
+        }
+    }
+
+    fn game_event(
+        &mut self,
+        event: u16,
+        pos: BlockPos,
+        source: Option<vanillite_world::entity::EntityId>,
+        affected: Option<BlockState>,
+    ) {
+        let context = vanillite_game::level::game_event::GameEventContext { source, affected };
+        self.level.game_event_block(event, pos, context);
+    }
+
+    fn use_end_crystal(&mut self, on: BlockPos) -> bool {
+        let seed = self.level.random().next_long();
+        let uuid =
+            vanillite_game::mob::random_uuid(&mut vanillite_base::random::LegacyRandom::new(seed));
+        vanillite_game::mob::boss::dragon::fight::use_end_crystal(self.level, uuid, on)
+    }
+
     fn is_unobstructed(&self, state: BlockState, pos: BlockPos) -> bool {
         let (dx, dy, dz) = (f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
         let store = &self.level.entities.store;
@@ -308,6 +453,13 @@ impl PlayLevel for WorldLevel<'_> {
 
     fn random_int(&mut self, bound: i32) -> i32 {
         self.level.random().next_int_bounded(bound.max(1))
+    }
+
+    fn random_sequences(
+        &self,
+    ) -> Option<std::sync::Arc<std::sync::Mutex<vanillite_game::random_sequences::RandomSequences>>>
+    {
+        Some(std::sync::Arc::clone(self.level.random_sequences()))
     }
 }
 
@@ -411,70 +563,114 @@ pub(crate) fn tick_items(
     chunks: &Chunks,
     random: &mut XoroshiroRandom,
     min_y: i32,
-    lifetime: i16,
-    merge_radius: f64,
+    settings: ItemSettings,
 ) {
     let ids: Vec<EntityId> = entities.items.iter().map(|(id, _)| id).collect();
     if ids.is_empty() {
         return;
     }
-    let block = |p: BlockPos| BlockState(chunks.block(p).unwrap_or(0));
-    let mut scratch = Vec::new();
-    let mut gone = Vec::new();
-    let mut near = Vec::new();
+    let mut scratch = ItemScratch::default();
     for id in ids {
-        let Entities { store, items, .. } = entities;
-        let Some(entity) = store.get(id) else {
+        // Only items in the tick order (entity ticking chunk) and in entity ticking range.
+        let Some(pos) = entities.store.get(id).map(|e| e.pos()) else {
             continue;
         };
-        // Only items in the tick order (entity ticking chunk) and in entity ticking range.
-        let pos = entity.pos();
         let chunk = vanillite_base::ChunkPos::new(
             vanillite_base::math::floor(pos.x) >> 4,
             vanillite_base::math::floor(pos.z) >> 4,
         );
-        if !store.is_ticking(id) || !chunks.in_entity_ticking_range(chunk) {
+        if !entities.store.is_ticking(id) || !chunks.in_entity_ticking_range(chunk) {
             continue;
         }
-        let row = entity.kind_row();
-        let input = item_entity::TickInput {
-            pos: entity.pos(),
-            velocity: entity.velocity(),
-            on_ground: entity.flags().contains(EntityFlags::ON_GROUND),
-            network_id: entity.network_id().0,
-            min_y,
-            lifetime,
-        };
-        let Some(data) = items.get_mut(row) else {
-            continue;
-        };
-        let ticked = item_entity::tick(
-            data,
-            input,
-            &block,
+        tick_item(
+            entities,
+            chunks,
+            id,
             &mut || random.next_float(),
+            min_y,
+            settings,
             &mut scratch,
         );
-        if ticked.discard {
-            gone.push(id);
-            continue;
-        }
-        let rate = if ticked.moved_block { 2 } else { 40 };
-        let merge = data.tick_count.is_multiple_of(rate) && data.is_mergable(lifetime);
-        if let Some(mut e) = store.get_mut(id) {
-            e.set_pos(ticked.pos);
-            e.set_velocity(ticked.velocity);
-            e.set_flags(EntityFlags::ON_GROUND, ticked.on_ground);
-            if ticked.needs_sync {
-                e.set_flags(EntityFlags::HAS_IMPULSE, true);
-            }
-        }
-        if merge {
-            merge_with_neighbours(entities, id, lifetime, merge_radius, &mut near, &mut gone);
+    }
+}
+
+/// The rules of item entities for [`tick_item`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ItemSettings {
+    /// Ticks an item lies on the ground before it despawns (Vanilla 6000).
+    pub lifetime: i16,
+    /// Horizontal merge radius (Vanilla 0.5); vertically 0.5 less.
+    pub merge_radius: f64,
+}
+
+/// Reused buffers of [`tick_item`].
+#[derive(Debug, Default)]
+pub struct ItemScratch {
+    boxes: Vec<vanillite_base::Aabb>,
+    near: Vec<EntityId>,
+    gone: Vec<EntityId>,
+}
+
+/// `ItemEntity.tick` of one item entity: movement, merging with its neighbours, despawning.
+/// `random_float` is the item's own random.
+pub fn tick_item(
+    entities: &mut Entities,
+    chunks: &Chunks,
+    id: EntityId,
+    random_float: &mut dyn FnMut() -> f32,
+    min_y: i32,
+    settings: ItemSettings,
+    scratch: &mut ItemScratch,
+) {
+    let lifetime = settings.lifetime;
+    let block = |p: BlockPos| BlockState(chunks.block(p).unwrap_or(0));
+    scratch.gone.clear();
+    let Entities { store, items, .. } = entities;
+    let Some(entity) = store.get(id) else {
+        return;
+    };
+    if entity.kind() != entity_ids::ITEM {
+        return;
+    }
+    let row = entity.kind_row();
+    let input = item_entity::TickInput {
+        pos: entity.pos(),
+        velocity: entity.velocity(),
+        on_ground: entity.flags().contains(EntityFlags::ON_GROUND),
+        network_id: entity.network_id().0,
+        min_y,
+        lifetime,
+    };
+    let Some(data) = items.get_mut(row) else {
+        return;
+    };
+    let ticked = item_entity::tick(data, input, &block, random_float, &mut scratch.boxes);
+    if ticked.discard {
+        entities.despawn(id);
+        return;
+    }
+    let rate = if ticked.moved_block { 2 } else { 40 };
+    let merge = data.tick_count.is_multiple_of(rate) && data.is_mergable(lifetime);
+    if let Some(mut e) = store.get_mut(id) {
+        e.set_pos(ticked.pos);
+        e.set_velocity(ticked.velocity);
+        e.set_flags(EntityFlags::ON_GROUND, ticked.on_ground);
+        if ticked.needs_sync {
+            e.set_flags(EntityFlags::HAS_IMPULSE, true);
         }
     }
-    for id in gone {
-        entities.despawn(id);
+    if merge {
+        merge_with_neighbours(
+            entities,
+            id,
+            lifetime,
+            settings.merge_radius,
+            &mut scratch.near,
+            &mut scratch.gone,
+        );
+    }
+    for &gone in &scratch.gone {
+        entities.despawn(gone);
     }
 }
 

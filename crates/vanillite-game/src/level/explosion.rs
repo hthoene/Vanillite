@@ -40,6 +40,21 @@ pub enum BlockInteraction {
     TriggerBlock,
 }
 
+/// The exploding entity's `getBlockExplosionResistance` override.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BlockResistance {
+    /// The block's and fluid's own resistance.
+    #[default]
+    Default,
+    /// `WitherSkull` (dangerous): at most 0.8 for blocks the wither can destroy.
+    DangerousWitherSkull,
+    /// `MinecartTNT`: rails and the blocks under them have no resistance and do not break.
+    TntMinecart,
+    /// `AbstractWindCharge.EXPLOSION_DAMAGE_CALCULATOR`: `#blocks_wind_charge_explosions` are
+    /// immune.
+    WindCharge,
+}
+
 /// An explosion for the clients (`ClientboundExplodePacket`), sent to players within 64 blocks.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExplosionEvent {
@@ -53,6 +68,33 @@ pub struct ExplosionEvent {
     pub small: bool,
     /// Knockback of the players it hit (`getHitPlayers`).
     pub hit_players: Vec<(EntityId, Vec3)>,
+    /// The burst sound of a wind charge (gust particles, no block particles); `None` for
+    /// normal explosions.
+    pub wind_sound: Option<&'static str>,
+}
+
+/// How an explosion treats entities (`ExplosionDamageCalculator`) and how clients show it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ExplosionStyle {
+    /// `shouldDamageEntity`.
+    pub damages_entities: bool,
+    /// `getKnockbackMultiplier`.
+    pub knockback: f64,
+    /// The wind charge burst sound, see [`ExplosionEvent::wind_sound`].
+    pub wind_sound: Option<&'static str>,
+    /// The source's block resistance override.
+    pub resistance: BlockResistance,
+}
+
+impl Default for ExplosionStyle {
+    fn default() -> Self {
+        ExplosionStyle {
+            damages_entities: true,
+            knockback: 1.0,
+            wind_sound: None,
+            resistance: BlockResistance::Default,
+        }
+    }
 }
 
 /// The damage an explosion deals to a living entity (`entity.hurtServer(level,
@@ -84,11 +126,18 @@ impl Level {
         radius: f32,
         interaction: BlockInteraction,
     ) -> usize {
-        self.explode_with(source, indirect, center, radius, interaction, false)
+        self.explode_with(
+            source,
+            indirect,
+            center,
+            radius,
+            interaction,
+            ExplosionStyle::default(),
+        )
     }
 
-    /// [`Level::explode`]; with `rails_resist` (a primed TNT minecart) rails and the blocks
-    /// under them have no resistance and do not break.
+    /// [`Self::explode`] with a damage calculator and client style (wind charges: no damage,
+    /// more knockback, gusts).
     pub fn explode_with(
         &mut self,
         source: Option<EntityId>,
@@ -96,14 +145,14 @@ impl Level {
         center: Vec3,
         radius: f32,
         interaction: BlockInteraction,
-        rails_resist: bool,
+        style: ExplosionStyle,
     ) -> usize {
         let context = super::game_event::GameEventContext::of(source);
         self.game_event(super::game_event::events().explode, center, context);
-        let mut targets = self.exploded_positions(center, radius, rails_resist);
-        let hit_players = self.hurt_entities(source, indirect, center, radius);
+        let mut targets = self.exploded_positions(center, radius, style.resistance);
+        let hit_players = self.hurt_entities(source, indirect, center, radius, style);
         if interaction != BlockInteraction::Keep {
-            self.interact_with_blocks(&mut targets, source, indirect, interaction);
+            self.interact_with_blocks(&mut targets, source, indirect, interaction, radius);
         }
         let count = targets.len();
         self.output.explosions.push(ExplosionEvent {
@@ -112,6 +161,7 @@ impl Level {
             block_count: i32::try_from(count).unwrap_or(i32::MAX),
             small: radius < 2.0 || interaction == BlockInteraction::Keep,
             hit_players,
+            wind_sound: style.wind_sound,
         });
         count
     }
@@ -122,7 +172,7 @@ impl Level {
         &mut self,
         center: Vec3,
         radius: f32,
-        rails_resist: bool,
+        override_resistance: BlockResistance,
     ) -> Vec<BlockPos> {
         let mut seen = FxHashSet::default();
         let mut positions = Vec::new();
@@ -151,19 +201,27 @@ impl Level {
                         let state = self.block(pos);
                         let fluid = state.fluid_state();
                         // `ExplosionDamageCalculator.getBlockExplosionResistance`.
-                        let rail_protected = rails_resist
+                        let rail_protected = override_resistance == BlockResistance::TntMinecart
                             && (crate::block::is_rail(state.block())
                                 || crate::block::is_rail(self.block(pos.offset(0, 1, 0)).block()));
                         if !(state.is_air() && fluid.is_empty()) {
-                            let resistance = if rail_protected {
-                                0.0
-                            } else {
-                                state
-                                    .block()
-                                    .info()
-                                    .blast_resistance
-                                    .max(fluid.info().explosion_resistance)
-                            };
+                            let mut resistance = state
+                                .block()
+                                .info()
+                                .blast_resistance
+                                .max(fluid.info().explosion_resistance);
+                            if override_resistance == BlockResistance::DangerousWitherSkull {
+                                resistance = crate::mob::boss::wither::skull_block_resistance(
+                                    true, state, resistance,
+                                );
+                            }
+                            if override_resistance == BlockResistance::WindCharge
+                                && crate::block::block_tags()
+                                    .blocks_wind_charge_explosions
+                                    .contains(state)
+                            {
+                                resistance = 3_600_000.0;
+                            }
                             power -= (resistance + 0.3) * 0.3;
                         }
                         if power > 0.0 && !rail_protected && seen.insert(pos) {
@@ -189,6 +247,7 @@ impl Level {
         indirect: Option<EntityId>,
         center: Vec3,
         radius: f32,
+        style: ExplosionStyle,
     ) -> Vec<(EntityId, Vec3)> {
         let mut hit_players = Vec::new();
         if radius < 1.0e-5 {
@@ -232,7 +291,7 @@ impl Level {
             // through the mob system, items here (`ItemEntity.hurtServer`: health 5).
             let is_boat = crate::vehicle::BoatKind::of(kind).is_some()
                 || crate::minecart::MinecartKind::of(kind).is_some();
-            if kind == entity_ids::ITEM {
+            if kind == entity_ids::ITEM && style.damages_entities {
                 let double_radius = f64::from(double_radius);
                 let pow = (1.0 - dist) * f64::from(self.seen_percent(center, aabb));
                 #[allow(clippy::cast_possible_truncation)]
@@ -266,7 +325,14 @@ impl Level {
             let direction = (origin - center).normalize();
             let seen = self.seen_percent(center, aabb);
             let exposure = f64::from(seen);
-            if player.is_some() || mob.is_some_and(crate::mob::MobData::is_alive) || is_boat {
+            // `ExplosionDamageCalculator.getEntityDamageAmount` for the living entities.
+            let crystal = kind == entity_ids::END_CRYSTAL;
+            if style.damages_entities
+                && (player.is_some()
+                    || crystal
+                    || mob.is_some_and(crate::mob::MobData::is_alive)
+                    || is_boat)
+            {
                 let double_radius = f64::from(double_radius);
                 let pow = (1.0 - dist) * exposure;
                 #[allow(clippy::cast_possible_truncation)]
@@ -280,7 +346,8 @@ impl Level {
                 });
             }
             let resistance = mob.map_or(0.0, |m| m.attrs.explosion_knockback_resistance);
-            let knockback = direction * ((1.0 - dist) * exposure * 1.0 * (1.0 - resistance));
+            let knockback =
+                direction * ((1.0 - dist) * exposure * style.knockback * (1.0 - resistance));
             if player.is_some() {
                 hit_players.push((id, knockback));
                 continue;
@@ -306,22 +373,41 @@ impl Level {
         source: Option<EntityId>,
         indirect: Option<EntityId>,
         interaction: BlockInteraction,
+        radius: f32,
     ) {
         // `Util.shuffle(targetBlocks, level.random)`.
         for i in (2..=targets.len()).rev() {
             let swap = self.random.next_int_bounded(i as i32) as usize;
             targets.swap(i - 1, swap);
         }
-        let mut dropped: Vec<(BlockPos, BlockState)> = Vec::new();
+        // `StackCollector`s: the drops merged into stacks of up to 16 (`addOrAppendStack`).
+        let mut stacks: Vec<(BlockPos, crate::item::ItemStack)> = Vec::new();
+        let mut loot = Vec::new();
+        let decay = (interaction == BlockInteraction::DestroyWithDecay).then_some(radius);
         for &pos in targets.iter() {
             // `Block.onExplosionHit`.
             let state = self.block(pos);
             if state.is_air() || interaction == BlockInteraction::TriggerBlock {
                 continue;
             }
-            // `dropFromExplosion`: everything but TNT.
+            // `dropFromExplosion`: everything but TNT; the loot is rolled block by block.
             if !state.is(ids::TNT) {
-                dropped.push((pos, state));
+                loot.clear();
+                drops::explosion_loot(self, pos, state, decay, source, &mut loot);
+                for mut stack in loot.drain(..) {
+                    for (_, collected) in &mut stacks {
+                        if crate::item_entity::are_mergable(collected, &stack) {
+                            *collected =
+                                crate::item_entity::merge_stacks_max(collected, &mut stack, 16);
+                        }
+                        if stack.is_empty() {
+                            break;
+                        }
+                    }
+                    if !stack.is_empty() {
+                        stacks.push((pos, stack));
+                    }
+                }
             }
             self.set_block(pos, BlockState::AIR, update::ALL);
             // `wasExploded`.
@@ -329,9 +415,11 @@ impl Level {
                 tnt::was_exploded(self, pos, indirect);
             }
         }
-        // The drops (`Block.popResource` of the merged stacks).
-        for (pos, state) in dropped {
-            drops::drop_resources(self, pos, state, source);
+        // `Block.popResource` of the merged stacks.
+        if self.settings.block_drops {
+            for (pos, stack) in stacks {
+                drops::pop_resource(self, pos, stack);
+            }
         }
     }
 

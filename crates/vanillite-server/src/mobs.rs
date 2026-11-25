@@ -9,7 +9,11 @@ use vanillite_data::entity::ids;
 use vanillite_game::entities::{Entities, is_mob_kind};
 use vanillite_game::item::ItemStack;
 use vanillite_game::level::Level;
+use vanillite_game::level::explosion::BlockInteraction;
 use vanillite_game::minecart::{self, MinecartKind};
+use vanillite_game::mob::boss;
+use vanillite_game::mob::boss::dragon::{self, fight::DragonFight};
+use vanillite_game::mob::boss::special::{self, is_special_kind};
 use vanillite_game::mob::spawn::{self, SpawnInput, SpawnLimits, SpawnTable, Spawner};
 use vanillite_game::mob::{
     self, Environment, MobContext, MobSettings, WorldAction, animal, attack, combat, projectile,
@@ -36,9 +40,29 @@ impl BlockAccess for NoBlocks {
     }
 }
 
+/// The dragon fight's saved data: the last state the fight wrote, taken by the next save.
+#[derive(Debug, Default)]
+struct FightData(std::sync::Mutex<Option<vanillite_nbt::Compound>>);
+
+impl vanillite_storage::saved_data::SavedData for FightData {
+    fn id(&self) -> &str {
+        DragonFight::ID
+    }
+
+    fn save(&self) -> Option<vanillite_nbt::Compound> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
+}
+
 /// The mob state of one world.
 #[derive(Debug)]
 pub(crate) struct WorldMobs {
+    /// The End's dragon fight.
+    fight: Option<DragonFight>,
+    fight_data: Option<Arc<FightData>>,
     cx: MobContext,
     spawner: Spawner,
     table: Option<Arc<SpawnTable>>,
@@ -51,11 +75,17 @@ pub(crate) struct WorldMobs {
     generated: Vec<(ChunkPos, u32)>,
     scratch: Vec<ChunkPos>,
     ticks: u64,
+    /// The custom spawners of the overworld (`ServerLevel.customSpawners`).
+    phantoms: vanillite_game::mob::fam::undead::phantom::PhantomSpawner,
+    patrols: vanillite_game::mob::fam::illager::patrol::PatrolSpawner,
+    cats: spawn::CatSpawner,
 }
 
 impl WorldMobs {
     pub(crate) fn new(table: Option<Arc<SpawnTable>>, seed: i64, rules: &WorldRules) -> WorldMobs {
         WorldMobs {
+            fight: None,
+            fight_data: None,
             cx: MobContext::default(),
             spawner: Spawner::default(),
             table,
@@ -66,7 +96,122 @@ impl WorldMobs {
             generated: Vec::new(),
             scratch: Vec::new(),
             ticks: 0,
+            phantoms: Default::default(),
+            patrols: Default::default(),
+            cats: spawn::CatSpawner::default(),
         }
+    }
+
+    /// Creates the End's dragon fight from its saved data (`EnderDragonFight.TYPE`).
+    pub(crate) fn init_dragon_fight(
+        &mut self,
+        data: &vanillite_storage::saved_data::SavedDataStore,
+        level: &mut Level,
+    ) {
+        let saved = match data.read(DragonFight::ID) {
+            Ok(saved) => saved,
+            Err(e) => {
+                log::error!("Could not read the dragon fight: {e}");
+                None
+            }
+        };
+        let mut bar_random = vanillite_base::random::LegacyRandom::new(
+            vanillite_base::random::RandomSource::next_long(level.random()),
+        );
+        let fight = DragonFight::new(saved.as_ref(), self.seed, &mut bar_random);
+        let store = Arc::new(FightData::default());
+        data.register(Arc::clone(&store) as _);
+        self.fight = Some(fight);
+        self.fight_data = Some(store);
+    }
+
+    /// `EnderDragonFight.tick` (before the entities), and the crystal placed since the last
+    /// tick (`tryRespawn`).
+    pub(crate) fn tick_dragon_fight(
+        &mut self,
+        level: &mut Level,
+        survival: &mut WorldSurvival,
+        global: &Global,
+        dimension: &str,
+    ) {
+        let Some(fight) = &mut self.fight else {
+            self.cx.dragon_fight = None;
+            return;
+        };
+        let state = &global.level;
+        let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+        let rules = state.rules().clone();
+        let no_blocks = NoBlocks;
+        let raining = |_| false;
+        let mut no_gateway = |_| false;
+        let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
+        let mut env = survival.env(
+            state,
+            &rules,
+            &no_blocks,
+            &raining,
+            dimension,
+            &mut no_gateway,
+            &hooks,
+            &names,
+        );
+        if std::mem::take(&mut level.output().try_dragon_respawn) {
+            fight.try_respawn(level);
+        }
+        fight.tick(level, &mut env, &mut self.cx);
+        self.cx.dragon_fight = Some(fight.view());
+        self.store_fight();
+        self.apply_explosion_hurts(level, survival, global, dimension);
+        self.apply_actions(level, survival, global, dimension);
+        survival.deliver(&mut level.entities, global);
+    }
+
+    /// Hands the fight's changed state to its saved data.
+    fn store_fight(&mut self) {
+        if let (Some(fight), Some(data)) = (&mut self.fight, &self.fight_data)
+            && fight.take_dirty()
+        {
+            *data
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(fight.save());
+        }
+    }
+
+    /// What the dragon and the crystals reported, handed to the fight.
+    fn dragon_events(
+        &mut self,
+        level: &mut Level,
+        survival: &mut WorldSurvival,
+        global: &Global,
+        dimension: &str,
+    ) {
+        let events = std::mem::take(&mut self.cx.dragon_events);
+        let Some(fight) = &mut self.fight else {
+            return;
+        };
+        let state = &global.level;
+        let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+        let rules = state.rules().clone();
+        let no_blocks = NoBlocks;
+        let raining = |_| false;
+        let mut no_gateway = |_| false;
+        let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
+        let mut env = survival.env(
+            state,
+            &rules,
+            &no_blocks,
+            &raining,
+            dimension,
+            &mut no_gateway,
+            &hooks,
+            &names,
+        );
+        for event in events {
+            fight.handle(level, &mut env, &mut self.cx, event);
+        }
+        self.cx.dragon_fight = Some(fight.view());
+        self.store_fight();
     }
 
     /// Takes over changed rules (config reload).
@@ -74,11 +219,6 @@ impl WorldMobs {
         self.settings = settings(rules);
         self.limits = spawn_limits(rules);
         self.spawn_interval = i64::from(rules.spawning.spawn_interval.max(1));
-    }
-
-    /// The spawn settings of the biomes.
-    pub(crate) fn table(&self) -> Option<&SpawnTable> {
-        self.table.as_deref()
     }
 
     /// The attacks, interactions, entity item uses and vehicle input of the players since the
@@ -111,7 +251,7 @@ impl WorldMobs {
         let state = &global.level;
         let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
         let rules = state.rules().clone();
-        let difficulty = state.difficulty;
+        let difficulty = state.difficulty();
         let network_ids = std::sync::Arc::clone(level.network_ids_arc());
         let mut ents = std::mem::take(&mut level.entities);
         {
@@ -120,6 +260,7 @@ impl WorldMobs {
             let chunks = &level.chunks;
             let raining = move |pos| raining_at(chunks, climate.as_deref(), &weather, pos);
             let mut no_gateway = |_| false;
+            let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
             let mut env = survival.env(
                 state,
                 &rules,
@@ -128,6 +269,7 @@ impl WorldMobs {
                 dimension,
                 &mut no_gateway,
                 &hooks,
+                &names,
             );
             let level: &Level = level;
             for (player, action) in pending {
@@ -142,6 +284,12 @@ impl WorldMobs {
                         let Some(target) = in_reach(&ents, player, network_id) else {
                             continue;
                         };
+                        // The part the player hit takes the damage (`EnderDragon.hurt(part)`).
+                        if let Some(i) = dragon::part_of(&ents, target, network_id)
+                            && let Some(s) = ents.mob_mut(target).and_then(|m| m.boss.dragon_mut())
+                        {
+                            s.hit_part = Some(i);
+                        }
                         attack_entity(level, &mut ents, &mut env, &mut self.cx, player, target);
                     }
                     EntityAction::Interact {
@@ -230,6 +378,9 @@ impl WorldMobs {
                     );
                 }
                 riding::paddle_boat(&mut ents, player, input.paddles.0, input.paddles.1);
+                if let Some(strength) = input.jump {
+                    riding::riding_jump(&mut ents, &mut env, player, strength);
+                }
                 // `wantsToStopRiding`: sneaking gets a player off its vehicle.
                 if input.input.shift && ents.vehicle_of(player).is_some() {
                     riding::stop_riding(&mut ents, &mut env, player);
@@ -237,7 +388,7 @@ impl WorldMobs {
             }
         }
         level.entities = ents;
-        self.finish_removals(level);
+        self.apply_actions(level, survival, global, dimension);
         vanillite_game::menu::container::open_requests(level, std::mem::take(&mut self.cx.menus));
         survival.deliver(&mut level.entities, global);
     }
@@ -257,8 +408,8 @@ impl WorldMobs {
         };
         let state = &global.level;
         let rules = state.rules().clone();
-        let difficulty = state.difficulty;
-        let env = environment(global, dimension, survival);
+        let difficulty = state.difficulty();
+        let env = environment(global, dimension, survival, self.seed);
         // New chunks: their animals once they are live.
         level.chunks.take_generated(&mut self.scratch);
         self.generated
@@ -285,9 +436,9 @@ impl WorldMobs {
             return;
         }
         let persistent = level.game_time() % 400 == 0;
-        if self.spawn_interval > 1 && !persistent && level.game_time() % self.spawn_interval != 0 {
-            return;
-        }
+        // `performance.spawning.spawn-interval`: natural spawn rounds only every n-th tick.
+        let natural =
+            self.spawn_interval == 1 || persistent || level.game_time() % self.spawn_interval == 0;
         let players: Vec<(EntityId, Vec3)> = level
             .entities
             .players
@@ -303,7 +454,86 @@ impl WorldMobs {
             env,
             limits: self.limits,
         };
-        spawn::tick(level, &table, &mut self.spawner, &input, persistent);
+        if natural {
+            spawn::tick(level, &table, &mut self.spawner, &input, persistent);
+        }
+        if dimension == "minecraft:overworld" {
+            self.custom_spawners(
+                level,
+                &table,
+                &rules,
+                input.spawn_enemies,
+                difficulty,
+                env,
+                &players,
+            );
+        }
+    }
+
+    /// `tickCustomSpawners`: phantoms, patrols and cats (the wandering trader is #60).
+    #[allow(clippy::too_many_arguments)]
+    fn custom_spawners(
+        &mut self,
+        level: &mut Level,
+        table: &SpawnTable,
+        rules: &vanillite_game::survival::rules::GameRules,
+        spawn_enemies: bool,
+        difficulty: Difficulty,
+        env: Environment,
+        players: &[(EntityId, Vec3)],
+    ) {
+        use vanillite_game::mob::fam::illager::patrol::{self, PatrolInput};
+        use vanillite_game::mob::fam::undead::phantom;
+        let rest = |id: EntityId| {
+            level
+                .entities
+                .player(id)
+                .map_or(0, |p| p.survival.time_since_rest)
+        };
+        let rests: Vec<(EntityId, i32)> = players.iter().map(|&(id, _)| (id, rest(id))).collect();
+        let time_since_rest = |id: EntityId| rests.iter().find(|r| r.0 == id).map_or(0, |r| r.1);
+        phantom::phantom_spawner_tick(
+            &mut self.phantoms,
+            level,
+            &env,
+            difficulty,
+            rules.bool(Rule::SPAWN_PHANTOMS),
+            spawn_enemies,
+            &time_since_rest,
+        );
+        let patrol_players: Vec<(Vec3, bool)> = level
+            .entities
+            .players
+            .iter()
+            .filter_map(|(id, p)| {
+                let e = level.entities.store.get(id)?;
+                Some((e.pos(), p.game_mode == GameMode::Spectator))
+            })
+            .collect();
+        let no_village = |_| false;
+        let can_patrol = |level: &Level, pos: BlockPos| {
+            table.biome(level.biome(pos)).is_none_or(|b| b.patrol_spawn)
+        };
+        let input = PatrolInput {
+            enabled: spawn_enemies && rules.bool(Rule::SPAWN_PATROLS),
+            difficulty,
+            env,
+            players: &patrol_players,
+            table: Some(table),
+            close_to_village: &no_village,
+            can_patrol_spawn: &can_patrol,
+        };
+        patrol::patrol_spawner_tick(level, &mut self.patrols, &input);
+        let ids: Vec<EntityId> = players.iter().map(|p| p.0).collect();
+        spawn::cat_spawner_tick(
+            level,
+            Some(table),
+            &mut self.cats,
+            &mut self.spawner.structures,
+            &env,
+            difficulty,
+            &ids,
+        );
     }
 
     /// `entityTickList.forEach(tickNonPassenger)`: falling blocks, mobs, arrows and orbs in
@@ -319,9 +549,26 @@ impl WorldMobs {
         let state = &global.level;
         let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
         let rules = state.rules().clone();
-        let has_players = !level.entities.players.is_empty();
-        let env = environment(global, dimension, survival);
+        // `WitherSkullBlock.setPlacedBy` of the skulls players placed since the last tick.
+        for pos in std::mem::take(&mut level.output().summon_checks) {
+            let seed = vanillite_game::mob::new_entity_seed();
+            boss::wither::check_spawn(level, pos, state.difficulty(), seed);
+        }
+        // `getNearestPlayer` skips spectators.
+        let has_players = level
+            .entities
+            .players
+            .iter()
+            .any(|(_, p)| p.game_mode != GameMode::Spectator);
+        let env = environment(global, dimension, survival, self.seed);
         self.cx.begin_tick(env, self.settings, has_players);
+        // What spawner blocks read when the block entities tick after the entities.
+        level.spawner_env = vanillite_game::block::spawner::SpawnerEnv {
+            env,
+            difficulty: state.difficulty(),
+            spawner_blocks_work: rules.bool(Rule::SPAWNER_BLOCKS_WORK),
+            spawn_mobs: rules.bool(Rule::SPAWN_MOBS),
+        };
         self.lightning_hits(level, survival, global, dimension);
         let activation = f64::from(self.settings.activation_range);
         minecart::players_push(&mut level.entities);
@@ -352,22 +599,34 @@ impl WorldMobs {
                 level.entities = ents;
                 vanillite_game::entities::tick_entity(level, id, kind);
                 self.apply_explosion_hurts(level, survival, global, dimension);
+                self.apply_actions(level, survival, global, dimension);
                 ents = std::mem::take(&mut level.entities);
                 continue;
             }
             let is_mob = is_mob_kind(kind);
+            let is_special = is_special_kind(kind);
             let is_boat = BoatKind::of(kind).is_some();
             let is_minecart = MinecartKind::of(kind).is_some();
+            let is_missile = vanillite_game::mob::missile::is_missile_kind(kind);
             if !is_mob
+                && !is_special
                 && !is_boat
                 && !is_minecart
-                && kind != ids::ARROW
+                && !is_missile
+                && !projectile::is_arrow_kind(kind)
                 && kind != ids::EXPERIENCE_ORB
+                && kind != ids::AREA_EFFECT_CLOUD
             {
                 continue;
             }
             let chunk = BlockPos::containing(pos.x, pos.y, pos.z).chunk();
             if !level.is_block_ticking(chunk) {
+                continue;
+            }
+            if kind == ids::EXPERIENCE_ORB {
+                level.entities = ents;
+                vanillite_game::entities::tick_entity(level, id, kind);
+                ents = std::mem::take(&mut level.entities);
                 continue;
             }
             if is_mob && activation > 0.0 && !self.ticks.is_multiple_of(20) {
@@ -391,6 +650,7 @@ impl WorldMobs {
                 let chunks = &level.chunks;
                 let raining = move |pos| raining_at(chunks, climate.as_deref(), &weather, pos);
                 let mut no_gateway = |_| false;
+                let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
                 let mut env = survival.env(
                     state,
                     &rules,
@@ -399,21 +659,38 @@ impl WorldMobs {
                     dimension,
                     &mut no_gateway,
                     &hooks,
+                    &names,
                 );
                 let level_ref: &Level = level;
                 if is_mob {
                     mob::tick(level_ref, &mut ents, &mut env, &mut self.cx, id);
+                } else if is_special {
+                    special::tick(level_ref, &mut ents, &mut env, &mut self.cx, id);
                 } else if is_boat {
                     vehicle::tick_boat(level_ref, &mut ents, &mut env, &mut self.cx, id);
                 } else if is_minecart {
                     minecart::tick(level_ref, &mut ents, &mut env, &mut self.cx, id);
-                } else if kind == ids::ARROW {
+                } else if projectile::is_arrow_kind(kind) {
                     projectile::tick_arrow(level_ref, &mut ents, &mut env, &mut self.cx, id);
-                } else {
-                    projectile::tick_orb(level_ref, &mut ents, &mut env, &mut self.cx, id);
+                } else if is_missile {
+                    vanillite_game::mob::missile::tick(
+                        level_ref,
+                        &mut ents,
+                        &mut env,
+                        &mut self.cx,
+                        id,
+                    );
+                } else if kind == ids::AREA_EFFECT_CLOUD {
+                    vanillite_game::effect::cloud::tick(
+                        level_ref,
+                        &mut ents,
+                        &mut env,
+                        &mut self.cx,
+                        id,
+                    );
                 }
             }
-            if !self.cx.actions.is_empty() {
+            if !self.cx.actions.is_empty() || !self.cx.dragon_events.is_empty() {
                 level.entities = ents;
                 self.apply_actions(level, survival, global, dimension);
                 ents = std::mem::take(&mut level.entities);
@@ -425,12 +702,14 @@ impl WorldMobs {
                 ents.despawn(d);
             }
         }
+        boss::wither::sweep_boss_bars(&mut self.cx, &ents, &mut survival.effects);
         // `rideTick`: passengers follow their vehicles; leads of knots and loaded mobs.
         riding::position_all_riders(&mut ents);
         {
             let blocks = WorldBlocks(&level.chunks);
             let raining = |_| false;
             let mut no_gateway = |_| false;
+            let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
             let mut env = survival.env(
                 state,
                 &rules,
@@ -439,6 +718,7 @@ impl WorldMobs {
                 dimension,
                 &mut no_gateway,
                 &hooks,
+                &names,
             );
             let mut discarded = Vec::new();
             vanillite_game::player::using::tick_all(&mut ents, &mut env);
@@ -461,12 +741,107 @@ impl WorldMobs {
     ) {
         let state = &global.level;
         let rules = state.rules().clone();
+        while !self.cx.actions.is_empty() || !self.cx.dragon_events.is_empty() {
+            self.apply_queued(level, survival, global, dimension, &rules);
+            self.finish_removals(level);
+            if !self.cx.dragon_events.is_empty() {
+                self.dragon_events(level, survival, global, dimension);
+                self.finish_removals(level);
+            }
+        }
+        self.finish_removals(level);
+    }
+
+    /// One round of the queued world changes.
+    fn apply_queued(
+        &mut self,
+        level: &mut Level,
+        survival: &mut WorldSurvival,
+        global: &Global,
+        dimension: &str,
+        rules: &vanillite_game::survival::rules::GameRules,
+    ) {
         for action in std::mem::take(&mut self.cx.actions) {
-            if let WorldAction::Explode(e) = action {
-                e.run(level, &rules);
-                self.apply_explosion_hurts(level, survival, global, dimension);
-            } else {
-                action.apply_to_level(level);
+            match action {
+                WorldAction::ExplodeWith {
+                    source,
+                    indirect,
+                    pos,
+                    radius,
+                    blocks,
+                } => {
+                    // `ExplosionInteraction.BLOCK` decays with `blockExplosionDropDecay`.
+                    let interaction = if !blocks {
+                        BlockInteraction::Keep
+                    } else if rules.bool(Rule::BLOCK_EXPLOSION_DROP_DECAY) {
+                        BlockInteraction::DestroyWithDecay
+                    } else {
+                        BlockInteraction::Destroy
+                    };
+                    level.explode(source, indirect, pos, radius, interaction);
+                    self.apply_explosion_hurts(level, survival, global, dimension);
+                }
+                WorldAction::Explode(e) => {
+                    // `Level.ExplosionInteraction.MOB`: `getDestroyType` with `mobGriefing`.
+                    let decay = if e.mob {
+                        Rule::MOB_EXPLOSION_DROP_DECAY
+                    } else {
+                        Rule::TNT_EXPLOSION_DROP_DECAY
+                    };
+                    let interaction = if e.mob && !rules.bool(Rule::MOB_GRIEFING) {
+                        BlockInteraction::Keep
+                    } else if rules.bool(decay) {
+                        BlockInteraction::DestroyWithDecay
+                    } else {
+                        BlockInteraction::Destroy
+                    };
+                    // `getIndirectSourceEntity`: a living source caused it itself.
+                    level.explode_with(
+                        e.source,
+                        e.indirect.or(e.source),
+                        e.pos,
+                        e.radius,
+                        interaction,
+                        vanillite_game::level::explosion::ExplosionStyle {
+                            resistance: e.resistance,
+                            ..Default::default()
+                        },
+                    );
+                    self.apply_explosion_hurts(level, survival, global, dimension);
+                }
+                WorldAction::SetBlock(pos, block, flags) => {
+                    level.set_block(pos, block, flags);
+                }
+                WorldAction::DestroyBlock(pos, drop) => {
+                    level.destroy_block(pos, drop, None);
+                }
+                WorldAction::LevelEvent(event, pos, data) => {
+                    level.level_event(None, event, pos, data);
+                }
+                WorldAction::SetDoorOpen(pos, open, source) => {
+                    vanillite_game::block::redstone::set_door_open(level, pos, open, source);
+                }
+                WorldAction::WindBurst(b) => {
+                    // `ExplosionInteraction.TRIGGER` without damage (`damagesEntities` off).
+                    level.explode_with(
+                        b.source,
+                        None,
+                        b.pos,
+                        b.radius,
+                        BlockInteraction::TriggerBlock,
+                        vanillite_game::level::explosion::ExplosionStyle {
+                            damages_entities: false,
+                            knockback: b.knockback,
+                            wind_sound: Some(b.sound),
+                            resistance:
+                                vanillite_game::level::explosion::BlockResistance::WindCharge,
+                        },
+                    );
+                }
+                WorldAction::Level(action) => action.apply(level),
+                other => {
+                    other.apply_to_level(level);
+                }
             }
         }
         self.finish_removals(level);
@@ -490,6 +865,7 @@ impl WorldMobs {
         let no_blocks = NoBlocks;
         let raining = |_| false;
         let mut no_gateway = |_| false;
+        let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
         let mut env = survival.env(
             state,
             &rules,
@@ -498,6 +874,7 @@ impl WorldMobs {
             dimension,
             &mut no_gateway,
             &hooks,
+            &names,
         );
         let mut ents = std::mem::take(&mut level.entities);
         for hurt in hurts {
@@ -547,6 +924,52 @@ impl WorldMobs {
         self.finish_removals(level);
     }
 
+    /// The magic damage block entities dealt this tick (conduits hunting mobs).
+    pub(crate) fn apply_magic_hurts(
+        &mut self,
+        level: &mut Level,
+        survival: &mut WorldSurvival,
+        global: &Global,
+        dimension: &str,
+    ) {
+        if level.output().magic_hurts.is_empty() {
+            return;
+        }
+        let state = &global.level;
+        let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+        let rules = state.rules().clone();
+        let hurts = std::mem::take(&mut level.output().magic_hurts);
+        let no_blocks = NoBlocks;
+        let raining = |_| false;
+        let mut no_gateway = |_| false;
+        let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
+        let mut env = survival.env(
+            state,
+            &rules,
+            &no_blocks,
+            &raining,
+            dimension,
+            &mut no_gateway,
+            &hooks,
+            &names,
+        );
+        let mut ents = std::mem::take(&mut level.entities);
+        for (target, amount) in hurts {
+            let source = DamageSource::of(env.types.magic);
+            combat::hurt(
+                level,
+                &mut ents,
+                &mut env,
+                &mut self.cx,
+                target,
+                source,
+                amount,
+            );
+        }
+        level.entities = ents;
+        self.finish_removals(level);
+    }
+
     /// `thunderHit` of the non-player entities lightning struck: mobs burn and take 5 damage,
     /// creepers become charged, items and boats are hurt.
     fn lightning_hits(
@@ -561,13 +984,14 @@ impl WorldMobs {
         }
         let struck = std::mem::take(&mut survival.struck);
         let state = &global.level;
+        let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
         let rules = state.rules().clone();
         let mut ents = std::mem::take(&mut level.entities);
         {
             let no_blocks = NoBlocks;
             let raining = |_| false;
-            let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
             let mut no_gateway = |_| false;
+            let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
             let mut env = survival.env(
                 state,
                 &rules,
@@ -576,6 +1000,7 @@ impl WorldMobs {
                 dimension,
                 &mut no_gateway,
                 &hooks,
+                &names,
             );
             let source = DamageSource::of(env.types.lightning_bolt);
             for id in struck {
@@ -590,12 +1015,25 @@ impl WorldMobs {
                     hurt_vehicle(&mut ents, &mut env, &mut self.cx, id, source, 5.0);
                     continue;
                 }
+                let Some(kind) = ents.mob(id).filter(|m| m.is_alive()).map(|m| m.kind) else {
+                    continue;
+                };
+                if kind.family() != mob::Family::Classic {
+                    let mut h = vanillite_game::mob::fam::Hurt {
+                        level,
+                        ents: &mut ents,
+                        env: &mut env,
+                        cx: &mut self.cx,
+                        target: id,
+                        source,
+                    };
+                    if vanillite_game::mob::fam::thunder_hit(&mut h, kind) {
+                        continue;
+                    }
+                }
                 let Some(m) = ents.mob_mut(id) else {
                     continue;
                 };
-                if !m.is_alive() {
-                    continue;
-                }
                 m.fire_ticks += 1;
                 if m.fire_ticks == 0 {
                     m.fire_ticks = 160;
@@ -633,11 +1071,8 @@ fn settings(rules: &WorldRules) -> MobSettings {
             VanillaOr::Vanilla => None,
             VanillaOr::Value(n) => Some(n),
         },
-        xp_merge_radius: rules.items.xp_merge_radius,
         arrow_despawn_ticks: i32::from(rules.items.arrow_despawn_ticks),
-        hard_despawn_range: spawning
-            .hard_despawn_range
-            .map_or(vanilla.hard_despawn_range, f64::from),
+        hard_despawn_range: spawning.hard_despawn_range.map(f64::from),
         soft_despawn_range: spawning
             .soft_despawn_range
             .map_or(vanilla.soft_despawn_range, f64::from),
@@ -673,11 +1108,19 @@ fn distance_sqr_to_box(b: &Aabb, p: Vec3) -> f64 {
 
 /// This tick's environment: sky darkness from the day time and the weather, whether monsters
 /// burn, and the dimension's monster light rules.
-fn environment(global: &Global, dimension: &str, survival: &WorldSurvival) -> Environment {
+fn environment(
+    global: &Global,
+    dimension: &str,
+    survival: &WorldSurvival,
+    seed: i64,
+) -> Environment {
     let overworld = dimension == "minecraft:overworld";
     let nether = dimension == "minecraft:the_nether";
     if !overworld {
         return Environment {
+            surface_slime_chance: 0.0,
+            world_seed: seed,
+            sea_level: if nether { 32 } else { 0 },
             sky_darken: if nether { 0 } else { 11 },
             monsters_burn: false,
             thundering: false,
@@ -686,6 +1129,7 @@ fn environment(global: &Global, dimension: &str, survival: &WorldSurvival) -> En
             monster_block_light_limit: if nether { 15 } else { 0 },
             monster_light_test: if nether { (7, 7) } else { (0, 7) },
             ambient_light: if nether { 0.1 } else { 0.0 },
+            has_ceiling: nether,
         };
     }
     let day = {
@@ -699,11 +1143,29 @@ fn environment(global: &Global, dimension: &str, survival: &WorldSurvival) -> En
     }
     .unwrap_or(6000);
     let w = survival.weather;
-    Environment::overworld(day, w.rain(), w.thunder())
+    // The `minecraft:moon` timeline: the surface slime chance is half the moon's brightness.
+    let moon = {
+        let clocks = global.level.clocks();
+        clocks.timeline("minecraft:moon").and_then(|t| {
+            clocks
+                .clocks
+                .get(t.clock)
+                .map(|c| t.current_ticks(c.total_ticks))
+        })
+    }
+    .unwrap_or(0);
+    const MOON_BRIGHTNESS: [f32; 8] = [1.0, 0.75, 0.5, 0.25, 0.0, 0.25, 0.5, 0.75];
+    let phase = usize::try_from((moon / 24000).rem_euclid(8)).unwrap_or(0);
+    Environment {
+        surface_slime_chance: MOON_BRIGHTNESS[phase] * 0.5,
+        world_seed: seed,
+        ..Environment::overworld(day, w.rain(), w.thunder())
+    }
 }
 
 /// The entity with `network_id` if `player` can reach it (`isWithinEntityInteractionRange`:
 /// 3 blocks plus 3 from the eyes to its box).
+/// A dragon part (`getEntityOrPart`) is reached by its own box; the hit goes to the dragon.
 fn in_reach(ents: &Entities, player: EntityId, network_id: i32) -> Option<EntityId> {
     let target = ents.by_network_id(network_id)?;
     if target == player {
@@ -711,12 +1173,19 @@ fn in_reach(ents: &Entities, player: EntityId, network_id: i32) -> Option<Entity
     }
     let pe = ents.store.get(player)?;
     let te = ents.store.get(target)?;
+    let target_box = match dragon::part_of(ents, target, network_id) {
+        Some(i) => ents
+            .mob(target)
+            .and_then(|m| m.boss.dragon())
+            .map_or(te.aabb(), |s| s.part_box(i)),
+        None => te.aabb(),
+    };
     let eye = Vec3::new(
         pe.pos().x,
         pe.pos().y + f64::from(pe.kind().info().eye_height) * f64::from(pe.dims().height / 1.8),
         pe.pos().z,
     );
-    (distance_sqr_to_box(&te.aabb(), eye) < 36.0).then_some(target)
+    (distance_sqr_to_box(&target_box, eye) < 36.0).then_some(target)
 }
 
 /// `Player.attack` of mobs and players, boats and knots.
@@ -829,8 +1298,8 @@ fn put_back(ents: &mut Entities, player: EntityId, hand: Hand, stack: ItemStack)
     }
 }
 
-/// `use_item` of the items that need entities: boats, the carrot on a stick, and items used
-/// over time.
+/// `use_item` of the items that need entities: boats, the carrot on a stick, thrown potions,
+/// and items used over time.
 fn use_item(
     level: &Level,
     ents: &mut Entities,
@@ -849,15 +1318,17 @@ fn use_item(
         vehicle::use_boat_item(
             level,
             ents,
-            env,
             network_ids,
             player,
             &mut stack,
             creative,
             reach,
         );
-    } else if name == "minecraft:carrot_on_a_stick" {
+    } else if name == "minecraft:carrot_on_a_stick" || name == "minecraft:warped_fungus_on_a_stick"
+    {
         riding::boost(ents, env, player, &mut stack, creative);
+    } else if vanillite_game::effect::thrown::kind_of(&stack).is_some() {
+        vanillite_game::effect::thrown::throw(ents, env, network_ids, player, &mut stack, creative);
     } else {
         put_back(ents, player, hand, stack);
         vanillite_game::player::using::start(ents, env, player, hand);
