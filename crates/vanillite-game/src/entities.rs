@@ -60,6 +60,8 @@ pub struct Entities {
     pub by_network_id: FxHashMap<i32, EntityId>,
     /// Primed TNT kind data.
     pub primed_tnts: Dense<PrimedTntData>,
+    /// Area effect cloud kind data.
+    pub clouds: Dense<crate::effect::cloud::CloudData>,
     /// Experience orb kind data.
     pub experience_orbs: Dense<ExperienceOrbData>,
 }
@@ -208,6 +210,34 @@ impl Entities {
         self.store.spawn(new, |id| primed_tnts.push(id, data))
     }
 
+    /// Adds an area effect cloud.
+    pub fn spawn_cloud(
+        &mut self,
+        new: NewEntity,
+        data: crate::effect::cloud::CloudData,
+    ) -> EntityId {
+        let clouds = &mut self.clouds;
+        self.store.spawn(new, |id| clouds.push(id, data))
+    }
+
+    /// The area effect cloud data of an entity.
+    pub fn cloud(&self, id: EntityId) -> Option<&crate::effect::cloud::CloudData> {
+        let entity = self.store.get(id)?;
+        (entity.kind() == ids::AREA_EFFECT_CLOUD)
+            .then(|| self.clouds.get(entity.kind_row()))
+            .flatten()
+    }
+
+    /// The area effect cloud data of an entity, mutably.
+    pub fn cloud_mut(&mut self, id: EntityId) -> Option<&mut crate::effect::cloud::CloudData> {
+        let entity = self.store.get(id)?;
+        if entity.kind() != ids::AREA_EFFECT_CLOUD {
+            return None;
+        }
+        let row = entity.kind_row();
+        self.clouds.get_mut(row)
+    }
+
     /// The primed TNT data of an entity.
     pub fn primed_tnt(&self, id: EntityId) -> Option<&PrimedTntData> {
         let entity = self.store.get(id)?;
@@ -291,6 +321,8 @@ impl Entities {
             self.arrows.swap_remove(row).and_then(|(_, moved)| moved)
         } else if is_mob_kind(kind) {
             self.mobs.swap_remove(row).and_then(|(_, moved)| moved)
+        } else if kind == ids::AREA_EFFECT_CLOUD {
+            self.clouds.swap_remove(row).and_then(|(_, moved)| moved)
         } else if kind == ids::TNT {
             self.primed_tnts
                 .swap_remove(row)

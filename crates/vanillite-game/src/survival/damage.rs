@@ -137,6 +137,10 @@ pub struct DamageTypes {
     pub arrow: DamageKind,
     pub explosion: DamageKind,
     pub player_explosion: DamageKind,
+    pub magic: DamageKind,
+    pub indirect_magic: DamageKind,
+    pub wither: DamageKind,
+    pub thorns: DamageKind,
 }
 
 /// The built-in types of Vanilla 26.3 with their values, for servers without data packs (tests).
@@ -225,6 +229,10 @@ impl DamageTypes {
             arrow: find("minecraft:arrow"),
             explosion: find("minecraft:explosion"),
             player_explosion: find("minecraft:player_explosion"),
+            magic: find("minecraft:magic"),
+            indirect_magic: find("minecraft:indirect_magic"),
+            wither: find("minecraft:wither"),
+            thorns: find("minecraft:thorns"),
             types,
         }
     }

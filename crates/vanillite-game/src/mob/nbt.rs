@@ -122,7 +122,10 @@ pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
         out.insert("Silent", true);
     }
     out.insert("Health", m.health);
-    out.insert("AbsorptionAmount", 0.0_f32);
+    out.insert("AbsorptionAmount", m.absorption);
+    if let Some(list) = m.effects.save() {
+        out.insert("active_effects", list);
+    }
     out.insert("FallFlying", false);
     out.insert("CanPickUpLoot", false);
     out.insert("PersistenceRequired", m.persistent);
@@ -208,6 +211,14 @@ pub fn load_mob(tag: &Compound, seed: i64) -> Option<LoadedMob> {
         super::random_uuid(&mut r)
     });
     let mut m = MobData::new(kind, seed);
+    // Effects first: their modifiers (Health Boost) raise the maximum health.
+    m.effects.load(tag.get("active_effects"));
+    if !m.effects.is_empty() {
+        let dirty = m.effects.modifiers.take_dirty();
+        crate::effect::living::apply_mob_modifiers(&mut m, &dirty);
+        m.absorption = float(tag, "AbsorptionAmount").unwrap_or(0.0).max(0.0);
+        crate::effect::living::apply_mob_modifiers(&mut m, &[]);
+    }
     if let Some(h) = float(tag, "Health") {
         m.health = h.clamp(0.0, m.max_health());
     }

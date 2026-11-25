@@ -201,6 +201,8 @@ pub struct Survival {
     pub take_xp_delay: i32,
     /// `lastLevelUpTime`: the tick of the last level-up sound.
     pub last_level_up_time: i32,
+    /// `activeEffects` with their attribute modifiers.
+    pub effects: crate::effect::ActiveEffects,
     first_tick: bool,
     sent: Sent,
 }
@@ -228,6 +230,7 @@ impl Default for Survival {
             attack_ticker: 0,
             take_xp_delay: 0,
             last_level_up_time: 0,
+            effects: crate::effect::ActiveEffects::default(),
             first_tick: true,
             sent: Sent::default(),
         }
@@ -308,7 +311,26 @@ impl Survival {
 
     /// `isHurt`.
     pub fn is_hurt(&self) -> bool {
-        self.health > 0.0 && self.health < MAX_HEALTH
+        self.health > 0.0 && self.health < self.max_health()
+    }
+
+    /// `getMaxHealth`: the base maximum with the effect modifiers (Health Boost).
+    #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+    pub fn max_health(&self) -> f32 {
+        if self.effects.modifiers.is_empty() {
+            return MAX_HEALTH;
+        }
+        self.effects.attribute(
+            crate::effect::attribute::Attribute::MAX_HEALTH,
+            f64::from(MAX_HEALTH),
+        ) as f32
+    }
+
+    /// `getMaxAbsorption`.
+    #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+    pub fn max_absorption(&self) -> f32 {
+        self.effects
+            .attribute(crate::effect::attribute::Attribute::MAX_ABSORPTION, 0.0) as f32
     }
 
     /// Reads the survival fields of a player data file.
@@ -317,10 +339,14 @@ impl Survival {
             food: FoodData::load(data),
             ..Survival::default()
         };
-        s.health = float(data, "Health")
-            .unwrap_or(MAX_HEALTH)
-            .clamp(0.0, MAX_HEALTH);
-        s.absorption = float(data, "AbsorptionAmount").unwrap_or(0.0).max(0.0);
+        // The effects (with their modifiers) first: Health Boost raises the maximum.
+        s.effects.load(data.get("active_effects"));
+        s.effects.resend_all();
+        let max = s.max_health();
+        s.health = float(data, "Health").unwrap_or(max).clamp(0.0, max);
+        s.absorption = float(data, "AbsorptionAmount")
+            .unwrap_or(0.0)
+            .clamp(0.0, s.max_absorption());
         s.air = int(data, "Air").unwrap_or(MAX_AIR);
         s.fire_ticks = int(data, "Fire").unwrap_or(0);
         s.fall_distance = match data.get("fall_distance") {
@@ -372,6 +398,12 @@ impl Survival {
         out.insert("XpTotal", Tag::Int(self.xp.total));
         out.insert("XpSeed", Tag::Int(self.xp.seed));
         out.insert("Score", Tag::Int(self.score));
+        match self.effects.save() {
+            Some(list) => out.insert("active_effects", list),
+            None => {
+                out.remove("active_effects");
+            }
+        }
         self.food.save(out);
         out.remove("LastDeathLocation");
         if let Some((dim, pos)) = &self.last_death {
@@ -452,7 +484,7 @@ impl Survival {
 
 /// `setHealth`: clamped to `[0, max]`; marks the entity data dirty when it changed.
 fn set_health(entity: &mut EntityMut<'_>, s: &mut Survival, health: f32) {
-    let health = health.clamp(0.0, MAX_HEALTH);
+    let health = health.clamp(0.0, s.max_health());
     if health != s.health {
         s.health = health;
         entity.mark_data_dirty();
@@ -523,6 +555,14 @@ pub fn hurt(
         return false;
     }
     if player.survival.is_dead_or_dying() {
+        return false;
+    }
+    if types.is(kind, tag::IS_FIRE)
+        && player
+            .survival
+            .effects
+            .has(crate::effect::MobEffect::FIRE_RESISTANCE)
+    {
         return false;
     }
     let mut damage = amount;
@@ -617,6 +657,23 @@ pub fn hurt(
     } else if took_full {
         player_sound(env, id, pos, types.get(kind).effects.sound());
     }
+    if !player.survival.effects.is_empty() {
+        // `onMobHurt` of the effects (Infested).
+        let e = entity.as_ref();
+        let look = crate::effect::living::view_vector(e.rot().x_rot, e.rot().y_rot);
+        let height = e.dims().height;
+        crate::experience_orb::with_entity_random(|random| {
+            crate::effect::living::on_hurt(
+                &player.survival.effects,
+                random,
+                env.random,
+                pos,
+                height,
+                look,
+                env.out,
+            );
+        });
+    }
     true
 }
 
@@ -657,6 +714,15 @@ fn actually_hurt(
     if !types.is(kind, tag::BYPASSES_ARMOR) {
         // TODO(#27): armour value and toughness of the equipment.
         damage = combat::damage_after_absorb(damage, 0.0, 0.0);
+    }
+    // `getDamageAfterMagicAbsorb`: Resistance (protection enchantments come with armour).
+    if !types.is(kind, tag::BYPASSES_EFFECTS) {
+        if !types.is(kind, tag::BYPASSES_RESISTANCE) {
+            damage = player.survival.effects.resistance_damage(damage);
+        }
+        if damage <= 0.0 {
+            damage = 0.0;
+        }
     }
     let s = &mut player.survival;
     let remaining = (damage - s.absorption).max(0.0);
@@ -885,7 +951,7 @@ pub fn do_tick(
                 .block_state(block_pos(eye))
                 .is_some_and(|s| env.facts.is_bubble_column(s));
         if eye_in_water {
-            if !abilities.invulnerable {
+            if !abilities.invulnerable && !player.survival.effects.has_water_breathing() {
                 let air = player.survival.air - 1;
                 set_air(entity, &mut player.survival, air);
                 if player.survival.air <= -20 {
@@ -901,7 +967,7 @@ pub fn do_tick(
                     let source = DamageSource::of(env.types.drown);
                     hurt(entity, player, env, source, 2.0);
                 }
-            } else if player.survival.air < MAX_AIR {
+            } else if player.survival.air < MAX_AIR && player.survival.effects.refills_air() {
                 let air = (player.survival.air + 4).min(MAX_AIR);
                 set_air(entity, &mut player.survival, air);
             }
@@ -937,9 +1003,20 @@ pub fn do_tick(
         let alive = s.health > 0.0;
         s.combat.recheck_status(s.tick_count, alive);
     }
+    // `tickEffects`, with the effect packets, flags and attributes.
+    crate::effect::living::tick_player(entity, player, env);
+    {
+        // `aiStep`: Slow Falling and Levitation reset the fall distance.
+        let s = &mut player.survival;
+        if s.effects.has(crate::effect::MobEffect::SLOW_FALLING)
+            || s.effects.has(crate::effect::MobEffect::LEVITATION)
+        {
+            s.fall_distance = 0.0;
+        }
+    }
     // `Player.aiStep`: peaceful regeneration (`ServerPlayer.tickRegeneration`).
     if env.difficulty == Difficulty::Peaceful && env.rules.bool(Rule::NATURAL_HEALTH_REGENERATION) {
-        if player.survival.tick_count % 20 == 0 && player.survival.health < MAX_HEALTH {
+        if player.survival.tick_count % 20 == 0 && player.survival.is_hurt() {
             heal(entity, player, 1.0);
         }
         let s = &mut player.survival;
@@ -1228,7 +1305,12 @@ fn check_fall_damage(
 
 /// `calculateFallDamage`.
 pub fn fall_damage(fall_distance: f64, multiplier: f32) -> i32 {
-    let power = fall_distance + 1.0e-6 - SAFE_FALL_DISTANCE;
+    fall_damage_with(fall_distance, multiplier, SAFE_FALL_DISTANCE)
+}
+
+/// `calculateFallDamage` with the `safe_fall_distance` attribute value (Jump Boost raises it).
+pub fn fall_damage_with(fall_distance: f64, multiplier: f32, safe_fall_distance: f64) -> i32 {
+    let power = fall_distance + 1.0e-6 - safe_fall_distance;
     // `Mth.floor(double)`.
     vanillite_base::math::floor(power * f64::from(multiplier))
 }
@@ -1245,7 +1327,11 @@ fn cause_fall_damage(
     if Abilities::of(player.game_mode).mayfly {
         return;
     }
-    let damage = fall_damage(fall_distance, multiplier);
+    let safe = player.survival.effects.attribute(
+        crate::effect::attribute::Attribute::SAFE_FALL_DISTANCE,
+        SAFE_FALL_DISTANCE,
+    );
+    let damage = fall_damage_with(fall_distance, multiplier, safe);
     if damage > 0 {
         let id = entity.as_ref().id();
         let pos = entity.as_ref().pos();

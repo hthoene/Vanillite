@@ -108,7 +108,8 @@ fn base_tick(t: &mut Tick<'_, '_>) {
                 .is_bubble_column(t.level.block(BlockPos::containing(p.x, t.eye_y(), p.z)))
         };
         if eye_in_water && !bubble {
-            if !t.mob_ref().kind.breathes_underwater() {
+            if !t.mob_ref().kind.breathes_underwater() && !t.mob_ref().effects.has_water_breathing()
+            {
                 t.mob().air -= 1;
                 if t.mob_ref().air <= -20 {
                     t.mob().air = 0;
@@ -117,6 +118,9 @@ fn base_tick(t: &mut Tick<'_, '_>) {
                     let source = DamageSource::of(t.env.types.drown);
                     hurt_self(t, source, 2.0);
                 }
+            } else if t.mob_ref().air < 300 && t.mob_ref().effects.refills_air() {
+                let m = t.mob();
+                m.air = (m.air + 4).min(300);
             }
         } else if t.mob_ref().air < 300 {
             let m = t.mob();
@@ -162,6 +166,11 @@ fn base_tick(t: &mut Tick<'_, '_>) {
             t.mob().last_hurt_by_mob = None;
         }
     }
+    // `tickEffects`.
+    crate::effect::living::tick_mob(t);
+    if !t.exists() || t.mob_ref().removed {
+        return;
+    }
     // `Mob.baseTick`: the ambient sound.
     if t.mob_ref().is_alive() {
         let m = t.mob();
@@ -181,6 +190,8 @@ fn tick_death(t: &mut Tick<'_, '_>) {
     if t.mob_ref().death_time >= 20 {
         let id = t.id;
         entity_event(t, id, event::POOF);
+        // `remove(KILLED)` → `triggerOnDeathMobEffects`.
+        crate::effect::living::on_mob_killed(t);
         t.mob().removed = true;
     }
 }
@@ -278,6 +289,15 @@ fn ai_step(t: &mut Tick<'_, '_>) {
     } else {
         t.mob().no_jump_delay = 0;
     }
+    {
+        // Slow Falling and Levitation reset the fall distance before travelling.
+        let m = t.mob();
+        if m.effects.has(crate::effect::MobEffect::SLOW_FALLING)
+            || m.effects.has(crate::effect::MobEffect::LEVITATION)
+        {
+            m.fall_distance = 0.0;
+        }
+    }
     if effective_ai {
         let m = t.mob_ref();
         let input = Vec3::new(f64::from(m.xxa), f64::from(m.yya), f64::from(m.zza));
@@ -325,7 +345,8 @@ fn jump_in_liquid(t: &mut Tick<'_, '_>) {
 /// `jumpFromGround`.
 fn jump_from_ground(t: &mut Tick<'_, '_>) {
     #[allow(clippy::cast_possible_truncation)]
-    let power = t.mob_ref().attrs.jump_strength as f32 * block_jump_factor(t);
+    let power = t.mob_ref().attrs.jump_strength as f32 * block_jump_factor(t)
+        + t.mob_ref().effects.jump_boost_power();
     if power <= 1.0e-5 {
         return;
     }
@@ -421,12 +442,15 @@ fn travel(t: &mut Tick<'_, '_>, input: Vec3) {
     }
 }
 
+/// `getEffectiveGravity`: Slow Falling caps it while falling.
 fn gravity(t: &Tick<'_, '_>) -> f64 {
-    if t.core().flags().contains(EntityFlags::NO_GRAVITY) {
+    let gravity = if t.core().flags().contains(EntityFlags::NO_GRAVITY) {
         0.0
     } else {
         t.mob_ref().attrs.gravity
-    }
+    };
+    let falling = t.velocity().y <= 0.0;
+    t.mob_ref().effects.effective_gravity(gravity, falling)
 }
 
 fn travel_in_air(t: &mut Tick<'_, '_>, input: Vec3) {
@@ -474,7 +498,13 @@ fn travel_in_air(t: &mut Tick<'_, '_>, input: Vec3) {
         movement.y = 0.2;
     }
     let mut y = movement.y;
-    if t.level.is_loaded(below) {
+    if let Some(a) = t
+        .mob_ref()
+        .effects
+        .amplifier(crate::effect::MobEffect::LEVITATION)
+    {
+        y += (0.05 * f64::from(a + 1) - movement.y) * 0.2;
+    } else if t.level.is_loaded(below) {
         y -= gravity(t);
     } else if t.pos().y > f64::from(t.level.min_y()) {
         y = -0.1;

@@ -179,6 +179,13 @@ pub struct MobData {
     pub xp_reward: i32,
     /// The last block position (`lastPos`).
     pub last_pos: BlockPos,
+    /// `activeEffects` with their attribute modifiers.
+    pub effects: crate::effect::ActiveEffects,
+    /// `getAbsorptionAmount`.
+    pub absorption: f32,
+    /// The attribute values without effect modifiers while modifiers are active; `attrs`
+    /// holds the modified values then.
+    pub base_attrs: Option<Box<Attrs>>,
 }
 
 impl MobData {
@@ -258,6 +265,9 @@ impl MobData {
             goal_path: None,
             variant: 0,
             xp_reward: 0,
+            effects: crate::effect::ActiveEffects::default(),
+            absorption: 0.0,
+            base_attrs: None,
             last_pos: BlockPos::new(i32::MIN, i32::MIN, i32::MIN),
         };
         mob.ambient_sound_time = -kind.ambient_sound_interval();

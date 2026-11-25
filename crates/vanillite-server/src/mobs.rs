@@ -213,7 +213,11 @@ impl WorldMobs {
                 continue;
             }
             let is_mob = is_mob_kind(kind);
-            if !is_mob && kind != ids::ARROW && kind != ids::EXPERIENCE_ORB {
+            if !is_mob
+                && kind != ids::ARROW
+                && kind != ids::EXPERIENCE_ORB
+                && kind != ids::AREA_EFFECT_CLOUD
+            {
                 continue;
             }
             let chunk = BlockPos::containing(pos.x, pos.y, pos.z).chunk();
@@ -252,6 +256,14 @@ impl WorldMobs {
                     mob::tick(level_ref, &mut ents, &mut env, &mut self.cx, id);
                 } else if kind == ids::ARROW {
                     projectile::tick_arrow(level_ref, &mut ents, &mut env, &mut self.cx, id);
+                } else if kind == ids::AREA_EFFECT_CLOUD {
+                    vanillite_game::effect::cloud::tick(
+                        level_ref,
+                        &mut ents,
+                        &mut env,
+                        &mut self.cx,
+                        id,
+                    );
                 }
             }
             if !self.cx.actions.is_empty() {

@@ -258,6 +258,8 @@ packet_set! {
         SetHealth(play::clientbound::SetHealth),
         SetTime(play::clientbound::SetTime),
         Sound(play::clientbound::Sound),
+        UpdateMobEffect(play::clientbound::UpdateMobEffect),
+        RemoveMobEffect(play::clientbound::RemoveMobEffect),
         SystemChat(play::clientbound::SystemChat),
     }
     unhandled Unhandled

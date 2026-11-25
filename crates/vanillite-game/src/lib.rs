@@ -11,6 +11,7 @@
 
 pub mod block;
 pub mod commands;
+pub mod effect;
 pub mod enchant;
 pub mod entities;
 pub mod experience_orb;

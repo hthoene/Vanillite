@@ -130,6 +130,9 @@ pub fn hurt_mob(
     if m.is_dead_or_dying() {
         return false;
     }
+    if types.is(kind, tag::IS_FIRE) && m.effects.has(crate::effect::MobEffect::FIRE_RESISTANCE) {
+        return false;
+    }
     if m.kind == Kind::Enderman && types.is(kind, tag::IS_PROJECTILE) {
         // `EnderMan.hurtServer`: projectiles make it teleport instead.
         kinds::enderman_dodge(level, ents, env, cx, target);
@@ -235,6 +238,16 @@ pub fn hurt_mob(
     if let Some(m) = ents.mob_mut(target) {
         m.last_damage = Some((kind, env.game_time));
     }
+    // `onMobHurt` of the effects (Infested).
+    let view = ents.store.get(target).map(|e| (e.rot(), e.dims().height));
+    if let Some((rot, height)) = view
+        && let Some(m) = ents.mob_mut(target).filter(|m| !m.effects.is_empty())
+    {
+        let look = crate::effect::living::view_vector(rot.x_rot, rot.y_rot);
+        let fx = std::mem::take(&mut m.effects);
+        crate::effect::living::on_hurt(&fx, &mut m.random, env.random, pos, height, look, env.out);
+        m.effects = fx;
+    }
     true
 }
 
@@ -284,6 +297,19 @@ fn actually_hurt(
         let (armor, toughness) = (m.attrs.armor as f32, m.attrs.armor_toughness as f32);
         damage = crate::survival::combat::damage_after_absorb(damage, armor, toughness);
     }
+    // `getDamageAfterMagicAbsorb`: Resistance.
+    if !types.is(source.kind, tag::BYPASSES_EFFECTS) {
+        if !types.is(source.kind, tag::BYPASSES_RESISTANCE) {
+            damage = m.effects.resistance_damage(damage);
+        }
+        if damage <= 0.0 {
+            damage = 0.0;
+        }
+    }
+    // Absorption takes the damage first.
+    let remaining = (damage - m.absorption).max(0.0);
+    m.absorption -= damage - remaining;
+    let damage = remaining;
     if damage != 0.0 {
         m.health = (m.health - damage).max(0.0);
         if let Some(mut e) = ents.store.get_mut(target) {

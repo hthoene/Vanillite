@@ -111,6 +111,7 @@ pub mod ids {
     pub const DYED_COLOR: u16 = find("minecraft:dyed_color");
     pub const POTION_CONTENTS: u16 = find("minecraft:potion_contents");
     pub const SUSPICIOUS_STEW_EFFECTS: u16 = find("minecraft:suspicious_stew_effects");
+    pub const POTION_DURATION_SCALE: u16 = find("minecraft:potion_duration_scale");
     pub const BANNER_PATTERNS: u16 = find("minecraft:banner_patterns");
     pub const BASE_COLOR: u16 = find("minecraft:base_color");
     pub const POT_DECORATIONS: u16 = find("minecraft:pot_decorations");

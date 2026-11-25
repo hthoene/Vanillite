@@ -33,6 +33,8 @@ mod data_id {
     pub const POSE: u8 = 6;
     pub const ITEM_ENTITY_ITEM: u8 = 8;
     pub const HEALTH: u8 = 9;
+    pub const EFFECT_PARTICLES: u8 = 10;
+    pub const EFFECT_AMBIENCE: u8 = 11;
     pub const PLAYER_MAIN_HAND: u8 = 15;
     pub const TNT_FUSE: u8 = 8;
     pub const TNT_BLOCK_STATE: u8 = 9;
@@ -58,6 +60,8 @@ mod serializer {
     pub const INT: i32 = 1;
     pub const FLOAT: i32 = 3;
     pub const BOOLEAN: i32 = 8;
+    pub const PARTICLE: i32 = 16;
+    pub const PARTICLES: i32 = 17;
     pub const BLOCK_STATE: i32 = 14;
     pub const OPTIONAL_BLOCK_STATE: i32 = 15;
     pub const POSE: i32 = 20;
@@ -127,6 +131,7 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
                 o.extend_from_slice(&health.to_be_bytes());
             });
         }
+        effect_data(&mut out, &player.survival.effects, all);
         let hand = player.client.main_hand;
         if all || hand != MainHand::Right {
             item(
@@ -190,6 +195,31 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
             );
         }
     }
+    if let Some(cloud) = entities.cloud(entity.id()) {
+        if all || cloud.radius != 3.0 {
+            item(&mut out, 8, serializer::FLOAT, |o| {
+                o.extend_from_slice(&cloud.radius.to_be_bytes());
+            });
+        }
+        if all || cloud.waiting {
+            item(&mut out, 9, serializer::BOOLEAN, |o| {
+                o.push(u8::from(cloud.waiting))
+            });
+        }
+        // `ColorParticleOption` of `entity_effect`; the default is white.
+        let color = cloud.particle_color();
+        if all || color != -1 {
+            item(&mut out, 10, serializer::PARTICLE, |o| {
+                write_varint(
+                    o,
+                    vanillite_data::registry::PARTICLE_TYPE
+                        .id("minecraft:entity_effect")
+                        .map_or(0, i32::from),
+                );
+                o.extend_from_slice(&color.to_be_bytes());
+            });
+        }
+    }
     if entity.kind() == ids::TNT
         && let Some(tnt) = entities.primed_tnt(entity.id())
     {
@@ -243,6 +273,24 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
     Some(out)
 }
 
+/// `DATA_EFFECT_PARTICLES` and `DATA_EFFECT_AMBIENCE_ID` of a living entity.
+fn effect_data(out: &mut Vec<u8>, fx: &crate::effect::ActiveEffects, all: bool) {
+    let any_visible = fx.iter().any(|e| e.visible);
+    if all || any_visible {
+        item(out, data_id::EFFECT_PARTICLES, serializer::PARTICLES, |o| {
+            fx.encode_particles(o);
+        });
+    }
+    // `areAllEffectsAmbient` of no effects is true, but the data starts false and is only set
+    // while effects are active.
+    let ambient = !fx.is_empty() && fx.all_ambient();
+    if all || ambient {
+        item(out, data_id::EFFECT_AMBIENCE, serializer::BOOLEAN, |o| {
+            o.push(u8::from(ambient));
+        });
+    }
+}
+
 /// The synched data of a mob after the entity's own: health, mob flags and the kind's values.
 fn mob_data(out: &mut Vec<u8>, mob: &crate::mob::MobData, all: bool) {
     use crate::mob::Kind;
@@ -257,6 +305,7 @@ fn mob_data(out: &mut Vec<u8>, mob: &crate::mob::MobData, all: bool) {
             o.extend_from_slice(&mob.health.to_be_bytes());
         });
     }
+    effect_data(out, &mob.effects, all);
     let flags = u8::from(mob.no_ai) | (u8::from(mob.aggressive) << 2);
     if all || flags != 0 {
         item(out, data_id::MOB_FLAGS, serializer::BYTE, |o| o.push(flags));

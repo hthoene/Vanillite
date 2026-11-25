@@ -190,6 +190,53 @@ impl Decode for DamageEvent {
     }
 }
 
+/// `update_mob_effect`: an effect of the entity was added or changed. Flags: 1 ambient,
+/// 2 visible, 4 show icon, 8 blend.
+#[derive(Debug, Clone, PartialEq, Eq, Packet)]
+#[packet(state = Play, dir = Clientbound, name = "update_mob_effect")]
+pub struct UpdateMobEffect {
+    #[field(varint)]
+    pub entity_id: i32,
+    #[field(varint)]
+    pub effect: i32,
+    #[field(varint)]
+    pub amplifier: i32,
+    #[field(varint)]
+    pub duration: i32,
+    pub flags: u8,
+}
+
+/// `remove_mob_effect`.
+#[derive(Debug, Clone, PartialEq, Eq, Packet)]
+#[packet(state = Play, dir = Clientbound, name = "remove_mob_effect")]
+pub struct RemoveMobEffect {
+    #[field(varint)]
+    pub entity_id: i32,
+    #[field(varint)]
+    pub effect: i32,
+}
+
+/// `update_attributes`: the encoded body (entity id, then per attribute its id, base value and
+/// modifiers), built by the game layer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateAttributes {
+    pub body: Vec<u8>,
+}
+
+impl Encode for UpdateAttributes {
+    fn encode(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&self.body);
+    }
+}
+
+impl Decode for UpdateAttributes {
+    fn decode(r: &mut Reader<'_>) -> Result<Self> {
+        Ok(UpdateAttributes {
+            body: r.take_rest().to_vec(),
+        })
+    }
+}
+
 /// `hurt_animation`.
 #[derive(Debug, Clone, PartialEq, Packet)]
 #[packet(state = Play, dir = Clientbound, name = "hurt_animation")]
@@ -257,4 +304,5 @@ macro_rules! manual_packet {
 
 manual_packet!(SetTime, SET_TIME, "set_time");
 manual_packet!(Respawn, RESPAWN, "respawn");
+manual_packet!(UpdateAttributes, UPDATE_ATTRIBUTES, "update_attributes");
 manual_packet!(DamageEvent, DAMAGE_EVENT, "damage_event");
