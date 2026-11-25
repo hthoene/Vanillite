@@ -422,6 +422,11 @@ impl ServerWorld {
             // time, every world runs on it. The world border moves first.
             self.level.border.tick();
             self.survival.tick_level(&self.level.entities, ctx.global);
+            self.level.set_weather(self.survival.weather);
+            self.level
+                .settings
+                .apply_game_rules(&ctx.global.level.rules());
+            self.level.settings.difficulty = ctx.global.level.difficulty();
             let level = &mut self.level;
             level.set_game_time(ctx.global.level.game_time());
             if self.id.0 == 0 {
@@ -462,7 +467,6 @@ impl ServerWorld {
         if ctx.runs_normally {
             self.ticks += 1;
             self.tick_entities(ctx.global);
-            self.level.raining = self.survival.weather.is_raining();
             self.level.tick_block_entities();
             self.mobs.apply_magic_hurts(
                 &mut self.level,

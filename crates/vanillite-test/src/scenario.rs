@@ -31,6 +31,13 @@
 //!   (`/forceload`) and ticking before the setup.
 //! - `light`: frames also hold the settled sky and block light of the region, the levels a
 //!   client sees. Default `false`.
+//! - `weather`: `clear` (default), `rain` or `thunder`, at full strength from the start (no
+//!   fade in); with `advance_weather` off it stays.
+//! - `level_rng`: frames also hold the state of the level random (always with entities).
+//!   Scenarios with random ticks set it: the random draws must match call by call.
+//!
+//! Random ticks: the level random is reseeded with the world seed after the setup, and the LCG
+//! of random tick positions (`Level.randValue`) starts at the seed's low 32 bits.
 //! - `setup`: applied without updates before frame 0 (`set`, `fill`; `place` with updates).
 //! - `actions`: before world tick `tick` (1-based): `place` (with neighbour and shape updates,
 //!   Vanilla `setBlock` flags 3), `set` (without updates), `fill` (with updates), `force` and
@@ -130,10 +137,14 @@ pub struct WorldSpec {
     /// Whether the world computes light: with entities (mobs see it) or `"light": true`.
     /// Block-only scenarios run without it, which is much faster.
     pub light: bool,
+    /// Whether frames observe light (`"light": true`).
+    pub observe_light: bool,
     /// `peaceful`, `easy`, `normal` or `hard`.
     pub difficulty: String,
-    /// Frames observe the settled light (`"light": true`).
-    pub observe_light: bool,
+    /// `clear`, `rain` or `thunder`.
+    pub weather: String,
+    /// Whether frames observe the level random.
+    pub level_rng: bool,
 }
 
 /// What an operation does.
@@ -377,12 +388,18 @@ impl Scenario {
                 forced,
                 light: v.get("entities").is_some()
                     || v.get("light").and_then(Value::as_bool).unwrap_or(false),
+                observe_light: v.get("light").and_then(Value::as_bool).unwrap_or(false),
                 difficulty: v
                     .get("difficulty")
                     .and_then(Value::as_str)
                     .unwrap_or("normal")
                     .to_owned(),
-                observe_light: v.get("light").and_then(Value::as_bool).unwrap_or(false),
+                weather: v
+                    .get("weather")
+                    .and_then(Value::as_str)
+                    .unwrap_or("clear")
+                    .to_owned(),
+                level_rng: v.get("level_rng").and_then(Value::as_bool).unwrap_or(false),
             },
             min,
             max,

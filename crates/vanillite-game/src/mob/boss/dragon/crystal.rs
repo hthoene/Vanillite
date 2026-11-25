@@ -17,7 +17,7 @@ use crate::effect::{EffectInstance, MobEffect};
 use crate::entities::Entities;
 use crate::level::Level;
 use crate::mob::physics::{self, Blocks};
-use crate::mob::{MobContext, WorldAction, random_uuid};
+use crate::mob::{MobContext, WorldAction};
 use crate::survival::damage::{DamageSource, tag};
 use crate::survival::player::Env;
 
@@ -94,8 +94,9 @@ fn breath_cloud(
     }
 }
 
-fn new_uuid(env: &mut Env<'_>) -> u128 {
-    random_uuid(env.random)
+/// The UUID of a new non-living entity (its seed from the entity seed stream).
+fn new_uuid(_env: &mut Env<'_>) -> u128 {
+    crate::mob::new_entity_uuid()
 }
 
 /// Adds an end crystal at `pos` (`new EndCrystal(level, x, y, z)`; its yaw is random).

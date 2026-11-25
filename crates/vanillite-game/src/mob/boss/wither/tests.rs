@@ -303,9 +303,10 @@ fn powered_wither_ignores_arrows() {
             last_state: None,
             tick_count: 0,
             pickup: 0,
-            random_seed: 0,
+            random_state: 0,
             knockback: 0.0,
             fire: false,
+            effect: None,
         },
     );
     if let Some(m) = level.entities.mob_mut(wither) {

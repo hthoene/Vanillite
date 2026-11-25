@@ -193,6 +193,10 @@ pub fn move_control(t: &mut Tick<'_, '_>) -> bool {
             wither::move_control(t);
             true
         }
+        Kind::Guardian | Kind::ElderGuardian => {
+            guardian::tick_move_control(t);
+            true
+        }
         _ => false,
     }
 }
@@ -295,7 +299,7 @@ pub fn death_loot(m: &mut MobData, killed_by_player: bool) -> Vec<crate::item::I
 
 /// The kind's synched entity data after the mob's own (ids from 16 on).
 pub fn entity_data(out: &mut Vec<u8>, m: &MobData, all: bool) {
-    match &m.ext {
+    match &m.boss {
         Ext::Guardian(s) => guardian::entity_data(out, s, all),
         Ext::Wither(s) => wither::entity_data(out, s, all),
         Ext::Dragon(s) => dragon::entity_data(out, s, all),
@@ -306,23 +310,31 @@ pub fn entity_data(out: &mut Vec<u8>, m: &MobData, all: bool) {
 
 /// The kind's entity NBT.
 pub fn save(m: &MobData, out: &mut Compound) {
-    match &m.ext {
+    match &m.boss {
         Ext::Guardian(s) => guardian::save(s, out),
         Ext::Wither(s) => wither::save(s, out),
         Ext::Dragon(s) => dragon::save(s, out),
-        Ext::Warden(s) => warden::save(s, out),
+        Ext::Warden(s) => {
+            warden::save(s, out);
+            if let Some(b) = m.brain.as_deref() {
+                super::brain::save(b, out);
+            }
+        }
         Ext::None => {}
     }
 }
 
 /// Reads the kind's entity NBT.
 pub fn load(m: &mut MobData, tag: &Compound) {
-    match &mut m.ext {
+    match &mut m.boss {
         Ext::Guardian(s) => guardian::load(s, tag),
         Ext::Wither(s) => wither::load(s, tag),
         Ext::Dragon(s) => dragon::load(s, tag),
         Ext::Warden(s) => warden::load(s, tag),
         Ext::None => {}
+    }
+    if let Some(b) = m.brain.as_deref_mut() {
+        super::brain::load(b, tag);
     }
 }
 

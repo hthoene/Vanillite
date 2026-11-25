@@ -1,0 +1,165 @@
+{
+  "description": "Grass and mycelium spread over dirt in the light, grass under a block turns to dirt, grass under snow turns snowy, nylium under a block turns to netherrack, a mushroom spreads in the dark.",
+  "tier": "fast",
+  "world": {
+    "seed": 8301,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:stone",
+        3
+      ]
+    ]
+  },
+  "rules": {
+    "random_tick_speed": "2048"
+  },
+  "time": 6000,
+  "level_rng": true,
+  "light": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      10,
+      -58,
+      10
+    ]
+  ],
+  "ticks": 150,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -61,
+        0
+      ],
+      "to": [
+        10,
+        -61,
+        10
+      ],
+      "block": "minecraft:dirt"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -61,
+        5
+      ],
+      "block": "minecraft:grass_block[snowy=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -61,
+        1
+      ],
+      "block": "minecraft:mycelium[snowy=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        9,
+        -61,
+        1
+      ],
+      "block": "minecraft:grass_block[snowy=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        9,
+        -60,
+        1
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        9,
+        -61,
+        3
+      ],
+      "block": "minecraft:grass_block[snowy=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        9,
+        -60,
+        3
+      ],
+      "block": "minecraft:snow[layers=1]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -58,
+        8
+      ],
+      "to": [
+        3,
+        -58,
+        10
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -60,
+        9
+      ],
+      "block": "minecraft:brown_mushroom"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -61,
+        9
+      ],
+      "block": "minecraft:netherrack"
+    },
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -61,
+        9
+      ],
+      "block": "minecraft:crimson_nylium"
+    },
+    {
+      "op": "set",
+      "pos": [
+        9,
+        -61,
+        9
+      ],
+      "block": "minecraft:warped_nylium"
+    },
+    {
+      "op": "set",
+      "pos": [
+        9,
+        -60,
+        9
+      ],
+      "block": "minecraft:stone"
+    }
+  ]
+}

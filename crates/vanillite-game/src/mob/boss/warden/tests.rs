@@ -7,12 +7,12 @@ use vanillite_data::block::{BlockState, ids};
 use vanillite_world::entity::{EntityId, Pose, Rotation};
 use vanillite_worldgen::behaviour::StateExt;
 
-use super::ai::Behave;
+use super::ai::{self, Behavior as B};
 use super::*;
 use crate::level::game_event::events;
 use crate::level::tests::{flat_level, tick};
 use crate::level::{BlockEntity, update};
-use crate::mob::brain::{Behavior, BehaviorInfo, MemoryType as M, MemoryValue};
+use crate::mob::brain::{MemValue, MemoryType as M, brain, brain_ref};
 use crate::survival::blocks::{BlockAccess, BlockFacts};
 use crate::survival::damage::DamageTypes;
 use crate::survival::rules::{Difficulty, GameRules};
@@ -96,16 +96,15 @@ fn sonic_boom_deals_ten_damage_after_its_charge_and_cools_down() {
     let warden = spawn(&mut level, Kind::Warden, 0.5, 0.5);
     let zombie = spawn(&mut level, Kind::Zombie, 6.5, 0.5);
     with_tick(&mut level, warden, |t| {
-        let mut mem = std::mem::take(&mut t.mob().ext.warden_mut().unwrap().brain.memories);
-        mem.set(M::AttackTarget, MemoryValue::Entity(zombie));
-        let mut b = Behave::SonicBoom;
-        assert!(mem.check_all(b.conditions()));
-        assert!(b.check_extra(&mut mem, t));
-        b.start(&mut mem, t, 0);
-        assert!(mem.has(M::AttackCoolingDown));
+        brain(t).set(M::AttackTarget, MemValue::Entity(zombie));
+        let mut b = B::SonicBoom;
+        assert!(brain_ref(t).check_all(ai::behavior_requirements(&b)));
+        assert!(ai::behavior_check(t, &mut b));
+        ai::behavior_start(t, &mut b, 0);
+        assert!(brain_ref(t).has(M::AttackCoolingDown));
         for time in 1..=33 {
-            mem.tick();
-            b.tick(&mut mem, t, time);
+            brain(t).forget_outdated();
+            ai::behavior_tick(t, &mut b, time);
         }
         assert_eq!(
             t.ents.mob(zombie).unwrap().health,
@@ -113,13 +112,13 @@ fn sonic_boom_deals_ten_damage_after_its_charge_and_cools_down() {
             "before the sound delay"
         );
         for time in 34..=60 {
-            mem.tick();
-            b.tick(&mut mem, t, time);
+            brain(t).forget_outdated();
+            ai::behavior_tick(t, &mut b, time);
         }
         assert_eq!(t.ents.mob(zombie).unwrap().health, 10.0);
-        b.stop(&mut mem, t, 61);
-        assert_eq!(mem.time_until_expiry(M::SonicBoomCooldown), Some(40));
-        assert!(!mem.check_all(Behave::SonicBoom.conditions()));
+        ai::behavior_stop(t, &mut b, 61);
+        assert_eq!(brain_ref(t).ttl(M::SonicBoomCooldown), 40);
+        assert!(!brain_ref(t).check_all(ai::behavior_requirements(&B::SonicBoom)));
     });
 }
 
@@ -131,7 +130,7 @@ fn the_warden_listener_follows_the_warden_and_hears_block_events() {
     assert_eq!(level.game_event_listeners().len(), 1);
     let pos = BlockPos::new(4, -60, 0);
     level.game_event_at(None, events().block_place, pos);
-    let s = level.entities.mob(warden).unwrap().ext.warden().unwrap();
+    let s = level.entities.mob(warden).unwrap().boss.warden().unwrap();
     let (vibration, _) = s.vibration.candidate.expect("the warden heard it");
     assert_eq!(vibration.event, events().block_place);
     // A digging warden hears nothing.
@@ -145,12 +144,12 @@ fn the_warden_listener_follows_the_warden_and_hears_block_events() {
         .entities
         .mob_mut(warden)
         .unwrap()
-        .ext
+        .boss
         .warden_mut()
         .unwrap()
         .vibration = VibrationData::default();
     level.game_event_at(None, events().block_place, pos);
-    let s = level.entities.mob(warden).unwrap().ext.warden().unwrap();
+    let s = level.entities.mob(warden).unwrap().boss.warden().unwrap();
     assert!(s.vibration.candidate.is_none());
     // Once the warden is gone its listener is dropped by the next event.
     level.entities.despawn(warden);
@@ -175,7 +174,7 @@ fn a_summoned_warden_emerges_on_a_block_top() {
     assert_eq!(e.pos().y, -60.0);
     let m = level.entities.mob(id).unwrap();
     assert_eq!(m.kind, Kind::Warden);
-    let mem = &m.ext.warden().unwrap().brain.memories;
+    let mem = m.brain.as_deref().unwrap();
     assert!(mem.has(M::IsEmerging) && mem.has(M::DigCooldown));
 }
 

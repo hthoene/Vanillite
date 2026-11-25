@@ -2,8 +2,9 @@
 //! portal frame filled with eyes of ender (`EnderEyeItem.useOn`) and the End gateway's block
 //! entity (`TheEndGatewayBlockEntity`). Travelling through portals is [`crate::portal`].
 
-use vanillite_base::random::RandomSource;
-use vanillite_base::{BlockPos, Direction};
+use vanillite_base::random::{LegacyRandom, RandomSource};
+use vanillite_base::{BlockPos, ChunkPos, Direction};
+use vanillite_chunk::ProtoChunk;
 use vanillite_data::block::{BlockId, BlockState, ids};
 use vanillite_nbt::{Compound, Tag};
 use vanillite_worldgen::behaviour::{HorizontalAxis, PortalShape, StateExt};
@@ -275,7 +276,7 @@ pub fn find_tallest_block(
 
 /// `TheEndGatewayBlockEntity.getPortalPosition` for a gateway with a known exit: the exit
 /// itself for exact gateways, else above the tallest block near it (`findExitPosition`).
-/// Gateways without an exit get one when the dragon fight places them.
+/// Gateways in the End without an exit get one from [`create_gateway_exit`] first.
 pub fn gateway_destination(level: &Level, gateway: &Gateway) -> Option<BlockPos> {
     let exit = gateway.exit?;
     Some(if gateway.exact {
@@ -283,4 +284,314 @@ pub fn gateway_destination(level: &Level, gateway: &Gateway) -> Option<BlockPos>
     } else {
         find_tallest_block(level, exit.offset(0, 2, 0), 5, false).offset(0, 1, 0)
     })
+}
+
+// --- The End's exit portal and the dragon fight's gateways --------------------------------
+
+/// `EndPodiumFeature.place` at `origin` (the portal layer's centre) on the live world;
+/// `active` fills the portal.
+pub fn place_podium(level: &mut Level, origin: BlockPos, active: bool) {
+    let bedrock = ids::BEDROCK.default_state();
+    for z in origin.z - 4..=origin.z + 4 {
+        for y in origin.y - 1..=origin.y + 32 {
+            for x in origin.x - 4..=origin.x + 4 {
+                let pos = BlockPos::new(x, y, z);
+                let dist = pos.dist_sqr(origin);
+                let inside_rim = dist < 2.5 * 2.5;
+                if !inside_rim && dist >= 3.5 * 3.5 {
+                    continue;
+                }
+                if y < origin.y {
+                    if inside_rim {
+                        level.set_block_and_update(pos, bedrock);
+                    } else {
+                        set_or_drop(level, pos, ids::END_STONE, active);
+                    }
+                } else if y > origin.y {
+                    set_or_drop(level, pos, ids::AIR, active);
+                } else if !inside_rim {
+                    level.set_block_and_update(pos, bedrock);
+                } else if active {
+                    drop_previous_and_set(level, pos, ids::END_PORTAL);
+                } else {
+                    level.set_block_and_update(pos, BlockState::AIR);
+                }
+            }
+        }
+    }
+    for y in 0..4 {
+        level.set_block_and_update(origin.offset(0, y, 0), bedrock);
+    }
+    let pillar = origin.offset(0, 2, 0);
+    // `Direction.Plane.HORIZONTAL` order.
+    for (dir, facing) in [
+        (Direction::North, "north"),
+        (Direction::East, "east"),
+        (Direction::South, "south"),
+        (Direction::West, "west"),
+    ] {
+        let torch = ids::WALL_TORCH.default_state();
+        let torch = torch.with("facing", facing).unwrap_or(torch);
+        level.set_block_and_update(pillar.relative(dir), torch);
+    }
+}
+
+fn set_or_drop(level: &mut Level, pos: BlockPos, block: BlockId, active: bool) {
+    if active {
+        drop_previous_and_set(level, pos, block);
+    } else {
+        level.set_block_and_update(pos, block.default_state());
+    }
+}
+
+/// `dropPreviousAndSetBlock`.
+fn drop_previous_and_set(level: &mut Level, pos: BlockPos, block: BlockId) {
+    if level.block(pos).block() != block {
+        level.destroy_block(pos, true, None);
+        level.set_block_and_update(pos, block.default_state());
+    }
+}
+
+/// The exit portal frame (`exitPortalPattern`) with its portal layer centred at `c`: the
+/// bedrock pillar above, the ring with its centre, and the disc below.
+pub fn portal_frame_at(level: &Level, c: BlockPos) -> bool {
+    let bedrock = |p: BlockPos| level.block(p).block() == ids::BEDROCK;
+    if !(1..=3).all(|dy| bedrock(c.offset(0, dy, 0))) || !bedrock(c) {
+        return false;
+    }
+    const RING: [&str; 7] = [
+        "  ###  ", " #   # ", "#     #", "#  #  #", "#     #", " #   # ", "  ###  ",
+    ];
+    const DISC: [&str; 7] = [
+        "       ", "  ###  ", " ##### ", " ##### ", " ##### ", "  ###  ", "       ",
+    ];
+    for (layer, dy) in [(RING, 0), (DISC, -1)] {
+        for (row, line) in layer.iter().enumerate() {
+            for (col, ch) in line.bytes().enumerate() {
+                if ch == b'#' {
+                    #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
+                    let p = c.offset(col as i32 - 3, dy, row as i32 - 3);
+                    if !bedrock(p) {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    true
+}
+
+/// Every position of the frame's 7×5×7 box (for clearing it before a respawn).
+pub fn portal_box(c: BlockPos) -> impl Iterator<Item = BlockPos> {
+    (-3..=3).flat_map(move |x| (-1..=3).flat_map(move |y| (-3..=3).map(move |z| c.offset(x, y, z))))
+}
+
+/// `EndGatewayFeature.place` on the live world: the gateway at `origin` in its bedrock frame,
+/// with `exit` (`knownExit(exit, exact)`) or without one (`END_GATEWAY_DELAYED`).
+pub fn place_end_gateway(level: &mut Level, origin: BlockPos, exit: Option<BlockPos>, exact: bool) {
+    let bedrock = ids::BEDROCK.default_state();
+    for z in origin.z - 1..=origin.z + 1 {
+        for y in origin.y - 2..=origin.y + 2 {
+            for x in origin.x - 1..=origin.x + 1 {
+                let pos = BlockPos::new(x, y, z);
+                let same_x = x == origin.x;
+                let same_y = y == origin.y;
+                let same_z = z == origin.z;
+                let end = (y - origin.y).abs() == 2;
+                if same_x && same_y && same_z {
+                    level.set_block_and_update(pos, ids::END_GATEWAY.default_state());
+                    if let Some(exit) = exit
+                        && let Some(gateway) = gateway_mut(level, pos)
+                    {
+                        gateway.exit = Some(exit);
+                        gateway.exact = exact;
+                    }
+                    continue;
+                }
+                let s = if same_y {
+                    BlockState::AIR
+                } else if (end && same_x && same_z) || ((same_x || same_z) && !end) {
+                    bedrock
+                } else {
+                    BlockState::AIR
+                };
+                level.set_block_and_update(pos, s);
+            }
+        }
+    }
+}
+
+// --- Exits of gateways without one --------------------------------------------------------
+
+/// `findExitPortalXZPosTentative`: chunks the search walks back, then forward.
+const EXIT_SEARCH_STEPS: i32 = 16;
+/// `findExitPortalXZPosTentative`: the distance of the first chunk looked at.
+const EXIT_SEARCH_DISTANCE: f64 = 1024.0;
+/// Chunks around the found chunk that the exit needs: the island (7 blocks), the tallest
+/// block search (16), the exit gateway above it and `findExitPosition` (5) stay within 22
+/// blocks of it.
+const EXIT_AREA_RADIUS: i32 = 2;
+
+/// The chunks `getPortalPosition` of a gateway without an exit reads (Vanilla loads them on
+/// the spot), as far as they are not full yet: first those the search along the gateway's
+/// direction may look at, then those around the chunk it found. Empty when
+/// [`create_gateway_exit`] can run.
+pub fn gateway_exit_chunks(level: &Level, entry: BlockPos) -> Vec<ChunkPos> {
+    let loaded = |pos: &ChunkPos| level.chunks.chunk(*pos).is_some();
+    match exit_xz_tentative(level, entry) {
+        Err(missing) => {
+            // Every chunk the walk can reach at once, instead of one after the other.
+            let (dx, dz) = exit_direction(entry);
+            let mut chunks = vec![missing];
+            for step in -EXIT_SEARCH_STEPS..=EXIT_SEARCH_STEPS {
+                let distance = EXIT_SEARCH_DISTANCE + f64::from(step) * 16.0;
+                let pos = chunk_at(dx * distance, dz * distance);
+                if !loaded(&pos) && !chunks.contains(&pos) {
+                    chunks.push(pos);
+                }
+            }
+            chunks
+        }
+        Ok((x, z)) => {
+            let center = chunk_at(x, z);
+            let r = EXIT_AREA_RADIUS;
+            (center.x - r..=center.x + r)
+                .flat_map(|cx| (center.z - r..=center.z + r).map(move |cz| ChunkPos::new(cx, cz)))
+                .filter(|pos| !loaded(pos))
+                .collect()
+        }
+    }
+}
+
+/// The part of `getPortalPosition` for a gateway at `entry` in the End without an exit
+/// (`findOrCreateValidTeleportPos`): finds end stone to stand on in the first chunk with
+/// blocks about 1024 blocks out in the gateway's direction, or places an `end_island` there;
+/// builds the exit gateway 10 blocks above the tallest block near it, leading back, and makes
+/// it the gateway's exit. Needs the chunks of [`gateway_exit_chunks`]; returns the exit.
+pub fn create_gateway_exit(level: &mut Level, entry: BlockPos) -> Option<BlockPos> {
+    let (x, z) = exit_xz_tentative(level, entry).ok()?;
+    let chunk = std::sync::Arc::clone(level.chunks.chunk(chunk_at(x, z))?);
+    let pos = match find_valid_spawn_in_chunk(level, &chunk) {
+        Some(pos) => pos,
+        None => {
+            let pos = BlockPos::containing(x + 0.5, 75.0, z + 0.5);
+            place_end_island(level, pos, &mut LegacyRandom::new(pos.as_long()));
+            pos
+        }
+    };
+    let exit = find_tallest_block(level, pos, 16, true).offset(0, 10, 0);
+    // `spawnGatewayPortal(..., EndGatewayFeature.knownExit(portalEntryPos, false))`.
+    place_end_gateway(level, exit, Some(entry), false);
+    // `setExitPosition(exitPortalPos, this.exactTeleport)`.
+    gateway_mut(level, entry)?.exit = Some(exit);
+    Some(exit)
+}
+
+/// `teleportXZDirectionVector`: the gateway's horizontal direction from the world's centre
+/// (`Vec3.normalize`).
+fn exit_direction(entry: BlockPos) -> (f64, f64) {
+    let (x, z) = (f64::from(entry.x), f64::from(entry.z));
+    let dist = (x * x + 0.0 * 0.0 + z * z).sqrt();
+    if dist < f64::from(1.0E-5_f32) {
+        (0.0, 0.0)
+    } else {
+        (x / dist, z / dist)
+    }
+}
+
+/// `getChunk(level, pos)`'s chunk position.
+#[allow(clippy::cast_possible_truncation)]
+fn chunk_at(x: f64, z: f64) -> ChunkPos {
+    ChunkPos::new((x / 16.0).floor() as i32, (z / 16.0).floor() as i32)
+}
+
+/// `findExitPortalXZPosTentative`: from 1024 blocks out, back by a chunk while the chunk holds
+/// blocks, then forward while it is empty (16 steps each at most). `Err` names a chunk that is
+/// not full yet.
+fn exit_xz_tentative(level: &Level, entry: BlockPos) -> Result<(f64, f64), ChunkPos> {
+    let (dx, dz) = exit_direction(entry);
+    let (mut x, mut z) = (dx * EXIT_SEARCH_DISTANCE, dz * EXIT_SEARCH_DISTANCE);
+    let mut limit = EXIT_SEARCH_STEPS;
+    while !chunk_is_empty(level, x, z)? && limit > 0 {
+        limit -= 1;
+        x += dx * -16.0;
+        z += dz * -16.0;
+    }
+    let mut limit = EXIT_SEARCH_STEPS;
+    while chunk_is_empty(level, x, z)? && limit > 0 {
+        limit -= 1;
+        x += dx * 16.0;
+        z += dz * 16.0;
+    }
+    Ok((x, z))
+}
+
+/// `isChunkEmpty`: the chunk has only air.
+fn chunk_is_empty(level: &Level, x: f64, z: f64) -> Result<bool, ChunkPos> {
+    let pos = chunk_at(x, z);
+    let chunk = level.chunks.chunk(pos).ok_or(pos)?;
+    Ok(highest_filled_section(chunk).is_none())
+}
+
+/// `getHighestFilledSectionIndex`, `None` for -1.
+fn highest_filled_section(chunk: &ProtoChunk) -> Option<usize> {
+    chunk
+        .chunk
+        .sections()
+        .iter()
+        .rposition(|section| !section.summary().is_empty())
+}
+
+/// `findValidSpawnInChunk`: the end stone with two non-full blocks above closest to the
+/// world's centre, from y 30 to the top of the highest section with blocks (the first of
+/// equally close ones in `betweenClosed` order).
+fn find_valid_spawn_in_chunk(level: &Level, chunk: &ProtoChunk) -> Option<BlockPos> {
+    let (min_x, min_z) = (chunk.pos.x * 16, chunk.pos.z * 16);
+    // `getHighestSectionPosition() + 16 - 1`.
+    let top = match highest_filled_section(chunk) {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        Some(index) => (chunk.chunk.min_section() + index as i32) * 16,
+        None => chunk.chunk.min_y(),
+    } + 15;
+    let full = |pos: BlockPos| {
+        vanillite_worldgen::behaviour::is_full_block(level.block(pos).collision_shape())
+    };
+    let mut closest: Option<(BlockPos, f64)> = None;
+    for z in min_z..=min_z + 15 {
+        for y in top.min(30)..=top.max(30) {
+            for x in min_x..=min_x + 15 {
+                let pos = BlockPos::new(x, y, z);
+                if level.block(pos).is(ids::END_STONE)
+                    && !full(pos.offset(0, 1, 0))
+                    && !full(pos.offset(0, 2, 0))
+                {
+                    let (cx, cy, cz) = (f64::from(x) + 0.5, f64::from(y) + 0.5, f64::from(z) + 0.5);
+                    let dist = cx * cx + cy * cy + cz * cz;
+                    if closest.is_none_or(|(_, best)| dist < best) {
+                        closest = Some((pos, dist));
+                    }
+                }
+            }
+        }
+    }
+    closest.map(|(pos, _)| pos)
+}
+
+/// `EndIslandFeature.place` on the live world: a cone of end stone hanging below `origin`.
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+fn place_end_island(level: &mut Level, origin: BlockPos, random: &mut LegacyRandom) {
+    let end_stone = ids::END_STONE.default_state();
+    let mut size = random.next_int_bounded(3) as f32 + 4.0;
+    let mut y = 0;
+    while size > 0.5 {
+        for x in (-size).floor() as i32..=size.ceil() as i32 {
+            for z in (-size).floor() as i32..=size.ceil() as i32 {
+                if ((x * x + z * z) as f32) <= (size + 1.0) * (size + 1.0) {
+                    level.set_block_and_update(origin.offset(x, y, z), end_stone);
+                }
+            }
+        }
+        size -= random.next_int_bounded(2) as f32 + 0.5;
+        y -= 1;
+    }
 }

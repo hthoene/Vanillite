@@ -325,24 +325,32 @@ fn explode_packet(
         None => body.push(0),
     }
     // `isSmall() ? EXPLOSION : EXPLOSION_EMITTER` (simple particles without options).
-    let main = if explosion.small {
-        "minecraft:explosion"
-    } else {
-        "minecraft:explosion_emitter"
+    let main = match (explosion.wind_sound.is_some(), explosion.small) {
+        (true, true) => "minecraft:gust_emitter_small",
+        (true, false) => "minecraft:gust_emitter_large",
+        (false, true) => "minecraft:explosion",
+        (false, false) => "minecraft:explosion_emitter",
     };
     write_varint(&mut body, particle(main));
-    // `SoundEvents.GENERIC_EXPLODE` as a registry holder.
+    // `SoundEvents.GENERIC_EXPLODE` (or the wind burst) as a registry holder.
     let sound = SOUND_EVENT
-        .id("minecraft:entity.generic.explode")
+        .id(explosion
+            .wind_sound
+            .unwrap_or("minecraft:entity.generic.explode"))
         .unwrap_or(0);
     write_varint(&mut body, i32::from(sound) + 1);
-    // `DEFAULT_EXPLOSION_BLOCK_PARTICLES`: poof (0.5, 1.0) and smoke (1.0, 1.0), weight 1.
-    write_varint(&mut body, 2);
-    for (name, scaling) in [("minecraft:poof", 0.5_f32), ("minecraft:smoke", 1.0_f32)] {
-        write_varint(&mut body, particle(name));
-        body.extend_from_slice(&scaling.to_be_bytes());
-        body.extend_from_slice(&1.0_f32.to_be_bytes());
-        write_varint(&mut body, 1);
+    if explosion.wind_sound.is_some() {
+        // Wind charges have no block particles (`WeightedList.of()`).
+        write_varint(&mut body, 0);
+    } else {
+        // `DEFAULT_EXPLOSION_BLOCK_PARTICLES`: poof (0.5, 1.0) and smoke (1.0, 1.0), weight 1.
+        write_varint(&mut body, 2);
+        for (name, scaling) in [("minecraft:poof", 0.5_f32), ("minecraft:smoke", 1.0_f32)] {
+            write_varint(&mut body, particle(name));
+            body.extend_from_slice(&scaling.to_be_bytes());
+            body.extend_from_slice(&1.0_f32.to_be_bytes());
+            write_varint(&mut body, 1);
+        }
     }
     // `playSound`: the source is not silent.
     body.push(1);

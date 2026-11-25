@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::{Map, Value, json};
 use vanillite_base::hash::FxHashMap;
-use vanillite_base::random::LegacyRandom;
+use vanillite_base::random::{LegacyRandom, RandomSource};
 use vanillite_base::{BlockPos, ChunkPos, Vec3};
 use vanillite_chunk::ProtoChunk;
 use vanillite_chunk::light::LightNibbles;
@@ -28,12 +28,16 @@ use vanillite_chunk::slots::{
 use vanillite_data::block::{BlockId, BlockState};
 use vanillite_data::entity::{EntityTypeId, ids};
 use vanillite_game::block::Behaviours;
+use vanillite_game::block::weather::Climate;
 use vanillite_game::entities::{Entities, is_mob_kind};
 use vanillite_game::item_entity::ItemData;
 use vanillite_game::level::explosion::BlockInteraction;
 use vanillite_game::level::{Level, LevelOutput, LevelSettings, update};
 use vanillite_game::minecart::{self, MinecartKind};
+use vanillite_game::mob::common::CommonGoal;
+use vanillite_game::mob::fam::FamGoal;
 use vanillite_game::mob::goals::{Goal, MeleeKind, Slot};
+use vanillite_game::mob::movement::{MoveGoal, RemoveSounds};
 use vanillite_game::mob::{
     self, Environment, Kind, MobContext, MobData, MobSettings, WorldAction, combat, kinds,
     projectile,
@@ -47,6 +51,7 @@ use vanillite_game::survival::blocks::{BlockAccess, BlockFacts};
 use vanillite_game::survival::damage::{DamageSource, DamageTypes};
 use vanillite_game::survival::player::{self as survival_player, Env};
 use vanillite_game::survival::rules::{Difficulty, GameRules, Rule};
+use vanillite_game::survival::weather::LevelWeather;
 use vanillite_protocol::SharedPacket;
 use vanillite_storage::{AnvilCodec, Compression};
 use vanillite_world::chunks::{
@@ -106,13 +111,21 @@ impl BlockAccess for ChunkBlocks<'_> {
 
 /// Damage types and block facts of the Vanilla data pack.
 static PACK: OnceLock<(DamageTypes, BlockFacts)> = OnceLock::new();
+/// The biomes of the Vanilla data pack (temperatures, precipitation).
+static BIOMES: OnceLock<vanillite_worldgen::biome::BiomeRegistry> = OnceLock::new();
+/// The biome ids by protocol id.
+static BIOME_NAMES: OnceLock<Arc<[String]>> = OnceLock::new();
+/// The trees saplings grow into (they do not depend on the seed).
+static TREES: OnceLock<Arc<vanillite_game::block::tree::TreeFeatures>> = OnceLock::new();
+
+/// Sea level of Vanilla's flat worlds (`FlatLevelSource.getSeaLevel`).
+const FLAT_SEA_LEVEL: i32 = -63;
 
 /// Installs the chunk facts and the block tags behaviour reads from the Vanilla data pack
 /// (extracted into `$VANILLITE_CACHE`, default `<workspace>/target/vanilla-cache`), once.
 fn install() {
     static DONE: OnceLock<()> = OnceLock::new();
     DONE.get_or_init(|| {
-        vanillite_chunk::facts::install_vanilla(&[], &[], 1);
         let cache = std::env::var_os("VANILLITE_CACHE").map_or_else(
             || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/vanilla-cache"),
             PathBuf::from,
@@ -121,11 +134,44 @@ fn install() {
         let pack = vanillite_datapack::vanilla::ensure_vanilla_pack(&cache, jar.as_deref())
             .expect("Vanilla data pack (set VANILLITE_SERVER_JAR for an offline copy)");
         let packs = vanillite_datapack::load(&[pack.as_path()]).expect("load Vanilla data pack");
+        // The heightmap tags and the biome count, as the server installs them.
+        let tag = |name: &str| {
+            packs
+                .tag_ids("minecraft:block", name)
+                .expect("Vanilla heightmap block tag")
+        };
+        let biomes = packs
+            .registry("minecraft:worldgen/biome")
+            .map_or(1, |r| r.entries().len());
+        vanillite_chunk::facts::install_vanilla(
+            &tag("minecraft:blocks_motion_in_heightmap"),
+            &tag("minecraft:blocks_motion_in_heightmap_no_leaves"),
+            u32::try_from(biomes).unwrap_or(u32::MAX),
+        );
         vanillite_worldgen::behaviour::init(&packs);
         let _ = PACK.set((
             vanillite_server::load_damage_types(&packs),
             vanillite_server::load_block_facts(&packs),
         ));
+        let _ = BIOMES
+            .set(vanillite_worldgen::biome::BiomeRegistry::load(&packs).expect("Vanilla biomes"));
+        let _ = TREES.set(Arc::new(
+            vanillite_game::block::tree::TreeFeatures::load(
+                &packs,
+                BIOMES.get().expect("biomes first"),
+                0,
+                MIN_Y,
+                HEIGHT as i32,
+                FLAT_SEA_LEVEL,
+            )
+            .expect("Vanilla tree features"),
+        ));
+        let _ = BIOME_NAMES.set(
+            packs
+                .registry("minecraft:worldgen/biome")
+                .map(|r| r.entries().iter().map(|e| e.id.clone()).collect())
+                .expect("Vanilla biome registry"),
+        );
         // Loot tables and item tags (block drops), as the server installs them.
         vanillite_game::player::play::install_game_data(Arc::new(vanillite_server::game_data(
             Some(&packs),
@@ -179,7 +225,15 @@ pub struct GameWorld {
     /// Scenario names of entities.
     names: Vec<(EntityId, String)>,
     seed: i64,
+    /// Frames observe the level random.
+    level_rng: bool,
+    /// The own random of item entities (not seeded per entity yet).
+    item_random: LegacyRandom,
+    item_scratch: vanillite_server::ItemScratch,
 }
+
+/// Ticks until an item entity despawns (`ItemEntity.LIFETIME`).
+const ITEM_LIFETIME: i16 = 6000;
 
 impl std::fmt::Debug for GameWorld {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -192,6 +246,12 @@ impl GameWorld {
     /// parallel execution are the same.
     pub fn new(spec: &WorldSpec) -> Result<Self, String> {
         install();
+        let biomes = Arc::clone(BIOME_NAMES.get().expect("installed"));
+        let default_biome = biomes
+            .iter()
+            .position(|b| *b == spec.biome)
+            .and_then(|i| u16::try_from(i).ok())
+            .ok_or_else(|| format!("unknown biome `{}`", spec.biome))?;
         let info = WorldInfo {
             dimension: "minecraft:overworld".to_owned(),
             dir: std::env::temp_dir(),
@@ -199,8 +259,8 @@ impl GameWorld {
             height: HEIGHT,
             seed: spec.seed,
             has_sky_light: true,
-            biomes: Arc::from([spec.biome.clone()]),
-            default_biome: 0,
+            biomes,
+            default_biome,
             air: BlockState::AIR.0,
         };
         let mut layers = Vec::new();
@@ -227,13 +287,31 @@ impl GameWorld {
         let mut rules = GameRules::default();
         apply_rules(&mut settings, &mut rules, &spec.rules)?;
         let network_ids = Arc::new(NetworkIds::new());
-        let level = Level::new(
+        let mut level = Level::new(
             chunks,
             settings,
             Arc::new(Behaviours::vanilla()),
             Arc::clone(&network_ids),
             spec.seed,
         );
+        level.set_tree_features(Arc::clone(TREES.get().expect("installed")));
+        level.set_climate(Arc::new(Climate {
+            biomes: BIOMES.get().expect("installed").clone(),
+            manager: vanillite_worldgen::biome::BiomeManager::for_world_seed(spec.seed),
+            sea_level: FLAT_SEA_LEVEL,
+        }));
+        let (rain, thunder) = match spec.weather.as_str() {
+            "clear" => (0.0, 0.0),
+            "rain" => (1.0, 0.0),
+            "thunder" => (1.0, 1.0),
+            w => return Err(format!("unknown weather `{w}`")),
+        };
+        level.set_weather(LevelWeather {
+            rain_level: rain,
+            o_rain_level: rain,
+            thunder_level: thunder,
+            o_thunder_level: thunder,
+        });
         let difficulty = match spec.difficulty.as_str() {
             "peaceful" => Difficulty::Peaceful,
             "easy" => Difficulty::Easy,
@@ -241,6 +319,7 @@ impl GameWorld {
             "hard" => Difficulty::Hard,
             d => return Err(format!("unknown difficulty `{d}`")),
         };
+        level.settings.difficulty = difficulty;
         // The world starts at day time 0 unless the scenario sets one; time does not advance.
         let env = Environment::overworld(spec.time.unwrap_or(0), 0.0, 0.0);
         let mut world = Self {
@@ -255,6 +334,9 @@ impl GameWorld {
             effects: Vec::new(),
             names: Vec::new(),
             seed: spec.seed,
+            level_rng: spec.level_rng,
+            item_random: LegacyRandom::new(spec.seed),
+            item_scratch: vanillite_server::ItemScratch::default(),
         };
         world
             .set_forced(&spec.forced, true)
@@ -294,7 +376,7 @@ impl GameWorld {
         let r = {
             let level = &self.level;
             let blocks = ChunkBlocks(&level.chunks);
-            let raining = |_| false;
+            let raining = |pos| level.is_raining_at(pos);
             let mut no_gateway = |_| false;
             let mut env = Env {
                 types,
@@ -348,6 +430,20 @@ impl GameWorld {
                     p.connection.movement.tick_client_load_timeout();
                     survival_player::tick_entity(p);
                 }
+                continue;
+            }
+            if kind == ids::ITEM {
+                let level = &mut self.level;
+                let random = &mut self.item_random;
+                vanillite_server::tick_item(
+                    &mut level.entities,
+                    &level.chunks,
+                    id,
+                    &mut || random.next_float(),
+                    MIN_Y,
+                    ITEM_LIFETIME,
+                    &mut self.item_scratch,
+                );
                 continue;
             }
             let is_mob = is_mob_kind(kind);
@@ -623,7 +719,20 @@ impl GameWorld {
             .ok_or_else(|| format!("{}: no mob behaviour in Vanillite", spec.kind))?;
         let mut m = MobData::new(kind, spec.seed);
         if spec.finalize {
-            kinds::finalize_spawn(&mut m, self.difficulty, kinds::FarmClimate::Temperate, 0);
+            // `finalizeSpawn(level, difficulty, COMMAND, null)` with the level random.
+            let pos = BlockPos::containing(spec.pos[0], spec.pos[1], spec.pos[2]);
+            let mut random = std::mem::replace(self.level.random(), LegacyRandom::new(0));
+            {
+                let mut ctx = vanillite_game::mob::fam::SpawnContext::simple(
+                    self.difficulty,
+                    vanillite_game::mob::fam::SpawnReason::Command,
+                );
+                ctx.pos = pos;
+                ctx.level = Some(&self.level);
+                ctx.env = self.env;
+                kinds::finalize_spawn(&mut m, &mut ctx, &mut random);
+            }
+            *self.level.random() = random;
         }
         if let Some(baby) = spec.baby {
             m.baby = baby;
@@ -702,8 +811,8 @@ impl GameWorld {
                 );
                 d.insert("target".into(), json!(name));
             }
-            d.insert("goals".into(), running(&m.goals.slots));
-            d.insert("targets".into(), running(&m.targets.slots));
+            d.insert("goals".into(), running(m.kind, &m.goals.slots));
+            d.insert("targets".into(), running(m.kind, &m.targets.slots));
             if let Some(path) = m.nav.path.as_ref().filter(|p| !p.is_done()) {
                 let nodes: Vec<Value> = path
                     .nodes
@@ -726,22 +835,23 @@ impl GameWorld {
 }
 
 /// The running goals by Vanilla class name, sorted.
-fn running(slots: &[Slot]) -> Value {
+fn running(kind: Kind, slots: &[Slot]) -> Value {
     let mut names: Vec<&str> = slots
         .iter()
         .filter(|s| s.running)
-        .map(|s| goal_name(&s.goal))
+        .map(|s| goal_name(kind, &s.goal))
         .collect();
     names.sort_unstable();
     json!(names)
 }
 
-/// The Vanilla class of a goal.
-fn goal_name(goal: &Goal) -> &'static str {
+/// The Vanilla class of a goal of a mob of `kind`.
+fn goal_name(kind: Kind, goal: &Goal) -> &'static str {
     match goal {
         Goal::Float => "FloatGoal",
         Goal::Panic { .. } => "PanicGoal",
         Goal::Stroll { .. } => "WaterAvoidingRandomStrollGoal",
+        Goal::LookAtPlayer { .. } if kind == Kind::Fox => "FoxLookAtPlayerGoal",
         Goal::LookAtPlayer { .. } => "LookAtPlayerGoal",
         Goal::RandomLook { .. } => "RandomLookAroundGoal",
         Goal::Melee { kind, .. } => match kind {
@@ -761,9 +871,6 @@ fn goal_name(goal: &Goal) -> &'static str {
         Goal::HurtBy { .. } => "HurtByTargetGoal",
         Goal::EndermanFreeze { .. } => "EndermanFreezeWhenLookedAt",
         Goal::EndermanStare { .. } => "EndermanLookForPlayerGoal",
-        // The boss goals are not part of a parity trace yet.
-        Goal::Guardian(_) => "GuardianGoal",
-        Goal::Wither(_) => "WitherGoal",
         Goal::Breed { .. } => "BreedGoal",
         Goal::Tempt { .. } => "TemptGoal",
         Goal::SitWhenOrdered => "SitWhenOrderedToGoal",
@@ -772,7 +879,195 @@ fn goal_name(goal: &Goal) -> &'static str {
         Goal::FollowOwner { .. } => "FollowOwnerGoal",
         Goal::OwnerHurtBy { .. } => "OwnerHurtByTargetGoal",
         Goal::OwnerHurt { .. } => "OwnerHurtTargetGoal",
+        Goal::Common(c) => common_goal_name(c),
+        Goal::Fam(f) => fam_goal_name(kind, f),
+        Goal::Guardian(g) => {
+            use vanillite_game::mob::boss::guardian::GuardianGoal as Gg;
+            match g {
+                Gg::Attack { .. } => "GuardianAttackGoal",
+                Gg::MoveTowardsRestriction { .. } => "MoveTowardsRestrictionGoal",
+                Gg::Stroll { .. } => "RandomStrollGoal",
+                Gg::LookAtGuardian { .. } => "LookAtPlayerGoal",
+                Gg::Target { .. } => "NearestAttackableTargetGoal",
+            }
+        }
+        Goal::Wither(w) => {
+            use vanillite_game::mob::boss::wither::WitherGoal as Wg;
+            match w {
+                Wg::DoNothing => "WitherDoNothingGoal",
+                Wg::RangedAttack { .. } => "RangedAttackGoal",
+                Wg::RandomFly { .. } => "WaterAvoidingRandomFlyingGoal",
+                Wg::NearestLiving { .. } => "NearestAttackableTargetGoal",
+            }
+        }
     }
+}
+
+/// The Vanilla class of a goal many families share.
+fn common_goal_name(goal: &CommonGoal) -> &'static str {
+    match goal {
+        CommonGoal::NearestAttackable { .. } => "NearestAttackableTargetGoal",
+        CommonGoal::Avoid { .. } => "AvoidEntityGoal",
+        CommonGoal::Ranged { .. } => "RangedAttackGoal",
+        CommonGoal::MoveTowardsRestriction { .. } => "MoveTowardsRestrictionGoal",
+        CommonGoal::ResetUniversalAnger { .. } => "ResetUniversalAngerTargetGoal",
+        CommonGoal::Move(m) => match m {
+            MoveGoal::RemoveBlock {
+                sounds: RemoveSounds::ZombieEgg,
+                ..
+            } => "ZombieAttackTurtleEggGoal",
+            MoveGoal::RemoveBlock { .. } => "RemoveBlockGoal",
+            MoveGoal::OpenDoor { .. } => "OpenDoorGoal",
+            MoveGoal::BreakDoor { .. } => "BreakDoorGoal",
+            MoveGoal::BreathAir => "BreathAirGoal",
+            MoveGoal::TryFindLiquid { .. } => "TryFindWaterGoal",
+            MoveGoal::ClimbOnTopOfPowderSnow => "ClimbOnTopOfPowderSnowGoal",
+            _ => "RandomStrollGoal",
+        },
+    }
+}
+
+/// The Vanilla class of a family goal of a mob of `kind`, read from the goal's `Debug` form
+/// (`Illager(Spell(UseSpell { spell: 1, .. }))`): the family, its variant and what selects the
+/// class inside it.
+fn fam_goal_name(kind: Kind, goal: &FamGoal) -> &'static str {
+    let debug = format!("{goal:?}");
+    let words: Vec<&str> = debug
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|s| !s.is_empty())
+        .collect();
+    let word = |i: usize| words.get(i).copied().unwrap_or("");
+    let field = |name: &str| {
+        words
+            .iter()
+            .position(|w| *w == name)
+            .map_or("", |i| word(i + 1))
+    };
+    let (family, variant) = (word(0), word(1));
+    match (family, variant) {
+        ("Undead", "DrownedMelee") => "DrownedAttackGoal",
+        ("Undead", "DrownedTrident") => "DrownedTridentAttackGoal",
+        ("Undead", "HurtByIgnoringDrowned") => "HurtByTargetGoal",
+        ("Undead", "SkeletonMelee") => "MeleeAttackGoal",
+        ("Undead", "CubeFloat") => "CubeMobFloatGoal",
+        ("Undead", "CubeAttack") => "CubeMobAttackGoal",
+        ("Undead", "CubeRandomDirection") => "CubeMobRandomDirectionGoal",
+        ("Undead", "CubeKeepOnJumping") => "CubeMobKeepOnJumpingGoal",
+        ("Undead", "PhantomSweep") => "PhantomSweepAttackGoal",
+        ("Undead", "PhantomCircle") => "PhantomCircleAroundAnchorGoal",
+        ("Undead", "PhantomTargetPlayer") => "PhantomAttackPlayerTargetGoal",
+        ("Illager", "Patrol") => "LongDistancePatrolGoal",
+        ("Illager", "HoldGround") => "HoldGroundAttackGoal",
+        ("Illager", "HurtBy") => "HurtByTargetGoal",
+        ("Illager", "LookAt") => "LookAtPlayerGoal",
+        ("Illager", "Stroll") => match kind {
+            Kind::Pillager | Kind::Witch => "WaterAvoidingRandomStrollGoal",
+            _ => "RandomStrollGoal",
+        },
+        ("Illager", "Locked") => common_name_of(word(2)),
+        ("Illager", "Target") => match field("gate") {
+            "WitchCanAttack" => "NearestAttackableWitchTargetGoal",
+            "Johnny" => "VindicatorJohnnyAttackGoal",
+            "NotPeaceful" => "ShulkerNearestAttackGoal",
+            _ => "NearestAttackableTargetGoal",
+        },
+        ("Illager", "WitchHeal") => "NearestHealableRaiderTargetGoal",
+        ("Illager", "Crossbow") => "RangedCrossbowAttackGoal",
+        ("Illager", "SpellCasting") => match kind {
+            Kind::Evoker => "EvokerCastingSpellGoal",
+            _ => "SpellcasterCastingSpellGoal",
+        },
+        ("Illager", "Spell") => match field("spell") {
+            "1" => "EvokerSummonSpellGoal",
+            "2" => "EvokerAttackSpellGoal",
+            "3" => "EvokerWololoSpellGoal",
+            "4" => "IllusionerMirrorSpellGoal",
+            "5" => "IllusionerBlindnessSpellGoal",
+            _ => "SpellcasterUseSpellGoal",
+        },
+        ("Illager", "VexCharge") => "VexChargeAttackGoal",
+        ("Illager", "VexCopyOwner") => "VexCopyOwnerTargetGoal",
+        ("Illager", "GhastFloat") => "RandomFloatAroundGoal",
+        ("Illager", "GhastShoot") => "GhastShootFireballGoal",
+        ("Companion", "Guard") => match (word(3), kind) {
+            ("Avoid", Kind::Cat) => "CatAvoidEntityGoal",
+            ("Avoid", Kind::Ocelot) => "OcelotAvoidEntityGoal",
+            ("NearestAttackable", _) if word(2) == "NotTame" => "NonTameRandomTargetGoal",
+            (inner, _) => common_name_of(inner),
+        },
+        ("Companion", "TamePanic") => "TamableAnimalPanicGoal",
+        ("Companion", _) => match (variant, word(2)) {
+            ("Horse", "RunAround") => "RunAroundLikeCrazyGoal",
+            ("Llama", "FollowCaravan") => "LlamaFollowCaravanGoal",
+            ("Llama", "AttackWolf") => "LlamaAttackWolfGoal",
+            ("Llama", "DefendTrader") => "TraderLlamaDefendWanderingTraderGoal",
+            ("Wolf", "AvoidLlama") => "WolfAvoidEntityGoal",
+            ("Feline", "RelaxOnOwner") => "CatRelaxOnOwnerGoal",
+            ("Feline", "LieOnBlock") => "CatLieOnBedGoal",
+            ("Feline", "SitOnBlock") => "CatSitOnBlockGoal",
+            ("Feline", "Attack") => "OcelotAttackGoal",
+            ("Parrot", "Wander") => "ParrotWanderGoal",
+            ("Fox", "Float") => "FoxFloatGoal",
+            ("Fox", "Panic") => "FoxPanicGoal",
+            ("Fox", "Avoid") => "AvoidEntityGoal",
+            ("Fox", "Pounce") => "FoxPounceGoal",
+            ("Fox", "EatBerries") => "FoxEatBerriesGoal",
+            ("Fox", "SearchForItems") => "FoxSearchForItemsGoal",
+            ("Fox", "DefendTrusted") => "DefendTrustedTargetGoal",
+            ("Panda", "BreedCheck") => "PandaBreedGoal",
+            ("Panda", inner) => leak(format!("Panda{inner}Goal")),
+            ("Bear", "Panic") => "PolarBearPanicGoal",
+            ("Bear", "AttackPlayers") => "PolarBearAttackPlayersGoal",
+            ("Rabbit", "Panic") => "RabbitPanicGoal",
+            ("Rabbit", "Avoid") => "RabbitAvoidEntityGoal",
+            (_, inner) => leak(format!("{inner}Goal")),
+        },
+        ("Mount", "Ghast") => match word(2) {
+            "Float" => "HappyGhastFloatGoal",
+            "Tempt" => "TemptGoal",
+            _ => "RandomFloatAroundGoal",
+        },
+        ("Wildlife", "Swim") => match kind {
+            Kind::Dolphin => "RandomSwimmingGoal",
+            _ => "FishSwimGoal",
+        },
+        ("Wildlife", "Puff") => "PufferfishPuffGoal",
+        ("Wildlife", "TurtleStroll") => "TurtleRandomStrollGoal",
+        ("Wildlife", "BeeValidateFlower") => "ValidateFlowerGoal",
+        (_, variant) => leak(if variant.ends_with("Goal") {
+            variant.to_owned()
+        } else {
+            format!("{variant}Goal")
+        }),
+    }
+}
+
+/// The Vanilla class of a [`CommonGoal`] variant by name.
+fn common_name_of(variant: &str) -> &'static str {
+    match variant {
+        "NearestAttackable" => "NearestAttackableTargetGoal",
+        "Avoid" => "AvoidEntityGoal",
+        "Ranged" => "RangedAttackGoal",
+        "MoveTowardsRestriction" => "MoveTowardsRestrictionGoal",
+        "ResetUniversalAnger" => "ResetUniversalAngerTargetGoal",
+        other => leak(format!("{other}Goal")),
+    }
+}
+
+/// A name for the trace, kept for the process (one per distinct name).
+fn leak(name: String) -> &'static str {
+    use std::collections::HashSet;
+    static NAMES: Mutex<Option<HashSet<&'static str>>> = Mutex::new(None);
+    let mut names = NAMES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let names = names.get_or_insert_with(HashSet::new);
+    if let Some(n) = names.get(name.as_str()) {
+        return n;
+    }
+    let n: &'static str = Box::leak(name.into_boxed_str());
+    names.insert(n);
+    n
 }
 
 /// `PathType.name()`: `WalkableDoor` → `WALKABLE_DOOR`.
@@ -807,32 +1102,33 @@ fn apply_rules(
     }
     for (name, value) in rules {
         let bad = || format!("game rule {name}: bad value `{value}`");
-        if let Some(rule) = Rule::by_name(name) {
-            let v = match value.as_str() {
-                "true" => 1,
-                "false" => 0,
-                v => v.parse().map_err(|_| bad())?,
-            };
-            game_rules.set(rule, v);
-        }
-        match name.as_str() {
-            "random_tick_speed" => settings.random_tick_speed = value.parse().map_err(|_| bad())?,
-            "water_source_conversion" => {
-                settings.water_source_conversion = value.parse().map_err(|_| bad())?;
-            }
-            "lava_source_conversion" => {
-                settings.lava_source_conversion = value.parse().map_err(|_| bad())?;
-            }
-            "block_drops" => settings.block_drops = value.parse().map_err(|_| bad())?,
-            "entity_drops" => settings.entity_drops = value.parse().map_err(|_| bad())?,
-            "spawn_mobs" | "advance_time" | "advance_weather" | "mob_griefing" | "mob_drops" => {}
-            _ => {
-                return Err(format!(
-                    "game rule {name} is not supported by the game world"
-                ));
-            }
-        }
+        let supported = matches!(
+            name.as_str(),
+            "random_tick_speed"
+                | "water_source_conversion"
+                | "lava_source_conversion"
+                | "block_drops"
+                | "entity_drops"
+                | "max_snow_accumulation_height"
+                | "fire_spread_radius_around_player"
+                | "spread_vines"
+                | "spawn_mobs"
+                | "advance_time"
+                | "advance_weather"
+                | "mob_griefing"
+                | "mob_drops"
+        );
+        let rule = Rule::by_name(name)
+            .filter(|_| supported)
+            .ok_or_else(|| format!("game rule {name} is not supported by the game world"))?;
+        let v = match value.as_str() {
+            "true" => 1,
+            "false" => 0,
+            v => v.parse().map_err(|_| bad())?,
+        };
+        game_rules.set(rule, v);
     }
+    settings.apply_game_rules(game_rules);
     Ok(())
 }
 
@@ -974,23 +1270,25 @@ impl ScenarioWorld for GameWorld {
     }
 
     /// Players, the level random reseeded with the world seed, then the other entities.
-    fn add_entities(&mut self, entities: &[EntitySpec], _entity_seed: i64) -> Result<(), String> {
+    fn add_entities(&mut self, entities: &[EntitySpec], entity_seed: i64) -> Result<(), String> {
         for (i, spec) in entities.iter().enumerate() {
             if spec.is_player() {
                 self.add_player(spec, i);
             }
         }
         *self.level.random() = LegacyRandom::new(self.seed);
+        self.level.set_rand_value(self.seed as i32);
         for (i, spec) in entities.iter().enumerate() {
             if !spec.is_player() {
                 self.add_mob(spec, i)?;
             }
         }
+        self.level.set_entity_seed(entity_seed);
         Ok(())
     }
 
     fn level_rng(&mut self) -> Option<i64> {
-        (!self.names.is_empty()).then(|| self.level.random().state())
+        (self.level_rng || !self.names.is_empty()).then(|| self.level.random().state())
     }
 
     fn hurt(&mut self, hurt: &Hurt) -> Result<(), String> {

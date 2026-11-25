@@ -351,6 +351,28 @@ fn door_sound(
     level.play_block_sound(player, pos, sound, SOUND_BLOCKS, 1.0, pitch);
 }
 
+/// `DoorBlock.setOpen(source, level, state, pos, open)`: mobs opening and closing doors.
+pub fn set_door_open(
+    level: &mut Level,
+    pos: BlockPos,
+    open: bool,
+    source: Option<vanillite_world::entity::EntityId>,
+) {
+    let state = level.block(pos);
+    if !state.block().name().ends_with("_door") || state.flag("open") == open {
+        return;
+    }
+    let new = state.set_flag("open", open);
+    level.set_block(pos, new, update::CLIENTS | update::IMMEDIATE);
+    door_sound(level, new, pos, open, source);
+    game_event(
+        level,
+        if open { "block_open" } else { "block_close" },
+        pos,
+        source,
+    );
+}
+
 /// `DoorBlock.useWithoutItem`.
 pub(super) fn door_use(
     level: &mut Level,

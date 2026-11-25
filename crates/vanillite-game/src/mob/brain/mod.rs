@@ -1,36 +1,32 @@
-//! The brain AI of mobs (`Brain`, `MemoryModuleType`, `Sensor`, `Activity`, `Behavior`,
-//! `OneShot`, `GateBehavior`/`RunOne`), shared by every brain driven kind (the warden here;
-//! villagers, piglins, axolotls, frogs, ... later).
+//! Brain AI (`Brain`): memories, sensors, activities, schedules and behaviours of the mobs
+//! that use it in Vanilla instead of goals.
 //!
-//! # Design
+//! A family builds the brain in its `init` hook with a [`BrainSpec`] (sensors, extra
+//! memories, activities with their behaviours, requirements and memories to erase) and ticks
+//! it in its `custom_server_ai_step` like Vanilla's `customServerAiStep` (`brain.tick` and the
+//! kind's `updateActivity`). Behaviours are small `Copy` values in an arena; running them
+//! copies the value out, so they have full access to the world through the [`Tick`].
 //!
-//! A [`Brain`] is plain data owned by the mob's kind state:
-//! - [`Memories`]: the registered memory slots (a small vector, looked up linearly: brains
-//!   register 10–40 memories) with Vanilla's expiry (`MemorySlot`: a value with a time to live
-//!   that is counted down by [`Brain::tick`] and cleared when it reaches zero).
-//! - Sensors: a kind specific sensor enum `S: Sensor<C>` with Vanilla's scan rate and the
-//!   random start delay (`Sensor.randomlyDelayStart`).
-//! - Behaviors: a kind specific behavior enum `B: Behavior<C>` (no trait objects; one `match`
-//!   per call), each in a [`Node`] that keeps Vanilla's `status`/`endTimestamp` bookkeeping.
-//!   [`Node::Gate`] is `GateBehavior` (and with [`Gate::run_one`] `RunOne`).
-//! - Activities: the entry requirements and the memories erased when an activity stops; the
-//!   core activities plus one other are active (`setActiveActivityToFirstValid`).
-//!
-//! `C` is the context the behaviors and sensors work on, for mobs the mob tick
-//! ([`crate::mob::Tick`]). Because that context reaches the mob's data (where the brain lives),
-//! the kind takes the brain out of its state for [`Brain::tick`] (`std::mem::take`, no
-//! allocation: the default brain is empty) and puts it back afterwards; behavior code receives
-//! the [`Memories`] separately.
-//!
-//! The tick is allocation free: sensors refill their memory vectors in place, behaviors keep
-//! their state inline.
-//!
-//! Vanilla iterates the behaviors of one priority in the order of a `HashMap<Activity, Set>`
-//! (identity hashed, so not deterministic); here they run in registration order.
+//! Memories only exist for the types the brain registered; their slots are inline in a small
+//! vector with an index table, so a lookup is one array read.
+
+pub mod behavior;
+pub mod memory;
+pub mod sensing;
+pub mod sensor;
 
 use vanillite_base::BlockPos;
-use vanillite_nbt::{Compound, Tag};
+use vanillite_base::random::RandomSource;
 use vanillite_world::entity::EntityId;
+
+pub use behavior::{Behavior, Spec, Status};
+pub use memory::{
+    GlobalPos, MEMORY_COUNT, MemValue, MemoryStatus, MemoryType, Slot, Tracker, ValueKind, Visible,
+    WalkTarget,
+};
+pub use sensor::{SensorKind, SensorState};
+
+use super::Tick;
 
 /// `Activity`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -66,978 +62,593 @@ pub enum Activity {
 
 impl Activity {
     fn bit(self) -> u32 {
-        1 << self as u8
+        1 << (self as u32)
     }
 }
 
-/// A set of activities (`Set<Activity>`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ActivitySet(u32);
-
-impl ActivitySet {
-    pub fn contains(self, a: Activity) -> bool {
-        self.0 & a.bit() != 0
-    }
-
-    pub fn insert(&mut self, a: Activity) {
-        self.0 |= a.bit();
-    }
-
-    pub fn of(activities: &[Activity]) -> ActivitySet {
-        let mut s = ActivitySet::default();
-        for &a in activities {
-            s.insert(a);
-        }
-        s
-    }
-}
-
-/// How a memory value is stored in NBT (`MemoryModuleType`'s codec), `None` if not saved.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Codec {
-    None,
-    Unit,
-    Bool,
-    Int,
-    Long,
-    Uuid,
-}
-
-macro_rules! memory_types {
-    ($($variant:ident = $name:literal : $codec:ident),* $(,)?) => {
-        /// `MemoryModuleType` (the ones used so far; add more as kinds need them).
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-        pub enum MemoryType {
-            $(#[doc = concat!("`minecraft:", $name, "`.")] $variant,)*
-        }
-
-        impl MemoryType {
-            /// The registry name without namespace.
-            pub fn name(self) -> &'static str {
-                match self { $(MemoryType::$variant => $name,)* }
-            }
-
-            fn codec(self) -> Codec {
-                match self { $(MemoryType::$variant => Codec::$codec,)* }
-            }
-
-            fn by_name(name: &str) -> Option<MemoryType> {
-                let name = name.strip_prefix("minecraft:").unwrap_or(name);
-                match name { $($name => Some(MemoryType::$variant),)* _ => None }
-            }
-        }
-    };
-}
-
-memory_types! {
-    Home = "home": None,
-    JobSite = "job_site": None,
-    MeetingPoint = "meeting_point": None,
-    NearestLivingEntities = "mobs": None,
-    NearestVisibleLivingEntities = "visible_mobs": None,
-    NearestPlayers = "nearest_players": None,
-    NearestVisiblePlayer = "nearest_visible_player": None,
-    NearestVisibleAttackablePlayer = "nearest_visible_targetable_player": None,
-    NearestVisibleAttackablePlayers = "nearest_visible_targetable_players": None,
-    WalkTarget = "walk_target": None,
-    LookTarget = "look_target": None,
-    AttackTarget = "attack_target": None,
-    AttackCoolingDown = "attack_cooling_down": None,
-    InteractionTarget = "interaction_target": None,
-    BreedTarget = "breed_target": None,
-    Path = "path": None,
-    HurtBy = "hurt_by": None,
-    HurtByEntity = "hurt_by_entity": None,
-    AvoidTarget = "avoid_target": None,
-    NearestHostile = "nearest_hostile": None,
-    NearestAttackable = "nearest_attackable": None,
-    CantReachWalkTargetSince = "cant_reach_walk_target_since": None,
-    NearestVisibleNemesis = "nearest_visible_nemesis": None,
-    LastSlept = "last_slept": Long,
-    LastWoken = "last_woken": Long,
-    LastWorkedAtPoi = "last_worked_at_poi": Long,
-    TemptingPlayer = "tempting_player": None,
-    TemptationCooldownTicks = "temptation_cooldown_ticks": Int,
-    IsInWater = "is_in_water": Unit,
-    IsPanicking = "is_panicking": Bool,
-    AngryAt = "angry_at": Uuid,
-    UniversalAnger = "universal_anger": Bool,
-    RoarTarget = "roar_target": None,
-    DisturbanceLocation = "disturbance_location": None,
-    RecentProjectile = "recent_projectile": Unit,
-    IsSniffing = "is_sniffing": Unit,
-    IsEmerging = "is_emerging": Unit,
-    RoarSoundDelay = "roar_sound_delay": Unit,
-    DigCooldown = "dig_cooldown": Unit,
-    RoarSoundCooldown = "roar_sound_cooldown": Unit,
-    SniffCooldown = "sniff_cooldown": Unit,
-    TouchCooldown = "touch_cooldown": Unit,
-    VibrationCooldown = "vibration_cooldown": Unit,
-    SonicBoomCooldown = "sonic_boom_cooldown": Unit,
-    SonicBoomSoundCooldown = "sonic_boom_sound_cooldown": Unit,
-    SonicBoomSoundDelay = "sonic_boom_sound_delay": Unit,
-    LikedPlayer = "liked_player": Uuid,
-    ItemPickupCooldownTicks = "item_pickup_cooldown_ticks": Int,
-}
-
-/// `MemoryStatus`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MemoryStatus {
-    Present,
-    Absent,
-    Registered,
-}
-
-/// `PositionTracker`: a block or an entity (`BlockPosTracker`, `EntityTracker`).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum PositionTracker {
-    Block(BlockPos),
-    /// The entity; `eye` tracks its eye height (`trackEyeHeight`).
-    Entity {
-        id: EntityId,
-        eye: bool,
-    },
-}
-
-/// `WalkTarget`.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct WalkTarget {
-    pub target: PositionTracker,
-    pub speed: f32,
-    pub close_enough: i32,
-}
-
-/// The value of a memory.
+/// A schedule: the activity of each part of the day (`Timeline` keyframes of the
+/// `villager_activity` attribute).
 #[derive(Clone, Debug, PartialEq)]
-pub enum MemoryValue {
-    Unit,
-    Bool(bool),
-    Int(i32),
-    Long(i64),
-    Uuid(u128),
-    Pos(BlockPos),
-    Entity(EntityId),
-    /// Entities sorted by distance (the sensors' lists).
-    Entities(Vec<EntityId>),
-    Tracker(PositionTracker),
-    Walk(WalkTarget),
+pub struct Schedule {
+    /// `(day time, activity)` sorted by time.
+    pub keyframes: Vec<(i32, Activity)>,
 }
 
-/// "Never expires" (`MemorySlot.NEVER_EXPIRE`).
-const NEVER: i64 = i64::MAX;
-
-#[derive(Clone, Debug, PartialEq)]
-struct Slot {
-    kind: MemoryType,
-    value: Option<MemoryValue>,
-    ttl: i64,
-}
-
-/// The memory slots of a brain (`Brain.memories`).
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Memories {
-    slots: Vec<Slot>,
-}
-
-impl Memories {
-    fn slot(&self, kind: MemoryType) -> Option<&Slot> {
-        self.slots.iter().find(|s| s.kind == kind)
+impl Schedule {
+    /// The adult villager schedule.
+    pub fn villager() -> Schedule {
+        Schedule {
+            keyframes: vec![
+                (10, Activity::Idle),
+                (2000, Activity::Work),
+                (9000, Activity::Meet),
+                (11000, Activity::Idle),
+                (12000, Activity::Rest),
+            ],
+        }
     }
 
-    fn slot_mut(&mut self, kind: MemoryType) -> Option<&mut Slot> {
-        self.slots.iter_mut().find(|s| s.kind == kind)
+    /// The baby villager schedule.
+    pub fn baby_villager() -> Schedule {
+        Schedule {
+            keyframes: vec![
+                (10, Activity::Idle),
+                (3000, Activity::Play),
+                (6000, Activity::Idle),
+                (10000, Activity::Play),
+                (12000, Activity::Rest),
+            ],
+        }
+    }
+
+    /// The activity at a day time: the last keyframe at or before it (the last of the day
+    /// before the first).
+    pub fn activity_at(&self, day_time: i64) -> Activity {
+        let t = day_time.rem_euclid(24000);
+        let mut current = self.keyframes.last().map_or(Activity::Idle, |k| k.1);
+        for &(at, a) in &self.keyframes {
+            if i64::from(at) <= t {
+                current = a;
+            }
+        }
+        current
+    }
+}
+
+/// One behaviour in the brain's arena.
+#[derive(Clone, Debug)]
+pub struct Node {
+    pub behavior: Behavior,
+    pub status: Status,
+    /// `endTimestamp` of timed behaviours.
+    pub end: i64,
+    pub min_duration: i32,
+    pub max_duration: i32,
+    /// Children of gates and sequences: node index, weight and the shuffle key.
+    pub children: Vec<Child>,
+}
+
+/// A child of a gate (`ShufflingList.WeightedEntry`).
+#[derive(Clone, Copy, Debug)]
+pub struct Child {
+    pub node: u16,
+    pub weight: i32,
+    pub rand_weight: f64,
+}
+
+/// An activity's requirements and the memories erased when it stops.
+#[derive(Clone, Debug)]
+struct ActivityData {
+    activity: Activity,
+    requirements: Vec<(MemoryType, MemoryStatus)>,
+    erase_when_stopped: Vec<MemoryType>,
+}
+
+/// `Brain`.
+#[derive(Clone, Debug)]
+pub struct Brain {
+    /// Memory type → slot index (`u8::MAX`: not registered).
+    index: [u8; MEMORY_COUNT],
+    pub slots: Vec<Slot>,
+    pub sensors: Vec<SensorState>,
+    pub nodes: Vec<Node>,
+    /// `availableBehaviorsByPriority`: `(priority, activity, node)` sorted by priority.
+    by_priority: Vec<(i32, Activity, u16)>,
+    activities: Vec<ActivityData>,
+    core: u32,
+    active: u32,
+    default_activity: Activity,
+    pub schedule: Option<Schedule>,
+    last_schedule_update: i64,
+    running: Vec<u16>,
+    /// Whether the behaviour being stopped timed out (`Behavior.timedOut` in `stop`).
+    pub stop_timed_out: bool,
+}
+
+impl Default for Brain {
+    fn default() -> Self {
+        Brain {
+            index: [u8::MAX; MEMORY_COUNT],
+            slots: Vec::new(),
+            sensors: Vec::new(),
+            nodes: Vec::new(),
+            by_priority: Vec::new(),
+            activities: Vec::new(),
+            core: Activity::Core.bit(),
+            active: 0,
+            default_activity: Activity::Idle,
+            schedule: None,
+            last_schedule_update: -9999,
+            running: Vec::new(),
+            stop_timed_out: false,
+        }
+    }
+}
+
+/// What a family declares for its brain (`Brain.Provider` and the `XAi.getActivities`).
+#[derive(Debug, Default)]
+pub struct BrainSpec {
+    pub memories: Vec<MemoryType>,
+    pub sensors: Vec<SensorKind>,
+    /// `(activity, first priority, behaviours, requirements, memories erased when stopped)`.
+    pub activities: Vec<ActivitySpec>,
+    pub core: Vec<Activity>,
+    pub default_activity: Option<Activity>,
+    pub schedule: Option<Schedule>,
+}
+
+/// One activity of a [`BrainSpec`] (`ActivityData`).
+#[derive(Debug)]
+pub struct ActivitySpec {
+    pub activity: Activity,
+    /// Behaviours with their priorities.
+    pub behaviors: Vec<(i32, Spec)>,
+    pub requirements: Vec<(MemoryType, MemoryStatus)>,
+    pub erase_when_stopped: Vec<MemoryType>,
+}
+
+impl ActivitySpec {
+    /// `ActivityData.create(activity, firstPriority, behaviours)`.
+    pub fn new(activity: Activity, first_priority: i32, behaviors: Vec<Spec>) -> ActivitySpec {
+        ActivitySpec {
+            activity,
+            behaviors: behaviors
+                .into_iter()
+                .zip(first_priority..)
+                .map(|(b, p)| (p, b))
+                .collect(),
+            requirements: Vec::new(),
+            erase_when_stopped: Vec::new(),
+        }
+    }
+
+    /// `ActivityData.create(activity, firstPriority, behaviours, memory)`: the memory must be
+    /// present and is erased when the activity stops.
+    pub fn with_memory(
+        activity: Activity,
+        first_priority: i32,
+        behaviors: Vec<Spec>,
+        memory: MemoryType,
+    ) -> ActivitySpec {
+        let mut a = ActivitySpec::new(activity, first_priority, behaviors);
+        a.requirements.push((memory, MemoryStatus::ValuePresent));
+        a.erase_when_stopped.push(memory);
+        a
+    }
+
+    /// `ActivityData.create(activity, pairs)` with explicit priorities.
+    pub fn with_priorities(activity: Activity, behaviors: Vec<(i32, Spec)>) -> ActivitySpec {
+        ActivitySpec {
+            activity,
+            behaviors,
+            requirements: Vec::new(),
+            erase_when_stopped: Vec::new(),
+        }
+    }
+
+    /// Adds requirements (`conditions`).
+    pub fn requires(mut self, requirements: &[(MemoryType, MemoryStatus)]) -> ActivitySpec {
+        self.requirements.extend_from_slice(requirements);
+        self
+    }
+
+    /// Adds memories to erase when the activity stops.
+    pub fn erases(mut self, memories: &[MemoryType]) -> ActivitySpec {
+        self.erase_when_stopped.extend_from_slice(memories);
+        self
+    }
+}
+
+impl Brain {
+    /// Builds a brain (`Brain(memoryTypes, sensorTypes, activities, memories, random)`): the
+    /// sensors start at a random delay from the mob's random.
+    pub fn new(spec: BrainSpec, random: &mut impl RandomSource) -> Brain {
+        let mut b = Brain::default();
+        for &m in &spec.memories {
+            b.register(m);
+        }
+        for kind in spec.sensors {
+            let mut s = SensorState::new(kind);
+            s.time_to_tick = i64::from(random.next_int_bounded(s.scan_rate.max(1)));
+            for &m in sensor::requires(&s.kind) {
+                b.register(m);
+            }
+            b.sensors.push(s);
+        }
+        for a in spec.activities {
+            let mut data = ActivityData {
+                activity: a.activity,
+                requirements: a.requirements,
+                erase_when_stopped: a.erase_when_stopped,
+            };
+            for (priority, s) in a.behaviors {
+                let node = b.add_spec(s);
+                b.by_priority.push((priority, a.activity, node));
+            }
+            // Only the first data of an activity counts (`activityRequirements.put`).
+            if let Some(old) = b.activities.iter_mut().find(|d| d.activity == a.activity) {
+                std::mem::swap(old, &mut data);
+            } else {
+                b.activities.push(data);
+            }
+        }
+        b.by_priority.sort_by_key(|e| e.0);
+        let all: Vec<MemoryType> = b
+            .nodes
+            .iter()
+            .flat_map(|n| behavior::requirements(&n.behavior).iter().map(|r| r.0))
+            .collect();
+        for m in all {
+            b.register(m);
+        }
+        if !spec.core.is_empty() {
+            b.core = spec.core.iter().fold(0, |acc, a| acc | a.bit());
+        }
+        if let Some(a) = spec.default_activity {
+            b.default_activity = a;
+        }
+        b.schedule = spec.schedule;
+        b.use_default_activity();
+        b
+    }
+
+    /// Adds a behaviour spec to the arena; returns its node.
+    fn add_spec(&mut self, s: Spec) -> u16 {
+        let (behavior, min, max, children) = s.into_parts();
+        let idx = u16::try_from(self.nodes.len()).unwrap_or(u16::MAX);
+        self.nodes.push(Node {
+            behavior,
+            status: Status::Stopped,
+            end: 0,
+            min_duration: min,
+            max_duration: max,
+            children: Vec::new(),
+        });
+        let mut list = Vec::with_capacity(children.len());
+        for (child, weight) in children {
+            let node = self.add_spec(child);
+            list.push(Child {
+                node,
+                weight,
+                rand_weight: 0.0,
+            });
+        }
+        if let Some(n) = self.nodes.get_mut(usize::from(idx)) {
+            n.children = list;
+        }
+        idx
     }
 
     /// `registerMemory`.
-    pub fn register(&mut self, kind: MemoryType) {
-        if self.slot(kind).is_none() {
-            self.slots.push(Slot {
-                kind,
-                value: None,
-                ttl: NEVER,
-            });
+    pub fn register(&mut self, m: MemoryType) {
+        let i = m as usize;
+        if self.index[i] != u8::MAX {
+            return;
         }
+        self.index[i] = u8::try_from(self.slots.len()).unwrap_or(u8::MAX);
+        self.slots.push(Slot {
+            memory: m,
+            value: None,
+            ttl: Slot::NEVER,
+        });
     }
 
-    /// `checkMemory(type, status)`.
-    pub fn check(&self, kind: MemoryType, status: MemoryStatus) -> bool {
-        let Some(slot) = self.slot(kind) else {
+    fn slot(&self, m: MemoryType) -> Option<&Slot> {
+        self.slots.get(usize::from(self.index[m as usize]))
+    }
+
+    fn slot_mut(&mut self, m: MemoryType) -> Option<&mut Slot> {
+        self.slots.get_mut(usize::from(self.index[m as usize]))
+    }
+
+    /// Whether the memory type is registered.
+    pub fn is_registered(&self, m: MemoryType) -> bool {
+        self.index[m as usize] != u8::MAX
+    }
+
+    /// `hasMemoryValue`.
+    pub fn has(&self, m: MemoryType) -> bool {
+        self.slot(m).is_some_and(|s| s.value.is_some())
+    }
+
+    /// `checkMemory`.
+    pub fn check(&self, m: MemoryType, status: MemoryStatus) -> bool {
+        let Some(s) = self.slot(m) else {
             return false;
         };
         match status {
             MemoryStatus::Registered => true,
-            MemoryStatus::Present => slot.value.is_some(),
-            MemoryStatus::Absent => slot.value.is_none(),
+            MemoryStatus::ValuePresent => s.value.is_some(),
+            MemoryStatus::ValueAbsent => s.value.is_none(),
         }
     }
 
-    /// Whether all `(memory, status)` conditions hold (`hasRequiredMemories`).
-    pub fn check_all(&self, conditions: &[(MemoryType, MemoryStatus)]) -> bool {
-        conditions.iter().all(|&(m, s)| self.check(m, s))
+    /// Whether all requirements hold (`hasRequiredMemories`).
+    pub fn check_all(&self, requirements: &[(MemoryType, MemoryStatus)]) -> bool {
+        requirements.iter().all(|&(m, s)| self.check(m, s))
     }
 
-    /// `hasMemoryValue`.
-    pub fn has(&self, kind: MemoryType) -> bool {
-        self.check(kind, MemoryStatus::Present)
+    /// `eraseMemory`.
+    pub fn erase(&mut self, m: MemoryType) {
+        if let Some(s) = self.slot_mut(m) {
+            s.clear();
+        }
     }
 
-    /// `getMemory`: the value, `None` when empty or not registered.
-    pub fn get(&self, kind: MemoryType) -> Option<&MemoryValue> {
-        self.slot(kind)?.value.as_ref()
+    /// `setMemory(type, value)`; empty lists erase it.
+    pub fn set(&mut self, m: MemoryType, v: MemValue) {
+        self.set_with_expiry(m, v, Slot::NEVER);
+    }
+
+    /// `setMemory(type, Optional)`.
+    pub fn set_opt(&mut self, m: MemoryType, v: Option<MemValue>) {
+        match v {
+            Some(v) => self.set(m, v),
+            None => self.erase(m),
+        }
+    }
+
+    /// `setMemoryWithExpiry`.
+    pub fn set_with_expiry(&mut self, m: MemoryType, v: MemValue, ttl: i64) {
+        if let Some(s) = self.slot_mut(m) {
+            if v.is_empty_collection() {
+                s.clear();
+            } else {
+                s.value = Some(v);
+                s.ttl = ttl;
+            }
+        }
+    }
+
+    /// `getMemory`.
+    pub fn get(&self, m: MemoryType) -> Option<&MemValue> {
+        self.slot(m).and_then(|s| s.value.as_ref())
+    }
+
+    /// The memory's value, mutably.
+    pub fn get_mut(&mut self, m: MemoryType) -> Option<&mut MemValue> {
+        self.slot_mut(m).and_then(|s| s.value.as_mut())
+    }
+
+    /// `getTimeUntilExpiry`.
+    pub fn ttl(&self, m: MemoryType) -> i64 {
+        self.slot(m).map_or(Slot::NEVER, |s| s.ttl)
     }
 
     /// An entity memory.
-    pub fn entity(&self, kind: MemoryType) -> Option<EntityId> {
-        match self.get(kind) {
-            Some(MemoryValue::Entity(e)) => Some(*e),
-            _ => None,
-        }
-    }
-
-    /// A block position memory.
-    pub fn pos(&self, kind: MemoryType) -> Option<BlockPos> {
-        match self.get(kind) {
-            Some(MemoryValue::Pos(p)) => Some(*p),
-            _ => None,
-        }
-    }
-
-    /// A long memory.
-    pub fn long(&self, kind: MemoryType) -> Option<i64> {
-        match self.get(kind) {
-            Some(MemoryValue::Long(v)) => Some(*v),
+    pub fn entity(&self, m: MemoryType) -> Option<EntityId> {
+        match self.get(m)? {
+            MemValue::Entity(e) => Some(*e),
             _ => None,
         }
     }
 
     /// An entity list memory (empty when absent).
-    pub fn entities(&self, kind: MemoryType) -> &[EntityId] {
-        match self.get(kind) {
-            Some(MemoryValue::Entities(v)) => v,
+    pub fn entities(&self, m: MemoryType) -> &[EntityId] {
+        match self.get(m) {
+            Some(MemValue::Entities(v)) => v,
+            Some(MemValue::Visible(v)) => &v.entities,
             _ => &[],
         }
     }
 
-    /// A walk target memory.
+    /// A block position memory.
+    pub fn pos(&self, m: MemoryType) -> Option<BlockPos> {
+        match self.get(m)? {
+            MemValue::Pos(p) => Some(*p),
+            MemValue::GlobalPos(g) => Some(g.pos),
+            _ => None,
+        }
+    }
+
+    /// An integer memory.
+    pub fn int(&self, m: MemoryType) -> Option<i32> {
+        match self.get(m)? {
+            MemValue::Int(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// A long memory.
+    pub fn long(&self, m: MemoryType) -> Option<i64> {
+        match self.get(m)? {
+            MemValue::Long(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// A boolean memory.
+    pub fn boolean(&self, m: MemoryType) -> Option<bool> {
+        match self.get(m)? {
+            MemValue::Bool(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// A UUID memory.
+    pub fn uuid(&self, m: MemoryType) -> Option<u128> {
+        match self.get(m)? {
+            MemValue::Uuid(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// A vector memory.
+    pub fn vec3(&self, m: MemoryType) -> Option<vanillite_base::Vec3> {
+        match self.get(m)? {
+            MemValue::Vec3(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// `WALK_TARGET`.
     pub fn walk_target(&self) -> Option<WalkTarget> {
-        match self.get(MemoryType::WalkTarget) {
-            Some(MemoryValue::Walk(w)) => Some(*w),
+        match self.get(MemoryType::WalkTarget)? {
+            MemValue::Walk(w) => Some(*w),
             _ => None,
         }
     }
 
-    /// A position tracker memory.
-    pub fn tracker(&self, kind: MemoryType) -> Option<PositionTracker> {
-        match self.get(kind) {
-            Some(MemoryValue::Tracker(t)) => Some(*t),
+    /// `LOOK_TARGET`.
+    pub fn look_target(&self) -> Option<Tracker> {
+        match self.get(MemoryType::LookTarget)? {
+            MemValue::Look(l) => Some(*l),
             _ => None,
         }
     }
 
-    /// `getTimeUntilExpiry`.
-    pub fn time_until_expiry(&self, kind: MemoryType) -> Option<i64> {
-        self.slot(kind).map(|s| s.ttl)
+    /// `isMemoryValue(type, entity)`.
+    pub fn is_entity(&self, m: MemoryType, id: EntityId) -> bool {
+        self.entity(m) == Some(id)
     }
 
-    /// `setMemory(type, value)`: only registered memories take values.
-    pub fn set(&mut self, kind: MemoryType, value: MemoryValue) {
-        self.set_with_expiry(kind, value, NEVER);
-    }
-
-    /// `setMemoryWithExpiry(type, value, timeToLive)`.
-    pub fn set_with_expiry(&mut self, kind: MemoryType, value: MemoryValue, ttl: i64) {
-        if let Some(slot) = self.slot_mut(kind) {
-            // `isEmptyCollection`: an empty list clears the memory.
-            if matches!(&value, MemoryValue::Entities(v) if v.is_empty()) {
-                slot.value = None;
-                slot.ttl = NEVER;
-            } else {
-                slot.value = Some(value);
-                slot.ttl = ttl;
-            }
-        }
-    }
-
-    /// `setMemory(type, Optional)`.
-    pub fn set_opt(&mut self, kind: MemoryType, value: Option<MemoryValue>) {
-        match value {
-            Some(v) => self.set(kind, v),
-            None => self.erase(kind),
-        }
-    }
-
-    /// Refills an entity list memory in place (the sensors' lists): `fill` writes into the
-    /// slot's vector, an empty result clears the memory.
-    pub fn set_entities_with(&mut self, kind: MemoryType, fill: impl FnOnce(&mut Vec<EntityId>)) {
-        let Some(slot) = self.slot_mut(kind) else {
+    /// Sets an entity list memory, reusing the stored vector.
+    pub fn set_entities(&mut self, m: MemoryType, ids: impl Iterator<Item = EntityId>) {
+        let Some(s) = self.slot_mut(m) else {
             return;
         };
-        let mut list = match slot.value.take() {
-            Some(MemoryValue::Entities(v)) => v,
+        let mut v = match s.value.take() {
+            Some(MemValue::Entities(v)) => v,
             _ => Vec::new(),
         };
-        list.clear();
-        fill(&mut list);
-        slot.ttl = NEVER;
-        slot.value = (!list.is_empty()).then_some(MemoryValue::Entities(list));
+        v.clear();
+        v.extend(ids);
+        if v.is_empty() {
+            s.clear();
+        } else {
+            s.value = Some(MemValue::Entities(v));
+            s.ttl = Slot::NEVER;
+        }
     }
 
-    /// `eraseMemory`.
-    pub fn erase(&mut self, kind: MemoryType) {
-        if let Some(slot) = self.slot_mut(kind) {
-            slot.value = None;
-            slot.ttl = NEVER;
+    /// `forgetOutdatedMemories`.
+    pub fn forget_outdated(&mut self) {
+        for s in &mut self.slots {
+            s.tick();
         }
     }
 
     /// `clearMemories`.
-    pub fn clear(&mut self) {
-        for slot in &mut self.slots {
-            slot.value = None;
-            slot.ttl = NEVER;
+    pub fn clear_memories(&mut self) {
+        for s in &mut self.slots {
+            s.clear();
         }
     }
 
-    /// `forgetOutdatedMemories` (`MemorySlot.tick`).
-    pub fn tick(&mut self) {
-        for slot in &mut self.slots {
-            if slot.value.is_some() && slot.ttl != NEVER {
-                if slot.ttl <= 0 {
-                    slot.value = None;
-                    slot.ttl = NEVER;
-                } else {
-                    slot.ttl -= 1;
-                }
-            }
-        }
-    }
+    // --- Activities ---------------------------------------------------------------------
 
-    /// `Brain.pack()` as NBT (`{memories: {"minecraft:<name>": {value, ttl}}}`): the memories
-    /// with a codec.
-    pub fn save(&self) -> Compound {
-        let mut memories = Compound::new();
-        for slot in &self.slots {
-            let Some(value) = &slot.value else { continue };
-            let tag = match (slot.kind.codec(), value) {
-                (Codec::Unit, _) => Tag::Compound(Compound::new()),
-                (Codec::Bool, MemoryValue::Bool(b)) => Tag::Byte(i8::from(*b)),
-                (Codec::Int, MemoryValue::Int(v)) => Tag::Int(*v),
-                (Codec::Long, MemoryValue::Long(v)) => Tag::Long(*v),
-                (Codec::Uuid, MemoryValue::Uuid(u)) => Tag::IntArray(uuid_ints(*u)),
-                _ => continue,
-            };
-            let mut entry = Compound::new();
-            entry.insert("value", tag);
-            if slot.ttl != NEVER {
-                entry.insert("ttl", Tag::Long(slot.ttl));
-            }
-            memories.insert(
-                format!("minecraft:{}", slot.kind.name()),
-                Tag::Compound(entry),
-            );
-        }
-        let mut out = Compound::new();
-        out.insert("memories", Tag::Compound(memories));
-        out
-    }
-
-    /// Reads `Brain.Packed`: values of registered memories only.
-    pub fn load(&mut self, tag: &Compound) {
-        let Some(Tag::Compound(memories)) = tag.get("memories") else {
-            return;
-        };
-        for (name, entry) in memories.iter() {
-            let (Some(kind), Tag::Compound(entry)) = (MemoryType::by_name(name), entry) else {
-                continue;
-            };
-            let Some(value) = entry.get("value") else {
-                continue;
-            };
-            let value = match (kind.codec(), value) {
-                (Codec::Unit, _) => MemoryValue::Unit,
-                (Codec::Bool, Tag::Byte(b)) => MemoryValue::Bool(*b != 0),
-                (Codec::Int, Tag::Int(v)) => MemoryValue::Int(*v),
-                (Codec::Long, Tag::Long(v)) => MemoryValue::Long(*v),
-                (Codec::Uuid, Tag::IntArray(v)) if v.len() == 4 => MemoryValue::Uuid(
-                    v.iter()
-                        .fold(0u128, |acc, &w| acc << 32 | u128::from(w as u32)),
-                ),
-                _ => continue,
-            };
-            let ttl = match entry.get("ttl") {
-                Some(Tag::Long(t)) => *t,
-                _ => NEVER,
-            };
-            self.set_with_expiry(kind, value, ttl);
-        }
-    }
-}
-
-fn uuid_ints(uuid: u128) -> Vec<i32> {
-    (0..4)
-        .map(|i| (uuid >> (96 - 32 * i)) as u32 as i32)
-        .collect()
-}
-
-/// What brains need from the world they tick in.
-pub trait BrainContext {
-    /// `level.getGameTime()`.
-    fn game_time(&self) -> i64;
-    /// `level.getRandom().nextInt(bound)`.
-    fn level_random_int(&mut self, bound: i32) -> i32;
-    /// A float from the random `ShufflingList` uses.
-    fn shuffle_random(&mut self) -> f32;
-}
-
-/// How a behavior starts and ends.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Flavor {
-    /// `Behavior`: runs from `start` until it times out (a duration drawn between `min` and
-    /// `max` with the level random) or `can_still_use` fails.
-    Timed { min: i32, max: i32 },
-    /// `OneShot` (`BehaviorBuilder`): `trigger` once per tick when its conditions hold.
-    OneShot,
-}
-
-/// The context free part of a behavior: its entry conditions and how it runs.
-pub trait BehaviorInfo {
-    /// The entry conditions (`entryCondition`, or the `BehaviorBuilder` group).
-    fn conditions(&self) -> &'static [(MemoryType, MemoryStatus)];
-    /// Timed or one shot.
-    fn flavor(&self) -> Flavor;
-}
-
-/// A kind's behavior (one enum per kind; each variant is one Vanilla behavior with its state).
-pub trait Behavior<C>: BehaviorInfo {
-    /// `checkExtraStartConditions` (timed behaviors).
-    fn check_extra(&mut self, mem: &mut Memories, cx: &mut C) -> bool {
-        let _ = (mem, cx);
-        true
-    }
-    /// `start` (timed) or the trigger (one shot; returns whether it ran).
-    fn start(&mut self, mem: &mut Memories, cx: &mut C, time: i64) -> bool;
-    /// `canStillUse`.
-    fn can_still_use(&mut self, mem: &mut Memories, cx: &mut C, time: i64) -> bool {
-        let _ = (mem, cx, time);
-        false
-    }
-    /// `tick`.
-    fn tick(&mut self, mem: &mut Memories, cx: &mut C, time: i64) {
-        let _ = (mem, cx, time);
-    }
-    /// `stop`.
-    fn stop(&mut self, mem: &mut Memories, cx: &mut C, time: i64) {
-        let _ = (mem, cx, time);
-    }
-}
-
-/// The context free part of a sensor.
-pub trait SensorInfo {
-    /// The memories it writes (`requires`).
-    fn requires(&self) -> &'static [MemoryType];
-    /// `scanRate` (default 20).
-    fn scan_rate(&self) -> i32 {
-        20
-    }
-}
-
-/// A kind's sensor (one enum per kind).
-pub trait Sensor<C>: SensorInfo {
-    /// `doTick`.
-    fn sense(&mut self, mem: &mut Memories, cx: &mut C);
-}
-
-/// `Behavior.Status`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Status {
-    #[default]
-    Stopped,
-    Running,
-}
-
-/// A behavior with its run state.
-#[derive(Clone, Debug)]
-pub struct Leaf<B> {
-    pub behavior: B,
-    status: Status,
-    end: i64,
-}
-
-/// `GateBehavior` (`RunOne` with [`Gate::run_one`]).
-#[derive(Clone, Debug)]
-pub struct Gate<B> {
-    conditions: &'static [(MemoryType, MemoryStatus)],
-    exit_erased: &'static [MemoryType],
-    shuffled: bool,
-    run_one: bool,
-    /// Children with their weight and their last shuffle key.
-    children: Vec<(Node<B>, i32, f64)>,
-    status: Status,
-}
-
-impl<B> Gate<B> {
-    /// `new RunOne(entryCondition, weightedBehaviors)`.
-    pub fn run_one(
-        conditions: &'static [(MemoryType, MemoryStatus)],
-        children: Vec<(Node<B>, i32)>,
-    ) -> Gate<B> {
-        Gate {
-            conditions,
-            exit_erased: &[],
-            shuffled: true,
-            run_one: true,
-            children: children.into_iter().map(|(n, w)| (n, w, 0.0)).collect(),
-            status: Status::Stopped,
-        }
-    }
-
-    /// `new GateBehavior(entryCondition, exitErasedMemories, order, running, behaviors)`.
-    pub fn new(
-        conditions: &'static [(MemoryType, MemoryStatus)],
-        exit_erased: &'static [MemoryType],
-        shuffled: bool,
-        run_one: bool,
-        children: Vec<(Node<B>, i32)>,
-    ) -> Gate<B> {
-        Gate {
-            conditions,
-            exit_erased,
-            shuffled,
-            run_one,
-            children: children.into_iter().map(|(n, w)| (n, w, 0.0)).collect(),
-            status: Status::Stopped,
-        }
-    }
-}
-
-/// One node of a brain's behavior table.
-#[derive(Clone, Debug)]
-pub enum Node<B> {
-    Leaf(Leaf<B>),
-    Gate(Box<Gate<B>>),
-}
-
-impl<B> Node<B> {
-    /// A single behavior.
-    pub fn leaf(behavior: B) -> Node<B> {
-        Node::Leaf(Leaf {
-            behavior,
-            status: Status::Stopped,
-            end: 0,
-        })
-    }
-
-    /// `getStatus`.
-    pub fn status(&self) -> Status {
-        match self {
-            Node::Leaf(l) => l.status,
-            Node::Gate(g) => g.status,
-        }
-    }
-}
-
-impl<B> Node<B> {
-    /// `tryStart`.
-    fn try_start<C: BrainContext>(&mut self, mem: &mut Memories, cx: &mut C, time: i64) -> bool
-    where
-        B: Behavior<C>,
-    {
-        match self {
-            Node::Leaf(l) => {
-                if !mem.check_all(l.behavior.conditions()) {
-                    return false;
-                }
-                match l.behavior.flavor() {
-                    Flavor::OneShot => {
-                        if l.behavior.start(mem, cx, time) {
-                            l.status = Status::Running;
-                            true
-                        } else {
-                            false
-                        }
-                    }
-                    Flavor::Timed { min, max } => {
-                        if !l.behavior.check_extra(mem, cx) {
-                            return false;
-                        }
-                        l.status = Status::Running;
-                        let duration = min + cx.level_random_int(max + 1 - min);
-                        l.end = time + i64::from(duration);
-                        l.behavior.start(mem, cx, time);
-                        true
-                    }
-                }
-            }
-            Node::Gate(g) => {
-                if !mem.check_all(g.conditions) {
-                    return false;
-                }
-                g.status = Status::Running;
-                if g.shuffled {
-                    // `ShufflingList.shuffle`: `-pow(random, 1 / weight)` ascending.
-                    for child in &mut g.children {
-                        let r = cx.shuffle_random();
-                        child.2 = -f64::from(r).powf(f64::from(1.0 / child.1 as f32));
-                    }
-                    g.children.sort_by(|a, b| a.2.total_cmp(&b.2));
-                }
-                for child in &mut g.children {
-                    if child.0.status() == Status::Stopped
-                        && child.0.try_start(mem, cx, time)
-                        && g.run_one
-                    {
-                        break;
-                    }
-                }
-                true
-            }
-        }
-    }
-
-    /// `tickOrStop`.
-    fn tick_or_stop<C: BrainContext>(&mut self, mem: &mut Memories, cx: &mut C, time: i64)
-    where
-        B: Behavior<C>,
-    {
-        match self {
-            Node::Leaf(l) => match l.behavior.flavor() {
-                Flavor::OneShot => l.status = Status::Stopped,
-                Flavor::Timed { .. } => {
-                    if time <= l.end && l.behavior.can_still_use(mem, cx, time) {
-                        l.behavior.tick(mem, cx, time);
-                    } else {
-                        l.status = Status::Stopped;
-                        l.behavior.stop(mem, cx, time);
-                    }
-                }
-            },
-            Node::Gate(g) => {
-                for child in &mut g.children {
-                    if child.0.status() == Status::Running {
-                        child.0.tick_or_stop(mem, cx, time);
-                    }
-                }
-                if g.children.iter().all(|c| c.0.status() != Status::Running) {
-                    self.do_stop(mem, cx, time);
-                }
-            }
-        }
-    }
-
-    /// `doStop`.
-    fn do_stop<C: BrainContext>(&mut self, mem: &mut Memories, cx: &mut C, time: i64)
-    where
-        B: Behavior<C>,
-    {
-        match self {
-            Node::Leaf(l) => {
-                l.status = Status::Stopped;
-                if let Flavor::Timed { .. } = l.behavior.flavor() {
-                    l.behavior.stop(mem, cx, time);
-                }
-            }
-            Node::Gate(g) => {
-                g.status = Status::Stopped;
-                for child in &mut g.children {
-                    if child.0.status() == Status::Running {
-                        child.0.do_stop(mem, cx, time);
-                    }
-                }
-                for &m in g.exit_erased {
-                    mem.erase(m);
-                }
-            }
-        }
-    }
-}
-
-/// A sensor with its countdown.
-#[derive(Clone, Debug)]
-struct SensorSlot<S> {
-    sensor: S,
-    time_to_tick: i64,
-}
-
-/// `ActivityData`: an activity's behaviors by priority, its entry requirements and the
-/// memories erased when it stops.
-#[derive(Debug)]
-pub struct ActivityData<B> {
-    pub activity: Activity,
-    pub behaviors: Vec<(i32, Node<B>)>,
-    pub requirements: &'static [(MemoryType, MemoryStatus)],
-    pub erase_on_stop: &'static [MemoryType],
-}
-
-impl<B> ActivityData<B> {
-    /// `ActivityData.create(activity, priorityStart, behaviors, conditions...)`: priorities
-    /// count up from `priority_start`.
-    pub fn create(
-        activity: Activity,
-        priority_start: i32,
-        behaviors: Vec<Node<B>>,
-        requirements: &'static [(MemoryType, MemoryStatus)],
-    ) -> ActivityData<B> {
-        ActivityData {
-            activity,
-            behaviors: behaviors
-                .into_iter()
-                .zip(priority_start..)
-                .map(|(b, p)| (p, b))
-                .collect(),
-            requirements,
-            erase_on_stop: &[],
-        }
-    }
-}
-
-impl<B> ActivityData<B> {
-    /// The memories erased when the activity stops (`memoriesToEraseWhenStopped`).
-    pub fn erase(mut self, memories: &'static [MemoryType]) -> ActivityData<B> {
-        self.erase_on_stop = memories;
-        self
-    }
-}
-
-/// `Brain<E>` with the kind's behavior enum `B` and sensor enum `S`.
-#[derive(Debug)]
-pub struct Brain<B, S> {
-    pub memories: Memories,
-    sensors: Vec<SensorSlot<S>>,
-    /// `availableBehaviorsByPriority`: (priority, activity, behavior), sorted by priority
-    /// (stable: registration order within a priority).
-    behaviors: Vec<(i32, Activity, Node<B>)>,
-    requirements: Vec<(Activity, &'static [(MemoryType, MemoryStatus)])>,
-    erase_on_stop: Vec<(Activity, &'static [MemoryType])>,
-    core: ActivitySet,
-    active: ActivitySet,
-    default_activity: Activity,
-}
-
-impl<B, S> Default for Brain<B, S> {
-    fn default() -> Self {
-        Brain {
-            memories: Memories::default(),
-            sensors: Vec::new(),
-            behaviors: Vec::new(),
-            requirements: Vec::new(),
-            erase_on_stop: Vec::new(),
-            core: ActivitySet::of(&[Activity::Core]),
-            active: ActivitySet::of(&[Activity::Core, Activity::Idle]),
-            default_activity: Activity::Idle,
-        }
-    }
-}
-
-impl<B, S> Brain<B, S> {
-    /// Builds a brain (`Brain.Provider.makeBrain`): registers `memories`, the sensors (each
-    /// with a random start delay `random_int(scanRate)`, `randomlyDelayStart`) and their
-    /// memories, and the activities with their behaviors' memories; the default activity is
-    /// active.
-    pub fn build(
-        memories: &[MemoryType],
-        sensors: Vec<S>,
-        activities: Vec<ActivityData<B>>,
-        mut random_int: impl FnMut(i32) -> i32,
-    ) -> Brain<B, S>
-    where
-        B: BehaviorInfo,
-        S: SensorInfo,
-    {
-        let mut brain = Brain::default();
-        for &m in memories {
-            brain.memories.register(m);
-        }
-        for sensor in sensors {
-            let time_to_tick = i64::from(random_int(sensor.scan_rate()));
-            for &m in sensor.requires() {
-                brain.memories.register(m);
-            }
-            brain.sensors.push(SensorSlot {
-                sensor,
-                time_to_tick,
-            });
-        }
-        for data in activities {
-            brain.requirements.push((data.activity, data.requirements));
-            if !data.erase_on_stop.is_empty() {
-                brain
-                    .erase_on_stop
-                    .push((data.activity, data.erase_on_stop));
-            }
-            for (priority, node) in data.behaviors {
-                register_node(&mut brain.memories, &node);
-                brain.behaviors.push((priority, data.activity, node));
-            }
-        }
-        brain.behaviors.sort_by_key(|(p, _, _)| *p);
-        brain
-    }
-
-    /// `isActive(activity)`.
-    pub fn is_active(&self, activity: Activity) -> bool {
-        self.active.contains(activity)
+    /// `isActive`.
+    pub fn is_active(&self, a: Activity) -> bool {
+        self.active & a.bit() != 0
     }
 
     /// `getActiveNonCoreActivity`.
     pub fn active_non_core(&self) -> Option<Activity> {
-        ALL_ACTIVITIES
-            .into_iter()
-            .find(|&a| self.active.contains(a) && !self.core.contains(a))
-    }
-
-    /// `setDefaultActivity`.
-    pub fn set_default_activity(&mut self, activity: Activity) {
-        self.default_activity = activity;
+        let rest = self.active & !self.core;
+        (0..32u32).find(|i| rest & (1 << i) != 0).and_then(|i| {
+            ACTIVITIES
+                .get(usize::try_from(i).unwrap_or(usize::MAX))
+                .copied()
+        })
     }
 
     /// `setCoreActivities`.
     pub fn set_core_activities(&mut self, activities: &[Activity]) {
-        self.core = ActivitySet::of(activities);
+        self.core = activities.iter().fold(0, |acc, a| acc | a.bit());
+    }
+
+    /// `setDefaultActivity`.
+    pub fn set_default_activity(&mut self, a: Activity) {
+        self.default_activity = a;
     }
 
     /// `useDefaultActivity`.
     pub fn use_default_activity(&mut self) {
-        self.set_active_activity(self.default_activity);
+        let a = self.default_activity;
+        self.set_active_activity(a);
     }
 
-    fn requirements_met(&self, activity: Activity) -> bool {
-        self.requirements
-            .iter()
-            .find(|(a, _)| *a == activity)
-            .is_some_and(|(_, req)| self.memories.check_all(req))
+    fn requirements_met(&self, a: Activity) -> bool {
+        match self.activities.iter().find(|d| d.activity == a) {
+            Some(d) => self.check_all(&d.requirements),
+            // `activityRequirements.get` of an unknown activity: no conditions to check.
+            None => false,
+        }
     }
 
     /// `setActiveActivityIfPossible`.
-    pub fn set_active_activity_if_possible(&mut self, activity: Activity) {
-        if self.requirements_met(activity) {
-            self.set_active_activity(activity);
+    pub fn set_active_activity_if_possible(&mut self, a: Activity) {
+        if self.requirements_met(a) {
+            self.set_active_activity(a);
         } else {
             self.use_default_activity();
         }
     }
 
     /// `setActiveActivityToFirstValid`.
-    pub fn set_active_activity_to_first_valid(&mut self, activities: &[Activity]) {
-        if let Some(&a) = activities.iter().find(|&&a| self.requirements_met(a)) {
-            self.set_active_activity(a);
+    pub fn set_active_activity_to_first_valid(&mut self, list: &[Activity]) {
+        for &a in list {
+            if self.requirements_met(a) {
+                self.set_active_activity(a);
+                break;
+            }
         }
     }
 
-    /// `setActiveActivity`: erases the stopped activities' memories, then the core activities
-    /// plus `activity` are active.
-    fn set_active_activity(&mut self, activity: Activity) {
-        if self.active.contains(activity) {
+    fn set_active_activity(&mut self, a: Activity) {
+        if self.is_active(a) {
             return;
         }
-        for &(old, memories) in &self.erase_on_stop {
-            if old != activity && self.active.contains(old) {
-                for &m in memories {
-                    self.memories.erase(m);
-                }
+        // `eraseMemoriesForOtherActivitesThan`.
+        let mut erase = Vec::new();
+        for d in &self.activities {
+            if d.activity != a && self.active & d.activity.bit() != 0 {
+                erase.extend_from_slice(&d.erase_when_stopped);
             }
         }
-        self.active = self.core;
-        self.active.insert(activity);
+        for m in erase {
+            self.erase(m);
+        }
+        self.active = self.core | a.bit();
     }
 
-    /// `Brain.tick`: forget outdated memories, tick the sensors, start the stopped behaviors
-    /// of the active activities, tick the running ones.
-    pub fn tick<C: BrainContext>(&mut self, cx: &mut C)
-    where
-        B: Behavior<C>,
-        S: Sensor<C>,
-    {
-        let time = cx.game_time();
-        self.memories.tick();
-        let Brain {
-            memories,
-            sensors,
-            behaviors,
-            active,
-            ..
-        } = self;
-        for slot in sensors.iter_mut() {
-            slot.time_to_tick -= 1;
-            if slot.time_to_tick <= 0 {
-                slot.time_to_tick = i64::from(slot.sensor.scan_rate());
-                slot.sensor.sense(memories, cx);
-            }
-        }
-        for (_, activity, node) in behaviors.iter_mut() {
-            if active.contains(*activity) && node.status() == Status::Stopped {
-                node.try_start(memories, cx, time);
-            }
-        }
-        for (_, _, node) in behaviors.iter_mut() {
-            if node.status() == Status::Running {
-                node.tick_or_stop(memories, cx, time);
-            }
-        }
-    }
-
-    /// `stopAll`.
-    pub fn stop_all<C: BrainContext>(&mut self, cx: &mut C)
-    where
-        B: Behavior<C>,
-    {
-        let time = cx.game_time();
-        let Brain {
-            memories,
-            behaviors,
-            ..
-        } = self;
-        for (_, _, node) in behaviors.iter_mut() {
-            if node.status() == Status::Running {
-                node.do_stop(memories, cx, time);
-            }
-        }
-    }
-
-    /// The running behaviors (`getRunningBehaviors`, leaves only, for tests and debugging).
-    pub fn running(&self) -> impl Iterator<Item = &B> {
-        let mut out = Vec::new();
-        for (_, _, node) in &self.behaviors {
-            collect_running(node, &mut out);
-        }
-        out.into_iter()
-    }
-}
-
-fn collect_running<'a, B>(node: &'a Node<B>, out: &mut Vec<&'a B>) {
-    match node {
-        Node::Leaf(l) => {
-            if l.status == Status::Running {
-                out.push(&l.behavior);
-            }
-        }
-        Node::Gate(g) => {
-            for c in &g.children {
-                collect_running(&c.0, out);
+    /// `updateActivityFromSchedule`: at most every 20 ticks.
+    pub fn update_activity_from_schedule(&mut self, game_time: i64, day_time: i64) {
+        if game_time - self.last_schedule_update > 20 {
+            self.last_schedule_update = game_time;
+            let scheduled = self
+                .schedule
+                .as_ref()
+                .map_or(Activity::Idle, |s| s.activity_at(day_time));
+            if !self.is_active(scheduled) {
+                self.set_active_activity_if_possible(scheduled);
             }
         }
     }
 }
 
-fn register_node<B: BehaviorInfo>(memories: &mut Memories, node: &Node<B>) {
-    match node {
-        Node::Leaf(l) => {
-            for &(m, _) in l.behavior.conditions() {
-                memories.register(m);
-            }
-        }
-        Node::Gate(g) => {
-            for &(m, _) in g.conditions {
-                memories.register(m);
-            }
-            for c in &g.children {
-                register_node(memories, &c.0);
-            }
-        }
-    }
-}
-
-/// Every activity in declaration order.
-const ALL_ACTIVITIES: [Activity; 26] = [
+/// All activities by discriminant.
+pub const ACTIVITIES: [Activity; 26] = [
     Activity::Core,
     Activity::Idle,
     Activity::Work,
@@ -1066,7 +677,220 @@ const ALL_ACTIVITIES: [Activity; 26] = [
     Activity::Dig,
 ];
 
-pub mod sensors;
+/// The ticking mob's brain. Panics are impossible for brain mobs; callers use it only for
+/// mobs whose family built one.
+pub fn brain<'a>(t: &'a mut Tick<'_, '_>) -> &'a mut Brain {
+    t.mob().brain.get_or_insert_with(Box::default)
+}
+
+/// The ticking mob's brain, read only (an empty brain for mobs without one).
+pub fn brain_ref<'a>(t: &'a Tick<'_, '_>) -> &'a Brain {
+    static EMPTY: std::sync::OnceLock<Brain> = std::sync::OnceLock::new();
+    t.mob_ref()
+        .brain
+        .as_deref()
+        .unwrap_or_else(|| EMPTY.get_or_init(Brain::default))
+}
+
+/// `Brain.tick`: forget outdated memories, tick the sensors, start the behaviours of the
+/// active activities by priority, then tick the running ones.
+pub fn tick(t: &mut Tick<'_, '_>) {
+    if t.mob_ref().brain.is_none() {
+        return;
+    }
+    brain(t).forget_outdated();
+    let n = brain_ref(t).sensors.len();
+    for i in 0..n {
+        let due = {
+            let s = &mut brain(t).sensors[i];
+            s.time_to_tick -= 1;
+            if s.time_to_tick <= 0 {
+                s.time_to_tick = i64::from(s.scan_rate);
+                true
+            } else {
+                false
+            }
+        };
+        if due {
+            let kind = brain_ref(t).sensors[i].kind;
+            sensor::tick(t, kind);
+            if !t.exists() {
+                return;
+            }
+        }
+    }
+    let now = t.game_time();
+    let count = brain_ref(t).by_priority.len();
+    for i in 0..count {
+        if !t.exists() || t.mob_ref().brain.is_none() {
+            return;
+        }
+        let (_, activity, node) = brain_ref(t).by_priority[i];
+        let b = brain_ref(t);
+        if b.is_active(activity) && b.nodes[usize::from(node)].status == Status::Stopped {
+            behavior::try_start(t, node, now);
+        }
+    }
+    if !t.exists() || t.mob_ref().brain.is_none() {
+        return;
+    }
+    // `getRunningBehaviors` in priority order, then `tickOrStop` each.
+    let mut running = std::mem::take(&mut brain(t).running);
+    running.clear();
+    {
+        let b = brain_ref(t);
+        running.extend(
+            b.by_priority
+                .iter()
+                .map(|e| e.2)
+                .filter(|&n| b.nodes[usize::from(n)].status == Status::Running),
+        );
+    }
+    for &node in &running {
+        if !t.exists() || t.mob_ref().brain.is_none() {
+            return;
+        }
+        behavior::tick_or_stop(t, node, now);
+    }
+    if t.exists()
+        && let Some(b) = t.mob().brain.as_mut()
+    {
+        b.running = running;
+    }
+}
+
+/// `stopAll`: stops every running behaviour.
+pub fn stop_all(t: &mut Tick<'_, '_>) {
+    if t.mob_ref().brain.is_none() {
+        return;
+    }
+    let now = t.game_time();
+    let tops: Vec<u16> = brain_ref(t).by_priority.iter().map(|e| e.2).collect();
+    for node in tops {
+        if brain_ref(t).nodes[usize::from(node)].status == Status::Running {
+            behavior::do_stop(t, node, now);
+        }
+    }
+}
+
+// --- NBT ------------------------------------------------------------------------------------
+
+/// Writes `Brain: {memories: {...}}` with the serializable memories (`Brain.pack`).
+pub fn save(brain: &Brain, out: &mut vanillite_nbt::Compound) {
+    use vanillite_nbt::{Compound, List, Tag};
+    let mut memories = Compound::new();
+    for s in &brain.slots {
+        if !s.memory.serializable() {
+            continue;
+        }
+        let Some(v) = &s.value else {
+            continue;
+        };
+        let value: Tag = match v {
+            MemValue::Unit => Tag::Compound(Compound::new()),
+            MemValue::Bool(b) => Tag::Byte(i8::from(*b)),
+            MemValue::Int(i) => Tag::Int(*i),
+            MemValue::Long(l) => Tag::Long(*l),
+            MemValue::Uuid(u) => uuid_tag(*u),
+            MemValue::GlobalPos(g) => global_pos_tag(g),
+            MemValue::GlobalPositions(list) => {
+                Tag::List(List(list.iter().map(global_pos_tag).collect()))
+            }
+            _ => continue,
+        };
+        let mut entry = Compound::new();
+        entry.insert("value", value);
+        if s.ttl != Slot::NEVER {
+            entry.insert("ttl", s.ttl);
+        }
+        memories.insert(format!("minecraft:{}", s.memory.name()), entry);
+    }
+    let mut c = Compound::new();
+    c.insert("memories", memories);
+    out.insert("Brain", c);
+}
+
+fn uuid_tag(u: u128) -> vanillite_nbt::Tag {
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    let v = vec![
+        (u >> 96) as i32,
+        (u >> 64) as i32,
+        (u >> 32) as i32,
+        u as i32,
+    ];
+    vanillite_nbt::Tag::IntArray(v)
+}
+
+fn global_pos_tag(g: &GlobalPos) -> vanillite_nbt::Tag {
+    let mut c = vanillite_nbt::Compound::new();
+    c.insert("dimension", &*g.dimension);
+    c.insert("pos", vec![g.pos.x, g.pos.y, g.pos.z]);
+    vanillite_nbt::Tag::Compound(c)
+}
+
+fn global_pos_of(t: &vanillite_nbt::Tag) -> Option<GlobalPos> {
+    use vanillite_nbt::Tag;
+    let Tag::Compound(c) = t else {
+        return None;
+    };
+    let dimension = c.get("dimension").and_then(Tag::as_str)?.into();
+    let Some(Tag::IntArray(p)) = c.get("pos") else {
+        return None;
+    };
+    (p.len() == 3).then(|| GlobalPos {
+        dimension,
+        pos: BlockPos::new(p[0], p[1], p[2]),
+    })
+}
+
+/// Reads `Brain.memories` into the registered memories (`makeBrain(packed)`).
+pub fn load(brain: &mut Brain, tag: &vanillite_nbt::Compound) {
+    use vanillite_nbt::Tag;
+    let Some(Tag::Compound(b)) = tag.get("Brain") else {
+        return;
+    };
+    let Some(Tag::Compound(memories)) = b.get("memories") else {
+        return;
+    };
+    for &m in &MemoryType::ALL {
+        if !m.serializable() || !brain.is_registered(m) {
+            continue;
+        }
+        let key = format!("minecraft:{}", m.name());
+        let Some(Tag::Compound(entry)) = memories.get(&key) else {
+            continue;
+        };
+        let Some(v) = entry.get("value") else {
+            continue;
+        };
+        let value = match (m.kind(), v) {
+            (ValueKind::Unit, _) => Some(MemValue::Unit),
+            (ValueKind::Bool, Tag::Byte(b)) => Some(MemValue::Bool(*b != 0)),
+            (ValueKind::Int, Tag::Int(i)) => Some(MemValue::Int(*i)),
+            (ValueKind::Long, Tag::Long(l)) => Some(MemValue::Long(*l)),
+            (ValueKind::Uuid, Tag::IntArray(a)) if a.len() == 4 => {
+                #[allow(clippy::cast_sign_loss)]
+                let u = a
+                    .iter()
+                    .fold(0u128, |acc, &x| (acc << 32) | u128::from(x as u32));
+                Some(MemValue::Uuid(u))
+            }
+            (ValueKind::GlobalPos, t) => global_pos_of(t).map(MemValue::GlobalPos),
+            (ValueKind::GlobalPositions, Tag::List(l)) => Some(MemValue::GlobalPositions(
+                l.0.iter().filter_map(global_pos_of).collect(),
+            )),
+            _ => None,
+        };
+        let Some(value) = value else {
+            continue;
+        };
+        let ttl = match entry.get("ttl") {
+            Some(Tag::Long(l)) => *l,
+            _ => Slot::NEVER,
+        };
+        brain.set_with_expiry(m, value, ttl);
+    }
+}
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

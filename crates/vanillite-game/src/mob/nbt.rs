@@ -2,7 +2,7 @@
 //! `load` with the keys of 26.3), as stored in the `entities/` region files.
 
 use vanillite_base::Vec3;
-use vanillite_base::random::RandomSource;
+use vanillite_base::random::{LegacyRandom, RandomSource};
 use vanillite_data::entity::{EntityTypeId, ids};
 use vanillite_nbt::{Compound, List, Tag};
 use vanillite_world::entity::{EntityFlags, EntityRef, Rotation};
@@ -127,6 +127,23 @@ pub fn pos_of(tag: &Compound) -> Option<Vec3> {
 }
 
 /// `Entity.saveWithoutId` plus the id: the common entity keys.
+/// The `Entity` part of entity NBT in a new compound.
+pub fn save_entity_base(core: &EntityRef<'_>) -> Compound {
+    let mut out = Compound::new();
+    save_entity(core, &mut out);
+    out
+}
+
+/// The `Entity` part of entity NBT.
+pub fn load_entity_base(tag: &Compound) -> Option<LoadedEntity> {
+    load_entity(tag)
+}
+
+/// A UUID int array under `key`.
+pub fn uuid_key_of(tag: &Compound, key: &str) -> Option<u128> {
+    uuid_key(tag, key)
+}
+
 fn save_entity(core: &EntityRef<'_>, out: &mut Compound) {
     let name = core.kind().info().name;
     out.insert(
@@ -238,9 +255,14 @@ pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
         out.insert("active_effects", list);
     }
     out.insert("FallFlying", false);
-    out.insert("CanPickUpLoot", false);
+    out.insert("CanPickUpLoot", m.can_pick_up_loot);
     out.insert("PersistenceRequired", m.persistent);
-    out.insert("LeftHanded", false);
+    out.insert("LeftHanded", m.left_handed);
+    if m.has_restriction() {
+        out.insert("home_radius", m.restrict_radius);
+        let c = m.restrict_center;
+        out.insert("home_pos", vec![c.x, c.y, c.z]);
+    }
     if m.no_ai {
         out.insert("NoAI", true);
     }
@@ -249,13 +271,15 @@ pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
     {
         out.insert("CustomName", tag);
     }
-    if m.saddled {
-        let mut saddle = Compound::new();
-        saddle.insert("id", "minecraft:saddle");
-        saddle.insert("count", 1);
-        let mut equipment = Compound::new();
-        equipment.insert("saddle", saddle);
-        out.insert("equipment", equipment);
+    {
+        let mut equipment = m.equipment.clone();
+        if m.saddled {
+            equipment.set(
+                crate::item::EquipmentSlot::Saddle,
+                super::equipment::stack("minecraft:saddle"),
+            );
+        }
+        super::equipment::save_equipment(&equipment, &mut out);
     }
     if let Some(owner) = m.owner {
         out.insert("Owner", uuid_ints(owner));
@@ -274,9 +298,8 @@ pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
     match m.kind {
         Kind::Zombie => {
             out.insert("IsBaby", m.baby);
-            out.insert("CanBreakDoors", false);
-            out.insert("InWaterTime", -1);
-            out.insert("DrownedConversionTime", -1);
+            out.insert("CanBreakDoors", m.can_break_doors);
+            super::fam::undead::zombies::save_conversion(m, &mut out);
         }
         Kind::Creeper => {
             #[allow(clippy::cast_possible_truncation)]
@@ -289,7 +312,6 @@ pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
             }
             out.insert("ignited", m.ignited);
         }
-        _ if super::boss::is_boss_kind(m.kind) => super::boss::save(m, &mut out),
         Kind::Cow | Kind::Pig | Kind::Sheep | Kind::Chicken => {
             out.insert("Age", m.age);
             out.insert("ForcedAge", m.forced_age);
@@ -308,11 +330,14 @@ pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
                     out.insert("variant", variant_name(m.variant));
                     if m.kind == Kind::Chicken {
                         out.insert("EggLayTime", m.egg_time);
+                        out.insert("IsChickenJockey", m.chicken_jockey);
                     }
                 }
             }
         }
-        _ => {}
+        Kind::Skeleton => super::fam::undead::skeletons::save_conversion(m, &mut out),
+        Kind::Spider | Kind::Enderman => {}
+        _ => super::fam::save(m, &mut out),
     }
     out
 }
@@ -380,12 +405,29 @@ pub fn load_mob(tag: &Compound, seed: i64) -> Option<LoadedMob> {
     m.silent = boolean(tag, "Silent");
     m.y_body_rot = y_rot;
     m.custom_name = tag.get("CustomName").and_then(tag_component);
-    m.saddled = match tag.get("equipment") {
-        Some(Tag::Compound(eq)) => {
-            matches!(eq.get("saddle"), Some(Tag::Compound(s)) if s.get("id").and_then(Tag::as_str) == Some("minecraft:saddle"))
+    super::equipment::load(&mut m, tag);
+    {
+        use crate::item::EquipmentSlot;
+        let saddle = m.equipment.get(EquipmentSlot::Saddle);
+        // The classic pig keeps its saddle in `saddled`; family mobs in the slot.
+        m.saddled = m.kind == Kind::Pig
+            && !saddle.is_empty()
+            && crate::item::item_id(saddle).name() == "minecraft:saddle";
+        if m.saddled {
+            m.equipment
+                .set(EquipmentSlot::Saddle, crate::item::ItemStack::default());
         }
-        _ => false,
-    };
+    }
+    m.can_pick_up_loot = boolean(tag, "CanPickUpLoot");
+    m.left_handed = boolean(tag, "LeftHanded");
+    if let Some(r) = int(tag, "home_radius")
+        && r >= 0
+        && let Some(Tag::IntArray(v)) = tag.get("home_pos")
+        && v.len() == 3
+    {
+        m.restrict_radius = r;
+        m.restrict_center = vanillite_base::BlockPos::new(v[0], v[1], v[2]);
+    }
     m.owner = uuid_key(tag, "Owner");
     m.tame = m.owner.is_some();
     m.order_to_sit = boolean(tag, "Sitting");
@@ -398,7 +440,11 @@ pub fn load_mob(tag: &Compound, seed: i64) -> Option<LoadedMob> {
         _ => None,
     };
     match kind {
-        Kind::Zombie => m.baby = boolean(tag, "IsBaby"),
+        Kind::Zombie => {
+            super::fam::undead::set_baby(&mut m, boolean(tag, "IsBaby"));
+            super::movement::set_can_break_doors(&mut m, boolean(tag, "CanBreakDoors"));
+            super::fam::undead::zombies::load_conversion(&mut m, tag);
+        }
         Kind::Creeper => {
             m.max_swell = int(tag, "Fuse").unwrap_or(30);
             m.explosion_radius = int(tag, "ExplosionRadius").unwrap_or(3);
@@ -425,10 +471,12 @@ pub fn load_mob(tag: &Compound, seed: i64) -> Option<LoadedMob> {
                 {
                     m.egg_time = t;
                 }
+                m.chicken_jockey = kind == Kind::Chicken && boolean(tag, "IsChickenJockey");
             }
         }
-        Kind::Skeleton | Kind::Spider | Kind::Enderman => {}
-        _ => super::boss::load(&mut m, tag),
+        Kind::Skeleton => super::fam::undead::skeletons::load_conversion(&mut m, tag),
+        Kind::Spider | Kind::Enderman => {}
+        _ => super::fam::load(&mut m, tag),
     }
     // A fresh random per loaded mob, like `Entity.random`.
     let _ = m.random.next_int();
@@ -619,9 +667,10 @@ pub fn load_arrow(tag: &Compound) -> Option<(LoadedEntity, super::projectile::Ar
             last_state: None,
             tick_count: 0,
             pickup: u8::try_from(int(tag, "pickup").unwrap_or(0).clamp(0, 2)).unwrap_or(0),
-            random_seed: e.uuid as i64,
+            random_state: LegacyRandom::new(crate::mob::new_entity_seed()).state(),
             knockback: 0.0,
             fire: int(tag, "Fire").is_some_and(|f| f > 0),
+            effect: None,
         },
     ))
 }

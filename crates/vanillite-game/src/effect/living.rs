@@ -790,3 +790,17 @@ pub fn apply_mob_effect(
         None => false,
     }
 }
+
+/// `addEffect` on a mob when only its data is at hand (another mob's attack, its own
+/// conversion), with `canBeAffected`; like [`add_detached`], the packets, attributes and the
+/// sound follow with the mob's next tick. Returns whether the effect changed.
+pub fn add_to_mob(m: &mut crate::mob::MobData, new: EffectInstance) -> bool {
+    let kind = m.kind.type_id();
+    if new.effect.is_instantaneous()
+        || !super::can_be_affected(kind, new.effect)
+        || super::refuses_all_effects(kind)
+    {
+        return false;
+    }
+    active::add(&mut BareMobHost { m, kind }, new)
+}

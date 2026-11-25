@@ -50,6 +50,9 @@ pub fn food_tag(kind: Kind) -> Option<&'static str> {
 
 /// `Animal.isFood(item)`.
 pub fn is_food(kind: Kind, item: u16) -> bool {
+    if kind.family() != super::Family::Classic {
+        return super::fam::is_food(kind, item);
+    }
     food_tag(kind).is_some_and(|tag| {
         crate::player::play::game_data().is_some_and(|d| d.item_in_tag(item, tag))
     })
@@ -79,7 +82,14 @@ pub fn free_partner(t: &mut super::Tick<'_, '_>) -> Option<EntityId> {
         let Some(m) = t.ents.mob(id) else {
             continue;
         };
-        if m.kind != kind || m.in_love <= 0 || !m.is_alive() {
+        if !m.is_alive() {
+            continue;
+        }
+        if kind.family() == super::Family::Classic {
+            if m.kind != kind || m.in_love <= 0 {
+                continue;
+            }
+        } else if !super::fam::can_mate(t.mob_ref(), m) {
             continue;
         }
         let Some(e) = t.ents.store.get(id) else {
@@ -98,7 +108,7 @@ pub fn free_partner(t: &mut super::Tick<'_, '_>) -> Option<EntityId> {
 }
 
 /// `level.broadcastEntityEvent(entity, event)`.
-fn entity_event(ents: &Entities, env: &mut Env<'_>, id: EntityId, event: i8) {
+pub fn entity_event(ents: &Entities, env: &mut Env<'_>, id: EntityId, event: i8) {
     if let Some(e) = ents.store.get(id) {
         env.out.push(Effect::Tracking {
             entity: id,
@@ -112,7 +122,7 @@ fn entity_event(ents: &Entities, env: &mut Env<'_>, id: EntityId, event: i8) {
 }
 
 /// A sound at an entity's position (`playSound(sound, volume, pitch)` of the entity).
-fn sound_at(
+pub fn sound_at(
     ents: &Entities,
     env: &mut Env<'_>,
     id: EntityId,
@@ -123,7 +133,7 @@ fn sound_at(
     let Some(pos) = ents.store.get(id).map(|e| e.pos()) else {
         return;
     };
-    let seed = env.random.next_long();
+    let seed = crate::survival::sound_seed();
     play_sound(env.out, None, pos, sound, source, 1.0, pitch, seed);
 }
 
@@ -144,8 +154,14 @@ pub fn breed(
     let Some(pos) = ents.store.get(parent).map(|e| e.pos()) else {
         return;
     };
-    let seed = env.random.next_long();
-    let mut child = MobData::new(kind, seed);
+    let seed = crate::mob::new_entity_seed();
+    let child_kind = match (ents.mob(parent), ents.mob(partner)) {
+        (Some(a), Some(b)) if kind.family() != super::Family::Classic => {
+            super::fam::offspring_kind(a, b)
+        }
+        _ => kind,
+    };
+    let mut child = MobData::new(child_kind, seed);
     let pick = ents
         .mob_mut(parent)
         .map(|m| m.random.next_boolean())
@@ -154,9 +170,15 @@ pub fn breed(
     if kind == Kind::Sheep {
         child.sheep_color = offspring_color(ca, cb, pick);
     }
+    if kind.family() != super::Family::Classic
+        && let (Some(a), Some(b)) = (ents.mob(parent), ents.mob(partner))
+    {
+        let mut random = vanillite_base::random::LegacyRandom::new(env.random.next_long());
+        super::fam::breed_offspring(a, b, &mut child, &mut random);
+    }
     child.age = -24000;
     child.baby = true;
-    let uuid = super::random_uuid(env.random);
+    let uuid = crate::mob::new_uuid();
     super::spawn(
         ents,
         level.network_ids(),
@@ -203,7 +225,7 @@ fn offspring_color(a: u8, b: u8, pick_first: bool) -> u8 {
 }
 
 /// The inventory index of a hand.
-fn hand_index(ents: &Entities, player: EntityId, hand: Hand) -> usize {
+pub fn hand_index(ents: &Entities, player: EntityId, hand: Hand) -> usize {
     match hand {
         Hand::MainHand => ents.player(player).map_or(0, |p| p.inventory.selected),
         Hand::OffHand => OFFHAND,
@@ -211,20 +233,20 @@ fn hand_index(ents: &Entities, player: EntityId, hand: Hand) -> usize {
 }
 
 /// The stack in a player's hand.
-pub(crate) fn held(ents: &Entities, player: EntityId, hand: Hand) -> ItemStack {
+pub fn held(ents: &Entities, player: EntityId, hand: Hand) -> ItemStack {
     let i = hand_index(ents, player, hand);
     ents.player(player)
         .map(|p| p.inventory.get(i).clone())
         .unwrap_or_default()
 }
 
-fn infinite(ents: &Entities, player: EntityId) -> bool {
+pub fn infinite(ents: &Entities, player: EntityId) -> bool {
     ents.player(player)
         .is_some_and(|p| p.game_mode == GameMode::Creative)
 }
 
 /// `usePlayerItem`: one item of the hand is used up unless the player has infinite materials.
-pub(crate) fn use_item(ents: &mut Entities, player: EntityId, hand: Hand) {
+pub fn use_item(ents: &mut Entities, player: EntityId, hand: Hand) {
     if infinite(ents, player) {
         return;
     }
@@ -237,7 +259,7 @@ pub(crate) fn use_item(ents: &mut Entities, player: EntityId, hand: Hand) {
 }
 
 /// `ItemUtils.createFilledResult`: the hand's stack turns into `filled` (one item of it).
-fn fill_held(
+pub fn fill_held(
     ents: &mut Entities,
     env: &mut Env<'_>,
     player: EntityId,
@@ -265,12 +287,12 @@ fn fill_held(
         *s = filled;
     } else if !p.inventory.add(None, &mut filled, false) {
         // `drop(filled, false)`: it falls in front of the player.
-        let r = &mut *env.random;
+        let (uuid, y_rot, _) = crate::mob::new_item_entity();
         env.out.push(Effect::DropItem {
-            uuid: super::random_uuid(r),
+            uuid,
             pos: pos + Vec3::new(0.0, 1.32, 0.0),
             velocity: Vec3::new(0.0, 0.1, 0.0),
-            y_rot: r.next_float() * 360.0,
+            y_rot,
             pickup_delay: 40,
             stack: filled,
         });
@@ -278,7 +300,13 @@ fn fill_held(
 }
 
 /// `hurtAndBreak(amount, player, hand)` of the stack in a hand.
-fn hurt_held(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, hand: Hand, amount: i32) {
+pub fn hurt_held(
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    player: EntityId,
+    hand: Hand,
+    amount: i32,
+) {
     if infinite(ents, player) {
         return;
     }
@@ -308,7 +336,7 @@ fn hurt_held(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, hand: Han
     if d >= item::max_damage(s) {
         s.shrink(1);
         if let Some(pos) = pos {
-            let seed = env.random.next_long();
+            let seed = crate::survival::sound_seed();
             play_sound(
                 env.out,
                 None,
@@ -423,7 +451,7 @@ fn mob_interact(
     if let Some(egg_kind) = spawn_egg_kind(stack) {
         let own = ents.mob(target).map(|m| m.kind);
         if own == Some(egg_kind) && ents.mob(target).is_some_and(|m| m.kind.ageable()) {
-            spawn_offspring(level, ents, env, player, target, hand, egg_kind);
+            spawn_offspring(level, ents, player, target, hand, egg_kind);
             return Interaction::Success;
         }
         return Interaction::Pass;
@@ -434,11 +462,25 @@ fn mob_interact(
         return r;
     }
     let kind = ents.mob(target).map_or(Kind::Zombie, |m| m.kind);
+    if kind.family() != super::Family::Classic {
+        let mut ix = super::fam::Interact {
+            level,
+            ents,
+            env,
+            cx: _cx,
+            player,
+            target,
+            hand,
+            sneaking,
+            stack,
+        };
+        return super::fam::interact(&mut ix, kind);
+    }
     match kind {
         Kind::Cow if name == "minecraft:bucket" && !ents.mob(target).is_some_and(|m| m.baby) => {
             // `AbstractCow.mobInteract`: the milk sound is the player's own.
             if let Some(pos) = ents.store.get(player).map(|e| e.pos()) {
-                let seed = env.random.next_long();
+                let seed = crate::survival::sound_seed();
                 play_sound(
                     env.out,
                     None,
@@ -498,7 +540,34 @@ fn mob_interact(
 }
 
 /// `Animal.mobInteract`: food makes adults fall in love and babies grow faster.
-fn animal_interact(
+/// `ItemUtils.createFilledResult` for the family kinds: the held item becomes `item`.
+pub fn fill_held_pub(ix: &mut super::fam::Interact<'_, '_>, item: &str) {
+    if let Some(id) = vanillite_data::registry::ITEM.id(item) {
+        fill_held(ix.ents, ix.env, ix.player, ix.hand, ItemStack::new(id, 1));
+    }
+}
+
+/// `stack.consume(1, player)` for the family kinds (creative players keep it).
+pub fn use_held_pub(ix: &mut super::fam::Interact<'_, '_>) {
+    use_item(ix.ents, ix.player, ix.hand);
+}
+
+/// `hurtAndBreak(amount, player, hand)` of the held item for the family kinds.
+pub fn hurt_held_pub(ix: &mut super::fam::Interact<'_, '_>, amount: i32) {
+    hurt_held(ix.ents, ix.env, ix.player, ix.hand, amount);
+}
+
+/// Whether the interacting player keeps its items (creative).
+pub fn infinite_pub(ents: &Entities, player: EntityId) -> bool {
+    infinite(ents, player)
+}
+
+/// `Animal.mobInteract` for the family kinds: feeding, love mode and growing babies.
+pub fn animal_interact_pub(ix: &mut super::fam::Interact<'_, '_>) -> Interaction {
+    animal_interact(ix.ents, ix.env, ix.player, ix.target, ix.hand, ix.stack)
+}
+
+pub fn animal_interact(
     ents: &mut Entities,
     env: &mut Env<'_>,
     player: EntityId,
@@ -545,7 +614,7 @@ fn animal_interact(
 }
 
 /// `playEatingSound`: sheep and pigs have one.
-fn eating_sound(ents: &mut Entities, env: &mut Env<'_>, target: EntityId) {
+pub fn eating_sound(ents: &mut Entities, env: &mut Env<'_>, target: EntityId) {
     let sound = match ents.mob(target).map(|m| m.kind) {
         Some(Kind::Sheep) => "minecraft:entity.sheep.eat",
         Some(Kind::Pig) => "minecraft:entity.pig.eat",
@@ -588,17 +657,12 @@ fn shear_sheep(ents: &mut Entities, env: &mut Env<'_>, target: EntityId) {
             f64::from((r.next_float() - r.next_float()) * 0.1),
         );
         // `spawnAtLocation(stack, 1.0F)`: an item one block up with the default motion.
-        let er = &mut *env.random;
-        let velocity = Vec3::new(
-            er.next_double() * 0.2 - 0.1,
-            0.2,
-            er.next_double() * 0.2 - 0.1,
-        ) + extra;
+        let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
         env.out.push(Effect::DropItem {
-            uuid: super::random_uuid(er),
+            uuid,
             pos: pos + Vec3::new(0.0, 1.0, 0.0),
-            velocity,
-            y_rot: er.next_float() * 360.0,
+            velocity: velocity + extra,
+            y_rot,
             pickup_delay: 10,
             stack: ItemStack::new(item, 1),
         });
@@ -657,16 +721,12 @@ fn unequip_saddle(ents: &mut Entities, env: &mut Env<'_>, target: EntityId) {
         return;
     };
     if let Some(saddle) = vanillite_data::registry::ITEM.id("minecraft:saddle") {
-        let r = &mut *env.random;
+        let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
         env.out.push(Effect::DropItem {
-            uuid: super::random_uuid(r),
+            uuid,
             pos: pos + Vec3::new(0.0, 1.0, 0.0),
-            velocity: Vec3::new(
-                r.next_double() * 0.2 - 0.1,
-                0.2,
-                r.next_double() * 0.2 - 0.1,
-            ),
-            y_rot: r.next_float() * 360.0,
+            velocity,
+            y_rot,
             pickup_delay: 10,
             stack: ItemStack::new(saddle, 1),
         });
@@ -733,7 +793,6 @@ pub fn spawn_egg_kind(stack: &ItemStack) -> Option<Kind> {
 fn spawn_offspring(
     level: &Level,
     ents: &mut Entities,
-    env: &mut Env<'_>,
     player: EntityId,
     target: EntityId,
     hand: Hand,
@@ -742,7 +801,7 @@ fn spawn_offspring(
     let Some(pos) = ents.store.get(target).map(|e| e.pos()) else {
         return;
     };
-    let seed = env.random.next_long();
+    let seed = crate::mob::new_entity_seed();
     let mut child = MobData::new(kind, seed);
     child.age = -24000;
     child.baby = true;
@@ -754,7 +813,7 @@ fn spawn_offspring(
     if let Some(name) = stack.component(vanillite_protocol::components::ids::CUSTOM_NAME) {
         child.custom_name = Some(name.into());
     }
-    let uuid = super::random_uuid(env.random);
+    let uuid = crate::mob::new_uuid();
     super::spawn(
         ents,
         level.network_ids(),
@@ -801,9 +860,13 @@ pub fn use_spawn_egg_on(
         pos.relative(face)
     };
     let below_face = spawn_pos != pos && face == vanillite_base::Direction::Up;
-    let seed = env.random.next_long();
+    let seed = crate::mob::new_entity_seed();
     let mut m = MobData::new(kind, seed);
-    kinds::finalize_spawn(&mut m, difficulty, kinds::FarmClimate::Temperate, 0);
+    let mut ctx =
+        super::fam::SpawnContext::simple(difficulty, super::fam::SpawnReason::SpawnItemUse);
+    ctx.pos = spawn_pos;
+    ctx.level = Some(level);
+    kinds::finalize_spawn(&mut m, &mut ctx, env.random);
     if let Some(name) = stack.component(vanillite_protocol::components::ids::CUSTOM_NAME) {
         m.custom_name = Some(name.into());
         m.persistent = true;
@@ -821,7 +884,7 @@ pub fn use_spawn_egg_on(
         x_rot: 0.0,
         y_head_rot: yaw,
     };
-    let uuid = super::random_uuid(env.random);
+    let uuid = crate::mob::new_uuid();
     m.y_body_rot = yaw;
     super::spawn(ents, network_ids, uuid, p, rot, m);
     if !infinite {

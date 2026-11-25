@@ -26,7 +26,7 @@ use crate::effect::{EffectInstance, MobEffect};
 use crate::item::ItemStack;
 use crate::level::block_entity::BlockEntity;
 use crate::level::{Level, SOUND_BLOCKS as SOUND, update};
-use crate::mob::{Kind, kinds, physics, spawn};
+use crate::mob::{Kind, physics, spawn};
 use crate::survival::rules::Difficulty;
 
 /// `MAX_MOB_TRACKING_DISTANCE`.
@@ -825,16 +825,18 @@ fn spawn_mob(level: &mut Level, pos: BlockPos) -> Option<(u128, EntityId)> {
     if !mob_spawn_checks(level, mob.kind, at, false) {
         return None;
     }
-    if data.has_no_configuration() {
-        kinds::finalize_spawn(
+    let extra = if data.has_no_configuration() {
+        super::spawner::finalize_spawner_mob(
+            level,
             &mut mob,
-            level.spawner_env.difficulty,
-            kinds::FarmClimate::Temperate,
-            0,
-        );
-    }
+            at,
+            crate::mob::fam::SpawnReason::TrialSpawner,
+        )
+    } else {
+        Vec::new()
+    };
     mob.persistent = true;
-    let id = spawn::add_mob(level, mob, at, y_rot);
+    let id = spawn::add_mob_with(level, mob, at, y_rot, extra);
     let uuid = level.entities.store.get(id)?.uuid();
     let flame = i32::from(ominous);
     level.level_event(None, 3011, pos, flame);
