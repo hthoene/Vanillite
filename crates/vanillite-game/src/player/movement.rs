@@ -75,10 +75,45 @@ pub struct MoveContext<'a> {
     pub runs_normally: bool,
     /// The world's movement rules.
     pub rules: &'a MovementRules,
+    /// The world border the player collides with (`None`: no border).
+    pub border: Option<&'a crate::level::border::WorldBorder>,
+    /// No "moved wrongly" check for this player (`isCreative()`, `isSpectator()`).
+    pub no_wrong_move_check: bool,
     /// The `player_movement_check` game rule.
     pub movement_check: bool,
     /// The `elytra_movement_check` game rule.
     pub elytra_movement_check: bool,
+}
+
+/// The part of `player.move`'s collision with the world border that the "moved wrongly"
+/// check sees: whether the move from `from` to `target` of a player box ends more than
+/// 0.25 blocks (`> 0.0625` squared) past the border's collision shape.
+fn moved_wrongly_into_border(
+    border: &crate::level::border::WorldBorder,
+    from: Vec3,
+    target: Vec3,
+) -> bool {
+    const HALF_WIDTH: f64 = 0.3;
+    let (dx, dz) = (target.x - from.x, target.z - from.z);
+    // `isInsideCloseToBorder` with the box grown by the movement.
+    let x_size = HALF_WIDTH * 2.0 + dx.abs();
+    let z_size = HALF_WIDTH * 2.0 + dz.abs();
+    if !border.is_inside_close_to_border(from.x, from.z, x_size, z_size) {
+        return false;
+    }
+    let (min_x, min_z, max_x, max_z) = border.collision_box();
+    let clamp = |v: f64, start: f64, lo: f64, hi: f64| {
+        // A box already past an edge does not collide with it from inside.
+        if start - HALF_WIDTH < lo || start + HALF_WIDTH > hi {
+            v
+        } else {
+            v.clamp(lo + HALF_WIDTH, hi - HALF_WIDTH)
+        }
+    };
+    let x = clamp(target.x, from.x, min_x, max_x);
+    let z = clamp(target.z, from.z, min_z, max_z);
+    let (ex, ez) = (target.x - x, target.z - z);
+    ex * ex + ez * ez > 0.0625
 }
 
 /// Per-connection movement state.
@@ -455,6 +490,17 @@ impl Movement {
             }
         }
         let from = body.pos;
+        // `player.move` collides with the world border: a move through it is a wrong move,
+        // and the player goes back (`teleport(oldX, oldY, oldZ)`).
+        if !ctx.no_wrong_move_check
+            && let Some(border) = ctx.border
+            && moved_wrongly_into_border(border, from, target)
+        {
+            log::warn!("Player moved wrongly!");
+            let (y, x) = (body.y_rot, body.x_rot);
+            self.teleport(body, from, y, x, sink);
+            return;
+        }
         let was_on_ground = body.on_ground;
         let moved_upwards = target.y - self.last_good.y > 0.0;
         // TODO(milestone 3): `player.move` with block collision and the "moved wrongly" check

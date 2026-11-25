@@ -154,16 +154,18 @@ fn minecart_data(out: &mut Vec<u8>, m: &crate::minecart::MinecartData, all: bool
             }
         }
         MinecartKind::CommandBlock => {
-            if all || !m.command.is_empty() {
+            let command = &m.command.command;
+            if all || !command.is_empty() {
                 item(out, 13, serializer::STRING, |o| {
-                    write_varint(o, i32::try_from(m.command.len()).unwrap_or(0));
-                    o.extend_from_slice(m.command.as_bytes());
+                    write_varint(o, i32::try_from(command.len()).unwrap_or(0));
+                    o.extend_from_slice(command.as_bytes());
                 });
             }
             let output = m
-                .extra
-                .get("LastOutput")
-                .and_then(crate::mob::nbt::tag_component);
+                .command
+                .last_output
+                .as_ref()
+                .and_then(|c| crate::mob::nbt::tag_component(&c.to_nbt()));
             if all || output.is_some() {
                 item(out, 14, serializer::COMPONENT, |o| match &output {
                     Some(c) => o.extend_from_slice(c),

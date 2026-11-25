@@ -430,7 +430,7 @@ fn version(source: &CommandSource, env: &Env<'_>) -> i32 {
     1
 }
 
-/// `SpectateCommand`: sends the camera; the server does not move the spectator along.
+/// `SpectateCommand`: sets the spectator's camera.
 fn spectate(
     parsed: &Parsed<CommandId>,
     source: &CommandSource,
@@ -463,14 +463,20 @@ fn spectate(
             vec![ErrArg::Component(Box::new(t.display()))],
         ));
     }
-    let camera = target.as_ref().map_or(player.entity, |t| t.entity);
-    let network_id = camera
-        .and_then(|id| env.level.entities.store.get(id))
-        .map(|e| e.network_id().0);
-    if let (Some(camera_id), Some((sink, _))) =
-        (network_id, env.global.players.connection(Uuid(player.uuid)))
-    {
-        sink.send(&SetCamera { camera_id });
+    // `ServerPlayer.setCamera`: the spectator moves along with its camera.
+    if let Some(id) = player.entity {
+        let camera = target.as_ref().and_then(|t| t.entity);
+        crate::spectator::set_camera(&mut env.level.entities, id, camera);
+    } else {
+        let camera = target.as_ref().map_or(player.entity, |t| t.entity);
+        let network_id = camera
+            .and_then(|id| env.level.entities.store.get(id))
+            .map(|e| e.network_id().0);
+        if let (Some(camera_id), Some((sink, _))) =
+            (network_id, env.global.players.connection(Uuid(player.uuid)))
+        {
+            sink.send(&SetCamera { camera_id });
+        }
     }
     let message = match &target {
         Some(t) => Component::translatable("commands.spectate.success.started", vec![t.display()]),
@@ -558,54 +564,69 @@ fn test(
     source: &CommandSource,
     env: &mut Env<'_>,
 ) -> Result<i32, CommandError> {
-    let global = env.global;
+    use super::gametest::{self, Finder, Retry};
+    let args = &parsed.args;
+    let retry = match args.int("numberOfTimes") {
+        Some(n) => Retry::new(*n, args.bool("untilFailed").copied().unwrap_or(false)),
+        None => Retry::NONE,
+    };
+    let rotation = args.int("rotationSteps").copied().unwrap_or(0);
+    let per_row = args
+        .int("testsPerRow")
+        .copied()
+        .unwrap_or(gametest::DEFAULT_TESTS_PER_ROW);
+    let selection = |copies| Finder::Selection {
+        pattern: args.string("tests").cloned().unwrap_or_default(),
+        copies,
+    };
     match op {
-        TestOp::Run
-        | TestOp::RunMultiple
-        | TestOp::RunThese
-        | TestOp::RunClosest
-        | TestOp::RunThat
-        | TestOp::RunFailed
-        | TestOp::Verify => {
-            source.send_success(global, tr("commands.test.no_tests", vec![]), false);
-            Ok(0)
+        TestOp::Run => gametest::run(env, source, &selection(1), retry, rotation, per_row),
+        TestOp::RunMultiple => {
+            let copies = args
+                .int("amount")
+                .map_or(1, |n| usize::try_from(*n).unwrap_or(0));
+            gametest::run(env, source, &selection(copies), Retry::NONE, 0, 8)
         }
-        TestOp::Locate => {
-            source.send_system(global, tr("commands.test.locate.started", vec![]));
-            Err(err("commands.test.error.no_test_instances"))
+        TestOp::RunThese => gametest::run(env, source, &Finder::AllNearby, retry, 0, 8),
+        TestOp::RunClosest => gametest::run(env, source, &Finder::Nearest, retry, 0, 8),
+        TestOp::RunThat => gametest::run(env, source, &Finder::LookedAt, retry, 0, 8),
+        TestOp::RunFailed => {
+            let only_required = args.bool("onlyRequiredTests").copied().unwrap_or(false);
+            gametest::run(
+                env,
+                source,
+                &Finder::Failed { only_required },
+                retry,
+                rotation,
+                per_row,
+            )
         }
-        // `reset` reports `CLEAR_NO_TESTS` like Vanilla.
-        TestOp::ResetClosest
-        | TestOp::ResetThese
-        | TestOp::ResetThat
-        | TestOp::ClearThat
-        | TestOp::ClearThese
-        | TestOp::ClearAll => Err(err("commands.test.clear.error.no_tests")),
-        TestOp::Stop => Ok(1),
+        TestOp::Verify => gametest::verify(env, source, &selection(1)),
+        TestOp::Locate => gametest::locate(env, source, &selection(1)),
+        TestOp::ResetClosest => gametest::reset(env, source, &Finder::Nearest),
+        TestOp::ResetThese => gametest::reset(env, source, &Finder::AllNearby),
+        TestOp::ResetThat => gametest::reset(env, source, &Finder::LookedAt),
+        TestOp::ClearThat => gametest::clear(env, source, &Finder::LookedAt),
+        TestOp::ClearThese => gametest::clear(env, source, &Finder::AllNearby),
+        TestOp::ClearAll => {
+            let radius = args.int("radius").map_or(250, |r| (*r).clamp(0, 1024));
+            gametest::clear(env, source, &Finder::Radius(radius))
+        }
+        TestOp::Stop => Ok(gametest::stop(env)),
         TestOp::Pos => {
-            let player = source_player(env, source)?;
-            let pos = player.place.map_or(source.pos, |(p, _, _)| p);
-            let block = |v: f64| {
-                #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
-                let b = v.floor() as i32;
-                ErrArg::Int(b)
-            };
-            Err(CommandError::new(
-                "commands.test.error.no_test_containing_pos",
-                vec![block(pos.x), block(pos.y), block(pos.z)],
-            ))
+            source_player(env, source)?;
+            let var = args
+                .string("var")
+                .cloned()
+                .unwrap_or_else(|| "pos".to_owned());
+            gametest::pos(env, source, &var)
         }
         TestOp::Create => {
-            let width = parsed.args.int("width").copied().unwrap_or(5);
-            let height = parsed.args.int("height").copied().unwrap_or(width);
-            let depth = parsed.args.int("depth").copied().unwrap_or(width);
-            if width > 48 || height > 48 || depth > 48 {
-                return Err(CommandError::new(
-                    "commands.test.error.too_large",
-                    vec![ErrArg::Int(48)],
-                ));
-            }
-            Err(err("commands.test.error.test_instance_not_found"))
+            let id = args.identifier("id").ok_or_else(|| missing("id"))?;
+            let width = args.int("width").copied().unwrap_or(5);
+            let height = args.int("height").copied().unwrap_or(width);
+            let depth = args.int("depth").copied().unwrap_or(width);
+            gametest::create(env, source, id, [width, height, depth])
         }
     }
 }

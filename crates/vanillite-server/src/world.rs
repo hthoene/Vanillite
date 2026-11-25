@@ -29,6 +29,35 @@ mod travel;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct WorldId(pub u16);
 
+/// `Level.getWorldBorderAdjustedRespawnData`: a world spawn outside the world border moves to
+/// the top of the border's centre column (`MOTION_BLOCKING`).
+pub(crate) fn effective_spawn(
+    level: &vanillite_game::level::Level,
+    spawn: (vanillite_base::Vec3, f32),
+) -> (vanillite_base::Vec3, f32) {
+    let (pos, yaw) = spawn;
+    let block = vanillite_base::BlockPos::containing(pos.x, pos.y, pos.z);
+    if level.border.is_block_within_bounds(block) {
+        return spawn;
+    }
+    let center =
+        vanillite_base::BlockPos::containing(level.border.center_x(), 0.0, level.border.center_z());
+    let y = vanillite_game::portal::height_at(
+        level,
+        vanillite_chunk::HeightmapKind::MotionBlocking,
+        center.x,
+        center.z,
+    );
+    (
+        vanillite_base::Vec3::new(
+            f64::from(center.x) + 0.5,
+            f64::from(y),
+            f64::from(center.z) + 0.5,
+        ),
+        yaw,
+    )
+}
+
 impl WorldId {
     /// The index into the server's world list.
     pub fn index(self) -> usize {
@@ -115,7 +144,8 @@ impl fmt::Debug for ServerWorld {
 }
 
 impl ServerWorld {
-    /// Posts the game events of the players' moves (steps, swimming, landing).
+    /// Posts the game events of the players' moves (steps, swimming, landing) and those the
+    /// survival logic produced.
     fn post_player_game_events(&mut self) {
         let mut pending = Vec::new();
         for (id, p) in self.level.entities.players.iter_mut() {
@@ -131,6 +161,9 @@ impl ServerWorld {
                 source: Some(id),
                 affected,
             };
+            self.level.game_event(event, pos, context);
+        }
+        for (event, pos, context) in std::mem::take(&mut self.survival.game_events) {
             self.level.game_event(event, pos, context);
         }
     }
@@ -316,6 +349,12 @@ impl ServerWorld {
     pub(crate) fn join_player(&mut self, global: &Global, arrival: crate::players::Arrival) {
         let weather = self.survival.join_weather();
         let (uuid, name) = (arrival.uuid, arrival.profile.name.clone());
+        let vehicle = arrival
+            .saved
+            .as_ref()
+            .and_then(|saved| saved.other.get("RootVehicle"))
+            .and_then(vanillite_nbt::Tag::as_compound)
+            .cloned();
         let saved_pearls = arrival
             .saved
             .as_ref()
@@ -330,6 +369,12 @@ impl ServerWorld {
             &weather,
             &state,
         );
+        // `PrepareSpawnTask`: the player rides back in.
+        if let Some(vehicle) = vehicle
+            && let Some(id) = self.level.entities.player_by_uuid(uuid)
+        {
+            self.level.spawn_root_vehicle(id, &vehicle);
+        }
         let pearls = self.players.take_saved_pearls(uuid, saved_pearls.as_ref());
         self.load_pearls(global, pearls);
         let plugins = global.plugins.clone();
@@ -421,6 +466,12 @@ impl ServerWorld {
             },
         );
         self.effects.flush(&self.level.entities);
+        // `handleTestInstanceBlockAction` of the players' packets.
+        crate::commands::gametest::handle_actions(&mut crate::commands::Env {
+            level: &mut self.level,
+            global: ctx.global,
+            world: self.id,
+        });
         if let Some(before) = positions {
             let moves: Vec<(u128, [f64; 3], [f64; 3])> = self
                 .player_positions()
@@ -475,6 +526,10 @@ impl ServerWorld {
                 .settings
                 .apply_game_rules(&ctx.global.level.rules());
             self.level.settings.difficulty = ctx.global.level.difficulty();
+            self.level.settings.overworld_clock_time =
+                crate::mobs::overworld_clock_time(ctx.global);
+            self.level.settings.moon_brightness =
+                crate::mobs::moon_brightness(ctx.global, &self.dimension);
             let level = &mut self.level;
             level.set_game_time(ctx.global.level.game_time());
             if self.id.0 == 0 {
@@ -511,10 +566,9 @@ impl ServerWorld {
         level.tick_chunk_runtime();
         level.post_process();
         if ctx.runs_normally {
-            let spawn_point = (self.dimension == "minecraft:overworld").then(|| {
-                let (pos, _) = self.players.level.spawn;
-                vanillite_base::BlockPos::containing(pos.x, pos.y, pos.z)
-            });
+            let (spawn, _) = effective_spawn(level, self.players.level.spawn);
+            let spawn_point = (self.dimension == "minecraft:overworld")
+                .then(|| vanillite_base::BlockPos::containing(spawn.x, spawn.y, spawn.z));
             self.mobs.spawn(
                 level,
                 &self.survival,
@@ -531,6 +585,12 @@ impl ServerWorld {
             self.tick_entities(ctx.global);
             self.entity_travel(ctx);
             self.level.tick_block_entities();
+            // `GameTestTicker.tick` for this world's tests.
+            crate::commands::gametest::tick(&mut crate::commands::Env {
+                level: &mut self.level,
+                global: ctx.global,
+                world: self.id,
+            });
             self.mobs.apply_magic_hurts(
                 &mut self.level,
                 &mut self.survival,
@@ -598,6 +658,7 @@ impl ServerWorld {
             self.enter_portal(ctx, id, kind, entry);
         }
         self.portal_requests = portals;
+        self.post_player_game_events();
         self.players.tick_connections(
             &mut self.level,
             ctx.tick,
@@ -706,7 +767,7 @@ impl ServerWorld {
     /// starts that captures them from the remaining time of the next ticks.
     pub(crate) fn save(&mut self, flush: bool, skip_chunks: bool) {
         log::debug!("Saving {} (flush: {flush})", self.dimension);
-        self.players.save_all(&self.level.entities);
+        self.players.save_all(&self.level);
         if !skip_chunks {
             if let Some(border) = self.level.border.take_dirty() {
                 self.data.write(crate::border::SAVED_DATA, border.to_nbt());

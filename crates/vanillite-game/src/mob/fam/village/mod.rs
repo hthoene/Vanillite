@@ -168,7 +168,7 @@ impl FamilyHooks for Hooks {
     fn jump_in_liquid(t: &mut Tick<'_, '_>) -> bool {
         by_kind!(t.mob_ref().kind, jump_in_liquid(t))
     }
-    fn ambient_sound(m: &MobData) -> Option<&'static str> {
+    fn ambient_sound(m: &mut MobData) -> Option<&'static str> {
         by_kind!(m.kind, ambient_sound(m))
     }
     fn hurt_sound(m: &MobData) -> &'static str {

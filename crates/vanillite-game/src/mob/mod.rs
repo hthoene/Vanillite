@@ -727,6 +727,8 @@ pub enum WorldAction {
     HopperMinecart(EntityId),
     /// `updateNeighbourForOutputSignal(pos, AIR)`: comparators re-read an item frame.
     OutputSignal(BlockPos),
+    /// A command block minecart runs its command (`BaseCommandBlock.performCommand`).
+    MinecartCommand(EntityId),
     /// A burning mob in a water or powder snow cauldron takes a level of it.
     BurningInCauldron(BlockPos),
     /// `BellBlock.attemptToRing(entity, level, pos, null)`.
@@ -785,6 +787,12 @@ impl WorldAction {
             WorldAction::HopperMinecart(id) => crate::minecart::hopper_suck(level, id),
             WorldAction::OutputSignal(pos) => {
                 level.update_neighbour_for_output_signal(pos, vanillite_data::block::ids::AIR);
+            }
+            WorldAction::MinecartCommand(id) => {
+                crate::block::technical::command_block::perform_command(
+                    level,
+                    crate::block::technical::command_block::Owner::Minecart(id),
+                );
             }
             WorldAction::BurningInCauldron(pos) => {
                 crate::block::cauldron::burning_inside(level, pos)

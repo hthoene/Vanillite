@@ -53,7 +53,7 @@ pub fn register_goals(m: &mut MobData) {
             recalc: 0,
         },
     );
-    g.add(5, G::stroll_with(1.0, 0.0));
+    g.add(5, crate::mob::movement::MoveGoal::random_stroll(1.0, 120));
     g.add(6, G::look_at_player(6.0));
     g.add(7, G::random_look());
     let tg = &mut m.targets;

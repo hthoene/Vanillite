@@ -492,7 +492,15 @@ impl SinglePoolElement {
         settings.ignore_entities = false;
         settings.finalize_entities = true;
         settings.liquid_settings = self.override_liquid_settings.unwrap_or(liquid_settings);
-        settings.add_processors(&self.processors);
+        if ctx.keep_jigsaws {
+            settings.processors.extend(
+                self.processors
+                    .iter()
+                    .filter(|p| !matches!(p, StructureProcessor::JigsawReplacement)),
+            );
+        } else {
+            settings.add_processors(&self.processors);
+        }
         self.template.place_in_world(
             ctx.level,
             position,

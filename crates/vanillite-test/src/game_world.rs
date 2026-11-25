@@ -269,7 +269,10 @@ impl GameWorld {
         };
         level.settings.difficulty = difficulty;
         // The world starts at day time 0 unless the scenario sets one; time does not advance.
-        let env = Environment::overworld(spec.time.unwrap_or(0), 0.0, 0.0);
+        let env = Environment {
+            sea_level: FLAT_SEA_LEVEL,
+            ..Environment::overworld(spec.time.unwrap_or(0), 0.0, 0.0)
+        };
         // What spawner blocks and creaking hearts read when the block entities tick.
         level.spawner_env = vanillite_game::block::spawner::SpawnerEnv {
             env,
@@ -1510,6 +1513,10 @@ impl ScenarioWorld for GameWorld {
     }
 
     fn command(&mut self, line: &str) -> Result<(), String> {
+        // Command blocks run on the same server's dispatcher.
+        if self.level.command_runner().is_none() {
+            vanillite_server::install_command_runner(command_server(), &mut self.level);
+        }
         vanillite_server::run_command_on_level(
             command_server(),
             &mut self.level,
@@ -1753,6 +1760,7 @@ impl ScenarioWorld for GameWorld {
                 stack,
                 left_owner: false,
                 tick_count: 0,
+                has_been_shot: false,
             })),
         );
         Ok(())

@@ -145,6 +145,10 @@ pub fn start_riding(
         e.set_flags(EntityFlags::PASSENGER, true);
     }
     ents.riding.add(passenger, vehicle, is_player);
+    if let Some(at) = ents.store.get(vehicle).map(|e| e.pos()) {
+        let event = crate::level::game_event::events().entity_mount;
+        crate::survival::game_event(env.out, event, at, Some(passenger));
+    }
     // `STARTED_RIDING` of every player riding the vehicle, directly or not
     // (`getIndirectPassengersStream`).
     let mut riders = vec![vehicle];
@@ -178,6 +182,10 @@ pub fn stop_riding(
     passenger: EntityId,
 ) -> Option<EntityId> {
     let vehicle = ents.riding.remove(passenger)?;
+    if let Some(at) = ents.store.get(vehicle).map(|e| e.pos()) {
+        let event = crate::level::game_event::events().entity_dismount;
+        crate::survival::game_event(env.out, event, at, Some(passenger));
+    }
     if let Some(mut e) = ents.store.get_mut(passenger) {
         e.set_flags(EntityFlags::PASSENGER, false);
     }
@@ -230,13 +238,20 @@ fn dismount_to(ents: &mut Entities, passenger: EntityId, target: Vec3) {
 }
 
 /// The blocks of the survival environment as collision blocks (unloaded = air).
-struct EnvBlocks<'a>(&'a dyn crate::survival::blocks::BlockAccess);
+struct EnvBlocks<'a>(
+    &'a dyn crate::survival::blocks::BlockAccess,
+    Option<&'a crate::level::border::WorldBorder>,
+);
 
 impl physics::Blocks for EnvBlocks<'_> {
     fn state(&self, pos: BlockPos) -> vanillite_data::block::BlockState {
         self.0
             .block_state(pos)
             .unwrap_or(vanillite_data::block::BlockState::AIR)
+    }
+
+    fn border(&self) -> Option<&crate::level::border::WorldBorder> {
+        self.1
     }
 }
 
@@ -292,7 +307,7 @@ fn dismount_location(
 ) -> Option<Vec3> {
     let v = ents.store.get(vehicle)?;
     let p = ents.store.get(passenger)?;
-    let level = &EnvBlocks(env.blocks);
+    let level = &EnvBlocks(env.blocks, env.border);
     let vpos = v.pos();
     let fallback = Vec3::new(vpos.x, v.aabb().max_y, vpos.z);
     let (pw, ph) = (f64::from(p.dims().width), f64::from(p.dims().height));

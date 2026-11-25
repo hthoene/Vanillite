@@ -331,7 +331,7 @@ impl FamilyHooks for Hooks {
     fn sound_source(_kind: Kind) -> SoundSource {
         SoundSource::Neutral
     }
-    fn ambient_sound(m: &MobData) -> Option<&'static str> {
+    fn ambient_sound(m: &mut MobData) -> Option<&'static str> {
         Some(merchant::ambient_sound(m))
     }
     fn hurt_sound(_m: &MobData) -> &'static str {

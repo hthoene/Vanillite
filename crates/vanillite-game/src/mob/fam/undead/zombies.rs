@@ -329,8 +329,7 @@ pub fn register_goals(m: &mut MobData) {
                     stuck: false,
                 }),
             );
-            // `RandomStrollGoal(this, 1.0)`.
-            g.add(7, goals::Goal::stroll_with(1.0, 1.0));
+            g.add(7, crate::mob::movement::MoveGoal::random_stroll(1.0, 120));
             tg.add(1, goal(Goal::HurtByIgnoringDrowned(HurtBy::new(true))));
             tg.add(
                 2,
@@ -931,7 +930,9 @@ fn drown_convert(t: &mut Tick<'_, '_>) {
         Kind::Husk => (Kind::Zombie, 1041),
         _ => (Kind::Drowned, 1040),
     };
-    let special = crate::mob::fam::special_multiplier(t.env.difficulty);
+    // `getCurrentDifficultyAt(converted.blockPosition())`: the converted mob is where this
+    // one is.
+    let special = crate::level::difficulty::at(t.level, t.block_pos()).special_multiplier();
     let Some(id) = super::convert_to(t, to, true, true, |n| {
         handle_attributes(n, special, SpawnReason::Conversion);
     }) else {
@@ -1307,7 +1308,7 @@ pub fn do_hurt_target(t: &mut Tick<'_, '_>, target: EntityId) -> Option<bool> {
     if kind == Kind::Giant {
         return Some(true);
     }
-    let diff = super::effective_difficulty(t.env);
+    let diff = crate::level::difficulty::at(t.level, t.block_pos()).effective;
     let empty = t
         .mob_ref()
         .equipment
@@ -1401,9 +1402,7 @@ pub fn reinforcements(h: &mut Hurt<'_, '_>) {
             continue;
         }
         new.target = Some(target);
-        let mut ctx = SpawnContext::simple(h.env.difficulty, SpawnReason::Reinforcement);
-        ctx.pos = spawn;
-        ctx.level = Some(h.level);
+        let mut ctx = SpawnContext::at(h.level, spawn, SpawnReason::Reinforcement);
         kinds::finalize_spawn(&mut new, &mut ctx, h.env.random);
         zs_mut(&mut new).reinforcement -= 0.05;
         let uuid = crate::mob::new_uuid();

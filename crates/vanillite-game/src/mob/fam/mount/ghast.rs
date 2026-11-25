@@ -184,7 +184,7 @@ pub fn fly(t: &mut Tick<'_, '_>, input: Vec3, speed: f32) {
     } else {
         f64::from(0.91_f32)
     };
-    move_relative(t, speed, input);
+    crate::mob::living::move_relative(t, speed, input);
     let v = t.velocity();
     crate::mob::living::move_self(t, v);
     if !t.exists() {
@@ -192,24 +192,6 @@ pub fn fly(t: &mut Tick<'_, '_>, input: Vec3, speed: f32) {
     }
     let v = t.velocity();
     t.set_velocity(Vec3::new(v.x * drag, v.y * drag, v.z * drag));
-}
-
-/// `moveRelative(speed, input)`.
-pub fn move_relative(t: &mut Tick<'_, '_>, speed: f32, input: Vec3) {
-    let len = input.length_sqr();
-    if len < 1.0e-7 {
-        return;
-    }
-    let scaled = if len > 1.0 { input.normalize() } else { input } * f64::from(speed);
-    let yaw = f64::from(t.core().rot().y_rot) * std::f64::consts::PI / 180.0;
-    let sin = f64::from(vanillite_base::math::sin(yaw));
-    let cos = f64::from(vanillite_base::math::cos(yaw));
-    let v = t.velocity();
-    t.set_velocity(Vec3::new(
-        v.x + scaled.x * cos - scaled.z * sin,
-        v.y + scaled.y,
-        v.z + scaled.z * cos + scaled.x * sin,
-    ));
 }
 
 /// `HappyGhast.tick`: the leash holder flag and the still timeout (a player standing on top).

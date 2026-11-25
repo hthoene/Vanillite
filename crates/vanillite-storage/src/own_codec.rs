@@ -4,7 +4,7 @@
 //! Fields, in this order, so readers that need only the front can stop early (§4.1 of the
 //! storage design):
 //! 1. header: record version, status, flags, data version, position, section range,
-//!    inhabited time;
+//!    inhabited time, last update (since record version 2);
 //! 2. heightmaps in their packed form (taken over on load instead of primed);
 //! 3. `extra`: every chunk tag the server does not decode (structure starts and references,
 //!    plugin data, …) as network NBT, written back unchanged;
@@ -35,7 +35,7 @@ use crate::compression::{zstd_compress, zstd_decompress};
 use crate::upgrade::{IdRemap, Upgrades};
 
 /// Version of the record layout.
-const RECORD_VERSION: u8 = 1;
+const RECORD_VERSION: u8 = 2;
 /// Default zstd level (`storage.own-format.compression-level`).
 pub const DEFAULT_LEVEL: i32 = 3;
 
@@ -118,6 +118,7 @@ impl OwnCodec {
         out.extend_from_slice(&c.min_section().to_le_bytes());
         out.extend_from_slice(&(c.sections().len() as u16).to_le_bytes());
         out.extend_from_slice(&chunk.inhabited_time.to_le_bytes());
+        out.extend_from_slice(&chunk.last_update.to_le_bytes());
         // 2. Heightmaps.
         let mask = c
             .heightmaps()
@@ -204,7 +205,8 @@ impl OwnCodec {
     pub fn decode_raw(&self, pos: ChunkPos, raw: &[u8]) -> io::Result<ProtoChunk> {
         let mut r = Reader { bytes: raw, pos };
         let info = &self.info;
-        if r.u8()? != RECORD_VERSION {
+        let version = r.u8()?;
+        if !(1..=RECORD_VERSION).contains(&version) {
             return Err(invalid(pos, "unknown record version"));
         }
         let status = *ChunkStatus::ALL
@@ -235,6 +237,7 @@ impl OwnCodec {
             return Err(invalid(pos, "stored for another world height"));
         }
         let inhabited_time = r.i64()?;
+        let last_update = if version >= 2 { r.i64()? } else { 0 };
 
         let mask = r.u8()?;
         let words = Heightmap::new(info.height).raw().len();
@@ -373,6 +376,7 @@ impl OwnCodec {
             chunk,
             block_entities,
             inhabited_time,
+            last_update,
             light_on: flags & FLAG_LIGHT_ON != 0,
             block_ticks,
             fluid_ticks,

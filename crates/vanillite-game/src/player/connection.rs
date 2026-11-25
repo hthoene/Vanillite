@@ -12,6 +12,8 @@ use vanillite_protocol::chat::{
 use vanillite_protocol::packets::common::ChatVisibility;
 use vanillite_protocol::packets::common::{ClientInfo, MainHand as WireMainHand};
 use vanillite_protocol::packets::play::clientbound::SystemChat;
+
+use crate::block::technical;
 use vanillite_protocol::packets::play::serverbound::{
     ClientCommandAction, PlayerAction, SeenAdvancementsAction,
 };
@@ -75,6 +77,8 @@ pub enum EntityAction {
     /// `player_command` `OPEN_INVENTORY` while riding: the vehicle's inventory opens
     /// (`HasCustomInventoryScreen`: chest boats).
     OpenVehicleInventory,
+    /// `spectator_action` of a spectator: spectate the entity of this network id.
+    Spectate(i32),
     /// `pick_item_from_entity`: the entity's pick result goes to the hand.
     PickItem { entity: i32, include_data: bool },
     /// `player_action` `STAB`: a jab with the piercing weapon in the main hand.
@@ -238,6 +242,8 @@ pub struct Connection {
     /// Attacks and interactions with entities since the last tick (`attack`, `interact`), in
     /// packet order; the world resolves them with the entities.
     pub entity_actions: Vec<EntityAction>,
+    /// `ServerPlayer.camera`: the entity a spectator watches through (`None`: itself).
+    pub camera: Option<vanillite_world::entity::EntityId>,
     /// Vehicle input: the last `player_input`, `paddle_boat` and `move_vehicle`.
     pub vehicle: VehicleInput,
     /// Digging, placing and item handling.
@@ -302,6 +308,7 @@ impl Connection {
             chunks: PlayerChunks::new(memory_connection),
             chat: PlayerChatState::new(chat, inbox),
             entity_actions: Vec::new(),
+            camera: None,
             vehicle: VehicleInput::default(),
             play: Digging::new(),
             last_action: std::time::Instant::now(),
@@ -370,6 +377,9 @@ impl Connection {
             | ServerboundPlay::PlaceRecipe(_)
             | ServerboundPlay::ContainerButtonClick(_)
             | ServerboundPlay::SignUpdate(_) => true,
+            ServerboundPlay::SpectatorAction(_) => {
+                loaded && play.actor.game_mode == vanillite_config::GameMode::Spectator
+            }
             _ => false,
         };
         let pos_before = state.body.pos;
@@ -513,6 +523,17 @@ impl Connection {
                 if self.movement.has_client_loaded() {
                     state.shift_key_down = p.0.shift;
                     self.vehicle.input = p.0;
+                }
+            }
+            ServerboundPlay::SpectatorAction(p) => {
+                // `handleSpectatorAction`: only loaded spectators, bounded like attacks.
+                let spectator = play.actor.game_mode == vanillite_config::GameMode::Spectator;
+                if let Some(id) = p.spectate_entity_id
+                    && spectator
+                    && self.movement.has_client_loaded()
+                    && self.entity_actions.len() < 16
+                {
+                    self.entity_actions.push(EntityAction::Spectate(id));
                 }
             }
             ServerboundPlay::Attack(p) => {
@@ -698,6 +719,29 @@ impl Connection {
                     crate::block::sign::update_text(level, pos, uuid, p.front, &p.lines);
                 }
             }
+            ServerboundPlay::SetCommandBlock(p) => {
+                self.technical(play, |l, e| technical::command_block::handle(l, p, e));
+            }
+            ServerboundPlay::SetCommandMinecart(p) => {
+                self.technical(play, |l, e| {
+                    technical::command_block::handle_minecart(l, p, e)
+                });
+            }
+            ServerboundPlay::SetStructureBlock(p) => {
+                self.technical(play, |l, e| technical::structure_block::handle(l, p, e));
+            }
+            ServerboundPlay::SetJigsawBlock(p) => {
+                self.technical(play, |l, e| technical::jigsaw::handle(l, p, e));
+            }
+            ServerboundPlay::JigsawGenerate(p) => {
+                self.technical(play, |l, e| technical::jigsaw::handle_generate(l, p, e));
+            }
+            ServerboundPlay::SetTestBlock(p) => {
+                self.technical(play, |l, e| technical::test_block::handle(l, p, e));
+            }
+            ServerboundPlay::TestInstanceBlockAction(p) => {
+                self.technical(play, |l, e| technical::test_instance::handle(l, p, e));
+            }
             // `handlePlayerAbilities`.
             ServerboundPlay::PlayerAbilities(p) => {
                 state.flying = p.is_flying()
@@ -750,6 +794,29 @@ impl Connection {
             | ServerboundPlay::Unhandled { .. } => {}
         }
         Ok(())
+    }
+
+    /// The edit packets of the technical blocks: run on the player's level with the player as
+    /// the editor.
+    fn technical(
+        &self,
+        play: &mut PlayContext<'_>,
+        f: impl FnOnce(&mut crate::level::Level, &technical::Editor<'_>),
+    ) {
+        let actor = &play.actor;
+        let editor = technical::Editor {
+            player: actor.entity,
+            uuid: actor.uuid,
+            allowed: technical::can_use_game_master_blocks(
+                actor.game_mode == vanillite_config::GameMode::Creative,
+                actor.permission_level,
+            ),
+            permission_level: actor.permission_level,
+            sink: self.sink.as_ref(),
+        };
+        if let Some(level) = play.level.level_mut() {
+            f(level, &editor);
+        }
     }
 
     /// Queues an operator screen request. The queue is bounded like the other per-tick

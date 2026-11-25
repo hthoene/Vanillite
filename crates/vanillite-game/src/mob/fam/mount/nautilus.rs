@@ -143,7 +143,7 @@ pub fn travel(t: &mut Tick<'_, '_>, input: Vec3) -> bool {
         return false;
     }
     let speed = t.mob_ref().speed;
-    super::ghast::move_relative(t, speed, input);
+    crate::mob::living::move_relative(t, speed, input);
     let v = t.velocity();
     crate::mob::living::move_self(t, v);
     if t.exists() {

@@ -106,13 +106,15 @@ pub fn tick(t: &mut MissileTick<'_, '_>) {
     {
         d.ints[NO_DEFLECT] -= 1;
     }
-    if let Some((target, _)) = entity_hit {
+    if let Some((target, hit)) = entity_hit {
         on_hit_entity(t, target, owner, new_pos);
+        crate::mob::missile::land_event(t.env.out, t.level, t.id, None, hit);
         discard(t);
     } else if let Some((block, at)) = block_hit {
         // `onHitBlock`: the burst a quarter block out of the hit face.
         let normal = face_normal(block, at);
         burst(t, at + normal * 0.25);
+        crate::mob::missile::land_event(t.env.out, t.level, t.id, Some(block), at);
         discard(t);
     }
 }

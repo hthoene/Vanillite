@@ -93,7 +93,11 @@ impl Level {
             else {
                 continue;
             };
-            if !self.load_entity(nbt) {
+            let mut loaded = Vec::new();
+            if self.load_with_passengers(nbt, &mut loaded, true).is_none() {
+                // A kind the game does not model, the vehicle's or a passenger's: the whole
+                // stack stays parked.
+                self.discard_loaded(&loaded);
                 parked.push(data);
             }
         }
@@ -109,36 +113,16 @@ impl Level {
         self.entity_chunks.contains(&chunk)
     }
 
-    /// `EntityType.loadEntityRecursive` + `addFreshEntity` of stored entity data (a modelled
-    /// kind); whether an entity was added. Its `Tags` come along.
+    /// `EntityType.loadEntityRecursive` + `addFreshEntityWithPassengers` of stored entity data
+    /// (a modelled kind, passengers of kinds that are not modelled left out); whether it loaded.
     pub fn load_entity(&mut self, nbt: Compound) -> bool {
-        let tags: Vec<String> = match nbt.get("Tags") {
-            Some(Tag::List(List(l))) => l
-                .iter()
-                .filter_map(|t| t.as_str().map(str::to_owned))
-                .collect(),
-            _ => Vec::new(),
-        };
-        let uuid = uuid_of(&nbt, "UUID");
-        if !self.load_entity_kind(nbt) {
-            return false;
-        }
-        // The new entity is the last row of the store.
-        if !tags.is_empty()
-            && let Some(&id) = self.entities.store.columns().id.last()
-            && self
-                .entities
-                .store
-                .get(id)
-                .is_some_and(|e| uuid.is_none_or(|u| e.uuid() == u))
-        {
-            self.entities.set_tags(id, tags);
-        }
-        true
+        let mut loaded = Vec::new();
+        self.load_with_passengers(nbt, &mut loaded, false).is_some()
     }
 
-    /// [`Level::load_entity`] without the tags.
-    fn load_entity_kind(&mut self, nbt: Compound) -> bool {
+    /// `EntityType.create` of a stored entity: `None` for kinds the game does not model,
+    /// `Some(None)` for data that makes no entity (leash knots, empty items).
+    fn create_entity(&mut self, nbt: Compound) -> Option<Option<EntityId>> {
         let seed = uuid_of(&nbt, "UUID").map_or(0, |uuid| uuid as i64) ^ self.game_time();
         if let Some(loaded) = crate::mob::nbt::load_mob(&nbt, seed) {
             let network_ids = Arc::clone(self.network_ids_arc());
@@ -156,7 +140,7 @@ impl Level {
             }
             // `Raider.readAdditionalSaveData`: back into its raid.
             crate::raid::rejoin_loaded(&mut self.entities, id);
-            return true;
+            return Some(Some(id));
         }
         if let Some((kind, pos, velocity, rot, uuid, data)) =
             crate::mob::nbt::load_special(&nbt, seed)
@@ -164,8 +148,7 @@ impl Level {
             let mut new = NewEntity::new(kind, self.network_ids().next(), uuid, pos);
             new.velocity = velocity;
             new.rot = rot;
-            self.entities.spawn_special(new, data);
-            return true;
+            return Some(Some(self.entities.spawn_special(new, data)));
         }
         if let Some((kind, base, decor, flags)) = crate::decoration::load(&nbt) {
             let network_ids = Arc::clone(self.network_ids_arc());
@@ -189,7 +172,7 @@ impl Level {
                     e.set_flags(f, flags.contains(f));
                 }
             }
-            return true;
+            return Some(Some(id));
         }
         if let Some((pos, uuid, cloud)) = crate::mob::nbt::load_cloud(&nbt) {
             let radius = cloud.radius;
@@ -201,21 +184,19 @@ impl Level {
                     height: 0.5,
                 });
             }
-            return true;
+            return Some(Some(id));
         }
         if let Some((pos, velocity, uuid, orb)) = crate::mob::nbt::load_orb(&nbt) {
             let mut new = NewEntity::new(ids::EXPERIENCE_ORB, self.network_ids().next(), uuid, pos);
             new.velocity = velocity;
-            self.entities.spawn_experience_orb(new, orb);
-            return true;
+            return Some(Some(self.entities.spawn_experience_orb(new, orb)));
         }
         if let Some((e, data)) = crate::mob::nbt::load_arrow(&nbt) {
             let kind = crate::mob::projectile::arrow_of(&data.item).0;
             let mut new = NewEntity::new(kind, self.network_ids().next(), e.uuid, e.pos);
             new.velocity = e.velocity;
             new.rot = e.rot;
-            self.entities.spawn_arrow(new, data);
-            return true;
+            return Some(Some(self.entities.spawn_arrow(new, data)));
         }
         if let Some((e, data)) = crate::mob::missile::load(&nbt) {
             let mut new = NewEntity::new(
@@ -226,8 +207,7 @@ impl Level {
             );
             new.velocity = e.velocity;
             new.rot = e.rot;
-            self.entities.spawn_missile(new, data);
-            return true;
+            return Some(Some(self.entities.spawn_missile(new, data)));
         }
         if let Some((e, data)) = crate::mob::nbt::load_boat(&nbt) {
             let network_ids = Arc::clone(self.network_ids_arc());
@@ -242,7 +222,7 @@ impl Level {
             if let Some(mut ent) = self.entities.store.get_mut(id) {
                 ent.set_velocity(e.velocity);
             }
-            return true;
+            return Some(Some(id));
         }
         if let Some((e, data)) = crate::mob::nbt::load_minecart(&nbt, seed) {
             let network_ids = Arc::clone(self.network_ids_arc());
@@ -258,21 +238,18 @@ impl Level {
                 ent.set_velocity(e.velocity);
                 ent.set_flags(EntityFlags::ON_GROUND, e.on_ground);
             }
-            return true;
+            return Some(Some(id));
         }
-        let Some(kind) = nbt
+        let kind = nbt
             .get("id")
             .and_then(Tag::as_str)
-            .and_then(EntityTypeId::by_name)
-        else {
-            return false;
-        };
+            .and_then(EntityTypeId::by_name)?;
         if kind == ids::LEASH_KNOT {
             // Knots come back with the leashes of their mobs.
-            return true;
+            return Some(None);
         }
         if kind != ids::ITEM && kind != ids::FALLING_BLOCK && kind != ids::TNT {
-            return false;
+            return None;
         }
         let base = Base::load(&nbt);
         let network_id = self.network_ids().next();
@@ -294,7 +271,7 @@ impl Level {
             };
             // `readAdditionalSaveData`: an item entity without an item is discarded.
             if stack.is_empty() {
-                return true;
+                return Some(None);
             }
             let mut data = ItemData::new(stack, short("PickupDelay", 0), uuid_of(&nbt, "Thrower"));
             data.age = short("Age", 0);
@@ -331,7 +308,7 @@ impl Level {
             self.entities.spawn_primed_tnt(new, data)
         };
         self.entity_nbt.insert(id, nbt);
-        true
+        Some(Some(id))
     }
 
     /// Writes the live entities of a chunk and its parked ones back into the chunk's stored
@@ -348,7 +325,12 @@ impl Level {
             .collect();
         let mut list: Vec<Arc<[u8]>> = Vec::with_capacity(ids.len());
         for id in ids {
-            let Some(nbt) = self.save_entity(id) else {
+            // `shouldBeSaved`: passengers go with their root vehicle, a root vehicle with
+            // exactly one player aboard goes with that player's data.
+            if self.entities.vehicle_of(id).is_some() || self.player_passengers(id) == 1 {
+                continue;
+            }
+            let Some(nbt) = self.save_with_passengers(id) else {
                 continue;
             };
             let mut bytes = Vec::new();
@@ -365,6 +347,180 @@ impl Level {
             self.entity_chunks.insert(chunk);
         }
         self.chunks.set_stored_entities(chunk, list);
+    }
+
+    /// `EntityType.loadEntityRecursive`: an entity with its `Tags` and the passengers stored in
+    /// its `Passengers`, each riding it. The created entities are added to `loaded`; `None` if the
+    /// entity's kind is not modelled, or with `strict` a passenger's (the caller discards what
+    /// was created). Without `strict` such passengers are left out, as Vanilla drops entities
+    /// it cannot load.
+    fn load_with_passengers(
+        &mut self,
+        mut nbt: Compound,
+        loaded: &mut Vec<EntityId>,
+        strict: bool,
+    ) -> Option<Option<EntityId>> {
+        let passengers = match nbt.remove("Passengers") {
+            Some(Tag::List(list)) => list.0,
+            _ => Vec::new(),
+        };
+        let tags: Vec<String> = match nbt.get("Tags") {
+            Some(Tag::List(list)) => list
+                .0
+                .iter()
+                .filter_map(|t| t.as_str().map(str::to_owned))
+                .collect(),
+            _ => Vec::new(),
+        };
+        let Some(vehicle) = self.create_entity(nbt)? else {
+            return Some(None);
+        };
+        self.entities.set_tags(vehicle, tags);
+        loaded.push(vehicle);
+        for tag in passengers {
+            let Tag::Compound(c) = tag else {
+                continue;
+            };
+            let passenger = match self.load_with_passengers(c, loaded, strict) {
+                Some(passenger) => passenger,
+                None if strict => return None,
+                None => None,
+            };
+            if let Some(passenger) = passenger {
+                self.entities.riding.add(passenger, vehicle, false);
+                if let Some(mut e) = self.entities.store.get_mut(passenger) {
+                    e.set_flags(EntityFlags::PASSENGER, true);
+                }
+            }
+        }
+        Some(Some(vehicle))
+    }
+
+    /// Removes entities created by a load that is given up.
+    fn discard_loaded(&mut self, loaded: &[EntityId]) {
+        for &id in loaded {
+            self.entities.despawn(id);
+            self.entity_nbt.remove(&id);
+        }
+    }
+
+    /// `getRootVehicle`.
+    fn root_vehicle(&self, mut id: EntityId) -> EntityId {
+        while let Some(vehicle) = self.entities.vehicle_of(id) {
+            id = vehicle;
+        }
+        id
+    }
+
+    /// `countPlayerPassengers`: the players among the direct and indirect passengers.
+    fn player_passengers(&self, id: EntityId) -> usize {
+        self.entities
+            .riding
+            .passengers_of(id)
+            .iter()
+            .map(|&p| usize::from(self.entities.player(p).is_some()) + self.player_passengers(p))
+            .sum()
+    }
+
+    /// `Entity.saveWithoutId` with `Tags` and `Passengers`: the entity and the entities riding
+    /// it; players and kinds that are not saved are left out.
+    fn save_with_passengers(&self, id: EntityId) -> Option<Compound> {
+        let mut nbt = self.save_entity(id)?;
+        // `Entity.tags`, as `/tag` left them.
+        let tags = self.entities.tags_of(id);
+        if tags.is_empty() {
+            nbt.remove("Tags");
+        } else {
+            nbt.insert(
+                "Tags",
+                Tag::List(List(tags.iter().map(|t| Tag::String(t.clone())).collect())),
+            );
+        }
+        let passengers: Vec<Tag> = self
+            .entities
+            .riding
+            .passengers_of(id)
+            .iter()
+            .filter_map(|&p| self.save_with_passengers(p))
+            .map(Tag::Compound)
+            .collect();
+        if passengers.is_empty() {
+            nbt.remove("Passengers");
+        } else {
+            nbt.insert("Passengers", Tag::List(List(passengers)));
+        }
+        Some(nbt)
+    }
+
+    /// `ServerPlayer.saveParentVehicle`: a riding player's `RootVehicle` (the vehicle it rides
+    /// as `Attach`, the root vehicle with its passengers as `Entity`), when the root vehicle
+    /// carries no other player.
+    pub fn save_root_vehicle(&self, player: EntityId) -> Option<Compound> {
+        let vehicle = self.entities.vehicle_of(player)?;
+        let root = self.root_vehicle(vehicle);
+        if self.player_passengers(root) != 1 {
+            return None;
+        }
+        let entity = self.save_with_passengers(root)?;
+        let mut out = Compound::with_capacity(2);
+        out.insert("Attach", uuid_tag(self.entities.store.get(vehicle)?.uuid()));
+        out.insert("Entity", Tag::Compound(entity));
+        Some(out)
+    }
+
+    /// `PlayerList.remove` of a riding player: a root vehicle that carries no other player
+    /// leaves the world with it, with all its passengers (`UNLOADED_WITH_PLAYER`).
+    pub fn remove_root_vehicle(&mut self, player: EntityId) {
+        let Some(vehicle) = self.entities.vehicle_of(player) else {
+            return;
+        };
+        let root = self.root_vehicle(vehicle);
+        if self.player_passengers(root) != 1 {
+            return;
+        }
+        self.entities.riding.remove(player);
+        if let Some(mut e) = self.entities.store.get_mut(player) {
+            e.set_flags(EntityFlags::PASSENGER, false);
+        }
+        let mut stack = vec![root];
+        let mut all = Vec::new();
+        while let Some(id) = stack.pop() {
+            stack.extend_from_slice(self.entities.riding.passengers_of(id));
+            all.push(id);
+        }
+        self.discard_loaded(&all);
+    }
+
+    /// `ServerPlayer.loadAndSpawnParentVehicle`: creates the saved root vehicle with its
+    /// passengers and lets the player ride the one it rode; without it the vehicles are
+    /// discarded again.
+    pub fn spawn_root_vehicle(&mut self, player: EntityId, data: &Compound) {
+        let Some(Tag::Compound(entity)) = data.get("Entity") else {
+            return;
+        };
+        let attach = uuid_of(data, "Attach");
+        let mut loaded = Vec::new();
+        let target = match self.load_with_passengers(entity.clone(), &mut loaded, false) {
+            Some(Some(_)) => loaded.iter().copied().find(|&id| {
+                self.entities
+                    .store
+                    .get(id)
+                    .is_some_and(|e| Some(e.uuid()) == attach)
+            }),
+            _ => None,
+        };
+        let Some(vehicle) = target else {
+            log::warn!("Couldn't reattach entity to player");
+            self.discard_loaded(&loaded);
+            return;
+        };
+        self.entities.riding.add(player, vehicle, true);
+        if let Some(mut e) = self.entities.store.get_mut(player) {
+            e.set_flags(EntityFlags::PASSENGER, true);
+        }
+        if let Some(p) = self.entities.player_mut(player) {
+            p.connection.movement.passenger = true;
+        }
     }
 
     /// `Entity.save`: the stored data of a live entity of a modelled kind, `None` for players

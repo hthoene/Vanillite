@@ -566,7 +566,7 @@ impl FamilyHooks for Hooks {
         }
     }
 
-    fn ambient_sound(m: &MobData) -> Option<&'static str> {
+    fn ambient_sound(m: &mut MobData) -> Option<&'static str> {
         let s = st(m);
         match m.kind {
             Kind::Pufferfish | Kind::IronGolem | Kind::Bee => None,
@@ -671,7 +671,7 @@ impl FamilyHooks for Hooks {
             }
             // `Turtle.getWalkTargetValue` needs the going-home state; see `turtle`.
             Kind::Turtle => turtle::walk_target_value(level, env, pos, false),
-            // `Strider.getWalkTargetValue` (in lava: negative infinity off lava, see `strider`).
+            // `Strider.getWalkTargetValue` (in lava: negative infinity off lava, see `randompos::walk_value`).
             Kind::Strider => {
                 if crate::mob::is_lava(level.block(pos)) {
                     10.0
@@ -679,6 +679,8 @@ impl FamilyHooks for Hooks {
                     0.0
                 }
             }
+            // `AgeableWaterCreature`s are no `Animal`s: `PathfinderMob.getWalkTargetValue`.
+            Kind::Squid | Kind::GlowSquid | Kind::Dolphin => 0.0,
             _ if Self::ageable(kind) => {
                 if below.block() == vanillite_data::block::ids::GRASS_BLOCK {
                     10.0

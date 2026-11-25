@@ -190,7 +190,15 @@ pub(super) fn tick(t: &mut MissileTick<'_, '_>) {
     } else {
         let owner_id = t.ents.missile(t.id).and_then(|d| d.owner);
         match fly(t) {
-            Flight::Hit(target) => on_hit(t, owner, owner_id, target),
+            Flight::Hit(target, block, at) => {
+                // `Projectile.onHit`: `onHitEntity`, then the `PROJECTILE_LAND` game event.
+                if let Some(target) = target {
+                    let source = thrown_source(t, owner_id);
+                    crate::mob::combat::hurt(t.level, t.ents, t.env, t.cx, target, source, 0.0);
+                }
+                crate::mob::missile::land_event(t.env.out, t.level, t.id, block, at);
+                on_hit(t, owner);
+            }
             Flight::Miss | Flight::Gone => {}
         }
     }
@@ -224,19 +232,10 @@ pub(super) fn tick(t: &mut MissileTick<'_, '_>) {
     }
 }
 
-/// `onHitEntity` and `onHit`: the hit entity takes a damage-free hit, the portal particles draw
+/// The rest of `onHit` after the damage-free hit of `onHitEntity`: the portal particles draw
 /// from the pearl's random, then the owner arrives where the pearl was at the start of the tick
 /// and the pearl is gone.
-fn on_hit(
-    t: &mut MissileTick<'_, '_>,
-    owner: Owner,
-    owner_id: Option<EntityId>,
-    target: Option<EntityId>,
-) {
-    if let Some(target) = target {
-        let source = thrown_source(t, owner_id);
-        crate::mob::combat::hurt(t.level, t.ents, t.env, t.cx, target, source, 0.0);
-    }
+fn on_hit(t: &mut MissileTick<'_, '_>, owner: Owner) {
     let Some(d) = t.ents.missile(t.id) else {
         return;
     };

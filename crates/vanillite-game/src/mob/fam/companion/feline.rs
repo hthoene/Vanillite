@@ -242,12 +242,11 @@ pub fn cat_sound(m: &MobData, which: &str) -> &'static str {
 }
 
 /// `Cat.getAmbientSound`.
-pub fn cat_ambient_sound(m: &MobData) -> Option<&'static str> {
+pub fn cat_ambient_sound(m: &mut MobData) -> Option<&'static str> {
     Some(if m.tame {
         if m.in_love > 0 {
             cat_sound(m, "purr")
-        } else if m.tick_count % 4 == 0 {
-            // `random.nextInt(4) == 0` (the tick count stands in for the roll).
+        } else if m.random.next_int_bounded(4) == 0 {
             cat_sound(m, "purreow")
         } else {
             cat_sound(m, "ambient")

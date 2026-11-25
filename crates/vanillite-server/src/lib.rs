@@ -30,6 +30,7 @@ mod progress;
 mod scoreboard;
 mod server;
 pub mod slot;
+mod spectator;
 mod survival;
 mod systems;
 mod test_bot;
@@ -42,7 +43,7 @@ mod world_updates;
 
 pub use blocks::{ItemScratch, ItemSettings, LevelEffects, WorldLevel, game_data, tick_item};
 pub use clock::Clock;
-pub use commands::run_command_on_level;
+pub use commands::{install_command_runner, run_command_on_level};
 pub use compute::{Compute, ComputePool, InlineScheduler, Job, Scheduler, Scope};
 pub use global::Global;
 pub use level::{load_block_facts, load_damage_types};

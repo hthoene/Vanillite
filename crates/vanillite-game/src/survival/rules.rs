@@ -112,13 +112,14 @@ impl Rule {
     pub const GLOBAL_SOUND_EVENTS: Rule = Rule(16);
     pub const LOG_ADMIN_COMMANDS: Rule = Rule(22);
     pub const SEND_COMMAND_FEEDBACK: Rule = Rule(43);
-    pub const SPECTATORS_GENERATE_CHUNKS: Rule = Rule(53);
 }
 
 impl Rule {
     pub const ADVANCE_TIME: Rule = Rule(0);
     pub const ADVANCE_WEATHER: Rule = Rule(1);
     pub const ALLOW_ENTERING_NETHER_USING_PORTALS: Rule = Rule(2);
+    pub const COMMAND_BLOCKS_WORK: Rule = Rule(5);
+    pub const COMMAND_BLOCK_OUTPUT: Rule = Rule(6);
     pub const DROWNING_DAMAGE: Rule = Rule(7);
     pub const ENDER_PEARLS_VANISH_ON_DEATH: Rule = Rule(9);
     pub const ENTITY_DROPS: Rule = Rule(10);
@@ -130,6 +131,7 @@ impl Rule {
     pub const KEEP_INVENTORY: Rule = Rule(18);
     pub const LIMITED_CRAFTING: Rule = Rule(20);
     pub const BLOCK_EXPLOSION_DROP_DECAY: Rule = Rule(4);
+    pub const MAX_COMMAND_SEQUENCE_LENGTH: Rule = Rule(25);
     pub const MAX_ENTITY_CRAMMING: Rule = Rule(26);
     pub const MOB_DROPS: Rule = Rule(29);
     pub const MOB_EXPLOSION_DROP_DECAY: Rule = Rule(30);
@@ -151,6 +153,7 @@ impl Rule {
     pub const SPAWN_PHANTOMS: Rule = Rule(50);
     pub const SPAWN_WANDERING_TRADERS: Rule = Rule(51);
     pub const SPAWN_WARDENS: Rule = Rule(52);
+    pub const SPECTATORS_GENERATE_CHUNKS: Rule = Rule(53);
     pub const TNT_EXPLODES: Rule = Rule(55);
     pub const TNT_EXPLOSION_DROP_DECAY: Rule = Rule(56);
     pub const UNIVERSAL_ANGER: Rule = Rule(57);
@@ -311,6 +314,10 @@ mod tests {
             (Rule::RESPAWN_RADIUS, "respawn_radius"),
             (Rule::SHOW_ADVANCEMENT_MESSAGES, "show_advancement_messages"),
             (Rule::SHOW_DEATH_MESSAGES, "show_death_messages"),
+            (
+                Rule::SPECTATORS_GENERATE_CHUNKS,
+                "spectators_generate_chunks",
+            ),
             (Rule::SPAWN_MOBS, "spawn_mobs"),
         ] {
             assert_eq!(rule.info().name, name);

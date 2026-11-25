@@ -237,12 +237,16 @@ pub fn set_raw_peek(t: &mut Tick<'_, '_>, amount: u8) {
         t.mob().attrs.armor -= 20.0;
         st_mut(t.mob()).covered = false;
     }
+    let events = crate::level::game_event::events();
+    let at = t.pos();
     if amount == 0 {
         t.mob().attrs.armor += 20.0;
         st_mut(t.mob()).covered = true;
         super::sound(t, "minecraft:entity.shulker.close", 1.0, 1.0);
+        crate::mob::living::post_game_event(t, events.container_close, at, None);
     } else {
         super::sound(t, "minecraft:entity.shulker.open", 1.0, 1.0);
+        crate::mob::living::post_game_event(t, events.container_open, at, None);
     }
     if st(t.mob_ref()).peek != amount {
         st_mut(t.mob()).peek = amount;
@@ -294,18 +298,13 @@ fn shoot_bullet(t: &mut Tick<'_, '_>, target: EntityId, avoid_axis: u8) {
         (b.min_z + b.max_z) / 2.0,
     );
     let mut d = MissileData::new(MissileKind::ShulkerBullet);
+    d.random_state = missile::new_projectile_random().state();
     d.target = Some(target);
     d.target_uuid = t.ents.store.get(target).map(|e| e.uuid());
     // ints: [move direction (6 = none), steps, -, -]; vec: target deltas.
     d.ints[0] = 1;
-    let id = missile::spawn_from(t, start, Vec3::ZERO, Rotation::default(), d);
-    super::missiles::select_next_move_direction(
-        t.level,
-        t.ents,
-        t.env.random,
-        id,
-        Some(avoid_axis),
-    );
+    let id = missile::spawn_shot(t, start, Vec3::ZERO, Rotation::default(), d);
+    super::missiles::select_next_move_direction(t.level, t.ents, id, Some(avoid_axis));
 }
 
 pub fn peek_can_use(t: &mut Tick<'_, '_>) -> bool {
@@ -400,7 +399,10 @@ pub fn teleport_somewhere(
         let dy = r.next_int_bounded(17) - 8;
         let dz = r.next_int_bounded(17) - 8;
         let target = BlockPos::new(old.x + dx, old.y + dy, old.z + dz);
-        if target.y <= level.min_y() || !level.block(target).is_air() {
+        if target.y <= level.min_y()
+            || !level.block(target).is_air()
+            || !level.border.is_block_within_bounds(target)
+        {
             continue;
         }
         let unit = Aabb::new(
@@ -434,6 +436,16 @@ pub fn teleport_somewhere(
             ));
             e.mark_data_dirty();
         }
+        crate::survival::game_event(
+            env.out,
+            crate::level::game_event::events().teleport,
+            Vec3::new(
+                f64::from(old.x) + 0.5,
+                f64::from(old.y) + 0.5,
+                f64::from(old.z) + 0.5,
+            ),
+            Some(id),
+        );
         let packed = ((old.x - target.x + 8) & 0xFF) << 16
             | ((old.y - target.y + 8) & 0xFF) << 8
             | ((old.z - target.z + 8) & 0xFF);

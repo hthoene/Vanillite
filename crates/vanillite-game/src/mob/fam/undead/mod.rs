@@ -568,7 +568,7 @@ impl FamilyHooks for Hooks {
         }
     }
 
-    fn ambient_sound(m: &MobData) -> Option<&'static str> {
+    fn ambient_sound(m: &mut MobData) -> Option<&'static str> {
         by_group!(m.kind, ambient_sound(m), None)
     }
 
@@ -821,11 +821,6 @@ pub fn add_effect(
     effect: crate::effect::EffectInstance,
 ) {
     crate::effect::living::add_detached(ents, target, effect);
-}
-
-/// The effective difficulty as an integer (`(int) difficulty.getEffectiveDifficulty()`).
-pub fn effective_difficulty(env: &Env<'_>) -> f32 {
-    super::effective_difficulty(env.difficulty)
 }
 
 /// The rotation of a freshly spawned mob looking along `y_rot`.

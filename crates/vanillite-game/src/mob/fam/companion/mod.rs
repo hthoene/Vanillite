@@ -106,8 +106,6 @@ pub struct State {
     pub jump_duration: i32,
     pub jump_delay_ticks: i32,
     pub was_on_ground: bool,
-    /// `RabbitMoveControl.nextJumpSpeed`.
-    pub next_jump_speed: f64,
     // --- Parrot ---
     pub flap: f32,
 }
@@ -489,14 +487,27 @@ pub fn encode_long(w: &mut DataWriter<'_>, id: u8, v: i64, default: i64) {
     });
 }
 
-/// The first registry entry of a biome-dependent variant list whose condition holds
-/// (`VariantUtils.selectVariantToSpawn` with priorities): `(index, condition)` pairs in
-/// registry order, conditions with priority 1 checked before the default (priority 0).
-pub fn pick_variant(ctx: &SpawnContext<'_>, entries: &[(i32, Option<&str>)], default: i32) -> i32 {
-    entries
+/// A random entry of a biome-dependent variant list (`VariantUtils.selectVariantToSpawn`,
+/// `PriorityProvider.pick`): `(index, condition)` pairs in registry order; the entries whose
+/// biome condition holds (priority 1) win over the default (priority 0), and one of the
+/// winners is drawn (`Util.getRandomSafe`, a draw even for a single one).
+pub fn pick_variant(
+    ctx: &SpawnContext<'_>,
+    random: &mut LegacyRandom,
+    entries: &[(i32, Option<&str>)],
+    default: i32,
+) -> i32 {
+    let mut matched: Vec<i32> = entries
         .iter()
-        .find(|(_, c)| c.is_some_and(|c| biome_matches(ctx, c)))
-        .map_or(default, |(i, _)| *i)
+        .filter(|(_, c)| c.is_some_and(|c| biome_matches(ctx, c)))
+        .map(|(i, _)| *i)
+        .collect();
+    if matched.is_empty() {
+        matched.push(default);
+    }
+    let n = i32::try_from(matched.len()).unwrap_or(i32::MAX);
+    let i = usize::try_from(random.next_int_bounded(n)).unwrap_or(0);
+    matched[i]
 }
 
 /// A biome condition: a biome id or `#tag`.
@@ -627,13 +638,13 @@ impl FamilyHooks for Hooks {
         }
     }
 
-    fn ambient_sound(m: &MobData) -> Option<&'static str> {
+    fn ambient_sound(m: &mut MobData) -> Option<&'static str> {
         match m.kind {
             k if is_horse(k) => horse::ambient_sound(m),
             Kind::Wolf => wolf::ambient_sound(m),
             Kind::Cat => feline::cat_ambient_sound(m),
             Kind::Ocelot => Some("minecraft:entity.ocelot.ambient"),
-            Kind::Parrot => Some(parrot::ambient_sound(m)),
+            Kind::Parrot => Some("minecraft:entity.parrot.ambient"),
             Kind::Fox => fox::ambient_sound(m),
             Kind::Panda => panda::ambient_sound(m),
             Kind::PolarBear => Some(if m.baby {

@@ -98,6 +98,22 @@ fn use_duration(ents: &Entities, player: EntityId, stack: &ItemStack) -> i32 {
     }
 }
 
+/// `ItemStack.causeUseVibration`: `use_effects.interact_vibrations` of the stack (on by
+/// default, off for spears).
+fn use_vibrations(stack: &ItemStack) -> bool {
+    match stack.component(vanillite_protocol::components::ids::USE_EFFECTS) {
+        Some(data) => data.get(1).is_some_and(|b| *b != 0),
+        None => !item::item_id(stack).name().ends_with("_spear"),
+    }
+}
+
+/// `gameEvent(event)` of a player at its position.
+fn player_game_event(ents: &Entities, env: &mut Env<'_>, player: EntityId, event: u16) {
+    if let Some(pos) = ents.store.get(player).map(|e| e.pos()) {
+        crate::survival::game_event(env.out, event, pos, Some(player));
+    }
+}
+
 fn mark(ents: &mut Entities, player: EntityId) {
     if let Some(mut e) = ents.store.get_mut(player) {
         e.mark_data_dirty();
@@ -158,14 +174,26 @@ pub fn start(
         p.survival.stabbed.clear();
     }
     mark(ents, player);
+    if use_vibrations(&stack) {
+        let event = crate::level::game_event::events().item_interact_start;
+        player_game_event(ents, env, player, event);
+    }
     // `Item.use` of a kinetic weapon: `KineticWeapon.makeSound`.
     if let Some(k) = kinetic {
         crate::spear::make_sound(ents, env, player, k.sound.as_ref());
     }
 }
 
-/// `stopUsingItem`.
-pub fn stop(ents: &mut Entities, player: EntityId) {
+/// `stopUsingItem`: the item in use (`stack`) vibrates when it was in use.
+pub fn stop(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, stack: &ItemStack) {
+    if stop_quietly(ents, player) && !stack.is_empty() && use_vibrations(stack) {
+        let event = crate::level::game_event::events().item_interact_finish;
+        player_game_event(ents, env, player, event);
+    }
+}
+
+/// `stopUsingItem` without its game event; returns whether an item was in use.
+fn stop_quietly(ents: &mut Entities, player: EntityId) -> bool {
     let was = ents.player_mut(player).and_then(|p| {
         p.survival.stabbed = Vec::new();
         p.survival.using_item.take()
@@ -173,6 +201,7 @@ pub fn stop(ents: &mut Entities, player: EntityId) {
     if was.is_some() {
         mark(ents, player);
     }
+    was.is_some()
 }
 
 /// Whether the player blocks with a shield (`isBlocking`).
@@ -217,7 +246,7 @@ pub fn tick(ents: &mut Entities, env: &mut Env<'_>, player: EntityId) {
     };
     let stack = held(ents, player, u.hand);
     if stack.item != u.item || stack.is_empty() {
-        stop(ents, player);
+        stop(ents, env, player, &ItemStack::new(u.item, 1));
         return;
     }
     let ticks = u.ticks.saturating_add(1);
@@ -240,7 +269,7 @@ pub fn tick(ents: &mut Entities, env: &mut Env<'_>, player: EntityId) {
         // `BrushItem.onUseTick` needs the level: [`tick_brushes`]. The brush is no
         // consumable, `completeUsingItem` only stops using it.
         if remaining <= 0 {
-            stop(ents, player);
+            stop(ents, env, player, &stack);
         }
         return;
     }
@@ -287,7 +316,17 @@ pub fn tick_brushes(level: &mut crate::level::Level) {
             continue;
         }
         let Some(hit) = brush_hit(level, player) else {
-            stop(&mut level.entities, player);
+            if stop_quietly(&mut level.entities, player)
+                && use_vibrations(&stack)
+                && let Some(at) = level.entities.store.get(player).map(|e| e.pos())
+            {
+                let event = crate::level::game_event::events().item_interact_finish;
+                level.game_event(
+                    event,
+                    at,
+                    crate::level::game_event::GameEventContext::of(Some(player)),
+                );
+            }
             continue;
         };
         // `timeElapsed = getUseDuration - ticksRemaining + 1` with the remaining ticks before
@@ -494,7 +533,8 @@ fn on_use_tick(
 /// `completeUsingItem`: food feeds the player, the stack shrinks (or turns into its
 /// remainder), the client is told (`entity_event` 9).
 fn finish(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, u: UsingItem) {
-    stop(ents, player);
+    // `stopUsingItem` comes after `finishUsingItem`: its game event is posted at the end.
+    let was_using = stop_quietly(ents, player);
     let stack = held(ents, player, u.hand);
     let id = item::item_id(&stack);
     let name = id.name();
@@ -513,6 +553,11 @@ fn finish(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, u: UsingItem
             spyglass_stop(env, player, pos);
         }
         finished_event(ents, player);
+        // `stopUsingItem`: the kept stack vibrates.
+        if was_using && use_vibrations(&stack) {
+            let event = crate::level::game_event::events().item_interact_finish;
+            player_game_event(ents, env, player, event);
+        }
         return;
     }
     let creative = ents
@@ -581,6 +626,20 @@ fn finish(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, u: UsingItem
             seed,
         );
     }
+    // `Consumable.onConsume`: the drink or eat game event.
+    let drink = matches!(
+        name,
+        "minecraft:milk_bucket"
+            | "minecraft:honey_bottle"
+            | "minecraft:potion"
+            | "minecraft:ominous_bottle"
+    );
+    let consumable = drink || id.info().food.is_some();
+    if consumable {
+        let events = crate::level::game_event::events();
+        let event = if drink { events.drink } else { events.eat };
+        player_game_event(ents, env, player, event);
+    }
     // `Consumable.onConsume`: the use statistic and `consume_item`.
     if let Some(p) = ents.player_mut(player) {
         p.stats.award(
@@ -629,6 +688,12 @@ fn finish(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, u: UsingItem
             .apply_use_cooldown(&stack, sink.as_ref());
     }
     finished_event(ents, player);
+    // `stopUsingItem`: the used stack vibrates unless it was used up.
+    let left = creative || stack.count > 1;
+    if was_using && left && use_vibrations(&stack) {
+        let event = crate::level::game_event::events().item_interact_finish;
+        player_game_event(ents, env, player, event);
+    }
 }
 
 /// `ServerPlayer.completeUsingItem`: `entity_event` 9 to the player.
@@ -913,19 +978,40 @@ pub fn release(
         return;
     };
     let stack = held(ents, player, u.hand);
+    if stack.item == u.item && item::item_id(&stack).name() == "minecraft:spyglass" {
+        let pos = ents.store.get(player).map_or(Vec3::ZERO, |e| e.pos());
+        // `releaseUsing` (the sound), then `stopUsingItem`.
+        spyglass_stop(env, player, pos);
+        stop(ents, env, player, &stack);
+        return;
+    }
     if stack.item == u.item && crate::crossbow::is_crossbow(&stack) {
         // `useOnRelease`: one more `updatingUsingItem` (a crossbow loads when released just
         // in time); `releaseUsing` itself changes nothing.
         crossbow_use_tick(ents, env, player, u.hand, u.ticks);
-        stop(ents, player);
+        let stack = held(ents, player, u.hand);
+        stop(ents, env, player, &stack);
         return;
     }
-    stop(ents, player);
-    if stack.item == u.item && item::item_id(&stack).name() == "minecraft:spyglass" {
-        let pos = ents.store.get(player).map_or(Vec3::ZERO, |e| e.pos());
-        spyglass_stop(env, player, pos);
-        return;
+    let was_using = stop_quietly(ents, player);
+    shoot_bow(ents, env, network_ids, player, u, &stack);
+    // `stopUsingItem` after `releaseUsing`.
+    if was_using && !stack.is_empty() && use_vibrations(&stack) {
+        let event = crate::level::game_event::events().item_interact_finish;
+        player_game_event(ents, env, player, event);
     }
+}
+
+/// `BowItem.releaseUsing`.
+fn shoot_bow(
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    network_ids: &vanillite_world::entity::NetworkIds,
+    player: EntityId,
+    u: UsingItem,
+    stack: &ItemStack,
+) {
+    let stack = stack.clone();
     if stack.item != u.item || item::item_id(&stack).name() != "minecraft:bow" {
         return;
     }

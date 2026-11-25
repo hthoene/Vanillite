@@ -430,7 +430,7 @@ pub fn apply_knockback(ents: &mut Entities, target: EntityId, power: f64, xd: f6
 /// `LivingEntity.actuallyHurt` of a mob: armour, then health.
 fn actually_hurt(
     ents: &mut Entities,
-    env: &Env<'_>,
+    env: &mut Env<'_>,
     target: EntityId,
     source: DamageSource,
     damage: f32,
@@ -474,6 +474,8 @@ fn actually_hurt(
         if let Some(mut e) = ents.store.get_mut(target) {
             e.mark_data_dirty();
         }
+        let event = crate::level::game_event::events().entity_damage;
+        super::animal::entity_game_event(ents, env, target, event, Some(target));
     }
     // `DAMAGE_DEALT_RESISTED` and `DAMAGE_DEALT_ABSORBED` of the player that caused it.
     if let Some(p) = source.cause.and_then(|c| ents.player_mut(c)) {
@@ -805,9 +807,6 @@ pub fn mob_sound(ents: &mut Entities, env: &mut Env<'_>, id: EntityId, sound: &s
     let Some(m) = ents.mob_mut(id) else {
         return;
     };
-    if m.silent {
-        return;
-    }
     let volume = super::fam::mob_sound_volume(m);
     let a = m.random.next_float();
     let b = m.random.next_float();
@@ -816,6 +815,10 @@ pub fn mob_sound(ents: &mut Entities, env: &mut Env<'_>, id: EntityId, sound: &s
     } else {
         (a - b) * 0.2 + 1.0
     };
+    // `playSound` checks `isSilent` after the pitch is drawn.
+    if m.silent {
+        return;
+    }
     let source = m.kind.sound_source();
     let seed = crate::survival::sound_seed();
     play_sound(env.out, None, pos, sound, source, volume, pitch, seed);

@@ -25,17 +25,20 @@ pub fn generate(
     mut candidate: impl FnMut(&mut Tick<'_, '_>) -> Option<BlockPos>,
     weight: impl Fn(&Tick<'_, '_>, BlockPos) -> f64,
 ) -> Option<Vec3> {
-    let mut best: Option<(BlockPos, f64)> = None;
+    // A candidate must weigh more than negative infinity.
+    let mut best: Option<BlockPos> = None;
+    let mut best_weight = f64::NEG_INFINITY;
     for _ in 0..10 {
         let Some(pos) = candidate(t) else {
             continue;
         };
         let value = weight(t, pos);
-        if best.is_none_or(|(_, b)| value > b) {
-            best = Some((pos, value));
+        if value > best_weight {
+            best_weight = value;
+            best = Some(pos);
         }
     }
-    best.map(|(p, _)| bottom_center(p))
+    best.map(bottom_center)
 }
 
 /// `Vec3.atBottomCenterOf`.
@@ -45,7 +48,13 @@ pub fn bottom_center(p: BlockPos) -> Vec3 {
 
 /// `getWalkTargetValue(pos)` of the ticking mob.
 pub fn walk_value(t: &Tick<'_, '_>, pos: BlockPos) -> f64 {
-    super::kinds::walk_target_value(t.mob_ref().kind, t.level, &t.cx.env, pos)
+    let m = t.mob_ref();
+    let value = super::kinds::walk_target_value(m.kind, t.level, &t.cx.env, pos);
+    // `Strider.getWalkTargetValue`: in lava, everything off lava is out of the question.
+    if m.kind == super::Kind::Strider && value == 0.0 && m.fluids.in_lava() {
+        return f64::NEG_INFINITY;
+    }
+    value
 }
 
 /// `RandomPos.generateRandomDirection`.
@@ -405,6 +414,17 @@ pub fn air_pos_towards(
         },
         walk_value,
     )
+}
+
+/// `WaterAvoidingRandomFlyingGoal.getPosition`: a hover position towards the view direction,
+/// else an air or water one.
+pub fn water_avoiding_flying_pos(t: &mut Tick<'_, '_>) -> Option<Vec3> {
+    // `getViewVector(0)`: the pitch and head yaw of the tick start, unchanged until the goals.
+    let rot = t.core().rot();
+    let dir = view_vector(rot.x_rot, rot.y_head_rot);
+    let half = std::f32::consts::FRAC_PI_2;
+    hover_pos(t, 8, 7, dir.x, dir.z, half, 3, 1)
+        .or_else(|| air_and_water_pos(t, 8, 4, -2, dir.x, dir.z, f64::from(half)))
 }
 
 /// `HoverRandomPos.getPos(mob, h, v, xDir, zDir, maxRadians, hoverMaxHeight,

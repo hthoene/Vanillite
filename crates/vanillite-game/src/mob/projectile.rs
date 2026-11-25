@@ -50,6 +50,8 @@ pub struct ArrowData {
     pub in_ground_time: i32,
     /// The glowing ticks of a spectral arrow (`duration`).
     pub spectral_duration: i32,
+    /// `hasBeenShot`: the `PROJECTILE_SHOOT` game event was posted.
+    pub has_been_shot: bool,
     /// `PIERCE_LEVEL`: how many more entities it passes through (Piercing).
     pub pierce_level: u8,
     /// `piercingIgnoreEntityIds`: the entities it pierced (hits them no more).
@@ -87,6 +89,7 @@ impl ArrowData {
             item,
             in_ground_time: 0,
             spectral_duration: 200,
+            has_been_shot: false,
             pierce_level: 0,
             pierced: Vec::new(),
             crossbow_sound: false,
@@ -323,6 +326,10 @@ pub fn tick_arrow(
     let mut rot = e.rot();
     let (kind, network_id) = (e.kind(), e.network_id().0);
     let mut random = LegacyRandom::from_state(a.random_state);
+    // `Projectile.tick`: the first tick posts `PROJECTILE_SHOOT` from the shooter.
+    if !std::mem::replace(&mut a.has_been_shot, true) {
+        super::missile::shoot_event(env.out, pos, a.owner);
+    }
     a.tick_count += 1;
     let block_pos = BlockPos::containing(pos.x, pos.y, pos.z);
     let state = level.block(block_pos);
@@ -449,7 +456,9 @@ pub fn tick_arrow(
         if let Some(&(_, _, first)) = hits.first() {
             pos = first;
         }
-        for &(target, _, _) in &hits {
+        for &(target, _, hit) in &hits {
+            // `onHit` posts `PROJECTILE_LAND` at the hit location after `onHitEntity`.
+            super::missile::land_event(env.out, level, id, None, hit);
             // `onHitEntity`.
             let pow = velocity.length_sqr().sqrt();
             #[allow(clippy::cast_possible_truncation)]
@@ -595,6 +604,7 @@ pub fn tick_arrow(
                 pitch,
                 seed,
             );
+            super::missile::land_event(env.out, level, id, Some(hit_pos), at);
             a.in_ground = true;
             a.shake = 7;
             a.crit = false;

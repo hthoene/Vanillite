@@ -173,6 +173,8 @@ pub(crate) fn handle(
             if game_mode != GameMode::Spectator {
                 return;
             }
+            // `teleportTo(..., resetCamera = true)`.
+            crate::spectator::set_camera(&mut level.entities, id, None);
             teleport_to_entity(level, global, id, world, to);
         }
     }

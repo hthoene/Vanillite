@@ -120,7 +120,7 @@ pub fn travel(t: &mut Tick<'_, '_>, input: Vec3) -> bool {
     if !discard || fluids.in_water() || fluids.in_lava() {
         return false;
     }
-    super::ghast::move_relative(t, 0.02, input);
+    crate::mob::living::move_relative(t, 0.02, input);
     let v = t.velocity();
     crate::mob::living::move_self(t, v);
     if !t.exists() {
