@@ -178,23 +178,23 @@ cause = "after the hit on tick 20 the zombified piglin draws 2 numbers from its 
 owner = "architect #101"
 
 [mob_villager_workstation]
-tick = 1
-cause = "one level random draw less on tick 1 (Vanilla 5 brain draws: panic trigger, raid status, 3 AcquirePoi and two DoNothing starts; here the idle RunOne started a stroll instead of DoNothing): Vanilla's ShufflingList random is unseeded (RandomSource.create()), so which child of a RunOne starts is not reproducible"
+tick = 89
+cause = "the villager draws other numbers from its random on tick 89; its path to the composter differs from tick 90 (not analysed yet)"
 owner = "gameplay-developer #60"
 
 [mob_villager_bed]
-tick = 1
-cause = "one level random draw less on tick 1 (the idle RunOne started a stroll instead of DoNothing): Vanilla's ShufflingList random is unseeded (RandomSource.create()), so which child of a RunOne starts is not reproducible"
+tick = 2
+cause = "the level random differs from tick 2 on (since the shuffled gates draw from their own random tick 1 matches; not analysed yet)"
 owner = "gameplay-developer #60"
 
 [mob_villager_panic]
-tick = 1
-cause = "one level random draw less on tick 1 (the idle RunOne started a stroll instead of DoNothing): Vanilla's ShufflingList random is unseeded (RandomSource.create()), so which child of a RunOne starts is not reproducible"
+tick = 186
+cause = "the villager draws other numbers from its random on tick 186 and starts no path on tick 187 (Vanilla strolls; not analysed yet)"
 owner = "gameplay-developer #60"
 
 [mob_villager_zombie]
-tick = 1
-cause = "the villager draws other numbers from its random and two level random numbers less on tick 1 (not investigated; the shuffled RunOne children differ, Vanilla's ShufflingList random is unseeded (RandomSource.create()), so which child of a RunOne starts is not reproducible)"
+tick = 6
+cause = "the zombie draws other numbers from its random from tick 6 on (not analysed yet)"
 owner = "gameplay-developer #60"
 
 [mob_wandering_trader_wander]

@@ -572,6 +572,7 @@ impl LootTables {
             out: &mut out,
             post: Vec::new(),
             depth: 0,
+            allow_additional_cost: false,
         };
         Ok(eval.test(cond))
     }
@@ -623,6 +624,7 @@ impl LootTables {
             out: &mut out,
             post: Vec::new(),
             depth: 0,
+            allow_additional_cost: false,
         };
         eval.apply(func, stack);
         Ok(())

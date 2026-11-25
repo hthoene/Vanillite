@@ -692,6 +692,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             from: p,
             to: p,
             block: String::new(),
+            command: None,
             hurt: None,
             effect: None,
             throw_potion: None,
