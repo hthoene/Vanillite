@@ -378,7 +378,7 @@ impl Entities {
         self.arrows.get_mut(row)
     }
 
-    /// The entity with a network id, for mobs.
+    /// The entity with a network id: mobs, players, boats, minecarts and leash knots.
     pub fn by_network_id(&self, network_id: i32) -> Option<EntityId> {
         self.by_network_id
             .get(&network_id)

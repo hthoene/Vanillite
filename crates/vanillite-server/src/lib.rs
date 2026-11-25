@@ -51,4 +51,4 @@ pub use tick_rate::TickRateManager;
 pub use vanillite_net::{VirtualConnection, VirtualOpener};
 pub use watchdog::{Heartbeat, WatchState, Watchdog};
 pub use world::{ServerWorld, TickContext, WorldId, WorldTask};
-pub use world_format::{convert_world, export_world};
+pub use world_format::{convert_world, export_world, upgrade_world};

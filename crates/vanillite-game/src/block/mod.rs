@@ -296,6 +296,7 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
     bookshelf::fill(block, &mut b);
     campfire::fill(block, &mut b);
     crafter::fill(block, &mut b);
+    portal::fill(block, &mut b);
     b
 }
 

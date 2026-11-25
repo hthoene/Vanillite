@@ -10,13 +10,16 @@
 //! the radius around the point where the mode started; `straight:<speed>[:<turn s>]` flies
 //! straight in a random direction per bot at `<speed>` blocks per second (a number or a
 //! preset: `walk`, `sprint`, `elytra`, `boat`), turning to a new random direction every
-//! `<turn s>` seconds if given. Straight flight cruises at y = 300, above all overworld
+//! `<turn s>` seconds if given; `spread:<radius>` flies at boat speed to a random point within
+//! the radius around the point where the mode started and hovers there; `still` stands where
+//! the server put the bot (e.g. after a `/tp`). Flight cruises at y = 300, above all overworld
 //! terrain, with `on_ground` false: the server needs `allow-flight=true`. `--check` only
 //! validates the arguments.
 //!
 //! Control on stdin, one command per line: `target <n>` raises the number of bots to `n`
 //! (bots join at the join rate), `movement <spec>` switches the movement of all bots,
-//! `quit` ends the process. Every second one JSON line with the
+//! `rate <joins per s> [<concurrent logins>]` changes the join rate (the concurrency can only
+//! grow), `quit` ends the process. Every second one JSON line with the
 //! metrics of that second goes to stdout (see [`Metrics::report`]). Driven by
 //! `cargo xtask loadtest`.
 
@@ -59,6 +62,10 @@ pub enum Movement {
     /// Straight flight at `speed` blocks per second in a random direction per bot; a new
     /// random direction every `turn` seconds (0 = never).
     Straight { speed: f64, turn: f64 },
+    /// Flight to a random point within `radius` blocks, then hovering there.
+    Spread { radius: f64 },
+    /// No movement at all.
+    Still,
 }
 
 impl Movement {
@@ -74,18 +81,25 @@ impl Movement {
     /// quickly" limit of 10 blocks per movement packet.
     const MAX_SPEED: f64 = 150.0;
 
-    /// `random` or `straight:<speed or preset>[:<turn s>]`.
+    /// `random`, `still`, `spread:<radius>` or `straight:<speed or preset>[:<turn s>]`.
     pub fn parse(spec: &str) -> Result<Self, String> {
         let bad = || {
             format!(
-                "movement {spec:?}: expected random or straight:<blocks per s|walk|sprint|\
-                 elytra|boat>[:<turn s>] with a speed up to {}",
+                "movement {spec:?}: expected random, still, spread:<radius> or \
+                 straight:<blocks per s|walk|sprint|elytra|boat>[:<turn s>] with a speed up to {}",
                 Self::MAX_SPEED
             )
         };
         let parts: Vec<&str> = spec.split(':').collect();
         match parts.as_slice() {
             ["random"] => Ok(Self::Random),
+            ["still"] => Ok(Self::Still),
+            ["spread", radius] => radius
+                .parse()
+                .ok()
+                .filter(|r: &f64| *r > 0.0 && r.is_finite())
+                .map(|radius| Self::Spread { radius })
+                .ok_or_else(bad),
             ["straight", speed, turn @ ..] if turn.len() <= 1 => {
                 let speed = Self::PRESETS
                     .iter()
@@ -117,6 +131,10 @@ pub struct Metrics {
     pub chunks_forgotten: AtomicU64,
     /// Server teleports after the join (rubber-banding of rejected moves).
     pub teleports: AtomicU64,
+    /// Chunks around the bots checked every probe interval, and how many of them were
+    /// missing (holes near the players).
+    pub near_checked: AtomicU64,
+    pub near_missing: AtomicU64,
     pub bytes_in: AtomicU64,
     pub bytes_out: AtomicU64,
     pub packets_in: AtomicU64,
@@ -163,6 +181,8 @@ impl Metrics {
             "chunks": load(&self.chunks),
             "chunks_forgotten": load(&self.chunks_forgotten),
             "teleports": load(&self.teleports),
+            "near_checked": load(&self.near_checked),
+            "near_missing": load(&self.near_missing),
             "bytes_in": load(&self.bytes_in),
             "bytes_out": load(&self.bytes_out),
             "packets_in": load(&self.packets_in),
@@ -259,6 +279,7 @@ fn main() {
     let metrics = Arc::new(Metrics::default());
     let (target_tx, target_rx) = watch::channel(0u64);
     let (movement_tx, movement_rx) = watch::channel(config.movement);
+    let (rate_tx, rate_rx) = watch::channel((config.join_rate, config.join_concurrency));
     let start = Instant::now();
 
     runtime.spawn(spawner(
@@ -266,6 +287,7 @@ fn main() {
         Arc::clone(&metrics),
         target_rx.clone(),
         movement_rx,
+        rate_rx,
     ));
     let reporter_metrics = Arc::clone(&metrics);
     runtime.spawn(async move {
@@ -293,6 +315,19 @@ fn main() {
                 }
                 Err(e) => eprintln!("loadbot: {e}"),
             },
+            ["rate", rate, concurrency @ ..] if concurrency.len() <= 1 => {
+                let rate = rate.parse::<f64>().ok().filter(|r| *r > 0.0);
+                let concurrency = match concurrency.first() {
+                    Some(c) => c.parse::<usize>().ok().filter(|c| *c > 0),
+                    None => Some(rate_tx.borrow().1),
+                };
+                match (rate, concurrency) {
+                    (Some(r), Some(c)) => {
+                        let _ = rate_tx.send((r, c));
+                    }
+                    _ => eprintln!("loadbot: rate: expected <joins per s> [<logins>]"),
+                }
+            }
             ["quit"] => break,
             [] => {}
             _ => eprintln!("loadbot: unknown command {line:?}"),
@@ -309,15 +344,29 @@ async fn spawner(
     metrics: Arc<Metrics>,
     mut target: watch::Receiver<u64>,
     movement: watch::Receiver<Movement>,
+    mut rate: watch::Receiver<(f64, usize)>,
 ) {
-    let pending = Arc::new(Semaphore::new(config.join_concurrency));
-    let mut interval = tokio::time::interval(Duration::from_secs_f64(1.0 / config.join_rate));
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut concurrency = config.join_concurrency;
+    let pending = Arc::new(Semaphore::new(concurrency));
+    let new_interval = |per_s: f64| {
+        let mut i = tokio::time::interval(Duration::from_secs_f64(1.0 / per_s));
+        i.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        i
+    };
+    let mut interval = new_interval(config.join_rate);
     let mut started = 0u64;
     loop {
         while started >= *target.borrow() {
             if target.changed().await.is_err() {
                 return;
+            }
+        }
+        if rate.has_changed().unwrap_or(false) {
+            let (per_s, logins) = *rate.borrow_and_update();
+            interval = new_interval(per_s);
+            if logins > concurrency {
+                pending.add_permits(logins - concurrency);
+                concurrency = logins;
             }
         }
         interval.tick().await;

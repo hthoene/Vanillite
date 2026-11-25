@@ -331,7 +331,7 @@ impl GameWorld {
                 continue;
             }
             if kind == ids::EXPERIENCE_ORB {
-                vanillite_game::experience_orb::tick_entity(&mut self.level, id);
+                vanillite_game::entities::tick_entity(&mut self.level, id, kind);
                 continue;
             }
             self.with_env(|level, ents, env, cx| {

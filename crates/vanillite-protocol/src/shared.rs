@@ -1,5 +1,7 @@
 //! Packets encoded once for many receivers, and the inbound play packet envelope.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{self, TryRecvError};
 use std::sync::{Arc, OnceLock};
 
 use crate::Packet;
@@ -86,4 +88,99 @@ impl SharedPacket {
 pub struct Inbound {
     pub seq: u64,
     pub packet: ServerboundPlay,
+}
+
+/// Creates the queue of one connection's play packets for the world. At most `max` packets
+/// wait (SEC-17); the memory follows the packets that wait (blocks of a few dozen), not
+/// `max`, so thousands of idle connections stay small.
+pub fn inbound_queue(max: usize) -> (InboundSender, InboundReceiver) {
+    let (tx, rx) = mpsc::channel();
+    let queued = Arc::new(AtomicUsize::new(0));
+    (
+        InboundSender {
+            tx,
+            queued: Arc::clone(&queued),
+            max,
+        },
+        InboundReceiver { rx, queued },
+    )
+}
+
+/// The network side of an [`inbound_queue`].
+#[derive(Debug)]
+pub struct InboundSender {
+    tx: mpsc::Sender<Inbound>,
+    queued: Arc<AtomicUsize>,
+    max: usize,
+}
+
+impl InboundSender {
+    /// Queues a packet. Returns false (and drops it) if `max` packets wait or the receiver is
+    /// gone.
+    pub fn try_send(&self, inbound: Inbound) -> bool {
+        if self.queued.fetch_add(1, Ordering::Relaxed) >= self.max {
+            self.queued.fetch_sub(1, Ordering::Relaxed);
+            return false;
+        }
+        if self.tx.send(inbound).is_err() {
+            self.queued.fetch_sub(1, Ordering::Relaxed);
+            return false;
+        }
+        true
+    }
+}
+
+/// The world side of an [`inbound_queue`].
+#[derive(Debug)]
+pub struct InboundReceiver {
+    rx: mpsc::Receiver<Inbound>,
+    queued: Arc<AtomicUsize>,
+}
+
+impl InboundReceiver {
+    /// The next packet, like [`mpsc::Receiver::try_recv`].
+    pub fn try_recv(&self) -> Result<Inbound, TryRecvError> {
+        let inbound = self.rx.try_recv()?;
+        self.queued.fetch_sub(1, Ordering::Relaxed);
+        Ok(inbound)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn packet(seq: u64) -> Inbound {
+        Inbound {
+            seq,
+            packet: ServerboundPlay::Unhandled { id: 0 },
+        }
+    }
+
+    #[test]
+    fn inbound_queue_never_holds_more_than_max() {
+        let (tx, rx) = inbound_queue(2);
+        assert!(tx.try_send(packet(1)));
+        assert!(tx.try_send(packet(2)));
+        assert!(!tx.try_send(packet(3)));
+        assert_eq!(rx.try_recv().map(|i| i.seq), Ok(1));
+        assert!(tx.try_send(packet(4)));
+        assert!(!tx.try_send(packet(5)));
+        assert_eq!(rx.try_recv().map(|i| i.seq), Ok(2));
+        assert_eq!(rx.try_recv().map(|i| i.seq), Ok(4));
+        assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
+    }
+
+    #[test]
+    fn inbound_queue_reports_disconnect() {
+        let (tx, rx) = inbound_queue(4);
+        assert!(tx.try_send(packet(1)));
+        drop(tx);
+        assert_eq!(rx.try_recv().map(|i| i.seq), Ok(1));
+        assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
+
+        let (tx, rx) = inbound_queue(4);
+        drop(rx);
+        assert!(!tx.try_send(packet(1)));
+    }
 }

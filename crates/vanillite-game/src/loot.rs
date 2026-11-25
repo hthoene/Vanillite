@@ -1,4 +1,4 @@
-//! Loot tables for block and entity drops (Vanilla `LootTable`, 26.3 format).
+//! Loot tables (Vanilla `LootTable`, 26.3 format) of block drops, entity drops and containers.
 //!
 //! [`LootTables::load`] parses every `data/<ns>/loot_table/{blocks,chests,archaeology,pots}/**.json`
 //! of the given packs once into a compact typed tree, together with the named predicates
@@ -24,10 +24,10 @@
 //!   structure search yet, as if no structure were found: the tables then discard the map);
 //! - results larger than the item's max stack size are split as `LootTable.createStackSplitter`.
 //!
-//! The context has no level and no entity, so:
+//! The context has no level access, so:
 //! - `entity_properties` on `this` with an empty predicate holds if the context has a breaker,
-//!   an explosion source or an entity (`this_present`); any non-empty entity predicate is
-//!   unsupported;
+//!   an explosion source, a `this` entity or entity loot parameters (`this_present`); any
+//!   non-empty entity predicate needs entity loot parameters;
 //! - `location_check` with only `block`/`fluid` predicates holds (the world is assumed
 //!   consistent, e.g. the other half of a double plant exists); `biomes` asks the context for
 //!   the biome at the origin; other location predicates are unsupported.
@@ -123,8 +123,8 @@ pub struct LootContext<'a> {
     /// Whether the biome at the origin is the given biome (`"ns:id"` or `"#ns:tag"`), for
     /// `location_check`; `None` without level access (the check fails).
     pub biome: Option<&'a dyn Fn(&str) -> bool>,
-    /// `THIS_ENTITY` is set without an entity id (the breaker or the explosion source of block
-    /// loot).
+    /// Whether `this_entity` is set without an entity id: the breaker or the explosion source
+    /// of block loot (`Block.dropResources(..., breaker, tool)`).
     pub this_present: bool,
     /// The entity parameters of entity loot (`LootContextParamSets.ENTITY`).
     pub entity: Option<&'a EntityLootContext<'a>>,
@@ -468,7 +468,12 @@ impl LootTables {
         out: &mut Vec<ItemStack>,
     ) {
         if self.by_name.contains_key(table) {
-            self.roll(table, &ctx.as_loot(), rng, out);
+            let ctx = LootContext {
+                block_state: ctx.state.is_valid().then_some(ctx.state),
+                tool: None,
+                ..ctx.as_loot()
+            };
+            self.roll(table, &ctx, rng, out);
         }
     }
 
@@ -492,7 +497,7 @@ impl LootTables {
         let table = self.parser().table(json)?;
         let mut eval = Eval {
             tables: self,
-            ctx,
+            ctx: &ctx,
             rng,
             out,
             post: Vec::new(),
@@ -609,6 +614,11 @@ impl LootTables {
         };
         eval.apply(func, stack);
         Ok(())
+    }
+
+    /// Whether a table with this id is loaded.
+    pub fn has_table(&self, table: &str) -> bool {
+        self.by_name.contains_key(table)
     }
 
     /// Builds the set from parsed JSON files: `(id, file content or read error)`.

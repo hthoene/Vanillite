@@ -329,6 +329,13 @@ impl ServerBuilder {
             format_plan.format
         };
         let own_level = i32::from(config.server.storage.compression_level);
+        let upgrades = match world_format {
+            WorldFormat::Vanillite => {
+                vanillite_storage::upgrade::Upgrades::load(&dir.join(&level_name))
+                    .map_err(|e| StartError::Io(format!("world \"{level_name}\": {e}")))?
+            }
+            WorldFormat::Anvil => vanillite_storage::upgrade::Upgrades::none(),
+        };
         let storage_rules = &config.server.storage;
         let io = IoPool::new(usize::from(storage_rules.io_threads))
             .map_err(|e| StartError::Io(format!("cannot start the storage IO threads: {e}")))?;
@@ -492,7 +499,9 @@ impl ServerBuilder {
                     .map_err(|e| StartError::io(&info.dir, e))?,
                 codec: match world_format {
                     WorldFormat::Anvil => Arc::new(AnvilCodec::new(&info, compression)),
-                    WorldFormat::Vanillite => Arc::new(OwnCodec::new(&info, own_level)),
+                    WorldFormat::Vanillite => Arc::new(
+                        OwnCodec::new(&info, own_level).with_upgrades(Arc::clone(&upgrades)),
+                    ),
                 },
                 generator: generator_provider
                     .create(&info)
