@@ -652,6 +652,7 @@ pub(super) fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
         ix.target,
         "minecraft:item.bucket.fill_fish",
     );
+    crate::mob::animal::filled_bucket(ix.ents, ix.player, &bucket);
     fill_held(ix.ents, ix.env, ix.player, ix.hand, bucket);
     crate::mob::tame::drop_leash(ix.ents, ix.env, ix.target, true);
     if let Some(m) = ix.ents.mob_mut(ix.target) {

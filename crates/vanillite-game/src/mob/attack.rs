@@ -229,6 +229,7 @@ pub fn player_attack(
                 .is_some_and(|d| d.item_in_tag(weapon.item, "minecraft:swords"))
     };
     let old_movement = ents.store.get(target).map(|e| e.velocity());
+    let old_health = living_health(ents, target);
     let hurt = combat::hurt(level, ents, env, cx, target, source, total);
     if !hurt {
         player_sound(env, ppos, "minecraft:entity.player.attack.nodamage");
@@ -285,9 +286,24 @@ pub fn player_attack(
     }
     post_attack(level, ents, env, cx, target, &source, Some(&weapon));
     hurt_weapon(ents, env, attacker, &weapon);
+    // `damageStatsAndHearts`: `DAMAGE_DEALT` of the health the living target lost.
+    if let (Some(old), Some(now)) = (old_health, living_health(ents, target))
+        && let Some(p) = ents.player_mut(attacker)
+    {
+        #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+        let v = ((old - now) * 10.0).round() as i32;
+        p.stats.award(crate::stats::custom::DAMAGE_DEALT, v);
+    }
     if let Some(p) = ents.player_mut(attacker) {
         player::cause_food_exhaustion(p, 0.1);
     }
+}
+
+/// `LivingEntity.getHealth` of a mob or player.
+fn living_health(ents: &Entities, id: EntityId) -> Option<f32> {
+    ents.mob(id)
+        .map(|m| m.health)
+        .or_else(|| ents.player(id).map(|p| p.survival.health))
 }
 
 /// `sendToTrackingPlayersAndSelf(new ClientboundAnimatePacket(entity, action))`.
@@ -692,17 +708,20 @@ fn hurt_equipment(
         EquipmentSlot::Head => 39,
         EquipmentSlot::Body | EquipmentSlot::Saddle => return,
     };
-    let Some(s) = p.inventory.get_mut(index) else {
+    let crate::player::PlayerData {
+        inventory,
+        advancements,
+        stats,
+        ..
+    } = p;
+    let Some(s) = inventory.get_mut(index) else {
         return;
     };
     let d = item::damage(s).saturating_add(damage);
-    if d >= item::max_damage(s) {
-        s.shrink(1);
-        if let Some(pos) = pos {
-            player_sound(env, pos, "minecraft:entity.item.break");
-        }
-    } else {
-        item::set_damage(s, d);
+    if crate::advancements::view::apply_damage(Some(advancements), Some(stats), s, d)
+        && let Some(pos) = pos
+    {
+        player_sound(env, pos, "minecraft:entity.item.break");
     }
 }
 
@@ -793,20 +812,23 @@ fn hurt_weapon(ents: &mut Entities, env: &mut Env<'_>, attacker: EntityId, weapo
     if p.game_mode == vanillite_config::GameMode::Creative || amount == 0 {
         return;
     }
-    let Some(tool) = p.inventory.selected_item_mut() else {
+    let crate::player::PlayerData {
+        inventory,
+        advancements,
+        stats,
+        ..
+    } = p;
+    let Some(tool) = inventory.selected_item_mut() else {
         return;
     };
     if !item::is_damageable(tool) {
         return;
     }
     let new_damage = item::damage(tool).saturating_add(amount);
-    if new_damage >= item::max_damage(tool) {
-        tool.shrink(1);
-        if let Some(pos) = pos {
-            player_sound(env, pos, "minecraft:entity.item.break");
-        }
-    } else {
-        item::set_damage(tool, new_damage);
+    if crate::advancements::view::apply_damage(Some(advancements), Some(stats), tool, new_damage)
+        && let Some(pos) = pos
+    {
+        player_sound(env, pos, "minecraft:entity.item.break");
     }
 }
 

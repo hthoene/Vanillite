@@ -6,6 +6,8 @@ use std::sync::Arc;
 use vanillite_base::{Aabb, BlockPos, ChunkPos, Vec3};
 use vanillite_config::{GameMode, WorldRules};
 use vanillite_data::entity::ids;
+use vanillite_game::advancements::trigger::{Event, TriggerKind};
+use vanillite_game::advancements::view;
 use vanillite_game::entities::{Entities, is_mob_kind};
 use vanillite_game::item::ItemStack;
 use vanillite_game::level::Level;
@@ -298,6 +300,11 @@ impl WorldMobs {
                         let Some(target) = in_reach(&ents, player, entity) else {
                             continue;
                         };
+                        // `handleInteract`: the stack before the interaction for
+                        // `player_interacted_with_entity`.
+                        let interacted = TriggerKind::PLAYER_INTERACTED_WITH_ENTITY;
+                        let used = view::listens(&ents, player, interacted)
+                            .then(|| animal::held(&ents, player, hand));
                         let r = if ents
                             .store
                             .get(target)
@@ -316,6 +323,13 @@ impl WorldMobs {
                                 sneaking,
                             )
                         };
+                        if r.consumes()
+                            && let Some(used) = used
+                        {
+                            view::fire(&mut ents, player, interacted, |ents| {
+                                Event::EntityItem(interacted, view::snapshot(ents, target), used)
+                            });
+                        }
                         if r == animal::Interaction::Success
                             && let Some(p) = ents.player_mut(player)
                         {
@@ -400,13 +414,15 @@ impl WorldMobs {
         dimension: &str,
         spawn_point: Option<BlockPos>,
     ) {
+        let env = environment(global, dimension, survival, self.seed);
+        // What random ticks read of this tick's environment (turtle eggs).
+        level.spawner_env.env = env;
         let Some(table) = self.table.clone() else {
             return;
         };
         let state = &global.level;
         let rules = state.rules().clone();
         let difficulty = state.difficulty();
-        let env = environment(global, dimension, survival, self.seed);
         // New chunks: their animals once they are live.
         level.chunks.take_generated(&mut self.scratch);
         self.generated
@@ -695,7 +711,7 @@ impl WorldMobs {
         }
         boss::wither::sweep_boss_bars(&mut self.cx, &ents, &mut survival.effects);
         // `rideTick`: passengers follow their vehicles; leads of knots and loaded mobs.
-        riding::position_all_riders(&mut ents);
+        riding::ride_tick(&mut ents);
         {
             let blocks = WorldBlocks(&level.chunks);
             let raining = |_| false;
@@ -1062,6 +1078,7 @@ fn environment(
             monster_light_test: if nether { (7, 7) } else { (0, 7) },
             ambient_light: if nether { 0.1 } else { 0.0 },
             has_ceiling: nether,
+            turtle_egg_hatch_chance: 0.002,
         };
     }
     let day = {
@@ -1245,9 +1262,10 @@ fn use_item(
     let creative = ents
         .player(player)
         .is_some_and(|p| p.game_mode == GameMode::Creative);
+    let item = stack.item;
     if name.ends_with("_boat") || name.ends_with("_raft") {
         let reach = if creative { 5.0 } else { 4.5 };
-        vehicle::use_boat_item(
+        if vehicle::use_boat_item(
             level,
             ents,
             network_ids,
@@ -1255,12 +1273,18 @@ fn use_item(
             &mut stack,
             creative,
             reach,
-        );
+        ) {
+            award_used(ents, player, item);
+        }
     } else if name == "minecraft:carrot_on_a_stick" || name == "minecraft:warped_fungus_on_a_stick"
     {
-        riding::boost(ents, env, player, &mut stack, creative);
+        // `FoodOnAStickItem.use` counts the use only when nothing was boosted.
+        if !riding::boost(ents, env, player, &mut stack, creative) {
+            award_used(ents, player, item);
+        }
     } else if vanillite_game::effect::thrown::kind_of(&stack).is_some() {
         vanillite_game::effect::thrown::throw(ents, env, network_ids, player, &mut stack, creative);
+        award_used(ents, player, item);
     } else {
         put_back(ents, player, hand, stack);
         vanillite_game::player::using::start(ents, env, player, hand);
@@ -1283,10 +1307,11 @@ fn use_item_on(
     difficulty: Difficulty,
 ) {
     let mut stack = take_held(ents, player, hand);
+    let before = stack.clone();
     let creative = ents
         .player(player)
         .is_some_and(|p| p.game_mode == GameMode::Creative);
-    if let Some(kind) = animal::spawn_egg_kind(&stack) {
+    let used = if let Some(kind) = animal::spawn_egg_kind(&stack) {
         animal::use_spawn_egg_on(
             level,
             ents,
@@ -1298,11 +1323,32 @@ fn use_item_on(
             &mut stack,
             creative,
             difficulty,
-        );
+        )
     } else if vanillite_game::item::item_id(&stack).name() == "minecraft:lead" {
-        tame::use_lead_on_fence(level, ents, env, player, pos);
+        tame::use_lead_on_fence(level, ents, env, player, pos)
     } else {
-        minecart::use_item_on(level, ents, network_ids, pos, &mut stack, creative);
-    }
+        minecart::use_item_on(level, ents, network_ids, pos, &mut stack, creative)
+    };
     put_back(ents, player, hand, stack);
+    if used && !before.is_empty() {
+        // `ItemStack.useOn` of a successful item interaction, then `ITEM_USED_ON_BLOCK` and
+        // `ANY_BLOCK_USE`.
+        award_used(ents, player, before.item);
+        if let Some(p) = ents.player_mut(player) {
+            use vanillite_game::advancements::trigger::Event;
+            p.advancements
+                .trigger(Event::ItemUsedOnBlock(pos, before.clone()));
+            p.advancements.trigger(Event::AnyBlockUse(pos, before));
+        }
+    }
+}
+
+/// `player.awardStat(Stats.ITEM_USED.get(item))`.
+fn award_used(ents: &mut Entities, player: EntityId, item: u16) {
+    if let Some(p) = ents.player_mut(player) {
+        p.stats.award(
+            vanillite_game::stats::Stat::of(vanillite_game::stats::StatType::Used, item),
+            1,
+        );
+    }
 }

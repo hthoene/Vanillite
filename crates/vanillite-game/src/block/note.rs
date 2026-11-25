@@ -23,7 +23,7 @@ pub(super) fn fill(block: BlockId, b: &mut BlockBehaviour) {
         b.use_item_on = Some(use_item_on);
         b.attack = Some(|level, state, pos, player| {
             play_note(level, Some(player), state, pos);
-            level.award_stat(player, Stat::custom_named("minecraft:play_noteblock"));
+            level.award_stat(player, crate::stats::custom::PLAY_NOTEBLOCK, 1);
         });
     }
 }
@@ -93,10 +93,7 @@ fn use_without_item(
     let state = state.with_index("note", (note + 1) % 25).unwrap_or(state);
     level.set_block_and_update(pos, state);
     play_note(level, Some(context.player), state, pos);
-    level.award_stat(
-        context.player,
-        Stat::custom_named("minecraft:tune_noteblock"),
-    );
+    level.award_stat(context.player, crate::stats::custom::TUNE_NOTEBLOCK, 1);
     Interaction::Success
 }
 

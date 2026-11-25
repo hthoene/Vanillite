@@ -50,6 +50,8 @@ pub struct ArrowData {
     pub in_ground_time: i32,
     /// The glowing ticks of a spectral arrow (`duration`).
     pub spectral_duration: i32,
+    /// The bow or crossbow it was shot from (`firedFromWeapon`).
+    pub weapon: Option<crate::item::ItemStack>,
 }
 
 impl ArrowData {
@@ -78,6 +80,7 @@ impl ArrowData {
             item,
             in_ground_time: 0,
             spectral_duration: 200,
+            weapon: None,
         }
     }
 
@@ -175,6 +178,7 @@ pub fn shoot_arrow(
     let (kind, item) = arrow_of(ammo);
     let mut data = ArrowData::shot(owner, 2.0, pickup, own.state(), item);
     data.crit = crit;
+    data.weapon = weapon.cloned();
     if let Some(w) = weapon {
         let combat = super::attack::combat_data();
         let (enchants, tags): (
@@ -476,6 +480,31 @@ pub fn tick_arrow(
                     crate::effect::living::add_to_entity(level, ents, env, cx, target, glowing);
                 } else {
                     crate::effect::cloud::arrow_hit(level, ents, env, cx, target, &a.item);
+                }
+                // `KILLED_BY_ARROW` of a player's arrow that killed what it hit (no piercing).
+                if let Some(player) = a.owner.filter(|&o| ents.player(o).is_some()) {
+                    let dead = ents.mob(target).map_or_else(
+                        || {
+                            ents.player(target)
+                                .is_some_and(|p| p.survival.is_dead_or_dying())
+                        },
+                        |m| !m.is_alive(),
+                    );
+                    if dead {
+                        use crate::advancements::{trigger, view};
+                        view::fire(
+                            ents,
+                            player,
+                            trigger::TriggerKind::KILLED_BY_ARROW,
+                            |ents| {
+                                trigger::Event::KilledByArrow(
+                                    view::snapshots(ents, &[target]),
+                                    1,
+                                    a.weapon.clone(),
+                                )
+                            },
+                        );
+                    }
                 }
                 if let Some(owner) = a.owner
                     && let Some(m) = ents.mob_mut(owner)

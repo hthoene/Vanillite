@@ -238,7 +238,7 @@ fn use_item_on(
     if fill_level < 7 {
         let new_state = add_layer(level, Some(ctx.player), state, pos, &provider);
         level.level_event(None, 1500, pos, i32::from(new_state != state));
-        level.award_stat(ctx.player, Stat::of(StatType::Used, stack.item));
+        level.award_stat(ctx.player, Stat::of(StatType::Used, stack.item), 1);
         stack.shrink(1);
     }
     ItemInteraction::Done(Interaction::Success)

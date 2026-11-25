@@ -86,7 +86,7 @@ fn flower_pot_use_item_on(
     }
     level.set_block_and_update(pos, pot.default_state());
     level.game_event_at(Some(ctx.player), events().block_change, pos);
-    level.award_stat(ctx.player, Stat::custom_named("minecraft:pot_flower"));
+    level.award_stat(ctx.player, Stat::custom_named("minecraft:pot_flower"), 1);
     if !ctx.infinite {
         stack.shrink(1);
     }
@@ -199,7 +199,7 @@ fn pumpkin_use_item_on(
         super::hurt_item(level, stack, 1);
     }
     level.game_event_at(Some(ctx.player), events().shear, pos);
-    level.award_stat(ctx.player, Stat::of(StatType::Used, items::SHEARS.0));
+    level.award_stat(ctx.player, Stat::of(StatType::Used, items::SHEARS.0), 1);
     ItemInteraction::Done(Interaction::Success)
 }
 

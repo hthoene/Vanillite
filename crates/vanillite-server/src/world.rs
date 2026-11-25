@@ -451,6 +451,10 @@ impl ServerWorld {
                 .auto_save
                 .load(std::sync::atomic::Ordering::Relaxed),
         );
+        if ctx.runs_normally {
+            // `ServerChunkCache.tick`: tickets that time out go first.
+            level.chunks.purge_stale_tickets();
+        }
         level.tick_chunk_runtime();
         level.post_process();
         if ctx.runs_normally {

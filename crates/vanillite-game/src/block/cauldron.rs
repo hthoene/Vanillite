@@ -202,8 +202,8 @@ fn bottle_used(
     used: vanillite_data::item::ItemId,
 ) {
     filled_result(level, ctx, stack, new, true);
-    level.award_stat(ctx.player, Stat::custom_named("minecraft:use_cauldron"));
-    level.award_stat(ctx.player, Stat::of(StatType::Used, used.0));
+    level.award_stat(ctx.player, Stat::custom_named("minecraft:use_cauldron"), 1);
+    level.award_stat(ctx.player, Stat::of(StatType::Used, used.0), 1);
 }
 
 /// `CauldronInteractions.fillBucket`: an empty bucket takes the cauldron's contents.
@@ -221,8 +221,8 @@ fn fill_bucket(
     }
     let used = item::item_id(stack);
     filled_result(level, ctx, stack, filled, true);
-    level.award_stat(ctx.player, Stat::custom_named("minecraft:use_cauldron"));
-    level.award_stat(ctx.player, Stat::of(StatType::Used, used.0));
+    level.award_stat(ctx.player, Stat::custom_named("minecraft:use_cauldron"), 1);
+    level.award_stat(ctx.player, Stat::of(StatType::Used, used.0), 1);
     level.set_block_and_update(pos, ids::CAULDRON.default_state());
     play(level, pos, sound);
     level.game_event_at(None, events().fluid_pickup, pos);
@@ -240,8 +240,8 @@ fn empty_bucket(
 ) -> ItemInteraction {
     let used = item::item_id(stack);
     filled_result(level, ctx, stack, ItemStack::new(items::BUCKET.0, 1), true);
-    level.award_stat(ctx.player, Stat::custom_named("minecraft:fill_cauldron"));
-    level.award_stat(ctx.player, Stat::of(StatType::Used, used.0));
+    level.award_stat(ctx.player, Stat::custom_named("minecraft:fill_cauldron"), 1);
+    level.award_stat(ctx.player, Stat::of(StatType::Used, used.0), 1);
     level.set_block_and_update(pos, new_state);
     play(level, pos, sound);
     level.game_event_at(None, events().fluid_place, pos);
@@ -264,7 +264,7 @@ fn dyed_item(
         // The stack itself changes, also in creative.
         level.player_effect(ctx.player, PlayerEffect::SetHand(stack.clone()));
     }
-    level.award_stat(ctx.player, Stat::custom_named("minecraft:clean_armor"));
+    level.award_stat(ctx.player, Stat::custom_named("minecraft:clean_armor"), 1);
     lower_fill_level(level, state, pos);
     ItemInteraction::Done(Interaction::Success)
 }
@@ -290,7 +290,7 @@ fn banner(
         Some(bytes) => cleaned.patch_mut().set(components::BANNER_PATTERNS, bytes),
     }
     filled_result(level, ctx, stack, cleaned, false);
-    level.award_stat(ctx.player, Stat::custom_named("minecraft:clean_banner"));
+    level.award_stat(ctx.player, Stat::custom_named("minecraft:clean_banner"), 1);
     lower_fill_level(level, state, pos);
     ItemInteraction::Done(Interaction::Success)
 }
@@ -334,10 +334,7 @@ fn shulker_box(
     let mut cleaned = stack.with_count(1);
     cleaned.item = items::SHULKER_BOX.0;
     filled_result(level, ctx, stack, cleaned, false);
-    level.award_stat(
-        ctx.player,
-        Stat::custom_named("minecraft:clean_shulker_box"),
-    );
+    level.award_stat(ctx.player, Stat::custom_named("minecraft:clean_shulker_box"), 1);
     lower_fill_level(level, state, pos);
     ItemInteraction::Done(Interaction::Success)
 }

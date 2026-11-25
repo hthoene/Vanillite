@@ -164,7 +164,7 @@ fn use_item_on(
             },
         );
     }
-    level.award_stat(ctx.player, Stat::custom_named("minecraft:play_record"));
+    level.award_stat(ctx.player, Stat::custom_named("minecraft:play_record"), 1);
     ItemInteraction::Done(Interaction::Success)
 }
 
