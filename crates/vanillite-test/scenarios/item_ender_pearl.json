@@ -1,0 +1,13 @@
+{
+  "description": "A player throws an ender pearl once its client counts as loaded (60 ticks): the throw, a second use on cooldown, the flight, and the teleport with 5 damage where the pearl was before it hit the ground.",
+  "rules": {"spawn_monsters": "false"},
+  "region": [[0, -61, 0], [31, -50, 15]],
+  "ticks": 74,
+  "entities": [
+    {"name": "steve", "type": "minecraft:player", "pos": [2.5, -60.0, 8.5], "rot": [-90, 0]}
+  ],
+  "actions": [
+    {"tick": 65, "op": "use_item", "entity": "steve", "item": "minecraft:ender_pearl", "count": 3},
+    {"tick": 70, "op": "use_item", "entity": "steve", "item": "minecraft:ender_pearl", "count": 3}
+  ]
+}

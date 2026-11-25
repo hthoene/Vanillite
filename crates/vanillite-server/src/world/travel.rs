@@ -6,7 +6,8 @@
 //! world loads the chunks its destination needs (the exit portal search, the End platform),
 //! then finds or builds the exit and places the player with the packets of a dimension
 //! change. A player that cannot arrive (a spectator without an exit portal) goes back.
-//! End gateways move players within their world.
+//! End gateways move players and other entities within their world. Ender pearls bring their
+//! owners over from other worlds.
 
 use std::sync::Arc;
 
@@ -15,8 +16,9 @@ use vanillite_base::{Aabb, BlockPos, ChunkPos, Vec3};
 use vanillite_config::GameMode;
 use vanillite_game::block::portal as portal_blocks;
 use vanillite_game::level::forced::SavedTickets;
+use vanillite_game::mob::fam::wildlife::ender_pearl;
 use vanillite_game::player::{Body, ChunkView, PlayerData, effective_view_distance, join};
-use vanillite_game::portal::{self, EntryPortal, PortalKind};
+use vanillite_game::portal::{self, EntryPortal, PearlArrival, PortalKind, TravelRequest};
 use vanillite_game::survival::rules::Rule;
 use vanillite_protocol::packets::play::clientbound::{
     Respawn, SetExperience, SetHeldSlot, relative,
@@ -93,6 +95,8 @@ enum Route {
     Respawn { keep_all: bool },
     /// Back to where it came from: its destination had no place for it.
     Back,
+    /// To where its ender pearl landed (`ThrownEnderpearl.onHit` across worlds).
+    Pearl(PearlArrival),
     /// `/tp` and `/teleport` into this world (`TeleportCommand.performTeleport`): to an exact
     /// place, without motion.
     Command { pos: Vec3, y_rot: f32, x_rot: f32 },
@@ -105,10 +109,10 @@ pub(crate) struct Waiting {
     area: Option<(ChunkPos, i32, TicketId)>,
 }
 
-/// A player in an End gateway waiting for the chunks the gateway's exit needs (Vanilla loads
+/// An entity in an End gateway waiting for the chunks the gateway's exit needs (Vanilla loads
 /// them on the spot).
 pub(crate) struct GatewayWait {
-    player: EntityId,
+    entity: EntityId,
     /// The gateway it entered.
     entry: BlockPos,
     /// The chunks requested so far, each with the ticket that loads it.
@@ -376,7 +380,7 @@ impl ServerWorld {
                 ),
                 1,
             )),
-            Route::Spawn | Route::Respawn { .. } | Route::Back => None,
+            Route::Spawn | Route::Respawn { .. } | Route::Back | Route::Pearl(_) => None,
         };
         let area = area.map(|(center, radius)| {
             let level = FULL_LEVEL.saturating_sub(u8::try_from(radius).unwrap_or(u8::MAX));
@@ -392,7 +396,8 @@ impl ServerWorld {
         self.place_arrivals(global);
         let mut waits = std::mem::take(&mut self.gateway_waits);
         waits.retain_mut(|wait| {
-            let done = self.level.entities.player(wait.player).is_none() || self.use_gateway(wait);
+            let done =
+                self.level.entities.store.get(wait.entity).is_none() || self.use_gateway(wait);
             if done {
                 for (_, ticket) in wait.tickets.drain(..) {
                     self.level.chunks.remove_ticket(ticket);
@@ -413,6 +418,148 @@ impl ServerWorld {
             keep
         });
         self.tickets_dirty |= self.portal_tickets.len() != before;
+        self.pearl_tickets
+            .retain(|_, &mut (until, ticket, simulation)| {
+                let keep = now < until;
+                if !keep {
+                    chunks.remove_ticket(ticket);
+                    chunks.remove_simulation_ticket(simulation);
+                }
+                keep
+            });
+    }
+
+    /// What the entities' tick asked of this world: portal and ender pearl tickets, gateway
+    /// exits to load, and pearl owners in other worlds.
+    pub(super) fn entity_travel(&mut self, ctx: &mut TickContext<'_>) {
+        for request in self.mobs.take_travel() {
+            match request {
+                TravelRequest::PortalTicket(pos) => self.place_portal_ticket(pos),
+                TravelRequest::PearlTicket(chunk) => self.place_pearl_ticket(chunk),
+                TravelRequest::Gateway { entity, entry } => self.enter_gateway(entity, entry),
+                TravelRequest::PearlOwner { owner, arrival } => {
+                    let Some(world) = ctx.global.players.world_of(Uuid(owner)) else {
+                        continue;
+                    };
+                    let Some(global) = ctx.global.arc() else {
+                        continue;
+                    };
+                    let target = self.id;
+                    if world == target {
+                        // The owner came here meanwhile; it travels like from another world.
+                        self.follow_pearl(&global, owner, target, arrival);
+                        continue;
+                    }
+                    ctx.in_world(world, move |w: &mut ServerWorld| {
+                        w.follow_pearl(&global, owner, target, arrival);
+                    });
+                }
+            }
+        }
+    }
+
+    /// `loadAndSpawnEnderPearls` of a joining player: each pearl into its world, with an
+    /// ender pearl ticket.
+    pub(crate) fn load_pearls(&mut self, global: &Global, pearls: Vec<vanillite_nbt::Compound>) {
+        for tag in pearls {
+            let dimension = match tag.get(ender_pearl::DIMENSION_TAG) {
+                Some(vanillite_nbt::Tag::String(d)) => d.clone(),
+                _ => continue,
+            };
+            if dimension == self.dimension {
+                self.load_pearl(&tag);
+                continue;
+            }
+            let Some(index) = crate::server::DIMENSIONS
+                .iter()
+                .position(|d| *d == dimension.as_str())
+                .and_then(|i| u16::try_from(i).ok())
+            else {
+                log::warn!(
+                    "Trying to load ender pearl without level ({dimension}) being loaded, skipping"
+                );
+                continue;
+            };
+            global.run_in_world(WorldId(index), move |world: &mut ServerWorld| {
+                world.load_pearl(&tag);
+            });
+        }
+    }
+
+    /// The ender pearls here of a player that died in another world vanish
+    /// (`ender_pearls_vanish_on_death`).
+    pub(crate) fn discard_pearls_of(&mut self, uuid: u128) {
+        let dead = self.level.entities.player_by_uuid(uuid).is_none_or(|id| {
+            self.level
+                .entities
+                .player(id)
+                .is_some_and(|p| p.survival.is_dead_or_dying() && !p.survival.portal.won_game)
+        });
+        if dead {
+            ender_pearl::take_owned(&mut self.level.entities, uuid, "");
+        }
+    }
+
+    /// The ender pearls here of a player that left from another world.
+    pub(crate) fn add_pearls_of(&mut self, uuid: u128) {
+        self.players.add_pearls(&mut self.level, uuid);
+    }
+
+    fn load_pearl(&mut self, tag: &vanillite_nbt::Compound) {
+        let network_ids = Arc::clone(self.level.network_ids_arc());
+        match ender_pearl::spawn_saved(&mut self.level.entities, &network_ids, tag) {
+            Some(chunk) => self.place_pearl_ticket(chunk),
+            None => log::warn!(
+                "Failed to spawn player ender pearl in level ({}), skipping",
+                self.dimension
+            ),
+        }
+    }
+
+    /// `ServerPlayer.placeEnderPearlTicket`: the chunks within 2 of `chunk` stay loaded and
+    /// ticking for 40 ticks (`TicketType.ENDER_PEARL`); placing it again extends it.
+    fn place_pearl_ticket(&mut self, chunk: ChunkPos) {
+        let until = self.ticks + ender_pearl::TICKET_TICKS;
+        if let Some(entry) = self.pearl_tickets.get_mut(&chunk) {
+            entry.0 = until;
+            return;
+        }
+        let level = FULL_LEVEL - u8::try_from(ender_pearl::TICKET_RADIUS).unwrap_or(0);
+        let chunks = &mut self.level.chunks;
+        let ticket = chunks.add_ticket(chunk, level);
+        let simulation = chunks.add_simulation_ticket(chunk, level);
+        self.pearl_tickets
+            .insert(chunk, (until, ticket, simulation));
+    }
+
+    /// `handlePortal` and `EndGatewayBlock.entityInside` of the item entities, which tick on
+    /// their own.
+    pub(super) fn item_portals(&mut self) {
+        let level = &mut self.level;
+        if !level.block_entities.has_gateways() && level.entities.portals.is_empty() {
+            return;
+        }
+        let in_end = self.dimension == END_DIMENSION;
+        let mut ents = std::mem::take(&mut level.entities);
+        let items: Vec<EntityId> = ents.items.iter().map(|(id, _)| id).collect();
+        let mut travel = Vec::new();
+        let mut taken = Vec::new();
+        for id in items {
+            portal::tick_portal(level, &mut ents, id, in_end, &mut travel);
+            portal::enter_gateway(level, &mut ents, id, &mut taken);
+        }
+        level.entities = ents;
+        for pos in taken {
+            let state = level.block(pos);
+            portal_blocks::trigger_gateway_cooldown(level, pos, state);
+        }
+        for request in travel {
+            match request {
+                TravelRequest::PortalTicket(pos) => self.place_portal_ticket(pos),
+                TravelRequest::Gateway { entity, entry } => self.enter_gateway(entity, entry),
+                TravelRequest::PearlTicket(_) | TravelRequest::PearlOwner { .. } => {}
+            }
+        }
     }
 
     fn place_arrivals(&mut self, global: &Global) {
@@ -464,6 +611,10 @@ impl ServerWorld {
     fn place(&mut self, global: &Global, mut traveller: Traveller) -> Option<Traveller> {
         let keep_all = match traveller.route {
             Route::Respawn { keep_all } => Some(keep_all),
+            _ => None,
+        };
+        let pearl = match traveller.route {
+            Route::Pearl(arrival) => Some((arrival, (traveller.pos, traveller.y_rot))),
             _ => None,
         };
         let landing = match self.landing(global, &traveller) {
@@ -668,6 +819,9 @@ impl ServerWorld {
         if let Some(pos) = landing.ticket {
             self.place_portal_ticket(pos);
         }
+        if let Some((arrival, from)) = pearl {
+            self.pearl_landed(global, id, arrival, from);
+        }
         None
     }
 
@@ -813,6 +967,14 @@ impl ServerWorld {
                     ticket: None,
                 })
             }
+            Route::Pearl(arrival) => Some(Landing {
+                pos: arrival.pos,
+                y_rot: 0.0,
+                x_rot: 0.0,
+                relatives: relative::Y_ROT | relative::X_ROT,
+                sound: false,
+                ticket: None,
+            }),
             &Route::Command { pos, y_rot, x_rot } => Some(Landing {
                 pos,
                 y_rot,
@@ -885,12 +1047,12 @@ impl ServerWorld {
     /// `EndGatewayBlock.getPortalDestination`: the player moves to the gateway's exit once the
     /// chunks it needs are loaded; a gateway in the End without an exit (from the dragon
     /// fight) gets one first.
-    fn enter_gateway(&mut self, id: EntityId, entry: BlockPos) {
-        if self.gateway_waits.iter().any(|w| w.player == id) {
+    pub(super) fn enter_gateway(&mut self, id: EntityId, entry: BlockPos) {
+        if self.gateway_waits.iter().any(|w| w.entity == id) {
             return;
         }
         let mut wait = GatewayWait {
-            player: id,
+            entity: id,
             entry,
             tickets: Vec::new(),
         };
@@ -936,53 +1098,119 @@ impl ServerWorld {
         let destination = portal_blocks::gateway(&self.level, wait.entry)
             .and_then(|gateway| portal_blocks::gateway_destination(&self.level, gateway));
         if let Some(pos) = destination {
-            self.teleport_through_gateway(wait.player, pos);
+            self.teleport_through_gateway(wait.entity, pos);
         }
         true
     }
 
-    /// The gateway's teleport within this world: to the bottom centre of `exit`, keeping
-    /// velocity and rotation, then `PLACE_PORTAL_TICKET`.
+    /// The gateway's teleport within this world: to the bottom centre of `exit`, players
+    /// keeping velocity and rotation, then `PLACE_PORTAL_TICKET`.
     fn teleport_through_gateway(&mut self, id: EntityId, exit: BlockPos) {
-        let pos = Vec3::new(
-            f64::from(exit.x) + 0.5,
-            f64::from(exit.y),
-            f64::from(exit.z) + 0.5,
+        let entities = &mut self.level.entities;
+        let pos = if entities.player(id).is_some() {
+            let pos = Vec3::new(
+                f64::from(exit.x) + 0.5,
+                f64::from(exit.y),
+                f64::from(exit.z) + 0.5,
+            );
+            let Some(pos) = vanillite_game::player::movement::teleport_within_world(
+                entities,
+                id,
+                pos,
+                0.0,
+                0.0,
+                KEEP_MOTION_AND_ROTATION,
+            ) else {
+                return;
+            };
+            pos
+        } else {
+            portal::teleport_through_gateway(entities, id, exit)
+        };
+        self.place_portal_ticket(containing(pos));
+    }
+
+    /// The player `uuid` of this world goes to `target`, where its ender pearl landed
+    /// (`isAllowedToTeleportOwner`: alive; `isAcceptingMessages`).
+    fn follow_pearl(
+        &mut self,
+        global: &Arc<Global>,
+        uuid: u128,
+        target: WorldId,
+        arrival: PearlArrival,
+    ) {
+        let Some(id) = self.level.entities.player_by_uuid(uuid) else {
+            return;
+        };
+        let allowed = self.level.entities.player(id).is_some_and(|p| {
+            !p.survival.is_dead_or_dying()
+                && !p.survival.portal.won_game
+                && !p.connection.sink.is_closed()
+        });
+        if !allowed {
+            return;
+        }
+        let Some(traveller) = self.take_player(id, Route::Pearl(arrival)) else {
+            return;
+        };
+        if target == self.id {
+            self.arrive(global, traveller);
+            return;
+        }
+        global.players.set_world(Uuid(traveller.uuid), target);
+        let global_arc = Arc::clone(global);
+        global.run_in_world(target, move |world: &mut ServerWorld| {
+            world.arrive(&global_arc, traveller);
+        });
+    }
+
+    /// The end of a player's trip to its ender pearl: the endermite where it was (in this
+    /// world, as Vanilla adds it to the pearl's level), the portal cooldown, then
+    /// [`ender_pearl::land`].
+    fn pearl_landed(
+        &mut self,
+        global: &Global,
+        id: EntityId,
+        arrival: PearlArrival,
+        from: (Vec3, f32),
+    ) {
+        let state = &global.level;
+        let rules = state.rules().clone();
+        let hooks = crate::plugins::Hooks::of(&global.plugins, &self.dimension);
+        let chunks = &self.level.chunks;
+        let blocks = crate::survival::WorldBlocks(chunks);
+        let (weather, climate) = (self.survival.weather, self.survival.climate().cloned());
+        let raining =
+            move |pos| crate::survival::raining_at(chunks, climate.as_deref(), &weather, pos);
+        let mut no_gateway = |_| false;
+        let dimension = self.dimension.clone();
+        let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
+        let mut env = self.survival.env(
+            state,
+            &rules,
+            &blocks,
+            &raining,
+            &dimension,
+            &mut no_gateway,
+            &hooks,
+            &names,
         );
         let entities = &mut self.level.entities;
-        let Some(entity) = entities.store.get(id) else {
-            return;
-        };
-        let rot = entity.rot();
-        let flags = entity.flags();
-        let mut body = Body {
-            pos: entity.pos(),
-            velocity: entity.velocity(),
-            y_rot: rot.y_rot,
-            x_rot: rot.x_rot,
-            on_ground: flags.contains(EntityFlags::ON_GROUND),
-            horizontal_collision: false,
-            fall_flying: flags.contains(EntityFlags::FALL_FLYING),
-        };
-        let Some(player) = entities.player_mut(id) else {
-            return;
-        };
-        let sink = Arc::clone(&player.connection.sink);
-        player.connection.movement.teleport_relative(
-            &mut body,
-            pos,
-            0.0,
-            0.0,
-            KEEP_MOTION_AND_ROTATION,
-            sink.as_ref(),
-        );
-        player.connection.movement.reset_position(body.pos);
-        player.survival.teleported();
-        if let Some(mut entity) = entities.store.get_mut(id) {
-            entity.set_pos(body.pos);
-            entity.set_velocity(body.velocity);
+        if arrival.endermite {
+            env.out.push(vanillite_game::survival::Effect::SpawnMob {
+                kind: vanillite_data::entity::ids::ENDERMITE,
+                pos: from.0,
+                y_rot: from.1,
+                velocity: Vec3::ZERO,
+            });
         }
-        self.place_portal_ticket(containing(body.pos));
+        if arrival.cooldown
+            && let Some(p) = entities.player_mut(id)
+        {
+            p.survival.portal.cooldown = portal::PLAYER_PORTAL_COOLDOWN;
+        }
+        ender_pearl::land(entities, &mut env, id);
+        self.survival.deliver(&mut self.level.entities, global);
     }
 }
 

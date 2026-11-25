@@ -17,12 +17,14 @@ use vanillite_game::minecart::{self, MinecartKind};
 use vanillite_game::mob::boss;
 use vanillite_game::mob::boss::dragon::{self, fight::DragonFight};
 use vanillite_game::mob::boss::special::{self, is_special_kind};
+use vanillite_game::mob::fam::wildlife::ender_pearl;
 use vanillite_game::mob::spawn::{self, SpawnInput, SpawnLimits, SpawnTable, Spawner};
 use vanillite_game::mob::{
     self, Environment, MobContext, MobSettings, WorldAction, animal, attack, combat, projectile,
     tame,
 };
 use vanillite_game::player::{EntityAction, VehicleInput};
+use vanillite_game::portal;
 use vanillite_game::riding;
 use vanillite_game::survival::blocks::BlockAccess;
 use vanillite_game::survival::damage::DamageSource;
@@ -32,6 +34,9 @@ use vanillite_protocol::packets::play::serverbound::Hand;
 use vanillite_world::entity::EntityId;
 
 use crate::global::Global;
+
+/// The End's dimension key.
+const END_DIMENSION: &str = "minecraft:the_end";
 use crate::survival::{WorldBlocks, WorldSurvival, raining_at};
 
 /// Block access without blocks, for effects applied after a tick.
@@ -344,6 +349,11 @@ impl WorldMobs {
         }
         self.cx.dragon_fight = Some(fight.view());
         self.store_fight();
+    }
+
+    /// What the entities' tick asked of the world (tickets, gateway exits, pearl owners).
+    pub(crate) fn take_travel(&mut self) -> Vec<vanillite_game::portal::TravelRequest> {
+        std::mem::take(&mut self.cx.travel)
     }
 
     /// Takes over changed rules (config reload).
@@ -801,6 +811,7 @@ impl WorldMobs {
         };
         let activation = f64::from(self.settings.activation_range);
         minecart::players_push(&mut level.entities);
+        let in_end = dimension == END_DIMENSION;
         let mut cursor = level.entities.store.tick_cursor();
         let mut tnt_left = self.settings.max_tnt_per_tick;
         let mut ents = std::mem::take(&mut level.entities);
@@ -835,11 +846,13 @@ impl WorldMobs {
                     }
                     *left -= 1;
                 }
+                portal::tick_portal(level, &mut ents, id, in_end, &mut self.cx.travel);
                 level.entities = ents;
                 vanillite_game::entities::tick_entity(level, id, kind);
                 self.apply_explosion_hurts(level, survival, global, dimension);
                 self.apply_actions(level, survival, global, dimension);
                 ents = std::mem::take(&mut level.entities);
+                portal::enter_gateway(level, &mut ents, id, &mut self.cx.gateways);
                 continue;
             }
             let is_mob = is_mob_kind(kind);
@@ -863,9 +876,11 @@ impl WorldMobs {
                 continue;
             }
             if kind == ids::EXPERIENCE_ORB {
+                portal::tick_portal(level, &mut ents, id, in_end, &mut self.cx.travel);
                 level.entities = ents;
                 vanillite_game::entities::tick_entity(level, id, kind);
                 ents = std::mem::take(&mut level.entities);
+                portal::enter_gateway(level, &mut ents, id, &mut self.cx.gateways);
                 continue;
             }
             if is_mob && activation > 0.0 && !self.ticks.is_multiple_of(20) {
@@ -882,6 +897,11 @@ impl WorldMobs {
                 if !near {
                     continue;
                 }
+            }
+            // Throwables handle portals inside their tick (`ThrowableProjectile.tick`).
+            let throwable = is_missile && ents.missile(id).is_some_and(|d| d.kind.is_throwable());
+            if !throwable {
+                portal::tick_portal(level, &mut ents, id, in_end, &mut self.cx.travel);
             }
             {
                 let blocks = WorldBlocks(&level.chunks);
@@ -934,6 +954,9 @@ impl WorldMobs {
                 self.apply_actions(level, survival, global, dimension);
                 ents = std::mem::take(&mut level.entities);
             }
+            if !throwable {
+                portal::enter_gateway(level, &mut ents, id, &mut self.cx.gateways);
+            }
             if ents.mob(id).is_some_and(|m| m.removed) {
                 ents.despawn(id);
             }
@@ -968,6 +991,11 @@ impl WorldMobs {
             }
         }
         level.entities = ents;
+        // `TheEndGatewayBlockEntity.triggerCooldown` of the gateways that took an entity.
+        for pos in std::mem::take(&mut self.cx.gateways) {
+            let state = level.block(pos);
+            vanillite_game::block::portal::trigger_gateway_cooldown(level, pos, state);
+        }
         vanillite_game::player::using::tick_brushes(level);
         survival.deliver(&mut level.entities, global);
     }
@@ -1520,8 +1548,8 @@ fn put_back(ents: &mut Entities, player: EntityId, hand: Hand, stack: ItemStack)
     }
 }
 
-/// `use_item` of the items that need entities: boats, the carrot on a stick, thrown potions,
-/// and items used over time.
+/// `use_item` of the items that need entities: boats, the carrot on a stick, ender pearls,
+/// thrown potions, and items used over time.
 fn use_item(
     level: &Level,
     ents: &mut Entities,
@@ -1566,6 +1594,8 @@ fn use_item(
         if !riding::boost(ents, env, player, &mut stack, creative) {
             award_used(ents, player, item);
         }
+    } else if name == ender_pearl::ITEM {
+        ender_pearl::throw(ents, env, network_ids, player, &mut stack, hand);
     } else if vanillite_game::effect::thrown::kind_of(&stack).is_some() {
         vanillite_game::effect::thrown::throw(ents, env, network_ids, player, &mut stack, creative);
         award_used(ents, player, item);

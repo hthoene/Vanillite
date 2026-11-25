@@ -1305,6 +1305,7 @@ pub fn die(
     let network_id = entity.as_ref().network_id().0;
     let uuid = entity.as_ref().uuid();
     let id = entity.as_ref().id();
+    env.out.push(Effect::PearlsVanish(uuid));
     let sink = std::sync::Arc::clone(&player.connection.sink);
     let mut broadcast = None;
     if env.rules.bool(Rule::SHOW_DEATH_MESSAGES) {

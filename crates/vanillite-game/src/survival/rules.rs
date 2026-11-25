@@ -120,6 +120,7 @@ impl Rule {
     pub const ADVANCE_WEATHER: Rule = Rule(1);
     pub const ALLOW_ENTERING_NETHER_USING_PORTALS: Rule = Rule(2);
     pub const DROWNING_DAMAGE: Rule = Rule(7);
+    pub const ENDER_PEARLS_VANISH_ON_DEATH: Rule = Rule(9);
     pub const ENTITY_DROPS: Rule = Rule(10);
     pub const FALL_DAMAGE: Rule = Rule(11);
     pub const FIRE_DAMAGE: Rule = Rule(12);
