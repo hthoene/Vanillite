@@ -133,7 +133,8 @@ pub mod custom {
     pub const TOTAL_WORLD_TIME: Stat = Stat::custom(2);
     pub const TIME_SINCE_DEATH: Stat = Stat::custom(3);
     pub const TIME_SINCE_REST: Stat = Stat::custom(4);
-    pub const SNEAK_TIME: Stat = Stat::custom(5);
+    /// `minecraft:sneak_time` (`Stats.CROUCH_TIME`).
+    pub const CROUCH_TIME: Stat = Stat::custom(5);
     pub const WALK_ONE_CM: Stat = Stat::custom(6);
     pub const CROUCH_ONE_CM: Stat = Stat::custom(7);
     pub const SPRINT_ONE_CM: Stat = Stat::custom(8);
