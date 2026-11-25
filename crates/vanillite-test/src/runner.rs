@@ -63,6 +63,9 @@ fn apply(
     if let Some(potion) = &op.throw_potion {
         return world.throw_potion(potion);
     }
+    if let Some(click) = &op.player_use {
+        return world.player_use(click);
+    }
     let updates = match op.kind {
         OpKind::Set => false,
         OpKind::Place => true,
@@ -72,6 +75,7 @@ fn apply(
         OpKind::Effect => return Err("effect without its effect".to_owned()),
         OpKind::Command => return Err("command without its line".to_owned()),
         OpKind::ThrowPotion => return Err("throw_potion without its potion".to_owned()),
+        OpKind::Use | OpKind::Attack => return Err("use without its click".to_owned()),
         OpKind::Force | OpKind::Unforce => {
             return world.set_forced(&op.chunks, op.kind == OpKind::Force);
         }

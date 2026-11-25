@@ -209,9 +209,12 @@ fn use_item_on(
     if state.flag("has_record") || !is_playable(stack) {
         return ItemInteraction::TryWithEmptyHand;
     }
-    // `consumeAndReturn(1, player)`: creative players keep the stack (the caller does not
-    // write it back).
-    let inserted = stack.split(1);
+    // `consumeAndReturn(1, player)`: creative players keep theirs.
+    let inserted = if ctx.infinite {
+        stack.with_count(1)
+    } else {
+        stack.split(1)
+    };
     if jukebox(level, pos).is_some() {
         set_the_item(level, pos, inserted);
         level.game_event_block(
@@ -220,6 +223,7 @@ fn use_item_on(
             GameEventContext::with_state(Some(ctx.player), state),
         );
     }
+    level.award_stat(ctx.player, crate::stats::custom::PLAY_RECORD, 1);
     ItemInteraction::Done(Interaction::Success)
 }
 

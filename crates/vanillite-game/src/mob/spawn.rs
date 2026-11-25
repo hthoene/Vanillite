@@ -12,7 +12,9 @@ use vanillite_world::entity::{EntityId, Rotation};
 
 use super::fam::{ExtraMob, GroupData, Relation, SpawnContext, SpawnReason};
 use super::kinds::{self, FarmClimate, Kind};
-use super::nearby::{CloseForSpawning, NearbyPlayers};
+use super::nearby::{
+    CloseForSpawning, NearbyPlayers, RADIUS, SPAWN_DISTANCE_SQR, chunk_center_distance_sqr,
+};
 use super::physics;
 use super::{Environment, MobData, max_local_raw_brightness};
 use crate::level::Level;
@@ -267,13 +269,96 @@ impl LocalCaps {
     }
 
     /// `canSpawn` for the players close to a chunk.
-    fn can_spawn(&self, c: Category, near: &[u32]) -> bool {
+    fn can_spawn(&self, c: Category, nearby: &NearbyPlayers, chunk: ChunkPos) -> bool {
         self.below[c.index()] > 0
-            && near
-                .iter()
-                .any(|&s| self.counts[s as usize][c.index()] < self.caps[c.index()])
+            && nearby.around(chunk).iter().any(|&s| {
+                self.counts[s as usize][c.index()] < self.caps[c.index()]
+                    && nearby.is_close_for_spawning(s, chunk)
+            })
+    }
+
+    /// The counts of every player in `nearby` (`addMob` for every counted mob): the mobs of
+    /// the chunks close enough for spawning to the player. The chunks close to a player form
+    /// one run of x per row of chunks, so the counts are prefix sums per row instead of every
+    /// mob's chunk times every close player.
+    fn count(
+        nearby: &NearbyPlayers,
+        mob_chunks: &FxHashMap<ChunkPos, [i32; 7]>,
+        caps: [i32; 7],
+    ) -> LocalCaps {
+        let mut rows: FxHashMap<i32, Vec<ChunkCounts>> = FxHashMap::default();
+        for (&chunk, &n) in mob_chunks {
+            rows.entry(chunk.z).or_default().push((chunk.x, n));
+        }
+        let mut rows: Vec<(i32, Vec<ChunkCounts>)> = rows.into_iter().collect();
+        rows.sort_unstable_by_key(|r| r.0);
+        for (_, row) in &mut rows {
+            row.sort_unstable_by_key(|e| e.0);
+            let mut sum = [0; 7];
+            for (_, n) in row.iter_mut() {
+                for (s, v) in sum.iter_mut().zip(n.iter_mut()) {
+                    *s += *v;
+                    *v = *s;
+                }
+            }
+        }
+        let mut local = LocalCaps {
+            counts: vec![[0; 7]; nearby.slot_count()],
+            below: [0; 7],
+            caps,
+        };
+        for (slot, pos, home) in nearby.players() {
+            let mut total = [0; 7];
+            let first = rows.partition_point(|r| r.0 < home.z - RADIUS);
+            let last = rows.partition_point(|r| r.0 <= home.z + RADIUS);
+            for (z, row) in rows.get(first..last).unwrap_or(&[]) {
+                let z = *z;
+                let close =
+                    |x| chunk_center_distance_sqr(ChunkPos::new(x, z), pos) < SPAWN_DISTANCE_SQR;
+                // The own column is the nearest one of the row.
+                if !close(home.x) {
+                    continue;
+                }
+                let dz = f64::from(z) * 16.0 + 8.0 - pos.z;
+                let half = (SPAWN_DISTANCE_SQR - dz * dz).max(0.0).sqrt();
+                #[allow(clippy::cast_possible_truncation)]
+                let guess = |x: f64| ((x - 8.0) / 16.0).floor() as i32;
+                let mut lo = guess(pos.x - half).clamp(home.x - RADIUS, home.x);
+                while lo < home.x && !close(lo) {
+                    lo += 1;
+                }
+                while lo > home.x - RADIUS && close(lo - 1) {
+                    lo -= 1;
+                }
+                let mut hi = guess(pos.x + half).clamp(home.x, home.x + RADIUS);
+                while hi > home.x && !close(hi) {
+                    hi -= 1;
+                }
+                while hi < home.x + RADIUS && close(hi + 1) {
+                    hi += 1;
+                }
+                let start = row.partition_point(|e| e.0 < lo);
+                let end = row.partition_point(|e| e.0 <= hi);
+                if end > start {
+                    let below = start.checked_sub(1).map_or([0; 7], |i| row[i].1);
+                    for ((t, a), b) in total.iter_mut().zip(row[end - 1].1).zip(below) {
+                        *t += a - b;
+                    }
+                }
+            }
+            local.counts[slot as usize] = total;
+            for c in Category::ALL {
+                if total[c.index()] < caps[c.index()] {
+                    local.below[c.index()] += 1;
+                }
+            }
+        }
+        local
     }
 }
+
+/// The chunk x of a row of chunks and the mob counts summed up to it.
+type ChunkCounts = (i32, [i32; 7]);
 
 /// `NaturalSpawner.SpawnState` of one tick.
 #[derive(Debug, Default)]
@@ -400,16 +485,11 @@ pub fn tick(
         spawner.chunks = chunks;
         return;
     }
-    let slots = spawner.nearby.slot_count();
     let mut state = SpawnState {
         // `getNaturalSpawnChunkCount`: chunks within 8 of a player chunk.
         spawnable_chunks: i32::try_from(spawner.nearby.chunk_count()).unwrap_or(i32::MAX),
         counts: [0; 7],
-        local: LocalCaps {
-            counts: vec![[0; 7]; slots],
-            below: [input.players.len(); 7],
-            caps: input.limits.caps,
-        },
+        local: LocalCaps::default(),
     };
     spawner.potential.charges.clear();
     spawner.mob_chunks.clear();
@@ -437,22 +517,8 @@ pub fn tick(
         state.counts[c.index()] += 1;
         spawner.mob_chunks.entry(chunk).or_insert([0; 7])[c.index()] += 1;
     }
-    // The local counts by chunk: the sums do not depend on the order.
-    for (&chunk, counts) in &spawner.mob_chunks {
-        let mut present = [(Category::Monster, 0); 7];
-        let mut len = 0;
-        for c in Category::ALL {
-            if counts[c.index()] != 0 {
-                present[len] = (c, counts[c.index()]);
-                len += 1;
-            }
-        }
-        for &slot in spawner.close.get(&spawner.nearby, chunk) {
-            for &(c, n) in &present[..len] {
-                state.local.add(slot, c, n);
-            }
-        }
-    }
+    // The local counts: the sums do not depend on the order.
+    state.local = LocalCaps::count(&spawner.nearby, &spawner.mob_chunks, input.limits.caps);
     let categories: Vec<Category> = Category::ALL
         .into_iter()
         .filter(|c| {
@@ -469,8 +535,7 @@ pub fn tick(
         }
         for &c in &categories {
             // `canSpawnForCategoryLocal`.
-            let near = spawner.close.get(&spawner.nearby, chunk);
-            if !state.local.can_spawn(c, near) {
+            if !state.local.can_spawn(c, &spawner.nearby, chunk) {
                 continue;
             }
             spawn_category_for_chunk(level, table, spawner, input, &mut state, c, chunk);

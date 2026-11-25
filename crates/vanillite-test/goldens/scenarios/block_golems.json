@@ -1,0 +1,16 @@
+{"format":1,
+"region":[[0,-61,0],[15,-56,15]],
+"palette":[
+"minecraft:grass_block[snowy=false]",
+"minecraft:air",
+"minecraft:snow_block",
+"minecraft:iron_block",
+"minecraft:exposed_copper",
+"minecraft:grass_block[snowy=true]",
+"minecraft:snow[layers=1]",
+"minecraft:exposed_copper_chest[facing=east,type=single,waterlogged=false]"],
+"frames":[
+{"tick":0,"blocks":[256,0,68,1,1,2,5,1,1,3,89,1,1,4,159,1,1,2,4,1,3,3,948,1],"block_ticks":[],"fluid_ticks":[],"entities":[],"level_rng":25214903917},
+{"tick":1,"changes":[[4,-61,4,5],[4,-60,4,6],[4,-59,4,1]],"block_ticks":[],"fluid_ticks":[],"entities":[["minecraft:snow_golem",4616752568008179712,-4589738007118374502,4616752568008179712,0,-4633058300709086167,0,{"rot":[0,0,0,0],"hp":1082130432,"rng":163509211818507,"goals":[],"targets":[]}]],"level_rng":25214903917},
+{"tick":2,"changes":[[4,-60,10,7]],"block_ticks":[],"fluid_ticks":[],"entities":[["minecraft:copper_golem",4616752568008179712,-4589878744606729830,4622100592565682176,0,-4633058300709086167,0,{"rot":[0,0,0,0],"hp":1094713344,"rng":252384339759878,"goals":[],"targets":[]}],["minecraft:snow_golem",4616752568008179712,-4589730970243956736,4616752568008179712,0,-4633058300709086167,0,{"rot":[0,0,0,0],"hp":1082130432,"rng":21395909740730,"goals":[],"targets":[]}]],"level_rng":67704983304270},
+{"tick":3,"changes":[[10,-60,4,1],[9,-59,4,1],[10,-59,4,1],[11,-59,4,1]],"block_ticks":[],"fluid_ticks":[],"entities":[["minecraft:copper_golem",4616752568008179712,-4589867710787428024,4622100592565682176,0,-4628611194182664847,0,{"rot":[0,0,0,0],"hp":1094713344,"rng":119108212784537,"goals":[],"targets":[]}],["minecraft:iron_golem",4622100592565682176,-4589738007118374502,4616752568008179712,0,-4633058300709086167,0,{"rot":[0,0,0,0],"hp":1120403456,"rng":199886566580254,"goals":[],"targets":[]}],["minecraft:snow_golem",4616752568008179712,-4589730970243956736,4616752568008179712,0,-4633058300709086167,0,{"rot":[0,0,0,0],"hp":1082130432,"rng":144026723940113,"goals":[],"targets":[]}]],"level_rng":67704983304270}]}

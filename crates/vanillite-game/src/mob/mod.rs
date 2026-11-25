@@ -15,6 +15,7 @@ pub mod common;
 pub mod equipment;
 pub mod fam;
 pub mod goals;
+pub mod golem_build;
 pub mod kinds;
 pub mod living;
 pub mod missile;
@@ -702,6 +703,9 @@ pub enum WorldAction {
     DestroyBlock(BlockPos, bool),
     /// `levelEvent(event, pos, data)`.
     LevelEvent(i32, BlockPos, i32),
+    /// `globalLevelEvent(event, pos, data)` (the `global_sound_events` rule decides who hears
+    /// it).
+    GlobalLevelEvent(i32, BlockPos, i32),
     /// `DoorBlock.setOpen(mob, level, state, pos, open)`.
     SetDoorOpen(BlockPos, bool, Option<EntityId>),
     /// A wind charge burst.
@@ -723,6 +727,8 @@ pub enum WorldAction {
     HopperMinecart(EntityId),
     /// `updateNeighbourForOutputSignal(pos, AIR)`: comparators re-read an item frame.
     OutputSignal(BlockPos),
+    /// A burning mob in a water or powder snow cauldron takes a level of it.
+    BurningInCauldron(BlockPos),
     /// `BellBlock.attemptToRing(entity, level, pos, null)`.
     RingBell(BlockPos, Option<EntityId>),
     /// `BoneMealItem.growCrop` on the block (a villager's bone meal).
@@ -768,6 +774,9 @@ impl WorldAction {
             WorldAction::LevelEvent(event, pos, data) => {
                 level.level_event(None, event, pos, data);
             }
+            WorldAction::GlobalLevelEvent(event, pos, data) => {
+                level.global_level_event(event, pos, data);
+            }
             WorldAction::EntityInside(pos, id) => {
                 if level.entities.store.contains(id) {
                     level.entity_inside(pos, id);
@@ -776,6 +785,9 @@ impl WorldAction {
             WorldAction::HopperMinecart(id) => crate::minecart::hopper_suck(level, id),
             WorldAction::OutputSignal(pos) => {
                 level.update_neighbour_for_output_signal(pos, vanillite_data::block::ids::AIR);
+            }
+            WorldAction::BurningInCauldron(pos) => {
+                crate::block::cauldron::burning_inside(level, pos)
             }
             WorldAction::RingBell(pos, entity) => {
                 crate::block::bell::attempt_to_ring(level, entity, pos, None);

@@ -122,6 +122,9 @@ pub struct Viewer {
     pub view_center: ChunkPos,
     /// The player's effective view distance in chunks.
     pub view_distance: i32,
+    /// Chebyshev distance from `view_center` below which every chunk was sent: the
+    /// tracker asks `chunk_pending` only from there (0 = ask always).
+    pub sent_radius: i32,
 }
 
 impl Viewer {
@@ -287,6 +290,18 @@ impl TrackerOutput {
     pub fn push_viewers(&mut self, viewers: impl IntoIterator<Item = EntityId>) -> ViewerSpan {
         let start = self.viewers.len();
         self.viewers.extend(viewers);
+        ViewerSpan {
+            start: u32::try_from(start).expect("tracker output full"),
+            len: u32::try_from(self.viewers.len() - start).expect("tracker output full"),
+        }
+    }
+
+    /// [`Self::push_viewers`] for a list and, if given, one more viewer: one copy of the
+    /// list's memory instead of one write per viewer.
+    pub fn push_viewer_list(&mut self, viewers: &[EntityId], and: Option<EntityId>) -> ViewerSpan {
+        let start = self.viewers.len();
+        self.viewers.extend_from_slice(viewers);
+        self.viewers.extend(and);
         ViewerSpan {
             start: u32::try_from(start).expect("tracker output full"),
             len: u32::try_from(self.viewers.len() - start).expect("tracker output full"),

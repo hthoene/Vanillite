@@ -250,6 +250,8 @@ pub struct Survival {
     pub carried_maps: Vec<i32>,
     /// The item in the main hand at the last tick (`lastItemInMainHand`).
     pub last_main_hand_item: u16,
+    /// `Abilities.flying`: the player flies (creative or spectator flight).
+    pub flying: bool,
     /// `raidOmenPosition` and what the omen effects see of villages and raids.
     pub raid_omen: crate::raid::PlayerOmen,
     /// The server moves the player itself (`canSimulateMovement` for a player no client
@@ -330,6 +332,7 @@ impl Default for Survival {
             cooldowns: crate::player::cooldowns::ItemCooldowns::default(),
             carried_maps: Vec::new(),
             last_main_hand_item: 0,
+            flying: false,
             raid_omen: crate::raid::PlayerOmen::default(),
             simulate_movement: false,
             y_body_rot: 0.0,
@@ -528,6 +531,9 @@ impl Survival {
             seed: int(data, "XpSeed").unwrap_or(0),
         };
         s.score = int(data, "Score").unwrap_or(0);
+        if let Some(Tag::Compound(abilities)) = data.get("abilities") {
+            s.flying = matches!(abilities.get("flying"), Some(Tag::Byte(b)) if *b != 0);
+        }
         s.warden_spawn_tracker = crate::block::sculk_shrieker::WardenSpawnTracker::load(
             data.get("warden_spawn_tracker"),
         );
@@ -1691,6 +1697,7 @@ pub fn do_tick_end(
                 entity,
                 player,
                 env,
+                players: None,
             };
             crate::effect::active::add(
                 &mut host,
