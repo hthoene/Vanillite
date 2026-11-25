@@ -163,6 +163,14 @@ packet_set! {
         EditBook(play::serverbound::EditBook),
         SelectBundleItem(play::serverbound::SelectBundleItem),
         PickItemFromEntity(play::serverbound::PickItemFromEntity),
+        PlayerAbilities(play::serverbound::PlayerAbilitiesServerbound),
+        ChangeDifficulty(play::serverbound::ChangeDifficultyServerbound),
+        LockDifficulty(play::serverbound::LockDifficulty),
+        ChangeGameMode(play::serverbound::ChangeGameMode),
+        SetGameRule(play::serverbound::SetGameRule),
+        BlockEntityTagQuery(play::serverbound::BlockEntityTagQuery),
+        EntityTagQuery(play::serverbound::EntityTagQuery),
+        TeleportToEntity(play::serverbound::TeleportToEntity),
     }
     unhandled Unhandled
 }

@@ -1397,6 +1397,12 @@ fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
             t.aabb().max_y,
             f64::from(feet.z),
         ));
+    if let Some(cauldron) = inside.cauldron
+        && t.mob_ref().fire_ticks > 0
+    {
+        t.cx.actions
+            .push(super::WorldAction::BurningInCauldron(cauldron));
+    }
     let m = t.mob();
     if (inside.water || in_rain) && m.fire_ticks > 0 {
         // `clearFire`.

@@ -37,6 +37,7 @@ pub struct ComponentPatch {
 
 impl ComponentPatch {
     /// Whether the patch changes nothing.
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.added.is_empty() && self.removed.is_empty()
     }
@@ -123,11 +124,13 @@ impl ItemStack {
     }
 
     /// `ItemStack.isEmpty`.
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.item == 0 || self.count <= 0
     }
 
     /// The component patch, if the stack has one.
+    #[inline]
     pub fn patch(&self) -> Option<&ComponentPatch> {
         self.patch.as_deref().filter(|p| !p.is_empty())
     }
@@ -143,6 +146,7 @@ impl ItemStack {
     }
 
     /// `ItemStack.isSameItemSameComponents`.
+    #[inline]
     pub fn same_item_same_components(&self, other: &ItemStack) -> bool {
         self.item == other.item && self.patch() == other.patch()
     }

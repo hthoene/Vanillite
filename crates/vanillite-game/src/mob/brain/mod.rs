@@ -165,8 +165,6 @@ pub struct Brain {
     running: Vec<u16>,
     /// Whether the behaviour being stopped timed out (`Behavior.timedOut` in `stop`).
     pub stop_timed_out: bool,
-    /// The random of the shuffled gates (`ShufflingList.random`), created on first use.
-    pub shuffle_random: Option<vanillite_base::random::LegacyRandom>,
 }
 
 impl Default for Brain {
@@ -185,7 +183,6 @@ impl Default for Brain {
             last_schedule_update: -9999,
             running: Vec::new(),
             stop_timed_out: false,
-            shuffle_random: None,
         }
     }
 }

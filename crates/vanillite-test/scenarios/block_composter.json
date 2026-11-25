@@ -1,0 +1,262 @@
+{
+  "description": "A player composts seeds and a pie (random layers from the level random) until the composter is ready, and takes bone meal out of a full composter.",
+  "tier": "fast",
+  "level_rng": true,
+  "player_state": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -57,
+      15
+    ]
+  ],
+  "ticks": 40,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        8
+      ],
+      "block": "minecraft:composter"
+    },
+    {
+      "op": "set",
+      "pos": [
+        10,
+        -60,
+        8
+      ],
+      "block": "minecraft:composter[level=8]"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        8.5,
+        -60,
+        8.5
+      ],
+      "rot": [
+        0,
+        0
+      ],
+      "seed": 1
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        6,
+        -60,
+        8
+      ],
+      "item": "minecraft:wheat_seeds",
+      "count": 40
+    },
+    {
+      "tick": 2,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        6,
+        -60,
+        8
+      ]
+    },
+    {
+      "tick": 3,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        6,
+        -60,
+        8
+      ]
+    },
+    {
+      "tick": 4,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        6,
+        -60,
+        8
+      ]
+    },
+    {
+      "tick": 5,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        6,
+        -60,
+        8
+      ]
+    },
+    {
+      "tick": 6,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        6,
+        -60,
+        8
+      ]
+    },
+    {
+      "tick": 7,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        6,
+        -60,
+        8
+      ]
+    },
+    {
+      "tick": 8,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        6,
+        -60,
+        8
+      ]
+    },
+    {
+      "tick": 9,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        6,
+        -60,
+        8
+      ]
+    },
+    {
+      "tick": 10,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        6,
+        -60,
+        8
+      ]
+    },
+    {
+      "tick": 11,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        6,
+        -60,
+        8
+      ]
+    },
+    {
+      "tick": 12,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        6,
+        -60,
+        8
+      ]
+    },
+    {
+      "tick": 13,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        6,
+        -60,
+        8
+      ]
+    },
+    {
+      "tick": 14,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        6,
+        -60,
+        8
+      ]
+    },
+    {
+      "tick": 15,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        6,
+        -60,
+        8
+      ]
+    },
+    {
+      "tick": 16,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        10,
+        -60,
+        8
+      ],
+      "item": "minecraft:air"
+    },
+    {
+      "tick": 17,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        6,
+        -60,
+        8
+      ],
+      "item": "minecraft:pumpkin_pie",
+      "count": 4
+    },
+    {
+      "tick": 18,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        6,
+        -60,
+        8
+      ]
+    },
+    {
+      "tick": 19,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        6,
+        -60,
+        8
+      ]
+    },
+    {
+      "tick": 20,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        6,
+        -60,
+        8
+      ]
+    }
+  ]
+}

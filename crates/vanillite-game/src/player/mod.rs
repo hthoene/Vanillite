@@ -25,8 +25,8 @@ pub mod world;
 
 pub use chunks::{ChunkSource, PlayerChunks};
 pub use connection::{
-    ChatContext, ChatRequest, Connection, EntityAction, Handled, PlayerChatState, PlayerState,
-    SignedCommand, VehicleInput, effective_view_distance,
+    AdminRequest, ChatContext, ChatRequest, Connection, EntityAction, Handled, PlayerChatState,
+    PlayerState, SignedCommand, VehicleInput, effective_view_distance,
 };
 pub use movement::{Body, Kick, MoveContext, MoveRequest, Movement};
 pub use sink::PacketSink;

@@ -169,6 +169,15 @@ impl PlayerInventory {
         }
     }
 
+    /// `Inventory.contains(stack)`: a stack of the same item and components anywhere.
+    pub fn contains(&self, stack: &ItemStack) -> bool {
+        self.items
+            .iter()
+            .chain(self.armor.iter())
+            .chain(std::iter::once(&self.offhand))
+            .any(|s| !s.is_empty() && s.same_item_same_components(stack))
+    }
+
     /// The selected hotbar stack (`getSelectedItem`).
     pub fn selected_item(&self) -> &ItemStack {
         self.get(self.selected)

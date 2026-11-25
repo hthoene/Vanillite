@@ -730,23 +730,10 @@ pub fn tick_death(t: &mut Tick<'_, '_>) -> bool {
         combat::award_experience(t.env, pos, amount);
     }
     if death_time == 1 && !t.mob_ref().silent {
-        // `globalLevelEvent(1028)`: the dragon's death sound for every player.
+        // `globalLevelEvent(1028)`: the dragon's death sound.
         let pos = t.block_pos();
-        let packet = vanillite_protocol::SharedPacket::of(
-            &vanillite_protocol::packets::play::clientbound::LevelEvent {
-                event: 1028,
-                pos: protocol_pos(pos),
-                data: 0,
-                global: true,
-            },
-        );
-        t.env.out.push(crate::survival::Effect::Nearby {
-            pos: t.pos(),
-            // Every player of this world (Vanilla: of the server).
-            range: 1.0e7,
-            except: None,
-            packet,
-        });
+        t.cx.actions
+            .push(crate::mob::WorldAction::GlobalLevelEvent(1028, pos, 0));
     }
     let delta = Vec3::new(0.0, f64::from(0.1_f32), 0.0);
     move_free(t, delta);
@@ -767,15 +754,6 @@ pub fn tick_death(t: &mut Tick<'_, '_>) -> bool {
         t.mob().removed = true;
     }
     true
-}
-
-/// A block position on the wire.
-pub(crate) fn protocol_pos(pos: BlockPos) -> vanillite_protocol::types::BlockPos {
-    vanillite_protocol::types::BlockPos {
-        x: pos.x,
-        y: pos.y,
-        z: pos.z,
-    }
 }
 
 /// `EnderDragon.hurt(part, source, damage)` up to `reallyHurt`: the damage the living entity
