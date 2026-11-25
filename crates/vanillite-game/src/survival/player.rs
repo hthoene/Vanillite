@@ -1682,8 +1682,7 @@ pub fn do_tick_end(
         stats.award(custom::CROUCH_TIME, 1);
     }
     stats.award(custom::TIME_SINCE_REST, 1);
-    let sink = std::sync::Arc::clone(&player.connection.sink);
-    player.survival.sync(sink.as_ref());
+    player.survival.sync(player.connection.sink.as_ref());
     result
 }
 

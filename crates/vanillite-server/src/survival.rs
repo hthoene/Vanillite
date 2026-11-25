@@ -608,6 +608,7 @@ impl WorldSurvival {
                             entity: viewer,
                             view_center: p.chunk_view.center,
                             view_distance: p.chunk_view.view_distance,
+                            sent_radius: 0,
                         }
                         .sees_chunk(chunk);
                         if sees && d.x * d.x + d.z * d.z <= range * range {
@@ -736,6 +737,7 @@ fn deliver_simple(effects: &[Effect], entities: &mut Entities, global: &Global) 
                         entity: id,
                         view_center: p.chunk_view.center,
                         view_distance: p.chunk_view.view_distance,
+                        sent_radius: 0,
                     }
                     .sees_chunk(chunk);
                     if (id == *entity && *with_self) || (id != *entity && sees) {

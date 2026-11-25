@@ -71,8 +71,9 @@ pub(crate) struct FanOut {
     codec: Codec,
     /// Runs: arena range and the index of the message whose viewers receive it.
     runs: Vec<(u32, u32, u32)>,
-    /// Viewer slot by entity index (`u32::MAX` = no viewer).
-    slot_of: Vec<u32>,
+    /// Generation and viewer slot by entity index (generation 0 = no viewer): one load per
+    /// viewer of a message.
+    slot_of: Vec<(u32, u32)>,
     /// Batches per job, by viewer slot.
     batches: Vec<Vec<Vec<u8>>>,
     /// Size of each batch at the last tick, by job and viewer slot: its capacity this tick.
@@ -98,19 +99,21 @@ impl FanOut {
             .map(|(_, player)| &player.connection.sink)
             .collect();
         let viewers_n = sinks.len();
-        self.slot_of.fill(u32::MAX);
+        self.slot_of.fill((0, u32::MAX));
         for (slot, (id, _)) in entities.players.iter().enumerate() {
             let index = id.raw().index() as usize;
             if self.slot_of.len() <= index {
-                self.slot_of.resize(index + 1, u32::MAX);
+                self.slot_of.resize(index + 1, (0, u32::MAX));
             }
-            self.slot_of[index] = u32::try_from(slot).unwrap_or(u32::MAX);
+            self.slot_of[index] = (
+                id.raw().generation(),
+                u32::try_from(slot).unwrap_or(u32::MAX),
+            );
         }
-        let ids: Vec<EntityId> = entities.players.iter().map(|(id, _)| id).collect();
         let slot_of = &self.slot_of;
         let slot = |viewer: &EntityId| -> usize {
             match slot_of.get(viewer.raw().index() as usize) {
-                Some(&s) if ids.get(s as usize) == Some(viewer) => s as usize,
+                Some(&(generation, s)) if generation == viewer.raw().generation() => s as usize,
                 _ => usize::MAX,
             }
         };
@@ -948,7 +951,7 @@ impl WorldPlayers {
         // Picked up stacks with a thrower: the picker, the thrower's UUID and `getItem()`.
         let mut thrown: Vec<(EntityId, u128, ItemStack)> = Vec::new();
         for (id, player) in players.iter_mut() {
-            let sink = Arc::clone(&player.connection.sink);
+            let sink = &player.connection.sink;
             if let Some(sequence) = player.connection.play.take_ack() {
                 sink.send(&BlockChangedAck { sequence });
             }

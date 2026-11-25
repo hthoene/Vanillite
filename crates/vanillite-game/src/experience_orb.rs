@@ -555,7 +555,7 @@ pub fn take_one(
 /// The orbs a player's pickup box touches, in entity order.
 pub fn touching(entities: &Entities, reach: &Aabb, out: &mut Vec<EntityId>) {
     out.clear();
-    entities.store.for_each_in(reach, false, |id| {
+    entities.store.for_each_non_player_in(reach, |id| {
         if entities.experience_orb(id).is_some_and(|d| d.count > 0) {
             out.push(id);
         }
