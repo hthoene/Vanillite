@@ -5,8 +5,7 @@
 //! kills the creaking, a heart that loses its creaking for too long forgets it.
 //!
 //! The creaking side (home position, damage transfer, tearing down) is in
-//! [`crate::mob::fam::mount::creaking`]. The trail particles are not sent (no particle packets
-//! yet); their random draws are made.
+//! [`crate::mob::fam::mount::creaking`].
 
 use std::collections::VecDeque;
 
@@ -651,7 +650,7 @@ fn spread_resin(level: &mut Level, start: BlockPos) -> Option<BlockPos> {
 }
 
 /// `emitParticles`: trail particles between the creaking and the heart (orange towards the
-/// creaking, grey towards the heart). Only their random draws are made.
+/// creaking, grey towards the heart).
 fn emit_particles(level: &mut Level, pos: BlockPos, count: i32, towards_creaking: bool) {
     let Some(id) = protector(level, pos) else {
         return;
@@ -659,24 +658,46 @@ fn emit_particles(level: &mut Level, pos: BlockPos, count: i32, towards_creaking
     let Some(b) = creaking_box(level, id) else {
         return;
     };
-    let _color = if towards_creaking {
+    let color = if towards_creaking {
         CREAKING_ORANGE
     } else {
         CREAKING_GRAY
     };
-    let r = level.random();
     for _ in 0..count {
-        let _source = Vec3::new(
+        let r = level.random();
+        let mut source = Vec3::new(
             b.min_x + r.next_double() * (b.max_x - b.min_x),
             b.min_y + r.next_double() * (b.max_y - b.min_y),
             b.min_z + r.next_double() * (b.max_z - b.min_z),
         );
-        let _destination = Vec3::new(
+        let mut destination = Vec3::new(
             f64::from(pos.x) + r.next_double(),
             f64::from(pos.y) + r.next_double(),
             f64::from(pos.z) + r.next_double(),
         );
-        let _duration = r.next_int_bounded(40) + 10;
+        if towards_creaking {
+            std::mem::swap(&mut source, &mut destination);
+        }
+        let duration = r.next_int_bounded(40) + 10;
+        // `TrailParticleOption(target, color, duration)`.
+        let mut options = Vec::with_capacity(32);
+        for v in [destination.x, destination.y, destination.z] {
+            options.extend_from_slice(&v.to_be_bytes());
+        }
+        options.extend_from_slice(&color.to_be_bytes());
+        vanillite_protocol::codec::write_varint(&mut options, duration);
+        let particle = crate::level::particles::Particle {
+            kind: i32::from(
+                vanillite_data::registry::PARTICLE_TYPE
+                    .id("minecraft:trail")
+                    .unwrap_or(0),
+            ),
+            options,
+        };
+        let mut packet = crate::level::particles::packet(particle, source, 1, Vec3::ZERO, 0.0);
+        packet.override_limiter = true;
+        packet.always_show = true;
+        level.send_particles_packet(packet);
     }
 }
 
