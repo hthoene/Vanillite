@@ -144,6 +144,10 @@ pub struct Metrics {
     /// Times from connect until every chunk within the view distance arrived, in
     /// milliseconds since the last report.
     pub full_view_ms: Mutex<Vec<f64>>,
+    /// Times from a chunk entering a bot's view (its position moved into the view distance)
+    /// until it arrived, in milliseconds since the last report; after the bot had its full
+    /// view once. Chunks that left the view before arriving count at the time they left.
+    pub chunk_ms: Mutex<Vec<f64>>,
     /// Round trips of `ping_request` in milliseconds since the last report.
     pub rtt_ms: Mutex<Vec<f64>>,
     /// Failure and disconnect reasons since the last report.
@@ -193,6 +197,7 @@ impl Metrics {
             "cpu_ticks": process_cpu_ticks(),
             "join_ms": take(&self.join_ms),
             "full_view_ms": take(&self.full_view_ms),
+            "chunk_ms": take(&self.chunk_ms),
             "rtt_ms": take(&self.rtt_ms),
             "errors": errors,
         })

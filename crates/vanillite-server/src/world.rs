@@ -73,6 +73,8 @@ pub struct ServerWorld {
     /// of players there: equal tickets at one chunk give the same levels as one, so dense
     /// players crossing chunks do not recompute the levels of their whole view.
     center_tickets: FxHashMap<ChunkPos, (u32, TicketId, TicketId)>,
+    /// Where the moving players' views head ([`Chunks::set_focus`]); reused per tick.
+    focus: Vec<ChunkPos>,
     scratch: Vec<ChunkPos>,
     /// Weather, lightning and the players' survival.
     pub(crate) survival: crate::survival::WorldSurvival,
@@ -177,6 +179,7 @@ impl ServerWorld {
             packets,
             updates: WorldUpdates::default(),
             player_tickets: FxHashMap::default(),
+            focus: Vec::new(),
             center_tickets: FxHashMap::default(),
             effects: LevelEffects::default(),
             item_random: XoroshiroRandom::new(seed),
@@ -257,6 +260,18 @@ impl ServerWorld {
                 release_center(chunks, centers, old);
             }
         }
+        // Moving views order the chunk work ahead of them first.
+        let focus = &mut self.focus;
+        focus.clear();
+        focus.extend(
+            self.level
+                .entities
+                .players
+                .iter()
+                .filter_map(|(_, player)| player.connection.chunks.focus())
+                .take(vanillite_world::chunks::MAX_FOCUS),
+        );
+        chunks.set_focus(focus);
         let entities = &self.level.entities;
         self.player_tickets.retain(|&id, &mut center| {
             let alive = entities.player(id).is_some();

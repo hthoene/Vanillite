@@ -453,6 +453,10 @@ pub(crate) struct WorldChunkSource<'a> {
 }
 
 impl ChunkSource for WorldChunkSource<'_> {
+    fn is_ready(&self, pos: ChunkPos) -> bool {
+        self.chunks.chunk(pos).is_some()
+    }
+
     fn chunk_packet(&self, pos: ChunkPos) -> Option<Arc<SharedPacket>> {
         if let Some(packet) = self.cache.borrow().get(&pos) {
             return Some(Arc::clone(packet));
