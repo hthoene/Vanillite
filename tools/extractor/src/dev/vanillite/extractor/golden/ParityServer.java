@@ -34,6 +34,7 @@ import net.minecraft.server.permissions.LevelBasedPermissionSet;
 import net.minecraft.server.permissions.PermissionSet;
 import net.minecraft.server.players.NameAndId;
 import net.minecraft.server.players.PlayerList;
+import net.minecraft.server.players.UserNameToIdResolver;
 import net.minecraft.util.Util;
 import net.minecraft.util.datafix.DataFixers;
 import net.minecraft.util.debugchart.LocalSampleLogger;
@@ -69,6 +70,28 @@ public final class ParityServer extends MinecraftServer {
 
   private final LocalSampleLogger sampleLogger = new LocalSampleLogger(1);
 
+  /** No name cache: scenario players are not remembered. */
+  private static final class NoNames implements UserNameToIdResolver {
+    @Override
+    public void add(NameAndId entry) {}
+
+    @Override
+    public Optional<NameAndId> get(String name) {
+      return Optional.empty();
+    }
+
+    @Override
+    public Optional<NameAndId> get(java.util.UUID id) {
+      return Optional.empty();
+    }
+
+    @Override
+    public void resolveOfflineUsers(boolean offline) {}
+
+    @Override
+    public void save() {}
+  }
+
   private ParityServer(
       Thread thread,
       LevelStorageSource.LevelStorageAccess access,
@@ -82,7 +105,7 @@ public final class ParityServer extends MinecraftServer {
         Optional.of(new GameRules(WorldDataConfiguration.DEFAULT.enabledFeatures())),
         Proxy.NO_PROXY,
         DataFixers.getDataFixer(),
-        new Services(null, null, null, null, null),
+        new Services(null, null, null, new NoNames(), null),
         LoggingLevelLoadListener.forDedicatedServer(),
         false,
         new NotificationManager());

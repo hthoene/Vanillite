@@ -1,7 +1,7 @@
 # Golden keys, written by `cargo xtask golden regen`. Do not edit.
 minecraft = "26.3"
 jar_sha1 = "33680f5f2ac32864d6d7cf5e56a705fdb3e05f4c"
-harness = 1
+harness = 2
 
 [entries]
 aquifer = "f203cc0ab7042d4fabdc15a0f0e489e8e6806f94"
