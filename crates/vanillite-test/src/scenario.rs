@@ -112,6 +112,8 @@
 //!   the players' food and hands to the frames.
 //! - `effect` action: `addEffect` on the entity `entity` with the mob effect `effect`,
 //!   `duration` ticks and `amplifier` (default 0).
+//! - `use_item` action: the player `entity` gets `count` (default 1) of the item `item` in its
+//!   main hand and uses it (`ServerPlayerGameMode.useItem`, as a `use_item` packet would).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -187,6 +189,8 @@ pub enum OpKind {
     Restart,
     /// A status effect on a scenario entity ([`Op::effect`]).
     Effect,
+    /// A player uses an item ([`Op::use_item`]).
+    UseItem,
     /// Bone meal used on the block at `pos` (an action).
     Bonemeal,
     /// A command run as the server at the origin ([`Op::command`]).
@@ -197,6 +201,16 @@ pub enum OpKind {
     Use,
     /// A player starts to break a block ([`Op::player_use`]).
     Attack,
+}
+
+/// The item use of a `use_item` action.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UseItemOp {
+    /// Name of the player.
+    pub entity: String,
+    /// Item id, e.g. `minecraft:ender_pearl`.
+    pub item: String,
+    pub count: i32,
 }
 
 /// The potion of a `throw_potion` action.
@@ -294,6 +308,8 @@ pub struct Op {
     pub hurt: Option<Hurt>,
     /// The effect of an `effect` action.
     pub effect: Option<EffectOp>,
+    /// The item use of a `use_item` action.
+    pub use_item: Option<UseItemOp>,
     /// The potion of a `throw_potion` action.
     pub throw_potion: Option<ThrowPotionOp>,
     /// The chunks of `force` and `unforce`.
@@ -590,6 +606,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
         Some("hurt") if action => OpKind::Hurt,
         Some("lightning") if action => OpKind::Lightning,
         Some("effect") if action => OpKind::Effect,
+        Some("use_item") if action => OpKind::UseItem,
         Some("throw_potion") if action => OpKind::ThrowPotion,
         Some("force") if action => OpKind::Force,
         Some("unforce") if action => OpKind::Unforce,
@@ -735,6 +752,23 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
                 effect: s("effect").ok_or("effect needs an effect")?,
                 duration: int("duration").ok_or("effect needs a duration")?,
                 amplifier: int("amplifier").unwrap_or(0),
+            }),
+            ..Op::default()
+        });
+    }
+    if kind == OpKind::UseItem {
+        let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
+        return Ok(Op {
+            tick,
+            kind,
+            use_item: Some(UseItemOp {
+                entity: s("entity").ok_or("use_item needs an entity")?,
+                item: s("item").ok_or("use_item needs an item")?,
+                count: v
+                    .get("count")
+                    .and_then(Value::as_i64)
+                    .and_then(|n| i32::try_from(n).ok())
+                    .unwrap_or(1),
             }),
             ..Op::default()
         });

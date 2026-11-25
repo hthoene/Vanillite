@@ -160,6 +160,9 @@ pub struct BlockEntities {
     next_ticker: u32,
     /// Game event listeners, of block entities and (later) entities.
     pub(super) listeners: GameEventListeners,
+    /// The number of loaded End gateways: entities look for gateways around them only while
+    /// there are any.
+    gateways: usize,
 }
 
 impl BlockEntities {
@@ -193,6 +196,11 @@ impl BlockEntities {
         self.chunks.is_empty()
     }
 
+    /// Whether an End gateway is loaded.
+    pub fn has_gateways(&self) -> bool {
+        self.gateways > 0
+    }
+
     /// `setBlockEntity` / `addAndRegisterBlockEntity`: replaces the block entity at `pos`; a
     /// ticking kind keeps the ticker slot of the one it replaces (`RebindableTickingBlockEntity
     /// Wrapper.rebind`) or gets a new one at the end of the tick order.
@@ -213,7 +221,17 @@ impl BlockEntities {
             (false, _) => None,
         };
         let new_listener = listener_of(pos, &entity);
-        if let Some(old) = entries.insert(pos, Entry { entity, ticker })
+        let gateway = matches!(entity, BlockEntity::EndGateway(_));
+        let old = entries.insert(pos, Entry { entity, ticker });
+        let old_gateway = matches!(
+            old,
+            Some(Entry {
+                entity: BlockEntity::EndGateway(_),
+                ..
+            })
+        );
+        self.gateways = self.gateways + usize::from(gateway) - usize::from(old_gateway);
+        if let Some(old) = old
             && let Some(listener) = listener_of(pos, &old.entity)
             && Some(listener) != new_listener
         {
@@ -234,6 +252,9 @@ impl BlockEntities {
             self.chunks.remove(&chunk);
         }
         self.touched.insert(chunk);
+        if matches!(removed.entity, BlockEntity::EndGateway(_)) {
+            self.gateways -= 1;
+        }
         if let Some(listener) = listener_of(pos, &removed.entity) {
             self.listeners.unregister(listener);
         }
@@ -257,6 +278,9 @@ impl BlockEntities {
     fn remove_chunk(&mut self, chunk: ChunkPos) {
         if let Some(entries) = self.chunks.remove(&chunk) {
             for (pos, entry) in entries {
+                if matches!(entry.entity, BlockEntity::EndGateway(_)) {
+                    self.gateways -= 1;
+                }
                 if let Some(listener) = listener_of(pos, &entry.entity) {
                     self.listeners.unregister(listener);
                 }
