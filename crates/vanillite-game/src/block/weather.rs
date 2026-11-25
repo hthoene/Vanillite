@@ -12,7 +12,7 @@ use vanillite_worldgen::behaviour::{PosExt, StateExt, with_properties_of};
 use vanillite_worldgen::biome::{BiomeManager, BiomeRegistry};
 
 use super::{drops, fluid, is_liquid};
-use crate::level::Level;
+use crate::level::{Level, update};
 
 /// The biomes of a world as far as the simulation needs them: temperatures for freezing.
 #[derive(Debug)]
@@ -178,17 +178,111 @@ fn should_freeze(level: &Level, biome_pos: BlockPos, pos: BlockPos) -> bool {
     !surrounded
 }
 
-/// `IceBlock.randomTick`: melts next to bright block light.
+/// `IceBlock.randomTick` (frosted ice too): melts next to bright block light.
 pub(super) fn ice_random_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
     if level.light(pos).1 > 11 - i32::from(state.light_dampening()) {
-        // `IceBlock.melt`; dimensions where water evaporates have no natural ice light.
-        if level.settings.water_evaporates {
-            level.remove_block(pos, false);
-        } else {
-            level.set_block_and_update(pos, ids::WATER.default_state());
-            level.neighbor_changed(pos, ids::WATER);
+        melt(level, state, pos);
+    }
+}
+
+/// `IceBlock.melt`: water, or nothing where water evaporates.
+fn melt(level: &mut Level, state: BlockState, pos: BlockPos) {
+    if level.settings.water_evaporates {
+        level.remove_block(pos, false);
+    } else {
+        level.set_block_and_update(pos, ids::WATER.default_state());
+        level.neighbor_changed(pos, ids::WATER);
+        level.game_event_block(
+            crate::level::game_event::events().block_destroy,
+            pos,
+            crate::level::game_event::GameEventContext::with_state(None, state),
+        );
+    }
+}
+
+/// `Mth.nextInt(random, min, max)` on the level random.
+fn next_int_between(level: &mut Level, min: i32, max: i32) -> i32 {
+    if min >= max {
+        min
+    } else {
+        level.random().next_int_bounded(max - min + 1) + min
+    }
+}
+
+/// `FrostedIceBlock.onPlace`.
+pub(super) fn frosted_ice_on_place(
+    level: &mut Level,
+    state: BlockState,
+    pos: BlockPos,
+    _old: BlockState,
+    _moved: bool,
+) {
+    let delay = next_int_between(level, 60, 120);
+    level.schedule_block_tick(pos, state.block(), delay);
+}
+
+/// `FrostedIceBlock.tick`: ages and melts in bright light, faster with few frosted neighbours.
+pub(super) fn frosted_ice_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
+    let block = state.block();
+    if level.random().next_int_bounded(3) == 0 || fewer_frosted_neighbours(level, pos, block, 4) {
+        // `getMaxLocalRawBrightness`; the End would use block light (no frosted ice there).
+        let brightness = level.max_local_raw_brightness(pos);
+        let age = state.int("age").unwrap_or(0);
+        if brightness > 11 - age - i32::from(state.light_dampening())
+            && slightly_melt(level, state, pos)
+        {
+            for direction in Direction::ALL {
+                let neighbour_pos = pos.relative(direction);
+                let neighbour = level.block(neighbour_pos);
+                if neighbour.is(block) && !slightly_melt(level, neighbour, neighbour_pos) {
+                    let delay = next_int_between(level, 20, 40);
+                    level.schedule_block_tick(neighbour_pos, block, delay);
+                }
+            }
+            return;
         }
     }
+    let delay = next_int_between(level, 20, 40);
+    level.schedule_block_tick(pos, block, delay);
+}
+
+/// `FrostedIceBlock.slightlyMelt`: one age older, or melted at age 3.
+fn slightly_melt(level: &mut Level, state: BlockState, pos: BlockPos) -> bool {
+    let age = state.int("age").unwrap_or(0);
+    if age < 3 {
+        level.set_block(pos, state.set_int("age", age + 1), update::CLIENTS);
+        false
+    } else {
+        melt(level, state, pos);
+        true
+    }
+}
+
+/// `FrostedIceBlock.neighborChanged`: melts once fewer than two frosted neighbours are left.
+pub(super) fn frosted_ice_neighbor_changed(
+    level: &mut Level,
+    state: BlockState,
+    pos: BlockPos,
+    source: BlockId,
+    _moved: bool,
+) {
+    if source == state.block() && fewer_frosted_neighbours(level, pos, source, 2) {
+        melt(level, state, pos);
+    }
+}
+
+/// `FrostedIceBlock.fewerNeigboursThan`.
+fn fewer_frosted_neighbours(level: &Level, pos: BlockPos, block: BlockId, limit: i32) -> bool {
+    let mut count = 0;
+    for direction in Direction::ALL {
+        if level.block(pos.relative(direction)).is(block) {
+            count += 1;
+            if count >= limit {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 /// `SnowLayerBlock.randomTick`: melts next to bright block light.
