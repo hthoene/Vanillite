@@ -17,19 +17,32 @@ pub enum EntityClass {
     Other,
 }
 
-/// The entities of one section, in insertion order (Vanilla keeps `ArrayList` order).
+/// Which entities of a section a query visits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Subset {
+    /// Every entity.
+    All,
+    /// Only players.
+    Players,
+    /// Everything but players.
+    Others,
+}
+
+/// The entities of one section, in insertion order (Vanilla keeps `ArrayList` order); the
+/// class lists keep that order too.
 #[derive(Debug, Default)]
 struct Section {
     all: Vec<EntityId>,
     players: Vec<EntityId>,
+    others: Vec<EntityId>,
 }
 
 impl Section {
-    fn list(&self, players_only: bool) -> &[EntityId] {
-        if players_only {
-            &self.players
-        } else {
-            &self.all
+    fn list(&self, subset: Subset) -> &[EntityId] {
+        match subset {
+            Subset::All => &self.all,
+            Subset::Players => &self.players,
+            Subset::Others => &self.others,
         }
     }
 }
@@ -38,14 +51,23 @@ impl Section {
 #[derive(Debug, Default)]
 pub struct SectionIndex {
     sections: FxHashMap<i64, Section>,
+    /// The Y of the non-empty sections of each chunk, ascending.
+    columns: FxHashMap<(i32, i32), Vec<i32>>,
 }
 
 impl SectionIndex {
     pub(super) fn insert(&mut self, section: SectionPos, class: EntityClass, id: EntityId) {
-        let entry = self.sections.entry(section.as_long()).or_default();
+        let entry = self.sections.entry(section.as_long()).or_insert_with(|| {
+            let ys = self.columns.entry((section.x, section.z)).or_default();
+            if let Err(index) = ys.binary_search(&section.y) {
+                ys.insert(index, section.y);
+            }
+            Section::default()
+        });
         entry.all.push(id);
-        if class == EntityClass::Player {
-            entry.players.push(id);
+        match class {
+            EntityClass::Player => entry.players.push(id),
+            EntityClass::Other => entry.others.push(id),
         }
     }
 
@@ -55,19 +77,49 @@ impl SectionIndex {
             return;
         };
         remove_ordered(&mut entry.all, id);
-        if class == EntityClass::Player {
-            remove_ordered(&mut entry.players, id);
+        match class {
+            EntityClass::Player => remove_ordered(&mut entry.players, id),
+            EntityClass::Other => remove_ordered(&mut entry.others, id),
         }
         if entry.all.is_empty() {
             self.sections.remove(&key);
+            let column = (section.x, section.z);
+            if let Some(ys) = self.columns.get_mut(&column) {
+                if let Ok(index) = ys.binary_search(&section.y) {
+                    ys.remove(index);
+                }
+                if ys.is_empty() {
+                    self.columns.remove(&column);
+                }
+            }
         }
+    }
+
+    /// The chunks with entities.
+    pub fn chunks(&self) -> impl Iterator<Item = (i32, i32)> + '_ {
+        self.columns.keys().copied()
+    }
+
+    /// The entities of a chunk, section by section from the bottom
+    /// (`getExistingSectionsInChunk`), each in section order.
+    pub fn in_chunk(&self, x: i32, z: i32) -> impl Iterator<Item = EntityId> + '_ {
+        self.columns
+            .get(&(x, z))
+            .into_iter()
+            .flatten()
+            .flat_map(move |&y| self.in_section(SectionPos::new(x, y, z), false).iter())
+            .copied()
     }
 
     /// The entities (or only the players) of one section.
     pub fn in_section(&self, section: SectionPos, players_only: bool) -> &[EntityId] {
-        self.sections
-            .get(&section.as_long())
-            .map_or(&[], |s| s.list(players_only))
+        self.sections.get(&section.as_long()).map_or(&[], |s| {
+            s.list(if players_only {
+                Subset::Players
+            } else {
+                Subset::All
+            })
+        })
     }
 
     /// Number of non-empty sections.
@@ -83,12 +135,7 @@ impl SectionIndex {
     /// Calls `f` for the entities of all sections near `aabb` in Vanilla's order
     /// (`forEachAccessibleNonEmptySection`: X ascending, then the packed section key, which
     /// orders Z and Y as unsigned fields). The caller filters by bounding box.
-    pub(super) fn for_each_near(
-        &self,
-        aabb: &Aabb,
-        players_only: bool,
-        mut f: impl FnMut(EntityId),
-    ) {
+    pub(super) fn for_each_near(&self, aabb: &Aabb, subset: Subset, mut f: impl FnMut(EntityId)) {
         let min_x = floor(aabb.min_x - 2.0) >> 4;
         let min_y = floor(aabb.min_y - 4.0) >> 4;
         let min_z = floor(aabb.min_z - 2.0) >> 4;
@@ -130,7 +177,7 @@ impl SectionIndex {
         keys.sort_unstable();
         for key in keys {
             if let Some(section) = self.sections.get(&key) {
-                section.list(players_only).iter().copied().for_each(&mut f);
+                section.list(subset).iter().copied().for_each(&mut f);
             }
         }
     }

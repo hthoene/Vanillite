@@ -80,6 +80,8 @@ pub(crate) struct WorldSurvival {
     player_range: i32,
     simulation_distance: i32,
     bolts: Vec<Bolt>,
+    /// Non-player entities lightning struck this tick (`thunderHit`), for the mob step.
+    pub(crate) struck: Vec<vanillite_world::entity::EntityId>,
     /// Candidate chunks left until the next lightning strike (geometric skip sampling).
     thunder_skip: f64,
     /// Players by chunk, rebuilt when effects are delivered.
@@ -216,6 +218,7 @@ impl WorldSurvival {
             simulation_distance: simulation_distance.max(1),
             bolts: Vec::new(),
             thunder_skip,
+            struck: Vec::new(),
             grid: FxHashMap::default(),
             scratch: Vec::new(),
         }
@@ -668,6 +671,7 @@ impl WorldSurvival {
         let raining = |pos| raining_at(chunks, climate.as_deref(), &weather, pos);
         let mut bolts = std::mem::take(&mut self.bolts);
         let mut hit = Vec::new();
+        let mut struck = std::mem::take(&mut self.struck);
         {
             let mut no_gateway = |_| false;
             let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
@@ -704,7 +708,7 @@ impl WorldSurvival {
                         p.z + 3.0,
                     );
                     hit.clear();
-                    entities.store.for_each_in(&area, true, |id| hit.push(id));
+                    entities.store.for_each_in(&area, false, |id| hit.push(id));
                     let Entities { store, players, .. } = &mut *entities;
                     for &id in &hit {
                         let Some(mut entity) = store.get_mut(id) else {
@@ -714,6 +718,13 @@ impl WorldSurvival {
                             continue;
                         }
                         let row = entity.as_ref().kind_row();
+                        if entity.as_ref().kind() != vanillite_data::entity::ids::PLAYER {
+                            // Mobs and other entities are struck in the mob step.
+                            if !struck.contains(&id) {
+                                struck.push(id);
+                            }
+                            continue;
+                        }
                         if let Some(data) = players.get_mut(row)
                             && data.survival.health > 0.0
                         {
@@ -725,6 +736,7 @@ impl WorldSurvival {
             });
         }
         self.bolts = bolts;
+        self.struck = struck;
         self.deliver(entities, global);
     }
 
@@ -820,7 +832,7 @@ impl WorldSurvival {
                         p.connection.sink.send_shared(packet);
                     }
                 }
-                Effect::DropItem { .. } => {}
+                Effect::DropItem { .. } | Effect::Experience { .. } => {}
             }
         }
         spawn_drops(&effects, entities, global);
@@ -919,15 +931,28 @@ fn deliver_simple(effects: &[Effect], entities: &mut Entities, global: &Global) 
                     p.connection.sink.send_shared(packet);
                 }
             }
-            Effect::DropItem { .. } => {}
+            Effect::DropItem { .. } | Effect::Experience { .. } => {}
         }
     }
     spawn_drops(effects, entities, global);
 }
 
-/// The item entities of [`Effect::DropItem`]s (`addFreshEntity`).
+/// The item entities of [`Effect::DropItem`]s (`addFreshEntity`) and the experience orbs of
+/// [`Effect::Experience`]s.
 fn spawn_drops(effects: &[Effect], entities: &mut Entities, global: &Global) {
     for effect in effects {
+        if let Effect::Experience { pos, amount } = effect {
+            vanillite_game::experience_orb::with_entity_random(|random| {
+                vanillite_game::experience_orb::award_in(
+                    entities,
+                    &global.network_ids,
+                    random,
+                    *pos,
+                    Vec3::default(),
+                    *amount,
+                );
+            });
+        }
         if let Effect::DropItem {
             uuid,
             pos,

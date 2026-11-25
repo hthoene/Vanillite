@@ -33,6 +33,7 @@ import net.minecraft.world.entity.ai.goal.GoalSelector;
 import net.minecraft.world.entity.ai.goal.WrappedGoal;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.entity.vehicle.minecart.AbstractMinecart;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.levelgen.LegacyRandomSource;
 import net.minecraft.world.level.pathfinder.Node;
@@ -130,6 +131,10 @@ final class ScenarioEntities {
     e.snapTo(p[0], p[1], p[2], rot(spec, 0), rot(spec, 1));
     e.setYHeadRot(rot(spec, 0));
     e.setYBodyRot(rot(spec, 0));
+    if (spec.has("motion")) {
+      double[] m = vec(spec.getAsJsonArray("motion"));
+      e.setDeltaMovement(m[0], m[1], m[2]);
+    }
     if (e instanceof Mob mob) {
       if (!spec.has("finalize") || spec.get("finalize").getAsBoolean()) {
         mob.finalizeSpawn(
@@ -192,6 +197,13 @@ final class ScenarioEntities {
           .append(BuiltInRegistries.ITEM.getKey(item.getItem().getItem()))
           .append("\",\"count\":")
           .append(item.getItem().getCount());
+    }
+    if (e instanceof AbstractMinecart cart) {
+      sb.append(",\"rot\":[")
+          .append(Float.floatToRawIntBits(cart.getYRot()))
+          .append(',')
+          .append(Float.floatToRawIntBits(cart.getXRot()))
+          .append(']');
     }
     if (e instanceof LivingEntity l) {
       sb.append(",\"rot\":[")

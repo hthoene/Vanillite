@@ -607,7 +607,7 @@ impl MenuSlots for PlayerInventory {
     fn on_take(
         &mut self,
         slot: usize,
-        _taken: &ItemStack,
+        _taken: &mut ItemStack,
         ctx: ClickContext,
         drops: &mut Vec<Drop>,
     ) {
@@ -702,10 +702,6 @@ pub fn destroy_speed(
 
 use vanillite_nbt::{Compound, List, Tag};
 
-/// Key of a stack's component patch in saved data: the patch in the delimited wire form.
-/// Vanilla readers ignore it and see the item and count.
-const PATCH_KEY: &str = "vanillite:patch";
-
 /// Equipment keys of Vanilla's `equipment` compound with their inventory index.
 const EQUIPMENT_KEYS: [(&str, usize); 5] = [
     ("feet", 36),
@@ -715,57 +711,7 @@ const EQUIPMENT_KEYS: [(&str, usize); 5] = [
     ("offhand", OFFHAND),
 ];
 
-pub(crate) fn stack_to_nbt(stack: &ItemStack) -> Compound {
-    let mut c = Compound::new();
-    c.insert(
-        "id",
-        vanillite_data::registry::ITEM
-            .name(stack.item)
-            .unwrap_or("minecraft:air"),
-    );
-    c.insert("count", stack.count);
-    if stack.patch().is_some() {
-        let mut bytes = Vec::new();
-        stack.encode_untrusted(&mut bytes);
-        // Drop the count and item id: only the patch is stored.
-        let mut r = vanillite_protocol::codec::Reader::new(&bytes);
-        if r.varint().is_ok() && r.varint().is_ok() {
-            let patch: Vec<i8> = r
-                .take_rest()
-                .iter()
-                .map(|b| i8::from_ne_bytes([*b]))
-                .collect();
-            c.insert(PATCH_KEY, patch);
-        }
-    }
-    c
-}
-
-pub(crate) fn stack_from_nbt(c: &Compound) -> ItemStack {
-    let Some(id) = c
-        .get("id")
-        .and_then(Tag::as_str)
-        .and_then(|n| vanillite_data::registry::ITEM.id(n))
-    else {
-        return ItemStack::EMPTY;
-    };
-    let count = c
-        .get("count")
-        .and_then(Tag::as_i64)
-        .and_then(|v| i32::try_from(v).ok())
-        .unwrap_or(1);
-    let plain = ItemStack::new(id, count.clamp(1, 99));
-    let Some(Tag::ByteArray(patch)) = c.get(PATCH_KEY) else {
-        return plain;
-    };
-    let mut bytes = Vec::with_capacity(patch.len() + 8);
-    vanillite_protocol::codec::write_varint(&mut bytes, plain.count);
-    vanillite_protocol::codec::write_varint(&mut bytes, i32::from(id));
-    bytes.extend(patch.iter().map(|b| b.to_ne_bytes()[0]));
-    let mut r = vanillite_protocol::codec::Reader::new(&bytes);
-    ItemStack::decode_untrusted(&mut r, &vanillite_protocol::item::InstalledRegistries)
-        .unwrap_or(plain)
-}
+pub use crate::item_nbt::{stack_from_nbt, stack_to_nbt};
 
 impl PlayerInventory {
     /// Writes Vanilla's `Inventory`, `SelectedItemSlot` and `equipment` into `out`.

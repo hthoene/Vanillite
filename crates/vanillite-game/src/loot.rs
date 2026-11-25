@@ -1,30 +1,36 @@
-//! Loot tables for block drops (Vanilla `LootTable`, 26.3 format).
+//! Loot tables (Vanilla `LootTable`, 26.3 format) of block drops, entity drops and containers.
 //!
-//! [`LootTables::load`] parses every `data/<ns>/loot_table/blocks/**.json` of the given packs once
-//! into a compact typed tree, together with the named predicates (`data/<ns>/predicate/`) and
-//! item modifiers (`data/<ns>/item_modifier/`) they may refer to. [`LootTables::block_drops`]
-//! then evaluates the table of a broken block state with Vanilla's rolls and formulas:
+//! [`LootTables::load`] parses every `data/<ns>/loot_table/{blocks,chests,archaeology,pots}/**.json`
+//! of the given packs once into a compact typed tree, together with the named predicates
+//! (`data/<ns>/predicate/`) and item modifiers (`data/<ns>/item_modifier/`) they may refer to.
+//! [`LootTables::block_drops`] evaluates the table of a broken block state, [`LootTables::roll`]
+//! any table against a [`LootContext`] and [`LootTables::fill`] fills a container like
+//! `LootTable.fill`, with Vanilla's rolls and formulas:
 //!
-//! - pools: `condition`, `modifier`, `rolls + floor(bonus_rolls * luck)` with luck 0; one roll
-//!   expands the entries (composite entries `alternatives`, `sequence`, `group`), keeps those with
-//!   a positive weight (`weight + quality * luck`) and picks one by weight;
+//! - pools: `condition`, `modifier`, `rolls + floor(bonus_rolls * luck)`; one roll expands the
+//!   entries (composite entries `alternatives`, `sequence`, `group`), keeps those with a
+//!   positive weight (`weight + quality * luck`) and picks one by weight;
 //! - entries: `item`, `tag`, `empty`, `loot_table` (other loaded tables or inline ones),
 //!   `dynamic` (block entity contents: none yet);
 //! - conditions: `survives_explosion`, `match_tool`, `match_block`, `table_bonus`,
 //!   `random_chance`, `random_chance_with_enchanted_bonus`, `inverted`, `any_of`, `all_of`,
 //!   `entity_properties` and `location_check` (best effort, see below), named predicates;
 //! - modifiers: `set_count`, `apply_bonus`, `explosion_decay`, `limit_count`, `copy_state`,
-//!   `sequence`, `discard`, named item modifiers; `copy_components`, `copy_name`,
-//!   `copy_custom_data` and `enchanted_count_increase` do nothing (no block entity data, no
-//!   attacking entity in block loot);
+//!   `sequence`, `discard`, `copy_components` and `copy_name` from the block entity,
+//!   `enchant_randomly`, `enchant_with_levels`, `set_enchantments`, `set_damage`, `set_name`,
+//!   `set_potion`, `set_stew_effect`, `set_instrument`, `set_ominous_bottle_amplifier`,
+//!   `filtered`, named item modifiers; `copy_custom_data` and `enchanted_count_increase` do
+//!   nothing (no attacking entity); `exploration_map` leaves the map empty (there is no
+//!   structure search yet, as if no structure were found: the tables then discard the map);
 //! - results larger than the item's max stack size are split as `LootTable.createStackSplitter`.
 //!
-//! The context has no level and no entity, so:
-//! - `entity_properties` on `this` with an empty predicate holds (the breaker or the explosion
-//!   source is assumed present); any non-empty entity predicate is unsupported;
+//! The context has no level access, so:
+//! - `entity_properties` on `this` with an empty predicate holds if the context has a breaker,
+//!   an explosion source, a `this` entity or entity loot parameters (`this_present`); any
+//!   non-empty entity predicate needs entity loot parameters;
 //! - `location_check` with only `block`/`fluid` predicates holds (the world is assumed
-//!   consistent, e.g. the other half of a double plant exists); other location predicates are
-//!   unsupported.
+//!   consistent, e.g. the other half of a double plant exists); `biomes` asks the context for
+//!   the biome at the origin; other location predicates are unsupported.
 //!
 //! Unsupported conditions evaluate to false, unsupported modifiers do nothing; each kind is
 //! logged once at load.
@@ -34,15 +40,14 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
+use vanillite_base::Vec3;
 use vanillite_base::random::RandomSource;
 use vanillite_data::block::{BLOCKS, BlockId, BlockState, PROPERTIES};
-use vanillite_data::item::{ITEMS, ItemId};
+use vanillite_data::item::{ITEMS, ItemId, ids as items};
 use vanillite_protocol::codec::{Reader, write_len, write_str};
 use vanillite_protocol::components::ids;
 use vanillite_protocol::item::ItemStack;
 
-/// The luck of block loot (no killer, no luck attribute).
-const LUCK: f32 = 0.0;
 /// Most nested tables, predicate and modifier references one evaluation follows (Vanilla
 /// detects reference cycles; this bounds them).
 const MAX_DEPTH: u32 = 32;
@@ -55,6 +60,10 @@ pub trait LootRandom {
     fn next_int(&mut self, bound: i32) -> i32;
     /// `nextFloat()`: uniform in `[0, 1)`.
     fn next_float(&mut self) -> f32;
+    /// `nextBoolean()` (the default equals it for `LegacyRandomSource`).
+    fn next_boolean(&mut self) -> bool {
+        self.next_int(2) == 1
+    }
 }
 
 impl<R: RandomSource> LootRandom for R {
@@ -64,6 +73,107 @@ impl<R: RandomSource> LootRandom for R {
 
     fn next_float(&mut self) -> f32 {
         RandomSource::next_float(self)
+    }
+
+    fn next_boolean(&mut self) -> bool {
+        RandomSource::next_boolean(self)
+    }
+}
+
+/// `Mth.nextInt(random, min, max)`.
+fn next_int_between(rng: &mut dyn LootRandom, min: i32, max: i32) -> i32 {
+    if min >= max {
+        return min;
+    }
+    match max.checked_sub(min).and_then(|d| d.checked_add(1)) {
+        Some(bound) => rng.next_int(bound).wrapping_add(min),
+        None => min,
+    }
+}
+
+/// The parameters of a loot roll (Vanilla `LootContextParams` and the context around them);
+/// every parameter is optional, as in Vanilla's parameter sets.
+pub struct LootContext<'a> {
+    /// `origin`.
+    pub origin: Option<Vec3>,
+    /// `this_entity` (the player opening a container, the brushing player, …).
+    pub this_entity: Option<vanillite_world::entity::EntityId>,
+    /// `block_state`.
+    pub block_state: Option<BlockState>,
+    /// `tool` (may be an empty stack).
+    pub tool: Option<&'a ItemStack>,
+    /// `explosion_radius`.
+    pub explosion_radius: Option<f32>,
+    /// The components of the block entity (`block_entity`, `collectComponents`), by component
+    /// type id, as wire values.
+    pub block_entity: Option<&'a dyn Fn(u16) -> Option<Box<[u8]>>>,
+    /// `LootParams.getLuck`.
+    pub luck: f32,
+    /// Enchantment level on the tool by enchantment id, e.g. `"minecraft:fortune"` → 3 (0 if
+    /// none).
+    pub enchantment_level: &'a dyn Fn(&str) -> i32,
+    /// Whether an item is in an item tag (tag id without '#').
+    pub item_in_tag: &'a dyn Fn(u16, &str) -> bool,
+    /// The enchantment registry (`enchant_randomly`, `enchant_with_levels`); without it these
+    /// modifiers do nothing.
+    pub enchanting: Option<&'a crate::enchant::Enchanting>,
+    /// Resolves a holder set entry of a registry (`"ns:id"` or `"#ns:tag"`) to registry ids in
+    /// Vanilla's order.
+    pub holder_set: &'a dyn Fn(&str, &str) -> Vec<u32>,
+    /// Whether the biome at the origin is the given biome (`"ns:id"` or `"#ns:tag"`), for
+    /// `location_check`; `None` without level access (the check fails).
+    pub biome: Option<&'a dyn Fn(&str) -> bool>,
+    /// Whether `this_entity` is set without an entity id: the breaker or the explosion source
+    /// of block loot (`Block.dropResources(..., breaker, tool)`).
+    pub this_present: bool,
+    /// The entity parameters of entity loot (`LootContextParamSets.ENTITY`).
+    pub entity: Option<&'a EntityLootContext<'a>>,
+}
+
+impl fmt::Debug for LootContext<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LootContext")
+            .field("origin", &self.origin)
+            .field("this_entity", &self.this_entity)
+            .field("block_state", &self.block_state)
+            .field("tool", &self.tool)
+            .field("explosion_radius", &self.explosion_radius)
+            .field("luck", &self.luck)
+            .finish_non_exhaustive()
+    }
+}
+
+fn no_enchantment(_: &str) -> i32 {
+    0
+}
+
+fn no_tag(_: u16, _: &str) -> bool {
+    false
+}
+
+fn no_holders(_: &str, _: &str) -> Vec<u32> {
+    Vec::new()
+}
+
+impl LootContext<'_> {
+    /// A context without any parameter.
+    pub fn empty() -> LootContext<'static> {
+        LootContext {
+            origin: None,
+            this_entity: None,
+            block_state: None,
+            tool: None,
+            explosion_radius: None,
+            block_entity: None,
+            luck: 0.0,
+            enchantment_level: &no_enchantment,
+            item_in_tag: &no_tag,
+            enchanting: None,
+            holder_set: &no_holders,
+            biome: None,
+            this_present: false,
+            entity: None,
+        }
     }
 }
 
@@ -79,9 +189,38 @@ pub struct BlockLootContext<'a> {
     pub item_in_tag: &'a dyn Fn(u16, &str) -> bool,
     /// Explosion radius if destroyed by an explosion (None for players).
     pub explosion_radius: Option<f32>,
+    /// Whether `THIS_ENTITY` is set for block loot: the breaker or the explosion source
+    /// (`Block.dropResources(..., breaker, tool)`); a block destroyed by a shape update has none.
+    pub this_present: bool,
+    /// The entity parameters of entity loot (`LootContextParamSets.ENTITY`); `None` for
+    /// block loot.
+    pub entity: Option<&'a EntityLootContext<'a>>,
     /// The components of the broken block's block entity (`collectComponents`), by component
     /// type id, as wire values; `None` without a block entity.
     pub block_entity: Option<&'a dyn Fn(u16) -> Option<Box<[u8]>>>,
+}
+
+/// The entity parameters of a loot context (`THIS_ENTITY`, `ATTACKING_ENTITY`,
+/// `DIRECT_ATTACKING_ENTITY`, `LAST_DAMAGE_PLAYER`, `DAMAGE_SOURCE`).
+pub struct EntityLootContext<'a> {
+    pub this: crate::predicate::EntityFacts,
+    pub attacker: Option<crate::predicate::EntityFacts>,
+    pub direct_attacker: Option<crate::predicate::EntityFacts>,
+    pub last_damage_player: Option<crate::predicate::EntityFacts>,
+    pub source: Option<crate::predicate::SourceFacts>,
+    pub types: &'a crate::survival::damage::DamageTypes,
+    pub tags: &'a dyn crate::predicate::EntityTags,
+    /// Enchantment level on the attacker's weapon by enchantment id (Looting).
+    pub attacker_enchantment_level: &'a dyn Fn(&str) -> i32,
+}
+
+impl fmt::Debug for EntityLootContext<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EntityLootContext")
+            .field("this", &self.this)
+            .field("attacker", &self.attacker)
+            .finish_non_exhaustive()
+    }
 }
 
 impl fmt::Debug for BlockLootContext<'_> {
@@ -113,9 +252,9 @@ pub struct LootTables {
 }
 
 impl LootTables {
-    /// Loads every `data/<ns>/loot_table/blocks/**.json` of the packs in `roots` (each root
-    /// contains `data/`; later roots override earlier ones). Broken tables are logged and
-    /// skipped.
+    /// Loads every `data/<ns>/loot_table/<kind>/**.json` of [`LOADED_KINDS`] of the packs in
+    /// `roots` (each root contains `data/`; later roots override earlier ones). Broken tables
+    /// are logged and skipped.
     pub fn load(roots: &[PathBuf]) -> LootTables {
         let mut table_files = BTreeMap::new();
         let mut predicate_files = BTreeMap::new();
@@ -133,9 +272,16 @@ impl LootTables {
                 .collect();
             namespaces.sort();
             for (ns, path) in namespaces {
+                for kind in LOADED_KINDS {
+                    collect_json(
+                        &path.join("loot_table").join(kind),
+                        &format!("{ns}:{kind}/"),
+                        &mut table_files,
+                    );
+                }
                 collect_json(
-                    &path.join("loot_table/blocks"),
-                    &format!("{ns}:blocks/"),
+                    &path.join("loot_table/entities"),
+                    &format!("{ns}:entities/"),
                     &mut table_files,
                 );
                 collect_json(
@@ -156,7 +302,7 @@ impl LootTables {
             read_files(&modifier_files),
         );
         log::debug!(
-            "loot tables: {} block tables, {} predicates, {} item modifiers",
+            "loot tables: {} tables, {} predicates, {} item modifiers",
             tables.tables.len(),
             tables.predicates.len(),
             tables.modifiers.len()
@@ -212,6 +358,51 @@ impl LootTables {
         else {
             return;
         };
+        let ctx = LootContext {
+            block_state: Some(ctx.state),
+            tool: Some(ctx.tool),
+            explosion_radius: ctx.explosion_radius,
+            block_entity: ctx.block_entity,
+            enchantment_level: ctx.enchantment_level,
+            item_in_tag: ctx.item_in_tag,
+            this_present: ctx.this_present,
+            entity: ctx.entity,
+            ..LootContext::empty()
+        };
+        let mut eval = Eval {
+            tables: self,
+            ctx: &ctx,
+            rng,
+            out,
+            post: Vec::new(),
+            depth: 0,
+        };
+        eval.table(table);
+    }
+
+    /// Whether the table `table_id` (e.g. `minecraft:chests/simple_dungeon`) is loaded.
+    pub fn contains(&self, table_id: &str) -> bool {
+        self.by_name.contains_key(table_id)
+    }
+
+    /// `LootTable.getRandomItems(context)`: the stacks of the table `table_id`, split by max
+    /// stack size, appended to `out` (an unknown table gives nothing, as Vanilla's empty
+    /// table).
+    pub fn roll(
+        &self,
+        table_id: &str,
+        ctx: &LootContext<'_>,
+        rng: &mut dyn LootRandom,
+        out: &mut Vec<ItemStack>,
+    ) {
+        let Some(table) = self
+            .by_name
+            .get(table_id)
+            .and_then(|&i| self.tables.get(usize::try_from(i).ok()?))
+        else {
+            log::warn!("loot tables: unknown loot table {table_id}");
+            return;
+        };
         let mut eval = Eval {
             tables: self,
             ctx,
@@ -221,6 +412,80 @@ impl LootTables {
             depth: 0,
         };
         eval.table(table);
+    }
+
+    /// `LootTable.fill(container, params, seed)` with the context's random `rng`: rolls the
+    /// table `table_id` and spreads the stacks over the empty slots of `items` in random order,
+    /// splitting stacks into the free slots (`shuffleAndSplitItems`).
+    pub fn fill(
+        &self,
+        table_id: &str,
+        ctx: &LootContext<'_>,
+        rng: &mut dyn LootRandom,
+        items: &mut [ItemStack],
+    ) {
+        let mut stacks = Vec::new();
+        self.roll(table_id, ctx, rng, &mut stacks);
+        // `getAvailableSlots`.
+        let mut slots: Vec<usize> = items
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.is_empty())
+            .map(|(i, _)| i)
+            .collect();
+        shuffle(&mut slots, rng);
+        shuffle_and_split(&mut stacks, slots.len(), rng);
+        for stack in stacks {
+            let Some(slot) = slots.pop() else {
+                log::warn!("Tried to over-fill a container");
+                return;
+            };
+            if let Some(target) = items.get_mut(slot) {
+                *target = stack;
+            }
+        }
+    }
+
+    /// Drops of the loot table `table` (e.g. `minecraft:entities/cow`) for an entity loot
+    /// context; a missing table drops nothing. Appends to `out`.
+    pub fn table_drops(
+        &self,
+        table: &str,
+        ctx: &BlockLootContext<'_>,
+        rng: &mut dyn LootRandom,
+        out: &mut Vec<ItemStack>,
+    ) {
+        let Some(table) = self
+            .by_name
+            .get(table)
+            .and_then(|&i| self.tables.get(usize::try_from(i).ok()?))
+        else {
+            return;
+        };
+        let ctx = LootContext {
+            block_state: ctx.state.is_valid().then_some(ctx.state),
+            explosion_radius: ctx.explosion_radius,
+            block_entity: ctx.block_entity,
+            enchantment_level: ctx.enchantment_level,
+            item_in_tag: ctx.item_in_tag,
+            this_present: ctx.this_present,
+            entity: ctx.entity,
+            ..LootContext::empty()
+        };
+        let mut eval = Eval {
+            tables: self,
+            ctx: &ctx,
+            rng,
+            out,
+            post: Vec::new(),
+            depth: 0,
+        };
+        eval.table(table);
+    }
+
+    /// Whether a table with this id is loaded.
+    pub fn has_table(&self, table: &str) -> bool {
+        self.by_name.contains_key(table)
     }
 
     /// Builds the set from parsed JSON files: `(id, file content or read error)`.
@@ -350,6 +615,58 @@ impl LootTables {
     }
 }
 
+/// The loot table directories [`LootTables::load`] reads.
+pub const LOADED_KINDS: [&str; 4] = ["blocks", "chests", "archaeology", "pots"];
+
+/// `Util.shuffle(list, random)`.
+fn shuffle<T>(list: &mut [T], rng: &mut dyn LootRandom) {
+    for i in (2..=list.len()).rev() {
+        let bound = i32::try_from(i).unwrap_or(i32::MAX);
+        let to = usize::try_from(rng.next_int(bound)).unwrap_or(0);
+        list.swap(i - 1, to);
+    }
+}
+
+/// `LootTable.shuffleAndSplitItems`: splits stacks of more than one item while there are more
+/// free slots than stacks, then shuffles.
+fn shuffle_and_split(result: &mut Vec<ItemStack>, available: usize, rng: &mut dyn LootRandom) {
+    let mut splittable = Vec::new();
+    let mut kept = Vec::with_capacity(result.len());
+    for stack in result.drain(..) {
+        if stack.is_empty() {
+            continue;
+        }
+        if stack.count > 1 {
+            splittable.push(stack);
+        } else {
+            kept.push(stack);
+        }
+    }
+    *result = kept;
+    while available.saturating_sub(result.len() + splittable.len()) > 0 && !splittable.is_empty() {
+        let last = i32::try_from(splittable.len() - 1).unwrap_or(0);
+        let index = usize::try_from(next_int_between(rng, 0, last)).unwrap_or(0);
+        if index >= splittable.len() {
+            break;
+        }
+        let mut stack = splittable.remove(index);
+        let remove = next_int_between(rng, 1, stack.count / 2);
+        let copy = stack.split(remove);
+        if stack.count > 1 && rng.next_boolean() {
+            splittable.push(stack);
+        } else {
+            result.push(stack);
+        }
+        if copy.count > 1 && rng.next_boolean() {
+            splittable.push(copy);
+        } else {
+            result.push(copy);
+        }
+    }
+    result.append(&mut splittable);
+    shuffle(result, rng);
+}
+
 /// Adds every `*.json` below `dir` as `<prefix><relative path without .json>`.
 pub(crate) fn collect_json(dir: &Path, prefix: &str, out: &mut BTreeMap<String, PathBuf>) {
     fn walk(dir: &Path, rel: &str, prefix: &str, out: &mut BTreeMap<String, PathBuf>) {
@@ -464,6 +781,29 @@ enum Cond {
     },
     MatchTool(Option<Box<ItemPredicate>>),
     MatchBlock(Box<BlockPredicate>),
+    /// `location_check` with `biomes`: holder set entries (`id` or `#tag`).
+    Biome(Box<[Box<str>]>),
+    /// `entity_properties` with a non-empty predicate (entity loot).
+    Entity(EntityTarget, Box<crate::predicate::EntityPredicate>),
+    /// `entity_properties` on `this` with an empty predicate.
+    ThisPresent,
+    KilledByPlayer,
+    DamageSource(Box<crate::predicate::DamageSourcePredicate>),
+    /// `random_chance_with_enchanted_bonus`.
+    EnchantedChance {
+        enchantment: Box<str>,
+        unenchanted: f32,
+        enchanted: crate::enchant::LevelBased,
+    },
+}
+
+/// `LootContext.EntityTarget`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EntityTarget {
+    This,
+    Attacker,
+    DirectAttacker,
+    AttackingPlayer,
 }
 
 #[derive(Debug)]
@@ -471,6 +811,8 @@ struct ItemPredicate {
     items: Option<ItemSet>,
     count: Bounds,
     enchantments: Box<[EnchantmentPredicate]>,
+    /// Component types that must be present (`AnyValue` predicates).
+    present: Box<[u16]>,
 }
 
 #[derive(Debug)]
@@ -537,8 +879,55 @@ enum FuncKind {
         properties: Box<[Box<str>]>,
     },
     Discard,
+    /// `enchanted_count_increase`: Looting adds `count × level` items.
+    EnchantedCountIncrease {
+        enchantment: Box<str>,
+        count: FloatProvider,
+        limit: i32,
+    },
+    /// `furnace_smelt`: the smelted item (the cooked meats).
+    FurnaceSmelt,
     /// `copy_components` / `copy_name` from the block entity: component type ids.
     CopyComponents(Box<[u16]>),
+    /// `enchant_randomly`: `options` holder set entries (all enchantments if `None`).
+    EnchantRandomly {
+        options: Option<Box<[Box<str>]>>,
+        only_compatible: bool,
+    },
+    /// `enchant_with_levels`.
+    EnchantWithLevels {
+        levels: IntProvider,
+        options: Option<Box<[Box<str>]>>,
+    },
+    /// `set_enchantments`: enchantment ids with their level providers.
+    SetEnchantments {
+        enchantments: Box<[(Box<str>, IntProvider)]>,
+        add: bool,
+    },
+    /// `set_damage`.
+    SetDamage {
+        damage: FloatProvider,
+        add: bool,
+    },
+    /// `set_name`: the component type (`custom_name` or `item_name`) and the encoded text.
+    SetName {
+        target: u16,
+        name: Option<Box<[u8]>>,
+    },
+    /// `set_potion`: the `minecraft:potion` id.
+    SetPotion(u32),
+    /// `set_stew_effect`: `(mob effect id, duration, instantaneous)`.
+    SetStewEffect(Box<[(u32, IntProvider, bool)]>),
+    /// `set_instrument`: holder set entries of `minecraft:instrument`.
+    SetInstrument(Box<[Box<str>]>),
+    /// `set_ominous_bottle_amplifier`.
+    SetOminousBottleAmplifier(IntProvider),
+    /// `filtered`.
+    Filtered {
+        filter: Option<Box<ItemPredicate>>,
+        on_pass: Option<Box<Func>>,
+        on_fail: Option<Box<Func>>,
+    },
     Noop,
 }
 
@@ -594,6 +983,23 @@ impl Table {
             }
         }
     }
+}
+
+/// The smelting result of the items mob loot smelts (`furnace_smelt` without recipes).
+fn smelted(item: u16) -> Option<u16> {
+    const PAIRS: [(&str, &str); 8] = [
+        ("minecraft:beef", "minecraft:cooked_beef"),
+        ("minecraft:porkchop", "minecraft:cooked_porkchop"),
+        ("minecraft:chicken", "minecraft:cooked_chicken"),
+        ("minecraft:mutton", "minecraft:cooked_mutton"),
+        ("minecraft:rabbit", "minecraft:cooked_rabbit"),
+        ("minecraft:cod", "minecraft:cooked_cod"),
+        ("minecraft:salmon", "minecraft:cooked_salmon"),
+        ("minecraft:potato", "minecraft:baked_potato"),
+    ];
+    let name = ITEMS.get(usize::from(item))?.name;
+    let cooked = PAIRS.iter().find(|(raw, _)| *raw == name)?.1;
+    vanillite_data::registry::ITEM.id(cooked)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -887,15 +1293,12 @@ impl Parser<'_> {
             "minecraft:random_chance" => {
                 Cond::RandomChance(self.float_provider(field(o, "chance")?)?)
             }
-            "minecraft:random_chance_with_enchanted_bonus" => {
-                // The enchantment is read from the attacking entity, which block loot never has.
-                string(field(o, "enchantment")?)?;
-                field(o, "enchanted_chance")?;
-                Cond::RandomChance(FloatProvider::Const(float(field(
-                    o,
-                    "unenchanted_chance",
-                )?)?))
-            }
+            "minecraft:random_chance_with_enchanted_bonus" => Cond::EnchantedChance {
+                enchantment: qualify(string(field(o, "enchantment")?)?).into(),
+                unenchanted: float(field(o, "unenchanted_chance")?)?,
+                enchanted: crate::enchant::LevelBased::parse(field(o, "enchanted_chance")?)
+                    .ok_or("unsupported `enchanted_chance`")?,
+            },
             "minecraft:table_bonus" => {
                 let chances = field(o, "chances")?
                     .as_array()
@@ -923,22 +1326,28 @@ impl Parser<'_> {
                 None => Cond::Const(false),
             },
             "minecraft:entity_properties" => {
-                let target = string(field(o, "entity")?)?;
+                let target = match string(field(o, "entity")?)? {
+                    "this" => EntityTarget::This,
+                    "attacker" => EntityTarget::Attacker,
+                    "direct_attacker" => EntityTarget::DirectAttacker,
+                    "attacking_player" => EntityTarget::AttackingPlayer,
+                    other => return Err(format!("unknown entity target {other}")),
+                };
                 match o.get("predicate") {
-                    None => Cond::Const(true),
-                    Some(p) if target != "this" => {
-                        object(p)?;
-                        // Block loot has no other entity than `this`.
-                        Cond::Const(false)
+                    None => Cond::ThisPresent,
+                    Some(p) if target == EntityTarget::This && object(p)?.is_empty() => {
+                        Cond::ThisPresent
                     }
-                    Some(p) if object(p)?.is_empty() => Cond::Const(true),
                     Some(p) => {
-                        let keys: Vec<&str> = object(p)?.keys().map(String::as_str).collect();
-                        self.unsupported(format!(
-                            "entity_properties predicate with {} (false)",
-                            keys.join(", ")
-                        ));
-                        Cond::Const(false)
+                        let predicate = crate::predicate::EntityPredicate::parse(p);
+                        if predicate.unsupported {
+                            let keys: Vec<&str> = object(p)?.keys().map(String::as_str).collect();
+                            self.unsupported(format!(
+                                "entity_properties predicate with {} (false)",
+                                keys.join(", ")
+                            ));
+                        }
+                        Cond::Entity(target, Box::new(predicate))
                     }
                 }
             }
@@ -949,11 +1358,15 @@ impl Parser<'_> {
                     let other: Vec<&str> = p
                         .keys()
                         .map(String::as_str)
-                        .filter(|k| *k != "block" && *k != "fluid")
+                        .filter(|k| !matches!(*k, "block" | "fluid" | "biomes"))
                         .collect();
                     if other.is_empty() {
-                        // No level access: the neighbourhood is assumed to be as Vanilla left it.
-                        Cond::Const(true)
+                        match p.get("biomes") {
+                            Some(b) => Cond::Biome(holder_entries(b)?),
+                            // No level access: the neighbourhood is assumed to be as Vanilla
+                            // left it.
+                            None => Cond::Const(true),
+                        }
                     } else {
                         self.unsupported(format!(
                             "location_check predicate with {} (false)",
@@ -963,9 +1376,15 @@ impl Parser<'_> {
                     }
                 }
             },
-            // Block loot has no killer and no damage source.
-            "minecraft:killed_by_player" | "minecraft:damage_source_properties" => {
-                Cond::Const(false)
+            "minecraft:killed_by_player" => Cond::KilledByPlayer,
+            "minecraft:damage_source_properties" => {
+                let p = crate::predicate::DamageSourcePredicate::parse(
+                    o.get("predicate").unwrap_or(&Value::Null),
+                );
+                if p.unsupported {
+                    self.unsupported("damage_source_properties predicate part (false)".into());
+                }
+                Cond::DamageSource(Box::new(p))
             }
             other => {
                 self.unsupported(format!("condition {other} (false)"));
@@ -986,11 +1405,22 @@ impl Parser<'_> {
             return Ok(None);
         }
         let mut enchantments = Vec::new();
+        let mut present = Vec::new();
         if let Some(p) = o.get("predicates") {
             for (key, value) in object(p)? {
-                if qualify(key) != "minecraft:enchantments" {
-                    self.unsupported(format!("item predicate {key} (false)"));
-                    return Ok(None);
+                let name = qualify(key);
+                if name != "minecraft:enchantments" {
+                    // A component type that is no predicate type: `AnyValue`.
+                    match vanillite_data::registry::DATA_COMPONENT_TYPE.id(&name) {
+                        Some(id) if !COMPONENT_PREDICATE_TYPES.contains(&name.as_str()) => {
+                            present.push(id);
+                            continue;
+                        }
+                        _ => {
+                            self.unsupported(format!("item predicate {key} (false)"));
+                            return Ok(None);
+                        }
+                    }
                 }
                 for e in value
                     .as_array()
@@ -1023,6 +1453,7 @@ impl Parser<'_> {
             items,
             count,
             enchantments: enchantments.into(),
+            present: present.into(),
         }))
     }
 
@@ -1167,6 +1598,12 @@ impl Parser<'_> {
             }
             "minecraft:sequence" => FuncKind::Sequence(self.func_list(field(o, "functions")?)?),
             "minecraft:discard" => FuncKind::Discard,
+            "minecraft:enchanted_count_increase" => FuncKind::EnchantedCountIncrease {
+                enchantment: qualify(string(field(o, "enchantment")?)?).into(),
+                count: self.float_provider(field(o, "count")?)?,
+                limit: o.get("limit").map(int).transpose()?.unwrap_or(0),
+            },
+            "minecraft:furnace_smelt" => FuncKind::FurnaceSmelt,
             "minecraft:copy_components"
                 if o.get("source").and_then(Value::as_str) == Some("block_entity") =>
             {
@@ -1191,11 +1628,105 @@ impl Parser<'_> {
                     vanillite_protocol::components::ids::CUSTOM_NAME,
                 ]))
             }
-            // The killer never exists for blocks.
-            "minecraft:copy_components"
-            | "minecraft:copy_name"
-            | "minecraft:copy_custom_data"
-            | "minecraft:enchanted_count_increase" => FuncKind::Noop,
+            "minecraft:enchant_randomly" => FuncKind::EnchantRandomly {
+                options: o.get("options").map(holder_entries).transpose()?,
+                only_compatible: o
+                    .get("only_compatible")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true),
+            },
+            "minecraft:enchant_with_levels" => FuncKind::EnchantWithLevels {
+                levels: self.int_provider(field(o, "levels")?)?,
+                options: o.get("options").map(holder_entries).transpose()?,
+            },
+            "minecraft:set_enchantments" => {
+                let mut enchantments = Vec::new();
+                if let Some(map) = o.get("enchantments") {
+                    for (id, level) in object(map)? {
+                        enchantments.push((qualify(id).into(), self.int_provider(level)?));
+                    }
+                }
+                FuncKind::SetEnchantments {
+                    enchantments: enchantments.into(),
+                    add: o.get("add").and_then(Value::as_bool).unwrap_or(false),
+                }
+            }
+            "minecraft:set_damage" => FuncKind::SetDamage {
+                damage: self.float_provider(field(o, "damage")?)?,
+                add: o.get("add").and_then(Value::as_bool).unwrap_or(false),
+            },
+            "minecraft:set_name" => {
+                let target = match o.get("target").and_then(Value::as_str) {
+                    None | Some("custom_name") => ids::CUSTOM_NAME,
+                    Some("item_name") => ids::ITEM_NAME,
+                    Some(other) => return Err(format!("unknown set_name target {other}")),
+                };
+                let name = o.get("name").map(|n| {
+                    let mut out = Vec::new();
+                    vanillite_protocol::codec::Encode::encode(
+                        &vanillite_protocol::text::Component::from_json(n),
+                        &mut out,
+                    );
+                    out.into_boxed_slice()
+                });
+                FuncKind::SetName { target, name }
+            }
+            "minecraft:set_potion" => {
+                let name = qualify(string(field(o, "id")?)?);
+                let id = vanillite_data::registry::POTION
+                    .id(&name)
+                    .ok_or_else(|| format!("unknown potion {name}"))?;
+                FuncKind::SetPotion(u32::from(id))
+            }
+            "minecraft:set_stew_effect" => {
+                let mut effects = Vec::new();
+                for e in o
+                    .get("effects")
+                    .and_then(Value::as_array)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default()
+                {
+                    let e = object(e)?;
+                    let name = qualify(string(field(e, "type")?)?);
+                    let id = vanillite_data::registry::MOB_EFFECT
+                        .id(&name)
+                        .ok_or_else(|| format!("unknown mob effect {name}"))?;
+                    // `MobEffect.isInstantaneous`: `InstantenousMobEffect` subclasses.
+                    let instantaneous = matches!(
+                        name.as_str(),
+                        "minecraft:instant_health"
+                            | "minecraft:instant_damage"
+                            | "minecraft:saturation"
+                    );
+                    effects.push((
+                        u32::from(id),
+                        self.int_provider(field(e, "duration")?)?,
+                        instantaneous,
+                    ));
+                }
+                FuncKind::SetStewEffect(effects.into())
+            }
+            "minecraft:set_instrument" => {
+                FuncKind::SetInstrument(holder_entries(field(o, "options")?)?)
+            }
+            "minecraft:set_ominous_bottle_amplifier" => {
+                FuncKind::SetOminousBottleAmplifier(self.int_provider(field(o, "amplifier")?)?)
+            }
+            "minecraft:filtered" => {
+                let filter = self.item_predicate(field(o, "item_filter")?)?.map(Box::new);
+                let on_pass = o.get("on_pass").map(|f| self.func(f)).transpose()?;
+                let on_fail = o.get("on_fail").map(|f| self.func(f)).transpose()?;
+                FuncKind::Filtered {
+                    filter,
+                    on_pass: on_pass.map(Box::new),
+                    on_fail: on_fail.map(Box::new),
+                }
+            }
+            // No structure search: the map stays empty, as when Vanilla finds no structure.
+            "minecraft:exploration_map" => FuncKind::Noop,
+            "minecraft:copy_components" | "minecraft:copy_name" | "minecraft:copy_custom_data" => {
+                FuncKind::Noop
+            }
             other => {
                 self.unsupported(format!("modifier {other} (does nothing)"));
                 FuncKind::Noop
@@ -1237,6 +1768,37 @@ impl Parser<'_> {
             other => return Err(format!("unsupported float provider {other}")),
         })
     }
+}
+
+/// The types of `minecraft:data_component_predicate_type` (component predicates with fields;
+/// other component type names are `AnyValue` checks).
+const COMPONENT_PREDICATE_TYPES: [&str; 15] = [
+    "minecraft:damage",
+    "minecraft:enchantments",
+    "minecraft:stored_enchantments",
+    "minecraft:potion_contents",
+    "minecraft:custom_data",
+    "minecraft:container",
+    "minecraft:bundle_contents",
+    "minecraft:firework_explosion",
+    "minecraft:fireworks",
+    "minecraft:writable_book_content",
+    "minecraft:written_book_content",
+    "minecraft:attribute_modifiers",
+    "minecraft:trim",
+    "minecraft:jukebox_playable",
+    "minecraft:villager/variant",
+];
+
+/// A holder set (`RegistryCodecs.holderSet`): `"id"`, `"#tag"` or a list of ids, qualified.
+fn holder_entries(v: &Value) -> Res<Box<[Box<str>]>> {
+    if let Some(tag) = v.as_str().and_then(|s| s.strip_prefix('#')) {
+        return Ok(Box::new([format!("#{}", qualify(tag)).into()]));
+    }
+    compact_list(v)
+        .into_iter()
+        .map(|e| string(e).map(|s| qualify(s).into()))
+        .collect()
 }
 
 /// The values of `block`'s property `name`, in Vanilla's order.
@@ -1293,7 +1855,7 @@ enum Leaf<'t> {
 
 struct Eval<'t, 'x> {
     tables: &'t LootTables,
-    ctx: &'x BlockLootContext<'x>,
+    ctx: &'x LootContext<'x>,
     rng: &'x mut dyn LootRandom,
     out: &'x mut Vec<ItemStack>,
     /// Modifiers every created stack passes, applied last to first.
@@ -1340,7 +1902,7 @@ impl<'t> Eval<'t, '_> {
         let rolls = self.int(&pool.rolls);
         let bonus = self.float(&pool.bonus_rolls);
         // `Mth.floor`; Rust's float to int cast saturates like Java's.
-        let count = rolls.wrapping_add((bonus * LUCK).floor() as i32);
+        let count = rolls.wrapping_add((bonus * self.ctx.luck).floor() as i32);
         for _ in 0..count {
             self.roll(pool);
         }
@@ -1393,7 +1955,7 @@ impl<'t> Eval<'t, '_> {
             return false;
         }
         let pushed = entry.modifier.as_ref().map(|m| chain.push(m)).is_some();
-        let weight = entry_weight(entry);
+        let weight = entry_weight(entry, self.ctx.luck);
         let result = match &entry.kind {
             EntryKind::Item(_) | EntryKind::Empty | EntryKind::Dynamic => {
                 if weight > 0 {
@@ -1596,18 +2158,77 @@ impl<'t> Eval<'t, '_> {
                     .unwrap_or(0.0);
                 self.rng.next_float() < chance
             }
-            Cond::MatchTool(None) => true,
-            Cond::MatchTool(Some(p)) => self.tool_matches(p),
-            Cond::MatchBlock(p) => block_matches(p, self.ctx.state),
+            Cond::MatchTool(None) => self.ctx.tool.is_some(),
+            Cond::MatchTool(Some(p)) => self
+                .ctx
+                .tool
+                .is_some_and(|tool| self.item_matches(p, tool, self.ctx.enchantment_level)),
+            Cond::MatchBlock(p) => self
+                .ctx
+                .block_state
+                .is_some_and(|state| block_matches(p, state)),
+            Cond::Biome(biomes) => {
+                self.ctx.origin.is_some()
+                    && self
+                        .ctx
+                        .biome
+                        .is_some_and(|biome| biomes.iter().any(|b| biome(b)))
+            }
+            Cond::ThisPresent => {
+                self.ctx.this_present || self.ctx.this_entity.is_some() || self.ctx.entity.is_some()
+            }
+            Cond::Entity(target, p) => {
+                let Some(e) = self.ctx.entity else {
+                    return false;
+                };
+                let facts = match target {
+                    EntityTarget::This => Some(e.this),
+                    EntityTarget::Attacker => e.attacker,
+                    EntityTarget::DirectAttacker => e.direct_attacker,
+                    EntityTarget::AttackingPlayer => e.last_damage_player,
+                };
+                p.test(facts.as_ref(), e.tags)
+            }
+            Cond::KilledByPlayer => self
+                .ctx
+                .entity
+                .is_some_and(|e| e.last_damage_player.is_some()),
+            Cond::DamageSource(p) => self.ctx.entity.is_some_and(|e| {
+                e.source
+                    .as_ref()
+                    .is_some_and(|s| p.test(s, e.types, e.tags))
+            }),
+            Cond::EnchantedChance {
+                enchantment,
+                unenchanted,
+                enchanted,
+            } => {
+                let level = self
+                    .ctx
+                    .entity
+                    .map_or(0, |e| (e.attacker_enchantment_level)(enchantment));
+                let chance = if level > 0 {
+                    enchanted.calculate(level)
+                } else {
+                    *unenchanted
+                };
+                self.rng.next_float() < chance
+            }
         }
     }
 
-    fn tool_matches(&self, p: &ItemPredicate) -> bool {
-        let tool = self.ctx.tool;
-        let (item, count) = if tool.is_empty() {
+    /// `ItemPredicate.test(stack)`; `enchantment_level` gives the stack's level of an
+    /// enchantment id.
+    fn item_matches(
+        &self,
+        p: &ItemPredicate,
+        stack: &ItemStack,
+        enchantment_level: &dyn Fn(&str) -> i32,
+    ) -> bool {
+        let (item, count) = if stack.is_empty() {
             (0, 0)
         } else {
-            (tool.item, tool.count)
+            (stack.item, stack.count)
         };
         let item_ok = match &p.items {
             None => true,
@@ -1616,12 +2237,37 @@ impl<'t> Eval<'t, '_> {
         };
         item_ok
             && p.count.matches(count)
+            && p.present.iter().all(|&id| stack.component(id).is_some())
             && p.enchantments.iter().all(|e| {
                 e.enchantments.iter().any(|id| {
-                    let level = (self.ctx.enchantment_level)(id);
+                    let level = enchantment_level(id);
                     level != 0 && (e.levels.is_any() || e.levels.matches(level))
                 })
             })
+    }
+
+    /// The level of the enchantment `name` in the stack's `enchantments`.
+    fn stack_enchantment_level(&self, stack: &ItemStack, name: &str) -> i32 {
+        let ids = (self.ctx.holder_set)("minecraft:enchantment", name);
+        crate::item::enchantments(stack)
+            .into_iter()
+            .find(|(e, _)| ids.contains(e))
+            .map_or(0, |(_, level)| level)
+    }
+
+    /// The enchantment ids of an `options` holder set (every enchantment without one).
+    fn enchantment_options(&self, options: Option<&[Box<str>]>) -> Vec<u32> {
+        match options {
+            Some(entries) => entries
+                .iter()
+                .flat_map(|e| (self.ctx.holder_set)("minecraft:enchantment", e))
+                .collect(),
+            None => self.ctx.enchanting.map_or_else(Vec::new, |e| {
+                (0..e.list.len())
+                    .filter_map(|i| u32::try_from(i).ok())
+                    .collect()
+            }),
+        }
     }
 
     fn apply(&mut self, func: &'t Func, stack: &mut ItemStack) {
@@ -1688,8 +2334,35 @@ impl<'t> Eval<'t, '_> {
                     }
                 };
             }
-            FuncKind::CopyState { properties } => copy_state(stack, self.ctx.state, properties),
+            FuncKind::CopyState { properties } => {
+                if let Some(state) = self.ctx.block_state {
+                    copy_state(stack, state, properties);
+                }
+            }
             FuncKind::Discard => *stack = ItemStack::EMPTY,
+            FuncKind::EnchantedCountIncrease {
+                enchantment,
+                count,
+                limit,
+            } => {
+                let level = self
+                    .ctx
+                    .entity
+                    .map_or(0, |e| (e.attacker_enchantment_level)(enchantment));
+                if level > 0 {
+                    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+                    let extra = (level as f32 * self.float(count)).round() as i32;
+                    stack.count = stack.count.saturating_add(extra);
+                    if *limit > 0 {
+                        stack.count = stack.count.min(*limit);
+                    }
+                }
+            }
+            FuncKind::FurnaceSmelt => {
+                if let Some(cooked) = smelted(stack.item) {
+                    stack.item = cooked;
+                }
+            }
             FuncKind::CopyComponents(include) => {
                 if let Some(source) = self.ctx.block_entity {
                     for &id in include.iter() {
@@ -1699,8 +2372,197 @@ impl<'t> Eval<'t, '_> {
                     }
                 }
             }
+            FuncKind::EnchantRandomly {
+                options,
+                only_compatible,
+            } => self.enchant_randomly(stack, options.as_deref(), *only_compatible),
+            FuncKind::EnchantWithLevels { levels, options } => {
+                let cost = self.int(levels);
+                let Some(e) = self.ctx.enchanting else {
+                    return;
+                };
+                let candidates = self.enchantment_options(options.as_deref());
+                let chosen =
+                    crate::enchant::select_enchantment(e, &mut *self.rng, stack, cost, &candidates);
+                // `EnchantmentHelper.enchantItem`.
+                if stack.item == items::BOOK.0 {
+                    *stack = ItemStack::new(items::ENCHANTED_BOOK.0, 1);
+                }
+                for (id, level) in chosen {
+                    upgrade_enchantment(stack, id, level);
+                }
+            }
+            FuncKind::SetEnchantments { enchantments, add } => {
+                if stack.item == items::BOOK.0 {
+                    // `transmuteCopy`: count and components stay.
+                    stack.item = items::ENCHANTED_BOOK.0;
+                }
+                let component = enchantment_component(stack);
+                let mut list = crate::enchant::read(stack.component(component));
+                for (name, level) in enchantments.iter() {
+                    let value = self.int(level);
+                    for id in (self.ctx.holder_set)("minecraft:enchantment", name) {
+                        let current = list.iter().find(|(e, _)| *e == id).map_or(0, |e| e.1);
+                        let level = if *add {
+                            current.wrapping_add(value)
+                        } else {
+                            value
+                        };
+                        set_enchantment(&mut list, id, level.clamp(0, 255));
+                    }
+                }
+                stack
+                    .patch_mut()
+                    .set(component, crate::enchant::write(&list));
+            }
+            FuncKind::SetDamage { damage, add } => {
+                if crate::item::is_damageable(stack) {
+                    let max = crate::item::max_damage(stack);
+                    #[allow(
+                        clippy::as_conversions,
+                        clippy::cast_precision_loss,
+                        clippy::cast_possible_truncation
+                    )]
+                    {
+                        let base = if *add {
+                            1.0 - crate::item::damage(stack) as f32 / max as f32
+                        } else {
+                            0.0
+                        };
+                        let pct = 1.0 - (self.float(damage) + base).clamp(0.0, 1.0);
+                        crate::item::set_damage(stack, (pct * max as f32).floor() as i32);
+                    }
+                } else {
+                    log::warn!("Couldn't set damage of loot item {stack:?}");
+                }
+            }
+            FuncKind::SetName { target, name } => {
+                if let Some(name) = name {
+                    stack.patch_mut().set(*target, name.clone());
+                }
+            }
+            FuncKind::SetPotion(potion) => {
+                // `PotionContents.EMPTY.withPotion(potion)`: no colour, effects or name.
+                let mut out = vec![1];
+                vanillite_protocol::codec::write_varint(
+                    &mut out,
+                    i32::try_from(*potion).unwrap_or(0),
+                );
+                out.extend_from_slice(&[0, 0, 0]);
+                stack
+                    .patch_mut()
+                    .set(ids::POTION_CONTENTS, out.into_boxed_slice());
+            }
+            FuncKind::SetStewEffect(effects) => {
+                if stack.item != items::SUSPICIOUS_STEW.0 || effects.is_empty() {
+                    return;
+                }
+                let len = i32::try_from(effects.len()).unwrap_or(i32::MAX);
+                let pick = usize::try_from(self.rng.next_int(len)).unwrap_or(0);
+                let Some((effect, duration, instantaneous)) = effects.get(pick) else {
+                    return;
+                };
+                let mut duration = self.int(duration);
+                if !instantaneous {
+                    duration = duration.wrapping_mul(20);
+                }
+                let mut list = read_stew_effects(stack.component(ids::SUSPICIOUS_STEW_EFFECTS));
+                list.push((*effect, duration));
+                let mut out = Vec::new();
+                write_len(&mut out, list.len());
+                for (effect, duration) in list {
+                    vanillite_protocol::codec::write_varint(
+                        &mut out,
+                        i32::try_from(effect).unwrap_or(0),
+                    );
+                    vanillite_protocol::codec::write_varint(&mut out, duration);
+                }
+                stack
+                    .patch_mut()
+                    .set(ids::SUSPICIOUS_STEW_EFFECTS, out.into_boxed_slice());
+            }
+            FuncKind::SetInstrument(options) => {
+                let instruments: Vec<u32> = options
+                    .iter()
+                    .flat_map(|o| (self.ctx.holder_set)("minecraft:instrument", o))
+                    .collect();
+                if instruments.is_empty() {
+                    return;
+                }
+                let len = i32::try_from(instruments.len()).unwrap_or(i32::MAX);
+                let pick = usize::try_from(self.rng.next_int(len)).unwrap_or(0);
+                if let Some(&id) = instruments.get(pick) {
+                    // A registry holder: id + 1.
+                    let mut out = Vec::new();
+                    vanillite_protocol::codec::write_varint(
+                        &mut out,
+                        i32::try_from(id).unwrap_or(-1).wrapping_add(1),
+                    );
+                    stack
+                        .patch_mut()
+                        .set(ids::INSTRUMENT, out.into_boxed_slice());
+                }
+            }
+            FuncKind::SetOminousBottleAmplifier(amplifier) => {
+                let value = self.int(amplifier).clamp(0, 4);
+                let mut out = Vec::new();
+                vanillite_protocol::codec::write_varint(&mut out, value);
+                stack
+                    .patch_mut()
+                    .set(ids::OMINOUS_BOTTLE_AMPLIFIER, out.into_boxed_slice());
+            }
+            FuncKind::Filtered {
+                filter,
+                on_pass,
+                on_fail,
+            } => {
+                let pass = {
+                    let level = |name: &str| self.stack_enchantment_level(stack, name);
+                    filter
+                        .as_ref()
+                        .is_some_and(|p| self.item_matches(p, stack, &level))
+                };
+                let next = if pass { on_pass } else { on_fail };
+                if let Some(f) = next {
+                    self.apply(f, stack);
+                }
+            }
             FuncKind::Noop => {}
         }
+    }
+
+    /// `EnchantRandomlyFunction.run`.
+    fn enchant_randomly(
+        &mut self,
+        stack: &mut ItemStack,
+        options: Option<&[Box<str>]>,
+        only_compatible: bool,
+    ) {
+        let Some(e) = self.ctx.enchanting else {
+            return;
+        };
+        let is_book = stack.item == items::BOOK.0;
+        let check = !is_book && only_compatible;
+        let candidates: Vec<u32> = self
+            .enchantment_options(options)
+            .into_iter()
+            .filter(|&id| !check || e.can_enchant(id, stack))
+            .collect();
+        if candidates.is_empty() {
+            log::warn!("Couldn't find a compatible enchantment for {stack:?}");
+            return;
+        }
+        let len = i32::try_from(candidates.len()).unwrap_or(i32::MAX);
+        let pick = usize::try_from(self.rng.next_int(len)).unwrap_or(0);
+        let Some(&id) = candidates.get(pick) else {
+            return;
+        };
+        let max = e.get(id).map_or(1, |info| info.max_level);
+        let level = next_int_between(&mut *self.rng, 1, max);
+        if is_book {
+            *stack = ItemStack::new(items::ENCHANTED_BOOK.0, 1);
+        }
+        upgrade_enchantment(stack, id, level);
     }
 
     /// `ApplyBonusCount.Formula.calculateNewCount`.
@@ -1787,8 +2649,67 @@ impl<'t> Eval<'t, '_> {
     clippy::cast_precision_loss,
     clippy::as_conversions
 )]
-fn entry_weight(entry: &Entry) -> i32 {
-    ((entry.weight as f32 + entry.quality as f32 * LUCK).floor() as i32).max(0)
+fn entry_weight(entry: &Entry, luck: f32) -> i32 {
+    ((entry.weight as f32 + entry.quality as f32 * luck).floor() as i32).max(0)
+}
+
+/// `EnchantmentHelper.getComponentType`: enchanted books store their enchantments.
+fn enchantment_component(stack: &ItemStack) -> u16 {
+    if stack.item == items::ENCHANTED_BOOK.0 {
+        ids::STORED_ENCHANTMENTS
+    } else {
+        ids::ENCHANTMENTS
+    }
+}
+
+/// `ItemEnchantments.Mutable.set`: level 0 removes the enchantment.
+fn set_enchantment(list: &mut Vec<(u32, i32)>, id: u32, level: i32) {
+    match list.iter().position(|(e, _)| *e == id) {
+        Some(i) if level <= 0 => {
+            list.remove(i);
+        }
+        Some(i) => {
+            if let Some(entry) = list.get_mut(i) {
+                entry.1 = level;
+            }
+        }
+        None if level > 0 => list.push((id, level)),
+        None => {}
+    }
+}
+
+/// `ItemStack.enchant(enchantment, level)`: `ItemEnchantments.Mutable.upgrade`.
+fn upgrade_enchantment(stack: &mut ItemStack, id: u32, level: i32) {
+    let component = enchantment_component(stack);
+    let mut list = crate::enchant::read(stack.component(component));
+    let current = list.iter().find(|(e, _)| *e == id).map_or(0, |e| e.1);
+    if level > current {
+        set_enchantment(&mut list, id, level.min(255));
+    }
+    stack
+        .patch_mut()
+        .set(component, crate::enchant::write(&list));
+}
+
+/// A `suspicious_stew_effects` value: `(mob effect id, duration)`.
+fn read_stew_effects(data: Option<&[u8]>) -> Vec<(u32, i32)> {
+    let Some(data) = data else {
+        return Vec::new();
+    };
+    let mut r = Reader::new(data);
+    let Ok(n) = r.len_prefix("stew effects", 1024, 2) else {
+        return Vec::new();
+    };
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        let (Ok(effect), Ok(duration)) = (r.varint(), r.varint()) else {
+            break;
+        };
+        if let Ok(effect) = u32::try_from(effect) {
+            out.push((effect, duration));
+        }
+    }
+    out
 }
 
 /// `BlockPredicate.matchesState`.
@@ -1895,12 +2816,107 @@ mod tests {
             enchantment_level: &level,
             item_in_tag: &in_tag,
             explosion_radius,
+            this_present: true,
+            entity: None,
             block_entity: None,
         };
         let mut rng = XoroshiroRandom::new(seed);
         let mut out = Vec::new();
         tables.block_drops(&ctx, &mut rng, &mut out);
         out
+    }
+
+    /// Drops of an entity table with the killer's Looting level and the given facts.
+    fn entity_drops(
+        tables: &LootTables,
+        table: &str,
+        on_fire: bool,
+        by_player: bool,
+        looting: i32,
+        seed: i64,
+    ) -> Vec<ItemStack> {
+        struct NoTags;
+        impl crate::predicate::EntityTags for NoTags {
+            fn entity_in_tag(&self, _: vanillite_data::entity::EntityTypeId, _: &str) -> bool {
+                false
+            }
+        }
+        let types = crate::survival::damage::DamageTypes::built_in();
+        let level = |id: &str| {
+            if id == "minecraft:looting" {
+                looting
+            } else {
+                0
+            }
+        };
+        let player = crate::predicate::EntityFacts {
+            kind: Some(vanillite_data::entity::ids::PLAYER),
+            ..crate::predicate::EntityFacts::default()
+        };
+        let entity = EntityLootContext {
+            this: crate::predicate::EntityFacts {
+                kind: Some(vanillite_data::entity::ids::COW),
+                on_fire,
+                ..crate::predicate::EntityFacts::default()
+            },
+            attacker: by_player.then_some(player),
+            direct_attacker: by_player.then_some(player),
+            last_damage_player: by_player.then_some(player),
+            source: None,
+            types: &types,
+            tags: &NoTags,
+            attacker_enchantment_level: &level,
+        };
+        let none = |_: &str| 0;
+        let in_tag = |_: u16, _: &str| false;
+        let empty = ItemStack::default();
+        let ctx = BlockLootContext {
+            state: BlockState::AIR,
+            tool: &empty,
+            enchantment_level: &none,
+            item_in_tag: &in_tag,
+            explosion_radius: None,
+            this_present: true,
+            entity: Some(&entity),
+            block_entity: None,
+        };
+        let mut rng = XoroshiroRandom::new(seed);
+        let mut out = Vec::new();
+        tables.table_drops(table, &ctx, &mut rng, &mut out);
+        out
+    }
+
+    #[test]
+    fn entity_loot_conditions_and_looting() {
+        let json: Value = serde_json::from_str(
+            r#"{"type": "minecraft:entity", "pools": [
+                {"rolls": 1, "entries": [{"type": "minecraft:item", "name": "minecraft:beef",
+                    "modifier": [
+                        {"type": "minecraft:set_count", "count": 1},
+                        {"type": "minecraft:furnace_smelt", "condition":
+                            {"type": "minecraft:entity_properties", "entity": "this",
+                             "predicate": {"minecraft:flags": {"is_on_fire": true}}}},
+                        {"type": "minecraft:enchanted_count_increase",
+                         "enchantment": "minecraft:looting", "count": 1.0}]}]},
+                {"rolls": 1, "condition": {"type": "minecraft:killed_by_player"},
+                 "entries": [{"type": "minecraft:item", "name": "minecraft:leather"}]}]}"#,
+        )
+        .expect("json");
+        let tables = LootTables::from_files(
+            vec![("minecraft:entities/cow".to_owned(), Ok(json))],
+            Vec::new(),
+            Vec::new(),
+        );
+        let t = "minecraft:entities/cow";
+        let raw = entity_drops(&tables, t, false, false, 0, 1);
+        assert_eq!(summary(&raw), vec![("minecraft:beef", 1)]);
+        let cooked = entity_drops(&tables, t, true, true, 0, 1);
+        assert_eq!(
+            summary(&cooked),
+            vec![("minecraft:cooked_beef", 1), ("minecraft:leather", 1)]
+        );
+        let looted = entity_drops(&tables, t, false, true, 3, 1);
+        assert_eq!(summary(&looted)[0], ("minecraft:beef", 4));
     }
 
     fn summary(stacks: &[ItemStack]) -> Vec<(&'static str, i32)> {
@@ -1960,6 +2976,9 @@ mod tests {
             };
             let wanted = [
                 "data/minecraft/loot_table/blocks/",
+                "data/minecraft/loot_table/chests/",
+                "data/minecraft/loot_table/archaeology/",
+                "data/minecraft/loot_table/pots/",
                 "data/minecraft/predicate/",
                 "data/minecraft/item_modifier/",
             ];
@@ -2142,6 +3161,97 @@ mod tests {
 
         // Blocks without a table drop nothing.
         assert!(drops(&tables, BlockState::AIR, &empty, &[], None, 1).is_empty());
+    }
+
+    /// Fills a container of `size` slots from `table` with the Vanilla registries.
+    fn fill_container(tables: &LootTables, table: &str, size: usize, seed: i64) -> Vec<ItemStack> {
+        let data = crate::menu::tests::install_data();
+        let in_tag = |item: u16, tag: &str| data.item_in_tag(item, tag);
+        let holders = |registry: &str, entry: &str| data.holder_set(registry, entry);
+        let ctx = LootContext {
+            origin: Some(Vec3::new(0.5, 64.5, 0.5)),
+            item_in_tag: &in_tag,
+            enchanting: Some(&data.enchanting),
+            holder_set: &holders,
+            ..LootContext::empty()
+        };
+        let mut items = vec![ItemStack::EMPTY; size];
+        let mut rng = vanillite_base::random::LegacyRandom::new(seed);
+        tables.fill(table, &ctx, &mut rng, &mut items);
+        items
+    }
+
+    #[test]
+    fn loot_vanilla_container_tables() {
+        let scratch = Scratch::new("containers");
+        if !extract_vanilla(&scratch.0) {
+            eprintln!("Vanilla server jar not found; skipped");
+            return;
+        }
+        let tables = LootTables::load(std::slice::from_ref(&scratch.0));
+        assert!(tables.broken.is_empty(), "broken: {:#?}", tables.broken);
+        assert!(tables.unsupported.is_empty(), "{:#?}", tables.unsupported);
+        let containers: Vec<String> = tables
+            .by_name
+            .keys()
+            .filter(|k| !k.starts_with("minecraft:blocks/"))
+            .map(|k| k.to_string())
+            .collect();
+        assert!(containers.len() > 60, "only {} tables", containers.len());
+        let mut stored = 0;
+        let mut named = 0;
+        for table in &containers {
+            for seed in 1..20 {
+                for stack in fill_container(&tables, table, 27, seed) {
+                    if stack.component(ids::STORED_ENCHANTMENTS).is_some() {
+                        stored += 1;
+                    }
+                    if stack.component(ids::ITEM_NAME).is_some() {
+                        named += 1;
+                    }
+                }
+            }
+        }
+        // Enchanted books from `enchant_randomly` / `enchant_with_levels`.
+        assert!(stored > 0);
+        // Explorer maps without a structure search are discarded by their `filtered` check.
+        assert_eq!(named, 0);
+
+        // The same seed fills the same slots.
+        let a = fill_container(&tables, "minecraft:chests/simple_dungeon", 27, 42);
+        let b = fill_container(&tables, "minecraft:chests/simple_dungeon", 27, 42);
+        assert_eq!(a, b);
+        let filled = a.iter().filter(|s| !s.is_empty()).count();
+        assert!((2..=27).contains(&filled), "{filled}");
+        // A pot holds the one stack of its table.
+        let pot = fill_container(&tables, "minecraft:pots/trial_chambers/corridor", 1, 7);
+        assert!(!pot.iter().all(ItemStack::is_empty));
+    }
+
+    #[test]
+    fn loot_fill_splits_stacks_over_free_slots() {
+        let pack = Scratch::new("fill");
+        pack.write(
+            "data/minecraft/loot_table/chests/test.json",
+            r#"{"pools": [{"rolls": 1, "entries": [
+                {"type": "minecraft:item", "name": "minecraft:cobblestone",
+                 "modifier": {"type": "minecraft:set_count", "count": 64}}]}]}"#,
+        );
+        let tables = LootTables::load(std::slice::from_ref(&pack.0));
+        let ctx = LootContext::empty();
+        let mut items = vec![ItemStack::EMPTY; 9];
+        items[4] = ItemStack::new(items::STONE.0, 1);
+        let mut rng = XoroshiroRandom::new(3);
+        tables.fill("minecraft:chests/test", &ctx, &mut rng, &mut items);
+        // The occupied slot stays; the 64 items spread over several free slots.
+        assert_eq!(items[4], ItemStack::new(items::STONE.0, 1));
+        let cobble: Vec<i32> = items
+            .iter()
+            .filter(|s| s.item == items::COBBLESTONE.0)
+            .map(|s| s.count)
+            .collect();
+        assert_eq!(cobble.iter().sum::<i32>(), 64);
+        assert!(cobble.len() > 1, "{cobble:?}");
     }
 
     #[test]

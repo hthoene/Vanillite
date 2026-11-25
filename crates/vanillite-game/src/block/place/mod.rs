@@ -765,6 +765,12 @@ pub fn placed_extra(
     }
 }
 
+/// `BaseFireBlock.getState(level, pos)`: soul fire on soul fire bases, else fire with its
+/// faces.
+pub fn base_fire_state(level: &dyn BlockReader, pos: BlockPos) -> BlockState {
+    functional::base_fire_state(level, pos)
+}
+
 /// `MossyCarpetBlock.setPlacedBy`: the carpet to set (flags 3) above a pale moss carpet `state`
 /// just placed at `pos`, if any. `next_boolean` is the level random's `nextBoolean()`, called
 /// once per side that could hang down, in north, east, south, west order.

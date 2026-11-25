@@ -1,0 +1,150 @@
+{
+  "description": "A plain minecart circles a rectangular track of straight and curved rails, kept going by one powered rail; its yaw follows the track and flips on reversals.",
+  "tier": "fast",
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      11,
+      -58,
+      7
+    ]
+  ],
+  "ticks": 240,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -60,
+        1
+      ],
+      "block": "minecraft:rail[shape=south_east]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        10,
+        -60,
+        1
+      ],
+      "block": "minecraft:rail[shape=south_west]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        10,
+        -60,
+        6
+      ],
+      "block": "minecraft:rail[shape=north_west]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -60,
+        6
+      ],
+      "block": "minecraft:rail[shape=north_east]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        2,
+        -60,
+        1
+      ],
+      "to": [
+        9,
+        -60,
+        1
+      ],
+      "block": "minecraft:rail[shape=east_west]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        2,
+        -60,
+        6
+      ],
+      "to": [
+        9,
+        -60,
+        6
+      ],
+      "block": "minecraft:rail[shape=east_west]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        1,
+        -60,
+        2
+      ],
+      "to": [
+        1,
+        -60,
+        5
+      ],
+      "block": "minecraft:rail[shape=north_south]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        10,
+        -60,
+        2
+      ],
+      "to": [
+        10,
+        -60,
+        5
+      ],
+      "block": "minecraft:rail[shape=north_south]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -61,
+        1
+      ],
+      "block": "minecraft:redstone_block"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -60,
+        1
+      ],
+      "block": "minecraft:powered_rail[powered=true,shape=east_west]"
+    }
+  ],
+  "entities": [
+    {
+      "name": "looper",
+      "type": "minecraft:minecart",
+      "pos": [
+        3.5,
+        -59.9375,
+        1.5
+      ],
+      "rot": [
+        0,
+        0
+      ],
+      "seed": 5,
+      "motion": [
+        0.2,
+        0,
+        0
+      ]
+    }
+  ]
+}

@@ -93,6 +93,8 @@ pub struct Movement {
     waiting_for_respawn: bool,
     /// Moves accepted since the caller took them last (for fall damage and exhaustion).
     pub moves: Vec<crate::survival::player::MoveRecord>,
+    /// The player rides a vehicle (`isPassenger`): moves only turn it, the vehicle places it.
+    pub passenger: bool,
 }
 
 /// `Mth.wrapDegrees`.
@@ -145,6 +147,7 @@ impl Movement {
             client_loaded_timeout: CLIENT_LOADED_TIMEOUT,
             waiting_for_respawn: false,
             moves: Vec::new(),
+            passenger: false,
         }
     }
 
@@ -362,7 +365,7 @@ impl Movement {
             return Ok(());
         }
         let (y_rot, x_rot) = request.rot.unwrap_or((body.y_rot, body.x_rot));
-        if self.update_awaiting_teleport(body, sink) {
+        if self.update_awaiting_teleport(body, sink) || self.passenger {
             snap_rotation(body, wrap_degrees(y_rot), wrap_degrees(x_rot));
         } else {
             self.position_change(

@@ -107,18 +107,22 @@ impl Level {
         if speed <= 0 {
             return;
         }
-        let Some(sections) = self.chunks.chunk(chunk).map(|c| c.chunk.sections().len()) else {
-            return;
-        };
         let min_section = self.min_y >> 4;
-        for index in 0..sections {
-            let ticking = self
-                .chunks
-                .chunk(chunk)
-                .is_some_and(|c| c.chunk.sections()[index].summary().is_randomly_ticking());
-            if !ticking {
-                continue;
-            }
+        let mut next = 0;
+        loop {
+            // The next randomly ticking section, read when the loop gets there (ticks of lower
+            // sections may change it); the sections in between are skipped with one lookup.
+            let found = self.chunks.chunk(chunk).and_then(|c| {
+                let sections = c.chunk.sections().get(next..)?;
+                let offset = sections
+                    .iter()
+                    .position(|section| section.summary().is_randomly_ticking())?;
+                Some(next + offset)
+            });
+            let Some(index) = found else {
+                break;
+            };
+            next = index + 1;
             let min_y = (min_section + index as i32) * 16;
             for _ in 0..speed {
                 let pos = self.block_random_pos(min_x, min_y, min_z, 15);

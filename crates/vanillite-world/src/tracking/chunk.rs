@@ -8,8 +8,9 @@
 //! step iterates all pairs. The per-tick cost is one pass over the entities (Vanilla's
 //! `sendChanges`) plus work proportional to the section changes.
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use vanillite_base::math::{java_round, pack_degrees};
+use vanillite_base::slot_map::SlotKey;
 use vanillite_base::{ChunkPos, SectionPos, Vec3};
 use vanillite_data::entity::EntityTypeId;
 
@@ -70,6 +71,10 @@ impl SyncState {
 /// One tracked entity.
 #[derive(Debug)]
 struct Tracked {
+    id: EntityId,
+    /// Its row in the store at the last update ([`ChunkTracker::stamp`] = `stamp`).
+    row: u32,
+    stamp: u32,
     network_id: NetworkId,
     kind: EntityTypeId,
     /// Section at the last update; `None` before the first.
@@ -84,31 +89,108 @@ struct Tracked {
 /// One viewer.
 #[derive(Debug)]
 struct ViewerState {
+    entity: EntityId,
+    /// Its row in the store at this update.
+    row: u32,
     view: Viewer,
     /// Centre of the square it is registered in (`nearby`).
     square: Option<ChunkPos>,
-    /// Entities it sees.
-    viewing: FxHashSet<EntityId>,
+    /// Entity indices of the entities it sees.
+    viewing: SlotSet,
     present: bool,
+    /// The update in which it was queued in `moved`.
+    queued: u32,
 }
 
-/// The built-in `entity-tracker`.
+/// A set of entity indices as a bit set: one bit per index instead of a hashed entity id, so
+/// a viewer that sees thousands of entities costs bytes, not tens of kilobytes, and a lookup
+/// is one bit test.
+#[derive(Debug, Default)]
+struct SlotSet(Vec<u64>);
+
+impl SlotSet {
+    #[inline]
+    fn contains(&self, slot: u32) -> bool {
+        self.0
+            .get(slot as usize / 64)
+            .is_some_and(|word| word & (1 << (slot % 64)) != 0)
+    }
+
+    #[inline]
+    fn insert(&mut self, slot: u32) {
+        let word = slot as usize / 64;
+        if self.0.len() <= word {
+            self.0.resize(word + 1, 0);
+        }
+        self.0[word] |= 1 << (slot % 64);
+    }
+
+    #[inline]
+    fn remove(&mut self, slot: u32) {
+        if let Some(word) = self.0.get_mut(slot as usize / 64) {
+            *word &= !(1 << (slot % 64));
+        }
+    }
+
+    fn iter(&self) -> impl Iterator<Item = u32> + '_ {
+        self.0.iter().zip(0u32..).flat_map(|(&word, index)| {
+            let mut bits = word;
+            std::iter::from_fn(move || {
+                (bits != 0).then(|| {
+                    let bit = bits.trailing_zeros();
+                    bits &= bits - 1;
+                    index * 64 + bit
+                })
+            })
+        })
+    }
+}
+
+/// No viewer slot.
+const NONE: u32 = u32::MAX;
+
+/// The dense index of an entity in the store (reused after it is removed).
+#[inline]
+fn index(id: EntityId) -> u32 {
+    id.raw().index()
+}
+
+/// The viewer slot of `id`, if it is a viewer.
+#[inline]
+fn viewer_of(viewer_slot: &[u32], viewers: &[Option<ViewerState>], id: EntityId) -> Option<u32> {
+    let slot = *viewer_slot.get(index(id) as usize)?;
+    viewers
+        .get(slot as usize)?
+        .as_ref()
+        .is_some_and(|state| state.entity == id)
+        .then_some(slot)
+}
+
+/// The built-in `entity-tracker`. Entities and viewers are kept in vectors by dense index
+/// (entity index, viewer slot), so the per-pair work of the visibility checks does no hashing.
 #[derive(Debug)]
 pub struct ChunkTracker {
     settings: TrackerSettings,
     /// Chebyshev radius in chunks of a viewer's registration square.
     radius: i32,
-    tracked: FxHashMap<EntityId, Tracked>,
-    /// Tracked entities per chunk.
-    by_chunk: FxHashMap<i64, Vec<EntityId>>,
-    viewers: FxHashMap<EntityId, ViewerState>,
-    /// Viewers whose square covers a chunk.
-    nearby: FxHashMap<i64, Vec<EntityId>>,
+    /// Tracked entities by entity index.
+    tracked: Vec<Option<Tracked>>,
+    /// Viewer slot by entity index ([`NONE`] = not a viewer).
+    viewer_slot: Vec<u32>,
+    viewers: Vec<Option<ViewerState>>,
+    free_viewers: Vec<u32>,
+    /// Entity indices of the tracked entities per chunk.
+    by_chunk: FxHashMap<i64, Vec<u32>>,
+    /// Slots of the viewers whose square covers a chunk.
+    nearby: FxHashMap<i64, Vec<u32>>,
+    /// Number of the current update.
+    stamp: u32,
     // Scratch buffers, kept for their capacity.
-    moved: Vec<EntityId>,
-    candidates: Vec<EntityId>,
+    moved: Vec<u32>,
+    candidates: Vec<u32>,
     added: Vec<EntityId>,
     gone: Vec<EntityId>,
+    gone_slots: Vec<u32>,
 }
 
 impl ChunkTracker {
@@ -118,33 +200,39 @@ impl ChunkTracker {
         ChunkTracker {
             settings,
             radius,
-            tracked: FxHashMap::default(),
+            tracked: Vec::new(),
+            viewer_slot: Vec::new(),
+            viewers: Vec::new(),
+            free_viewers: Vec::new(),
             by_chunk: FxHashMap::default(),
-            viewers: FxHashMap::default(),
             nearby: FxHashMap::default(),
+            stamp: 0,
             moved: Vec::new(),
             candidates: Vec::new(),
             added: Vec::new(),
             gone: Vec::new(),
+            gone_slots: Vec::new(),
         }
     }
 
     /// Sends `Remove` for despawned entities and forgets them.
     fn forget_removed(&mut self, store: &EntityStore, out: &mut TrackerOutput) {
         for removed in store.removed() {
-            let Some(tracked) = self.tracked.remove(&removed.id) else {
+            let i = index(removed.id);
+            let Some(tracked) = self
+                .tracked
+                .get_mut(i as usize)
+                .and_then(|t| t.take_if(|t| t.id == removed.id))
+            else {
                 continue;
             };
-            if let Some(chunk) = tracked.chunk {
-                remove_from(&mut self.by_chunk, chunk.as_long(), removed.id);
-            }
-            for viewer in &tracked.seen_by {
-                if let Some(state) = self.viewers.get_mut(viewer) {
-                    state.viewing.remove(&removed.id);
-                }
-            }
-            let span = out.push_viewers(tracked.seen_by.iter().copied());
-            out.push(removed.id, tracked.network_id, EntityUpdate::Remove, span);
+            forget(
+                tracked,
+                &mut self.by_chunk,
+                &self.viewer_slot,
+                &mut self.viewers,
+                out,
+            );
         }
     }
 
@@ -153,7 +241,7 @@ impl ChunkTracker {
     /// changes dimension, which clears its entities).
     fn sync_viewers(&mut self, input: &TrackerInput<'_>) {
         let core = input.entities.columns();
-        for state in self.viewers.values_mut() {
+        for state in self.viewers.iter_mut().flatten() {
             state.present = false;
         }
         for viewer in input.viewers {
@@ -161,24 +249,49 @@ impl ChunkTracker {
                 continue;
             };
             let chunk = core.section[row].chunk();
-            let state = self
-                .viewers
-                .entry(viewer.entity)
-                .or_insert_with(|| ViewerState {
-                    view: *viewer,
-                    square: None,
-                    viewing: FxHashSet::default(),
-                    present: false,
-                });
+            let slot = match viewer_of(&self.viewer_slot, &self.viewers, viewer.entity) {
+                Some(slot) => slot,
+                None => {
+                    let state = ViewerState {
+                        entity: viewer.entity,
+                        row: 0,
+                        view: *viewer,
+                        square: None,
+                        viewing: SlotSet::default(),
+                        present: false,
+                        queued: self.stamp.wrapping_sub(1),
+                    };
+                    let slot = match self.free_viewers.pop() {
+                        Some(slot) => {
+                            self.viewers[slot as usize] = Some(state);
+                            slot
+                        }
+                        None => {
+                            self.viewers.push(Some(state));
+                            u32::try_from(self.viewers.len() - 1).unwrap_or(NONE)
+                        }
+                    };
+                    let i = index(viewer.entity) as usize;
+                    if self.viewer_slot.len() <= i {
+                        self.viewer_slot.resize(i + 1, NONE);
+                    }
+                    self.viewer_slot[i] = slot;
+                    slot
+                }
+            };
+            let Some(Some(state)) = self.viewers.get_mut(slot as usize) else {
+                continue;
+            };
+            state.row = u32::try_from(row).unwrap_or(u32::MAX);
             if state.square.is_none() || state.view != *viewer {
                 state.view = *viewer;
-                push_unique(&mut self.moved, viewer.entity);
+                queue(&mut self.moved, state, slot, self.stamp);
             }
             state.present = true;
             if state.square != Some(chunk) {
                 move_square(
                     &mut self.nearby,
-                    viewer.entity,
+                    slot,
                     state.square,
                     Some(chunk),
                     self.radius,
@@ -186,43 +299,89 @@ impl ChunkTracker {
                 state.square = Some(chunk);
             }
         }
-        self.gone.clear();
-        self.gone.extend(
+        self.gone_slots.clear();
+        self.gone_slots.extend(
             self.viewers
                 .iter()
-                .filter(|(_, state)| !state.present)
-                .map(|(&id, _)| id),
+                .zip(0u32..)
+                .filter(|(state, _)| state.as_ref().is_some_and(|state| !state.present))
+                .map(|(_, slot)| slot),
         );
-        for id in &self.gone {
-            let Some(state) = self.viewers.remove(id) else {
+        for &slot in &self.gone_slots {
+            let Some(state) = self.viewers.get_mut(slot as usize).and_then(Option::take) else {
                 continue;
             };
-            move_square(&mut self.nearby, *id, state.square, None, self.radius);
-            for entity in state.viewing {
-                if let Some(tracked) = self.tracked.get_mut(&entity) {
-                    remove_unordered(&mut tracked.seen_by, *id);
+            self.free_viewers.push(slot);
+            if let Some(at) = self.viewer_slot.get_mut(index(state.entity) as usize)
+                && *at == slot
+            {
+                *at = NONE;
+            }
+            move_square(&mut self.nearby, slot, state.square, None, self.radius);
+            for i in state.viewing.iter() {
+                if let Some(Some(tracked)) = self.tracked.get_mut(i as usize) {
+                    remove_unordered(&mut tracked.seen_by, state.entity);
                 }
             }
         }
-        self.gone.clear();
+        self.gone_slots.clear();
     }
+}
+
+/// Queues a viewer in `moved` once per update.
+#[inline]
+fn queue(moved: &mut Vec<u32>, state: &mut ViewerState, slot: u32, stamp: u32) {
+    if state.queued != stamp {
+        state.queued = stamp;
+        moved.push(slot);
+    }
+}
+
+/// Forgets a tracked entity and sends `Remove` to its viewers.
+fn forget(
+    tracked: Tracked,
+    by_chunk: &mut FxHashMap<i64, Vec<u32>>,
+    viewer_slot: &[u32],
+    viewers: &mut [Option<ViewerState>],
+    out: &mut TrackerOutput,
+) {
+    let i = index(tracked.id);
+    if let Some(chunk) = tracked.chunk {
+        remove_from(by_chunk, chunk.as_long(), i);
+    }
+    for &viewer in &tracked.seen_by {
+        if let Some(slot) = viewer_of(viewer_slot, viewers, viewer)
+            && let Some(Some(state)) = viewers.get_mut(slot as usize)
+        {
+            state.viewing.remove(i);
+        }
+    }
+    let span = out.push_viewers(tracked.seen_by.iter().copied());
+    out.push(tracked.id, tracked.network_id, EntityUpdate::Remove, span);
 }
 
 impl EntityTracker for ChunkTracker {
     fn seen_by(&self, entity: EntityId) -> &[EntityId] {
-        self.tracked.get(&entity).map_or(&[], |t| &t.seen_by)
+        self.tracked
+            .get(index(entity) as usize)
+            .and_then(Option::as_ref)
+            .filter(|t| t.id == entity)
+            .map_or(&[], |t| &t.seen_by)
     }
 
     fn update(&mut self, input: &TrackerInput<'_>, out: &mut TrackerOutput) {
         let store = input.entities;
         let core = store.columns();
+        self.stamp = self.stamp.wrapping_add(1);
         self.moved.clear();
         self.forget_removed(store, out);
         self.sync_viewers(input);
         // Chunks that reached a client make its entities pairable: check that viewer again.
         for &(viewer, _) in input.chunks_sent {
-            if self.viewers.contains_key(&viewer) {
-                push_unique(&mut self.moved, viewer);
+            if let Some(slot) = viewer_of(&self.viewer_slot, &self.viewers, viewer)
+                && let Some(Some(state)) = self.viewers.get_mut(slot as usize)
+            {
+                queue(&mut self.moved, state, slot, self.stamp);
             }
         }
 
@@ -230,15 +389,19 @@ impl EntityTracker for ChunkTracker {
             settings,
             radius,
             tracked,
-            by_chunk,
+            viewer_slot,
             viewers,
+            by_chunk,
             nearby,
+            stamp,
             moved,
             candidates,
             added,
             gone,
+            ..
         } = self;
         let radius = *radius;
+        let stamp = *stamp;
         let mut pairing = Pairing {
             input,
             settings,
@@ -251,7 +414,19 @@ impl EntityTracker for ChunkTracker {
         for row in 0..core.id.len() {
             let id = core.id[row];
             let section = core.section[row];
-            let entry = tracked.entry(id).or_insert_with(|| Tracked {
+            let i = index(id);
+            if tracked.len() <= i as usize {
+                tracked.resize_with(i as usize + 1, || None);
+            }
+            let slot = &mut tracked[i as usize];
+            // An entity that left without a removal record: forget it like a removed one.
+            if let Some(stale) = slot.take_if(|t| t.id != id) {
+                forget(stale, by_chunk, viewer_slot, pairing.viewers, out);
+            }
+            let entry = slot.get_or_insert_with(|| Tracked {
+                id,
+                row: 0,
+                stamp: 0,
                 network_id: core.network_id[row],
                 kind: core.kind[row],
                 section: None,
@@ -259,13 +434,16 @@ impl EntityTracker for ChunkTracker {
                 seen_by: Vec::new(),
                 sync: SyncState::new(core, row),
             });
+            entry.row = u32::try_from(row).unwrap_or(u32::MAX);
+            entry.stamp = stamp;
+            let own_slot = viewer_of(viewer_slot, pairing.viewers, id);
             if entry.section != Some(section) {
                 let chunk = section.chunk();
                 if entry.chunk != Some(chunk) {
                     if let Some(old) = entry.chunk {
-                        remove_from(by_chunk, old.as_long(), id);
+                        remove_from(by_chunk, old.as_long(), i);
                     }
-                    by_chunk.entry(chunk.as_long()).or_default().push(id);
+                    by_chunk.entry(chunk.as_long()).or_default().push(i);
                     entry.chunk = Some(chunk);
                 }
                 entry.section = Some(section);
@@ -275,27 +453,38 @@ impl EntityTracker for ChunkTracker {
                 }
                 // Viewers that see it but are no longer registered near its chunk.
                 for &viewer in &entry.seen_by {
-                    let near = pairing
-                        .viewers
-                        .get(&viewer)
+                    let Some(slot) = viewer_of(viewer_slot, pairing.viewers, viewer) else {
+                        continue;
+                    };
+                    let near = pairing.viewers[slot as usize]
+                        .as_ref()
                         .and_then(|state| state.square)
                         .is_some_and(|square| in_square(square, radius, chunk));
                     if !near {
-                        candidates.push(viewer);
+                        candidates.push(slot);
                     }
                 }
-                pairing.update(entry, id, row, candidates, out);
-                if pairing.viewers.contains_key(&id) {
-                    push_unique(moved, id);
+                pairing.update(entry, row, candidates, out);
+                if let Some(slot) = own_slot
+                    && let Some(Some(state)) = pairing.viewers.get_mut(slot as usize)
+                {
+                    queue(moved, state, slot, stamp);
                 }
             }
-            let is_viewer = pairing.viewers.contains_key(&id);
-            send_changes(entry, core, row, id, is_viewer, input.update_scale, out);
+            send_changes(
+                entry,
+                core,
+                row,
+                id,
+                own_slot.is_some(),
+                input.update_scale,
+                out,
+            );
         }
 
         // Viewers that moved to another section (or joined) re-check what they can see.
         for &viewer in moved.iter() {
-            let Some(state) = pairing.viewers.get(&viewer) else {
+            let Some(Some(state)) = pairing.viewers.get(viewer as usize) else {
                 continue;
             };
             let Some(square) = state.square else {
@@ -307,17 +496,22 @@ impl EntityTracker for ChunkTracker {
                     candidates.extend_from_slice(list);
                 }
             });
-            candidates.extend(state.viewing.iter().copied().filter(|&entity| {
+            candidates.extend(state.viewing.iter().filter(|&i| {
                 tracked
-                    .get(&entity)
+                    .get(i as usize)
+                    .and_then(Option::as_ref)
                     .and_then(|t| t.chunk)
                     .is_none_or(|chunk| !in_square(square, radius, chunk))
             }));
-            for &entity in candidates.iter() {
-                let (Some(entry), Some(row)) = (tracked.get_mut(&entity), store.row(entity)) else {
+            for &i in candidates.iter() {
+                let Some(Some(entry)) = tracked.get_mut(i as usize) else {
                     continue;
                 };
-                pairing.update(entry, entity, row, &[viewer], out);
+                if entry.stamp != stamp {
+                    continue;
+                }
+                let row = entry.row as usize;
+                pairing.update(entry, row, &[viewer], out);
             }
         }
     }
@@ -327,40 +521,41 @@ impl EntityTracker for ChunkTracker {
 struct Pairing<'a, 'i> {
     input: &'a TrackerInput<'i>,
     settings: &'a TrackerSettings,
-    viewers: &'a mut FxHashMap<EntityId, ViewerState>,
+    viewers: &'a mut Vec<Option<ViewerState>>,
     added: &'a mut Vec<EntityId>,
     gone: &'a mut Vec<EntityId>,
 }
 
 impl Pairing<'_, '_> {
-    /// Re-checks `candidates` as viewers of one entity and emits `Remove` and `Spawn`.
+    /// Re-checks the viewers in the slots `candidates` and emits `Remove` and `Spawn`.
     fn update(
         &mut self,
         entry: &mut Tracked,
-        id: EntityId,
         row: usize,
-        candidates: &[EntityId],
+        candidates: &[u32],
         out: &mut TrackerOutput,
     ) {
         self.added.clear();
         self.gone.clear();
-        for &viewer in candidates {
-            if viewer == id {
-                continue;
-            }
-            let Some(state) = self.viewers.get_mut(&viewer) else {
+        let id = entry.id;
+        let i = index(id);
+        for &slot in candidates {
+            let Some(Some(state)) = self.viewers.get_mut(slot as usize) else {
                 continue;
             };
-            let visible = is_visible(self.input, self.settings, row, &state.view);
-            let seen = state.viewing.contains(&id);
+            if state.entity == id {
+                continue;
+            }
+            let visible = is_visible(self.input, self.settings, row, state);
+            let seen = state.viewing.contains(i);
             if visible && !seen {
-                state.viewing.insert(id);
-                entry.seen_by.push(viewer);
-                self.added.push(viewer);
+                state.viewing.insert(i);
+                entry.seen_by.push(state.entity);
+                self.added.push(state.entity);
             } else if !visible && seen {
-                state.viewing.remove(&id);
-                remove_unordered(&mut entry.seen_by, viewer);
-                self.gone.push(viewer);
+                state.viewing.remove(i);
+                remove_unordered(&mut entry.seen_by, state.entity);
+                self.gone.push(state.entity);
             }
         }
         if !self.gone.is_empty() {
@@ -391,19 +586,19 @@ fn is_visible(
     input: &TrackerInput<'_>,
     settings: &TrackerSettings,
     row: usize,
-    view: &Viewer,
+    viewer: &ViewerState,
 ) -> bool {
-    let Some(viewer_row) = input.entities.row(view.entity) else {
+    let core = input.entities.columns();
+    let Some(&viewer_pos) = core.pos.get(viewer.row as usize) else {
         return false;
     };
-    let core = input.entities.columns();
-    let delta = core.pos[viewer_row] - core.pos[row];
+    let delta = viewer_pos - core.pos[row];
     let distance = delta.x * delta.x + delta.z * delta.z;
     let range = f64::from(settings.range(core.kind[row]));
     let chunk = core.section[row].chunk();
     distance <= range * range
-        && view.sees_chunk(chunk)
-        && !(input.chunk_pending)(view.entity, chunk)
+        && viewer.view.sees_chunk(chunk)
+        && !(input.chunk_pending)(viewer.entity, chunk)
 }
 
 /// Lazily stored viewer lists of one entity for one tick.
@@ -623,8 +818,8 @@ fn for_square(center: ChunkPos, radius: i32, mut f: impl FnMut(ChunkPos)) {
 /// Moves a viewer's registration from the square around `old` to the one around `new`,
 /// touching only the chunks that differ.
 fn move_square(
-    nearby: &mut FxHashMap<i64, Vec<EntityId>>,
-    viewer: EntityId,
+    nearby: &mut FxHashMap<i64, Vec<u32>>,
+    viewer: u32,
     old: Option<ChunkPos>,
     new: Option<ChunkPos>,
     radius: i32,
@@ -645,7 +840,7 @@ fn move_square(
     }
 }
 
-fn remove_from(map: &mut FxHashMap<i64, Vec<EntityId>>, key: i64, id: EntityId) {
+fn remove_from(map: &mut FxHashMap<i64, Vec<u32>>, key: i64, id: u32) {
     if let Some(list) = map.get_mut(&key) {
         remove_unordered(list, id);
         if list.is_empty() {
@@ -654,14 +849,8 @@ fn remove_from(map: &mut FxHashMap<i64, Vec<EntityId>>, key: i64, id: EntityId) 
     }
 }
 
-fn remove_unordered(list: &mut Vec<EntityId>, id: EntityId) {
-    if let Some(index) = list.iter().position(|&e| e == id) {
+fn remove_unordered<T: PartialEq>(list: &mut Vec<T>, id: T) {
+    if let Some(index) = list.iter().position(|e| *e == id) {
         list.swap_remove(index);
-    }
-}
-
-fn push_unique(list: &mut Vec<EntityId>, id: EntityId) {
-    if !list.contains(&id) {
-        list.push(id);
     }
 }
