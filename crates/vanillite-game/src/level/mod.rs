@@ -293,6 +293,8 @@ pub struct LevelOutput {
 #[derive(Clone)]
 pub struct Generation {
     pub terrain: Arc<vanillite_worldgen::generator::TerrainGenerator>,
+    /// The dimension it generates.
+    pub dimension: String,
     /// `WorldOptions.generateStructures`.
     pub structures: bool,
 }
@@ -490,6 +492,11 @@ impl Level {
     }
 
     /// The server's map store.
+    pub fn maps_shared(&self) -> Option<Arc<crate::map::Maps>> {
+        self.maps.clone()
+    }
+
+    /// The maps of the server.
     pub fn maps(&self) -> Option<&crate::map::Maps> {
         self.maps.as_deref()
     }

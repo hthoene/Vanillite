@@ -86,6 +86,8 @@ pub struct MenuState {
     pub suppress_remote: bool,
     /// Whether the player has infinite materials (creative), as of the last click.
     pub creative: bool,
+    /// Bundle sounds of the last clicks, for the players around.
+    pub sounds: Vec<crate::bundle::Sound>,
 }
 
 impl MenuState {
@@ -103,6 +105,7 @@ impl MenuState {
             quickcraft_slots: Vec::new(),
             suppress_remote: false,
             creative: false,
+            sounds: Vec::new(),
         }
     }
 
@@ -475,7 +478,9 @@ pub fn click<S: MenuSlots + ?Sized>(
                 }
                 return;
             }
-            pickup(s, index, primary, ctx, drops);
+            if !bundle_override(s, index, primary, ctx, drops) {
+                pickup(s, index, primary, ctx, drops);
+            }
             s.set_changed(index);
         }
         ContainerInput::Swap if (0..9).contains(&button) || button == 40 => {
@@ -625,6 +630,104 @@ fn quick_craft<S: MenuSlots + ?Sized>(
     } else {
         st.reset_quickcraft();
     }
+}
+
+/// `tryItemClickBehaviourOverride`: the bundle overrides of a `PICKUP` click
+/// (`BundleItem.overrideStackedOnOther` of the carried stack, then
+/// `overrideOtherStackedOnMe` of the clicked one). Returns whether the click was handled.
+fn bundle_override<S: MenuSlots + ?Sized>(
+    s: &mut S,
+    index: usize,
+    primary: bool,
+    ctx: ClickContext,
+    drops: &mut Vec<Drop>,
+) -> bool {
+    use crate::bundle::{self, Contents, Sound};
+    let carried = s.state_ref().carried.clone();
+    let clicked = s.item(index).clone();
+    let selection = s.inventory().bundle_selection;
+    if let Some(mut contents) = Contents::of(&carried, selection) {
+        let mut handled = false;
+        if primary && !clicked.is_empty() {
+            // `tryTransfer`.
+            let moved = match bundle::item_weight(&clicked) {
+                Some(w) if bundle::can_be_in_bundle(&clicked) => {
+                    let max = contents.max_amount(w);
+                    match try_remove(s, index, clicked.count, max) {
+                        Some(mut taken) => {
+                            s.on_take(index, &mut taken, ctx, drops);
+                            contents.try_insert(&mut taken)
+                        }
+                        None => 0,
+                    }
+                }
+                _ => 0,
+            };
+            s.state().sounds.push(if moved > 0 {
+                Sound::Insert
+            } else {
+                Sound::InsertFail
+            });
+            handled = true;
+        } else if !primary && clicked.is_empty() {
+            if let Some(mut one) = contents.remove_one() {
+                let count = one.count;
+                safe_insert(s, index, &mut one, count);
+                if one.count > 0 {
+                    contents.try_insert(&mut one);
+                } else {
+                    s.state().sounds.push(Sound::RemoveOne);
+                }
+            }
+            handled = true;
+        }
+        if handled {
+            let mut carried = carried;
+            let keep = contents.store(&mut carried);
+            s.inventory().bundle_selection = keep;
+            s.state().carried = carried;
+            return true;
+        }
+    }
+    let Some(mut contents) = Contents::of(&clicked, selection) else {
+        return false;
+    };
+    // `toggleSelectedItem(self, -1)`.
+    let deselect = |s: &mut S| {
+        if selection.is_some_and(|(k, _)| k == bundle::key(&clicked)) {
+            s.inventory().bundle_selection = None;
+        }
+    };
+    if primary && carried.is_empty() {
+        deselect(s);
+        return false;
+    }
+    let mut carried = carried;
+    if primary {
+        if allow_modification(s, index) && contents.try_insert(&mut carried) > 0 {
+            s.state().sounds.push(Sound::Insert);
+        } else {
+            s.state().sounds.push(Sound::InsertFail);
+        }
+    } else if carried.is_empty() {
+        if allow_modification(s, index)
+            && let Some(removed) = contents.remove_one()
+        {
+            s.state().sounds.push(Sound::RemoveOne);
+            carried = removed;
+        }
+    } else {
+        deselect(s);
+        return false;
+    }
+    let mut bundle_stack = clicked.clone();
+    let keep = contents.store(&mut bundle_stack);
+    s.inventory().bundle_selection = keep;
+    if let Some(slot) = s.item_mut(index) {
+        *slot = bundle_stack;
+    }
+    s.state().carried = carried;
+    true
 }
 
 /// The `PICKUP` branch of `doClick` on a slot (without bundle overrides).

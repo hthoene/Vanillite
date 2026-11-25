@@ -123,6 +123,27 @@ pub fn game_data(packs: Option<&LoadedPacks>) -> GameData {
                 .collect()
         })
         .unwrap_or_default();
+    let instruments = packs
+        .registry("minecraft:instrument")
+        .map(|r| {
+            r.entries()
+                .iter()
+                .map(|e| {
+                    serde_json::from_str::<serde_json::Value>(e.json.get())
+                        .ok()
+                        .and_then(|json| {
+                            vanillite_game::player::items::Instrument::from_json(&json)
+                        })
+                        .unwrap_or(vanillite_game::player::items::Instrument {
+                            sound: String::new(),
+                            use_duration: 0.0,
+                            range: 0.0,
+                            durability_damage: 0,
+                        })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let recipes = vanillite_game::recipe::Recipes::load(packs.roots(), &|tag| {
         item_tags.get(tag).cloned().unwrap_or_default()
     });
@@ -218,6 +239,7 @@ pub fn game_data(packs: Option<&LoadedPacks>) -> GameData {
         enchanting,
         banner_patterns,
         registry_tags,
+        instruments,
     }
 }
 
@@ -294,11 +316,17 @@ pub(crate) struct WorldLevel<'a> {
     pub(crate) spectators: &'a FxHashSet<EntityId>,
     /// The acting player with its current box (its stored position may lag behind).
     pub(crate) actor: Option<(EntityId, Aabb)>,
+    /// The world's dimension.
+    pub(crate) dimension: &'a str,
 }
 
 impl PlayLevel for WorldLevel<'_> {
     fn level_mut(&mut self) -> Option<&mut Level> {
         Some(self.level)
+    }
+
+    fn dimension(&self) -> &str {
+        self.dimension
     }
 
     fn block(&self, pos: BlockPos) -> BlockState {

@@ -20,8 +20,7 @@
 //!   `enchant_randomly`, `enchant_with_levels`, `set_enchantments`, `set_damage`, `set_name`,
 //!   `set_potion`, `set_stew_effect`, `set_instrument`, `set_ominous_bottle_amplifier`,
 //!   `filtered`, named item modifiers; `copy_custom_data` and `enchanted_count_increase` do
-//!   nothing (no attacking entity); `exploration_map` leaves the map empty (there is no
-//!   structure search yet, as if no structure were found: the tables then discard the map);
+//!   nothing (no attacking entity); `exploration_map` needs the context's level access;
 //! - results larger than the item's max stack size are split as `LootTable.createStackSplitter`.
 //!
 //! The context has no level access, so:
@@ -128,6 +127,27 @@ pub struct LootContext<'a> {
     pub this_present: bool,
     /// The entity parameters of entity loot (`LootContextParamSets.ENTITY`).
     pub entity: Option<&'a EntityLootContext<'a>>,
+    /// `exploration_map` with level access: the filled map for the request at the origin, if
+    /// a structure was found.
+    pub exploration_map: Option<&'a ExploreFn<'a>>,
+}
+
+/// Makes the map of an `exploration_map` request at an origin (see [`LootContext`]).
+pub type ExploreFn<'a> = dyn Fn(&ExplorationMap, Vec3) -> Option<ItemStack> + 'a;
+
+/// The arguments of `exploration_map` (`ExplorationMapFunction`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExplorationMap {
+    /// `destination`: a structure tag id without `#`.
+    pub destination: String,
+    /// `decoration`: a map decoration type id.
+    pub decoration: String,
+    /// `zoom`.
+    pub zoom: i8,
+    /// `search_radius`.
+    pub search_radius: i32,
+    /// `skip_existing_chunks`.
+    pub skip_existing_chunks: bool,
 }
 
 impl fmt::Debug for LootContext<'_> {
@@ -173,6 +193,7 @@ impl LootContext<'_> {
             biome: None,
             this_present: false,
             entity: None,
+            exploration_map: None,
         }
     }
 }
@@ -991,6 +1012,8 @@ enum FuncKind {
     SetStewEffect(Box<[(u32, IntProvider, bool)]>),
     /// `set_instrument`: holder set entries of `minecraft:instrument`.
     SetInstrument(Box<[Box<str>]>),
+    /// `exploration_map`.
+    ExplorationMap(Box<ExplorationMap>),
     /// `set_ominous_bottle_amplifier`.
     SetOminousBottleAmplifier(IntProvider),
     /// `filtered`.
@@ -1801,8 +1824,44 @@ impl Parser<'_> {
                     on_fail: on_fail.map(Box::new),
                 }
             }
-            // No structure search: the map stays empty, as when Vanilla finds no structure.
-            "minecraft:exploration_map" => FuncKind::Noop,
+            "minecraft:exploration_map" => {
+                let with_ns = |s: &str| {
+                    if s.contains(':') {
+                        s.to_owned()
+                    } else {
+                        format!("minecraft:{s}")
+                    }
+                };
+                let destination = o.get("destination").and_then(Value::as_str).map_or_else(
+                    || "minecraft:on_treasure_maps".to_owned(),
+                    |s| with_ns(s.trim_start_matches('#')),
+                );
+                let decoration = o
+                    .get("decoration")
+                    .and_then(Value::as_str)
+                    .map_or_else(|| "minecraft:mansion".to_owned(), with_ns);
+                let zoom = o
+                    .get("zoom")
+                    .and_then(Value::as_i64)
+                    .and_then(|z| i8::try_from(z).ok())
+                    .unwrap_or(2);
+                let search_radius = o
+                    .get("search_radius")
+                    .and_then(Value::as_i64)
+                    .and_then(|r| i32::try_from(r).ok())
+                    .unwrap_or(50);
+                let skip_existing_chunks = o
+                    .get("skip_existing_chunks")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
+                FuncKind::ExplorationMap(Box::new(ExplorationMap {
+                    destination,
+                    decoration,
+                    zoom,
+                    search_radius,
+                    skip_existing_chunks,
+                }))
+            }
             "minecraft:copy_components" | "minecraft:copy_name" | "minecraft:copy_custom_data" => {
                 FuncKind::Noop
             }
@@ -2604,6 +2663,17 @@ impl<'t> Eval<'t, '_> {
                 let next = if pass { on_pass } else { on_fail };
                 if let Some(f) = next {
                     self.apply(f, stack);
+                }
+            }
+            FuncKind::ExplorationMap(request) => {
+                // `ExplorationMapFunction.run`: an empty map becomes a map to the structure.
+                if stack.item != items::MAP.0 {
+                    return;
+                }
+                if let (Some(origin), Some(explore)) = (self.ctx.origin, self.ctx.exploration_map)
+                    && let Some(map) = explore(request, origin)
+                {
+                    *stack = map;
                 }
             }
             FuncKind::Noop => {}

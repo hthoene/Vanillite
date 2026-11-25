@@ -493,6 +493,75 @@ pub mod serverbound {
         "container_click",
         Inventory
     );
+
+    /// `edit_book`: the pages of the writable book in a hotbar slot (or 40, the offhand),
+    /// signed with `title` when present.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct EditBook {
+        #[allow(missing_docs)]
+        pub slot: i32,
+        /// At most 100 pages of at most 1024 characters.
+        pub pages: Vec<String>,
+        /// At most 32 characters.
+        pub title: Option<String>,
+    }
+
+    impl Encode for EditBook {
+        fn encode(&self, out: &mut Vec<u8>) {
+            write_varint(out, self.slot);
+            write_len(out, self.pages.len());
+            for page in &self.pages {
+                page.encode(out);
+            }
+            self.title.encode(out);
+        }
+    }
+
+    impl Decode for EditBook {
+        fn decode(r: &mut Reader<'_>) -> Result<Self> {
+            let slot = r.varint()?;
+            let n = r.len_prefix("book pages", 100, 1)?;
+            let mut pages = Vec::with_capacity(n);
+            for _ in 0..n {
+                pages.push(r.string(1024)?.to_owned());
+            }
+            let title = if bool::decode(r)? {
+                Some(r.string(32)?.to_owned())
+            } else {
+                None
+            };
+            Ok(EditBook { slot, pages, title })
+        }
+    }
+
+    manual_packet!(
+        EditBook,
+        Serverbound,
+        serverbound,
+        EDIT_BOOK,
+        "edit_book",
+        Inventory
+    );
+
+    /// `bundle_item_selected`: the item of the bundle in menu slot `slot_id` the client
+    /// selected (`-1` for none).
+    #[derive(Debug, Clone, PartialEq, Eq, Packet)]
+    #[packet(state = Play, dir = Serverbound, name = "bundle_item_selected", bucket = "inventory")]
+    pub struct SelectBundleItem {
+        #[field(varint)]
+        pub slot_id: i32,
+        #[field(varint)]
+        pub selected_item_index: i32,
+    }
+
+    /// `pick_item_from_entity`: middle click on an entity.
+    #[derive(Debug, Clone, PartialEq, Eq, Packet)]
+    #[packet(state = Play, dir = Serverbound, name = "pick_item_from_entity", bucket = "inventory")]
+    pub struct PickItemFromEntity {
+        #[field(varint)]
+        pub id: i32,
+        pub include_data: bool,
+    }
 }
 
 /// Clientbound packets.
@@ -501,6 +570,153 @@ pub mod clientbound {
     use crate::codec::{Decode, Encode, Reader, Result, write_len, write_varint};
     use crate::item::ItemStack;
     use crate::types::BlockPos;
+
+    /// `open_book`: the client opens the written book in `hand`.
+    #[derive(Debug, Clone, PartialEq, Eq, Packet)]
+    #[packet(state = Play, dir = Clientbound, name = "open_book")]
+    pub struct OpenBook {
+        pub hand: super::serverbound::Hand,
+    }
+
+    /// One map decoration (`MapDecoration`).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct MapDecoration {
+        /// `minecraft:map_decoration_type` id.
+        pub kind: i32,
+        pub x: i8,
+        pub y: i8,
+        /// 0–15.
+        pub rot: i8,
+        pub name: Option<crate::text::Component>,
+    }
+
+    impl Encode for MapDecoration {
+        fn encode(&self, out: &mut Vec<u8>) {
+            write_varint(out, self.kind);
+            self.x.encode(out);
+            self.y.encode(out);
+            self.rot.encode(out);
+            self.name.encode(out);
+        }
+    }
+
+    impl Decode for MapDecoration {
+        fn decode(r: &mut Reader<'_>) -> Result<Self> {
+            let kind = r.varint()?;
+            let x = r.i8()?;
+            let y = r.i8()?;
+            let rot = r.i8()? & 15;
+            let name = if bool::decode(r)? {
+                Some(crate::codec::DecodeLimited::decode_limited(r, 2_097_152)?)
+            } else {
+                None
+            };
+            Ok(MapDecoration {
+                kind,
+                x,
+                y,
+                rot,
+                name,
+            })
+        }
+    }
+
+    /// A changed rectangle of map colours (`MapPatch`).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct MapPatch {
+        pub start_x: u8,
+        pub start_y: u8,
+        pub width: u8,
+        pub height: u8,
+        /// `width * height` colours, column `x` first: `colors[x + y * width]`.
+        pub colors: Vec<u8>,
+    }
+
+    /// `map_item_data`: colours and decorations of map `map_id`.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct MapItemData {
+        pub map_id: i32,
+        pub scale: i8,
+        pub locked: bool,
+        pub decorations: Option<Vec<MapDecoration>>,
+        pub patch: Option<MapPatch>,
+    }
+
+    impl Encode for MapItemData {
+        fn encode(&self, out: &mut Vec<u8>) {
+            write_varint(out, self.map_id);
+            self.scale.encode(out);
+            self.locked.encode(out);
+            match &self.decorations {
+                Some(list) => {
+                    out.push(1);
+                    write_len(out, list.len());
+                    for d in list {
+                        d.encode(out);
+                    }
+                }
+                None => out.push(0),
+            }
+            match &self.patch {
+                Some(p) if p.width > 0 => {
+                    out.extend_from_slice(&[p.width, p.height, p.start_x, p.start_y]);
+                    write_len(out, p.colors.len());
+                    out.extend_from_slice(&p.colors);
+                }
+                _ => out.push(0),
+            }
+        }
+    }
+
+    impl Decode for MapItemData {
+        fn decode(r: &mut Reader<'_>) -> Result<Self> {
+            let map_id = r.varint()?;
+            let scale = r.i8()?;
+            let locked = bool::decode(r)?;
+            let decorations = if bool::decode(r)? {
+                let n = r.len_prefix("map decorations", 1 << 16, 5)?;
+                let mut list = Vec::with_capacity(n);
+                for _ in 0..n {
+                    list.push(MapDecoration::decode(r)?);
+                }
+                Some(list)
+            } else {
+                None
+            };
+            let width = r.u8()?;
+            let patch = if width > 0 {
+                let height = r.u8()?;
+                let start_x = r.u8()?;
+                let start_y = r.u8()?;
+                let n = r.len_prefix("map colors", 128 * 128, 1)?;
+                Some(MapPatch {
+                    start_x,
+                    start_y,
+                    width,
+                    height,
+                    colors: r.take(n)?.to_vec(),
+                })
+            } else {
+                None
+            };
+            Ok(MapItemData {
+                map_id,
+                scale,
+                locked,
+                decorations,
+                patch,
+            })
+        }
+    }
+
+    manual_packet!(
+        MapItemData,
+        Clientbound,
+        clientbound,
+        MAP_ITEM_DATA,
+        "map_item_data",
+        Default
+    );
 
     /// `block_changed_ack`: block changes of the client's predictions up to `sequence` are
     /// settled.

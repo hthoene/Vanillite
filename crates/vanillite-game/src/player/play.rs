@@ -54,6 +54,8 @@ pub struct GameData {
     pub enchantment_info: HashMap<String, EnchantmentInfo>,
     /// The `minecraft:trial_spawner` registry.
     pub trial_spawner_configs: crate::block::trial_spawner::TrialConfigs,
+    /// The `minecraft:instrument` registry, by id.
+    pub instruments: Vec<super::items::Instrument>,
 }
 
 /// What `/enchant` reads of an enchantment (`Enchantment` and its `EnchantmentDefinition`).
@@ -974,6 +976,52 @@ impl Digging {
             return true;
         }
         let used = item::item_id(&stack);
+        if used == vanillite_data::item::ids::FILLED_MAP
+            && let Some(level) = ctx.level.level_mut()
+            && let Some(ok) = crate::map::use_on_banner(level, &stack, pos)
+        {
+            // `MapItem.useOn` on a banner (any game mode: it runs before `useOn`'s build check
+            // in Vanilla's `ItemStack.useOn` only for the item itself).
+            return ok;
+        }
+        if used == vanillite_data::item::ids::COMPASS
+            && ctx.actor.game_mode != GameMode::Adventure
+            && ctx.level.block(pos).block() == vanillite_data::block::ids::LODESTONE
+        {
+            // `CompassItem.useOn`.
+            ctx.level.play_sound(
+                None,
+                Vec3::new(
+                    f64::from(pos.x) + 0.5,
+                    f64::from(pos.y) + 0.5,
+                    f64::from(pos.z) + 0.5,
+                ),
+                u16::try_from(
+                    crate::survival::sound_event("minecraft:item.lodestone_compass.lock").0,
+                )
+                .unwrap_or(0),
+                crate::player::world::SoundSource::Players,
+                1.0,
+                1.0,
+            );
+            let dimension = ctx.level.dimension().to_owned();
+            let creative = ctx.actor.creative();
+            let slot = match hand {
+                Hand::MainHand => ctx.inventory.selected_item_mut(),
+                Hand::OffHand => Some(&mut ctx.inventory.offhand),
+            };
+            let extra =
+                slot.and_then(|s| crate::carried::bind_lodestone(s, &dimension, pos, creative));
+            if let Some(mut compass) = extra
+                && !ctx.inventory.add(None, &mut compass, creative)
+            {
+                ctx.drops.push(Drop {
+                    stack: compass,
+                    thrown: false,
+                });
+            }
+            return true;
+        }
         if used == vanillite_data::item::ids::FLINT_AND_STEEL
             || used == vanillite_data::item::ids::ENDER_EYE
         {

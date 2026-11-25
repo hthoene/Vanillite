@@ -12,7 +12,10 @@
 
 pub mod advancements;
 pub mod block;
+pub mod book;
 pub mod boss_bar;
+pub mod bundle;
+pub mod carried;
 pub mod commands;
 pub mod effect;
 pub mod enchant;

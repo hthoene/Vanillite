@@ -52,8 +52,17 @@ fn use_duration(ents: &Entities, player: EntityId, stack: &ItemStack) -> i32 {
     if info.blocks_attacks || name == "minecraft:bow" {
         return 72000;
     }
-    if name == "minecraft:brush" {
+    if name == "minecraft:brush" || crate::bundle::has_contents(stack) {
         return 200;
+    }
+    if name == "minecraft:spyglass" {
+        return 1200;
+    }
+    if stack
+        .component(vanillite_protocol::components::ids::INSTRUMENT)
+        .is_some()
+    {
+        return super::items::instrument_use_ticks(stack);
     }
     let drink = matches!(
         name,
@@ -191,6 +200,17 @@ pub fn tick(ents: &mut Entities, env: &mut Env<'_>, player: EntityId) {
         mark(ents, player);
     }
     let remaining = u.duration.saturating_sub(ticks);
+    if crate::bundle::has_contents(&stack) {
+        // `BundleItem.onUseTick` with Vanilla's remaining ticks before the decrement.
+        super::items::bundle_use_tick(
+            ents,
+            env,
+            player,
+            u.hand,
+            remaining.saturating_add(1),
+            u.duration,
+        );
+    }
     on_use_tick(ents, env, player, &stack, remaining);
     if remaining <= 0 && u.duration < 72000 {
         finish(ents, env, player, u);
@@ -246,6 +266,22 @@ fn finish(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, u: UsingItem
     let id = item::item_id(&stack);
     let name = id.name();
     let pos = ents.store.get(player).map_or(Vec3::ZERO, |e| e.pos());
+    let consumable = id.info().food.is_some()
+        || matches!(
+            name,
+            "minecraft:milk_bucket"
+                | "minecraft:potion"
+                | "minecraft:honey_bottle"
+                | "minecraft:ominous_bottle"
+        );
+    if !consumable {
+        // `Item.finishUsingItem` keeps the stack; the spyglass stops zooming.
+        if name == "minecraft:spyglass" {
+            spyglass_stop(env, player, pos);
+        }
+        finished_event(ents, player);
+        return;
+    }
     let creative = ents
         .player(player)
         .is_some_and(|p| p.game_mode == GameMode::Creative);
@@ -340,6 +376,18 @@ fn finish(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, u: UsingItem
             }
         }
     }
+    // `applyAfterUseComponentSideEffects`: the `use_cooldown` of the used stack.
+    if let Some(p) = ents.player_mut(player) {
+        let sink = std::sync::Arc::clone(&p.connection.sink);
+        p.survival
+            .cooldowns
+            .apply_use_cooldown(&stack, sink.as_ref());
+    }
+    finished_event(ents, player);
+}
+
+/// `ServerPlayer.completeUsingItem`: `entity_event` 9 to the player.
+fn finished_event(ents: &Entities, player: EntityId) {
     if let Some(e) = ents.store.get(player)
         && let Some(p) = ents.player(player)
     {
@@ -348,6 +396,20 @@ fn finish(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, u: UsingItem
             event: 9,
         });
     }
+}
+
+/// `SpyglassItem.stopUsing`: the player's sound for everyone else.
+fn spyglass_stop(env: &mut Env<'_>, player: EntityId, pos: Vec3) {
+    play_sound(
+        env.out,
+        Some(player),
+        pos,
+        "minecraft:item.spyglass.stop_using",
+        SoundSource::Players,
+        1.0,
+        1.0,
+        crate::survival::sound_seed(),
+    );
 }
 
 /// The first arrow (`#arrows`: arrows, tipped and spectral arrows) in the inventory
@@ -388,6 +450,11 @@ pub fn release(
     };
     stop(ents, player);
     let stack = held(ents, player, u.hand);
+    if stack.item == u.item && item::item_id(&stack).name() == "minecraft:spyglass" {
+        let pos = ents.store.get(player).map_or(Vec3::ZERO, |e| e.pos());
+        spyglass_stop(env, player, pos);
+        return;
+    }
     if stack.item != u.item || item::item_id(&stack).name() != "minecraft:bow" {
         return;
     }

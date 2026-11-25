@@ -78,6 +78,10 @@ pub trait PlayLevel {
     }
     /// The level itself, for gameplay that works on block entities and block behaviours
     /// (block use, containers); `None` in tests without a level.
+    /// The world's dimension.
+    fn dimension(&self) -> &str {
+        "minecraft:overworld"
+    }
     fn level_mut(&mut self) -> Option<&mut crate::level::Level> {
         None
     }

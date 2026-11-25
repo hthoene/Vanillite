@@ -102,8 +102,14 @@ pub(super) fn locate(
                         .iter()
                         .filter_map(|id| g.terrain.structures().structure_id(id))
                         .collect();
-                    nearest_structure(&g.terrain, &wanted, origin, level_height(env))
-                        .map(|(pos, id)| (pos, g.terrain.structures().structure(id).name.clone()))
+                    nearest_structure(
+                        &g.terrain,
+                        &wanted,
+                        origin,
+                        level_height(env),
+                        MAX_STRUCTURE_SEARCH_RADIUS,
+                    )
+                    .map(|(pos, id)| (pos, g.terrain.structures().structure(id).name.clone()))
                 });
             let Some((pos, name)) = found else {
                 return Err(CommandError::new(
@@ -273,12 +279,13 @@ fn generating_at(
     })
 }
 
-/// `ChunkGenerator.findNearestMapStructure(level, structures, pos, 100, false)`.
+/// `ChunkGenerator.findNearestMapStructure(level, structures, pos, radius, false)`.
 fn nearest_structure(
     terrain: &TerrainGenerator,
     wanted: &[StructureId],
     origin: BlockPos,
     level: LevelHeight,
+    max_radius: i32,
 ) -> Option<(BlockPos, StructureId)> {
     let state = StructureState::new(terrain);
     let registry = terrain.structures();
@@ -332,7 +339,7 @@ fn nearest_structure(
     }
     let (cx, cz) = (origin.x >> 4, origin.z >> 4);
     let seed = state.level_seed();
-    for radius in 0..=MAX_STRUCTURE_SEARCH_RADIUS {
+    for radius in 0..=max_radius {
         let mut found_something = false;
         for &(set, spacing) in &spreads {
             let placement = &registry.set(set).placement;
@@ -526,6 +533,60 @@ pub(super) fn place(
             check(chunk, chunk)?;
             failed("commands.place.template.failed")
         }
+    }
+}
+
+/// The structure search and biome tags of exploration maps
+/// ([`vanillite_game::map::Explorer`]), with the registry tags of the loaded data packs.
+/// Structures already explored are not skipped: starts carry no reference counts yet.
+pub(crate) struct MapExplorer {
+    pub(crate) tags: std::sync::Arc<crate::systems::RegistryTags>,
+}
+
+impl vanillite_game::map::Explorer for MapExplorer {
+    fn nearest_structure(
+        &self,
+        terrain: &TerrainGenerator,
+        tag: &str,
+        origin: BlockPos,
+        radius: i32,
+        min_y: i32,
+        height: i32,
+    ) -> Option<BlockPos> {
+        let names = self.tags.get("minecraft:worldgen/structure")?.get(tag)?;
+        let wanted: Vec<StructureId> = names
+            .iter()
+            .filter_map(|n| terrain.structures().structure_id(n))
+            .collect();
+        if wanted.is_empty() {
+            return None;
+        }
+        nearest_structure(
+            terrain,
+            &wanted,
+            origin,
+            LevelHeight { min_y, height },
+            radius,
+        )
+        .map(|(pos, _)| pos)
+    }
+
+    fn water_on_map_outlines<'a>(
+        &'a self,
+        terrain: &'a TerrainGenerator,
+    ) -> Box<dyn FnMut(BlockPos) -> bool + 'a> {
+        let watery = self
+            .tags
+            .get("minecraft:worldgen/biome")
+            .and_then(|t| t.get("minecraft:water_on_map_outlines"));
+        let mut resolver = terrain
+            .biome_source()
+            .create_caching_resolver(terrain.program(), terrain.climate());
+        Box::new(move |pos: BlockPos| {
+            let biome = resolver.noise_biome(pos.x >> 2, pos.y >> 2, pos.z >> 2);
+            let name = &terrain.biomes().get(biome).name;
+            watery.is_some_and(|w| w.iter().any(|n| n == name))
+        })
     }
 }
 

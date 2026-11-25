@@ -55,6 +55,31 @@ impl ItemData {
     }
 }
 
+/// `Item.onDestroyed` of a destroyed item entity's stack: a bundle (`BundleItem`) or a block
+/// item with a `container` (`BlockItem`) is emptied; the stacks to drop.
+pub fn take_destroyed_contents(stack: &mut ItemStack) -> Vec<ItemStack> {
+    if let Some(items) = crate::bundle::items(stack) {
+        crate::bundle::set_items(stack, &[]);
+        return items;
+    }
+    if item::item_id(stack).block().is_none() {
+        return Vec::new();
+    }
+    let Some(value) = stack
+        .component(vanillite_protocol::components::ids::CONTAINER)
+        .map(<[u8]>::to_vec)
+    else {
+        return Vec::new();
+    };
+    // `set(CONTAINER, EMPTY)`: the empty contents are the default.
+    stack
+        .patch_mut()
+        .unset(vanillite_protocol::components::ids::CONTAINER);
+    vanillite_protocol::item::decode_container_contents(&value)
+        .map(|items| items.into_iter().filter(|s| !s.is_empty()).collect())
+        .unwrap_or_default()
+}
+
 /// `ItemEntity.areMergable`.
 pub fn are_mergable(a: &ItemStack, b: &ItemStack) -> bool {
     b.count.saturating_add(a.count) <= item::max_stack_size(b) && a.same_item_same_components(b)

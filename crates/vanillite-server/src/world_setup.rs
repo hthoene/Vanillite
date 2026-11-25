@@ -280,6 +280,7 @@ impl ChunkGeneratorProvider for BuiltInGenerators {
                 world.dimension.clone(),
                 vanillite_game::level::Generation {
                     terrain: generator.shared(),
+                    dimension: world.dimension.clone(),
                     structures: generator.generates_structures(),
                 },
             );
