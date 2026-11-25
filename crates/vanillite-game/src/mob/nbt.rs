@@ -630,18 +630,31 @@ pub fn save_arrow(
     out.insert("pickup", a.pickup as i8);
     out.insert("damage", a.base_damage);
     out.insert("crit", a.crit);
-    out.insert("PierceLevel", 0_i8);
-    out.insert("SoundEvent", "minecraft:entity.arrow.hit");
+    #[allow(clippy::cast_possible_wrap)]
+    out.insert("PierceLevel", a.pierce_level as i8);
+    out.insert("SoundEvent", hit_sound(a));
     if let Some(o) = owner {
         out.insert("Owner", uuid_ints(o));
     }
     out.insert("HasBeenShot", a.has_been_shot);
     out.insert("LeftOwner", a.left_owner);
     out.insert("item", crate::item_nbt::stack_to_nbt(&a.item));
+    if let Some(w) = a.weapon.as_ref().filter(|w| !w.is_empty()) {
+        out.insert("weapon", crate::item_nbt::stack_to_nbt(w));
+    }
     if core.kind() == ids::SPECTRAL_ARROW {
         out.insert("Duration", a.spectral_duration);
     }
     out
+}
+
+/// The sound an arrow makes when it hits (`soundEvent`).
+fn hit_sound(a: &super::projectile::ArrowData) -> &'static str {
+    if a.crossbow_sound {
+        "minecraft:item.crossbow.hit"
+    } else {
+        "minecraft:entity.arrow.hit"
+    }
 }
 
 /// An arrow from entity NBT (its owner is not resolved).
@@ -690,6 +703,17 @@ pub fn load_arrow(tag: &Compound) -> Option<(LoadedEntity, super::projectile::Ar
             in_ground_time: 0,
             spectral_duration: int(tag, "Duration").unwrap_or(200),
             has_been_shot: matches!(tag.get("HasBeenShot"), Some(Tag::Byte(b)) if *b != 0),
+            pierce_level: u8::try_from(int(tag, "PierceLevel").unwrap_or(0).clamp(0, 127))
+                .unwrap_or(0),
+            pierced: Vec::new(),
+            crossbow_sound: matches!(
+                tag.get("SoundEvent"),
+                Some(Tag::String(s)) if s.as_str() == "minecraft:item.crossbow.hit"
+            ),
+            weapon: match tag.get("weapon") {
+                Some(Tag::Compound(c)) => Some(crate::item_nbt::stack_from_nbt(c)),
+                _ => None,
+            },
         },
     ))
 }

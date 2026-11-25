@@ -235,6 +235,7 @@ impl ServerWorld {
                     knockback: vanillite_game::effect::living::WIND_CHARGED_KNOCKBACK,
                     wind_sound: Some(vanillite_game::effect::living::WIND_CHARGED_SOUND),
                     resistance: vanillite_game::level::explosion::BlockResistance::WindCharge,
+                    fire: false,
                 },
             );
         }
@@ -488,19 +489,35 @@ impl ServerWorld {
         }
         let rules = global.level.rules();
         let data = &mut traveller.data;
-        // `triggerDimensionChangeTriggers`: `changed_dimension` from the world it left.
-        if traveller.from != self.id
+        // `teleport(TeleportTransition)`: `enteredNetherPosition` and
+        // `triggerDimensionChangeTriggers` (`changed_dimension`, `nether_travel`) from the world
+        // it left; a respawn (`PlayerList.respawn`) fires none.
+        if keep_all.is_none()
+            && traveller.from != self.id
             && let (Some(from), Some(to)) = (
                 crate::server::DIMENSIONS.get(traveller.from.index()),
                 crate::server::DIMENSIONS.get(self.id.index()),
             )
         {
-            data.advancements.trigger(
-                vanillite_game::advancements::trigger::Event::ChangedDimension(
-                    (*from).to_owned(),
-                    (*to).to_owned(),
-                ),
-            );
+            use vanillite_game::advancements::trigger::{Event, TriggerKind};
+            let (from, to) = (*from, *to);
+            let tracking = &mut data.survival.tracking;
+            if from == "minecraft:overworld" && to == "minecraft:the_nether" {
+                tracking.entered_nether = Some(traveller.pos);
+            }
+            data.advancements
+                .trigger(Event::ChangedDimension(from.to_owned(), to.to_owned()));
+            if from == "minecraft:the_nether"
+                && to == "minecraft:overworld"
+                && let Some(entered) = data.survival.tracking.entered_nether
+            {
+                let kind = TriggerKind::NETHER_TRAVEL;
+                data.advancements
+                    .trigger_with(kind, || Event::Distance(kind, entered));
+            }
+            if to != "minecraft:the_nether" {
+                data.survival.tracking.entered_nether = None;
+            }
         }
         if let Some(keep_all) = keep_all {
             // `restoreFrom`: everything stays after the credits, else what death keeps.

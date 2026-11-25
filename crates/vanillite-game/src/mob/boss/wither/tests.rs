@@ -310,6 +310,10 @@ fn powered_wither_ignores_arrows() {
             in_ground_time: 0,
             spectral_duration: 200,
             has_been_shot: false,
+            pierce_level: 0,
+            pierced: Vec::new(),
+            crossbow_sound: false,
+            weapon: None,
         },
     );
     if let Some(m) = level.entities.mob_mut(wither) {

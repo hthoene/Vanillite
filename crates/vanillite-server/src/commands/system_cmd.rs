@@ -136,7 +136,7 @@ fn random(
                 Some(id) => global
                     .systems
                     .random_sequences()
-                    .get(id, global.seed)
+                    .get(id)
                     .next_int_bounded(bound),
                 None => env.level.random().next_int_bounded(bound),
             };
@@ -169,10 +169,7 @@ fn random(
                 .identifier("sequence")
                 .ok_or_else(|| missing("sequence"))?;
             let options = (op == RandomOp::ResetWithSeed).then(seed_options);
-            global
-                .systems
-                .random_sequences()
-                .reset(id, global.seed, options);
+            global.systems.random_sequences().reset(id, options);
             source.send_success(
                 global,
                 tr(

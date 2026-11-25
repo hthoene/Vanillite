@@ -117,6 +117,34 @@ pub(super) fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
         && !baby
         && let Some(effect) = flower_effect(name)
     {
+        // Smoke when it already has an effect, else the effect swirl; the spread is the speed.
+        if let Some((e, h)) = ix
+            .ents
+            .store
+            .get(ix.target)
+            .map(|e| (e.pos(), e.dims().height))
+        {
+            let (particle, count) = if stew.is_some() {
+                (crate::level::particles::simple("minecraft:smoke"), 2)
+            } else {
+                (
+                    crate::level::particles::spell("minecraft:effect", -1, 1.0),
+                    4,
+                )
+            };
+            let mut packet = crate::level::particles::packet(
+                particle,
+                Vec3::new(e.x, e.y + f64::from(h) * 0.5, e.z),
+                count,
+                Vec3::new(0.5, 0.0, 0.5),
+                0.0,
+            );
+            packet.y_max_speed = 0.2;
+            packet.randomization = crate::level::particles::ALTERNATIVE_WITH_SPEED;
+            ix.cx
+                .actions
+                .push(crate::mob::WorldAction::Particles(Box::new(packet)));
+        }
         if stew.is_none() {
             use_item(ix.ents, ix.player, ix.hand);
             if let Some(m) = ix.ents.mob_mut(ix.target) {
@@ -206,6 +234,13 @@ fn shear(ix: &mut Interact<'_, '_>) {
             ..rot
         },
         cow,
+    );
+    ix.cx.send_particles(
+        crate::level::particles::simple("minecraft:explosion"),
+        pos + Vec3::new(0.0, height * 0.5, 0.0),
+        1,
+        Vec3::ZERO,
+        0.0,
     );
     // `shearing/mooshroom`: five mushrooms of its colour, one item entity each.
     for _ in 0..5 {

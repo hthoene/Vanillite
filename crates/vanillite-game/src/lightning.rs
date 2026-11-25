@@ -40,6 +40,10 @@ pub struct LightningData {
     pub visual_only: bool,
     /// The entity's own random (`Entity.random`).
     pub random: LegacyRandom,
+    /// `blocksSetOnFire`.
+    pub blocks_set_on_fire: i32,
+    /// `hitEntities`: every entity a flash struck.
+    pub hit_entities: Vec<EntityId>,
 }
 
 /// What a strike needs to know about the world besides the level.
@@ -109,6 +113,8 @@ pub fn spawn(level: &mut Level, pos: Vec3, visual_only: bool) -> EntityId {
             flashes,
             visual_only,
             random,
+            blocks_set_on_fire: 0,
+            hit_entities: Vec::new(),
         },
     )
 }
@@ -282,6 +288,7 @@ pub fn tick(level: &mut Level, id: EntityId, hits: &mut Vec<EntityId>) {
     bolt.life -= 1;
     if bolt.life < 0 {
         if bolt.flashes == 0 {
+            strike_triggers(&mut level.entities, id, pos);
             level.entities.despawn(id);
             return;
         }
@@ -312,6 +319,64 @@ pub fn tick(level: &mut Level, id: EntityId, hits: &mut Vec<EntityId>) {
             hits.push(other);
         }
     });
+    if let Some(bolt) = level.entities.bolt_mut(id) {
+        for &h in hits.iter() {
+            if !bolt.hit_entities.contains(&h) {
+                bolt.hit_entities.push(h);
+            }
+        }
+    }
+}
+
+/// The `lightning_strike` trigger when the bolt goes: the players closer than 256 blocks, with
+/// the alive entities around that no flash struck.
+fn strike_triggers(ents: &mut Entities, id: EntityId, pos: Vec3) {
+    use crate::advancements::trigger::{Event, TriggerKind};
+    use crate::advancements::view;
+    let kind = TriggerKind::LIGHTNING_STRIKE;
+    let players: Vec<EntityId> = ents
+        .players
+        .iter()
+        .map(|(p, _)| p)
+        .filter(|&p| {
+            view::listens(ents, p, kind)
+                && ents
+                    .store
+                    .get(p)
+                    .is_some_and(|e| e.pos().distance_to_sqr(pos) < 256.0 * 256.0)
+        })
+        .collect();
+    if players.is_empty() {
+        return;
+    }
+    let area = Aabb::new(
+        pos.x - 15.0,
+        pos.y - 15.0,
+        pos.z - 15.0,
+        pos.x + 15.0,
+        pos.y + 6.0 + 15.0,
+        pos.z + 15.0,
+    );
+    let hit = ents
+        .bolt(id)
+        .map(|b| b.hit_entities.clone())
+        .unwrap_or_default();
+    let mut viewers = Vec::new();
+    ents.store.for_each_in(&area, false, |other| {
+        if other != id && alive(ents, other) && !hit.contains(&other) {
+            viewers.push(other);
+        }
+    });
+    let Some(bolt) = view::snapshot(ents, id) else {
+        return;
+    };
+    let around = view::snapshots(ents, &viewers);
+    for p in players {
+        if let Some(p) = ents.player_mut(p) {
+            p.advancements
+                .trigger(Event::LightningStrike(bolt.clone(), around.clone()));
+        }
+    }
 }
 
 /// `LightningBolt.spawnFire(additionalSources)`: fire at the bolt and at random blocks around
@@ -333,17 +398,20 @@ fn spawn_fire(level: &mut Level, id: EntityId, pos: Vec3, additional: i32) {
         let state = place::fire_state(&*level, target);
         if level.block(target).is_air() && level.can_survive(state, target) {
             level.set_block_and_update(target, state);
+            return 1;
         }
+        0
     };
-    place_fire(level, at);
+    let mut set = place_fire(level, at);
     for _ in 0..additional {
         let x = random.next_int_bounded(3) - 1;
         let y = random.next_int_bounded(3) - 1;
         let z = random.next_int_bounded(3) - 1;
-        place_fire(level, at.offset(x, y, z));
+        set += place_fire(level, at.offset(x, y, z));
     }
     if let Some(bolt) = level.entities.bolt_mut(id) {
         bolt.random = random;
+        bolt.blocks_set_on_fire += set;
     }
 }
 

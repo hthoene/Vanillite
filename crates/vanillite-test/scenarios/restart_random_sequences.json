@@ -1,0 +1,124 @@
+{
+  "description": "Loot random sequences survive a restart like Vanilla (random_sequences.dat): wheat broken before the restart (outside the observed region) and after it drops seeds that go on from where the wheat loot table's sequence was, not from its start.",
+  "world": {
+    "seed": 9114,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:dirt",
+        3
+      ]
+    ]
+  },
+  "region": [
+    [
+      0,
+      -62,
+      0
+    ],
+    [
+      10,
+      -58,
+      6
+    ]
+  ],
+  "ticks": 40,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        2,
+        -61,
+        2
+      ],
+      "to": [
+        9,
+        -61,
+        2
+      ],
+      "block": "minecraft:farmland[moisture=7]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        2,
+        -60,
+        2
+      ],
+      "to": [
+        9,
+        -60,
+        2
+      ],
+      "block": "minecraft:wheat[age=7]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        20,
+        -61,
+        2
+      ],
+      "to": [
+        27,
+        -61,
+        2
+      ],
+      "block": "minecraft:farmland[moisture=7]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        20,
+        -60,
+        2
+      ],
+      "to": [
+        27,
+        -60,
+        2
+      ],
+      "block": "minecraft:wheat[age=7]"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 2,
+      "op": "fill",
+      "from": [
+        20,
+        -61,
+        2
+      ],
+      "to": [
+        27,
+        -61,
+        2
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "tick": 5,
+      "op": "restart"
+    },
+    {
+      "tick": 8,
+      "op": "fill",
+      "from": [
+        2,
+        -61,
+        2
+      ],
+      "to": [
+        9,
+        -61,
+        2
+      ],
+      "block": "minecraft:air"
+    }
+  ],
+  "tier": "fast"
+}

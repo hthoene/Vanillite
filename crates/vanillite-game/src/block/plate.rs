@@ -265,9 +265,20 @@ pub fn check_inside_blocks(level: &mut Level, entity: EntityId) {
     {
         return;
     }
-    let Some(aabb) = level.entities.store.get(entity).map(|e| e.aabb()) else {
+    let Some((aabb, pos, flags)) = level
+        .entities
+        .store
+        .get(entity)
+        .map(|e| (e.aabb(), e.pos(), e.flags()))
+    else {
         return;
     };
+    // `TurtleEggBlock.stepOn`: careful (sneaking) entities spare the eggs.
+    use vanillite_world::entity::EntityFlags;
+    if flags.contains(EntityFlags::ON_GROUND) && !flags.contains(EntityFlags::CROUCHING) {
+        let on = BlockPos::containing(pos.x, pos.y - f64::from(0.2_f32), pos.z);
+        super::eggs::trample_turtle_egg(level, on, true, 100);
+    }
     let eps = 1.0e-5;
     let min = (
         (aabb.min_x + eps).floor() as i32,

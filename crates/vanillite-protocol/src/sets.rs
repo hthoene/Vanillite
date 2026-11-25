@@ -123,6 +123,7 @@ packet_set! {
         ContainerButtonClick(play::serverbound::ContainerButtonClick),
         ContainerSlotStateChanged(play::serverbound::ContainerSlotStateChanged),
         RenameItem(play::serverbound::RenameItem),
+        SelectTrade(play::serverbound::SelectTrade),
         SetBeacon(play::serverbound::SetBeacon),
         SignUpdate(play::serverbound::SignUpdate),
         PlaceRecipe(play::serverbound::PlaceRecipe),

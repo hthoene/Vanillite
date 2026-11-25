@@ -88,6 +88,8 @@ pub struct CopperGolem {
     pub next_weathering_tick: i64,
     /// `TRANSPORT_ITEMS_COOLDOWN_TICKS` set in the constructor.
     pub transport_cooldown: i32,
+    /// `openedChestPos` with the container whose lid it opened.
+    pub opened_chest: Option<(BlockPos, crate::block::container::ContainerRef)>,
 }
 
 pub fn golem(m: &MobData) -> CopperGolem {

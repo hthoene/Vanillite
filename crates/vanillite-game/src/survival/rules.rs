@@ -128,6 +128,7 @@ impl Rule {
     pub const PLAYERS_NETHER_PORTAL_CREATIVE_DELAY: Rule = Rule(34);
     pub const PLAYERS_NETHER_PORTAL_DEFAULT_DELAY: Rule = Rule(35);
     pub const PVP: Rule = Rule(38);
+    pub const RAIDS: Rule = Rule(39);
     pub const REDUCED_DEBUG_INFO: Rule = Rule(41);
     pub const RESPAWN_RADIUS: Rule = Rule(42);
     pub const SHOW_ADVANCEMENT_MESSAGES: Rule = Rule(44);
@@ -137,6 +138,7 @@ impl Rule {
     pub const SPAWN_MONSTERS: Rule = Rule(48);
     pub const SPAWN_PATROLS: Rule = Rule(49);
     pub const SPAWN_PHANTOMS: Rule = Rule(50);
+    pub const SPAWN_WANDERING_TRADERS: Rule = Rule(51);
     pub const SPAWN_WARDENS: Rule = Rule(52);
     pub const SPECTATORS_GENERATE_CHUNKS: Rule = Rule(53);
     pub const TNT_EXPLODES: Rule = Rule(55);

@@ -1,0 +1,98 @@
+{
+  "description": "An unemployed villager by day finds a composter, claims it and becomes a farmer.",
+  "time": 2500,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -58,
+      15
+    ]
+  ],
+  "ticks": 400,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -58,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -58,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -58,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -58,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        11,
+        -60,
+        11
+      ],
+      "block": "minecraft:composter"
+    }
+  ],
+  "entities": [
+    {
+      "name": "villager",
+      "type": "minecraft:villager",
+      "pos": [
+        3.5,
+        -60.0,
+        3.5
+      ],
+      "seed": 21,
+      "finalize": false
+    }
+  ],
+  "tier": "fast"
+}

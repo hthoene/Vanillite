@@ -64,6 +64,36 @@ pub fn brushable_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
     }
 }
 
+/// `ScaffoldingBlock.onPlace`: the distance is checked on the next tick.
+pub fn scaffolding_on_place(
+    level: &mut Level,
+    _state: BlockState,
+    pos: BlockPos,
+    _old: BlockState,
+    _moved: bool,
+) {
+    level.schedule_block_tick(pos, ids::SCAFFOLDING, 1);
+}
+
+/// `ScaffoldingBlock.tick`: takes its distance to support; without support it falls (if it
+/// had none before) or breaks.
+pub fn scaffolding_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
+    let distance = vanillite_worldgen::behaviour::scaffolding_distance(level, pos);
+    let bottom = distance > 0 && !level.block(pos.below()).is(ids::SCAFFOLDING);
+    let new = state
+        .set_int("distance", distance)
+        .set_flag("bottom", bottom);
+    if distance == 7 {
+        if state.int("distance") == Some(7) {
+            fall(level, pos, new, true);
+        } else {
+            level.destroy_block(pos, true, None);
+        }
+    } else if state != new {
+        level.set_block_and_update(pos, new);
+    }
+}
+
 /// `FallingBlock.isFree(state)`.
 pub fn is_free(state: BlockState) -> bool {
     state.is_air()

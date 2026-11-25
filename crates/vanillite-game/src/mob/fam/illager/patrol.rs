@@ -29,8 +29,6 @@ pub struct PatrolInput<'a> {
     /// The players: position and whether they are spectators.
     pub players: &'a [(Vec3, bool)],
     pub table: Option<&'a SpawnTable>,
-    /// `isCloseToVillage(pos, 2)` (villages are #60; `false` without them).
-    pub close_to_village: &'a dyn Fn(BlockPos) -> bool,
     /// `EnvironmentAttributes.CAN_PILLAGER_PATROL_SPAWN` at a position.
     pub can_patrol_spawn: &'a dyn Fn(&Level, BlockPos) -> bool,
 }
@@ -73,7 +71,8 @@ pub fn patrol_spawner_tick(
         return 0;
     }
     let pp = BlockPos::containing(player.x, player.y, player.z);
-    if (input.close_to_village)(pp) {
+    // `isCloseToVillage(pos, 2)`.
+    if level.entities.poi.is_close_to_village(pp, 2) {
         return 0;
     }
     let r = level.random();
