@@ -997,6 +997,11 @@ impl Digging {
         {
             // `MapItem.useOn` on a banner (any game mode: it runs before `useOn`'s build check
             // in Vanilla's `ItemStack.useOn` only for the item itself).
+            if ok {
+                ctx.award_stat(Stat::of(StatType::Used, stack.item), 1);
+                ctx.trigger(Event::ItemUsedOnBlock(pos, stack));
+                any_block_use(ctx, hand, pos);
+            }
             return ok;
         }
         if used == vanillite_data::item::ids::COMPASS
@@ -1035,6 +1040,9 @@ impl Digging {
                     thrown: false,
                 });
             }
+            ctx.award_stat(Stat::of(StatType::Used, stack.item), 1);
+            ctx.trigger(Event::ItemUsedOnBlock(pos, stack));
+            any_block_use(ctx, hand, pos);
             return true;
         }
         if used == vanillite_data::item::ids::FLINT_AND_STEEL

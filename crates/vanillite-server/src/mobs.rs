@@ -1535,7 +1535,7 @@ fn use_item(
     if cooling {
         return;
     }
-    if vanillite_game::player::items::use_item(level, ents, env, player, hand) {
+    if vanillite_game::player::items::use_item(level, ents, env, network_ids, player, hand) {
         return;
     }
     let mut stack = take_held(ents, player, hand);
