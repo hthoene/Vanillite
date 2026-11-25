@@ -26,7 +26,7 @@ use vanillite_chunk::slots::{self, ChunkGenerator, ChunkStatus, Neighbours, Worl
 use vanillite_data::block::{BlockId, BlockState, ids};
 use vanillite_nbt::{Budget, Tag};
 use vanillite_storage::region::RegionFile;
-use vanillite_storage::{AnvilStorage, Compression};
+use vanillite_storage::{AnvilCodec, Compression};
 use vanillite_worldgen::behaviour::{self, BlockLevel};
 use vanillite_worldgen::{DimensionSpec, TerrainGenerator, VanillaChunkGenerator};
 
@@ -290,24 +290,41 @@ fn compare_with_vanilla_world() {
         }
     }
 
-    let storage = AnvilStorage::new(&world, Compression::Deflate);
+    let storage = (
+        world.dir.clone(),
+        AnvilCodec::new(&world, Compression::Deflate),
+    );
     // A second Vanilla world instead of Vanillite's generation (how much two Vanilla runs differ).
     let other = env("VANILLITE_COMPARE_OTHER").map(|dir| {
-        AnvilStorage::new(
-            &WorldInfo {
-                dir: PathBuf::from(dir),
-                ..world.clone()
-            },
-            Compression::Deflate,
+        let info = WorldInfo {
+            dir: PathBuf::from(dir),
+            ..world.clone()
+        };
+        (
+            info.dir.clone(),
+            AnvilCodec::new(&info, Compression::Deflate),
         )
     });
+    let load = |(dir, codec): &(PathBuf, AnvilCodec), pos: ChunkPos| -> Option<slots::ProtoChunk> {
+        use vanillite_chunk::slots::{ChunkCodec, RecordMeta};
+        let (rx, rz) = pos.region();
+        let path = dir.join(format!("region/r.{rx}.{rz}.mca"));
+        let region = RegionFile::open(&path, false).expect("open")?;
+        let record = region.read_record(pos).expect("read")?;
+        Some(
+            codec
+                .decode(pos, &RecordMeta::default(), &record)
+                .expect("decode"),
+        )
+    };
     let agree = env("VANILLITE_COMPARE_AGREE").map(|dir| {
-        AnvilStorage::new(
-            &WorldInfo {
-                dir: PathBuf::from(dir),
-                ..world.clone()
-            },
-            Compression::Deflate,
+        let info = WorldInfo {
+            dir: PathBuf::from(dir),
+            ..world.clone()
+        };
+        (
+            info.dir.clone(),
+            AnvilCodec::new(&info, Compression::Deflate),
         )
     });
     let mut pairs: BTreeMap<(String, String), u64> = BTreeMap::new();
@@ -324,14 +341,7 @@ fn compare_with_vanilla_world() {
                 skipped += 1;
                 continue;
             }
-            let mut out = Vec::new();
-            use vanillite_chunk::slots::ChunkStorage;
-            storage.load(&[pos], &mut out);
-            let vanilla = out
-                .pop()
-                .unwrap()
-                .expect("read")
-                .expect("chunk in Vanilla world");
+            let vanilla = load(&storage, pos).expect("chunk in Vanilla world");
             assert_eq!(
                 vanilla.status,
                 ChunkStatus::Full,
@@ -340,25 +350,14 @@ fn compare_with_vanilla_world() {
             let loaded;
             let ours = match &other {
                 Some(other) => {
-                    let mut out = Vec::new();
-                    other.load(&[pos], &mut out);
-                    loaded = out
-                        .pop()
-                        .unwrap()
-                        .expect("read")
-                        .expect("chunk in other world");
+                    loaded = load(other, pos).expect("chunk in other world");
                     &loaded
                 }
                 None => &*chunks[index(pos)],
             };
-            let agreed = agree.as_ref().map(|agree| {
-                let mut out = Vec::new();
-                agree.load(&[pos], &mut out);
-                out.pop()
-                    .unwrap()
-                    .expect("read")
-                    .expect("chunk in second Vanilla world")
-            });
+            let agreed = agree
+                .as_ref()
+                .map(|agree| load(agree, pos).expect("chunk in second Vanilla world"));
             let mut diff = 0u64;
             for (si, (a, b)) in ours
                 .chunk

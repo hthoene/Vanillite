@@ -52,6 +52,15 @@ pub enum MenuKind {
     BrewingStand,
     /// `enchantment`: the enchanting table.
     Enchantment,
+    /// `loom`.
+    Loom,
+    /// `cartography_table`.
+    CartographyTable,
+    /// `crafter_3x3`: the grid of a crafter block entity and a result display slot after the
+    /// player's inventory.
+    Crafter,
+    /// `lectern`: the book of a lectern, without the player's inventory.
+    Lectern,
 }
 
 impl MenuKind {
@@ -79,6 +88,10 @@ impl MenuKind {
             MenuKind::Smithing => "minecraft:smithing",
             MenuKind::BrewingStand => "minecraft:brewing_stand",
             MenuKind::Enchantment => "minecraft:enchantment",
+            MenuKind::Loom => "minecraft:loom",
+            MenuKind::CartographyTable => "minecraft:cartography_table",
+            MenuKind::Crafter => "minecraft:crafter_3x3",
+            MenuKind::Lectern => "minecraft:lectern",
         };
         vanillite_data::registry::MENU.id(name).map_or(0, i32::from)
     }
@@ -93,8 +106,11 @@ impl MenuKind {
             MenuKind::Crafting => 10,
             MenuKind::Furnace(_) | MenuKind::Anvil | MenuKind::Grindstone => 3,
             MenuKind::Stonecutter | MenuKind::Enchantment => 2,
-            MenuKind::Smithing => 4,
+            MenuKind::Smithing | MenuKind::Loom => 4,
             MenuKind::BrewingStand => 5,
+            MenuKind::CartographyTable => 3,
+            MenuKind::Crafter => 9,
+            MenuKind::Lectern => 1,
         }
     }
 
@@ -107,6 +123,8 @@ impl MenuKind {
                 | MenuKind::Grindstone
                 | MenuKind::Smithing
                 | MenuKind::Enchantment
+                | MenuKind::Loom
+                | MenuKind::CartographyTable
         )
     }
 
@@ -114,8 +132,12 @@ impl MenuKind {
     pub fn data_count(self) -> usize {
         match self {
             MenuKind::Furnace(_) | MenuKind::BrewingStand => 4,
-            MenuKind::Stonecutter | MenuKind::Anvil | MenuKind::Smithing => 1,
-            MenuKind::Enchantment => 10,
+            MenuKind::Stonecutter
+            | MenuKind::Anvil
+            | MenuKind::Smithing
+            | MenuKind::Loom
+            | MenuKind::Lectern => 1,
+            MenuKind::Enchantment | MenuKind::Crafter => 10,
             _ => 0,
         }
     }
@@ -132,6 +154,8 @@ pub enum Storage {
     Ender(BlockPos),
     /// The menu's own slots (crafting grid and result).
     Local,
+    /// A container entity: a chest or hopper minecart, a chest boat or raft.
+    Entity(EntityId),
 }
 
 /// A menu a block asks to open (`MenuProvider`).
@@ -178,22 +202,35 @@ pub struct ContainerMenu {
     pub only_renaming: bool,
     /// `StonecutterMenu.input`: the input the recipe list was made for.
     pub last_input: ItemStack,
-    /// The stonecutter recipes (indices) for the input.
+    /// The stonecutter recipes (indices) for the input; the loom's selectable patterns
+    /// (`minecraft:banner_pattern` ids).
     pub recipes: Vec<usize>,
+    /// The crafter grid the result display was computed for.
+    pub(super) crafter_grid: Vec<ItemStack>,
+    /// `player.mayBuild()` of the last button click (the lectern's take button).
+    pub may_build: bool,
     /// `StonecutterMenu.lastSoundTime`.
     pub last_sound: i64,
 }
 
 /// Where a menu slot is stored.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Source {
+pub(super) enum Source {
     Container(usize),
     Inv(usize),
+    /// The crafter's result display (after the inventory).
+    CrafterResult,
 }
 
 impl ContainerMenu {
-    fn source(&self, slot: usize) -> Option<Source> {
+    pub(super) fn source(&self, slot: usize) -> Option<Source> {
         let n = self.kind.container_slots();
+        if self.kind == MenuKind::Lectern {
+            return (slot == 0).then_some(Source::Container(0));
+        }
+        if self.kind == MenuKind::Crafter && slot == n + 36 {
+            return Some(Source::CrafterResult);
+        }
         if slot < n {
             Some(Source::Container(slot))
         } else if slot < n + 27 {
@@ -208,6 +245,9 @@ impl ContainerMenu {
     /// The menu slot that shows an inventory index (`findSlot(inventory, index)`).
     pub fn slot_of_inventory(&self, index: usize) -> Option<usize> {
         let n = self.kind.container_slots();
+        if self.kind == MenuKind::Lectern {
+            return None;
+        }
         match index {
             0..=8 => Some(n + 27 + index),
             9..=35 => Some(n + index - 9),
@@ -217,7 +257,11 @@ impl ContainerMenu {
 
     /// Number of slots.
     pub fn slot_count(&self) -> usize {
-        self.kind.container_slots() + 36
+        match self.kind {
+            MenuKind::Lectern => 1,
+            MenuKind::Crafter => 46,
+            kind => kind.container_slots() + 36,
+        }
     }
 
     /// The container positions whose viewers this menu counts.
@@ -225,7 +269,7 @@ impl ContainerMenu {
         match self.storage {
             Storage::Block(p) | Storage::Ender(p) => [Some(p), None],
             Storage::Double(a, b) => [Some(a), Some(b)],
-            Storage::Local => [None, None],
+            Storage::Local | Storage::Entity(_) => [None, None],
         }
     }
 }
@@ -249,6 +293,15 @@ pub struct ContainerView<'a> {
 impl ContainerView<'_> {
     fn container_item(&self, i: usize) -> &ItemStack {
         let empty = &ItemStack::EMPTY;
+        if self.menu.kind == MenuKind::Lectern {
+            return match self.menu.storage {
+                Storage::Block(pos) => match self.level.block_entity(pos) {
+                    Some(BlockEntity::Lectern(l)) if i == 0 => &l.book,
+                    _ => empty,
+                },
+                _ => empty,
+            };
+        }
         match self.menu.storage {
             Storage::Block(pos) => blocks::items(self.level, pos)
                 .and_then(|items| items.get(i))
@@ -261,10 +314,19 @@ impl ContainerView<'_> {
             }
             Storage::Ender(_) => self.inv.ender_chest.get(i).unwrap_or(empty),
             Storage::Local => self.menu.local.get(i).unwrap_or(empty),
+            Storage::Entity(id) => self
+                .level
+                .entities
+                .container_items(id)
+                .and_then(|items| items.get(i))
+                .unwrap_or(empty),
         }
     }
 
     fn container_item_mut(&mut self, i: usize) -> Option<&mut ItemStack> {
+        if self.menu.kind == MenuKind::Lectern {
+            return None;
+        }
         match self.menu.storage {
             Storage::Block(pos) => blocks::items_mut(self.level, pos)?.get_mut(i),
             Storage::Double(a, b) => {
@@ -273,6 +335,7 @@ impl ContainerView<'_> {
             }
             Storage::Ender(_) => self.inv.ender_chest.get_mut(i),
             Storage::Local => self.menu.local.get_mut(i),
+            Storage::Entity(id) => self.level.entities.container_items_mut(id)?.get_mut(i),
         }
     }
 
@@ -282,7 +345,9 @@ impl ContainerView<'_> {
             let grid = self.menu.local.get(1..10).unwrap_or_default();
             let input = CraftingInput::of(3, 3, grid);
             d.recipes
-                .crafting_for(&input)
+                .crafting_for_in(&input, &|m| {
+                    crate::map::info(self.level, m).map(|i| i.scale)
+                })
                 .map(|r| d.recipes.assemble(r, &input))
                 .unwrap_or_default()
         });
@@ -352,6 +417,7 @@ impl MenuSlots for ContainerView<'_> {
         match self.menu.source(slot) {
             Some(Source::Container(i)) => self.container_item(i),
             Some(Source::Inv(i)) => self.inv.get(i),
+            Some(Source::CrafterResult) => self.menu.local.first().unwrap_or(&ItemStack::EMPTY),
             None => &ItemStack::EMPTY,
         }
     }
@@ -360,6 +426,7 @@ impl MenuSlots for ContainerView<'_> {
         match self.menu.source(slot)? {
             Source::Container(i) => self.container_item_mut(i),
             Source::Inv(i) => self.inv.get_mut(i),
+            Source::CrafterResult => None,
         }
     }
 
@@ -372,6 +439,19 @@ impl MenuSlots for ContainerView<'_> {
                     if let Some(BlockEntity::Furnace(f)) = self.level.block_entity_mut(pos) {
                         f.set_item(i, stack);
                     }
+                    return;
+                }
+                if let (MenuKind::Crafter, Storage::Block(pos)) =
+                    (self.menu.kind, self.menu.storage)
+                {
+                    if let Some(BlockEntity::Crafter(c)) = self.level.block_entity_mut(pos) {
+                        c.set_item(i, stack);
+                    }
+                    self.crafter_changed();
+                    return;
+                }
+                if self.menu.kind == MenuKind::Lectern {
+                    // The lectern's book access ignores `setItem`.
                     return;
                 }
                 if let Some(target) = self.container_item_mut(i) {
@@ -387,7 +467,7 @@ impl MenuSlots for ContainerView<'_> {
                 }
             }
             Some(Source::Inv(i)) => self.inv.set(i, stack),
-            None => {}
+            Some(Source::CrafterResult) | None => {}
         }
     }
 
@@ -405,7 +485,10 @@ impl MenuSlots for ContainerView<'_> {
                     blocks::set_changed(self.level, a);
                     blocks::set_changed(self.level, b);
                 }
-                Storage::Ender(_) | Storage::Local => {}
+                Storage::Ender(_) | Storage::Local | Storage::Entity(_) => {}
+            }
+            if self.menu.kind == MenuKind::Crafter {
+                self.crafter_changed();
             }
         }
     }
@@ -425,7 +508,11 @@ impl MenuSlots for ContainerView<'_> {
     }
 
     fn may_place(&self, slot: usize, stack: &ItemStack) -> bool {
-        let Some(Source::Container(i)) = self.menu.source(slot) else {
+        let source = self.menu.source(slot);
+        if source == Some(Source::CrafterResult) {
+            return false;
+        }
+        let Some(Source::Container(i)) = source else {
             return true;
         };
         match self.menu.kind {
@@ -438,6 +525,9 @@ impl MenuSlots for ContainerView<'_> {
                 _ => false,
             },
             kind if kind.is_workstation() => super::workstation::may_place(kind, i, stack),
+            MenuKind::Crafter => !self.crafter_disabled(i),
+            // The lectern's book access ignores `setItem`: Vanilla would void the stack.
+            MenuKind::Lectern => false,
             MenuKind::BrewingStand => match i {
                 0..=2 => crate::block::brewing::is_potion_input(stack),
                 3 => crate::block::brewing::is_reagent(stack),
@@ -450,13 +540,19 @@ impl MenuSlots for ContainerView<'_> {
     fn slot_max(&self, slot: usize) -> i32 {
         match (self.menu.kind, self.menu.source(slot)) {
             (MenuKind::BrewingStand, Some(Source::Container(0..=2)))
-            | (MenuKind::Enchantment, Some(Source::Container(0))) => 1,
+            | (MenuKind::Enchantment, Some(Source::Container(0)))
+            | (MenuKind::Lectern, Some(Source::Container(0))) => 1,
             _ => super::CONTAINER_MAX,
         }
     }
 
     fn may_pickup(&self, slot: usize) -> bool {
         match self.menu.source(slot) {
+            // Only the take button (with `mayBuild`) takes the book: Vanilla's slot would hand
+            // a modified client the book (in adventure mode too) and its swap shares the
+            // instance with the lectern.
+            Some(Source::CrafterResult) => false,
+            Some(Source::Container(_)) if self.menu.kind == MenuKind::Lectern => false,
             Some(Source::Container(i))
                 if self.menu.kind.is_workstation()
                     && Some(i) == super::workstation::result_slot(self.menu.kind) =>
@@ -486,7 +582,7 @@ impl MenuSlots for ContainerView<'_> {
     fn on_take(
         &mut self,
         slot: usize,
-        taken: &ItemStack,
+        taken: &mut ItemStack,
         ctx: ClickContext,
         drops: &mut Vec<Drop>,
     ) {
@@ -494,12 +590,18 @@ impl MenuSlots for ContainerView<'_> {
             return;
         };
         match (self.menu.kind, i) {
+            (MenuKind::Loom, 3) => self.loom_take(),
+            (MenuKind::CartographyTable, 2) => self.cartography_take(taken),
             (kind, i)
                 if kind.is_workstation() && Some(i) == super::workstation::result_slot(kind) =>
             {
                 self.workstation_take(ctx, drops);
             }
-            (MenuKind::Crafting, 0) => self.take_crafted(taken, ctx, drops),
+            (MenuKind::Crafting, 0) => {
+                // `ResultSlot.checkTakeAchievements` → `onCraftedBy` → `onCraftedPostProcess`.
+                crate::map::on_crafted(self.level, taken);
+                self.take_crafted(taken, ctx, drops);
+            }
             (MenuKind::Furnace(_), 2) => {
                 if let Storage::Block(pos) = self.menu.storage {
                     let xp = crate::block::furnace::pop_experience(self.level, pos);
@@ -534,6 +636,21 @@ impl MenuSlots for ContainerView<'_> {
             return self.workstation_quick_move(index, ctx, drops);
         }
         match self.menu.kind {
+            MenuKind::Lectern => ItemStack::EMPTY,
+            MenuKind::Crafter => {
+                if index >= 45 {
+                    return ItemStack::EMPTY;
+                }
+                let moved = if index < 9 {
+                    super::move_to(self, &mut stack, 9, 45, true)
+                } else {
+                    super::move_to(self, &mut stack, 0, 9, false)
+                };
+                if !moved {
+                    return ItemStack::EMPTY;
+                }
+                super::finish_quick_move(self, index, stack, &original, ctx, drops)
+            }
             MenuKind::Generic { .. } | MenuKind::Hopper | MenuKind::ShulkerBox => {
                 let moved = if index < n {
                     super::move_to(self, &mut stack, n, total, true)
@@ -567,6 +684,8 @@ impl MenuSlots for ContainerView<'_> {
             }
             MenuKind::Crafting => {
                 let moved = if index == 0 {
+                    // `item.onCraftedBy(stack, player)` before moving.
+                    crate::map::on_crafted(self.level, &mut stack);
                     let moved = super::move_to(self, &mut stack, 10, 46, true);
                     if moved {
                         self.on_quick_craft(index, original.count - stack.count);
@@ -599,7 +718,9 @@ impl MenuSlots for ContainerView<'_> {
             | MenuKind::Anvil
             | MenuKind::Grindstone
             | MenuKind::Smithing
-            | MenuKind::Enchantment => ItemStack::EMPTY,
+            | MenuKind::Enchantment
+            | MenuKind::Loom
+            | MenuKind::CartographyTable => ItemStack::EMPTY,
             MenuKind::BrewingStand => {
                 use crate::block::brewing;
                 let moved = if index > 4 {
@@ -671,7 +792,8 @@ impl MenuSlots for ContainerView<'_> {
     fn can_take_for_pick_all(&self, slot: usize) -> bool {
         // `CraftingMenu` and `StonecutterMenu.canTakeItemForPickAll`: not the result.
         !((self.menu.kind == MenuKind::Crafting && slot == 0)
-            || (self.menu.kind == MenuKind::Stonecutter && slot == 1))
+            || (self.menu.kind == MenuKind::Stonecutter && slot == 1)
+            || (self.menu.kind == MenuKind::CartographyTable && slot == 2))
     }
 
     fn inventory(&mut self) -> &mut PlayerInventory {
@@ -692,6 +814,20 @@ impl MenuSlots for ContainerView<'_> {
                 },
                 _ => 0,
             },
+            MenuKind::Crafter => match self.menu.storage {
+                Storage::Block(pos) => match self.level.block_entity(pos) {
+                    Some(BlockEntity::Crafter(c)) => c.data(index),
+                    _ => 0,
+                },
+                _ => 0,
+            },
+            MenuKind::Lectern => match self.menu.storage {
+                Storage::Block(pos) => match self.level.block_entity(pos) {
+                    Some(BlockEntity::Lectern(l)) if index == 0 => l.page,
+                    _ => 0,
+                },
+                _ => 0,
+            },
             _ => self.menu.data.get(index).copied().unwrap_or(0),
         }
     }
@@ -699,8 +835,11 @@ impl MenuSlots for ContainerView<'_> {
 
 impl ContainerView<'_> {
     /// `clickMenuButton`: whether the button did something.
-    pub fn button(&mut self, id: i32) -> bool {
-        self.workstation_button(id)
+    pub fn button(&mut self, id: i32, drops: &mut Vec<Drop>) -> bool {
+        match self.menu.kind {
+            MenuKind::Lectern => self.lectern_button(id, drops),
+            _ => self.workstation_button(id),
+        }
     }
 
     /// `ResultSlot.onTake` of the crafting table.
@@ -710,7 +849,9 @@ impl ContainerView<'_> {
         };
         let grid: Vec<ItemStack> = self.menu.local.get(1..10).unwrap_or_default().to_vec();
         let input = CraftingInput::of(3, 3, &grid);
-        let recipe = data.recipes.crafting_for(&input);
+        let recipe = data.recipes.crafting_for_in(&input, &|m| {
+            crate::map::info(self.level, m).map(|i| i.scale)
+        });
         self.inv
             .crafted
             .push(crate::inventory::crafted(taken, recipe, grid.clone()));
@@ -758,6 +899,24 @@ pub fn open(
     if inv.container.is_some() {
         close(inv, level, who, drops, Some(sink));
     }
+    // `RandomizableContainerBlockEntity.canOpen`: spectators cannot open containers with a
+    // loot table; `createMenu` rolls the tables for the player (both halves of a chest).
+    let positions = match request.storage {
+        Storage::Block(p) => [Some(p), None],
+        Storage::Double(a, b) => [Some(a), Some(b)],
+        Storage::Ender(_) | Storage::Local | Storage::Entity(_) => [None, None],
+    };
+    if who.spectator
+        && positions
+            .iter()
+            .flatten()
+            .any(|&p| crate::block::chest_loot::has_loot(level, p))
+    {
+        return;
+    }
+    for p in positions.into_iter().flatten() {
+        crate::block::chest_loot::unpack(level, p, request.player);
+    }
     inv.container_counter = inv.container_counter % 100 + 1;
     let id = inv.container_counter;
     let kind = request.menu;
@@ -768,11 +927,15 @@ pub fn open(
         | MenuKind::Anvil
         | MenuKind::Grindstone
         | MenuKind::Smithing
-        | MenuKind::Enchantment => vec![ItemStack::EMPTY; kind.container_slots()],
+        | MenuKind::Enchantment
+        | MenuKind::Loom
+        | MenuKind::CartographyTable => vec![ItemStack::EMPTY; kind.container_slots()],
+        MenuKind::Crafter => vec![ItemStack::EMPTY],
         _ => Vec::new(),
     };
     let data = match kind {
-        MenuKind::Stonecutter => vec![-1],
+        // `DataSlot.standalone()` starts at 0; a changed input sets -1.
+        MenuKind::Stonecutter | MenuKind::Loom => vec![0],
         MenuKind::Anvil | MenuKind::Smithing => vec![0],
         MenuKind::Enchantment => vec![0, 0, 0, 0, -1, -1, -1, -1, -1, -1],
         _ => Vec::new(),
@@ -792,6 +955,8 @@ pub fn open(
         last_input: ItemStack::EMPTY,
         recipes: Vec::new(),
         last_sound: 0,
+        crafter_grid: Vec::new(),
+        may_build: true,
     };
     // The menu's constructor counts the viewer (`container.startOpen`).
     for pos in menu.viewed().into_iter().flatten() {
@@ -804,8 +969,58 @@ pub fn open(
     });
     inv.container = Some(Box::new(menu));
     with_view(inv, level, Vec3::default(), None, |view| {
+        if view.menu.kind == MenuKind::Crafter {
+            view.crafter_changed();
+        }
         super::send_all(view, sink)
     });
+}
+
+/// Opens the menus players asked for at entities (`ServerPlayer.openMenu`), with the
+/// entities back in the level; what the closed menus give back and does not fit drops at the
+/// player.
+pub fn open_requests(level: &mut Level, requests: Vec<MenuRequest>) {
+    if requests.is_empty() {
+        return;
+    }
+    let mut players = std::mem::take(&mut level.entities.players);
+    let mut drops: Vec<(Vec3, Drop)> = Vec::new();
+    for request in requests {
+        let Some(player) = request.player else {
+            continue;
+        };
+        let Some(row) = level.entities.store.get(player).map(|e| e.kind_row()) else {
+            continue;
+        };
+        let pos = level
+            .entities
+            .store
+            .get(player)
+            .map_or(Vec3::default(), |e| e.pos());
+        let Some(p) = players.get_mut(row) else {
+            continue;
+        };
+        let who = Opener {
+            spectator: p.game_mode == vanillite_config::GameMode::Spectator,
+            infinite: p.game_mode == vanillite_config::GameMode::Creative,
+            disconnected: false,
+        };
+        let sink = std::sync::Arc::clone(&p.connection.sink);
+        let mut out = Vec::new();
+        open(
+            &mut p.inventory,
+            level,
+            request,
+            who,
+            &mut out,
+            sink.as_ref(),
+        );
+        drops.extend(out.into_iter().map(|d| (pos, d)));
+    }
+    level.entities.players = players;
+    for (pos, drop) in drops {
+        crate::block::drops::spawn_item(level, pos, drop.stack, Vec3::default(), 40, None);
+    }
 }
 
 /// Runs `f` on the open container menu with the player's inventory and the level.
@@ -923,11 +1138,13 @@ pub fn close_on_leave(
 }
 
 /// `stillValid`: the block is still there and the player close enough
-/// (`isWithinBlockInteractionRange(pos, 4)`).
+/// (`isWithinBlockInteractionRange(pos, 4)`); a container entity is still there and the
+/// player close enough to its box (`isWithinEntityInteractionRange(box, 4)`).
 pub fn still_valid(
     inv: &PlayerInventory,
     level: &Level,
     in_range: &dyn Fn(BlockPos) -> bool,
+    in_entity_range: &dyn Fn(&vanillite_base::Aabb) -> bool,
 ) -> bool {
     let Some(menu) = &inv.container else {
         return true;
@@ -938,8 +1155,11 @@ pub fn still_valid(
                 BlockEntity::Container(_)
                 | BlockEntity::Hopper(_)
                 | BlockEntity::Furnace(_)
-                | BlockEntity::BrewingStand(_),
+                | BlockEntity::BrewingStand(_)
+                | BlockEntity::Crafter(_),
             ) => in_range(pos),
+            // `bookAccess.stillValid`: the lectern still has its book.
+            Some(BlockEntity::Lectern(l)) => !l.book.is_empty() && in_range(pos),
             _ => false,
         }
     };
@@ -958,6 +1178,14 @@ pub fn still_valid(
                 || (menu.kind == MenuKind::Anvil
                     && block.info().kind == vanillite_data::block::BlockKind::AnvilBlock);
             fits && in_range(menu.pos)
+        }
+        Storage::Entity(id) => {
+            level.entities.container_items(id).is_some()
+                && level
+                    .entities
+                    .store
+                    .get(id)
+                    .is_some_and(|e| in_entity_range(&e.aabb()))
         }
     }
 }

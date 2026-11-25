@@ -11,6 +11,7 @@ repository.workspace = true
 [dependencies]
 vanillite-config.workspace = true
 vanillite-server.workspace = true
+vanillite-storage.workspace = true
 ctrlc.workspace = true
 log.workspace = true
 

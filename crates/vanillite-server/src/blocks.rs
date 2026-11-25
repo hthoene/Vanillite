@@ -24,7 +24,7 @@ use vanillite_world::entity::{EntityFlags, EntityId, EntityStore};
 
 /// Builds the gameplay data from the loaded data packs and installs the registry sizes and
 /// tags the protocol needs to validate client item stacks.
-pub(crate) fn game_data(packs: Option<&LoadedPacks>) -> GameData {
+pub fn game_data(packs: Option<&LoadedPacks>) -> GameData {
     let Some(packs) = packs else {
         return GameData::default();
     };
@@ -38,7 +38,7 @@ pub(crate) fn game_data(packs: Option<&LoadedPacks>) -> GameData {
     };
     let tools = ToolTable::new(&|tag| tag_ids("minecraft:block", tag));
     let loot = LootTables::load(packs.roots());
-    log::info!("Loaded {} block loot tables", loot.len());
+    log::info!("Loaded {} loot tables", loot.len());
     let enchantments = packs
         .registry("minecraft:enchantment")
         .map(|r| {
@@ -57,9 +57,35 @@ pub(crate) fn game_data(packs: Option<&LoadedPacks>) -> GameData {
                 .collect()
         })
         .unwrap_or_default();
+    let entity_tags: HashMap<String, Vec<u16>> = packs
+        .tags("minecraft:entity_type")
+        .map(|tags| {
+            tags.keys()
+                .map(|t| (t.clone(), tag_ids("minecraft:entity_type", t)))
+                .collect()
+        })
+        .unwrap_or_default();
+    let enchants = vanillite_game::enchant::Enchantments {
+        list: packs
+            .registry("minecraft:enchantment")
+            .map(|r| {
+                r.entries()
+                    .iter()
+                    .map(|e| {
+                        let json = serde_json::from_str(e.json.get()).unwrap_or_default();
+                        vanillite_game::enchant::Enchantment::parse(&e.id, &json)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+    };
     let mut info = vanillite_protocol::item::RegistryInfo::default();
     for r in packs.registries() {
         info.sizes.insert(r.name.to_owned(), r.entries().len());
+        info.names.insert(
+            r.name.to_owned(),
+            r.entries().iter().map(|e| e.id.clone()).collect(),
+        );
     }
     for registry in packs.tagged_registries() {
         let tags: HashSet<String> = packs
@@ -119,14 +145,49 @@ pub(crate) fn game_data(packs: Option<&LoadedPacks>) -> GameData {
         &names("minecraft:trim_material"),
         &names("minecraft:trim_pattern"),
     );
+    let banner_patterns = vanillite_game::menu::BannerPatterns {
+        names: names("minecraft:banner_pattern"),
+        tags: packs
+            .tags("minecraft:banner_pattern")
+            .map(|tags| {
+                tags.keys()
+                    .map(|t| {
+                        let ids = packs
+                            .tag_ids("minecraft:banner_pattern", t)
+                            .unwrap_or_default();
+                        (t.clone(), ids)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+    };
+    let registry_tags = packs
+        .tagged_registries()
+        .map(|registry| {
+            let tags = packs
+                .tags(registry)
+                .map(|tags| {
+                    tags.keys()
+                        .map(|t| (t.clone(), packs.tag_ids(registry, t).unwrap_or_default()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            (registry.to_owned(), tags)
+        })
+        .collect();
     GameData {
         tools,
         loot,
         enchantments,
         item_tags,
+        entity_tags,
+        enchants,
+        enderman_holdable: tag_ids("minecraft:block", "minecraft:enderman_holdable"),
         enchantment_info,
         recipes,
         enchanting,
+        banner_patterns,
+        registry_tags,
     }
 }
 
@@ -456,6 +517,15 @@ pub(crate) fn tick_items(
         let Some(entity) = store.get(id) else {
             continue;
         };
+        // Only items in the tick order (entity ticking chunk) and in entity ticking range.
+        let pos = entity.pos();
+        let chunk = vanillite_base::ChunkPos::new(
+            vanillite_base::math::floor(pos.x) >> 4,
+            vanillite_base::math::floor(pos.z) >> 4,
+        );
+        if !store.is_ticking(id) || !chunks.in_entity_ticking_range(chunk) {
+            continue;
+        }
         let row = entity.kind_row();
         let input = item_entity::TickInput {
             pos: entity.pos(),

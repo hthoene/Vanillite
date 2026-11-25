@@ -263,3 +263,104 @@ impl ToolTable {
 pub fn matches(a: &ItemStack, b: &ItemStack) -> bool {
     (a.is_empty() && b.is_empty()) || (a.count == b.count && a.same_item_same_components(b))
 }
+
+/// The attribute id of `name` (index into `ATTRIBUTES`).
+pub fn attribute_id(name: &str) -> Option<u16> {
+    vanillite_data::entity::ATTRIBUTES
+        .iter()
+        .position(|a| a.name == name)
+        .and_then(|i| u16::try_from(i).ok())
+}
+
+/// The `attribute_modifiers` of a stack for `attribute` while worn in `slot`, as
+/// `(operation, amount)`, followed by those of its enchantments (`minecraft:attributes`).
+/// Patched modifier components are not decoded yet: a stack uses its item's defaults.
+pub fn attribute_modifiers(
+    stack: &ItemStack,
+    slot: EquipmentSlot,
+    attribute: &str,
+    out: &mut Vec<(u8, f64)>,
+) {
+    if stack.is_empty() {
+        return;
+    }
+    let removed = stack
+        .patch()
+        .is_some_and(|p| p.is_removed(ids::ATTRIBUTE_MODIFIERS));
+    if !removed && let Some(id) = attribute_id(attribute) {
+        for m in item_id(stack).info().modifiers {
+            if m.attribute == id && crate::enchant::slot_group_matches(m.slot, slot) {
+                out.push((m.operation, m.amount));
+            }
+        }
+    }
+    if let Some(data) = crate::player::play::game_data() {
+        data.enchants
+            .attribute_modifiers(stack, slot, attribute, out);
+    }
+}
+
+/// `AttributeInstance.calculateValue`: the base plus the modifiers in operation order,
+/// clamped to the attribute's range.
+pub fn attribute_value(base: f64, modifiers: &[(u8, f64)], min: f64, max: f64) -> f64 {
+    let mut v = base;
+    for &(op, amount) in modifiers {
+        if op == 0 {
+            v += amount;
+        }
+    }
+    let mut result = v;
+    for &(op, amount) in modifiers {
+        if op == 1 {
+            result += v * amount;
+        }
+    }
+    for &(op, amount) in modifiers {
+        if op == 2 {
+            result *= 1.0 + amount;
+        }
+    }
+    result.clamp(min, max)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sword_attack_damage_and_speed() {
+        let sword = ItemStack::new(vanillite_data::item::ids::DIAMOND_SWORD.0, 1);
+        let mut damage = Vec::new();
+        attribute_modifiers(
+            &sword,
+            EquipmentSlot::MainHand,
+            "minecraft:attack_damage",
+            &mut damage,
+        );
+        assert!((attribute_value(1.0, &damage, 0.0, 2048.0) - 7.0).abs() < 1e-9);
+        let mut speed = Vec::new();
+        attribute_modifiers(
+            &sword,
+            EquipmentSlot::MainHand,
+            "minecraft:attack_speed",
+            &mut speed,
+        );
+        assert!((attribute_value(4.0, &speed, 0.0, 1024.0) - 1.6).abs() < 1e-6);
+        // In the off hand it does nothing.
+        let mut off = Vec::new();
+        attribute_modifiers(
+            &sword,
+            EquipmentSlot::OffHand,
+            "minecraft:attack_damage",
+            &mut off,
+        );
+        assert!(off.is_empty());
+    }
+
+    #[test]
+    fn attribute_operations_in_order() {
+        // (base + add) * (1 + mult_base) * (1 + mult_total).
+        let mods = [(2, 0.5), (0, 2.0), (1, 1.0)];
+        assert!((attribute_value(1.0, &mods, 0.0, 100.0) - 9.0).abs() < 1e-9);
+    }
+}
