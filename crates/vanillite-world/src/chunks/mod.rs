@@ -2368,6 +2368,13 @@ impl Chunks {
         }
     }
 
+    /// `getBlockTicks().clearArea(area)`: drops the block ticks inside `min..=max`.
+    pub fn clear_block_ticks(&mut self, min: BlockPos, max: BlockPos) {
+        for chunk in self.block_ticks.clear_area(min, max) {
+            self.mark_dirty(chunk);
+        }
+    }
+
     /// Changes a full chunk in place (`/fillbiome`'s `fillBiomesFromNoise`): the chunk is saved
     /// again and its cached packets are dropped. `None` if the chunk is not full.
     pub fn modify_chunk<R>(

@@ -725,6 +725,8 @@ pub enum WorldAction {
     EntityInside(BlockPos, EntityId),
     /// A hopper minecart takes in an item (`MinecartHopper.tryConsumeItems`).
     HopperMinecart(EntityId),
+    /// A command block minecart runs its command (`BaseCommandBlock.performCommand`).
+    MinecartCommand(EntityId),
     /// A burning mob in a water or powder snow cauldron takes a level of it.
     BurningInCauldron(BlockPos),
     /// `BellBlock.attemptToRing(entity, level, pos, null)`.
@@ -781,6 +783,12 @@ impl WorldAction {
                 }
             }
             WorldAction::HopperMinecart(id) => crate::minecart::hopper_suck(level, id),
+            WorldAction::MinecartCommand(id) => {
+                crate::block::technical::command_block::perform_command(
+                    level,
+                    crate::block::technical::command_block::Owner::Minecart(id),
+                );
+            }
             WorldAction::BurningInCauldron(pos) => {
                 crate::block::cauldron::burning_inside(level, pos)
             }

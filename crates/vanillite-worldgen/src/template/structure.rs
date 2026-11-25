@@ -130,7 +130,7 @@ impl JigsawBlockInfo {
 
 /// `StructureTemplate.Palette`: the blocks of one palette, in Vanilla's order (full blocks,
 /// then other blocks, then block entities, each sorted by y, x, z).
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Palette {
     blocks: Vec<StructureBlockInfo>,
     jigsaws: OnceLock<Vec<JigsawBlockInfo>>,
@@ -158,11 +158,24 @@ impl Palette {
 }
 
 /// `StructureTemplate`.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct StructureTemplate {
     palettes: Vec<Palette>,
     entities: Vec<StructureEntityInfo>,
     size: BlockPos,
+    /// `author`: who saved it with a structure block (not stored in the file).
+    author: String,
+}
+
+impl Default for StructureTemplate {
+    fn default() -> Self {
+        Self {
+            palettes: Vec::new(),
+            entities: Vec::new(),
+            size: BlockPos::ZERO,
+            author: "?".to_owned(),
+        }
+    }
 }
 
 /// Randomizable container block entities: `placeInWorld` draws a loot table seed for them.
@@ -278,6 +291,21 @@ fn compounds(tag: Option<&Tag>) -> impl Iterator<Item = &Compound> {
     list.iter().filter_map(Tag::as_compound)
 }
 
+/// `NbtUtils.writeBlockState`: `{id, properties}`, without properties for single-state
+/// blocks.
+fn write_block_state(state: BlockState) -> Compound {
+    let mut tag = Compound::new();
+    tag.insert("id", Tag::String(state.block().name().to_owned()));
+    let mut properties = Compound::new();
+    for (name, value) in state.properties() {
+        properties.insert(name, Tag::String(value.to_owned()));
+    }
+    if state.block().default_state() != state || !properties.is_empty() {
+        tag.insert("properties", Tag::Compound(properties));
+    }
+    tag
+}
+
 /// `NbtUtils.readBlockState`: `{id, properties}`; unknown blocks are air, unknown properties
 /// and values are skipped.
 fn read_block_state(tag: &Compound) -> BlockState {
@@ -332,7 +360,137 @@ impl StructureTemplate {
             palettes,
             entities,
             size: BlockPos::new(sx, sy, sz),
+            ..Self::default()
         }
+    }
+
+    /// The template `fillFromWorld` makes of the blocks and entities of an area: one palette of
+    /// `blocks` (relative positions, block entity data without position) in Vanilla's order,
+    /// and the entities.
+    pub fn filled(
+        size: BlockPos,
+        blocks: Vec<StructureBlockInfo>,
+        entities: Vec<StructureEntityInfo>,
+    ) -> Self {
+        Self {
+            palettes: vec![Palette {
+                blocks: build_info_list(blocks),
+                jigsaws: OnceLock::new(),
+            }],
+            entities,
+            size,
+            ..Self::default()
+        }
+    }
+
+    /// `getAuthor()`.
+    pub fn author(&self) -> &str {
+        &self.author
+    }
+
+    /// `setAuthor(author)`.
+    pub fn set_author(&mut self, author: impl Into<String>) {
+        self.author = author.into();
+    }
+
+    /// `save(tag)`: the template as stored in a `.nbt` file, with the current data version.
+    pub fn save(&self) -> Compound {
+        let ints = |v: [i32; 3]| Tag::List(List(v.into_iter().map(Tag::Int).collect()));
+        let mut tag = Compound::new();
+        if self.palettes.is_empty() {
+            tag.insert("blocks", Tag::List(List(Vec::new())));
+            tag.insert("palette", Tag::List(List(Vec::new())));
+        } else {
+            // `SimplePalette.idFor`: ids in order of first use in the main palette; the other
+            // palettes map their state at the same index to that id.
+            let mut main: Vec<BlockState> = Vec::new();
+            let mut others: Vec<Vec<Option<BlockState>>> =
+                vec![Vec::new(); self.palettes.len() - 1];
+            let mut blocks = Vec::with_capacity(self.palettes[0].blocks.len());
+            for (i, info) in self.palettes[0].blocks.iter().enumerate() {
+                let id = match main.iter().position(|s| *s == info.state) {
+                    Some(id) => id,
+                    None => {
+                        main.push(info.state);
+                        main.len() - 1
+                    }
+                };
+                let mut block = Compound::new();
+                block.insert("pos", ints([info.pos.x, info.pos.y, info.pos.z]));
+                block.insert("state", Tag::Int(i32::try_from(id).unwrap_or(i32::MAX)));
+                if let Some(nbt) = &info.nbt {
+                    block.insert("nbt", Tag::Compound(nbt.clone()));
+                }
+                blocks.push(Tag::Compound(block));
+                for (palette, other) in self.palettes[1..].iter().zip(&mut others) {
+                    if other.len() <= id {
+                        other.resize(id + 1, None);
+                    }
+                    // `IdMapper.addMapping`: the last state mapped to an id wins.
+                    other[id] = palette.blocks.get(i).map(|b| b.state);
+                }
+            }
+            tag.insert("blocks", Tag::List(List(blocks)));
+            let list = |states: &mut dyn Iterator<Item = BlockState>| {
+                Tag::List(List(
+                    states
+                        .map(|s| Tag::Compound(write_block_state(s)))
+                        .collect(),
+                ))
+            };
+            if others.is_empty() {
+                tag.insert("palette", list(&mut main.iter().copied()));
+            } else {
+                let mut all = vec![list(&mut main.iter().copied())];
+                for other in &others {
+                    // `IdMapper.iterator` skips ids without a state.
+                    all.push(list(&mut other.iter().flatten().copied()));
+                }
+                tag.insert("palettes", Tag::List(List(all)));
+            }
+        }
+        let entities = self
+            .entities
+            .iter()
+            .map(|e| {
+                let mut entity = Compound::new();
+                entity.insert(
+                    "pos",
+                    Tag::List(List(vec![
+                        Tag::Double(e.pos.x),
+                        Tag::Double(e.pos.y),
+                        Tag::Double(e.pos.z),
+                    ])),
+                );
+                entity.insert(
+                    "blockPos",
+                    ints([e.block_pos.x, e.block_pos.y, e.block_pos.z]),
+                );
+                entity.insert("nbt", Tag::Compound(e.nbt.clone()));
+                Tag::Compound(entity)
+            })
+            .collect();
+        tag.insert("entities", Tag::List(List(entities)));
+        tag.insert("size", ints([self.size.x, self.size.y, self.size.z]));
+        tag.insert(
+            "DataVersion",
+            Tag::Int(vanillite_data::version::DATA_VERSION),
+        );
+        tag
+    }
+
+    /// `NbtIo.writeCompressed(save(...))`: the gzip compressed file.
+    pub fn to_gzip(&self) -> Result<Vec<u8>, Error> {
+        let mut raw = Vec::new();
+        vanillite_nbt::write::write_named("", &self.save(), &mut raw)
+            .map_err(|e| Error::new(format!("structure NBT: {e}")))?;
+        let mut compressor = libdeflater::Compressor::new(libdeflater::CompressionLvl::default());
+        let mut out = vec![0; compressor.gzip_compress_bound(raw.len())];
+        let written = compressor
+            .gzip_compress(&raw, &mut out)
+            .map_err(|e| Error::new(format!("gzip: {e:?}")))?;
+        out.truncate(written);
+        Ok(out)
     }
 
     fn load_palette(palette: Option<&Tag>, blocks: &[&Compound]) -> Palette {

@@ -6,8 +6,8 @@
 //! Minecarts tick with the other non-player entities ([`tick`]). What needs the whole level
 //! (detector rails, a hopper minecart taking in items, explosions) is queued as
 //! [`WorldAction`]s and runs right after the minecart's tick, in Vanilla's order.
-//! Command block minecarts keep their command but run none, spawner minecarts keep their
-//! spawner data but spawn nothing: neither command blocks nor spawners exist yet.
+//! Command block minecarts run their command on a powered activator rail; spawner minecarts
+//! keep their spawner data but spawn nothing.
 
 mod movement;
 
@@ -181,8 +181,8 @@ pub struct MinecartData {
     pub explosion_power: f32,
     pub explosion_speed_factor: f32,
     pub ignited_by: Option<EntityId>,
-    /// Command block minecart: `Command` and `lastActivated`.
-    pub command: String,
+    /// Command block minecart: its `BaseCommandBlock` and `lastActivated`.
+    pub command: crate::block::technical::command_block::BaseCommandBlock,
     pub last_activated: i32,
     /// What the kind saves that is not simulated (spawner data, command block output).
     pub extra: Compound,
@@ -218,7 +218,7 @@ impl MinecartData {
             explosion_power: 4.0,
             explosion_speed_factor: 1.0,
             ignited_by: None,
-            command: String::new(),
+            command: Default::default(),
             last_activated: 0,
             extra: Compound::new(),
         }
@@ -513,7 +513,13 @@ fn prime_fuse(ents: &mut Entities, env: &mut Env<'_>, id: EntityId, cause: Optio
 }
 
 /// `activateMinecart(level, x, y, z, powered)` of an activator rail under the minecart.
-pub(crate) fn activate(ents: &mut Entities, env: &mut Env<'_>, id: EntityId, powered: bool) {
+pub(crate) fn activate(
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    cx: &mut MobContext,
+    id: EntityId,
+    powered: bool,
+) {
     let Some(m) = ents.minecart_mut(id) else {
         return;
     };
@@ -542,9 +548,11 @@ pub(crate) fn activate(ents: &mut Entities, env: &mut Env<'_>, id: EntityId, pow
                 prime_fuse(ents, env, id, None);
             }
         }
-        // `performCommand` every 4 ticks: command blocks do not run commands yet.
+        // `performCommand` every 4 ticks; the command runs on the level right after the
+        // minecart's tick.
         MinecartKind::CommandBlock if powered && m.tick_count - m.last_activated >= 4 => {
             m.last_activated = m.tick_count;
+            cx.actions.push(WorldAction::MinecartCommand(id));
         }
         _ => {}
     }

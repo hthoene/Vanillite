@@ -150,6 +150,12 @@ pub struct LevelSettings {
     pub peaceful: bool,
     /// `spawnWardens` game rule (set by the server every tick).
     pub spawn_wardens: bool,
+    /// `command_blocks_work` game rule (`isCommandBlockEnabled`).
+    pub command_blocks_work: bool,
+    /// `max_command_sequence_length` game rule (chain command blocks).
+    pub max_command_sequence_length: i32,
+    /// `send_command_feedback` game rule (new command blocks track their output).
+    pub send_command_feedback: bool,
     /// `mobGriefing` game rule (`MOB_GRIEFING`).
     pub mob_griefing: bool,
 }
@@ -185,6 +191,9 @@ impl Default for LevelSettings {
             xp_merge_radius: 0.5,
             peaceful: false,
             spawn_wardens: true,
+            command_blocks_work: true,
+            max_command_sequence_length: 65536,
+            send_command_feedback: true,
             mob_griefing: true,
         }
     }
@@ -226,6 +235,9 @@ impl LevelSettings {
         if let Some(v) = get("spread_vines") {
             self.spread_vines = v != 0;
         }
+        self.command_blocks_work = rules.bool(Rule::COMMAND_BLOCKS_WORK);
+        self.max_command_sequence_length = rules.get(Rule::MAX_COMMAND_SEQUENCE_LENGTH);
+        self.send_command_feedback = rules.bool(Rule::SEND_COMMAND_FEEDBACK);
         if let Some(v) = get("mob_griefing") {
             self.mob_griefing = v != 0;
         }
@@ -423,14 +435,24 @@ pub struct Level {
     /// Statistics and criterion triggers for players (`awardStat`, `CriteriaTriggers`) from
     /// block code; the server applies them after the players' tick.
     player_awards: Vec<(EntityId, crate::advancements::award::Award)>,
+    /// `test_instance_block_action` packets of the tick; the server's game tests handle them
+    /// after the players' packets.
+    pub test_instance_actions: Vec<crate::block::technical::test_instance::Action>,
     /// The server's maps (shared by all worlds).
     maps: Option<Arc<crate::map::Maps>>,
+    /// The server's structure templates (`getStructureTemplateManager`, shared by all worlds).
+    templates: Option<Arc<vanillite_worldgen::template::manager::StructureTemplateManager>>,
+    /// The data packs loaded at start (template pools of jigsaw blocks).
+    packs: Option<Arc<vanillite_datapack::LoadedPacks>>,
     min_y: i32,
     max_y: i32,
     /// The seed the level was created with (`getSeed`).
     seed: i64,
     /// What spawner blocks read of this tick's rules and sky (set by the world each tick).
     pub spawner_env: crate::block::spawner::SpawnerEnv,
+    /// The server's dispatcher for command blocks and command block minecarts.
+    pub(crate) command_runner:
+        Option<Arc<dyn crate::block::technical::command_block::CommandRunner>>,
     /// POI changes of block changes made while the entities (with the POI manager) were out
     /// of the level; applied by [`Level::flush_poi_changes`].
     poi_changes: Vec<(
@@ -500,17 +522,46 @@ impl Level {
             player_gives: Vec::new(),
             player_effects: Vec::new(),
             player_awards: Vec::new(),
+            test_instance_actions: Vec::new(),
             maps: None,
+            templates: None,
+            packs: None,
             min_y,
             max_y,
             seed,
             spawner_env: crate::block::spawner::SpawnerEnv::default(),
+            command_runner: None,
             poi_changes: Vec::new(),
         };
         level.entities.poi = crate::poi::PoiManager::new_live();
         // Chunks that are visible already queue their entities for the end of the first tick.
         level.apply_visibility();
         level
+    }
+
+    /// Sets the server's structure templates.
+    pub fn set_structure_templates(
+        &mut self,
+        templates: Arc<vanillite_worldgen::template::manager::StructureTemplateManager>,
+    ) {
+        self.templates = Some(templates);
+    }
+
+    /// Sets the data packs loaded at start.
+    pub fn set_data_packs(&mut self, packs: Arc<vanillite_datapack::LoadedPacks>) {
+        self.packs = Some(packs);
+    }
+
+    /// The data packs loaded at start (`registryAccess`), if the server has them.
+    pub fn data_packs(&self) -> Option<&Arc<vanillite_datapack::LoadedPacks>> {
+        self.packs.as_ref()
+    }
+
+    /// `getStructureTemplateManager`: the server's structure templates, if it has any.
+    pub fn structure_templates(
+        &self,
+    ) -> Option<&Arc<vanillite_worldgen::template::manager::StructureTemplateManager>> {
+        self.templates.as_ref()
     }
 
     /// `getSeed`.
@@ -589,6 +640,17 @@ impl Level {
     pub fn trigger(&mut self, player: EntityId, event: crate::advancements::trigger::Event) {
         self.player_awards
             .push((player, crate::advancements::award::Award::Trigger(event)));
+    }
+
+    /// `clearBlockEvents(bb)`: drops the queued block events inside `min..=max`.
+    pub fn clear_block_events(&mut self, min: BlockPos, max: BlockPos) {
+        let inside = |p: BlockPos| {
+            (min.x..=max.x).contains(&p.x)
+                && (min.y..=max.y).contains(&p.y)
+                && (min.z..=max.z).contains(&p.z)
+        };
+        self.block_events.retain(|e| !inside(e.pos));
+        self.block_event_set.retain(|e| !inside(e.pos));
     }
 
     /// Takes the statistics and triggers block code awarded since the last call.

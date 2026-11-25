@@ -791,16 +791,7 @@ fn load_chest_vehicle(
     None
 }
 
-/// The keys of the kinds Vanillite does not simulate, kept as they were
-/// (`BaseCommandBlock.save`, `BaseSpawner.save`).
-const COMMAND_BLOCK_KEYS: &[&str] = &[
-    "SuccessCount",
-    "LastOutput",
-    "TrackOutput",
-    "UpdateLastExecution",
-    "LastExecution",
-    "CustomName",
-];
+/// The keys of the kind Vanillite does not simulate, kept as they were (`BaseSpawner.save`).
 const SPAWNER_KEYS: &[&str] = &[
     "Delay",
     "MinSpawnDelay",
@@ -860,7 +851,11 @@ pub fn save_minecart(core: &EntityRef<'_>, m: &crate::minecart::MinecartData) ->
             }
         }
         MinecartKind::CommandBlock => {
-            out.insert("Command", m.command.clone());
+            let mut base = Compound::new();
+            m.command.save(&mut base);
+            for (key, value) in base.iter() {
+                out.insert(key, value.clone());
+            }
         }
         MinecartKind::Plain | MinecartKind::Spawner => {}
     }
@@ -915,18 +910,7 @@ pub fn load_minecart(
                 .unwrap_or(1.0)
                 .clamp(0.0, 128.0);
         }
-        MinecartKind::CommandBlock => {
-            m.command = tag
-                .get("Command")
-                .and_then(Tag::as_str)
-                .unwrap_or("")
-                .to_owned();
-            for &key in COMMAND_BLOCK_KEYS {
-                if let Some(v) = tag.get(key) {
-                    m.extra.insert(key, v.clone());
-                }
-            }
-        }
+        MinecartKind::CommandBlock => m.command.load(tag),
         MinecartKind::Spawner => {
             for &key in SPAWNER_KEYS {
                 if let Some(v) = tag.get(key) {
@@ -936,7 +920,5 @@ pub fn load_minecart(
         }
         MinecartKind::Plain => {}
     }
-    // The command block's own custom name lives in the entity's name.
-    m.extra.remove("CustomName");
     Some((e, m))
 }

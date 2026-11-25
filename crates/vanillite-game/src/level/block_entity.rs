@@ -89,6 +89,16 @@ pub enum BlockEntity {
     EndPortal,
     /// `TheEndGatewayBlockEntity`.
     EndGateway(crate::block::portal::Gateway),
+    /// `CommandBlockEntity` (impulse, chain and repeating command blocks).
+    CommandBlock(Box<crate::block::technical::command_block::CommandBlock>),
+    /// `StructureBlockEntity`.
+    StructureBlock(Box<crate::block::technical::structure_block::StructureBlock>),
+    /// `JigsawBlockEntity`.
+    Jigsaw(Box<crate::block::technical::jigsaw::Jigsaw>),
+    /// `TestBlockEntity`.
+    TestBlock(Box<crate::block::technical::test_block::TestBlock>),
+    /// `TestInstanceBlockEntity`.
+    TestInstance(Box<crate::block::technical::test_instance::TestInstance>),
     /// `BeehiveBlockEntity` (beehives and bee nests).
     Beehive(Box<crate::block::beehive::Beehive>),
     /// `CreakingHeartBlockEntity`.
@@ -303,6 +313,11 @@ fn ticker_of(entity: &BlockEntity) -> Option<TickerFn> {
         | BlockEntity::DecoratedPot(_)
         | BlockEntity::ChiseledBookshelf(_)
         | BlockEntity::Brushable(_)
+        | BlockEntity::CommandBlock(_)
+        | BlockEntity::StructureBlock(_)
+        | BlockEntity::Jigsaw(_)
+        | BlockEntity::TestBlock(_)
+        | BlockEntity::TestInstance(_)
         | BlockEntity::EnchantingTable(_)
         | BlockEntity::Shelf(_)
         | BlockEntity::CopperGolemStatue(_)
@@ -382,6 +397,8 @@ pub fn new_block_entity(state: BlockState) -> Option<BlockEntity> {
         Some(BlockEntity::SculkCatalyst(Box::default()))
     } else if crate::block::sign::is_sign(block) {
         Some(BlockEntity::Sign(Box::default()))
+    } else if let Some(entity) = crate::block::technical::new_block_entity(state) {
+        Some(entity)
     } else if block == ids::END_PORTAL {
         Some(BlockEntity::EndPortal)
     } else if block == ids::END_GATEWAY {
@@ -494,6 +511,13 @@ fn is_valid(entity: &BlockEntity, state: BlockState) -> bool {
         BlockEntity::Crafter(_) => state.block() == ids::CRAFTER,
         BlockEntity::Beacon(_) => state.block() == ids::BEACON,
         BlockEntity::Conduit(_) => state.block() == ids::CONDUIT,
+        BlockEntity::CommandBlock(_) => {
+            state.block().info().kind == vanillite_data::block::BlockKind::CommandBlock
+        }
+        BlockEntity::StructureBlock(_) => state.block() == ids::STRUCTURE_BLOCK,
+        BlockEntity::Jigsaw(_) => state.block() == ids::JIGSAW,
+        BlockEntity::TestBlock(_) => state.block() == ids::TEST_BLOCK,
+        BlockEntity::TestInstance(_) => state.block() == ids::TEST_INSTANCE_BLOCK,
         BlockEntity::EnchantingTable(_) => state.block() == ids::ENCHANTING_TABLE,
         BlockEntity::PotentSulfur { .. } => state.block() == ids::POTENT_SULFUR,
         BlockEntity::Shelf(_) => {
@@ -727,6 +751,11 @@ fn load(state: BlockState, nbt: &Compound) -> Option<BlockEntity> {
             h.cooldown_time = int("TransferCooldown").unwrap_or(-1);
         }
         BlockEntity::EndGateway(gateway) => *gateway = crate::block::portal::Gateway::load(nbt),
+        BlockEntity::CommandBlock(c) => c.load(nbt),
+        BlockEntity::StructureBlock(b) => b.load(nbt),
+        BlockEntity::Jigsaw(j) => j.load(nbt),
+        BlockEntity::TestBlock(t) => t.load(nbt),
+        BlockEntity::TestInstance(t) => t.load(nbt),
         BlockEntity::EnchantingTable(name) => {
             *name = crate::block::container::load_name(nbt).map(Box::new);
         }
@@ -810,6 +839,11 @@ fn save(entity: &BlockEntity, state: BlockState, pos: BlockPos) -> Compound {
             nbt.insert("TransferCooldown", Tag::Int(h.cooldown_time));
         }
         BlockEntity::EndGateway(gateway) => gateway.save(&mut nbt),
+        BlockEntity::CommandBlock(c) => c.save(&mut nbt),
+        BlockEntity::StructureBlock(b) => b.save(&mut nbt),
+        BlockEntity::Jigsaw(j) => j.save(&mut nbt),
+        BlockEntity::TestBlock(t) => t.save(&mut nbt),
+        BlockEntity::TestInstance(t) => t.save(&mut nbt),
         BlockEntity::EnchantingTable(name) => {
             crate::block::container::save_name(&name.as_deref().cloned(), &mut nbt);
         }
@@ -933,7 +967,12 @@ impl Level {
             let Some(entity) = load(state, nbt) else {
                 return false;
             };
+            let previous_auto = match self.block_entities.get(pos) {
+                Some(BlockEntity::CommandBlock(c)) => Some(c.auto),
+                _ => None,
+            };
             self.block_entities.insert(pos, entity);
+            crate::block::technical::command_block::loaded(self, pos, previous_auto);
         } else {
             let mut data = nbt.clone();
             for key in ["id", "x", "y", "z"] {
@@ -964,6 +1003,7 @@ impl Level {
             }
         }
         self.block_entities.touch(pos.chunk());
+        crate::block::technical::structure_block::loaded(self, pos);
         self.send_block_entity_updated(pos);
         true
     }
@@ -1143,6 +1183,10 @@ pub fn update_tag(entity: &BlockEntity, state: BlockState) -> Option<Compound> {
             nbt.sort_java_hash_order();
             Some(nbt)
         }
+        BlockEntity::StructureBlock(b) => b.update_tag(),
+        BlockEntity::Jigsaw(j) => j.update_tag(),
+        BlockEntity::TestBlock(t) => t.update_tag(),
+        BlockEntity::TestInstance(t) => t.update_tag(),
         _ => None,
     }
 }
@@ -1195,6 +1239,64 @@ pub fn collect_component(entity: &BlockEntity, id: u16) -> Option<Box<[u8]>> {
 /// `ItemContainerContents.fromItems`: always a value (empty contents are an empty list).
 fn container_value(items: &[ItemStack]) -> Box<[u8]> {
     vanillite_protocol::item::encode_container_contents(items).unwrap_or_else(|| Box::new([0]))
+}
+
+/// `CompoundTag.merge`: compounds merge key by key, everything else is replaced.
+fn merge_compound(target: &mut Compound, other: &Compound) {
+    for (key, value) in other.iter() {
+        match (target.get_mut(key), value) {
+            (Some(Tag::Compound(old)), Tag::Compound(new)) => merge_compound(old, new),
+            _ => target.insert(key, value.clone()),
+        }
+    }
+}
+
+/// `BlockItem.updateCustomBlockEntityTag`: the item's `block_entity_data` merged into the
+/// placed block entity (`TypedEntityData.loadInto`), if the types match; the operator-only
+/// kinds (command blocks, lecterns, signs, spawners and trial spawners) only for players
+/// that may use game master blocks.
+pub fn apply_block_entity_data(
+    level: &mut Level,
+    pos: BlockPos,
+    stack: &ItemStack,
+    game_master: bool,
+) -> bool {
+    use vanillite_data::block::{BlockKind, ids};
+    let Some(wire) = stack.component(components::BLOCK_ENTITY_DATA) else {
+        return false;
+    };
+    let mut reader = vanillite_protocol::codec::Reader::new(wire);
+    let Ok(type_id) = reader.varint() else {
+        return false;
+    };
+    let mut rest = reader.rest();
+    let mut budget = vanillite_nbt::Budget::file();
+    let Ok(Some(Tag::Compound(data))) = vanillite_nbt::read::read_network(&mut rest, &mut budget)
+    else {
+        return false;
+    };
+    let state = level.block(pos);
+    let kind = state.block().info().block_entity;
+    if kind == u16::MAX || i32::from(kind) != type_id {
+        return false;
+    }
+    let op_only = matches!(state.block().info().kind, BlockKind::CommandBlock)
+        || state.is(ids::LECTERN)
+        || state.is(ids::SPAWNER)
+        || state.is(ids::TRIAL_SPAWNER)
+        || crate::block::sign::is_sign(state.block());
+    if op_only && !game_master {
+        return false;
+    }
+    let Some(mut tag) = level.block_entity_nbt(pos) else {
+        return false;
+    };
+    for key in ["id", "x", "y", "z"] {
+        tag.remove(key);
+    }
+    let old = tag.clone();
+    merge_compound(&mut tag, &data);
+    tag != old && level.load_block_entity_nbt(pos, &tag)
 }
 
 /// `BlockEntity.applyComponentsFromItemStack` of a placed block item.

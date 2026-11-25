@@ -59,6 +59,7 @@ pub mod spawner;
 #[cfg(test)]
 mod spawner_tests;
 mod spread;
+pub mod technical;
 pub mod tnt;
 pub mod tree;
 pub mod trial_spawner;
@@ -375,6 +376,7 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
     interact::fill(block, &mut b);
     beehive::fill(block, &mut b);
     crafter::fill(block, &mut b);
+    technical::fill(block, &mut b);
     creaking_heart::fill(block, &mut b);
     portal::fill(block, &mut b);
     eggs::fill(block, &mut b);

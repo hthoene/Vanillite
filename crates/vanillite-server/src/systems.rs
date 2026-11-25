@@ -141,6 +141,7 @@ pub(crate) struct GameSystems {
     profiling: Mutex<Profiling>,
     waypoints: Mutex<std::collections::BTreeMap<u128, WaypointIcon>>,
     bossbars: Mutex<crate::bossbars::CustomBossEvents>,
+    game_tests: Mutex<crate::commands::gametest::GameTests>,
 }
 
 /// Registry tags: registry name → tag id → resolved entry ids.
@@ -178,7 +179,13 @@ impl GameSystems {
             profiling: Mutex::default(),
             waypoints: Mutex::default(),
             bossbars: Mutex::default(),
+            game_tests: Mutex::default(),
         }
+    }
+
+    /// The game tests (`GameTestTicker.SINGLETON`, `FailedTestTracker`).
+    pub(crate) fn game_tests(&self) -> MutexGuard<'_, crate::commands::gametest::GameTests> {
+        lock(&self.game_tests)
     }
 
     /// Scheduled functions (`MinecraftServer.getScheduledEvents`).

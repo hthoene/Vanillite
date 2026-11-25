@@ -18,6 +18,7 @@ mod entities_cmd;
 pub(crate) mod exec;
 mod execute;
 pub(crate) mod functions;
+pub(crate) mod gametest;
 pub(crate) mod items;
 mod locate;
 pub(crate) mod loot_cmd;
@@ -505,6 +506,14 @@ pub fn run_command_on_level(
     Ok(())
 }
 
+/// Installs the overworld's command block dispatcher on `level`, outside a running server
+/// (parity scenarios).
+pub fn install_command_runner(global: &Global, level: &mut vanillite_game::level::Level) {
+    if let Some(arc) = global.arc() {
+        level.set_command_runner(Arc::new(BlockCommands::new(&arc, WorldId(0))));
+    }
+}
+
 pub(crate) fn run_console_command(world: &mut ServerWorld, global: &Global, line: &str) {
     run_server_command(world, global, line, SourceKind::Console);
 }
@@ -518,6 +527,72 @@ pub(crate) fn run_rcon_command(world: &mut ServerWorld, global: &Global, line: &
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner),
     )
+}
+
+/// The dispatcher of one world's command blocks and command block minecarts
+/// (`BaseCommandBlock.performCommand`).
+pub(crate) struct BlockCommands {
+    global: std::sync::Weak<Global>,
+    world: WorldId,
+}
+
+impl BlockCommands {
+    pub(crate) fn new(global: &Arc<Global>, world: WorldId) -> Self {
+        Self {
+            global: Arc::downgrade(global),
+            world,
+        }
+    }
+}
+
+impl vanillite_game::block::technical::command_block::CommandRunner for BlockCommands {
+    fn run(
+        &self,
+        level: &mut vanillite_game::level::Level,
+        run: &vanillite_game::block::technical::command_block::CommandRun<'_>,
+    ) -> vanillite_game::block::technical::command_block::CommandOutcome {
+        let Some(global) = self.global.upgrade() else {
+            return Default::default();
+        };
+        let output = Arc::new(source::BlockOutput::new(run.track_output, run.name.clone()));
+        let entity = run
+            .entity
+            .and_then(|id| select::local(&level.entities, self.world, id))
+            .map(|t| t.source_entity());
+        let successes = Arc::new(std::sync::atomic::AtomicI32::new(0));
+        let source = CommandSource::new(
+            Arc::clone(&global),
+            SourceKind::CommandBlock(Arc::clone(&output)),
+            2,
+            self.world,
+            run.pos,
+            run.rot,
+            entity,
+        )
+        .with_callback(engine::Callback::Count(Arc::clone(&successes)));
+        // `performPrefixedCommand`: one leading `/` is optional.
+        let command = run.command.strip_prefix('/').unwrap_or(run.command);
+        let mut env = Env {
+            level,
+            global: &global,
+            world: self.world,
+        };
+        match global.commands.parse_command(command, &source) {
+            Ok(parsed) => run_line(
+                &mut env,
+                engine::Line {
+                    parsed: Arc::new(parsed),
+                    signed: None,
+                },
+                source,
+            ),
+            Err(e) => send_error(&source, &global, &e, command),
+        }
+        vanillite_game::block::technical::command_block::CommandOutcome {
+            successes: successes.load(std::sync::atomic::Ordering::Relaxed),
+            last_message: output.take(),
+        }
+    }
 }
 
 /// A command of the console or RCON with the owner permission level.
