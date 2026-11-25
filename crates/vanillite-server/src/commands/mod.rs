@@ -52,6 +52,7 @@ use vanillite_world::entity::EntityId;
 pub(crate) use bans::ban_reason;
 pub(crate) use exec::{find_player, permission_event};
 pub(crate) use player_data::add_experience;
+pub(crate) use select::find_uuid;
 pub(crate) use sound::send_post_effects;
 pub(crate) use source::{CommandSource, SourceKind};
 pub(crate) use world_cmd::sprint_finished;

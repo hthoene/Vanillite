@@ -205,6 +205,7 @@ pub(crate) fn loaded_block_pos(
 pub(crate) fn block_matches(
     env: &Env<'_>,
     pred: &vanillite_command::BlockPredicateArg,
+    pos: BlockPos,
     state: BlockState,
 ) -> bool {
     let name = state.block().name();
@@ -217,8 +218,11 @@ pub(crate) fn block_matches(
             .properties
             .iter()
             .all(|(k, v)| state.value(k) == Some(v.as_str()))
-        // No block entity data is kept for commands yet: an NBT test fails.
-        && pred.nbt.is_none()
+        && pred.nbt.as_ref().is_none_or(|nbt| {
+            env.level.block_entity_nbt(pos).is_some_and(|actual| {
+                super::nbt_ops::matches(&Tag::Compound(nbt.clone()), &Tag::Compound(actual))
+            })
+        })
 }
 
 /// Score holder names of an argument, `*` for all tracked holders.
@@ -679,7 +683,7 @@ fn test(
             let Some(GameValue::BlockPredicate(pred)) = args.game("block") else {
                 return Err(missing("block"));
             };
-            i32::from(block_matches(env, pred, env.level.block(pos)))
+            i32::from(block_matches(env, pred, pos, env.level.block(pos)))
         }
         ExecuteCondition::Biome => {
             let pos = loaded_block_pos(args, "pos", source, env)?;

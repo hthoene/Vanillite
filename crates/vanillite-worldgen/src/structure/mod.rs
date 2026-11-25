@@ -410,7 +410,11 @@ pub struct StructureParser<'a> {
 }
 
 impl<'a> StructureParser<'a> {
-    fn new(packs: &'a LoadedPacks, biomes: &'a BiomeRegistry, features: &'a FeatureSet) -> Self {
+    pub(crate) fn new(
+        packs: &'a LoadedPacks,
+        biomes: &'a BiomeRegistry,
+        features: &'a FeatureSet,
+    ) -> Self {
         // The registry's sets keep their registry index as id.
         let mut set_ids = FxHashMap::default();
         let mut sets = Vec::new();
