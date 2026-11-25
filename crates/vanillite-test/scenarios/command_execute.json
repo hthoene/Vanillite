@@ -1,0 +1,24 @@
+{
+  "description": "execute modifiers, conditions and store with scores and storage: if/unless score, store result score of fill, positioned and align, in the overworld, if blocks, scoreboard operations and data storage.",
+  "tier": "fast",
+  "region": [[0, 0, 0], [3, 3, 3]],
+  "ticks": 5,
+  "setup": [],
+  "actions": [
+    {"tick": 1, "op": "command", "command": "scoreboard objectives add t dummy"},
+    {"tick": 1, "op": "command", "command": "scoreboard players set a t 3"},
+    {"tick": 2, "op": "command", "command": "execute if score a t matches 3 run setblock 0 1 0 minecraft:stone"},
+    {"tick": 2, "op": "command", "command": "execute store result score b t run fill 0 0 0 3 0 3 minecraft:dirt"},
+    {"tick": 3, "op": "command", "command": "execute if score b t matches 16 run setblock 1 1 0 minecraft:oak_log[axis=x]"},
+    {"tick": 3, "op": "command", "command": "execute positioned 2 1 2 run setblock ~ ~ ~ minecraft:glass"},
+    {"tick": 3, "op": "command", "command": "execute in minecraft:overworld run setblock 3 1 3 minecraft:stone"},
+    {"tick": 3, "op": "command", "command": "execute align xyz positioned 2.7 1.2 0.4 run setblock ~ ~ ~ minecraft:bricks"},
+    {"tick": 4, "op": "command", "command": "execute if blocks 0 0 0 1 0 1 2 0 2 all run setblock 0 2 0 minecraft:gold_block"},
+    {"tick": 4, "op": "command", "command": "scoreboard players operation a t += b t"},
+    {"tick": 4, "op": "command", "command": "execute if score a t matches 19 run setblock 3 2 3 minecraft:diamond_block"},
+    {"tick": 4, "op": "command", "command": "data modify storage vanillite:test v set value 7"},
+    {"tick": 5, "op": "command", "command": "execute store result score c t run data get storage vanillite:test v"},
+    {"tick": 5, "op": "command", "command": "execute if score c t matches 7 unless block 0 3 0 minecraft:stone run setblock 0 3 0 minecraft:emerald_block"},
+    {"tick": 5, "op": "command", "command": "execute unless entity @e[type=minecraft:cow] run setblock 3 3 3 minecraft:sea_lantern"}
+  ]
+}

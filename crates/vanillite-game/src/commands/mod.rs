@@ -293,6 +293,47 @@ pub enum BossbarOp {
     GetPlayers,
 }
 
+/// Where `loot` puts the drops.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LootTarget {
+    /// `replace entity <entities> <slot> [<count>]`.
+    ReplaceEntity,
+    /// `replace block <targetPos> <slot> [<count>]`.
+    ReplaceBlock,
+    /// `insert <targetPos>`.
+    Insert,
+    /// `give <players>`.
+    Give,
+    /// `spawn <targetPos>`.
+    Spawn,
+}
+
+/// The tool of `loot ... fish` and `loot ... mine`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LootTool {
+    /// No tool (an empty stack).
+    Empty,
+    /// `<tool>`.
+    Item,
+    /// `mainhand`.
+    MainHand,
+    /// `offhand`.
+    OffHand,
+}
+
+/// Where `loot` takes the drops from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LootSource {
+    /// `fish <loot_table> <pos> [<tool> | mainhand | offhand]`.
+    Fish(LootTool),
+    /// `loot <loot_table>`.
+    Loot,
+    /// `kill <target>`.
+    Kill,
+    /// `mine <pos> [<tool> | mainhand | offhand]`.
+    Mine(LootTool),
+}
+
 /// The subcommands of `posteffect`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PostEffectOp {
@@ -589,6 +630,8 @@ pub enum PlaceOp {
     Jigsaw,
     Structure,
     Template,
+    /// `template ... strict`.
+    TemplateStrict,
 }
 
 /// Where `datapack enable <name>` puts the pack.
@@ -770,6 +813,11 @@ pub enum CommandId {
     Scoreboard(ScoreboardOp),
     /// `bossbar ...`.
     Bossbar(BossbarOp),
+    /// `loot <target> <source>`.
+    Loot {
+        target: LootTarget,
+        source: LootSource,
+    },
     /// `damage <target> <amount> [<damageType> [at <location> | by <entity> [from <cause>]]]`.
     Damage,
     /// `effect clear [<targets> [<effect>]]`.
@@ -952,6 +1000,7 @@ pub fn register(d: &mut Dispatcher<CommandId>) {
     world::register_kill(d);
     players::register_list(d);
     world_state::register_locate(d);
+    items::register_loot(d);
     players::register_msg(d);
     entities::register_swing(d);
     sound::register_particle(d);

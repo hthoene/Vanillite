@@ -196,8 +196,8 @@ fn with_context(
     };
     if seed != 0 {
         let mut rng = LegacyRandom::new(seed);
-        f(data, &ctx, &mut rng);
+        f(&data, &ctx, &mut rng);
     } else {
-        f(data, &ctx, level.random());
+        f(&data, &ctx, level.random());
     }
 }

@@ -146,9 +146,19 @@ impl PlayerData {
         let Some(data) = play::game_data() else {
             return 0;
         };
+        let before: Vec<bool> = ids.iter().map(|id| self.recipe_book.contains(id)).collect();
         let (n, packet) = self.recipe_book.unlock(&data.recipes.book, ids);
         if let Some(packet) = packet {
             self.connection.sink.send(&packet);
+        }
+        // `CriteriaTriggers.RECIPE_UNLOCKED` of every newly known recipe.
+        for (id, known) in ids.iter().zip(before) {
+            if !known && self.recipe_book.contains(id) {
+                self.advancements
+                    .trigger(crate::advancements::trigger::Event::RecipeUnlocked(
+                        (*id).to_owned(),
+                    ));
+            }
         }
         n
     }

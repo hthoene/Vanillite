@@ -353,7 +353,7 @@ pub fn look_control(t: &mut Tick<'_, '_>) {
         let (dr, df) = (dot(right), dot(forward));
         if dr.abs() > 1.0e-5 || df.abs() > 1.0e-5 {
             #[allow(clippy::cast_possible_truncation)]
-            let y_rot_d = ((-dr).atan2(df) * 180.0 / f64::from(std::f32::consts::PI)) as f32;
+            let y_rot_d = crate::mob::atan2_deg(-dr, df) as f32;
             rot.y_head_rot = rotate_towards(rot.y_head_rot, y_rot_d, look.y_max_rot_speed);
         }
         rot.x_rot = rotate_towards(rot.x_rot, 0.0, look.x_max_rot_angle);

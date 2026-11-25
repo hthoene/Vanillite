@@ -14,9 +14,9 @@ use vanillite_protocol::types::Identifier;
 
 use super::Env;
 use super::exec::resolve_position;
-use super::response::Tracker;
 use super::select::{self, Target};
 use super::source::CommandSource;
+use super::tracker::Tracker;
 use crate::player_list::Uuid;
 
 fn missing(name: &str) -> CommandError {
@@ -99,7 +99,7 @@ pub(crate) fn play_sound(
     let range = if volume > 1.0 { 16.0 * volume } else { 16.0 };
     let max_dist_sqr = f64::from(range * range);
     let seed = env.level.random().next_long();
-    let mut tracker = Tracker::new();
+    let mut tracker = Tracker::default();
     for player in targets {
         let Some((at, _, _)) = player.place.filter(|_| player.world == source.world) else {
             continue;
@@ -136,9 +136,9 @@ pub(crate) fn play_sound(
         if let Some((sink, _)) = env.global.players.connection(Uuid(player.uuid)) {
             sink.send(&packet);
         }
-        tracker.track(player, true);
+        tracker.track(&player, i32::from(true));
     }
-    tracker.feedback(
+    tracker.messages(
         source,
         env.global,
         || CommandError::new("commands.playsound.failed", vec![]),
@@ -285,7 +285,7 @@ pub(crate) fn post_effect(
     let targets = select::many(env, source, selector)?;
     let effect = identifier(args, "posteffect")?;
     let effect_id = effect.as_ref().map(ToString::to_string).unwrap_or_default();
-    let mut tracker = Tracker::new();
+    let mut tracker = Tracker::default();
     for target in targets {
         let changed = match target.entity {
             Some(id) => env
@@ -306,7 +306,7 @@ pub(crate) fn post_effect(
                 true
             }
         };
-        tracker.track(target, changed);
+        tracker.track(&target, i32::from(changed));
     }
     let effect_arg = || {
         effect
@@ -332,7 +332,7 @@ pub(crate) fn post_effect(
         ),
     };
     let with_effect = op != PostEffectOp::Clear;
-    tracker.feedback(
+    tracker.messages(
         source,
         global,
         || CommandError::new(failed, vec![]),

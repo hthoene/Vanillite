@@ -207,6 +207,9 @@ pub struct SpawnInput<'a> {
     pub spawn_enemies: bool,
     pub difficulty: Difficulty,
     pub env: Environment,
+    /// The `spawn_mobs` rule and the clock for lightning (`tickThunder` runs in every spawning
+    /// chunk, whether mobs spawn or not).
+    pub thunder: crate::lightning::StrikeInput,
 }
 
 /// Per-player mob counts (`LocalMobCapCalculator.MobCounts`), by [`NearbyPlayers`] slot.
@@ -336,8 +339,8 @@ fn counts_for_caps(level: &Level, id: EntityId, m: &MobData) -> bool {
         && !level.entities.leashes.contains_key(&id)
 }
 
-/// `ServerChunkCache.tickChunks`' spawning: counts, caps and one attempt per category and
-/// chunk near players.
+/// `ServerChunkCache.tickChunks`' spawning chunks: counts, caps, and per shuffled chunk near
+/// players the thunder (`tickThunder`) and one attempt per category.
 pub fn tick(
     level: &mut Level,
     table: &SpawnTable,
@@ -350,6 +353,18 @@ pub fn tick(
     }
     spawner.nearby.update(input.players);
     spawner.close.clear();
+    if !input.thunder.spawn_mobs {
+        // No categories: only the shuffled chunks and their thunder.
+        collect_spawning_chunks(level, spawner);
+        let chunks = std::mem::take(&mut spawner.chunks);
+        for &chunk in &chunks {
+            if level.chunks.in_entity_ticking_range(chunk) {
+                crate::lightning::tick_thunder(level, chunk, input.thunder);
+            }
+        }
+        spawner.chunks = chunks;
+        return;
+    }
     let slots = spawner.nearby.slot_count();
     let mut state = SpawnState {
         // `getNaturalSpawnChunkCount`: chunks within 8 of a player chunk.
@@ -410,7 +425,27 @@ pub fn tick(
                 && state.can_spawn_global(*c)
         })
         .collect();
-    // `collectSpawningChunks`: ticking chunks with a player within 128 blocks, shuffled.
+    collect_spawning_chunks(level, spawner);
+    let chunks = std::mem::take(&mut spawner.chunks);
+    for &chunk in &chunks {
+        if level.chunks.in_entity_ticking_range(chunk) {
+            crate::lightning::tick_thunder(level, chunk, input.thunder);
+        }
+        for &c in &categories {
+            // `canSpawnForCategoryLocal`.
+            let near = spawner.close.get(&spawner.nearby, chunk);
+            if !state.local.can_spawn(c, near) {
+                continue;
+            }
+            spawn_category_for_chunk(level, table, spawner, input, &mut state, c, chunk);
+        }
+    }
+    spawner.chunks = chunks;
+}
+
+/// `collectSpawningChunks`: ticking chunks with a player within 128 blocks, shuffled with the
+/// level random (`Util.shuffle`).
+fn collect_spawning_chunks(level: &mut Level, spawner: &mut Spawner) {
     spawner.chunks.clear();
     {
         let nearby = &spawner.nearby;
@@ -431,21 +466,6 @@ pub fn tick(
         .unwrap_or(0);
         spawner.chunks.swap(i, j);
     }
-    if categories.is_empty() {
-        return;
-    }
-    let chunks = std::mem::take(&mut spawner.chunks);
-    for &chunk in &chunks {
-        for &c in &categories {
-            // `canSpawnForCategoryLocal`.
-            let near = spawner.close.get(&spawner.nearby, chunk);
-            if !state.local.can_spawn(c, near) {
-                continue;
-            }
-            spawn_category_for_chunk(level, table, spawner, input, &mut state, c, chunk);
-        }
-    }
-    spawner.chunks = chunks;
 }
 
 /// The nether fortress enemies (`NetherFortressStructure.FORTRESS_ENEMIES`).
@@ -696,6 +716,7 @@ pub fn finalize(
         env: *env,
         extra: Vec::new(),
         ride: None,
+        own_state: 0,
     };
     kinds::finalize_spawn(mob, &mut ctx, random);
     if let Some(vehicle) = ctx.ride {
