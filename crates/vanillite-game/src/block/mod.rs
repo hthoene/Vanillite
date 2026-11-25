@@ -16,6 +16,7 @@ pub mod container;
 pub mod dispenser;
 pub mod drops;
 pub mod falling;
+pub mod fire;
 pub mod fluid;
 pub mod furnace;
 mod growth;
@@ -185,6 +186,7 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
         Class::Liquid => {
             b.on_place = Some(fluid::liquid_on_place);
             b.neighbor_changed = Some(fluid::liquid_neighbor_changed);
+            b.random_tick = Some(fluid::liquid_random_tick);
         }
         Class::Falling | Class::Anvil | Class::ConcretePowder => {
             b.on_place = Some(falling::on_place);
@@ -237,6 +239,9 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
             b.tick = Some(spread::coral_tick);
         }
         _ => {}
+    }
+    if block == ids::FIRE {
+        b.tick = Some(fire::tick);
     }
     if block == ids::GRASS_BLOCK || block == ids::MYCELIUM {
         b.random_tick = Some(spread::spreading_snowy_dirt_random_tick);

@@ -308,6 +308,7 @@ impl GameWorld {
             "hard" => Difficulty::Hard,
             d => return Err(format!("unknown difficulty `{d}`")),
         };
+        level.settings.difficulty = difficulty;
         // The world starts at day time 0 unless the scenario sets one; time does not advance.
         let env = Environment::overworld(spec.time.unwrap_or(0), 0.0, 0.0);
         Ok(Self {

@@ -374,6 +374,7 @@ impl ServerWorld {
             self.level
                 .settings
                 .apply_game_rules(&ctx.global.level.rules());
+            self.level.settings.difficulty = ctx.global.level.difficulty;
             let level = &mut self.level;
             level.set_game_time(ctx.global.level.game_time());
             level.run_scheduled_ticks();

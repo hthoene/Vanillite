@@ -468,7 +468,16 @@ pub(crate) fn level_settings(
             .and_then(|json| json.get("attributes")?.get(name)?.as_bool())
             .unwrap_or(false)
     };
+    let infiniburn = packs
+        .and_then(|p| p.registry("minecraft:dimension_type"))
+        .and_then(|r| r.get(&info.dimension))
+        .and_then(|entry| serde_json::from_str::<serde_json::Value>(entry.json.get()).ok())
+        .and_then(|json| Some(json.get("infiniburn")?.as_str()?.to_owned()))
+        .map_or_else(Default::default, |tag| {
+            vanillite_game::block::fire::Infiniburn::from_tag(&tag)
+        });
     let mut settings = vanillite_game::level::LevelSettings {
+        infiniburn,
         fast_lava: attribute("minecraft:gameplay/fast_lava"),
         water_evaporates: attribute("minecraft:gameplay/water_evaporates"),
         has_sky_light: info.has_sky_light,

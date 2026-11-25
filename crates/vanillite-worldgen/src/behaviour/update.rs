@@ -1015,7 +1015,7 @@ pub fn touches_liquid(level: &impl BlockLevel, pos: BlockPos) -> bool {
 }
 
 /// `FireBlock.getStateWithAge`: `BaseFireBlock.getState` with the age kept for fire.
-fn fire_state_with_age(level: &impl BlockLevel, pos: BlockPos, age: i32) -> BlockState {
+pub fn fire_state_with_age(level: &impl BlockLevel, pos: BlockPos, age: i32) -> BlockState {
     let below_pos = pos.below();
     let below = level.block(below_pos);
     if tags().blocks.soul_fire_base_blocks.contains(below) {

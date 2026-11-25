@@ -28,6 +28,7 @@ macro_rules! block_tags {
 }
 
 block_tags!(
+    blocks_lava_fire_spread,
     campfires,
     candle_cakes,
     candles,
@@ -44,6 +45,9 @@ block_tags!(
     fire,
     flowers,
     grows_crops,
+    infiniburn_end,
+    infiniburn_nether,
+    infiniburn_overworld,
     maintains_farmland,
     nether_portal_frame,
     occludes_vibration_signals,
