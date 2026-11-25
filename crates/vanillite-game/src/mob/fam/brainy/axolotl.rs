@@ -242,8 +242,20 @@ pub fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
     if ctx.reason == super::SpawnReason::Bucket {
         return;
     }
-    let common = m.random.next_int_bounded(4);
-    state_mut(m).variant = common;
+    // `AxolotlGroupData`: two common variants (`getCommonSpawnVariant`), one per member.
+    let (a, b) = if let crate::mob::fam::GroupData::Axolotl(a, b) = ctx.group {
+        (a, b)
+    } else {
+        let a = m.random.next_int_bounded(4);
+        let b = m.random.next_int_bounded(4);
+        ctx.group = crate::mob::fam::GroupData::Axolotl(a, b);
+        (a, b)
+    };
+    state_mut(m).variant = if m.random.next_int_bounded(2) == 0 {
+        a
+    } else {
+        b
+    };
     if ctx.group_index >= 2 {
         m.age = -24000;
         m.baby = true;
@@ -406,6 +418,10 @@ pub fn bucket_or_feed(ix: &mut Interact<'_, '_>) -> Interaction {
                 1.0,
                 seed,
             );
+        }
+        if let Some(item) = vanillite_data::registry::ITEM.id(bucket) {
+            let stack = crate::item::ItemStack::new(item, 1);
+            crate::mob::animal::filled_bucket(ix.ents, ix.player, &stack);
         }
         crate::mob::animal::fill_held_pub(ix, bucket);
         if let Some(m) = ix.ents.mob_mut(ix.target) {

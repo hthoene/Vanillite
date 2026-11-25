@@ -300,7 +300,8 @@ impl ItemStack {
         self.encode_template(out);
     }
 
-    /// Encodes a non-empty stack as `ItemStackTemplate` (item, count, trusted patch).
+    /// Encodes `ItemStackTemplate.STREAM_CODEC` of a non-empty stack: item, count, trusted
+    /// patch (`charged_projectiles`).
     pub fn encode_template(&self, out: &mut Vec<u8>) {
         write_varint(out, i32::from(self.item));
         write_varint(out, self.count);

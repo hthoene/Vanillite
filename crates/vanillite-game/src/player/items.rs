@@ -231,15 +231,15 @@ pub fn use_item(
             sound_seed(),
         );
         award_used(ents, player, stack.item);
-        super::using::start(ents, env, player, hand);
+        super::using::start(ents, env, level.network_ids(), player, hand);
         return true;
     }
     if stack.component(ids::INSTRUMENT).is_some() {
-        use_instrument(ents, env, player, hand, &stack, creative, pos);
+        use_instrument(level, ents, env, player, hand, &stack, creative, pos);
         return true;
     }
     if crate::bundle::has_contents(&stack) {
-        super::using::start(ents, env, player, hand);
+        super::using::start(ents, env, level.network_ids(), player, hand);
         return true;
     }
     false
@@ -347,6 +347,7 @@ fn use_empty_map(
 /// item cools down for its use duration.
 #[allow(clippy::too_many_arguments)]
 fn use_instrument(
+    level: &Level,
     ents: &mut Entities,
     env: &mut Env<'_>,
     player: EntityId,
@@ -358,7 +359,7 @@ fn use_instrument(
     let Some(instrument) = instrument(stack) else {
         return;
     };
-    super::using::start(ents, env, player, hand);
+    super::using::start(ents, env, level.network_ids(), player, hand);
     play_sound(
         env.out,
         Some(player),

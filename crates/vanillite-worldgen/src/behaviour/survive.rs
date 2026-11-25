@@ -542,7 +542,7 @@ fn piston_head_can_survive(level: &impl BlockLevel, state: BlockState, pos: Bloc
 }
 
 /// `ScaffoldingBlock.getDistance`.
-pub(crate) fn scaffolding_distance(level: &impl BlockLevel, pos: BlockPos) -> i32 {
+pub fn scaffolding_distance(level: &impl BlockLevel, pos: BlockPos) -> i32 {
     let below_pos = pos.below();
     let below = level.block(below_pos);
     let mut distance = 7;

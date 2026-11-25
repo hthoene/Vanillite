@@ -83,6 +83,14 @@ pub struct Entities {
     pub missiles: Dense<crate::mob::missile::MissileData>,
     /// Minecart kind data (every type of [`crate::minecart::MinecartKind`]).
     pub minecarts: Dense<crate::minecart::MinecartData>,
+    /// The points of interest of the world's live chunks (`ServerLevel.getPoiManager`): here,
+    /// so mob ticks can claim and release tickets while the entities are out of the level.
+    pub poi: crate::poi::PoiManager,
+    /// The raids of the world (`ServerLevel.getRaids`), next to the POI for the same reason.
+    pub raids: crate::raid::Raids,
+    /// Mobs whose equipment a menu changed: the next tick sends it to the players tracking
+    /// them (`LivingEntity.detectEquipmentUpdates`).
+    pub equipment_updates: Vec<EntityId>,
     /// Lightning bolt kind data.
     pub bolts: Dense<crate::lightning::LightningData>,
     /// Decoration kind data: item frames, paintings, cushions, markers, interactions and
@@ -552,6 +560,15 @@ impl Entities {
     ) -> EntityId {
         let bolts = &mut self.bolts;
         self.store.spawn(new, |id| bolts.push(id, data))
+    }
+
+    /// The lightning bolt data of an entity.
+    pub fn bolt(&self, id: EntityId) -> Option<&crate::lightning::LightningData> {
+        let entity = self.store.get(id)?;
+        if entity.kind() != ids::LIGHTNING_BOLT {
+            return None;
+        }
+        self.bolts.get(entity.kind_row())
     }
 
     /// The lightning bolt data of an entity, mutably.

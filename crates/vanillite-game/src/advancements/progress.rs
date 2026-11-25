@@ -66,6 +66,9 @@ pub struct PlayerAdvancements {
     completed: Vec<u32>,
     /// The inventory as the listener last saw it (`lastSlots` of its slots).
     seen_inventory: Vec<ItemStack>,
+    /// Damage and deaths of the player whose triggers need the world's entities
+    /// ([`super::view::resolve_combat`]).
+    pub combat: Vec<super::view::PendingCombat>,
 }
 
 impl PlayerAdvancements {
@@ -83,6 +86,7 @@ impl PlayerAdvancements {
             events: Vec::new(),
             completed: Vec::new(),
             seen_inventory: Vec::new(),
+            combat: Vec::new(),
         };
         if let Some(json) = json {
             me.apply_json(json);
@@ -361,6 +365,28 @@ impl PlayerAdvancements {
         if self.listens(event.kind()) {
             self.events.push(event);
         }
+    }
+
+    /// Queues the event `make` builds if anything listens for `kind` (the event is only built
+    /// then).
+    pub fn trigger_with(&mut self, kind: TriggerKind, make: impl FnOnce() -> Event) {
+        if self.listens(kind) {
+            let event = make();
+            debug_assert_eq!(event.kind(), kind);
+            self.events.push(event);
+        }
+    }
+
+    /// An [`Event::Item`] trigger (`consume_item`, `filled_bucket`, `used_totem`,
+    /// `shot_crossbow`, `using_item`) with a copy of `stack`.
+    pub fn trigger_item(&mut self, kind: TriggerKind, stack: &ItemStack) {
+        self.trigger_with(kind, || Event::Item(kind, stack.clone()));
+    }
+
+    /// A data-less trigger (`slept_in_bed`, `hero_of_the_village`, `voluntary_exile`,
+    /// `avoid_vibration`, `started_riding`).
+    pub fn trigger_player(&mut self, kind: TriggerKind) {
+        self.trigger_with(kind, || Event::Player(kind));
     }
 
     /// `ContainerListener.slotChanged` of the inventory: `inventory_changed` for every slot of

@@ -506,12 +506,15 @@ fn execute(
             {
                 return dispense(level, source, stack, B::Default);
             }
-            // `sendParticles(SPLASH, ...)` five times; the particles are the client's.
-            for _ in 0..5 {
-                level.random().next_double();
-                level.random().next_double();
-            }
+            // `sendParticles(SPLASH, ...)` five times on top of the dispenser.
             let pos = source.pos;
+            for _ in 0..5 {
+                let x = f64::from(pos.x) + level.random().next_double();
+                let z = f64::from(pos.z) + level.random().next_double();
+                let at = vanillite_base::Vec3::new(x, f64::from(pos.y + 1), z);
+                let splash = crate::level::particles::simple("minecraft:splash");
+                level.send_particles(splash, at, 1, vanillite_base::Vec3::ZERO, 1.0);
+            }
             level.play_block_sound(
                 None,
                 pos,
@@ -842,9 +845,15 @@ fn full_beehive(state: BlockState) -> bool {
         && state.int("honey_level").is_some_and(|h| h >= 5)
 }
 
-/// `BeehiveBlock.releaseBeesAndResetHoneyLevel` (the hive's bees are not simulated).
+/// `BeehiveBlock.releaseBeesAndResetHoneyLevel(level, state, pos, null, BEE_RELEASED)`.
 fn reset_honey_level(level: &mut Level, pos: BlockPos, state: BlockState) {
-    level.set_block_and_update(pos, state.set_int("honey_level", 0));
+    super::beehive::release_bees_and_reset_honey_level(
+        level,
+        state,
+        pos,
+        None,
+        super::beehive::ReleaseStatus::BeeReleased,
+    );
 }
 
 /// `ShearsDispenseItemBehavior.tryShearBeehive`.
@@ -861,8 +870,7 @@ fn shear_beehive(level: &mut Level, pos: BlockPos) -> bool {
         1.0,
         1.0,
     );
-    // `BeehiveBlock.dropHoneycomb`: `minecraft:harvest/beehive` gives three honeycombs.
-    super::drops::pop_resource(level, pos, ItemStack::new(items::HONEYCOMB.0, 3));
+    super::beehive::drop_honeycomb(level, pos);
     reset_honey_level(level, pos, state);
     level.game_event_at(None, events().shear, pos);
     true

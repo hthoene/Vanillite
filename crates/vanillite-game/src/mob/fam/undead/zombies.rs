@@ -42,6 +42,9 @@ pub struct ZombieState {
     pub cure_time: i32,
     pub cure_starter: Option<u128>,
     pub villager_xp: i32,
+    /// `ZombieVillager.gossips` and `tradeOffers` of the villager it was.
+    pub gossips: Option<crate::mob::fam::village::gossip::Gossips>,
+    pub offers: Option<crate::trading::MerchantOffers>,
     /// `ZombifiedPiglin`: the first anger sound, the alert interval, whether it had a
     /// target last tick and whether the attacking speed bonus is on.
     pub first_anger_sound_in: i32,
@@ -431,13 +434,18 @@ pub fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
 
 /// `Zombie.finalizeSpawn`.
 pub fn zombie_finalize(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
+    zombie_finalize_with(m, ctx, true);
+}
+
+/// `Zombie.finalizeSpawn`; `roll_baby` false for a given `ZombieGroupData(false, true)`.
+fn zombie_finalize_with(m: &mut MobData, ctx: &mut SpawnContext<'_>, roll_baby: bool) {
     let special = ctx.special_multiplier;
     let conversion = ctx.reason == SpawnReason::Conversion;
     if !conversion {
         m.can_pick_up_loot = m.random.next_float() < 0.55 * special;
     }
     // `ZombieGroupData(getSpawnAsBabyOdds(random), true)`.
-    if m.random.next_float() < 0.05 {
+    if roll_baby && m.random.next_float() < 0.05 {
         super::set_baby(m, true);
         kinds::zombie_chicken_jockey(m, ctx);
     }
@@ -449,6 +457,43 @@ pub fn zombie_finalize(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
     }
     kinds::halloween_head(m);
     handle_attributes(m, special, ctx.reason);
+}
+
+/// `finalizeSpawn(CONVERSION, new ZombieGroupData(false, true))` of a zombie villager made
+/// from a villager: `Mob.finalizeSpawn` and the zombie part without a baby roll, drawing from
+/// the level's `random`.
+pub fn finalize_converted(m: &mut MobData, ctx: &mut SpawnContext<'_>, random: &mut LegacyRandom) {
+    std::mem::swap(&mut m.random, random);
+    let bonus = m.random.triangle(0.0, 0.114_850_000_000_000_01);
+    m.attrs.follow_range *= 1.0 + bonus;
+    m.left_handed = m.random.next_float() < 0.05;
+    if m.kind == Kind::ZombieVillager {
+        finalize_villager_type(m, ctx);
+    }
+    zombie_finalize_with(m, ctx, false);
+    std::mem::swap(&mut m.random, random);
+}
+
+/// `setVillagerData` and `setVillagerDataFinalized` of a zombie villager.
+pub fn set_villager_data(m: &mut MobData, ty: u16, profession: u16, level: i32, finalized: bool) {
+    let z = zs_mut(m);
+    z.villager_type = ty;
+    z.profession = profession;
+    z.villager_level = level;
+    z.data_finalized = finalized;
+}
+
+/// `setGossips`, `setTradeOffers` and `setVillagerXp` of a zombie villager.
+pub fn set_villager_trades(
+    m: &mut MobData,
+    gossips: crate::mob::fam::village::gossip::Gossips,
+    offers: crate::trading::MerchantOffers,
+    xp: i32,
+) {
+    let z = zs_mut(m);
+    z.gossips = Some(gossips);
+    z.offers = Some(offers);
+    z.villager_xp = xp;
 }
 
 /// `setCanBreakDoors`: ground navigation only.
@@ -770,10 +815,70 @@ fn conversion_progress(t: &mut Tick<'_, '_>) -> i32 {
     amount
 }
 
-/// `finishConversion`: the zombie villager becomes a villager. Villagers are #60; until they
-/// exist the cured zombie villager waits here with its countdown at zero.
+/// `finishConversion`: the zombie villager becomes a villager with its data, gossip, offers
+/// and experience; the player who cured it gains reputation.
 fn finish_curing(t: &mut Tick<'_, '_>) {
-    let _ = t;
+    let Some(z) = zs(t.mob_ref()).cloned() else {
+        return;
+    };
+    // `dropPreservedEquipment`: what the zombie villager picked up goes into the villager's
+    // inventory slot of the same index.
+    let mut kept: Vec<(usize, ItemStack)> = Vec::new();
+    {
+        let m = t.mob();
+        for (i, chance) in m.equipment.drop_chances.iter().enumerate() {
+            if *chance > 1.0 && !m.equipment.items[i].is_empty() {
+                kept.push((i, m.equipment.items[i].clone()));
+            }
+        }
+    }
+    let silent = t.mob_ref().silent;
+    let pos = t.block_pos();
+    let Some(id) = super::convert_to(t, Kind::Villager, false, false, |v| {
+        crate::mob::fam::village::villager::cured(
+            v,
+            z.villager_type,
+            z.profession,
+            z.villager_level,
+            z.data_finalized,
+            z.gossips.clone().unwrap_or_default(),
+            z.offers.clone(),
+            z.villager_xp,
+        );
+        let inv = &mut crate::mob::fam::village::state_mut(v).merchant.inventory;
+        for (i, stack) in kept {
+            if let Some(slot) = inv.get_mut(i) {
+                *slot = stack;
+            }
+        }
+    }) else {
+        return;
+    };
+    // `finalizeSpawn(CONVERSION)`: the villager type of the biome unless final.
+    if let Some(v) = t.ents.mob_mut(id)
+        && !crate::mob::fam::village::villager::vs(v).data_finalized
+    {
+        let biome = crate::mob::fam::village::villager::biome_at(t.level, pos);
+        let ty = vanillite_data::registry::VILLAGER_TYPE
+            .id(villager_type_of_biome(&biome))
+            .unwrap_or(0);
+        let s = crate::mob::fam::village::villager::vs_mut(v);
+        s.villager_type = ty;
+        s.data_finalized = true;
+    }
+    if let Some(starter) = z.cure_starter
+        && let Some(player) = t.ents.player_by_uuid(starter)
+    {
+        crate::mob::fam::village::villager::reputation_event(
+            t.ents,
+            crate::mob::fam::village::villager::ReputationEvent::ZombieVillagerCured,
+            player,
+            id,
+        );
+    }
+    if !silent {
+        level_event(t.cx, 1027, pos, 0);
+    }
 }
 
 // --- Drowned --------------------------------------------------------------------------------
@@ -1355,6 +1460,12 @@ pub fn save(m: &MobData, out: &mut Compound) {
                 out.insert("ConversionPlayer", uuid_ints(u));
             }
             out.insert("Xp", z.villager_xp);
+            if let Some(g) = &z.gossips {
+                out.insert("Gossips", g.save());
+            }
+            if let Some(o) = &z.offers {
+                crate::mob::fam::village::merchant::save_offers(o, out);
+            }
         }
         Kind::ZombifiedPiglin => common::save_anger(m, out),
         _ => {}
@@ -1438,6 +1549,12 @@ pub fn load(m: &mut MobData, tag: &Compound) {
                 }
             }
             z.villager_xp = int("Xp").unwrap_or(0);
+            if tag.get("Gossips").is_some() {
+                z.gossips = Some(crate::mob::fam::village::gossip::Gossips::load(
+                    tag.get("Gossips"),
+                ));
+            }
+            z.offers = crate::mob::fam::village::merchant::load_offers(tag);
             match int("ConversionTime") {
                 Some(t) if t != -1 => {
                     z.curing = true;

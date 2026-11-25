@@ -317,6 +317,11 @@ pub fn check_spawn(
         },
         m,
     );
+    // `SUMMONED_ENTITY` for the players within 50 blocks of the wither's box.
+    if let Some(b) = level.entities.store.get(id).map(|e| e.aabb()) {
+        let near = crate::mob::animal::players_in(&level.entities, &b.inflate(50.0, 50.0, 50.0));
+        crate::mob::animal::award_summoned(&mut level.entities, &near, id);
+    }
     // `CarvedPumpkinBlock.updatePatternBlocks`.
     for x in 0..3 {
         for y in 0..3 {
@@ -1059,6 +1064,7 @@ pub fn custom_server_ai_step(t: &mut Tick<'_, '_>) {
                 radius: 7.0,
                 mob: true,
                 resistance: BlockResistance::Default,
+                fire: false,
             }));
             if !t.mob_ref().silent {
                 global_spawn_event(t);
@@ -1645,6 +1651,7 @@ pub fn tick_skull(t: &mut SpecialTick<'_, '_>) {
         } else {
             BlockResistance::Default
         },
+        fire: false,
     }));
     t.cx.discarded.push(id);
 }

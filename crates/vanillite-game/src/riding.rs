@@ -9,6 +9,7 @@ use vanillite_protocol::packets::play::clientbound::{MoveVehicleBack, SetPasseng
 use vanillite_protocol::types::VarIntList;
 use vanillite_world::entity::{EntityFlags, EntityId, Pose};
 
+use crate::advancements::trigger::{Event, TriggerKind};
 use crate::entities::Entities;
 use crate::level::Level;
 use crate::mob::{Kind, MobContext, physics};
@@ -144,6 +145,20 @@ pub fn start_riding(
         e.set_flags(EntityFlags::PASSENGER, true);
     }
     ents.riding.add(passenger, vehicle, is_player);
+    // `STARTED_RIDING` of every player riding the vehicle, directly or not
+    // (`getIndirectPassengersStream`).
+    let mut riders = vec![vehicle];
+    let mut i = 0;
+    while let Some(&v) = riders.get(i) {
+        i += 1;
+        riders.extend_from_slice(ents.riding.passengers_of(v));
+    }
+    for &rider in riders.iter().skip(1) {
+        if let Some(p) = ents.player_mut(rider) {
+            p.advancements
+                .trigger_player(crate::advancements::trigger::TriggerKind::STARTED_RIDING);
+        }
+    }
     if let Some(p) = ents.player_mut(passenger) {
         p.connection.movement.passenger = true;
     }
@@ -456,6 +471,69 @@ pub fn position_all_riders(ents: &mut Entities) {
     }
 }
 
+/// `rideTick` of every passenger: [`position_all_riders`] with the riding statistics of the
+/// players (`ServerPlayer.checkRidingStatistics`).
+pub fn ride_tick(ents: &mut Entities) {
+    if ents.riding.is_empty() {
+        return;
+    }
+    let riders: Vec<(EntityId, EntityId, Vec3)> = ents
+        .players
+        .iter()
+        .filter_map(|(id, _)| {
+            let vehicle = ents.riding.vehicle_of(id)?;
+            Some((id, vehicle, ents.store.get(id)?.pos()))
+        })
+        .collect();
+    position_all_riders(ents);
+    for (id, vehicle, before) in riders {
+        let Some(after) = ents.store.get(id).map(|e| e.pos()) else {
+            continue;
+        };
+        let (dx, dy, dz) = (after.x - before.x, after.y - before.y, after.z - before.z);
+        // `didNotMove`.
+        if dx == 0.0 && dy == 0.0 && dz == 0.0 {
+            continue;
+        }
+        let stat = riding_stat(ents, vehicle);
+        if let Some(stat) = stat
+            && let Some(p) = ents.player_mut(id)
+        {
+            // `Math.round((float)Math.sqrt(...) * 100.0F)`.
+            #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+            let cm = (((dx * dx + dy * dy + dz * dz).sqrt() as f32) * 100.0).round() as i32;
+            p.stats.award(stat, cm);
+        }
+    }
+}
+
+/// The distance statistic of riding `vehicle`.
+fn riding_stat(ents: &Entities, vehicle: EntityId) -> Option<crate::stats::Stat> {
+    use crate::stats::custom;
+    if ents.minecart(vehicle).is_some() {
+        return Some(custom::MINECART_ONE_CM);
+    }
+    if ents.boat(vehicle).is_some() {
+        return Some(custom::BOAT_ONE_CM);
+    }
+    Some(match ents.mob(vehicle)?.kind {
+        Kind::Pig => custom::PIG_ONE_CM,
+        Kind::Horse
+        | Kind::Donkey
+        | Kind::Mule
+        | Kind::SkeletonHorse
+        | Kind::ZombieHorse
+        | Kind::Llama
+        | Kind::TraderLlama
+        | Kind::Camel
+        | Kind::CamelHusk => custom::HORSE_ONE_CM,
+        Kind::Strider => custom::STRIDER_ONE_CM,
+        Kind::HappyGhast => custom::HAPPY_GHAST_ONE_CM,
+        Kind::Nautilus | Kind::ZombieNautilus => custom::NAUTILUS_ONE_CM,
+        _ => return None,
+    })
+}
+
 /// Whether `player` controls `vehicle` (the first passenger of a boat or a saddled pig).
 pub fn controls(ents: &Entities, player: EntityId, vehicle: EntityId) -> bool {
     if ents.riding.passengers_of(vehicle).first() != Some(&player) {
@@ -561,7 +639,16 @@ pub fn move_vehicle(
         0.0
     };
     let was_on_ground = v.flags().contains(EntityFlags::ON_GROUND);
-    let moved = physics::collide(level, old_box, delta, step, was_on_ground, &mut cx.boxes);
+    let on_lava = ents.mob(vehicle).is_some_and(|m| m.nav.stands_on_lava);
+    let moved = physics::collide_for(
+        level,
+        old_box,
+        delta,
+        step,
+        was_on_ground,
+        &mut cx.boxes,
+        on_lava,
+    );
     let mut err = target - (old + moved);
     if err.y > -0.5 && err.y < 0.5 {
         err.y = 0.0;
@@ -642,6 +729,21 @@ pub fn boost(
         }
     }
     let d = crate::item::damage(stack) + n;
+    if n > 0
+        && let Some(p) = ents.player_mut(player)
+    {
+        // `applyDamage`: `ITEM_DURABILITY_CHANGED`, and `ITEM_BROKEN` when it breaks.
+        p.advancements
+            .trigger_with(TriggerKind::ITEM_DURABILITY_CHANGED, || {
+                Event::ItemDurabilityChanged(stack.clone(), d)
+            });
+        if d >= crate::item::max_damage(stack) {
+            p.stats.award(
+                crate::stats::Stat::of(crate::stats::StatType::Broken, stack.item),
+                1,
+            );
+        }
+    }
     if d >= crate::item::max_damage(stack) {
         // `hurtAndConvertOnBreak(7, FISHING_ROD)`: the components stay, the damage resets.
         let mut rod = stack.clone();
