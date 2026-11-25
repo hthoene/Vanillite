@@ -157,8 +157,9 @@ area (entity variant conditions use it, e.g. the swamp hut cat).
 Whole starts of the large structures, checked by `tests/large_structure_goldens.rs`
 (`VANILLITE_STRUCTURE` selects one structure id there too).
 
-- `starts`, one per line: for each target (world 0: 3 monuments, 2 mansions; world 3: 4 end cities)
-  its first starts, found by a spiral over the grid cells of its random spread set around the
+- `starts`, one per line: for each target (world 0: 3 monuments, 2 mansions; world 2: one bastion
+  remnant per start pool variant — units, hoglin stable, treasure, bridge; world 3: 4 end cities)
+  its first starts (for a variant: whose first piece comes from that start pool element), found by a spiral over the grid cells of its random spread set around the
   origin (as the search of `structure_starts`, but collecting several hits): `dimension`, `seed`,
   `min_y`, `height`, `w`, `structure`, `chunk`, `references`, `bb`, `pieces` (as in
   `structure_starts`) and `decorated`: every chunk that a piece's box intersects, z outer then x.
@@ -172,5 +173,6 @@ Whole starts of the large structures, checked by `tests/large_structure_goldens.
 Content: monuments at chunks [86, -12], [-44, -87], [-21, -79]; mansions at [-221, -52] (531
 pieces) and [-305, 434] (580 pieces); end cities at [-15, -78] (105 pieces), [-73, -15] (57, with
 a ship), [86, -15] and [106, -98] (74, with a ship). 16 chunks per monument, 29–30 per mansion,
-4–28 per end city; entities: shulkers, the ships' elytra item frames, elder guardians, evokers,
+4–28 per end city; bastion remnants at [-21, 47] (units), [-25, -43] (hoglin stable), [37, 45]
+(treasure) and [59, -49] (bridge), 15–21 chunks each; entities: shulkers, the ships' elytra item frames, elder guardians, evokers,
 vindicators (and mineshaft chest minecarts).

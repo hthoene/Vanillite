@@ -13,6 +13,7 @@
 
 use std::time::Duration;
 
+use vanillite_bedrock::Version;
 use vanillite_bedrock::client::{
     self, AuthInput, Client, RequestAction as A, block_action, container, input_flag,
     packet_id as id,
@@ -40,8 +41,21 @@ async fn until(c: &mut Client, what: &str, pid: u32, mut f: impl FnMut(&[u8]) ->
 }
 
 #[test]
-fn bedrock_player_builds_and_uses_the_inventory() {
-    let dir = std::env::temp_dir().join(format!("vanillite-bedrock-play-{}", std::process::id()));
+fn oldest_bedrock_version_builds_and_uses_the_inventory() {
+    builds_and_uses_the_inventory(Version::oldest());
+}
+
+#[test]
+fn newest_bedrock_version_builds_and_uses_the_inventory() {
+    builds_and_uses_the_inventory(Version::latest());
+}
+
+fn builds_and_uses_the_inventory(version: &'static Version) {
+    let dir = std::env::temp_dir().join(format!(
+        "vanillite-bedrock-play-{}-{}",
+        std::process::id(),
+        version.protocol
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
@@ -67,7 +81,7 @@ fn bedrock_player_builds_and_uses_the_inventory() {
         .build()
         .unwrap();
     runtime.block_on(async {
-        let mut c = Client::connect(bedrock_addr, "2535400000000002", "Builder")
+        let mut c = Client::connect_as(bedrock_addr, "2535400000000002", "Builder", version)
             .await
             .expect("Bedrock login");
         let start = c.recv(id::START_GAME).await.expect("start_game");
@@ -94,14 +108,18 @@ fn bedrock_player_builds_and_uses_the_inventory() {
             tick,
             delta: [0.0; 3],
         };
-        c.send(id::PLAYER_AUTH_INPUT, &client::auth_input(&input(1)))
-            .await
-            .unwrap();
+        c.send(
+            id::PLAYER_AUTH_INPUT,
+            &client::auth_input(&input(1), version),
+        )
+        .await
+        .unwrap();
 
         // Creative: a stack of stone from the palette into the first hotbar slot.
         handle.console("gamemode creative .Builder".into());
         until(&mut c, "creative", id::SET_PLAYER_GAME_TYPE, |b| b == [2]).await;
-        let stone = client::creative_net_id("minecraft:stone").expect("stone in the palette");
+        let stone =
+            client::creative_net_id(version, "minecraft:stone").expect("stone in the palette");
         let take = client::stack_request(
             1,
             &[
@@ -122,10 +140,13 @@ fn bedrock_player_builds_and_uses_the_inventory() {
 
         // Break the grass two blocks east (creative breaks at once).
         let target = [feet[0] + 2, feet[1] - 1, feet[2]];
-        let breaking =
-            client::auth_input_with_blocks(&input(2), &[(block_action::START_BREAK, target, 1)]);
+        let breaking = client::auth_input_with_blocks(
+            &input(2),
+            version,
+            &[(block_action::START_BREAK, target, 1)],
+        );
         c.send(id::PLAYER_AUTH_INPUT, &breaking).await.unwrap();
-        let air = client::air_runtime_id();
+        let air = client::air_runtime_id(version);
         until(&mut c, "block broken", id::UPDATE_BLOCK, |b| {
             client::read_update_block(b) == Some((target, air, 0))
         })
@@ -135,7 +156,7 @@ fn bedrock_player_builds_and_uses_the_inventory() {
         let below = [target[0], target[1] - 1, target[2]];
         c.send(
             id::INVENTORY_TRANSACTION,
-            &client::use_item_on(below, 1, 0, [0.5, 1.0, 0.5]),
+            &client::use_item_on(version, below, 1, 0, [0.5, 1.0, 0.5]),
         )
         .await
         .unwrap();

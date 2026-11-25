@@ -12,7 +12,9 @@ use vanillite_chunk::light::LightNibbles;
 use vanillite_chunk::slots::{DimensionId, LightEngine, Neighbours, ProtoChunk, WorldInfo};
 use vanillite_data::block::BlockState;
 use vanillite_light::BfsLightEngine;
-use vanillite_storage::{AnvilCodec, AnvilStore, Compression, IoPool, StoreSettings, blocking};
+use vanillite_storage::{
+    AnvilCodec, Compression, IoPool, RegionStore, StoreSettings, WorldFormat, blocking,
+};
 
 /// Overworld height range.
 pub const MIN_Y: i32 = -64;
@@ -138,7 +140,12 @@ impl World {
         let info = world_info(dir);
         let codec = AnvilCodec::new(&info, Compression::Deflate);
         let pool = IoPool::new(1).expect("IO thread");
-        let store = AnvilStore::new(info.dir.clone(), StoreSettings::default(), pool);
+        let store = RegionStore::new(
+            info.dir.clone(),
+            WorldFormat::Anvil,
+            StoreSettings::default(),
+            pool,
+        );
         World {
             load: Box::new(move |pos| {
                 blocking::load(&store, &codec, DimensionId(0), &[pos])

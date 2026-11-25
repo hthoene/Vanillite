@@ -382,8 +382,9 @@ fn main() {
         Arc::clone(&timings),
     ));
     let store = || {
-        Arc::new(vanillite_storage::AnvilStore::new(
+        Arc::new(vanillite_storage::RegionStore::new(
             info.dir.clone(),
+            vanillite_storage::WorldFormat::Anvil,
             vanillite_storage::StoreSettings::default(),
             io.clone(),
         ))
