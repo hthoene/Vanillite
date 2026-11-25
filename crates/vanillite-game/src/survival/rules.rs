@@ -113,6 +113,7 @@ impl Rule {
     pub const ENTITY_DROPS: Rule = Rule(10);
     pub const FALL_DAMAGE: Rule = Rule(11);
     pub const FIRE_DAMAGE: Rule = Rule(12);
+    pub const FORGIVE_DEAD_PLAYERS: Rule = Rule(14);
     pub const FREEZE_DAMAGE: Rule = Rule(15);
     pub const IMMEDIATE_RESPAWN: Rule = Rule(17);
     pub const KEEP_INVENTORY: Rule = Rule(18);
@@ -131,8 +132,12 @@ impl Rule {
     pub const RESPAWN_RADIUS: Rule = Rule(42);
     pub const SHOW_ADVANCEMENT_MESSAGES: Rule = Rule(44);
     pub const SHOW_DEATH_MESSAGES: Rule = Rule(45);
+    pub const SPAWNER_BLOCKS_WORK: Rule = Rule(46);
     pub const SPAWN_MOBS: Rule = Rule(47);
     pub const SPAWN_MONSTERS: Rule = Rule(48);
+    pub const SPAWN_PATROLS: Rule = Rule(49);
+    pub const SPAWN_PHANTOMS: Rule = Rule(50);
+    pub const SPAWN_WARDENS: Rule = Rule(52);
     pub const TNT_EXPLODES: Rule = Rule(55);
     pub const TNT_EXPLOSION_DROP_DECAY: Rule = Rule(56);
     pub const UNIVERSAL_ANGER: Rule = Rule(57);

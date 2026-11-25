@@ -56,6 +56,12 @@ impl NetworkIds {
     pub fn next(&self) -> NetworkId {
         NetworkId(self.0.fetch_add(1, Ordering::Relaxed).wrapping_add(1))
     }
+
+    /// The first of `count` consecutive ids (an entity with parts: the ender dragon's parts are
+    /// numbered after it on the client).
+    pub fn next_block(&self, count: i32) -> NetworkId {
+        NetworkId(self.0.fetch_add(count, Ordering::Relaxed).wrapping_add(1))
+    }
 }
 
 /// Boolean state of an entity in one word: engine flags in the low byte, Vanilla's shared

@@ -12,6 +12,7 @@ use vanillite_base::hash::FxHashMap;
 
 use crate::item_entity::ItemData;
 use crate::mob::MobData;
+use crate::mob::boss::special::{SpecialData, is_special_kind};
 use crate::mob::projectile::ArrowData;
 use crate::player::PlayerData;
 
@@ -62,8 +63,12 @@ pub struct Entities {
     pub primed_tnts: Dense<PrimedTntData>,
     /// Entity tags (`Entity.tags`) of the entities that have any.
     tags: std::collections::HashMap<EntityId, Vec<String>>,
+    /// Area effect cloud kind data.
+    pub clouds: Dense<crate::effect::cloud::CloudData>,
     /// Experience orb kind data.
     pub experience_orbs: Dense<ExperienceOrbData>,
+    /// Kind data of the bosses' non-living entities (skulls, crystals, fireballs).
+    pub specials: Dense<SpecialData>,
     /// Vehicles and their passengers.
     pub riding: Riding,
     /// Player entities by UUID (owners and leash holders are found by it).
@@ -74,6 +79,8 @@ pub struct Entities {
     pub boats: Dense<crate::vehicle::BoatData>,
     /// Leash knot kind data (their position block).
     pub knots: Dense<BlockPos>,
+    /// Projectile kind data besides arrows (every type of [`crate::mob::missile::MissileKind`]).
+    pub missiles: Dense<crate::mob::missile::MissileData>,
     /// Minecart kind data (every type of [`crate::minecart::MinecartKind`]).
     pub minecarts: Dense<crate::minecart::MinecartData>,
 }
@@ -214,9 +221,17 @@ impl Entities {
     /// Adds a mob.
     pub fn spawn_mob(&mut self, new: NewEntity, data: MobData) -> EntityId {
         let network_id = new.network_id.0;
+        let parts = if data.kind == crate::mob::Kind::EnderDragon {
+            8
+        } else {
+            0
+        };
         let mobs = &mut self.mobs;
         let id = self.store.spawn(new, |id| mobs.push(id, data));
         self.by_network_id.insert(network_id, id);
+        for i in 1..=parts {
+            self.by_network_id.insert(network_id.wrapping_add(i), id);
+        }
         id
     }
 
@@ -224,6 +239,85 @@ impl Entities {
     pub fn spawn_arrow(&mut self, new: NewEntity, data: ArrowData) -> EntityId {
         let arrows = &mut self.arrows;
         self.store.spawn(new, |id| arrows.push(id, data))
+    }
+
+    /// Adds a projectile of the missile store.
+    pub fn spawn_missile(
+        &mut self,
+        new: NewEntity,
+        data: crate::mob::missile::MissileData,
+    ) -> EntityId {
+        let missiles = &mut self.missiles;
+        self.store.spawn(new, |id| missiles.push(id, data))
+    }
+
+    /// The missile data of an entity.
+    pub fn missile(&self, id: EntityId) -> Option<&crate::mob::missile::MissileData> {
+        let entity = self.store.get(id)?;
+        if !crate::mob::missile::is_missile_kind(entity.kind()) {
+            return None;
+        }
+        self.missiles.get(entity.kind_row())
+    }
+
+    /// The missile data of an entity, mutably.
+    pub fn missile_mut(&mut self, id: EntityId) -> Option<&mut crate::mob::missile::MissileData> {
+        let entity = self.store.get(id)?;
+        if !crate::mob::missile::is_missile_kind(entity.kind()) {
+            return None;
+        }
+        let row = entity.kind_row();
+        self.missiles.get_mut(row)
+    }
+
+    /// Adds a special entity (see [`crate::mob::boss::special`]).
+    pub fn spawn_special(&mut self, new: NewEntity, data: SpecialData) -> EntityId {
+        let network_id = new.network_id.0;
+        let specials = &mut self.specials;
+        let id = self.store.spawn(new, |id| specials.push(id, data));
+        // End crystals are attacked by players.
+        self.by_network_id.insert(network_id, id);
+        id
+    }
+
+    /// The special data of an entity.
+    pub fn special(&self, id: EntityId) -> Option<&SpecialData> {
+        let entity = self.store.get(id)?;
+        if !is_special_kind(entity.kind()) {
+            return None;
+        }
+        self.specials.get(entity.kind_row())
+    }
+
+    /// The special data of an entity, mutably.
+    pub fn special_mut(&mut self, id: EntityId) -> Option<&mut SpecialData> {
+        let entity = self.store.get(id)?;
+        if !is_special_kind(entity.kind()) {
+            return None;
+        }
+        let row = entity.kind_row();
+        self.specials.get_mut(row)
+    }
+
+    /// `addEffect` on a living entity (player or mob) from outside its tick (bosses, block
+    /// entities): `canBeAffected` and the kinds that refuse every effect are checked here,
+    /// `can_be_affected` is an extra verdict of the caller. The client packets, flags and
+    /// attributes follow with the entity's next tick. Returns whether it was added or changed.
+    pub fn add_effect(
+        &mut self,
+        id: EntityId,
+        effect: crate::effect::EffectInstance,
+        can_be_affected: bool,
+    ) -> bool {
+        can_be_affected && crate::effect::living::add_detached(self, id, effect)
+    }
+
+    /// The active effects of a living entity (player or mob).
+    pub fn effects(&self, id: EntityId) -> Option<&crate::effect::ActiveEffects> {
+        if let Some(m) = self.mob(id) {
+            return Some(&m.effects);
+        }
+        self.player(id).map(|p| &p.survival.effects)
     }
 
     /// The mob data of an entity.
@@ -275,6 +369,34 @@ impl Entities {
     pub fn spawn_primed_tnt(&mut self, new: NewEntity, data: PrimedTntData) -> EntityId {
         let primed_tnts = &mut self.primed_tnts;
         self.store.spawn(new, |id| primed_tnts.push(id, data))
+    }
+
+    /// Adds an area effect cloud.
+    pub fn spawn_cloud(
+        &mut self,
+        new: NewEntity,
+        data: crate::effect::cloud::CloudData,
+    ) -> EntityId {
+        let clouds = &mut self.clouds;
+        self.store.spawn(new, |id| clouds.push(id, data))
+    }
+
+    /// The area effect cloud data of an entity.
+    pub fn cloud(&self, id: EntityId) -> Option<&crate::effect::cloud::CloudData> {
+        let entity = self.store.get(id)?;
+        (entity.kind() == ids::AREA_EFFECT_CLOUD)
+            .then(|| self.clouds.get(entity.kind_row()))
+            .flatten()
+    }
+
+    /// The area effect cloud data of an entity, mutably.
+    pub fn cloud_mut(&mut self, id: EntityId) -> Option<&mut crate::effect::cloud::CloudData> {
+        let entity = self.store.get(id)?;
+        if entity.kind() != ids::AREA_EFFECT_CLOUD {
+            return None;
+        }
+        let row = entity.kind_row();
+        self.clouds.get_mut(row)
     }
 
     /// The primed TNT data of an entity.
@@ -367,6 +489,12 @@ impl Entities {
         self.tags.remove(&id);
         if self.by_network_id.get(&removed.network_id.0) == Some(&id) {
             self.by_network_id.remove(&removed.network_id.0);
+            if removed.kind == ids::ENDER_DRAGON {
+                for i in 1..=8 {
+                    self.by_network_id
+                        .remove(&removed.network_id.0.wrapping_add(i));
+                }
+            }
         }
         let moved = self.remove_kind_row(removed.kind, removed.kind_row);
         if let Some(moved) = moved {
@@ -439,6 +567,12 @@ impl Entities {
             self.arrows.swap_remove(row).and_then(|(_, moved)| moved)
         } else if is_mob_kind(kind) {
             self.mobs.swap_remove(row).and_then(|(_, moved)| moved)
+        } else if crate::mob::missile::is_missile_kind(kind) {
+            self.missiles.swap_remove(row).and_then(|(_, moved)| moved)
+        } else if kind == ids::AREA_EFFECT_CLOUD {
+            self.clouds.swap_remove(row).and_then(|(_, moved)| moved)
+        } else if is_special_kind(kind) {
+            self.specials.swap_remove(row).and_then(|(_, moved)| moved)
         } else if kind == ids::TNT {
             self.primed_tnts
                 .swap_remove(row)

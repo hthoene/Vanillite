@@ -10,7 +10,7 @@ use vanillite_config::GameMode;
 use vanillite_world::entity::{EntityFlags, EntityId};
 
 use super::living::{self, has_line_of_sight};
-use super::path::{PathType, malus_of, path_type_static};
+use super::path::{PathType, path_type_static};
 use super::{Tick, combat, kinds, nav, projectile};
 use crate::survival::damage::tag;
 use crate::survival::rules::{Difficulty, Rule};
@@ -38,7 +38,8 @@ pub struct TargetState {
 }
 
 impl TargetState {
-    fn new(must_see: bool) -> TargetState {
+    /// The state of a new target goal.
+    pub fn new(must_see: bool) -> TargetState {
         TargetState {
             must_see,
             unseen_ticks: 0,
@@ -178,6 +179,14 @@ pub enum Goal {
         timestamp: i32,
         found: Option<EntityId>,
     },
+    /// A goal of a mob family (`mob/fam`).
+    Fam(super::fam::FamGoal),
+    /// A goal many families share (`mob/common.rs`).
+    Common(super::common::CommonGoal),
+    /// The goals of guardians (`super::boss::guardian`).
+    Guardian(super::boss::guardian::GuardianGoal),
+    /// The wither's own goals.
+    Wither(super::boss::wither::WitherGoal),
 }
 
 /// The items of a [`Goal::Tempt`].
@@ -186,6 +195,8 @@ pub enum TemptItems {
     /// The animal's breeding food (`isFood`).
     Food,
     CarrotOnAStick,
+    /// The items of an item tag (`minecraft:horse_tempt_items`).
+    Tag(&'static str),
 }
 
 impl Goal {
@@ -206,19 +217,37 @@ impl Goal {
             Goal::SitWhenOrdered => JUMP | MOVE,
             Goal::EndermanLeaveBlock | Goal::EndermanTakeBlock => 0,
             Goal::OwnerHurtBy { .. } | Goal::OwnerHurt { .. } => TARGET,
+            Goal::Fam(g) => super::fam::goal_flags(g),
+            Goal::Common(g) => g.flags(),
+            Goal::Guardian(g) => g.flags(),
+            Goal::Wither(g) => g.flags(),
         }
     }
 
     /// `requiresUpdateEveryTick`.
-    fn every_tick(&self) -> bool {
-        matches!(
-            self,
-            Goal::Float
-                | Goal::RandomLook { .. }
-                | Goal::Melee { .. }
-                | Goal::Swell
-                | Goal::Bow { .. }
-        )
+    pub fn every_tick(&self) -> bool {
+        match self {
+            Goal::Fam(g) => super::fam::goal_every_tick(g),
+            Goal::Common(g) => g.every_tick(),
+            Goal::Guardian(g) => g.every_tick(),
+            Goal::Wither(g) => g.every_tick(),
+            _ => matches!(
+                self,
+                Goal::Float
+                    | Goal::RandomLook { .. }
+                    | Goal::Melee { .. }
+                    | Goal::Swell
+                    | Goal::Bow { .. }
+            ),
+        }
+    }
+
+    /// `isInterruptable`.
+    pub fn interruptable(&self) -> bool {
+        match self {
+            Goal::Common(g) => g.interruptable(),
+            _ => true,
+        }
     }
 
     /// `adjustedTickDelay`.
@@ -523,10 +552,11 @@ pub fn tick_selector(t: &mut Tick<'_, '_>, which: Which) {
                     return true;
                 }
                 let l = s.locked[b];
+                // `canBeReplacedBy`: interruptable and a lower priority.
                 l == NO_SLOT
                     || s.slots
                         .get(usize::from(l))
-                        .is_none_or(|o| slot.priority < o.priority)
+                        .is_none_or(|o| o.goal.interruptable() && slot.priority < o.priority)
             });
             (slot.running, flags, slot.priority, s.disabled, replaceable)
         };
@@ -578,12 +608,12 @@ fn random_int(t: &mut Tick<'_, '_>, bound: i32) -> i32 {
     t.mob().random.next_int_bounded(bound.max(1))
 }
 
-fn distance_sqr(t: &Tick<'_, '_>, other: Vec3) -> f64 {
+pub(super) fn distance_sqr(t: &Tick<'_, '_>, other: Vec3) -> f64 {
     t.pos().distance_to_sqr(other)
 }
 
 /// `LivingEntity.canAttack(target)` and the combat part of `TargetingConditions.test`.
-fn can_attack(t: &Tick<'_, '_>, target: EntityId) -> bool {
+pub(crate) fn can_attack(t: &Tick<'_, '_>, target: EntityId) -> bool {
     if target == t.id {
         return false;
     }
@@ -598,7 +628,7 @@ fn can_attack(t: &Tick<'_, '_>, target: EntityId) -> bool {
 }
 
 /// `TargetingConditions.test` for a player target.
-fn test_player(
+pub(crate) fn test_player(
     t: &mut Tick<'_, '_>,
     target: EntityId,
     combat: bool,
@@ -707,6 +737,8 @@ fn tempting_player(t: &mut Tick<'_, '_>, items: TemptItems) -> Option<EntityId> 
                     TemptItems::CarrotOnAStick => {
                         stack.item == vanillite_data::item::ids::CARROT_ON_A_STICK.0
                     }
+                    TemptItems::Tag(tag) => crate::player::play::game_data()
+                        .is_some_and(|d| d.item_in_tag(stack.item, tag)),
                 }
         });
         if !holds {
@@ -732,7 +764,7 @@ fn other_pos(t: &Tick<'_, '_>, id: EntityId) -> Option<Vec3> {
 }
 
 /// `Mob.isWithinMeleeAttackRange`.
-fn within_melee_range(t: &Tick<'_, '_>, target: EntityId) -> bool {
+pub(super) fn within_melee_range(t: &Tick<'_, '_>, target: EntityId) -> bool {
     let Some(o) = t.other(target) else {
         return false;
     };
@@ -751,97 +783,28 @@ fn walk_target_value(t: &Tick<'_, '_>, pos: BlockPos) -> f64 {
     kinds::walk_target_value(t.mob_ref().kind, t.level, &t.cx.env, pos)
 }
 
-/// `GoalUtils.hasMalus`.
-fn has_malus(t: &Tick<'_, '_>, pos: BlockPos) -> bool {
-    let kind = path_type_static(t.level, t.level.min_y(), pos.x, pos.y, pos.z);
-    malus_of(t.mob_ref().kind.malus(), kind) != 0.0
-}
-
-/// `PathNavigation.isStableDestination`: the block below renders solid.
-fn is_stable(t: &Tick<'_, '_>, pos: BlockPos) -> bool {
-    t.level
-        .block(BlockPos::new(pos.x, pos.y - 1, pos.z))
-        .has(vanillite_data::block::flags::SOLID_RENDER)
-}
-
-/// `RandomPos.generateRandomDirection`.
-fn random_direction(t: &mut Tick<'_, '_>, h: i32, v: i32) -> (i32, i32, i32) {
-    let x = random_int(t, 2 * h + 1) - h;
-    let y = random_int(t, 2 * v + 1) - v;
-    let z = random_int(t, 2 * h + 1) - h;
-    (x, y, z)
-}
-
-/// `RandomPos.generateRandomPosTowardDirection` (mobs here have no home).
-fn toward(t: &Tick<'_, '_>, dir: (i32, i32, i32)) -> BlockPos {
-    let p = t.pos();
-    BlockPos::containing(
-        f64::from(dir.0) + p.x,
-        f64::from(dir.1) + p.y,
-        f64::from(dir.2) + p.z,
-    )
-}
-
 /// `DefaultRandomPos.getPos(mob, h, v)`.
 fn default_random_pos(t: &mut Tick<'_, '_>, h: i32, v: i32) -> Option<Vec3> {
-    let mut best: Option<(BlockPos, f64)> = None;
-    for _ in 0..10 {
-        let dir = random_direction(t, h, v);
-        let pos = toward(t, dir);
-        if !t.level.in_height(pos.y) || !is_stable(t, pos) || has_malus(t, pos) {
-            continue;
-        }
-        let value = walk_target_value(t, pos);
-        if best.is_none_or(|(_, b)| value > b) {
-            best = Some((pos, value));
-        }
-    }
-    best.map(|(p, _)| bottom_center(p))
+    super::randompos::default_pos(t, h, v)
 }
 
 /// `LandRandomPos.getPos(mob, h, v)`.
-fn land_random_pos(t: &mut Tick<'_, '_>, h: i32, v: i32) -> Option<Vec3> {
-    let mut best: Option<(BlockPos, f64)> = None;
-    for _ in 0..10 {
-        let dir = random_direction(t, h, v);
-        let pos = toward(t, dir);
-        if !t.level.in_height(pos.y) || !is_stable(t, pos) {
-            continue;
-        }
-        // `movePosUpOutOfSolid`.
-        let mut pos = pos;
-        if nav::is_solid(t.level.block(pos)) {
-            let mut y = pos.y + 1;
-            while y <= t.level.max_y()
-                && nav::is_solid(t.level.block(BlockPos::new(pos.x, y, pos.z)))
-            {
-                y += 1;
-            }
-            pos = BlockPos::new(pos.x, y, pos.z);
-        }
-        if super::is_water(t.level.block(pos)) || has_malus(t, pos) {
-            continue;
-        }
-        let value = walk_target_value(t, pos);
-        if best.is_none_or(|(_, b)| value > b) {
-            best = Some((pos, value));
-        }
-    }
-    best.map(|(p, _)| bottom_center(p))
+pub(crate) fn land_random_pos(t: &mut Tick<'_, '_>, h: i32, v: i32) -> Option<Vec3> {
+    super::randompos::land_pos(t, h, v)
 }
 
 fn bottom_center(p: BlockPos) -> Vec3 {
     Vec3::new(f64::from(p.x) + 0.5, f64::from(p.y), f64::from(p.z) + 0.5)
 }
 
-fn set_aggressive(t: &mut Tick<'_, '_>, on: bool) {
+pub(super) fn set_aggressive(t: &mut Tick<'_, '_>, on: bool) {
     if t.mob_ref().aggressive != on {
         t.mob().aggressive = on;
         t.core_mut().mark_data_dirty();
     }
 }
 
-fn set_target(t: &mut Tick<'_, '_>, target: Option<EntityId>) {
+pub(crate) fn set_target(t: &mut Tick<'_, '_>, target: Option<EntityId>) {
     t.mob().target = target;
 }
 
@@ -856,8 +819,11 @@ fn fluid_jump_threshold(t: &Tick<'_, '_>) -> f64 {
 // --- Goal behaviour -------------------------------------------------------------------------
 
 /// `canUse`.
-fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
+pub(crate) fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
     match g {
+        Goal::Fam(f) => super::fam::goal_can_use(t, f),
+        Goal::Common(c) => super::common::can_use(t, c),
+        Goal::Wither(w) => super::boss::wither::goal_can_use(t, w),
         Goal::Float => {
             let f = t.mob_ref().fluids;
             f.water_height > fluid_jump_threshold(t) || f.in_lava()
@@ -1120,12 +1086,16 @@ fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
             let _ = state;
             pending.is_some()
         }
+        Goal::Guardian(g) => super::boss::guardian::goal_can_use(t, g),
     }
 }
 
 /// `canContinueToUse`.
-fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
+pub(crate) fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
     match g {
+        Goal::Fam(f) => super::fam::goal_can_continue(t, f),
+        Goal::Common(c) => super::common::can_continue(t, c),
+        Goal::Wither(w) => super::boss::wither::goal_can_continue(t, w),
         Goal::Float | Goal::RestrictSun => can_use(t, g),
         Goal::Panic { .. } | Goal::Stroll { .. } | Goal::FleeSun { .. } => {
             !t.mob_ref().nav.is_done()
@@ -1218,11 +1188,12 @@ fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
             }
             target_can_continue(t, state)
         }
+        Goal::Guardian(g) => super::boss::guardian::goal_can_continue(t, g),
     }
 }
 
 /// `TargetGoal.canContinueToUse`.
-fn target_can_continue(t: &mut Tick<'_, '_>, state: &mut TargetState) -> bool {
+pub(crate) fn target_can_continue(t: &mut Tick<'_, '_>, state: &mut TargetState) -> bool {
     let Some(target) = t.mob_ref().target.or(state.target_mob) else {
         return false;
     };
@@ -1251,8 +1222,11 @@ fn target_can_continue(t: &mut Tick<'_, '_>, state: &mut TargetState) -> bool {
 }
 
 /// `start`.
-fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
+pub(crate) fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
     match g {
+        Goal::Fam(f) => super::fam::goal_start(t, f),
+        Goal::Common(c) => super::common::start(t, c),
+        Goal::Wither(w) => super::boss::wither::goal_start(t, w),
         Goal::Panic { speed, pos } => {
             nav::move_to_pos(t, *pos, *speed);
         }
@@ -1374,6 +1348,7 @@ fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
             kinds::set_creepy(t, true);
         }
         Goal::Float => {}
+        Goal::Guardian(g) => super::boss::guardian::goal_start(t, g),
     }
 }
 
@@ -1403,8 +1378,11 @@ fn alert_others(t: &mut Tick<'_, '_>, by: EntityId) {
 }
 
 /// `stop`.
-fn stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
+pub(crate) fn stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
     match g {
+        Goal::Fam(f) => super::fam::goal_stop(t, f),
+        Goal::Common(c) => super::common::stop(t, c),
+        Goal::Wither(w) => super::boss::wither::goal_stop(t, w),
         Goal::Stroll { .. } => t.mob().nav.stop(),
         Goal::LookAtPlayer { look_at, .. } => *look_at = None,
         Goal::Melee { .. } => {
@@ -1459,13 +1437,17 @@ fn stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
             state.target_mob = None;
             kinds::set_creepy(t, false);
         }
+        Goal::Guardian(g) => super::boss::guardian::goal_stop(t, g),
         _ => {}
     }
 }
 
 /// `tick`.
-fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
+pub(crate) fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
     match g {
+        Goal::Fam(f) => super::fam::goal_tick(t, f),
+        Goal::Common(c) => super::common::tick(t, c),
+        Goal::Wither(w) => super::boss::wither::goal_tick(t, w),
         Goal::Float => {
             if random_float(t) < 0.8 {
                 t.mob().jump = true;
@@ -1581,6 +1563,7 @@ fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
                 }
             }
         }
+        Goal::Guardian(g) => super::boss::guardian::goal_tick(t, g),
         _ => {}
     }
 }
