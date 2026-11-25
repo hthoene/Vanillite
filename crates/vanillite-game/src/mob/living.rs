@@ -44,6 +44,11 @@ pub fn entity_event(t: &mut Tick<'_, '_>, id: EntityId, event: i8) {
 
 /// `Mob.tick` (with the kind specific parts before and after `LivingEntity.tick`).
 pub fn tick(t: &mut Tick<'_, '_>) {
+    // `Entity.baseTick`: `computeSpeed`.
+    let pos = t.pos();
+    let m = t.mob();
+    m.known_speed = pos - m.last_known_pos.unwrap_or(pos);
+    m.last_known_pos = Some(pos);
     kinds::before_tick(t);
     if t.mob_ref().removed {
         return;
@@ -51,6 +56,19 @@ pub fn tick(t: &mut Tick<'_, '_>) {
     base_tick(t);
     if t.mob_ref().removed {
         return;
+    }
+    // `updatingUsingItem` of the zombies' spears.
+    if matches!(
+        t.mob_ref().kind,
+        super::Kind::Zombie
+            | super::Kind::Husk
+            | super::Kind::ZombieVillager
+            | super::Kind::ZombifiedPiglin
+    ) {
+        super::fam::undead::zombies::spear_use_tick(t);
+        if !t.exists() || t.mob_ref().removed {
+            return;
+        }
     }
     ai_step(t);
     if t.mob_ref().removed || !t.exists() {
@@ -1080,7 +1098,16 @@ pub fn move_self(t: &mut Tick<'_, '_>, delta: Vec3) {
     let step = t.mob_ref().attrs.step_height as f32;
     let on_ground = t.on_ground();
     let aabb = t.aabb();
-    let movement = physics::collide(t.level, aabb, delta, step, on_ground, &mut t.cx.boxes);
+    let on_lava = t.mob_ref().nav.stands_on_lava;
+    let movement = physics::collide_for(
+        t.level,
+        aabb,
+        delta,
+        step,
+        on_ground,
+        &mut t.cx.boxes,
+        on_lava,
+    );
     let length = movement.length_sqr();
     if length > 1.0e-7 || delta.length_sqr() - length < 1.0e-7 {
         let p = t.pos();
@@ -1100,7 +1127,7 @@ pub fn move_self(t: &mut Tick<'_, '_>, delta: Vec3) {
     }
     let effect_pos = on_pos(t, f64::from(0.2_f32));
     let effect_state = t.level.block(effect_pos);
-    check_fall_damage(t, movement.y, t.on_ground(), effect_state);
+    check_fall_damage(t, movement.y, t.on_ground(), effect_state, effect_pos);
     if !t.exists() || t.mob_ref().removed {
         return;
     }
@@ -1209,10 +1236,17 @@ fn java_equal(a: f64, b: f64) -> bool {
 }
 
 /// `LivingEntity.checkFallDamage` → `Entity.checkFallDamage` → `Block.fallOn`.
-fn check_fall_damage(t: &mut Tick<'_, '_>, ya: f64, on_ground: bool, on_state: BlockState) {
+fn check_fall_damage(
+    t: &mut Tick<'_, '_>,
+    ya: f64,
+    on_ground: bool,
+    on_state: BlockState,
+    on_pos: BlockPos,
+) {
     if on_ground {
         let distance = t.mob_ref().fall_distance;
         if distance > 0.0 {
+            fall_particles(t, distance, on_state, on_pos);
             // `TurtleEggBlock.fallOn`: zombies land on eggs without breaking them.
             if on_state.block() == vanillite_data::block::ids::TURTLE_EGG
                 && !crate::mob::fam::undead::zombies::is_zombie(t.mob_ref().kind)
@@ -1247,6 +1281,37 @@ fn check_fall_damage(t: &mut Tick<'_, '_>, ya: f64, on_ground: bool, on_state: B
     } else if ya < 0.0 {
         t.mob().fall_distance -= ya;
     }
+}
+
+/// `LivingEntity.checkFallDamage`: the landing dust of a fall of at least one damaging
+/// block, more for higher falls.
+fn fall_particles(t: &mut Tick<'_, '_>, distance: f64, on_state: BlockState, on_pos: BlockPos) {
+    let power = floor(distance + 1.0e-6 - t.mob_ref().attrs.safe_fall_distance).max(0);
+    if power <= 0 || on_state.is_air() {
+        return;
+    }
+    let p = t.pos();
+    let (mut x, mut z) = (p.x, p.z);
+    let here = t.block_pos();
+    if on_pos.x != here.x || on_pos.z != here.z {
+        let x_diff = x - f64::from(on_pos.x) - 0.5;
+        let z_diff = z - f64::from(on_pos.z) - 0.5;
+        let max = x_diff.abs().max(z_diff.abs());
+        x = f64::from(on_pos.x) + 0.5 + x_diff / max * 0.5;
+        z = f64::from(on_pos.z) + 0.5 + z_diff / max * 0.5;
+    }
+    let scale = (f64::from(0.2_f32) + f64::from(power) / 15.0).min(2.5);
+    #[allow(clippy::cast_possible_truncation)]
+    let count = (150.0 * scale) as i32;
+    let mut particle = crate::level::particles::simple("minecraft:block");
+    vanillite_protocol::codec::write_varint(&mut particle.options, i32::from(on_state.0));
+    t.cx.send_particles(
+        particle,
+        Vec3::new(x, p.y, z),
+        count,
+        Vec3::ZERO,
+        f64::from(0.15_f32),
+    );
 }
 
 /// `LivingEntity.causeFallDamage`.
@@ -1404,11 +1469,40 @@ fn bubble_columns(
                     (false, false) => (v.y + 0.06).min(0.7),
                 };
                 t.set_velocity(Vec3::new(v.x, yd, v.z));
-                if !nothing_above {
+                if nothing_above {
+                    send_bubble_column_particles(t, pos);
+                } else {
                     t.mob().fall_distance = 0.0;
                 }
             }
         }
+    }
+}
+
+/// `Entity.sendBubbleColumnParticles`: splashes and bubbles at random spots on the column's
+/// top, drawn from the level's random.
+fn send_bubble_column_particles(t: &mut Tick<'_, '_>, pos: BlockPos) {
+    use crate::level::particles::simple;
+    let (x, y, z) = (f64::from(pos.x), f64::from(pos.y + 1), f64::from(pos.z));
+    for _ in 0..2 {
+        let at = Vec3::new(
+            x + t.env.random.next_double(),
+            y,
+            z + t.env.random.next_double(),
+        );
+        t.cx.send_particles(simple("minecraft:splash"), at, 1, Vec3::ZERO, 1.0);
+        let at = Vec3::new(
+            x + t.env.random.next_double(),
+            y,
+            z + t.env.random.next_double(),
+        );
+        t.cx.send_particles(
+            simple("minecraft:bubble"),
+            at,
+            1,
+            Vec3::new(0.0, 0.01, 0.0),
+            0.2,
+        );
     }
 }
 
@@ -1449,7 +1543,12 @@ fn push_entities(t: &mut Tick<'_, '_>) {
         }
     }
     let climbing = on_climbable(t);
-    for &other in &ids {
+    // `max-entity-collisions`: only the first ones push.
+    let limit =
+        t.cx.settings
+            .max_entity_collisions
+            .map_or(usize::MAX, |n| usize::try_from(n).unwrap_or(usize::MAX));
+    for &other in ids.iter().take(limit) {
         if t.ents.minecart(other).is_some() {
             // `AbstractMinecart.push(this)`.
             crate::minecart::push_by(t.ents, other, id);
@@ -1624,7 +1723,9 @@ pub fn check_despawn(t: &mut Tick<'_, '_>) {
     let category = super::spawn::Category::of(t.core().kind());
     let despawn = f64::from(category.map_or(128, super::spawn::Category::despawn_distance));
     let p = t.pos();
-    let r = 128.0;
+    let hard = t.cx.settings.hard_despawn_range.unwrap_or(despawn);
+    let soft = t.cx.settings.soft_despawn_range;
+    let r = hard.max(128.0);
     let area = Aabb::new(p.x - r, p.y - r, p.z - r, p.x + r, p.y + r, p.z + r);
     let mut nearest = f64::MAX;
     t.ents.store.for_each_in(&area, true, |player| {
@@ -1643,7 +1744,7 @@ pub fn check_despawn(t: &mut Tick<'_, '_>) {
         }
     });
     let far_away_ok = super::fam::remove_when_far_away_mob(t.mob_ref(), nearest);
-    if !persistent && nearest > despawn * despawn && far_away_ok {
+    if !persistent && nearest > hard * hard && far_away_ok {
         t.mob().removed = true;
         return;
     }
@@ -1651,11 +1752,11 @@ pub fn check_despawn(t: &mut Tick<'_, '_>) {
     if !persistent
         && m.no_action_time > 600
         && m.random.next_int_bounded(800) == 0
-        && nearest > 32.0 * 32.0
+        && nearest > soft * soft
         && far_away_ok
     {
         m.removed = true;
-    } else if nearest < 32.0 * 32.0 {
+    } else if nearest < soft * soft {
         m.no_action_time = 0;
     }
 }

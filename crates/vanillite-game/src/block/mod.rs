@@ -11,6 +11,7 @@
 //! blocks that placing or breaking one block adds or removes.
 
 pub mod beacon;
+pub mod beehive;
 pub mod bell;
 pub mod bonemeal;
 pub mod bookshelf;
@@ -21,6 +22,7 @@ pub mod campfire;
 pub mod chest_loot;
 pub mod container;
 pub mod crafter;
+pub mod creaking_heart;
 pub mod decor;
 pub mod dispenser;
 mod dripleaf;
@@ -33,6 +35,7 @@ pub mod fluid;
 pub mod furnace;
 mod growth;
 pub mod hopper;
+pub mod jukebox;
 pub mod lectern;
 pub mod note;
 pub mod piston;
@@ -319,6 +322,7 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
     note::fill(block, &mut b);
     bell::fill(block, &mut b);
     lectern::fill(block, &mut b);
+    jukebox::fill(block, &mut b);
     sculk::fill(block, &mut b);
     sculk_shrieker::fill(block, &mut b);
     sculk_catalyst::fill(block, &mut b);
@@ -332,7 +336,9 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
     pot::fill(block, &mut b);
     bookshelf::fill(block, &mut b);
     campfire::fill(block, &mut b);
+    beehive::fill(block, &mut b);
     crafter::fill(block, &mut b);
+    creaking_heart::fill(block, &mut b);
     portal::fill(block, &mut b);
     eggs::fill(block, &mut b);
     dripleaf::fill(block, &mut b);

@@ -14,6 +14,7 @@ pub mod damage;
 pub mod food;
 pub mod player;
 pub mod rules;
+pub mod shoulder;
 pub mod weather;
 
 use std::sync::Arc;
@@ -79,6 +80,13 @@ pub enum Effect {
     /// The player with this UUID died: with `ender_pearls_vanish_on_death` its ender pearls in
     /// the other worlds vanish (the pearls of its own world see it themselves).
     PearlsVanish(u128),
+    /// An entity from a player's shoulder back in the world (`respawnEntityOnShoulder`): its
+    /// NBT, the position and the player that becomes its owner.
+    RespawnShoulder {
+        tag: Box<vanillite_nbt::Compound>,
+        pos: Vec3,
+        owner: u128,
+    },
 }
 
 /// The seed of a sound (`Level.soundSeedGenerator`, a random of its own that Vanilla never

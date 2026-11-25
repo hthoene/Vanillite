@@ -105,6 +105,16 @@ pub const RULES: [RuleInfo; 59] = [
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Rule(pub usize);
 
+/// The rules the operator screens, commands and clients read.
+impl Rule {
+    pub const BLOCK_DROPS: Rule = Rule(3);
+    pub const ELYTRA_MOVEMENT_CHECK: Rule = Rule(8);
+    pub const GLOBAL_SOUND_EVENTS: Rule = Rule(16);
+    pub const LOG_ADMIN_COMMANDS: Rule = Rule(22);
+    pub const SEND_COMMAND_FEEDBACK: Rule = Rule(43);
+    pub const SPECTATORS_GENERATE_CHUNKS: Rule = Rule(53);
+}
+
 impl Rule {
     pub const ADVANCE_TIME: Rule = Rule(0);
     pub const ADVANCE_WEATHER: Rule = Rule(1);
@@ -129,6 +139,7 @@ impl Rule {
     pub const PLAYERS_NETHER_PORTAL_CREATIVE_DELAY: Rule = Rule(34);
     pub const PLAYERS_NETHER_PORTAL_DEFAULT_DELAY: Rule = Rule(35);
     pub const PVP: Rule = Rule(38);
+    pub const RAIDS: Rule = Rule(39);
     pub const REDUCED_DEBUG_INFO: Rule = Rule(41);
     pub const RESPAWN_RADIUS: Rule = Rule(42);
     pub const SHOW_ADVANCEMENT_MESSAGES: Rule = Rule(44);
@@ -138,6 +149,7 @@ impl Rule {
     pub const SPAWN_MONSTERS: Rule = Rule(48);
     pub const SPAWN_PATROLS: Rule = Rule(49);
     pub const SPAWN_PHANTOMS: Rule = Rule(50);
+    pub const SPAWN_WANDERING_TRADERS: Rule = Rule(51);
     pub const SPAWN_WARDENS: Rule = Rule(52);
     pub const TNT_EXPLODES: Rule = Rule(55);
     pub const TNT_EXPLOSION_DROP_DECAY: Rule = Rule(56);

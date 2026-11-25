@@ -75,6 +75,7 @@ fn player_view<'a>(
     v.crouching = e.pose() == Pose::Crouching;
     v.sprinting = flags.contains(EntityFlags::SPRINTING);
     v.swimming = flags.contains(EntityFlags::SWIMMING);
+    v.flying = survival.flying;
     v.fall_flying = flags.contains(EntityFlags::FALL_FLYING);
     v.in_water = survival.fluids.in_water();
     v.equipment = [

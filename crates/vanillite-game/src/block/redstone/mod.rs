@@ -38,7 +38,10 @@ pub fn strike_lightning_rod(level: &mut crate::level::Level, pos: BlockPos) {
 }
 use crate::level::Level;
 
-pub use components::set_door_open;
+pub use components::{
+    button_explosion_hit, door_explosion_hit, fence_gate_explosion_hit, lever_pull, set_door_open,
+    trapdoor_explosion_hit,
+};
 pub use diode::set_placed_by;
 
 /// Fills the redstone behaviours of `block`.
@@ -159,6 +162,11 @@ impl BlockSet {
         } else {
             wood("wooden")
         }
+    }
+
+    /// `canOpenByWindCharge`: everything but iron.
+    pub(crate) fn can_open_by_wind_charge(self) -> bool {
+        self.family != "iron"
     }
 
     /// `doorOpen` / `doorClose`.

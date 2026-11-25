@@ -433,7 +433,7 @@ fn clockwise(d: Direction) -> Direction {
 }
 
 /// `ChestBlock.isChestBlockedAt`: a redstone conductor above (cats are not checked).
-fn chest_blocked(level: &Level, pos: BlockPos) -> bool {
+pub(crate) fn chest_blocked(level: &Level, pos: BlockPos) -> bool {
     let above = pos.above();
     Level::is_redstone_conductor(level.block(above))
 }
@@ -580,9 +580,8 @@ pub fn drop_item_stack(level: &mut Level, pos: BlockPos, mut stack: ItemStack) {
     while !stack.is_empty() {
         let n = level.random().next_int_bounded(21) + 10;
         let part = stack.split(n);
-        // `new ItemEntity(level, x, y, z, stack)` draws a velocity, replaced right after.
-        level.random().next_double();
-        level.random().next_double();
+        // `new ItemEntity(level, x, y, z, stack)` draws its first velocity from the entity's
+        // own random, not the level's; it is replaced right after.
         let triangle = |level: &mut Level, mode: f64| {
             let a = level.random().next_double();
             let b = level.random().next_double();

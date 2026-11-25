@@ -235,6 +235,7 @@ impl ServerWorld {
                     knockback: vanillite_game::effect::living::WIND_CHARGED_KNOCKBACK,
                     wind_sound: Some(vanillite_game::effect::living::WIND_CHARGED_SOUND),
                     resistance: vanillite_game::level::explosion::BlockResistance::WindCharge,
+                    fire: false,
                 },
             );
         }
@@ -749,7 +750,7 @@ impl ServerWorld {
             );
         }
         data.connection.movement.reset_position(body.pos);
-        join::send_abilities(sink.as_ref(), data.game_mode);
+        join::send_abilities(sink.as_ref(), data.game_mode, data.survival.flying);
         let view = ChunkView {
             center: ChunkPos::new(
                 vanillite_base::math::floor(body.pos.x) >> 4,

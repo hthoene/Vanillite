@@ -89,6 +89,12 @@ pub enum BlockEntity {
     EndPortal,
     /// `TheEndGatewayBlockEntity`.
     EndGateway(crate::block::portal::Gateway),
+    /// `BeehiveBlockEntity` (beehives and bee nests).
+    Beehive(Box<crate::block::beehive::Beehive>),
+    /// `CreakingHeartBlockEntity`.
+    CreakingHeart(Box<crate::block::creaking_heart::CreakingHeart>),
+    /// `JukeboxBlockEntity`.
+    Jukebox(Box<crate::block::jukebox::Jukebox>),
 }
 
 /// `BlockEntityTicker.tick(level, pos, state, blockEntity)`: the block entity is looked up at
@@ -261,6 +267,7 @@ fn ticker_of(entity: &BlockEntity) -> Option<TickerFn> {
         | BlockEntity::ChiseledBookshelf(_)
         | BlockEntity::Brushable(_) => None,
         BlockEntity::Campfire(_) => Some(crate::block::campfire::tick),
+        BlockEntity::Beehive(_) => Some(crate::block::beehive::tick),
         BlockEntity::Crafter(_) => Some(crate::block::crafter::server_tick),
         BlockEntity::Beacon(_) => Some(crate::block::beacon::tick),
         BlockEntity::Conduit(_) => Some(crate::block::beacon::conduit_tick),
@@ -272,12 +279,14 @@ fn ticker_of(entity: &BlockEntity) -> Option<TickerFn> {
         BlockEntity::Hopper(_) => Some(crate::block::hopper::push_items_tick),
         BlockEntity::DaylightDetector => Some(crate::block::sensor::daylight_detector_tick),
         BlockEntity::Bell(_) => Some(crate::block::bell::tick),
+        BlockEntity::Jukebox(_) => Some(crate::block::jukebox::tick),
         BlockEntity::SculkSensor(_) => Some(crate::block::sculk::tick_block_entity),
         BlockEntity::Spawner(_) => Some(crate::block::spawner::tick),
         BlockEntity::TrialSpawner(_) => Some(crate::block::trial_spawner::tick),
         BlockEntity::Vault(_) => Some(crate::block::vault::tick),
         BlockEntity::SculkShrieker(_) => Some(crate::block::sculk_shrieker::tick_block_entity),
         BlockEntity::SculkCatalyst(_) => Some(crate::block::sculk_catalyst::tick_block_entity),
+        BlockEntity::CreakingHeart(_) => Some(crate::block::creaking_heart::server_tick),
     }
 }
 
@@ -312,6 +321,8 @@ pub fn new_block_entity(state: BlockState) -> Option<BlockEntity> {
         Some(BlockEntity::Bell(Bell::default()))
     } else if block == ids::LECTERN {
         Some(BlockEntity::Lectern(Lectern::default()))
+    } else if block == ids::JUKEBOX {
+        Some(BlockEntity::Jukebox(Box::default()))
     } else if block == ids::SCULK_SENSOR || block == ids::CALIBRATED_SCULK_SENSOR {
         Some(BlockEntity::SculkSensor(Box::new(SculkSensor::new(
             block == ids::CALIBRATED_SCULK_SENSOR,
@@ -355,10 +366,14 @@ pub fn new_block_entity(state: BlockState) -> Option<BlockEntity> {
         Some(BlockEntity::Brushable(Box::default()))
     } else if crate::block::campfire::is_campfire(block) {
         Some(BlockEntity::Campfire(Box::default()))
+    } else if crate::block::beehive::is_beehive(block) {
+        Some(BlockEntity::Beehive(Box::default()))
     } else if crate::block::decor::is_skull(block) {
         Some(BlockEntity::Skull(Box::default()))
     } else if crate::block::decor::is_banner(block) {
         Some(BlockEntity::Banner(Box::default()))
+    } else if block == ids::CREAKING_HEART {
+        Some(BlockEntity::CreakingHeart(Box::default()))
     } else {
         crate::block::container::new_block_entity(block)
     }
@@ -373,6 +388,7 @@ fn is_valid(entity: &BlockEntity, state: BlockState) -> bool {
         BlockEntity::DaylightDetector => state.block() == ids::DAYLIGHT_DETECTOR,
         BlockEntity::Bell(_) => state.block() == ids::BELL,
         BlockEntity::Lectern(_) => state.block() == ids::LECTERN,
+        BlockEntity::Jukebox(_) => state.block() == ids::JUKEBOX,
         BlockEntity::SculkSensor(sensor) => {
             state.block()
                 == if sensor.calibrated {
@@ -415,10 +431,12 @@ fn is_valid(entity: &BlockEntity, state: BlockState) -> bool {
         BlockEntity::DecoratedPot(_) => state.block() == ids::DECORATED_POT,
         BlockEntity::ChiseledBookshelf(_) => state.block() == ids::CHISELED_BOOKSHELF,
         BlockEntity::Campfire(_) => crate::block::campfire::is_campfire(state.block()),
+        BlockEntity::Beehive(_) => crate::block::beehive::is_beehive(state.block()),
         BlockEntity::Brushable(_) => crate::block::brushable::is_brushable(state),
         BlockEntity::Crafter(_) => state.block() == ids::CRAFTER,
         BlockEntity::Beacon(_) => state.block() == ids::BEACON,
         BlockEntity::Conduit(_) => state.block() == ids::CONDUIT,
+        BlockEntity::CreakingHeart(_) => state.block() == ids::CREAKING_HEART,
     }
 }
 
@@ -482,11 +500,17 @@ impl Level {
                     if let BlockEntity::Lectern(lectern) = &entity {
                         crate::block::lectern::drop_book(self, pos, old, lectern);
                     }
+                    if let BlockEntity::Jukebox(_) = entity {
+                        crate::block::jukebox::pop_out_the_item(self, pos);
+                    }
                     if let BlockEntity::Beacon(_) = entity {
                         crate::block::beacon::removed(self, pos);
                     }
                     if let BlockEntity::SculkShrieker(_) = entity {
                         crate::block::sculk_shrieker::pre_remove(self, pos, old);
+                    }
+                    if let BlockEntity::CreakingHeart(_) = entity {
+                        crate::block::creaking_heart::remove_protector(self, pos, None);
                     }
                     if let BlockEntity::Furnace(_) = entity {
                         let xp = crate::block::furnace::pop_experience(self, pos);
@@ -494,7 +518,10 @@ impl Level {
                     }
                 }
             }
-            self.block_entities.remove(pos);
+            if let Some(BlockEntity::Jukebox(_)) = self.block_entities.remove(pos) {
+                // `setRemoved`.
+                crate::block::jukebox::removed(self, pos, old);
+            }
         }
     }
 
@@ -619,11 +646,13 @@ fn load(state: BlockState, nbt: &Compound) -> Option<BlockEntity> {
         BlockEntity::DecoratedPot(pot) => pot.load(nbt),
         BlockEntity::ChiseledBookshelf(shelf) => shelf.load(nbt),
         BlockEntity::Campfire(campfire) => campfire.load(nbt),
+        BlockEntity::Beehive(hive) => hive.load(nbt),
         BlockEntity::Brushable(b) => b.load(nbt),
         BlockEntity::Crafter(c) => c.load(nbt),
         BlockEntity::Beacon(b) => b.load(nbt),
         BlockEntity::Conduit(c) => c.load(nbt),
         BlockEntity::Lectern(lectern) => lectern.load(nbt),
+        BlockEntity::Jukebox(j) => j.load(nbt),
         BlockEntity::Hopper(h) => {
             h.custom_name = crate::block::container::load_name(nbt);
             (h.loot_table, h.loot_seed) = crate::block::chest_loot::load(nbt);
@@ -633,6 +662,7 @@ fn load(state: BlockState, nbt: &Compound) -> Option<BlockEntity> {
             h.cooldown_time = int("TransferCooldown").unwrap_or(-1);
         }
         BlockEntity::EndGateway(gateway) => *gateway = crate::block::portal::Gateway::load(nbt),
+        BlockEntity::CreakingHeart(h) => h.load(nbt),
         _ => {}
     }
     Some(entity)
@@ -685,11 +715,13 @@ fn save(entity: &BlockEntity, state: BlockState, pos: BlockPos) -> Compound {
         BlockEntity::DecoratedPot(pot) => pot.save(&mut nbt),
         BlockEntity::ChiseledBookshelf(shelf) => shelf.save(&mut nbt),
         BlockEntity::Campfire(campfire) => campfire.save(&mut nbt),
+        BlockEntity::Beehive(hive) => hive.save(&mut nbt),
         BlockEntity::Brushable(b) => b.save(&mut nbt),
         BlockEntity::Crafter(c) => c.save(&mut nbt),
         BlockEntity::Beacon(b) => b.save(&mut nbt),
         BlockEntity::Conduit(c) => c.save(&mut nbt),
         BlockEntity::Lectern(lectern) => lectern.save(&mut nbt),
+        BlockEntity::Jukebox(j) => j.save(&mut nbt),
         BlockEntity::Hopper(h) => {
             crate::block::container::save_name(&h.custom_name, &mut nbt);
             if !crate::block::chest_loot::save(h.loot_table.as_deref(), h.loot_seed, &mut nbt) {
@@ -698,6 +730,7 @@ fn save(entity: &BlockEntity, state: BlockState, pos: BlockPos) -> Compound {
             nbt.insert("TransferCooldown", Tag::Int(h.cooldown_time));
         }
         BlockEntity::EndGateway(gateway) => gateway.save(&mut nbt),
+        BlockEntity::CreakingHeart(h) => h.save(&mut nbt),
         _ => {}
     }
     nbt
@@ -961,6 +994,7 @@ impl Level {
             self.write_block_entities(chunk);
         }
         self.write_all_entities();
+        self.write_all_poi();
         self.chunks.save_all(flush);
     }
 }
@@ -1034,6 +1068,7 @@ pub fn collect_component(entity: &BlockEntity, id: u16) -> Option<Box<[u8]>> {
         BlockEntity::Campfire(campfire) => {
             (id == components::CONTAINER).then(|| container_value(&campfire.items))
         }
+        BlockEntity::Beehive(hive) => hive.component(id),
         BlockEntity::Crafter(crafter) => {
             if id == components::CONTAINER {
                 Some(container_value(&crafter.items))
@@ -1078,6 +1113,12 @@ pub fn apply_components(level: &mut Level, pos: BlockPos, stack: &ItemStack) {
             if let Some(items) = contents() {
                 copy_into(&items, &mut campfire.items);
             }
+        }
+        Some(BlockEntity::Beehive(hive)) => {
+            hive.apply(stack);
+            level.block_entities.touch(pos.chunk());
+            crate::block::beehive::placed_changed(level, pos);
+            return;
         }
         Some(BlockEntity::Crafter(crafter)) => {
             if let Some(name) = decode_name(stack) {

@@ -45,6 +45,8 @@ pub struct PlayerState {
     pub client: Option<ClientInformation>,
     /// The client asked to respawn (`client_command` `PERFORM_RESPAWN`).
     pub respawn: bool,
+    /// `Abilities.flying`.
+    pub flying: bool,
 }
 
 /// An attack or interaction of a player with an entity, by network id.
@@ -73,6 +75,8 @@ pub enum EntityAction {
     /// `player_command` `OPEN_INVENTORY` while riding: the vehicle's inventory opens
     /// (`HasCustomInventoryScreen`: chest boats).
     OpenVehicleInventory,
+    /// `player_action` `STAB`: a jab with the piercing weapon in the main hand.
+    Stab,
 }
 
 /// What a player sends to steer its vehicle.
@@ -139,6 +143,30 @@ pub enum ChatRequest {
     /// The player started a new, validated chat session; other players learn it through the
     /// tab list.
     Session(ChatSessionData),
+    /// An operator screen packet; the server checks the permissions.
+    Admin(AdminRequest),
+}
+
+/// The packets of the operator screens, handled by the server in packet order with the chat
+/// requests (Vanilla's `ServerGamePacketListenerImpl.handleChangeDifficulty` and friends).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AdminRequest {
+    /// `change_difficulty` with the raw difficulty id.
+    ChangeDifficulty(i32),
+    /// `lock_difficulty`.
+    LockDifficulty(bool),
+    /// `change_game_mode` (F3+F4) with the raw game mode id.
+    ChangeGameMode(i32),
+    /// `set_game_rule`: rule keys and serialized values.
+    SetGameRules(Vec<(String, String)>),
+    /// `client_command` `REQUEST_GAMERULE_VALUES`.
+    RequestGameRuleValues,
+    /// `block_entity_tag_query` (F3+I on a block).
+    BlockEntityTagQuery { transaction_id: i32, pos: BlockPos },
+    /// `entity_tag_query` (F3+I on an entity).
+    EntityTagQuery { transaction_id: i32, entity_id: i32 },
+    /// `teleport_to_entity`: the spectator menu teleport to the entity with this UUID.
+    TeleportToEntity(u128),
 }
 
 /// A player's chat state.
@@ -401,8 +429,9 @@ impl Connection {
                         sink.send(&stats.award_packet());
                     }
                 }
-                // Game rule values come later.
-                ClientCommandAction::RequestGameRuleValues => {}
+                ClientCommandAction::RequestGameRuleValues => {
+                    self.admin(AdminRequest::RequestGameRuleValues);
+                }
             },
             ServerboundPlay::SeenAdvancements(p) => {
                 // `handleSeenAdvancements`: an opened tab of a known advancement.
@@ -607,6 +636,7 @@ impl Connection {
                 self.container_button(p.container_id, p.button_id, play)
             }
             ServerboundPlay::RenameItem(p) => self.rename_item(&p.name, play),
+            ServerboundPlay::SelectTrade(p) => self.select_trade(p.item, play),
             ServerboundPlay::SetBeacon(p) => self.set_beacon(p.primary, p.secondary, play),
             ServerboundPlay::ContainerSlotStateChanged(p) => {
                 self.container_slot_state(p.slot_id, p.container_id, p.new_state, play);
@@ -620,6 +650,39 @@ impl Connection {
                 {
                     crate::block::sign::update_text(level, pos, uuid, p.front, &p.lines);
                 }
+            }
+            // `handlePlayerAbilities`.
+            ServerboundPlay::PlayerAbilities(p) => {
+                state.flying = p.is_flying()
+                    && crate::survival::player::Abilities::of(play.actor.game_mode).mayfly;
+            }
+            ServerboundPlay::ChangeDifficulty(p) => {
+                self.admin(AdminRequest::ChangeDifficulty(p.difficulty));
+            }
+            ServerboundPlay::LockDifficulty(p) => {
+                self.admin(AdminRequest::LockDifficulty(p.locked));
+            }
+            ServerboundPlay::ChangeGameMode(p) => self.admin(AdminRequest::ChangeGameMode(p.mode)),
+            ServerboundPlay::SetGameRule(p) => {
+                let entries = p
+                    .entries
+                    .into_iter()
+                    .map(|e| (e.rule.to_string(), e.value))
+                    .collect();
+                self.admin(AdminRequest::SetGameRules(entries));
+            }
+            ServerboundPlay::BlockEntityTagQuery(p) => {
+                self.admin(AdminRequest::BlockEntityTagQuery {
+                    transaction_id: p.transaction_id,
+                    pos: BlockPos::new(p.pos.x, p.pos.y, p.pos.z),
+                });
+            }
+            ServerboundPlay::EntityTagQuery(p) => self.admin(AdminRequest::EntityTagQuery {
+                transaction_id: p.transaction_id,
+                entity_id: p.entity_id,
+            }),
+            ServerboundPlay::TeleportToEntity(p) => {
+                self.admin(AdminRequest::TeleportToEntity(p.uuid.0));
             }
             // The server never asks the client to reconfigure yet.
             ServerboundPlay::ConfigurationAcknowledged(_) => {
@@ -640,6 +703,14 @@ impl Connection {
             | ServerboundPlay::Unhandled { .. } => {}
         }
         Ok(())
+    }
+
+    /// Queues an operator screen request. The queue is bounded like the other per-tick
+    /// request lists; requests beyond the bound are dropped.
+    fn admin(&mut self, request: AdminRequest) {
+        if self.chat.requests.len() < 64 {
+            self.chat.requests.push(ChatRequest::Admin(request));
+        }
     }
 
     /// `handlePlayerAction`.
@@ -665,7 +736,11 @@ impl Connection {
                     self.entity_actions.push(EntityAction::ReleaseUseItem);
                 }
             }
-            DigAction::Stab => {}
+            DigAction::Stab => {
+                if self.entity_actions.len() < 16 {
+                    self.entity_actions.push(EntityAction::Stab);
+                }
+            }
             DigAction::StartDestroyBlock
             | DigAction::ChangeDestroyDirection
             | DigAction::AbortDestroyBlock
@@ -983,6 +1058,37 @@ impl Connection {
         }
         crate::menu::container::with_view(inventory, level, actor.pos, None, |view| {
             view.update_beacon(primary, secondary);
+        });
+    }
+
+    /// `handleSelectTrade`: the offer picked in the open merchant menu.
+    fn select_trade(&mut self, item: i32, play: &mut PlayContext<'_>) {
+        let sink = self.sink.as_ref();
+        let actor = play.actor;
+        let PlayContext {
+            level, inventory, ..
+        } = play;
+        let Some(level) = level.level_mut() else {
+            return;
+        };
+        if inventory
+            .container
+            .as_ref()
+            .is_none_or(|m| m.kind != crate::menu::container::MenuKind::Merchant)
+        {
+            return;
+        }
+        let in_range = |pos| actor.within_block_range(pos, 4.0);
+        if !crate::menu::container::still_valid(inventory, level, &in_range, &|b| {
+            actor.within_entity_range(b, 4.0)
+        }) {
+            log::debug!("A player interacted with an invalid menu");
+            return;
+        }
+        crate::menu::container::with_view(inventory, level, actor.pos, None, |view| {
+            view.merchant_select(item);
+            view.flush_result_updates(sink);
+            crate::menu::broadcast_changes(view, sink);
         });
     }
 

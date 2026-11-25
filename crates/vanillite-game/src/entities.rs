@@ -86,6 +86,14 @@ pub struct Entities {
     /// The portal state (`portalProcess`, `portalCooldown`) of the entities besides players
     /// that are in a portal or cool down after one; players keep theirs in their data.
     pub portals: FxHashMap<EntityId, crate::portal::PortalState>,
+    /// The points of interest of the world's live chunks (`ServerLevel.getPoiManager`): here,
+    /// so mob ticks can claim and release tickets while the entities are out of the level.
+    pub poi: crate::poi::PoiManager,
+    /// The raids of the world (`ServerLevel.getRaids`), next to the POI for the same reason.
+    pub raids: crate::raid::Raids,
+    /// Mobs whose equipment a menu changed: the next tick sends it to the players tracking
+    /// them (`LivingEntity.detectEquipmentUpdates`).
+    pub equipment_updates: Vec<EntityId>,
     /// Lightning bolt kind data.
     pub bolts: Dense<crate::lightning::LightningData>,
 }

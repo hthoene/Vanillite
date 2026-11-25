@@ -52,6 +52,10 @@ pub struct GameData {
     pub banner_patterns: crate::menu::BannerPatterns,
     /// The tags of the registries: registry → tag id (without `#`) → entry ids in tag order.
     pub registry_tags: HashMap<String, HashMap<String, Vec<u32>>>,
+    /// The `minecraft:villager_trade` and `minecraft:trade_set` registries.
+    pub trades: crate::trading::data::TradeData,
+    /// The `minecraft:jukebox_song` registry, by registry id.
+    pub jukebox_songs: Vec<crate::block::jukebox::JukeboxSong>,
 }
 
 impl crate::predicate::EntityTags for GameData {
@@ -660,6 +664,14 @@ impl Digging {
             block_update(sink, ctx.level, pos);
             return false;
         }
+        // `CreakingHeartBlock.playerWillDestroy`: the creaking dies by the player's attack.
+        if state.block() == vanillite_data::block::ids::CREAKING_HEART
+            && let Some(player) = ctx.actor.entity
+            && let Some(level) = ctx.level.level_mut()
+        {
+            let prevents = ctx.actor.creative();
+            crate::block::creaking_heart::player_will_destroy(level, pos, state, player, prevents);
+        }
         // `playerWillDestroy`: break particles and sound for everyone else, and the other half
         // of double blocks.
         ctx.level.level_event(
@@ -714,6 +726,10 @@ impl Digging {
         {
             // `ShulkerBoxBlock.playerWillDestroy`: a creative player still gets a filled box.
             crate::block::container::creative_shulker_drop(level, pos, state, entity);
+            // `BeehiveBlock.playerWillDestroy`: a hive with bees or honey drops as an item.
+            if crate::block::beehive::is_beehive(state.block()) {
+                crate::block::beehive::creative_drop(level, pos, state);
+            }
         }
         ctx.level.game_event(
             events_ids().block_destroy,
@@ -734,6 +750,19 @@ impl Digging {
             // `Block.playerDestroy`.
             ctx.award_stat(Stat::of(StatType::Mined, state.block().0), 1);
             drop_resources(ctx, state, pos, &tool, entity.as_ref());
+            if crate::block::beehive::is_beehive(state.block())
+                && let Some(player) = ctx.actor.entity
+                && let Some(level) = ctx.level.level_mut()
+            {
+                crate::block::beehive::player_destroy(
+                    level,
+                    pos,
+                    state,
+                    entity.as_ref(),
+                    player,
+                    &tool,
+                );
+            }
         }
         true
     }
@@ -1140,6 +1169,9 @@ impl Digging {
         else {
             return false;
         };
+        if let Some(level) = ctx.level.level_mut() {
+            state = crate::block::creaking_heart::placement_state(level, state);
+        }
         if !ctx.level.is_unobstructed(state, target) {
             return false;
         }
@@ -1523,11 +1555,11 @@ impl crate::loot::LootRandom for LevelRandom<'_> {
 
 /// `Block.popResource`.
 pub fn pop_resource(level: &mut dyn PlayLevel, pos: BlockPos, stack: ItemStack) {
-    if stack.is_empty() {
-        return;
-    }
     if let Some(level) = level.level_mut() {
         crate::block::drops::pop_resource(level, pos, stack);
+        return;
+    }
+    if stack.is_empty() {
         return;
     }
     let half_height = 0.125;

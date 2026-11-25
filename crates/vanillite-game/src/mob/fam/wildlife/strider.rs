@@ -1,8 +1,8 @@
 //! Striders (`Strider`): lava walkers of the Nether that shiver out of warm blocks, carry a
 //! saddle and are steered with a warped fungus on a stick.
 //!
-//! Standing on lava (`canStandOnFluid`) needs fluid collision in the shared movement; until
-//! then `floatStrider` keeps them at the surface.
+//! They stand on lava (`canStandOnFluid`): lava sources collide with their lower half in the
+//! strider's movement ([`crate::mob::physics::collide_for`]).
 
 use vanillite_base::random::RandomSource;
 use vanillite_base::{BlockPos, Vec3};
@@ -17,10 +17,11 @@ use crate::mob::fam::{ExtraMob, FamGoal, Interact, Relation, SpawnContext, Spawn
 use crate::mob::goals::{Goal as MobGoal, TemptItems};
 use crate::mob::kinds::{self, Kind};
 use crate::mob::{Attrs, MobData, Tick, combat, equipment, is_lava};
-use crate::survival::rules::Difficulty;
 
 /// `Strider.registerGoals` (`LookAtPlayerGoal(Strider.class)` looks at players only here).
 pub(super) fn register_goals(m: &mut MobData) {
+    // `canStandOnFluid(lava)` and `StriderPathNavigation`.
+    m.nav.stands_on_lava = true;
     let g = &mut m.goals;
     g.add(1, MobGoal::panic(1.65));
     g.add(2, MobGoal::breed(1.0));
@@ -82,7 +83,9 @@ pub(super) fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
     if m.baby {
         return;
     }
-    if m.random.next_int_bounded(30) == 0 && ctx.difficulty != Difficulty::Peaceful {
+    // `level.isSpawningMonsters()`.
+    if m.random.next_int_bounded(30) == 0 && ctx.level.is_none_or(|l| l.settings.spawning_monsters)
+    {
         let seed = crate::mob::new_entity_seed();
         let mut rider = MobData::new(Kind::ZombifiedPiglin, seed);
         let mut inner = SpawnContext {
@@ -173,8 +176,8 @@ pub(super) fn after_tick(t: &mut Tick<'_, '_>) {
     }
     let pos = t.block_pos();
     let above_lava = is_lava(t.level.block(BlockPos::new(pos.x, pos.y + 1, pos.z)));
-    // `isAbove(liquid collision shape)`: the feet at or over the top half of the lava block.
-    if t.pos().y >= f64::from(pos.y) + 0.5 - 1.0e-5 && !above_lava {
+    // `isAbove(liquid collision shape)`: the feet over the top of the lower half of the block.
+    if t.pos().y > f64::from(pos.y) + 0.5 - f64::from(1.0e-5_f32) && !above_lava {
         t.core_mut().set_flags(EntityFlags::ON_GROUND, true);
     } else {
         let v = t.velocity() * 0.5;

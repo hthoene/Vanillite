@@ -73,6 +73,8 @@ pub struct ServerWorld {
     /// of players there: equal tickets at one chunk give the same levels as one, so dense
     /// players crossing chunks do not recompute the levels of their whole view.
     center_tickets: FxHashMap<ChunkPos, (u32, TicketId, TicketId)>,
+    /// Where the moving players' views head ([`Chunks::set_focus`]); reused per tick.
+    focus: Vec<ChunkPos>,
     scratch: Vec<ChunkPos>,
     /// Weather, lightning and the players' survival.
     pub(crate) survival: crate::survival::WorldSurvival,
@@ -149,6 +151,11 @@ impl ServerWorld {
         if dimension == "minecraft:the_end" {
             mobs.init_dragon_fight(&data, &mut level);
         }
+        mobs.init_raids(&data, &mut level);
+        // `MinecraftServer.customSpawners`: the wandering trader spawner of the overworld.
+        if dimension == "minecraft:overworld" {
+            mobs.init_trader_spawner(&data);
+        }
         // Entity randoms are `RandomSource.create()`: seeded from the clock, not the world seed.
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -175,6 +182,7 @@ impl ServerWorld {
             packets,
             updates: WorldUpdates::default(),
             player_tickets: FxHashMap::default(),
+            focus: Vec::new(),
             center_tickets: FxHashMap::default(),
             effects: LevelEffects::default(),
             item_random: XoroshiroRandom::new(seed),
@@ -217,12 +225,22 @@ impl ServerWorld {
     /// Keeps every player's view loaded and the chunks in its simulation distance ticking:
     /// one load ticket and one simulation ticket at each centre chunk, shared by the players
     /// there, moved with a player that was alone, removed when the last one is gone.
-    fn update_player_tickets(&mut self) {
+    /// `ChunkMap.skipPlayer`: without `spectators_generate_chunks`, spectators hold no tickets
+    /// (they see what others keep loaded).
+    fn update_player_tickets(&mut self, spectators_generate_chunks: bool) {
         let chunks = &mut self.level.chunks;
         let level = chunks.player_ticket_level();
         let simulation = chunks.player_simulation_level();
         let centers = &mut self.center_tickets;
         for (id, player) in self.level.entities.players.iter() {
+            if !spectators_generate_chunks
+                && player.game_mode == vanillite_config::GameMode::Spectator
+            {
+                if let Some(old) = self.player_tickets.remove(&id) {
+                    release_center(chunks, centers, old);
+                }
+                continue;
+            }
             let center = player.chunk_view.center;
             let old = self.player_tickets.get(&id).copied();
             if old == Some(center) {
@@ -256,6 +274,18 @@ impl ServerWorld {
                 release_center(chunks, centers, old);
             }
         }
+        // Moving views order the chunk work ahead of them first.
+        let focus = &mut self.focus;
+        focus.clear();
+        focus.extend(
+            self.level
+                .entities
+                .players
+                .iter()
+                .filter_map(|(_, player)| player.connection.chunks.focus())
+                .take(vanillite_world::chunks::MAX_FOCUS),
+        );
+        chunks.set_focus(focus);
         let entities = &self.level.entities;
         self.player_tickets.retain(|&id, &mut center| {
             let alive = entities.player(id).is_some();
@@ -452,8 +482,20 @@ impl ServerWorld {
             }
             let level = &mut self.level;
             level.run_scheduled_ticks();
+            // `raids.tick`.
+            self.mobs.tick_raids(
+                &mut self.level,
+                &mut self.survival,
+                ctx.global,
+                &self.dimension,
+            );
         }
-        self.update_player_tickets();
+        let spectators_generate_chunks = ctx
+            .global
+            .level
+            .rules()
+            .bool(vanillite_game::survival::rules::Rule::SPECTATORS_GENERATE_CHUNKS);
+        self.update_player_tickets(spectators_generate_chunks);
         let level = &mut self.level;
         // `/save-off` (`ServerLevel.noSave`): chunks without tickets stay loaded.
         level.chunks.set_no_save(
@@ -511,7 +553,7 @@ impl ServerWorld {
         for pos in &self.level.output().block_entity_updates {
             self.packets.invalidate_chunk(pos.chunk());
         }
-        self.updates.broadcast(&mut self.level, ctx.global);
+        self.updates.broadcast(&mut self.level, ctx.global, self.id);
         WorldPlayers::send_chunks(
             &mut self.level.entities,
             &self
@@ -526,6 +568,10 @@ impl ServerWorld {
             &mut self.fan_out,
         );
         let mut portals = std::mem::take(&mut self.portal_requests);
+        // The omen effects see the village and raids at the players (they tick without the
+        // level); raid omens that ran out start their raids right after the players' ticks.
+        self.level.flush_poi_changes();
+        vanillite_game::raid::update_omen_views(&mut self.level.entities);
         self.survival.do_tick(
             &mut self.level.entities,
             &self.level.chunks,
@@ -534,6 +580,15 @@ impl ServerWorld {
             ctx.global,
             &self.dimension,
             &mut portals,
+        );
+        vanillite_game::raid::start_pending_raids(
+            &mut self.level.entities,
+            ctx.global
+                .level
+                .rules()
+                .bool(vanillite_game::survival::rules::Rule::RAIDS),
+            self.dimension != "minecraft:the_nether",
+            ctx.global.level.difficulty(),
         );
         for pos in portals.gateways.drain(..) {
             let state = self.level.block(pos);
@@ -589,7 +644,10 @@ impl ServerWorld {
             &level.chunks,
             &mut self.item_random,
             min_y,
-            i16::try_from(self.rules.items.despawn_ticks).unwrap_or(i16::MAX),
+            crate::blocks::ItemSettings {
+                lifetime: i16::try_from(self.rules.items.despawn_ticks).unwrap_or(i16::MAX),
+                merge_radius: self.rules.items.merge_radius,
+            },
         );
         self.item_portals();
     }
