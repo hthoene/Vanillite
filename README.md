@@ -46,10 +46,25 @@ The first start downloads the Vanilla server jar into `/data/cache`. The health 
 ## Pterodactyl
 
 [`deploy/pterodactyl/egg-vanillite.json`](deploy/pterodactyl/egg-vanillite.json) is an egg for
-[Pterodactyl](https://pterodactyl.io) with the image `thoenehannes/vanillite`. Import it in the
-admin panel under *Nests → Import Egg*, then create a server with it. The server's primary
-allocation is its port. Every `server.properties` key and every `vanillite.toml` rule is a
-variable on the *Startup* page; rule variables left empty keep the value of the selected profile
-(or of `vanillite.toml`). Set *Accept the Minecraft EULA* to `true`, or accept the EULA prompt
-in the console. Variables apply to the run and are not written to the files. The egg is
+[Pterodactyl](https://pterodactyl.io) 1.x (Pelican imports it as well). Import it in the admin
+panel under *Nests → Import Egg* (Pelican: *Eggs → Import*), then create a server with it; its
+primary allocation is the game port.
+
+- **Image:** *Beta, Minecraft <version>* (`thoenehannes/vanillite:mc<version>-beta`, e.g.
+  `mc26.3-beta`; the default) stays on that Minecraft version; *Beta, newest Minecraft version*
+  (`beta`) follows new Minecraft versions. Switch it on the *Startup* page.
+- **EULA:** switch on *Accept the Minecraft EULA*, or accept the panel's EULA prompt on the first
+  start.
+- **Essentials first:** the *Startup* page starts with the settings most servers change (profile,
+  MOTD, players, game mode, difficulty, whitelist, seed, distances, Bedrock players), as switches
+  and dropdowns.
+- **Everything else** follows, grouped by area (`Server: …` for `server.properties`,
+  `Performance: …`, `Storage: …`, `Exploits: …`, `Bedrock: …`, …); each description names the
+  default and the range. Technical settings keep the selected profile's value while they are
+  empty or set to `default`.
+- **Bedrock** players join on the server's port (UDP) unless *Bedrock: Port* names another
+  allocation.
+
+Variables apply to the run and are not written to the files. Startup is detected from the
+`Done (…)! For help, type "help"` line and the panel's stop button sends `stop`. The egg is
 generated from the configuration schema (`cargo xtask egg`), so re-import it after an update.

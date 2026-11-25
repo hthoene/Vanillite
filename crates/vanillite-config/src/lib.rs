@@ -7,7 +7,8 @@
 //! - Layers, lowest first: profile defaults → global keys → the world's section → environment
 //!   variables `VANILLITE_<KEY>` (dots become `__`, dashes `_`, e.g.
 //!   `VANILLITE_PERFORMANCE__TICK__PARALLEL_DIMENSIONS=false`; `VANILLITE_PROFILE` selects the profile).
-//!   An empty variable is ignored, so panels can leave a key at its profile or file value.
+//!   An empty variable is ignored (for boolean and enumeration rules also `default`), so panels
+//!   can leave a key at its profile or file value.
 //! - The result is plain structs ([`ServerRules`], [`WorldRules`]); hot paths read fields.
 //!   A reload builds a new [`Config`]; the server swaps it at a tick boundary.
 
@@ -179,7 +180,9 @@ impl EnvOverrides {
         Self::from_vars(std::env::vars())
     }
 
-    /// Reads the overrides from `(name, value)` pairs. Empty values are ignored.
+    /// Reads the overrides from `(name, value)` pairs. Empty values are ignored, and so is
+    /// `default` for rules with a fixed set of values (booleans and enumerations): panels offer
+    /// it to keep the profile's value.
     pub fn from_vars(vars: impl IntoIterator<Item = (String, String)>) -> EnvOverrides {
         let vars: BTreeMap<String, String> =
             vars.into_iter().filter(|(_, v)| !v.is_empty()).collect();
@@ -187,13 +190,12 @@ impl EnvOverrides {
             profile: vars.get("VANILLITE_PROFILE").cloned(),
             values: BTreeMap::new(),
         };
-        let keys = ServerRules::RULES
-            .iter()
-            .chain(WorldRules::RULES)
-            .map(|r| r.key);
-        for key in keys {
-            if let Some(value) = vars.get(&env_name(key)) {
-                overrides.values.insert(key.to_owned(), value.clone());
+        for rule in ServerRules::RULES.iter().chain(WorldRules::RULES) {
+            let fixed = rule.value.ty == ValueType::Bool || !rule.value.choices.is_empty();
+            if let Some(value) = vars.get(&env_name(rule.key))
+                && !(fixed && value == "default")
+            {
+                overrides.values.insert(rule.key.to_owned(), value.clone());
             }
         }
         overrides
