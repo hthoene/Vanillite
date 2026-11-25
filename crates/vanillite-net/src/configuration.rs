@@ -1,5 +1,6 @@
-//! Pre-encoded data of the configuration phase. Registries, tags, feature flags and known packs
-//! are immutable during a server run, so they are encoded once and shared by every connection.
+//! Pre-encoded data of the configuration phase. Registries, feature flags and known packs are
+//! immutable during a server run, so they are encoded once and shared by every connection; the
+//! tags are encoded again when `/reload` changes them.
 
 use std::sync::Arc;
 use vanillite_datapack::LoadedPacks;
@@ -53,11 +54,20 @@ impl ConfigurationData {
         }
     }
 
+    /// The same data with other tags (`/reload`).
+    pub fn with_tags(&self, tags: &UpdateTags) -> Self {
+        Self {
+            tags: Arc::new(SharedPacket::new(encode_body(tags))),
+            ..self.clone()
+        }
+    }
+
     /// Builds the data from loaded data packs: every synchronised registry in Vanilla's order
-    /// and the tags of all registries the client knows. Every entry is assumed to come from the
-    /// Vanilla pack (`minecraft:core`), which is offered as known pack.
+    /// and the tags of all registries the client knows. The known packs among the loaded packs
+    /// are offered (`select_known_packs`); clients that have them all get the entries of those
+    /// packs without contents (`RegistrySynchronization.packRegistries`).
     pub fn from_packs(packs: &LoadedPacks, features: &[&str]) -> Self {
-        use vanillite_data::dynamic_registries::{SYNCHRONIZED, WORLD};
+        use vanillite_data::dynamic_registries::SYNCHRONIZED;
         let mut known = Vec::new();
         let mut full = Vec::new();
         for &name in &SYNCHRONIZED {
@@ -87,7 +97,7 @@ impl ConfigurationData {
                     });
                 known_entries.push(RegistryEntry {
                     id: id.clone(),
-                    data: None,
+                    data: if e.known { None } else { data.clone() },
                 });
                 full_entries.push(RegistryEntry { id, data });
             }
@@ -101,51 +111,63 @@ impl ConfigurationData {
             });
         }
 
-        let mut tags = Vec::new();
-        for registry in packs.tagged_registries() {
-            let networked = SYNCHRONIZED.contains(&registry) || !WORLD.contains(&registry);
-            let (true, Ok(registry_id), Some(registry_tags)) =
-                (networked, Identifier::new(registry), packs.tags(registry))
-            else {
-                continue;
-            };
-            let entries: Vec<TagEntries> = registry_tags
-                .keys()
-                .filter_map(|tag| {
-                    let ids = packs.tag_ids(registry, tag).ok()?;
-                    Some(TagEntries {
-                        name: Identifier::new(tag).ok()?,
-                        entries: VarIntList(
-                            ids.into_iter()
-                                .filter_map(|i| i32::try_from(i).ok())
-                                .collect(),
-                        ),
-                    })
-                })
-                .collect();
-            tags.push(RegistryTags {
-                registry: registry_id,
-                tags: entries,
-            });
-        }
-
-        let core = KnownPack {
-            namespace: "minecraft".into(),
-            id: "core".into(),
-            version: vanillite_protocol::VERSION_ID.into(),
-        };
+        let offered = packs
+            .known_packs()
+            .into_iter()
+            .map(|id| KnownPack {
+                namespace: "minecraft".into(),
+                id: id.into(),
+                version: vanillite_protocol::VERSION_ID.into(),
+            })
+            .collect();
         let features = features
             .iter()
             .filter_map(|f| Identifier::new(f).ok())
             .collect();
         Self::new(
-            vec![core],
+            offered,
             features,
             known,
             full,
-            UpdateTags { registries: tags },
+            UpdateTags {
+                registries: network_tags(packs),
+            },
         )
     }
+}
+
+/// The tags of every registry the client knows (`TagNetworkSerialization.serializeTagsToNetwork`),
+/// for `update_tags` in configuration and play.
+pub fn network_tags(packs: &LoadedPacks) -> Vec<RegistryTags> {
+    use vanillite_data::dynamic_registries::{SYNCHRONIZED, WORLD};
+    let mut tags = Vec::new();
+    for registry in packs.tagged_registries() {
+        let networked = SYNCHRONIZED.contains(&registry) || !WORLD.contains(&registry);
+        let (true, Ok(registry_id), Some(registry_tags)) =
+            (networked, Identifier::new(registry), packs.tags(registry))
+        else {
+            continue;
+        };
+        let entries: Vec<TagEntries> = registry_tags
+            .keys()
+            .filter_map(|tag| {
+                let ids = packs.tag_ids(registry, tag).ok()?;
+                Some(TagEntries {
+                    name: Identifier::new(tag).ok()?,
+                    entries: VarIntList(
+                        ids.into_iter()
+                            .filter_map(|i| i32::try_from(i).ok())
+                            .collect(),
+                    ),
+                })
+            })
+            .collect();
+        tags.push(RegistryTags {
+            registry: registry_id,
+            tags: entries,
+        });
+    }
+    tags
 }
 
 /// Converts data pack JSON to NBT the way Vanilla's codecs accept it: integers become ints (or

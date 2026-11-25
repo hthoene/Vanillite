@@ -93,6 +93,10 @@ pub mod suggest {
     pub const TICK_SPRINT: &str = "tick.sprint";
     /// Structure templates (`/place template`).
     pub const TEMPLATES: &str = "templates";
+    /// Selected data packs (`DataPackCommand.SELECTED_PACKS`).
+    pub const SELECTED_PACKS: &str = "datapack.selected";
+    /// Available data packs that are not selected (`DataPackCommand.UNSELECTED_PACKS`).
+    pub const UNSELECTED_PACKS: &str = "datapack.unselected";
     /// Entity types `summon` may create; the client answers it itself.
     pub const SUMMONABLE_ENTITIES: &str = "minecraft:summonable_entities";
     /// Sound event ids; the client answers it itself.
@@ -568,6 +572,36 @@ pub enum PlaceOp {
     Template,
 }
 
+/// Where `datapack enable <name>` puts the pack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PackPosition {
+    /// The pack's default position.
+    Default,
+    First,
+    Last,
+    /// `before <existing>`.
+    Before,
+    /// `after <existing>`.
+    After,
+}
+
+/// The subcommands of `datapack`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DataPackOp {
+    /// `enable <name> [...]`.
+    Enable(PackPosition),
+    /// `disable <name>`.
+    Disable,
+    /// `list`.
+    List,
+    /// `list available`.
+    ListAvailable,
+    /// `list enabled`.
+    ListEnabled,
+    /// `create <id> <description>`.
+    Create,
+}
+
 /// The subcommands of `tick`; `step` with or without `<time>`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TickOp {
@@ -747,6 +781,10 @@ pub enum CommandId {
     Clear,
     /// `data ...`.
     Data(DataOp),
+    /// `datapack ...`.
+    DataPack(DataPackOp),
+    /// `reload`.
+    Reload,
     /// `enchant <targets> <enchantment> [<level>]`.
     Enchant,
     /// `experience|xp ...`; `levels` for the `levels` unit.
@@ -870,6 +908,7 @@ pub fn register(d: &mut Dispatcher<CommandId>) {
     blocks::register_clone(d);
     entities::register_damage(d);
     data::register_data(d);
+    server::register_datapack(d);
     system::register_debug(d);
     world_state::register_default_game_mode(d);
     chat::register_dialog(d);
@@ -898,6 +937,7 @@ pub fn register(d: &mut Dispatcher<CommandId>) {
     sound::register_playsound(d);
     sound::register_posteffect(d);
     system::register_random(d);
+    server::register_reload(d);
     items::register_recipe(d);
     system::register_fetch_profile(d);
     execute::register_return(d);

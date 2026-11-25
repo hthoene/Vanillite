@@ -78,6 +78,26 @@ fn commands_resolve_like_vanilla() {
     assert_eq!(command("kick Bob Bye bye"), Some(CommandId::Kick));
     assert_eq!(command("list uuids"), Some(CommandId::ListUuids));
     assert_eq!(command("help gamemode"), Some(CommandId::HelpCommand));
+    use vanillite_game::commands::{DataPackOp, PackPosition};
+    assert_eq!(
+        command("datapack enable \"file/a b\" before vanilla"),
+        Some(CommandId::DataPack(DataPackOp::Enable(
+            PackPosition::Before
+        )))
+    );
+    assert_eq!(
+        command("datapack list available"),
+        Some(CommandId::DataPack(DataPackOp::ListAvailable))
+    );
+    assert_eq!(
+        command("datapack create x \"Hi\""),
+        Some(CommandId::DataPack(DataPackOp::Create))
+    );
+    assert_eq!(command("reload"), Some(CommandId::Reload));
+    assert_eq!(
+        error("datapack create x \"Hi\"", 3).map(|e| e.0),
+        Some("command.unknown.argument")
+    );
     assert_eq!(command("stop"), Some(CommandId::Stop));
     assert_eq!(command("save-all"), Some(CommandId::SaveAll));
     assert_eq!(command("save-all flush"), Some(CommandId::SaveAllFlush));
@@ -161,6 +181,7 @@ fn help_lines_like_vanilla() {
             "/clone (<begin>|from)",
             "/damage <target> <amount> [<damageType>]",
             "/data (merge|get|remove|modify)",
+            "/datapack (enable|disable|list|create)",
             "/debug (start|stop|function)",
             "/defaultgamemode <gamemode>",
             "/dialog (show|clear)",
@@ -238,6 +259,7 @@ fn help_lines_like_vanilla() {
             "/playsound <sound> [master|music|record|weather|block|hostile|neutral|player|ambient|voice|ui]",
             "/posteffect (add|clear|list|remove)",
             "/random (value|roll|reset)",
+            "/reload",
             "/recipe (give|take)",
             "/fetchprofile (name|id|entity)",
             "/return (<value>|fail|run)",

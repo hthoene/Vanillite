@@ -19,6 +19,7 @@ pub(crate) mod functions;
 mod items;
 mod locate;
 mod nbt_ops;
+mod pack_cmd;
 mod particle;
 mod player_data;
 mod response;
@@ -74,15 +75,10 @@ pub(crate) struct Env<'a> {
     pub(crate) world: WorldId,
 }
 
-/// Loads the data pack functions once the server exists (`ServerFunctionLibrary.reload`).
-pub(crate) fn load_game_systems(global: &Global) {
-    let roots = functions::pack_roots(
-        global.systems.vanilla_pack.as_deref(),
-        &global.systems.level_dir,
-    );
-    global
-        .systems
-        .set_functions(functions::load(global, &roots));
+/// Loads the functions of the selected data packs once the server exists
+/// (`ServerFunctionLibrary.reload`).
+pub(crate) fn load_game_systems(global: &Global, packs: &[vanillite_datapack::OpenedPack]) {
+    global.systems.set_functions(functions::load(global, packs));
 }
 
 /// `ServerFunctionManager.tick` on the overworld.

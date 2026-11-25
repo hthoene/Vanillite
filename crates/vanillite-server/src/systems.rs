@@ -30,8 +30,6 @@ pub(crate) struct GameSystems {
     pub(crate) function_level: u8,
     /// The world directory.
     pub(crate) level_dir: PathBuf,
-    /// The Vanilla data pack, when loaded.
-    pub(crate) vanilla_pack: Option<PathBuf>,
     spawn: Mutex<Vec3>,
     /// Tags of the static and dynamic registries: registry → tag → entries.
     tags: RwLock<Arc<RegistryTags>>,
@@ -54,11 +52,7 @@ impl std::fmt::Debug for GameSystems {
 
 impl GameSystems {
     /// Empty systems; [`crate::commands::load_game_systems`] fills them once the server exists.
-    pub(crate) fn new(
-        level_dir: PathBuf,
-        vanilla_pack: Option<PathBuf>,
-        function_level: u8,
-    ) -> Self {
+    pub(crate) fn new(level_dir: PathBuf, function_level: u8) -> Self {
         GameSystems {
             scoreboard: Mutex::new(Scoreboard::new()),
             storage: Mutex::new(CommandStorage::new()),
@@ -66,7 +60,6 @@ impl GameSystems {
             post_reload: AtomicBool::new(false),
             function_level,
             level_dir,
-            vanilla_pack,
             spawn: Mutex::new(Vec3::ZERO),
             tags: RwLock::new(Arc::new(RegistryTags::new())),
             scheduled: Mutex::default(),
