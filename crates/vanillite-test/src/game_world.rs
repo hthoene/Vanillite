@@ -355,6 +355,7 @@ impl GameWorld {
             let blocks = ChunkBlocks(&level.chunks);
             let raining = |pos| level.is_raining_at(pos);
             let mut no_gateway = |_| false;
+            let names = |name: &str, _| vanillite_protocol::text::Component::text(name.to_owned());
             let mut env = Env {
                 types,
                 facts,
@@ -369,6 +370,8 @@ impl GameWorld {
                 random: &mut random,
                 out: &mut self.effects,
                 hooks: &vanillite_game::hooks::NoHooks,
+                border: None,
+                display_name: &names,
             };
             f(level, &mut ents, &mut env, &mut self.mobs)
         };
@@ -667,6 +670,12 @@ impl GameWorld {
             last_equipment: std::array::from_fn(|_| vanillite_game::item::ItemStack::EMPTY),
             survival: vanillite_game::survival::player::Survival::default(),
             recipe_book: vanillite_game::recipe::book::PlayerRecipeBook::default(),
+            post_effects: Vec::new(),
+            stats: vanillite_game::stats::StatsCounter::default(),
+            advancements: vanillite_game::advancements::PlayerAdvancements::load(
+                Arc::default(),
+                None,
+            ),
         };
         let rot = Rotation {
             y_rot: spec.rot[0],

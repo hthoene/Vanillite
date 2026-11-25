@@ -21,7 +21,7 @@ pub use auth::{
     AuthResult, Authenticator, KeyPair, SessionServer, is_valid_player_name, server_hash,
 };
 pub use config::{NetConfig, RateLimit};
-pub use configuration::{ConfigurationData, json_to_nbt};
+pub use configuration::{ConfigurationData, json_to_nbt, network_tags};
 pub use conn::rand_bytes;
 pub use limits::{ConnectionGuard, ConnectionLimiter};
 pub use outbound::Outbound;
@@ -40,11 +40,24 @@ pub(crate) struct Shared {
     pub(crate) status: StatusCache,
     pub(crate) keys: Option<KeyPair>,
     pub(crate) authenticator: Arc<dyn Authenticator>,
-    pub(crate) configuration: Arc<ConfigurationData>,
+    /// Replaced when `/reload` changes the tags.
+    configuration: std::sync::RwLock<Arc<ConfigurationData>>,
     pub(crate) limiter: Arc<ConnectionLimiter>,
     pub(crate) auth_permits: Semaphore,
     pub(crate) joins: std::sync::mpsc::SyncSender<Joined>,
     pub(crate) session_id: Uuid,
+}
+
+impl Shared {
+    /// The current configuration data.
+    pub(crate) fn configuration(&self) -> Arc<ConfigurationData> {
+        Arc::clone(
+            &self
+                .configuration
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
 }
 
 /// A virtual connection (architecture 14.1): packet bodies (`id` + fields, current protocol,
@@ -155,7 +168,7 @@ impl Network {
             status: StatusCache::new(&status),
             keys,
             authenticator,
-            configuration: Arc::new(configuration),
+            configuration: std::sync::RwLock::new(Arc::new(configuration)),
             limiter: ConnectionLimiter::new(config.max_connections, config.max_pending_per_ip),
             auth_permits: Semaphore::new(config.max_concurrent_auth.max(1)),
             joins,
@@ -184,6 +197,19 @@ impl Network {
     /// The status cache, for the server to update player counts and the description.
     pub fn status(&self) -> &StatusCache {
         &self.shared.status
+    }
+
+    /// Replaces the tags joining clients get (after `/reload`).
+    pub fn set_tags(
+        &self,
+        tags: &vanillite_protocol::packets::configuration::clientbound::UpdateTags,
+    ) {
+        let mut current = self
+            .shared
+            .configuration
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *current = Arc::new(current.with_tags(tags));
     }
 
     /// Opens a virtual connection for a vouched-for profile.

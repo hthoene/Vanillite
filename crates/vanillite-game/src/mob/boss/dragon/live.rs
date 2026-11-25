@@ -1,6 +1,6 @@
-//! The End features the fight places into the live world (`EndPodiumFeature`,
-//! `EndGatewayFeature` with a delayed exit, `EndSpikeFeature` for the respawn): the same blocks
-//! as the world generation, written through `setBlock` with neighbour updates.
+//! The pillars the fight rebuilds in the live world for the respawn (`EndSpikeFeature`): the
+//! same blocks as the world generation, written through `setBlock` with neighbour updates.
+//! The exit portal and the gateways are End portal blocks of [`crate::block::portal`].
 
 use vanillite_base::random::RandomSource;
 use vanillite_base::{BlockPos, Direction, Vec3};
@@ -21,97 +21,6 @@ pub const HORIZONTAL: [Direction; 4] = [
 
 fn state(block: BlockId) -> BlockState {
     block.default_state()
-}
-
-/// `EndPodiumFeature.place` at `origin` (the portal layer's centre); `active` fills the
-/// portal.
-pub fn place_podium(level: &mut Level, origin: BlockPos, active: bool) {
-    let bedrock = state(ids::BEDROCK);
-    for z in origin.z - 4..=origin.z + 4 {
-        for y in origin.y - 1..=origin.y + 32 {
-            for x in origin.x - 4..=origin.x + 4 {
-                let pos = BlockPos::new(x, y, z);
-                let dist = pos.dist_sqr(origin);
-                let inside_rim = dist < 2.5 * 2.5;
-                if !inside_rim && dist >= 3.5 * 3.5 {
-                    continue;
-                }
-                if y < origin.y {
-                    if inside_rim {
-                        level.set_block_and_update(pos, bedrock);
-                    } else {
-                        set_or_drop(level, pos, ids::END_STONE, active);
-                    }
-                } else if y > origin.y {
-                    set_or_drop(level, pos, ids::AIR, active);
-                } else if !inside_rim {
-                    level.set_block_and_update(pos, bedrock);
-                } else if active {
-                    drop_previous_and_set(level, pos, ids::END_PORTAL);
-                } else {
-                    level.set_block_and_update(pos, BlockState::AIR);
-                }
-            }
-        }
-    }
-    for y in 0..4 {
-        level.set_block_and_update(origin.offset(0, y, 0), bedrock);
-    }
-    let pillar = origin.offset(0, 2, 0);
-    for dir in HORIZONTAL {
-        let facing = match dir {
-            Direction::North => "north",
-            Direction::East => "east",
-            Direction::South => "south",
-            _ => "west",
-        };
-        let torch = state(ids::WALL_TORCH)
-            .with("facing", facing)
-            .unwrap_or_else(|| state(ids::WALL_TORCH));
-        level.set_block_and_update(pillar.relative(dir), torch);
-    }
-}
-
-fn set_or_drop(level: &mut Level, pos: BlockPos, block: BlockId, active: bool) {
-    if active {
-        drop_previous_and_set(level, pos, block);
-    } else {
-        level.set_block_and_update(pos, state(block));
-    }
-}
-
-/// `dropPreviousAndSetBlock`.
-fn drop_previous_and_set(level: &mut Level, pos: BlockPos, block: BlockId) {
-    if level.block(pos).block() != block {
-        level.destroy_block(pos, true, None);
-        level.set_block_and_update(pos, state(block));
-    }
-}
-
-/// `EndGatewayFeature.place` with `END_GATEWAY_DELAYED` (no exit yet).
-pub fn place_gateway(level: &mut Level, origin: BlockPos) {
-    let bedrock = state(ids::BEDROCK);
-    for z in origin.z - 1..=origin.z + 1 {
-        for y in origin.y - 2..=origin.y + 2 {
-            for x in origin.x - 1..=origin.x + 1 {
-                let pos = BlockPos::new(x, y, z);
-                let same_x = x == origin.x;
-                let same_y = y == origin.y;
-                let same_z = z == origin.z;
-                let end = (y - origin.y).abs() == 2;
-                let s = if same_x && same_y && same_z {
-                    state(ids::END_GATEWAY)
-                } else if same_y {
-                    BlockState::AIR
-                } else if (end && same_x && same_z) || ((same_x || same_z) && !end) {
-                    bedrock
-                } else {
-                    BlockState::AIR
-                };
-                level.set_block_and_update(pos, s);
-            }
-        }
-    }
 }
 
 /// `EndSpikeFeature(List.of(spike), true, Optional.of(0, 128, 0)).placeSpike`: the pillar, its
@@ -194,38 +103,4 @@ pub fn place_spike(level: &mut Level, env: &mut Env<'_>, spike: &EndSpike) {
         state(ids::FIRE)
     };
     level.set_block_and_update(at, fire);
-}
-
-/// The exit portal frame (`exitPortalPattern`) with its portal layer centred at `c`: the
-/// bedrock pillar above, the ring with its centre, and the disc below.
-pub fn portal_frame_at(level: &Level, c: BlockPos) -> bool {
-    let bedrock = |p: BlockPos| level.block(p).block() == ids::BEDROCK;
-    if !(1..=3).all(|dy| bedrock(c.offset(0, dy, 0))) || !bedrock(c) {
-        return false;
-    }
-    const RING: [&str; 7] = [
-        "  ###  ", " #   # ", "#     #", "#  #  #", "#     #", " #   # ", "  ###  ",
-    ];
-    const DISC: [&str; 7] = [
-        "       ", "  ###  ", " ##### ", " ##### ", " ##### ", "  ###  ", "       ",
-    ];
-    for (layer, dy) in [(RING, 0), (DISC, -1)] {
-        for (row, line) in layer.iter().enumerate() {
-            for (col, ch) in line.bytes().enumerate() {
-                if ch == b'#' {
-                    #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
-                    let p = c.offset(col as i32 - 3, dy, row as i32 - 3);
-                    if !bedrock(p) {
-                        return false;
-                    }
-                }
-            }
-        }
-    }
-    true
-}
-
-/// Every position of the frame's 7×5×7 box (for clearing it before a respawn).
-pub fn portal_box(c: BlockPos) -> impl Iterator<Item = BlockPos> {
-    (-3..=3).flat_map(move |x| (-1..=3).flat_map(move |y| (-3..=3).map(move |z| c.offset(x, y, z))))
 }
