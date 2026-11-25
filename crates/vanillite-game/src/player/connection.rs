@@ -12,6 +12,8 @@ use vanillite_protocol::chat::{
 use vanillite_protocol::packets::common::ChatVisibility;
 use vanillite_protocol::packets::common::{ClientInfo, MainHand as WireMainHand};
 use vanillite_protocol::packets::play::clientbound::SystemChat;
+
+use crate::block::technical;
 use vanillite_protocol::packets::play::serverbound::{
     ClientCommandAction, PlayerAction, SeenAdvancementsAction,
 };
@@ -621,6 +623,29 @@ impl Connection {
                     crate::block::sign::update_text(level, pos, uuid, p.front, &p.lines);
                 }
             }
+            ServerboundPlay::SetCommandBlock(p) => {
+                self.technical(play, |l, e| technical::command_block::handle(l, p, e));
+            }
+            ServerboundPlay::SetCommandMinecart(p) => {
+                self.technical(play, |l, e| {
+                    technical::command_block::handle_minecart(l, p, e)
+                });
+            }
+            ServerboundPlay::SetStructureBlock(p) => {
+                self.technical(play, |l, e| technical::structure_block::handle(l, p, e));
+            }
+            ServerboundPlay::SetJigsawBlock(p) => {
+                self.technical(play, |l, e| technical::jigsaw::handle(l, p, e));
+            }
+            ServerboundPlay::JigsawGenerate(p) => {
+                self.technical(play, |l, e| technical::jigsaw::handle_generate(l, p, e));
+            }
+            ServerboundPlay::SetTestBlock(p) => {
+                self.technical(play, |l, e| technical::test_block::handle(l, p, e));
+            }
+            ServerboundPlay::TestInstanceBlockAction(p) => {
+                self.technical(play, |l, e| technical::test_instance::handle(l, p, e));
+            }
             // The server never asks the client to reconfigure yet.
             ServerboundPlay::ConfigurationAcknowledged(_) => {
                 return Err(Kick(Box::new(Component::translatable(
@@ -640,6 +665,29 @@ impl Connection {
             | ServerboundPlay::Unhandled { .. } => {}
         }
         Ok(())
+    }
+
+    /// The edit packets of the technical blocks: run on the player's level with the player as
+    /// the editor.
+    fn technical(
+        &self,
+        play: &mut PlayContext<'_>,
+        f: impl FnOnce(&mut crate::level::Level, &technical::Editor<'_>),
+    ) {
+        let actor = &play.actor;
+        let editor = technical::Editor {
+            player: actor.entity,
+            uuid: actor.uuid,
+            allowed: technical::can_use_game_master_blocks(
+                actor.game_mode == vanillite_config::GameMode::Creative,
+                actor.permission_level,
+            ),
+            permission_level: actor.permission_level,
+            sink: self.sink.as_ref(),
+        };
+        if let Some(level) = play.level.level_mut() {
+            f(level, &editor);
+        }
     }
 
     /// `handlePlayerAction`.

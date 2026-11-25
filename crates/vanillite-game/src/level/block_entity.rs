@@ -89,6 +89,16 @@ pub enum BlockEntity {
     EndPortal,
     /// `TheEndGatewayBlockEntity`.
     EndGateway(crate::block::portal::Gateway),
+    /// `CommandBlockEntity` (impulse, chain and repeating command blocks).
+    CommandBlock(Box<crate::block::technical::command_block::CommandBlock>),
+    /// `StructureBlockEntity`.
+    StructureBlock(Box<crate::block::technical::structure_block::StructureBlock>),
+    /// `JigsawBlockEntity`.
+    Jigsaw(Box<crate::block::technical::jigsaw::Jigsaw>),
+    /// `TestBlockEntity`.
+    TestBlock(Box<crate::block::technical::test_block::TestBlock>),
+    /// `TestInstanceBlockEntity`.
+    TestInstance(Box<crate::block::technical::test_instance::TestInstance>),
 }
 
 /// `BlockEntityTicker.tick(level, pos, state, blockEntity)`: the block entity is looked up at
@@ -235,7 +245,12 @@ fn ticker_of(entity: &BlockEntity) -> Option<TickerFn> {
         | BlockEntity::Banner(_)
         | BlockEntity::DecoratedPot(_)
         | BlockEntity::ChiseledBookshelf(_)
-        | BlockEntity::Brushable(_) => None,
+        | BlockEntity::Brushable(_)
+        | BlockEntity::CommandBlock(_)
+        | BlockEntity::StructureBlock(_)
+        | BlockEntity::Jigsaw(_)
+        | BlockEntity::TestBlock(_)
+        | BlockEntity::TestInstance(_) => None,
         BlockEntity::Campfire(_) => Some(crate::block::campfire::tick),
         BlockEntity::Crafter(_) => Some(crate::block::crafter::server_tick),
         BlockEntity::Beacon(_) => Some(crate::block::beacon::tick),
@@ -306,6 +321,8 @@ pub fn new_block_entity(state: BlockState) -> Option<BlockEntity> {
         Some(BlockEntity::SculkCatalyst(Box::default()))
     } else if crate::block::sign::is_sign(block) {
         Some(BlockEntity::Sign(Box::default()))
+    } else if let Some(entity) = crate::block::technical::new_block_entity(block) {
+        Some(entity)
     } else if block == ids::END_PORTAL {
         Some(BlockEntity::EndPortal)
     } else if block == ids::END_GATEWAY {
@@ -395,6 +412,13 @@ fn is_valid(entity: &BlockEntity, state: BlockState) -> bool {
         BlockEntity::Crafter(_) => state.block() == ids::CRAFTER,
         BlockEntity::Beacon(_) => state.block() == ids::BEACON,
         BlockEntity::Conduit(_) => state.block() == ids::CONDUIT,
+        BlockEntity::CommandBlock(_) => {
+            state.block().info().kind == vanillite_data::block::BlockKind::CommandBlock
+        }
+        BlockEntity::StructureBlock(_) => state.block() == ids::STRUCTURE_BLOCK,
+        BlockEntity::Jigsaw(_) => state.block() == ids::JIGSAW,
+        BlockEntity::TestBlock(_) => state.block() == ids::TEST_BLOCK,
+        BlockEntity::TestInstance(_) => state.block() == ids::TEST_INSTANCE_BLOCK,
     }
 }
 
@@ -609,6 +633,11 @@ fn load(state: BlockState, nbt: &Compound) -> Option<BlockEntity> {
             h.cooldown_time = int("TransferCooldown").unwrap_or(-1);
         }
         BlockEntity::EndGateway(gateway) => *gateway = crate::block::portal::Gateway::load(nbt),
+        BlockEntity::CommandBlock(c) => c.load(nbt),
+        BlockEntity::StructureBlock(b) => b.load(nbt),
+        BlockEntity::Jigsaw(j) => j.load(nbt),
+        BlockEntity::TestBlock(t) => t.load(nbt),
+        BlockEntity::TestInstance(t) => t.load(nbt),
         _ => {}
     }
     Some(entity)
@@ -674,6 +703,11 @@ fn save(entity: &BlockEntity, state: BlockState, pos: BlockPos) -> Compound {
             nbt.insert("TransferCooldown", Tag::Int(h.cooldown_time));
         }
         BlockEntity::EndGateway(gateway) => gateway.save(&mut nbt),
+        BlockEntity::CommandBlock(c) => c.save(&mut nbt),
+        BlockEntity::StructureBlock(b) => b.save(&mut nbt),
+        BlockEntity::Jigsaw(j) => j.save(&mut nbt),
+        BlockEntity::TestBlock(t) => t.save(&mut nbt),
+        BlockEntity::TestInstance(t) => t.save(&mut nbt),
         _ => {}
     }
     nbt
@@ -991,6 +1025,10 @@ pub fn update_tag(entity: &BlockEntity, state: BlockState) -> Option<Compound> {
             nbt.sort_java_hash_order();
             Some(nbt)
         }
+        BlockEntity::StructureBlock(b) => b.update_tag(),
+        BlockEntity::Jigsaw(j) => j.update_tag(),
+        BlockEntity::TestBlock(t) => t.update_tag(),
+        BlockEntity::TestInstance(t) => t.update_tag(),
         _ => None,
     }
 }

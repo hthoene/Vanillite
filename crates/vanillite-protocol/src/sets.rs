@@ -159,6 +159,13 @@ packet_set! {
         Pong(play::serverbound::Pong),
         ResourcePack(play::serverbound::ResourcePack),
         SeenAdvancements(play::serverbound::SeenAdvancementsPacket),
+        SetCommandBlock(play::serverbound::SetCommandBlock),
+        SetCommandMinecart(play::serverbound::SetCommandMinecart),
+        SetStructureBlock(play::serverbound::SetStructureBlock),
+        SetJigsawBlock(play::serverbound::SetJigsawBlock),
+        JigsawGenerate(play::serverbound::JigsawGenerate),
+        SetTestBlock(play::serverbound::SetTestBlock),
+        TestInstanceBlockAction(play::serverbound::TestInstanceBlockAction),
     }
     unhandled Unhandled
 }
