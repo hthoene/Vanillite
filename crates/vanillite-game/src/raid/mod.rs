@@ -10,6 +10,8 @@
 //! - The raid's own random (`RandomSource.create()`) is seeded from the entity seed stream, so
 //!   it is distribution-equal like Vanilla's.
 
+pub mod siege;
+
 use vanillite_base::random::{LegacyRandom, RandomSource};
 use vanillite_base::{BlockPos, SectionPos, Vec3};
 use vanillite_chunk::HeightmapKind;
@@ -611,7 +613,8 @@ impl Raids {
 
     /// The id of [`Raids::raid_at`].
     pub fn raid_id_at(&self, pos: BlockPos) -> Option<i32> {
-        self.nearby_raid(pos, VALID_RAID_RADIUS_SQR).map(|(id, _)| id)
+        self.nearby_raid(pos, VALID_RAID_RADIUS_SQR)
+            .map(|(id, _)| id)
     }
 
     /// `ServerLevel.isRaided(pos)`.
@@ -655,11 +658,13 @@ impl Raids {
                 .entities
                 .players
                 .iter()
-                .filter(|(pid, p)| !p.survival.is_dead_or_dying() && {
-                    level.entities.store.get(*pid).is_some_and(|e| {
-                        let pos = e.pos();
-                        raids.raid_id_at(BlockPos::containing(pos.x, pos.y, pos.z)) == Some(id)
-                    })
+                .filter(|(pid, p)| {
+                    !p.survival.is_dead_or_dying() && {
+                        level.entities.store.get(*pid).is_some_and(|e| {
+                            let pos = e.pos();
+                            raids.raid_id_at(BlockPos::containing(pos.x, pos.y, pos.z)) == Some(id)
+                        })
+                    }
                 })
                 .map(|(pid, _)| pid)
                 .collect();
@@ -677,6 +682,7 @@ impl Raids {
     /// `createOrExtendRaid(player, raidPosition)`: the raid omen of `player` (its amplifier) at
     /// `pos` starts or grows a raid. `can_start` is `EnvironmentAttributes.CAN_START_RAID`
     /// there. Returns the raid id.
+    #[allow(clippy::too_many_arguments)]
     pub fn create_or_extend_raid(
         &mut self,
         ents: &Entities,
@@ -699,12 +705,7 @@ impl Raids {
         );
         let mut total = Vec3::ZERO;
         for r in &posses {
-            total = total
-                + Vec3::new(
-                    f64::from(r.pos.x),
-                    f64::from(r.pos.y),
-                    f64::from(r.pos.z),
-                );
+            total = total + Vec3::new(f64::from(r.pos.x), f64::from(r.pos.y), f64::from(r.pos.z));
         }
         #[allow(clippy::cast_precision_loss)]
         let center = if posses.is_empty() {
@@ -967,9 +968,10 @@ impl Raid {
                         let Some(&pid) = level.entities.players_by_uuid.get(&hero) else {
                             continue;
                         };
-                        let spectator = level.entities.player(pid).is_some_and(|p| {
-                            p.game_mode == vanillite_config::GameMode::Spectator
-                        });
+                        let spectator = level
+                            .entities
+                            .player(pid)
+                            .is_some_and(|p| p.game_mode == vanillite_config::GameMode::Spectator);
                         if spectator {
                             continue;
                         }
@@ -1062,7 +1064,13 @@ impl Raid {
     }
 
     /// `spawnGroup(level, pos)`.
-    fn spawn_group(&mut self, level: &mut Level, raid_id: i32, pos: BlockPos, cx: &mut RaidTick<'_>) {
+    fn spawn_group(
+        &mut self,
+        level: &mut Level,
+        raid_id: i32,
+        pos: BlockPos,
+        cx: &mut RaidTick<'_>,
+    ) {
         let mut leader_set = false;
         let wave = self.groups_spawned + 1;
         self.total_health = 0.0;
@@ -1099,7 +1107,8 @@ impl Raid {
                     if let (Some(rk), Some(vehicle)) = (rider, id) {
                         let mob = MobData::new(rk, crate::mob::new_entity_seed());
                         if let Some(rider) = self.join_new(level, raid_id, wave, mob, pos, cx) {
-                            let at = Vec3::new(f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
+                            let at =
+                                Vec3::new(f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
                             if let Some(mut e) = level.entities.store.get_mut(rider) {
                                 e.set_pos(at);
                             }
@@ -1239,7 +1248,13 @@ pub fn can_join_raid(m: &MobData) -> bool {
 }
 
 /// `raid.joinRaid(level, wave, raider, null, exists = true)` of a living raider.
-pub fn join_existing(ents: &mut Entities, raid_id: i32, wave: i32, id: EntityId, out: &mut Vec<Effect>) {
+pub fn join_existing(
+    ents: &mut Entities,
+    raid_id: i32,
+    wave: i32,
+    id: EntityId,
+    out: &mut Vec<Effect>,
+) {
     let uuid = ents.store.get(id).map_or(0, |e| e.uuid());
     let mut raids = std::mem::take(&mut ents.raids);
     if let Some(raid) = raids.get_mut(raid_id) {
@@ -1271,7 +1286,12 @@ pub fn current_raid<'a>(ents: &'a Entities, m: &MobData) -> Option<&'a Raid> {
 
 /// `Raider.die`: a leader leaves its wave, a player killer becomes a hero, the raider leaves
 /// the raid.
-pub fn on_raider_death(ents: &mut Entities, id: EntityId, killer: Option<EntityId>, out: &mut Vec<Effect>) {
+pub fn on_raider_death(
+    ents: &mut Entities,
+    id: EntityId,
+    killer: Option<EntityId>,
+    out: &mut Vec<Effect>,
+) {
     let Some(m) = ents.mob(id) else {
         return;
     };
@@ -1475,7 +1495,9 @@ mod tests {
     #[test]
     fn nearby_raid_needs_active_within_range() {
         let mut raids = Raids::default();
-        raids.raids.push((2, Raid::new(BlockPos::new(0, 64, 0), Difficulty::Normal)));
+        raids
+            .raids
+            .push((2, Raid::new(BlockPos::new(0, 64, 0), Difficulty::Normal)));
         assert!(raids.raid_at(BlockPos::new(50, 64, 0)).is_some());
         assert!(raids.raid_at(BlockPos::new(97, 64, 0)).is_none());
         raids.raids[0].1.active = false;

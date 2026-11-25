@@ -224,10 +224,13 @@ pub fn register_vindicator(m: &mut MobData) {
 /// `Vindicator.finalizeSpawn`: doors and the iron axe.
 pub fn finalize_vindicator(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
     m.nav.can_open_doors = true;
-    m.equipment.set(
-        EquipmentSlot::MainHand,
-        equipment::stack("minecraft:iron_axe"),
-    );
+    // `populateDefaultEquipmentSlots`: raiders of a raid get their axe from the raid buffs.
+    if st(m).raid.is_none() {
+        m.equipment.set(
+            EquipmentSlot::MainHand,
+            equipment::stack("minecraft:iron_axe"),
+        );
+    }
     equipment::populate_default_enchantments(m, ctx.special_multiplier);
 }
 
@@ -612,7 +615,12 @@ pub fn set_celebrating(t: &mut Tick<'_, '_>, on: bool) {
 /// raid, moving through the village and the celebration.
 pub fn add_raider_goals(g: &mut goals::GoalSelector) {
     g.add(1, fam(Goal::ObtainBanner { banner: None }));
-    g.add(3, fam(Goal::PathfindToRaid { recruitment_tick: 0 }));
+    g.add(
+        3,
+        fam(Goal::PathfindToRaid {
+            recruitment_tick: 0,
+        }),
+    );
     g.add(4, fam(Goal::MoveThroughVillage(MoveThroughVillage::new())));
     g.add(5, fam(Goal::Celebration));
 }
@@ -703,9 +711,7 @@ pub fn pick_up_item(t: &mut Tick<'_, '_>, item: EntityId) -> bool {
             raid.leaders.push((wave, me));
         }
         // `Raid.setLeader`: the banner and its drop chance.
-        t.mob()
-            .equipment
-            .set(EquipmentSlot::Head, ominous_banner());
+        t.mob().equipment.set(EquipmentSlot::Head, ominous_banner());
         t.mob().equipment.set_drop_chance(EquipmentSlot::Head, 2.0);
         st_mut(t.mob()).patrol_leader = true;
         return true;

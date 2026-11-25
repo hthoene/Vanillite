@@ -218,7 +218,7 @@ pub enum Goal {
     /// `Raider.RaiderCelebration`.
     Celebration,
     /// `NearestHealableRaiderTargetGoal`.
-    WitchHeal,
+    WitchHeal(CommonGoal),
     /// `RangedCrossbowAttackGoal`.
     Crossbow(pillager::Crossbow),
     /// `SpellcasterCastingSpellGoal`.
@@ -824,7 +824,7 @@ impl FamilyHooks for Hooks {
         use goals::flag::*;
         match g {
             Goal::Idle | Goal::Spell(_) => 0,
-            Goal::WitchHeal => TARGET,
+            Goal::WitchHeal(_) => TARGET,
             Goal::Stroll(s) if s.look => MOVE | LOOK,
             Goal::Locked(_) => MOVE | LOOK,
             Goal::Patrol(_) | Goal::Stroll(_) | Goal::GhastFloat | Goal::VexCharge => MOVE,
@@ -908,7 +908,7 @@ impl FamilyHooks for Hooks {
             Goal::PathfindToRaid { .. } => raider::pathfind_can_use(t),
             Goal::MoveThroughVillage(v) => raider::move_through_can_use(t, v),
             Goal::Celebration => raider::celebration_can_use(t),
-            Goal::WitchHeal => witch::heal_can_use(t),
+            Goal::WitchHeal(inner) => witch::heal_can_use(t, inner),
             Goal::Crossbow(_) => pillager::crossbow_can_use(t),
             Goal::SpellCasting => st(t.mob_ref()).spell_ticks > 0,
             Goal::Spell(s) => spellcaster::can_use(t, s),
@@ -941,6 +941,7 @@ impl FamilyHooks for Hooks {
                 }
             }
             Goal::ObtainBanner { banner } => raider::banner_can_continue(t, banner),
+            Goal::WitchHeal(inner) => common::can_continue(t, inner),
             Goal::PathfindToRaid { .. } => raider::pathfind_can_continue(t),
             Goal::MoveThroughVillage(v) => raider::move_through_can_continue(t, v),
             Goal::Crossbow(_) => pillager::crossbow_can_continue(t),
@@ -979,6 +980,10 @@ impl FamilyHooks for Hooks {
                 }
             }
             Goal::RaidDoor { inner, .. } => common::start(t, inner),
+            Goal::WitchHeal(inner) => {
+                st_mut(t.mob()).heal_cooldown = goals::reduced(200);
+                common::start(t, inner);
+            }
             Goal::ObtainBanner { .. } => raider::banner_start(t),
             Goal::MoveThroughVillage(v) => raider::move_through_start(t, v),
             Goal::Celebration => raider::set_celebrating(t, true),
@@ -1013,7 +1018,7 @@ impl FamilyHooks for Hooks {
             Goal::Stroll(_) => t.mob().nav.stop(),
             Goal::Locked(inner) => common::stop(t, inner),
             Goal::Target { inner, .. } => common::stop(t, inner),
-            Goal::RaidDoor { inner, .. } => common::stop(t, inner),
+            Goal::RaidDoor { inner, .. } | Goal::WitchHeal(inner) => common::stop(t, inner),
             Goal::ObtainBanner { banner } => {
                 t.mob().goal_path = None;
                 *banner = None;
@@ -1051,7 +1056,7 @@ impl FamilyHooks for Hooks {
             Goal::LookAt(l) => raider::look_at_tick(t, l),
             Goal::Locked(inner) => common::tick(t, inner),
             Goal::Target { inner, .. } => common::tick(t, inner),
-            Goal::RaidDoor { inner, .. } => common::tick(t, inner),
+            Goal::RaidDoor { inner, .. } | Goal::WitchHeal(inner) => common::tick(t, inner),
             Goal::ObtainBanner { banner } => raider::banner_tick(t, banner),
             Goal::PathfindToRaid { recruitment_tick } => {
                 raider::pathfind_tick(t, recruitment_tick);
