@@ -261,6 +261,13 @@ impl Style {
         *self == Self::default()
     }
 
+    /// The NBT form (`Style.Serializer.CODEC`): a compound with the style fields.
+    pub fn to_nbt(&self) -> Tag {
+        let mut c = Compound::new();
+        style_to_nbt(self, &mut c);
+        Tag::Compound(c.in_java_hash_order())
+    }
+
     /// Decodes a style from NBT (`Style.Serializer.CODEC`): a compound with the style fields.
     pub fn try_from_nbt(tag: &Tag) -> Result<Self> {
         let v = NbtIn(tag);

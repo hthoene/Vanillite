@@ -3,7 +3,6 @@
 
 use vanillite_game::entities::Entities;
 use vanillite_game::player::chat::{ChainError, ChatMessage, MessageBody, now_millis};
-use vanillite_game::player::join::display_name;
 use vanillite_game::player::{ChatRequest, PacketSink};
 use vanillite_protocol::chat::{ChatSessionData, ChatTypeBound};
 use vanillite_protocol::packets::play::clientbound::{PlayerInfoUpdate, SystemChat, info_action};
@@ -97,7 +96,7 @@ fn chat(
     }
     let chat_type = ChatTypeBound {
         chat_type: global.chat_types.chat,
-        name: display_name(&name, uuid),
+        name: crate::scoreboard::display_name(global, &name, uuid),
         target_name: None,
     };
     broadcast_chat(global, &message, &chat_type, "chat.type.text");

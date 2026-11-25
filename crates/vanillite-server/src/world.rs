@@ -408,6 +408,7 @@ impl ServerWorld {
             },
         );
         self.effects.flush(&self.level.entities);
+        crate::scoreboard::flush(ctx.global);
         self.overload
             .update(started.elapsed(), &self.rules.tracking, &self.dimension);
     }

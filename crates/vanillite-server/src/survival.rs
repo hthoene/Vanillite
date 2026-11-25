@@ -21,6 +21,7 @@ use vanillite_protocol::SharedPacket;
 use vanillite_protocol::packets::play::clientbound::{
     ChangeDifficulty, ClockUpdate, GameEvent, RemoveEntities, Respawn, SetExperience, SetTime,
 };
+use vanillite_protocol::text::Component;
 use vanillite_protocol::types::VarIntList;
 use vanillite_world::chunks::Chunks;
 use vanillite_world::entity::{EntityFlags, EntityId, NewEntity, Rotation};
@@ -256,6 +257,7 @@ impl WorldSurvival {
     }
 
     /// The survival `Env` over this world's state.
+    #[allow(clippy::too_many_arguments)]
     fn env<'a>(
         &'a mut self,
         level: &'a LevelState,
@@ -264,6 +266,7 @@ impl WorldSurvival {
         raining_at: &'a dyn Fn(BlockPos) -> bool,
         dimension: &'a str,
         hooks: &'a dyn vanillite_game::hooks::GameHooks,
+        display_name: &'a dyn Fn(&str, u128) -> Component,
     ) -> Env<'a> {
         Env {
             types: &level.damage_types,
@@ -279,6 +282,7 @@ impl WorldSurvival {
             random: &mut self.random,
             out: &mut self.effects,
             hooks,
+            display_name,
         }
     }
 
@@ -297,7 +301,8 @@ impl WorldSurvival {
         let (weather, climate) = (self.weather, self.climate.clone());
         let raining = |pos| raining_at(chunks, climate.as_deref(), &weather, pos);
         let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
-        let mut env = self.env(level, &rules, &blocks, &raining, dimension, &hooks);
+        let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
+        let mut env = self.env(level, &rules, &blocks, &raining, dimension, &hooks, &names);
         let Entities { store, players, .. } = entities;
         for (id, data) in players.iter_mut() {
             if data.connection.movement.moves.is_empty() {
@@ -350,7 +355,8 @@ impl WorldSurvival {
         let mut removed = std::mem::take(&mut self.scratch);
         {
             let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
-            let mut env = self.env(level, &rules, &blocks, &raining, dimension, &hooks);
+            let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
+            let mut env = self.env(level, &rules, &blocks, &raining, dimension, &hooks, &names);
             env.border = Some(border);
             let Entities { store, players, .. } = entities;
             for (id, data) in players.iter_mut() {
@@ -376,6 +382,7 @@ impl WorldSurvival {
             }
         }
         self.scratch = removed;
+        crate::scoreboard::update_criteria(global, entities);
         self.deliver(entities, global);
     }
 
@@ -442,8 +449,10 @@ impl WorldSurvival {
         };
         let raining = |_| false;
         let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+        let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
         let mut env = Env {
             hooks: &hooks,
+            display_name: &names,
             types: &level.damage_types,
             facts: &level.block_facts,
             blocks,
@@ -659,7 +668,8 @@ impl WorldSurvival {
         let mut hit = Vec::new();
         {
             let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
-            let mut env = self.env(level, &rules, &blocks, &raining, dimension, &hooks);
+            let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
+            let mut env = self.env(level, &rules, &blocks, &raining, dimension, &hooks, &names);
             bolts.retain_mut(|bolt| {
                 // TODO(#30): fire blocks (`spawnFire`) once blocks tick.
                 bolt.life -= 1;
@@ -795,6 +805,11 @@ impl WorldSurvival {
                         .players
                         .broadcast_system(message.clone(), false, None);
                 }
+                Effect::Died {
+                    victim,
+                    killer,
+                    message,
+                } => crate::scoreboard::died(global, entities, *victim, *killer, message.as_ref()),
                 Effect::DropItem { .. } => {}
             }
         }
@@ -1016,6 +1031,11 @@ fn deliver_simple(effects: &[Effect], entities: &mut Entities, global: &Global) 
                     .players
                     .broadcast_system(message.clone(), false, None);
             }
+            Effect::Died {
+                victim,
+                killer,
+                message,
+            } => crate::scoreboard::died(global, entities, *victim, *killer, message.as_ref()),
             Effect::DropItem { .. } => {}
         }
     }

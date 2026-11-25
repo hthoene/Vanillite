@@ -456,11 +456,12 @@ impl WorldPlayers {
             None,
         );
         crate::commands::send_permissions(global, sink.as_ref(), network_id, &source);
-        // `updateEntireScoreboard`: the teams.
-        crate::commands::teams::send_all(global, sink.as_ref());
-        global
-            .players
-            .broadcast_system(join::joined_message(&name, arrival.uuid), false, None);
+        crate::scoreboard::send_all(global, sink.as_ref(), arrival.uuid);
+        global.players.broadcast_system(
+            join::joined_message(crate::scoreboard::display_name(global, &name, arrival.uuid)),
+            false,
+            None,
+        );
         let connection = &mut player.connection;
         connection
             .movement
@@ -744,6 +745,7 @@ impl WorldPlayers {
     ) {
         crate::commands::answer_suggestions(&mut level.entities, global, world);
         for uuid in std::mem::take(&mut self.left) {
+            crate::scoreboard::left(global, uuid);
             if global.players.remove(Uuid(uuid)).is_some() {
                 global
                     .players
@@ -999,9 +1001,11 @@ impl WorldPlayers {
         entities.despawn(id);
         // Vanilla's order: the message, the entity removal (sent by the tracker this tick),
         // then the tab list entry.
-        global
-            .players
-            .broadcast_system(join::left_message(&name, uuid), false, Some(Uuid(uuid)));
+        global.players.broadcast_system(
+            join::left_message(crate::scoreboard::display_name(global, &name, uuid)),
+            false,
+            Some(Uuid(uuid)),
+        );
         self.left.push(uuid);
         let world = crate::server::DIMENSIONS
             .iter()

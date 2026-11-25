@@ -19,7 +19,7 @@ use super::food::{FoodAction, FoodData, exhaustion};
 use super::rules::{Difficulty, GameRules, Rule};
 use super::{Effect, play_sound};
 use crate::player::PlayerData;
-use crate::player::join::display_name;
+use crate::scoreboard::CriteriaKind;
 
 /// `Attributes.MAX_HEALTH` of players.
 pub const MAX_HEALTH: f32 = 20.0;
@@ -193,6 +193,32 @@ pub struct Survival {
     pub fluids: FluidContact,
     first_tick: bool,
     sent: Sent,
+    recorded: Recorded,
+}
+
+/// `ServerPlayer.lastRecorded*`: the values the built-in score criteria got last.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Recorded {
+    health: f32,
+    food: i32,
+    air: i32,
+    armor: i32,
+    experience: i32,
+    level: i32,
+}
+
+impl Default for Recorded {
+    fn default() -> Self {
+        Recorded {
+            // Java's `Float.MIN_VALUE`.
+            health: f32::from_bits(1),
+            food: i32::MIN,
+            air: i32::MIN,
+            armor: i32::MIN,
+            experience: i32::MIN,
+            level: i32::MIN,
+        }
+    }
 }
 
 impl Default for Survival {
@@ -218,6 +244,7 @@ impl Default for Survival {
             fluids: FluidContact::default(),
             first_tick: true,
             sent: Sent::default(),
+            recorded: Recorded::default(),
         }
     }
 }
@@ -297,6 +324,8 @@ pub struct Env<'a> {
     pub out: &'a mut Vec<Effect>,
     /// Plugin hooks (damage).
     pub hooks: &'a dyn crate::hooks::GameHooks,
+    /// `Player.getDisplayName` by name and UUID: the name in its team's format.
+    pub display_name: &'a dyn Fn(&str, u128) -> Component,
 }
 
 impl std::fmt::Debug for Env<'_> {
@@ -460,6 +489,36 @@ impl Survival {
     /// Forces the next [`sync`](Self::sync) to send the experience (`lastSentExp = -1`).
     pub fn resend_experience(&mut self) {
         self.sent.exp = Sent::default().exp;
+    }
+
+    /// `doTick`'s `updateScoreForCriteria`: the built-in criteria whose values changed since
+    /// the last call, with the new values (`Mth.ceil` of health with absorption, food, air,
+    /// armour, total experience and level).
+    pub fn changed_criteria(&mut self) -> Vec<(CriteriaKind, i32)> {
+        let mut out = Vec::new();
+        let r = &mut self.recorded;
+        let health = self.health + self.absorption;
+        if health != r.health {
+            r.health = health;
+            // `Mth.ceil`: the float's ceiling as an int, saturating like Java's cast.
+            #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+            out.push((CriteriaKind::Health, health.ceil() as i32));
+        }
+        // TODO(#27): the armour value of the equipment; it is 0 until armour exists.
+        let armor = 0;
+        for (kind, value, last) in [
+            (CriteriaKind::Food, self.food.food_level, &mut r.food),
+            (CriteriaKind::Air, self.air, &mut r.air),
+            (CriteriaKind::Armor, armor, &mut r.armor),
+            (CriteriaKind::Experience, self.xp.total, &mut r.experience),
+            (CriteriaKind::Level, self.xp.level, &mut r.level),
+        ] {
+            if value != *last {
+                *last = value;
+                out.push((kind, value));
+            }
+        }
+        out
     }
 
     /// `doTick`'s packets: `set_health` and `set_experience` when they changed.
@@ -716,20 +775,21 @@ pub fn die(
     entity: &mut EntityMut<'_>,
     player: &mut PlayerData,
     env: &mut Env<'_>,
-    _source: DamageSource,
+    source: DamageSource,
 ) {
     let network_id = entity.as_ref().network_id().0;
     let uuid = entity.as_ref().uuid();
     let id = entity.as_ref().id();
     let sink = std::sync::Arc::clone(&player.connection.sink);
+    let mut broadcast = None;
     if env.rules.bool(Rule::SHOW_DEATH_MESSAGES) {
-        let name = display_name(&player.profile.name, uuid);
+        let name = (env.display_name)(&player.profile.name, uuid);
         let message = player.survival.combat.death_message(env.types, name);
         sink.send(&PlayerCombatKill {
             player_id: network_id,
             message: message.clone(),
         });
-        env.out.push(Effect::Broadcast(message));
+        broadcast = Some(message);
     } else {
         sink.send(&PlayerCombatKill {
             player_id: network_id,
@@ -753,6 +813,12 @@ pub fn die(
             env,
         );
     }
+    // The kill credit is the damage's causing entity: nothing else credits kills yet.
+    env.out.push(Effect::Died {
+        victim: id,
+        killer: source.cause,
+        message: broadcast,
+    });
     env.out.push(Effect::Tracking {
         entity: id,
         with_self: true,

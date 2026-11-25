@@ -1,10 +1,11 @@
 //! Server-wide state of commands kept in [`GameSystems`](crate::systems::GameSystems):
-//! scheduled functions, random sequences, stopwatches, the profilers and waypoint icons. Plain
-//! data, so the saved-data seam can store it later.
+//! scheduled functions (saved as `minecraft:scheduled_events`), random sequences, stopwatches,
+//! the profilers and waypoint icons.
 
 use std::collections::BTreeMap;
 
 use vanillite_base::random::{Seed128, XoroshiroRandom};
+use vanillite_nbt::{Compound, List, Tag};
 
 /// What a scheduled event runs (`TimerCallback`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -33,6 +34,8 @@ pub(crate) struct TimerQueue {
     /// `events`: id → trigger time → sequence number.
     events: BTreeMap<String, BTreeMap<i64, u64>>,
     sequence: u64,
+    /// Changed since the last save (`setDirty`).
+    dirty: bool,
 }
 
 impl TimerQueue {
@@ -43,6 +46,7 @@ impl TimerQueue {
             return;
         }
         self.sequence = self.sequence.wrapping_add(1);
+        self.dirty = true;
         row.insert(time, self.sequence);
         self.queue.insert(
             (time, self.sequence),
@@ -56,6 +60,7 @@ impl TimerQueue {
 
     /// `remove`: drops all events of an id; the number dropped.
     pub(crate) fn remove(&mut self, id: &str) -> usize {
+        self.dirty = true;
         let Some(row) = self.events.remove(id) else {
             return 0;
         };
@@ -81,6 +86,7 @@ impl TimerQueue {
             return None;
         }
         let event = self.queue.remove(&key)?;
+        self.dirty = true;
         if let Some(row) = self.events.get_mut(&event.id) {
             row.remove(&current);
             if row.is_empty() {
@@ -88,6 +94,72 @@ impl TimerQueue {
             }
         }
         Some(event)
+    }
+
+    /// Whether it changed since the last call; clears the flag.
+    pub(crate) fn take_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.dirty)
+    }
+
+    /// `TimerQueue.Packed.CODEC`: the events in queue order with their callbacks
+    /// (`TimerCallbacks.SERVER_CALLBACKS`).
+    pub(crate) fn to_nbt(&self) -> Compound {
+        let events = self
+            .queue
+            .values()
+            .map(|e| {
+                let (kind, id) = match &e.callback {
+                    TimerCallback::Function(id) => ("minecraft:function", id),
+                    TimerCallback::FunctionTag(id) => ("minecraft:function_tag", id),
+                };
+                let callback = Compound::new()
+                    .with("type", kind)
+                    .with("id", id.as_str())
+                    .in_java_hash_order();
+                Tag::Compound(
+                    Compound::new()
+                        .with("trigger_time", e.trigger_time)
+                        .with("id", e.id.as_str())
+                        .with("callback", callback)
+                        .in_java_hash_order(),
+                )
+            })
+            .collect();
+        Compound::new().with("events", List(events))
+    }
+
+    /// The queue of saved events, scheduled again in their order (`new TimerQueue(packed)`).
+    pub(crate) fn from_nbt(data: &Compound) -> TimerQueue {
+        let mut queue = TimerQueue::default();
+        let events = match data.get("events") {
+            Some(Tag::List(List(events))) => events.as_slice(),
+            _ => &[],
+        };
+        for event in events.iter().filter_map(Tag::as_compound) {
+            let str_of =
+                |c: &Compound, key: &str| c.get(key).and_then(Tag::as_str).map(str::to_owned);
+            let callback = event.get("callback").and_then(Tag::as_compound);
+            let (Some(time), Some(id), Some(kind), Some(target)) = (
+                event.get("trigger_time").and_then(Tag::as_i64),
+                str_of(event, "id"),
+                callback.and_then(|c| str_of(c, "type")),
+                callback.and_then(|c| str_of(c, "id")),
+            ) else {
+                log::error!("Failed to parse scheduled event {event:?}");
+                continue;
+            };
+            let callback = match kind.strip_prefix("minecraft:").unwrap_or(&kind) {
+                "function" => TimerCallback::Function(target),
+                "function_tag" => TimerCallback::FunctionTag(target),
+                _ => {
+                    log::error!("Unknown scheduled event callback {kind}");
+                    continue;
+                }
+            };
+            queue.schedule(&id, time, callback);
+        }
+        queue.dirty = false;
+        queue
     }
 }
 
@@ -298,6 +370,14 @@ mod tests {
         assert_eq!(q.remove("a:f"), 1);
         // The late tag event stays listed under its trigger time, as in Vanilla.
         assert_eq!(q.ids().collect::<Vec<_>>(), ["#a:t"]);
+        q.schedule("b:g", 3, TimerCallback::Function("b:g".into()));
+        let saved = q.to_nbt();
+        let mut loaded = TimerQueue::from_nbt(&saved);
+        assert_eq!(loaded.to_nbt(), saved);
+        assert_eq!(
+            loaded.next_due(3).map(|e| e.callback),
+            Some(TimerCallback::Function("b:g".into()))
+        );
     }
 
     #[test]

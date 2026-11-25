@@ -1,11 +1,10 @@
-//! `/team` (Vanilla's `TeamCommand`) and the team packets of `ServerScoreboard`: every change
-//! goes to all players, a joining player gets all teams (`updateEntireScoreboard`).
+//! `/team` (Vanilla's `TeamCommand`) and the team packets of `ServerScoreboard`; the changes
+//! go out with [`flush`] right away.
 
 use vanillite_command::error::CommandError;
 use vanillite_command::{Arg as ErrArg, Args, GameValue};
 use vanillite_game::commands::TeamOp;
-use vanillite_game::player::PacketSink;
-use vanillite_game::scoreboard::{COLOR_NAMES, CollisionRule, ScoreEvent, Team, Visibility};
+use vanillite_game::scoreboard::{COLOR_NAMES, CollisionRule, Team, Visibility};
 use vanillite_protocol::packets::play::clientbound::{SetPlayerTeam, TeamAction, TeamParameters};
 use vanillite_protocol::text::{Arg, Color, Component, HoverEvent, NamedColor};
 
@@ -13,7 +12,7 @@ use super::Env;
 use super::scores::{self, Holder};
 use super::source::CommandSource;
 use super::tracker::Tracker;
-use crate::global::Global;
+use crate::scoreboard::flush;
 
 fn missing(name: &str) -> CommandError {
     CommandError::new(
@@ -23,7 +22,7 @@ fn missing(name: &str) -> CommandError {
 }
 
 /// `ClientboundSetPlayerTeamPacket.Parameters`.
-fn parameters(team: &Team) -> Box<TeamParameters> {
+pub(crate) fn parameters(team: &Team) -> Box<TeamParameters> {
     Box::new(TeamParameters {
         display_name: team.display_name.clone(),
         prefix: team.prefix.clone(),
@@ -36,53 +35,10 @@ fn parameters(team: &Team) -> Box<TeamParameters> {
 }
 
 /// `createAddOrModifyPacket(team, true)`.
-fn add_packet(team: &Team) -> SetPlayerTeam {
+pub(crate) fn add_packet(team: &Team) -> SetPlayerTeam {
     SetPlayerTeam {
         name: team.name.clone(),
         action: TeamAction::Add(parameters(team), team.players.clone()),
-    }
-}
-
-/// `PlayerList.updateEntireScoreboard`, team part: all teams to a joining player.
-pub(crate) fn send_all(global: &Global, sink: &dyn PacketSink) {
-    let board = global.systems.scoreboard();
-    for team in board.teams() {
-        sink.send(&add_packet(team));
-    }
-}
-
-/// `ServerScoreboard.onTeamAdded`/`onTeamChanged`/`onTeamRemoved`/`addPlayerToTeam`/
-/// `removePlayerFromTeam`: the team changes so far, to all players.
-pub(crate) fn flush(global: &Global) {
-    let packets: Vec<SetPlayerTeam> = {
-        let mut board = global.systems.scoreboard();
-        let events = board.take_team_events();
-        events
-            .into_iter()
-            .filter_map(|event| match event {
-                ScoreEvent::TeamAdded(name) => board.team(&name).map(add_packet),
-                ScoreEvent::TeamChanged(name) => board.team(&name).map(|t| SetPlayerTeam {
-                    name: name.clone(),
-                    action: TeamAction::Change(parameters(t)),
-                }),
-                ScoreEvent::TeamRemoved(name) => Some(SetPlayerTeam {
-                    name,
-                    action: TeamAction::Remove,
-                }),
-                ScoreEvent::TeamJoined { team, holder } => Some(SetPlayerTeam {
-                    name: team,
-                    action: TeamAction::Join(vec![holder]),
-                }),
-                ScoreEvent::TeamLeft { team, holder } => Some(SetPlayerTeam {
-                    name: team,
-                    action: TeamAction::Leave(vec![holder]),
-                }),
-                _ => None,
-            })
-            .collect()
-    };
-    for packet in &packets {
-        global.players.broadcast(packet, None);
     }
 }
 

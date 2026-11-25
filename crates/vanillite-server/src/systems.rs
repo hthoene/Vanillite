@@ -1,14 +1,17 @@
 //! Server-wide game systems around the simulation: the scoreboard, command storage, data pack
 //! functions, scheduled functions, random sequences, stopwatches and the profilers. Each sits
-//! behind its own lock, held only for one command's change.
+//! behind its own lock, held only for one command's change. The scoreboard, the command
+//! storage and the scheduled functions are the world's saved data.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 
 use vanillite_base::Vec3;
 use vanillite_game::scoreboard::Scoreboard;
-use vanillite_nbt::Compound;
+use vanillite_nbt::{Compound, Tag};
+use vanillite_storage::saved_data::SavedDataStore;
 
 use crate::command_state::{Profiling, RandomSequences, Stopwatches, TimerQueue, WaypointIcon};
 use crate::commands::functions::FunctionLibrary;
@@ -17,12 +20,103 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// `CommandStorage`: compounds by id.
-pub(crate) type CommandStorage = std::collections::BTreeMap<String, Compound>;
+/// The saved data of the scoreboard (`ScoreboardSaveData.TYPE`).
+const SCOREBOARD: &str = "minecraft:scoreboard";
+/// The saved data of the scheduled functions (`TimerQueue.TYPE`).
+const SCHEDULED_EVENTS: &str = "minecraft:scheduled_events";
+/// The path of a namespace's command storage (`CommandStorage.Container.type`).
+const COMMAND_STORAGE: &str = "command_storage";
+
+/// `CommandStorage`: compounds by id, saved per namespace as `<namespace>:command_storage`.
+#[derive(Debug, Default)]
+pub(crate) struct CommandStorage {
+    entries: BTreeMap<String, Compound>,
+    /// Namespaces changed since the last save.
+    dirty: BTreeSet<String>,
+}
+
+fn split_id(id: &str) -> (&str, &str) {
+    id.split_once(':').unwrap_or(("minecraft", id))
+}
+
+impl CommandStorage {
+    /// `get`: the compound of an id, if any.
+    pub(crate) fn get(&self, id: &str) -> Option<&Compound> {
+        self.entries.get(id)
+    }
+
+    /// `set`: an empty compound removes the id.
+    pub(crate) fn set(&mut self, id: String, data: Compound) {
+        self.dirty.insert(split_id(&id).0.to_owned());
+        if data.is_empty() {
+            self.entries.remove(&id);
+        } else {
+            self.entries.insert(id, data);
+        }
+    }
+
+    /// `keys`.
+    pub(crate) fn keys(&self) -> impl Iterator<Item = &String> {
+        self.entries.keys()
+    }
+
+    /// Every `<namespace>:command_storage` below `data/` of the world.
+    fn load(data: &SavedDataStore) -> CommandStorage {
+        let mut storage = CommandStorage::default();
+        let Ok(dirs) = std::fs::read_dir(data.dir().join("data")) else {
+            return storage;
+        };
+        for dir in dirs.flatten() {
+            let Ok(namespace) = dir.file_name().into_string() else {
+                continue;
+            };
+            let id = format!("{namespace}:{COMMAND_STORAGE}");
+            let contents = match data.read(&id) {
+                Ok(Some(mut c)) => match c.remove("contents") {
+                    Some(Tag::Compound(contents)) => contents,
+                    _ => continue,
+                },
+                Ok(None) => continue,
+                Err(e) => {
+                    log::error!("Cannot read {id}: {e}");
+                    continue;
+                }
+            };
+            for (path, tag) in contents.iter() {
+                if let Tag::Compound(c) = tag {
+                    storage
+                        .entries
+                        .insert(format!("{namespace}:{path}"), c.clone());
+                }
+            }
+        }
+        storage
+    }
+
+    /// The changed namespaces' `Container.CODEC` data, as saved data ids.
+    fn take_dirty(&mut self) -> Vec<(String, Compound)> {
+        std::mem::take(&mut self.dirty)
+            .into_iter()
+            .map(|namespace| {
+                let mut contents = Compound::new();
+                for (id, data) in &self.entries {
+                    let (ns, path) = split_id(id);
+                    if ns == namespace {
+                        contents.insert(path, data.clone());
+                    }
+                }
+                let data = Compound::new().with("contents", contents.in_java_hash_order());
+                (format!("{namespace}:{COMMAND_STORAGE}"), data)
+            })
+            .collect()
+    }
+}
 
 /// The game systems of the server.
 pub(crate) struct GameSystems {
     scoreboard: Mutex<Scoreboard>,
+    /// What the clients know of the scoreboard; locked before the scoreboard.
+    scoreboard_sync: Mutex<crate::scoreboard::ScoreboardSync>,
     storage: Mutex<CommandStorage>,
     functions: RwLock<Arc<FunctionLibrary>>,
     post_reload: AtomicBool,
@@ -61,7 +155,8 @@ impl GameSystems {
     ) -> Self {
         GameSystems {
             scoreboard: Mutex::new(Scoreboard::new()),
-            storage: Mutex::new(CommandStorage::new()),
+            scoreboard_sync: Mutex::default(),
+            storage: Mutex::default(),
             functions: RwLock::new(Arc::new(FunctionLibrary::default())),
             post_reload: AtomicBool::new(false),
             function_level,
@@ -127,6 +222,50 @@ impl GameSystems {
         self.scoreboard
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The scoreboard as the clients know it ([`crate::scoreboard::flush`]).
+    pub(crate) fn scoreboard_sync(&self) -> MutexGuard<'_, crate::scoreboard::ScoreboardSync> {
+        lock(&self.scoreboard_sync)
+    }
+
+    /// Loads the scoreboard, the command storage and the scheduled functions from the world's
+    /// saved data (`ServerScoreboard.load`, `CommandStorage`, `TimerQueue`).
+    pub(crate) fn load(&self, data: &SavedDataStore) {
+        let read = |id: &str| {
+            data.read(id).unwrap_or_else(|e| {
+                log::error!("Cannot read {id}: {e}");
+                None
+            })
+        };
+        if let Some(c) = read(SCOREBOARD) {
+            *self.scoreboard() = Scoreboard::from_nbt(&c);
+        }
+        if let Some(c) = read(SCHEDULED_EVENTS) {
+            *self.scheduled() = TimerQueue::from_nbt(&c);
+        }
+        *self.storage() = CommandStorage::load(data);
+    }
+
+    /// Writes what changed since the last save (`storeToSaveDataIfDirty`, `setDirty`).
+    pub(crate) fn save(&self, data: &SavedDataStore) {
+        let scoreboard = {
+            let mut board = self.scoreboard();
+            board.take_dirty().then(|| board.to_nbt())
+        };
+        if let Some(c) = scoreboard {
+            data.write(SCOREBOARD, c);
+        }
+        let scheduled = {
+            let mut queue = self.scheduled();
+            queue.take_dirty().then(|| queue.to_nbt())
+        };
+        if let Some(c) = scheduled {
+            data.write(SCHEDULED_EVENTS, c);
+        }
+        for (id, c) in self.storage().take_dirty() {
+            data.write(&id, c);
+        }
     }
 
     /// Command storage.

@@ -44,6 +44,13 @@ pub enum Effect {
     },
     /// A system message to every player of the server.
     Broadcast(Component),
+    /// `ServerPlayer.die`'s scoreboard part: the death message for the players the victim's
+    /// team allows, the death count and the kill scores of the killer (`getKillCredit`).
+    Died {
+        victim: EntityId,
+        killer: Option<EntityId>,
+        message: Option<Component>,
+    },
     /// A new item entity (a dropped stack): its UUID, position, motion, yaw and pickup delay.
     DropItem {
         uuid: u128,

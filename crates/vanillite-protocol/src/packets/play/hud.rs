@@ -3,7 +3,7 @@
 
 use crate::Packet;
 use crate::codec::{Decode, DecodeLimited, Encode, Error, Reader, Result, write_varint};
-use crate::text::Component;
+use crate::text::{Component, Style};
 use crate::types::Nbt;
 
 /// Component quota of team and title components (`ComponentSerialization.TRUSTED_STREAM_CODEC`
@@ -137,6 +137,162 @@ pub struct SetPlayerTeam {
     pub action: TeamAction,
 }
 
+/// How a score is shown (`NumberFormat`, `NumberFormatTypes.STREAM_CODEC`: the type's
+/// registry id, then its data).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NumberFormat {
+    /// 0, `blank`.
+    Blank,
+    /// 1, `styled`.
+    Styled(Box<Style>),
+    /// 2, `fixed`.
+    Fixed(Box<Component>),
+}
+
+impl Encode for NumberFormat {
+    fn encode(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::Blank => write_varint(out, 0),
+            Self::Styled(style) => {
+                write_varint(out, 1);
+                Nbt(Some(style.to_nbt())).encode(out);
+            }
+            Self::Fixed(component) => {
+                write_varint(out, 2);
+                component.encode(out);
+            }
+        }
+    }
+}
+
+impl Decode for NumberFormat {
+    fn decode(r: &mut Reader<'_>) -> Result<Self> {
+        Ok(match r.varint()? {
+            0 => Self::Blank,
+            1 => {
+                let nbt = Nbt::decode_limited(r, COMPONENT_MAX)?;
+                let style = nbt
+                    .0
+                    .as_ref()
+                    .and_then(|tag| Style::try_from_nbt(tag).ok())
+                    .ok_or(Error::Invalid("number format style"))?;
+                Self::Styled(Box::new(style))
+            }
+            2 => Self::Fixed(Box::new(Component::decode_limited(r, COMPONENT_MAX)?)),
+            _ => return Err(Error::Invalid("number format type")),
+        })
+    }
+}
+
+/// `ClientboundSetObjectivePacket` data of the add and change methods.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectiveParameters {
+    pub display_name: Component,
+    /// `ObjectiveCriteria.RenderType` ordinal: 0 integer, 1 hearts.
+    pub render_type: i32,
+    pub number_format: Option<NumberFormat>,
+}
+
+impl Encode for ObjectiveParameters {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.display_name.encode(out);
+        write_varint(out, self.render_type);
+        self.number_format.encode(out);
+    }
+}
+
+impl Decode for ObjectiveParameters {
+    fn decode(r: &mut Reader<'_>) -> Result<Self> {
+        Ok(Self {
+            display_name: Component::decode_limited(r, COMPONENT_MAX)?,
+            render_type: r.varint()?,
+            number_format: Option::<NumberFormat>::decode(r)?,
+        })
+    }
+}
+
+/// The method of `set_objective` with its data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ObjectiveAction {
+    /// 0: a new objective.
+    Add(Box<ObjectiveParameters>),
+    /// 1: the objective is gone.
+    Remove,
+    /// 2: the objective changed.
+    Change(Box<ObjectiveParameters>),
+}
+
+impl Encode for ObjectiveAction {
+    fn encode(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::Add(p) => {
+                out.push(0);
+                p.encode(out);
+            }
+            Self::Remove => out.push(1),
+            Self::Change(p) => {
+                out.push(2);
+                p.encode(out);
+            }
+        }
+    }
+}
+
+impl Decode for ObjectiveAction {
+    fn decode(r: &mut Reader<'_>) -> Result<Self> {
+        Ok(match r.i8()? {
+            0 => Self::Add(Box::new(ObjectiveParameters::decode(r)?)),
+            2 => Self::Change(Box::new(ObjectiveParameters::decode(r)?)),
+            // Vanilla reads every other method like a removal.
+            _ => Self::Remove,
+        })
+    }
+}
+
+/// `set_objective`.
+#[derive(Debug, Clone, PartialEq, Eq, Packet)]
+#[packet(state = Play, dir = Clientbound, name = "set_objective")]
+pub struct SetObjective {
+    #[field(max_len = 32767)]
+    pub name: String,
+    pub action: ObjectiveAction,
+}
+
+/// `set_score`.
+#[derive(Debug, Clone, PartialEq, Eq, Packet)]
+#[packet(state = Play, dir = Clientbound, name = "set_score")]
+pub struct SetScore {
+    #[field(max_len = 32767)]
+    pub owner: String,
+    #[field(max_len = 32767)]
+    pub objective: String,
+    #[field(varint)]
+    pub score: i32,
+    #[field(max_len = 2_097_152)]
+    pub display: Option<Component>,
+    pub number_format: Option<NumberFormat>,
+}
+
+/// `reset_score`: one score of the owner, or all with no objective.
+#[derive(Debug, Clone, PartialEq, Eq, Packet)]
+#[packet(state = Play, dir = Clientbound, name = "reset_score")]
+pub struct ResetScore {
+    #[field(max_len = 32767)]
+    pub owner: String,
+    #[field(max_len = 32767)]
+    pub objective: Option<String>,
+}
+
+/// `set_display_objective`: the `DisplaySlot` id and the objective name, empty for none.
+#[derive(Debug, Clone, PartialEq, Eq, Packet)]
+#[packet(state = Play, dir = Clientbound, name = "set_display_objective")]
+pub struct SetDisplayObjective {
+    #[field(varint)]
+    pub slot: i32,
+    #[field(max_len = 32767)]
+    pub objective: String,
+}
+
 /// `set_title_text`.
 #[derive(Debug, Clone, PartialEq, Eq, Packet)]
 #[packet(state = Play, dir = Clientbound, name = "set_title_text")]
@@ -262,6 +418,45 @@ mod tests {
         let mut out = Vec::new();
         TeamAction::Remove.encode(&mut out);
         assert_eq!(out, [1]);
+    }
+
+    #[test]
+    fn scoreboard_packets_round_trip() {
+        let style = Style {
+            bold: Some(true),
+            ..Style::default()
+        };
+        let p = ObjectiveParameters {
+            display_name: Component::text("Kills"),
+            render_type: 1,
+            number_format: Some(NumberFormat::Styled(Box::new(style))),
+        };
+        round_trip(&ObjectiveAction::Add(Box::new(p.clone())));
+        round_trip(&ObjectiveAction::Change(Box::new(ObjectiveParameters {
+            number_format: None,
+            ..p
+        })));
+        round_trip(&ObjectiveAction::Remove);
+        round_trip(&NumberFormat::Blank);
+        round_trip(&NumberFormat::Fixed(Box::new(Component::text("-"))));
+        let mut out = Vec::new();
+        NumberFormat::Blank.encode(&mut out);
+        ObjectiveAction::Remove.encode(&mut out);
+        assert_eq!(out, [0, 1]);
+        let mut out = Vec::new();
+        SetDisplayObjective {
+            slot: 1,
+            objective: String::new(),
+        }
+        .encode(&mut out);
+        assert_eq!(out, [1, 0]);
+        let mut out = Vec::new();
+        ResetScore {
+            owner: "a".into(),
+            objective: None,
+        }
+        .encode(&mut out);
+        assert_eq!(out, [1, b'a', 0]);
     }
 
     #[test]

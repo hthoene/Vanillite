@@ -83,6 +83,7 @@ pub(crate) fn load_game_systems(global: &Global) {
     global
         .systems
         .set_functions(functions::load(global, &roots));
+    global.systems.load(&global.level.data);
 }
 
 /// `ServerFunctionManager.tick` on the overworld.
@@ -97,9 +98,6 @@ pub(crate) fn tick_functions(
         world,
     };
     functions::tick(&mut env);
-    // Scoreboard changes reach clients with the scoreboard packets; until then they are
-    // dropped each tick so they do not pile up.
-    drop(global.systems.scoreboard().take_events());
 }
 
 /// The scheduled functions due now (`TimerQueue.tick` in the overworld's `tickTime`).

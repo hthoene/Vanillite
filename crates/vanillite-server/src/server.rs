@@ -1363,6 +1363,7 @@ impl Server {
     /// (with `flush`: once everything is on disk).
     pub(crate) fn save_everything(&mut self, flush: bool, force: bool, then: Option<AfterSave>) {
         let skip_chunks = !force && !self.global.level.auto_save.load(Ordering::Relaxed);
+        self.global.systems.save(&self.global.level.data);
         self.global.level.save();
         let done = Arc::new(SaveDone {
             remaining: AtomicUsize::new(self.routes.len()),
@@ -1477,6 +1478,7 @@ impl Server {
                 }
             }
         }
+        self.global.systems.save(&self.global.level.data);
         self.global.level.save();
         self.global.level.writer().flush();
         log::info!("All dimensions are saved");

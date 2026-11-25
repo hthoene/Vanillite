@@ -5,7 +5,11 @@
 use std::collections::BTreeMap;
 
 use vanillite_base::hash::FxHashMap;
-use vanillite_protocol::text::{Component, Style};
+use vanillite_protocol::text::Component;
+
+mod save;
+
+pub use save::{slot_by_name, slot_name};
 
 /// How an objective is shown (`ObjectiveCriteria.RenderType`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -37,15 +41,7 @@ impl RenderType {
 }
 
 /// How a score is shown (`NumberFormat`).
-#[derive(Debug, Clone, PartialEq)]
-pub enum NumberFormat {
-    /// `blank`.
-    Blank,
-    /// `styled`.
-    Styled(Box<Style>),
-    /// `fixed`.
-    Fixed(Box<Component>),
-}
+pub use vanillite_protocol::packets::play::clientbound::NumberFormat;
 
 /// What feeds an objective (`ObjectiveCriteria`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -434,8 +430,8 @@ pub enum ScoreEvent {
     ScoreRemoved { holder: String, objective: String },
     /// `onPlayerRemoved`: all scores of the holder.
     HolderRemoved(String),
-    /// `setDisplayObjective`: the slot id and the objective before.
-    DisplaySlot { slot: u8, before: Option<String> },
+    /// `setDisplayObjective`: the slot id and its new objective.
+    DisplaySlot { slot: u8, objective: Option<String> },
     /// `onTeamAdded`.
     TeamAdded(String),
     /// `onTeamChanged`.
@@ -482,22 +478,6 @@ impl Scoreboard {
     /// Takes the changes since the last call.
     pub fn take_events(&mut self) -> Vec<ScoreEvent> {
         std::mem::take(&mut self.events)
-    }
-
-    /// Takes the team changes since the last call; the other changes stay.
-    pub fn take_team_events(&mut self) -> Vec<ScoreEvent> {
-        let (teams, rest) = std::mem::take(&mut self.events).into_iter().partition(|e| {
-            matches!(
-                e,
-                ScoreEvent::TeamAdded(_)
-                    | ScoreEvent::TeamChanged(_)
-                    | ScoreEvent::TeamRemoved(_)
-                    | ScoreEvent::TeamJoined { .. }
-                    | ScoreEvent::TeamLeft { .. }
-            )
-        });
-        self.events = rest;
-        teams
     }
 
     /// Whether it changed since the last save; clears the flag.
@@ -571,8 +551,9 @@ impl Scoreboard {
         let Some(entry) = self.display.get_mut(usize::from(slot)) else {
             return;
         };
-        let before = std::mem::replace(entry, objective.map(str::to_owned));
-        self.changed(ScoreEvent::DisplaySlot { slot, before });
+        let objective = objective.map(str::to_owned);
+        entry.clone_from(&objective);
+        self.changed(ScoreEvent::DisplaySlot { slot, objective });
     }
 
     /// The display slots an objective is in.

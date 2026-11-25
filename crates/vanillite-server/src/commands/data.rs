@@ -106,7 +106,7 @@ pub(crate) fn write(
 ) -> Result<(), CommandError> {
     match target {
         DataTarget::Storage(id) => {
-            env.global.systems.storage().insert(id.clone(), data);
+            env.global.systems.storage().set(id.clone(), data);
             Ok(())
         }
         DataTarget::Entity { id, .. } => apply_entity_nbt(&mut env.level.entities, *id, &data),
