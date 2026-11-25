@@ -3,20 +3,24 @@
 //! The world matches the Vanilla recorder (`ParityServer` and `ScenarioRecorder`): flat layers
 //! from the bottom of the overworld, the scenario's game rules on top of the recorder's
 //! defaults, and the region's chunks plus one chunk around them forced (entity ticking). A
-//! step runs the simulation phases of `ServerLevel.tick` in Vanilla's order.
+//! step runs the simulation phases of `ServerLevel.tick` in Vanilla's order. Chunks are saved
+//! to and loaded from memory in the Anvil format, so unloading and loading them goes through
+//! the real chunk and entity records.
 
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
+use vanillite_base::hash::FxHashMap;
 use vanillite_base::{BlockPos, ChunkPos};
 use vanillite_chunk::ProtoChunk;
-use vanillite_chunk::slots::{
-    FlatGenerator, LightEngine, Neighbours, NullCodec, NullStore, WorldInfo,
-};
+use vanillite_chunk::slots::{FlatGenerator, LightEngine, MemoryStore, Neighbours, WorldInfo};
 use vanillite_data::block::{BlockId, BlockState};
 use vanillite_game::block::Behaviours;
 use vanillite_game::level::{Level, LevelOutput, LevelSettings, update};
-use vanillite_world::chunks::{ChunkSettings, ChunkSlots, Chunks, InlineExecutor};
+use vanillite_storage::{AnvilCodec, Compression};
+use vanillite_world::chunks::{
+    ChunkSettings, ChunkSlots, Chunks, InlineExecutor, TicketId, Visibility,
+};
 use vanillite_world::entity::NetworkIds;
 use vanillite_world::ticks::LevelTicks;
 
@@ -29,9 +33,8 @@ const MIN_Y: i32 = -64;
 const HEIGHT: u32 = 384;
 /// `ChunkLevel.byStatus(ENTITY_TICKING)`: the level of a forced chunk.
 const FORCED_LEVEL: u8 = 31;
-/// Chunks around the origin that are forced: the recorder forces the scenario region's chunks
-/// and one more around them; every scenario region fits in this square.
-const FORCED_RADIUS: i32 = 3;
+/// Chunk runtime ticks [`GameWorld::set_forced`] runs at most to settle.
+const SETTLE_LIMIT: usize = 1000;
 
 struct NoLight;
 
@@ -62,6 +65,8 @@ fn install() {
 /// A headless level over flat chunks.
 pub struct GameWorld {
     level: Level,
+    /// The forced tickets (loading and simulation) per chunk.
+    forced: FxHashMap<ChunkPos, (TicketId, TicketId)>,
 }
 
 impl std::fmt::Debug for GameWorld {
@@ -93,32 +98,15 @@ impl GameWorld {
                 .default_state();
             layers.extend(std::iter::repeat_n(state.0, *height as usize));
         }
+        let codec = AnvilCodec::new(&info, Compression::None);
         let slots = ChunkSlots {
-            store: Arc::new(NullStore),
-            codec: Arc::new(NullCodec),
+            store: Arc::new(MemoryStore::default()),
+            codec: Arc::new(codec),
             generator: Arc::new(FlatGenerator::new(&info, &layers)),
             light: Arc::new(NoLight),
             executor: Arc::new(InlineExecutor),
         };
-        let mut chunks = Chunks::new(info, ChunkSettings::default(), slots);
-        let mut forced = Vec::new();
-        for cx in -FORCED_RADIUS..=FORCED_RADIUS {
-            for cz in -FORCED_RADIUS..=FORCED_RADIUS {
-                let pos = ChunkPos::new(cx, cz);
-                chunks.add_ticket(pos, FORCED_LEVEL);
-                chunks.add_simulation_ticket(pos, FORCED_LEVEL);
-                forced.push(pos);
-            }
-        }
-        for i in 0.. {
-            if forced.iter().all(|&c| chunks.is_block_ticking(c)) {
-                break;
-            }
-            if i == 1000 {
-                return Err("the scenario region does not become ticking".to_owned());
-            }
-            chunks.tick();
-        }
+        let chunks = Chunks::new(info, ChunkSettings::default(), slots);
         let mut settings = LevelSettings::default();
         apply_rules(&mut settings, &spec.rules)?;
         let level = Level::new(
@@ -128,7 +116,24 @@ impl GameWorld {
             Arc::new(NetworkIds::new()),
             spec.seed,
         );
-        Ok(Self { level })
+        let mut world = Self {
+            level,
+            forced: FxHashMap::default(),
+        };
+        world
+            .set_forced(&spec.forced, true)
+            .map_err(|_| "the scenario region does not become ticking".to_owned())?;
+        Ok(world)
+    }
+
+    /// Whether the chunk system is settled around the forced chunks: every chunk is visible
+    /// as its ticket level says, and nothing is loading, generating or waiting to unload.
+    fn settled(&self) -> bool {
+        let chunks = &self.level.chunks;
+        chunks.is_idle()
+            && self.forced.keys().all(|&pos| {
+                chunks.visibility(pos) == Visibility::Ticking && chunks.is_block_ticking(pos)
+            })
     }
 
     /// [`crate::world::WorldFactory`] of the game world.
@@ -146,6 +151,9 @@ impl GameWorld {
         let level = &mut self.level;
         let mut cursor = level.entities.store.tick_cursor();
         while let Some(id) = level.entities.store.next_to_tick(&mut cursor) {
+            if !vanillite_game::entities::in_ticking_range(level, id) {
+                continue;
+            }
             let Some(mut entity) = level.entities.store.get_mut(id) else {
                 continue;
             };
@@ -187,6 +195,35 @@ fn apply_rules(
 }
 
 impl ScenarioWorld for GameWorld {
+    fn is_loaded(&self, pos: BlockPos) -> bool {
+        self.level.is_loaded(pos)
+    }
+
+    fn set_forced(&mut self, chunks: &[ChunkPos], forced: bool) -> Result<(), String> {
+        for &pos in chunks {
+            let runtime = &mut self.level.chunks;
+            if forced {
+                self.forced.entry(pos).or_insert_with(|| {
+                    (
+                        runtime.add_ticket(pos, FORCED_LEVEL),
+                        runtime.add_simulation_ticket(pos, FORCED_LEVEL),
+                    )
+                });
+            } else if let Some((ticket, simulation)) = self.forced.remove(&pos) {
+                runtime.remove_ticket(ticket);
+                runtime.remove_simulation_ticket(simulation);
+            }
+        }
+        for _ in 0..SETTLE_LIMIT {
+            // The chunk system only: no game tick.
+            self.level.tick_chunk_runtime();
+            if self.settled() {
+                return Ok(());
+            }
+        }
+        Err("the chunk system does not settle".to_owned())
+    }
+
     fn set_block_raw(&mut self, pos: BlockPos, state: BlockState) {
         self.level
             .set_block(pos, state, update::CLIENTS | update::KNOWN_SHAPE);

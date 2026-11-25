@@ -347,6 +347,7 @@ impl OwnCodec {
             block_ticks,
             fluid_ticks,
             post_processing,
+            entities: Vec::new(),
             extra,
             generation: None,
         })
@@ -477,6 +478,33 @@ impl ChunkCodec for OwnCodec {
         Ok((meta, Arc::from(zstd_compress(&raw, self.level)?)))
     }
 
+    /// An entities record is Vanilla's entities NBT (`DataVersion`, `Position`, `Entities`,
+    /// entities in stored order) in one zstd frame, as the conversion writes it.
+    fn decode_entities(
+        &self,
+        pos: ChunkPos,
+        _: &RecordMeta,
+        record: &[u8],
+    ) -> io::Result<Vec<Arc<[u8]>>> {
+        let nbt = zstd_decompress(record).map_err(|e| invalid(pos, e))?;
+        crate::chunk_nbt::read_entities(pos, &crate::read_root(pos, &nbt)?)
+    }
+
+    fn encode_entities(&self, chunk: &ProtoChunk) -> io::Result<(RecordMeta, Arc<[u8]>)> {
+        let root = crate::chunk_nbt::write_entities(chunk.pos, &chunk.entities)?;
+        let mut nbt = Vec::with_capacity(1024);
+        vanillite_nbt::write::write_named("", &root, &mut nbt)
+            .map_err(|e| invalid(chunk.pos, format!("{e:?}")))?;
+        let meta = RecordMeta {
+            data_version: DATA_VERSION as u32,
+            raw_len: u32::try_from(nbt.len()).unwrap_or(u32::MAX),
+            checksum: 0,
+            status: RecordMeta::STATUS_UNKNOWN,
+            flags: 0,
+        };
+        Ok((meta, Arc::from(zstd_compress(&nbt, self.level)?)))
+    }
+
     fn chunks_per_job(&self) -> usize {
         // ~80 µs per chunk with zstd 3 (#25 measurements): jobs of about 1 ms.
         12
@@ -540,6 +568,31 @@ mod tests {
         for y in 0..chunk.chunk.sections().len() as i32 {
             assert_eq!(name(anvil.info(), &chunk, y), name(&info, &back, y));
         }
+    }
+
+    /// Entities keep their stored order through an own-format entities record.
+    #[test]
+    fn entities_keep_their_order() {
+        let chunks = golden();
+        let anvil = codec(&chunks);
+        let own = OwnCodec::new(anvil.info(), DEFAULT_LEVEL);
+        let (pos, bytes, _) = &chunks[0];
+        let mut chunk = anvil.read_bytes(*pos, bytes).unwrap();
+        chunk.entities = (0..5)
+            .map(|i| {
+                let mut entity = vanillite_nbt::Compound::new();
+                entity.insert("id", "minecraft:pig");
+                entity.insert("Age", i);
+                let mut nbt = Vec::new();
+                vanillite_nbt::write::write_network_compound(&entity, &mut nbt).unwrap();
+                Arc::from(nbt)
+            })
+            .collect();
+        let (meta, record) = own.encode_entities(&chunk).unwrap();
+        assert_eq!(
+            own.decode_entities(*pos, &meta, &record).unwrap(),
+            chunk.entities
+        );
     }
 
     /// A damaged or truncated record is an error, never a panic.

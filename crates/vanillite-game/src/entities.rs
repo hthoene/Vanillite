@@ -215,6 +215,21 @@ impl Entities {
     }
 }
 
+/// The tick loop's check of an entity in the tick order (`ServerLevel.tick`): players always
+/// tick, other entities only in entity ticking range (`inEntityTickingRange`).
+pub fn in_ticking_range(level: &crate::level::Level, id: EntityId) -> bool {
+    level.entities.store.get(id).is_some_and(|entity| {
+        entity.kind() == ids::PLAYER || {
+            let pos = entity.pos();
+            let chunk = vanillite_base::ChunkPos::new(
+                vanillite_base::math::floor(pos.x) >> 4,
+                vanillite_base::math::floor(pos.z) >> 4,
+            );
+            level.chunks.in_entity_ticking_range(chunk)
+        }
+    })
+}
+
 /// `tickNonPassenger` of the non-player entity kinds that tick: the one dispatch the world tick
 /// and the scenario world share.
 pub fn tick_entity(level: &mut crate::level::Level, id: EntityId, kind: EntityTypeId) {

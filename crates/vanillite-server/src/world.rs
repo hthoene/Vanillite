@@ -326,6 +326,13 @@ impl ServerWorld {
         }
         self.update_player_tickets();
         let level = &mut self.level;
+        // `/save-off` (`ServerLevel.noSave`): chunks without tickets stay loaded.
+        level.chunks.set_no_save(
+            !ctx.global
+                .level
+                .auto_save
+                .load(std::sync::atomic::Ordering::Relaxed),
+        );
         level.tick_chunk_runtime();
         level.post_process();
         if ctx.runs_normally {
@@ -410,6 +417,9 @@ impl ServerWorld {
         let level = &mut self.level;
         let mut cursor = level.entities.store.tick_cursor();
         while let Some(id) = level.entities.store.next_to_tick(&mut cursor) {
+            if !vanillite_game::entities::in_ticking_range(level, id) {
+                continue;
+            }
             let Some(mut entity) = level.entities.store.get_mut(id) else {
                 continue;
             };

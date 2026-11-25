@@ -392,6 +392,7 @@ impl Codec {
             block_ticks,
             fluid_ticks,
             post_processing,
+            entities: Vec::new(),
             extra,
             generation: None,
         })
@@ -952,6 +953,51 @@ fn to_anvil<S: Strategy>(
             (palette, Some(words_to_longs(&packed)))
         }
     }
+}
+
+/// Decodes an entities record (`entities/`: `DataVersion`, `Position`, `Entities`) into one
+/// binary network-NBT compound per entity, in stored order.
+pub fn read_entities(pos: ChunkPos, root: &Compound) -> io::Result<Vec<Arc<[u8]>>> {
+    let version = root.get("DataVersion").and_then(Tag::as_i64).unwrap_or(0);
+    if version > i64::from(DATA_VERSION) {
+        return Err(invalid(format!(
+            "entities of chunk {pos:?} have data version {version}, newer than this server \
+             ({DATA_VERSION})"
+        )));
+    }
+    if let Some(Tag::IntArray(stored)) = root.get("Position")
+        && stored[..] != [pos.x, pos.z]
+    {
+        return Err(invalid(format!(
+            "entities of chunk {pos:?} are stored at {stored:?}"
+        )));
+    }
+    let mut out = Vec::new();
+    if let Some(Tag::List(list)) = root.get("Entities") {
+        for entity in list.0.iter().filter_map(Tag::as_compound) {
+            let mut nbt = Vec::new();
+            vanillite_nbt::write::write_network_compound(entity, &mut nbt).map_err(nbt_err)?;
+            out.push(nbt.into());
+        }
+    }
+    Ok(out)
+}
+
+/// Encodes the entities of a chunk as an entities record (`EntityStorage.storeEntities`).
+pub fn write_entities(pos: ChunkPos, entities: &[Arc<[u8]>]) -> io::Result<Compound> {
+    let mut list = Vec::with_capacity(entities.len());
+    for entity in entities {
+        if let Some(tag) = vanillite_nbt::read::read_network(&mut &entity[..], &mut Budget::file())
+            .map_err(nbt_err)?
+        {
+            list.push(tag);
+        }
+    }
+    let mut root = Compound::new();
+    root.insert("DataVersion", DATA_VERSION);
+    root.insert("Position", Tag::IntArray(vec![pos.x, pos.z]));
+    root.insert("Entities", List(list));
+    Ok(root)
 }
 
 #[cfg(test)]

@@ -63,6 +63,15 @@ impl RecordKey {
             stream: Stream::Chunk,
         }
     }
+
+    /// The entities record of `pos`.
+    pub const fn entities(dimension: DimensionId, pos: ChunkPos) -> Self {
+        RecordKey {
+            dimension,
+            pos,
+            stream: Stream::Entities,
+        }
+    }
 }
 
 /// Metadata kept next to a record. Fields a format does not store are 0
@@ -252,6 +261,26 @@ pub trait ChunkCodec: Send + Sync {
     /// Encodes a chunk into a record.
     fn encode(&self, chunk: &ProtoChunk) -> io::Result<(RecordMeta, Arc<[u8]>)>;
 
+    /// Decodes an entities record: one binary network-NBT compound per entity, in stored
+    /// order. Default: the format keeps no entities.
+    fn decode_entities(
+        &self,
+        _pos: ChunkPos,
+        _meta: &RecordMeta,
+        _bytes: &[u8],
+    ) -> io::Result<Vec<Arc<[u8]>>> {
+        Ok(Vec::new())
+    }
+
+    /// Encodes the entities of a chunk ([`ProtoChunk::entities`]) into a record. Default: the
+    /// format keeps no entities.
+    fn encode_entities(&self, chunk: &ProtoChunk) -> io::Result<(RecordMeta, Arc<[u8]>)> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("chunk {:?}: this world format keeps no entities", chunk.pos),
+        ))
+    }
+
     /// Chunks per encode job, so one job takes about 1 ms (compute-pool rule).
     fn chunks_per_job(&self) -> usize {
         4
@@ -269,6 +298,48 @@ impl ChunkStore for NullStore {
             let result = match op {
                 StoreOp::Get(_) | StoreOp::Meta(_) => StoreResult::Missing,
                 StoreOp::Put { .. } | StoreOp::Delete(_) => StoreResult::Done,
+            };
+            to.post(token, index, result);
+        }
+    }
+
+    fn cancel(&self, _: Token) {}
+}
+
+/// A store that keeps its records in memory (tests and scenario worlds): writes take effect
+/// at once, every commit succeeds.
+#[derive(Debug, Default)]
+pub struct MemoryStore {
+    records: std::sync::Mutex<std::collections::HashMap<RecordKey, Record>>,
+}
+
+/// A stored record: its metadata and bytes.
+type Record = (RecordMeta, Arc<[u8]>);
+
+impl ChunkStore for MemoryStore {
+    fn submit(&self, token: Token, ops: Vec<StoreOp>, _: Priority, to: CompletionTarget) {
+        let mut records = self
+            .records
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for (index, op) in ops.into_iter().enumerate() {
+            let result = match op {
+                StoreOp::Get(key) => match records.get(&key) {
+                    Some((meta, bytes)) => StoreResult::Record(*meta, Arc::clone(bytes)),
+                    None => StoreResult::Missing,
+                },
+                StoreOp::Meta(key) => match records.get(&key) {
+                    Some((meta, _)) => StoreResult::Meta(*meta),
+                    None => StoreResult::Missing,
+                },
+                StoreOp::Put { key, meta, bytes } => {
+                    records.insert(key, (meta, bytes));
+                    StoreResult::Done
+                }
+                StoreOp::Delete(key) => {
+                    records.remove(&key);
+                    StoreResult::Done
+                }
             };
             to.post(token, index, result);
         }
@@ -297,6 +368,10 @@ impl ChunkCodec for NullCodec {
             },
             Arc::from([]),
         ))
+    }
+
+    fn encode_entities(&self, _: &ProtoChunk) -> io::Result<(RecordMeta, Arc<[u8]>)> {
+        Ok((RecordMeta::default(), Arc::from([])))
     }
 
     fn chunks_per_job(&self) -> usize {

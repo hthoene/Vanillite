@@ -1,0 +1,113 @@
+{
+  "description": "A falling block entity is saved with its chunk's entities when every chunk unloads mid-fall and continues falling with its stored motion when they load again.",
+  "tier": "fast",
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      2,
+      -40,
+      0
+    ]
+  ],
+  "ticks": 40,
+  "actions": [
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        1,
+        -42,
+        0
+      ],
+      "block": "minecraft:sand"
+    },
+    {
+      "tick": 10,
+      "op": "unforce",
+      "chunks": [
+        [
+          -1,
+          -1
+        ],
+        [
+          -1,
+          0
+        ],
+        [
+          -1,
+          1
+        ],
+        [
+          0,
+          -1
+        ],
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          -1
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          1,
+          1
+        ]
+      ]
+    },
+    {
+      "tick": 13,
+      "op": "force",
+      "chunks": [
+        [
+          -1,
+          -1
+        ],
+        [
+          -1,
+          0
+        ],
+        [
+          -1,
+          1
+        ],
+        [
+          0,
+          -1
+        ],
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          -1
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          1,
+          1
+        ]
+      ]
+    }
+  ]
+}
