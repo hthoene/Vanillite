@@ -134,6 +134,11 @@ impl Kind {
     }
 
     /// A monster (`Monster`), else an animal.
+    /// `AgeableMob`: animals grow up and breed.
+    pub fn ageable(self) -> bool {
+        matches!(self, Kind::Cow | Kind::Pig | Kind::Sheep | Kind::Chicken)
+    }
+
     pub fn is_monster(self) -> bool {
         matches!(
             self,
@@ -439,6 +444,8 @@ pub fn register_goals(m: &mut MobData) {
             g.add(7, Goal::stroll_with(1.0, 0.0));
             g.add(8, Goal::look_at_player(8.0));
             g.add(8, Goal::random_look());
+            g.add(10, Goal::EndermanLeaveBlock);
+            g.add(11, Goal::EndermanTakeBlock);
             tg.add(
                 1,
                 Goal::EndermanStare {
@@ -457,33 +464,53 @@ pub fn register_goals(m: &mut MobData) {
             m.nav.can_float = true;
         }
         Kind::Cow | Kind::Pig | Kind::Sheep | Kind::Chicken => {
-            let (panic, follow) = match m.kind {
-                Kind::Cow => (2.0, 1.25),
-                Kind::Pig => (1.25, 1.1),
-                Kind::Sheep => (1.25, 1.1),
-                _ => (1.4, 1.1),
+            use super::goals::TemptItems;
+            let follow = |speed| Goal::FollowParent {
+                speed,
+                parent: None,
+                recalc: 0,
             };
             g.add(0, Goal::Float);
-            g.add(1, Goal::panic(panic));
-            let follow_prio = if m.kind == Kind::Pig { 5 } else { 4 };
-            g.add(
-                follow_prio,
-                Goal::FollowParent {
-                    speed: follow,
-                    parent: None,
-                    recalc: 0,
-                },
-            );
-            if m.kind == Kind::Sheep {
-                g.add(5, Goal::EatBlock { tick: 0 });
+            match m.kind {
+                Kind::Cow => {
+                    g.add(1, Goal::panic(2.0));
+                    g.add(2, Goal::breed(1.0));
+                    g.add(3, Goal::tempt(1.25, TemptItems::Food));
+                    g.add(4, follow(1.25));
+                    g.add(5, Goal::stroll(1.0));
+                    g.add(6, Goal::look_at_player(6.0));
+                    g.add(7, Goal::random_look());
+                }
+                Kind::Pig => {
+                    g.add(1, Goal::panic(1.25));
+                    g.add(3, Goal::breed(1.0));
+                    g.add(4, Goal::tempt(1.2, TemptItems::CarrotOnAStick));
+                    g.add(4, Goal::tempt(1.2, TemptItems::Food));
+                    g.add(5, follow(1.1));
+                    g.add(6, Goal::stroll(1.0));
+                    g.add(7, Goal::look_at_player(6.0));
+                    g.add(8, Goal::random_look());
+                }
+                Kind::Sheep => {
+                    g.add(1, Goal::panic(1.25));
+                    g.add(2, Goal::breed(1.0));
+                    g.add(3, Goal::tempt(1.1, TemptItems::Food));
+                    g.add(4, follow(1.1));
+                    g.add(5, Goal::EatBlock { tick: 0 });
+                    g.add(6, Goal::stroll(1.0));
+                    g.add(7, Goal::look_at_player(6.0));
+                    g.add(8, Goal::random_look());
+                }
+                _ => {
+                    g.add(1, Goal::panic(1.4));
+                    g.add(2, Goal::breed(1.0));
+                    g.add(3, Goal::tempt(1.0, TemptItems::Food));
+                    g.add(4, follow(1.1));
+                    g.add(5, Goal::stroll(1.0));
+                    g.add(6, Goal::look_at_player(6.0));
+                    g.add(7, Goal::random_look());
+                }
             }
-            let stroll_prio = match m.kind {
-                Kind::Pig | Kind::Sheep => 6,
-                _ => 5,
-            };
-            g.add(stroll_prio, Goal::stroll(1.0));
-            g.add(stroll_prio + 1, Goal::look_at_player(6.0));
-            g.add(stroll_prio + 2, Goal::random_look());
             m.nav.can_float = true;
         }
         Kind::Guardian | Kind::ElderGuardian | Kind::Wither | Kind::EnderDragon | Kind::Warden => {}
@@ -603,7 +630,7 @@ pub fn play_sound(t: &mut Tick<'_, '_>, sound: &str, volume: f32, pitch: f32) {
     }
     let pos = t.pos();
     let source = t.mob_ref().kind.sound_source();
-    let seed = t.mob().random.next_long();
+    let seed = crate::survival::sound_seed();
     crate::survival::play_sound(t.env.out, None, pos, sound, source, volume, pitch, seed);
 }
 
@@ -718,6 +745,16 @@ pub fn ai_step(t: &mut Tick<'_, '_>) {
         }
         if m.in_love > 0 {
             m.in_love -= 1;
+        }
+        if m.forced_age_timer > 0 {
+            m.forced_age_timer -= 1;
+        }
+        // `ItemBasedSteering.tickBoost`.
+        if m.boosting {
+            m.boost_time += 1;
+            if m.boost_time > m.boost_total {
+                m.boosting = false;
+            }
         }
         let baby = m.age < 0;
         if baby != m.baby {
@@ -867,11 +904,7 @@ pub fn is_stared_at_by(t: &Tick<'_, '_>, player: EntityId) -> bool {
     let rot = e.rot();
     let eye = e.pos().y + f64::from(e.kind().info().eye_height);
     // `getViewVector`.
-    let pitch = f64::from(rot.x_rot).to_radians();
-    let yaw = f64::from(-rot.y_rot).to_radians();
-    let (yc, ys) = (yaw.cos(), yaw.sin());
-    let (pc, ps) = (pitch.cos(), pitch.sin());
-    let view = Vec3::new(ys * pc, -ps, yc * pc).normalize();
+    let view = super::view_vector(rot.x_rot, rot.y_rot).normalize();
     let p = t.pos();
     let to = Vec3::new(p.x - e.pos().x, t.eye_y() - eye, p.z - e.pos().z);
     let dist = to.length_sqr().sqrt();
@@ -949,7 +982,7 @@ fn teleport_to(
         m.nav.stop();
         m.target_change_time = m.tick_count;
     }
-    let seed = env.random.next_long();
+    let seed = crate::survival::sound_seed();
     crate::survival::play_sound(
         env.out,
         None,
@@ -1014,6 +1047,26 @@ pub fn living_flags(m: &MobData) -> u8 {
     u8::from(m.using_item >= 0)
 }
 
+/// The wool of each sheep colour (`DyeColor` order).
+pub const SHEEP_WOOL: [&str; 16] = [
+    "minecraft:white_wool",
+    "minecraft:orange_wool",
+    "minecraft:magenta_wool",
+    "minecraft:light_blue_wool",
+    "minecraft:yellow_wool",
+    "minecraft:lime_wool",
+    "minecraft:pink_wool",
+    "minecraft:gray_wool",
+    "minecraft:light_gray_wool",
+    "minecraft:cyan_wool",
+    "minecraft:purple_wool",
+    "minecraft:blue_wool",
+    "minecraft:brown_wool",
+    "minecraft:green_wool",
+    "minecraft:red_wool",
+    "minecraft:black_wool",
+];
+
 /// One loot entry: an item with a uniform count, smelted when the mob burns.
 struct Drop {
     item: &'static str,
@@ -1046,24 +1099,6 @@ const fn meat(item: &'static str, min: i32, max: i32, smelted: &'static str) -> 
 /// The items of `entities/<kind>` of the 26.3 loot tables without looting: one pool per
 /// entry. `killed_by_player`, `on_fire` and the sheep's wool decide the conditional parts.
 pub fn death_loot(m: &mut MobData, killed_by_player: bool) -> Vec<crate::item::ItemStack> {
-    const SHEEP_WOOL: [&str; 16] = [
-        "minecraft:white_wool",
-        "minecraft:orange_wool",
-        "minecraft:magenta_wool",
-        "minecraft:light_blue_wool",
-        "minecraft:yellow_wool",
-        "minecraft:lime_wool",
-        "minecraft:pink_wool",
-        "minecraft:gray_wool",
-        "minecraft:light_gray_wool",
-        "minecraft:cyan_wool",
-        "minecraft:purple_wool",
-        "minecraft:blue_wool",
-        "minecraft:brown_wool",
-        "minecraft:green_wool",
-        "minecraft:red_wool",
-        "minecraft:black_wool",
-    ];
     let pools: &[Drop] = match m.kind {
         Kind::Zombie => &[drop("minecraft:rotten_flesh", 0, 2)],
         Kind::Skeleton => &[drop("minecraft:arrow", 0, 2), drop("minecraft:bone", 0, 2)],
@@ -1137,4 +1172,79 @@ pub fn death_loot(m: &mut MobData, killed_by_player: bool) -> Vec<crate::item::I
         _ => {}
     }
     out
+}
+
+/// `EndermanLeaveBlockGoal.tick`: puts the carried block down on a full block nearby.
+pub fn enderman_leave_block(t: &mut Tick<'_, '_>) {
+    let p = t.pos();
+    let m = t.mob();
+    let x = vanillite_base::math::floor(p.x - 1.0 + m.random.next_double() * 2.0);
+    let y = vanillite_base::math::floor(p.y + m.random.next_double() * 2.0);
+    let z = vanillite_base::math::floor(p.z - 1.0 + m.random.next_double() * 2.0);
+    let pos = BlockPos::new(x, y, z);
+    let Some(carried) = t.mob_ref().carried else {
+        return;
+    };
+    let here = t.level.block(pos);
+    let below_pos = BlockPos::new(x, y - 1, z);
+    let below = t.level.block(below_pos);
+    let full_below = below.collision_shape().iter().any(|b| {
+        b[0] <= 0.0 && b[1] <= 0.0 && b[2] <= 0.0 && b[3] >= 1.0 && b[4] >= 1.0 && b[5] >= 1.0
+    });
+    if !here.is_air()
+        || below.is_air()
+        || below.block() == vanillite_data::block::ids::BEDROCK
+        || !full_below
+        || !t.level.can_survive(carried, pos)
+    {
+        return;
+    }
+    let cell = vanillite_base::Aabb::of_block(pos);
+    let mut occupied = false;
+    let me = t.id;
+    t.ents.store.for_each_in(&cell, false, |id| {
+        if id != me {
+            occupied = true;
+        }
+    });
+    if occupied {
+        return;
+    }
+    t.cx.actions.push(WorldAction::SetBlock(pos, carried, 3));
+    t.mob().carried = None;
+    t.core_mut().mark_data_dirty();
+}
+
+/// `EndermanTakeBlockGoal.tick`: picks up a holdable block it can reach.
+pub fn enderman_take_block(t: &mut Tick<'_, '_>) {
+    let p = t.pos();
+    let m = t.mob();
+    let x = vanillite_base::math::floor(p.x - 2.0 + m.random.next_double() * 4.0);
+    let y = vanillite_base::math::floor(p.y + m.random.next_double() * 3.0);
+    let z = vanillite_base::math::floor(p.z - 2.0 + m.random.next_double() * 4.0);
+    let pos = BlockPos::new(x, y, z);
+    let state = t.level.block(pos);
+    let holdable = crate::player::play::game_data()
+        .is_some_and(|d| d.enderman_holdable.contains(&state.block().0));
+    if !holdable {
+        return;
+    }
+    let from = vanillite_base::Vec3::new(
+        f64::from(vanillite_base::math::floor(p.x)) + 0.5,
+        f64::from(y) + 0.5,
+        f64::from(vanillite_base::math::floor(p.z)) + 0.5,
+    );
+    let to = vanillite_base::Vec3::new(f64::from(x) + 0.5, f64::from(y) + 0.5, f64::from(z) + 0.5);
+    let reached = match super::physics::clip(t.level, from, to) {
+        Some((hit, _)) => hit == pos,
+        None => true,
+    };
+    if !reached {
+        return;
+    }
+    // `removeBlock(pos, false)`.
+    t.cx.actions
+        .push(WorldAction::SetBlock(pos, BlockState::AIR, 3));
+    t.mob().carried = Some(state.block().default_state());
+    t.core_mut().mark_data_dirty();
 }

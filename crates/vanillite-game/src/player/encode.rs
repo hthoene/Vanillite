@@ -29,6 +29,7 @@ pub type Encoded = Vec<Arc<SharedPacket>>;
 /// Entity data ids (`EntityDataAccessor` ids of 26.3).
 mod data_id {
     pub const SHARED_FLAGS: u8 = 0;
+    pub const CUSTOM_NAME: u8 = 2;
     pub const AIR_SUPPLY: u8 = 1;
     pub const POSE: u8 = 6;
     pub const ITEM_ENTITY_ITEM: u8 = 8;
@@ -36,6 +37,7 @@ mod data_id {
     pub const PLAYER_MAIN_HAND: u8 = 15;
     pub const TNT_FUSE: u8 = 8;
     pub const TNT_BLOCK_STATE: u8 = 9;
+    pub const EXPERIENCE_ORB_VALUE: u8 = 8;
     pub const PLAYER_MODE_CUSTOMISATION: u8 = 16;
     pub const PLAYER_ABSORPTION: u8 = 17;
     pub const PLAYER_SCORE: u8 = 18;
@@ -55,6 +57,9 @@ mod serializer {
     pub const BYTE: i32 = 0;
     pub const ITEM_STACK: i32 = 7;
     pub const INT: i32 = 1;
+    pub const STRING: i32 = 4;
+    pub const COMPONENT: i32 = 5;
+    pub const OPTIONAL_COMPONENT: i32 = 6;
     pub const FLOAT: i32 = 3;
     pub const BOOLEAN: i32 = 8;
     pub const BLOCK_STATE: i32 = 14;
@@ -79,6 +84,64 @@ fn pose_id(pose: Pose) -> i32 {
     #[allow(clippy::as_conversions)]
     let id = pose as u8;
     i32::from(id)
+}
+
+/// The synched data of a minecart (`VehicleEntity`, `AbstractMinecart` and the kinds).
+fn minecart_data(out: &mut Vec<u8>, m: &crate::minecart::MinecartData, all: bool) {
+    use crate::minecart::MinecartKind;
+    if all || m.hurt_time != 0 {
+        item(out, 8, serializer::INT, |o| write_varint(o, m.hurt_time));
+    }
+    if all || m.hurt_dir != 1 {
+        item(out, 9, serializer::INT, |o| write_varint(o, m.hurt_dir));
+    }
+    if all || m.damage != 0.0 {
+        item(out, 10, serializer::FLOAT, |o| {
+            o.extend_from_slice(&m.damage.to_be_bytes());
+        });
+    }
+    if all || m.display_state.is_some() {
+        item(out, 11, serializer::OPTIONAL_BLOCK_STATE, |o| {
+            write_varint(o, m.display_state.map_or(0, |s| i32::from(s.0)));
+        });
+    }
+    if all || m.display_offset != m.kind.default_display_offset() {
+        item(out, 12, serializer::INT, |o| {
+            write_varint(o, m.display_offset)
+        });
+    }
+    match m.kind {
+        MinecartKind::Furnace => {
+            if all || m.has_fuel {
+                item(out, 13, serializer::BOOLEAN, |o| {
+                    o.push(u8::from(m.has_fuel))
+                });
+            }
+        }
+        MinecartKind::CommandBlock => {
+            if all || !m.command.is_empty() {
+                item(out, 13, serializer::STRING, |o| {
+                    write_varint(o, i32::try_from(m.command.len()).unwrap_or(0));
+                    o.extend_from_slice(m.command.as_bytes());
+                });
+            }
+            let output = m
+                .extra
+                .get("LastOutput")
+                .and_then(crate::mob::nbt::tag_component);
+            if all || output.is_some() {
+                item(out, 14, serializer::COMPONENT, |o| match &output {
+                    Some(c) => o.extend_from_slice(c),
+                    // `CommonComponents.EMPTY`: an empty literal.
+                    None => {
+                        let empty = vanillite_nbt::Tag::String(String::new());
+                        let _ = vanillite_nbt::write::write_network(&empty, o);
+                    }
+                });
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Appends one data item.
@@ -112,6 +175,32 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
             });
         }
     }
+    let name = entities
+        .mob(entity.id())
+        .and_then(|m| m.custom_name.as_deref())
+        .or_else(|| {
+            entities
+                .boat(entity.id())
+                .and_then(|b| b.custom_name.as_deref())
+        })
+        .or_else(|| {
+            entities
+                .minecart(entity.id())
+                .and_then(|m| m.custom_name.as_deref())
+        });
+    if all || name.is_some() {
+        item(
+            &mut out,
+            data_id::CUSTOM_NAME,
+            serializer::OPTIONAL_COMPONENT,
+            |o| {
+                o.push(u8::from(name.is_some()));
+                if let Some(n) = name {
+                    o.extend_from_slice(n);
+                }
+            },
+        );
+    }
     let pose = entity.pose();
     if all || pose != Pose::Standing {
         item(&mut out, data_id::POSE, serializer::POSE, |o| {
@@ -119,6 +208,12 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
         });
     }
     if let Some(player) = player {
+        let living = crate::player::using::living_flags(player.survival.using_item);
+        if all || living != 0 {
+            item(&mut out, data_id::LIVING_FLAGS, serializer::BYTE, |o| {
+                o.push(living);
+            });
+        }
         // `LivingEntity` defines the health as 1.0 and sets it to the maximum afterwards.
         let health = player.survival.health;
         if all || health != 1.0 {
@@ -168,7 +263,37 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
     if let Some(special) = entities.special(entity.id()) {
         crate::mob::boss::special::entity_data(&mut out, special, all);
     }
-    if let Some(orb) = entities.orb(entity.id())
+    if let Some(b) = entities.boat(entity.id()) {
+        if all || b.hurt_time != 0 {
+            item(&mut out, 8, serializer::INT, |o| {
+                write_varint(o, b.hurt_time)
+            });
+        }
+        if all || b.hurt_dir != 1 {
+            item(&mut out, 9, serializer::INT, |o| {
+                write_varint(o, b.hurt_dir)
+            });
+        }
+        if all || b.damage != 0.0 {
+            item(&mut out, 10, serializer::FLOAT, |o| {
+                o.extend_from_slice(&b.damage.to_be_bytes());
+            });
+        }
+        if all || b.paddles.0 {
+            item(&mut out, 11, serializer::BOOLEAN, |o| {
+                o.push(u8::from(b.paddles.0))
+            });
+        }
+        if all || b.paddles.1 {
+            item(&mut out, 12, serializer::BOOLEAN, |o| {
+                o.push(u8::from(b.paddles.1))
+            });
+        }
+    }
+    if let Some(m) = entities.minecart(entity.id()) {
+        minecart_data(&mut out, m, all);
+    }
+    if let Some(orb) = entities.experience_orb(entity.id())
         && (all || orb.value != 0)
     {
         item(&mut out, data_id::ORB_VALUE, serializer::INT, |o| {
@@ -211,6 +336,19 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
                 },
             );
         }
+    }
+    if entity.kind() == ids::EXPERIENCE_ORB
+        && let Some(orb) = entities.experience_orb(entity.id())
+        && (all || orb.value != 0)
+    {
+        item(
+            &mut out,
+            data_id::EXPERIENCE_ORB_VALUE,
+            serializer::INT,
+            |o| {
+                write_varint(o, orb.value);
+            },
+        );
     }
     if entity.kind() == ids::ITEM
         && let Some(data) = entities.item(entity.id())
@@ -304,7 +442,14 @@ fn mob_data(out: &mut Vec<u8>, mob: &crate::mob::MobData, all: bool) {
                         item(out, data_id::KIND_18, serializer::BYTE, |o| o.push(wool));
                     }
                 }
-                Kind::Pig => variant(out, data_id::KIND_19, serializer::PIG_VARIANT, mob.variant),
+                Kind::Pig => {
+                    if all || mob.boost_total != 0 {
+                        item(out, data_id::KIND_18, serializer::INT, |o| {
+                            write_varint(o, mob.boost_total);
+                        });
+                    }
+                    variant(out, data_id::KIND_19, serializer::PIG_VARIANT, mob.variant);
+                }
                 Kind::Cow => variant(out, data_id::KIND_18, serializer::COW_VARIANT, mob.variant),
                 _ => variant(
                     out,
@@ -320,11 +465,19 @@ fn mob_data(out: &mut Vec<u8>, mob: &crate::mob::MobData, all: bool) {
 /// `set_equipment` with every non-empty equipment slot of a player (pairing data).
 fn equipment(entity: &EntityRef<'_>, entities: &Entities) -> Option<SetEquipment> {
     if let Some(mob) = entities.mob(entity.id()) {
+        let mut slots = Vec::new();
         // Skeletons hold their bow (`populateDefaultEquipmentSlots`).
-        let bow = vanillite_data::registry::ITEM.id("minecraft:bow")?;
-        return (mob.kind == crate::mob::Kind::Skeleton).then(|| SetEquipment {
+        if mob.kind == crate::mob::Kind::Skeleton {
+            let bow = vanillite_data::registry::ITEM.id("minecraft:bow")?;
+            slots.push((EquipmentSlot::MainHand.ordinal(), ItemStack::new(bow, 1)));
+        }
+        if mob.saddled {
+            let saddle = vanillite_data::registry::ITEM.id("minecraft:saddle")?;
+            slots.push((EquipmentSlot::Saddle.ordinal(), ItemStack::new(saddle, 1)));
+        }
+        return (!slots.is_empty()).then(|| SetEquipment {
             entity_id: entity.network_id().0,
-            slots: vec![(EquipmentSlot::MainHand.ordinal(), ItemStack::new(bow, 1))],
+            slots,
         });
     }
     let player = entities.player(entity.id())?;
@@ -389,7 +542,18 @@ pub fn encode_update(message: &Message, entities: &Entities) -> Option<Encoded> 
                 .as_ref()
                 .and_then(|e| entity_data(e, entities, false));
             let gear = entity.as_ref().and_then(|e| equipment(e, entities));
-            if data.is_none() && gear.is_none() {
+            // Passengers and the lead (`sendPairingData`).
+            let passengers = crate::riding::passengers_packet(entities, message.entity);
+            let riding = entities
+                .vehicle_of(message.entity)
+                .and_then(|v| crate::riding::passengers_packet(entities, v));
+            let link = crate::mob::tame::link_pairing_packet(entities, message.entity);
+            if data.is_none()
+                && gear.is_none()
+                && passengers.is_none()
+                && riding.is_none()
+                && link.is_none()
+            {
                 return Some(vec![add]);
             }
             // `sendPairingData` bundles the spawn with its data and equipment.
@@ -402,6 +566,12 @@ pub fn encode_update(message: &Message, entities: &Entities) -> Option<Encoded> 
             }
             if let Some(gear) = gear {
                 packets.push(SharedPacket::of(&gear));
+            }
+            for p in [passengers, riding].into_iter().flatten() {
+                packets.push(SharedPacket::of(&p));
+            }
+            if let Some(link) = link {
+                packets.push(SharedPacket::of(&link));
             }
             packets.push(SharedPacket::of(&BundleDelimiter));
             Some(packets)

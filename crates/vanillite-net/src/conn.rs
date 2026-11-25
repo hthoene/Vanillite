@@ -111,6 +111,8 @@ pub(crate) struct Conn {
     guard: Option<ConnectionGuard>,
     /// An in-process client that takes all chunks at once (Vanilla's `memoryConnection`).
     memory: bool,
+    /// Translates the packets of a client of an older version (multi-version layer).
+    adapter: Option<vanillite_multiversion::ServerboundHalf>,
 }
 
 impl Conn {
@@ -174,6 +176,7 @@ impl Conn {
             vouched,
             guard,
             memory: false,
+            adapter: None,
         }
     }
 
@@ -245,10 +248,20 @@ impl Conn {
     /// Receives and decodes the next packet, handling timeouts and keepalives while waiting.
     async fn recv<T>(&mut self, decode: fn(&[u8]) -> vanillite_protocol::Result<T>) -> Result<T> {
         loop {
+            // Packets the multi-version layer added to the last one come first.
+            if let Some(t) = self.adapter.as_mut().and_then(|a| a.pending()) {
+                return Ok(decode(t)?);
+            }
             if let Source::Tcp { decoder, .. } = &mut self.source
                 && let Some(frame) = decoder.next_frame()?
             {
-                return Ok(decode(frame)?);
+                match &mut self.adapter {
+                    None => return Ok(decode(frame)?),
+                    Some(a) => match a.translate(frame)? {
+                        Some(t) => return Ok(decode(t)?),
+                        None => continue,
+                    },
+                }
             }
             let read_deadline = self.last_read.checked_add(self.shared.config.read_timeout);
             let mut wake = [self.deadline, read_deadline].into_iter().flatten().min();
@@ -271,7 +284,12 @@ impl Conn {
                             if f.len() > max {
                                 return Err(Error::TooLong { what: "frame", len: f.len(), max }.into());
                             }
-                            return Ok(decode(&f)?);
+                            match &mut self.adapter {
+                                None => return Ok(decode(&f)?),
+                                Some(a) => if let Some(t) = a.translate(&f)? {
+                                    return Ok(decode(t)?);
+                                },
+                            }
                         }
                     }
                 }
@@ -358,10 +376,20 @@ impl Conn {
     async fn drive(&mut self) -> Result<()> {
         let ServerboundHandshake::Intention(hs) = self.recv(ServerboundHandshake::decode).await?;
         match hs.intent {
-            Intent::Status => self.status().await,
+            Intent::Status => self.status(hs.protocol_version).await,
             Intent::Login | Intent::Transfer => {
                 self.enter(State::Login, Some(self.shared.config.login_timeout));
-                if hs.protocol_version != vanillite_protocol::PROTOCOL_VERSION {
+                if hs.protocol_version != vanillite_protocol::PROTOCOL_VERSION
+                    && let Some(adapter) = self
+                        .shared
+                        .config
+                        .multiversion
+                        .adapter(hs.protocol_version, State::Login)
+                {
+                    let (serverbound, clientbound) = adapter.split();
+                    self.adapter = Some(serverbound);
+                    self.out.control(Out::Adapter(Box::new(clientbound)));
+                } else if hs.protocol_version != vanillite_protocol::PROTOCOL_VERSION {
                     let key = if hs.protocol_version < 754 {
                         "multiplayer.disconnect.outdated_client"
                     } else {
@@ -385,16 +413,23 @@ impl Conn {
         }
     }
 
-    async fn status(&mut self) -> Result<()> {
+    async fn status(&mut self, protocol: i32) -> Result<()> {
         self.enter(State::Status, Some(self.shared.config.status_timeout));
         let mut answered = false;
         loop {
             match self.recv(ServerboundStatus::decode).await? {
                 ServerboundStatus::StatusRequest(_) if !answered => {
                     answered = true;
-                    self.out.send(&status::StatusResponse {
-                        json: self.shared.status.get().to_string(),
-                    });
+                    let json = self.shared.status.get();
+                    // Clients of an accepted older version see the server as compatible.
+                    let json = if protocol != vanillite_protocol::PROTOCOL_VERSION
+                        && self.shared.config.multiversion.version(protocol).is_some()
+                    {
+                        vanillite_multiversion::status_json(&json, protocol)
+                    } else {
+                        json.to_string()
+                    };
+                    self.out.send(&status::StatusResponse { json });
                 }
                 ServerboundStatus::PingRequest(p) => {
                     self.out.send(&status::PongResponse { time: p.time });
@@ -630,7 +665,7 @@ impl Conn {
 
     async fn play(&mut self, profile: GameProfile, client_info: ClientInfo) -> Result<()> {
         self.enter(State::Play, None);
-        let (tx, rx) = std::sync::mpsc::sync_channel(self.shared.config.max_inbound_packets);
+        let (tx, rx) = vanillite_protocol::inbound_queue(self.shared.config.max_inbound_packets);
         let joined = Joined {
             profile,
             client_info,
@@ -667,7 +702,7 @@ impl Conn {
                 ServerboundPlay::Unhandled { .. } => {}
                 packet => {
                     seq = seq.wrapping_add(1);
-                    if tx.try_send(Inbound { seq, packet }).is_err() {
+                    if !tx.try_send(Inbound { seq, packet }) {
                         // The world is not draining this connection fast enough (SEC-17).
                         return Err(kick(Component::translatable(
                             "disconnect.exceeded_packet_rate",

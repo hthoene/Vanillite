@@ -4,6 +4,7 @@
 //! cargo xtask vanilla update [<version>] [--jar <server.jar>]
 //! cargo xtask version check
 //! cargo xtask version update <version> [--final] [--bulk] [--no-test]
+//! cargo xtask multiversion add <version>
 //! cargo xtask codegen [--check]
 //! cargo xtask golden check
 //! cargo xtask golden regen [--all] [--bulk] [<name>...]
@@ -14,14 +15,18 @@
 //! cargo xtask docker [--push] [--in-docker] [--tag <tag>]...
 //! cargo xtask egg [--check] | egg smoke [--image <ref>]
 //! cargo xtask loadtest [--server vanillite|paper|both] [--steps <n,...>] [--hold <s>] ...
+//! cargo xtask bench all|<scenario>... [--servers <a,b>] [--publish] [--no-deploy]
+//! cargo xtask bench list | report | nightly [--no-push]
 //! ```
 
+mod bench;
 mod codegen;
 mod devenv;
 mod docker;
 mod egg;
 mod golden;
 mod loadtest;
+mod multiversion;
 mod normalize;
 mod vanilla;
 mod version;
@@ -50,8 +55,15 @@ pub const USAGE: &str = "usage:
       target/version/<version>/change-report.md (protocol, packet fields, registries, blocks,
       items, entities, data pack, goldens, failing tests, affected code areas). --final does it
       in this checkout instead (only for releases): the real switch. --no-test skips the tests.
+  cargo xtask multiversion add <version>...
+      Extract older versions (releases or snapshots, 1.20.5 and later; obfuscated jars are
+      remapped with Mojang's mappings) and keep what the multi-version layer needs to translate
+      between each and its successor in data/multiversion/<version>/ (packets, packet shapes,
+      registries, blocks, entity types, synchronised registry entries), then run codegen.
+      `version update --final` keeps the outgoing version the same way.
   cargo xtask codegen [--check]
-      Generate crates/vanillite-data/src/generated/ from data/vanilla/.
+      Generate crates/vanillite-data/src/generated/ from data/vanilla/ and the adapter tables
+      crates/vanillite-multiversion/src/generated/ from data/multiversion/.
       --check fails if the committed files are not current.
   cargo xtask golden check
       Fail if a repository golden (worldgen, data, fast scenarios) is missing or stale: its key
@@ -101,15 +113,34 @@ pub const USAGE: &str = "usage:
       Movement (default for all steps: --movement, per step: <players>@<movement>; counts
       must not decrease): random (walk around the spawn) or straight:<speed>[:<turn s>],
       straight flight at y 300 in a random direction per bot at <speed> blocks/s or a preset
-      (walk 4.317, sprint 5.612, elytra 33.5, boat 72.7), optionally turning every <turn s>.
+      (walk 4.317, sprint 5.612, elytra 33.5, boat 72.7), optionally turning every <turn s>;
+      spread:<radius> (fly to a random point within the radius and stay) or still.
       E.g. --steps 50,50@straight:boat:30. Steps also report chunks/s received by the bots,
-      teleports (rejected moves) and the server's disk reads and read calls per player.
+      holes (missing chunks within 2 chunks of a bot), teleports (rejected moves), the
+      server's disk reads and read calls per player, and RSS per player above the idle RSS.
       Writes target/loadtest/<time>/{vanillite,paper}.json, report.md and chart.svg, keeps
       results of clean checkouts under /opt/vanillite/bench/results on the test server and
       fails when p95 MSPT or RSS per player of a step is more than 10 % above the median of
       the last 5 runs (--no-gate skips the check).
   cargo xtask loadtest report <run.json>...
-      Writes report.md and chart.svg for earlier runs next to the first file.";
+      Writes report.md and chart.svg for earlier runs next to the first file.
+  cargo xtask bench all|<scenario>... [--servers <server,...>] [--publish] [--no-deploy]
+      Benchmark suite (`bench list` shows the scenarios): every scenario against Vanillite
+      (vanillite@30901, deployed from this checkout; also with the paper rule profile), Paper,
+      Vanilla and Pumpkin (taking turns on 30900), or the proxies Velocity and vanillite-proxy,
+      with the same settings and a new world each (`vanillite-bench` on the test server). Player
+      load from tools/loadbot here; command-built scenarios (redstone, mobs, items, hoppers,
+      TNT, fluids, light) use console commands and one observer bot. A server that lacks a
+      command is reported as n/a. Writes target/bench/<time>/results.json and keeps the raw
+      results under /opt/vanillite/bench/suite on the test server; --publish also updates
+      benchmarks/results/latest.json and history.json and regenerates benchmarks/README.md.
+      --servers limits the run to these servers; --no-deploy uses the binaries installed there.
+  cargo xtask bench report
+      Regenerates benchmarks/README.md from benchmarks/results/.
+  cargo xtask bench nightly [--no-push]
+      When origin/dev has code newer than the published results: runs `bench all --publish` in
+      the worktree target/bench/tree and commits the results on the branch
+      bench/results-<date> (pushed unless --no-push; then hand it to the normal landing).";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -118,6 +149,7 @@ fn main() -> ExitCode {
         ["vanilla", "update", rest @ ..] => vanilla_update(rest),
         ["version", "check"] => version::check(&repo_root()),
         ["version", "update", rest @ ..] => version::update(&repo_root(), rest),
+        ["multiversion", "add", rest @ ..] => multiversion::add(&repo_root(), rest),
         ["codegen"] => codegen::run(&repo_root(), false),
         ["codegen", "--check"] => codegen::run(&repo_root(), true),
         ["golden", "check"] => golden::check(&repo_root()),
@@ -129,6 +161,7 @@ fn main() -> ExitCode {
         ["docker", rest @ ..] => docker::run_docker(&repo_root(), rest),
         ["egg", rest @ ..] => egg::run(&repo_root(), rest),
         ["loadtest", rest @ ..] => loadtest::run(&repo_root(), rest),
+        ["bench", rest @ ..] => bench::run(&repo_root(), rest),
         _ => Err(USAGE.to_owned()),
     };
     match result {

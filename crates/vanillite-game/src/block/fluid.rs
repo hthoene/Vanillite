@@ -153,7 +153,7 @@ fn fluid_state(fluid: u16, amount: i32, falling: bool) -> FluidState {
 }
 
 /// `fluidState.getHeight(level, pos)`.
-fn height(level: &Level, fluid: FluidState, pos: BlockPos) -> f32 {
+pub(crate) fn height(level: &Level, fluid: FluidState, pos: BlockPos) -> f32 {
     match Kind::of(fluid.info().fluid) {
         Some(kind) if kind.is_same(level.fluid(pos.above())) => 1.0,
         _ => fluid.info().own_height,
@@ -598,6 +598,11 @@ pub fn place_liquid(
 /// `fluidState.is(FluidTags.WATER)`.
 pub fn is_water(fluid: FluidState) -> bool {
     Kind::Water.is_same(fluid)
+}
+
+/// `fluidState.is(FluidTags.LAVA)`.
+pub fn is_lava(fluid: FluidState) -> bool {
+    Kind::Lava.is_same(fluid)
 }
 
 /// The `waterlogged` property.

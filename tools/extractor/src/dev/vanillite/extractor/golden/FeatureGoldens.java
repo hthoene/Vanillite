@@ -170,6 +170,13 @@ public final class FeatureGoldens {
     // A forest with many overlapping trees and ore blobs across chunk borders, in both orders.
     new DecorationArea(OVERWORLD, -578941029922802438L, -7, -12, 3, false),
     new DecorationArea(OVERWORLD, -578941029922802438L, -7, -12, 3, true),
+    // Nether areas where blobs, columns, huge fungi and vines overlap across chunk borders (basalt
+    // deltas, crimson forest), in both orders.
+    new DecorationArea(NETHER, -578941029922802438L, -9, 21, 3, false),
+    new DecorationArea(NETHER, -578941029922802438L, -9, 21, 3, true),
+    new DecorationArea(NETHER, -578941029922802438L, 1, -15, 2, false),
+    new DecorationArea(NETHER, -578941029922802438L, -1, 16, 2, false),
+    new DecorationArea(NETHER, -578941029922802438L, -20, 13, 2, true),
   };
 
   /**

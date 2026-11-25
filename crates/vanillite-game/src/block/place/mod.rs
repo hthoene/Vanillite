@@ -577,6 +577,17 @@ fn block_state_for_placement(
 }
 
 /// `BlockState.canSurvive(level, pos)`.
+/// `Direction.fromYRot(yRot)`: the horizontal direction a player with this yaw faces.
+pub fn horizontal_direction_of(y_rot: f32) -> Direction {
+    util::from_y_rot(f64::from(y_rot))
+}
+
+/// `BaseFireBlock.getState(level, pos)`: soul fire on soul fire bases, else fire facing its
+/// flammable neighbours.
+pub fn fire_state(level: &dyn BlockReader, pos: BlockPos) -> BlockState {
+    functional::base_fire_state(level, pos)
+}
+
 pub fn can_survive(state: BlockState, pos: BlockPos, level: &dyn BlockReader) -> bool {
     match group(state.kind()) {
         Group::Default => true,
@@ -752,6 +763,12 @@ pub fn placed_extra(
         Group::Plants => plants::placed_extra(state, pos, ctx, level, out),
         Group::Functional => functional::placed_extra(state, pos, ctx, level, out),
     }
+}
+
+/// `BaseFireBlock.getState(level, pos)`: soul fire on soul fire bases, else fire with its
+/// faces.
+pub fn base_fire_state(level: &dyn BlockReader, pos: BlockPos) -> BlockState {
+    functional::base_fire_state(level, pos)
 }
 
 /// `MossyCarpetBlock.setPlacedBy`: the carpet to set (flags 3) above a pale moss carpet `state`

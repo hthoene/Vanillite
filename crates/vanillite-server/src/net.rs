@@ -70,15 +70,12 @@ fn registry_index(packs: Option<&LoadedPacks>, registry: &str, entry: &str) -> u
         .unwrap_or(0)
 }
 
-/// Loads the data packs and prepares each world's players' side.
-pub(crate) fn prepare(
-    config: &Config,
-    dir: &Path,
-    level_dir: &Path,
+/// Loads the data packs (the Vanilla pack from the cache in `dir`, downloaded once).
+pub(crate) fn load_packs(
     pack: &VanillaPack,
-    player_store: &PlayerDataStore,
-) -> Result<Prepared, StartError> {
-    let packs = match pack {
+    dir: &Path,
+) -> Result<Option<LoadedPacks>, StartError> {
+    Ok(match pack {
         VanillaPack::None => None,
         VanillaPack::Download | VanillaPack::Jar(_) => {
             let jar = match pack {
@@ -92,7 +89,18 @@ pub(crate) fn prepare(
                 .map_err(|e| StartError::Io(format!("data packs: {e}")))?;
             Some(packs)
         }
-    };
+    })
+}
+
+/// Loads the data packs and prepares each world's players' side.
+pub(crate) fn prepare(
+    config: &Config,
+    dir: &Path,
+    level_dir: &Path,
+    pack: &VanillaPack,
+    player_store: &PlayerDataStore,
+) -> Result<Prepared, StartError> {
+    let packs = load_packs(pack, dir)?;
     let configuration = match &packs {
         Some(packs) => ConfigurationData::from_packs(packs, &["minecraft:vanilla"]),
         None => ConfigurationData::new(
@@ -232,6 +240,10 @@ impl NetState {
                 config.server.proxy.velocity_secret.as_bytes(),
             ),
             allow_direct_connections: config.server.proxy.allow_direct_connections,
+            multiversion: vanillite_multiversion::Accepted::parse(
+                &config.server.multiversion.versions,
+            )
+            .map_err(|e| StartError::Io(format!("vanillite.toml multiversion.versions: {e}")))?,
             ..NetConfig::default()
         };
         let status = StatusInfo {
@@ -306,6 +318,7 @@ fn start_bedrock(
     let bedrock = vanillite_bedrock::BedrockConfig {
         bind,
         online_mode: b.online_mode,
+        min_protocol: i32::try_from(b.min_protocol).unwrap_or(i32::MAX),
         name_prefix: b.name_prefix.clone(),
         world_name: p.level_name.clone(),
         max_connections: u32::try_from(p.max_players).unwrap_or(0).saturating_add(64),

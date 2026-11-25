@@ -12,11 +12,26 @@ final class Registries {
 
   static JsonObject extract() {
     JsonObject root = new JsonObject();
-    root.add("world", keys(RegistryDataLoader.WORLD_REGISTRIES));
-    root.add("dimension", keys(RegistryDataLoader.DIMENSION_REGISTRIES));
-    root.add("reloadable", keys(RegistryDataLoader.RELOADABLE_REGISTRIES));
-    root.add("synchronized", keys(RegistryDataLoader.SYNCHRONIZED_REGISTRIES));
+    // By name, so the extractor also runs against older versions (multi-version data): 26.2
+    // has `WORLDGEN_REGISTRIES` and no reloadable list.
+    root.add("world", keys(list("WORLD_REGISTRIES", "WORLDGEN_REGISTRIES")));
+    root.add("dimension", keys(list("DIMENSION_REGISTRIES")));
+    root.add("reloadable", keys(list("RELOADABLE_REGISTRIES")));
+    root.add("synchronized", keys(list("SYNCHRONIZED_REGISTRIES")));
     return root;
+  }
+
+  @SuppressWarnings("unchecked")
+  private static List<RegistryDataLoader.RegistryData<?>> list(String... names) {
+    for (String name : names) {
+      try {
+        return (List<RegistryDataLoader.RegistryData<?>>)
+            RegistryDataLoader.class.getField(name).get(null);
+      } catch (ReflectiveOperationException e) {
+        // Try the next name.
+      }
+    }
+    return List.of();
   }
 
   private static JsonArray keys(List<RegistryDataLoader.RegistryData<?>> list) {

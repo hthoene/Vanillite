@@ -175,6 +175,17 @@ impl<S: Strategy> PalettedContainer<S> {
     /// count of the stored data; 0 means `Single(palette[0])`; `palette` is ignored when `bits` is
     /// the global bit count above the indirect range.
     pub fn from_parts(bits: u8, palette: &[u16], data: &[Word]) -> Result<Self, DecodeError> {
+        Self::from_parts_counted(bits, palette, data, &mut [0; 256])
+    }
+
+    /// [`from_parts`](Self::from_parts) that also counts how often each palette index occurs
+    /// in indirect data (`counts` starts zeroed; it stays untouched for other forms).
+    pub(crate) fn from_parts_counted(
+        bits: u8,
+        palette: &[u16],
+        data: &[Word],
+        counts: &mut [u32; 256],
+    ) -> Result<Self, DecodeError> {
         let global = S::global_count();
         let check_value = |value: u16| {
             if u32::from(value) < global {
@@ -204,14 +215,12 @@ impl<S: Strategy> PalettedContainer<S> {
                 for &value in palette {
                     check_value(value)?;
                 }
-                let mut bad = None;
+                // Indirect data has at most 8 bits: every index has a counter.
                 bits::for_each(data, bits, S::ENTRIES, |_, index| {
-                    if index as usize >= palette.len() {
-                        bad = Some(index);
-                    }
+                    counts[index as usize & 255] += 1;
                 });
-                if let Some(index) = bad {
-                    return Err(DecodeError::InvalidIndex(index));
+                if let Some(index) = counts[palette.len()..].iter().position(|&n| n > 0) {
+                    return Err(DecodeError::InvalidIndex((palette.len() + index) as u32));
                 }
                 Ok(Self::wrap(ContainerData::Indirect {
                     bits,
@@ -380,6 +389,17 @@ impl<S: Strategy> PalettedContainer<S> {
             }
         };
         self.data = new;
+    }
+
+    /// Whether a stored value may match `test`: exact for one value, the palette for the
+    /// paletted form (it may still list values no longer stored), always `true` for the direct
+    /// form. A cheap filter before scanning the entries.
+    pub fn may_contain(&self, test: impl Fn(u16) -> bool) -> bool {
+        match &self.data {
+            ContainerData::Single(value) => test(*value),
+            ContainerData::Indirect { palette, .. } => palette.iter().any(|&v| test(v)),
+            ContainerData::Direct { .. } => true,
+        }
     }
 
     /// Calls `f(value, count)` for the stored values; values may repeat in the direct form.

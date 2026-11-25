@@ -19,6 +19,9 @@ use crate::block::bell::Bell;
 use crate::block::lectern::Lectern;
 use crate::block::piston::MovingPiston;
 use crate::block::sculk::SculkSensor;
+use crate::item::ItemStack;
+use vanillite_protocol::components::ids as components;
+use vanillite_protocol::text::Component;
 
 /// The data of one block entity, by kind. Kinds whose behaviour does not exist yet have no
 /// variant; their blocks simply have no live block entity.
@@ -64,6 +67,24 @@ pub enum BlockEntity {
     SculkShrieker(Box<crate::block::sculk_shrieker::Shrieker>),
     /// `SculkCatalystBlockEntity` with its `SculkSpreader`.
     SculkCatalyst(Box<crate::block::sculk_catalyst::Catalyst>),
+    /// Heads and skulls.
+    Skull(Box<crate::block::decor::Skull>),
+    /// Banners.
+    Banner(Box<crate::block::decor::Banner>),
+    /// Decorated pots.
+    DecoratedPot(Box<crate::block::pot::DecoratedPot>),
+    /// Chiseled bookshelves.
+    ChiseledBookshelf(Box<crate::block::bookshelf::Bookshelf>),
+    /// Campfires and soul campfires.
+    Campfire(Box<crate::block::campfire::Campfire>),
+    /// Suspicious sand and gravel.
+    Brushable(Box<crate::block::brushable::Brushable>),
+    /// Crafters.
+    Crafter(Box<crate::block::crafter::Crafter>),
+    /// `TheEndPortalBlockEntity` (no data; clients render the portal from it).
+    EndPortal,
+    /// `TheEndGatewayBlockEntity`.
+    EndGateway(crate::block::portal::Gateway),
 }
 
 /// `BlockEntityTicker.tick(level, pos, state, blockEntity)`: the block entity is looked up at
@@ -204,10 +225,19 @@ fn ticker_of(entity: &BlockEntity) -> Option<TickerFn> {
         BlockEntity::Comparator { .. }
         | BlockEntity::Lectern(_)
         | BlockEntity::Container(_)
-        | BlockEntity::EnderChest { .. } => None,
+        | BlockEntity::EnderChest { .. }
+        | BlockEntity::Skull(_)
+        | BlockEntity::Banner(_)
+        | BlockEntity::DecoratedPot(_)
+        | BlockEntity::ChiseledBookshelf(_)
+        | BlockEntity::Brushable(_)
+        | BlockEntity::EndPortal => None,
+        BlockEntity::Campfire(_) => Some(crate::block::campfire::tick),
+        BlockEntity::Crafter(_) => Some(crate::block::crafter::server_tick),
         BlockEntity::Furnace(_) => Some(crate::block::furnace::server_tick),
         BlockEntity::BrewingStand(_) => Some(crate::block::brewing::server_tick),
         BlockEntity::Sign(_) => Some(crate::block::sign::tick),
+        BlockEntity::EndGateway(_) => Some(crate::block::portal::gateway_tick),
         BlockEntity::MovingPiston(_) => Some(crate::block::piston::moving_piston_tick),
         BlockEntity::Hopper(_) => Some(crate::block::hopper::push_items_tick),
         BlockEntity::DaylightDetector => Some(crate::block::sensor::daylight_detector_tick),
@@ -270,6 +300,31 @@ pub fn new_block_entity(state: BlockState) -> Option<BlockEntity> {
         Some(BlockEntity::SculkCatalyst(Box::default()))
     } else if crate::block::sign::is_sign(block) {
         Some(BlockEntity::Sign(Box::default()))
+    } else if block == ids::DECORATED_POT {
+        Some(BlockEntity::DecoratedPot(Box::default()))
+    } else if block == ids::CHISELED_BOOKSHELF {
+        Some(BlockEntity::ChiseledBookshelf(Box::default()))
+    } else if block == ids::CRAFTER {
+        Some(BlockEntity::Crafter(Box::new(
+            crate::block::crafter::Crafter {
+                triggered: state.value("triggered") == Some("true"),
+                ..Default::default()
+            },
+        )))
+    } else if crate::block::brushable::is_brushable(state) {
+        Some(BlockEntity::Brushable(Box::default()))
+    } else if crate::block::campfire::is_campfire(block) {
+        Some(BlockEntity::Campfire(Box::default()))
+    } else if crate::block::decor::is_skull(block) {
+        Some(BlockEntity::Skull(Box::default()))
+    } else if crate::block::decor::is_banner(block) {
+        Some(BlockEntity::Banner(Box::default()))
+    } else if block == ids::END_PORTAL {
+        Some(BlockEntity::EndPortal)
+    } else if block == ids::END_GATEWAY {
+        Some(BlockEntity::EndGateway(
+            crate::block::portal::Gateway::default(),
+        ))
     } else {
         crate::block::container::new_block_entity(block)
     }
@@ -319,7 +374,23 @@ fn is_valid(entity: &BlockEntity, state: BlockState) -> bool {
         }
         BlockEntity::BrewingStand(_) => state.block() == ids::BREWING_STAND,
         BlockEntity::Sign(_) => crate::block::sign::is_sign(state.block()),
+        BlockEntity::Skull(_) => crate::block::decor::is_skull(state.block()),
+        BlockEntity::Banner(_) => crate::block::decor::is_banner(state.block()),
+        BlockEntity::DecoratedPot(_) => state.block() == ids::DECORATED_POT,
+        BlockEntity::ChiseledBookshelf(_) => state.block() == ids::CHISELED_BOOKSHELF,
+        BlockEntity::Campfire(_) => crate::block::campfire::is_campfire(state.block()),
+        BlockEntity::Brushable(_) => crate::block::brushable::is_brushable(state),
+        BlockEntity::Crafter(_) => state.block() == ids::CRAFTER,
+        BlockEntity::EndPortal => state.block() == ids::END_PORTAL,
+        BlockEntity::EndGateway(_) => state.block() == ids::END_GATEWAY,
     }
+}
+
+/// `shouldChangedStateKeepBlockEntity`: copper chests keep their block entity (and stacks) when
+/// they weather or get waxed.
+fn keeps_block_entity(old: BlockState, new: BlockState) -> bool {
+    let copper_chests = &vanillite_worldgen::behaviour::tags().blocks.copper_chests;
+    copper_chests.contains(old) && copper_chests.contains(new)
 }
 
 impl Level {
@@ -356,14 +427,27 @@ impl Level {
         pos: BlockPos,
         flags: u32,
     ) {
-        if old.block() != new.block() && old.block().info().block_entity != u16::MAX {
+        if old.block() != new.block()
+            && old.block().info().block_entity != u16::MAX
+            && !keeps_block_entity(old, new)
+        {
             let side_effects = flags & super::update::SKIP_BLOCK_ENTITY_SIDEEFFECTS == 0;
             if side_effects {
-                // `preRemoveSideEffects`, while the block entity is still there.
+                // `preRemoveSideEffects`, while the block entity is still there:
+                // `Containers.dropContents` reads the stacks, which rolls a loot table first
+                // (shulker boxes drop nothing here).
+                if crate::block::container::kind_of(old.block())
+                    != Some(crate::block::container::Kind::ShulkerBox)
+                {
+                    crate::block::chest_loot::unpack(self, pos, None);
+                }
                 if let Some(entity) = self.block_entities.get(pos).cloned() {
                     crate::block::container::pre_remove_side_effects(self, pos, &entity);
                     if let BlockEntity::SculkShrieker(_) = entity {
                         crate::block::sculk_shrieker::pre_remove(self, pos, old);
+                    }
+                    if let BlockEntity::Lectern(lectern) = &entity {
+                        crate::block::lectern::drop_book(self, pos, old, lectern);
                     }
                     if let BlockEntity::Furnace(_) = entity {
                         let xp = crate::block::furnace::pop_experience(self, pos);
@@ -375,12 +459,9 @@ impl Level {
         }
     }
 
-    /// `ExperienceOrb.award(level, pos, amount)`. Experience orbs are not simulated yet: the
-    /// amount is queued for the server, which gives it to the nearest player.
+    /// `ExperienceOrb.award(level, pos, amount)`: experience orbs at `pos`.
     pub fn award_experience(&mut self, pos: vanillite_base::Vec3, amount: i32) {
-        if amount > 0 {
-            self.output().experience.push((pos, amount));
-        }
+        crate::experience_orb::award(self, pos, amount);
     }
 
     /// The block entity part of `LevelChunk.setBlockState` after `onPlace`: a block with a
@@ -494,11 +575,23 @@ fn load(state: BlockState, nbt: &Compound) -> Option<BlockEntity> {
         BlockEntity::Furnace(f) => f.load(nbt),
         BlockEntity::BrewingStand(b) => b.load(nbt),
         BlockEntity::Sign(sign) => sign.load(nbt),
+        BlockEntity::Skull(skull) => skull.load(nbt),
+        BlockEntity::Banner(banner) => banner.load(nbt),
+        BlockEntity::DecoratedPot(pot) => pot.load(nbt),
+        BlockEntity::ChiseledBookshelf(shelf) => shelf.load(nbt),
+        BlockEntity::Campfire(campfire) => campfire.load(nbt),
+        BlockEntity::Brushable(b) => b.load(nbt),
+        BlockEntity::Crafter(c) => c.load(nbt),
+        BlockEntity::Lectern(lectern) => lectern.load(nbt),
         BlockEntity::Hopper(h) => {
             h.custom_name = crate::block::container::load_name(nbt);
-            crate::block::container::load_items(nbt, &mut h.items);
+            (h.loot_table, h.loot_seed) = crate::block::chest_loot::load(nbt);
+            if h.loot_table.is_none() {
+                crate::block::container::load_items(nbt, &mut h.items);
+            }
             h.cooldown_time = int("TransferCooldown").unwrap_or(-1);
         }
+        BlockEntity::EndGateway(gateway) => *gateway = crate::block::portal::Gateway::load(nbt),
         _ => {}
     }
     Some(entity)
@@ -546,11 +639,22 @@ fn save(entity: &BlockEntity, state: BlockState, pos: BlockPos) -> Compound {
         BlockEntity::Furnace(f) => f.save(&mut nbt),
         BlockEntity::BrewingStand(b) => b.save(&mut nbt),
         BlockEntity::Sign(sign) => sign.save(&mut nbt),
+        BlockEntity::Skull(skull) => skull.save(&mut nbt),
+        BlockEntity::Banner(banner) => banner.save(&mut nbt),
+        BlockEntity::DecoratedPot(pot) => pot.save(&mut nbt),
+        BlockEntity::ChiseledBookshelf(shelf) => shelf.save(&mut nbt),
+        BlockEntity::Campfire(campfire) => campfire.save(&mut nbt),
+        BlockEntity::Brushable(b) => b.save(&mut nbt),
+        BlockEntity::Crafter(c) => c.save(&mut nbt),
+        BlockEntity::Lectern(lectern) => lectern.save(&mut nbt),
         BlockEntity::Hopper(h) => {
             crate::block::container::save_name(&h.custom_name, &mut nbt);
-            crate::block::container::save_items(&h.items, &mut nbt);
+            if !crate::block::chest_loot::save(h.loot_table.as_deref(), h.loot_seed, &mut nbt) {
+                crate::block::container::save_items(&h.items, &mut nbt);
+            }
             nbt.insert("TransferCooldown", Tag::Int(h.cooldown_time));
         }
+        BlockEntity::EndGateway(gateway) => gateway.save(&mut nbt),
         _ => {}
     }
     nbt
@@ -581,7 +685,7 @@ fn direction_to_3d(direction: Direction) -> i32 {
 }
 
 /// `NbtUtils.readBlockState`.
-fn read_block_state(c: &Compound) -> BlockState {
+pub(crate) fn read_block_state(c: &Compound) -> BlockState {
     let Some(Tag::String(name)) = c.get("Name") else {
         return BlockState::AIR;
     };
@@ -600,7 +704,7 @@ fn read_block_state(c: &Compound) -> BlockState {
 }
 
 /// `NbtUtils.writeBlockState`.
-fn write_block_state(state: BlockState) -> Compound {
+pub(crate) fn write_block_state(state: BlockState) -> Compound {
     let mut c = Compound::new();
     c.insert("Name", Tag::String(state.block().name().to_owned()));
     let mut props = Compound::new();
@@ -704,6 +808,7 @@ impl Level {
         for &chunk in &chunks {
             self.load_block_entities(chunk);
         }
+        self.apply_visibility();
         self.chunk_scratch = chunks;
     }
 
@@ -723,6 +828,7 @@ impl Level {
         for chunk in chunks {
             self.write_block_entities(chunk);
         }
+        self.write_all_entities();
         self.chunks.save_all(flush);
     }
 }
@@ -742,6 +848,174 @@ pub fn update_tag(entity: &BlockEntity, state: BlockState) -> Option<Compound> {
             Some(s.update_tag(crate::block::trial_spawner::TrialState::of(state)))
         }
         BlockEntity::Vault(v) => Some(v.update_tag()),
+        BlockEntity::Skull(skull) => {
+            let mut nbt = Compound::new();
+            skull.save(&mut nbt);
+            Some(nbt)
+        }
+        BlockEntity::Banner(banner) => {
+            let mut nbt = Compound::new();
+            banner.save(&mut nbt);
+            Some(nbt)
+        }
+        BlockEntity::DecoratedPot(pot) => {
+            let mut nbt = Compound::new();
+            pot.save(&mut nbt);
+            Some(nbt)
+        }
+        BlockEntity::Campfire(campfire) => Some(campfire.update_tag()),
+        BlockEntity::Brushable(b) => Some(b.update_tag()),
+        // `saveCustomOnly`: the age for the beam and the exit.
+        BlockEntity::EndGateway(gateway) => {
+            let mut nbt = Compound::new();
+            gateway.save(&mut nbt);
+            nbt.sort_java_hash_order();
+            Some(nbt)
+        }
         _ => None,
     }
+}
+
+// --- Components ------------------------------------------------------------------------------
+
+/// `BlockEntity.collectComponents`: the value of component `id` the block entity puts on the
+/// item it drops (loot `copy_components`), as a wire value.
+pub fn collect_component(entity: &BlockEntity, id: u16) -> Option<Box<[u8]>> {
+    match entity {
+        BlockEntity::Skull(skull) => skull.component(id),
+        BlockEntity::Banner(banner) => banner.component(id),
+        BlockEntity::DecoratedPot(pot) => pot.component(id),
+        BlockEntity::ChiseledBookshelf(shelf) => {
+            (id == components::CONTAINER).then(|| container_value(&shelf.items))
+        }
+        BlockEntity::Campfire(campfire) => {
+            (id == components::CONTAINER).then(|| container_value(&campfire.items))
+        }
+        BlockEntity::Crafter(crafter) => {
+            if id == components::CONTAINER {
+                Some(container_value(&crafter.items))
+            } else if id == components::CUSTOM_NAME {
+                encode_name(crafter.custom_name.as_ref())
+            } else if id == components::CONTAINER_LOOT {
+                let table = crafter.loot_table.as_deref()?;
+                Some(crate::block::chest_loot::component(
+                    table,
+                    crafter.loot_seed,
+                ))
+            } else {
+                None
+            }
+        }
+        _ => crate::block::container::component(entity, id),
+    }
+}
+
+/// `ItemContainerContents.fromItems`: always a value (empty contents are an empty list).
+fn container_value(items: &[ItemStack]) -> Box<[u8]> {
+    vanillite_protocol::item::encode_container_contents(items).unwrap_or_else(|| Box::new([0]))
+}
+
+/// `BlockEntity.applyComponentsFromItemStack` of a placed block item.
+pub fn apply_components(level: &mut Level, pos: BlockPos, stack: &ItemStack) {
+    let contents = || {
+        stack
+            .component(components::CONTAINER)
+            .and_then(|v| vanillite_protocol::item::decode_container_contents(v).ok())
+    };
+    match level.block_entity_mut(pos) {
+        Some(BlockEntity::Skull(skull)) => skull.apply(stack),
+        Some(BlockEntity::Banner(banner)) => banner.apply(stack),
+        Some(BlockEntity::DecoratedPot(pot)) => pot.apply(stack),
+        Some(BlockEntity::ChiseledBookshelf(shelf)) => {
+            if let Some(items) = contents() {
+                copy_into(&items, &mut shelf.items);
+            }
+        }
+        Some(BlockEntity::Campfire(campfire)) => {
+            if let Some(items) = contents() {
+                copy_into(&items, &mut campfire.items);
+            }
+        }
+        Some(BlockEntity::Crafter(crafter)) => {
+            if let Some(name) = decode_name(stack) {
+                crafter.custom_name = Some(name);
+            }
+            if let Some(items) = contents() {
+                copy_into(&items, &mut crafter.items);
+            }
+            if let Some((table, seed)) = stack
+                .component(components::CONTAINER_LOOT)
+                .and_then(crate::block::chest_loot::read_component)
+            {
+                crafter.loot_table = Some(table);
+                crafter.loot_seed = seed;
+            }
+        }
+        _ => {
+            crate::block::container::apply_item_components(level, pos, stack);
+            return;
+        }
+    }
+    level.block_entities.touch(pos.chunk());
+    let state = level.block(pos);
+    if level
+        .block_entity(pos)
+        .is_some_and(|e| update_tag(e, state).is_some())
+    {
+        level.output().block_entity_updates.push(pos);
+    }
+}
+
+/// `ItemContainerContents.copyInto`: slots in order, the rest emptied.
+fn copy_into(items: &[ItemStack], target: &mut [ItemStack]) {
+    for (i, slot) in target.iter_mut().enumerate() {
+        *slot = items.get(i).cloned().unwrap_or_default();
+    }
+}
+
+/// The `custom_name` component of a stack.
+pub fn decode_name(stack: &ItemStack) -> Option<Component> {
+    let bytes = stack.component(components::CUSTOM_NAME)?;
+    let mut r = vanillite_protocol::codec::Reader::new(bytes);
+    <Component as vanillite_protocol::codec::DecodeLimited>::decode_limited(&mut r, 2_097_152).ok()
+}
+
+/// A `custom_name` component value.
+pub fn encode_name(name: Option<&Component>) -> Option<Box<[u8]>> {
+    use vanillite_protocol::codec::Encode;
+    let mut out = Vec::new();
+    name?.encode(&mut out);
+    Some(out.into_boxed_slice())
+}
+
+/// Prefix of stored component values that have no persistent form (yet): their wire bytes.
+const WIRE_PREFIX: &str = "vanillite:";
+
+/// Stores a component value under `key` in its persistent form (or its wire bytes).
+pub fn save_component(out: &mut Compound, key: &str, type_id: u16, wire: &[u8]) {
+    match crate::item_nbt::component_to_nbt(type_id, wire) {
+        Some(tag) => out.insert(key, tag),
+        None => {
+            let bytes: Vec<i8> = wire.iter().map(|b| i8::from_ne_bytes([*b])).collect();
+            out.insert(format!("{WIRE_PREFIX}{key}"), Tag::ByteArray(bytes));
+        }
+    }
+}
+
+/// Reads what [`save_component`] stored; invalid values read as none.
+pub fn load_component(nbt: &Compound, key: &str, type_id: u16) -> Option<Box<[u8]>> {
+    if let Some(tag) = nbt.get(key) {
+        return crate::item_nbt::component_from_nbt(type_id, tag);
+    }
+    let Some(Tag::ByteArray(bytes)) = nbt.get(&format!("{WIRE_PREFIX}{key}")) else {
+        return None;
+    };
+    let wire: Vec<u8> = bytes.iter().map(|b| b.to_ne_bytes()[0]).collect();
+    vanillite_protocol::components::validate(
+        type_id,
+        &wire,
+        &vanillite_protocol::item::InstalledRegistries,
+    )
+    .ok()?;
+    Some(wire.into_boxed_slice())
 }

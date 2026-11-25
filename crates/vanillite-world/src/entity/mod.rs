@@ -20,10 +20,12 @@ mod tick_order;
 
 use std::sync::atomic::{AtomicI32, Ordering};
 
+use vanillite_base::hash::FxHashSet;
 use vanillite_base::{Aabb, BlockPos, SectionPos, SlotMap, Vec3};
 use vanillite_data::entity::{EntityTypeId, ids};
 
 pub use dense::Dense;
+use sections::Subset;
 pub use sections::{EntityClass, SectionIndex};
 pub use tick_order::TickCursor;
 
@@ -337,6 +339,9 @@ pub struct EntityStore {
     tick_order: TickOrder,
     sections: SectionIndex,
     removed: Vec<Removed>,
+    /// Chunks whose entities tick (Vanilla's `Visibility.TICKING`), set by the world: only
+    /// entities in these chunks are in the tick order.
+    ticking_chunks: FxHashSet<(i32, i32)>,
 }
 
 impl EntityStore {
@@ -420,7 +425,13 @@ impl EntityStore {
         core.flags.push(new.flags);
         core.pose.push(Pose::Standing);
         core.section.push(section);
-        self.order_slot.push(self.tick_order.push(id));
+        // `addEntity`: it starts ticking if its section ticks.
+        let slot = if self.ticking_chunks.contains(&(section.x, section.z)) {
+            self.tick_order.push(id)
+        } else {
+            tick_order::NONE
+        };
+        self.order_slot.push(slot);
         self.sections.insert(section, class_of(new.kind), id);
         id
     }
@@ -478,6 +489,38 @@ impl EntityStore {
         }
     }
 
+    /// Whether an entity is in the tick order.
+    pub fn is_ticking(&self, id: EntityId) -> bool {
+        self.row(id)
+            .is_some_and(|row| self.order_slot[row] != tick_order::NONE)
+    }
+
+    /// Whether the entities of a chunk tick.
+    pub fn is_chunk_ticking(&self, x: i32, z: i32) -> bool {
+        self.ticking_chunks.contains(&(x, z))
+    }
+
+    /// Sets whether the entities of a chunk tick (`updateChunkStatus`): its entities start
+    /// ticking at the end of the tick order, section by section from the bottom, or stop.
+    pub fn set_chunk_ticking(&mut self, x: i32, z: i32, ticking: bool) {
+        let changed = if ticking {
+            self.ticking_chunks.insert((x, z))
+        } else {
+            self.ticking_chunks.remove(&(x, z))
+        };
+        if !changed {
+            return;
+        }
+        let ids: Vec<EntityId> = self.sections.in_chunk(x, z).collect();
+        for id in ids {
+            if ticking {
+                self.start_ticking(id);
+            } else {
+                self.stop_ticking(id);
+            }
+        }
+    }
+
     /// Adds an entity back to the end of the tick order (e.g. when its chunk starts ticking).
     pub fn start_ticking(&mut self, id: EntityId) {
         if let Some(row) = self.row(id)
@@ -516,8 +559,23 @@ impl EntityStore {
 
     /// Calls `f` for every entity (or only every player) whose bounding box intersects `aabb`,
     /// in Vanilla's order (`EntitySectionStorage.getEntities`).
-    pub fn for_each_in(&self, aabb: &Aabb, players_only: bool, mut f: impl FnMut(EntityId)) {
-        self.sections.for_each_near(aabb, players_only, |id| {
+    pub fn for_each_in(&self, aabb: &Aabb, players_only: bool, f: impl FnMut(EntityId)) {
+        let subset = if players_only {
+            Subset::Players
+        } else {
+            Subset::All
+        };
+        self.for_each_in_subset(aabb, subset, f);
+    }
+
+    /// Like [`Self::for_each_in`] for every entity that is not a player: queries for other
+    /// kinds (items a player picks up) skip the players of crowded sections.
+    pub fn for_each_non_player_in(&self, aabb: &Aabb, f: impl FnMut(EntityId)) {
+        self.for_each_in_subset(aabb, Subset::Others, f);
+    }
+
+    fn for_each_in_subset(&self, aabb: &Aabb, subset: Subset, mut f: impl FnMut(EntityId)) {
+        self.sections.for_each_near(aabb, subset, |id| {
             if let Some(row) = self.row(id)
                 && self.core.aabb[row].intersects(aabb)
             {
@@ -659,6 +717,15 @@ impl EntityMut<'_> {
             let id = core.id[row];
             self.store.sections.remove(old, class, id);
             self.store.sections.insert(section, class, id);
+            // `onMove`: ticking follows the status of the new section.
+            let ticking = &self.store.ticking_chunks;
+            let was = ticking.contains(&(old.x, old.z));
+            let is = ticking.contains(&(section.x, section.z));
+            if is && !was {
+                self.store.start_ticking(id);
+            } else if was && !is {
+                self.store.stop_ticking(id);
+            }
         }
     }
 

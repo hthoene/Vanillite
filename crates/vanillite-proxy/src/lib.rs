@@ -218,6 +218,7 @@ fn start_bedrock(
     let config = vanillite_bedrock::BedrockConfig {
         bind: b.bind,
         online_mode: b.online_mode,
+        min_protocol: b.min_protocol,
         name_prefix: b.name_prefix.clone(),
         world_name: shared.config.motd.clone(),
         max_connections: u32::try_from(shared.config.limits.max_connections).unwrap_or(u32::MAX),

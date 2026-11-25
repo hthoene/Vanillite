@@ -11,8 +11,15 @@
 //! blocks that placing or breaking one block adds or removes.
 
 pub mod bell;
+pub mod bonemeal;
+pub mod bookshelf;
 pub mod brewing;
+pub mod brushable;
+pub mod campfire;
+pub mod chest_loot;
 pub mod container;
+pub mod crafter;
+pub mod decor;
 pub mod dispenser;
 pub mod drops;
 pub mod falling;
@@ -25,6 +32,8 @@ pub mod note;
 pub mod piston;
 pub mod place;
 pub mod plate;
+pub mod portal;
+pub mod pot;
 pub mod rail;
 pub mod redstone;
 pub mod sculk;
@@ -282,6 +291,11 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
     spawner::fill(block, &mut b);
     container::fill(block, &mut b);
     sign::fill(block, &mut b);
+    pot::fill(block, &mut b);
+    bookshelf::fill(block, &mut b);
+    campfire::fill(block, &mut b);
+    crafter::fill(block, &mut b);
+    portal::fill(block, &mut b);
     b
 }
 
@@ -344,4 +358,34 @@ pub fn sound_id(name: &str) -> u16 {
     full[prefix.len()..len].copy_from_slice(name.as_bytes());
     let full = std::str::from_utf8(&full[..len]).unwrap_or_default();
     vanillite_data::registry::SOUND_EVENT.id(full).unwrap_or(0)
+}
+
+/// `ItemStack.hurtAndBreak(amount, …)` of a held tool: `minecraft:unbreaking` skips each point
+/// with chance `level / (level + 1)`; the stack breaks at its maximum damage.
+pub fn hurt_item(level: &mut Level, stack: &mut crate::item::ItemStack, amount: i32) {
+    use crate::item;
+    if !item::is_damageable(stack) {
+        return;
+    }
+    let unbreaking = crate::player::play::game_data()
+        .map_or(0, |d| d.enchantment_level(stack, "minecraft:unbreaking"));
+    let mut taken: i32 = 0;
+    for _ in 0..amount.max(0) {
+        #[allow(clippy::as_conversions)]
+        let chance = 1.0 / (unbreaking.max(0) as f32 + 1.0);
+        if unbreaking <= 0
+            || vanillite_base::random::RandomSource::next_float(level.random()) < chance
+        {
+            taken = taken.saturating_add(1);
+        }
+    }
+    if taken == 0 {
+        return;
+    }
+    let damage = item::damage(stack).saturating_add(taken);
+    if damage >= item::max_damage(stack) {
+        stack.shrink(1);
+    } else {
+        item::set_damage(stack, damage);
+    }
 }

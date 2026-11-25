@@ -9,7 +9,9 @@
 //! The damage of the living entities hit is queued in [`super::LevelOutput::explosion_hurts`]
 //! for the mob system, which applies it right after the explosion's tick step.
 //!
-//! Not ported: damage of non-living entities (items, end crystals), fire of fire explosions, the
+//! Items lose health and are destroyed, boats take damage like living entities.
+//!
+//! Not ported: damage of end crystals and other non-living entities, fire of fire explosions, the
 //! block reactions of `TRIGGER_BLOCK` explosions (wind charges) and the special damage
 //! calculators (wither skulls, wind charges, TNT that used a portal).
 
@@ -46,6 +48,9 @@ pub enum BlockResistance {
     Default,
     /// `WitherSkull` (dangerous): at most 0.8 for blocks the wither can destroy.
     DangerousWitherSkull,
+    /// A primed TNT minecart: rails and the blocks under them have no resistance and do not
+    /// break (`MinecartTNT.getBlockExplosionResistance`, `shouldBlockExplode`).
+    TntMinecart,
 }
 
 /// An explosion for the clients (`ClientboundExplodePacket`), sent to players within 64 blocks.
@@ -117,7 +122,7 @@ impl Level {
         let mut targets = self.exploded_positions(center, radius, resistance);
         let hit_players = self.hurt_entities(source, indirect, center, radius);
         if interaction != BlockInteraction::Keep {
-            self.interact_with_blocks(&mut targets, indirect, interaction);
+            self.interact_with_blocks(&mut targets, source, indirect, interaction);
         }
         let count = targets.len();
         self.output.explosions.push(ExplosionEvent {
@@ -165,12 +170,19 @@ impl Level {
                         let state = self.block(pos);
                         let fluid = state.fluid_state();
                         // `ExplosionDamageCalculator.getBlockExplosionResistance`.
+                        let rail_protected = override_resistance == BlockResistance::TntMinecart
+                            && (crate::block::is_rail(state.block())
+                                || crate::block::is_rail(self.block(pos.offset(0, 1, 0)).block()));
                         if !(state.is_air() && fluid.is_empty()) {
-                            let mut resistance = state
-                                .block()
-                                .info()
-                                .blast_resistance
-                                .max(fluid.info().explosion_resistance);
+                            let mut resistance = if rail_protected {
+                                0.0
+                            } else {
+                                state
+                                    .block()
+                                    .info()
+                                    .blast_resistance
+                                    .max(fluid.info().explosion_resistance)
+                            };
                             if override_resistance == BlockResistance::DangerousWitherSkull {
                                 resistance = crate::mob::boss::wither::skull_block_resistance(
                                     true, state, resistance,
@@ -178,7 +190,7 @@ impl Level {
                             }
                             power -= (resistance + 0.3) * 0.3;
                         }
-                        if power > 0.0 && seen.insert(pos) {
+                        if power > 0.0 && !rail_protected && seen.insert(pos) {
                             positions.push(pos);
                         }
                         xp += xd * step;
@@ -229,14 +241,42 @@ impl Level {
             let kind = entity.kind();
             let (pos, aabb) = (entity.pos(), entity.aabb());
             // `getEntities(..., NO_SPECTATORS)`.
-            let player = self.entities.player(id);
-            if player.is_some_and(|p| p.game_mode == vanillite_config::GameMode::Spectator) {
+            if self
+                .entities
+                .player(id)
+                .is_some_and(|p| p.game_mode == vanillite_config::GameMode::Spectator)
+            {
                 continue;
             }
             let dist = pos.distance_to_sqr(center).sqrt() / f64::from(double_radius);
             if dist > 1.0 {
                 continue;
             }
+            // `ExplosionDamageCalculator.getEntityDamageAmount`: living entities and boats
+            // through the mob system, items here (`ItemEntity.hurtServer`: health 5).
+            let is_boat = crate::vehicle::BoatKind::of(kind).is_some()
+                || crate::minecart::MinecartKind::of(kind).is_some();
+            if kind == entity_ids::ITEM {
+                let double_radius = f64::from(double_radius);
+                let pow = (1.0 - dist) * f64::from(self.seen_percent(center, aabb));
+                #[allow(clippy::cast_possible_truncation)]
+                let amount = ((pow * pow + pow) / 2.0 * 7.0 * double_radius + 1.0) as f32;
+                let destroyed = self.entities.item_mut(id).is_some_and(|d| {
+                    // The nether star resists explosions (`damage_resistant`).
+                    if crate::item::item_id(&d.stack).name() == "minecraft:nether_star" {
+                        return false;
+                    }
+                    #[allow(clippy::cast_possible_truncation)]
+                    let health = (f32::from(d.health) - amount) as i16;
+                    d.health = health;
+                    health <= 0
+                });
+                if destroyed {
+                    self.entities.despawn(id);
+                    continue;
+                }
+            }
+            let player = self.entities.player(id);
             let mob = self.entities.mob(id);
             let eye = match mob {
                 Some(mob) => crate::mob::eye_height(mob),
@@ -252,7 +292,11 @@ impl Level {
             let exposure = f64::from(seen);
             // `ExplosionDamageCalculator.getEntityDamageAmount` for the living entities.
             let crystal = kind == entity_ids::END_CRYSTAL;
-            if player.is_some() || crystal || mob.is_some_and(crate::mob::MobData::is_alive) {
+            if player.is_some()
+                || crystal
+                || mob.is_some_and(crate::mob::MobData::is_alive)
+                || is_boat
+            {
                 let double_radius = f64::from(double_radius);
                 let pow = (1.0 - dist) * exposure;
                 #[allow(clippy::cast_possible_truncation)]
@@ -289,6 +333,7 @@ impl Level {
     fn interact_with_blocks(
         &mut self,
         targets: &mut [BlockPos],
+        source: Option<EntityId>,
         indirect: Option<EntityId>,
         interaction: BlockInteraction,
     ) {
@@ -316,7 +361,7 @@ impl Level {
         }
         // The drops (`Block.popResource` of the merged stacks).
         for (pos, state) in dropped {
-            drops::drop_resources(self, pos, state, None);
+            drops::drop_resources(self, pos, state, source);
         }
     }
 

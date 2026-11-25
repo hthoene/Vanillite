@@ -2,25 +2,31 @@
 """Generates the Bedrock data of `vanillite-bedrock` (crates/vanillite-bedrock/data/).
 
 Inputs (MIT, GeyserMC): a checkout of https://github.com/GeyserMC/mappings (Java <-> Bedrock
-block and biome mappings) and the `core/src/main/resources/bedrock` directory of
-https://github.com/GeyserMC/Geyser (Bedrock block palette, items, biomes, entity identifiers).
-Plus Vanillite's own `data/vanilla/blocks.json` for the Java block state order.
+block and biome mappings) and a checkout of https://github.com/GeyserMC/Geyser: the Bedrock
+resources in `core/src/main/resources/bedrock` (block palettes, items, creative inventories,
+biomes, entity identifiers per Bedrock release) and the fallback tables of its conversion classes
+(`registry/populator/conversion`: blocks and items that older releases lack). Plus Vanillite's
+own `data/vanilla/blocks.json` and `items.json` for the Java ids.
 
-Usage: generate.py <mappings dir> <geyser bedrock resources dir> <palette version, e.g. 26_60>
+Usage: generate.py <mappings dir> <Geyser dir> <palette version>...
+(e.g. `26_40 26_50 26_60`: every palette version a supported Bedrock release uses).
 
-Outputs (all little-endian, Bedrock network NBT where NBT is involved):
+Outputs (all little-endian, Bedrock network NBT where NBT is involved). Per palette version, in
+data/<palette version>/:
 - blocks.bin: u32 count, u32 runtime id of still water, then one u16 per Java block state id:
   the Bedrock runtime id, bit 15 set when the state is waterlogged (water in the second layer).
-- biomes.txt: `<java biome name> <bedrock biome id>` per line.
+  States an older release lacks fall back to Geyser's replacement block or drop unknown states.
 - block_properties.bin: the `block properties` list of `start_game` (count + name + NBT).
 - item_registry.bin: the body of `item_registry` (count + entries).
-- biome_definitions.bin: the body of `biome_definition_list`.
-- entity_identifiers.bin: the body of `available_actor_identifiers` (network NBT).
 - items.bin: u32 count, then per Java item id: i16 Bedrock item id, u16 Bedrock metadata (0/0 for
   Java items without a Bedrock counterpart).
 - creative.bin: the body of `creative_content` (groups and items, Bedrock's creative order).
 - creative_java.bin: u32 count, then per creative item network id (1-based, in order): u16 Java
   item id.
+Shared by all releases, in data/:
+- biomes.txt: `<java biome name> <bedrock biome id>` per line.
+- biome_definitions.bin: the body of `biome_definition_list`.
+- entity_identifiers.bin: the body of `available_actor_identifiers` (network NBT).
 - sounds.txt: `<java sound event> <bedrock sound name>` per line.
 """
 
@@ -29,6 +35,7 @@ import base64
 import gzip
 import json
 import os
+import re
 import struct
 import sys
 
@@ -230,78 +237,100 @@ def canonical(tag):
 
 # ---- Generation ----------------------------------------------------------------------------------
 
-def main():
-    mappings, resources, version = sys.argv[1], sys.argv[2], sys.argv[3]
-    root = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..'))
-    out_dir = os.path.join(root, 'crates', 'vanillite-bedrock', 'data')
+def conversion_tables(geyser):
+    """Fallbacks of blocks and items that older Bedrock releases lack, read from Geyser's
+    conversion classes: Bedrock block name -> (fallback name, clear the states) and Java item ->
+    fallback Java item."""
+    folder = os.path.join(geyser, 'core', 'src', 'main', 'java', 'org', 'geysermc', 'geyser',
+                          'registry', 'populator', 'conversion')
+    blocks = {}
+    items = {}
+
+    def ident(constant):
+        return 'minecraft:' + constant.lower()
+
+    for name in sorted(os.listdir(folder)):
+        src = open(os.path.join(folder, name)).read()
+        for a, b, clear in re.findall(r'addBlock\(Blocks\.(\w+), Blocks\.(\w+)(, true)?\)', src):
+            blocks[ident(a)] = (ident(b), bool(clear))
+            items[ident(a)] = ident(b)
+        for a, b, ia, ib, clear in re.findall(
+                r'addBlock\("([^"]+)", "([^"]+)",\s*Items\.(\w+), Items\.(\w+), (true|false)\)', src):
+            blocks[a] = (b, clear == 'true')
+            items[ident(ia)] = ident(ib)
+        for a, b in re.findall(r'addBlockOnly\("([^"]+)", "([^"]+)"\)', src):
+            blocks[a] = (b, False)
+        for a, b in re.findall(r'addItem\(Items\.(\w+), Items\.(\w+)\)', src):
+            items[ident(a)] = ident(b)
+    return blocks, items
+
+
+def write_release(root, mappings, resources, version, fallbacks, item_fallbacks, wet):
+    """The files of one Bedrock release (palette version) in data/<version>/."""
+    out_dir = os.path.join(root, 'crates', 'vanillite-bedrock', 'data', version)
     os.makedirs(out_dir, exist_ok=True)
-
-    # Java block state id -> Java block name and whether it holds water.
-    always_wet = {'minecraft:kelp', 'minecraft:kelp_plant', 'minecraft:seagrass',
-                  'minecraft:tall_seagrass', 'minecraft:bubble_column'}
-    java_names = []
-    wet = []
-    for block in json.load(open(os.path.join(root, 'data', 'vanilla', 'blocks.json'))):
-        assert block['first_state'] == len(java_names), block['name']
-        java_names += [block['name']] * block['state_count']
-        props = block['properties']
-        for i in range(block['state_count']):
-            w = block['name'] in always_wet
-            stride = 1
-            for prop in reversed(props):
-                value = prop['values'][(i // stride) % len(prop['values'])]
-                stride *= len(prop['values'])
-                if prop['name'] == 'waterlogged' and value == 'true':
-                    w = True
-            wet.append(w)
-
     # Bedrock palette: runtime id = index (the order the client uses).
     palette = compound_get(read_gz_nbt(os.path.join(resources, f'block_palette.{version}.nbt')), 'blocks')
     runtime = {}
+    by_name = {}
     air = None
     for i, entry in enumerate(palette[2]):
         name = compound_get(entry, 'name')[1]
         states = compound_get(entry, 'states')
         runtime[(name, canonical(states))] = i
+        by_name.setdefault(name, []).append((dict(canonical(states)[1]), i))
         if name == 'minecraft:air':
             air = i
     assert air is not None
     water = runtime[('minecraft:water', canonical(('c', [('liquid_depth', ('i', 0))])))]
 
+    def lookup(name, states):
+        """Runtime id of a state; states the release does not know yet are dropped."""
+        rid = runtime.get((name, canonical(states)))
+        if rid is not None or name not in by_name:
+            return rid
+        want = dict(canonical(states)[1])
+        for have, i in by_name[name]:
+            if all(want.get(k) == v for k, v in have.items()):
+                return i
+        return None
+
     # Java state -> Bedrock name + states (Geyser's mapping, index = Java state id).
     mapped = compound_get(read_gz_nbt(os.path.join(mappings, 'blocks.nbt')), 'bedrock_mappings')[2]
-    assert len(mapped) == len(java_names), (len(mapped), len(java_names))
+    assert len(mapped) == len(wet), (len(mapped), len(wet))
+    java_names = [n for n, _ in wet]
     table = []
     missing = 0
+    fell_back = 0
     for java_id, entry in enumerate(mapped):
         ident = compound_get(entry, 'bedrock_identifier')
         name = 'minecraft:' + (ident[1] if ident else java_names[java_id].split(':', 1)[1])
         states = compound_get(entry, 'state', ('c', []))
-        rid = runtime.get((name, canonical(states)))
+        rid = lookup(name, states)
+        if rid is None and name in fallbacks:
+            other, clear = fallbacks[name]
+            rid = lookup(other, ('c', []) if clear else states)
+            if rid is None and clear:
+                rid = by_name.get(other, [(None, None)])[0][1]
+            fell_back += rid is not None
         if rid is None:
             missing += 1
             rid = air
         table.append(rid)
     assert max(table) < 1 << 15
-    table = [rid | (0x8000 if w else 0) for rid, w in zip(table, wet)]
+    table = [rid | (0x8000 if w else 0) for rid, (_, w) in zip(table, wet)]
     with open(os.path.join(out_dir, 'blocks.bin'), 'wb') as f:
         f.write(struct.pack('<II', len(table), water))
         f.write(struct.pack(f'<{len(table)}H', *table))
-    print(f'blocks: {len(table)} Java states, {len(runtime)} Bedrock states, {missing} unmapped')
-
-    # Biomes.
-    biomes = json.load(open(os.path.join(mappings, 'biomes.json')))
-    with open(os.path.join(out_dir, 'biomes.txt'), 'w') as f:
-        for name, v in sorted(biomes.items()):
-            f.write(f"{name} {v['bedrock_id']}\n")
-
-    # Block properties of start_game (data-driven vanilla blocks).
-    ddb = read_gz_nbt(os.path.join(resources, f'data_driven_blocks.{version}.nbt'))
+    print(f'{version} blocks: {len(table)} Java states, {len(runtime)} Bedrock states, '
+          f'{fell_back} fallbacks, {missing} unmapped')
+    # Block properties of start_game (data-driven vanilla blocks; none before 26.50).
+    path = os.path.join(resources, f'data_driven_blocks.{version}.nbt')
+    ddb = read_gz_nbt(path) if os.path.exists(path) else ('c', [])
     out = bytearray(varuint(len(ddb[1])))
     for name, props in ddb[1]:
         out += net_string(name) + net_root(props)
     open(os.path.join(out_dir, 'block_properties.bin'), 'wb').write(out)
-
     # Item registry.
     items = json.load(open(os.path.join(resources, f'runtime_item_states.{version}.json')))
     components = dict(read_gz_nbt(os.path.join(resources, f'item_components.{version}.nbt'))[1])
@@ -313,64 +342,38 @@ def main():
         out += zigzag32(item['version'])
         out += net_root(components.get(item['name'], ('c', [])))
     open(os.path.join(out_dir, 'item_registry.bin'), 'wb').write(out)
-
-    # Biome definitions (structured format since 1.21.80; vanilla biomes carry no id: -1).
-    defs = json.load(open(os.path.join(resources, 'stripped_biome_definitions.json')))
-    strings = []
-    index = {}
-
-    def string_index(s):
-        if s not in index:
-            index[s] = len(strings)
-            strings.append(s)
-        return index[s]
-
-    out = bytearray(varuint(len(defs)))
-    for name, d in defs.items():
-        out += struct.pack('<h', string_index(name))
-        out += struct.pack('<h', -1 if d.get('id') is None else d['id'])
-        out += struct.pack('<5f', d['temperature'], d['downfall'], d.get('foliageSnow', 0.0),
-                           d['depth'], d['scale'])
-        c = d['mapWaterColor']
-        out += struct.pack('<I', (c['a'] << 24) | (c['r'] << 16) | (c['g'] << 8) | c['b'])
-        out += bytes([1 if d['rain'] else 0])
-        tags = d.get('tags')
-        if tags is None:
-            out += b'\x00'
-        else:
-            out += b'\x01' + varuint(len(tags))
-            for t in tags:
-                out += struct.pack('<h', string_index(t))
-        out += b'\x00'  # no chunk generation data
-    out += varuint(len(strings))
-    for s in strings:
-        out += net_string(s)
-    open(os.path.join(out_dir, 'biome_definitions.bin'), 'wb').write(out)
-
     # Items: Java item id -> Bedrock item id and metadata.
     bedrock_item_ids = {item['name']: item['id'] for item in items}
     item_map = json.load(open(os.path.join(mappings, 'items.json')))
     java_items = [i['name'] for i in json.load(open(os.path.join(root, 'data', 'vanilla', 'items.json')))]
+
+    def item_mapping(name):
+        m = item_map.get(name)
+        if m and m['bedrock_identifier'] in bedrock_item_ids:
+            return m
+        other = item_fallbacks.get(name)
+        return item_mapping(other) if other else None
+
     table = []
     reverse = {}
     unmapped = []
     for java_id, name in enumerate(java_items):
-        m = item_map.get(name)
-        bid = bedrock_item_ids.get(m['bedrock_identifier']) if m else None
-        if bid is None:
+        m = item_mapping(name)
+        if m is None:
             if name != 'minecraft:air':
                 unmapped.append(name)
             table.append((0, 0))
             continue
+        bid = bedrock_item_ids[m['bedrock_identifier']]
         meta = m.get('bedrock_data', 0)
         table.append((bid, meta))
-        reverse.setdefault((bid, meta), java_id)
+        if item_map.get(name) is m:
+            reverse.setdefault((bid, meta), java_id)
     with open(os.path.join(out_dir, 'items.bin'), 'wb') as f:
         f.write(struct.pack('<I', len(table)))
         for bid, meta in table:
             f.write(struct.pack('<hH', bid, meta))
-    print(f'items: {len(table)} Java items, unmapped: {unmapped}')
-
+    print(f'{version} items: {len(table)} Java items, unmapped: {unmapped}')
     # Creative inventory: Bedrock's groups and order, items that have a Java counterpart.
     creative = json.load(open(os.path.join(resources, f'creative_items.{version}.json')))
 
@@ -414,15 +417,81 @@ def main():
         f.write(struct.pack('<I', len(entries)))
         for _, java_id in entries:
             f.write(struct.pack('<H', java_id))
-    print(f'creative: {len(entries)} of {len(creative["items"])} items')
+    print(f'{version} creative: {len(entries)} of {len(creative["items"])} items')
 
+
+def main():
+    mappings, geyser, versions = sys.argv[1], sys.argv[2], sys.argv[3:]
+    assert versions, 'name at least one palette version'
+    resources = os.path.join(geyser, 'core', 'src', 'main', 'resources', 'bedrock')
+    root = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..'))
+    out_dir = os.path.join(root, 'crates', 'vanillite-bedrock', 'data')
+    os.makedirs(out_dir, exist_ok=True)
+
+    # Java block state id -> Java block name and whether it holds water.
+    always_wet = {'minecraft:kelp', 'minecraft:kelp_plant', 'minecraft:seagrass',
+                  'minecraft:tall_seagrass', 'minecraft:bubble_column'}
+    wet = []
+    for block in json.load(open(os.path.join(root, 'data', 'vanilla', 'blocks.json'))):
+        assert block['first_state'] == len(wet), block['name']
+        props = block['properties']
+        for i in range(block['state_count']):
+            w = block['name'] in always_wet
+            stride = 1
+            for prop in reversed(props):
+                value = prop['values'][(i // stride) % len(prop['values'])]
+                stride *= len(prop['values'])
+                if prop['name'] == 'waterlogged' and value == 'true':
+                    w = True
+            wet.append((block['name'], w))
+
+    fallbacks, item_fallbacks = conversion_tables(geyser)
+    for version in versions:
+        write_release(root, mappings, resources, version, fallbacks, item_fallbacks, wet)
+
+    # Biomes.
+    biomes = json.load(open(os.path.join(mappings, 'biomes.json')))
+    with open(os.path.join(out_dir, 'biomes.txt'), 'w') as f:
+        for name, v in sorted(biomes.items()):
+            f.write(f"{name} {v['bedrock_id']}\n")
+    # Biome definitions (structured format since 1.21.80; vanilla biomes carry no id: -1).
+    defs = json.load(open(os.path.join(resources, 'stripped_biome_definitions.json')))
+    strings = []
+    index = {}
+
+    def string_index(s):
+        if s not in index:
+            index[s] = len(strings)
+            strings.append(s)
+        return index[s]
+
+    out = bytearray(varuint(len(defs)))
+    for name, d in defs.items():
+        out += struct.pack('<h', string_index(name))
+        out += struct.pack('<h', -1 if d.get('id') is None else d['id'])
+        out += struct.pack('<5f', d['temperature'], d['downfall'], d.get('foliageSnow', 0.0),
+                           d['depth'], d['scale'])
+        c = d['mapWaterColor']
+        out += struct.pack('<I', (c['a'] << 24) | (c['r'] << 16) | (c['g'] << 8) | c['b'])
+        out += bytes([1 if d['rain'] else 0])
+        tags = d.get('tags')
+        if tags is None:
+            out += b'\x00'
+        else:
+            out += b'\x01' + varuint(len(tags))
+            for t in tags:
+                out += struct.pack('<h', string_index(t))
+        out += b'\x00'  # no chunk generation data
+    out += varuint(len(strings))
+    for s in strings:
+        out += net_string(s)
+    open(os.path.join(out_dir, 'biome_definitions.bin'), 'wb').write(out)
     # Sounds: Java sound event -> Bedrock sound name.
     sounds = json.load(open(os.path.join(mappings, 'sounds.json')))
     with open(os.path.join(out_dir, 'sounds.txt'), 'w') as f:
         for name, v in sorted(sounds.items()):
             if v.get('playsound_mapping'):
                 f.write(f"minecraft:{name} {v['playsound_mapping']}\n")
-
     # Entity identifiers: already network NBT.
     data = open(os.path.join(resources, 'entity_identifiers.dat'), 'rb').read()
     open(os.path.join(out_dir, 'entity_identifiers.bin'), 'wb').write(data)

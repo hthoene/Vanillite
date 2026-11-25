@@ -1,7 +1,7 @@
 # Golden keys, written by `cargo xtask golden regen`. Do not edit.
 minecraft = "26.3"
 jar_sha1 = "33680f5f2ac32864d6d7cf5e56a705fdb3e05f4c"
-harness = 1
+harness = 2
 
 [entries]
 block_states = "8234b37ec928954368cbbe3e909ed93d5a7e7868"

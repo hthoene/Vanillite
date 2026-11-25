@@ -82,6 +82,7 @@ impl World {
             min_y: -64,
             dimension: "minecraft:the_end",
             raining_at: &raining,
+            enter_gateway: &mut |_| false,
             random: &mut self.random,
             out: &mut self.out,
         };
@@ -271,6 +272,7 @@ fn respawn_stages_take_604_ticks() {
             min_y: -64,
             dimension: "minecraft:the_end",
             raining_at: &raining,
+            enter_gateway: &mut |_| false,
             random,
             out,
         };

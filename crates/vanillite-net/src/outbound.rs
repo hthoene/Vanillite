@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
+use vanillite_multiversion::ClientboundHalf;
 use vanillite_protocol::compress::Codec;
 use vanillite_protocol::frame::{FrameEncoder, encode_body, encode_frame, for_each_body};
 use vanillite_protocol::{Packet, SharedPacket};
@@ -22,6 +23,8 @@ pub(crate) enum Out {
     Compression(i32),
     /// Encryption on from here (after the key exchange).
     Encryption([u8; 16]),
+    /// Translate every packet from here for a client of an older version.
+    Adapter(Box<ClientboundHalf>),
     /// Flush and close the connection.
     Close,
 }
@@ -126,6 +129,9 @@ impl Outbound {
     }
 }
 
+/// Capacity of a writer's buffers kept after a write; larger ones are released.
+const IDLE_BUFFER_MAX: usize = 64 * 1024;
+
 /// Writes to a TCP socket.
 pub(crate) async fn tcp_writer(
     mut socket: tokio::net::tcp::OwnedWriteHalf,
@@ -137,16 +143,57 @@ pub(crate) async fn tcp_writer(
     let mut codec = Codec::new(compression_level);
     let mut buf = Vec::with_capacity(8192);
     let mut open = true;
+    let mut adapter: Option<Box<ClientboundHalf>> = None;
     while open {
         let Some(first) = rx.recv().await else { break };
         let mut next = Some(first);
         while let Some(msg) = next.take() {
             let consumed = match msg {
+                Out::Body(body) if adapter.is_some() => {
+                    if let Some(a) = adapter.as_mut() {
+                        match a.translate(&body) {
+                            Ok(Some(t)) => {
+                                if encoder.body(t, &mut buf).is_err() {
+                                    open = false;
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(e) => {
+                                log::debug!("multiversion: untranslatable packet: {e}");
+                            }
+                        }
+                    }
+                    body.len()
+                }
+                Out::Shared(p) if adapter.is_some() => {
+                    if let Some(t) = adapter.as_mut().and_then(|a| a.translate_shared(&p))
+                        && encoder.body(t, &mut buf).is_err()
+                    {
+                        open = false;
+                    }
+                    p.body().len()
+                }
                 Out::Body(body) => {
                     if encoder.body(&body, &mut buf).is_err() {
                         open = false;
                     }
                     body.len()
+                }
+                Out::Batch(frames, threshold) if adapter.is_some() => {
+                    let res = for_each_body(&frames, threshold, |body| {
+                        if let Some(a) = adapter.as_mut() {
+                            match a.translate(body) {
+                                Ok(Some(t)) => encoder.body(t, &mut buf)?,
+                                Ok(None) => {}
+                                Err(e) => log::debug!("multiversion: untranslatable packet: {e}"),
+                            }
+                        }
+                        Ok(true)
+                    });
+                    if res.is_err() {
+                        open = false;
+                    }
+                    frames.len()
                 }
                 Out::Batch(frames, threshold) => {
                     if encoder.batch(&frames, threshold, &mut buf).is_err() {
@@ -180,6 +227,10 @@ pub(crate) async fn tcp_writer(
                     encoder.enable_encryption(&secret);
                     0
                 }
+                Out::Adapter(a) => {
+                    adapter = Some(a);
+                    0
+                }
                 Out::Close => {
                     open = false;
                     0
@@ -196,6 +247,11 @@ pub(crate) async fn tcp_writer(
             }
             buf.clear();
         }
+        // Bursts (the chunks of a join) grow the buffers; give that memory back.
+        if buf.capacity() > IDLE_BUFFER_MAX {
+            buf = Vec::with_capacity(8192);
+        }
+        encoder.trim(IDLE_BUFFER_MAX);
     }
     let _ = socket.shutdown().await;
 }
@@ -206,13 +262,21 @@ pub(crate) async fn virtual_writer(
     mut rx: mpsc::UnboundedReceiver<Out>,
     queued: Arc<AtomicUsize>,
 ) {
+    let mut adapter: Option<Box<ClientboundHalf>> = None;
     while let Some(msg) = rx.recv().await {
-        let body = match msg {
+        let (body, queued_len) = match msg {
             Out::Batch(frames, threshold) => {
                 queued.fetch_sub(frames.len(), Ordering::Relaxed);
                 let mut bodies = Vec::new();
                 if for_each_body(&frames, threshold, |body| {
-                    bodies.push(body.to_vec());
+                    match adapter.as_mut() {
+                        Some(a) => match a.translate(body) {
+                            Ok(Some(t)) => bodies.push(t.to_vec()),
+                            Ok(None) => {}
+                            Err(e) => log::debug!("multiversion: untranslatable packet: {e}"),
+                        },
+                        None => bodies.push(body.to_vec()),
+                    }
                     Ok(true)
                 })
                 .is_err()
@@ -226,13 +290,35 @@ pub(crate) async fn virtual_writer(
                 }
                 continue;
             }
-            Out::Body(b) => b,
-            Out::Shared(p) => p.body().to_vec(),
+            Out::Body(b) => match adapter.as_mut() {
+                Some(a) => {
+                    let n = b.len();
+                    let t = a.translate(&b).unwrap_or_else(|e| {
+                        log::debug!("multiversion: untranslatable packet: {e}");
+                        None
+                    });
+                    (t.map(<[u8]>::to_vec), n)
+                }
+                None => {
+                    let n = b.len();
+                    (Some(b), n)
+                }
+            },
+            Out::Shared(p) => match adapter.as_mut() {
+                Some(a) => (a.translate_shared(&p).map(<[u8]>::to_vec), p.body().len()),
+                None => (Some(p.body().to_vec()), p.body().len()),
+            },
+            Out::Adapter(a) => {
+                adapter = Some(a);
+                continue;
+            }
             Out::Compression(_) | Out::Encryption(_) => continue,
             Out::Close => break,
         };
-        queued.fetch_sub(body.len(), Ordering::Relaxed);
-        if tx.send(body).await.is_err() {
+        queued.fetch_sub(queued_len, Ordering::Relaxed);
+        if let Some(body) = body
+            && tx.send(body).await.is_err()
+        {
             break;
         }
     }
