@@ -670,8 +670,8 @@ impl GameWorld {
                 );
                 d.insert("target".into(), json!(name));
             }
-            d.insert("goals".into(), running(&m.goals.slots));
-            d.insert("targets".into(), running(&m.targets.slots));
+            d.insert("goals".into(), running(m.kind, &m.goals.slots));
+            d.insert("targets".into(), running(m.kind, &m.targets.slots));
             if let Some(path) = m.nav.path.as_ref().filter(|p| !p.is_done()) {
                 let nodes: Vec<Value> = path
                     .nodes
@@ -694,22 +694,23 @@ impl GameWorld {
 }
 
 /// The running goals by Vanilla class name, sorted.
-fn running(slots: &[Slot]) -> Value {
+fn running(kind: Kind, slots: &[Slot]) -> Value {
     let mut names: Vec<&str> = slots
         .iter()
         .filter(|s| s.running)
-        .map(|s| goal_name(&s.goal))
+        .map(|s| goal_name(kind, &s.goal))
         .collect();
     names.sort_unstable();
     json!(names)
 }
 
-/// The Vanilla class of a goal.
-fn goal_name(goal: &Goal) -> &'static str {
+/// The Vanilla class of a goal of a mob of `kind`.
+fn goal_name(kind: Kind, goal: &Goal) -> &'static str {
     match goal {
         Goal::Float => "FloatGoal",
         Goal::Panic { .. } => "PanicGoal",
         Goal::Stroll { .. } => "WaterAvoidingRandomStrollGoal",
+        Goal::LookAtPlayer { .. } if kind == Kind::Fox => "FoxLookAtPlayerGoal",
         Goal::LookAtPlayer { .. } => "LookAtPlayerGoal",
         Goal::RandomLook { .. } => "RandomLookAroundGoal",
         Goal::Melee { kind, .. } => match kind {
@@ -738,7 +739,7 @@ fn goal_name(goal: &Goal) -> &'static str {
         Goal::OwnerHurtBy { .. } => "OwnerHurtByTargetGoal",
         Goal::OwnerHurt { .. } => "OwnerHurtTargetGoal",
         Goal::Common(c) => common_goal_name(c),
-        Goal::Fam(f) => fam_goal_name(f),
+        Goal::Fam(f) => fam_goal_name(kind, f),
         Goal::Guardian(g) => {
             use vanillite_game::mob::boss::guardian::GuardianGoal as Gg;
             match g {
@@ -785,31 +786,148 @@ fn common_goal_name(goal: &CommonGoal) -> &'static str {
     }
 }
 
-/// The Vanilla class of a family goal: its variant name (`SpiderTarget` → `SpiderTargetGoal`)
-/// until the families map their goals one by one.
-fn fam_goal_name(goal: &FamGoal) -> &'static str {
-    use std::collections::HashMap;
-    static NAMES: Mutex<Option<HashMap<String, &'static str>>> = Mutex::new(None);
+/// The Vanilla class of a family goal of a mob of `kind`, read from the goal's `Debug` form
+/// (`Illager(Spell(UseSpell { spell: 1, .. }))`): the family, its variant and what selects the
+/// class inside it.
+fn fam_goal_name(kind: Kind, goal: &FamGoal) -> &'static str {
     let debug = format!("{goal:?}");
-    // `Undead(SpiderTarget(...))`: the second identifier is the family goal's variant.
-    let inner = debug
+    let words: Vec<&str> = debug
         .split(|c: char| !c.is_alphanumeric() && c != '_')
         .filter(|s| !s.is_empty())
-        .nth(1)
-        .unwrap_or("Unknown")
-        .to_owned();
+        .collect();
+    let word = |i: usize| words.get(i).copied().unwrap_or("");
+    let field = |name: &str| {
+        words
+            .iter()
+            .position(|w| *w == name)
+            .map_or("", |i| word(i + 1))
+    };
+    let (family, variant) = (word(0), word(1));
+    let name = match (family, variant) {
+        ("Undead", "DrownedMelee") => "DrownedAttackGoal",
+        ("Undead", "DrownedTrident") => "DrownedTridentAttackGoal",
+        ("Undead", "HurtByIgnoringDrowned") => "HurtByTargetGoal",
+        ("Undead", "SkeletonMelee") => "MeleeAttackGoal",
+        ("Undead", "CubeFloat") => "CubeMobFloatGoal",
+        ("Undead", "CubeAttack") => "CubeMobAttackGoal",
+        ("Undead", "CubeRandomDirection") => "CubeMobRandomDirectionGoal",
+        ("Undead", "CubeKeepOnJumping") => "CubeMobKeepOnJumpingGoal",
+        ("Undead", "PhantomSweep") => "PhantomSweepAttackGoal",
+        ("Undead", "PhantomCircle") => "PhantomCircleAroundAnchorGoal",
+        ("Undead", "PhantomTargetPlayer") => "PhantomAttackPlayerTargetGoal",
+        ("Illager", "Patrol") => "LongDistancePatrolGoal",
+        ("Illager", "HoldGround") => "HoldGroundAttackGoal",
+        ("Illager", "HurtBy") => "HurtByTargetGoal",
+        ("Illager", "LookAt") => "LookAtPlayerGoal",
+        ("Illager", "Stroll") => match kind {
+            Kind::Pillager | Kind::Witch => "WaterAvoidingRandomStrollGoal",
+            _ => "RandomStrollGoal",
+        },
+        ("Illager", "Locked") => common_name_of(word(2)),
+        ("Illager", "Target") => match field("gate") {
+            "WitchCanAttack" => "NearestAttackableWitchTargetGoal",
+            "Johnny" => "VindicatorJohnnyAttackGoal",
+            "NotPeaceful" => "ShulkerNearestAttackGoal",
+            _ => "NearestAttackableTargetGoal",
+        },
+        ("Illager", "WitchHeal") => "NearestHealableRaiderTargetGoal",
+        ("Illager", "Crossbow") => "RangedCrossbowAttackGoal",
+        ("Illager", "SpellCasting") => match kind {
+            Kind::Evoker => "EvokerCastingSpellGoal",
+            _ => "SpellcasterCastingSpellGoal",
+        },
+        ("Illager", "Spell") => match field("spell") {
+            "1" => "EvokerSummonSpellGoal",
+            "2" => "EvokerAttackSpellGoal",
+            "3" => "EvokerWololoSpellGoal",
+            "4" => "IllusionerMirrorSpellGoal",
+            "5" => "IllusionerBlindnessSpellGoal",
+            _ => "SpellcasterUseSpellGoal",
+        },
+        ("Illager", "VexCharge") => "VexChargeAttackGoal",
+        ("Illager", "VexCopyOwner") => "VexCopyOwnerTargetGoal",
+        ("Illager", "GhastFloat") => "RandomFloatAroundGoal",
+        ("Illager", "GhastShoot") => "GhastShootFireballGoal",
+        ("Companion", "Guard") => match (word(3), kind) {
+            ("Avoid", Kind::Cat) => "CatAvoidEntityGoal",
+            ("Avoid", Kind::Ocelot) => "OcelotAvoidEntityGoal",
+            ("NearestAttackable", _) if word(2) == "NotTame" => "NonTameRandomTargetGoal",
+            (inner, _) => common_name_of(inner),
+        },
+        ("Companion", "TamePanic") => "TamableAnimalPanicGoal",
+        ("Companion", _) => match (variant, word(2)) {
+            ("Horse", "RunAround") => "RunAroundLikeCrazyGoal",
+            ("Llama", "FollowCaravan") => "LlamaFollowCaravanGoal",
+            ("Llama", "AttackWolf") => "LlamaAttackWolfGoal",
+            ("Llama", "DefendTrader") => "TraderLlamaDefendWanderingTraderGoal",
+            ("Wolf", "AvoidLlama") => "WolfAvoidEntityGoal",
+            ("Feline", "RelaxOnOwner") => "CatRelaxOnOwnerGoal",
+            ("Feline", "LieOnBlock") => "CatLieOnBedGoal",
+            ("Feline", "SitOnBlock") => "CatSitOnBlockGoal",
+            ("Feline", "Attack") => "OcelotAttackGoal",
+            ("Parrot", "Wander") => "ParrotWanderGoal",
+            ("Fox", "Float") => "FoxFloatGoal",
+            ("Fox", "Panic") => "FoxPanicGoal",
+            ("Fox", "Avoid") => "AvoidEntityGoal",
+            ("Fox", "Pounce") => "FoxPounceGoal",
+            ("Fox", "EatBerries") => "FoxEatBerriesGoal",
+            ("Fox", "SearchForItems") => "FoxSearchForItemsGoal",
+            ("Fox", "DefendTrusted") => "DefendTrustedTargetGoal",
+            ("Panda", "BreedCheck") => "PandaBreedGoal",
+            ("Panda", inner) => leak(format!("Panda{inner}Goal")),
+            ("Bear", "Panic") => "PolarBearPanicGoal",
+            ("Bear", "AttackPlayers") => "PolarBearAttackPlayersGoal",
+            ("Rabbit", "Panic") => "RabbitPanicGoal",
+            ("Rabbit", "Avoid") => "RabbitAvoidEntityGoal",
+            (_, inner) => leak(format!("{inner}Goal")),
+        },
+        ("Mount", "Ghast") => match word(2) {
+            "Float" => "HappyGhastFloatGoal",
+            "Tempt" => "TemptGoal",
+            _ => "RandomFloatAroundGoal",
+        },
+        ("Wildlife", "Swim") => match kind {
+            Kind::Dolphin => "RandomSwimmingGoal",
+            _ => "FishSwimGoal",
+        },
+        ("Wildlife", "Puff") => "PufferfishPuffGoal",
+        ("Wildlife", "TurtleStroll") => "TurtleRandomStrollGoal",
+        ("Wildlife", "BeeValidateFlower") => "ValidateFlowerGoal",
+        (_, variant) => leak(if variant.ends_with("Goal") {
+            variant.to_owned()
+        } else {
+            format!("{variant}Goal")
+        }),
+    };
+    name
+}
+
+/// The Vanilla class of a [`CommonGoal`] variant by name.
+fn common_name_of(variant: &str) -> &'static str {
+    match variant {
+        "NearestAttackable" => "NearestAttackableTargetGoal",
+        "Avoid" => "AvoidEntityGoal",
+        "Ranged" => "RangedAttackGoal",
+        "MoveTowardsRestriction" => "MoveTowardsRestrictionGoal",
+        "ResetUniversalAnger" => "ResetUniversalAngerTargetGoal",
+        other => leak(format!("{other}Goal")),
+    }
+}
+
+/// A name for the trace, kept for the process (one per distinct name).
+fn leak(name: String) -> &'static str {
+    use std::collections::HashSet;
+    static NAMES: Mutex<Option<HashSet<&'static str>>> = Mutex::new(None);
     let mut names = NAMES
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let names = names.get_or_insert_with(HashMap::new);
-    names.entry(inner.clone()).or_insert_with(|| {
-        let name = if inner.ends_with("Goal") {
-            inner
-        } else {
-            format!("{inner}Goal")
-        };
-        Box::leak(name.into_boxed_str())
-    })
+    let names = names.get_or_insert_with(HashSet::new);
+    if let Some(n) = names.get(name.as_str()) {
+        return n;
+    }
+    let n: &'static str = Box::leak(name.into_boxed_str());
+    names.insert(n);
+    n
 }
 
 /// `PathType.name()`: `WalkableDoor` → `WALKABLE_DOOR`.
