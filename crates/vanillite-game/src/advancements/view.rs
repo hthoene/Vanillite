@@ -194,3 +194,117 @@ pub fn damage_event(
         blocked,
     })
 }
+
+/// Damage or the death of a player, kept until the world's entities are at hand
+/// (`LivingEntity.hurtServer`'s triggers and `awardKillScore`).
+#[derive(Clone, Copy, Debug)]
+pub enum PendingCombat {
+    /// `ENTITY_HURT_PLAYER` and the causing player's `PLAYER_HURT_ENTITY`.
+    Hurt {
+        source: DamageSource,
+        damage: f32,
+        blocked: bool,
+    },
+    /// `ENTITY_KILLED_PLAYER` and the killing player's `PLAYER_KILLED_ENTITY`.
+    Died {
+        source: DamageSource,
+        killer: EntityId,
+    },
+}
+
+/// Fires the triggers of a player's [`PendingCombat`] with the entities as they are now.
+pub fn resolve_combat(ents: &mut Entities, types: &DamageTypes, player: EntityId) {
+    let pending = match ents.player_mut(player) {
+        Some(p) if !p.advancements.combat.is_empty() => std::mem::take(&mut p.advancements.combat),
+        _ => return,
+    };
+    let is_player = |ents: &Entities, id: EntityId| ents.player(id).is_some();
+    for p in pending {
+        match p {
+            PendingCombat::Hurt {
+                source,
+                damage,
+                blocked,
+            } => {
+                fire(ents, player, TriggerKind::ENTITY_HURT_PLAYER, |ents| {
+                    Event::EntityHurtPlayer(damage_event(
+                        ents, types, &source, damage, damage, blocked,
+                    ))
+                });
+                if let Some(cause) = source.cause.filter(|&c| is_player(ents, c))
+                    && listens(ents, cause, TriggerKind::PLAYER_HURT_ENTITY)
+                    && let Some(victim) = snapshot(ents, player)
+                {
+                    let event = Event::PlayerHurtEntity(
+                        victim,
+                        damage_event(ents, types, &source, damage, damage, blocked),
+                    );
+                    if let Some(p) = ents.player_mut(cause) {
+                        p.advancements.trigger(event);
+                    }
+                }
+            }
+            PendingCombat::Died { source, killer } => {
+                // `Entity.awardKillScore`: `ENTITY_KILLED_PLAYER` of the victim.
+                if listens(ents, player, TriggerKind::ENTITY_KILLED_PLAYER)
+                    && let Some(k) = snapshot(ents, killer)
+                {
+                    let event = Event::Killed(
+                        TriggerKind::ENTITY_KILLED_PLAYER,
+                        k,
+                        Box::new(damage_view(ents, types, &source)),
+                    );
+                    if let Some(p) = ents.player_mut(player) {
+                        p.advancements.trigger(event);
+                    }
+                }
+                // `ServerPlayer.awardKillScore`: `PLAYER_KILLED_ENTITY` of the killer.
+                if killer != player
+                    && is_player(ents, killer)
+                    && listens(ents, killer, TriggerKind::PLAYER_KILLED_ENTITY)
+                    && let Some(victim) = snapshot(ents, player)
+                {
+                    let event = Event::Killed(
+                        TriggerKind::PLAYER_KILLED_ENTITY,
+                        victim,
+                        Box::new(damage_view(ents, types, &source)),
+                    );
+                    if let Some(p) = ents.player_mut(killer) {
+                        p.advancements.trigger(event);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// `ItemStack.applyDamage` of a player's item (`hurtAndBreak(amount, owner, slot)` after
+/// Unbreaking, when the change is not 0): `ITEM_DURABILITY_CHANGED` with the stack as it was,
+/// the new damage, and when it breaks the stack shrinks and `ITEM_BROKEN` counts
+/// (`onEquippedItemBroken`). Returns whether it broke.
+pub fn apply_damage(
+    advancements: Option<&mut super::PlayerAdvancements>,
+    stats: Option<&mut crate::stats::StatsCounter>,
+    stack: &mut ItemStack,
+    new_damage: i32,
+) -> bool {
+    if let Some(a) = advancements {
+        a.trigger_with(TriggerKind::ITEM_DURABILITY_CHANGED, || {
+            Event::ItemDurabilityChanged(stack.clone(), new_damage)
+        });
+    }
+    if new_damage >= crate::item::max_damage(stack) {
+        let item = stack.item;
+        stack.shrink(1);
+        if let Some(stats) = stats {
+            stats.award(
+                crate::stats::Stat::of(crate::stats::StatType::Broken, item),
+                1,
+            );
+        }
+        true
+    } else {
+        crate::item::set_damage(stack, new_damage);
+        false
+    }
+}

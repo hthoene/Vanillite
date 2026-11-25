@@ -77,6 +77,8 @@ pub enum EffectEvent {
     },
     /// `remove_mob_effect`.
     Remove(MobEffect),
+    /// `update_mob_effect` without a change (`sendActivePlayerEffects`): no `onEffectUpdated`.
+    Resend(EffectInstance),
     /// The sound of an effect added outside the entity's tick (`onEffectAdded`), played by
     /// the owner at the entity.
     Sound(Box<str>),
@@ -299,10 +301,7 @@ impl ActiveEffects {
     /// dimension, a rider mounting).
     pub fn resend_all(&mut self) {
         for e in &self.list {
-            self.events.push(EffectEvent::Update {
-                instance: e.clone(),
-                blend: false,
-            });
+            self.events.push(EffectEvent::Resend(e.clone()));
         }
     }
 

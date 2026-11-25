@@ -326,30 +326,33 @@ pub fn hurt_held(
     let Some(p) = ents.player_mut(player) else {
         return;
     };
-    let Some(s) = p.inventory.get_mut(i) else {
+    let crate::player::PlayerData {
+        inventory,
+        advancements,
+        stats,
+        ..
+    } = p;
+    let Some(s) = inventory.get_mut(i) else {
         return;
     };
     if n == 0 || !item::is_damageable(s) {
         return;
     }
     let d = item::damage(s) + n;
-    if d >= item::max_damage(s) {
-        s.shrink(1);
-        if let Some(pos) = pos {
-            let seed = crate::survival::sound_seed();
-            play_sound(
-                env.out,
-                None,
-                pos,
-                "minecraft:entity.item.break",
-                SoundSource::Players,
-                0.8,
-                0.8 + env.random.next_float() * 0.4,
-                seed,
-            );
-        }
-    } else {
-        item::set_damage(s, d);
+    if crate::advancements::view::apply_damage(Some(advancements), Some(stats), s, d)
+        && let Some(pos) = pos
+    {
+        let seed = crate::survival::sound_seed();
+        play_sound(
+            env.out,
+            None,
+            pos,
+            "minecraft:entity.item.break",
+            SoundSource::Players,
+            0.8,
+            0.8 + env.random.next_float() * 0.4,
+            seed,
+        );
     }
 }
 

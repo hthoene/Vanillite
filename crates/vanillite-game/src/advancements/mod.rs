@@ -14,6 +14,7 @@
 
 pub mod predicate;
 mod progress;
+pub mod tracking;
 pub mod trigger;
 pub mod view;
 

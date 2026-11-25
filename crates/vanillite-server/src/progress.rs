@@ -55,6 +55,7 @@ impl World for LevelWorld<'_> {
 }
 
 /// A player as the entity predicates see it.
+#[allow(clippy::too_many_arguments)]
 fn player_view<'a>(
     level: &Level,
     id: EntityId,
@@ -135,6 +136,17 @@ pub(crate) fn tick(level: &mut Level, global: &Global, world: WorldId, dimension
         .registries
         .get("minecraft:worldgen/biome")
         .unwrap_or(&no_biomes);
+    // `ServerPlayer.tick`'s distance triggers, and the damage and deaths of the tick whose
+    // triggers need the entities.
+    let ids: Vec<EntityId> = level.entities.players.iter().map(|(id, _)| id).collect();
+    for id in ids {
+        vanillite_game::advancements::tracking::tick(&mut level.entities, id);
+        vanillite_game::advancements::view::resolve_combat(
+            &mut level.entities,
+            &global.level.damage_types,
+            id,
+        );
+    }
     let mut players = std::mem::take(&mut level.entities.players);
     let mut scores = Vec::new();
     let mut rewards = Vec::new();

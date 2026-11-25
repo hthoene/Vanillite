@@ -345,7 +345,11 @@ impl Conditions {
                 let slots = match o.get("slots") {
                     Some(s) => {
                         let s = object(s)?;
-                        [bounds(s, "occupied")?, bounds(s, "full")?, bounds(s, "empty")?]
+                        [
+                            bounds(s, "occupied")?,
+                            bounds(s, "full")?,
+                            bounds(s, "empty")?,
+                        ]
                     }
                     None => [Bounds::default(); 3],
                 };
@@ -371,9 +375,11 @@ impl Conditions {
                 from: o.get("from").map(string).transpose()?.map(qualify),
                 to: o.get("to").map(string).transpose()?.map(qualify),
             },
-            K::CONSUME_ITEM | K::FILLED_BUCKET | K::USED_TOTEM | K::SHOT_CROSSBOW | K::USING_ITEM => {
-                Data::Item(item(o, "item")?)
-            }
+            K::CONSUME_ITEM
+            | K::FILLED_BUCKET
+            | K::USED_TOTEM
+            | K::SHOT_CROSSBOW
+            | K::USING_ITEM => Data::Item(item(o, "item")?),
             K::PLAYER_KILLED_ENTITY | K::ENTITY_KILLED_PLAYER | K::KILL_MOB_NEAR_SCULK_CATALYST => {
                 Data::Killed {
                     entity: condition(o, "entity")?,
@@ -433,11 +439,17 @@ impl Conditions {
                 delta: bounds(o, "delta")?,
             },
             K::LEVITATION => Data::Levitation {
-                distance: o.get("distance").map(DistancePredicate::parse).transpose()?,
+                distance: o
+                    .get("distance")
+                    .map(DistancePredicate::parse)
+                    .transpose()?,
                 duration: bounds(o, "duration")?,
             },
             K::EFFECTS_CHANGED => Data::Effects {
-                effects: o.get("effects").map(MobEffectsPredicate::parse).transpose()?,
+                effects: o
+                    .get("effects")
+                    .map(MobEffectsPredicate::parse)
+                    .transpose()?,
                 source: condition(o, "source")?,
             },
             K::NETHER_TRAVEL
@@ -448,7 +460,10 @@ impl Conditions {
                     .get("start_position")
                     .map(LocationPredicate::parse)
                     .transpose()?,
-                distance: o.get("distance").map(DistancePredicate::parse).transpose()?,
+                distance: o
+                    .get("distance")
+                    .map(DistancePredicate::parse)
+                    .transpose()?,
                 cause: condition(o, "cause")?,
             },
             K::FISHING_ROD_HOOKED => Data::Fishing {
@@ -472,9 +487,9 @@ impl Conditions {
                 signal: bounds(o, "signal_strength")?,
                 projectile: condition(o, "projectile")?,
             },
-            K::PLAYER_GENERATES_CONTAINER_LOOT => {
-                Data::Loot(IdSet::parse(o.get("loot_tables").ok_or("missing loot_tables")?)?)
-            }
+            K::PLAYER_GENERATES_CONTAINER_LOOT => Data::Loot(IdSet::parse(
+                o.get("loot_tables").ok_or("missing loot_tables")?,
+            )?),
             K::LIGHTNING_STRIKE => Data::Lightning {
                 lightning: condition(o, "lightning")?,
                 bystander: condition(o, "bystander")?,
@@ -774,9 +789,10 @@ impl Conditions {
                 | Event::AnyBlockUse(pos, tool),
             ) => location(c, *pos, Some(tool)),
             (Data::Location(c), Event::DefaultBlockUse(pos)) => location(c, *pos, None),
-            (Data::EnterBlock { blocks, state }, Event::EnterBlock(s) | Event::SlideDownBlock(s)) => {
-                block_matches(blocks.as_ref(), state.as_ref(), *s, world)
-            }
+            (
+                Data::EnterBlock { blocks, state },
+                Event::EnterBlock(s) | Event::SlideDownBlock(s),
+            ) => block_matches(blocks.as_ref(), state.as_ref(), *s, world),
             (Data::Recipes { recipes, .. }, Event::RecipeUnlocked(id)) => {
                 recipes.contains("minecraft:recipe", id, world)
             }
@@ -786,7 +802,10 @@ impl Conditions {
                     ingredients,
                 },
                 Event::RecipeCrafted(id, used) | Event::CrafterRecipeCrafted(id, used),
-            ) => recipes.contains("minecraft:recipe", id, world) && ingredients_match(ingredients, used),
+            ) => {
+                recipes.contains("minecraft:recipe", id, world)
+                    && ingredients_match(ingredients, used)
+            }
             (Data::Dimension { from, to }, Event::ChangedDimension(f, t)) => {
                 from.as_ref().is_none_or(|d| d == f) && to.as_ref().is_none_or(|d| d == t)
             }
@@ -869,9 +888,9 @@ impl Conditions {
                 effects
                     .as_ref()
                     .is_none_or(|p| p.matches(&ctx.player.effects))
-                    && source.as_ref().is_none_or(|c| {
-                        cause.as_ref().is_some_and(|e| entity_test(c, Some(e)))
-                    })
+                    && source
+                        .as_ref()
+                        .is_none_or(|c| cause.as_ref().is_some_and(|e| entity_test(c, Some(e))))
             }
             (
                 Data::Distance {
@@ -885,9 +904,7 @@ impl Conditions {
                     Event::FallAfterExplosion(_, by) => by.as_deref(),
                     _ => None,
                 };
-                start
-                    .as_ref()
-                    .is_none_or(|l| l.matches(world, *at))
+                start.as_ref().is_none_or(|l| l.matches(world, *at))
                     && distance.as_ref().is_none_or(|d| d.matches(*at, origin))
                     && cause
                         .as_ref()
@@ -908,11 +925,9 @@ impl Conditions {
                             || caught.iter().any(|s| p.test(s, world))
                     })
             }
-            (Data::Victims { victims, .. }, Event::ChanneledLightning(struck)) => {
-                victims
-                    .iter()
-                    .all(|c| struck.iter().any(|e| entity_test(c, Some(e))))
-            }
+            (Data::Victims { victims, .. }, Event::ChanneledLightning(struck)) => victims
+                .iter()
+                .all(|c| struck.iter().any(|e| entity_test(c, Some(e)))),
             (
                 Data::Victims {
                     victims,
