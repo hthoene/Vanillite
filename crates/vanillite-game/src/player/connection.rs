@@ -622,8 +622,7 @@ impl Connection {
             | ServerboundPlay::Unhandled { .. } => {}
         }
         // `handlePlayerKnownMovement`: a real move counts as activity.
-        let moved = state.body.pos - before;
-        if moved.x * moved.x + moved.y * moved.y + moved.z * moved.z > 1.0e-5 {
+        if state.body.pos.distance_to_sqr(before) > 1.0e-5 {
             self.last_action = std::time::Instant::now();
         }
         Ok(())
