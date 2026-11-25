@@ -1028,7 +1028,7 @@ fn protection(
     };
     let cx = crate::enchant::EnchantContext {
         types: env.types,
-        tags: data,
+        tags: &*data,
         this: Some(this),
         attacker: None,
         direct_attacker: None,

@@ -272,8 +272,7 @@ impl ConfigRef {
         match self {
             ConfigRef::Inline(c, _) => (**c).clone(),
             ConfigRef::Named(id) => crate::player::play::game_data()
-                .and_then(|d| d.trial_spawner_configs.get(id))
-                .cloned()
+                .and_then(|d| d.trial_spawner_configs.get(id).cloned())
                 .unwrap_or_default(),
         }
     }

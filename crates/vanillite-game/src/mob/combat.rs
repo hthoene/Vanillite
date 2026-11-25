@@ -560,7 +560,7 @@ fn table_loot(
             cause: attacker,
         }),
         types: env.types,
-        tags: data,
+        tags: &*data,
         attacker_enchantment_level: &level,
     };
     let none = |_: &str| 0;

@@ -217,7 +217,7 @@ fn encode_component(name: &str, value: &Tag, env: &Env<'_>) -> Result<Vec<u8>, C
             for (enchantment, level) in levels.iter() {
                 let id = env
                     .global
-                    .game
+                    .game()
                     .enchantments
                     .get(&qualify(enchantment))
                     .and_then(|id| i32::try_from(*id).ok())
@@ -1009,7 +1009,7 @@ pub(crate) fn enchant(
         .identifier("enchantment")
         .ok_or_else(|| missing("enchantment"))?
         .clone();
-    let game = std::sync::Arc::clone(&env.global.game);
+    let game = env.global.game();
     let Some((id, info)) = game
         .enchantments
         .get(&name)

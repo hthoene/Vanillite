@@ -532,7 +532,13 @@ impl WorldPlayers {
         sink.send(&SetHeldSlot {
             slot: i32::try_from(player.inventory.selected).unwrap_or(0),
         });
-        sink.send_shared(&global.recipes_packet);
+        let recipes = Arc::clone(
+            &global
+                .recipes_packet
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        sink.send_shared(&recipes);
         if let Some(d) = vanillite_game::player::play::game_data() {
             let (settings, book) = player.recipe_book.initial(&d.recipes.book);
             sink.send(&settings);
@@ -629,7 +635,7 @@ impl WorldPlayers {
                     xp: Some(&mut player.survival.xp),
                     recipe_book: Some(&mut player.recipe_book),
                     actor,
-                    data: &global.game,
+                    data: &global.game(),
                     spawn_protected: &protected,
                     drops: &mut drops,
                     swings: &mut hands,
@@ -907,7 +913,7 @@ impl WorldPlayers {
                     xp: Some(&mut player.survival.xp),
                     recipe_book: Some(&mut player.recipe_book),
                     actor,
-                    data: &global.game,
+                    data: &global.game(),
                     spawn_protected: &protected,
                     drops: &mut drops,
                     swings: &mut hands,
@@ -1387,7 +1393,7 @@ fn touch_orb(
             &mut level.entities,
             orb,
             &mut player.inventory,
-            &global.game.enchanting,
+            &global.game().enchanting,
             &mut |n| r.next_int_bounded(n),
         )
     });

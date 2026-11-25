@@ -83,6 +83,13 @@ pub(crate) struct Env<'a> {
 pub(crate) fn load_game_systems(global: &Global, packs: &[vanillite_datapack::OpenedPack]) {
     global.systems.set_functions(functions::load(global, packs));
     global.systems.load(&global.level.data);
+    global.systems.set_advancements(load_advancements(packs));
+}
+
+/// The advancements of the packs (`ServerAdvancementManager.apply`).
+pub(crate) fn load_advancements(
+    packs: &[vanillite_datapack::OpenedPack],
+) -> vanillite_game::advancements::Advancements {
     let roots: Vec<std::path::PathBuf> = packs.iter().flat_map(|p| p.layers.clone()).collect();
     let files = functions::list(&roots, "advancement", ".json")
         .into_iter()
@@ -94,9 +101,7 @@ pub(crate) fn load_game_systems(global: &Global, packs: &[vanillite_datapack::Op
             }
         })
         .collect::<std::collections::BTreeMap<_, _>>();
-    global
-        .systems
-        .set_advancements(vanillite_game::advancements::Advancements::load(&files));
+    vanillite_game::advancements::Advancements::load(&files)
 }
 
 /// `ServerFunctionManager.tick` on the overworld.

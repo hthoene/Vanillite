@@ -283,3 +283,30 @@ pub(crate) fn grant_rewards(env: &mut Env<'_>, id: EntityId) {
         }
     }
 }
+
+/// `PlayerAdvancements.reload` of every online player after `/reload`: the progress kept for
+/// the advancements that still exist, sent again as a full update.
+pub(crate) fn reload_advancements(global: &Global) {
+    for index in 0..crate::server::DIMENSIONS.len() {
+        let Ok(index) = u16::try_from(index) else {
+            continue;
+        };
+        let Some(arc) = global.arc() else {
+            return;
+        };
+        global.run_in_world(WorldId(index), move |w| {
+            let set = arc.systems.advancements();
+            let entities = w.entities_mut();
+            let ids: Vec<EntityId> = entities.players.iter().map(|(id, _)| id).collect();
+            for id in ids {
+                if let Some(p) = entities.player_mut(id) {
+                    let saved = p.advancements.to_json();
+                    p.advancements = vanillite_game::advancements::PlayerAdvancements::load(
+                        std::sync::Arc::clone(&set),
+                        Some(&saved),
+                    );
+                }
+            }
+        });
+    }
+}

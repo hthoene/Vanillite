@@ -71,8 +71,8 @@ pub(super) fn fill(block: BlockId, b: &mut BlockBehaviour) {
     }
 }
 
-fn recipes() -> Option<&'static crate::recipe::Recipes> {
-    crate::player::play::game_data().map(|d| &d.recipes)
+fn recipes() -> Option<std::sync::Arc<crate::player::play::GameData>> {
+    crate::player::play::game_data()
 }
 
 /// The ticker: `cookTick` while lit, `cooldownTick` otherwise (Vanilla picks the ticker by the
@@ -109,8 +109,12 @@ fn cook_tick(level: &mut Level, pos: BlockPos, state: BlockState) {
         }
         let input = stack.clone();
         let result = recipes()
-            .and_then(|r| r.cooking_for(CookingKind::Campfire, &input))
-            .map_or(input, |r| r.result.clone());
+            .and_then(|r| {
+                r.recipes
+                    .cooking_for(CookingKind::Campfire, &input)
+                    .map(|r| r.result.clone())
+            })
+            .unwrap_or(input);
         if let Some(target) = c.items.get_mut(slot) {
             *target = ItemStack::EMPTY;
         }
@@ -156,7 +160,7 @@ fn use_item_on(
     stack: &mut ItemStack,
 ) -> ItemInteraction {
     if matches!(level.block_entity(pos), Some(BlockEntity::Campfire(_)))
-        && recipes().is_some_and(|r| r.is_cooking_input(CookingKind::Campfire, stack))
+        && recipes().is_some_and(|r| r.recipes.is_cooking_input(CookingKind::Campfire, stack))
     {
         if place_food(level, pos, Some(ctx.player), stack) {
             return ItemInteraction::Done(Interaction::Success);
@@ -186,9 +190,11 @@ pub fn place_food(
     source: Option<vanillite_world::entity::EntityId>,
     stack: &mut ItemStack,
 ) -> bool {
-    let Some(time) = recipes()
-        .and_then(|r| r.cooking_for(CookingKind::Campfire, stack))
-        .map(|r| r.cooking_time)
+    let Some(time) = recipes().and_then(|r| {
+        r.recipes
+            .cooking_for(CookingKind::Campfire, stack)
+            .map(|r| r.cooking_time)
+    })
     else {
         return false;
     };

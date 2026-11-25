@@ -22,22 +22,12 @@ use crate::survival::player::{self, Env};
 use crate::survival::{Effect, play_sound};
 
 /// Entity type tags when no data packs are loaded.
-struct NoTags;
-
-impl EntityTags for NoTags {
-    fn entity_in_tag(&self, _: vanillite_data::entity::EntityTypeId, _: &str) -> bool {
-        false
-    }
-}
-
-static NO_ENCHANTS: Enchantments = Enchantments { list: Vec::new() };
-
-/// The loaded enchantments and entity tags (empty without data packs).
-pub fn combat_data() -> (&'static Enchantments, &'static dyn EntityTags) {
-    match crate::player::play::game_data() {
-        Some(d) => (&d.enchants, d),
-        None => (&NO_ENCHANTS, &NoTags),
-    }
+/// The loaded game data with the enchantments and entity tags (empty without data packs).
+pub fn combat_data() -> std::sync::Arc<crate::player::play::GameData> {
+    static EMPTY: std::sync::OnceLock<std::sync::Arc<crate::player::play::GameData>> =
+        std::sync::OnceLock::new();
+    crate::player::play::game_data()
+        .unwrap_or_else(|| std::sync::Arc::clone(EMPTY.get_or_init(Default::default)))
 }
 
 /// The facts predicates test of a living entity.
@@ -189,7 +179,8 @@ pub fn player_attack(
     let weapon = p.inventory.selected_item().clone();
     let fall_distance = p.survival.fall_distance;
     let in_water = p.survival.fluids.in_water();
-    let (enchants, tags) = combat_data();
+    let combat = combat_data();
+    let (enchants, tags): (&Enchantments, &dyn EntityTags) = (&combat.enchants, &*combat);
 
     let base = player_attribute(ents, attacker, "minecraft:attack_damage", 1.0, 0.0, 2048.0);
     #[allow(clippy::cast_possible_truncation)]
@@ -334,7 +325,8 @@ fn mace_bonus(
     } else {
         22.0 + f - 8.0
     };
-    let (enchants, tags) = combat_data();
+    let combat = combat_data();
+    let (enchants, tags): (&Enchantments, &dyn EntityTags) = (&combat.enchants, &*combat);
     let ecx = damage_context(ents, env.types, tags, target, source);
     #[allow(clippy::cast_possible_truncation)]
     let per_block = enchants.modify_fall_based_damage(weapon, &ecx, env.random, 0.0) * f as f32;
@@ -439,7 +431,8 @@ fn sweep_attack(
         .player(attacker)
         .map(|p| p.inventory.selected_item().clone())
         .unwrap_or_default();
-    let (enchants, tags) = combat_data();
+    let combat = combat_data();
+    let (enchants, tags): (&Enchantments, &dyn EntityTags) = (&combat.enchants, &*combat);
     for id in near {
         if id == attacker || id == target || !is_alive(ents, id) {
             continue;
@@ -478,7 +471,8 @@ pub fn post_attack(
     source: &DamageSource,
     weapon: &ItemStack,
 ) {
-    let (enchants, tags) = combat_data();
+    let combat = combat_data();
+    let (enchants, tags): (&Enchantments, &dyn EntityTags) = (&combat.enchants, &*combat);
     let seconds = {
         let ecx = damage_context(ents, env.types, tags, victim, source);
         enchants.post_attack_ignite(weapon, &ecx, env.random)

@@ -55,7 +55,7 @@ pub(crate) fn with_context<R>(
     params: Params<'_>,
     f: impl FnOnce(&vanillite_game::player::play::GameData, &LootContext<'_>, &mut dyn LootRandom) -> R,
 ) -> R {
-    let data = std::sync::Arc::clone(&env.global.game);
+    let data = env.global.game();
     let at = params.origin.map(|o| BlockPos::containing(o.x, o.y, o.z));
     let level = &mut *env.level;
     let biome: Option<String> = at.and_then(|at| {
@@ -122,7 +122,7 @@ pub(crate) fn test_predicate(
     predicate: &(Option<String>, Option<serde_json::Value>),
     rng: &mut dyn LootRandom,
 ) -> Result<bool, String> {
-    let data = &*global.game;
+    let data = &*global.game();
     let no_level = |_: &str| 0;
     let entity = this
         .and_then(|id| vanillite_game::mob::attack::facts(entities, id))
@@ -252,7 +252,7 @@ fn drops(
             let name = state.block().info().name;
             let (ns, path) = name.split_once(':').unwrap_or(("minecraft", name));
             let table = format!("{ns}:blocks/{path}");
-            let data = std::sync::Arc::clone(&env.global.game);
+            let data = env.global.game();
             if state.is_air() || !data.loot.contains(&table) {
                 return Err(CommandError::new(
                     "commands.drop.no_loot_table.block",
@@ -289,7 +289,7 @@ fn drops(
             let name = target.kind.name();
             let (ns, path) = name.split_once(':').unwrap_or(("minecraft", name));
             let table = format!("{ns}:entities/{path}");
-            let data = std::sync::Arc::clone(&env.global.game);
+            let data = env.global.game();
             let Some(id) = target.entity.filter(|_| data.loot.contains(&table)) else {
                 return Err(CommandError::new(
                     "commands.drop.no_loot_table.entity",

@@ -168,7 +168,7 @@ fn is_living(target: &Target) -> bool {
 
 /// `canBeAffected` of a target's kind.
 fn can_be_affected(env: &Env<'_>, target: &Target, effect: u16) -> bool {
-    let game = &env.global.game;
+    let game = &env.global.game();
     vanillite_game::effect::can_be_affected(target.kind, effect, &|tag| {
         game.entity_tags
             .get(tag)

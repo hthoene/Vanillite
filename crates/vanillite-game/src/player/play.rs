@@ -60,17 +60,24 @@ impl crate::predicate::EntityTags for GameData {
     }
 }
 
-static GAME_DATA: std::sync::OnceLock<std::sync::Arc<GameData>> = std::sync::OnceLock::new();
+static GAME_DATA: std::sync::RwLock<Option<std::sync::Arc<GameData>>> =
+    std::sync::RwLock::new(None);
 
 /// Installs the gameplay data for code that has no player context (block drops of the level
-/// simulation). Data packs are frozen for the process: later calls are ignored.
+/// simulation); `/reload` installs the reloaded data the same way.
 pub fn install_game_data(data: std::sync::Arc<GameData>) {
-    let _ = GAME_DATA.set(data);
+    *GAME_DATA
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(data);
 }
 
-/// The installed gameplay data, if any.
-pub fn game_data() -> Option<&'static GameData> {
-    GAME_DATA.get().map(|d| &**d)
+/// The installed gameplay data, if any. Callers keep the returned data for one operation, so
+/// a reload never changes the data in the middle of it.
+pub fn game_data() -> Option<std::sync::Arc<GameData>> {
+    GAME_DATA
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
 }
 
 impl GameData {
