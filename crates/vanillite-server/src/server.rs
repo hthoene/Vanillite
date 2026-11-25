@@ -538,6 +538,7 @@ impl ServerBuilder {
             watchdog: Some(watchdog),
             net: Some(net),
             test_bots: Vec::new(),
+            dupe_waiting: Vec::new(),
             layout,
             player_store,
             next_backup: Instant::now(),
@@ -788,6 +789,9 @@ pub struct Server {
     net: Option<NetState>,
     /// UUIDs of the test bots this server started (`debug.test-bots`).
     test_bots: Vec<u128>,
+    /// Joins whose UUID was still online, with the tick they arrived in: they wait until the
+    /// kicked older session has left (Vanilla's `WAITING_FOR_DUPE_DISCONNECT`).
+    dupe_waiting: Vec<(vanillite_net::Joined, u64)>,
     layout: WorldLayout,
     /// Player data files, written in the background.
     player_store: PlayerDataStore,
@@ -994,12 +998,44 @@ impl Server {
 
     /// Takes joined connections into the game, at most `security.max-joins-per-tick`.
     fn accept_joins(&mut self) {
+        for (joined, since) in std::mem::take(&mut self.dupe_waiting) {
+            self.accept_waiting(joined, since);
+        }
         let max = self.config.server.security.max_joins_per_tick;
         for _ in 0..max {
             let Some(joined) = self.net.as_ref().and_then(NetState::next_join) else {
                 break;
             };
+            if self.global.players.contains(Uuid(joined.profile.id.0)) {
+                // `disconnectAllPlayersWithProfile`: the older session goes, the new one waits.
+                if let Some((sink, _)) = self.global.players.connection(Uuid(joined.profile.id.0)) {
+                    sink.kick(vanillite_protocol::text::Component::translatable(
+                        "multiplayer.disconnect.duplicate_login",
+                        vec![],
+                    ));
+                }
+                self.accept_waiting(joined, self.tick_count);
+            } else {
+                self.accept(joined);
+            }
+        }
+    }
+
+    /// A join waiting for its older session to leave: accepted once it has left, refused with
+    /// `slow_login` after Vanilla's login limit of 600 ticks.
+    fn accept_waiting(&mut self, joined: vanillite_net::Joined, since: u64) {
+        if !self.global.players.contains(Uuid(joined.profile.id.0)) {
             self.accept(joined);
+        } else if self.tick_count.saturating_sub(since) >= 600 {
+            let properties = &self.config.properties;
+            let (_, sink) =
+                crate::net::arrival(joined, None, properties.gamemode, properties.force_gamemode);
+            sink.kick(vanillite_protocol::text::Component::translatable(
+                "multiplayer.disconnect.slow_login",
+                vec![],
+            ));
+        } else {
+            self.dupe_waiting.push((joined, since));
         }
     }
 
@@ -1027,10 +1063,6 @@ impl Server {
         let test_bot = arrival.memory_connection && self.test_bots.contains(&uuid);
         let refuse = if !test_bot && !access.is_whitelisted(uuid) {
             Some("multiplayer.disconnect.not_whitelisted")
-        } else if players.contains(Uuid(uuid)) {
-            // Vanilla kicks the older session; refusing the new one keeps a single owner of the
-            // player without a cross-world removal.
-            Some("multiplayer.disconnect.duplicate_login")
         } else if players.count() >= players.max_players() && !access.bypasses_player_limit(uuid) {
             Some("multiplayer.disconnect.server_full")
         } else {
