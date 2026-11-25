@@ -139,7 +139,9 @@ fn act(
         }
         // `container_button_click`.
         2..=6 => {
-            if inv.container.is_none() || !super::container::still_valid(inv, level, &|_| true, &|_| true) {
+            if inv.container.is_none()
+                || !super::container::still_valid(inv, level, &|_| true, &|_| true)
+            {
                 return false;
             }
             let id = match rng.next_int_bounded(3) {

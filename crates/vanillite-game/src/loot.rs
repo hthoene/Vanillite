@@ -2300,9 +2300,7 @@ impl<'t> Eval<'t, '_> {
                         .is_some_and(|biome| biomes.iter().any(|b| biome(b)))
             }
             Cond::ThisPresent => {
-                self.ctx.this_present
-                    || self.ctx.this_entity.is_some()
-                    || self.ctx.entity.is_some()
+                self.ctx.this_present || self.ctx.this_entity.is_some() || self.ctx.entity.is_some()
             }
             Cond::Entity(target, p) => {
                 let Some(e) = self.ctx.entity else {
@@ -3500,5 +3498,64 @@ mod tests {
             summary(&drops(&tables, stone, &empty, &[], None, 1)),
             [("minecraft:stone", 1)]
         );
+    }
+
+    #[test]
+    fn named_and_inline_predicates_modifiers_and_tables() {
+        let parse = |t: &str| serde_json::from_str::<Value>(t).expect("json");
+        let tables = LootTables::from_files(
+            Vec::new(),
+            vec![(
+                "test:never".to_owned(),
+                Ok(parse(
+                    r#"{"type": "minecraft:random_chance", "chance": 0.0}"#,
+                )),
+            )],
+            vec![(
+                "test:five".to_owned(),
+                Ok(parse(r#"{"type": "minecraft:set_count", "count": 5}"#)),
+            )],
+        );
+        let ctx = LootContext::empty();
+        let mut rng = XoroshiroRandom::new(1);
+        assert!(tables.has_predicate("test:never"));
+        assert_eq!(
+            tables.test_predicate(Some("test:never"), None, &ctx, &mut rng),
+            Ok(false)
+        );
+        // An inline list is `all_of`; a named reference resolves inside it.
+        let inline = parse(
+            r#"[{"type": "minecraft:random_chance", "chance": 1.0},
+                {"type": "minecraft:inverted", "term": "test:never"}]"#,
+        );
+        assert_eq!(
+            tables.test_predicate(None, Some(&inline), &ctx, &mut rng),
+            Ok(true)
+        );
+        assert!(
+            tables
+                .test_predicate(Some("test:unknown"), None, &ctx, &mut rng)
+                .is_err()
+        );
+        let mut stack = ItemStack::new(items::STONE.0, 1);
+        tables
+            .modify(Some("test:five"), None, &mut stack, &ctx, &mut rng)
+            .expect("modifier");
+        assert_eq!(stack.count, 5);
+        let inline = parse(r#"[{"type": "minecraft:set_count", "count": 2}]"#);
+        tables
+            .modify(None, Some(&inline), &mut stack, &ctx, &mut rng)
+            .expect("modifier");
+        assert_eq!(stack.count, 2);
+        let table = parse(
+            r#"{"pools": [{"rolls": 1, "entries": [
+                {"type": "minecraft:item", "name": "minecraft:stone",
+                 "modifier": "test:five"}]}]}"#,
+        );
+        let mut out = Vec::new();
+        tables
+            .roll_inline(&table, &ctx, &mut rng, &mut out)
+            .expect("table");
+        assert_eq!(summary(&out), vec![("minecraft:stone", 5)]);
     }
 }

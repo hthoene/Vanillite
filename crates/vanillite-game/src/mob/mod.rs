@@ -6,10 +6,10 @@
 //! readable for blocks and light); what changes blocks (explosions, a sheep eating grass) is
 //! queued as a [`WorldAction`] and applied by the world right after that mob's tick.
 
-pub mod boss;
-pub mod brain;
 pub mod animal;
 pub mod attack;
+pub mod boss;
+pub mod brain;
 pub mod combat;
 pub mod goals;
 pub mod kinds;

@@ -362,7 +362,13 @@ pub(crate) fn drop_for(level: &mut Level, id: EntityId, stack: ItemStack) {
 }
 
 /// `GiveCommand.giveItem` for one player: stacks into the inventory, the rest dropped.
-pub(crate) fn give_to(level: &mut Level, id: EntityId, prototype: &ItemStack, count: i32, max: i32) {
+pub(crate) fn give_to(
+    level: &mut Level,
+    id: EntityId,
+    prototype: &ItemStack,
+    count: i32,
+    max: i32,
+) {
     let mut remaining = count;
     while remaining > 0 {
         let size = max.min(remaining).max(1);
@@ -606,7 +612,12 @@ fn slot_get(entities: &Entities, id: EntityId, slot: EntitySlot) -> ItemStack {
 }
 
 /// `SlotAccess.set`: armour slots below the head take only their own armour.
-pub(crate) fn slot_set(entities: &mut Entities, id: EntityId, slot: EntitySlot, stack: ItemStack) -> bool {
+pub(crate) fn slot_set(
+    entities: &mut Entities,
+    id: EntityId,
+    slot: EntitySlot,
+    stack: ItemStack,
+) -> bool {
     if let EntitySlot::ItemEntity = slot {
         return entities.item_mut(id).is_some_and(|i| {
             i.stack = stack;
@@ -662,7 +673,9 @@ pub(crate) fn selected_stacks(
 ) -> Result<Vec<ItemStack>, CommandError> {
     let (_, slots) = slot_range(args, "slots")?;
     if block {
-        let c = args.coordinates("source").ok_or_else(|| missing("source"))?;
+        let c = args
+            .coordinates("source")
+            .ok_or_else(|| missing("source"))?;
         let p = super::exec::resolve_position(source, c);
         let pos = vanillite_base::BlockPos::containing(p.x, p.y, p.z);
         if !env.level.is_loaded(pos) {

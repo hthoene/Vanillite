@@ -77,7 +77,9 @@ pub(crate) fn store(store: &Store, env: &mut Env<'_>, success: bool, result: i32
         }
         StoreKind::Bossbar { id, max } => {
             let mut out = Vec::new();
-            env.global.systems.set_bossbar_value(id, *max, value, &mut out);
+            env.global
+                .systems
+                .set_bossbar_value(id, *max, value, &mut out);
             crate::bossbars::send(env.global, out);
         }
     }
@@ -381,7 +383,14 @@ pub(crate) fn modify(
                         .into_iter()
                         .collect()
                 }
-                Relation::Leasher => env.level.entities.leashes.get(&own).copied().into_iter().collect(),
+                Relation::Leasher => env
+                    .level
+                    .entities
+                    .leashes
+                    .get(&own)
+                    .copied()
+                    .into_iter()
+                    .collect(),
                 // `Targeting.getTarget`.
                 Relation::Target => env
                     .level
@@ -766,9 +775,9 @@ fn test(
                 level.random(),
             );
             level.entities = entities;
-            i32::from(result.map_err(|e| {
-                CommandError::new("command.exception", vec![ErrArg::Str(e)])
-            })?)
+            i32::from(
+                result.map_err(|e| CommandError::new("command.exception", vec![ErrArg::Str(e)]))?,
+            )
         }
         ExecuteCondition::Stopwatch => {
             let id = args.identifier("id").ok_or_else(|| missing("id"))?;
@@ -798,9 +807,9 @@ fn test(
                 .sum()
         }
         // `countSlots`: the number of selected slots.
-        ExecuteCondition::Slots(kind) => count(
-            super::items::selected_stacks(kind == DataKind::Block, args, source, env)?.len(),
-        ),
+        ExecuteCondition::Slots(kind) => {
+            count(super::items::selected_stacks(kind == DataKind::Block, args, source, env)?.len())
+        }
     })
 }
 

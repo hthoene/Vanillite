@@ -535,17 +535,17 @@ pub mod clientbound {
     pub use super::entities::*;
     pub use super::hud::*;
     pub use super::level::*;
+    pub use super::mobs::{Animate, Cooldown, MoveVehicleBack, SetEntityLink, SetPassengers};
     pub use super::progress::{
         AdvancementDisplay, AdvancementEntry, AdvancementProgress, AwardStats,
         SelectAdvancementsTab, StatValue, UpdateAdvancements,
     };
-    pub use super::mobs::{Animate, Cooldown, MoveVehicleBack, SetEntityLink, SetPassengers};
     pub use super::survival::*;
 }
 
+mod boss;
 mod hud;
 mod level;
-mod boss;
 mod mobs;
 mod progress;
 mod survival;

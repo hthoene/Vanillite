@@ -728,8 +728,8 @@ pub fn tick_death(t: &mut Tick<'_, '_>) -> bool {
         let pos = t.pos();
         let amount = (xp as f32 * 0.08).floor() as i32;
         t.env
-                .out
-                .push(crate::survival::Effect::Experience { pos, amount });
+            .out
+            .push(crate::survival::Effect::Experience { pos, amount });
     }
     if death_time == 1 && !t.mob_ref().silent {
         // `globalLevelEvent(1028)`: the dragon's death sound for every player.

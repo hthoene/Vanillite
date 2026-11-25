@@ -14,9 +14,9 @@ use vanillite_protocol::types::Identifier;
 
 use super::Env;
 use super::exec::resolve_position;
-use super::tracker::Tracker;
 use super::select::{self, Target};
 use super::source::CommandSource;
+use super::tracker::Tracker;
 use crate::player_list::Uuid;
 
 fn missing(name: &str) -> CommandError {

@@ -330,15 +330,14 @@ fn loot_tail(node: Builder<CommandId>, target: LootTarget) -> Builder<CommandId>
             .then(literal("offhand").executes(id(tool(LootTool::OffHand))))
     };
     node.then(
-        literal("fish").then(
-            argument("loot_table", ArgumentType::LootTable)
-                .then(tools(argument("pos", ArgumentType::BlockPos), LootSource::Fish)),
-        ),
+        literal("fish").then(argument("loot_table", ArgumentType::LootTable).then(tools(
+            argument("pos", ArgumentType::BlockPos),
+            LootSource::Fish,
+        ))),
     )
     .then(
-        literal("loot").then(
-            argument("loot_table", ArgumentType::LootTable).executes(id(LootSource::Loot)),
-        ),
+        literal("loot")
+            .then(argument("loot_table", ArgumentType::LootTable).executes(id(LootSource::Loot))),
     )
     .then(
         literal("kill").then(
@@ -352,7 +351,10 @@ fn loot_tail(node: Builder<CommandId>, target: LootTarget) -> Builder<CommandId>
             .executes(id(LootSource::Kill)),
         ),
     )
-    .then(literal("mine").then(tools(argument("pos", ArgumentType::BlockPos), LootSource::Mine)))
+    .then(literal("mine").then(tools(
+        argument("pos", ArgumentType::BlockPos),
+        LootSource::Mine,
+    )))
 }
 
 /// `LootCommand.register` with `addTargets`.
@@ -372,14 +374,28 @@ pub(super) fn register_loot(d: &mut Dispatcher<CommandId>) {
             .requires(level::GAMEMASTERS)
             .then(
                 literal("replace")
-                    .then(literal("entity").then(argument("entities", entities()).then(
-                        loot_tail(argument("slot", ArgumentType::ItemSlot), T::ReplaceEntity)
-                            .then(loot_tail(count(), T::ReplaceEntity)),
-                    )))
-                    .then(literal("block").then(argument("targetPos", ArgumentType::BlockPos).then(
-                        loot_tail(argument("slot", ArgumentType::ItemSlot), T::ReplaceBlock)
-                            .then(loot_tail(count(), T::ReplaceBlock)),
-                    ))),
+                    .then(
+                        literal("entity").then(
+                            argument("entities", entities()).then(
+                                loot_tail(
+                                    argument("slot", ArgumentType::ItemSlot),
+                                    T::ReplaceEntity,
+                                )
+                                .then(loot_tail(count(), T::ReplaceEntity)),
+                            ),
+                        ),
+                    )
+                    .then(
+                        literal("block").then(
+                            argument("targetPos", ArgumentType::BlockPos).then(
+                                loot_tail(
+                                    argument("slot", ArgumentType::ItemSlot),
+                                    T::ReplaceBlock,
+                                )
+                                .then(loot_tail(count(), T::ReplaceBlock)),
+                            ),
+                        ),
+                    ),
             )
             .then(literal("insert").then(loot_tail(
                 argument("targetPos", ArgumentType::BlockPos),

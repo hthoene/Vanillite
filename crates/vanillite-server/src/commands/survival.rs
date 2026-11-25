@@ -439,11 +439,15 @@ pub(crate) fn kill(source: &CommandSource, env: &mut Env<'_>, victims: &[Target]
             }
             _ => {
                 let uuid = victim.uuid;
-                super::entities_cmd::on_level(env, victim.world, move |level, global, dimension| {
-                    if let Some(id) = super::select::find_uuid(&level.entities, uuid) {
-                        super::entities_cmd::kill_any(level, global, dimension, id);
-                    }
-                });
+                super::entities_cmd::on_level(
+                    env,
+                    victim.world,
+                    move |level, global, dimension| {
+                        if let Some(id) = super::select::find_uuid(&level.entities, uuid) {
+                            super::entities_cmd::kill_any(level, global, dimension, id);
+                        }
+                    },
+                );
             }
         }
     }

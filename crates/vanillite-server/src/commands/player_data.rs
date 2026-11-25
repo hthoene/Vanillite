@@ -195,7 +195,10 @@ pub(crate) fn recipe(
     };
     let mut tracker = Tracker::<Component>::default();
     for player in &players {
-        let changed = match player.entity.and_then(|id| env.level.entities.player_mut(id)) {
+        let changed = match player
+            .entity
+            .and_then(|id| env.level.entities.player_mut(id))
+        {
             Some(p) => {
                 let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
                 if give {
@@ -219,7 +222,10 @@ pub(crate) fn recipe(
                 ids.len()
             }
         };
-        tracker.track(&player.display(), i32::try_from(changed).unwrap_or(i32::MAX));
+        tracker.track(
+            &player.display(),
+            i32::try_from(changed).unwrap_or(i32::MAX),
+        );
     }
     let action = if give { "give" } else { "take" };
     let failed = if give {

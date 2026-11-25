@@ -35,7 +35,9 @@ const OVERLAYS: [(BossBarOverlay, &str); 5] = [
 
 /// The colour with the `BossBarColor` id (command order).
 pub(crate) fn color_of(id: u8) -> BossBarColor {
-    COLORS.get(usize::from(id)).map_or(BossBarColor::White, |c| c.0)
+    COLORS
+        .get(usize::from(id))
+        .map_or(BossBarColor::White, |c| c.0)
 }
 
 /// The overlay with the `BossBarOverlay` id (command order).
@@ -117,7 +119,9 @@ impl CustomBossEvent {
             .map_or(NamedColor::White, |c| c.2);
         Component::translatable("chat.square_brackets", vec![self.name.clone()])
             .color(Color::Named(color))
-            .hover(HoverEvent::ShowText(Component::text(self.custom_id.clone())))
+            .hover(HoverEvent::ShowText(Component::text(
+                self.custom_id.clone(),
+            )))
             .insertion(self.custom_id.clone())
     }
 
@@ -282,7 +286,10 @@ impl CustomBossEvent {
         c.insert("Visible", self.visible);
         c.insert("Value", self.value);
         c.insert("Max", self.max);
-        let color = COLORS.iter().find(|x| x.0 == self.color).map_or("white", |x| x.1);
+        let color = COLORS
+            .iter()
+            .find(|x| x.0 == self.color)
+            .map_or("white", |x| x.1);
         c.insert("Color", color);
         let overlay = OVERLAYS
             .iter()
@@ -446,5 +453,43 @@ pub(crate) fn send(global: &crate::global::Global, out: Outbox) {
         if let Some((sink, _)) = global.players.connection(crate::player_list::Uuid(uuid)) {
             sink.send_shared(&packet);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn players_visibility_and_save() {
+        let mut bars = CustomBossEvents::default();
+        bars.create(7, "test:bar".to_owned(), Component::text("Bar"));
+        let mut out = Vec::new();
+        let bar = bars.get_mut("test:bar").expect("bar");
+        assert!(bar.set_players(&[1, 2], &mut out));
+        // Visible: both players get the bar.
+        assert_eq!(out.len(), 2);
+        assert!(!bar.set_players(&[1, 2], &mut out));
+        out.clear();
+        bar.set_visible(false, &mut out);
+        assert_eq!(out.len(), 2);
+        out.clear();
+        // Hidden bars send no updates.
+        bar.set_value(50, &mut out);
+        assert!(out.is_empty());
+        assert!(bar.set_players(&[2], &mut out));
+        assert_eq!(bar.shown(), &[2]);
+        let saved = bars.take_dirty().expect("dirty");
+        assert!(bars.take_dirty().is_none());
+        let mut next = 0u128;
+        let mut loaded = CustomBossEvents::load(&saved, &mut || {
+            next += 1;
+            next
+        });
+        let bar = loaded.get_mut("test:bar").expect("loaded");
+        assert_eq!((bar.value(), bar.max(), bar.visible()), (50, 100, false));
+        assert!(bar.shown().is_empty());
+        loaded.player_connected(2, &mut out);
+        assert_eq!(loaded.get("test:bar").expect("bar").shown(), &[2]);
     }
 }

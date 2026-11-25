@@ -1,11 +1,11 @@
 //! `/bossbar` (Vanilla's `BossBarCommands`) on the server's command boss bars.
 
+use crate::player_list::Uuid;
 use vanillite_command::Args;
 use vanillite_command::error::{Arg as ErrArg, CommandError};
 use vanillite_command::game_values::GameValue;
 use vanillite_game::commands::BossbarOp;
 use vanillite_protocol::text::{Arg, Component};
-use crate::player_list::Uuid;
 
 use super::Env;
 use super::exec::format_list;
@@ -130,7 +130,10 @@ pub(crate) fn run(
                 Ok((tr("commands.bossbar.remove.success", vec![d()]), n))
             }
             BossbarOp::GetValue => Ok((
-                tr("commands.bossbar.get.value", vec![d(), Arg::Int(bar.value())]),
+                tr(
+                    "commands.bossbar.get.value",
+                    vec![d(), Arg::Int(bar.value())],
+                ),
                 bar.value(),
             )),
             BossbarOp::GetMax => Ok((
@@ -188,7 +191,13 @@ fn set(
                 return Err(err("commands.bossbar.set.name.unchanged"));
             }
             bar.set_name(name, out);
-            Ok((tr("commands.bossbar.set.name.success", vec![Arg::from(bar.display_name())]), 0))
+            Ok((
+                tr(
+                    "commands.bossbar.set.name.success",
+                    vec![Arg::from(bar.display_name())],
+                ),
+                0,
+            ))
         }
         BossbarOp::SetColor(id) => {
             let color = bossbars::color_of(id);
@@ -196,7 +205,13 @@ fn set(
                 return Err(err("commands.bossbar.set.color.unchanged"));
             }
             bar.set_color(color, out);
-            Ok((tr("commands.bossbar.set.color.success", vec![Arg::from(bar.display_name())]), 0))
+            Ok((
+                tr(
+                    "commands.bossbar.set.color.success",
+                    vec![Arg::from(bar.display_name())],
+                ),
+                0,
+            ))
         }
         BossbarOp::SetStyle(id) => {
             let overlay = bossbars::overlay_of(id);
@@ -204,7 +219,13 @@ fn set(
                 return Err(err("commands.bossbar.set.style.unchanged"));
             }
             bar.set_overlay(overlay, out);
-            Ok((tr("commands.bossbar.set.style.success", vec![Arg::from(bar.display_name())]), 0))
+            Ok((
+                tr(
+                    "commands.bossbar.set.style.success",
+                    vec![Arg::from(bar.display_name())],
+                ),
+                0,
+            ))
         }
         BossbarOp::SetValue => {
             let value = *args.int("value").ok_or_else(|| missing("value"))?;
@@ -227,7 +248,10 @@ fn set(
             }
             bar.set_max(max, out);
             Ok((
-                tr("commands.bossbar.set.max.success", vec![Arg::from(bar.display_name()), Arg::Int(max)]),
+                tr(
+                    "commands.bossbar.set.max.success",
+                    vec![Arg::from(bar.display_name()), Arg::Int(max)],
+                ),
                 max,
             ))
         }
@@ -256,7 +280,10 @@ fn set(
             let n = i32::try_from(bar.shown().len()).unwrap_or(i32::MAX);
             if n == 0 {
                 return Ok((
-                    tr("commands.bossbar.set.players.success.none", vec![Arg::from(bar.display_name())]),
+                    tr(
+                        "commands.bossbar.set.players.success.none",
+                        vec![Arg::from(bar.display_name())],
+                    ),
                     0,
                 ));
             }

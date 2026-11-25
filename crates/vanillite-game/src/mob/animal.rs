@@ -179,7 +179,8 @@ pub fn breed(
         let xp = ents
             .mob_mut(parent)
             .map_or(1, |m| m.random.next_int_bounded(7) + 1);
-        env.out.push(crate::survival::Effect::Experience { pos, amount: xp });
+        env.out
+            .push(crate::survival::Effect::Experience { pos, amount: xp });
     }
 }
 

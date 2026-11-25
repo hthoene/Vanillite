@@ -194,8 +194,7 @@ pub fn place_food(
         r.recipes
             .cooking_for(CookingKind::Campfire, stack)
             .map(|r| r.cooking_time)
-    })
-    else {
+    }) else {
         return false;
     };
     let state = level.block(pos);

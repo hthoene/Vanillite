@@ -523,12 +523,8 @@ impl ServerWorld {
     /// `entityTickList.forEach(tickNonPassenger)`: every entity in tick order; players move
     /// through their packets.
     fn tick_entities(&mut self, global: &Global) {
-        self.mobs.tick_dragon_fight(
-            &mut self.level,
-            &mut self.survival,
-            global,
-            &self.dimension,
-        );
+        self.mobs
+            .tick_dragon_fight(&mut self.level, &mut self.survival, global, &self.dimension);
         self.mobs
             .tick_entities(&mut self.level, &mut self.survival, global, &self.dimension);
         let level = &mut self.level;

@@ -288,12 +288,7 @@ impl DragonFight {
     }
 
     /// `EnderDragonFight.tick`.
-    pub fn tick(
-        &mut self,
-        level: &mut Level,
-        env: &mut Env<'_>,
-        cx: &mut MobContext,
-    ) {
+    pub fn tick(&mut self, level: &mut Level, env: &mut Env<'_>, cx: &mut MobContext) {
         self.bar.set_visible(!self.dragon_killed, env.out);
         self.ticks_since_last_player_scan += 1;
         if self.ticks_since_last_player_scan >= 20 {
@@ -372,9 +367,8 @@ impl DragonFight {
             }
         }
         // `areEntitiesLoaded`: the chunk's stored entities are live.
-        let entities_loaded = |p: ChunkPos| {
-            level.chunks.visibility(p) != vanillite_world::chunks::Visibility::Hidden
-        };
+        let entities_loaded =
+            |p: ChunkPos| level.chunks.visibility(p) != vanillite_world::chunks::Visibility::Hidden;
         (-1..=1).all(|dx| (-1..=1).all(|dz| entities_loaded(ChunkPos::new(c.x + dx, c.z + dz))))
     }
 

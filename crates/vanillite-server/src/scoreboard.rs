@@ -307,13 +307,20 @@ fn holder_name(entities: &Entities, id: EntityId) -> Option<(String, u128, bool)
     let uuid = e.uuid();
     match entities.player(id) {
         Some(p) => Some((p.profile.name.clone(), uuid, true)),
-        None => Some((vanillite_protocol::types::Uuid(uuid).to_string(), uuid, false)),
+        None => Some((
+            vanillite_protocol::types::Uuid(uuid).to_string(),
+            uuid,
+            false,
+        )),
     }
 }
 
 /// A custom statistic by its name (`minecraft:mob_kills`).
 fn custom_stat(name: &str) -> Option<vanillite_game::stats::Stat> {
-    vanillite_game::stats::Stat::by_criteria_name(&format!("minecraft.custom:{}", name.replace(':', ".")))
+    vanillite_game::stats::Stat::by_criteria_name(&format!(
+        "minecraft.custom:{}",
+        name.replace(':', ".")
+    ))
 }
 
 /// `LivingEntity.die` of a player or mob: the player's death message by the team's
@@ -378,11 +385,12 @@ pub(crate) fn died(
     let Some((killer, killer_uuid, true)) = killer.and_then(|k| holder_name(entities, k)) else {
         return;
     };
-    let killer_id = entities
-        .players
-        .iter()
-        .map(|(id, _)| id)
-        .find(|&id| entities.store.get(id).is_some_and(|e| e.uuid() == killer_uuid));
+    let killer_id = entities.players.iter().map(|(id, _)| id).find(|&id| {
+        entities
+            .store
+            .get(id)
+            .is_some_and(|e| e.uuid() == killer_uuid)
+    });
     if let Some(p) = killer_id.and_then(|id| entities.player_mut(id)) {
         if let Some(kind) = victim_kind {
             p.stats.award(
@@ -390,7 +398,11 @@ pub(crate) fn died(
                 1,
             );
         }
-        let counter = if victim_player { "player_kills" } else { "mob_kills" };
+        let counter = if victim_player {
+            "player_kills"
+        } else {
+            "mob_kills"
+        };
         if let Some(stat) = custom_stat(counter) {
             p.stats.award(stat, 1);
         }
@@ -398,9 +410,19 @@ pub(crate) fn died(
     let mut board = global.systems.scoreboard();
     let killer_team = board.team_of(&killer).cloned();
     let killer_display = team_display_name(killer_team.as_ref(), &killer, killer_uuid);
-    board.for_criteria(&CriteriaKind::TotalKillCount, &killer, Some(&killer_display), increment);
+    board.for_criteria(
+        &CriteriaKind::TotalKillCount,
+        &killer,
+        Some(&killer_display),
+        increment,
+    );
     if victim_player {
-        board.for_criteria(&CriteriaKind::PlayerKillCount, &killer, Some(&killer_display), increment);
+        board.for_criteria(
+            &CriteriaKind::PlayerKillCount,
+            &killer,
+            Some(&killer_display),
+            increment,
+        );
     }
     if let Some(color) = team.as_ref().and_then(|t| t.color) {
         let kind = CriteriaKind::TeamKill(color);

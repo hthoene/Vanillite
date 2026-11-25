@@ -7,8 +7,8 @@
 mod advancement_cmd;
 mod bans;
 mod blocks_cmd;
-mod bossbar_cmd;
 mod border_cmd;
+mod bossbar_cmd;
 mod chat_cmd;
 mod data;
 mod data_cmd;

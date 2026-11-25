@@ -25,9 +25,9 @@ use vanillite_world::tracking::Viewer;
 
 use super::Env;
 use super::exec::{resolve_position, resolve_rotation};
-use super::tracker::Tracker;
 use super::select::{self, Target};
 use super::source::CommandSource;
+use super::tracker::Tracker;
 use crate::global::Global;
 use crate::server::DIMENSIONS;
 use crate::survival::WorldSurvival;
@@ -431,9 +431,10 @@ fn ride_mount(
         ));
     }
     let dimension = dimension_of(env.world);
-    let mounted = WorldSurvival::with_entities(env.level, env.global, dimension, |_, ents, e, _| {
-        vanillite_game::riding::start_riding(ents, e, t, v, true)
-    });
+    let mounted =
+        WorldSurvival::with_entities(env.level, env.global, dimension, |_, ents, e, _| {
+            vanillite_game::riding::start_riding(ents, e, t, v, true)
+        });
     if !mounted {
         return Err(CommandError::new(
             "commands.ride.mount.failure.generic",
@@ -484,7 +485,13 @@ pub(crate) fn kill_any(
     id: EntityId,
 ) {
     if level.entities.player(id).is_some() {
-        WorldSurvival::kill(&mut level.entities, Some(&level.chunks), global, dimension, id);
+        WorldSurvival::kill(
+            &mut level.entities,
+            Some(&level.chunks),
+            global,
+            dimension,
+            id,
+        );
     } else if level.entities.mob(id).is_some() {
         let source = DamageSource::of(global.level.damage_types.generic_kill);
         hurt_any(level, global, dimension, id, source, f32::MAX);

@@ -101,8 +101,13 @@ pub(crate) fn apply_modifier(
     };
     let mut out = stack.clone();
     with_context(env, params, |data, ctx, rng| {
-        data.loot
-            .modify(modifier.0.as_deref(), modifier.1.as_ref(), &mut out, ctx, rng)
+        data.loot.modify(
+            modifier.0.as_deref(),
+            modifier.1.as_ref(),
+            &mut out,
+            ctx,
+            rng,
+        )
     })
     .map_err(|e| CommandError::new("command.exception", vec![ErrArg::Str(e)]))?;
     let max = vanillite_game::item::max_stack_size(&out);
@@ -285,7 +290,11 @@ fn drops(
             Ok((out, Some(table)))
         }
         LootSource::Kill => {
-            let target = select::single(env, source, args.selector("target").ok_or_else(|| missing("target"))?)?;
+            let target = select::single(
+                env,
+                source,
+                args.selector("target").ok_or_else(|| missing("target"))?,
+            )?;
             let name = target.kind.name();
             let (ns, path) = name.split_once(':').unwrap_or(("minecraft", name));
             let table = format!("{ns}:entities/{path}");
@@ -383,7 +392,11 @@ fn output(
 ) -> Result<(), CommandError> {
     match target {
         LootTarget::Give => {
-            let players = select::many(env, source, args.selector("players").ok_or_else(|| missing("players"))?)?;
+            let players = select::many(
+                env,
+                source,
+                args.selector("players").ok_or_else(|| missing("players"))?,
+            )?;
             for drop in drops {
                 for player in &players {
                     let stack = drop.clone();
@@ -418,7 +431,9 @@ fn output(
             }
         }
         LootTarget::Spawn => {
-            let c = args.coordinates("targetPos").ok_or_else(|| missing("targetPos"))?;
+            let c = args
+                .coordinates("targetPos")
+                .ok_or_else(|| missing("targetPos"))?;
             let pos = resolve_position(source, c);
             for drop in drops {
                 let velocity = {
@@ -482,9 +497,10 @@ fn output(
             let pos = block_pos(args, "targetPos", source)?;
             let c = container(env, pos)?;
             let start = slot_arg(args)?;
-            let count = args.int("count").copied().map_or(drops.len(), |n| {
-                usize::try_from(n).unwrap_or(0)
-            });
+            let count = args
+                .int("count")
+                .copied()
+                .map_or(drops.len(), |n| usize::try_from(n).unwrap_or(0));
             let size = c.size(env.level);
             let Some(start) = usize::try_from(start).ok().filter(|&s| s < size) else {
                 return Err(CommandError::new(
@@ -502,11 +518,17 @@ fn output(
             }
         }
         LootTarget::ReplaceEntity => {
-            let targets = select::many(env, source, args.selector("entities").ok_or_else(|| missing("entities"))?)?;
+            let targets = select::many(
+                env,
+                source,
+                args.selector("entities")
+                    .ok_or_else(|| missing("entities"))?,
+            )?;
             let start = slot_arg(args)?;
-            let count = args.int("count").copied().map_or(drops.len(), |n| {
-                usize::try_from(n).unwrap_or(0)
-            });
+            let count = args
+                .int("count")
+                .copied()
+                .map_or(drops.len(), |n| usize::try_from(n).unwrap_or(0));
             for t in &targets {
                 let Some(id) = t.entity else {
                     continue;
@@ -551,12 +573,14 @@ pub(crate) fn run(
         match (one, &table) {
             (Some(drop), None) => Component::translatable_args(
                 "commands.drop.success.single",
-                vec![Arg::Int(drop.count), Arg::from(items::item_display(drop, None))],
+                vec![
+                    Arg::Int(drop.count),
+                    Arg::from(items::item_display(drop, None)),
+                ],
             ),
-            (None, None) => Component::translatable_args(
-                "commands.drop.success.multiple",
-                vec![Arg::Int(n)],
-            ),
+            (None, None) => {
+                Component::translatable_args("commands.drop.success.multiple", vec![Arg::Int(n)])
+            }
             (Some(drop), Some(table)) => Component::translatable_args(
                 "commands.drop.success.single_with_table",
                 vec![

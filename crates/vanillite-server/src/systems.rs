@@ -418,3 +418,39 @@ fn legacy_scheduled_events(legacy: &dyn Fn(&str) -> Option<Tag>) -> Option<Compo
     c.insert("events", Tag::List(vanillite_nbt::List(events)));
     Some(c)
 }
+
+#[cfg(test)]
+mod legacy_tests {
+    use vanillite_nbt::{Compound, List, Tag};
+
+    #[test]
+    fn scheduled_events_of_old_level_dat() {
+        let mut callback = Compound::new();
+        callback.insert("Type", "minecraft:function");
+        callback.insert("Name", "test:tick");
+        let mut event = Compound::new();
+        event.insert("Name", "test:tick");
+        event.insert("TriggerTime", Tag::Long(40));
+        event.insert("Callback", Tag::Compound(callback));
+        let list = Tag::List(List(vec![Tag::Compound(event)]));
+        let converted =
+            super::legacy_scheduled_events(&|k| (k == "ScheduledEvents").then(|| list.clone()))
+                .expect("converted");
+        let Some(Tag::List(events)) = converted.get("events") else {
+            panic!("no events");
+        };
+        let Some(Tag::Compound(e)) = events.0.first() else {
+            panic!("no event");
+        };
+        assert_eq!(e.get("id").and_then(Tag::as_str), Some("test:tick"));
+        assert_eq!(e.get("trigger_time").and_then(Tag::as_i64), Some(40));
+        let Some(Tag::Compound(cb)) = e.get("callback") else {
+            panic!("no callback");
+        };
+        assert_eq!(
+            cb.get("type").and_then(Tag::as_str),
+            Some("minecraft:function")
+        );
+        assert!(super::legacy_scheduled_events(&|_| None).is_none());
+    }
+}

@@ -76,7 +76,9 @@ pub fn can_be_affected(
 ) -> bool {
     let effect_name = name(effect).unwrap_or("");
     let refused = match kind.name() {
-        "minecraft:spider" | "minecraft:cave_spider" | "minecraft:nautilus"
+        "minecraft:spider"
+        | "minecraft:cave_spider"
+        | "minecraft:nautilus"
         | "minecraft:zombie_nautilus" => "minecraft:poison",
         "minecraft:wither_skeleton" | "minecraft:wither" => "minecraft:wither",
         "minecraft:parched" => "minecraft:weakness",

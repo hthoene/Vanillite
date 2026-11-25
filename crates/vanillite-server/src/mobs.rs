@@ -10,10 +10,10 @@ use vanillite_game::entities::{Entities, is_mob_kind};
 use vanillite_game::item::ItemStack;
 use vanillite_game::level::Level;
 use vanillite_game::level::explosion::BlockInteraction;
+use vanillite_game::minecart::{self, MinecartKind};
 use vanillite_game::mob::boss;
 use vanillite_game::mob::boss::dragon::{self, fight::DragonFight};
 use vanillite_game::mob::boss::special::{self, is_special_kind};
-use vanillite_game::minecart::{self, MinecartKind};
 use vanillite_game::mob::spawn::{self, SpawnInput, SpawnTable, Spawner};
 use vanillite_game::mob::{
     self, Environment, MobContext, MobSettings, WorldAction, animal, attack, combat, projectile,

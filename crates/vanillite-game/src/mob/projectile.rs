@@ -108,7 +108,10 @@ pub fn shoot_arrow(
     };
     if let Some(w) = weapon {
         let combat = super::attack::combat_data();
-    let (enchants, tags): (&crate::enchant::Enchantments, &dyn crate::predicate::EntityTags) = (&combat.enchants, &*combat);
+        let (enchants, tags): (
+            &crate::enchant::Enchantments,
+            &dyn crate::predicate::EntityTags,
+        ) = (&combat.enchants, &*combat);
         let arrow = crate::predicate::EntityFacts {
             kind: Some(entity_ids::ARROW),
             ..crate::predicate::EntityFacts::default()

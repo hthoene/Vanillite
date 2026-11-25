@@ -330,7 +330,8 @@ impl Connection {
                 | ServerboundPlay::PlaceRecipe(_)
                 | ServerboundPlay::ContainerButtonClick(_)
                 | ServerboundPlay::SignUpdate(_)
-        ) || matches!(packet, ServerboundPlay::PlayerInput(_)) && self.movement.has_client_loaded()
+        ) || matches!(packet, ServerboundPlay::PlayerInput(_))
+            && self.movement.has_client_loaded()
         {
             self.last_action = std::time::Instant::now();
         }
