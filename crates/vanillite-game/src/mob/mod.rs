@@ -415,6 +415,13 @@ pub struct Environment {
     pub monster_light_test: (i32, i32),
     /// `DimensionType.ambientLight`.
     pub ambient_light: f32,
+    /// `EnvironmentAttributes.SURFACE_SLIME_SPAWN_CHANCE` (the moon's brightness / 2 in the
+    /// overworld).
+    pub surface_slime_chance: f32,
+    /// The world seed (slime chunks).
+    pub world_seed: i64,
+    /// `getSeaLevel`.
+    pub sea_level: i32,
 }
 
 impl Default for Environment {
@@ -428,6 +435,9 @@ impl Default for Environment {
             monster_block_light_limit: 0,
             monster_light_test: (0, 7),
             ambient_light: 0.0,
+            surface_slime_chance: 0.0,
+            world_seed: 0,
+            sea_level: 63,
         }
     }
 }

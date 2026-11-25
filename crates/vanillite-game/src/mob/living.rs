@@ -379,6 +379,9 @@ pub fn hurt_equipment(t: &mut Tick<'_, '_>, slot: crate::item::EquipmentSlot, am
 
 /// `Mob.jumpInLiquid`.
 fn jump_in_liquid(t: &mut Tick<'_, '_>) {
+    if t.mob_ref().kind.family() != super::Family::Classic && super::fam::jump_in_liquid(t) {
+        return;
+    }
     let dy = if t.mob_ref().nav.can_float {
         f64::from(0.04_f32)
     } else {
@@ -391,9 +394,12 @@ fn jump_in_liquid(t: &mut Tick<'_, '_>) {
 /// `jumpFromGround`.
 fn jump_from_ground(t: &mut Tick<'_, '_>) {
     #[allow(clippy::cast_possible_truncation)]
-    let power = t.mob_ref().attrs.jump_strength as f32 * block_jump_factor(t);
+    let mut power = t.mob_ref().attrs.jump_strength as f32 * block_jump_factor(t);
     if power <= 1.0e-5 {
         return;
+    }
+    if t.mob_ref().kind.family() != super::Family::Classic {
+        power += super::fam::jump_power_bonus(t.mob_ref());
     }
     let v = t.velocity();
     t.set_velocity(Vec3::new(v.x, f64::from(power).max(v.y), v.z));
@@ -446,7 +452,7 @@ fn modified_friction(friction: f32, modifier: f32) -> f32 {
 }
 
 /// `moveRelative(speed, input)`.
-fn move_relative(t: &mut Tick<'_, '_>, speed: f32, input: Vec3) {
+pub(crate) fn move_relative(t: &mut Tick<'_, '_>, speed: f32, input: Vec3) {
     let length = input.length_sqr();
     if length < 1.0e-7 {
         return;
@@ -470,7 +476,10 @@ fn move_relative(t: &mut Tick<'_, '_>, speed: f32, input: Vec3) {
 
 /// `onClimbable`: spiders climbing walls, or a `#climbable` block at the feet.
 pub fn on_climbable(t: &Tick<'_, '_>) -> bool {
-    if t.mob_ref().kind == super::Kind::Spider {
+    if matches!(
+        t.mob_ref().kind,
+        super::Kind::Spider | super::Kind::CaveSpider
+    ) {
         return t.mob_ref().climbing;
     }
     let state = t.level.block(t.block_pos());

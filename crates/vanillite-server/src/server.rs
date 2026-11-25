@@ -291,6 +291,9 @@ impl ServerBuilder {
         let world_gen = prepared.world_gen.clone();
         let behaviours = Arc::new(vanillite_game::block::Behaviours::vanilla());
         let spawn_table = crate::world_setup::spawn_table(packs.as_deref()).map(Arc::new);
+        if let Some(t) = &spawn_table {
+            vanillite_game::mob::spawn::install_table(Arc::clone(t));
+        }
         let slot = |name: &str, origin: &Origin| log::info!("Slot {name}: {origin}");
         let entity_compression = match config.properties.region_file_compression {
             RegionFileCompression::Deflate => Compression::Deflate,

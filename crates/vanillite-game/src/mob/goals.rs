@@ -217,7 +217,7 @@ impl Goal {
     }
 
     /// `requiresUpdateEveryTick`.
-    fn every_tick(&self) -> bool {
+    pub fn every_tick(&self) -> bool {
         match self {
             Goal::Fam(g) => super::fam::goal_every_tick(g),
             Goal::Common(g) => g.every_tick(),
@@ -798,7 +798,7 @@ fn fluid_jump_threshold(t: &Tick<'_, '_>) -> f64 {
 // --- Goal behaviour -------------------------------------------------------------------------
 
 /// `canUse`.
-fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
+pub(crate) fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
     match g {
         Goal::Fam(f) => super::fam::goal_can_use(t, f),
         Goal::Common(c) => super::common::can_use(t, c),
@@ -1068,7 +1068,7 @@ fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
 }
 
 /// `canContinueToUse`.
-fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
+pub(crate) fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
     match g {
         Goal::Fam(f) => super::fam::goal_can_continue(t, f),
         Goal::Common(c) => super::common::can_continue(t, c),
@@ -1197,7 +1197,7 @@ pub(super) fn target_can_continue(t: &mut Tick<'_, '_>, state: &mut TargetState)
 }
 
 /// `start`.
-fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
+pub(crate) fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
     match g {
         Goal::Fam(f) => super::fam::goal_start(t, f),
         Goal::Common(c) => super::common::start(t, c),
@@ -1351,7 +1351,7 @@ fn alert_others(t: &mut Tick<'_, '_>, by: EntityId) {
 }
 
 /// `stop`.
-fn stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
+pub(crate) fn stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
     match g {
         Goal::Fam(f) => super::fam::goal_stop(t, f),
         Goal::Common(c) => super::common::stop(t, c),
@@ -1414,7 +1414,7 @@ fn stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
 }
 
 /// `tick`.
-fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
+pub(crate) fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
     match g {
         Goal::Fam(f) => super::fam::goal_tick(t, f),
         Goal::Common(c) => super::common::tick(t, c),

@@ -579,6 +579,10 @@ pub fn register_goals(m: &mut MobData) {
 
 /// `finalizeSpawn`: the random spawn bonus, babies, colours and variants.
 pub fn finalize_spawn(m: &mut MobData, ctx: &mut fam::SpawnContext<'_>) {
+    if m.kind == Kind::CaveSpider {
+        // `CaveSpider.finalizeSpawn` calls no `super`: not even `Mob.finalizeSpawn`.
+        return;
+    }
     // `Mob.finalizeSpawn`: follow range bonus and left-handedness.
     let bonus = m.random.triangle(0.0, 0.114_850_000_000_000_01);
     m.attrs.follow_range *= 1.0 + bonus;
@@ -590,37 +594,8 @@ pub fn finalize_spawn(m: &mut MobData, ctx: &mut fam::SpawnContext<'_>) {
     let (difficulty, climate, group_index) = (ctx.difficulty, ctx.climate, ctx.group_index);
     match m.kind {
         Kind::Zombie => {
-            m.can_pick_up_loot = m.random.next_float() < 0.55 * ctx.special_multiplier;
-            if m.random.next_float() < 0.05 {
-                m.baby = true;
-                zombie_chicken_jockey(m, ctx);
-            }
-            m.can_break_doors = m.random.next_float() < ctx.special_multiplier * 0.1;
-            // `populateDefaultEquipmentSlots`: armour, then a sword, spear or shovel.
-            equipment::populate_default_armor(m, difficulty, ctx.special_multiplier);
-            let chance = if difficulty == Difficulty::Hard {
-                0.05
-            } else {
-                0.01
-            };
-            if m.random.next_float() < chance {
-                let weapon = match m.random.next_int_bounded(6) {
-                    0 => "minecraft:iron_sword",
-                    1 => "minecraft:iron_spear",
-                    _ => "minecraft:iron_shovel",
-                };
-                m.equipment.set(
-                    crate::item::EquipmentSlot::MainHand,
-                    equipment::stack(weapon),
-                );
-            }
-            equipment::populate_default_enchantments(m, ctx.special_multiplier);
-            halloween_head(m);
-            m.attrs.knockback_resistance += m.random.next_double() * f64::from(0.05_f32);
-            let range_bonus = m.random.next_double() * 0.2 * 1.0;
-            if range_bonus > 1.0 {
-                m.attrs.follow_range *= 1.0 + range_bonus;
-            }
+            // `Zombie.finalizeSpawn`, shared with the zombie variants.
+            fam::undead::zombies::finalize_spawn(m, ctx);
         }
         Kind::Skeleton => {
             // `populateDefaultEquipmentSlots`: armour and the bow.
@@ -817,6 +792,11 @@ pub fn before_tick(t: &mut Tick<'_, '_>) {
             }
         }
         Kind::Skeleton => {
+            // `Skeleton.tick`: the powder snow conversion into a stray first.
+            fam::undead::skeletons::freezing_tick(t);
+            if t.mob_ref().removed {
+                return;
+            }
             let m = t.mob();
             if m.using_item >= 0 {
                 m.using_item += 1;
@@ -856,6 +836,10 @@ pub fn after_tick(t: &mut Tick<'_, '_>) {
             t.mob().climbing = climbing;
             t.core_mut().mark_data_dirty();
         }
+    }
+    if t.mob_ref().kind == Kind::Zombie {
+        // `Zombie.tick`: the drowning conversion into a drowned.
+        fam::undead::zombies::drowning_tick(t);
     }
 }
 

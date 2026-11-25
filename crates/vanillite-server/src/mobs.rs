@@ -233,7 +233,7 @@ impl WorldMobs {
         let state = &global.level;
         let rules = state.rules().clone();
         let difficulty = state.difficulty;
-        let env = environment(global, dimension, survival);
+        let env = environment(global, dimension, survival, self.seed);
         // New chunks: their animals once they are live.
         level.chunks.take_generated(&mut self.scratch);
         self.generated
@@ -291,7 +291,7 @@ impl WorldMobs {
         let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
         let rules = state.rules().clone();
         let has_players = !level.entities.players.is_empty();
-        let env = environment(global, dimension, survival);
+        let env = environment(global, dimension, survival, self.seed);
         self.cx.begin_tick(env, self.settings, has_players);
         self.lightning_hits(level, survival, global, dimension);
         let activation = f64::from(self.settings.activation_range);
@@ -619,11 +619,19 @@ fn day_sky_factor(ticks: i64) -> f32 {
 
 /// This tick's environment: sky darkness from the day time and the weather, whether monsters
 /// burn, and the dimension's monster light rules.
-fn environment(global: &Global, dimension: &str, survival: &WorldSurvival) -> Environment {
+fn environment(
+    global: &Global,
+    dimension: &str,
+    survival: &WorldSurvival,
+    seed: i64,
+) -> Environment {
     let overworld = dimension == "minecraft:overworld";
     let nether = dimension == "minecraft:the_nether";
     if !overworld {
         return Environment {
+            surface_slime_chance: 0.0,
+            world_seed: seed,
+            sea_level: if nether { 32 } else { 0 },
             sky_darken: if nether { 0 } else { 11 },
             monsters_burn: false,
             thundering: false,
@@ -653,7 +661,23 @@ fn environment(global: &Global, dimension: &str, survival: &WorldSurvival) -> En
     #[allow(clippy::cast_possible_truncation)]
     let sky_darken = (15.0 - sky) as i32;
     let burn = !(12542..23460).contains(&day);
+    // The `minecraft:moon` timeline: the surface slime chance is half the moon's brightness.
+    let moon = {
+        let clocks = global.level.clocks();
+        clocks.timeline("minecraft:moon").and_then(|t| {
+            clocks
+                .clocks
+                .get(t.clock)
+                .map(|c| t.current_ticks(c.total_ticks))
+        })
+    }
+    .unwrap_or(0);
+    const MOON_BRIGHTNESS: [f32; 8] = [1.0, 0.75, 0.5, 0.25, 0.0, 0.25, 0.5, 0.75];
+    let phase = usize::try_from((moon / 24000).rem_euclid(8)).unwrap_or(0);
     Environment {
+        surface_slime_chance: MOON_BRIGHTNESS[phase] * 0.5,
+        world_seed: seed,
+        sea_level: 63,
         sky_darken,
         monsters_burn: burn,
         thundering: thunder > 0.9,

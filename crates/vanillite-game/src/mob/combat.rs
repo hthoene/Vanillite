@@ -236,6 +236,18 @@ pub fn hurt_mob(
         if mob_kind == Kind::Enderman {
             kinds::after_hurt(level, ents, env, target, source);
         }
+        if mob_kind == Kind::Zombie {
+            // `Zombie.hurtServer`: reinforcements on Hard.
+            let mut h = super::fam::Hurt {
+                level,
+                ents,
+                env,
+                cx,
+                target,
+                source,
+            };
+            super::fam::undead::zombies::reinforcements(&mut h);
+        }
     } else {
         let mut h = super::fam::Hurt {
             level,
@@ -480,7 +492,7 @@ pub fn mob_sound(ents: &mut Entities, env: &mut Env<'_>, id: EntityId, sound: &s
     if m.silent {
         return;
     }
-    let volume = m.kind.sound_volume();
+    let volume = super::fam::mob_sound_volume(m);
     let a = m.random.next_float();
     let b = m.random.next_float();
     let pitch = if m.baby {
