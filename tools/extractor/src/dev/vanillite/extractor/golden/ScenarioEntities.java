@@ -180,6 +180,19 @@ final class ScenarioEntities {
     target.hurtServer(level, source, action.get("amount").getAsFloat());
   }
 
+  /** The {@code effect} action: {@code addEffect} on a named living entity. */
+  void effect(JsonObject action) {
+    LivingEntity target = (LivingEntity) byName.get(action.get("entity").getAsString());
+    var effect =
+        BuiltInRegistries.MOB_EFFECT
+            .get(Identifier.parse(action.get("effect").getAsString()))
+            .orElseThrow();
+    int amplifier = action.has("amplifier") ? action.get("amplifier").getAsInt() : 0;
+    target.addEffect(
+        new net.minecraft.world.effect.MobEffectInstance(
+            effect, action.get("duration").getAsInt(), amplifier));
+  }
+
   private String nameOf(Entity e) {
     String n = names.get(e);
     return n != null ? n : BuiltInRegistries.ENTITY_TYPE.getKey(e.getType()).toString();

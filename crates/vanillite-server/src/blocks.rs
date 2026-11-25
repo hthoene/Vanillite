@@ -57,6 +57,19 @@ pub fn game_data(packs: Option<&LoadedPacks>) -> GameData {
                 .collect()
         })
         .unwrap_or_default();
+    let block_tags: HashMap<String, Vec<u16>> = packs
+        .tags("minecraft:block")
+        .map(|tags| {
+            tags.keys()
+                .map(|t| {
+                    let mut ids = tag_ids("minecraft:block", t);
+                    ids.sort_unstable();
+                    ids.dedup();
+                    (t.clone(), ids)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let entity_tags: HashMap<String, Vec<u16>> = packs
         .tags("minecraft:entity_type")
         .map(|tags| {
@@ -95,6 +108,21 @@ pub fn game_data(packs: Option<&LoadedPacks>) -> GameData {
         info.tags.insert(registry.to_owned(), tags);
     }
     vanillite_protocol::item::install_registries(info);
+    let trial_spawner_configs = packs
+        .registry("minecraft:trial_spawner")
+        .map(|r| {
+            r.entries()
+                .iter()
+                .filter_map(|e| {
+                    let json = serde_json::from_str::<serde_json::Value>(e.json.get()).ok()?;
+                    Some((
+                        e.id.clone(),
+                        vanillite_game::block::trial_spawner::TrialConfig::from_json(&json),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let recipes = vanillite_game::recipe::Recipes::load(packs.roots(), &|tag| {
         item_tags.get(tag).cloned().unwrap_or_default()
     });
@@ -171,9 +199,11 @@ pub fn game_data(packs: Option<&LoadedPacks>) -> GameData {
         loot,
         enchantments,
         item_tags,
+        trial_spawner_configs,
         entity_tags,
         enchants,
         enderman_holdable: tag_ids("minecraft:block", "minecraft:enderman_holdable"),
+        block_tags,
         recipes,
         enchanting,
         banner_patterns,
@@ -297,6 +327,30 @@ impl PlayLevel for WorldLevel<'_> {
             pickup_delay,
             thrower,
         );
+    }
+
+    fn placed_by(&mut self, pos: BlockPos, state: BlockState) {
+        if vanillite_game::mob::boss::wither::is_wither_skull(state) {
+            self.level.output().summon_checks.push(pos);
+        }
+    }
+
+    fn game_event(
+        &mut self,
+        event: u16,
+        pos: BlockPos,
+        source: Option<vanillite_world::entity::EntityId>,
+        affected: Option<BlockState>,
+    ) {
+        let context = vanillite_game::level::game_event::GameEventContext { source, affected };
+        self.level.game_event_block(event, pos, context);
+    }
+
+    fn use_end_crystal(&mut self, on: BlockPos) -> bool {
+        let seed = self.level.random().next_long();
+        let uuid =
+            vanillite_game::mob::random_uuid(&mut vanillite_base::random::LegacyRandom::new(seed));
+        vanillite_game::mob::boss::dragon::fight::use_end_crystal(self.level, uuid, on)
     }
 
     fn is_unobstructed(&self, state: BlockState, pos: BlockPos) -> bool {

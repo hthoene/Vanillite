@@ -121,6 +121,7 @@ packet_set! {
         ContainerButtonClick(play::serverbound::ContainerButtonClick),
         ContainerSlotStateChanged(play::serverbound::ContainerSlotStateChanged),
         RenameItem(play::serverbound::RenameItem),
+        SetBeacon(play::serverbound::SetBeacon),
         SignUpdate(play::serverbound::SignUpdate),
         PlaceRecipe(play::serverbound::PlaceRecipe),
         RecipeBookSeenRecipe(play::serverbound::RecipeBookSeenRecipe),
@@ -261,6 +262,8 @@ packet_set! {
         SetHealth(play::clientbound::SetHealth),
         SetTime(play::clientbound::SetTime),
         Sound(play::clientbound::Sound),
+        UpdateMobEffect(play::clientbound::UpdateMobEffect),
+        RemoveMobEffect(play::clientbound::RemoveMobEffect),
         SystemChat(play::clientbound::SystemChat),
     }
     unhandled Unhandled

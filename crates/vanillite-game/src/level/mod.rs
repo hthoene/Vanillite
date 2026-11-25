@@ -20,6 +20,11 @@ pub mod signal;
 mod tick;
 pub mod update;
 
+pub use crate::random_sequences::RandomSequences;
+
+/// The loot random sequences the levels of a server share.
+pub type SharedRandomSequences = Arc<std::sync::Mutex<RandomSequences>>;
+
 #[cfg(test)]
 pub(crate) mod tests;
 
@@ -119,6 +124,10 @@ pub struct LevelSettings {
     pub portal_dimension: bool,
     /// Exploit switches (D1).
     pub exploits: ExploitSettings,
+    /// The difficulty is peaceful (set by the server every tick).
+    pub peaceful: bool,
+    /// `spawnWardens` game rule (set by the server every tick).
+    pub spawn_wardens: bool,
 }
 
 impl Default for LevelSettings {
@@ -143,6 +152,8 @@ impl Default for LevelSettings {
             water_evaporates: false,
             portal_dimension: true,
             exploits: ExploitSettings::default(),
+            peaceful: false,
+            spawn_wardens: true,
         }
     }
 }
@@ -234,6 +245,8 @@ pub struct Sound {
 pub const SOUND_BLOCKS: u8 = 4;
 /// `SoundSource.PLAYERS`.
 pub const SOUND_PLAYERS: u8 = 7;
+/// `SoundSource.HOSTILE`.
+pub const SOUND_HOSTILE: u8 = 5;
 /// `SoundSource.NEUTRAL`.
 pub const SOUND_NEUTRAL: u8 = 6;
 /// `SoundSource.RECORDS`.
@@ -256,10 +269,17 @@ pub struct LevelOutput {
     pub explosions: Vec<explosion::ExplosionEvent>,
     /// The damage of the living entities explosions hit, for the mob system.
     pub explosion_hurts: Vec<explosion::ExplosionHurt>,
+    /// Magic damage block entities deal (conduits): target and amount.
+    pub magic_hurts: Vec<(vanillite_world::entity::EntityId, f32)>,
     /// Experience to award at a position (`ExperienceOrb.award`; orbs are not simulated yet).
     pub experience: Vec<(vanillite_base::Vec3, i32)>,
     /// Block entities whose client data changed (`sendBlockUpdated` of a block entity).
     pub block_entity_updates: Vec<BlockPos>,
+    /// Wither skeleton skulls players placed, for the wither's summon check
+    /// (`WitherSkullBlock.setPlacedBy`).
+    pub summon_checks: Vec<BlockPos>,
+    /// An end crystal was placed: the End fight tries to respawn the dragon (`tryRespawn`).
+    pub try_dragon_respawn: bool,
     /// Global level events (`globalLevelEvent`: event, position, data), heard by every player
     /// of the server.
     pub global_level_events: Vec<(i32, BlockPos, i32)>,
@@ -314,9 +334,6 @@ pub struct Level {
     rand_value: i32,
     /// The server's named random sequences (loot tables).
     random_sequences: Arc<std::sync::Mutex<crate::random_sequences::RandomSequences>>,
-    /// The seeds of new entities' own randoms (`Entity.random`): the next `nextLong()` per
-    /// entity, in creation order (the parity contract of `ParityHooks`).
-    entity_seeds: LegacyRandom,
     /// Rain and thunder levels (`Level.rainLevel`, `thunderLevel`), set by the world's weather.
     weather: crate::survival::weather::LevelWeather,
     game_time: i64,
@@ -333,6 +350,10 @@ pub struct Level {
     maps: Option<Arc<crate::map::Maps>>,
     min_y: i32,
     max_y: i32,
+    /// The seed the level was created with (`getSeed`).
+    seed: i64,
+    /// What spawner blocks read of this tick's rules and sky (set by the world each tick).
+    pub spawner_env: crate::block::spawner::SpawnerEnv,
 }
 
 impl std::fmt::Debug for Level {
@@ -383,7 +404,6 @@ impl Level {
             random_sequences: Arc::new(std::sync::Mutex::new(
                 crate::random_sequences::RandomSequences::new(seed),
             )),
-            entity_seeds: LegacyRandom::new(seed),
             weather: crate::survival::weather::LevelWeather::default(),
             game_time: 0,
             output: LevelOutput::default(),
@@ -393,10 +413,26 @@ impl Level {
             maps: None,
             min_y,
             max_y,
+            seed,
+            spawner_env: crate::block::spawner::SpawnerEnv::default(),
         };
         // Chunks that are visible already load their entities.
         level.apply_visibility();
         level
+    }
+
+    /// `getSeed`.
+    pub fn seed(&self) -> i64 {
+        self.seed
+    }
+
+    /// `sendBlockUpdated` of a block entity whose client data changed: the block and a
+    /// `block_entity_data` packet with its update tag go to the clients that see its chunk.
+    pub fn send_block_entity_updated(&mut self, pos: BlockPos) {
+        self.send_block_updated(pos);
+        if !self.output.block_entity_updates.contains(&pos) {
+            self.output.block_entity_updates.push(pos);
+        }
     }
 
     /// `player.openMenu(provider)` from block code: the player handlers open it.
@@ -605,6 +641,19 @@ impl Level {
                 Some(c.chunk.min_y() + relative as i32)
             })
             .unwrap_or(self.min_y)
+    }
+
+    /// `getRandomSequence(key)`: runs `f` with the named random of loot tables.
+    pub fn with_random_sequence<R>(
+        &self,
+        key: &str,
+        f: impl FnOnce(&mut vanillite_base::random::XoroshiroRandom) -> R,
+    ) -> R {
+        let mut sequences = self
+            .random_sequences
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        f(sequences.get(key))
     }
 
     /// The game time.
@@ -1145,21 +1194,24 @@ impl Level {
         }
     }
 
-    /// Restarts the seeds of new entities' randoms from `seed`.
+    /// Restarts the seeds of new entities' randoms from `seed` (on this thread, see
+    /// [`crate::mob::set_entity_seed_stream`]).
     pub fn set_entity_seed(&mut self, seed: i64) {
-        self.entity_seeds = LegacyRandom::new(seed);
+        crate::mob::set_entity_seed_stream(Some(seed));
     }
 
     /// The own random of a new entity (`Entity.random`); every entity the level creates
     /// takes one, in creation order.
     pub fn new_entity_random(&mut self) -> LegacyRandom {
-        LegacyRandom::new(self.entity_seeds.next_long())
+        LegacyRandom::new(crate::mob::new_entity_seed())
     }
 
     /// A random UUID for a new entity (`Mth.createInsecureUUID(entity.random)`): drawn from a
     /// random of its own, as Vanilla's entities draw it from theirs, so spawning entities does
     /// not shift the level random.
     pub fn new_uuid(&mut self) -> u128 {
+        // A new entity: it takes its seed like Vanilla's constructor.
+        crate::mob::new_entity_seed();
         let most = self.sound_seeds.next_long() as u64;
         let least = self.sound_seeds.next_long() as u64;
         // Version 4, IETF variant.

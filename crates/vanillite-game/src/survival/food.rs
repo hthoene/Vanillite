@@ -68,6 +68,13 @@ impl FoodData {
         self.saturation = (saturation + self.saturation).clamp(0.0, max);
     }
 
+    /// `eat(food, saturationModifier)` (the Saturation effect).
+    #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
+    pub fn eat_with_modifier(&mut self, food: i32, modifier: f32) {
+        // `FoodConstants.saturationByModifier`.
+        self.add(food, food as f32 * modifier * 2.0);
+    }
+
     /// `eat(FoodProperties)`.
     pub fn eat(&mut self, food: &FoodProperties) {
         self.add(food.nutrition, food.saturation);

@@ -60,6 +60,15 @@ pub enum Effect {
     },
     /// Experience orbs (`ExperienceOrb.award`).
     Experience { pos: Vec3, amount: i32 },
+    /// A mob an effect releases (`EntityType.create(level, TRIGGERED)` + `addFreshEntity`):
+    /// silverfish of Infested, slimes of Oozing. Kinds the mob system does not simulate yet
+    /// are skipped.
+    SpawnMob {
+        kind: vanillite_data::entity::EntityTypeId,
+        pos: Vec3,
+        y_rot: f32,
+        velocity: Vec3,
+    },
 }
 
 /// The seed of a sound (`Level.soundSeedGenerator`, a random of its own that Vanilla never

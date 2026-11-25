@@ -4,7 +4,6 @@
 //! those moves (see [`crate::riding`]).
 
 use vanillite_base::math::{ceil, floor};
-use vanillite_base::random::RandomSource;
 use vanillite_base::{Aabb, BlockPos, Vec3};
 use vanillite_data::entity::EntityTypeId;
 use vanillite_world::entity::{EntityFlags, EntityId, NetworkIds, NewEntity, Rotation};
@@ -592,16 +591,12 @@ pub fn hurt_boat(
                 .patch_mut()
                 .set(vanillite_protocol::components::ids::CUSTOM_NAME, n);
         }
-        let r = &mut *env.random;
+        let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
         env.out.push(Effect::DropItem {
-            uuid: crate::mob::random_uuid(r),
+            uuid,
             pos,
-            velocity: Vec3::new(
-                r.next_double() * 0.2 - 0.1,
-                0.2,
-                r.next_double() * 0.2 - 0.1,
-            ),
-            y_rot: r.next_float() * 360.0,
+            velocity,
+            y_rot,
             pickup_delay: 10,
             stack,
         });
@@ -641,7 +636,6 @@ pub fn passenger_offset(
 pub fn use_boat_item(
     level: &Level,
     ents: &mut Entities,
-    env: &mut Env<'_>,
     network_ids: &NetworkIds,
     player: EntityId,
     stack: &mut ItemStack,
@@ -709,7 +703,7 @@ pub fn use_boat_item(
     data.custom_name = stack
         .component(vanillite_protocol::components::ids::CUSTOM_NAME)
         .map(Into::into);
-    let uuid = crate::mob::random_uuid(env.random);
+    let uuid = crate::mob::new_entity_uuid();
     spawn_boat(ents, network_ids, uuid, hit, rot.y_rot, data);
     if !infinite {
         stack.shrink(1);

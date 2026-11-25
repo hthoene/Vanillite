@@ -197,6 +197,51 @@ pub mod serverbound {
         Interact
     );
 
+    /// `set_beacon`: the powers picked in the beacon menu (`mob_effect` registry ids).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct SetBeacon {
+        pub primary: Option<i32>,
+        pub secondary: Option<i32>,
+    }
+
+    impl Encode for SetBeacon {
+        fn encode(&self, out: &mut Vec<u8>) {
+            for effect in [self.primary, self.secondary] {
+                match effect {
+                    Some(id) => {
+                        out.push(1);
+                        write_varint(out, id);
+                    }
+                    None => out.push(0),
+                }
+            }
+        }
+    }
+
+    impl Decode for SetBeacon {
+        fn decode(r: &mut Reader<'_>) -> Result<Self> {
+            let effect = |r: &mut Reader<'_>| -> Result<Option<i32>> {
+                Ok(if bool::decode(r)? {
+                    Some(r.varint()?)
+                } else {
+                    None
+                })
+            };
+            let primary = effect(r)?;
+            let secondary = effect(r)?;
+            Ok(SetBeacon { primary, secondary })
+        }
+    }
+
+    manual_packet!(
+        SetBeacon,
+        Serverbound,
+        serverbound,
+        SET_BEACON,
+        "set_beacon",
+        Inventory
+    );
+
     /// `rename_item`: the anvil's name field.
     #[derive(Debug, Clone, PartialEq, Eq, Packet)]
     #[packet(state = Play, dir = Serverbound, name = "rename_item", bucket = "inventory")]

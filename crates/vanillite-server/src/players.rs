@@ -590,7 +590,13 @@ impl WorldPlayers {
                 respawn: false,
             };
             let mut state = before.clone();
-            let mut actor = actor_of(&entity, player.game_mode, global, &level.chunks);
+            let mut actor = actor_of(
+                &entity,
+                player.game_mode,
+                &player.survival.effects,
+                global,
+                &level.chunks,
+            );
             let op = actor.permission_level > 0;
             let protected = |pos: BlockPos| protection.protects(pos, op);
             let aabb = entity.aabb();
@@ -847,7 +853,13 @@ impl WorldPlayers {
             let Some(entity) = level.entities.store.get(id) else {
                 continue;
             };
-            let actor = actor_of(&entity, player.game_mode, global, &level.chunks);
+            let actor = actor_of(
+                &entity,
+                player.game_mode,
+                &player.survival.effects,
+                global,
+                &level.chunks,
+            );
             let aabb = entity.aabb();
             let network_id = entity.network_id().0;
             let uuid = entity.uuid();
@@ -1097,6 +1109,7 @@ impl WorldPlayers {
         survival.insert("recipeBook", player.recipe_book.save());
         // `Survival::save` removes the death location when there is none.
         let has_death = survival.get("LastDeathLocation").is_some();
+        let has_effects = survival.get("active_effects").is_some();
         self.store.update(entity.uuid(), move |data| {
             data.pos = pos;
             data.rotation = rotation;
@@ -1105,6 +1118,9 @@ impl WorldPlayers {
             data.game_mode = game_mode;
             if !has_death {
                 data.other.remove("LastDeathLocation");
+            }
+            if !has_effects {
+                data.other.remove("active_effects");
             }
             for (key, tag) in survival.iter() {
                 data.other.insert(key, tag.clone());
@@ -1152,6 +1168,7 @@ impl SpawnProtection {
 fn actor_of(
     entity: &EntityRef<'_>,
     game_mode: GameMode,
+    effects: &vanillite_game::effect::ActiveEffects,
     global: &Global,
     chunks: &Chunks,
 ) -> Actor {
@@ -1190,6 +1207,10 @@ fn actor_of(
         game_mode,
         permission_level: crate::commands::permission_level(global, entity.uuid()),
         eyes_in_water,
+        dig_speed: effects
+            .has_dig_speed()
+            .then(|| effects.dig_speed_amplification()),
+        mining_fatigue: effects.amplifier(vanillite_game::effect::MobEffect::MINING_FATIGUE),
     }
 }
 

@@ -407,7 +407,7 @@ impl ChunkSource for WorldChunkSource<'_> {
                 continue;
             }
             let mut nbt = Vec::new();
-            match vanillite_game::level::block_entity::update_tag(entity) {
+            match vanillite_game::level::block_entity::update_tag(entity, state) {
                 Some(tag) => {
                     if vanillite_nbt::write::write_network_compound(&tag, &mut nbt).is_err() {
                         nbt = vec![0];
@@ -559,6 +559,35 @@ pub(crate) fn climate(
     })
 }
 
+/// A `SpawnerData` (`type`, `weight`, `count`) of biome or structure spawns.
+fn spawn_entry(e: &serde_json::Value) -> Option<vanillite_game::mob::spawn::SpawnEntry> {
+    let type_id = e
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .and_then(vanillite_data::entity::EntityTypeId::by_name)?;
+    let int = |v: Option<&serde_json::Value>| {
+        v.and_then(serde_json::Value::as_i64)
+            .and_then(|v| i32::try_from(v).ok())
+    };
+    let weight = int(e.get("weight")).unwrap_or(1);
+    let (min, max) = match e.get("count") {
+        Some(serde_json::Value::Object(o)) => (
+            int(o.get("min_inclusive")).unwrap_or(1),
+            int(o.get("max_inclusive")).unwrap_or(1),
+        ),
+        other => {
+            let n = int(other).unwrap_or(1);
+            (n, n)
+        }
+    };
+    Some(vanillite_game::mob::spawn::SpawnEntry {
+        type_id,
+        weight,
+        min,
+        max,
+    })
+}
+
 /// The trees saplings grow into, from the data packs; `None` without them.
 pub(crate) fn tree_features(
     packs: Option<&LoadedPacks>,
@@ -582,7 +611,7 @@ pub(crate) fn spawn_table(
     packs: Option<&LoadedPacks>,
 ) -> Option<vanillite_game::mob::spawn::SpawnTable> {
     use vanillite_game::mob::kinds::FarmClimate;
-    use vanillite_game::mob::spawn::{BiomeSpawns, Category, SpawnEntry, SpawnTable};
+    use vanillite_game::mob::spawn::{BiomeSpawns, Category, SpawnTable};
     let packs = packs?;
     let registry = packs.registry("minecraft:worldgen/biome")?;
     let tag = |name: &str| {
@@ -590,6 +619,21 @@ pub(crate) fn spawn_table(
             .tag_ids("minecraft:worldgen/biome", name)
             .unwrap_or_default()
     };
+    // The tags of every biome, by protocol id.
+    let mut biome_tags: Vec<Vec<Box<str>>> = vec![Vec::new(); registry.entries().len()];
+    if let Some(all) = packs.tags("minecraft:worldgen/biome") {
+        for name in all.keys() {
+            for id in tag(name) {
+                if let Some(list) = usize::try_from(id).ok().and_then(|i| biome_tags.get_mut(i)) {
+                    list.push(name.as_str().into());
+                }
+            }
+        }
+    }
+    for list in &mut biome_tags {
+        list.sort();
+        list.dedup();
+    }
     let warm = tag("minecraft:spawns_warm_variant_farm_animals");
     let cold = tag("minecraft:spawns_cold_variant_farm_animals");
     // An attribute value, directly or as the `argument` of a modifier.
@@ -603,7 +647,17 @@ pub(crate) fn spawn_table(
         let json: serde_json::Value = serde_json::from_str(entry.json.get()).unwrap_or_default();
         let attrs = json.get("attributes").cloned().unwrap_or_default();
         let mut b = BiomeSpawns {
+            name: entry.id.as_str().into(),
+            tags: biome_tags.get(index).cloned().unwrap_or_default(),
+            #[allow(clippy::cast_possible_truncation)]
+            temperature: json
+                .get("temperature")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(0.5) as f32,
             creature_probability: 0.1,
+            patrol_spawn: attribute(&attrs, "minecraft:gameplay/can_pillager_patrol_spawn")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(true),
             climate: if warm.contains(&id) {
                 FarmClimate::Warm
             } else if cold.contains(&id) {
@@ -624,6 +678,20 @@ pub(crate) fn spawn_table(
                 b.creature_probability = p as f32;
             }
         }
+        if let Some(costs) = attribute(&attrs, "minecraft:gameplay/natural_mob_spawns")
+            .and_then(|s| s.get("spawn_costs"))
+            .and_then(serde_json::Value::as_object)
+        {
+            for (name, cost) in costs {
+                let Some(type_id) = vanillite_data::entity::EntityTypeId::by_name(name) else {
+                    continue;
+                };
+                let num = |k: &str| cost.get(k).and_then(serde_json::Value::as_f64);
+                if let (Some(charge), Some(budget)) = (num("charge"), num("energy_budget")) {
+                    b.spawn_costs.push((type_id, charge, budget));
+                }
+            }
+        }
         if let Some(by) = attribute(&attrs, "minecraft:gameplay/natural_mob_spawns")
             .and_then(|s| s.get("spawns_by_category"))
             .and_then(serde_json::Value::as_object)
@@ -636,39 +704,40 @@ pub(crate) fn spawn_table(
                     continue;
                 };
                 let slot = &mut b.by_category[c as usize];
-                for e in list {
-                    let Some(type_id) = e
-                        .get("type")
-                        .and_then(serde_json::Value::as_str)
-                        .and_then(vanillite_data::entity::EntityTypeId::by_name)
-                    else {
-                        continue;
-                    };
-                    let int = |v: Option<&serde_json::Value>| {
-                        v.and_then(serde_json::Value::as_i64)
-                            .and_then(|v| i32::try_from(v).ok())
-                    };
-                    let weight = int(e.get("weight")).unwrap_or(1);
-                    let (min, max) = match e.get("count") {
-                        Some(serde_json::Value::Object(o)) => (
-                            int(o.get("min_inclusive")).unwrap_or(1),
-                            int(o.get("max_inclusive")).unwrap_or(1),
-                        ),
-                        other => {
-                            let n = int(other).unwrap_or(1);
-                            (n, n)
-                        }
-                    };
-                    slot.push(SpawnEntry {
-                        type_id,
-                        weight,
-                        min,
-                        max,
-                    });
-                }
+                slot.extend(list.iter().filter_map(spawn_entry));
             }
         }
         biomes.push(b);
     }
-    Some(SpawnTable { biomes })
+    let mut structures = vanillite_base::hash::FxHashMap::default();
+    if let Some(registry) = packs.registry("minecraft:worldgen/structure") {
+        for entry in registry.entries() {
+            let json: serde_json::Value =
+                serde_json::from_str(entry.json.get()).unwrap_or_default();
+            let Some(overrides) = json
+                .get("spawn_overrides")
+                .and_then(serde_json::Value::as_object)
+            else {
+                continue;
+            };
+            let mut by_category: [Option<vanillite_game::mob::spawn::StructureOverride>; 7] =
+                Default::default();
+            for (category, o) in overrides {
+                let Some(c) = Category::by_name(category) else {
+                    continue;
+                };
+                let piece =
+                    o.get("bounding_box").and_then(serde_json::Value::as_str) == Some("piece");
+                let spawns = o
+                    .get("spawns")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|l| l.iter().filter_map(spawn_entry).collect())
+                    .unwrap_or_default();
+                by_category[c as usize] =
+                    Some(vanillite_game::mob::spawn::StructureOverride { piece, spawns });
+            }
+            structures.insert(entry.id.as_str().into(), by_category);
+        }
+    }
+    Some(SpawnTable { biomes, structures })
 }

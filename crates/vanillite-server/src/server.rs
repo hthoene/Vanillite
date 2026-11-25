@@ -298,6 +298,9 @@ impl ServerBuilder {
         let world_gen = prepared.world_gen.clone();
         let behaviours = Arc::new(vanillite_game::block::Behaviours::vanilla());
         let spawn_table = crate::world_setup::spawn_table(packs.as_deref()).map(Arc::new);
+        if let Some(t) = &spawn_table {
+            vanillite_game::mob::spawn::install_table(Arc::clone(t));
+        }
         let slot = |name: &str, origin: &Origin| log::info!("Slot {name}: {origin}");
         let compression = crate::world_format::anvil_compression(&config);
         let world_format = if format_plan.convert_to.is_some() {

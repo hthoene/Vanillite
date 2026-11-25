@@ -61,6 +61,8 @@ pub enum MenuKind {
     Crafter,
     /// `lectern`: the book of a lectern, without the player's inventory.
     Lectern,
+    /// `beacon`: the payment slot (the menu's own) and the beacon's levels and powers.
+    Beacon,
 }
 
 impl MenuKind {
@@ -92,6 +94,7 @@ impl MenuKind {
             MenuKind::CartographyTable => "minecraft:cartography_table",
             MenuKind::Crafter => "minecraft:crafter_3x3",
             MenuKind::Lectern => "minecraft:lectern",
+            MenuKind::Beacon => "minecraft:beacon",
         };
         vanillite_data::registry::MENU.id(name).map_or(0, i32::from)
     }
@@ -110,7 +113,7 @@ impl MenuKind {
             MenuKind::BrewingStand => 5,
             MenuKind::CartographyTable => 3,
             MenuKind::Crafter => 9,
-            MenuKind::Lectern => 1,
+            MenuKind::Lectern | MenuKind::Beacon => 1,
         }
     }
 
@@ -138,6 +141,7 @@ impl MenuKind {
             | MenuKind::Loom
             | MenuKind::Lectern => 1,
             MenuKind::Enchantment | MenuKind::Crafter => 10,
+            MenuKind::Beacon => 3,
             _ => 0,
         }
     }
@@ -302,6 +306,9 @@ impl ContainerView<'_> {
                 _ => empty,
             };
         }
+        if self.menu.kind == MenuKind::Beacon {
+            return self.menu.local.get(i).unwrap_or(empty);
+        }
         match self.menu.storage {
             Storage::Block(pos) => blocks::items(self.level, pos)
                 .and_then(|items| items.get(i))
@@ -326,6 +333,9 @@ impl ContainerView<'_> {
     fn container_item_mut(&mut self, i: usize) -> Option<&mut ItemStack> {
         if self.menu.kind == MenuKind::Lectern {
             return None;
+        }
+        if self.menu.kind == MenuKind::Beacon {
+            return self.menu.local.get_mut(i);
         }
         match self.menu.storage {
             Storage::Block(pos) => blocks::items_mut(self.level, pos)?.get_mut(i),
@@ -528,6 +538,9 @@ impl MenuSlots for ContainerView<'_> {
             MenuKind::Crafter => !self.crafter_disabled(i),
             // The lectern's book access ignores `setItem`: Vanilla would void the stack.
             MenuKind::Lectern => false,
+            // `BeaconMenu.PaymentSlot`.
+            MenuKind::Beacon => crate::player::play::game_data()
+                .is_some_and(|d| d.item_in_tag(stack.item, "minecraft:beacon_payment_items")),
             MenuKind::BrewingStand => match i {
                 0..=2 => crate::block::brewing::is_potion_input(stack),
                 3 => crate::block::brewing::is_reagent(stack),
@@ -541,7 +554,8 @@ impl MenuSlots for ContainerView<'_> {
         match (self.menu.kind, self.menu.source(slot)) {
             (MenuKind::BrewingStand, Some(Source::Container(0..=2)))
             | (MenuKind::Enchantment, Some(Source::Container(0)))
-            | (MenuKind::Lectern, Some(Source::Container(0))) => 1,
+            | (MenuKind::Lectern, Some(Source::Container(0)))
+            | (MenuKind::Beacon, Some(Source::Container(0))) => 1,
             _ => super::CONTAINER_MAX,
         }
     }
@@ -571,7 +585,8 @@ impl MenuSlots for ContainerView<'_> {
             return 1;
         }
         if let (MenuKind::BrewingStand, Some(Source::Container(0..=2)))
-        | (MenuKind::Enchantment, Some(Source::Container(0))) =
+        | (MenuKind::Enchantment, Some(Source::Container(0)))
+        | (MenuKind::Beacon, Some(Source::Container(0))) =
             (self.menu.kind, self.menu.source(slot))
         {
             return 1;
@@ -637,6 +652,24 @@ impl MenuSlots for ContainerView<'_> {
         }
         match self.menu.kind {
             MenuKind::Lectern => ItemStack::EMPTY,
+            MenuKind::Beacon => {
+                let payment_free = self.item(0).is_empty();
+                let moved = if index == 0 {
+                    super::move_to(self, &mut stack, 1, 37, true)
+                } else if payment_free && self.may_place(0, &stack) && stack.count == 1 {
+                    super::move_to(self, &mut stack, 0, 1, false)
+                } else if (1..28).contains(&index) {
+                    super::move_to(self, &mut stack, 28, 37, false)
+                } else if (28..37).contains(&index) {
+                    super::move_to(self, &mut stack, 1, 28, false)
+                } else {
+                    super::move_to(self, &mut stack, 1, 37, false)
+                };
+                if !moved {
+                    return ItemStack::EMPTY;
+                }
+                super::finish_quick_move(self, index, stack, &original, ctx, drops)
+            }
             MenuKind::Crafter => {
                 if index >= 45 {
                     return ItemStack::EMPTY;
@@ -828,12 +861,30 @@ impl MenuSlots for ContainerView<'_> {
                 },
                 _ => 0,
             },
+            MenuKind::Beacon => match self.menu.storage {
+                Storage::Block(pos) => match self.level.block_entity(pos) {
+                    Some(BlockEntity::Beacon(b)) => b.data(index),
+                    _ => 0,
+                },
+                _ => 0,
+            },
             _ => self.menu.data.get(index).copied().unwrap_or(0),
         }
     }
 }
 
 impl ContainerView<'_> {
+    /// `BeaconMenu.updateEffects`: new powers paid with the payment slot's item.
+    pub fn update_beacon(&mut self, primary: Option<i32>, secondary: Option<i32>) {
+        let Storage::Block(pos) = self.menu.storage else {
+            return;
+        };
+        let Some(payment) = self.menu.local.get_mut(0) else {
+            return;
+        };
+        crate::block::beacon::update_effects(self.level, pos, payment, primary, secondary);
+    }
+
     /// `clickMenuButton`: whether the button did something.
     pub fn button(&mut self, id: i32, drops: &mut Vec<Drop>) -> bool {
         match self.menu.kind {
@@ -927,7 +978,7 @@ pub fn open(
         | MenuKind::Enchantment
         | MenuKind::Loom
         | MenuKind::CartographyTable => vec![ItemStack::EMPTY; kind.container_slots()],
-        MenuKind::Crafter => vec![ItemStack::EMPTY],
+        MenuKind::Crafter | MenuKind::Beacon => vec![ItemStack::EMPTY],
         _ => Vec::new(),
     };
     let data = match kind {
@@ -1082,6 +1133,17 @@ pub fn close(
             give_back(inv, stack, who, drops);
         }
     }
+    // `BeaconMenu.removed`: the payment drops.
+    if menu.kind == MenuKind::Beacon {
+        for stack in menu.local.drain(..) {
+            if !stack.is_empty() {
+                drops.push(Drop {
+                    stack,
+                    thrown: false,
+                });
+            }
+        }
+    }
     // `inventoryMenu.transferState(containerMenu)`.
     let n = menu.kind.container_slots();
     inv.menu.transfer_from(&menu.state, |slot| {
@@ -1153,7 +1215,8 @@ pub fn still_valid(
                 | BlockEntity::Hopper(_)
                 | BlockEntity::Furnace(_)
                 | BlockEntity::BrewingStand(_)
-                | BlockEntity::Crafter(_),
+                | BlockEntity::Crafter(_)
+                | BlockEntity::Beacon(_),
             ) => in_range(pos),
             // `bookAccess.stillValid`: the lectern still has its book.
             Some(BlockEntity::Lectern(l)) => !l.book.is_empty() && in_range(pos),

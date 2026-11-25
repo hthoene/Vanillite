@@ -530,11 +530,13 @@ pub mod clientbound {
         pub head_y_rot: i8,
     }
 
+    pub use super::boss::*;
     pub use super::entities::*;
     pub use super::mobs::{Animate, Cooldown, MoveVehicleBack, SetEntityLink, SetPassengers};
     pub use super::survival::*;
 }
 
+mod boss;
 mod mobs;
 mod survival;
 
