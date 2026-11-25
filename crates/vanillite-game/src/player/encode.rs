@@ -34,9 +34,12 @@ mod data_id {
     pub const POSE: u8 = 6;
     pub const ITEM_ENTITY_ITEM: u8 = 8;
     pub const HEALTH: u8 = 9;
+    pub const EFFECT_PARTICLES: u8 = 10;
+    pub const EFFECT_AMBIENCE: u8 = 11;
     pub const PLAYER_MAIN_HAND: u8 = 15;
     pub const TNT_FUSE: u8 = 8;
     pub const TNT_BLOCK_STATE: u8 = 9;
+    pub const EXPERIENCE_ORB_VALUE: u8 = 8;
     pub const PLAYER_MODE_CUSTOMISATION: u8 = 16;
     pub const PLAYER_ABSORPTION: u8 = 17;
     pub const PLAYER_SCORE: u8 = 18;
@@ -115,6 +118,64 @@ fn pose_id(pose: Pose) -> i32 {
     i32::from(id)
 }
 
+/// The synched data of a minecart (`VehicleEntity`, `AbstractMinecart` and the kinds).
+fn minecart_data(out: &mut Vec<u8>, m: &crate::minecart::MinecartData, all: bool) {
+    use crate::minecart::MinecartKind;
+    if all || m.hurt_time != 0 {
+        item(out, 8, serializer::INT, |o| write_varint(o, m.hurt_time));
+    }
+    if all || m.hurt_dir != 1 {
+        item(out, 9, serializer::INT, |o| write_varint(o, m.hurt_dir));
+    }
+    if all || m.damage != 0.0 {
+        item(out, 10, serializer::FLOAT, |o| {
+            o.extend_from_slice(&m.damage.to_be_bytes());
+        });
+    }
+    if all || m.display_state.is_some() {
+        item(out, 11, serializer::OPTIONAL_BLOCK_STATE, |o| {
+            write_varint(o, m.display_state.map_or(0, |s| i32::from(s.0)));
+        });
+    }
+    if all || m.display_offset != m.kind.default_display_offset() {
+        item(out, 12, serializer::INT, |o| {
+            write_varint(o, m.display_offset)
+        });
+    }
+    match m.kind {
+        MinecartKind::Furnace => {
+            if all || m.has_fuel {
+                item(out, 13, serializer::BOOLEAN, |o| {
+                    o.push(u8::from(m.has_fuel))
+                });
+            }
+        }
+        MinecartKind::CommandBlock => {
+            if all || !m.command.is_empty() {
+                item(out, 13, serializer::STRING, |o| {
+                    write_varint(o, i32::try_from(m.command.len()).unwrap_or(0));
+                    o.extend_from_slice(m.command.as_bytes());
+                });
+            }
+            let output = m
+                .extra
+                .get("LastOutput")
+                .and_then(crate::mob::nbt::tag_component);
+            if all || output.is_some() {
+                item(out, 14, serializer::COMPONENT, |o| match &output {
+                    Some(c) => o.extend_from_slice(c),
+                    // `CommonComponents.EMPTY`: an empty literal.
+                    None => {
+                        let empty = vanillite_nbt::Tag::String(String::new());
+                        let _ = vanillite_nbt::write::write_network(&empty, o);
+                    }
+                });
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Appends one data item.
 fn item(out: &mut Vec<u8>, id: u8, serializer: i32, value: impl FnOnce(&mut Vec<u8>)) {
     out.push(id);
@@ -153,6 +214,11 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
             entities
                 .boat(entity.id())
                 .and_then(|b| b.custom_name.as_deref())
+        })
+        .or_else(|| {
+            entities
+                .minecart(entity.id())
+                .and_then(|m| m.custom_name.as_deref())
         });
     if all || name.is_some() {
         item(
@@ -187,6 +253,7 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
                 o.extend_from_slice(&health.to_be_bytes());
             });
         }
+        effect_data(&mut out, &player.survival.effects, all);
         let hand = player.client.main_hand;
         if all || hand != MainHand::Right {
             item(
@@ -226,6 +293,9 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
     if let Some(mob) = entities.mob(entity.id()) {
         mob_data(&mut out, mob, all);
     }
+    if let Some(special) = entities.special(entity.id()) {
+        crate::mob::boss::special::entity_data(&mut out, special, all);
+    }
     if let Some(b) = entities.boat(entity.id()) {
         if all || b.hurt_time != 0 {
             item(&mut out, 8, serializer::INT, |o| {
@@ -253,10 +323,10 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
             });
         }
     }
-    if let Some(special) = entities.special(entity.id()) {
-        crate::mob::boss::special::entity_data(&mut out, special, all);
+    if let Some(m) = entities.minecart(entity.id()) {
+        minecart_data(&mut out, m, all);
     }
-    if let Some(orb) = entities.orb(entity.id())
+    if let Some(orb) = entities.experience_orb(entity.id())
         && (all || orb.value != 0)
     {
         item(&mut out, data_id::ORB_VALUE, serializer::INT, |o| {
@@ -283,6 +353,37 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
             );
         }
     }
+    if let Some(cloud) = entities.cloud(entity.id()) {
+        if all || cloud.radius != 3.0 {
+            item(&mut out, 8, serializer::FLOAT, |o| {
+                o.extend_from_slice(&cloud.radius.to_be_bytes());
+            });
+        }
+        if all || cloud.waiting {
+            item(&mut out, 9, serializer::BOOLEAN, |o| {
+                o.push(u8::from(cloud.waiting))
+            });
+        }
+        let particle_id = |name: &str| {
+            vanillite_data::registry::PARTICLE_TYPE
+                .id(name)
+                .map_or(0, i32::from)
+        };
+        // `PowerParticleOption` of `dragon_breath`, else `ColorParticleOption` of
+        // `entity_effect`; the default is white.
+        let color = cloud.particle_color();
+        if cloud.dragon_breath {
+            item(&mut out, 10, serializer::PARTICLE, |o| {
+                write_varint(o, particle_id("minecraft:dragon_breath"));
+                o.extend_from_slice(&1.0_f32.to_be_bytes());
+            });
+        } else if all || color != -1 {
+            item(&mut out, 10, serializer::PARTICLE, |o| {
+                write_varint(o, particle_id("minecraft:entity_effect"));
+                o.extend_from_slice(&color.to_be_bytes());
+            });
+        }
+    }
     if entity.kind() == ids::TNT
         && let Some(tnt) = entities.primed_tnt(entity.id())
     {
@@ -302,6 +403,19 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
                 },
             );
         }
+    }
+    if entity.kind() == ids::EXPERIENCE_ORB
+        && let Some(orb) = entities.experience_orb(entity.id())
+        && (all || orb.value != 0)
+    {
+        item(
+            &mut out,
+            data_id::EXPERIENCE_ORB_VALUE,
+            serializer::INT,
+            |o| {
+                write_varint(o, orb.value);
+            },
+        );
     }
     if entity.kind() == ids::ITEM
         && let Some(data) = entities.item(entity.id())
@@ -420,6 +534,24 @@ impl<'a> DataWriter<'a> {
     }
 }
 
+/// `DATA_EFFECT_PARTICLES` and `DATA_EFFECT_AMBIENCE_ID` of a living entity.
+fn effect_data(out: &mut Vec<u8>, fx: &crate::effect::ActiveEffects, all: bool) {
+    let any_visible = fx.iter().any(|e| e.visible);
+    if all || any_visible {
+        item(out, data_id::EFFECT_PARTICLES, serializer::PARTICLES, |o| {
+            fx.encode_particles(o);
+        });
+    }
+    // `areAllEffectsAmbient` of no effects is true, but the data starts false and is only set
+    // while effects are active.
+    let ambient = !fx.is_empty() && fx.all_ambient();
+    if all || ambient {
+        item(out, data_id::EFFECT_AMBIENCE, serializer::BOOLEAN, |o| {
+            o.push(u8::from(ambient));
+        });
+    }
+}
+
 /// The synched data of a mob after the entity's own: health, mob flags and the kind's values.
 fn mob_data(out: &mut Vec<u8>, mob: &crate::mob::MobData, all: bool) {
     use crate::mob::Kind;
@@ -434,6 +566,7 @@ fn mob_data(out: &mut Vec<u8>, mob: &crate::mob::MobData, all: bool) {
             o.extend_from_slice(&mob.health.to_be_bytes());
         });
     }
+    effect_data(out, &mob.effects, all);
     let flags =
         u8::from(mob.no_ai) | (u8::from(mob.left_handed) << 1) | (u8::from(mob.aggressive) << 2);
     if all || flags != 0 {

@@ -215,9 +215,9 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
     if in_tag(ix.stack, "minecraft:parrot_poisonous_food") {
         consume(ix);
         if let Some(m) = ix.ents.mob_mut(ix.target) {
-            crate::effect::add(
+            crate::effect::living::add_to_mob(
                 m,
-                crate::effect::EffectInstance::new(crate::effect::id::POISON, 900, 0),
+                crate::effect::EffectInstance::new(crate::effect::MobEffect::POISON, 900, 0),
             );
         }
         let kind = ix.env.types.player_attack;

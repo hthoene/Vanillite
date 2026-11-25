@@ -20,7 +20,7 @@ use vanillite_worldgen::behaviour::StateExt;
 use super::data;
 use super::special::{SpecialData, SpecialTick};
 use crate::boss_bar::BossBar;
-use crate::effect::{EffectInstance, ids as effect_ids};
+use crate::effect::{EffectInstance, MobEffect};
 use crate::entities::Entities;
 use crate::level::explosion::BlockResistance;
 use crate::level::{Level, update};
@@ -1709,7 +1709,7 @@ fn skull_hit_entity(t: &mut SpecialTick<'_, '_>, skull: &Skull, target: EntityId
     if hurt && living {
         let seconds = wither_seconds(t.env.difficulty);
         if seconds > 0 {
-            let effect = EffectInstance::new(effect_ids::wither(), 20 * seconds, 1);
+            let effect = EffectInstance::new(MobEffect::WITHER, 20 * seconds, 1);
             t.ents.add_effect(target, effect, true);
         }
     }

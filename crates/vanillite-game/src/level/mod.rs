@@ -12,6 +12,7 @@
 //!   fluid ticks, random ticks, block events); entities tick in the world's entity phase.
 
 pub mod block_entity;
+mod entity_storage;
 pub mod explosion;
 pub mod game_event;
 mod neighbors;
@@ -100,10 +101,15 @@ pub struct LevelSettings {
     pub entity_drops: bool,
     /// The dimension's `fast_lava` attribute (the Nether).
     pub fast_lava: bool,
+    /// `tntExplodes` game rule (`TNT_EXPLODES`).
+    pub tnt_explodes: bool,
     /// The dimension has sky light.
     pub has_sky_light: bool,
     /// The dimension's `water_evaporates` attribute (the Nether).
     pub water_evaporates: bool,
+    /// Fire lights nether portals here (`BaseFireBlock.inPortalDimension`: the Overworld and
+    /// the Nether).
+    pub portal_dimension: bool,
     /// Exploit switches (D1).
     pub exploits: ExploitSettings,
     /// The difficulty is peaceful (set by the server every tick).
@@ -124,8 +130,10 @@ impl Default for LevelSettings {
             block_drops: true,
             entity_drops: true,
             fast_lava: false,
+            tnt_explodes: true,
             has_sky_light: true,
             water_evaporates: false,
+            portal_dimension: true,
             exploits: ExploitSettings::default(),
             peaceful: false,
             spawn_wardens: true,
@@ -186,6 +194,8 @@ pub struct Sound {
 
 /// `SoundSource.BLOCKS`.
 pub const SOUND_BLOCKS: u8 = 4;
+/// `SoundSource.PLAYERS`.
+pub const SOUND_PLAYERS: u8 = 7;
 /// `SoundSource.HOSTILE`.
 pub const SOUND_HOSTILE: u8 = 5;
 /// `SoundSource.NEUTRAL`.
@@ -210,6 +220,8 @@ pub struct LevelOutput {
     pub explosions: Vec<explosion::ExplosionEvent>,
     /// The damage of the living entities explosions hit, for the mob system.
     pub explosion_hurts: Vec<explosion::ExplosionHurt>,
+    /// Magic damage block entities deal (conduits): target and amount.
+    pub magic_hurts: Vec<(vanillite_world::entity::EntityId, f32)>,
     /// Experience to award at a position (`ExperienceOrb.award`; orbs are not simulated yet).
     pub experience: Vec<(vanillite_base::Vec3, i32)>,
     /// Block entities whose client data changed (`sendBlockUpdated` of a block entity).
@@ -219,6 +231,9 @@ pub struct LevelOutput {
     pub summon_checks: Vec<BlockPos>,
     /// An end crystal was placed: the End fight tries to respawn the dragon (`tryRespawn`).
     pub try_dragon_respawn: bool,
+    /// Global level events (`globalLevelEvent`: event, position, data), heard by every player
+    /// of the server.
+    pub global_level_events: Vec<(i32, BlockPos, i32)>,
 }
 
 /// The game state of one world.
@@ -232,6 +247,8 @@ pub struct Level {
     behaviours: Arc<Behaviours>,
     network_ids: Arc<NetworkIds>,
     climate: Option<Arc<Climate>>,
+    /// `isRaining`, set by the server's weather each tick.
+    pub raining: bool,
     updater: NeighborUpdater,
     /// Live block entities.
     pub block_entities: BlockEntities,
@@ -247,6 +264,16 @@ pub struct Level {
     pub(crate) torch_toggles: Vec<(BlockPos, i64)>,
     /// Scratch list of [`Level::tick_chunk_runtime`].
     chunk_scratch: Vec<ChunkPos>,
+    /// Scratch list of the visibility changes.
+    visibility_scratch: Vec<vanillite_world::chunks::VisibilityChange>,
+    /// The stored data live entities were loaded from: written back with their modelled
+    /// fields replaced, so stored fields the game does not model are kept.
+    entity_nbt: FxHashMap<EntityId, vanillite_nbt::Compound>,
+    /// Stored entities of kinds the game does not model, per live chunk; written back
+    /// unchanged.
+    parked_entities: FxHashMap<ChunkPos, Vec<Arc<[u8]>>>,
+    /// Live chunks whose stored entities are not empty.
+    entity_chunks: FxHashSet<ChunkPos>,
     /// `blockEvents`, a linked set: an event already queued is not queued again.
     block_events: Vec<BlockEvent>,
     block_event_set: FxHashSet<BlockEvent>,
@@ -265,6 +292,11 @@ pub struct Level {
     menu_requests: Vec<crate::menu::container::MenuRequest>,
     /// Sign editors blocks asked to open: player, position, front side.
     sign_editors: Vec<(EntityId, BlockPos, bool)>,
+    /// Stacks blocks hand to the player that used them (`player.getInventory().add`, else
+    /// dropped); taken by the player handlers.
+    player_gives: Vec<(EntityId, crate::item::ItemStack)>,
+    /// The server's maps (shared by all worlds).
+    maps: Option<Arc<crate::map::Maps>>,
     min_y: i32,
     max_y: i32,
     /// The seed the level was created with (`getSeed`).
@@ -294,7 +326,7 @@ impl Level {
         let info = chunks.info();
         let min_y = info.min_y;
         let max_y = info.min_y + info.height as i32 - 1;
-        Level {
+        let mut level = Level {
             chunks,
             entities: Entities::new(),
             updater: NeighborUpdater::new(settings.max_chained_neighbor_updates),
@@ -302,12 +334,17 @@ impl Level {
             behaviours,
             network_ids,
             climate: None,
+            raining: false,
             block_entities: BlockEntities::default(),
             pistons: crate::block::piston::Scratch::default(),
             handling_tick: false,
             wire_signals: true,
             torch_toggles: Vec::new(),
             chunk_scratch: Vec::new(),
+            visibility_scratch: Vec::new(),
+            entity_nbt: FxHashMap::default(),
+            parked_entities: FxHashMap::default(),
+            entity_chunks: FxHashSet::default(),
             block_events: Vec::new(),
             block_event_set: FxHashSet::default(),
             random: LegacyRandom::new(seed),
@@ -320,11 +357,16 @@ impl Level {
             output: LevelOutput::default(),
             menu_requests: Vec::new(),
             sign_editors: Vec::new(),
+            player_gives: Vec::new(),
+            maps: None,
             min_y,
             max_y,
             seed,
             spawner_env: crate::block::spawner::SpawnerEnv::default(),
-        }
+        };
+        // Chunks that are visible already load their entities.
+        level.apply_visibility();
+        level
     }
 
     /// `getSeed`.
@@ -356,7 +398,29 @@ impl Level {
         self.sign_editors.push((player, pos, front));
     }
 
-    /// The sign editors blocks asked to open since the last call.
+    /// Uses the server's map store.
+    pub fn set_maps(&mut self, maps: Arc<crate::map::Maps>) {
+        self.maps = Some(maps);
+    }
+
+    /// The server's map store.
+    pub fn maps(&self) -> Option<&crate::map::Maps> {
+        self.maps.as_deref()
+    }
+
+    /// `player.getInventory().add(stack)` (or drop) from block code.
+    pub fn give_to_player(&mut self, player: EntityId, stack: crate::item::ItemStack) {
+        if !stack.is_empty() {
+            self.player_gives.push((player, stack));
+        }
+    }
+
+    /// Takes the stacks blocks handed to players.
+    pub fn take_player_gives(&mut self) -> Vec<(EntityId, crate::item::ItemStack)> {
+        std::mem::take(&mut self.player_gives)
+    }
+
+    /// Takes the sign editors blocks asked to open.
     pub fn take_sign_editors(&mut self) -> Vec<(EntityId, BlockPos, bool)> {
         std::mem::take(&mut self.sign_editors)
     }
@@ -399,6 +463,37 @@ impl Level {
         self.climate.as_deref()
     }
 
+    /// `Level.isRainingAt` without the sky light test (the motion blocking heightmap covers it
+    /// outside of caves).
+    pub fn is_raining_at(&self, pos: BlockPos) -> bool {
+        if !self.raining {
+            return false;
+        }
+        let Some(chunk) = self.chunks.chunk(pos.chunk()) else {
+            return false;
+        };
+        let Some(heights) = chunk
+            .chunk
+            .heightmaps()
+            .get(vanillite_chunk::HeightmapKind::MotionBlocking)
+        else {
+            return false;
+        };
+        let (x, z) = (
+            u32::try_from(pos.x & 15).unwrap_or(0),
+            u32::try_from(pos.z & 15).unwrap_or(0),
+        );
+        let top = i32::try_from(heights.get(x, z)).unwrap_or(0) + chunk.chunk.min_y();
+        if top > pos.y {
+            return false;
+        }
+        let Some(climate) = &self.climate else {
+            return true;
+        };
+        let data = climate.biomes.get(self.biome(pos));
+        data.has_precipitation && data.warm_enough_to_rain(pos.x, pos.y, pos.z, climate.sea_level)
+    }
+
     /// `getBiome(pos)`: the noise biome the biome manager picks for `pos`; the default biome
     /// outside live chunks.
     pub fn biome(&self, pos: BlockPos) -> u16 {
@@ -429,6 +524,11 @@ impl Level {
     /// The server-wide network id counter.
     pub fn network_ids(&self) -> &NetworkIds {
         &self.network_ids
+    }
+
+    /// The entities, the network ids and the level random at once.
+    pub fn entity_parts(&mut self) -> (&mut Entities, &NetworkIds, &mut LegacyRandom) {
+        (&mut self.entities, &self.network_ids, &mut self.random)
     }
 
     /// The server-wide network id counter, shared.
@@ -517,10 +617,11 @@ impl Level {
         self.block(pos).fluid_state()
     }
 
-    /// `isLoaded(pos)` / `hasChunkAt`: the position is in a live chunk.
+    /// `isLoaded(pos)` / `hasChunkAt`: the position is in an accessible full chunk (level up
+    /// to full).
     #[inline]
     pub fn is_loaded(&self, pos: BlockPos) -> bool {
-        self.chunks.chunk(pos.chunk()).is_some()
+        self.chunks.is_accessible(pos.chunk())
     }
 
     /// `getBrightness(LightLayer.SKY / BLOCK, pos)` as `(sky, block)`.
@@ -669,6 +770,11 @@ impl Level {
             seed,
             except,
         });
+    }
+
+    /// `globalLevelEvent(event, pos, data)`.
+    pub fn global_level_event(&mut self, event: i32, pos: BlockPos, data: i32) {
+        self.output.global_level_events.push((event, pos, data));
     }
 
     /// `levelEvent(source, event, pos, data)`.
@@ -950,6 +1056,11 @@ impl Level {
         }
     }
 
+    /// Whether the block of `state` reacts to entities inside it (`entityInside`).
+    pub fn has_entity_inside(&self, state: BlockState) -> bool {
+        self.behaviours.get(state.block()).entity_inside.is_some()
+    }
+
     /// `state.entityInside(level, pos, entity, ...)` of the block at `pos`.
     pub fn entity_inside(&mut self, pos: BlockPos, entity: EntityId) {
         let state = self.block(pos);
@@ -1011,6 +1122,10 @@ impl BlockLevel for Level {
     #[inline]
     fn block(&self, pos: BlockPos) -> BlockState {
         Level::block(self, pos)
+    }
+
+    fn min_y(&self) -> i32 {
+        Level::min_y(self)
     }
 
     fn raw_brightness(&self, pos: BlockPos) -> i32 {

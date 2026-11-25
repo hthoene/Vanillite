@@ -112,6 +112,17 @@ impl LightEngine for BfsLightEngine {
         }
     }
 
+    /// Light is a function of each state's emission, dampening and occlusion shape and of
+    /// which sections are empty, so a change that keeps all of them keeps every light level.
+    fn changes_light(&self, old: u16, new: u16) -> bool {
+        let air =
+            |state| vanillite_chunk::facts::block_flags(state) & vanillite_chunk::facts::AIR != 0;
+        let facts = LightFacts::get();
+        LightFacts::light(old) != LightFacts::light(new)
+            || air(old) != air(new)
+            || facts.shape_of(old) != facts.shape_of(new)
+    }
+
     fn relight(&self, changed: &[ChunkPos], area: &mut Neighbours<'_>) {
         for &center in changed {
             let origin = ChunkPos::new(center.x - 2, center.z - 2);
@@ -179,7 +190,11 @@ struct Grid<'a> {
     origin: ChunkPos,
     size: usize,
     width: usize,
+    /// Cells of the grid in y: from the bottom of the world to the section above the highest
+    /// non-air section of the area.
     height: usize,
+    /// Sections of the world.
+    sections: usize,
     min_y: i32,
     chunks: &'a [Option<&'a Chunk>],
     facts: &'static LightFacts,
@@ -192,7 +207,15 @@ struct Grid<'a> {
 impl<'a> Grid<'a> {
     fn new(origin: ChunkPos, size: usize, chunks: &'a [Option<&'a Chunk>]) -> Self {
         let any = chunks.iter().flatten().next();
-        let (min_y, height) = any.map_or((0, 0), |c| (c.min_y(), c.height() as usize));
+        let (min_y, sections) = any.map_or((0, 0), |c| (c.min_y(), c.sections().len()));
+        // Above the highest non-air section of the area every cell is a sky source and no block
+        // light reaches past the section above it: the grid ends there.
+        let top = chunks
+            .iter()
+            .flatten()
+            .filter_map(|c| highest_filled_section(c))
+            .max();
+        let height = top.map_or(0, |t| (t + 2).min(sections)) * 16;
         let width = size * 16;
         let cells = width * width * height;
         Grid {
@@ -200,6 +223,7 @@ impl<'a> Grid<'a> {
             size,
             width,
             height,
+            sections,
             min_y,
             chunks,
             facts: LightFacts::get(),
@@ -409,19 +433,25 @@ impl<'a> Grid<'a> {
     }
 
     /// The computed light per present chunk, in the chunk's layout (layer `i + 1` is section
-    /// `i`; the border layers stay absent). Sections without light are `Uniform(0)`.
+    /// `i`; the border layers stay absent). Sections without light are `Uniform(0)`; above the
+    /// grid sky light is absent (full) and block light 0.
     fn into_light(self) -> Vec<Option<ChunkLight>> {
-        let sections = self.height / 16;
+        let grid_sections = self.height / 16;
         (0..self.chunks.len())
             .map(|i| {
                 self.chunks[i]?;
                 let base_x = (i % self.size) * 16;
                 let base_z = (i / self.size) * 16;
-                let mut light = ChunkLight::new(sections);
-                for section in 0..sections {
-                    light.sky_mut()[section + 1] = self.layer(&self.sky, base_x, base_z, section);
-                    light.block_mut()[section + 1] =
-                        self.layer(&self.block, base_x, base_z, section);
+                let mut light = ChunkLight::new(self.sections);
+                for section in 0..self.sections {
+                    if section < grid_sections {
+                        light.sky_mut()[section + 1] =
+                            self.layer(&self.sky, base_x, base_z, section);
+                        light.block_mut()[section + 1] =
+                            self.layer(&self.block, base_x, base_z, section);
+                    } else {
+                        light.block_mut()[section + 1] = LightNibbles::Uniform(0);
+                    }
                 }
                 Some(light)
             })

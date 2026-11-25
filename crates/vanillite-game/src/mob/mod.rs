@@ -194,6 +194,13 @@ pub struct MobData {
     pub xp_reward: i32,
     /// The last block position (`lastPos`).
     pub last_pos: BlockPos,
+    /// `activeEffects` with their attribute modifiers.
+    pub effects: crate::effect::ActiveEffects,
+    /// `getAbsorptionAmount`.
+    pub absorption: f32,
+    /// The attribute values without effect modifiers while modifiers are active; `attrs`
+    /// holds the modified values then.
+    pub base_attrs: Option<Box<Attrs>>,
     /// Wears a saddle (`EquipmentSlot.SADDLE`).
     pub saddled: bool,
     /// `ItemBasedSteering`: boosting, the ticks boosted and the boost length
@@ -221,10 +228,6 @@ pub struct MobData {
     pub can_pick_up_loot: bool,
     /// `isLeftHanded`.
     pub left_handed: bool,
-    /// Active status effects (`activeEffects`).
-    pub effects: crate::effect::MobEffects,
-    /// The attributes before attribute effects, kept while one is active.
-    pub effect_base_attrs: Option<Attrs>,
     /// `PathfinderMob.restrictTo`: the home position and radius (`-1` = none).
     pub restrict_center: BlockPos,
     pub restrict_radius: i32,
@@ -332,6 +335,9 @@ impl MobData {
             goal_path: None,
             variant: 0,
             xp_reward: 0,
+            effects: crate::effect::ActiveEffects::default(),
+            absorption: 0.0,
+            base_attrs: None,
             last_pos: BlockPos::new(i32::MIN, i32::MIN, i32::MIN),
             saddled: false,
             boosting: false,
@@ -349,8 +355,6 @@ impl MobData {
             equipment: equipment::Equipment::default(),
             can_pick_up_loot: false,
             left_handed: false,
-            effects: crate::effect::MobEffects::default(),
-            effect_base_attrs: None,
             restrict_center: BlockPos::new(0, 0, 0),
             restrict_radius: -1,
             brain: None,
@@ -542,13 +546,13 @@ pub struct MobSettings {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ExplosionRequest {
     pub source: Option<EntityId>,
-    /// `getIndirectSourceEntity` when it is not `source` itself (a projectile's owner).
+    /// The entity responsible (`getIndirectSourceEntity`); `None`: the source itself.
     pub indirect: Option<EntityId>,
     pub pos: Vec3,
     pub radius: f32,
     /// `ExplosionInteraction.MOB`: blocks only break with `mobGriefing`.
     pub mob: bool,
-    /// The source's `getBlockExplosionResistance`.
+    /// The source's `getBlockExplosionResistance` (the wither's skulls, primed TNT minecarts).
     pub resistance: crate::level::explosion::BlockResistance,
 }
 
@@ -564,6 +568,39 @@ pub struct WindBurst {
     pub knockback: f64,
     /// The burst sound.
     pub sound: &'static str,
+}
+
+impl ExplosionRequest {
+    /// `Level.explode` with the block interaction of the rules (`ExplosionInteraction.MOB` or
+    /// `TNT`).
+    pub fn run(&self, level: &mut crate::level::Level, rules: &crate::survival::rules::GameRules) {
+        use crate::level::explosion::BlockInteraction;
+        use crate::survival::rules::Rule;
+        let decay = if self.mob {
+            Rule::MOB_EXPLOSION_DROP_DECAY
+        } else {
+            Rule::TNT_EXPLOSION_DROP_DECAY
+        };
+        let interaction = if self.mob && !rules.bool(Rule::MOB_GRIEFING) {
+            BlockInteraction::Keep
+        } else if rules.bool(decay) {
+            BlockInteraction::DestroyWithDecay
+        } else {
+            BlockInteraction::Destroy
+        };
+        // `getIndirectSourceEntity`: a living source caused it itself.
+        level.explode_with(
+            self.source,
+            self.indirect.or(self.source),
+            self.pos,
+            self.radius,
+            interaction,
+            crate::level::explosion::ExplosionStyle {
+                resistance: self.resistance,
+                ..Default::default()
+            },
+        );
+    }
 }
 
 /// A change of the world a mob tick causes; applied right after that tick.
@@ -591,6 +628,56 @@ pub enum WorldAction {
     },
     /// Game events, listener moves and sculk catalyst charges.
     Level(boss::warden::LevelAction),
+    /// `entityInside` of the block at the position for the entity (`applyEffectsFromBlocks`).
+    EntityInside(BlockPos, EntityId),
+    /// A hopper minecart takes in an item (`MinecartHopper.tryConsumeItems`).
+    HopperMinecart(EntityId),
+}
+
+impl WorldAction {
+    /// Applies the actions that need nothing but the level; returns `false` for the others.
+    pub fn apply_to_level(&self, level: &mut crate::level::Level) -> bool {
+        match *self {
+            WorldAction::SetBlock(pos, block, flags) => {
+                level.set_block(pos, block, flags);
+            }
+            WorldAction::DestroyBlock(pos, drop) => {
+                level.destroy_block(pos, drop, None);
+            }
+            WorldAction::LevelEvent(event, pos, data) => {
+                level.level_event(None, event, pos, data);
+            }
+            WorldAction::EntityInside(pos, id) => {
+                if level.entities.store.contains(id) {
+                    level.entity_inside(pos, id);
+                }
+            }
+            WorldAction::HopperMinecart(id) => crate::minecart::hopper_suck(level, id),
+            WorldAction::SetDoorOpen(pos, open, source) => {
+                crate::block::redstone::set_door_open(level, pos, open, source);
+            }
+            WorldAction::WindBurst(b) => {
+                // `ExplosionInteraction.TRIGGER` without damage (`damagesEntities` off).
+                level.explode_with(
+                    b.source,
+                    None,
+                    b.pos,
+                    b.radius,
+                    crate::level::explosion::BlockInteraction::TriggerBlock,
+                    crate::level::explosion::ExplosionStyle {
+                        damages_entities: false,
+                        knockback: b.knockback,
+                        wind_sound: Some(b.sound),
+                        ..Default::default()
+                    },
+                );
+            }
+            WorldAction::Explode(_) | WorldAction::ExplodeWith { .. } | WorldAction::Level(_) => {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 /// The mob state of a world besides the entities: search buffers, queued world changes and
@@ -616,6 +703,9 @@ pub struct MobContext {
     pub dragon_fight: Option<boss::dragon::FightView>,
     /// What the dragon and the crystals report to the fight, handled after each tick.
     pub dragon_events: Vec<boss::dragon::DragonEvent>,
+    /// Menus players opened at entities (chest boats, container minecarts), opened once the
+    /// entities are back in the level.
+    pub menus: Vec<crate::menu::container::MenuRequest>,
 }
 
 impl MobContext {

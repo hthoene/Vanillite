@@ -380,7 +380,7 @@ pub fn tick(
 }
 
 /// `Entity.moveTowardsClosestSpace`: pushes an entity stuck in a block out of it.
-fn move_towards_closest_space(
+pub(crate) fn move_towards_closest_space(
     pos: Vec3,
     y: f64,
     velocity: Vec3,

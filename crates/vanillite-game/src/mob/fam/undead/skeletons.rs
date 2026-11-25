@@ -64,15 +64,15 @@ fn ss(m: &MobData) -> Option<&SkeletonState> {
 pub fn skeleton_arrow(kind: Kind) -> (Option<EffectInstance>, bool) {
     match kind {
         Kind::Stray => (
-            Some(EffectInstance::new(effects::id::SLOWNESS, 600, 0)),
+            Some(EffectInstance::new(effects::MobEffect::SLOWNESS, 600, 0)),
             false,
         ),
         Kind::Bogged => (
-            Some(EffectInstance::new(effects::id::POISON, 100, 0)),
+            Some(EffectInstance::new(effects::MobEffect::POISON, 100, 0)),
             false,
         ),
         Kind::Parched => (
-            Some(EffectInstance::new(effects::id::WEAKNESS, 600, 0)),
+            Some(EffectInstance::new(effects::MobEffect::WEAKNESS, 600, 0)),
             false,
         ),
         Kind::WitherSkeleton => (None, true),
@@ -387,7 +387,7 @@ pub fn do_hurt_target(t: &mut Tick<'_, '_>, target: EntityId) -> Option<bool> {
         super::add_effect(
             t.ents,
             target,
-            EffectInstance::new(effects::id::WITHER, 200, 0),
+            EffectInstance::new(effects::MobEffect::WITHER, 200, 0),
         );
     }
     Some(hit)

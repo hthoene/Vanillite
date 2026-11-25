@@ -88,6 +88,11 @@ pub enum Kind {
     BrewingStand,
     /// Enchanting tables (their block entity only animates the book).
     EnchantingTable,
+    /// Looms (no block entity).
+    Loom,
+    /// Cartography tables (no block entity).
+    CartographyTable,
+    Beacon,
 }
 
 /// The container kind of a block.
@@ -113,6 +118,9 @@ pub fn kind_of(block: BlockId) -> Option<Kind> {
         BlockKind::SmithingTableBlock => Kind::SmithingTable,
         BlockKind::BrewingStandBlock => Kind::BrewingStand,
         BlockKind::EnchantingTableBlock => Kind::EnchantingTable,
+        BlockKind::LoomBlock => Kind::Loom,
+        BlockKind::CartographyTableBlock => Kind::CartographyTable,
+        BlockKind::BeaconBlock => Kind::Beacon,
         _ => return None,
     })
 }
@@ -130,7 +138,10 @@ pub fn size_of(kind: Kind) -> usize {
         | Kind::Anvil
         | Kind::Grindstone
         | Kind::SmithingTable
-        | Kind::EnchantingTable => 0,
+        | Kind::EnchantingTable
+        | Kind::Loom
+        | Kind::CartographyTable
+        | Kind::Beacon => 0,
     }
 }
 
@@ -146,7 +157,10 @@ pub fn new_block_entity(block: BlockId) -> Option<BlockEntity> {
         | Kind::Anvil
         | Kind::Grindstone
         | Kind::SmithingTable
-        | Kind::EnchantingTable => return None,
+        | Kind::EnchantingTable
+        | Kind::Loom
+        | Kind::CartographyTable
+        | Kind::Beacon => return None,
         kind => BlockEntity::Container(Box::new(Container::new(size_of(kind)))),
     })
 }
@@ -240,6 +254,7 @@ pub fn menu_provider(level: &Level, state: BlockState, pos: BlockPos) -> Option<
             Some(BlockEntity::Hopper(h)) => h.custom_name.clone(),
             Some(BlockEntity::Furnace(f)) => f.custom_name.clone(),
             Some(BlockEntity::BrewingStand(b)) => b.custom_name.clone(),
+            Some(BlockEntity::Beacon(b)) => b.custom_name.clone(),
             _ => None,
         }
         .unwrap_or_else(|| title(default))
@@ -388,6 +403,21 @@ pub fn menu_provider(level: &Level, state: BlockState, pos: BlockPos) -> Option<
             Storage::Local,
             title("container.upgrade"),
         )),
+        Kind::Loom => Some(request(
+            MenuKind::Loom,
+            Storage::Local,
+            title("container.loom"),
+        )),
+        Kind::Beacon => Some(request(
+            MenuKind::Beacon,
+            Storage::Block(pos),
+            named("container.beacon"),
+        )),
+        Kind::CartographyTable => Some(request(
+            MenuKind::CartographyTable,
+            Storage::Local,
+            title("container.cartography_table"),
+        )),
     }
 }
 
@@ -481,6 +511,9 @@ pub fn items(level: &Level, pos: BlockPos) -> Option<&[ItemStack]> {
         BlockEntity::Hopper(h) => Some(&h.items),
         BlockEntity::Furnace(f) => Some(&f.items),
         BlockEntity::BrewingStand(b) => Some(&b.items),
+        BlockEntity::DecoratedPot(p) => Some(std::slice::from_ref(&p.item)),
+        BlockEntity::ChiseledBookshelf(b) => Some(&b.items),
+        BlockEntity::Crafter(c) => Some(&c.items),
         _ => None,
     }
 }
@@ -492,6 +525,9 @@ pub fn items_mut(level: &mut Level, pos: BlockPos) -> Option<&mut [ItemStack]> {
         BlockEntity::Hopper(h) => Some(&mut h.items),
         BlockEntity::Furnace(f) => Some(&mut f.items),
         BlockEntity::BrewingStand(b) => Some(&mut b.items),
+        BlockEntity::DecoratedPot(p) => Some(std::slice::from_mut(&mut p.item)),
+        BlockEntity::ChiseledBookshelf(b) => Some(&mut b.items),
+        BlockEntity::Crafter(c) => Some(&mut c.items),
         _ => None,
     }
 }
@@ -518,6 +554,11 @@ pub fn pre_remove_side_effects(level: &mut Level, pos: BlockPos, entity: &BlockE
         BlockEntity::Hopper(h) => &h.items,
         BlockEntity::Furnace(f) => &f.items,
         BlockEntity::BrewingStand(b) => &b.items,
+        BlockEntity::Crafter(c) => &c.items,
+        // `CampfireBlockEntity.preRemoveSideEffects`; bookshelves and pots are containers.
+        BlockEntity::Campfire(c) => &c.items,
+        BlockEntity::ChiseledBookshelf(b) => &b.items,
+        BlockEntity::DecoratedPot(p) => std::slice::from_ref(&p.item),
         _ => return,
     };
     let items: Vec<ItemStack> = items.iter().filter(|s| !s.is_empty()).cloned().collect();
@@ -571,6 +612,8 @@ pub enum ContainerRef {
     Block(BlockPos),
     /// Both halves of a double chest.
     Double(BlockPos, BlockPos),
+    /// A container entity (chest and hopper minecarts, chest boats).
+    Entity(vanillite_world::entity::EntityId),
 }
 
 impl ContainerRef {
@@ -593,8 +636,39 @@ impl ContainerRef {
         Some(ContainerRef::Block(pos))
     }
 
+    /// `HopperBlockEntity.getContainerAt(level, x, y, z)`: the block container at the point,
+    /// else a random container entity within half a block of it.
+    pub fn at_point(level: &mut Level, point: Vec3) -> Option<ContainerRef> {
+        let pos = BlockPos::containing(point.x, point.y, point.z);
+        if let Some(c) = ContainerRef::at(level, pos) {
+            return Some(c);
+        }
+        let area = vanillite_base::Aabb::new(
+            point.x - 0.5,
+            point.y - 0.5,
+            point.z - 0.5,
+            point.x + 0.5,
+            point.y + 0.5,
+            point.z + 0.5,
+        );
+        let mut found = Vec::new();
+        let ents = &level.entities;
+        ents.store.for_each_in(&area, false, |id| {
+            if ents.container_items(id).is_some() {
+                found.push(id);
+            }
+        });
+        if found.is_empty() {
+            return None;
+        }
+        let n = i32::try_from(found.len()).unwrap_or(i32::MAX);
+        let i = usize::try_from(level.random().next_int_bounded(n)).unwrap_or(0);
+        found.get(i).copied().map(ContainerRef::Entity)
+    }
+
     fn locate(self, level: &Level, slot: usize) -> Option<(BlockPos, usize)> {
         match self {
+            ContainerRef::Entity(_) => None,
             ContainerRef::Block(p) => Some((p, slot)),
             ContainerRef::Double(a, b) => {
                 let first = items(level, a).map_or(0, <[ItemStack]>::len);
@@ -610,6 +684,10 @@ impl ContainerRef {
     /// `getContainerSize`.
     pub fn size(self, level: &Level) -> usize {
         match self {
+            ContainerRef::Entity(id) => level
+                .entities
+                .container_items(id)
+                .map_or(0, <[ItemStack]>::len),
             ContainerRef::Block(p) => items(level, p).map_or(0, <[ItemStack]>::len),
             ContainerRef::Double(a, b) => {
                 items(level, a).map_or(0, <[ItemStack]>::len)
@@ -620,6 +698,13 @@ impl ContainerRef {
 
     /// `getItem(slot)`.
     pub fn get(self, level: &Level, slot: usize) -> ItemStack {
+        if let ContainerRef::Entity(id) = self {
+            return level
+                .entities
+                .container_items(id)
+                .and_then(|items| items.get(slot).cloned())
+                .unwrap_or_default();
+        }
         self.locate(level, slot)
             .and_then(|(p, i)| items(level, p)?.get(i).cloned())
             .unwrap_or_default()
@@ -627,19 +712,48 @@ impl ContainerRef {
 
     /// The stack of a slot for in-place changes.
     pub fn get_mut(self, level: &mut Level, slot: usize) -> Option<&mut ItemStack> {
+        if let ContainerRef::Entity(id) = self {
+            return level.entities.container_items_mut(id)?.get_mut(slot);
+        }
         let (p, i) = self.locate(level, slot)?;
         items_mut(level, p)?.get_mut(i)
     }
 
     /// `setItem(slot, stack)` (a furnace's input restarts its cooking).
     pub fn set(self, level: &mut Level, slot: usize, stack: ItemStack) {
+        if let ContainerRef::Entity(id) = self {
+            if let Some(target) = level
+                .entities
+                .container_items_mut(id)
+                .and_then(|items| items.get_mut(slot))
+            {
+                *target = stack;
+            }
+            return;
+        }
         let Some((p, i)) = self.locate(level, slot) else {
             return;
         };
         if let Some(BlockEntity::Furnace(f)) = level.block_entity_mut(p) {
             f.set_item(i, stack);
+        } else if let Some(BlockEntity::ChiseledBookshelf(_)) = level.block_entity(p) {
+            super::bookshelf::set_item(level, p, i, stack);
+        } else if let Some(BlockEntity::Crafter(c)) = level.block_entity_mut(p) {
+            c.set_item(i, stack);
         } else if let Some(target) = items_mut(level, p).and_then(|items| items.get_mut(i)) {
             *target = stack;
+        }
+    }
+
+    /// `removeItem(slot, 1)`: one item of a slot (a bookshelf updates its state).
+    pub fn remove_one(self, level: &mut Level, slot: usize) {
+        let Some((p, i)) = self.locate(level, slot) else {
+            return;
+        };
+        if let Some(BlockEntity::ChiseledBookshelf(_)) = level.block_entity(p) {
+            super::bookshelf::remove_item(level, p, i);
+        } else if let Some(s) = items_mut(level, p).and_then(|items| items.get_mut(i)) {
+            s.shrink(1);
         }
     }
 
@@ -651,6 +765,35 @@ impl ContainerRef {
                 set_changed(level, a);
                 set_changed(level, b);
             }
+            ContainerRef::Entity(_) => {}
+        }
+    }
+
+    /// `getItem(slot)` of a `RandomizableContainer` first rolls the loot table of the block
+    /// entity holding the slot.
+    pub fn unpack(self, level: &mut Level, slot: usize) {
+        if let Some((p, _)) = self.locate(level, slot) {
+            super::chest_loot::unpack(level, p, None);
+        }
+    }
+
+    /// `isEmpty` with the loot tables it rolls (a double chest's second half only if the
+    /// first is empty).
+    pub fn is_empty_unpacking(self, level: &mut Level) -> bool {
+        match self {
+            ContainerRef::Block(p) => {
+                super::chest_loot::unpack(level, p, None);
+                ContainerRef::Block(p).is_empty(level)
+            }
+            ContainerRef::Double(a, b) => {
+                super::chest_loot::unpack(level, a, None);
+                if !ContainerRef::Block(a).is_empty(level) {
+                    return false;
+                }
+                super::chest_loot::unpack(level, b, None);
+                ContainerRef::Block(b).is_empty(level)
+            }
+            ContainerRef::Entity(_) => self.is_empty(level),
         }
     }
 
@@ -663,7 +806,7 @@ impl ContainerRef {
     pub fn hopper(self) -> Option<BlockPos> {
         match self {
             ContainerRef::Block(p) => Some(p),
-            ContainerRef::Double(..) => None,
+            ContainerRef::Double(..) | ContainerRef::Entity(_) => None,
         }
     }
 
@@ -693,6 +836,9 @@ impl ContainerRef {
 
     /// `canPlaceItem` and `canPlaceItemThroughFace`.
     pub fn can_place(self, level: &Level, slot: usize, stack: &ItemStack) -> bool {
+        if let ContainerRef::Entity(_) = self {
+            return slot < self.size(level);
+        }
         let Some((p, i)) = self.locate(level, slot) else {
             return false;
         };
@@ -700,6 +846,10 @@ impl ContainerRef {
             Some(BlockEntity::Furnace(f)) => crate::player::play::game_data()
                 .is_some_and(|d| f.can_place_item(i, stack, &d.recipes)),
             Some(BlockEntity::BrewingStand(b)) => b.can_place_item(i, stack),
+            Some(BlockEntity::ChiseledBookshelf(b)) => {
+                super::bookshelf::accepts(stack) && b.items.get(i).is_some_and(ItemStack::is_empty)
+            }
+            Some(BlockEntity::Crafter(c)) => c.can_place_item(i, stack),
             Some(BlockEntity::Container(_))
                 if kind_of(level.block(p).block()) == Some(Kind::ShulkerBox) =>
             {
@@ -711,6 +861,9 @@ impl ContainerRef {
 
     /// `canTakeItem` and `canTakeItemThroughFace`.
     pub fn can_take(self, level: &Level, slot: usize, stack: &ItemStack, face: Direction) -> bool {
+        if let ContainerRef::Entity(_) = self {
+            return slot < self.size(level);
+        }
         let Some((p, i)) = self.locate(level, slot) else {
             return false;
         };
@@ -909,6 +1062,15 @@ pub fn component(entity: &BlockEntity, id: u16) -> Option<Box<[u8]>> {
         BlockEntity::BrewingStand(b) => (&b.custom_name, &b.items),
         _ => return None,
     };
+    if id == ids::CONTAINER_LOOT {
+        // `RandomizableContainerBlockEntity.collectImplicitComponents`.
+        let (table, seed) = match entity {
+            BlockEntity::Container(c) => (c.loot_table.as_deref(), c.loot_seed),
+            BlockEntity::Hopper(h) => (h.loot_table.as_deref(), h.loot_seed),
+            _ => (None, 0),
+        };
+        return Some(super::chest_loot::component(table?, seed));
+    }
     if id == ids::CUSTOM_NAME {
         let mut out = Vec::new();
         name.as_ref()?.encode(&mut out);
@@ -917,13 +1079,7 @@ pub fn component(entity: &BlockEntity, id: u16) -> Option<Box<[u8]>> {
     if id == ids::CONTAINER {
         // `ItemContainerContents.fromItems`: up to the last non-empty slot; nothing if empty
         // (the item's default).
-        let last = items.iter().rposition(|s| !s.is_empty())?;
-        let mut out = Vec::new();
-        vanillite_protocol::codec::write_varint(&mut out, i32::try_from(last + 1).ok()?);
-        for stack in items.get(..=last)? {
-            stack.encode(&mut out);
-        }
-        return Some(out.into_boxed_slice());
+        return vanillite_protocol::item::encode_container_contents(items);
     }
     None
 }
@@ -937,18 +1093,20 @@ pub fn apply_item_components(level: &mut Level, pos: BlockPos, stack: &ItemStack
         <Component as vanillite_protocol::codec::DecodeLimited>::decode_limited(&mut r, 2_097_152)
             .ok()
     });
-    let contents: Option<Vec<ItemStack>> = stack.component(ids::CONTAINER).and_then(|bytes| {
-        let mut r = vanillite_protocol::codec::Reader::new(bytes);
-        let n = r.len_prefix("container", 256, 1).ok()?;
-        let mut items = Vec::with_capacity(n);
-        for _ in 0..n {
-            items.push(
-                ItemStack::decode_untrusted(&mut r, &vanillite_protocol::item::InstalledRegistries)
-                    .ok()?,
-            );
+    let contents: Option<Vec<ItemStack>> = stack
+        .component(ids::CONTAINER)
+        .and_then(|bytes| vanillite_protocol::item::decode_container_contents(bytes).ok());
+    let loot = stack
+        .component(ids::CONTAINER_LOOT)
+        .and_then(super::chest_loot::read_component);
+    if let Some((table, seed)) = loot {
+        // `RandomizableContainerBlockEntity.applyImplicitComponents`.
+        match level.block_entity_mut(pos) {
+            Some(BlockEntity::Container(c)) => (c.loot_table, c.loot_seed) = (Some(table), seed),
+            Some(BlockEntity::Hopper(h)) => (h.loot_table, h.loot_seed) = (Some(table), seed),
+            _ => {}
         }
-        Some(items)
-    });
+    }
     let (target_name, target_items): (&mut Option<Component>, &mut [ItemStack]) =
         match level.block_entity_mut(pos) {
             Some(BlockEntity::Container(c)) => (&mut c.custom_name, &mut c.items),
@@ -1021,6 +1179,14 @@ pub fn save_items(items: &[ItemStack], out: &mut Compound) {
     }
 }
 
+/// `ContainerHelper.saveAllItems(output, items, true)`: `Items` even when empty.
+pub fn save_items_always(items: &[ItemStack], out: &mut Compound) {
+    save_items(items, out);
+    if out.get("Items").is_none() {
+        out.insert("Items", List::new());
+    }
+}
+
 /// `ContainerHelper.loadAllItems`.
 pub fn load_items(nbt: &Compound, items: &mut [ItemStack]) {
     let Some(Tag::List(list)) = nbt.get("Items") else {
@@ -1052,26 +1218,21 @@ pub fn save_name(name: &Option<Component>, out: &mut Compound) {
 }
 
 impl Container {
-    /// Loads the stored fields. A container whose loot table was not rolled yet keeps it
-    /// (chest loot is not generated yet); stacks stored next to it are kept as well.
+    /// Loads the stored fields: a container whose loot table was not rolled yet has no
+    /// stacks (`tryLoadLootTable`, else `loadAllItems`).
     pub fn load(&mut self, nbt: &Compound) {
         self.custom_name = load_name(nbt);
-        if let Some(Tag::String(table)) = nbt.get("LootTable") {
-            self.loot_table = Some(table.clone());
-            self.loot_seed = nbt.get("LootTableSeed").and_then(Tag::as_i64).unwrap_or(0);
+        (self.loot_table, self.loot_seed) = super::chest_loot::load(nbt);
+        if self.loot_table.is_none() {
+            load_items(nbt, &mut self.items);
         }
-        load_items(nbt, &mut self.items);
     }
 
-    /// Saves the stored fields.
+    /// Saves the stored fields (`trySaveLootTable`, else `saveAllItems`).
     pub fn save(&self, out: &mut Compound) {
         save_name(&self.custom_name, out);
-        if let Some(table) = &self.loot_table {
-            out.insert("LootTable", Tag::String(table.clone()));
-            if self.loot_seed != 0 {
-                out.insert("LootTableSeed", Tag::Long(self.loot_seed));
-            }
+        if !super::chest_loot::save(self.loot_table.as_deref(), self.loot_seed, out) {
+            save_items(&self.items, out);
         }
-        save_items(&self.items, out);
     }
 }

@@ -48,6 +48,8 @@ pub enum BlockResistance {
     Default,
     /// `WitherSkull` (dangerous): at most 0.8 for blocks the wither can destroy.
     DangerousWitherSkull,
+    /// `MinecartTNT`: rails and the blocks under them have no resistance and do not break.
+    TntMinecart,
 }
 
 /// An explosion for the clients (`ClientboundExplodePacket`), sent to players within 64 blocks.
@@ -147,7 +149,7 @@ impl Level {
         let mut targets = self.exploded_positions(center, radius, style.resistance);
         let hit_players = self.hurt_entities(source, indirect, center, radius, style);
         if interaction != BlockInteraction::Keep {
-            self.interact_with_blocks(&mut targets, indirect, interaction, radius);
+            self.interact_with_blocks(&mut targets, source, indirect, interaction, radius);
         }
         let count = targets.len();
         self.output.explosions.push(ExplosionEvent {
@@ -196,6 +198,9 @@ impl Level {
                         let state = self.block(pos);
                         let fluid = state.fluid_state();
                         // `ExplosionDamageCalculator.getBlockExplosionResistance`.
+                        let rail_protected = override_resistance == BlockResistance::TntMinecart
+                            && (crate::block::is_rail(state.block())
+                                || crate::block::is_rail(self.block(pos.offset(0, 1, 0)).block()));
                         if !(state.is_air() && fluid.is_empty()) {
                             let mut resistance = state
                                 .block()
@@ -209,7 +214,7 @@ impl Level {
                             }
                             power -= (resistance + 0.3) * 0.3;
                         }
-                        if power > 0.0 && seen.insert(pos) {
+                        if power > 0.0 && !rail_protected && seen.insert(pos) {
                             positions.push(pos);
                         }
                         xp += xd * step;
@@ -274,7 +279,8 @@ impl Level {
             }
             // `ExplosionDamageCalculator.getEntityDamageAmount`: living entities and boats
             // through the mob system, items here (`ItemEntity.hurtServer`: health 5).
-            let is_boat = crate::vehicle::BoatKind::of(kind).is_some();
+            let is_boat = crate::vehicle::BoatKind::of(kind).is_some()
+                || crate::minecart::MinecartKind::of(kind).is_some();
             if kind == entity_ids::ITEM && style.damages_entities {
                 let double_radius = f64::from(double_radius);
                 let pow = (1.0 - dist) * f64::from(self.seen_percent(center, aabb));
@@ -354,6 +360,7 @@ impl Level {
     fn interact_with_blocks(
         &mut self,
         targets: &mut [BlockPos],
+        source: Option<EntityId>,
         indirect: Option<EntityId>,
         interaction: BlockInteraction,
         radius: f32,
@@ -376,7 +383,7 @@ impl Level {
             // `dropFromExplosion`: everything but TNT; the loot is rolled block by block.
             if !state.is(ids::TNT) {
                 loot.clear();
-                drops::explosion_loot(self, pos, state, decay, &mut loot);
+                drops::explosion_loot(self, pos, state, decay, source, &mut loot);
                 for mut stack in loot.drain(..) {
                     for (_, collected) in &mut stacks {
                         if crate::item_entity::are_mergable(collected, &stack) {

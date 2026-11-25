@@ -112,7 +112,7 @@ pub struct State {
     pub bat_target: Option<BlockPos>,
     // Mooshrooms.
     /// `stew_effects`: the effect and its duration in ticks.
-    pub stew_effects: Option<(u16, i32)>,
+    pub stew_effects: Option<(crate::effect::MobEffect, i32)>,
 }
 
 impl State {
@@ -290,12 +290,12 @@ use crate::mob::goals::flag;
 pub(crate) fn add_effect(
     ents: &mut crate::entities::Entities,
     target: EntityId,
-    effect: u16,
+    effect: crate::effect::MobEffect,
     duration: i32,
     amplifier: u8,
 ) {
     if let Some(m) = ents.mob_mut(target) {
-        effects::add(
+        effects::living::add_to_mob(
             m,
             EffectInstance::new(effect, duration, i32::from(amplifier)),
         );

@@ -200,7 +200,7 @@ pub fn breed(
         let xp = ents
             .mob_mut(parent)
             .map_or(1, |m| m.random.next_int_bounded(7) + 1);
-        combat::award_experience(level, ents, env.random, pos, xp);
+        env.out.push(Effect::Experience { pos, amount: xp });
     }
 }
 
@@ -381,14 +381,25 @@ pub fn interact_on(
         let out_of_control = ents
             .boat(target)
             .is_some_and(|b| b.out_of_control_ticks >= 60.0);
-        if sneaking || out_of_control {
-            return Interaction::Pass;
+        if !sneaking
+            && !out_of_control
+            && crate::riding::start_riding(ents, env, player, target, false)
+        {
+            return Interaction::Success;
         }
-        return if crate::riding::start_riding(ents, env, player, target, false) {
-            Interaction::Success
-        } else {
-            Interaction::Pass
-        };
+        // `AbstractChestBoat.interact`: sneaking, or a full boat, opens the chest.
+        if let Some(b) = ents.boat(target).filter(|b| b.kind.chest) {
+            let room = ents.riding.passengers_of(target).len() < b.kind.max_passengers();
+            if room && !sneaking {
+                return Interaction::Pass;
+            }
+            crate::minecart::open_container(ents, env, cx, player, target);
+            return Interaction::Success;
+        }
+        return Interaction::Pass;
+    }
+    if ents.minecart(target).is_some() {
+        return crate::minecart::interact(ents, env, cx, player, target, hand, sneaking);
     }
     if !ents.mob(target).is_some_and(MobData::is_alive) {
         return Interaction::Pass;

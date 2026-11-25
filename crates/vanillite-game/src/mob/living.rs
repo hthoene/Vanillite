@@ -112,11 +112,8 @@ fn base_tick(t: &mut Tick<'_, '_>) {
                 .is_bubble_column(t.level.block(BlockPos::containing(p.x, t.eye_y(), p.z)))
         };
         if eye_in_water && !bubble {
-            let effects = &t.mob_ref().effects;
-            let water_breathing = effects.has(crate::effect::id::WATER_BREATHING)
-                || effects.has(crate::effect::id::CONDUIT_POWER)
-                || effects.has(crate::effect::id::BREATH_OF_THE_NAUTILUS);
-            if !t.mob_ref().kind.breathes_underwater() && !water_breathing {
+            if !t.mob_ref().kind.breathes_underwater() && !t.mob_ref().effects.has_water_breathing()
+            {
                 t.mob().air -= 1;
                 if t.mob_ref().air <= -20 {
                     t.mob().air = 0;
@@ -125,6 +122,9 @@ fn base_tick(t: &mut Tick<'_, '_>) {
                     let source = DamageSource::of(t.env.types.drown);
                     hurt_self(t, source, 2.0);
                 }
+            } else if t.mob_ref().air < 300 && t.mob_ref().effects.refills_air() {
+                let m = t.mob();
+                m.air = (m.air + 4).min(300);
             }
         } else if t.mob_ref().air < 300 {
             let m = t.mob();
@@ -170,7 +170,8 @@ fn base_tick(t: &mut Tick<'_, '_>) {
             t.mob().last_hurt_by_mob = None;
         }
     }
-    tick_effects(t);
+    // `tickEffects`.
+    crate::effect::living::tick_mob(t);
     if !t.exists() || t.mob_ref().removed {
         return;
     }
@@ -199,41 +200,9 @@ fn tick_death(t: &mut Tick<'_, '_>) {
     if t.mob_ref().death_time >= 20 {
         let id = t.id;
         entity_event(t, id, event::POOF);
+        // `remove(KILLED)` → `triggerOnDeathMobEffects`.
+        crate::effect::living::on_mob_killed(t);
         t.mob().removed = true;
-    }
-}
-
-/// `tickEffects` on the server: what the active effects do this tick.
-pub fn tick_effects(t: &mut Tick<'_, '_>) {
-    if t.mob_ref().effects.is_empty() {
-        return;
-    }
-    let mut out = Vec::new();
-    {
-        let m = t.mob();
-        let (tick_count, health, max) = (m.tick_count, m.health, m.max_health());
-        m.effects.tick(tick_count, health, max, &mut out);
-    }
-    for e in out {
-        match e {
-            crate::effect::EffectTick::Magic(amount) => {
-                let source = DamageSource::of(t.env.types.magic);
-                hurt_self(t, source, amount);
-            }
-            crate::effect::EffectTick::Wither(amount) => {
-                let source = DamageSource::of(t.env.types.wither);
-                hurt_self(t, source, amount);
-            }
-            crate::effect::EffectTick::Heal(amount) => heal(t, amount),
-            crate::effect::EffectTick::Removed(e) => {
-                crate::effect::on_removed(t.mob(), e.effect);
-                t.core_mut().mark_data_dirty();
-            }
-            crate::effect::EffectTick::Refresh(_) => {}
-        }
-        if !t.exists() {
-            return;
-        }
     }
 }
 
@@ -640,6 +609,15 @@ fn ai_step(t: &mut Tick<'_, '_>) {
     } else {
         t.mob().no_jump_delay = 0;
     }
+    {
+        // Slow Falling and Levitation reset the fall distance before travelling.
+        let m = t.mob();
+        if m.effects.has(crate::effect::MobEffect::SLOW_FALLING)
+            || m.effects.has(crate::effect::MobEffect::LEVITATION)
+        {
+            m.fall_distance = 0.0;
+        }
+    }
     // A mob its rider steers moves on the rider's client (`isControlledByLocalInstance`).
     let steered = t
         .ents
@@ -732,7 +710,8 @@ fn jump_in_liquid(t: &mut Tick<'_, '_>) {
 /// `jumpFromGround`.
 fn jump_from_ground(t: &mut Tick<'_, '_>) {
     #[allow(clippy::cast_possible_truncation)]
-    let mut power = t.mob_ref().attrs.jump_strength as f32 * block_jump_factor(t);
+    let mut power = t.mob_ref().attrs.jump_strength as f32 * block_jump_factor(t)
+        + t.mob_ref().effects.jump_boost_power();
     if power <= 1.0e-5 {
         return;
     }
@@ -864,18 +843,15 @@ fn float_in_liquid_while_ridden(t: &mut Tick<'_, '_>) {
     }
 }
 
+/// `getEffectiveGravity`: Slow Falling caps it while falling.
 pub fn gravity(t: &Tick<'_, '_>) -> f64 {
-    if t.core().flags().contains(EntityFlags::NO_GRAVITY) {
+    let gravity = if t.core().flags().contains(EntityFlags::NO_GRAVITY) {
         0.0
     } else {
-        // `getEffectiveGravity`: slow falling caps the gravity while falling.
-        let g = t.mob_ref().attrs.gravity;
-        if t.velocity().y <= 0.0 && t.mob_ref().effects.has(crate::effect::id::SLOW_FALLING) {
-            g.min(0.01)
-        } else {
-            g
-        }
-    }
+        t.mob_ref().attrs.gravity
+    };
+    let falling = t.velocity().y <= 0.0;
+    t.mob_ref().effects.effective_gravity(gravity, falling)
 }
 
 fn travel_in_air(t: &mut Tick<'_, '_>, input: Vec3) {
@@ -923,8 +899,12 @@ fn travel_in_air(t: &mut Tick<'_, '_>, input: Vec3) {
         movement.y = 0.2;
     }
     let mut y = movement.y;
-    if let Some(a) = t.mob_ref().effects.amplifier(crate::effect::id::LEVITATION) {
-        y += (0.05 * (f64::from(a) + 1.0) - movement.y) * 0.2;
+    if let Some(a) = t
+        .mob_ref()
+        .effects
+        .amplifier(crate::effect::MobEffect::LEVITATION)
+    {
+        y += (0.05 * f64::from(a + 1) - movement.y) * 0.2;
     } else if t.level.is_loaded(below) {
         y -= gravity(t);
     } else if t.pos().y > f64::from(t.level.min_y()) {
@@ -965,7 +945,7 @@ fn travel_in_fluid(t: &mut Tick<'_, '_>, input: Vec3) {
             slow_down += (0.546_000_06 - slow_down) * walker;
             speed += (t.mob_ref().speed - speed) * walker;
         }
-        if t.mob_ref().effects.has(crate::effect::id::DOLPHINS_GRACE) {
+        if t.mob_ref().effects.has(crate::effect::MobEffect::DOLPHINS_GRACE) {
             slow_down = 0.96;
         }
         move_relative(t, speed, input);
@@ -1348,6 +1328,7 @@ fn push_entities(t: &mut Tick<'_, '_>) {
     });
     ids.retain(|&o| {
         t.ents.mob(o).is_some_and(super::MobData::is_alive)
+            || t.ents.minecart(o).is_some()
             || t.ents.player(o).is_some_and(|p| {
                 !p.survival.is_dead_or_dying()
                     && p.game_mode != vanillite_config::GameMode::Spectator
@@ -1371,6 +1352,11 @@ fn push_entities(t: &mut Tick<'_, '_>) {
     }
     let climbing = on_climbable(t);
     for &other in &ids {
+        if t.ents.minecart(other).is_some() {
+            // `AbstractMinecart.push(this)`.
+            crate::minecart::push_by(t.ents, other, id);
+            continue;
+        }
         let Some(o) = t.ents.store.get(other) else {
             continue;
         };

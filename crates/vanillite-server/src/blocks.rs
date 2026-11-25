@@ -38,7 +38,7 @@ pub fn game_data(packs: Option<&LoadedPacks>) -> GameData {
     };
     let tools = ToolTable::new(&|tag| tag_ids("minecraft:block", tag));
     let loot = LootTables::load(packs.roots());
-    log::info!("Loaded {} block loot tables", loot.len());
+    log::info!("Loaded {} loot tables", loot.len());
     let enchantments = packs
         .registry("minecraft:enchantment")
         .map(|r| {
@@ -95,6 +95,10 @@ pub fn game_data(packs: Option<&LoadedPacks>) -> GameData {
     let mut info = vanillite_protocol::item::RegistryInfo::default();
     for r in packs.registries() {
         info.sizes.insert(r.name.to_owned(), r.entries().len());
+        info.names.insert(
+            r.name.to_owned(),
+            r.entries().iter().map(|e| e.id.clone()).collect(),
+        );
     }
     for registry in packs.tagged_registries() {
         let tags: HashSet<String> = packs
@@ -160,18 +164,50 @@ pub fn game_data(packs: Option<&LoadedPacks>) -> GameData {
         &names("minecraft:trim_material"),
         &names("minecraft:trim_pattern"),
     );
+    let banner_patterns = vanillite_game::menu::BannerPatterns {
+        names: names("minecraft:banner_pattern"),
+        tags: packs
+            .tags("minecraft:banner_pattern")
+            .map(|tags| {
+                tags.keys()
+                    .map(|t| {
+                        let ids = packs
+                            .tag_ids("minecraft:banner_pattern", t)
+                            .unwrap_or_default();
+                        (t.clone(), ids)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+    };
+    let registry_tags = packs
+        .tagged_registries()
+        .map(|registry| {
+            let tags = packs
+                .tags(registry)
+                .map(|tags| {
+                    tags.keys()
+                        .map(|t| (t.clone(), packs.tag_ids(registry, t).unwrap_or_default()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            (registry.to_owned(), tags)
+        })
+        .collect();
     GameData {
         tools,
         loot,
         enchantments,
         item_tags,
+        trial_spawner_configs,
         entity_tags,
         enchants,
         enderman_holdable: tag_ids("minecraft:block", "minecraft:enderman_holdable"),
         block_tags,
-        trial_spawner_configs,
         recipes,
         enchanting,
+        banner_patterns,
+        registry_tags,
     }
 }
 
@@ -212,6 +248,20 @@ impl PlayLevel for WorldLevel<'_> {
 
     fn block(&self, pos: BlockPos) -> BlockState {
         self.level.block(pos)
+    }
+
+    fn lights_portal(&self, pos: BlockPos, forward: vanillite_base::Direction) -> bool {
+        vanillite_game::block::portal::lights_portal(self.level, pos, forward)
+    }
+
+    fn end_portal_frame_filled(&mut self, pos: BlockPos) {
+        use vanillite_game::block::portal;
+        self.level
+            .update_neighbour_for_output_signal(pos, vanillite_data::block::ids::END_PORTAL_FRAME);
+        self.level.level_event(None, 1503, pos, 0);
+        if let Some(corner) = portal::find_end_portal(self.level, pos) {
+            portal::open_end_portal(self.level, corner);
+        }
     }
 
     fn is_loaded(&self, pos: BlockPos) -> bool {
@@ -466,6 +516,15 @@ pub(crate) fn tick_items(
         let Some(entity) = store.get(id) else {
             continue;
         };
+        // Only items in the tick order (entity ticking chunk) and in entity ticking range.
+        let pos = entity.pos();
+        let chunk = vanillite_base::ChunkPos::new(
+            vanillite_base::math::floor(pos.x) >> 4,
+            vanillite_base::math::floor(pos.z) >> 4,
+        );
+        if !store.is_ticking(id) || !chunks.in_entity_ticking_range(chunk) {
+            continue;
+        }
         let row = entity.kind_row();
         let input = item_entity::TickInput {
             pos: entity.pos(),

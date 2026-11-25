@@ -197,6 +197,51 @@ pub mod serverbound {
         Interact
     );
 
+    /// `set_beacon`: the powers picked in the beacon menu (`mob_effect` registry ids).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct SetBeacon {
+        pub primary: Option<i32>,
+        pub secondary: Option<i32>,
+    }
+
+    impl Encode for SetBeacon {
+        fn encode(&self, out: &mut Vec<u8>) {
+            for effect in [self.primary, self.secondary] {
+                match effect {
+                    Some(id) => {
+                        out.push(1);
+                        write_varint(out, id);
+                    }
+                    None => out.push(0),
+                }
+            }
+        }
+    }
+
+    impl Decode for SetBeacon {
+        fn decode(r: &mut Reader<'_>) -> Result<Self> {
+            let effect = |r: &mut Reader<'_>| -> Result<Option<i32>> {
+                Ok(if bool::decode(r)? {
+                    Some(r.varint()?)
+                } else {
+                    None
+                })
+            };
+            let primary = effect(r)?;
+            let secondary = effect(r)?;
+            Ok(SetBeacon { primary, secondary })
+        }
+    }
+
+    manual_packet!(
+        SetBeacon,
+        Serverbound,
+        serverbound,
+        SET_BEACON,
+        "set_beacon",
+        Inventory
+    );
+
     /// `rename_item`: the anvil's name field.
     #[derive(Debug, Clone, PartialEq, Eq, Packet)]
     #[packet(state = Play, dir = Serverbound, name = "rename_item", bucket = "inventory")]
@@ -666,6 +711,151 @@ pub mod clientbound {
         clientbound,
         UPDATE_RECIPES,
         "update_recipes",
+        Default
+    );
+
+    /// `recipe_book_add`: recipe displays the player knows, with their flags
+    /// (`FLAG_NOTIFICATION` 1, `FLAG_HIGHLIGHT` 2).
+    #[derive(Debug, Clone, PartialEq, Eq, Default)]
+    pub struct RecipeBookAdd {
+        pub entries: Vec<(crate::recipe_display::RecipeDisplayEntry, u8)>,
+        /// Replaces the client's whole book (the initial book).
+        pub replace: bool,
+    }
+
+    impl Encode for RecipeBookAdd {
+        fn encode(&self, out: &mut Vec<u8>) {
+            write_len(out, self.entries.len());
+            for (entry, flags) in &self.entries {
+                entry.encode(out);
+                out.push(*flags);
+            }
+            out.push(u8::from(self.replace));
+        }
+    }
+
+    impl Decode for RecipeBookAdd {
+        fn decode(r: &mut Reader<'_>) -> Result<Self> {
+            // Only the test client reads it; the contents are skipped.
+            r.take_rest();
+            Ok(RecipeBookAdd::default())
+        }
+    }
+
+    manual_packet!(
+        RecipeBookAdd,
+        Clientbound,
+        clientbound,
+        RECIPE_BOOK_ADD,
+        "recipe_book_add",
+        Default
+    );
+
+    /// `recipe_book_remove`: `RecipeDisplayId`s.
+    #[derive(Debug, Clone, PartialEq, Eq, Default)]
+    pub struct RecipeBookRemove {
+        pub ids: Vec<i32>,
+    }
+
+    impl Encode for RecipeBookRemove {
+        fn encode(&self, out: &mut Vec<u8>) {
+            write_len(out, self.ids.len());
+            for id in &self.ids {
+                write_varint(out, *id);
+            }
+        }
+    }
+
+    impl Decode for RecipeBookRemove {
+        fn decode(r: &mut Reader<'_>) -> Result<Self> {
+            let n = r.len_prefix("recipe ids", 1 << 16, 1)?;
+            let mut ids = Vec::with_capacity(n);
+            for _ in 0..n {
+                ids.push(r.varint()?);
+            }
+            Ok(RecipeBookRemove { ids })
+        }
+    }
+
+    manual_packet!(
+        RecipeBookRemove,
+        Clientbound,
+        clientbound,
+        RECIPE_BOOK_REMOVE,
+        "recipe_book_remove",
+        Default
+    );
+
+    /// `recipe_book_settings`: open and filtering per book type (crafting, furnace, blast
+    /// furnace, smoker).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub struct RecipeBookSettings {
+        pub types: [(bool, bool); 4],
+    }
+
+    impl Encode for RecipeBookSettings {
+        fn encode(&self, out: &mut Vec<u8>) {
+            for (open, filtering) in self.types {
+                out.push(u8::from(open));
+                out.push(u8::from(filtering));
+            }
+        }
+    }
+
+    impl Decode for RecipeBookSettings {
+        fn decode(r: &mut Reader<'_>) -> Result<Self> {
+            let mut types = [(false, false); 4];
+            for t in &mut types {
+                *t = (bool::decode(r)?, bool::decode(r)?);
+            }
+            Ok(RecipeBookSettings { types })
+        }
+    }
+
+    manual_packet!(
+        RecipeBookSettings,
+        Clientbound,
+        clientbound,
+        RECIPE_BOOK_SETTINGS,
+        "recipe_book_settings",
+        Default
+    );
+
+    /// `place_ghost_recipe`: the recipe the player lacks items for, shown as ghost items.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct PlaceGhostRecipe {
+        pub container_id: i32,
+        pub display: crate::recipe_display::RecipeDisplay,
+    }
+
+    impl Encode for PlaceGhostRecipe {
+        fn encode(&self, out: &mut Vec<u8>) {
+            write_varint(out, self.container_id);
+            self.display.encode(out);
+        }
+    }
+
+    impl Decode for PlaceGhostRecipe {
+        fn decode(r: &mut Reader<'_>) -> Result<Self> {
+            let container_id = r.varint()?;
+            r.take_rest();
+            Ok(PlaceGhostRecipe {
+                container_id,
+                display: crate::recipe_display::RecipeDisplay::Stonecutter {
+                    input: crate::recipe_display::SlotDisplay::Empty,
+                    result: crate::recipe_display::SlotDisplay::Empty,
+                    station: crate::recipe_display::SlotDisplay::Empty,
+                },
+            })
+        }
+    }
+
+    manual_packet!(
+        PlaceGhostRecipe,
+        Clientbound,
+        clientbound,
+        PLACE_GHOST_RECIPE,
+        "place_ghost_recipe",
         Default
     );
 

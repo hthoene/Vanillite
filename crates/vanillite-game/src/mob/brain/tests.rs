@@ -49,6 +49,7 @@ pub(crate) fn with_tick<R>(
             min_y: level.min_y(),
             dimension: "minecraft:overworld",
             raining_at: &raining,
+            enter_gateway: &mut |_| false,
             random: &mut random,
             out: &mut out,
             hooks: &hooks,

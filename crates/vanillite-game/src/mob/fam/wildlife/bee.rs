@@ -11,7 +11,7 @@ use vanillite_base::{BlockPos, Vec3};
 use vanillite_nbt::Compound;
 
 use super::{Goal, block_tags, st, st_mut};
-use crate::effect::id as effect;
+use crate::effect::MobEffect;
 use crate::mob::animal::{Interaction, animal_interact, use_item};
 use crate::mob::common::{self, CommonGoal};
 use crate::mob::fam::{FamGoal, Interact};
@@ -227,7 +227,7 @@ pub(super) fn sting(t: &mut Tick<'_, '_>, target: EntityId) -> bool {
             _ => 0,
         };
         if seconds > 0 {
-            super::add_effect(t.ents, target, effect::POISON, seconds * 20, 0);
+            super::add_effect(t.ents, target, MobEffect::POISON, seconds * 20, 0);
         }
         if !t.exists() {
             return hurt;
@@ -244,8 +244,8 @@ pub(super) fn sting(t: &mut Tick<'_, '_>, target: EntityId) -> bool {
 pub(super) fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
     let name = crate::item::item_id(ix.stack).name();
     let effect = match name {
-        "minecraft:open_eyeblossom" | "minecraft:closed_eyeblossom" => Some((effect::POISON, 25)),
-        "minecraft:wither_rose" => Some((effect::WITHER, 40)),
+        "minecraft:open_eyeblossom" | "minecraft:closed_eyeblossom" => Some((MobEffect::POISON, 25)),
+        "minecraft:wither_rose" => Some((MobEffect::WITHER, 40)),
         _ => None,
     };
     if let Some((e, duration)) = effect

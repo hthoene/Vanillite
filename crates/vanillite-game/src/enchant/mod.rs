@@ -59,6 +59,200 @@ pub struct Info {
     pub curse: bool,
     /// In `#minecraft:in_enchanting_table`.
     pub in_table: bool,
+    /// `slots`: the equipment slot groups it works in, as a bit per `EquipmentSlot` ordinal.
+    pub slots: u8,
+    /// The `minecraft:repair_with_xp` effects (Mending), or `None` without that component.
+    pub repair_with_xp: Option<Vec<ValueEffect>>,
+}
+
+impl Info {
+    /// Whether the enchantment has `minecraft:repair_with_xp` effects.
+    pub fn repairs_with_xp(&self) -> bool {
+        self.repair_with_xp.is_some()
+    }
+
+    /// `Enchantment.matchingSlot(slot)`.
+    pub fn matches_slot(&self, slot: crate::item::EquipmentSlot) -> bool {
+        self.slots & (1 << slot.ordinal()) != 0
+    }
+}
+
+/// A `LevelBasedValue`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LevelValue {
+    /// A number.
+    Constant(f32),
+    /// `linear`: `base + per_level_above_first * (level - 1)`.
+    Linear { base: f32, per_level: f32 },
+    /// `clamped`.
+    Clamped {
+        value: Box<LevelValue>,
+        min: f32,
+        max: f32,
+    },
+    /// `fraction`.
+    Fraction(Box<LevelValue>, Box<LevelValue>),
+    /// `levels_squared`: `level² + added`.
+    LevelsSquared(f32),
+    /// `lookup`: `values[level - 1]` or the fallback.
+    Lookup(Vec<f32>, Box<LevelValue>),
+    /// `exponent`: `base ^ power`.
+    Exponent(Box<LevelValue>, Box<LevelValue>),
+}
+
+impl LevelValue {
+    fn parse(v: &Value) -> Option<LevelValue> {
+        #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+        let num = |v: &Value| v.as_f64().map(|n| n as f32);
+        if let Some(n) = num(v) {
+            return Some(LevelValue::Constant(n));
+        }
+        let field = |k: &str| v.get(k).and_then(LevelValue::parse).map(Box::new);
+        let float = |k: &str| v.get(k).and_then(num);
+        let kind = v.get("type")?.as_str()?;
+        Some(match kind.strip_prefix("minecraft:").unwrap_or(kind) {
+            "linear" => LevelValue::Linear {
+                base: float("base")?,
+                per_level: float("per_level_above_first")?,
+            },
+            "clamped" => LevelValue::Clamped {
+                value: field("value")?,
+                min: float("min")?,
+                max: float("max")?,
+            },
+            "fraction" => LevelValue::Fraction(field("numerator")?, field("denominator")?),
+            "levels_squared" => LevelValue::LevelsSquared(float("added")?),
+            "lookup" => LevelValue::Lookup(
+                v.get("values")?
+                    .as_array()?
+                    .iter()
+                    .filter_map(num)
+                    .collect(),
+                field("fallback")?,
+            ),
+            "exponent" => LevelValue::Exponent(field("base")?, field("power")?),
+            _ => return None,
+        })
+    }
+
+    /// `calculate(level)`.
+    #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
+    pub fn calculate(&self, level: i32) -> f32 {
+        match self {
+            LevelValue::Constant(v) => *v,
+            LevelValue::Linear { base, per_level } => base + per_level * (level - 1) as f32,
+            LevelValue::Clamped { value, min, max } => value.calculate(level).clamp(*min, *max),
+            LevelValue::Fraction(n, d) => {
+                let d = d.calculate(level);
+                if d == 0.0 {
+                    0.0
+                } else {
+                    n.calculate(level) / d
+                }
+            }
+            LevelValue::LevelsSquared(added) => (level as f32) * (level as f32) + added,
+            LevelValue::Lookup(values, fallback) => usize::try_from(level - 1)
+                .ok()
+                .and_then(|i| values.get(i))
+                .copied()
+                .unwrap_or_else(|| fallback.calculate(level)),
+            LevelValue::Exponent(base, power) => {
+                f64::from(base.calculate(level)).powf(f64::from(power.calculate(level))) as f32
+            }
+        }
+    }
+}
+
+/// An `EnchantmentValueEffect` without randomness.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ValueEffect {
+    /// `add`.
+    Add(LevelValue),
+    /// `multiply`.
+    Multiply(LevelValue),
+    /// `set`.
+    Set(LevelValue),
+    /// `all_of`.
+    AllOf(Vec<ValueEffect>),
+    /// `exponential`: `value * base ^ exponent`.
+    Exponential(LevelValue, LevelValue),
+}
+
+impl ValueEffect {
+    fn parse(v: &Value) -> Option<ValueEffect> {
+        let field = |k: &str| v.get(k).and_then(LevelValue::parse);
+        let kind = v.get("type")?.as_str()?;
+        Some(match kind.strip_prefix("minecraft:").unwrap_or(kind) {
+            "add" => ValueEffect::Add(field("value")?),
+            "multiply" => ValueEffect::Multiply(field("factor")?),
+            "set" => ValueEffect::Set(field("value")?),
+            "all_of" => ValueEffect::AllOf(
+                v.get("effects")?
+                    .as_array()?
+                    .iter()
+                    .filter_map(ValueEffect::parse)
+                    .collect(),
+            ),
+            "exponential" => ValueEffect::Exponential(field("base")?, field("exponent")?),
+            _ => return None,
+        })
+    }
+
+    /// `process(level, random, value)`.
+    #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+    pub fn process(&self, level: i32, value: f32) -> f32 {
+        match self {
+            ValueEffect::Add(v) => value + v.calculate(level),
+            ValueEffect::Multiply(v) => value * v.calculate(level),
+            ValueEffect::Set(v) => v.calculate(level),
+            ValueEffect::AllOf(list) => list.iter().fold(value, |acc, e| e.process(level, acc)),
+            ValueEffect::Exponential(base, exponent) => {
+                (f64::from(value)
+                    * f64::from(base.calculate(level)).powf(f64::from(exponent.calculate(level))))
+                    as f32
+            }
+        }
+    }
+}
+
+/// The `minecraft:repair_with_xp` effects of an enchantment definition: the conditional
+/// effects without requirements (their loot conditions are not evaluated).
+fn repair_with_xp(json: &Value) -> Option<Vec<ValueEffect>> {
+    let list = json
+        .get("effects")?
+        .get("minecraft:repair_with_xp")?
+        .as_array()?;
+    Some(
+        list.iter()
+            .filter(|e| e.get("requirements").is_none())
+            .filter_map(|e| e.get("effect").and_then(ValueEffect::parse))
+            .collect(),
+    )
+}
+
+/// `slots`: `EquipmentSlotGroup` names as a bit per `EquipmentSlot` ordinal (main hand 0,
+/// off hand 1, feet 2, legs 3, chest 4, head 5, body 6, saddle 7).
+fn slot_bits(json: &Value) -> u8 {
+    let Some(list) = json.get("slots").and_then(Value::as_array) else {
+        return 0;
+    };
+    list.iter()
+        .filter_map(Value::as_str)
+        .map(|g| match g {
+            "any" => 0xFF,
+            "mainhand" => 1,
+            "offhand" => 2,
+            "hand" => 3,
+            "feet" => 1 << 2,
+            "legs" => 1 << 3,
+            "chest" => 1 << 4,
+            "head" => 1 << 5,
+            "armor" => 0b0111_1100,
+            "body" => 1 << 6,
+            "saddle" => 1 << 7,
+            _ => 0,
+        })
+        .fold(0, |a, b| a | b)
 }
 
 /// The enchantment data of the loaded data packs.
@@ -155,6 +349,8 @@ impl Enchanting {
                     exclusive: holder_set(json.get("exclusive_set"), enchantment_tag, &enchantment),
                     curse: curses.contains(&i),
                     in_table: table.contains(&i),
+                    slots: slot_bits(json),
+                    repair_with_xp: repair_with_xp(json),
                 }
             })
             .collect();
@@ -353,6 +549,23 @@ impl Enchanting {
         stack.patch_mut().set(id, write(&list));
     }
 
+    /// `EnchantmentHelper.modifyDurabilityToRepairFromXp(level, stack, durability)`: the
+    /// `repair_with_xp` effects of every enchantment of the stack applied to the experience.
+    #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+    pub fn durability_to_repair_from_xp(&self, stack: &ItemStack, xp: i32) -> i32 {
+        #[allow(clippy::cast_precision_loss)]
+        let mut value = xp as f32;
+        for (id, level) in crate::item::enchantments(stack) {
+            if let Some(effects) = self.get(id).and_then(|e| e.repair_with_xp.as_ref()) {
+                for effect in effects {
+                    value = effect.process(level, value);
+                }
+            }
+        }
+        // `MutableFloat.intValue()`: truncation; NaN gives 0.
+        (value as i32).max(0)
+    }
+
     /// `ItemStack.isValidRepairItem(addition)`: the `repairable` component.
     pub fn is_valid_repair_item(&self, stack: &ItemStack, addition: &ItemStack) -> bool {
         !addition.is_empty()
@@ -361,6 +574,90 @@ impl Enchanting {
                 .get(&stack.item)
                 .is_some_and(|items| items.binary_search(&addition.item).is_ok())
     }
+}
+
+/// `EnchantmentHelper.selectEnchantment(random, stack, cost, candidates)`: enchantments for an
+/// item at an enchanting cost, drawn by weight from the candidates (in their order) that fit
+/// the cost; nothing for items without `enchantable`.
+pub fn select_enchantment(
+    e: &Enchanting,
+    random: &mut dyn crate::loot::LootRandom,
+    stack: &ItemStack,
+    cost: i32,
+    candidates: &[u32],
+) -> Vec<(u32, i32)> {
+    let enchantable = e.enchantable(stack);
+    if enchantable <= 0 {
+        return Vec::new();
+    }
+    let mut cost = cost
+        .saturating_add(1)
+        .saturating_add(random.next_int(enchantable / 4 + 1))
+        .saturating_add(random.next_int(enchantable / 4 + 1));
+    let span = (random.next_float() + random.next_float() - 1.0) * 0.15;
+    // `Mth.clamp(Math.round(cost + cost * span), 1, MAX_VALUE)`.
+    #[allow(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss
+    )]
+    let rounded = (cost as f32 + cost as f32 * span + 0.5).floor() as i32;
+    cost = rounded.max(1);
+    let is_book = stack.item == vanillite_data::item::ids::BOOK.0;
+    // `getAvailableEnchantmentResults`.
+    let mut available: Vec<(u32, i32, i32)> = Vec::new();
+    for &id in candidates {
+        if !(is_book || e.is_primary(id, stack)) {
+            continue;
+        }
+        let Some(info) = e.get(id) else {
+            continue;
+        };
+        let mut level = info.max_level;
+        while level >= 1 {
+            if cost >= info.min_cost.at(level) && cost <= info.max_cost.at(level) {
+                available.push((id, level, info.weight));
+                break;
+            }
+            level -= 1;
+        }
+    }
+    // `WeightedRandom.getRandomItem`.
+    let pick = |random: &mut dyn crate::loot::LootRandom, list: &[(u32, i32, i32)]| {
+        let total = list
+            .iter()
+            .fold(0i32, |sum, &(_, _, w)| sum.saturating_add(w));
+        if total <= 0 {
+            return None;
+        }
+        let mut selection = random.next_int(total);
+        for &(id, level, weight) in list {
+            selection = selection.saturating_sub(weight);
+            if selection < 0 {
+                return Some((id, level));
+            }
+        }
+        None
+    };
+    let mut results: Vec<(u32, i32)> = Vec::new();
+    if !available.is_empty() {
+        if let Some(first) = pick(random, &available) {
+            results.push(first);
+        }
+        while random.next_int(50) <= cost {
+            if let Some(&(last, _)) = results.last() {
+                available.retain(|&(id, _, _)| e.compatible(last, id));
+            }
+            if available.is_empty() {
+                break;
+            }
+            if let Some(next) = pick(random, &available) {
+                results.push(next);
+            }
+            cost /= 2;
+        }
+    }
+    results
 }
 
 /// An `ItemEnchantments` value: `(enchantment id, level)` in insertion order.

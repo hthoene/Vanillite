@@ -1041,7 +1041,7 @@ pub fn do_hurt_target(t: &mut Tick<'_, '_>, target: EntityId) -> Option<bool> {
         super::add_effect(
             t.ents,
             target,
-            effects::EffectInstance::new(effects::id::HUNGER, ticks, 0),
+            effects::EffectInstance::new(effects::MobEffect::HUNGER, ticks, 0),
         );
     }
     Some(true)
@@ -1186,7 +1186,7 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
     {
         return Interaction::Pass;
     }
-    if !m.effects.has(effects::id::WEAKNESS) {
+    if !m.effects.has(effects::MobEffect::WEAKNESS) {
         return Interaction::Consume;
     }
     crate::mob::animal::use_item(ix.ents, ix.player, ix.hand);
@@ -1210,13 +1210,13 @@ fn start_curing(m: &mut MobData, starter: Option<u128>, time: i32, difficulty: D
     z.cure_starter = starter;
     z.cure_time = time;
     z.curing = true;
-    effects::remove(m, effects::id::WEAKNESS);
+    m.effects.remove(effects::MobEffect::WEAKNESS);
     // `Math.min(difficulty.getId() - 1, 0)`: level 0 (no zombie villagers in peaceful).
     let _ = difficulty;
     let amplifier = 0;
-    effects::add(
+    effects::living::add_to_mob(
         m,
-        effects::EffectInstance::new(effects::id::STRENGTH, time, amplifier),
+        effects::EffectInstance::new(effects::MobEffect::STRENGTH, time, amplifier),
     );
 }
 

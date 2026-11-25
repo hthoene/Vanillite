@@ -300,7 +300,7 @@ pub fn do_hurt_target(t: &mut Tick<'_, '_>, target: EntityId) -> Option<bool> {
             super::add_effect(
                 t.ents,
                 target,
-                EffectInstance::new(effects::id::POISON, seconds * 20, 0),
+                EffectInstance::new(effects::MobEffect::POISON, seconds * 20, 0),
             );
         }
     }

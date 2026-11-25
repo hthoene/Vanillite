@@ -864,9 +864,9 @@ pub fn update_activity(t: &mut Tick<'_, '_>) {
         if let Some(z) = convert_to(t, Kind::ZombifiedPiglin, true, true)
             && let Some(m) = t.ents.mob_mut(z)
         {
-            crate::effect::add(
+            crate::effect::living::add_to_mob(
                 m,
-                crate::effect::EffectInstance::new(crate::effect::id::NAUSEA, 200, 0),
+                crate::effect::EffectInstance::new(crate::effect::MobEffect::NAUSEA, 200, 0),
             );
         }
     }
@@ -1342,6 +1342,7 @@ fn barter_items(t: &mut Tick<'_, '_>) -> Vec<ItemStack> {
         enchantment_level: &none,
         item_in_tag: &in_tag,
         explosion_radius: None,
+        this_present: true,
         entity: Some(&entity),
         block_entity: None,
     };

@@ -287,14 +287,8 @@ impl DragonFight {
         &self.bar
     }
 
-    /// `EnderDragonFight.tick`. `entities_loaded` tells whether a chunk's entities are in.
-    pub fn tick(
-        &mut self,
-        level: &mut Level,
-        env: &mut Env<'_>,
-        cx: &mut MobContext,
-        entities_loaded: &dyn Fn(ChunkPos) -> bool,
-    ) {
+    /// `EnderDragonFight.tick`.
+    pub fn tick(&mut self, level: &mut Level, env: &mut Env<'_>, cx: &mut MobContext) {
         self.bar.set_visible(!self.dragon_killed, env.out);
         self.ticks_since_last_player_scan += 1;
         if self.ticks_since_last_player_scan >= 20 {
@@ -311,7 +305,7 @@ impl DragonFight {
             // `addTicketWithRadius(DRAGON, (0, 0), 9)`.
             self.ticket = Some(level.chunks.add_ticket(ChunkPos::new(0, 0), 33 - 9));
         }
-        if !self.arena_loaded(level, entities_loaded) {
+        if !self.arena_loaded(level) {
             return;
         }
         if self.needs_state_scanning {
@@ -364,7 +358,7 @@ impl DragonFight {
     }
 
     /// `isArenaLoaded`: Vanilla checks the chunks `x -8..8` of the row `z = 8` only.
-    fn arena_loaded(&self, level: &Level, entities_loaded: &dyn Fn(ChunkPos) -> bool) -> bool {
+    fn arena_loaded(&self, level: &Level) -> bool {
         let c = self.origin.chunk();
         for x in c.x - 8..=c.x + 8 {
             let chunk = ChunkPos::new(x, c.z + 8);
@@ -372,7 +366,8 @@ impl DragonFight {
                 return false;
             }
         }
-        (-1..=1).all(|dx| (-1..=1).all(|dz| entities_loaded(ChunkPos::new(c.x + dx, c.z + dz))))
+        (-1..=1)
+            .all(|dx| (-1..=1).all(|dz| level.entities_loaded(ChunkPos::new(c.x + dx, c.z + dz))))
     }
 
     /// `updatePlayers`: the players alive within 192 blocks of the dragon's spawn see the bar.

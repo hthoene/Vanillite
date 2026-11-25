@@ -94,6 +94,11 @@ pub struct BoatData {
     /// Custom name (the `custom_name` component of the item it came from), encoded.
     pub custom_name: Option<Box<[u8]>>,
     pub tick_count: i32,
+    /// The 27 slots of a chest boat or raft (empty for the others).
+    pub items: Vec<ItemStack>,
+    /// `LootTable` and `LootTableSeed` of a chest boat (kept; filling is not implemented for
+    /// any container).
+    pub loot_table: Option<(String, i64)>,
 }
 
 impl BoatData {
@@ -115,6 +120,12 @@ impl BoatData {
             fall_distance: 0.0,
             custom_name: None,
             tick_count: 0,
+            items: if kind.chest {
+                vec![ItemStack::EMPTY; 27]
+            } else {
+                Vec::new()
+            },
+            loot_table: None,
         }
     }
 }
@@ -548,6 +559,11 @@ pub fn hurt_boat(
     let destroy = !creative && b.damage > 40.0;
     let drop = b.kind.drop_item();
     let name = b.custom_name.clone();
+    let items = if destroy {
+        std::mem::take(&mut b.items)
+    } else {
+        Vec::new()
+    };
     if let Some(mut e) = ents.store.get_mut(id) {
         e.mark_data_dirty();
         e.set_flags(EntityFlags::HURT_MARKED, true);
@@ -558,6 +574,12 @@ pub fn hurt_boat(
             e.set_flags(EntityFlags::HURT_MARKED, false);
         }
         cx.discarded.push(id);
+    }
+    // `kill` → `remove(KILLED)`: a chest boat drops its contents first.
+    if let Some(pos) = pos
+        && !items.is_empty()
+    {
+        crate::minecart::drop_contents(env, pos, &items);
     }
     if destroy
         && env.rules.bool(Rule::ENTITY_DROPS)
@@ -578,6 +600,10 @@ pub fn hurt_boat(
             pickup_delay: 10,
             stack,
         });
+        if !items.is_empty() {
+            // `chestVehicleDestroyed` drops the (now empty) contents once more.
+            crate::minecart::drop_contents(env, pos, &vec![ItemStack::EMPTY; items.len()]);
+        }
     }
     true
 }

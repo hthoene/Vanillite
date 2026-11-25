@@ -137,6 +137,7 @@ fn with_tick<R>(
     let mut random = LegacyRandom::new(3);
     let mut out = Vec::new();
     let raining = |_| false;
+    let mut no_gateway = |_| false;
     let mut env = Env {
         hooks: &crate::hooks::NoHooks,
         types: &types,
@@ -148,6 +149,7 @@ fn with_tick<R>(
         min_y: -64,
         dimension: "minecraft:overworld",
         raining_at: &raining,
+        enter_gateway: &mut no_gateway,
         random: &mut random,
         out: &mut out,
     };
@@ -230,6 +232,7 @@ fn skull_hit_withers_by_difficulty() {
         let mut random = LegacyRandom::new(3);
         let mut out = Vec::new();
         let raining = |_| false;
+        let mut no_gateway = |_| false;
         let mut env = Env {
             hooks: &crate::hooks::NoHooks,
             types: &types,
@@ -241,6 +244,7 @@ fn skull_hit_withers_by_difficulty() {
             min_y: -64,
             dimension: "minecraft:overworld",
             raining_at: &raining,
+            enter_gateway: &mut no_gateway,
             random: &mut random,
             out: &mut out,
         };
@@ -257,8 +261,11 @@ fn skull_hit_withers_by_difficulty() {
         }
         let cow = ents.mob(target).expect("the cow lives");
         assert!(cow.health < cow.max_health(), "the skull hurt the cow");
-        let effect = cow.effects.get(effect_ids::wither()).copied();
-        assert_eq!(effect.map(|e| (e.duration, e.amplifier)), Some((ticks, 1)));
+        let effect = cow.effects.get(MobEffect::WITHER).cloned();
+        assert_eq!(
+            effect.map(|e| (e.duration, e.amplifier())),
+            Some((ticks, 1))
+        );
         assert!(cx.discarded.contains(&skull));
         assert!(cx.actions.iter().any(|a| matches!(
             a,
@@ -314,6 +321,7 @@ fn powered_wither_ignores_arrows() {
         let mut random = LegacyRandom::new(3);
         let mut out = Vec::new();
         let raining = |_| false;
+        let mut no_gateway = |_| false;
         let mut env = Env {
             hooks: &crate::hooks::NoHooks,
             types: &types,
@@ -325,6 +333,7 @@ fn powered_wither_ignores_arrows() {
             min_y: -64,
             dimension: "minecraft:overworld",
             raining_at: &raining,
+            enter_gateway: &mut no_gateway,
             random: &mut random,
             out: &mut out,
         };

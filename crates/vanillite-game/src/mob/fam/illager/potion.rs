@@ -3,7 +3,7 @@
 use vanillite_protocol::codec::write_varint;
 use vanillite_protocol::components::ids;
 
-use crate::effect::{EffectInstance, id};
+use crate::effect::{EffectInstance, MobEffect};
 use crate::item::ItemStack;
 
 /// A potion of the `minecraft:potion` registry that mobs use.
@@ -51,15 +51,15 @@ impl Potion {
     /// The effects of the potion (`Potions`).
     pub fn effects(self) -> [EffectInstance; 1] {
         let (effect, duration) = match self {
-            Potion::WaterBreathing => (id::WATER_BREATHING, 3600),
-            Potion::FireResistance => (id::FIRE_RESISTANCE, 3600),
-            Potion::Healing => (id::INSTANT_HEALTH, 1),
-            Potion::Swiftness => (id::SPEED, 3600),
-            Potion::Harming => (id::INSTANT_DAMAGE, 1),
-            Potion::Slowness => (id::SLOWNESS, 1800),
-            Potion::Poison => (id::POISON, 900),
-            Potion::Regeneration => (id::REGENERATION, 900),
-            Potion::Weakness => (id::WEAKNESS, 1800),
+            Potion::WaterBreathing => (MobEffect::WATER_BREATHING, 3600),
+            Potion::FireResistance => (MobEffect::FIRE_RESISTANCE, 3600),
+            Potion::Healing => (MobEffect::INSTANT_HEALTH, 1),
+            Potion::Swiftness => (MobEffect::SPEED, 3600),
+            Potion::Harming => (MobEffect::INSTANT_DAMAGE, 1),
+            Potion::Slowness => (MobEffect::SLOWNESS, 1800),
+            Potion::Poison => (MobEffect::POISON, 900),
+            Potion::Regeneration => (MobEffect::REGENERATION, 900),
+            Potion::Weakness => (MobEffect::WEAKNESS, 1800),
         };
         [EffectInstance::new(effect, duration, 0)]
     }

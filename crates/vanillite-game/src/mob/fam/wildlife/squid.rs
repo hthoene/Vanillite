@@ -7,7 +7,7 @@ use vanillite_base::{BlockPos, Vec3};
 use vanillite_world::entity::Rotation;
 
 use super::{Goal, SEA_LEVEL, st, st_mut};
-use crate::effect::id as effect;
+use crate::effect::MobEffect;
 use crate::level::Level;
 use crate::mob::fam::{FamGoal, Hurt};
 use crate::mob::goals::{Goal as MobGoal, reduced};
@@ -84,7 +84,7 @@ pub(super) fn ai_step(t: &mut Tick<'_, '_>) {
         t.core_mut().set_rot(Rotation { y_rot: body, ..rot });
     } else {
         let mut yd = t.velocity().y;
-        if let Some(a) = t.mob_ref().effects.amplifier(effect::LEVITATION) {
+        if let Some(a) = t.mob_ref().effects.amplifier(MobEffect::LEVITATION) {
             yd = 0.05 * (f64::from(a) + 1.0);
         } else {
             yd -= living::gravity(t);

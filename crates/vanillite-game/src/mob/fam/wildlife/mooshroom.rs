@@ -8,7 +8,7 @@ use vanillite_protocol::packets::play::clientbound::SoundSource;
 use vanillite_world::entity::Rotation;
 
 use super::{st, st_mut};
-use crate::effect::id as effect;
+use crate::effect::MobEffect;
 use crate::item::ItemStack;
 use crate::mob::MobData;
 use crate::mob::animal::{Interaction, animal_interact, fill_held, hurt_held, sound_at, use_item};
@@ -39,33 +39,33 @@ pub(super) fn register_goals(m: &mut MobData) {
 }
 
 /// The suspicious stew effect of a flower item (`SuspiciousEffectHolder`), in ticks.
-pub(crate) fn flower_effect(name: &str) -> Option<(u16, i32)> {
+pub(crate) fn flower_effect(name: &str) -> Option<(MobEffect, i32)> {
     let name = name.strip_prefix("minecraft:").unwrap_or(name);
     Some(match name {
-        "dandelion" | "golden_dandelion" | "blue_orchid" => (effect::SATURATION, 7),
+        "dandelion" | "golden_dandelion" | "blue_orchid" => (MobEffect::SATURATION, 7),
         "torchflower" | "poppy" | "cornflower" => {
             if name == "cornflower" {
-                (effect::JUMP_BOOST, 100)
+                (MobEffect::JUMP_BOOST, 100)
             } else {
-                (effect::NIGHT_VISION, 100)
+                (MobEffect::NIGHT_VISION, 100)
             }
         }
-        "allium" => (effect::FIRE_RESISTANCE, 60),
-        "azure_bluet" | "open_eyeblossom" => (effect::BLINDNESS, 220),
-        "red_tulip" | "orange_tulip" | "white_tulip" | "pink_tulip" => (effect::WEAKNESS, 140),
-        "oxeye_daisy" => (effect::REGENERATION, 140),
-        "wither_rose" => (effect::WITHER, 140),
-        "lily_of_the_valley" => (effect::POISON, 220),
-        "closed_eyeblossom" => (effect::NAUSEA, 140),
+        "allium" => (MobEffect::FIRE_RESISTANCE, 60),
+        "azure_bluet" | "open_eyeblossom" => (MobEffect::BLINDNESS, 220),
+        "red_tulip" | "orange_tulip" | "white_tulip" | "pink_tulip" => (MobEffect::WEAKNESS, 140),
+        "oxeye_daisy" => (MobEffect::REGENERATION, 140),
+        "wither_rose" => (MobEffect::WITHER, 140),
+        "lily_of_the_valley" => (MobEffect::POISON, 220),
+        "closed_eyeblossom" => (MobEffect::NAUSEA, 140),
         _ => return None,
     })
 }
 
 /// The `suspicious_stew_effects` component value of one effect.
-fn stew_component(effect: u16, duration: i32) -> Box<[u8]> {
+fn stew_component(effect: MobEffect, duration: i32) -> Box<[u8]> {
     let mut out = Vec::new();
     vanillite_protocol::codec::write_varint(&mut out, 1);
-    vanillite_protocol::codec::write_varint(&mut out, i32::from(effect));
+    vanillite_protocol::codec::write_varint(&mut out, i32::from(effect.0));
     vanillite_protocol::codec::write_varint(&mut out, duration);
     out.into()
 }
@@ -267,7 +267,7 @@ pub(super) fn save(m: &MobData, out: &mut Compound) {
     let s = st(m);
     out.insert("Type", if s.variant == 1 { "brown" } else { "red" });
     if let Some((effect, duration)) = s.stew_effects
-        && let Some(name) = crate::effect::id::name(effect)
+        && let name = effect.key()
     {
         let mut c = Compound::new();
         c.insert("id", name);
@@ -285,7 +285,7 @@ pub(super) fn load(m: &mut MobData, tag: &Compound) {
             let Tag::Compound(c) = t else {
                 return None;
             };
-            let effect = c.get("id").and_then(Tag::as_str).and_then(effect::of)?;
+            let effect = c.get("id").and_then(Tag::as_str).and_then(MobEffect::by_name)?;
             Some((effect, super::int(c, "duration").unwrap_or(160)))
         }),
         _ => None,

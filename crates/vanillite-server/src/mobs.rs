@@ -10,6 +10,7 @@ use vanillite_game::entities::{Entities, is_mob_kind};
 use vanillite_game::item::ItemStack;
 use vanillite_game::level::Level;
 use vanillite_game::level::explosion::BlockInteraction;
+use vanillite_game::minecart::{self, MinecartKind};
 use vanillite_game::mob::boss;
 use vanillite_game::mob::boss::dragon::{self, fight::DragonFight};
 use vanillite_game::mob::boss::special::{self, is_special_kind};
@@ -127,7 +128,6 @@ impl WorldMobs {
         survival: &mut WorldSurvival,
         global: &Global,
         dimension: &str,
-        entities_loaded: &dyn Fn(ChunkPos) -> bool,
     ) {
         let Some(fight) = &mut self.fight else {
             self.cx.dragon_fight = None;
@@ -138,11 +138,20 @@ impl WorldMobs {
         let rules = state.rules().clone();
         let no_blocks = NoBlocks;
         let raining = |_| false;
-        let mut env = survival.env(state, &rules, &no_blocks, &raining, dimension, &hooks);
+        let mut no_gateway = |_| false;
+        let mut env = survival.env(
+            state,
+            &rules,
+            &no_blocks,
+            &raining,
+            dimension,
+            &mut no_gateway,
+            &hooks,
+        );
         if std::mem::take(&mut level.output().try_dragon_respawn) {
             fight.try_respawn(level);
         }
-        fight.tick(level, &mut env, &mut self.cx, entities_loaded);
+        fight.tick(level, &mut env, &mut self.cx);
         self.cx.dragon_fight = Some(fight.view());
         self.store_fight();
         self.apply_explosion_hurts(level, survival, global, dimension);
@@ -179,7 +188,16 @@ impl WorldMobs {
         let rules = state.rules().clone();
         let no_blocks = NoBlocks;
         let raining = |_| false;
-        let mut env = survival.env(state, &rules, &no_blocks, &raining, dimension, &hooks);
+        let mut no_gateway = |_| false;
+        let mut env = survival.env(
+            state,
+            &rules,
+            &no_blocks,
+            &raining,
+            dimension,
+            &mut no_gateway,
+            &hooks,
+        );
         for event in events {
             fight.handle(level, &mut env, &mut self.cx, event);
         }
@@ -235,7 +253,16 @@ impl WorldMobs {
             let (weather, climate) = (survival.weather, survival.climate().cloned());
             let chunks = &level.chunks;
             let raining = move |pos| raining_at(chunks, climate.as_deref(), &weather, pos);
-            let mut env = survival.env(state, &rules, &blocks, &raining, dimension, &hooks);
+            let mut no_gateway = |_| false;
+            let mut env = survival.env(
+                state,
+                &rules,
+                &blocks,
+                &raining,
+                dimension,
+                &mut no_gateway,
+                &hooks,
+            );
             let level: &Level = level;
             for (player, action) in pending {
                 let usable = ents.player(player).is_some_and(|p| {
@@ -319,6 +346,14 @@ impl WorldMobs {
                             player,
                         );
                     }
+                    EntityAction::OpenVehicleInventory => {
+                        // `openCustomInventoryScreen` of a chest boat the player rides.
+                        if let Some(v) = ents.vehicle_of(player)
+                            && ents.boat(v).is_some_and(|b| b.kind.chest)
+                        {
+                            minecart::open_container(&mut ents, &mut env, &mut self.cx, player, v);
+                        }
+                    }
                 }
             }
             for (player, input) in inputs {
@@ -346,6 +381,7 @@ impl WorldMobs {
         }
         level.entities = ents;
         self.apply_actions(level, survival, global, dimension);
+        vanillite_game::menu::container::open_requests(level, std::mem::take(&mut self.cx.menus));
         survival.deliver(&mut level.entities, global);
     }
 
@@ -516,6 +552,7 @@ impl WorldMobs {
         };
         self.lightning_hits(level, survival, global, dimension);
         let activation = f64::from(self.settings.activation_range);
+        minecart::players_push(&mut level.entities);
         let mut cursor = level.entities.store.tick_cursor();
         let mut ents = std::mem::take(&mut level.entities);
         while let Some(id) = ents.store.next_to_tick(&mut cursor) {
@@ -526,6 +563,10 @@ impl WorldMobs {
             let kind = entity.as_ref().kind();
             let pos = entity.as_ref().pos();
             if kind == ids::FALLING_BLOCK || kind == ids::TNT {
+                let chunk = BlockPos::containing(pos.x, pos.y, pos.z).chunk();
+                if !level.chunks.in_entity_ticking_range(chunk) {
+                    continue;
+                }
                 level.entities = ents;
                 vanillite_game::entities::tick_entity(level, id, kind);
                 self.apply_explosion_hurts(level, survival, global, dimension);
@@ -534,20 +575,29 @@ impl WorldMobs {
                 continue;
             }
             let is_mob = is_mob_kind(kind);
-            let is_boat = BoatKind::of(kind).is_some();
-            let is_missile = vanillite_game::mob::missile::is_missile_kind(kind);
             let is_special = is_special_kind(kind);
+            let is_boat = BoatKind::of(kind).is_some();
+            let is_minecart = MinecartKind::of(kind).is_some();
+            let is_missile = vanillite_game::mob::missile::is_missile_kind(kind);
             if !is_mob
-                && !is_boat
-                && !is_missile
                 && !is_special
+                && !is_boat
+                && !is_minecart
+                && !is_missile
                 && kind != ids::ARROW
                 && kind != ids::EXPERIENCE_ORB
+                && kind != ids::AREA_EFFECT_CLOUD
             {
                 continue;
             }
             let chunk = BlockPos::containing(pos.x, pos.y, pos.z).chunk();
             if !level.is_block_ticking(chunk) {
+                continue;
+            }
+            if kind == ids::EXPERIENCE_ORB {
+                level.entities = ents;
+                vanillite_game::entities::tick_entity(level, id, kind);
+                ents = std::mem::take(&mut level.entities);
                 continue;
             }
             if is_mob && activation > 0.0 && !self.ticks.is_multiple_of(20) {
@@ -570,14 +620,25 @@ impl WorldMobs {
                 let (weather, climate) = (survival.weather, survival.climate().cloned());
                 let chunks = &level.chunks;
                 let raining = move |pos| raining_at(chunks, climate.as_deref(), &weather, pos);
-                let mut env = survival.env(state, &rules, &blocks, &raining, dimension, &hooks);
+                let mut no_gateway = |_| false;
+                let mut env = survival.env(
+                    state,
+                    &rules,
+                    &blocks,
+                    &raining,
+                    dimension,
+                    &mut no_gateway,
+                    &hooks,
+                );
                 let level_ref: &Level = level;
                 if is_mob {
                     mob::tick(level_ref, &mut ents, &mut env, &mut self.cx, id);
-                } else if is_boat {
-                    vehicle::tick_boat(level_ref, &mut ents, &mut env, &mut self.cx, id);
                 } else if is_special {
                     special::tick(level_ref, &mut ents, &mut env, &mut self.cx, id);
+                } else if is_boat {
+                    vehicle::tick_boat(level_ref, &mut ents, &mut env, &mut self.cx, id);
+                } else if is_minecart {
+                    minecart::tick(level_ref, &mut ents, &mut env, &mut self.cx, id);
                 } else if kind == ids::ARROW {
                     projectile::tick_arrow(level_ref, &mut ents, &mut env, &mut self.cx, id);
                 } else if is_missile {
@@ -588,8 +649,14 @@ impl WorldMobs {
                         &mut self.cx,
                         id,
                     );
-                } else {
-                    projectile::tick_orb(level_ref, &mut ents, &mut env, &mut self.cx, id);
+                } else if kind == ids::AREA_EFFECT_CLOUD {
+                    vanillite_game::effect::cloud::tick(
+                        level_ref,
+                        &mut ents,
+                        &mut env,
+                        &mut self.cx,
+                        id,
+                    );
                 }
             }
             if !self.cx.actions.is_empty() || !self.cx.dragon_events.is_empty() {
@@ -610,7 +677,16 @@ impl WorldMobs {
         {
             let blocks = WorldBlocks(&level.chunks);
             let raining = |_| false;
-            let mut env = survival.env(state, &rules, &blocks, &raining, dimension, &hooks);
+            let mut no_gateway = |_| false;
+            let mut env = survival.env(
+                state,
+                &rules,
+                &blocks,
+                &raining,
+                dimension,
+                &mut no_gateway,
+                &hooks,
+            );
             let mut discarded = Vec::new();
             vanillite_game::player::using::tick_all(&mut ents, &mut env);
             tame::tick_leashes(level, &mut ents, &mut env, &mut discarded);
@@ -729,6 +805,9 @@ impl WorldMobs {
                     );
                 }
                 WorldAction::Level(action) => action.apply(level),
+                other => {
+                    other.apply_to_level(level);
+                }
             }
         }
         self.finish_removals(level);
@@ -751,7 +830,16 @@ impl WorldMobs {
         let hurts = std::mem::take(&mut level.output().explosion_hurts);
         let no_blocks = NoBlocks;
         let raining = |_| false;
-        let mut env = survival.env(state, &rules, &no_blocks, &raining, dimension, &hooks);
+        let mut no_gateway = |_| false;
+        let mut env = survival.env(
+            state,
+            &rules,
+            &no_blocks,
+            &raining,
+            dimension,
+            &mut no_gateway,
+            &hooks,
+        );
         let mut ents = std::mem::take(&mut level.entities);
         for hurt in hurts {
             // `damageSources().explosion(source, indirect)`.
@@ -771,11 +859,11 @@ impl WorldMobs {
                 }
             };
             source.position.get_or_insert(hurt.center);
-            if ents.boat(hurt.target).is_some() {
+            if ents.boat(hurt.target).is_some() || ents.minecart(hurt.target).is_some() {
                 // `VehicleEntity.ignoreExplosion`: mob explosions without mob griefing.
                 let mob_source = hurt.indirect.is_some_and(|c| ents.mob(c).is_some());
                 if !(mob_source && !rules.bool(Rule::MOB_GRIEFING)) {
-                    vehicle::hurt_boat(
+                    hurt_vehicle(
                         &mut ents,
                         &mut env,
                         &mut self.cx,
@@ -794,6 +882,50 @@ impl WorldMobs {
                 hurt.target,
                 source,
                 hurt.amount,
+            );
+        }
+        level.entities = ents;
+        self.finish_removals(level);
+    }
+
+    /// The magic damage block entities dealt this tick (conduits hunting mobs).
+    pub(crate) fn apply_magic_hurts(
+        &mut self,
+        level: &mut Level,
+        survival: &mut WorldSurvival,
+        global: &Global,
+        dimension: &str,
+    ) {
+        if level.output().magic_hurts.is_empty() {
+            return;
+        }
+        let state = &global.level;
+        let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+        let rules = state.rules().clone();
+        let hurts = std::mem::take(&mut level.output().magic_hurts);
+        let no_blocks = NoBlocks;
+        let raining = |_| false;
+        let mut no_gateway = |_| false;
+        let mut env = survival.env(
+            state,
+            &rules,
+            &no_blocks,
+            &raining,
+            dimension,
+            &mut no_gateway,
+            &hooks,
+        );
+        let mut ents = std::mem::take(&mut level.entities);
+        for (target, amount) in hurts {
+            let source = DamageSource::of(env.types.magic);
+            combat::hurt(
+                level,
+                &mut ents,
+                &mut env,
+                &mut self.cx,
+                target,
+                source,
+                amount,
             );
         }
         level.entities = ents;
@@ -820,7 +952,16 @@ impl WorldMobs {
         {
             let no_blocks = NoBlocks;
             let raining = |_| false;
-            let mut env = survival.env(state, &rules, &no_blocks, &raining, dimension, &hooks);
+            let mut no_gateway = |_| false;
+            let mut env = survival.env(
+                state,
+                &rules,
+                &no_blocks,
+                &raining,
+                dimension,
+                &mut no_gateway,
+                &hooks,
+            );
             let source = DamageSource::of(env.types.lightning_bolt);
             for id in struck {
                 if let Some(d) = ents.item_mut(id) {
@@ -830,8 +971,8 @@ impl WorldMobs {
                     }
                     continue;
                 }
-                if ents.boat(id).is_some() {
-                    vehicle::hurt_boat(&mut ents, &mut env, &mut self.cx, id, source, 5.0);
+                if ents.boat(id).is_some() || ents.minecart(id).is_some() {
+                    hurt_vehicle(&mut ents, &mut env, &mut self.cx, id, source, 5.0);
                     continue;
                 }
                 let Some(kind) = ents.mob(id).filter(|m| m.is_alive()).map(|m| m.kind) else {
@@ -991,7 +1132,7 @@ fn attack_entity(
         tame::break_knot(ents, env, target, &mut cx.discarded);
         return;
     }
-    if ents.boat(target).is_some() {
+    if ents.boat(target).is_some() || ents.minecart(target).is_some() {
         let scale = attack::attack_strength_scale(ents, player, 0.5);
         let base =
             attack::player_attribute(ents, player, "minecraft:attack_damage", 1.0, 0.0, 2048.0);
@@ -1002,7 +1143,7 @@ fn attack_entity(
         }
         let mut source = combat::entity_source(ents, env.types.player_attack, player, player);
         source.cause_is_mob = false;
-        vehicle::hurt_boat(ents, env, cx, target, source, damage);
+        hurt_vehicle(ents, env, cx, target, source, damage);
         return;
     }
     // `canHarmPlayer`: the pvp rule.
@@ -1010,6 +1151,22 @@ fn attack_entity(
         return;
     }
     attack::player_attack(level, ents, env, cx, player, target);
+}
+
+/// `VehicleEntity.hurtServer` of a boat or minecart.
+fn hurt_vehicle(
+    ents: &mut Entities,
+    env: &mut vanillite_game::survival::player::Env<'_>,
+    cx: &mut MobContext,
+    target: EntityId,
+    source: DamageSource,
+    amount: f32,
+) {
+    if ents.minecart(target).is_some() {
+        minecart::hurt(ents, env, cx, target, source, amount);
+    } else {
+        vehicle::hurt_boat(ents, env, cx, target, source, amount);
+    }
 }
 
 /// `LeashFenceKnotEntity.interact`: ties the player's leashed mobs to the knot, or breaks it.
@@ -1139,6 +1296,8 @@ fn use_item_on(
         );
     } else if vanillite_game::item::item_id(&stack).name() == "minecraft:lead" {
         tame::use_lead_on_fence(level, ents, env, player, pos);
+    } else {
+        minecart::use_item_on(level, ents, network_ids, pos, &mut stack, creative);
     }
     put_back(ents, player, hand, stack);
 }

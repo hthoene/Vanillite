@@ -257,7 +257,7 @@ pub fn ai_step(t: &mut Tick<'_, '_>) {
     let m = t.mob();
     let expected = if m.baby { 1.0 } else { 2.0 };
     #[allow(clippy::float_cmp)]
-    if m.attrs.attack_damage != expected && !m.effects.has(crate::effect::id::STRENGTH) {
+    if m.attrs.attack_damage != expected && !m.effects.has(crate::effect::MobEffect::STRENGTH) {
         age_boundary(m);
     }
 }
@@ -569,7 +569,7 @@ pub fn tick(b: &mut Behavior, t: &mut Tick<'_, '_>, now: i64) {
                     let boost = t
                         .mob_ref()
                         .effects
-                        .amplifier(crate::effect::id::JUMP_BOOST)
+                        .amplifier(crate::effect::MobEffect::JUMP_BOOST)
                         .map_or(0.0, |a| 0.1 * (f64::from(a) + 1.0));
                     let v = jump * ((len + boost) / len);
                     t.set_velocity(v);
@@ -759,9 +759,9 @@ fn ram_tick(t: &mut Tick<'_, '_>, direction: Vec3) {
             return;
         }
         let fx = &t.mob_ref().effects;
-        let speed_level = fx.amplifier(crate::effect::id::SPEED).map_or(0, |a| a + 1);
+        let speed_level = fx.amplifier(crate::effect::MobEffect::SPEED).map_or(0, |a| a + 1);
         let slow_level = fx
-            .amplifier(crate::effect::id::SLOWNESS)
+            .amplifier(crate::effect::MobEffect::SLOWNESS)
             .map_or(0, |a| a + 1);
         #[allow(clippy::cast_precision_loss)]
         let boost = 0.25 * (speed_level - slow_level) as f32;

@@ -53,6 +53,7 @@ fn with_tick<R>(level: &mut Level, id: EntityId, f: impl FnOnce(&mut Tick<'_, '_
     {
         let level_ref: &Level = level;
         let blocks = LevelBlocks(level_ref);
+        let mut no_gateway = |_| false;
         let mut env = Env {
             hooks: &crate::hooks::NoHooks,
             types: &types,
@@ -64,6 +65,7 @@ fn with_tick<R>(level: &mut Level, id: EntityId, f: impl FnOnce(&mut Tick<'_, '_
             min_y: level_ref.min_y(),
             dimension: "minecraft:overworld",
             raining_at: &raining,
+            enter_gateway: &mut no_gateway,
             random: &mut random,
             out: &mut out,
         };

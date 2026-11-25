@@ -1,7 +1,12 @@
 //! Persistence providers: Anvil region files (deflate, LZ4, none), chunk NBT, player data,
 //! `level.dat` and the import of older and Spigot world layouts.
 //!
-//! - [`AnvilStorage`] is the built-in `chunk-storage` slot (architecture 9.3).
+//! - [`service`] is the storage service (#47): the built-in `chunk-storage` slot
+//!   ([`RegionStore`]) on the disk IO threads ([`IoPool`]), for both world formats.
+//! - [`format`] knows the world formats (#25): Anvil and the own format, the default for new
+//!   worlds ([`vwr`] files, [`OwnCodec`]); it detects them and converts and exports worlds.
+//! - [`AnvilCodec`] turns chunks into Anvil records and back on the compute pool.
+//! - [`blocking`] waits for store results on the calling thread (tools, tests, import).
 //! - [`player_data`] reads and writes `players/data/<uuid>.dat`.
 //! - [`level_dat`] reads and writes `level.dat`, [`saved_data`] the files below `data/`.
 //! - [`writer`] writes small files in the background, [`files`] makes every write atomic.
@@ -13,39 +18,40 @@
 //! (SEC-26), and errors are reported per chunk instead of panicking.
 
 pub mod backup;
+pub mod blocking;
 pub mod chunk_nbt;
 pub mod compression;
 pub mod entities;
 pub mod files;
+pub mod format;
 pub mod import;
 pub mod layout;
 pub mod level_dat;
+pub mod own_codec;
 pub mod player_data;
 pub mod region;
 pub mod saved_data;
+pub mod service;
+pub mod vwr;
 pub mod writer;
 
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 
 use vanillite_base::ChunkPos;
-use vanillite_base::hash::FxHashMap;
 use vanillite_chunk::ProtoChunk;
-use vanillite_chunk::slots::{ChunkStorage, ChunkStorageProvider, WorldInfo};
+use vanillite_chunk::slots::{ChunkCodec, RecordMeta, WorldInfo};
+use vanillite_data::version::DATA_VERSION;
 use vanillite_nbt::Budget;
 
 pub use crate::chunk_nbt::Codec;
 pub use crate::compression::Compression;
+pub use crate::format::WorldFormat;
 pub use crate::layout::WorldLayout;
-use crate::region::RegionFile;
+pub use crate::own_codec::OwnCodec;
 pub use crate::saved_data::{read_saved_data, saved_data_path, write_saved_data};
-
-/// An open region file, shared by the jobs that use it.
-type SharedRegion = Arc<Mutex<RegionFile>>;
-
-/// Region files kept open per world while no job uses them; files in use stay open above it.
-const MAX_OPEN_REGIONS: usize = 256;
+pub use crate::service::{IoPool, RegionStore, RegionStoreProvider, StoreSettings, StoreStats};
 
 /// The folder of a dimension inside a world folder (26.x layout):
 /// `dimensions/<namespace>/<path>`.
@@ -56,191 +62,112 @@ pub fn dimension_dir(world_dir: &Path, dimension: &str) -> PathBuf {
     world_dir.join("dimensions").join(namespace).join(path)
 }
 
-/// The built-in `chunk-storage` slot: Anvil region files in `<dimension>/region`.
+/// The Anvil chunk codec: a record is the compression id followed by the compressed chunk NBT,
+/// exactly what a region file keeps after the length.
 #[derive(Debug)]
-pub struct AnvilStorage {
-    dir: PathBuf,
-    compression: Compression,
+pub struct AnvilCodec {
     codec: Codec,
-    /// Open region files; at most one instance per file, so jobs never write past each other.
-    regions: Mutex<FxHashMap<(i32, i32), SharedRegion>>,
-    max_open: usize,
+    compression: Compression,
 }
 
-impl AnvilStorage {
-    /// The storage of a world; new chunks are written with `compression`.
+impl AnvilCodec {
+    /// The codec of a world; chunks are written with `compression`.
     pub fn new(world: &WorldInfo, compression: Compression) -> Self {
-        AnvilStorage {
-            dir: world.dir.join("region"),
-            compression,
+        AnvilCodec {
             codec: Codec::new(world),
-            regions: Mutex::new(FxHashMap::default()),
-            max_open: MAX_OPEN_REGIONS,
+            compression,
         }
     }
 
-    fn region(&self, pos: ChunkPos, create: bool) -> io::Result<Option<SharedRegion>> {
-        let key = pos.region();
-        let mut regions = self.regions.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(region) = regions.get(&key) {
-            return Ok(Some(Arc::clone(region)));
-        }
-        if create {
-            std::fs::create_dir_all(&self.dir)?;
-        }
-        let path = self.dir.join(format!("r.{}.{}.mca", key.0, key.1));
-        let Some(region) = RegionFile::open(&path, create)? else {
-            return Ok(None);
+    /// The chunk NBT codec.
+    pub fn nbt(&self) -> &Codec {
+        &self.codec
+    }
+}
+
+/// The root compound of uncompressed named NBT.
+pub(crate) fn read_root(pos: ChunkPos, nbt: &[u8]) -> io::Result<vanillite_nbt::Compound> {
+    vanillite_nbt::read::read_named(&mut &nbt[..], &mut Budget::file())
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("chunk {pos:?}: {e:?}")))
+}
+
+impl AnvilCodec {
+    /// The NBT of a record: a compression id byte, then the compressed NBT.
+    fn read_nbt(&self, pos: ChunkPos, record: &[u8]) -> io::Result<Vec<u8>> {
+        let Some((&id, data)) = record.split_first() else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("chunk {pos:?}: empty record"),
+            ));
         };
-        if regions.len() >= self.max_open {
-            // Close only files no job holds: a job's handle must stay the one instance of its
-            // file (a second instance would allocate the same sectors). Handles are only cloned
-            // under this lock, so a count of 1 cannot grow while it is held.
-            regions.retain(|_, region| Arc::strong_count(region) > 1);
-        }
-        let region = Arc::new(Mutex::new(region));
-        regions.insert(key, Arc::clone(&region));
-        Ok(Some(region))
+        let compression = Compression::from_id(id).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("chunk {pos:?}: unknown compression {id}"),
+            )
+        })?;
+        compression.decompress(data)
     }
 
-    fn load_one(&self, pos: ChunkPos) -> io::Result<Option<ProtoChunk>> {
-        let Some(region) = self.region(pos, false)? else {
-            return Ok(None);
-        };
-        let raw = region
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .read(pos)?;
-        let Some((compression, data)) = raw else {
-            return Ok(None);
-        };
-        let bytes = compression.decompress(&data)?;
-        let root = vanillite_nbt::read::read_named(&mut bytes.as_slice(), &mut Budget::file())
-            .map_err(|e| {
-                io::Error::new(io::ErrorKind::InvalidData, format!("chunk {pos:?}: {e:?}"))
-            })?;
-        self.codec.read(pos, root).map(Some)
+    /// The root compound of a record.
+    fn read_root(&self, pos: ChunkPos, record: &[u8]) -> io::Result<vanillite_nbt::Compound> {
+        read_root(pos, &self.read_nbt(pos, record)?)
     }
 
-    fn save_one(&self, chunk: &ProtoChunk) -> io::Result<()> {
-        let root = self.codec.write(chunk)?;
+    /// A record of a root compound and its metadata.
+    fn write_root(
+        &self,
+        root: &vanillite_nbt::Compound,
+        status: u8,
+    ) -> io::Result<(RecordMeta, Arc<[u8]>)> {
         let mut bytes = Vec::with_capacity(16 * 1024);
-        vanillite_nbt::write::write_named("", &root, &mut bytes)
+        vanillite_nbt::write::write_named("", root, &mut bytes)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{e:?}")))?;
         let data = self.compression.compress(&bytes)?;
-        let region = self
-            .region(chunk.pos, true)?
-            .ok_or_else(|| io::Error::other("region file not created"))?;
-        let mut region = region.lock().unwrap_or_else(PoisonError::into_inner);
-        region.write(chunk.pos, self.compression, &data)
-    }
-}
-
-impl ChunkStorage for AnvilStorage {
-    fn load(&self, positions: &[ChunkPos], out: &mut Vec<io::Result<Option<ProtoChunk>>>) {
-        out.extend(positions.iter().map(|&pos| self.load_one(pos)));
-    }
-
-    fn save(&self, chunks: &[Arc<ProtoChunk>], out: &mut Vec<io::Result<()>>) {
-        out.extend(chunks.iter().map(|chunk| self.save_one(chunk)));
-    }
-
-    fn flush(&self) -> io::Result<()> {
-        let regions: Vec<_> = self
-            .regions
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .values()
-            .cloned()
-            .collect();
-        for region in regions {
-            region
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .sync()?;
-        }
-        Ok(())
-    }
-}
-
-/// Provider of [`AnvilStorage`].
-#[derive(Debug, Clone, Copy)]
-pub struct AnvilStorageProvider {
-    /// Compression of written chunks (`region-file-compression`).
-    pub compression: Compression,
-}
-
-impl Default for AnvilStorageProvider {
-    fn default() -> Self {
-        AnvilStorageProvider {
-            compression: Compression::Deflate,
-        }
-    }
-}
-
-impl ChunkStorageProvider for AnvilStorageProvider {
-    fn create(&self, world: &WorldInfo) -> io::Result<Arc<dyn ChunkStorage>> {
-        Ok(Arc::new(AnvilStorage::new(world, self.compression)))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Many threads writing into more region files than stay open: every chunk reads back
-    /// intact (#50: evicting files in use opened a second instance that overwrote sectors).
-    #[test]
-    fn region_cache_keeps_one_instance_per_file() {
-        let dir = std::env::temp_dir().join(format!("vanillite-regions-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let info = WorldInfo {
-            dimension: "minecraft:overworld".to_owned(),
-            dir: dir.clone(),
-            min_y: 0,
-            height: 16,
-            seed: 0,
-            has_sky_light: true,
-            biomes: Arc::from(Vec::<String>::new()),
-            default_biome: Default::default(),
-            air: Default::default(),
+        let mut record = Vec::with_capacity(data.len() + 1);
+        record.push(self.compression.id());
+        record.extend_from_slice(&data);
+        let meta = RecordMeta {
+            data_version: DATA_VERSION as u32,
+            raw_len: u32::try_from(bytes.len()).unwrap_or(u32::MAX),
+            checksum: 0,
+            status,
+            flags: 0,
         };
-        let mut storage = AnvilStorage::new(&info, Compression::None);
-        storage.max_open = 4;
-        let (files, threads, per_file) = (64, 16, 24);
-        let data = |pos: ChunkPos| {
-            let tag = (pos.x as u8).wrapping_mul(31) ^ (pos.z as u8);
-            vec![tag; 3000 + (pos.x as usize & 7) * 1000]
-        };
-        let pos = |file: i32, i: i32| ChunkPos::new((file % 8) * 32 + i, (file / 8) * 32 + i);
-        std::thread::scope(|scope| {
-            for t in 0..threads {
-                let storage = &storage;
-                scope.spawn(move || {
-                    // Each file gets chunks from several threads, interleaved with other files.
-                    for i in 0..per_file {
-                        for file in (0..files).filter(|f| (f + i) % threads == t) {
-                            let pos = pos(file, i);
-                            let region = storage.region(pos, true).unwrap().unwrap();
-                            // A job holds its handle a while (compression, waiting for the lock).
-                            std::thread::sleep(std::time::Duration::from_millis(1));
-                            let mut region = region.lock().unwrap();
-                            region.write(pos, Compression::None, &data(pos)).unwrap();
-                        }
-                    }
-                });
-            }
-        });
-        drop(storage);
-        let storage = AnvilStorage::new(&info, Compression::None);
-        for file in 0..files {
-            for i in 0..per_file {
-                let pos = pos(file, i);
-                let region = storage.region(pos, false).unwrap().unwrap();
-                let read = region.lock().unwrap().read(pos).unwrap();
-                assert_eq!(read, Some((Compression::None, data(pos))), "chunk {pos:?}");
-            }
+        Ok((meta, Arc::from(record)))
+    }
+}
+
+impl ChunkCodec for AnvilCodec {
+    fn decode(&self, pos: ChunkPos, _: &RecordMeta, record: &[u8]) -> io::Result<ProtoChunk> {
+        self.codec.read_bytes(pos, &self.read_nbt(pos, record)?)
+    }
+
+    fn encode(&self, chunk: &ProtoChunk) -> io::Result<(RecordMeta, Arc<[u8]>)> {
+        let root = self.codec.write(chunk)?;
+        self.write_root(&root, chunk.status as u8)
+    }
+
+    fn decode_entities(
+        &self,
+        pos: ChunkPos,
+        _: &RecordMeta,
+        record: &[u8],
+    ) -> io::Result<Vec<Arc<[u8]>>> {
+        let root = self.read_root(pos, record)?;
+        chunk_nbt::read_entities(pos, &root)
+    }
+
+    fn encode_entities(&self, chunk: &ProtoChunk) -> io::Result<(RecordMeta, Arc<[u8]>)> {
+        let root = chunk_nbt::write_entities(chunk.pos, &chunk.entities)?;
+        self.write_root(&root, RecordMeta::STATUS_UNKNOWN)
+    }
+
+    fn chunks_per_job(&self) -> usize {
+        // Jobs of about 1 ms: deflate takes ~0.5 ms per chunk, LZ4 and none far less.
+        match self.compression {
+            Compression::Deflate => 2,
+            _ => 8,
         }
-        std::fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -7,12 +7,13 @@ use vanillite_world::entity::{
     Dense, EntityId, EntityStore, NetworkId, NetworkIds, NewEntity, Removed, Rotation,
 };
 
+use crate::experience_orb::ExperienceOrbData;
 use vanillite_base::hash::FxHashMap;
 
 use crate::item_entity::ItemData;
 use crate::mob::MobData;
 use crate::mob::boss::special::{SpecialData, is_special_kind};
-use crate::mob::projectile::{ArrowData, OrbData};
+use crate::mob::projectile::ArrowData;
 use crate::player::PlayerData;
 
 /// The kind data of a `falling_block` (`FallingBlockEntity`).
@@ -56,12 +57,16 @@ pub struct Entities {
     pub mobs: Dense<MobData>,
     /// Arrow kind data.
     pub arrows: Dense<ArrowData>,
-    /// Experience orb kind data.
-    pub orbs: Dense<OrbData>,
     /// Network id → entity of mobs (attack and interaction packets name their target by it).
     pub by_network_id: FxHashMap<i32, EntityId>,
     /// Primed TNT kind data.
     pub primed_tnts: Dense<PrimedTntData>,
+    /// Area effect cloud kind data.
+    pub clouds: Dense<crate::effect::cloud::CloudData>,
+    /// Experience orb kind data.
+    pub experience_orbs: Dense<ExperienceOrbData>,
+    /// Kind data of the bosses' non-living entities (skulls, crystals, fireballs).
+    pub specials: Dense<SpecialData>,
     /// Vehicles and their passengers.
     pub riding: Riding,
     /// Player entities by UUID (owners and leash holders are found by it).
@@ -74,8 +79,8 @@ pub struct Entities {
     pub knots: Dense<BlockPos>,
     /// Projectile kind data besides arrows (every type of [`crate::mob::missile::MissileKind`]).
     pub missiles: Dense<crate::mob::missile::MissileData>,
-    /// Kind data of the bosses' non-living entities (skulls, crystals, fireballs, clouds).
-    pub specials: Dense<SpecialData>,
+    /// Minecart kind data (every type of [`crate::minecart::MinecartKind`]).
+    pub minecarts: Dense<crate::minecart::MinecartData>,
 }
 
 /// Who rides what (`Entity.vehicle`, `Entity.passengers`).
@@ -234,12 +239,6 @@ impl Entities {
         self.store.spawn(new, |id| arrows.push(id, data))
     }
 
-    /// Adds an experience orb.
-    pub fn spawn_orb(&mut self, new: NewEntity, data: OrbData) -> EntityId {
-        let orbs = &mut self.orbs;
-        self.store.spawn(new, |id| orbs.push(id, data))
-    }
-
     /// Adds a projectile of the missile store.
     pub fn spawn_missile(
         &mut self,
@@ -298,37 +297,21 @@ impl Entities {
         self.specials.get_mut(row)
     }
 
-    /// `addEffect` on a living entity (player or mob): merges it and, for players, tells the
-    /// client. `can_be_affected` is the target's `canBeAffected` verdict (checked by the
-    /// caller for kinds with immunities). Returns whether it was added or changed.
+    /// `addEffect` on a living entity (player or mob) from outside its tick (bosses, block
+    /// entities): `canBeAffected` and the kinds that refuse every effect are checked here,
+    /// `can_be_affected` is an extra verdict of the caller. The client packets, flags and
+    /// attributes follow with the entity's next tick. Returns whether it was added or changed.
     pub fn add_effect(
         &mut self,
         id: EntityId,
         effect: crate::effect::EffectInstance,
         can_be_affected: bool,
     ) -> bool {
-        if !can_be_affected {
-            return false;
-        }
-        if let Some(m) = self.mob_mut(id) {
-            return crate::effect::add(m, effect);
-        }
-        let Entities { store, players, .. } = self;
-        let Some(entity) = store.get_mut(id) else {
-            return false;
-        };
-        if entity.as_ref().kind() != ids::PLAYER {
-            return false;
-        }
-        let row = entity.as_ref().kind_row();
-        let Some(p) = players.get_mut(row) else {
-            return false;
-        };
-        crate::survival::player::add_effect(&entity, p, effect)
+        can_be_affected && crate::effect::living::add_detached(self, id, effect)
     }
 
     /// The active effects of a living entity (player or mob).
-    pub fn effects(&self, id: EntityId) -> Option<&crate::effect::MobEffects> {
+    pub fn effects(&self, id: EntityId) -> Option<&crate::effect::ActiveEffects> {
         if let Some(m) = self.mob(id) {
             return Some(&m.effects);
         }
@@ -372,25 +355,7 @@ impl Entities {
         self.arrows.get_mut(row)
     }
 
-    /// The experience orb data of an entity.
-    pub fn orb(&self, id: EntityId) -> Option<&OrbData> {
-        let entity = self.store.get(id)?;
-        (entity.kind() == ids::EXPERIENCE_ORB)
-            .then(|| self.orbs.get(entity.kind_row()))
-            .flatten()
-    }
-
-    /// The experience orb data of an entity, mutably.
-    pub fn orb_mut(&mut self, id: EntityId) -> Option<&mut OrbData> {
-        let entity = self.store.get(id)?;
-        if entity.kind() != ids::EXPERIENCE_ORB {
-            return None;
-        }
-        let row = entity.kind_row();
-        self.orbs.get_mut(row)
-    }
-
-    /// The entity with a network id: mobs, players, boats and leash knots.
+    /// The entity with a network id: mobs, players, boats, minecarts and leash knots.
     pub fn by_network_id(&self, network_id: i32) -> Option<EntityId> {
         self.by_network_id
             .get(&network_id)
@@ -402,6 +367,34 @@ impl Entities {
     pub fn spawn_primed_tnt(&mut self, new: NewEntity, data: PrimedTntData) -> EntityId {
         let primed_tnts = &mut self.primed_tnts;
         self.store.spawn(new, |id| primed_tnts.push(id, data))
+    }
+
+    /// Adds an area effect cloud.
+    pub fn spawn_cloud(
+        &mut self,
+        new: NewEntity,
+        data: crate::effect::cloud::CloudData,
+    ) -> EntityId {
+        let clouds = &mut self.clouds;
+        self.store.spawn(new, |id| clouds.push(id, data))
+    }
+
+    /// The area effect cloud data of an entity.
+    pub fn cloud(&self, id: EntityId) -> Option<&crate::effect::cloud::CloudData> {
+        let entity = self.store.get(id)?;
+        (entity.kind() == ids::AREA_EFFECT_CLOUD)
+            .then(|| self.clouds.get(entity.kind_row()))
+            .flatten()
+    }
+
+    /// The area effect cloud data of an entity, mutably.
+    pub fn cloud_mut(&mut self, id: EntityId) -> Option<&mut crate::effect::cloud::CloudData> {
+        let entity = self.store.get(id)?;
+        if entity.kind() != ids::AREA_EFFECT_CLOUD {
+            return None;
+        }
+        let row = entity.kind_row();
+        self.clouds.get_mut(row)
     }
 
     /// The primed TNT data of an entity.
@@ -420,6 +413,30 @@ impl Entities {
         }
         let row = entity.kind_row();
         self.primed_tnts.get_mut(row)
+    }
+
+    /// Adds an experience orb.
+    pub fn spawn_experience_orb(&mut self, new: NewEntity, data: ExperienceOrbData) -> EntityId {
+        let orbs = &mut self.experience_orbs;
+        self.store.spawn(new, |id| orbs.push(id, data))
+    }
+
+    /// The experience orb data of an entity.
+    pub fn experience_orb(&self, id: EntityId) -> Option<&ExperienceOrbData> {
+        let entity = self.store.get(id)?;
+        (entity.kind() == ids::EXPERIENCE_ORB)
+            .then(|| self.experience_orbs.get(entity.kind_row()))
+            .flatten()
+    }
+
+    /// The experience orb data of an entity, mutably.
+    pub fn experience_orb_mut(&mut self, id: EntityId) -> Option<&mut ExperienceOrbData> {
+        let entity = self.store.get(id)?;
+        if entity.kind() != ids::EXPERIENCE_ORB {
+            return None;
+        }
+        let row = entity.kind_row();
+        self.experience_orbs.get_mut(row)
     }
 
     /// Removes an entity of any kind together with its kind data.
@@ -503,22 +520,28 @@ impl Entities {
                 .and_then(|(_, moved)| moved)
         } else if kind == ids::ARROW {
             self.arrows.swap_remove(row).and_then(|(_, moved)| moved)
-        } else if kind == ids::EXPERIENCE_ORB {
-            self.orbs.swap_remove(row).and_then(|(_, moved)| moved)
         } else if is_mob_kind(kind) {
             self.mobs.swap_remove(row).and_then(|(_, moved)| moved)
         } else if crate::mob::missile::is_missile_kind(kind) {
             self.missiles.swap_remove(row).and_then(|(_, moved)| moved)
+        } else if kind == ids::AREA_EFFECT_CLOUD {
+            self.clouds.swap_remove(row).and_then(|(_, moved)| moved)
         } else if is_special_kind(kind) {
             self.specials.swap_remove(row).and_then(|(_, moved)| moved)
         } else if kind == ids::TNT {
             self.primed_tnts
                 .swap_remove(row)
                 .and_then(|(_, moved)| moved)
+        } else if kind == ids::EXPERIENCE_ORB {
+            self.experience_orbs
+                .swap_remove(row)
+                .and_then(|(_, moved)| moved)
         } else if crate::vehicle::BoatKind::of(kind).is_some() {
             self.boats.swap_remove(row).and_then(|(_, moved)| moved)
         } else if kind == ids::LEASH_KNOT {
             self.knots.swap_remove(row).and_then(|(_, moved)| moved)
+        } else if crate::minecart::MinecartKind::of(kind).is_some() {
+            self.minecarts.swap_remove(row).and_then(|(_, moved)| moved)
         } else {
             None
         }
@@ -543,6 +566,21 @@ impl Entities {
     }
 }
 
+/// The tick loop's check of an entity in the tick order (`ServerLevel.tick`): players always
+/// tick, other entities only in entity ticking range (`inEntityTickingRange`).
+pub fn in_ticking_range(level: &crate::level::Level, id: EntityId) -> bool {
+    level.entities.store.get(id).is_some_and(|entity| {
+        entity.kind() == ids::PLAYER || {
+            let pos = entity.pos();
+            let chunk = vanillite_base::ChunkPos::new(
+                vanillite_base::math::floor(pos.x) >> 4,
+                vanillite_base::math::floor(pos.z) >> 4,
+            );
+            level.chunks.in_entity_ticking_range(chunk)
+        }
+    })
+}
+
 /// Whether entities of `kind` keep their data in the mob store.
 #[inline]
 pub fn is_mob_kind(kind: EntityTypeId) -> bool {
@@ -556,6 +594,8 @@ pub fn tick_entity(level: &mut crate::level::Level, id: EntityId, kind: EntityTy
         crate::block::falling::tick_entity(level, id);
     } else if kind == ids::TNT {
         crate::block::tnt::tick_entity(level, id);
+    } else if kind == ids::EXPERIENCE_ORB {
+        crate::experience_orb::tick_entity(level, id);
     }
 }
 

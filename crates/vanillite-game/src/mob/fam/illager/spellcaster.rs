@@ -16,7 +16,7 @@ use super::{
     Goal, dirty, fam, look_at_player, sound, st, st_mut, target_mobs, target_players, with_memory,
 };
 use crate::effect as effects;
-use crate::effect::{EffectInstance, id};
+use crate::effect::{EffectInstance, MobEffect};
 use crate::survival::rules::{Difficulty, Rule};
 
 /// `SpellcasterIllager.IllagerSpell` ids.
@@ -148,7 +148,7 @@ pub fn can_use(t: &mut Tick<'_, '_>, s: &mut UseSpell) -> bool {
             t.mob().random.next_int_bounded(8) + 1 > vexes
         }
         spell::WOLOLO => wololo_can_use(t, s),
-        spell::DISAPPEAR => base_can_use(t, s) && !t.mob_ref().effects.has(id::INVISIBILITY),
+        spell::DISAPPEAR => base_can_use(t, s) && !t.mob_ref().effects.has(MobEffect::INVISIBILITY),
         spell::BLINDNESS => {
             if !base_can_use(t, s) {
                 return false;
@@ -224,7 +224,7 @@ pub fn tick(t: &mut Tick<'_, '_>, s: &mut UseSpell) {
             spell::FANGS => cast_fangs(t),
             spell::WOLOLO => wololo(t),
             spell::DISAPPEAR => {
-                effects::add(t.mob(), EffectInstance::new(id::INVISIBILITY, 1200, 0));
+                effects::living::add_to_mob(t.mob(), EffectInstance::new(MobEffect::INVISIBILITY, 1200, 0));
                 dirty(t);
             }
             _ => {
@@ -232,7 +232,7 @@ pub fn tick(t: &mut Tick<'_, '_>, s: &mut UseSpell) {
                     && let Some(m) = t.ents.mob_mut(target)
                 {
                     // Players get the blindness with the effect system (#74).
-                    effects::add(m, EffectInstance::new(id::BLINDNESS, 400, 0));
+                    effects::living::add_to_mob(m, EffectInstance::new(MobEffect::BLINDNESS, 400, 0));
                 }
             }
         }

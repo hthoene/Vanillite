@@ -4,7 +4,7 @@
 //! `[worlds."<dimension>"]`. Both read their keys from the top level of `vanillite.toml`, so a
 //! group key must be unique across both sets. Performance knobs live under `performance.*`.
 
-use crate::rule::{DisabledOr, StorageLayout, VanillaOr};
+use crate::rule::{DisabledOr, StorageLayout, VanillaOr, WorldFormat};
 use crate::rules;
 
 rules! {
@@ -22,7 +22,7 @@ rules! {
         /// Thread counts.
         threads: ThreadRules = "performance.threads" {
             /// Worker threads of the compute pool (world generation, lighting, saving, parallel
-            /// tick phases). 0 = number of cores minus the busy tick threads, at least 1.
+            /// tick phases). 0 = number of cores minus one (the tick threads), at least 1.
             compute: u16 = "compute", Setting, range = [0, 1024], restart = true, vanilla = 0;
         }
         /// Saving.
@@ -40,6 +40,60 @@ rules! {
             /// other layout is moved into this one once at startup.
             layout: StorageLayout = "layout", Setting, restart = true,
                 vanilla = StorageLayout::Vanilla, spigot = StorageLayout::Spigot;
+            /// Format of the chunk, entity and POI files of new worlds: `"vanillite"`, the own
+            /// format (about 1.75 × smaller than Anvil, loads and saves several times faster,
+            /// `vanillite export` writes a Vanilla copy), or `"anvil"`, Vanilla's region files.
+            /// An existing world keeps its format unless `convert-world` is set.
+            world_format: WorldFormat = "world-format", Setting, restart = true,
+                vanilla = WorldFormat::Vanillite;
+            /// Converts an existing world into `world-format` at startup, before it loads.
+            /// The new files are read back and compared before the old ones are removed; if
+            /// that fails, the world stays as it is and the server starts with it.
+            convert_world: bool = "convert-world", Setting, restart = true, vanilla = false;
+            /// After a conversion the original files are moved into
+            /// `world-format-backup/<time>/` in the server folder instead of being deleted.
+            keep_converted_files: bool = "keep-converted-files", Setting, restart = true,
+                vanilla = true;
+            /// zstd level of chunk records in the own format, 1 (fastest) to 19 (smallest).
+            /// Takes effect for chunks saved from then on.
+            compression_level: u8 = "compression-level", Performance, range = [1, 19],
+                restart = true, vanilla = 3;
+            /// Disk IO threads shared by all dimensions. They only read and write files;
+            /// compression runs on the compute pool. More help on network volumes with high
+            /// latency.
+            io_threads: u16 = "io-threads", Performance, range = [1, 16], restart = true,
+                vanilla = 2;
+            /// Seconds after which saves of unloaded chunks are made durable (synced when
+            /// `sync-chunk-writes` is on). Save rounds and `save-all flush` commit at their end.
+            commit_interval: u32 = "commit-interval", Performance, range = [5, 300],
+                vanilla = 30;
+            /// Reads the neighbours of a loaded chunk in its 4 × 4 tile along when they lie
+            /// next to it in the file, and keeps them for a short time: fewer disk reads for
+            /// moving players.
+            read_ahead: bool = "read-ahead", Performance, restart = true, vanilla = true;
+            /// MiB of chunk records read ahead kept per dimension.
+            read_cache: u32 = "read-cache", Performance, range = [0, 65_536], restart = true,
+                vanilla = 64;
+            /// Region files kept open per dimension while unused; files in use always stay
+            /// open.
+            max_open_files: u32 = "max-open-files", Performance, range = [16, 65_536],
+                restart = true, vanilla = 256;
+            /// MiB of saved chunks waiting for the disk per dimension above which no more
+            /// saves are queued: changed chunks stay loaded and save rounds pause until the
+            /// disk caught up. Bounds RAM on slow disks.
+            max_pending_writes: u32 = "max-pending-writes", Performance, range = [4, 65_536],
+                vanilla = 64;
+        }
+        /// Autosave without tick spikes: a save round captures the changed chunks after the
+        /// world tick from the tick's remaining time, spread over as many ticks as needed.
+        storage_autosave: StorageAutosaveRules = "storage.autosave" {
+            /// Most microseconds of one tick spent capturing chunks for a save round; only the
+            /// time left in the tick is used. ~380 chunks fit into the default.
+            tick_budget: u32 = "tick-budget", Performance, range = [100, 10_000], vanilla = 500;
+            /// Chunks captured per tick even when the tick has no time left, so a round ends
+            /// on an overloaded server.
+            min_chunks_per_tick: u32 = "min-chunks-per-tick", Performance, range = [1, 1024],
+                vanilla = 16;
         }
         /// Automatic backups: zip archives of the world, made in the background from a fresh
         /// save while the server runs. Vanilla has none.
@@ -131,6 +185,17 @@ rules! {
             allow_direct_connections: bool = "allow-direct-connections", Setting, restart = true,
                 vanilla = false;
         }
+        /// Clients of older Minecraft versions (`vanillite-multiversion`): their packets are
+        /// translated to the server's version and back, like with ViaVersion.
+        multiversion: MultiversionRules = "multiversion" {
+            /// Older versions whose clients may join: `"all"` (every version this build
+            /// translates, currently 1.20.5 to 26.2), `"none"`, or a comma-separated list of
+            /// releases such as `"1.21.4, 26.2"` (a release accepts every release of its
+            /// protocol). Clients of the server's own version are not translated and pay
+            /// nothing.
+            versions: String = "versions", Setting, restart = true,
+                vanilla = String::from("all");
+        }
         /// Native plugins in `plugins/`: packages with a `plugin.toml` and a library built
         /// against the plugin API. Plugins are trusted code with the server's rights.
         plugins: PluginRules = "plugins" {
@@ -159,6 +224,11 @@ rules! {
             /// Require an Xbox Live login. Off accepts any identity a client claims: only for
             /// tests on closed networks.
             online_mode: bool = "online-mode", Security, restart = true, vanilla = true;
+            /// Oldest Bedrock network protocol that may join. 0 accepts every Bedrock version
+            /// this build supports (listed at startup); e.g. 2225 admits only Bedrock 1.26.60
+            /// and newer.
+            min_protocol: u32 = "min-protocol", Setting, range = [0, 100_000], restart = true,
+                vanilla = 0;
             /// Prefix of Bedrock players' Java names, so they never collide with Java accounts.
             /// Bedrock players get the UUID `00000000-0000-0000-xxxx-xxxxxxxxxxxx` of their XUID
             /// (like Floodgate); whitelist and operators use that UUID.

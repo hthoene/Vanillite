@@ -480,7 +480,7 @@ fn split(t: &mut Tick<'_, '_>) {
         let old = t.mob_ref();
         let mut new = MobData::new(kind, seed);
         for e in old.effects.iter() {
-            crate::effect::add(&mut new, *e);
+            crate::effect::living::add_to_mob(&mut new, e.clone());
         }
         new.left_handed = old.left_handed;
         new.no_ai = old.no_ai;
@@ -946,7 +946,7 @@ pub fn goal_can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
                 && (t.on_ground()
                     || m.fluids.in_water()
                     || m.fluids.in_lava()
-                    || m.effects.has(crate::effect::id::LEVITATION))
+                    || m.effects.has(crate::effect::MobEffect::LEVITATION))
         }
         Goal::CubeKeepOnJumping => t.ents.vehicle_of(t.id).is_none(),
         Goal::SulfurTempt { player, calm_down } => {

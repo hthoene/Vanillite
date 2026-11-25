@@ -339,7 +339,7 @@ pub fn convert_to(
     new.y_body_rot = old.y_body_rot;
     new.last_hurt_by_player_time = old.last_hurt_by_player_time;
     for e in old.effects.iter() {
-        crate::effect::add(&mut new, *e);
+        crate::effect::living::add_to_mob(&mut new, e.clone());
     }
     if old.baby {
         set_baby(&mut new, true);
@@ -453,6 +453,7 @@ pub fn simple_table_loot(
         enchantment_level: &none,
         item_in_tag: &in_tag,
         explosion_radius: None,
+        this_present: false,
         entity: None,
         block_entity: None,
     };
@@ -808,7 +809,7 @@ pub fn add_effect(
     effect: crate::effect::EffectInstance,
 ) {
     if let Some(m) = ents.mob_mut(target) {
-        crate::effect::add(m, effect);
+        crate::effect::living::add_to_mob(m, effect);
     }
 }
 

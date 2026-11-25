@@ -4,22 +4,27 @@
 //! from the bottom of the overworld, the scenario's game rules on top of the recorder's
 //! defaults, and the region's chunks plus one chunk around them forced (entity ticking). A
 //! step runs the simulation phases of `ServerLevel.tick` in Vanilla's order, then the
-//! connection tick of the players (`ServerPlayer.doTick`).
+//! connection tick of the players (`ServerPlayer.doTick`). Chunks are saved to and loaded from
+//! memory in the Anvil format, so unloading and loading them goes through the real chunk and
+//! entity records.
 //!
 //! Entities: the mob, arrow and orb tick and what it queues (explosions, block changes, drops)
 //! work like `vanillite-server`'s world (`mobs.rs`, `survival.rs`); keep them in step. The
 //! survival random of the server world is the level random here, as in Vanilla (one
 //! `Level.random`).
 
-use std::io;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::{Map, Value, json};
+use vanillite_base::hash::FxHashMap;
 use vanillite_base::random::LegacyRandom;
 use vanillite_base::{BlockPos, ChunkPos, Vec3};
 use vanillite_chunk::ProtoChunk;
-use vanillite_chunk::slots::{ChunkStorage, FlatGenerator, LightEngine, Neighbours, WorldInfo};
+use vanillite_chunk::light::LightNibbles;
+use vanillite_chunk::slots::{
+    FlatGenerator, LightEngine, LightEngineProvider, MemoryStore, Neighbours, WorldInfo,
+};
 use vanillite_data::block::{BlockId, BlockState};
 use vanillite_data::entity::{EntityTypeId, ids};
 use vanillite_game::block::Behaviours;
@@ -29,6 +34,7 @@ use vanillite_game::level::explosion::BlockInteraction;
 use vanillite_game::level::{Level, LevelOutput, LevelSettings, update};
 use vanillite_game::mob::common::CommonGoal;
 use vanillite_game::mob::fam::FamGoal;
+use vanillite_game::minecart::{self, MinecartKind};
 use vanillite_game::mob::goals::{Goal, MeleeKind, Slot};
 use vanillite_game::mob::movement::{MoveGoal, RemoveSounds};
 use vanillite_game::mob::{
@@ -45,7 +51,10 @@ use vanillite_game::survival::damage::{DamageSource, DamageTypes};
 use vanillite_game::survival::player::{self as survival_player, Env};
 use vanillite_game::survival::rules::{Difficulty, GameRules, Rule};
 use vanillite_protocol::SharedPacket;
-use vanillite_world::chunks::{ChunkSettings, ChunkSlots, Chunks, InlineExecutor};
+use vanillite_storage::{AnvilCodec, Compression};
+use vanillite_world::chunks::{
+    ChunkSettings, ChunkSlots, Chunks, InlineExecutor, TicketId, Visibility,
+};
 use vanillite_world::entity::{EntityId, NetworkIds, Rotation};
 use vanillite_world::ticks::LevelTicks;
 
@@ -58,20 +67,8 @@ const MIN_Y: i32 = -64;
 const HEIGHT: u32 = 384;
 /// `ChunkLevel.byStatus(ENTITY_TICKING)`: the level of a forced chunk.
 const FORCED_LEVEL: u8 = 31;
-
-struct NoStorage;
-
-impl ChunkStorage for NoStorage {
-    fn load(&self, positions: &[ChunkPos], out: &mut Vec<io::Result<Option<ProtoChunk>>>) {
-        out.extend(positions.iter().map(|_| Ok(None)));
-    }
-    fn save(&self, chunks: &[Arc<ProtoChunk>], out: &mut Vec<io::Result<()>>) {
-        out.extend(chunks.iter().map(|_| Ok(())));
-    }
-    fn flush(&self) -> io::Result<()> {
-        Ok(())
-    }
-}
+/// Chunk runtime ticks [`GameWorld::set_forced`] runs at most to settle.
+const SETTLE_LIMIT: usize = 1000;
 
 /// No lighting, for scenarios that do not need it (see [`WorldSpec::light`]).
 struct NoLight;
@@ -142,6 +139,10 @@ fn install() {
 /// A headless level over flat chunks.
 pub struct GameWorld {
     level: Level,
+    /// The forced tickets (loading and simulation) per chunk.
+    forced: FxHashMap<ChunkPos, (TicketId, TicketId)>,
+    /// Runs the light engine (scenarios that observe light).
+    light: bool,
     network_ids: Arc<NetworkIds>,
     mobs: MobContext,
     rules: GameRules,
@@ -182,38 +183,19 @@ impl GameWorld {
                 .default_state();
             layers.extend(std::iter::repeat_n(state.0, *height as usize));
         }
-        let light_info = info.clone();
+        let codec = AnvilCodec::new(&info, Compression::None);
         let slots = ChunkSlots {
-            storage: Arc::new(NoStorage),
+            store: Arc::new(MemoryStore::default()),
+            codec: Arc::new(codec),
             generator: Arc::new(FlatGenerator::new(&info, &layers)),
             light: if spec.light {
-                Arc::new(vanillite_light::BfsLightEngine::new(&light_info))
+                vanillite_light::BfsLightEngineProvider.create(&info)
             } else {
                 Arc::new(NoLight)
             },
             executor: Arc::new(InlineExecutor),
         };
-        let mut chunks = Chunks::new(info, ChunkSettings::default(), slots);
-        let mut forced = Vec::new();
-        // Like the recorder: the region's chunks and one more around them.
-        let (min, max) = spec.region;
-        for cx in (min.x >> 4) - 1..=(max.x >> 4) + 1 {
-            for cz in (min.z >> 4) - 1..=(max.z >> 4) + 1 {
-                let pos = ChunkPos::new(cx, cz);
-                chunks.add_ticket(pos, FORCED_LEVEL);
-                chunks.add_simulation_ticket(pos, FORCED_LEVEL);
-                forced.push(pos);
-            }
-        }
-        for i in 0.. {
-            if forced.iter().all(|&c| chunks.is_block_ticking(c)) {
-                break;
-            }
-            if i == 1000 {
-                return Err("the scenario region does not become ticking".to_owned());
-            }
-            chunks.tick();
-        }
+        let chunks = Chunks::new(info, ChunkSettings::default(), slots);
         let mut settings = LevelSettings::default();
         let mut rules = GameRules::default();
         apply_rules(&mut settings, &mut rules, &spec.rules)?;
@@ -234,8 +216,10 @@ impl GameWorld {
         };
         // The world starts at day time 0 unless the scenario sets one; time does not advance.
         let env = Environment::overworld(spec.time.unwrap_or(0), 0.0, 0.0);
-        Ok(Self {
+        let mut world = Self {
             level,
+            forced: FxHashMap::default(),
+            light: spec.observe_light,
             network_ids,
             mobs: MobContext::default(),
             rules,
@@ -244,7 +228,21 @@ impl GameWorld {
             effects: Vec::new(),
             names: Vec::new(),
             seed: spec.seed,
-        })
+        };
+        world
+            .set_forced(&spec.forced, true)
+            .map_err(|_| "the scenario region does not become ticking".to_owned())?;
+        Ok(world)
+    }
+
+    /// Whether the chunk system is settled around the forced chunks: every chunk is visible
+    /// as its ticket level says, and nothing is loading, generating or waiting to unload.
+    fn settled(&self) -> bool {
+        let chunks = &self.level.chunks;
+        chunks.is_idle()
+            && self.forced.keys().all(|&pos| {
+                chunks.visibility(pos) == Visibility::Ticking && chunks.is_block_ticking(pos)
+            })
     }
 
     /// [`crate::world::WorldFactory`] of the game world.
@@ -270,6 +268,7 @@ impl GameWorld {
             let level = &self.level;
             let blocks = ChunkBlocks(&level.chunks);
             let raining = |_| false;
+            let mut no_gateway = |_| false;
             let mut env = Env {
                 types,
                 facts,
@@ -280,6 +279,7 @@ impl GameWorld {
                 min_y: MIN_Y,
                 dimension: "minecraft:overworld",
                 raining_at: &raining,
+                enter_gateway: &mut no_gateway,
                 random: &mut random,
                 out: &mut self.effects,
                 hooks: &vanillite_game::hooks::NoHooks,
@@ -297,8 +297,12 @@ impl GameWorld {
         let has_players = !self.level.entities.players.is_empty();
         self.mobs
             .begin_tick(self.env, MobSettings::default(), has_players);
+        minecart::players_push(&mut self.level.entities);
         let mut cursor = self.level.entities.store.tick_cursor();
         while let Some(id) = self.level.entities.store.next_to_tick(&mut cursor) {
+            if !vanillite_game::entities::in_ticking_range(&self.level, id) {
+                continue;
+            }
             let Some(mut entity) = self.level.entities.store.get_mut(id) else {
                 continue;
             };
@@ -318,7 +322,15 @@ impl GameWorld {
                 continue;
             }
             let is_mob = is_mob_kind(kind);
-            if !is_mob && kind != ids::ARROW && kind != ids::EXPERIENCE_ORB {
+            let is_special = mob::boss::special::is_special_kind(kind);
+            let is_minecart = MinecartKind::of(kind).is_some();
+            if !is_mob
+                && !is_special
+                && !is_minecart
+                && kind != ids::ARROW
+                && kind != ids::EXPERIENCE_ORB
+                && kind != ids::AREA_EFFECT_CLOUD
+            {
                 continue;
             }
             if !self
@@ -327,13 +339,21 @@ impl GameWorld {
             {
                 continue;
             }
+            if kind == ids::EXPERIENCE_ORB {
+                vanillite_game::entities::tick_entity(&mut self.level, id, kind);
+                continue;
+            }
             self.with_env(|level, ents, env, cx| {
                 if is_mob {
                     mob::tick(level, ents, env, cx, id);
+                } else if is_special {
+                    mob::boss::special::tick(level, ents, env, cx, id);
+                } else if is_minecart {
+                    minecart::tick(level, ents, env, cx, id);
                 } else if kind == ids::ARROW {
                     projectile::tick_arrow(level, ents, env, cx, id);
                 } else {
-                    projectile::tick_orb(level, ents, env, cx, id);
+                    vanillite_game::effect::cloud::tick(level, ents, env, cx, id);
                 }
             });
             if !self.mobs.actions.is_empty() {
@@ -353,29 +373,7 @@ impl GameWorld {
         for action in std::mem::take(&mut self.mobs.actions) {
             match action {
                 WorldAction::Explode(e) => {
-                    let decay = if e.mob {
-                        Rule::MOB_EXPLOSION_DROP_DECAY
-                    } else {
-                        Rule::TNT_EXPLOSION_DROP_DECAY
-                    };
-                    let interaction = if e.mob && !self.rules.bool(Rule::MOB_GRIEFING) {
-                        BlockInteraction::Keep
-                    } else if self.rules.bool(decay) {
-                        BlockInteraction::DestroyWithDecay
-                    } else {
-                        BlockInteraction::Destroy
-                    };
-                    self.level.explode_with(
-                        e.source,
-                        e.indirect.or(e.source),
-                        e.pos,
-                        e.radius,
-                        interaction,
-                        vanillite_game::level::explosion::ExplosionStyle {
-                            resistance: e.resistance,
-                            ..Default::default()
-                        },
-                    );
+                    e.run(&mut self.level, &self.rules);
                     self.explosion_hurts();
                 }
                 WorldAction::ExplodeWith {
@@ -397,37 +395,8 @@ impl GameWorld {
                     self.explosion_hurts();
                 }
                 WorldAction::Level(action) => action.apply(&mut self.level),
-                WorldAction::SetBlock(pos, block, flags) => {
-                    self.level.set_block(pos, block, flags);
-                }
-                WorldAction::DestroyBlock(pos, drop) => {
-                    self.level.destroy_block(pos, drop, None);
-                }
-                WorldAction::LevelEvent(event, pos, data) => {
-                    self.level.level_event(None, event, pos, data);
-                }
-                WorldAction::SetDoorOpen(pos, open, source) => {
-                    vanillite_game::block::redstone::set_door_open(
-                        &mut self.level,
-                        pos,
-                        open,
-                        source,
-                    );
-                }
-                WorldAction::WindBurst(b) => {
-                    self.level.explode_with(
-                        b.source,
-                        None,
-                        b.pos,
-                        b.radius,
-                        BlockInteraction::TriggerBlock,
-                        vanillite_game::level::explosion::ExplosionStyle {
-                            damages_entities: false,
-                            knockback: b.knockback,
-                            wind_sound: Some(b.sound),
-                            ..Default::default()
-                        },
-                    );
+                other => {
+                    other.apply_to_level(&mut self.level);
                 }
             }
         }
@@ -459,6 +428,10 @@ impl GameWorld {
                     }
                 };
                 source.position.get_or_insert(hurt.center);
+                if ents.minecart(hurt.target).is_some() {
+                    minecart::hurt(ents, env, cx, hurt.target, source, hurt.amount);
+                    continue;
+                }
                 combat::hurt(level, ents, env, cx, hurt.target, source, hurt.amount);
             }
         });
@@ -475,6 +448,18 @@ impl GameWorld {
     /// other effects go to clients nobody has.
     fn spawn_drops(&mut self) {
         for effect in std::mem::take(&mut self.effects) {
+            if let Effect::Experience { pos, amount } = effect {
+                vanillite_game::experience_orb::with_entity_random(|random| {
+                    vanillite_game::experience_orb::award_in(
+                        &mut self.level.entities,
+                        &self.network_ids,
+                        random,
+                        pos,
+                        vanillite_base::Vec3::default(),
+                        amount,
+                    );
+                });
+            }
             if let Effect::DropItem {
                 uuid,
                 pos,
@@ -562,6 +547,7 @@ impl GameWorld {
             inventory: vanillite_game::inventory::PlayerInventory::default(),
             last_equipment: std::array::from_fn(|_| vanillite_game::item::ItemStack::EMPTY),
             survival: vanillite_game::survival::player::Survival::default(),
+            recipe_book: vanillite_game::recipe::book::PlayerRecipeBook::default(),
         };
         let rot = Rotation {
             y_rot: spec.rot[0],
@@ -576,6 +562,27 @@ impl GameWorld {
     }
 
     fn add_mob(&mut self, spec: &EntitySpec, index: usize) -> Result<(), String> {
+        if let Some(kind) = EntityTypeId::by_name(&spec.kind).and_then(MinecartKind::of) {
+            let rot = Rotation {
+                y_rot: spec.rot[0],
+                x_rot: spec.rot[1],
+                y_head_rot: spec.rot[0],
+            };
+            let pos = Vec3::new(spec.pos[0], spec.pos[1], spec.pos[2]);
+            let id = minecart::spawn(
+                &mut self.level.entities,
+                &self.network_ids,
+                spec.uuid(index),
+                pos,
+                rot,
+                minecart::MinecartData::new(kind, spec.seed),
+            );
+            if let (Some(m), Some(mut e)) = (spec.motion, self.level.entities.store.get_mut(id)) {
+                e.set_velocity(Vec3::new(m[0], m[1], m[2]));
+            }
+            self.names.push((id, spec.name.clone()));
+            return Ok(());
+        }
         let kind = EntityTypeId::by_name(&spec.kind)
             .and_then(Kind::of)
             .ok_or_else(|| format!("{}: no mob behaviour in Vanillite", spec.kind))?;
@@ -654,6 +661,9 @@ impl GameWorld {
         };
         if let Some(p) = ents.player(id) {
             living(&mut d, rot.y_rot, p.survival.health, p.survival.death_time);
+        }
+        if ents.minecart(id).is_some() {
+            d.insert("rot".into(), json!([bits(rot.y_rot), bits(rot.x_rot)]));
         }
         if let Some(m) = ents.mob(id) {
             living(&mut d, m.y_body_rot, m.health, m.death_time);
@@ -991,6 +1001,35 @@ fn apply_rules(
 }
 
 impl ScenarioWorld for GameWorld {
+    fn is_loaded(&self, pos: BlockPos) -> bool {
+        self.level.is_loaded(pos)
+    }
+
+    fn set_forced(&mut self, chunks: &[ChunkPos], forced: bool) -> Result<(), String> {
+        for &pos in chunks {
+            let runtime = &mut self.level.chunks;
+            if forced {
+                self.forced.entry(pos).or_insert_with(|| {
+                    (
+                        runtime.add_ticket(pos, FORCED_LEVEL),
+                        runtime.add_simulation_ticket(pos, FORCED_LEVEL),
+                    )
+                });
+            } else if let Some((ticket, simulation)) = self.forced.remove(&pos) {
+                runtime.remove_ticket(ticket);
+                runtime.remove_simulation_ticket(simulation);
+            }
+        }
+        for _ in 0..SETTLE_LIMIT {
+            // The chunk system only: no game tick.
+            self.level.tick_chunk_runtime();
+            if self.settled() {
+                return Ok(());
+            }
+        }
+        Err("the chunk system does not settle".to_owned())
+    }
+
     fn set_block_raw(&mut self, pos: BlockPos, state: BlockState) {
         self.level
             .set_block(pos, state, update::CLIENTS | update::KNOWN_SHAPE);
@@ -1055,6 +1094,27 @@ impl ScenarioWorld for GameWorld {
         );
     }
 
+    fn light(&mut self, min: BlockPos, max: BlockPos, out: &mut Vec<u8>) {
+        if !self.light {
+            return;
+        }
+        let chunks = &mut self.level.chunks;
+        chunks.flush_light();
+        let layers = HEIGHT as usize / 16 + 2;
+        let mut storing = std::collections::HashMap::new();
+        for y in min.y..=max.y {
+            for z in min.z..=max.z {
+                for x in min.x..=max.x {
+                    let pos = BlockPos::new(x, y, z);
+                    let storing = storing
+                        .entry(pos.chunk())
+                        .or_insert_with(|| storing_sections(chunks, pos.chunk(), layers));
+                    out.push(visible_light(chunks, storing, pos));
+                }
+            }
+        }
+    }
+
     fn entities(&self, min: BlockPos, max: BlockPos, out: &mut Vec<EntityObs>) {
         let core = self.level.entities.store.columns();
         for row in 0..core.id.len() {
@@ -1115,6 +1175,69 @@ impl ScenarioWorld for GameWorld {
         self.spawn_drops();
         Ok(())
     }
+
+    fn effect(&mut self, effect: &crate::scenario::EffectOp) -> Result<(), String> {
+        let target = self.named(&effect.entity)?;
+        let kind = vanillite_game::effect::MobEffect::by_name(&effect.effect)
+            .ok_or_else(|| format!("unknown effect {}", effect.effect))?;
+        let instance =
+            vanillite_game::effect::EffectInstance::new(kind, effect.duration, effect.amplifier);
+        self.with_env(|level, ents, env, cx| {
+            vanillite_game::effect::living::add_to_entity(level, ents, env, cx, target, instance);
+        });
+        self.finish_removals();
+        self.spawn_drops();
+        Ok(())
+    }
+}
+
+/// Whether Vanilla keeps light data for each light section of a chunk (index 0 is the layer
+/// below the world): those within one section in every direction of a non-air section
+/// (`LayerLightSectionStorage.updateSectionStatus`).
+fn storing_sections(chunks: &Chunks, pos: ChunkPos, layers: usize) -> Vec<bool> {
+    let mut storing = vec![false; layers];
+    for dz in -1..=1 {
+        for dx in -1..=1 {
+            let Some(chunk) = chunks.chunk(ChunkPos::new(pos.x + dx, pos.z + dz)) else {
+                continue;
+            };
+            for (section, s) in chunk.chunk.sections().iter().enumerate() {
+                if !s.summary().is_empty() {
+                    // Section `section` is light layer `section + 1`.
+                    let end = (section + 3).min(layers);
+                    storing[section..end].fill(true);
+                }
+            }
+        }
+    }
+    storing
+}
+
+/// The light a client sees at `pos` as `sky << 4 | block`: the stored levels in sections with
+/// light data; elsewhere no block light and the sky light of the bottom row of the next section
+/// with data above, or full sky light (`SkyLightSectionStorage.getLightValue`).
+fn visible_light(chunks: &Chunks, storing: &[bool], pos: BlockPos) -> u8 {
+    let Some(chunk) = chunks.chunk(pos.chunk()) else {
+        return 0;
+    };
+    let light = chunk.chunk.light();
+    let (x, y, z) = (
+        (pos.x & 15) as u32,
+        (pos.y & 15) as u32,
+        (pos.z & 15) as u32,
+    );
+    let sky_at = |layer: usize, y: u32| match &light.sky()[layer] {
+        LightNibbles::Absent => 15,
+        data => data.get(x, y, z),
+    };
+    let layer = ((pos.y - MIN_Y) >> 4) as usize + 1;
+    if storing[layer] {
+        return (sky_at(layer, y) << 4) | light.block()[layer].get(x, y, z);
+    }
+    let sky = (layer + 1..storing.len())
+        .find(|&l| storing[l])
+        .map_or(15, |l| sky_at(l, 0));
+    sky << 4
 }
 
 fn inside(p: BlockPos, min: BlockPos, max: BlockPos) -> bool {

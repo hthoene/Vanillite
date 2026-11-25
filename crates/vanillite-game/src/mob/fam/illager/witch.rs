@@ -11,7 +11,7 @@ use super::super::super::{MobData, Tick, living, missile, projectile};
 use super::potion::{self, Potion};
 use super::raider::{self, Ignore};
 use super::{Gate, Goal, dirty, fam, is_raider, look_at_player, sound, st, st_mut};
-use crate::effect::id;
+use crate::effect::MobEffect;
 use crate::item::EquipmentSlot;
 use crate::survival::damage::{DamageSource, DamageTypes, tag};
 
@@ -68,7 +68,7 @@ pub fn ai_step_start(t: &mut Tick<'_, '_>) {
                 && crate::item::item_id(&held).name() == "minecraft:potion"
             {
                 for e in p.effects() {
-                    crate::effect::add(t.mob(), e);
+                    crate::effect::living::add_to_mob(t.mob(), e);
                 }
             }
             if let Some(speed) = speed {
@@ -91,18 +91,18 @@ pub fn ai_step_start(t: &mut Tick<'_, '_>) {
         };
         let mut chosen = None;
         let has = |t: &Tick<'_, '_>, e| t.mob_ref().effects.has(e);
-        if t.mob().random.next_float() < 0.15 && in_water && !has(t, id::WATER_BREATHING) {
+        if t.mob().random.next_float() < 0.15 && in_water && !has(t, MobEffect::WATER_BREATHING) {
             chosen = Some(Potion::WaterBreathing);
         } else if t.mob().random.next_float() < 0.15
             && (on_fire || fire_damage)
-            && !has(t, id::FIRE_RESISTANCE)
+            && !has(t, MobEffect::FIRE_RESISTANCE)
         {
             chosen = Some(Potion::FireResistance);
         } else if t.mob().random.next_float() < 0.05 && hurt {
             chosen = Some(Potion::Healing);
         } else if t.mob().random.next_float() < 0.5
             && target.is_some()
-            && !has(t, id::SPEED)
+            && !has(t, MobEffect::SPEED)
             && target
                 .and_then(|id| t.other(id))
                 .is_some_and(|o| o.pos.distance_to_sqr(t.pos()) > 121.0)
@@ -190,11 +190,11 @@ pub fn perform_ranged_attack(t: &mut Tick<'_, '_>, target: EntityId) {
             Potion::Regeneration
         };
         t.mob().target = None;
-    } else if dist >= 8.0 && !has(id::SLOWNESS) {
+    } else if dist >= 8.0 && !has(MobEffect::SLOWNESS) {
         chosen = Potion::Slowness;
-    } else if target_health >= 8.0 && !has(id::POISON) {
+    } else if target_health >= 8.0 && !has(MobEffect::POISON) {
         chosen = Potion::Poison;
-    } else if dist <= 3.0 && !has(id::WEAKNESS) && t.mob().random.next_float() < 0.25 {
+    } else if dist <= 3.0 && !has(MobEffect::WEAKNESS) && t.mob().random.next_float() < 0.25 {
         chosen = Potion::Weakness;
     }
     let mut data = MissileData::new(MissileKind::SplashPotion);

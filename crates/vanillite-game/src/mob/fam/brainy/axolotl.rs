@@ -493,9 +493,9 @@ pub fn start(b: &mut Behavior, t: &mut Tick<'_, '_>, _now: i64) {
         let br = brain::brain(t);
         br.erase(M::WalkTarget);
         br.erase(M::LookTarget);
-        crate::effect::add(
+        crate::effect::living::add_to_mob(
             t.mob(),
-            crate::effect::EffectInstance::new(crate::effect::id::REGENERATION, 200, 0),
+            crate::effect::EffectInstance::new(crate::effect::MobEffect::REGENERATION, 200, 0),
         );
     }
 }

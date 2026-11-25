@@ -20,7 +20,7 @@ use super::super::super::{ExplosionRequest, WorldAction, atan2_deg, combat, is_w
 use super::potion::{self, Potion};
 use super::{is_illager, st};
 use crate::effect as effects;
-use crate::effect::{EffectInstance, id};
+use crate::effect::{EffectInstance, MobEffect};
 use crate::entities::Entities;
 use crate::level::Level;
 use crate::player::encode::DataWriter;
@@ -534,7 +534,7 @@ fn bullet_hit(t: &mut MissileTick<'_, '_>, d: &MissileData, hit: Hit) {
                 && let Some(m) = t.ents.mob_mut(target)
             {
                 // Players get levitation with the effect system (#74).
-                effects::add(m, EffectInstance::new(id::LEVITATION, 200, 0));
+                effects::living::add_to_mob(m, EffectInstance::new(MobEffect::LEVITATION, 200, 0));
             }
         }
         Hit::Block(..) => {
@@ -742,13 +742,13 @@ fn splash(t: &mut MissileTick<'_, '_>, d: &MissileData, p: Potion, at: Vec3) {
         }
         let scale = 1.0 - dist.sqrt() / 4.0;
         for effect in p.effects() {
-            if matches!(effect.effect, id::INSTANT_HEALTH | id::INSTANT_DAMAGE) {
+            if matches!(effect.effect, MobEffect::INSTANT_HEALTH | MobEffect::INSTANT_DAMAGE) {
                 instant(t, d, owner_id, target, effect, scale);
             } else if let Some(mob) = t.ents.mob_mut(target) {
                 #[allow(clippy::cast_possible_truncation)]
                 let duration = (scale * f64::from(effect.duration) + 0.5) as i32;
                 if duration > 20 {
-                    effects::add(mob, EffectInstance { duration, ..effect });
+                    effects::living::add_to_mob(mob, EffectInstance { duration, ..effect });
                 }
             }
             // Players get the lasting effects with the effect system (#74).
@@ -766,11 +766,11 @@ fn instant(
     effect: EffectInstance,
     scale: f64,
 ) {
-    let harm = effect.effect == id::INSTANT_DAMAGE;
+    let harm = effect.effect == MobEffect::INSTANT_DAMAGE;
     let undead = t
         .ents
         .mob(target)
-        .is_some_and(|m| !effects::can_be_affected(m, id::REGENERATION));
+        .is_some_and(|m| effects::inverted_heal_and_harm(m.kind.type_id()));
     let amp = u32::try_from(effect.amplifier.clamp(0, 20)).unwrap_or(0);
     if harm == undead {
         #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]

@@ -61,8 +61,9 @@ impl LightFacts {
         Self::light(state).1.max(1)
     }
 
+    /// The occlusion shape of a state, as an index (0: none for light).
     #[inline]
-    fn shape_of(&self, state: u16) -> usize {
+    pub(crate) fn shape_of(&self, state: u16) -> usize {
         usize::from(self.shape.get(usize::from(state)).copied().unwrap_or(0))
     }
 

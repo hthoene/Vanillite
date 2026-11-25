@@ -20,7 +20,6 @@ pub fn drop_resources(
     state: BlockState,
     breaker: Option<EntityId>,
 ) {
-    let _ = breaker;
     if !level.settings.block_drops {
         return;
     }
@@ -33,7 +32,7 @@ pub fn drop_resources(
     let components = |id: u16| {
         entity
             .as_ref()
-            .and_then(|e| super::container::component(e, id))
+            .and_then(|e| crate::level::block_entity::collect_component(e, id))
     };
     let item_in_tag = |item: u16, tag: &str| data.item_in_tag(item, tag);
     let loot = BlockLootContext {
@@ -42,6 +41,7 @@ pub fn drop_resources(
         enchantment_level: &|_| 0,
         item_in_tag: &item_in_tag,
         explosion_radius: None,
+        this_present: breaker.is_some(),
         entity: None,
         block_entity: Some(&components),
     };
@@ -61,6 +61,7 @@ pub fn explosion_loot(
     pos: BlockPos,
     state: BlockState,
     radius: Option<f32>,
+    source: Option<EntityId>,
     out: &mut Vec<ItemStack>,
 ) {
     let Some(data) = crate::player::play::game_data() else {
@@ -80,6 +81,7 @@ pub fn explosion_loot(
         enchantment_level: &|_| 0,
         item_in_tag: &item_in_tag,
         explosion_radius: radius,
+        this_present: source.is_some(),
         entity: None,
         block_entity: Some(&components),
     };

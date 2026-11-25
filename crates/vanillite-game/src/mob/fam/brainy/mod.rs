@@ -283,7 +283,7 @@ pub fn finalize_child_from_breeding(t: &mut Tick<'_, '_>, partner: EntityId) {
     if t.env.rules.bool(crate::survival::rules::Rule::MOB_DROPS) {
         let xp = t.mob().random.next_int_bounded(7) + 1;
         let pos = t.pos();
-        crate::mob::combat::award_experience(t.level, t.ents, t.env.random, pos, xp);
+        crate::mob::combat::award_experience(t.env, pos, xp);
     }
 }
 
@@ -334,6 +334,7 @@ pub fn gift_loot(t: &mut Tick<'_, '_>, table: &str) -> Vec<ItemStack> {
         enchantment_level: &none,
         item_in_tag: &in_tag,
         explosion_radius: None,
+        this_present: true,
         entity: Some(&entity),
         block_entity: None,
     };

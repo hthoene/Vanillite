@@ -32,10 +32,6 @@ pub struct GameData {
     pub enchantments: HashMap<String, u32>,
     /// Item tags: tag id → item ids.
     pub item_tags: HashMap<String, Vec<u16>>,
-    /// Recipes.
-    pub recipes: crate::recipe::Recipes,
-    /// Enchantment data.
-    pub enchanting: crate::enchant::Enchanting,
     /// Entity type tags: tag id → entity type ids.
     pub entity_tags: HashMap<String, Vec<u16>>,
     /// The combat effects of the enchantments, by registry id.
@@ -44,6 +40,14 @@ pub struct GameData {
     pub enderman_holdable: Vec<u16>,
     /// Block tags: tag id → sorted block ids.
     pub block_tags: HashMap<String, Vec<u16>>,
+    /// Recipes.
+    pub recipes: crate::recipe::Recipes,
+    /// Enchantment data.
+    pub enchanting: crate::enchant::Enchanting,
+    /// The `minecraft:banner_pattern` registry.
+    pub banner_patterns: crate::menu::BannerPatterns,
+    /// The tags of the registries: registry → tag id (without `#`) → entry ids in tag order.
+    pub registry_tags: HashMap<String, HashMap<String, Vec<u32>>>,
     /// The `minecraft:trial_spawner` registry.
     pub trial_spawner_configs: crate::block::trial_spawner::TrialConfigs,
 }
@@ -92,6 +96,31 @@ impl GameData {
     pub fn item_in_tag(&self, item: u16, tag: &str) -> bool {
         self.item_tags.get(tag).is_some_and(|v| v.contains(&item))
     }
+
+    /// One holder set entry of `registry` (`"ns:id"` or `"#ns:tag"`) as entry ids, in tag
+    /// order; unknown entries give none.
+    pub fn holder_set(&self, registry: &str, entry: &str) -> Vec<u32> {
+        if let Some(tag) = entry.strip_prefix('#') {
+            return self
+                .registry_tags
+                .get(registry)
+                .and_then(|tags| tags.get(tag))
+                .cloned()
+                .unwrap_or_default();
+        }
+        if registry == "minecraft:enchantment" {
+            return self.enchantments.get(entry).copied().into_iter().collect();
+        }
+        if let Some(r) = vanillite_data::registry::Registry::by_name(registry) {
+            return r.id(entry).map(u32::from).into_iter().collect();
+        }
+        use vanillite_protocol::components_nbt::RegistryNames;
+        vanillite_protocol::item::InstalledRegistries
+            .entry_id(registry, entry)
+            .and_then(|id| u32::try_from(id).ok())
+            .into_iter()
+            .collect()
+    }
 }
 
 /// The acting player.
@@ -121,8 +150,10 @@ pub struct Actor {
     pub permission_level: u8,
     /// Whether the player's eyes are in water.
     pub eyes_in_water: bool,
-    /// The status effects that change the mining speed.
-    pub dig: crate::inventory::DigEffects,
+    /// `MobEffectUtil.getDigSpeedAmplification` when Haste or Conduit Power is active.
+    pub dig_speed: Option<i32>,
+    /// The amplifier of Mining Fatigue, if active.
+    pub mining_fatigue: Option<i32>,
 }
 
 impl Actor {
@@ -144,6 +175,14 @@ impl Actor {
         let max = self.block_range() + buffer;
         aabb_distance_sqr(&Aabb::of_block(pos), self.eye()) < max * max
     }
+
+    /// `isWithinEntityInteractionRange(box, buffer)`: the entity range is 3, plus 2 in
+    /// creative.
+    pub fn within_entity_range(&self, aabb: &Aabb, buffer: f64) -> bool {
+        let range = if self.creative() { 5.0 } else { 3.0 };
+        let max = range + buffer;
+        aabb_distance_sqr(aabb, self.eye()) < max * max
+    }
 }
 
 /// `AABB.distanceToSqr(Vec3)`.
@@ -162,6 +201,8 @@ pub struct PlayContext<'a> {
     pub inventory: &'a mut PlayerInventory,
     /// The player's experience (`None` in tests).
     pub xp: Option<&'a mut crate::survival::player::Experience>,
+    /// The player's recipe book (`None` in tests).
+    pub recipe_book: Option<&'a mut crate::recipe::book::PlayerRecipeBook>,
     /// The player.
     pub actor: Actor,
     /// Gameplay data.
@@ -338,12 +379,30 @@ fn destroy_progress(ctx: &PlayContext<'_>, state: BlockState) -> f32 {
         tool,
         state,
         efficiency,
-        ctx.actor.dig,
+        ctx.actor.dig_speed,
+        ctx.actor.mining_fatigue,
         submerged,
         ctx.actor.on_ground,
     );
     let modifier = if correct { 30.0 } else { 100.0 };
     player_speed / speed / modifier
+}
+
+/// `Player.getDestroySpeed`'s effect part: Haste / Conduit Power speed it up by 20 % per level,
+/// Mining Fatigue slows it to `0.3^(level)`.
+pub fn dig_effects(speed: f32, dig_speed: Option<i32>, fatigue: Option<i32>) -> f32 {
+    let mut speed = speed;
+    if let Some(amplification) = dig_speed {
+        #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
+        let factor = 1.0 + (amplification as f32 + 1.0) * 0.2;
+        speed *= factor;
+    }
+    if let Some(amplifier) = fatigue {
+        #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+        let scale = 0.3_f64.powi(amplifier.saturating_add(1)) as f32;
+        speed *= scale;
+    }
+    speed
 }
 
 /// `(int)(progress * 10.0F)`.
@@ -602,6 +661,19 @@ impl Digging {
                 );
             }
         }
+        // `ShulkerBoxBlock.playerWillDestroy`: the loot table is rolled for the player (in
+        // creative by `isEmpty`, without the player).
+        if crate::block::container::kind_of(state.block())
+            == Some(crate::block::container::Kind::ShulkerBox)
+            && let Some(level) = ctx.level.level_mut()
+        {
+            let player = if ctx.actor.creative() {
+                None
+            } else {
+                ctx.actor.entity
+            };
+            crate::block::chest_loot::unpack(level, pos, player);
+        }
         // The block entity as `playerDestroy` sees it (captured before the removal).
         let entity = ctx
             .level
@@ -843,6 +915,20 @@ impl Digging {
             }
             return true;
         }
+        let used = item::item_id(&stack);
+        if used == vanillite_data::item::ids::FLINT_AND_STEEL
+            || used == vanillite_data::item::ids::ENDER_EYE
+        {
+            // `ItemStack.useOn`: adventure players cannot build.
+            if ctx.actor.game_mode == GameMode::Adventure {
+                return false;
+            }
+            return if used == vanillite_data::item::ids::FLINT_AND_STEEL {
+                self.use_flint_and_steel(ctx, hand, pos, face)
+            } else {
+                use_ender_eye(ctx, hand, pos)
+            };
+        }
         let Some(_block) = item::item_id(&stack).block() else {
             // Non-block items (buckets, tools on blocks, spawn eggs, ...) come later.
             return false;
@@ -879,8 +965,20 @@ impl Digging {
         };
         let requests = level.take_menu_requests();
         let editors = level.take_sign_editors();
+        let gives = level.take_player_gives();
         for request in requests {
             open_menu(ctx, request, sink);
+        }
+        for (player, mut stack) in gives {
+            if Some(player) == ctx.actor.entity {
+                let infinite = ctx.actor.creative();
+                if !ctx.inventory.add(None, &mut stack, infinite) {
+                    ctx.drops.push(Drop {
+                        stack,
+                        thrown: false,
+                    });
+                }
+            }
         }
         for (player, pos, front) in editors {
             if Some(player) == ctx.actor.entity {
@@ -892,6 +990,57 @@ impl Digging {
                 );
             }
         }
+    }
+
+    /// `FlintAndSteelItem.useOn`: lights a campfire, candle or candle cake, or places fire
+    /// against the clicked face (lighting a nether portal frame).
+    fn use_flint_and_steel(
+        &mut self,
+        ctx: &mut PlayContext<'_>,
+        hand: Hand,
+        pos: BlockPos,
+        face: Direction,
+    ) -> bool {
+        let state = ctx.level.block(pos);
+        let lightable = can_light(state);
+        let target = if lightable { pos } else { relative(pos, face) };
+        if !lightable {
+            // `BaseFireBlock.canBePlacedAt`.
+            let reader = LevelReader(&*ctx.level);
+            let fire = place::fire_state(&reader, target);
+            let forward = place::horizontal_direction_of(ctx.actor.y_rot);
+            let placeable = ctx.level.block(target).is_air()
+                && (place::can_survive(fire, target, &reader)
+                    || ctx.level.lights_portal(target, forward));
+            if !placeable {
+                return false;
+            }
+        }
+        let pitch = ctx.level.random_float() * 0.4 + 0.8;
+        let sound = vanillite_data::registry::SOUND_EVENT
+            .id("minecraft:item.flintandsteel.use")
+            .unwrap_or(0);
+        ctx.level.play_sound(
+            Some(ctx.actor.network_id),
+            Vec3::new(
+                f64::from(target.x) + 0.5,
+                f64::from(target.y) + 0.5,
+                f64::from(target.z) + 0.5,
+            ),
+            sound,
+            SoundSource::Blocks,
+            1.0,
+            pitch,
+        );
+        let new_state = if lightable {
+            state.with("lit", "true").unwrap_or(state)
+        } else {
+            place::fire_state(&LevelReader(&*ctx.level), target)
+        };
+        ctx.level
+            .set_block(target, new_state, update::ALL_IMMEDIATE);
+        hurt_and_break(ctx, hand, 1);
+        true
     }
 
     /// `BlockItem.place`.
@@ -968,8 +1117,9 @@ impl Digging {
             && placed.block() == state.block()
         {
             // `BlockItem.updateCustomBlockEntityTag` and `Block.setPlacedBy`.
-            crate::block::container::apply_item_components(level, target, stack);
+            crate::level::block_entity::apply_components(level, target, stack);
             crate::block::redstone::set_placed_by(level, placed, target);
+            crate::block::crafter::set_placed_by(level, placed, target);
             if placed.block() == vanillite_data::block::ids::TRIPWIRE_HOOK {
                 crate::block::tripwire::hook_set_placed_by(level, target, placed);
             }
@@ -1084,6 +1234,84 @@ fn open_menu(
     crate::menu::container::open(ctx.inventory, level, request, who, ctx.drops, sink);
 }
 
+/// `CampfireBlock.canLight`, `CandleBlock.canLight` and `CandleCakeBlock.canLight`: an unlit
+/// (and, for campfires and candles, dry) one.
+fn can_light(state: BlockState) -> bool {
+    let blocks = &vanillite_worldgen::behaviour::tags().blocks;
+    let unlit = state.value("lit") == Some("false");
+    let dry = state.value("waterlogged") == Some("false");
+    if blocks.campfires.contains(state) || blocks.candles.contains(state) {
+        unlit && dry
+    } else {
+        blocks.candle_cakes.contains(state) && unlit
+    }
+}
+
+/// `EnderEyeItem.useOn`: an eye into an empty End portal frame.
+fn use_ender_eye(ctx: &mut PlayContext<'_>, hand: Hand, pos: BlockPos) -> bool {
+    let state = ctx.level.block(pos);
+    if state.block() != vanillite_data::block::ids::END_PORTAL_FRAME
+        || state.value("eye") != Some("false")
+    {
+        return false;
+    }
+    let filled = state.with("eye", "true").unwrap_or(state);
+    // `Block.pushEntitiesUp` comes with entity collisions.
+    ctx.level.set_block(pos, filled, update::CLIENTS);
+    if !ctx.actor.creative() {
+        let slot = match hand {
+            Hand::MainHand => ctx.inventory.selected_item_mut(),
+            Hand::OffHand => Some(&mut ctx.inventory.offhand),
+        };
+        if let Some(slot) = slot {
+            slot.shrink(1);
+        }
+    }
+    // The comparators, the eye's particles and sound (1503), then the portal.
+    ctx.level.end_portal_frame_filled(pos);
+    true
+}
+
+/// `ItemStack.hurtAndBreak(amount, player, hand)`: the item in `hand` loses durability (the
+/// unbreaking enchantment may save each point); creative players' items do not.
+fn hurt_and_break(ctx: &mut PlayContext<'_>, hand: Hand, amount: i32) {
+    if ctx.actor.creative() {
+        return;
+    }
+    let stack = match hand {
+        Hand::MainHand => ctx.inventory.selected_item().clone(),
+        Hand::OffHand => ctx.inventory.offhand.clone(),
+    };
+    if stack.is_empty() || !item::is_damageable(&stack) {
+        return;
+    }
+    let unbreaking = ctx.data.enchantment_level(&stack, "minecraft:unbreaking");
+    let mut damage: i32 = 0;
+    for _ in 0..amount {
+        #[allow(clippy::as_conversions)]
+        let chance = 1.0 / (unbreaking.max(0) as f32 + 1.0);
+        if unbreaking <= 0 || ctx.level.random_float() < chance {
+            damage = damage.saturating_add(1);
+        }
+    }
+    let slot = match hand {
+        Hand::MainHand => ctx.inventory.selected_item_mut(),
+        Hand::OffHand => Some(&mut ctx.inventory.offhand),
+    };
+    let Some(tool) = slot else {
+        return;
+    };
+    if damage == 0 {
+        return;
+    }
+    let new_damage = item::damage(tool).saturating_add(damage);
+    if new_damage >= item::max_damage(tool) {
+        tool.shrink(1);
+    } else {
+        item::set_damage(tool, new_damage);
+    }
+}
+
 /// `blockActionRestricted`: spectators never, adventure players only with `can_break`
 /// (not evaluated yet, so never).
 fn block_action_restricted(ctx: &PlayContext<'_>) -> bool {
@@ -1094,7 +1322,10 @@ fn block_action_restricted(ctx: &PlayContext<'_>) -> bool {
 }
 
 /// `BlockItem.updateBlockStateFromTag`: the `block_state` component sets properties.
-fn apply_block_state_component(stack: &ItemStack, state: BlockState) -> Option<BlockState> {
+pub(crate) fn apply_block_state_component(
+    stack: &ItemStack,
+    state: BlockState,
+) -> Option<BlockState> {
     let data = stack.component(ids::BLOCK_STATE)?;
     let mut r = Reader::new(data);
     let n = r.varint().ok()?;
@@ -1122,13 +1353,15 @@ fn drop_resources(
         let data = ctx.data;
         let enchantment_level = |name: &str| data.enchantment_level(tool, name);
         let item_in_tag = |item: u16, tag: &str| data.item_in_tag(item, tag);
-        let components = |id: u16| entity.and_then(|e| crate::block::container::component(e, id));
+        let components =
+            |id: u16| entity.and_then(|e| crate::level::block_entity::collect_component(e, id));
         let loot = BlockLootContext {
             state,
             tool,
             enchantment_level: &enchantment_level,
             item_in_tag: &item_in_tag,
             explosion_radius: None,
+            this_present: true,
             entity: None,
             block_entity: Some(&components),
         };

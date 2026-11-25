@@ -607,7 +607,7 @@ impl MenuSlots for PlayerInventory {
     fn on_take(
         &mut self,
         slot: usize,
-        _taken: &ItemStack,
+        _taken: &mut ItemStack,
         ctx: ClickContext,
         drops: &mut Vec<Drop>,
     ) {
@@ -670,54 +670,18 @@ impl MenuSlots for PlayerInventory {
     }
 }
 
-/// The status effects that change a player's mining speed.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct DigEffects {
-    /// `MobEffectUtil.getDigSpeedAmplification` when haste or conduit power is active.
-    pub haste: Option<i32>,
-    /// The mining fatigue amplifier.
-    pub fatigue: Option<i32>,
-}
-
-impl DigEffects {
-    /// The dig effects among `effects`.
-    pub fn of(effects: &crate::effect::MobEffects) -> DigEffects {
-        static CONDUIT: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
-        let conduit = *CONDUIT.get_or_init(|| crate::effect::id("minecraft:conduit_power"));
-        let haste = effects.amplifier(crate::effect::ids::haste());
-        let power = effects.amplifier(conduit);
-        DigEffects {
-            haste: (haste.is_some() || power.is_some())
-                .then(|| haste.unwrap_or(0).max(power.unwrap_or(0))),
-            fatigue: effects.amplifier(crate::effect::ids::mining_fatigue()),
-        }
-    }
-
-    /// The haste and mining fatigue factors of `getDestroySpeed` applied to `speed`.
-    pub fn apply(self, mut speed: f32) -> f32 {
-        if let Some(amplifier) = self.haste {
-            #[allow(clippy::as_conversions, clippy::cast_precision_loss)]
-            let factor = 1.0 + (amplifier.saturating_add(1)) as f32 * 0.2;
-            speed *= factor;
-        }
-        if let Some(amplifier) = self.fatigue {
-            #[allow(clippy::cast_possible_truncation)]
-            let scale = 0.3_f64.powf(f64::from(amplifier.saturating_add(1))) as f32;
-            speed *= scale;
-        }
-        speed
-    }
-}
-
 /// `Player.getDestroySpeed` without attributes other than the enchantment-driven ones the
-/// caller passes: `efficiency` level, the dig effects, whether the player is in water without
-/// aqua affinity, and whether it stands on the ground.
+/// caller passes: `efficiency` level, the dig effects (Haste / Conduit Power amplification,
+/// Mining Fatigue amplifier), whether the player is in water without aqua affinity, and whether
+/// it stands on the ground.
+#[allow(clippy::too_many_arguments)]
 pub fn destroy_speed(
     tools: &ToolTable,
     stack: &ItemStack,
     state: vanillite_data::block::BlockState,
     efficiency: i32,
-    dig: DigEffects,
+    dig_speed: Option<i32>,
+    mining_fatigue: Option<i32>,
     submerged_penalty: bool,
     on_ground: bool,
 ) -> f32 {
@@ -729,7 +693,7 @@ pub fn destroy_speed(
         let bonus = bonus as f32;
         speed += bonus;
     }
-    speed = dig.apply(speed);
+    speed = crate::player::play::dig_effects(speed, dig_speed, mining_fatigue);
     if submerged_penalty {
         speed *= 0.2;
     }
@@ -743,10 +707,6 @@ pub fn destroy_speed(
 
 use vanillite_nbt::{Compound, List, Tag};
 
-/// Key of a stack's component patch in saved data: the patch in the delimited wire form.
-/// Vanilla readers ignore it and see the item and count.
-const PATCH_KEY: &str = "vanillite:patch";
-
 /// Equipment keys of Vanilla's `equipment` compound with their inventory index.
 const EQUIPMENT_KEYS: [(&str, usize); 5] = [
     ("feet", 36),
@@ -756,59 +716,7 @@ const EQUIPMENT_KEYS: [(&str, usize); 5] = [
     ("offhand", OFFHAND),
 ];
 
-/// A stack as saved NBT (`ItemStack.CODEC`: id, count and the patch).
-pub fn stack_to_nbt(stack: &ItemStack) -> Compound {
-    let mut c = Compound::new();
-    c.insert(
-        "id",
-        vanillite_data::registry::ITEM
-            .name(stack.item)
-            .unwrap_or("minecraft:air"),
-    );
-    c.insert("count", stack.count);
-    if stack.patch().is_some() {
-        let mut bytes = Vec::new();
-        stack.encode_untrusted(&mut bytes);
-        // Drop the count and item id: only the patch is stored.
-        let mut r = vanillite_protocol::codec::Reader::new(&bytes);
-        if r.varint().is_ok() && r.varint().is_ok() {
-            let patch: Vec<i8> = r
-                .take_rest()
-                .iter()
-                .map(|b| i8::from_ne_bytes([*b]))
-                .collect();
-            c.insert(PATCH_KEY, patch);
-        }
-    }
-    c
-}
-
-/// A stack from saved NBT.
-pub fn stack_from_nbt(c: &Compound) -> ItemStack {
-    let Some(id) = c
-        .get("id")
-        .and_then(Tag::as_str)
-        .and_then(|n| vanillite_data::registry::ITEM.id(n))
-    else {
-        return ItemStack::EMPTY;
-    };
-    let count = c
-        .get("count")
-        .and_then(Tag::as_i64)
-        .and_then(|v| i32::try_from(v).ok())
-        .unwrap_or(1);
-    let plain = ItemStack::new(id, count.clamp(1, 99));
-    let Some(Tag::ByteArray(patch)) = c.get(PATCH_KEY) else {
-        return plain;
-    };
-    let mut bytes = Vec::with_capacity(patch.len() + 8);
-    vanillite_protocol::codec::write_varint(&mut bytes, plain.count);
-    vanillite_protocol::codec::write_varint(&mut bytes, i32::from(id));
-    bytes.extend(patch.iter().map(|b| b.to_ne_bytes()[0]));
-    let mut r = vanillite_protocol::codec::Reader::new(&bytes);
-    ItemStack::decode_untrusted(&mut r, &vanillite_protocol::item::InstalledRegistries)
-        .unwrap_or(plain)
-}
+pub use crate::item_nbt::{stack_from_nbt, stack_to_nbt};
 
 impl PlayerInventory {
     /// Writes Vanilla's `Inventory`, `SelectedItemSlot` and `equipment` into `out`.

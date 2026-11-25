@@ -9,7 +9,7 @@ use vanillite_protocol::packets::play::clientbound::{DamageEvent, EntityEvent};
 use vanillite_world::entity::{EntityFlags, EntityId, Pose};
 
 use super::living::event;
-use super::{Kind, MobContext, kinds, projectile};
+use super::{Kind, MobContext, kinds};
 use crate::entities::Entities;
 use crate::level::Level;
 use crate::survival::damage::{DamageKind, DamageSource, tag};
@@ -112,7 +112,7 @@ fn invulnerable_to(ents: &Entities, env: &Env<'_>, target: EntityId, kind: Damag
     };
     m.removed
         || types.is(kind, tag::IS_FIRE)
-            && (e.kind().info().fire_immune || m.effects.has(crate::effect::id::FIRE_RESISTANCE))
+            && (e.kind().info().fire_immune || m.effects.has(crate::effect::MobEffect::FIRE_RESISTANCE))
         || types.is(kind, tag::IS_FALL) && m.kind.fall_damage_immune()
 }
 
@@ -142,6 +142,9 @@ pub fn hurt_mob(
         return false;
     };
     if m.is_dead_or_dying() {
+        return false;
+    }
+    if types.is(kind, tag::IS_FIRE) && m.effects.has(crate::effect::MobEffect::FIRE_RESISTANCE) {
         return false;
     }
     let mob_kind = m.kind;
@@ -268,6 +271,16 @@ pub fn hurt_mob(
     if let Some(m) = ents.mob_mut(target) {
         m.last_damage = Some((kind, env.game_time));
     }
+    // `onMobHurt` of the effects (Infested).
+    let view = ents.store.get(target).map(|e| (e.rot(), e.dims().height));
+    if let Some((rot, height)) = view
+        && let Some(m) = ents.mob_mut(target).filter(|m| !m.effects.is_empty())
+    {
+        let look = crate::effect::living::view_vector(rot.x_rot, rot.y_rot);
+        let fx = std::mem::take(&mut m.effects);
+        crate::effect::living::on_hurt(&fx, &mut m.random, env.random, pos, height, look, env.out);
+        m.effects = fx;
+    }
     // What the kinds' `hurtServer` overrides do after `super.hurtServer` (even when it died).
     if mob_kind.family() == super::Family::Classic {
         if mob_kind == Kind::Enderman {
@@ -348,17 +361,20 @@ fn actually_hurt(
         let (armor, toughness) = (m.attrs.armor as f32, m.attrs.armor_toughness as f32);
         damage = crate::survival::combat::damage_after_absorb(damage, armor, toughness);
     }
-    // `getDamageAfterMagicAbsorb`: resistance, then the kind's own resistances.
-    if let Some(a) = m.effects.amplifier(crate::effect::id::RESISTANCE)
-        && !types.is(source.kind, tag::BYPASSES_RESISTANCE)
-    {
-        let level = (a + 1) * 5;
-        #[allow(clippy::cast_precision_loss)]
-        {
-            damage = (damage * (25 - level) as f32 / 25.0).max(0.0);
+    // `getDamageAfterMagicAbsorb`: Resistance.
+    if !types.is(source.kind, tag::BYPASSES_EFFECTS) {
+        if !types.is(source.kind, tag::BYPASSES_RESISTANCE) {
+            damage = m.effects.resistance_damage(damage);
+        }
+        if damage <= 0.0 {
+            damage = 0.0;
         }
     }
     damage = super::fam::absorb(m, &source, env, damage);
+    // Absorption takes the damage first.
+    let remaining = (damage - m.absorption).max(0.0);
+    m.absorption -= damage - remaining;
+    let damage = remaining;
     if damage != 0.0 {
         m.health = (m.health - damage).max(0.0);
         if let Some(mut e) = ents.store.get_mut(target) {
@@ -471,7 +487,7 @@ fn die(
         }
     }
     if !consumed && (killed_by_player && env.rules.bool(Rule::MOB_DROPS)) && reward > 0 {
-        award_experience(level, ents, env.random, pos, reward);
+        award_experience(env, pos, reward);
     }
     env.out.push(Effect::Tracking {
         entity: target,
@@ -486,27 +502,9 @@ fn die(
     }
 }
 
-/// `ExperienceOrb.getExperienceValue`: the largest orb size not above `max`.
-pub fn experience_value(max: i32) -> i32 {
-    const SIZES: [i32; 10] = [2477, 1237, 617, 307, 149, 73, 37, 17, 7, 3];
-    SIZES.into_iter().find(|&s| max >= s).unwrap_or(1)
-}
-
-/// `ExperienceOrb.award`: splits `amount` into orbs, merging into orbs of the same value
-/// nearby.
-pub fn award_experience(
-    level: &Level,
-    ents: &mut Entities,
-    random: &mut LegacyRandom,
-    pos: Vec3,
-    amount: i32,
-) {
-    let mut amount = amount;
-    while amount > 0 {
-        let value = experience_value(amount);
-        amount -= value;
-        projectile::add_experience_orb(level, ents, random, pos, value);
-    }
+/// `ExperienceOrb.award`: the world splits `amount` into orbs from the [`Effect::Experience`].
+pub fn award_experience(env: &mut Env<'_>, pos: Vec3, amount: i32) {
+    env.out.push(Effect::Experience { pos, amount });
 }
 
 /// Plays a mob's sound at its position with its volume and voice pitch (`makeSound`).
@@ -652,6 +650,7 @@ fn table_loot(
         enchantment_level: &none,
         item_in_tag: &in_tag,
         explosion_radius: None,
+        this_present: true,
         entity: Some(&entity),
         block_entity: None,
     };

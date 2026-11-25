@@ -65,6 +65,12 @@ impl PlayLevel for TestLevel {
     fn random_int(&mut self, _: i32) -> i32 {
         0
     }
+
+    fn lights_portal(&self, _: BlockPos, _: vanillite_base::Direction) -> bool {
+        false
+    }
+
+    fn end_portal_frame_filled(&mut self, _: BlockPos) {}
 }
 
 #[derive(Default)]
@@ -101,7 +107,8 @@ fn actor(game_mode: GameMode) -> Actor {
         game_mode,
         permission_level: 0,
         eyes_in_water: false,
-        dig: crate::inventory::DigEffects::default(),
+        dig_speed: None,
+        mining_fatigue: None,
     }
 }
 
@@ -120,6 +127,7 @@ fn with_ctx(
     let mut ctx = PlayContext {
         hooks: &crate::hooks::NoHooks,
         xp: None,
+        recipe_book: None,
         level,
         inventory: &mut inventory,
         actor: actor(game_mode),

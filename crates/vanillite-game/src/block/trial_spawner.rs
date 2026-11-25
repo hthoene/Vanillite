@@ -22,7 +22,7 @@ use super::spawner::{
     SpawnData, SpawnPotentials, center, create_mob, custom_rules_valid, entity_place_event,
     fixed_pos, mob_spawn_checks, no_collision_at, random_spawn_pos, spawner_spawn_rules,
 };
-use crate::effect::{EffectInstance, ids as effects};
+use crate::effect::{EffectInstance, MobEffect};
 use crate::item::ItemStack;
 use crate::level::block_entity::BlockEntity;
 use crate::level::{Level, SOUND_BLOCKS as SOUND, update};
@@ -617,10 +617,10 @@ fn player_with_ominous_effect(level: &Level, players: &[Detected]) -> Option<(En
         let Some(p) = level.entities.player(id) else {
             continue;
         };
-        if p.survival.effects.has(effects::trial_omen()) {
+        if p.survival.effects.has(MobEffect::TRIAL_OMEN) {
             return Some((id, true));
         }
-        if p.survival.effects.has(effects::bad_omen()) {
+        if p.survival.effects.has(MobEffect::BAD_OMEN) {
             bad_omen = Some((id, false));
         }
     }
@@ -632,25 +632,18 @@ fn bad_omen_to_trial_omen(level: &mut Level, player: EntityId) {
     let Some(amplifier) = level
         .entities
         .player(player)
-        .and_then(|p| p.survival.effects.amplifier(effects::bad_omen()))
+        .and_then(|p| p.survival.effects.amplifier(MobEffect::BAD_OMEN))
     else {
         return;
     };
     let amplifier = amplifier + 1;
     let duration = 18000 * amplifier;
-    let ents = &mut level.entities;
-    if ents.store.get(player).is_some() {
-        let crate::entities::Entities { store, players, .. } = ents;
-        if let Some(e) = store.get_mut(player) {
-            let row = e.as_ref().kind_row();
-            if let Some(p) = players.get_mut(row) {
-                crate::survival::player::remove_effect(&e, p, effects::bad_omen());
-            }
-        }
+    if let Some(p) = level.entities.player_mut(player) {
+        p.survival.effects.remove(MobEffect::BAD_OMEN);
     }
     level.entities.add_effect(
         player,
-        EffectInstance::new(effects::trial_omen(), duration, 0),
+        EffectInstance::new(MobEffect::TRIAL_OMEN, duration, 0),
         true,
     );
 }

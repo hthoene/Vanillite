@@ -19,7 +19,7 @@ use vanillite_world::entity::{EntityId, Pose, Rotation};
 use self::anger::{AngerLevel, AngerManagement, SuspectState};
 use super::data;
 use crate::block::sculk_vibration::{self, Listenable, Vibration, VibrationData};
-use crate::effect::{EffectInstance, ids as effects};
+use crate::effect::{EffectInstance, MobEffect};
 use crate::entities::Entities;
 use crate::level::Level;
 use crate::level::game_event::{GameEventContext, Listener, containing};
@@ -341,8 +341,14 @@ pub fn apply_darkness_around(
     radius: f64,
 ) {
     let _ = source;
-    let darkness =
-        EffectInstance::with_flags(effects::darkness(), DARKNESS_DURATION, 0, false, false);
+    let darkness = EffectInstance::with_flags(
+        MobEffect::DARKNESS,
+        DARKNESS_DURATION,
+        0,
+        false,
+        false,
+        false,
+    );
     let mut targets = Vec::new();
     for (id, p) in ents.players.iter() {
         if !matches!(p.game_mode, GameMode::Survival | GameMode::Adventure) {
@@ -362,7 +368,7 @@ pub fn apply_darkness_around(
         }
     }
     for id in targets {
-        ents.add_effect(id, darkness, true);
+        ents.add_effect(id, darkness.clone(), true);
     }
 }
 

@@ -9,7 +9,7 @@ use vanillite_nbt::{Compound, Tag};
 use vanillite_world::entity::{EntityFlags, EntityId};
 
 use super::{Goal, SEA_LEVEL, add_effect, rotlerp, st, st_mut};
-use crate::effect::id as effect;
+use crate::effect::MobEffect;
 use crate::item::ItemStack;
 use crate::level::Level;
 use crate::mob::animal::{Interaction, fill_held};
@@ -553,7 +553,7 @@ pub(super) fn puffer_ai_step(t: &mut Tick<'_, '_>) {
         }
         let source = combat::entity_source(t.ents, t.env.types.mob_attack, t.id, t.id);
         if combat::hurt(t.level, t.ents, t.env, t.cx, id, source, damage) {
-            add_effect(t.ents, id, effect::POISON, 60 * puff, 0);
+            add_effect(t.ents, id, MobEffect::POISON, 60 * puff, 0);
             if !is_player {
                 crate::mob::kinds::play_sound(t, "minecraft:entity.puffer_fish.sting", 1.0, 1.0);
             }
