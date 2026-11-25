@@ -1050,7 +1050,7 @@ pub fn is_valid_spawn(_level: &Level, state: BlockState, type_id: EntityTypeId) 
 
 /// `BlockState.isValidSpawn` for a mob: a sturdy top face that is not too bright, except
 /// the blocks that never let mobs spawn on them.
-fn valid_spawn_floor(state: BlockState, type_id: EntityTypeId) -> bool {
+pub fn valid_spawn_floor(state: BlockState, type_id: EntityTypeId) -> bool {
     let name = state.block().name();
     if name.ends_with("glass")
         || name.ends_with("glass_pane")
@@ -1236,7 +1236,7 @@ pub fn heightmap_y(level: &Level, kind: HeightmapKind, x: i32, z: i32) -> i32 {
     surface_y(level, kind, x, z)
 }
 
-fn surface_y(level: &Level, kind: HeightmapKind, x: i32, z: i32) -> i32 {
+pub fn surface_y(level: &Level, kind: HeightmapKind, x: i32, z: i32) -> i32 {
     let Some(c) = level.chunks.chunk(ChunkPos::new(x >> 4, z >> 4)) else {
         return level.min_y();
     };

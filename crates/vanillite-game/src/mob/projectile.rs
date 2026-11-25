@@ -455,7 +455,7 @@ pub fn tick_arrow(
 }
 
 /// `Projectile.lerpRotation`.
-fn lerp_rotation(old: f32, new: f32) -> f32 {
+pub fn lerp_rotation(old: f32, new: f32) -> f32 {
     let mut old = old;
     while new - old < -180.0 {
         old -= 360.0;

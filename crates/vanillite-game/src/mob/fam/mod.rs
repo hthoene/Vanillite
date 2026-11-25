@@ -363,6 +363,8 @@ pub trait FamilyHooks {
     fn before_tick(_t: &mut Tick<'_, '_>) {}
     /// Work after `LivingEntity.tick`.
     fn after_tick(_t: &mut Tick<'_, '_>) {}
+    /// The kind's `aiStep` override before it calls `super.aiStep()`.
+    fn ai_step_start(_t: &mut Tick<'_, '_>) {}
     /// The kind's additions at the end of `aiStep`.
     fn ai_step(_t: &mut Tick<'_, '_>) {}
     /// `customServerAiStep` (runs after the goals and navigation).
@@ -391,10 +393,12 @@ pub trait FamilyHooks {
     }
     /// The end of `baseTick` (`WaterAnimal.handleAirSupply`).
     fn after_base_tick(_t: &mut Tick<'_, '_>) {}
-    /// The start of `aiStep`, before `super.aiStep()` (fish flopping on land).
-    fn ai_step_start(_t: &mut Tick<'_, '_>) {}
     /// `thunderHit`: `true` when the kind handles the lightning strike itself.
     fn thunder_hit(_h: &mut Hurt<'_, '_>) -> bool {
+        false
+    }
+    /// `isImmobile` besides being dead (a roaring or stunned ravager): no AI and no input.
+    fn is_immobile(_m: &MobData) -> bool {
         false
     }
     /// `causeFallDamage` additions (the fall distance).
@@ -659,6 +663,9 @@ pub fn before_tick(t: &mut Tick<'_, '_>) {
 pub fn after_tick(t: &mut Tick<'_, '_>) {
     by_family!(t.mob_ref().kind, (), after_tick(t));
 }
+pub fn ai_step_start(t: &mut Tick<'_, '_>) {
+    by_family!(t.mob_ref().kind, (), ai_step_start(t));
+}
 pub fn ai_step(t: &mut Tick<'_, '_>) {
     by_family!(t.mob_ref().kind, (), ai_step(t));
 }
@@ -683,11 +690,11 @@ pub fn look_control(t: &mut Tick<'_, '_>) -> bool {
 pub fn after_base_tick(t: &mut Tick<'_, '_>) {
     by_family!(t.mob_ref().kind, (), after_base_tick(t));
 }
-pub fn ai_step_start(t: &mut Tick<'_, '_>) {
-    by_family!(t.mob_ref().kind, (), ai_step_start(t));
-}
 pub fn thunder_hit(h: &mut Hurt<'_, '_>, kind: Kind) -> bool {
     by_family!(kind, false, thunder_hit(h))
+}
+pub fn is_immobile(m: &MobData) -> bool {
+    by_family!(m.kind, false, is_immobile(m))
 }
 pub fn on_fall_damage(t: &mut Tick<'_, '_>, distance: f64) {
     by_family!(t.mob_ref().kind, (), on_fall_damage(t, distance));
