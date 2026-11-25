@@ -607,10 +607,9 @@ impl WorldMobs {
         use vanillite_game::mob::fam::illager::patrol::{self, PatrolInput};
         use vanillite_game::mob::fam::undead::phantom;
         let rest = |id: EntityId| {
-            level
-                .entities
-                .player(id)
-                .map_or(0, |p| p.survival.time_since_rest)
+            level.entities.player(id).map_or(0, |p| {
+                p.stats.get(vanillite_game::stats::custom::TIME_SINCE_REST)
+            })
         };
         let rests: Vec<(EntityId, i32)> = players.iter().map(|&(id, _)| (id, rest(id))).collect();
         let time_since_rest = |id: EntityId| rests.iter().find(|r| r.0 == id).map_or(0, |r| r.1);
