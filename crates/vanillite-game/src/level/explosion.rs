@@ -306,7 +306,10 @@ impl Level {
             // through the mob system, items here (`ItemEntity.hurtServer`: health 5).
             let is_boat = crate::vehicle::BoatKind::of(kind).is_some()
                 || crate::minecart::MinecartKind::of(kind).is_some();
-            if kind == entity_ids::ITEM && style.damages_entities {
+            // `ItemEntity.hurtServer`: a mob's explosion spares items without `mob_griefing`.
+            let mob_spared = !self.settings.mob_griefing
+                && indirect.is_some_and(|i| self.entities.mob(i).is_some());
+            if kind == entity_ids::ITEM && style.damages_entities && !mob_spared {
                 let double_radius = f64::from(double_radius);
                 let pow = (1.0 - dist) * f64::from(self.seen_percent(center, aabb));
                 #[allow(clippy::cast_possible_truncation)]
@@ -460,11 +463,10 @@ impl Level {
                 crate::block::beehive::anger_nearby_bees(self, pos);
             }
         }
-        // `Block.popResource` of the merged stacks.
-        if self.settings.block_drops {
-            for (pos, stack) in stacks {
-                drops::pop_resource(self, pos, stack);
-            }
+        // `Block.popResource` of the merged stacks (it draws the positions even without
+        // `block_drops`).
+        for (pos, stack) in stacks {
+            drops::pop_resource(self, pos, stack);
         }
     }
 

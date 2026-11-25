@@ -44,7 +44,7 @@ owner = "architect #120"
 
 [mob_copper_golem_chest]
 tick = 35
-cause = "the golem's random and the level random differ from tick 35 on, then no path to the chest on tick 36 (not analysed yet)"
+cause = "the golem and the level random differ from tick 35 on and it finds no path on tick 36 (since the shuffled gates of #60 draw from their own random tick 1 matches; not analysed yet)"
 owner = "gameplay-developer #81"
 
 [mob_copper_golem_wander]
@@ -79,8 +79,8 @@ owner = "architect #120"
 
 [mob_iron_golem_fight]
 tick = 10
-cause = "random draws of the iron golem differ from tick 10 on (not analysed yet)"
-owner = "architect #120"
+cause = "the iron golem draws fewer numbers from its random than Vanilla from tick 10 (the village goals of #60 fixed tick 1)"
+owner = "gameplay-developer #60"
 
 [mob_phantom_swoop]
 tick = 2

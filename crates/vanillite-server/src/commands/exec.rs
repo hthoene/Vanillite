@@ -143,7 +143,11 @@ pub(crate) fn game_mode(
                 true,
             );
         } else {
-            if let Some((sink, _)) = global.players.connection(Uuid(target.uuid)) {
+            let feedback = global
+                .level
+                .rules()
+                .bool(vanillite_game::survival::rules::Rule::SEND_COMMAND_FEEDBACK);
+            if feedback && let Some((sink, _)) = global.players.connection(Uuid(target.uuid)) {
                 sink.send(
                     &vanillite_protocol::packets::play::clientbound::SystemChat {
                         content: Component::translatable(
@@ -519,7 +523,7 @@ pub(crate) fn teleport(
 
 /// Moves a target of another world than the command's to `world` on the target's world
 /// thread (`Entity.teleportTo(level, ...)`).
-fn move_to_world(
+pub(crate) fn move_to_world(
     global: &Global,
     target: &Target,
     world: WorldId,

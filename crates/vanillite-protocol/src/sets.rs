@@ -160,6 +160,14 @@ packet_set! {
         Pong(play::serverbound::Pong),
         ResourcePack(play::serverbound::ResourcePack),
         SeenAdvancements(play::serverbound::SeenAdvancementsPacket),
+        PlayerAbilities(play::serverbound::PlayerAbilitiesServerbound),
+        ChangeDifficulty(play::serverbound::ChangeDifficultyServerbound),
+        LockDifficulty(play::serverbound::LockDifficulty),
+        ChangeGameMode(play::serverbound::ChangeGameMode),
+        SetGameRule(play::serverbound::SetGameRule),
+        BlockEntityTagQuery(play::serverbound::BlockEntityTagQuery),
+        EntityTagQuery(play::serverbound::EntityTagQuery),
+        TeleportToEntity(play::serverbound::TeleportToEntity),
     }
     unhandled Unhandled
 }

@@ -43,8 +43,9 @@ enum Remote {
     Placeholder,
     /// A stack the server sent.
     Stack(ItemStack),
-    /// The client's prediction from a click.
-    Hashed(HashedStack),
+    /// The client's prediction from a click (boxed: the slots of every menu of every player
+    /// are compared each tick, so the common variants stay small).
+    Hashed(Box<HashedStack>),
 }
 
 impl Remote {
@@ -788,10 +789,10 @@ pub fn receive_predictions(
             .ok()
             .and_then(|s| state.remote.get_mut(s))
         {
-            *r = Remote::Hashed(stack.clone());
+            *r = Remote::Hashed(Box::new(stack.clone()));
         }
     }
-    state.remote_carried = Remote::Hashed(carried.clone());
+    state.remote_carried = Remote::Hashed(Box::new(carried.clone()));
 }
 
 /// `sendAllDataToRemote`: all slots, the carried stack and the data slots.

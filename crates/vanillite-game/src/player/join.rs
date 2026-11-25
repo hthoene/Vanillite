@@ -59,16 +59,16 @@ pub fn game_mode(mode: ConfigGameMode) -> GameMode {
     }
 }
 
-/// `ClientboundPlayerAbilitiesPacket` for a game mode's default abilities
-/// (`GameType.updatePlayerAbilities`).
-fn abilities(mode: ConfigGameMode) -> PlayerAbilities {
+/// `ClientboundPlayerAbilitiesPacket` for a game mode's abilities
+/// (`GameType.updatePlayerAbilities`) and the flying state.
+fn abilities(mode: ConfigGameMode, flying: bool) -> PlayerAbilities {
     let flags = match mode {
         // invulnerable | may fly | instabuild
         ConfigGameMode::Creative => 1 | 4 | 8,
-        // invulnerable | flying | may fly
-        ConfigGameMode::Spectator => 1 | 2 | 4,
+        // invulnerable | may fly
+        ConfigGameMode::Spectator => 1 | 4,
         ConfigGameMode::Survival | ConfigGameMode::Adventure => 0,
-    };
+    } | if flying { 2 } else { 0 };
     PlayerAbilities {
         flags,
         flying_speed: 0.05,
@@ -89,14 +89,21 @@ pub fn set_game_mode(
     }
     player.previous_game_mode = Some(player.game_mode);
     player.game_mode = mode;
+    // `updatePlayerAbilities`: creative keeps the flying state.
+    match mode {
+        ConfigGameMode::Spectator => player.survival.flying = true,
+        ConfigGameMode::Survival | ConfigGameMode::Adventure => player.survival.flying = false,
+        ConfigGameMode::Creative => {}
+    }
+    let flying = player.survival.flying;
     let sink = player.connection.sink.as_ref();
-    sink.send(&abilities(mode));
+    sink.send(&abilities(mode, flying));
     broadcast_tab_list();
     sink.send(&GameEvent {
         event: GameEvent::CHANGE_GAME_MODE,
         param: game_mode_id(mode),
     });
-    sink.send(&abilities(mode));
+    sink.send(&abilities(mode, flying));
     true
 }
 
@@ -127,8 +134,9 @@ pub fn send_login(
     entity_id: i32,
     player: &PlayerData,
     enforces_secure_chat: bool,
-    show_death_screen: bool,
+    rules: &crate::survival::rules::GameRules,
 ) {
+    use crate::survival::rules::Rule;
     sink.send(&Login {
         entity_id,
         hardcore: level.hardcore,
@@ -136,9 +144,9 @@ pub fn send_login(
         max_players: level.max_players,
         chunk_radius: level.view_distance,
         simulation_distance: level.simulation_distance,
-        reduced_debug_info: false,
-        show_death_screen,
-        do_limited_crafting: false,
+        reduced_debug_info: rules.bool(Rule::REDUCED_DEBUG_INFO),
+        show_death_screen: !rules.bool(Rule::IMMEDIATE_RESPAWN),
+        do_limited_crafting: rules.bool(Rule::LIMITED_CRAFTING),
         spawn: spawn_info(level, player),
         online_mode: level.online_mode,
         enforces_secure_chat,
@@ -171,8 +179,8 @@ pub fn spawn_info(level: &LevelInfo, player: &PlayerData) -> SpawnInfo {
 }
 
 /// The player's abilities (`ClientboundPlayerAbilitiesPacket`).
-pub fn send_abilities(sink: &dyn PacketSink, mode: ConfigGameMode) {
-    sink.send(&abilities(mode));
+pub fn send_abilities(sink: &dyn PacketSink, mode: ConfigGameMode, flying: bool) {
+    sink.send(&abilities(mode, flying));
 }
 
 /// What `sendLevelInfo` sends of the world border and the server's tick state.

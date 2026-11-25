@@ -514,6 +514,7 @@ fn finish(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, u: UsingItem
                 entity: &mut entity,
                 player: data,
                 env: &mut *env,
+                players: None,
             };
             let mut roll = || crate::experience_orb::with_entity_random(|r| r.next_float());
             crate::effect::consume::on_consume(

@@ -20,7 +20,7 @@ use crate::mob::goals::{self, MeleeKind};
 use crate::mob::nav::{self, MoveKind, NavKind};
 use crate::mob::{Environment, Kind, MobData, Tick, kinds, randompos};
 use crate::player::encode::{DataWriter, serializer};
-use crate::survival::rules::Difficulty;
+use crate::survival::rules::{Difficulty, Rule};
 
 /// The state of a zombie (any `Zombie` subclass, the classic one included).
 #[derive(Clone, Debug, Default)]
@@ -1360,7 +1360,11 @@ pub fn reinforcements(h: &mut Hurt<'_, '_>) {
     let Some(m) = h.ents.mob_mut(h.target) else {
         return;
     };
-    if f64::from(m.random.next_float()) >= chance {
+    // `level.isSpawningMonsters()` after the chance roll.
+    if f64::from(m.random.next_float()) >= chance
+        || !h.env.rules.bool(Rule::SPAWN_MOBS)
+        || !h.env.rules.bool(Rule::SPAWN_MONSTERS)
+    {
         return;
     }
     let mut new = MobData::new(kind, crate::mob::new_entity_seed());
