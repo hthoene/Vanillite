@@ -225,6 +225,10 @@ pub struct Chunks {
     saving: FxHashMap<ChunkPos, Arc<ProtoChunk>>,
     unload_candidates: FxHashSet<ChunkPos>,
     relight: FxHashSet<ChunkPos>,
+    /// Centres of relights in flight; a centre changed again waits in `relight` until its
+    /// running relight is applied, so results of one centre never overtake each other.
+    /// Relights do not count against the job budget of loading and generation.
+    relighting: FxHashSet<ChunkPos>,
     /// Sections whose sky and block light changed, per full chunk.
     light_changes: FxHashMap<ChunkPos, LightChange>,
     block_changes: Vec<BlockPos>,
@@ -293,6 +297,7 @@ impl Chunks {
             saving: FxHashMap::default(),
             unload_candidates: FxHashSet::default(),
             relight: FxHashSet::default(),
+            relighting: FxHashSet::default(),
             light_changes: FxHashMap::default(),
             block_changes: Vec::new(),
             tick: 0,
@@ -637,7 +642,7 @@ impl Chunks {
                 }
             }
             Done::Relit { center, chunks } => {
-                self.in_flight -= 1;
+                self.relighting.remove(&center);
                 for chunk in chunks {
                     if chunk.pos.chessboard_distance(center) > 1 {
                         continue;
@@ -1082,7 +1087,7 @@ impl Chunks {
         }
         self.save_chunks(chunks);
         if flush {
-            while !self.saving.is_empty() || self.in_flight > 0 {
+            while !self.saving.is_empty() || self.in_flight > 0 || !self.relighting.is_empty() {
                 match self.done_rx.recv() {
                     Ok(done) => self.apply_done(done),
                     Err(_) => break,
@@ -1319,6 +1324,8 @@ impl Chunks {
     /// Recomputes the light around changed chunks now and applies the results that are done:
     /// with an inline executor, all of them (scenario worlds observe settled light).
     pub fn flush_light(&mut self) {
+        // Relights still to apply would hold back new ones of the same centres.
+        self.drain_done();
         self.start_relights();
         self.drain_done();
     }
@@ -1329,16 +1336,16 @@ impl Chunks {
             return;
         }
         let max = self.settings.max_relights.max(1);
-        let changed: Vec<ChunkPos> = if self.relight.len() <= max {
-            self.relight.drain().collect()
-        } else {
-            let some: Vec<ChunkPos> = self.relight.iter().copied().take(max).collect();
-            for pos in &some {
-                self.relight.remove(pos);
-            }
-            some
-        };
+        let changed: Vec<ChunkPos> = self
+            .relight
+            .iter()
+            .copied()
+            .filter(|pos| !self.relighting.contains(pos))
+            .take(max)
+            .collect();
         for center in changed {
+            self.relight.remove(&center);
+            self.relighting.insert(center);
             let mut area = Vec::with_capacity(25);
             for dz in -2..=2 {
                 for dx in -2..=2 {
@@ -1348,7 +1355,6 @@ impl Chunks {
                     }
                 }
             }
-            self.in_flight += 1;
             let light = Arc::clone(&self.slots.light);
             let tx = self.done_tx.clone();
             self.slots.executor.spawn(
