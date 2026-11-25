@@ -29,8 +29,17 @@ import net.minecraft.server.level.FullChunkStatus;
 import net.minecraft.server.level.ServerChunkCache;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ThreadedLevelLightEngine;
+import net.minecraft.tags.BlockTags;
+import net.minecraft.world.DifficultyInstance;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntitySpawnReason;
+import net.minecraft.world.entity.EntityTypes;
+import net.minecraft.world.entity.LightningBolt;
+import net.minecraft.world.entity.animal.equine.SkeletonHorse;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.BoneMealItem;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.block.Block;
@@ -38,6 +47,7 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.Property;
 import net.minecraft.world.level.entity.EntityTypeTest;
 import net.minecraft.world.level.entity.PersistentEntitySectionManager;
+import net.minecraft.world.level.gamerules.GameRules;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.ticks.LevelChunkTicks;
 import net.minecraft.world.ticks.LevelTicks;
@@ -54,13 +64,17 @@ import net.minecraft.world.ticks.ScheduledTick;
  * scenarios with {@code "light": true}, the settled sky and block light of the region.
  * Positions in chunks that are not accessible are recorded as {@link #UNLOADED}.
  *
+ * <p>The action {@code command} runs a command line as the server at the origin of the
+ * overworld.
+ *
  * <p>The actions {@code force} and {@code unforce} add or remove forced tickets of chunks and then
  * run the chunk system and the entity manager without a game tick until every chunk around the
  * scenario is loaded or unloaded, with its entities, as its ticket level says. The action {@code
  * restart} stops the server, which saves the world, and starts a new one on the saved world: its
  * saved chunk tickets come back and their chunks load before the next tick ({@code
  * prepareLevels}); the rules, time and difficulty are set again and the level random starts from
- * the seed.
+ * the seed. The action {@code bonemeal} uses bone meal on a block ({@code
+ * BoneMealItem.growCrop}).
  *
  * <p>Usage: {@code java -cp ... dev.vanillite.extractor.golden.ScenarioRecorder (<scenario.json>
  * <trace.json>)...}
@@ -134,6 +148,9 @@ public final class ScenarioRecorder {
       BlockPos min = pos(region.get(0));
       BlockPos max = pos(region.get(1));
       loadRegion(server, level, min, max);
+      // The warm-up takes as many ticks as the chunks need to load: the scenario starts at game
+      // time 0 instead, like Vanillite's new level (camels count their pose time from it).
+      server.getWorldData().overworldData().setGameTime(0);
       Area area = new Area(min, max);
 
       // The setup may draw from the level random (blocks that schedule a random delay when
@@ -200,10 +217,22 @@ public final class ScenarioRecorder {
                 level = server.level();
                 timeAndDifficulty(server, level, scenario);
                 level.getRandom().setSeed(seed);
+              } else if (op.equals("bonemeal")) {
+                // Bone meal used on the block (`BoneMealItem.growCrop`).
+                BoneMealItem.growCrop(new ItemStack(Items.BONE_MEAL), level, pos(action.get("pos")));
               } else if (op.equals("hurt")) {
                 entities.hurt(action);
-              } else if (action.get("op").getAsString().equals("effect")) {
+              } else if (op.equals("lightning")) {
+                strike(level, pos(action.get("pos")));
+              } else if (op.equals("effect")) {
                 entities.effect(action);
+              } else if (op.equals("command")) {
+                // As the server, at the origin of the overworld.
+                server
+                    .getCommands()
+                    .performPrefixedCommand(
+                        server.createCommandSourceStack().withPosition(Vec3.ZERO),
+                        action.get("command").getAsString());
               } else if (op.equals("throw_potion")) {
                 entities.throwPotion(action);
               } else {
@@ -369,6 +398,39 @@ public final class ScenarioRecorder {
       }
     }
     return null;
+  }
+
+  /**
+   * The {@code lightning} action: the strike of {@code ServerLevel.tickThunder} in the column of
+   * {@code column}, without its chance roll and the random column.
+   */
+  private static void strike(ServerLevel level, BlockPos column) throws Exception {
+    Method find = ServerLevel.class.getDeclaredMethod("findLightningTargetAround", BlockPos.class);
+    find.setAccessible(true);
+    BlockPos pos = (BlockPos) find.invoke(level, column);
+    if (!level.isRainingAt(pos)) {
+      return;
+    }
+    DifficultyInstance difficulty = level.getCurrentDifficultyAt(pos);
+    boolean isTrap =
+        level.getGameRules().get(GameRules.SPAWN_MOBS)
+            && level.getRandom().nextDouble() < difficulty.getEffectiveDifficulty() * 0.01
+            && !level.getBlockState(pos.below()).is(BlockTags.LIGHTNING_RODS);
+    if (isTrap) {
+      SkeletonHorse horse = EntityTypes.SKELETON_HORSE.create(level, EntitySpawnReason.EVENT);
+      if (horse != null) {
+        horse.setTrap(true);
+        horse.setAge(0);
+        horse.setPos(pos.getX(), pos.getY(), pos.getZ());
+        level.addFreshEntity(horse);
+      }
+    }
+    LightningBolt bolt = EntityTypes.LIGHTNING_BOLT.create(level, EntitySpawnReason.EVENT);
+    if (bolt != null) {
+      bolt.snapTo(Vec3.atBottomCenterOf(pos));
+      bolt.setVisualOnly(isTrap);
+      level.addFreshEntity(bolt);
+    }
   }
 
   private static void apply(ServerLevel level, JsonObject op, boolean action) throws Exception {

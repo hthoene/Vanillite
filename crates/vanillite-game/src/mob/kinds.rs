@@ -167,6 +167,8 @@ kinds! {
     Wither "wither" WITHER Boss;
     EnderDragon "ender_dragon" ENDER_DRAGON Boss;
     Warden "warden" WARDEN Boss;
+    Villager "villager" VILLAGER Village;
+    WanderingTrader "wandering_trader" WANDERING_TRADER Village;
 }
 
 /// The default sounds of a kind (`minecraft:entity.<name>.<suffix>`).
@@ -280,11 +282,12 @@ impl Kind {
         )
     }
 
-    /// `getMaxHeadXRot`: the pitch limit of `LookControl.setLookAt(x, y, z)`.
-    pub fn max_head_x_rot(self) -> f32 {
+    /// `getHeadRotSpeed`: the head turn speed of `LookControl.setLookAt(x, y, z)`.
+    pub fn head_rot_speed(self) -> f32 {
         match self {
-            Kind::Guardian | Kind::ElderGuardian => 180.0,
-            _ => 40.0,
+            Kind::Frog => 35.0,
+            Kind::Breeze => 25.0,
+            _ => 10.0,
         }
     }
 
@@ -304,6 +307,9 @@ impl Kind {
 
     /// `#burn_in_daylight`.
     pub fn burns_in_daylight(self) -> bool {
+        if matches!(self, Kind::ZombieHorse | Kind::ZombieNautilus) {
+            return true;
+        }
         if !self.classic() {
             return fam::burns_in_daylight(self);
         }
@@ -442,6 +448,34 @@ impl Kind {
 }
 
 /// The state dependent sounds of a mob (`getAmbientSound`, `getHurtSound`, `getDeathSound`).
+/// `getMaxHeadXRot`: the pitch limit of `LookControl.setLookAt(x, y, z)`.
+pub fn max_head_x_rot(m: &MobData) -> f32 {
+    match m.kind {
+        Kind::Guardian | Kind::ElderGuardian | Kind::Shulker => 180.0,
+        Kind::Axolotl | Kind::Dolphin => 1.0,
+        Kind::Slime | Kind::MagmaCube | Kind::SulfurCube => 0.0,
+        Kind::Wolf if m.in_sitting_pose => 20.0,
+        _ => 40.0,
+    }
+}
+
+/// `getMaxHeadYRot`: how far the head turns from the body (`LookControl`,
+/// `BodyRotationControl`).
+pub fn max_head_y_rot(m: &MobData) -> f32 {
+    match m.kind {
+        Kind::Axolotl | Kind::Dolphin => 1.0,
+        Kind::Armadillo if fam::brainy::armadillo::is_scared(m) => 0.0,
+        Kind::Armadillo => 32.0,
+        Kind::Camel | Kind::CamelHusk | Kind::Breeze => 30.0,
+        Kind::Frog => 5.0,
+        Kind::Sniffer => 50.0,
+        Kind::Goat => 15.0,
+        Kind::Shulker => 180.0,
+        Kind::Ravager => 45.0,
+        _ => 75.0,
+    }
+}
+
 pub fn ambient_sound(m: &MobData) -> Option<&'static str> {
     if !m.kind.classic() {
         return fam::ambient_sound(m);
@@ -681,8 +715,15 @@ pub fn finalize_spawn(
     ctx: &mut fam::SpawnContext<'_>,
     random: &mut vanillite_base::random::LegacyRandom,
 ) {
+    if !m.kind.classic() {
+        fam::finalize_spawn_own(m);
+    }
     std::mem::swap(&mut m.random, random);
+    ctx.own_state = random.state();
     finalize_spawn_inner(m, ctx);
+    if ctx.own_state != random.state() {
+        *random = vanillite_base::random::LegacyRandom::from_state(ctx.own_state);
+    }
     std::mem::swap(&mut m.random, random);
 }
 
@@ -691,14 +732,25 @@ fn finalize_spawn_inner(m: &mut MobData, ctx: &mut fam::SpawnContext<'_>) {
         // `CaveSpider.finalizeSpawn` calls no `super`: not even `Mob.finalizeSpawn`.
         return;
     }
-    // `Mob.finalizeSpawn`: follow range bonus and left-handedness.
-    let bonus = m.random.triangle(0.0, 0.114_850_000_000_000_01);
-    m.attrs.follow_range *= 1.0 + bonus;
-    m.left_handed = m.random.next_float() < 0.05;
+    // `Mob.finalizeSpawn`: follow range bonus and left-handedness; the kinds that call
+    // `super.finalizeSpawn` after their own draws run it last.
+    let mob_part = |m: &mut MobData| {
+        let bonus = m.random.triangle(0.0, 0.114_850_000_000_000_01);
+        m.attrs.follow_range *= 1.0 + bonus;
+        m.left_handed = m.random.next_float() < 0.05;
+    };
     if !m.kind.classic() {
+        let last = fam::mob_spawn_part_last(m.kind);
+        if !last {
+            mob_part(m);
+        }
         fam::finalize_spawn(m, ctx);
+        if last {
+            mob_part(m);
+        }
         return;
     }
+    mob_part(m);
     let (difficulty, climate, group_index) = (ctx.difficulty, ctx.climate, ctx.group_index);
     match m.kind {
         Kind::Zombie => {
@@ -935,6 +987,7 @@ fn explode_creeper(t: &mut Tick<'_, '_>) {
         radius,
         mob: true,
         resistance: crate::level::explosion::BlockResistance::Default,
+        fire: false,
     }));
 }
 
@@ -966,6 +1019,22 @@ pub fn ai_step(t: &mut Tick<'_, '_>) {
             t.set_velocity(v.multiply(1.0, 0.6, 1.0));
         }
     }
+    if kind.ageable() && t.mob_ref().forced_age_timer > 0 {
+        // `AgeableMob.aiStep`: a happy villager particle at a random spot every 4 ticks.
+        if t.mob_ref().forced_age_timer % 4 == 0 {
+            let (pos, dims) = (t.pos(), t.core().dims());
+            let (width, height) = (f64::from(dims.width), f64::from(dims.height));
+            let r = &mut t.mob().random;
+            let at = Vec3::new(
+                pos.x + width * (2.0 * r.next_double() - 1.0),
+                pos.y + height * r.next_double() + 0.5,
+                pos.z + width * (2.0 * r.next_double() - 1.0),
+            );
+            let particle = crate::level::particles::simple("minecraft:happy_villager");
+            t.cx.send_particles(particle, at, 1, Vec3::ZERO, 0.0);
+        }
+        t.mob().forced_age_timer -= 1;
+    }
     if kind.ageable() && t.mob_ref().is_alive() {
         // `AgeableMob.aiStep` and `Animal.aiStep`.
         let m = t.mob();
@@ -979,9 +1048,13 @@ pub fn ai_step(t: &mut Tick<'_, '_>) {
         }
         if m.in_love > 0 {
             m.in_love -= 1;
-        }
-        if m.forced_age_timer > 0 {
-            m.forced_age_timer -= 1;
+            if m.in_love % 10 == 0 {
+                // `Animal.aiStep`: the heart particle is the client's, but its speed and
+                // position are drawn on the server too.
+                let r = &mut m.random;
+                let _ = (r.next_gaussian(), r.next_gaussian(), r.next_gaussian());
+                let _ = (r.next_double(), r.next_double(), r.next_double());
+            }
         }
         // `ItemBasedSteering.tickBoost`.
         if m.boosting {
@@ -1490,4 +1563,14 @@ pub fn enderman_take_block(t: &mut Tick<'_, '_>) {
         .push(WorldAction::SetBlock(pos, BlockState::AIR, 3));
     t.mob().carried = Some(state.block().default_state());
     t.core_mut().mark_data_dirty();
+}
+
+/// The path costs of a mob: its kind's, or those a creaking gets from its heart
+/// (`Creaking.setTransient`).
+pub fn mob_malus(m: &MobData) -> &'static MalusTable {
+    if fam::mount::creaking::heart_bound(m) {
+        fam::mount::creaking::HEART_BOUND_MALUS
+    } else {
+        m.kind.malus()
+    }
 }

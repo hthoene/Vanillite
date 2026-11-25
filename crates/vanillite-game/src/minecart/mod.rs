@@ -468,6 +468,7 @@ pub(crate) fn explode(
                 radius,
                 mob: false,
                 resistance,
+                fire: false,
             }));
         discard(cx, id);
     } else if m.fuse > -1 {
@@ -996,7 +997,9 @@ pub fn players_push(ents: &mut Entities) {
         .players
         .iter()
         .filter(|(_, p)| {
-            p.game_mode != vanillite_config::GameMode::Spectator && !p.survival.is_dead_or_dying()
+            p.game_mode != vanillite_config::GameMode::Spectator
+                && !p.survival.is_dead_or_dying()
+                && !p.survival.simulate_movement
         })
         .filter_map(|(id, _)| ents.store.get(id).map(|e| (id, e.aabb())))
         .collect();

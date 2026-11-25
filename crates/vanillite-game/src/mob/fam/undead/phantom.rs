@@ -199,7 +199,7 @@ pub fn move_control(t: &mut Tick<'_, '_>) -> bool {
     let mut rot = t.core().rot();
     let prev = rot.y_rot;
     #[allow(clippy::cast_possible_truncation)]
-    let angle = tdz.atan2(tdx) as f32;
+    let angle = vanillite_base::math::atan2(tdz, tdx) as f32;
     let a = vanillite_base::math::wrap_degrees_f(rot.y_rot + 90.0);
     let b = vanillite_base::math::wrap_degrees_f(angle * (180.0 / std::f32::consts::PI));
     rot.y_rot = approach_degrees(a, b, 4.0) - 90.0;

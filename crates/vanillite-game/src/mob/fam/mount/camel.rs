@@ -2,6 +2,7 @@
 //! dashing with a saddle, two riders, sand spawning; their brain is in [`super::ai`].
 
 use vanillite_base::BlockPos;
+use vanillite_base::RandomSource;
 use vanillite_nbt::Compound;
 use vanillite_world::entity::{Dimensions, EntityId, Pose};
 
@@ -36,6 +37,51 @@ pub struct Camel {
     pub horse_flags: u8,
     /// `Temper`.
     pub temper: i32,
+    /// `eatingCounter`.
+    pub eating_counter: i32,
+}
+
+const EATING: u8 = 16;
+
+/// `AbstractHorse.isImmobile`: eating (camels do not rear).
+pub fn is_immobile(m: &MobData) -> bool {
+    camel(m).is_some_and(|c| c.horse_flags & EATING != 0)
+}
+
+/// `AbstractHorse.aiStep` before `super.aiStep()`: the `moveTail` roll.
+pub fn ai_step_start(t: &mut Tick<'_, '_>) {
+    let _ = t.mob().random.next_int_bounded(200);
+}
+
+/// `AbstractHorse.aiStep` after `super.aiStep()`: healing and grazing. (`followMommy` only
+/// computes a path it does not use.)
+pub fn ai_step(t: &mut Tick<'_, '_>) {
+    if !t.mob_ref().is_alive() {
+        return;
+    }
+    if t.mob().random.next_int_bounded(900) == 0 && t.mob_ref().death_time == 0 {
+        crate::mob::fam::companion::heal(t.mob(), 1.0);
+        t.core_mut().mark_data_dirty();
+    }
+    let eating = camel(t.mob_ref()).is_some_and(|c| c.horse_flags & EATING != 0);
+    let vehicle = !t.ents.riding.passengers_of(t.id).is_empty();
+    if !eating && !vehicle && t.mob().random.next_int_bounded(300) == 0 {
+        let p = t.block_pos();
+        let below = t.level.block(BlockPos::new(p.x, p.y - 1, p.z));
+        if below.block() == vanillite_data::block::ids::GRASS_BLOCK {
+            camel_mut(t.mob()).horse_flags |= EATING;
+            t.core_mut().mark_data_dirty();
+        }
+    }
+    let c = camel_mut(t.mob());
+    if c.horse_flags & EATING != 0 {
+        c.eating_counter += 1;
+        if c.eating_counter > 50 {
+            c.eating_counter = 0;
+            c.horse_flags &= !EATING;
+            t.core_mut().mark_data_dirty();
+        }
+    }
 }
 
 /// The camel state of a mob.
@@ -259,10 +305,29 @@ pub fn after_tick(t: &mut Tick<'_, '_>) {
             );
         }
     }
+    if refuse_to_move(t.mob_ref(), t.game_time()) {
+        clamp_head_rotation_to_body(t);
+    }
     if is_sitting(t.mob_ref()) && t.mob_ref().fluids.in_water() {
         let id = t.id;
         stand_up_instantly(t.ents, t.env, id);
     }
+}
+
+/// `clampHeadRotationToBody`.
+fn clamp_head_rotation_to_body(t: &mut Tick<'_, '_>) {
+    let limit = crate::mob::kinds::max_head_y_rot(t.mob_ref());
+    let body = t.mob_ref().y_body_rot;
+    let mut rot = t.core().rot();
+    let delta = vanillite_base::math::wrap_degrees_f(body - rot.y_head_rot);
+    let target = delta.clamp(-limit, limit);
+    rot.y_head_rot = rot.y_head_rot + delta - target;
+    t.core_mut().set_rot(rot);
+}
+
+/// `BodyRotationControl` of a camel: none while it refuses to move.
+pub fn turns_body(t: &Tick<'_, '_>) -> bool {
+    !refuse_to_move(t.mob_ref(), t.game_time())
 }
 
 /// `Camel.travel`: a sitting camel only falls.
@@ -337,7 +402,7 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
     let baby = m.baby;
     let kind = m.kind;
     if ix.sneaking && !baby {
-        // `openCustomInventoryScreen`: the mount inventory menu is not there yet.
+        crate::mob::fam::companion::horse::open_inventory_screen(ix);
         return Interaction::Success;
     }
     let name = crate::item::item_id(ix.stack).name();

@@ -24,11 +24,12 @@ const RETURNING: i32 = 2;
 
 /// Throws a trident from `start` along `dir` (`spawnProjectileUsingShoot` with power 1.6).
 pub fn throw(t: &mut Tick<'_, '_>, start: Vec3, dir: Vec3, item: ItemStack, uncertainty: f32) {
-    let (velocity, rot) = shoot(&mut t.mob().random, dir, 1.6, uncertainty);
+    let mut own = crate::mob::missile::new_projectile_random();
+    let (velocity, rot) = shoot(&mut own, dir, 1.6, uncertainty);
     let mut d = MissileData::new(MissileKind::Trident);
     d.ints[3] = loyalty(&item);
     d.item = item;
-    crate::mob::missile::spawn_from(t, start, velocity, rot, d);
+    crate::mob::missile::spawn_shot(t, start, velocity, rot, d);
 }
 
 /// The Loyalty level of a trident (`getTridentReturnToOwnerAcceleration`).
@@ -265,7 +266,8 @@ fn find_hit(
         let Some(oe) = t.ents.store.get(other) else {
             return;
         };
-        let grown = oe.aabb().inflate(0.3, 0.3, 0.3);
+        let m = crate::mob::missile::margin(d.life);
+        let grown = oe.aabb().inflate(m, m, m);
         if let Some(f) = segment_box(from, to, &grown) {
             let hit = from + (to - from) * f;
             let dist = from.distance_to_sqr(oe.pos());
@@ -288,7 +290,11 @@ fn hit_entity(t: &mut MissileTick<'_, '_>, d: &mut MissileData, target: EntityId
     source.position = Some(pos);
     let mut damage = 8.0_f32;
     if !d.item.is_empty() {
-        let (enchants, tags) = crate::mob::attack::combat_data();
+        let combat = crate::mob::attack::combat_data();
+        let (enchants, tags): (
+            &crate::enchant::Enchantments,
+            &dyn crate::predicate::EntityTags,
+        ) = (&combat.enchants, &*combat);
         let cx = crate::enchant::EnchantContext {
             types: t.env.types,
             tags,

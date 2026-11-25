@@ -200,6 +200,23 @@ pub struct BlockLootContext<'a> {
     pub entity: Option<&'a EntityLootContext<'a>>,
 }
 
+impl<'a> BlockLootContext<'a> {
+    /// The general loot context with these parameters.
+    pub fn as_loot(&self) -> LootContext<'a> {
+        LootContext {
+            block_state: Some(self.state),
+            tool: Some(self.tool),
+            explosion_radius: self.explosion_radius,
+            block_entity: self.block_entity,
+            enchantment_level: self.enchantment_level,
+            item_in_tag: self.item_in_tag,
+            this_present: self.this_present,
+            entity: self.entity,
+            ..LootContext::empty()
+        }
+    }
+}
+
 /// The entity parameters of a loot context (`THIS_ENTITY`, `ATTACKING_ENTITY`,
 /// `DIRECT_ATTACKING_ENTITY`, `LAST_DAMAGE_PLAYER`, `DAMAGE_SOURCE`).
 pub struct EntityLootContext<'a> {
@@ -245,6 +262,9 @@ pub struct LootTables {
     predicates: Vec<Cond>,
     /// Named item modifiers (`data/<ns>/item_modifier/`), referenced by index.
     modifiers: Vec<Func>,
+    /// Predicate and item modifier indices by id.
+    predicate_ids: HashMap<String, u32>,
+    modifier_ids: HashMap<String, u32>,
     /// Files that failed to parse, with the reason.
     broken: Vec<String>,
     /// Unsupported features met while parsing, with the first file using each.
@@ -252,9 +272,9 @@ pub struct LootTables {
 }
 
 impl LootTables {
-    /// Loads every `data/<ns>/loot_table/<kind>/**.json` of [`LOADED_KINDS`] of the packs in
-    /// `roots` (each root contains `data/`; later roots override earlier ones). Broken tables
-    /// are logged and skipped.
+    /// Loads every `data/<ns>/loot_table/**.json` of the packs in `roots` (each root contains
+    /// `data/`; later roots override earlier ones), like the reloadable `loot_table` registry.
+    /// Broken tables are logged and skipped.
     pub fn load(roots: &[PathBuf]) -> LootTables {
         let mut table_files = BTreeMap::new();
         let mut predicate_files = BTreeMap::new();
@@ -272,16 +292,9 @@ impl LootTables {
                 .collect();
             namespaces.sort();
             for (ns, path) in namespaces {
-                for kind in LOADED_KINDS {
-                    collect_json(
-                        &path.join("loot_table").join(kind),
-                        &format!("{ns}:{kind}/"),
-                        &mut table_files,
-                    );
-                }
                 collect_json(
-                    &path.join("loot_table/entities"),
-                    &format!("{ns}:entities/"),
+                    &path.join("loot_table"),
+                    &format!("{ns}:"),
                     &mut table_files,
                 );
                 collect_json(
@@ -367,17 +380,7 @@ impl LootTables {
         else {
             return;
         };
-        let ctx = LootContext {
-            block_state: Some(ctx.state),
-            tool: Some(ctx.tool),
-            explosion_radius: ctx.explosion_radius,
-            block_entity: ctx.block_entity,
-            enchantment_level: ctx.enchantment_level,
-            item_in_tag: ctx.item_in_tag,
-            this_present: ctx.this_present,
-            entity: ctx.entity,
-            ..LootContext::empty()
-        };
+        let ctx = ctx.as_loot();
         let mut eval = Eval {
             tables: self,
             ctx: &ctx,
@@ -385,6 +388,7 @@ impl LootTables {
             out,
             post: Vec::new(),
             depth: 0,
+            allow_additional_cost: false,
         };
         eval.table(table);
     }
@@ -419,8 +423,18 @@ impl LootTables {
             out,
             post: Vec::new(),
             depth: 0,
+            allow_additional_cost: false,
         };
         eval.table(table);
+    }
+
+    /// `LootTable.getRandomItems` of the table `name` (e.g. `minecraft:spawners/trial_chamber/key`)
+    /// with an empty context (no block, no tool, no entity). Appends to `out`; unknown tables
+    /// drop nothing.
+    pub fn random_items(&self, name: &str, rng: &mut dyn LootRandom, out: &mut Vec<ItemStack>) {
+        if self.by_name.contains_key(name) {
+            self.roll(name, &LootContext::empty(), rng, out);
+        }
     }
 
     /// `LootTable.fill(container, params, seed)` with the context's random `rng`: rolls the
@@ -455,12 +469,6 @@ impl LootTables {
         }
     }
 
-    /// `LootTable.getRandomItems` of the table `name` (e.g. `minecraft:spawners/trial_chamber/key`)
-    /// with an empty context (no block, no tool, no entity). Appends to `out`.
-    pub fn random_items(&self, name: &str, rng: &mut dyn LootRandom, out: &mut Vec<ItemStack>) {
-        self.roll(name, &LootContext::empty(), rng, out);
-    }
-
     /// Drops of the loot table `table` (e.g. `minecraft:entities/cow`) for an entity loot
     /// context; a missing table drops nothing. Appends to `out`.
     pub fn table_drops(
@@ -470,32 +478,156 @@ impl LootTables {
         rng: &mut dyn LootRandom,
         out: &mut Vec<ItemStack>,
     ) {
-        let Some(table) = self
-            .by_name
-            .get(table)
-            .and_then(|&i| self.tables.get(usize::try_from(i).ok()?))
-        else {
-            return;
-        };
-        let ctx = LootContext {
-            block_state: ctx.state.is_valid().then_some(ctx.state),
-            explosion_radius: ctx.explosion_radius,
-            block_entity: ctx.block_entity,
-            enchantment_level: ctx.enchantment_level,
-            item_in_tag: ctx.item_in_tag,
-            this_present: ctx.this_present,
-            entity: ctx.entity,
-            ..LootContext::empty()
-        };
+        if self.by_name.contains_key(table) {
+            let ctx = LootContext {
+                block_state: ctx.state.is_valid().then_some(ctx.state),
+                tool: None,
+                ..ctx.as_loot()
+            };
+            self.roll(table, &ctx, rng, out);
+        }
+    }
+
+    /// A parser that resolves the named predicates and item modifiers of this set.
+    fn parser(&self) -> Parser<'_> {
+        Parser {
+            predicates: &self.predicate_ids,
+            modifiers: &self.modifier_ids,
+            unsupported: Vec::new(),
+        }
+    }
+
+    /// `LootTable.getRandomItems` of an inline table (`ResourceOrIdArgument` with a value).
+    pub fn roll_inline(
+        &self,
+        json: &Value,
+        ctx: &LootContext<'_>,
+        rng: &mut dyn LootRandom,
+        out: &mut Vec<ItemStack>,
+    ) -> Result<(), String> {
+        let table = self.parser().table(json)?;
         let mut eval = Eval {
             tables: self,
-            ctx: &ctx,
+            ctx,
             rng,
             out,
             post: Vec::new(),
             depth: 0,
+            allow_additional_cost: false,
         };
-        eval.table(table);
+        eval.table(&table);
+        Ok(())
+    }
+
+    /// Whether the named predicate is loaded.
+    pub fn has_predicate(&self, id: &str) -> bool {
+        self.predicate_ids.contains_key(id)
+    }
+
+    /// Whether the named item modifier is loaded.
+    pub fn has_modifier(&self, id: &str) -> bool {
+        self.modifier_ids.contains_key(id)
+    }
+
+    /// `LootItemCondition.test` of a named predicate (`None`: unknown) or, with `inline`, of
+    /// an inline predicate (a list is `all_of`).
+    pub fn test_predicate(
+        &self,
+        id: Option<&str>,
+        inline: Option<&Value>,
+        ctx: &LootContext<'_>,
+        rng: &mut dyn LootRandom,
+    ) -> Result<bool, String> {
+        let owned;
+        let cond = match (id, inline) {
+            (Some(id), _) => {
+                let i = *self
+                    .predicate_ids
+                    .get(id)
+                    .ok_or_else(|| format!("unknown predicate {id}"))?;
+                self.predicates
+                    .get(usize::try_from(i).unwrap_or(usize::MAX))
+                    .ok_or_else(|| format!("unknown predicate {id}"))?
+            }
+            (None, Some(Value::Array(list))) => {
+                let mut parser = self.parser();
+                let all = list
+                    .iter()
+                    .map(|c| parser.cond(c))
+                    .collect::<Res<Vec<_>>>()?;
+                owned = Cond::AllOf(all.into());
+                &owned
+            }
+            (None, Some(v)) => {
+                owned = self.parser().cond(v)?;
+                &owned
+            }
+            (None, None) => return Err("no predicate".to_owned()),
+        };
+        let mut out = Vec::new();
+        let mut eval = Eval {
+            tables: self,
+            ctx,
+            rng,
+            out: &mut out,
+            post: Vec::new(),
+            depth: 0,
+            allow_additional_cost: false,
+        };
+        Ok(eval.test(cond))
+    }
+
+    /// `LootItemFunction.apply` of a named item modifier or, with `inline`, of an inline one
+    /// (a list is a `sequence`).
+    pub fn modify(
+        &self,
+        id: Option<&str>,
+        inline: Option<&Value>,
+        stack: &mut ItemStack,
+        ctx: &LootContext<'_>,
+        rng: &mut dyn LootRandom,
+    ) -> Result<(), String> {
+        let owned;
+        let func = match (id, inline) {
+            (Some(id), _) => {
+                let i = *self
+                    .modifier_ids
+                    .get(id)
+                    .ok_or_else(|| format!("unknown item modifier {id}"))?;
+                self.modifiers
+                    .get(usize::try_from(i).unwrap_or(usize::MAX))
+                    .ok_or_else(|| format!("unknown item modifier {id}"))?
+            }
+            (None, Some(Value::Array(list))) => {
+                let mut parser = self.parser();
+                let all = list
+                    .iter()
+                    .map(|f| parser.func(f))
+                    .collect::<Res<Vec<_>>>()?;
+                owned = Func {
+                    condition: None,
+                    kind: FuncKind::Sequence(all.into()),
+                };
+                &owned
+            }
+            (None, Some(v)) => {
+                owned = self.parser().func(v)?;
+                &owned
+            }
+            (None, None) => return Err("no item modifier".to_owned()),
+        };
+        let mut out = Vec::new();
+        let mut eval = Eval {
+            tables: self,
+            ctx,
+            rng,
+            out: &mut out,
+            post: Vec::new(),
+            depth: 0,
+            allow_additional_cost: false,
+        };
+        eval.apply(func, stack);
+        Ok(())
     }
 
     /// [`Self::block_drops`] with the table's random sequence of `level`
@@ -678,6 +810,8 @@ impl LootTables {
             by_block,
             predicates: parsed_predicates,
             modifiers: parsed_modifiers,
+            predicate_ids,
+            modifier_ids,
             broken,
             unsupported,
         }
@@ -964,12 +1098,20 @@ enum FuncKind {
     EnchantRandomly {
         options: Option<Box<[Box<str>]>>,
         only_compatible: bool,
+        /// `include_additional_cost_component` (villager trades).
+        additional_cost: bool,
     },
     /// `enchant_with_levels`.
     EnchantWithLevels {
         levels: IntProvider,
         options: Option<Box<[Box<str>]>>,
+        /// `include_additional_cost_component` (villager trades).
+        additional_cost: bool,
     },
+    /// `set_random_dyes`: the number of random dyes mixed into the colour.
+    SetRandomDyes(IntProvider),
+    /// `set_random_potion`: `options` holder set entries (all potions if `None`).
+    SetRandomPotion(Option<Box<[Box<str>]>>),
     /// `set_enchantments`: enchantment ids with their level providers.
     SetEnchantments {
         enchantments: Box<[(Box<str>, IntProvider)]>,
@@ -1014,6 +1156,8 @@ enum IntProvider {
     Const(i32),
     Uniform(Box<(IntProvider, IntProvider)>),
     Binomial(Box<(IntProvider, FloatProvider)>),
+    /// `add`: the sum of the inputs, in order.
+    Sum(Box<[IntProvider]>),
 }
 
 #[derive(Debug)]
@@ -1713,11 +1857,25 @@ impl Parser<'_> {
                     .get("only_compatible")
                     .and_then(Value::as_bool)
                     .unwrap_or(true),
+                additional_cost: o
+                    .get("include_additional_cost_component")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
             },
             "minecraft:enchant_with_levels" => FuncKind::EnchantWithLevels {
                 levels: self.int_provider(field(o, "levels")?)?,
                 options: o.get("options").map(holder_entries).transpose()?,
+                additional_cost: o
+                    .get("include_additional_cost_component")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
             },
+            "minecraft:set_random_dyes" => {
+                FuncKind::SetRandomDyes(self.int_provider(field(o, "number_of_dyes")?)?)
+            }
+            "minecraft:set_random_potion" => {
+                FuncKind::SetRandomPotion(o.get("options").map(holder_entries).transpose()?)
+            }
             "minecraft:set_enchantments" => {
                 let mut enchantments = Vec::new();
                 if let Some(map) = o.get("enchantments") {
@@ -1829,6 +1987,15 @@ impl Parser<'_> {
                 self.int_provider(field(o, "n")?)?,
                 self.float_provider(field(o, "p")?)?,
             ))),
+            "minecraft:add" => IntProvider::Sum(
+                field(o, "inputs")?
+                    .as_array()
+                    .ok_or("`inputs` is not a list")?
+                    .iter()
+                    .map(|v| self.int_provider(v))
+                    .collect::<Res<Vec<_>>>()?
+                    .into(),
+            ),
             other => return Err(format!("unsupported int provider {other}")),
         })
     }
@@ -1940,6 +2107,8 @@ struct Eval<'t, 'x> {
     /// Modifiers every created stack passes, applied last to first.
     post: Vec<&'t Func>,
     depth: u32,
+    /// `ADDITIONAL_COST_COMPONENT_ALLOWED` (villager trade contexts).
+    allow_additional_cost: bool,
 }
 
 impl<'t> Eval<'t, '_> {
@@ -2454,8 +2623,25 @@ impl<'t> Eval<'t, '_> {
             FuncKind::EnchantRandomly {
                 options,
                 only_compatible,
-            } => self.enchant_randomly(stack, options.as_deref(), *only_compatible),
-            FuncKind::EnchantWithLevels { levels, options } => {
+                additional_cost,
+            } => {
+                if let Some(level) =
+                    self.enchant_randomly(stack, options.as_deref(), *only_compatible)
+                    && *additional_cost
+                    && self.allow_additional_cost
+                {
+                    let bound = 5i32.wrapping_add(level.wrapping_mul(10));
+                    let cost = 2i32
+                        .wrapping_add(self.rng.next_int(bound.max(1)))
+                        .wrapping_add(level.wrapping_mul(3));
+                    set_additional_trade_cost(stack, cost);
+                }
+            }
+            FuncKind::EnchantWithLevels {
+                levels,
+                options,
+                additional_cost,
+            } => {
                 let cost = self.int(levels);
                 let Some(e) = self.ctx.enchanting else {
                     return;
@@ -2469,6 +2655,55 @@ impl<'t> Eval<'t, '_> {
                 }
                 for (id, level) in chosen {
                     upgrade_enchantment(stack, id, level);
+                }
+                if *additional_cost && self.allow_additional_cost && !stack.is_empty() && cost > 0 {
+                    set_additional_trade_cost(stack, cost);
+                }
+            }
+            FuncKind::SetRandomDyes(count) => {
+                // `SetRandomDyesFunction.run`: `Util.getRandom(DyeColor.VALUES, random)` each.
+                let rolls = self.int(count);
+                if rolls > 0 {
+                    let mut dyes = Vec::with_capacity(usize::try_from(rolls).unwrap_or(0));
+                    for _ in 0..rolls {
+                        dyes.push(self.rng.next_int(16));
+                    }
+                    let current = stack
+                        .component(ids::DYED_COLOR)
+                        .and_then(|v| Reader::new(v).i32().ok());
+                    let rgb = crate::recipe::apply_dyes(current, &dyes);
+                    *stack = stack.with_count(1);
+                    stack
+                        .patch_mut()
+                        .set(ids::DYED_COLOR, Box::new(rgb.to_be_bytes()));
+                }
+            }
+            FuncKind::SetRandomPotion(options) => {
+                // `HolderSet.getRandomElement` / `Registry.getRandom`: `Util.getRandomSafe`.
+                let potions: Vec<u32> = match options {
+                    Some(options) => options
+                        .iter()
+                        .flat_map(|o| (self.ctx.holder_set)("minecraft:potion", o))
+                        .collect(),
+                    None => (0..vanillite_data::registry::POTION.len())
+                        .filter_map(|i| u32::try_from(i).ok())
+                        .collect(),
+                };
+                if potions.is_empty() {
+                    return;
+                }
+                let len = i32::try_from(potions.len()).unwrap_or(i32::MAX);
+                let pick = usize::try_from(self.rng.next_int(len)).unwrap_or(0);
+                if let Some(&potion) = potions.get(pick) {
+                    let mut out = vec![1];
+                    vanillite_protocol::codec::write_varint(
+                        &mut out,
+                        i32::try_from(potion).unwrap_or(0),
+                    );
+                    out.extend_from_slice(&[0, 0, 0]);
+                    stack
+                        .patch_mut()
+                        .set(ids::POTION_CONTENTS, out.into_boxed_slice());
                 }
             }
             FuncKind::SetEnchantments { enchantments, add } => {
@@ -2616,10 +2851,8 @@ impl<'t> Eval<'t, '_> {
         stack: &mut ItemStack,
         options: Option<&[Box<str>]>,
         only_compatible: bool,
-    ) {
-        let Some(e) = self.ctx.enchanting else {
-            return;
-        };
+    ) -> Option<i32> {
+        let e = self.ctx.enchanting?;
         let is_book = stack.item == items::BOOK.0;
         let check = !is_book && only_compatible;
         let candidates: Vec<u32> = self
@@ -2629,19 +2862,18 @@ impl<'t> Eval<'t, '_> {
             .collect();
         if candidates.is_empty() {
             log::warn!("Couldn't find a compatible enchantment for {stack:?}");
-            return;
+            return None;
         }
         let len = i32::try_from(candidates.len()).unwrap_or(i32::MAX);
         let pick = usize::try_from(self.rng.next_int(len)).unwrap_or(0);
-        let Some(&id) = candidates.get(pick) else {
-            return;
-        };
+        let &id = candidates.get(pick)?;
         let max = e.get(id).map_or(1, |info| info.max_level);
         let level = next_int_between(&mut *self.rng, 1, max);
         if is_book {
             *stack = ItemStack::new(items::ENCHANTED_BOOK.0, 1);
         }
         upgrade_enchantment(stack, id, level);
+        Some(level)
     }
 
     /// `ApplyBonusCount.Formula.calculateNewCount`.
@@ -2702,6 +2934,9 @@ impl<'t> Eval<'t, '_> {
                 }
                 result
             }
+            IntProvider::Sum(inputs) => inputs
+                .iter()
+                .fold(0i32, |sum, p| sum.wrapping_add(self.int(p))),
         }
     }
 
@@ -2857,6 +3092,161 @@ fn decode_block_state(data: &[u8]) -> Option<Vec<(String, String)>> {
         pairs.push((k.to_owned(), v.to_owned()));
     }
     Some(pairs)
+}
+
+/// `DataComponents.ADDITIONAL_TRADE_COST` (a var int) on a stack.
+fn set_additional_trade_cost(stack: &mut ItemStack, cost: i32) {
+    let Some(id) =
+        vanillite_data::registry::DATA_COMPONENT_TYPE.id("minecraft:additional_trade_cost")
+    else {
+        return;
+    };
+    let mut out = Vec::new();
+    vanillite_protocol::codec::write_varint(&mut out, cost);
+    stack.patch_mut().set(id, out.into_boxed_slice());
+}
+
+// --- Standalone loot parts (villager trades and other data that embeds them) ------------------
+
+/// A parser for loot parts outside loot tables: named predicates and item modifiers are not
+/// available.
+fn standalone_parser<'n>(names: &'n HashMap<String, u32>) -> Parser<'n> {
+    Parser {
+        predicates: names,
+        modifiers: names,
+        unsupported: Vec::new(),
+    }
+}
+
+/// The empty name map of [`standalone_parser`].
+fn no_names() -> &'static HashMap<String, u32> {
+    static EMPTY: std::sync::OnceLock<HashMap<String, u32>> = std::sync::OnceLock::new();
+    EMPTY.get_or_init(HashMap::new)
+}
+
+/// Logs the unsupported parts a standalone parse met.
+fn note_unsupported(parser: &mut Parser<'_>, what: &str) {
+    for feature in parser.unsupported.drain(..) {
+        log::warn!("{what}: unsupported {feature}");
+    }
+}
+
+/// An item modifier (`LootItemFunction`, a list is a sequence) parsed on its own.
+#[derive(Debug)]
+pub struct LootFunction(Func);
+
+/// A loot condition (`LootItemCondition`) parsed on its own.
+#[derive(Debug)]
+pub struct LootCondition(Cond);
+
+/// A number provider of ints (`ContextIntProvider`).
+#[derive(Debug)]
+pub struct LootInt(IntProvider);
+
+/// A number provider of floats (`ContextFloatProvider`).
+#[derive(Debug)]
+pub struct LootFloat(FloatProvider);
+
+/// How a standalone loot part is evaluated: the context, its random and whether
+/// `ADDITIONAL_COST_COMPONENT_ALLOWED` is set.
+pub struct LootEval<'a> {
+    pub tables: &'a LootTables,
+    pub ctx: &'a LootContext<'a>,
+    pub rng: &'a mut dyn LootRandom,
+    pub additional_cost_allowed: bool,
+}
+
+impl fmt::Debug for LootEval<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LootEval")
+            .field("additional_cost_allowed", &self.additional_cost_allowed)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a> LootEval<'a> {
+    fn eval<'s>(&'s mut self, out: &'s mut Vec<ItemStack>) -> Eval<'a, 's> {
+        Eval {
+            tables: self.tables,
+            ctx: self.ctx,
+            rng: &mut *self.rng,
+            out,
+            post: Vec::new(),
+            depth: 0,
+            allow_additional_cost: self.additional_cost_allowed,
+        }
+    }
+}
+
+impl LootFunction {
+    /// Parses a modifier object, a list of them or (failing) a reference.
+    pub fn parse(v: &Value, what: &str) -> Result<LootFunction, String> {
+        let mut parser = standalone_parser(no_names());
+        let f = parser.func(v);
+        note_unsupported(&mut parser, what);
+        f.map(LootFunction)
+    }
+
+    /// `apply(stack, context)`.
+    pub fn apply(&self, eval: &mut LootEval<'_>, stack: &mut ItemStack) {
+        let mut out = Vec::new();
+        let mut e = eval.eval(&mut out);
+        e.apply(&self.0, stack);
+    }
+}
+
+impl LootCondition {
+    /// Parses a condition object.
+    pub fn parse(v: &Value, what: &str) -> Result<LootCondition, String> {
+        let mut parser = standalone_parser(no_names());
+        let c = parser.cond(v);
+        note_unsupported(&mut parser, what);
+        c.map(LootCondition)
+    }
+
+    /// `test(context)`.
+    pub fn test(&self, eval: &mut LootEval<'_>) -> bool {
+        let mut out = Vec::new();
+        eval.eval(&mut out).test(&self.0)
+    }
+}
+
+impl LootInt {
+    /// A constant.
+    pub fn constant(v: i32) -> LootInt {
+        LootInt(IntProvider::Const(v))
+    }
+
+    /// Parses a number or a provider object.
+    pub fn parse(v: &Value) -> Result<LootInt, String> {
+        standalone_parser(no_names()).int_provider(v).map(LootInt)
+    }
+
+    /// `getInt(context)`.
+    pub fn sample(&self, eval: &mut LootEval<'_>) -> i32 {
+        let mut out = Vec::new();
+        eval.eval(&mut out).int(&self.0)
+    }
+}
+
+impl LootFloat {
+    /// A constant.
+    pub fn constant(v: f32) -> LootFloat {
+        LootFloat(FloatProvider::Const(v))
+    }
+
+    /// Parses a number or a provider object.
+    pub fn parse(v: &Value) -> Result<LootFloat, String> {
+        standalone_parser(no_names())
+            .float_provider(v)
+            .map(LootFloat)
+    }
+
+    /// `getFloat(context)`.
+    pub fn sample(&self, eval: &mut LootEval<'_>) -> f32 {
+        let mut out = Vec::new();
+        eval.eval(&mut out).float(&self.0)
+    }
 }
 
 #[cfg(test)]
@@ -3452,5 +3842,64 @@ mod tests {
             summary(&drops(&tables, stone, &empty, &[], None, 1)),
             [("minecraft:stone", 1)]
         );
+    }
+
+    #[test]
+    fn named_and_inline_predicates_modifiers_and_tables() {
+        let parse = |t: &str| serde_json::from_str::<Value>(t).expect("json");
+        let tables = LootTables::from_files(
+            Vec::new(),
+            vec![(
+                "test:never".to_owned(),
+                Ok(parse(
+                    r#"{"type": "minecraft:random_chance", "chance": 0.0}"#,
+                )),
+            )],
+            vec![(
+                "test:five".to_owned(),
+                Ok(parse(r#"{"type": "minecraft:set_count", "count": 5}"#)),
+            )],
+        );
+        let ctx = LootContext::empty();
+        let mut rng = XoroshiroRandom::new(1);
+        assert!(tables.has_predicate("test:never"));
+        assert_eq!(
+            tables.test_predicate(Some("test:never"), None, &ctx, &mut rng),
+            Ok(false)
+        );
+        // An inline list is `all_of`; a named reference resolves inside it.
+        let inline = parse(
+            r#"[{"type": "minecraft:random_chance", "chance": 1.0},
+                {"type": "minecraft:inverted", "term": "test:never"}]"#,
+        );
+        assert_eq!(
+            tables.test_predicate(None, Some(&inline), &ctx, &mut rng),
+            Ok(true)
+        );
+        assert!(
+            tables
+                .test_predicate(Some("test:unknown"), None, &ctx, &mut rng)
+                .is_err()
+        );
+        let mut stack = ItemStack::new(items::STONE.0, 1);
+        tables
+            .modify(Some("test:five"), None, &mut stack, &ctx, &mut rng)
+            .expect("modifier");
+        assert_eq!(stack.count, 5);
+        let inline = parse(r#"[{"type": "minecraft:set_count", "count": 2}]"#);
+        tables
+            .modify(None, Some(&inline), &mut stack, &ctx, &mut rng)
+            .expect("modifier");
+        assert_eq!(stack.count, 2);
+        let table = parse(
+            r#"{"pools": [{"rolls": 1, "entries": [
+                {"type": "minecraft:item", "name": "minecraft:stone",
+                 "modifier": "test:five"}]}]}"#,
+        );
+        let mut out = Vec::new();
+        tables
+            .roll_inline(&table, &ctx, &mut rng, &mut out)
+            .expect("table");
+        assert_eq!(summary(&out), vec![("minecraft:stone", 5)]);
     }
 }

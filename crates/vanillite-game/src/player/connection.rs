@@ -607,6 +607,7 @@ impl Connection {
                 self.container_button(p.container_id, p.button_id, play)
             }
             ServerboundPlay::RenameItem(p) => self.rename_item(&p.name, play),
+            ServerboundPlay::SelectTrade(p) => self.select_trade(p.item, play),
             ServerboundPlay::SetBeacon(p) => self.set_beacon(p.primary, p.secondary, play),
             ServerboundPlay::ContainerSlotStateChanged(p) => {
                 self.container_slot_state(p.slot_id, p.container_id, p.new_state, play);
@@ -983,6 +984,37 @@ impl Connection {
         }
         crate::menu::container::with_view(inventory, level, actor.pos, None, |view| {
             view.update_beacon(primary, secondary);
+        });
+    }
+
+    /// `handleSelectTrade`: the offer picked in the open merchant menu.
+    fn select_trade(&mut self, item: i32, play: &mut PlayContext<'_>) {
+        let sink = self.sink.as_ref();
+        let actor = play.actor;
+        let PlayContext {
+            level, inventory, ..
+        } = play;
+        let Some(level) = level.level_mut() else {
+            return;
+        };
+        if inventory
+            .container
+            .as_ref()
+            .is_none_or(|m| m.kind != crate::menu::container::MenuKind::Merchant)
+        {
+            return;
+        }
+        let in_range = |pos| actor.within_block_range(pos, 4.0);
+        if !crate::menu::container::still_valid(inventory, level, &in_range, &|b| {
+            actor.within_entity_range(b, 4.0)
+        }) {
+            log::debug!("A player interacted with an invalid menu");
+            return;
+        }
+        crate::menu::container::with_view(inventory, level, actor.pos, None, |view| {
+            view.merchant_select(item);
+            view.flush_result_updates(sink);
+            crate::menu::broadcast_changes(view, sink);
         });
     }
 

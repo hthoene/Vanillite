@@ -203,7 +203,7 @@ fn json_to_nbt(json: &serde_json::Value) -> vanillite_nbt::Tag {
 }
 
 /// NBT as JSON for the data-driven parsers (numbers stay numbers, `Byte` too).
-fn nbt_to_json(tag: &vanillite_nbt::Tag) -> serde_json::Value {
+pub(crate) fn nbt_to_json(tag: &vanillite_nbt::Tag) -> serde_json::Value {
     use serde_json::Value;
     use vanillite_nbt::Tag;
     match tag {

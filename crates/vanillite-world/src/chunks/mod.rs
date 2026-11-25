@@ -21,9 +21,12 @@
 //! all are submitted. Chunks that unload are saved at once and committed within the commit
 //! interval.
 //!
-//! Scheduling follows Vanilla's generation pyramid: a chunk's ticket level decides the status
-//! it must reach; a step runs once every chunk in its requirement radius has the required
-//! status. Chunks waiting for a neighbour are parked on it and checked again only when it makes
+//! Scheduling follows Vanilla's generation pyramid: a chunk's level decides the status it must
+//! reach; a step runs once every chunk in its requirement radius has the required status.
+//! Tickets reach only the levels the game reads ([`MAX_TICKET_LEVEL`]); a chunk with a ticket
+//! that must still be generated gets a generation ticket, whose levels up to [`MAX_LEVEL`] keep
+//! the chunks its steps need. Those are loaded only once a step asks for them, so already
+//! generated terrain keeps no pyramid in memory (#47 D3). Chunks waiting for a neighbour are parked on it and checked again only when it makes
 //! progress. Steps with a block write radius (features) take their neighbours exclusively;
 //! light results combine by maximum and need no exclusive access.
 //!
@@ -40,6 +43,7 @@
 pub mod levels;
 pub mod simulation;
 
+use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::fmt;
 use std::io;
@@ -59,13 +63,16 @@ use vanillite_chunk::slots::{
 use vanillite_chunk::{BlockStateId, ChunkStatus, ProtoChunk};
 
 pub use levels::{
-    BLOCK_TICKING_LEVEL, ENTITY_TICKING_LEVEL, FULL_LEVEL, LevelChange, MAX_LEVEL, TicketLevels,
-    required_status,
+    BLOCK_TICKING_LEVEL, ENTITY_TICKING_LEVEL, FULL_LEVEL, LevelChange, MAX_LEVEL,
+    MAX_TICKET_LEVEL, TicketLevels, required_status,
 };
 
 use simulation::SimulationLevels;
 
 use crate::ticks::{LevelTicks, ScheduledTick, TickPriority};
+
+/// An empty slot of the chunk cache (`ChunkPos.INVALID_CHUNK_POS`).
+const NO_CHUNK: ChunkPos = ChunkPos::new(i32::MAX, i32::MAX);
 
 /// Runs background jobs; the server's compute pool, or inline in tests.
 pub trait Executor: Send + Sync {
@@ -216,12 +223,16 @@ struct Holder {
     entities_dirty: bool,
     /// The chunk has an entities record in the store (an empty list deletes it).
     entities_stored: bool,
+    /// The POI changed since the last save; set through [`Holder::touch_poi`].
+    poi_dirty: bool,
     /// The load request while the chunk is read.
     loading: Option<Token>,
     /// Tick from which an unneeded chunk may be unloaded.
     unload_at: Option<u64>,
     /// Queued for a scheduling check.
     queued: bool,
+    /// The step whose missing neighbours were last added as dependencies.
+    planned: Option<ChunkStatus>,
     /// The chunk's stored entities are live (`ChunkLoadStatus.LOADED`); set by the entity
     /// storage at the end of the level tick, required for scheduled ticks.
     entities_loaded: bool,
@@ -236,7 +247,7 @@ impl Holder {
     /// save round.
     fn touch(&mut self, pos: ChunkPos, changed: &mut Vec<ChunkPos>) {
         if !self.dirty {
-            if !self.entities_dirty {
+            if !self.entities_dirty && !self.poi_dirty {
                 changed.push(pos);
             }
             self.dirty = true;
@@ -246,16 +257,26 @@ impl Holder {
     /// Marks the chunk's entities changed, like [`Holder::touch`].
     fn touch_entities(&mut self, pos: ChunkPos, changed: &mut Vec<ChunkPos>) {
         if !self.entities_dirty {
-            if !self.dirty {
+            if !self.dirty && !self.poi_dirty {
                 changed.push(pos);
             }
             self.entities_dirty = true;
         }
     }
 
+    /// Marks the chunk's POI changed, like [`Holder::touch`].
+    fn touch_poi(&mut self, pos: ChunkPos, changed: &mut Vec<ChunkPos>) {
+        if !self.poi_dirty {
+            if !self.dirty && !self.entities_dirty {
+                changed.push(pos);
+            }
+            self.poi_dirty = true;
+        }
+    }
+
     /// Whether anything is unsaved.
     fn unsaved(&self) -> bool {
-        self.dirty || self.entities_dirty
+        self.dirty || self.entities_dirty || self.poi_dirty
     }
 }
 
@@ -267,6 +288,8 @@ struct Snapshot {
     blocks: bool,
     /// Write the entities record (delete it if the list is empty).
     entities: bool,
+    /// Write the POI record (delete it if there is none).
+    poi: bool,
 }
 
 /// A load waiting for the store: the chunk and the entities record.
@@ -275,23 +298,23 @@ struct PendingLoad {
     pos: ChunkPos,
     chunk: Option<StoreResult>,
     entities: Option<StoreResult>,
+    poi: Option<StoreResult>,
 }
 
-/// A chunk read between ticks with its stored entities, waiting for the next tick.
-type LoadedChunk = (
-    ChunkPos,
-    Box<ProtoChunk>,
+/// The stored entities and POI of a loaded chunk.
+type LoadedRecords = (
     io::Result<Option<Vec<Arc<[u8]>>>>,
+    io::Result<Option<Arc<[u8]>>>,
 );
+
+/// A chunk read between ticks with its stored entities, waiting for the next tick.
+type LoadedChunk = (ChunkPos, Box<ProtoChunk>, LoadedRecords);
 
 /// A finished background job.
 enum Done {
-    /// A chunk was read (`None`: never saved) with its stored entities (`None`: no record).
-    Loaded(
-        ChunkPos,
-        io::Result<Option<Box<ProtoChunk>>>,
-        io::Result<Option<Vec<Arc<[u8]>>>>,
-    ),
+    /// A chunk was read (`None`: never saved) with its stored entities and POI (`None`: no
+    /// record).
+    Loaded(ChunkPos, io::Result<Option<Box<ProtoChunk>>>, LoadedRecords),
     Stepped {
         status: ChunkStatus,
         targets: Vec<ProtoChunk>,
@@ -332,8 +355,14 @@ pub struct Chunks {
     settings: ChunkSettings,
     slots: ChunkSlots,
     holders: FxHashMap<ChunkPos, Holder>,
+    /// Levels of the tickets, up to [`MAX_TICKET_LEVEL`].
     levels: TicketLevels,
     tickets: FxHashMap<TicketId, (ChunkPos, u8)>,
+    /// Levels of the generation tickets, up to [`MAX_LEVEL`]; a chunk's level is the lower of
+    /// both.
+    generation: TicketLevels,
+    /// The generation ticket of each chunk with a ticket that is being generated.
+    generation_tickets: FxHashMap<ChunkPos, u8>,
     next_ticket: u64,
     level_changes: Vec<LevelChange>,
     /// Chunks to check, most urgent (lowest level) first.
@@ -411,6 +440,13 @@ pub struct Chunks {
     visibility_check: Vec<ChunkPos>,
     /// Visibility changes since the last [`Chunks::take_visibility_changes`].
     visibility_changes: Vec<VisibilityChange>,
+    /// The `unknown` tickets of synchronous loads ([`Chunks::load_now`]) with their ticks
+    /// left (`TicketType.UNKNOWN`: level 33, timeout 1).
+    unknown: FxHashMap<ChunkPos, (TicketId, Cell<i64>)>,
+    /// `ServerChunkCache.lastChunkPos`: the world thread's cache of the last four accessible
+    /// chunks it read, newest first. A read that hits it does not reset an `unknown` ticket.
+    /// Only kept while `unknown` tickets exist: a new one clears it.
+    chunk_cache: Cell<[ChunkPos; 4]>,
 }
 
 /// What the entities of a chunk do (Vanilla's `Visibility`, from the chunk's full status).
@@ -466,8 +502,10 @@ impl Chunks {
             },
             slots,
             holders: FxHashMap::default(),
-            levels: TicketLevels::default(),
+            levels: TicketLevels::with_max(MAX_TICKET_LEVEL),
             tickets: FxHashMap::default(),
+            generation: TicketLevels::default(),
+            generation_tickets: FxHashMap::default(),
             next_ticket: 0,
             level_changes: Vec::new(),
             check: BTreeSet::new(),
@@ -514,6 +552,8 @@ impl Chunks {
             visibility: FxHashMap::default(),
             visibility_check: Vec::new(),
             visibility_changes: Vec::new(),
+            unknown: FxHashMap::default(),
+            chunk_cache: Cell::new([NO_CHUNK; 4]),
         }
     }
 
@@ -561,8 +601,8 @@ impl Chunks {
 
     // --- Tickets -------------------------------------------------------------------------
 
-    /// Adds a ticket: chunks within `33 - level` of `pos` become full, the pyramid around
-    /// them is generated (forced chunks: level 31, Vanilla's `ChunkLevel.byStatus(ENTITY_TICKING)`).
+    /// Adds a ticket: chunks within `33 - level` of `pos` become full, one ring further at
+    /// least lit; what is missing is generated (forced chunks: level 31, Vanilla's `ChunkLevel.byStatus(ENTITY_TICKING)`).
     pub fn add_ticket(&mut self, pos: ChunkPos, level: u8) -> TicketId {
         let id = TicketId(self.next_ticket);
         self.next_ticket += 1;
@@ -594,7 +634,7 @@ impl Chunks {
         FULL_LEVEL - (self.settings.view_distance as u8 + 1)
     }
 
-    /// The level of a chunk.
+    /// The ticket level of a chunk (above [`MAX_TICKET_LEVEL`]: no ticket reaches it).
     pub fn level(&self, pos: ChunkPos) -> u8 {
         self.levels.level(pos)
     }
@@ -677,47 +717,92 @@ impl Chunks {
     }
 
     fn apply_level_changes(&mut self) {
-        let changes = std::mem::take(&mut self.level_changes);
-        for change in &changes {
-            let pos = change.pos;
-            if visibility_of_level(change.old) != visibility_of_level(change.new) {
-                self.visibility_check.push(pos);
+        if !self.level_changes.is_empty() {
+            // `runDistanceManagerUpdates` clears the chunk cache after level changes.
+            self.chunk_cache.set([NO_CHUNK; 4]);
+        }
+        // Moving a generation ticket reports more changes; apply them too.
+        while !self.level_changes.is_empty() {
+            let mut changes = std::mem::take(&mut self.level_changes);
+            for change in &changes {
+                self.apply_level_change(change.pos);
             }
-            if change.new <= MAX_LEVEL {
-                let holder = self.holders.entry(pos).or_default();
-                if holder.queued {
-                    self.check.remove(&(holder.level, pos));
-                    self.check.insert((change.new, pos));
-                }
-                holder.level = change.new;
-                holder.unload_at = None;
-                self.unload_candidates.remove(&pos);
-                // Only a new required status gives the chunk work: a full chunk moving
-                // closer to a player (level 25 to 24) needs no check.
-                if change.new < change.old
-                    && required_status(change.new) != required_status(change.old)
-                {
-                    self.enqueue(pos);
-                }
-            } else if let Some(holder) = self.holders.get_mut(&pos) {
-                if holder.queued {
-                    self.check.remove(&(holder.level, pos));
-                    holder.queued = false;
-                }
-                holder.level = change.new;
-                // At least one tick later: the game writes back what the chunk holds first.
-                holder.unload_at = Some(self.tick + self.settings.unload_delay.max(1));
-                self.unload_candidates.insert(pos);
-                // A queued load nobody needs any more is dropped before IO and decoding.
-                if holder.chunk.is_none()
-                    && let Some(token) = holder.loading
-                {
-                    self.slots.store.cancel(token);
-                }
+            changes.clear();
+            if self.level_changes.is_empty() {
+                self.level_changes = changes;
             }
         }
-        self.level_changes = changes;
-        self.level_changes.clear();
+    }
+
+    /// Brings a chunk's holder to its current level (the lower of ticket and generation level).
+    fn apply_level_change(&mut self, pos: ChunkPos) {
+        let ticket = self.levels.level(pos);
+        if self.generation_tickets.contains_key(&pos) {
+            // The pyramid of a chunk being generated follows its ticket level.
+            self.set_generation_ticket(pos, generation_ticket_level(ticket));
+        }
+        let new = ticket.min(self.generation.level(pos));
+        let old = self
+            .holders
+            .get(&pos)
+            .map_or(levels::UNLOADED, |holder| holder.level);
+        if old == new {
+            return;
+        }
+        if visibility_of_level(old) != visibility_of_level(new) {
+            self.visibility_check.push(pos);
+        }
+        if new <= MAX_LEVEL {
+            // Chunks only the generation pyramid reaches are added once a step needs them.
+            if ticket > MAX_TICKET_LEVEL && !self.holders.contains_key(&pos) {
+                return;
+            }
+            let holder = self.holders.entry(pos).or_default();
+            if holder.queued {
+                self.check.remove(&(holder.level, pos));
+                self.check.insert((new, pos));
+            }
+            holder.level = new;
+            holder.unload_at = None;
+            self.unload_candidates.remove(&pos);
+            // Only a new required status gives the chunk work: a full chunk moving
+            // closer to a player (level 25 to 24) needs no check.
+            if new < old && required_status(new) != required_status(old) {
+                self.enqueue(pos);
+            }
+        } else if let Some(holder) = self.holders.get_mut(&pos) {
+            if holder.queued {
+                self.check.remove(&(holder.level, pos));
+                holder.queued = false;
+            }
+            holder.level = new;
+            // At least one tick later: the game writes back what the chunk holds first.
+            holder.unload_at = Some(self.tick + self.settings.unload_delay.max(1));
+            self.unload_candidates.insert(pos);
+            // A queued load nobody needs any more is dropped before IO and decoding.
+            if holder.chunk.is_none()
+                && let Some(token) = holder.loading
+            {
+                self.slots.store.cancel(token);
+            }
+        }
+    }
+
+    /// Places, moves or (`None`) removes the generation ticket of a chunk.
+    fn set_generation_ticket(&mut self, pos: ChunkPos, level: Option<u8>) {
+        let current = self.generation_tickets.get(&pos).copied();
+        if current == level {
+            return;
+        }
+        if let Some(current) = current {
+            self.generation
+                .remove(pos, current, &mut self.level_changes);
+            self.generation_tickets.remove(&pos);
+        }
+        if let Some(level) = level {
+            self.generation.add(pos, level, &mut self.level_changes);
+            self.generation_tickets.insert(pos, level);
+        }
     }
 
     fn enqueue(&mut self, pos: ChunkPos) {
@@ -738,6 +823,130 @@ impl Chunks {
             }
         }
         self.enqueue(pos);
+    }
+
+    // --- Synchronous loads ---------------------------------------------------------------
+
+    /// Whether a chunk is accessible as a full chunk (ticket level up to full).
+    #[inline]
+    fn is_full_at(&self, pos: ChunkPos) -> bool {
+        self.holders
+            .get(&pos)
+            .is_some_and(|h| h.level <= FULL_LEVEL && h.status() == Some(ChunkStatus::Full))
+    }
+
+    /// A read of an accessible chunk on the world thread (`ServerChunkCache.getChunk`): unless
+    /// the chunk cache holds it, it goes into the cache and `reset` restarts its `unknown`
+    /// ticket. Only tracked while `unknown` tickets exist.
+    #[inline]
+    fn note_read(&self, pos: ChunkPos, reset: bool) {
+        if self.unknown.is_empty() {
+            return;
+        }
+        let mut cache = self.chunk_cache.get();
+        if cache.contains(&pos) {
+            return;
+        }
+        cache.copy_within(0..3, 1);
+        cache[0] = pos;
+        self.chunk_cache.set(cache);
+        if reset && let Some((_, left)) = self.unknown.get(&pos) {
+            left.set(1);
+        }
+    }
+
+    /// `ServerChunkCache.getChunkNow(x, z) != null`: whether the chunk is accessible, which
+    /// puts it into the chunk cache without touching tickets.
+    pub fn chunk_now(&self, pos: ChunkPos) -> bool {
+        let accessible = self.is_full_at(pos);
+        if accessible {
+            self.note_read(pos, false);
+        }
+        accessible
+    }
+
+    /// `ServerChunkCache.getChunk(x, z, FULL, true)` on the world thread, as `getBlockState`
+    /// and `setBlock` call it: a chunk that is not accessible gets an `unknown` ticket at
+    /// level 33 (timeout 1 tick, [`Chunks::purge_stale_tickets`]) and is loaded or generated
+    /// while the world thread waits (`managedBlock`). Returns whether it had to wait; the
+    /// chunks that became live are in [`Chunks::take_promoted`].
+    #[inline]
+    pub fn load_now(&mut self, pos: ChunkPos) -> bool {
+        if self.is_full_at(pos) {
+            self.note_read(pos, true);
+            return false;
+        }
+        self.load_blocking(pos);
+        true
+    }
+
+    #[cold]
+    fn load_blocking(&mut self, pos: ChunkPos) {
+        match self.unknown.get(&pos) {
+            Some((_, left)) => left.set(1),
+            None => {
+                let id = self.add_ticket(pos, FULL_LEVEL);
+                self.unknown.insert(pos, (id, Cell::new(1)));
+            }
+        }
+        // What waits for the next tick is wanted now.
+        for (at, chunk, entities) in std::mem::take(&mut self.loaded_between_ticks) {
+            self.apply_loaded(at, Ok(Some(chunk)), entities);
+        }
+        for at in std::mem::take(&mut self.due_next_tick) {
+            self.enqueue(at);
+        }
+        loop {
+            let mut progress = self.drain_done();
+            self.apply_level_changes();
+            if self.is_full_at(pos) {
+                break;
+            }
+            progress |= self.dispatch();
+            if progress {
+                continue;
+            }
+            if self.in_flight == 0 && self.check.is_empty() {
+                log::error!(
+                    "Couldn't load chunk {}, {} in {} synchronously",
+                    pos.x,
+                    pos.z,
+                    self.info.dimension
+                );
+                break;
+            }
+            match self.done_rx.recv_timeout(Duration::from_millis(1)) {
+                Ok(job) => self.apply_done(job),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        self.check_visibility();
+        // The ticket changed levels, which cleared the cache; the chunk goes in.
+        self.chunk_cache.set([NO_CHUNK; 4]);
+        self.note_read(pos, false);
+    }
+
+    /// `TicketStorage.purgeStaleTickets` for the `unknown` tickets of synchronous loads: each
+    /// counts down and goes once below zero, so a ticket lives through two purges. Runs once
+    /// per world tick at the start of the chunk source tick while the game runs normally.
+    pub fn purge_stale_tickets(&mut self) {
+        if self.unknown.is_empty() {
+            return;
+        }
+        let mut expired = Vec::new();
+        self.unknown.retain(|_, (id, left)| {
+            left.set(left.get() - 1);
+            if left.get() < 0 {
+                expired.push(*id);
+                false
+            } else {
+                true
+            }
+        });
+        for id in expired {
+            self.remove_ticket(id);
+        }
     }
 
     // --- Tick ----------------------------------------------------------------------------
@@ -763,6 +972,8 @@ impl Chunks {
         self.start_relights();
         self.unload();
         self.check_visibility();
+        // `ServerChunkCache.tick` ends with `clearCache`.
+        self.chunk_cache.set([NO_CHUNK; 4]);
     }
 
     /// The visibility of a chunk (`ChunkMap.onFullChunkStatusChange`): hidden unless it is
@@ -876,18 +1087,19 @@ impl Chunks {
                     }
                     return;
                 };
-                if index == 0 {
-                    load.chunk = Some(result);
-                } else {
-                    load.entities = Some(result);
+                match index {
+                    0 => load.chunk = Some(result),
+                    1 => load.entities = Some(result),
+                    _ => load.poi = Some(result),
                 }
-                if load.chunk.is_none() || load.entities.is_none() {
+                if load.chunk.is_none() || load.entities.is_none() || load.poi.is_none() {
                     return;
                 }
                 let Some(PendingLoad {
                     pos,
                     chunk: Some(chunk),
                     entities: Some(entities),
+                    poi: Some(poi),
                 }) = self.loads.remove(&token)
                 else {
                     return;
@@ -897,6 +1109,7 @@ impl Chunks {
                 }
                 if matches!(chunk, StoreResult::Cancelled)
                     || matches!(entities, StoreResult::Cancelled)
+                    || matches!(poi, StoreResult::Cancelled)
                 {
                     self.in_flight -= 1;
                     if let Some(holder) = self.holders.get_mut(&pos) {
@@ -906,11 +1119,13 @@ impl Chunks {
                     return;
                 }
                 let needs_decode = matches!(chunk, StoreResult::Record(..))
-                    || matches!(entities, StoreResult::Record(..));
+                    || matches!(entities, StoreResult::Record(..))
+                    || matches!(poi, StoreResult::Record(..));
                 if !needs_decode {
                     let chunk = load_result(chunk).map(|_| None);
                     let entities = load_result(entities).map(|_| None);
-                    self.apply_done(Done::Loaded(pos, chunk, entities));
+                    let poi = load_result(poi).map(|_| None);
+                    self.apply_done(Done::Loaded(pos, chunk, (entities, poi)));
                     return;
                 }
                 let codec = Arc::clone(&self.slots.codec);
@@ -929,7 +1144,13 @@ impl Chunks {
                                 .map(|(meta, bytes)| codec.decode_entities(pos, &meta, &bytes))
                                 .transpose()
                         });
-                        tx.send(Done::Loaded(pos, chunk, entities));
+                        let poi = load_result(poi).and_then(|record| {
+                            Ok(record
+                                .map(|(meta, bytes)| codec.decode_poi(pos, &meta, &bytes))
+                                .transpose()?
+                                .flatten())
+                        });
+                        tx.send(Done::Loaded(pos, chunk, (entities, poi)));
                     }),
                 );
             }
@@ -959,7 +1180,7 @@ impl Chunks {
         &mut self,
         pos: ChunkPos,
         result: io::Result<Option<Box<ProtoChunk>>>,
-        entities: io::Result<Option<Vec<Arc<[u8]>>>>,
+        (entities, poi): LoadedRecords,
     ) {
         let mut chunk = match result {
             Ok(Some(chunk)) => *chunk,
@@ -990,6 +1211,15 @@ impl Chunks {
                 false
             }
         };
+        match poi {
+            Ok(poi) => chunk.poi = poi,
+            Err(e) => log::error!(
+                "Couldn't load the POI of chunk {}, {} in {}: {e}",
+                pos.x,
+                pos.z,
+                self.info.dimension
+            ),
+        }
         let mut dirty = chunk.status == ChunkStatus::Empty;
         // Stored light that is not trusted is computed again (Vanilla: `isLightOn`).
         if chunk.status > ChunkStatus::Features && !chunk.light_on {
@@ -1175,13 +1405,15 @@ impl Chunks {
         if holder.busy {
             return Check::Blocked(pos);
         }
-        let Some(chunk) = holder.chunk.as_ref() else {
+        let Some(status) = holder.status() else {
             return self.start_load(pos);
         };
-        if chunk.status >= required {
-            return Check::Done;
-        }
-        let Some(next) = chunk.status.next() else {
+        let next = status.next().filter(|_| status < required);
+        // The first check of a step adds every missing neighbour it needs, so they load
+        // together; later checks stop at the first one not ready.
+        let plan = holder.planned != next;
+        let Some(next) = next else {
+            self.set_generation_ticket(pos, None);
             return Check::Done;
         };
         if self.between_ticks && matches!(next, ChunkStatus::Spawn | ChunkStatus::Full) {
@@ -1190,6 +1422,7 @@ impl Chunks {
         }
         // Requirements by radius.
         let radius = next.requirement_radius() as i32;
+        let mut blocked = None;
         for dz in -radius..=radius {
             for dx in -radius..=radius {
                 if dx == 0 && dz == 0 {
@@ -1200,11 +1433,33 @@ impl Chunks {
                     continue;
                 };
                 let other = ChunkPos::new(pos.x + dx, pos.z + dz);
-                match self.holders.get(&other).and_then(Holder::status) {
-                    Some(status) if status >= needed => {}
-                    _ => return Check::Blocked(other),
+                let other_holder = self.holders.get(&other);
+                if other_holder
+                    .and_then(Holder::status)
+                    .is_some_and(|status| status >= needed)
+                {
+                    continue;
                 }
+                match other_holder {
+                    None => self.add_dependency(pos, other),
+                    // Kept only by a generation ticket that is gone: this chunk's own
+                    // ticket keeps it.
+                    Some(other) if required_status(other.level) < Some(needed) => {
+                        self.add_generation_ticket(pos);
+                    }
+                    Some(_) => {}
+                }
+                if !plan {
+                    return Check::Blocked(other);
+                }
+                blocked.get_or_insert(other);
             }
+        }
+        if let Some(holder) = self.holders.get_mut(&pos) {
+            holder.planned = Some(next);
+        }
+        if let Some(other) = blocked {
+            return Check::Blocked(other);
         }
         let write = next.write_radius() as i32;
         for dz in -write..=write {
@@ -1217,6 +1472,33 @@ impl Chunks {
         }
         self.run_step(pos, next, radius, write);
         Check::Progress
+    }
+
+    /// Gives a chunk with a ticket that is being generated its generation ticket: it keeps the
+    /// chunks its steps need while no ticket reaches them. Chunks without a ticket are needed
+    /// only within such a pyramid, which already reaches everything they need.
+    fn add_generation_ticket(&mut self, pos: ChunkPos) {
+        let ticket = self.levels.level(pos);
+        if ticket <= MAX_TICKET_LEVEL {
+            self.set_generation_ticket(pos, generation_ticket_level(ticket));
+        }
+    }
+
+    /// Adds the holder of a chunk that a step of `of` needs but no ticket reaches.
+    fn add_dependency(&mut self, of: ChunkPos, pos: ChunkPos) {
+        self.add_generation_ticket(of);
+        let level = self.levels.level(pos).min(self.generation.level(pos));
+        if level > MAX_LEVEL {
+            return;
+        }
+        self.holders.insert(
+            pos,
+            Holder {
+                level,
+                ..Holder::default()
+            },
+        );
+        self.enqueue(pos);
     }
 
     fn start_load(&mut self, pos: ChunkPos) -> Check {
@@ -1255,6 +1537,7 @@ impl Chunks {
             vec![
                 StoreOp::Get(RecordKey::chunk(dimension, pos)),
                 StoreOp::Get(RecordKey::entities(dimension, pos)),
+                StoreOp::Get(RecordKey::poi(dimension, pos)),
             ],
             priority,
             self.inbox_tx.clone(),
@@ -1452,6 +1735,30 @@ impl Chunks {
         self.chunk(pos).map_or(&[], |c| &c.entities[..])
     }
 
+    /// The stored POI of a full chunk ([`ProtoChunk::poi`]).
+    pub fn stored_poi(&self, pos: ChunkPos) -> Option<&Arc<[u8]>> {
+        self.chunk(pos).and_then(|c| c.poi.as_ref())
+    }
+
+    /// Replaces the stored POI of a full chunk (the game writes its POI back before saving and
+    /// unloading); the chunk's POI count as changed if they differ.
+    pub fn set_stored_poi(&mut self, pos: ChunkPos, poi: Option<Arc<[u8]>>) {
+        let Some(holder) = self.holders.get_mut(&pos) else {
+            return;
+        };
+        if holder.busy || holder.status() != Some(ChunkStatus::Full) {
+            return;
+        }
+        let Some(chunk) = holder.chunk.as_mut() else {
+            return;
+        };
+        if chunk.poi == poi {
+            return;
+        }
+        Arc::make_mut(chunk).poi = poi;
+        holder.touch_poi(pos, &mut self.changed);
+    }
+
     /// Replaces the stored entities of a full chunk (the game writes its live entities back
     /// before saving and unloading); the chunk's entities count as changed if they differ.
     pub fn set_stored_entities(&mut self, pos: ChunkPos, entities: Vec<Arc<[u8]>>) {
@@ -1527,6 +1834,7 @@ impl Chunks {
                 save.push(Snapshot {
                     entities: holder.entities_dirty
                         && (holder.entities_stored || !chunk.entities.is_empty()),
+                    poi: holder.poi_dirty,
                     blocks: holder.dirty,
                     chunk,
                 });
@@ -1589,6 +1897,19 @@ impl Chunks {
                                 }
                             }
                         }
+                        if snapshot.poi {
+                            let key = RecordKey::poi(dimension, chunk.pos);
+                            if chunk.poi.is_none() {
+                                ops.push(StoreOp::Delete(key));
+                            } else {
+                                match codec.encode_poi(chunk) {
+                                    Ok((meta, bytes)) => {
+                                        ops.push(StoreOp::Put { key, meta, bytes });
+                                    }
+                                    Err(e) => errors.push((chunk.pos, e)),
+                                }
+                            }
+                        }
                     }
                     if !ops.is_empty() {
                         store.submit(token, ops, Priority::Background, inbox);
@@ -1621,6 +1942,7 @@ impl Chunks {
         if entities {
             holder.entities_stored = !chunk.entities.is_empty();
         }
+        let poi = std::mem::take(&mut holder.poi_dirty);
         if blocks && chunk.status == ChunkStatus::Full {
             let chunk = Arc::make_mut(chunk);
             chunk.block_ticks = self.block_ticks.pack(pos, self.game_time);
@@ -1630,6 +1952,7 @@ impl Chunks {
             chunk: Arc::clone(chunk),
             blocks,
             entities,
+            poi,
         })
     }
 
@@ -1774,7 +2097,15 @@ impl Chunks {
 
     /// The block state at `pos`, `None` outside full chunks and the build height.
     pub fn block(&self, pos: BlockPos) -> Option<BlockStateId> {
-        let chunk = self.chunk(pos.chunk())?;
+        let chunk_pos = pos.chunk();
+        let holder = self.holders.get(&chunk_pos)?;
+        let chunk = holder
+            .chunk
+            .as_ref()
+            .filter(|c| c.status == ChunkStatus::Full)?;
+        if holder.level <= FULL_LEVEL {
+            self.note_read(chunk_pos, true);
+        }
         chunk
             .chunk
             .block((pos.x & 15) as u32, pos.y, (pos.z & 15) as u32)
@@ -2103,6 +2434,12 @@ impl Chunks {
             );
         }
     }
+}
+
+/// The level of the generation ticket of a chunk with this ticket level: the pyramid of a
+/// full chunk (or of the ring around full chunks); `None` above [`MAX_TICKET_LEVEL`].
+fn generation_ticket_level(ticket: u8) -> Option<u8> {
+    (ticket <= MAX_TICKET_LEVEL).then_some(ticket.max(FULL_LEVEL))
 }
 
 /// The visibility of a full chunk at `level`.

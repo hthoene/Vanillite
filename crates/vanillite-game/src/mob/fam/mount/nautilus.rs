@@ -171,6 +171,18 @@ pub fn after_tick(t: &mut Tick<'_, '_>) {
     if dirty {
         t.core_mut().mark_data_dirty();
     }
+    if t.mob_ref().fluids.in_water() {
+        // `spawnBubbles`: the particles are the client's, the server still draws them.
+        let speed = t.velocity().length();
+        let probability = (speed * 2.0).clamp(f64::from(0.15_f32), 1.0);
+        let r = &mut t.mob().random;
+        if f64::from(r.next_float()) < probability {
+            let _spread = r.next_double();
+            for _ in 0..3 {
+                let _ = r.next_float();
+            }
+        }
+    }
 }
 
 /// `Nautilus.baseTick`'s air: out of water it dries out (2 damage every second once the air is
@@ -279,7 +291,7 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
     }
     let tame = m.tame;
     if tame && ix.sneaking {
-        // `openCustomInventoryScreen`: the mount inventory menu is not there yet.
+        crate::mob::fam::companion::horse::open_inventory_screen(ix);
         return Interaction::Success;
     }
     let food = is_food(m, ix.stack.item);
@@ -361,6 +373,7 @@ fn try_to_tame(ix: &mut Interact<'_, '_>) {
     if tamed && let Some(uuid) = uuid {
         crate::mob::tame::tame(m, uuid);
         m.nav.stop();
+        crate::mob::tame::award_tame(ix.ents, ix.target, ix.player);
     }
     animal::entity_event(ix.ents, ix.env, ix.target, if tamed { 7 } else { 6 });
     let s = ix.ents.mob(ix.target).map(|m| sound(m, "eat"));

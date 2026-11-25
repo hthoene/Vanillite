@@ -22,10 +22,13 @@ use crate::player::PlayerData;
 use crate::scoreboard::CriteriaKind;
 use crate::stats::custom;
 
-/// `Math.round(damage * 10.0F)` of the damage statistics, below `Float.MAX_VALUE / 10`.
+use crate::advancements::tracking::reset_fall_distance;
+
+/// `Math.round(damage * 10.0F)` of the damage statistics, for damage above 0 and below
+/// `Float.MAX_VALUE / 10`.
 #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
-fn damage_stat(damage: f32) -> Option<i32> {
-    (damage < 3.402_823_5e37).then(|| (damage * 10.0).round() as i32)
+pub fn damage_stat(damage: f32) -> Option<i32> {
+    (damage > 0.0 && damage < 3.402_823_5e37).then(|| (damage * 10.0).round() as i32)
 }
 
 /// `Attributes.MAX_HEALTH` of players.
@@ -203,8 +206,8 @@ pub struct Survival {
     pub combat: CombatTracker,
     /// `tickCount`.
     pub tick_count: i32,
-    /// The `minecraft:time_since_rest` statistic (ticks alive since the last sleep or death).
-    pub time_since_rest: i32,
+    /// The entities on the player's shoulders.
+    pub shoulders: super::shoulder::Shoulders,
     /// `lastClimbablePos`'s fall location.
     pub last_climbable: Option<FallLocation>,
     /// The fluids around the player after the last update.
@@ -223,6 +226,8 @@ pub struct Survival {
     pub effects: crate::effect::ActiveEffects,
     /// `wardenSpawnTracker`.
     pub warden_spawn_tracker: crate::block::sculk_shrieker::WardenSpawnTracker,
+    /// The positions of the distance triggers.
+    pub tracking: crate::advancements::tracking::Tracking,
     /// `moveDist` and `nextStep`: when the next step makes a sound and a vibration.
     pub move_dist: f32,
     pub next_step: f32,
@@ -239,6 +244,15 @@ pub struct Survival {
     pub shield_disabled_until: i32,
     /// The item in the main hand at the last tick (`lastItemInMainHand`).
     pub last_main_hand_item: u16,
+    /// `raidOmenPosition` and what the omen effects see of villages and raids.
+    pub raid_omen: crate::raid::PlayerOmen,
+    /// The server moves the player itself (`canSimulateMovement` for a player no client
+    /// moves: the parity scenarios' mock players), see [`simulate_travel`].
+    pub simulate_movement: bool,
+    /// `yBodyRot`, only kept while the server moves the player.
+    pub y_body_rot: f32,
+    /// `horizontalCollision` of the last server-side move.
+    horizontal_collision: bool,
     first_tick: bool,
     sent: Sent,
     recorded: Recorded,
@@ -288,7 +302,7 @@ impl Default for Survival {
             respawn: None,
             combat: CombatTracker::default(),
             tick_count: 0,
-            time_since_rest: 0,
+            shoulders: super::shoulder::Shoulders::default(),
             last_climbable: None,
             fluids: FluidContact::default(),
             portal: crate::portal::PortalState::default(),
@@ -298,6 +312,7 @@ impl Default for Survival {
             last_level_up_time: 0,
             effects: crate::effect::ActiveEffects::default(),
             warden_spawn_tracker: crate::block::sculk_shrieker::WardenSpawnTracker::default(),
+            tracking: crate::advancements::tracking::Tracking::default(),
             move_dist: 0.0,
             next_step: 1.0,
             game_events: Vec::new(),
@@ -306,6 +321,10 @@ impl Default for Survival {
             using_item: None,
             shield_disabled_until: 0,
             last_main_hand_item: 0,
+            raid_omen: crate::raid::PlayerOmen::default(),
+            simulate_movement: false,
+            y_body_rot: 0.0,
+            horizontal_collision: false,
             first_tick: true,
             sent: Sent::default(),
             recorded: Recorded::default(),
@@ -504,6 +523,12 @@ impl Survival {
             data.get("warden_spawn_tracker"),
         );
         s.portal = crate::portal::PortalState::load(data);
+        if let Some(Tag::IntArray(v)) = data.get("raid_omen_position")
+            && let [x, y, z] = v.as_slice()
+        {
+            s.raid_omen.position = Some(BlockPos::new(*x, *y, *z));
+        }
+        s.tracking = crate::advancements::tracking::Tracking::load(data);
         if let Some(Tag::Compound(loc)) = data.get("LastDeathLocation")
             && let (Some(Tag::String(dim)), Some(Tag::IntArray(pos))) =
                 (loc.get("dimension"), loc.get("pos"))
@@ -514,6 +539,7 @@ impl Survival {
         if let Some(Tag::Compound(respawn)) = data.get("respawn") {
             s.respawn = RespawnConfig::load(respawn);
         }
+        s.shoulders = super::shoulder::Shoulders::load(data);
         s
     }
 
@@ -554,7 +580,12 @@ impl Survival {
             }
         }
         self.portal.save(out);
+        self.tracking.save(out);
         self.food.save(out);
+        out.remove("raid_omen_position");
+        if let Some(p) = self.raid_omen.position {
+            out.insert("raid_omen_position", Tag::IntArray(vec![p.x, p.y, p.z]));
+        }
         out.remove("LastDeathLocation");
         if let Some((dim, pos)) = &self.last_death {
             let mut loc = Compound::with_capacity(2);
@@ -566,6 +597,7 @@ impl Survival {
         if let Some(respawn) = &self.respawn {
             out.insert("respawn", Tag::Compound(respawn.save()));
         }
+        self.shoulders.save(out);
     }
 
     /// `restoreFrom` for a respawn after death: health, food and air start over; experience,
@@ -578,6 +610,8 @@ impl Survival {
             respawn: self.respawn.clone(),
             warden_spawn_tracker: self.warden_spawn_tracker,
             portal: self.portal.clone(),
+            shoulders: self.shoulders.clone(),
+            tracking: self.tracking.respawned(),
             ..Survival::default()
         };
         if keep_inventory {
@@ -586,6 +620,12 @@ impl Survival {
         }
         s.xp.seed = self.xp.seed;
         s
+    }
+
+    /// The player was moved without walking (teleport, portal): the blocks it touches next
+    /// tick are only those at its new place.
+    pub fn teleported(&mut self) {
+        self.last_box = None;
     }
 
     /// `Player.giveExperiencePoints`: the score grows by the points too. Returns the volume of
@@ -605,12 +645,6 @@ impl Survival {
             }
         });
         volume
-    }
-
-    /// The player was moved without walking (teleport, portal): the blocks it touches next
-    /// tick are only those at its new place.
-    pub fn teleported(&mut self) {
-        self.last_box = None;
     }
 
     /// Forces the next [`sync`](Self::sync) to send health, food and experience
@@ -769,6 +803,7 @@ pub fn hurt_with(
     if player.survival.is_dead_or_dying() {
         return false;
     }
+    super::shoulder::remove_entities(entity, player, env);
     if types.is(kind, tag::IS_FIRE)
         && player
             .survival
@@ -869,14 +904,12 @@ pub fn hurt_with(
         let fully_blocked = blocked && damage <= 0.0;
         if !types.is(kind, tag::NO_KNOCKBACK) && !fully_blocked {
             // `dealDefaultKnockback`: away from the source position.
-            let (xd, zd) = source
-                .position
-                .map_or((0.0, 0.0), |p| (p.x - pos.x, p.z - pos.z));
+            let (xd, zd) = source.knockback_direction(pos);
             let on_ground = entity.as_ref().flags().contains(EntityFlags::ON_GROUND);
             let v = crate::mob::combat::knockback(
                 entity.as_ref().velocity(),
                 on_ground,
-                0.4,
+                f64::from(0.4_f32),
                 xd,
                 zd,
                 0.0,
@@ -911,6 +944,25 @@ pub fn hurt_with(
                 env.out,
             );
         });
+    }
+    // `ENTITY_HURT_PLAYER`, `DAMAGE_BLOCKED_BY_SHIELD` and the causing player's
+    // `PLAYER_HURT_ENTITY` (resolved with the entities: `view::resolve_combat`).
+    if source.cause.is_some()
+        || player
+            .advancements
+            .listens(crate::advancements::trigger::TriggerKind::ENTITY_HURT_PLAYER)
+    {
+        player
+            .advancements
+            .combat
+            .push(crate::advancements::view::PendingCombat::Hurt {
+                source,
+                damage,
+                blocked,
+            });
+    }
+    if let Some(v) = damage_stat(blocked_amount) {
+        player.stats.award(custom::DAMAGE_BLOCKED_BY_SHIELD, v);
     }
     true
 }
@@ -956,20 +1008,24 @@ fn actually_hurt(
         let (armor, toughness) = armor_values(player);
         damage = combat::damage_after_absorb_with(damage, armor, toughness, armor_effectiveness);
     }
-    // `getDamageAfterMagicAbsorb`: the protection enchantments.
-    if !types.is(kind, tag::BYPASSES_ENCHANTMENTS) && damage > 0.0 {
-        let protection = protection(entity, player, env, &source);
-        if protection > 0.0 {
-            damage = combat::damage_after_magic_absorb(damage, protection);
-        }
-    }
-    // `getDamageAfterMagicAbsorb`: Resistance (protection enchantments come with armour).
+    // `getDamageAfterMagicAbsorb`: Resistance (with `DAMAGE_RESISTED`), then the protection
+    // enchantments.
     if !types.is(kind, tag::BYPASSES_EFFECTS) {
         if !types.is(kind, tag::BYPASSES_RESISTANCE) {
+            let before = damage;
             damage = player.survival.effects.resistance_damage(damage);
+            if let Some(v) = damage_stat(before - damage) {
+                player.stats.award(custom::DAMAGE_RESISTED, v);
+            }
         }
         if damage <= 0.0 {
             damage = 0.0;
+        }
+        if !types.is(kind, tag::BYPASSES_ENCHANTMENTS) && damage > 0.0 {
+            let protection = protection(entity, player, env, &source);
+            if protection > 0.0 {
+                damage = combat::damage_after_magic_absorb(damage, protection);
+            }
         }
     }
     let s = &mut player.survival;
@@ -1056,11 +1112,14 @@ fn hurt_armor(player: &mut PlayerData, env: &mut Env<'_>, source: &DamageSource,
                 n += 1;
             }
         }
-        let d = crate::item::damage(stack) + n;
-        if d >= crate::item::max_damage(stack) {
-            stack.shrink(1);
-        } else if n > 0 {
-            crate::item::set_damage(stack, d);
+        if n > 0 {
+            let d = crate::item::damage(stack) + n;
+            crate::advancements::view::apply_damage(
+                Some(&mut player.advancements),
+                Some(&mut player.stats),
+                stack,
+                d,
+            );
         }
     }
 }
@@ -1096,10 +1155,11 @@ fn protection(
         smelts_loot: false,
         sheep_color: None,
         sheared: false,
+        villager_variant: None,
     };
     let cx = crate::enchant::EnchantContext {
         types: env.types,
-        tags: data,
+        tags: &*data,
         this: Some(this),
         attacker: None,
         direct_attacker: None,
@@ -1167,12 +1227,15 @@ fn apply_item_blocking(
             && crate::item::is_damageable(s)
         {
             let d = crate::item::damage(s) + n;
-            if d >= crate::item::max_damage(s) {
-                s.shrink(1);
+            let broke = crate::advancements::view::apply_damage(
+                Some(&mut player.advancements),
+                Some(&mut player.stats),
+                s,
+                d,
+            );
+            if broke {
                 player.survival.using_item = None;
                 entity.mark_data_dirty();
-            } else {
-                crate::item::set_damage(s, d);
             }
         }
     }
@@ -1227,8 +1290,6 @@ pub fn die(
     let network_id = entity.as_ref().network_id().0;
     let uuid = entity.as_ref().uuid();
     let id = entity.as_ref().id();
-    // `resetStat(TIME_SINCE_REST)`.
-    player.survival.time_since_rest = 0;
     let sink = std::sync::Arc::clone(&player.connection.sink);
     let mut broadcast = None;
     if env.rules.bool(Rule::SHOW_DEATH_MESSAGES) {
@@ -1245,6 +1306,7 @@ pub fn die(
             message: Component::empty(),
         });
     }
+    super::shoulder::remove_entities(entity, player, env);
     // `dropAllDeathLoot` → `dropEquipment` and `dropExperience`.
     if !env.rules.bool(Rule::KEEP_INVENTORY) && player.game_mode != GameMode::Spectator {
         let pos = entity.as_ref().pos();
@@ -1268,6 +1330,12 @@ pub fn die(
         }
     }
     // The kill credit is the damage's causing entity: nothing else credits kills yet.
+    if let Some(killer) = source.cause {
+        player
+            .advancements
+            .combat
+            .push(crate::advancements::view::PendingCombat::Died { source, killer });
+    }
     env.out.push(Effect::Died {
         victim: id,
         killer: source.cause,
@@ -1384,20 +1452,30 @@ pub fn do_tick(
     player: &mut PlayerData,
     env: &mut Env<'_>,
 ) -> TickResult {
+    match do_tick_ai(entity, player, env) {
+        std::ops::ControlFlow::Break(result) => result,
+        std::ops::ControlFlow::Continue(result) => do_tick_end(entity, player, env, result),
+    }
+}
+
+/// [`do_tick`] up to the end of `Player.aiStep` (without its `pushEntities` and `touch`, which
+/// need the other entities): `Break` when the tick ends early.
+pub fn do_tick_ai(
+    entity: &mut EntityMut<'_>,
+    player: &mut PlayerData,
+    env: &mut Env<'_>,
+) -> std::ops::ControlFlow<TickResult, TickResult> {
+    use std::ops::ControlFlow::{Break, Continue};
     let spectator = player.game_mode == GameMode::Spectator;
     let abilities = Abilities::of(player.game_mode);
     let mut result = TickResult::Alive;
     if player.survival.portal.won_game {
         // Removed from the world while the credits roll.
-        return result;
+        return Break(result);
     }
     {
         let s = &mut player.survival;
         s.tick_count = s.tick_count.wrapping_add(1);
-        // `awardStat(TIME_SINCE_REST)` while alive (players cannot sleep yet).
-        if !s.is_dead_or_dying() {
-            s.time_since_rest = s.time_since_rest.saturating_add(1);
-        }
         // `ServerPlayer.tick`: `wardenSpawnTracker.tick()`.
         s.warden_spawn_tracker.tick();
     }
@@ -1416,7 +1494,7 @@ pub fn do_tick(
         _ => 0,
     };
     if let Some((kind, entry)) = player.survival.portal.handle(can_use_portal, portal_delay) {
-        return TickResult::Portal(kind, entry);
+        return Break(TickResult::Portal(kind, entry));
     }
     update_fluids(entity, player, env);
     update_swimming(entity, player);
@@ -1527,7 +1605,7 @@ pub fn do_tick(
         if s.effects.has(crate::effect::MobEffect::SLOW_FALLING)
             || s.effects.has(crate::effect::MobEffect::LEVITATION)
         {
-            s.fall_distance = 0.0;
+            reset_fall_distance(player);
         }
     }
     // `Player.aiStep`: peaceful regeneration (`ServerPlayer.tickRegeneration`).
@@ -1540,6 +1618,9 @@ pub fn do_tick(
             s.food.food_level += 1;
         }
     }
+    if player.survival.simulate_movement && result == TickResult::Alive {
+        simulate_travel(entity, player, env);
+    }
     if result == TickResult::Alive && !player.survival.is_dead_or_dying() {
         if !spectator {
             apply_block_effects(entity, player, env);
@@ -1548,7 +1629,22 @@ pub fn do_tick(
             result = TickResult::Credits;
         }
     }
+    Continue(result)
+}
+
+/// [`do_tick`] after `Player.aiStep`: the body turn, the food tick and the health packets.
+pub fn do_tick_end(
+    entity: &mut EntityMut<'_>,
+    player: &mut PlayerData,
+    env: &mut Env<'_>,
+    result: TickResult,
+) -> TickResult {
+    if player.survival.simulate_movement {
+        tick_head_turn(entity, &mut player.survival);
+    }
     player.survival.last_box = Some(entity.as_ref().aabb());
+    // `Player.aiStep`: `handleShoulderEntities`.
+    super::shoulder::handle(entity, player, env, false);
     // `FoodData.tick`.
     let s = &mut player.survival;
     let action = s.food.tick(
@@ -1589,10 +1685,9 @@ fn update_fluids(entity: &EntityMut<'_>, player: &mut PlayerData, env: &Env<'_>)
     let pos = e.pos();
     let eye = Vec3::new(pos.x, pos.y + eye_height(e.dims().height), pos.z);
     let contact = blocks::fluid_contact(env.blocks, env.facts, e.aabb(), eye);
-    let s = &mut player.survival;
-    s.fluids = contact;
+    player.survival.fluids = contact;
     if contact.in_water() {
-        s.fall_distance = 0.0;
+        reset_fall_distance(player);
     }
 }
 
@@ -1802,7 +1897,7 @@ pub fn on_move(
     let dy = mv.to.y - mv.from.y;
     check_fall_damage(entity, player, env, dy, mv.on_ground, crouching);
     if mv.moved_upwards {
-        player.survival.fall_distance = 0.0;
+        reset_fall_distance(player);
     }
     if player.game_mode != GameMode::Spectator && !(mv.on_ground && crouching) {
         movement_emission(entity, player, env, mv, crouching);
@@ -1964,7 +2059,7 @@ fn check_fall_damage(
                 }
             }
         }
-        player.survival.fall_distance = 0.0;
+        reset_fall_distance(player);
         player.survival.last_climbable = None;
     }
 }
@@ -2089,6 +2184,277 @@ fn movement_statistics(
         if d > 25 {
             player.stats.award(custom::FLY_ONE_CM, d);
         }
+    }
+}
+
+/// `LivingEntity.aiStep` → `Player.travel` without input, for a player the server moves itself
+/// ([`Survival::simulate_movement`]): the small motion cut-off, then air or fluid travel with
+/// gravity, friction and block collisions (`Entity.move`).
+fn simulate_travel(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mut Env<'_>) {
+    let v = entity.as_ref().velocity();
+    let (x, z) = if v.x * v.x + v.z * v.z < 9.0e-6 {
+        (0.0, 0.0)
+    } else {
+        (v.x, v.z)
+    };
+    let y = if v.y.abs() < 0.003 { 0.0 } else { v.y };
+    entity.set_velocity(Vec3::new(x, y, z));
+    if player.survival.is_dead_or_dying() {
+        return;
+    }
+    let fluids = player.survival.fluids;
+    if fluids.in_water() || fluids.in_lava() {
+        travel_in_fluid(entity, player, env);
+    } else {
+        travel_in_air(entity, player, env);
+    }
+}
+
+/// The `minecraft:gravity` attribute of players.
+const GRAVITY: f64 = 0.08;
+
+/// `getEffectiveGravity` of a player.
+fn player_gravity(entity: &EntityMut<'_>, player: &PlayerData) -> f64 {
+    let gravity = if entity.as_ref().flags().contains(EntityFlags::NO_GRAVITY) {
+        0.0
+    } else {
+        GRAVITY
+    };
+    let falling = entity.as_ref().velocity().y <= 0.0;
+    player.survival.effects.effective_gravity(gravity, falling)
+}
+
+/// `getBlockPosBelowThatAffectsMyMovement`.
+fn pos_below_affecting_movement(pos: Vec3) -> BlockPos {
+    block_pos(Vec3::new(pos.x, pos.y - f64::from(0.500_001_f32), pos.z))
+}
+
+fn travel_in_air(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mut Env<'_>) {
+    let pos = entity.as_ref().pos();
+    let on_ground = entity.as_ref().flags().contains(EntityFlags::ON_GROUND);
+    let below = pos_below_affecting_movement(pos);
+    let below_state = env.blocks.block_state(below);
+    let block_friction = match below_state {
+        Some(state) if on_ground => state.block().info().friction,
+        _ => 1.0,
+    };
+    let v = entity.as_ref().velocity();
+    simulate_move(entity, player, env, v);
+    let movement = entity.as_ref().velocity();
+    let mut y = movement.y;
+    if let Some(a) = player
+        .survival
+        .effects
+        .amplifier(crate::effect::MobEffect::LEVITATION)
+    {
+        y += (0.05 * f64::from(a + 1) - movement.y) * 0.2;
+    } else if below_state.is_some() {
+        y -= player_gravity(entity, player);
+    } else if entity.as_ref().pos().y > f64::from(env.min_y) {
+        y = -0.1;
+    } else {
+        y = 0.0;
+    }
+    let friction = block_friction * 0.91;
+    entity.set_velocity(Vec3::new(
+        movement.x * f64::from(friction),
+        y * f64::from(0.98_f32),
+        movement.z * f64::from(friction),
+    ));
+}
+
+fn travel_in_fluid(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mut Env<'_>) {
+    let falling = entity.as_ref().velocity().y <= 0.0;
+    let old_y = entity.as_ref().pos().y;
+    let gravity = player_gravity(entity, player);
+    let adjusted = |movement: Vec3| {
+        if gravity == 0.0 {
+            return movement;
+        }
+        let y = if falling
+            && (movement.y - 0.005).abs() >= 0.003
+            && (movement.y - gravity / 16.0).abs() < 0.003
+        {
+            -0.003
+        } else {
+            movement.y - gravity / 16.0
+        };
+        Vec3::new(movement.x, y, movement.z)
+    };
+    let v = entity.as_ref().velocity();
+    simulate_move(entity, player, env, v);
+    let movement = entity.as_ref().velocity();
+    if player.survival.fluids.in_water() {
+        // `travelInWater`: the player's water slow down; no input, no Depth Strider here.
+        let mut slow_down = 0.8_f32;
+        if player
+            .survival
+            .effects
+            .has(crate::effect::MobEffect::DOLPHINS_GRACE)
+        {
+            slow_down = 0.96;
+        }
+        let m = movement.multiply(
+            f64::from(slow_down),
+            f64::from(0.8_f32),
+            f64::from(slow_down),
+        );
+        entity.set_velocity(adjusted(m));
+    } else {
+        let m = if player.survival.fluids.lava_height <= 0.4 {
+            adjusted(movement.multiply(0.5, f64::from(0.8_f32), 0.5))
+        } else {
+            movement * 0.5
+        };
+        let m = if gravity == 0.0 {
+            m
+        } else {
+            Vec3::new(m.x, m.y - gravity / 4.0, m.z)
+        };
+        entity.set_velocity(m);
+    }
+    // `jumpOutOfFluid`.
+    let v = entity.as_ref().velocity();
+    if player.survival.horizontal_collision {
+        let pos = entity.as_ref().pos();
+        let probe =
+            entity
+                .as_ref()
+                .aabb()
+                .offset(v.x, v.y + f64::from(0.6_f32) - pos.y + old_y, v.z);
+        let blocks = MoveBlocks(env.blocks);
+        let mut scratch = Vec::new();
+        if crate::mob::physics::no_collision(&blocks, &probe, &mut scratch)
+            && !crate::mob::physics::contains_any_liquid(&blocks, &probe)
+        {
+            entity.set_velocity(Vec3::new(v.x, f64::from(0.3_f32), v.z));
+        }
+    }
+}
+
+/// The world's blocks for [`crate::mob::physics`] (air where nothing is loaded).
+struct MoveBlocks<'a>(&'a dyn BlockAccess);
+
+impl crate::mob::physics::Blocks for MoveBlocks<'_> {
+    fn state(&self, pos: BlockPos) -> vanillite_data::block::BlockState {
+        self.0
+            .block_state(pos)
+            .unwrap_or(vanillite_data::block::BlockState::AIR)
+    }
+}
+
+/// `Entity.move(MoverType.SELF, delta)` of a player the server moves: collisions with step up,
+/// the ground flag, fall damage, the colliding axes stopped, the step game events and the
+/// block speed factor.
+fn simulate_move(
+    entity: &mut EntityMut<'_>,
+    player: &mut PlayerData,
+    env: &mut Env<'_>,
+    delta: Vec3,
+) {
+    let from = entity.as_ref().pos();
+    let was_on_ground = entity.as_ref().flags().contains(EntityFlags::ON_GROUND);
+    let blocks = MoveBlocks(env.blocks);
+    let mut scratch = Vec::new();
+    let movement = crate::mob::physics::collide(
+        &blocks,
+        entity.as_ref().aabb(),
+        delta,
+        0.6,
+        was_on_ground,
+        &mut scratch,
+    );
+    let length = movement.length_sqr();
+    if length > 1.0e-7 || delta.length_sqr() - length < 1.0e-7 {
+        entity.set_pos(from + movement);
+    }
+    let x_collision = !java_equal(delta.x, movement.x);
+    let z_collision = !java_equal(delta.z, movement.z);
+    let horizontal = x_collision || z_collision;
+    player.survival.horizontal_collision = horizontal;
+    let moved_vertically = delta.y.abs() > 0.0;
+    let mut vertical = false;
+    let mut on_ground = was_on_ground;
+    if moved_vertically {
+        vertical = delta.y != movement.y;
+        on_ground = vertical && delta.y < 0.0;
+        entity.set_flags(EntityFlags::ON_GROUND, on_ground);
+    }
+    let crouching = entity.as_ref().flags().contains(EntityFlags::CROUCHING);
+    check_fall_damage(entity, player, env, movement.y, on_ground, crouching);
+    if player.survival.is_dead_or_dying() {
+        return;
+    }
+    if moved_vertically && vertical || horizontal {
+        let mut v = entity.as_ref().velocity();
+        // `restituteMovementAfterCollisions` without bounciness (Java's signed zeros).
+        if x_collision {
+            v.x = -v.x * 0.0;
+        }
+        if z_collision {
+            v.z = -v.z * 0.0;
+        }
+        if vertical {
+            v.y = -v.y * 0.0;
+        }
+        entity.set_velocity(v);
+    }
+    let to = entity.as_ref().pos();
+    if player.game_mode != GameMode::Spectator && !(on_ground && crouching) {
+        let mv = MoveRecord {
+            from,
+            to,
+            was_on_ground,
+            on_ground,
+            moved_upwards: false,
+        };
+        movement_emission(entity, player, env, mv, crouching);
+    }
+    // `getBlockSpeedFactor`.
+    let here = env
+        .blocks
+        .block_state(block_pos(to))
+        .map_or(1.0, |s| s.block().info().speed_factor);
+    let factor = if here == 1.0 {
+        env.blocks
+            .block_state(pos_below_affecting_movement(to))
+            .map_or(1.0, |s| s.block().info().speed_factor)
+    } else {
+        here
+    };
+    let v = entity.as_ref().velocity();
+    entity.set_velocity(v.multiply(f64::from(factor), 1.0, f64::from(factor)));
+}
+
+/// `Math.abs(a - b) < 1.0E-5F` as `Mth.equal`.
+fn java_equal(a: f64, b: f64) -> bool {
+    (b - a).abs() < f64::from(1.0e-5_f32)
+}
+
+/// `LivingEntity.tick` after `aiStep`: the body turns towards the walk direction
+/// (`tickHeadTurn`), for a player the server moves.
+fn tick_head_turn(entity: &EntityMut<'_>, s: &mut Survival) {
+    let e = entity.as_ref();
+    let d = e.pos() - e.old_pos();
+    let yaw = e.rot().y_rot;
+    #[allow(clippy::cast_possible_truncation)]
+    let side = (d.x * d.x + d.z * d.z) as f32;
+    let mut target = s.y_body_rot;
+    if side > 0.002_500_000_2 {
+        #[allow(clippy::cast_possible_truncation)]
+        let walk =
+            vanillite_base::math::atan2(d.z, d.x) as f32 * (180.0 / std::f32::consts::PI) - 90.0;
+        let diff = (vanillite_base::math::wrap_degrees_f(yaw) - walk).abs();
+        target = if 95.0 < diff && diff < 265.0 {
+            walk - 180.0
+        } else {
+            walk
+        };
+    }
+    s.y_body_rot += vanillite_base::math::wrap_degrees_f(target - s.y_body_rot) * 0.3;
+    let head = vanillite_base::math::wrap_degrees_f(yaw - s.y_body_rot);
+    if head.abs() > 50.0 {
+        s.y_body_rot += head - head.signum() * 50.0;
     }
 }
 

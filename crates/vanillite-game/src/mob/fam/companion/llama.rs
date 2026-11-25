@@ -11,7 +11,7 @@ use crate::entities::Entities;
 use crate::level::Level;
 use crate::mob::animal::Interaction;
 use crate::mob::common::{CommonGoal, TargetFilter};
-use crate::mob::fam::{Interact, SpawnReason};
+use crate::mob::fam::{GroupData, Interact, SpawnReason};
 use crate::mob::goals::{TargetState, flag, reduced};
 use crate::mob::kinds::Kind;
 use crate::mob::missile::{MissileData, MissileKind, MissileTick};
@@ -143,7 +143,13 @@ pub fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
     let max = if m.random.next_float() < 0.04 { 5 } else { 3 };
     let strength = 1 + m.random.next_int_bounded(max);
     st_mut(m).strength = strength.clamp(1, 5);
-    m.variant = m.random.next_int_bounded(4);
+    m.variant = if let GroupData::Llama(v) = ctx.group {
+        v
+    } else {
+        let v = m.random.next_int_bounded(4);
+        ctx.group = GroupData::Llama(v);
+        v
+    };
     let trader = m.kind == Kind::TraderLlama;
     if trader && ctx.reason == SpawnReason::Event {
         m.age = 0;
@@ -171,9 +177,10 @@ pub fn spit(t: &mut Tick<'_, '_>, target: EntityId, _power: f32) {
     let zd = o.pos.z - p.z;
     let yo = (xd * xd + zd * zd).sqrt() * f64::from(0.2_f32);
     let dir = Vec3::new(xd, yd + yo, zd);
-    let (velocity, rot) = crate::mob::projectile::shoot(&mut t.mob().random, dir, 1.5, 10.0);
+    let mut own = crate::mob::missile::new_projectile_random();
+    let (velocity, rot) = crate::mob::projectile::shoot(&mut own, dir, 1.5, 10.0);
     let data = MissileData::new(MissileKind::LlamaSpit);
-    crate::mob::missile::spawn_from(t, start, velocity, rot, data);
+    crate::mob::missile::spawn_shot(t, start, velocity, rot, data);
     let pitch = {
         let r = &mut t.mob().random;
         1.0 + (r.next_float() - r.next_float()) * 0.2
@@ -228,7 +235,10 @@ pub fn spit_tick(t: &mut MissileTick<'_, '_>) {
     let to = pos + velocity;
     let block_hit = physics::clip(t.level as &dyn Blocks, pos, to);
     let end = block_hit.map_or(to, |(_, p)| p);
-    let hit = first_entity_hit(t.ents, t.id, d.owner, left_owner, pos, end, aabb, velocity);
+    let margin = crate::mob::missile::margin(d.life);
+    let hit = first_entity_hit(
+        t.ents, t.id, d.owner, left_owner, pos, end, aabb, velocity, margin,
+    );
     if let Some(m) = t.ents.missile_mut(t.id) {
         m.left_owner = left_owner;
     }
@@ -299,7 +309,7 @@ fn touches_block(level: &Level, b: &Aabb) -> bool {
 }
 
 /// `ProjectileUtil.getEntityHitResult` along the move: the nearest living entity whose box
-/// (grown by 0.3) the segment crosses, the owner excluded until the projectile left it.
+/// (grown by `margin`) the segment crosses, the owner excluded until the projectile left it.
 #[allow(clippy::too_many_arguments)]
 pub fn first_entity_hit(
     ents: &Entities,
@@ -310,6 +320,7 @@ pub fn first_entity_hit(
     to: Vec3,
     aabb: Aabb,
     velocity: Vec3,
+    margin: f64,
 ) -> Option<EntityId> {
     let area = aabb
         .expand_towards(velocity.x, velocity.y, velocity.z)
@@ -330,7 +341,7 @@ pub fn first_entity_hit(
         let Some(oe) = ents.store.get(other) else {
             return;
         };
-        let grown = oe.aabb().inflate(0.3, 0.3, 0.3);
+        let grown = oe.aabb().inflate(margin, margin, margin);
         if crate::mob::projectile::segment_box(from, to, &grown).is_some() {
             let d = from.distance_to_sqr(oe.pos());
             if best.is_none_or(|(_, b)| d < b) {
@@ -388,11 +399,17 @@ pub fn trader_despawn(t: &mut Tick<'_, '_>) {
     if m.tame || other_leash || one_player || m.persistent {
         return;
     }
-    // A llama leashed to its trader despawns with it (the trader's delay is not known
-    // here; it counts down like an unleashed one).
+    // A llama leashed to its trader despawns with it.
+    let trader_delay = holder
+        .filter(|_| to_trader)
+        .and_then(|h| t.ents.mob(h))
+        .map(|m| crate::mob::fam::village::state(m).trader.despawn_delay);
     let m = t.mob();
     let s = st_mut(m);
-    s.despawn_delay -= 1;
+    s.despawn_delay = match trader_delay {
+        Some(d) => d - 1,
+        None => s.despawn_delay - 1,
+    };
     if s.despawn_delay <= 0 {
         m.removed = true;
         crate::mob::tame::drop_leash(t.ents, t.env, t.id, false);
@@ -517,7 +534,9 @@ pub fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
             *found = crate::mob::common::find_nearest(t, wolves, range, false, false, area);
             found.is_some()
         }
-        Goal::DefendTrader { found, .. } => {
+        Goal::DefendTrader {
+            found, timestamp, ..
+        } => {
             let Some(&holder) = t.ents.leashes.get(&t.id) else {
                 return false;
             };
@@ -529,9 +548,27 @@ pub fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
             {
                 return false;
             }
-            // The wandering trader's attacker (traders are not simulated yet).
-            *found = None;
-            false
+            // The trader's attacker (`getLastHurtByMob`), once per hit, if it can be attacked
+            // (`TargetingConditions.DEFAULT`: no range, line of sight).
+            let Some((by, stamp)) = t
+                .ents
+                .mob(holder)
+                .map(|m| (m.last_hurt_by_mob, m.last_hurt_by_mob_time))
+            else {
+                return false;
+            };
+            *found = by;
+            let Some(by) = by else {
+                return false;
+            };
+            if stamp == *timestamp {
+                return false;
+            }
+            if t.ents.player(by).is_some() {
+                crate::mob::goals::test_player(t, by, true, -1.0, true)
+            } else {
+                crate::mob::goals::can_attack(t, by) && crate::mob::living::has_line_of_sight(t, by)
+            }
         }
     }
 }
@@ -568,6 +605,13 @@ pub fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
 }
 
 pub fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
+    if let Goal::DefendTrader { timestamp, .. } = g
+        && let Some(holder) = t.ents.leashes.get(&t.id).copied()
+        && let Some(m) = t.ents.mob(holder)
+        && m.kind == crate::mob::Kind::WanderingTrader
+    {
+        *timestamp = m.last_hurt_by_mob_time;
+    }
     if let Goal::AttackWolf { found, state } | Goal::DefendTrader { found, state, .. } = g {
         crate::mob::goals::set_target(t, *found);
         state.unseen_ticks = 0;

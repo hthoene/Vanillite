@@ -56,8 +56,23 @@ pub fn tick(t: &mut Tick<'_, '_>) {
     if t.mob_ref().removed || !t.exists() {
         return;
     }
-    // `tickHeadTurn` → `BodyRotationControl.clientTick`.
-    nav::tick_body_rotation(t);
+    // `tickHeadTurn` → `BodyRotationControl.clientTick` (`CamelBodyRotationControl`).
+    let camel = matches!(
+        t.mob_ref().kind,
+        super::Kind::Camel | super::Kind::CamelHusk
+    );
+    if !camel || super::fam::mount::camel::turns_body(t) {
+        nav::tick_body_rotation(t);
+    }
+    // `refreshDirtyAttributes`: a lowered max health caps the health.
+    {
+        let m = t.mob();
+        #[allow(clippy::cast_possible_truncation)]
+        let max = m.attrs.max_health as f32;
+        if m.health > max {
+            m.health = max;
+        }
+    }
     super::tame::tick_leash(t);
     if !t.exists() {
         return;
@@ -67,6 +82,7 @@ pub fn tick(t: &mut Tick<'_, '_>) {
 
 /// `Entity.baseTick` + `LivingEntity.baseTick` + `Mob.baseTick`.
 fn base_tick(t: &mut Tick<'_, '_>) {
+    sprint_particle(t);
     update_fluids(t);
     let fire_immune = t.core().kind().info().fire_immune;
     let in_lava = t.mob_ref().fluids.in_lava();
@@ -752,6 +768,39 @@ fn block_speed_factor(t: &Tick<'_, '_>) -> f32 {
     factor + efficiency * (1.0 - factor)
 }
 
+/// `canSpawnSprintParticle` → `spawnSprintParticle`: the particles are the client's, the
+/// server still draws their position.
+fn sprint_particle(t: &mut Tick<'_, '_>) {
+    let flags = t.core().flags();
+    let fluids = t.mob_ref().fluids;
+    if !flags.contains(EntityFlags::SPRINTING)
+        || flags.contains(EntityFlags::CROUCHING)
+        || fluids.in_water()
+        || fluids.in_lava()
+        || !t.mob_ref().is_alive()
+    {
+        return;
+    }
+    use vanillite_data::block::BlockKind as K;
+    let state = t.level.block(on_pos(t, f64::from(0.2_f32)));
+    let invisible = matches!(
+        state.block().info().kind,
+        K::AirBlock
+            | K::BarrierBlock
+            | K::LiquidBlock
+            | K::BubbleColumnBlock
+            | K::LightBlock
+            | K::EndGatewayBlock
+            | K::EndPortalBlock
+            | K::StructureVoidBlock
+            | K::MovingPistonBlock
+    );
+    if !invisible {
+        let r = &mut t.mob().random;
+        let _ = (r.next_double(), r.next_double());
+    }
+}
+
 /// `getOnPos(offset)` without the supporting block search.
 fn on_pos(t: &Tick<'_, '_>, offset: f64) -> BlockPos {
     let p = t.pos();
@@ -1031,7 +1080,16 @@ pub fn move_self(t: &mut Tick<'_, '_>, delta: Vec3) {
     let step = t.mob_ref().attrs.step_height as f32;
     let on_ground = t.on_ground();
     let aabb = t.aabb();
-    let movement = physics::collide(t.level, aabb, delta, step, on_ground, &mut t.cx.boxes);
+    let on_lava = t.mob_ref().nav.stands_on_lava;
+    let movement = physics::collide_for(
+        t.level,
+        aabb,
+        delta,
+        step,
+        on_ground,
+        &mut t.cx.boxes,
+        on_lava,
+    );
     let length = movement.length_sqr();
     if length > 1.0e-7 || delta.length_sqr() - length < 1.0e-7 {
         let p = t.pos();
@@ -1051,7 +1109,7 @@ pub fn move_self(t: &mut Tick<'_, '_>, delta: Vec3) {
     }
     let effect_pos = on_pos(t, f64::from(0.2_f32));
     let effect_state = t.level.block(effect_pos);
-    check_fall_damage(t, movement.y, t.on_ground(), effect_state);
+    check_fall_damage(t, movement.y, t.on_ground(), effect_state, effect_pos);
     if !t.exists() || t.mob_ref().removed {
         return;
     }
@@ -1065,7 +1123,7 @@ pub fn move_self(t: &mut Tick<'_, '_>, delta: Vec3) {
             v.z = -v.z * 0.0;
         }
         if vertical {
-            v.y = 0.0;
+            v.y = -v.y * 0.0;
         }
         t.set_velocity(v);
     }
@@ -1160,10 +1218,23 @@ fn java_equal(a: f64, b: f64) -> bool {
 }
 
 /// `LivingEntity.checkFallDamage` → `Entity.checkFallDamage` → `Block.fallOn`.
-fn check_fall_damage(t: &mut Tick<'_, '_>, ya: f64, on_ground: bool, on_state: BlockState) {
+fn check_fall_damage(
+    t: &mut Tick<'_, '_>,
+    ya: f64,
+    on_ground: bool,
+    on_state: BlockState,
+    on_pos: BlockPos,
+) {
     if on_ground {
         let distance = t.mob_ref().fall_distance;
         if distance > 0.0 {
+            fall_particles(t, distance, on_state, on_pos);
+            // `TurtleEggBlock.fallOn`: zombies land on eggs without breaking them.
+            if on_state.block() == vanillite_data::block::ids::TURTLE_EGG
+                && !crate::mob::fam::undead::zombies::is_zombie(t.mob_ref().kind)
+            {
+                trample_turtle_egg(t, 3);
+            }
             let pos = t.pos();
             post_game_event(
                 t,
@@ -1194,6 +1265,37 @@ fn check_fall_damage(t: &mut Tick<'_, '_>, ya: f64, on_ground: bool, on_state: B
     }
 }
 
+/// `LivingEntity.checkFallDamage`: the landing dust of a fall of at least one damaging
+/// block, more for higher falls.
+fn fall_particles(t: &mut Tick<'_, '_>, distance: f64, on_state: BlockState, on_pos: BlockPos) {
+    let power = floor(distance + 1.0e-6 - t.mob_ref().attrs.safe_fall_distance).max(0);
+    if power <= 0 || on_state.is_air() {
+        return;
+    }
+    let p = t.pos();
+    let (mut x, mut z) = (p.x, p.z);
+    let here = t.block_pos();
+    if on_pos.x != here.x || on_pos.z != here.z {
+        let x_diff = x - f64::from(on_pos.x) - 0.5;
+        let z_diff = z - f64::from(on_pos.z) - 0.5;
+        let max = x_diff.abs().max(z_diff.abs());
+        x = f64::from(on_pos.x) + 0.5 + x_diff / max * 0.5;
+        z = f64::from(on_pos.z) + 0.5 + z_diff / max * 0.5;
+    }
+    let scale = (f64::from(0.2_f32) + f64::from(power) / 15.0).min(2.5);
+    #[allow(clippy::cast_possible_truncation)]
+    let count = (150.0 * scale) as i32;
+    let mut particle = crate::level::particles::simple("minecraft:block");
+    vanillite_protocol::codec::write_varint(&mut particle.options, i32::from(on_state.0));
+    t.cx.send_particles(
+        particle,
+        Vec3::new(x, p.y, z),
+        count,
+        Vec3::ZERO,
+        f64::from(0.15_f32),
+    );
+}
+
 /// `LivingEntity.causeFallDamage`.
 fn cause_fall_damage(t: &mut Tick<'_, '_>, distance: f64, multiplier: f32) {
     if t.mob_ref().kind.fall_damage_immune() {
@@ -1216,10 +1318,31 @@ fn cause_fall_damage(t: &mut Tick<'_, '_>, distance: f64, multiplier: f32) {
     kinds::on_fall_damage(t, distance);
 }
 
+/// Queues `TurtleEggBlock.destroyEgg` for the eggs the mob stands on.
+fn trample_turtle_egg(t: &mut Tick<'_, '_>, randomness: i32) {
+    let pos = on_pos(t, f64::from(0.2_f32));
+    // `canDestroyEgg`: living entities but turtles and bats, with `mob_griefing`.
+    let can_destroy = !matches!(t.mob_ref().kind, super::Kind::Turtle | super::Kind::Bat)
+        && t.env.rules.bool(Rule::MOB_GRIEFING);
+    t.cx.actions.push(super::WorldAction::TrampleTurtleEgg {
+        pos,
+        can_destroy,
+        randomness,
+    });
+}
+
 /// `applyEffectsFromBlocks` / `checkInsideBlocks` for fire, lava, cobwebs and berry bushes.
 fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
+    // `stepOn` of the block below (turtle eggs; mobs are never careful).
+    if t.on_ground()
+        && t.level.block(on_pos(t, f64::from(0.2_f32))).block()
+            == vanillite_data::block::ids::TURTLE_EGG
+    {
+        trample_turtle_egg(t, 100);
+    }
     let inside = inside_blocks(t.env.blocks, t.env.facts, t.aabb());
     let fire_immune = t.core().kind().info().fire_immune;
+    let previous_fire = t.mob_ref().fire_ticks;
     if let Some(damage) = inside.fire
         && !fire_immune
     {
@@ -1247,11 +1370,23 @@ fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
     if !t.exists() {
         return;
     }
-    if inside.water {
-        let m = t.mob();
-        if m.fire_ticks > 0 {
-            m.fire_ticks = 0;
-        }
+    // `isInRain`: the feet's block or the column at the top of the box.
+    let p = t.pos();
+    let feet = BlockPos::containing(p.x, p.y, p.z);
+    let in_rain = (t.env.raining_at)(feet)
+        || (t.env.raining_at)(BlockPos::containing(
+            f64::from(feet.x),
+            t.aabb().max_y,
+            f64::from(feet.z),
+        ));
+    let m = t.mob();
+    if (inside.water || in_rain) && m.fire_ticks > 0 {
+        // `clearFire`.
+        m.fire_ticks = 0;
+    }
+    // Not burning and not ignited this tick: `-getFireImmuneTicks()`.
+    if m.fire_ticks <= 0 && m.fire_ticks <= previous_fire {
+        m.fire_ticks = -1;
     }
     // Cobwebs and sweet berry bushes slow the next move (`makeStuckInBlock`).
     let b = t.aabb().inflate(-1.0e-5, -1.0e-5, -1.0e-5);
@@ -1263,6 +1398,13 @@ fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
             for z in z0..=z1 {
                 let state = t.level.block(BlockPos::new(x, y, z));
                 let block = state.block();
+                if block == vanillite_data::block::ids::BIG_DRIPLEAF {
+                    // `BigDripleafBlock.entityInside`.
+                    t.cx.actions.push(super::WorldAction::EntityInside(
+                        BlockPos::new(x, y, z),
+                        t.id,
+                    ));
+                }
                 if block == vanillite_data::block::ids::COBWEB {
                     stuck = Some(Vec3::new(0.25, f64::from(0.05_f32), 0.25));
                 } else if block == vanillite_data::block::ids::SWEET_BERRY_BUSH {
@@ -1309,11 +1451,40 @@ fn bubble_columns(
                     (false, false) => (v.y + 0.06).min(0.7),
                 };
                 t.set_velocity(Vec3::new(v.x, yd, v.z));
-                if !nothing_above {
+                if nothing_above {
+                    send_bubble_column_particles(t, pos);
+                } else {
                     t.mob().fall_distance = 0.0;
                 }
             }
         }
+    }
+}
+
+/// `Entity.sendBubbleColumnParticles`: splashes and bubbles at random spots on the column's
+/// top, drawn from the level's random.
+fn send_bubble_column_particles(t: &mut Tick<'_, '_>, pos: BlockPos) {
+    use crate::level::particles::simple;
+    let (x, y, z) = (f64::from(pos.x), f64::from(pos.y + 1), f64::from(pos.z));
+    for _ in 0..2 {
+        let at = Vec3::new(
+            x + t.env.random.next_double(),
+            y,
+            z + t.env.random.next_double(),
+        );
+        t.cx.send_particles(simple("minecraft:splash"), at, 1, Vec3::ZERO, 1.0);
+        let at = Vec3::new(
+            x + t.env.random.next_double(),
+            y,
+            z + t.env.random.next_double(),
+        );
+        t.cx.send_particles(
+            simple("minecraft:bubble"),
+            at,
+            1,
+            Vec3::new(0.0, 0.01, 0.0),
+            0.2,
+        );
     }
 }
 
@@ -1381,15 +1552,19 @@ fn push_entities(t: &mut Tick<'_, '_>) {
         xa /= dd;
         za /= dd;
         let pow = (1.0 / dd).min(1.0);
-        xa *= pow * f64::from(0.05_f32);
-        za *= pow * f64::from(0.05_f32);
+        // `xa *= pow; xa *= 0.05F`: two roundings.
+        xa = xa * pow * f64::from(0.05_f32);
+        za = za * pow * f64::from(0.05_f32);
         if t.mob_ref().kind == super::Kind::Warden {
             // `Warden.doPush`.
             super::boss::warden::do_push(t, other);
         }
-        if t.ents.mob(other).is_some()
-            && let Some(mut e) = t.ents.store.get_mut(other)
-        {
+        // Players the server moves itself take the push too (a client moves the others).
+        let pushed = t.ents.mob(other).is_some()
+            || t.ents
+                .player(other)
+                .is_some_and(|p| p.survival.simulate_movement);
+        if pushed && let Some(mut e) = t.ents.store.get_mut(other) {
             let v = e.as_ref().velocity();
             e.set_velocity(Vec3::new(v.x - xa, v.y, v.z - za));
             e.set_flags(EntityFlags::HAS_IMPULSE, true);
@@ -1401,6 +1576,65 @@ fn push_entities(t: &mut Tick<'_, '_>) {
         }
     }
     t.cx.ids = ids;
+}
+
+/// `LivingEntity.pushEntities` of a player the server moves itself
+/// (`survival::player::Survival::simulate_movement`): it pushes and is pushed by the mobs,
+/// minecarts and players in its box. Players moved by their clients push in
+/// [`crate::minecart::players_push`].
+pub fn player_push_entities(ents: &mut super::Entities, player: EntityId) {
+    let Some(aabb) = ents.store.get(player).map(|e| e.aabb()) else {
+        return;
+    };
+    let mut ids = Vec::new();
+    ents.store.for_each_in(&aabb, false, |other| {
+        if other != player {
+            ids.push(other);
+        }
+    });
+    ids.retain(|&o| {
+        ents.mob(o).is_some_and(super::MobData::is_alive)
+            || ents.minecart(o).is_some()
+            || ents.player(o).is_some_and(|p| {
+                !p.survival.is_dead_or_dying()
+                    && p.game_mode != vanillite_config::GameMode::Spectator
+            })
+    });
+    for other in ids {
+        if ents.minecart(other).is_some() {
+            crate::minecart::push_by(ents, other, player);
+            continue;
+        }
+        let (Some(o), Some(p)) = (ents.store.get(other), ents.store.get(player)) else {
+            continue;
+        };
+        // `other.push(player)`.
+        let (op, pp) = (o.pos(), p.pos());
+        let mut xa = pp.x - op.x;
+        let mut za = pp.z - op.z;
+        let mut dd = xa.abs().max(za.abs());
+        if dd < f64::from(0.01_f32) {
+            continue;
+        }
+        dd = dd.sqrt();
+        xa /= dd;
+        za /= dd;
+        let pow = (1.0 / dd).min(1.0);
+        // `xa *= pow; xa *= 0.05F`: two roundings.
+        xa = xa * pow * f64::from(0.05_f32);
+        za = za * pow * f64::from(0.05_f32);
+        let pushed = ents.mob(other).is_some()
+            || ents
+                .player(other)
+                .is_some_and(|p| p.survival.simulate_movement);
+        for (id, x, z, on) in [(other, -xa, -za, pushed), (player, xa, za, true)] {
+            if on && let Some(mut e) = ents.store.get_mut(id) {
+                let v = e.as_ref().velocity();
+                e.set_velocity(Vec3::new(v.x + x, v.y, v.z + z));
+                e.set_flags(EntityFlags::HAS_IMPULSE, true);
+            }
+        }
+    }
 }
 
 /// `Mob.serverAiStep`.

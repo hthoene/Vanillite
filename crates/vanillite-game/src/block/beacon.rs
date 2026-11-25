@@ -223,6 +223,27 @@ pub fn tick(level: &mut Level, pos: BlockPos, _state: BlockState) {
         let active = b.levels > 0;
         if !was_active && active {
             play(level, pos, "minecraft:block.beacon.activate");
+            // `CONSTRUCT_BEACON` for the players near the base.
+            let (fx, fy, fz) = (f64::from(x), f64::from(y), f64::from(z));
+            let area = Aabb::new(
+                fx - 10.0,
+                fy - 9.0,
+                fz - 10.0,
+                fx + 10.0,
+                fy + 5.0,
+                fz + 10.0,
+            );
+            let mut players: Vec<EntityId> = Vec::new();
+            level
+                .entities
+                .store
+                .for_each_in(&area, true, |p| players.push(p));
+            for p in players {
+                level.trigger(
+                    p,
+                    crate::advancements::trigger::Event::ConstructBeacon(b.levels),
+                );
+            }
         } else if was_active && !active {
             play(level, pos, "minecraft:block.beacon.deactivate");
         }

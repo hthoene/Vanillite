@@ -1,0 +1,20 @@
+{
+  "description": "Lightning strikes living entities under the open sky (easy difficulty, so only the later flashes set fire): a strike next to a creeper and a cow picks one of them as its target, hits both (5 damage, fire) and charges the creeper; a strike next to a player hits the player.",
+  "tier": "fast",
+  "world": {"seed": 8903},
+  "rules": {"fire_spread_radius_around_player": "-1"},
+  "weather": "thunder",
+  "time": 6000,
+  "difficulty": "easy",
+  "region": [[0, -61, 0], [31, -55, 15]],
+  "ticks": 60,
+  "entities": [
+    {"name": "steve", "type": "minecraft:player", "pos": [20.5, -60, 4.5]},
+    {"name": "creeper", "type": "minecraft:creeper", "pos": [6.5, -60, 6.5], "seed": 11, "finalize": false},
+    {"name": "cow", "type": "minecraft:cow", "pos": [6.5, -60, 8.5], "seed": 12, "finalize": false}
+  ],
+  "actions": [
+    {"tick": 2, "op": "lightning", "pos": [7, 0, 7]},
+    {"tick": 30, "op": "lightning", "pos": [21, 0, 3]}
+  ]
+}
