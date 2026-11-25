@@ -111,6 +111,8 @@ pub struct PlayerInventory {
     pub(crate) result_updates: Vec<ItemStack>,
     /// Crafting results taken since the server last took them (statistics and triggers).
     pub crafted: Vec<Crafted>,
+    /// The selected item of a bundle: its contents key and index ([`crate::bundle`]).
+    pub bundle_selection: Option<(u64, i32)>,
     /// Statistics and triggers menus awarded since the server last took them.
     pub awards: Vec<crate::advancements::award::Award>,
 }
@@ -130,6 +132,7 @@ impl Default for PlayerInventory {
             container_counter: 0,
             result_updates: Vec::new(),
             crafted: Vec::new(),
+            bundle_selection: None,
             awards: Vec::new(),
         }
     }

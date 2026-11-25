@@ -96,6 +96,9 @@ pub struct ServerWorld {
     gateway_waits: Vec<travel::GatewayWait>,
     /// Portal tickets with the tick they expire.
     portal_tickets: Vec<travel::PortalTicket>,
+    /// Ender pearl tickets (load and simulation) by chunk with the tick they expire; placing
+    /// one again only extends it.
+    pearl_tickets: FxHashMap<ChunkPos, (u64, TicketId, TicketId)>,
     /// What the players' tick asked of portals.
     portal_requests: crate::survival::PortalRequests,
 }
@@ -193,6 +196,7 @@ impl ServerWorld {
             arrivals: Vec::new(),
             gateway_waits: Vec::new(),
             portal_tickets: Vec::new(),
+            pearl_tickets: FxHashMap::default(),
             portal_requests: crate::survival::PortalRequests::default(),
         }
     }
@@ -318,6 +322,11 @@ impl ServerWorld {
             .and_then(|saved| saved.other.get("RootVehicle"))
             .and_then(vanillite_nbt::Tag::as_compound)
             .cloned();
+        let saved_pearls = arrival
+            .saved
+            .as_ref()
+            .and_then(|saved| saved.other.get("ender_pearls"))
+            .cloned();
         let state = crate::border::level_packets(&self.level.border, global);
         self.players.join(
             &mut self.level.entities,
@@ -333,6 +342,8 @@ impl ServerWorld {
         {
             self.level.spawn_root_vehicle(id, &vehicle);
         }
+        let pearls = self.players.take_saved_pearls(uuid, saved_pearls.as_ref());
+        self.load_pearls(global, pearls);
         let plugins = global.plugins.clone();
         plugins.player_join(&mut crate::plugins::PluginWorld(self), uuid, &name);
     }
@@ -530,6 +541,7 @@ impl ServerWorld {
         if ctx.runs_normally {
             self.ticks += 1;
             self.tick_entities(ctx.global);
+            self.entity_travel(ctx);
             self.level.tick_block_entities();
             self.mobs.apply_magic_hurts(
                 &mut self.level,
@@ -649,6 +661,7 @@ impl ServerWorld {
                 merge_radius: self.rules.items.merge_radius,
             },
         );
+        self.item_portals();
     }
 
     /// Runs the entity tracker over this tick's state and resets the per-tick sync state.

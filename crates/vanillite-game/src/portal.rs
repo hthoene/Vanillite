@@ -13,6 +13,10 @@ use vanillite_data::block::{BlockState, ids};
 use vanillite_nbt::{Compound, Tag};
 use vanillite_worldgen::behaviour::{HorizontalAxis, StateExt, relative_n};
 
+use vanillite_data::entity::ids as entity_ids;
+use vanillite_world::entity::EntityId;
+
+use crate::entities::Entities;
 use crate::level::Level;
 
 /// The portal a player stands in.
@@ -28,6 +32,9 @@ pub enum PortalKind {
 
 /// `Player.getDimensionChangingDelay`: the portal cooldown after a teleport, in ticks.
 pub const PLAYER_PORTAL_COOLDOWN: i32 = 10;
+
+/// `Entity.getDimensionChangingDelay` of every other entity.
+pub const ENTITY_PORTAL_COOLDOWN: i32 = 300;
 
 /// `PortalForcer.TICKET_RADIUS`: chunks kept loaded around an exit portal after arrival.
 pub const PORTAL_TICKET_RADIUS: i32 = 3;
@@ -45,7 +52,8 @@ struct Process {
 }
 
 /// The portal state of a player (`portalProcess`, `portalCooldown`, `seenCredits`, `wonGame`,
-/// `enteredNetherPosition`).
+/// `enteredNetherPosition`); other entities use the process and the cooldown with
+/// [`ENTITY_PORTAL_COOLDOWN`].
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PortalState {
     /// `portalCooldown`.
@@ -60,10 +68,16 @@ pub struct PortalState {
 }
 
 impl PortalState {
-    /// `setAsInsidePortal(portal, pos)`.
+    /// `setAsInsidePortal(portal, pos)` of a player.
     pub fn set_inside(&mut self, kind: PortalKind, pos: BlockPos) {
+        self.set_inside_with(kind, pos, PLAYER_PORTAL_COOLDOWN);
+    }
+
+    /// `setAsInsidePortal(portal, pos)` of an entity whose cooldown is `delay`
+    /// (`getDimensionChangingDelay`).
+    pub fn set_inside_with(&mut self, kind: PortalKind, pos: BlockPos, delay: i32) {
         if self.cooldown > 0 {
-            self.cooldown = PLAYER_PORTAL_COOLDOWN;
+            self.cooldown = delay;
             return;
         }
         match &mut self.process {
@@ -92,6 +106,16 @@ impl PortalState {
         can_use: bool,
         transition_time: impl FnOnce(PortalKind) -> i32,
     ) -> Option<(PortalKind, BlockPos)> {
+        self.handle_with(can_use, transition_time, PLAYER_PORTAL_COOLDOWN)
+    }
+
+    /// [`Self::handle`] of an entity whose cooldown is `delay`.
+    pub fn handle_with(
+        &mut self,
+        can_use: bool,
+        transition_time: impl FnOnce(PortalKind) -> i32,
+        delay: i32,
+    ) -> Option<(PortalKind, BlockPos)> {
         if self.cooldown > 0 {
             self.cooldown -= 1;
         }
@@ -109,13 +133,18 @@ impl PortalState {
             false
         };
         if teleport {
-            self.cooldown = PLAYER_PORTAL_COOLDOWN;
+            self.cooldown = delay;
             return Some((p.kind, p.entry));
         }
         if p.time <= 0 {
             self.process = None;
         }
         None
+    }
+
+    /// Whether nothing is left to track: no cooldown and no portal.
+    pub fn is_idle(&self) -> bool {
+        self.cooldown <= 0 && self.process.is_none()
     }
 
     /// Reads `PortalCooldown`, `seenCredits` and `entered_nether_pos` of a player data file.
@@ -158,6 +187,188 @@ impl PortalState {
                 out.remove("entered_nether_pos");
             }
         }
+    }
+}
+
+// --- Entities besides players -----------------------------------------------------------
+
+/// What an entity's tick asks of its world beyond the level: chunk tickets, exits that need
+/// chunks first, and ender pearl owners in other worlds. The world handles them after the
+/// entities' tick.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TravelRequest {
+    /// `placePortalTicket`: the chunks within [`PORTAL_TICKET_RADIUS`] of the position stay
+    /// loaded and ticking for 300 ticks.
+    PortalTicket(BlockPos),
+    /// `ServerPlayer.placeEnderPearlTicket`: the chunks within 2 of the chunk stay loaded and
+    /// ticking for 40 ticks (`TicketType.ENDER_PEARL`).
+    PearlTicket(ChunkPos),
+    /// The entity goes through the End gateway at `entry` once the gateway's exit exists and
+    /// its chunks are loaded (Vanilla loads them on the spot).
+    Gateway { entity: EntityId, entry: BlockPos },
+    /// An ender pearl landed at `pos` and its owner, a player of another world, comes over
+    /// (`ThrownEnderpearl.onHit` with a cross-dimension teleport): the owner's world sends it
+    /// with [`PearlArrival`].
+    PearlOwner { owner: u128, arrival: PearlArrival },
+}
+
+/// What happens to a player an ender pearl brings to its world: where it lands, whether an
+/// endermite spawns where it was (the 5 % roll of the pearl's random came up) and whether the
+/// pearl was on portal cooldown (`setPortalCooldown` of the owner).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PearlArrival {
+    pub pos: Vec3,
+    pub endermite: bool,
+    pub cooldown: bool,
+}
+
+/// `canUsePortal(false)` of an entity besides players: not riding, alive, and not one of the
+/// kinds that never use portals (the ender dragon, the wither, fishing bobbers). Vehicles with
+/// players aboard stay: only the players' worlds move players.
+pub fn can_use_portal(ents: &Entities, id: EntityId) -> bool {
+    let Some(e) = ents.store.get(id) else {
+        return false;
+    };
+    let kind = e.kind();
+    if kind == entity_ids::ENDER_DRAGON
+        || kind == entity_ids::WITHER
+        || kind == entity_ids::FISHING_BOBBER
+    {
+        return false;
+    }
+    // `ThrowableProjectile.canUsePortal` ignores riding.
+    let throwable = ents.missile(id).is_some_and(|d| d.kind.is_throwable());
+    if !throwable && ents.riding.vehicle_of(id).is_some() {
+        return false;
+    }
+    if ents
+        .riding
+        .passengers_of(id)
+        .iter()
+        .any(|&p| ents.player(p).is_some())
+    {
+        return false;
+    }
+    if let Some(m) = ents.mob(id) {
+        return m.is_alive();
+    }
+    if let Some(d) = ents.missile(id) {
+        return !d.removed;
+    }
+    true
+}
+
+/// `EndGatewayBlock.entityInside` for an entity besides players on its way this tick (the box
+/// from its old to its new position): the first gateway it touches takes it unless the gateway
+/// cools down or took an entity this tick already (`taken`; their cooldowns start after the
+/// entities' tick, [`crate::block::portal::trigger_gateway_cooldown`]).
+pub fn enter_gateway(level: &Level, ents: &mut Entities, id: EntityId, taken: &mut Vec<BlockPos>) {
+    if !level.block_entities.has_gateways() {
+        return;
+    }
+    let Some(e) = ents.store.get(id) else {
+        return;
+    };
+    let now = e.aabb();
+    let d = e.old_pos() - e.pos();
+    let last = now.offset(d.x, d.y, d.z);
+    let swept = vanillite_base::Aabb {
+        min_x: now.min_x.min(last.min_x),
+        min_y: now.min_y.min(last.min_y),
+        min_z: now.min_z.min(last.min_z),
+        max_x: now.max_x.max(last.max_x),
+        max_y: now.max_y.max(last.max_y),
+        max_z: now.max_z.max(last.max_z),
+    };
+    let Some(pos) = crate::survival::blocks::inside_portals(&LevelBlocks(level), swept).gateway
+    else {
+        return;
+    };
+    let ready = crate::block::portal::gateway(level, pos).is_some_and(|g| !g.is_cooling_down())
+        && !taken.contains(&pos);
+    if !ready || !can_use_portal(ents, id) {
+        return;
+    }
+    taken.push(pos);
+    ents.portals.entry(id).or_default().set_inside_with(
+        PortalKind::Gateway,
+        pos,
+        ENTITY_PORTAL_COOLDOWN,
+    );
+}
+
+/// `handlePortal` of an entity besides players: the gateway it goes through now, if any.
+pub fn handle_portal(ents: &mut Entities, id: EntityId) -> Option<BlockPos> {
+    if !ents.portals.contains_key(&id) {
+        return None;
+    }
+    let can_use = can_use_portal(ents, id);
+    let state = ents.portals.get_mut(&id)?;
+    let teleport = state.handle_with(can_use, |_| 0, ENTITY_PORTAL_COOLDOWN);
+    if state.is_idle() {
+        ents.portals.remove(&id);
+    }
+    teleport
+        .filter(|&(kind, _)| kind == PortalKind::Gateway)
+        .map(|(_, entry)| entry)
+}
+
+/// `handlePortal` with the teleport of an entity besides players: through the gateway it is
+/// in, when the gateway's exit is known and loaded, else a [`TravelRequest::Gateway`].
+pub fn tick_portal(
+    level: &Level,
+    ents: &mut Entities,
+    id: EntityId,
+    in_end: bool,
+    travel: &mut Vec<TravelRequest>,
+) {
+    let Some(entry) = handle_portal(ents, id) else {
+        return;
+    };
+    match crate::block::portal::gateway_exit_now(level, entry, in_end) {
+        crate::block::portal::GatewayExit::At(exit) => {
+            let pos = teleport_through_gateway(ents, id, exit);
+            travel.push(TravelRequest::PortalTicket(BlockPos::containing(
+                pos.x, pos.y, pos.z,
+            )));
+        }
+        crate::block::portal::GatewayExit::Wait => {
+            travel.push(TravelRequest::Gateway { entity: id, entry });
+        }
+        crate::block::portal::GatewayExit::Nowhere => {}
+    }
+}
+
+/// The teleport of an entity besides players through a gateway to `exit`
+/// (`EndGatewayBlock.getPortalDestination`, `teleportSameDimension`): to the exit's bottom
+/// centre; ender pearls stop and face south (no relatives), the others keep their motion and
+/// rotation. Returns the new position.
+pub fn teleport_through_gateway(ents: &mut Entities, id: EntityId, exit: BlockPos) -> Vec3 {
+    let pos = Vec3::new(
+        f64::from(exit.x) + 0.5,
+        f64::from(exit.y),
+        f64::from(exit.z) + 0.5,
+    );
+    let pearl = ents
+        .missile(id)
+        .is_some_and(|d| d.kind == crate::mob::missile::MissileKind::EnderPearl);
+    if let Some(mut e) = ents.store.get_mut(id) {
+        e.set_pos(pos);
+        if pearl {
+            e.set_velocity(Vec3::ZERO);
+            e.set_rot(vanillite_world::entity::Rotation::default());
+        }
+        e.set_old_pos();
+    }
+    pos
+}
+
+/// Blocks of a level for [`crate::survival::blocks::inside_portals`].
+struct LevelBlocks<'a>(&'a Level);
+
+impl crate::survival::blocks::BlockAccess for LevelBlocks<'_> {
+    fn block_state(&self, pos: BlockPos) -> Option<BlockState> {
+        self.0.is_loaded(pos).then(|| self.0.block(pos))
     }
 }
 

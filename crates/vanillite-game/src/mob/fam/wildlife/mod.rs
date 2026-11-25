@@ -7,6 +7,7 @@
 mod bat;
 pub(crate) mod bee;
 mod dolphin;
+pub mod ender_pearl;
 pub(crate) mod fish;
 mod golem;
 mod mooshroom;
