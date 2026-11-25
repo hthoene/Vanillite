@@ -1017,6 +1017,7 @@ impl WorldPlayers {
                     &mut taken_orbs,
                 );
             }
+            let sink = &player.connection.sink;
             if player.inventory.container.is_some() {
                 // `containerMenu.broadcastChanges`, then `stillValid`.
                 use vanillite_game::menu::container as menus;

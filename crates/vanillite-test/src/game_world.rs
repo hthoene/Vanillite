@@ -348,6 +348,7 @@ impl GameWorld {
             let blocks = ChunkBlocks(&level.chunks);
             let raining = |pos| level.is_raining_at(pos);
             let mut no_gateway = |_| false;
+            let names = |name: &str, _| vanillite_protocol::text::Component::text(name.to_owned());
             let mut env = Env {
                 types,
                 facts,
@@ -363,7 +364,7 @@ impl GameWorld {
                 random: &mut random,
                 out: &mut self.effects,
                 hooks: &vanillite_game::hooks::NoHooks,
-                display_name: &|name, _| vanillite_protocol::text::Component::text(name),
+                display_name: &names,
             };
             f(level, &mut ents, &mut env, &mut self.mobs)
         };
