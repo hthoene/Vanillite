@@ -495,6 +495,7 @@ impl ServerWorld {
             &mut self.item_random,
             min_y,
             i16::try_from(self.rules.items.despawn_ticks).unwrap_or(i16::MAX),
+            self.rules.items.merge_radius,
         );
     }
 

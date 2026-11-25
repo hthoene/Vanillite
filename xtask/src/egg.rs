@@ -92,11 +92,12 @@ pub fn render() -> String {
         variable(
             "Profile",
             "Preset of every vanillite.toml rule: vanilla (Vanilla behaviour), technical \
-             (Vanilla plus what technical players need), paper or spigot (their defaults). Rules \
+             (Vanilla plus what technical players need), paper or spigot (their defaults), \
+             performance (Vanillite's optimizations that deviate a little from Vanilla). Rules \
              set below or in vanillite.toml override the profile.",
             "VANILLITE_PROFILE",
             "vanilla",
-            "required|string|in:vanilla,technical,paper,spigot",
+            "required|string|in:vanilla,technical,paper,spigot,performance",
         ),
         variable(
             "Log Level",

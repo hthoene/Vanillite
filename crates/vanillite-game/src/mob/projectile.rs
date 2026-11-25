@@ -266,7 +266,7 @@ pub fn tick_arrow(
             a.life = 0;
         } else {
             a.life += 1;
-            if a.life >= 1200 {
+            if a.life >= cx.settings.arrow_despawn_ticks {
                 discard = true;
             }
         }
@@ -603,7 +603,8 @@ pub fn tick_orb(
     }
     if o.tick_count % 20 == 1 {
         // `scanForMerges`.
-        let area = aabb.inflate(0.5, 0.5, 0.5);
+        let r = cx.settings.xp_merge_radius;
+        let area = aabb.inflate(r, r, r);
         let mut others = Vec::new();
         ents.store.for_each_in(&area, false, |other| {
             if other != id && ents.orb(other).is_some_and(|x| x.value == o.value) {

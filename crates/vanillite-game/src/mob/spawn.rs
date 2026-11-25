@@ -93,6 +93,35 @@ impl Category {
     }
 }
 
+/// Deviations from Vanilla's spawn numbers (`performance.spawning`). The default is Vanilla.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpawnLimits {
+    /// Mob cap per category, in [`Category::ALL`] order (`getMaxInstancesPerChunk`).
+    pub caps: [i32; 7],
+    /// Despawn distance of every category; `None` keeps each category's own.
+    pub despawn_distance: Option<i32>,
+}
+
+impl Default for SpawnLimits {
+    fn default() -> Self {
+        SpawnLimits {
+            caps: Category::ALL.map(Category::max_per_chunk),
+            despawn_distance: None,
+        }
+    }
+}
+
+impl SpawnLimits {
+    fn cap(&self, c: Category) -> i32 {
+        self.caps[c.index()]
+    }
+
+    fn despawn_distance(&self, c: Category) -> i32 {
+        self.despawn_distance
+            .unwrap_or_else(|| c.despawn_distance())
+    }
+}
+
 /// One `SpawnerData` of a biome.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SpawnEntry {
@@ -149,6 +178,7 @@ pub struct SpawnInput<'a> {
     pub spawn_enemies: bool,
     pub difficulty: Difficulty,
     pub env: Environment,
+    pub limits: SpawnLimits,
 }
 
 /// Per-player mob counts (`LocalMobCapCalculator.MobCounts`).
@@ -166,8 +196,8 @@ struct SpawnState {
 }
 
 impl SpawnState {
-    fn can_spawn_global(&self, c: Category) -> bool {
-        let max = c.max_per_chunk() * self.spawnable_chunks / 289;
+    fn can_spawn_global(&self, c: Category, limits: &SpawnLimits) -> bool {
+        let max = limits.cap(c) * self.spawnable_chunks / 289;
         self.counts[c.index()] < max
     }
 }
@@ -256,7 +286,7 @@ pub fn tick(
         .filter(|c| {
             (input.spawn_enemies || c.is_friendly())
                 && (spawn_persistent || !c.is_persistent())
-                && state.can_spawn_global(*c)
+                && state.can_spawn_global(*c, &input.limits)
         })
         .collect();
     // `collectSpawningChunks`: ticking chunks with a player within 128 blocks, shuffled.
@@ -292,7 +322,7 @@ pub fn tick(
             let local_ok = spawner
                 .near
                 .iter()
-                .any(|&i| state.local.counts[i][c.index()] < c.max_per_chunk());
+                .any(|&i| state.local.counts[i][c.index()] < input.limits.cap(c));
             if !local_ok {
                 continue;
             }
@@ -455,7 +485,7 @@ fn valid_position_for_type(
     nearest: f64,
 ) -> bool {
     let info = entry.type_id.info();
-    let despawn = f64::from(category.despawn_distance());
+    let despawn = f64::from(input.limits.despawn_distance(category));
     if !info.can_spawn_far_from_player && nearest > despawn * despawn {
         return false;
     }
@@ -500,7 +530,7 @@ fn valid_position_for_mob(
     nearest: f64,
 ) -> bool {
     let category = Category::of(mob.kind.type_id()).unwrap_or(Category::Monster);
-    let despawn = f64::from(category.despawn_distance());
+    let despawn = f64::from(input.limits.despawn_distance(category));
     if nearest > despawn * despawn && mob.kind.remove_when_far_away() {
         return false;
     }

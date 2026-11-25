@@ -412,6 +412,7 @@ pub(crate) fn tick_items(
     random: &mut XoroshiroRandom,
     min_y: i32,
     lifetime: i16,
+    merge_radius: f64,
 ) {
     let ids: Vec<EntityId> = entities.items.iter().map(|(id, _)| id).collect();
     if ids.is_empty() {
@@ -469,7 +470,7 @@ pub(crate) fn tick_items(
             }
         }
         if merge {
-            merge_with_neighbours(entities, id, lifetime, &mut near, &mut gone);
+            merge_with_neighbours(entities, id, lifetime, merge_radius, &mut near, &mut gone);
         }
     }
     for id in gone {
@@ -477,11 +478,13 @@ pub(crate) fn tick_items(
     }
 }
 
-/// `ItemEntity.mergeWithNeighbours`.
+/// `ItemEntity.mergeWithNeighbours` within `radius` (Vanilla 0.5) horizontally and `radius`
+/// minus 0.5 vertically.
 fn merge_with_neighbours(
     entities: &mut Entities,
     id: EntityId,
     lifetime: i16,
+    radius: f64,
     near: &mut Vec<EntityId>,
     gone: &mut Vec<EntityId>,
 ) {
@@ -489,13 +492,15 @@ fn merge_with_neighbours(
         return;
     };
     near.clear();
-    entities
-        .store
-        .for_each_in(&aabb.inflate(0.5, 0.0, 0.5), false, |other| {
+    entities.store.for_each_in(
+        &aabb.inflate(radius, radius - 0.5, radius),
+        false,
+        |other| {
             if other != id {
                 near.push(other);
             }
-        });
+        },
+    );
     for &other in near.iter() {
         if gone.contains(&other) {
             continue;

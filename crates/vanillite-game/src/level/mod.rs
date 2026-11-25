@@ -107,6 +107,10 @@ pub struct LevelSettings {
     pub portal_dimension: bool,
     /// Exploit switches (D1).
     pub exploits: ExploitSettings,
+    /// Ticks a hopper waits after moving an item (`HopperBlockEntity.MOVE_ITEM_SPEED`, 8).
+    pub hopper_transfer_cooldown: i32,
+    /// Ticks a hopper waits after finding nothing to move (Vanilla 1: every tick).
+    pub hopper_check_cooldown: i32,
 }
 
 impl Default for LevelSettings {
@@ -125,6 +129,8 @@ impl Default for LevelSettings {
             water_evaporates: false,
             portal_dimension: true,
             exploits: ExploitSettings::default(),
+            hopper_transfer_cooldown: 8,
+            hopper_check_cooldown: 1,
         }
     }
 }

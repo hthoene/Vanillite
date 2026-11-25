@@ -796,7 +796,12 @@ fn push_entities(t: &mut Tick<'_, '_>) {
         }
     }
     let climbing = on_climbable(t);
-    for &other in &ids {
+    // `max-entity-collisions`: only the first ones push.
+    let limit =
+        t.cx.settings
+            .max_entity_collisions
+            .map_or(usize::MAX, |n| usize::try_from(n).unwrap_or(usize::MAX));
+    for &other in ids.iter().take(limit) {
         if t.ents.minecart(other).is_some() {
             // `AbstractMinecart.push(this)`.
             crate::minecart::push_by(t.ents, other, id);
@@ -896,7 +901,11 @@ pub fn check_despawn(t: &mut Tick<'_, '_>) {
     }
     let persistent = t.mob_ref().persistent;
     let p = t.pos();
-    let r = 128.0;
+    let (hard, soft) = (
+        t.cx.settings.hard_despawn_range,
+        t.cx.settings.soft_despawn_range,
+    );
+    let r = hard;
     let area = Aabb::new(p.x - r, p.y - r, p.z - r, p.x + r, p.y + r, p.z + r);
     let mut nearest = f64::MAX;
     t.ents.store.for_each_in(&area, true, |player| {
@@ -908,7 +917,7 @@ pub fn check_despawn(t: &mut Tick<'_, '_>) {
         }
     });
     let far_away_ok = t.mob_ref().kind.remove_when_far_away();
-    if !persistent && nearest > 128.0 * 128.0 && far_away_ok {
+    if !persistent && nearest > hard * hard && far_away_ok {
         t.mob().removed = true;
         return;
     }
@@ -916,11 +925,11 @@ pub fn check_despawn(t: &mut Tick<'_, '_>) {
     if !persistent
         && m.no_action_time > 600
         && m.random.next_int_bounded(800) == 0
-        && nearest > 32.0 * 32.0
+        && nearest > soft * soft
         && far_away_ok
     {
         m.removed = true;
-    } else if nearest < 32.0 * 32.0 {
+    } else if nearest < soft * soft {
         m.no_action_time = 0;
     }
 }

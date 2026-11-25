@@ -38,9 +38,6 @@ impl Default for Hopper {
     }
 }
 
-/// `HopperBlockEntity.MOVE_ITEM_SPEED`.
-const MOVE_ITEM_SPEED: i32 = 8;
-
 /// Fills the hopper behaviours of `block`.
 pub(super) fn fill(block: BlockId, b: &mut BlockBehaviour) {
     if block == ids::HOPPER {
@@ -84,6 +81,10 @@ fn check_powered_state(level: &mut Level, pos: BlockPos, state: BlockState) {
 /// `HopperBlockEntity.pushItemsTick`.
 pub fn push_items_tick(level: &mut Level, pos: BlockPos, state: BlockState) {
     let game_time = level.game_time();
+    let (move_item_speed, check_cooldown) = (
+        level.settings.hopper_transfer_cooldown,
+        level.settings.hopper_check_cooldown,
+    );
     let Some(BlockEntity::Hopper(hopper)) = level.block_entity_mut(pos) else {
         return;
     };
@@ -96,10 +97,15 @@ pub fn push_items_tick(level: &mut Level, pos: BlockPos, state: BlockState) {
     // `tryMoveItems`.
     if state.flag("enabled") && transfer(level, pos, state) {
         if let Some(BlockEntity::Hopper(hopper)) = level.block_entity_mut(pos) {
-            hopper.cooldown_time = MOVE_ITEM_SPEED;
+            hopper.cooldown_time = move_item_speed;
         }
         // `setChanged`: comparators re-read the hopper.
         level.update_neighbour_for_output_signal(pos, state.block());
+    } else if check_cooldown > 1
+        && let Some(BlockEntity::Hopper(hopper)) = level.block_entity_mut(pos)
+    {
+        // `performance.hoppers.check-cooldown`: an idle hopper looks again later.
+        hopper.cooldown_time = check_cooldown;
     }
 }
 
@@ -307,10 +313,11 @@ fn try_move_in_item(
         success = n > 0;
     }
     if success {
+        let move_item_speed = level.settings.hopper_transfer_cooldown;
         if was_empty
             && let Some(target) = into.hopper()
             && let Some(BlockEntity::Hopper(h)) = level.block_entity(target)
-            && h.cooldown_time <= MOVE_ITEM_SPEED
+            && h.cooldown_time <= move_item_speed
         {
             let target_time = h.ticked_game_time;
             let skip = match from.and_then(ContainerRef::hopper) {
@@ -321,7 +328,7 @@ fn try_move_in_item(
                 None => 0,
             };
             if let Some(BlockEntity::Hopper(h)) = level.block_entity_mut(target) {
-                h.cooldown_time = MOVE_ITEM_SPEED - skip;
+                h.cooldown_time = move_item_speed - skip;
             }
         }
         into.set_changed(level);
