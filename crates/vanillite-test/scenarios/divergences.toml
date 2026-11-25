@@ -58,8 +58,8 @@ cause = "random draws of the cod differ from tick 45 on (not analysed yet)"
 owner = "architect #101"
 
 [mob_copper_golem_chest]
-tick = 1
-cause = "brain: the golem's random and the level random differ from tick 1 (RunOne/GateBehavior (ShufflingList.shuffle) draws its weights from the level random; Vanilla's ShufflingList has its own random), as in mob_copper_golem_wander"
+tick = 35
+cause = "the golem's random and the level random differ from tick 35 on, then no path to the chest on tick 36 (not analysed yet)"
 owner = "gameplay-developer #81"
 
 [mob_copper_golem_wander]
@@ -120,16 +120,6 @@ owner = "architect #101"
 [mob_phantom_swoop]
 tick = 2
 cause = "the phantom's motion differs in the last bits on tick 2 (float/double rounding of the circling movement)"
-owner = "architect #101"
-
-[mob_piglin_hostile]
-tick = 67
-cause = "the level random differs from tick 67 on (not analysed yet)"
-owner = "architect #101"
-
-[mob_pillager_crossbow]
-tick = 36
-cause = "random draws of the pillager and the level random differ on tick 36 (not analysed yet)"
 owner = "architect #101"
 
 [mob_polar_bear_wander]
