@@ -173,6 +173,19 @@ pub fn game_data(packs: Option<&LoadedPacks>) -> GameData {
         &names("minecraft:trim_material"),
         &names("minecraft:trim_pattern"),
     );
+    let jukebox_songs = packs
+        .registry("minecraft:jukebox_song")
+        .map(|r| {
+            r.entries()
+                .iter()
+                .map(|e| {
+                    let json =
+                        serde_json::from_str::<serde_json::Value>(e.json.get()).unwrap_or_default();
+                    vanillite_game::block::jukebox::JukeboxSong::from_json(&e.id, &json)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let banner_patterns = vanillite_game::menu::BannerPatterns {
         names: names("minecraft:banner_pattern"),
         tags: packs
@@ -253,6 +266,7 @@ pub fn game_data(packs: Option<&LoadedPacks>) -> GameData {
         enchanting,
         banner_patterns,
         registry_tags,
+        jukebox_songs,
     }
 }
 

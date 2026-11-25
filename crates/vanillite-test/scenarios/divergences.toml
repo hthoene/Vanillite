@@ -386,3 +386,13 @@ owner = "gameplay-developer #60"
 tick = 94
 cause = "the trader draws another count of its own random on tick 94 (a goal start, not investigated)"
 owner = "gameplay-developer #60"
+
+[mob_allay_noteblock]
+tick = 1
+cause = "brain: the allay's random and the level random differ from tick 1 (RunOne/GateBehavior (ShufflingList.shuffle) draws its weights from the level random; Vanilla's ShufflingList has its own random), as in mob_allay_fly; the note block plays on tick 10"
+owner = "gameplay-developer #81"
+
+[mob_copper_golem_chest]
+tick = 1
+cause = "brain: the golem's random and the level random differ from tick 1 (RunOne/GateBehavior (ShufflingList.shuffle) draws its weights from the level random; Vanilla's ShufflingList has its own random), as in mob_copper_golem_wander"
+owner = "gameplay-developer #81"

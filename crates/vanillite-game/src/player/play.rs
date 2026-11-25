@@ -56,6 +56,8 @@ pub struct GameData {
     pub trades: crate::trading::data::TradeData,
     /// The definitions of the enchantments by name.
     pub enchantment_info: HashMap<String, EnchantmentInfo>,
+    /// The `minecraft:jukebox_song` registry, by registry id.
+    pub jukebox_songs: Vec<crate::block::jukebox::JukeboxSong>,
 }
 
 /// What `/enchant` reads of an enchantment (`Enchantment` and its `EnchantmentDefinition`).

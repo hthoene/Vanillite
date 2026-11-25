@@ -31,6 +31,7 @@ pub mod fluid;
 pub mod furnace;
 mod growth;
 pub mod hopper;
+pub mod jukebox;
 pub mod lectern;
 pub mod note;
 pub mod piston;
@@ -311,6 +312,7 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
     note::fill(block, &mut b);
     bell::fill(block, &mut b);
     lectern::fill(block, &mut b);
+    jukebox::fill(block, &mut b);
     sculk::fill(block, &mut b);
     sculk_shrieker::fill(block, &mut b);
     sculk_catalyst::fill(block, &mut b);

@@ -130,6 +130,7 @@ pub mod ids {
     pub const FIREWORK_EXPLOSION: u16 = find("minecraft:firework_explosion");
     pub const WRITABLE_BOOK_CONTENT: u16 = find("minecraft:writable_book_content");
     pub const PROVIDES_BANNER_PATTERNS: u16 = find("minecraft:provides_banner_patterns");
+    pub const JUKEBOX_PLAYABLE: u16 = find("minecraft:jukebox_playable");
     pub const ITEM_NAME: u16 = find("minecraft:item_name");
     pub const RARITY: u16 = find("minecraft:rarity");
     pub const BUNDLE_CONTENTS: u16 = find("minecraft:bundle_contents");
