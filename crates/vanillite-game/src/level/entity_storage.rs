@@ -152,7 +152,8 @@ impl Level {
             return true;
         }
         if let Some((e, data)) = crate::mob::nbt::load_arrow(&nbt) {
-            let mut new = NewEntity::new(ids::ARROW, self.network_ids().next(), e.uuid, e.pos);
+            let kind = crate::mob::projectile::arrow_of(&data.item).0;
+            let mut new = NewEntity::new(kind, self.network_ids().next(), e.uuid, e.pos);
             new.velocity = e.velocity;
             new.rot = e.rot;
             self.entities.spawn_arrow(new, data);
@@ -332,7 +333,7 @@ impl Level {
         if let Some(m) = ents.minecart(id) {
             return Some(crate::mob::nbt::save_minecart(&entity, m));
         }
-        if kind == ids::ARROW {
+        if crate::mob::projectile::is_arrow_kind(kind) {
             return ents.arrow(id).map(|a| {
                 let owner = a.owner.and_then(|o| ents.store.get(o)).map(|o| o.uuid());
                 crate::mob::nbt::save_arrow(&entity, a, owner)

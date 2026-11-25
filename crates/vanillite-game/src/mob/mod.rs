@@ -668,7 +668,7 @@ impl WorldAction {
                         damages_entities: false,
                         knockback: b.knockback,
                         wind_sound: Some(b.sound),
-                        ..Default::default()
+                        resistance: crate::level::explosion::BlockResistance::WindCharge,
                     },
                 );
             }

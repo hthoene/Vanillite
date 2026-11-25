@@ -585,7 +585,7 @@ impl WorldMobs {
                 && !is_boat
                 && !is_minecart
                 && !is_missile
-                && kind != ids::ARROW
+                && !projectile::is_arrow_kind(kind)
                 && kind != ids::EXPERIENCE_ORB
                 && kind != ids::AREA_EFFECT_CLOUD
             {
@@ -642,7 +642,7 @@ impl WorldMobs {
                     vehicle::tick_boat(level_ref, &mut ents, &mut env, &mut self.cx, id);
                 } else if is_minecart {
                     minecart::tick(level_ref, &mut ents, &mut env, &mut self.cx, id);
-                } else if kind == ids::ARROW {
+                } else if projectile::is_arrow_kind(kind) {
                     projectile::tick_arrow(level_ref, &mut ents, &mut env, &mut self.cx, id);
                 } else if is_missile {
                     vanillite_game::mob::missile::tick(
@@ -805,7 +805,8 @@ impl WorldMobs {
                             damages_entities: false,
                             knockback: b.knockback,
                             wind_sound: Some(b.sound),
-                            ..Default::default()
+                            resistance:
+                                vanillite_game::level::explosion::BlockResistance::WindCharge,
                         },
                     );
                 }
@@ -1238,8 +1239,8 @@ fn put_back(ents: &mut Entities, player: EntityId, hand: Hand, stack: ItemStack)
     }
 }
 
-/// `use_item` of the items that need entities: boats, the carrot on a stick, and items used
-/// over time.
+/// `use_item` of the items that need entities: boats, the carrot on a stick, thrown potions,
+/// and items used over time.
 fn use_item(
     level: &Level,
     ents: &mut Entities,
@@ -1267,6 +1268,8 @@ fn use_item(
     } else if name == "minecraft:carrot_on_a_stick" || name == "minecraft:warped_fungus_on_a_stick"
     {
         riding::boost(ents, env, player, &mut stack, creative);
+    } else if vanillite_game::effect::thrown::kind_of(&stack).is_some() {
+        vanillite_game::effect::thrown::throw(ents, env, network_ids, player, &mut stack, creative);
     } else {
         put_back(ents, player, hand, stack);
         vanillite_game::player::using::start(ents, env, player, hand);

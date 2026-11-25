@@ -190,9 +190,22 @@ impl CombatTracker {
 
 /// `CombatRules.getDamageAfterAbsorb` without weapon enchantments.
 pub fn damage_after_absorb(damage: f32, total_armor: f32, armor_toughness: f32) -> f32 {
+    damage_after_absorb_with(damage, total_armor, armor_toughness, None)
+}
+
+/// `CombatRules.getDamageAfterAbsorb`: `modify` is the armour effectiveness of the source's
+/// weapon (`EnchantmentHelper.modifyArmorEffectiveness`, Breach), clamped to 0..=1.
+pub fn damage_after_absorb_with(
+    damage: f32,
+    total_armor: f32,
+    armor_toughness: f32,
+    modify: Option<&dyn Fn(f32) -> f32>,
+) -> f32 {
     let toughness = 2.0 + armor_toughness / 4.0;
     let real_armor = (total_armor - damage / toughness).clamp(total_armor * 0.2, 20.0);
-    damage * (1.0 - real_armor / 25.0)
+    let fraction = real_armor / 25.0;
+    let fraction = modify.map_or(fraction, |m| m(fraction).clamp(0.0, 1.0));
+    damage * (1.0 - fraction)
 }
 
 /// `CombatRules.getDamageAfterMagicAbsorb`.
