@@ -8,6 +8,8 @@
 
 pub mod boss;
 pub mod brain;
+pub mod animal;
+pub mod attack;
 pub mod combat;
 pub mod goals;
 pub mod kinds;
@@ -18,6 +20,7 @@ pub mod path;
 pub mod physics;
 pub mod projectile;
 pub mod spawn;
+pub mod tame;
 
 use vanillite_base::random::{LegacyRandom, RandomSource};
 use vanillite_base::{Aabb, BlockPos, ChunkPos, Vec3};
@@ -188,6 +191,34 @@ pub struct MobData {
     pub next_step: f32,
     /// The state of bosses and other kinds with their own machinery.
     pub ext: boss::Ext,
+    /// Wears a saddle (`EquipmentSlot.SADDLE`).
+    pub saddled: bool,
+    /// `ItemBasedSteering`: boosting, the ticks boosted and the boost length
+    /// (`DATA_BOOST_TIME`).
+    pub boosting: bool,
+    pub boost_time: i32,
+    pub boost_total: i32,
+    /// `getCustomName`, encoded as the `custom_name` component (network NBT).
+    pub custom_name: Option<Box<[u8]>>,
+    /// `TamableAnimal`: the owner's UUID, tame, ordered to sit, sitting pose.
+    pub owner: Option<u128>,
+    pub tame: bool,
+    pub order_to_sit: bool,
+    pub in_sitting_pose: bool,
+    /// `loveCause`: the player who fed it.
+    pub love_cause: Option<u128>,
+    /// `forcedAge` and `forcedAgeTimer` (babies fed to grow).
+    pub forced_age: i32,
+    pub forced_age_timer: i32,
+    /// A leash read from NBT, attached once its holder is there.
+    pub pending_leash: Option<LeashRef>,
+}
+
+/// What holds a leash in entity NBT (`leash`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LeashRef {
+    Entity(u128),
+    Knot(BlockPos),
 }
 
 impl MobData {
@@ -272,9 +303,27 @@ impl MobData {
             move_dist: 0.0,
             next_step: 1.0,
             ext: boss::new_ext(kind),
+            saddled: false,
+            boosting: false,
+            boost_time: 0,
+            boost_total: 0,
+            custom_name: None,
+            owner: None,
+            tame: false,
+            order_to_sit: false,
+            in_sitting_pose: false,
+            love_cause: None,
+            forced_age: 0,
+            forced_age_timer: 0,
+            pending_leash: None,
         };
-        mob.ambient_sound_time = -kind.ambient_sound_interval();
-        mob.egg_time = mob.random.next_int_bounded(6000) + 6000;
+        // `Mob.ambientSoundTime` starts at 0; only playing a sound resets it to `-interval`.
+        // `LivingEntity`'s constructor turns the entity to a random yaw (`setYRot(random.nextFloat()
+        // * 2 PI)`); spawning sets the real rotation afterwards, but the draw stays.
+        let _ = mob.random.next_float();
+        if kind == Kind::Chicken {
+            mob.egg_time = mob.random.next_int_bounded(6000) + 6000;
+        }
         kinds::register_goals(&mut mob);
         mob
     }
@@ -346,10 +395,62 @@ impl Default for Environment {
 }
 
 impl Environment {
+    /// The overworld at `day` ticks of the day (the `minecraft:day` timeline) with the rain and
+    /// thunder levels of the weather: sky darkness, whether monsters burn.
+    pub fn overworld(day: i64, rain: f32, thunder: f32) -> Environment {
+        let mut sky = 15.0 * day_sky_factor(day);
+        sky += (4.0 - sky) * 0.3125 * rain;
+        sky += (4.0 - sky) * 0.527_343_75 * thunder;
+        #[allow(clippy::cast_possible_truncation)]
+        let sky_darken = (15.0 - sky) as i32;
+        let burn = !(12542..23460).contains(&day.rem_euclid(24000));
+        Environment {
+            sky_darken,
+            monsters_burn: burn,
+            thundering: thunder > 0.9,
+            raining: rain > 0.2,
+            has_sky_light: true,
+            monster_block_light_limit: 0,
+            monster_light_test: (0, 7),
+            ambient_light: 0.0,
+        }
+    }
+
     /// `Level.isBrightOutside`.
     pub fn is_bright_outside(&self) -> bool {
         self.has_sky_light && self.sky_darken < 4
     }
+}
+
+/// The overworld's sky light factor at `ticks` of the day (the `day` timeline's
+/// `gameplay/sky_light_level` track).
+pub fn day_sky_factor(ticks: i64) -> f32 {
+    const KEYS: [(i64, f32); 4] = [
+        (133, 1.0),
+        (11867, 1.0),
+        (13670, 0.266_666_68),
+        (22330, 0.266_666_68),
+    ];
+    let t = ticks.rem_euclid(24000);
+    for w in KEYS.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        if t >= a.0 && t < b.0 {
+            #[allow(clippy::cast_precision_loss)]
+            let f = (t - a.0) as f32 / (b.0 - a.0) as f32;
+            return a.1 + (b.1 - a.1) * f;
+        }
+    }
+    // Wraps from the last key to the first of the next day.
+    let (last, first) = (KEYS[3], KEYS[0]);
+    let span = first.0 + 24000 - last.0;
+    let since = if t >= last.0 {
+        t - last.0
+    } else {
+        t + 24000 - last.0
+    };
+    #[allow(clippy::cast_precision_loss)]
+    let f = since as f32 / span as f32;
+    last.1 + (first.1 - last.1) * f
 }
 
 /// Performance knobs of the mob tick (`[mobs]` in the configuration).
@@ -376,6 +477,37 @@ pub struct ExplosionRequest {
     pub resistance: crate::level::explosion::BlockResistance,
 }
 
+impl ExplosionRequest {
+    /// `Level.explode` with the block interaction of the rules (`ExplosionInteraction.MOB` or
+    /// `TNT`).
+    pub fn run(&self, level: &mut crate::level::Level, rules: &crate::survival::rules::GameRules) {
+        use crate::level::explosion::BlockInteraction;
+        use crate::survival::rules::Rule;
+        let decay = if self.mob {
+            Rule::MOB_EXPLOSION_DROP_DECAY
+        } else {
+            Rule::TNT_EXPLOSION_DROP_DECAY
+        };
+        let interaction = if self.mob && !rules.bool(Rule::MOB_GRIEFING) {
+            BlockInteraction::Keep
+        } else if rules.bool(decay) {
+            BlockInteraction::DestroyWithDecay
+        } else {
+            BlockInteraction::Destroy
+        };
+        // `getIndirectSourceEntity`: a living source caused it itself.
+        let indirect = self.indirect.or(self.source);
+        level.explode_with(
+            self.source,
+            indirect,
+            self.pos,
+            self.radius,
+            interaction,
+            self.resistance,
+        );
+    }
+}
+
 /// A change of the world a mob tick causes; applied right after that tick.
 #[derive(Clone, Debug, PartialEq)]
 pub enum WorldAction {
@@ -397,6 +529,37 @@ pub enum WorldAction {
     },
     /// Game events, listener moves and sculk catalyst charges.
     Level(boss::warden::LevelAction),
+    /// `entityInside` of the block at the position for the entity (`applyEffectsFromBlocks`).
+    EntityInside(BlockPos, EntityId),
+    /// A hopper minecart takes in an item (`MinecartHopper.tryConsumeItems`).
+    HopperMinecart(EntityId),
+}
+
+impl WorldAction {
+    /// Applies the actions that need nothing but the level; returns `false` for the others.
+    pub fn apply_to_level(&self, level: &mut crate::level::Level) -> bool {
+        match *self {
+            WorldAction::SetBlock(pos, block, flags) => {
+                level.set_block(pos, block, flags);
+            }
+            WorldAction::DestroyBlock(pos, drop) => {
+                level.destroy_block(pos, drop, None);
+            }
+            WorldAction::LevelEvent(event, pos, data) => {
+                level.level_event(None, event, pos, data);
+            }
+            WorldAction::EntityInside(pos, id) => {
+                if level.entities.store.contains(id) {
+                    level.entity_inside(pos, id);
+                }
+            }
+            WorldAction::HopperMinecart(id) => crate::minecart::hopper_suck(level, id),
+            WorldAction::Explode(_) | WorldAction::ExplodeWith { .. } | WorldAction::Level(_) => {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 /// The mob state of a world besides the entities: search buffers, queued world changes and
@@ -422,6 +585,9 @@ pub struct MobContext {
     pub dragon_fight: Option<boss::dragon::FightView>,
     /// What the dragon and the crystals report to the fight, handled after each tick.
     pub dragon_events: Vec<boss::dragon::DragonEvent>,
+    /// Menus players opened at entities (chest boats, container minecarts), opened once the
+    /// entities are back in the level.
+    pub menus: Vec<crate::menu::container::MenuRequest>,
 }
 
 impl MobContext {
@@ -438,9 +604,24 @@ impl MobContext {
     }
 }
 
-/// `Mth.atan2(y, x)` in degrees as Vanilla computes it (`* 180.0F / (float)Math.PI`).
+/// `Mth.DEG_TO_RAD` (`(float) (Math.PI / 180.0)`): Vanilla turns float degrees into radians
+/// with a float multiplication before `Mth.sin`/`Mth.cos`.
+pub const DEG_TO_RAD: f32 = 0.017_453_292;
+
+/// `Entity.calculateViewVector(xRot, yRot)` with Vanilla's table sine.
+pub fn view_vector(x_rot: f32, y_rot: f32) -> Vec3 {
+    use vanillite_base::math::{cos, sin};
+    let f = x_rot * DEG_TO_RAD;
+    let f1 = -y_rot * DEG_TO_RAD;
+    let (f2, f3) = (cos(f64::from(f1)), sin(f64::from(f1)));
+    let (f4, f5) = (cos(f64::from(f)), sin(f64::from(f)));
+    Vec3::new(f64::from(f3 * f4), f64::from(-f5), f64::from(f2 * f4))
+}
+
+/// `Mth.atan2(y, x) * Mth.RAD_TO_DEG` (the float `57.295776F` widened to double), as every
+/// Vanilla entity rotation computes it.
 pub fn atan2_deg(y: f64, x: f64) -> f64 {
-    y.atan2(x) * 180.0 / f64::from(std::f32::consts::PI)
+    vanillite_base::math::atan2(y, x) * f64::from(57.295_776_f32)
 }
 
 fn fluid_ids(names: [&str; 2]) -> [u16; 2] {

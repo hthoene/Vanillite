@@ -65,9 +65,10 @@ pub mod tag {
     pub const PANIC_CAUSES: u32 = 1 << 15;
     pub const IS_EXPLOSION: u32 = 1 << 16;
     pub const IS_PROJECTILE: u32 = 1 << 17;
+    pub const BYPASSES_SHIELD: u32 = 1 << 18;
 
     /// Tag names and their bits.
-    pub const NAMES: [(&str, u32); 18] = [
+    pub const NAMES: [(&str, u32); 19] = [
         ("minecraft:is_fall", IS_FALL),
         ("minecraft:is_fire", IS_FIRE),
         ("minecraft:is_drowning", IS_DROWNING),
@@ -92,6 +93,7 @@ pub mod tag {
         ("minecraft:panic_causes", PANIC_CAUSES),
         ("minecraft:is_explosion", IS_EXPLOSION),
         ("minecraft:is_projectile", IS_PROJECTILE),
+        ("minecraft:bypasses_shield", BYPASSES_SHIELD),
     ];
 }
 
@@ -319,6 +321,8 @@ pub struct DamageSource {
     pub cause_is_mob: bool,
     /// Translation key of the causing entity's type, for death messages (`death.attack.mob`).
     pub cause_name: Option<&'static str>,
+    /// `getSecondsToDisableBlocking` of the attacker's weapon (axes disable shields).
+    pub disable_shield_seconds: f32,
 }
 
 impl DamageSource {
@@ -331,6 +335,7 @@ impl DamageSource {
             position: None,
             cause_is_mob: false,
             cause_name: None,
+            disable_shield_seconds: 0.0,
         }
     }
 

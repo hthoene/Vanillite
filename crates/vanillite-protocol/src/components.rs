@@ -105,6 +105,8 @@ pub mod ids {
     pub const BLOCK_STATE: u16 = find("minecraft:block_state");
     pub const BLOCK_ENTITY_DATA: u16 = find("minecraft:block_entity_data");
     pub const CUSTOM_NAME: u16 = find("minecraft:custom_name");
+    pub const ATTRIBUTE_MODIFIERS: u16 = find("minecraft:attribute_modifiers");
+    pub const ENTITY_DATA: u16 = find("minecraft:entity_data");
     pub const CONTAINER: u16 = find("minecraft:container");
     pub const REPAIR_COST: u16 = find("minecraft:repair_cost");
     pub const STORED_ENCHANTMENTS: u16 = find("minecraft:stored_enchantments");

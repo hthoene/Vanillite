@@ -2,12 +2,12 @@
 //!
 //! A hopper is enabled while it receives no signal. Its block entity ticks every tick: the
 //! transfer cooldown counts down and, once it is over, the hopper tries to push one item out and
-//! pull one in, waiting 8 ticks after a transfer. Containers do not exist yet: [`transfer`] is
-//! the seam that moves items and moves none for now.
+//! pull one in, waiting 8 ticks after a transfer. Container entities (minecarts, chest boats)
+//! count as containers where no block container is.
 
-use vanillite_base::{Aabb, BlockPos, Direction};
+use vanillite_base::{Aabb, BlockPos, Direction, Vec3};
 use vanillite_data::block::{BlockId, BlockState, ids};
-use vanillite_worldgen::behaviour::{PosExt, StateExt};
+use vanillite_worldgen::behaviour::StateExt;
 
 use super::container::ContainerRef;
 use super::{BlockBehaviour, dispenser};
@@ -139,7 +139,7 @@ fn hopper_items(level: &Level, pos: BlockPos) -> Option<&[ItemStack]> {
 /// `ejectItems`: one item of the first slot that fits goes into the container in front.
 fn eject_items(level: &mut Level, pos: BlockPos, state: BlockState) -> bool {
     let facing = state.direction("facing").unwrap_or(Direction::Down);
-    let Some(target) = ContainerRef::at(level, pos.relative(facing)) else {
+    let Some(target) = ContainerRef::at_point(level, center(pos.relative(facing))) else {
         return false;
     };
     let face = facing.opposite();
@@ -175,11 +175,36 @@ fn eject_items(level: &mut Level, pos: BlockPos, state: BlockState) -> bool {
     false
 }
 
+/// The center of a block (`getContainerAt(level, pos)` looks there).
+fn center(pos: BlockPos) -> Vec3 {
+    Vec3::new(
+        f64::from(pos.x) + 0.5,
+        f64::from(pos.y) + 0.5,
+        f64::from(pos.z) + 0.5,
+    )
+}
+
 /// `suckInItems`: one item from the container above, or item entities above.
 fn suck_in_items(level: &mut Level, pos: BlockPos) -> bool {
-    let above = pos.above();
-    let me = ContainerRef::Block(pos);
-    if let Some(source) = ContainerRef::at(level, above) {
+    suck(level, ContainerRef::Block(pos), center(pos), true)
+}
+
+/// `HopperBlockEntity.suckInItems(level, hopper)` for a hopper minecart whose `getLevelX/Y/Z`
+/// is `point`.
+pub fn suck_into_entity(
+    level: &mut Level,
+    id: vanillite_world::entity::EntityId,
+    point: Vec3,
+) -> bool {
+    suck(level, ContainerRef::Entity(id), point, false)
+}
+
+/// `suckInItems` of a hopper at `point` (`getLevelX/Y/Z`); `grid_aligned` for hopper blocks
+/// (a full block above stops them).
+fn suck(level: &mut Level, me: ContainerRef, point: Vec3, grid_aligned: bool) -> bool {
+    let above_point = Vec3::new(point.x, point.y + 1.0, point.z);
+    let above = BlockPos::containing(above_point.x, above_point.y, above_point.z);
+    if let Some(source) = ContainerRef::at_point(level, above_point) {
         for slot in source.slots_for_face(level, Direction::Down) {
             source.unpack(level, slot);
             let stack = source.get(level, slot);
@@ -198,12 +223,12 @@ fn suck_in_items(level: &mut Level, pos: BlockPos) -> bool {
     let state = level.block(above);
     let shape = state.collision_shape();
     let full = shape.len() == 1 && shape.first() == Some(&[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]);
-    let blocked = full && !(state.is(ids::BEEHIVE) || state.is(ids::BEE_NEST));
+    let blocked = grid_aligned && full && !(state.is(ids::BEEHIVE) || state.is(ids::BEE_NEST));
     if blocked {
         return false;
     }
     // `getItemsAtAndAbove`: the suck box (`Block.column(16, 11, 32)`) at the hopper.
-    let (x, y, z) = (f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
+    let (x, y, z) = (point.x - 0.5, point.y - 0.5, point.z - 0.5);
     let aabb = Aabb::new(x, y + 11.0 / 16.0, z, x + 1.0, y + 2.0, z + 1.0);
     let mut found = Vec::new();
     level
@@ -211,24 +236,36 @@ fn suck_in_items(level: &mut Level, pos: BlockPos) -> bool {
         .store
         .for_each_in(&aabb, false, |id| found.push(id));
     for id in found {
-        let Some(stack) = level.entities.item(id).map(|d| d.stack.clone()) else {
-            continue;
-        };
-        if stack.is_empty() {
-            continue;
-        }
-        // `addItem(container, itemEntity)`.
-        let rest = add_item(level, None, me, stack, None);
-        if rest.is_empty() {
-            if let Some(data) = level.entities.item_mut(id) {
-                data.stack = ItemStack::EMPTY;
-            }
-            level.entities.despawn(id);
+        if add_item_entity(level, me, id) {
             return true;
         }
+    }
+    false
+}
+
+/// `addItem(container, itemEntity)`: whether all of the item entity's stack went in (it is
+/// then removed); what does not fit stays.
+pub fn add_item_entity(
+    level: &mut Level,
+    into: ContainerRef,
+    id: vanillite_world::entity::EntityId,
+) -> bool {
+    let Some(stack) = level.entities.item(id).map(|d| d.stack.clone()) else {
+        return false;
+    };
+    if stack.is_empty() {
+        return false;
+    }
+    let rest = add_item(level, None, into, stack, None);
+    if rest.is_empty() {
         if let Some(data) = level.entities.item_mut(id) {
-            data.stack = rest;
+            data.stack = ItemStack::EMPTY;
         }
+        level.entities.despawn(id);
+        return true;
+    }
+    if let Some(data) = level.entities.item_mut(id) {
+        data.stack = rest;
     }
     false
 }

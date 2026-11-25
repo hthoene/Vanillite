@@ -397,11 +397,19 @@ pub fn regen(root: &Path, args: &[&str]) -> Result<()> {
     }
     work.retain(|w| !w.1.is_empty());
     let work_dir = root.join("target/vanilla").join(&key.minecraft);
+    let agent = if recorder_broken {
+        None
+    } else {
+        Some(agent_jar(&classes, &work_dir)?)
+    };
     let sep = if cfg!(windows) { ";" } else { ":" };
     let java = |main: &str| {
         let mut cmd = Command::new(java_tool("java"));
-        cmd.current_dir(&work_dir)
-            .arg("-cp")
+        cmd.current_dir(&work_dir);
+        if let Some(agent) = &agent {
+            cmd.arg(format!("-javaagent:{}", agent.display()));
+        }
+        cmd.arg("-cp")
             .arg(format!("{}{sep}{cp}", classes.display()))
             .arg(main);
         cmd
@@ -484,6 +492,37 @@ pub fn regen(root: &Path, args: &[&str]) -> Result<()> {
         ));
     }
     check(root)
+}
+
+/// Packs the recorder's Java agent (`golden/ParityAgent.java`, makes Vanilla's random seeds
+/// reproducible) into a jar with its manifest.
+fn agent_jar(classes: &Path, work_dir: &Path) -> Result<PathBuf> {
+    let package = "dev/vanillite/extractor/golden";
+    let dir = classes.join(package);
+    let mut files: Vec<String> = std::fs::read_dir(&dir)
+        .map_err(|e| format!("{}: {e}", dir.display()))?
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .filter(|n| n.starts_with("ParityAgent") && n.ends_with(".class"))
+        .map(|n| format!("{package}/{n}"))
+        .collect();
+    files.sort();
+    let manifest = work_dir.join("golden-agent.mf");
+    write(
+        &manifest,
+        "Premain-Class: dev.vanillite.extractor.golden.ParityAgent\n",
+    )?;
+    let jar = work_dir.join("golden-agent.jar");
+    let mut cmd = Command::new(java_tool("jar"));
+    cmd.arg("--create")
+        .arg("--file")
+        .arg(&jar)
+        .arg("--manifest")
+        .arg(&manifest);
+    for f in &files {
+        cmd.arg("-C").arg(classes).arg(f);
+    }
+    run(&mut cmd)?;
+    Ok(jar)
 }
 
 /// Harness sources left out because they do not compile against the jar, with javac's output.

@@ -369,7 +369,7 @@ impl ServerWorld {
             &self.dimension,
         );
         self.post_player_game_events();
-        self.mobs.attacks(
+        self.mobs.player_actions(
             &mut self.level,
             &mut self.survival,
             ctx.global,

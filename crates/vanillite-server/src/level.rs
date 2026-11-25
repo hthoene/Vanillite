@@ -441,7 +441,7 @@ fn load_clocks(packs: &LoadedPacks) -> Clocks {
 }
 
 /// `minecraft:damage_type` with the tags survival checks.
-fn load_damage_types(packs: &LoadedPacks) -> DamageTypes {
+pub fn load_damage_types(packs: &LoadedPacks) -> DamageTypes {
     let tags = packs.tags("minecraft:damage_type");
     let types = json_of(packs, "minecraft:damage_type")
         .into_iter()
@@ -490,7 +490,7 @@ fn load_damage_types(packs: &LoadedPacks) -> DamageTypes {
 }
 
 /// Block tags and fluid ids for survival.
-fn load_block_facts(packs: &LoadedPacks) -> BlockFacts {
+pub fn load_block_facts(packs: &LoadedPacks) -> BlockFacts {
     let tag = |name: &str| {
         packs.tag_ids("minecraft:block", name).unwrap_or_else(|e| {
             log::error!("Block tag {name}: {e:?}");

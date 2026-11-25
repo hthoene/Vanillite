@@ -30,6 +30,7 @@ import net.minecraft.server.level.ServerChunkCache;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ThreadedLevelLightEngine;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.block.Block;
@@ -117,8 +118,10 @@ public final class ScenarioRecorder {
       layers.add(new ParityServer.Layer("minecraft:grass_block", 1));
     }
 
+    ParityHooks.reset();
     Path dir = Files.createTempDirectory("vanillite-parity");
     ParityServer server = ParityServer.start(dir, seed, layers, biome);
+    ScenarioEntities entities = null;
     try {
       Map<String, String> rules = new java.util.LinkedHashMap<>();
       for (String[] rule : DEFAULT_RULES) {
@@ -144,8 +147,32 @@ public final class ScenarioRecorder {
         }
       }
 
+      if (scenario.has("time")) {
+        server.command("time set " + scenario.get("time").getAsLong());
+      }
+      server.command(
+          "difficulty "
+              + (scenario.has("difficulty") ? scenario.get("difficulty").getAsString() : "normal"));
+      entities = new ScenarioEntities(server, level);
+      JsonArray specs = scenario.has("entities") ? scenario.getAsJsonArray("entities") : new JsonArray();
+      // Players join first; then the level random starts from the world seed and the mobs come.
+      for (int i = 0; i < specs.size(); i++) {
+        JsonObject spec = specs.get(i).getAsJsonObject();
+        if (spec.get("type").getAsString().equals("minecraft:player")) {
+          entities.player(spec, i);
+        }
+      }
+      level.getRandom().setSeed(seed);
+      for (int i = 0; i < specs.size(); i++) {
+        JsonObject spec = specs.get(i).getAsJsonObject();
+        if (!spec.get("type").getAsString().equals("minecraft:player")) {
+          entities.mob(spec, i);
+        }
+      }
+      ParityHooks.startStream(scenario.has("entity_seed") ? scenario.get("entity_seed").getAsLong() : seed);
+
       boolean light = scenario.has("light") && scenario.get("light").getAsBoolean();
-      Trace trace = new Trace(min, max, light);
+      Trace trace = new Trace(min, max, light, entities);
       trace.frame(level, 0, true);
       int ticks = scenario.get("ticks").getAsInt();
       JsonArray actions = scenario.has("actions") ? scenario.getAsJsonArray("actions") : null;
@@ -162,6 +189,8 @@ public final class ScenarioRecorder {
                   level.setChunkForced(xz.get(0).getAsInt(), xz.get(1).getAsInt(), op.equals("force"));
                 }
                 settle(server, level, area);
+              } else if (op.equals("hurt")) {
+                entities.hurt(action);
               } else {
                 apply(level, action, true);
               }
@@ -169,10 +198,16 @@ public final class ScenarioRecorder {
           }
         }
         server.step();
+        // The connection tick of the players (`ServerGamePacketListenerImpl.tick`), which the
+        // server runs after the levels.
+        entities.tickPlayers();
         trace.frame(level, tick, false);
       }
       return trace.finish();
     } finally {
+      if (entities != null) {
+        entities.release();
+      }
       server.shutdown();
       deleteTree(dir);
     }
@@ -348,11 +383,13 @@ public final class ScenarioRecorder {
     private final List<String> frames = new ArrayList<>();
     private final boolean light;
     private int[] last;
+    private final ScenarioEntities names;
 
-    Trace(BlockPos min, BlockPos max, boolean light) {
+    Trace(BlockPos min, BlockPos max, boolean light, ScenarioEntities names) {
       this.min = min;
       this.max = max;
       this.light = light;
+      this.names = names;
     }
 
     private int index(String state) {
@@ -428,6 +465,9 @@ public final class ScenarioRecorder {
       entities(sb, level);
       if (light) {
         light(sb, level);
+      }
+      if (names.hasEntities()) {
+        sb.append(",\"level_rng\":").append(ScenarioEntities.state(level.getRandom()));
       }
       frames.add(sb.append('}').toString());
     }
@@ -540,7 +580,8 @@ public final class ScenarioRecorder {
           EntityTypeTest.forClass(Entity.class), e -> inside(e.blockPosition()), list);
       List<String> rows = new ArrayList<>();
       for (Entity e : list) {
-        Vec3 v = e.getDeltaMovement();
+        // A player moves by its client: its server-side motion is not part of the trace.
+        Vec3 v = e instanceof Player ? Vec3.ZERO : e.getDeltaMovement();
         rows.add(
             "[\""
                 + BuiltInRegistries.ENTITY_TYPE.getKey(e.getType())
@@ -556,6 +597,7 @@ public final class ScenarioRecorder {
                 + Double.doubleToRawLongBits(v.y)
                 + ','
                 + Double.doubleToRawLongBits(v.z)
+                + names.detail(e)
                 + ']');
       }
       rows.sort(Comparator.naturalOrder());

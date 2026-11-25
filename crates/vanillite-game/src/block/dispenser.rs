@@ -127,6 +127,21 @@ fn tick(level: &mut Level, state: BlockState, pos: BlockPos) {
             }
             None => dispense(level, source, stack, Behaviour::Default),
         }
+    } else if let Some(kind) = crate::minecart::MinecartKind::of_item(item::item_id(&stack)) {
+        // `MinecartDispenseItemBehavior`: onto the rail in front, else the default behaviour;
+        // then its own sound and animation.
+        let mut remaining = stack;
+        let name = remaining
+            .component(vanillite_protocol::components::ids::CUSTOM_NAME)
+            .map(Into::into);
+        if crate::minecart::dispense(level, kind, pos, facing, name) {
+            remaining.shrink(1);
+        } else {
+            remaining = dispense(level, source, remaining, Behaviour::Default);
+        }
+        level.level_event(None, DISPENSE_SUCCESS, pos, 0);
+        level.level_event(None, DISPENSE_ANIMATION, pos, direction_3d(facing));
+        remaining
     } else {
         let behaviour = behaviour_of(&stack);
         dispense(level, source, stack, behaviour)

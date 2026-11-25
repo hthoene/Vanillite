@@ -1,7 +1,7 @@
 # Golden keys, written by `cargo xtask golden regen`. Do not edit.
 minecraft = "26.3"
 jar_sha1 = "33680f5f2ac32864d6d7cf5e56a705fdb3e05f4c"
-harness = 1
+harness = 2
 
 [entries]
 block_set_get = "8e5c84713490f4afed8cdda98451d451426a3d75"
@@ -16,6 +16,19 @@ light_roofs = "46c45df1bac159a6ef28b9d2d1adc56341fee6e0"
 light_sky_platform = "e015c34083bb0d767dee5d3f0b7c4eb5c35bf609"
 light_sources = "7e4a5853396bd975efd642041f8b5495c02e93c9"
 light_water_flood = "67fe1929a63baec4e0a62a2ac17bb451c530d3c2"
+minecart_collisions = "01822692c40874a408cdc05978d4dc1a32654bea"
+minecart_curve_loop = "e44f1b6c6bfbae46bbed86f18406f6ab9e7e3f05"
+minecart_detector_activator = "9d5f130a04f64e1496e04f21b2e2232b7a870b84"
+minecart_powered_rails = "3d2a505d2d794291ba651b1c5d63b3d84c98b940"
+minecart_slopes = "563c43903fa1070da4525d70b198cb939459e5b7"
+mob_animals_wander_panic = "6f080124c6a90b3fc5bdaece1f909752301ebcdf"
+mob_baby_follow_parent = "55dd7ddbd109dc115946ff6251d4a2c65273118e"
+mob_creeper_explode = "f299e8a7a640c37eebbe32ee9bf8400f81c63960"
+mob_enderman_teleport = "561e099bd130b83ac8136883342898c11933e1cf"
+mob_sheep_eat_grass = "aa4550349d8d925049feeff6c1e6d46456588caf"
+mob_skeleton_shoot = "1cd3a968aea4fed9ce567ab7293d787c8adab073"
+mob_spider_climb = "af02e5eeb0525fe99f8ddf443bc9e965b83f400b"
+mob_zombie_chase = "b8f540adeedae1b74f08b77629087c2b58c55942"
 observer_clock = "9f37203f131d755d1c83c25b3749da49bc89a699"
 piston_contraptions = "10166875391c7dcb30c4442d7dbf762ed9316c63"
 redstone_border_chunk = "f82dac6b3176d3d46e306ce960e84d088def0494"

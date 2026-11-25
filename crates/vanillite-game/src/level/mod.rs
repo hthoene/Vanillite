@@ -1021,6 +1021,11 @@ impl Level {
         }
     }
 
+    /// Whether the block of `state` reacts to entities inside it (`entityInside`).
+    pub fn has_entity_inside(&self, state: BlockState) -> bool {
+        self.behaviours.get(state.block()).entity_inside.is_some()
+    }
+
     /// `state.entityInside(level, pos, entity, ...)` of the block at `pos`.
     pub fn entity_inside(&mut self, pos: BlockPos, entity: EntityId) {
         let state = self.block(pos);

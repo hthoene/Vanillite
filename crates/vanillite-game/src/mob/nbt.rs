@@ -32,6 +32,34 @@ pub fn uuid_of(tag: &Compound) -> Option<u128> {
     }
 }
 
+/// A UUID stored as four ints under `key`.
+fn uuid_key(tag: &Compound, key: &str) -> Option<u128> {
+    match tag.get(key) {
+        Some(Tag::IntArray(v)) if v.len() == 4 => {
+            #[allow(clippy::cast_sign_loss)]
+            let part = |i: usize| u128::from(v[i] as u32);
+            Some((part(0) << 96) | (part(1) << 64) | (part(2) << 32) | part(3))
+        }
+        _ => None,
+    }
+}
+
+/// A text component of a `custom_name` component value (network NBT) as an NBT tag.
+pub fn component_tag(encoded: &[u8]) -> Option<Tag> {
+    let mut input = encoded;
+    let mut budget = vanillite_nbt::read::Budget::new(1 << 16, 64);
+    vanillite_nbt::read::read_network(&mut input, &mut budget)
+        .ok()
+        .flatten()
+}
+
+/// The `custom_name` component value (network NBT) of a text component NBT tag.
+pub fn tag_component(tag: &Tag) -> Option<Box<[u8]>> {
+    let mut out = Vec::new();
+    vanillite_nbt::write::write_network(tag, &mut out).ok()?;
+    Some(out.into())
+}
+
 fn vec3_of(tag: &Compound, key: &str) -> Option<Vec3> {
     match tag.get(key) {
         Some(Tag::List(l)) if l.0.len() == 3 => {
@@ -54,6 +82,14 @@ fn int(tag: &Compound, key: &str) -> Option<i32> {
 
 fn boolean(tag: &Compound, key: &str) -> bool {
     tag.get(key).and_then(Tag::as_i64).is_some_and(|v| v != 0)
+}
+
+fn double(tag: &Compound, key: &str) -> Option<f64> {
+    match tag.get(key) {
+        Some(Tag::Double(v)) if v.is_finite() => Some(*v),
+        Some(Tag::Float(v)) if v.is_finite() => Some(f64::from(*v)),
+        _ => None,
+    }
 }
 
 fn float(tag: &Compound, key: &str) -> Option<f32> {
@@ -180,6 +216,33 @@ pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
     if m.no_ai {
         out.insert("NoAI", true);
     }
+    if let Some(name) = m.custom_name.as_deref()
+        && let Some(tag) = component_tag(name)
+    {
+        out.insert("CustomName", tag);
+    }
+    if m.saddled {
+        let mut saddle = Compound::new();
+        saddle.insert("id", "minecraft:saddle");
+        saddle.insert("count", 1);
+        let mut equipment = Compound::new();
+        equipment.insert("saddle", saddle);
+        out.insert("equipment", equipment);
+    }
+    if let Some(owner) = m.owner {
+        out.insert("Owner", uuid_ints(owner));
+        out.insert("Sitting", m.order_to_sit);
+    }
+    if let Some(l) = m.pending_leash {
+        match l {
+            super::LeashRef::Entity(u) => {
+                let mut c = Compound::new();
+                c.insert("UUID", uuid_ints(u));
+                out.insert("leash", c);
+            }
+            super::LeashRef::Knot(p) => out.insert("leash", vec![p.x, p.y, p.z]),
+        }
+    }
     match m.kind {
         Kind::Zombie => {
             out.insert("IsBaby", m.baby);
@@ -201,9 +264,12 @@ pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
         _ if super::boss::is_boss_kind(m.kind) => super::boss::save(m, &mut out),
         Kind::Cow | Kind::Pig | Kind::Sheep | Kind::Chicken => {
             out.insert("Age", m.age);
-            out.insert("ForcedAge", 0);
+            out.insert("ForcedAge", m.forced_age);
             out.insert("AgeLocked", false);
             out.insert("InLove", m.in_love);
+            if let Some(cause) = m.love_cause {
+                out.insert("LoveCause", uuid_ints(cause));
+            }
             match m.kind {
                 Kind::Sheep => {
                     #[allow(clippy::cast_possible_wrap)]
@@ -277,6 +343,24 @@ pub fn load_mob(tag: &Compound, seed: i64) -> Option<LoadedMob> {
     m.no_ai = boolean(tag, "NoAI");
     m.silent = boolean(tag, "Silent");
     m.y_body_rot = y_rot;
+    m.custom_name = tag.get("CustomName").and_then(tag_component);
+    m.saddled = match tag.get("equipment") {
+        Some(Tag::Compound(eq)) => {
+            matches!(eq.get("saddle"), Some(Tag::Compound(s)) if s.get("id").and_then(Tag::as_str) == Some("minecraft:saddle"))
+        }
+        _ => false,
+    };
+    m.owner = uuid_key(tag, "Owner");
+    m.tame = m.owner.is_some();
+    m.order_to_sit = boolean(tag, "Sitting");
+    m.in_sitting_pose = m.order_to_sit;
+    m.pending_leash = match tag.get("leash") {
+        Some(Tag::Compound(c)) => uuid_of(c).map(super::LeashRef::Entity),
+        Some(Tag::IntArray(v)) if v.len() == 3 => Some(super::LeashRef::Knot(
+            vanillite_base::BlockPos::new(v[0], v[1], v[2]),
+        )),
+        _ => None,
+    };
     match kind {
         Kind::Zombie => m.baby = boolean(tag, "IsBaby"),
         Kind::Creeper => {
@@ -289,6 +373,8 @@ pub fn load_mob(tag: &Compound, seed: i64) -> Option<LoadedMob> {
             m.age = int(tag, "Age").unwrap_or(0);
             m.baby = m.age < 0;
             m.in_love = int(tag, "InLove").unwrap_or(0);
+            m.love_cause = uuid_key(tag, "LoveCause");
+            m.forced_age = int(tag, "ForcedAge").unwrap_or(0);
             if kind == Kind::Sheep {
                 m.sheep_color = u8::try_from(int(tag, "Color").unwrap_or(0) & 15).unwrap_or(0);
                 m.sheared = boolean(tag, "Sheared");
@@ -363,4 +449,367 @@ pub fn load_orb(tag: &Compound) -> Option<(Vec3, Vec3, u128, ExperienceOrbData)>
             tick_count: 0,
         },
     ))
+}
+
+/// The common part of an entity loaded from NBT.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LoadedEntity {
+    pub pos: Vec3,
+    pub velocity: Vec3,
+    pub rot: Rotation,
+    pub uuid: u128,
+    pub on_ground: bool,
+}
+
+fn load_entity(tag: &Compound) -> Option<LoadedEntity> {
+    let pos = vec3_of(tag, "Pos")?;
+    let (y_rot, x_rot) = match tag.get("Rotation") {
+        Some(Tag::List(l)) if l.0.len() == 2 => match (&l.0[0], &l.0[1]) {
+            (Tag::Float(y), Tag::Float(x)) if y.is_finite() && x.is_finite() => (*y, *x),
+            _ => (0.0, 0.0),
+        },
+        _ => (0.0, 0.0),
+    };
+    Some(LoadedEntity {
+        pos,
+        velocity: vec3_of(tag, "Motion").unwrap_or(Vec3::ZERO),
+        rot: Rotation {
+            y_rot,
+            x_rot,
+            y_head_rot: y_rot,
+        },
+        uuid: uuid_of(tag)?,
+        on_ground: boolean(tag, "OnGround"),
+    })
+}
+
+/// An item entity as entity NBT (`ItemEntity.addAdditionalSaveData`).
+pub fn save_item(core: &EntityRef<'_>, d: &crate::item_entity::ItemData) -> Compound {
+    let mut out = Compound::new();
+    save_entity(core, &mut out);
+    out.insert("fall_distance", 0.0_f64);
+    out.insert("Fire", -1_i16);
+    out.insert("Air", 300_i16);
+    out.insert("Health", d.health);
+    out.insert("Age", d.age);
+    out.insert("PickupDelay", d.pickup_delay);
+    if let Some(t) = d.thrower {
+        out.insert("Thrower", uuid_ints(t));
+    }
+    if let Some(t) = d.target {
+        out.insert("Owner", uuid_ints(t));
+    }
+    out.insert("Item", crate::inventory::stack_to_nbt(&d.stack));
+    out
+}
+
+/// An item entity from entity NBT; `None` without a valid item.
+pub fn load_item(tag: &Compound) -> Option<(LoadedEntity, crate::item_entity::ItemData)> {
+    if type_of(tag)? != ids::ITEM {
+        return None;
+    }
+    let e = load_entity(tag)?;
+    let stack = match tag.get("Item") {
+        Some(Tag::Compound(c)) => crate::inventory::stack_from_nbt(c),
+        _ => return None,
+    };
+    if stack.is_empty() {
+        return None;
+    }
+    let short = |k: &str| int(tag, k).map_or(0, |v| i16::try_from(v).unwrap_or(0));
+    let mut d =
+        crate::item_entity::ItemData::new(stack, short("PickupDelay"), uuid_key(tag, "Thrower"));
+    d.age = short("Age");
+    d.health = int(tag, "Health").map_or(5, |v| i16::try_from(v).unwrap_or(5));
+    d.target = uuid_key(tag, "Owner");
+    Some((e, d))
+}
+
+/// An arrow as entity NBT (`AbstractArrow.addAdditionalSaveData`); `owner` is the owner's
+/// UUID.
+pub fn save_arrow(
+    core: &EntityRef<'_>,
+    a: &super::projectile::ArrowData,
+    owner: Option<u128>,
+) -> Compound {
+    let mut out = Compound::new();
+    save_entity(core, &mut out);
+    out.insert("fall_distance", 0.0_f64);
+    out.insert("Fire", if a.fire { 2000_i16 } else { -1_i16 });
+    out.insert("Air", 300_i16);
+    #[allow(clippy::cast_possible_truncation)]
+    {
+        out.insert("life", a.life.clamp(-32768, 32767) as i16);
+        out.insert("shake", a.shake.clamp(0, 127) as i8);
+    }
+    out.insert("inGround", a.in_ground);
+    #[allow(clippy::cast_possible_wrap)]
+    out.insert("pickup", a.pickup as i8);
+    out.insert("damage", a.base_damage);
+    out.insert("crit", a.crit);
+    out.insert("PierceLevel", 0_i8);
+    out.insert("SoundEvent", "minecraft:entity.arrow.hit");
+    if let Some(o) = owner {
+        out.insert("Owner", uuid_ints(o));
+    }
+    out.insert("HasBeenShot", true);
+    out.insert("LeftOwner", a.left_owner);
+    let mut item = Compound::new();
+    item.insert("id", "minecraft:arrow");
+    item.insert("count", 1);
+    out.insert("item", item);
+    out
+}
+
+/// An arrow from entity NBT (its owner is not resolved).
+pub fn load_arrow(tag: &Compound) -> Option<(LoadedEntity, super::projectile::ArrowData)> {
+    if type_of(tag)? != ids::ARROW {
+        return None;
+    }
+    let e = load_entity(tag)?;
+    let damage = match tag.get("damage") {
+        Some(Tag::Double(d)) if d.is_finite() => *d,
+        _ => 2.0,
+    };
+    Some((
+        e,
+        super::projectile::ArrowData {
+            owner: None,
+            base_damage: damage,
+            in_ground: boolean(tag, "inGround"),
+            life: int(tag, "life").unwrap_or(0),
+            shake: int(tag, "shake").unwrap_or(0),
+            crit: boolean(tag, "crit"),
+            left_owner: boolean(tag, "LeftOwner"),
+            last_state: None,
+            tick_count: 0,
+            pickup: u8::try_from(int(tag, "pickup").unwrap_or(0).clamp(0, 2)).unwrap_or(0),
+            random_seed: e.uuid as i64,
+            knockback: 0.0,
+            fire: int(tag, "Fire").is_some_and(|f| f > 0),
+        },
+    ))
+}
+
+/// A boat as entity NBT.
+pub fn save_boat(
+    core: &EntityRef<'_>,
+    b: &crate::vehicle::BoatData,
+    leash: Option<super::LeashRef>,
+) -> Compound {
+    let mut out = Compound::new();
+    save_entity(core, &mut out);
+    out.insert("fall_distance", b.fall_distance);
+    out.insert("Fire", -1_i16);
+    out.insert("Air", 300_i16);
+    if let Some(name) = b.custom_name.as_deref()
+        && let Some(tag) = component_tag(name)
+    {
+        out.insert("CustomName", tag);
+    }
+    if b.kind.chest {
+        save_chest_vehicle(&b.items, b.loot_table.as_ref(), &mut out);
+    }
+    match leash {
+        Some(super::LeashRef::Entity(u)) => {
+            let mut c = Compound::new();
+            c.insert("UUID", uuid_ints(u));
+            out.insert("leash", c);
+        }
+        Some(super::LeashRef::Knot(p)) => out.insert("leash", vec![p.x, p.y, p.z]),
+        None => {}
+    }
+    out
+}
+
+/// A boat from entity NBT.
+pub fn load_boat(tag: &Compound) -> Option<(LoadedEntity, crate::vehicle::BoatData)> {
+    let kind = crate::vehicle::BoatKind::of(type_of(tag)?)?;
+    let e = load_entity(tag)?;
+    let mut b = crate::vehicle::BoatData::new(kind);
+    b.custom_name = tag.get("CustomName").and_then(tag_component);
+    if kind.chest {
+        b.loot_table = load_chest_vehicle(tag, &mut b.items);
+    }
+    Some((e, b))
+}
+
+/// `ContainerEntity.addChestVehicleSaveData`: the loot table, or the items.
+fn save_chest_vehicle(
+    items: &[crate::item::ItemStack],
+    loot_table: Option<&(String, i64)>,
+    out: &mut Compound,
+) {
+    match loot_table {
+        Some((table, seed)) => {
+            out.insert("LootTable", table.clone());
+            if *seed != 0 {
+                out.insert("LootTableSeed", *seed);
+            }
+        }
+        None => crate::block::container::save_items(items, out),
+    }
+}
+
+/// `ContainerEntity.readChestVehicleSaveData`.
+fn load_chest_vehicle(
+    tag: &Compound,
+    items: &mut [crate::item::ItemStack],
+) -> Option<(String, i64)> {
+    if let Some(Tag::String(table)) = tag.get("LootTable") {
+        let seed = tag.get("LootTableSeed").and_then(Tag::as_i64).unwrap_or(0);
+        return Some((table.clone(), seed));
+    }
+    crate::block::container::load_items(tag, items);
+    None
+}
+
+/// The keys of the kinds Vanillite does not simulate, kept as they were
+/// (`BaseCommandBlock.save`, `BaseSpawner.save`).
+const COMMAND_BLOCK_KEYS: &[&str] = &[
+    "SuccessCount",
+    "LastOutput",
+    "TrackOutput",
+    "UpdateLastExecution",
+    "LastExecution",
+    "CustomName",
+];
+const SPAWNER_KEYS: &[&str] = &[
+    "Delay",
+    "MinSpawnDelay",
+    "MaxSpawnDelay",
+    "SpawnCount",
+    "MaxNearbyEntities",
+    "RequiredPlayerRange",
+    "SpawnRange",
+    "SpawnData",
+    "SpawnPotentials",
+];
+
+/// A minecart as entity NBT (`AbstractMinecart.addAdditionalSaveData` and the kinds').
+pub fn save_minecart(core: &EntityRef<'_>, m: &crate::minecart::MinecartData) -> Compound {
+    use crate::minecart::MinecartKind;
+    let mut out = Compound::new();
+    save_entity(core, &mut out);
+    out.insert("fall_distance", m.fall_distance);
+    out.insert("Fire", -1_i16);
+    out.insert("Air", 300_i16);
+    if let Some(name) = m.custom_name.as_deref()
+        && let Some(tag) = component_tag(name)
+    {
+        out.insert("CustomName", tag);
+    }
+    if let Some(state) = m.display_state {
+        out.insert(
+            "DisplayState",
+            Tag::Compound(crate::level::block_entity::write_block_state(state)),
+        );
+    }
+    if m.display_offset != m.kind.default_display_offset() {
+        out.insert("DisplayOffset", m.display_offset);
+    }
+    out.insert("FlippedRotation", m.flipped);
+    out.insert("HasTicked", m.first_tick);
+    match m.kind {
+        MinecartKind::Chest | MinecartKind::Hopper => {
+            save_chest_vehicle(&m.items, m.loot_table.as_ref(), &mut out);
+            if m.kind == MinecartKind::Hopper {
+                out.insert("Enabled", m.enabled);
+            }
+        }
+        MinecartKind::Furnace => {
+            out.insert("PushX", m.push.x);
+            out.insert("PushZ", m.push.z);
+            #[allow(clippy::cast_possible_truncation)]
+            out.insert("Fuel", m.fuel as i16);
+        }
+        MinecartKind::Tnt => {
+            out.insert("fuse", m.fuse);
+            if m.explosion_power != 4.0 {
+                out.insert("explosion_power", m.explosion_power);
+            }
+            if m.explosion_speed_factor != 1.0 {
+                out.insert("explosion_speed_factor", m.explosion_speed_factor);
+            }
+        }
+        MinecartKind::CommandBlock => {
+            out.insert("Command", m.command.clone());
+        }
+        MinecartKind::Plain | MinecartKind::Spawner => {}
+    }
+    for (key, value) in m.extra.iter() {
+        if out.get(key).is_none() {
+            out.insert(key, value.clone());
+        }
+    }
+    out
+}
+
+/// A minecart from entity NBT.
+pub fn load_minecart(
+    tag: &Compound,
+    seed: i64,
+) -> Option<(LoadedEntity, crate::minecart::MinecartData)> {
+    use crate::minecart::{MinecartData, MinecartKind};
+    let kind = MinecartKind::of(type_of(tag)?)?;
+    let e = load_entity(tag)?;
+    let mut m = MinecartData::new(kind, seed);
+    m.custom_name = tag.get("CustomName").and_then(tag_component);
+    m.fall_distance = double(tag, "fall_distance").unwrap_or(0.0);
+    if let Some(Tag::Compound(c)) = tag.get("DisplayState") {
+        m.display_state = Some(crate::level::block_entity::read_block_state(c));
+    }
+    m.display_offset = int(tag, "DisplayOffset").unwrap_or(kind.default_display_offset());
+    m.flipped = boolean(tag, "FlippedRotation");
+    m.first_tick = boolean(tag, "HasTicked");
+    match kind {
+        MinecartKind::Chest | MinecartKind::Hopper => {
+            m.loot_table = load_chest_vehicle(tag, &mut m.items);
+            if kind == MinecartKind::Hopper {
+                m.enabled = tag
+                    .get("Enabled")
+                    .and_then(Tag::as_i64)
+                    .is_none_or(|v| v != 0);
+            }
+        }
+        MinecartKind::Furnace => {
+            let x = double(tag, "PushX").unwrap_or(0.0);
+            let z = double(tag, "PushZ").unwrap_or(0.0);
+            m.push = Vec3::new(x, 0.0, z);
+            m.fuel = int(tag, "Fuel").unwrap_or(0);
+            m.has_fuel = m.fuel > 0;
+        }
+        MinecartKind::Tnt => {
+            m.fuse = int(tag, "fuse").unwrap_or(-1);
+            m.explosion_power = float(tag, "explosion_power")
+                .unwrap_or(4.0)
+                .clamp(0.0, 128.0);
+            m.explosion_speed_factor = float(tag, "explosion_speed_factor")
+                .unwrap_or(1.0)
+                .clamp(0.0, 128.0);
+        }
+        MinecartKind::CommandBlock => {
+            m.command = tag
+                .get("Command")
+                .and_then(Tag::as_str)
+                .unwrap_or("")
+                .to_owned();
+            for &key in COMMAND_BLOCK_KEYS {
+                if let Some(v) = tag.get(key) {
+                    m.extra.insert(key, v.clone());
+                }
+            }
+        }
+        MinecartKind::Spawner => {
+            for &key in SPAWNER_KEYS {
+                if let Some(v) = tag.get(key) {
+                    m.extra.insert(key, v.clone());
+                }
+            }
+        }
+        MinecartKind::Plain => {}
+    }
+    // The command block's own custom name lives in the entity's name.
+    m.extra.remove("CustomName");
+    Some((e, m))
 }
