@@ -162,6 +162,10 @@ fn base_tick(t: &mut Tick<'_, '_>) {
             t.mob().last_hurt_by_mob = None;
         }
     }
+    tick_effects(t);
+    if !t.exists() || t.mob_ref().removed {
+        return;
+    }
     // `Mob.baseTick`: the ambient sound.
     if t.mob_ref().is_alive() {
         let m = t.mob();
@@ -177,11 +181,54 @@ fn base_tick(t: &mut Tick<'_, '_>) {
 
 /// `LivingEntity.tickDeath`.
 fn tick_death(t: &mut Tick<'_, '_>) {
+    if super::boss::tick_death(t) {
+        return;
+    }
     t.mob().death_time += 1;
     if t.mob_ref().death_time >= 20 {
         let id = t.id;
         entity_event(t, id, event::POOF);
         t.mob().removed = true;
+    }
+}
+
+/// `tickEffects` on the server: what the active effects do this tick.
+pub fn tick_effects(t: &mut Tick<'_, '_>) {
+    if t.mob_ref().effects.is_empty() {
+        return;
+    }
+    let mut out = Vec::new();
+    {
+        let m = t.mob();
+        let (tick_count, health, max) = (m.tick_count, m.health, m.max_health());
+        m.effects.tick(tick_count, health, max, &mut out);
+    }
+    for e in out {
+        match e {
+            crate::effect::EffectTick::Magic(amount) => {
+                let source = DamageSource::of(t.env.types.magic);
+                hurt_self(t, source, amount);
+            }
+            crate::effect::EffectTick::Wither(amount) => {
+                let source = DamageSource::of(t.env.types.wither);
+                hurt_self(t, source, amount);
+            }
+            crate::effect::EffectTick::Heal(amount) => heal(t, amount),
+            crate::effect::EffectTick::Removed(_) | crate::effect::EffectTick::Refresh(_) => {}
+        }
+        if !t.exists() {
+            return;
+        }
+    }
+}
+
+/// `LivingEntity.heal(amount)`.
+pub fn heal(t: &mut Tick<'_, '_>, amount: f32) {
+    let m = t.mob();
+    if m.health > 0.0 {
+        let max = m.max_health();
+        m.health = (m.health + amount).clamp(0.0, max);
+        t.core_mut().mark_data_dirty();
     }
 }
 
@@ -216,6 +263,10 @@ fn fluid_jump_threshold(t: &Tick<'_, '_>) -> f64 {
 
 /// `LivingEntity.aiStep` with `Mob.aiStep`'s additions.
 fn ai_step(t: &mut Tick<'_, '_>) {
+    super::boss::ai_step_pre(t);
+    if !t.exists() || t.mob_ref().removed {
+        return;
+    }
     {
         let m = t.mob();
         if m.no_jump_delay > 0 {
@@ -237,6 +288,9 @@ fn ai_step(t: &mut Tick<'_, '_>) {
         let m = t.mob();
         m.xxa *= 0.98;
         m.zza *= 0.98;
+    }
+    if super::boss::ai_step_override(t) {
+        return;
     }
     let effective_ai = !t.mob_ref().no_ai;
     if t.mob_ref().is_dead_or_dying() {
@@ -380,7 +434,7 @@ fn modified_friction(friction: f32, modifier: f32) -> f32 {
 }
 
 /// `moveRelative(speed, input)`.
-fn move_relative(t: &mut Tick<'_, '_>, speed: f32, input: Vec3) {
+pub(crate) fn move_relative(t: &mut Tick<'_, '_>, speed: f32, input: Vec3) {
     let length = input.length_sqr();
     if length < 1.0e-7 {
         return;
@@ -413,6 +467,9 @@ pub fn on_climbable(t: &Tick<'_, '_>) -> bool {
 
 /// `LivingEntity.travel`.
 fn travel(t: &mut Tick<'_, '_>, input: Vec3) {
+    if super::boss::travel(t, input) {
+        return;
+    }
     let fluids = t.mob_ref().fluids;
     if fluids.in_water() || fluids.in_lava() {
         travel_in_fluid(t, input);
@@ -627,9 +684,89 @@ pub fn move_self(t: &mut Tick<'_, '_>, delta: Vec3) {
         }
         t.set_velocity(v);
     }
+    if t.mob_ref().kind != super::Kind::EnderDragon {
+        movement_emission(t, movement, effect_pos, effect_state);
+    }
     let factor = f64::from(block_speed_factor(t));
     let v = t.velocity();
     t.set_velocity(v.multiply(factor, 1.0, factor));
+}
+
+/// Queues `gameEvent(event, pos, Context.of(this mob, affected))`.
+fn post_game_event(t: &mut Tick<'_, '_>, event: u16, pos: Vec3, affected: Option<BlockState>) {
+    let context = crate::level::game_event::GameEventContext {
+        source: Some(t.id),
+        affected,
+    };
+    t.cx.actions.push(super::WorldAction::Level(
+        super::boss::warden::LevelAction::GameEvent {
+            event,
+            pos,
+            context,
+        },
+    ));
+}
+
+/// `Entity.applyMovementEmissionAndPlaySound`: the `STEP` and `SWIM` game events of a mob's
+/// move (the step sounds are not simulated).
+fn movement_emission(
+    t: &mut Tick<'_, '_>,
+    movement: Vec3,
+    effect_pos: BlockPos,
+    effect_state: BlockState,
+) {
+    #[allow(clippy::cast_possible_truncation)]
+    let (moved, horizontal) = (
+        (movement.length() * f64::from(0.6_f32)) as f32,
+        ((movement.x * movement.x + movement.z * movement.z).sqrt() * f64::from(0.6_f32)) as f32,
+    );
+    let supporting_pos = on_pos(t, 1.0e-5);
+    let supporting = t.level.block(supporting_pos);
+    let climbing = t.env.facts.is_climbable(supporting.block());
+    {
+        let m = t.mob();
+        m.move_dist += if climbing { moved } else { horizontal };
+        if m.move_dist <= m.next_step || supporting.is_air() {
+            return;
+        }
+    }
+    let on_ground = t.on_ground();
+    let pos = t.pos();
+    let steps = |t: &Tick<'_, '_>, st: BlockState| {
+        !st.is_air() && (on_ground || t.env.facts.is_climbable(st.block()))
+    };
+    let only_effect = supporting_pos == effect_pos;
+    let mut produced = false;
+    if steps(t, effect_state) {
+        produced = true;
+        if only_effect {
+            post_game_event(
+                t,
+                crate::level::game_event::events().step,
+                pos,
+                Some(effect_state),
+            );
+        }
+    }
+    if !only_effect && steps(t, supporting) {
+        produced = true;
+        post_game_event(
+            t,
+            crate::level::game_event::events().step,
+            pos,
+            Some(supporting),
+        );
+    }
+    let in_water = t.mob_ref().fluids.in_water();
+    let m = t.mob();
+    if produced || in_water {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+        let next = (m.move_dist as i32).saturating_add(1) as f32;
+        m.next_step = next;
+    }
+    if !produced && in_water {
+        post_game_event(t, crate::level::game_event::events().swim, pos, None);
+    }
 }
 
 /// `Mth.equal(double, double)`.
@@ -642,6 +779,13 @@ fn check_fall_damage(t: &mut Tick<'_, '_>, ya: f64, on_ground: bool, on_state: B
     if on_ground {
         let distance = t.mob_ref().fall_distance;
         if distance > 0.0 {
+            let pos = t.pos();
+            post_game_event(
+                t,
+                crate::level::game_event::events().hit_ground,
+                pos,
+                Some(on_state),
+            );
             let multiplier = match t.env.facts.landing(on_state) {
                 Landing::Fall(m) => Some(m),
                 Landing::Slime => None,
@@ -742,7 +886,10 @@ fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
             }
         }
     }
-    if let Some(s) = stuck {
+    // `WitherBoss.makeStuckInBlock` does nothing.
+    if let Some(s) = stuck
+        && t.mob_ref().kind != super::Kind::Wither
+    {
         t.mob().fall_distance = 0.0;
         t.mob().stuck_speed = s;
     }
@@ -803,6 +950,10 @@ fn push_entities(t: &mut Tick<'_, '_>) {
         let pow = (1.0 / dd).min(1.0);
         xa *= pow * f64::from(0.05_f32);
         za *= pow * f64::from(0.05_f32);
+        if t.mob_ref().kind == super::Kind::Warden {
+            // `Warden.doPush`.
+            super::boss::warden::do_push(t, other);
+        }
         if t.ents.mob(other).is_some()
             && let Some(mut e) = t.ents.store.get_mut(other)
         {
@@ -844,7 +995,9 @@ fn server_ai_step(t: &mut Tick<'_, '_>) {
     if !t.exists() || t.mob_ref().removed {
         return;
     }
-    nav::tick_move_control(t);
+    if !super::boss::move_control(t) {
+        nav::tick_move_control(t);
+    }
     nav::tick_look_control(t);
     let m = t.mob();
     m.jumping = m.jump;

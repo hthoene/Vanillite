@@ -198,6 +198,198 @@ pub struct Spawner {
     near: Vec<usize>,
     /// Chunks that passed the spawn step and wait for their animals.
     pub generated: Vec<ChunkPos>,
+    /// Structure spawn overrides (ocean monuments) by chunk.
+    pub structures: StructureSpawns,
+}
+
+/// The emptied spawn lists of an ocean monument (axolotls, underground water creatures).
+const NO_SPAWNS: &[SpawnEntry] = &[];
+
+/// The structure starts with spawn overrides that chunks reference, read from the chunks'
+/// stored structure data and cached per chunk (`StructureManager.getStructureAt` for the
+/// `full` bounding boxes of ocean monuments).
+#[derive(Debug, Default)]
+pub struct StructureSpawns {
+    cache: FxHashMap<ChunkPos, CachedChunk>,
+}
+
+/// The monuments a chunk references.
+#[derive(Debug)]
+struct CachedChunk {
+    /// The chunk's stored data the boxes were read from.
+    data: Option<std::sync::Arc<[u8]>>,
+    /// Every referenced start chunk was available.
+    complete: bool,
+    /// The monuments' bounding boxes (`min_x, min_y, min_z, max_x, max_y, max_z`).
+    boxes: Vec<[i32; 6]>,
+}
+
+/// Most chunks kept in [`StructureSpawns`] before it starts over.
+const STRUCTURE_CACHE_LIMIT: usize = 4096;
+
+fn chunk_tags(
+    level: &Level,
+    chunk: ChunkPos,
+) -> Option<(std::sync::Arc<[u8]>, vanillite_nbt::Compound)> {
+    let c = level.chunks.chunk(chunk)?;
+    let bytes = c.extra.clone()?;
+    let tag = vanillite_nbt::read::read_network(
+        &mut &bytes[..],
+        &mut vanillite_nbt::read::Budget::file(),
+    )
+    .ok()??;
+    match tag {
+        vanillite_nbt::Tag::Compound(c) => Some((bytes, c)),
+        _ => None,
+    }
+}
+
+impl StructureSpawns {
+    /// Whether `pos` is inside the bounding box of an ocean monument its chunk references.
+    pub fn in_monument(&mut self, level: &Level, pos: BlockPos) -> bool {
+        let chunk = pos.chunk();
+        let extra = level.chunks.chunk(chunk).and_then(|c| c.extra.clone());
+        let fresh = match self.cache.get(&chunk) {
+            Some(cached) => {
+                cached.complete
+                    && match (&cached.data, &extra) {
+                        (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
+                        (None, None) => true,
+                        _ => false,
+                    }
+            }
+            None => false,
+        };
+        if !fresh {
+            if self.cache.len() >= STRUCTURE_CACHE_LIMIT {
+                self.cache.clear();
+            }
+            let (complete, boxes) = monument_boxes(level, chunk);
+            self.cache.insert(
+                chunk,
+                CachedChunk {
+                    data: extra,
+                    complete,
+                    boxes,
+                },
+            );
+        }
+        self.cache.get(&chunk).is_some_and(|c| {
+            c.boxes.iter().any(|b| {
+                (b[0]..=b[3]).contains(&pos.x)
+                    && (b[1]..=b[4]).contains(&pos.y)
+                    && (b[2]..=b[5]).contains(&pos.z)
+            })
+        })
+    }
+}
+
+/// The bounding boxes of the monuments `chunk` references; `false` when a start chunk was
+/// not available.
+fn monument_boxes(level: &Level, chunk: ChunkPos) -> (bool, Vec<[i32; 6]>) {
+    use vanillite_nbt::Tag;
+    const NAME: &str = "minecraft:monument";
+    let Some((_, tags)) = chunk_tags(level, chunk) else {
+        return (true, Vec::new());
+    };
+    let Some(Tag::LongArray(refs)) = tags
+        .get("structures")
+        .and_then(Tag::as_compound)
+        .and_then(|s| s.get("References"))
+        .and_then(Tag::as_compound)
+        .and_then(|r| r.get(NAME))
+    else {
+        return (true, Vec::new());
+    };
+    let mut complete = true;
+    let mut boxes = Vec::new();
+    for &key in refs {
+        let start_chunk = ChunkPos::from_long(key);
+        let Some((_, start_tags)) = chunk_tags(level, start_chunk) else {
+            complete = false;
+            continue;
+        };
+        let Some(start) = start_tags
+            .get("structures")
+            .and_then(Tag::as_compound)
+            .and_then(|s| s.get("starts"))
+            .and_then(Tag::as_compound)
+            .and_then(|s| s.get(NAME))
+            .and_then(Tag::as_compound)
+        else {
+            continue;
+        };
+        boxes.extend(start_box(start));
+    }
+    (complete, boxes)
+}
+
+/// The bounding box of a stored structure start (`StructureStart.getBoundingBox`): the box
+/// around all its pieces' `BB`s.
+fn start_box(start: &vanillite_nbt::Compound) -> Option<[i32; 6]> {
+    use vanillite_nbt::Tag;
+    let Some(Tag::List(children)) = start.get("Children") else {
+        return None;
+    };
+    let mut bb: Option<[i32; 6]> = None;
+    for child in &children.0 {
+        let Some(Tag::IntArray(b)) = child.as_compound().and_then(|c| c.get("BB")) else {
+            continue;
+        };
+        let [x0, y0, z0, x1, y1, z1] = b.as_slice() else {
+            continue;
+        };
+        bb = Some(match bb {
+            None => [*x0, *y0, *z0, *x1, *y1, *z1],
+            Some(o) => [
+                o[0].min(*x0),
+                o[1].min(*y0),
+                o[2].min(*z0),
+                o[3].max(*x1),
+                o[4].max(*y1),
+                o[5].max(*z1),
+            ],
+        });
+    }
+    bb
+}
+
+/// `ChunkGenerator.getMobsAt` (via `NaturalSpawner.mobsAt`): the structure override inside an
+/// ocean monument, else the biome's list.
+fn mobs_at<'t>(
+    level: &Level,
+    table: &'t SpawnTable,
+    structures: &mut StructureSpawns,
+    category: Category,
+    pos: BlockPos,
+) -> Option<&'t [SpawnEntry]> {
+    if matches!(
+        category,
+        Category::Monster | Category::Axolotls | Category::UndergroundWaterCreature
+    ) && structures.in_monument(level, pos)
+    {
+        return Some(if category == Category::Monster {
+            monument_monsters()
+        } else {
+            NO_SPAWNS
+        });
+    }
+    table
+        .biome(level.biome(pos))
+        .map(|b| b.by_category[category.index()].as_slice())
+}
+
+/// The guardians of an ocean monument: weight 1, 2 to 4.
+fn monument_monsters() -> &'static [SpawnEntry] {
+    static ENTRIES: std::sync::OnceLock<[SpawnEntry; 1]> = std::sync::OnceLock::new();
+    ENTRIES.get_or_init(|| {
+        [SpawnEntry {
+            type_id: vanillite_data::entity::ids::GUARDIAN,
+            weight: 1,
+            min: 2,
+            max: 4,
+        }]
+    })
 }
 
 /// `ServerChunkCache.tickChunks`' spawning: counts, caps and one attempt per category and
@@ -351,8 +543,7 @@ fn spawn_category_for_chunk(
                 continue;
             }
             if current.is_none() {
-                let biome = level.biome(pos);
-                let Some(list) = table.biome(biome).map(|b| &b.by_category[category.index()])
+                let Some(list) = mobs_at(level, table, &mut spawner.structures, category, pos)
                 else {
                     break;
                 };
@@ -367,7 +558,16 @@ fn spawn_category_for_chunk(
             let Some(entry) = current else {
                 break;
             };
-            if !valid_position_for_type(level, table, input, category, entry, pos, nearest) {
+            if !valid_position_for_type(
+                level,
+                table,
+                &mut spawner.structures,
+                input,
+                category,
+                entry,
+                pos,
+                nearest,
+            ) {
                 continue;
             }
             let Some(kind) = Kind::of(entry.type_id) else {
@@ -445,9 +645,11 @@ fn right_distance(
 }
 
 /// `isValidSpawnPostitionForType`.
+#[allow(clippy::too_many_arguments)]
 fn valid_position_for_type(
     level: &Level,
     table: &SpawnTable,
+    structures: &mut StructureSpawns,
     input: &SpawnInput<'_>,
     category: Category,
     entry: SpawnEntry,
@@ -462,12 +664,8 @@ fn valid_position_for_type(
     if !info.summonable {
         return false;
     }
-    // `canSpawnMobAt`: the entry is still in the biome's list there.
-    let biome = level.biome(pos);
-    if !table
-        .biome(biome)
-        .is_some_and(|b| b.by_category[category.index()].contains(&entry))
-    {
+    // `canSpawnMobAt`: the entry is still in the list there.
+    if !mobs_at(level, table, structures, category, pos).is_some_and(|l| l.contains(&entry)) {
         return false;
     }
     if !spawn_position_ok(level, entry.type_id, pos) {
@@ -478,7 +676,12 @@ fn valid_position_for_type(
     };
     let mut random =
         LegacyRandom::new(i64::from(pos.x) ^ (i64::from(pos.z) << 20) ^ level.game_time());
-    if !check_spawn_rules(level, &input.env, kind, pos, &mut random, false) {
+    let rules = if super::boss::guardian::is_guardian(kind) {
+        super::boss::guardian::check_spawn_rules(level, pos, input.difficulty, &mut random)
+    } else {
+        check_spawn_rules(level, &input.env, kind, pos, &mut random, false)
+    };
+    if !rules {
         return false;
     }
     let dims = super::Dimensions::of(entry.type_id);
@@ -509,13 +712,22 @@ fn valid_position_for_mob(
     if kinds::walk_target_value(mob.kind, level, &input.env, block) < 0.0 {
         return false;
     }
-    // `checkSpawnObstruction`: no liquid in the box.
+    // `checkSpawnObstruction`: no liquid in the box (guardians: no blocking entity).
+    if super::boss::guardian::is_guardian(mob.kind) {
+        return true;
+    }
     let aabb = super::Dimensions::of(mob.kind.type_id()).bounding_box(pos);
     !physics::contains_any_liquid(level, &aabb)
 }
 
 /// `SpawnPlacementTypes.ON_GROUND.isSpawnPositionOk`.
 pub fn spawn_position_ok(level: &Level, type_id: EntityTypeId, pos: BlockPos) -> bool {
+    if type_id == vanillite_data::entity::ids::GUARDIAN
+        || type_id == vanillite_data::entity::ids::ELDER_GUARDIAN
+    {
+        // `SpawnPlacementTypes.IN_WATER`.
+        return super::boss::guardian::in_water_spawn_position_ok(level, pos);
+    }
     let below = BlockPos::new(pos.x, pos.y - 1, pos.z);
     let above = BlockPos::new(pos.x, pos.y + 1, pos.z);
     if !valid_spawn_floor(level.block(below), type_id) {
@@ -598,7 +810,7 @@ pub fn check_spawn_rules(
 }
 
 /// `Monster.isDarkEnoughToSpawn`.
-fn is_dark_enough_to_spawn(
+pub fn is_dark_enough_to_spawn(
     level: &Level,
     env: &Environment,
     pos: BlockPos,
@@ -764,4 +976,32 @@ pub fn count_by_kind(level: &Level) -> FxHashMap<Kind, usize> {
         *out.entry(m.kind).or_insert(0) += 1;
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vanillite_nbt::{Compound, List, Tag};
+
+    #[test]
+    fn a_start_box_covers_all_pieces() {
+        let piece = |bb: Vec<i32>| Tag::Compound(Compound::new().with("BB", bb));
+        let start = Compound::new().with(
+            "Children",
+            Tag::List(List(vec![
+                piece(vec![0, 39, 0, 57, 61, 57]),
+                piece(vec![-3, 30, 5, 10, 70, 6]),
+            ])),
+        );
+        assert_eq!(start_box(&start), Some([-3, 30, 0, 57, 70, 57]));
+        assert_eq!(start_box(&Compound::new()), None);
+    }
+
+    #[test]
+    fn monuments_override_the_monster_list() {
+        let list = monument_monsters();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].type_id, vanillite_data::entity::ids::GUARDIAN);
+        assert_eq!((list[0].weight, list[0].min, list[0].max), (1, 2, 4));
+    }
 }

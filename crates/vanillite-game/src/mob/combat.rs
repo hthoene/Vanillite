@@ -84,6 +84,12 @@ pub fn hurt(
     if ents.mob(target).is_some() {
         return hurt_mob(level, ents, env, cx, target, source, amount);
     }
+    if ents.special(target).is_some() {
+        return super::boss::special::hurt(ents, env, cx, target, &source);
+    }
+    if ents.player(target).is_none() {
+        return false;
+    }
     let Entities { store, players, .. } = ents;
     let Some(mut entity) = store.get_mut(target) else {
         return false;
@@ -124,6 +130,13 @@ pub fn hurt_mob(
     if invulnerable_to(ents, env, target, kind) {
         return false;
     }
+    if ents.mob(target).is_some_and(|m| m.is_dead_or_dying()) {
+        return false;
+    }
+    let Some(amount) = super::boss::filter_hurt(level, ents, env, cx, target, &source, amount)
+    else {
+        return false;
+    };
     let Some(m) = ents.mob_mut(target) else {
         return false;
     };
@@ -217,7 +230,9 @@ pub fn hurt_mob(
         .is_some_and(super::MobData::is_dead_or_dying);
     if dead {
         if took_full {
-            let sound = ents.mob(target).map(|m| m.kind.death_sound());
+            let sound = ents
+                .mob(target)
+                .map(|m| super::boss::guardian::sound_variant(m, m.kind.death_sound()));
             if let Some(sound) = sound {
                 mob_sound(ents, env, target, sound);
             }
@@ -226,7 +241,7 @@ pub fn hurt_mob(
     } else if took_full {
         let sound = ents.mob_mut(target).map(|m| {
             m.ambient_sound_time = -m.kind.ambient_sound_interval();
-            m.kind.hurt_sound()
+            super::boss::guardian::sound_variant(m, m.kind.hurt_sound())
         });
         if let Some(sound) = sound {
             mob_sound(ents, env, target, sound);
@@ -235,11 +250,15 @@ pub fn hurt_mob(
     if let Some(m) = ents.mob_mut(target) {
         m.last_damage = Some((kind, env.game_time));
     }
+    super::boss::after_hurt(level, ents, env, cx, target, &source, true);
     true
 }
 
 /// `knockback(power, xd, zd)` of a mob.
 pub fn apply_knockback(ents: &mut Entities, target: EntityId, power: f64, xd: f64, zd: f64) {
+    if super::boss::dragon::ignores_knockback(ents, target) {
+        return;
+    }
     let Some(resistance) = ents.mob(target).map(|m| m.attrs.knockback_resistance) else {
         return;
     };
@@ -308,6 +327,10 @@ fn die(
         return;
     }
     m.dead = true;
+    super::boss::on_death(level, ents, env, cx, target);
+    let Some(m) = ents.mob_mut(target) else {
+        return;
+    };
     let killed_by_player = m.last_hurt_by_player_time > 0;
     let baby = m.baby;
     let kind = m.kind;
@@ -326,6 +349,24 @@ fn die(
     };
     let pos = e.pos();
     let network_id = e.network_id().0;
+    // `gameEvent(ENTITY_DIE)`: a sculk catalyst nearby takes the experience
+    // (`CatalystListener`, `skipDropExperience`); vibration listeners hear the death.
+    let consumed = crate::block::sculk_catalyst::catalyst_near(level, pos);
+    if consumed {
+        cx.actions.push(super::WorldAction::Level(
+            super::boss::warden::LevelAction::SculkDeath {
+                pos,
+                experience: reward,
+            },
+        ));
+    }
+    cx.actions.push(super::WorldAction::Level(
+        super::boss::warden::LevelAction::GameEvent {
+            event: crate::level::game_event::events().entity_die,
+            pos,
+            context: crate::level::game_event::GameEventContext::of(Some(target)),
+        },
+    ));
     // `dropAllDeathLoot`: the loot table, then the experience.
     if !baby && env.rules.bool(Rule::MOB_DROPS) {
         let loot = ents
@@ -352,7 +393,7 @@ fn die(
             });
         }
     }
-    if (killed_by_player && env.rules.bool(Rule::MOB_DROPS)) && reward > 0 {
+    if !consumed && (killed_by_player && env.rules.bool(Rule::MOB_DROPS)) && reward > 0 {
         award_experience(level, ents, cx, pos, reward);
     }
     env.out.push(Effect::Tracking {
@@ -532,7 +573,15 @@ pub fn player_attack(
         player_sound(env, "minecraft:entity.player.attack.nodamage");
         return;
     }
-    let kb = if knockback_attack { 0.5_f32 } else { 0.0 };
+    // Dragon parts are not living entities: no knockback from the attack itself.
+    let part = ents
+        .mob(target)
+        .is_some_and(|m| m.kind == Kind::EnderDragon);
+    let kb = if knockback_attack && !part {
+        0.5_f32
+    } else {
+        0.0
+    };
     if kb > 0.0 {
         let rad = f64::from(y_rot) * std::f64::consts::PI / 180.0;
         let (sin, cos) = (

@@ -81,4 +81,23 @@ pub trait PlayLevel {
     /// The rest of `EnderEyeItem.useOn` after the frame at `pos` got its eye: comparators
     /// re-read it, and a complete frame opens the End portal.
     fn end_portal_frame_filled(&mut self, pos: BlockPos);
+    /// `gameEvent(event, pos, Context.of(source, affected))` at the centre of a block.
+    fn game_event(
+        &mut self,
+        event: u16,
+        pos: BlockPos,
+        source: Option<vanillite_world::entity::EntityId>,
+        affected: Option<BlockState>,
+    ) {
+        let _ = (event, pos, source, affected);
+    }
+    /// `Block.setPlacedBy` of a block a player placed (the wither skull's summon check).
+    fn placed_by(&mut self, pos: BlockPos, state: BlockState) {
+        let _ = (pos, state);
+    }
+    /// `EndCrystalItem.useOn` on the block at `on`: places an end crystal; whether it did.
+    fn use_end_crystal(&mut self, on: BlockPos) -> bool {
+        let _ = on;
+        false
+    }
 }

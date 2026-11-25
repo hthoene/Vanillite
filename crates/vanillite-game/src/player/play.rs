@@ -40,6 +40,8 @@ pub struct GameData {
     pub enchanting: crate::enchant::Enchanting,
     /// The definitions of the enchantments by name.
     pub enchantment_info: HashMap<String, EnchantmentInfo>,
+    /// The `minecraft:trial_spawner` registry.
+    pub trial_spawner_configs: crate::block::trial_spawner::TrialConfigs,
 }
 
 /// What `/enchant` reads of an enchantment (`Enchantment` and its `EnchantmentDefinition`).
@@ -113,6 +115,8 @@ pub struct Actor {
     pub permission_level: u8,
     /// Whether the player's eyes are in water.
     pub eyes_in_water: bool,
+    /// The status effects that change the mining speed.
+    pub dig: crate::inventory::DigEffects,
 }
 
 impl Actor {
@@ -348,6 +352,7 @@ fn destroy_progress(ctx: &PlayContext<'_>, state: BlockState) -> f32 {
         tool,
         state,
         efficiency,
+        ctx.actor.dig,
         submerged,
         ctx.actor.on_ground,
     );
@@ -623,6 +628,12 @@ impl Digging {
             // `ShulkerBoxBlock.playerWillDestroy`: a creative player still gets a filled box.
             crate::block::container::creative_shulker_drop(level, pos, state, entity);
         }
+        ctx.level.game_event(
+            events_ids().block_destroy,
+            pos,
+            ctx.actor.entity,
+            Some(state),
+        );
         // `removeBlock`: the fluid of a waterlogged block stays.
         let replacement = state.fluid_state().block_state();
         let changed = ctx.level.set_block(pos, replacement, update::ALL);
@@ -830,6 +841,25 @@ impl Digging {
             Hand::MainHand => ctx.inventory.selected_item().clone(),
             Hand::OffHand => ctx.inventory.offhand.clone(),
         };
+        // `VaultBlock.useItemOn`: an active vault takes the key, the use is consumed.
+        if !suppress_use
+            && state.block() == vanillite_data::block::ids::VAULT
+            && let Some(level) = ctx.level.level_mut()
+            && let Some(taken) =
+                crate::block::vault::use_item_on(level, pos, ctx.actor.uuid, &stack)
+        {
+            if taken && !ctx.actor.creative() {
+                let count = crate::block::vault::key_count(level, pos);
+                let slot = match hand {
+                    Hand::MainHand => ctx.inventory.selected_item_mut(),
+                    Hand::OffHand => Some(&mut ctx.inventory.offhand),
+                };
+                if let Some(slot) = slot {
+                    slot.shrink(count);
+                }
+            }
+            return true;
+        }
         if stack.is_empty() {
             return false;
         }
@@ -846,6 +876,21 @@ impl Digging {
             } else {
                 use_ender_eye(ctx, hand, pos)
             };
+        }
+        if used == vanillite_data::item::ids::END_CRYSTAL {
+            if !ctx.level.use_end_crystal(pos) {
+                return false;
+            }
+            if !ctx.actor.creative() {
+                let slot = match hand {
+                    Hand::MainHand => ctx.inventory.selected_item_mut(),
+                    Hand::OffHand => Some(&mut ctx.inventory.offhand),
+                };
+                if let Some(slot) = slot {
+                    slot.shrink(1);
+                }
+            }
+            return true;
         }
         let Some(_block) = item::item_id(&stack).block() else {
             // Non-block items (buckets, tools on blocks, spawn eggs, ...) come later.
@@ -1045,6 +1090,9 @@ impl Digging {
                 level.request_sign_editor(player, target, true);
             }
         }
+        if placed.block() == state.block() {
+            ctx.level.placed_by(target, placed);
+        }
         let sound = placed.block().sound();
         ctx.level.play_sound(
             Some(ctx.actor.network_id),
@@ -1057,6 +1105,12 @@ impl Digging {
             SoundSource::Blocks,
             (sound.volume + 1.0) / 2.0,
             sound.pitch * 0.8,
+        );
+        ctx.level.game_event(
+            events_ids().block_place,
+            target,
+            ctx.actor.entity,
+            Some(placed),
         );
         if !ctx.actor.creative() {
             let slot = match hand {
@@ -1382,3 +1436,8 @@ pub fn block_pos_of(v: Vec3) -> BlockPos {
 #[cfg(test)]
 #[path = "play_tests.rs"]
 mod tests;
+
+/// The Vanilla game event ids.
+fn events_ids() -> &'static crate::level::game_event::GameEvents {
+    crate::level::game_event::events()
+}

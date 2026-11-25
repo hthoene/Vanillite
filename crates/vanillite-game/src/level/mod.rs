@@ -108,6 +108,10 @@ pub struct LevelSettings {
     pub portal_dimension: bool,
     /// Exploit switches (D1).
     pub exploits: ExploitSettings,
+    /// The difficulty is peaceful (set by the server every tick).
+    pub peaceful: bool,
+    /// `spawnWardens` game rule (set by the server every tick).
+    pub spawn_wardens: bool,
 }
 
 impl Default for LevelSettings {
@@ -126,6 +130,8 @@ impl Default for LevelSettings {
             water_evaporates: false,
             portal_dimension: true,
             exploits: ExploitSettings::default(),
+            peaceful: false,
+            spawn_wardens: true,
         }
     }
 }
@@ -183,6 +189,8 @@ pub struct Sound {
 
 /// `SoundSource.BLOCKS`.
 pub const SOUND_BLOCKS: u8 = 4;
+/// `SoundSource.HOSTILE`.
+pub const SOUND_HOSTILE: u8 = 5;
 /// `SoundSource.NEUTRAL`.
 pub const SOUND_NEUTRAL: u8 = 6;
 /// `SoundSource.RECORDS`.
@@ -212,6 +220,11 @@ pub struct LevelOutput {
     /// Global level events (`globalLevelEvent`: event, position, data), heard by every player
     /// of the server.
     pub global_level_events: Vec<(i32, BlockPos, i32)>,
+    /// Wither skeleton skulls players placed, for the wither's summon check
+    /// (`WitherSkullBlock.setPlacedBy`).
+    pub summon_checks: Vec<BlockPos>,
+    /// An end crystal was placed: the End fight tries to respawn the dragon (`tryRespawn`).
+    pub try_dragon_respawn: bool,
 }
 
 /// The terrain generator of a world (`getChunkSource().getGenerator()`).
@@ -281,6 +294,10 @@ pub struct Level {
     sign_editors: Vec<(EntityId, BlockPos, bool)>,
     min_y: i32,
     max_y: i32,
+    /// The seed the level was created with (`getSeed`).
+    seed: i64,
+    /// What spawner blocks read of this tick's rules and sky (set by the world each tick).
+    pub spawner_env: crate::block::spawner::SpawnerEnv,
 }
 
 impl std::fmt::Debug for Level {
@@ -332,6 +349,22 @@ impl Level {
             sign_editors: Vec::new(),
             min_y,
             max_y,
+            seed,
+            spawner_env: crate::block::spawner::SpawnerEnv::default(),
+        }
+    }
+
+    /// `getSeed`.
+    pub fn seed(&self) -> i64 {
+        self.seed
+    }
+
+    /// `sendBlockUpdated` of a block entity whose client data changed: the block and a
+    /// `block_entity_data` packet with its update tag go to the clients that see its chunk.
+    pub fn send_block_entity_updated(&mut self, pos: BlockPos) {
+        self.send_block_updated(pos);
+        if !self.output.block_entity_updates.contains(&pos) {
+            self.output.block_entity_updates.push(pos);
         }
     }
 

@@ -574,7 +574,13 @@ impl WorldPlayers {
                 respawn: false,
             };
             let mut state = before.clone();
-            let mut actor = actor_of(&entity, player.game_mode, global, &level.chunks);
+            let mut actor = actor_of(
+                &entity,
+                player.game_mode,
+                &player.survival.effects,
+                global,
+                &level.chunks,
+            );
             let op = actor.permission_level > 0;
             let protected = |pos: BlockPos| protection.protects(pos, op);
             let aabb = entity.aabb();
@@ -842,7 +848,13 @@ impl WorldPlayers {
             let Some(entity) = level.entities.store.get(id) else {
                 continue;
             };
-            let actor = actor_of(&entity, player.game_mode, global, &level.chunks);
+            let actor = actor_of(
+                &entity,
+                player.game_mode,
+                &player.survival.effects,
+                global,
+                &level.chunks,
+            );
             let aabb = entity.aabb();
             let network_id = entity.network_id().0;
             let uuid = entity.uuid();
@@ -1157,6 +1169,7 @@ impl SpawnProtection {
 fn actor_of(
     entity: &EntityRef<'_>,
     game_mode: GameMode,
+    effects: &vanillite_game::effect::MobEffects,
     global: &Global,
     chunks: &Chunks,
 ) -> Actor {
@@ -1195,6 +1208,7 @@ fn actor_of(
         game_mode,
         permission_level: crate::commands::permission_level(global, entity.uuid()),
         eyes_in_water,
+        dig: vanillite_game::inventory::DigEffects::of(effects),
     }
 }
 

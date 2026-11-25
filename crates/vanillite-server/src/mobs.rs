@@ -9,6 +9,9 @@ use vanillite_data::entity::ids;
 use vanillite_game::entities::is_mob_kind;
 use vanillite_game::level::Level;
 use vanillite_game::level::explosion::BlockInteraction;
+use vanillite_game::mob::boss;
+use vanillite_game::mob::boss::dragon::{self, fight::DragonFight};
+use vanillite_game::mob::boss::special::{self, is_special_kind};
 use vanillite_game::mob::spawn::{self, SpawnInput, SpawnTable, Spawner};
 use vanillite_game::mob::{
     self, Environment, MobContext, MobSettings, WorldAction, combat, projectile,
@@ -30,9 +33,29 @@ impl BlockAccess for NoBlocks {
     }
 }
 
+/// The dragon fight's saved data: the last state the fight wrote, taken by the next save.
+#[derive(Debug, Default)]
+struct FightData(std::sync::Mutex<Option<vanillite_nbt::Compound>>);
+
+impl vanillite_storage::saved_data::SavedData for FightData {
+    fn id(&self) -> &str {
+        DragonFight::ID
+    }
+
+    fn save(&self) -> Option<vanillite_nbt::Compound> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
+}
+
 /// The mob state of one world.
 #[derive(Debug)]
 pub(crate) struct WorldMobs {
+    /// The End's dragon fight.
+    fight: Option<DragonFight>,
+    fight_data: Option<Arc<FightData>>,
     cx: MobContext,
     spawner: Spawner,
     table: Option<Arc<SpawnTable>>,
@@ -47,6 +70,8 @@ pub(crate) struct WorldMobs {
 impl WorldMobs {
     pub(crate) fn new(table: Option<Arc<SpawnTable>>, seed: i64, rules: &WorldRules) -> WorldMobs {
         WorldMobs {
+            fight: None,
+            fight_data: None,
             cx: MobContext::default(),
             spawner: Spawner::default(),
             table,
@@ -56,6 +81,119 @@ impl WorldMobs {
             scratch: Vec::new(),
             ticks: 0,
         }
+    }
+
+    /// Creates the End's dragon fight from its saved data (`EnderDragonFight.TYPE`).
+    pub(crate) fn init_dragon_fight(
+        &mut self,
+        data: &vanillite_storage::saved_data::SavedDataStore,
+        level: &mut Level,
+    ) {
+        let saved = match data.read(DragonFight::ID) {
+            Ok(saved) => saved,
+            Err(e) => {
+                log::error!("Could not read the dragon fight: {e}");
+                None
+            }
+        };
+        let mut bar_random = vanillite_base::random::LegacyRandom::new(
+            vanillite_base::random::RandomSource::next_long(level.random()),
+        );
+        let fight = DragonFight::new(saved.as_ref(), self.seed, &mut bar_random);
+        let store = Arc::new(FightData::default());
+        data.register(Arc::clone(&store) as _);
+        self.fight = Some(fight);
+        self.fight_data = Some(store);
+    }
+
+    /// `EnderDragonFight.tick` (before the entities), and the crystal placed since the last
+    /// tick (`tryRespawn`).
+    pub(crate) fn tick_dragon_fight(
+        &mut self,
+        level: &mut Level,
+        survival: &mut WorldSurvival,
+        global: &Global,
+        dimension: &str,
+        entities_loaded: &dyn Fn(ChunkPos) -> bool,
+    ) {
+        let Some(fight) = &mut self.fight else {
+            self.cx.dragon_fight = None;
+            return;
+        };
+        let state = &global.level;
+        let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+        let rules = state.rules().clone();
+        let no_blocks = NoBlocks;
+        let raining = |_| false;
+        let mut no_gateway = |_| false;
+        let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
+        let mut env = survival.env(
+            state,
+            &rules,
+            &no_blocks,
+            &raining,
+            dimension,
+            &mut no_gateway,
+            &hooks,
+            &names,
+        );
+        if std::mem::take(&mut level.output().try_dragon_respawn) {
+            fight.try_respawn(level);
+        }
+        fight.tick(level, &mut env, &mut self.cx, entities_loaded);
+        self.cx.dragon_fight = Some(fight.view());
+        self.store_fight();
+        self.apply_explosion_hurts(level, survival, global, dimension);
+        self.apply_actions(level, survival, global, dimension);
+        survival.deliver(&mut level.entities, global);
+    }
+
+    /// Hands the fight's changed state to its saved data.
+    fn store_fight(&mut self) {
+        if let (Some(fight), Some(data)) = (&mut self.fight, &self.fight_data)
+            && fight.take_dirty()
+        {
+            *data
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(fight.save());
+        }
+    }
+
+    /// What the dragon and the crystals reported, handed to the fight.
+    fn dragon_events(
+        &mut self,
+        level: &mut Level,
+        survival: &mut WorldSurvival,
+        global: &Global,
+        dimension: &str,
+    ) {
+        let events = std::mem::take(&mut self.cx.dragon_events);
+        let Some(fight) = &mut self.fight else {
+            return;
+        };
+        let state = &global.level;
+        let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+        let rules = state.rules().clone();
+        let no_blocks = NoBlocks;
+        let raining = |_| false;
+        let mut no_gateway = |_| false;
+        let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
+        let mut env = survival.env(
+            state,
+            &rules,
+            &no_blocks,
+            &raining,
+            dimension,
+            &mut no_gateway,
+            &hooks,
+            &names,
+        );
+        for event in events {
+            fight.handle(level, &mut env, &mut self.cx, event);
+        }
+        self.cx.dragon_fight = Some(fight.view());
+        self.store_fight();
     }
 
     /// Takes over changed rules (config reload).
@@ -88,8 +226,17 @@ impl WorldMobs {
             let Some(target) = ents.by_network_id(network_id) else {
                 continue;
             };
+            // A dragon part (`getEntityOrPart`): the hit goes to the dragon through the part.
+            let part = dragon::part_of(&ents, target, network_id);
             let (Some(pe), Some(te)) = (ents.store.get(player), ents.store.get(target)) else {
                 continue;
+            };
+            let target_box = match part {
+                Some(i) => ents
+                    .mob(target)
+                    .and_then(|m| m.ext.dragon())
+                    .map_or(te.aabb(), |s| s.part_box(i)),
+                None => te.aabb(),
             };
             let Some(pd) = ents.player(player) else {
                 continue;
@@ -99,8 +246,13 @@ impl WorldMobs {
             }
             // `isWithinAttackRange(item, box, 3.0)`: the interaction range of 3 plus 3.
             let eye = Vec3::new(pe.pos().x, pe.pos().y + 1.62, pe.pos().z);
-            if distance_sqr_to_box(&te.aabb(), eye) >= 36.0 {
+            if distance_sqr_to_box(&target_box, eye) >= 36.0 {
                 continue;
+            }
+            if let Some(i) = part
+                && let Some(s) = ents.mob_mut(target).and_then(|m| m.ext.dragon_mut())
+            {
+                s.hit_part = Some(i);
             }
             let blocks = WorldBlocks(&level.chunks);
             let (weather, climate) = (survival.weather, survival.climate().cloned());
@@ -121,7 +273,7 @@ impl WorldMobs {
             combat::player_attack(level, &mut ents, &mut env, &mut self.cx, player, target);
         }
         level.entities = ents;
-        self.finish_removals(level);
+        self.apply_actions(level, survival, global, dimension);
         survival.deliver(&mut level.entities, global);
     }
 
@@ -198,9 +350,21 @@ impl WorldMobs {
         let state = &global.level;
         let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
         let rules = state.rules().clone();
+        // `WitherSkullBlock.setPlacedBy` of the skulls players placed since the last tick.
+        for pos in std::mem::take(&mut level.output().summon_checks) {
+            let seed = self.seed ^ level.game_time() ^ i64::from(pos.x) << 32 ^ i64::from(pos.z);
+            boss::wither::check_spawn(level, pos, state.difficulty(), seed);
+        }
         let has_players = !level.entities.players.is_empty();
         let env = environment(global, dimension, survival);
         self.cx.begin_tick(env, self.settings, has_players);
+        // What spawner blocks read when the block entities tick after the entities.
+        level.spawner_env = vanillite_game::block::spawner::SpawnerEnv {
+            env,
+            difficulty: state.difficulty(),
+            spawner_blocks_work: rules.bool(Rule::SPAWNER_BLOCKS_WORK),
+            spawn_mobs: rules.bool(Rule::SPAWN_MOBS),
+        };
         let activation = f64::from(self.settings.activation_range);
         let mut cursor = level.entities.store.tick_cursor();
         let mut ents = std::mem::take(&mut level.entities);
@@ -215,11 +379,13 @@ impl WorldMobs {
                 level.entities = ents;
                 vanillite_game::entities::tick_entity(level, id, kind);
                 self.apply_explosion_hurts(level, survival, global, dimension);
+                self.apply_actions(level, survival, global, dimension);
                 ents = std::mem::take(&mut level.entities);
                 continue;
             }
             let is_mob = is_mob_kind(kind);
-            if !is_mob && kind != ids::ARROW && kind != ids::EXPERIENCE_ORB {
+            let is_special = is_special_kind(kind);
+            if !is_mob && !is_special && kind != ids::ARROW && kind != ids::EXPERIENCE_ORB {
                 continue;
             }
             let chunk = BlockPos::containing(pos.x, pos.y, pos.z).chunk();
@@ -261,13 +427,15 @@ impl WorldMobs {
                 let level_ref: &Level = level;
                 if is_mob {
                     mob::tick(level_ref, &mut ents, &mut env, &mut self.cx, id);
+                } else if is_special {
+                    special::tick(level_ref, &mut ents, &mut env, &mut self.cx, id);
                 } else if kind == ids::ARROW {
                     projectile::tick_arrow(level_ref, &mut ents, &mut env, &mut self.cx, id);
                 } else {
                     projectile::tick_orb(level_ref, &mut ents, &mut env, &mut self.cx, id);
                 }
             }
-            if !self.cx.actions.is_empty() {
+            if !self.cx.actions.is_empty() || !self.cx.dragon_events.is_empty() {
                 level.entities = ents;
                 self.apply_actions(level, survival, global, dimension);
                 ents = std::mem::take(&mut level.entities);
@@ -279,6 +447,7 @@ impl WorldMobs {
                 ents.despawn(d);
             }
         }
+        boss::wither::sweep_boss_bars(&mut self.cx, &ents, &mut survival.effects);
         level.entities = ents;
         survival.deliver(&mut level.entities, global);
     }
@@ -293,8 +462,46 @@ impl WorldMobs {
     ) {
         let state = &global.level;
         let rules = state.rules().clone();
+        while !self.cx.actions.is_empty() || !self.cx.dragon_events.is_empty() {
+            self.apply_queued(level, survival, global, dimension, &rules);
+            self.finish_removals(level);
+            if !self.cx.dragon_events.is_empty() {
+                self.dragon_events(level, survival, global, dimension);
+                self.finish_removals(level);
+            }
+        }
+        self.finish_removals(level);
+    }
+
+    /// One round of the queued world changes.
+    fn apply_queued(
+        &mut self,
+        level: &mut Level,
+        survival: &mut WorldSurvival,
+        global: &Global,
+        dimension: &str,
+        rules: &vanillite_game::survival::rules::GameRules,
+    ) {
         for action in std::mem::take(&mut self.cx.actions) {
             match action {
+                WorldAction::ExplodeWith {
+                    source,
+                    indirect,
+                    pos,
+                    radius,
+                    blocks,
+                } => {
+                    // `ExplosionInteraction.BLOCK` decays with `blockExplosionDropDecay`.
+                    let interaction = if !blocks {
+                        BlockInteraction::Keep
+                    } else if rules.bool(Rule::BLOCK_EXPLOSION_DROP_DECAY) {
+                        BlockInteraction::DestroyWithDecay
+                    } else {
+                        BlockInteraction::Destroy
+                    };
+                    level.explode(source, indirect, pos, radius, interaction);
+                    self.apply_explosion_hurts(level, survival, global, dimension);
+                }
                 WorldAction::Explode(e) => {
                     // `Level.ExplosionInteraction.MOB`: `getDestroyType` with `mobGriefing`.
                     let decay = if e.mob {
@@ -310,7 +517,14 @@ impl WorldMobs {
                         BlockInteraction::Destroy
                     };
                     // `getIndirectSourceEntity`: a living source caused it itself.
-                    level.explode(e.source, e.source, e.pos, e.radius, interaction);
+                    level.explode_with(
+                        e.source,
+                        e.indirect.or(e.source),
+                        e.pos,
+                        e.radius,
+                        interaction,
+                        e.resistance,
+                    );
                     self.apply_explosion_hurts(level, survival, global, dimension);
                 }
                 WorldAction::SetBlock(pos, block, flags) => {
@@ -322,6 +536,7 @@ impl WorldMobs {
                 WorldAction::LevelEvent(event, pos, data) => {
                     level.level_event(None, event, pos, data);
                 }
+                WorldAction::Level(action) => action.apply(level),
             }
         }
         self.finish_removals(level);

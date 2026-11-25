@@ -138,6 +138,14 @@ impl LootTables {
                     &format!("{ns}:blocks/"),
                     &mut table_files,
                 );
+                // The tables of trial spawners and vaults (`random_items`).
+                for dir in ["spawners", "chests/trial_chambers"] {
+                    collect_json(
+                        &path.join("loot_table").join(dir),
+                        &format!("{ns}:{dir}/"),
+                        &mut table_files,
+                    );
+                }
                 collect_json(
                     &path.join("predicate"),
                     &format!("{ns}:"),
@@ -215,6 +223,37 @@ impl LootTables {
         let mut eval = Eval {
             tables: self,
             ctx,
+            rng,
+            out,
+            post: Vec::new(),
+            depth: 0,
+        };
+        eval.table(table);
+    }
+
+    /// `LootTable.getRandomItems` of the table `name` (e.g. `minecraft:spawners/trial_chamber/key`)
+    /// with an empty context (no block, no tool, no entity). Appends to `out`; unknown tables
+    /// drop nothing.
+    pub fn random_items(&self, name: &str, rng: &mut dyn LootRandom, out: &mut Vec<ItemStack>) {
+        let Some(table) = self
+            .by_name
+            .get(name)
+            .and_then(|&i| self.tables.get(usize::try_from(i).ok()?))
+        else {
+            return;
+        };
+        let tool = ItemStack::EMPTY;
+        let ctx = BlockLootContext {
+            state: BlockState::AIR,
+            tool: &tool,
+            enchantment_level: &|_| 0,
+            item_in_tag: &|_, _| false,
+            explosion_radius: None,
+            block_entity: None,
+        };
+        let mut eval = Eval {
+            tables: self,
+            ctx: &ctx,
             rng,
             out,
             post: Vec::new(),
@@ -536,6 +575,10 @@ enum FuncKind {
     CopyState {
         properties: Box<[Box<str>]>,
     },
+    /// `set_potion`: the `potion_contents` component with a registered potion.
+    SetPotion(u16),
+    /// `set_ominous_bottle_amplifier` (clamped to 0–4).
+    SetOminousBottleAmplifier(IntProvider),
     Discard,
     /// `copy_components` / `copy_name` from the block entity: component type ids.
     CopyComponents(Box<[u16]>),
@@ -1166,6 +1209,16 @@ impl Parser<'_> {
                 FuncKind::CopyState { properties }
             }
             "minecraft:sequence" => FuncKind::Sequence(self.func_list(field(o, "functions")?)?),
+            "minecraft:set_potion" => {
+                let id = qualify(string(field(o, "id")?)?);
+                let potion = vanillite_data::registry::POTION
+                    .id(&id)
+                    .ok_or_else(|| format!("unknown potion {id}"))?;
+                FuncKind::SetPotion(potion)
+            }
+            "minecraft:set_ominous_bottle_amplifier" => {
+                FuncKind::SetOminousBottleAmplifier(self.int_provider(field(o, "amplifier")?)?)
+            }
             "minecraft:discard" => FuncKind::Discard,
             "minecraft:copy_components"
                 if o.get("source").and_then(Value::as_str) == Some("block_entity") =>
@@ -1689,6 +1742,28 @@ impl<'t> Eval<'t, '_> {
                 };
             }
             FuncKind::CopyState { properties } => copy_state(stack, self.ctx.state, properties),
+            FuncKind::SetPotion(potion) => {
+                // `PotionContents.STREAM_CODEC`: the potion, no colour, no custom effects, no
+                // custom name.
+                let mut buf = vec![1];
+                vanillite_protocol::codec::write_varint(&mut buf, i32::from(*potion));
+                buf.extend_from_slice(&[0, 0, 0]);
+                if let Some(id) =
+                    vanillite_data::registry::DATA_COMPONENT_TYPE.id("minecraft:potion_contents")
+                {
+                    stack.patch_mut().set(id, buf.into_boxed_slice());
+                }
+            }
+            FuncKind::SetOminousBottleAmplifier(amplifier) => {
+                let value = self.int(amplifier).clamp(0, 4);
+                let mut buf = Vec::new();
+                vanillite_protocol::codec::write_varint(&mut buf, value);
+                if let Some(id) = vanillite_data::registry::DATA_COMPONENT_TYPE
+                    .id("minecraft:ominous_bottle_amplifier")
+                {
+                    stack.patch_mut().set(id, buf.into_boxed_slice());
+                }
+            }
             FuncKind::Discard => *stack = ItemStack::EMPTY,
             FuncKind::CopyComponents(include) => {
                 if let Some(source) = self.ctx.block_entity {

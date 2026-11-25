@@ -58,6 +58,16 @@ pub enum BlockEntity {
     EndPortal,
     /// `TheEndGatewayBlockEntity`.
     EndGateway(crate::block::portal::Gateway),
+    /// `SpawnerBlockEntity` (`BaseSpawner`).
+    Spawner(Box<crate::block::spawner::MobSpawner>),
+    /// `TrialSpawnerBlockEntity`.
+    TrialSpawner(Box<crate::block::trial_spawner::TrialSpawner>),
+    /// `VaultBlockEntity`.
+    Vault(Box<crate::block::vault::Vault>),
+    /// `SculkShriekerBlockEntity`.
+    SculkShrieker(Box<crate::block::sculk_shrieker::Shrieker>),
+    /// `SculkCatalystBlockEntity` with its `SculkSpreader`.
+    SculkCatalyst(Box<crate::block::sculk_catalyst::Catalyst>),
 }
 
 /// `BlockEntityTicker.tick(level, pos, state, blockEntity)`: the block entity is looked up at
@@ -209,6 +219,11 @@ fn ticker_of(entity: &BlockEntity) -> Option<TickerFn> {
         BlockEntity::DaylightDetector => Some(crate::block::sensor::daylight_detector_tick),
         BlockEntity::Bell(_) => Some(crate::block::bell::tick),
         BlockEntity::SculkSensor(_) => Some(crate::block::sculk::tick_block_entity),
+        BlockEntity::Spawner(_) => Some(crate::block::spawner::tick),
+        BlockEntity::TrialSpawner(_) => Some(crate::block::trial_spawner::tick),
+        BlockEntity::Vault(_) => Some(crate::block::vault::tick),
+        BlockEntity::SculkShrieker(_) => Some(crate::block::sculk_shrieker::tick_block_entity),
+        BlockEntity::SculkCatalyst(_) => Some(crate::block::sculk_catalyst::tick_block_entity),
     }
 }
 
@@ -218,6 +233,14 @@ fn listener_of(pos: BlockPos, entity: &BlockEntity) -> Option<Listener> {
         BlockEntity::SculkSensor(sensor) => Some(Listener::Block {
             pos,
             radius: sensor.listener_radius(),
+        }),
+        BlockEntity::SculkShrieker(_) => Some(Listener::Block {
+            pos,
+            radius: crate::block::sculk_shrieker::LISTENER_RADIUS,
+        }),
+        BlockEntity::SculkCatalyst(_) => Some(Listener::Block {
+            pos,
+            radius: crate::block::sculk_catalyst::LISTENER_RADIUS,
         }),
         _ => None,
     }
@@ -241,6 +264,16 @@ pub fn new_block_entity(state: BlockState) -> Option<BlockEntity> {
         ))))
     } else if block == ids::HOPPER {
         Some(BlockEntity::Hopper(Box::default()))
+    } else if block == ids::SPAWNER {
+        Some(BlockEntity::Spawner(Box::default()))
+    } else if block == ids::TRIAL_SPAWNER {
+        Some(BlockEntity::TrialSpawner(Box::default()))
+    } else if block == ids::VAULT {
+        Some(BlockEntity::Vault(Box::default()))
+    } else if block == ids::SCULK_SHRIEKER {
+        Some(BlockEntity::SculkShrieker(Box::default()))
+    } else if block == ids::SCULK_CATALYST {
+        Some(BlockEntity::SculkCatalyst(Box::default()))
     } else if crate::block::sign::is_sign(block) {
         Some(BlockEntity::Sign(Box::default()))
     } else if block == ids::END_PORTAL {
@@ -272,6 +305,11 @@ fn is_valid(entity: &BlockEntity, state: BlockState) -> bool {
                 }
         }
         BlockEntity::Hopper(_) => state.block() == ids::HOPPER,
+        BlockEntity::Spawner(_) => state.block() == ids::SPAWNER,
+        BlockEntity::TrialSpawner(_) => state.block() == ids::TRIAL_SPAWNER,
+        BlockEntity::Vault(_) => state.block() == ids::VAULT,
+        BlockEntity::SculkShrieker(_) => state.block() == ids::SCULK_SHRIEKER,
+        BlockEntity::SculkCatalyst(_) => state.block() == ids::SCULK_CATALYST,
         BlockEntity::Container(c) => {
             use crate::block::container::{Kind, kind_of, size_of};
             matches!(
@@ -338,6 +376,9 @@ impl Level {
                 // `preRemoveSideEffects`, while the block entity is still there.
                 if let Some(entity) = self.block_entities.get(pos).cloned() {
                     crate::block::container::pre_remove_side_effects(self, pos, &entity);
+                    if let BlockEntity::SculkShrieker(_) = entity {
+                        crate::block::sculk_shrieker::pre_remove(self, pos, old);
+                    }
                     if let BlockEntity::Furnace(_) = entity {
                         let xp = crate::block::furnace::pop_experience(self, pos);
                         self.award_experience(crate::block::furnace::center(pos), xp);
@@ -371,7 +412,7 @@ impl Level {
         if let Some(entity) = new_block_entity(state) {
             // `ChunkHolder.broadcastBlockEntityIfNeeded`: a block entity with client data goes
             // out with the block change.
-            if update_tag(&entity).is_some() {
+            if update_tag(&entity, state).is_some() {
                 self.output().block_entity_updates.push(pos);
             }
             self.block_entities.insert(pos, entity);
@@ -450,6 +491,19 @@ fn load(state: BlockState, nbt: &Compound) -> Option<BlockEntity> {
     let mut entity = new_block_entity(state)?;
     match &mut entity {
         BlockEntity::Comparator { output } => *output = int("OutputSignal").unwrap_or(0),
+        BlockEntity::Spawner(s) => **s = crate::block::spawner::MobSpawner::load(nbt),
+        BlockEntity::TrialSpawner(s) => {
+            **s = crate::block::trial_spawner::TrialSpawner::load(nbt);
+        }
+        BlockEntity::Vault(v) => **v = crate::block::vault::Vault::load(nbt),
+        BlockEntity::SculkSensor(sensor) => {
+            sensor.last_vibration_frequency = int("last_vibration_frequency").unwrap_or(0);
+            if let Some(Tag::Compound(l)) = nbt.get("listener") {
+                sensor.vibration = crate::block::sculk_vibration::VibrationData::load(l, |_| None);
+            }
+        }
+        BlockEntity::SculkShrieker(shrieker) => shrieker.load(nbt),
+        BlockEntity::SculkCatalyst(catalyst) => catalyst.load(nbt),
         BlockEntity::Container(c) => c.load(nbt),
         BlockEntity::Furnace(f) => f.load(nbt),
         BlockEntity::BrewingStand(b) => b.load(nbt),
@@ -491,6 +545,18 @@ fn save(entity: &BlockEntity, state: BlockState, pos: BlockPos) -> Compound {
             nbt.insert("extending", Tag::Byte(i8::from(piston.extending)));
             nbt.insert("source", Tag::Byte(i8::from(piston.source)));
         }
+        BlockEntity::Spawner(s) => s.save(&mut nbt, true),
+        BlockEntity::TrialSpawner(s) => s.save(&mut nbt),
+        BlockEntity::Vault(v) => v.save(&mut nbt),
+        BlockEntity::SculkSensor(sensor) => {
+            nbt.insert(
+                "last_vibration_frequency",
+                Tag::Int(sensor.last_vibration_frequency),
+            );
+            nbt.insert("listener", Tag::Compound(sensor.vibration.save(|_| None)));
+        }
+        BlockEntity::SculkShrieker(shrieker) => shrieker.save(&mut nbt),
+        BlockEntity::SculkCatalyst(catalyst) => catalyst.save(&mut nbt),
         BlockEntity::Container(c) => c.save(&mut nbt),
         BlockEntity::Furnace(f) => f.save(&mut nbt),
         BlockEntity::BrewingStand(b) => b.save(&mut nbt),
@@ -679,7 +745,7 @@ impl Level {
 
 /// `BlockEntity.getUpdateTag`: what clients see of a block entity, `None` for kinds whose
 /// client data is empty.
-pub fn update_tag(entity: &BlockEntity) -> Option<Compound> {
+pub fn update_tag(entity: &BlockEntity, state: BlockState) -> Option<Compound> {
     match entity {
         BlockEntity::Sign(sign) => {
             let mut nbt = Compound::new();
@@ -694,6 +760,11 @@ pub fn update_tag(entity: &BlockEntity) -> Option<Compound> {
             nbt.sort_java_hash_order();
             Some(nbt)
         }
+        BlockEntity::Spawner(s) => Some(crate::block::spawner::update_tag(s)),
+        BlockEntity::TrialSpawner(s) => {
+            Some(s.update_tag(crate::block::trial_spawner::TrialState::of(state)))
+        }
+        BlockEntity::Vault(v) => Some(v.update_tag()),
         _ => None,
     }
 }

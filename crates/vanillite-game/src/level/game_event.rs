@@ -259,23 +259,23 @@ pub enum Listener {
         /// `getListenerRadius()`.
         radius: i32,
     },
+    /// The listener of an entity (`DynamicGameEventListener` with an `EntityPositionSource` at
+    /// the eyes, the warden's vibration listener), registered in the section its position was
+    /// in when it last moved there.
+    Entity {
+        /// The entity.
+        id: EntityId,
+        /// The section it is registered in.
+        section: SectionPos,
+        /// `getListenerRadius()`.
+        radius: i32,
+    },
 }
 
 impl Listener {
-    /// The listener's position (`PositionSource.getPosition`).
-    fn position(self) -> Vec3 {
-        match self {
-            Listener::Block { pos, .. } => Vec3::new(
-                f64::from(pos.x) + 0.5,
-                f64::from(pos.y) + 0.5,
-                f64::from(pos.z) + 0.5,
-            ),
-        }
-    }
-
     fn radius(self) -> i32 {
         match self {
-            Listener::Block { radius, .. } => radius,
+            Listener::Block { radius, .. } | Listener::Entity { radius, .. } => radius,
         }
     }
 
@@ -283,6 +283,7 @@ impl Listener {
     fn section(self) -> SectionPos {
         match self {
             Listener::Block { pos, .. } => pos.section(),
+            Listener::Entity { section, .. } => section,
         }
     }
 }
@@ -382,6 +383,7 @@ impl Level {
         );
         let mut found = std::mem::take(&mut self.block_entities.listeners.scratch);
         found.clear();
+        let mut stale = Vec::new();
         for x in min_x..=max_x {
             for z in min_z..=max_z {
                 if self.chunks.chunk(ChunkPos::new(x, z)).is_none() {
@@ -397,12 +399,22 @@ impl Level {
                         continue;
                     };
                     // `getPostableListenerPosition`.
-                    found.extend(list.iter().copied().filter(|l| {
+                    for &l in list {
+                        let Some(position) = self.listener_position(l) else {
+                            // An entity listener whose entity is gone.
+                            stale.push(l);
+                            continue;
+                        };
                         let r = f64::from(l.radius());
-                        dist_sqr(containing(l.position()), center) <= r * r
-                    }));
+                        if dist_sqr(containing(position), center) <= r * r {
+                            found.push(l);
+                        }
+                    }
                 }
             }
+        }
+        for listener in stale {
+            self.block_entities.listeners.unregister(listener);
         }
         for &listener in &found {
             self.handle_game_event(listener, event, context, position);
@@ -420,11 +432,80 @@ impl Level {
         source: Vec3,
     ) {
         match listener {
-            Listener::Block { pos, .. } => {
-                crate::block::sculk::handle_game_event(self, pos, event, context, source);
+            Listener::Block { pos, .. } => match self.block_entities.get(pos) {
+                Some(super::BlockEntity::SculkSensor(_)) => {
+                    crate::block::sculk::handle_game_event(self, pos, event, context, source);
+                }
+                Some(super::BlockEntity::SculkShrieker(_)) => {
+                    crate::block::sculk_shrieker::handle_game_event(
+                        self, pos, event, context, source,
+                    );
+                }
+                // Catalysts hear deaths through `sculk_catalyst::on_mob_death`.
+                _ => {}
+            },
+            Listener::Entity { id, .. } => {
+                crate::mob::boss::warden::handle_game_event(self, id, event, context, source);
             }
         }
     }
+
+    /// The listener's position (`PositionSource.getPosition`): a block entity's centre, an
+    /// entity's eyes; `None` for an entity that is gone.
+    pub fn listener_position(&self, listener: Listener) -> Option<Vec3> {
+        match listener {
+            Listener::Block { pos, .. } => Some(center(pos)),
+            Listener::Entity { id, .. } => {
+                let e = self.entities.store.get(id)?;
+                let p = e.pos();
+                let eye = crate::mob::boss::warden::listener_eye_height(self, id)?;
+                Some(Vec3::new(p.x, p.y + eye, p.z))
+            }
+        }
+    }
+
+    /// The block entity listeners whose own radius reaches `position`, in the sections within
+    /// the notification `radius`, whose block entity matches `select`, nearest first
+    /// (`DeliveryMode.BY_DISTANCE`), into `out`.
+    pub fn block_listeners_near(
+        &self,
+        position: Vec3,
+        radius: i32,
+        select: impl Fn(&super::BlockEntity) -> bool,
+        out: &mut Vec<(BlockPos, f64)>,
+    ) {
+        out.clear();
+        let center = containing(position);
+        for x in (center.x - radius) >> 4..=(center.x + radius) >> 4 {
+            for z in (center.z - radius) >> 4..=(center.z + radius) >> 4 {
+                for y in (center.y - radius) >> 4..=(center.y + radius) >> 4 {
+                    let Some(list) = self
+                        .block_entities
+                        .listeners
+                        .sections
+                        .get(&SectionPos::new(x, y, z))
+                    else {
+                        continue;
+                    };
+                    for &l in list {
+                        let Listener::Block { pos, radius: r } = l else {
+                            continue;
+                        };
+                        let r = f64::from(r);
+                        let d = dist_sqr(pos, center);
+                        if d <= r * r && self.block_entities.get(pos).is_some_and(&select) {
+                            out.push((pos, center_of(pos).distance_to_sqr(position)));
+                        }
+                    }
+                }
+            }
+        }
+        out.sort_by(|a, b| a.1.total_cmp(&b.1));
+    }
+}
+
+fn center_of(pos: BlockPos) -> Vec3 {
+    center(pos)
 }
 
 /// `Vec3.atCenterOf(pos)`.
