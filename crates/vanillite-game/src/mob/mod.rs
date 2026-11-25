@@ -632,6 +632,9 @@ pub enum WorldAction {
     EntityInside(BlockPos, EntityId),
     /// A hopper minecart takes in an item (`MinecartHopper.tryConsumeItems`).
     HopperMinecart(EntityId),
+    /// `BellBlock.attemptToRing(entity, level, pos, null)` (villagers ringing the bell of their
+    /// meeting point).
+    RingBell(BlockPos, Option<EntityId>),
 }
 
 impl WorldAction {
@@ -653,6 +656,9 @@ impl WorldAction {
                 }
             }
             WorldAction::HopperMinecart(id) => crate::minecart::hopper_suck(level, id),
+            WorldAction::RingBell(pos, entity) => {
+                crate::block::bell::attempt_to_ring(level, entity, pos, None);
+            }
             WorldAction::SetDoorOpen(pos, open, source) => {
                 crate::block::redstone::set_door_open(level, pos, open, source);
             }
