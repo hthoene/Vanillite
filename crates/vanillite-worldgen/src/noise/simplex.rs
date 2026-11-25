@@ -162,4 +162,16 @@ impl Octave for SimplexNoise {
             }
         }
     }
+
+    fn add_to_volume_masked(
+        &self,
+        buffer: &mut [f32],
+        volume: &DensityVolume,
+        xz_scale: f64,
+        y_scale: f64,
+        amplitude: f32,
+        _mask: &[bool],
+    ) {
+        self.add_to_volume(buffer, volume, xz_scale, y_scale, amplitude);
+    }
 }
