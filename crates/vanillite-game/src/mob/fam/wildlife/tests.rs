@@ -47,7 +47,9 @@ fn every_kind_constructs_with_its_goals() {
         MobGoal::Fam(crate::mob::fam::FamGoal::Wildlife(Goal::Puff))
     )));
     let golem = MobData::new(Kind::IronGolem, 1);
-    assert_eq!(golem.targets.slots.len(), 4);
+    // Defend the village, hurt by, angry at players, enemies, reset anger.
+    assert_eq!(golem.targets.slots.len(), 5);
+    assert_eq!(golem.goals.slots.len(), 7);
 }
 
 #[test]

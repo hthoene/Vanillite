@@ -276,6 +276,10 @@ pub struct ProtoChunk {
     /// `entities/`): one binary network-NBT compound per entity, in stored order. A live
     /// chunk's entities are run by the world and put back here when it is saved.
     pub entities: Vec<Arc<[u8]>>,
+    /// The points of interest record of the chunk (Vanilla's `poi/`) as binary network NBT of
+    /// its root compound without `DataVersion` (`Sections` and unknown tags); `None` without
+    /// a record. A live chunk's POI are run by the world and put back here when it is saved.
+    pub poi: Option<Arc<[u8]>>,
     /// The rest of the stored chunk (structures, …) as binary network NBT of a compound,
     /// written back unchanged. `None` for new chunks.
     pub extra: Option<Arc<[u8]>>,
@@ -309,6 +313,7 @@ impl ProtoChunk {
             fluid_ticks: Vec::new(),
             post_processing: Vec::new(),
             entities: Vec::new(),
+            poi: None,
             extra: None,
             generation: None,
         }

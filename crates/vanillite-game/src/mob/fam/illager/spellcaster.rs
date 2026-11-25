@@ -54,6 +54,7 @@ pub fn register_goals(m: &mut MobData) {
     let g = &mut m.goals;
     let tg = &mut m.targets;
     g.add(4, raider::patrol());
+    raider::add_raider_goals(g);
     g.add(0, MobGoal::Float);
     g.add(1, fam(Goal::SpellCasting));
     if evoker {

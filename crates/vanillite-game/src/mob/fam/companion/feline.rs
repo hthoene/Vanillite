@@ -19,9 +19,6 @@ use crate::mob::kinds::Kind;
 use crate::mob::{MobData, Tick, nav};
 use crate::player::encode::{DataWriter, serializer};
 
-/// The sea level of the Overworld (ocelots only spawn there).
-const SEA_LEVEL: i32 = 63;
-
 /// `cat_variant` ids (alphabetical): all_black, black, british_shorthair, calico, jellie,
 /// persian, ragdoll, red, siamese, tabby, white.
 const CAT_VARIANTS: [&str; 11] = [
@@ -352,6 +349,8 @@ pub fn cat_interact(ix: &mut Interact<'_, '_>) -> Interaction {
                 super::tame_by(m, o);
                 m.order_to_sit = true;
             }
+            let (target, player) = (ix.target, ix.player);
+            crate::mob::tame::award_tame(ix.ents, target, player);
             event(ix, 7);
         } else {
             event(ix, 6);
@@ -424,7 +423,7 @@ pub fn ocelot_spawn_rules(
     if random.next_int_bounded(3) == 0 {
         return false;
     }
-    if pos.y < SEA_LEVEL {
+    if pos.y < crate::mob::sea_level(level) {
         return false;
     }
     let below = level.block(BlockPos::new(pos.x, pos.y - 1, pos.z));

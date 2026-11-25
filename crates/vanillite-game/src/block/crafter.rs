@@ -298,16 +298,22 @@ fn tick(level: &mut Level, state: BlockState, pos: BlockPos) {
         return;
     }
     let remainders = data.recipes.remainders(Some(recipe), &input);
+    let recipe_id = data
+        .recipes
+        .crafting
+        .get(recipe)
+        .map(|r| r.id.clone())
+        .unwrap_or_default();
     if let Some(BlockEntity::Crafter(c)) = level.block_entity_mut(pos) {
         c.crafting_ticks = 6;
     }
     level.set_block(pos, state.set_flag("crafting", true), 2);
     // `onCraftedBySystem` → `onCraftedPostProcess`.
     crate::map::on_crafted(level, &mut result);
-    dispense_item(level, pos, state, result);
+    dispense_item(level, pos, state, result, &recipe_id);
     for rest in remainders {
         if !rest.is_empty() {
-            dispense_item(level, pos, state, rest);
+            dispense_item(level, pos, state, rest, &recipe_id);
         }
     }
     if let Some(BlockEntity::Crafter(c)) = level.block_entity_mut(pos) {
@@ -322,7 +328,13 @@ fn tick(level: &mut Level, state: BlockState, pos: BlockPos) {
 }
 
 /// `dispenseItem`: into the container in front, the rest as an item entity.
-fn dispense_item(level: &mut Level, pos: BlockPos, state: BlockState, result: ItemStack) {
+fn dispense_item(
+    level: &mut Level,
+    pos: BlockPos,
+    state: BlockState,
+    result: ItemStack,
+    recipe: &str,
+) {
     use super::container::ContainerRef;
     let direction = front(state);
     let into = ContainerRef::at(level, pos.relative(direction));
@@ -365,6 +377,35 @@ fn dispense_item(level: &mut Level, pos: BlockPos, state: BlockState, result: It
     }
     if !remaining.is_empty() {
         super::dispenser::spawn_dispensed(level, pos, direction, remaining);
+        // `CRAFTER_RECIPE_CRAFTED` for the players in the 17-block box around it.
+        let c = super::furnace::center(pos);
+        let area = vanillite_base::Aabb::new(
+            c.x - 8.5,
+            c.y - 8.5,
+            c.z - 8.5,
+            c.x + 8.5,
+            c.y + 8.5,
+            c.z + 8.5,
+        );
+        let mut players = Vec::new();
+        level
+            .entities
+            .store
+            .for_each_in(&area, true, |p| players.push(p));
+        if !players.is_empty()
+            && let Some(BlockEntity::Crafter(c)) = level.block_entity(pos)
+        {
+            let items = c.items.to_vec();
+            for p in players {
+                level.trigger(
+                    p,
+                    crate::advancements::trigger::Event::CrafterRecipeCrafted(
+                        recipe.to_owned(),
+                        items.clone(),
+                    ),
+                );
+            }
+        }
         level.level_event(None, 1049, pos, 0);
         level.level_event(None, 2010, pos, super::dispenser::direction_3d(direction));
     }

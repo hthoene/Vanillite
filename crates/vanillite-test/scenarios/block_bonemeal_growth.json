@@ -1,0 +1,259 @@
+{
+  "description": "Bone meal on azaleas (azalea trees by chance), a big dripleaf (one taller per use), a sea pickle on coral in water (pickles spread over the coral) and a mangrove propagule (stage, then a mangrove tree by chance): every growth draws from the level random.",
+  "world": {
+    "seed": 9111,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:stone",
+        5
+      ]
+    ]
+  },
+  "time": 6000,
+  "level_rng": true,
+  "light": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      23,
+      -44,
+      23
+    ]
+  ],
+  "ticks": 20,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -59,
+        0
+      ],
+      "to": [
+        23,
+        -59,
+        23
+      ],
+      "block": "minecraft:dirt"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -59,
+        3
+      ],
+      "block": "minecraft:moss_block"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -58,
+        3
+      ],
+      "block": "minecraft:azalea"
+    },
+    {
+      "op": "set",
+      "pos": [
+        19,
+        -58,
+        3
+      ],
+      "block": "minecraft:flowering_azalea"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -59,
+        19
+      ],
+      "block": "minecraft:clay"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -58,
+        19
+      ],
+      "block": "minecraft:big_dripleaf[facing=south,tilt=none,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        19,
+        -58,
+        19
+      ],
+      "block": "minecraft:mangrove_propagule[age=0,hanging=false,stage=0,waterlogged=false]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        9,
+        -61,
+        9
+      ],
+      "to": [
+        14,
+        -61,
+        14
+      ],
+      "block": "minecraft:brain_coral_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        9,
+        -60,
+        9
+      ],
+      "to": [
+        14,
+        -59,
+        14
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "op": "set",
+      "pos": [
+        11,
+        -60,
+        11
+      ],
+      "block": "minecraft:sea_pickle[pickles=1,waterlogged=true]"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "bonemeal",
+      "pos": [
+        3,
+        -58,
+        3
+      ]
+    },
+    {
+      "tick": 2,
+      "op": "bonemeal",
+      "pos": [
+        3,
+        -58,
+        3
+      ]
+    },
+    {
+      "tick": 3,
+      "op": "bonemeal",
+      "pos": [
+        3,
+        -58,
+        3
+      ]
+    },
+    {
+      "tick": 4,
+      "op": "bonemeal",
+      "pos": [
+        19,
+        -58,
+        3
+      ]
+    },
+    {
+      "tick": 5,
+      "op": "bonemeal",
+      "pos": [
+        19,
+        -58,
+        3
+      ]
+    },
+    {
+      "tick": 6,
+      "op": "bonemeal",
+      "pos": [
+        19,
+        -58,
+        3
+      ]
+    },
+    {
+      "tick": 7,
+      "op": "bonemeal",
+      "pos": [
+        3,
+        -58,
+        19
+      ]
+    },
+    {
+      "tick": 8,
+      "op": "bonemeal",
+      "pos": [
+        3,
+        -57,
+        19
+      ]
+    },
+    {
+      "tick": 9,
+      "op": "bonemeal",
+      "pos": [
+        11,
+        -60,
+        11
+      ]
+    },
+    {
+      "tick": 10,
+      "op": "bonemeal",
+      "pos": [
+        19,
+        -58,
+        19
+      ]
+    },
+    {
+      "tick": 11,
+      "op": "bonemeal",
+      "pos": [
+        19,
+        -58,
+        19
+      ]
+    },
+    {
+      "tick": 12,
+      "op": "bonemeal",
+      "pos": [
+        19,
+        -58,
+        19
+      ]
+    },
+    {
+      "tick": 13,
+      "op": "bonemeal",
+      "pos": [
+        19,
+        -58,
+        19
+      ]
+    }
+  ],
+  "tier": "fast"
+}

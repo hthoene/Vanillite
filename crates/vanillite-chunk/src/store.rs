@@ -72,6 +72,15 @@ impl RecordKey {
             stream: Stream::Entities,
         }
     }
+
+    /// The points of interest record of `pos`.
+    pub const fn poi(dimension: DimensionId, pos: ChunkPos) -> Self {
+        RecordKey {
+            dimension,
+            pos,
+            stream: Stream::Poi,
+        }
+    }
 }
 
 /// Metadata kept next to a record. Fields a format does not store are 0
@@ -315,6 +324,26 @@ pub trait ChunkCodec: Send + Sync {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             format!("chunk {:?}: this world format keeps no entities", chunk.pos),
+        ))
+    }
+
+    /// Decodes a points of interest record into [`ProtoChunk::poi`]. Default: the format
+    /// keeps no POI.
+    fn decode_poi(
+        &self,
+        _pos: ChunkPos,
+        _meta: &RecordMeta,
+        _bytes: &[u8],
+    ) -> io::Result<Option<Arc<[u8]>>> {
+        Ok(None)
+    }
+
+    /// Encodes the POI of a chunk ([`ProtoChunk::poi`], which is `Some`) into a record.
+    /// Default: the format keeps no POI.
+    fn encode_poi(&self, chunk: &ProtoChunk) -> io::Result<(RecordMeta, Arc<[u8]>)> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("chunk {:?}: this world format keeps no POI", chunk.pos),
         ))
     }
 

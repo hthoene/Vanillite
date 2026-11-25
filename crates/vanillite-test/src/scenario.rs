@@ -47,7 +47,8 @@
 //!   then starts again on the saved world: the saved chunk tickets come back and their chunks
 //!   load before the next tick like `MinecraftServer.prepareLevels`; the rules, time and
 //!   difficulty are set again and the level random starts from the world seed; scenarios with
-//!   entities cannot restart).
+//!   entities cannot restart), `bonemeal` (`"pos"`: bone meal used on the block,
+//!   `BoneMealItem.growCrop`).
 //!
 //! Positions in chunks that are not accessible (unloaded or above full level) are traced as
 //! the state [`UNLOADED`].
@@ -176,6 +177,8 @@ pub enum OpKind {
     Restart,
     /// A status effect on a scenario entity ([`Op::effect`]).
     Effect,
+    /// Bone meal used on the block at `pos` (an action).
+    Bonemeal,
     /// A command run as the server at the origin ([`Op::command`]).
     Command,
     /// A thrown splash or lingering potion ([`Op::throw_potion`]).
@@ -543,6 +546,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
         Some("unforce") if action => OpKind::Unforce,
         Some("command") if action => OpKind::Command,
         Some("restart") if action => OpKind::Restart,
+        Some("bonemeal") if action => OpKind::Bonemeal,
         o => return Err(format!("unknown op {o:?}")),
     };
     if kind == OpKind::Command {
@@ -684,7 +688,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             throw_potion: None,
         });
     }
-    if kind == OpKind::Lightning {
+    if matches!(kind, OpKind::Bonemeal | OpKind::Lightning) {
         let p = pos(v.get("pos"))?;
         return Ok(Op {
             tick,
@@ -693,6 +697,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             to: p,
             block: String::new(),
             hurt: None,
+            command: None,
             effect: None,
             throw_potion: None,
             chunks: Vec::new(),
