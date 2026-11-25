@@ -702,6 +702,9 @@ pub enum WorldAction {
     DestroyBlock(BlockPos, bool),
     /// `levelEvent(event, pos, data)`.
     LevelEvent(i32, BlockPos, i32),
+    /// `globalLevelEvent(event, pos, data)` (the `global_sound_events` rule decides who hears
+    /// it).
+    GlobalLevelEvent(i32, BlockPos, i32),
     /// `DoorBlock.setOpen(mob, level, state, pos, open)`.
     SetDoorOpen(BlockPos, bool, Option<EntityId>),
     /// A wind charge burst.
@@ -765,6 +768,9 @@ impl WorldAction {
             }
             WorldAction::LevelEvent(event, pos, data) => {
                 level.level_event(None, event, pos, data);
+            }
+            WorldAction::GlobalLevelEvent(event, pos, data) => {
+                level.global_level_event(event, pos, data);
             }
             WorldAction::EntityInside(pos, id) => {
                 if level.entities.store.contains(id) {

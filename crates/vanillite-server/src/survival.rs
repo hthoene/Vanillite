@@ -141,7 +141,7 @@ pub(crate) fn difficulty(d: vanillite_config::Difficulty) -> Difficulty {
 pub(crate) fn change_difficulty(level: &LevelState) -> ChangeDifficulty {
     ChangeDifficulty {
         difficulty: level.difficulty().id(),
-        locked: false,
+        locked: level.difficulty_locked(),
     }
 }
 
@@ -648,7 +648,17 @@ impl WorldSurvival {
                     victim,
                     killer,
                     message,
-                } => crate::scoreboard::died(global, entities, *victim, *killer, message.as_ref()),
+                } => {
+                    // `ServerPlayer.die`: `tellNeutralMobsThatIDied` with `forgive_dead_players`.
+                    if entities.player(*victim).is_some()
+                        && global.level.rules().bool(Rule::FORGIVE_DEAD_PLAYERS)
+                    {
+                        vanillite_game::mob::common::tell_neutral_mobs_player_died(
+                            entities, *victim,
+                        );
+                    }
+                    crate::scoreboard::died(global, entities, *victim, *killer, message.as_ref());
+                }
                 Effect::To { player, packet } => {
                     if let Some(p) = entities.player(*player) {
                         p.connection.sink.send_shared(packet);
@@ -760,7 +770,15 @@ fn deliver_simple(effects: &[Effect], entities: &mut Entities, global: &Global) 
                 victim,
                 killer,
                 message,
-            } => crate::scoreboard::died(global, entities, *victim, *killer, message.as_ref()),
+            } => {
+                // `ServerPlayer.die`: `tellNeutralMobsThatIDied` with `forgive_dead_players`.
+                if entities.player(*victim).is_some()
+                    && global.level.rules().bool(Rule::FORGIVE_DEAD_PLAYERS)
+                {
+                    vanillite_game::mob::common::tell_neutral_mobs_player_died(entities, *victim);
+                }
+                crate::scoreboard::died(global, entities, *victim, *killer, message.as_ref());
+            }
             Effect::To { player, packet } => {
                 if let Some(p) = entities.player(*player) {
                     p.connection.sink.send_shared(packet);
@@ -856,12 +874,4 @@ fn spawn_drops(effects: &[Effect], entities: &mut Entities, global: &Global) {
 /// Sends `packet` to every player of the server (`broadcastAll`).
 pub(crate) fn broadcast_all<P: vanillite_protocol::Packet>(global: &Global, packet: &P) {
     global.players.broadcast(packet, None);
-}
-
-/// The game event for `immediate_respawn` (`ClientboundGameEventPacket.IMMEDIATE_RESPAWN`).
-pub(crate) fn immediate_respawn_event(on: bool) -> GameEvent {
-    GameEvent {
-        event: 11,
-        param: if on { 1.0 } else { 0.0 },
-    }
 }

@@ -1555,11 +1555,11 @@ impl crate::loot::LootRandom for LevelRandom<'_> {
 
 /// `Block.popResource`.
 pub fn pop_resource(level: &mut dyn PlayLevel, pos: BlockPos, stack: ItemStack) {
-    if stack.is_empty() {
-        return;
-    }
     if let Some(level) = level.level_mut() {
         crate::block::drops::pop_resource(level, pos, stack);
+        return;
+    }
+    if stack.is_empty() {
         return;
     }
     let half_height = 0.125;
