@@ -12,7 +12,7 @@
     "eula"
   ],
   "docker_images": {
-    "Vanillite": "thoenehannes/vanillite:latest"
+    "Vanillite": "thoenehannes/vanillite:beta"
   },
   "file_denylist": [],
   "startup": "env VANILLITE_SERVER_PORT={{SERVER_PORT}} /vanillite run --dir /home/container",

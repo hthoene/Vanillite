@@ -1,0 +1,144 @@
+name: Release
+
+# Builds the server for Windows, Linux and macOS and publishes a GitHub release for a version
+# tag v<version>+mc<minecraft version> (e.g. v0.1.0-beta.1+mc26.3; docs/development.md,
+# "Releases"). Pre-release versions become GitHub pre-releases. A manual run is a dry run: it
+# builds and uploads the archives as workflow artifacts and publishes nothing. Docker Hub
+# images come from docker.yml on the same tag.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  meta:
+    name: Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      mc: ${{ steps.meta.outputs.mc }}
+      tag: ${{ steps.meta.outputs.tag }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v5
+      # A tag must match the workspace version and the generated Minecraft version.
+      - id: meta
+        env:
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: scripts/release/meta.sh ${TAG:+"$TAG"} | tee -a "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.os }}-${{ matrix.arch }}
+    needs: meta
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux: static musl binaries (mimalloc), cross-compiled with cargo-zigbuild like the
+          # Docker image, so they run on any distribution.
+          - { os: linux, arch: x86_64, runner: ubuntu-latest, target: x86_64-unknown-linux-musl, zig: true }
+          - { os: linux, arch: aarch64, runner: ubuntu-latest, target: aarch64-unknown-linux-musl, zig: true }
+          - { os: windows, arch: x86_64, runner: windows-latest, target: x86_64-pc-windows-msvc }
+          - { os: macos, arch: aarch64, runner: macos-latest, target: aarch64-apple-darwin }
+          - { os: macos, arch: x86_64, runner: macos-latest, target: x86_64-apple-darwin }
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Windows: the C runtime linked in, so no Visual C++ redistributable is needed.
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: -C target-feature=+crt-static
+      # zig's clang turns off evex512 for the x86-64 baseline; libdeflate's AVX-512 code needs it.
+      CFLAGS_x86_64_unknown_linux_musl: -mevex512
+    steps:
+      # Scripts and text files keep LF line ends on Windows (package.sh converts the texts).
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v5
+      # The pinned toolchain (rust-toolchain.toml), then the target for it.
+      - run: rustup toolchain install --profile minimal && rustup target add ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+      - uses: mlugg/setup-zig@v2
+        if: matrix.zig
+        with:
+          version: 0.14.1
+      - uses: taiki-e/install-action@v2
+        if: matrix.zig
+        with:
+          tool: cargo-zigbuild
+      - name: Build
+        run: |
+          build=build
+          [[ "${{ matrix.zig }}" == true ]] && build=zigbuild
+          cargo "$build" --release --locked -p vanillite --target ${{ matrix.target }}
+      - name: Package
+        run: |
+          exe=vanillite
+          [[ "${{ matrix.os }}" == windows ]] && exe=vanillite.exe
+          scripts/release/package.sh "target/${{ matrix.target }}/release/$exe" \
+              ${{ matrix.os }} ${{ matrix.arch }} dist
+      # The native binaries must at least start.
+      - name: Smoke test
+        if: matrix.target != 'aarch64-unknown-linux-musl' && matrix.target != 'x86_64-apple-darwin'
+        run: |
+          exe=vanillite
+          [[ "${{ matrix.os }}" == windows ]] && exe=vanillite.exe
+          "target/${{ matrix.target }}/release/$exe" --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vanillite-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: ${{ github.ref_type == 'tag' && 'Publish the release' || 'Dry run (nothing published)' }}
+    needs: [meta, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums and notes
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          MC: ${{ needs.meta.outputs.mc }}
+          PRERELEASE: ${{ needs.meta.outputs.prerelease }}
+        run: |
+          (cd dist && sha256sum vanillite-* > SHA256SUMS && cat SHA256SUMS)
+          {
+            if [[ "$PRERELEASE" == true ]]; then
+              echo "**Beta of Vanillite $VERSION for Minecraft Java Edition $MC.** Back up your worlds; please report problems as issues."
+            else
+              echo "**Vanillite $VERSION for Minecraft Java Edition $MC.**"
+            fi
+            echo
+            echo "Download the archive for your system, unpack it and start \`vanillite\` (\`vanillite.exe\` on Windows); the README.txt inside explains the first start. Docker: \`docker pull thoenehannes/vanillite:${VERSION}-mc${MC}\`. Checksums: SHA256SUMS."
+          } > notes.md
+          cat notes.md
+      - name: Create the GitHub release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.meta.outputs.tag }}
+          VERSION: ${{ needs.meta.outputs.version }}
+          MC: ${{ needs.meta.outputs.mc }}
+          PRERELEASE: ${{ needs.meta.outputs.prerelease }}
+        run: |
+          flags=()
+          [[ "$PRERELEASE" == true ]] && flags+=(--prerelease) || flags+=(--latest)
+          gh release create "$TAG" dist/* "${flags[@]}" --verify-tag \
+              --title "Vanillite $VERSION for Minecraft $MC" \
+              --notes-file notes.md --generate-notes

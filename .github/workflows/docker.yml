@@ -31,23 +31,38 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+      # Docker tags cannot hold the `+` of v<version>+mc<minecraft>, so scripts/release/meta.sh
+      # computes them: 0.1.0-beta.1-mc26.3, mc26.3-beta and beta for a pre-release,
+      # 0.1.0-mc26.3, mc26.3 and latest for a stable version. Manual runs: the commit only.
+      - id: release
+        if: env.HAS_SECRETS == 'true' && github.ref_type == 'tag'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          scripts/release/meta.sh "$TAG" > "$RUNNER_TEMP/release"
+          {
+            echo 'tags<<EOF'
+            sed -n 's/^docker_tags=//p' "$RUNNER_TEMP/release" | tr ',' '\n' | sed 's/^/type=raw,value=/'
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
       - id: meta
         uses: docker/metadata-action@v5
         if: env.HAS_SECRETS == 'true'
         with:
           images: ${{ secrets.DOCKERHUB_USERNAME }}/vanillite
-          # Version tags: the version and latest (not for pre-releases). Manual runs: the commit.
           tags: |
-            type=semver,pattern={{version}}
+            ${{ steps.release.outputs.tags }}
             type=sha,format=short,enable=${{ github.event_name == 'workflow_dispatch' }}
-          flavor: latest=auto
+          flavor: latest=false
       # The binaries are cross-compiled in the build stage (cargo-zigbuild): no emulation.
       - uses: docker/build-push-action@v6
         if: env.HAS_SECRETS == 'true'
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          build-args: BINARY=build
+          build-args: |
+            BINARY=build
+            VANILLITE_COMMIT=${{ github.sha }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

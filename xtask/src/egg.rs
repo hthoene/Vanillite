@@ -20,8 +20,9 @@ use crate::Result;
 
 /// The egg, relative to the repository root.
 pub const EGG_PATH: &str = "deploy/pterodactyl/egg-vanillite.json";
-/// The image on Docker Hub (published by `.github/workflows/docker.yml`).
-const IMAGE: &str = "thoenehannes/vanillite:latest";
+/// The image on Docker Hub (published by `.github/workflows/docker.yml`): the newest beta until
+/// the first stable release, then `latest`.
+const IMAGE: &str = "thoenehannes/vanillite:beta";
 /// The startup command; Wings replaces `{{SERVER_PORT}}` with the allocation's port.
 const STARTUP: &str =
     "env VANILLITE_SERVER_PORT={{SERVER_PORT}} /vanillite run --dir /home/container";
