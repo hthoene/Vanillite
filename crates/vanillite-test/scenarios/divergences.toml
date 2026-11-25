@@ -206,3 +206,8 @@ owner = "architect #101"
 tick = 23
 cause = "after the hit on tick 20 the zombified piglin draws 2 numbers from its random on tick 23, Vanilla 4 (anger alert / target)"
 owner = "architect #101"
+
+[block_golems]
+tick = 3
+cause = "random draws of the iron golem differ from its first tick (as in mob_iron_golem_fight, not analysed yet)"
+owner = "architect #101"

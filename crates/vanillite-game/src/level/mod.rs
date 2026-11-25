@@ -408,6 +408,8 @@ pub struct Level {
     /// Stacks blocks hand to the player that used them (`player.getInventory().add`, else
     /// dropped); taken by the player handlers.
     player_gives: Vec<(EntityId, crate::item::ItemStack)>,
+    /// What blocks did to the player that used them; taken by the player handlers.
+    player_effects: Vec<(EntityId, block::PlayerEffect)>,
     /// Statistics and criterion triggers for players (`awardStat`, `CriteriaTriggers`) from
     /// block code; the server applies them after the players' tick.
     player_awards: Vec<(EntityId, crate::advancements::award::Award)>,
@@ -486,6 +488,7 @@ impl Level {
             menu_requests: Vec::new(),
             sign_editors: Vec::new(),
             player_gives: Vec::new(),
+            player_effects: Vec::new(),
             player_awards: Vec::new(),
             maps: None,
             min_y,
@@ -551,6 +554,16 @@ impl Level {
         std::mem::take(&mut self.player_gives)
     }
 
+    /// A block's effect on the player that used it ([`block::PlayerEffect`]).
+    pub fn player_effect(&mut self, player: EntityId, effect: block::PlayerEffect) {
+        self.player_effects.push((player, effect));
+    }
+
+    /// Takes the effects blocks had on players.
+    pub fn take_player_effects(&mut self) -> Vec<(EntityId, block::PlayerEffect)> {
+        std::mem::take(&mut self.player_effects)
+    }
+
     /// `player.awardStat(stat, count)` from block code.
     pub fn award_stat(&mut self, player: EntityId, stat: crate::stats::Stat, count: i32) {
         self.player_awards
@@ -578,6 +591,14 @@ impl Level {
     pub fn block_entity_changed(&mut self, pos: BlockPos) {
         self.block_entities.touch(pos.chunk());
         self.output.block_entity_updates.push(pos);
+    }
+
+    /// `state.attack(level, pos, player)` of the block at `pos`.
+    pub fn attack_block(&mut self, pos: BlockPos, player: EntityId) {
+        let state = self.block(pos);
+        if let Some(f) = self.behaviours.get(state.block()).attack {
+            f(self, state, pos, player);
+        }
     }
 
     /// `state.useItemOn(stack, level, player, hand, hit)` of the block at `pos`.
