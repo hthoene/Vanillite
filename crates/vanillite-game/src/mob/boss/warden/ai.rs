@@ -605,6 +605,14 @@ fn sonic_boom_tick(t: &mut Tick<'_, '_>) {
     } else {
         Vec3::new(delta.x / len, delta.y / len, delta.z / len)
     };
+    // The beam: one particle per block from the chest to the target's eyes and beyond.
+    #[allow(clippy::cast_possible_truncation)]
+    let steps = len.floor() as i32 + 7;
+    for i in 1..steps {
+        let at = source + n * f64::from(i);
+        let boom = crate::level::particles::simple("minecraft:sonic_boom");
+        t.cx.send_particles(boom, at, 1, Vec3::ZERO, 0.0);
+    }
     sound(t, "minecraft:entity.warden.sonic_boom", 3.0, 1.0);
     let damage = crate::survival::damage::DamageSource {
         kind: t.env.types.sonic_boom,

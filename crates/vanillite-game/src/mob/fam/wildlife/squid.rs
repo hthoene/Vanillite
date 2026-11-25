@@ -39,8 +39,10 @@ const PI: f32 = std::f32::consts::PI;
 pub(super) fn ai_step(t: &mut Tick<'_, '_>) {
     {
         let m = t.mob();
+        let y_body_rot = m.y_body_rot;
         let s = st_mut(m);
         s.x_body_rot_o = s.x_body_rot;
+        s.y_body_rot_o = y_body_rot;
         s.tentacle_movement += s.tentacle_speed;
     }
     if st(t.mob_ref()).tentacle_movement > PI * 2.0 {
@@ -122,14 +124,58 @@ pub(super) fn after_hurt(h: &mut Hurt<'_, '_>) {
     if m.last_hurt_by_mob.is_none() {
         return;
     }
-    // `spawnInk`: the squirt (the ink particles are client side effects of the server's
-    // particle packets, not simulated here).
-    let sound = if m.kind == Kind::GlowSquid {
+    // `spawnInk`: the squirt, then 30 ink particles shot backwards.
+    let glow = m.kind == Kind::GlowSquid;
+    let sound = if glow {
         "minecraft:entity.glow_squid.squirt"
     } else {
         "minecraft:entity.squid.squirt"
     };
     combat::mob_sound(h.ents, h.env, h.target, sound);
+    let Some(pos) = h.ents.store.get(h.target).map(|e| e.pos()) else {
+        return;
+    };
+    let Some(m) = h.ents.mob_mut(h.target) else {
+        return;
+    };
+    let (x_rot, y_rot) = {
+        let s = st(m);
+        (s.x_body_rot_o, s.y_body_rot_o)
+    };
+    let rotate = |v: Vec3| rotate_vector(v, x_rot, y_rot);
+    let origin = rotate(Vec3::new(0.0, -1.0, 0.0)) + pos;
+    let scale = if m.baby { 0.1_f32 } else { 0.3 };
+    let particle = if glow {
+        "minecraft:glow_squid_ink"
+    } else {
+        "minecraft:squid_ink"
+    };
+    for _ in 0..30 {
+        let r = &mut m.random;
+        let dx = f64::from(r.next_float()) * 0.6 - 0.3;
+        let dz = f64::from(r.next_float()) * 0.6 - 0.3;
+        let dir = rotate(Vec3::new(dx, -1.0, dz));
+        let offset = dir * f64::from(scale + r.next_float() * 2.0);
+        h.cx.send_particles(
+            crate::level::particles::simple(particle),
+            Vec3::new(origin.x, origin.y + 0.5, origin.z),
+            0,
+            offset,
+            f64::from(0.1_f32),
+        );
+    }
+}
+
+/// `Squid.rotateVector`: by the old body pitch, then the old body yaw (`Vec3.xRot`, `yRot`).
+fn rotate_vector(v: Vec3, x_body_rot: f32, y_body_rot: f32) -> Vec3 {
+    #[allow(clippy::cast_possible_truncation)]
+    let rad = (std::f64::consts::PI / 180.0) as f32;
+    let a = f64::from(x_body_rot * rad);
+    let (c, s) = (f64::from(vanillite_base::math::cos(a)), f64::from(sin(a)));
+    let v = Vec3::new(v.x, v.y * c + v.z * s, v.z * c - v.y * s);
+    let a = f64::from(-y_body_rot * rad);
+    let (c, s) = (f64::from(vanillite_base::math::cos(a)), f64::from(sin(a)));
+    Vec3::new(v.x * c + v.z * s, v.y, v.z * c - v.x * s)
 }
 
 pub(super) fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {

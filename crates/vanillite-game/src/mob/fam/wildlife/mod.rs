@@ -74,6 +74,8 @@ pub struct State {
     pub movement_vector: Vec3,
     pub x_body_rot: f32,
     pub x_body_rot_o: f32,
+    /// `yBodyRotO` (the body yaw after `baseTick`), for the ink's direction.
+    pub y_body_rot_o: f32,
     /// `GlowSquid` dark ticks.
     pub dark_ticks: i32,
     // Dolphins.
@@ -133,6 +135,7 @@ impl State {
         movement_vector: Vec3::ZERO,
         x_body_rot: 0.0,
         x_body_rot_o: 0.0,
+        y_body_rot_o: 0.0,
         dark_ticks: 0,
         got_fish: false,
         moistness: 2400,

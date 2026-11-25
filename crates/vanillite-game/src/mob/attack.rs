@@ -238,6 +238,7 @@ pub fn player_attack(
                 .is_some_and(|d| d.item_in_tag(weapon.item, "minecraft:swords"))
     };
     let old_movement = ents.store.get(target).map(|e| e.velocity());
+    let old_health = living_health(ents, target);
     let hurt = combat::hurt(level, ents, env, cx, target, source, total);
     if !hurt {
         player_sound(env, ppos, "minecraft:entity.player.attack.nodamage");
@@ -294,9 +295,34 @@ pub fn player_attack(
     }
     post_attack(ents, env, target, &source, &weapon);
     hurt_weapon(ents, env, attacker, &weapon);
+    // `damageStatsAndHearts`: dark hearts for more than one heart of damage.
+    if let (Some(old), Some(new)) = (old_health, living_health(ents, target)) {
+        let damage = old - new;
+        if damage > 2.0
+            && let Some(e) = ents.store.get(target)
+        {
+            let (pos, height) = (e.pos(), f64::from(e.dims().height));
+            #[allow(clippy::cast_possible_truncation)]
+            let count = (f64::from(damage) * 0.5) as i32;
+            cx.send_particles(
+                crate::level::particles::simple("minecraft:damage_indicator"),
+                Vec3::new(pos.x, pos.y + height * 0.5, pos.z),
+                count,
+                Vec3::new(0.1, 0.0, 0.1),
+                0.2,
+            );
+        }
+    }
     if let Some(p) = ents.player_mut(attacker) {
         player::cause_food_exhaustion(p, 0.1);
     }
+}
+
+/// The health of a living target (`LivingEntity.getHealth`), `None` for other entities.
+fn living_health(ents: &Entities, id: EntityId) -> Option<f32> {
+    ents.mob(id)
+        .map(|m| m.health)
+        .or_else(|| ents.player(id).map(|p| p.survival.health))
 }
 
 /// `sendToTrackingPlayersAndSelf(new ClientboundAnimatePacket(entity, action))`.
@@ -467,6 +493,20 @@ fn sweep_attack(
             post_attack(ents, env, id, source, &weapon);
         }
     }
+    let rad = f64::from(y_rot * super::DEG_TO_RAD);
+    let dx = -f64::from(vanillite_base::math::sin(rad));
+    let dz = f64::from(vanillite_base::math::cos(rad));
+    let height = ents
+        .store
+        .get(attacker)
+        .map_or(0.0, |e| f64::from(e.dims().height));
+    cx.send_particles(
+        crate::level::particles::simple("minecraft:sweep_attack"),
+        Vec3::new(ppos.x + dx, ppos.y + height * 0.5, ppos.z + dz),
+        0,
+        Vec3::new(dx, 0.0, dz),
+        0.0,
+    );
 }
 
 /// `EnchantmentHelper.doPostAttackEffectsWithItemSource`: the weapon's post attack effects on

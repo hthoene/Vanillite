@@ -11,15 +11,18 @@
 //!
 //! Items lose health and are destroyed, boats take damage like living entities.
 //!
-//! Not ported: damage of end crystals and other non-living entities, fire of fire explosions, the
-//! block reactions of `TRIGGER_BLOCK` explosions (wind charges) and the special damage
+//! Fire explosions (ghast fireballs) set fire to a third of the blown up air above solid
+//! blocks. `TRIGGER_BLOCK` explosions (wind charges) leave the blocks and open doors,
+//! trapdoors and fence gates, press buttons, pull levers, ring bells and blow out candles.
+//!
+//! Not ported: damage of end crystals and other non-living entities and the special damage
 //! calculators (wither skulls, wind charges, TNT that used a portal).
 
 use vanillite_base::hash::FxHashSet;
 use vanillite_base::math::{floor, frac, lerp};
 use vanillite_base::random::RandomSource;
 use vanillite_base::{Aabb, BlockPos, Vec3};
-use vanillite_data::block::{BlockState, ids};
+use vanillite_data::block::{BlockKind, BlockState, ids};
 use vanillite_data::entity::ids as entity_ids;
 use vanillite_world::entity::{EntityFlags, EntityId};
 use vanillite_worldgen::behaviour::StateExt;
@@ -81,6 +84,8 @@ pub struct ExplosionStyle {
     pub wind_sound: Option<&'static str>,
     /// The source's block resistance override.
     pub resistance: BlockResistance,
+    /// `fire`: sets fire to some of the blown up positions (`createFire`).
+    pub fire: bool,
 }
 
 impl Default for ExplosionStyle {
@@ -90,6 +95,7 @@ impl Default for ExplosionStyle {
             knockback: 1.0,
             wind_sound: None,
             resistance: BlockResistance::Default,
+            fire: false,
         }
     }
 }
@@ -150,6 +156,9 @@ impl Level {
         let hit_players = self.hurt_entities(source, indirect, center, radius, style);
         if interaction != BlockInteraction::Keep {
             self.interact_with_blocks(&mut targets, source, indirect, interaction, radius);
+        }
+        if style.fire {
+            self.create_fire(&targets);
         }
         let count = targets.len();
         self.output.explosions.push(ExplosionEvent {
@@ -374,9 +383,14 @@ impl Level {
         let mut stacks: Vec<(BlockPos, crate::item::ItemStack)> = Vec::new();
         let mut loot = Vec::new();
         let decay = (interaction == BlockInteraction::DestroyWithDecay).then_some(radius);
+        let trigger =
+            interaction == BlockInteraction::TriggerBlock && self.can_trigger_blocks(source);
         for &pos in targets.iter() {
             // `Block.onExplosionHit`.
             let state = self.block(pos);
+            if trigger {
+                self.trigger_block(state, pos);
+            }
             if state.is_air() || interaction == BlockInteraction::TriggerBlock {
                 continue;
             }
@@ -409,6 +423,59 @@ impl Level {
         if self.settings.block_drops {
             for (pos, stack) in stacks {
                 drops::pop_resource(self, pos, stack);
+            }
+        }
+    }
+
+    /// `canTriggerBlocks`: a breeze's wind charge only with `mobGriefing`.
+    fn can_trigger_blocks(&self, source: Option<EntityId>) -> bool {
+        let breeze = source
+            .and_then(|s| self.entities.store.get(s))
+            .is_some_and(|e| e.kind() == entity_ids::BREEZE_WIND_CHARGE);
+        !breeze || self.settings.mob_griefing
+    }
+
+    /// The `onExplosionHit` overrides of the blocks a triggering explosion reaches.
+    fn trigger_block(&mut self, state: BlockState, pos: BlockPos) {
+        use crate::block::redstone;
+        match state.block().info().kind {
+            BlockKind::DoorBlock | BlockKind::WeatheringCopperDoorBlock => {
+                redstone::door_explosion_hit(self, state, pos);
+            }
+            BlockKind::TrapDoorBlock | BlockKind::WeatheringCopperTrapDoorBlock => {
+                redstone::trapdoor_explosion_hit(self, state, pos);
+            }
+            BlockKind::FenceGateBlock => redstone::fence_gate_explosion_hit(self, state, pos),
+            BlockKind::ButtonBlock => redstone::button_explosion_hit(self, state, pos),
+            BlockKind::LeverBlock => redstone::lever_pull(self, state, pos),
+            BlockKind::BellBlock => {
+                crate::block::bell::attempt_to_ring(self, None, pos, None);
+            }
+            BlockKind::CandleBlock | BlockKind::CandleCakeBlock if state.flag("lit") => {
+                // `AbstractCandleBlock.extinguish(null, ...)`; the smoke is the client's.
+                self.set_block(
+                    pos,
+                    state.set_flag("lit", false),
+                    update::ALL | update::IMMEDIATE,
+                );
+                let sound = crate::block::sound_id("block.candle.extinguish");
+                self.play_block_sound(None, pos, sound, crate::level::SOUND_BLOCKS, 1.0, 1.0);
+                let event = super::game_event::events().block_change;
+                self.game_event_at(None, event, pos);
+            }
+            _ => {}
+        }
+    }
+
+    /// `createFire`: a third of the blown up air positions above solid blocks catch fire.
+    fn create_fire(&mut self, targets: &[BlockPos]) {
+        for &pos in targets {
+            if self.random.next_int_bounded(3) == 0
+                && self.block(pos).is_air()
+                && vanillite_worldgen::behaviour::is_solid_render(self.block(pos.offset(0, -1, 0)))
+            {
+                let fire = crate::block::place::fire_state(&*self, pos);
+                self.set_block_and_update(pos, fire);
             }
         }
     }

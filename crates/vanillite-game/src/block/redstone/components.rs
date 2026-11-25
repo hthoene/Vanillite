@@ -487,6 +487,61 @@ pub(super) fn fence_gate_neighbor_changed(
     }
 }
 
+/// `TrapDoorBlock.onExplosionHit` of an explosion that triggers blocks (wind charges):
+/// `toggle` unless powered or iron.
+pub fn trapdoor_explosion_hit(level: &mut Level, state: BlockState, pos: BlockPos) {
+    if !BlockSet::of(state.block()).can_open_by_wind_charge() || powered(state) {
+        return;
+    }
+    let new = state.set_flag("open", !state.flag("open"));
+    level.set_block(pos, new, update::CLIENTS);
+    if new.waterlogged() {
+        BlockLevel::schedule_fluid_tick(level, pos, WATER);
+    }
+    trapdoor_sound(level, state, pos, new.flag("open"), None);
+}
+
+/// `DoorBlock.onExplosionHit` of an explosion that triggers blocks: the lower half toggles
+/// the door unless powered or iron.
+pub fn door_explosion_hit(level: &mut Level, state: BlockState, pos: BlockPos) {
+    if is_lower(state) && BlockSet::of(state.block()).can_open_by_wind_charge() && !powered(state) {
+        set_door_open(level, pos, !state.flag("open"), None);
+    }
+}
+
+/// `FenceGateBlock.onExplosionHit` of an explosion that triggers blocks.
+pub fn fence_gate_explosion_hit(level: &mut Level, state: BlockState, pos: BlockPos) {
+    if powered(state) {
+        return;
+    }
+    let open = state.flag("open");
+    level.set_block_and_update(pos, state.set_flag("open", !open));
+    let sound = BlockSet::of(state.block()).fence_gate_sound(!open);
+    let pitch = door_pitch(level);
+    level.play_block_sound(None, pos, sound, SOUND_BLOCKS, 1.0, pitch);
+    let events = crate::level::game_event::events();
+    let event = if open {
+        events.block_close
+    } else {
+        events.block_open
+    };
+    level.game_event_block(
+        event,
+        pos,
+        crate::level::game_event::GameEventContext {
+            source: None,
+            affected: Some(state),
+        },
+    );
+}
+
+/// `ButtonBlock.onExplosionHit` of an explosion that triggers blocks.
+pub fn button_explosion_hit(level: &mut Level, state: BlockState, pos: BlockPos) {
+    if !powered(state) {
+        button_press(level, state, pos, None);
+    }
+}
+
 /// `FenceGateBlock.useWithoutItem`: opens away from the player.
 pub(super) fn fence_gate_use(
     level: &mut Level,

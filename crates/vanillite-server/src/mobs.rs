@@ -916,33 +916,10 @@ impl WorldMobs {
                     self.apply_explosion_hurts(level, survival, global, dimension);
                 }
                 WorldAction::Explode(e) => {
-                    // `Level.ExplosionInteraction.MOB`: `getDestroyType` with `mobGriefing`.
-                    let decay = if e.mob {
-                        Rule::MOB_EXPLOSION_DROP_DECAY
-                    } else {
-                        Rule::TNT_EXPLOSION_DROP_DECAY
-                    };
-                    let interaction = if e.mob && !rules.bool(Rule::MOB_GRIEFING) {
-                        BlockInteraction::Keep
-                    } else if rules.bool(decay) {
-                        BlockInteraction::DestroyWithDecay
-                    } else {
-                        BlockInteraction::Destroy
-                    };
-                    // `getIndirectSourceEntity`: a living source caused it itself.
-                    level.explode_with(
-                        e.source,
-                        e.indirect.or(e.source),
-                        e.pos,
-                        e.radius,
-                        interaction,
-                        vanillite_game::level::explosion::ExplosionStyle {
-                            resistance: e.resistance,
-                            ..Default::default()
-                        },
-                    );
+                    e.run(level, rules);
                     self.apply_explosion_hurts(level, survival, global, dimension);
                 }
+                WorldAction::Particles(p) => level.send_particles_packet(*p),
                 WorldAction::SetBlock(pos, block, flags) => {
                     level.set_block(pos, block, flags);
                 }
