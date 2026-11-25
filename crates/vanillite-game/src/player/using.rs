@@ -191,10 +191,192 @@ pub fn tick(ents: &mut Entities, env: &mut Env<'_>, player: EntityId) {
         mark(ents, player);
     }
     let remaining = u.duration.saturating_sub(ticks);
+    if is_brush(&stack) {
+        // `BrushItem.onUseTick` needs the level: [`tick_brushes`]. The brush is no
+        // consumable, `completeUsingItem` only stops using it.
+        if remaining <= 0 {
+            stop(ents, player);
+        }
+        return;
+    }
     on_use_tick(ents, env, player, &stack, remaining);
     if remaining <= 0 && u.duration < 72000 {
         finish(ents, env, player, u);
     }
+}
+
+fn is_brush(stack: &ItemStack) -> bool {
+    item::item_id(stack).name() == "minecraft:brush"
+}
+
+/// `BrushItem.onUseTick` of every player brushing (after [`tick_all`], with the entities back
+/// in the level): the view ray must hit a block within the block interaction range, else the
+/// player stops (`releaseUsingItem`); every tenth tick (`timeElapsed % 10 == 5`) the stroke
+/// plays the brush sound and brushes a brushable block (`BrushableBlockEntity.brush`).
+pub fn tick_brushes(level: &mut crate::level::Level) {
+    let users: Vec<(EntityId, UsingItem)> = level
+        .entities
+        .players
+        .iter()
+        .filter_map(|(id, p)| p.survival.using_item.map(|u| (id, u)))
+        .collect();
+    for (player, u) in users {
+        let stack = held(&level.entities, player, u.hand);
+        if stack.item != u.item || !is_brush(&stack) {
+            continue;
+        }
+        let Some(hit) = brush_hit(level, player) else {
+            stop(&mut level.entities, player);
+            continue;
+        };
+        // `timeElapsed = getUseDuration - ticksRemaining + 1` with the remaining ticks before
+        // this tick's decrement: the ticks used so far.
+        if u.ticks % 10 != 5 {
+            continue;
+        }
+        let (pos, face) = hit;
+        let state = level.block(pos);
+        let sound = crate::block::brushable::brush_sound(state);
+        let sound = crate::block::sound_id(sound.strip_prefix("minecraft:").unwrap_or(sound));
+        level.play_block_sound(
+            Some(player),
+            pos,
+            sound,
+            crate::level::SOUND_BLOCKS,
+            1.0,
+            1.0,
+        );
+        if !matches!(
+            level.block_entity(pos),
+            Some(crate::level::BlockEntity::Brushable(_))
+        ) {
+            continue;
+        }
+        let i = hand_index(&level.entities, player, u.hand);
+        let mut brush = level
+            .entities
+            .player_mut(player)
+            .and_then(|p| p.inventory.get_mut(i).map(std::mem::take))
+            .unwrap_or_default();
+        let time = level.game_time();
+        crate::block::brushable::brush(level, time, player, pos, face, &mut brush);
+        if let Some(p) = level.entities.player_mut(player)
+            && let Some(slot) = p.inventory.get_mut(i)
+        {
+            *slot = brush;
+        }
+    }
+}
+
+/// `ProjectileUtil.getHitResultOnViewVector(player, CAN_BE_PICKED, blockInteractionRange)`:
+/// the block and face the player looks at, `None` when nothing or an entity is hit first.
+fn brush_hit(
+    level: &crate::level::Level,
+    player: EntityId,
+) -> Option<(vanillite_base::BlockPos, vanillite_base::Direction)> {
+    /// The `block_interaction_range` attribute of players.
+    const RANGE: f64 = 4.5;
+    let e = level.entities.store.get(player)?;
+    let info = e.kind().info();
+    let eye_height =
+        f64::from(info.eye_height) * f64::from(e.dims().height / info.height.max(0.01));
+    let rot = e.rot();
+    let eye = e.pos() + Vec3::new(0.0, eye_height, 0.0);
+    let view = crate::mob::view_vector(rot.x_rot, rot.y_rot);
+    let to = eye + view * RANGE;
+    let (pos, at) = crate::mob::physics::clip(level, eye, to)?;
+    // An entity on the way is hit first (`getEntityHitResult` with `isPickable`).
+    let area =
+        vanillite_base::Aabb::new(eye.x, eye.y, eye.z, at.x, at.y, at.z).inflate(1.0, 1.0, 1.0);
+    let mut entity_first = false;
+    let store = &level.entities.store;
+    store.for_each_in(&area, false, |other| {
+        if other == player || entity_first {
+            return;
+        }
+        let Some(o) = store.get(other) else {
+            return;
+        };
+        if !pickable(level, other, o.kind()) {
+            return;
+        }
+        if let Some(t) = ray_box(eye, at - eye, &o.aabb())
+            && t < 1.0
+        {
+            entity_first = true;
+        }
+    });
+    if entity_first {
+        return None;
+    }
+    Some((pos, hit_face(pos, at, view)))
+}
+
+/// `Entity.isPickable` of the entities a view ray can hit: living entities that are not
+/// spectators, boats, minecarts and other solid entities, not items, orbs or projectiles.
+fn pickable(
+    level: &crate::level::Level,
+    id: EntityId,
+    kind: vanillite_data::entity::EntityTypeId,
+) -> bool {
+    use vanillite_data::entity::ids;
+    if let Some(p) = level.entities.player(id) {
+        return p.game_mode != GameMode::Spectator && !p.survival.is_dead_or_dying();
+    }
+    if let Some(m) = level.entities.mob(id) {
+        return m.is_alive();
+    }
+    crate::vehicle::BoatKind::of(kind).is_some()
+        || crate::minecart::MinecartKind::of(kind).is_some()
+        || kind == ids::END_CRYSTAL
+        || kind == ids::ARMOR_STAND
+}
+
+/// The entry fraction of the segment `from + t * delta` (`t` in 0..=1) into the box.
+fn ray_box(from: Vec3, delta: Vec3, b: &vanillite_base::Aabb) -> Option<f64> {
+    let mut t0 = 0.0_f64;
+    let mut t1 = 1.0_f64;
+    for (o, d, lo, hi) in [
+        (from.x, delta.x, b.min_x, b.max_x),
+        (from.y, delta.y, b.min_y, b.max_y),
+        (from.z, delta.z, b.min_z, b.max_z),
+    ] {
+        if d.abs() < 1e-12 {
+            if o < lo || o > hi {
+                return None;
+            }
+            continue;
+        }
+        let (a, c) = ((lo - o) / d, (hi - o) / d);
+        let (a, c) = if a < c { (a, c) } else { (c, a) };
+        t0 = t0.max(a);
+        t1 = t1.min(c);
+        if t0 > t1 {
+            return None;
+        }
+    }
+    Some(t0)
+}
+
+/// The face of the block the ray entered at `at`: the side whose plane the hit point lies on,
+/// facing against the ray.
+fn hit_face(pos: vanillite_base::BlockPos, at: Vec3, view: Vec3) -> vanillite_base::Direction {
+    use vanillite_base::Direction;
+    let local = at - Vec3::new(f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
+    let candidates = [
+        (local.x, view.x, Direction::West, Direction::East),
+        (local.y, view.y, Direction::Down, Direction::Up),
+        (local.z, view.z, Direction::North, Direction::South),
+    ];
+    let mut best = (f64::MAX, Direction::Up);
+    for (c, d, low, high) in candidates {
+        if d > 0.0 && c.abs() < best.0 {
+            best = (c.abs(), low);
+        } else if d < 0.0 && (1.0 - c).abs() < best.0 {
+            best = ((1.0 - c).abs(), high);
+        }
+    }
+    best.1
 }
 
 /// `Item.onUseTick`: eating and drinking sounds. Items with their own use tick (the brush of

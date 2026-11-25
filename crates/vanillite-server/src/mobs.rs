@@ -697,6 +697,7 @@ impl WorldMobs {
             }
         }
         level.entities = ents;
+        vanillite_game::player::using::tick_brushes(level);
         survival.deliver(&mut level.entities, global);
     }
 
