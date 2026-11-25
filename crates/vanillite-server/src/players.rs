@@ -25,7 +25,6 @@ use vanillite_game::player::{
 };
 use vanillite_game::stats::{Stat, StatType, StatsCounter, custom};
 use vanillite_game::survival::player::Survival;
-use vanillite_game::survival::rules::Rule;
 use vanillite_net::{Latency, Outbound};
 use vanillite_protocol::SharedPacket;
 use vanillite_protocol::compress::Codec;
@@ -391,11 +390,17 @@ impl WorldPlayers {
         weather: &[vanillite_protocol::packets::play::clientbound::GameEvent],
         state: &join::LevelPackets,
     ) {
-        let survival = arrival
+        let mut survival = arrival
             .saved
             .as_ref()
             .map(|saved| Survival::load(&saved.other))
             .unwrap_or_default();
+        // `loadGameTypes` → `updatePlayerAbilities`: creative keeps the saved flying state.
+        match arrival.game_mode {
+            GameMode::Spectator => survival.flying = true,
+            GameMode::Survival | GameMode::Adventure => survival.flying = false,
+            GameMode::Creative => {}
+        }
         let (pos, rot, on_ground) = match &arrival.saved {
             Some(saved) => (
                 Vec3::new(saved.pos[0], saved.pos[1], saved.pos[2]),
@@ -497,17 +502,17 @@ impl WorldPlayers {
             pos.y,
             pos.z
         );
-        let immediate_respawn = global.level.rules().bool(Rule::IMMEDIATE_RESPAWN);
+        let rules = global.level.rules().clone();
         join::send_login(
             sink.as_ref(),
             &self.level,
             network_id,
             player,
             global.chat.enforce_secure,
-            !immediate_respawn,
+            &rules,
         );
         sink.send(&crate::survival::change_difficulty(&global.level));
-        join::send_abilities(sink.as_ref(), player.game_mode);
+        join::send_abilities(sink.as_ref(), player.game_mode, player.survival.flying);
         let Some(global_arc) = global.arc() else {
             return;
         };
@@ -600,9 +605,19 @@ impl WorldPlayers {
         world: crate::world::WorldId,
         blocks: &mut WorldBlocks<'_>,
     ) {
+        let (movement_check, elytra_movement_check) = {
+            use vanillite_game::survival::rules::Rule;
+            let game_rules = global.level.rules();
+            (
+                game_rules.bool(Rule::PLAYER_MOVEMENT_CHECK),
+                game_rules.bool(Rule::ELYTRA_MOVEMENT_CHECK),
+            )
+        };
         let ctx = MoveContext {
             runs_normally,
             rules: &rules.movement,
+            movement_check,
+            elytra_movement_check,
         };
         let protection = self.spawn_protection(global);
         // The player kind data leaves the level while the packets are handled, so the block
@@ -640,6 +655,7 @@ impl WorldPlayers {
                 sprinting: flags.contains(EntityFlags::SPRINTING),
                 client: None,
                 respawn: false,
+                flying: player.survival.flying,
             };
             let mut state = before.clone();
             let mut actor = actor_of(
@@ -736,11 +752,12 @@ impl WorldPlayers {
             }
             entity.set_flags(EntityFlags::ON_GROUND, body.on_ground);
             entity.set_flags(EntityFlags::SPRINTING, state.sprinting);
-            if state.shift_key_down != before.shift_key_down {
+            player.survival.flying = state.flying;
+            if state.shift_key_down != before.shift_key_down || state.flying != before.flying {
                 // `setShiftKeyDown`, and the pose `Player.updatePlayerPose` picks (without the
-                // collision test, which needs blocks).
+                // collision test, which needs blocks): flying players do not crouch.
                 entity.set_flags(EntityFlags::CROUCHING, state.shift_key_down);
-                let pose = if state.shift_key_down {
+                let pose = if state.shift_key_down && !state.flying {
                     Pose::Crouching
                 } else {
                     Pose::Standing
@@ -1200,6 +1217,10 @@ impl WorldPlayers {
         player.inventory.save(&mut survival);
         player.survival.save(&mut survival);
         survival.insert(
+            "abilities",
+            abilities_nbt(player.game_mode, player.survival.flying),
+        );
+        survival.insert(
             "post_effects",
             vanillite_nbt::Tag::List(vanillite_nbt::List(
                 player
@@ -1243,6 +1264,29 @@ impl WorldPlayers {
             self.save_player(entities, id);
         }
     }
+}
+
+/// `Abilities.Packed` of a player: the game mode's abilities (`updatePlayerAbilities`) and the
+/// flying state; the speeds cannot change on this server.
+fn abilities_nbt(mode: GameMode, flying: bool) -> vanillite_nbt::Tag {
+    use vanillite_nbt::Tag;
+    let creative = mode == GameMode::Creative;
+    let spectator = mode == GameMode::Spectator;
+    let mut c = vanillite_nbt::Compound::with_capacity(7);
+    c.insert("invulnerable", Tag::Byte(i8::from(creative || spectator)));
+    c.insert("flying", Tag::Byte(i8::from(flying)));
+    c.insert("mayfly", Tag::Byte(i8::from(creative || spectator)));
+    c.insert("instabuild", Tag::Byte(i8::from(creative)));
+    c.insert(
+        "mayBuild",
+        Tag::Byte(i8::from(!matches!(
+            mode,
+            GameMode::Adventure | GameMode::Spectator
+        ))),
+    );
+    c.insert("flySpeed", Tag::Float(0.05));
+    c.insert("walkSpeed", Tag::Float(0.1));
+    Tag::Compound(c)
 }
 
 /// `ServerPlayer.readAdditionalSaveData`'s `post_effects`: the valid identifiers.

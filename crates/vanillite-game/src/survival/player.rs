@@ -239,6 +239,8 @@ pub struct Survival {
     pub shield_disabled_until: i32,
     /// The item in the main hand at the last tick (`lastItemInMainHand`).
     pub last_main_hand_item: u16,
+    /// `Abilities.flying`: the player flies (creative or spectator flight).
+    pub flying: bool,
     first_tick: bool,
     sent: Sent,
     recorded: Recorded,
@@ -306,6 +308,7 @@ impl Default for Survival {
             using_item: None,
             shield_disabled_until: 0,
             last_main_hand_item: 0,
+            flying: false,
             first_tick: true,
             sent: Sent::default(),
             recorded: Recorded::default(),
@@ -500,6 +503,9 @@ impl Survival {
             seed: int(data, "XpSeed").unwrap_or(0),
         };
         s.score = int(data, "Score").unwrap_or(0);
+        if let Some(Tag::Compound(abilities)) = data.get("abilities") {
+            s.flying = matches!(abilities.get("flying"), Some(Tag::Byte(b)) if *b != 0);
+        }
         s.warden_spawn_tracker = crate::block::sculk_shrieker::WardenSpawnTracker::load(
             data.get("warden_spawn_tracker"),
         );

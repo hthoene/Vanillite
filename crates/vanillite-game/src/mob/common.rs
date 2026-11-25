@@ -267,6 +267,35 @@ pub fn stop_being_angry(m: &mut MobData) {
     m.anger_end = -1;
 }
 
+/// `ServerPlayer.tellNeutralMobsThatIDied` → `NeutralMob.playerDied`: with
+/// `forgive_dead_players`, the neutral mobs within 32 blocks (10 vertically) of the dead
+/// player's block that are angry at it calm down.
+pub fn tell_neutral_mobs_player_died(ents: &mut crate::entities::Entities, player: EntityId) {
+    let Some(e) = ents.store.get(player) else {
+        return;
+    };
+    let uuid = e.uuid();
+    let p = e.pos();
+    let (x, y, z) = (p.x.floor(), p.y.floor(), p.z.floor());
+    let area = Aabb::new(x - 32.0, y - 10.0, z - 32.0, x + 33.0, y + 11.0, z + 33.0);
+    let angry: Vec<EntityId> = ents
+        .mobs
+        .iter()
+        .filter(|(_, m)| m.anger_target == Some(uuid))
+        .map(|(id, _)| id)
+        .filter(|&id| {
+            ents.store
+                .get(id)
+                .is_some_and(|e| e.aabb().intersects(&area))
+        })
+        .collect();
+    for id in angry {
+        if let Some(m) = ents.mob_mut(id) {
+            stop_being_angry(m);
+        }
+    }
+}
+
 /// `isValidPlayerTarget`.
 fn valid_player_target(t: &Tick<'_, '_>, id: EntityId) -> bool {
     t.ents.player(id).is_some_and(|p| {

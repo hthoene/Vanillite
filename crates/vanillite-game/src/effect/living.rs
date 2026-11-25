@@ -41,6 +41,9 @@ pub struct PlayerHost<'a, 'b, 'c> {
     pub entity: &'a mut EntityMut<'b>,
     pub player: &'a mut PlayerData,
     pub env: &'a mut Env<'c>,
+    /// The players of the world by UUID, for the pvp rule of player-caused damage; `None`
+    /// where effects hurt without a causing entity (ticking effects).
+    pub players: Option<&'a vanillite_base::hash::FxHashMap<u128, EntityId>>,
 }
 
 impl std::fmt::Debug for PlayerHost<'_, '_, '_> {
@@ -64,6 +67,13 @@ impl EffectHost for PlayerHost<'_, '_, '_> {
     }
     fn hurt(&mut self, kind: HurtKind, amount: f32) -> bool {
         let source = source_of(self.env, kind);
+        // `ServerPlayer.hurtServer`: `canHarmPlayer` of a causing player (the pvp rule).
+        if !self.env.rules.bool(crate::survival::rules::Rule::PVP)
+            && let (Some(cause), Some(players)) = (source.cause, self.players)
+            && players.values().any(|&p| p == cause)
+        {
+            return false;
+        }
         player::hurt(self.entity, self.player, self.env, source, amount)
     }
     fn absorption(&self) -> f32 {
@@ -194,6 +204,7 @@ pub fn tick_player(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mu
             entity,
             player,
             env,
+            players: None,
         };
         active::tick(&mut host);
         sync_player(host.entity, host.player, host.env);
@@ -569,7 +580,12 @@ pub fn with_host<R>(
         sync_mob(ents, env.out, target);
         return Some(r);
     }
-    let Entities { store, players, .. } = ents;
+    let Entities {
+        store,
+        players,
+        players_by_uuid,
+        ..
+    } = ents;
     let mut entity = store.get_mut(target)?;
     let row = entity.as_ref().kind_row();
     let data = players.get_mut(row)?;
@@ -578,6 +594,7 @@ pub fn with_host<R>(
             entity: &mut entity,
             player: data,
             env,
+            players: Some(players_by_uuid),
         };
         f(&mut host)
     };

@@ -208,12 +208,22 @@ impl ServerWorld {
     /// Keeps every player's view loaded and the chunks in its simulation distance ticking:
     /// one load ticket and one simulation ticket at each centre chunk, shared by the players
     /// there, moved with a player that was alone, removed when the last one is gone.
-    fn update_player_tickets(&mut self) {
+    /// `ChunkMap.skipPlayer`: without `spectators_generate_chunks`, spectators hold no tickets
+    /// (they see what others keep loaded).
+    fn update_player_tickets(&mut self, spectators_generate_chunks: bool) {
         let chunks = &mut self.level.chunks;
         let level = chunks.player_ticket_level();
         let simulation = chunks.player_simulation_level();
         let centers = &mut self.center_tickets;
         for (id, player) in self.level.entities.players.iter() {
+            if !spectators_generate_chunks
+                && player.game_mode == vanillite_config::GameMode::Spectator
+            {
+                if let Some(old) = self.player_tickets.remove(&id) {
+                    release_center(chunks, centers, old);
+                }
+                continue;
+            }
             let center = player.chunk_view.center;
             let old = self.player_tickets.get(&id).copied();
             if old == Some(center) {
@@ -437,7 +447,12 @@ impl ServerWorld {
             self.survival
                 .tick_thunder(&mut self.level.entities, &self.level.chunks, ctx.global);
         }
-        self.update_player_tickets();
+        let spectators_generate_chunks = ctx
+            .global
+            .level
+            .rules()
+            .bool(vanillite_game::survival::rules::Rule::SPECTATORS_GENERATE_CHUNKS);
+        self.update_player_tickets(spectators_generate_chunks);
         let level = &mut self.level;
         // `/save-off` (`ServerLevel.noSave`): chunks without tickets stay loaded.
         level.chunks.set_no_save(
@@ -490,7 +505,7 @@ impl ServerWorld {
         for pos in &self.level.output().block_entity_updates {
             self.packets.invalidate_chunk(pos.chunk());
         }
-        self.updates.broadcast(&mut self.level, ctx.global);
+        self.updates.broadcast(&mut self.level, ctx.global, self.id);
         WorldPlayers::send_chunks(
             &mut self.level.entities,
             &self

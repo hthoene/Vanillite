@@ -246,6 +246,16 @@ impl LevelState {
         lock(&self.level_data).other.get(key).cloned()
     }
 
+    /// `WorldData.isDifficultyLocked`.
+    pub(crate) fn difficulty_locked(&self) -> bool {
+        lock(&self.level_data).difficulty_locked
+    }
+
+    /// `MinecraftServer.setDifficultyLocked`.
+    pub(crate) fn set_difficulty_locked(&self, locked: bool) {
+        lock(&self.level_data).difficulty_locked = locked;
+    }
+
     /// `level.dat`'s `GameType`: the default game mode id.
     pub(crate) fn default_game_type(&self) -> i32 {
         lock(&self.level_data).game_type

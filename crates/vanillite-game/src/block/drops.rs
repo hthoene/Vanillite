@@ -20,9 +20,6 @@ pub fn drop_resources(
     state: BlockState,
     breaker: Option<EntityId>,
 ) {
-    if !level.settings.block_drops {
-        return;
-    }
     let Some(data) = crate::player::play::game_data() else {
         return;
     };
@@ -102,13 +99,15 @@ pub fn explosion_loot(
 /// `Block.popResource(level, pos, stack)`: the stack as an item entity around the block's
 /// centre.
 pub fn pop_resource(level: &mut Level, pos: BlockPos, stack: ItemStack) {
-    if stack.is_empty() {
-        return;
-    }
     let half_height = 0.125;
     let x = f64::from(pos.x) + 0.5 + level.random().next_double() * 0.5 - 0.25;
     let y = f64::from(pos.y) + 0.5 + level.random().next_double() * 0.5 - 0.25 - half_height;
     let z = f64::from(pos.z) + 0.5 + level.random().next_double() * 0.5 - 0.25;
+    // The position is drawn either way; empty stacks and the `block_drops` rule only stop the
+    // item entity.
+    if stack.is_empty() || !level.settings.block_drops {
+        return;
+    }
     spawn_item_moving(level, Vec3::new(x, y, z), stack, None, 10, None);
 }
 

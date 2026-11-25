@@ -1118,6 +1118,8 @@ fn apply_rules(
                 | "advance_weather"
                 | "mob_griefing"
                 | "mob_drops"
+                | "tnt_explodes"
+                | "tnt_explosion_drop_decay"
         );
         let rule = Rule::by_name(name)
             .filter(|_| supported)

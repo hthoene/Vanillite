@@ -229,7 +229,16 @@ pub fn owner_hurt_by_can_use(
         .ents
         .mob(target)
         .is_some_and(|o| o.tame && o.owner == t.mob_ref().owner);
-    if !alive || same_owner || owner_of(t.ents, t.mob_ref()) == Some(target) {
+    let owner = owner_of(t.ents, t.mob_ref());
+    if !alive || same_owner || owner == Some(target) {
+        return false;
+    }
+    // `Wolf.wantsToAttack`: a player's wolf attacks no player when `canHarmPlayer` fails (the
+    // pvp rule).
+    if t.ents.player(target).is_some()
+        && owner.is_some_and(|o| t.ents.player(o).is_some())
+        && !t.env.rules.bool(crate::survival::rules::Rule::PVP)
+    {
         return false;
     }
     *found = Some(target);

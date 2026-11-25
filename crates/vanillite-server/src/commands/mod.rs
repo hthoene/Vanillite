@@ -22,6 +22,7 @@ pub(crate) mod items;
 mod locate;
 pub(crate) mod loot_cmd;
 mod nbt_ops;
+mod operator;
 mod pack_cmd;
 mod particle;
 mod player_data;
@@ -51,6 +52,7 @@ use vanillite_world::entity::EntityId;
 
 pub(crate) use bans::ban_reason;
 pub(crate) use exec::{find_player, permission_event};
+pub(crate) use operator::handle as handle_admin;
 pub(crate) use player_data::add_experience;
 pub(crate) use select::find_uuid;
 pub(crate) use sound::send_post_effects;

@@ -17,7 +17,6 @@ use crate::mob::fam::{ExtraMob, FamGoal, Interact, Relation, SpawnContext, Spawn
 use crate::mob::goals::{Goal as MobGoal, TemptItems};
 use crate::mob::kinds::{self, Kind};
 use crate::mob::{Attrs, MobData, Tick, combat, equipment, is_lava};
-use crate::survival::rules::Difficulty;
 
 /// `Strider.registerGoals` (`LookAtPlayerGoal(Strider.class)` looks at players only here).
 pub(super) fn register_goals(m: &mut MobData) {
@@ -74,7 +73,9 @@ pub(super) fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
     if m.baby {
         return;
     }
-    if m.random.next_int_bounded(30) == 0 && ctx.difficulty != Difficulty::Peaceful {
+    // `level.isSpawningMonsters()`.
+    if m.random.next_int_bounded(30) == 0 && ctx.level.is_none_or(|l| l.settings.spawning_monsters)
+    {
         let seed = crate::mob::new_entity_seed();
         let mut rider = MobData::new(Kind::ZombifiedPiglin, seed);
         let mut inner = SpawnContext {

@@ -74,7 +74,7 @@ fn player_view<'a>(
         crouching: e.pose() == Pose::Crouching,
         sprinting: flags.contains(EntityFlags::SPRINTING),
         swimming: flags.contains(EntityFlags::SWIMMING),
-        flying: false,
+        flying: survival.flying,
         fall_flying: flags.contains(EntityFlags::FALL_FLYING),
         in_water: survival.fluids.in_water(),
         equipment: [

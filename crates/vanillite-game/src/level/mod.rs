@@ -118,6 +118,12 @@ pub struct LevelSettings {
     pub fast_lava: bool,
     /// `tntExplodes` game rule (`TNT_EXPLODES`).
     pub tnt_explodes: bool,
+    /// `tnt_explosion_drop_decay` game rule.
+    pub tnt_explosion_drop_decay: bool,
+    /// `mob_griefing` game rule.
+    pub mob_griefing: bool,
+    /// `ServerLevel.isSpawningMonsters`: the `spawn_mobs` and `spawn_monsters` game rules.
+    pub spawning_monsters: bool,
     /// The dimension has sky light.
     pub has_sky_light: bool,
     /// The dimension's `water_evaporates` attribute (the Nether).
@@ -151,6 +157,9 @@ impl Default for LevelSettings {
             infiniburn: crate::block::fire::Infiniburn::Overworld,
             fast_lava: false,
             tnt_explodes: true,
+            tnt_explosion_drop_decay: false,
+            mob_griefing: true,
+            spawning_monsters: true,
             has_sky_light: true,
             water_evaporates: false,
             portal_dimension: true,
@@ -178,6 +187,16 @@ impl LevelSettings {
         if let Some(v) = get("block_drops") {
             self.block_drops = v != 0;
         }
+        if let Some(v) = get("tnt_explodes") {
+            self.tnt_explodes = v != 0;
+        }
+        if let Some(v) = get("tnt_explosion_drop_decay") {
+            self.tnt_explosion_drop_decay = v != 0;
+        }
+        if let Some(v) = get("mob_griefing") {
+            self.mob_griefing = v != 0;
+        }
+        self.spawning_monsters = rules.bool(Rule::SPAWN_MOBS) && rules.bool(Rule::SPAWN_MONSTERS);
         if let Some(v) = get("entity_drops") {
             self.entity_drops = v != 0;
         }

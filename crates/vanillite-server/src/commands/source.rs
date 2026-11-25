@@ -6,6 +6,7 @@ use std::sync::Arc;
 use vanillite_base::Vec3;
 use vanillite_game::player::PacketSink;
 use vanillite_game::player::join::display_name;
+use vanillite_game::survival::rules::Rule;
 use vanillite_protocol::packets::play::clientbound::SystemChat;
 use vanillite_protocol::text::{Color, Component, NamedColor};
 
@@ -453,14 +454,25 @@ impl CommandSource {
         }
     }
 
-    /// `sendSuccess`: feedback to the source and, when `inform_admins`, a gray italic note to
-    /// the other operators and the log (`broadcastToAdmins`; the game rules
-    /// `sendCommandFeedback` and `logAdminCommands` are on, as by default).
+    /// `sendSuccess`: feedback to the source (players only with the game rule
+    /// `send_command_feedback`) and, when `inform_admins`, a gray italic note to the other
+    /// operators (with `send_command_feedback`) and the log (with `log_admin_commands`)
+    /// (`broadcastToAdmins`).
     pub(crate) fn send_success(&self, global: &Global, message: Component, inform_admins: bool) {
         if self.silent || matches!(self.kind, SourceKind::Server) {
             return;
         }
-        self.send_system(global, message.clone());
+        let (feedback, log_admin) = {
+            let rules = global.level.rules();
+            (
+                rules.bool(Rule::SEND_COMMAND_FEEDBACK),
+                rules.bool(Rule::LOG_ADMIN_COMMANDS),
+            )
+        };
+        // `ServerPlayer.acceptsSuccess`.
+        if feedback || !matches!(self.kind, SourceKind::Player { .. }) {
+            self.send_system(global, message.clone());
+        }
         if !inform_admins {
             return;
         }
@@ -470,7 +482,10 @@ impl CommandSource {
                 .italic(true);
         let own = self.receiver_uuid();
         for entry in global.players.snapshot() {
-            if Some(entry.uuid.0) != own && global.access.op_level(entry.uuid.0).is_some() {
+            if feedback
+                && Some(entry.uuid.0) != own
+                && global.access.op_level(entry.uuid.0).is_some()
+            {
                 let accepts = entry
                     .inbox
                     .lock()
@@ -484,7 +499,7 @@ impl CommandSource {
                 }
             }
         }
-        if own.is_some() {
+        if own.is_some() && log_admin {
             log::info!("{}", broadcast.plain());
         }
     }
