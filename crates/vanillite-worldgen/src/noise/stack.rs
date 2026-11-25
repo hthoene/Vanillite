@@ -29,6 +29,16 @@ pub(super) trait Octave {
         y_scale: f64,
         amplitude: f32,
     );
+    /// `add_to_volume` at the points of `mask` only.
+    fn add_to_volume_masked(
+        &self,
+        buffer: &mut [f32],
+        volume: &DensityVolume,
+        xz_scale: f64,
+        y_scale: f64,
+        amplitude: f32,
+        mask: &[bool],
+    );
 }
 
 /// `NoiseStack.Layer`.
@@ -109,6 +119,28 @@ impl<N: Octave> Octave for NoiseStack<N> {
                 xz_scale * f,
                 y_scale * f,
                 amplitude * layer.amplitude,
+            );
+        }
+    }
+
+    fn add_to_volume_masked(
+        &self,
+        buffer: &mut [f32],
+        volume: &DensityVolume,
+        xz_scale: f64,
+        y_scale: f64,
+        amplitude: f32,
+        mask: &[bool],
+    ) {
+        for layer in &self.layers {
+            let f = layer.frequency;
+            layer.noise.add_to_volume_masked(
+                buffer,
+                volume,
+                xz_scale * f,
+                y_scale * f,
+                amplitude * layer.amplitude,
+                mask,
             );
         }
     }

@@ -72,6 +72,15 @@ impl MaterialRules {
         parser.out.root = parser.rule(json)?;
         Ok(parser.out)
     }
+
+    /// Per biome set: the constant its `BiomeCondition` compiles to for a chunk whose biomes
+    /// are all in `possible` (none when not given).
+    pub(crate) fn biome_folds(&self, possible: Option<&[BiomeId]>) -> Vec<Option<bool>> {
+        self.biome_sets
+            .iter()
+            .map(|set| possible.and_then(|possible| set.fold(possible)))
+            .collect()
+    }
 }
 
 struct Parser<'a> {

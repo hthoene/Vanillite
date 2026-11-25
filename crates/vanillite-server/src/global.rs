@@ -54,6 +54,12 @@ pub struct Global {
     pub(crate) tick_rate: std::sync::Mutex<crate::tick_rate::TickRateManager>,
     /// The durations of the last ticks (`/tick query`).
     pub(crate) tick_times: std::sync::Mutex<crate::tick_rate::TickTimes>,
+    /// Vanilla's English translations, for texts of the console and RCON.
+    pub(crate) language: std::collections::HashMap<String, String>,
+    /// `broadcast-console-to-ops`.
+    pub(crate) broadcast_console_to_ops: bool,
+    /// `broadcast-rcon-to-ops`.
+    pub(crate) broadcast_rcon_to_ops: bool,
     /// `force-gamemode`.
     pub(crate) force_game_mode: bool,
     /// The plugins.
@@ -90,6 +96,11 @@ impl Global {
         self.tick_rate
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// `Component.getString` in English, as the console and RCON show texts.
+    pub(crate) fn english(&self, text: &vanillite_protocol::text::Component) -> String {
+        text.to_string_in(&|key| self.language.get(key).cloned())
     }
 
     /// Asks the server to stop after the current tick (`/stop`).

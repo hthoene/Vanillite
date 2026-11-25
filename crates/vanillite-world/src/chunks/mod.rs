@@ -222,6 +222,9 @@ struct Holder {
     unload_at: Option<u64>,
     /// Queued for a scheduling check.
     queued: bool,
+    /// The chunk's stored entities are live (`ChunkLoadStatus.LOADED`); set by the entity
+    /// storage at the end of the level tick, required for scheduled ticks.
+    entities_loaded: bool,
 }
 
 impl Holder {
@@ -648,6 +651,18 @@ impl Chunks {
     /// Whether scheduled ticks run in a chunk (`isPositionTickingWithEntitiesLoaded`).
     pub fn is_block_ticking(&self, pos: ChunkPos) -> bool {
         tick_check(&self.holders, &self.simulation, pos)
+    }
+
+    /// Whether the stored entities of a chunk are live (`areEntitiesLoaded`).
+    pub fn entities_loaded(&self, pos: ChunkPos) -> bool {
+        self.holders.get(&pos).is_some_and(|h| h.entities_loaded)
+    }
+
+    /// Marks the stored entities of a loaded chunk live or not (`ChunkLoadStatus`).
+    pub fn set_entities_loaded(&mut self, pos: ChunkPos, loaded: bool) {
+        if let Some(holder) = self.holders.get_mut(&pos) {
+            holder.entities_loaded = loaded;
+        }
     }
 
     /// The chunks that get random ticks this tick (`forEachBlockTickingChunk`: entity ticking
@@ -1362,7 +1377,8 @@ impl Chunks {
     }
 
     /// Makes a chunk that just became full live: its stored ticks move into the world's tick
-    /// queues and its post-processing marks wait for its neighbours.
+    /// queues (and the chunk is saved again for them) and its post-processing marks wait for
+    /// its neighbours.
     fn promote(&mut self, pos: ChunkPos) {
         let Some(chunk) = self.holders.get_mut(&pos).and_then(|h| h.chunk.as_mut()) else {
             return;
@@ -1378,8 +1394,14 @@ impl Chunks {
             self.post_process.push(pos);
         }
         self.promoted.push(pos);
+        // Stored ticks hold delays relative to the save; the next save writes them anew from
+        // the game time then, even if nothing else changes (the new `LevelChunk` is unsaved).
+        let ticks = !blocks.is_empty() || !fluids.is_empty();
         self.block_ticks.add_container(pos, &blocks, self.game_time);
         self.fluid_ticks.add_container(pos, &fluids, self.game_time);
+        if ticks {
+            self.mark_dirty(pos);
+        }
     }
 
     /// Chunks that became live since the last call (the game loads their block entities).
@@ -2114,7 +2136,8 @@ fn tick_check(
 ) -> bool {
     simulation.level(pos) <= BLOCK_TICKING_LEVEL
         && holders.get(&pos).is_some_and(|h| {
-            h.level <= BLOCK_TICKING_LEVEL
+            h.entities_loaded
+                && h.level <= BLOCK_TICKING_LEVEL
                 && h.chunk
                     .as_ref()
                     .is_some_and(|c| c.status == ChunkStatus::Full)
