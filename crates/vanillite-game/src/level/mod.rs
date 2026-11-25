@@ -325,6 +325,8 @@ pub struct LevelOutput {
 #[derive(Clone)]
 pub struct Generation {
     pub terrain: Arc<vanillite_worldgen::generator::TerrainGenerator>,
+    /// The dimension it generates.
+    pub dimension: String,
     /// `WorldOptions.generateStructures`.
     pub structures: bool,
 }
@@ -408,6 +410,8 @@ pub struct Level {
     /// Stacks blocks hand to the player that used them (`player.getInventory().add`, else
     /// dropped); taken by the player handlers.
     player_gives: Vec<(EntityId, crate::item::ItemStack)>,
+    /// What blocks did to the player that used them; taken by the player handlers.
+    player_effects: Vec<(EntityId, block::PlayerEffect)>,
     /// Statistics and criterion triggers for players (`awardStat`, `CriteriaTriggers`) from
     /// block code; the server applies them after the players' tick.
     player_awards: Vec<(EntityId, crate::advancements::award::Award)>,
@@ -486,6 +490,7 @@ impl Level {
             menu_requests: Vec::new(),
             sign_editors: Vec::new(),
             player_gives: Vec::new(),
+            player_effects: Vec::new(),
             player_awards: Vec::new(),
             maps: None,
             min_y,
@@ -535,6 +540,11 @@ impl Level {
     }
 
     /// The server's map store.
+    pub fn maps_shared(&self) -> Option<Arc<crate::map::Maps>> {
+        self.maps.clone()
+    }
+
+    /// The maps of the server.
     pub fn maps(&self) -> Option<&crate::map::Maps> {
         self.maps.as_deref()
     }
@@ -549,6 +559,16 @@ impl Level {
     /// Takes the stacks blocks handed to players.
     pub fn take_player_gives(&mut self) -> Vec<(EntityId, crate::item::ItemStack)> {
         std::mem::take(&mut self.player_gives)
+    }
+
+    /// A block's effect on the player that used it ([`block::PlayerEffect`]).
+    pub fn player_effect(&mut self, player: EntityId, effect: block::PlayerEffect) {
+        self.player_effects.push((player, effect));
+    }
+
+    /// Takes the effects blocks had on players.
+    pub fn take_player_effects(&mut self) -> Vec<(EntityId, block::PlayerEffect)> {
+        std::mem::take(&mut self.player_effects)
     }
 
     /// `player.awardStat(stat, count)` from block code.
@@ -578,6 +598,14 @@ impl Level {
     pub fn block_entity_changed(&mut self, pos: BlockPos) {
         self.block_entities.touch(pos.chunk());
         self.output.block_entity_updates.push(pos);
+    }
+
+    /// `state.attack(level, pos, player)` of the block at `pos`.
+    pub fn attack_block(&mut self, pos: BlockPos, player: EntityId) {
+        let state = self.block(pos);
+        if let Some(f) = self.behaviours.get(state.block()).attack {
+            f(self, state, pos, player);
+        }
     }
 
     /// `state.useItemOn(stack, level, player, hand, hit)` of the block at `pos`.

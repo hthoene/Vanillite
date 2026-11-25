@@ -108,6 +108,7 @@ fn send_to_viewers(entities: &Entities, id: EntityId, with_self: bool, packet: &
                 entity: viewer,
                 view_center: view.center,
                 view_distance: view.view_distance,
+                sent_radius: 0,
             }
             .sees_chunk(chunk)
                 && dx * dx + dz * dz <= limit * limit

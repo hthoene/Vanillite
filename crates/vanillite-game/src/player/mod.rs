@@ -13,7 +13,9 @@
 pub mod chat;
 pub mod chunks;
 pub mod connection;
+pub mod cooldowns;
 pub mod encode;
+pub mod items;
 pub mod join;
 pub mod movement;
 pub mod play;

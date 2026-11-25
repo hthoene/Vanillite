@@ -48,6 +48,8 @@ final class ScenarioEntities {
   private final ServerLevel level;
   private final Map<Entity, String> names = new IdentityHashMap<>();
   private final Map<String, Entity> byName = new LinkedHashMap<>();
+  /** Frames hold the players' food and hands ({@code "player_state": true}). */
+  boolean playerState;
   private final List<ServerPlayer> players = new ArrayList<>();
 
   ScenarioEntities(ParityServer server, ServerLevel level) {
@@ -170,6 +172,79 @@ final class ScenarioEntities {
     }
   }
 
+  /**
+   * The {@code use} action ({@code ServerPlayerGameMode.useItemOn} after the checks of {@code
+   * handleUseItemOn}) and the {@code attack} action ({@code START_DESTROY_BLOCK}) of a named
+   * player, with the stack of the action put into its hand first.
+   */
+  void use(JsonObject action, boolean attack) throws Exception {
+    net.minecraft.server.level.ServerPlayer p =
+        (net.minecraft.server.level.ServerPlayer) byName.get(action.get("entity").getAsString());
+    JsonArray at = action.getAsJsonArray("pos");
+    BlockPos pos = new BlockPos(at.get(0).getAsInt(), at.get(1).getAsInt(), at.get(2).getAsInt());
+    net.minecraft.core.Direction face =
+        action.has("face")
+            ? net.minecraft.core.Direction.byName(action.get("face").getAsString())
+            : net.minecraft.core.Direction.UP;
+    net.minecraft.world.InteractionHand hand =
+        action.has("hand") && action.get("hand").getAsString().equals("off")
+            ? net.minecraft.world.InteractionHand.OFF_HAND
+            : net.minecraft.world.InteractionHand.MAIN_HAND;
+    if (action.has("item") && action.get("item").getAsString().equals("minecraft:air")) {
+      p.setItemInHand(hand, net.minecraft.world.item.ItemStack.EMPTY);
+    } else if (action.has("item")) {
+      net.minecraft.nbt.CompoundTag tag = new net.minecraft.nbt.CompoundTag();
+      tag.putString("id", action.get("item").getAsString());
+      tag.putInt("count", action.has("count") ? action.get("count").getAsInt() : 1);
+      if (action.has("components")) {
+        tag.put(
+            "components",
+            net.minecraft.nbt.TagParser.parseCompoundFully(action.get("components").getAsString()));
+      }
+      net.minecraft.world.item.ItemStack stack =
+          net.minecraft.world.item.ItemStack.CODEC
+              .parse(
+                  level.registryAccess().createSerializationContext(net.minecraft.nbt.NbtOps.INSTANCE),
+                  tag)
+              .getOrThrow();
+      p.setItemInHand(hand, stack);
+    }
+    if (action.has("food")) {
+      p.getFoodData().setFoodLevel(action.get("food").getAsInt());
+    }
+    boolean sneak = action.has("sneak") && action.get("sneak").getAsBoolean();
+    p.setShiftKeyDown(sneak);
+    if (attack) {
+      p.gameMode.handleBlockBreakAction(
+          pos,
+          net.minecraft.network.protocol.game.ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK,
+          face,
+          level.getMaxY(),
+          0);
+    } else {
+      double[] hit;
+      if (action.has("hit")) {
+        JsonArray h = action.getAsJsonArray("hit");
+        hit = new double[] {h.get(0).getAsDouble(), h.get(1).getAsDouble(), h.get(2).getAsDouble()};
+      } else {
+        hit =
+            new double[] {
+              0.5 + face.getStepX() * 0.5, 0.5 + face.getStepY() * 0.5, 0.5 + face.getStepZ() * 0.5
+            };
+      }
+      // The packet's cursor is a float relative to the block.
+      net.minecraft.world.phys.Vec3 location =
+          new net.minecraft.world.phys.Vec3(
+              pos.getX() + (double) (float) hit[0],
+              pos.getY() + (double) (float) hit[1],
+              pos.getZ() + (double) (float) hit[2]);
+      net.minecraft.world.phys.BlockHitResult result =
+          new net.minecraft.world.phys.BlockHitResult(location, face, pos, false);
+      p.gameMode.useItemOn(p, level, p.getItemInHand(hand), hand, result);
+    }
+    p.setShiftKeyDown(false);
+  }
+
   /** The {@code hurt} action: damage to a named entity, by a named entity or generic. */
   void hurt(JsonObject action) {
     Entity target = byName.get(action.get("entity").getAsString());
@@ -247,6 +322,10 @@ final class ScenarioEntities {
   }
 
   /** {@code ,{...}} with the detail of an entity, or nothing for entities without detail. */
+  private static String hand(net.minecraft.world.item.ItemStack stack) {
+    return "[\"" + BuiltInRegistries.ITEM.getKey(stack.getItem()) + "\"," + stack.getCount() + "]";
+  }
+
   String detail(Entity e) {
     StringBuilder sb = new StringBuilder();
     String name = names.get(e);
@@ -258,6 +337,17 @@ final class ScenarioEntities {
           .append(BuiltInRegistries.ITEM.getKey(item.getItem().getItem()))
           .append("\",\"count\":")
           .append(item.getItem().getCount());
+    }
+    if (playerState && e instanceof Player player) {
+      sb.append(",\"food\":[")
+          .append(player.getFoodData().getFoodLevel())
+          .append(',')
+          .append(Float.floatToRawIntBits(player.getFoodData().getSaturationLevel()))
+          .append("],\"hands\":[")
+          .append(hand(player.getMainHandItem()))
+          .append(',')
+          .append(hand(player.getOffhandItem()))
+          .append(']');
     }
     if (e instanceof AbstractMinecart cart) {
       sb.append(",\"rot\":[")

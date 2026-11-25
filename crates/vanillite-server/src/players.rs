@@ -75,8 +75,9 @@ pub(crate) struct FanOut {
     codec: Codec,
     /// Runs: arena range and the index of the message whose viewers receive it.
     runs: Vec<(u32, u32, u32)>,
-    /// Viewer slot by entity index (`u32::MAX` = no viewer).
-    slot_of: Vec<u32>,
+    /// Generation and viewer slot by entity index (generation 0 = no viewer): one load per
+    /// viewer of a message.
+    slot_of: Vec<(u32, u32)>,
     /// Batches per job, by viewer slot.
     batches: Vec<Vec<Vec<u8>>>,
     /// Size of each batch at the last tick, by job and viewer slot: its capacity this tick.
@@ -102,19 +103,21 @@ impl FanOut {
             .map(|(_, player)| &player.connection.sink)
             .collect();
         let viewers_n = sinks.len();
-        self.slot_of.fill(u32::MAX);
+        self.slot_of.fill((0, u32::MAX));
         for (slot, (id, _)) in entities.players.iter().enumerate() {
             let index = id.raw().index() as usize;
             if self.slot_of.len() <= index {
-                self.slot_of.resize(index + 1, u32::MAX);
+                self.slot_of.resize(index + 1, (0, u32::MAX));
             }
-            self.slot_of[index] = u32::try_from(slot).unwrap_or(u32::MAX);
+            self.slot_of[index] = (
+                id.raw().generation(),
+                u32::try_from(slot).unwrap_or(u32::MAX),
+            );
         }
-        let ids: Vec<EntityId> = entities.players.iter().map(|(id, _)| id).collect();
         let slot_of = &self.slot_of;
         let slot = |viewer: &EntityId| -> usize {
             match slot_of.get(viewer.raw().index() as usize) {
-                Some(&s) if ids.get(s as usize) == Some(viewer) => s as usize,
+                Some(&(generation, s)) if generation == viewer.raw().generation() => s as usize,
                 _ => usize::MAX,
             }
         };
@@ -624,6 +627,8 @@ impl WorldPlayers {
             elytra_movement_check,
         };
         let protection = self.spawn_protection(global);
+        let dimension_name = self.level.dimension.clone();
+        let dimension_name = dimension_name.as_str();
         // The player kind data leaves the level while the packets are handled, so the block
         // handlers can change the level (`setBlock` with its updates) meanwhile. Nothing in
         // between adds or removes players.
@@ -680,6 +685,7 @@ impl WorldPlayers {
                     effects: &mut *blocks.effects,
                     spectators: &spectators,
                     actor: Some((id, aabb)),
+                    dimension: dimension_name,
                 };
                 let hooks =
                     crate::plugins::Hooks::of(&global.plugins, self.level.dimension.as_str());
@@ -687,6 +693,7 @@ impl WorldPlayers {
                     level: &mut level,
                     inventory: &mut player.inventory,
                     xp: Some(&mut player.survival.xp),
+                    food: Some(&mut player.survival.food),
                     recipe_book: Some(&mut player.recipe_book),
                     actor,
                     data: &global.game(),
@@ -938,6 +945,8 @@ impl WorldPlayers {
     /// `broadcastChanges` and equipment changes for other players.
     fn tick_players(&mut self, level: &mut Level, global: &Global, blocks: &mut WorldBlocks<'_>) {
         let protection = self.spawn_protection(global);
+        let dimension_name = self.level.dimension.clone();
+        let dimension_name = dimension_name.as_str();
         // As in `handle_packets`: the players leave the level while it may change.
         let mut players = std::mem::take(&mut level.entities.players);
         let spectators: FxHashSet<EntityId> = players
@@ -951,7 +960,7 @@ impl WorldPlayers {
         // Picked up stacks with a thrower: the picker, the thrower's UUID and `getItem()`.
         let mut thrown: Vec<(EntityId, u128, ItemStack)> = Vec::new();
         for (id, player) in players.iter_mut() {
-            let sink = Arc::clone(&player.connection.sink);
+            let sink = &player.connection.sink;
             if let Some(sequence) = player.connection.play.take_ack() {
                 sink.send(&BlockChangedAck { sequence });
             }
@@ -976,6 +985,7 @@ impl WorldPlayers {
                     effects: &mut *blocks.effects,
                     spectators: &spectators,
                     actor: Some((id, aabb)),
+                    dimension: dimension_name,
                 };
                 let mut drops = Vec::new();
                 let mut hands = Vec::new();
@@ -985,6 +995,7 @@ impl WorldPlayers {
                     level: &mut level,
                     inventory: &mut player.inventory,
                     xp: Some(&mut player.survival.xp),
+                    food: Some(&mut player.survival.food),
                     recipe_book: Some(&mut player.recipe_book),
                     actor,
                     data: &global.game(),
@@ -1049,6 +1060,17 @@ impl WorldPlayers {
                     &mut taken_orbs,
                 );
             }
+            // `Inventory.tick` of maps and lodestone compasses, and the map updates.
+            {
+                let owner = vanillite_game::carried::Owner {
+                    uuid,
+                    pos: actor.pos,
+                    y_rot: actor.y_rot,
+                    dimension: dimension_name,
+                    has_ceiling: dimension_name == "minecraft:the_nether",
+                };
+                vanillite_game::carried::tick(level, owner, player);
+            }
             let sink = &player.connection.sink;
             if player.inventory.container.is_some() {
                 // `containerMenu.broadcastChanges`, then `stillValid`.
@@ -1084,6 +1106,7 @@ impl WorldPlayers {
                         effects: &mut *blocks.effects,
                         spectators: &spectators,
                         actor: Some((id, aabb)),
+                        dimension: dimension_name,
                     };
                     for drop in drops {
                         throw_item(&mut world, &actor, drop);
@@ -1201,6 +1224,14 @@ impl WorldPlayers {
         }
         self.save_player(entities, id);
         self.store_pearls(level, global, uuid);
+        if let Some(p) = level.entities.player_mut(id) {
+            let mut carried = std::mem::take(&mut p.survival.carried_maps);
+            if let Some(maps) = level.maps() {
+                for map in carried.drain(..) {
+                    maps.with(map, |d| d.carrier_gone(uuid));
+                }
+            }
+        }
         drop_menus_on_leave(level, id);
         let entities = &mut level.entities;
         entities.despawn(id);

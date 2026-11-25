@@ -75,6 +75,8 @@ pub enum EntityAction {
     /// `player_command` `OPEN_INVENTORY` while riding: the vehicle's inventory opens
     /// (`HasCustomInventoryScreen`: chest boats).
     OpenVehicleInventory,
+    /// `pick_item_from_entity`: the entity's pick result goes to the hand.
+    PickItem { entity: i32, include_data: bool },
     /// `player_action` `STAB`: a jab with the piercing weapon in the main hand.
     Stab,
 }
@@ -143,6 +145,12 @@ pub enum ChatRequest {
     /// The player started a new, validated chat session; other players learn it through the
     /// tab list.
     Session(ChatSessionData),
+    /// `openItemGui`: the written book in the hand is resolved for the player (selectors,
+    /// scores, NBT), then opened.
+    OpenBook(Hand),
+    /// `LecternBlockEntity.resolveBook`: the written book put on the lectern at the position is
+    /// resolved for the player.
+    ResolveLecternBook(BlockPos),
     /// An operator screen packet; the server checks the permissions.
     Admin(AdminRequest),
 }
@@ -577,6 +585,15 @@ impl Connection {
                         || name == "minecraft:lead"
                         || name.ends_with("minecart");
                     self.play.use_item_on(play, &p, self.sink.as_ref());
+                    // `LecternBlockEntity.setBook` resolves a written book for the player.
+                    let at = BlockPos::new(p.pos.x, p.pos.y, p.pos.z);
+                    if name == "minecraft:written_book"
+                        && let Some(level) = play.level.level_mut()
+                        && let Some(crate::level::BlockEntity::Lectern(l)) = level.block_entity(at)
+                        && crate::book::needs_resolving(&l.book)
+                    {
+                        self.chat.requests.push(ChatRequest::ResolveLecternBook(at));
+                    }
                     if entity_item && self.entity_actions.len() < 16 {
                         self.entity_actions.push(EntityAction::UseItemOn {
                             hand: p.hand,
@@ -632,6 +649,36 @@ impl Connection {
                 }
             }
             ServerboundPlay::PickItemFromBlock(p) => self.pick_item_from_block(p.pos, play),
+            ServerboundPlay::PickItemFromEntity(p) => {
+                if self.entity_actions.len() < 16 {
+                    self.entity_actions.push(EntityAction::PickItem {
+                        entity: p.id,
+                        include_data: p.include_data,
+                    });
+                }
+            }
+            ServerboundPlay::EditBook(p) => {
+                // `handleEditBook`: a hotbar slot or the off hand.
+                let slot = usize::try_from(p.slot)
+                    .ok()
+                    .filter(|&s| s < crate::inventory::HOTBAR || s == crate::inventory::OFFHAND);
+                if let Some(slot) = slot
+                    && let Some(stack) = play.inventory.get_mut(slot)
+                {
+                    match &p.title {
+                        Some(title) => {
+                            if let Some(book) = crate::book::sign(stack, title, chat.name, &p.pages)
+                            {
+                                *stack = book;
+                            }
+                        }
+                        None => crate::book::update_pages(stack, &p.pages),
+                    }
+                }
+            }
+            ServerboundPlay::SelectBundleItem(p) => {
+                self.select_bundle_item(p.slot_id, p.selected_item_index, play);
+            }
             ServerboundPlay::ContainerButtonClick(p) => {
                 self.container_button(p.container_id, p.button_id, play)
             }
@@ -1133,6 +1180,13 @@ impl Connection {
         if let Some(open) = &play.inventory.container {
             if p.container_id == open.state.container_id {
                 self.container_menu_click(p, play);
+                let sounds = play
+                    .inventory
+                    .container
+                    .as_mut()
+                    .map(|c| std::mem::take(&mut c.state.sounds))
+                    .unwrap_or_default();
+                play_bundle_sounds(play, sounds);
             }
             return;
         }
@@ -1159,6 +1213,8 @@ impl Connection {
         play.inventory.menu.suppress_remote = true;
         play.inventory
             .click(p.slot, p.button, p.input, ctx, play.drops);
+        let sounds = std::mem::take(&mut play.inventory.menu.sounds);
+        play_bundle_sounds(play, sounds);
         play.inventory.flush_result_updates(sink);
         play.inventory.receive_predictions(&p.changed, &p.carried);
         play.inventory.menu.suppress_remote = false;
@@ -1166,6 +1222,36 @@ impl Connection {
             play.inventory.broadcast_full_state(sink);
         } else {
             play.inventory.broadcast_changes(sink);
+        }
+    }
+
+    /// `AbstractContainerMenu.setSelectedBundleItemIndex` of the open menu.
+    fn select_bundle_item(&mut self, slot: i32, index: i32, play: &mut PlayContext<'_>) {
+        let Ok(slot) = usize::try_from(slot) else {
+            return;
+        };
+        let stack = if play.inventory.container.is_some() {
+            let pos = play.actor.pos;
+            let Some(level) = play.level.level_mut() else {
+                return;
+            };
+            crate::menu::container::with_view(play.inventory, level, pos, None, |view| {
+                use crate::menu::MenuSlots;
+                (slot < view.slot_count()).then(|| view.item(slot).clone())
+            })
+            .flatten()
+        } else {
+            use crate::menu::MenuSlots;
+            (slot < crate::inventory::MENU_SLOTS).then(|| play.inventory.item(slot).clone())
+        };
+        let Some(stack) = stack else {
+            return;
+        };
+        let selection = play.inventory.bundle_selection;
+        if let Some(mut contents) = crate::bundle::Contents::of(&stack, selection) {
+            contents.toggle_selected(index);
+            play.inventory.bundle_selection =
+                (contents.selected >= 0).then(|| (crate::bundle::key(&stack), contents.selected));
         }
     }
 
@@ -1277,4 +1363,26 @@ fn chat_validation_failed() -> Kick {
         "multiplayer.disconnect.chat_validation_failed",
         vec![],
     )))
+}
+
+/// The bundle sounds of a click (`Entity.playSound` of the player: everyone around but the
+/// player, who predicted them).
+fn play_bundle_sounds(play: &mut PlayContext<'_>, sounds: Vec<crate::bundle::Sound>) {
+    for sound in sounds {
+        let (name, volume, random_pitch) = sound.params();
+        let pitch = if random_pitch {
+            0.8 + play.level.random_float() * 0.4
+        } else {
+            1.0
+        };
+        let id = u16::try_from(crate::survival::sound_event(name).0).unwrap_or(0);
+        play.level.play_sound(
+            Some(play.actor.network_id),
+            play.actor.pos,
+            id,
+            crate::player::world::SoundSource::Players,
+            volume,
+            pitch,
+        );
+    }
 }

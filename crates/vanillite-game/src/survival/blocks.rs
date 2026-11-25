@@ -356,6 +356,9 @@ pub struct Inside {
     pub lava_blocks: u8,
     /// Touches water (`EXTINGUISH`).
     pub water: bool,
+    /// The first water or powder snow cauldron touched: a burning entity takes a level of
+    /// it before the fire goes out (`LayeredCauldronBlock.entityInside`).
+    pub cauldron: Option<BlockPos>,
 }
 
 /// The blocks inside the deflated box of an entity at its current position.
@@ -375,6 +378,16 @@ pub fn inside_blocks(blocks: &dyn BlockAccess, facts: &BlockFacts, aabb: Aabb) -
         };
         if state.is_air() {
             continue;
+        }
+        let block = state.block();
+        if block == vanillite_data::block::ids::LAVA_CAULDRON {
+            // `LavaCauldronBlock.entityInside`: `LAVA_IGNITE` and `lavaHurt`.
+            out.lava_blocks = out.lava_blocks.saturating_add(1);
+        } else if block == vanillite_data::block::ids::WATER_CAULDRON
+            || block == vanillite_data::block::ids::POWDER_SNOW_CAULDRON
+        {
+            out.water = true;
+            out.cauldron.get_or_insert(pos);
         }
         if let Some(damage) = facts.fire_damage(state) {
             out.fire = Some(out.fire.map_or(damage, |d| d.max(damage)));

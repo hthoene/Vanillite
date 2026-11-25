@@ -34,6 +34,12 @@ pub struct ItemInfo {
     pub food: Option<FoodInfo>,
     /// Whether the item has a default `minecraft:blocks_attacks` component (shields).
     pub blocks_attacks: bool,
+    /// The `minecraft:context_int_provider` of the default `minecraft:compostable` component
+    /// (its `layers`), empty if the item cannot be composted.
+    pub compostable: &'static str,
+    /// The `minecraft:jukebox_song` of the default `minecraft:jukebox_playable` component,
+    /// empty if the item is no music disc.
+    pub jukebox_song: &'static str,
 }
 
 /// One entry of a `minecraft:attribute_modifiers` component.

@@ -655,21 +655,17 @@ impl ServerWorld {
     /// Runs the entity tracker over this tick's state and resets the per-tick sync state.
     fn track_entities(&mut self) {
         self.viewers.clear();
-        self.viewers.extend(
-            self.level
-                .entities
-                .players
-                .iter()
-                .map(|(entity, player)| Viewer {
-                    entity,
-                    view_center: player.chunk_view.center,
-                    view_distance: player.chunk_view.view_distance,
-                }),
-        );
         self.entity_updates.clear();
         self.chunks_sent.clear();
         let mut sent = Vec::new();
         for (entity, player) in self.level.entities.players.iter_mut() {
+            let view_center = player.chunk_view.center;
+            self.viewers.push(Viewer {
+                entity,
+                view_center,
+                view_distance: player.chunk_view.view_distance,
+                sent_radius: player.connection.chunks.sent_radius(view_center),
+            });
             player.connection.chunks.take_sent(&mut sent);
             self.chunks_sent
                 .extend(sent.drain(..).map(|pos| (entity, pos)));

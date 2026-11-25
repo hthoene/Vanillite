@@ -30,56 +30,6 @@ pub struct UsingItem {
     pub crossbow: crate::crossbow::UseFlags,
 }
 
-/// `ItemCooldowns` of a player (`ServerItemCooldowns`): per cooldown group (the item's name)
-/// the tick the cooldown started and ends; the client learns of each start and end.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ItemCooldowns {
-    tick_count: i32,
-    groups: Vec<(&'static str, i32, i32)>,
-}
-
-impl ItemCooldowns {
-    /// `isOnCooldown(item)`.
-    pub fn is_on_cooldown(&self, group: &str) -> bool {
-        self.groups
-            .iter()
-            .any(|&(g, _, end)| g == group && end > self.tick_count)
-    }
-
-    /// `addCooldown(group, ticks)` with the `cooldown` packet.
-    pub fn add(&mut self, group: &'static str, ticks: i32, sink: &dyn crate::player::PacketSink) {
-        let (start, end) = (self.tick_count, self.tick_count.wrapping_add(ticks));
-        match self.groups.iter_mut().find(|(g, _, _)| *g == group) {
-            Some(entry) => *entry = (group, start, end),
-            None => self.groups.push((group, start, end)),
-        }
-        send_cooldown(sink, group, ticks);
-    }
-
-    /// `tick`: cooldowns that ended go, and the client hears of it.
-    pub fn tick(&mut self, sink: &dyn crate::player::PacketSink) {
-        self.tick_count = self.tick_count.wrapping_add(1);
-        if self.groups.is_empty() {
-            return;
-        }
-        let now = self.tick_count;
-        self.groups.retain(|&(group, _, end)| {
-            let ended = end <= now;
-            if ended {
-                send_cooldown(sink, group, 0);
-            }
-            !ended
-        });
-    }
-}
-
-fn send_cooldown(sink: &dyn crate::player::PacketSink, group: &str, duration: i32) {
-    sink.send(&vanillite_protocol::packets::play::clientbound::Cooldown {
-        group: group.to_owned(),
-        duration,
-    });
-}
-
 /// Ticks a shield needs before it blocks (`block_delay_seconds` 0.25).
 const SHIELD_DELAY: i32 = 5;
 
@@ -109,8 +59,17 @@ fn use_duration(ents: &Entities, player: EntityId, stack: &ItemStack) -> i32 {
     {
         return 72000;
     }
-    if name == "minecraft:brush" {
+    if name == "minecraft:brush" || crate::bundle::has_contents(stack) {
         return 200;
+    }
+    if name == "minecraft:spyglass" {
+        return 1200;
+    }
+    if stack
+        .component(vanillite_protocol::components::ids::INSTRUMENT)
+        .is_some()
+    {
+        return super::items::instrument_use_ticks(stack);
     }
     let drink = matches!(
         name,
@@ -277,6 +236,17 @@ pub fn tick(ents: &mut Entities, env: &mut Env<'_>, player: EntityId) {
         mark(ents, player);
     }
     let remaining = u.duration.saturating_sub(ticks);
+    if crate::bundle::has_contents(&stack) {
+        // `BundleItem.onUseTick` with Vanilla's remaining ticks before the decrement.
+        super::items::bundle_use_tick(
+            ents,
+            env,
+            player,
+            u.hand,
+            remaining.saturating_add(1),
+            u.duration,
+        );
+    }
     if is_brush(&stack) {
         // `BrushItem.onUseTick` needs the level: [`tick_brushes`]. The brush is no
         // consumable, `completeUsingItem` only stops using it.
@@ -529,6 +499,22 @@ fn finish(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, u: UsingItem
     let id = item::item_id(&stack);
     let name = id.name();
     let pos = ents.store.get(player).map_or(Vec3::ZERO, |e| e.pos());
+    let consumable = id.info().food.is_some()
+        || matches!(
+            name,
+            "minecraft:milk_bucket"
+                | "minecraft:potion"
+                | "minecraft:honey_bottle"
+                | "minecraft:ominous_bottle"
+        );
+    if !consumable {
+        // `Item.finishUsingItem` keeps the stack; the spyglass stops zooming.
+        if name == "minecraft:spyglass" {
+            spyglass_stop(env, player, pos);
+        }
+        finished_event(ents, player);
+        return;
+    }
     let creative = ents
         .player(player)
         .is_some_and(|p| p.game_mode == GameMode::Creative);
@@ -635,6 +621,18 @@ fn finish(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, u: UsingItem
             }
         }
     }
+    // `applyAfterUseComponentSideEffects`: the `use_cooldown` of the used stack.
+    if let Some(p) = ents.player_mut(player) {
+        let sink = std::sync::Arc::clone(&p.connection.sink);
+        p.survival
+            .cooldowns
+            .apply_use_cooldown(&stack, sink.as_ref());
+    }
+    finished_event(ents, player);
+}
+
+/// `ServerPlayer.completeUsingItem`: `entity_event` 9 to the player.
+fn finished_event(ents: &Entities, player: EntityId) {
     if let Some(e) = ents.store.get(player)
         && let Some(p) = ents.player(player)
     {
@@ -643,6 +641,20 @@ fn finish(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, u: UsingItem
             event: 9,
         });
     }
+}
+
+/// `SpyglassItem.stopUsing`: the player's sound for everyone else.
+fn spyglass_stop(env: &mut Env<'_>, player: EntityId, pos: Vec3) {
+    play_sound(
+        env.out,
+        Some(player),
+        pos,
+        "minecraft:item.spyglass.stop_using",
+        SoundSource::Players,
+        1.0,
+        1.0,
+        crate::survival::sound_seed(),
+    );
 }
 
 /// The first arrow (`#arrows`: arrows, tipped and spectral arrows) in the inventory
@@ -901,6 +913,12 @@ pub fn release(
         return;
     };
     let stack = held(ents, player, u.hand);
+    if stack.item == u.item && item::item_id(&stack).name() == "minecraft:spyglass" {
+        let pos = ents.store.get(player).map_or(Vec3::ZERO, |e| e.pos());
+        stop(ents, player);
+        spyglass_stop(env, player, pos);
+        return;
+    }
     if stack.item == u.item && crate::crossbow::is_crossbow(&stack) {
         // `useOnRelease`: one more `updatingUsingItem` (a crossbow loads when released just
         // in time); `releaseUsing` itself changes nothing.

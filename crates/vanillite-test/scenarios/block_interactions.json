@@ -1,0 +1,237 @@
+{
+  "description": "Flower pot potting and unpotting, carving a pumpkin with shears, picking glow berries and sweet berries, the dragon egg teleporting when used and when hit, turning a copper golem statue and hitting a note block.",
+  "tier": "fast",
+  "level_rng": true,
+  "player_state": true,
+  "region": [
+    [
+      -8,
+      -61,
+      -8
+    ],
+    [
+      23,
+      -53,
+      23
+    ]
+  ],
+  "ticks": 12,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        8
+      ],
+      "block": "minecraft:flower_pot"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -60,
+        10
+      ],
+      "block": "minecraft:pumpkin"
+    },
+    {
+      "op": "set",
+      "pos": [
+        10,
+        -58,
+        8
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        10,
+        -59,
+        8
+      ],
+      "block": "minecraft:cave_vines[berries=true]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        9,
+        -60,
+        10
+      ],
+      "block": "minecraft:sweet_berry_bush[age=3]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        6
+      ],
+      "block": "minecraft:dragon_egg"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -60,
+        6
+      ],
+      "block": "minecraft:dragon_egg"
+    },
+    {
+      "op": "set",
+      "pos": [
+        10,
+        -60,
+        10
+      ],
+      "block": "minecraft:copper_golem_statue"
+    },
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -60,
+        11
+      ],
+      "block": "minecraft:note_block"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        8.5,
+        -60,
+        8.5
+      ],
+      "rot": [
+        0,
+        0
+      ],
+      "seed": 1
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        6,
+        -60,
+        8
+      ],
+      "item": "minecraft:dandelion"
+    },
+    {
+      "tick": 2,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        6,
+        -60,
+        8
+      ],
+      "item": "minecraft:air"
+    },
+    {
+      "tick": 3,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        7,
+        -60,
+        10
+      ],
+      "item": "minecraft:shears",
+      "face": "west",
+      "hit": [
+        0.0,
+        0.5,
+        0.5
+      ]
+    },
+    {
+      "tick": 4,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        10,
+        -59,
+        8
+      ],
+      "item": "minecraft:air",
+      "face": "down"
+    },
+    {
+      "tick": 5,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        9,
+        -60,
+        10
+      ],
+      "item": "minecraft:air"
+    },
+    {
+      "tick": 6,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        6,
+        -60,
+        6
+      ],
+      "item": "minecraft:air"
+    },
+    {
+      "tick": 7,
+      "op": "attack",
+      "entity": "steve",
+      "pos": [
+        7,
+        -60,
+        6
+      ],
+      "face": "up"
+    },
+    {
+      "tick": 8,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        10,
+        -60,
+        10
+      ],
+      "item": "minecraft:air"
+    },
+    {
+      "tick": 9,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        10,
+        -60,
+        10
+      ],
+      "item": "minecraft:stick"
+    },
+    {
+      "tick": 10,
+      "op": "attack",
+      "entity": "steve",
+      "pos": [
+        8,
+        -60,
+        11
+      ],
+      "face": "up"
+    }
+  ]
+}

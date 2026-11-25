@@ -260,6 +260,7 @@ impl ToolTable {
 }
 
 /// `ItemStack.matches`: same item, count and components.
+#[inline]
 pub fn matches(a: &ItemStack, b: &ItemStack) -> bool {
     (a.is_empty() && b.is_empty()) || (a.count == b.count && a.same_item_same_components(b))
 }

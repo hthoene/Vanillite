@@ -52,10 +52,14 @@ pub struct GameData {
     pub banner_patterns: crate::menu::BannerPatterns,
     /// The tags of the registries: registry → tag id (without `#`) → entry ids in tag order.
     pub registry_tags: HashMap<String, HashMap<String, Vec<u32>>>,
+    /// The `minecraft:context_int_provider` registry (compostable layers).
+    pub compostables: HashMap<String, crate::block::composter::IntProvider>,
     /// The `minecraft:villager_trade` and `minecraft:trade_set` registries.
     pub trades: crate::trading::data::TradeData,
     /// The `minecraft:jukebox_song` registry, by registry id.
     pub jukebox_songs: Vec<crate::block::jukebox::JukeboxSong>,
+    /// The `minecraft:instrument` registry, by id.
+    pub instruments: Vec<super::items::Instrument>,
 }
 
 impl crate::predicate::EntityTags for GameData {
@@ -214,6 +218,8 @@ pub struct PlayContext<'a> {
     pub inventory: &'a mut PlayerInventory,
     /// The player's experience (`None` in tests).
     pub xp: Option<&'a mut crate::survival::player::Experience>,
+    /// The player's food (`None` in tests).
+    pub food: Option<&'a mut crate::survival::food::FoodData>,
     /// The player's recipe book (`None` in tests).
     pub recipe_book: Option<&'a mut crate::recipe::book::PlayerRecipeBook>,
     /// The player.
@@ -576,6 +582,11 @@ impl Digging {
                 let state = ctx.level.block(pos);
                 let mut progress = 1.0;
                 if !state.is_air() {
+                    if let Some(player) = ctx.actor.entity
+                        && let Some(level) = ctx.level.level_mut()
+                    {
+                        level.attack_block(pos, player);
+                    }
                     progress = destroy_progress(ctx, state);
                 }
                 if !state.is_air() && progress >= 1.0 {
@@ -898,6 +909,11 @@ impl Digging {
                     yaw: ctx.actor.y_rot,
                     face,
                     hit,
+                    infinite: ctx.actor.creative(),
+                    // `canEat(false)`: creative players are invulnerable.
+                    can_eat: ctx.actor.creative()
+                        || ctx.food.as_deref().is_some_and(|f| f.needs_food()),
+                    game_master: ctx.actor.creative() && ctx.actor.permission_level >= 2,
                 };
                 let mut held = match hand {
                     Hand::MainHand => ctx.inventory.selected_item().clone(),
@@ -932,6 +948,7 @@ impl Digging {
                     }
                     _ => (None, false),
                 };
+                apply_player_effects(ctx, hand);
                 self.open_requested(ctx, sink);
                 if let Some(
                     result @ (crate::block::Interaction::Success
@@ -987,6 +1004,60 @@ impl Digging {
             return false;
         }
         let used = item::item_id(&stack);
+        if used == vanillite_data::item::ids::FILLED_MAP
+            && let Some(level) = ctx.level.level_mut()
+            && let Some(ok) = crate::map::use_on_banner(level, &stack, pos)
+        {
+            // `MapItem.useOn` on a banner (any game mode: it runs before `useOn`'s build check
+            // in Vanilla's `ItemStack.useOn` only for the item itself).
+            if ok {
+                ctx.award_stat(Stat::of(StatType::Used, stack.item), 1);
+                ctx.trigger(Event::ItemUsedOnBlock(pos, stack));
+                any_block_use(ctx, hand, pos);
+            }
+            return ok;
+        }
+        if used == vanillite_data::item::ids::COMPASS
+            && ctx.actor.game_mode != GameMode::Adventure
+            && ctx.level.block(pos).block() == vanillite_data::block::ids::LODESTONE
+        {
+            // `CompassItem.useOn`.
+            ctx.level.play_sound(
+                None,
+                Vec3::new(
+                    f64::from(pos.x) + 0.5,
+                    f64::from(pos.y) + 0.5,
+                    f64::from(pos.z) + 0.5,
+                ),
+                u16::try_from(
+                    crate::survival::sound_event("minecraft:item.lodestone_compass.lock").0,
+                )
+                .unwrap_or(0),
+                crate::player::world::SoundSource::Players,
+                1.0,
+                1.0,
+            );
+            let dimension = ctx.level.dimension().to_owned();
+            let creative = ctx.actor.creative();
+            let slot = match hand {
+                Hand::MainHand => ctx.inventory.selected_item_mut(),
+                Hand::OffHand => Some(&mut ctx.inventory.offhand),
+            };
+            let extra =
+                slot.and_then(|s| crate::carried::bind_lodestone(s, &dimension, pos, creative));
+            if let Some(mut compass) = extra
+                && !ctx.inventory.add(None, &mut compass, creative)
+            {
+                ctx.drops.push(Drop {
+                    stack: compass,
+                    thrown: false,
+                });
+            }
+            ctx.award_stat(Stat::of(StatType::Used, stack.item), 1);
+            ctx.trigger(Event::ItemUsedOnBlock(pos, stack));
+            any_block_use(ctx, hand, pos);
+            return true;
+        }
         if used == vanillite_data::item::ids::FLINT_AND_STEEL
             || used == vanillite_data::item::ids::ENDER_EYE
         {
@@ -1331,6 +1402,46 @@ fn any_block_use(ctx: &mut PlayContext<'_>, hand: Hand, pos: BlockPos) {
         Hand::OffHand => ctx.inventory.offhand.clone(),
     };
     ctx.trigger(Event::AnyBlockUse(pos, held));
+}
+
+/// Applies what blocks did to the player during a use ([`crate::block::PlayerEffect`]).
+fn apply_player_effects(ctx: &mut PlayContext<'_>, hand: Hand) {
+    use crate::block::PlayerEffect;
+    let Some(level) = ctx.level.level_mut() else {
+        return;
+    };
+    let effects = level.take_player_effects();
+    for (player, effect) in effects {
+        if Some(player) != ctx.actor.entity {
+            continue;
+        }
+        match effect {
+            PlayerEffect::Stat(stat, count) => ctx.award_stat(stat, count),
+            PlayerEffect::Eat(nutrition, saturation) => {
+                if let Some(food) = ctx.food.as_deref_mut() {
+                    food.eat(&crate::survival::food::FoodProperties {
+                        nutrition,
+                        saturation,
+                        can_always_eat: false,
+                    });
+                }
+            }
+            PlayerEffect::GiveIfMissing(mut stack) => {
+                if !ctx.inventory.contains(&stack) {
+                    ctx.inventory.add(None, &mut stack, true);
+                }
+            }
+            PlayerEffect::SetHand(stack) => {
+                let slot = match hand {
+                    Hand::MainHand => ctx.inventory.selected_item_mut(),
+                    Hand::OffHand => Some(&mut ctx.inventory.offhand),
+                };
+                if let Some(slot) = slot {
+                    *slot = stack;
+                }
+            }
+        }
+    }
 }
 
 /// The statistic a block awards when it opens its menu (`getOpenChestStat`,

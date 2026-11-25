@@ -111,6 +111,8 @@ pub struct PlayerInventory {
     pub(crate) result_updates: Vec<ItemStack>,
     /// Crafting results taken since the server last took them (statistics and triggers).
     pub crafted: Vec<Crafted>,
+    /// The selected item of a bundle: its contents key and index ([`crate::bundle`]).
+    pub bundle_selection: Option<(u64, i32)>,
     /// Statistics and triggers menus awarded since the server last took them.
     pub awards: Vec<crate::advancements::award::Award>,
 }
@@ -130,6 +132,7 @@ impl Default for PlayerInventory {
             container_counter: 0,
             result_updates: Vec::new(),
             crafted: Vec::new(),
+            bundle_selection: None,
             awards: Vec::new(),
         }
     }
@@ -164,6 +167,15 @@ impl PlayerInventory {
         if let Some(slot) = self.get_mut(index) {
             *slot = stack;
         }
+    }
+
+    /// `Inventory.contains(stack)`: a stack of the same item and components anywhere.
+    pub fn contains(&self, stack: &ItemStack) -> bool {
+        self.items
+            .iter()
+            .chain(self.armor.iter())
+            .chain(std::iter::once(&self.offhand))
+            .any(|s| !s.is_empty() && s.same_item_same_components(stack))
     }
 
     /// The selected hotbar stack (`getSelectedItem`).

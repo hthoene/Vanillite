@@ -51,10 +51,11 @@ pub fn throw(
     let Some(p) = ents.player(player) else {
         return false;
     };
-    if p.game_mode == GameMode::Spectator || p.survival.cooldowns.is_on_cooldown(ITEM) {
+    if p.game_mode == GameMode::Spectator || p.survival.cooldowns.is_on_cooldown(stack) {
         return false;
     }
     let creative = p.game_mode == GameMode::Creative;
+    let group = crate::player::cooldowns::group(stack);
     let known = p.connection.movement.known_movement;
     let Some(e) = ents.store.get(player) else {
         return false;
@@ -119,7 +120,9 @@ pub fn throw(
     }
     if let Some(p) = ents.player_mut(player) {
         let sink = std::sync::Arc::clone(&p.connection.sink);
-        p.survival.cooldowns.add(ITEM, COOLDOWN, sink.as_ref());
+        p.survival
+            .cooldowns
+            .add_group(&group, COOLDOWN, sink.as_ref());
     }
     true
 }

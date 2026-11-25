@@ -40,7 +40,7 @@ const FIRE_IMMUNE_TICKS: i32 = 20;
 /// `Attributes.SAFE_FALL_DISTANCE`.
 const SAFE_FALL_DISTANCE: f64 = 3.0;
 /// Player eye height when standing (`Player.STANDING_EYE_HEIGHT`) and the other poses.
-pub(crate) fn eye_height(height: f32) -> f64 {
+pub fn eye_height(height: f32) -> f64 {
     // `EntityDimensions.eyeHeight` of the player's poses: 1.62 standing, 1.27 crouching,
     // 0.4 swimming/gliding, 0.2 sleeping/dying.
     let eye: f32 = if height >= 1.8 {
@@ -244,10 +244,12 @@ pub struct Survival {
     pub stabbed: Vec<(vanillite_world::entity::EntityId, i64)>,
     /// The tick until which the shield is on cool-down (an axe hit it).
     pub shield_disabled_until: i32,
+    /// `cooldowns`.
+    pub cooldowns: crate::player::cooldowns::ItemCooldowns,
+    /// The map ids in the inventory at the last inventory tick.
+    pub carried_maps: Vec<i32>,
     /// The item in the main hand at the last tick (`lastItemInMainHand`).
     pub last_main_hand_item: u16,
-    /// `Player.cooldowns`: item groups the player may not use for a while.
-    pub cooldowns: crate::player::using::ItemCooldowns,
     /// `Abilities.flying`: the player flies (creative or spectator flight).
     pub flying: bool,
     /// `raidOmenPosition` and what the omen effects see of villages and raids.
@@ -327,8 +329,9 @@ impl Default for Survival {
             using_item: None,
             stabbed: Vec::new(),
             shield_disabled_until: 0,
+            cooldowns: crate::player::cooldowns::ItemCooldowns::default(),
+            carried_maps: Vec::new(),
             last_main_hand_item: 0,
-            cooldowns: crate::player::using::ItemCooldowns::default(),
             flying: false,
             raid_omen: crate::raid::PlayerOmen::default(),
             simulate_movement: false,
@@ -1492,11 +1495,6 @@ pub fn do_tick_ai(
         // `ServerPlayer.tick`: `wardenSpawnTracker.tick()`.
         s.warden_spawn_tracker.tick();
     }
-    // `Player.tick`: `cooldowns.tick()`.
-    player
-        .survival
-        .cooldowns
-        .tick(player.connection.sink.as_ref());
     let id = entity.as_ref().id();
     // `Entity.baseTick`: `handlePortal` first.
     let can_use_portal = !player.survival.is_dead_or_dying();
@@ -1692,6 +1690,31 @@ pub fn do_tick_end(
     }
     stats.award(custom::TIME_SINCE_REST, 1);
     let sink = std::sync::Arc::clone(&player.connection.sink);
+    // `Player.tick`: the turtle helmet outside water, then the item cool-downs.
+    if !player.survival.fluids.eye_in_water {
+        let head = player.inventory.equipment(crate::item::EquipmentSlot::Head);
+        if crate::item::item_id(head) == vanillite_data::item::ids::TURTLE_HELMET {
+            let mut host = crate::effect::living::PlayerHost {
+                entity,
+                player,
+                env,
+                players: None,
+            };
+            crate::effect::active::add(
+                &mut host,
+                crate::effect::EffectInstance::with_flags(
+                    crate::effect::MobEffect::WATER_BREATHING,
+                    200,
+                    0,
+                    false,
+                    false,
+                    true,
+                ),
+            );
+            crate::effect::living::sync_player(entity, player, env);
+        }
+    }
+    player.survival.cooldowns.tick(sink.as_ref());
     player.survival.sync(sink.as_ref());
     result
 }
