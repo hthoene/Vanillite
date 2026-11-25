@@ -124,6 +124,9 @@ struct World {
     hardcore: bool,
     started: bool,
     spawned: bool,
+    /// Chunks that arrived before the spawn: the spawn waits for the one at the player, like
+    /// the Java client's level loading screen.
+    early_chunks: FxHashSet<(i32, i32)>,
     pos: [f64; 3],
     yaw: f32,
     pitch: f32,
@@ -1076,6 +1079,7 @@ impl Session {
             hardcore: l.hardcore,
             started: false,
             spawned: false,
+            early_chunks: FxHashSet::default(),
             pos: [0.0; 3],
             yaw: 0.0,
             pitch: 0.0,
@@ -1222,8 +1226,10 @@ impl Session {
         let Some(w) = &mut self.world else {
             return;
         };
-        if w.started && !w.spawned {
+        let own = (floor_i32(w.pos[0]) >> 4, floor_i32(w.pos[2]) >> 4);
+        if w.started && !w.spawned && w.early_chunks.contains(&own) {
             w.spawned = true;
+            w.early_chunks = FxHashSet::default();
             self.send(id::PLAY_STATUS, &bp::play_status(status::PLAYER_SPAWN));
         }
     }
@@ -1275,9 +1281,12 @@ impl Session {
     }
 
     fn chunk(&mut self, x: i32, z: i32, data: &[u8]) {
-        let Some(w) = &self.world else {
+        let Some(w) = &mut self.world else {
             return;
         };
+        if !w.spawned {
+            w.early_chunks.insert((x, z));
+        }
         match chunk::translate(
             x,
             z,

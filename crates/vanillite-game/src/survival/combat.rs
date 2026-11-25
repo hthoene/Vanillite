@@ -174,10 +174,16 @@ impl CombatTracker {
                 .hover(HoverEvent::ShowText(Component::text("MCPE-28723")));
                 Component::translatable(format!("{key}.message"), vec![victim, link])
             }
-            _ => Component::translatable(
-                format!("death.attack.{}", killing_type.msg_id),
-                vec![victim],
-            ),
+            _ => match killing.source.cause_name {
+                Some(killer) => Component::translatable(
+                    format!("death.attack.{}", killing_type.msg_id),
+                    vec![victim, Component::translatable(killer, vec![])],
+                ),
+                None => Component::translatable(
+                    format!("death.attack.{}", killing_type.msg_id),
+                    vec![victim],
+                ),
+            },
         }
     }
 }

@@ -72,6 +72,10 @@ pub struct ServerWorld {
     scratch: Vec<ChunkPos>,
     /// Weather, lightning and the players' survival.
     pub(crate) survival: crate::survival::WorldSurvival,
+    /// Mobs: their tick, the players' attacks and spawning.
+    pub(crate) mobs: crate::mobs::WorldMobs,
+    /// Loading and saving the entities of chunks.
+    entity_io: crate::entity_io::EntityChunks,
     /// Player ids of the tick (block effects).
     player_scratch: Vec<vanillite_world::entity::EntityId>,
     /// The dimension's saved data (`<dimension>/data/`: world border, chunk tickets, raids,
@@ -108,6 +112,8 @@ impl ServerWorld {
         players: WorldPlayers,
         mut level: Level,
         survival: crate::survival::WorldSurvival,
+        mobs: crate::mobs::WorldMobs,
+        entity_io: crate::entity_io::EntityChunks,
         data: vanillite_storage::saved_data::SavedDataStore,
     ) -> ServerWorld {
         // Entity randoms are `RandomSource.create()`: seeded from the clock, not the world seed.
@@ -138,6 +144,8 @@ impl ServerWorld {
             item_random: XoroshiroRandom::new(seed),
             scratch: Vec::new(),
             survival,
+            mobs,
+            entity_io,
             player_scratch: Vec::new(),
             data,
             arrivals: Vec::new(),
@@ -221,8 +229,42 @@ impl ServerWorld {
     /// Places a player that joined the server into this world.
     pub(crate) fn join_player(&mut self, global: &Global, arrival: crate::players::Arrival) {
         let weather = self.survival.join_weather();
+        let (uuid, name) = (arrival.uuid, arrival.profile.name.clone());
         self.players
             .join(&mut self.level.entities, global, self.id, arrival, &weather);
+        let plugins = global.plugins.clone();
+        plugins.player_join(&mut crate::plugins::PluginWorld(self), uuid, &name);
+    }
+
+    /// The UUIDs and positions of this world's players.
+    fn player_positions(&self) -> Vec<(u128, [f64; 3])> {
+        let entities = &self.level.entities;
+        entities
+            .players
+            .iter()
+            .filter_map(|(id, _)| {
+                let e = entities.store.get(id)?;
+                let pos = e.pos();
+                Some((e.uuid(), [pos.x, pos.y, pos.z]))
+            })
+            .collect()
+    }
+
+    /// Spawns a mob like `/summon` (`finalizeSpawn` with the command reason).
+    pub(crate) fn summon(
+        &mut self,
+        kind: vanillite_game::mob::Kind,
+        pos: vanillite_base::Vec3,
+        global: &Global,
+    ) {
+        let difficulty = global.level.difficulty;
+        vanillite_game::mob::spawn::summon(
+            &mut self.level,
+            self.mobs.table(),
+            kind,
+            pos,
+            difficulty,
+        );
     }
 
     /// This world's id.
@@ -253,6 +295,7 @@ impl ServerWorld {
         self.level.chunks.set_max_relights(
             usize::try_from(rules.simulation.max_relights_per_tick).unwrap_or(usize::MAX),
         );
+        self.mobs.set_rules(&rules);
         self.rules = rules;
     }
 
@@ -264,6 +307,10 @@ impl ServerWorld {
     /// connection tick.
     pub(crate) fn tick(&mut self, ctx: &mut TickContext<'_>) {
         debug_assert_eq!(ctx.world, self.id);
+        let plugins = ctx.global.plugins.clone();
+        let positions = plugins
+            .wants(vanillite_abi::event::PLAYERS_MOVED)
+            .then(|| self.player_positions());
         let started = Instant::now();
         self.players.handle_packets(
             &mut self.level,
@@ -277,9 +324,27 @@ impl ServerWorld {
             },
         );
         self.effects.flush(&self.level.entities);
+        if let Some(before) = positions {
+            let moves: Vec<(u128, [f64; 3], [f64; 3])> = self
+                .player_positions()
+                .into_iter()
+                .filter_map(|(uuid, to)| {
+                    let (_, from) = before.iter().find(|(u, _)| *u == uuid)?;
+                    (*from != to).then_some((uuid, *from, to))
+                })
+                .collect();
+            plugins.players_moved(&mut crate::plugins::PluginWorld(self), &moves);
+        }
+        plugins.run_world_tasks(&mut crate::plugins::PluginWorld(self), ctx.tick);
         self.survival.moves(
             &mut self.level.entities,
             &self.level.chunks,
+            ctx.global,
+            &self.dimension,
+        );
+        self.mobs.attacks(
+            &mut self.level,
+            &mut self.survival,
             ctx.global,
             &self.dimension,
         );
@@ -302,15 +367,27 @@ impl ServerWorld {
         self.update_player_tickets();
         let level = &mut self.level;
         level.tick_chunk_runtime();
+        self.entity_io.tick(level);
         level.post_process();
         if ctx.runs_normally {
+            let spawn_point = (self.dimension == "minecraft:overworld").then(|| {
+                let (pos, _) = self.players.level.spawn;
+                vanillite_base::BlockPos::containing(pos.x, pos.y, pos.z)
+            });
+            self.mobs.spawn(
+                level,
+                &self.survival,
+                ctx.global,
+                &self.dimension,
+                spawn_point,
+            );
             level.tick_chunks(&mut self.scratch);
             level.run_block_events();
         }
         level.set_handling_tick(false);
         if ctx.runs_normally {
             self.ticks += 1;
-            self.tick_entities();
+            self.tick_entities(ctx.global);
             self.level.tick_block_entities();
         }
         self.players.tick_entities(&mut self.level.entities);
@@ -387,17 +464,10 @@ impl ServerWorld {
 
     /// `entityTickList.forEach(tickNonPassenger)`: every entity in tick order; players move
     /// through their packets.
-    fn tick_entities(&mut self) {
+    fn tick_entities(&mut self, global: &Global) {
+        self.mobs
+            .tick_entities(&mut self.level, &mut self.survival, global, &self.dimension);
         let level = &mut self.level;
-        let mut cursor = level.entities.store.tick_cursor();
-        while let Some(id) = level.entities.store.next_to_tick(&mut cursor) {
-            let Some(mut entity) = level.entities.store.get_mut(id) else {
-                continue;
-            };
-            entity.set_old_pos();
-            let kind = entity.as_ref().kind();
-            vanillite_game::entities::tick_entity(level, id, kind);
-        }
         let min_y = level.min_y();
         crate::blocks::tick_items(
             &mut level.entities,
@@ -452,6 +522,7 @@ impl ServerWorld {
         self.players.save_all(&self.level.entities);
         if !skip_chunks {
             self.data.save();
+            self.entity_io.save_all(&mut self.level, flush);
             self.level.save(flush);
         }
     }

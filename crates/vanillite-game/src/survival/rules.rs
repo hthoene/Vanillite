@@ -116,6 +116,10 @@ impl Rule {
     pub const IMMEDIATE_RESPAWN: Rule = Rule(17);
     pub const KEEP_INVENTORY: Rule = Rule(18);
     pub const LIMITED_CRAFTING: Rule = Rule(20);
+    pub const BLOCK_EXPLOSION_DROP_DECAY: Rule = Rule(4);
+    pub const MAX_ENTITY_CRAMMING: Rule = Rule(26);
+    pub const MOB_DROPS: Rule = Rule(29);
+    pub const MOB_EXPLOSION_DROP_DECAY: Rule = Rule(30);
     pub const MOB_GRIEFING: Rule = Rule(31);
     pub const NATURAL_HEALTH_REGENERATION: Rule = Rule(32);
     pub const PLAYER_MOVEMENT_CHECK: Rule = Rule(33);
@@ -126,6 +130,9 @@ impl Rule {
     pub const RESPAWN_RADIUS: Rule = Rule(42);
     pub const SHOW_DEATH_MESSAGES: Rule = Rule(45);
     pub const SPAWN_MOBS: Rule = Rule(47);
+    pub const SPAWN_MONSTERS: Rule = Rule(48);
+    pub const TNT_EXPLOSION_DROP_DECAY: Rule = Rule(56);
+    pub const UNIVERSAL_ANGER: Rule = Rule(57);
 
     /// The rule named `name`, with or without the `minecraft:` namespace.
     pub fn by_name(name: &str) -> Option<Rule> {

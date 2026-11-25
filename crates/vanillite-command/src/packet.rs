@@ -83,7 +83,13 @@ impl<C: Copy> Dispatcher<C> {
                     NodeKind::Argument { name, ty } => WireKind::Argument {
                         name: name.clone(),
                         parser: ty.wire(),
-                        suggestions: n.suggests.map(|_| Identifier::vanilla("ask_server")),
+                        suggestions: n.suggests.map(|s| {
+                            // Providers named `minecraft:…` run on the client (Vanilla's
+                            // `SuggestionProviders`); the others ask the server.
+                            Identifier::vanilla(
+                                s.strip_prefix("minecraft:").unwrap_or("ask_server"),
+                            )
+                        }),
                     },
                 };
                 Some(WireNode {

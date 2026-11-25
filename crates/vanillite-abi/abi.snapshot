@@ -1,0 +1,269 @@
+abi 1.0
+type Status = i32
+type PluginId = u32
+type EntryFn = unsafeextern"C"fn()->*constPluginInfo
+type LoadFn = unsafeextern"C"fn(host:*constHostApi,plugin:PluginId)->Status
+type LifecycleFn = unsafeextern"C"fn(ctx:*mutContext)->Status
+type SaveStateFn = unsafeextern"C"fn(sink:*constByteSink)->Status
+type RestoreStateFn = unsafeextern"C"fn(state:Bytes)->Status
+type ByteSinkFn = unsafeextern"C"fn(state:*mutc_void,data:Bytes)
+type EventFn = unsafeextern"C"fn(user:*mutc_void,ctx:*mutContext,event:*mutEventHeader)->Status
+type TaskFn = unsafeextern"C"fn(user:*mutc_void,ctx:*mutContext)->Status
+type DropFn = unsafeextern"C"fn(user:*mutc_void)
+type CommandFn = unsafeextern"C"fn(user:*mutc_void,ctx:*mutContext,invocation:*constCommandInvocation,result:*muti32,)->Status
+type SuggestFn = unsafeextern"C"fn(user:*mutc_void,ctx:*mutContext,request:*constSuggestRequest,sink:*constSuggestSink,)->Status
+type SuggestAddFn = unsafeextern"C"fn(state:*mutc_void,text:Str)
+type PermissionFn = unsafeextern"C"fn(user:*mutc_void,player:Uuid,node:Str,out:*mutu32)->Status
+type GeneratorCreateFn = unsafeextern"C"fn(user:*mutc_void,world:*constWorldInfo,instance:*mut*mutc_void,)->Status
+type GeneratorRunFn = unsafeextern"C"fn(instance:*mutc_void,chunks:*constGenChunk,count:usize,stride:usize,)->Status
+type GeneratorDestroyFn = unsafeextern"C"fn(instance:*mutc_void)
+const status::OK: Status = 0
+const status::ERROR: Status = 1
+const status::UNSUPPORTED: Status = 2
+const status::NOT_FOUND: Status = 3
+const status::WRONG_OWNER: Status = 4
+const status::INVALID_ARGUMENT: Status = 5
+const status::PANICKED: Status = 6
+const status::WRONG_PHASE: Status = 7
+const status::DISABLED: Status = 8
+const panic_strategy::UNWIND: u32 = 0
+const panic_strategy::ABORT: u32 = 1
+const log_level::ERROR: u32 = 1
+const log_level::WARN: u32 = 2
+const log_level::INFO: u32 = 3
+const log_level::DEBUG: u32 = 4
+const log_level::TRACE: u32 = 5
+const text_format::PLAIN: u32 = 0
+const text_format::JSON: u32 = 1
+const event::PLAYER_JOIN: u32 = 1
+const event::PLAYER_LEAVE: u32 = 2
+const event::PLAYER_CHAT: u32 = 3
+const event::PLAYER_COMMAND: u32 = 4
+const event::PLAYERS_MOVED: u32 = 5
+const event::ENTITY_DAMAGE: u32 = 6
+const event::BLOCK_BREAK: u32 = 7
+const event::BLOCK_PLACE: u32 = 8
+const priority::LOWEST: i32 = -200
+const priority::LOW: i32 = -100
+const priority::NORMAL: i32 = 0
+const priority::HIGH: i32 = 100
+const priority::HIGHEST: i32 = 200
+const priority::MONITOR: i32 = 1000
+const owner::GLOBAL: u32 = 0
+const owner::WORLD: u32 = 1
+const owner::LOCATION: u32 = 2
+const owner::ENTITY: u32 = 3
+const owner::BACKGROUND: u32 = 4
+const node::LITERAL: u32 = 0
+const node::ARGUMENT: u32 = 1
+const arg::BOOL: u32 = 0
+const arg::INTEGER: u32 = 1
+const arg::LONG: u32 = 2
+const arg::FLOAT: u32 = 3
+const arg::DOUBLE: u32 = 4
+const arg::WORD: u32 = 5
+const arg::STRING: u32 = 6
+const arg::GREEDY_STRING: u32 = 7
+const arg::PLAYER: u32 = 8
+const arg::PLAYERS: u32 = 9
+const arg::BLOCK_POS: u32 = 10
+const sender::CONSOLE: u32 = 0
+const sender::PLAYER: u32 = 1
+const permission::DENY: u32 = 0
+const permission::ALLOW: u32 = 1
+const permission::UNDEFINED: u32 = 2
+const limits::ROOT: u32 = 4294967295
+const limits::NO_WORLD: u32 = 4294967295
+struct Str size=16 align=8
+  ptr: *constu8 @0
+  len: usize @8
+struct Bytes size=16 align=8
+  ptr: *constu8 @0
+  len: usize @8
+struct StrBuf size=24 align=8
+  ptr: *mutu8 @0
+  cap: usize @8
+  len: usize @16
+struct Uuid size=16 align=8
+  hi: u64 @0
+  lo: u64 @8
+struct BlockPos size=12 align=4
+  x: i32 @0
+  y: i32 @4
+  z: i32 @8
+struct Vec3 size=24 align=8
+  x: f64 @0
+  y: f64 @8
+  z: f64 @16
+struct PluginInfo size=88 align=8
+  size: u32 @0
+  abi_major: u16 @4
+  abi_minor: u16 @6
+  panic_strategy: u32 @8
+  data_version: i32 @12
+  sdk_version: Str @16
+  target: Str @32
+  load: LoadFn @48
+  enable: LifecycleFn @56
+  disable: LifecycleFn @64
+  save_state: Option<SaveStateFn> @72
+  restore_state: Option<RestoreStateFn> @80
+struct ByteSink size=24 align=8
+  size: u32 @0
+  state: *mutc_void @8
+  write: ByteSinkFn @16
+struct EventHeader size=12 align=4
+  size: u32 @0
+  kind: u32 @4
+  cancelled: u32 @8
+struct PlayerEvent size=56 align=8
+  header: EventHeader @0
+  player: Uuid @16
+  name: Str @32
+  world: u32 @48
+struct PlayerTextEvent size=64 align=8
+  header: EventHeader @0
+  player: Uuid @16
+  name: Str @32
+  text: Str @48
+struct PlayerMove size=64 align=8
+  player: Uuid @0
+  from: Vec3 @16
+  to: Vec3 @40
+struct PlayersMovedEvent size=40 align=8
+  header: EventHeader @0
+  world: u32 @12
+  moves: *constPlayerMove @16
+  count: usize @24
+  stride: usize @32
+struct EntityDamageEvent size=72 align=8
+  header: EventHeader @0
+  world: u32 @12
+  entity: Uuid @16
+  entity_type: Str @32
+  damage_type: Str @48
+  amount: f32 @64
+struct BlockEvent size=64 align=8
+  header: EventHeader @0
+  world: u32 @12
+  player: Uuid @16
+  pos: BlockPos @32
+  state: Str @48
+struct Owner size=40 align=8
+  kind: u32 @0
+  world: u32 @4
+  pos: BlockPos @8
+  entity: Uuid @24
+struct TaskSpec size=88 align=8
+  size: u32 @0
+  owner: Owner @8
+  delay: u64 @48
+  period: u64 @56
+  run: TaskFn @64
+  drop: Option<DropFn> @72
+  user: *mutc_void @80
+struct CommandNode size=88 align=8
+  parent: u32 @0
+  kind: u32 @4
+  name: Str @8
+  arg_type: u32 @24
+  has_min: u32 @28
+  min: f64 @32
+  has_max: u32 @40
+  max: f64 @48
+  level: u32 @56
+  permission: Str @64
+  executes: u32 @80
+  suggests: u32 @84
+struct CommandSpec size=56 align=8
+  size: u32 @0
+  nodes: *constCommandNode @8
+  count: usize @16
+  stride: usize @24
+  execute: CommandFn @32
+  suggest: Option<SuggestFn> @40
+  user: *mutc_void @48
+struct Sender size=56 align=8
+  kind: u32 @0
+  player: Uuid @8
+  world: u32 @24
+  pos: Vec3 @32
+struct CommandArg size=88 align=8
+  name: Str @0
+  kind: u32 @16
+  int: i64 @24
+  float: f64 @32
+  text: Str @40
+  pos: BlockPos @56
+  players: *constUuid @72
+  player_count: usize @80
+struct CommandInvocation size=104 align=8
+  size: u32 @0
+  command: u32 @4
+  sender: Sender @8
+  line: Str @64
+  args: *constCommandArg @80
+  arg_count: usize @88
+  arg_stride: usize @96
+struct SuggestRequest size=104 align=8
+  size: u32 @0
+  provider: u32 @4
+  sender: Sender @8
+  remaining: Str @64
+  args: *constCommandArg @80
+  arg_count: usize @88
+  arg_stride: usize @96
+struct SuggestSink size=24 align=8
+  size: u32 @0
+  state: *mutc_void @8
+  add: SuggestAddFn @16
+struct WorldInfo size=40 align=8
+  size: u32 @0
+  dimension: Str @8
+  min_y: i32 @24
+  height: u32 @28
+  seed: i64 @32
+struct GenChunk size=24 align=8
+  x: i32 @0
+  z: i32 @4
+  blocks: *mutu32 @8
+  len: usize @16
+struct ChunkGeneratorProvider size=40 align=8
+  size: u32 @0
+  data_version: i32 @4
+  user: *mutc_void @8
+  create: GeneratorCreateFn @16
+  generate: GeneratorRunFn @24
+  destroy: GeneratorDestroyFn @32
+struct HostApi size=232 align=8
+  size: u32 @0
+  abi_major: u16 @4
+  abi_minor: u16 @6
+  log: unsafeextern"C"fn(PluginId,u32,Str) @8
+  data_dir: unsafeextern"C"fn(PluginId,*mutStrBuf)->Status @16
+  config_load: unsafeextern"C"fn(PluginId,Str)->Status @24
+  config_string: unsafeextern"C"fn(PluginId,Str,*mutStrBuf)->Status @32
+  config_int: unsafeextern"C"fn(PluginId,Str,*muti64)->Status @40
+  config_float: unsafeextern"C"fn(PluginId,Str,*mutf64)->Status @48
+  config_bool: unsafeextern"C"fn(PluginId,Str,*mutu32)->Status @56
+  server_rule: unsafeextern"C"fn(PluginId,Str,*mutStrBuf)->Status @64
+  online_players: unsafeextern"C"fn(PluginId,*mutUuid,usize,*mutusize)->Status @72
+  player_name: unsafeextern"C"fn(PluginId,Uuid,*mutStrBuf)->Status @80
+  player_world: unsafeextern"C"fn(PluginId,Uuid,*mutu32)->Status @88
+  player_send_message: unsafeextern"C"fn(PluginId,Uuid,Str,u32)->Status @96
+  player_kick: unsafeextern"C"fn(PluginId,Uuid,Str,u32)->Status @104
+  player_has_permission: unsafeextern"C"fn(PluginId,Uuid,Str,*mutu32)->Status @112
+  broadcast_message: unsafeextern"C"fn(PluginId,Str,u32)->Status @120
+  world_name: unsafeextern"C"fn(PluginId,u32,*mutStrBuf)->Status @128
+  block_state_id: unsafeextern"C"fn(PluginId,Str,*mutu32)->Status @136
+  run_command: unsafeextern"C"fn(PluginId,Str)->Status @144
+  schedule: unsafeextern"C"fn(PluginId,*constTaskSpec,*mutu64)->Status @152
+  cancel_task: unsafeextern"C"fn(PluginId,u64)->Status @160
+  subscribe: unsafeextern"C"fn(PluginId,u32,i32,EventFn,*mutc_void)->Status @168
+  register_command: unsafeextern"C"fn(PluginId,*constCommandSpec)->Status @176
+  set_permission_provider: unsafeextern"C"fn(PluginId,PermissionFn,*mutc_void)->Status @184
+  provide_chunk_generator: unsafeextern"C"fn(PluginId,*constChunkGeneratorProvider)->Status @192
+  owner_world: unsafeextern"C"fn(*mutContext,*mutu32)->Status @200
+  block_get: unsafeextern"C"fn(*mutContext,u32,BlockPos,*mutStrBuf)->Status @208
+  block_set: unsafeextern"C"fn(*mutContext,u32,BlockPos,Str)->Status @216
+  player_position: unsafeextern"C"fn(*mutContext,Uuid,*mutVec3)->Status @224

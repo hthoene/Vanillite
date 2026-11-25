@@ -201,6 +201,8 @@ pub struct LevelOutput {
     pub sounds: Vec<Sound>,
     /// Explosions.
     pub explosions: Vec<explosion::ExplosionEvent>,
+    /// The damage of the living entities explosions hit, for the mob system.
+    pub explosion_hurts: Vec<explosion::ExplosionHurt>,
     /// Experience to award at a position (`ExperienceOrb.award`; orbs are not simulated yet).
     pub experience: Vec<(vanillite_base::Vec3, i32)>,
     /// Block entities whose client data changed (`sendBlockUpdated` of a block entity).
@@ -392,6 +394,11 @@ impl Level {
 
     /// The server-wide network id counter.
     pub fn network_ids(&self) -> &NetworkIds {
+        &self.network_ids
+    }
+
+    /// The server-wide network id counter, shared.
+    pub fn network_ids_arc(&self) -> &Arc<NetworkIds> {
         &self.network_ids
     }
 

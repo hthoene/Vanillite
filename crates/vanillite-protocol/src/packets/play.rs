@@ -12,6 +12,8 @@ pub mod serverbound {
 
     crate::common_serverbound!(Play);
 
+    pub use super::mobs::Attack;
+
     /// `configuration_acknowledged`: the client entered configuration again.
     #[derive(Debug, Clone, PartialEq, Eq, Packet)]
     #[packet(state = Play, dir = Serverbound, name = "configuration_acknowledged")]
@@ -532,6 +534,7 @@ pub mod clientbound {
     pub use super::survival::*;
 }
 
+mod mobs;
 mod survival;
 
 /// Clientbound play packets with hand-written codecs (variable layouts).
