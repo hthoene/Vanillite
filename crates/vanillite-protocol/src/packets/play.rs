@@ -13,6 +13,10 @@ pub mod serverbound {
 
     crate::common_serverbound!(Play);
 
+    pub use super::admin::{
+        BlockEntityTagQuery, ChangeDifficultyServerbound, ChangeGameMode, EntityTagQuery,
+        GameRuleEntry, LockDifficulty, PlayerAbilitiesServerbound, SetGameRule, TeleportToEntity,
+    };
     pub use super::mobs::{Attack, Interact, MoveVehicle, PaddleBoat};
 
     /// `configuration_acknowledged`: the client entered configuration again.
@@ -177,20 +181,6 @@ pub mod serverbound {
     #[derive(Debug, Clone, PartialEq, Eq, Packet)]
     #[packet(state = Play, dir = Serverbound, name = "player_input", bucket = "movement")]
     pub struct PlayerInput(pub Input);
-
-    /// `player_abilities`: the client starts or stops flying (flag 2, `FLAG_FLYING`).
-    #[derive(Debug, Clone, PartialEq, Eq, Packet)]
-    #[packet(state = Play, dir = Serverbound, name = "player_abilities", bucket = "movement")]
-    pub struct PlayerAbilities {
-        pub flags: u8,
-    }
-
-    impl PlayerAbilities {
-        /// `isFlying`.
-        pub fn is_flying(&self) -> bool {
-            self.flags & 2 != 0
-        }
-    }
 
     varint_enum! {
         /// Action of `player_command`.
@@ -555,6 +545,7 @@ pub mod clientbound {
         pub head_y_rot: i8,
     }
 
+    pub use super::admin::{GameRuleValues, TagQuery};
     pub use super::boss::*;
     pub use super::entities::*;
     pub use super::hud::*;
@@ -567,6 +558,7 @@ pub mod clientbound {
     pub use super::survival::*;
 }
 
+mod admin;
 mod boss;
 mod hud;
 mod level;

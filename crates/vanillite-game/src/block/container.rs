@@ -559,6 +559,7 @@ pub fn pre_remove_side_effects(level: &mut Level, pos: BlockPos, entity: &BlockE
         BlockEntity::Campfire(c) => &c.items,
         BlockEntity::ChiseledBookshelf(b) => &b.items,
         BlockEntity::DecoratedPot(p) => std::slice::from_ref(&p.item),
+        BlockEntity::Shelf(s) => &s.items,
         _ => return,
     };
     let items: Vec<ItemStack> = items.iter().filter(|s| !s.is_empty()).cloned().collect();
@@ -580,9 +581,8 @@ pub fn drop_item_stack(level: &mut Level, pos: BlockPos, mut stack: ItemStack) {
     while !stack.is_empty() {
         let n = level.random().next_int_bounded(21) + 10;
         let part = stack.split(n);
-        // `new ItemEntity(level, x, y, z, stack)` draws a velocity, replaced right after.
-        level.random().next_double();
-        level.random().next_double();
+        // `new ItemEntity(level, x, y, z, stack)` draws its first velocity from the entity's
+        // own random, not the level's; it is replaced right after.
         let triangle = |level: &mut Level, mode: f64| {
             let a = level.random().next_double();
             let b = level.random().next_double();

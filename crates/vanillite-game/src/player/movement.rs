@@ -75,6 +75,10 @@ pub struct MoveContext<'a> {
     pub runs_normally: bool,
     /// The world's movement rules.
     pub rules: &'a MovementRules,
+    /// The `player_movement_check` game rule.
+    pub movement_check: bool,
+    /// The `elytra_movement_check` game rule.
+    pub elytra_movement_check: bool,
 }
 
 /// Per-connection movement state.
@@ -382,8 +386,11 @@ impl Movement {
         Ok(())
     }
 
+    /// `shouldCheckPlayerMovement`: the game rules, and the server's own switches on top.
     fn should_check_movement(ctx: MoveContext<'_>, fall_flying: bool) -> bool {
-        ctx.rules.too_fast_check && (!fall_flying || ctx.rules.elytra_too_fast_check)
+        ctx.movement_check
+            && ctx.rules.too_fast_check
+            && (!fall_flying || (ctx.elytra_movement_check && ctx.rules.elytra_too_fast_check))
     }
 
     /// `handlePlayerPositionChange` without vehicles, sleeping and block collision.

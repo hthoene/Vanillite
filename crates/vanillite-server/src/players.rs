@@ -25,7 +25,6 @@ use vanillite_game::player::{
 };
 use vanillite_game::stats::{Stat, StatType, StatsCounter, custom};
 use vanillite_game::survival::player::Survival;
-use vanillite_game::survival::rules::Rule;
 use vanillite_nbt::{List, Tag};
 use vanillite_net::{Latency, Outbound};
 use vanillite_protocol::SharedPacket;
@@ -73,8 +72,9 @@ pub(crate) struct FanOut {
     codec: Codec,
     /// Runs: arena range and the index of the message whose viewers receive it.
     runs: Vec<(u32, u32, u32)>,
-    /// Viewer slot by entity index (`u32::MAX` = no viewer).
-    slot_of: Vec<u32>,
+    /// Generation and viewer slot by entity index (generation 0 = no viewer): one load per
+    /// viewer of a message.
+    slot_of: Vec<(u32, u32)>,
     /// Batches per job, by viewer slot.
     batches: Vec<Vec<Vec<u8>>>,
     /// Size of each batch at the last tick, by job and viewer slot: its capacity this tick.
@@ -100,19 +100,21 @@ impl FanOut {
             .map(|(_, player)| &player.connection.sink)
             .collect();
         let viewers_n = sinks.len();
-        self.slot_of.fill(u32::MAX);
+        self.slot_of.fill((0, u32::MAX));
         for (slot, (id, _)) in entities.players.iter().enumerate() {
             let index = id.raw().index() as usize;
             if self.slot_of.len() <= index {
-                self.slot_of.resize(index + 1, u32::MAX);
+                self.slot_of.resize(index + 1, (0, u32::MAX));
             }
-            self.slot_of[index] = u32::try_from(slot).unwrap_or(u32::MAX);
+            self.slot_of[index] = (
+                id.raw().generation(),
+                u32::try_from(slot).unwrap_or(u32::MAX),
+            );
         }
-        let ids: Vec<EntityId> = entities.players.iter().map(|(id, _)| id).collect();
         let slot_of = &self.slot_of;
         let slot = |viewer: &EntityId| -> usize {
             match slot_of.get(viewer.raw().index() as usize) {
-                Some(&s) if ids.get(s as usize) == Some(viewer) => s as usize,
+                Some(&(generation, s)) if generation == viewer.raw().generation() => s as usize,
                 _ => usize::MAX,
             }
         };
@@ -392,11 +394,17 @@ impl WorldPlayers {
         weather: &[vanillite_protocol::packets::play::clientbound::GameEvent],
         state: &join::LevelPackets,
     ) {
-        let survival = arrival
+        let mut survival = arrival
             .saved
             .as_ref()
             .map(|saved| Survival::load(&saved.other))
             .unwrap_or_default();
+        // `loadGameTypes` → `updatePlayerAbilities`: creative keeps the saved flying state.
+        match arrival.game_mode {
+            GameMode::Spectator => survival.flying = true,
+            GameMode::Survival | GameMode::Adventure => survival.flying = false,
+            GameMode::Creative => {}
+        }
         let (pos, rot, on_ground) = match &arrival.saved {
             Some(saved) => (
                 Vec3::new(saved.pos[0], saved.pos[1], saved.pos[2]),
@@ -451,7 +459,6 @@ impl WorldPlayers {
             .and_then(Tag::as_i64)
             .and_then(|v| i32::try_from(v).ok())
             .and_then(game_mode_by_id);
-        let flying = join::flying_in(arrival.game_mode, saved.is_some_and(load_flying));
         let tags = saved.map(load_tags).unwrap_or_default();
         let motion = saved.map_or(Vec3::ZERO, load_motion);
         let icon = saved
@@ -470,7 +477,6 @@ impl WorldPlayers {
             profile: arrival.profile,
             game_mode: arrival.game_mode,
             previous_game_mode,
-            flying,
             client: arrival.client,
             chunk_view: ChunkView {
                 center,
@@ -517,17 +523,17 @@ impl WorldPlayers {
             pos.y,
             pos.z
         );
-        let immediate_respawn = global.level.rules().bool(Rule::IMMEDIATE_RESPAWN);
+        let rules = global.level.rules().clone();
         join::send_login(
             sink.as_ref(),
             &self.level,
             network_id,
             player,
             global.chat.enforce_secure,
-            !immediate_respawn,
+            &rules,
         );
         sink.send(&crate::survival::change_difficulty(&global.level));
-        join::send_abilities(sink.as_ref(), player);
+        join::send_abilities(sink.as_ref(), player.game_mode, player.survival.flying);
         let Some(global_arc) = global.arc() else {
             return;
         };
@@ -620,9 +626,19 @@ impl WorldPlayers {
         world: crate::world::WorldId,
         blocks: &mut WorldBlocks<'_>,
     ) {
+        let (movement_check, elytra_movement_check) = {
+            use vanillite_game::survival::rules::Rule;
+            let game_rules = global.level.rules();
+            (
+                game_rules.bool(Rule::PLAYER_MOVEMENT_CHECK),
+                game_rules.bool(Rule::ELYTRA_MOVEMENT_CHECK),
+            )
+        };
         let ctx = MoveContext {
             runs_normally,
             rules: &rules.movement,
+            movement_check,
+            elytra_movement_check,
         };
         let protection = self.spawn_protection(global);
         // The player kind data leaves the level while the packets are handled, so the block
@@ -660,7 +676,7 @@ impl WorldPlayers {
                 sprinting: flags.contains(EntityFlags::SPRINTING),
                 client: None,
                 respawn: false,
-                flying: None,
+                flying: player.survival.flying,
             };
             let mut state = before.clone();
             let mut actor = actor_of(
@@ -688,6 +704,7 @@ impl WorldPlayers {
                     level: &mut level,
                     inventory: &mut player.inventory,
                     xp: Some(&mut player.survival.xp),
+                    food: Some(&mut player.survival.food),
                     recipe_book: Some(&mut player.recipe_book),
                     actor,
                     data: &global.game(),
@@ -720,10 +737,6 @@ impl WorldPlayers {
                 handled
             };
             swings.extend(hands.into_iter().map(|h| (id, h)));
-            // `handlePlayerAbilities`.
-            if let Some(flying) = state.flying {
-                player.flying = flying && join::may_fly(player.game_mode);
-            }
             // `player-idle-timeout` (`ServerGamePacketListenerImpl.tick`; not while the end
             // credits show).
             let idle_minutes = u64::try_from(global.access.idle_timeout()).unwrap_or(0);
@@ -762,11 +775,12 @@ impl WorldPlayers {
             }
             entity.set_flags(EntityFlags::ON_GROUND, body.on_ground);
             entity.set_flags(EntityFlags::SPRINTING, state.sprinting);
-            if state.shift_key_down != before.shift_key_down {
+            player.survival.flying = state.flying;
+            if state.shift_key_down != before.shift_key_down || state.flying != before.flying {
                 // `setShiftKeyDown`, and the pose `Player.updatePlayerPose` picks (without the
-                // collision test, which needs blocks).
+                // collision test, which needs blocks): flying players do not crouch.
                 entity.set_flags(EntityFlags::CROUCHING, state.shift_key_down);
-                let pose = if state.shift_key_down {
+                let pose = if state.shift_key_down && !state.flying {
                     Pose::Crouching
                 } else {
                     Pose::Standing
@@ -955,7 +969,7 @@ impl WorldPlayers {
         // Picked up stacks with a thrower: the picker, the thrower's UUID and `getItem()`.
         let mut thrown: Vec<(EntityId, u128, ItemStack)> = Vec::new();
         for (id, player) in players.iter_mut() {
-            let sink = Arc::clone(&player.connection.sink);
+            let sink = &player.connection.sink;
             if let Some(sequence) = player.connection.play.take_ack() {
                 sink.send(&BlockChangedAck { sequence });
             }
@@ -989,6 +1003,7 @@ impl WorldPlayers {
                     level: &mut level,
                     inventory: &mut player.inventory,
                     xp: Some(&mut player.survival.xp),
+                    food: Some(&mut player.survival.food),
                     recipe_book: Some(&mut player.recipe_book),
                     actor,
                     data: &global.game(),
@@ -1313,7 +1328,7 @@ impl WorldPlayers {
         }
         let abilities = Abilities {
             mode: player.game_mode,
-            flying: player.flying,
+            flying: player.survival.flying,
         };
         // `PlayerList.save`: the statistics and advancements files with the data.
         self.store
@@ -1389,7 +1404,12 @@ impl Abilities {
         let spectator = self.mode == GameMode::Spectator;
         out.insert("invulnerable", Tag::Byte(i8::from(creative || spectator)));
         out.insert("flying", Tag::Byte(i8::from(self.flying)));
-        out.insert("mayfly", Tag::Byte(i8::from(join::may_fly(self.mode))));
+        out.insert(
+            "mayfly",
+            Tag::Byte(i8::from(
+                vanillite_game::survival::player::Abilities::of(self.mode).mayfly,
+            )),
+        );
         out.insert("instabuild", Tag::Byte(i8::from(creative)));
         // `isBlockPlacingRestricted`.
         out.insert(
@@ -1407,14 +1427,6 @@ impl Abilities {
         }
         out
     }
-}
-
-/// `Abilities.flying` of a player data file.
-fn load_flying(data: &vanillite_nbt::Compound) -> bool {
-    matches!(
-        data.get("abilities"),
-        Some(Tag::Compound(c)) if matches!(c.get("flying"), Some(Tag::Byte(b)) if *b != 0)
-    )
 }
 
 /// `Entity.load`'s `Tags`.

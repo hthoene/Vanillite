@@ -1,0 +1,165 @@
+{
+  "description": "A player eats cake slices, puts a candle on a whole cake, eats a candle cake (the candle drops), puts out lit candles and a lit candle cake by hand, and cannot eat when full.",
+  "tier": "fast",
+  "level_rng": true,
+  "player_state": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -57,
+      15
+    ]
+  ],
+  "ticks": 9,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        8
+      ],
+      "block": "minecraft:cake"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -60,
+        10
+      ],
+      "block": "minecraft:cake"
+    },
+    {
+      "op": "set",
+      "pos": [
+        10,
+        -60,
+        8
+      ],
+      "block": "minecraft:candle_cake"
+    },
+    {
+      "op": "set",
+      "pos": [
+        10,
+        -60,
+        10
+      ],
+      "block": "minecraft:candle[candles=2,lit=true]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        9,
+        -60,
+        6
+      ],
+      "block": "minecraft:red_candle_cake[lit=true]"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        8.5,
+        -60,
+        8.5
+      ],
+      "rot": [
+        0,
+        0
+      ],
+      "seed": 1
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        6,
+        -60,
+        8
+      ],
+      "item": "minecraft:air",
+      "food": 10
+    },
+    {
+      "tick": 2,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        6,
+        -60,
+        8
+      ]
+    },
+    {
+      "tick": 3,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        7,
+        -60,
+        10
+      ],
+      "item": "minecraft:candle",
+      "count": 2
+    },
+    {
+      "tick": 4,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        10,
+        -60,
+        10
+      ]
+    },
+    {
+      "tick": 5,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        9,
+        -60,
+        6
+      ],
+      "hit": [
+        0.5,
+        1.0,
+        0.5
+      ]
+    },
+    {
+      "tick": 6,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        6,
+        -60,
+        8
+      ],
+      "food": 20
+    },
+    {
+      "tick": 7,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        10,
+        -60,
+        8
+      ],
+      "item": "minecraft:air"
+    }
+  ]
+}

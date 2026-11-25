@@ -1,0 +1,16 @@
+{
+  "description": "With tnt_explodes off, a TNT block next to a redstone block does not prime and a summoned primed TNT burns out without an explosion: the blocks around stay.",
+  "tier": "fast",
+  "rules": {
+    "tnt_explodes": "false"
+  },
+  "region": [[0, 0, 0], [5, 3, 5]],
+  "ticks": 20,
+  "setup": [],
+  "actions": [
+    {"tick": 1, "op": "command", "command": "fill 0 0 0 5 0 5 minecraft:stone"},
+    {"tick": 1, "op": "command", "command": "setblock 1 1 1 minecraft:tnt"},
+    {"tick": 2, "op": "command", "command": "setblock 2 1 1 minecraft:redstone_block"},
+    {"tick": 3, "op": "command", "command": "summon minecraft:tnt 3.5 1 3.5 {fuse:5,Motion:[0.0d,0.0d,0.0d]}"}
+  ]
+}

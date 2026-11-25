@@ -23,8 +23,8 @@ pub mod world;
 
 pub use chunks::{ChunkSource, PlayerChunks};
 pub use connection::{
-    ChatContext, ChatRequest, Connection, EntityAction, Handled, PlayerChatState, PlayerState,
-    SignedCommand, VehicleInput, effective_view_distance,
+    AdminRequest, ChatContext, ChatRequest, Connection, EntityAction, Handled, PlayerChatState,
+    PlayerState, SignedCommand, VehicleInput, effective_view_distance,
 };
 pub use movement::{Body, Kick, MoveContext, MoveRequest, Movement};
 pub use sink::PacketSink;
@@ -113,8 +113,6 @@ pub struct PlayerData {
     pub game_mode: GameMode,
     /// `previousPlayerGameType`: the game mode before the last change.
     pub previous_game_mode: Option<GameMode>,
-    /// `Abilities.flying`.
-    pub flying: bool,
     /// Client settings.
     pub client: ClientInformation,
     /// Loaded chunks on the client.

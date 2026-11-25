@@ -40,7 +40,7 @@ mod world_format;
 mod world_setup;
 mod world_updates;
 
-pub use blocks::{ItemScratch, ItemSettings, game_data, tick_item};
+pub use blocks::{ItemScratch, ItemSettings, LevelEffects, WorldLevel, game_data, tick_item};
 pub use clock::Clock;
 pub use commands::run_command_on_level;
 pub use compute::{Compute, ComputePool, InlineScheduler, Job, Scheduler, Scope};

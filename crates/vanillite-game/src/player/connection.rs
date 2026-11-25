@@ -45,9 +45,8 @@ pub struct PlayerState {
     pub client: Option<ClientInformation>,
     /// The client asked to respawn (`client_command` `PERFORM_RESPAWN`).
     pub respawn: bool,
-    /// The client started or stopped flying (`player_abilities`); `handlePlayerAbilities`
-    /// applies it where the player may fly.
-    pub flying: Option<bool>,
+    /// `Abilities.flying`.
+    pub flying: bool,
 }
 
 /// An attack or interaction of a player with an entity, by network id.
@@ -144,6 +143,30 @@ pub enum ChatRequest {
     /// The player started a new, validated chat session; other players learn it through the
     /// tab list.
     Session(ChatSessionData),
+    /// An operator screen packet; the server checks the permissions.
+    Admin(AdminRequest),
+}
+
+/// The packets of the operator screens, handled by the server in packet order with the chat
+/// requests (Vanilla's `ServerGamePacketListenerImpl.handleChangeDifficulty` and friends).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AdminRequest {
+    /// `change_difficulty` with the raw difficulty id.
+    ChangeDifficulty(i32),
+    /// `lock_difficulty`.
+    LockDifficulty(bool),
+    /// `change_game_mode` (F3+F4) with the raw game mode id.
+    ChangeGameMode(i32),
+    /// `set_game_rule`: rule keys and serialized values.
+    SetGameRules(Vec<(String, String)>),
+    /// `client_command` `REQUEST_GAMERULE_VALUES`.
+    RequestGameRuleValues,
+    /// `block_entity_tag_query` (F3+I on a block).
+    BlockEntityTagQuery { transaction_id: i32, pos: BlockPos },
+    /// `entity_tag_query` (F3+I on an entity).
+    EntityTagQuery { transaction_id: i32, entity_id: i32 },
+    /// `teleport_to_entity`: the spectator menu teleport to the entity with this UUID.
+    TeleportToEntity(u128),
 }
 
 /// A player's chat state.
@@ -406,8 +429,9 @@ impl Connection {
                         sink.send(&stats.award_packet());
                     }
                 }
-                // Game rule values come later.
-                ClientCommandAction::RequestGameRuleValues => {}
+                ClientCommandAction::RequestGameRuleValues => {
+                    self.admin(AdminRequest::RequestGameRuleValues);
+                }
             },
             ServerboundPlay::SeenAdvancements(p) => {
                 // `handleSeenAdvancements`: an opened tab of a known advancement.
@@ -477,7 +501,6 @@ impl Connection {
             ServerboundPlay::CommandSuggestion(p) => {
                 self.chat.suggestion = Some((p.id, p.command));
             }
-            ServerboundPlay::PlayerAbilities(p) => state.flying = Some(p.is_flying()),
             ServerboundPlay::PlayerInput(p) => {
                 if self.movement.has_client_loaded() {
                     state.shift_key_down = p.0.shift;
@@ -628,6 +651,39 @@ impl Connection {
                     crate::block::sign::update_text(level, pos, uuid, p.front, &p.lines);
                 }
             }
+            // `handlePlayerAbilities`.
+            ServerboundPlay::PlayerAbilities(p) => {
+                state.flying = p.is_flying()
+                    && crate::survival::player::Abilities::of(play.actor.game_mode).mayfly;
+            }
+            ServerboundPlay::ChangeDifficulty(p) => {
+                self.admin(AdminRequest::ChangeDifficulty(p.difficulty));
+            }
+            ServerboundPlay::LockDifficulty(p) => {
+                self.admin(AdminRequest::LockDifficulty(p.locked));
+            }
+            ServerboundPlay::ChangeGameMode(p) => self.admin(AdminRequest::ChangeGameMode(p.mode)),
+            ServerboundPlay::SetGameRule(p) => {
+                let entries = p
+                    .entries
+                    .into_iter()
+                    .map(|e| (e.rule.to_string(), e.value))
+                    .collect();
+                self.admin(AdminRequest::SetGameRules(entries));
+            }
+            ServerboundPlay::BlockEntityTagQuery(p) => {
+                self.admin(AdminRequest::BlockEntityTagQuery {
+                    transaction_id: p.transaction_id,
+                    pos: BlockPos::new(p.pos.x, p.pos.y, p.pos.z),
+                });
+            }
+            ServerboundPlay::EntityTagQuery(p) => self.admin(AdminRequest::EntityTagQuery {
+                transaction_id: p.transaction_id,
+                entity_id: p.entity_id,
+            }),
+            ServerboundPlay::TeleportToEntity(p) => {
+                self.admin(AdminRequest::TeleportToEntity(p.uuid.0));
+            }
             // The server never asks the client to reconfigure yet.
             ServerboundPlay::ConfigurationAcknowledged(_) => {
                 return Err(Kick(Box::new(Component::translatable(
@@ -647,6 +703,14 @@ impl Connection {
             | ServerboundPlay::Unhandled { .. } => {}
         }
         Ok(())
+    }
+
+    /// Queues an operator screen request. The queue is bounded like the other per-tick
+    /// request lists; requests beyond the bound are dropped.
+    fn admin(&mut self, request: AdminRequest) {
+        if self.chat.requests.len() < 64 {
+            self.chat.requests.push(ChatRequest::Admin(request));
+        }
     }
 
     /// `handlePlayerAction`.
