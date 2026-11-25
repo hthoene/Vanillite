@@ -1229,6 +1229,29 @@ impl FamilyHooks for Hooks {
         0.0
     }
 
+    fn before_tick(t: &mut Tick<'_, '_>) {
+        // `LivingEntity.tick`: out of a bed that is gone; sleepers look straight.
+        if let Some(bed) = vs(t.mob_ref()).sleeping_pos {
+            if sleep_height(t.level.block(bed)).is_none() {
+                stop_sleeping(t);
+            } else {
+                let mut e = t.core_mut();
+                let mut rot = e.as_ref().rot();
+                rot.x_rot = 0.0;
+                e.set_rot(rot);
+            }
+        }
+    }
+
+    fn hurt_filter(h: &mut Hurt<'_, '_>, amount: f32) -> Option<f32> {
+        // `hurtServer`: a hit wakes a sleeper.
+        if h.ents.mob(h.target).is_some_and(is_sleeping) {
+            let mut t = crate::mob::fam::brainy::hurt_tick(h);
+            stop_sleeping(&mut t);
+        }
+        Some(amount)
+    }
+
     fn after_tick(t: &mut Tick<'_, '_>) {
         // `Villager.tick` after `super.tick()`.
         let s = state_mut(t.mob());
@@ -1311,6 +1334,7 @@ impl FamilyHooks for Hooks {
             }
         }
         release_all_pois(&mut t);
+        stop_sleeping(&mut t);
         merchant::stop_trading(&mut t);
         if let Some(killer) = source.cause {
             killed_by_zombie(&mut t, killer);
