@@ -167,6 +167,8 @@ kinds! {
     Wither "wither" WITHER Boss;
     EnderDragon "ender_dragon" ENDER_DRAGON Boss;
     Warden "warden" WARDEN Boss;
+    Villager "villager" VILLAGER Village;
+    WanderingTrader "wandering_trader" WANDERING_TRADER Village;
 }
 
 /// The default sounds of a kind (`minecraft:entity.<name>.<suffix>`).

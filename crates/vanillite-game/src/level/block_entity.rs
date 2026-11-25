@@ -848,6 +848,7 @@ impl Level {
             self.write_block_entities(chunk);
         }
         self.write_all_entities();
+        self.write_all_poi();
         self.chunks.save_all(flush);
     }
 }

@@ -468,6 +468,7 @@ impl WorldMobs {
         env: Environment,
         players: &[(EntityId, Vec3)],
     ) {
+        level.flush_poi_changes();
         use vanillite_game::mob::fam::illager::patrol::{self, PatrolInput};
         use vanillite_game::mob::fam::undead::phantom;
         let rest = |id: EntityId| {
@@ -532,6 +533,7 @@ impl WorldMobs {
         dimension: &str,
     ) {
         self.ticks += 1;
+        level.flush_poi_changes();
         let state = &global.level;
         let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
         let rules = state.rules().clone();

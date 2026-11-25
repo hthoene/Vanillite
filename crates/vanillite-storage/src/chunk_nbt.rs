@@ -393,6 +393,7 @@ impl Codec {
             fluid_ticks,
             post_processing,
             entities: Vec::new(),
+            poi: None,
             extra,
             generation: None,
         })
@@ -997,6 +998,39 @@ pub fn write_entities(pos: ChunkPos, entities: &[Arc<[u8]>]) -> io::Result<Compo
     root.insert("DataVersion", DATA_VERSION);
     root.insert("Position", Tag::IntArray(vec![pos.x, pos.z]));
     root.insert("Entities", List(list));
+    Ok(root)
+}
+
+/// Decodes a POI record (`SectionStorage` data of `PoiManager`): the root without
+/// `DataVersion` as binary network NBT, unknown tags kept.
+pub fn read_poi(pos: ChunkPos, mut root: Compound) -> io::Result<Arc<[u8]>> {
+    let version = root.get("DataVersion").and_then(Tag::as_i64).unwrap_or(0);
+    if version > i64::from(DATA_VERSION) {
+        return Err(invalid(format!(
+            "POI of chunk {pos:?} have data version {version}, newer than this server \
+             ({DATA_VERSION})"
+        )));
+    }
+    root.remove("DataVersion");
+    let mut nbt = Vec::new();
+    vanillite_nbt::write::write_network_compound(&root, &mut nbt).map_err(nbt_err)?;
+    Ok(nbt.into())
+}
+
+/// Encodes the POI of a chunk (the root of [`read_poi`]) as a POI record with the current
+/// `DataVersion`.
+pub fn write_poi(pos: ChunkPos, poi: &[u8]) -> io::Result<Compound> {
+    let mut root = if poi.is_empty() {
+        Compound::new()
+    } else {
+        match vanillite_nbt::read::read_network(&mut &poi[..], &mut Budget::file())
+            .map_err(nbt_err)?
+        {
+            Some(Tag::Compound(c)) => c,
+            _ => return Err(invalid(format!("POI of chunk {pos:?} are no compound"))),
+        }
+    };
+    root.insert("DataVersion", DATA_VERSION);
     Ok(root)
 }
 

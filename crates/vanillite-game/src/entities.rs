@@ -81,6 +81,11 @@ pub struct Entities {
     pub missiles: Dense<crate::mob::missile::MissileData>,
     /// Minecart kind data (every type of [`crate::minecart::MinecartKind`]).
     pub minecarts: Dense<crate::minecart::MinecartData>,
+    /// The points of interest of the world's live chunks (`ServerLevel.getPoiManager`): here,
+    /// so mob ticks can claim and release tickets while the entities are out of the level.
+    pub poi: crate::poi::PoiManager,
+    /// The raids of the world (`ServerLevel.getRaids`), next to the POI for the same reason.
+    pub raids: crate::raid::Raids,
 }
 
 /// Who rides what (`Entity.vehicle`, `Entity.passengers`).

@@ -354,6 +354,13 @@ pub struct Level {
     seed: i64,
     /// What spawner blocks read of this tick's rules and sky (set by the world each tick).
     pub spawner_env: crate::block::spawner::SpawnerEnv,
+    /// POI changes of block changes made while the entities (with the POI manager) were out
+    /// of the level; applied by [`Level::flush_poi_changes`].
+    poi_changes: Vec<(
+        BlockPos,
+        Option<crate::poi::PoiType>,
+        Option<crate::poi::PoiType>,
+    )>,
 }
 
 impl std::fmt::Debug for Level {
@@ -415,7 +422,9 @@ impl Level {
             max_y,
             seed,
             spawner_env: crate::block::spawner::SpawnerEnv::default(),
+            poi_changes: Vec::new(),
         };
+        level.entities.poi = crate::poi::PoiManager::new_live();
         // Chunks that are visible already load their entities.
         level.apply_visibility();
         level
@@ -945,8 +954,34 @@ impl Level {
                 self.update_neighbour_shapes(state, pos, neighbour_flags, limit - 1);
                 self.update_indirect_neighbour_shapes(state, pos, neighbour_flags, limit - 1);
             }
+            // `updatePOIOnBlockStateChange`.
+            let (old_poi, new_poi) = (
+                crate::poi::PoiType::of_state(old),
+                crate::poi::PoiType::of_state(state),
+            );
+            if old_poi != new_poi {
+                self.poi_changes.push((pos, old_poi, new_poi));
+                self.flush_poi_changes();
+            }
         }
         true
+    }
+
+    /// Applies the POI changes of block changes to the POI manager (`remove`, then `add`, as
+    /// the server tasks of `updatePOIOnBlockStateChange` run); kept while the entities are out
+    /// of the level.
+    pub fn flush_poi_changes(&mut self) {
+        if self.poi_changes.is_empty() || !self.entities.poi.live {
+            return;
+        }
+        for (pos, old, new) in std::mem::take(&mut self.poi_changes) {
+            if old.is_some() {
+                self.entities.poi.remove(pos);
+            }
+            if let Some(ty) = new {
+                self.entities.poi.add(pos, ty);
+            }
+        }
     }
 
     /// `removeBlock(pos, movedByPiston)`: the block becomes the fluid it holds.

@@ -216,6 +216,8 @@ struct Holder {
     entities_dirty: bool,
     /// The chunk has an entities record in the store (an empty list deletes it).
     entities_stored: bool,
+    /// The POI changed since the last save; set through [`Holder::touch_poi`].
+    poi_dirty: bool,
     /// The load request while the chunk is read.
     loading: Option<Token>,
     /// Tick from which an unneeded chunk may be unloaded.
@@ -233,7 +235,7 @@ impl Holder {
     /// save round.
     fn touch(&mut self, pos: ChunkPos, changed: &mut Vec<ChunkPos>) {
         if !self.dirty {
-            if !self.entities_dirty {
+            if !self.entities_dirty && !self.poi_dirty {
                 changed.push(pos);
             }
             self.dirty = true;
@@ -243,16 +245,26 @@ impl Holder {
     /// Marks the chunk's entities changed, like [`Holder::touch`].
     fn touch_entities(&mut self, pos: ChunkPos, changed: &mut Vec<ChunkPos>) {
         if !self.entities_dirty {
-            if !self.dirty {
+            if !self.dirty && !self.poi_dirty {
                 changed.push(pos);
             }
             self.entities_dirty = true;
         }
     }
 
+    /// Marks the chunk's POI changed, like [`Holder::touch`].
+    fn touch_poi(&mut self, pos: ChunkPos, changed: &mut Vec<ChunkPos>) {
+        if !self.poi_dirty {
+            if !self.dirty && !self.entities_dirty {
+                changed.push(pos);
+            }
+            self.poi_dirty = true;
+        }
+    }
+
     /// Whether anything is unsaved.
     fn unsaved(&self) -> bool {
-        self.dirty || self.entities_dirty
+        self.dirty || self.entities_dirty || self.poi_dirty
     }
 }
 
@@ -264,6 +276,8 @@ struct Snapshot {
     blocks: bool,
     /// Write the entities record (delete it if the list is empty).
     entities: bool,
+    /// Write the POI record (delete it if there is none).
+    poi: bool,
 }
 
 /// A load waiting for the store: the chunk and the entities record.
@@ -272,23 +286,23 @@ struct PendingLoad {
     pos: ChunkPos,
     chunk: Option<StoreResult>,
     entities: Option<StoreResult>,
+    poi: Option<StoreResult>,
 }
 
-/// A chunk read between ticks with its stored entities, waiting for the next tick.
-type LoadedChunk = (
-    ChunkPos,
-    Box<ProtoChunk>,
+/// The stored entities and POI of a loaded chunk.
+type LoadedRecords = (
     io::Result<Option<Vec<Arc<[u8]>>>>,
+    io::Result<Option<Arc<[u8]>>>,
 );
+
+/// A chunk read between ticks with its stored entities, waiting for the next tick.
+type LoadedChunk = (ChunkPos, Box<ProtoChunk>, LoadedRecords);
 
 /// A finished background job.
 enum Done {
-    /// A chunk was read (`None`: never saved) with its stored entities (`None`: no record).
-    Loaded(
-        ChunkPos,
-        io::Result<Option<Box<ProtoChunk>>>,
-        io::Result<Option<Vec<Arc<[u8]>>>>,
-    ),
+    /// A chunk was read (`None`: never saved) with its stored entities and POI (`None`: no
+    /// record).
+    Loaded(ChunkPos, io::Result<Option<Box<ProtoChunk>>>, LoadedRecords),
     Stepped {
         status: ChunkStatus,
         targets: Vec<ProtoChunk>,
@@ -852,18 +866,19 @@ impl Chunks {
                     }
                     return;
                 };
-                if index == 0 {
-                    load.chunk = Some(result);
-                } else {
-                    load.entities = Some(result);
+                match index {
+                    0 => load.chunk = Some(result),
+                    1 => load.entities = Some(result),
+                    _ => load.poi = Some(result),
                 }
-                if load.chunk.is_none() || load.entities.is_none() {
+                if load.chunk.is_none() || load.entities.is_none() || load.poi.is_none() {
                     return;
                 }
                 let Some(PendingLoad {
                     pos,
                     chunk: Some(chunk),
                     entities: Some(entities),
+                    poi: Some(poi),
                 }) = self.loads.remove(&token)
                 else {
                     return;
@@ -873,6 +888,7 @@ impl Chunks {
                 }
                 if matches!(chunk, StoreResult::Cancelled)
                     || matches!(entities, StoreResult::Cancelled)
+                    || matches!(poi, StoreResult::Cancelled)
                 {
                     self.in_flight -= 1;
                     if let Some(holder) = self.holders.get_mut(&pos) {
@@ -882,11 +898,13 @@ impl Chunks {
                     return;
                 }
                 let needs_decode = matches!(chunk, StoreResult::Record(..))
-                    || matches!(entities, StoreResult::Record(..));
+                    || matches!(entities, StoreResult::Record(..))
+                    || matches!(poi, StoreResult::Record(..));
                 if !needs_decode {
                     let chunk = load_result(chunk).map(|_| None);
                     let entities = load_result(entities).map(|_| None);
-                    self.apply_done(Done::Loaded(pos, chunk, entities));
+                    let poi = load_result(poi).map(|_| None);
+                    self.apply_done(Done::Loaded(pos, chunk, (entities, poi)));
                     return;
                 }
                 let codec = Arc::clone(&self.slots.codec);
@@ -905,7 +923,13 @@ impl Chunks {
                                 .map(|(meta, bytes)| codec.decode_entities(pos, &meta, &bytes))
                                 .transpose()
                         });
-                        tx.send(Done::Loaded(pos, chunk, entities));
+                        let poi = load_result(poi).and_then(|record| {
+                            Ok(record
+                                .map(|(meta, bytes)| codec.decode_poi(pos, &meta, &bytes))
+                                .transpose()?
+                                .flatten())
+                        });
+                        tx.send(Done::Loaded(pos, chunk, (entities, poi)));
                     }),
                 );
             }
@@ -935,7 +959,7 @@ impl Chunks {
         &mut self,
         pos: ChunkPos,
         result: io::Result<Option<Box<ProtoChunk>>>,
-        entities: io::Result<Option<Vec<Arc<[u8]>>>>,
+        (entities, poi): LoadedRecords,
     ) {
         let mut chunk = match result {
             Ok(Some(chunk)) => *chunk,
@@ -966,6 +990,15 @@ impl Chunks {
                 false
             }
         };
+        match poi {
+            Ok(poi) => chunk.poi = poi,
+            Err(e) => log::error!(
+                "Couldn't load the POI of chunk {}, {} in {}: {e}",
+                pos.x,
+                pos.z,
+                self.info.dimension
+            ),
+        }
         let mut dirty = chunk.status == ChunkStatus::Empty;
         // Stored light that is not trusted is computed again (Vanilla: `isLightOn`).
         if chunk.status > ChunkStatus::Features && !chunk.light_on {
@@ -1231,6 +1264,7 @@ impl Chunks {
             vec![
                 StoreOp::Get(RecordKey::chunk(dimension, pos)),
                 StoreOp::Get(RecordKey::entities(dimension, pos)),
+                StoreOp::Get(RecordKey::poi(dimension, pos)),
             ],
             priority,
             self.inbox_tx.clone(),
@@ -1421,6 +1455,30 @@ impl Chunks {
         self.chunk(pos).map_or(&[], |c| &c.entities[..])
     }
 
+    /// The stored POI of a full chunk ([`ProtoChunk::poi`]).
+    pub fn stored_poi(&self, pos: ChunkPos) -> Option<&Arc<[u8]>> {
+        self.chunk(pos).and_then(|c| c.poi.as_ref())
+    }
+
+    /// Replaces the stored POI of a full chunk (the game writes its POI back before saving and
+    /// unloading); the chunk's POI count as changed if they differ.
+    pub fn set_stored_poi(&mut self, pos: ChunkPos, poi: Option<Arc<[u8]>>) {
+        let Some(holder) = self.holders.get_mut(&pos) else {
+            return;
+        };
+        if holder.busy || holder.status() != Some(ChunkStatus::Full) {
+            return;
+        }
+        let Some(chunk) = holder.chunk.as_mut() else {
+            return;
+        };
+        if chunk.poi == poi {
+            return;
+        }
+        Arc::make_mut(chunk).poi = poi;
+        holder.touch_poi(pos, &mut self.changed);
+    }
+
     /// Replaces the stored entities of a full chunk (the game writes its live entities back
     /// before saving and unloading); the chunk's entities count as changed if they differ.
     pub fn set_stored_entities(&mut self, pos: ChunkPos, entities: Vec<Arc<[u8]>>) {
@@ -1496,6 +1554,7 @@ impl Chunks {
                 save.push(Snapshot {
                     entities: holder.entities_dirty
                         && (holder.entities_stored || !chunk.entities.is_empty()),
+                    poi: holder.poi_dirty,
                     blocks: holder.dirty,
                     chunk,
                 });
@@ -1558,6 +1617,19 @@ impl Chunks {
                                 }
                             }
                         }
+                        if snapshot.poi {
+                            let key = RecordKey::poi(dimension, chunk.pos);
+                            if chunk.poi.is_none() {
+                                ops.push(StoreOp::Delete(key));
+                            } else {
+                                match codec.encode_poi(chunk) {
+                                    Ok((meta, bytes)) => {
+                                        ops.push(StoreOp::Put { key, meta, bytes });
+                                    }
+                                    Err(e) => errors.push((chunk.pos, e)),
+                                }
+                            }
+                        }
                     }
                     if !ops.is_empty() {
                         store.submit(token, ops, Priority::Background, inbox);
@@ -1590,6 +1662,7 @@ impl Chunks {
         if entities {
             holder.entities_stored = !chunk.entities.is_empty();
         }
+        let poi = std::mem::take(&mut holder.poi_dirty);
         if blocks && chunk.status == ChunkStatus::Full {
             let chunk = Arc::make_mut(chunk);
             chunk.block_ticks = self.block_ticks.pack(pos, self.game_time);
@@ -1599,6 +1672,7 @@ impl Chunks {
             chunk: Arc::clone(chunk),
             blocks,
             entities,
+            poi,
         })
     }
 
