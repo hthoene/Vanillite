@@ -492,12 +492,15 @@ fn execute(
             {
                 return dispense(level, source, stack, B::Default);
             }
-            // `sendParticles(SPLASH, ...)` five times; the particles are the client's.
-            for _ in 0..5 {
-                level.random().next_double();
-                level.random().next_double();
-            }
+            // `sendParticles(SPLASH, ...)` five times on top of the dispenser.
             let pos = source.pos;
+            for _ in 0..5 {
+                let x = f64::from(pos.x) + level.random().next_double();
+                let z = f64::from(pos.z) + level.random().next_double();
+                let at = vanillite_base::Vec3::new(x, f64::from(pos.y + 1), z);
+                let splash = crate::level::particles::simple("minecraft:splash");
+                level.send_particles(splash, at, 1, vanillite_base::Vec3::ZERO, 1.0);
+            }
             level.play_block_sound(
                 None,
                 pos,

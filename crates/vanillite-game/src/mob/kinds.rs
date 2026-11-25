@@ -937,6 +937,7 @@ fn explode_creeper(t: &mut Tick<'_, '_>) {
         radius,
         mob: true,
         resistance: crate::level::explosion::BlockResistance::Default,
+        fire: false,
     }));
 }
 
@@ -968,6 +969,22 @@ pub fn ai_step(t: &mut Tick<'_, '_>) {
             t.set_velocity(v.multiply(1.0, 0.6, 1.0));
         }
     }
+    if kind.ageable() && t.mob_ref().forced_age_timer > 0 {
+        // `AgeableMob.aiStep`: a happy villager particle at a random spot every 4 ticks.
+        if t.mob_ref().forced_age_timer % 4 == 0 {
+            let (pos, dims) = (t.pos(), t.core().dims());
+            let (width, height) = (f64::from(dims.width), f64::from(dims.height));
+            let r = &mut t.mob().random;
+            let at = Vec3::new(
+                pos.x + width * (2.0 * r.next_double() - 1.0),
+                pos.y + height * r.next_double() + 0.5,
+                pos.z + width * (2.0 * r.next_double() - 1.0),
+            );
+            let particle = crate::level::particles::simple("minecraft:happy_villager");
+            t.cx.send_particles(particle, at, 1, Vec3::ZERO, 0.0);
+        }
+        t.mob().forced_age_timer -= 1;
+    }
     if kind.ageable() && t.mob_ref().is_alive() {
         // `AgeableMob.aiStep` and `Animal.aiStep`.
         let m = t.mob();
@@ -981,9 +998,13 @@ pub fn ai_step(t: &mut Tick<'_, '_>) {
         }
         if m.in_love > 0 {
             m.in_love -= 1;
-        }
-        if m.forced_age_timer > 0 {
-            m.forced_age_timer -= 1;
+            if m.in_love % 10 == 0 {
+                // `Animal.aiStep`: the heart particle is the client's, but its speed and
+                // position are drawn on the server too.
+                let r = &mut m.random;
+                let _ = (r.next_gaussian(), r.next_gaussian(), r.next_gaussian());
+                let _ = (r.next_double(), r.next_double(), r.next_double());
+            }
         }
         // `ItemBasedSteering.tickBoost`.
         if m.boosting {

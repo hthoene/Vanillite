@@ -566,6 +566,8 @@ pub struct ExplosionRequest {
     pub mob: bool,
     /// The source's `getBlockExplosionResistance` (the wither's skulls, primed TNT minecarts).
     pub resistance: crate::level::explosion::BlockResistance,
+    /// `fire`: blown up positions may catch fire (ghast fireballs with `mobGriefing`).
+    pub fire: bool,
 }
 
 /// A wind charge burst (`AbstractWindCharge.explode`): a knockback-only explosion that
@@ -609,6 +611,7 @@ impl ExplosionRequest {
             interaction,
             crate::level::explosion::ExplosionStyle {
                 resistance: self.resistance,
+                fire: self.fire,
                 ..Default::default()
             },
         );
@@ -648,6 +651,8 @@ pub enum WorldAction {
     RingBell(BlockPos, Option<EntityId>),
     /// `BoneMealItem.growCrop` on the block (a villager's bone meal).
     BoneMeal(BlockPos),
+    /// `ServerLevel.sendParticles`.
+    Particles(Box<crate::level::particles::LevelParticles>),
 }
 
 impl WorldAction {
@@ -680,6 +685,7 @@ impl WorldAction {
             WorldAction::SetDoorOpen(pos, open, source) => {
                 crate::block::redstone::set_door_open(level, pos, open, source);
             }
+            WorldAction::Particles(ref p) => level.send_particles_packet((**p).clone()),
             WorldAction::WindBurst(b) => {
                 // `ExplosionInteraction.TRIGGER` without damage (`damagesEntities` off).
                 level.explode_with(
@@ -733,6 +739,19 @@ pub struct MobContext {
 }
 
 impl MobContext {
+    /// `ServerLevel.sendParticles(particle, x, y, z, count, xDist, yDist, zDist, speed)`.
+    pub fn send_particles(
+        &mut self,
+        particle: crate::level::particles::Particle,
+        pos: Vec3,
+        count: i32,
+        dist: Vec3,
+        speed: f64,
+    ) {
+        let packet = crate::level::particles::packet(particle, pos, count, dist, speed);
+        self.actions.push(WorldAction::Particles(Box::new(packet)));
+    }
+
     /// Resets the per-tick state.
     pub fn begin_tick(&mut self, env: Environment, settings: MobSettings, has_players: bool) {
         self.env = env;

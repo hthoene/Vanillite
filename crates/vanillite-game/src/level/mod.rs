@@ -18,6 +18,7 @@ pub mod explosion;
 pub mod forced;
 pub mod game_event;
 mod neighbors;
+pub mod particles;
 pub mod signal;
 mod tick;
 pub mod update;
@@ -130,6 +131,8 @@ pub struct LevelSettings {
     pub peaceful: bool,
     /// `spawnWardens` game rule (set by the server every tick).
     pub spawn_wardens: bool,
+    /// `mobGriefing` game rule (`MOB_GRIEFING`).
+    pub mob_griefing: bool,
 }
 
 impl Default for LevelSettings {
@@ -156,6 +159,7 @@ impl Default for LevelSettings {
             exploits: ExploitSettings::default(),
             peaceful: false,
             spawn_wardens: true,
+            mob_griefing: true,
         }
     }
 }
@@ -188,6 +192,9 @@ impl LevelSettings {
         }
         if let Some(v) = get("spread_vines") {
             self.spread_vines = v != 0;
+        }
+        if let Some(v) = get("mob_griefing") {
+            self.mob_griefing = v != 0;
         }
     }
 }
@@ -267,6 +274,8 @@ pub struct LevelOutput {
     pub level_events: Vec<LevelEvent>,
     /// Sounds.
     pub sounds: Vec<Sound>,
+    /// Server particles (`sendParticles`).
+    pub particles: Vec<particles::LevelParticles>,
     /// Explosions.
     pub explosions: Vec<explosion::ExplosionEvent>,
     /// The damage of the living entities explosions hit, for the mob system.
