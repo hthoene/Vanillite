@@ -831,9 +831,15 @@ fn full_beehive(state: BlockState) -> bool {
         && state.int("honey_level").is_some_and(|h| h >= 5)
 }
 
-/// `BeehiveBlock.releaseBeesAndResetHoneyLevel` (the hive's bees are not simulated).
+/// `BeehiveBlock.releaseBeesAndResetHoneyLevel(level, state, pos, null, BEE_RELEASED)`.
 fn reset_honey_level(level: &mut Level, pos: BlockPos, state: BlockState) {
-    level.set_block_and_update(pos, state.set_int("honey_level", 0));
+    super::beehive::release_bees_and_reset_honey_level(
+        level,
+        state,
+        pos,
+        None,
+        super::beehive::ReleaseStatus::BeeReleased,
+    );
 }
 
 /// `ShearsDispenseItemBehavior.tryShearBeehive`.
@@ -850,8 +856,7 @@ fn shear_beehive(level: &mut Level, pos: BlockPos) -> bool {
         1.0,
         1.0,
     );
-    // `BeehiveBlock.dropHoneycomb`: `minecraft:harvest/beehive` gives three honeycombs.
-    super::drops::pop_resource(level, pos, ItemStack::new(items::HONEYCOMB.0, 3));
+    super::beehive::drop_honeycomb(level, pos);
     reset_honey_level(level, pos, state);
     level.game_event_at(None, events().shear, pos);
     true

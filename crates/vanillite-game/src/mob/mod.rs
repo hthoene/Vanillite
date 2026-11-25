@@ -456,6 +456,9 @@ pub struct Environment {
     /// The time of the overworld day (ticks into the `minecraft:overworld` clock's day): the
     /// universal timelines (the villager schedules) follow it in every dimension.
     pub day_time: i64,
+    /// `EnvironmentAttributes.BEES_STAY_IN_HIVE`: the night of the `minecraft:day` timeline or
+    /// rain (any rain level).
+    pub bees_stay_in_hive: bool,
 }
 
 impl Default for Environment {
@@ -475,6 +478,7 @@ impl Default for Environment {
             world_seed: 0,
             sea_level: 63,
             day_time: 6000,
+            bees_stay_in_hive: false,
         }
     }
 }
@@ -493,10 +497,11 @@ impl Environment {
         sky += (4.0 - sky) * 0.527_343_75 * thunder;
         #[allow(clippy::cast_possible_truncation)]
         let sky_darken = (15.0 - sky) as i32;
-        let burn = !(12542..23460).contains(&day.rem_euclid(24000));
+        let night = (12542..23460).contains(&day.rem_euclid(24000));
         Environment {
             sky_darken,
-            monsters_burn: burn,
+            monsters_burn: !night,
+            bees_stay_in_hive: night || rain > 0.0,
             thundering: thunder > 0.9,
             raining: rain > 0.2,
             has_sky_light: true,
@@ -653,6 +658,14 @@ pub enum WorldAction {
     BoneMeal(BlockPos),
     /// `ServerLevel.sendParticles`.
     Particles(Box<crate::level::particles::LevelParticles>),
+    /// `BeehiveBlockEntity.addOccupant`: the bee, saved as `data` when it entered (its tick
+    /// discards it), moves into the hive at `hive`; `flower` is its saved flower.
+    EnterHive {
+        hive: BlockPos,
+        bee: EntityId,
+        data: Box<vanillite_nbt::Compound>,
+        flower: Option<BlockPos>,
+    },
 }
 
 impl WorldAction {
@@ -677,6 +690,12 @@ impl WorldAction {
             WorldAction::RingBell(pos, entity) => {
                 crate::block::bell::attempt_to_ring(level, entity, pos, None);
             }
+            WorldAction::EnterHive {
+                hive,
+                bee,
+                ref data,
+                flower,
+            } => crate::block::beehive::add_occupant(level, hive, bee, data, flower),
             WorldAction::BoneMeal(pos) => {
                 let mut meal =
                     crate::item::ItemStack::new(vanillite_data::item::ids::BONE_MEAL.0, 1);

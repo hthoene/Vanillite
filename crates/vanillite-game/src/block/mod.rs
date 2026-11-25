@@ -11,6 +11,7 @@
 //! blocks that placing or breaking one block adds or removes.
 
 pub mod beacon;
+pub mod beehive;
 pub mod bell;
 pub mod bonemeal;
 pub mod bookshelf;
@@ -323,6 +324,7 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
     pot::fill(block, &mut b);
     bookshelf::fill(block, &mut b);
     campfire::fill(block, &mut b);
+    beehive::fill(block, &mut b);
     crafter::fill(block, &mut b);
     portal::fill(block, &mut b);
     b

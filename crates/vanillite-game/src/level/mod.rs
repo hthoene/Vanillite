@@ -1195,6 +1195,9 @@ impl Level {
         neighbour_pos: BlockPos,
         neighbour_state: BlockState,
     ) -> BlockState {
+        if block::beehive::is_beehive(state.block()) {
+            block::beehive::neighbour_changed_shape(self, pos, state, neighbour_pos);
+        }
         shared::update_shape(self, state, pos, direction, neighbour_pos, neighbour_state)
     }
 

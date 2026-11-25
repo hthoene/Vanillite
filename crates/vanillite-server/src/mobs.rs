@@ -1278,6 +1278,7 @@ fn environment(
             ambient_light: if nether { 0.1 } else { 0.0 },
             has_ceiling: nether,
             day_time: day,
+            bees_stay_in_hive: false,
         };
     }
     let w = survival.weather;

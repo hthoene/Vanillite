@@ -379,6 +379,8 @@ impl GameWorld {
         let has_players = !self.level.entities.players.is_empty();
         self.mobs
             .begin_tick(self.env, MobSettings::default(), has_players);
+        // What block entities (beehives) read of the world after the entities.
+        self.level.spawner_env.env = self.env;
         minecart::players_push(&mut self.level.entities);
         let mut cursor = self.level.entities.store.tick_cursor();
         while let Some(id) = self.level.entities.store.next_to_tick(&mut cursor) {
@@ -1005,6 +1007,7 @@ fn fam_goal_name(kind: Kind, goal: &FamGoal) -> &'static str {
         ("Wildlife", "Puff") => "PufferfishPuffGoal",
         ("Wildlife", "TurtleStroll") => "TurtleRandomStrollGoal",
         ("Wildlife", "BeeValidateFlower") => "ValidateFlowerGoal",
+        ("Wildlife", "BeeValidateHive") => "ValidateHiveGoal",
         (_, variant) => leak(if variant.ends_with("Goal") {
             variant.to_owned()
         } else {

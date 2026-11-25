@@ -89,6 +89,8 @@ pub enum BlockEntity {
     EndPortal,
     /// `TheEndGatewayBlockEntity`.
     EndGateway(crate::block::portal::Gateway),
+    /// `BeehiveBlockEntity` (beehives and bee nests).
+    Beehive(Box<crate::block::beehive::Beehive>),
 }
 
 /// `BlockEntityTicker.tick(level, pos, state, blockEntity)`: the block entity is looked up at
@@ -237,6 +239,7 @@ fn ticker_of(entity: &BlockEntity) -> Option<TickerFn> {
         | BlockEntity::Brushable(_)
         | BlockEntity::EndPortal => None,
         BlockEntity::Campfire(_) => Some(crate::block::campfire::tick),
+        BlockEntity::Beehive(_) => Some(crate::block::beehive::tick),
         BlockEntity::Crafter(_) => Some(crate::block::crafter::server_tick),
         BlockEntity::Beacon(_) => Some(crate::block::beacon::tick),
         BlockEntity::Conduit(_) => Some(crate::block::beacon::conduit_tick),
@@ -325,6 +328,8 @@ pub fn new_block_entity(state: BlockState) -> Option<BlockEntity> {
         Some(BlockEntity::Brushable(Box::default()))
     } else if crate::block::campfire::is_campfire(block) {
         Some(BlockEntity::Campfire(Box::default()))
+    } else if crate::block::beehive::is_beehive(block) {
+        Some(BlockEntity::Beehive(Box::default()))
     } else if crate::block::decor::is_skull(block) {
         Some(BlockEntity::Skull(Box::default()))
     } else if crate::block::decor::is_banner(block) {
@@ -389,6 +394,7 @@ fn is_valid(entity: &BlockEntity, state: BlockState) -> bool {
         BlockEntity::DecoratedPot(_) => state.block() == ids::DECORATED_POT,
         BlockEntity::ChiseledBookshelf(_) => state.block() == ids::CHISELED_BOOKSHELF,
         BlockEntity::Campfire(_) => crate::block::campfire::is_campfire(state.block()),
+        BlockEntity::Beehive(_) => crate::block::beehive::is_beehive(state.block()),
         BlockEntity::Brushable(_) => crate::block::brushable::is_brushable(state),
         BlockEntity::Crafter(_) => state.block() == ids::CRAFTER,
         BlockEntity::Beacon(_) => state.block() == ids::BEACON,
@@ -595,6 +601,7 @@ fn load(state: BlockState, nbt: &Compound) -> Option<BlockEntity> {
         BlockEntity::DecoratedPot(pot) => pot.load(nbt),
         BlockEntity::ChiseledBookshelf(shelf) => shelf.load(nbt),
         BlockEntity::Campfire(campfire) => campfire.load(nbt),
+        BlockEntity::Beehive(hive) => hive.load(nbt),
         BlockEntity::Brushable(b) => b.load(nbt),
         BlockEntity::Crafter(c) => c.load(nbt),
         BlockEntity::Beacon(b) => b.load(nbt),
@@ -661,6 +668,7 @@ fn save(entity: &BlockEntity, state: BlockState, pos: BlockPos) -> Compound {
         BlockEntity::DecoratedPot(pot) => pot.save(&mut nbt),
         BlockEntity::ChiseledBookshelf(shelf) => shelf.save(&mut nbt),
         BlockEntity::Campfire(campfire) => campfire.save(&mut nbt),
+        BlockEntity::Beehive(hive) => hive.save(&mut nbt),
         BlockEntity::Brushable(b) => b.save(&mut nbt),
         BlockEntity::Crafter(c) => c.save(&mut nbt),
         BlockEntity::Beacon(b) => b.save(&mut nbt),
@@ -922,6 +930,7 @@ pub fn collect_component(entity: &BlockEntity, id: u16) -> Option<Box<[u8]>> {
         BlockEntity::Campfire(campfire) => {
             (id == components::CONTAINER).then(|| container_value(&campfire.items))
         }
+        BlockEntity::Beehive(hive) => hive.component(id),
         BlockEntity::Crafter(crafter) => {
             if id == components::CONTAINER {
                 Some(container_value(&crafter.items))
@@ -966,6 +975,12 @@ pub fn apply_components(level: &mut Level, pos: BlockPos, stack: &ItemStack) {
             if let Some(items) = contents() {
                 copy_into(&items, &mut campfire.items);
             }
+        }
+        Some(BlockEntity::Beehive(hive)) => {
+            hive.apply(stack);
+            level.block_entities.touch(pos.chunk());
+            crate::block::beehive::placed_changed(level, pos);
+            return;
         }
         Some(BlockEntity::Crafter(crafter)) => {
             if let Some(name) = decode_name(stack) {
