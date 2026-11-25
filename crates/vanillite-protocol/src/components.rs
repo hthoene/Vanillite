@@ -136,6 +136,7 @@ pub mod ids {
     pub const DYE: u16 = find("minecraft:dye");
     pub const INSTRUMENT: u16 = find("minecraft:instrument");
     pub const OMINOUS_BOTTLE_AMPLIFIER: u16 = find("minecraft:ominous_bottle_amplifier");
+    pub const BEES: u16 = find("minecraft:bees");
 }
 
 /// Validates one component value: `data` must be exactly one value of the stream codec of

@@ -1,16 +1,12 @@
-//! Bees (`Bee`): neutral flyers that pollinate flowers, grow crops on the way home, sting
-//! once and die after stinging.
-//!
-//! Beehives and bee nests have no block entity yet: bees cannot enter, leave or find a hive
-//! (`BeeEnterHiveGoal`, `BeeLocateHiveGoal`, `BeeGoToHiveGoal` never start, `isHiveValid` is
-//! false), so they do not grow crops either (`BeeGrowCropGoal` needs a valid hive). They wander,
-//! pollinate, breed, get angry and sting like Vanilla.
+//! Bees (`Bee`): neutral flyers that pollinate flowers, grow crops on the way home, live in
+//! beehives and bee nests ([`crate::block::beehive`]), sting once and die after stinging.
 
 use vanillite_base::random::RandomSource;
 use vanillite_base::{BlockPos, Vec3};
 use vanillite_nbt::Compound;
 
 use super::{Goal, block_tags, st, st_mut};
+use crate::block::beehive::{self, Beehive};
 use crate::effect::MobEffect;
 use crate::mob::animal::{Interaction, animal_interact, use_item};
 use crate::mob::common::{self, CommonGoal};
@@ -18,6 +14,7 @@ use crate::mob::fam::{FamGoal, Interact};
 use crate::mob::goals::{Goal as MobGoal, MeleeKind, TemptItems, reduced};
 use crate::mob::kinds::{self, Kind};
 use crate::mob::{MobData, Tick, WorldAction, combat, living, nav, randompos};
+use crate::poi::{Occupancy, PoiType};
 use crate::survival::damage::DamageSource;
 use crate::survival::rules::Difficulty;
 use vanillite_world::entity::EntityId;
@@ -42,10 +39,17 @@ fn angry_target(t: &crate::mob::Tick<'_, '_>, id: EntityId) -> bool {
 /// their cooldowns, then the bee's own field initializer rolls the flower cooldown.
 pub(super) fn register_goals(m: &mut MobData) {
     m.goals.add(0, MobGoal::melee(MeleeKind::Plain, 1.4, true));
+    m.goals.add(1, fam(Goal::BeeEnterHive));
     m.goals.add(2, MobGoal::breed(1.0));
     m.goals.add(3, MobGoal::tempt(1.25, TemptItems::Food));
-    // `ValidateHiveGoal`: there are no hives to validate; its cooldown roll stays.
-    let _hive_cooldown = m.random.next_int_between_inclusive(20, 40);
+    let hive_cooldown = m.random.next_int_between_inclusive(20, 40);
+    m.goals.add(
+        3,
+        fam(Goal::BeeValidateHive {
+            cooldown: hive_cooldown,
+            last_validate: -1,
+        }),
+    );
     let cooldown = m.random.next_int_between_inclusive(20, 40);
     m.goals.add(
         3,
@@ -71,6 +75,14 @@ pub(super) fn register_goals(m: &mut MobData) {
             parent: None,
             recalc: 0,
         },
+    );
+    m.goals.add(5, fam(Goal::BeeLocateHive));
+    m.goals.add(
+        5,
+        fam(Goal::BeeGoToHive {
+            travelling: 0,
+            stuck: 0,
+        }),
     );
     m.goals
         .add(6, fam(Goal::BeeGoToKnownFlower { travelling: 0 }));
@@ -132,6 +144,140 @@ fn drop_flower(t: &mut Tick<'_, '_>) {
     s.cooldown_flower = r;
 }
 
+/// `dropHive`.
+fn drop_hive(t: &mut Tick<'_, '_>) {
+    let s = st_mut(t.mob());
+    s.hive_pos = None;
+    s.cooldown_hive = 200;
+}
+
+/// `setHivePos` (`None` forgets the hive).
+pub(crate) fn set_hive_pos(m: &mut MobData, pos: Option<BlockPos>) {
+    st_mut(m).hive_pos = pos;
+}
+
+/// `hasSavedFlowerPos`.
+pub(crate) fn has_saved_flower_pos(m: &MobData) -> bool {
+    st(m).flower_pos.is_some()
+}
+
+/// `setSavedFlowerPos`.
+pub(crate) fn set_saved_flower_pos(m: &mut MobData, pos: BlockPos) {
+    st_mut(m).flower_pos = Some(pos);
+}
+
+/// `dropOffNectar`: the nectar went into the hive.
+pub(crate) fn drop_off_nectar(m: &mut MobData) {
+    let s = st_mut(m);
+    s.bee_flags &= !FLAG_HAS_NECTAR;
+    s.crops_grown = 0;
+}
+
+/// `setStayOutOfHiveCountdown`.
+pub(crate) fn set_stay_out_of_hive(m: &mut MobData, ticks: i32) {
+    st_mut(m).stay_out_of_hive = ticks;
+}
+
+/// `isTooFarAway(pos)`: 48 blocks or more from the bee.
+fn too_far(t: &Tick<'_, '_>, pos: BlockPos) -> bool {
+    !close_to(pos, t.block_pos(), 48)
+}
+
+/// `getBeehiveBlockEntity`: the hive at the bee's hive position, if it is near enough.
+fn beehive<'a>(t: &'a Tick<'_, '_>) -> Option<&'a Beehive> {
+    let pos = st(t.mob_ref()).hive_pos?;
+    if too_far(t, pos) {
+        return None;
+    }
+    beehive::hive(t.level, pos)
+}
+
+/// `isHiveValid`.
+fn is_hive_valid(t: &Tick<'_, '_>) -> bool {
+    beehive(t).is_some()
+}
+
+/// `wantsToEnterHive`: no countdown, not pollinating, not stung, no target; with nectar,
+/// tired of looking for it or when bees stay in (night, rain), unless fire is at the hive.
+fn wants_to_enter_hive(t: &Tick<'_, '_>) -> bool {
+    let m = t.mob_ref();
+    let s = st(m);
+    if s.stay_out_of_hive > 0
+        || s.pollinating
+        || s.bee_flags & FLAG_HAS_STUNG != 0
+        || m.target.is_some()
+    {
+        return false;
+    }
+    let wants = s.bee_flags & FLAG_HAS_NECTAR != 0
+        || s.ticks_without_nectar > 3600
+        || t.cx.env.bees_stay_in_hive;
+    // `isHiveNearFire`.
+    wants
+        && !s
+            .hive_pos
+            .filter(|_| is_hive_valid(t))
+            .is_some_and(|p| beehive::is_fire_nearby(t.level, p))
+}
+
+/// `doesHiveHaveSpace`.
+fn hive_has_space(t: &Tick<'_, '_>, pos: BlockPos) -> bool {
+    beehive::hive(t.level, pos).is_some_and(|h| !h.is_full())
+}
+
+/// `BeeGoToHiveGoal.hasReachedTarget`.
+fn has_reached_target(t: &Tick<'_, '_>, pos: BlockPos) -> bool {
+    if close_to(pos, t.block_pos(), 2) {
+        return true;
+    }
+    t.mob_ref()
+        .nav
+        .path
+        .as_ref()
+        .is_some_and(|p| p.target == pos && p.reached && p.is_done())
+}
+
+/// `BeeGoToHiveGoal.dropAndBlacklistHive`.
+fn drop_and_blacklist_hive(t: &mut Tick<'_, '_>) {
+    let s = st_mut(t.mob());
+    if let Some(p) = s.hive_pos {
+        s.hive_blacklist.push(p);
+        while s.hive_blacklist.len() > 3 {
+            s.hive_blacklist.remove(0);
+        }
+    }
+    drop_hive(t);
+}
+
+/// `BeeGoToHiveGoal.pathfindDirectlyTowards`: whether the path reaches the hive.
+fn pathfind_directly_towards(t: &mut Tick<'_, '_>, target: BlockPos) -> bool {
+    let close_enough = if close_to(target, t.block_pos(), 3) {
+        1
+    } else {
+        2
+    };
+    t.mob().nav.max_visited_nodes_multiplier = 10.0;
+    let path = nav::create_path_to(t, target, close_enough);
+    nav::move_to_path(t, path, 1.0);
+    t.mob_ref().nav.path.as_ref().is_some_and(|p| p.reached)
+}
+
+/// `BeeLocateHiveGoal.findNearbyHivesWithSpace`: the bee homes within 20 blocks with room,
+/// nearest first.
+fn find_nearby_hives_with_space(t: &Tick<'_, '_>) -> Vec<BlockPos> {
+    let bee = t.block_pos();
+    let mut hives: Vec<BlockPos> = t
+        .ents
+        .poi
+        .in_range(PoiType::is_bee_home, bee, 20, Occupancy::Any)
+        .into_iter()
+        .map(|r| r.pos)
+        .filter(|&p| hive_has_space(t, p))
+        .collect();
+    hives.sort_by(|a, b| a.dist_sqr(bee).total_cmp(&b.dist_sqr(bee)));
+    hives
+}
+
 /// `Bee.attractsBees(state)`.
 pub(crate) fn attracts_bees(state: vanillite_data::block::BlockState) -> bool {
     if !block_tags().bee_attractive.contains(state) {
@@ -164,8 +310,7 @@ pub(super) fn ai_step(t: &mut Tick<'_, '_>) {
             .and_then(|id| t.other(id))
             .is_some_and(|o| o.pos.distance_to_sqr(t.pos()) < 4.0);
     set_flag(t, FLAG_ROLL, roll);
-    // `isHiveValid` is false without hive block entities.
-    if t.mob_ref().tick_count % 20 == 0 {
+    if t.mob_ref().tick_count % 20 == 0 && !is_hive_valid(t) {
         st_mut(t.mob()).hive_pos = None;
     }
 }
@@ -314,18 +459,72 @@ fn find_nearby_flower(t: &mut Tick<'_, '_>) -> Option<BlockPos> {
     None
 }
 
+/// `BaseBeeGoal.canUse`: the bee's own check, then not angry (the wander goal has no anger
+/// check).
 pub(super) fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
-    if is_angry(t) && !matches!(g, Goal::BeeWander) {
-        return false;
+    if matches!(g, Goal::BeeWander) {
+        return t.mob_ref().nav.is_done() && t.mob().random.next_int_bounded(10) == 0;
     }
-    let s = st(t.mob_ref()).clone();
+    can_bee_use(t, g) && !is_angry(t)
+}
+
+/// `canBeeUse`.
+fn can_bee_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
+    match g {
+        Goal::BeeValidateHive {
+            cooldown,
+            last_validate,
+        } => return t.env.game_time > *last_validate + i64::from(*cooldown),
+        Goal::BeeEnterHive => {
+            let Some(hive) = st(t.mob_ref()).hive_pos else {
+                return false;
+            };
+            let center = Vec3::new(
+                f64::from(hive.x) + 0.5,
+                f64::from(hive.y) + 0.5,
+                f64::from(hive.z) + 0.5,
+            );
+            if !wants_to_enter_hive(t) || center.distance_to_sqr(t.pos()) >= 4.0 {
+                return false;
+            }
+            match beehive(t).map(Beehive::is_full) {
+                Some(false) => return true,
+                Some(true) => st_mut(t.mob()).hive_pos = None,
+                None => {}
+            }
+            return false;
+        }
+        Goal::BeeLocateHive => {
+            let s = st(t.mob_ref());
+            return s.cooldown_hive == 0 && s.hive_pos.is_none() && wants_to_enter_hive(t);
+        }
+        Goal::BeeGoToHive { .. } => {
+            let Some(hive) = st(t.mob_ref()).hive_pos else {
+                return false;
+            };
+            return !too_far(t, hive)
+                && !t.mob_ref().has_restriction()
+                && wants_to_enter_hive(t)
+                && !has_reached_target(t, hive)
+                && block_tags().beehives.contains(t.level.block(hive));
+        }
+        _ => {}
+    }
+    let s = st(t.mob_ref());
+    let (cooldown_flower, flags, flower_pos, without_nectar, crops_grown) = (
+        s.cooldown_flower,
+        s.bee_flags,
+        s.flower_pos,
+        s.ticks_without_nectar,
+        s.crops_grown,
+    );
     match g {
         Goal::BeeValidateFlower {
             cooldown,
             last_validate,
         } => t.env.game_time > *last_validate + i64::from(*cooldown),
         Goal::BeePollinate { .. } => {
-            if s.cooldown_flower > 0 || s.bee_flags & FLAG_HAS_NECTAR != 0 || t.cx.env.raining {
+            if cooldown_flower > 0 || flags & FLAG_HAS_NECTAR != 0 || t.cx.env.raining {
                 return false;
             }
             match find_nearby_flower(t) {
@@ -346,22 +545,18 @@ pub(super) fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
                 }
             }
         }
-        Goal::BeeGoToKnownFlower { .. } => s.flower_pos.is_some_and(|f| {
-            !t.mob_ref().has_restriction()
-                && s.ticks_without_nectar > 600
-                && !close_to(t.block_pos(), f, 2)
+        Goal::BeeGoToKnownFlower { .. } => flower_pos.is_some_and(|f| {
+            !t.mob_ref().has_restriction() && without_nectar > 600 && !close_to(t.block_pos(), f, 2)
         }),
         Goal::BeeGrowCrop => {
-            if s.crops_grown >= 10 {
+            if crops_grown >= 10 {
                 return false;
             }
             if t.mob().random.next_float() < 0.3 {
                 return false;
             }
-            // `hasNectar() && isHiveValid()`: there are no hives yet.
-            false
+            flag(t.mob_ref(), FLAG_HAS_NECTAR) && is_hive_valid(t)
         }
-        Goal::BeeWander => t.mob_ref().nav.is_done() && t.mob().random.next_int_bounded(10) == 0,
         _ => false,
     }
 }
@@ -376,30 +571,75 @@ fn close_to(a: BlockPos, b: BlockPos, distance: i32) -> bool {
     dx * dx + dy * dy + dz * dz < f64::from(distance * distance)
 }
 
+/// `canContinueToUse`: `canBeeContinueToUse() && !isAngry()` for the bee goals.
 pub(super) fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
-    if is_angry(t) && !matches!(g, Goal::BeeWander) {
-        return false;
-    }
-    match g {
+    let go_on = match g {
+        Goal::BeeWander => return !t.mob_ref().nav.is_done(),
         Goal::BeePollinate { successful, .. } => {
             let s = st(t.mob_ref());
             if !s.pollinating || s.flower_pos.is_none() || t.cx.env.raining {
-                return false;
-            }
-            if *successful > 400 {
+                false
+            } else if *successful > 400 {
                 t.mob().random.next_float() < 0.2
             } else {
                 true
             }
         }
-        Goal::BeeWander => !t.mob_ref().nav.is_done(),
-        Goal::BeeValidateFlower { .. } => false,
-        _ => can_use(t, g),
-    }
+        Goal::BeeValidateFlower { .. }
+        | Goal::BeeValidateHive { .. }
+        | Goal::BeeEnterHive
+        | Goal::BeeLocateHive => false,
+        _ => can_bee_use(t, g),
+    };
+    go_on && !is_angry(t)
 }
 
 pub(super) fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
     match g {
+        Goal::BeeValidateHive { last_validate, .. } => {
+            if let Some(h) = st(t.mob_ref()).hive_pos
+                && t.level.is_loaded(h)
+                && !is_hive_valid(t)
+            {
+                drop_hive(t);
+            }
+            *last_validate = t.env.game_time;
+        }
+        Goal::BeeEnterHive => {
+            // `addOccupant`: the bee is saved now and leaves the world; the hive takes it in
+            // right after this tick.
+            if let Some(hive) = st(t.mob_ref()).hive_pos
+                && beehive(t).is_some_and(|h| !h.is_full())
+            {
+                let data = crate::mob::nbt::save_mob(&t.core(), t.mob_ref());
+                let flower = st(t.mob_ref()).flower_pos;
+                t.cx.actions.push(WorldAction::EnterHive {
+                    hive,
+                    bee: t.id,
+                    data: Box::new(data),
+                    flower,
+                });
+                t.mob().removed = true;
+            }
+        }
+        Goal::BeeLocateHive => {
+            st_mut(t.mob()).cooldown_hive = 200;
+            let hives = find_nearby_hives_with_space(t);
+            if let Some(&first) = hives.first() {
+                let s = st_mut(t.mob());
+                match hives.iter().find(|p| !s.hive_blacklist.contains(p)) {
+                    Some(&p) => s.hive_pos = Some(p),
+                    None => {
+                        s.hive_blacklist.clear();
+                        s.hive_pos = Some(first);
+                    }
+                }
+            }
+        }
+        Goal::BeeGoToHive { travelling, stuck } => {
+            *travelling = 0;
+            *stuck = 0;
+        }
         Goal::BeeValidateFlower { last_validate, .. } => {
             if let Some(f) = st(t.mob_ref()).flower_pos
                 && t.level.is_loaded(f)
@@ -424,10 +664,29 @@ pub(super) fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
         }
         Goal::BeeGoToKnownFlower { travelling } => *travelling = 0,
         Goal::BeeWander => {
-            // `findPos`: hover near the ground in the view direction (hives are not there yet,
-            // so never towards the hive), else in the air or water.
-            let rad = f64::from(t.core().rot().y_rot).to_radians();
-            let (dx, dz) = (-rad.sin(), rad.cos());
+            // `findPos`: hover near the ground towards a far hive or in the view direction,
+            // else in the air or water.
+            let s = st(t.mob_ref());
+            let threshold = if s.hive_pos.is_none() && s.flower_pos.is_none() {
+                48 - 16
+            } else {
+                48 - 24
+            };
+            let far_hive = s
+                .hive_pos
+                .filter(|&h| is_hive_valid(t) && !close_to(h, t.block_pos(), threshold));
+            let (dx, dz) = if let Some(h) = far_hive {
+                let c = Vec3::new(
+                    f64::from(h.x) + 0.5,
+                    f64::from(h.y) + 0.5,
+                    f64::from(h.z) + 0.5,
+                );
+                let d = (c - t.pos()).normalize();
+                (d.x, d.z)
+            } else {
+                let rad = f64::from(t.core().rot().y_rot).to_radians();
+                (-rad.sin(), rad.cos())
+            };
             let half = randompos::half_pi();
             #[allow(clippy::cast_possible_truncation)]
             let found = randompos::hover_pos(t, 8, 7, dx, dz, half as f32, 3, 1)
@@ -455,6 +714,13 @@ pub(super) fn stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
         Goal::BeeGoToKnownFlower { travelling } => {
             *travelling = 0;
             t.mob().nav.stop();
+            t.mob().nav.max_visited_nodes_multiplier = 1.0;
+        }
+        Goal::BeeGoToHive { travelling, stuck } => {
+            *travelling = 0;
+            *stuck = 0;
+            t.mob().nav.stop();
+            t.mob().nav.max_visited_nodes_multiplier = 1.0;
         }
         _ => {}
     }
@@ -534,6 +800,37 @@ pub(super) fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
                     pathfind_randomly_towards(t, f);
                 } else {
                     drop_flower(t);
+                }
+            }
+        }
+        Goal::BeeGoToHive { travelling, stuck } => {
+            let Some(hive) = st(t.mob_ref()).hive_pos else {
+                return;
+            };
+            *travelling += 1;
+            if *travelling > reduced(2400) {
+                drop_and_blacklist_hive(t);
+            } else if t.mob_ref().nav.is_done() {
+                if !close_to(hive, t.block_pos(), 16) {
+                    if too_far(t, hive) {
+                        drop_hive(t);
+                    } else {
+                        pathfind_randomly_towards(t, hive);
+                    }
+                } else if !pathfind_directly_towards(t, hive) {
+                    drop_and_blacklist_hive(t);
+                } else {
+                    let path = t.mob_ref().nav.path.as_ref().map(|p| p.nodes.clone());
+                    let s = st_mut(t.mob());
+                    if s.hive_last_path.is_some() && s.hive_last_path == path {
+                        *stuck += 1;
+                        if *stuck > 60 {
+                            drop_hive(t);
+                            *stuck = 0;
+                        }
+                    } else {
+                        s.hive_last_path = path;
+                    }
                 }
             }
         }

@@ -377,11 +377,19 @@ impl Level {
         for &pos in targets.iter() {
             // `Block.onExplosionHit`.
             let state = self.block(pos);
+            let hive = crate::block::beehive::is_beehive(state.block());
             if state.is_air() || interaction == BlockInteraction::TriggerBlock {
+                // `BeehiveBlock.onExplosionHit` angers the bees around in any explosion.
+                if hive {
+                    crate::block::beehive::anger_nearby_bees(self, pos);
+                }
                 continue;
             }
             // `dropFromExplosion`: everything but TNT; the loot is rolled block by block.
             if !state.is(ids::TNT) {
+                if hive {
+                    crate::block::beehive::exploded(self, pos, state, source);
+                }
                 loot.clear();
                 drops::explosion_loot(self, pos, state, decay, source, &mut loot);
                 for mut stack in loot.drain(..) {
@@ -403,6 +411,9 @@ impl Level {
             // `wasExploded`.
             if state.is(ids::TNT) {
                 tnt::was_exploded(self, pos, indirect);
+            }
+            if hive {
+                crate::block::beehive::anger_nearby_bees(self, pos);
             }
         }
         // `Block.popResource` of the merged stacks.

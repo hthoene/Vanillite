@@ -724,6 +724,10 @@ impl Digging {
         {
             // `ShulkerBoxBlock.playerWillDestroy`: a creative player still gets a filled box.
             crate::block::container::creative_shulker_drop(level, pos, state, entity);
+            // `BeehiveBlock.playerWillDestroy`: a hive with bees or honey drops as an item.
+            if crate::block::beehive::is_beehive(state.block()) {
+                crate::block::beehive::creative_drop(level, pos, state);
+            }
         }
         ctx.level.game_event(
             events_ids().block_destroy,
@@ -744,6 +748,19 @@ impl Digging {
             // `Block.playerDestroy`.
             ctx.award_stat(Stat::of(StatType::Mined, state.block().0), 1);
             drop_resources(ctx, state, pos, &tool, entity.as_ref());
+            if crate::block::beehive::is_beehive(state.block())
+                && let Some(player) = ctx.actor.entity
+                && let Some(level) = ctx.level.level_mut()
+            {
+                crate::block::beehive::player_destroy(
+                    level,
+                    pos,
+                    state,
+                    entity.as_ref(),
+                    player,
+                    &tool,
+                );
+            }
         }
         true
     }
