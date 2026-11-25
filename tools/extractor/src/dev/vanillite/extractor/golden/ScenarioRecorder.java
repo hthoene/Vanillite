@@ -237,8 +237,8 @@ public final class ScenarioRecorder {
                         action.get("command").getAsString());
               } else if (op.equals("throw_potion")) {
                 entities.throwPotion(action);
-              } else if (op.equals("use") || op.equals("attack")) {
-                entities.use(action, op.equals("attack"));
+              } else if (op.equals("use") || op.equals("attack") || op.equals("use_item")) {
+                entities.use(action, op);
               } else {
                 apply(level, action, true);
               }

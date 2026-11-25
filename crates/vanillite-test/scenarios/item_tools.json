@@ -1,0 +1,298 @@
+{
+  "description": "Tools and items on blocks: a shovel makes a path, a hoe tills grass, coarse dirt and rooted dirt (dropping hanging roots from the face), an axe strips a log, scrapes copper and removes wax, honeycomb waxes copper, bone meal grows wheat, a water bottle turns dirt into mud, shears stop twisting vines, flint and steel primes TNT and a fire charge lights a campfire.",
+  "tier": "fast",
+  "level_rng": true,
+  "player_state": true,
+  "region": [
+    [
+      0,
+      -62,
+      0
+    ],
+    [
+      15,
+      -57,
+      15
+    ]
+  ],
+  "ticks": 16,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -61,
+        4
+      ],
+      "block": "minecraft:coarse_dirt"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -61,
+        4
+      ],
+      "block": "minecraft:rooted_dirt"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        6
+      ],
+      "block": "minecraft:oak_log[axis=x]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -60,
+        6
+      ],
+      "block": "minecraft:exposed_copper"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        6
+      ],
+      "block": "minecraft:waxed_cut_copper"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -60,
+        6
+      ],
+      "block": "minecraft:copper_block"
+    },
+    {
+      "op": "set",
+      "pos": [
+        9,
+        -61,
+        4
+      ],
+      "block": "minecraft:farmland"
+    },
+    {
+      "op": "set",
+      "pos": [
+        9,
+        -60,
+        4
+      ],
+      "block": "minecraft:wheat[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        10,
+        -61,
+        4
+      ],
+      "block": "minecraft:dirt"
+    },
+    {
+      "op": "set",
+      "pos": [
+        12,
+        -60,
+        4
+      ],
+      "block": "minecraft:twisting_vines[age=3]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        12,
+        -60,
+        8
+      ],
+      "block": "minecraft:tnt"
+    },
+    {
+      "op": "set",
+      "pos": [
+        13,
+        -60,
+        8
+      ],
+      "block": "minecraft:campfire[lit=false]"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        8.5,
+        -60,
+        8.5
+      ],
+      "rot": [
+        0,
+        0
+      ],
+      "seed": 1
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        4,
+        -61,
+        4
+      ],
+      "item": "minecraft:iron_shovel"
+    },
+    {
+      "tick": 2,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        5,
+        -61,
+        4
+      ],
+      "item": "minecraft:iron_hoe"
+    },
+    {
+      "tick": 3,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        6,
+        -61,
+        4
+      ],
+      "item": "minecraft:iron_hoe"
+    },
+    {
+      "tick": 4,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        7,
+        -61,
+        4
+      ],
+      "item": "minecraft:iron_hoe",
+      "face": "north"
+    },
+    {
+      "tick": 5,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        4,
+        -60,
+        6
+      ],
+      "item": "minecraft:iron_axe",
+      "face": "east"
+    },
+    {
+      "tick": 6,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        5,
+        -60,
+        6
+      ],
+      "item": "minecraft:iron_axe",
+      "face": "south"
+    },
+    {
+      "tick": 7,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        6,
+        -60,
+        6
+      ],
+      "item": "minecraft:iron_axe",
+      "face": "south"
+    },
+    {
+      "tick": 8,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        7,
+        -60,
+        6
+      ],
+      "item": "minecraft:honeycomb",
+      "count": 3
+    },
+    {
+      "tick": 9,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        9,
+        -60,
+        4
+      ],
+      "item": "minecraft:bone_meal",
+      "count": 4
+    },
+    {
+      "tick": 10,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        10,
+        -61,
+        4
+      ],
+      "item": "minecraft:potion",
+      "components": "{\"minecraft:potion_contents\":{potion:\"minecraft:water\"}}"
+    },
+    {
+      "tick": 11,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        12,
+        -60,
+        4
+      ],
+      "item": "minecraft:shears"
+    },
+    {
+      "tick": 12,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        12,
+        -60,
+        8
+      ],
+      "item": "minecraft:flint_and_steel"
+    },
+    {
+      "tick": 13,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        13,
+        -60,
+        8
+      ],
+      "item": "minecraft:fire_charge",
+      "count": 2
+    }
+  ]
+}

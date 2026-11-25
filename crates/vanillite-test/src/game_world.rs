@@ -1610,7 +1610,17 @@ impl ScenarioWorld for GameWorld {
                 y: at.y,
                 z: at.z,
             };
-            if click.attack {
+            if click.air {
+                let hand = if click.offhand {
+                    Hand::OffHand
+                } else {
+                    Hand::MainHand
+                };
+                player
+                    .connection
+                    .play
+                    .use_item(&mut ctx, hand, 0, rot.y_rot, rot.x_rot);
+            } else if click.attack {
                 player.connection.play.handle_action(
                     &mut ctx,
                     DigAction::StartDestroyBlock,

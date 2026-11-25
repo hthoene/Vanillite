@@ -108,8 +108,9 @@
 //!   at `pos` on `face` (default `up`) at `hit` (relative to the block's corner, default the
 //!   face's centre), sneaking if `sneak`, with its food level set to `food` first
 //!   (`ServerPlayerGameMode.useItemOn`). `attack`: the
-//!   player starts to break the block (`START_DESTROY_BLOCK`). `"player_state": true` adds
-//!   the players' food and hands to the frames.
+//!   player starts to break the block (`START_DESTROY_BLOCK`). `use_item`: the player uses the
+//!   stack in the air (`ServerPlayerGameMode.useItem`, aiming with its rotation; no `pos`).
+//!   `"player_state": true` adds the players' food and hands to the frames.
 //! - `effect` action: `addEffect` on the entity `entity` with the mob effect `effect`,
 //!   `duration` ticks and `amplifier` (default 0).
 
@@ -196,6 +197,8 @@ pub enum OpKind {
     Use,
     /// A player starts to break a block ([`Op::player_use`]).
     Attack,
+    /// A player uses the stack in a hand in the air (`handleUseItem`, [`Op::player_use`]).
+    UseItem,
 }
 
 /// The potion of a `throw_potion` action.
@@ -308,6 +311,8 @@ pub struct PlayerUse {
     pub entity: String,
     /// `attack` instead of `use`.
     pub attack: bool,
+    /// `use_item` (the item's use in the air; `pos` and `face` are unused).
+    pub air: bool,
     pub pos: BlockPos,
     /// The clicked face: `down`, `up`, `north`, `south`, `west` or `east`.
     pub face: String,
@@ -593,17 +598,22 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
         Some("restart") if action => OpKind::Restart,
         Some("use") if action => OpKind::Use,
         Some("attack") if action => OpKind::Attack,
+        Some("use_item") if action => OpKind::UseItem,
         Some("bonemeal") if action => OpKind::Bonemeal,
         o => return Err(format!("unknown op {o:?}")),
     };
-    if matches!(kind, OpKind::Use | OpKind::Attack) {
+    if matches!(kind, OpKind::Use | OpKind::Attack | OpKind::UseItem) {
         let tick = v
             .get("tick")
             .and_then(Value::as_u64)
             .and_then(|t| u32::try_from(t).ok())
             .filter(|&t| t >= 1)
             .ok_or("an action needs a tick >= 1")?;
-        let p = pos(v.get("pos"))?;
+        let p = if kind == OpKind::UseItem && v.get("pos").is_none() {
+            BlockPos::new(0, 0, 0)
+        } else {
+            pos(v.get("pos"))?
+        };
         let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
         let hit = match v.get("hit").and_then(Value::as_array) {
             Some(a) if a.len() == 3 => Some([
@@ -628,6 +638,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             player_use: Some(PlayerUse {
                 entity: s("entity").ok_or("use needs an entity")?,
                 attack: kind == OpKind::Attack,
+                air: kind == OpKind::UseItem,
                 pos: p,
                 face: s("face").unwrap_or_else(|| "up".to_owned()),
                 hit,

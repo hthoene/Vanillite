@@ -171,14 +171,19 @@ final class ScenarioEntities {
 
   /**
    * The {@code use} action ({@code ServerPlayerGameMode.useItemOn} after the checks of {@code
-   * handleUseItemOn}) and the {@code attack} action ({@code START_DESTROY_BLOCK}) of a named
-   * player, with the stack of the action put into its hand first.
+   * handleUseItemOn}), the {@code use_item} action ({@code ServerPlayerGameMode.useItem}) and the
+   * {@code attack} action ({@code START_DESTROY_BLOCK}) of a named player, with the stack of the
+   * action put into its hand first.
    */
-  void use(JsonObject action, boolean attack) throws Exception {
+  void use(JsonObject action, String op) throws Exception {
+    boolean attack = op.equals("attack");
     net.minecraft.server.level.ServerPlayer p =
         (net.minecraft.server.level.ServerPlayer) byName.get(action.get("entity").getAsString());
-    JsonArray at = action.getAsJsonArray("pos");
-    BlockPos pos = new BlockPos(at.get(0).getAsInt(), at.get(1).getAsInt(), at.get(2).getAsInt());
+    JsonArray at = action.has("pos") ? action.getAsJsonArray("pos") : null;
+    BlockPos pos =
+        at == null
+            ? BlockPos.ZERO
+            : new BlockPos(at.get(0).getAsInt(), at.get(1).getAsInt(), at.get(2).getAsInt());
     net.minecraft.core.Direction face =
         action.has("face")
             ? net.minecraft.core.Direction.byName(action.get("face").getAsString())
@@ -211,7 +216,9 @@ final class ScenarioEntities {
     }
     boolean sneak = action.has("sneak") && action.get("sneak").getAsBoolean();
     p.setShiftKeyDown(sneak);
-    if (attack) {
+    if (op.equals("use_item")) {
+      p.gameMode.useItem(p, level, p.getItemInHand(hand), hand);
+    } else if (attack) {
       p.gameMode.handleBlockBreakAction(
           pos,
           net.minecraft.network.protocol.game.ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK,

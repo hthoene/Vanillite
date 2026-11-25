@@ -75,7 +75,9 @@ fn apply(
         OpKind::Effect => return Err("effect without its effect".to_owned()),
         OpKind::Command => return Err("command without its line".to_owned()),
         OpKind::ThrowPotion => return Err("throw_potion without its potion".to_owned()),
-        OpKind::Use | OpKind::Attack => return Err("use without its click".to_owned()),
+        OpKind::Use | OpKind::Attack | OpKind::UseItem => {
+            return Err("use without its click".to_owned());
+        }
         OpKind::Force | OpKind::Unforce => {
             return world.set_forced(&op.chunks, op.kind == OpKind::Force);
         }
