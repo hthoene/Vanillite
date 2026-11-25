@@ -36,6 +36,8 @@ pub(crate) struct RTree {
     /// Children of every subtree as a range into `child_list` (empty for leaves).
     children: Vec<(u32, u32)>,
     child_list: Vec<u32>,
+    /// The parameter space of each `child_list` entry, so a node's children are contiguous.
+    child_spaces: Vec<[Parameter; DIMENSIONS]>,
     leaf_count: usize,
     root: usize,
 }
@@ -48,6 +50,7 @@ impl RTree {
             spaces: leaves.to_vec(),
             children: vec![(0, 0); leaves.len()],
             child_list: Vec::new(),
+            child_spaces: Vec::new(),
             leaf_count: leaves.len(),
             root: 0,
         };
@@ -117,6 +120,8 @@ impl RTree {
         let space = self.union_space(children.iter().copied());
         let start = self.child_list.len() as u32;
         self.child_list.extend(children.iter().map(|&c| c as u32));
+        let spaces: Vec<_> = children.iter().map(|&c| self.spaces[c]).collect();
+        self.child_spaces.extend(spaces);
         self.spaces.push(space);
         self.children.push((start, children.len() as u32));
         self.spaces.len() - 1
@@ -136,35 +141,41 @@ impl RTree {
         }
         // Vanilla throws (NullPointerException) if no leaf is closer than `Long.MAX_VALUE`, which
         // needs absurd targets; fall back to the first value.
+        let candidate = candidate.map(|c| (c, distance(&self.spaces[c], target)));
         self.search_subtree(self.root, target, candidate)
-            .unwrap_or(0)
+            .map_or(0, |(leaf, _)| leaf)
     }
 
-    /// `SubTree.search(target, candidate, Node::distance)`.
+    /// `SubTree.search(target, candidate, Node::distance)`; leaves come with their distance
+    /// to `target` (computed once instead of at every level).
     fn search_subtree(
         &self,
         node: usize,
         target: &[i64; DIMENSIONS],
-        candidate: Option<usize>,
-    ) -> Option<usize> {
-        let mut min_distance = candidate.map_or(i64::MAX, |c| distance(&self.spaces[c], target));
+        candidate: Option<(usize, i64)>,
+    ) -> Option<(usize, i64)> {
+        let mut min_distance = candidate.map_or(i64::MAX, |(_, d)| d);
         let mut closest = candidate;
         let (start, len) = self.children[node];
-        for &child in &self.child_list[start as usize..(start + len) as usize] {
+        let range = start as usize..(start + len) as usize;
+        for (&child, space) in self.child_list[range.clone()]
+            .iter()
+            .zip(&self.child_spaces[range])
+        {
             let child = child as usize;
-            let child_distance = distance(&self.spaces[child], target);
+            let child_distance = distance(space, target);
             if min_distance > child_distance {
                 let (leaf, leaf_distance) = if self.is_leaf(child) {
                     (child, child_distance)
                 } else {
-                    let Some(leaf) = self.search_subtree(child, target, closest) else {
+                    let Some(found) = self.search_subtree(child, target, closest) else {
                         continue;
                     };
-                    (leaf, distance(&self.spaces[leaf], target))
+                    found
                 };
                 if min_distance > leaf_distance {
                     min_distance = leaf_distance;
-                    closest = Some(leaf);
+                    closest = Some((leaf, leaf_distance));
                 }
             }
         }

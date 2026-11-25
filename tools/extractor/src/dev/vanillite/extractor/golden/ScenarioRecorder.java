@@ -63,7 +63,11 @@ import net.minecraft.world.ticks.ScheduledTick;
  *
  * <p>The actions {@code force} and {@code unforce} add or remove forced tickets of chunks and then
  * run the chunk system and the entity manager without a game tick until every chunk around the
- * scenario is loaded or unloaded, with its entities, as its ticket level says.
+ * scenario is loaded or unloaded, with its entities, as its ticket level says. The action {@code
+ * restart} stops the server, which saves the world, and starts a new one on the saved world: its
+ * saved chunk tickets come back and their chunks load before the next tick ({@code
+ * prepareLevels}); the rules, time and difficulty are set again and the level random starts from
+ * the seed.
  *
  * <p>Usage: {@code java -cp ... dev.vanillite.extractor.golden.ScenarioRecorder (<scenario.json>
  * <trace.json>)...}
@@ -130,16 +134,7 @@ public final class ScenarioRecorder {
     ParityServer server = ParityServer.start(dir, seed, layers, biome);
     ScenarioEntities entities = null;
     try {
-      Map<String, String> rules = new java.util.LinkedHashMap<>();
-      for (String[] rule : DEFAULT_RULES) {
-        rules.put(rule[0], rule[1]);
-      }
-      if (scenario.has("rules")) {
-        for (Map.Entry<String, JsonElement> e : scenario.getAsJsonObject("rules").entrySet()) {
-          rules.put(e.getKey(), e.getValue().getAsString());
-        }
-      }
-      rules.forEach((k, v) -> server.command("gamerule " + k + " " + v));
+      rules(server, scenario);
 
       ServerLevel level = server.level();
       JsonArray region = scenario.getAsJsonArray("region");
@@ -157,24 +152,7 @@ public final class ScenarioRecorder {
         }
       }
 
-      if (scenario.has("weather")) {
-        String weather = scenario.get("weather").getAsString();
-        boolean thunder = weather.equals("thunder");
-        if (!thunder && !weather.equals("rain") && !weather.equals("clear")) {
-          throw new IllegalArgumentException("unknown weather " + weather);
-        }
-        boolean rain = !weather.equals("clear");
-        // Full rain (and thunder) at once instead of the client fade of 0.01 per tick.
-        server.setWeatherParameters(0, rain ? 1_000_000 : 0, rain, thunder);
-        level.setRainLevel(rain ? 1.0F : 0.0F);
-        level.setThunderLevel(thunder ? 1.0F : 0.0F);
-      }
-      if (scenario.has("time")) {
-        server.command("time set " + scenario.get("time").getAsLong());
-      }
-      server.command(
-          "difficulty "
-              + (scenario.has("difficulty") ? scenario.get("difficulty").getAsString() : "normal"));
+      timeAndDifficulty(server, level, scenario);
       entities = new ScenarioEntities(server, level);
       JsonArray specs = scenario.has("entities") ? scenario.getAsJsonArray("entities") : new JsonArray();
       // Players join first; then the level random starts from the world seed and the mobs come.
@@ -217,12 +195,26 @@ public final class ScenarioRecorder {
                   level.setChunkForced(xz.get(0).getAsInt(), xz.get(1).getAsInt(), op.equals("force"));
                 }
                 settle(server, level, area);
+              } else if (op.equals("restart")) {
+                if (!specs.isEmpty()) {
+                  throw new IllegalStateException("scenarios with entities cannot restart");
+                }
+                // `stopServer` saves every level with its chunks and chunk tickets; the new
+                // server loads them, and `prepareLevels` loads the chunks of the saved tickets.
+                server.shutdown();
+                server = ParityServer.start(dir, seed, layers, biome);
+                rules(server, scenario);
+                level = server.level();
+                timeAndDifficulty(server, level, scenario);
+                level.getRandom().setSeed(seed);
               } else if (op.equals("hurt")) {
                 entities.hurt(action);
               } else if (op.equals("lightning")) {
                 strike(level, pos(action.get("pos")));
               } else if (op.equals("effect")) {
                 entities.effect(action);
+              } else if (op.equals("throw_potion")) {
+                entities.throwPotion(action);
               } else {
                 apply(level, action, true);
               }
@@ -243,6 +235,45 @@ public final class ScenarioRecorder {
       server.shutdown();
       deleteTree(dir);
     }
+  }
+
+  /** The default game rules and the scenario's on top. */
+  private static void rules(ParityServer server, JsonObject scenario) {
+    Map<String, String> rules = new java.util.LinkedHashMap<>();
+    for (String[] rule : DEFAULT_RULES) {
+      rules.put(rule[0], rule[1]);
+    }
+    if (scenario.has("rules")) {
+      for (Map.Entry<String, JsonElement> e : scenario.getAsJsonObject("rules").entrySet()) {
+        rules.put(e.getKey(), e.getValue().getAsString());
+      }
+    }
+    for (Map.Entry<String, String> rule : rules.entrySet()) {
+      server.command("gamerule " + rule.getKey() + " " + rule.getValue());
+    }
+  }
+
+  /** The scenario's time of day and difficulty. */
+  private static void timeAndDifficulty(
+      ParityServer server, ServerLevel level, JsonObject scenario) {
+    if (scenario.has("weather")) {
+      String weather = scenario.get("weather").getAsString();
+      boolean thunder = weather.equals("thunder");
+      if (!thunder && !weather.equals("rain") && !weather.equals("clear")) {
+        throw new IllegalArgumentException("unknown weather " + weather);
+      }
+      boolean rain = !weather.equals("clear");
+      // Full rain (and thunder) at once instead of the client fade of 0.01 per tick.
+      server.setWeatherParameters(0, rain ? 1_000_000 : 0, rain, thunder);
+      level.setRainLevel(rain ? 1.0F : 0.0F);
+      level.setThunderLevel(thunder ? 1.0F : 0.0F);
+    }
+    if (scenario.has("time")) {
+      server.command("time set " + scenario.get("time").getAsLong());
+    }
+    server.command(
+        "difficulty "
+            + (scenario.has("difficulty") ? scenario.get("difficulty").getAsString() : "normal"));
   }
 
   /** Loads the region's chunks and their neighbours and steps until they all tick. */

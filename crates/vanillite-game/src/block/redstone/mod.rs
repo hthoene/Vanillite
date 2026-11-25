@@ -8,6 +8,7 @@
 //! experiments (`redstone_experiments`) are off by default in 26.3, so only the default wire
 //! evaluator exists.
 
+pub mod alternate_current;
 mod components;
 mod diode;
 mod torch;

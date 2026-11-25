@@ -82,6 +82,28 @@ impl Noise {
         dispatch!(self, n => n.add_to_volume(buffer, volume, xz_scale, y_scale, amplitude));
     }
 
+    /// [`Self::add_to_volume`] where only the points of `mask` (same index order as `buffer`)
+    /// matter: they get the same values as unmasked, the others may or may not be added to.
+    pub fn add_to_volume_masked(
+        &self,
+        buffer: &mut [f32],
+        volume: &DensityVolume,
+        xz_scale: f64,
+        y_scale: f64,
+        amplitude: f32,
+        mask: &[bool],
+    ) {
+        match &self.0 {
+            Kind::Perlin(n) => {
+                n.add_to_volume_masked(buffer, volume, xz_scale, y_scale, amplitude, mask)
+            }
+            Kind::SmearedPerlin(n) => {
+                n.add_to_volume_masked(buffer, volume, xz_scale, y_scale, amplitude, mask);
+            }
+            Kind::Simplex(n) => n.add_to_volume(buffer, volume, xz_scale, y_scale, amplitude),
+        }
+    }
+
     /// `new SimplexNoise(random, discardNoiseOffset)` (the end islands use it with `true`).
     pub fn simplex(random: &mut AnyRandom, discard_noise_offset: bool) -> Noise {
         Noise(Kind::Simplex(Box::new(SimplexNoise::new(

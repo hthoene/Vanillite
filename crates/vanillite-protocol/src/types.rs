@@ -88,7 +88,12 @@ impl Uuid {
 
     /// Vanilla's offline-mode UUID: version 3 (MD5) of `OfflinePlayer:<name>`.
     pub fn offline(name: &str) -> Self {
-        let digest = md5(format!("OfflinePlayer:{name}").as_bytes());
+        Self::from_name_bytes(format!("OfflinePlayer:{name}").as_bytes())
+    }
+
+    /// Java's `UUID.nameUUIDFromBytes`: a version 3 (MD5) UUID.
+    pub fn from_name_bytes(name: &[u8]) -> Self {
+        let digest = md5(name);
         let mut v = u128::from_be_bytes(digest);
         v &= !(0xF000u128 << 64);
         v |= 0x3000u128 << 64;

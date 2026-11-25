@@ -270,7 +270,35 @@ fn finish(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, u: UsingItem
             seed,
         );
     }
-    if name == "minecraft:milk_bucket" || name == "minecraft:honey_bottle" {
+    // The consumable listeners and `on_consume_effects`: potions, stew effects, golden
+    // apples, milk, honey.
+    {
+        let Entities { store, players, .. } = &mut *ents;
+        if let Some(mut entity) = store.get_mut(player)
+            && let Some(data) = players.get_mut(entity.as_ref().kind_row())
+        {
+            let mut host = crate::effect::living::PlayerHost {
+                entity: &mut entity,
+                player: data,
+                env: &mut *env,
+            };
+            let mut roll = || crate::experience_orb::with_entity_random(|r| r.next_float());
+            crate::effect::consume::on_consume(
+                &stack,
+                vanillite_data::entity::ids::PLAYER,
+                &mut host,
+                &mut roll,
+                Some(player),
+            );
+        }
+    }
+    if matches!(
+        name,
+        "minecraft:milk_bucket"
+            | "minecraft:honey_bottle"
+            | "minecraft:potion"
+            | "minecraft:ominous_bottle"
+    ) {
         let seed = crate::survival::sound_seed();
         play_sound(
             env.out,
@@ -322,11 +350,17 @@ fn finish(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, u: UsingItem
     }
 }
 
-/// The first arrow in the inventory (`getProjectile`): off hand, main hand, then the slots.
+/// The first arrow (`#arrows`: arrows, tipped and spectral arrows) in the inventory
+/// (`getProjectile`): off hand, main hand, then the slots.
 fn find_arrow(ents: &Entities, player: EntityId) -> Option<usize> {
     let p = ents.player(player)?;
-    let arrow = vanillite_data::registry::ITEM.id("minecraft:arrow")?;
-    let is_arrow = |s: &ItemStack| s.item == arrow && !s.is_empty();
+    let is_arrow = |s: &ItemStack| {
+        !s.is_empty()
+            && matches!(
+                item::item_id(s).name(),
+                "minecraft:arrow" | "minecraft:tipped_arrow" | "minecraft:spectral_arrow"
+            )
+    };
     if is_arrow(p.inventory.get(crate::inventory::OFFHAND)) {
         return Some(crate::inventory::OFFHAND);
     }
@@ -370,6 +404,19 @@ pub fn release(
     if arrow_slot.is_none() && !creative {
         return;
     }
+    // Creative players without arrows shoot a plain one.
+    let ammo = arrow_slot
+        .and_then(|i| ents.player(player).map(|p| p.inventory.get(i).clone()))
+        .unwrap_or_else(|| {
+            ItemStack::new(
+                vanillite_data::registry::ITEM
+                    .id("minecraft:arrow")
+                    .unwrap_or(0),
+                1,
+            )
+        });
+    // Infinity (`ammo_use`) only saves plain arrows.
+    let infinity = infinity && item::item_id(&ammo).name() == "minecraft:arrow";
     let Some(e) = ents.store.get(player) else {
         return;
     };
@@ -398,6 +445,7 @@ pub fn release(
         1.0,
         Some(player),
         Some(&stack),
+        &ammo,
         power >= 1.0,
         pickup,
     );

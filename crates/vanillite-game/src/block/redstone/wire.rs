@@ -9,7 +9,7 @@ use crate::level::signal::{DIRECTIONS, wire_power, with_power};
 use crate::level::{Level, update};
 
 /// `Direction.Plane.VERTICAL`.
-const VERTICAL: [Direction; 2] = [Direction::Up, Direction::Down];
+pub(super) const VERTICAL: [Direction; 2] = [Direction::Up, Direction::Down];
 
 /// `getSignal`: the wire's power towards a side it points to, or up; nothing down. While a wire
 /// computes its power, wires emit nothing.
@@ -191,7 +191,7 @@ fn wire_signal(state: BlockState) -> i32 {
 }
 
 /// `updateNeighborsOfNeighboringWires`.
-fn update_neighbors_of_neighboring_wires(level: &mut Level, pos: BlockPos) {
+pub(super) fn update_neighbors_of_neighboring_wires(level: &mut Level, pos: BlockPos) {
     for direction in HORIZONTAL {
         check_corner_change_at(level, pos.relative(direction));
     }
