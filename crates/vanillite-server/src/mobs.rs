@@ -1145,6 +1145,16 @@ fn environment(
 ) -> Environment {
     let overworld = dimension == "minecraft:overworld";
     let nether = dimension == "minecraft:the_nether";
+    let day = {
+        let clocks = global.level.clocks();
+        clocks.timeline("minecraft:day").and_then(|t| {
+            clocks
+                .clocks
+                .get(t.clock)
+                .map(|c| t.current_ticks(c.total_ticks))
+        })
+    }
+    .unwrap_or(6000);
     if !overworld {
         return Environment {
             surface_slime_chance: 0.0,
@@ -1159,18 +1169,9 @@ fn environment(
             monster_light_test: if nether { (7, 7) } else { (0, 7) },
             ambient_light: if nether { 0.1 } else { 0.0 },
             has_ceiling: nether,
+            day_time: day,
         };
     }
-    let day = {
-        let clocks = global.level.clocks();
-        clocks.timeline("minecraft:day").and_then(|t| {
-            clocks
-                .clocks
-                .get(t.clock)
-                .map(|c| t.current_ticks(c.total_ticks))
-        })
-    }
-    .unwrap_or(6000);
     let w = survival.weather;
     // The `minecraft:moon` timeline: the surface slime chance is half the moon's brightness.
     let moon = {
@@ -1188,6 +1189,7 @@ fn environment(
     Environment {
         surface_slime_chance: MOON_BRIGHTNESS[phase] * 0.5,
         world_seed: seed,
+        day_time: day,
         ..Environment::overworld(day, w.rain(), w.thunder())
     }
 }
