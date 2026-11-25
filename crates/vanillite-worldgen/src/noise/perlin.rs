@@ -111,23 +111,68 @@ struct Column {
     x1: i32,
 }
 
-/// Runs `body` for every (Z, X) column of `volume` with the column's slice of `buffer` (the
-/// outer loops of `addToVolume`).
+/// The points of a volume `add_to_volume` computes: all, or those of a mask.
+trait Points: Copy {
+    /// Whether any point of the column starting at `start` (`len` points) is needed.
+    fn any(self, start: usize, len: usize) -> bool;
+    /// Whether point `index` is needed.
+    fn has(self, index: usize) -> bool;
+}
+
+/// Every point.
+#[derive(Clone, Copy)]
+struct All;
+
+impl Points for All {
+    #[inline(always)]
+    fn any(self, _: usize, _: usize) -> bool {
+        true
+    }
+
+    #[inline(always)]
+    fn has(self, _: usize) -> bool {
+        true
+    }
+}
+
+impl Points for &[bool] {
+    #[inline(always)]
+    fn any(self, start: usize, len: usize) -> bool {
+        self[start..start + len].contains(&true)
+    }
+
+    #[inline(always)]
+    fn has(self, index: usize) -> bool {
+        self[index]
+    }
+}
+
+/// Runs `body` for every (Z, X) column of `volume` with a needed point, with the column's
+/// slice of `buffer` and the index of its first point (the outer loops of `addToVolume`).
 #[inline(always)]
 fn for_each_column(
     noise: &GradientNoise,
     buffer: &mut [f32],
     volume: &DensityVolume,
     xz_scale: f64,
-    mut body: impl FnMut(&mut [f32], &Column),
+    points: impl Points,
+    mut body: impl FnMut(&mut [f32], &Column, usize),
 ) {
-    let mut columns = buffer[..volume.len()].chunks_exact_mut(volume.size_y as usize);
+    let size_y = volume.size_y as usize;
+    let mut columns = buffer[..volume.len()].chunks_exact_mut(size_y);
+    let mut start = 0;
     for index_z in 0..volume.size_z {
         let z = Lattice::new(
             f64::from(volume.block_z(index_z)) * xz_scale,
             noise.offset_z,
         );
         for index_x in 0..volume.size_x {
+            let out = columns.next().expect("buffer covers the volume");
+            let first = start;
+            start += size_y;
+            if !points.any(first, size_y) {
+                continue;
+            }
             let x = Lattice::new(
                 f64::from(volume.block_x(index_x)) * xz_scale,
                 noise.offset_x,
@@ -138,8 +183,7 @@ fn for_each_column(
                 x,
                 z,
             };
-            let out = columns.next().expect("buffer covers the volume");
-            body(out, &column);
+            body(out, &column, first);
         }
     }
 }
@@ -220,11 +264,43 @@ impl Octave for PerlinNoise {
         y_scale: f64,
         amplitude: f32,
     ) {
+        self.add_points(buffer, volume, xz_scale, y_scale, amplitude, All);
+    }
+
+    fn add_to_volume_masked(
+        &self,
+        buffer: &mut [f32],
+        volume: &DensityVolume,
+        xz_scale: f64,
+        y_scale: f64,
+        amplitude: f32,
+        mask: &[bool],
+    ) {
+        self.add_points(buffer, volume, xz_scale, y_scale, amplitude, mask);
+    }
+}
+
+impl PerlinNoise {
+    /// `addToVolume` at `points`: the cell column is computed when a needed point enters a new
+    /// cell, so the values do not depend on which points are skipped.
+    #[inline(always)]
+    fn add_points(
+        &self,
+        buffer: &mut [f32],
+        volume: &DensityVolume,
+        xz_scale: f64,
+        y_scale: f64,
+        amplitude: f32,
+        points: impl Points,
+    ) {
         let n = &self.base;
-        for_each_column(n, buffer, volume, xz_scale, |out, c| {
+        for_each_column(n, buffer, volume, xz_scale, points, |out, c, first| {
             let mut cell = CellColumn::default();
             let mut last_floor_y = i32::MIN;
             for (index_y, value) in (0..volume.size_y).zip(out.iter_mut()) {
+                if !points.has(first + index_y as usize) {
+                    continue;
+                }
                 let y = wrap(f64::from(volume.block_y(index_y)) * y_scale) + n.offset_y;
                 let floor_y = floor(y);
                 let ry = (y - f64::from(floor_y)) as f32;
@@ -309,11 +385,42 @@ impl Octave for SmearedPerlinNoise {
         y_scale: f64,
         amplitude: f32,
     ) {
+        self.add_points(buffer, volume, xz_scale, y_scale, amplitude, All);
+    }
+
+    fn add_to_volume_masked(
+        &self,
+        buffer: &mut [f32],
+        volume: &DensityVolume,
+        xz_scale: f64,
+        y_scale: f64,
+        amplitude: f32,
+        mask: &[bool],
+    ) {
+        self.add_points(buffer, volume, xz_scale, y_scale, amplitude, mask);
+    }
+}
+
+impl SmearedPerlinNoise {
+    /// `addToVolume` at `points` (see [`PerlinNoise::add_points`]).
+    #[inline(always)]
+    fn add_points(
+        &self,
+        buffer: &mut [f32],
+        volume: &DensityVolume,
+        xz_scale: f64,
+        y_scale: f64,
+        amplitude: f32,
+        points: impl Points,
+    ) {
         let n = &self.perlin.base;
-        for_each_column(n, buffer, volume, xz_scale, |out, c| {
+        for_each_column(n, buffer, volume, xz_scale, points, |out, c, first| {
             let mut cell = CellColumn::default();
             let mut last_floor_y = i32::MIN;
             for (index_y, value) in (0..volume.size_y).zip(out.iter_mut()) {
+                if !points.has(first + index_y as usize) {
+                    continue;
+                }
                 let original_y = f64::from(volume.block_y(index_y)) * y_scale;
                 let y = wrap(original_y) + n.offset_y;
                 let floor_y = floor(y);

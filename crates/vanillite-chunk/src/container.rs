@@ -336,6 +336,51 @@ impl<S: Strategy> PalettedContainer<S> {
         self.set(S::index(x, y, z), value)
     }
 
+    /// A container holding `values` (`S::ENTRIES` of them, in index order), with the palette in
+    /// order of first occurrence and the fewest bits that hold it.
+    pub fn from_values(values: &[u16]) -> Self {
+        assert_eq!(values.len(), S::ENTRIES, "one value per entry");
+        let first = values[0];
+        if values.iter().all(|&v| v == first) {
+            return Self::new(first);
+        }
+        let mut palette = vec![first];
+        let mut indices = vec![0u8; S::ENTRIES];
+        let (mut last, mut last_id) = (first, 0u8);
+        for (slot, &value) in indices.iter_mut().zip(values) {
+            if value != last {
+                last = value;
+                last_id = match find(&palette, value) {
+                    Some(id) => id as u8,
+                    None if palette.len() < 256 => {
+                        palette.push(value);
+                        (palette.len() - 1) as u8
+                    }
+                    None => return Self::direct(values),
+                };
+            }
+            *slot = last_id;
+        }
+        let needed = (usize::BITS - (palette.len() - 1).leading_zeros()) as u8;
+        match S::indirect_bits(needed.max(1)) {
+            Some(bits) => Self::wrap(ContainerData::Indirect {
+                bits,
+                data: bits::pack(S::ENTRIES, bits, |i| u32::from(indices[i])),
+                palette,
+            }),
+            None => Self::direct(values),
+        }
+    }
+
+    /// The global-palette form of `values`.
+    fn direct(values: &[u16]) -> Self {
+        let bits = S::global_bits();
+        Self::wrap(ContainerData::Direct {
+            bits,
+            data: bits::pack(S::ENTRIES, bits, |i| u32::from(values[i])),
+        })
+    }
+
     /// Sets every entry to `value` (drops the data array).
     #[inline]
     pub fn fill(&mut self, value: u16) {

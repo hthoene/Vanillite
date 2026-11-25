@@ -10,7 +10,9 @@ use std::sync::Arc;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 use vanillite_base::{BlockPos, ChunkPos};
-use vanillite_chunk::{BiomeId, Chunk, ChunkLight, HeightmapKind, Section, facts};
+use vanillite_chunk::{
+    BiomeId, Chunk, ChunkLight, HeightmapKind, PalettedContainer, Section, facts,
+};
 use vanillite_data::block::{BlockId, BlockState};
 use vanillite_nbt::Compound;
 
@@ -109,6 +111,9 @@ pub struct ProtoChunk {
     heightmaps: [[i32; 256]; 6],
     /// Whether the terrain stage is done: block changes update the final heightmaps from then on.
     terrain_done: bool,
+    /// Whether the final heightmaps equal a fresh `primeHeightmaps` of the blocks: true from
+    /// the terrain's end until a block changes without updating them.
+    final_heightmaps_exact: bool,
     /// Positions (`BlockPos.asLong` layout is not needed: x, y, z) marked for post-processing.
     post_processing: Vec<(i32, i32, i32)>,
     /// Block entity data by position (`setBlockEntityNbt`, `DUMMY` placeholders included).
@@ -123,9 +128,89 @@ pub struct ProtoChunk {
     /// `entities`: entities added during generation (structure mobs, template entities), as
     /// their saved NBT (`id`, `Pos`, ...), in the order they were added.
     entities: Vec<Compound>,
+    /// The blocks while the terrain stage builds them ([`Self::begin_dense`] to
+    /// [`Self::end_dense`]); the sections' blocks are stale meanwhile.
+    dense: Option<DenseBlocks>,
+}
+
+/// Block states of all sections as plain arrays (section after section, each in
+/// `PalettedContainer` index order), with the non-air count per section: the terrain stage
+/// writes nearly every block of a chunk, which is much cheaper here than in paletted sections.
+#[derive(Clone, Debug)]
+struct DenseBlocks {
+    states: Vec<u16>,
+    non_air: Vec<u16>,
+}
+
+impl DenseBlocks {
+    /// The index of a position (local x/z, section index, local y).
+    #[inline]
+    fn index(section: usize, x: i32, y: i32, z: i32) -> usize {
+        (section << 12)
+            | (((y & 15) as usize) << 8)
+            | (((z & 15) as usize) << 4)
+            | (x & 15) as usize
+    }
+
+    /// Sets the state at `index` of `section` and returns the previous one.
+    #[inline]
+    fn set(&mut self, section: usize, index: usize, state: u16) -> u16 {
+        let old = std::mem::replace(&mut self.states[index], state);
+        let air = BlockState::AIR.0;
+        if old == air && state != air {
+            self.non_air[section] += 1;
+        } else if old != air && state == air {
+            self.non_air[section] -= 1;
+        }
+        old
+    }
+}
+
+thread_local! {
+    /// A spare state buffer of [`DenseBlocks`], so chunks on one thread reuse it.
+    static SPARE_DENSE: std::cell::Cell<Vec<u16>> = const { std::cell::Cell::new(Vec::new()) };
 }
 
 impl ProtoChunk {
+    /// Moves the blocks into a dense buffer until [`Self::end_dense`]: block reads and writes
+    /// are much cheaper there. [`Self::sections`] must not be read for blocks meanwhile.
+    pub fn begin_dense(&mut self) {
+        if self.dense.is_some() {
+            return;
+        }
+        let mut states = SPARE_DENSE.take();
+        states.clear();
+        states.reserve(self.sections.len() << 12);
+        let mut non_air = Vec::with_capacity(self.sections.len());
+        for section in &self.sections {
+            let blocks = section.blocks();
+            match blocks.single() {
+                Some(state) => states.resize(states.len() + 4096, state),
+                None => states.extend((0..4096).map(|i| blocks.get(i))),
+            }
+            let start = states.len() - 4096;
+            let air = BlockState::AIR.0;
+            non_air.push(states[start..].iter().filter(|&&s| s != air).count() as u16);
+        }
+        self.dense = Some(DenseBlocks { states, non_air });
+    }
+
+    /// Packs the dense buffer of [`Self::begin_dense`] back into the sections.
+    pub fn end_dense(&mut self) {
+        let Some(dense) = self.dense.take() else {
+            return;
+        };
+        for (section, states) in self
+            .sections
+            .iter_mut()
+            .zip(dense.states.as_chunks::<4096>().0)
+        {
+            let biomes = std::mem::replace(section.biomes_mut(), PalettedContainer::new(0));
+            *section = Section::from_containers(PalettedContainer::from_values(states), biomes);
+        }
+        SPARE_DENSE.set(dense.states);
+    }
+
     /// An empty chunk of air with every biome set to `biome`.
     pub fn new(pos: ChunkPos, min_y: i32, height: i32, biome: BiomeId) -> Self {
         assert!(
@@ -139,6 +224,7 @@ impl ProtoChunk {
             sections: (0..height / 16).map(|_| Section::new(air, biome)).collect(),
             heightmaps: [[min_y; 256]; 6],
             terrain_done: false,
+            final_heightmaps_exact: false,
             post_processing: Vec::new(),
             block_entities: FxHashMap::default(),
             block_ticks: ProtoTicks::default(),
@@ -146,6 +232,7 @@ impl ProtoChunk {
             structure_starts: Vec::new(),
             structure_references: Vec::new(),
             entities: Vec::new(),
+            dense: None,
         }
     }
 
@@ -165,6 +252,7 @@ impl ProtoChunk {
             sections,
             heightmaps: [[min_y; 256]; 6],
             terrain_done: false,
+            final_heightmaps_exact: false,
             post_processing: Vec::new(),
             block_entities: FxHashMap::default(),
             block_ticks: ProtoTicks::default(),
@@ -172,6 +260,7 @@ impl ProtoChunk {
             structure_starts: Vec::new(),
             structure_references: Vec::new(),
             entities: Vec::new(),
+            dense: None,
         };
         chunk.prime(&[
             WgHeightmap::WorldSurface.kind(),
@@ -187,10 +276,12 @@ impl ProtoChunk {
     /// else (heightmaps, block entities, ticks) and must get sections back with
     /// [`Self::set_sections`] before it is used again.
     pub fn take_sections(&mut self) -> Vec<Section> {
+        self.end_dense();
         std::mem::take(&mut self.sections)
     }
 
-    /// Puts the chunk's sections back (see [`Self::take_sections`]).
+    /// Puts the chunk's sections back (see [`Self::take_sections`]); they must hold the blocks
+    /// they held when taken, as the heightmaps are kept.
     pub fn set_sections(&mut self, sections: Vec<Section>) {
         self.sections = sections;
     }
@@ -227,16 +318,26 @@ impl ProtoChunk {
 
     /// Sections, bottom first.
     pub fn sections(&self) -> &[Section] {
+        debug_assert!(self.dense.is_none(), "sections read in dense mode");
         &self.sections
     }
 
     /// Mutable section by index.
     pub fn section_mut(&mut self, index: usize) -> &mut Section {
+        self.end_dense();
+        self.final_heightmaps_exact = false;
         &mut self.sections[index]
     }
 
     /// `getHighestFilledSectionIndex()`: the highest section with a non-air block, or -1.
     pub fn highest_filled_section_index(&self) -> i32 {
+        if let Some(dense) = &self.dense {
+            return dense
+                .non_air
+                .iter()
+                .rposition(|&n| n > 0)
+                .map_or(-1, |i| i as i32);
+        }
         self.sections
             .iter()
             .rposition(|s| !s.summary().is_empty())
@@ -248,6 +349,9 @@ impl ProtoChunk {
     pub fn block(&self, x: i32, y: i32, z: i32) -> BlockState {
         if self.is_outside(y) {
             return BlockState::AIR;
+        }
+        if let Some(dense) = &self.dense {
+            return BlockState(dense.states[DenseBlocks::index(self.section_index(y), x, y, z)]);
         }
         BlockState(self.sections[self.section_index(y)].block(
             (x & 15) as u32,
@@ -273,12 +377,19 @@ impl ProtoChunk {
             return void_air();
         }
         let index = self.section_index(y);
-        let section = &mut self.sections[index];
-        if section.summary().is_empty() && state == BlockState::AIR {
-            return state;
-        }
         let (lx, lz) = ((x & 15) as u32, (z & 15) as u32);
-        let old = BlockState(section.set_block(lx, (y & 15) as u32, lz, state.0));
+        let old = if let Some(dense) = &mut self.dense {
+            if dense.non_air[index] == 0 && state == BlockState::AIR {
+                return state;
+            }
+            BlockState(dense.set(index, DenseBlocks::index(index, x, y, z), state.0))
+        } else {
+            let section = &mut self.sections[index];
+            if section.summary().is_empty() && state == BlockState::AIR {
+                return state;
+            }
+            BlockState(section.set_block(lx, (y & 15) as u32, lz, state.0))
+        };
         let (lx, lz) = (lx as usize, lz as usize);
         if self.terrain_done {
             for kind in FINAL {
@@ -297,6 +408,28 @@ impl ProtoChunk {
     pub fn finish_terrain(&mut self) {
         self.terrain_done = true;
         self.prime(&FINAL);
+        self.final_heightmaps_exact = true;
+    }
+
+    /// The final heightmap `kind` (first free Y per column `x + z * 16`) when it is known to
+    /// equal a fresh prime of the blocks (`Heightmap.primeHeightmaps`).
+    pub fn exact_final_heightmap(&self, kind: HeightmapKind) -> Option<&[i32; 256]> {
+        (self.terrain_done && self.final_heightmaps_exact && FINAL.contains(&kind))
+            .then(|| &self.heightmaps[kind.id() as usize])
+    }
+
+    /// Notes a block change that bypassed the heightmaps.
+    #[inline]
+    fn note_unmapped_change(&mut self, old: u16, new: u16) {
+        if self.terrain_done && old != new {
+            let (old, new) = (facts::block_flags(old), facts::block_flags(new));
+            if FINAL
+                .iter()
+                .any(|kind| kind.matches(old) != kind.matches(new))
+            {
+                self.final_heightmaps_exact = false;
+            }
+        }
     }
 
     /// `Heightmap.primeHeightmaps` for `kinds`: each column's highest matching block.
@@ -338,7 +471,17 @@ impl ProtoChunk {
     #[inline]
     pub fn set_block_raw(&mut self, x: i32, y: i32, z: i32, state: BlockState) {
         let index = self.section_index(y);
-        self.sections[index].set_block((x & 15) as u32, (y & 15) as u32, (z & 15) as u32, state.0);
+        let old = if let Some(dense) = &mut self.dense {
+            dense.set(index, DenseBlocks::index(index, x, y, z), state.0)
+        } else {
+            self.sections[index].set_block(
+                (x & 15) as u32,
+                (y & 15) as u32,
+                (z & 15) as u32,
+                state.0,
+            )
+        };
+        self.note_unmapped_change(old, state.0);
     }
 
     /// `getHeight(type, x, z)` of a world generation heightmap: the highest matching block Y,
@@ -456,12 +599,18 @@ impl ProtoChunk {
         state: BlockState,
     ) -> BlockState {
         let index = self.section_index(y);
-        BlockState(self.sections[index].set_block(
-            (x & 15) as u32,
-            (y & 15) as u32,
-            (z & 15) as u32,
-            state.0,
-        ))
+        let old = if let Some(dense) = &mut self.dense {
+            dense.set(index, DenseBlocks::index(index, x, y, z), state.0)
+        } else {
+            self.sections[index].set_block(
+                (x & 15) as u32,
+                (y & 15) as u32,
+                (z & 15) as u32,
+                state.0,
+            )
+        };
+        self.note_unmapped_change(old, state.0);
+        BlockState(old)
     }
 
     /// `markPosForPostProcessing(pos)`; positions outside the build height are ignored.
@@ -566,7 +715,8 @@ impl ProtoChunk {
     }
 
     /// The finished chunk; its heightmaps are primed from the blocks.
-    pub fn into_chunk(self) -> Chunk {
+    pub fn into_chunk(mut self) -> Chunk {
+        self.end_dense();
         let count = self.sections.len();
         Chunk::from_sections(
             self.min_y >> 4,
