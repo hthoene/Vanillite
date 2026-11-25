@@ -30,7 +30,7 @@ mod world_format;
 mod world_setup;
 mod world_updates;
 
-pub use blocks::game_data;
+pub use blocks::{ItemScratch, game_data, tick_item};
 pub use clock::Clock;
 pub use compute::{Compute, ComputePool, InlineScheduler, Job, Scheduler, Scope};
 pub use global::Global;

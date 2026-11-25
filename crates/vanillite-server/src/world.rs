@@ -390,6 +390,11 @@ impl ServerWorld {
             // `advanceWeatherCycle`, then `tickTime`: the overworld advances the shared game
             // time, every world runs on it.
             self.survival.tick_level(&self.level.entities, ctx.global);
+            self.level.set_weather(self.survival.weather);
+            self.level
+                .settings
+                .apply_game_rules(&ctx.global.level.rules());
+            self.level.settings.difficulty = ctx.global.level.difficulty;
             let level = &mut self.level;
             level.set_game_time(ctx.global.level.game_time());
             level.run_scheduled_ticks();

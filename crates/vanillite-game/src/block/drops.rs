@@ -45,7 +45,18 @@ pub fn drop_resources(
         entity: None,
         block_entity: Some(&components),
     };
-    data.loot.block_drops(&loot, level.random(), &mut stacks);
+    // `LootContext.Builder.create`: the table's random sequence, else the level random.
+    match data.loot.block_sequence(state) {
+        Some(key) => {
+            let sequences = std::sync::Arc::clone(level.random_sequences());
+            let mut sequences = sequences
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            data.loot
+                .block_drops(&loot, sequences.get(key), &mut stacks);
+        }
+        None => data.loot.block_drops(&loot, level.random(), &mut stacks),
+    }
     for stack in stacks {
         pop_resource(level, pos, stack);
     }
@@ -61,8 +72,7 @@ pub fn pop_resource(level: &mut Level, pos: BlockPos, stack: ItemStack) {
     let x = f64::from(pos.x) + 0.5 + level.random().next_double() * 0.5 - 0.25;
     let y = f64::from(pos.y) + 0.5 + level.random().next_double() * 0.5 - 0.25 - half_height;
     let z = f64::from(pos.z) + 0.5 + level.random().next_double() * 0.5 - 0.25;
-    let velocity = default_velocity(level);
-    spawn_item(level, Vec3::new(x, y, z), stack, velocity, 10, None);
+    spawn_item_moving(level, Vec3::new(x, y, z), stack, None, 10, None);
 }
 
 /// `spawnAtLocation(level, block)`: the item of `block` as an item entity at `pos`.
@@ -71,15 +81,7 @@ pub fn spawn_block_item(level: &mut Level, pos: Vec3, block: BlockId) {
     if item == u16::MAX || item == 0 {
         return;
     }
-    let velocity = default_velocity(level);
-    spawn_item(level, pos, ItemStack::new(item, 1), velocity, 10, None);
-}
-
-/// The velocity of `new ItemEntity(level, x, y, z, stack)`.
-pub(crate) fn default_velocity(level: &mut Level) -> Vec3 {
-    let x = level.random().next_double() * 0.2 - 0.1;
-    let z = level.random().next_double() * 0.2 - 0.1;
-    Vec3::new(x, 0.2, z)
+    spawn_item_moving(level, pos, ItemStack::new(item, 1), None, 10, None);
 }
 
 /// Adds an item entity with `pickup_delay` ticks before it can be picked up and the UUID of
@@ -92,11 +94,32 @@ pub fn spawn_item(
     pickup_delay: i16,
     thrower: Option<u128>,
 ) -> Option<EntityId> {
+    spawn_item_moving(level, pos, stack, Some(velocity), pickup_delay, thrower)
+}
+
+/// [`spawn_item`] with `new ItemEntity(level, x, y, z, stack)`'s random velocity if `velocity`
+/// is `None`. The item draws its yaw, then the velocity, from its own random.
+pub fn spawn_item_moving(
+    level: &mut Level,
+    pos: Vec3,
+    stack: ItemStack,
+    velocity: Option<Vec3>,
+    pickup_delay: i16,
+    thrower: Option<u128>,
+) -> Option<EntityId> {
     if stack.is_empty() {
         return None;
     }
+    let mut own = level.new_entity_random();
     let uuid = level.new_uuid();
-    let y_rot = level.random().next_float() * 360.0;
+    // `bobOffs` (client bobbing), then `setYRot(this.random.nextFloat() * 360.0F)`.
+    let _bob = own.next_float();
+    let y_rot = own.next_float() * 360.0;
+    let velocity = velocity.unwrap_or_else(|| {
+        let x = own.next_double() * 0.2 - 0.1;
+        let z = own.next_double() * 0.2 - 0.1;
+        Vec3::new(x, 0.2, z)
+    });
     let network_id = level.network_ids().next();
     Some(level.entities.spawn_item(
         network_id,
