@@ -1,0 +1,97 @@
+{
+  "description": "A music disc goes into a jukebox: it powers redstone dust and a comparator reads the song's output while it plays; using it again pops the disc out.",
+  "tier": "fast",
+  "level_rng": true,
+  "player_state": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -57,
+      15
+    ]
+  ],
+  "ticks": 26,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -60,
+        6
+      ],
+      "block": "minecraft:jukebox"
+    },
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -60,
+        5
+      ],
+      "block": "minecraft:redstone_wire"
+    },
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -60,
+        7
+      ],
+      "block": "minecraft:comparator[facing=north]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -60,
+        8
+      ],
+      "block": "minecraft:redstone_wire"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        5.5,
+        -60,
+        8.5
+      ],
+      "rot": [
+        0,
+        0
+      ],
+      "seed": 1
+    }
+  ],
+  "actions": [
+    {
+      "tick": 2,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        8,
+        -60,
+        6
+      ],
+      "item": "minecraft:music_disc_cat"
+    },
+    {
+      "tick": 23,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        8,
+        -60,
+        6
+      ],
+      "item": "minecraft:air"
+    }
+  ]
+}

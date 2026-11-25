@@ -121,6 +121,10 @@ pub struct LevelSettings {
     pub fast_lava: bool,
     /// `tntExplodes` game rule (`TNT_EXPLODES`).
     pub tnt_explodes: bool,
+    /// `tnt_explosion_drop_decay` game rule.
+    pub tnt_explosion_drop_decay: bool,
+    /// `ServerLevel.isSpawningMonsters`: the `spawn_mobs` and `spawn_monsters` game rules.
+    pub spawning_monsters: bool,
     /// The dimension has sky light.
     pub has_sky_light: bool,
     /// The dimension's `water_evaporates` attribute (the Nether).
@@ -168,6 +172,8 @@ impl Default for LevelSettings {
             infiniburn: crate::block::fire::Infiniburn::Overworld,
             fast_lava: false,
             tnt_explodes: true,
+            tnt_explosion_drop_decay: false,
+            spawning_monsters: true,
             has_sky_light: true,
             water_evaporates: false,
             portal_dimension: true,
@@ -202,6 +208,13 @@ impl LevelSettings {
         if let Some(v) = get("block_drops") {
             self.block_drops = v != 0;
         }
+        if let Some(v) = get("tnt_explodes") {
+            self.tnt_explodes = v != 0;
+        }
+        if let Some(v) = get("tnt_explosion_drop_decay") {
+            self.tnt_explosion_drop_decay = v != 0;
+        }
+        self.spawning_monsters = rules.bool(Rule::SPAWN_MOBS) && rules.bool(Rule::SPAWN_MONSTERS);
         if let Some(v) = get("entity_drops") {
             self.entity_drops = v != 0;
         }
@@ -407,6 +420,8 @@ pub struct Level {
     /// Stacks blocks hand to the player that used them (`player.getInventory().add`, else
     /// dropped); taken by the player handlers.
     player_gives: Vec<(EntityId, crate::item::ItemStack)>,
+    /// What blocks did to the player that used them; taken by the player handlers.
+    player_effects: Vec<(EntityId, block::PlayerEffect)>,
     /// Statistics and criterion triggers for players (`awardStat`, `CriteriaTriggers`) from
     /// block code; the server applies them after the players' tick.
     player_awards: Vec<(EntityId, crate::advancements::award::Award)>,
@@ -495,6 +510,7 @@ impl Level {
             menu_requests: Vec::new(),
             sign_editors: Vec::new(),
             player_gives: Vec::new(),
+            player_effects: Vec::new(),
             player_awards: Vec::new(),
             test_instance_actions: Vec::new(),
             maps: None,
@@ -589,6 +605,16 @@ impl Level {
         std::mem::take(&mut self.player_gives)
     }
 
+    /// A block's effect on the player that used it ([`block::PlayerEffect`]).
+    pub fn player_effect(&mut self, player: EntityId, effect: block::PlayerEffect) {
+        self.player_effects.push((player, effect));
+    }
+
+    /// Takes the effects blocks had on players.
+    pub fn take_player_effects(&mut self) -> Vec<(EntityId, block::PlayerEffect)> {
+        std::mem::take(&mut self.player_effects)
+    }
+
     /// `player.awardStat(stat, count)` from block code.
     pub fn award_stat(&mut self, player: EntityId, stat: crate::stats::Stat, count: i32) {
         self.player_awards
@@ -627,6 +653,14 @@ impl Level {
     pub fn block_entity_changed(&mut self, pos: BlockPos) {
         self.block_entities.touch(pos.chunk());
         self.output.block_entity_updates.push(pos);
+    }
+
+    /// `state.attack(level, pos, player)` of the block at `pos`.
+    pub fn attack_block(&mut self, pos: BlockPos, player: EntityId) {
+        let state = self.block(pos);
+        if let Some(f) = self.behaviours.get(state.block()).attack {
+            f(self, state, pos, player);
+        }
     }
 
     /// `state.useItemOn(stack, level, player, hand, hit)` of the block at `pos`.

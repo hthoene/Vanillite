@@ -167,6 +167,14 @@ packet_set! {
         JigsawGenerate(play::serverbound::JigsawGenerate),
         SetTestBlock(play::serverbound::SetTestBlock),
         TestInstanceBlockAction(play::serverbound::TestInstanceBlockAction),
+        PlayerAbilities(play::serverbound::PlayerAbilitiesServerbound),
+        ChangeDifficulty(play::serverbound::ChangeDifficultyServerbound),
+        LockDifficulty(play::serverbound::LockDifficulty),
+        ChangeGameMode(play::serverbound::ChangeGameMode),
+        SetGameRule(play::serverbound::SetGameRule),
+        BlockEntityTagQuery(play::serverbound::BlockEntityTagQuery),
+        EntityTagQuery(play::serverbound::EntityTagQuery),
+        TeleportToEntity(play::serverbound::TeleportToEntity),
     }
     unhandled Unhandled
 }

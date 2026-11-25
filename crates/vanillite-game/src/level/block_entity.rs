@@ -105,6 +105,43 @@ pub enum BlockEntity {
     CreakingHeart(Box<crate::block::creaking_heart::CreakingHeart>),
     /// `JukeboxBlockEntity`.
     Jukebox(Box<crate::block::jukebox::Jukebox>),
+    /// `EnchantingTableBlockEntity`: its custom name.
+    EnchantingTable(Option<Box<Component>>),
+    /// `ShelfBlockEntity`.
+    Shelf(Box<Shelf>),
+    /// `CopperGolemStatueBlockEntity`: the components it keeps for the golem (its name).
+    CopperGolemStatue(Option<Box<Compound>>),
+    /// `PotentSulfurBlockEntity`: the eruption countdown.
+    PotentSulfur {
+        /// `countdown` (`waitingCountdown`).
+        countdown: i32,
+    },
+}
+
+/// `ShelfBlockEntity`: three stacks.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Shelf {
+    /// `Items`.
+    pub items: [ItemStack; 3],
+    /// `align_items_to_bottom`.
+    pub align_items_to_bottom: bool,
+}
+
+impl Shelf {
+    fn load(&mut self, nbt: &Compound) {
+        self.items = Default::default();
+        crate::block::container::load_items(nbt, &mut self.items);
+        self.align_items_to_bottom =
+            matches!(nbt.get("align_items_to_bottom"), Some(Tag::Byte(v)) if *v != 0);
+    }
+
+    fn save(&self, nbt: &mut Compound) {
+        crate::block::container::save_items_always(&self.items, nbt);
+        nbt.insert(
+            "align_items_to_bottom",
+            Tag::Byte(i8::from(self.align_items_to_bottom)),
+        );
+    }
 }
 
 /// `BlockEntityTicker.tick(level, pos, state, blockEntity)`: the block entity is looked up at
@@ -256,7 +293,11 @@ fn ticker_of(entity: &BlockEntity) -> Option<TickerFn> {
         | BlockEntity::StructureBlock(_)
         | BlockEntity::Jigsaw(_)
         | BlockEntity::TestBlock(_)
-        | BlockEntity::TestInstance(_) => None,
+        | BlockEntity::TestInstance(_)
+        | BlockEntity::EnchantingTable(_)
+        | BlockEntity::Shelf(_)
+        | BlockEntity::CopperGolemStatue(_)
+        | BlockEntity::PotentSulfur { .. } => None,
         BlockEntity::Campfire(_) => Some(crate::block::campfire::tick),
         BlockEntity::Beehive(_) => Some(crate::block::beehive::tick),
         BlockEntity::Crafter(_) => Some(crate::block::crafter::server_tick),
@@ -342,6 +383,14 @@ pub fn new_block_entity(state: BlockState) -> Option<BlockEntity> {
         ))
     } else if block == ids::DECORATED_POT {
         Some(BlockEntity::DecoratedPot(Box::default()))
+    } else if block == ids::ENCHANTING_TABLE {
+        Some(BlockEntity::EnchantingTable(None))
+    } else if block == ids::POTENT_SULFUR {
+        Some(BlockEntity::PotentSulfur { countdown: -1 })
+    } else if block.info().kind == vanillite_data::block::BlockKind::ShelfBlock {
+        Some(BlockEntity::Shelf(Box::default()))
+    } else if is_golem_statue(block) {
+        Some(BlockEntity::CopperGolemStatue(None))
     } else if block == ids::CHISELED_BOOKSHELF {
         Some(BlockEntity::ChiseledBookshelf(Box::default()))
     } else if block == ids::BEACON {
@@ -370,6 +419,15 @@ pub fn new_block_entity(state: BlockState) -> Option<BlockEntity> {
     } else {
         crate::block::container::new_block_entity(block)
     }
+}
+
+/// The copper golem statue blocks (all weathering and waxed variants).
+pub fn is_golem_statue(block: vanillite_data::block::BlockId) -> bool {
+    use vanillite_data::block::BlockKind;
+    matches!(
+        block.info().kind,
+        BlockKind::CopperGolemStatueBlock | BlockKind::WeatheringCopperGolemStatueBlock
+    )
 }
 
 /// Whether `entity` belongs to a block of `state` (`BlockEntityType.isValid(state)`).
@@ -436,6 +494,12 @@ fn is_valid(entity: &BlockEntity, state: BlockState) -> bool {
         BlockEntity::Jigsaw(_) => state.block() == ids::JIGSAW,
         BlockEntity::TestBlock(_) => state.block() == ids::TEST_BLOCK,
         BlockEntity::TestInstance(_) => state.block() == ids::TEST_INSTANCE_BLOCK,
+        BlockEntity::EnchantingTable(_) => state.block() == ids::ENCHANTING_TABLE,
+        BlockEntity::PotentSulfur { .. } => state.block() == ids::POTENT_SULFUR,
+        BlockEntity::Shelf(_) => {
+            state.block().info().kind == vanillite_data::block::BlockKind::ShelfBlock
+        }
+        BlockEntity::CopperGolemStatue(_) => is_golem_statue(state.block()),
         BlockEntity::CreakingHeart(_) => state.block() == ids::CREAKING_HEART,
     }
 }
@@ -667,6 +731,21 @@ fn load(state: BlockState, nbt: &Compound) -> Option<BlockEntity> {
         BlockEntity::Jigsaw(j) => j.load(nbt),
         BlockEntity::TestBlock(t) => t.load(nbt),
         BlockEntity::TestInstance(t) => t.load(nbt),
+        BlockEntity::EnchantingTable(name) => {
+            *name = crate::block::container::load_name(nbt).map(Box::new);
+        }
+        BlockEntity::Shelf(shelf) => shelf.load(nbt),
+        BlockEntity::CopperGolemStatue(components) => {
+            *components = match nbt.get("components") {
+                Some(Tag::Compound(c)) => Some(Box::new(c.clone())),
+                _ => None,
+            };
+        }
+        BlockEntity::PotentSulfur { countdown } => {
+            if let Some(v) = int("countdown") {
+                *countdown = v;
+            }
+        }
         BlockEntity::CreakingHeart(h) => h.load(nbt),
         _ => {}
     }
@@ -740,6 +819,14 @@ fn save(entity: &BlockEntity, state: BlockState, pos: BlockPos) -> Compound {
         BlockEntity::Jigsaw(j) => j.save(&mut nbt),
         BlockEntity::TestBlock(t) => t.save(&mut nbt),
         BlockEntity::TestInstance(t) => t.save(&mut nbt),
+        BlockEntity::EnchantingTable(name) => {
+            crate::block::container::save_name(&name.as_deref().cloned(), &mut nbt);
+        }
+        BlockEntity::Shelf(shelf) => shelf.save(&mut nbt),
+        BlockEntity::CopperGolemStatue(Some(c)) => {
+            nbt.insert("components", Tag::Compound((**c).clone()));
+        }
+        BlockEntity::PotentSulfur { countdown } => nbt.insert("countdown", Tag::Int(*countdown)),
         BlockEntity::CreakingHeart(h) => h.save(&mut nbt),
         _ => {}
     }
@@ -1058,6 +1145,12 @@ pub fn update_tag(entity: &BlockEntity, state: BlockState) -> Option<Compound> {
             Some(s.update_tag(crate::block::trial_spawner::TrialState::of(state)))
         }
         BlockEntity::Vault(v) => Some(v.update_tag()),
+        BlockEntity::Shelf(shelf) => {
+            let mut nbt = Compound::new();
+            shelf.save(&mut nbt);
+            Some(nbt)
+        }
+        BlockEntity::CopperGolemStatue(_) => Some(Compound::new()),
         // `saveCustomOnly`: the age for the beam and the exit.
         BlockEntity::EndGateway(gateway) => {
             let mut nbt = Compound::new();
@@ -1087,6 +1180,16 @@ pub fn collect_component(entity: &BlockEntity, id: u16) -> Option<Box<[u8]>> {
         }
         BlockEntity::Campfire(campfire) => {
             (id == components::CONTAINER).then(|| container_value(&campfire.items))
+        }
+        BlockEntity::Shelf(shelf) => {
+            (id == components::CONTAINER).then(|| container_value(&shelf.items))
+        }
+        BlockEntity::EnchantingTable(name) => {
+            if id == components::CUSTOM_NAME {
+                encode_name(name.as_deref())
+            } else {
+                None
+            }
         }
         BlockEntity::Beehive(hive) => hive.component(id),
         BlockEntity::Crafter(crafter) => {
@@ -1191,6 +1294,14 @@ pub fn apply_components(level: &mut Level, pos: BlockPos, stack: &ItemStack) {
             if let Some(items) = contents() {
                 copy_into(&items, &mut campfire.items);
             }
+        }
+        Some(BlockEntity::Shelf(shelf)) => {
+            if let Some(items) = contents() {
+                copy_into(&items, &mut shelf.items);
+            }
+        }
+        Some(BlockEntity::EnchantingTable(name)) => {
+            *name = decode_name(stack).map(Box::new);
         }
         Some(BlockEntity::Beehive(hive)) => {
             hive.apply(stack);

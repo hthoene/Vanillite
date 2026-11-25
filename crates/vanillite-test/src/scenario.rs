@@ -103,6 +103,13 @@
 //!   does not matter) without the chance roll: the target (`findLightningTargetAround`: the
 //!   nearest lightning rod, a living entity under the open sky, or the column's top), then
 //!   `isRainingAt`, the skeleton trap and the bolt. Needs `"weather": "thunder"` (or rain).
+//! - `use` action: the player `entity` gets `item` (`count`, SNBT `components`;
+//!   `minecraft:air` empties the hand; without `item` the hand stays as it is) in its main hand (or `"hand": "off"`) and clicks the block
+//!   at `pos` on `face` (default `up`) at `hit` (relative to the block's corner, default the
+//!   face's centre), sneaking if `sneak`, with its food level set to `food` first
+//!   (`ServerPlayerGameMode.useItemOn`). `attack`: the
+//!   player starts to break the block (`START_DESTROY_BLOCK`). `"player_state": true` adds
+//!   the players' food and hands to the frames.
 //! - `effect` action: `addEffect` on the entity `entity` with the mob effect `effect`,
 //!   `duration` ticks and `amplifier` (default 0).
 
@@ -154,6 +161,8 @@ pub struct WorldSpec {
     pub weather: String,
     /// Whether frames observe the level random.
     pub level_rng: bool,
+    /// Whether frames hold the players' food and hands.
+    pub player_state: bool,
 }
 
 /// What an operation does.
@@ -184,6 +193,10 @@ pub enum OpKind {
     Command,
     /// A thrown splash or lingering potion ([`Op::throw_potion`]).
     ThrowPotion,
+    /// A player uses a block with a stack ([`Op::player_use`]).
+    Use,
+    /// A player starts to break a block ([`Op::player_use`]).
+    Attack,
 }
 
 /// The potion of a `throw_potion` action.
@@ -287,6 +300,34 @@ pub struct Op {
     pub chunks: Vec<ChunkPos>,
     /// The command line of a `command` action.
     pub command: Option<String>,
+    /// The player's click of a `use` or `attack` action.
+    pub player_use: Option<PlayerUse>,
+}
+
+/// A `use` action (`ServerPlayerGameMode.useItemOn` with the stack put into the hand) or an
+/// `attack` action (`handleBlockBreakAction` with `START_DESTROY_BLOCK`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlayerUse {
+    /// Name of the player.
+    pub entity: String,
+    /// `attack` instead of `use`.
+    pub attack: bool,
+    pub pos: BlockPos,
+    /// The clicked face: `down`, `up`, `north`, `south`, `west` or `east`.
+    pub face: String,
+    /// The hit location relative to the block's corner (default: the face's centre).
+    pub hit: Option<[f64; 3]>,
+    /// The stack put into the hand first (`None` keeps the hand as it is).
+    pub item: Option<String>,
+    pub count: i32,
+    /// SNBT of the stack's components, e.g. `{"minecraft:dyed_color": 255}`.
+    pub components: Option<String>,
+    /// The off hand instead of the main hand.
+    pub offhand: bool,
+    /// Sneaking (`isSecondaryUseActive`).
+    pub sneak: bool,
+    /// The player's food level set before the click.
+    pub food: Option<i32>,
 }
 
 /// A parsed scenario.
@@ -436,6 +477,10 @@ impl Scenario {
                     .unwrap_or("clear")
                     .to_owned(),
                 level_rng: v.get("level_rng").and_then(Value::as_bool).unwrap_or(false),
+                player_state: v
+                    .get("player_state")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
             },
             min,
             max,
@@ -550,9 +595,57 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
         Some("unforce") if action => OpKind::Unforce,
         Some("command") if action => OpKind::Command,
         Some("restart") if action => OpKind::Restart,
+        Some("use") if action => OpKind::Use,
+        Some("attack") if action => OpKind::Attack,
         Some("bonemeal") if action => OpKind::Bonemeal,
         o => return Err(format!("unknown op {o:?}")),
     };
+    if matches!(kind, OpKind::Use | OpKind::Attack) {
+        let tick = v
+            .get("tick")
+            .and_then(Value::as_u64)
+            .and_then(|t| u32::try_from(t).ok())
+            .filter(|&t| t >= 1)
+            .ok_or("an action needs a tick >= 1")?;
+        let p = pos(v.get("pos"))?;
+        let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
+        let hit = match v.get("hit").and_then(Value::as_array) {
+            Some(a) if a.len() == 3 => Some([
+                a[0].as_f64().ok_or("bad hit")?,
+                a[1].as_f64().ok_or("bad hit")?,
+                a[2].as_f64().ok_or("bad hit")?,
+            ]),
+            Some(_) => return Err("hit needs three numbers".to_owned()),
+            None => None,
+        };
+        return Ok(Op {
+            tick,
+            kind,
+            from: p,
+            to: p,
+            player_use: Some(PlayerUse {
+                entity: s("entity").ok_or("use needs an entity")?,
+                attack: kind == OpKind::Attack,
+                pos: p,
+                face: s("face").unwrap_or_else(|| "up".to_owned()),
+                hit,
+                item: s("item"),
+                count: v
+                    .get("count")
+                    .and_then(Value::as_i64)
+                    .and_then(|c| i32::try_from(c).ok())
+                    .unwrap_or(1),
+                components: s("components"),
+                offhand: v.get("hand").and_then(Value::as_str) == Some("off"),
+                sneak: v.get("sneak").and_then(Value::as_bool).unwrap_or(false),
+                food: v
+                    .get("food")
+                    .and_then(Value::as_i64)
+                    .and_then(|f| i32::try_from(f).ok()),
+            }),
+            ..Op::default()
+        });
+    }
     if kind == OpKind::Command {
         let tick = v
             .get("tick")

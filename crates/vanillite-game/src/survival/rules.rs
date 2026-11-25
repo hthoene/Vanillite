@@ -105,6 +105,16 @@ pub const RULES: [RuleInfo; 59] = [
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Rule(pub usize);
 
+/// The rules the operator screens, commands and clients read.
+impl Rule {
+    pub const BLOCK_DROPS: Rule = Rule(3);
+    pub const ELYTRA_MOVEMENT_CHECK: Rule = Rule(8);
+    pub const GLOBAL_SOUND_EVENTS: Rule = Rule(16);
+    pub const LOG_ADMIN_COMMANDS: Rule = Rule(22);
+    pub const SEND_COMMAND_FEEDBACK: Rule = Rule(43);
+    pub const SPECTATORS_GENERATE_CHUNKS: Rule = Rule(53);
+}
+
 impl Rule {
     pub const ADVANCE_TIME: Rule = Rule(0);
     pub const ADVANCE_WEATHER: Rule = Rule(1);
@@ -121,7 +131,6 @@ impl Rule {
     pub const KEEP_INVENTORY: Rule = Rule(18);
     pub const LIMITED_CRAFTING: Rule = Rule(20);
     pub const BLOCK_EXPLOSION_DROP_DECAY: Rule = Rule(4);
-    pub const LOG_ADMIN_COMMANDS: Rule = Rule(22);
     pub const MAX_COMMAND_SEQUENCE_LENGTH: Rule = Rule(25);
     pub const MAX_ENTITY_CRAMMING: Rule = Rule(26);
     pub const MOB_DROPS: Rule = Rule(29);
@@ -135,7 +144,6 @@ impl Rule {
     pub const RAIDS: Rule = Rule(39);
     pub const REDUCED_DEBUG_INFO: Rule = Rule(41);
     pub const RESPAWN_RADIUS: Rule = Rule(42);
-    pub const SEND_COMMAND_FEEDBACK: Rule = Rule(43);
     pub const SHOW_ADVANCEMENT_MESSAGES: Rule = Rule(44);
     pub const SHOW_DEATH_MESSAGES: Rule = Rule(45);
     pub const SPAWNER_BLOCKS_WORK: Rule = Rule(46);

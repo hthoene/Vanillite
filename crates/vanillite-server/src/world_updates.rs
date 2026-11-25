@@ -32,14 +32,23 @@ impl WorldUpdates {
 
     /// Sends the light changes collected with [`Self::light_changes`] and the level's output,
     /// then clears both.
-    pub(crate) fn broadcast(&mut self, level: &mut Level, global: &crate::global::Global) {
+    pub(crate) fn broadcast(
+        &mut self,
+        level: &mut Level,
+        global: &crate::global::Global,
+        world: crate::world::WorldId,
+    ) {
         let mut output = std::mem::take(level.output());
         self.encode_chunks(level, &mut output);
         let entities = &level.entities;
-        // `globalLevelEvent`: every player of the server.
-        for (event, pos, data) in output.global_level_events.drain(..) {
-            let packet = Arc::new(level_event_packet(event, pos, data, true));
-            global.players.broadcast_shared(&packet, None);
+        if !output.global_level_events.is_empty() {
+            let global_sounds = global
+                .level
+                .rules()
+                .bool(vanillite_game::survival::rules::Rule::GLOBAL_SOUND_EVENTS);
+            for (event, pos, data) in output.global_level_events.drain(..) {
+                global_level_event(entities, global, world, global_sounds, (event, pos, data));
+            }
         }
         // Vanilla sends level events when they happen, before the chunk holders broadcast the
         // block changes of the tick.
@@ -196,6 +205,64 @@ fn send_near(
 ) {
     let at = (f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
     send_within(entities, at, EVENT_RANGE, except, packet);
+}
+
+/// `ServerLevel.globalLevelEvent`: with `global_sound_events` every player of the server hears
+/// it, players of this world from at most 32 blocks away in its direction, the others at their
+/// own position; without, it is an ordinary level event.
+fn global_level_event(
+    entities: &Entities,
+    global: &crate::global::Global,
+    world: crate::world::WorldId,
+    global_sounds: bool,
+    (event, pos, data): (i32, BlockPos, i32),
+) {
+    if !global_sounds {
+        let packet = level_event(event, pos, data);
+        send_near(entities, pos, None, &packet);
+        return;
+    }
+    let center = vanillite_base::Vec3::new(
+        f64::from(pos.x) + 0.5,
+        f64::from(pos.y) + 0.5,
+        f64::from(pos.z) + 0.5,
+    );
+    for (id, player) in entities.players.iter() {
+        let Some(p) = entities.store.get(id).map(|e| e.pos()) else {
+            continue;
+        };
+        let at = if p.distance_to_sqr(center) < 32.0 * 32.0 {
+            center
+        } else {
+            p + (center - p).normalize() * 32.0
+        };
+        let at = BlockPos::containing(at.x, at.y, at.z);
+        player
+            .connection
+            .sink
+            .send_shared(&Arc::new(level_event_packet(event, at, data, true)));
+    }
+    for index in 0..crate::server::DIMENSIONS.len() {
+        let Ok(index) = u16::try_from(index) else {
+            continue;
+        };
+        let other = crate::world::WorldId(index);
+        if other == world {
+            continue;
+        }
+        global.run_in_world(other, move |w| {
+            let entities = w.entities();
+            for (id, player) in entities.players.iter() {
+                if let Some(p) = entities.store.get(id).map(|e| e.pos()) {
+                    let at = BlockPos::containing(p.x, p.y, p.z);
+                    player
+                        .connection
+                        .sink
+                        .send_shared(&Arc::new(level_event_packet(event, at, data, true)));
+                }
+            }
+        });
+    }
 }
 
 /// `ServerLevel.sendParticles`: to the players whose block centre is closer than 32 blocks

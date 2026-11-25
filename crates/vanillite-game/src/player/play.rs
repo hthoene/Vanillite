@@ -52,6 +52,8 @@ pub struct GameData {
     pub banner_patterns: crate::menu::BannerPatterns,
     /// The tags of the registries: registry → tag id (without `#`) → entry ids in tag order.
     pub registry_tags: HashMap<String, HashMap<String, Vec<u32>>>,
+    /// The `minecraft:context_int_provider` registry (compostable layers).
+    pub compostables: HashMap<String, crate::block::composter::IntProvider>,
     /// The `minecraft:villager_trade` and `minecraft:trade_set` registries.
     pub trades: crate::trading::data::TradeData,
     /// The `minecraft:jukebox_song` registry, by registry id.
@@ -214,6 +216,8 @@ pub struct PlayContext<'a> {
     pub inventory: &'a mut PlayerInventory,
     /// The player's experience (`None` in tests).
     pub xp: Option<&'a mut crate::survival::player::Experience>,
+    /// The player's food (`None` in tests).
+    pub food: Option<&'a mut crate::survival::food::FoodData>,
     /// The player's recipe book (`None` in tests).
     pub recipe_book: Option<&'a mut crate::recipe::book::PlayerRecipeBook>,
     /// The player.
@@ -566,6 +570,11 @@ impl Digging {
                 let state = ctx.level.block(pos);
                 let mut progress = 1.0;
                 if !state.is_air() {
+                    if let Some(player) = ctx.actor.entity
+                        && let Some(level) = ctx.level.level_mut()
+                    {
+                        level.attack_block(pos, player);
+                    }
                     progress = destroy_progress(ctx, state);
                 }
                 if !state.is_air() && progress >= 1.0 {
@@ -910,6 +919,11 @@ impl Digging {
                         yaw: ctx.actor.y_rot,
                         face,
                         hit,
+                        infinite: ctx.actor.creative(),
+                        // `canEat(false)`: creative players are invulnerable.
+                        can_eat: ctx.actor.creative()
+                            || ctx.food.as_deref().is_some_and(|f| f.needs_food()),
+                        game_master: ctx.actor.creative() && ctx.actor.permission_level >= 2,
                     };
                     let mut held = match hand {
                         Hand::MainHand => ctx.inventory.selected_item().clone(),
@@ -944,6 +958,7 @@ impl Digging {
                         }
                         _ => (None, false),
                     };
+                    apply_player_effects(ctx, hand);
                     self.open_requested(ctx, sink);
                     if let Some(
                         result @ (crate::block::Interaction::Success
@@ -1369,6 +1384,46 @@ fn any_block_use(ctx: &mut PlayContext<'_>, hand: Hand, pos: BlockPos) {
     ctx.trigger(Event::AnyBlockUse(pos, held));
 }
 
+/// Applies what blocks did to the player during a use ([`crate::block::PlayerEffect`]).
+fn apply_player_effects(ctx: &mut PlayContext<'_>, hand: Hand) {
+    use crate::block::PlayerEffect;
+    let Some(level) = ctx.level.level_mut() else {
+        return;
+    };
+    let effects = level.take_player_effects();
+    for (player, effect) in effects {
+        if Some(player) != ctx.actor.entity {
+            continue;
+        }
+        match effect {
+            PlayerEffect::Stat(stat, count) => ctx.award_stat(stat, count),
+            PlayerEffect::Eat(nutrition, saturation) => {
+                if let Some(food) = ctx.food.as_deref_mut() {
+                    food.eat(&crate::survival::food::FoodProperties {
+                        nutrition,
+                        saturation,
+                        can_always_eat: false,
+                    });
+                }
+            }
+            PlayerEffect::GiveIfMissing(mut stack) => {
+                if !ctx.inventory.contains(&stack) {
+                    ctx.inventory.add(None, &mut stack, true);
+                }
+            }
+            PlayerEffect::SetHand(stack) => {
+                let slot = match hand {
+                    Hand::MainHand => ctx.inventory.selected_item_mut(),
+                    Hand::OffHand => Some(&mut ctx.inventory.offhand),
+                };
+                if let Some(slot) = slot {
+                    *slot = stack;
+                }
+            }
+        }
+    }
+}
+
 /// The statistic a block awards when it opens its menu (`getOpenChestStat`,
 /// `INTERACT_WITH_*`, `INSPECT_*`).
 fn open_stat(block: vanillite_data::block::BlockId) -> Option<Stat> {
@@ -1591,11 +1646,11 @@ impl crate::loot::LootRandom for LevelRandom<'_> {
 
 /// `Block.popResource`.
 pub fn pop_resource(level: &mut dyn PlayLevel, pos: BlockPos, stack: ItemStack) {
-    if stack.is_empty() {
-        return;
-    }
     if let Some(level) = level.level_mut() {
         crate::block::drops::pop_resource(level, pos, stack);
+        return;
+    }
+    if stack.is_empty() {
         return;
     }
     let half_height = 0.125;

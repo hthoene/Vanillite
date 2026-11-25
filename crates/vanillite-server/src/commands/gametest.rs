@@ -864,14 +864,7 @@ fn set_rules(global: &Global, rules: &[(Rule, i32)]) {
         if !changed {
             continue;
         }
-        if rule == Rule::ADVANCE_TIME {
-            crate::survival::broadcast_all(global, &crate::survival::full_time_sync(&global.level));
-        } else if rule == Rule::IMMEDIATE_RESPAWN {
-            crate::survival::broadcast_all(
-                global,
-                &crate::survival::immediate_respawn_event(value != 0),
-            );
-        }
+        super::survival::on_game_rule_changed(global, rule, value);
     }
 }
 
