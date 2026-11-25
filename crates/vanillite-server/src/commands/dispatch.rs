@@ -5,7 +5,7 @@ use vanillite_command::error::CommandError;
 use vanillite_command::selector::EntitySelector;
 use vanillite_command::values::Anchor;
 use vanillite_command::{GameProfileArg, Message, Parsed, Source as _};
-use vanillite_game::commands::CommandId;
+use vanillite_game::commands::{CommandId, ExecuteOp};
 use vanillite_game::player::chat::ChatMessage;
 use vanillite_game::player::join::display_name;
 use vanillite_protocol::packets::play::clientbound::{LookAtEntity, PlayerLookAt};
@@ -32,24 +32,9 @@ fn targets(
     env: &Env<'_>,
     source: &CommandSource,
     selector: &EntitySelector,
-    players_only: bool,
+    _players_only: bool,
 ) -> Result<Vec<Target>, CommandError> {
-    if selector.uses_selector && !source.allows_selectors() {
-        return Err(CommandError::new(
-            "argument.entity.selector.not_allowed",
-            vec![],
-        ));
-    }
-    let found = select::select(selector, source, env.entities, env.global);
-    if found.is_empty() {
-        let key = if players_only {
-            "argument.entity.notfound.player"
-        } else {
-            "argument.entity.notfound.entity"
-        };
-        return Err(CommandError::new(key, vec![]));
-    }
-    Ok(found)
+    select::many(env, source, selector)
 }
 
 fn selector_arg<'a>(
@@ -61,7 +46,7 @@ fn selector_arg<'a>(
 
 /// `GameProfileArgument.getGameProfiles`: selected players, or a name of an online player,
 /// an operator or a whitelisted player. In offline mode an unknown name gets its offline UUID.
-fn profiles(
+pub(super) fn profiles(
     env: &Env<'_>,
     source: &CommandSource,
     parsed: &Parsed<CommandId>,
@@ -117,7 +102,7 @@ fn profiles(
 
 /// `MessageArgument.Message.resolveComponent`: the text with its selectors replaced by the
 /// names they select.
-fn resolve_message(
+pub(super) fn resolve_message(
     env: &Env<'_>,
     source: &CommandSource,
     message: &Message,
@@ -130,7 +115,7 @@ fn resolve_message(
     let mut out = Component::text(text.get(..first).unwrap_or(""));
     let mut previous = first;
     for part in &message.parts {
-        let names = select::select(&part.selector, source, env.entities, env.global)
+        let names = select::select(&part.selector, source, &env.level.entities, env.global)
             .into_iter()
             .map(|t| display_name(&t.name, t.uuid))
             .collect();
@@ -148,20 +133,18 @@ fn resolve_message(
     Ok(out)
 }
 
-/// `MessageArgument.resolveChatMessage`: the signed message with the resolved text as unsigned
-/// content, or a system message when the argument is not signed.
-fn chat_message(
+/// `MessageArgument.resolveChatMessage` of the argument `name`: the signed message with the
+/// resolved text as unsigned content, or a system message when the argument is not signed.
+pub(super) fn chat_message(
     env: &Env<'_>,
     source: &CommandSource,
     parsed: &Parsed<CommandId>,
     signed: &SignedArguments,
+    name: &str,
 ) -> Result<ChatMessage, CommandError> {
-    let message = parsed
-        .args
-        .message("message")
-        .ok_or_else(|| missing("message"))?;
+    let message = parsed.args.message(name).ok_or_else(|| missing(name))?;
     let formatted = resolve_message(env, source, message)?;
-    let mut out = match signed.get("message") {
+    let mut out = match signed.get(name) {
         Some(m) => m.clone(),
         None => ChatMessage::system(message.text.clone()),
     };
@@ -180,14 +163,18 @@ fn require_player(source: &CommandSource) -> Result<(), CommandError> {
 }
 
 /// The source itself as a target.
-fn self_target(env: &Env<'_>, source: &CommandSource) -> Result<Target, CommandError> {
-    let uuid = source
-        .uuid()
+pub(crate) fn self_target(env: &Env<'_>, source: &CommandSource) -> Result<Target, CommandError> {
+    let own = source
+        .entity
+        .as_ref()
         .ok_or_else(|| CommandError::new("permissions.requires.entity", vec![]))?;
-    select::online_players(env.entities, env.global, source.world)
-        .into_iter()
-        .find(|t| t.uuid == uuid)
-        .ok_or_else(|| CommandError::new("permissions.requires.entity", vec![]))
+    let found = match own.id.filter(|_| own.world == env.world) {
+        Some(id) => select::local(&env.level.entities, env.world, id),
+        None => select::online_players(&env.level.entities, env.global, source.world)
+            .into_iter()
+            .find(|t| t.uuid == own.uuid),
+    };
+    found.ok_or_else(|| CommandError::new("permissions.requires.entity", vec![]))
 }
 
 /// `LookAt.perform` for players: `player_look_at` from the eyes.
@@ -208,7 +195,7 @@ fn look_at(
         };
         let network_id = to
             .entity
-            .and_then(|id| env.entities.store.get(id))
+            .and_then(|id| env.level.entities.store.get(id))
             .map(|e| e.network_id().0);
         let pos = to.place.map_or(source.pos, |(p, _, _)| p);
         Some((
@@ -244,13 +231,7 @@ fn targets_single(
     source: &CommandSource,
     selector: &EntitySelector,
 ) -> Result<Target, CommandError> {
-    let mut found = targets(env, source, selector, false)?;
-    if found.len() > 1 {
-        return Err(CommandError::new("argument.entity.toomany", vec![]));
-    }
-    found
-        .pop()
-        .ok_or_else(|| CommandError::new("argument.entity.notfound.entity", vec![]))
+    select::single(env, source, selector)
 }
 
 /// Executes a parsed command; errors are shown to the source by the caller.
@@ -263,6 +244,9 @@ pub(crate) fn execute(
     let global = env.global;
     match parsed.command {
         CommandId::Plugin(command) => plugin_command(env, source, parsed, command),
+        CommandId::Advancement { grant, mode } => {
+            super::advancement_cmd::advancement(grant, mode, &parsed.args, source, env)
+        }
         CommandId::GameModeSelf | CommandId::GameModeTargets => {
             let mode = parsed
                 .args
@@ -276,7 +260,7 @@ pub(crate) fn execute(
             };
             Ok(exec::game_mode(
                 source,
-                env.entities,
+                &mut env.level.entities,
                 global,
                 targets,
                 config_game_mode(*mode),
@@ -302,26 +286,15 @@ pub(crate) fn execute(
         CommandId::ListUuids => Ok(exec::list(source, global, true)),
         CommandId::Msg => {
             let targets = targets(env, source, selector_arg(parsed, "targets")?, true)?;
-            let message = chat_message(env, source, parsed, signed)?;
+            let message = chat_message(env, source, parsed, signed, "message")?;
             Ok(exec::msg(source, global, &targets, &message))
         }
         CommandId::Say => {
-            let message = chat_message(env, source, parsed, signed)?;
+            let message = chat_message(env, source, parsed, signed, "message")?;
             exec::say(source, global, &message);
             Ok(1)
         }
         CommandId::Seed => Ok(exec::seed(source, global, global.seed)),
-        CommandId::Summon => {
-            let entity = parsed
-                .args
-                .identifier("entity")
-                .ok_or_else(|| missing("entity"))?;
-            let pos = match parsed.args.coordinates("pos") {
-                Some(c) => exec::resolve_position(source, c),
-                None => source.pos,
-            };
-            survival::summon(source, global, entity, pos)
-        }
         CommandId::TeleportToLocation
         | CommandId::TeleportToEntity
         | CommandId::TeleportTargetsToLocation
@@ -349,7 +322,13 @@ pub(crate) fn execute(
                     rotation: parsed.args.coordinates("rotation").copied(),
                 },
             };
-            let count = exec::teleport(source, env.entities, global, local.clone(), destination)?;
+            let count = exec::teleport(
+                source,
+                &mut env.level.entities,
+                global,
+                local.clone(),
+                destination,
+            )?;
             look_at(env, source, &local, parsed)?;
             Ok(count)
         }
@@ -466,6 +445,114 @@ pub(crate) fn execute(
             exec::whitelist_change(source, global, &profiles, false)
         }
         CommandId::WhitelistReload => Ok(exec::whitelist_reload(source, global)),
+        CommandId::Execute(ExecuteOp::Test { condition, unless }) => {
+            super::execute::run_condition(condition, unless, &parsed.args, source, env)
+        }
+        CommandId::Scoreboard(op) => super::scores::run(op, &parsed.args, source, env),
+        CommandId::Summon
+        | CommandId::RideMount
+        | CommandId::RideDismount
+        | CommandId::Rotate
+        | CommandId::Damage
+        | CommandId::Swing { .. }
+        | CommandId::EffectClear
+        | CommandId::EffectGive { .. }
+        | CommandId::Bossbar(_) => {
+            super::entities_cmd::run(parsed.command, &parsed.args, source, env)
+        }
+        CommandId::Particle { force } => super::particle::run(force, &parsed.args, source, env),
+        CommandId::PlaySound(index) => super::sound::play_sound(index, &parsed.args, source, env),
+        CommandId::StopSound(index) => super::sound::stop_sound(index, &parsed.args, source, env),
+        CommandId::PostEffect(op) => super::sound::post_effect(op, &parsed.args, source, env),
+        CommandId::Attribute(op) => super::player_data::attribute(op, &parsed.args, source, env),
+        CommandId::Clear => super::items::clear(&parsed.args, source, env),
+        CommandId::Data(op) => super::data_cmd::run_data(op, &parsed.args, source, env),
+        CommandId::DataPack(_) | CommandId::Reload => super::pack_cmd::run(parsed, source, env),
+        CommandId::Enchant => super::items::enchant(&parsed.args, source, env),
+        CommandId::Experience { op, levels } => {
+            super::player_data::experience(op, levels, &parsed.args, source, env)
+        }
+        CommandId::Give => super::items::give(&parsed.args, source, env),
+        CommandId::Item(op) => super::items::item(op, &parsed.args, source, env),
+        CommandId::RecipeGive => super::player_data::recipe(true, &parsed.args, source, env),
+        CommandId::RecipeTake => super::player_data::recipe(false, &parsed.args, source, env),
+        CommandId::Tag(op) => super::data_cmd::run_tag(op, &parsed.args, source, env),
+        CommandId::TellRaw
+        | CommandId::Title(_)
+        | CommandId::Me
+        | CommandId::TeamMsg
+        | CommandId::Trigger(_)
+        | CommandId::DialogShow
+        | CommandId::DialogClear => super::chat_cmd::run(parsed, signed, source, env),
+        CommandId::Team(op) => super::teams::run(op, &parsed.args, source, env),
+        CommandId::Ban
+        | CommandId::BanIp
+        | CommandId::BanList(_)
+        | CommandId::Pardon
+        | CommandId::PardonIp => super::bans::run(parsed, source, env),
+        CommandId::ScheduleFunction(replace) => {
+            super::schedule::schedule(&parsed.args, replace, source, env)
+        }
+        CommandId::ScheduleClear => super::schedule::clear(&parsed.args, source, env),
+        CommandId::Random(_)
+        | CommandId::FetchProfile(_)
+        | CommandId::Version
+        | CommandId::Spectate
+        | CommandId::Stopwatch(_)
+        | CommandId::Test(_)
+        | CommandId::Waypoint(_)
+        | CommandId::JfrStart
+        | CommandId::JfrStop
+        | CommandId::PerfStart
+        | CommandId::PerfStop
+        | CommandId::DebugStart
+        | CommandId::DebugStop
+        | CommandId::SetIdleTimeout
+        | CommandId::Transfer => super::system_cmd::run(parsed, source, env),
+        CommandId::SetBlock(mode) => super::blocks_cmd::set_block(mode, &parsed.args, source, env),
+        CommandId::Fill(mode) => super::blocks_cmd::fill(mode, &parsed.args, source, env),
+        CommandId::Clone {
+            filter,
+            mode,
+            strict,
+        } => super::blocks_cmd::clone((filter, mode, strict), &parsed.args, source, env),
+        CommandId::FillBiome => super::blocks_cmd::fill_biome(&parsed.args, source, env),
+        CommandId::ForceLoad(op) => super::world_cmd::force_load(op, &parsed.args, source, env),
+        CommandId::SetWorldSpawn => super::world_cmd::set_world_spawn(&parsed.args, source, env),
+        CommandId::SpawnPoint => {
+            let targets = if parsed.args.has("targets") {
+                targets(env, source, selector_arg(parsed, "targets")?, true)?
+            } else {
+                require_player(source)?;
+                vec![self_target(env, source)?]
+            };
+            super::world_cmd::spawn_point(&targets, &parsed.args, source, env)
+        }
+        CommandId::DifficultyQuery => Ok(super::world_cmd::difficulty_query(source, global)),
+        CommandId::DifficultySet(id) => super::world_cmd::difficulty_set(source, global, id),
+        CommandId::DefaultGameMode => {
+            super::world_cmd::default_game_mode(&parsed.args, source, env)
+        }
+        CommandId::SpreadPlayers => {
+            let targets = targets(env, source, selector_arg(parsed, "targets")?, false)?;
+            super::world_cmd::spread_players(targets, &parsed.args, source, env)
+        }
+        CommandId::Tick(op) => super::world_cmd::tick(op, &parsed.args, source, global),
+        CommandId::WorldBorder(op) => super::border_cmd::run(op, &parsed.args, source, env),
+        CommandId::Locate(op) => super::locate::locate(op, &parsed.args, source, env),
+        CommandId::Place(op) => super::locate::place(op, &parsed.args, source, env),
+        // Redirect modifiers never end a command; the engine runs `function` and `return`.
+        CommandId::Execute(_)
+        | CommandId::ExecuteIfFunction
+        | CommandId::ExecuteUnlessFunction
+        | CommandId::Function
+        | CommandId::FunctionWithArguments
+        | CommandId::FunctionWith
+        | CommandId::FunctionWithPath
+        | CommandId::ReturnValue
+        | CommandId::ReturnFail
+        | CommandId::ReturnRun
+        | CommandId::DebugFunction => Err(CommandError::new("command.unknown.command", vec![])),
     }
 }
 

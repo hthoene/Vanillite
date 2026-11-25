@@ -12,7 +12,9 @@ use vanillite_protocol::chat::{
 use vanillite_protocol::packets::common::ChatVisibility;
 use vanillite_protocol::packets::common::{ClientInfo, MainHand as WireMainHand};
 use vanillite_protocol::packets::play::clientbound::SystemChat;
-use vanillite_protocol::packets::play::serverbound::{ClientCommandAction, PlayerAction};
+use vanillite_protocol::packets::play::serverbound::{
+    ClientCommandAction, PlayerAction, SeenAdvancementsAction,
+};
 use vanillite_protocol::sets::ServerboundPlay;
 use vanillite_protocol::text::{Color, Component, NamedColor};
 
@@ -347,10 +349,26 @@ impl Connection {
                     .accept_teleport(&p, &mut state.body, ctx, sink)?;
             }
             ServerboundPlay::ClientTickEnd(_) => self.movement.client_tick_end(),
-            ServerboundPlay::ClientCommand(p) => {
-                // Statistics and game rule values come later.
-                if p.action == ClientCommandAction::PerformRespawn {
-                    state.respawn = true;
+            ServerboundPlay::ClientCommand(p) => match p.action {
+                ClientCommandAction::PerformRespawn => state.respawn = true,
+                // `sendStats`.
+                ClientCommandAction::RequestStats => {
+                    if let Some(stats) = play.stats.as_deref_mut() {
+                        sink.send(&stats.award_packet());
+                    }
+                }
+                // Game rule values come later.
+                ClientCommandAction::RequestGameRuleValues => {}
+            },
+            ServerboundPlay::SeenAdvancements(p) => {
+                // `handleSeenAdvancements`: an opened tab of a known advancement.
+                if p.0.action == SeenAdvancementsAction::OpenedTab
+                    && let Some(tab) = &p.0.tab
+                    && let Some(advancements) = play.advancements.as_deref_mut()
+                    && advancements.advancements().index(tab.as_str()).is_some()
+                    && let Some(packet) = advancements.select_tab(Some(tab.as_str()))
+                {
+                    sink.send(&packet);
                 }
             }
             ServerboundPlay::PlayerLoaded(_) => self.movement.mark_client_loaded(),

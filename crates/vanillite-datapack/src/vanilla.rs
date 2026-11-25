@@ -8,6 +8,7 @@
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use sha1::{Digest, Sha1};
 use vanillite_data::version::{SERVER_JAR_SHA1, SERVER_JAR_URL, VERSION_ID};
@@ -22,20 +23,28 @@ const COMPLETE: &str = ".complete";
 ///
 /// `local_jar` is used instead of a download when given; it must be the pinned jar too.
 ///
-/// Safe to call from several processes at once (e.g. test binaries run in parallel): each
-/// works in its own temporary files, and the first complete pack to be renamed into place wins.
+/// Safe to call from several processes and threads at once (e.g. tests run in parallel): each
+/// call works in its own temporary files, and the first complete pack to be renamed into place
+/// wins.
 pub fn ensure_vanilla_pack(cache_dir: &Path, local_jar: Option<&Path>) -> Result<PathBuf, Error> {
+    static CALLS: AtomicU64 = AtomicU64::new(0);
     let root = cache_dir.join("vanilla");
     let pack = root.join(SERVER_JAR_SHA1);
     if pack.join(COMPLETE).exists() {
         return Ok(pack);
     }
+    // Unique per process and call, so parallel callers never share a temporary file.
+    let unique = format!(
+        "{}-{}",
+        std::process::id(),
+        CALLS.fetch_add(1, Ordering::Relaxed)
+    );
     std::fs::create_dir_all(&root).map_err(io_err(&root))?;
 
     let (jar, downloaded) = match local_jar {
         Some(p) => (p.to_path_buf(), false),
         None => {
-            let p = root.join(format!("server-{VERSION_ID}.{}.jar", std::process::id()));
+            let p = root.join(format!("server-{VERSION_ID}.{unique}.jar"));
             download(SERVER_JAR_URL, &p)?;
             (p, true)
         }
@@ -52,7 +61,7 @@ pub fn ensure_vanilla_pack(cache_dir: &Path, local_jar: Option<&Path>) -> Result
         });
     }
 
-    let tmp = root.join(format!("{SERVER_JAR_SHA1}.{}.tmp", std::process::id()));
+    let tmp = root.join(format!("{SERVER_JAR_SHA1}.{unique}.tmp"));
     if tmp.exists() {
         std::fs::remove_dir_all(&tmp).map_err(io_err(&tmp))?;
     }
@@ -74,7 +83,7 @@ pub fn ensure_vanilla_pack(cache_dir: &Path, local_jar: Option<&Path>) -> Result
         let _ = std::fs::remove_dir_all(&tmp);
         return Ok(pack);
     }
-    if pack.exists() {
+    if pack.exists() && !pack.join(COMPLETE).exists() {
         std::fs::remove_dir_all(&pack).map_err(io_err(&pack))?;
     }
     if let Err(e) = std::fs::rename(&tmp, &pack) {
@@ -87,7 +96,7 @@ pub fn ensure_vanilla_pack(cache_dir: &Path, local_jar: Option<&Path>) -> Result
     Ok(pack)
 }
 
-fn open_zip(jar: &Path) -> Result<zip::ZipArchive<File>, Error> {
+pub(crate) fn open_zip(jar: &Path) -> Result<zip::ZipArchive<File>, Error> {
     let file = File::open(jar).map_err(io_err(jar))?;
     zip::ZipArchive::new(file).map_err(|e| Error::Jar(jar.to_path_buf(), e.to_string()))
 }

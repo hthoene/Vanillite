@@ -59,7 +59,21 @@ pub fn encode_chunk_with_light(
     chunk: &Chunk,
     block_entities: &[BlockEntityWire<'_>],
 ) {
-    let data_size = chunk_data_size(chunk);
+    encode_chunk_with_sections(out, x, z, chunk, chunk.sections(), block_entities);
+}
+
+/// Like [`encode_chunk_with_light`], with `sections` sent instead of the chunk's own (one per
+/// section of the chunk), e.g. sections with blocks hidden from clients.
+pub fn encode_chunk_with_sections(
+    out: &mut Vec<u8>,
+    x: i32,
+    z: i32,
+    chunk: &Chunk,
+    sections: &[std::sync::Arc<crate::section::Section>],
+    block_entities: &[BlockEntityWire<'_>],
+) {
+    debug_assert_eq!(sections.len(), chunk.sections().len());
+    let data_size: usize = sections.iter().map(|s| s.serialized_size()).sum();
     out.reserve(
         64 + 3 * 300 + data_size + block_entities.len() * 8 + light_size_hint(chunk.light()),
     );
@@ -78,7 +92,7 @@ pub fn encode_chunk_with_light(
 
     write_varint(out, data_size as u32);
     let start = out.len();
-    for section in chunk.sections() {
+    for section in sections {
         section.write(out);
     }
     debug_assert_eq!(out.len() - start, data_size);

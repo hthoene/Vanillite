@@ -53,6 +53,8 @@ pub(crate) fn with_tick<R>(
             random: &mut random,
             out: &mut out,
             hooks: &hooks,
+            border: None,
+            display_name: &|n: &str, _| vanillite_protocol::text::Component::text(n.to_owned()),
         };
         let mut cx = MobContext {
             path_budget: u64::MAX,

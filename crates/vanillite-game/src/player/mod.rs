@@ -126,6 +126,12 @@ pub struct PlayerData {
     pub last_equipment: [crate::item::ItemStack; 6],
     /// Health, food, air, fire, experience and the combat tracker.
     pub survival: crate::survival::player::Survival,
+    /// `ServerPlayer.postEffects` (`/posteffect`), saved as `post_effects`.
+    pub post_effects: Vec<String>,
+    /// Statistics (`ServerStatsCounter`).
+    pub stats: crate::stats::StatsCounter,
+    /// Advancement progress (`PlayerAdvancements`).
+    pub advancements: crate::advancements::PlayerAdvancements,
     /// The recipes the player knows (`ServerRecipeBook`).
     pub recipe_book: crate::recipe::book::PlayerRecipeBook,
 }

@@ -15,6 +15,7 @@ use crate::player_list::Uuid;
 use vanillite_base::{Aabb, BlockPos, ChunkPos, Vec3};
 use vanillite_config::GameMode;
 use vanillite_game::block::portal as portal_blocks;
+use vanillite_game::level::forced::SavedTickets;
 use vanillite_game::mob::fam::wildlife::ender_pearl;
 use vanillite_game::player::{Body, ChunkView, PlayerData, effective_view_distance, join};
 use vanillite_game::portal::{self, EntryPortal, PearlArrival, PortalKind, TravelRequest};
@@ -41,6 +42,16 @@ const END_DIMENSION: &str = "minecraft:the_end";
 /// `TicketType.PORTAL`: ticks a portal ticket keeps the chunks around an arrival loaded.
 const PORTAL_TICKET_TICKS: u64 = 300;
 
+/// A portal ticket (load and simulation) with the tick it expires (`TicketType.PORTAL`).
+#[derive(Debug)]
+pub(crate) struct PortalTicket {
+    until: u64,
+    pos: ChunkPos,
+    level: u8,
+    load: TicketId,
+    simulation: TicketId,
+}
+
 /// `ClientboundRespawnPacket.KEEP_ALL_DATA`: what the client keeps on a dimension change.
 const KEEP_ALL_DATA: u8 = 3;
 
@@ -63,6 +74,8 @@ pub(crate) struct Traveller {
     width: f32,
     height: f32,
     route: Route,
+    /// Its entity tags (`entityTags`), kept like `PlayerList.respawn` and `teleport` do.
+    tags: Vec<String>,
 }
 
 /// Where a traveller goes in its new world.
@@ -185,7 +198,19 @@ impl ServerWorld {
         if !keep_all && !player.survival.is_dead_or_dying() {
             return;
         }
-        self.send_away(ctx, id, OVERWORLD, Route::Respawn { keep_all });
+        // `findRespawnPositionAndUseSpawnBlock`: the world of the player's respawn position.
+        let target = player
+            .survival
+            .respawn
+            .as_ref()
+            .and_then(|r| {
+                crate::server::DIMENSIONS
+                    .iter()
+                    .position(|d| *d == r.dimension)
+            })
+            .and_then(|i| u16::try_from(i).ok())
+            .map_or(OVERWORLD, WorldId);
+        self.send_away(ctx, id, target, Route::Respawn { keep_all });
     }
 
     /// Removes the player `id` from this world and hands it to `target` (this world too).
@@ -222,6 +247,7 @@ impl ServerWorld {
         let (uuid, pos, velocity, rot) =
             (entity.uuid(), entity.pos(), entity.velocity(), entity.rot());
         let (width, height) = size(&entity.aabb());
+        let tags = self.level.entities.tags_of(id).to_vec();
         let (removed, data) = self.level.entities.despawn_player(id)?;
         Some(Traveller {
             uuid,
@@ -235,6 +261,7 @@ impl ServerWorld {
             width,
             height,
             route,
+            tags,
         })
     }
 
@@ -277,14 +304,16 @@ impl ServerWorld {
         self.gateway_waits = waits;
         let now = self.ticks;
         let chunks = &mut self.level.chunks;
-        self.portal_tickets.retain(|&(until, ticket, simulation)| {
-            let keep = now < until;
+        let before = self.portal_tickets.len();
+        self.portal_tickets.retain(|t| {
+            let keep = now < t.until;
             if !keep {
-                chunks.remove_ticket(ticket);
-                chunks.remove_simulation_ticket(simulation);
+                chunks.remove_ticket(t.load);
+                chunks.remove_simulation_ticket(t.simulation);
             }
             keep
         });
+        self.tickets_dirty |= self.portal_tickets.len() != before;
         self.pearl_tickets
             .retain(|_, &mut (until, ticket, simulation)| {
                 let keep = now < until;
@@ -505,6 +534,23 @@ impl ServerWorld {
             }
         }
         drop(rules);
+        // A respawn position that is gone (`NO_RESPAWN_BLOCK_AVAILABLE`): cleared, the world
+        // spawn stands in.
+        let respawn_missing = keep_all.is_some()
+            && data
+                .survival
+                .respawn
+                .as_ref()
+                .is_some_and(|r| r.dimension == self.dimension)
+            && data
+                .survival
+                .respawn
+                .as_ref()
+                .and_then(|r| crate::survival::forced_respawn(&self.level.chunks, r))
+                .is_none();
+        if respawn_missing {
+            data.survival.respawn = None;
+        }
         data.survival.reset_sent();
         data.survival.teleported();
         data.connection.chunks.reset();
@@ -535,6 +581,12 @@ impl ServerWorld {
                 landing.relatives,
                 sink.as_ref(),
             );
+            if respawn_missing {
+                sink.send(&vanillite_protocol::packets::play::clientbound::GameEvent {
+                    event: vanillite_protocol::packets::play::clientbound::GameEvent::NO_RESPAWN_BLOCK_AVAILABLE,
+                    param: 0.0,
+                });
+            }
             join::send_spawn_position(sink.as_ref(), info);
             sink.send(&difficulty);
             sink.send(&SetExperience {
@@ -545,6 +597,7 @@ impl ServerWorld {
             join::send_level_info(
                 sink.as_ref(),
                 info,
+                &crate::border::level_packets(&self.level.border, global),
                 &crate::survival::full_time_sync(&global.level),
                 &self.survival.join_weather(),
             );
@@ -576,6 +629,7 @@ impl ServerWorld {
             uuid,
             network_id,
             data,
+            tags,
             ..
         } = traveller;
         let id = self.level.entities.spawn_player_as(
@@ -589,6 +643,7 @@ impl ServerWorld {
             },
             data,
         );
+        self.level.entities.set_tags(id, tags);
         if let Some(mut entity) = self.level.entities.store.get_mut(id) {
             entity.set_velocity(body.velocity);
             entity.set_flags(EntityFlags::ON_GROUND, false);
@@ -606,6 +661,7 @@ impl ServerWorld {
             join::send_level_info(
                 sink.as_ref(),
                 &self.players.level,
+                &crate::border::level_packets(&self.level.border, global),
                 &crate::survival::full_time_sync(&global.level),
                 &self.survival.join_weather(),
             );
@@ -748,6 +804,24 @@ impl ServerWorld {
                     ticket: Some(containing(pos)),
                 })
             }
+            Route::Respawn { .. }
+                if let Some((pos, y_rot, x_rot)) = traveller
+                    .data
+                    .survival
+                    .respawn
+                    .as_ref()
+                    .filter(|r| r.dimension == self.dimension)
+                    .and_then(|r| crate::survival::forced_respawn(&self.level.chunks, r)) =>
+            {
+                Some(Landing {
+                    pos,
+                    y_rot,
+                    x_rot,
+                    relatives: 0,
+                    sound: false,
+                    ticket: None,
+                })
+            }
             Route::Spawn | Route::Respawn { .. } => {
                 let (pos, yaw) = self.players.level.spawn;
                 Some(Landing {
@@ -782,11 +856,50 @@ impl ServerWorld {
     /// ticks.
     fn place_portal_ticket(&mut self, pos: BlockPos) {
         let level = FULL_LEVEL - u8::try_from(portal::PORTAL_TICKET_RADIUS).unwrap_or(0);
+        self.add_portal_ticket(pos.chunk(), level, PORTAL_TICKET_TICKS);
+    }
+
+    /// Adds a portal ticket that expires after `ticks`.
+    fn add_portal_ticket(&mut self, pos: ChunkPos, level: u8, ticks: u64) {
         let chunks = &mut self.level.chunks;
-        let ticket = chunks.add_ticket(pos.chunk(), level);
-        let simulation = chunks.add_simulation_ticket(pos.chunk(), level);
-        self.portal_tickets
-            .push((self.ticks + PORTAL_TICKET_TICKS, ticket, simulation));
+        let load = chunks.add_ticket(pos, level);
+        let simulation = chunks.add_simulation_ticket(pos, level);
+        self.portal_tickets.push(PortalTicket {
+            until: self.ticks + ticks,
+            pos,
+            level,
+            load,
+            simulation,
+        });
+        self.tickets_dirty = true;
+    }
+
+    /// Restores the saved chunk tickets besides the forced ones (`activateAllDeactivatedTickets`).
+    pub(crate) fn restore_tickets(&mut self, saved: SavedTickets) {
+        for t in &saved.portal {
+            self.add_portal_ticket(t.pos, t.level, u64::try_from(t.ticks_left).unwrap_or(0));
+        }
+        self.kept_tickets = saved.kept;
+        // Loading is not a change.
+        self.tickets_dirty = false;
+    }
+
+    /// The saved chunk tickets besides the forced ones, with the portal tickets' remaining
+    /// ticks.
+    pub(crate) fn saved_tickets(&self) -> SavedTickets {
+        let portal = self
+            .portal_tickets
+            .iter()
+            .map(|t| vanillite_game::level::forced::PortalTicket {
+                pos: t.pos,
+                level: t.level,
+                ticks_left: i64::try_from(t.until.saturating_sub(self.ticks)).unwrap_or(i64::MAX),
+            })
+            .collect();
+        SavedTickets {
+            portal,
+            kept: self.kept_tickets.clone(),
+        }
     }
 
     /// `EndGatewayBlock.getPortalDestination`: the player moves to the gateway's exit once the
@@ -929,6 +1042,7 @@ impl ServerWorld {
             move |pos| crate::survival::raining_at(chunks, climate.as_deref(), &weather, pos);
         let mut no_gateway = |_| false;
         let dimension = self.dimension.clone();
+        let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
         let mut env = self.survival.env(
             state,
             &rules,
@@ -937,6 +1051,7 @@ impl ServerWorld {
             &dimension,
             &mut no_gateway,
             &hooks,
+            &names,
         );
         let entities = &mut self.level.entities;
         if arrival.endermite {

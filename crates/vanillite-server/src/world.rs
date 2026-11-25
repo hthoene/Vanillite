@@ -84,12 +84,16 @@ pub struct ServerWorld {
     /// The dimension's saved data (`<dimension>/data/`: world border, chunk tickets, raids,
     /// ...); systems register here when they come.
     pub(crate) data: vanillite_storage::saved_data::SavedDataStore,
+    /// The saved chunk tickets of types Vanillite does not know, written back unchanged.
+    kept_tickets: Vec<vanillite_nbt::Tag>,
+    /// The portal tickets changed since the last save.
+    tickets_dirty: bool,
     /// Players arriving from other worlds or respawning, waiting for their destination.
     arrivals: Vec<travel::Waiting>,
     /// Players in End gateways waiting for the exit's chunks.
     gateway_waits: Vec<travel::GatewayWait>,
-    /// Portal tickets (load and simulation) with the tick they expire.
-    portal_tickets: Vec<(u64, TicketId, TicketId)>,
+    /// Portal tickets with the tick they expire.
+    portal_tickets: Vec<travel::PortalTicket>,
     /// Ender pearl tickets (load and simulation) by chunk with the tick they expire; placing
     /// one again only extends it.
     pearl_tickets: FxHashMap<ChunkPos, (u64, TicketId, TicketId)>,
@@ -153,6 +157,8 @@ impl ServerWorld {
         if let Some(climate) = survival.climate() {
             level.set_climate(Arc::clone(climate));
         }
+        let mut packets = ChunkPackets::default();
+        packets.set_anti_xray(&rules.anti_xray, &dimension);
         ServerWorld {
             id,
             dimension,
@@ -166,7 +172,7 @@ impl ServerWorld {
             viewers: Vec::new(),
             chunks_sent: Vec::new(),
             players,
-            packets: ChunkPackets::default(),
+            packets,
             updates: WorldUpdates::default(),
             player_tickets: FxHashMap::default(),
             center_tickets: FxHashMap::default(),
@@ -177,6 +183,8 @@ impl ServerWorld {
             mobs,
             player_scratch: Vec::new(),
             data,
+            kept_tickets: Vec::new(),
+            tickets_dirty: false,
             arrivals: Vec::new(),
             gateway_waits: Vec::new(),
             portal_tickets: Vec::new(),
@@ -283,8 +291,15 @@ impl ServerWorld {
             .as_ref()
             .and_then(|saved| saved.other.get("ender_pearls"))
             .cloned();
-        self.players
-            .join(&mut self.level.entities, global, self.id, arrival, &weather);
+        let state = crate::border::level_packets(&self.level.border, global);
+        self.players.join(
+            &mut self.level.entities,
+            global,
+            self.id,
+            arrival,
+            &weather,
+            &state,
+        );
         let pearls = self.players.take_saved_pearls(uuid, saved_pearls.as_ref());
         self.load_pearls(global, pearls);
         let plugins = global.plugins.clone();
@@ -303,23 +318,6 @@ impl ServerWorld {
                 Some((e.uuid(), [pos.x, pos.y, pos.z]))
             })
             .collect()
-    }
-
-    /// Spawns a mob like `/summon` (`finalizeSpawn` with the command reason).
-    pub(crate) fn summon(
-        &mut self,
-        kind: vanillite_game::mob::Kind,
-        pos: vanillite_base::Vec3,
-        global: &Global,
-    ) {
-        let difficulty = global.level.difficulty;
-        vanillite_game::mob::spawn::summon(
-            &mut self.level,
-            self.mobs.table(),
-            kind,
-            pos,
-            difficulty,
-        );
     }
 
     /// This world's id.
@@ -363,6 +361,8 @@ impl ServerWorld {
             usize::try_from(rules.simulation.max_relights_per_tick).unwrap_or(usize::MAX),
         );
         self.mobs.set_rules(&rules);
+        self.packets
+            .set_anti_xray(&rules.anti_xray, &self.dimension);
         self.rules = rules;
     }
 
@@ -420,10 +420,15 @@ impl ServerWorld {
             self.respawn(ctx, id);
         }
         self.tick_travel(ctx.global);
+        if self.id.0 == 0 && ctx.runs_normally {
+            // `ServerFunctionManager.tick`: the data pack functions run as the server in the
+            // overworld before the clocks and the worlds tick.
+            crate::commands::tick_functions(&mut self.level, ctx.global, self.id);
+        }
         self.players_inside_blocks();
         // The rules block behaviour reads (sculk shriekers).
         self.level.settings.peaceful =
-            ctx.global.level.difficulty == vanillite_game::survival::rules::Difficulty::Peaceful;
+            ctx.global.level.difficulty() == vanillite_game::survival::rules::Difficulty::Peaceful;
         self.level.settings.spawn_wardens = ctx
             .global
             .level
@@ -432,15 +437,20 @@ impl ServerWorld {
         self.level.set_handling_tick(true);
         if ctx.runs_normally {
             // `advanceWeatherCycle`, then `tickTime`: the overworld advances the shared game
-            // time, every world runs on it.
+            // time, every world runs on it. The world border moves first.
+            self.level.border.tick();
             self.survival.tick_level(&self.level.entities, ctx.global);
             self.level.set_weather(self.survival.weather);
             self.level
                 .settings
                 .apply_game_rules(&ctx.global.level.rules());
-            self.level.settings.difficulty = ctx.global.level.difficulty;
+            self.level.settings.difficulty = ctx.global.level.difficulty();
             let level = &mut self.level;
             level.set_game_time(ctx.global.level.game_time());
+            if self.id.0 == 0 {
+                crate::commands::tick_scheduled(level, ctx.global, self.id);
+            }
+            let level = &mut self.level;
             level.run_scheduled_ticks();
             self.survival
                 .tick_thunder(&mut self.level.entities, &self.level.chunks, ctx.global);
@@ -495,7 +505,10 @@ impl ServerWorld {
         }
         let light = self.updates.light_changes();
         self.level.chunks.take_light_changes(light);
-        self.packets.invalidate(&mut self.level.chunks, light);
+        let mut changed = std::mem::take(&mut self.level.output().changed);
+        self.packets
+            .invalidate(&mut self.level.chunks, light, &mut changed);
+        self.level.output().changed = changed;
         for pos in &self.level.output().block_entity_updates {
             self.packets.invalidate_chunk(pos.chunk());
         }
@@ -517,6 +530,7 @@ impl ServerWorld {
         self.survival.do_tick(
             &mut self.level.entities,
             &self.level.chunks,
+            &self.level.border,
             &self.level.block_entities,
             ctx.global,
             &self.dimension,
@@ -541,6 +555,7 @@ impl ServerWorld {
             },
         );
         self.effects.flush(&self.level.entities);
+        crate::scoreboard::flush(ctx.global);
         self.overload
             .update(started.elapsed(), &self.rules.tracking, &self.dimension);
         // Save rounds take only the time left in the tick (#47).
@@ -620,6 +635,18 @@ impl ServerWorld {
         self.level.chunks.when_saved(then);
     }
 
+    /// Whether the world has saved tickets to load before the first tick.
+    pub(crate) fn has_saved_tickets(&self) -> bool {
+        !self.level.forced.is_empty() || !self.portal_tickets.is_empty()
+    }
+
+    /// One step of `prepareLevels` for the saved tickets: runs the chunk system without a game
+    /// tick and returns how many ticketed chunks are not full yet.
+    pub(crate) fn prepare_step(&mut self) -> usize {
+        self.level.chunks.tick();
+        self.level.chunks.pending_full()
+    }
+
     /// Saves the world like Vanilla (`saveEverything`): the players always, the chunks and the
     /// dimension's saved data unless `skip_chunks` (`/save-off`). `flush` waits until the
     /// chunks are written and committed (shutdown, `/save-all flush`); otherwise a save round
@@ -628,6 +655,12 @@ impl ServerWorld {
         log::debug!("Saving {} (flush: {flush})", self.dimension);
         self.players.save_all(&self.level.entities);
         if !skip_chunks {
+            if let Some(border) = self.level.border.take_dirty() {
+                self.data.write(crate::border::SAVED_DATA, border.to_nbt());
+            }
+            if self.level.forced.take_dirty() | std::mem::take(&mut self.tickets_dirty) {
+                crate::chunk_tickets::save(&self.data, &self.level, &self.saved_tickets());
+            }
             self.data.save();
             self.level.save(flush);
         }

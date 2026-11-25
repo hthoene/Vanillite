@@ -14,12 +14,14 @@ use vanillite_protocol::packets::play::serverbound::{DigAction, Hand};
 use vanillite_protocol::types::BlockPos as WirePos;
 
 use super::sink::PacketSink;
+use crate::advancements::trigger::Event;
 use crate::block::place::{self, BlockReader, PlaceContext};
 use crate::inventory::{Drop, PlayerInventory};
 use crate::item::{self, ItemStack, ToolTable};
 use crate::level::update;
 use crate::loot::{BlockLootContext, LootTables};
 use crate::player::world::{PlayLevel, SoundSource, events};
+use crate::stats::{Stat, StatType, custom};
 
 /// Static gameplay data the handlers read: tool rules, loot tables and enchantment ids.
 #[derive(Debug, Default)]
@@ -50,6 +52,21 @@ pub struct GameData {
     pub registry_tags: HashMap<String, HashMap<String, Vec<u32>>>,
     /// The `minecraft:trial_spawner` registry.
     pub trial_spawner_configs: crate::block::trial_spawner::TrialConfigs,
+    /// The definitions of the enchantments by name.
+    pub enchantment_info: HashMap<String, EnchantmentInfo>,
+}
+
+/// What `/enchant` reads of an enchantment (`Enchantment` and its `EnchantmentDefinition`).
+#[derive(Debug, Clone)]
+pub struct EnchantmentInfo {
+    /// `description`.
+    pub description: vanillite_protocol::text::Component,
+    /// `max_level`.
+    pub max_level: i32,
+    /// `supported_items`: item ids.
+    pub supported_items: Vec<u16>,
+    /// `exclusive_set`: enchantment names.
+    pub exclusive_set: Vec<String>,
 }
 
 impl crate::predicate::EntityTags for GameData {
@@ -215,6 +232,26 @@ pub struct PlayContext<'a> {
     pub swings: &'a mut Vec<Hand>,
     /// Plugin hooks (block breaking and placing).
     pub hooks: &'a dyn crate::hooks::GameHooks,
+    /// The player's statistics (`None` in tests).
+    pub stats: Option<&'a mut crate::stats::StatsCounter>,
+    /// The player's advancements (`None` in tests).
+    pub advancements: Option<&'a mut crate::advancements::PlayerAdvancements>,
+}
+
+impl PlayContext<'_> {
+    /// `ServerPlayer.awardStat`.
+    pub fn award_stat(&mut self, stat: Stat, count: i32) {
+        if let Some(stats) = self.stats.as_deref_mut() {
+            stats.award(stat, count);
+        }
+    }
+
+    /// Fires a criterion trigger of the player.
+    pub fn trigger(&mut self, event: Event) {
+        if let Some(advancements) = self.advancements.as_deref_mut() {
+            advancements.trigger(event);
+        }
+    }
 }
 
 impl std::fmt::Debug for PlayContext<'_> {
@@ -702,16 +739,24 @@ impl Digging {
             || ctx.data.tools.is_correct_for_drops(&tool, state);
         self.mine_block(ctx, state);
         if changed && correct {
+            // `Block.playerDestroy`.
+            ctx.award_stat(Stat::of(StatType::Mined, state.block().0), 1);
             drop_resources(ctx, state, pos, &tool, entity.as_ref());
         }
         true
     }
 
-    /// `ItemStack.mineBlock`: tools lose durability.
+    /// `ItemStack.mineBlock`: tools count as used and lose durability.
     fn mine_block(&mut self, ctx: &mut PlayContext<'_>, state: BlockState) {
+        let tool = ctx.inventory.selected_item();
+        if !ctx.data.tools.is_tool(tool) {
+            return;
+        }
+        let used = tool.item;
+        ctx.award_stat(Stat::of(StatType::Used, used), 1);
         let damage = {
             let tool = ctx.inventory.selected_item();
-            if tool.is_empty() || state.misc().destroy_speed == 0.0 {
+            if state.misc().destroy_speed == 0.0 {
                 return;
             }
             ctx.data.tools.damage_per_block(tool)
@@ -739,7 +784,10 @@ impl Digging {
         }
         let new_damage = item::damage(tool).saturating_add(amount);
         if new_damage >= item::max_damage(tool) {
+            let broken = tool.item;
             tool.shrink(1);
+            // `onEquippedItemBroken`.
+            ctx.award_stat(Stat::of(StatType::Broken, broken), 1);
         } else {
             item::set_damage(tool, new_damage);
         }
@@ -841,7 +889,7 @@ impl Digging {
                     Some(level) if has_item_use => level.use_item_on(pos, &use_ctx, &mut held),
                     _ => crate::block::ItemInteraction::TryWithEmptyHand,
                 };
-                let result = match item_use {
+                let (result, item_used) = match item_use {
                     crate::block::ItemInteraction::Done(result) => {
                         if held != before && !ctx.actor.creative() {
                             let slot = match hand {
@@ -852,22 +900,32 @@ impl Digging {
                                 *slot = held;
                             }
                         }
-                        Some(result)
+                        (Some(result), true)
                     }
                     crate::block::ItemInteraction::TryWithEmptyHand
                         if hand == Hand::MainHand && has_use =>
                     {
-                        ctx.level
+                        let used = ctx
+                            .level
                             .level_mut()
-                            .map(|level| level.use_without_item(pos, &use_ctx))
+                            .map(|level| level.use_without_item(pos, &use_ctx));
+                        (used, false)
                     }
-                    _ => None,
+                    _ => (None, false),
                 };
                 self.open_requested(ctx, sink);
-                match result {
-                    Some(crate::block::Interaction::Success) => return true,
-                    Some(crate::block::Interaction::Consume) => return false,
-                    _ => {}
+                if let Some(
+                    result @ (crate::block::Interaction::Success
+                    | crate::block::Interaction::Consume),
+                ) = result
+                {
+                    ctx.trigger(if item_used {
+                        Event::ItemUsedOnBlock(pos, before)
+                    } else {
+                        Event::DefaultBlockUse(pos)
+                    });
+                    any_block_use(ctx, hand, pos);
+                    return result == crate::block::Interaction::Success;
                 }
             } else if has_use_action(state) {
                 // Blocks whose use is not implemented yet consume the click.
@@ -955,6 +1013,12 @@ impl Digging {
         };
         let placed = self.place_block(ctx, hand, &stack, &place_ctx);
         self.open_requested(ctx, sink);
+        if placed {
+            // `ItemStack.useOn` of a successful item interaction.
+            ctx.award_stat(Stat::of(StatType::Used, stack.item), 1);
+            ctx.trigger(Event::ItemUsedOnBlock(pos, stack));
+            any_block_use(ctx, hand, pos);
+        }
         placed
     }
 
@@ -1075,6 +1139,7 @@ impl Digging {
         if !ctx.level.set_block(target, state, update::ALL_IMMEDIATE) {
             return false;
         }
+        ctx.trigger(Event::PlacedBlock(target, stack.clone()));
         if ctx.level.block(target).block() == state.block() {
             if let Some(updated) = apply_block_state_component(stack, state) {
                 ctx.level.set_block(target, updated, update::CLIENTS);
@@ -1217,6 +1282,44 @@ impl Digging {
     }
 }
 
+/// `ANY_BLOCK_USE` after a use that consumed the click, with the stack now in the hand.
+fn any_block_use(ctx: &mut PlayContext<'_>, hand: Hand, pos: BlockPos) {
+    let held = match hand {
+        Hand::MainHand => ctx.inventory.selected_item().clone(),
+        Hand::OffHand => ctx.inventory.offhand.clone(),
+    };
+    ctx.trigger(Event::AnyBlockUse(pos, held));
+}
+
+/// The statistic a block awards when it opens its menu (`getOpenChestStat`,
+/// `INTERACT_WITH_*`, `INSPECT_*`).
+fn open_stat(block: vanillite_data::block::BlockId) -> Option<Stat> {
+    let name = block.name().strip_prefix("minecraft:").unwrap_or("");
+    Some(match name {
+        "trapped_chest" => custom::TRIGGER_TRAPPED_CHEST,
+        "ender_chest" => custom::OPEN_ENDERCHEST,
+        "barrel" => custom::OPEN_BARREL,
+        "dispenser" => custom::INSPECT_DISPENSER,
+        "dropper" => custom::INSPECT_DROPPER,
+        "hopper" => custom::INSPECT_HOPPER,
+        "crafting_table" => custom::INTERACT_WITH_CRAFTING_TABLE,
+        "furnace" => custom::INTERACT_WITH_FURNACE,
+        "blast_furnace" => custom::INTERACT_WITH_BLAST_FURNACE,
+        "smoker" => custom::INTERACT_WITH_SMOKER,
+        "stonecutter" => custom::INTERACT_WITH_STONECUTTER,
+        "anvil" | "chipped_anvil" | "damaged_anvil" => custom::INTERACT_WITH_ANVIL,
+        "grindstone" => custom::INTERACT_WITH_GRINDSTONE,
+        "smithing_table" => custom::INTERACT_WITH_SMITHING_TABLE,
+        "brewing_stand" => custom::INTERACT_WITH_BREWINGSTAND,
+        "cartography_table" => custom::INTERACT_WITH_CARTOGRAPHY_TABLE,
+        "loom" => custom::INTERACT_WITH_LOOM,
+        "beacon" => custom::INTERACT_WITH_BEACON,
+        _ if name.ends_with("shulker_box") => custom::OPEN_SHULKER_BOX,
+        _ if name == "chest" || name.ends_with("copper_chest") => custom::OPEN_CHEST,
+        _ => return None,
+    })
+}
+
 /// `ServerPlayer.openMenu` for a menu a block asked for.
 fn open_menu(
     ctx: &mut PlayContext<'_>,
@@ -1231,7 +1334,12 @@ fn open_menu(
         infinite: ctx.actor.creative(),
         disconnected: false,
     };
+    // Spectators open menus without using the block, so without its statistic.
+    let stat = open_stat(request.block).filter(|_| !who.spectator);
     crate::menu::container::open(ctx.inventory, level, request, who, ctx.drops, sink);
+    if let Some(stat) = stat {
+        ctx.award_stat(stat, 1);
+    }
 }
 
 /// `CampfireBlock.canLight`, `CandleBlock.canLight` and `CandleCakeBlock.canLight`: an unlit

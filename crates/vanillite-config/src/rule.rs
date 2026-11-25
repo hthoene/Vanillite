@@ -332,6 +332,75 @@ impl RuleValue for WorldFormat {
     }
 }
 
+/// A list of strings (block ids, …), written as a TOML array or as one comma-separated string
+/// (for environment variables and panels).
+impl RuleValue for Vec<String> {
+    const SHAPE: ValueShape = ValueShape::of(ValueType::Text);
+    fn from_toml(value: &toml::Value) -> Result<Self, String> {
+        match value {
+            toml::Value::Array(items) => items
+                .iter()
+                .map(|item| {
+                    item.as_str()
+                        .map(|s| s.trim().to_owned())
+                        .ok_or_else(|| format!("expected a list of strings, found {item}"))
+                })
+                .collect(),
+            toml::Value::String(s) => Ok(s
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .collect()),
+            _ => Err(format!("expected a list of strings, found {value}")),
+        }
+    }
+    fn to_toml(&self) -> toml::Value {
+        toml::Value::Array(self.iter().cloned().map(toml::Value::String).collect())
+    }
+}
+
+/// How hidden blocks are kept from clients (`anticheat.anti-xray.engine-mode`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum AntiXrayMode {
+    /// Clients get the real blocks (Vanilla).
+    #[default]
+    Disabled,
+    /// Hidden blocks that touch no transparent block are sent as the dimension's base stone.
+    Hide,
+    /// Hidden and replacement blocks that touch no transparent block are sent as random hidden
+    /// blocks, so the client sees fake ores everywhere.
+    Obfuscate,
+}
+
+impl RuleValue for AntiXrayMode {
+    const SHAPE: ValueShape = ValueShape::of(ValueType::Text);
+    fn from_toml(value: &toml::Value) -> Result<Self, String> {
+        match value {
+            toml::Value::Boolean(false) => Ok(AntiXrayMode::Disabled),
+            toml::Value::String(s) => match s.trim().to_ascii_lowercase().as_str() {
+                "disabled" => Ok(AntiXrayMode::Disabled),
+                "hide" => Ok(AntiXrayMode::Hide),
+                "obfuscate" => Ok(AntiXrayMode::Obfuscate),
+                _ => Err(format!(
+                    "expected \"disabled\", \"hide\" or \"obfuscate\", found {value}"
+                )),
+            },
+            _ => Err(format!(
+                "expected \"disabled\", \"hide\" or \"obfuscate\", found {value}"
+            )),
+        }
+    }
+    fn to_toml(&self) -> toml::Value {
+        let name = match self {
+            AntiXrayMode::Disabled => "disabled",
+            AntiXrayMode::Hide => "hide",
+            AntiXrayMode::Obfuscate => "obfuscate",
+        };
+        toml::Value::String(name.to_owned())
+    }
+}
+
 /// A value that is either switched off (written `"disabled"` or `false`) or set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum DisabledOr<T> {
