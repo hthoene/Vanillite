@@ -1077,6 +1077,64 @@ fn container_value(items: &[ItemStack]) -> Box<[u8]> {
     vanillite_protocol::item::encode_container_contents(items).unwrap_or_else(|| Box::new([0]))
 }
 
+/// `CompoundTag.merge`: compounds merge key by key, everything else is replaced.
+fn merge_compound(target: &mut Compound, other: &Compound) {
+    for (key, value) in other.iter() {
+        match (target.get_mut(key), value) {
+            (Some(Tag::Compound(old)), Tag::Compound(new)) => merge_compound(old, new),
+            _ => target.insert(key, value.clone()),
+        }
+    }
+}
+
+/// `BlockItem.updateCustomBlockEntityTag`: the item's `block_entity_data` merged into the
+/// placed block entity (`TypedEntityData.loadInto`), if the types match; the operator-only
+/// kinds (command blocks, lecterns, signs, spawners and trial spawners) only for players
+/// that may use game master blocks.
+pub fn apply_block_entity_data(
+    level: &mut Level,
+    pos: BlockPos,
+    stack: &ItemStack,
+    game_master: bool,
+) -> bool {
+    use vanillite_data::block::{BlockKind, ids};
+    let Some(wire) = stack.component(components::BLOCK_ENTITY_DATA) else {
+        return false;
+    };
+    let mut reader = vanillite_protocol::codec::Reader::new(wire);
+    let Ok(type_id) = reader.varint() else {
+        return false;
+    };
+    let mut rest = reader.rest();
+    let mut budget = vanillite_nbt::Budget::file();
+    let Ok(Some(Tag::Compound(data))) = vanillite_nbt::read::read_network(&mut rest, &mut budget)
+    else {
+        return false;
+    };
+    let state = level.block(pos);
+    let kind = state.block().info().block_entity;
+    if kind == u16::MAX || i32::from(kind) != type_id {
+        return false;
+    }
+    let op_only = matches!(state.block().info().kind, BlockKind::CommandBlock)
+        || state.is(ids::LECTERN)
+        || state.is(ids::SPAWNER)
+        || state.is(ids::TRIAL_SPAWNER)
+        || crate::block::sign::is_sign(state.block());
+    if op_only && !game_master {
+        return false;
+    }
+    let Some(mut tag) = level.block_entity_nbt(pos) else {
+        return false;
+    };
+    for key in ["id", "x", "y", "z"] {
+        tag.remove(key);
+    }
+    let old = tag.clone();
+    merge_compound(&mut tag, &data);
+    tag != old && level.load_block_entity_nbt(pos, &tag)
+}
+
 /// `BlockEntity.applyComponentsFromItemStack` of a placed block item.
 pub fn apply_components(level: &mut Level, pos: BlockPos, stack: &ItemStack) {
     let contents = || {

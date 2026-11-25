@@ -1204,7 +1204,17 @@ impl Digging {
         if let Some(level) = ctx.level.level_mut()
             && placed.block() == state.block()
         {
-            // `BlockItem.updateCustomBlockEntityTag` and `Block.setPlacedBy`.
+            // `BlockItem.updateCustomBlockEntityTag`, `updateBlockEntityComponents` and
+            // `Block.setPlacedBy`.
+            crate::level::block_entity::apply_block_entity_data(
+                level,
+                target,
+                stack,
+                crate::block::technical::can_use_game_master_blocks(
+                    ctx.actor.creative(),
+                    ctx.actor.permission_level,
+                ),
+            );
             crate::level::block_entity::apply_components(level, target, stack);
             crate::block::redstone::set_placed_by(level, placed, target);
             crate::block::crafter::set_placed_by(level, placed, target);
