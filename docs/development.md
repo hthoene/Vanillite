@@ -186,6 +186,43 @@ time 0, and every shuffled behaviour list (`ShufflingList`, the brains' `RunOne`
 own random with the same constant (`ParityHooks.SHUFFLE_SEED`), as Vanillite's scenario world
 does.
 
+## Releases
+
+Vanillite has its own [SemVer](https://semver.org) version (`version` of `[workspace.package]`
+in `Cargo.toml`) with the Minecraft version it targets attached as build metadata; the Minecraft
+version is `VERSION_ID` of the generated `vanillite-data` (`cargo xtask vanilla update`), never
+written by hand. `vanillite --version` and the first log line show both and the commit, e.g.
+`Vanillite 0.1.0-beta.1 (Minecraft 26.3, 3bd22ae)`.
+
+| What | Scheme | Example |
+|---|---|---|
+| Git tag, GitHub release | `v<version>+mc<minecraft>` | `v0.1.0-beta.1+mc26.3` |
+| Release archive | `vanillite-<version>-mc<minecraft>-<os>-<arch>.<tar.gz\|zip>` | `vanillite-0.1.0-beta.1-mc26.3-windows-x86_64.zip` |
+| Docker tag, immutable | `<version>-mc<minecraft>` | `0.1.0-beta.1-mc26.3` |
+| Docker tag, newest of a channel for a Minecraft version | `mc<minecraft>-<channel>`, stable: `mc<minecraft>` | `mc26.3-beta`, `mc26.3` |
+| Docker tag, newest of a channel | `<channel>`, stable: `latest` | `beta`, `latest` |
+
+The channel is the first part of the pre-release (`beta` of `0.1.0-beta.1`, `rc` of
+`0.2.0-rc.1`). Pre-releases are GitHub pre-releases and never move `latest` or `mc<minecraft>`.
+`scripts/release/meta.sh [<tag>]` derives all names from the sources and fails for a tag that
+does not match them.
+
+To release: set the workspace version (and the `version` of every internal crate in
+`[workspace.dependencies]`), land it on dev, promote dev to main and push the tag
+`v<version>+mc<minecraft>` on that commit. The tag starts two workflows:
+
+- `.github/workflows/release.yml` builds the release profile for Linux (static musl, x86_64 and
+  aarch64, cargo-zigbuild), Windows (x86_64, static C runtime) and macOS (aarch64 and x86_64),
+  packs each binary with LICENSE, NOTICE and a README.txt (`scripts/release/package.sh`,
+  template `scripts/release/README.txt`) and creates the GitHub release with SHA256SUMS and
+  generated notes. A manual run (`gh workflow run release.yml --ref <branch>`) is a dry run: the
+  archives become workflow artifacts and nothing is published.
+- `.github/workflows/docker.yml` pushes the linux/amd64 and linux/arm64 image to Docker Hub with
+  the tags above. The Pterodactyl egg uses `beta` until the first stable release.
+
+The binaries hold everything but Mojang's data: the first start downloads the pinned server jar
+into `cache/` (internet access needed once, no Java).
+
 ## CI
 
 `.github/workflows/ci.yml` runs on every push and pull request: format, clippy, cargo-deny, the

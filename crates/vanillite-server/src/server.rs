@@ -142,6 +142,7 @@ pub struct ServerBuilder {
     light_engine: Slot<dyn LightEngineProvider>,
     vanilla_pack: VanillaPack,
     network: bool,
+    version: String,
 }
 
 impl ServerBuilder {
@@ -156,7 +157,19 @@ impl ServerBuilder {
             light_engine: Slot::new("light-engine"),
             vanilla_pack: VanillaPack::default(),
             network: true,
+            version: format!(
+                "Vanillite {} (Minecraft {})",
+                env!("CARGO_PKG_VERSION"),
+                vanillite_data::version::VERSION_ID
+            ),
         }
+    }
+
+    /// The version shown in the startup log (default: `Vanillite <version> (Minecraft <id>)`);
+    /// the server binary adds its commit.
+    pub fn version(&mut self, version: impl Into<String>) -> &mut Self {
+        self.version = version.into();
+        self
     }
 
     /// Where the Vanilla data pack comes from (default: downloaded once into `cache/`).
@@ -217,7 +230,7 @@ impl ServerBuilder {
     /// Loads the configuration, starts the threads and creates the worlds.
     pub fn start(self) -> Result<Server, StartError> {
         let started = Instant::now();
-        log::info!("Starting Vanillite {}", env!("CARGO_PKG_VERSION"));
+        log::info!("Starting {}", self.version);
         let dir = self.dir;
         fs::create_dir_all(&dir).map_err(|e| StartError::io(&dir, e))?;
         log::info!("Loading properties");

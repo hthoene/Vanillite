@@ -4,7 +4,7 @@ members = ["crates/*", "examples/*", "tools/loadbot", "xtask"]
 default-members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.0-beta.1"
 edition = "2024"
 rust-version = "1.99"
 license = "Apache-2.0"
@@ -13,29 +13,29 @@ repository = "https://github.com/hthoene/Vanillite"
 
 [workspace.dependencies]
 # Internal crates.
-vanillite-abi = { path = "crates/vanillite-abi", version = "0.1.0" }
-vanillite-base = { path = "crates/vanillite-base", version = "0.1.0" }
-vanillite-bedrock = { path = "crates/vanillite-bedrock", version = "0.1.0" }
-vanillite-chunk = { path = "crates/vanillite-chunk", version = "0.1.0" }
-vanillite-command = { path = "crates/vanillite-command", version = "0.1.0" }
-vanillite-config = { path = "crates/vanillite-config", version = "0.1.0" }
-vanillite-data = { path = "crates/vanillite-data", version = "0.1.0" }
-vanillite-datapack = { path = "crates/vanillite-datapack", version = "0.1.0" }
-vanillite-game = { path = "crates/vanillite-game", version = "0.1.0" }
-vanillite-light = { path = "crates/vanillite-light", version = "0.1.0" }
-vanillite-macros = { path = "crates/vanillite-macros", version = "0.1.0" }
-vanillite-multiversion = { path = "crates/vanillite-multiversion", version = "0.1.0" }
-vanillite-nbt = { path = "crates/vanillite-nbt", version = "0.1.0" }
-vanillite-net = { path = "crates/vanillite-net", version = "0.1.0" }
-vanillite-plugin = { path = "crates/vanillite-plugin", version = "0.1.0" }
-vanillite-plugin-host = { path = "crates/vanillite-plugin-host", version = "0.1.0" }
-vanillite-protocol = { path = "crates/vanillite-protocol", version = "0.1.0" }
-vanillite-proxy = { path = "crates/vanillite-proxy", version = "0.1.0" }
-vanillite-server = { path = "crates/vanillite-server", version = "0.1.0" }
-vanillite-storage = { path = "crates/vanillite-storage", version = "0.1.0" }
-vanillite-test = { path = "crates/vanillite-test", version = "0.1.0" }
-vanillite-world = { path = "crates/vanillite-world", version = "0.1.0" }
-vanillite-worldgen = { path = "crates/vanillite-worldgen", version = "0.1.0" }
+vanillite-abi = { path = "crates/vanillite-abi", version = "0.1.0-beta.1" }
+vanillite-base = { path = "crates/vanillite-base", version = "0.1.0-beta.1" }
+vanillite-bedrock = { path = "crates/vanillite-bedrock", version = "0.1.0-beta.1" }
+vanillite-chunk = { path = "crates/vanillite-chunk", version = "0.1.0-beta.1" }
+vanillite-command = { path = "crates/vanillite-command", version = "0.1.0-beta.1" }
+vanillite-config = { path = "crates/vanillite-config", version = "0.1.0-beta.1" }
+vanillite-data = { path = "crates/vanillite-data", version = "0.1.0-beta.1" }
+vanillite-datapack = { path = "crates/vanillite-datapack", version = "0.1.0-beta.1" }
+vanillite-game = { path = "crates/vanillite-game", version = "0.1.0-beta.1" }
+vanillite-light = { path = "crates/vanillite-light", version = "0.1.0-beta.1" }
+vanillite-macros = { path = "crates/vanillite-macros", version = "0.1.0-beta.1" }
+vanillite-multiversion = { path = "crates/vanillite-multiversion", version = "0.1.0-beta.1" }
+vanillite-nbt = { path = "crates/vanillite-nbt", version = "0.1.0-beta.1" }
+vanillite-net = { path = "crates/vanillite-net", version = "0.1.0-beta.1" }
+vanillite-plugin = { path = "crates/vanillite-plugin", version = "0.1.0-beta.1" }
+vanillite-plugin-host = { path = "crates/vanillite-plugin-host", version = "0.1.0-beta.1" }
+vanillite-protocol = { path = "crates/vanillite-protocol", version = "0.1.0-beta.1" }
+vanillite-proxy = { path = "crates/vanillite-proxy", version = "0.1.0-beta.1" }
+vanillite-server = { path = "crates/vanillite-server", version = "0.1.0-beta.1" }
+vanillite-storage = { path = "crates/vanillite-storage", version = "0.1.0-beta.1" }
+vanillite-test = { path = "crates/vanillite-test", version = "0.1.0-beta.1" }
+vanillite-world = { path = "crates/vanillite-world", version = "0.1.0-beta.1" }
+vanillite-worldgen = { path = "crates/vanillite-worldgen", version = "0.1.0-beta.1" }
 
 # External crates.
 bumpalo = { version = "3.20", features = ["collections"] }

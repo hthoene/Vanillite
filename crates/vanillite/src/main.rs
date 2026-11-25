@@ -54,7 +54,7 @@ fn main() -> ExitCode {
         Some("export") => export(args),
         Some("upgrade-world") => upgrade_world(args),
         Some("version" | "--version" | "-V") => {
-            println!("vanillite {}", env!("CARGO_PKG_VERSION"));
+            println!("{}", version());
             ExitCode::SUCCESS
         }
         Some("help" | "--help" | "-h") => {
@@ -85,7 +85,9 @@ fn run(mut args: impl Iterator<Item = String>) -> ExitCode {
     let server_thread = std::thread::Builder::new()
         .name("Server thread".to_owned())
         .spawn(move || {
-            let server = match ServerBuilder::new(dir).start() {
+            let mut builder = ServerBuilder::new(dir);
+            builder.version(version());
+            let server = match builder.start() {
                 Ok(server) => server,
                 Err(e) => {
                     log::error!("Failed to start the server: {e}");
@@ -113,6 +115,16 @@ fn run(mut args: impl Iterator<Item = String>) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// `Vanillite <version> (Minecraft <id>, <commit>)`.
+fn version() -> String {
+    format!(
+        "Vanillite {} (Minecraft {}, {})",
+        env!("CARGO_PKG_VERSION"),
+        vanillite_data::version::VERSION_ID,
+        env!("VANILLITE_COMMIT")
+    )
 }
 
 /// `vanillite convert [--to <format>] [--dir <path>]`.
