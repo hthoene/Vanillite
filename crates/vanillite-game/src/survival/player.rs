@@ -189,6 +189,10 @@ pub struct Survival {
     pub last_climbable: Option<FallLocation>,
     /// The fluids around the player after the last update.
     pub fluids: FluidContact,
+    /// `attackStrengthTicker`.
+    pub attack_ticker: i32,
+    /// `takeXpDelay`.
+    pub take_xp_delay: i32,
     first_tick: bool,
     sent: Sent,
 }
@@ -213,6 +217,8 @@ impl Default for Survival {
             tick_count: 0,
             last_climbable: None,
             fluids: FluidContact::default(),
+            attack_ticker: 0,
+            take_xp_delay: 0,
             first_tick: true,
             sent: Sent::default(),
         }
@@ -492,8 +498,7 @@ pub fn hurt(
         return false;
     }
     let mut damage = amount;
-    // Sources without a causing entity only scale when their type always does.
-    if source.scales_with_difficulty(types, false) {
+    if source.scales_with_difficulty(types, source.cause_is_mob) {
         match env.difficulty {
             Difficulty::Peaceful => damage = 0.0,
             Difficulty::Easy => damage = (damage / 2.0 + 1.0).min(damage),
@@ -555,6 +560,25 @@ pub fn hurt(
         });
         if !types.is(kind, tag::NO_IMPACT) {
             entity.set_flags(EntityFlags::HURT_MARKED, true);
+        }
+        if !types.is(kind, tag::NO_KNOCKBACK) {
+            // `dealDefaultKnockback`: away from the source position.
+            let (xd, zd) = source
+                .position
+                .map_or((0.0, 0.0), |p| (p.x - pos.x, p.z - pos.z));
+            let on_ground = entity.as_ref().flags().contains(EntityFlags::ON_GROUND);
+            let v = crate::mob::combat::knockback(
+                entity.as_ref().velocity(),
+                on_ground,
+                0.4,
+                xd,
+                zd,
+                0.0,
+                env.random,
+            );
+            if let Some(v) = v {
+                entity.set_velocity(v);
+            }
         }
     }
     if player.survival.is_dead_or_dying() {
@@ -760,6 +784,10 @@ pub fn tick_entity(player: &mut PlayerData) {
     let s = &mut player.survival;
     if s.damage_cooldown > 0 {
         s.damage_cooldown -= 1;
+    }
+    s.attack_ticker = s.attack_ticker.saturating_add(1);
+    if s.take_xp_delay > 0 {
+        s.take_xp_delay -= 1;
     }
 }
 

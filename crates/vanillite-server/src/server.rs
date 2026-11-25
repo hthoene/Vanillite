@@ -290,7 +290,13 @@ impl ServerBuilder {
         let seed = prepared.world_gen.seed;
         let world_gen = prepared.world_gen.clone();
         let behaviours = Arc::new(vanillite_game::block::Behaviours::vanilla());
+        let spawn_table = crate::world_setup::spawn_table(packs.as_deref()).map(Arc::new);
         let slot = |name: &str, origin: &Origin| log::info!("Slot {name}: {origin}");
+        let entity_compression = match config.properties.region_file_compression {
+            RegionFileCompression::Deflate => Compression::Deflate,
+            RegionFileCompression::Lz4 => Compression::Lz4,
+            RegionFileCompression::None => Compression::None,
+        };
         let (storage_provider, origin) = self.chunk_storage.take().unwrap_or_else(|| {
             let compression = match config.properties.region_file_compression {
                 RegionFileCompression::Deflate => Compression::Deflate,
@@ -407,6 +413,8 @@ impl ServerBuilder {
                 dimension,
                 seed,
             )?;
+            let entity_io =
+                crate::entity_io::EntityChunks::new(&info.dir, entity_compression, dimension);
             let slots = ChunkSlots {
                 storage: storage_provider
                     .create(&info)
@@ -455,6 +463,7 @@ impl ServerBuilder {
                 player_range,
                 climate,
             );
+            let mobs = crate::mobs::WorldMobs::new(spawn_table.clone(), seed, &rules);
             worlds.push(ServerWorld::new(
                 WorldId(index),
                 (*dimension).to_owned(),
@@ -463,6 +472,8 @@ impl ServerBuilder {
                 players,
                 level,
                 survival,
+                mobs,
+                entity_io,
                 data,
             ));
         }

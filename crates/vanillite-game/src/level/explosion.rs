@@ -6,7 +6,10 @@
 //! of rays from their box to the centre that no block stops), then the blown up blocks are
 //! destroyed in random order and their drops spawn after all of them.
 //!
-//! Not ported: entity damage (entities have no health yet), fire of fire explosions, the
+//! The damage of the living entities hit is queued in [`super::LevelOutput::explosion_hurts`]
+//! for the mob system, which applies it right after the explosion's tick step.
+//!
+//! Not ported: damage of non-living entities (items, end crystals), fire of fire explosions, the
 //! block reactions of `TRIGGER_BLOCK` explosions (wind charges) and the special damage
 //! calculators (wither skulls, wind charges, TNT that used a portal).
 
@@ -50,6 +53,22 @@ pub struct ExplosionEvent {
     pub hit_players: Vec<(EntityId, Vec3)>,
 }
 
+/// The damage an explosion deals to a living entity (`entity.hurtServer(level,
+/// damageSources().explosion(source, indirect), amount)`), applied by the mob system.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ExplosionHurt {
+    /// The entity hit.
+    pub target: EntityId,
+    /// `getEntityDamageAmount`.
+    pub amount: f32,
+    /// The exploding entity (`getDirectSourceEntity`).
+    pub source: Option<EntityId>,
+    /// The entity that caused it (`getIndirectSourceEntity`).
+    pub indirect: Option<EntityId>,
+    /// Centre (the damage position without a source entity).
+    pub center: Vec3,
+}
+
 impl Level {
     /// `ServerLevel.explode(source, ..., x, y, z, radius, fire = false, interaction)` with the
     /// default particles and sound. `source` is the exploding entity (already removed or not),
@@ -66,7 +85,7 @@ impl Level {
         let context = super::game_event::GameEventContext::of(source);
         self.game_event(super::game_event::events().explode, center, context);
         let mut targets = self.exploded_positions(center, radius);
-        let hit_players = self.hurt_entities(source, center, radius);
+        let hit_players = self.hurt_entities(source, indirect, center, radius);
         if interaction != BlockInteraction::Keep {
             self.interact_with_blocks(&mut targets, indirect, interaction);
         }
@@ -134,11 +153,12 @@ impl Level {
         positions
     }
 
-    /// `hurtEntities`: pushes the entities in range away; players get their knockback with the
-    /// explosion packet instead.
+    /// `hurtEntities`: queues the damage of the living entities in range and pushes the
+    /// entities away; players get their knockback with the explosion packet instead.
     fn hurt_entities(
         &mut self,
         source: Option<EntityId>,
+        indirect: Option<EntityId>,
         center: Vec3,
         radius: f32,
     ) -> Vec<(EntityId, Vec3)> {
@@ -177,14 +197,35 @@ impl Level {
             if dist > 1.0 {
                 continue;
             }
+            let mob = self.entities.mob(id);
+            let eye = match mob {
+                Some(mob) => crate::mob::eye_height(mob),
+                None => f64::from(kind.info().eye_height),
+            };
             let origin = if kind == entity_ids::TNT {
                 pos
             } else {
-                Vec3::new(pos.x, pos.y + f64::from(kind.info().eye_height), pos.z)
+                Vec3::new(pos.x, pos.y + eye, pos.z)
             };
             let direction = (origin - center).normalize();
-            let exposure = f64::from(self.seen_percent(center, aabb));
-            let knockback = direction * ((1.0 - dist) * exposure * 1.0 * (1.0 - 0.0));
+            let seen = self.seen_percent(center, aabb);
+            let exposure = f64::from(seen);
+            // `ExplosionDamageCalculator.getEntityDamageAmount` for the living entities.
+            if player.is_some() || mob.is_some_and(crate::mob::MobData::is_alive) {
+                let double_radius = f64::from(double_radius);
+                let pow = (1.0 - dist) * exposure;
+                #[allow(clippy::cast_possible_truncation)]
+                let amount = ((pow * pow + pow) / 2.0 * 7.0 * double_radius + 1.0) as f32;
+                self.output.explosion_hurts.push(ExplosionHurt {
+                    target: id,
+                    amount,
+                    source,
+                    indirect,
+                    center,
+                });
+            }
+            let resistance = mob.map_or(0.0, |m| m.attrs.explosion_knockback_resistance);
+            let knockback = direction * ((1.0 - dist) * exposure * 1.0 * (1.0 - resistance));
             if player.is_some() {
                 hit_players.push((id, knockback));
                 continue;
