@@ -12,7 +12,7 @@ pub mod serverbound {
 
     crate::common_serverbound!(Play);
 
-    pub use super::mobs::Attack;
+    pub use super::mobs::{Attack, Interact, MoveVehicle, PaddleBoat};
 
     /// `configuration_acknowledged`: the client entered configuration again.
     #[derive(Debug, Clone, PartialEq, Eq, Packet)]
@@ -531,6 +531,7 @@ pub mod clientbound {
     }
 
     pub use super::entities::*;
+    pub use super::mobs::{Animate, Cooldown, MoveVehicleBack, SetEntityLink, SetPassengers};
     pub use super::survival::*;
 }
 

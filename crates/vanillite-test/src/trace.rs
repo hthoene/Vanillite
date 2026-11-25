@@ -15,17 +15,28 @@
 //! - Frame 0 holds every block of the region as run-length pairs in y, z, x order (x fastest);
 //!   later frames hold the blocks that changed.
 //! - Block states are `name[key=value,...]` with properties sorted by name.
+//! - `level_rng` (scenarios with entities): the state of the level random after the tick.
 //! - Ticks: `[x, y, z, block or fluid, delay, priority]` in Vanilla's drain order; the delay is
 //!   relative to the game time of the frame.
-//! - Entities: `[type, x, y, z, dx, dy, dz]`, doubles as IEEE bit patterns (signed 64-bit), so
-//!   the comparison is exact. Their order is not significant.
+//! - Entities: `[type, x, y, z, dx, dy, dz]` or `[type, x, y, z, dx, dy, dz, {detail}]`,
+//!   doubles as IEEE bit patterns (signed 64-bit), so the comparison is exact. Their order is
+//!   not significant. The detail object (living entities and items):
+//!   - `name`: the scenario name of the entity;
+//!   - `item`, `count`: the stack of an item entity;
+//!   - `rot`: yaw, pitch, head yaw, body yaw; `hp`: health (floats as signed 32-bit bit
+//!     patterns); `death`: the death animation tick once dying;
+//!   - mobs: `rng` (the state of the entity's random: the first tick it differs is the first
+//!     diverging random call), `target` (name or type of the attack target), `goals` and `targets` (the running
+//!     goals of the goal and target selector by Vanilla class name, sorted), `path` (the
+//!     navigation path while not done: `to` target block, `next` node index, `reach`, `nodes`
+//!     as `[x, y, z, path type]`).
 //! - Light (scenarios with `"light": true`): `"light":[count,level,...]` in every frame, run-length
 //!   pairs over the region in y, z, x order; a level is `sky << 4 | block` as a client sees it.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 use vanillite_base::BlockPos;
 
 /// Format version the recorder writes.
@@ -50,14 +61,71 @@ pub struct EntityObs {
     pub kind: String,
     pub pos: [f64; 3],
     pub motion: [f64; 3],
+    /// The detail object of living entities and items (see the module documentation).
+    pub detail: Option<Map<String, Value>>,
 }
 
 impl EntityObs {
     /// Exact sort and comparison key.
-    fn key(&self) -> (&str, [u64; 6]) {
+    fn key(&self) -> (&str, [u64; 6], String) {
         let p = self.pos.map(f64::to_bits);
         let m = self.motion.map(f64::to_bits);
-        (&self.kind, [p[0], p[1], p[2], m[0], m[1], m[2]])
+        let detail = self
+            .detail
+            .as_ref()
+            .map(|d| canonical(&Value::Object(d.clone())))
+            .unwrap_or_default();
+        (&self.kind, [p[0], p[1], p[2], m[0], m[1], m[2]], detail)
+    }
+
+    /// The scenario name of the entity, if it has one.
+    pub fn name(&self) -> Option<&str> {
+        self.detail.as_ref()?.get("name")?.as_str()
+    }
+
+    /// A float of the detail written as bit pattern (`hp`) or an element of an array of them
+    /// (`rot`).
+    pub fn float_bits(v: &Value) -> Option<f32> {
+        v.as_i64()
+            .and_then(|b| i32::try_from(b).ok())
+            .map(|b| f32::from_bits(b as u32))
+    }
+
+    /// The differences of `actual` from this (expected) observation of the same entity.
+    fn differences(&self, actual: &Self) -> Vec<String> {
+        let mut out = Vec::new();
+        for (what, e, a) in [
+            ("pos", self.pos, actual.pos),
+            ("motion", self.motion, actual.motion),
+        ] {
+            if e.map(f64::to_bits) != a.map(f64::to_bits) {
+                out.push(format!("{what} {a:?}, expected {e:?}"));
+            }
+        }
+        let empty = Map::new();
+        let (ed, ad) = (
+            self.detail.as_ref().unwrap_or(&empty),
+            actual.detail.as_ref().unwrap_or(&empty),
+        );
+        let mut keys: Vec<&String> = ed.keys().chain(ad.keys()).collect();
+        keys.sort();
+        keys.dedup();
+        for k in keys {
+            let (e, a) = (ed.get(k), ad.get(k));
+            if e == a {
+                continue;
+            }
+            let show = |v: Option<&Value>| match (k.as_str(), v) {
+                (_, None) => "none".to_owned(),
+                ("hp", Some(v)) => format!("{:?}", Self::float_bits(v)),
+                ("rot", Some(Value::Array(a))) => {
+                    format!("{:?}", a.iter().map(Self::float_bits).collect::<Vec<_>>())
+                }
+                (_, Some(v)) => v.to_string(),
+            };
+            out.push(format!("{k} {}, expected {}", show(a), show(e)));
+        }
+        out
     }
 }
 
@@ -72,6 +140,8 @@ pub struct Frame {
     pub entities: Vec<EntityObs>,
     /// `sky << 4 | block` per block of the region, y, z, x order; empty if not observed.
     pub light: Vec<u8>,
+    /// State of the level random after the tick (scenarios with entities).
+    pub level_rng: Option<i64>,
 }
 
 /// A recorded scenario run.
@@ -207,6 +277,7 @@ impl Trace {
                 fluid_ticks: ticks(f.get("fluid_ticks"))?,
                 entities: entities(f.get("entities"))?,
                 light,
+                level_rng: f.get("level_rng").and_then(Value::as_i64),
             });
         }
         Ok(trace)
@@ -284,7 +355,7 @@ impl Trace {
                 let m = e.motion.map(|v| v.to_bits() as i64);
                 let _ = write!(
                     s,
-                    "{}[\"{}\",{},{},{},{},{},{}]",
+                    "{}[\"{}\",{},{},{},{},{},{}",
                     if i == 0 { "" } else { "," },
                     e.kind,
                     p[0],
@@ -294,6 +365,10 @@ impl Trace {
                     m[1],
                     m[2]
                 );
+                if let Some(d) = &e.detail {
+                    let _ = write!(s, ",{}", Value::Object(d.clone()));
+                }
+                s.push(']');
             }
             s.push(']');
             if !f.light.is_empty() {
@@ -309,10 +384,26 @@ impl Trace {
                 }
                 s.push(']');
             }
+            if let Some(r) = f.level_rng {
+                let _ = write!(s, ",\"level_rng\":{r}");
+            }
             s.push('}');
         }
         s.push_str("]}\n");
         s
+    }
+
+    /// The tick of the first difference of `actual` from this (expected) trace, `None` if
+    /// they are equal. A difference outside the frames (region, frame count) counts as tick 0.
+    pub fn first_divergence(&self, actual: &Self) -> Option<u32> {
+        let first = self.diff(actual, 1).into_iter().next()?;
+        Some(
+            first
+                .strip_prefix("tick ")
+                .and_then(|r| r.split(' ').next())
+                .and_then(|t| t.parse().ok())
+                .unwrap_or(0),
+        )
     }
 
     /// Every difference of `actual` from this (expected) trace, at most `limit` lines, frame by
@@ -358,9 +449,12 @@ impl Trace {
             ee.sort_unstable();
             ae.sort_unstable();
             if ee != ae {
+                entity_diff(t, &e.entities, &a.entities, &mut out);
+            }
+            if e.level_rng != a.level_rng {
                 out.push(format!(
-                    "tick {t} entities: {:?}, expected {:?}",
-                    a.entities, e.entities
+                    "tick {t} level random state {:?}, expected {:?}",
+                    a.level_rng, e.level_rng
                 ));
             }
             if !e.light.is_empty() && a.light.len() != e.light.len() {
@@ -389,6 +483,81 @@ impl Trace {
         }
         out.truncate(limit);
         out
+    }
+}
+
+/// JSON text with the object keys sorted, whatever order the map keeps.
+fn canonical(v: &Value) -> String {
+    match v {
+        Value::Object(m) => {
+            let mut kv: Vec<_> = m.iter().collect();
+            kv.sort_by(|a, b| a.0.cmp(b.0));
+            let inner: Vec<String> = kv
+                .iter()
+                .map(|(k, v)| format!("{k:?}:{}", canonical(v)))
+                .collect();
+            format!("{{{}}}", inner.join(","))
+        }
+        Value::Array(a) => format!(
+            "[{}]",
+            a.iter().map(canonical).collect::<Vec<_>>().join(",")
+        ),
+        v => v.to_string(),
+    }
+}
+
+/// The differences of the entities of one frame: named entities field by field, the others
+/// as the lists of what is only on one side.
+fn entity_diff(t: u32, expected: &[EntityObs], actual: &[EntityObs], out: &mut Vec<String>) {
+    let mut names: Vec<&str> = expected
+        .iter()
+        .chain(actual)
+        .filter_map(EntityObs::name)
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    for name in names {
+        let e = expected.iter().find(|o| o.name() == Some(name));
+        let a = actual.iter().find(|o| o.name() == Some(name));
+        match (e, a) {
+            (Some(e), Some(a)) => {
+                for d in e.differences(a) {
+                    out.push(format!("tick {t} {name} ({}): {d}", e.kind));
+                }
+            }
+            (Some(e), None) => out.push(format!("tick {t} {name} ({}): missing", e.kind)),
+            (None, Some(a)) => out.push(format!("tick {t} {name} ({}): unexpected", a.kind)),
+            (None, None) => {}
+        }
+    }
+    let unnamed = |list: &[EntityObs]| -> Vec<EntityObs> {
+        let mut v: Vec<EntityObs> = list
+            .iter()
+            .filter(|o| o.name().is_none())
+            .cloned()
+            .collect();
+        v.sort_by(|a, b| a.key().cmp(&b.key()));
+        v
+    };
+    let (ue, ua) = (unnamed(expected), unnamed(actual));
+    let only = |of: &[EntityObs], other: &[EntityObs]| -> Vec<EntityObs> {
+        of.iter()
+            .filter(|o| !other.iter().any(|x| x.key() == o.key()))
+            .cloned()
+            .collect()
+    };
+    let (missing, extra) = (only(&ue, &ua), only(&ua, &ue));
+    if missing.len() == 1 && extra.len() == 1 && missing[0].kind == extra[0].kind {
+        for d in missing[0].differences(&extra[0]) {
+            out.push(format!("tick {t} {}: {d}", missing[0].kind));
+        }
+        return;
+    }
+    if !missing.is_empty() {
+        out.push(format!("tick {t} entities missing: {missing:?}"));
+    }
+    if !extra.is_empty() {
+        out.push(format!("tick {t} entities unexpected: {extra:?}"));
     }
 }
 
@@ -446,6 +615,7 @@ fn entities(v: Option<&Value>) -> Result<Vec<EntityObs>, String> {
                     .to_owned(),
                 pos: [bits(1)?, bits(2)?, bits(3)?],
                 motion: [bits(4)?, bits(5)?, bits(6)?],
+                detail: e.get(7).and_then(Value::as_object).cloned(),
             })
         })
         .collect()

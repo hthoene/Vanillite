@@ -715,7 +715,8 @@ const EQUIPMENT_KEYS: [(&str, usize); 5] = [
     ("offhand", OFFHAND),
 ];
 
-pub(crate) fn stack_to_nbt(stack: &ItemStack) -> Compound {
+/// A stack as saved NBT (`ItemStack.CODEC`: id, count and the patch).
+pub fn stack_to_nbt(stack: &ItemStack) -> Compound {
     let mut c = Compound::new();
     c.insert(
         "id",
@@ -741,7 +742,8 @@ pub(crate) fn stack_to_nbt(stack: &ItemStack) -> Compound {
     c
 }
 
-pub(crate) fn stack_from_nbt(c: &Compound) -> ItemStack {
+/// A stack from saved NBT.
+pub fn stack_from_nbt(c: &Compound) -> ItemStack {
     let Some(id) = c
         .get("id")
         .and_then(Tag::as_str)

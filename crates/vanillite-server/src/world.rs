@@ -351,7 +351,7 @@ impl ServerWorld {
             ctx.global,
             &self.dimension,
         );
-        self.mobs.attacks(
+        self.mobs.player_actions(
             &mut self.level,
             &mut self.survival,
             ctx.global,

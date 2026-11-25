@@ -13,7 +13,7 @@ use vanillite_base::{BlockPos, ChunkPos};
 use vanillite_chunk::{Chunk, facts};
 use vanillite_data::block::{BlockId, BlockState, STATE_COUNT};
 
-use crate::scenario::WorldSpec;
+use crate::scenario::{EntitySpec, Hurt, WorldSpec};
 use crate::trace::{EntityObs, TickObs};
 
 /// How the world runs the parallel phases of a tick.
@@ -60,6 +60,24 @@ pub trait ScenarioWorld {
     /// a client sees. Worlds without a light engine leave `out` empty.
     fn light(&mut self, min: BlockPos, max: BlockPos, out: &mut Vec<u8>) {
         let _ = (min, max, out);
+    }
+    /// Adds the scenario's entities after the setup (order and seeds in
+    /// [`crate::scenario`]); `entity_seed` seeds the entities created later.
+    fn add_entities(&mut self, entities: &[EntitySpec], entity_seed: i64) -> Result<(), String> {
+        let _ = entity_seed;
+        if entities.is_empty() {
+            Ok(())
+        } else {
+            Err("this world has no entities".to_owned())
+        }
+    }
+    /// The state of the level random, for scenarios with entities.
+    fn level_rng(&mut self) -> Option<i64> {
+        None
+    }
+    /// Runs a `hurt` action.
+    fn hurt(&mut self, hurt: &Hurt) -> Result<(), String> {
+        Err(format!("this world cannot hurt `{}`", hurt.entity))
     }
 }
 

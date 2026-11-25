@@ -536,6 +536,12 @@ pub fn rotlerp(a: f32, b: f32, max: f32) -> f32 {
 }
 
 /// `MoveControl.tick`.
+/// `Mob.setSpeed`: the speed is also the forward input.
+fn set_speed(m: &mut super::MobData, speed: f32) {
+    m.speed = speed;
+    m.zza = speed;
+}
+
 pub fn tick_move_control(t: &mut Tick<'_, '_>) {
     let speed_attr = t.mob_ref().attrs.movement_speed;
     let ctl = t.mob_ref().move_ctl;
@@ -554,7 +560,7 @@ pub fn tick_move_control(t: &mut Tick<'_, '_>) {
             dist = modified / dist;
             xa *= dist;
             za *= dist;
-            let rad = f64::from(t.core().rot().y_rot) * std::f64::consts::PI / 180.0;
+            let rad = f64::from(t.core().rot().y_rot * super::DEG_TO_RAD);
             let sin = vanillite_base::math::sin(rad);
             let cos = vanillite_base::math::cos(rad);
             let dx = xa * cos - za * sin;
@@ -591,10 +597,9 @@ pub fn tick_move_control(t: &mut Tick<'_, '_>) {
             t.core_mut().set_rot(rot);
             let width = t.core().dims().width;
             let step = t.mob_ref().attrs.step_height;
+            // `Mob.setSpeed` also sets the forward input (`setZza`).
             #[allow(clippy::cast_possible_truncation)]
-            {
-                t.mob().speed = (ctl.speed_modifier * speed_attr) as f32;
-            }
+            set_speed(t.mob(), (ctl.speed_modifier * speed_attr) as f32);
             let pos = t.block_pos();
             let state = t.level.block(pos);
             let shape = state.collision_shape();
@@ -610,10 +615,9 @@ pub fn tick_move_control(t: &mut Tick<'_, '_>) {
             }
         }
         Operation::Jumping => {
+            // `Mob.setSpeed` also sets the forward input (`setZza`).
             #[allow(clippy::cast_possible_truncation)]
-            {
-                t.mob().speed = (ctl.speed_modifier * speed_attr) as f32;
-            }
+            set_speed(t.mob(), (ctl.speed_modifier * speed_attr) as f32);
             let fluid = {
                 let m = t.mob_ref();
                 m.fluids.in_water() || m.fluids.in_lava()

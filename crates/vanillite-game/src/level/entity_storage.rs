@@ -101,6 +101,44 @@ impl Level {
             self.entities.spawn_orb(new, orb);
             return true;
         }
+        if let Some((e, data)) = crate::mob::nbt::load_arrow(&nbt) {
+            let mut new = NewEntity::new(ids::ARROW, self.network_ids().next(), e.uuid, e.pos);
+            new.velocity = e.velocity;
+            new.rot = e.rot;
+            self.entities.spawn_arrow(new, data);
+            return true;
+        }
+        if let Some((e, data)) = crate::mob::nbt::load_boat(&nbt) {
+            let network_ids = Arc::clone(self.network_ids_arc());
+            let id = crate::vehicle::spawn_boat(
+                &mut self.entities,
+                &network_ids,
+                e.uuid,
+                e.pos,
+                e.rot.y_rot,
+                data,
+            );
+            if let Some(mut ent) = self.entities.store.get_mut(id) {
+                ent.set_velocity(e.velocity);
+            }
+            return true;
+        }
+        if let Some((e, data)) = crate::mob::nbt::load_minecart(&nbt, seed) {
+            let network_ids = Arc::clone(self.network_ids_arc());
+            let id = crate::minecart::spawn(
+                &mut self.entities,
+                &network_ids,
+                e.uuid,
+                e.pos,
+                e.rot,
+                data,
+            );
+            if let Some(mut ent) = self.entities.store.get_mut(id) {
+                ent.set_velocity(e.velocity);
+                ent.set_flags(EntityFlags::ON_GROUND, e.on_ground);
+            }
+            return true;
+        }
         let Some(kind) = nbt
             .get("id")
             .and_then(Tag::as_str)
@@ -108,6 +146,10 @@ impl Level {
         else {
             return false;
         };
+        if kind == ids::LEASH_KNOT {
+            // Knots come back with the leashes of their mobs.
+            return true;
+        }
         if kind != ids::ITEM && kind != ids::FALLING_BLOCK && kind != ids::TNT {
             return false;
         }
@@ -209,12 +251,30 @@ impl Level {
     fn save_entity(&self, id: EntityId) -> Option<Compound> {
         let entity = self.entities.store.get(id)?;
         let kind = entity.kind();
+        let ents = &self.entities;
         if crate::entities::is_mob_kind(kind) {
-            return self
-                .entities
-                .mob(id)
-                .filter(|m| m.is_alive())
-                .map(|m| crate::mob::nbt::save_mob(&entity, m));
+            let leash = self.leash_of(id);
+            return ents.mob(id).filter(|m| m.is_alive()).map(|m| {
+                if leash.is_some() {
+                    let mut m = m.clone();
+                    m.pending_leash = leash;
+                    crate::mob::nbt::save_mob(&entity, &m)
+                } else {
+                    crate::mob::nbt::save_mob(&entity, m)
+                }
+            });
+        }
+        if let Some(b) = ents.boat(id) {
+            return Some(crate::mob::nbt::save_boat(&entity, b, self.leash_of(id)));
+        }
+        if let Some(m) = ents.minecart(id) {
+            return Some(crate::mob::nbt::save_minecart(&entity, m));
+        }
+        if kind == ids::ARROW {
+            return ents.arrow(id).map(|a| {
+                let owner = a.owner.and_then(|o| ents.store.get(o)).map(|o| o.uuid());
+                crate::mob::nbt::save_arrow(&entity, a, owner)
+            });
         }
         if kind == ids::EXPERIENCE_ORB {
             return self
@@ -302,6 +362,18 @@ impl Level {
             }
         }
         Some(nbt)
+    }
+
+    /// The leash holder of a mob or boat as stored: a knot by its block, else the holder's UUID.
+    fn leash_of(&self, id: EntityId) -> Option<crate::mob::LeashRef> {
+        let ents = &self.entities;
+        let holder = ents.store.get(*ents.leashes.get(&id)?)?;
+        if holder.kind() == ids::LEASH_KNOT
+            && let Some(&pos) = ents.knots.get(holder.kind_row())
+        {
+            return Some(crate::mob::LeashRef::Knot(pos));
+        }
+        Some(crate::mob::LeashRef::Entity(holder.uuid()))
     }
 
     /// Removes the entities of a chunk that unloaded (they were written back before).

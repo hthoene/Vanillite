@@ -571,6 +571,8 @@ pub enum ContainerRef {
     Block(BlockPos),
     /// Both halves of a double chest.
     Double(BlockPos, BlockPos),
+    /// A container entity (chest and hopper minecarts, chest boats).
+    Entity(vanillite_world::entity::EntityId),
 }
 
 impl ContainerRef {
@@ -593,8 +595,39 @@ impl ContainerRef {
         Some(ContainerRef::Block(pos))
     }
 
+    /// `HopperBlockEntity.getContainerAt(level, x, y, z)`: the block container at the point,
+    /// else a random container entity within half a block of it.
+    pub fn at_point(level: &mut Level, point: Vec3) -> Option<ContainerRef> {
+        let pos = BlockPos::containing(point.x, point.y, point.z);
+        if let Some(c) = ContainerRef::at(level, pos) {
+            return Some(c);
+        }
+        let area = vanillite_base::Aabb::new(
+            point.x - 0.5,
+            point.y - 0.5,
+            point.z - 0.5,
+            point.x + 0.5,
+            point.y + 0.5,
+            point.z + 0.5,
+        );
+        let mut found = Vec::new();
+        let ents = &level.entities;
+        ents.store.for_each_in(&area, false, |id| {
+            if ents.container_items(id).is_some() {
+                found.push(id);
+            }
+        });
+        if found.is_empty() {
+            return None;
+        }
+        let n = i32::try_from(found.len()).unwrap_or(i32::MAX);
+        let i = usize::try_from(level.random().next_int_bounded(n)).unwrap_or(0);
+        found.get(i).copied().map(ContainerRef::Entity)
+    }
+
     fn locate(self, level: &Level, slot: usize) -> Option<(BlockPos, usize)> {
         match self {
+            ContainerRef::Entity(_) => None,
             ContainerRef::Block(p) => Some((p, slot)),
             ContainerRef::Double(a, b) => {
                 let first = items(level, a).map_or(0, <[ItemStack]>::len);
@@ -610,6 +643,10 @@ impl ContainerRef {
     /// `getContainerSize`.
     pub fn size(self, level: &Level) -> usize {
         match self {
+            ContainerRef::Entity(id) => level
+                .entities
+                .container_items(id)
+                .map_or(0, <[ItemStack]>::len),
             ContainerRef::Block(p) => items(level, p).map_or(0, <[ItemStack]>::len),
             ContainerRef::Double(a, b) => {
                 items(level, a).map_or(0, <[ItemStack]>::len)
@@ -620,6 +657,13 @@ impl ContainerRef {
 
     /// `getItem(slot)`.
     pub fn get(self, level: &Level, slot: usize) -> ItemStack {
+        if let ContainerRef::Entity(id) = self {
+            return level
+                .entities
+                .container_items(id)
+                .and_then(|items| items.get(slot).cloned())
+                .unwrap_or_default();
+        }
         self.locate(level, slot)
             .and_then(|(p, i)| items(level, p)?.get(i).cloned())
             .unwrap_or_default()
@@ -627,12 +671,25 @@ impl ContainerRef {
 
     /// The stack of a slot for in-place changes.
     pub fn get_mut(self, level: &mut Level, slot: usize) -> Option<&mut ItemStack> {
+        if let ContainerRef::Entity(id) = self {
+            return level.entities.container_items_mut(id)?.get_mut(slot);
+        }
         let (p, i) = self.locate(level, slot)?;
         items_mut(level, p)?.get_mut(i)
     }
 
     /// `setItem(slot, stack)` (a furnace's input restarts its cooking).
     pub fn set(self, level: &mut Level, slot: usize, stack: ItemStack) {
+        if let ContainerRef::Entity(id) = self {
+            if let Some(target) = level
+                .entities
+                .container_items_mut(id)
+                .and_then(|items| items.get_mut(slot))
+            {
+                *target = stack;
+            }
+            return;
+        }
         let Some((p, i)) = self.locate(level, slot) else {
             return;
         };
@@ -651,6 +708,7 @@ impl ContainerRef {
                 set_changed(level, a);
                 set_changed(level, b);
             }
+            ContainerRef::Entity(_) => {}
         }
     }
 
@@ -663,7 +721,7 @@ impl ContainerRef {
     pub fn hopper(self) -> Option<BlockPos> {
         match self {
             ContainerRef::Block(p) => Some(p),
-            ContainerRef::Double(..) => None,
+            ContainerRef::Double(..) | ContainerRef::Entity(_) => None,
         }
     }
 
@@ -693,6 +751,9 @@ impl ContainerRef {
 
     /// `canPlaceItem` and `canPlaceItemThroughFace`.
     pub fn can_place(self, level: &Level, slot: usize, stack: &ItemStack) -> bool {
+        if let ContainerRef::Entity(_) = self {
+            return slot < self.size(level);
+        }
         let Some((p, i)) = self.locate(level, slot) else {
             return false;
         };
@@ -711,6 +772,9 @@ impl ContainerRef {
 
     /// `canTakeItem` and `canTakeItemThroughFace`.
     pub fn can_take(self, level: &Level, slot: usize, stack: &ItemStack, face: Direction) -> bool {
+        if let ContainerRef::Entity(_) = self {
+            return slot < self.size(level);
+        }
         let Some((p, i)) = self.locate(level, slot) else {
             return false;
         };

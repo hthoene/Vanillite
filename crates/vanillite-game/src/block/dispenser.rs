@@ -85,8 +85,30 @@ fn tick(level: &mut Level, state: BlockState, pos: BlockPos) {
         source.set(level, slot, remaining);
         return;
     }
-    // `DefaultDispenseItemBehavior` (the item behaviours of dispensers are not ported yet:
-    // every item drops like from a dropper).
+    if state.block() == ids::DISPENSER
+        && let Some(kind) = crate::minecart::MinecartKind::of_item(crate::item::item_id(&stack))
+    {
+        // `MinecartDispenseItemBehavior`: onto the rail in front, else dropped.
+        let mut remaining = stack;
+        let name = remaining
+            .component(vanillite_protocol::components::ids::CUSTOM_NAME)
+            .map(Into::into);
+        if crate::minecart::dispense(level, kind, pos, facing, name) {
+            remaining.shrink(1);
+        } else {
+            let one = remaining.split(1);
+            spawn_dispensed(level, pos, facing, one);
+            level.level_event(None, DISPENSE_SUCCESS, pos, 0);
+            level.level_event(None, DISPENSE_ANIMATION, pos, direction_3d(facing));
+        }
+        level.level_event(None, DISPENSE_SUCCESS, pos, 0);
+        level.level_event(None, DISPENSE_ANIMATION, pos, direction_3d(facing));
+        source.set(level, slot, remaining);
+        super::container::set_changed(level, pos);
+        return;
+    }
+    // `DefaultDispenseItemBehavior` (the item behaviours of dispensers are not ported yet
+    // besides minecarts: other items drop like from a dropper).
     let mut remaining = stack;
     let one = remaining.split(1);
     spawn_dispensed(level, pos, facing, one);

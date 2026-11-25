@@ -8,6 +8,7 @@ pub mod arena;
 pub mod bitset;
 pub mod hash;
 pub mod math;
+mod mth_tables;
 pub mod pos;
 pub mod random;
 pub mod slot_map;

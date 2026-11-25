@@ -30,9 +30,11 @@ mod world_format;
 mod world_setup;
 mod world_updates;
 
+pub use blocks::game_data;
 pub use clock::Clock;
 pub use compute::{Compute, ComputePool, InlineScheduler, Job, Scheduler, Scope};
 pub use global::Global;
+pub use level::{load_block_facts, load_damage_types};
 pub use net::VanillaPack;
 pub use player_list::{PlayerEntry, PlayerList, Uuid};
 pub use server::{DIMENSIONS, GlobalTask, Server, ServerBuilder, ServerHandle, StartError};

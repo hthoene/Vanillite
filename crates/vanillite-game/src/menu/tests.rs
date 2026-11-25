@@ -538,7 +538,12 @@ fn breaking_a_chest_drops_its_contents_and_closing_returns_the_carried_stack() {
         .sum();
     assert_eq!(dropped, 20);
     // The menu is no longer valid; closing it puts the carried half back.
-    assert!(!super::container::still_valid(&inv, &level, &|_| true));
+    assert!(!super::container::still_valid(
+        &inv,
+        &level,
+        &|_| true,
+        &|_| true
+    ));
     let who = super::container::Opener {
         spectator: false,
         infinite: false,
