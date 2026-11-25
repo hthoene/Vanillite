@@ -17,8 +17,8 @@ use crate::facts::{BiomeId, BlockStateId};
 
 pub use crate::store::{
     ChunkCodec, ChunkStore, ChunkStoreProvider, Completion, CompletionTarget, DimensionId,
-    MemoryStore, NullCodec, NullStore, Priority, RecordKey, RecordMeta, RoundView, StoreOp,
-    StoreResult, Stream, Token,
+    InboxWaker, MemoryStore, NullCodec, NullStore, Priority, RecordKey, RecordMeta, RoundView,
+    StoreOp, StoreResult, Stream, Token,
 };
 
 /// Vanilla's `ChunkStatus`, in generation order.

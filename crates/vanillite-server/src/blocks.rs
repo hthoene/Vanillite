@@ -561,7 +561,7 @@ pub(crate) fn tick_items(
     chunks: &Chunks,
     random: &mut XoroshiroRandom,
     min_y: i32,
-    lifetime: i16,
+    settings: ItemSettings,
 ) {
     let ids: Vec<EntityId> = entities.items.iter().map(|(id, _)| id).collect();
     if ids.is_empty() {
@@ -586,10 +586,19 @@ pub(crate) fn tick_items(
             id,
             &mut || random.next_float(),
             min_y,
-            lifetime,
+            settings,
             &mut scratch,
         );
     }
+}
+
+/// The rules of item entities for [`tick_item`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ItemSettings {
+    /// Ticks an item lies on the ground before it despawns (Vanilla 6000).
+    pub lifetime: i16,
+    /// Horizontal merge radius (Vanilla 0.5); vertically 0.5 less.
+    pub merge_radius: f64,
 }
 
 /// Reused buffers of [`tick_item`].
@@ -608,9 +617,10 @@ pub fn tick_item(
     id: EntityId,
     random_float: &mut dyn FnMut() -> f32,
     min_y: i32,
-    lifetime: i16,
+    settings: ItemSettings,
     scratch: &mut ItemScratch,
 ) {
+    let lifetime = settings.lifetime;
     let block = |p: BlockPos| BlockState(chunks.block(p).unwrap_or(0));
     scratch.gone.clear();
     let Entities { store, items, .. } = entities;
@@ -648,18 +658,27 @@ pub fn tick_item(
         }
     }
     if merge {
-        merge_with_neighbours(entities, id, lifetime, &mut scratch.near, &mut scratch.gone);
+        merge_with_neighbours(
+            entities,
+            id,
+            lifetime,
+            settings.merge_radius,
+            &mut scratch.near,
+            &mut scratch.gone,
+        );
     }
     for &gone in &scratch.gone {
         entities.despawn(gone);
     }
 }
 
-/// `ItemEntity.mergeWithNeighbours`.
+/// `ItemEntity.mergeWithNeighbours` within `radius` (Vanilla 0.5) horizontally and `radius`
+/// minus 0.5 vertically.
 fn merge_with_neighbours(
     entities: &mut Entities,
     id: EntityId,
     lifetime: i16,
+    radius: f64,
     near: &mut Vec<EntityId>,
     gone: &mut Vec<EntityId>,
 ) {
@@ -667,13 +686,15 @@ fn merge_with_neighbours(
         return;
     };
     near.clear();
-    entities
-        .store
-        .for_each_in(&aabb.inflate(0.5, 0.0, 0.5), false, |other| {
+    entities.store.for_each_in(
+        &aabb.inflate(radius, radius - 0.5, radius),
+        false,
+        |other| {
             if other != id {
                 near.push(other);
             }
-        });
+        },
+    );
     for &other in near.iter() {
         if gone.contains(&other) {
             continue;

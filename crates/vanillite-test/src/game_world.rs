@@ -415,7 +415,10 @@ impl GameWorld {
                     id,
                     &mut || random.next_float(),
                     MIN_Y,
-                    ITEM_LIFETIME,
+                    vanillite_server::ItemSettings {
+                        lifetime: ITEM_LIFETIME,
+                        merge_radius: 0.5,
+                    },
                     &mut self.item_scratch,
                 );
                 continue;

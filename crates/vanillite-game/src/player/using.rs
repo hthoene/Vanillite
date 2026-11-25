@@ -1,6 +1,7 @@
 //! Using an item over time (`LivingEntity.startUsingItem`, `updatingUsingItem`,
 //! `releaseUsingItem`, `completeUsingItem`) for players: eating and drinking, blocking with a
-//! shield, drawing a bow, loading and firing a crossbow. The per-item behaviour is the `match` in [`on_use_tick`],
+//! shield, drawing a bow, loading and firing a crossbow, charging with a spear (its damage is
+//! [`crate::spear::tick_players`]). The per-item behaviour is the `match` in [`on_use_tick`],
 //! [`finish`] and [`release`].
 
 use vanillite_base::Vec3;
@@ -51,7 +52,11 @@ fn use_duration(ents: &Entities, player: EntityId, stack: &ItemStack) -> i32 {
     let id = item::item_id(stack);
     let info = id.info();
     let name = id.name();
-    if info.blocks_attacks || name == "minecraft:bow" || name == crate::crossbow::CROSSBOW {
+    if info.blocks_attacks
+        || name == "minecraft:bow"
+        || name == crate::crossbow::CROSSBOW
+        || crate::spear::is_kinetic(stack)
+    {
         return 72000;
     }
     if name == "minecraft:brush" {
@@ -148,6 +153,7 @@ pub fn start(
             return;
         }
     }
+    let kinetic = crate::spear::kinetic_weapon(&stack);
     if let Some(p) = ents.player_mut(player) {
         p.survival.using_item = Some(UsingItem {
             hand,
@@ -156,11 +162,16 @@ pub fn start(
             duration,
             crossbow: crate::crossbow::UseFlags::default(),
         });
+        p.survival.stabbed.clear();
     }
     mark(ents, player);
     if use_vibrations(&stack) {
         let event = crate::level::game_event::events().item_interact_start;
         player_game_event(ents, env, player, event);
+    }
+    // `Item.use` of a kinetic weapon: `KineticWeapon.makeSound`.
+    if let Some(k) = kinetic {
+        crate::spear::make_sound(ents, env, player, k.sound.as_ref());
     }
 }
 
@@ -174,9 +185,10 @@ pub fn stop(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, stack: &It
 
 /// `stopUsingItem` without its game event; returns whether an item was in use.
 fn stop_quietly(ents: &mut Entities, player: EntityId) -> bool {
-    let was = ents
-        .player_mut(player)
-        .and_then(|p| p.survival.using_item.take());
+    let was = ents.player_mut(player).and_then(|p| {
+        p.survival.stabbed = Vec::new();
+        p.survival.using_item.take()
+    });
     if was.is_some() {
         mark(ents, player);
     }

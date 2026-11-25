@@ -3,7 +3,7 @@
 //!
 //! Incoming packets are framed and counted; only the few a client must answer are decoded.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
@@ -134,6 +134,10 @@ impl Bot {
         // Full view: every chunk within the view distance (a circle) has arrived.
         let mut full_view = false;
         let view = i32::from(self.config.view_distance.max(1));
+        // Chunks that entered the view after the full view and did not arrive yet, with the
+        // time they entered; the chunk the bot stood in when they were last updated.
+        let mut wanted: HashMap<(i32, i32), Instant> = HashMap::new();
+        let mut wanted_center: Option<(i32, i32)> = None;
         let mut tick = tokio::time::interval_at(
             tokio::time::Instant::now() + Duration::from_millis(self.rng.next_u64() % 50),
             Duration::from_millis(50),
@@ -188,6 +192,11 @@ impl Bot {
                                 self.metrics.chunks_forgotten.fetch_add(1, Ordering::Relaxed);
                             }
                             Action::Chunk(cx, cz) => {
+                                if let Some(since) = wanted.remove(&(cx, cz))
+                                    && let Ok(mut v) = self.metrics.chunk_ms.lock()
+                                {
+                                    v.push(since.elapsed().as_secs_f64() * 1e3);
+                                }
                                 loaded.insert((cx, cz));
                                 self.metrics.chunks.fetch_add(1, Ordering::Relaxed);
                             }
@@ -236,6 +245,34 @@ impl Bot {
                 }
                 _ = tick.tick(), if *joined => {
                     let Some((x, y, z)) = pos.as_mut() else { continue };
+                    let center = ((*x / 16.0).floor() as i32, (*z / 16.0).floor() as i32);
+                    if full_view && wanted_center != Some(center) {
+                        let inside = |c: (i32, i32), p: (i32, i32)| {
+                            let (dx, dz) = (p.0 - c.0, p.1 - c.1);
+                            dx * dx + dz * dz <= view * view
+                        };
+                        // Chunks that left the view unsent count as waited until now.
+                        let now = Instant::now();
+                        wanted.retain(|&p, since| {
+                            let keep = inside(center, p);
+                            if !keep && let Ok(mut v) = self.metrics.chunk_ms.lock() {
+                                v.push(now.duration_since(*since).as_secs_f64() * 1e3);
+                            }
+                            keep
+                        });
+                        for dz in -view..=view {
+                            for dx in -view..=view {
+                                let p = (center.0 + dx, center.1 + dz);
+                                if inside(center, p)
+                                    && !loaded.contains(&p)
+                                    && wanted_center.is_none_or(|old| !inside(old, p))
+                                {
+                                    wanted.entry(p).or_insert(now);
+                                }
+                            }
+                        }
+                        wanted_center = Some(center);
+                    }
                     if self.movement.has_changed().unwrap_or(false) {
                         movement = *self.movement.borrow_and_update();
                         next_turn = turn_deadline(movement);

@@ -169,6 +169,12 @@ Adding a mob:
    moves earlier (a regression) and asks to raise the tick when it moves later. Editing that
    file needs no new recording.
 
+Adding an action or a field to `Op` (`crates/vanillite-test/src/scenario.rs`): give the new
+field a type that implements `Default` (usually `Option<_>`) and derive `Default` for new action
+structs that need it. Every construction site names only `tick`, `kind` and the fields of its own
+kind and ends with `..Op::default()`, so a field added on another branch never breaks it; keep
+new sites that way.
+
 Scenario players are mock players: they join on a connection nobody reads and load no chunks
 (the region's chunks are the world). No client moves them, so the server does, in Vanilla as in
 Vanillite (`Survival::simulate_movement`): knockback, pushes and explosions move them with

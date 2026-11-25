@@ -77,6 +77,8 @@ pub enum EntityAction {
     Spectate(i32),
     /// `teleport_to_entity` of a spectator: to the entity of this UUID in any world.
     TeleportToEntity(u128),
+    /// `player_action` `STAB`: a jab with the piercing weapon in the main hand.
+    Stab,
 }
 
 /// What a player sends to steer its vehicle.
@@ -696,7 +698,11 @@ impl Connection {
                     self.entity_actions.push(EntityAction::ReleaseUseItem);
                 }
             }
-            DigAction::Stab => {}
+            DigAction::Stab => {
+                if self.entity_actions.len() < 16 {
+                    self.entity_actions.push(EntityAction::Stab);
+                }
+            }
             DigAction::StartDestroyBlock
             | DigAction::ChangeDestroyDirection
             | DigAction::AbortDestroyBlock

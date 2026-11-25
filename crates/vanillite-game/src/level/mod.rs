@@ -136,6 +136,12 @@ pub struct LevelSettings {
     pub portal_dimension: bool,
     /// Exploit switches (D1).
     pub exploits: ExploitSettings,
+    /// Ticks a hopper waits after moving an item (`HopperBlockEntity.MOVE_ITEM_SPEED`, 8).
+    pub hopper_transfer_cooldown: i32,
+    /// Ticks a hopper waits after finding nothing to move (Vanilla 1: every tick).
+    pub hopper_check_cooldown: i32,
+    /// Radius of the experience orb merge scan (Vanilla 0.5).
+    pub xp_merge_radius: f64,
     /// The difficulty is peaceful (set by the server every tick).
     pub peaceful: bool,
     /// `spawnWardens` game rule (set by the server every tick).
@@ -168,6 +174,9 @@ impl Default for LevelSettings {
             water_evaporates: false,
             portal_dimension: true,
             exploits: ExploitSettings::default(),
+            hopper_transfer_cooldown: 8,
+            hopper_check_cooldown: 1,
+            xp_merge_radius: 0.5,
             peaceful: false,
             spawn_wardens: true,
             mob_griefing: true,

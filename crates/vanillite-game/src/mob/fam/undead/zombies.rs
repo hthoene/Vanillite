@@ -288,8 +288,8 @@ pub fn init(m: &mut MobData) {
     }
 }
 
-/// `Zombie.registerGoals` / `addBehaviourGoals` of the variants (the turtle egg goal, the
-/// spear goal and `MoveThroughVillageGoal` come with the navigation and villages).
+/// `Zombie.registerGoals` / `addBehaviourGoals` of the variants (`MoveThroughVillageGoal`
+/// comes with the villages).
 pub fn register_goals(m: &mut MobData) {
     let g = &mut m.goals;
     let tg = &mut m.targets;
@@ -356,6 +356,7 @@ pub fn register_goals(m: &mut MobData) {
         Kind::ZombifiedPiglin => {
             g.add(8, goals::Goal::look_at_player(8.0));
             g.add(8, goals::Goal::random_look());
+            g.add(1, goal(Goal::SpearUse(SpearUse::new(1.0, 1.0, 10.0, 2.0))));
             g.add(2, goals::Goal::melee(MeleeKind::Zombie, 1.0, false));
             g.add(7, goals::Goal::stroll(1.0));
             tg.add(1, goals::Goal::hurt_by(true));
@@ -374,6 +375,7 @@ pub fn register_goals(m: &mut MobData) {
         _ => {
             g.add(8, goals::Goal::look_at_player(8.0));
             g.add(8, goals::Goal::random_look());
+            g.add(2, goal(Goal::SpearUse(SpearUse::new(1.0, 1.0, 10.0, 2.0))));
             g.add(3, goals::Goal::melee(MeleeKind::Zombie, 1.0, false));
             g.add(7, goals::Goal::stroll(1.0));
             tg.add(1, goals::Goal::hurt_by(true));
@@ -685,6 +687,176 @@ fn drowned_finalize(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
             relation: Relation::CarriesIt,
         });
     }
+}
+
+// --- Spears -----------------------------------------------------------------------------
+
+/// `SpearUseGoal`: approach the target, charge it with the spear lowered for the weapon's
+/// damage use duration, then back off and charge again (`SpearUseState`; `active` while the
+/// goal has a state).
+#[derive(Clone, Copy, Debug)]
+pub struct SpearUse {
+    pub charge_speed: f64,
+    pub reposition_speed: f64,
+    pub approach_sqr: f32,
+    pub in_range_sqr: f32,
+    pub active: bool,
+    pub engage_time: i32,
+    pub fleeing_time: i32,
+    pub away: Option<Vec3>,
+    pub done: bool,
+}
+
+impl SpearUse {
+    /// `SpearUseGoal(mob, charging, repositioning, approachDistance, targetInRangeRadius)`.
+    pub fn new(charge: f64, reposition: f64, approach: f32, in_range: f32) -> SpearUse {
+        SpearUse {
+            charge_speed: charge,
+            reposition_speed: reposition,
+            approach_sqr: approach * approach,
+            in_range_sqr: in_range * in_range,
+            active: false,
+            engage_time: -1,
+            fleeing_time: -1,
+            away: None,
+            done: false,
+        }
+    }
+}
+
+/// `SpearUseGoal.MAX_FLEEING_TIME` (`reducedTickDelay(100)`).
+const SPEAR_MAX_FLEEING_TIME: i32 = 50;
+
+/// `ableToAttack`: a target and a kinetic weapon in the main hand.
+fn spear_able(t: &Tick<'_, '_>) -> bool {
+    t.mob_ref().target.is_some() && crate::spear::mob_holds_kinetic(t.mob_ref())
+}
+
+fn spear_can_use(t: &Tick<'_, '_>) -> bool {
+    spear_able(t) && t.mob_ref().using_item < 0
+}
+
+fn spear_can_continue(t: &Tick<'_, '_>, s: &SpearUse) -> bool {
+    s.active && !s.done && spear_able(t)
+}
+
+fn spear_start(t: &mut Tick<'_, '_>, s: &mut SpearUse) {
+    goals::set_aggressive(t, true);
+    // `state = new SpearUseState()`.
+    s.active = true;
+    s.engage_time = -1;
+    s.fleeing_time = -1;
+    s.away = None;
+    s.done = false;
+}
+
+fn spear_stop(t: &mut Tick<'_, '_>, s: &mut SpearUse) {
+    t.mob().nav.stop();
+    goals::set_aggressive(t, false);
+    s.active = false;
+    crate::mob::projectile::stop_using_item(t);
+}
+
+fn spear_tick(t: &mut Tick<'_, '_>, s: &mut SpearUse) {
+    if !s.active {
+        return;
+    }
+    let Some(target) = t.mob_ref().target else {
+        return;
+    };
+    let Some(o) = t.other(target) else {
+        return;
+    };
+    let p = t.pos();
+    let dist_sqr = p.distance_to_sqr(o.pos);
+    let mut root = t.id;
+    while let Some(v) = t.ents.vehicle_of(root) {
+        root = v;
+    }
+    // `chargeSpeedModifier` of the mob the zombie rides (zombie horses charge faster).
+    let speed = if root != t.id
+        && t.ents
+            .mob(root)
+            .is_some_and(|m| m.kind == Kind::ZombieHorse)
+    {
+        1.4_f32
+    } else {
+        1.0
+    };
+    let speed = f64::from(speed);
+    let mount = if t.ents.vehicle_of(t.id).is_some() {
+        2.0
+    } else {
+        0.0
+    };
+    kinds::look_at_entity(t, o, 30.0, 30.0);
+    t.mob()
+        .look
+        .set_look_at(Vec3::new(o.pos.x, o.eye_y, o.pos.z), 30.0, 30.0);
+    if s.engage_time < 0 {
+        if dist_sqr > f64::from(s.approach_sqr) {
+            nav::move_to_entity(t, o.pos, 0, speed * s.reposition_speed);
+            return;
+        }
+        s.engage_time = goals::reduced(crate::spear::mob_use_duration(t.mob_ref()));
+        crate::mob::projectile::start_using_item(t);
+    }
+    // `tickAndCheckEngagement`.
+    if s.engage_time > 0 {
+        s.engage_time -= 1;
+        if s.engage_time == 0 {
+            crate::mob::projectile::stop_using_item(t);
+            let d = dist_sqr.sqrt();
+            s.away = randompos::land_pos_away(
+                t,
+                (9.0 + mount - d).max(0.0),
+                (11.0 + mount - d).max(1.0),
+                7,
+                o.pos,
+            );
+            s.fleeing_time = 1;
+        }
+    }
+    // `tickAndCheckFleeing`.
+    if s.fleeing_time > 0 {
+        s.fleeing_time += 1;
+        if s.fleeing_time > SPEAR_MAX_FLEEING_TIME {
+            s.done = true;
+            return;
+        }
+    }
+    if let Some(away) = s.away {
+        nav::move_to_pos(t, away, speed * s.reposition_speed);
+        if t.mob_ref().nav.is_done() {
+            if s.fleeing_time > 0 {
+                s.done = true;
+                return;
+            }
+            s.away = None;
+        }
+    } else {
+        nav::move_to_entity(t, o.pos, 0, speed * s.charge_speed);
+        if dist_sqr < f64::from(s.in_range_sqr) || t.mob_ref().nav.is_done() {
+            let d = dist_sqr.sqrt();
+            s.away = randompos::land_pos_away(t, 6.0 + mount - d, 7.0 + mount - d, 7, o.pos);
+        }
+    }
+}
+
+/// `LivingEntity.updatingUsingItem` of the zombies (they only use spears): the use counts up
+/// and the spear damages what it touches; another item in the hand stops the use.
+pub fn spear_use_tick(t: &mut Tick<'_, '_>) {
+    if t.mob_ref().using_item < 0 {
+        return;
+    }
+    if !crate::spear::mob_holds_kinetic(t.mob_ref()) {
+        crate::mob::projectile::stop_using_item(t);
+        return;
+    }
+    let m = t.mob();
+    m.using_item += 1;
+    let used = m.using_item - 1;
+    crate::spear::mob_use_tick(t, used);
 }
 
 // --- Tick -------------------------------------------------------------------------------
@@ -1582,6 +1754,7 @@ pub fn goal_flags(g: &Goal) -> u8 {
         Goal::DrownedGoToWater { .. } => MOVE,
         Goal::DrownedGoToBeach(_) => MOVE | JUMP,
         Goal::HurtByIgnoringDrowned(_) => TARGET,
+        Goal::SpearUse(_) => MOVE | LOOK,
         _ => 0,
     }
 }
@@ -1595,6 +1768,7 @@ pub fn goal_every_tick(g: &Goal) -> bool {
 
 pub fn goal_can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
     match g {
+        Goal::SpearUse(_) => spear_can_use(t),
         Goal::DrownedMelee(melee) => {
             melee.with(t, goals::can_use)
                 && t.mob_ref()
@@ -1646,6 +1820,7 @@ pub fn goal_can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
 
 pub fn goal_can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
     match g {
+        Goal::SpearUse(s) => spear_can_continue(t, s),
         Goal::DrownedMelee(melee) => {
             melee.with(t, goals::can_continue)
                 && t.mob_ref()
@@ -1668,6 +1843,7 @@ pub fn goal_can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
 
 pub fn goal_start(t: &mut Tick<'_, '_>, g: &mut Goal) {
     match g {
+        Goal::SpearUse(s) => spear_start(t, s),
         Goal::DrownedMelee(melee) => melee.with(t, goals::start),
         Goal::DrownedTrident(c) => {
             common::start(t, c);
@@ -1692,6 +1868,7 @@ pub fn goal_start(t: &mut Tick<'_, '_>, g: &mut Goal) {
 
 pub fn goal_stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
     match g {
+        Goal::SpearUse(s) => spear_stop(t, s),
         Goal::DrownedMelee(melee) => melee.with(t, goals::stop),
         Goal::DrownedTrident(c) => {
             common::stop(t, c);
@@ -1706,6 +1883,7 @@ pub fn goal_stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
 
 pub fn goal_tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
     match g {
+        Goal::SpearUse(s) => spear_tick(t, s),
         Goal::DrownedMelee(melee) => melee.with(t, goals::tick),
         Goal::DrownedTrident(c) => common::tick(t, c),
         Goal::DrownedGoToBeach(mtb) => {
