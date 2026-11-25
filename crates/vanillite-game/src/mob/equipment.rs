@@ -363,11 +363,15 @@ pub fn equip_item_if_possible(
 
 /// Sends the mob's equipment to the players tracking it (`set_equipment` after a change).
 pub fn broadcast(t: &mut Tick<'_, '_>) {
-    let Some(e) = t.ents.store.get(t.id) else {
-        return;
-    };
-    let entity_id = e.network_id().0;
-    let m = t.mob_ref();
+    if let Some(effect) = tracking_update(t.ents, t.id) {
+        t.env.out.push(effect);
+    }
+}
+
+/// The `set_equipment` of a mob for the players tracking it.
+pub fn tracking_update(ents: &crate::entities::Entities, id: EntityId) -> Option<Effect> {
+    let entity_id = ents.store.get(id)?.network_id().0;
+    let m = ents.mob(id)?;
     let mut slots: Vec<(u8, ItemStack)> = SLOTS
         .iter()
         .map(|&s| (s.ordinal(), m.equipment.get(s).clone()))
@@ -375,14 +379,13 @@ pub fn broadcast(t: &mut Tick<'_, '_>) {
     if m.saddled {
         slots[usize::from(EquipmentSlot::Saddle.ordinal())].1 = stack("minecraft:saddle");
     }
-    let id = t.id;
-    t.env.out.push(Effect::Tracking {
+    Some(Effect::Tracking {
         entity: id,
         with_self: false,
         packet: SharedPacket::of(
             &vanillite_protocol::packets::play::clientbound::SetEquipment { entity_id, slots },
         ),
-    });
+    })
 }
 
 /// `spawnAtLocation(stack, yOffset)`: an item entity at the mob with the default motion.
@@ -447,9 +450,25 @@ pub fn pick_up_items(
     t.cx.ids = found;
 }
 
-/// `take(entity, amount)` and the stack shrinking of `pickUpItem`: the pickup animation,
-/// then the item entity loses `amount` (and is discarded when empty).
+/// `onItemPickup`, `take(entity, amount)` and the stack shrinking of `pickUpItem`: the
+/// thrown item triggers, the pickup animation, then the item entity loses `amount` (and is
+/// discarded when empty).
 pub fn take(t: &mut Tick<'_, '_>, item: EntityId, amount: i32) {
+    let thrown = crate::advancements::trigger::TriggerKind::THROWN_ITEM_PICKED_UP_BY_ENTITY;
+    let ents = &*t.ents;
+    if let Some((thrower, stack)) = ents
+        .item(item)
+        .and_then(|d| d.thrower.map(|o| (o, d)))
+        .filter(|(o, _)| {
+            ents.players_by_uuid
+                .get(o)
+                .is_some_and(|&p| crate::advancements::view::listens(ents, p, thrown))
+        })
+        .map(|(o, d)| (o, d.stack.clone()))
+    {
+        let me = t.id;
+        super::animal::item_picked_up(t.ents, me, thrower, &stack);
+    }
     let (Some(item_net), Some(me)) = (
         t.ents.store.get(item).map(|e| e.network_id().0),
         t.ents.store.get(t.id).map(|e| e.network_id().0),

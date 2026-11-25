@@ -4,8 +4,10 @@
 use std::sync::Arc;
 
 use vanillite_base::{Aabb, BlockPos, ChunkPos, Vec3};
-use vanillite_config::{GameMode, WorldRules};
+use vanillite_config::{GameMode, VanillaOr, WorldRules};
 use vanillite_data::entity::ids;
+use vanillite_game::advancements::trigger::{Event, TriggerKind};
+use vanillite_game::advancements::view;
 use vanillite_game::entities::{Entities, is_mob_kind};
 use vanillite_game::item::ItemStack;
 use vanillite_game::level::Level;
@@ -15,7 +17,7 @@ use vanillite_game::minecart::{self, MinecartKind};
 use vanillite_game::mob::boss;
 use vanillite_game::mob::boss::dragon::{self, fight::DragonFight};
 use vanillite_game::mob::boss::special::{self, is_special_kind};
-use vanillite_game::mob::spawn::{self, SpawnInput, SpawnTable, Spawner};
+use vanillite_game::mob::spawn::{self, SpawnInput, SpawnLimits, SpawnTable, Spawner};
 use vanillite_game::mob::{
     self, Environment, MobContext, MobSettings, WorldAction, animal, attack, combat, projectile,
     tame,
@@ -58,6 +60,41 @@ impl vanillite_storage::saved_data::SavedData for FightData {
     }
 }
 
+/// The raids' saved data (`minecraft:raids`): the last state the raids wrote, taken by the
+/// next save.
+#[derive(Debug, Default)]
+struct RaidsData(std::sync::Mutex<Option<vanillite_nbt::Compound>>);
+
+impl vanillite_storage::saved_data::SavedData for RaidsData {
+    fn id(&self) -> &str {
+        "minecraft:raids"
+    }
+
+    fn save(&self) -> Option<vanillite_nbt::Compound> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
+}
+
+/// The wandering trader spawner's saved data: the last state it wrote, taken by the next save.
+#[derive(Debug, Default)]
+struct TraderSavedData(std::sync::Mutex<Option<vanillite_nbt::Compound>>);
+
+impl vanillite_storage::saved_data::SavedData for TraderSavedData {
+    fn id(&self) -> &str {
+        "minecraft:wandering_trader"
+    }
+
+    fn save(&self) -> Option<vanillite_nbt::Compound> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
+}
+
 /// The mob state of one world.
 #[derive(Debug)]
 pub(crate) struct WorldMobs {
@@ -69,6 +106,9 @@ pub(crate) struct WorldMobs {
     table: Option<Arc<SpawnTable>>,
     seed: i64,
     settings: MobSettings,
+    limits: SpawnLimits,
+    /// Ticks between natural spawn rounds (`performance.spawning.spawn-interval`).
+    spawn_interval: i64,
     /// Generated chunks waiting to become live, with the ticks they waited.
     generated: Vec<(ChunkPos, u32)>,
     scratch: Vec<ChunkPos>,
@@ -79,6 +119,11 @@ pub(crate) struct WorldMobs {
     phantoms: vanillite_game::mob::fam::undead::phantom::PhantomSpawner,
     patrols: vanillite_game::mob::fam::illager::patrol::PatrolSpawner,
     cats: spawn::CatSpawner,
+    siege: vanillite_game::raid::siege::VillageSiege,
+    raids_data: Option<Arc<RaidsData>>,
+    /// `WanderingTraderSpawner` (overworld) and its saved data.
+    traders: Option<vanillite_game::mob::fam::village::trader::spawner::TraderSpawner>,
+    trader_data: Option<Arc<TraderSavedData>>,
 }
 
 impl WorldMobs {
@@ -91,6 +136,8 @@ impl WorldMobs {
             table,
             seed,
             settings: settings(rules),
+            limits: spawn_limits(rules),
+            spawn_interval: i64::from(rules.spawning.spawn_interval.max(1)),
             generated: Vec::new(),
             scratch: Vec::new(),
             ticks: 0,
@@ -98,7 +145,93 @@ impl WorldMobs {
             phantoms: Default::default(),
             patrols: Default::default(),
             cats: spawn::CatSpawner::default(),
+            siege: Default::default(),
+            raids_data: None,
+            traders: None,
+            trader_data: None,
         }
+    }
+
+    /// Loads the dimension's raids from their saved data (`Raids.TYPE`).
+    pub(crate) fn init_raids(
+        &mut self,
+        data: &vanillite_storage::saved_data::SavedDataStore,
+        level: &mut Level,
+    ) {
+        match data.read("minecraft:raids") {
+            Ok(Some(saved)) => level.entities.raids = vanillite_game::raid::Raids::load(&saved),
+            Ok(None) => {}
+            Err(e) => log::error!("Could not read the raids: {e}"),
+        }
+        let store = Arc::new(RaidsData::default());
+        data.register(Arc::clone(&store) as _);
+        self.raids_data = Some(store);
+    }
+
+    /// `Raids.tick` (after the scheduled ticks, before the chunks), then the raids' changed
+    /// state goes to their saved data.
+    pub(crate) fn tick_raids(
+        &mut self,
+        level: &mut Level,
+        survival: &mut WorldSurvival,
+        global: &Global,
+        dimension: &str,
+    ) {
+        level.flush_poi_changes();
+        if level.entities.raids.raids.is_empty() && !level.entities.raids.dirty {
+            return;
+        }
+        let state = &global.level;
+        let rules = state.rules().clone();
+        let env = environment(
+            global,
+            dimension,
+            survival,
+            self.seed,
+            level.climate().map(|c| c.sea_level),
+        );
+        let mut cx = vanillite_game::raid::RaidTick {
+            difficulty: state.difficulty(),
+            raids_rule: rules.bool(Rule::RAIDS),
+            table: self.table.as_deref(),
+            env,
+            out: &mut survival.effects,
+        };
+        vanillite_game::raid::Raids::tick(level, &mut cx);
+        survival.deliver(&mut level.entities, global);
+        if let Some(data) = &self.raids_data
+            && std::mem::take(&mut level.entities.raids.dirty)
+        {
+            *data
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some(level.entities.raids.save());
+        }
+    }
+
+    /// Creates the wandering trader spawner from its saved data (`WanderingTraderData.TYPE`).
+    pub(crate) fn init_trader_spawner(
+        &mut self,
+        data: &vanillite_storage::saved_data::SavedDataStore,
+    ) {
+        use vanillite_game::mob::fam::village::trader::spawner::{TraderData, TraderSpawner};
+        let saved = match data.read("minecraft:wandering_trader") {
+            Ok(saved) => saved,
+            Err(e) => {
+                log::error!("Could not read the wandering trader data: {e}");
+                None
+            }
+        };
+        let trader = saved.as_ref().map(TraderData::load).unwrap_or_default();
+        let store = Arc::new(TraderSavedData::default());
+        data.register(Arc::clone(&store) as _);
+        // `RandomSource.create()`: seeded from the clock.
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos() as i64);
+        self.traders = Some(TraderSpawner::new(trader, seed));
+        self.trader_data = Some(store);
     }
 
     /// Creates the End's dragon fight from its saved data (`EnderDragonFight.TYPE`).
@@ -216,6 +349,8 @@ impl WorldMobs {
     /// Takes over changed rules (config reload).
     pub(crate) fn set_rules(&mut self, rules: &WorldRules) {
         self.settings = settings(rules);
+        self.limits = spawn_limits(rules);
+        self.spawn_interval = i64::from(rules.spawning.spawn_interval.max(1));
     }
 
     /// The attacks, interactions, entity item uses and vehicle input of the players since the
@@ -298,6 +433,11 @@ impl WorldMobs {
                         let Some(target) = in_reach(&ents, player, entity) else {
                             continue;
                         };
+                        // `handleInteract`: the stack before the interaction for
+                        // `player_interacted_with_entity`.
+                        let interacted = TriggerKind::PLAYER_INTERACTED_WITH_ENTITY;
+                        let used = view::listens(&ents, player, interacted)
+                            .then(|| animal::held(&ents, player, hand));
                         let r = if ents
                             .store
                             .get(target)
@@ -316,6 +456,13 @@ impl WorldMobs {
                                 sneaking,
                             )
                         };
+                        if r.consumes()
+                            && let Some(used) = used
+                        {
+                            view::fire(&mut ents, player, interacted, |ents| {
+                                Event::EntityItem(interacted, view::snapshot(ents, target), used)
+                            });
+                        }
                         if r == animal::Interaction::Success
                             && let Some(p) = ents.player_mut(player)
                         {
@@ -343,6 +490,17 @@ impl WorldMobs {
                             );
                         }
                     }
+                    EntityAction::Stab => {
+                        if usable {
+                            vanillite_game::spear::player_stab(
+                                level,
+                                &mut ents,
+                                &mut env,
+                                &mut self.cx,
+                                player,
+                            );
+                        }
+                    }
                     EntityAction::ReleaseUseItem => {
                         vanillite_game::player::using::release(
                             &mut ents,
@@ -352,11 +510,22 @@ impl WorldMobs {
                         );
                     }
                     EntityAction::OpenVehicleInventory => {
-                        // `openCustomInventoryScreen` of a chest boat the player rides.
-                        if let Some(v) = ents.vehicle_of(player)
-                            && ents.boat(v).is_some_and(|b| b.kind.chest)
-                        {
-                            minecart::open_container(&mut ents, &mut env, &mut self.cx, player, v);
+                        // `openCustomInventoryScreen` of a chest boat or mount the player
+                        // rides.
+                        if let Some(v) = ents.vehicle_of(player) {
+                            if ents.boat(v).is_some_and(|b| b.kind.chest) {
+                                minecart::open_container(
+                                    &mut ents,
+                                    &mut env,
+                                    &mut self.cx,
+                                    player,
+                                    v,
+                                );
+                            } else if let Some(request) =
+                                vanillite_game::menu::mount::request(&ents, v, player)
+                            {
+                                self.cx.menus.push(request);
+                            }
                         }
                     }
                 }
@@ -400,14 +569,22 @@ impl WorldMobs {
         dimension: &str,
         spawn_point: Option<BlockPos>,
     ) {
+        let env = environment(
+            global,
+            dimension,
+            survival,
+            self.seed,
+            level.climate().map(|c| c.sea_level),
+        );
+        // What random ticks read of this tick's environment (turtle eggs).
+        level.spawner_env.env = env;
         let Some(table) = self.table.clone() else {
             return;
         };
+        let roll_siege = day_time(global) == Some(18000);
         let state = &global.level;
         let rules = state.rules().clone();
         let difficulty = state.difficulty();
-        let sea_level = level.climate().map(|c| c.sea_level);
-        let env = environment(global, dimension, survival, self.seed, sea_level);
         // New chunks: their animals once they are live.
         level.chunks.take_generated(&mut self.scratch);
         self.generated
@@ -430,6 +607,10 @@ impl WorldMobs {
             }
             self.generated = waiting;
         }
+        let persistent = level.game_time() % 400 == 0;
+        // `performance.spawning.spawn-interval`: natural spawn rounds only every n-th tick.
+        let natural =
+            self.spawn_interval == 1 || persistent || level.game_time() % self.spawn_interval == 0;
         let players: Vec<(EntityId, Vec3)> = level
             .entities
             .players
@@ -443,12 +624,13 @@ impl WorldMobs {
             spawn_enemies: difficulty != Difficulty::Peaceful && rules.bool(Rule::SPAWN_MONSTERS),
             difficulty,
             env,
+            limits: self.limits,
             thunder: StrikeInput {
                 spawn_mobs: rules.bool(Rule::SPAWN_MOBS),
                 clock_time: overworld_clock_time(global),
             },
+            natural,
         };
-        let persistent = level.game_time() % 400 == 0;
         spawn::tick(level, &table, &mut self.spawner, &input, persistent);
         if dimension == "minecraft:overworld" {
             self.custom_spawners(
@@ -459,11 +641,12 @@ impl WorldMobs {
                 difficulty,
                 env,
                 &players,
+                roll_siege,
             );
         }
     }
 
-    /// `tickCustomSpawners`: phantoms, patrols and cats (the wandering trader is #60).
+    /// `tickCustomSpawners`: phantoms, patrols, cats and zombie sieges.
     #[allow(clippy::too_many_arguments)]
     fn custom_spawners(
         &mut self,
@@ -474,14 +657,15 @@ impl WorldMobs {
         difficulty: Difficulty,
         env: Environment,
         players: &[(EntityId, Vec3)],
+        roll_siege: bool,
     ) {
+        level.flush_poi_changes();
         use vanillite_game::mob::fam::illager::patrol::{self, PatrolInput};
         use vanillite_game::mob::fam::undead::phantom;
         let rest = |id: EntityId| {
-            level
-                .entities
-                .player(id)
-                .map_or(0, |p| p.survival.time_since_rest)
+            level.entities.player(id).map_or(0, |p| {
+                p.stats.get(vanillite_game::stats::custom::TIME_SINCE_REST)
+            })
         };
         let rests: Vec<(EntityId, i32)> = players.iter().map(|&(id, _)| (id, rest(id))).collect();
         let time_since_rest = |id: EntityId| rests.iter().find(|r| r.0 == id).map_or(0, |r| r.1);
@@ -503,7 +687,6 @@ impl WorldMobs {
                 Some((e.pos(), p.game_mode == GameMode::Spectator))
             })
             .collect();
-        let no_village = |_| false;
         let can_patrol = |level: &Level, pos: BlockPos| {
             table.biome(level.biome(pos)).is_none_or(|b| b.patrol_spawn)
         };
@@ -513,7 +696,6 @@ impl WorldMobs {
             env,
             players: &patrol_players,
             table: Some(table),
-            close_to_village: &no_village,
             can_patrol_spawn: &can_patrol,
         };
         patrol::patrol_spawner_tick(level, &mut self.patrols, &input);
@@ -527,6 +709,44 @@ impl WorldMobs {
             difficulty,
             &ids,
         );
+        vanillite_game::raid::siege::tick(
+            level,
+            &mut self.siege,
+            &vanillite_game::raid::siege::SiegeInput {
+                spawn_enemies,
+                difficulty,
+                env,
+                at_roll_marker: roll_siege,
+                table: Some(table),
+            },
+        );
+        if let Some(traders) = &mut self.traders {
+            use vanillite_game::mob::fam::village::trader::spawner::{self, TraderInput};
+            // `getRandomPlayer`: the alive players.
+            let alive: Vec<Vec3> = level
+                .entities
+                .players
+                .iter()
+                .filter(|(_, p)| !p.survival.is_dead_or_dying())
+                .filter_map(|(id, _)| level.entities.store.get(id).map(|e| e.pos()))
+                .collect();
+            let input = TraderInput {
+                enabled: rules.bool(Rule::SPAWN_WANDERING_TRADERS),
+                difficulty,
+                env,
+                table: Some(table),
+                players: &alive,
+            };
+            spawner::tick(level, traders, &input);
+            if std::mem::take(&mut traders.dirty)
+                && let Some(store) = &self.trader_data
+            {
+                *store
+                    .0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(traders.data.save());
+            }
+        }
     }
 
     /// `entityTickList.forEach(tickNonPassenger)`: falling blocks, mobs, arrows and orbs in
@@ -539,6 +759,13 @@ impl WorldMobs {
         dimension: &str,
     ) {
         self.ticks += 1;
+        level.flush_poi_changes();
+        // `detectEquipmentUpdates` of the mobs whose equipment a menu changed.
+        for id in std::mem::take(&mut level.entities.equipment_updates) {
+            if let Some(e) = vanillite_game::mob::equipment::tracking_update(&level.entities, id) {
+                survival.effects.push(e);
+            }
+        }
         let state = &global.level;
         let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
         let rules = state.rules().clone();
@@ -553,8 +780,13 @@ impl WorldMobs {
             .players
             .iter()
             .any(|(_, p)| p.game_mode != GameMode::Spectator);
-        let sea_level = level.climate().map(|c| c.sea_level);
-        let env = environment(global, dimension, survival, self.seed, sea_level);
+        let env = environment(
+            global,
+            dimension,
+            survival,
+            self.seed,
+            level.climate().map(|c| c.sea_level),
+        );
         self.cx.begin_tick(env, self.settings, has_players);
         // What spawner blocks read when the block entities tick after the entities.
         level.spawner_env = vanillite_game::block::spawner::SpawnerEnv {
@@ -562,10 +794,12 @@ impl WorldMobs {
             difficulty: state.difficulty(),
             spawner_blocks_work: rules.bool(Rule::SPAWNER_BLOCKS_WORK),
             spawn_mobs: rules.bool(Rule::SPAWN_MOBS),
+            spawn_monsters: rules.bool(Rule::SPAWN_MONSTERS),
         };
         let activation = f64::from(self.settings.activation_range);
         minecart::players_push(&mut level.entities);
         let mut cursor = level.entities.store.tick_cursor();
+        let mut tnt_left = self.settings.max_tnt_per_tick;
         let mut ents = std::mem::take(&mut level.entities);
         while let Some(id) = ents.store.next_to_tick(&mut cursor) {
             let Some(mut entity) = ents.store.get_mut(id) else {
@@ -588,6 +822,15 @@ impl WorldMobs {
                 let chunk = BlockPos::containing(pos.x, pos.y, pos.z).chunk();
                 if !level.chunks.in_entity_ticking_range(chunk) {
                     continue;
+                }
+                // `max-tnt-per-tick`: the rest waits for a later tick.
+                if kind == ids::TNT
+                    && let Some(left) = &mut tnt_left
+                {
+                    if *left == 0 {
+                        continue;
+                    }
+                    *left -= 1;
                 }
                 level.entities = ents;
                 vanillite_game::entities::tick_entity(level, id, kind);
@@ -697,7 +940,7 @@ impl WorldMobs {
         }
         boss::wither::sweep_boss_bars(&mut self.cx, &ents, &mut survival.effects);
         // `rideTick`: passengers follow their vehicles; leads of knots and loaded mobs.
-        riding::position_all_riders(&mut ents);
+        riding::ride_tick(&mut ents);
         {
             let blocks = WorldBlocks(&level.chunks);
             let raining = |_| false;
@@ -715,12 +958,14 @@ impl WorldMobs {
             );
             let mut discarded = Vec::new();
             vanillite_game::player::using::tick_all(&mut ents, &mut env);
+            vanillite_game::spear::tick_players(level, &mut ents, &mut env, &mut self.cx);
             tame::tick_leashes(level, &mut ents, &mut env, &mut discarded);
             for d in discarded {
                 ents.despawn(d);
             }
         }
         level.entities = ents;
+        vanillite_game::player::using::tick_brushes(level);
         survival.deliver(&mut level.entities, global);
     }
 
@@ -775,33 +1020,10 @@ impl WorldMobs {
                     self.apply_explosion_hurts(level, survival, global, dimension);
                 }
                 WorldAction::Explode(e) => {
-                    // `Level.ExplosionInteraction.MOB`: `getDestroyType` with `mobGriefing`.
-                    let decay = if e.mob {
-                        Rule::MOB_EXPLOSION_DROP_DECAY
-                    } else {
-                        Rule::TNT_EXPLOSION_DROP_DECAY
-                    };
-                    let interaction = if e.mob && !rules.bool(Rule::MOB_GRIEFING) {
-                        BlockInteraction::Keep
-                    } else if rules.bool(decay) {
-                        BlockInteraction::DestroyWithDecay
-                    } else {
-                        BlockInteraction::Destroy
-                    };
-                    // `getIndirectSourceEntity`: a living source caused it itself.
-                    level.explode_with(
-                        e.source,
-                        e.indirect.or(e.source),
-                        e.pos,
-                        e.radius,
-                        interaction,
-                        vanillite_game::level::explosion::ExplosionStyle {
-                            resistance: e.resistance,
-                            ..Default::default()
-                        },
-                    );
+                    e.run(level, rules);
                     self.apply_explosion_hurts(level, survival, global, dimension);
                 }
+                WorldAction::Particles(p) => level.send_particles_packet(*p),
                 WorldAction::SetBlock(pos, block, flags) => {
                     level.set_block(pos, block, flags);
                 }
@@ -828,6 +1050,7 @@ impl WorldMobs {
                             wind_sound: Some(b.sound),
                             resistance:
                                 vanillite_game::level::explosion::BlockResistance::WindCharge,
+                            fire: false,
                         },
                     );
                 }
@@ -1016,9 +1239,40 @@ impl WorldMobs {
 }
 
 fn settings(rules: &WorldRules) -> MobSettings {
+    let vanilla = MobSettings::default();
+    let spawning = &rules.spawning;
     MobSettings {
         path_nodes_per_tick: rules.mobs.path_nodes_per_tick,
         activation_range: u32::from(rules.mobs.activation_range),
+        max_entity_collisions: match rules.collisions.max_entity_collisions {
+            VanillaOr::Vanilla => None,
+            VanillaOr::Value(n) => Some(n),
+        },
+        arrow_despawn_ticks: i32::from(rules.items.arrow_despawn_ticks),
+        hard_despawn_range: spawning.hard_despawn_range.map(f64::from),
+        soft_despawn_range: spawning
+            .soft_despawn_range
+            .map_or(vanilla.soft_despawn_range, f64::from),
+        max_tnt_per_tick: rules.explosions.max_tnt_per_tick.get(),
+    }
+}
+
+/// The mob caps and despawn distance of `performance.spawning`.
+fn spawn_limits(rules: &WorldRules) -> SpawnLimits {
+    let s = &rules.spawning;
+    let vanilla = SpawnLimits::default();
+    let caps = [
+        s.monster_cap,
+        s.creature_cap,
+        s.ambient_cap,
+        s.axolotls_cap,
+        s.underground_water_creature_cap,
+        s.water_creature_cap,
+        s.water_ambient_cap,
+    ];
+    SpawnLimits {
+        caps: std::array::from_fn(|i| caps[i].map_or(vanilla.caps[i], i32::from)),
+        despawn_distance: s.hard_despawn_range.map(i32::from),
     }
 }
 
@@ -1027,6 +1281,17 @@ fn distance_sqr_to_box(b: &Aabb, p: Vec3) -> f64 {
     let dy = (b.min_y - p.y).max(0.0).max(p.y - b.max_y);
     let dz = (b.min_z - p.z).max(0.0).max(p.z - b.max_z);
     dx * dx + dy * dy + dz * dz
+}
+
+/// The overworld day time (`minecraft:day` timeline) within the day.
+fn day_time(global: &Global) -> Option<i64> {
+    let clocks = global.level.clocks();
+    clocks.timeline("minecraft:day").and_then(|t| {
+        clocks
+            .clocks
+            .get(t.clock)
+            .map(|c| t.current_ticks(c.total_ticks).rem_euclid(24000))
+    })
 }
 
 /// `getOverworldClockTime`: the ticks of the overworld clock.
@@ -1051,8 +1316,30 @@ fn environment(
 ) -> Environment {
     let overworld = dimension == "minecraft:overworld";
     let nether = dimension == "minecraft:the_nether";
+    let day = {
+        let clocks = global.level.clocks();
+        clocks.timeline("minecraft:day").and_then(|t| {
+            clocks
+                .clocks
+                .get(t.clock)
+                .map(|c| t.current_ticks(c.total_ticks))
+        })
+    }
+    .unwrap_or(6000);
+    // `Timelines.OVERWORLD_DAY` period count (villagers' restock days).
+    let day_count = {
+        let clocks = global.level.clocks();
+        clocks.timeline("minecraft:day").and_then(|t| {
+            clocks
+                .clocks
+                .get(t.clock)
+                .map(|c| t.period_count(c.total_ticks))
+        })
+    }
+    .unwrap_or(0);
     if !overworld {
         return Environment {
+            day_count,
             surface_slime_chance: 0.0,
             world_seed: seed,
             sea_level: sea_level.unwrap_or(if nether { 32 } else { 0 }),
@@ -1065,18 +1352,12 @@ fn environment(
             monster_light_test: if nether { (7, 7) } else { (0, 7) },
             ambient_light: if nether { 0.1 } else { 0.0 },
             has_ceiling: nether,
+            day_time: day,
+            bees_stay_in_hive: false,
+            creaking_active: false,
+            turtle_egg_hatch_chance: 0.002,
         };
     }
-    let day = {
-        let clocks = global.level.clocks();
-        clocks.timeline("minecraft:day").and_then(|t| {
-            clocks
-                .clocks
-                .get(t.clock)
-                .map(|c| t.current_ticks(c.total_ticks))
-        })
-    }
-    .unwrap_or(6000);
     let w = survival.weather;
     // The `minecraft:moon` timeline: the surface slime chance is half the moon's brightness.
     let moon = {
@@ -1094,6 +1375,8 @@ fn environment(
     Environment {
         surface_slime_chance: MOON_BRIGHTNESS[phase] * 0.5,
         world_seed: seed,
+        day_time: day,
+        day_count,
         sea_level: sea_level.unwrap_or(63),
         ..Environment::overworld(day, w.rain(), w.thunder())
     }
@@ -1249,9 +1532,10 @@ fn use_item(
     let creative = ents
         .player(player)
         .is_some_and(|p| p.game_mode == GameMode::Creative);
+    let item = stack.item;
     if name.ends_with("_boat") || name.ends_with("_raft") {
         let reach = if creative { 5.0 } else { 4.5 };
-        vehicle::use_boat_item(
+        if vehicle::use_boat_item(
             level,
             ents,
             network_ids,
@@ -1259,15 +1543,21 @@ fn use_item(
             &mut stack,
             creative,
             reach,
-        );
+        ) {
+            award_used(ents, player, item);
+        }
     } else if name == "minecraft:carrot_on_a_stick" || name == "minecraft:warped_fungus_on_a_stick"
     {
-        riding::boost(ents, env, player, &mut stack, creative);
+        // `FoodOnAStickItem.use` counts the use only when nothing was boosted.
+        if !riding::boost(ents, env, player, &mut stack, creative) {
+            award_used(ents, player, item);
+        }
     } else if vanillite_game::effect::thrown::kind_of(&stack).is_some() {
         vanillite_game::effect::thrown::throw(ents, env, network_ids, player, &mut stack, creative);
+        award_used(ents, player, item);
     } else {
         put_back(ents, player, hand, stack);
-        vanillite_game::player::using::start(ents, env, player, hand);
+        vanillite_game::player::using::start(ents, env, network_ids, player, hand);
         return;
     }
     put_back(ents, player, hand, stack);
@@ -1287,10 +1577,11 @@ fn use_item_on(
     difficulty: Difficulty,
 ) {
     let mut stack = take_held(ents, player, hand);
+    let before = stack.clone();
     let creative = ents
         .player(player)
         .is_some_and(|p| p.game_mode == GameMode::Creative);
-    if let Some(kind) = animal::spawn_egg_kind(&stack) {
+    let used = if let Some(kind) = animal::spawn_egg_kind(&stack) {
         animal::use_spawn_egg_on(
             level,
             ents,
@@ -1302,11 +1593,32 @@ fn use_item_on(
             &mut stack,
             creative,
             difficulty,
-        );
+        )
     } else if vanillite_game::item::item_id(&stack).name() == "minecraft:lead" {
-        tame::use_lead_on_fence(level, ents, env, player, pos);
+        tame::use_lead_on_fence(level, ents, env, player, pos)
     } else {
-        minecart::use_item_on(level, ents, network_ids, pos, &mut stack, creative);
-    }
+        minecart::use_item_on(level, ents, network_ids, pos, &mut stack, creative)
+    };
     put_back(ents, player, hand, stack);
+    if used && !before.is_empty() {
+        // `ItemStack.useOn` of a successful item interaction, then `ITEM_USED_ON_BLOCK` and
+        // `ANY_BLOCK_USE`.
+        award_used(ents, player, before.item);
+        if let Some(p) = ents.player_mut(player) {
+            use vanillite_game::advancements::trigger::Event;
+            p.advancements
+                .trigger(Event::ItemUsedOnBlock(pos, before.clone()));
+            p.advancements.trigger(Event::AnyBlockUse(pos, before));
+        }
+    }
+}
+
+/// `player.awardStat(Stats.ITEM_USED.get(item))`.
+fn award_used(ents: &mut Entities, player: EntityId, item: u16) {
+    if let Some(p) = ents.player_mut(player) {
+        p.stats.award(
+            vanillite_game::stats::Stat::of(vanillite_game::stats::StatType::Used, item),
+            1,
+        );
+    }
 }

@@ -1,8 +1,8 @@
 //! Striders (`Strider`): lava walkers of the Nether that shiver out of warm blocks, carry a
 //! saddle and are steered with a warped fungus on a stick.
 //!
-//! They stand on lava sources (`canStandOnFluid`, see `physics::LavaWalker`); `floatStrider`
-//! lifts them up to the surface.
+//! They stand on lava (`canStandOnFluid`): lava sources collide with their lower half in the
+//! strider's movement ([`crate::mob::physics::collide_for`]).
 
 use vanillite_base::random::RandomSource;
 use vanillite_base::{BlockPos, Vec3};
@@ -21,7 +21,7 @@ use crate::survival::rules::Difficulty;
 
 /// `Strider.registerGoals` (`LookAtPlayerGoal(Strider.class)` looks at players only here).
 pub(super) fn register_goals(m: &mut MobData) {
-    // `canStandOnFluid(lava)`.
+    // `canStandOnFluid(lava)` and `StriderPathNavigation`.
     m.nav.stands_on_lava = true;
     let g = &mut m.goals;
     g.add(1, MobGoal::panic(1.65));
@@ -167,7 +167,7 @@ pub(super) fn after_tick(t: &mut Tick<'_, '_>) {
     }
     let pos = t.block_pos();
     let above_lava = is_lava(t.level.block(BlockPos::new(pos.x, pos.y + 1, pos.z)));
-    // `isAbove(getLiquidCollisionShape())`: the feet over the top of the lower half.
+    // `isAbove(liquid collision shape)`: the feet over the top of the lower half of the block.
     if t.pos().y > f64::from(pos.y) + 0.5 - f64::from(1.0e-5_f32) && !above_lava {
         t.core_mut().set_flags(EntityFlags::ON_GROUND, true);
     } else {

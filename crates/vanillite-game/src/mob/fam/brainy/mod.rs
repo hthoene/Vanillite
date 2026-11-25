@@ -49,6 +49,8 @@ pub struct State {
     pub inventory: Vec<ItemStack>,
     /// `DATA_IS_CHARGING_CROSSBOW`.
     pub charging_crossbow: bool,
+    /// The loading sounds the crossbow played (piglins).
+    pub crossbow_sounds: crate::crossbow::UseFlags,
     /// `DATA_IS_DANCING`.
     pub dancing: bool,
     /// `DATA_IS_SCREAMING_GOAT`, `DATA_HAS_LEFT_HORN`, `DATA_HAS_RIGHT_HORN`.
@@ -272,6 +274,7 @@ impl NextSeed for LegacyRandom {
 /// ends and experience drops.
 pub fn finalize_child_from_breeding(t: &mut Tick<'_, '_>, partner: EntityId) {
     use vanillite_base::random::RandomSource;
+    crate::mob::animal::award_breeding(t.ents, t.id, partner, None);
     for id in [t.id, partner] {
         if let Some(m) = t.ents.mob_mut(id) {
             m.age = 6000;

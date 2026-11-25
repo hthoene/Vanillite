@@ -6,6 +6,8 @@ use vanillite_base::math::{floor, frac};
 use vanillite_base::{Aabb, BlockPos, Vec3};
 use vanillite_data::block::{BlockState, flags, ids};
 
+use vanillite_worldgen::behaviour::StateExt;
+
 use crate::level::Level;
 
 /// `Shapes.EPSILON`.
@@ -15,41 +17,6 @@ const EPSILON: f64 = 1.0e-7;
 pub trait Blocks {
     /// `getBlockState(pos)`.
     fn state(&self, pos: BlockPos) -> BlockState;
-
-    /// `getCollisionShape(level, pos, context)` of `state` at `pos` for the moving entity.
-    fn collision_shape(&self, _pos: BlockPos, state: BlockState) -> &'static [[f64; 6]] {
-        state.collision_shape()
-    }
-}
-
-/// The blocks as an entity that stands on lava sees them (`canStandOnFluid`, striders): a lava
-/// source it is above (`isAbove(getLiquidCollisionShape())`) without lava over it collides
-/// like its liquid collision shape, the lower half of the block.
-#[allow(missing_debug_implementations)]
-pub struct LavaWalker<'a> {
-    pub blocks: &'a dyn Blocks,
-    /// `entityBottom`: the entity's feet when the move starts.
-    pub bottom: f64,
-}
-
-/// `Strider.getLiquidCollisionShape`: `Block.column(16, 0, 8)`.
-const LAVA_STAND: &[[f64; 6]] = &[[0.0, 0.0, 0.0, 1.0, 0.5, 1.0]];
-
-impl Blocks for LavaWalker<'_> {
-    fn state(&self, pos: BlockPos) -> BlockState {
-        self.blocks.state(pos)
-    }
-
-    fn collision_shape(&self, pos: BlockPos, state: BlockState) -> &'static [[f64; 6]] {
-        if state.block() == ids::LAVA
-            && state.value("level") == Some("0")
-            && self.bottom > f64::from(pos.y) + 0.5 - f64::from(1.0e-5_f32)
-            && !crate::mob::is_lava(self.blocks.state(BlockPos::new(pos.x, pos.y + 1, pos.z)))
-        {
-            return LAVA_STAND;
-        }
-        state.collision_shape()
-    }
 }
 
 impl Blocks for Level {
@@ -63,6 +30,22 @@ impl Blocks for Level {
 /// `BlockCollisions`: the cells the box touches plus a ring around it, where ring cells only
 /// count with a large collision shape (fences, walls) and edge cells only for moving pistons.
 pub fn block_boxes(blocks: &dyn Blocks, area: &Aabb, out: &mut Vec<Aabb>) {
+    block_boxes_for(blocks, area, out, None);
+}
+
+/// `getLiquidCollisionShape` of the mobs that stand on lava (`Strider`): the lower half of a
+/// lava source.
+const LAVA_STABLE_TOP: f64 = 0.5;
+
+/// [`block_boxes`] for an entity that stands on lava (`canStandOnFluid`) with its feet at
+/// `lava_bottom` (`EntityCollisionContext.entityBottom`): lava sources without lava above
+/// collide with their lower half when the feet are above it (`LiquidBlock.getCollisionShape`).
+pub fn block_boxes_for(
+    blocks: &dyn Blocks,
+    area: &Aabb,
+    out: &mut Vec<Aabb>,
+    lava_bottom: Option<f64>,
+) {
     let min_x = floor(area.min_x - EPSILON) - 1;
     let max_x = floor(area.max_x + EPSILON) + 1;
     let min_y = floor(area.min_y - EPSILON) - 1;
@@ -90,7 +73,26 @@ pub fn block_boxes(blocks: &dyn Blocks, area: &Aabb, out: &mut Vec<Aabb>) {
                     continue;
                 }
                 let (ox, oy, oz) = (f64::from(x), f64::from(y), f64::from(z));
-                for b in blocks.collision_shape(pos, state) {
+                if let Some(bottom) = lava_bottom
+                    && state.block() == ids::LAVA
+                    && state.int("level") == Some(0)
+                    && bottom > oy + LAVA_STABLE_TOP - f64::from(1.0e-5_f32)
+                    && blocks.state(BlockPos::new(x, y + 1, z)).block() != ids::LAVA
+                {
+                    let shape = Aabb {
+                        min_x: ox,
+                        min_y: oy,
+                        min_z: oz,
+                        max_x: ox + 1.0,
+                        max_y: oy + LAVA_STABLE_TOP,
+                        max_z: oz + 1.0,
+                    };
+                    if shape.intersects(area) {
+                        out.push(shape);
+                    }
+                    continue;
+                }
+                for b in state.collision_shape() {
                     let shape = Aabb {
                         min_x: ox + b[0],
                         min_y: oy + b[1],
@@ -194,12 +196,35 @@ pub fn collide(
     on_ground: bool,
     scratch: &mut Vec<Aabb>,
 ) -> Vec3 {
+    collide_for(
+        blocks,
+        aabb,
+        movement,
+        max_up_step,
+        on_ground,
+        scratch,
+        false,
+    )
+}
+
+/// [`collide`] for an entity that stands on lava when `on_lava` (`Strider.canStandOnFluid`):
+/// its feet are the bottom of `aabb`.
+pub fn collide_for(
+    blocks: &dyn Blocks,
+    aabb: Aabb,
+    movement: Vec3,
+    max_up_step: f32,
+    on_ground: bool,
+    scratch: &mut Vec<Aabb>,
+    on_lava: bool,
+) -> Vec3 {
+    let lava_bottom = on_lava.then_some(aabb.min_y);
     let step = if movement.length_sqr() == 0.0 {
         movement
     } else {
         scratch.clear();
         let area = aabb.expand_towards(movement.x, movement.y, movement.z);
-        block_boxes(blocks, &area, scratch);
+        block_boxes_for(blocks, &area, scratch, lava_bottom);
         collide_with_shapes(movement, aabb, scratch)
     };
     let x_collision = movement.x != step.x;
@@ -217,7 +242,7 @@ pub fn collide(
             area = area.expand_towards(0.0, -1.0e-5, 0.0);
         }
         scratch.clear();
-        block_boxes(blocks, &area, scratch);
+        block_boxes_for(blocks, &area, scratch, lava_bottom);
         // `(float)movementStep.y`.
         #[allow(clippy::cast_possible_truncation)]
         let skip = step.y as f32;

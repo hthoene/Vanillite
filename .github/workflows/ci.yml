@@ -54,10 +54,12 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/dev' }}
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
-  # The tests run in two parallel jobs: the world generation goldens on their own, everything
-  # else with the codegen checks and doc tests. Together they run every test of the workspace.
+  # The tests run in four parallel jobs: the world generation goldens, the game and world
+  # crates (menu fuzz and chunk level tests), the test harness (parity scenarios) and all other
+  # crates. Together they run every test of the workspace; the doc tests and the codegen checks
+  # run in a job of their own.
   test:
-    name: Tests and codegen
+    name: Tests (all other crates)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -81,21 +83,115 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
+      - name: Tests
+        run: cargo nextest run --workspace --exclude vanillite-worldgen --exclude vanillite-game --exclude vanillite-world --exclude vanillite-test --all-features --locked --profile ci --no-tests=warn
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: junit
+          path: target/nextest/ci/junit.xml
+
+  test-game:
+    name: Tests (game and world)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # The pinned toolchain (rust-toolchain.toml) from the cache: faster than rustup's download.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.rustup/toolchains/1.*
+            ~/.rustup/update-hashes/1.*
+          key: rustup-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}
+      - run: rustup toolchain install --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/dev' }}
+      # The Vanilla data pack the tests extract from the pinned server jar. After rust-cache so
+      # that its post step saves before rust-cache cleans target/ (which drops this directory).
+      - uses: actions/cache@v4
+        with:
+          path: target/vanilla-cache
+          key: vanilla-pack-${{ hashFiles('crates/vanillite-data/src/generated/version.rs') }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Tests
+        run: cargo nextest run -p vanillite-game -p vanillite-world --all-features --locked --profile ci --no-tests=warn
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: junit-game
+          path: target/nextest/ci/junit.xml
+
+  test-parity:
+    name: Tests (parity scenarios)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # The pinned toolchain (rust-toolchain.toml) from the cache: faster than rustup's download.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.rustup/toolchains/1.*
+            ~/.rustup/update-hashes/1.*
+          key: rustup-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}
+      - run: rustup toolchain install --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/dev' }}
+      # The Vanilla data pack the tests extract from the pinned server jar. After rust-cache so
+      # that its post step saves before rust-cache cleans target/ (which drops this directory).
+      - uses: actions/cache@v4
+        with:
+          path: target/vanilla-cache
+          key: vanilla-pack-${{ hashFiles('crates/vanillite-data/src/generated/version.rs') }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      # The scenarios tick mobs in chunk levels: with the world crate at opt-level 1 they run
+      # about a third faster for no longer build. Same code and the same checks: debug
+      # assertions and overflow checks stay on.
+      - name: Tests
+        run: >-
+          cargo nextest run -p vanillite-test --all-features --locked --profile ci --no-tests=warn
+          --config 'profile.dev.package.vanillite-world.opt-level=1'
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: junit-parity
+          path: target/nextest/ci/junit.xml
+
+  codegen:
+    name: Doc tests and codegen
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # The pinned toolchain (rust-toolchain.toml) from the cache: faster than rustup's download.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.rustup/toolchains/1.*
+            ~/.rustup/update-hashes/1.*
+          key: rustup-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}
+      - run: rustup toolchain install --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/dev' }}
+      # The Vanilla data pack the tests extract from the pinned server jar. After rust-cache so
+      # that its post step saves before rust-cache cleans target/ (which drops this directory).
+      - uses: actions/cache@v4
+        with:
+          path: target/vanilla-cache
+          key: vanilla-pack-${{ hashFiles('crates/vanillite-data/src/generated/version.rs') }}
       - name: Generated code is current
         run: cargo xtask codegen --check
       - name: Pterodactyl egg is current
         run: cargo xtask egg --check
       - name: Parity goldens are current
         run: cargo xtask golden check
-      - name: Tests (all but world generation)
-        run: cargo nextest run --workspace --exclude vanillite-worldgen --all-features --locked --profile ci --no-tests=warn
       - name: Doc tests
         run: cargo test --workspace --all-features --locked --doc
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: junit
-          path: target/nextest/ci/junit.xml
 
   test-worldgen:
     name: Tests (world generation)

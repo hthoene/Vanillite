@@ -3,6 +3,8 @@
 //! light, data components, named predicates, ...) parse into [`Unsupported`](Condition) parts
 //! that never match, so such criteria are never granted by triggers.
 
+use std::borrow::Cow;
+
 use serde_json::{Map, Value};
 use vanillite_base::{BlockPos, Vec3};
 use vanillite_config::GameMode;
@@ -44,7 +46,27 @@ pub trait World {
     fn in_tag(&self, registry: &str, tag: &str, id: &str) -> bool;
 }
 
-/// An entity as the entity predicates see it.
+/// An active effect as `MobEffectsPredicate` sees it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EffectView {
+    pub effect: crate::effect::MobEffect,
+    pub amplifier: i32,
+    pub duration: i32,
+    pub ambient: bool,
+    pub visible: bool,
+}
+
+/// The player part of an entity view (`PlayerPredicate`).
+#[derive(Clone, Copy, Debug)]
+pub struct PlayerFacts<'a> {
+    pub game_mode: GameMode,
+    pub level: i32,
+    /// The statistics; `None` in snapshots of other players (stat conditions fail).
+    pub stats: Option<&'a StatsCounter>,
+}
+
+/// An entity as the entity predicates see it. With `'static` it is a snapshot that events
+/// carry (`EntityPredicate.createContext` at the time of the event).
 #[derive(Clone, Debug)]
 pub struct EntityView<'a> {
     /// The type id, e.g. `minecraft:player`.
@@ -58,12 +80,50 @@ pub struct EntityView<'a> {
     pub flying: bool,
     pub fall_flying: bool,
     pub in_water: bool,
+    pub baby: bool,
     /// Head, chest, legs, feet, body, main hand, off hand.
-    pub equipment: [&'a ItemStack; 7],
+    pub equipment: [Cow<'a, ItemStack>; 7],
     /// The team name.
     pub team: Option<String>,
     /// Game mode, level and statistics of a player.
-    pub player: Option<(GameMode, i32, &'a StatsCounter)>,
+    pub player: Option<PlayerFacts<'a>>,
+    /// The active effects of a living entity.
+    pub effects: Vec<EffectView>,
+    /// The vehicle (with its passengers).
+    pub vehicle: Option<Box<EntityView<'a>>>,
+    /// The passengers (without their own vehicle or passengers).
+    pub passengers: Vec<EntityView<'a>>,
+    /// Exact entity components the predicates can test, e.g. `minecraft:cat/variant`.
+    pub components: Vec<(&'static str, String)>,
+    /// `LightningBolt.getBlocksSetOnFire` of a lightning bolt.
+    pub lightning_fires: Option<i32>,
+}
+
+impl<'a> EntityView<'a> {
+    /// A view of `kind` at `pos` with nothing else set.
+    pub fn new(kind: &'static str, pos: Vec3) -> EntityView<'a> {
+        EntityView {
+            kind,
+            pos,
+            on_ground: false,
+            on_fire: false,
+            crouching: false,
+            sprinting: false,
+            swimming: false,
+            flying: false,
+            fall_flying: false,
+            in_water: false,
+            baby: false,
+            equipment: std::array::from_fn(|_| Cow::Owned(ItemStack::EMPTY)),
+            team: None,
+            player: None,
+            effects: Vec::new(),
+            vehicle: None,
+            passengers: Vec::new(),
+            components: Vec::new(),
+            lightning_fires: None,
+        }
+    }
 }
 
 /// `MinMaxBounds`: a number or `{min, max}`.
@@ -144,13 +204,24 @@ impl IdSet {
     }
 }
 
+/// `EnchantmentPredicate` of the `minecraft:enchantments` item sub-predicate.
+#[derive(Clone, Debug, PartialEq)]
+struct EnchantmentMatcher {
+    enchantments: Option<IdSet>,
+    levels: Bounds,
+}
+
 /// `ItemPredicate`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ItemPredicate {
     /// Item ids, or a tag.
     items: Option<Result<Vec<u16>, String>>,
     count: Bounds,
-    /// Component matchers are not evaluated: the predicate never matches.
+    /// The exact `minecraft:damage` component.
+    damage: Option<i32>,
+    /// The `minecraft:enchantments` sub-predicate: every entry must match an enchantment.
+    enchantments: Vec<EnchantmentMatcher>,
+    /// Other component matchers are not evaluated: the predicate never matches.
     supported: bool,
 }
 
@@ -170,15 +241,48 @@ impl ItemPredicate {
                 })
                 .collect::<Res<Vec<_>>>()?)),
         };
-        let non_empty = |k: &str| {
-            o.get(k)
-                .and_then(Value::as_object)
-                .is_some_and(|m| !m.is_empty())
-        };
+        let mut supported = true;
+        let mut damage = None;
+        for (k, v) in o
+            .get("components")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+        {
+            match (
+                qualify(k).as_str(),
+                v.as_i64().and_then(|n| i32::try_from(n).ok()),
+            ) {
+                ("minecraft:damage", Some(n)) => damage = Some(n),
+                _ => supported = false,
+            }
+        }
+        let mut enchantments = Vec::new();
+        for (k, v) in o
+            .get("predicates")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+        {
+            match (qualify(k).as_str(), v) {
+                ("minecraft:enchantments", Value::Array(list)) => {
+                    for e in list {
+                        let e = object(e)?;
+                        enchantments.push(EnchantmentMatcher {
+                            enchantments: e.get("enchantments").map(IdSet::parse).transpose()?,
+                            levels: Bounds::field(e, "levels")?,
+                        });
+                    }
+                }
+                _ => supported = false,
+            }
+        }
         Ok(ItemPredicate {
             items,
             count: Bounds::field(o, "count")?,
-            supported: !non_empty("components") && !non_empty("predicates"),
+            damage,
+            enchantments,
+            supported,
         })
     }
 
@@ -193,7 +297,219 @@ impl ItemPredicate {
                 .is_some_and(|n| world.in_tag("minecraft:item", tag, n)),
         };
         let count = if stack.is_empty() { 0 } else { stack.count };
-        self.supported && items_ok && self.count.matches(f64::from(count))
+        self.supported
+            && items_ok
+            && self.count.matches(f64::from(count))
+            && self.damage.is_none_or(|d| {
+                crate::item::max_damage(stack) > 0 && crate::item::damage(stack) == d
+            })
+            && (self.enchantments.is_empty() || self.enchantments_match(stack, world))
+    }
+
+    /// `EnchantmentsPredicate.matches`: each entry finds an enchantment of the stack.
+    fn enchantments_match(&self, stack: &ItemStack, world: &dyn World) -> bool {
+        let present = crate::item::enchantments(stack);
+        let data = crate::player::play::game_data();
+        let name = |id: u32| {
+            data.as_ref().and_then(|d| {
+                d.enchantments
+                    .iter()
+                    .find(|(_, v)| **v == id)
+                    .map(|(n, _)| n.clone())
+            })
+        };
+        self.enchantments.iter().all(|m| {
+            present.iter().any(|&(id, level)| {
+                m.levels.matches(f64::from(level))
+                    && m.enchantments.as_ref().is_none_or(|set| {
+                        name(id).is_some_and(|n| set.contains("minecraft:enchantment", &n, world))
+                    })
+            })
+        })
+    }
+}
+
+/// `MobEffectsPredicate`: every listed effect is active and matches.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MobEffectsPredicate(Vec<(crate::effect::MobEffect, [Bounds; 2], [Option<bool>; 2])>);
+
+impl MobEffectsPredicate {
+    /// Parses `{"minecraft:speed": {"amplifier": .., "duration": .., "ambient": .., "visible": ..}}`.
+    pub fn parse(v: &Value) -> Res<MobEffectsPredicate> {
+        let mut out = Vec::new();
+        for (name, p) in object(v)? {
+            let effect = crate::effect::MobEffect::by_name(&qualify(name))
+                .ok_or_else(|| format!("unknown effect {name}"))?;
+            let p = object(p)?;
+            out.push((
+                effect,
+                [
+                    Bounds::field(p, "amplifier")?,
+                    Bounds::field(p, "duration")?,
+                ],
+                [
+                    p.get("ambient").and_then(Value::as_bool),
+                    p.get("visible").and_then(Value::as_bool),
+                ],
+            ));
+        }
+        Ok(MobEffectsPredicate(out))
+    }
+
+    /// `matches(activeEffects)`.
+    pub fn matches(&self, effects: &[EffectView]) -> bool {
+        self.0
+            .iter()
+            .all(|(effect, [amp, dur], [ambient, visible])| {
+                effects
+                    .iter()
+                    .find(|e| e.effect == *effect)
+                    .is_some_and(|e| {
+                        amp.matches(f64::from(e.amplifier))
+                            && dur.matches(f64::from(e.duration))
+                            && ambient.is_none_or(|a| a == e.ambient)
+                            && visible.is_none_or(|v| v == e.visible)
+                    })
+            })
+    }
+}
+
+/// A damage source as `DamageSourcePredicate` sees it.
+#[derive(Clone, Debug)]
+pub struct DamageView {
+    /// The damage type id.
+    pub kind: String,
+    /// The built-in damage type tag bits (`survival::damage::tag`).
+    pub tags: u32,
+    /// `getDirectEntity`.
+    pub direct: Option<Box<EntityView<'static>>>,
+    /// `getEntity`: the causing entity.
+    pub cause: Option<Box<EntityView<'static>>>,
+    /// `isDirect`: the direct entity is the causing entity.
+    pub is_direct: bool,
+    /// `getSourcePosition`.
+    pub position: Option<Vec3>,
+}
+
+/// `DamageSourcePredicate`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DamageSourcePredicate {
+    tags: Vec<(String, bool)>,
+    direct: Option<EntityPredicate>,
+    cause: Option<EntityPredicate>,
+    is_direct: Option<bool>,
+}
+
+impl DamageSourcePredicate {
+    /// Parses a damage source predicate.
+    pub fn parse(v: &Value) -> Res<DamageSourcePredicate> {
+        let o = object(v)?;
+        let mut tags = Vec::new();
+        for t in o
+            .get("tags")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let t = object(t)?;
+            let id = string(t.get("id").ok_or("tag without id")?)?;
+            let expected = t
+                .get("expected")
+                .and_then(Value::as_bool)
+                .ok_or("tag without expected")?;
+            tags.push((qualify(id.trim_start_matches('#')), expected));
+        }
+        Ok(DamageSourcePredicate {
+            tags,
+            direct: o
+                .get("direct_entity")
+                .map(EntityPredicate::parse)
+                .transpose()?,
+            cause: o
+                .get("source_entity")
+                .map(EntityPredicate::parse)
+                .transpose()?,
+            is_direct: o.get("is_direct").and_then(Value::as_bool),
+        })
+    }
+
+    /// `matches(level, position, source)`.
+    pub fn matches(&self, source: &DamageView, world: &dyn World, origin: Vec3) -> bool {
+        let entity = |p: &Option<EntityPredicate>, e: &Option<Box<EntityView<'static>>>| {
+            p.as_ref().is_none_or(|p| {
+                e.as_ref()
+                    .is_some_and(|e| p.matches(e, world, Some(origin)))
+            })
+        };
+        self.tags.iter().all(|(tag, expected)| {
+            let has = match crate::survival::damage::tag::NAMES
+                .iter()
+                .find(|(n, _)| *n == tag.as_str())
+            {
+                Some(&(_, bit)) => source.tags & bit != 0,
+                None => world.in_tag("minecraft:damage_type", tag, &source.kind),
+            };
+            has == *expected
+        }) && entity(&self.direct, &source.direct)
+            && entity(&self.cause, &source.cause)
+            && self.is_direct.is_none_or(|d| d == source.is_direct)
+    }
+}
+
+/// `DamagePredicate`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DamagePredicate {
+    dealt: Bounds,
+    taken: Bounds,
+    source_entity: Option<EntityPredicate>,
+    blocked: Option<bool>,
+    kind: Option<DamageSourcePredicate>,
+}
+
+/// A damage event: the source, the original and the actual damage, and whether it was
+/// blocked.
+#[derive(Clone, Debug)]
+pub struct DamageEvent {
+    pub source: DamageView,
+    pub dealt: f32,
+    pub taken: f32,
+    pub blocked: bool,
+}
+
+impl DamagePredicate {
+    /// Parses a damage predicate.
+    pub fn parse(v: &Value) -> Res<DamagePredicate> {
+        let o = object(v)?;
+        Ok(DamagePredicate {
+            dealt: Bounds::field(o, "dealt")?,
+            taken: Bounds::field(o, "taken")?,
+            source_entity: o
+                .get("source_entity")
+                .map(EntityPredicate::parse)
+                .transpose()?,
+            blocked: o.get("blocked").and_then(Value::as_bool),
+            kind: o
+                .get("type")
+                .map(DamageSourcePredicate::parse)
+                .transpose()?,
+        })
+    }
+
+    /// `matches(player, source, originalDamage, actualDamage, blocked)`.
+    pub fn matches(&self, d: &DamageEvent, world: &dyn World, origin: Vec3) -> bool {
+        self.dealt.matches(f64::from(d.dealt))
+            && self.taken.matches(f64::from(d.taken))
+            && self.source_entity.as_ref().is_none_or(|p| {
+                d.source
+                    .cause
+                    .as_ref()
+                    .is_some_and(|e| p.matches(e, world, Some(origin)))
+            })
+            && self.blocked.is_none_or(|b| b == d.blocked)
+            && self
+                .kind
+                .as_ref()
+                .is_none_or(|k| k.matches(&d.source, world, origin))
     }
 }
 
@@ -385,7 +701,7 @@ pub struct DistancePredicate {
 }
 
 impl DistancePredicate {
-    fn parse(v: &Value) -> Res<DistancePredicate> {
+    pub fn parse(v: &Value) -> Res<DistancePredicate> {
         let o = object(v)?;
         Ok(DistancePredicate {
             x: Bounds::field(o, "x")?,
@@ -398,7 +714,7 @@ impl DistancePredicate {
 
     /// `matches(x0, y0, z0, x1, y1, z1)` with float differences.
     #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
-    fn matches(&self, a: Vec3, b: Vec3) -> bool {
+    pub fn matches(&self, a: Vec3, b: Vec3) -> bool {
         let (dx, dy, dz) = ((a.x - b.x) as f32, (a.y - b.y) as f32, (a.z - b.z) as f32);
         self.x.matches(f64::from(dx.abs()))
             && self.y.matches(f64::from(dy.abs()))
@@ -426,6 +742,13 @@ enum EntityPart {
         level: Bounds,
         stats: Vec<(Stat, Bounds)>,
     },
+    Vehicle(Box<EntityPredicate>),
+    Passenger(Box<EntityPredicate>),
+    Effects(MobEffectsPredicate),
+    /// Exact entity components (variants) by name and expected value.
+    Components(Vec<(String, String)>),
+    /// `type_specific/lightning`: blocks set on fire (`entity_struck` is not evaluated).
+    Lightning(Bounds),
     Unsupported,
 }
 
@@ -479,6 +802,36 @@ impl EntityPredicate {
                 }
                 "minecraft:team" => EntityPart::Team(string(value)?.to_owned()),
                 "minecraft:type_specific/player" => Self::player(object(value)?)?,
+                "minecraft:vehicle" => {
+                    EntityPart::Vehicle(Box::new(EntityPredicate::parse(value)?))
+                }
+                "minecraft:passenger" => {
+                    EntityPart::Passenger(Box::new(EntityPredicate::parse(value)?))
+                }
+                "minecraft:effects" => EntityPart::Effects(MobEffectsPredicate::parse(value)?),
+                "minecraft:components" => {
+                    let mut out = Vec::new();
+                    let mut supported = true;
+                    for (k, v) in object(value)? {
+                        match v.as_str() {
+                            Some(s) => out.push((qualify(k), qualify(s))),
+                            None => supported = false,
+                        }
+                    }
+                    if supported {
+                        EntityPart::Components(out)
+                    } else {
+                        EntityPart::Unsupported
+                    }
+                }
+                "minecraft:type_specific/lightning" => {
+                    let o = object(value)?;
+                    if o.contains_key("entity_struck") {
+                        EntityPart::Unsupported
+                    } else {
+                        EntityPart::Lightning(Bounds::field(o, "blocks_set_on_fire")?)
+                    }
+                }
                 _ => EntityPart::Unsupported,
             });
         }
@@ -555,7 +908,7 @@ impl EntityPredicate {
                     "is_flying" => e.flying || e.fall_flying,
                     "is_fall_flying" => e.fall_flying,
                     "is_in_water" => e.in_water,
-                    "is_baby" => false,
+                    "is_baby" => e.baby,
                     _ => return false,
                 };
                 have == *want
@@ -570,13 +923,30 @@ impl EntityPredicate {
                 game_modes,
                 level,
                 stats,
-            } => e.player.is_some_and(|(mode, xp_level, counter)| {
-                game_modes.as_ref().is_none_or(|m| m.contains(&mode))
-                    && level.matches(f64::from(xp_level))
-                    && stats
-                        .iter()
-                        .all(|(stat, range)| range.matches(f64::from(counter.get(*stat))))
+            } => e.player.is_some_and(|p| {
+                game_modes.as_ref().is_none_or(|m| m.contains(&p.game_mode))
+                    && level.matches(f64::from(p.level))
+                    && (stats.is_empty()
+                        || p.stats.is_some_and(|counter| {
+                            stats
+                                .iter()
+                                .all(|(stat, range)| range.matches(f64::from(counter.get(*stat))))
+                        }))
             }),
+            EntityPart::Vehicle(p) => e
+                .vehicle
+                .as_ref()
+                .is_some_and(|v| p.matches(v, world, origin)),
+            EntityPart::Passenger(p) => e.passengers.iter().any(|v| p.matches(v, world, origin)),
+            EntityPart::Effects(p) => p.matches(&e.effects),
+            EntityPart::Components(expected) => expected.iter().all(|(name, value)| {
+                e.components
+                    .iter()
+                    .any(|(n, v)| *n == name.as_str() && v == value)
+            }),
+            EntityPart::Lightning(fires) => e
+                .lightning_fires
+                .is_some_and(|n| fires.matches(f64::from(n))),
             EntityPart::Unsupported => false,
         })
     }

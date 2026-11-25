@@ -7,6 +7,11 @@ tick = 1
 cause = "stroll target: Vanilla takes `AirAndWaterRandomPos` (36 draws of the allay's random), Vanillite `DefaultRandomPos` (30)"
 owner = "architect #120"
 
+[mob_allay_noteblock]
+tick = 1
+cause = "brain: the allay's random and the level random differ from tick 1 (RunOne/GateBehavior (ShufflingList.shuffle) draws its weights from the level random; Vanilla's ShufflingList has its own random), as in mob_allay_fly; the note block plays on tick 10"
+owner = "gameplay-developer #81"
+
 [mob_armadillo_scared]
 tick = 40
 cause = "the hit on tick 40: Vanilla knocks the armadillo back horizontally (motion -0.023, 0.314, -0.217), Vanillite only lifts it"
@@ -22,6 +27,11 @@ tick = 1
 cause = "Vanilla runs `BeeGrowCropGoal.canBeeUse` and starts `BeeWanderGoal` with `HoverRandomPos` (41 draws of the bee's random), Vanillite starts no goal (4 draws)"
 owner = "architect #120"
 
+[mob_bee_hive]
+tick = 1
+cause = "same start as mob_bee_fly: ValidateFlowerGoal and ValidateHiveGoal do not start on tick 1 (the game world's game time is below their cooldown) and the bee random takes one draw more; finding, entering and leaving the hive happen on Vanilla's ticks"
+owner = "gameplay-developer #81"
+
 [mob_camel_husk_wander]
 tick = 176
 cause = "random draws of the camel husk differ from tick 176 on (not analysed yet)"
@@ -31,6 +41,11 @@ owner = "architect #120"
 tick = 176
 cause = "random draws of the camel differ from tick 176 on (not analysed yet)"
 owner = "architect #120"
+
+[mob_copper_golem_chest]
+tick = 35
+cause = "the golem's random and the level random differ from tick 35 on, then no path to the chest on tick 36 (not analysed yet)"
+owner = "gameplay-developer #81"
 
 [mob_copper_golem_wander]
 tick = 90
@@ -72,15 +87,30 @@ tick = 2
 cause = "the phantom's motion differs in the last bits on tick 2 (float/double rounding of the circling movement)"
 owner = "architect #120"
 
-[mob_piglin_hostile]
-tick = 67
-cause = "the level random differs from tick 67 on (not analysed yet)"
-owner = "architect #120"
+[mob_villager_bed]
+tick = 2
+cause = "not investigated yet: the brain lists shuffle with their own random since #101; the first difference moved here from tick 1"
+owner = "gameplay-developer #60"
 
-[mob_pillager_crossbow]
-tick = 36
-cause = "random draws of the pillager and the level random differ on tick 36 (not analysed yet)"
-owner = "architect #120"
+[mob_villager_panic]
+tick = 186
+cause = "not investigated yet: the brain lists shuffle with their own random since #101; the first difference moved here from tick 1"
+owner = "gameplay-developer #60"
+
+[mob_villager_workstation]
+tick = 89
+cause = "not investigated yet: the brain lists shuffle with their own random since #101; the first difference moved here from tick 1"
+owner = "gameplay-developer #60"
+
+[mob_villager_zombie]
+tick = 6
+cause = "not investigated yet: the brain lists shuffle with their own random since #101; the first difference moved here from tick 1"
+owner = "gameplay-developer #60"
+
+[mob_wandering_trader_wander]
+tick = 94
+cause = "the trader draws another count of its own random on tick 94 (a goal start, not investigated)"
+owner = "gameplay-developer #60"
 
 [mob_witch_potions]
 tick = 147

@@ -1,6 +1,5 @@
 //! `Parrot`: taming with seeds, cookies poison it, flying wander to trees, following other
-//! mobs and imitating hostile mobs. Shoulder sitting needs the player's shoulder entity data
-//! and is not done yet.
+//! mobs, imitating hostile mobs and landing on its owner's shoulder.
 
 use vanillite_base::random::RandomSource;
 use vanillite_base::{BlockPos, Vec3};
@@ -28,12 +27,18 @@ pub enum Goal {
         following: Option<EntityId>,
         recalc: i32,
     },
+    /// `LandOnOwnersShoulderGoal`.
+    LandOnShoulder {
+        /// `isSittingOnShoulder`.
+        sitting: bool,
+    },
 }
 
 pub fn flags(g: &Goal) -> u8 {
     match g {
         Goal::Wander { .. } => flag::MOVE,
         Goal::FollowMob { .. } => flag::MOVE | flag::LOOK,
+        Goal::LandOnShoulder { .. } => 0,
     }
 }
 
@@ -59,7 +64,10 @@ pub fn register_goals(m: &mut MobData) {
             wanted: Vec3::ZERO,
         })),
     );
-    // 3: `LandOnOwnersShoulderGoal` needs the player's shoulder data (not available yet).
+    g.add(
+        3,
+        fam(FamGoal::Parrot(Goal::LandOnShoulder { sitting: false })),
+    );
     g.add(
         3,
         fam(FamGoal::Parrot(Goal::FollowMob {
@@ -168,12 +176,17 @@ pub fn imitated_sound(kind: Kind) -> Option<&'static str> {
     MOB_SOUNDS.iter().find(|(k, _)| *k == kind).map(|(_, s)| *s)
 }
 
-/// `getAmbientSound` → `getAmbient(level, level.getRandom())`: one in a thousand an imitated
-/// sound of a random imitable kind (Vanilla's order of that map is a hash order).
+/// `getAmbientSound` → `getAmbient(level, level.getRandom())`.
 pub fn ambient_sound(t: &mut Tick<'_, '_>) -> &'static str {
-    if t.env.difficulty != Difficulty::Peaceful && t.env.random.next_int_bounded(1000) == 0 {
+    ambient(t.env.difficulty, &mut *t.env.random)
+}
+
+/// `Parrot.getAmbient(level, random)`: one in a thousand an imitated sound of a random
+/// imitable kind (Vanilla's order of that map is a hash order).
+pub fn ambient(difficulty: Difficulty, random: &mut impl RandomSource) -> &'static str {
+    if difficulty != Difficulty::Peaceful && random.next_int_bounded(1000) == 0 {
         let n = i32::try_from(MOB_SOUNDS.len()).unwrap_or(i32::MAX);
-        let i = usize::try_from(t.env.random.next_int_bounded(n)).unwrap_or(0);
+        let i = usize::try_from(random.next_int_bounded(n)).unwrap_or(0);
         return MOB_SOUNDS[i].1;
     }
     "minecraft:entity.parrot.ambient"
@@ -261,6 +274,8 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
             if let (Some(m), Some(o)) = (ix.ents.mob_mut(ix.target), owner) {
                 super::tame_by(m, o);
             }
+            let (target, player) = (ix.target, ix.player);
+            crate::mob::tame::award_tame(ix.ents, target, player);
             event(ix, 7);
         } else {
             event(ix, 6);
@@ -405,7 +420,54 @@ pub fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
             *following = found;
             found.is_some()
         }
+        Goal::LandOnShoulder { .. } => can_land_on_shoulder(t),
     }
+}
+
+/// `LandOnOwnersShoulderGoal.canUse`: the owner is a player here that is no spectator and not
+/// in water, the parrot is not ordered to sit and rode no shoulder for 100 ticks
+/// (`canSitOnShoulder`; `rideCooldownCounter` counts like `tickCount`).
+fn can_land_on_shoulder(t: &Tick<'_, '_>) -> bool {
+    let m = t.mob_ref();
+    let Some(owner) = crate::mob::tame::owner_of(t.ents, m) else {
+        return false;
+    };
+    let Some(p) = t.ents.player(owner) else {
+        return false;
+    };
+    let can_be_sat_on =
+        p.game_mode != vanillite_config::GameMode::Spectator && !p.survival.fluids.in_water();
+    !m.order_to_sit && can_be_sat_on && m.tick_count > 100
+}
+
+/// `ShoulderRidingEntity.setEntityOnShoulder` with `ServerPlayer.setEntityOnShoulder`: the
+/// parrot's NBT goes onto a free shoulder of a player on the ground, out of vehicles and
+/// water, and the parrot leaves the world.
+fn set_on_shoulder(t: &mut Tick<'_, '_>, owner: EntityId) -> bool {
+    let on_ground = t.ents.store.get(owner).is_some_and(|e| {
+        e.flags()
+            .contains(vanillite_world::entity::EntityFlags::ON_GROUND)
+    });
+    let riding = t.ents.vehicle_of(owner).is_some();
+    let Some(core) = t.ents.store.get(t.id) else {
+        return false;
+    };
+    let tag = crate::mob::nbt::save_mob(&core, t.mob_ref());
+    let game_time = t.game_time();
+    let Some(p) = t.ents.player_mut(owner) else {
+        return false;
+    };
+    if riding || !on_ground || p.survival.fluids.in_water() {
+        return false;
+    }
+    if !p.survival.shoulders.put(tag, game_time) {
+        return false;
+    }
+    if let Some(mut e) = t.ents.store.get_mut(owner) {
+        e.mark_data_dirty();
+    }
+    t.mob().removed = true;
+    true
 }
 
 pub fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
@@ -417,6 +479,7 @@ pub fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
             };
             !t.mob_ref().nav.is_done() && o.pos.distance_to_sqr(t.pos()) > 9.0
         }
+        Goal::LandOnShoulder { .. } => can_land_on_shoulder(t),
     }
 }
 
@@ -426,6 +489,7 @@ pub fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
             nav::move_to_pos(t, *wanted, *speed);
         }
         Goal::FollowMob { recalc, .. } => *recalc = 0,
+        Goal::LandOnShoulder { sitting } => *sitting = false,
     }
 }
 
@@ -436,10 +500,27 @@ pub fn stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
             *following = None;
             t.mob().nav.stop();
         }
+        Goal::LandOnShoulder { .. } => {}
     }
 }
 
 pub fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
+    if let Goal::LandOnShoulder { sitting } = g {
+        if *sitting || t.mob_ref().in_sitting_pose || t.ents.leashes.contains_key(&t.id) {
+            return;
+        }
+        let owner = crate::mob::tame::owner_of(t.ents, t.mob_ref());
+        if let Some(owner) = owner
+            && t.ents.player(owner).is_some()
+            && t.ents
+                .store
+                .get(owner)
+                .is_some_and(|e| e.aabb().intersects(&t.aabb()))
+        {
+            *sitting = set_on_shoulder(t, owner);
+        }
+        return;
+    }
     if let Goal::FollowMob { following, recalc } = g {
         if t.ents.leashes.contains_key(&t.id) {
             return;

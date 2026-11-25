@@ -299,9 +299,11 @@ fn fireball_hit(t: &mut MissileTick<'_, '_>, d: &MissileData, hit: Hit, at: Vec3
         Hit::Miss => return,
     }
     if d.kind == MissileKind::Fireball {
-        // `LargeFireball.onHit`: the explosion (`ExplosionInteraction.MOB`).
+        // `LargeFireball.onHit`: the explosion (`ExplosionInteraction.MOB`), with fire when
+        // mobs may grief.
         #[allow(clippy::cast_precision_loss)]
         let radius = d.explosion_power as f32;
+        let fire = t.env.rules.bool(crate::survival::rules::Rule::MOB_GRIEFING);
         t.cx.actions.push(WorldAction::Explode(ExplosionRequest {
             source: Some(me),
             indirect: d.owner,
@@ -309,6 +311,7 @@ fn fireball_hit(t: &mut MissileTick<'_, '_>, d: &MissileData, hit: Hit, at: Vec3
             radius,
             mob: true,
             resistance: crate::level::explosion::BlockResistance::Default,
+            fire,
         }));
     }
     discard(t);
@@ -549,6 +552,8 @@ fn bullet_hit(t: &mut MissileTick<'_, '_>, d: &MissileData, hit: Hit) {
         }
         Hit::Block(..) => {
             let pos = t.ents.store.get(me).map_or(Vec3::ZERO, |e| e.pos());
+            let explosion = crate::level::particles::simple("minecraft:explosion");
+            t.cx.send_particles(explosion, pos, 2, Vec3::new(0.2, 0.2, 0.2), 0.0);
             let seed = crate::survival::sound_seed();
             crate::survival::play_sound(
                 t.env.out,

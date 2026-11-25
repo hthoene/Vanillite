@@ -14,6 +14,7 @@ pub mod companion;
 pub mod illager;
 pub mod mount;
 pub mod undead;
+pub mod village;
 pub mod wildlife;
 
 use vanillite_base::random::{LegacyRandom, RandomSource};
@@ -56,6 +57,8 @@ pub enum Family {
     Wildlife,
     /// Guardians, the wither, the ender dragon and the warden (`crate::mob::boss`).
     Boss,
+    /// Villagers and wandering traders (`AbstractVillager`).
+    Village,
 }
 
 /// Why a mob spawns (`EntitySpawnReason`).
@@ -108,6 +111,29 @@ pub struct ExtraMob {
     pub relation: Relation,
 }
 
+/// The `SpawnGroupData` a spawn group shares beyond its size: what the first member chose and
+/// the later members take over.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GroupData {
+    /// No group data yet (the first member, or a single spawn).
+    #[default]
+    None,
+    /// `Horse.HorseGroupData`: the coat.
+    Horse(i32),
+    /// `Llama.LlamaGroupData`: the variant.
+    Llama(i32),
+    /// `Wolf.WolfPackData`: the variant.
+    Wolf(i32),
+    /// `Rabbit.RabbitGroupData`: the variant.
+    Rabbit(i32),
+    /// `Fox.FoxGroupData`: the variant.
+    Fox(i32),
+    /// `Axolotl.AxolotlGroupData`: two common variants to pick from.
+    Axolotl(i32, i32),
+    /// `TropicalFish.TropicalFishGroupData`: the packed variant.
+    TropicalFish(i32),
+}
+
 /// What `finalizeSpawn` gets (`DifficultyInstance`, the spawn reason, the biome) and the mobs
 /// it adds.
 #[derive(Debug)]
@@ -120,6 +146,8 @@ pub struct SpawnContext<'a> {
     pub climate: FarmClimate,
     /// Index of the mob in its spawn group (0 for the first).
     pub group_index: u32,
+    /// The group data the earlier members of the spawn group left; `finalizeSpawn` updates it.
+    pub group: GroupData,
     pub reason: SpawnReason,
     /// The biome at the spawn position (`None` without data packs).
     pub biome: Option<&'a BiomeSpawns>,
@@ -146,6 +174,7 @@ impl SpawnContext<'_> {
             effective_difficulty: effective_difficulty(difficulty),
             climate: FarmClimate::Temperate,
             group_index: 0,
+            group: GroupData::None,
             reason,
             biome: None,
             pos: BlockPos::new(0, 64, 0),
@@ -559,6 +588,7 @@ pub enum Ext {
     /// Boxed: the records are large and most mobs are of other families.
     Companion(Box<companion::State>),
     Wildlife(Box<wildlife::State>),
+    Village(Box<village::State>),
 }
 
 /// A goal of a family.
@@ -570,6 +600,7 @@ pub enum FamGoal {
     Mount(mount::Goal),
     Companion(companion::Goal),
     Wildlife(wildlife::Goal),
+    Village(village::Goal),
 }
 
 /// Calls a hook of the kind's family; `$classic` for the classic kinds.
@@ -584,6 +615,7 @@ macro_rules! by_family {
             Family::Companion => <companion::Hooks as FamilyHooks>::$f($($arg),*),
             Family::Wildlife => <wildlife::Hooks as FamilyHooks>::$f($($arg),*),
             Family::Boss => <boss::Hooks as FamilyHooks>::$f($($arg),*),
+            Family::Village => <village::Hooks as FamilyHooks>::$f($($arg),*),
         }
     };
 }
@@ -600,6 +632,7 @@ macro_rules! by_goal {
                 <companion::Hooks as FamilyHooks>::$f($($pre,)* g $(, $post)*)
             }
             FamGoal::Wildlife(g) => <wildlife::Hooks as FamilyHooks>::$f($($pre,)* g $(, $post)*),
+            FamGoal::Village(g) => <village::Hooks as FamilyHooks>::$f($($pre,)* g $(, $post)*),
         }
     };
 }
@@ -913,6 +946,7 @@ macro_rules! by_missile {
             Family::Companion => <companion::Hooks as FamilyHooks>::$f($($arg),*),
             Family::Wildlife => <wildlife::Hooks as FamilyHooks>::$f($($arg),*),
             Family::Boss => <boss::Hooks as FamilyHooks>::$f($($arg),*),
+            Family::Village => <village::Hooks as FamilyHooks>::$f($($arg),*),
         }
     };
 }

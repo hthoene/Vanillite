@@ -715,9 +715,20 @@ pub fn tick(t: &mut Tick<'_, '_>, g: &mut MoveGoal) {
             if *ticks_since_reached > 0 {
                 let v = t.velocity();
                 t.set_velocity(Vec3::new(v.x, 0.3, v.z));
-                // `sendParticles(ITEM egg)` rolls three floats.
+                // `sendParticles(ITEM egg)`: the crumbs.
                 let r = &mut t.mob().random;
-                let _ = (r.next_float(), r.next_float(), r.next_float());
+                let dist = Vec3::new(
+                    f64::from((r.next_float() - 0.5) * 0.08),
+                    f64::from((r.next_float() - 0.5) * 0.08),
+                    f64::from((r.next_float() - 0.5) * 0.08),
+                );
+                let at = Vec3::new(
+                    f64::from(eat.x) + 0.5,
+                    f64::from(eat.y) + 0.7,
+                    f64::from(eat.z) + 0.5,
+                );
+                let egg = crate::level::particles::item(vanillite_data::item::ids::EGG.0);
+                t.cx.send_particles(egg, at, 3, dist, f64::from(0.15_f32));
             }
             if *ticks_since_reached % 2 == 0 {
                 let v = t.velocity();
@@ -737,10 +748,20 @@ pub fn tick(t: &mut Tick<'_, '_>, g: &mut MoveGoal) {
             if *ticks_since_reached > 60 {
                 t.cx.actions
                     .push(WorldAction::SetBlock(eat, BlockState::AIR, 3));
-                // The poof particles roll a Gaussian triple each.
-                let r = &mut t.mob().random;
+                let at = Vec3::new(
+                    f64::from(eat.x) + 0.5,
+                    f64::from(eat.y),
+                    f64::from(eat.z) + 0.5,
+                );
                 for _ in 0..20 {
-                    let _ = (r.next_gaussian(), r.next_gaussian(), r.next_gaussian());
+                    let r = &mut t.mob().random;
+                    let dist = Vec3::new(
+                        r.next_gaussian() * 0.02,
+                        r.next_gaussian() * 0.02,
+                        r.next_gaussian() * 0.02,
+                    );
+                    let poof = crate::level::particles::simple("minecraft:poof");
+                    t.cx.send_particles(poof, at, 1, dist, f64::from(0.15_f32));
                 }
                 if *sounds == RemoveSounds::ZombieEgg {
                     let pitch = 0.9 + t.env.random.next_float() * 0.2;

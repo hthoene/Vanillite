@@ -14,7 +14,7 @@ use crate::item::EquipmentSlot;
 use crate::level::Level;
 use crate::mob::animal::Interaction;
 use crate::mob::common::{CommonGoal, TargetFilter};
-use crate::mob::fam::{Hurt, SpawnReason};
+use crate::mob::fam::{GroupData, Hurt, SpawnReason};
 use crate::mob::goals::{flag, reduced};
 use crate::mob::kinds::Kind;
 use crate::mob::{MobData, Tick};
@@ -167,7 +167,13 @@ pub fn random_sound_variant(r: &mut LegacyRandom) -> u8 {
 /// `finalizeSpawn`: the pack variant of the biome and a random sound variant, before
 /// `Mob.finalizeSpawn`; a pack (`WolfPackData`) has no babies.
 pub fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
-    m.variant = variant_for(ctx, &mut m.random);
+    m.variant = if let GroupData::Wolf(v) = ctx.group {
+        v
+    } else {
+        let v = variant_for(ctx, &mut m.random);
+        ctx.group = GroupData::Wolf(v);
+        v
+    };
     st_mut(m).sound_variant = random_sound_variant(&mut m.random);
 }
 
@@ -454,6 +460,8 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
                 m.target = None;
                 m.order_to_sit = true;
             }
+            let (target, player) = (ix.target, ix.player);
+            crate::mob::tame::award_tame(ix.ents, target, player);
             event(ix, 7);
         } else {
             event(ix, 6);

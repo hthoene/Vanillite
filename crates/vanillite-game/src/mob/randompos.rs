@@ -137,7 +137,7 @@ pub fn is_restricted(t: &Tick<'_, '_>, restrict: bool, pos: BlockPos) -> bool {
 /// `GoalUtils.hasMalus`.
 pub fn has_malus(t: &Tick<'_, '_>, pos: BlockPos) -> bool {
     let kind = path_type_static(t.level, t.level.min_y(), pos.x, pos.y, pos.z);
-    malus_of(t.mob_ref().kind.malus(), kind) != 0.0
+    malus_of(super::kinds::mob_malus(t.mob_ref()), kind) != 0.0
 }
 
 /// `PathNavigation.isStableDestination` of the mob's navigation.

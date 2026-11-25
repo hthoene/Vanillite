@@ -136,6 +136,9 @@ fn use_item_on(
     } else {
         "block.chiseled_bookshelf.insert"
     };
+    // `addBook`.
+    let used = crate::stats::Stat::of(crate::stats::StatType::Used, stack.item);
+    level.award_stat(ctx.player, used, 1);
     let book = stack.split(1);
     set_item(level, pos, slot, book);
     level.play_block_sound(None, pos, sound_id(sound), SOUND_BLOCKS, 1.0, 1.0);

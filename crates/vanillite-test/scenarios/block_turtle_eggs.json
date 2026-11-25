@@ -1,0 +1,86 @@
+{
+  "description": "Turtle eggs on sand crack by random ticks while the day timeline's hatch chance is 1 (before dawn) and hatch into baby turtles, one per egg; eggs on stone stay.",
+  "world": {
+    "seed": 9107,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:stone",
+        2
+      ],
+      [
+        "minecraft:sand",
+        1
+      ]
+    ]
+  },
+  "rules": {
+    "random_tick_speed": "1024"
+  },
+  "time": 21500,
+  "level_rng": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -58,
+      15
+    ]
+  ],
+  "ticks": 35,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -60,
+        3
+      ],
+      "block": "minecraft:turtle_egg[eggs=1,hatch=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -60,
+        3
+      ],
+      "block": "minecraft:turtle_egg[eggs=4,hatch=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        12,
+        -60,
+        8
+      ],
+      "block": "minecraft:turtle_egg[eggs=2,hatch=1]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -61,
+        12
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -60,
+        12
+      ],
+      "block": "minecraft:turtle_egg[eggs=3,hatch=0]"
+    }
+  ],
+  "tier": "fast"
+}

@@ -191,6 +191,8 @@ pub enum Goal {
     DrownedSwimUp { speed: f64, stuck: bool },
     /// `HurtByTargetGoal(this, Drowned.class)`: damage by drowned does not count.
     HurtByIgnoringDrowned(HurtBy),
+    /// `SpearUseGoal(mob, 1.0, 1.0, 10.0F, 2.0F)` of the zombies.
+    SpearUse(zombies::SpearUse),
     /// The melee goal of a skeleton without a bow (`AbstractSkeleton.meleeGoal`).
     SkeletonMelee(Melee),
     /// `Spider.SpiderTargetGoal` for other targets than players.
@@ -270,7 +272,8 @@ fn goal_group(g: &Goal) -> Group {
         | Goal::DrownedGoToWater { .. }
         | Goal::DrownedGoToBeach(_)
         | Goal::DrownedSwimUp { .. }
-        | Goal::HurtByIgnoringDrowned(_) => Group::Zombie,
+        | Goal::HurtByIgnoringDrowned(_)
+        | Goal::SpearUse(_) => Group::Zombie,
         Goal::SkeletonMelee(_) => Group::Skeleton,
         Goal::SpiderTarget(_)
         | Goal::SilverfishWakeUpFriends
