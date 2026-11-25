@@ -82,7 +82,14 @@ pub fn free_partner(t: &mut super::Tick<'_, '_>) -> Option<EntityId> {
         let Some(m) = t.ents.mob(id) else {
             continue;
         };
-        if m.kind != kind || m.in_love <= 0 || !m.is_alive() {
+        if !m.is_alive() {
+            continue;
+        }
+        if kind.family() == super::Family::Classic {
+            if m.kind != kind || m.in_love <= 0 {
+                continue;
+            }
+        } else if !super::fam::can_mate(t.mob_ref(), m) {
             continue;
         }
         let Some(e) = t.ents.store.get(id) else {
@@ -101,7 +108,7 @@ pub fn free_partner(t: &mut super::Tick<'_, '_>) -> Option<EntityId> {
 }
 
 /// `level.broadcastEntityEvent(entity, event)`.
-fn entity_event(ents: &Entities, env: &mut Env<'_>, id: EntityId, event: i8) {
+pub(crate) fn entity_event(ents: &Entities, env: &mut Env<'_>, id: EntityId, event: i8) {
     if let Some(e) = ents.store.get(id) {
         env.out.push(Effect::Tracking {
             entity: id,
@@ -115,7 +122,7 @@ fn entity_event(ents: &Entities, env: &mut Env<'_>, id: EntityId, event: i8) {
 }
 
 /// A sound at an entity's position (`playSound(sound, volume, pitch)` of the entity).
-fn sound_at(
+pub(crate) fn sound_at(
     ents: &Entities,
     env: &mut Env<'_>,
     id: EntityId,
@@ -149,7 +156,13 @@ pub fn breed(
         return;
     };
     let seed = env.random.next_long();
-    let mut child = MobData::new(kind, seed);
+    let child_kind = match (ents.mob(parent), ents.mob(partner)) {
+        (Some(a), Some(b)) if kind.family() != super::Family::Classic => {
+            super::fam::offspring_kind(a, b)
+        }
+        _ => kind,
+    };
+    let mut child = MobData::new(child_kind, seed);
     let pick = ents
         .mob_mut(parent)
         .map(|m| m.random.next_boolean())
@@ -213,7 +226,7 @@ fn offspring_color(a: u8, b: u8, pick_first: bool) -> u8 {
 }
 
 /// The inventory index of a hand.
-fn hand_index(ents: &Entities, player: EntityId, hand: Hand) -> usize {
+pub(crate) fn hand_index(ents: &Entities, player: EntityId, hand: Hand) -> usize {
     match hand {
         Hand::MainHand => ents.player(player).map_or(0, |p| p.inventory.selected),
         Hand::OffHand => OFFHAND,
@@ -221,20 +234,20 @@ fn hand_index(ents: &Entities, player: EntityId, hand: Hand) -> usize {
 }
 
 /// The stack in a player's hand.
-fn held(ents: &Entities, player: EntityId, hand: Hand) -> ItemStack {
+pub(crate) fn held(ents: &Entities, player: EntityId, hand: Hand) -> ItemStack {
     let i = hand_index(ents, player, hand);
     ents.player(player)
         .map(|p| p.inventory.get(i).clone())
         .unwrap_or_default()
 }
 
-fn infinite(ents: &Entities, player: EntityId) -> bool {
+pub(crate) fn infinite(ents: &Entities, player: EntityId) -> bool {
     ents.player(player)
         .is_some_and(|p| p.game_mode == GameMode::Creative)
 }
 
 /// `usePlayerItem`: one item of the hand is used up unless the player has infinite materials.
-fn use_item(ents: &mut Entities, player: EntityId, hand: Hand) {
+pub(crate) fn use_item(ents: &mut Entities, player: EntityId, hand: Hand) {
     if infinite(ents, player) {
         return;
     }
@@ -247,7 +260,7 @@ fn use_item(ents: &mut Entities, player: EntityId, hand: Hand) {
 }
 
 /// `ItemUtils.createFilledResult`: the hand's stack turns into `filled` (one item of it).
-fn fill_held(
+pub(crate) fn fill_held(
     ents: &mut Entities,
     env: &mut Env<'_>,
     player: EntityId,
@@ -288,7 +301,13 @@ fn fill_held(
 }
 
 /// `hurtAndBreak(amount, player, hand)` of the stack in a hand.
-fn hurt_held(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, hand: Hand, amount: i32) {
+pub(crate) fn hurt_held(
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    player: EntityId,
+    hand: Hand,
+    amount: i32,
+) {
     if infinite(ents, player) {
         return;
     }
@@ -511,7 +530,7 @@ fn mob_interact(
 }
 
 /// `Animal.mobInteract`: food makes adults fall in love and babies grow faster.
-fn animal_interact(
+pub(crate) fn animal_interact(
     ents: &mut Entities,
     env: &mut Env<'_>,
     player: EntityId,
@@ -558,7 +577,7 @@ fn animal_interact(
 }
 
 /// `playEatingSound`: sheep and pigs have one.
-fn eating_sound(ents: &mut Entities, env: &mut Env<'_>, target: EntityId) {
+pub(crate) fn eating_sound(ents: &mut Entities, env: &mut Env<'_>, target: EntityId) {
     let sound = match ents.mob(target).map(|m| m.kind) {
         Some(Kind::Sheep) => "minecraft:entity.sheep.eat",
         Some(Kind::Pig) => "minecraft:entity.pig.eat",
