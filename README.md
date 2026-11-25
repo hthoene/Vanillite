@@ -50,8 +50,8 @@ The first start downloads the Vanilla server jar into `/data/cache`. The health 
 panel under *Nests → Import Egg* (Pelican: *Eggs → Import*), then create a server with it; its
 primary allocation is the game port.
 
-- **Image:** *Beta, Minecraft <version>* (`thoenehannes/vanillite:mc<version>-beta`, e.g.
-  `mc26.3-beta`; the default) stays on that Minecraft version; *Beta, newest Minecraft version*
+- **Image:** *Beta - Minecraft <version>* (`thoenehannes/vanillite:mc<version>-beta`, e.g.
+  `mc26.3-beta`; the default) stays on that Minecraft version; *Beta - newest Minecraft version*
   (`beta`) follows new Minecraft versions. Switch it on the *Startup* page.
 - **EULA:** switch on *Accept the Minecraft EULA*, or accept the panel's EULA prompt on the first
   start.

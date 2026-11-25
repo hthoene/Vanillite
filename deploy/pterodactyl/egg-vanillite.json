@@ -12,8 +12,8 @@
     "eula"
   ],
   "docker_images": {
-    "Beta, Minecraft 26.3": "thoenehannes/vanillite:mc26.3-beta",
-    "Beta, newest Minecraft version": "thoenehannes/vanillite:beta"
+    "Beta - Minecraft 26.3": "thoenehannes/vanillite:mc26.3-beta",
+    "Beta - newest Minecraft version": "thoenehannes/vanillite:beta"
   },
   "file_denylist": [],
   "startup": "env VANILLITE_SERVER_PORT={{SERVER_PORT}} VANILLITE_BEDROCK__PORT=${VANILLITE_BEDROCK__PORT:-{{SERVER_PORT}}} /vanillite run --dir /home/container",

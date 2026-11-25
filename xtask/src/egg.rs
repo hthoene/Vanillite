@@ -374,11 +374,11 @@ fn docker_images(root: &Path) -> Result<Value> {
             let channel = pre.split('.').next().unwrap_or(pre);
             let label = title(channel);
             images.insert(
-                format!("{label}, Minecraft {mc}"),
+                format!("{label} - Minecraft {mc}"),
                 format!("{REPOSITORY}:mc{mc}-{channel}").into(),
             );
             images.insert(
-                format!("{label}, newest Minecraft version"),
+                format!("{label} - newest Minecraft version"),
                 format!("{REPOSITORY}:{channel}").into(),
             );
         }
@@ -557,7 +557,24 @@ pub fn check_format(egg: &str) -> Result<()> {
         .and_then(Value::as_object)
         .filter(|m| !m.is_empty() && m.values().all(Value::is_string))
         .ok_or("egg: docker_images must map names to images")?;
-    let _ = images;
+    // The panel stores the images as `name|image` lines and rejects names with other characters
+    // than letters, digits, `_`, `#`, `.`, `/`, `-` and spaces (e.g. a comma).
+    for (name, image) in images {
+        let image = image.as_str().unwrap_or_default();
+        let name_ok = name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || " _#./-".contains(c));
+        let image_ok = image
+            .strip_prefix('~')
+            .unwrap_or(image)
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || " _./-:@".contains(c));
+        if !name_ok || !image_ok || image.is_empty() {
+            return Err(format!(
+                "egg: docker image \"{name}|{image}\" is not accepted by the panel"
+            ));
+        }
+    }
     for pointer in ["/features", "/file_denylist"] {
         egg.pointer(pointer)
             .and_then(Value::as_array)
