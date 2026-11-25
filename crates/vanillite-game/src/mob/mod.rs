@@ -6,6 +6,8 @@
 //! readable for blocks and light); what changes blocks (explosions, a sheep eating grass) is
 //! queued as a [`WorldAction`] and applied by the world right after that mob's tick.
 
+pub mod boss;
+pub mod brain;
 pub mod combat;
 pub mod goals;
 pub mod kinds;
@@ -186,6 +188,11 @@ pub struct MobData {
     /// The attribute values without effect modifiers while modifiers are active; `attrs`
     /// holds the modified values then.
     pub base_attrs: Option<Box<Attrs>>,
+    /// `moveDist` and `nextStep`: when the next step makes a vibration.
+    pub move_dist: f32,
+    pub next_step: f32,
+    /// The state of bosses and other kinds with their own machinery.
+    pub ext: boss::Ext,
 }
 
 impl MobData {
@@ -269,6 +276,9 @@ impl MobData {
             absorption: 0.0,
             base_attrs: None,
             last_pos: BlockPos::new(i32::MIN, i32::MIN, i32::MIN),
+            move_dist: 0.0,
+            next_step: 1.0,
+            ext: boss::new_ext(kind),
         };
         // `Mob.ambientSoundTime` starts at 0; only playing a sound resets it to `-interval`.
         // `LivingEntity`'s constructor turns the entity to a random yaw (`setYRot(random.nextFloat()
@@ -420,10 +430,14 @@ pub struct MobSettings {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ExplosionRequest {
     pub source: Option<EntityId>,
+    /// `getIndirectSourceEntity` when it is not `source` itself (a projectile's owner).
+    pub indirect: Option<EntityId>,
     pub pos: Vec3,
     pub radius: f32,
     /// `ExplosionInteraction.MOB`: blocks only break with `mobGriefing`.
     pub mob: bool,
+    /// The source's `getBlockExplosionResistance`.
+    pub resistance: crate::level::explosion::BlockResistance,
 }
 
 /// A change of the world a mob tick causes; applied right after that tick.
@@ -436,6 +450,17 @@ pub enum WorldAction {
     DestroyBlock(BlockPos, bool),
     /// `levelEvent(event, pos, data)`.
     LevelEvent(i32, BlockPos, i32),
+    /// `explode(source, damageSource(source, indirect), pos, radius, interaction)` with
+    /// `ExplosionInteraction.BLOCK` (`blocks`) or `NONE`.
+    ExplodeWith {
+        source: Option<EntityId>,
+        indirect: Option<EntityId>,
+        pos: Vec3,
+        radius: f32,
+        blocks: bool,
+    },
+    /// Game events, listener moves and sculk catalyst charges.
+    Level(boss::warden::LevelAction),
 }
 
 /// The mob state of a world besides the entities: search buffers, queued world changes and
@@ -454,6 +479,13 @@ pub struct MobContext {
     pub has_players: bool,
     /// Entities to remove after the tick (`discard` of other entities).
     pub discarded: Vec<EntityId>,
+    /// The boss bars of entities (the wither's), by entity; see
+    /// [`boss::wither::sweep_boss_bars`].
+    pub boss_bars: vanillite_base::hash::FxHashMap<EntityId, crate::boss_bar::BossBar>,
+    /// The End fight as the dragon and the crystals see it; `None` outside the End.
+    pub dragon_fight: Option<boss::dragon::FightView>,
+    /// What the dragon and the crystals report to the fight, handled after each tick.
+    pub dragon_events: Vec<boss::dragon::DragonEvent>,
 }
 
 impl MobContext {
@@ -530,7 +562,13 @@ pub fn spawn(
     rot: Rotation,
     mob: MobData,
 ) -> EntityId {
-    let mut new = NewEntity::new(mob.kind.type_id(), network_ids.next(), uuid, pos);
+    // The dragon's eight parts take the ids after its own.
+    let network_id = if mob.kind == Kind::EnderDragon {
+        network_ids.next_block(9)
+    } else {
+        network_ids.next()
+    };
+    let mut new = NewEntity::new(mob.kind.type_id(), network_id, uuid, pos);
     new.rot = rot;
     let baby = mob.baby;
     let id = entities.spawn_mob(new, mob);

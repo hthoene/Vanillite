@@ -41,9 +41,12 @@ block_tags!(
     copper_chests,
     coral_blocks,
     dampens_vibrations,
+    dragon_immune,
+    dragon_transparent,
     enables_bubble_column_drag_down,
     enables_bubble_column_push_up,
     fences,
+    fire,
     grows_crops,
     maintains_farmland,
     nylium,
@@ -51,6 +54,8 @@ block_tags!(
     overrides_mushroom_light_requirement,
     prevents_nearby_leaf_decay,
     saplings,
+    sculk_growth_inhibitors,
+    sculk_replaceable,
     shulker_boxes,
     snow,
     soul_fire_base_blocks,
@@ -91,6 +96,8 @@ block_tags!(
     wall_post_override,
     walls,
     washed_away_by_fluids,
+    wither_immune,
+    wither_summon_base_blocks,
     wooden_fences,
 );
 
@@ -180,6 +187,8 @@ impl GameEventSet {
 pub struct GameEventTags {
     pub vibrations: GameEventSet,
     pub ignore_vibrations_sneaking: GameEventSet,
+    pub warden_can_listen: GameEventSet,
+    pub shrieker_can_listen: GameEventSet,
 }
 
 impl GameEventTags {
@@ -190,6 +199,8 @@ impl GameEventTags {
                 packs,
                 "minecraft:ignore_vibrations_sneaking",
             ),
+            warden_can_listen: GameEventSet::from_tag(packs, "minecraft:warden_can_listen"),
+            shrieker_can_listen: GameEventSet::from_tag(packs, "minecraft:shrieker_can_listen"),
         }
     }
 }

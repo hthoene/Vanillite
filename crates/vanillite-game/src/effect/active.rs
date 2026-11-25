@@ -77,6 +77,9 @@ pub enum EffectEvent {
     },
     /// `remove_mob_effect`.
     Remove(MobEffect),
+    /// The sound of an effect added outside the entity's tick (`onEffectAdded`), played by
+    /// the owner at the entity.
+    Sound(Box<str>),
 }
 
 /// The active effects of a living entity, sorted by effect id.
@@ -204,6 +207,11 @@ impl ActiveEffects {
                 }
             }
         }
+    }
+
+    /// Queues the sound of an effect added outside the entity's tick ([`EffectEvent::Sound`]).
+    pub fn push_sound(&mut self, sound: &str) {
+        self.events.push(EffectEvent::Sound(sound.into()));
     }
 
     /// `addEffect` while the effects tick: applied after the tick.

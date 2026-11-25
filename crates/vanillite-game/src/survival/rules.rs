@@ -126,8 +126,10 @@ impl Rule {
     pub const REDUCED_DEBUG_INFO: Rule = Rule(41);
     pub const RESPAWN_RADIUS: Rule = Rule(42);
     pub const SHOW_DEATH_MESSAGES: Rule = Rule(45);
+    pub const SPAWNER_BLOCKS_WORK: Rule = Rule(46);
     pub const SPAWN_MOBS: Rule = Rule(47);
     pub const SPAWN_MONSTERS: Rule = Rule(48);
+    pub const SPAWN_WARDENS: Rule = Rule(52);
     pub const TNT_EXPLOSION_DROP_DECAY: Rule = Rule(56);
     pub const UNIVERSAL_ANGER: Rule = Rule(57);
 

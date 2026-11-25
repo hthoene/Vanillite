@@ -402,6 +402,12 @@ impl LootTables {
         }
     }
 
+    /// `LootTable.getRandomItems` of the table `name` (e.g. `minecraft:spawners/trial_chamber/key`)
+    /// with an empty context (no block, no tool, no entity). Appends to `out`.
+    pub fn random_items(&self, name: &str, rng: &mut dyn LootRandom, out: &mut Vec<ItemStack>) {
+        self.roll(name, &LootContext::empty(), rng, out);
+    }
+
     /// Builds the set from parsed JSON files: `(id, file content or read error)`.
     fn from_files(
         tables: Vec<(String, Result<Value, String>)>,
@@ -530,7 +536,7 @@ impl LootTables {
 }
 
 /// The loot table directories [`LootTables::load`] reads.
-pub const LOADED_KINDS: [&str; 4] = ["blocks", "chests", "archaeology", "pots"];
+pub const LOADED_KINDS: [&str; 5] = ["blocks", "chests", "archaeology", "pots", "spawners"];
 
 /// `Util.shuffle(list, random)`.
 fn shuffle<T>(list: &mut [T], rng: &mut dyn LootRandom) {

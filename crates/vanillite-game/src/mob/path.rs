@@ -328,6 +328,108 @@ pub fn floor_level(blocks: &dyn Blocks, pos: BlockPos) -> f64 {
     f64::from(below.y) + top.unwrap_or(0.0)
 }
 
+/// `SwimNodeEvaluator.getPathTypeOfMob`.
+fn swim_type_of_mob(eval: &Eval<'_>, x: i32, y: i32, z: i32) -> PathType {
+    let blocks = eval.blocks;
+    let mut last = BlockPos::new(x, y, z);
+    for xx in x..x + eval.entity_width {
+        for yy in y..y + eval.entity_height {
+            for zz in z..z + eval.entity_depth {
+                let pos = BlockPos::new(xx, yy, zz);
+                last = pos;
+                let state = blocks.state(pos);
+                let fluid = state.fluid_state();
+                let below = blocks.state(BlockPos::new(xx, yy - 1, zz));
+                if fluid.is_empty() && is_pathfindable_water(below) && state.is_air() {
+                    return PathType::Breach;
+                }
+                if !is_water(state) {
+                    return PathType::Blocked;
+                }
+            }
+        }
+    }
+    if is_pathfindable_water(blocks.state(last)) {
+        PathType::Water
+    } else {
+        PathType::Blocked
+    }
+}
+
+/// `BlockState.isPathfindable(PathComputationType.WATER)`.
+pub fn is_pathfindable_water(state: BlockState) -> bool {
+    match class_of_block(state.block()) {
+        Class::AbstractBed
+        | Class::BambooStalk
+        | Class::Skull
+        | Class::WallSkull
+        | Class::Anvil
+        | Class::CandleCake
+        | Class::Cake
+        | Class::Azalea
+        | Class::Cocoa
+        | Class::Campfire
+        | Class::EndPortalFrame
+        | Class::Bell
+        | Class::Cactus
+        | Class::EnderChest
+        | Class::Farmland
+        | Class::FlowerPot
+        | Class::Grindstone
+        | Class::ChorusPlant
+        | Class::Chest
+        | Class::CopperChest
+        | Class::Lantern
+        | Class::Fence
+        | Class::IronBars
+        | Class::Chain
+        | Class::Conduit
+        | Class::Hopper
+        | Class::DecoratedPot
+        | Class::Path
+        | Class::HeavyCore
+        | Class::Rod
+        | Class::LightningRod
+        | Class::SculkSensor
+        | Class::CalibratedSculkSensor
+        | Class::SeaPickle
+        | Class::Stonecutter
+        | Class::Lectern
+        | Class::Wall
+        | Class::ShelfMushroom
+        | Class::WallHangingSign
+        | Class::Stair
+        | Class::Speleothem
+        | Class::Door
+        | Class::FenceGate
+        | Class::SnowLayer => false,
+        Class::TrapDoor => state.value("waterlogged") == Some("true"),
+        Class::Liquid => !state.block().name().ends_with("lava"),
+        _ => {
+            if matches!(
+                state.block().name(),
+                "minecraft:brewing_stand"
+                    | "minecraft:enchanting_table"
+                    | "minecraft:cauldron"
+                    | "minecraft:water_cauldron"
+                    | "minecraft:lava_cauldron"
+                    | "minecraft:powder_snow_cauldron"
+                    | "minecraft:composter"
+                    | "minecraft:dragon_egg"
+                    | "minecraft:mud"
+                    | "minecraft:soul_sand"
+                    | "minecraft:respawn_anchor"
+            ) {
+                return false;
+            }
+            if state.block() == ids::POWDER_SNOW {
+                return true;
+            }
+            is_water(state)
+        }
+    }
+}
+
 /// What the path finder needs to know about the mob.
 #[derive(Clone, Copy, Debug)]
 pub struct PathMob {
@@ -513,6 +615,8 @@ pub struct Search<'a> {
     pub max_visited_nodes: i32,
     pub malus: &'a MalusTable,
     pub min_y: i32,
+    /// `SwimNodeEvaluator` (water-bound navigation) instead of the `WalkNodeEvaluator`.
+    pub swim: bool,
 }
 
 struct Eval<'a> {
@@ -668,7 +772,11 @@ impl PathFinder {
             entity_height: h,
             entity_depth: w,
         };
-        let from = self.start(&eval)?;
+        let from = if search.swim {
+            self.swim_start(&eval)
+        } else {
+            self.start(&eval)?
+        };
         let mut tgts: Vec<Target> = targets
             .iter()
             .map(|&pos| Target {
@@ -739,7 +847,11 @@ impl PathFinder {
             if self.n(current).distance_to(fx, fy, fz) >= max_len {
                 continue;
             }
-            let count_n = self.neighbors(eval, &mut neighbors, current);
+            let count_n = if eval.search.swim {
+                self.swim_neighbors(eval, &mut neighbors, current)
+            } else {
+                self.neighbors(eval, &mut neighbors, current)
+            };
             for &neighbor in neighbors.iter().take(count_n) {
                 let (cx, cy, cz) = {
                     let c = self.n(current);
@@ -1204,6 +1316,91 @@ impl PathFinder {
         c
     }
 
+    // --- `SwimNodeEvaluator` -----------------------------------------------------------------
+
+    /// `SwimNodeEvaluator.getStart`.
+    fn swim_start(&mut self, eval: &Eval<'_>) -> u32 {
+        let b = eval.mob.aabb;
+        self.node(floor(b.min_x), floor(b.min_y + 0.5), floor(b.min_z))
+    }
+
+    /// `SwimNodeEvaluator.getNeighbors` (without breaching).
+    fn swim_neighbors(&mut self, eval: &Eval<'_>, out: &mut [u32; 32], pos: u32) -> usize {
+        let (px, py, pz) = {
+            let n = self.n(pos);
+            (n.x, n.y, n.z)
+        };
+        // `Direction.values()`: down, up, north, south, west, east.
+        const DIRS: [(i32, i32, i32); 6] = [
+            (0, -1, 0),
+            (0, 1, 0),
+            (0, 0, -1),
+            (0, 0, 1),
+            (-1, 0, 0),
+            (1, 0, 0),
+        ];
+        let mut found = [NONE; 6];
+        let mut p = 0;
+        for (i, &(dx, dy, dz)) in DIRS.iter().enumerate() {
+            let node = self.swim_accepted_node(eval, px + dx, py + dy, pz + dz);
+            found[i] = node;
+            if node != NONE && !self.n(node).closed {
+                out[p] = node;
+                p += 1;
+            }
+        }
+        // `Direction.Plane.HORIZONTAL` (north, east, south, west) with the clockwise one.
+        const HORIZONTAL: [(usize, usize, i32, i32); 4] =
+            [(2, 5, 0, -1), (5, 3, 1, 0), (3, 4, 0, 1), (4, 2, -1, 0)];
+        for &(a, b, dx, dz) in &HORIZONTAL {
+            let has_malus = |n: u32| n != NONE && self.n(n).cost_malus >= 0.0;
+            if has_malus(found[a]) && has_malus(found[b]) {
+                let (cx, cz) = (DIRS[b].0, DIRS[b].2);
+                let diag = self.swim_accepted_node(eval, px + dx + cx, py, pz + dz + cz);
+                if diag != NONE && !self.n(diag).closed {
+                    out[p] = diag;
+                    p += 1;
+                }
+            }
+        }
+        p
+    }
+
+    /// `SwimNodeEvaluator.findAcceptedNode`: water nodes only.
+    fn swim_accepted_node(&mut self, eval: &Eval<'_>, x: i32, y: i32, z: i32) -> u32 {
+        let t = self.cached_swim_type(eval, x, y, z);
+        if t != PathType::Water {
+            return NONE;
+        }
+        let cost = Self::malus(eval, t);
+        if cost < 0.0 {
+            return NONE;
+        }
+        let i = self.node(x, y, z);
+        let fluid_empty = eval
+            .blocks
+            .state(BlockPos::new(x, y, z))
+            .fluid_state()
+            .is_empty();
+        let n = self.nm(i);
+        n.kind = t;
+        n.cost_malus = n.cost_malus.max(cost);
+        if fluid_empty {
+            n.cost_malus += 8.0;
+        }
+        i
+    }
+
+    fn cached_swim_type(&mut self, eval: &Eval<'_>, x: i32, y: i32, z: i32) -> PathType {
+        let k = key(x, y, z);
+        if let Some(&t) = self.types.get(&k) {
+            return t;
+        }
+        let t = swim_type_of_mob(eval, x, y, z);
+        self.types.insert(k, t);
+        t
+    }
+
     fn cached_type(&mut self, eval: &Eval<'_>, x: i32, y: i32, z: i32) -> PathType {
         let k = key(x, y, z);
         if let Some(&t) = self.types.get(&k) {
@@ -1345,6 +1542,7 @@ mod tests {
             max_visited_nodes: 256,
             malus: &[],
             min_y: -64,
+            swim: false,
         };
         let path = finder
             .find_path(
@@ -1365,6 +1563,86 @@ mod tests {
         );
         // The wall at x = 3 is one block high: the path jumps on it.
         assert!(path.nodes.iter().any(|n| n.y == 65));
+    }
+
+    /// A pool of water from y 60 to 63 within 8 blocks, with a stone wall at x = 3 up to
+    /// y 62.
+    struct Pool;
+    impl Blocks for Pool {
+        fn state(&self, pos: BlockPos) -> BlockState {
+            let inside = pos.x.abs() <= 8 && pos.z.abs() <= 8;
+            if pos.x == 3 && (60..63).contains(&pos.y) && inside {
+                ids::STONE.default_state()
+            } else if inside && (60..64).contains(&pos.y) {
+                ids::WATER.default_state()
+            } else if pos.y >= 64 {
+                BlockState::AIR
+            } else {
+                ids::STONE.default_state()
+            }
+        }
+    }
+
+    #[test]
+    fn swims_over_a_wall_and_stays_in_water() {
+        let mut finder = PathFinder::new();
+        let search = Search {
+            max_path_length: 16.0,
+            reach_range: 0,
+            max_visited_nodes: 480,
+            malus: &[(PathType::Water, 0.0)],
+            min_y: -64,
+            swim: true,
+        };
+        let pos = Vec3::new(0.5, 61.0, 0.5);
+        let guardian = PathMob {
+            aabb: Aabb::new(
+                pos.x - 0.425,
+                pos.y,
+                pos.z - 0.425,
+                pos.x + 0.425,
+                pos.y + 0.85,
+                pos.z + 0.425,
+            ),
+            width: 0.85,
+            height: 0.85,
+            in_water: true,
+            ..mob(pos)
+        };
+        let path = finder
+            .find_path(&Pool, &guardian, &[BlockPos::new(6, 61, 0)], search)
+            .unwrap_or_else(|| panic!("no start"));
+        assert!(path.reached);
+        assert!(path.nodes.iter().skip(1).all(|n| n.kind == PathType::Water));
+        assert!(path.nodes.iter().any(|n| n.y == 63));
+        assert_eq!(
+            path.nodes.last().map(PathNode::pos),
+            Some(BlockPos::new(6, 61, 0))
+        );
+    }
+
+    #[test]
+    fn swim_path_types() {
+        let mob = mob(Vec3::new(0.5, 61.0, 0.5));
+        let search = Search {
+            max_path_length: 16.0,
+            reach_range: 0,
+            max_visited_nodes: 64,
+            malus: &[],
+            min_y: -64,
+            swim: true,
+        };
+        let eval = Eval {
+            blocks: &Pool,
+            mob: &mob,
+            search,
+            entity_width: 1,
+            entity_height: 1,
+            entity_depth: 1,
+        };
+        assert_eq!(swim_type_of_mob(&eval, 0, 61, 0), PathType::Water);
+        assert_eq!(swim_type_of_mob(&eval, 3, 61, 0), PathType::Blocked);
+        assert_eq!(swim_type_of_mob(&eval, 0, 64, 0), PathType::Breach);
     }
 
     #[test]

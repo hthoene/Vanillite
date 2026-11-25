@@ -105,6 +105,10 @@ pub struct LevelSettings {
     pub water_evaporates: bool,
     /// Exploit switches (D1).
     pub exploits: ExploitSettings,
+    /// The difficulty is peaceful (set by the server every tick).
+    pub peaceful: bool,
+    /// `spawnWardens` game rule (set by the server every tick).
+    pub spawn_wardens: bool,
 }
 
 impl Default for LevelSettings {
@@ -123,6 +127,8 @@ impl Default for LevelSettings {
             has_sky_light: true,
             water_evaporates: false,
             exploits: ExploitSettings::default(),
+            peaceful: false,
+            spawn_wardens: true,
         }
     }
 }
@@ -182,6 +188,8 @@ pub struct Sound {
 pub const SOUND_BLOCKS: u8 = 4;
 /// `SoundSource.PLAYERS`.
 pub const SOUND_PLAYERS: u8 = 7;
+/// `SoundSource.HOSTILE`.
+pub const SOUND_HOSTILE: u8 = 5;
 /// `SoundSource.NEUTRAL`.
 pub const SOUND_NEUTRAL: u8 = 6;
 /// `SoundSource.RECORDS`.
@@ -210,6 +218,11 @@ pub struct LevelOutput {
     pub experience: Vec<(vanillite_base::Vec3, i32)>,
     /// Block entities whose client data changed (`sendBlockUpdated` of a block entity).
     pub block_entity_updates: Vec<BlockPos>,
+    /// Wither skeleton skulls players placed, for the wither's summon check
+    /// (`WitherSkullBlock.setPlacedBy`).
+    pub summon_checks: Vec<BlockPos>,
+    /// An end crystal was placed: the End fight tries to respawn the dragon (`tryRespawn`).
+    pub try_dragon_respawn: bool,
 }
 
 /// The game state of one world.
@@ -263,6 +276,10 @@ pub struct Level {
     maps: Option<Arc<crate::map::Maps>>,
     min_y: i32,
     max_y: i32,
+    /// The seed the level was created with (`getSeed`).
+    seed: i64,
+    /// What spawner blocks read of this tick's rules and sky (set by the world each tick).
+    pub spawner_env: crate::block::spawner::SpawnerEnv,
 }
 
 impl std::fmt::Debug for Level {
@@ -314,6 +331,22 @@ impl Level {
             maps: None,
             min_y,
             max_y,
+            seed,
+            spawner_env: crate::block::spawner::SpawnerEnv::default(),
+        }
+    }
+
+    /// `getSeed`.
+    pub fn seed(&self) -> i64 {
+        self.seed
+    }
+
+    /// `sendBlockUpdated` of a block entity whose client data changed: the block and a
+    /// `block_entity_data` packet with its update tag go to the clients that see its chunk.
+    pub fn send_block_entity_updated(&mut self, pos: BlockPos) {
+        self.send_block_updated(pos);
+        if !self.output.block_entity_updates.contains(&pos) {
+            self.output.block_entity_updates.push(pos);
         }
     }
 

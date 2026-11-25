@@ -8,6 +8,7 @@
 
 use vanillite_base::{Aabb, BlockPos, Vec3};
 use vanillite_data::entity::ids;
+use vanillite_nbt::{Compound, Tag};
 use vanillite_world::entity::{Dimensions, EntityId, NetworkIds, NewEntity};
 
 use super::living::{add_to_entity, with_host};
@@ -36,8 +37,12 @@ pub struct CloudData {
     /// `DATA_WAITING`.
     pub waiting: bool,
     pub owner: Option<EntityId>,
+    /// The owner's UUID (`Owner`), kept for saving.
+    pub owner_uuid: Option<u128>,
     pub contents: PotionContents,
     pub duration_scale: f32,
+    /// `customParticle` is the dragon's breath (the only custom particle the server sets).
+    pub dragon_breath: bool,
     /// `victims`: entities and the tick they may be affected again.
     pub victims: Vec<(EntityId, i32)>,
 }
@@ -55,8 +60,10 @@ impl Default for CloudData {
             age: 0,
             waiting: false,
             owner: None,
+            owner_uuid: None,
             contents: PotionContents::default(),
             duration_scale: 1.0,
+            dragon_breath: false,
             victims: Vec::new(),
         }
     }
@@ -66,6 +73,74 @@ impl CloudData {
     /// `DATA_PARTICLE`: `entity_effect` in the opaque potion colour.
     pub fn particle_color(&self) -> i32 {
         self.contents.color() | -16_777_216
+    }
+
+    /// The `area_effect_cloud` entity NBT after the entity's own (`addAdditionalSaveData`).
+    pub fn save(&self, out: &mut Compound) {
+        out.insert("Age", Tag::Int(self.age));
+        out.insert("Duration", Tag::Int(self.duration));
+        out.insert("WaitTime", Tag::Int(self.wait_time));
+        out.insert("ReapplicationDelay", Tag::Int(self.reapplication_delay));
+        out.insert("DurationOnUse", Tag::Int(self.duration_on_use));
+        out.insert("RadiusOnUse", Tag::Float(self.radius_on_use));
+        out.insert("RadiusPerTick", Tag::Float(self.radius_per_tick));
+        out.insert("Radius", Tag::Float(self.radius));
+        if self.dragon_breath {
+            let mut p = Compound::new();
+            p.insert("type", Tag::String("minecraft:dragon_breath".into()));
+            p.insert("power", Tag::Float(1.0));
+            out.insert("custom_particle", Tag::Compound(p));
+        }
+        if let Some(uuid) = self.owner_uuid {
+            out.insert("Owner", crate::mob::nbt::uuid_tag(uuid));
+        }
+        if self.contents != PotionContents::default() {
+            out.insert("potion_contents", Tag::Compound(self.contents.to_nbt()));
+        }
+        if self.duration_scale != 1.0 {
+            out.insert("potion_duration_scale", Tag::Float(self.duration_scale));
+        }
+    }
+
+    /// Reads the `area_effect_cloud` entity NBT (`readAdditionalSaveData`); custom particles
+    /// other than the dragon's breath fall back to the potion colour.
+    pub fn load(tag: &Compound) -> CloudData {
+        let int = |key: &str, default: i32| {
+            tag.get(key)
+                .and_then(Tag::as_i64)
+                .and_then(|v| i32::try_from(v).ok())
+                .unwrap_or(default)
+        };
+        let float = |key: &str, default: f32| match tag.get(key) {
+            Some(Tag::Float(f)) if f.is_finite() => *f,
+            _ => default,
+        };
+        let dragon_breath = matches!(
+            tag.get("custom_particle"),
+            Some(Tag::Compound(p))
+                if matches!(p.get("type"), Some(Tag::String(s)) if s == "minecraft:dragon_breath")
+        );
+        let contents = match tag.get("potion_contents") {
+            Some(Tag::Compound(c)) => PotionContents::from_nbt(c),
+            _ => PotionContents::default(),
+        };
+        CloudData {
+            radius: float("Radius", 3.0).clamp(0.0, 32.0),
+            radius_on_use: float("RadiusOnUse", 0.0),
+            radius_per_tick: float("RadiusPerTick", 0.0),
+            duration: int("Duration", -1),
+            duration_on_use: int("DurationOnUse", 0),
+            wait_time: int("WaitTime", 20),
+            reapplication_delay: int("ReapplicationDelay", 20),
+            age: int("Age", 0),
+            waiting: false,
+            owner: None,
+            owner_uuid: crate::mob::nbt::uuid_from_tag(tag.get("Owner")),
+            contents,
+            duration_scale: float("potion_duration_scale", 1.0).max(0.0),
+            dragon_breath,
+            victims: Vec::new(),
+        }
     }
 }
 
@@ -298,6 +373,8 @@ pub fn spawn_cloud(
     data: CloudData,
 ) -> EntityId {
     let uuid = crate::experience_orb::with_entity_random(crate::mob::random_uuid);
+    let mut data = data;
+    data.owner_uuid = data.owner.and_then(|o| ents.store.get(o)).map(|e| e.uuid());
     let radius = data.radius;
     let new = NewEntity::new(ids::AREA_EFFECT_CLOUD, network_ids.next(), uuid, pos);
     let id = ents.spawn_cloud(new, data);

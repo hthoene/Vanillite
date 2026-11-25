@@ -315,7 +315,9 @@ impl GameWorld {
                 continue;
             }
             let is_mob = is_mob_kind(kind);
+            let is_special = mob::boss::special::is_special_kind(kind);
             if !is_mob
+                && !is_special
                 && kind != ids::ARROW
                 && kind != ids::EXPERIENCE_ORB
                 && kind != ids::AREA_EFFECT_CLOUD
@@ -335,6 +337,8 @@ impl GameWorld {
             self.with_env(|level, ents, env, cx| {
                 if is_mob {
                     mob::tick(level, ents, env, cx, id);
+                } else if is_special {
+                    mob::boss::special::tick(level, ents, env, cx, id);
                 } else if kind == ids::ARROW {
                     projectile::tick_arrow(level, ents, env, cx, id);
                 } else {
@@ -383,6 +387,25 @@ impl GameWorld {
                 WorldAction::LevelEvent(event, pos, data) => {
                     self.level.level_event(None, event, pos, data);
                 }
+                WorldAction::ExplodeWith {
+                    source,
+                    indirect,
+                    pos,
+                    radius,
+                    blocks,
+                } => {
+                    let interaction = if !blocks {
+                        BlockInteraction::Keep
+                    } else if self.rules.bool(Rule::BLOCK_EXPLOSION_DROP_DECAY) {
+                        BlockInteraction::DestroyWithDecay
+                    } else {
+                        BlockInteraction::Destroy
+                    };
+                    self.level
+                        .explode(source, indirect, pos, radius, interaction);
+                    self.explosion_hurts();
+                }
+                WorldAction::Level(action) => action.apply(&mut self.level),
             }
         }
         self.finish_removals();
@@ -683,6 +706,9 @@ fn goal_name(goal: &Goal) -> &'static str {
         Goal::HurtBy { .. } => "HurtByTargetGoal",
         Goal::EndermanFreeze { .. } => "EndermanFreezeWhenLookedAt",
         Goal::EndermanStare { .. } => "EndermanLookForPlayerGoal",
+        // The boss goals are not part of a parity trace yet.
+        Goal::Guardian(_) => "GuardianGoal",
+        Goal::Wither(_) => "WitherGoal",
     }
 }
 

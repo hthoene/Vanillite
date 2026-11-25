@@ -103,6 +103,54 @@ impl PotionContents {
             .unwrap_or_default()
     }
 
+    /// `PotionContents.CODEC` as NBT (the `potion_contents` of a saved cloud).
+    pub fn to_nbt(&self) -> vanillite_nbt::Compound {
+        use vanillite_nbt::Tag;
+        let mut c = vanillite_nbt::Compound::new();
+        if let Some(name) = self
+            .potion
+            .and_then(|p| vanillite_data::registry::POTION.name(p))
+        {
+            c.insert("potion", Tag::String(name.into()));
+        }
+        if let Some(color) = self.custom_color {
+            c.insert("custom_color", Tag::Int(color));
+        }
+        if !self.custom_effects.is_empty() {
+            c.insert(
+                "custom_effects",
+                super::instance::list_to_nbt(self.custom_effects.iter()),
+            );
+        }
+        if let Some(name) = &self.custom_name {
+            c.insert("custom_name", Tag::String(name.clone()));
+        }
+        c
+    }
+
+    /// Reads `PotionContents.CODEC` NBT; unknown potions and effects are dropped.
+    pub fn from_nbt(c: &vanillite_nbt::Compound) -> PotionContents {
+        use vanillite_nbt::Tag;
+        let potion = match c.get("potion") {
+            Some(Tag::String(name)) => vanillite_data::registry::POTION.id(name),
+            _ => None,
+        };
+        let custom_color = match c.get("custom_color") {
+            Some(Tag::Int(color)) => Some(*color),
+            _ => None,
+        };
+        let custom_name = match c.get("custom_name") {
+            Some(Tag::String(name)) => Some(name.clone()),
+            _ => None,
+        };
+        PotionContents {
+            potion,
+            custom_color,
+            custom_effects: super::instance::list_from_nbt(c.get("custom_effects")),
+            custom_name,
+        }
+    }
+
     /// `PotionContents.STREAM_CODEC` from component bytes.
     pub fn decode(bytes: &[u8]) -> Option<PotionContents> {
         let mut r = Reader::new(bytes);

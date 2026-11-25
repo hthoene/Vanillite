@@ -140,7 +140,13 @@ pub struct DamageTypes {
     pub magic: DamageKind,
     pub indirect_magic: DamageKind,
     pub wither: DamageKind,
+    pub wither_skull: DamageKind,
+    pub dragon_breath: DamageKind,
+    pub sonic_boom: DamageKind,
     pub thorns: DamageKind,
+    pub mob_projectile: DamageKind,
+    pub fireworks: DamageKind,
+    pub fly_into_wall: DamageKind,
 }
 
 /// The built-in types of Vanilla 26.3 with their values, for servers without data packs (tests).
@@ -232,7 +238,13 @@ impl DamageTypes {
             magic: find("minecraft:magic"),
             indirect_magic: find("minecraft:indirect_magic"),
             wither: find("minecraft:wither"),
+            wither_skull: find("minecraft:wither_skull"),
+            dragon_breath: find("minecraft:dragon_breath"),
+            sonic_boom: find("minecraft:sonic_boom"),
             thorns: find("minecraft:thorns"),
+            mob_projectile: find("minecraft:mob_projectile"),
+            fireworks: find("minecraft:fireworks"),
+            fly_into_wall: find("minecraft:fly_into_wall"),
             types,
         }
     }

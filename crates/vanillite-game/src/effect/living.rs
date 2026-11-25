@@ -236,6 +236,19 @@ pub fn sync_player(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mu
                         effect: i32::from(effect.0),
                     });
                 }
+                EffectEvent::Sound(sound) => {
+                    let seed = env.random.next_long();
+                    play_sound(
+                        env.out,
+                        None,
+                        entity.as_ref().pos(),
+                        &sound,
+                        SoundSource::Players,
+                        1.0,
+                        1.0,
+                        seed,
+                    );
+                }
             }
         }
     }
@@ -401,7 +414,8 @@ pub fn apply_mob_modifiers(m: &mut crate::mob::MobData, dirty: &[Attribute]) -> 
 }
 
 /// A player as the target of effects added outside its tick and without the world's
-/// environment (beacons, conduits): only effects that need no damage, sound or food.
+/// environment (beacons, conduits, bosses): only effects that need no damage or food; the
+/// sound is queued for the player's next sync.
 struct BareHost<'a> {
     player: &'a mut PlayerData,
 }
@@ -433,17 +447,77 @@ impl EffectHost for BareHost<'_> {
     fn tick_count(&self) -> i32 {
         self.player.survival.tick_count
     }
+    fn play_sound(&mut self, sound: &str) {
+        self.player.survival.effects.push_sound(sound);
+    }
 }
 
-/// `player.addEffect` from a block entity (beacon powers, conduit power): non-instant effects
-/// without a sound; the packets go out with the player's next tick.
+/// A mob as the target of effects added outside its tick (see [`BareHost`]); the sync follows
+/// with the mob's next tick.
+struct BareMobHost<'a> {
+    m: &'a mut crate::mob::MobData,
+    kind: EntityTypeId,
+}
+
+impl EffectHost for BareMobHost<'_> {
+    fn effects(&mut self) -> &mut ActiveEffects {
+        &mut self.m.effects
+    }
+    fn health(&self) -> f32 {
+        self.m.health
+    }
+    fn max_health(&self) -> f32 {
+        #[allow(clippy::cast_possible_truncation)]
+        let max = self.m.attrs.max_health as f32;
+        max
+    }
+    fn heal(&mut self, _amount: f32) {}
+    fn hurt(&mut self, _kind: HurtKind, _amount: f32) -> bool {
+        false
+    }
+    fn absorption(&self) -> f32 {
+        self.m.absorption
+    }
+    fn set_absorption(&mut self, amount: f32) {
+        let max = self.m.effects.attribute(Attribute::MAX_ABSORPTION, 0.0);
+        #[allow(clippy::cast_possible_truncation)]
+        let amount = amount.clamp(0.0, max as f32);
+        self.m.absorption = amount;
+    }
+    fn inverted_heal_and_harm(&self) -> bool {
+        super::inverted_heal_and_harm(self.kind)
+    }
+    fn tick_count(&self) -> i32 {
+        self.m.tick_count
+    }
+}
+
+/// `player.addEffect` from a block entity (beacon powers, conduit power): see
+/// [`add_detached`].
 pub fn add_to_player(ents: &mut Entities, player: EntityId, new: EffectInstance) -> bool {
-    let Some(data) = ents.player_mut(player) else {
+    add_detached(ents, player, new)
+}
+
+/// `addEffect` on a player or mob outside its tick and without the world's environment
+/// (beacons, conduits, bosses, trial spawners), with `canBeAffected`: non-instant effects; the
+/// packets, flags, attributes and the sound follow with the entity's next tick. Returns
+/// whether the effect changed.
+pub fn add_detached(ents: &mut Entities, id: EntityId, new: EffectInstance) -> bool {
+    let Some(kind) = ents.store.get(id).map(|e| e.kind()) else {
         return false;
     };
-    if new.effect.is_instantaneous() || new.effect.info().sound_on_added.is_some() {
+    if new.effect.is_instantaneous()
+        || !super::can_be_affected(kind, new.effect)
+        || super::refuses_all_effects(kind)
+    {
         return false;
     }
+    if let Some(m) = ents.mob_mut(id) {
+        return active::add(&mut BareMobHost { m, kind }, new);
+    }
+    let Some(data) = ents.player_mut(id) else {
+        return false;
+    };
     active::add(&mut BareHost { player: data }, new)
 }
 
@@ -460,7 +534,7 @@ pub fn add_to_entity(
     let Some(kind) = ents.store.get(target).map(|e| e.kind()) else {
         return false;
     };
-    if !super::can_be_affected(kind, new.effect) {
+    if !super::can_be_affected(kind, new.effect) || super::refuses_all_effects(kind) {
         return false;
     }
     with_host(level, ents, env, cx, target, |host| active::add(host, new)).unwrap_or(false)

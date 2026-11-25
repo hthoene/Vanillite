@@ -171,6 +171,9 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
     if let Some(mob) = entities.mob(entity.id()) {
         mob_data(&mut out, mob, all);
     }
+    if let Some(special) = entities.special(entity.id()) {
+        crate::mob::boss::special::entity_data(&mut out, special, all);
+    }
     if let Some(orb) = entities.experience_orb(entity.id())
         && (all || orb.value != 0)
     {
@@ -206,16 +209,22 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
                 o.push(u8::from(cloud.waiting))
             });
         }
-        // `ColorParticleOption` of `entity_effect`; the default is white.
+        let particle_id = |name: &str| {
+            vanillite_data::registry::PARTICLE_TYPE
+                .id(name)
+                .map_or(0, i32::from)
+        };
+        // `PowerParticleOption` of `dragon_breath`, else `ColorParticleOption` of
+        // `entity_effect`; the default is white.
         let color = cloud.particle_color();
-        if all || color != -1 {
+        if cloud.dragon_breath {
             item(&mut out, 10, serializer::PARTICLE, |o| {
-                write_varint(
-                    o,
-                    vanillite_data::registry::PARTICLE_TYPE
-                        .id("minecraft:entity_effect")
-                        .map_or(0, i32::from),
-                );
+                write_varint(o, particle_id("minecraft:dragon_breath"));
+                o.extend_from_slice(&1.0_f32.to_be_bytes());
+            });
+        } else if all || color != -1 {
+            item(&mut out, 10, serializer::PARTICLE, |o| {
+                write_varint(o, particle_id("minecraft:entity_effect"));
                 o.extend_from_slice(&color.to_be_bytes());
             });
         }
@@ -352,6 +361,9 @@ fn mob_data(out: &mut Vec<u8>, mob: &crate::mob::MobData, all: bool) {
             boolean(out, data_id::KIND_17, mob.creepy);
         }
         Kind::Skeleton => {}
+        Kind::Guardian | Kind::ElderGuardian | Kind::Wither | Kind::EnderDragon | Kind::Warden => {
+            crate::mob::boss::entity_data(out, mob, all);
+        }
         Kind::Cow | Kind::Pig | Kind::Sheep | Kind::Chicken => {
             boolean(out, data_id::KIND_16, mob.baby);
             match mob.kind {

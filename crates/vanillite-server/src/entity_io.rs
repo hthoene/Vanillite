@@ -151,6 +151,11 @@ impl EntityChunks {
         self.scratch.clear();
     }
 
+    /// Whether the entities of a chunk are in the world (`areEntitiesLoaded`).
+    pub(crate) fn is_loaded(&self, pos: ChunkPos) -> bool {
+        self.loaded.contains(&pos)
+    }
+
     /// Adds loaded entities to the world.
     fn add(&mut self, level: &mut Level, pos: ChunkPos, entities: Vec<Compound>) {
         let mut raw = Vec::new();
@@ -169,6 +174,24 @@ impl EntityChunks {
                 if let Some(mut e) = level.entities.store.get_mut(id) {
                     e.set_velocity(loaded.velocity);
                     e.set_flags(EntityFlags::ON_GROUND, loaded.on_ground);
+                }
+            } else if let Some((kind, p, v, rot, uuid, data)) =
+                nbt::load_special(&tag, self.seed ^ level.game_time())
+            {
+                let mut new = NewEntity::new(kind, level.network_ids().next(), uuid, p);
+                new.velocity = v;
+                new.rot = rot;
+                level.entities.spawn_special(new, data);
+            } else if let Some((p, uuid, cloud)) = nbt::load_cloud(&tag) {
+                let radius = cloud.radius;
+                let new =
+                    NewEntity::new(ids::AREA_EFFECT_CLOUD, level.network_ids().next(), uuid, p);
+                let id = level.entities.spawn_cloud(new, cloud);
+                if let Some(mut e) = level.entities.store.get_mut(id) {
+                    e.set_dims(vanillite_world::entity::Dimensions {
+                        width: radius * 2.0,
+                        height: 0.5,
+                    });
                 }
             } else if let Some((p, v, uuid, orb)) = nbt::load_orb(&tag) {
                 let mut new =
@@ -229,6 +252,10 @@ impl EntityChunks {
                     .entities
                     .experience_orb(id)
                     .map(|o| nbt::save_orb(&e, o))
+            } else if let Some(s) = level.entities.special(id) {
+                nbt::save_special(&e, s)
+            } else if let Some(c) = level.entities.cloud(id) {
+                Some(nbt::save_cloud(&e, c))
             } else if kind == ids::ARROW {
                 None
             } else {

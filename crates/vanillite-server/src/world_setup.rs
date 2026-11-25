@@ -407,7 +407,7 @@ impl ChunkSource for WorldChunkSource<'_> {
                 continue;
             }
             let mut nbt = Vec::new();
-            match vanillite_game::level::block_entity::update_tag(entity) {
+            match vanillite_game::level::block_entity::update_tag(entity, state) {
                 Some(tag) => {
                     if vanillite_nbt::write::write_network_compound(&tag, &mut nbt).is_err() {
                         nbt = vec![0];

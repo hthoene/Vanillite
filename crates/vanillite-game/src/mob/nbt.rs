@@ -20,9 +20,19 @@ fn uuid_ints(uuid: u128) -> Vec<i32> {
     vec![part(96), part(64), part(32), part(0)]
 }
 
+/// A UUID as four ints (`UUIDUtil.CODEC`).
+pub fn uuid_tag(uuid: u128) -> Tag {
+    Tag::IntArray(uuid_ints(uuid))
+}
+
 /// The UUID of an entity compound (`UUID` as four ints).
 pub fn uuid_of(tag: &Compound) -> Option<u128> {
-    match tag.get("UUID") {
+    uuid_from_tag(tag.get("UUID"))
+}
+
+/// A UUID stored as four ints.
+pub fn uuid_from_tag(tag: Option<&Tag>) -> Option<u128> {
+    match tag {
         Some(Tag::IntArray(v)) if v.len() == 4 => {
             #[allow(clippy::cast_sign_loss)]
             let part = |i: usize| u128::from(v[i] as u32);
@@ -106,6 +116,71 @@ fn save_entity(core: &EntityRef<'_>, out: &mut Compound) {
     }
 }
 
+/// An area effect cloud as entity NBT.
+pub fn save_cloud(core: &EntityRef<'_>, data: &crate::effect::cloud::CloudData) -> Compound {
+    let mut out = Compound::new();
+    save_entity(core, &mut out);
+    data.save(&mut out);
+    out
+}
+
+/// An area effect cloud loaded from entity NBT: position, UUID and data.
+pub fn load_cloud(tag: &Compound) -> Option<(Vec3, u128, crate::effect::cloud::CloudData)> {
+    if type_of(tag)? != vanillite_data::entity::ids::AREA_EFFECT_CLOUD {
+        return None;
+    }
+    let pos = vec3_of(tag, "Pos")?;
+    let uuid = uuid_of(tag)?;
+    Some((pos, uuid, crate::effect::cloud::CloudData::load(tag)))
+}
+
+/// A special entity (see [`super::boss::special`]) as entity NBT; `None` when it is not
+/// saved (`shouldBeSaved`).
+pub fn save_special(
+    core: &EntityRef<'_>,
+    data: &super::boss::special::SpecialData,
+) -> Option<Compound> {
+    let mut out = Compound::new();
+    save_entity(core, &mut out);
+    super::boss::special::save(data, &mut out)?;
+    Some(out)
+}
+
+/// A special entity loaded from entity NBT: type, position, motion, rotation, UUID and data.
+pub fn load_special(
+    tag: &Compound,
+    seed: i64,
+) -> Option<(
+    EntityTypeId,
+    Vec3,
+    Vec3,
+    Rotation,
+    u128,
+    super::boss::special::SpecialData,
+)> {
+    let kind = type_of(tag)?;
+    let data = super::boss::special::load(kind, tag)?;
+    let pos = vec3_of(tag, "Pos")?;
+    let velocity = vec3_of(tag, "Motion").unwrap_or(Vec3::ZERO);
+    let rot = match tag.get("Rotation") {
+        Some(Tag::List(l)) if l.0.len() == 2 => match (&l.0[0], &l.0[1]) {
+            (Tag::Float(y), Tag::Float(x)) if y.is_finite() && x.is_finite() => Rotation {
+                y_rot: *y,
+                x_rot: *x,
+                y_head_rot: *y,
+            },
+            _ => Rotation::default(),
+        },
+        _ => Rotation::default(),
+    };
+    // Generated entities (the pillars' crystals) have no UUID yet.
+    let uuid = uuid_of(tag).unwrap_or_else(|| {
+        let mut r = vanillite_base::random::LegacyRandom::new(seed);
+        super::random_uuid(&mut r)
+    });
+    Some((kind, pos, velocity, rot, uuid, data))
+}
+
 /// A mob as entity NBT.
 pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
     let mut out = Compound::new();
@@ -151,6 +226,7 @@ pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
             }
             out.insert("ignited", m.ignited);
         }
+        _ if super::boss::is_boss_kind(m.kind) => super::boss::save(m, &mut out),
         Kind::Cow | Kind::Pig | Kind::Sheep | Kind::Chicken => {
             out.insert("Age", m.age);
             out.insert("ForcedAge", 0);
@@ -170,7 +246,7 @@ pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
                 }
             }
         }
-        Kind::Skeleton | Kind::Spider | Kind::Enderman => {}
+        _ => {}
     }
     out
 }
@@ -230,7 +306,10 @@ pub fn load_mob(tag: &Compound, seed: i64) -> Option<LoadedMob> {
     };
     m.hurt_time = int(tag, "HurtTime").unwrap_or(0);
     m.death_time = int(tag, "DeathTime").unwrap_or(0);
-    m.persistent = boolean(tag, "PersistenceRequired");
+    // Elder guardians are persistent from birth (`setPersistenceRequired`), also when
+    // generated monuments store them without the key.
+    m.persistent = boolean(tag, "PersistenceRequired")
+        || kind == Kind::ElderGuardian && tag.get("PersistenceRequired").is_none();
     m.no_ai = boolean(tag, "NoAI");
     m.silent = boolean(tag, "Silent");
     m.y_body_rot = y_rot;
@@ -263,6 +342,7 @@ pub fn load_mob(tag: &Compound, seed: i64) -> Option<LoadedMob> {
             }
         }
         Kind::Skeleton | Kind::Spider | Kind::Enderman => {}
+        _ => super::boss::load(&mut m, tag),
     }
     // A fresh random per loaded mob, like `Entity.random`.
     let _ = m.random.next_int();

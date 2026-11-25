@@ -388,6 +388,12 @@ pub fn can_be_affected(kind: vanillite_data::entity::EntityTypeId, effect: MobEf
     }
 }
 
+/// `WitherBoss.addEffect` and `EnderDragon.addEffect`: these kinds refuse every effect (after
+/// `canBeAffected`, which still reports the effects they would take).
+pub fn refuses_all_effects(kind: vanillite_data::entity::EntityTypeId) -> bool {
+    kind == vanillite_data::entity::ids::WITHER || kind == vanillite_data::entity::ids::ENDER_DRAGON
+}
+
 /// `isInvertedHealAndHarm`.
 pub fn inverted_heal_and_harm(kind: vanillite_data::entity::EntityTypeId) -> bool {
     entity_in_tag(kind, "minecraft:inverted_healing_and_harm")
