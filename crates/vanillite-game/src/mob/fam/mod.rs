@@ -389,6 +389,14 @@ pub trait FamilyHooks {
     fn look_control(_t: &mut Tick<'_, '_>) -> bool {
         false
     }
+    /// The end of `baseTick` (`WaterAnimal.handleAirSupply`).
+    fn after_base_tick(_t: &mut Tick<'_, '_>) {}
+    /// The start of `aiStep`, before `super.aiStep()` (fish flopping on land).
+    fn ai_step_start(_t: &mut Tick<'_, '_>) {}
+    /// `thunderHit`: `true` when the kind handles the lightning strike itself.
+    fn thunder_hit(_h: &mut Hurt<'_, '_>) -> bool {
+        false
+    }
     /// `causeFallDamage` additions (the fall distance).
     fn on_fall_damage(_t: &mut Tick<'_, '_>, _distance: f64) {}
 
@@ -488,7 +496,8 @@ pub enum Ext {
     Brainy(brainy::State),
     Mount(mount::State),
     Companion(companion::State),
-    Wildlife(wildlife::State),
+    /// Boxed: the record is large and most mobs are of other families.
+    Wildlife(Box<wildlife::State>),
 }
 
 /// A goal of a family.
@@ -670,6 +679,15 @@ pub fn move_control(t: &mut Tick<'_, '_>) -> bool {
 }
 pub fn look_control(t: &mut Tick<'_, '_>) -> bool {
     by_family!(t.mob_ref().kind, false, look_control(t))
+}
+pub fn after_base_tick(t: &mut Tick<'_, '_>) {
+    by_family!(t.mob_ref().kind, (), after_base_tick(t));
+}
+pub fn ai_step_start(t: &mut Tick<'_, '_>) {
+    by_family!(t.mob_ref().kind, (), ai_step_start(t));
+}
+pub fn thunder_hit(h: &mut Hurt<'_, '_>, kind: Kind) -> bool {
+    by_family!(kind, false, thunder_hit(h))
 }
 pub fn on_fall_damage(t: &mut Tick<'_, '_>, distance: f64) {
     by_family!(t.mob_ref().kind, (), on_fall_damage(t, distance));

@@ -740,6 +740,11 @@ impl MoveToBlock {
     /// `tick` with the move-to target (`getMoveToTarget`, the block above by default) and
     /// the accepted distance (`acceptedDistance`, 1 by default).
     pub fn tick(&mut self, t: &mut Tick<'_, '_>, target: BlockPos, accepted: f64) {
+        self.tick_with(t, target, accepted, 40);
+    }
+
+    /// `tick` with the kind's `shouldRecalculatePath` interval (`tryTicks % every == 0`).
+    pub fn tick_with(&mut self, t: &mut Tick<'_, '_>, target: BlockPos, accepted: f64, every: i32) {
         let center = Vec3::new(
             f64::from(target.x) + 0.5,
             f64::from(target.y) + 0.5,
@@ -751,7 +756,7 @@ impl MoveToBlock {
         } else {
             self.reached_target = false;
             self.try_ticks += 1;
-            if self.try_ticks % 40 == 0 {
+            if self.try_ticks % every == 0 {
                 let at = Vec3::new(
                     f64::from(target.x) + 0.5,
                     f64::from(target.y),

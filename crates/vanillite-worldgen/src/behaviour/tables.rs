@@ -85,6 +85,13 @@ block_tags!(
     walls,
     washed_away_by_fluids,
     wooden_fences,
+    // Mob behaviour (#59).
+    bats_spawnable_on,
+    bee_attractive,
+    bee_growables,
+    mooshrooms_spawnable_on,
+    sand,
+    strider_warm_blocks,
 );
 
 /// A set of fluids (a resolved fluid tag), one bit per `minecraft:fluid` id.

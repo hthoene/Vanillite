@@ -1231,6 +1231,11 @@ pub fn is_dark_enough_to_spawn(
     brightness <= random.next_int_between_inclusive(lo, hi)
 }
 
+/// `getHeight(heightmap, x, z)`: the first free y of a column.
+pub fn heightmap_y(level: &Level, kind: HeightmapKind, x: i32, z: i32) -> i32 {
+    surface_y(level, kind, x, z)
+}
+
 fn surface_y(level: &Level, kind: HeightmapKind, x: i32, z: i32) -> i32 {
     let Some(c) = level.chunks.chunk(ChunkPos::new(x >> 4, z >> 4)) else {
         return level.min_y();

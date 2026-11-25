@@ -197,6 +197,9 @@ fn base_tick(t: &mut Tick<'_, '_>) {
             kinds::play_ambient_sound(t);
         }
     }
+    if t.exists() && t.mob_ref().kind.family() != super::Family::Classic {
+        super::fam::after_base_tick(t);
+    }
 }
 
 /// `LivingEntity.tickDeath`.
@@ -210,7 +213,7 @@ fn tick_death(t: &mut Tick<'_, '_>) {
 }
 
 /// Hurts the ticking mob itself (environment damage).
-fn hurt_self(t: &mut Tick<'_, '_>, source: DamageSource, amount: f32) -> bool {
+pub fn hurt_self(t: &mut Tick<'_, '_>, source: DamageSource, amount: f32) -> bool {
     let id = t.id;
     combat::hurt(t.level, t.ents, t.env, t.cx, id, source, amount)
 }
@@ -524,6 +527,12 @@ fn fluid_jump_threshold(t: &Tick<'_, '_>) -> f64 {
 
 /// `LivingEntity.aiStep` with `Mob.aiStep`'s additions.
 fn ai_step(t: &mut Tick<'_, '_>) {
+    if t.mob_ref().kind.family() != super::Family::Classic {
+        super::fam::ai_step_start(t);
+        if !t.exists() || t.mob_ref().removed {
+            return;
+        }
+    }
     {
         let m = t.mob();
         if m.no_jump_delay > 0 {
@@ -725,7 +734,7 @@ fn pos_below_affecting_movement(t: &Tick<'_, '_>) -> BlockPos {
 }
 
 /// `computeModifiedFriction`.
-fn modified_friction(friction: f32, modifier: f32) -> f32 {
+pub fn modified_friction(friction: f32, modifier: f32) -> f32 {
     (1.0 - (1.0 - friction) * modifier).clamp(0.0, 1.0)
 }
 
@@ -766,6 +775,11 @@ fn travel(t: &mut Tick<'_, '_>, input: Vec3) {
     if t.mob_ref().kind.family() != super::Family::Classic && super::fam::travel(t, input) {
         return;
     }
+    base_travel(t, input);
+}
+
+/// `LivingEntity.travel` without the kind's override (`super.travel(input)`).
+pub fn base_travel(t: &mut Tick<'_, '_>, input: Vec3) {
     let fluids = t.mob_ref().fluids;
     // `shouldTravelInFluid`: in a liquid it cannot stand on (striders walk on lava).
     let stands = t.mob_ref().nav.stands_on_lava && {
@@ -796,7 +810,7 @@ fn float_in_liquid_while_ridden(t: &mut Tick<'_, '_>) {
     }
 }
 
-fn gravity(t: &Tick<'_, '_>) -> f64 {
+pub fn gravity(t: &Tick<'_, '_>) -> f64 {
     if t.core().flags().contains(EntityFlags::NO_GRAVITY) {
         0.0
     } else {
