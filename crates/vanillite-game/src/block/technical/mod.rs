@@ -85,7 +85,9 @@ pub(crate) fn new_block_entity(state: BlockState) -> Option<BlockEntity> {
             BlockEntity::StructureBlock(Box::new(structure_block::StructureBlock::new(state)))
         }
         b if b == ids::JIGSAW => BlockEntity::Jigsaw(Box::new(jigsaw::Jigsaw::new(state))),
-        b if b == ids::TEST_BLOCK => BlockEntity::TestBlock(Box::default()),
+        b if b == ids::TEST_BLOCK => {
+            BlockEntity::TestBlock(Box::new(test_block::TestBlock::new(state)))
+        }
         b if b == ids::TEST_INSTANCE_BLOCK => BlockEntity::TestInstance(Box::default()),
         _ => return None,
     })

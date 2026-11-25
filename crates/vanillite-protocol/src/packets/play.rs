@@ -289,6 +289,7 @@ pub mod serverbound {
 
 /// Clientbound play packets.
 pub mod clientbound {
+    pub use super::technical::clientbound::*;
     pub use super::world::clientbound::*;
     use crate::Packet;
     use crate::text::Component;

@@ -392,6 +392,9 @@ pub struct Level {
     /// Statistics and criterion triggers for players (`awardStat`, `CriteriaTriggers`) from
     /// block code; the server applies them after the players' tick.
     player_awards: Vec<(EntityId, crate::advancements::award::Award)>,
+    /// `test_instance_block_action` packets of the tick; the server's game tests handle them
+    /// after the players' packets.
+    pub test_instance_actions: Vec<crate::block::technical::test_instance::Action>,
     /// The server's maps (shared by all worlds).
     maps: Option<Arc<crate::map::Maps>>,
     /// The server's structure templates (`getStructureTemplateManager`, shared by all worlds).
@@ -468,6 +471,7 @@ impl Level {
             sign_editors: Vec::new(),
             player_gives: Vec::new(),
             player_awards: Vec::new(),
+            test_instance_actions: Vec::new(),
             maps: None,
             templates: None,
             packs: None,
@@ -568,6 +572,17 @@ impl Level {
     pub fn trigger(&mut self, player: EntityId, event: crate::advancements::trigger::Event) {
         self.player_awards
             .push((player, crate::advancements::award::Award::Trigger(event)));
+    }
+
+    /// `clearBlockEvents(bb)`: drops the queued block events inside `min..=max`.
+    pub fn clear_block_events(&mut self, min: BlockPos, max: BlockPos) {
+        let inside = |p: BlockPos| {
+            (min.x..=max.x).contains(&p.x)
+                && (min.y..=max.y).contains(&p.y)
+                && (min.z..=max.z).contains(&p.z)
+        };
+        self.block_events.retain(|e| !inside(e.pos));
+        self.block_event_set.retain(|e| !inside(e.pos));
     }
 
     /// Takes the statistics and triggers block code awarded since the last call.
