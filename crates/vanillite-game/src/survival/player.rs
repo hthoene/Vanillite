@@ -22,10 +22,13 @@ use crate::player::PlayerData;
 use crate::scoreboard::CriteriaKind;
 use crate::stats::custom;
 
-/// `Math.round(damage * 10.0F)` of the damage statistics, below `Float.MAX_VALUE / 10`.
+use crate::advancements::tracking::reset_fall_distance;
+
+/// `Math.round(damage * 10.0F)` of the damage statistics, for damage above 0 and below
+/// `Float.MAX_VALUE / 10`.
 #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
-fn damage_stat(damage: f32) -> Option<i32> {
-    (damage < 3.402_823_5e37).then(|| (damage * 10.0).round() as i32)
+pub fn damage_stat(damage: f32) -> Option<i32> {
+    (damage > 0.0 && damage < 3.402_823_5e37).then(|| (damage * 10.0).round() as i32)
 }
 
 /// `Attributes.MAX_HEALTH` of players.
@@ -223,6 +226,8 @@ pub struct Survival {
     pub effects: crate::effect::ActiveEffects,
     /// `wardenSpawnTracker`.
     pub warden_spawn_tracker: crate::block::sculk_shrieker::WardenSpawnTracker,
+    /// The positions of the distance triggers.
+    pub tracking: crate::advancements::tracking::Tracking,
     /// `moveDist` and `nextStep`: when the next step makes a sound and a vibration.
     pub move_dist: f32,
     pub next_step: f32,
@@ -305,6 +310,7 @@ impl Default for Survival {
             last_level_up_time: 0,
             effects: crate::effect::ActiveEffects::default(),
             warden_spawn_tracker: crate::block::sculk_shrieker::WardenSpawnTracker::default(),
+            tracking: crate::advancements::tracking::Tracking::default(),
             move_dist: 0.0,
             next_step: 1.0,
             game_events: Vec::new(),
@@ -514,6 +520,7 @@ impl Survival {
             data.get("warden_spawn_tracker"),
         );
         s.portal = crate::portal::PortalState::load(data);
+        s.tracking = crate::advancements::tracking::Tracking::load(data);
         if let Some(Tag::Compound(loc)) = data.get("LastDeathLocation")
             && let (Some(Tag::String(dim)), Some(Tag::IntArray(pos))) =
                 (loc.get("dimension"), loc.get("pos"))
@@ -564,6 +571,7 @@ impl Survival {
             }
         }
         self.portal.save(out);
+        self.tracking.save(out);
         self.food.save(out);
         out.remove("LastDeathLocation");
         if let Some((dim, pos)) = &self.last_death {
@@ -588,6 +596,7 @@ impl Survival {
             respawn: self.respawn.clone(),
             warden_spawn_tracker: self.warden_spawn_tracker,
             portal: self.portal.clone(),
+            tracking: self.tracking.respawned(),
             ..Survival::default()
         };
         if keep_inventory {
@@ -920,6 +929,25 @@ pub fn hurt_with(
             );
         });
     }
+    // `ENTITY_HURT_PLAYER`, `DAMAGE_BLOCKED_BY_SHIELD` and the causing player's
+    // `PLAYER_HURT_ENTITY` (resolved with the entities: `view::resolve_combat`).
+    if source.cause.is_some()
+        || player
+            .advancements
+            .listens(crate::advancements::trigger::TriggerKind::ENTITY_HURT_PLAYER)
+    {
+        player
+            .advancements
+            .combat
+            .push(crate::advancements::view::PendingCombat::Hurt {
+                source,
+                damage,
+                blocked,
+            });
+    }
+    if let Some(v) = damage_stat(blocked_amount) {
+        player.stats.award(custom::DAMAGE_BLOCKED_BY_SHIELD, v);
+    }
     true
 }
 
@@ -964,20 +992,24 @@ fn actually_hurt(
         let (armor, toughness) = armor_values(player);
         damage = combat::damage_after_absorb_with(damage, armor, toughness, armor_effectiveness);
     }
-    // `getDamageAfterMagicAbsorb`: the protection enchantments.
-    if !types.is(kind, tag::BYPASSES_ENCHANTMENTS) && damage > 0.0 {
-        let protection = protection(entity, player, env, &source);
-        if protection > 0.0 {
-            damage = combat::damage_after_magic_absorb(damage, protection);
-        }
-    }
-    // `getDamageAfterMagicAbsorb`: Resistance (protection enchantments come with armour).
+    // `getDamageAfterMagicAbsorb`: Resistance (with `DAMAGE_RESISTED`), then the protection
+    // enchantments.
     if !types.is(kind, tag::BYPASSES_EFFECTS) {
         if !types.is(kind, tag::BYPASSES_RESISTANCE) {
+            let before = damage;
             damage = player.survival.effects.resistance_damage(damage);
+            if let Some(v) = damage_stat(before - damage) {
+                player.stats.award(custom::DAMAGE_RESISTED, v);
+            }
         }
         if damage <= 0.0 {
             damage = 0.0;
+        }
+        if !types.is(kind, tag::BYPASSES_ENCHANTMENTS) && damage > 0.0 {
+            let protection = protection(entity, player, env, &source);
+            if protection > 0.0 {
+                damage = combat::damage_after_magic_absorb(damage, protection);
+            }
         }
     }
     let s = &mut player.survival;
@@ -1064,11 +1096,14 @@ fn hurt_armor(player: &mut PlayerData, env: &mut Env<'_>, source: &DamageSource,
                 n += 1;
             }
         }
-        let d = crate::item::damage(stack) + n;
-        if d >= crate::item::max_damage(stack) {
-            stack.shrink(1);
-        } else if n > 0 {
-            crate::item::set_damage(stack, d);
+        if n > 0 {
+            let d = crate::item::damage(stack) + n;
+            crate::advancements::view::apply_damage(
+                Some(&mut player.advancements),
+                Some(&mut player.stats),
+                stack,
+                d,
+            );
         }
     }
 }
@@ -1175,12 +1210,15 @@ fn apply_item_blocking(
             && crate::item::is_damageable(s)
         {
             let d = crate::item::damage(s) + n;
-            if d >= crate::item::max_damage(s) {
-                s.shrink(1);
+            let broke = crate::advancements::view::apply_damage(
+                Some(&mut player.advancements),
+                Some(&mut player.stats),
+                s,
+                d,
+            );
+            if broke {
                 player.survival.using_item = None;
                 entity.mark_data_dirty();
-            } else {
-                crate::item::set_damage(s, d);
             }
         }
     }
@@ -1276,6 +1314,12 @@ pub fn die(
         }
     }
     // The kill credit is the damage's causing entity: nothing else credits kills yet.
+    if let Some(killer) = source.cause {
+        player
+            .advancements
+            .combat
+            .push(crate::advancements::view::PendingCombat::Died { source, killer });
+    }
     env.out.push(Effect::Died {
         victim: id,
         killer: source.cause,
@@ -1549,7 +1593,7 @@ pub fn do_tick_ai(
         if s.effects.has(crate::effect::MobEffect::SLOW_FALLING)
             || s.effects.has(crate::effect::MobEffect::LEVITATION)
         {
-            s.fall_distance = 0.0;
+            reset_fall_distance(player);
         }
     }
     // `Player.aiStep`: peaceful regeneration (`ServerPlayer.tickRegeneration`).
@@ -1627,10 +1671,9 @@ fn update_fluids(entity: &EntityMut<'_>, player: &mut PlayerData, env: &Env<'_>)
     let pos = e.pos();
     let eye = Vec3::new(pos.x, pos.y + eye_height(e.dims().height), pos.z);
     let contact = blocks::fluid_contact(env.blocks, env.facts, e.aabb(), eye);
-    let s = &mut player.survival;
-    s.fluids = contact;
+    player.survival.fluids = contact;
     if contact.in_water() {
-        s.fall_distance = 0.0;
+        reset_fall_distance(player);
     }
 }
 
@@ -1840,7 +1883,7 @@ pub fn on_move(
     let dy = mv.to.y - mv.from.y;
     check_fall_damage(entity, player, env, dy, mv.on_ground, crouching);
     if mv.moved_upwards {
-        player.survival.fall_distance = 0.0;
+        reset_fall_distance(player);
     }
     if player.game_mode != GameMode::Spectator && !(mv.on_ground && crouching) {
         movement_emission(entity, player, env, mv, crouching);
@@ -2002,7 +2045,7 @@ fn check_fall_damage(
                 }
             }
         }
-        player.survival.fall_distance = 0.0;
+        reset_fall_distance(player);
         player.survival.last_climbable = None;
     }
 }

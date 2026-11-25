@@ -503,6 +503,15 @@ impl Entities {
         self.store.spawn(new, |id| bolts.push(id, data))
     }
 
+    /// The lightning bolt data of an entity.
+    pub fn bolt(&self, id: EntityId) -> Option<&crate::lightning::LightningData> {
+        let entity = self.store.get(id)?;
+        if entity.kind() != ids::LIGHTNING_BOLT {
+            return None;
+        }
+        self.bolts.get(entity.kind_row())
+    }
+
     /// The lightning bolt data of an entity, mutably.
     pub fn bolt_mut(&mut self, id: EntityId) -> Option<&mut crate::lightning::LightningData> {
         let entity = self.store.get(id)?;

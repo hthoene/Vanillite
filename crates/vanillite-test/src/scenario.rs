@@ -697,6 +697,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             to: p,
             block: String::new(),
             hurt: None,
+            command: None,
             effect: None,
             throw_potion: None,
             chunks: Vec::new(),

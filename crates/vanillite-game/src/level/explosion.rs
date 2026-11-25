@@ -352,6 +352,11 @@ impl Level {
             let resistance = mob.map_or(0.0, |m| m.attrs.explosion_knockback_resistance);
             let knockback =
                 direction * ((1.0 - dist) * exposure * style.knockback * (1.0 - resistance));
+            // `onExplosionHit`: where the explosion hit the player and what caused it.
+            if let Some(p) = self.entities.player_mut(id) {
+                crate::advancements::tracking::explosion_hit(p, pos, source);
+            }
+            let player = self.entities.player(id);
             if let Some(p) = player {
                 hit_players.push((id, knockback));
                 // A client moves the player by the packet, unless the server moves it itself.

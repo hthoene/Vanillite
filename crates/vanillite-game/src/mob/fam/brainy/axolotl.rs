@@ -407,6 +407,10 @@ pub fn bucket_or_feed(ix: &mut Interact<'_, '_>) -> Interaction {
                 seed,
             );
         }
+        if let Some(item) = vanillite_data::registry::ITEM.id(bucket) {
+            let stack = crate::item::ItemStack::new(item, 1);
+            crate::mob::animal::filled_bucket(ix.ents, ix.player, &stack);
+        }
         crate::mob::animal::fill_held_pub(ix, bucket);
         if let Some(m) = ix.ents.mob_mut(ix.target) {
             m.removed = true;
