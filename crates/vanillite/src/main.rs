@@ -22,9 +22,12 @@ Commands:
   health           Send a status ping to the local server; exit code 0 if it answers
   convert          Convert the world into another format while the server is stopped
   export <target>  Write a Vanilla (Anvil) copy of an own-format world into <target>
+  upgrade-world    Rewrite every chunk of an own-format world written by an older
+                   Minecraft version in this version (otherwise chunks are upgraded
+                   when they are saved)
   version          Print the version
 
-Options of run, health, convert and export:
+Options of run, health, convert, export and upgrade-world:
   --dir <path>   Server folder with config files and worlds (default: current folder)
 
 Options of convert:
@@ -49,6 +52,7 @@ fn main() -> ExitCode {
         Some("health") => health::run(args, USAGE),
         Some("convert") => convert(args),
         Some("export") => export(args),
+        Some("upgrade-world") => upgrade_world(args),
         Some("version" | "--version" | "-V") => {
             println!("vanillite {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
@@ -131,6 +135,28 @@ fn convert(mut args: impl Iterator<Item = String>) -> ExitCode {
         Ok(_) => ExitCode::SUCCESS,
         Err(e) => {
             log::error!("Conversion failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `vanillite upgrade-world [--dir <path>]`.
+fn upgrade_world(mut args: impl Iterator<Item = String>) -> ExitCode {
+    let mut dir = PathBuf::from(".");
+    while let Some(arg) = args.next() {
+        match (arg.as_str(), args.next()) {
+            ("--dir", Some(path)) => dir = PathBuf::from(path),
+            _ => {
+                eprintln!("Invalid option {arg:?}\n\n{USAGE}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    logger::init();
+    match vanillite_server::upgrade_world(&dir) {
+        Ok(_) => ExitCode::SUCCESS,
+        Err(e) => {
+            log::error!("Upgrade failed: {e}");
             ExitCode::FAILURE
         }
     }
