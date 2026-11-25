@@ -16,7 +16,7 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 use vanillite_protocol::Inbound;
 use vanillite_protocol::frame::FrameDecoder;
-use vanillite_protocol::packets::common::ClientInfo;
+use vanillite_protocol::packets::common::{ClientInfo, ResourcePackAction};
 use vanillite_protocol::packets::handshake::Intent;
 use vanillite_protocol::packets::{configuration as cfg, login, play, status};
 use vanillite_protocol::sets::{
@@ -90,6 +90,14 @@ impl Source {
     }
 }
 
+/// `rate-limit` (Vanilla's `RateKickingConnection`): packets of the current second and the
+/// smoothed average of the last seconds.
+struct PacketRate {
+    second: Instant,
+    received: u32,
+    average: f32,
+}
+
 struct KeepAlive {
     enabled: bool,
     next: Instant,
@@ -113,6 +121,7 @@ pub(crate) struct Conn {
     memory: bool,
     /// Translates the packets of a client of an older version (multi-version layer).
     adapter: Option<vanillite_multiversion::ServerboundHalf>,
+    packet_rate: PacketRate,
 }
 
 impl Conn {
@@ -177,6 +186,11 @@ impl Conn {
             guard,
             memory: false,
             adapter: None,
+            packet_rate: PacketRate {
+                second: now,
+                received: 0,
+                average: 0.0,
+            },
         }
     }
 
@@ -245,8 +259,56 @@ impl Conn {
         self.keepalive.next = Instant::now();
     }
 
-    /// Receives and decodes the next packet, handling timeouts and keepalives while waiting.
+    /// Receives and decodes the next packet and counts it for `rate-limit`.
     async fn recv<T>(&mut self, decode: fn(&[u8]) -> vanillite_protocol::Result<T>) -> Result<T> {
+        let packet = self.recv_packet(decode).await?;
+        self.count_packet()?;
+        Ok(packet)
+    }
+
+    /// `Connection.tickSecond` of `RateKickingConnection`: once per second the average is
+    /// `lerp(0.75, received, average)`; above `rate-limit` the connection is kicked.
+    fn count_packet(&mut self) -> Result<()> {
+        let limit = self.shared.config.rate_limit;
+        if limit == 0 {
+            return Ok(());
+        }
+        let r = &mut self.packet_rate;
+        let elapsed = Instant::now().saturating_duration_since(r.second).as_secs();
+        if elapsed > 0 {
+            #[allow(clippy::as_conversions)] // a packet count, exact up to 2^24
+            let received = r.received as f32;
+            r.average += 0.75 * (received - r.average);
+            // Seconds without packets.
+            for _ in 1..elapsed.min(16) {
+                r.average *= 0.25;
+            }
+            r.received = 0;
+            r.second = r
+                .second
+                .checked_add(Duration::from_secs(elapsed))
+                .unwrap_or(r.second);
+            #[allow(clippy::as_conversions)] // at most `i32::MAX`
+            if r.average > limit as f32 {
+                log::warn!(
+                    "Player exceeded rate-limit (sent {} packets per second)",
+                    r.average
+                );
+                return Err(kick(Component::translatable(
+                    "disconnect.exceeded_packet_rate",
+                    vec![],
+                )));
+            }
+        }
+        r.received = r.received.saturating_add(1);
+        Ok(())
+    }
+
+    /// Receives and decodes the next packet, handling timeouts and keepalives while waiting.
+    async fn recv_packet<T>(
+        &mut self,
+        decode: fn(&[u8]) -> vanillite_protocol::Result<T>,
+    ) -> Result<T> {
         loop {
             // Packets the multi-version layer added to the last one come first.
             if let Some(t) = self.adapter.as_mut().and_then(|a| a.pending()) {
@@ -376,6 +438,8 @@ impl Conn {
     async fn drive(&mut self) -> Result<()> {
         let ServerboundHandshake::Intention(hs) = self.recv(ServerboundHandshake::decode).await?;
         match hs.intent {
+            // `repliesToStatus`: without it the connection is closed at once.
+            Intent::Status if !self.shared.config.enable_status => Err(End::Done),
             Intent::Status => self.status(hs.protocol_version).await,
             Intent::Login | Intent::Transfer => {
                 self.enter(State::Login, Some(self.shared.config.login_timeout));
@@ -513,12 +577,20 @@ impl Conn {
         else {
             return Err(Error::Invalid("unexpected login packet").into());
         };
-        log::info!(
-            "{} ({}) logged in from {}",
-            profile.name,
-            profile.id,
-            self.addr
-        );
+        if self.shared.config.log_ips {
+            log::info!(
+                "{} ({}) logged in from {}",
+                profile.name,
+                profile.id,
+                self.addr
+            );
+        } else {
+            log::info!(
+                "{} ({}) logged in from <ip address withheld>",
+                profile.name,
+                profile.id
+            );
+        }
         Ok(profile)
     }
 
@@ -622,16 +694,23 @@ impl Conn {
             channel: Identifier::vanilla("brand"),
             data: RawBytes(brand),
         });
+        let config = &self.shared.config;
+        if !config.server_links.is_empty() {
+            self.out.send(&cfg::clientbound::ServerLinks {
+                links: config.server_links.clone(),
+            });
+        }
         self.out.send_shared(&data.features);
         self.out.send_shared(&data.select_known_packs);
         let mut info = ClientInfo::default();
-        let mut finish_sent = false;
+        // `ServerConfigurationPacketListenerImpl`'s task queue after the registries.
+        let mut task = Task::KnownPacks;
         loop {
             let packet = self.recv(ServerboundConfiguration::decode).await?;
             self.rate(packet.cost())?;
             match packet {
                 ServerboundConfiguration::ClientInformation(c) => info = c.0,
-                ServerboundConfiguration::SelectKnownPacks(p) if !finish_sent => {
+                ServerboundConfiguration::SelectKnownPacks(p) if task == Task::KnownPacks => {
                     let registries = if p.packs == data.offered_packs {
                         &data.registries_known
                     } else {
@@ -641,26 +720,84 @@ impl Conn {
                         self.out.send_shared(r);
                     }
                     self.out.send_shared(&data.tags);
-                    self.out.send(&cfg::clientbound::FinishConfiguration);
-                    finish_sent = true;
-                    // The client is in play after `finish_configuration`: a configuration
-                    // keepalive sent now would reach it as an unknown play packet.
-                    self.keepalive.enabled = false;
+                    task = self.next_task(Task::KnownPacks, &info);
                 }
-                ServerboundConfiguration::FinishConfiguration(_) if finish_sent => return Ok(info),
+                ServerboundConfiguration::AcceptCodeOfConduct(_) if task == Task::CodeOfConduct => {
+                    task = self.next_task(Task::CodeOfConduct, &info);
+                }
+                ServerboundConfiguration::ResourcePack(p) => {
+                    self.resource_pack_answer(p.action)?;
+                    if task == Task::ResourcePack && is_terminal(p.action) {
+                        task = self.next_task(Task::ResourcePack, &info);
+                    }
+                }
+                ServerboundConfiguration::FinishConfiguration(_) if task == Task::Join => {
+                    return Ok(info);
+                }
                 ServerboundConfiguration::KeepAlive(k) => self.keepalive_answer(k.id)?,
                 ServerboundConfiguration::CustomPayload(_)
                 | ServerboundConfiguration::Pong(_)
-                | ServerboundConfiguration::ResourcePack(_)
                 | ServerboundConfiguration::CookieResponse(_)
-                | ServerboundConfiguration::CustomClickAction(_)
-                | ServerboundConfiguration::AcceptCodeOfConduct(_) => {}
+                | ServerboundConfiguration::CustomClickAction(_) => {}
                 ServerboundConfiguration::SelectKnownPacks(_)
+                | ServerboundConfiguration::AcceptCodeOfConduct(_)
                 | ServerboundConfiguration::FinishConfiguration(_) => {
                     return Err(Error::Invalid("unexpected configuration packet").into());
                 }
             }
         }
+    }
+
+    /// Starts the configuration task after `done` and returns it: the code of conduct, the
+    /// resource pack, then joining (`finish_configuration`).
+    fn next_task(&mut self, done: Task, info: &ClientInfo) -> Task {
+        let config = &self.shared.config;
+        if done < Task::CodeOfConduct && !config.code_of_conduct.is_empty() {
+            let text = config
+                .code_of_conduct
+                .get(&info.language.to_lowercase())
+                .or_else(|| config.code_of_conduct.get("en_us"))
+                .or_else(|| config.code_of_conduct.values().next())
+                .cloned()
+                .unwrap_or_default();
+            self.out.send(&cfg::clientbound::CodeOfConduct { text });
+            return Task::CodeOfConduct;
+        }
+        if done < Task::ResourcePack
+            && let Some(pack) = &config.resource_pack
+        {
+            self.out.send(&cfg::clientbound::ResourcePackPush {
+                id: pack.id,
+                url: pack.url.clone(),
+                hash: pack.hash.clone(),
+                required: pack.required,
+                prompt: pack.prompt.clone(),
+            });
+            return Task::ResourcePack;
+        }
+        self.out.send(&cfg::clientbound::FinishConfiguration);
+        // The client is in play after `finish_configuration`: a configuration keepalive sent
+        // now would reach it as an unknown play packet.
+        self.keepalive.enabled = false;
+        Task::Join
+    }
+
+    /// `handleResourcePackResponse`: declining a required pack kicks.
+    fn resource_pack_answer(&self, action: ResourcePackAction) -> Result<()> {
+        if action == ResourcePackAction::Declined
+            && self
+                .shared
+                .config
+                .resource_pack
+                .as_ref()
+                .is_some_and(|p| p.required)
+        {
+            return Err(kick(Component::translatable(
+                "multiplayer.requiredTexturePrompt.disconnect",
+                vec![],
+            )));
+        }
+        Ok(())
     }
 
     async fn play(&mut self, profile: GameProfile, client_info: ClientInfo) -> Result<()> {
@@ -700,6 +837,7 @@ impl Conn {
                         .send(&play::clientbound::PongResponse { time: p.time });
                 }
                 ServerboundPlay::Unhandled { .. } => {}
+                ServerboundPlay::ResourcePack(p) => self.resource_pack_answer(p.action)?,
                 packet => {
                     seq = seq.wrapping_add(1);
                     if tx.try_send(Inbound { seq, packet }).is_err() {
@@ -713,6 +851,27 @@ impl Conn {
             }
         }
     }
+}
+
+/// The configuration task waited for, in Vanilla's order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Task {
+    /// `SynchronizeRegistriesTask`: the answer to `select_known_packs`.
+    KnownPacks,
+    /// `ServerCodeOfConductConfigurationTask`.
+    CodeOfConduct,
+    /// `ServerResourcePackConfigurationTask`.
+    ResourcePack,
+    /// `JoinWorldTask`: the client's `finish_configuration`.
+    Join,
+}
+
+/// `ServerboundResourcePackPacket.Action.isTerminal`.
+fn is_terminal(action: ResourcePackAction) -> bool {
+    !matches!(
+        action,
+        ResourcePackAction::Accepted | ResourcePackAction::Downloaded
+    )
 }
 
 fn kick(reason: Component) -> End {

@@ -320,6 +320,16 @@ pub mod clientbound {
         pub overlay: bool,
     }
 
+    /// `tab_list`: the header and footer of the player list.
+    #[derive(Debug, Clone, PartialEq, Eq, Packet)]
+    #[packet(state = Play, dir = Clientbound, name = "tab_list")]
+    pub struct TabList {
+        #[field(max_len = 2_097_152)]
+        pub header: Component,
+        #[field(max_len = 2_097_152)]
+        pub footer: Component,
+    }
+
     /// `chunk_batch_start`.
     #[derive(Debug, Clone, PartialEq, Eq, Packet)]
     #[packet(state = Play, dir = Clientbound, name = "chunk_batch_start")]

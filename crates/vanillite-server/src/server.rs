@@ -397,6 +397,9 @@ impl ServerBuilder {
             tick_rate: std::sync::Mutex::new(TickRateManager::default()),
             tick_times: std::sync::Mutex::new(crate::tick_rate::TickTimes::default()),
             force_game_mode: config.properties.force_gamemode,
+            language: prepared.language,
+            broadcast_console_to_ops: config.properties.broadcast_console_to_ops,
+            broadcast_rcon_to_ops: config.properties.broadcast_rcon_to_ops,
             plugins,
             this: this.clone(),
         });
@@ -556,6 +559,7 @@ impl ServerBuilder {
 
         let net = NetState::start(
             &config,
+            &dir,
             prepared.configuration,
             self.network,
             global.chat.enforce_secure,
@@ -599,6 +603,15 @@ impl ServerBuilder {
         server.next_backup = server.backup_due_after();
         server.ticks_until_autosave = server.autosave_interval();
         let _ = server.global.handle.set(server.handle());
+        if let Some(net) = &server.net {
+            crate::admin::start_rcon(
+                &server.config,
+                &net.network,
+                server.handle(),
+                &server.global,
+            );
+            crate::admin::start_query(&server.config, &net.network, Arc::clone(&net.query));
+        }
         server.global.plugins.enable_all();
         let bots = server.config.server.debug.test_bots;
         if bots > 0
@@ -1180,6 +1193,7 @@ impl Server {
             sink,
             inbox: Arc::clone(&arrival.inbox),
             ip,
+            allows_listing: arrival.client.allows_listing,
         });
         let global = Arc::clone(&self.global);
         self.run_in_world(
@@ -1249,8 +1263,27 @@ impl Server {
     /// G2: player list and autosave.
     fn global_post_phase(&mut self) {
         let online = self.global.players.count();
+        let properties = &self.config.properties;
         if let Some(net) = self.net.as_mut() {
             net.set_online(online);
+            // `rebuildServerStatus` every 5 seconds; the Query names every second.
+            let (sample_due, query_due) = (
+                self.tick_count.is_multiple_of(100),
+                self.tick_count.is_multiple_of(20),
+            );
+            if sample_due || (query_due && properties.enable_query) {
+                let players = self.global.players.snapshot();
+                if sample_due {
+                    let listed: Vec<(String, u128, bool)> = players
+                        .iter()
+                        .map(|p| (p.name.clone(), p.uuid.0, p.allows_listing))
+                        .collect();
+                    net.update_sample(&listed, properties.hide_online_players);
+                }
+                if properties.enable_query {
+                    net.query.set(players.into_iter().map(|p| p.name).collect());
+                }
+            }
         }
         // Player list maintenance (latency updates, idle kicks) comes with players.
         self.ticks_until_autosave -= 1;
