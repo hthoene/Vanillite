@@ -58,6 +58,7 @@ pub fn brushable_on_place(
 
 /// `BrushableBlock.tick`: falls without dropping an item.
 pub fn brushable_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
+    super::brushable::check_reset(level, pos);
     if is_free(level.block(pos.below())) && pos.y >= level.min_y() {
         fall(level, pos, state, false);
     }
@@ -184,11 +185,12 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
         }
     }
     if !removed && let Some(mut entity) = level.entities.store.get_mut(id) {
-        // `getAirDrag()`.
+        // `getAirDrag()`: a float.
+        let drag = f64::from(0.98f32);
         entity.set_velocity(Vec3::new(
-            velocity.x * 0.98,
-            velocity.y * 0.98,
-            velocity.z * 0.98,
+            velocity.x * drag,
+            velocity.y * drag,
+            velocity.z * drag,
         ));
         entity.set_flags(EntityFlags::PRECISE_POSITION, horizontal || vertical);
     }

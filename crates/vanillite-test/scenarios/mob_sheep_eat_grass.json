@@ -1,0 +1,102 @@
+{
+  "description": "Two baby sheep on grass in a fenced pen at noon eat grass (grass block to dirt) and grow up faster: eat block goal and its block change.",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      11,
+      -58,
+      11
+    ]
+  ],
+  "ticks": 200,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        11,
+        -60,
+        0
+      ],
+      "block": "minecraft:oak_fence"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        11
+      ],
+      "to": [
+        11,
+        -60,
+        11
+      ],
+      "block": "minecraft:oak_fence"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -60,
+        11
+      ],
+      "block": "minecraft:oak_fence"
+    },
+    {
+      "op": "fill",
+      "from": [
+        11,
+        -60,
+        0
+      ],
+      "to": [
+        11,
+        -60,
+        11
+      ],
+      "block": "minecraft:oak_fence"
+    }
+  ],
+  "entities": [
+    {
+      "name": "lamb",
+      "type": "minecraft:sheep",
+      "pos": [
+        4.5,
+        -60.0,
+        4.5
+      ],
+      "seed": 12,
+      "baby": true,
+      "finalize": false
+    },
+    {
+      "name": "lamb2",
+      "type": "minecraft:sheep",
+      "pos": [
+        7.5,
+        -60.0,
+        7.5
+      ],
+      "seed": 13,
+      "baby": true,
+      "finalize": false
+    }
+  ],
+  "tier": "fast"
+}

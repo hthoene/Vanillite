@@ -105,6 +105,8 @@ pub mod ids {
     pub const BLOCK_STATE: u16 = find("minecraft:block_state");
     pub const BLOCK_ENTITY_DATA: u16 = find("minecraft:block_entity_data");
     pub const CUSTOM_NAME: u16 = find("minecraft:custom_name");
+    pub const ATTRIBUTE_MODIFIERS: u16 = find("minecraft:attribute_modifiers");
+    pub const ENTITY_DATA: u16 = find("minecraft:entity_data");
     pub const CONTAINER: u16 = find("minecraft:container");
     pub const REPAIR_COST: u16 = find("minecraft:repair_cost");
     pub const STORED_ENCHANTMENTS: u16 = find("minecraft:stored_enchantments");
@@ -118,6 +120,21 @@ pub mod ids {
     pub const TRIM: u16 = find("minecraft:trim");
     pub const CONTAINER_LOOT: u16 = find("minecraft:container_loot");
     pub const LOCK: u16 = find("minecraft:lock");
+    pub const PROFILE: u16 = find("minecraft:profile");
+    pub const NOTE_BLOCK_SOUND: u16 = find("minecraft:note_block_sound");
+    pub const MAP_ID: u16 = find("minecraft:map_id");
+    pub const MAP_POST_PROCESSING: u16 = find("minecraft:map_post_processing");
+    pub const MAP_DECORATIONS: u16 = find("minecraft:map_decorations");
+    pub const FIREWORKS: u16 = find("minecraft:fireworks");
+    pub const FIREWORK_EXPLOSION: u16 = find("minecraft:firework_explosion");
+    pub const WRITABLE_BOOK_CONTENT: u16 = find("minecraft:writable_book_content");
+    pub const PROVIDES_BANNER_PATTERNS: u16 = find("minecraft:provides_banner_patterns");
+    pub const ITEM_NAME: u16 = find("minecraft:item_name");
+    pub const RARITY: u16 = find("minecraft:rarity");
+    pub const BUNDLE_CONTENTS: u16 = find("minecraft:bundle_contents");
+    pub const DYE: u16 = find("minecraft:dye");
+    pub const INSTRUMENT: u16 = find("minecraft:instrument");
+    pub const OMINOUS_BOTTLE_AMPLIFIER: u16 = find("minecraft:ominous_bottle_amplifier");
 }
 
 /// Validates one component value: `data` must be exactly one value of the stream codec of

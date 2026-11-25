@@ -802,7 +802,7 @@ impl Conn {
 
     async fn play(&mut self, profile: GameProfile, client_info: ClientInfo) -> Result<()> {
         self.enter(State::Play, None);
-        let (tx, rx) = std::sync::mpsc::sync_channel(self.shared.config.max_inbound_packets);
+        let (tx, rx) = vanillite_protocol::inbound_queue(self.shared.config.max_inbound_packets);
         let joined = Joined {
             profile,
             client_info,
@@ -840,7 +840,7 @@ impl Conn {
                 ServerboundPlay::ResourcePack(p) => self.resource_pack_answer(p.action)?,
                 packet => {
                     seq = seq.wrapping_add(1);
-                    if tx.try_send(Inbound { seq, packet }).is_err() {
+                    if !tx.try_send(Inbound { seq, packet }) {
                         // The world is not draining this connection fast enough (SEC-17).
                         return Err(kick(Component::translatable(
                             "disconnect.exceeded_packet_rate",

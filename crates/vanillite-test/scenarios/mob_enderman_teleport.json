@@ -1,0 +1,45 @@
+{
+  "description": "An enderman at noon takes generic damage twice and teleports away (random teleport positions in the loaded chunks), otherwise wanders.",
+  "time": 6000,
+  "region": [
+    [
+      -16,
+      -61,
+      -16
+    ],
+    [
+      31,
+      -50,
+      31
+    ]
+  ],
+  "ticks": 120,
+  "entities": [
+    {
+      "name": "enderman",
+      "type": "minecraft:enderman",
+      "pos": [
+        8.5,
+        -60.0,
+        8.5
+      ],
+      "seed": 5,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 10,
+      "op": "hurt",
+      "entity": "enderman",
+      "amount": 1
+    },
+    {
+      "tick": 60,
+      "op": "hurt",
+      "entity": "enderman",
+      "amount": 1
+    }
+  ],
+  "tier": "fast"
+}

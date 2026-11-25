@@ -26,6 +26,43 @@ pub struct ItemInfo {
     /// `EquipmentSlot` ordinal (mainhand, offhand, feet, legs, chest, head, body, saddle) of the
     /// default `minecraft:equippable` component, or 255.
     pub equip_slot: u8,
+    /// The default `minecraft:attribute_modifiers`.
+    pub modifiers: &'static [ItemModifier],
+    /// The default `minecraft:weapon` component.
+    pub weapon: Option<WeaponInfo>,
+    /// The default `minecraft:food` component.
+    pub food: Option<FoodInfo>,
+    /// Whether the item has a default `minecraft:blocks_attacks` component (shields).
+    pub blocks_attacks: bool,
+}
+
+/// One entry of a `minecraft:attribute_modifiers` component.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ItemModifier {
+    /// Attribute id (index into `ATTRIBUTES`).
+    pub attribute: u16,
+    pub amount: f64,
+    /// `AttributeModifier.Operation` ordinal: add value, add multiplied base, add multiplied
+    /// total.
+    pub operation: u8,
+    /// `EquipmentSlotGroup` ordinal: any, mainhand, offhand, hand, feet, legs, chest, head,
+    /// armor, body, saddle.
+    pub slot: u8,
+}
+
+/// A `minecraft:weapon` component.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WeaponInfo {
+    pub item_damage_per_attack: u32,
+    pub disable_blocking_for_seconds: f32,
+}
+
+/// A `minecraft:food` component.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FoodInfo {
+    pub nutrition: i32,
+    pub saturation: f32,
+    pub can_always_eat: bool,
 }
 
 /// The blocks a tool rule applies to.

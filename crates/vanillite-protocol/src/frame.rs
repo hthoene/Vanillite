@@ -325,6 +325,16 @@ impl FrameEncoder {
         self.threshold
     }
 
+    /// Releases scratch buffers that grew beyond `max` bytes (after a burst such as the
+    /// chunks of a join), so an idle connection keeps little memory.
+    pub fn trim(&mut self, max: usize) {
+        for buffer in [&mut self.scratch, &mut self.compressed] {
+            if buffer.capacity() > max {
+                *buffer = Vec::new();
+            }
+        }
+    }
+
     /// Frames and appends a typed packet.
     pub fn packet<P: Packet>(&mut self, packet: &P, out: &mut Vec<u8>) -> Result<()> {
         let mut body = std::mem::take(&mut self.scratch);

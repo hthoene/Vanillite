@@ -2,7 +2,8 @@
 //!
 //! - [`Tag`], [`Compound`] and [`List`] are the owned value model.
 //! - [`read`] decodes binary NBT from a byte slice in one pass under a [`Budget`] (memory estimate
-//!   and nesting depth, SEC-03/04/26); [`read::skip`] validates and measures without allocating.
+//!   and nesting depth, SEC-03/04/26); [`read::skip_network`] validates and measures without
+//!   allocating, and [`read::Cursor`] walks the input value by value without building a tree.
 //! - [`write`] encodes binary NBT (network form with a nameless root, file form with a named root).
 //! - [`snbt`] parses and formats the string form under the same depth limit.
 //!

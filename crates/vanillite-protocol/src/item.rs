@@ -287,6 +287,76 @@ impl ItemStack {
     }
 }
 
+impl ItemStack {
+    /// Encodes `Optional<ItemStackTemplate>` (`ByteBufCodecs.optional(ItemStackTemplate
+    /// .STREAM_CODEC)`): presence, item, count, trusted patch. Used by component values that
+    /// hold stacks (`container`, `pot_decorations`, `bundle_contents`, …).
+    pub fn encode_template_optional(&self, out: &mut Vec<u8>) {
+        if self.is_empty() {
+            out.push(0);
+            return;
+        }
+        out.push(1);
+        write_varint(out, i32::from(self.item));
+        write_varint(out, self.count);
+        match self.patch.as_deref() {
+            Some(p) => p.encode_with(out, false),
+            None => out.extend_from_slice(&[0, 0]),
+        }
+    }
+
+    /// Decodes what [`Self::encode_template_optional`] writes (values from the server's own
+    /// stores or already validated client values).
+    pub fn decode_template_optional(r: &mut Reader<'_>) -> Result<ItemStack> {
+        if r.u8()? == 0 {
+            return Ok(ItemStack::EMPTY);
+        }
+        let item = u16::try_from(r.varint()?).map_err(|_| Error::Invalid("item id"))?;
+        let count = r.varint()?;
+        if !(1..=99).contains(&count) {
+            return Err(Error::Invalid("item stack template count"));
+        }
+        let mut header = Vec::with_capacity(8);
+        write_varint(&mut header, count);
+        write_varint(&mut header, i32::from(item));
+        let rest = r.rest();
+        let mut joined = Vec::with_capacity(header.len().saturating_add(rest.len()));
+        joined.extend_from_slice(&header);
+        joined.extend_from_slice(rest);
+        let mut inner = Reader::new(&joined);
+        let stack = ItemStack::decode_plain(&mut inner)?;
+        let used = joined
+            .len()
+            .saturating_sub(inner.remaining())
+            .saturating_sub(header.len());
+        r.take(used)?;
+        Ok(stack)
+    }
+}
+
+/// The `container` component value of `items` (`ItemContainerContents.fromItems`): the slots
+/// up to the last non-empty one; `None` when all are empty (the item's default).
+pub fn encode_container_contents(items: &[ItemStack]) -> Option<Box<[u8]>> {
+    let last = items.iter().rposition(|s| !s.is_empty())?;
+    let mut out = Vec::new();
+    write_len(&mut out, last.saturating_add(1));
+    for stack in items.get(..=last)? {
+        stack.encode_template_optional(&mut out);
+    }
+    Some(out.into_boxed_slice())
+}
+
+/// The slots of a `container` component value (at most 256).
+pub fn decode_container_contents(value: &[u8]) -> Result<Vec<ItemStack>> {
+    let mut r = Reader::new(value);
+    let n = r.len_prefix("container slots", 256, 1)?;
+    let mut items = Vec::with_capacity(n);
+    for _ in 0..n {
+        items.push(ItemStack::decode_template_optional(&mut r)?);
+    }
+    Ok(items)
+}
+
 /// The trusted codec (`OPTIONAL_STREAM_CODEC`), which the server sends.
 impl Encode for ItemStack {
     fn encode(&self, out: &mut Vec<u8>) {
@@ -312,14 +382,35 @@ pub struct RegistryInfo {
     pub sizes: HashMap<String, usize>,
     /// Registry → its tag ids (without `#`).
     pub tags: HashMap<String, HashSet<String>>,
+    /// Dynamic registry → its entry names in id order (for saved item components).
+    pub names: HashMap<String, Vec<String>>,
 }
 
-static INSTALLED: OnceLock<RegistryInfo> = OnceLock::new();
+/// The installed information with the entry ids by name.
+#[derive(Debug)]
+struct Installed {
+    info: RegistryInfo,
+    ids: HashMap<String, HashMap<String, usize>>,
+}
+
+static INSTALLED: OnceLock<Installed> = OnceLock::new();
 
 /// Installs the registry information. Later calls are ignored: registries are frozen for the
 /// lifetime of the process.
 pub fn install_registries(info: RegistryInfo) {
-    let _ = INSTALLED.set(info);
+    let ids = info
+        .names
+        .iter()
+        .map(|(registry, names)| {
+            let by_name = names
+                .iter()
+                .enumerate()
+                .map(|(id, name)| (name.clone(), id))
+                .collect();
+            (registry.clone(), by_name)
+        })
+        .collect();
+    let _ = INSTALLED.set(Installed { info, ids });
 }
 
 /// Static registries plus the installed dynamic ones and tags.
@@ -330,13 +421,29 @@ impl Registries for InstalledRegistries {
     fn size(&self, registry: &str) -> Option<usize> {
         vanillite_data::registry::Registry::by_name(registry)
             .map(|r| r.len())
-            .or_else(|| INSTALLED.get()?.sizes.get(registry).copied())
+            .or_else(|| INSTALLED.get()?.info.sizes.get(registry).copied())
     }
 
     fn has_tag(&self, registry: &str, tag: &str) -> bool {
         INSTALLED
             .get()
-            .and_then(|i| i.tags.get(registry))
+            .and_then(|i| i.info.tags.get(registry))
             .is_some_and(|t| t.contains(tag))
+    }
+}
+
+impl crate::components_nbt::RegistryNames for InstalledRegistries {
+    fn entry_name(&self, registry: &str, id: usize) -> Option<&str> {
+        INSTALLED
+            .get()?
+            .info
+            .names
+            .get(registry)?
+            .get(id)
+            .map(String::as_str)
+    }
+
+    fn entry_id(&self, registry: &str, name: &str) -> Option<usize> {
+        INSTALLED.get()?.ids.get(registry)?.get(name).copied()
     }
 }

@@ -2,7 +2,7 @@
 //!
 //! Vanilla: `net.minecraft.world.level.chunk.LevelChunkSection`.
 
-use crate::container::{Biomes, BlockStates, PalettedContainer};
+use crate::container::{Biomes, BlockStates, ContainerData, PalettedContainer};
 use crate::facts::{self, BiomeId, BlockStateId};
 use crate::wire::{self, DecodeError};
 
@@ -74,6 +74,35 @@ impl Section {
     /// A section filled with one block state and one biome.
     pub fn new(block: BlockStateId, biome: BiomeId) -> Self {
         Self::from_containers(PalettedContainer::new(block), PalettedContainer::new(biome))
+    }
+
+    /// A section from stored parts: block palette and packed data as on the wire (validated
+    /// like [`PalettedContainer::from_parts`]) and the biomes. The summary is counted in the
+    /// same pass that checks the block indices.
+    pub fn from_parts(
+        bits: u8,
+        palette: &[u16],
+        data: &[crate::bits::Word],
+        biomes: PalettedContainer<Biomes>,
+    ) -> Result<Self, DecodeError> {
+        let mut counts = [0u32; 256];
+        let blocks = PalettedContainer::from_parts_counted(bits, palette, data, &mut counts)?;
+        let mut section = Self {
+            blocks,
+            biomes,
+            summary: SectionSummary::default(),
+        };
+        match section.blocks.data() {
+            ContainerData::Indirect { palette, .. } => {
+                for (&state, &count) in palette.iter().zip(&counts) {
+                    if count > 0 {
+                        section.summary.add(facts::block_flags(state), count as u16);
+                    }
+                }
+            }
+            _ => section.recalculate_summary(),
+        }
+        Ok(section)
     }
 
     /// A section from containers; the summary is computed.
