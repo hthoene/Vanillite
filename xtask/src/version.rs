@@ -111,9 +111,15 @@ pub fn update(root: &Path, args: &[&str]) -> Result<()> {
 
     // Both versions through the same (current) extractor, so their raw outputs compare.
     println!("version: extracting the pinned {pinned}");
-    let old = vanilla::extract(root, &manifest, Some(&pinned), None)?;
+    let old = vanilla::extract(
+        root,
+        &manifest,
+        Some(&pinned),
+        None,
+        vanilla::Extractor::Full,
+    )?;
     println!("version: extracting {id}");
-    let new = vanilla::extract(root, &manifest, Some(&id), None)?;
+    let new = vanilla::extract(root, &manifest, Some(&id), None, vanilla::Extractor::Full)?;
     if finalise && new.kind != "release" {
         return Err(format!(
             "{id} is a {}; only a release can become the pinned version",

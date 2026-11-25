@@ -842,7 +842,7 @@
     },
     {
       "name": "Multiversion: Versions",
-      "description": "Older versions whose clients may join: `\"all\"` (every version this build translates, currently the previous release), `\"none\"`, or a comma-separated list of version names such as `\"26.2\"`. Clients of the server's own version are not translated and pay nothing. Empty: the profile's value (vanilla profile: all). vanillite.toml: multiversion.versions.",
+      "description": "Older versions whose clients may join: `\"all\"` (every version this build translates, currently 1.20.5 to 26.2), `\"none\"`, or a comma-separated list of releases such as `\"1.21.4, 26.2\"` (a release accepts every release of its protocol). Clients of the server's own version are not translated and pay nothing. Empty: the profile's value (vanilla profile: all). vanillite.toml: multiversion.versions.",
       "env_variable": "VANILLITE_MULTIVERSION__VERSIONS",
       "default_value": "",
       "user_viewable": true,

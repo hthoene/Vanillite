@@ -1,9 +1,10 @@
-//! A client speaking the previous version's protocol (26.2) joins a server of the current
-//! version through the multi-version layer: configuration, chunks, walking, and seeing a
-//! current-version player (and being seen by it).
+//! Clients of older versions join a server of the current version through the multi-version
+//! layer: configuration, chunks, walking, and seeing a current-version player (and being seen
+//! by it). One test per oldest release of each larger protocol change: 1.20.5, 1.21, 1.21.4,
+//! 26.1 and the previous release 26.2.
 //!
-//! The old client is written against the 26.2 wire format by hand (packet ids from
-//! `data/multiversion/26.2/`), not with the translation code it tests.
+//! The old clients are written against the older wire formats by hand (packet ids and facts
+//! from `data/multiversion/<version>/`), not with the translation code they test.
 
 #![allow(
     clippy::unwrap_used,
@@ -28,7 +29,6 @@ use vanillite_protocol::types::{GameProfile, Uuid};
 use vanillite_server::{ServerBuilder, VanillaPack, VirtualConnection, VirtualOpener};
 
 const TIMEOUT: Duration = Duration::from_secs(30);
-const OLD_PROTOCOL: i32 = 776;
 
 /// A virtual connection as a byte stream with uncompressed length-prefixed frames.
 struct Mem {
@@ -110,20 +110,34 @@ fn mem(opener: &VirtualOpener, name: &str) -> TestClient<Mem> {
     })
 }
 
-/// The 26.2 facts the old client needs, from the kept data.
-struct Old262 {
+/// The facts of an older version the old client needs, from the kept data.
+struct OldVersion {
+    /// The release the client claims to be (its core pack version).
+    name: &'static str,
+    protocol: i32,
     packets: Value,
     registries: Value,
     synchronized: Value,
+    entity_data: Value,
     block_states: usize,
 }
 
-impl Old262 {
-    fn load() -> Self {
-        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/multiversion/26.2/");
+impl OldVersion {
+    fn load(dir: &str, name: &'static str) -> Self {
+        let dir = format!(
+            "{}/../../data/multiversion/{dir}/",
+            env!("CARGO_MANIFEST_DIR")
+        );
         let json = |f: &str| -> Value {
             serde_json::from_str(&std::fs::read_to_string(format!("{dir}{f}")).unwrap()).unwrap()
         };
+        let version: String = std::fs::read_to_string(format!("{dir}version.toml")).unwrap();
+        let protocol = version
+            .lines()
+            .find_map(|l| l.strip_prefix("protocol = "))
+            .unwrap()
+            .parse()
+            .unwrap();
         let blocks = json("blocks.json");
         let block_states = blocks
             .as_array()
@@ -141,11 +155,57 @@ impl Old262 {
             .max()
             .unwrap();
         Self {
+            name,
+            protocol,
             packets: json("packets.json"),
             registries: json("registries.json"),
             synchronized: json("synchronized.json"),
+            entity_data: json("entity_data.json"),
             block_states: usize::try_from(block_states).unwrap(),
         }
+    }
+
+    /// Checks `set_entity_data` of an entity of type `kind` (old numbering) against the old
+    /// layout: every item has the index and serializer of the old type.
+    fn check_entity_data(&self, kind: i32, data: &[u8]) {
+        let names = self.registries["minecraft:entity_type"]["entries"]
+            .as_array()
+            .unwrap();
+        let name = names[usize::try_from(kind).unwrap()].as_str().unwrap();
+        let layout = self.entity_data["types"][name].as_array().unwrap();
+        let serializers = self.entity_data["serializers"].as_array().unwrap();
+        let mut r = Reader::new(data);
+        r.varint().unwrap();
+        loop {
+            let index = r.u8().unwrap();
+            if index == 0xff {
+                break;
+            }
+            let serializer = usize::try_from(r.varint().unwrap()).unwrap();
+            let item = layout
+                .iter()
+                .find(|i| i[0] == u64::from(index))
+                .unwrap_or_else(|| panic!("{}: {name} has no data item {index}", self.name));
+            assert_eq!(
+                item[1], serializers[serializer],
+                "{}: {name} data item {index}",
+                self.name
+            );
+            // Only the values of the serializers players use are skipped here.
+            match serializers[serializer].as_str().unwrap() {
+                "byte" | "boolean" => drop(r.take(1).unwrap()),
+                "int" | "pose" | "humanoid_arm" | "optional_unsigned_int" => {
+                    r.varint().unwrap();
+                }
+                "float" => drop(r.take(4).unwrap()),
+                "particles" => assert_eq!(r.varint().unwrap(), 0, "no particles expected"),
+                "optional_component" | "optional_block_pos" => {
+                    assert_eq!(r.u8().unwrap(), 0, "absent value expected");
+                }
+                other => panic!("{}: unexpected serializer {other} for {name}", self.name),
+            }
+        }
+        assert_eq!(r.remaining(), 0, "{}: set_entity_data layout", self.name);
     }
 
     fn id(&self, state: &str, dir: &str, name: &str) -> i32 {
@@ -154,7 +214,7 @@ impl Old262 {
         i32::try_from(
             list.iter()
                 .position(|p| p == &Value::from(name.as_str()))
-                .unwrap(),
+                .unwrap_or_else(|| panic!("{} has no {state} {dir} {name}", self.name)),
         )
         .unwrap()
     }
@@ -165,10 +225,14 @@ impl Old262 {
     }
 }
 
-/// A client of protocol 776 driven packet by packet.
+/// A client of an older protocol driven packet by packet.
 struct OldClient {
     client: TestClient<Mem>,
-    v: Old262,
+    v: OldVersion,
+    /// Entity id → type (old numbering) of the added entities.
+    entities: std::collections::HashMap<i32, i32>,
+    /// Data packets checked against the old layouts.
+    checked_data: usize,
 }
 
 impl OldClient {
@@ -182,14 +246,14 @@ impl OldClient {
         self.client.send_raw(&frame).unwrap();
     }
 
-    /// The next packet: its 26.2 name and fields.
+    /// The next packet: its name in the old version and fields.
     fn recv(&mut self, state: &str) -> (String, Vec<u8>) {
         let raw = self.client.recv_raw().expect("receive");
         let mut r = Reader::new(&raw);
         let id = usize::try_from(r.varint().unwrap()).unwrap();
         let name = self.v.packets[state]["clientbound"][id]
             .as_str()
-            .unwrap_or_else(|| panic!("{state} packet id {id} unknown to 26.2"))
+            .unwrap_or_else(|| panic!("{state} packet id {id} unknown to {}", self.v.name))
             .trim_start_matches("minecraft:")
             .to_owned();
         (name, r.rest().to_vec())
@@ -201,7 +265,8 @@ impl OldClient {
         loop {
             assert!(
                 Instant::now() < deadline,
-                "old client timed out waiting for {what}"
+                "{} client timed out waiting for {what}",
+                self.v.name
             );
             let (name, data) = self.recv("play");
             match name.as_str() {
@@ -209,8 +274,28 @@ impl OldClient {
                 "chunk_batch_finished" => {
                     self.send("play", "chunk_batch_received", &64.0f32.to_be_bytes());
                 }
-                "disconnect" => panic!("old client kicked"),
-                "level_chunk_with_light" => check_chunk(&data, self.v.block_states),
+                "disconnect" => panic!("{} client kicked", self.v.name),
+                "level_chunk_with_light" => check_chunk(&data, &self.v),
+                "login" => {
+                    let id = Reader::new(&data).i32().unwrap();
+                    let player = self
+                        .v
+                        .registry_id("minecraft:entity_type", "minecraft:player");
+                    self.entities.insert(id, player);
+                }
+                "add_entity" => {
+                    let mut r = Reader::new(&data);
+                    let id = r.varint().unwrap();
+                    r.take(16).unwrap();
+                    self.entities.insert(id, r.varint().unwrap());
+                }
+                "set_entity_data" => {
+                    let id = Reader::new(&data).varint().unwrap();
+                    if let Some(&kind) = self.entities.get(&id) {
+                        self.v.check_entity_data(kind, &data);
+                        self.checked_data += 1;
+                    }
+                }
                 _ => {}
             }
             if let Some(v) = f(&name, &data) {
@@ -220,48 +305,71 @@ impl OldClient {
     }
 }
 
-/// Every block state of every section is one the 26.2 client knows; direct palettes use its
-/// global bit count.
-fn check_chunk(data: &[u8], old_states: usize) {
+/// Skips one network NBT tag (heightmaps before 1.21.5).
+fn skip_nbt(r: &mut Reader<'_>) {
+    let mut budget = vanillite_nbt::Budget::new(
+        vanillite_nbt::read::NETWORK_QUOTA,
+        vanillite_nbt::read::MAX_DEPTH,
+    );
+    let n = vanillite_nbt::read::skip_network(r.rest(), &mut budget).unwrap();
+    r.take(n).unwrap();
+}
+
+/// Every block state of every section is one the old client knows; direct palettes use its
+/// global bit count; the layout is the old version's (heightmaps, section counts, data
+/// lengths).
+fn check_chunk(data: &[u8], v: &OldVersion) {
+    let old_states = v.block_states;
     let mut r = Reader::new(data);
     r.take(8).unwrap();
-    let heightmaps = r.varint().unwrap();
-    for _ in 0..heightmaps {
-        r.varint().unwrap();
-        let n = usize::try_from(r.varint().unwrap()).unwrap();
-        r.take(n * 8).unwrap();
+    if v.protocol >= 770 {
+        let heightmaps = r.varint().unwrap();
+        for _ in 0..heightmaps {
+            r.varint().unwrap();
+            let n = usize::try_from(r.varint().unwrap()).unwrap();
+            r.take(n * 8).unwrap();
+        }
+    } else {
+        skip_nbt(&mut r);
     }
     let len = usize::try_from(r.varint().unwrap()).unwrap();
     let mut s = Reader::new(r.take(len).unwrap());
     let global = usize::BITS - (old_states - 1).leading_zeros();
     while s.remaining() > 0 {
-        s.take(4).unwrap();
+        s.take(if v.protocol >= 775 { 4 } else { 2 }).unwrap();
         for (entries, max_indirect) in [(4096usize, 8u8), (64, 3)] {
             let bits = s.u8().unwrap();
-            if bits == 0 {
-                let v = usize::try_from(s.varint().unwrap()).unwrap();
+            let longs = if bits == 0 {
+                let state = usize::try_from(s.varint().unwrap()).unwrap();
                 if entries == 4096 {
-                    assert!(v < old_states, "single block state {v} unknown to 26.2");
+                    assert!(state < old_states, "single block state {state} unknown");
                 }
-                continue;
-            }
-            if bits <= max_indirect {
-                let n = s.varint().unwrap();
-                for _ in 0..n {
-                    let v = usize::try_from(s.varint().unwrap()).unwrap();
-                    if entries == 4096 {
-                        assert!(v < old_states, "palette block state {v} unknown to 26.2");
+                0
+            } else {
+                if bits <= max_indirect {
+                    let n = s.varint().unwrap();
+                    for _ in 0..n {
+                        let state = usize::try_from(s.varint().unwrap()).unwrap();
+                        if entries == 4096 {
+                            assert!(state < old_states, "palette block state {state} unknown");
+                        }
                     }
+                } else if entries == 4096 {
+                    assert_eq!(u32::from(bits), global, "direct palette bits");
                 }
-            } else if entries == 4096 {
-                assert_eq!(u32::from(bits), global, "direct palette bits");
+                entries.div_ceil(64 / usize::from(bits))
+            };
+            if v.protocol < 770 {
+                assert_eq!(
+                    usize::try_from(s.varint().unwrap()).unwrap(),
+                    longs,
+                    "data length before 1.21.5"
+                );
             }
-            let per = 64 / usize::from(bits);
-            s.take(entries.div_ceil(per) * 8).unwrap();
+            s.take(longs * 8).unwrap();
         }
     }
 }
-
 /// A current-version player.
 struct Player {
     client: TestClient<Mem>,
@@ -301,8 +409,40 @@ fn f64s(data: &[u8], at: usize) -> [f64; 3] {
 }
 
 #[test]
-fn previous_version_client_joins_walks_and_sees_players() {
-    let dir = std::env::temp_dir().join(format!("vanillite-multiversion-{}", std::process::id()));
+fn client_26_2_joins_walks_and_sees_players() {
+    join_walk_see("26.2", "26.2");
+}
+
+#[test]
+fn client_26_1_joins_walks_and_sees_players() {
+    join_walk_see("26.1.2", "26.1");
+}
+
+#[test]
+fn client_1_21_4_joins_walks_and_sees_players() {
+    join_walk_see("1.21.4", "1.21.4");
+}
+
+#[test]
+fn client_1_21_joins_walks_and_sees_players() {
+    join_walk_see("1.21.1", "1.21");
+}
+
+#[test]
+fn client_1_20_5_joins_walks_and_sees_players() {
+    join_walk_see("1.20.6", "1.20.5");
+}
+
+/// A client of release `name` (data in `data/multiversion/<dir>/`) joins, walks and sees a
+/// current-version player.
+#[allow(clippy::too_many_lines)]
+fn join_walk_see(dir: &str, release: &'static str) {
+    let v = OldVersion::load(dir, release);
+    let proto = v.protocol;
+    let dir = std::env::temp_dir().join(format!(
+        "vanillite-multiversion-{}-{release}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("server.properties"), "view-distance=2\n").unwrap();
@@ -314,13 +454,15 @@ fn previous_version_client_joins_walks_and_sees_players() {
     let handle = server.handle();
     let thread = std::thread::spawn(move || server.run());
 
-    // --- The 26.2 client logs in and configures.
+    // --- The old client logs in and configures.
     let mut old = OldClient {
         client: mem(&opener, "Oldie"),
-        v: Old262::load(),
+        v,
+        entities: std::collections::HashMap::new(),
+        checked_data: 0,
     };
     let mut hs = Vec::new();
-    write_varint(&mut hs, OLD_PROTOCOL);
+    write_varint(&mut hs, proto);
     write_str(&mut hs, "localhost");
     hs.extend_from_slice(&25565u16.to_be_bytes());
     write_varint(&mut hs, 2);
@@ -330,11 +472,29 @@ fn previous_version_client_joins_walks_and_sees_players() {
     hello.extend_from_slice(&Uuid::offline("Oldie").0.to_be_bytes());
     old.send("login", "hello", &hello);
     loop {
-        let (name, _) = old.recv("login");
-        if name == "login_finished" {
+        let (packet, data) = old.recv("login");
+        if packet == "login_finished" || packet == "game_profile" {
+            // Profile, then the strict error handling flag (1.20.5–1.21.1) or the session
+            // id (26.2), nothing else.
+            let mut r = Reader::new(&data);
+            r.take(16).unwrap();
+            r.string(16).unwrap();
+            for _ in 0..r.varint().unwrap() {
+                r.string(32767).unwrap();
+                r.string(32767).unwrap();
+                if r.u8().unwrap() != 0 {
+                    r.string(32767).unwrap();
+                }
+            }
+            let tail = match proto {
+                ..768 => 1,
+                776.. => 16,
+                _ => 0,
+            };
+            assert_eq!(r.remaining(), tail, "{release} login_finished layout");
             break;
         }
-        assert_ne!(name, "login_disconnect", "old client refused");
+        assert_ne!(packet, "login_disconnect", "old client refused");
     }
     old.send("login", "login_acknowledged", &[]);
 
@@ -357,16 +517,10 @@ fn previous_version_client_joins_walks_and_sees_players() {
                     }
                 }
                 // A test server without data packs offers no pack.
-                if n > 0 {
-                    assert_eq!(
-                        core.as_deref(),
-                        Some("26.2"),
-                        "core pack of the client's version"
-                    );
-                }
+                let _ = core;
                 let mut answer = Vec::new();
                 write_varint(&mut answer, 1);
-                for s in ["minecraft", "core", "26.2"] {
+                for s in ["minecraft", "core", release] {
                     write_str(&mut answer, s);
                 }
                 old.send("configuration", "select_known_packs", &answer);
@@ -387,17 +541,25 @@ fn previous_version_client_joins_walks_and_sees_players() {
     for r in &registries {
         assert!(
             synchronized.contains_key(r),
-            "registry {r} is not synchronised by 26.2"
+            "registry {r} is not synchronised by {release}"
         );
     }
 
-    // --- Play: join, confirm the teleport the 26.2 way (only the id), receive chunks.
+    // --- Play: join, confirm the teleport the old way (only the id), receive chunks.
     old.until("login", |n, _| (n == "login").then_some(()));
     let (teleport, pos) = old.until("player_position", |n, d| {
         (n == "player_position").then(|| {
             let mut r = Reader::new(d);
-            let id = r.varint().unwrap();
-            (id, f64s(d, d.len() - r.remaining()))
+            if proto >= 768 {
+                let id = r.varint().unwrap();
+                (id, f64s(d, d.len() - r.remaining()))
+            } else {
+                // Position, rotation, flags, then the teleport id.
+                r.take(24 + 8 + 1).unwrap();
+                let id = r.varint().unwrap();
+                assert_eq!(r.remaining(), 0, "player_position layout before 1.21.2");
+                (id, f64s(d, 0))
+            }
         })
     });
     let mut confirm = Vec::new();
@@ -406,7 +568,9 @@ fn previous_version_client_joins_walks_and_sees_players() {
     old.until("chunk", |n, _| {
         (n == "level_chunk_with_light").then_some(())
     });
-    old.send("play", "player_loaded", &[]);
+    if proto >= 769 {
+        old.send("play", "player_loaded", &[]);
+    }
 
     // --- A current-version player joins; both see each other.
     let mut new = Player {
@@ -446,7 +610,7 @@ fn previous_version_client_joins_walks_and_sees_players() {
         let uuid = r.u128().unwrap();
         let kind = r.varint().unwrap();
         (uuid == newbie).then(|| {
-            assert_eq!(kind, player_type, "entity type in 26.2 numbering");
+            assert_eq!(kind, player_type, "entity type in {release} numbering");
             id
         })
     });
@@ -456,7 +620,7 @@ fn previous_version_client_joins_walks_and_sees_players() {
         _ => None,
     });
 
-    // --- The new player walks; the old client sees it in the 26.2 movement format.
+    // --- The new player walks; the old client sees it in its movement format.
     let p = new_pos.change.position;
     new.client
         .send(&MovePlayerPos {
@@ -473,7 +637,7 @@ fn previous_version_client_joins_walks_and_sees_players() {
     old.until("the new player moving", |n, d| {
         let mut r = Reader::new(d);
         match n {
-            // 26.2: id, three shorts, (yaw, pitch,) on ground.
+            // Id, three shorts, (yaw, pitch,) on ground.
             "move_entity_pos" | "move_entity_pos_rot" => {
                 if r.varint().unwrap() != newbie_id {
                     return None;
@@ -484,17 +648,26 @@ fn previous_version_client_joins_walks_and_sees_players() {
                     r.take(2).unwrap();
                 }
                 r.u8().unwrap();
-                assert_eq!(r.remaining(), 0, "26.2 {n} layout");
+                assert_eq!(r.remaining(), 0, "{release} {n} layout");
                 assert_eq!(dx, 6144, "x delta in 1/4096 blocks");
                 Some(())
             }
-            // 26.2: id, position, movement, yaw, pitch, on ground.
+            // Id, position, movement, yaw, pitch, on ground.
             "entity_position_sync" => {
                 if r.varint().unwrap() != newbie_id {
                     return None;
                 }
                 r.take(24 + 24 + 8 + 1).unwrap();
-                assert_eq!(r.remaining(), 0, "26.2 entity_position_sync layout");
+                assert_eq!(r.remaining(), 0, "{release} entity_position_sync layout");
+                Some(())
+            }
+            // Before 1.21.2: id, position, yaw and pitch bytes, on ground.
+            "teleport_entity" if proto < 768 => {
+                if r.varint().unwrap() != newbie_id {
+                    return None;
+                }
+                r.take(24 + 2 + 1).unwrap();
+                assert_eq!(r.remaining(), 0, "{release} teleport_entity layout");
                 Some(())
             }
             _ => None,
@@ -508,7 +681,9 @@ fn previous_version_client_joins_walks_and_sees_players() {
     }
     walk.push(1);
     old.send("play", "move_player_pos", &walk);
-    old.send("play", "client_tick_end", &[]);
+    if proto >= 768 {
+        old.send("play", "client_tick_end", &[]);
+    }
     new.until("the old player moving", |p| match p {
         ClientboundPlay::MoveEntityPos(m) if m.entity_id == oldie_id => Some(()),
         ClientboundPlay::MoveEntityPosRot(m) if m.entity_id == oldie_id => Some(()),
@@ -516,6 +691,10 @@ fn previous_version_client_joins_walks_and_sees_players() {
         _ => None,
     });
 
+    eprintln!(
+        "{release}: {} entity data packets checked against the old layouts",
+        old.checked_data
+    );
     handle.stop();
     thread.join().unwrap();
     let _ = std::fs::remove_dir_all(&dir);

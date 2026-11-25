@@ -55,6 +55,10 @@ impl Rx {
         let Some(adapter) = self.adapter.as_mut() else {
             return self.decoder.next_frame();
         };
+        // Packets the translation added to the last one come first.
+        if adapter.pending().is_some() {
+            return Ok(Some(adapter.translated()));
+        }
         loop {
             let Some(frame) = self.decoder.next_frame()? else {
                 return Ok(None);
