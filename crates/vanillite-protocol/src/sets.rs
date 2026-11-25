@@ -118,6 +118,7 @@ packet_set! {
         ContainerButtonClick(play::serverbound::ContainerButtonClick),
         ContainerSlotStateChanged(play::serverbound::ContainerSlotStateChanged),
         RenameItem(play::serverbound::RenameItem),
+        SetBeacon(play::serverbound::SetBeacon),
         SignUpdate(play::serverbound::SignUpdate),
         PlaceRecipe(play::serverbound::PlaceRecipe),
         RecipeBookSeenRecipe(play::serverbound::RecipeBookSeenRecipe),

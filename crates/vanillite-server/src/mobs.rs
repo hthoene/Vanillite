@@ -377,6 +377,41 @@ impl WorldMobs {
         self.finish_removals(level);
     }
 
+    /// The magic damage block entities dealt this tick (conduits hunting mobs).
+    pub(crate) fn apply_magic_hurts(
+        &mut self,
+        level: &mut Level,
+        survival: &mut WorldSurvival,
+        global: &Global,
+        dimension: &str,
+    ) {
+        if level.output().magic_hurts.is_empty() {
+            return;
+        }
+        let state = &global.level;
+        let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+        let rules = state.rules().clone();
+        let hurts = std::mem::take(&mut level.output().magic_hurts);
+        let no_blocks = NoBlocks;
+        let raining = |_| false;
+        let mut env = survival.env(state, &rules, &no_blocks, &raining, dimension, &hooks);
+        let mut ents = std::mem::take(&mut level.entities);
+        for (target, amount) in hurts {
+            let source = DamageSource::of(env.types.magic);
+            combat::hurt(
+                level,
+                &mut ents,
+                &mut env,
+                &mut self.cx,
+                target,
+                source,
+                amount,
+            );
+        }
+        level.entities = ents;
+        self.finish_removals(level);
+    }
+
     /// Despawns the entities removed outside their own tick.
     fn finish_removals(&mut self, level: &mut Level) {
         for d in std::mem::take(&mut self.cx.discarded) {

@@ -400,6 +400,53 @@ pub fn apply_mob_modifiers(m: &mut crate::mob::MobData, dirty: &[Attribute]) -> 
     base
 }
 
+/// A player as the target of effects added outside its tick and without the world's
+/// environment (beacons, conduits): only effects that need no damage, sound or food.
+struct BareHost<'a> {
+    player: &'a mut PlayerData,
+}
+
+impl EffectHost for BareHost<'_> {
+    fn effects(&mut self) -> &mut ActiveEffects {
+        &mut self.player.survival.effects
+    }
+    fn health(&self) -> f32 {
+        self.player.survival.health
+    }
+    fn max_health(&self) -> f32 {
+        self.player.survival.max_health()
+    }
+    fn heal(&mut self, _amount: f32) {}
+    fn hurt(&mut self, _kind: HurtKind, _amount: f32) -> bool {
+        false
+    }
+    fn absorption(&self) -> f32 {
+        self.player.survival.absorption
+    }
+    fn set_absorption(&mut self, amount: f32) {
+        let max = self.player.survival.max_absorption();
+        self.player.survival.absorption = amount.clamp(0.0, max);
+    }
+    fn inverted_heal_and_harm(&self) -> bool {
+        false
+    }
+    fn tick_count(&self) -> i32 {
+        self.player.survival.tick_count
+    }
+}
+
+/// `player.addEffect` from a block entity (beacon powers, conduit power): non-instant effects
+/// without a sound; the packets go out with the player's next tick.
+pub fn add_to_player(ents: &mut Entities, player: EntityId, new: EffectInstance) -> bool {
+    let Some(data) = ents.player_mut(player) else {
+        return false;
+    };
+    if new.effect.is_instantaneous() || new.effect.info().sound_on_added.is_some() {
+        return false;
+    }
+    active::add(&mut BareHost { player: data }, new)
+}
+
 /// `addEffect(effect, source)` on any living entity: players and mobs, with `canBeAffected`.
 /// Returns whether the effect changed.
 pub fn add_to_entity(
@@ -619,4 +666,48 @@ pub fn view_vector(x_rot: f32, y_rot: f32) -> Vec3 {
     let (ys, yc) = (sin(ry), cos(ry));
     let (xs, xc) = (sin(rx), cos(rx));
     Vec3::new(f64::from(ys * xc), f64::from(-xs), f64::from(yc * xc))
+}
+
+/// The enchantment entity effect `minecraft:apply_mob_effect` (`ApplyMobEffect.apply`, e.g.
+/// Bane of Arthropods' Slowness): one of `candidates` with a duration (seconds) and amplifier
+/// between the bounds already calculated for the enchantment level, drawn from the target's
+/// own random. Returns whether the effect changed.
+#[allow(clippy::too_many_arguments)]
+pub fn apply_mob_effect(
+    level: &Level,
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    cx: &mut MobContext,
+    target: EntityId,
+    candidates: &[MobEffect],
+    duration: (f32, f32),
+    amplifier: (f32, f32),
+) -> bool {
+    let draw = |random: &mut LegacyRandom| -> Option<EffectInstance> {
+        // `HolderSet.getRandomElement`: `Util.getRandomSafe`.
+        if candidates.is_empty() {
+            return None;
+        }
+        let n = i32::try_from(candidates.len()).unwrap_or(i32::MAX);
+        let effect = *candidates.get(usize::try_from(random.next_int_bounded(n)).ok()?)?;
+        let between =
+            |r: &mut LegacyRandom, (min, max): (f32, f32)| r.next_float() * (max - min) + min;
+        // `Math.round(float)`.
+        #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+        let ticks = (between(random, duration) * 20.0 + 0.5).floor() as i32;
+        #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+        let amp = ((between(random, amplifier) + 0.5).floor() as i32).max(0);
+        Some(EffectInstance::new(effect, ticks, amp))
+    };
+    let instance = if let Some(m) = ents.mob_mut(target) {
+        draw(&mut m.random)
+    } else if ents.player(target).is_some() {
+        crate::experience_orb::with_entity_random(|r| draw(r))
+    } else {
+        None
+    };
+    match instance {
+        Some(e) => add_to_entity(level, ents, env, cx, target, e),
+        None => false,
+    }
 }

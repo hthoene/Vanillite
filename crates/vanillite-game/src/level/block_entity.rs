@@ -71,6 +71,10 @@ pub enum BlockEntity {
     Brushable(Box<crate::block::brushable::Brushable>),
     /// Crafters.
     Crafter(Box<crate::block::crafter::Crafter>),
+    /// Beacons.
+    Beacon(Box<crate::block::beacon::Beacon>),
+    /// Conduits.
+    Conduit(Box<crate::block::beacon::Conduit>),
 }
 
 /// `BlockEntityTicker.tick(level, pos, state, blockEntity)`: the block entity is looked up at
@@ -219,6 +223,8 @@ fn ticker_of(entity: &BlockEntity) -> Option<TickerFn> {
         | BlockEntity::Brushable(_) => None,
         BlockEntity::Campfire(_) => Some(crate::block::campfire::tick),
         BlockEntity::Crafter(_) => Some(crate::block::crafter::server_tick),
+        BlockEntity::Beacon(_) => Some(crate::block::beacon::tick),
+        BlockEntity::Conduit(_) => Some(crate::block::beacon::conduit_tick),
         BlockEntity::Furnace(_) => Some(crate::block::furnace::server_tick),
         BlockEntity::BrewingStand(_) => Some(crate::block::brewing::server_tick),
         BlockEntity::Sign(_) => Some(crate::block::sign::tick),
@@ -265,6 +271,10 @@ pub fn new_block_entity(state: BlockState) -> Option<BlockEntity> {
         Some(BlockEntity::DecoratedPot(Box::default()))
     } else if block == ids::CHISELED_BOOKSHELF {
         Some(BlockEntity::ChiseledBookshelf(Box::default()))
+    } else if block == ids::BEACON {
+        Some(BlockEntity::Beacon(Box::default()))
+    } else if block == ids::CONDUIT {
+        Some(BlockEntity::Conduit(Box::default()))
     } else if block == ids::CRAFTER {
         Some(BlockEntity::Crafter(Box::new(
             crate::block::crafter::Crafter {
@@ -331,6 +341,8 @@ fn is_valid(entity: &BlockEntity, state: BlockState) -> bool {
         BlockEntity::Campfire(_) => crate::block::campfire::is_campfire(state.block()),
         BlockEntity::Brushable(_) => crate::block::brushable::is_brushable(state),
         BlockEntity::Crafter(_) => state.block() == ids::CRAFTER,
+        BlockEntity::Beacon(_) => state.block() == ids::BEACON,
+        BlockEntity::Conduit(_) => state.block() == ids::CONDUIT,
     }
 }
 
@@ -393,6 +405,9 @@ impl Level {
                     crate::block::container::pre_remove_side_effects(self, pos, &entity);
                     if let BlockEntity::Lectern(lectern) = &entity {
                         crate::block::lectern::drop_book(self, pos, old, lectern);
+                    }
+                    if let BlockEntity::Beacon(_) = entity {
+                        crate::block::beacon::removed(self, pos);
                     }
                     if let BlockEntity::Furnace(_) = entity {
                         let xp = crate::block::furnace::pop_experience(self, pos);
@@ -514,6 +529,8 @@ fn load(state: BlockState, nbt: &Compound) -> Option<BlockEntity> {
         BlockEntity::Campfire(campfire) => campfire.load(nbt),
         BlockEntity::Brushable(b) => b.load(nbt),
         BlockEntity::Crafter(c) => c.load(nbt),
+        BlockEntity::Beacon(b) => b.load(nbt),
+        BlockEntity::Conduit(c) => c.load(nbt),
         BlockEntity::Lectern(lectern) => lectern.load(nbt),
         BlockEntity::Hopper(h) => {
             h.custom_name = crate::block::container::load_name(nbt);
@@ -565,6 +582,8 @@ fn save(entity: &BlockEntity, state: BlockState, pos: BlockPos) -> Compound {
         BlockEntity::Campfire(campfire) => campfire.save(&mut nbt),
         BlockEntity::Brushable(b) => b.save(&mut nbt),
         BlockEntity::Crafter(c) => c.save(&mut nbt),
+        BlockEntity::Beacon(b) => b.save(&mut nbt),
+        BlockEntity::Conduit(c) => c.save(&mut nbt),
         BlockEntity::Lectern(lectern) => lectern.save(&mut nbt),
         BlockEntity::Hopper(h) => {
             crate::block::container::save_name(&h.custom_name, &mut nbt);
@@ -776,6 +795,17 @@ pub fn update_tag(entity: &BlockEntity) -> Option<Compound> {
         }
         BlockEntity::Campfire(campfire) => Some(campfire.update_tag()),
         BlockEntity::Brushable(b) => Some(b.update_tag()),
+        // `saveCustomOnly`.
+        BlockEntity::Beacon(b) => {
+            let mut nbt = Compound::new();
+            b.save(&mut nbt);
+            Some(nbt)
+        }
+        BlockEntity::Conduit(c) => {
+            let mut nbt = Compound::new();
+            c.save(&mut nbt);
+            Some(nbt)
+        }
         _ => None,
     }
 }
