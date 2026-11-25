@@ -1016,7 +1016,7 @@ pub fn use_spawn_egg_on(
 }
 
 /// `EntityType.getYOffset`: how far up from the block the new mob stands.
-fn spawn_y_offset(
+pub(crate) fn spawn_y_offset(
     level: &Level,
     spawn_pos: vanillite_base::BlockPos,
     moved_up: bool,

@@ -381,6 +381,23 @@ impl MobSpawner {
         }
     }
 
+    /// `BaseSpawner.setEntityId` (a spawn egg used on the spawner): the next spawn data,
+    /// drawn from the potentials if there is none, spawns `name`.
+    pub fn set_entity_id(&mut self, name: &str, random: &mut impl RandomSource) {
+        let mut data = match self.next_spawn_data.take() {
+            Some(data) => data,
+            None => self
+                .spawn_potentials
+                .get_random(random)
+                .cloned()
+                .unwrap_or_else(|| SpawnData::from_nbt(Compound::new())),
+        };
+        if let Some(Tag::Compound(entity)) = data.0.get_mut("entity") {
+            entity.insert("id", Tag::String(name.to_owned()));
+        }
+        self.next_spawn_data = Some(data);
+    }
+
     /// `BaseSpawner.save`; `with_potentials` is false for the update tag.
     pub fn save(&self, out: &mut Compound, with_potentials: bool) {
         out.insert("Delay", to_short(self.spawn_delay));

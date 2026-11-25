@@ -701,3 +701,30 @@ pub(super) fn load(m: &mut MobData, tag: &Compound) {
         _ => {}
     }
 }
+
+/// The variant components of a fish bucket (`salmon/size`, `tropical_fish/*`) and
+/// `setFromBucket(true)` of the released fish.
+pub(crate) fn from_bucket(m: &mut MobData, varint: &dyn Fn(&str) -> Option<i32>) {
+    let kind = m.kind;
+    let s = st_mut(m);
+    s.from_bucket = true;
+    match kind {
+        Kind::Salmon => {
+            if let Some(v) = varint("minecraft:salmon/size") {
+                s.variant = v.clamp(0, 2);
+            }
+        }
+        Kind::TropicalFish => {
+            let pattern = varint("minecraft:tropical_fish/pattern");
+            let base = varint("minecraft:tropical_fish/base_color");
+            let color = varint("minecraft:tropical_fish/pattern_color");
+            if pattern.is_some() || base.is_some() || color.is_some() {
+                let v = s.variant;
+                s.variant = (pattern.unwrap_or(v & 0xFFFF) & 0xFFFF)
+                    | (base.unwrap_or(v >> 16 & 0xFF) & 0xFF) << 16
+                    | (color.unwrap_or(v >> 24 & 0xFF) & 0xFF) << 24;
+            }
+        }
+        _ => {}
+    }
+}

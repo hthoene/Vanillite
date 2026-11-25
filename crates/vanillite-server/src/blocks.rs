@@ -260,6 +260,10 @@ impl PlayLevel for WorldLevel<'_> {
         Some(self.level)
     }
 
+    fn level(&self) -> Option<&Level> {
+        Some(self.level)
+    }
+
     fn block(&self, pos: BlockPos) -> BlockState {
         self.level.block(pos)
     }

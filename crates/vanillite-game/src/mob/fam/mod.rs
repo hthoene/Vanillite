@@ -954,3 +954,63 @@ pub fn goal_stop(t: &mut Tick<'_, '_>, g: &mut FamGoal) {
 pub fn goal_tick(t: &mut Tick<'_, '_>, g: &mut FamGoal) {
     by_goal!(g, goal_tick(t, @g));
 }
+
+/// `MobBucketItem.spawn` after the mob is created: the bucket's components
+/// (`createDefaultStackConfig`: the variants), `Bucketable.loadFromBucketTag` of its
+/// `bucket_entity_data` and `setFromBucket(true)`. `NoGravity`, `Glowing` and `Invulnerable`
+/// are entity flags the mob data does not hold.
+pub fn load_from_bucket(m: &mut MobData, stack: &crate::item::ItemStack) {
+    let id = |name: &str| vanillite_data::registry::DATA_COMPONENT_TYPE.id(name);
+    let varint = |name: &str| -> Option<i32> {
+        let data = stack.component(id(name)?)?;
+        vanillite_protocol::codec::Reader::new(data).varint().ok()
+    };
+    let tag = id("minecraft:bucket_entity_data")
+        .and_then(|c| stack.component(c))
+        .and_then(crate::mob::nbt::component_tag);
+    let empty = Compound::new();
+    let tag = match &tag {
+        Some(vanillite_nbt::Tag::Compound(c)) => c,
+        _ => &empty,
+    };
+    let flag = |key: &str| match tag.get(key) {
+        Some(vanillite_nbt::Tag::Byte(v)) => Some(*v != 0),
+        _ => None,
+    };
+    if let Some(v) = flag("NoAI") {
+        m.no_ai = v;
+    }
+    if let Some(v) = flag("Silent") {
+        m.silent = v;
+    }
+    if flag("PersistenceRequired") == Some(true) {
+        m.persistent = true;
+    }
+    if let Some(vanillite_nbt::Tag::Float(h)) = tag.get("Health") {
+        m.health = *h;
+    }
+    match m.kind {
+        Kind::Cod | Kind::Salmon | Kind::Pufferfish | Kind::TropicalFish => {
+            wildlife::fish::from_bucket(m, &varint);
+        }
+        Kind::Axolotl => {
+            if let Some(v) = varint("minecraft:axolotl/variant") {
+                brainy::state_mut(m).variant = v.clamp(0, 4);
+            }
+            if let Some(vanillite_nbt::Tag::Int(age)) = tag.get("Age") {
+                m.age = *age;
+                m.baby = m.age < 0;
+            }
+            brainy::state_mut(m).from_bucket = true;
+        }
+        Kind::Tadpole => {
+            let s = brainy::state_mut(m);
+            if let Some(vanillite_nbt::Tag::Int(age)) = tag.get("Age") {
+                s.tadpole_age = *age;
+            }
+            s.playing_dead = flag("AgeLocked").unwrap_or(false);
+            s.from_bucket = true;
+        }
+        _ => {}
+    }
+}

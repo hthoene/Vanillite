@@ -31,7 +31,52 @@ pub(super) fn fill(block: BlockId, b: &mut BlockBehaviour) {
     if block == ids::TNT {
         b.on_place = Some(on_place);
         b.neighbor_changed = Some(neighbor_changed);
+        b.use_item_on = Some(use_item_on);
     }
+}
+
+/// `TntBlock.useItemOn`: flint and steel or a fire charge primes the TNT (adventure players
+/// need `can_break`).
+fn use_item_on(
+    level: &mut Level,
+    _state: BlockState,
+    pos: BlockPos,
+    ctx: &super::UseContext,
+    stack: &mut crate::item::ItemStack,
+) -> super::ItemInteraction {
+    use super::{Interaction, ItemInteraction};
+    use vanillite_data::item::ids as items;
+    let id = crate::item::item_id(stack);
+    if id != items::FLINT_AND_STEEL && id != items::FIRE_CHARGE {
+        return ItemInteraction::TryWithEmptyHand;
+    }
+    let allowed = ctx.may_build
+        || crate::player::play::game_data().is_some_and(|data| {
+            crate::player::play::adventure_allows(
+                &data,
+                Some(level),
+                stack.component(vanillite_protocol::components::ids::CAN_BREAK),
+                pos,
+            )
+        });
+    if !level.settings.tnt_explodes {
+        // The "TNT explosions are disabled" overlay message is not sent.
+        return ItemInteraction::Done(Interaction::Pass);
+    }
+    if allowed {
+        prime(level, pos, Some(ctx.player));
+        level.set_block(pos, BlockState::AIR, crate::level::update::ALL_IMMEDIATE);
+        if id == items::FLINT_AND_STEEL {
+            if !ctx.infinite {
+                super::hurt_item(level, stack, 1);
+            }
+        } else {
+            stack.shrink(1);
+        }
+        let used = crate::stats::Stat::of(crate::stats::StatType::Used, id.0);
+        level.award_stat(ctx.player, used, 1);
+    }
+    ItemInteraction::Done(Interaction::Success)
 }
 
 /// `TntBlock.onPlace`: a TNT block placed next to a signal primes at once.

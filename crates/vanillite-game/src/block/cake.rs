@@ -89,7 +89,11 @@ fn eat(level: &mut Level, pos: BlockPos, state: BlockState, ctx: &UseContext) ->
     if !ctx.can_eat {
         return Interaction::Pass;
     }
-    level.award_stat(ctx.player, Stat::custom_named("minecraft:eat_cake_slice"), 1);
+    level.award_stat(
+        ctx.player,
+        Stat::custom_named("minecraft:eat_cake_slice"),
+        1,
+    );
     // `FoodData.eat(2, 0.1F)`: saturation `nutrition * modifier * 2`.
     level.player_effect(ctx.player, PlayerEffect::Eat(2, 2.0 * 0.1 * 2.0));
     let bites = state.int("bites").unwrap_or(0);

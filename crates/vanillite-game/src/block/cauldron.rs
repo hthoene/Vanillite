@@ -334,7 +334,11 @@ fn shulker_box(
     let mut cleaned = stack.with_count(1);
     cleaned.item = items::SHULKER_BOX.0;
     filled_result(level, ctx, stack, cleaned, false);
-    level.award_stat(ctx.player, Stat::custom_named("minecraft:clean_shulker_box"), 1);
+    level.award_stat(
+        ctx.player,
+        Stat::custom_named("minecraft:clean_shulker_box"),
+        1,
+    );
     lower_fill_level(level, state, pos);
     ItemInteraction::Done(Interaction::Success)
 }

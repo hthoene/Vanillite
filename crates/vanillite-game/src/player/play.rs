@@ -23,6 +23,10 @@ use crate::loot::{BlockLootContext, LootTables};
 use crate::player::world::{PlayLevel, SoundSource, events};
 use crate::stats::{Stat, StatType, custom};
 
+mod item_use;
+
+pub use item_use::adventure_allows;
+
 /// Static gameplay data the handlers read: tool rules, loot tables and enchantment ids.
 #[derive(Debug, Default)]
 pub struct GameData {
@@ -394,6 +398,9 @@ pub struct Digging {
     pub ack_up_to: i32,
     /// `dropSpamThrottler` for creative drops.
     drop_spam: i32,
+    /// Whether the last `use_item_on` reached the item's own use on entities (spawn eggs,
+    /// leads, minecarts): no block reacted and the item has no block use of its own.
+    pub entity_item_use: bool,
 }
 
 /// `getDestroyProgress` of `state` for the actor.
@@ -570,7 +577,7 @@ impl Digging {
                     self.destroy_and_ack(ctx, pos, sink);
                     return;
                 }
-                if block_action_restricted(ctx) {
+                if block_action_restricted(ctx, pos) {
                     block_update(sink, ctx.level, pos);
                     return;
                 }
@@ -656,6 +663,11 @@ impl Digging {
     ) -> bool {
         let state = ctx.level.block(pos);
         let tool = ctx.inventory.selected_item().clone();
+        if item::item_id(&tool) == vanillite_data::item::ids::DEBUG_STICK {
+            // `DebugStickItem.canDestroyBlock`: selects the next property instead.
+            item_use::debug_stick(ctx, pos, false, sink);
+            return false;
+        }
         if ctx.actor.creative() && !ctx.data.tools.can_destroy_in_creative(&tool) {
             return false;
         }
@@ -664,7 +676,7 @@ impl Digging {
             block_update(sink, ctx.level, pos);
             return false;
         }
-        if block_action_restricted(ctx) {
+        if block_action_restricted(ctx, pos) {
             return false;
         }
         if !ctx.hooks.block_break(ctx.actor.uuid, pos, state) {
@@ -759,7 +771,11 @@ impl Digging {
         ctx.award_stat(Stat::of(StatType::Used, used), 1);
         let damage = {
             let tool = ctx.inventory.selected_item();
-            if state.misc().destroy_speed == 0.0 {
+            // `ShearsItem.mineBlock` skips only `#fire`, `Item.mineBlock` instant blocks.
+            let shears = item::item_id(tool) == vanillite_data::item::ids::SHEARS;
+            if (shears && crate::block::is_fire(state))
+                || (!shears && state.misc().destroy_speed == 0.0)
+            {
                 return;
             }
             ctx.data.tools.damage_per_block(tool)
@@ -802,6 +818,7 @@ impl Digging {
         sink: &dyn PacketSink,
     ) {
         self.ack(p.sequence.max(0));
+        self.entity_item_use = false;
         let pos = BlockPos::new(p.pos.x, p.pos.y, p.pos.z);
         let face = direction_wrapped(p.face);
         if !ctx.actor.within_block_range(pos, 1.0) {
@@ -978,8 +995,10 @@ impl Digging {
         if used == vanillite_data::item::ids::FLINT_AND_STEEL
             || used == vanillite_data::item::ids::ENDER_EYE
         {
-            // `ItemStack.useOn`: adventure players cannot build.
-            if ctx.actor.game_mode == GameMode::Adventure {
+            // `ItemStack.useOn`: adventure players need `can_place_on`.
+            if ctx.actor.game_mode == GameMode::Adventure
+                && !item_use::can_place_on(ctx, &stack, pos)
+            {
                 return false;
             }
             let done = if used == vanillite_data::item::ids::FLINT_AND_STEEL {
@@ -1014,12 +1033,32 @@ impl Digging {
             any_block_use(ctx, hand, pos);
             return true;
         }
-        let Some(_block) = item::item_id(&stack).block() else {
-            // Non-block items (buckets, tools on blocks, spawn eggs, ...) come later.
+        let click = item_use::Click { hand, pos, face };
+        if let Some(result) = item_use::use_on(ctx, click, sink) {
+            if result == item_use::Used::Success {
+                ctx.trigger(Event::ItemUsedOnBlock(pos, stack));
+                any_block_use(ctx, hand, pos);
+                return true;
+            }
+            return false;
+        }
+        if let Some(done) = self.spawn_egg_on_spawner(ctx, hand, pos, &stack) {
+            return done;
+        }
+        let used = item::item_id(&stack);
+        let Some(_block) = used.block() else {
+            // Spawn eggs, leads and minecarts act on entities: the world runs them next.
+            self.entity_item_use = ctx.actor.game_mode != GameMode::Adventure
+                || item_use::can_place_on(ctx, &stack, pos);
             return false;
         };
-        if ctx.actor.game_mode == GameMode::Adventure {
-            // `can_place_on` predicates are not evaluated yet: adventure players cannot build.
+        // `PlaceOnWaterBlockItem.useOn` passes: lily pads and frogspawn go on water by `use`.
+        if used == vanillite_data::item::ids::LILY_PAD
+            || used == vanillite_data::item::ids::FROGSPAWN
+        {
+            return false;
+        }
+        if ctx.actor.game_mode == GameMode::Adventure && !item_use::can_place_on(ctx, &stack, pos) {
             return false;
         }
         let place_ctx = PlaceContext::new(
@@ -1157,6 +1196,11 @@ impl Digging {
         else {
             return false;
         };
+        // `GameMasterBlockItem.getPlacementState`: only creative operators.
+        if is_game_master_block(state) && !(ctx.actor.creative() && ctx.actor.permission_level >= 2)
+        {
+            return false;
+        }
         if !ctx.level.is_unobstructed(state, target) {
             return false;
         }
@@ -1208,7 +1252,10 @@ impl Digging {
         if let Some(level) = ctx.level.level_mut()
             && placed.block() == state.block()
         {
-            // `BlockItem.updateCustomBlockEntityTag` and `Block.setPlacedBy`.
+            // `BlockItem.updateCustomBlockEntityTag`, `updateBlockEntityComponents` and
+            // `Block.setPlacedBy`.
+            let game_master = ctx.actor.creative() && ctx.actor.permission_level >= 2;
+            item_use::apply_block_entity_data(level, target, stack, game_master);
             crate::level::block_entity::apply_components(level, target, stack);
             crate::block::redstone::set_placed_by(level, placed, target);
             crate::block::crafter::set_placed_by(level, placed, target);
@@ -1229,6 +1276,20 @@ impl Digging {
             ctx.level.placed_by(target, placed);
         }
         let sound = placed.block().sound();
+        let powder_snow = stack.item == vanillite_data::item::ids::POWDER_SNOW_BUCKET.0;
+        let (place_sound, volume, pitch) = if powder_snow {
+            // `SolidBucketItem.getPlaceSound`.
+            let id = vanillite_data::registry::SOUND_EVENT
+                .id("minecraft:item.bucket.empty_powder_snow")
+                .unwrap_or(0);
+            (id, (sound.volume + 1.0) / 2.0, sound.pitch * 0.8)
+        } else {
+            (
+                sound.place_sound,
+                (sound.volume + 1.0) / 2.0,
+                sound.pitch * 0.8,
+            )
+        };
         ctx.level.play_sound(
             Some(ctx.actor.network_id),
             Vec3::new(
@@ -1236,10 +1297,10 @@ impl Digging {
                 f64::from(target.y) + 0.5,
                 f64::from(target.z) + 0.5,
             ),
-            sound.place_sound,
+            place_sound,
             SoundSource::Blocks,
-            (sound.volume + 1.0) / 2.0,
-            sound.pitch * 0.8,
+            volume,
+            pitch,
         );
         ctx.level.game_event(
             events_ids().block_place,
@@ -1254,14 +1315,106 @@ impl Digging {
             };
             if let Some(slot) = slot {
                 slot.shrink(1);
+                // `SolidBucketItem.useOn`: the empty bucket stays in the hand.
+                if powder_snow {
+                    *slot = ItemStack::new(vanillite_data::item::ids::BUCKET.0, 1);
+                }
             }
         }
         true
     }
 
-    /// `handleUseItem`: only the acknowledgement for now (item use comes with its items).
-    pub fn use_item(&mut self, sequence: i32) {
+    /// `SpawnEggItem.useOn` on a spawner: the spawner spawns the egg's mob (`None` when the
+    /// block is no spawner or the item no spawn egg).
+    fn spawn_egg_on_spawner(
+        &mut self,
+        ctx: &mut PlayContext<'_>,
+        hand: Hand,
+        pos: BlockPos,
+        stack: &ItemStack,
+    ) -> Option<bool> {
+        let name = item::item_id(stack).name();
+        let entity = name.strip_suffix("_spawn_egg")?;
+        if ctx.actor.game_mode == GameMode::Adventure && !item_use::can_place_on(ctx, stack, pos) {
+            return Some(false);
+        }
+        let player = ctx.actor.entity;
+        let level = ctx.level.level_mut()?;
+        if !matches!(
+            level.block_entity(pos),
+            Some(crate::level::BlockEntity::Spawner(_))
+        ) {
+            return None;
+        }
+        if !level.spawner_env.spawner_blocks_work {
+            return Some(false);
+        }
+        let mut random = level.random().clone();
+        if let Some(crate::level::BlockEntity::Spawner(spawner)) = level.block_entity_mut(pos) {
+            spawner.set_entity_id(entity, &mut random);
+        }
+        *level.random() = random;
+        level.block_entity_changed(pos);
+        level.game_event_at(player, crate::level::game_event::events().block_change, pos);
+        if !ctx.actor.creative() {
+            let mut held = item_use::held(ctx, hand);
+            held.shrink(1);
+            item_use::set_held(ctx, hand, held);
+        }
+        ctx.award_stat(Stat::of(StatType::Used, stack.item), 1);
+        ctx.trigger(Event::ItemUsedOnBlock(pos, stack.clone()));
+        any_block_use(ctx, hand, pos);
+        Some(true)
+    }
+
+    /// `handleUseItem` (`ServerPlayerGameMode.useItem`) of the items whose use needs only the
+    /// world: buckets, glass bottles, lily pads and frogspawn, swappable equipment. Returns
+    /// whether the item was handled here (else the world's entity handlers use it).
+    pub fn use_item(
+        &mut self,
+        ctx: &mut PlayContext<'_>,
+        hand: Hand,
+        sequence: i32,
+        y_rot: f32,
+        x_rot: f32,
+    ) -> bool {
         self.ack(sequence.max(0));
+        if ctx.actor.game_mode == GameMode::Spectator {
+            return false;
+        }
+        let y_rot = vanillite_base::math::wrap_degrees_f(y_rot);
+        let x_rot = vanillite_base::math::wrap_degrees_f(x_rot);
+        match item_use::use_item(ctx, hand, y_rot, x_rot) {
+            None => false,
+            Some(item_use::UseAir::Done(result)) => {
+                if result == item_use::Used::Success {
+                    ctx.swings.push(hand);
+                }
+                true
+            }
+            Some(item_use::UseAir::PlaceOnWater(pos, face, hit)) => {
+                // `BlockItem.useOn` with the hit moved onto the block above the water.
+                let stack = item_use::held(ctx, hand);
+                let place_ctx = PlaceContext::new(
+                    pos,
+                    face,
+                    hit,
+                    false,
+                    y_rot,
+                    x_rot,
+                    ctx.actor.sneaking,
+                    item::item_id(&stack),
+                    &LevelReader(&*ctx.level),
+                );
+                if let Some(place_ctx) =
+                    place::update_placement_context(&place_ctx, &LevelReader(&*ctx.level))
+                    && self.place_block(ctx, hand, &stack, &place_ctx)
+                {
+                    ctx.swings.push(hand);
+                }
+                true
+            }
+        }
     }
 
     /// `drop(boolean all)` (Q / Ctrl+Q).
@@ -1488,13 +1641,17 @@ fn hurt_and_break(ctx: &mut PlayContext<'_>, hand: Hand, amount: i32) {
     );
 }
 
-/// `blockActionRestricted`: spectators never, adventure players only with `can_break`
-/// (not evaluated yet, so never).
-fn block_action_restricted(ctx: &PlayContext<'_>) -> bool {
-    matches!(
-        ctx.actor.game_mode,
-        GameMode::Spectator | GameMode::Adventure
-    )
+/// `blockActionRestricted`: spectators never, adventure players only with a main hand item
+/// whose `can_break` matches the block.
+fn block_action_restricted(ctx: &PlayContext<'_>, pos: BlockPos) -> bool {
+    match ctx.actor.game_mode {
+        GameMode::Spectator => true,
+        GameMode::Adventure => {
+            let tool = ctx.inventory.selected_item();
+            tool.is_empty() || !item_use::can_break(ctx, tool, pos)
+        }
+        _ => false,
+    }
 }
 
 /// `BlockItem.updateBlockStateFromTag`: the `block_state` component sets properties.
