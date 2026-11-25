@@ -576,8 +576,8 @@ impl Survival {
         let mut s = Survival {
             last_death: self.last_death.clone(),
             respawn: self.respawn.clone(),
-            portal: self.portal.clone(),
             warden_spawn_tracker: self.warden_spawn_tracker,
+            portal: self.portal.clone(),
             ..Survival::default()
         };
         if keep_inventory {
