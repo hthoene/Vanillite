@@ -454,7 +454,12 @@ pub(crate) fn explode(
         #[allow(clippy::cast_possible_truncation)]
         let radius = (f64::from(m.explosion_power)
             + f64::from(m.explosion_speed_factor) * r * 1.5 * speed) as f32;
-        let primed = m.fuse > -1;
+        // A primed TNT minecart spares rails (`MinecartTNT.getBlockExplosionResistance`).
+        let resistance = if m.fuse > -1 {
+            crate::level::explosion::BlockResistance::TntMinecart
+        } else {
+            crate::level::explosion::BlockResistance::Default
+        };
         cx.actions
             .push(WorldAction::Explode(crate::mob::ExplosionRequest {
                 source: Some(id),
@@ -462,7 +467,7 @@ pub(crate) fn explode(
                 pos,
                 radius,
                 mob: false,
-                rails_resist: primed,
+                resistance,
             }));
         discard(cx, id);
     } else if m.fuse > -1 {

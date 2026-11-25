@@ -9,6 +9,7 @@ use vanillite_base::hash::FxHashSet;
 use vanillite_base::slot_map::SlotKey;
 use vanillite_base::{ChunkPos, Vec3};
 use vanillite_config::{GameMode, WorldRules};
+use vanillite_game::advancements::PlayerAdvancements;
 use vanillite_game::entities::Entities;
 use vanillite_game::inventory::{Drop, PlayerInventory};
 use vanillite_game::item::ItemStack;
@@ -22,6 +23,7 @@ use vanillite_game::player::{
     Body, ChatContext, ChunkSource, ChunkView, ClientInformation, Connection, GameProfile, Handled,
     MoveContext, PacketSink, PlayerData, PlayerState, effective_view_distance,
 };
+use vanillite_game::stats::{Stat, StatType, StatsCounter, custom};
 use vanillite_game::survival::player::Survival;
 use vanillite_game::survival::rules::Rule;
 use vanillite_net::{Latency, Outbound};
@@ -33,7 +35,7 @@ use vanillite_protocol::packets::play::clientbound::{
 };
 use vanillite_protocol::packets::play::serverbound::Hand;
 use vanillite_protocol::text::Component;
-use vanillite_storage::player_data::{self, PlayerDataStore};
+use vanillite_storage::player_data::{self, JsonFile, PlayerDataStore};
 use vanillite_world::chunks::Chunks;
 use vanillite_world::entity::{EntityFlags, EntityId, EntityRef, Pose, Rotation};
 use vanillite_world::tracking::{EntityTracker, TrackerOutput};
@@ -326,6 +328,10 @@ pub(crate) struct Arrival {
     /// A virtual connection (test bot, Bedrock player): no chat session, chat is unsigned.
     pub(crate) virtual_connection: bool,
     pub(crate) saved: Option<player_data::PlayerData>,
+    /// The statistics file.
+    pub(crate) stats: Option<String>,
+    /// The advancements file.
+    pub(crate) advancements: Option<String>,
     pub(crate) address: String,
     pub(crate) inbox: Arc<Mutex<ChatInbox>>,
 }
@@ -383,6 +389,7 @@ impl WorldPlayers {
         world: crate::world::WorldId,
         arrival: Arrival,
         weather: &[vanillite_protocol::packets::play::clientbound::GameEvent],
+        state: &join::LevelPackets,
     ) {
         let survival = arrival
             .saved
@@ -406,6 +413,24 @@ impl WorldPlayers {
             .as_ref()
             .map(|saved| PlayerInventory::load(&saved.other))
             .unwrap_or_default();
+        let post_effects = arrival
+            .saved
+            .as_ref()
+            .map(|saved| load_post_effects(&saved.other))
+            .unwrap_or_default();
+        let mut stats = match arrival.stats.as_deref().map(StatsCounter::from_json) {
+            Some(Ok(stats)) => stats,
+            Some(Err(e)) => {
+                log::error!("Couldn't parse statistics of {name}: {e}");
+                StatsCounter::default()
+            }
+            None => StatsCounter::default(),
+        };
+        stats.mark_all_dirty();
+        let advancements = PlayerAdvancements::load(
+            global.systems.advancements(),
+            arrival.advancements.as_deref(),
+        );
         let recipe_book = match (
             arrival
                 .saved
@@ -421,6 +446,8 @@ impl WorldPlayers {
         };
         let data = PlayerData {
             recipe_book,
+            stats,
+            advancements,
             inventory,
             last_equipment: std::array::from_fn(|_| ItemStack::EMPTY),
             profile: arrival.profile,
@@ -441,6 +468,7 @@ impl WorldPlayers {
                 Arc::clone(&arrival.inbox),
             ),
             survival,
+            post_effects,
         };
         let id = entities.spawn_player(
             &global.network_ids,
@@ -483,22 +511,26 @@ impl WorldPlayers {
         let Some(global_arc) = global.arc() else {
             return;
         };
-        let source = crate::commands::CommandSource {
-            global: global_arc,
-            kind: crate::commands::SourceKind::Player {
+        let source = crate::commands::CommandSource::new(
+            global_arc,
+            crate::commands::SourceKind::Player {
                 uuid: arrival.uuid,
                 name: name.clone(),
                 sink: Arc::clone(&sink),
             },
-            level: crate::commands::permission_level(global, arrival.uuid),
+            crate::commands::permission_level(global, arrival.uuid),
             world,
             pos,
             rot,
-        };
+            None,
+        );
         crate::commands::send_permissions(global, sink.as_ref(), network_id, &source);
-        global
-            .players
-            .broadcast_system(join::joined_message(&name, arrival.uuid), false, None);
+        crate::scoreboard::send_all(global, sink.as_ref(), arrival.uuid);
+        global.players.broadcast_system(
+            join::joined_message(crate::scoreboard::display_name(global, &name, arrival.uuid)),
+            false,
+            None,
+        );
         let connection = &mut player.connection;
         connection
             .movement
@@ -514,6 +546,7 @@ impl WorldPlayers {
         join::send_level_info(
             sink.as_ref(),
             &self.level,
+            state,
             &crate::survival::full_time_sync(&global.level),
             weather,
         );
@@ -533,6 +566,10 @@ impl WorldPlayers {
         player.inventory.send_all(sink.as_ref());
         for (last, slot) in player.last_equipment.iter_mut().zip(EQUIPMENT_SLOTS) {
             *last = player.inventory.equipment(slot).clone();
+        }
+        // `sendPostEffects` of the first tick (an empty list changes nothing on the client).
+        if !player.post_effects.is_empty() {
+            crate::commands::send_post_effects(player);
         }
     }
 
@@ -590,7 +627,13 @@ impl WorldPlayers {
                 respawn: false,
             };
             let mut state = before.clone();
-            let mut actor = actor_of(&entity, player.game_mode, global, &level.chunks);
+            let mut actor = actor_of(
+                &entity,
+                player.game_mode,
+                &player.survival.effects,
+                global,
+                &level.chunks,
+            );
             let op = actor.permission_level > 0;
             let protected = |pos: BlockPos| protection.protects(pos, op);
             let aabb = entity.aabb();
@@ -616,6 +659,8 @@ impl WorldPlayers {
                     drops: &mut drops,
                     swings: &mut hands,
                     hooks: &hooks,
+                    stats: Some(&mut player.stats),
+                    advancements: Some(&mut player.advancements),
                 };
                 let handled = player.connection.handle_packets(
                     &mut state,
@@ -626,6 +671,14 @@ impl WorldPlayers {
                 );
                 actor = play.actor;
                 for drop in drops {
+                    // `ServerPlayer.drop` of a stack thrown from the hand.
+                    if drop.thrown && !drop.stack.is_empty() {
+                        let item = drop.stack.item;
+                        player
+                            .stats
+                            .award(Stat::of(StatType::Dropped, item), drop.stack.count);
+                        player.stats.award(custom::DROP, 1);
+                    }
                     throw_item(&mut level, &actor, drop);
                 }
                 handled
@@ -717,7 +770,7 @@ impl WorldPlayers {
             }
         }
         for id in std::mem::take(&mut self.chatting) {
-            crate::chat::handle_requests(entities, global, id, world, &mut self.leaving);
+            crate::chat::handle_requests(level, global, id, world, &mut self.leaving);
         }
         for (id, reason) in std::mem::take(&mut self.leaving) {
             self.leave(level, global, id, reason);
@@ -783,6 +836,7 @@ impl WorldPlayers {
     ) {
         crate::commands::answer_suggestions(&mut level.entities, global, world);
         for uuid in std::mem::take(&mut self.left) {
+            crate::scoreboard::left(global, uuid);
             if global.players.remove(Uuid(uuid)).is_some() {
                 global
                     .players
@@ -790,6 +844,7 @@ impl WorldPlayers {
             }
         }
         self.tick_players(level, global, blocks);
+        crate::progress::tick(level, global, world, self.level.dimension.as_str());
         let entities = &mut level.entities;
         let Entities { store, players, .. } = entities;
         for (id, player) in players.iter_mut() {
@@ -840,14 +895,20 @@ impl WorldPlayers {
         let mut equipment: Vec<(EntityId, SetEquipment)> = Vec::new();
         let mut taken_orbs: Vec<(EntityId, EntityId)> = Vec::new();
         for (id, player) in players.iter_mut() {
-            let sink = &player.connection.sink;
+            let sink = Arc::clone(&player.connection.sink);
             if let Some(sequence) = player.connection.play.take_ack() {
                 sink.send(&BlockChangedAck { sequence });
             }
             let Some(entity) = level.entities.store.get(id) else {
                 continue;
             };
-            let actor = actor_of(&entity, player.game_mode, global, &level.chunks);
+            let actor = actor_of(
+                &entity,
+                player.game_mode,
+                &player.survival.effects,
+                global,
+                &level.chunks,
+            );
             let aabb = entity.aabb();
             let network_id = entity.network_id().0;
             let uuid = entity.uuid();
@@ -875,6 +936,8 @@ impl WorldPlayers {
                     drops: &mut drops,
                     swings: &mut hands,
                     hooks: &hooks,
+                    stats: Some(&mut player.stats),
+                    advancements: Some(&mut player.advancements),
                 };
                 player.connection.play.tick(&mut play, sink.as_ref());
             }
@@ -901,8 +964,12 @@ impl WorldPlayers {
                         continue;
                     }
                     let count = item.stack.count;
+                    let kind = item.stack.item;
                     if player.inventory.add(None, &mut item.stack, infinite) {
                         taken.push((item_id, id, count));
+                        player
+                            .stats
+                            .award(Stat::of(StatType::PickedUp, kind), count);
                     }
                 }
             }
@@ -918,6 +985,7 @@ impl WorldPlayers {
                     &mut taken_orbs,
                 );
             }
+            let sink = &player.connection.sink;
             if player.inventory.container.is_some() {
                 // `containerMenu.broadcastChanges`, then `stillValid`.
                 use vanillite_game::menu::container as menus;
@@ -1050,10 +1118,13 @@ impl WorldPlayers {
             return;
         };
         let uuid = entity.uuid();
-        let Some(player) = entities.player(id) else {
+        let Some(player) = entities.player_mut(id) else {
             return;
         };
+        player.stats.award(custom::LEAVE_GAME, 1);
         let name = player.profile.name.clone();
+        let changes = player.stats.take_score_changes();
+        crate::progress::apply_scores(global, vec![(name.clone(), uuid, changes)]);
         match reason {
             Some(reason) => {
                 log::info!("{name} lost connection: {}", reason.plain());
@@ -1067,9 +1138,11 @@ impl WorldPlayers {
         entities.despawn(id);
         // Vanilla's order: the message, the entity removal (sent by the tracker this tick),
         // then the tab list entry.
-        global
-            .players
-            .broadcast_system(join::left_message(&name, uuid), false, Some(Uuid(uuid)));
+        global.players.broadcast_system(
+            join::left_message(crate::scoreboard::display_name(global, &name, uuid)),
+            false,
+            Some(Uuid(uuid)),
+        );
         self.left.push(uuid);
         let world = crate::server::DIMENSIONS
             .iter()
@@ -1094,9 +1167,26 @@ impl WorldPlayers {
         let mut survival = vanillite_nbt::Compound::new();
         player.inventory.save(&mut survival);
         player.survival.save(&mut survival);
+        survival.insert(
+            "post_effects",
+            vanillite_nbt::Tag::List(vanillite_nbt::List(
+                player
+                    .post_effects
+                    .iter()
+                    .map(|e| vanillite_nbt::Tag::String(e.clone()))
+                    .collect(),
+            )),
+        );
+        // `PlayerList.save`: the statistics and advancements files with the data.
+        let uuid = entity.uuid();
+        self.store
+            .save_json(JsonFile::Stats, uuid, player.stats.to_json());
+        self.store
+            .save_json(JsonFile::Advancements, uuid, player.advancements.to_json());
         survival.insert("recipeBook", player.recipe_book.save());
         // `Survival::save` removes the death location when there is none.
         let has_death = survival.get("LastDeathLocation").is_some();
+        let has_effects = survival.get("active_effects").is_some();
         self.store.update(entity.uuid(), move |data| {
             data.pos = pos;
             data.rotation = rotation;
@@ -1105,6 +1195,9 @@ impl WorldPlayers {
             data.game_mode = game_mode;
             if !has_death {
                 data.other.remove("LastDeathLocation");
+            }
+            if !has_effects {
+                data.other.remove("active_effects");
             }
             for (key, tag) in survival.iter() {
                 data.other.insert(key, tag.clone());
@@ -1118,6 +1211,19 @@ impl WorldPlayers {
             self.save_player(entities, id);
         }
     }
+}
+
+/// `ServerPlayer.readAdditionalSaveData`'s `post_effects`: the valid identifiers.
+fn load_post_effects(data: &vanillite_nbt::Compound) -> Vec<String> {
+    let Some(vanillite_nbt::Tag::List(list)) = data.get("post_effects") else {
+        return Vec::new();
+    };
+    list.0
+        .iter()
+        .filter_map(|t| t.as_str())
+        .filter_map(|id| vanillite_protocol::types::Identifier::new(id).ok())
+        .map(|id| id.to_string())
+        .collect()
 }
 
 /// What the block and item handling of a tick needs from the world.
@@ -1152,6 +1258,7 @@ impl SpawnProtection {
 fn actor_of(
     entity: &EntityRef<'_>,
     game_mode: GameMode,
+    effects: &vanillite_game::effect::ActiveEffects,
     global: &Global,
     chunks: &Chunks,
 ) -> Actor {
@@ -1190,6 +1297,10 @@ fn actor_of(
         game_mode,
         permission_level: crate::commands::permission_level(global, entity.uuid()),
         eyes_in_water,
+        dig_speed: effects
+            .has_dig_speed()
+            .then(|| effects.dig_speed_amplification()),
+        mining_fatigue: effects.amplifier(vanillite_game::effect::MobEffect::MINING_FATIGUE),
     }
 }
 
@@ -1213,6 +1324,17 @@ fn body_of(entities: &Entities, id: EntityId) -> Body {
             horizontal_collision: false,
             fall_flying: false,
         },
+    }
+}
+
+/// `GameType.byId` without a fallback.
+pub(crate) fn game_mode_by_id(id: i32) -> Option<GameMode> {
+    match id {
+        0 => Some(GameMode::Survival),
+        1 => Some(GameMode::Creative),
+        2 => Some(GameMode::Adventure),
+        3 => Some(GameMode::Spectator),
+        _ => None,
     }
 }
 

@@ -437,12 +437,25 @@ pub fn thunder_hit(
         crate::vehicle::hurt_boat(ents, env, cx, target, source, 5.0);
         return;
     }
+    let Some(kind) = ents.mob(target).filter(|m| m.is_alive()).map(|m| m.kind) else {
+        return;
+    };
+    if kind.family() != crate::mob::Family::Classic {
+        let mut h = crate::mob::fam::Hurt {
+            level,
+            ents,
+            env,
+            cx,
+            target,
+            source,
+        };
+        if crate::mob::fam::thunder_hit(&mut h, kind) {
+            return;
+        }
+    }
     let Some(m) = ents.mob_mut(target) else {
         return;
     };
-    if !m.is_alive() {
-        return;
-    }
     m.fire_ticks += 1;
     if m.fire_ticks == 0 {
         m.fire_ticks = 160;

@@ -83,8 +83,7 @@ pub fn fall(level: &mut Level, pos: BlockPos, state: BlockState, drop_item: bool
         f64::from(pos.z) + 0.5,
     );
     level.set_block_and_update(pos, below);
-    // The entity takes its own random (not drawn from at creation).
-    let _ = level.new_entity_random();
+    // The entity takes its own random (not drawn from at creation) with its UUID.
     let uuid = level.new_uuid();
     let network_id = level.network_ids().next();
     let new = NewEntity::new(entity_ids::FALLING_BLOCK, network_id, uuid, spawn_pos);

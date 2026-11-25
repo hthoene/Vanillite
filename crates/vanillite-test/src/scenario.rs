@@ -95,6 +95,8 @@
 //!   does not matter) without the chance roll: the target (`findLightningTargetAround`: the
 //!   nearest lightning rod, a living entity under the open sky, or the column's top), then
 //!   `isRainingAt`, the skeleton trap and the bolt. Needs `"weather": "thunder"` (or rain).
+//! - `effect` action: `addEffect` on the entity `entity` with the mob effect `effect`,
+//!   `duration` ticks and `amplifier` (default 0).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -163,6 +165,19 @@ pub enum OpKind {
     Hurt,
     /// A lightning strike in the column of `from` (an action).
     Lightning,
+    /// A status effect on a scenario entity ([`Op::effect`]).
+    Effect,
+}
+
+/// The status effect of an `effect` action.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EffectOp {
+    /// Name of the entity.
+    pub entity: String,
+    /// Mob effect id, e.g. `minecraft:poison`.
+    pub effect: String,
+    pub duration: i32,
+    pub amplifier: i32,
 }
 
 /// The damage of a `hurt` action.
@@ -231,6 +246,8 @@ pub struct Op {
     pub block: String,
     /// The damage of a `hurt` action.
     pub hurt: Option<Hurt>,
+    /// The effect of an `effect` action.
+    pub effect: Option<EffectOp>,
     /// The chunks of `force` and `unforce`.
     pub chunks: Vec<ChunkPos>,
 }
@@ -490,6 +507,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
         Some("fill") => OpKind::Fill,
         Some("hurt") if action => OpKind::Hurt,
         Some("lightning") if action => OpKind::Lightning,
+        Some("effect") if action => OpKind::Effect,
         Some("force") if action => OpKind::Force,
         Some("unforce") if action => OpKind::Unforce,
         o => return Err(format!("unknown op {o:?}")),
@@ -523,6 +541,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             to: BlockPos::new(0, 0, 0),
             block: String::new(),
             hurt: None,
+            effect: None,
             chunks,
         });
     }
@@ -535,6 +554,29 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
     } else {
         0
     };
+    if kind == OpKind::Effect {
+        let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
+        let int = |k: &str| {
+            v.get(k)
+                .and_then(Value::as_i64)
+                .and_then(|n| i32::try_from(n).ok())
+        };
+        return Ok(Op {
+            tick,
+            kind,
+            from: BlockPos::new(0, 0, 0),
+            to: BlockPos::new(0, 0, 0),
+            block: String::new(),
+            hurt: None,
+            effect: Some(EffectOp {
+                entity: s("entity").ok_or("effect needs an entity")?,
+                effect: s("effect").ok_or("effect needs an effect")?,
+                duration: int("duration").ok_or("effect needs a duration")?,
+                amplifier: int("amplifier").unwrap_or(0),
+            }),
+            chunks: Vec::new(),
+        });
+    }
     if kind == OpKind::Hurt {
         let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
         return Ok(Op {
@@ -552,6 +594,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
                     .and_then(Value::as_f64)
                     .ok_or("hurt needs an amount")? as f32,
             }),
+            effect: None,
         });
     }
     if kind == OpKind::Lightning {
@@ -563,6 +606,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             to: p,
             block: String::new(),
             hurt: None,
+            effect: None,
             chunks: Vec::new(),
         });
     }
@@ -583,6 +627,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             .ok_or("an op needs a block")?
             .to_owned(),
         hurt: None,
+        effect: None,
         chunks: Vec::new(),
     })
 }

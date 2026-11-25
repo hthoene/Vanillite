@@ -221,6 +221,8 @@ public final class ScenarioRecorder {
                 entities.hurt(action);
               } else if (op.equals("lightning")) {
                 strike(level, pos(action.get("pos")));
+              } else if (op.equals("effect")) {
+                entities.effect(action);
               } else {
                 apply(level, action, true);
               }

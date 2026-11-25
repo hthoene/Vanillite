@@ -37,6 +37,7 @@ pub fn strike_lightning_rod(level: &mut crate::level::Level, pos: BlockPos) {
 }
 use crate::level::Level;
 
+pub use components::set_door_open;
 pub use diode::set_placed_by;
 
 /// Fills the redstone behaviours of `block`.

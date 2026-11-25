@@ -81,6 +81,25 @@ pub trait PlayLevel {
     fn level_mut(&mut self) -> Option<&mut crate::level::Level> {
         None
     }
+    /// `gameEvent(event, pos, Context.of(source, affected))` at the centre of a block.
+    fn game_event(
+        &mut self,
+        event: u16,
+        pos: BlockPos,
+        source: Option<vanillite_world::entity::EntityId>,
+        affected: Option<BlockState>,
+    ) {
+        let _ = (event, pos, source, affected);
+    }
+    /// `Block.setPlacedBy` of a block a player placed (the wither skull's summon check).
+    fn placed_by(&mut self, pos: BlockPos, state: BlockState) {
+        let _ = (pos, state);
+    }
+    /// `EndCrystalItem.useOn` on the block at `on`: places an end crystal; whether it did.
+    fn use_end_crystal(&mut self, on: BlockPos) -> bool {
+        let _ = on;
+        false
+    }
     /// `BaseFireBlock.isPortal`: fire at `pos` would light a nether portal (`forward` is the
     /// player's horizontal facing).
     fn lights_portal(&self, pos: BlockPos, forward: vanillite_base::Direction) -> bool;

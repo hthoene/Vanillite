@@ -189,15 +189,15 @@ pub struct BlockLootContext<'a> {
     pub item_in_tag: &'a dyn Fn(u16, &str) -> bool,
     /// Explosion radius if destroyed by an explosion (None for players).
     pub explosion_radius: Option<f32>,
+    /// The components of the broken block's block entity (`collectComponents`), by component
+    /// type id, as wire values; `None` without a block entity.
+    pub block_entity: Option<&'a dyn Fn(u16) -> Option<Box<[u8]>>>,
     /// Whether `THIS_ENTITY` is set for block loot: the breaker or the explosion source
     /// (`Block.dropResources(..., breaker, tool)`); a block destroyed by a shape update has none.
     pub this_present: bool,
     /// The entity parameters of entity loot (`LootContextParamSets.ENTITY`); `None` for
     /// block loot.
     pub entity: Option<&'a EntityLootContext<'a>>,
-    /// The components of the broken block's block entity (`collectComponents`), by component
-    /// type id, as wire values; `None` without a block entity.
-    pub block_entity: Option<&'a dyn Fn(u16) -> Option<Box<[u8]>>>,
 }
 
 /// The entity parameters of a loot context (`THIS_ENTITY`, `ATTACKING_ENTITY`,
@@ -455,6 +455,12 @@ impl LootTables {
         }
     }
 
+    /// `LootTable.getRandomItems` of the table `name` (e.g. `minecraft:spawners/trial_chamber/key`)
+    /// with an empty context (no block, no tool, no entity). Appends to `out`.
+    pub fn random_items(&self, name: &str, rng: &mut dyn LootRandom, out: &mut Vec<ItemStack>) {
+        self.roll(name, &LootContext::empty(), rng, out);
+    }
+
     /// Drops of the loot table `table` (e.g. `minecraft:entities/cow`) for an entity loot
     /// context; a missing table drops nothing. Appends to `out`.
     pub fn table_drops(
@@ -490,6 +496,60 @@ impl LootTables {
             depth: 0,
         };
         eval.table(table);
+    }
+
+    /// [`Self::block_drops`] with the table's random sequence of `level`
+    /// (`LootContext.Builder.create(randomSequence)`), else with `fallback` (the level random).
+    pub fn roll_block(
+        &self,
+        level: &crate::level::Level,
+        ctx: &BlockLootContext<'_>,
+        fallback: &mut dyn LootRandom,
+        out: &mut Vec<ItemStack>,
+    ) {
+        match self.block_random_sequence(ctx.state) {
+            Some(key) => level.with_random_sequence(key, |r| self.block_drops(ctx, r, out)),
+            None => self.block_drops(ctx, fallback, out),
+        }
+    }
+
+    /// [`Self::table_drops`] with the table's random sequence of `level`, else with
+    /// `fallback` (the level random).
+    pub fn roll_table(
+        &self,
+        level: &crate::level::Level,
+        table: &str,
+        ctx: &BlockLootContext<'_>,
+        fallback: &mut dyn LootRandom,
+        out: &mut Vec<ItemStack>,
+    ) {
+        match self.random_sequence(table) {
+            Some(key) => {
+                level.with_random_sequence(key, |r| self.table_drops(table, ctx, r, out));
+            }
+            None => self.table_drops(table, ctx, fallback, out),
+        }
+    }
+
+    /// The `random_sequence` of the block's table.
+    pub fn block_random_sequence(&self, state: BlockState) -> Option<&str> {
+        if !state.is_valid() {
+            return None;
+        }
+        self.by_block
+            .get(usize::from(state.block().0))
+            .and_then(|&i| self.tables.get(usize::try_from(i).ok()?))?
+            .sequence
+            .as_deref()
+    }
+
+    /// The `random_sequence` of the table `table`.
+    pub fn random_sequence(&self, table: &str) -> Option<&str> {
+        self.by_name
+            .get(table)
+            .and_then(|&i| self.tables.get(usize::try_from(i).ok()?))?
+            .sequence
+            .as_deref()
     }
 
     /// Whether a table with this id is loaded.
@@ -625,7 +685,7 @@ impl LootTables {
 }
 
 /// The loot table directories [`LootTables::load`] reads.
-pub const LOADED_KINDS: [&str; 4] = ["blocks", "chests", "archaeology", "pots"];
+pub const LOADED_KINDS: [&str; 5] = ["blocks", "chests", "archaeology", "pots", "spawners"];
 
 /// `Util.shuffle(list, random)`.
 fn shuffle<T>(list: &mut [T], rng: &mut dyn LootRandom) {
@@ -1821,7 +1881,7 @@ fn holder_entries(v: &Value) -> Res<Box<[Box<str>]>> {
 }
 
 /// The values of `block`'s property `name`, in Vanilla's order.
-fn property_values(block: BlockId, name: &str) -> Option<&'static [&'static str]> {
+pub(crate) fn property_values(block: BlockId, name: &str) -> Option<&'static [&'static str]> {
     block
         .info()
         .properties
@@ -1834,13 +1894,13 @@ fn property_values(block: BlockId, name: &str) -> Option<&'static [&'static str]
 /// A property value as the property compares it: integers numerically, booleans false < true,
 /// enums by declaration order. `None` if `value` is not a value of the property.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum PropertyKey {
+pub(crate) enum PropertyKey {
     Int(i64),
     Bool(bool),
     Index(usize),
 }
 
-fn property_key(values: &[&str], value: &str) -> Option<PropertyKey> {
+pub(crate) fn property_key(values: &[&str], value: &str) -> Option<PropertyKey> {
     if (value == "true" || value == "false") && values.contains(&value) {
         return Some(PropertyKey::Bool(value == "true"));
     }

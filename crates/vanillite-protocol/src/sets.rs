@@ -121,6 +121,7 @@ packet_set! {
         ContainerButtonClick(play::serverbound::ContainerButtonClick),
         ContainerSlotStateChanged(play::serverbound::ContainerSlotStateChanged),
         RenameItem(play::serverbound::RenameItem),
+        SetBeacon(play::serverbound::SetBeacon),
         SignUpdate(play::serverbound::SignUpdate),
         PlaceRecipe(play::serverbound::PlaceRecipe),
         RecipeBookSeenRecipe(play::serverbound::RecipeBookSeenRecipe),
@@ -157,6 +158,7 @@ packet_set! {
         PlayerLoaded(play::serverbound::PlayerLoaded),
         Pong(play::serverbound::Pong),
         ResourcePack(play::serverbound::ResourcePack),
+        SeenAdvancements(play::serverbound::SeenAdvancementsPacket),
     }
     unhandled Unhandled
 }
@@ -209,6 +211,7 @@ packet_set! {
     /// `Unhandled`.
     ClientboundPlay {
         AddEntity(play::clientbound::AddEntity),
+        AwardStats(play::clientbound::AwardStats),
         BlockChangedAck(play::clientbound::BlockChangedAck),
         BlockDestruction(play::clientbound::BlockDestruction),
         BlockUpdate(play::clientbound::BlockUpdate),
@@ -261,6 +264,9 @@ packet_set! {
         SetHealth(play::clientbound::SetHealth),
         SetTime(play::clientbound::SetTime),
         Sound(play::clientbound::Sound),
+        UpdateAdvancements(play::clientbound::UpdateAdvancements),
+        UpdateMobEffect(play::clientbound::UpdateMobEffect),
+        RemoveMobEffect(play::clientbound::RemoveMobEffect),
         SystemChat(play::clientbound::SystemChat),
     }
     unhandled Unhandled

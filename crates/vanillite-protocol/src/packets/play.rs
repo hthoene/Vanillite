@@ -5,6 +5,7 @@
 mod world;
 
 pub mod serverbound {
+    pub use super::progress::{SeenAdvancements, SeenAdvancementsAction, SeenAdvancementsPacket};
     pub use super::world::serverbound::*;
     use crate::Packet;
     use crate::codec::{Decode, Encode, Reader, Result};
@@ -530,12 +531,23 @@ pub mod clientbound {
         pub head_y_rot: i8,
     }
 
+    pub use super::boss::*;
     pub use super::entities::*;
+    pub use super::hud::*;
+    pub use super::level::*;
     pub use super::mobs::{Animate, Cooldown, MoveVehicleBack, SetEntityLink, SetPassengers};
+    pub use super::progress::{
+        AdvancementDisplay, AdvancementEntry, AdvancementProgress, AwardStats,
+        SelectAdvancementsTab, StatValue, UpdateAdvancements,
+    };
     pub use super::survival::*;
 }
 
+mod boss;
+mod hud;
+mod level;
 mod mobs;
+mod progress;
 mod survival;
 
 /// Clientbound play packets with hand-written codecs (variable layouts).

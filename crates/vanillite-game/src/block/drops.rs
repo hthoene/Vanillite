@@ -1,7 +1,7 @@
 //! What breaking blocks drops (`Block.dropResources`, `Entity.spawnAtLocation`) and how item
 //! entities enter the level (`new ItemEntity` + `addFreshEntity`).
 
-use vanillite_base::random::RandomSource;
+use vanillite_base::random::{LegacyRandom, RandomSource};
 use vanillite_base::{BlockPos, Vec3};
 use vanillite_data::block::{BlockId, BlockState};
 use vanillite_world::entity::EntityId;
@@ -62,6 +62,43 @@ pub fn drop_resources(
     }
 }
 
+/// `BlockState.getDrops` of a block an explosion destroys (`onExplosionHit`): its loot without
+/// a tool, with the explosion radius for `explosion_decay` when the blocks decay. The loot
+/// is rolled whether or not blocks drop (`popResource` checks that).
+pub fn explosion_loot(
+    level: &mut Level,
+    pos: BlockPos,
+    state: BlockState,
+    radius: Option<f32>,
+    source: Option<EntityId>,
+    out: &mut Vec<ItemStack>,
+) {
+    let Some(data) = crate::player::play::game_data() else {
+        return;
+    };
+    let tool = ItemStack::EMPTY;
+    let entity = level.block_entity(pos).cloned();
+    let components = |id: u16| {
+        entity
+            .as_ref()
+            .and_then(|e| super::container::component(e, id))
+    };
+    let item_in_tag = |item: u16, tag: &str| data.item_in_tag(item, tag);
+    let loot = BlockLootContext {
+        state,
+        tool: &tool,
+        enchantment_level: &|_| 0,
+        item_in_tag: &item_in_tag,
+        explosion_radius: radius,
+        this_present: source.is_some(),
+        entity: None,
+        block_entity: Some(&components),
+    };
+    let mut random = std::mem::replace(level.random(), LegacyRandom::new(0));
+    data.loot.roll_block(level, &loot, &mut random, out);
+    *level.random() = random;
+}
+
 /// `Block.popResource(level, pos, stack)`: the stack as an item entity around the block's
 /// centre.
 pub fn pop_resource(level: &mut Level, pos: BlockPos, stack: ItemStack) {
@@ -110,16 +147,10 @@ pub fn spawn_item_moving(
     if stack.is_empty() {
         return None;
     }
-    let mut own = level.new_entity_random();
-    let uuid = level.new_uuid();
-    // `bobOffs` (client bobbing), then `setYRot(this.random.nextFloat() * 360.0F)`.
-    let _bob = own.next_float();
-    let y_rot = own.next_float() * 360.0;
-    let velocity = velocity.unwrap_or_else(|| {
-        let x = own.next_double() * 0.2 - 0.1;
-        let z = own.next_double() * 0.2 - 0.1;
-        Vec3::new(x, 0.2, z)
-    });
+    // The `ItemEntity` constructor draws `bobOffs`, the yaw and the motion from the item's own
+    // random (seeded from the entity seed stream).
+    let (uuid, y_rot, motion) = crate::mob::new_item_entity();
+    let velocity = velocity.unwrap_or(motion);
     let network_id = level.network_ids().next();
     Some(level.entities.spawn_item(
         network_id,

@@ -6,6 +6,7 @@
 pub mod aabb;
 pub mod arena;
 pub mod bitset;
+pub mod date;
 pub mod hash;
 pub mod math;
 mod mth_tables;

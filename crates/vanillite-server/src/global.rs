@@ -36,7 +36,8 @@ pub struct Global {
     pub(crate) level: crate::level::LevelState,
     /// The world seed (`/seed`).
     pub(crate) seed: i64,
-    /// Entries of data-driven registries commands refer to (timelines, world clocks).
+    /// Entries of data-driven registries commands refer to (timelines, world clocks,
+    /// enchantments).
     pub(crate) registries: std::collections::BTreeMap<String, Vec<String>>,
     /// Tool rules, loot tables and item data of the block and item handlers.
     pub(crate) game: Arc<vanillite_game::player::play::GameData>,
@@ -44,6 +45,16 @@ pub struct Global {
     pub(crate) recipes_packet: Arc<vanillite_protocol::SharedPacket>,
     /// `spawn-protection` radius in blocks.
     pub(crate) spawn_protection: i32,
+    /// Scoreboard, command storage, functions and tags.
+    pub(crate) systems: crate::systems::GameSystems,
+    /// The data pack repository.
+    pub(crate) packs: crate::packs::DataPacks,
+    /// `/tick`'s state; the server loop reads it once per tick.
+    pub(crate) tick_rate: std::sync::Mutex<crate::tick_rate::TickRateManager>,
+    /// The durations of the last ticks (`/tick query`).
+    pub(crate) tick_times: std::sync::Mutex<crate::tick_rate::TickTimes>,
+    /// `force-gamemode`.
+    pub(crate) force_game_mode: bool,
     /// The plugins.
     pub(crate) plugins: vanillite_plugin_host::PluginHost,
     /// This value itself, for work handed to other worlds.
@@ -68,6 +79,13 @@ impl Global {
         }
     }
 
+    /// The tick rate state, locked for one read or change.
+    pub(crate) fn tick_rate(&self) -> std::sync::MutexGuard<'_, crate::tick_rate::TickRateManager> {
+        self.tick_rate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// Asks the server to stop after the current tick (`/stop`).
     pub fn stop(&self) {
         if let Some(handle) = self.handle.get() {
@@ -89,4 +107,8 @@ pub struct ChatTypes {
     pub msg_outgoing: i32,
     /// `minecraft:emote_command`.
     pub emote_command: i32,
+    /// `minecraft:team_msg_command_incoming`.
+    pub team_msg_incoming: i32,
+    /// `minecraft:team_msg_command_outgoing`.
+    pub team_msg_outgoing: i32,
 }

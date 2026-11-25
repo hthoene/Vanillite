@@ -31,10 +31,14 @@ use vanillite_game::block::Behaviours;
 use vanillite_game::block::weather::Climate;
 use vanillite_game::entities::{Entities, is_mob_kind};
 use vanillite_game::item_entity::ItemData;
+use vanillite_game::level::explosion::BlockInteraction;
 use vanillite_game::level::{Level, LevelOutput, LevelSettings, update};
 use vanillite_game::lightning;
 use vanillite_game::minecart::{self, MinecartKind};
+use vanillite_game::mob::common::CommonGoal;
+use vanillite_game::mob::fam::FamGoal;
 use vanillite_game::mob::goals::{Goal, MeleeKind, Slot};
+use vanillite_game::mob::movement::{MoveGoal, RemoveSounds};
 use vanillite_game::mob::{
     self, Environment, Kind, MobContext, MobData, MobSettings, WorldAction, combat, kinds,
     projectile,
@@ -351,6 +355,7 @@ impl GameWorld {
             let blocks = ChunkBlocks(&level.chunks);
             let raining = |pos| level.is_raining_at(pos);
             let mut no_gateway = |_| false;
+            let names = |name: &str, _| vanillite_protocol::text::Component::text(name.to_owned());
             let mut env = Env {
                 types,
                 facts,
@@ -365,6 +370,8 @@ impl GameWorld {
                 random: &mut random,
                 out: &mut self.effects,
                 hooks: &vanillite_game::hooks::NoHooks,
+                border: None,
+                display_name: &names,
             };
             f(level, &mut ents, &mut env, &mut self.mobs)
         };
@@ -432,8 +439,15 @@ impl GameWorld {
                 continue;
             }
             let is_mob = is_mob_kind(kind);
+            let is_special = mob::boss::special::is_special_kind(kind);
             let is_minecart = MinecartKind::of(kind).is_some();
-            if !is_mob && !is_minecart && kind != ids::ARROW && kind != ids::EXPERIENCE_ORB {
+            if !is_mob
+                && !is_special
+                && !is_minecart
+                && kind != ids::ARROW
+                && kind != ids::EXPERIENCE_ORB
+                && kind != ids::AREA_EFFECT_CLOUD
+            {
                 continue;
             }
             if !self
@@ -449,10 +463,14 @@ impl GameWorld {
             self.with_env(|level, ents, env, cx| {
                 if is_mob {
                     mob::tick(level, ents, env, cx, id);
+                } else if is_special {
+                    mob::boss::special::tick(level, ents, env, cx, id);
                 } else if is_minecart {
                     minecart::tick(level, ents, env, cx, id);
-                } else {
+                } else if kind == ids::ARROW {
                     projectile::tick_arrow(level, ents, env, cx, id);
+                } else {
+                    vanillite_game::effect::cloud::tick(level, ents, env, cx, id);
                 }
             });
             if !self.mobs.actions.is_empty() {
@@ -470,11 +488,33 @@ impl GameWorld {
     /// What the last mob tick queued (`WorldMobs::apply_actions` of the server).
     fn apply_actions(&mut self) {
         for action in std::mem::take(&mut self.mobs.actions) {
-            if let WorldAction::Explode(e) = action {
-                e.run(&mut self.level, &self.rules);
-                self.explosion_hurts();
-            } else {
-                action.apply_to_level(&mut self.level);
+            match action {
+                WorldAction::Explode(e) => {
+                    e.run(&mut self.level, &self.rules);
+                    self.explosion_hurts();
+                }
+                WorldAction::ExplodeWith {
+                    source,
+                    indirect,
+                    pos,
+                    radius,
+                    blocks,
+                } => {
+                    let interaction = if !blocks {
+                        BlockInteraction::Keep
+                    } else if self.rules.bool(Rule::BLOCK_EXPLOSION_DROP_DECAY) {
+                        BlockInteraction::DestroyWithDecay
+                    } else {
+                        BlockInteraction::Destroy
+                    };
+                    self.level
+                        .explode(source, indirect, pos, radius, interaction);
+                    self.explosion_hurts();
+                }
+                WorldAction::Level(action) => action.apply(&mut self.level),
+                other => {
+                    other.apply_to_level(&mut self.level);
+                }
             }
         }
         self.finish_removals();
@@ -525,6 +565,18 @@ impl GameWorld {
     /// other effects go to clients nobody has.
     fn spawn_drops(&mut self) {
         for effect in std::mem::take(&mut self.effects) {
+            if let Effect::Experience { pos, amount } = effect {
+                vanillite_game::experience_orb::with_entity_random(|random| {
+                    vanillite_game::experience_orb::award_in(
+                        &mut self.level.entities,
+                        &self.network_ids,
+                        random,
+                        pos,
+                        vanillite_base::Vec3::default(),
+                        amount,
+                    );
+                });
+            }
             if let Effect::DropItem {
                 uuid,
                 pos,
@@ -613,6 +665,12 @@ impl GameWorld {
             last_equipment: std::array::from_fn(|_| vanillite_game::item::ItemStack::EMPTY),
             survival: vanillite_game::survival::player::Survival::default(),
             recipe_book: vanillite_game::recipe::book::PlayerRecipeBook::default(),
+            post_effects: Vec::new(),
+            stats: vanillite_game::stats::StatsCounter::default(),
+            advancements: vanillite_game::advancements::PlayerAdvancements::load(
+                Arc::default(),
+                None,
+            ),
         };
         let rot = Rotation {
             y_rot: spec.rot[0],
@@ -653,7 +711,20 @@ impl GameWorld {
             .ok_or_else(|| format!("{}: no mob behaviour in Vanillite", spec.kind))?;
         let mut m = MobData::new(kind, spec.seed);
         if spec.finalize {
-            kinds::finalize_spawn(&mut m, self.difficulty, kinds::FarmClimate::Temperate, 0);
+            // `finalizeSpawn(level, difficulty, COMMAND, null)` with the level random.
+            let pos = BlockPos::containing(spec.pos[0], spec.pos[1], spec.pos[2]);
+            let mut random = std::mem::replace(self.level.random(), LegacyRandom::new(0));
+            {
+                let mut ctx = vanillite_game::mob::fam::SpawnContext::simple(
+                    self.difficulty,
+                    vanillite_game::mob::fam::SpawnReason::Command,
+                );
+                ctx.pos = pos;
+                ctx.level = Some(&self.level);
+                ctx.env = self.env;
+                kinds::finalize_spawn(&mut m, &mut ctx, &mut random);
+            }
+            *self.level.random() = random;
         }
         if let Some(baby) = spec.baby {
             m.baby = baby;
@@ -732,8 +803,8 @@ impl GameWorld {
                 );
                 d.insert("target".into(), json!(name));
             }
-            d.insert("goals".into(), running(&m.goals.slots));
-            d.insert("targets".into(), running(&m.targets.slots));
+            d.insert("goals".into(), running(m.kind, &m.goals.slots));
+            d.insert("targets".into(), running(m.kind, &m.targets.slots));
             if let Some(path) = m.nav.path.as_ref().filter(|p| !p.is_done()) {
                 let nodes: Vec<Value> = path
                     .nodes
@@ -756,22 +827,23 @@ impl GameWorld {
 }
 
 /// The running goals by Vanilla class name, sorted.
-fn running(slots: &[Slot]) -> Value {
+fn running(kind: Kind, slots: &[Slot]) -> Value {
     let mut names: Vec<&str> = slots
         .iter()
         .filter(|s| s.running)
-        .map(|s| goal_name(&s.goal))
+        .map(|s| goal_name(kind, &s.goal))
         .collect();
     names.sort_unstable();
     json!(names)
 }
 
-/// The Vanilla class of a goal.
-fn goal_name(goal: &Goal) -> &'static str {
+/// The Vanilla class of a goal of a mob of `kind`.
+fn goal_name(kind: Kind, goal: &Goal) -> &'static str {
     match goal {
         Goal::Float => "FloatGoal",
         Goal::Panic { .. } => "PanicGoal",
         Goal::Stroll { .. } => "WaterAvoidingRandomStrollGoal",
+        Goal::LookAtPlayer { .. } if kind == Kind::Fox => "FoxLookAtPlayerGoal",
         Goal::LookAtPlayer { .. } => "LookAtPlayerGoal",
         Goal::RandomLook { .. } => "RandomLookAroundGoal",
         Goal::Melee { kind, .. } => match kind {
@@ -799,7 +871,195 @@ fn goal_name(goal: &Goal) -> &'static str {
         Goal::FollowOwner { .. } => "FollowOwnerGoal",
         Goal::OwnerHurtBy { .. } => "OwnerHurtByTargetGoal",
         Goal::OwnerHurt { .. } => "OwnerHurtTargetGoal",
+        Goal::Common(c) => common_goal_name(c),
+        Goal::Fam(f) => fam_goal_name(kind, f),
+        Goal::Guardian(g) => {
+            use vanillite_game::mob::boss::guardian::GuardianGoal as Gg;
+            match g {
+                Gg::Attack { .. } => "GuardianAttackGoal",
+                Gg::MoveTowardsRestriction { .. } => "MoveTowardsRestrictionGoal",
+                Gg::Stroll { .. } => "RandomStrollGoal",
+                Gg::LookAtGuardian { .. } => "LookAtPlayerGoal",
+                Gg::Target { .. } => "NearestAttackableTargetGoal",
+            }
+        }
+        Goal::Wither(w) => {
+            use vanillite_game::mob::boss::wither::WitherGoal as Wg;
+            match w {
+                Wg::DoNothing => "WitherDoNothingGoal",
+                Wg::RangedAttack { .. } => "RangedAttackGoal",
+                Wg::RandomFly { .. } => "WaterAvoidingRandomFlyingGoal",
+                Wg::NearestLiving { .. } => "NearestAttackableTargetGoal",
+            }
+        }
     }
+}
+
+/// The Vanilla class of a goal many families share.
+fn common_goal_name(goal: &CommonGoal) -> &'static str {
+    match goal {
+        CommonGoal::NearestAttackable { .. } => "NearestAttackableTargetGoal",
+        CommonGoal::Avoid { .. } => "AvoidEntityGoal",
+        CommonGoal::Ranged { .. } => "RangedAttackGoal",
+        CommonGoal::MoveTowardsRestriction { .. } => "MoveTowardsRestrictionGoal",
+        CommonGoal::ResetUniversalAnger { .. } => "ResetUniversalAngerTargetGoal",
+        CommonGoal::Move(m) => match m {
+            MoveGoal::RemoveBlock {
+                sounds: RemoveSounds::ZombieEgg,
+                ..
+            } => "ZombieAttackTurtleEggGoal",
+            MoveGoal::RemoveBlock { .. } => "RemoveBlockGoal",
+            MoveGoal::OpenDoor { .. } => "OpenDoorGoal",
+            MoveGoal::BreakDoor { .. } => "BreakDoorGoal",
+            MoveGoal::BreathAir => "BreathAirGoal",
+            MoveGoal::TryFindLiquid { .. } => "TryFindWaterGoal",
+            MoveGoal::ClimbOnTopOfPowderSnow => "ClimbOnTopOfPowderSnowGoal",
+            _ => "RandomStrollGoal",
+        },
+    }
+}
+
+/// The Vanilla class of a family goal of a mob of `kind`, read from the goal's `Debug` form
+/// (`Illager(Spell(UseSpell { spell: 1, .. }))`): the family, its variant and what selects the
+/// class inside it.
+fn fam_goal_name(kind: Kind, goal: &FamGoal) -> &'static str {
+    let debug = format!("{goal:?}");
+    let words: Vec<&str> = debug
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|s| !s.is_empty())
+        .collect();
+    let word = |i: usize| words.get(i).copied().unwrap_or("");
+    let field = |name: &str| {
+        words
+            .iter()
+            .position(|w| *w == name)
+            .map_or("", |i| word(i + 1))
+    };
+    let (family, variant) = (word(0), word(1));
+    match (family, variant) {
+        ("Undead", "DrownedMelee") => "DrownedAttackGoal",
+        ("Undead", "DrownedTrident") => "DrownedTridentAttackGoal",
+        ("Undead", "HurtByIgnoringDrowned") => "HurtByTargetGoal",
+        ("Undead", "SkeletonMelee") => "MeleeAttackGoal",
+        ("Undead", "CubeFloat") => "CubeMobFloatGoal",
+        ("Undead", "CubeAttack") => "CubeMobAttackGoal",
+        ("Undead", "CubeRandomDirection") => "CubeMobRandomDirectionGoal",
+        ("Undead", "CubeKeepOnJumping") => "CubeMobKeepOnJumpingGoal",
+        ("Undead", "PhantomSweep") => "PhantomSweepAttackGoal",
+        ("Undead", "PhantomCircle") => "PhantomCircleAroundAnchorGoal",
+        ("Undead", "PhantomTargetPlayer") => "PhantomAttackPlayerTargetGoal",
+        ("Illager", "Patrol") => "LongDistancePatrolGoal",
+        ("Illager", "HoldGround") => "HoldGroundAttackGoal",
+        ("Illager", "HurtBy") => "HurtByTargetGoal",
+        ("Illager", "LookAt") => "LookAtPlayerGoal",
+        ("Illager", "Stroll") => match kind {
+            Kind::Pillager | Kind::Witch => "WaterAvoidingRandomStrollGoal",
+            _ => "RandomStrollGoal",
+        },
+        ("Illager", "Locked") => common_name_of(word(2)),
+        ("Illager", "Target") => match field("gate") {
+            "WitchCanAttack" => "NearestAttackableWitchTargetGoal",
+            "Johnny" => "VindicatorJohnnyAttackGoal",
+            "NotPeaceful" => "ShulkerNearestAttackGoal",
+            _ => "NearestAttackableTargetGoal",
+        },
+        ("Illager", "WitchHeal") => "NearestHealableRaiderTargetGoal",
+        ("Illager", "Crossbow") => "RangedCrossbowAttackGoal",
+        ("Illager", "SpellCasting") => match kind {
+            Kind::Evoker => "EvokerCastingSpellGoal",
+            _ => "SpellcasterCastingSpellGoal",
+        },
+        ("Illager", "Spell") => match field("spell") {
+            "1" => "EvokerSummonSpellGoal",
+            "2" => "EvokerAttackSpellGoal",
+            "3" => "EvokerWololoSpellGoal",
+            "4" => "IllusionerMirrorSpellGoal",
+            "5" => "IllusionerBlindnessSpellGoal",
+            _ => "SpellcasterUseSpellGoal",
+        },
+        ("Illager", "VexCharge") => "VexChargeAttackGoal",
+        ("Illager", "VexCopyOwner") => "VexCopyOwnerTargetGoal",
+        ("Illager", "GhastFloat") => "RandomFloatAroundGoal",
+        ("Illager", "GhastShoot") => "GhastShootFireballGoal",
+        ("Companion", "Guard") => match (word(3), kind) {
+            ("Avoid", Kind::Cat) => "CatAvoidEntityGoal",
+            ("Avoid", Kind::Ocelot) => "OcelotAvoidEntityGoal",
+            ("NearestAttackable", _) if word(2) == "NotTame" => "NonTameRandomTargetGoal",
+            (inner, _) => common_name_of(inner),
+        },
+        ("Companion", "TamePanic") => "TamableAnimalPanicGoal",
+        ("Companion", _) => match (variant, word(2)) {
+            ("Horse", "RunAround") => "RunAroundLikeCrazyGoal",
+            ("Llama", "FollowCaravan") => "LlamaFollowCaravanGoal",
+            ("Llama", "AttackWolf") => "LlamaAttackWolfGoal",
+            ("Llama", "DefendTrader") => "TraderLlamaDefendWanderingTraderGoal",
+            ("Wolf", "AvoidLlama") => "WolfAvoidEntityGoal",
+            ("Feline", "RelaxOnOwner") => "CatRelaxOnOwnerGoal",
+            ("Feline", "LieOnBlock") => "CatLieOnBedGoal",
+            ("Feline", "SitOnBlock") => "CatSitOnBlockGoal",
+            ("Feline", "Attack") => "OcelotAttackGoal",
+            ("Parrot", "Wander") => "ParrotWanderGoal",
+            ("Fox", "Float") => "FoxFloatGoal",
+            ("Fox", "Panic") => "FoxPanicGoal",
+            ("Fox", "Avoid") => "AvoidEntityGoal",
+            ("Fox", "Pounce") => "FoxPounceGoal",
+            ("Fox", "EatBerries") => "FoxEatBerriesGoal",
+            ("Fox", "SearchForItems") => "FoxSearchForItemsGoal",
+            ("Fox", "DefendTrusted") => "DefendTrustedTargetGoal",
+            ("Panda", "BreedCheck") => "PandaBreedGoal",
+            ("Panda", inner) => leak(format!("Panda{inner}Goal")),
+            ("Bear", "Panic") => "PolarBearPanicGoal",
+            ("Bear", "AttackPlayers") => "PolarBearAttackPlayersGoal",
+            ("Rabbit", "Panic") => "RabbitPanicGoal",
+            ("Rabbit", "Avoid") => "RabbitAvoidEntityGoal",
+            (_, inner) => leak(format!("{inner}Goal")),
+        },
+        ("Mount", "Ghast") => match word(2) {
+            "Float" => "HappyGhastFloatGoal",
+            "Tempt" => "TemptGoal",
+            _ => "RandomFloatAroundGoal",
+        },
+        ("Wildlife", "Swim") => match kind {
+            Kind::Dolphin => "RandomSwimmingGoal",
+            _ => "FishSwimGoal",
+        },
+        ("Wildlife", "Puff") => "PufferfishPuffGoal",
+        ("Wildlife", "TurtleStroll") => "TurtleRandomStrollGoal",
+        ("Wildlife", "BeeValidateFlower") => "ValidateFlowerGoal",
+        (_, variant) => leak(if variant.ends_with("Goal") {
+            variant.to_owned()
+        } else {
+            format!("{variant}Goal")
+        }),
+    }
+}
+
+/// The Vanilla class of a [`CommonGoal`] variant by name.
+fn common_name_of(variant: &str) -> &'static str {
+    match variant {
+        "NearestAttackable" => "NearestAttackableTargetGoal",
+        "Avoid" => "AvoidEntityGoal",
+        "Ranged" => "RangedAttackGoal",
+        "MoveTowardsRestriction" => "MoveTowardsRestrictionGoal",
+        "ResetUniversalAnger" => "ResetUniversalAngerTargetGoal",
+        other => leak(format!("{other}Goal")),
+    }
+}
+
+/// A name for the trace, kept for the process (one per distinct name).
+fn leak(name: String) -> &'static str {
+    use std::collections::HashSet;
+    static NAMES: Mutex<Option<HashSet<&'static str>>> = Mutex::new(None);
+    let mut names = NAMES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let names = names.get_or_insert_with(HashSet::new);
+    if let Some(n) = names.get(name.as_str()) {
+        return n;
+    }
+    let n: &'static str = Box::leak(name.into_boxed_str());
+    names.insert(n);
+    n
 }
 
 /// `PathType.name()`: `WalkableDoor` → `WALKABLE_DOOR`.
@@ -1043,6 +1303,20 @@ impl ScenarioWorld for GameWorld {
                 None => DamageSource::of(env.types.generic),
             };
             combat::hurt(level, ents, env, cx, target, source, hurt.amount);
+        });
+        self.finish_removals();
+        self.spawn_drops();
+        Ok(())
+    }
+
+    fn effect(&mut self, effect: &crate::scenario::EffectOp) -> Result<(), String> {
+        let target = self.named(&effect.entity)?;
+        let kind = vanillite_game::effect::MobEffect::by_name(&effect.effect)
+            .ok_or_else(|| format!("unknown effect {}", effect.effect))?;
+        let instance =
+            vanillite_game::effect::EffectInstance::new(kind, effect.duration, effect.amplifier);
+        self.with_env(|level, ents, env, cx| {
+            vanillite_game::effect::living::add_to_entity(level, ents, env, cx, target, instance);
         });
         self.finish_removals();
         self.spawn_drops();

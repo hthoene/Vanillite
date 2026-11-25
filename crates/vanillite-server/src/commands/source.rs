@@ -9,14 +9,19 @@ use vanillite_game::player::join::display_name;
 use vanillite_protocol::packets::play::clientbound::SystemChat;
 use vanillite_protocol::text::{Color, Component, NamedColor};
 
+use vanillite_command::values::Anchor;
+use vanillite_data::entity::EntityTypeId;
+use vanillite_world::entity::EntityId;
+
+use super::engine::Callback;
 use crate::global::Global;
 use crate::player_list::Uuid;
 use crate::world::WorldId;
 
-/// Who runs a command.
+/// Who gets the feedback of a command (Vanilla's `CommandSource`).
 #[derive(Clone)]
 pub(crate) enum SourceKind {
-    /// A player on this world.
+    /// A player.
     Player {
         uuid: u128,
         name: String,
@@ -24,9 +29,37 @@ pub(crate) enum SourceKind {
     },
     /// The server console.
     Console,
+    /// The server itself (functions of the game loop, scheduled functions): no feedback.
+    Server,
 }
 
-/// A command source.
+/// The entity a command runs as (`CommandSourceStack.entity`).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SourceEntity {
+    /// UUID.
+    pub(crate) uuid: u128,
+    /// The world the entity is in.
+    pub(crate) world: WorldId,
+    /// The entity, when it is in the world the command runs on.
+    pub(crate) id: Option<EntityId>,
+    /// Its type.
+    pub(crate) kind: EntityTypeId,
+    /// `getScoreboardName`/`getName`: the player name, else the custom name or the type name.
+    pub(crate) name: String,
+    /// Its display name.
+    pub(crate) display: Component,
+    /// Eye height above the feet.
+    pub(crate) eye_height: f64,
+}
+
+impl SourceEntity {
+    /// Whether it is a player.
+    pub(crate) fn is_player(&self) -> bool {
+        self.kind == vanillite_data::entity::ids::PLAYER
+    }
+}
+
+/// A command source (`CommandSourceStack`).
 #[derive(Clone)]
 pub(crate) struct CommandSource {
     /// The server, for suggestions.
@@ -40,6 +73,14 @@ pub(crate) struct CommandSource {
     pub(crate) pos: Vec3,
     /// Rotation (`y_rot`, `x_rot`).
     pub(crate) rot: (f32, f32),
+    /// The entity it runs as.
+    pub(crate) entity: Option<SourceEntity>,
+    /// `anchored`.
+    pub(crate) anchor: Anchor,
+    /// No feedback at all (`withSuppressedOutput`).
+    pub(crate) silent: bool,
+    /// Gets the result of the command (`execute store`, function results).
+    pub(crate) callback: Callback,
 }
 
 impl vanillite_command::Source for CommandSource {
@@ -62,7 +103,7 @@ impl vanillite_command::Source for CommandSource {
                 let operator = self.global.access.op_level(*uuid).is_some();
                 self.global.plugins.has_permission(*uuid, node, operator)
             }
-            SourceKind::Console => true,
+            SourceKind::Console | SourceKind::Server => true,
         }
     }
 
@@ -102,6 +143,119 @@ impl vanillite_command::Source for CommandSource {
                     .collect()
             }
             suggest::WHITELISTED => access.whitelisted_names(),
+            suggest::SCORE_HOLDERS => {
+                let mut names: Vec<String> = online.into_iter().map(|p| p.name).collect();
+                names.extend(
+                    self.global
+                        .systems
+                        .scoreboard()
+                        .holders()
+                        .filter(|h| !names.iter().any(|n| n == h))
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>(),
+                );
+                names
+            }
+            suggest::TRIGGER_OBJECTIVES => self
+                .global
+                .systems
+                .scoreboard()
+                .objectives()
+                .filter(|o| o.criteria == vanillite_game::scoreboard::CriteriaKind::Trigger)
+                .map(|o| o.name.clone())
+                .collect(),
+            suggest::FUNCTIONS => {
+                let library = self.global.systems.functions();
+                let tags: Vec<String> = library.tag_names().map(|t| format!("#{t}")).collect();
+                let names: Vec<&str> = library.names().collect();
+                builder.suggest_resource_ids(names.iter().copied());
+                builder.suggest_matching(tags.iter().map(String::as_str));
+                return;
+            }
+            suggest::STORAGE => {
+                let ids: Vec<String> = self.global.systems.storage().keys().cloned().collect();
+                builder.suggest_resource_ids(ids.iter().map(String::as_str));
+                return;
+            }
+            suggest::TRIGGERS => {
+                let Some(e) = &self.entity else {
+                    return;
+                };
+                let holder = if e.is_player() {
+                    e.name.clone()
+                } else {
+                    crate::player_list::Uuid(e.uuid).to_string()
+                };
+                let board = self.global.systems.scoreboard();
+                board
+                    .objectives()
+                    .filter(|o| o.criteria == vanillite_game::scoreboard::CriteriaKind::Trigger)
+                    .filter(|o| board.score(&holder, &o.name).is_some_and(|s| !s.locked))
+                    .map(|o| o.name.clone())
+                    .collect()
+            }
+            suggest::RANDOM_SEQUENCES => self
+                .global
+                .systems
+                .random_sequences()
+                .ids()
+                .map(str::to_owned)
+                .collect(),
+            suggest::BANNED_PLAYERS => access.bans().into_iter().map(|b| b.name).collect(),
+            suggest::BANNED_IPS => access.ip_bans().into_iter().map(|b| b.ip).collect(),
+            suggest::SCHEDULED | suggest::STOPWATCHES => {
+                let ids: Vec<String> = if provider == suggest::SCHEDULED {
+                    let queue = self.global.systems.scheduled();
+                    queue
+                        .ids()
+                        .filter(|id| !id.starts_with('#'))
+                        .map(str::to_owned)
+                        .collect()
+                } else {
+                    let stopwatches = self.global.systems.stopwatches();
+                    stopwatches.ids().map(str::to_owned).collect()
+                };
+                builder.suggest_resource_ids(ids.iter().map(String::as_str));
+                return;
+            }
+            suggest::TEST_INSTANCES => {
+                builder.suggest_resource_ids(
+                    self.registry_entries("minecraft:test_instance")
+                        .iter()
+                        .map(String::as_str),
+                );
+                return;
+            }
+            suggest::SELECTED_PACKS | suggest::UNSELECTED_PACKS => {
+                let packs = &self.global.packs;
+                let repo = packs.repository();
+                if provider == suggest::SELECTED_PACKS {
+                    repo.selected()
+                        .iter()
+                        .map(|id| super::pack_cmd::escape_if_required(id))
+                        .collect()
+                } else {
+                    repo.available()
+                        .filter(|p| {
+                            vanillite_datapack::repository::features_allowed(
+                                &p.features,
+                                &packs.features,
+                            ) && !repo.is_selected(&p.id)
+                        })
+                        .map(|p| super::pack_cmd::escape_if_required(&p.id))
+                        .collect()
+                }
+            }
+            suggest::ADVANCEMENT_CRITERIA => {
+                let set = self.global.systems.advancements();
+                args.identifier("advancement")
+                    .and_then(|id| set.get(set.index(id)?))
+                    .map(|a| a.criteria.iter().map(|c| c.name.clone()).collect())
+                    .unwrap_or_default()
+            }
+            suggest::TICK_RATE => vec!["20".to_owned()],
+            suggest::TICK_STEP => vec!["1t".to_owned(), "1s".to_owned()],
+            suggest::TICK_SPRINT => vec!["60s".to_owned(), "1d".to_owned(), "3d".to_owned()],
             suggest::TIMELINES => {
                 builder.suggest_resource_ids(
                     self.registry_entries("minecraft:timeline")
@@ -123,7 +277,57 @@ impl vanillite_command::Source for CommandSource {
         }
     }
 
+    fn registry_tags(&self, registry: &str) -> Vec<String> {
+        if registry == "minecraft:function" {
+            return self
+                .global
+                .systems
+                .functions()
+                .tag_names()
+                .map(str::to_owned)
+                .collect();
+        }
+        self.global
+            .systems
+            .tags()
+            .get(registry)
+            .map(|t| t.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    fn tag_entries(&self, registry: &str, tag: &str) -> Vec<String> {
+        self.global
+            .systems
+            .tags()
+            .get(registry)
+            .and_then(|t| t.get(tag))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn objective_names(&self) -> Vec<String> {
+        self.global
+            .systems
+            .scoreboard()
+            .objectives()
+            .map(|o| o.name.clone())
+            .collect()
+    }
+
+    fn team_names(&self) -> Vec<String> {
+        self.global
+            .systems
+            .scoreboard()
+            .teams()
+            .map(|t| t.name.clone())
+            .collect()
+    }
+
     fn registry_entries(&self, registry: &str) -> Vec<String> {
+        if registry == "minecraft:advancement" {
+            let set = self.global.systems.advancements();
+            return set.iter().map(|(_, a)| a.id.clone()).collect();
+        }
         match self.global.registries.get(registry) {
             Some(entries) => entries.clone(),
             None => vanillite_data::registry::Registry::by_name(registry)
@@ -143,32 +347,89 @@ impl CommandSource {
         }
     }
 
-    /// The player's UUID, if a player runs the command.
-    pub(crate) fn uuid(&self) -> Option<u128> {
-        match &self.kind {
-            SourceKind::Player { uuid, .. } => Some(*uuid),
-            SourceKind::Console => None,
+    /// A source with the defaults of `CommandSourceStack`'s constructor.
+    pub(crate) fn new(
+        global: Arc<Global>,
+        kind: SourceKind,
+        level: u8,
+        world: WorldId,
+        pos: Vec3,
+        rot: (f32, f32),
+        entity: Option<SourceEntity>,
+    ) -> CommandSource {
+        CommandSource {
+            global,
+            kind,
+            level,
+            world,
+            pos,
+            rot,
+            entity,
+            anchor: Anchor::Feet,
+            silent: false,
+            callback: Callback::Empty,
         }
     }
 
-    /// `getDisplayName`: the player's display name or `Server`.
+    /// `EntityAnchorArgument.Anchor.apply(source)`: the position, or the entity's eyes.
+    pub(crate) fn anchor_pos(&self) -> Vec3 {
+        match (self.anchor, &self.entity) {
+            (Anchor::Eyes, Some(e)) => self.pos + Vec3::new(0.0, e.eye_height, 0.0),
+            _ => self.pos,
+        }
+    }
+
+    /// The player's UUID, if the source runs as a player (`getPlayer`).
+    pub(crate) fn uuid(&self) -> Option<u128> {
+        self.entity
+            .as_ref()
+            .filter(|e| e.is_player())
+            .map(|e| e.uuid)
+    }
+
+    /// The UUID of the player that gets the feedback.
+    pub(crate) fn receiver_uuid(&self) -> Option<u128> {
+        match &self.kind {
+            SourceKind::Player { uuid, .. } => Some(*uuid),
+            SourceKind::Console | SourceKind::Server => None,
+        }
+    }
+
+    /// `getDisplayName`: the entity's display name, the player's, or `Server`.
     pub(crate) fn display_name(&self) -> Component {
+        if let Some(e) = &self.entity {
+            return e.display.clone();
+        }
         match &self.kind {
             SourceKind::Player { uuid, name, .. } => display_name(name, *uuid),
-            SourceKind::Console => Component::text("Server"),
+            SourceKind::Console | SourceKind::Server => Component::text("Server"),
         }
     }
 
     /// `getTextName`.
     pub(crate) fn text_name(&self) -> &str {
+        if let Some(e) = &self.entity {
+            return &e.name;
+        }
         match &self.kind {
             SourceKind::Player { name, .. } => name,
-            SourceKind::Console => "Server",
+            SourceKind::Console | SourceKind::Server => "Server",
+        }
+    }
+
+    /// `withCallback`.
+    pub(crate) fn with_callback(&self, callback: Callback) -> CommandSource {
+        CommandSource {
+            callback,
+            ..self.clone()
         }
     }
 
     /// `sendSystemMessage`: to the player (if it accepts system messages) or the log.
     pub(crate) fn send_system(&self, global: &Global, message: Component) {
+        if self.silent {
+            return;
+        }
         match &self.kind {
             SourceKind::Player { uuid, sink, .. } => {
                 let accepts = global
@@ -188,6 +449,7 @@ impl CommandSource {
                 }
             }
             SourceKind::Console => log::info!("{}", message.plain()),
+            SourceKind::Server => {}
         }
     }
 
@@ -195,6 +457,9 @@ impl CommandSource {
     /// the other operators and the log (`broadcastToAdmins`; the game rules
     /// `sendCommandFeedback` and `logAdminCommands` are on, as by default).
     pub(crate) fn send_success(&self, global: &Global, message: Component, inform_admins: bool) {
+        if self.silent || matches!(self.kind, SourceKind::Server) {
+            return;
+        }
         self.send_system(global, message.clone());
         if !inform_admins {
             return;
@@ -203,7 +468,7 @@ impl CommandSource {
             Component::translatable("chat.type.admin", vec![self.display_name(), message])
                 .color(Color::Named(NamedColor::Gray))
                 .italic(true);
-        let own = self.uuid();
+        let own = self.receiver_uuid();
         for entry in global.players.snapshot() {
             if Some(entry.uuid.0) != own && global.access.op_level(entry.uuid.0).is_some() {
                 let accepts = entry
