@@ -138,6 +138,7 @@ fn with_tick<R>(
     let mut out = Vec::new();
     let raining = |_| false;
     let mut env = Env {
+        hooks: &crate::hooks::NoHooks,
         types: &types,
         facts: &facts,
         blocks: &NoBlocks,
@@ -230,6 +231,7 @@ fn skull_hit_withers_by_difficulty() {
         let mut out = Vec::new();
         let raining = |_| false;
         let mut env = Env {
+            hooks: &crate::hooks::NoHooks,
             types: &types,
             facts: &facts,
             blocks: &NoBlocks,
@@ -310,6 +312,7 @@ fn powered_wither_ignores_arrows() {
         let mut out = Vec::new();
         let raining = |_| false;
         let mut env = Env {
+            hooks: &crate::hooks::NoHooks,
             types: &types,
             facts: &facts,
             blocks: &NoBlocks,

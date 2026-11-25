@@ -9,8 +9,19 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
-vanillite-game.workspace = true
 vanillite-abi.workspace = true
+vanillite-base.workspace = true
+vanillite-chunk.workspace = true
+vanillite-command.workspace = true
+vanillite-data.workspace = true
+libloading.workspace = true
+log.workspace = true
+sha2.workspace = true
+toml.workspace = true
+zip.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
 
 [lints]
 workspace = true

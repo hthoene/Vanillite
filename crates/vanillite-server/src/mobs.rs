@@ -121,10 +121,11 @@ impl WorldMobs {
             return;
         };
         let state = &global.level;
+        let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
         let rules = state.rules().clone();
         let no_blocks = NoBlocks;
         let raining = |_| false;
-        let mut env = survival.env(state, &rules, &no_blocks, &raining, dimension);
+        let mut env = survival.env(state, &rules, &no_blocks, &raining, dimension, &hooks);
         if std::mem::take(&mut level.output().try_dragon_respawn) {
             fight.try_respawn(level);
         }
@@ -161,10 +162,11 @@ impl WorldMobs {
             return;
         };
         let state = &global.level;
+        let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
         let rules = state.rules().clone();
         let no_blocks = NoBlocks;
         let raining = |_| false;
-        let mut env = survival.env(state, &rules, &no_blocks, &raining, dimension);
+        let mut env = survival.env(state, &rules, &no_blocks, &raining, dimension, &hooks);
         for event in events {
             fight.handle(level, &mut env, &mut self.cx, event);
         }
@@ -200,6 +202,7 @@ impl WorldMobs {
             return;
         }
         let state = &global.level;
+        let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
         let rules = state.rules().clone();
         let mut ents = std::mem::take(&mut level.entities);
         for (player, network_id) in pending {
@@ -238,7 +241,7 @@ impl WorldMobs {
             let (weather, climate) = (survival.weather, survival.climate().cloned());
             let chunks = &level.chunks;
             let raining = move |pos| raining_at(chunks, climate.as_deref(), &weather, pos);
-            let mut env = survival.env(state, &rules, &blocks, &raining, dimension);
+            let mut env = survival.env(state, &rules, &blocks, &raining, dimension, &hooks);
             combat::player_attack(level, &mut ents, &mut env, &mut self.cx, player, target);
         }
         level.entities = ents;
@@ -317,6 +320,7 @@ impl WorldMobs {
     ) {
         self.ticks += 1;
         let state = &global.level;
+        let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
         let rules = state.rules().clone();
         // `WitherSkullBlock.setPlacedBy` of the skulls players placed since the last tick.
         for pos in std::mem::take(&mut level.output().summon_checks) {
@@ -380,7 +384,7 @@ impl WorldMobs {
                 let (weather, climate) = (survival.weather, survival.climate().cloned());
                 let chunks = &level.chunks;
                 let raining = move |pos| raining_at(chunks, climate.as_deref(), &weather, pos);
-                let mut env = survival.env(state, &rules, &blocks, &raining, dimension);
+                let mut env = survival.env(state, &rules, &blocks, &raining, dimension, &hooks);
                 let level_ref: &Level = level;
                 if is_mob {
                     mob::tick(level_ref, &mut ents, &mut env, &mut self.cx, id);
@@ -511,11 +515,12 @@ impl WorldMobs {
             return;
         }
         let state = &global.level;
+        let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
         let rules = state.rules().clone();
         let hurts = std::mem::take(&mut level.output().explosion_hurts);
         let no_blocks = NoBlocks;
         let raining = |_| false;
-        let mut env = survival.env(state, &rules, &no_blocks, &raining, dimension);
+        let mut env = survival.env(state, &rules, &no_blocks, &raining, dimension, &hooks);
         let mut ents = std::mem::take(&mut level.entities);
         for hurt in hurts {
             // `damageSources().explosion(source, indirect)`.

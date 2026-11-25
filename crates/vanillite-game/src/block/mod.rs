@@ -11,10 +11,13 @@
 //! blocks that placing or breaking one block adds or removes.
 
 pub mod bell;
+pub mod brewing;
+pub mod container;
 pub mod dispenser;
 pub mod drops;
 pub mod falling;
 pub mod fluid;
+pub mod furnace;
 mod growth;
 pub mod hopper;
 pub mod lectern;
@@ -29,6 +32,7 @@ pub mod sculk_catalyst;
 pub mod sculk_shrieker;
 pub mod sculk_vibration;
 pub mod sensor;
+pub mod sign;
 pub mod spawner;
 #[cfg(test)]
 mod spawner_tests;
@@ -73,6 +77,15 @@ pub type SignalFn = fn(&Level, BlockState, BlockPos, Direction) -> i32;
 pub type AnalogFn = fn(&Level, BlockState, BlockPos, Direction) -> i32;
 /// `useWithoutItem(state, level, pos, player, hitResult)`.
 pub type UseFn = fn(&mut Level, BlockState, BlockPos, &UseContext) -> Interaction;
+/// `useItemOn(stack, state, level, pos, player, hand, hitResult)`: the stack is the one in
+/// the hand; a handler that uses items shrinks it (creative players keep theirs).
+pub type UseItemFn = fn(
+    &mut Level,
+    BlockState,
+    BlockPos,
+    &UseContext,
+    &mut crate::item::ItemStack,
+) -> ItemInteraction;
 /// `entityInside(state, level, pos, entity, effectApplier, isPrecise)`.
 pub type EntityInsideFn = fn(&mut Level, BlockState, BlockPos, EntityId);
 
@@ -105,6 +118,17 @@ pub enum Interaction {
     Fail,
 }
 
+/// What `useItemOn` did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ItemInteraction {
+    /// A result of its own (consumes the click unless it is `Pass` or `Fail`).
+    Done(Interaction),
+    /// `TRY_WITH_EMPTY_HAND`: `useWithoutItem` runs for the main hand.
+    TryWithEmptyHand,
+    /// `PASS`: the item's own use runs.
+    Pass,
+}
+
 /// The behaviour of one block.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BlockBehaviour {
@@ -128,6 +152,8 @@ pub struct BlockBehaviour {
     pub analog_output: Option<AnalogFn>,
     /// `useWithoutItem`.
     pub use_without_item: Option<UseFn>,
+    /// `useItemOn` (`TRY_WITH_EMPTY_HAND` without an entry).
+    pub use_item_on: Option<UseItemFn>,
     /// `entityInside`.
     pub entity_inside: Option<EntityInsideFn>,
 }
@@ -254,6 +280,8 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
     dispenser::fill(block, &mut b);
     hopper::fill(block, &mut b);
     spawner::fill(block, &mut b);
+    container::fill(block, &mut b);
+    sign::fill(block, &mut b);
     b
 }
 

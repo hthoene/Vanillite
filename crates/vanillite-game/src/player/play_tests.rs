@@ -89,6 +89,7 @@ impl PacketSink for Sink {
 
 fn actor(game_mode: GameMode) -> Actor {
     Actor {
+        entity: None,
         network_id: 1,
         uuid: 1,
         pos: Vec3::new(0.5, 0.0, 0.5),
@@ -101,7 +102,6 @@ fn actor(game_mode: GameMode) -> Actor {
         permission_level: 0,
         eyes_in_water: false,
         dig: crate::inventory::DigEffects::default(),
-        entity: None,
     }
 }
 
@@ -118,6 +118,8 @@ fn with_ctx(
     let mut drops = Vec::new();
     let mut swings = Vec::new();
     let mut ctx = PlayContext {
+        hooks: &crate::hooks::NoHooks,
+        xp: None,
         level,
         inventory: &mut inventory,
         actor: actor(game_mode),

@@ -72,6 +72,7 @@ impl World {
     ) -> R {
         let raining = |_| false;
         let mut env = Env {
+            hooks: &crate::hooks::NoHooks,
             types: &self.types,
             facts: &self.facts,
             blocks: &NoBlocks,
@@ -260,6 +261,7 @@ fn respawn_stages_take_604_ticks() {
         } = &mut w;
         let raining = |_| false;
         let mut env = Env {
+            hooks: &crate::hooks::NoHooks,
             types,
             facts,
             blocks: &NoBlocks,

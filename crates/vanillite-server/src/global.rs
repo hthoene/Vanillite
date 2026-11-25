@@ -40,8 +40,12 @@ pub struct Global {
     pub(crate) registries: std::collections::BTreeMap<String, Vec<String>>,
     /// Tool rules, loot tables and item data of the block and item handlers.
     pub(crate) game: Arc<vanillite_game::player::play::GameData>,
+    /// `ClientboundUpdateRecipesPacket` of the loaded recipes, encoded once.
+    pub(crate) recipes_packet: Arc<vanillite_protocol::SharedPacket>,
     /// `spawn-protection` radius in blocks.
     pub(crate) spawn_protection: i32,
+    /// The plugins.
+    pub(crate) plugins: vanillite_plugin_host::PluginHost,
     /// This value itself, for work handed to other worlds.
     pub(crate) this: Weak<Global>,
 }

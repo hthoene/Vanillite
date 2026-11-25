@@ -134,7 +134,14 @@ fn extract_data(jar: &Path, dir: &Path) -> Result<(), Error> {
 fn sha1_hex(path: &Path) -> Result<String, Error> {
     let mut file = File::open(path).map_err(io_err(path))?;
     let mut hasher = Sha1::new();
-    std::io::copy(&mut file, &mut hasher).map_err(io_err(path))?;
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = std::io::Read::read(&mut file, &mut buf).map_err(io_err(path))?;
+        let Some(chunk) = buf.get(..n).filter(|c| !c.is_empty()) else {
+            break;
+        };
+        hasher.update(chunk);
+    }
     Ok(hasher
         .finalize()
         .iter()

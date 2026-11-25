@@ -1,6 +1,7 @@
 //! A headless Bedrock client for tests and tools: RakNet handshake, offline login, encryption,
 //! resource pack handshake, then raw packets. It speaks only what the frontend needs.
 
+use p384::elliptic_curve::Generate;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
@@ -104,7 +105,7 @@ impl Client {
         client.recv(id::NETWORK_SETTINGS).await?;
         client.codec.enable_compression();
 
-        let secret = p384::SecretKey::random(&mut rsa::rand_core::OsRng);
+        let secret = <p384::SecretKey as Generate>::generate();
         let mut login = crate::data::PROTOCOL.to_be_bytes().to_vec();
         io::write_bytes(&mut login, &login::offline_request(&secret, xuid, gamertag));
         client.send(id::LOGIN, &login).await?;

@@ -39,8 +39,21 @@ pub enum BlockEntity {
     Lectern(Lectern),
     /// `SculkSensorBlockEntity` and `CalibratedSculkSensorBlockEntity`.
     SculkSensor(Box<SculkSensor>),
-    /// `HopperBlockEntity`: the transfer timing (its items come with containers).
-    Hopper(crate::block::hopper::Hopper),
+    /// `HopperBlockEntity`: its stacks and the transfer timing.
+    Hopper(Box<crate::block::hopper::Hopper>),
+    /// Chests, trapped chests, barrels, shulker boxes, dispensers and droppers.
+    Container(Box<crate::block::container::Container>),
+    /// `EnderChestBlockEntity`: the viewers of the lid (the stacks are the player's).
+    EnderChest {
+        /// Players that have it open.
+        openers: i32,
+    },
+    /// Furnaces, blast furnaces and smokers.
+    Furnace(Box<crate::block::furnace::Furnace>),
+    /// Brewing stands.
+    BrewingStand(Box<crate::block::brewing::BrewingStand>),
+    /// Signs and hanging signs.
+    Sign(Box<crate::block::sign::Sign>),
     /// `SpawnerBlockEntity` (`BaseSpawner`).
     Spawner(Box<crate::block::spawner::MobSpawner>),
     /// `TrialSpawnerBlockEntity`.
@@ -167,6 +180,11 @@ impl BlockEntities {
             .flat_map(|entries| entries.iter().map(|(&pos, e)| (pos, &e.entity)))
     }
 
+    /// Marks a chunk whose block entity data changed (written back on save).
+    pub fn touch(&mut self, chunk: ChunkPos) {
+        self.touched.insert(chunk);
+    }
+
     /// Drops the block entities of an unloaded chunk.
     fn remove_chunk(&mut self, chunk: ChunkPos) {
         if let Some(entries) = self.chunks.remove(&chunk) {
@@ -183,7 +201,13 @@ impl BlockEntities {
 /// The ticker of a block entity kind (`EntityBlock.getTicker`).
 fn ticker_of(entity: &BlockEntity) -> Option<TickerFn> {
     match entity {
-        BlockEntity::Comparator { .. } | BlockEntity::Lectern(_) => None,
+        BlockEntity::Comparator { .. }
+        | BlockEntity::Lectern(_)
+        | BlockEntity::Container(_)
+        | BlockEntity::EnderChest { .. } => None,
+        BlockEntity::Furnace(_) => Some(crate::block::furnace::server_tick),
+        BlockEntity::BrewingStand(_) => Some(crate::block::brewing::server_tick),
+        BlockEntity::Sign(_) => Some(crate::block::sign::tick),
         BlockEntity::MovingPiston(_) => Some(crate::block::piston::moving_piston_tick),
         BlockEntity::Hopper(_) => Some(crate::block::hopper::push_items_tick),
         BlockEntity::DaylightDetector => Some(crate::block::sensor::daylight_detector_tick),
@@ -233,7 +257,7 @@ pub fn new_block_entity(state: BlockState) -> Option<BlockEntity> {
             block == ids::CALIBRATED_SCULK_SENSOR,
         ))))
     } else if block == ids::HOPPER {
-        Some(BlockEntity::Hopper(crate::block::hopper::Hopper::default()))
+        Some(BlockEntity::Hopper(Box::default()))
     } else if block == ids::SPAWNER {
         Some(BlockEntity::Spawner(Box::default()))
     } else if block == ids::TRIAL_SPAWNER {
@@ -244,8 +268,10 @@ pub fn new_block_entity(state: BlockState) -> Option<BlockEntity> {
         Some(BlockEntity::SculkShrieker(Box::default()))
     } else if block == ids::SCULK_CATALYST {
         Some(BlockEntity::SculkCatalyst(Box::default()))
+    } else if crate::block::sign::is_sign(block) {
+        Some(BlockEntity::Sign(Box::default()))
     } else {
-        None
+        crate::block::container::new_block_entity(block)
     }
 }
 
@@ -272,6 +298,27 @@ fn is_valid(entity: &BlockEntity, state: BlockState) -> bool {
         BlockEntity::Vault(_) => state.block() == ids::VAULT,
         BlockEntity::SculkShrieker(_) => state.block() == ids::SCULK_SHRIEKER,
         BlockEntity::SculkCatalyst(_) => state.block() == ids::SCULK_CATALYST,
+        BlockEntity::Container(c) => {
+            use crate::block::container::{Kind, kind_of, size_of};
+            matches!(
+                kind_of(state.block()),
+                Some(
+                    k @ (Kind::Chest
+                    | Kind::TrappedChest
+                    | Kind::Barrel
+                    | Kind::ShulkerBox
+                    | Kind::Dispenser
+                    | Kind::Dropper)
+                ) if size_of(k) == c.items.len()
+            )
+        }
+        BlockEntity::EnderChest { .. } => state.block() == ids::ENDER_CHEST,
+        BlockEntity::Furnace(f) => {
+            crate::block::container::kind_of(state.block())
+                == Some(crate::block::container::Kind::Furnace(f.kind))
+        }
+        BlockEntity::BrewingStand(_) => state.block() == ids::BREWING_STAND,
+        BlockEntity::Sign(_) => crate::block::sign::is_sign(state.block()),
     }
 }
 
@@ -302,16 +349,37 @@ impl Level {
 
     /// The block entity part of `LevelChunk.setBlockState` before `affectNeighborsAfterRemoval`:
     /// the old block's block entity goes when the block changes.
-    pub(super) fn block_entity_removed(&mut self, old: BlockState, new: BlockState, pos: BlockPos) {
+    pub(super) fn block_entity_removed(
+        &mut self,
+        old: BlockState,
+        new: BlockState,
+        pos: BlockPos,
+        flags: u32,
+    ) {
         if old.block() != new.block() && old.block().info().block_entity != u16::MAX {
-            // `preRemoveSideEffects`.
-            if matches!(
-                self.block_entities.get(pos),
-                Some(BlockEntity::SculkShrieker(_))
-            ) {
-                crate::block::sculk_shrieker::pre_remove(self, pos, old);
+            let side_effects = flags & super::update::SKIP_BLOCK_ENTITY_SIDEEFFECTS == 0;
+            if side_effects {
+                // `preRemoveSideEffects`, while the block entity is still there.
+                if let Some(entity) = self.block_entities.get(pos).cloned() {
+                    crate::block::container::pre_remove_side_effects(self, pos, &entity);
+                    if let BlockEntity::SculkShrieker(_) = entity {
+                        crate::block::sculk_shrieker::pre_remove(self, pos, old);
+                    }
+                    if let BlockEntity::Furnace(_) = entity {
+                        let xp = crate::block::furnace::pop_experience(self, pos);
+                        self.award_experience(crate::block::furnace::center(pos), xp);
+                    }
+                }
             }
             self.block_entities.remove(pos);
+        }
+    }
+
+    /// `ExperienceOrb.award(level, pos, amount)`. Experience orbs are not simulated yet: the
+    /// amount is queued for the server, which gives it to the nearest player.
+    pub fn award_experience(&mut self, pos: vanillite_base::Vec3, amount: i32) {
+        if amount > 0 {
+            self.output().experience.push((pos, amount));
         }
     }
 
@@ -328,6 +396,11 @@ impl Level {
             self.block_entities.remove(pos);
         }
         if let Some(entity) = new_block_entity(state) {
+            // `ChunkHolder.broadcastBlockEntityIfNeeded`: a block entity with client data goes
+            // out with the block change.
+            if update_tag(&entity, state).is_some() {
+                self.output().block_entity_updates.push(pos);
+            }
             self.block_entities.insert(pos, entity);
         }
     }
@@ -417,6 +490,15 @@ fn load(state: BlockState, nbt: &Compound) -> Option<BlockEntity> {
         }
         BlockEntity::SculkShrieker(shrieker) => shrieker.load(nbt),
         BlockEntity::SculkCatalyst(catalyst) => catalyst.load(nbt),
+        BlockEntity::Container(c) => c.load(nbt),
+        BlockEntity::Furnace(f) => f.load(nbt),
+        BlockEntity::BrewingStand(b) => b.load(nbt),
+        BlockEntity::Sign(sign) => sign.load(nbt),
+        BlockEntity::Hopper(h) => {
+            h.custom_name = crate::block::container::load_name(nbt);
+            crate::block::container::load_items(nbt, &mut h.items);
+            h.cooldown_time = int("TransferCooldown").unwrap_or(-1);
+        }
         _ => {}
     }
     Some(entity)
@@ -460,24 +542,18 @@ fn save(entity: &BlockEntity, state: BlockState, pos: BlockPos) -> Compound {
         }
         BlockEntity::SculkShrieker(shrieker) => shrieker.save(&mut nbt),
         BlockEntity::SculkCatalyst(catalyst) => catalyst.save(&mut nbt),
+        BlockEntity::Container(c) => c.save(&mut nbt),
+        BlockEntity::Furnace(f) => f.save(&mut nbt),
+        BlockEntity::BrewingStand(b) => b.save(&mut nbt),
+        BlockEntity::Sign(sign) => sign.save(&mut nbt),
+        BlockEntity::Hopper(h) => {
+            crate::block::container::save_name(&h.custom_name, &mut nbt);
+            crate::block::container::save_items(&h.items, &mut nbt);
+            nbt.insert("TransferCooldown", Tag::Int(h.cooldown_time));
+        }
         _ => {}
     }
     nbt
-}
-
-/// `getUpdateTag` of the block entity at `pos` with its type id, for the
-/// `block_entity_data` packet; `None` for kinds that send no update.
-pub fn update_tag(level: &Level, pos: BlockPos) -> Option<(u16, Compound)> {
-    let state = level.block(pos);
-    let tag = match level.block_entity(pos)? {
-        BlockEntity::Spawner(s) => crate::block::spawner::update_tag(s),
-        BlockEntity::TrialSpawner(s) => {
-            s.update_tag(crate::block::trial_spawner::TrialState::of(state))
-        }
-        BlockEntity::Vault(v) => v.update_tag(),
-        _ => return None,
-    };
-    Some((state.block().info().block_entity, tag))
 }
 
 /// `Direction.from3DDataValue`.
@@ -648,5 +724,24 @@ impl Level {
             self.write_block_entities(chunk);
         }
         self.chunks.save_all(flush);
+    }
+}
+
+/// `BlockEntity.getUpdateTag`: what clients see of a block entity, `None` for kinds whose
+/// client data is empty.
+pub fn update_tag(entity: &BlockEntity, state: BlockState) -> Option<Compound> {
+    match entity {
+        BlockEntity::Sign(sign) => {
+            let mut nbt = Compound::new();
+            sign.save(&mut nbt);
+            nbt.sort_java_hash_order();
+            Some(nbt)
+        }
+        BlockEntity::Spawner(s) => Some(crate::block::spawner::update_tag(s)),
+        BlockEntity::TrialSpawner(s) => {
+            Some(s.update_tag(crate::block::trial_spawner::TrialState::of(state)))
+        }
+        BlockEntity::Vault(v) => Some(v.update_tag()),
+        _ => None,
     }
 }

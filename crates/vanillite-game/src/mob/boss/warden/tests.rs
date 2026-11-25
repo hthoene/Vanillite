@@ -54,6 +54,7 @@ fn with_tick<R>(level: &mut Level, id: EntityId, f: impl FnOnce(&mut Tick<'_, '_
         let level_ref: &Level = level;
         let blocks = LevelBlocks(level_ref);
         let mut env = Env {
+            hooks: &crate::hooks::NoHooks,
             types: &types,
             facts: &facts,
             blocks: &blocks,

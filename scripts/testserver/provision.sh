@@ -14,7 +14,7 @@
 # - Bedrock players on UDP 30019: the Bedrock frontend of Vanillite 30001 (`[bedrock]` set by the
 #   drop-in vanillite@30001.service.d/bedrock.conf), and on UDP 30020 the Bedrock frontend of
 #   the proxy (`[bedrock]` in /opt/vanillite-proxy/proxy.toml).
-# - vanillite-autodeploy (timer, every 2 minutes): builds every new green dev head in
+# - vanillite-autodeploy (timer, every 30 minutes): builds the newest green dev commit in
 #   /opt/vanillite-build and deploys it to 30001, 30002 and the proxy on 30010, with a chat
 #   announcement and rollback; log in /var/log/vanillite-autodeploy.log. Manual deploys of a
 #   branch go to 30003-30099.
@@ -205,8 +205,14 @@ write_if_changed /usr/local/bin/vanillite-console 755 <<'EOF'
 set -euo pipefail
 port=${1:?usage: vanillite-console <port> <command...>}
 shift
-systemctl is-active --quiet "vanillite@$port" || { echo "vanillite@$port is not running" >&2; exit 1; }
-printf '%s\n' "$*" > "/run/vanillite-console/$port"
+fifo=/run/vanillite-console/$port
+# No FIFO: an instance started before it existed. Never create a plain file in its place: the
+# socket could then not start, nor the instance with it.
+if ! systemctl is-active --quiet "vanillite@$port" || [ ! -p "$fifo" ]; then
+    echo "vanillite@$port is not running with a console" >&2
+    exit 1
+fi
+printf '%s\n' "$*" > "$fifo"
 EOF
 
 echo "== creative players (/etc/vanillite-test/creative-players.json)"
@@ -410,6 +416,8 @@ if [ "$port" = 30901 ]; then
     set_prop online-mode false
     set_prop white-list false
     set_prop max-players 10000
+    # Straight-flight bots (loadbot --movement straight:...) cruise above the terrain.
+    set_prop allow-flight true
     rm -f "$dir/tick.log"
 else
     set_prop online-mode true
@@ -467,6 +475,8 @@ set_prop max-players 10000
 set_prop level-type minecraft:flat
 set_prop generate-structures false
 set_prop spawn-protection 0
+# Straight-flight bots (loadbot --movement straight:...) cruise above the terrain.
+set_prop allow-flight true
 # No mobs, like Vanillite so far: hostile mobs would kill the bots, which do not respawn.
 set_prop difficulty peaceful
 set_prop spawn-monsters false
@@ -498,7 +508,8 @@ write_if_changed /usr/local/bin/vanillite-loadtest-monitor 755 <<'EOF'
 # Usage: vanillite-loadtest-monitor <unit>
 # Streams load test metrics of a systemd unit to stdout until the connection closes:
 #   H <clock ticks per second>
-#   S <rss KiB> <cpu ticks> <net rx bytes> <net tx bytes>   every second
+#   S <rss KiB> <cpu ticks> <net rx bytes> <net tx bytes> <read syscalls> <storage read bytes>
+#     <storage write bytes>                                  every second
 #   T <tick nanoseconds>                                     every tick (vanillite@<port>)
 #   Q <output of /tick query>                                every 5 s (paper-loadtest)
 # Installed by scripts/testserver/provision.sh.
@@ -520,13 +531,14 @@ case $unit in
 esac
 while sleep 1; do
     pid=$(systemctl show -p MainPID --value "$unit")
-    rss=0 cpu=0
+    rss=0 cpu=0 io="0 0 0"
     if [ "${pid:-0}" -gt 0 ] && [ -r "/proc/$pid/stat" ]; then
         rss=$(awk '/^VmRSS:/ { print $2 }' "/proc/$pid/status")
         cpu=$(sed 's/^.*) //' "/proc/$pid/stat" | awk '{ print $12 + $13 }')
+        io=$(awk '{ v[$1] = $2 } END { print v["syscr:"] + 0, v["read_bytes:"] + 0, v["write_bytes:"] + 0 }' "/proc/$pid/io" 2> /dev/null)
     fi
     net=$(awk -F'[: ]+' 'NR > 2 && $2 != "lo" { rx += $3; tx += $11 } END { print rx + 0, tx + 0 }' /proc/net/dev)
-    echo "S $rss $cpu $net"
+    echo "S $rss $cpu $net $io"
 done
 EOF
 install -d /opt/vanillite/bench/results
@@ -671,18 +683,17 @@ install -d /var/lib/vanillite-autodeploy
 write_if_changed /usr/local/bin/vanillite-autodeploy 755 <<'EOF'
 #!/usr/bin/env bash
 # Usage: vanillite-autodeploy [run | status [<lines>]]
-# run (vanillite-autodeploy.timer, every 2 minutes): when the dev head on GitHub is new and its
-# CI checks passed, builds vanillite and vanillite-proxy (release-fast) in /opt/vanillite-build,
-# announces the restart in chat 10 s ahead, deploys 30001, 30002 and the proxy on 30010 (only
-# those whose binary changed) and rolls all of them back to the previous binaries if one does not
-# come up. A red, unbuildable or rolled back head is not tried again; the next dev head is.
+# run (vanillite-autodeploy.timer, every 30 minutes): takes the newest dev commit whose CI
+# workflow passed (dev lands often, so the head itself is often still running or cancelled); if
+# it is newer than the deployed one, builds vanillite and vanillite-proxy (release-fast) in
+# /opt/vanillite-build, announces the restart in chat 10 s ahead, deploys 30001, 30002 and the
+# proxy on 30010 (only those whose binary changed) and rolls all of them back to the previous
+# binaries if one does not come up. An unbuildable or rolled back commit is not tried again; the
+# next green one is.
 # Log: /var/log/vanillite-autodeploy.log. Installed by scripts/testserver/provision.sh.
 set -uo pipefail
 repo=https://github.com/hthoene/Vanillite.git
 api=https://api.github.com/repos/hthoene/Vanillite
-# CI checks of the dev head that must pass. cargo-deny is not one of them: it turns red on new
-# advisories without any code change.
-required='["Format", "Clippy", "Tests and codegen"]'
 ports=(30001 30002)
 declare -A motd=([30001]="Vanillite test: own worldgen" [30002]="Vanillite test: Paper world import")
 build=/opt/vanillite-build
@@ -712,47 +723,37 @@ install -d "$state"
 exec 9> "$state/lock"
 flock -n 9 || exit 0
 
-sha=$(git ls-remote "$repo" refs/heads/dev | cut -f1)
-[ -n "$sha" ] || { echo "cannot read the dev head" >&2; exit 0; }
+as_build() {
+    runuser -u vanillite-build -- env HOME="$build" PATH="$build/.cargo/bin:/usr/bin:/bin" "$@"
+}
+
+# The newest dev commit whose whole CI workflow (all jobs) succeeded.
+sha=$(curl -fsS -H 'Accept: application/vnd.github+json' \
+    "$api/actions/workflows/ci.yml/runs?branch=dev&event=push&status=success&per_page=1" \
+    | jq -r '.workflow_runs[0].head_sha // empty')
+[ -n "$sha" ] || { echo "no green dev commit found (GitHub API unavailable?)" >&2; exit 0; }
 deployed=$(cat "$state/deployed" 2> /dev/null)
 [ "$sha" = "$deployed" ] && exit 0
 [ "$sha" = "$(cat "$state/skipped" 2> /dev/null)" ] && exit 0
-
-verdict=$(curl -fsS -H 'Accept: application/vnd.github+json' \
-    "$api/commits/$sha/check-runs?per_page=100" | jq -r --argjson req "$required" '
-    [$req[] as $n | ([.check_runs[] | select(.name == $n)] | max_by(.id)) as $r
-        | if $r == null or $r.status != "completed" then "pending"
-          elif $r.conclusion == "success" then "success"
-          else "\($n): \($r.conclusion)" end]
-    | (map(select(. != "pending" and . != "success")) | join(", ")) as $red
-    | if $red != "" then "red (" + $red + ")"
-      elif any(.[]; . == "pending") then "pending" else "green" end')
-case "$verdict" in
-    green) ;;
-    pending | "")
-        echo "dev ${sha:0:12}: checks ${verdict:-unavailable}"
-        exit 0
-        ;;
-    *)
-        log "skipped: dev is $verdict"
-        echo "$sha" > "$state/skipped"
-        exit 0
-        ;;
-esac
+as_build bash -ec '
+    cd "$HOME"
+    [ -d src/.git ] || git clone --quiet "$1" src
+    git -C src fetch --quiet origin dev
+' build "$repo" || { echo "cannot fetch dev" >&2; exit 0; }
+# A re-run of an older commit's CI does not take the servers back.
+if [ -n "$deployed" ] && as_build git -C "$build/src" merge-base --is-ancestor "$sha" "$deployed"; then
+    exit 0
+fi
 
 log "building"
 started=$SECONDS
-if ! runuser -u vanillite-build -- env HOME="$build" PATH="$build/.cargo/bin:/usr/bin:/bin" \
-    bash -ec '
-        cd "$HOME"
-        [ -d src/.git ] || git clone --quiet "$1" src
-        cd src
-        git fetch --quiet origin dev
-        git checkout --quiet --force --detach "$2"
-        rustup toolchain install --profile minimal > /dev/null
-        CARGO_TARGET_DIR="$HOME/target" cargo build --locked --profile release-fast \
-            -p vanillite -p vanillite-proxy
-    ' build "$repo" "$sha" > "$state/build.log" 2>&1; then
+if ! as_build bash -ec '
+    cd "$HOME/src"
+    git checkout --quiet --force --detach "$1"
+    rustup toolchain install --profile minimal > /dev/null
+    CARGO_TARGET_DIR="$HOME/target" cargo build --locked --profile release-fast \
+        -p vanillite -p vanillite-proxy
+' build "$sha" > "$state/build.log" 2>&1; then
     log "FAILED: build failed after $((SECONDS - started)) s, see $state/build.log"
     tail -n 30 "$state/build.log"
     echo "$sha" > "$state/skipped"
@@ -863,9 +864,9 @@ MemoryMax=3500M
 EOF
 write_if_changed /etc/systemd/system/vanillite-autodeploy.timer <<'EOF'
 [Unit]
-Description=Check for a new green dev every 2 minutes (vanillite-autodeploy)
+Description=Check for a new green dev every 30 minutes (vanillite-autodeploy)
 [Timer]
-OnCalendar=*:0/2
+OnCalendar=*:0/30
 AccuracySec=10s
 [Install]
 WantedBy=timers.target
