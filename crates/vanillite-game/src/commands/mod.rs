@@ -630,6 +630,8 @@ pub enum PlaceOp {
     Jigsaw,
     Structure,
     Template,
+    /// `template ... strict`.
+    TemplateStrict,
 }
 
 /// Where `datapack enable <name>` puts the pack.

@@ -19,7 +19,11 @@ import net.minecraft.world.entity.Entity;
  * </ul>
  */
 public final class ParityHooks {
+  /** The seed of every shuffled behaviour list's random while a scenario runs. */
+  static final long SHUFFLE_SEED = 0x5348_5546L;
+
   private static long unique;
+  private static boolean scenario;
   private static RandomSource stream;
   private static Long next;
 
@@ -31,8 +35,20 @@ public final class ParityHooks {
     return unique * 0x9E3779B97F4A7C15L;
   }
 
+  /**
+   * Replaces {@code RandomSource.create()} in the {@code ShufflingList} constructors: while a
+   * scenario runs, every list's random starts from {@link #SHUFFLE_SEED}, so the shuffles of
+   * gate behaviours do not depend on the order the lists were created in. The unique seed is
+   * still taken, so the seeds of all other randoms stay the same.
+   */
+  public static synchronized RandomSource shuffleRandom() {
+    long seed = uniqueSeed();
+    return RandomSource.create(scenario ? SHUFFLE_SEED : seed);
+  }
+
   /** Starts a scenario: unique seeds from the start, no entity stream yet. */
   public static synchronized void reset() {
+    scenario = true;
     unique = 0;
     stream = null;
     next = null;

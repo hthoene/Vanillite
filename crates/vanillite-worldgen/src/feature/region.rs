@@ -61,6 +61,8 @@ pub struct WorldGenRegion<'a> {
     /// The structure starts the centre chunk references (Vanilla reads them through the
     /// region's `StructureManager`).
     structure_starts: ReferencedStarts,
+    /// Every successful `setBlock` in call order (position, state, flags), when recorded.
+    journal: Option<Vec<(BlockPos, BlockState, i32)>>,
     /// Live mode: the world the writes go to; the chunks mirror its blocks.
     live: Option<Box<dyn LiveLevel + 'a>>,
     /// Scratch list of the live world's changes.
@@ -100,9 +102,20 @@ impl<'a> WorldGenRegion<'a> {
             generation_context: WorldGenerationContext::new(min_y, height, sea_level),
             has_sky_light: true,
             structure_starts: ReferencedStarts::empty(),
+            journal: None,
             live: None,
             live_changes: Vec::new(),
         }
+    }
+
+    /// Records every following successful `setBlock` (`/place` replays them on a live world).
+    pub fn record_writes(&mut self) {
+        self.journal = Some(Vec::new());
+    }
+
+    /// The recorded writes in call order: position, state and update flags.
+    pub fn take_writes(&mut self) -> Vec<(BlockPos, BlockState, i32)> {
+        self.journal.take().unwrap_or_default()
     }
 
     /// Live mode: features write into `live` (no write zone, no placeholders, no
@@ -331,6 +344,9 @@ impl<'a> WorldGenRegion<'a> {
             && let Some(post) = crate::behaviour::post_process_pos(self, state, pos)
         {
             self.mark_post_processing(post);
+        }
+        if let Some(journal) = &mut self.journal {
+            journal.push((pos, state, update_flags));
         }
         true
     }

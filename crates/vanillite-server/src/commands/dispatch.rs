@@ -172,7 +172,20 @@ pub(crate) fn self_target(env: &Env<'_>, source: &CommandSource) -> Result<Targe
         Some(id) => select::local(&env.level.entities, env.world, id),
         None => select::online_players(&env.level.entities, env.global, source.world)
             .into_iter()
-            .find(|t| t.uuid == own.uuid),
+            .find(|t| t.uuid == own.uuid)
+            // An entity of another world (`execute in` moved the execution): known by the
+            // source.
+            .or_else(|| {
+                (own.world != env.world && !own.is_player()).then(|| Target {
+                    uuid: own.uuid,
+                    name: own.name.clone(),
+                    world: own.world,
+                    entity: None,
+                    place: None,
+                    game_mode: vanillite_config::GameMode::Survival,
+                    kind: own.kind,
+                })
+            }),
     };
     found.ok_or_else(|| CommandError::new("permissions.requires.entity", vec![]))
 }
@@ -305,7 +318,11 @@ pub(crate) fn execute(
                 }
                 _ => targets(env, source, selector_arg(parsed, "targets")?, false)?,
             };
-            let local: Vec<Target> = victims.into_iter().filter(|t| t.entity.is_some()).collect();
+            let local: Vec<Target> = victims
+                .iter()
+                .filter(|t| t.entity.is_some())
+                .cloned()
+                .collect();
             let destination = match parsed.command {
                 CommandId::TeleportToEntity | CommandId::TeleportTargetsToEntity => {
                     Destination::Entity(targets_single(
@@ -322,13 +339,7 @@ pub(crate) fn execute(
                     rotation: parsed.args.coordinates("rotation").copied(),
                 },
             };
-            let count = exec::teleport(
-                source,
-                &mut env.level.entities,
-                global,
-                local.clone(),
-                destination,
-            )?;
+            let count = exec::teleport(source, env, victims, destination)?;
             look_at(env, source, &local, parsed)?;
             Ok(count)
         }

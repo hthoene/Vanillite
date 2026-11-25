@@ -38,13 +38,13 @@ pub fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
     equipment::populate_default_enchantments(m, ctx.special_multiplier);
 }
 
-/// `Vex.tick` before `super.tick()`: no gravity.
-pub fn before_tick(t: &mut Tick<'_, '_>) {
-    t.core_mut().set_flags(EntityFlags::NO_GRAVITY, true);
-}
+/// `Vex.tick` before `super.tick()`.
+pub fn before_tick(_t: &mut Tick<'_, '_>) {}
 
-/// `Vex.tick` after `super.tick()`: the limited life starves it.
+/// `Vex.tick` after `super.tick()`: no gravity from now on (a new vex falls in its first
+/// tick), and the limited life starves it.
 pub fn after_tick(t: &mut Tick<'_, '_>) {
+    t.core_mut().set_flags(EntityFlags::NO_GRAVITY, true);
     let s = st_mut(t.mob());
     let Some(life) = s.life_ticks.as_mut() else {
         return;
@@ -58,7 +58,8 @@ pub fn after_tick(t: &mut Tick<'_, '_>) {
     }
 }
 
-/// `travel` with `noPhysics`: flies through blocks, no gravity.
+/// `travelInAir` with `noPhysics`: flies through blocks; the gravity only counts in its first
+/// tick (no gravity afterwards).
 pub fn travel(t: &mut Tick<'_, '_>, input: Vec3) {
     living::move_relative(t, 0.02, input);
     let v = t.velocity();
@@ -66,9 +67,10 @@ pub fn travel(t: &mut Tick<'_, '_>, input: Vec3) {
     t.core_mut().set_pos(p + v);
     t.core_mut().set_flags(EntityFlags::ON_GROUND, false);
     let v = t.velocity();
+    let y = v.y - living::gravity(t);
     t.set_velocity(Vec3::new(
         v.x * f64::from(0.91_f32),
-        v.y * f64::from(0.98_f32),
+        y * f64::from(0.98_f32),
         v.z * f64::from(0.91_f32),
     ));
 }
@@ -98,7 +100,7 @@ pub fn move_control(t: &mut Tick<'_, '_>) {
         None => (v.x, v.z),
     };
     #[allow(clippy::cast_possible_truncation)]
-    let y_rot = -(dx.atan2(dz) as f32) * (180.0 / std::f32::consts::PI);
+    let y_rot = -(vanillite_base::math::atan2(dx, dz) as f32) * (180.0 / std::f32::consts::PI);
     let mut rot = t.core().rot();
     rot.y_rot = y_rot;
     t.core_mut().set_rot(rot);

@@ -142,6 +142,11 @@ impl DataPacks {
         DataPacks { loaded, ..self }
     }
 
+    /// The packs as loaded at start (`None` without the Vanilla pack).
+    pub(crate) fn loaded(&self) -> Option<&Arc<LoadedPacks>> {
+        self.loaded.as_ref()
+    }
+
     /// The repository, locked for one command.
     pub(crate) fn repository(&self) -> MutexGuard<'_, PackRepository> {
         lock(&self.repository)

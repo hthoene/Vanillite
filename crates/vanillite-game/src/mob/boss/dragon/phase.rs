@@ -616,8 +616,7 @@ fn strafe_tick(t: &mut Tick<'_, '_>) {
             #[allow(clippy::cast_possible_truncation)]
             let dot = dir.dot(aim) as f32;
             #[allow(clippy::cast_possible_truncation)]
-            let angle =
-                (f64::from(dot).acos() * 180.0 / f64::from(std::f32::consts::PI)) as f32 + 0.5;
+            let angle = (f64::from(dot).acos() * f64::from(57.295_776_f32)) as f32 + 0.5;
             if st_ref(t).phases.strafe.fireball_charge >= 5 && (0.0..10.0).contains(&angle) {
                 let view = super::view_vector(0.0, yr);
                 let head = st_ref(t).parts[HEAD];
@@ -881,13 +880,13 @@ fn scanning_tick(t: &mut Tick<'_, '_>) {
         #[allow(clippy::cast_possible_truncation)]
         let dot = dir.dot(aim) as f32;
         #[allow(clippy::cast_possible_truncation)]
-        let angle = (f64::from(dot).acos() * 180.0 / f64::from(std::f32::consts::PI)) as f32 + 0.5;
+        let angle = (f64::from(dot).acos() * f64::from(57.295_776_f32)) as f32 + 0.5;
         if !(0.0..=10.0).contains(&angle) {
             let head = st_ref(t).parts[HEAD];
             let (xa, za) = (tp.x - head.x, tp.z - head.z);
-            let atan = xa.atan2(za);
+            let atan = vanillite_base::math::atan2(xa, za);
             let delta = vanillite_base::math::wrap_degrees(
-                180.0 - atan * 180.0 / f64::from(std::f32::consts::PI) - f64::from(yr),
+                180.0 - atan * f64::from(57.295_776_f32) - f64::from(yr),
             )
             .clamp(-100.0, 100.0);
             #[allow(clippy::cast_possible_truncation)]
