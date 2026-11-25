@@ -33,11 +33,14 @@ use crate::feature::region::WorldGenRegion;
 pub use class::{Class, class_of, class_of_block};
 pub use geometry::{is_full_block, merged_face_occludes};
 pub use portal::{HorizontalAxis, MAX_PORTAL_SIZE, PortalShape, is_frame, relative_n};
-pub use props::{HORIZONTAL, PosExt, StateExt, UPDATE_SHAPE_ORDER, with_properties_of};
+pub use props::{
+    HORIZONTAL, PosExt, StateExt, UPDATE_SHAPE_ORDER, clockwise, counter_clockwise, is_horizontal,
+    with_properties_of,
+};
 pub use survive::redstone_wire_can_survive_on;
-pub use tables::{BlockTags, FluidTags, Tags, init, tags};
+pub use tables::{BlockTags, FluidTags, Tags, can_burn, init, tags};
 pub use update::{
-    concrete_of, should_wire_connect_to, touches_liquid, wire_connecting_side,
+    concrete_of, fire_state_with_age, should_wire_connect_to, touches_liquid, wire_connecting_side,
     wire_connection_state,
 };
 
@@ -105,12 +108,21 @@ impl BlockLevel for WorldGenRegion<'_> {
         self.random().next_int_bounded(bound)
     }
 
-    /// Generation ticks are stored with delay 0 (`WorldGenTickAccess`).
-    fn schedule_block_tick(&mut self, pos: BlockPos, block: BlockId, _delay: i32) {
+    /// Generation ticks are stored with delay 0 (`WorldGenTickAccess`); a live world gets the
+    /// delay.
+    fn schedule_block_tick(&mut self, pos: BlockPos, block: BlockId, delay: i32) {
+        if let Some(live) = self.live_level() {
+            return live.schedule_block_tick(pos, block, delay);
+        }
         WorldGenRegion::schedule_block_tick(self, pos, block);
     }
 
     fn schedule_fluid_tick(&mut self, pos: BlockPos, fluid: u16) {
+        if let Some(live) = self.live_level() {
+            // `Fluid.getTickDelay` of the overworld: water 5, lava 30.
+            let delay = if matches!(fluid, 3 | 4) { 30 } else { 5 };
+            return live.schedule_fluid_tick(pos, fluid, delay);
+        }
         WorldGenRegion::schedule_fluid_tick(self, pos, fluid);
     }
 

@@ -339,6 +339,15 @@ impl LootTables {
         &self.unsupported
     }
 
+    /// The `random_sequence` of the loot table of `state`, if it has one.
+    pub fn block_sequence(&self, state: BlockState) -> Option<&str> {
+        let block = usize::from(state.block().0);
+        self.by_block
+            .get(block)
+            .and_then(|&i| self.tables.get(usize::try_from(i).ok()?))
+            .and_then(|t| t.sequence.as_deref())
+    }
+
     /// Drops of breaking `ctx.state` (table `minecraft:blocks/<block path>`; no table → nothing).
     /// Appends to `out`.
     pub fn block_drops(
@@ -530,7 +539,7 @@ impl LootTables {
         self.by_block
             .get(usize::from(state.block().0))
             .and_then(|&i| self.tables.get(usize::try_from(i).ok()?))?
-            .random_sequence
+            .sequence
             .as_deref()
     }
 
@@ -539,7 +548,7 @@ impl LootTables {
         self.by_name
             .get(table)
             .and_then(|&i| self.tables.get(usize::try_from(i).ok()?))?
-            .random_sequence
+            .sequence
             .as_deref()
     }
 
@@ -772,8 +781,8 @@ pub(crate) fn read_files(
 struct Table {
     pools: Vec<Pool>,
     modifier: Option<Func>,
-    /// `random_sequence`: the named random the table rolls with.
-    random_sequence: Option<Box<str>>,
+    /// `random_sequence`: the named random the rolls draw from.
+    sequence: Option<Box<str>>,
 }
 
 #[derive(Debug)]
@@ -1220,14 +1229,14 @@ impl Parser<'_> {
             .map(|m| self.func(m))
             .transpose()
             .map_err(|e| format!("modifier: {e}"))?;
-        let random_sequence = o
+        let sequence = o
             .get("random_sequence")
-            .and_then(Value::as_str)
-            .map(Into::into);
+            .map(|s| string(s).map(Box::from))
+            .transpose()?;
         Ok(Table {
             pools,
             modifier,
-            random_sequence,
+            sequence,
         })
     }
 

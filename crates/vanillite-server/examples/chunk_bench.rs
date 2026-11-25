@@ -239,7 +239,18 @@ fn run(
     wake: Option<&mpsc::Receiver<()>>,
 ) -> (Duration, Duration) {
     let start = Instant::now();
-    let _ticket = chunks.add_ticket(ChunkPos::new(0, 0), FULL_LEVEL - radius as u8);
+    // One ticket reaches at most 32 chunks; larger areas get a ticket per chunk, as a
+    // pregenerator does.
+    let mut tickets = Vec::new();
+    if radius < i32::from(FULL_LEVEL) {
+        tickets.push(chunks.add_ticket(ChunkPos::new(0, 0), FULL_LEVEL - radius as u8));
+    } else {
+        for z in -radius..=radius {
+            for x in -radius..=radius {
+                tickets.push(chunks.add_ticket(ChunkPos::new(x, z), FULL_LEVEL));
+            }
+        }
+    }
     let mut first = None;
     let total = (2 * radius + 1).pow(2) as usize;
     loop {

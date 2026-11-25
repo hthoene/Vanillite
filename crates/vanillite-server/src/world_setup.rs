@@ -468,7 +468,16 @@ pub(crate) fn level_settings(
             .and_then(|json| json.get("attributes")?.get(name)?.as_bool())
             .unwrap_or(false)
     };
+    let infiniburn = packs
+        .and_then(|p| p.registry("minecraft:dimension_type"))
+        .and_then(|r| r.get(&info.dimension))
+        .and_then(|entry| serde_json::from_str::<serde_json::Value>(entry.json.get()).ok())
+        .and_then(|json| Some(json.get("infiniburn")?.as_str()?.to_owned()))
+        .map_or_else(Default::default, |tag| {
+            vanillite_game::block::fire::Infiniburn::from_tag(&tag)
+        });
     let mut settings = vanillite_game::level::LevelSettings {
+        infiniburn,
         fast_lava: attribute("minecraft:gameplay/fast_lava"),
         water_evaporates: attribute("minecraft:gameplay/water_evaporates"),
         has_sky_light: info.has_sky_light,
@@ -577,6 +586,22 @@ fn spawn_entry(e: &serde_json::Value) -> Option<vanillite_game::mob::spawn::Spaw
         min,
         max,
     })
+}
+
+/// The trees saplings grow into, from the data packs; `None` without them.
+pub(crate) fn tree_features(
+    packs: Option<&LoadedPacks>,
+    seed: i64,
+) -> Option<Arc<vanillite_game::block::tree::TreeFeatures>> {
+    let packs = packs?;
+    let biomes = vanillite_worldgen::biome::BiomeRegistry::load(packs).ok()?;
+    match vanillite_game::block::tree::TreeFeatures::load(packs, &biomes, seed, -64, 384, 63) {
+        Ok(trees) => Some(Arc::new(trees)),
+        Err(e) => {
+            log::warn!("tree features: {e}");
+            None
+        }
+    }
 }
 
 /// The spawn settings of every biome from the data packs: `gameplay/natural_mob_spawns`,

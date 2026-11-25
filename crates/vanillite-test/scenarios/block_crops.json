@@ -1,0 +1,435 @@
+{
+  "description": "Crops, stems, torchflower and pitcher crops, berries, nether wart and cocoa grow by random ticks on hydrated farmland; a dry farmland row without crops turns to dirt, one with a crop stays.",
+  "tier": "fast",
+  "world": {
+    "seed": 8301,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:stone",
+        3
+      ]
+    ]
+  },
+  "rules": {
+    "random_tick_speed": "2048"
+  },
+  "time": 6000,
+  "level_rng": true,
+  "light": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      10,
+      -58,
+      9
+    ]
+  ],
+  "ticks": 160,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        1,
+        -61,
+        1
+      ],
+      "to": [
+        7,
+        -61,
+        7
+      ],
+      "block": "minecraft:farmland[moisture=7]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -61,
+        4
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "op": "fill",
+      "from": [
+        9,
+        -61,
+        1
+      ],
+      "to": [
+        9,
+        -61,
+        3
+      ],
+      "block": "minecraft:farmland[moisture=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -60,
+        1
+      ],
+      "block": "minecraft:wheat[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -60,
+        2
+      ],
+      "block": "minecraft:carrots[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -60,
+        3
+      ],
+      "block": "minecraft:potatoes[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -60,
+        5
+      ],
+      "block": "minecraft:beetroots[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        1
+      ],
+      "block": "minecraft:wheat[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        2
+      ],
+      "block": "minecraft:carrots[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        3
+      ],
+      "block": "minecraft:potatoes[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        5
+      ],
+      "block": "minecraft:beetroots[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -60,
+        1
+      ],
+      "block": "minecraft:wheat[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -60,
+        2
+      ],
+      "block": "minecraft:carrots[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -60,
+        3
+      ],
+      "block": "minecraft:potatoes[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -60,
+        5
+      ],
+      "block": "minecraft:beetroots[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        1
+      ],
+      "block": "minecraft:wheat[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        2
+      ],
+      "block": "minecraft:carrots[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        3
+      ],
+      "block": "minecraft:potatoes[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        5
+      ],
+      "block": "minecraft:beetroots[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -60,
+        1
+      ],
+      "block": "minecraft:wheat[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -60,
+        2
+      ],
+      "block": "minecraft:carrots[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -60,
+        3
+      ],
+      "block": "minecraft:potatoes[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -60,
+        5
+      ],
+      "block": "minecraft:beetroots[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        1
+      ],
+      "block": "minecraft:wheat[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        2
+      ],
+      "block": "minecraft:carrots[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        3
+      ],
+      "block": "minecraft:potatoes[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        5
+      ],
+      "block": "minecraft:beetroots[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -60,
+        1
+      ],
+      "block": "minecraft:wheat[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -60,
+        2
+      ],
+      "block": "minecraft:carrots[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -60,
+        3
+      ],
+      "block": "minecraft:potatoes[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -60,
+        5
+      ],
+      "block": "minecraft:beetroots[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        6
+      ],
+      "block": "minecraft:pumpkin_stem[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        6
+      ],
+      "block": "minecraft:melon_stem[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -60,
+        7
+      ],
+      "block": "minecraft:torchflower_crop[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        7
+      ],
+      "block": "minecraft:torchflower_crop[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        7
+      ],
+      "block": "minecraft:pitcher_crop[age=0,half=lower]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        9,
+        -61,
+        5
+      ],
+      "block": "minecraft:grass_block[snowy=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        9,
+        -60,
+        5
+      ],
+      "block": "minecraft:sweet_berry_bush[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        9,
+        -61,
+        7
+      ],
+      "block": "minecraft:soul_sand"
+    },
+    {
+      "op": "set",
+      "pos": [
+        9,
+        -60,
+        7
+      ],
+      "block": "minecraft:nether_wart[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        0,
+        -60,
+        9
+      ],
+      "block": "minecraft:jungle_log[axis=y]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        0,
+        -60,
+        8
+      ],
+      "block": "minecraft:cocoa[age=0,facing=south]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        9,
+        -60,
+        2
+      ],
+      "block": "minecraft:wheat[age=3]"
+    }
+  ]
+}

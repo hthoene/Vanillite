@@ -1,0 +1,222 @@
+{
+  "description": "Copper blocks of every shape weather by random ticks; neighbours within four blocks slow or speed it, waxed copper stays.",
+  "tier": "fast",
+  "world": {
+    "seed": 8301,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:stone",
+        3
+      ]
+    ]
+  },
+  "rules": {
+    "random_tick_speed": "4096"
+  },
+  "time": 6000,
+  "level_rng": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      10,
+      -59,
+      10
+    ]
+  ],
+  "ticks": 200,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -60,
+        1
+      ],
+      "block": "minecraft:copper_block"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -60,
+        1
+      ],
+      "block": "minecraft:cut_copper"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -60,
+        1
+      ],
+      "block": "minecraft:cut_copper_slab[type=bottom,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -60,
+        1
+      ],
+      "block": "minecraft:cut_copper_stairs[facing=north,half=bottom,shape=straight,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -60,
+        3
+      ],
+      "block": "minecraft:copper_grate[waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -60,
+        3
+      ],
+      "block": "minecraft:copper_bulb[lit=false,powered=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -60,
+        3
+      ],
+      "block": "minecraft:chiseled_copper"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -60,
+        3
+      ],
+      "block": "minecraft:copper_trapdoor[facing=north,half=bottom,open=false,powered=false,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -60,
+        5
+      ],
+      "block": "minecraft:copper_chain[axis=y,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -60,
+        5
+      ],
+      "block": "minecraft:copper_bars[east=false,north=false,south=false,waterlogged=false,west=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -60,
+        5
+      ],
+      "block": "minecraft:copper_lantern[hanging=false,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -60,
+        5
+      ],
+      "block": "minecraft:lightning_rod[facing=up,powered=false,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -60,
+        7
+      ],
+      "block": "minecraft:exposed_copper"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -60,
+        7
+      ],
+      "block": "minecraft:weathered_copper"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -60,
+        7
+      ],
+      "block": "minecraft:oxidized_copper"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -60,
+        7
+      ],
+      "block": "minecraft:waxed_copper_block"
+    },
+    {
+      "op": "set",
+      "pos": [
+        9,
+        -60,
+        1
+      ],
+      "block": "minecraft:copper_door[facing=north,half=lower,hinge=left,open=false,powered=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        9,
+        -59,
+        1
+      ],
+      "block": "minecraft:copper_door[facing=north,half=upper,hinge=left,open=false,powered=false]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        9
+      ],
+      "to": [
+        3,
+        -60,
+        9
+      ],
+      "block": "minecraft:copper_block"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        9
+      ],
+      "block": "minecraft:exposed_copper"
+    }
+  ]
+}
