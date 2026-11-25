@@ -491,6 +491,8 @@ impl ServerWorld {
                 &self.dimension,
             );
         }
+        // `entityManager.tick()`: entities of chunks that became visible this tick load now.
+        self.level.tick_entity_manager();
         let light = self.updates.light_changes();
         self.level.chunks.take_light_changes(light);
         let mut changed = std::mem::take(&mut self.level.output().changed);
