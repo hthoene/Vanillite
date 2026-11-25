@@ -14,6 +14,7 @@ use crate::player_list::Uuid;
 use vanillite_base::{Aabb, BlockPos, ChunkPos, Vec3};
 use vanillite_config::GameMode;
 use vanillite_game::block::portal as portal_blocks;
+use vanillite_game::level::forced::SavedTickets;
 use vanillite_game::player::{Body, ChunkView, PlayerData, effective_view_distance, join};
 use vanillite_game::portal::{self, EntryPortal, PortalKind};
 use vanillite_game::survival::rules::Rule;
@@ -36,6 +37,16 @@ const END: WorldId = WorldId(2);
 
 /// `TicketType.PORTAL`: ticks a portal ticket keeps the chunks around an arrival loaded.
 const PORTAL_TICKET_TICKS: u64 = 300;
+
+/// A portal ticket (load and simulation) with the tick it expires (`TicketType.PORTAL`).
+#[derive(Debug)]
+pub(crate) struct PortalTicket {
+    until: u64,
+    pos: ChunkPos,
+    level: u8,
+    load: TicketId,
+    simulation: TicketId,
+}
 
 /// `ClientboundRespawnPacket.KEEP_ALL_DATA`: what the client keeps on a dimension change.
 const KEEP_ALL_DATA: u8 = 3;
@@ -289,14 +300,16 @@ impl ServerWorld {
         self.gateway_waits = waits;
         let now = self.ticks;
         let chunks = &mut self.level.chunks;
-        self.portal_tickets.retain(|&(until, ticket, simulation)| {
-            let keep = now < until;
+        let before = self.portal_tickets.len();
+        self.portal_tickets.retain(|t| {
+            let keep = now < t.until;
             if !keep {
-                chunks.remove_ticket(ticket);
-                chunks.remove_simulation_ticket(simulation);
+                chunks.remove_ticket(t.load);
+                chunks.remove_simulation_ticket(t.simulation);
             }
             keep
         });
+        self.tickets_dirty |= self.portal_tickets.len() != before;
     }
 
     fn place_arrivals(&mut self, global: &Global) {
@@ -682,11 +695,50 @@ impl ServerWorld {
     /// ticks.
     fn place_portal_ticket(&mut self, pos: BlockPos) {
         let level = FULL_LEVEL - u8::try_from(portal::PORTAL_TICKET_RADIUS).unwrap_or(0);
+        self.add_portal_ticket(pos.chunk(), level, PORTAL_TICKET_TICKS);
+    }
+
+    /// Adds a portal ticket that expires after `ticks`.
+    fn add_portal_ticket(&mut self, pos: ChunkPos, level: u8, ticks: u64) {
         let chunks = &mut self.level.chunks;
-        let ticket = chunks.add_ticket(pos.chunk(), level);
-        let simulation = chunks.add_simulation_ticket(pos.chunk(), level);
-        self.portal_tickets
-            .push((self.ticks + PORTAL_TICKET_TICKS, ticket, simulation));
+        let load = chunks.add_ticket(pos, level);
+        let simulation = chunks.add_simulation_ticket(pos, level);
+        self.portal_tickets.push(PortalTicket {
+            until: self.ticks + ticks,
+            pos,
+            level,
+            load,
+            simulation,
+        });
+        self.tickets_dirty = true;
+    }
+
+    /// Restores the saved chunk tickets besides the forced ones (`activateAllDeactivatedTickets`).
+    pub(crate) fn restore_tickets(&mut self, saved: SavedTickets) {
+        for t in &saved.portal {
+            self.add_portal_ticket(t.pos, t.level, u64::try_from(t.ticks_left).unwrap_or(0));
+        }
+        self.kept_tickets = saved.kept;
+        // Loading is not a change.
+        self.tickets_dirty = false;
+    }
+
+    /// The saved chunk tickets besides the forced ones, with the portal tickets' remaining
+    /// ticks.
+    pub(crate) fn saved_tickets(&self) -> SavedTickets {
+        let portal = self
+            .portal_tickets
+            .iter()
+            .map(|t| vanillite_game::level::forced::PortalTicket {
+                pos: t.pos,
+                level: t.level,
+                ticks_left: i64::try_from(t.until.saturating_sub(self.ticks)).unwrap_or(i64::MAX),
+            })
+            .collect();
+        SavedTickets {
+            portal,
+            kept: self.kept_tickets.clone(),
+        }
     }
 
     /// `EndGatewayBlock.getPortalDestination`: gateways with an exit move the player there

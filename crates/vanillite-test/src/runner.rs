@@ -62,6 +62,7 @@ fn apply(
         OpKind::Force | OpKind::Unforce => {
             return world.set_forced(&op.chunks, op.kind == OpKind::Force);
         }
+        OpKind::Restart => return world.restart(),
     };
     let state = parse_state(&op.block)?;
     let (a, b) = (op.from, op.to);

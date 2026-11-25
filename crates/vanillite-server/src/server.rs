@@ -556,7 +556,7 @@ impl ServerBuilder {
                 player_range,
                 climate,
             );
-            let kept_tickets = crate::chunk_tickets::load(&data, &mut level);
+            let saved_tickets = crate::chunk_tickets::load(&data, &mut level);
             let mobs = crate::mobs::WorldMobs::new(spawn_table.clone(), seed, &rules);
             let mut world = ServerWorld::new(
                 WorldId(index),
@@ -569,9 +569,10 @@ impl ServerBuilder {
                 mobs,
                 data,
             );
-            world.kept_tickets = kept_tickets;
+            world.restore_tickets(saved_tickets);
             worlds.push(world);
         }
+        prepare_levels(&mut worlds);
         let (worlds, routes) = if parallel {
             log::info!("Dimensions tick in parallel");
             let mut threads = Vec::with_capacity(worlds.len());
@@ -1712,4 +1713,33 @@ fn open_tick_log() -> Option<io::BufWriter<File>> {
             None
         }
     }
+}
+
+/// `MinecraftServer.prepareLevels`: the chunks of the saved tickets (forced chunks, portal
+/// tickets) become full before the first tick, so forced chunks tick from the first tick on.
+fn prepare_levels(worlds: &mut [ServerWorld]) {
+    let mut waiting: Vec<&mut ServerWorld> = worlds
+        .iter_mut()
+        .filter(|w| w.has_saved_tickets())
+        .collect();
+    if waiting.is_empty() {
+        return;
+    }
+    let started = Instant::now();
+    let mut next_report = started + Duration::from_secs(5);
+    loop {
+        let pending: usize = waiting.iter_mut().map(|w| w.prepare_step()).sum();
+        if pending == 0 {
+            break;
+        }
+        if Instant::now() >= next_report {
+            log::info!("Loading the chunks of the saved chunk tickets: {pending} left");
+            next_report += Duration::from_secs(5);
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    log::info!(
+        "Loaded the chunks of the saved chunk tickets in {} ms",
+        started.elapsed().as_millis()
+    );
 }

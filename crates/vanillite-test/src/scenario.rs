@@ -36,7 +36,11 @@
 //!   Vanilla `setBlock` flags 3), `set` (without updates), `fill` (with updates), `force` and
 //!   `unforce` (`"chunks": [[x, z], ...]`: adds or removes forced tickets like `/forceload`,
 //!   then the chunk system runs without a game tick until every chunk is loaded, unloaded and
-//!   has its entities like its new ticket level says).
+//!   has its entities like its new ticket level says), `restart` (the server saves and stops,
+//!   then starts again on the saved world: the saved chunk tickets come back and their chunks
+//!   load before the next tick like `MinecraftServer.prepareLevels`; the rules, time and
+//!   difficulty are set again and the level random starts from the world seed; scenarios with
+//!   entities cannot restart).
 //!
 //! Positions in chunks that are not accessible (unloaded or above full level) are traced as
 //! the state [`UNLOADED`].
@@ -146,6 +150,8 @@ pub enum OpKind {
     Unforce,
     /// Damage to a scenario entity ([`Op::hurt`]).
     Hurt,
+    /// Saves, stops and starts the server again (an action).
+    Restart,
 }
 
 /// The damage of a `hurt` action.
@@ -468,24 +474,27 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
         Some("hurt") if action => OpKind::Hurt,
         Some("force") if action => OpKind::Force,
         Some("unforce") if action => OpKind::Unforce,
+        Some("restart") if action => OpKind::Restart,
         o => return Err(format!("unknown op {o:?}")),
     };
-    if matches!(kind, OpKind::Force | OpKind::Unforce) {
-        let chunks = v
-            .get("chunks")
-            .and_then(Value::as_array)
-            .ok_or("a chunk op needs chunks")?
-            .iter()
-            .map(|c| {
-                let c = |i: usize| {
-                    c.get(i)
-                        .and_then(Value::as_i64)
-                        .and_then(|v| i32::try_from(v).ok())
-                        .ok_or_else(|| format!("bad chunk {c:?}"))
-                };
-                Ok(ChunkPos::new(c(0)?, c(1)?))
-            })
-            .collect::<Result<_, String>>()?;
+    if matches!(kind, OpKind::Force | OpKind::Unforce | OpKind::Restart) {
+        let chunks = match v.get("chunks").and_then(Value::as_array) {
+            Some(_) if kind == OpKind::Restart => return Err("restart takes no chunks".to_owned()),
+            Some(list) => list
+                .iter()
+                .map(|c| {
+                    let c = |i: usize| {
+                        c.get(i)
+                            .and_then(Value::as_i64)
+                            .and_then(|v| i32::try_from(v).ok())
+                            .ok_or_else(|| format!("bad chunk {c:?}"))
+                    };
+                    Ok(ChunkPos::new(c(0)?, c(1)?))
+                })
+                .collect::<Result<_, String>>()?,
+            None if kind == OpKind::Restart => Vec::new(),
+            None => return Err("a chunk op needs chunks".to_owned()),
+        };
         let tick = v
             .get("tick")
             .and_then(Value::as_u64)

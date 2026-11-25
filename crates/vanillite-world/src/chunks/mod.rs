@@ -800,6 +800,15 @@ impl Chunks {
             && self.visibility_changes.is_empty()
     }
 
+    /// The chunks whose ticket level asks for a full chunk that is not full yet
+    /// (`ChunkLoadCounter.pendingChunks`); ticket changes count from the next [`Chunks::tick`].
+    pub fn pending_full(&self) -> usize {
+        self.holders
+            .values()
+            .filter(|h| h.level <= FULL_LEVEL && h.status() != Some(ChunkStatus::Full))
+            .count()
+    }
+
     /// Whether a chunk is accessible as a full chunk (`hasChunk`: level up to full).
     pub fn is_accessible(&self, pos: ChunkPos) -> bool {
         self.visibility.contains_key(&pos)
