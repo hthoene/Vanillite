@@ -1293,6 +1293,7 @@ fn sync_bar(t: &mut Tick<'_, '_>) {
             entity: player,
             view_center: p.chunk_view.center,
             view_distance: p.chunk_view.view_distance,
+            sent_radius: 0,
         };
         let r = range.min(f64::from(p.chunk_view.view_distance) * 16.0);
         let d = e.pos() - pos;

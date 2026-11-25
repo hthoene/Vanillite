@@ -124,6 +124,8 @@ pub struct PlayerChunks {
     scratch: Vec<ChunkPos>,
     /// Chunks sent since the last [`PlayerChunks::take_sent`].
     sent: Vec<ChunkPos>,
+    /// [`PlayerChunks::sent_radius`] by centre, until `pending` changes.
+    sent_radius: Option<(ChunkPos, i32)>,
 }
 
 impl PlayerChunks {
@@ -140,6 +142,7 @@ impl PlayerChunks {
             max_unacknowledged_batches: 1,
             scratch: Vec::new(),
             sent: Vec::new(),
+            sent_radius: None,
         }
     }
 
@@ -153,6 +156,24 @@ impl PlayerChunks {
         self.pending.contains(&pos)
     }
 
+    /// The Chebyshev distance from `center` of the nearest pending chunk (`i32::MAX` when
+    /// none): no chunk closer to `center` is pending.
+    pub fn sent_radius(&mut self, center: ChunkPos) -> i32 {
+        if let Some((at, radius)) = self.sent_radius
+            && at == center
+        {
+            return radius;
+        }
+        let radius = self
+            .pending
+            .iter()
+            .map(|p| p.x.abs_diff(center.x).max(p.z.abs_diff(center.z)))
+            .min()
+            .map_or(i32::MAX, |d| i32::try_from(d).unwrap_or(i32::MAX));
+        self.sent_radius = Some((center, radius));
+        radius
+    }
+
     /// `updateChunkTracking` / `applyChunkTrackingView`: moves the view to `center` with
     /// `distance`. Sends the new centre, queues entering chunks and forgets leaving ones.
     pub fn update_view(&mut self, center: ChunkPos, distance: i32, sink: &dyn PacketSink) {
@@ -164,6 +185,7 @@ impl PlayerChunks {
         if previous == Some(next) {
             return;
         }
+        self.sent_radius = None;
         if previous.is_none_or(|p| p.center != center) {
             sink.send(&SetChunkCacheCenter {
                 x: center.x,
@@ -205,11 +227,13 @@ impl PlayerChunks {
     pub fn reset(&mut self) {
         self.view = None;
         self.pending.clear();
+        self.sent_radius = None;
         self.sent.clear();
     }
 
     /// `dropChunk`.
     fn drop_chunk(&mut self, pos: ChunkPos, sink: &dyn PacketSink) {
+        self.sent_radius = None;
         if !self.pending.remove(&pos) {
             sink.send(&ForgetLevelChunk { pos: pos.as_long() });
         }
@@ -245,6 +269,7 @@ impl PlayerChunks {
         for &pos in &chosen {
             if let Some(packet) = source.chunk_packet(pos) {
                 self.pending.remove(&pos);
+                self.sent_radius = None;
                 self.sent.push(pos);
                 packets.push(packet);
             }
