@@ -12,8 +12,9 @@
 //!    (block states, biomes), light per layer, block entities, typed scheduled ticks and
 //!    post-processing marks.
 //!
-//! Block state, block and fluid ids are those of the record's data version; biomes are kept by
-//! name, so data packs that change the biome registry do not shift them.
+//! Block state, block, fluid and block entity type ids are those of the record's data version;
+//! records of older versions are mapped on load ([`crate::upgrade`]). Biomes are kept by name,
+//! so data packs that change the biome registry do not shift them.
 
 use std::io;
 use std::sync::Arc;
@@ -31,6 +32,7 @@ use vanillite_chunk::{
 use vanillite_data::version::DATA_VERSION;
 
 use crate::compression::{zstd_compress, zstd_decompress};
+use crate::upgrade::{IdRemap, Upgrades};
 
 /// Version of the record layout.
 const RECORD_VERSION: u8 = 1;
@@ -64,6 +66,7 @@ pub struct OwnCodec {
     info: WorldInfo,
     biome_ids: FxHashMap<String, u16>,
     level: i32,
+    upgrades: Arc<Upgrades>,
 }
 
 impl OwnCodec {
@@ -78,7 +81,14 @@ impl OwnCodec {
                 .map(|(name, id)| (name.clone(), id))
                 .collect(),
             level,
+            upgrades: Upgrades::none(),
         }
+    }
+
+    /// The codec that also reads records of the older data versions of `upgrades`.
+    pub fn with_upgrades(mut self, upgrades: Arc<Upgrades>) -> Self {
+        self.upgrades = upgrades;
+        self
     }
 
     /// The uncompressed record of a chunk and its metadata.
@@ -202,15 +212,19 @@ impl OwnCodec {
             .ok_or_else(|| invalid(pos, "unknown status"))?;
         let flags = r.u8()?;
         let data_version = r.u32()?;
-        if data_version != DATA_VERSION as u32 {
-            return Err(invalid(
-                pos,
-                format!(
-                    "written by data version {data_version}, this server is {DATA_VERSION}; \
-                     own-format worlds are not upgraded yet"
-                ),
-            ));
-        }
+        let ids = if data_version == DATA_VERSION as u32 {
+            None
+        } else {
+            Some(self.upgrades.get(data_version).ok_or_else(|| {
+                invalid(
+                    pos,
+                    format!(
+                        "written by data version {data_version}, this server is {DATA_VERSION} \
+                         and has no id table of it"
+                    ),
+                )
+            })?)
+        };
         let (x, z) = (r.i32()?, r.i32()?);
         if (x, z) != (pos.x, pos.z) {
             return Err(invalid(pos, format!("record of chunk {x}, {z}")));
@@ -280,8 +294,11 @@ impl OwnCodec {
             };
             let data = r.take(words * 8)?.as_chunks::<8>().0;
             let biomes = read_biomes(&mut r, &remap, identity)?;
-            let section =
-                Section::from_parts(bits, &palette, data, biomes).map_err(|e| invalid(pos, e))?;
+            let section = match ids {
+                None => Section::from_parts(bits, &palette, data, biomes),
+                Some(ids) => remap_section(pos, ids, bits, &mut palette, data, biomes)?,
+            }
+            .map_err(|e| invalid(pos, e))?;
             sections.push(Arc::new(section));
         }
         let mut light = ChunkLight::new(count);
@@ -309,23 +326,36 @@ impl OwnCodec {
             let at = r.pos()?;
             let kind = r.u16()?;
             let len = r.u32()? as usize;
+            let kind = (kind != NO_KIND).then_some(kind);
             block_entities.push(BlockEntityData {
                 pos: at,
-                kind: (kind != NO_KIND).then_some(kind),
+                kind: match ids {
+                    None => kind,
+                    Some(ids) => kind.and_then(|kind| ids.block_entity_type(kind)),
+                },
                 nbt: Arc::from(r.take(len)?),
             });
         }
         let mut ticks = [Vec::new(), Vec::new()];
-        for list in &mut ticks {
+        for (fluids, list) in ticks.iter_mut().enumerate() {
             let n = r.u32()? as usize;
             list.reserve(n.min(65_536));
             for _ in 0..n {
-                list.push(SavedTick {
+                let tick = SavedTick {
                     kind: r.u16()?,
                     pos: r.pos()?,
                     delay: r.i32()?,
                     priority: r.u8()? as i8,
-                });
+                };
+                // Ticks of blocks and fluids that are gone are dropped, as Vanilla does.
+                let kind = match ids {
+                    None => Some(tick.kind),
+                    Some(ids) if fluids == 1 => ids.fluid(tick.kind),
+                    Some(ids) => ids.block(tick.kind),
+                };
+                if let Some(kind) = kind {
+                    list.push(SavedTick { kind, ..tick });
+                }
             }
         }
         let [block_ticks, fluid_ticks] = ticks;
@@ -352,6 +382,83 @@ impl OwnCodec {
             generation: None,
         })
     }
+}
+
+/// A section whose block states in wire form (`bits`, `palette`, `data`) are ids of an older
+/// data version: the palette is mapped; where that merges entries or the data is direct, the
+/// states are packed again.
+fn remap_section(
+    pos: ChunkPos,
+    remap: &IdRemap,
+    bits: u8,
+    palette: &mut [u16],
+    data: &[Word],
+    biomes: PalettedContainer<Biomes>,
+) -> io::Result<Result<Section, vanillite_chunk::DecodeError>> {
+    let map = |old: u16| {
+        remap.state(old).ok_or_else(|| {
+            invalid(
+                pos,
+                format!(
+                    "block state {old} is not in the id table of data version {}",
+                    remap.data_version()
+                ),
+            )
+        })
+    };
+    let indirect = bits == 0 || BlockStates::indirect_bits(bits) == Some(bits);
+    if indirect {
+        for entry in palette.iter_mut() {
+            *entry = map(*entry)?;
+        }
+        let unique = palette
+            .iter()
+            .enumerate()
+            .all(|(i, entry)| !palette[..i].contains(entry));
+        if unique {
+            return Ok(Section::from_parts(bits, palette, data, biomes));
+        }
+    } else if bits > 16 || data.len() != bits::words_for(BlockStates::ENTRIES, bits) {
+        return Ok(Err(vanillite_chunk::DecodeError::InvalidBits(bits)));
+    }
+    let mut states = vec![0u16; BlockStates::ENTRIES];
+    for (index, state) in states.iter_mut().enumerate() {
+        let value = bits::get(data, bits, index);
+        *state = if indirect {
+            *palette
+                .get(value as usize)
+                .ok_or_else(|| invalid(pos, "invalid block palette index"))?
+        } else {
+            map(u16::try_from(value).map_err(|_| invalid(pos, "block state too large"))?)?
+        };
+    }
+    // Packed again like the container would hold them.
+    let mut packed: Vec<u16> = Vec::new();
+    let mut index_of: FxHashMap<u16, u32> = FxHashMap::default();
+    for &state in &states {
+        index_of.entry(state).or_insert_with(|| {
+            packed.push(state);
+            packed.len() as u32 - 1
+        });
+    }
+    if packed.len() == 1 {
+        return Ok(Section::from_parts(0, &packed, &[], biomes));
+    }
+    let needed = (u32::BITS - (packed.len() as u32 - 1).leading_zeros()) as u8;
+    let (bits, packed) = match BlockStates::indirect_bits(needed) {
+        Some(bits) => (bits, packed),
+        None => (BlockStates::global_bits(), Vec::new()),
+    };
+    let mut data = vec![Word::default(); bits::words_for(BlockStates::ENTRIES, bits)];
+    for (index, &state) in states.iter().enumerate() {
+        let value = if packed.is_empty() {
+            u32::from(state)
+        } else {
+            index_of[&state]
+        };
+        bits::set(&mut data, bits, index, value);
+    }
+    Ok(Section::from_parts(bits, &packed, &data, biomes))
 }
 
 /// A biome container in wire form whose ids are mapped through `remap` (old → current).
@@ -593,6 +700,76 @@ mod tests {
             own.decode_entities(*pos, &meta, &record).unwrap(),
             chunk.entities
         );
+    }
+
+    /// A record of an older data version (made-up id table: states, blocks and block entity
+    /// types shifted, removed and with a lost property) loads with the current ids; a direct
+    /// palette is packed again, ticks of removed blocks are dropped.
+    #[test]
+    fn older_records_are_remapped() {
+        use crate::upgrade::tests::{older_table, upgraded_state};
+        let removed = 10;
+        let chunks = golden();
+        let anvil = codec(&chunks);
+        let (pos, bytes, _) = &chunks[0];
+        let mut chunk = anvil.read_bytes(*pos, bytes).unwrap();
+        let bottom = chunk.chunk.min_section() * 16;
+        for i in 0..300u32 {
+            let state = 1 + i as u16 * 7;
+            chunk
+                .chunk
+                .set_block(i % 16, bottom + (i / 256) as i32, (i / 16) % 16, state);
+        }
+        let tick = |kind| SavedTick {
+            kind,
+            pos: BlockPos::new(pos.x * 16, bottom, pos.z * 16),
+            delay: 3,
+            priority: 0,
+        };
+        chunk.block_ticks = vec![tick(0), tick(5)];
+        chunk.fluid_ticks = vec![tick(1)];
+        for kind in [0, 3] {
+            chunk.block_entities.push(BlockEntityData {
+                pos: BlockPos::new(pos.x * 16, bottom + kind as i32, pos.z * 16),
+                kind: Some(kind),
+                nbt: Arc::from(&[10u8, 0][..]),
+            });
+        }
+        let own = OwnCodec::new(anvil.info(), DEFAULT_LEVEL);
+        let (_, mut raw) = own.encode_raw(&chunk);
+        let old = DATA_VERSION as u32 - 1;
+        raw[3..7].copy_from_slice(&old.to_le_bytes());
+        assert!(own.decode_raw(*pos, &raw).is_err());
+
+        let remap = crate::upgrade::IdRemap::parse(old, &older_table(removed, true)).unwrap();
+        let own = own.with_upgrades(Upgrades::new(vec![remap]));
+        let back = own.decode_raw(*pos, &raw).unwrap();
+        assert!(matches!(
+            chunk.chunk.sections()[0].blocks().data(),
+            vanillite_chunk::ContainerData::Direct { .. }
+        ));
+        for (before, after) in chunk.chunk.sections().iter().zip(back.chunk.sections()) {
+            for index in 0..BlockStates::ENTRIES {
+                assert_eq!(
+                    after.blocks().get(index),
+                    upgraded_state(removed, before.blocks().get(index))
+                );
+            }
+            assert_eq!(before.biomes(), after.biomes());
+        }
+        assert_eq!(back.block_ticks, [tick(4)]);
+        assert_eq!(back.fluid_ticks, chunk.fluid_ticks);
+        let kinds =
+            |c: &ProtoChunk| -> Vec<_> { c.block_entities.iter().map(|b| b.kind).collect() };
+        let expected: Vec<_> = kinds(&chunk)
+            .into_iter()
+            .map(|kind| kind.and_then(|k| k.checked_sub(1)))
+            .collect();
+        assert_eq!(kinds(&back), expected);
+        // Saved again, the chunk has the current data version.
+        let (meta, raw) = own.encode_raw(&back);
+        assert_eq!(meta.data_version, DATA_VERSION as u32);
+        assert_eq!(own.encode_raw(&own.decode_raw(*pos, &raw).unwrap()).1, raw);
     }
 
     /// A damaged or truncated record is an error, never a panic.
