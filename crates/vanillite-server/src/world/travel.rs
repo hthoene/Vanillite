@@ -360,6 +360,20 @@ impl ServerWorld {
         }
         let rules = global.level.rules();
         let data = &mut traveller.data;
+        // `triggerDimensionChangeTriggers`: `changed_dimension` from the world it left.
+        if traveller.from != self.id
+            && let (Some(from), Some(to)) = (
+                crate::server::DIMENSIONS.get(traveller.from.index()),
+                crate::server::DIMENSIONS.get(self.id.index()),
+            )
+        {
+            data.advancements.trigger(
+                vanillite_game::advancements::trigger::Event::ChangedDimension(
+                    (*from).to_owned(),
+                    (*to).to_owned(),
+                ),
+            );
+        }
         if let Some(keep_all) = keep_all {
             // `restoreFrom`: everything stays after the credits, else what death keeps.
             if keep_all {
