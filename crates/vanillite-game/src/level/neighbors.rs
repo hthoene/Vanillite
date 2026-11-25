@@ -65,6 +65,12 @@ impl Update {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Update steps run on this thread, for measurements in tests.
+    pub(crate) static STEPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 /// What one step of an update does.
 enum Step {
     Shape {
@@ -163,6 +169,8 @@ impl Level {
     }
 
     fn run_step(&mut self, step: Option<Step>) {
+        #[cfg(test)]
+        STEPS.with(|s| s.set(s.get() + 1));
         match step {
             Some(Step::Shape {
                 direction,

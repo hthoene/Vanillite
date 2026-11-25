@@ -941,6 +941,16 @@
       "field_type": "text"
     },
     {
+      "name": "Redstone: Implementation",
+      "description": "The redstone wire implementation. \"vanilla\" is tick-exact. \"alternate-current\" follows Alternate Current (by Space Walker, MIT): a change computes the power of the whole connected wire network in one pass and then updates every block around the changed wires once, instead of Vanilla's recursive updates with thousands of redundant ones. Final wire powers are the same as Vanilla's, but the order of the neighbour and shape updates differs: it follows the direction power flows in (front, back, right, left, down, up of each wire, wires nearest the change first) instead of Vanilla's location-dependent hash order, so a circuit behaves the same in every rotation and place, but contraptions that depend on Vanilla's update order (some piston and observer builds) can behave differently. Wires powered only by blocks update north first. Empty: the profile's value (vanilla profile: vanilla). vanillite.toml: performance.redstone.implementation.",
+      "env_variable": "VANILLITE_PERFORMANCE__REDSTONE__IMPLEMENTATION",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string",
+      "field_type": "text"
+    },
+    {
       "name": "Proxy: Velocity Secret",
       "description": "Shared secret of modern forwarding (the proxy's `forwarding.secret`). Empty turns forwarding off. With a secret, players' identities and addresses come from the proxy, signed with it; `online-mode` then only applies to direct connections. Empty: the profile's value (vanilla profile: ). vanillite.toml: proxy.velocity-secret.",
       "env_variable": "VANILLITE_PROXY__VELOCITY_SECRET",
