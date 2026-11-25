@@ -272,6 +272,7 @@ impl NextSeed for LegacyRandom {
 /// ends and experience drops.
 pub fn finalize_child_from_breeding(t: &mut Tick<'_, '_>, partner: EntityId) {
     use vanillite_base::random::RandomSource;
+    crate::mob::animal::award_breeding(t.ents, t.id, partner, None);
     for id in [t.id, partner] {
         if let Some(m) = t.ents.mob_mut(id) {
             m.age = 6000;

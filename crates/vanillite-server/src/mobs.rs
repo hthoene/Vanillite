@@ -6,6 +6,8 @@ use std::sync::Arc;
 use vanillite_base::{Aabb, BlockPos, ChunkPos, Vec3};
 use vanillite_config::{GameMode, WorldRules};
 use vanillite_data::entity::ids;
+use vanillite_game::advancements::trigger::{Event, TriggerKind};
+use vanillite_game::advancements::view;
 use vanillite_game::entities::{Entities, is_mob_kind};
 use vanillite_game::item::ItemStack;
 use vanillite_game::level::Level;
@@ -298,6 +300,11 @@ impl WorldMobs {
                         let Some(target) = in_reach(&ents, player, entity) else {
                             continue;
                         };
+                        // `handleInteract`: the stack before the interaction for
+                        // `player_interacted_with_entity`.
+                        let interacted = TriggerKind::PLAYER_INTERACTED_WITH_ENTITY;
+                        let used = view::listens(&ents, player, interacted)
+                            .then(|| animal::held(&ents, player, hand));
                         let r = if ents
                             .store
                             .get(target)
@@ -316,6 +323,13 @@ impl WorldMobs {
                                 sneaking,
                             )
                         };
+                        if r.consumes()
+                            && let Some(used) = used
+                        {
+                            view::fire(&mut ents, player, interacted, |ents| {
+                                Event::EntityItem(interacted, view::snapshot(ents, target), used)
+                            });
+                        }
                         if r == animal::Interaction::Success
                             && let Some(p) = ents.player_mut(player)
                         {

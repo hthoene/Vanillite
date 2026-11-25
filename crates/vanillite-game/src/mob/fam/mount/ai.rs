@@ -1016,6 +1016,11 @@ fn deposit_target(t: &mut Tick<'_, '_>) -> Option<Tracker> {
         }
         brain::brain(t).erase(M::LikedNoteblockPosition);
     }
+    liked_player_near(t).map(|id| Tracker::entity(id, true))
+}
+
+/// `AllayAi.getLikedPlayer`: the liked player within 64 blocks in survival or creative.
+fn liked_player_near(t: &Tick<'_, '_>) -> Option<EntityId> {
     let uuid = brain_ref(t).uuid(M::LikedPlayer)?;
     let id = t.ents.player_by_uuid(uuid)?;
     let p = t.ents.player(id)?;
@@ -1028,7 +1033,7 @@ fn deposit_target(t: &mut Tick<'_, '_>) -> Option<Tracker> {
         .store
         .get(id)
         .is_some_and(|e| e.pos().distance_to_sqr(t.pos()) < 64.0 * 64.0);
-    (mode_ok && close).then(|| Tracker::entity(id, true))
+    (mode_ok && close).then_some(id)
 }
 
 /// `AllayAi.throwItem`: one item towards the target, the throw sound now and then.
@@ -1043,6 +1048,19 @@ fn throw_to(t: &mut Tick<'_, '_>, target: Vec3) {
         one
     };
     let id = t.id;
+    // `ALLAY_DROP_ITEM_ON_BLOCK` for the liked player, at the block below the target.
+    let drop_kind = crate::advancements::trigger::TriggerKind::ALLAY_DROP_ITEM_ON_BLOCK;
+    if let Some(player) = liked_player_near(t)
+        && crate::advancements::view::listens(t.ents, player, drop_kind)
+        && let Some(p) = t.ents.player_mut(player)
+    {
+        let below = crate::player::play::block_pos_of(target).offset(0, -1, 0);
+        p.advancements
+            .trigger(crate::advancements::trigger::Event::AllayDropItemOnBlock(
+                below,
+                stack.clone(),
+            ));
+    }
     super::allay::throw_item(
         t.ents,
         t.env,

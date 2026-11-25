@@ -391,6 +391,8 @@ fn set_laying_egg(t: &mut Tick<'_, '_>, on: bool) {
 
 /// `TurtleBreedGoal.breed`: the turtle carries an egg instead of a baby.
 fn breed(t: &mut Tick<'_, '_>, partner: vanillite_world::entity::EntityId) {
+    // The award comes first (`TurtleBreedGoal.breed`).
+    crate::mob::animal::award_breeding(t.ents, t.id, partner, None);
     st_mut(t.mob()).has_egg = true;
     for id in [t.id, partner] {
         if let Some(m) = t.ents.mob_mut(id) {

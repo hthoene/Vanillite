@@ -352,6 +352,8 @@ pub fn cat_interact(ix: &mut Interact<'_, '_>) -> Interaction {
                 super::tame_by(m, o);
                 m.order_to_sit = true;
             }
+            let (target, player) = (ix.target, ix.player);
+            crate::mob::tame::award_tame(ix.ents, target, player);
             event(ix, 7);
         } else {
             event(ix, 6);
