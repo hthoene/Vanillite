@@ -84,6 +84,9 @@ pub enum Effect {
         pos: Vec3,
         context: crate::level::game_event::GameEventContext,
     },
+    /// The player with this UUID died: with `ender_pearls_vanish_on_death` its ender pearls in
+    /// the other worlds vanish (the pearls of its own world see it themselves).
+    PearlsVanish(u128),
     /// An entity from a player's shoulder back in the world (`respawnEntityOnShoulder`): its
     /// NBT, the position and the player that becomes its owner.
     RespawnShoulder {

@@ -1,5 +1,5 @@
 //! The projectiles besides arrows (`Projectile` subclasses): fireballs, shulker bullets,
-//! evoker fangs, thrown potions, llama spit, snowballs, tridents and wind charges. They share
+//! evoker fangs, thrown potions, llama spit, snowballs, ender pearls, tridents and wind charges. They share
 //! one entity store; each kind's flight and impact is implemented by the mob family that uses
 //! it (`FamilyHooks::missile_tick`), so mobs and later players throw the same entities.
 
@@ -30,6 +30,8 @@ pub enum MissileKind {
     LingeringPotion,
     LlamaSpit,
     Snowball,
+    /// `ThrownEnderpearl` (players).
+    EnderPearl,
     /// `ThrownTrident` (drowned).
     Trident,
     WindCharge,
@@ -37,7 +39,7 @@ pub enum MissileKind {
 }
 
 impl MissileKind {
-    pub const ALL: [MissileKind; 11] = [
+    pub const ALL: [MissileKind; 12] = [
         MissileKind::SmallFireball,
         MissileKind::Fireball,
         MissileKind::ShulkerBullet,
@@ -46,6 +48,7 @@ impl MissileKind {
         MissileKind::LingeringPotion,
         MissileKind::LlamaSpit,
         MissileKind::Snowball,
+        MissileKind::EnderPearl,
         MissileKind::Trident,
         MissileKind::WindCharge,
         MissileKind::BreezeWindCharge,
@@ -62,10 +65,22 @@ impl MissileKind {
             MissileKind::LingeringPotion => ids::LINGERING_POTION,
             MissileKind::LlamaSpit => ids::LLAMA_SPIT,
             MissileKind::Snowball => ids::SNOWBALL,
+            MissileKind::EnderPearl => ids::ENDER_PEARL,
             MissileKind::Trident => ids::TRIDENT,
             MissileKind::WindCharge => ids::WIND_CHARGE,
             MissileKind::BreezeWindCharge => ids::BREEZE_WIND_CHARGE,
         }
+    }
+
+    /// A `ThrowableProjectile` (snowballs, ender pearls, thrown potions).
+    pub fn is_throwable(self) -> bool {
+        matches!(
+            self,
+            MissileKind::Snowball
+                | MissileKind::EnderPearl
+                | MissileKind::SplashPotion
+                | MissileKind::LingeringPotion
+        )
     }
 
     /// The kind of an entity type.
@@ -83,7 +98,7 @@ impl MissileKind {
             | MissileKind::SplashPotion
             | MissileKind::LingeringPotion => Family::Illager,
             MissileKind::LlamaSpit => Family::Companion,
-            MissileKind::Snowball => Family::Wildlife,
+            MissileKind::Snowball | MissileKind::EnderPearl => Family::Wildlife,
             MissileKind::Trident => Family::Undead,
             MissileKind::WindCharge | MissileKind::BreezeWindCharge => Family::Mount,
         }
@@ -128,6 +143,9 @@ pub struct MissileData {
     pub removed: bool,
     /// `hasBeenShot`: the `PROJECTILE_SHOOT` game event was posted.
     pub has_been_shot: bool,
+    /// The state of its own random ([`vanillite_base::random::LegacyRandom::state`]) for the
+    /// kinds that draw from it (ender pearls).
+    pub random_state: i64,
 }
 
 impl MissileData {
@@ -149,6 +167,7 @@ impl MissileData {
             vec: Vec3::ZERO,
             in_ground: false,
             removed: false,
+            random_state: 0,
         }
     }
 }

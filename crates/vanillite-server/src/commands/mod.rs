@@ -144,6 +144,92 @@ fn run_line(env: &mut Env<'_>, line: engine::Line, source: CommandSource) {
     engine.run(env);
 }
 
+/// Installs the structure search of exploration maps with the current registry tags.
+pub(crate) fn install_map_explorer(global: &Global) {
+    vanillite_game::map::install_explorer(Box::new(locate::MapExplorer {
+        tags: global.systems.tags(),
+    }));
+}
+
+/// Where a written book to resolve is.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum BookAt {
+    /// In a hand of the player; it opens afterwards (`openItemGui`).
+    Hand(vanillite_protocol::packets::play::serverbound::Hand),
+    /// On the lectern at the position (`LecternBlockEntity.resolveBook`).
+    Lectern(vanillite_base::BlockPos),
+}
+
+/// `WrittenBookContent.resolveForItem` with the player's command source.
+pub(crate) fn resolve_book(
+    level: &mut vanillite_game::level::Level,
+    global: &Global,
+    id: EntityId,
+    world: WorldId,
+    at: BookAt,
+) {
+    use vanillite_protocol::packets::play::serverbound::Hand;
+    let Some(source) = player_source(&level.entities, global, id, world) else {
+        return;
+    };
+    let slot = |level: &vanillite_game::level::Level, hand: Hand| match hand {
+        Hand::MainHand => level
+            .entities
+            .player(id)
+            .map_or(0, |p| p.inventory.selected),
+        Hand::OffHand => vanillite_game::inventory::OFFHAND,
+    };
+    let mut stack = match at {
+        BookAt::Hand(hand) => {
+            let i = slot(level, hand);
+            match level.entities.player(id) {
+                Some(p) => p.inventory.get(i).clone(),
+                None => return,
+            }
+        }
+        BookAt::Lectern(pos) => match level.block_entity(pos) {
+            Some(vanillite_game::level::BlockEntity::Lectern(l)) => l.book.clone(),
+            _ => return,
+        },
+    };
+    if vanillite_game::book::needs_resolving(&stack) {
+        let env = Env {
+            level: &mut *level,
+            global,
+            world,
+        };
+        vanillite_game::book::resolve_for_item(&mut stack, &mut |c| {
+            text::resolve(&env, &source, c, None).ok()
+        });
+        match at {
+            BookAt::Hand(hand) => {
+                let i = slot(level, hand);
+                if let Some(p) = level.entities.player_mut(id) {
+                    p.inventory.set(i, stack);
+                }
+            }
+            BookAt::Lectern(pos) => {
+                if let Some(vanillite_game::level::BlockEntity::Lectern(l)) =
+                    level.block_entity_mut(pos)
+                {
+                    l.book = stack;
+                }
+                level.block_entity_changed(pos);
+            }
+        }
+    }
+    if let BookAt::Hand(hand) = at
+        && let Some(p) = level.entities.player_mut(id)
+    {
+        // `containerMenu.broadcastChanges()` first: the client opens the resolved book.
+        let sink = Arc::clone(&p.connection.sink);
+        if p.inventory.container.is_none() {
+            p.inventory.broadcast_changes(sink.as_ref());
+        }
+        sink.send(&vanillite_protocol::packets::play::clientbound::OpenBook { hand });
+    }
+}
+
 /// The permission level of a player: its operator level or 0.
 pub(crate) fn permission_level(global: &Global, uuid: u128) -> u8 {
     global.access.op_level(uuid).unwrap_or(0)

@@ -224,6 +224,8 @@ public final class ScenarioRecorder {
                 BoneMealItem.growCrop(new ItemStack(Items.BONE_MEAL), level, pos(action.get("pos")));
               } else if (op.equals("hurt")) {
                 entities.hurt(action);
+              } else if (op.equals("use_item")) {
+                entities.useItem(action);
               } else if (op.equals("lightning")) {
                 strike(level, pos(action.get("pos")));
               } else if (op.equals("effect")) {

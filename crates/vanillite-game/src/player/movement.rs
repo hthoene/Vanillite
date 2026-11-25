@@ -134,6 +134,10 @@ pub struct Movement {
     pub moves: Vec<crate::survival::player::MoveRecord>,
     /// The player rides a vehicle (`isPassenger`): moves only turn it, the vehicle places it.
     pub passenger: bool,
+    /// `lastKnownClientMovement`: the last move of this client tick, zero after a client tick
+    /// without one (`getKnownMovement`).
+    pub known_movement: Vec3,
+    received_movement_this_tick: bool,
 }
 
 /// `Mth.wrapDegrees`.
@@ -187,6 +191,8 @@ impl Movement {
             waiting_for_respawn: false,
             moves: Vec::new(),
             passenger: false,
+            known_movement: Vec3::ZERO,
+            received_movement_this_tick: false,
         }
     }
 
@@ -236,6 +242,10 @@ impl Movement {
 
     /// `client_tick_end`.
     pub fn client_tick_end(&mut self) {
+        if !self.received_movement_this_tick {
+            self.known_movement = Vec3::ZERO;
+        }
+        self.received_movement_this_tick = false;
         self.received_position_this_tick = false;
     }
 
@@ -504,6 +514,13 @@ impl Movement {
         body.on_ground = on_ground;
         body.horizontal_collision = horizontal_collision;
         self.last_good = body.pos;
+        // `handlePlayerKnownMovement`.
+        self.known_movement = Vec3::new(
+            body.pos.x - from.x,
+            body.pos.y - from.y,
+            body.pos.z - from.z,
+        );
+        self.received_movement_this_tick = true;
         self.moves.push(crate::survival::player::MoveRecord {
             from,
             to: body.pos,
@@ -512,4 +529,50 @@ impl Movement {
             moved_upwards,
         });
     }
+}
+
+/// `ServerPlayer.teleport` within its world (`teleportSameDimension`, `connection.teleport`):
+/// the player goes to `pos` with the rotation and the [`relative`] bits of the transition, and
+/// its client follows. Returns the new position.
+///
+/// [`relative`]: vanillite_protocol::packets::play::clientbound::relative
+pub fn teleport_within_world(
+    ents: &mut crate::entities::Entities,
+    id: vanillite_world::entity::EntityId,
+    pos: Vec3,
+    y_rot: f32,
+    x_rot: f32,
+    relatives: i32,
+) -> Option<Vec3> {
+    use vanillite_world::entity::EntityFlags;
+    let entity = ents.store.get(id)?;
+    let rot = entity.rot();
+    let flags = entity.flags();
+    let mut body = Body {
+        pos: entity.pos(),
+        velocity: entity.velocity(),
+        y_rot: rot.y_rot,
+        x_rot: rot.x_rot,
+        on_ground: flags.contains(EntityFlags::ON_GROUND),
+        horizontal_collision: false,
+        fall_flying: flags.contains(EntityFlags::FALL_FLYING),
+    };
+    let player = ents.player_mut(id)?;
+    let sink = std::sync::Arc::clone(&player.connection.sink);
+    player.connection.movement.teleport_relative(
+        &mut body,
+        pos,
+        y_rot,
+        x_rot,
+        relatives,
+        sink.as_ref(),
+    );
+    player.connection.movement.reset_position(body.pos);
+    player.survival.teleported();
+    if let Some(mut entity) = ents.store.get_mut(id) {
+        entity.set_pos(body.pos);
+        entity.set_velocity(body.velocity);
+        entity.set_old_pos();
+    }
+    Some(body.pos)
 }

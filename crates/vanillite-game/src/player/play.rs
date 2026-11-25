@@ -58,6 +58,8 @@ pub struct GameData {
     pub trades: crate::trading::data::TradeData,
     /// The `minecraft:jukebox_song` registry, by registry id.
     pub jukebox_songs: Vec<crate::block::jukebox::JukeboxSong>,
+    /// The `minecraft:instrument` registry, by id.
+    pub instruments: Vec<super::items::Instrument>,
 }
 
 impl crate::predicate::EntityTags for GameData {
@@ -1049,6 +1051,60 @@ impl Digging {
             return false;
         }
         let used = item::item_id(&stack);
+        if used == vanillite_data::item::ids::FILLED_MAP
+            && let Some(level) = ctx.level.level_mut()
+            && let Some(ok) = crate::map::use_on_banner(level, &stack, pos)
+        {
+            // `MapItem.useOn` on a banner (any game mode: it runs before `useOn`'s build check
+            // in Vanilla's `ItemStack.useOn` only for the item itself).
+            if ok {
+                ctx.award_stat(Stat::of(StatType::Used, stack.item), 1);
+                ctx.trigger(Event::ItemUsedOnBlock(pos, stack));
+                any_block_use(ctx, hand, pos);
+            }
+            return ok;
+        }
+        if used == vanillite_data::item::ids::COMPASS
+            && ctx.actor.game_mode != GameMode::Adventure
+            && ctx.level.block(pos).block() == vanillite_data::block::ids::LODESTONE
+        {
+            // `CompassItem.useOn`.
+            ctx.level.play_sound(
+                None,
+                Vec3::new(
+                    f64::from(pos.x) + 0.5,
+                    f64::from(pos.y) + 0.5,
+                    f64::from(pos.z) + 0.5,
+                ),
+                u16::try_from(
+                    crate::survival::sound_event("minecraft:item.lodestone_compass.lock").0,
+                )
+                .unwrap_or(0),
+                crate::player::world::SoundSource::Players,
+                1.0,
+                1.0,
+            );
+            let dimension = ctx.level.dimension().to_owned();
+            let creative = ctx.actor.creative();
+            let slot = match hand {
+                Hand::MainHand => ctx.inventory.selected_item_mut(),
+                Hand::OffHand => Some(&mut ctx.inventory.offhand),
+            };
+            let extra =
+                slot.and_then(|s| crate::carried::bind_lodestone(s, &dimension, pos, creative));
+            if let Some(mut compass) = extra
+                && !ctx.inventory.add(None, &mut compass, creative)
+            {
+                ctx.drops.push(Drop {
+                    stack: compass,
+                    thrown: false,
+                });
+            }
+            ctx.award_stat(Stat::of(StatType::Used, stack.item), 1);
+            ctx.trigger(Event::ItemUsedOnBlock(pos, stack));
+            any_block_use(ctx, hand, pos);
+            return true;
+        }
         if used == vanillite_data::item::ids::FLINT_AND_STEEL
             || used == vanillite_data::item::ids::ENDER_EYE
         {

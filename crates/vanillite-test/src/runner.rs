@@ -57,6 +57,9 @@ fn apply(
     if let Some(effect) = &op.effect {
         return world.effect(effect);
     }
+    if let Some(use_item) = &op.use_item {
+        return world.use_item(use_item);
+    }
     if let Some(command) = &op.command {
         return world.command(command);
     }
@@ -73,6 +76,7 @@ fn apply(
         OpKind::Hurt => return Err("hurt without its damage".to_owned()),
         OpKind::Lightning => return world.lightning(op.from),
         OpKind::Effect => return Err("effect without its effect".to_owned()),
+        OpKind::UseItem => return Err("use_item without its item".to_owned()),
         OpKind::Command => return Err("command without its line".to_owned()),
         OpKind::ThrowPotion => return Err("throw_potion without its potion".to_owned()),
         OpKind::Use | OpKind::Attack => return Err("use without its click".to_owned()),
