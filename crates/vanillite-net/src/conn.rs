@@ -580,7 +580,7 @@ impl Conn {
             State::Configuration,
             Some(self.shared.config.configuration_timeout),
         );
-        let data = Arc::clone(&self.shared.configuration);
+        let data = self.shared.configuration();
         let mut brand = Vec::new();
         vanillite_protocol::codec::write_str(&mut brand, &self.shared.config.brand);
         self.out.send(&cfg::clientbound::CustomPayload {

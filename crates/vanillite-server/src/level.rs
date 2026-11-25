@@ -216,6 +216,27 @@ impl LevelState {
         lock(&self.level_data).spawn = Some(spawn);
     }
 
+    /// `getDataConfiguration().dataPacks().getDisabled()`.
+    pub(crate) fn disabled_packs(&self) -> Vec<String> {
+        lock(&self.level_data)
+            .data_packs()
+            .map(|(_, disabled)| disabled)
+            .unwrap_or_default()
+    }
+
+    /// `setDataConfiguration`: `level.dat`'s `DataPacks` and, when given, `enabled_features`.
+    pub(crate) fn set_data_configuration(
+        &self,
+        packs: &vanillite_datapack::repository::DataPackConfig,
+        features: Option<&[String]>,
+    ) {
+        let mut data = lock(&self.level_data);
+        data.set_data_packs(&packs.enabled, &packs.disabled);
+        if let Some(features) = features {
+            data.set_enabled_features(features);
+        }
+    }
+
     /// The clocks.
     pub fn clocks(&self) -> MutexGuard<'_, Clocks> {
         lock(&self.clocks)

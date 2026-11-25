@@ -47,6 +47,8 @@ pub struct Global {
     pub(crate) spawn_protection: i32,
     /// Scoreboard, command storage, functions and tags.
     pub(crate) systems: crate::systems::GameSystems,
+    /// The data pack repository.
+    pub(crate) packs: crate::packs::DataPacks,
     /// `/tick`'s state; the server loop reads it once per tick.
     pub(crate) tick_rate: std::sync::Mutex<crate::tick_rate::TickRateManager>,
     /// The durations of the last ticks (`/tick query`).

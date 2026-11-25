@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use vanillite_command::error::CommandError;
 use vanillite_command::{Arg as ErrArg, Args, FunctionRef, GameValue};
+use vanillite_datapack::OpenedPack;
 use vanillite_game::commands::CommandId;
 use vanillite_nbt::{Compound, Tag};
 use vanillite_protocol::text::{Arg, Component};
@@ -222,22 +223,6 @@ fn compile_source(global: &Global) -> Option<CommandSource> {
     ))
 }
 
-/// The data pack roots: the Vanilla pack, then the world's packs in name order.
-pub(crate) fn pack_roots(vanilla: Option<&Path>, level_dir: &Path) -> Vec<PathBuf> {
-    let mut roots: Vec<PathBuf> = vanilla.map(Path::to_owned).into_iter().collect();
-    let dir = level_dir.join("datapacks");
-    if let Ok(read) = std::fs::read_dir(&dir) {
-        let mut packs: Vec<PathBuf> = read
-            .filter_map(Result::ok)
-            .map(|e| e.path())
-            .filter(|p| p.join("pack.mcmeta").is_file() && p.join("data").is_dir())
-            .collect();
-        packs.sort();
-        roots.extend(packs);
-    }
-    roots
-}
-
 fn walk(dir: &Path, prefix: &str, ext: &str, out: &mut BTreeMap<String, PathBuf>) {
     let Ok(read) = std::fs::read_dir(dir) else {
         return;
@@ -277,13 +262,15 @@ fn list(roots: &[PathBuf], dir: &str, ext: &str) -> BTreeMap<String, PathBuf> {
     out
 }
 
-/// Loads every function and function tag of the data packs (`ServerFunctionLibrary.reload`).
-pub(crate) fn load(global: &Global, roots: &[PathBuf]) -> FunctionLibrary {
+/// Loads every function and function tag of the selected data packs in load order
+/// (`ServerFunctionLibrary.reload`).
+pub(crate) fn load(global: &Global, packs: &[OpenedPack]) -> FunctionLibrary {
     let Some(source) = compile_source(global) else {
         return FunctionLibrary::default();
     };
+    let roots: Vec<PathBuf> = packs.iter().flat_map(|p| p.layers.clone()).collect();
     let mut functions = BTreeMap::new();
-    for (id, file) in list(roots, "function", ".mcfunction") {
+    for (id, file) in list(&roots, "function", ".mcfunction") {
         let text = match std::fs::read_to_string(&file) {
             Ok(t) => t,
             Err(e) => {
@@ -298,7 +285,7 @@ pub(crate) fn load(global: &Global, roots: &[PathBuf]) -> FunctionLibrary {
             Err(e) => log::error!("Failed to load function {id}: {e}"),
         }
     }
-    let tags = load_tags(roots, &functions);
+    let tags = load_tags(packs, &functions);
     log::info!("Loaded {} functions", functions.len());
     FunctionLibrary { functions, tags }
 }
@@ -456,14 +443,15 @@ enum TagValue {
     Tag { id: String, required: bool },
 }
 
-/// `TagLoader`: the function tags of all roots, resolved.
+/// `TagLoader`: the function tags of all packs, resolved; within a pack the top overlay's file
+/// wins.
 fn load_tags(
-    roots: &[PathBuf],
+    packs: &[OpenedPack],
     functions: &BTreeMap<String, Arc<Function>>,
 ) -> BTreeMap<String, Vec<Arc<Function>>> {
     let mut raw: BTreeMap<String, Vec<TagValue>> = BTreeMap::new();
-    for root in roots {
-        let files = list(std::slice::from_ref(root), "tags/function", ".json");
+    for pack in packs {
+        let files = list(&pack.layers, "tags/function", ".json");
         for (id, file) in files {
             let Ok(text) = std::fs::read_to_string(&file) else {
                 continue;

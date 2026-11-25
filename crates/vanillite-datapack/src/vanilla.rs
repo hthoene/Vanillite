@@ -87,7 +87,7 @@ pub fn ensure_vanilla_pack(cache_dir: &Path, local_jar: Option<&Path>) -> Result
     Ok(pack)
 }
 
-fn open_zip(jar: &Path) -> Result<zip::ZipArchive<File>, Error> {
+pub(crate) fn open_zip(jar: &Path) -> Result<zip::ZipArchive<File>, Error> {
     let file = File::open(jar).map_err(io_err(jar))?;
     zip::ZipArchive::new(file).map_err(|e| Error::Jar(jar.to_path_buf(), e.to_string()))
 }

@@ -18,6 +18,7 @@ pub mod eula;
 mod global;
 mod level;
 mod net;
+mod packs;
 mod player_list;
 mod players;
 mod plugins;

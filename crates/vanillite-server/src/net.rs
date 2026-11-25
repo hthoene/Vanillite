@@ -38,6 +38,8 @@ pub(crate) struct Prepared {
     pub(crate) registries: std::collections::BTreeMap<String, Vec<String>>,
     /// The loaded data packs; `None` with [`VanillaPack::None`].
     pub(crate) packs: Option<LoadedPacks>,
+    /// The pack repository and the packs selected at start.
+    pub(crate) selected: crate::packs::Selected,
     /// Seed and generators of the world.
     pub(crate) world_gen: crate::world_setup::WorldGen,
 }
@@ -70,7 +72,7 @@ fn registry_index(packs: Option<&LoadedPacks>, registry: &str, entry: &str) -> u
         .unwrap_or(0)
 }
 
-/// Loads the data packs and prepares each world's players' side.
+/// Selects and loads the data packs and prepares each world's players' side.
 pub(crate) fn prepare(
     config: &Config,
     dir: &Path,
@@ -78,23 +80,43 @@ pub(crate) fn prepare(
     pack: &VanillaPack,
     player_store: &PlayerDataStore,
 ) -> Result<Prepared, StartError> {
-    let packs = match pack {
+    let cache = dir.join("cache");
+    let vanilla = match pack {
         VanillaPack::None => None,
         VanillaPack::Download | VanillaPack::Jar(_) => {
             let jar = match pack {
                 VanillaPack::Jar(jar) => Some(jar.as_path()),
                 _ => None,
             };
-            let cache = dir.join("cache");
             let root = vanillite_datapack::vanilla::ensure_vanilla_pack(&cache, jar)
                 .map_err(|e| StartError::Io(format!("Vanilla data pack: {e}")))?;
-            let packs = vanillite_datapack::load(&[root.as_path()])
-                .map_err(|e| StartError::Io(format!("data packs: {e}")))?;
-            Some(packs)
+            Some(root)
         }
     };
+    let loads_registries = vanilla.is_some();
+    let properties = &config.properties;
+    let selected = crate::packs::select(
+        vanilla,
+        level_dir,
+        &cache,
+        (
+            &properties.initial_enabled_packs,
+            &properties.initial_disabled_packs,
+        ),
+    );
+    let packs = if loads_registries {
+        let packs = vanillite_datapack::load_opened(&selected.opened)
+            .map_err(|e| StartError::Io(format!("data packs: {e}")))?;
+        for warning in &packs.warnings {
+            log::warn!("{warning}");
+        }
+        Some(packs)
+    } else {
+        None
+    };
+    let features: Vec<&str> = selected.packs.features.iter().map(String::as_str).collect();
     let configuration = match &packs {
-        Some(packs) => ConfigurationData::from_packs(packs, &["minecraft:vanilla"]),
+        Some(packs) => ConfigurationData::from_packs(packs, &features),
         None => ConfigurationData::new(
             Vec::new(),
             Vec::new(),
@@ -114,7 +136,6 @@ pub(crate) fn prepare(
     let is_flat = world_gen.is_flat();
     let spawn = world_spawn(level_dir, is_flat);
 
-    let properties = &config.properties;
     let levels: Vec<Identifier> = DIMENSIONS
         .iter()
         .map(|d| Identifier::vanilla(d.trim_start_matches("minecraft:")))
@@ -188,6 +209,7 @@ pub(crate) fn prepare(
         chat_types,
         registries,
         packs,
+        selected,
         world_gen,
     })
 }

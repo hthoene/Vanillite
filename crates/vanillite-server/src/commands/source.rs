@@ -226,6 +226,26 @@ impl vanillite_command::Source for CommandSource {
                 );
                 return;
             }
+            suggest::SELECTED_PACKS | suggest::UNSELECTED_PACKS => {
+                let packs = &self.global.packs;
+                let repo = packs.repository();
+                if provider == suggest::SELECTED_PACKS {
+                    repo.selected()
+                        .iter()
+                        .map(|id| super::pack_cmd::escape_if_required(id))
+                        .collect()
+                } else {
+                    repo.available()
+                        .filter(|p| {
+                            vanillite_datapack::repository::features_allowed(
+                                &p.features,
+                                &packs.features,
+                            ) && !repo.is_selected(&p.id)
+                        })
+                        .map(|p| super::pack_cmd::escape_if_required(&p.id))
+                        .collect()
+                }
+            }
             suggest::TICK_RATE => vec!["20".to_owned()],
             suggest::TICK_STEP => vec!["1t".to_owned(), "1s".to_owned()],
             suggest::TICK_SPRINT => vec!["60s".to_owned(), "1d".to_owned(), "3d".to_owned()],

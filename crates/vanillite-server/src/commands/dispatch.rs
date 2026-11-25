@@ -464,6 +464,7 @@ pub(crate) fn execute(
         CommandId::Attribute(op) => super::player_data::attribute(op, &parsed.args, source, env),
         CommandId::Clear => super::items::clear(&parsed.args, source, env),
         CommandId::Data(op) => super::data_cmd::run_data(op, &parsed.args, source, env),
+        CommandId::DataPack(_) | CommandId::Reload => super::pack_cmd::run(parsed, source, env),
         CommandId::Enchant => super::items::enchant(&parsed.args, source, env),
         CommandId::Experience { op, levels } => {
             super::player_data::experience(op, levels, &parsed.args, source, env)

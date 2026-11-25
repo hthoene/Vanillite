@@ -283,6 +283,11 @@ impl ServerBuilder {
         };
         let mut world_players = prepared.worlds.into_iter();
         let packs = prepared.packs.map(Arc::new);
+        let crate::packs::Selected {
+            packs: data_packs,
+            config: pack_config,
+            opened: opened_packs,
+        } = prepared.selected;
         // Block behaviour reads its tags in every world, also without the noise generator.
         if let Some(packs) = packs.as_deref() {
             vanillite_worldgen::behaviour::init(packs);
@@ -355,6 +360,7 @@ impl ServerBuilder {
             &level_setup,
             writer.clone(),
         );
+        level.set_data_configuration(&pack_config, Some(&data_packs.features));
         let global = Arc::new_cyclic(|this| Global {
             clock,
             players: PlayerList::new(max_players),
@@ -378,9 +384,9 @@ impl ServerBuilder {
             spawn_protection: config.properties.spawn_protection,
             systems: crate::systems::GameSystems::new(
                 level_dir.clone(),
-                packs.as_deref().and_then(|p| p.roots().first().cloned()),
                 u8::try_from(config.properties.function_permission_level).unwrap_or(2),
             ),
+            packs: data_packs.with_loaded(packs.clone()),
             tick_rate: std::sync::Mutex::new(TickRateManager::default()),
             tick_times: std::sync::Mutex::new(crate::tick_rate::TickTimes::default()),
             force_game_mode: config.properties.force_gamemode,
@@ -393,15 +399,10 @@ impl ServerBuilder {
                 &global, &compute, &config,
             )));
         if let Some(packs) = packs.as_deref() {
-            global.systems.set_tags(
-                packs
-                    .tagged_registries()
-                    .filter_map(|r| Some((r.to_owned(), packs.tags(r)?.clone())))
-                    .collect(),
-            );
+            global.systems.set_tags(crate::packs::registry_tags(packs));
         }
         global.systems.set_spawn(level_setup.spawn.0);
-        crate::commands::load_game_systems(&global);
+        crate::commands::load_game_systems(&global, &opened_packs);
         let watch = Arc::new(WatchState::new(
             config.server.watchdog.early_warning_after.get(),
             config.server.watchdog.warning_interval,
@@ -837,6 +838,11 @@ impl Server {
     /// thread while the server runs; they log in like a client from the handshake on.
     pub fn virtual_opener(&self) -> Option<VirtualOpener> {
         self.net.as_ref().map(|n| n.network.virtual_opener())
+    }
+
+    /// The network, while it runs.
+    pub(crate) fn network(&self) -> Option<&vanillite_net::Network> {
+        self.net.as_ref().map(|n| &n.network)
     }
 
     /// The UDP address of the Bedrock frontend, if it runs.

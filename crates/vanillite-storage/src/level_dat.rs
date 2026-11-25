@@ -106,6 +106,42 @@ impl LevelData {
         files::write_gzip_nbt(&world_dir.join("level.dat"), &root, true)
     }
 
+    /// `DataPacks` (`DataPackConfig`): the enabled and the disabled pack ids; `None` when it is
+    /// missing or malformed (Vanilla then uses `DataPackConfig.DEFAULT`).
+    pub fn data_packs(&self) -> Option<(Vec<String>, Vec<String>)> {
+        let Some(Tag::Compound(packs)) = self.other.get("DataPacks") else {
+            return None;
+        };
+        Some((
+            string_list(packs.get("Enabled"))?,
+            string_list(packs.get("Disabled"))?,
+        ))
+    }
+
+    /// Sets `DataPacks`.
+    pub fn set_data_packs(&mut self, enabled: &[String], disabled: &[String]) {
+        let list = |ids: &[String]| List(ids.iter().map(|s| Tag::from(s.as_str())).collect());
+        self.other.insert(
+            "DataPacks",
+            Compound::new()
+                .with("Enabled", list(enabled))
+                .with("Disabled", list(disabled)),
+        );
+    }
+
+    /// `enabled_features`; `None` when it is missing or malformed.
+    pub fn enabled_features(&self) -> Option<Vec<String>> {
+        string_list(self.other.get("enabled_features"))
+    }
+
+    /// Sets `enabled_features`.
+    pub fn set_enabled_features(&mut self, features: &[String]) {
+        self.other.insert(
+            "enabled_features",
+            List(features.iter().map(|s| Tag::from(s.as_str())).collect()),
+        );
+    }
+
     /// Records that `brand` saved the world (`setModdedInfo`).
     pub fn add_brand(&mut self, brand: &str, modded: bool) {
         if !self.server_brands.iter().any(|b| b == brand) {
@@ -271,6 +307,17 @@ impl LevelData {
                 .with("locked", self.difficulty_locked),
         );
         data
+    }
+}
+
+/// A list of strings; `None` for anything else.
+fn string_list(tag: Option<&Tag>) -> Option<Vec<String>> {
+    match tag? {
+        Tag::List(List(items)) => items
+            .iter()
+            .map(|t| t.as_str().map(str::to_owned))
+            .collect(),
+        _ => None,
     }
 }
 

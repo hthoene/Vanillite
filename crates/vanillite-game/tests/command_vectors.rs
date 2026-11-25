@@ -97,6 +97,8 @@ const OUR_COMMANDS: &[&str] = &[
     "fetchprofile",
     "test",
     "spectate",
+    "datapack",
+    "reload",
 ];
 
 struct TestSource {

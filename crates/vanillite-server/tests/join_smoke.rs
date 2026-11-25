@@ -500,3 +500,125 @@ fn two_players_join_see_each_other_and_rejoin() {
     thread.join().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The first of `keys` a system message has.
+fn system_keys(packet: &ClientboundPlay, keys: &[&'static str]) -> Option<&'static str> {
+    keys.iter()
+        .copied()
+        .find(|k| system_key(packet, k).is_some())
+}
+
+#[test]
+fn data_packs_are_listed_enabled_disabled_and_created() {
+    let dir = std::env::temp_dir().join(format!("vanillite-packs-smoke-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let pack = dir.join("world/datapacks/test");
+    std::fs::create_dir_all(pack.join("data/t/function")).unwrap();
+    std::fs::write(
+        pack.join("pack.mcmeta"),
+        r#"{"pack": {"description": "Test", "min_format": 121, "max_format": 121}}"#,
+    )
+    .unwrap();
+    std::fs::write(pack.join("data/t/function/hello.mcfunction"), "say hi\n").unwrap();
+    std::fs::write(dir.join("server.properties"), "view-distance=2\n").unwrap();
+    std::fs::write(
+        dir.join("ops.json"),
+        format!(
+            r#"[{{"uuid":"{}","name":"Alice","level":4,"bypassesPlayerLimit":false}}]"#,
+            Uuid::offline("Alice")
+        ),
+    )
+    .unwrap();
+    std::fs::write(dir.join("eula.txt"), "eula=true\n").unwrap();
+    let mut builder = ServerBuilder::new(&dir);
+    builder.vanilla_pack(VanillaPack::None).network(false);
+    let server = builder.start().expect("server starts");
+    let opener = server.virtual_opener().expect("network");
+    let handle = server.handle();
+    let thread = std::thread::spawn(move || server.run());
+    let mut a = connect(&opener, "Alice");
+    join(&mut a);
+    let command = |a: &mut Player, line: &str, keys: &[&'static str]| {
+        a.send(&ChatCommand {
+            command: line.to_owned(),
+        });
+        a.until(line, |p| system_keys(p, keys))
+    };
+
+    // The new world pack was enabled at start.
+    let enabled = ["commands.datapack.list.enabled.success"];
+    assert_eq!(
+        command(&mut a, "datapack list enabled", &enabled),
+        enabled[0]
+    );
+    let unknown = ["commands.datapack.unknown"];
+    assert_eq!(
+        command(&mut a, "datapack disable nope", &unknown),
+        unknown[0]
+    );
+    let disable = ["commands.datapack.modify.disable"];
+    assert_eq!(
+        command(&mut a, "datapack disable \"file/test\"", &disable),
+        disable[0]
+    );
+    // The reload loads on a worker, but the selection changes at once.
+    let available = [
+        "commands.datapack.list.available.success",
+        "commands.datapack.list.available.none",
+    ];
+    assert_eq!(
+        command(&mut a, "datapack list available", &available),
+        available[0]
+    );
+    // The functions follow once the reload is applied.
+    let function = [
+        "commands.function.scheduled.single",
+        "arguments.function.unknown",
+    ];
+    let until_function = |a: &mut Player, expected: &str| {
+        for _ in 0..100 {
+            if command(a, "function t:hello", &function) == expected {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!("function t:hello never gave {expected}");
+    };
+    until_function(&mut a, function[1]);
+    let enable = ["commands.datapack.modify.enable"];
+    assert_eq!(
+        command(&mut a, "datapack enable \"file/test\" first", &enable),
+        enable[0]
+    );
+    let reload = ["commands.reload.success"];
+    assert_eq!(command(&mut a, "reload", &reload), reload[0]);
+    until_function(&mut a, function[0]);
+
+    let created = ["commands.datapack.create.success"];
+    assert_eq!(
+        command(&mut a, "datapack create made \"Made\"", &created),
+        created[0]
+    );
+    let meta = std::fs::read_to_string(dir.join("world/datapacks/made/pack.mcmeta")).unwrap();
+    assert!(meta.contains("\"description\": \"Made\""), "{meta}");
+    let exists = ["commands.datapack.create.already_exists"];
+    assert_eq!(
+        command(&mut a, "datapack create made x", &exists),
+        exists[0]
+    );
+    let invalid = ["commands.datapack.create.invalid_name"];
+    assert_eq!(
+        command(&mut a, "datapack create Made x", &invalid),
+        invalid[0]
+    );
+
+    handle.stop();
+    thread.join().unwrap();
+    // `level.dat` keeps the selection.
+    let level = vanillite_storage::level_dat::LevelData::read(&dir.join("world"))
+        .unwrap()
+        .unwrap();
+    let (enabled, _) = level.data_packs().unwrap();
+    assert!(enabled.iter().any(|p| p == "file/test"), "{enabled:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
