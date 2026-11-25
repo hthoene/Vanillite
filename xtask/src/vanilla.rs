@@ -14,7 +14,7 @@ const MANIFEST: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_
 
 pub fn update(root: &Path, version: Option<&str>, local_jar: Option<&Path>) -> Result<()> {
     let manifest = manifest()?;
-    let x = extract(root, &manifest, version, local_jar)?;
+    let x = extract(root, &manifest, version, local_jar, Extractor::Full)?;
     let out = root.join("data").join("vanilla");
     let before = normalize::Snapshot::load(&out);
     normalize::run(&x.generated.join("reports"), &x.extracted, &x.info, &out)?;
@@ -52,6 +52,16 @@ pub(crate) struct Extracted {
     pub info: VersionInfo,
 }
 
+/// Which extractor runs against a jar.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Extractor {
+    /// Everything `data/vanilla/` needs (`Main`, needs the current API).
+    Full,
+    /// What `data/multiversion/` needs (`MultiversionMain`, runs against every version from
+    /// 1.20.5 on; obfuscated jars are remapped with Mojang's mappings first).
+    Multiversion,
+}
+
 /// Downloads (or takes) the server jar of `version` (default: the latest release), verifies its
 /// SHA-1, fetches the mappings if there are any, and runs datagen and the extractor.
 pub(crate) fn extract(
@@ -59,6 +69,7 @@ pub(crate) fn extract(
     manifest: &Value,
     version: Option<&str>,
     local_jar: Option<&Path>,
+    extractor: Extractor,
 ) -> Result<Extracted> {
     let id = match version {
         Some(v) => v.to_owned(),
@@ -114,7 +125,15 @@ pub(crate) fn extract(
         .join("versions")
         .join(&id)
         .join(format!("server-{id}.jar"));
-    let mut classpath = vec![inner.clone()];
+    // Obfuscated jars (before 26.1) get Mojang's names, which the extractor is written against.
+    let named = if mappings && extractor == Extractor::Multiversion {
+        let named = work.join(format!("server-{id}-named.jar"));
+        remap(root, &inner, &work.join("server_mappings.txt"), &named)?;
+        named
+    } else {
+        inner.clone()
+    };
+    let mut classpath = vec![named];
     collect_jars(&work.join("libraries"), &mut classpath)?;
     classpath.sort();
     let sep = if cfg!(windows) { ";" } else { ":" };
@@ -131,6 +150,13 @@ pub(crate) fn extract(
     let mut sources = Vec::new();
     collect_files(&root.join("tools/extractor/src"), "java", &mut sources)?;
     sources.retain(|p| !p.components().any(|c| c.as_os_str() == "golden"));
+    let main = match extractor {
+        Extractor::Full => "dev.vanillite.extractor.Main",
+        Extractor::Multiversion => {
+            sources.retain(|p| p.ends_with("MultiversionMain.java") || p.ends_with("Packets.java"));
+            "dev.vanillite.extractor.MultiversionMain"
+        }
+    };
     sources.sort();
     run(Command::new(java_tool("javac"))
         .args(["-encoding", "UTF-8", "-nowarn", "-d"])
@@ -144,7 +170,7 @@ pub(crate) fn extract(
         .current_dir(&work)
         .arg("-cp")
         .arg(format!("{}{sep}{cp}", classes.display()))
-        .arg("dev.vanillite.extractor.Main")
+        .arg(main)
         .arg(&extracted))?;
 
     let version_json: Value = serde_json::from_slice(&zip_entry(&inner, "version.json")?)
@@ -160,6 +186,58 @@ pub(crate) fn extract(
         mappings,
         info,
     })
+}
+
+/// ASM (BSD-3-Clause) for the remapper, from Maven Central: artifact, SHA-1.
+const ASM: &[(&str, &str)] = &[
+    ("asm", "2ceea6ab43bcae1979b2a6d85fc0ca429877e5ab"),
+    ("asm-commons", "ab35de4c537184a09339069f1a3b3aacf2289149"),
+    ("asm-tree", "b6b1b3366296163b4b1f540731aad0a2baa484d8"),
+];
+const ASM_VERSION: &str = "9.9.1";
+
+/// Applies Mojang's mappings to an obfuscated jar (`tools/remapper/`). The result is kept.
+fn remap(root: &Path, jar: &Path, mappings: &Path, out: &Path) -> Result<()> {
+    if out.exists() {
+        return Ok(());
+    }
+    let tools = root.join("target").join("tools").join("remapper");
+    std::fs::create_dir_all(&tools).map_err(|e| format!("{}: {e}", tools.display()))?;
+    let mut classpath = Vec::new();
+    for (artifact, sha1) in ASM {
+        let file = tools.join(format!("{artifact}-{ASM_VERSION}.jar"));
+        if !file.exists() || sha1_file(&file)? != *sha1 {
+            download(
+                &format!(
+                    "https://repo1.maven.org/maven2/org/ow2/asm/{artifact}/{ASM_VERSION}/{artifact}-{ASM_VERSION}.jar"
+                ),
+                &file,
+            )?;
+            if sha1_file(&file)? != *sha1 {
+                return Err(format!("{}: SHA-1 mismatch", file.display()));
+            }
+        }
+        classpath.push(file.display().to_string());
+    }
+    let sep = if cfg!(windows) { ";" } else { ":" };
+    let classes = tools.join("classes");
+    remove_dir(&classes)?;
+    run(Command::new(java_tool("javac"))
+        .args(["-encoding", "UTF-8", "-nowarn", "-d"])
+        .arg(&classes)
+        .arg("-cp")
+        .arg(classpath.join(sep))
+        .arg(root.join("tools/remapper/Remap.java")))?;
+    classpath.push(classes.display().to_string());
+    let tmp = out.with_extension("part");
+    run(Command::new(java_tool("java"))
+        .arg("-cp")
+        .arg(classpath.join(sep))
+        .arg("dev.vanillite.remapper.Remap")
+        .arg(jar)
+        .arg(mappings)
+        .arg(&tmp))?;
+    std::fs::rename(&tmp, out).map_err(|e| format!("{}: {e}", out.display()))
 }
 
 /// `VANILLITE_JAVA_HOME`, then `JAVA_HOME`, then the tool on `PATH`.

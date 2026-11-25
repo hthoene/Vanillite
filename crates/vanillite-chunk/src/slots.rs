@@ -398,6 +398,11 @@ pub trait ChunkGenerator: Send + Sync {
         targets: &mut [ProtoChunk],
         neighbours: &mut Neighbours<'_>,
     );
+
+    /// Precomputes what the first steps would otherwise compute on demand (Vanilla's
+    /// `ensureStructuresGenerated` when a level loads). Runs once as a background job when the
+    /// world starts; `generate` must work without it.
+    fn prepare(&self) {}
 }
 
 /// Creates the generator of each world.
@@ -483,6 +488,13 @@ pub trait LightEngine: Send + Sync {
     /// Recomputes the light after block changes in `changed`. `area` holds the chunks within
     /// 2 of every changed chunk; the light of the chunks within 1 is replaced.
     fn relight(&self, changed: &[ChunkPos], area: &mut Neighbours<'_>);
+
+    /// Whether changing a block from `old` to `new` can change any light level. The runtime
+    /// only recomputes the light around changes where this is `true` (the default).
+    fn changes_light(&self, old: BlockStateId, new: BlockStateId) -> bool {
+        let _ = (old, new);
+        true
+    }
 }
 
 /// Creates the light engine of each world.

@@ -10,8 +10,9 @@ use std::sync::{Arc, OnceLock};
 
 use vanillite_base::{BlockPos, ChunkPos};
 use vanillite_chunk::ProtoChunk;
+use vanillite_chunk::light::LightNibbles;
 use vanillite_chunk::slots::{
-    FlatGenerator, LightEngine, Neighbours, NullCodec, NullStore, WorldInfo,
+    FlatGenerator, LightEngine, LightEngineProvider, Neighbours, NullCodec, NullStore, WorldInfo,
 };
 use vanillite_data::block::{BlockId, BlockState};
 use vanillite_game::block::Behaviours;
@@ -62,6 +63,8 @@ fn install() {
 /// A headless level over flat chunks.
 pub struct GameWorld {
     level: Level,
+    /// Runs the light engine (scenarios that observe light).
+    light: bool,
 }
 
 impl std::fmt::Debug for GameWorld {
@@ -97,7 +100,11 @@ impl GameWorld {
             store: Arc::new(NullStore),
             codec: Arc::new(NullCodec),
             generator: Arc::new(FlatGenerator::new(&info, &layers)),
-            light: Arc::new(NoLight),
+            light: if spec.light {
+                vanillite_light::BfsLightEngineProvider.create(&info)
+            } else {
+                Arc::new(NoLight)
+            },
             executor: Arc::new(InlineExecutor),
         };
         let mut chunks = Chunks::new(info, ChunkSettings::default(), slots);
@@ -128,7 +135,10 @@ impl GameWorld {
             Arc::new(NetworkIds::new()),
             spec.seed,
         );
-        Ok(Self { level })
+        Ok(Self {
+            level,
+            light: spec.light,
+        })
     }
 
     /// [`crate::world::WorldFactory`] of the game world.
@@ -250,6 +260,27 @@ impl ScenarioWorld for GameWorld {
         );
     }
 
+    fn light(&mut self, min: BlockPos, max: BlockPos, out: &mut Vec<u8>) {
+        if !self.light {
+            return;
+        }
+        let chunks = &mut self.level.chunks;
+        chunks.flush_light();
+        let layers = HEIGHT as usize / 16 + 2;
+        let mut storing = std::collections::HashMap::new();
+        for y in min.y..=max.y {
+            for z in min.z..=max.z {
+                for x in min.x..=max.x {
+                    let pos = BlockPos::new(x, y, z);
+                    let storing = storing
+                        .entry(pos.chunk())
+                        .or_insert_with(|| storing_sections(chunks, pos.chunk(), layers));
+                    out.push(visible_light(chunks, storing, pos));
+                }
+            }
+        }
+    }
+
     fn entities(&self, min: BlockPos, max: BlockPos, out: &mut Vec<EntityObs>) {
         let core = self.level.entities.store.columns();
         for row in 0..core.id.len() {
@@ -270,6 +301,55 @@ impl ScenarioWorld for GameWorld {
             });
         }
     }
+}
+
+/// Whether Vanilla keeps light data for each light section of a chunk (index 0 is the layer
+/// below the world): those within one section in every direction of a non-air section
+/// (`LayerLightSectionStorage.updateSectionStatus`).
+fn storing_sections(chunks: &Chunks, pos: ChunkPos, layers: usize) -> Vec<bool> {
+    let mut storing = vec![false; layers];
+    for dz in -1..=1 {
+        for dx in -1..=1 {
+            let Some(chunk) = chunks.chunk(ChunkPos::new(pos.x + dx, pos.z + dz)) else {
+                continue;
+            };
+            for (section, s) in chunk.chunk.sections().iter().enumerate() {
+                if !s.summary().is_empty() {
+                    // Section `section` is light layer `section + 1`.
+                    let end = (section + 3).min(layers);
+                    storing[section..end].fill(true);
+                }
+            }
+        }
+    }
+    storing
+}
+
+/// The light a client sees at `pos` as `sky << 4 | block`: the stored levels in sections with
+/// light data; elsewhere no block light and the sky light of the bottom row of the next section
+/// with data above, or full sky light (`SkyLightSectionStorage.getLightValue`).
+fn visible_light(chunks: &Chunks, storing: &[bool], pos: BlockPos) -> u8 {
+    let Some(chunk) = chunks.chunk(pos.chunk()) else {
+        return 0;
+    };
+    let light = chunk.chunk.light();
+    let (x, y, z) = (
+        (pos.x & 15) as u32,
+        (pos.y & 15) as u32,
+        (pos.z & 15) as u32,
+    );
+    let sky_at = |layer: usize, y: u32| match &light.sky()[layer] {
+        LightNibbles::Absent => 15,
+        data => data.get(x, y, z),
+    };
+    let layer = ((pos.y - MIN_Y) >> 4) as usize + 1;
+    if storing[layer] {
+        return (sky_at(layer, y) << 4) | light.block()[layer].get(x, y, z);
+    }
+    let sky = (layer + 1..storing.len())
+        .find(|&l| storing[l])
+        .map_or(15, |l| sky_at(l, 0));
+    sky << 4
 }
 
 fn inside(p: BlockPos, min: BlockPos, max: BlockPos) -> bool {

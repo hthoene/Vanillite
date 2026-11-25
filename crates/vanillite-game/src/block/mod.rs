@@ -25,6 +25,7 @@ pub mod note;
 pub mod piston;
 pub mod place;
 pub mod plate;
+pub mod portal;
 pub mod rail;
 pub mod redstone;
 pub mod sculk;
@@ -271,6 +272,7 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
     hopper::fill(block, &mut b);
     container::fill(block, &mut b);
     sign::fill(block, &mut b);
+    portal::fill(block, &mut b);
     b
 }
 
