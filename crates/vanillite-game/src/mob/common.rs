@@ -641,3 +641,131 @@ pub fn is_crouching(t: &Tick<'_, '_>, id: EntityId) -> bool {
         .get(id)
         .is_some_and(|e| e.flags().contains(EntityFlags::CROUCHING))
 }
+
+// --- MoveToBlockGoal ------------------------------------------------------------------------
+
+/// Whether a block is a target of a [`MoveToBlock`] goal (`isValidTarget(level, pos)`).
+pub type BlockFilter = fn(&Tick<'_, '_>, BlockPos) -> bool;
+
+/// The state of a `MoveToBlockGoal` subclass; family goals embed it and call its methods
+/// from their `canUse`, `start`, `tick` (`requiresUpdateEveryTick`, flags `MOVE | JUMP`).
+#[derive(Clone, Copy, Debug)]
+pub struct MoveToBlock {
+    pub speed: f64,
+    pub next_start_tick: i32,
+    pub try_ticks: i32,
+    pub max_stay_ticks: i32,
+    pub block_pos: BlockPos,
+    pub reached_target: bool,
+    pub search_range: i32,
+    pub vertical_search_range: i32,
+    pub vertical_search_start: i32,
+}
+
+impl MoveToBlock {
+    /// `MoveToBlockGoal(mob, speed, searchRange, verticalSearchRange)`.
+    pub fn new(speed: f64, search_range: i32, vertical_search_range: i32) -> MoveToBlock {
+        MoveToBlock {
+            speed,
+            next_start_tick: 0,
+            try_ticks: 0,
+            max_stay_ticks: 0,
+            block_pos: BlockPos::new(0, 0, 0),
+            reached_target: false,
+            search_range,
+            vertical_search_range,
+            vertical_search_start: 0,
+        }
+    }
+
+    /// `nextStartTick`: `reducedTickDelay(200 + random(200))`.
+    pub fn default_next_start_tick(t: &mut Tick<'_, '_>) -> i32 {
+        reduced(200 + t.mob().random.next_int_bounded(200))
+    }
+
+    /// `canUse` with the kind's next start delay.
+    pub fn can_use(
+        &mut self,
+        t: &mut Tick<'_, '_>,
+        valid: BlockFilter,
+        next_start: fn(&mut Tick<'_, '_>) -> i32,
+    ) -> bool {
+        if self.next_start_tick > 0 {
+            self.next_start_tick -= 1;
+            return false;
+        }
+        self.next_start_tick = next_start(t);
+        self.find_nearest_block(t, valid)
+    }
+
+    /// `canContinueToUse`.
+    pub fn can_continue(&self, t: &Tick<'_, '_>, valid: BlockFilter) -> bool {
+        self.try_ticks >= -self.max_stay_ticks && self.try_ticks <= 1200 && valid(t, self.block_pos)
+    }
+
+    /// `start`: moves to the block (`moveMobToBlock`) and rolls the stay time.
+    pub fn start(&mut self, t: &mut Tick<'_, '_>) {
+        let p = self.block_pos;
+        let at = Vec3::new(
+            f64::from(p.x) + 0.5,
+            f64::from(p.y) + 1.0,
+            f64::from(p.z) + 0.5,
+        );
+        nav::move_to_pos(t, at, self.speed);
+        self.try_ticks = 0;
+        let r = &mut t.mob().random;
+        let inner = r.next_int_bounded(1200) + 1200;
+        self.max_stay_ticks = r.next_int_bounded(inner) + 1200;
+    }
+
+    /// `tick` with the move-to target (`getMoveToTarget`, the block above by default) and
+    /// the accepted distance (`acceptedDistance`, 1 by default).
+    pub fn tick(&mut self, t: &mut Tick<'_, '_>, target: BlockPos, accepted: f64) {
+        let center = Vec3::new(
+            f64::from(target.x) + 0.5,
+            f64::from(target.y) + 0.5,
+            f64::from(target.z) + 0.5,
+        );
+        if center.distance_to_sqr(t.pos()) < accepted * accepted {
+            self.reached_target = true;
+            self.try_ticks -= 1;
+        } else {
+            self.reached_target = false;
+            self.try_ticks += 1;
+            if self.try_ticks % 40 == 0 {
+                let at = Vec3::new(
+                    f64::from(target.x) + 0.5,
+                    f64::from(target.y),
+                    f64::from(target.z) + 0.5,
+                );
+                nav::move_to_pos(t, at, self.speed);
+            }
+        }
+    }
+
+    /// `findNearestBlock`: rings around the mob, the closest layers first.
+    pub fn find_nearest_block(&mut self, t: &Tick<'_, '_>, valid: BlockFilter) -> bool {
+        let mob = t.block_pos();
+        let (h, v) = (self.search_range, self.vertical_search_range);
+        let mut y = self.vertical_search_start;
+        while y <= v {
+            for r in 0..h {
+                let mut x = 0;
+                while x <= r {
+                    let mut z = if x < r && x > -r { r } else { 0 };
+                    while z <= r {
+                        let pos = BlockPos::new(mob.x + x, mob.y + y - 1, mob.z + z);
+                        if t.mob_ref().is_within_restriction(pos) && valid(t, pos) {
+                            self.block_pos = pos;
+                            return true;
+                        }
+                        z = if z > 0 { -z } else { 1 - z };
+                    }
+                    x = if x > 0 { -x } else { 1 - x };
+                }
+            }
+            y = if y > 0 { -y } else { 1 - y };
+        }
+        false
+    }
+}
