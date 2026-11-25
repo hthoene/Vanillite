@@ -19,7 +19,7 @@ pub fn can_be_seen(t: &Tick<'_, '_>, id: EntityId) -> bool {
 }
 
 /// `getVisibilityPercent`: sneaking players are seen at 80 %, invisible entities by their
-/// armour cover.
+/// armour cover, wearers of a mob's head at half by that mob.
 pub fn visibility_percent(t: &Tick<'_, '_>, id: EntityId) -> f64 {
     let mut v = 1.0;
     if t.ents
@@ -45,7 +45,27 @@ pub fn visibility_percent(t: &Tick<'_, '_>, id: EntityId) -> f64 {
         let cover = (worn as f32 / 4.0).max(0.1);
         v *= f64::from(0.7 * cover);
     }
-    v
+    // `mob_visibility` of the worn heads: the mob kind they imitate sees the wearer at half
+    // the range.
+    let head = match (t.ents.player(id), t.ents.mob(id)) {
+        (Some(p), _) => Some(p.inventory.equipment(EquipmentSlot::Head).item),
+        (None, Some(m)) => Some(m.equipment.get(EquipmentSlot::Head).item),
+        _ => None,
+    };
+    if let Some(head) = head {
+        let viewer = t.core().kind().name();
+        let fooled: &[&str] = match vanillite_data::registry::ITEM.name(head).unwrap_or("") {
+            "minecraft:skeleton_skull" => &["minecraft:skeleton"],
+            "minecraft:zombie_head" => &["minecraft:zombie"],
+            "minecraft:creeper_head" => &["minecraft:creeper"],
+            "minecraft:piglin_head" => &["minecraft:piglin", "minecraft:piglin_brute"],
+            _ => &[],
+        };
+        if fooled.contains(&viewer) {
+            v *= 0.5;
+        }
+    }
+    v.clamp(0.0, 10.0)
 }
 
 /// `TargetingConditions.test` with the mob as the targeter.

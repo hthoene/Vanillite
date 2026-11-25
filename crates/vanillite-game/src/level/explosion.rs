@@ -325,6 +325,15 @@ impl Level {
                     health <= 0
                 });
                 if destroyed {
+                    // `Item.onDestroyed`: a bundle's or a container item's contents drop.
+                    let contents = self
+                        .entities
+                        .item_mut(id)
+                        .map(|d| crate::item_entity::take_destroyed_contents(&mut d.stack))
+                        .unwrap_or_default();
+                    for stack in contents {
+                        crate::block::drops::spawn_item_moving(self, pos, stack, None, 0, None);
+                    }
                     self.entities.despawn(id);
                     continue;
                 }

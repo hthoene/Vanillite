@@ -40,7 +40,7 @@ const FIRE_IMMUNE_TICKS: i32 = 20;
 /// `Attributes.SAFE_FALL_DISTANCE`.
 const SAFE_FALL_DISTANCE: f64 = 3.0;
 /// Player eye height when standing (`Player.STANDING_EYE_HEIGHT`) and the other poses.
-pub(crate) fn eye_height(height: f32) -> f64 {
+pub fn eye_height(height: f32) -> f64 {
     // `EntityDimensions.eyeHeight` of the player's poses: 1.62 standing, 1.27 crouching,
     // 0.4 swimming/gliding, 0.2 sleeping/dying.
     let eye: f32 = if height >= 1.8 {
@@ -244,6 +244,10 @@ pub struct Survival {
     pub stabbed: Vec<(vanillite_world::entity::EntityId, i64)>,
     /// The tick until which the shield is on cool-down (an axe hit it).
     pub shield_disabled_until: i32,
+    /// `cooldowns`.
+    pub cooldowns: crate::player::cooldowns::ItemCooldowns,
+    /// The map ids in the inventory at the last inventory tick.
+    pub carried_maps: Vec<i32>,
     /// The item in the main hand at the last tick (`lastItemInMainHand`).
     pub last_main_hand_item: u16,
     /// `Abilities.flying`: the player flies (creative or spectator flight).
@@ -325,6 +329,8 @@ impl Default for Survival {
             using_item: None,
             stabbed: Vec::new(),
             shield_disabled_until: 0,
+            cooldowns: crate::player::cooldowns::ItemCooldowns::default(),
+            carried_maps: Vec::new(),
             last_main_hand_item: 0,
             flying: false,
             raid_omen: crate::raid::PlayerOmen::default(),
@@ -1682,7 +1688,33 @@ pub fn do_tick_end(
         stats.award(custom::CROUCH_TIME, 1);
     }
     stats.award(custom::TIME_SINCE_REST, 1);
-    player.survival.sync(player.connection.sink.as_ref());
+    let sink = std::sync::Arc::clone(&player.connection.sink);
+    // `Player.tick`: the turtle helmet outside water, then the item cool-downs.
+    if !player.survival.fluids.eye_in_water {
+        let head = player.inventory.equipment(crate::item::EquipmentSlot::Head);
+        if crate::item::item_id(head) == vanillite_data::item::ids::TURTLE_HELMET {
+            let mut host = crate::effect::living::PlayerHost {
+                entity,
+                player,
+                env,
+                players: None,
+            };
+            crate::effect::active::add(
+                &mut host,
+                crate::effect::EffectInstance::with_flags(
+                    crate::effect::MobEffect::WATER_BREATHING,
+                    200,
+                    0,
+                    false,
+                    false,
+                    true,
+                ),
+            );
+            crate::effect::living::sync_player(entity, player, env);
+        }
+    }
+    player.survival.cooldowns.tick(sink.as_ref());
+    player.survival.sync(sink.as_ref());
     result
 }
 
