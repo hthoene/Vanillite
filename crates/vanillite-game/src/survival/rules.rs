@@ -129,6 +129,8 @@ impl Rule {
     pub const SHOW_DEATH_MESSAGES: Rule = Rule(45);
     pub const SPAWN_MOBS: Rule = Rule(47);
     pub const SPAWN_MONSTERS: Rule = Rule(48);
+    pub const SPAWN_PATROLS: Rule = Rule(49);
+    pub const SPAWN_PHANTOMS: Rule = Rule(50);
     pub const TNT_EXPLOSION_DROP_DECAY: Rule = Rule(56);
     pub const UNIVERSAL_ANGER: Rule = Rule(57);
 

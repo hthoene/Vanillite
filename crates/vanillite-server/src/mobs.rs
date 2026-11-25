@@ -48,6 +48,10 @@ pub(crate) struct WorldMobs {
     generated: Vec<(ChunkPos, u32)>,
     scratch: Vec<ChunkPos>,
     ticks: u64,
+    /// The custom spawners of the overworld (`ServerLevel.customSpawners`).
+    phantoms: vanillite_game::mob::fam::undead::phantom::PhantomSpawner,
+    patrols: vanillite_game::mob::fam::illager::patrol::PatrolSpawner,
+    cats: spawn::CatSpawner,
 }
 
 impl WorldMobs {
@@ -61,6 +65,9 @@ impl WorldMobs {
             generated: Vec::new(),
             scratch: Vec::new(),
             ticks: 0,
+            phantoms: Default::default(),
+            patrols: Default::default(),
+            cats: spawn::CatSpawner::default(),
         }
     }
 
@@ -275,6 +282,83 @@ impl WorldMobs {
         };
         let persistent = level.game_time() % 400 == 0;
         spawn::tick(level, &table, &mut self.spawner, &input, persistent);
+        if dimension == "minecraft:overworld" {
+            self.custom_spawners(
+                level,
+                &table,
+                &rules,
+                input.spawn_enemies,
+                difficulty,
+                env,
+                &players,
+            );
+        }
+    }
+
+    /// `tickCustomSpawners`: phantoms, patrols and cats (the wandering trader is #60).
+    #[allow(clippy::too_many_arguments)]
+    fn custom_spawners(
+        &mut self,
+        level: &mut Level,
+        table: &SpawnTable,
+        rules: &vanillite_game::survival::rules::GameRules,
+        spawn_enemies: bool,
+        difficulty: Difficulty,
+        env: Environment,
+        players: &[(EntityId, Vec3)],
+    ) {
+        use vanillite_game::mob::fam::illager::patrol::{self, PatrolInput};
+        use vanillite_game::mob::fam::undead::phantom;
+        let rest = |id: EntityId| {
+            level
+                .entities
+                .player(id)
+                .map_or(0, |p| p.survival.time_since_rest)
+        };
+        let rests: Vec<(EntityId, i32)> = players.iter().map(|&(id, _)| (id, rest(id))).collect();
+        let time_since_rest = |id: EntityId| rests.iter().find(|r| r.0 == id).map_or(0, |r| r.1);
+        phantom::phantom_spawner_tick(
+            &mut self.phantoms,
+            level,
+            &env,
+            difficulty,
+            rules.bool(Rule::SPAWN_PHANTOMS),
+            spawn_enemies,
+            &time_since_rest,
+        );
+        let patrol_players: Vec<(Vec3, bool)> = level
+            .entities
+            .players
+            .iter()
+            .filter_map(|(id, p)| {
+                let e = level.entities.store.get(id)?;
+                Some((e.pos(), p.game_mode == GameMode::Spectator))
+            })
+            .collect();
+        let no_village = |_| false;
+        let can_patrol = |level: &Level, pos: BlockPos| {
+            table.biome(level.biome(pos)).is_none_or(|b| b.patrol_spawn)
+        };
+        let input = PatrolInput {
+            enabled: spawn_enemies && rules.bool(Rule::SPAWN_PATROLS),
+            difficulty,
+            env,
+            players: &patrol_players,
+            table: Some(table),
+            close_to_village: &no_village,
+            can_patrol_spawn: &can_patrol,
+        };
+        patrol::patrol_spawner_tick(level, &mut self.patrols, &input);
+        let ids: Vec<EntityId> = players.iter().map(|p| p.0).collect();
+        spawn::cat_spawner_tick(
+            level,
+            Some(table),
+            &mut self.cats,
+            &mut self.spawner.structures,
+            &env,
+            difficulty,
+            &ids,
+        );
     }
 
     /// `entityTickList.forEach(tickNonPassenger)`: falling blocks, mobs, arrows and orbs in

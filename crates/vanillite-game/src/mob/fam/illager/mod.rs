@@ -321,6 +321,14 @@ fn check_monster_spawn_rules(
 }
 
 impl FamilyHooks for Hooks {
+    /// `PatrollingMonster.removeWhenFarAway`: patrols only despawn beyond 128 blocks.
+    fn remove_when_far_away_mob(m: &MobData, dist_sqr: f64) -> bool {
+        if is_raider(m.kind) {
+            return !st(m).patrolling || dist_sqr > 16384.0;
+        }
+        Self::remove_when_far_away(m.kind)
+    }
+
     type Goal = Goal;
 
     fn ambient_sound_interval(kind: Kind) -> i32 {

@@ -316,22 +316,9 @@ fn scary(t: &Tick<'_, '_>, id: EntityId) -> bool {
         )
 }
 
-/// `BehaviorUtils.getRandomSwimmablePos(mob, 10, 7)` (the nav fork's `RandomSwimmingGoal`
-/// replaces this).
+/// `BehaviorUtils.getRandomSwimmablePos(mob, h, v)`.
 pub(super) fn random_swimmable_pos(t: &mut Tick<'_, '_>, h: i32, v: i32) -> Option<Vec3> {
-    let mut pos = randompos::default_pos(t, h, v);
-    let mut i = 0;
-    while let Some(p) = pos {
-        if is_water(t.level.block(BlockPos::containing(p.x, p.y, p.z))) {
-            break;
-        }
-        i += 1;
-        if i >= 10 {
-            break;
-        }
-        pos = randompos::default_pos(t, h, v);
-    }
-    pos
+    randompos::swimmable_pos(t, h, v)
 }
 
 pub(super) fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {

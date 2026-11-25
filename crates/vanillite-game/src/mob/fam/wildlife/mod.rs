@@ -415,6 +415,12 @@ pub(crate) fn mob_spawn_rules(level: &Level, pos: BlockPos, reason: SpawnReason)
 }
 
 impl FamilyHooks for Hooks {
+    /// `TropicalFish.isMaxGroupSizeReached`: a fish of a pattern that does not school ends
+    /// its spawn group.
+    fn is_max_group_size_reached(m: &MobData, _group_size: i32) -> bool {
+        m.kind == Kind::TropicalFish && !st(m).is_school
+    }
+
     type Goal = Goal;
 
     fn ageable(kind: Kind) -> bool {

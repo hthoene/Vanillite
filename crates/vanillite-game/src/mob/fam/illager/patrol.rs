@@ -32,7 +32,7 @@ pub struct PatrolInput<'a> {
     /// `isCloseToVillage(pos, 2)` (villages are #60; `false` without them).
     pub close_to_village: &'a dyn Fn(BlockPos) -> bool,
     /// `EnvironmentAttributes.CAN_PILLAGER_PATROL_SPAWN` at a position.
-    pub can_patrol_spawn: &'a dyn Fn(BlockPos) -> bool,
+    pub can_patrol_spawn: &'a dyn Fn(&Level, BlockPos) -> bool,
 }
 
 impl std::fmt::Debug for PatrolInput<'_> {
@@ -84,7 +84,7 @@ pub fn patrol_spawner_tick(
         (((spawn_pos.z - 10) >> 4)..=((spawn_pos.z + 10) >> 4))
             .all(|cz| level.chunks.chunk(ChunkPos::new(cx, cz)).is_some())
     });
-    if !loaded || !(input.can_patrol_spawn)(spawn_pos) {
+    if !loaded || !(input.can_patrol_spawn)(level, spawn_pos) {
         return 0;
     }
     #[allow(clippy::cast_possible_truncation)]

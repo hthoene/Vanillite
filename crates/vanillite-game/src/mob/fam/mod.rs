@@ -712,11 +712,36 @@ pub fn custom_server_ai_step(t: &mut Tick<'_, '_>) {
 pub fn travel(t: &mut Tick<'_, '_>, input: Vec3) -> bool {
     by_family!(t.mob_ref().kind, false, travel(t, input))
 }
+/// `isPushedByFluid`: water animals, axolotls, frogs, turtles and nautiluses swim against
+/// the current; the families can refine it.
 pub fn pushed_by_fluid(m: &MobData) -> bool {
+    if matches!(
+        m.kind,
+        Kind::Cod
+            | Kind::Salmon
+            | Kind::Pufferfish
+            | Kind::TropicalFish
+            | Kind::Squid
+            | Kind::GlowSquid
+            | Kind::Dolphin
+            | Kind::Axolotl
+            | Kind::Frog
+            | Kind::Tadpole
+            | Kind::Turtle
+            | Kind::Nautilus
+            | Kind::ZombieNautilus
+    ) {
+        return false;
+    }
     by_family!(m.kind, true, pushed_by_fluid(m))
 }
+/// `getWaterSlowDown`: 0.8, skeleton horses 0.96, polar bears 0.98.
 pub fn water_slow_down(kind: Kind) -> f32 {
-    by_family!(kind, 0.8, water_slow_down(kind))
+    match kind {
+        Kind::SkeletonHorse => 0.96,
+        Kind::PolarBear => 0.98,
+        _ => by_family!(kind, 0.8, water_slow_down(kind)),
+    }
 }
 pub fn move_control(t: &mut Tick<'_, '_>) -> bool {
     by_family!(t.mob_ref().kind, false, move_control(t))

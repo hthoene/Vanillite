@@ -625,6 +625,9 @@ pub(crate) fn spawn_table(
                 .and_then(serde_json::Value::as_f64)
                 .unwrap_or(0.5) as f32,
             creature_probability: 0.1,
+            patrol_spawn: attribute(&attrs, "minecraft:gameplay/can_pillager_patrol_spawn")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(true),
             climate: if warm.contains(&id) {
                 FarmClimate::Warm
             } else if cold.contains(&id) {

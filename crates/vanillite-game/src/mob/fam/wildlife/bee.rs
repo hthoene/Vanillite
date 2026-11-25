@@ -258,13 +258,12 @@ pub(super) fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
     animal_interact(ix.ents, ix.env, ix.player, ix.target, ix.hand, ix.stack)
 }
 
-/// `pathfindRandomlyTowards(target)` (the nav fork's `AirRandomPos.getPosTowards` replaces the
-/// default random position here).
+/// `pathfindRandomlyTowards(target)`.
 fn pathfind_randomly_towards(t: &mut Tick<'_, '_>, target: BlockPos) {
     let tv = randompos::bottom_center(target);
     let b = t.block_pos();
     let y_delta = vanillite_base::math::floor(tv.y) - b.y;
-    let _y_adjust = if y_delta > 2 {
+    let y_adjust = if y_delta > 2 {
         4
     } else if y_delta < -2 {
         -4
@@ -278,7 +277,7 @@ fn pathfind_randomly_towards(t: &mut Tick<'_, '_>, target: BlockPos) {
         (6, 8)
     };
     let pi10 = f64::from(std::f32::consts::PI / 10.0);
-    if let Some(next) = randompos::default_pos_towards(t, xz.max(1), y.max(1), tv, pi10) {
+    if let Some(next) = randompos::air_pos_towards(t, xz, y, y_adjust, tv, pi10) {
         nav::move_to_pos(t, next, 1.0);
     }
 }
@@ -423,9 +422,15 @@ pub(super) fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
         }
         Goal::BeeGoToKnownFlower { travelling } => *travelling = 0,
         Goal::BeeWander => {
-            // `findPos`: the nav fork's `HoverRandomPos` / `AirAndWaterRandomPos` replace the
-            // default random position here.
-            if let Some(p) = randompos::default_pos(t, 8, 7) {
+            // `findPos`: hover near the ground in the view direction (hives are not there yet,
+            // so never towards the hive), else in the air or water.
+            let rad = f64::from(t.core().rot().y_rot).to_radians();
+            let (dx, dz) = (-rad.sin(), rad.cos());
+            let half = randompos::half_pi();
+            #[allow(clippy::cast_possible_truncation)]
+            let found = randompos::hover_pos(t, 8, 7, dx, dz, half as f32, 3, 1)
+                .or_else(|| randompos::air_and_water_pos(t, 8, 4, -2, dx, dz, half));
+            if let Some(p) = found {
                 let path = nav::create_path_to(t, BlockPos::containing(p.x, p.y, p.z), 1);
                 nav::move_to_path(t, path, 1.0);
             }

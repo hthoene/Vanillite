@@ -185,6 +185,8 @@ pub struct Survival {
     pub combat: CombatTracker,
     /// `tickCount`.
     pub tick_count: i32,
+    /// The `minecraft:time_since_rest` statistic (ticks alive since the last sleep or death).
+    pub time_since_rest: i32,
     /// `lastClimbablePos`'s fall location.
     pub last_climbable: Option<FallLocation>,
     /// The fluids around the player after the last update.
@@ -225,6 +227,7 @@ impl Default for Survival {
             last_death: None,
             combat: CombatTracker::default(),
             tick_count: 0,
+            time_since_rest: 0,
             last_climbable: None,
             fluids: FluidContact::default(),
             attack_ticker: 0,
@@ -926,6 +929,8 @@ pub fn die(
     let network_id = entity.as_ref().network_id().0;
     let uuid = entity.as_ref().uuid();
     let id = entity.as_ref().id();
+    // `resetStat(TIME_SINCE_REST)`.
+    player.survival.time_since_rest = 0;
     let sink = std::sync::Arc::clone(&player.connection.sink);
     if env.rules.bool(Rule::SHOW_DEATH_MESSAGES) {
         let name = display_name(&player.profile.name, uuid);
@@ -1066,6 +1071,10 @@ pub fn do_tick(
     {
         let s = &mut player.survival;
         s.tick_count = s.tick_count.wrapping_add(1);
+        // `awardStat(TIME_SINCE_REST)` while alive (players cannot sleep yet).
+        if !s.is_dead_or_dying() {
+            s.time_since_rest = s.time_since_rest.saturating_add(1);
+        }
     }
     let id = entity.as_ref().id();
     // `Entity.baseTick`.

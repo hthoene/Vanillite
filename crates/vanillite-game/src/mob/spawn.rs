@@ -118,6 +118,8 @@ pub struct BiomeSpawns {
     pub climate: FarmClimate,
     /// The base temperature of the biome.
     pub temperature: f32,
+    /// `minecraft:gameplay/can_pillager_patrol_spawn`.
+    pub patrol_spawn: bool,
 }
 
 impl BiomeSpawns {
@@ -1433,6 +1435,99 @@ pub fn summon(
     );
     let y_rot = level.random().next_float() * 360.0;
     add_mob_with(level, mob, pos, y_rot, extra)
+}
+
+/// `CatSpawner`'s state.
+#[derive(Debug, Default)]
+pub struct CatSpawner {
+    next_tick: i32,
+}
+
+/// `CatSpawner.tick`: every minute a cat may spawn 8–24 blocks from a random player, in a
+/// swamp hut (`#cats_spawn_in`, a black persistent cat when none is within 16 blocks).
+/// Villages (`isCloseToVillage`, more than four occupied homes) need POIs (#60).
+pub fn cat_spawner_tick(
+    level: &mut Level,
+    table: Option<&SpawnTable>,
+    spawner: &mut CatSpawner,
+    structures: &mut super::structures::StructureIndex,
+    env: &Environment,
+    difficulty: Difficulty,
+    players: &[EntityId],
+) {
+    spawner.next_tick -= 1;
+    if spawner.next_tick > 0 {
+        return;
+    }
+    spawner.next_tick = 1200;
+    if players.is_empty() {
+        return;
+    }
+    // `getRandomPlayer`.
+    let i = level
+        .random()
+        .next_int_bounded(i32::try_from(players.len()).unwrap_or(i32::MAX));
+    let Some(p) = usize::try_from(i)
+        .ok()
+        .and_then(|i| players.get(i))
+        .and_then(|&id| level.entities.store.get(id))
+        .map(|e| e.pos())
+    else {
+        return;
+    };
+    let r = level.random();
+    let x = (8 + r.next_int_bounded(24)) * if r.next_boolean() { -1 } else { 1 };
+    let z = (8 + r.next_int_bounded(24)) * if r.next_boolean() { -1 } else { 1 };
+    let base = BlockPos::containing(p.x, p.y, p.z);
+    let pos = BlockPos::new(base.x + x, base.y, base.z + z);
+    let loaded = (-10..=10).step_by(10).all(|dx| {
+        (-10..=10)
+            .step_by(10)
+            .all(|dz| level.is_loaded(BlockPos::new(pos.x + dx, pos.y, pos.z + dz)))
+    });
+    if !loaded || !spawn_position_ok(level, vanillite_data::entity::ids::CAT, pos) {
+        return;
+    }
+    let mut in_hut = false;
+    structures.structures_at(level, pos, |name, in_piece, _| {
+        in_hut |= in_piece && name == "minecraft:swamp_hut";
+    });
+    if !in_hut {
+        return;
+    }
+    // `spawnInHut`: no cat within 16 × 8 × 16.
+    let area = vanillite_base::Aabb::new(
+        f64::from(pos.x) - 16.0,
+        f64::from(pos.y) - 8.0,
+        f64::from(pos.z) - 16.0,
+        f64::from(pos.x) + 17.0,
+        f64::from(pos.y) + 9.0,
+        f64::from(pos.z) + 17.0,
+    );
+    let mut cats = false;
+    let ents = &level.entities;
+    ents.store.for_each_in(&area, false, |id| {
+        cats |= ents.mob(id).is_some_and(|m| m.kind == Kind::Cat);
+    });
+    if cats {
+        return;
+    }
+    let seed = level.random().next_long();
+    let mut cat = MobData::new(Kind::Cat, seed);
+    let extra = finalize(
+        level,
+        table,
+        env,
+        &mut cat,
+        pos,
+        difficulty,
+        0,
+        SpawnReason::Natural,
+    );
+    cat.variant = super::fam::companion::feline::pick_cat_variant(&mut cat.random, true, false);
+    cat.persistent = true;
+    let at = Vec3::new(f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
+    add_mob_with(level, cat, at, 0.0, extra);
 }
 
 /// Counts the mobs per kind (for `/vanillite` style statistics and tests).
