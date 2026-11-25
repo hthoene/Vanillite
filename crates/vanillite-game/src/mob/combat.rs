@@ -91,6 +91,9 @@ pub fn hurt(
     if ents.special(target).is_some() {
         return super::boss::special::hurt(ents, env, cx, target, &source);
     }
+    if ents.decor(target).is_some() {
+        return crate::decoration::hurt(level, ents, env, cx, target, &source);
+    }
     if ents.player(target).is_none() {
         return false;
     }
@@ -182,6 +185,9 @@ pub fn hurt_mob(
     let source = with_projectile_motion(ents, source);
     let kind = source.kind;
     let types = env.types;
+    if ents.mob(target).is_some_and(|m| m.kind == Kind::ArmorStand) {
+        return crate::decoration::stand::hurt(level, ents, env, cx, target, &source);
+    }
     if invulnerable_to(ents, env, target, kind) {
         return false;
     }
@@ -655,7 +661,11 @@ fn die(
             .unwrap_or_default();
         // `dropCustomDeathLoot` / `dropEquipment`: the equipment, the saddle and the
         // enderman's block.
-        if let Some(m) = ents.mob_mut(target) {
+        // `LivingEntity.dropEquipment` drops nothing; `Mob` and the players drop theirs.
+        if let Some(m) = ents
+            .mob_mut(target)
+            .filter(|m| m.kind.family() != super::Family::Decor)
+        {
             super::equipment::death_drops(m, killed_by_player, &mut loot);
             if m.saddled
                 && let Some(saddle) = vanillite_data::registry::ITEM.id("minecraft:saddle")

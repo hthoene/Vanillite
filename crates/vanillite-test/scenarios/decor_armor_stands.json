@@ -1,0 +1,16 @@
+{
+  "description": "Armor stands summoned in the air fall like living entities without AI: a plain one, a small one with arms, one turned that lands on a slab, one without gravity and an invisible marker that stays put.",
+  "tier": "fast",
+  "region": [[0, -61, 0], [7, -52, 4]],
+  "ticks": 40,
+  "setup": [
+    {"op": "set", "pos": [5, -60, 2], "block": "minecraft:stone_slab[type=bottom]"}
+  ],
+  "actions": [
+    {"tick": 1, "op": "command", "command": "summon minecraft:armor_stand 1.5 -55 2.5"},
+    {"tick": 1, "op": "command", "command": "summon minecraft:armor_stand 3.5 -56 2.5 {Small:1b,ShowArms:1b}"},
+    {"tick": 1, "op": "command", "command": "summon minecraft:armor_stand 5.5 -54 2.5 {Rotation:[90f,0f]}"},
+    {"tick": 1, "op": "command", "command": "summon minecraft:armor_stand 6.5 -56 0.5 {NoGravity:1b}"},
+    {"tick": 1, "op": "command", "command": "summon minecraft:armor_stand 0.5 -56 0.5 {Marker:1b,Invisible:1b}"}
+  ]
+}

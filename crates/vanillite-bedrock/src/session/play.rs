@@ -81,7 +81,13 @@ impl Session {
             .is_some_and(|w| w.game_mode == GameMode::Creative);
         for a in actions {
             let breaking = self.world.as_ref().and_then(|w| w.breaking);
+            let frame = self
+                .world
+                .as_ref()
+                .and_then(|w| w.frames.get(&a.pos).copied());
             match a.action {
+                // Hitting a frame block hits the Java item frame.
+                action::START_BREAK if frame.is_some() => self.attack(frame.unwrap_or(0)),
                 action::START_BREAK => {
                     if let Some(w) = &mut self.world {
                         w.breaking = Some(a.pos);
@@ -139,7 +145,22 @@ impl Session {
                     self.select_hotbar(h);
                 }
                 let (yaw, pitch) = self.world.as_ref().map_or((0.0, 0.0), |w| (w.yaw, w.pitch));
+                let frame = self
+                    .world
+                    .as_ref()
+                    .and_then(|w| w.frames.get(&pos).copied());
                 match action {
+                    // A frame block is the Java item frame entity.
+                    0 if frame.is_some() => {
+                        let sneaking = self.world.as_ref().is_some_and(|w| w.sneaking);
+                        self.java_send(&psb::Interact {
+                            entity_id: frame.unwrap_or(0),
+                            hand: Hand::MainHand,
+                            location: vanillite_protocol::types::LpVec3::default(),
+                            using_secondary_action: sneaking,
+                        });
+                    }
+                    2 if frame.is_some() => self.attack(frame.unwrap_or(0)),
                     0 if (0..6).contains(&face) => {
                         let sequence = self.next_sequence();
                         self.java_send(&psb::UseItemOn {
@@ -196,14 +217,7 @@ impl Session {
                         using_secondary_action: sneaking,
                     });
                 } else if action == 1 {
-                    // `attack` (Java 26.3): the target's entity id.
-                    let mut body = Vec::with_capacity(8);
-                    vanillite_protocol::codec::write_varint(
-                        &mut body,
-                        vanillite_protocol::ids::play::serverbound::ATTACK,
-                    );
-                    vanillite_protocol::codec::write_varint(&mut body, java);
-                    self.java_send_raw(body);
+                    self.attack(java);
                 }
             }
             Transaction::Release { .. } => {
@@ -211,6 +225,17 @@ impl Session {
             }
             Transaction::Other => {}
         }
+    }
+
+    /// `attack` (Java 26.3): the target's entity id.
+    fn attack(&mut self, java: i32) {
+        let mut body = Vec::with_capacity(8);
+        vanillite_protocol::codec::write_varint(
+            &mut body,
+            vanillite_protocol::ids::play::serverbound::ATTACK,
+        );
+        vanillite_protocol::codec::write_varint(&mut body, java);
+        self.java_send_raw(body);
     }
 
     /// The Java entity id of a Bedrock runtime id.
@@ -424,7 +449,85 @@ impl Session {
             w.entities.insert(e.entity_id, entity);
             return;
         }
-        let Some(name) = entity::bedrock_identifier(java_name, &self.shared.entity_types) else {
+        let block = pos.map(crate::num::floor_i32);
+        match java_name {
+            // Nothing on Bedrock shows them.
+            "minecraft:marker"
+            | "minecraft:block_display"
+            | "minecraft:item_display"
+            | "minecraft:cushion" => {
+                entity.kind = Kind::Hidden;
+                w.entities.insert(e.entity_id, entity);
+                return;
+            }
+            "minecraft:painting" => {
+                // `add_painting` needs the variant from the entity data.
+                entity.kind = Kind::PendingPainting;
+                entity.block = block;
+                entity.direction = u8::try_from(e.data.clamp(0, 5)).unwrap_or(3);
+                w.entities.insert(e.entity_id, entity);
+                return;
+            }
+            "minecraft:item_frame" | "minecraft:glow_item_frame" => {
+                entity.kind = Kind::Frame;
+                entity.block = block;
+                entity.direction = u8::try_from(e.data.clamp(0, 5)).unwrap_or(0);
+                let glow = java_name == "minecraft:glow_item_frame";
+                let direction = entity.direction;
+                w.frames.insert(block, e.entity_id);
+                w.entities.insert(e.entity_id, entity);
+                let rid = self.version.palette.frame_block(glow, false, direction);
+                self.send(id::UPDATE_BLOCK, &bp::update_block(block, rid, 0));
+                return;
+            }
+            "minecraft:mannequin" => {
+                // A player model: a nameless list entry for the skin, then the player.
+                entity.kind = Kind::Player;
+                w.entities.insert(e.entity_id, entity.clone());
+                let skin = std::sync::Arc::clone(&self.shared.plain);
+                let entry = bp::ListEntry {
+                    uuid: e.uuid.0,
+                    entity_id: uid(e.entity_id),
+                    name: "",
+                    xuid: "",
+                    skin: &skin,
+                };
+                self.send(
+                    id::PLAYER_LIST,
+                    &bp::player_list_add(&[entry], self.version),
+                );
+                let body = bp::add_player(
+                    &bp::AddPlayer {
+                        uuid: e.uuid.0,
+                        name: "",
+                        entity_id: uid(e.entity_id),
+                        pos: f3([pos[0], pos[1] + EYE, pos[2]]),
+                        pitch: entity.pitch,
+                        yaw: entity.yaw,
+                        head_yaw: entity.head_yaw,
+                        game_mode: 0,
+                        sneaking: false,
+                    },
+                    self.version,
+                );
+                self.send(id::ADD_PLAYER, &body);
+                self.send(id::PLAYER_LIST, &bp::player_list_remove(&[e.uuid.0]));
+                return;
+            }
+            _ => {}
+        }
+        // Text displays show as the name of an invisible armor stand, interactions as its
+        // hit box.
+        let marker_stand = matches!(
+            java_name,
+            "minecraft:text_display" | "minecraft:interaction"
+        );
+        let name = if marker_stand {
+            Some("minecraft:armor_stand".to_owned())
+        } else {
+            entity::bedrock_identifier(java_name, &self.shared.entity_types)
+        };
+        let Some(name) = name else {
             return;
         };
         w.entities.insert(e.entity_id, entity.clone());
@@ -442,6 +545,19 @@ impl Session {
                         base_flags(0, false) | 1i64.wrapping_shl(meta::FLAG_IGNITED),
                     )
                     .int(meta::FUSE, 80);
+            }
+            "minecraft:text_display" | "minecraft:interaction" => {
+                let flags = (base_flags(0, false) | 1i64.wrapping_shl(meta::FLAG_INVISIBLE))
+                    & !1i64.wrapping_shl(meta::FLAG_HAS_GRAVITY);
+                let size = if java_name == "minecraft:interaction" {
+                    1.0
+                } else {
+                    0.0
+                };
+                m = bp::Metadata::default()
+                    .long(meta::FLAGS, flags)
+                    .float(meta::WIDTH, size)
+                    .float(meta::HEIGHT, size);
             }
             _ => {}
         }
@@ -468,11 +584,21 @@ impl Session {
             {
                 self.java_passengers(e, Vec::new());
             }
-            let known = self
-                .world
-                .as_mut()
-                .and_then(|w| w.entities.remove(&e))
-                .is_some_and(|e| e.kind != Kind::PendingItem);
+            let removed = self.world.as_mut().and_then(|w| w.entities.remove(&e));
+            if let Some(frame) = removed.as_ref().filter(|r| r.kind == Kind::Frame) {
+                // The frame block goes back to air (frames hang in air).
+                if let Some(w) = &mut self.world {
+                    w.frames.remove(&frame.block);
+                }
+                let air = bedrock_block(self.version.palette.blocks(), 0);
+                self.send(id::UPDATE_BLOCK, &bp::update_block(frame.block, air, 0));
+            }
+            let known = removed.is_some_and(|r| {
+                !matches!(
+                    r.kind,
+                    Kind::PendingItem | Kind::PendingPainting | Kind::Frame | Kind::Hidden
+                )
+            });
             if known {
                 self.send(id::REMOVE_ACTOR, &bp::remove_actor(uid(e)));
             }
@@ -524,6 +650,76 @@ impl Session {
             self.send(id::ADD_ITEM_ACTOR, &body);
             return;
         }
+        if e.kind == Kind::Hidden {
+            return;
+        }
+        if e.kind == Kind::PendingPainting {
+            let Some(variant) = data.painting else {
+                return;
+            };
+            use vanillite_protocol::components_nbt::RegistryNames;
+            let java = vanillite_protocol::item::InstalledRegistries
+                .entry_name(
+                    "minecraft:painting_variant",
+                    usize::try_from(variant).unwrap_or(0),
+                )
+                .unwrap_or("minecraft:kebab");
+            let (w, h) = painting_size(java);
+            let pos = painting_center(e.block, e.direction, w, h);
+            if let Some(world) = &mut self.world
+                && let Some(ent) = world.entities.get_mut(&d.entity_id)
+            {
+                ent.kind = Kind::Painting;
+            }
+            let direction = match e.direction {
+                3 => 0,
+                4 => 1,
+                2 => 2,
+                _ => 3,
+            };
+            let title = entity::painting_title(java);
+            self.send(
+                id::ADD_PAINTING,
+                &bp::add_painting(uid(d.entity_id), pos, direction, &title),
+            );
+            return;
+        }
+        if e.kind == Kind::Frame {
+            if let Some(item) = &data.frame_item {
+                let glow = java_name == "minecraft:glow_item_frame";
+                let map = item.item == vanillite_data::item::ids::FILLED_MAP.0;
+                let rid = self.version.palette.frame_block(glow, map, e.direction);
+                self.send(id::UPDATE_BLOCK, &bp::update_block(e.block, rid, 0));
+            }
+            return;
+        }
+        if matches!(
+            java_name,
+            "minecraft:text_display" | "minecraft:interaction" | "minecraft:armor_stand"
+        ) {
+            let mut m = bp::Metadata::default();
+            let mut any = false;
+            if let Some(t) = &data.text {
+                m = m.string(meta::NAME, t).byte(meta::ALWAYS_SHOW_NAME, 1);
+                any = true;
+            }
+            if let (Some(w), Some(h)) = (data.width, data.height) {
+                m = m.float(meta::WIDTH, w).float(meta::HEIGHT, h);
+                any = true;
+            }
+            if let Some(f) = data.stand_flags {
+                // Small stands at half size, markers without a hit box.
+                let scale = if f & 1 != 0 { 0.5 } else { 1.0 };
+                m = m.float(meta::SCALE, scale);
+                if f & 16 != 0 {
+                    m = m.float(meta::WIDTH, 0.0).float(meta::HEIGHT, 0.0);
+                }
+                any = true;
+            }
+            if any {
+                self.send(id::SET_ACTOR_DATA, &bp::set_actor_data(runtime, &m));
+            }
+        }
         let mut next = e.clone();
         if let Some(f) = data.flags {
             next.flags = f;
@@ -567,6 +763,9 @@ impl Session {
         }
         if !player && let Some(n) = &next.name {
             m = m.string(meta::NAME, n);
+        }
+        if !player && let Some(v) = data.name_visible {
+            m = m.byte(meta::ALWAYS_SHOW_NAME, u8::from(v));
         }
         if let Some(c) = data.effect_color {
             m = m.int(meta::EFFECT_COLOR, c);
@@ -1355,6 +1554,46 @@ pub(super) fn java_type_name(id: u16) -> &'static str {
     vanillite_data::registry::Registry::by_name("minecraft:entity_type")
         .and_then(|r| r.name(id))
         .unwrap_or("")
+}
+
+/// The size of a painting variant in blocks (the Vanilla variants; others count as 1×1).
+fn painting_size(java: &str) -> (i32, i32) {
+    let path = java.strip_prefix("minecraft:").unwrap_or(java);
+    match path {
+        "wanderer" | "graham" | "prairie_ride" => (1, 2),
+        "pool" | "courbet" | "sunset" | "sea" | "creebet" => (2, 1),
+        "match" | "bust" | "stage" | "void" | "skull_and_roses" | "wither" | "earth" | "wind"
+        | "water" | "fire" | "baroque" | "humble" => (2, 2),
+        "fighters" | "changing" | "finding" | "lowmist" | "passage" => (4, 2),
+        "skeleton" | "donkey_kong" => (4, 3),
+        "pointer" | "pigscene" | "burning_skull" | "unpacked" | "orb" => (4, 4),
+        "backyard" => (3, 4),
+        "bouquet" | "cavebird" | "cotan" | "endboss" | "fern" | "owlemons" | "sunflowers"
+        | "tides" => (3, 3),
+        "dennis" => (3, 3),
+        _ => (1, 1),
+    }
+}
+
+/// The centre of a painting on its wall (`Painting.calculateBoundingBox`): `direction` is the
+/// Java 3D direction it faces.
+fn painting_center(block: [i32; 3], direction: u8, w: i32, h: i32) -> [f32; 3] {
+    let (nx, nz) = match direction {
+        2 => (0.0, -1.0),
+        3 => (0.0, 1.0),
+        4 => (-1.0, 0.0),
+        _ => (1.0, 0.0),
+    };
+    // `getCounterClockWise`: north -> west, south -> east, west -> south, east -> north.
+    let (lx, lz) = (nz, -nx);
+    let offset = |size: i32| if size.rem_euclid(2) == 0 { 0.5 } else { 0.0 };
+    let c = block.map(|v| f64::from(v) + 0.5);
+    [
+        c[0] - nx * 0.46875 + lx * offset(w),
+        c[1] + offset(h),
+        c[2] - nz * 0.46875 + lz * offset(w),
+    ]
+    .map(f32_of)
 }
 
 /// All Bedrock flags of a known entity.

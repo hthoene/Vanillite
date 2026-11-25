@@ -755,6 +755,14 @@ impl EntityMut<'_> {
         core.aabb[self.row] = dims.bounding_box(core.pos[self.row]);
     }
 
+    /// Sets a bounding box that is not centred on the position (`setBoundingBox` of
+    /// block-attached entities); the next [`EntityMut::set_pos`] or
+    /// [`EntityMut::set_dims`] recomputes it from the dimensions.
+    #[inline]
+    pub fn set_aabb(&mut self, aabb: Aabb) {
+        self.store.core.aabb[self.row] = aabb;
+    }
+
     /// Sets or clears flags. Changing a shared flag marks the synched data dirty.
     pub fn set_flags(&mut self, flags: EntityFlags, on: bool) {
         let current = &mut self.store.core.flags[self.row];

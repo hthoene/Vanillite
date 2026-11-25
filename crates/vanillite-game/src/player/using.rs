@@ -265,17 +265,6 @@ pub fn tick(ents: &mut Entities, env: &mut Env<'_>, player: EntityId) {
         mark(ents, player);
     }
     let remaining = u.duration.saturating_sub(ticks);
-    if crate::bundle::has_contents(&stack) {
-        // `BundleItem.onUseTick` with Vanilla's remaining ticks before the decrement.
-        super::items::bundle_use_tick(
-            ents,
-            env,
-            player,
-            u.hand,
-            remaining.saturating_add(1),
-            u.duration,
-        );
-    }
     if is_brush(&stack) {
         // `BrushItem.onUseTick` needs the level: [`tick_brushes`]. The brush is no
         // consumable, `completeUsingItem` only stops using it.
@@ -288,6 +277,17 @@ pub fn tick(ents: &mut Entities, env: &mut Env<'_>, player: EntityId) {
         // `onUseTick` sees the ticks before this one's (`useItemRemaining` counts down after).
         crossbow_use_tick(ents, env, player, u.hand, ticks.saturating_sub(1));
         return;
+    }
+    if crate::bundle::has_contents(&stack) {
+        // `BundleItem.onUseTick` with Vanilla's remaining ticks before the decrement.
+        super::items::bundle_use_tick(
+            ents,
+            env,
+            player,
+            u.hand,
+            remaining.saturating_add(1),
+            u.duration,
+        );
     }
     on_use_tick(ents, env, player, &stack, remaining);
     if remaining <= 0 && u.duration < 72000 {

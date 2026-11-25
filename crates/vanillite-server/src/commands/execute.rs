@@ -401,6 +401,9 @@ pub(crate) fn modify(
                     .entities
                     .mob(own)
                     .and_then(|m| m.target)
+                    .or_else(|| {
+                        vanillite_game::decoration::display::target(&env.level.entities, own)
+                    })
                     .into_iter()
                     .collect(),
                 // `LivingEntity.getLastAttacker`.
@@ -413,6 +416,7 @@ pub(crate) fn modify(
                                 .and_then(|p| p.survival.last_hurt_by_mob)
                                 .map(|(id, _)| id)
                         })
+                        .or_else(|| vanillite_game::decoration::display::last_attacker(ents, own))
                         .into_iter()
                         .collect()
                 }
@@ -578,14 +582,25 @@ pub(crate) fn summon(
     if source.world != env.world || kind == ids::PLAYER {
         return Err(failed());
     }
+    // Decorations, armor stands and mannequins take their seed when their data is created.
+    let decor = vanillite_game::decoration::is_decor_kind(kind)
+        || vanillite_game::mob::kinds::Kind::by_name(id)
+            .is_some_and(|k| k.family() == vanillite_game::mob::Family::Decor);
+    let mut fresh_uuid = || {
+        if decor {
+            vanillite_game::mob::new_uuid()
+        } else {
+            env.level.new_uuid()
+        }
+    };
     let uuid = match nbt.get("UUID") {
         Some(Tag::IntArray(ints)) => match ints.as_slice() {
             [a, b, c, d] => [*a, *b, *c, *d]
                 .iter()
                 .fold(0u128, |acc, v| (acc << 32) | u128::from(v.cast_unsigned())),
-            _ => env.level.new_uuid(),
+            _ => fresh_uuid(),
         },
-        _ => env.level.new_uuid(),
+        _ => fresh_uuid(),
     };
     if select::find_uuid(&env.level.entities, uuid).is_some() {
         return Err(duplicate());
@@ -602,7 +617,9 @@ pub(crate) fn summon(
         Some(Tag::Compound(c)) => vanillite_game::level::block_entity::read_block_state(c),
         _ => default,
     };
-    if let Some(mob) = vanillite_game::mob::kinds::Kind::by_name(id) {
+    if let Some(mob) = vanillite_game::mob::kinds::Kind::by_name(id)
+        .filter(|k| k.family() != vanillite_game::mob::Family::Decor)
+    {
         // Mobs with behaviour: `finalizeSpawn` with the command reason.
         let table = env.global.systems.mob_spawns.get().map(Arc::as_ref);
         let difficulty = env.global.level.difficulty();
@@ -611,6 +628,79 @@ pub(crate) fn summon(
         loaded.remove("Pos");
         data::apply_entity_nbt(&mut env.level.entities, id, &loaded)?;
         return select::local(&env.level.entities, env.world, id).ok_or_else(failed);
+    }
+    if vanillite_game::mob::kinds::Kind::by_name(id)
+        .is_some_and(|k| k.family() == vanillite_game::mob::Family::Decor)
+    {
+        // Armor stands and mannequins are no `Mob`: loaded without `finalizeSpawn`.
+        let mut full = nbt.clone();
+        full.insert("id", kind.name());
+        full.insert(
+            "Pos",
+            vanillite_nbt::List(vec![
+                Tag::Double(pos.x),
+                Tag::Double(pos.y),
+                Tag::Double(pos.z),
+            ]),
+        );
+        full.insert("UUID", vanillite_game::mob::nbt::uuid_tag(uuid));
+        let loaded =
+            vanillite_game::mob::nbt::load_mob(&full, vanillite_game::mob::new_entity_seed())
+                .ok_or_else(failed)?;
+        let network_ids = Arc::clone(env.level.network_ids_arc());
+        let id = vanillite_game::mob::spawn(
+            &mut env.level.entities,
+            &network_ids,
+            loaded.uuid,
+            loaded.pos,
+            loaded.rot,
+            loaded.data,
+        );
+        let tags: Vec<String> = match nbt.get("Tags") {
+            Some(Tag::List(l)) => {
+                l.0.iter()
+                    .filter_map(|t| t.as_str().map(str::to_owned))
+                    .collect()
+            }
+            _ => Vec::new(),
+        };
+        if let Some(mut e) = env.level.entities.store.get_mut(id) {
+            e.set_velocity(loaded.velocity);
+        }
+        env.level.entities.set_tags(id, tags);
+        return select::local(&env.level.entities, env.world, id).ok_or_else(failed);
+    }
+    if kind == ids::LIGHTNING_BOLT {
+        let id = vanillite_game::lightning::spawn(env.level, pos, false);
+        return select::local(&env.level.entities, env.world, id).ok_or_else(failed);
+    }
+    if kind != ids::ITEM
+        && kind != ids::FALLING_BLOCK
+        && kind != ids::TNT
+        && vanillite_game::entities::Entities::has_kind_store(kind)
+    {
+        // `EntityType.loadEntityRecursive` of the kinds with data: the NBT with the command's
+        // type, position and UUID.
+        let mut full = nbt.clone();
+        full.insert("id", kind.name());
+        full.insert(
+            "Pos",
+            vanillite_nbt::List(vec![
+                Tag::Double(pos.x),
+                Tag::Double(pos.y),
+                Tag::Double(pos.z),
+            ]),
+        );
+        full.insert("UUID", vanillite_game::mob::nbt::uuid_tag(uuid));
+        if !env.level.load_entity(full) {
+            return Err(failed());
+        }
+        let entities = &env.level.entities;
+        let id = *entities.store.columns().id.last().ok_or_else(failed)?;
+        if entities.store.get(id).is_none_or(|e| e.uuid() != uuid) {
+            return Err(failed());
+        }
+        return select::local(entities, env.world, id).ok_or_else(failed);
     }
     let entities = &mut env.level.entities;
     let id = if kind == ids::ITEM {

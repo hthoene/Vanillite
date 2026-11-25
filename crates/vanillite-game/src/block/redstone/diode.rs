@@ -71,8 +71,8 @@ pub(super) fn direct_signal(
 }
 
 /// `DiodeBlock.getInputSignal`, and `ComparatorBlock.getInputSignal` with the analog output
-/// of the block behind (directly or through a conductor). Item frames are not read: they do not
-/// exist yet.
+/// of the block behind (directly or through a conductor, where an item frame on the conductor
+/// counts too).
 fn input_signal(level: &Level, pos: BlockPos, state: BlockState) -> i32 {
     let direction = facing(state);
     let target = pos.relative(direction);
@@ -92,8 +92,11 @@ fn input_signal(level: &Level, pos: BlockPos, state: BlockState) -> i32 {
     } else if input < 15 && Level::is_redstone_conductor(target_state) {
         let behind = target.relative(direction);
         let behind_state = level.block(behind);
-        if Level::has_analog_output(behind_state) {
-            input = level.analog_output(behind_state, behind, direction.opposite());
+        let frame = crate::decoration::hanging::comparator_frame(level, behind, direction);
+        let block = Level::has_analog_output(behind_state)
+            .then(|| level.analog_output(behind_state, behind, direction.opposite()));
+        if let Some(v) = frame.into_iter().chain(block).max() {
+            input = v;
         }
     }
     input

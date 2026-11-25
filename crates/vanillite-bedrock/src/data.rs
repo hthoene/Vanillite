@@ -31,6 +31,8 @@ pub struct Palette {
     pub item_registry: &'static [u8],
     /// Body of `creative_content`.
     pub creative: &'static [u8],
+    /// Runtime ids of the frame blocks (`frames.bin`).
+    frames_bin: &'static [u8],
     blocks: OnceLock<Blocks>,
     items: OnceLock<Items>,
 }
@@ -45,6 +47,7 @@ macro_rules! palette {
             block_properties: include_bytes!(concat!("../data/", $name, "/block_properties.bin")),
             item_registry: include_bytes!(concat!("../data/", $name, "/item_registry.bin")),
             creative: include_bytes!(concat!("../data/", $name, "/creative.bin")),
+            frames_bin: include_bytes!(concat!("../data/", $name, "/frames.bin")),
             blocks: OnceLock::new(),
             items: OnceLock::new(),
         }
@@ -62,6 +65,19 @@ impl Palette {
     /// The block state table.
     pub fn blocks(&self) -> &Blocks {
         self.blocks.get_or_init(|| Blocks::parse(self.blocks_bin))
+    }
+
+    /// The runtime id of the `frame` (`glow`: `glow_frame`) block facing `facing` (a Java 3D
+    /// direction id, Bedrock's `facing_direction`), with the map bit for framed maps.
+    pub fn frame_block(&self, glow: bool, map: bool, facing: u8) -> u32 {
+        let i = usize::from(u8::from(glow).wrapping_mul(12))
+            .wrapping_add(usize::from(u8::from(map).wrapping_mul(6)))
+            .wrapping_add(usize::from(facing.min(5)));
+        let at = i.wrapping_mul(2);
+        match self.frames_bin.get(at..at.wrapping_add(2)) {
+            Some(&[a, b]) => u32::from(u16::from_le_bytes([a, b])),
+            _ => 0,
+        }
     }
 
     /// The item tables.

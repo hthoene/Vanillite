@@ -167,6 +167,8 @@ kinds! {
     Wither "wither" WITHER Boss;
     EnderDragon "ender_dragon" ENDER_DRAGON Boss;
     Warden "warden" WARDEN Boss;
+    ArmorStand "armor_stand" ARMOR_STAND Decor;
+    Mannequin "mannequin" MANNEQUIN Decor;
     Villager "villager" VILLAGER Village;
     WanderingTrader "wandering_trader" WANDERING_TRADER Village;
 }

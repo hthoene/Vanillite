@@ -437,7 +437,7 @@ impl WorldMobs {
                         entity,
                         hand,
                         sneaking,
-                        ..
+                        location,
                     } => {
                         let Some(target) = in_reach(&ents, player, entity) else {
                             continue;
@@ -453,6 +453,33 @@ impl WorldMobs {
                             .is_some_and(|e| e.kind() == ids::LEASH_KNOT)
                         {
                             knot_interact(&mut ents, &mut env, &mut self.cx, player, target)
+                        } else if ents.decor(target).is_some() {
+                            let spectator = ents
+                                .player(player)
+                                .is_none_or(|p| p.game_mode == GameMode::Spectator);
+                            if spectator {
+                                animal::Interaction::Pass
+                            } else {
+                                vanillite_game::decoration::interact(
+                                    level,
+                                    &mut ents,
+                                    &mut env,
+                                    &mut self.cx,
+                                    player,
+                                    target,
+                                    hand,
+                                    sneaking,
+                                )
+                            }
+                        } else if ents.mob(target).is_some_and(|m| {
+                            m.kind == vanillite_game::mob::Kind::ArmorStand && m.is_alive()
+                        }) && let r @ (animal::Interaction::Success
+                        | animal::Interaction::Consume) =
+                            vanillite_game::decoration::stand::interact(
+                                &mut ents, &mut env, player, target, hand, location,
+                            )
+                        {
+                            r
                         } else {
                             animal::interact_on(
                                 level,
@@ -863,11 +890,13 @@ impl WorldMobs {
             let is_boat = BoatKind::of(kind).is_some();
             let is_minecart = MinecartKind::of(kind).is_some();
             let is_missile = vanillite_game::mob::missile::is_missile_kind(kind);
+            let is_decor = vanillite_game::decoration::ticks(kind);
             if !is_mob
                 && !is_special
                 && !is_boat
                 && !is_minecart
                 && !is_missile
+                && !is_decor
                 && !projectile::is_arrow_kind(kind)
                 && kind != ids::EXPERIENCE_ORB
                 && kind != ids::AREA_EFFECT_CLOUD
@@ -944,6 +973,14 @@ impl WorldMobs {
                     );
                 } else if kind == ids::AREA_EFFECT_CLOUD {
                     vanillite_game::effect::cloud::tick(
+                        level_ref,
+                        &mut ents,
+                        &mut env,
+                        &mut self.cx,
+                        id,
+                    );
+                } else if is_decor {
+                    vanillite_game::decoration::tick(
                         level_ref,
                         &mut ents,
                         &mut env,
@@ -1158,6 +1195,25 @@ impl WorldMobs {
                         hurt.amount,
                     );
                 }
+                continue;
+            }
+            // `ignoreExplosion` of the block-like entities: block-attached entities and armor
+            // stands (invisible ones always).
+            let blocklike = hurt.affects_blocklike(rules.bool(Rule::MOB_GRIEFING));
+            let ignores = if ents.decor(hurt.target).is_some() {
+                !blocklike
+            } else {
+                ents.mob(hurt.target)
+                    .filter(|m| m.kind == vanillite_game::mob::Kind::ArmorStand)
+                    .is_some_and(|_| {
+                        !blocklike
+                            || ents.store.get(hurt.target).is_some_and(|e| {
+                                e.flags()
+                                    .contains(vanillite_world::entity::EntityFlags::INVISIBLE)
+                            })
+                    })
+            };
+            if ignores {
                 continue;
             }
             combat::hurt(
@@ -1461,6 +1517,12 @@ fn attack_entity(
     target: EntityId,
 ) {
     let kind = ents.store.get(target).map(|e| e.kind());
+    if ents.decor(target).is_some() {
+        // `skipAttackInteraction` of block-attached entities and interactions.
+        if vanillite_game::decoration::attack(level, ents, env, cx, player, target) {
+            return;
+        }
+    }
     if kind == Some(ids::LEASH_KNOT) {
         // `LeashFenceKnotEntity.hurtServer`: it breaks.
         tame::break_knot(ents, env, target, &mut cx.discarded);
@@ -1626,6 +1688,9 @@ fn pick_result(ents: &Entities, target: EntityId) -> Option<ItemStack> {
     let kind = ents.store.get(target)?.kind();
     if kind == vanillite_data::entity::ids::PLAYER {
         return None;
+    }
+    if ents.decor(target).is_some() {
+        return vanillite_game::decoration::pick_result(ents, target);
     }
     let name = kind.name();
     let item = match name.strip_prefix("minecraft:").unwrap_or(name) {

@@ -97,6 +97,14 @@ pub fn passengers_packet(ents: &Entities, vehicle: EntityId) -> Option<SetPassen
 /// `canAddPassenger` of a vehicle.
 fn can_add_passenger(ents: &Entities, vehicle: EntityId) -> bool {
     let count = ents.riding.passengers_of(vehicle).len();
+    // `Marker.canAddPassenger`.
+    if ents
+        .store
+        .get(vehicle)
+        .is_some_and(|e| e.kind() == vanillite_data::entity::ids::MARKER)
+    {
+        return false;
+    }
     if let Some(b) = ents.boat(vehicle) {
         return count < b.kind.max_passengers();
     }
@@ -185,6 +193,7 @@ pub fn stop_riding(
         p.connection.movement.passenger = false;
     }
     send_passengers(ents, env, vehicle);
+    crate::decoration::cushion::passenger_left(ents, env, vehicle);
     let alive = ents.store.contains(passenger);
     if alive && let Some(target) = dismount_location(ents, env, vehicle, passenger) {
         dismount_to(ents, passenger, target);

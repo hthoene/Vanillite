@@ -625,7 +625,9 @@ pub(crate) fn can_attack(t: &Tick<'_, '_>, target: EntityId) -> bool {
         return !p.survival.is_dead_or_dying()
             && matches!(p.game_mode, GameMode::Survival | GameMode::Adventure);
     }
-    t.ents.mob(target).is_some_and(super::MobData::is_alive)
+    t.ents
+        .mob(target)
+        .is_some_and(|m| m.is_alive() && crate::decoration::stand::attackable(m))
 }
 
 /// `TargetingConditions.test` for a player target.

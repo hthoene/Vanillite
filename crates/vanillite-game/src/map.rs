@@ -647,6 +647,31 @@ impl MapData {
         statics: &[(String, u16, f64, f64, f32)],
         game_time: i64,
     ) {
+        self.tick_carried_in(carrier, statics, game_time, None);
+    }
+
+    /// `isTrackedCountOverLimit(limit)`.
+    pub fn is_tracked_count_over_limit(&self, limit: i32) -> bool {
+        self.tracked_count >= limit
+    }
+
+    /// `removedFromFrame(pos, entityId)`.
+    pub fn removed_from_frame(&mut self, pos: BlockPos, entity_id: i32) {
+        self.remove_decoration(&frame_key(entity_id));
+        self.frames.retain(|f| f.pos != pos);
+        self.dirty = true;
+    }
+
+    /// `tickCarriedBy(player, stack, placedInFrame)`: `frame` is the frame the map is in
+    /// (its block position, rotation `direction2D * 90` and network id).
+    pub fn tick_carried_in(
+        &mut self,
+        carrier: &Carrier,
+        statics: &[(String, u16, f64, f64, f32)],
+        game_time: i64,
+        frame: Option<Frame>,
+    ) {
+        let in_frame = frame.is_some();
         match self
             .holders
             .iter()
@@ -679,8 +704,8 @@ impl MapData {
             let same_dimension = h.carrier.dimension == self.dimension;
             // The name is lent out while the decorations change.
             let name = std::mem::take(&mut self.holders[i].carrier.name);
-            let removed = if has_map {
-                if same_dimension && self.tracking_position {
+            let removed = if has_map || in_frame {
+                if !in_frame && same_dimension && self.tracking_position {
                     self.add_decoration(
                         player,
                         Some(game_time),
@@ -704,6 +729,35 @@ impl MapData {
                 h.carrier.name = name;
             }
             i += 1;
+        }
+        if let Some(frame) = frame
+            && self.tracking_position
+        {
+            if let Some(existing) = self.frames.iter().find(|f| f.pos == frame.pos)
+                && existing.entity_id != frame.entity_id
+            {
+                let key = frame_key(existing.entity_id);
+                self.remove_decoration(&key);
+            }
+            self.add_decoration(
+                decoration_type("minecraft:frame"),
+                Some(game_time),
+                &frame_key(frame.entity_id),
+                f64::from(frame.pos.x),
+                f64::from(frame.pos.z),
+                f64::from(frame.rotation),
+                None,
+            );
+            let old = self.frames.iter().position(|f| f.pos == frame.pos);
+            let changed = old.is_none_or(|i| self.frames[i] != frame);
+            if let Some(i) = old {
+                self.frames[i] = frame;
+            } else {
+                self.frames.push(frame);
+            }
+            if changed {
+                self.dirty = true;
+            }
         }
         let missing = statics
             .iter()

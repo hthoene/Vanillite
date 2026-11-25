@@ -431,11 +431,13 @@ impl GameWorld {
             let is_minecart = MinecartKind::of(kind).is_some();
             let is_boat = vanillite_game::vehicle::BoatKind::of(kind).is_some();
             let is_missile = vanillite_game::mob::missile::is_missile_kind(kind);
+            let is_decor = vanillite_game::decoration::ticks(kind);
             if !is_mob
                 && !is_special
                 && !is_minecart
                 && !is_boat
                 && !is_missile
+                && !is_decor
                 && !projectile::is_arrow_kind(kind)
                 && kind != ids::EXPERIENCE_ORB
                 && kind != ids::AREA_EFFECT_CLOUD
@@ -465,6 +467,8 @@ impl GameWorld {
                     projectile::tick_arrow(level, ents, env, cx, id);
                 } else if is_missile {
                     vanillite_game::mob::missile::tick(level, ents, env, cx, id);
+                } else if is_decor {
+                    vanillite_game::decoration::tick(level, ents, env, cx, id);
                 } else {
                     vanillite_game::effect::cloud::tick(level, ents, env, cx, id);
                 }
@@ -731,7 +735,8 @@ impl GameWorld {
             .and_then(Kind::of)
             .ok_or_else(|| format!("{}: no mob behaviour in Vanillite", spec.kind))?;
         let mut m = MobData::new(kind, spec.seed);
-        if spec.finalize {
+        // Only a `Mob` has `finalizeSpawn`.
+        if spec.finalize && kind.family() != vanillite_game::mob::Family::Decor {
             // `finalizeSpawn(level, difficulty, COMMAND, null)` with the level random.
             let pos = BlockPos::containing(spec.pos[0], spec.pos[1], spec.pos[2]);
             let mut random = std::mem::replace(self.level.random(), LegacyRandom::new(0));
@@ -832,6 +837,12 @@ impl GameWorld {
         }
         if let Some(m) = ents.mob(id) {
             living(&mut d, m.y_body_rot, m.health, m.death_time);
+        }
+        // Armor stands and mannequins are living entities but no `Mob`.
+        if let Some(m) = ents
+            .mob(id)
+            .filter(|m| m.kind.family() != vanillite_game::mob::Family::Decor)
+        {
             d.insert("rng".into(), json!(m.random.state()));
             if let Some(t) = m.target {
                 let name = self.name_of(t).map_or_else(

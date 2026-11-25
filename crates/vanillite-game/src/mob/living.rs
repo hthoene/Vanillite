@@ -79,7 +79,11 @@ pub fn tick(t: &mut Tick<'_, '_>) {
         t.mob_ref().kind,
         super::Kind::Camel | super::Kind::CamelHusk
     );
-    if !camel || super::fam::mount::camel::turns_body(t) {
+    if t.mob_ref().kind == super::Kind::ArmorStand {
+        // `ArmorStand.tickHeadTurn`: the body follows the yaw.
+        let y = t.core().rot().y_rot;
+        crate::decoration::stand::tick_head_turn(t.mob(), y);
+    } else if !camel || super::fam::mount::camel::turns_body(t) {
         nav::tick_body_rotation(t);
     }
     // `refreshDirtyAttributes`: a lowered max health caps the health.
@@ -209,8 +213,8 @@ fn base_tick(t: &mut Tick<'_, '_>) {
     if !t.exists() || t.mob_ref().removed {
         return;
     }
-    // `Mob.baseTick`: the ambient sound.
-    if t.mob_ref().is_alive() {
+    // `Mob.baseTick`: the ambient sound (armor stands and mannequins are no `Mob`).
+    if t.mob_ref().is_alive() && t.mob_ref().kind.family() != super::Family::Decor {
         let m = t.mob();
         let roll = m.random.next_int_bounded(1000);
         let time = m.ambient_sound_time;
@@ -659,14 +663,22 @@ fn ai_step(t: &mut Tick<'_, '_>) {
     if super::boss::ai_step_override(t) {
         return;
     }
-    let effective_ai = !t.mob_ref().no_ai;
+    let decor = t.mob_ref().kind.family() == super::Family::Decor;
+    // `isEffectiveAi`: armor stands move with physics, mannequins unless immovable; neither
+    // has a `serverAiStep`.
+    let effective_ai = if decor {
+        let no_gravity = t.core().flags().contains(EntityFlags::NO_GRAVITY);
+        crate::decoration::stand::moves(t.mob_ref(), no_gravity)
+    } else {
+        !t.mob_ref().no_ai
+    };
     // `isImmobile`: dead or held by the kind (a stunned ravager).
     if t.mob_ref().is_dead_or_dying() || super::fam::is_immobile(t.mob_ref()) {
         let m = t.mob();
         m.jumping = false;
         m.xxa = 0.0;
         m.zza = 0.0;
-    } else if effective_ai {
+    } else if effective_ai && !decor {
         server_ai_step(t);
         if !t.exists() || t.mob_ref().removed {
             return;
@@ -1674,6 +1686,10 @@ fn send_bubble_column_particles(t: &mut Tick<'_, '_>, pos: BlockPos) {
 fn push_entities(t: &mut Tick<'_, '_>) {
     let aabb = t.aabb();
     let id = t.id;
+    if t.mob_ref().kind == super::Kind::ArmorStand {
+        crate::decoration::stand::push_minecarts(t.ents, id);
+        return;
+    }
     let mut ids = std::mem::take(&mut t.cx.ids);
     ids.clear();
     t.ents.store.for_each_in(&aabb, false, |other| {
@@ -1682,7 +1698,9 @@ fn push_entities(t: &mut Tick<'_, '_>) {
         }
     });
     ids.retain(|&o| {
-        t.ents.mob(o).is_some_and(super::MobData::is_alive)
+        t.ents
+            .mob(o)
+            .is_some_and(|m| m.is_alive() && crate::decoration::stand::pushable(m))
             || t.ents.minecart(o).is_some()
             || t.ents.player(o).is_some_and(|p| {
                 !p.survival.is_dead_or_dying()
@@ -1774,7 +1792,8 @@ pub fn player_push_entities(ents: &mut super::Entities, player: EntityId) {
         }
     });
     ids.retain(|&o| {
-        ents.mob(o).is_some_and(super::MobData::is_alive)
+        ents.mob(o)
+            .is_some_and(|m| m.is_alive() && crate::decoration::stand::pushable(m))
             || ents.minecart(o).is_some()
             || ents.player(o).is_some_and(|p| {
                 !p.survival.is_dead_or_dying()
@@ -1873,6 +1892,10 @@ fn is_sun_burn_tick(t: &mut Tick<'_, '_>) -> bool {
 
 /// `Mob.checkDespawn`.
 pub fn check_despawn(t: &mut Tick<'_, '_>) {
+    // `Mob.checkDespawn`: armor stands and mannequins are no `Mob`.
+    if t.mob_ref().kind.family() == super::Family::Decor {
+        return;
+    }
     if t.env.difficulty == crate::survival::rules::Difficulty::Peaceful
         && !t.mob_ref().kind.allowed_in_peaceful()
     {

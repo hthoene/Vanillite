@@ -67,9 +67,13 @@ pub mod tag {
     pub const IS_PROJECTILE: u32 = 1 << 17;
     pub const BYPASSES_SHIELD: u32 = 1 << 18;
     pub const PANIC_ENVIRONMENTAL_CAUSES: u32 = 1 << 19;
+    pub const IGNITES_ARMOR_STANDS: u32 = 1 << 20;
+    pub const BURNS_ARMOR_STANDS: u32 = 1 << 21;
+    pub const CAN_BREAK_ARMOR_STAND: u32 = 1 << 22;
+    pub const ALWAYS_KILLS_ARMOR_STANDS: u32 = 1 << 23;
 
     /// Tag names and their bits.
-    pub const NAMES: [(&str, u32); 20] = [
+    pub const NAMES: [(&str, u32); 24] = [
         ("minecraft:is_fall", IS_FALL),
         ("minecraft:is_fire", IS_FIRE),
         ("minecraft:is_drowning", IS_DROWNING),
@@ -98,6 +102,13 @@ pub mod tag {
         (
             "minecraft:panic_environmental_causes",
             PANIC_ENVIRONMENTAL_CAUSES,
+        ),
+        ("minecraft:ignites_armor_stands", IGNITES_ARMOR_STANDS),
+        ("minecraft:burns_armor_stands", BURNS_ARMOR_STANDS),
+        ("minecraft:can_break_armor_stand", CAN_BREAK_ARMOR_STAND),
+        (
+            "minecraft:always_kills_armor_stands",
+            ALWAYS_KILLS_ARMOR_STANDS,
         ),
     ];
 }
@@ -275,7 +286,7 @@ impl DamageTypes {
                         exhaustion,
                         effects,
                         death_message_type: dm,
-                        tags,
+                        tags: tags | armor_stand_tags(id),
                     },
                 )
                 .collect(),
@@ -314,6 +325,24 @@ impl DamageTypes {
     #[inline]
     pub fn is(&self, kind: DamageKind, tag: u32) -> bool {
         self.get(kind).tags & tag != 0
+    }
+}
+
+/// The armor stand tags of Vanilla 26.3's built-in types.
+fn armor_stand_tags(id: &str) -> u32 {
+    match id {
+        "minecraft:in_fire" | "minecraft:campfire" => tag::IGNITES_ARMOR_STANDS,
+        "minecraft:on_fire" => tag::BURNS_ARMOR_STANDS,
+        "minecraft:player_explosion"
+        | "minecraft:player_attack"
+        | "minecraft:spear"
+        | "minecraft:mace_smash" => tag::CAN_BREAK_ARMOR_STAND,
+        "minecraft:arrow"
+        | "minecraft:trident"
+        | "minecraft:fireball"
+        | "minecraft:wither_skull"
+        | "minecraft:wind_charge" => tag::ALWAYS_KILLS_ARMOR_STANDS,
+        _ => 0,
     }
 }
 

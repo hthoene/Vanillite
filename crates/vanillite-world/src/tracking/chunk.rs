@@ -648,7 +648,8 @@ fn is_visible(input: &TrackerInput<'_>, target: &Target, viewer: &ViewerState) -
     let ring = (target.chunk.x - view.view_center.x)
         .abs()
         .max((target.chunk.z - view.view_center.z).abs());
-    distance <= target.range * target.range
+    target.range > 0.0
+        && distance <= target.range * target.range
         && view.sees_chunk(target.chunk)
         && (ring < view.sent_radius || !(input.chunk_pending)(viewer.entity, target.chunk))
 }

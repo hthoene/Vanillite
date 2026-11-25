@@ -117,6 +117,23 @@ pub struct ExplosionHurt {
     pub indirect: Option<EntityId>,
     /// Centre (the damage position without a source entity).
     pub center: Vec3,
+    /// `ServerExplosion.shouldAffectBlocklikeEntities` with mob griefing off: the explosion
+    /// breaks blocks and is no wind charge (with mob griefing on only the wind charge part
+    /// counts, see [`ExplosionHurt::wind`]).
+    pub blocklike: bool,
+    /// The source is a wind charge.
+    pub wind: bool,
+}
+
+impl ExplosionHurt {
+    /// `shouldAffectBlocklikeEntities`.
+    pub fn affects_blocklike(&self, mob_griefing: bool) -> bool {
+        if mob_griefing {
+            !self.wind
+        } else {
+            self.blocklike
+        }
+    }
 }
 
 impl Level {
@@ -156,7 +173,11 @@ impl Level {
         let context = super::game_event::GameEventContext::of(source);
         self.game_event(super::game_event::events().explode, center, context);
         let mut targets = self.exploded_positions(center, radius, style.resistance);
-        let hit_players = self.hurt_entities(source, indirect, center, radius, style);
+        let destroys = matches!(
+            interaction,
+            BlockInteraction::Destroy | BlockInteraction::DestroyWithDecay
+        );
+        let hit_players = self.hurt_entities(source, indirect, center, radius, style, destroys);
         if interaction != BlockInteraction::Keep {
             self.interact_with_blocks(&mut targets, source, indirect, interaction, radius, center);
         }
@@ -263,8 +284,14 @@ impl Level {
         center: Vec3,
         radius: f32,
         style: ExplosionStyle,
+        destroys: bool,
     ) -> Vec<(EntityId, Vec3)> {
         let mut hit_players = Vec::new();
+        let wind = source
+            .and_then(|s| self.entities.store.get(s))
+            .is_some_and(|e| {
+                e.kind() == entity_ids::WIND_CHARGE || e.kind() == entity_ids::BREEZE_WIND_CHARGE
+            });
         if radius < 1.0e-5 {
             return hit_players;
         }
@@ -354,11 +381,13 @@ impl Level {
             let exposure = f64::from(seen);
             // `ExplosionDamageCalculator.getEntityDamageAmount` for the living entities.
             let crystal = kind == entity_ids::END_CRYSTAL;
+            let decor = crate::decoration::ticks(kind);
             if style.damages_entities
                 && (player.is_some()
                     || crystal
                     || mob.is_some_and(crate::mob::MobData::is_alive)
-                    || is_boat)
+                    || is_boat
+                    || decor)
             {
                 let double_radius = f64::from(double_radius);
                 let pow = (1.0 - dist) * exposure;
@@ -370,7 +399,13 @@ impl Level {
                     source,
                     indirect,
                     center,
+                    blocklike: destroys && !wind,
+                    wind,
                 });
+            }
+            if decor || crate::decoration::is_decor_kind(kind) {
+                // Block-attached entities break when pushed; displays and markers do not move.
+                continue;
             }
             let resistance = mob.map_or(0.0, |m| m.attrs.explosion_knockback_resistance);
             let knockback =

@@ -600,7 +600,7 @@ fn root_vehicle(ents: &Entities, id: EntityId) -> EntityId {
 /// boats and minecarts.
 fn pushable(ents: &Entities, id: EntityId) -> bool {
     if let Some(m) = ents.mob(id) {
-        return m.is_alive();
+        return m.is_alive() && crate::decoration::stand::pushable(m);
     }
     if let Some(p) = ents.player(id) {
         return p.game_mode != vanillite_config::GameMode::Spectator

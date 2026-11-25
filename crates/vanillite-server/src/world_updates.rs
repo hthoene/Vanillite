@@ -142,6 +142,9 @@ impl WorldUpdates {
                 &packet,
             );
         }
+        for (pos, range, packet) in output.nearby_packets.drain(..) {
+            send_within(entities, (pos.x, pos.y, pos.z), range, None, &packet);
+        }
         // Hand the emptied buffers back to the level.
         let reuse = level.output();
         if reuse.changed.is_empty()

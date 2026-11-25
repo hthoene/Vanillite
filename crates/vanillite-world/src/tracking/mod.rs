@@ -76,6 +76,11 @@ impl TrackerSettings {
                     let blocks = i32::try_from(info.tracking_range).unwrap_or(i32::MAX / 16) * 16;
                     range_percentage.wrapping_mul(blocks) / 100
                 };
+                // `ChunkMap.addEntity`: types without a client tracking range (markers) are
+                // never tracked.
+                if info.tracking_range == 0 {
+                    return 0;
+                }
                 match rule {
                     VanillaOr::Value(blocks) => i32::from(blocks),
                     VanillaOr::Vanilla => vanilla(),
