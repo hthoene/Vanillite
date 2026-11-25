@@ -370,12 +370,14 @@ impl MobData {
         };
         // `Mob.ambientSoundTime` starts at 0; only playing a sound resets it to `-interval`.
         // `LivingEntity`'s constructor turns the entity to a random yaw (`setYRot(random.nextFloat()
-        // * 2 PI)`); spawning sets the real rotation afterwards, but the draw stays.
-        let _ = mob.random.next_float();
+        // * 2 PI)`); spawning sets the real rotation afterwards, but the draw stays, and the
+        // cubes' move control keeps a direction from it.
+        let y_rot = mob.random.next_float() * (std::f32::consts::PI * 2.0);
         if kind == Kind::Chicken {
             mob.egg_time = mob.random.next_int_bounded(6000) + 6000;
         }
         kinds::register_goals(&mut mob);
+        fam::undead::cubes::construct_move_yaw(&mut mob, y_rot);
         mob
     }
 
@@ -823,6 +825,27 @@ pub fn new_entity_seed() -> i64 {
 /// Vanilla, whose recorder does the same.
 pub fn set_entity_seed_stream(seed: Option<i64>) {
     ENTITY_SEEDS.with_borrow_mut(|(stream, _)| *stream = seed.map(LegacyRandom::new));
+}
+
+thread_local! {
+    /// The seed of every shuffled behaviour list's own random in parity scenarios (see
+    /// [`set_parity_shuffle_seed`]).
+    static SHUFFLE_SEED: std::cell::Cell<Option<i64>> = const { std::cell::Cell::new(None) };
+}
+
+/// The seed of a new shuffled behaviour list's own random (`ShufflingList.random`, a
+/// `RandomSource.create()` of its own): unique, or the parity seed (on this thread).
+pub fn new_shuffle_seed() -> i64 {
+    SHUFFLE_SEED
+        .get()
+        .unwrap_or_else(|| ENTITY_SEEDS.with_borrow_mut(|(_, unique)| unique.next_long()))
+}
+
+/// From now on (on this thread) every new shuffled behaviour list seeds its random with
+/// `seed` (`None`: unique seeds). For tick exact comparisons with Vanilla, whose recorder
+/// does the same.
+pub fn set_parity_shuffle_seed(seed: Option<i64>) {
+    SHUFFLE_SEED.set(seed);
 }
 
 /// The UUID of a new entity (`Mth.createInsecureUUID` of its own fresh random): draws from no

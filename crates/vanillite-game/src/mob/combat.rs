@@ -81,6 +81,7 @@ pub fn hurt(
     source: DamageSource,
     amount: f32,
 ) -> bool {
+    let source = with_projectile_motion(ents, source);
     if ents.mob(target).is_some() {
         return hurt_mob(level, ents, env, cx, target, source, amount);
     }
@@ -99,6 +100,39 @@ pub fn hurt(
         return false;
     };
     player::hurt(&mut entity, data, env, source, amount)
+}
+
+/// The motion of a projectile that hits (arrows, tridents, fireballs, thrown items, …: every
+/// `Projectile` but potions and fireworks, which push away from their position), for the
+/// knockback direction.
+fn with_projectile_motion(ents: &Entities, mut source: DamageSource) -> DamageSource {
+    if source.projectile_motion.is_some() {
+        return source;
+    }
+    if let Some(e) = source.direct.and_then(|d| ents.store.get(d))
+        && matches!(
+            e.kind().name(),
+            "minecraft:arrow"
+                | "minecraft:spectral_arrow"
+                | "minecraft:trident"
+                | "minecraft:fireball"
+                | "minecraft:small_fireball"
+                | "minecraft:dragon_fireball"
+                | "minecraft:wither_skull"
+                | "minecraft:wind_charge"
+                | "minecraft:breeze_wind_charge"
+                | "minecraft:snowball"
+                | "minecraft:egg"
+                | "minecraft:ender_pearl"
+                | "minecraft:experience_bottle"
+                | "minecraft:llama_spit"
+                | "minecraft:shulker_bullet"
+                | "minecraft:fishing_bobber"
+        )
+    {
+        source.projectile_motion = Some(e.velocity());
+    }
+    source
 }
 
 /// `isInvulnerableTo` of a mob.
@@ -127,6 +161,7 @@ pub fn hurt_mob(
     source: DamageSource,
     amount: f32,
 ) -> bool {
+    let source = with_projectile_motion(ents, source);
     let kind = source.kind;
     let types = env.types;
     if invulnerable_to(ents, env, target, kind) {
@@ -243,9 +278,7 @@ pub fn hurt_mob(
             e.set_flags(EntityFlags::HURT_MARKED, true);
         }
         if !types.is(kind, tag::NO_KNOCKBACK) {
-            let (xd, zd) = source
-                .position
-                .map_or((0.0, 0.0), |p| (p.x - pos.x, p.z - pos.z));
+            let (xd, zd) = source.knockback_direction(pos);
             apply_knockback(ents, target, f64::from(0.4_f32), xd, zd);
         }
     }

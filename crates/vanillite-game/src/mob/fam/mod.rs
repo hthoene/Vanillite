@@ -723,6 +723,24 @@ pub fn register_goals(m: &mut MobData) {
     let kind = m.kind;
     by_family!(kind, (), register_goals(m));
 }
+/// Whether the kind's `finalizeSpawn` makes its own draws before `super.finalizeSpawn`, so
+/// `Mob.finalizeSpawn` (follow range, left-handedness) comes last: the horses
+/// (`AbstractHorse.finalizeSpawn`: `randomizeAttributes`, then `AgeableMob`, then `Mob`).
+pub fn mob_spawn_part_last(kind: Kind) -> bool {
+    matches!(
+        kind,
+        Kind::Horse
+            | Kind::Donkey
+            | Kind::Mule
+            | Kind::Llama
+            | Kind::TraderLlama
+            | Kind::SkeletonHorse
+            | Kind::ZombieHorse
+            | Kind::Camel
+            | Kind::CamelHusk
+    )
+}
+
 pub fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
     let kind = m.kind;
     by_family!(kind, (), finalize_spawn(m, ctx));

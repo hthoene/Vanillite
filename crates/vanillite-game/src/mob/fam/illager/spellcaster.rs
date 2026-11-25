@@ -100,10 +100,10 @@ pub fn casting_tick(t: &mut Tick<'_, '_>) {
         None
     });
     if let Some(o) = look.and_then(|id| t.other(id)) {
-        // `getMaxHeadYRot` 10, `getMaxHeadXRot` 40.
+        // `getMaxHeadYRot` 75, `getMaxHeadXRot` 40.
         t.mob()
             .look
-            .set_look_at(Vec3::new(o.pos.x, o.eye_y, o.pos.z), 10.0, 40.0);
+            .set_look_at(Vec3::new(o.pos.x, o.eye_y, o.pos.z), 75.0, 40.0);
     }
 }
 

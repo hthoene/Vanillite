@@ -813,6 +813,14 @@ impl FamilyHooks for Hooks {
         }
     }
 
+    fn is_immobile(m: &MobData) -> bool {
+        is_horse(m.kind) && horse::is_immobile(m)
+    }
+    fn ai_step_start(t: &mut Tick<'_, '_>) {
+        if is_horse(t.mob_ref().kind) {
+            horse::ai_step_start(t);
+        }
+    }
     fn ai_step(t: &mut Tick<'_, '_>) {
         match t.mob_ref().kind {
             k if is_horse(k) => horse::ai_step(t),

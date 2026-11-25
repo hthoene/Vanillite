@@ -367,6 +367,7 @@ pub fn tick_arrow(
             let owner = a.owner.filter(|o| ents.store.contains(*o)).unwrap_or(id);
             let mut source = combat::entity_source(ents, env.types.arrow, owner, id);
             source.position = Some(pos);
+            source.projectile_motion = Some(velocity);
             #[allow(clippy::cast_precision_loss)]
             let hurt = combat::hurt(level, ents, env, cx, target, source, damage as f32);
             if hurt {

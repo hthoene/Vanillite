@@ -280,11 +280,12 @@ impl Kind {
         )
     }
 
-    /// `getMaxHeadXRot`: the pitch limit of `LookControl.setLookAt(x, y, z)`.
-    pub fn max_head_x_rot(self) -> f32 {
+    /// `getHeadRotSpeed`: the head turn speed of `LookControl.setLookAt(x, y, z)`.
+    pub fn head_rot_speed(self) -> f32 {
         match self {
-            Kind::Guardian | Kind::ElderGuardian => 180.0,
-            _ => 40.0,
+            Kind::Frog => 35.0,
+            Kind::Breeze => 25.0,
+            _ => 10.0,
         }
     }
 
@@ -304,6 +305,9 @@ impl Kind {
 
     /// `#burn_in_daylight`.
     pub fn burns_in_daylight(self) -> bool {
+        if matches!(self, Kind::ZombieHorse | Kind::ZombieNautilus) {
+            return true;
+        }
         if !self.classic() {
             return fam::burns_in_daylight(self);
         }
@@ -442,6 +446,34 @@ impl Kind {
 }
 
 /// The state dependent sounds of a mob (`getAmbientSound`, `getHurtSound`, `getDeathSound`).
+/// `getMaxHeadXRot`: the pitch limit of `LookControl.setLookAt(x, y, z)`.
+pub fn max_head_x_rot(m: &MobData) -> f32 {
+    match m.kind {
+        Kind::Guardian | Kind::ElderGuardian | Kind::Shulker => 180.0,
+        Kind::Axolotl | Kind::Dolphin => 1.0,
+        Kind::Slime | Kind::MagmaCube | Kind::SulfurCube => 0.0,
+        Kind::Wolf if m.in_sitting_pose => 20.0,
+        _ => 40.0,
+    }
+}
+
+/// `getMaxHeadYRot`: how far the head turns from the body (`LookControl`,
+/// `BodyRotationControl`).
+pub fn max_head_y_rot(m: &MobData) -> f32 {
+    match m.kind {
+        Kind::Axolotl | Kind::Dolphin => 1.0,
+        Kind::Armadillo if fam::brainy::armadillo::is_scared(m) => 0.0,
+        Kind::Armadillo => 32.0,
+        Kind::Camel | Kind::CamelHusk | Kind::Breeze => 30.0,
+        Kind::Frog => 5.0,
+        Kind::Sniffer => 50.0,
+        Kind::Goat => 15.0,
+        Kind::Shulker => 180.0,
+        Kind::Ravager => 45.0,
+        _ => 75.0,
+    }
+}
+
 pub fn ambient_sound(m: &MobData) -> Option<&'static str> {
     if !m.kind.classic() {
         return fam::ambient_sound(m);
@@ -691,14 +723,25 @@ fn finalize_spawn_inner(m: &mut MobData, ctx: &mut fam::SpawnContext<'_>) {
         // `CaveSpider.finalizeSpawn` calls no `super`: not even `Mob.finalizeSpawn`.
         return;
     }
-    // `Mob.finalizeSpawn`: follow range bonus and left-handedness.
-    let bonus = m.random.triangle(0.0, 0.114_850_000_000_000_01);
-    m.attrs.follow_range *= 1.0 + bonus;
-    m.left_handed = m.random.next_float() < 0.05;
+    // `Mob.finalizeSpawn`: follow range bonus and left-handedness; the kinds that call
+    // `super.finalizeSpawn` after their own draws run it last.
+    let mob_part = |m: &mut MobData| {
+        let bonus = m.random.triangle(0.0, 0.114_850_000_000_000_01);
+        m.attrs.follow_range *= 1.0 + bonus;
+        m.left_handed = m.random.next_float() < 0.05;
+    };
     if !m.kind.classic() {
+        let last = fam::mob_spawn_part_last(m.kind);
+        if !last {
+            mob_part(m);
+        }
         fam::finalize_spawn(m, ctx);
+        if last {
+            mob_part(m);
+        }
         return;
     }
+    mob_part(m);
     let (difficulty, climate, group_index) = (ctx.difficulty, ctx.climate, ctx.group_index);
     match m.kind {
         Kind::Zombie => {

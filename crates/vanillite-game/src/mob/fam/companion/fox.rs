@@ -971,9 +971,10 @@ pub fn stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
                 set_flag(t, INTERESTED, true);
                 set_flag(t, CROUCHING, true);
                 t.mob().nav.stop();
+                // `getMaxHeadYRot`, `getMaxHeadXRot`.
                 t.mob()
                     .look
-                    .set_look_at(Vec3::new(o.pos.x, o.eye_y, o.pos.z), 10.0, 40.0);
+                    .set_look_at(Vec3::new(o.pos.x, o.eye_y, o.pos.z), 75.0, 40.0);
             } else {
                 set_flag(t, INTERESTED, false);
                 set_flag(t, CROUCHING, false);
@@ -1014,9 +1015,10 @@ pub fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
             let Some(o) = t.mob_ref().target.and_then(|id| t.other(id)) else {
                 return;
             };
+            // `getMaxHeadYRot`, `getMaxHeadXRot`.
             t.mob()
                 .look
-                .set_look_at(Vec3::new(o.pos.x, o.eye_y, o.pos.z), 10.0, 40.0);
+                .set_look_at(Vec3::new(o.pos.x, o.eye_y, o.pos.z), 75.0, 40.0);
             if o.pos.distance_to_sqr(t.pos()) <= 36.0 {
                 set_flag(t, INTERESTED, true);
                 set_flag(t, CROUCHING, true);
@@ -1085,7 +1087,8 @@ pub fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
             }
             let p = t.pos();
             let at = Vec3::new(p.x + *rel_x, t.eye_y(), p.z + *rel_z);
-            t.mob().look.set_look_at(at, 10.0, 40.0);
+            // `getMaxHeadYRot`, `getMaxHeadXRot`.
+            t.mob().look.set_look_at(at, 75.0, 40.0);
         }
         _ => {}
     }

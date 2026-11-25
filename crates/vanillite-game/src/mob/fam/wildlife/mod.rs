@@ -294,12 +294,11 @@ pub(crate) fn add_effect(
     duration: i32,
     amplifier: u8,
 ) {
-    if let Some(m) = ents.mob_mut(target) {
-        effects::living::add_to_mob(
-            m,
-            EffectInstance::new(effect, duration, i32::from(amplifier)),
-        );
-    }
+    effects::living::add_detached(
+        ents,
+        target,
+        EffectInstance::new(effect, duration, i32::from(amplifier)),
+    );
 }
 
 /// Whether the kind is a fish (`AbstractFish`).

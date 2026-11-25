@@ -313,7 +313,8 @@ impl Goal {
             pathed: Vec3::ZERO,
             recalc: 0,
             attack_in: 0,
-            last_can_use: i64::MIN / 2,
+            // `lastCanUseCheck` starts at 0: no attack in a world's first 20 ticks.
+            last_can_use: 0,
             raise_arm: 0,
         }
     }
@@ -1512,9 +1513,10 @@ pub(crate) fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
             let Some(o) = t.other(p) else {
                 return;
             };
+            let x_max = super::kinds::max_head_x_rot(t.mob_ref());
             t.mob()
                 .look
-                .set_look_at(Vec3::new(o.pos.x, o.eye_y, o.pos.z), 10.0, 40.0);
+                .set_look_at(Vec3::new(o.pos.x, o.eye_y, o.pos.z), 10.0, x_max);
             nav::move_to_entity(t, o.pos, 0, *speed);
             *love_time += 1;
             if *love_time >= reduced(60) && distance_sqr(t, o.pos) < 9.0 {
@@ -1527,9 +1529,11 @@ pub(crate) fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
                 return;
             };
             // `getMaxHeadYRot() + 20`, `getMaxHeadXRot()`.
+            let y_max = super::kinds::max_head_y_rot(t.mob_ref()) + 20.0;
+            let x_max = super::kinds::max_head_x_rot(t.mob_ref());
             t.mob()
                 .look
-                .set_look_at(Vec3::new(o.pos.x, o.eye_y, o.pos.z), 95.0, 40.0);
+                .set_look_at(Vec3::new(o.pos.x, o.eye_y, o.pos.z), y_max, x_max);
             if distance_sqr(t, o.pos) < 6.25 {
                 t.mob().nav.stop();
             } else {

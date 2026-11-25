@@ -332,6 +332,9 @@ pub struct DamageSource {
     pub cause_name: Option<&'static str>,
     /// `getSecondsToDisableBlocking` of the attacker's weapon (axes disable shields).
     pub disable_shield_seconds: f32,
+    /// The motion of the projectile that hit, which the knockback follows
+    /// (`Projectile.calculateHorizontalHurtKnockbackDirection`).
+    pub projectile_motion: Option<Vec3>,
 }
 
 impl DamageSource {
@@ -345,6 +348,18 @@ impl DamageSource {
             cause_is_mob: false,
             cause_name: None,
             disable_shield_seconds: 0.0,
+            projectile_motion: None,
+        }
+    }
+
+    /// The horizontal direction towards the attacker for the default knockback
+    /// (`hurtServer`): against the projectile's motion, else towards the source position.
+    pub fn knockback_direction(&self, target: Vec3) -> (f64, f64) {
+        if let Some(m) = self.projectile_motion {
+            (-m.x, -m.z)
+        } else {
+            self.position
+                .map_or((0.0, 0.0), |p| (p.x - target.x, p.z - target.z))
         }
     }
 
