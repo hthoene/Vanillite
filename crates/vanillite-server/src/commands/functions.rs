@@ -257,7 +257,7 @@ fn walk(dir: &Path, prefix: &str, ext: &str, out: &mut BTreeMap<String, PathBuf>
 
 /// `<namespace>:<path>` → file for `data/<namespace>/<dir>/**/*<ext>` of every root; later
 /// roots override earlier ones.
-fn list(roots: &[PathBuf], dir: &str, ext: &str) -> BTreeMap<String, PathBuf> {
+pub(crate) fn list(roots: &[PathBuf], dir: &str, ext: &str) -> BTreeMap<String, PathBuf> {
     let mut out = BTreeMap::new();
     for root in roots {
         let Ok(namespaces) = std::fs::read_dir(root.join("data")) else {

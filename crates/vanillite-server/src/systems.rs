@@ -1,12 +1,13 @@
 //! Server-wide game systems around the simulation: the scoreboard, command storage, data pack
-//! functions, scheduled functions, random sequences, stopwatches and the profilers. Each sits
-//! behind its own lock, held only for one command's change.
+//! functions and advancements, scheduled functions, random sequences, stopwatches and the
+//! profilers. Each sits behind its own lock, held only for one command's change.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 
 use vanillite_base::Vec3;
+use vanillite_game::advancements::Advancements;
 use vanillite_game::scoreboard::Scoreboard;
 use vanillite_nbt::Compound;
 
@@ -25,6 +26,7 @@ pub(crate) struct GameSystems {
     scoreboard: Mutex<Scoreboard>,
     storage: Mutex<CommandStorage>,
     functions: RwLock<Arc<FunctionLibrary>>,
+    advancements: RwLock<Arc<Advancements>>,
     post_reload: AtomicBool,
     /// `function-permission-level`.
     pub(crate) function_level: u8,
@@ -63,6 +65,7 @@ impl GameSystems {
             scoreboard: Mutex::new(Scoreboard::new()),
             storage: Mutex::new(CommandStorage::new()),
             functions: RwLock::new(Arc::new(FunctionLibrary::default())),
+            advancements: RwLock::default(),
             post_reload: AtomicBool::new(false),
             function_level,
             level_dir,
@@ -151,6 +154,24 @@ impl GameSystems {
             .write()
             .unwrap_or_else(PoisonError::into_inner) = Arc::new(library);
         self.post_reload.store(true, Ordering::Release);
+    }
+
+    /// The advancements (`ServerAdvancementManager`).
+    pub(crate) fn advancements(&self) -> Arc<Advancements> {
+        Arc::clone(
+            &self
+                .advancements
+                .read()
+                .unwrap_or_else(PoisonError::into_inner),
+        )
+    }
+
+    /// Replaces the advancements; players that join afterwards use them.
+    pub(crate) fn set_advancements(&self, advancements: Advancements) {
+        *self
+            .advancements
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = Arc::new(advancements);
     }
 
     /// Whether the load functions are due; clears the flag.

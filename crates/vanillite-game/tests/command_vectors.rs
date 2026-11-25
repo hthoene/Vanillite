@@ -10,6 +10,7 @@ use vanillite_protocol::packets::play::clientbound::CommandSuggestions;
 use vanillite_protocol::text::{Component, Content};
 
 const OUR_COMMANDS: &[&str] = &[
+    "advancement",
     "execute",
     "bossbar",
     "damage",

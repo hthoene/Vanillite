@@ -99,6 +99,25 @@ pub mod suggest {
     pub const AVAILABLE_SOUNDS: &str = "minecraft:available_sounds";
     /// Post effect ids; the client answers it itself.
     pub const POST_EFFECTS: &str = "minecraft:post_effects";
+    /// The criteria of the `advancement` argument (`/advancement ... only <advancement>`).
+    pub const ADVANCEMENT_CRITERIA: &str = "advancement.criteria";
+}
+
+/// Which advancements `/advancement grant|revoke` changes (`AdvancementCommands.Mode`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AdvancementMode {
+    /// `only <advancement>`.
+    Only,
+    /// `only <advancement> <criterion>`.
+    Criterion,
+    /// `from <advancement>`: it and its descendants.
+    From,
+    /// `until <advancement>`: its parents and it.
+    Until,
+    /// `through <advancement>`: parents, it and descendants.
+    Through,
+    /// `everything`.
+    Everything,
 }
 
 /// A score comparison of `execute if score`.
@@ -602,6 +621,8 @@ pub enum WorldBorderOp {
 pub enum CommandId {
     /// A command of a plugin: the plugin host's command key.
     Plugin(u32),
+    /// `advancement (grant|revoke) <targets> ...` (`grant` = true).
+    Advancement { grant: bool, mode: AdvancementMode },
     /// `gamemode <gamemode>` for the source.
     GameModeSelf,
     /// `gamemode <gamemode> <target>`.
@@ -863,6 +884,7 @@ pub enum CommandId {
 
 /// Registers all commands in Vanilla's registration order (`Commands` constructor).
 pub fn register(d: &mut Dispatcher<CommandId>) {
+    players::register_advancement(d);
     items::register_attribute(d);
     execute::register_execute(d);
     entities::register_bossbar(d);

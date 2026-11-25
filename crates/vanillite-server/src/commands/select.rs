@@ -300,12 +300,33 @@ fn filter_matches(filter: &Filter, target: &Target, ctx: &Ctx<'_>) -> bool {
                         .is_some_and(|s| range.matches(s.value))
             })
         }
-        // No advancements yet: nothing is done.
+        // Players of other worlds are seen without progress.
         Filter::Advancements(checks) => {
+            let progress = target
+                .entity
+                .and_then(|id| ctx.entities.player(id))
+                .map(|p| &p.advancements);
+            let set = systems.advancements();
             target.is_player()
-                && checks.iter().all(|(_, check)| match check {
-                    AdvancementCheck::Done(done) => !done,
-                    AdvancementCheck::Criteria(criteria) => criteria.iter().all(|(_, done)| !done),
+                && checks.iter().all(|(id, check)| {
+                    let Some(index) = set.index(id) else {
+                        return false;
+                    };
+                    match check {
+                        AdvancementCheck::Done(done) => {
+                            progress.is_some_and(|p| p.is_done(index)) == *done
+                        }
+                        AdvancementCheck::Criteria(criteria) => {
+                            criteria.iter().all(|(name, done)| {
+                                set.get(index)
+                                    .and_then(|a| a.criterion(name))
+                                    .is_some_and(|c| {
+                                        progress.is_some_and(|p| p.criterion_done(index, c))
+                                            == *done
+                                    })
+                            })
+                        }
+                    }
                 })
         }
         // No predicates yet.

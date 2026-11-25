@@ -486,7 +486,7 @@ impl MenuSlots for ContainerView<'_> {
     fn on_take(
         &mut self,
         slot: usize,
-        _taken: &ItemStack,
+        taken: &ItemStack,
         ctx: ClickContext,
         drops: &mut Vec<Drop>,
     ) {
@@ -499,7 +499,7 @@ impl MenuSlots for ContainerView<'_> {
             {
                 self.workstation_take(ctx, drops);
             }
-            (MenuKind::Crafting, 0) => self.take_crafted(ctx, drops),
+            (MenuKind::Crafting, 0) => self.take_crafted(taken, ctx, drops),
             (MenuKind::Furnace(_), 2) => {
                 if let Storage::Block(pos) = self.menu.storage {
                     let xp = crate::block::furnace::pop_experience(self.level, pos);
@@ -704,13 +704,16 @@ impl ContainerView<'_> {
     }
 
     /// `ResultSlot.onTake` of the crafting table.
-    fn take_crafted(&mut self, ctx: ClickContext, drops: &mut Vec<Drop>) {
+    fn take_crafted(&mut self, taken: &ItemStack, ctx: ClickContext, drops: &mut Vec<Drop>) {
         let Some(data) = crate::player::play::game_data() else {
             return;
         };
         let grid: Vec<ItemStack> = self.menu.local.get(1..10).unwrap_or_default().to_vec();
         let input = CraftingInput::of(3, 3, &grid);
         let recipe = data.recipes.crafting_for(&input);
+        self.inv
+            .crafted
+            .push(crate::inventory::crafted(taken, recipe, grid.clone()));
         let remaining = data.recipes.remainders(recipe, &input);
         for y in 0..input.height {
             for x in 0..input.width {

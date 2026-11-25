@@ -171,6 +171,7 @@ pub(crate) fn prepare(
         "minecraft:world_clock",
         "minecraft:enchantment",
         "minecraft:dialog",
+        "minecraft:worldgen/biome",
     ]
     .into_iter()
     .map(|name| {
@@ -379,6 +380,8 @@ pub(crate) fn arrival(
         memory_connection: joined.memory,
         virtual_connection: joined.is_virtual,
         saved,
+        stats: None,
+        advancements: None,
         address: joined.address.to_string(),
         inbox,
     };

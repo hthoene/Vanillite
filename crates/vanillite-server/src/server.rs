@@ -20,7 +20,7 @@ use vanillite_config::{
 use vanillite_game::level::Level;
 use vanillite_light::BfsLightEngineProvider;
 use vanillite_storage::backup::BackupSettings;
-use vanillite_storage::player_data::PlayerDataStore;
+use vanillite_storage::player_data::{JsonFile, PlayerDataStore};
 use vanillite_storage::saved_data::SavedDataStore;
 use vanillite_storage::writer::FileWriter;
 use vanillite_storage::{AnvilStorageProvider, Compression, WorldLayout};
@@ -1056,7 +1056,7 @@ impl Server {
         // `getDefaultGameType`: `level.dat`'s game type, which `/defaultgamemode` changes.
         let default_mode = crate::players::game_mode_by_id(self.global.level.default_game_type())
             .unwrap_or(properties.gamemode);
-        let (arrival, sink) =
+        let (mut arrival, sink) =
             crate::net::arrival(joined, saved, default_mode, properties.force_gamemode);
         let players = &self.global.players;
         let access = &self.global.access;
@@ -1091,6 +1091,17 @@ impl Server {
             sink.kick(reason);
             return;
         }
+        // `PlayerList.getPlayerStats` and `getPlayerAdvancements`.
+        let name = arrival.profile.name.clone();
+        let json = |kind| match self.player_store.load_json(kind, uuid) {
+            Ok(text) => text,
+            Err(e) => {
+                log::error!("Couldn't read {kind:?} of {name}: {e}");
+                None
+            }
+        };
+        arrival.stats = json(JsonFile::Stats);
+        arrival.advancements = json(JsonFile::Advancements);
         let world = arrival
             .saved
             .as_ref()

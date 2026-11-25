@@ -5,6 +5,7 @@
 mod world;
 
 pub mod serverbound {
+    pub use super::progress::{SeenAdvancements, SeenAdvancementsAction, SeenAdvancementsPacket};
     pub use super::world::serverbound::*;
     use crate::Packet;
     use crate::codec::{Decode, Encode, Reader, Result};
@@ -529,11 +530,16 @@ pub mod clientbound {
     pub use super::entities::*;
     pub use super::hud::*;
     pub use super::level::*;
+    pub use super::progress::{
+        AdvancementDisplay, AdvancementEntry, AdvancementProgress, AwardStats,
+        SelectAdvancementsTab, StatValue, UpdateAdvancements,
+    };
     pub use super::survival::*;
 }
 
 mod hud;
 mod level;
+mod progress;
 mod survival;
 
 /// Clientbound play packets with hand-written codecs (variable layouts).

@@ -20,6 +20,13 @@ use super::rules::{Difficulty, GameRules, Rule};
 use super::{Effect, play_sound};
 use crate::player::PlayerData;
 use crate::player::join::display_name;
+use crate::stats::custom;
+
+/// `Math.round(damage * 10.0F)` of the damage statistics, below `Float.MAX_VALUE / 10`.
+#[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+fn damage_stat(damage: f32) -> Option<i32> {
+    (damage < 3.402_823_5e37).then(|| (damage * 10.0).round() as i32)
+}
 
 /// `Attributes.MAX_HEALTH` of players.
 pub const MAX_HEALTH: f32 = 20.0;
@@ -682,6 +689,12 @@ fn actually_hurt(
     let s = &mut player.survival;
     let remaining = (damage - s.absorption).max(0.0);
     s.absorption -= damage - remaining;
+    let absorbed = damage - remaining;
+    if absorbed > 0.0
+        && let Some(v) = damage_stat(absorbed)
+    {
+        player.stats.award(custom::DAMAGE_ABSORBED, v);
+    }
     if remaining != 0.0 {
         let exhaustion = types.get(kind).exhaustion;
         cause_food_exhaustion(player, exhaustion);
@@ -699,6 +712,9 @@ fn actually_hurt(
             .record_damage(entry, s.tick_count, alive, source.cause.is_some());
         let health = s.health - remaining;
         set_health(entity, s, health);
+        if let Some(v) = damage_stat(remaining) {
+            player.stats.award(custom::DAMAGE_TAKEN, v);
+        }
     }
 }
 
@@ -769,6 +785,9 @@ pub fn die(
     let alive = s.health > 0.0;
     s.combat.recheck_status(s.tick_count, alive);
     s.last_death = Some((env.dimension.to_owned(), block_pos(entity.as_ref().pos())));
+    player.stats.award(custom::DEATHS, 1);
+    player.stats.reset(custom::TIME_SINCE_DEATH);
+    player.stats.reset(custom::TIME_SINCE_REST);
     player.connection.movement.mark_client_unloaded();
 }
 
@@ -983,6 +1002,18 @@ pub fn do_tick(
             hurt(entity, player, env, source, 1.0);
         }
     }
+    // `ServerPlayer.doTick`'s time statistics; players never sleep yet.
+    let stats = &mut player.stats;
+    stats.award(custom::PLAY_TIME, 1);
+    stats.award(custom::TOTAL_WORLD_TIME, 1);
+    if player.survival.health > 0.0 {
+        stats.award(custom::TIME_SINCE_DEATH, 1);
+    }
+    // `isDiscrete`: the sneak key is held.
+    if entity.as_ref().flags().contains(EntityFlags::CROUCHING) {
+        stats.award(custom::CROUCH_TIME, 1);
+    }
+    stats.award(custom::TIME_SINCE_REST, 1);
     let sink = std::sync::Arc::clone(&player.connection.sink);
     player.survival.sync(sink.as_ref());
     result
@@ -1155,6 +1186,7 @@ pub fn on_move(
         } else {
             exhaustion::JUMP
         };
+        player.stats.award(custom::JUMP, 1);
         cause_food_exhaustion(player, cost);
     }
     let dy = mv.to.y - mv.from.y;
@@ -1163,7 +1195,7 @@ pub fn on_move(
         player.survival.fall_distance = 0.0;
     }
     update_climbable(entity, player, env);
-    movement_statistics(player, entity, mv);
+    movement_statistics(player, entity, env, mv);
 }
 
 /// `onClimbable`: remembers the climbable block the player is in for the fall message.
@@ -1262,6 +1294,11 @@ fn cause_fall_damage(
     if Abilities::of(player.game_mode).mayfly {
         return;
     }
+    if fall_distance >= 2.0 {
+        #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+        let cm = (fall_distance * 100.0).round() as i32;
+        player.stats.award(custom::FALL_ONE_CM, cm);
+    }
     let damage = fall_damage(fall_distance, multiplier);
     if damage > 0 {
         let id = entity.as_ref().id();
@@ -1279,9 +1316,14 @@ fn cause_fall_damage(
     }
 }
 
-/// `ServerPlayer.checkMovementStatistics`: the exhaustion of swimming, walking in water and
-/// sprinting.
-fn movement_statistics(player: &mut PlayerData, entity: &EntityMut<'_>, mv: MoveRecord) {
+/// `ServerPlayer.checkMovementStatistics`: the distance statistics and the exhaustion of
+/// swimming, walking in water and sprinting (players never ride yet).
+fn movement_statistics(
+    player: &mut PlayerData,
+    entity: &EntityMut<'_>,
+    env: &Env<'_>,
+    mv: MoveRecord,
+) {
     let (dx, dy, dz) = (
         mv.to.x - mv.from.x,
         mv.to.y - mv.from.y,
@@ -1298,20 +1340,51 @@ fn movement_statistics(player: &mut PlayerData, entity: &EntityMut<'_>, mv: Move
     let cost = |per_meter: f32, cm: i32| per_meter * cm as f32 * 0.01;
     let flags = entity.as_ref().flags();
     let fluids = player.survival.fluids;
-    if flags.contains(EntityFlags::SWIMMING) || fluids.eye_in_water {
-        let d = cm(dx * dx + dy * dy + dz * dz);
+    // `onClimbable`.
+    let climbable = player.game_mode != GameMode::Spectator
+        && env
+            .blocks
+            .block_state(block_pos(entity.as_ref().pos()))
+            .is_some_and(|s| env.facts.is_climbable(s.block()));
+    let in_fluid = |player: &mut PlayerData, stat, d: i32| {
         if d > 0 {
+            player.stats.award(stat, d);
             cause_food_exhaustion(player, cost(exhaustion::SWIM, d));
         }
+    };
+    if flags.contains(EntityFlags::SWIMMING) {
+        in_fluid(player, custom::SWIM_ONE_CM, cm(dx * dx + dy * dy + dz * dz));
+    } else if fluids.eye_in_water {
+        let d = cm(dx * dx + dy * dy + dz * dz);
+        in_fluid(player, custom::WALK_UNDER_WATER_ONE_CM, d);
     } else if fluids.in_water() {
-        let d = cm(dx * dx + dz * dz);
-        if d > 0 {
-            cause_food_exhaustion(player, cost(exhaustion::SWIM, d));
+        in_fluid(player, custom::WALK_ON_WATER_ONE_CM, cm(dx * dx + dz * dz));
+    } else if climbable {
+        if dy > 0.0 {
+            #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+            let up = (dy * 100.0).round() as i32;
+            player.stats.award(custom::CLIMB_ONE_CM, up);
         }
     } else if mv.on_ground {
         let d = cm(dx * dx + dz * dz);
-        if d > 0 && flags.contains(EntityFlags::SPRINTING) {
-            cause_food_exhaustion(player, cost(exhaustion::SPRINT, d));
+        if d > 0 {
+            if flags.contains(EntityFlags::SPRINTING) {
+                player.stats.award(custom::SPRINT_ONE_CM, d);
+                cause_food_exhaustion(player, cost(exhaustion::SPRINT, d));
+            } else if entity.as_ref().pose() == Pose::Crouching {
+                player.stats.award(custom::CROUCH_ONE_CM, d);
+            } else {
+                player.stats.award(custom::WALK_ONE_CM, d);
+            }
+        }
+    } else if flags.contains(EntityFlags::FALL_FLYING) {
+        player
+            .stats
+            .award(custom::AVIATE_ONE_CM, cm(dx * dx + dy * dy + dz * dz));
+    } else {
+        let d = cm(dx * dx + dz * dz);
+        if d > 25 {
+            player.stats.award(custom::FLY_ONE_CM, d);
         }
     }
 }
