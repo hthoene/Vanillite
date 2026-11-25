@@ -643,7 +643,11 @@ fn knockback_amount(
         ents.mob(attacker)
             .map_or(0.0, |m| m.attrs.attack_knockback as f32)
     };
-    let (enchants, tags) = combat_data();
+    let combat = combat_data();
+    let (enchants, tags): (
+        &crate::enchant::Enchantments,
+        &dyn crate::predicate::EntityTags,
+    ) = (&combat.enchants, &*combat);
     let ecx = damage_context(ents, env.types, tags, target, source);
     enchants.modify_knockback(weapon, &ecx, env.random, base) / 2.0
 }
@@ -694,7 +698,11 @@ pub fn stab_attack(
     dismounts: bool,
 ) -> bool {
     let source = weapon_source(ents, env, a.id, weapon);
-    let (enchants, tags) = combat_data();
+    let combat = combat_data();
+    let (enchants, tags): (
+        &crate::enchant::Enchantments,
+        &dyn crate::predicate::EntityTags,
+    ) = (&combat.enchants, &*combat);
     let damage = {
         let ecx = damage_context(ents, env.types, tags, target, &source);
         enchants.modify_damage(weapon, &ecx, env.random, base_damage)
@@ -715,7 +723,7 @@ pub fn stab_attack(
         crate::riding::stop_riding(ents, env, target);
     }
     if dealt {
-        post_attack(ents, env, target, &source, weapon);
+        post_attack(level, ents, env, cx, target, &source, Some(weapon));
     }
     if !affected {
         return false;
