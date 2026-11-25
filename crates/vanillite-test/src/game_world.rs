@@ -328,15 +328,17 @@ impl GameWorld {
             {
                 continue;
             }
+            if kind == ids::EXPERIENCE_ORB {
+                vanillite_game::entities::tick_entity(&mut self.level, id, kind);
+                continue;
+            }
             self.with_env(|level, ents, env, cx| {
                 if is_mob {
                     mob::tick(level, ents, env, cx, id);
                 } else if is_minecart {
                     minecart::tick(level, ents, env, cx, id);
-                } else if kind == ids::ARROW {
-                    projectile::tick_arrow(level, ents, env, cx, id);
                 } else {
-                    projectile::tick_orb(level, ents, env, cx, id);
+                    projectile::tick_arrow(level, ents, env, cx, id);
                 }
             });
             if !self.mobs.actions.is_empty() {
@@ -496,6 +498,7 @@ impl GameWorld {
             inventory: vanillite_game::inventory::PlayerInventory::default(),
             last_equipment: std::array::from_fn(|_| vanillite_game::item::ItemStack::EMPTY),
             survival: vanillite_game::survival::player::Survival::default(),
+            recipe_book: vanillite_game::recipe::book::PlayerRecipeBook::default(),
         };
         let rot = Rotation {
             y_rot: spec.rot[0],

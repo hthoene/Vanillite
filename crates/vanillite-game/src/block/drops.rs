@@ -32,7 +32,7 @@ pub fn drop_resources(
     let components = |id: u16| {
         entity
             .as_ref()
-            .and_then(|e| super::container::component(e, id))
+            .and_then(|e| crate::level::block_entity::collect_component(e, id))
     };
     let item_in_tag = |item: u16, tag: &str| data.item_in_tag(item, tag);
     let loot = BlockLootContext {

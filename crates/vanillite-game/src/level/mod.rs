@@ -98,6 +98,8 @@ pub struct LevelSettings {
     pub entity_drops: bool,
     /// The dimension's `fast_lava` attribute (the Nether).
     pub fast_lava: bool,
+    /// `tntExplodes` game rule (`TNT_EXPLODES`).
+    pub tnt_explodes: bool,
     /// The dimension has sky light.
     pub has_sky_light: bool,
     /// The dimension's `water_evaporates` attribute (the Nether).
@@ -121,6 +123,7 @@ impl Default for LevelSettings {
             block_drops: true,
             entity_drops: true,
             fast_lava: false,
+            tnt_explodes: true,
             has_sky_light: true,
             water_evaporates: false,
             portal_dimension: true,
@@ -182,6 +185,8 @@ pub struct Sound {
 
 /// `SoundSource.BLOCKS`.
 pub const SOUND_BLOCKS: u8 = 4;
+/// `SoundSource.PLAYERS`.
+pub const SOUND_PLAYERS: u8 = 7;
 /// `SoundSource.NEUTRAL`.
 pub const SOUND_NEUTRAL: u8 = 6;
 /// `SoundSource.RECORDS`.
@@ -265,6 +270,11 @@ pub struct Level {
     menu_requests: Vec<crate::menu::container::MenuRequest>,
     /// Sign editors blocks asked to open: player, position, front side.
     sign_editors: Vec<(EntityId, BlockPos, bool)>,
+    /// Stacks blocks hand to the player that used them (`player.getInventory().add`, else
+    /// dropped); taken by the player handlers.
+    player_gives: Vec<(EntityId, crate::item::ItemStack)>,
+    /// The server's maps (shared by all worlds).
+    maps: Option<Arc<crate::map::Maps>>,
     min_y: i32,
     max_y: i32,
 }
@@ -317,6 +327,8 @@ impl Level {
             output: LevelOutput::default(),
             menu_requests: Vec::new(),
             sign_editors: Vec::new(),
+            player_gives: Vec::new(),
+            maps: None,
             min_y,
             max_y,
         };
@@ -340,7 +352,29 @@ impl Level {
         self.sign_editors.push((player, pos, front));
     }
 
-    /// The sign editors blocks asked to open since the last call.
+    /// Uses the server's map store.
+    pub fn set_maps(&mut self, maps: Arc<crate::map::Maps>) {
+        self.maps = Some(maps);
+    }
+
+    /// The server's map store.
+    pub fn maps(&self) -> Option<&crate::map::Maps> {
+        self.maps.as_deref()
+    }
+
+    /// `player.getInventory().add(stack)` (or drop) from block code.
+    pub fn give_to_player(&mut self, player: EntityId, stack: crate::item::ItemStack) {
+        if !stack.is_empty() {
+            self.player_gives.push((player, stack));
+        }
+    }
+
+    /// Takes the stacks blocks handed to players.
+    pub fn take_player_gives(&mut self) -> Vec<(EntityId, crate::item::ItemStack)> {
+        std::mem::take(&mut self.player_gives)
+    }
+
+    /// Takes the sign editors blocks asked to open.
     pub fn take_sign_editors(&mut self) -> Vec<(EntityId, BlockPos, bool)> {
         std::mem::take(&mut self.sign_editors)
     }
@@ -413,6 +447,11 @@ impl Level {
     /// The server-wide network id counter.
     pub fn network_ids(&self) -> &NetworkIds {
         &self.network_ids
+    }
+
+    /// The entities, the network ids and the level random at once.
+    pub fn entity_parts(&mut self) -> (&mut Entities, &NetworkIds, &mut LegacyRandom) {
+        (&mut self.entities, &self.network_ids, &mut self.random)
     }
 
     /// The server-wide network id counter, shared.
