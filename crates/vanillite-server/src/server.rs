@@ -13,18 +13,20 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use std::{fmt, io};
 
-use vanillite_chunk::slots::{ChunkGeneratorProvider, ChunkStorageProvider, LightEngineProvider};
-use vanillite_config::{
-    Config, ConfigError, RegionFileCompression, RuleSet, VANILLITE_FILE, VanillaOr,
+use vanillite_chunk::slots::{
+    ChunkGeneratorProvider, ChunkStoreProvider, DimensionId, LightEngineProvider,
 };
+use vanillite_config::{Config, ConfigError, RuleSet, VANILLITE_FILE, VanillaOr};
 use vanillite_game::level::Level;
 use vanillite_light::BfsLightEngineProvider;
 use vanillite_storage::backup::BackupSettings;
 use vanillite_storage::player_data::{JsonFile, PlayerDataStore};
 use vanillite_storage::saved_data::SavedDataStore;
 use vanillite_storage::writer::FileWriter;
-use vanillite_storage::{AnvilStorageProvider, Compression, WorldLayout};
-use vanillite_world::chunks::{ChunkSettings, ChunkSlots, Chunks};
+use vanillite_storage::{
+    AnvilCodec, IoPool, OwnCodec, RegionStoreProvider, StoreSettings, WorldFormat, WorldLayout,
+};
+use vanillite_world::chunks::{ChunkSettings, ChunkSlots, Chunks, SaveSettings};
 use vanillite_world::entity::NetworkIds;
 use vanillite_world::tracking::{ChunkTrackerProvider, EntityTrackerProvider, TrackerSettings};
 
@@ -99,7 +101,12 @@ enum ServerMsg {
 }
 
 enum WorldMsg {
-    Tick { tick: u64, runs_normally: bool },
+    Tick {
+        tick: u64,
+        runs_normally: bool,
+        /// When the tick should end (clock nanoseconds).
+        deadline: u64,
+    },
     Task(WorldTask),
     Stop,
 }
@@ -130,7 +137,7 @@ pub struct ServerBuilder {
     dir: PathBuf,
     scheduler: Slot<dyn Scheduler>,
     entity_tracker: Slot<dyn EntityTrackerProvider>,
-    chunk_storage: Slot<dyn ChunkStorageProvider>,
+    chunk_storage: Slot<dyn ChunkStoreProvider>,
     chunk_generator: Slot<dyn ChunkGeneratorProvider>,
     light_engine: Slot<dyn LightEngineProvider>,
     vanilla_pack: VanillaPack,
@@ -183,7 +190,7 @@ impl ServerBuilder {
     /// Fills the `chunk-storage` slot with an embedded implementation.
     pub fn chunk_storage(
         &mut self,
-        provider: Box<dyn ChunkStorageProvider>,
+        provider: Box<dyn ChunkStoreProvider>,
     ) -> Result<&mut Self, SlotError> {
         self.chunk_storage.fill(provider, Origin::Embedded)?;
         Ok(self)
@@ -253,15 +260,14 @@ impl ServerBuilder {
         let level_name = config.properties.level_name.clone();
         let level_dir = dir.join(&level_name);
         let session_lock = lock_world(&level_dir)?;
-        let layout = match config.server.storage.layout {
-            vanillite_config::StorageLayout::Vanilla => WorldLayout::Vanilla,
-            vanillite_config::StorageLayout::Spigot => WorldLayout::Spigot,
-        };
+        let layout = crate::world_format::layout(&config);
         let moved = vanillite_storage::layout::adopt_layout(&dir, &level_name, layout, &DIMENSIONS)
             .map_err(|e| StartError::Io(format!("world layout of \"{level_name}\": {e}")))?;
         for line in moved {
             log::warn!("storage.layout = {layout:?}: {line}");
         }
+        // Before anything writes into the world: a new world is marked with its format.
+        let format_plan = crate::world_format::plan(&config, &dir, &level_name)?;
         let writer = FileWriter::start().map_err(|e| StartError::io(&level_dir, e))?;
         let player_store = PlayerDataStore::new(&level_dir).with_writer(writer.clone());
         // Mojang's profile key signers are fetched while the data packs load.
@@ -298,24 +304,62 @@ impl ServerBuilder {
         let behaviours = Arc::new(vanillite_game::block::Behaviours::vanilla());
         let spawn_table = crate::world_setup::spawn_table(packs.as_deref()).map(Arc::new);
         let slot = |name: &str, origin: &Origin| log::info!("Slot {name}: {origin}");
-        let entity_compression = match config.properties.region_file_compression {
-            RegionFileCompression::Deflate => Compression::Deflate,
-            RegionFileCompression::Lz4 => Compression::Lz4,
-            RegionFileCompression::None => Compression::None,
+        let compression = crate::world_format::anvil_compression(&config);
+        let world_format = if format_plan.convert_to.is_some() {
+            let infos = DIMENSIONS
+                .iter()
+                .map(|d| {
+                    crate::world_setup::world_info(
+                        packs.as_deref(),
+                        layout.dimension_dir(&dir, &level_name, d),
+                        d,
+                        seed,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            crate::world_format::convert_on_start(
+                format_plan,
+                &config,
+                &dir,
+                &level_name,
+                &infos,
+                workers,
+            )
+        } else {
+            format_plan.format
         };
+        let own_level = i32::from(config.server.storage.compression_level);
+        let storage_rules = &config.server.storage;
+        let io = IoPool::new(usize::from(storage_rules.io_threads))
+            .map_err(|e| StartError::Io(format!("cannot start the storage IO threads: {e}")))?;
         let (storage_provider, origin) = self.chunk_storage.take().unwrap_or_else(|| {
-            let compression = match config.properties.region_file_compression {
-                RegionFileCompression::Deflate => Compression::Deflate,
-                RegionFileCompression::Lz4 => Compression::Lz4,
-                RegionFileCompression::None => Compression::None,
+            let settings = StoreSettings {
+                sync: config.properties.sync_chunk_writes,
+                read_ahead: storage_rules.read_ahead,
+                read_cache: (storage_rules.read_cache as usize) << 20,
+                max_open_files: storage_rules.max_open_files as usize,
             };
             (
-                Box::new(AnvilStorageProvider { compression }),
+                Box::new(RegionStoreProvider {
+                    format: world_format,
+                    pool: io.clone(),
+                    settings,
+                }),
                 Origin::BuiltIn,
             )
         });
+        let save_settings = SaveSettings {
+            dimension: DimensionId(0),
+            tick_budget: Duration::from_micros(u64::from(
+                config.server.storage_autosave.tick_budget,
+            )),
+            min_chunks_per_tick: config.server.storage_autosave.min_chunks_per_tick as usize,
+            commit_interval: u64::from(storage_rules.commit_interval) * 20,
+            max_backlog: (storage_rules.max_pending_writes as usize) << 20,
+        };
         slot("chunk-storage", &origin);
         let terrains = crate::world_setup::GeneratorsByDimension::default();
+        log::info!("World format: {}", world_format.name());
         let built_in_generators = {
             let packs = packs.clone();
             let world_gen = prepared.world_gen;
@@ -442,12 +486,14 @@ impl ServerBuilder {
                 dimension,
                 seed,
             )?;
-            let entity_io =
-                crate::entity_io::EntityChunks::new(&info.dir, entity_compression, dimension);
             let slots = ChunkSlots {
-                storage: storage_provider
-                    .create(&info)
+                store: storage_provider
+                    .create(&info, DimensionId(index))
                     .map_err(|e| StartError::io(&info.dir, e))?,
+                codec: match world_format {
+                    WorldFormat::Anvil => Arc::new(AnvilCodec::new(&info, compression)),
+                    WorldFormat::Vanillite => Arc::new(OwnCodec::new(&info, own_level)),
+                },
                 generator: generator_provider
                     .create(&info)
                     .map_err(|e| StartError::Io(format!("chunk generator of {dimension}: {e}")))?,
@@ -467,6 +513,10 @@ impl ServerBuilder {
                 )),
                 max_relights: usize::try_from(rules.simulation.max_relights_per_tick)
                     .unwrap_or(usize::MAX),
+                save: SaveSettings {
+                    dimension: DimensionId(index),
+                    ..save_settings
+                },
             };
             let level_settings = crate::world_setup::level_settings(
                 packs.as_deref(),
@@ -517,7 +567,6 @@ impl ServerBuilder {
                 level,
                 survival,
                 mobs,
-                entity_io,
                 data,
             );
             world.kept_tickets = kept_tickets;
@@ -594,6 +643,7 @@ impl ServerBuilder {
             player_store,
             next_backup: Instant::now(),
             backup: None,
+            io,
             _session_lock: session_lock,
         };
         server.next_backup = server.backup_due_after();
@@ -671,7 +721,7 @@ fn chat_settings(
     }
 }
 
-fn lock_world(level_dir: &Path) -> Result<File, StartError> {
+pub(crate) fn lock_world(level_dir: &Path) -> Result<File, StartError> {
     fs::create_dir_all(level_dir).map_err(|e| StartError::io(level_dir, e))?;
     let path = level_dir.join("session.lock");
     let mut file = File::options()
@@ -745,12 +795,14 @@ fn world_loop(
             WorldMsg::Tick {
                 tick,
                 runs_normally,
+                deadline,
             } => {
                 let mut outbox = Vec::new();
                 let mut ctx = TickContext::new(
                     world.id(),
                     tick,
                     runs_normally,
+                    deadline,
                     compute,
                     global,
                     &mut outbox,
@@ -853,6 +905,8 @@ pub struct Server {
     next_backup: Instant,
     /// The thread of the running or last backup.
     backup: Option<JoinHandle<()>>,
+    /// The disk IO threads of the storage service.
+    io: IoPool,
     _session_lock: File,
 }
 
@@ -1001,7 +1055,9 @@ impl Server {
             if self.empty_ticks >= threshold {
                 if self.empty_ticks == threshold {
                     log::info!("Server empty for {pause_seconds} seconds, pausing");
-                    self.autosave();
+                    // Paused worlds run no save rounds: write everything now.
+                    self.ticks_until_autosave = self.autosave_interval();
+                    self.save_everything(true, false, None);
                 }
                 // The console stays responsive while paused, like Vanilla.
                 self.global_pre_phase();
@@ -1192,6 +1248,7 @@ impl Server {
     fn tick_worlds(&mut self) {
         let tick = self.tick_count;
         let runs_normally = self.global.tick_rate().runs_normally();
+        let deadline = self.next_tick;
         let mut outboxes: Vec<Vec<(WorldId, WorldTask)>> =
             self.routes.iter().map(|_| Vec::new()).collect();
         match &mut self.worlds {
@@ -1205,6 +1262,7 @@ impl Server {
                         world.id(),
                         tick,
                         runs_normally,
+                        deadline,
                         &self.compute,
                         &self.global,
                         outbox,
@@ -1218,6 +1276,7 @@ impl Server {
                     let _ = thread.sender.send(WorldMsg::Tick {
                         tick,
                         runs_normally,
+                        deadline,
                     });
                 }
                 let mut remaining = threads.len();
@@ -1450,11 +1509,12 @@ impl Server {
                 break;
             };
             let done = Arc::clone(&done);
+            // `then` (backups) waits until the world's save round is committed.
             self.run_in_world(
                 id,
                 Box::new(move |w| {
                     w.save(flush, skip_chunks);
-                    done.world_saved();
+                    w.when_saved(Box::new(move || done.world_saved()));
                 }),
             );
         }
@@ -1556,6 +1616,7 @@ impl Server {
         self.global.systems.save(&self.global.level.data);
         self.global.level.save();
         self.global.level.writer().flush();
+        self.io.shutdown();
         log::info!("All dimensions are saved");
         if let Some(backup) = self.backup.take()
             && !backup.is_finished()

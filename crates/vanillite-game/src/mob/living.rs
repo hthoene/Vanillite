@@ -58,6 +58,10 @@ pub fn tick(t: &mut Tick<'_, '_>) {
     }
     // `tickHeadTurn` → `BodyRotationControl.clientTick`.
     nav::tick_body_rotation(t);
+    super::tame::tick_leash(t);
+    if !t.exists() {
+        return;
+    }
     kinds::after_tick(t);
 }
 
@@ -278,7 +282,14 @@ fn ai_step(t: &mut Tick<'_, '_>) {
     } else {
         t.mob().no_jump_delay = 0;
     }
-    if effective_ai {
+    // A mob its rider steers moves on the rider's client (`isControlledByLocalInstance`).
+    let steered = t
+        .ents
+        .riding
+        .passengers_of(t.id)
+        .first()
+        .is_some_and(|&p| crate::riding::controls(t.ents, p, t.id));
+    if effective_ai && !steered {
         let m = t.mob_ref();
         let input = Vec3::new(f64::from(m.xxa), f64::from(m.yya), f64::from(m.zza));
         travel(t, input);
@@ -390,7 +401,7 @@ fn move_relative(t: &mut Tick<'_, '_>, speed: f32, input: Vec3) {
     } else {
         input
     } * f64::from(speed);
-    let rad = f64::from(t.core().rot().y_rot) * std::f64::consts::PI / 180.0;
+    let rad = f64::from(t.core().rot().y_rot * super::DEG_TO_RAD);
     let sin = f64::from(vanillite_base::math::sin(rad));
     let cos = f64::from(vanillite_base::math::cos(rad));
     let delta = Vec3::new(
@@ -762,6 +773,7 @@ fn push_entities(t: &mut Tick<'_, '_>) {
     });
     ids.retain(|&o| {
         t.ents.mob(o).is_some_and(super::MobData::is_alive)
+            || t.ents.minecart(o).is_some()
             || t.ents.player(o).is_some_and(|p| {
                 !p.survival.is_dead_or_dying()
                     && p.game_mode != vanillite_config::GameMode::Spectator
@@ -785,6 +797,11 @@ fn push_entities(t: &mut Tick<'_, '_>) {
     }
     let climbing = on_climbable(t);
     for &other in &ids {
+        if t.ents.minecart(other).is_some() {
+            // `AbstractMinecart.push(this)`.
+            crate::minecart::push_by(t.ents, other, id);
+            continue;
+        }
         let Some(o) = t.ents.store.get(other) else {
             continue;
         };

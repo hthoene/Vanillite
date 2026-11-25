@@ -21,7 +21,7 @@ pub use properties::{
 };
 pub use rule::{
     DisabledOr, Kind, Profile, RuleInfo, RuleSet, RuleValue, StorageLayout, ValueShape, ValueType,
-    VanillaOr,
+    VanillaOr, WorldFormat,
 };
 pub use toml;
 

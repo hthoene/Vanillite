@@ -47,6 +47,47 @@ pub struct PlayerState {
     pub respawn: bool,
 }
 
+/// An attack or interaction of a player with an entity, by network id.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum EntityAction {
+    /// `attack`.
+    Attack(i32),
+    /// `interact`: hand, hit location relative to the entity, sneaking.
+    Interact {
+        entity: i32,
+        hand: Hand,
+        location: Vec3,
+        sneaking: bool,
+    },
+    /// `use_item` (after the block handling): items used on air that need the entities
+    /// (boats, carrot on a stick, shields, eating).
+    UseItem(Hand),
+    /// `use_item_on` with an item that acts on entities (spawn eggs, leads on fences).
+    UseItemOn {
+        hand: Hand,
+        pos: vanillite_base::BlockPos,
+        face: vanillite_base::Direction,
+    },
+    /// `player_action` `RELEASE_USE_ITEM`.
+    ReleaseUseItem,
+    /// `player_command` `OPEN_INVENTORY` while riding: the vehicle's inventory opens
+    /// (`HasCustomInventoryScreen`: chest boats).
+    OpenVehicleInventory,
+}
+
+/// What a player sends to steer its vehicle.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct VehicleInput {
+    /// The last `player_input`.
+    pub input: vanillite_protocol::packets::play::serverbound::Input,
+    /// `paddle_boat`: left and right paddle.
+    pub paddles: (bool, bool),
+    /// The last `move_vehicle` since the world took it: position, yaw, pitch, on ground.
+    pub moved: Option<(Vec3, f32, f32, bool)>,
+    /// `player_command` `START_RIDING_JUMP` with its strength, taken by the world.
+    pub jump: Option<i32>,
+}
+
 /// How handling a player's packets ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Handled {
@@ -158,9 +199,11 @@ pub struct Connection {
     pub chunks: PlayerChunks,
     /// Chat and commands.
     pub chat: PlayerChatState,
-    /// Network ids of the entities the player attacked since the last tick (`attack`); the
-    /// world resolves them with the entities.
-    pub attacks: Vec<i32>,
+    /// Attacks and interactions with entities since the last tick (`attack`, `interact`), in
+    /// packet order; the world resolves them with the entities.
+    pub entity_actions: Vec<EntityAction>,
+    /// Vehicle input: the last `player_input`, `paddle_boat` and `move_vehicle`.
+    pub vehicle: VehicleInput,
     /// Digging, placing and item handling.
     pub play: Digging,
     /// A virtual connection (test bot, Bedrock player). These have no chat session, so their
@@ -219,7 +262,8 @@ impl Connection {
             movement: Movement::new(pos),
             chunks: PlayerChunks::new(memory_connection),
             chat: PlayerChatState::new(chat, inbox),
-            attacks: Vec::new(),
+            entity_actions: Vec::new(),
+            vehicle: VehicleInput::default(),
             play: Digging::new(),
             is_virtual,
         }
@@ -387,24 +431,57 @@ impl Connection {
             ServerboundPlay::PlayerInput(p) => {
                 if self.movement.has_client_loaded() {
                     state.shift_key_down = p.0.shift;
+                    self.vehicle.input = p.0;
                 }
             }
             ServerboundPlay::Attack(p) => {
                 // `handleAttack`: bounded like the other per-tick packet budgets.
-                if self.movement.has_client_loaded() && self.attacks.len() < 16 {
-                    self.attacks.push(p.entity_id);
+                if self.movement.has_client_loaded() && self.entity_actions.len() < 16 {
+                    self.entity_actions.push(EntityAction::Attack(p.entity_id));
                 }
             }
+            ServerboundPlay::Interact(p) => {
+                // `handleInteract`: sets the sneak state, then interacts.
+                if self.movement.has_client_loaded() {
+                    state.shift_key_down = p.using_secondary_action;
+                    let l = p.location.0;
+                    if self.entity_actions.len() < 16
+                        && l.x.is_finite()
+                        && l.y.is_finite()
+                        && l.z.is_finite()
+                    {
+                        self.entity_actions.push(EntityAction::Interact {
+                            entity: p.entity_id,
+                            hand: p.hand,
+                            location: Vec3::new(l.x, l.y, l.z),
+                            sneaking: p.using_secondary_action,
+                        });
+                    }
+                }
+            }
+            ServerboundPlay::MoveVehicle(p) => {
+                if self.movement.has_client_loaded() {
+                    self.vehicle.moved =
+                        Some((Vec3::new(p.x, p.y, p.z), p.y_rot, p.x_rot, p.on_ground));
+                }
+            }
+            ServerboundPlay::PaddleBoat(p) => self.vehicle.paddles = (p.left, p.right),
             ServerboundPlay::PlayerCommand(p) => {
                 if self.movement.has_client_loaded() {
                     match p.action {
                         PlayerAction::StartSprinting => state.sprinting = true,
                         PlayerAction::StopSprinting => state.sprinting = false,
                         // Sleeping, vehicles, inventories and elytra come later.
+                        PlayerAction::StartRidingJump => {
+                            self.vehicle.jump = Some(p.data);
+                        }
+                        PlayerAction::OpenInventory => {
+                            if self.entity_actions.len() < 16 {
+                                self.entity_actions.push(EntityAction::OpenVehicleInventory);
+                            }
+                        }
                         PlayerAction::StopSleeping
-                        | PlayerAction::StartRidingJump
                         | PlayerAction::StopRidingJump
-                        | PlayerAction::OpenInventory
                         | PlayerAction::StartFallFlying => {}
                     }
                 }
@@ -416,12 +493,32 @@ impl Connection {
             }
             ServerboundPlay::UseItemOn(p) => {
                 if self.movement.has_client_loaded() {
+                    let stack = match p.hand {
+                        Hand::MainHand => play.inventory.selected_item(),
+                        Hand::OffHand => play
+                            .inventory
+                            .equipment(crate::item::EquipmentSlot::OffHand),
+                    };
+                    let name = crate::item::item_id(stack).name();
+                    let entity_item = name.ends_with("_spawn_egg")
+                        || name == "minecraft:lead"
+                        || name.ends_with("minecart");
                     self.play.use_item_on(play, &p, self.sink.as_ref());
+                    if entity_item && self.entity_actions.len() < 16 {
+                        self.entity_actions.push(EntityAction::UseItemOn {
+                            hand: p.hand,
+                            pos: vanillite_base::BlockPos::new(p.pos.x, p.pos.y, p.pos.z),
+                            face: crate::player::play::direction_wrapped(p.face),
+                        });
+                    }
                 }
             }
             ServerboundPlay::UseItem(p) => {
                 if self.movement.has_client_loaded() {
                     self.play.use_item(p.sequence);
+                    if self.entity_actions.len() < 16 {
+                        self.entity_actions.push(EntityAction::UseItem(p.hand));
+                    }
                 }
             }
             ServerboundPlay::Punch(_) => play.swings.push(Hand::MainHand),
@@ -508,7 +605,12 @@ impl Connection {
                     .drop_selected(play, p.action == DigAction::DropAllItems);
                 play.swings.push(Hand::MainHand);
             }
-            DigAction::ReleaseUseItem | DigAction::Stab => {}
+            DigAction::ReleaseUseItem => {
+                if self.entity_actions.len() < 16 {
+                    self.entity_actions.push(EntityAction::ReleaseUseItem);
+                }
+            }
+            DigAction::Stab => {}
             DigAction::StartDestroyBlock
             | DigAction::ChangeDestroyDirection
             | DigAction::AbortDestroyBlock
@@ -551,7 +653,9 @@ impl Connection {
             return;
         }
         let in_range = |pos| actor.within_block_range(pos, 4.0);
-        if !crate::menu::container::still_valid(inventory, level, &in_range) {
+        if !crate::menu::container::still_valid(inventory, level, &in_range, &|b| {
+            actor.within_entity_range(b, 4.0)
+        }) {
             log::debug!("A player interacted with an invalid menu");
             return;
         }
@@ -600,7 +704,9 @@ impl Connection {
             return;
         };
         let in_range = |pos| actor.within_block_range(pos, 4.0);
-        if !crate::menu::container::still_valid(inventory, level, &in_range) {
+        if !crate::menu::container::still_valid(inventory, level, &in_range, &|b| {
+            actor.within_entity_range(b, 4.0)
+        }) {
             log::debug!("A player interacted with an invalid menu");
             return;
         }
@@ -631,7 +737,9 @@ impl Connection {
             return;
         }
         let in_range = |pos| actor.within_block_range(pos, 4.0);
-        if !crate::menu::container::still_valid(inventory, level, &in_range) {
+        if !crate::menu::container::still_valid(inventory, level, &in_range, &|b| {
+            actor.within_entity_range(b, 4.0)
+        }) {
             log::debug!("A player interacted with an invalid menu");
             return;
         }

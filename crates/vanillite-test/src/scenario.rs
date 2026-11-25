@@ -27,21 +27,72 @@
 //!   minimum y. Defaults: seed 0, plains, the classic layers above.
 //! - `rules`: game rules on top of the defaults every scenario has (`random_tick_speed 0`,
 //!   `spawn_mobs false`, `advance_time false`, `advance_weather false`).
-//! - `region`: the observed box (inclusive). Its chunks and their neighbours are loaded and
-//!   ticking before the setup.
+//! - `region`: the observed box (inclusive). Its chunks and their neighbours are forced
+//!   (`/forceload`) and ticking before the setup.
 //! - `light`: frames also hold the settled sky and block light of the region, the levels a
 //!   client sees. Default `false`.
 //! - `setup`: applied without updates before frame 0 (`set`, `fill`; `place` with updates).
 //! - `actions`: before world tick `tick` (1-based): `place` (with neighbour and shape updates,
-//!   Vanilla `setBlock` flags 3), `set` (without updates), `fill` (with updates).
+//!   Vanilla `setBlock` flags 3), `set` (without updates), `fill` (with updates), `force` and
+//!   `unforce` (`"chunks": [[x, z], ...]`: adds or removes forced tickets like `/forceload`,
+//!   then the chunk system runs without a game tick until every chunk is loaded, unloaded and
+//!   has its entities like its new ticket level says).
+//!
+//! Positions in chunks that are not accessible (unloaded or above full level) are traced as
+//! the state [`UNLOADED`].
 //!
 //! Block states are written `name[key=value,...]` like in commands.
+//!
+//! Entities (mob AI and path finding parity):
+//!
+//! ```json
+//! {
+//!   "time": 18000, "difficulty": "normal", "entity_seed": 7,
+//!   "entities": [
+//!     {"name": "steve", "type": "minecraft:player", "pos": [8.5, -60, 2.5]},
+//!     {"name": "zombie", "type": "minecraft:zombie", "pos": [2.5, -60, 2.5], "rot": [0, 0],
+//!      "seed": 1}
+//!   ],
+//!   "actions": [{"tick": 5, "op": "hurt", "entity": "zombie", "by": "steve", "amount": 1}]
+//! }
+//! ```
+//!
+//! - `time`: the day time set before the entities come (`/time set`); none = the world's start.
+//! - `difficulty`: `peaceful`, `easy`, `normal` (default) or `hard`.
+//! - `entities`: after the setup, players first (survival, on a connection nobody reads), then
+//!   the level random is reseeded with the world seed, then the other entities in order, each
+//!   like `/summon` makes it: created with its random seeded with `seed`, placed at `pos` with
+//!   `rot` (yaw, pitch; head and body face the yaw), `finalizeSpawn` (unless `"finalize":
+//!   false`), made a baby if `baby` says so. The `name` identifies the entity in the trace.
+//! - `entity_seed`: every entity created while the scenario runs (arrows, drops, orbs, babies,
+//!   spawned mobs) seeds its random with the next `nextLong()` of a legacy random seeded with
+//!   it, in creation order (default: the world seed). The Java recorder enforces this in
+//!   Vanilla with its agent (`ParityAgent.java`).
+//!
+//! Known divergences from Vanilla live in `scenarios/divergences.toml`, not in the scenario
+//! (so they change without a new recording):
+//!
+//! ```toml
+//! [mob_zombie_chase]
+//! tick = 1
+//! cause = "the zombie lacks the villager, iron golem and turtle target goals"
+//! owner = "gameplay-developer #58"
+//! ```
+//!
+//! The check passes while the first difference is at exactly that tick and fails when it
+//! moves: earlier is a regression; later is progress (raise the tick, or remove the entry once
+//! the scenario matches Vanilla).
+//! - `hurt` action: `amount` damage to the entity `entity`, by `by` (player attack or mob
+//!   attack) or generic damage without `by`.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde_json::Value;
-use vanillite_base::BlockPos;
+use vanillite_base::{BlockPos, ChunkPos};
+
+/// The traced state of a position in a chunk that is not accessible.
+pub const UNLOADED: &str = "<unloaded>";
 
 use crate::golden;
 
@@ -65,8 +116,19 @@ pub struct WorldSpec {
     pub rules: BTreeMap<String, String>,
     /// Configuration profile (`vanilla` unless the scenario says otherwise).
     pub profile: String,
-    /// The world runs a light engine and frames observe light.
+    /// Day time set before the entities come.
+    pub time: Option<i64>,
+    /// The observed region (inclusive): its chunks and their neighbours are forced.
+    pub region: (BlockPos, BlockPos),
+    /// Chunks forced before the setup: the region's chunks and one chunk around them.
+    pub forced: Vec<ChunkPos>,
+    /// Whether the world computes light: with entities (mobs see it) or `"light": true`.
+    /// Block-only scenarios run without it, which is much faster.
     pub light: bool,
+    /// `peaceful`, `easy`, `normal` or `hard`.
+    pub difficulty: String,
+    /// Frames observe the settled light (`"light": true`).
+    pub observe_light: bool,
 }
 
 /// What an operation does.
@@ -78,6 +140,66 @@ pub enum OpKind {
     Place,
     /// A box: without updates in the setup, with updates as an action.
     Fill,
+    /// Forces chunks (an action).
+    Force,
+    /// Removes the forced tickets of chunks (an action).
+    Unforce,
+    /// Damage to a scenario entity ([`Op::hurt`]).
+    Hurt,
+}
+
+/// The damage of a `hurt` action.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Hurt {
+    /// Name of the entity hurt.
+    pub entity: String,
+    /// Name of the attacker, if any.
+    pub by: Option<String>,
+    pub amount: f32,
+}
+
+/// A known divergence from Vanilla (`scenarios/divergences.toml`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Divergence {
+    /// The tick of the first difference.
+    pub tick: u32,
+    /// Why it differs.
+    pub cause: String,
+    /// Who fixes it.
+    pub owner: String,
+}
+
+/// A scenario entity.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EntitySpec {
+    /// Name in the trace.
+    pub name: String,
+    /// Entity type, e.g. `minecraft:zombie`.
+    pub kind: String,
+    pub pos: [f64; 3],
+    /// Yaw and pitch.
+    pub rot: [f32; 2],
+    /// Seed of the entity's random.
+    pub seed: i64,
+    /// Made a baby (or an adult) after spawning, if set.
+    pub baby: Option<bool>,
+    /// `finalizeSpawn` like `/summon`.
+    pub finalize: bool,
+    /// Velocity set after spawning.
+    pub motion: Option<[f64; 3]>,
+}
+
+impl EntitySpec {
+    /// Whether the entity is a player.
+    pub fn is_player(&self) -> bool {
+        self.kind == "minecraft:player"
+    }
+
+    /// The fixed UUID of the scenario entity with index `index` (`ScenarioEntities.uuid`).
+    pub fn uuid(&self, index: usize) -> u128 {
+        let most = 0x5641_4E49_0000_0000_u64 | (index as u64 + 1);
+        (u128::from(most) << 64) | u128::from(self.seed as u64)
+    }
 }
 
 /// A setup step or an action.
@@ -88,8 +210,12 @@ pub struct Op {
     pub kind: OpKind,
     pub from: BlockPos,
     pub to: BlockPos,
-    /// Block state, `name[key=value,...]`.
+    /// Block state, `name[key=value,...]`; empty for `hurt` and chunk ops.
     pub block: String,
+    /// The damage of a `hurt` action.
+    pub hurt: Option<Hurt>,
+    /// The chunks of `force` and `unforce`.
+    pub chunks: Vec<ChunkPos>,
 }
 
 /// A parsed scenario.
@@ -106,6 +232,11 @@ pub struct Scenario {
     pub ticks: u32,
     pub setup: Vec<Op>,
     pub actions: Vec<Op>,
+    pub entities: Vec<EntitySpec>,
+    /// Seed of the stream new entities take their seeds from.
+    pub entity_seed: i64,
+    /// A known divergence from Vanilla.
+    pub diverges: Option<Divergence>,
 }
 
 impl Scenario {
@@ -178,6 +309,13 @@ impl Scenario {
             })
             .unwrap_or_default();
         let region = v.get("region").ok_or("region is missing")?;
+        let (min, max) = (pos(region.get(0))?, pos(region.get(1))?);
+        let mut forced = Vec::new();
+        for x in (min.x >> 4) - 1..=(max.x >> 4) + 1 {
+            for z in (min.z >> 4) - 1..=(max.z >> 4) + 1 {
+                forced.push(ChunkPos::new(x, z));
+            }
+        }
         let ops = |key: &str, actions: bool| -> Result<Vec<Op>, String> {
             v.get(key)
                 .and_then(Value::as_array)
@@ -210,10 +348,20 @@ impl Scenario {
                     .and_then(Value::as_str)
                     .unwrap_or("vanilla")
                     .to_owned(),
-                light: v.get("light").and_then(Value::as_bool).unwrap_or(false),
+                time: v.get("time").and_then(Value::as_i64),
+                region: (pos(region.get(0))?, pos(region.get(1))?),
+                forced,
+                light: v.get("entities").is_some()
+                    || v.get("light").and_then(Value::as_bool).unwrap_or(false),
+                difficulty: v
+                    .get("difficulty")
+                    .and_then(Value::as_str)
+                    .unwrap_or("normal")
+                    .to_owned(),
+                observe_light: v.get("light").and_then(Value::as_bool).unwrap_or(false),
             },
-            min: pos(region.get(0))?,
-            max: pos(region.get(1))?,
+            min,
+            max,
             ticks: v
                 .get("ticks")
                 .and_then(Value::as_u64)
@@ -221,6 +369,17 @@ impl Scenario {
                 .ok_or("ticks is missing")?,
             setup: ops("setup", false)?,
             actions: ops("actions", true)?,
+            entities: v
+                .get("entities")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().map(entity).collect())
+                .unwrap_or(Ok(Vec::new()))?,
+            diverges: divergence(name)?,
+            entity_seed: v
+                .get("entity_seed")
+                .and_then(Value::as_i64)
+                .or_else(|| world.and_then(|w| w.get("seed")).and_then(Value::as_i64))
+                .unwrap_or(0),
         })
     }
 }
@@ -235,19 +394,114 @@ fn pos(v: Option<&Value>) -> Result<BlockPos, String> {
     Ok(BlockPos::new(c(0)?, c(1)?, c(2)?))
 }
 
+/// The known divergence of a scenario from `scenarios/divergences.toml`.
+fn divergence(name: &str) -> Result<Option<Divergence>, String> {
+    let path = Scenario::dir().join("divergences.toml");
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    let table: toml::Table = text
+        .parse()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let Some(entry) = table.get(name) else {
+        return Ok(None);
+    };
+    let field = |k: &str| {
+        entry
+            .get(k)
+            .and_then(toml::Value::as_str)
+            .unwrap_or_default()
+    };
+    Ok(Some(Divergence {
+        tick: entry
+            .get("tick")
+            .and_then(toml::Value::as_integer)
+            .and_then(|t| u32::try_from(t).ok())
+            .ok_or_else(|| format!("{}: [{name}] needs a tick", path.display()))?,
+        cause: field("cause").to_owned(),
+        owner: field("owner").to_owned(),
+    }))
+}
+
+fn vec3(v: Option<&Value>) -> Result<[f64; 3], String> {
+    let c = |i: usize| {
+        v.and_then(|v| v.get(i))
+            .and_then(Value::as_f64)
+            .ok_or_else(|| format!("bad position {v:?}"))
+    };
+    Ok([c(0)?, c(1)?, c(2)?])
+}
+
+fn entity(v: &Value) -> Result<EntitySpec, String> {
+    let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
+    let kind = s("type").ok_or("an entity needs a type")?;
+    let seed = v.get("seed").and_then(Value::as_i64);
+    let rot = |i: usize| {
+        v.get("rot")
+            .and_then(|r| r.get(i))
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0) as f32
+    };
+    Ok(EntitySpec {
+        name: s("name").ok_or("an entity needs a name")?,
+        pos: vec3(v.get("pos"))?,
+        rot: [rot(0), rot(1)],
+        seed: match seed {
+            Some(s) => s,
+            None if kind == "minecraft:player" => 0,
+            None => return Err(format!("entity {kind} needs a seed")),
+        },
+        baby: v.get("baby").and_then(Value::as_bool),
+        finalize: v.get("finalize").and_then(Value::as_bool).unwrap_or(true),
+        motion: v.get("motion").map(|m| vec3(Some(m))).transpose()?,
+        kind,
+    })
+}
+
 fn op(v: &Value, action: bool) -> Result<Op, String> {
     let kind = match v.get("op").and_then(Value::as_str) {
         Some("set") => OpKind::Set,
         Some("place") => OpKind::Place,
         Some("fill") => OpKind::Fill,
+        Some("hurt") if action => OpKind::Hurt,
+        Some("force") if action => OpKind::Force,
+        Some("unforce") if action => OpKind::Unforce,
         o => return Err(format!("unknown op {o:?}")),
     };
-    let (from, to) = if kind == OpKind::Fill {
-        (pos(v.get("from"))?, pos(v.get("to"))?)
-    } else {
-        let p = pos(v.get("pos"))?;
-        (p, p)
-    };
+    if matches!(kind, OpKind::Force | OpKind::Unforce) {
+        let chunks = v
+            .get("chunks")
+            .and_then(Value::as_array)
+            .ok_or("a chunk op needs chunks")?
+            .iter()
+            .map(|c| {
+                let c = |i: usize| {
+                    c.get(i)
+                        .and_then(Value::as_i64)
+                        .and_then(|v| i32::try_from(v).ok())
+                        .ok_or_else(|| format!("bad chunk {c:?}"))
+                };
+                Ok(ChunkPos::new(c(0)?, c(1)?))
+            })
+            .collect::<Result<_, String>>()?;
+        let tick = v
+            .get("tick")
+            .and_then(Value::as_u64)
+            .and_then(|t| u32::try_from(t).ok())
+            .filter(|&t| t >= 1)
+            .ok_or("an action needs a tick >= 1")?;
+        return Ok(Op {
+            tick,
+            kind,
+            from: BlockPos::new(0, 0, 0),
+            to: BlockPos::new(0, 0, 0),
+            block: String::new(),
+            hurt: None,
+            chunks,
+        });
+    }
     let tick = if action {
         v.get("tick")
             .and_then(Value::as_u64)
@@ -256,6 +510,31 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             .ok_or("an action needs a tick >= 1")?
     } else {
         0
+    };
+    if kind == OpKind::Hurt {
+        let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
+        return Ok(Op {
+            tick,
+            kind,
+            from: BlockPos::new(0, 0, 0),
+            to: BlockPos::new(0, 0, 0),
+            block: String::new(),
+            chunks: Vec::new(),
+            hurt: Some(Hurt {
+                entity: s("entity").ok_or("hurt needs an entity")?,
+                by: s("by"),
+                amount: v
+                    .get("amount")
+                    .and_then(Value::as_f64)
+                    .ok_or("hurt needs an amount")? as f32,
+            }),
+        });
+    }
+    let (from, to) = if kind == OpKind::Fill {
+        (pos(v.get("from"))?, pos(v.get("to"))?)
+    } else {
+        let p = pos(v.get("pos"))?;
+        (p, p)
     };
     Ok(Op {
         tick,
@@ -267,5 +546,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             .and_then(Value::as_str)
             .ok_or("an op needs a block")?
             .to_owned(),
+        hurt: None,
+        chunks: Vec::new(),
     })
 }

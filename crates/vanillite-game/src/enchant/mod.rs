@@ -2,7 +2,10 @@
 //! registry of the data packs (costs, levels, supported items, exclusive sets, tags) and the
 //! default `enchantable` and `repairable` item components.
 
+mod effects;
 mod items;
+
+pub use effects::*;
 
 use std::collections::HashMap;
 

@@ -287,6 +287,16 @@ fn ray_box(from: Vec3, to: Vec3, b: &Aabb) -> Option<f64> {
 /// `Level.clip` with `ClipContext.Block.COLLIDER` and `Fluid.NONE`: the first block whose
 /// collision shape the segment hits (`BlockGetter.traverseBlocks`), with the hit point.
 pub fn clip(blocks: &dyn Blocks, from: Vec3, to: Vec3) -> Option<(BlockPos, Vec3)> {
+    clip_with(blocks, from, to, false)
+}
+
+/// `Level.clip` with `ClipContext.Block.COLLIDER` and `Fluid.ANY`: also stops at fluid
+/// surfaces (a fluid's shape is its height in the block).
+pub fn clip_fluids(blocks: &dyn Blocks, from: Vec3, to: Vec3) -> Option<(BlockPos, Vec3)> {
+    clip_with(blocks, from, to, true)
+}
+
+fn clip_with(blocks: &dyn Blocks, from: Vec3, to: Vec3, fluids: bool) -> Option<(BlockPos, Vec3)> {
     if from == to {
         return None;
     }
@@ -304,6 +314,19 @@ pub fn clip(blocks: &dyn Blocks, from: Vec3, to: Vec3) -> Option<(BlockPos, Vec3
         let state = blocks.state(pos);
         let (ox, oy, oz) = (f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
         let mut best: Option<f64> = None;
+        let fluid = state.fluid_state();
+        if fluids && !fluid.is_empty() {
+            let above = blocks
+                .state(BlockPos::new(pos.x, pos.y + 1, pos.z))
+                .fluid_state();
+            let height = if !above.is_empty() && above.info().fluid == fluid.info().fluid {
+                1.0
+            } else {
+                f64::from(fluid.info().own_height)
+            };
+            let shape = Aabb::new(ox, oy, oz, ox + 1.0, oy + height, oz + 1.0);
+            best = ray_box(from, to, &shape);
+        }
         for b in state.collision_shape() {
             let shape = Aabb {
                 min_x: ox + b[0],

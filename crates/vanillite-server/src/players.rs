@@ -920,7 +920,8 @@ impl WorldPlayers {
                     },
                 );
                 let in_range = |pos| actor.within_block_range(pos, 4.0);
-                if !menus::still_valid(&player.inventory, level, &in_range) {
+                let in_entity_range = |b: &vanillite_base::Aabb| actor.within_entity_range(b, 4.0);
+                if !menus::still_valid(&player.inventory, level, &in_range, &in_entity_range) {
                     let who = menus::Opener {
                         spectator: player.game_mode == GameMode::Spectator,
                         infinite: player.game_mode == GameMode::Creative,

@@ -667,8 +667,16 @@ fn fluids(data: &Path, regs: &Value) -> Result<String> {
 fn items(data: &Path, regs: &Value) -> Result<String> {
     let block_ids = ids(regs, "minecraft:block")?;
     let items = arr(&read_json(&data.join("items.json"))?)?;
+    let attrs = arr(&read_json(&data.join("attributes.json"))?)?;
+    let attr_ids: HashMap<&str, usize> = attrs
+        .iter()
+        .enumerate()
+        .map(|(i, a)| (a["name"].as_str().unwrap_or_default(), i))
+        .collect();
     let mut o = String::from(HEADER);
-    o.push_str("\nuse crate::item::{BlockSet, ItemId, ItemInfo, ToolInfo, ToolRule};\n\n");
+    o.push_str(
+        "\nuse crate::item::{BlockSet, FoodInfo, ItemId, ItemInfo, ItemModifier, ToolInfo, ToolRule, WeaponInfo};\n\n",
+    );
     let mut rarities: Vec<String> = items
         .iter()
         .map(|i| {
@@ -728,11 +736,62 @@ fn items(data: &Path, regs: &Value) -> Result<String> {
             .position(|s| *s == slot)
             .ok_or_else(|| format!("{name}: unknown equipment slot {slot}"))?,
         };
+        // Default `minecraft:attribute_modifiers`: attribute id, amount, operation and slot
+        // group ordinals.
+        let mut modifiers = String::new();
+        for m in c["minecraft:attribute_modifiers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            let attr = m["type"].as_str().unwrap_or_default();
+            let attribute = attr_ids
+                .get(attr)
+                .ok_or_else(|| format!("{name}: unknown attribute {attr}"))?;
+            let op = m["operation"].as_str().unwrap_or_default();
+            let operation = ["add_value", "add_multiplied_base", "add_multiplied_total"]
+                .iter()
+                .position(|x| *x == op)
+                .ok_or_else(|| format!("{name}: unknown operation {op}"))?;
+            let slot = m["slot"].as_str().unwrap_or("any");
+            let slot = [
+                "any", "mainhand", "offhand", "hand", "feet", "legs", "chest", "head", "armor",
+                "body", "saddle",
+            ]
+            .iter()
+            .position(|x| *x == slot)
+            .ok_or_else(|| format!("{name}: unknown slot group {slot}"))?;
+            let _ = write!(
+                modifiers,
+                "ItemModifier {{ attribute: {attribute}, amount: {}, operation: {operation}, slot: {slot} }}, ",
+                f64_of(&m["amount"])
+            );
+        }
+        let weapon = match c.get("minecraft:weapon") {
+            None => "None".to_owned(),
+            Some(w) => format!(
+                "Some(WeaponInfo {{ item_damage_per_attack: {}, disable_blocking_for_seconds: {} }})",
+                w["item_damage_per_attack"].as_u64().unwrap_or(1),
+                w.get("disable_blocking_for_seconds")
+                    .map_or_else(|| "0.0".to_owned(), f32_of)
+            ),
+        };
+        let food = match c.get("minecraft:food") {
+            None => "None".to_owned(),
+            Some(f) => format!(
+                "Some(FoodInfo {{ nutrition: {}, saturation: {}, can_always_eat: {} }})",
+                f["nutrition"].as_i64().unwrap_or(0),
+                f32_of(&f["saturation"]),
+                f["can_always_eat"].as_bool().unwrap_or(false)
+            ),
+        };
         let _ = writeln!(
             item_lines,
-            "    ItemInfo {{ name: {name:?}, max_stack_size: {}, max_damage: {}, rarity: Rarity::{rarity}, block: {block}, tool: {tool}, equip_slot: {equip} }},",
+            "    ItemInfo {{ name: {name:?}, max_stack_size: {}, max_damage: {}, rarity: Rarity::{rarity}, block: {block}, tool: {tool}, equip_slot: {equip}, modifiers: &[{}], weapon: {weapon}, food: {food}, blocks_attacks: {} }},",
             c["minecraft:max_stack_size"].as_u64().unwrap_or(1),
             c["minecraft:max_damage"].as_u64().unwrap_or(0),
+            modifiers.trim_end_matches(", "),
+            c.get("minecraft:blocks_attacks").is_some(),
         );
     }
     o.push_str(&item_lines);

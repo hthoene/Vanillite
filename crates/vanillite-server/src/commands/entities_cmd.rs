@@ -404,6 +404,7 @@ fn damage(args: &Args, source: &CommandSource, env: &mut Env<'_>) -> Result<i32,
         // `new DamageSource(type, direct)` makes the direct entity the cause too.
         cause: local(&cause).or(local(&entity)),
         direct: local(&entity),
+        disable_shield_seconds: 0.0,
         position: args
             .coordinates("location")
             .map(|c| resolve_position(source, c)),
