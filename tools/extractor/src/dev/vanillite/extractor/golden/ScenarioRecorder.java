@@ -54,6 +54,9 @@ import net.minecraft.world.ticks.ScheduledTick;
  * scenarios with {@code "light": true}, the settled sky and block light of the region.
  * Positions in chunks that are not accessible are recorded as {@link #UNLOADED}.
  *
+ * <p>The action {@code command} runs a command line as the server at the origin of the
+ * overworld.
+ *
  * <p>The actions {@code force} and {@code unforce} add or remove forced tickets of chunks and then
  * run the chunk system and the entity manager without a game tick until every chunk around the
  * scenario is loaded or unloaded, with its entities, as its ticket level says.
@@ -193,6 +196,13 @@ public final class ScenarioRecorder {
                 entities.hurt(action);
               } else if (action.get("op").getAsString().equals("effect")) {
                 entities.effect(action);
+              } else if (op.equals("command")) {
+                // As the server, at the origin of the overworld.
+                server
+                    .getCommands()
+                    .performPrefixedCommand(
+                        server.createCommandSourceStack().withPosition(Vec3.ZERO),
+                        action.get("command").getAsString());
               } else {
                 apply(level, action, true);
               }

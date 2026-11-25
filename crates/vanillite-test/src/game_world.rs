@@ -133,6 +133,36 @@ fn install() {
     });
 }
 
+/// The server whose command tree, scoreboard and storage `command` actions use: started once
+/// without network in a temporary directory, with the Vanilla data pack of [`install`], and
+/// never run (the commands run on the scenario's level).
+fn command_server() -> &'static vanillite_server::Global {
+    static GLOBAL: OnceLock<Arc<vanillite_server::Global>> = OnceLock::new();
+    GLOBAL.get_or_init(|| {
+        install();
+        let dir = std::env::temp_dir().join(format!("vanillite-scenario-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scenario server directory");
+        std::fs::write(dir.join("eula.txt"), "eula=true\n").expect("scenario server eula");
+        let cache = std::env::var_os("VANILLITE_CACHE").map_or_else(
+            || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/vanilla-cache"),
+            PathBuf::from,
+        );
+        let cache = std::fs::canonicalize(&cache).unwrap_or(cache);
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&cache, dir.join("cache")).expect("link the pack cache");
+        let mut builder = vanillite_server::ServerBuilder::new(&dir);
+        builder
+            .vanilla_pack(vanillite_server::VanillaPack::Download)
+            .network(false);
+        let server = builder.start().expect("scenario server starts");
+        let global = server.global().arc().expect("server global");
+        // Kept for the whole test run: its global outlives every scenario.
+        std::mem::forget(server);
+        global
+    })
+}
+
 /// A headless level over flat chunks.
 pub struct GameWorld {
     level: Level,
@@ -975,6 +1005,18 @@ impl ScenarioWorld for GameWorld {
             };
             combat::hurt(level, ents, env, cx, target, source, hurt.amount);
         });
+        self.finish_removals();
+        self.spawn_drops();
+        Ok(())
+    }
+
+    fn command(&mut self, line: &str) -> Result<(), String> {
+        vanillite_server::run_command_on_level(
+            command_server(),
+            &mut self.level,
+            Vec3::ZERO,
+            line,
+        )?;
         self.finish_removals();
         self.spawn_drops();
         Ok(())

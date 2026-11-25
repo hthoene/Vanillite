@@ -57,12 +57,16 @@ fn apply(
     if let Some(effect) = &op.effect {
         return world.effect(effect);
     }
+    if let Some(command) = &op.command {
+        return world.command(command);
+    }
     let updates = match op.kind {
         OpKind::Set => false,
         OpKind::Place => true,
         OpKind::Fill => action,
         OpKind::Hurt => return Err("hurt without its damage".to_owned()),
         OpKind::Effect => return Err("effect without its effect".to_owned()),
+        OpKind::Command => return Err("command without its line".to_owned()),
         OpKind::Force | OpKind::Unforce => {
             return world.set_forced(&op.chunks, op.kind == OpKind::Force);
         }

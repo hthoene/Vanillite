@@ -385,6 +385,38 @@ fn collect_signed_arguments(
 }
 
 /// A console command, run on the overworld.
+/// Runs a command line as the server (permission level 4) at `pos` in the overworld on
+/// `level`, outside a running server (parity scenarios): the execution is the console's;
+/// a line that does not parse is an error.
+pub fn run_command_on_level(
+    global: &Global,
+    level: &mut vanillite_game::level::Level,
+    pos: vanillite_base::Vec3,
+    line: &str,
+) -> Result<(), String> {
+    let arc = global.arc().ok_or("the server is gone")?;
+    let world = WorldId(0);
+    let source = CommandSource::new(arc, SourceKind::Console, 4, world, pos, (0.0, 0.0), None);
+    let parsed = global
+        .commands
+        .parse_command(line.trim().trim_start_matches('/'), &source)
+        .map_err(|e| error_message(&e).plain())?;
+    let mut env = Env {
+        level,
+        global,
+        world,
+    };
+    run_line(
+        &mut env,
+        engine::Line {
+            parsed: Arc::new(parsed),
+            signed: None,
+        },
+        source,
+    );
+    Ok(())
+}
+
 pub(crate) fn run_console_command(world: &mut ServerWorld, global: &Global, line: &str) {
     let command = line.trim().trim_start_matches('/');
     if command.is_empty() {

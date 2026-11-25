@@ -69,6 +69,9 @@
 //!   it, in creation order (default: the world seed). The Java recorder enforces this in
 //!   Vanilla with its agent (`ParityAgent.java`).
 //!
+//! Commands: `{"tick": 2, "op": "command", "command": "fill 0 1 0 3 1 3 stone"}` runs the line
+//! as the server (permission level 4) at the origin of the overworld before that tick.
+//!
 //! Known divergences from Vanilla live in `scenarios/divergences.toml`, not in the scenario
 //! (so they change without a new recording):
 //!
@@ -150,6 +153,8 @@ pub enum OpKind {
     Hurt,
     /// A status effect on a scenario entity ([`Op::effect`]).
     Effect,
+    /// A command run as the server at the origin ([`Op::command`]).
+    Command,
 }
 
 /// The status effect of an `effect` action.
@@ -233,6 +238,8 @@ pub struct Op {
     pub effect: Option<EffectOp>,
     /// The chunks of `force` and `unforce`.
     pub chunks: Vec<ChunkPos>,
+    /// The command line of a `command` action.
+    pub command: Option<String>,
 }
 
 /// A parsed scenario.
@@ -486,8 +493,33 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
         Some("effect") if action => OpKind::Effect,
         Some("force") if action => OpKind::Force,
         Some("unforce") if action => OpKind::Unforce,
+        Some("command") if action => OpKind::Command,
         o => return Err(format!("unknown op {o:?}")),
     };
+    if kind == OpKind::Command {
+        let tick = v
+            .get("tick")
+            .and_then(Value::as_u64)
+            .and_then(|t| u32::try_from(t).ok())
+            .filter(|&t| t >= 1)
+            .ok_or("an action needs a tick >= 1")?;
+        return Ok(Op {
+            tick,
+            kind,
+            from: BlockPos::new(0, 0, 0),
+            to: BlockPos::new(0, 0, 0),
+            block: String::new(),
+            hurt: None,
+            effect: None,
+            chunks: Vec::new(),
+            command: Some(
+                v.get("command")
+                    .and_then(Value::as_str)
+                    .ok_or("command needs a command")?
+                    .to_owned(),
+            ),
+        });
+    }
     if matches!(kind, OpKind::Force | OpKind::Unforce) {
         let chunks = v
             .get("chunks")
@@ -519,6 +551,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             hurt: None,
             effect: None,
             chunks,
+            command: None,
         });
     }
     let tick = if action {
@@ -551,6 +584,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
                 amplifier: int("amplifier").unwrap_or(0),
             }),
             chunks: Vec::new(),
+            command: None,
         });
     }
     if kind == OpKind::Hurt {
@@ -562,6 +596,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             to: BlockPos::new(0, 0, 0),
             block: String::new(),
             chunks: Vec::new(),
+            command: None,
             hurt: Some(Hurt {
                 entity: s("entity").ok_or("hurt needs an entity")?,
                 by: s("by"),
@@ -592,5 +627,6 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
         hurt: None,
         effect: None,
         chunks: Vec::new(),
+        command: None,
     })
 }
