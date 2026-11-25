@@ -152,6 +152,8 @@ impl ServerWorld {
         if let Some(climate) = survival.climate() {
             level.set_climate(Arc::clone(climate));
         }
+        let mut packets = ChunkPackets::default();
+        packets.set_anti_xray(&rules.anti_xray, &dimension);
         ServerWorld {
             id,
             dimension,
@@ -165,7 +167,7 @@ impl ServerWorld {
             viewers: Vec::new(),
             chunks_sent: Vec::new(),
             players,
-            packets: ChunkPackets::default(),
+            packets,
             updates: WorldUpdates::default(),
             player_tickets: FxHashMap::default(),
             center_tickets: FxHashMap::default(),
@@ -345,6 +347,8 @@ impl ServerWorld {
             usize::try_from(rules.simulation.max_relights_per_tick).unwrap_or(usize::MAX),
         );
         self.mobs.set_rules(&rules);
+        self.packets
+            .set_anti_xray(&rules.anti_xray, &self.dimension);
         self.rules = rules;
     }
 
@@ -486,7 +490,10 @@ impl ServerWorld {
         }
         let light = self.updates.light_changes();
         self.level.chunks.take_light_changes(light);
-        self.packets.invalidate(&mut self.level.chunks, light);
+        let mut changed = std::mem::take(&mut self.level.output().changed);
+        self.packets
+            .invalidate(&mut self.level.chunks, light, &mut changed);
+        self.level.output().changed = changed;
         for pos in &self.level.output().block_entity_updates {
             self.packets.invalidate_chunk(pos.chunk());
         }

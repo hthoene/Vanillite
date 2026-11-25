@@ -4,7 +4,7 @@
 //! `[worlds."<dimension>"]`. Both read their keys from the top level of `vanillite.toml`, so a
 //! group key must be unique across both sets. Performance knobs live under `performance.*`.
 
-use crate::rule::{DisabledOr, StorageLayout, VanillaOr, WorldFormat};
+use crate::rule::{AntiXrayMode, DisabledOr, StorageLayout, VanillaOr, WorldFormat};
 use crate::rules;
 
 rules! {
@@ -397,5 +397,76 @@ rules! {
             despawn_ticks: u16 = "despawn-ticks", Performance, range = [20, 32766],
                 vanilla = 6000;
         }
+        /// Anti-Xray: ores and other hidden blocks that touch no transparent block are kept from
+        /// clients, so x-ray clients and texture packs cannot find them. Chunk packets stay
+        /// shared by every player of the world; blocks around a changed block are sent with
+        /// their real state.
+        anti_xray: AntiXrayRules = "anticheat.anti-xray" {
+            /// "disabled" sends the real blocks (Vanilla). "hide" sends hidden blocks as the
+            /// dimension's base stone (deepslate below y 0, netherrack, end stone). "obfuscate"
+            /// sends hidden and replacement blocks as random hidden blocks (bigger chunk packets).
+            engine_mode: AntiXrayMode = "engine-mode", Limit, vanilla = AntiXrayMode::Disabled,
+                paper = AntiXrayMode::Hide;
+            /// Blocks that are hidden (block ids).
+            hidden_blocks: Vec<String> = "hidden-blocks", Limit,
+                vanilla = anti_xray_hidden_blocks();
+            /// Blocks that "obfuscate" also replaces with random hidden blocks (block ids).
+            replacement_blocks: Vec<String> = "replacement-blocks", Limit,
+                vanilla = anti_xray_replacement_blocks();
+            /// Blocks at and above this height are always sent as they are.
+            max_block_height: i32 = "max-block-height", Limit, range = [-2048, 2048],
+                vanilla = 64;
+            /// Distance in blocks around a changed block (mined, exploded, moved) within which
+            /// hidden blocks are sent with their real state.
+            update_radius: u8 = "update-radius", Limit, range = [1, 4], vanilla = 2;
+        }
     }
+}
+
+/// Default of `anticheat.anti-xray.hidden-blocks`: ores, raw ore blocks and blocks that mark
+/// dungeons, mineshafts and strongholds, in all three dimensions.
+fn anti_xray_hidden_blocks() -> Vec<String> {
+    [
+        "coal_ore",
+        "deepslate_coal_ore",
+        "copper_ore",
+        "deepslate_copper_ore",
+        "raw_copper_block",
+        "iron_ore",
+        "deepslate_iron_ore",
+        "raw_iron_block",
+        "gold_ore",
+        "deepslate_gold_ore",
+        "redstone_ore",
+        "deepslate_redstone_ore",
+        "lapis_ore",
+        "deepslate_lapis_ore",
+        "diamond_ore",
+        "deepslate_diamond_ore",
+        "emerald_ore",
+        "deepslate_emerald_ore",
+        "nether_gold_ore",
+        "nether_quartz_ore",
+        "ancient_debris",
+        "mossy_cobblestone",
+        "obsidian",
+        "clay",
+        "chest",
+        "ender_chest",
+    ]
+    .map(|id| format!("minecraft:{id}"))
+    .to_vec()
+}
+
+/// Default of `anticheat.anti-xray.replacement-blocks`: the common blocks around hidden ones.
+fn anti_xray_replacement_blocks() -> Vec<String> {
+    [
+        "stone",
+        "deepslate",
+        "oak_planks",
+        "netherrack",
+        "end_stone",
+    ]
+    .map(|id| format!("minecraft:{id}"))
+    .to_vec()
 }
