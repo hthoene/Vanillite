@@ -512,9 +512,6 @@ impl WorldMobs {
                             crate::spectator::spectate(&mut ents, &level.border, player, target);
                         }
                     }
-                    EntityAction::TeleportToEntity(uuid) => {
-                        crate::spectator::teleport_to_entity(&mut ents, global, player, uuid);
-                    }
                     EntityAction::OpenVehicleInventory => {
                         // `openCustomInventoryScreen` of a chest boat or mount the player
                         // rides.

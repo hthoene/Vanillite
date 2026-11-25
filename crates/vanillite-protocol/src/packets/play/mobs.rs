@@ -80,13 +80,6 @@ impl Packet for SpectatorAction {
     const BUCKET: crate::Bucket = crate::Bucket::Interact;
 }
 
-/// `teleport_to_entity`: a spectator teleports to an entity of the spectator menu.
-#[derive(Debug, Clone, PartialEq, Eq, Packet)]
-#[packet(state = Play, dir = Serverbound, name = "teleport_to_entity", bucket = "interact")]
-pub struct TeleportToEntity {
-    pub uuid: crate::types::Uuid,
-}
-
 /// `set_passengers`: the passengers of a vehicle.
 #[derive(Debug, Clone, PartialEq, Eq, Packet)]
 #[packet(state = Play, dir = Clientbound, name = "set_passengers")]

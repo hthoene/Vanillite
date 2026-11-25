@@ -50,6 +50,10 @@ pub(crate) fn handle_requests(
                 session(global, uuid, data);
                 None
             }
+            ChatRequest::Admin(request) => {
+                crate::commands::handle_admin(level, global, id, world, request);
+                None
+            }
             ChatRequest::Command { command, signed } => {
                 crate::commands::run_player_command(level, global, id, world, &command, signed)
             }

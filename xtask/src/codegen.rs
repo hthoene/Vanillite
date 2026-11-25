@@ -787,11 +787,15 @@ fn items(data: &Path, regs: &Value) -> Result<String> {
         };
         let _ = writeln!(
             item_lines,
-            "    ItemInfo {{ name: {name:?}, max_stack_size: {}, max_damage: {}, rarity: Rarity::{rarity}, block: {block}, tool: {tool}, equip_slot: {equip}, modifiers: &[{}], weapon: {weapon}, food: {food}, blocks_attacks: {} }},",
+            "    ItemInfo {{ name: {name:?}, max_stack_size: {}, max_damage: {}, rarity: Rarity::{rarity}, block: {block}, tool: {tool}, equip_slot: {equip}, modifiers: &[{}], weapon: {weapon}, food: {food}, blocks_attacks: {}, compostable: {:?}, jukebox_song: {:?} }},",
             c["minecraft:max_stack_size"].as_u64().unwrap_or(1),
             c["minecraft:max_damage"].as_u64().unwrap_or(0),
             modifiers.trim_end_matches(", "),
             c.get("minecraft:blocks_attacks").is_some(),
+            c["minecraft:compostable"]["layers"]
+                .as_str()
+                .unwrap_or_default(),
+            c["minecraft:jukebox_playable"].as_str().unwrap_or_default(),
         );
     }
     o.push_str(&item_lines);

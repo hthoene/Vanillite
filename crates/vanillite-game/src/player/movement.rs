@@ -79,6 +79,10 @@ pub struct MoveContext<'a> {
     pub border: Option<&'a crate::level::border::WorldBorder>,
     /// No "moved wrongly" check for this player (`isCreative()`, `isSpectator()`).
     pub no_wrong_move_check: bool,
+    /// The `player_movement_check` game rule.
+    pub movement_check: bool,
+    /// The `elytra_movement_check` game rule.
+    pub elytra_movement_check: bool,
 }
 
 /// The part of `player.move`'s collision with the world border that the "moved wrongly"
@@ -417,8 +421,11 @@ impl Movement {
         Ok(())
     }
 
+    /// `shouldCheckPlayerMovement`: the game rules, and the server's own switches on top.
     fn should_check_movement(ctx: MoveContext<'_>, fall_flying: bool) -> bool {
-        ctx.rules.too_fast_check && (!fall_flying || ctx.rules.elytra_too_fast_check)
+        ctx.movement_check
+            && ctx.rules.too_fast_check
+            && (!fall_flying || (ctx.elytra_movement_check && ctx.rules.elytra_too_fast_check))
     }
 
     /// `handlePlayerPositionChange` without vehicles, sleeping and block collision.

@@ -58,6 +58,9 @@ fn neighbor_changed(
 /// priming sound. The caller removes the block. Fire (`FireBlock`), flint and steel and burning
 /// projectiles call this too.
 pub fn prime(level: &mut Level, pos: BlockPos, source: Option<EntityId>) -> bool {
+    if !level.settings.tnt_explodes {
+        return false;
+    }
     let at = Vec3::new(
         f64::from(pos.x) + 0.5,
         f64::from(pos.y),
@@ -80,6 +83,9 @@ pub fn prime(level: &mut Level, pos: BlockPos, source: Option<EntityId>) -> bool
 
 /// `TntBlock.wasExploded`: TNT hit by an explosion primes with a short random fuse.
 pub fn was_exploded(level: &mut Level, pos: BlockPos, source: Option<EntityId>) {
+    if !level.settings.tnt_explodes {
+        return;
+    }
     let at = Vec3::new(
         f64::from(pos.x) + 0.5,
         f64::from(pos.y),
@@ -210,8 +216,17 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
     }
 }
 
-/// `PrimedTnt.explode`: power 4 at a sixteenth of its height, breaking blocks like TNT.
+/// `PrimedTnt.explode`: power 4 at a sixteenth of its height, breaking blocks like TNT
+/// (`ExplosionInteraction.TNT`), if the `tnt_explodes` rule allows.
 fn explode(level: &mut Level, id: EntityId, pos: Vec3, data: PrimedTntData) {
+    if !level.settings.tnt_explodes {
+        return;
+    }
+    let interaction = if level.settings.tnt_explosion_drop_decay {
+        BlockInteraction::DestroyWithDecay
+    } else {
+        BlockInteraction::Destroy
+    };
     let height = f64::from(entity_ids::TNT.info().height);
     let center = Vec3::new(pos.x, pos.y + height * 0.0625, pos.z);
     level.explode(
@@ -219,7 +234,7 @@ fn explode(level: &mut Level, id: EntityId, pos: Vec3, data: PrimedTntData) {
         data.owner,
         center,
         data.explosion_power,
-        BlockInteraction::Destroy,
+        interaction,
     );
 }
 

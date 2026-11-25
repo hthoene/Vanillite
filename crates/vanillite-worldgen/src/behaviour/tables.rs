@@ -42,6 +42,7 @@ block_tags!(
     causes_continuous_geyser_eruptions,
     causes_periodic_geyser_eruptions,
     convertible_to_mud,
+    copper,
     copper_chests,
     coral_blocks,
     dampens_vibrations,

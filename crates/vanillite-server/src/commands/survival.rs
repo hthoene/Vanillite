@@ -403,14 +403,7 @@ pub(crate) fn game_rule_set(
         }
         rules.set(rule, value);
     }
-    if rule == Rule::ADVANCE_TIME {
-        broadcast_all(global, &full_time_sync(&global.level));
-    } else if rule == Rule::IMMEDIATE_RESPAWN {
-        broadcast_all(
-            global,
-            &crate::survival::immediate_respawn_event(value != 0),
-        );
-    }
+    on_game_rule_changed(global, rule, value);
     source.send_success(
         global,
         Component::translatable_args(
@@ -423,6 +416,47 @@ pub(crate) fn game_rule_set(
         true,
     );
     Ok(value)
+}
+
+/// `MinecraftServer.onGameRuleChanged`: what the clients learn of a changed rule.
+pub(crate) fn on_game_rule_changed(global: &Global, rule: Rule, value: i32) {
+    if rule == Rule::REDUCED_DEBUG_INFO {
+        // Entity event 22 or 23 to every player about itself.
+        let event: i8 = if value != 0 { 22 } else { 23 };
+        for index in 0..crate::server::DIMENSIONS.len() {
+            let Ok(index) = u16::try_from(index) else {
+                continue;
+            };
+            global.run_in_world(crate::world::WorldId(index), move |w| {
+                let entities = w.entities();
+                for (id, player) in entities.players.iter() {
+                    if let Some(e) = entities.store.get(id) {
+                        player.connection.sink.send(
+                            &vanillite_protocol::packets::play::clientbound::EntityEvent {
+                                entity_id: e.network_id().0,
+                                event,
+                            },
+                        );
+                    }
+                }
+            });
+        }
+    } else if rule == Rule::LIMITED_CRAFTING || rule == Rule::IMMEDIATE_RESPAWN {
+        let event = if rule == Rule::LIMITED_CRAFTING {
+            vanillite_game::survival::weather::event::LIMITED_CRAFTING
+        } else {
+            vanillite_game::survival::weather::event::IMMEDIATE_RESPAWN
+        };
+        broadcast_all(
+            global,
+            &vanillite_protocol::packets::play::clientbound::GameEvent {
+                event,
+                param: if value != 0 { 1.0 } else { 0.0 },
+            },
+        );
+    } else if rule == Rule::ADVANCE_TIME {
+        broadcast_all(global, &full_time_sync(&global.level));
+    }
 }
 
 /// `kill [<targets>]`: `kill` on every victim; players of other worlds die between ticks.

@@ -94,6 +94,18 @@ pub fn hurt(
     if ents.player(target).is_none() {
         return false;
     }
+    // `ServerPlayer.hurtServer`: a player-caused hit (also through projectiles, potions and
+    // arrows of a player) fails `canHarmPlayer` without the pvp rule.
+    if !env.rules.bool(Rule::PVP)
+        && (source.cause.is_some_and(|c| ents.player(c).is_some())
+            || source
+                .direct
+                .and_then(|d| ents.arrow(d))
+                .and_then(|a| a.owner)
+                .is_some_and(|o| ents.player(o).is_some()))
+    {
+        return false;
+    }
     let armor = super::attack::armor_effectiveness(ents, env.types, target, &source);
     let Entities { store, players, .. } = ents;
     let Some(mut entity) = store.get_mut(target) else {
@@ -519,6 +531,43 @@ fn die(
     if m.removed || m.dead {
         return;
     }
+    // `TamableAnimal.die`: the death message goes to the owner first.
+    if let Some(m) = ents.mob(target)
+        && m.tame
+        && matches!(
+            m.kind,
+            Kind::Wolf | Kind::Cat | Kind::Parrot | Kind::Nautilus | Kind::ZombieNautilus
+        )
+        && env.rules.bool(Rule::SHOW_DEATH_MESSAGES)
+    {
+        let name = mob_name(m);
+        if let Some(owner) = super::tame::owner_of(ents, m).filter(|&o| ents.player(o).is_some()) {
+            let mut tracker = crate::survival::combat::CombatTracker::default();
+            tracker.record_damage(
+                crate::survival::combat::CombatEntry {
+                    source,
+                    damage: 0.0,
+                    fall_location: None,
+                    fall_distance: 0.0,
+                },
+                0,
+                false,
+                false,
+            );
+            env.out.push(Effect::To {
+                player: owner,
+                packet: SharedPacket::of(
+                    &vanillite_protocol::packets::play::clientbound::SystemChat {
+                        content: tracker.death_message(env.types, name),
+                        overlay: false,
+                    },
+                ),
+            });
+        }
+    }
+    let Some(m) = ents.mob_mut(target) else {
+        return;
+    };
     m.dead = true;
     let mob_kind = m.kind;
     if mob_kind.family() != super::Family::Classic {
@@ -659,6 +708,7 @@ fn die(
             )
         });
     }
+    create_wither_rose(level, ents, env, cx, pos, credit);
     env.out.push(Effect::Died {
         victim: target,
         killer: credit.or(source.cause),
@@ -675,6 +725,63 @@ fn die(
     if let Some(mut e) = ents.store.get_mut(target) {
         e.set_pose(Pose::Dying);
     }
+}
+
+/// `LivingEntity.createWitherRose`: a victim of the wither leaves a wither rose, planted
+/// where it died if `mob_griefing` allows and the rose survives there, else as an item.
+pub fn create_wither_rose(
+    level: &Level,
+    ents: &Entities,
+    env: &mut Env<'_>,
+    cx: &mut MobContext,
+    pos: Vec3,
+    killer: Option<EntityId>,
+) {
+    if !killer.is_some_and(|k| ents.mob(k).is_some_and(|m| m.kind == Kind::Wither)) {
+        return;
+    }
+    use vanillite_data::block::ids;
+    let block_pos = vanillite_base::BlockPos::new(
+        vanillite_base::math::floor(pos.x),
+        vanillite_base::math::floor(pos.y),
+        vanillite_base::math::floor(pos.z),
+    );
+    let rose = ids::WITHER_ROSE.default_state();
+    if env.rules.bool(Rule::MOB_GRIEFING)
+        && level.block(block_pos).is_air()
+        && crate::block::place::can_survive(rose, block_pos, level)
+    {
+        cx.actions.push(super::WorldAction::SetBlock(
+            block_pos,
+            rose,
+            crate::level::update::ALL,
+        ));
+        return;
+    }
+    let Some(item) = vanillite_data::registry::ITEM.id("minecraft:wither_rose") else {
+        return;
+    };
+    let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
+    env.out.push(Effect::DropItem {
+        uuid,
+        pos,
+        velocity,
+        y_rot,
+        pickup_delay: 0,
+        stack: crate::item::ItemStack::new(item, 1),
+    });
+}
+
+/// `getDisplayName` of a mob without team: its custom name, else its type's name.
+fn mob_name(m: &super::MobData) -> vanillite_protocol::text::Component {
+    if let Some(bytes) = &m.custom_name {
+        let mut input = &bytes[..];
+        let mut budget = vanillite_nbt::Budget::file();
+        if let Ok(Some(tag)) = vanillite_nbt::read::read_network(&mut input, &mut budget) {
+            return vanillite_protocol::text::Component::from_nbt(&tag);
+        }
+    }
+    vanillite_protocol::text::Component::translatable(m.kind.translation_key(), vec![])
 }
 
 /// `ExperienceOrb.award`: the world splits `amount` into orbs from the [`Effect::Experience`].

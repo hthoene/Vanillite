@@ -13,9 +13,11 @@ pub mod serverbound {
 
     crate::common_serverbound!(Play);
 
-    pub use super::mobs::{
-        Attack, Interact, MoveVehicle, PaddleBoat, SpectatorAction, TeleportToEntity,
+    pub use super::admin::{
+        BlockEntityTagQuery, ChangeDifficultyServerbound, ChangeGameMode, EntityTagQuery,
+        GameRuleEntry, LockDifficulty, PlayerAbilitiesServerbound, SetGameRule, TeleportToEntity,
     };
+    pub use super::mobs::{Attack, Interact, MoveVehicle, PaddleBoat, SpectatorAction};
 
     /// `configuration_acknowledged`: the client entered configuration again.
     #[derive(Debug, Clone, PartialEq, Eq, Packet)]
@@ -543,6 +545,7 @@ pub mod clientbound {
         pub head_y_rot: i8,
     }
 
+    pub use super::admin::{GameRuleValues, TagQuery};
     pub use super::boss::*;
     pub use super::entities::*;
     pub use super::hud::*;
@@ -555,6 +558,7 @@ pub mod clientbound {
     pub use super::survival::*;
 }
 
+mod admin;
 mod boss;
 mod hud;
 mod level;
