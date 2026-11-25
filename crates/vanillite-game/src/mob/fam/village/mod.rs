@@ -45,6 +45,21 @@ pub struct Merchant {
     pub unhappy_counter: i32,
     /// The `SimpleContainer(8)` inventory.
     pub inventory: [ItemStack; 8],
+    /// `Villager.villagerXp` (`Xp`).
+    pub villager_xp: i32,
+    /// `Villager.lastRestockGameTime` (`LastRestock`).
+    pub last_restock: i64,
+    /// `Villager.numberOfRestocksToday` (`RestocksToday`).
+    pub restocks_today: i32,
+    /// `Villager.lastRestockCheckDay` (not saved).
+    pub last_restock_check_day: i64,
+    /// `Villager.lastTradedPlayer`: the reputation event of the last trade, taken by the
+    /// villager's `customServerAiStep`.
+    pub last_traded_player: Option<EntityId>,
+    /// The trading player's UUID and Hero of the Village amplifier, as of the start of the
+    /// trade or the last refresh (`updateSpecialPrices`).
+    pub trading_uuid: u128,
+    pub trading_hero: Option<i32>,
 }
 
 /// The kind state of the family's mobs (in [`super::Ext::Village`]).

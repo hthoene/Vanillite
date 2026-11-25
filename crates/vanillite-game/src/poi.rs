@@ -133,7 +133,8 @@ fn by_state() -> &'static [u8] {
     TABLE.get_or_init(|| {
         let mut table = vec![NONE; vanillite_data::block::STATE_COUNT];
         for info in vanillite_data::block::BLOCKS.iter() {
-            let ty = match info.name {
+            let name = info.name.strip_prefix("minecraft:").unwrap_or(info.name);
+            let ty = match name {
                 "blast_furnace" => PoiType::Armorer,
                 "smoker" => PoiType::Butcher,
                 "cartography_table" => PoiType::Cartographer,
@@ -951,7 +952,7 @@ mod tests {
     }
 
     fn state(name: &str) -> BlockState {
-        vanillite_data::block::BlockId::by_name(name)
+        vanillite_data::block::BlockId::by_name(&format!("minecraft:{name}"))
             .expect("block")
             .default_state()
     }

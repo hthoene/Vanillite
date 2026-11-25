@@ -934,6 +934,7 @@ fn protection(
         smelts_loot: false,
         sheep_color: None,
         sheared: false,
+        villager_variant: None,
     };
     let cx = crate::enchant::EnchantContext {
         types: env.types,

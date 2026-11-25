@@ -57,6 +57,23 @@ impl vanillite_storage::saved_data::SavedData for FightData {
     }
 }
 
+/// The wandering trader spawner's saved data: the last state it wrote, taken by the next save.
+#[derive(Debug, Default)]
+struct TraderSavedData(std::sync::Mutex<Option<vanillite_nbt::Compound>>);
+
+impl vanillite_storage::saved_data::SavedData for TraderSavedData {
+    fn id(&self) -> &str {
+        "minecraft:wandering_trader"
+    }
+
+    fn save(&self) -> Option<vanillite_nbt::Compound> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
+}
+
 /// The mob state of one world.
 #[derive(Debug)]
 pub(crate) struct WorldMobs {
@@ -76,6 +93,9 @@ pub(crate) struct WorldMobs {
     phantoms: vanillite_game::mob::fam::undead::phantom::PhantomSpawner,
     patrols: vanillite_game::mob::fam::illager::patrol::PatrolSpawner,
     cats: spawn::CatSpawner,
+    /// `WanderingTraderSpawner` (overworld) and its saved data.
+    traders: Option<vanillite_game::mob::fam::village::trader::spawner::TraderSpawner>,
+    trader_data: Option<Arc<TraderSavedData>>,
 }
 
 impl WorldMobs {
@@ -94,7 +114,33 @@ impl WorldMobs {
             phantoms: Default::default(),
             patrols: Default::default(),
             cats: spawn::CatSpawner::default(),
+            traders: None,
+            trader_data: None,
         }
+    }
+
+    /// Creates the wandering trader spawner from its saved data (`WanderingTraderData.TYPE`).
+    pub(crate) fn init_trader_spawner(
+        &mut self,
+        data: &vanillite_storage::saved_data::SavedDataStore,
+    ) {
+        use vanillite_game::mob::fam::village::trader::spawner::{TraderData, TraderSpawner};
+        let saved = match data.read("minecraft:wandering_trader") {
+            Ok(saved) => saved,
+            Err(e) => {
+                log::error!("Could not read the wandering trader data: {e}");
+                None
+            }
+        };
+        let trader = saved.as_ref().map(TraderData::load).unwrap_or_default();
+        let store = Arc::new(TraderSavedData::default());
+        data.register(Arc::clone(&store) as _);
+        // `RandomSource.create()`: seeded from the clock.
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos() as i64);
+        self.traders = Some(TraderSpawner::new(trader, seed));
+        self.trader_data = Some(store);
     }
 
     /// Creates the End's dragon fight from its saved data (`EnderDragonFight.TYPE`).
@@ -521,6 +567,33 @@ impl WorldMobs {
             difficulty,
             &ids,
         );
+        if let Some(traders) = &mut self.traders {
+            use vanillite_game::mob::fam::village::trader::spawner::{self, TraderInput};
+            // `getRandomPlayer`: the alive players.
+            let alive: Vec<Vec3> = level
+                .entities
+                .players
+                .iter()
+                .filter(|(_, p)| !p.survival.is_dead_or_dying())
+                .filter_map(|(id, _)| level.entities.store.get(id).map(|e| e.pos()))
+                .collect();
+            let input = TraderInput {
+                enabled: rules.bool(Rule::SPAWN_WANDERING_TRADERS),
+                difficulty,
+                env,
+                table: Some(table),
+                players: &alive,
+            };
+            spawner::tick(level, traders, &input);
+            if std::mem::take(&mut traders.dirty)
+                && let Some(store) = &self.trader_data
+            {
+                *store
+                    .0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(traders.data.save());
+            }
+        }
     }
 
     /// `entityTickList.forEach(tickNonPassenger)`: falling blocks, mobs, arrows and orbs in
@@ -1047,8 +1120,20 @@ fn environment(
 ) -> Environment {
     let overworld = dimension == "minecraft:overworld";
     let nether = dimension == "minecraft:the_nether";
+    // `Timelines.OVERWORLD_DAY` period count (villagers' restock days).
+    let day_count = {
+        let clocks = global.level.clocks();
+        clocks.timeline("minecraft:day").and_then(|t| {
+            clocks
+                .clocks
+                .get(t.clock)
+                .map(|c| t.period_count(c.total_ticks))
+        })
+    }
+    .unwrap_or(0);
     if !overworld {
         return Environment {
+            day_count,
             surface_slime_chance: 0.0,
             world_seed: seed,
             sea_level: if nether { 32 } else { 0 },
@@ -1090,6 +1175,7 @@ fn environment(
     Environment {
         surface_slime_chance: MOON_BRIGHTNESS[phase] * 0.5,
         world_seed: seed,
+        day_count,
         ..Environment::overworld(day, w.rain(), w.thunder())
     }
 }

@@ -70,6 +70,7 @@ pub fn facts(ents: &Entities, id: EntityId) -> Option<EntityFacts> {
         }),
         sheep_color: sheep.map(|s| s.0),
         sheared: sheep.is_some_and(|s| s.1),
+        villager_variant: None,
     })
 }
 

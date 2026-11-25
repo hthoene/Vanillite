@@ -1,5 +1,8 @@
 //! Trading (`net.minecraft.world.item.trading`): merchant offers with their prices, demand
-//! and stock.
+//! and stock, the data-driven trades ([`data`]) and their NBT and wire forms ([`nbt`]).
+
+pub mod data;
+pub mod nbt;
 
 use crate::item::ItemStack;
 

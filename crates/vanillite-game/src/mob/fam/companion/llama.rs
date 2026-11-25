@@ -388,11 +388,17 @@ pub fn trader_despawn(t: &mut Tick<'_, '_>) {
     if m.tame || other_leash || one_player || m.persistent {
         return;
     }
-    // A llama leashed to its trader despawns with it (the trader's delay is not known
-    // here; it counts down like an unleashed one).
+    // A llama leashed to its trader despawns with it.
+    let trader_delay = holder
+        .filter(|_| to_trader)
+        .and_then(|h| t.ents.mob(h))
+        .map(|m| crate::mob::fam::village::state(m).trader.despawn_delay);
     let m = t.mob();
     let s = st_mut(m);
-    s.despawn_delay -= 1;
+    s.despawn_delay = match trader_delay {
+        Some(d) => d - 1,
+        None => s.despawn_delay - 1,
+    };
     if s.despawn_delay <= 0 {
         m.removed = true;
         crate::mob::tame::drop_leash(t.ents, t.env, t.id, false);
@@ -517,7 +523,9 @@ pub fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
             *found = crate::mob::common::find_nearest(t, wolves, range, false, false, area);
             found.is_some()
         }
-        Goal::DefendTrader { found, .. } => {
+        Goal::DefendTrader {
+            found, timestamp, ..
+        } => {
             let Some(&holder) = t.ents.leashes.get(&t.id) else {
                 return false;
             };
@@ -529,9 +537,27 @@ pub fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
             {
                 return false;
             }
-            // The wandering trader's attacker (traders are not simulated yet).
-            *found = None;
-            false
+            // The trader's attacker (`getLastHurtByMob`), once per hit, if it can be attacked
+            // (`TargetingConditions.DEFAULT`: no range, line of sight).
+            let Some((by, stamp)) = t
+                .ents
+                .mob(holder)
+                .map(|m| (m.last_hurt_by_mob, m.last_hurt_by_mob_time))
+            else {
+                return false;
+            };
+            *found = by;
+            let Some(by) = by else {
+                return false;
+            };
+            if stamp == *timestamp {
+                return false;
+            }
+            if t.ents.player(by).is_some() {
+                crate::mob::goals::test_player(t, by, true, -1.0, true)
+            } else {
+                crate::mob::goals::can_attack(t, by) && crate::mob::living::has_line_of_sight(t, by)
+            }
         }
     }
 }
@@ -568,6 +594,13 @@ pub fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
 }
 
 pub fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
+    if let Goal::DefendTrader { timestamp, .. } = g
+        && let Some(holder) = t.ents.leashes.get(&t.id).copied()
+        && let Some(m) = t.ents.mob(holder)
+        && m.kind == crate::mob::Kind::WanderingTrader
+    {
+        *timestamp = m.last_hurt_by_mob_time;
+    }
     if let Goal::AttackWolf { found, state } | Goal::DefendTrader { found, state, .. } = g {
         crate::mob::goals::set_target(t, *found);
         state.unseen_ticks = 0;

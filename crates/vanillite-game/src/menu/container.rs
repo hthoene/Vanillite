@@ -63,6 +63,9 @@ pub enum MenuKind {
     Lectern,
     /// `beacon`: the payment slot (the menu's own) and the beacon's levels and powers.
     Beacon,
+    /// `merchant`: two payment slots and the result of a villager's or wandering trader's
+    /// offer (the menu's own slots).
+    Merchant,
 }
 
 impl MenuKind {
@@ -95,6 +98,7 @@ impl MenuKind {
             MenuKind::Crafter => "minecraft:crafter_3x3",
             MenuKind::Lectern => "minecraft:lectern",
             MenuKind::Beacon => "minecraft:beacon",
+            MenuKind::Merchant => "minecraft:merchant",
         };
         vanillite_data::registry::MENU.id(name).map_or(0, i32::from)
     }
@@ -108,6 +112,7 @@ impl MenuKind {
             MenuKind::ShulkerBox => 27,
             MenuKind::Crafting => 10,
             MenuKind::Furnace(_) | MenuKind::Anvil | MenuKind::Grindstone => 3,
+            MenuKind::Merchant => 3,
             MenuKind::Stonecutter | MenuKind::Enchantment => 2,
             MenuKind::Smithing | MenuKind::Loom => 4,
             MenuKind::BrewingStand => 5,
@@ -160,6 +165,9 @@ pub enum Storage {
     Local,
     /// A container entity: a chest or hopper minecart, a chest boat or raft.
     Entity(EntityId),
+    /// The merchant (villager or wandering trader) of a merchant menu; the slots are the
+    /// menu's own.
+    Merchant(EntityId),
 }
 
 /// A menu a block asks to open (`MenuProvider`).
@@ -215,6 +223,8 @@ pub struct ContainerMenu {
     pub may_build: bool,
     /// `StonecutterMenu.lastSoundTime`.
     pub last_sound: i64,
+    /// The merchant menu's state.
+    pub merchant: super::merchant::MerchantMenu,
 }
 
 /// Where a menu slot is stored.
@@ -273,7 +283,7 @@ impl ContainerMenu {
         match self.storage {
             Storage::Block(p) | Storage::Ender(p) => [Some(p), None],
             Storage::Double(a, b) => [Some(a), Some(b)],
-            Storage::Local | Storage::Entity(_) => [None, None],
+            Storage::Local | Storage::Entity(_) | Storage::Merchant(_) => [None, None],
         }
     }
 }
@@ -320,7 +330,7 @@ impl ContainerView<'_> {
                     .unwrap_or(empty)
             }
             Storage::Ender(_) => self.inv.ender_chest.get(i).unwrap_or(empty),
-            Storage::Local => self.menu.local.get(i).unwrap_or(empty),
+            Storage::Local | Storage::Merchant(_) => self.menu.local.get(i).unwrap_or(empty),
             Storage::Entity(id) => self
                 .level
                 .entities
@@ -344,7 +354,7 @@ impl ContainerView<'_> {
                 blocks::items_mut(self.level, pos)?.get_mut(i)
             }
             Storage::Ender(_) => self.inv.ender_chest.get_mut(i),
-            Storage::Local => self.menu.local.get_mut(i),
+            Storage::Local | Storage::Merchant(_) => self.menu.local.get_mut(i),
             Storage::Entity(id) => self.level.entities.container_items_mut(id)?.get_mut(i),
         }
     }
@@ -396,6 +406,9 @@ impl ContainerView<'_> {
 
     /// Sends the crafting results computed during a click.
     pub fn flush_result_updates(&mut self, sink: &dyn PacketSink) {
+        if self.menu.kind == MenuKind::Merchant {
+            self.flush_merchant(sink);
+        }
         for item in std::mem::take(&mut self.menu.result_updates) {
             let state_id = self.menu.state.next_state_id();
             sink.send(
@@ -464,6 +477,10 @@ impl MenuSlots for ContainerView<'_> {
                     // The lectern's book access ignores `setItem`.
                     return;
                 }
+                if self.menu.kind == MenuKind::Merchant {
+                    self.merchant_set_item(i, stack);
+                    return;
+                }
                 if let Some(target) = self.container_item_mut(i) {
                     *target = stack;
                 }
@@ -495,10 +512,14 @@ impl MenuSlots for ContainerView<'_> {
                     blocks::set_changed(self.level, a);
                     blocks::set_changed(self.level, b);
                 }
-                Storage::Ender(_) | Storage::Local | Storage::Entity(_) => {}
+                Storage::Ender(_) | Storage::Local | Storage::Entity(_) | Storage::Merchant(_) => {}
             }
             if self.menu.kind == MenuKind::Crafter {
                 self.crafter_changed();
+            }
+            // `MerchantContainer.setChanged`.
+            if self.menu.kind == MenuKind::Merchant {
+                self.merchant_update_sell();
             }
         }
     }
@@ -515,6 +536,22 @@ impl MenuSlots for ContainerView<'_> {
         {
             self.craft_changed();
         }
+    }
+
+    fn remove(&mut self, slot: usize, amount: i32) -> ItemStack {
+        if self.menu.kind == MenuKind::Merchant
+            && let Some(Source::Container(i)) = self.menu.source(slot)
+        {
+            return self.merchant_remove(i, amount);
+        }
+        let taken = self
+            .item_mut(slot)
+            .map(|s| s.split(amount))
+            .unwrap_or_default();
+        if !taken.is_empty() {
+            self.slot_contents_changed(slot);
+        }
+        taken
     }
 
     fn may_place(&self, slot: usize, stack: &ItemStack) -> bool {
@@ -538,6 +575,8 @@ impl MenuSlots for ContainerView<'_> {
             MenuKind::Crafter => !self.crafter_disabled(i),
             // The lectern's book access ignores `setItem`: Vanilla would void the stack.
             MenuKind::Lectern => false,
+            // `MerchantResultSlot.mayPlace`.
+            MenuKind::Merchant => i != 2,
             // `BeaconMenu.PaymentSlot`.
             MenuKind::Beacon => crate::player::play::game_data()
                 .is_some_and(|d| d.item_in_tag(stack.item, "minecraft:beacon_payment_items")),
@@ -567,6 +606,9 @@ impl MenuSlots for ContainerView<'_> {
             // instance with the lectern.
             Some(Source::CrafterResult) => false,
             Some(Source::Container(_)) if self.menu.kind == MenuKind::Lectern => false,
+            Some(Source::Container(2)) if self.menu.kind == MenuKind::Merchant => {
+                self.merchant_may_pickup_result()
+            }
             Some(Source::Container(i))
                 if self.menu.kind.is_workstation()
                     && Some(i) == super::workstation::result_slot(self.menu.kind) =>
@@ -605,6 +647,7 @@ impl MenuSlots for ContainerView<'_> {
             return;
         };
         match (self.menu.kind, i) {
+            (MenuKind::Merchant, 2) => self.merchant_take_result(),
             (MenuKind::Loom, 3) => self.loom_take(),
             (MenuKind::CartographyTable, 2) => self.cartography_take(taken),
             (kind, i)
@@ -629,7 +672,12 @@ impl MenuSlots for ContainerView<'_> {
         self.set_changed(slot);
     }
 
-    fn on_quick_craft(&mut self, slot: usize, _count: i32) {
+    fn on_quick_craft(&mut self, slot: usize, count: i32) {
+        if self.menu.kind == MenuKind::Merchant
+            && self.menu.source(slot) == Some(Source::Container(2))
+        {
+            self.menu.merchant.remove_count += count;
+        }
         if let (MenuKind::Furnace(_), Some(Source::Container(2)), Storage::Block(pos)) =
             (self.menu.kind, self.menu.source(slot), self.menu.storage)
         {
@@ -652,6 +700,7 @@ impl MenuSlots for ContainerView<'_> {
         }
         match self.menu.kind {
             MenuKind::Lectern => ItemStack::EMPTY,
+            MenuKind::Merchant => self.merchant_quick_move(index, ctx, drops),
             MenuKind::Beacon => {
                 let payment_free = self.item(0).is_empty();
                 let moved = if index == 0 {
@@ -823,8 +872,10 @@ impl MenuSlots for ContainerView<'_> {
     }
 
     fn can_take_for_pick_all(&self, slot: usize) -> bool {
-        // `CraftingMenu` and `StonecutterMenu.canTakeItemForPickAll`: not the result.
+        // `CraftingMenu` and `StonecutterMenu.canTakeItemForPickAll`: not the result;
+        // `MerchantMenu`: no slot.
         !((self.menu.kind == MenuKind::Crafting && slot == 0)
+            || self.menu.kind == MenuKind::Merchant
             || (self.menu.kind == MenuKind::Stonecutter && slot == 1)
             || (self.menu.kind == MenuKind::CartographyTable && slot == 2))
     }
@@ -952,7 +1003,9 @@ pub fn open(
     let positions = match request.storage {
         Storage::Block(p) => [Some(p), None],
         Storage::Double(a, b) => [Some(a), Some(b)],
-        Storage::Ender(_) | Storage::Local | Storage::Entity(_) => [None, None],
+        Storage::Ender(_) | Storage::Local | Storage::Entity(_) | Storage::Merchant(_) => {
+            [None, None]
+        }
     };
     if who.spectator
         && positions
@@ -979,6 +1032,7 @@ pub fn open(
         | MenuKind::Loom
         | MenuKind::CartographyTable => vec![ItemStack::EMPTY; kind.container_slots()],
         MenuKind::Crafter | MenuKind::Beacon => vec![ItemStack::EMPTY],
+        MenuKind::Merchant => vec![ItemStack::EMPTY; 3],
         _ => Vec::new(),
     };
     let data = match kind {
@@ -1005,6 +1059,7 @@ pub fn open(
         last_sound: 0,
         crafter_grid: Vec::new(),
         may_build: true,
+        merchant: super::merchant::MerchantMenu::default(),
     };
     // The menu's constructor counts the viewer (`container.startOpen`).
     for pos in menu.viewed().into_iter().flatten() {
@@ -1020,7 +1075,18 @@ pub fn open(
         if view.menu.kind == MenuKind::Crafter {
             view.crafter_changed();
         }
-        super::send_all(view, sink)
+        super::send_all(view, sink);
+        // `openTradingScreen`: the offers follow the screen (none when there are none).
+        if let Storage::Merchant(id) = view.menu.storage
+            && let Some(packet) = crate::mob::fam::village::merchant::offers_packet(
+                view.level,
+                id,
+                view.menu.state.container_id,
+            )
+            && !packet.offers.is_empty()
+        {
+            sink.send(&packet);
+        }
     });
 }
 
@@ -1133,6 +1199,14 @@ pub fn close(
             give_back(inv, stack, who, drops);
         }
     }
+    // `MerchantMenu.removed`: the merchant stops trading, the payment goes back (drops when
+    // the player left).
+    if let Storage::Merchant(id) = menu.storage {
+        crate::mob::fam::village::merchant::stop_trading_in_level(level, id);
+        for stack in menu.local.drain(..).take(2) {
+            give_back(inv, stack, who, drops);
+        }
+    }
     // `BeaconMenu.removed`: the payment drops.
     if menu.kind == MenuKind::Beacon {
         for stack in menu.local.drain(..) {
@@ -1241,6 +1315,16 @@ pub fn still_valid(
         }
         Storage::Entity(id) => {
             level.entities.container_items(id).is_some()
+                && level
+                    .entities
+                    .store
+                    .get(id)
+                    .is_some_and(|e| in_entity_range(&e.aabb()))
+        }
+        // `AbstractVillager.stillValid`: the merchant still trades with the player, is alive
+        // and close enough.
+        Storage::Merchant(id) => {
+            crate::mob::fam::village::merchant::still_trading(level, id)
                 && level
                     .entities
                     .store
