@@ -24,6 +24,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      # The pinned toolchain (rust-toolchain.toml) from the cache: faster than rustup's download.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.rustup/toolchains/1.*
+            ~/.rustup/update-hashes/1.*
+          key: rustup-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}
       - run: rustup toolchain install --profile minimal --component rustfmt
       - run: cargo fmt --all --check
       - run: cargo fmt --check --manifest-path fuzz/Cargo.toml
@@ -33,6 +40,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      # The pinned toolchain (rust-toolchain.toml) from the cache: faster than rustup's download.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.rustup/toolchains/1.*
+            ~/.rustup/update-hashes/1.*
+          key: rustup-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}
       - run: rustup toolchain install --profile minimal --component clippy
       - uses: Swatinem/rust-cache@v2
         with:
@@ -40,11 +54,20 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/dev' }}
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
+  # The tests run in two parallel jobs: the world generation goldens on their own, everything
+  # else with the codegen checks and doc tests. Together they run every test of the workspace.
   test:
     name: Tests and codegen
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      # The pinned toolchain (rust-toolchain.toml) from the cache: faster than rustup's download.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.rustup/toolchains/1.*
+            ~/.rustup/update-hashes/1.*
+          key: rustup-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}
       - run: rustup toolchain install --profile minimal
       - uses: Swatinem/rust-cache@v2
         with:
@@ -64,8 +87,8 @@ jobs:
         run: cargo xtask egg --check
       - name: Parity goldens are current
         run: cargo xtask golden check
-      - name: Tests
-        run: cargo nextest run --workspace --all-features --locked --profile ci --no-tests=warn
+      - name: Tests (all but world generation)
+        run: cargo nextest run --workspace --exclude vanillite-worldgen --all-features --locked --profile ci --no-tests=warn
       - name: Doc tests
         run: cargo test --workspace --all-features --locked --doc
       - uses: actions/upload-artifact@v4
@@ -74,9 +97,53 @@ jobs:
           name: junit
           path: target/nextest/ci/junit.xml
 
+  test-worldgen:
+    name: Tests (world generation)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # The pinned toolchain (rust-toolchain.toml) from the cache: faster than rustup's download.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.rustup/toolchains/1.*
+            ~/.rustup/update-hashes/1.*
+          key: rustup-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}
+      - run: rustup toolchain install --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/dev' }}
+      - uses: actions/cache@v4
+        with:
+          path: target/vanilla-cache
+          key: vanilla-pack-${{ hashFiles('crates/vanillite-data/src/generated/version.rs') }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Tests
+        run: cargo nextest run -p vanillite-worldgen --all-features --locked --profile ci --no-tests=warn
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: junit-worldgen
+          path: target/nextest/ci/junit.xml
+
   deny:
     name: Dependencies (cargo-deny)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      # The pinned toolchain (rust-toolchain.toml) from the cache: faster than rustup's download.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.rustup/toolchains/1.*
+            ~/.rustup/update-hashes/1.*
+          key: rustup-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}
+      - run: rustup toolchain install --profile minimal
+      # Prebuilt binary instead of the action's container build; same command as the action's
+      # defaults.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - run: cargo deny --log-level warn --all-features check
