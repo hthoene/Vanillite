@@ -36,6 +36,9 @@ pub struct ArrowData {
     pub knockback: f32,
     /// Burning (Flame): sets what it hits on fire for 5 seconds.
     pub fire: bool,
+    /// The effect of a tipped arrow (`Arrow.addEffect`; strays, bogged and parched shoot
+    /// them), applied to the living entity it hurts.
+    pub effect: Option<super::effects::EffectInstance>,
 }
 
 /// The kind data of an experience orb.
@@ -121,6 +124,7 @@ pub fn shoot_arrow(
         random_seed: seed,
         knockback: 0.0,
         fire: false,
+        effect: None,
     };
     if let Some(w) = weapon {
         let (enchants, tags) = super::attack::combat_data();
@@ -185,10 +189,15 @@ pub fn skeleton_shoot(t: &mut Tick<'_, '_>, target: EntityId, power: f32) {
     let seed = m.random.next_long();
     let uuid = random_uuid(&mut m.random);
     let crit = false;
+    // `getArrow` of the skeleton kinds: tipped arrows and the wither skeleton's fire.
+    let (effect, fire) = super::fam::undead::skeleton_arrow(m.kind);
     let mut new = NewEntity::new(entity_ids::ARROW, t.level.network_ids().next(), uuid, start);
     new.velocity = velocity;
     new.rot = rot;
     new.flags = EntityFlags::HAS_IMPULSE;
+    if fire {
+        new.flags.set(EntityFlags::ON_FIRE, true);
+    }
     t.ents.spawn_arrow(
         new,
         ArrowData {
@@ -204,7 +213,8 @@ pub fn skeleton_shoot(t: &mut Tick<'_, '_>, target: EntityId, power: f32) {
             pickup: 0,
             random_seed: seed,
             knockback: 0.0,
-            fire: false,
+            fire,
+            effect,
         },
     );
     let m = t.mob();
@@ -354,6 +364,13 @@ pub fn tick_arrow(
             if hurt {
                 if a.fire {
                     super::attack::ignite(ents, target, 100);
+                }
+                // `Arrow.doPostHurtEffects`: the tipped arrow's effect (mobs only; players
+                // get effects with #74).
+                if let Some(effect) = a.effect
+                    && let Some(m) = ents.mob_mut(target)
+                {
+                    super::effects::add(m, effect);
                 }
                 // `doKnockback`: Punch pushes along the arrow's flight.
                 if a.knockback > 0.0 {

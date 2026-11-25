@@ -182,7 +182,6 @@ pub fn can_be_affected(m: &MobData, effect: u16) -> bool {
             | Kind::Drowned
             | Kind::ZombieVillager
             | Kind::ZombifiedPiglin
-            | Kind::Giant
             | Kind::Stray
             | Kind::Bogged
             | Kind::Parched
@@ -198,6 +197,12 @@ pub fn can_be_affected(m: &MobData, effect: u16) -> bool {
         return false;
     }
     if matches!(m.kind, Kind::Spider | Kind::CaveSpider) && effect == id::POISON {
+        return false;
+    }
+    // `Parched.canBeAffected` and `WitherSkeleton.canBeAffected`.
+    if (m.kind == Kind::Parched && effect == id::WEAKNESS)
+        || (m.kind == Kind::WitherSkeleton && effect == id::WITHER)
+    {
         return false;
     }
     true

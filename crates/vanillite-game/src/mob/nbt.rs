@@ -214,8 +214,7 @@ pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
         Kind::Zombie => {
             out.insert("IsBaby", m.baby);
             out.insert("CanBreakDoors", m.can_break_doors);
-            out.insert("InWaterTime", -1);
-            out.insert("DrownedConversionTime", -1);
+            super::fam::undead::zombies::save_conversion(m, &mut out);
         }
         Kind::Creeper => {
             #[allow(clippy::cast_possible_truncation)]
@@ -251,7 +250,8 @@ pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
                 }
             }
         }
-        Kind::Skeleton | Kind::Spider | Kind::Enderman => {}
+        Kind::Skeleton => super::fam::undead::skeletons::save_conversion(m, &mut out),
+        Kind::Spider | Kind::Enderman => {}
         _ => super::fam::save(m, &mut out),
     }
     out
@@ -346,8 +346,9 @@ pub fn load_mob(tag: &Compound, seed: i64) -> Option<LoadedMob> {
     };
     match kind {
         Kind::Zombie => {
-            m.baby = boolean(tag, "IsBaby");
+            super::fam::undead::set_baby(&mut m, boolean(tag, "IsBaby"));
             super::movement::set_can_break_doors(&mut m, boolean(tag, "CanBreakDoors"));
+            super::fam::undead::zombies::load_conversion(&mut m, tag);
         }
         Kind::Creeper => {
             m.max_swell = int(tag, "Fuse").unwrap_or(30);
@@ -378,7 +379,8 @@ pub fn load_mob(tag: &Compound, seed: i64) -> Option<LoadedMob> {
                 m.chicken_jockey = kind == Kind::Chicken && boolean(tag, "IsChickenJockey");
             }
         }
-        Kind::Skeleton | Kind::Spider | Kind::Enderman => {}
+        Kind::Skeleton => super::fam::undead::skeletons::load_conversion(&mut m, tag),
+        Kind::Spider | Kind::Enderman => {}
         _ => super::fam::load(&mut m, tag),
     }
     // A fresh random per loaded mob, like `Entity.random`.
@@ -572,6 +574,7 @@ pub fn load_arrow(tag: &Compound) -> Option<(LoadedEntity, super::projectile::Ar
             random_seed: e.uuid as i64,
             knockback: 0.0,
             fire: int(tag, "Fire").is_some_and(|f| f > 0),
+            effect: None,
         },
     ))
 }

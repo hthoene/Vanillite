@@ -164,6 +164,20 @@ impl SpawnTable {
     }
 }
 
+/// The spawn table of the loaded data packs for code without a world's table at hand (spawn
+/// rules that check the biome); data packs are frozen for the process.
+static INSTALLED: std::sync::OnceLock<std::sync::Arc<SpawnTable>> = std::sync::OnceLock::new();
+
+/// Installs the process' spawn table (later calls are ignored).
+pub fn install_table(table: std::sync::Arc<SpawnTable>) {
+    let _ = INSTALLED.set(table);
+}
+
+/// The spawn settings of the biome at `pos`, `None` without data packs.
+pub fn biome_at(level: &Level, pos: BlockPos) -> Option<&'static BiomeSpawns> {
+    INSTALLED.get()?.biome(level.biome(pos))
+}
+
 /// `WeightedList.getRandom`.
 fn pick(list: &[SpawnEntry], random: &mut LegacyRandom) -> Option<SpawnEntry> {
     let total: i32 = list.iter().map(|e| e.weight).sum();
@@ -742,13 +756,21 @@ pub fn add_mob_with(
     extra: Vec<ExtraMob>,
 ) -> EntityId {
     let id = add_mob(level, mob, pos, y_rot);
+    let mut spawned = Vec::with_capacity(extra.len());
     for e in extra {
         if let Relation::Existing(vehicle) = e.relation {
             level.entities.riding.add(id, vehicle, false);
+            spawned.push(vehicle);
             continue;
         }
         let other = add_mob(level, e.mob, pos + e.offset, y_rot);
+        spawned.push(other);
         match e.relation {
+            Relation::RidesExtra(i) => {
+                if let Some(&vehicle) = spawned.get(i) {
+                    level.entities.riding.add(other, vehicle, false);
+                }
+            }
             Relation::RidesIt => level.entities.riding.add(other, id, false),
             Relation::CarriesIt => level.entities.riding.add(id, other, false),
             Relation::Beside | Relation::Existing(_) => {}

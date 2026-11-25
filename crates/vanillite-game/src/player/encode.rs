@@ -441,7 +441,12 @@ fn mob_data(out: &mut Vec<u8>, mob: &crate::mob::MobData, all: bool) {
         return;
     }
     match mob.kind {
-        Kind::Zombie => boolean(out, data_id::KIND_16, mob.baby),
+        Kind::Zombie => {
+            boolean(out, data_id::KIND_16, mob.baby);
+            let converting =
+                crate::mob::fam::undead::zombies::zs(mob).is_some_and(|z| z.converting);
+            boolean(out, data_id::KIND_18, converting);
+        }
         Kind::Creeper => {
             if all || mob.swell_dir != -1 {
                 item(out, data_id::KIND_16, serializer::INT, |o| {
@@ -470,7 +475,11 @@ fn mob_data(out: &mut Vec<u8>, mob: &crate::mob::MobData, all: bool) {
             }
             boolean(out, data_id::KIND_17, mob.creepy);
         }
-        Kind::Skeleton => {}
+        Kind::Skeleton => boolean(
+            out,
+            data_id::KIND_16,
+            crate::mob::fam::undead::skeletons::is_converting(mob),
+        ),
         Kind::Cow | Kind::Pig | Kind::Sheep | Kind::Chicken => {
             boolean(out, data_id::KIND_16, mob.baby);
             match mob.kind {

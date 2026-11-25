@@ -88,6 +88,9 @@ pub enum Relation {
     CarriesIt,
     /// Spawned next to it.
     Beside,
+    /// It rides an earlier extra mob (by its index in [`SpawnContext::extra`]): the second
+    /// rider of a camel husk.
+    RidesExtra(usize),
     /// The new mob rides this existing entity (the mob of the entry is unused).
     Existing(EntityId),
 }
@@ -297,6 +300,18 @@ pub trait FamilyHooks {
     }
     fn sound_volume(_kind: Kind) -> f32 {
         1.0
+    }
+    /// `getSoundVolume` with the mob's state (slimes scale it with their size).
+    fn mob_sound_volume(m: &MobData) -> f32 {
+        Self::sound_volume(m.kind)
+    }
+    /// What `jumpFromGround` adds to the jump power (magma cubes jump higher when large).
+    fn jump_power_bonus(_m: &MobData) -> f32 {
+        0.0
+    }
+    /// `jumpInLiquid` when the kind does it differently; `true` when handled.
+    fn jump_in_liquid(_t: &mut Tick<'_, '_>) -> bool {
+        false
     }
     fn ambient_sound(m: &MobData) -> Option<&'static str> {
         Some(m.kind.default_sound(DefaultSound::Ambient))
@@ -598,6 +613,15 @@ pub fn sound_source(kind: Kind) -> SoundSource {
 }
 pub fn sound_volume(kind: Kind) -> f32 {
     by_family!(kind, 1.0, sound_volume(kind))
+}
+pub fn mob_sound_volume(m: &MobData) -> f32 {
+    by_family!(m.kind, m.kind.sound_volume(), mob_sound_volume(m))
+}
+pub fn jump_power_bonus(m: &MobData) -> f32 {
+    by_family!(m.kind, 0.0, jump_power_bonus(m))
+}
+pub fn jump_in_liquid(t: &mut Tick<'_, '_>) -> bool {
+    by_family!(t.mob_ref().kind, false, jump_in_liquid(t))
 }
 pub fn ambient_sound(m: &MobData) -> Option<&'static str> {
     by_family!(m.kind, m.kind.ambient_sound(), ambient_sound(m))
