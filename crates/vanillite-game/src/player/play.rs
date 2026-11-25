@@ -54,6 +54,8 @@ pub struct GameData {
     pub registry_tags: HashMap<String, HashMap<String, Vec<u32>>>,
     /// The `minecraft:instrument` registry, by id.
     pub instruments: Vec<super::items::Instrument>,
+    /// The `minecraft:painting_variant` registry: width and height by id.
+    pub painting_variants: Vec<(i32, i32)>,
 }
 
 impl crate::predicate::EntityTags for GameData {
@@ -1027,6 +1029,9 @@ impl Digging {
             }
             return true;
         }
+        if let Some(placed) = self.place_decoration(ctx, hand, &stack, pos, face, hit) {
+            return placed;
+        }
         let Some(_block) = item::item_id(&stack).block() else {
             // Non-block items (buckets, tools on blocks, spawn eggs, ...) come later.
             return false;
@@ -1060,6 +1065,72 @@ impl Digging {
             any_block_use(ctx, hand, pos);
         }
         placed
+    }
+
+    /// `useOn` of the items that place decorations: armor stands, item frames, paintings and
+    /// cushions. `None` for other items; else whether the hand swings.
+    fn place_decoration(
+        &mut self,
+        ctx: &mut PlayContext<'_>,
+        hand: Hand,
+        stack: &ItemStack,
+        pos: BlockPos,
+        face: Direction,
+        hit: Vec3,
+    ) -> Option<bool> {
+        use crate::decoration::hanging::Placed;
+        let used = item::item_id(stack);
+        let kind = if used == vanillite_data::item::ids::ARMOR_STAND {
+            vanillite_data::entity::ids::ARMOR_STAND
+        } else if used == vanillite_data::item::ids::ITEM_FRAME {
+            vanillite_data::entity::ids::ITEM_FRAME
+        } else if used == vanillite_data::item::ids::GLOW_ITEM_FRAME {
+            vanillite_data::entity::ids::GLOW_ITEM_FRAME
+        } else if used == vanillite_data::item::ids::PAINTING {
+            vanillite_data::entity::ids::PAINTING
+        } else if crate::decoration::cushion::color_of_item(stack).is_some() {
+            vanillite_data::entity::ids::CUSHION
+        } else {
+            return None;
+        };
+        // `ItemStack.useOn`: adventure players cannot build.
+        if ctx.actor.game_mode == GameMode::Adventure {
+            return Some(false);
+        }
+        let creative = ctx.actor.creative();
+        let player = ctx.actor.entity;
+        let y_rot = ctx.actor.y_rot;
+        let level = ctx.level.level_mut()?;
+        let mut held = stack.clone();
+        let result = if kind == vanillite_data::entity::ids::ARMOR_STAND {
+            if crate::decoration::stand::use_on(
+                level, pos, face, y_rot, &mut held, player, creative,
+            ) {
+                Placed::Success
+            } else {
+                Placed::Fail
+            }
+        } else if kind == vanillite_data::entity::ids::CUSHION {
+            crate::decoration::cushion::use_on(
+                level, pos, face, hit.y, y_rot, &mut held, player, creative,
+            )
+        } else {
+            crate::decoration::hanging::use_on(
+                level, kind, pos, face, &mut held, player, true, creative,
+            )
+        };
+        if result == Placed::Success {
+            let slot = match hand {
+                Hand::MainHand => ctx.inventory.selected_item_mut(),
+                Hand::OffHand => Some(&mut ctx.inventory.offhand),
+            };
+            if let Some(slot) = slot {
+                *slot = held;
+            }
+            ctx.award_stat(Stat::of(StatType::Used, stack.item), 1);
+            ctx.trigger(Event::ItemUsedOnBlock(pos, stack.clone()));
+        }
+        Some(result == Placed::Success)
     }
 
     /// Opens the menus and sign editors blocks asked for during a use.

@@ -649,6 +649,8 @@ pub enum WorldAction {
     EntityInside(BlockPos, EntityId),
     /// A hopper minecart takes in an item (`MinecartHopper.tryConsumeItems`).
     HopperMinecart(EntityId),
+    /// `updateNeighbourForOutputSignal(pos, AIR)`: comparators re-read an item frame.
+    OutputSignal(BlockPos),
 }
 
 impl WorldAction {
@@ -670,6 +672,9 @@ impl WorldAction {
                 }
             }
             WorldAction::HopperMinecart(id) => crate::minecart::hopper_suck(level, id),
+            WorldAction::OutputSignal(pos) => {
+                level.update_neighbour_for_output_signal(pos, vanillite_data::block::ids::AIR);
+            }
             WorldAction::SetDoorOpen(pos, open, source) => {
                 crate::block::redstone::set_door_open(level, pos, open, source);
             }
@@ -816,11 +821,15 @@ pub fn spawn(
     let mut new = NewEntity::new(mob.kind.type_id(), network_id, uuid, pos);
     new.rot = rot;
     let dims = kinds::mob_dimensions(&mob);
+    let decor = mob.kind.family() == Family::Decor;
     let id = entities.spawn_mob(new, mob);
     if let Some(mut e) = entities.store.get_mut(id)
         && e.as_ref().dims() != dims
     {
         e.set_dims(dims);
+    }
+    if decor {
+        crate::decoration::stand::after_spawn(entities, id);
     }
     id
 }

@@ -596,7 +596,8 @@ fn is_visible(
     let distance = delta.x * delta.x + delta.z * delta.z;
     let range = f64::from(settings.range(core.kind[row]));
     let chunk = core.section[row].chunk();
-    distance <= range * range
+    range > 0.0
+        && distance <= range * range
         && viewer.view.sees_chunk(chunk)
         && !(input.chunk_pending)(viewer.entity, chunk)
 }

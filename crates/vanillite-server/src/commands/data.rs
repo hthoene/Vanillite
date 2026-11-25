@@ -174,6 +174,24 @@ fn vec3_list(v: Vec3) -> Tag {
 /// data for players and items.
 pub(crate) fn entity_nbt(entities: &Entities, id: EntityId) -> Option<Compound> {
     let e = entities.store.get(id)?;
+    // Decorations, armor stands and mannequins with all their stored data.
+    let full = vanillite_game::decoration::save(entities, id).or_else(|| {
+        entities
+            .mob(id)
+            .filter(|m| vanillite_game::decoration::stand::is_stand(m.kind))
+            .map(|m| vanillite_game::mob::nbt::save_mob(&e, m))
+    });
+    if let Some(mut full) = full {
+        full.remove("id");
+        let tags = entities.tags_of(id);
+        if !tags.is_empty() {
+            full.insert(
+                "Tags",
+                Tag::List(List(tags.iter().map(|t| Tag::String(t.clone())).collect())),
+            );
+        }
+        return Some(full);
+    }
     let mut out = Compound::new();
     out.insert("Pos", vec3_list(e.pos()));
     out.insert("Motion", vec3_list(e.velocity()));
@@ -264,6 +282,9 @@ pub(crate) fn apply_entity_nbt(
         _ => Vec::new(),
     };
     entities.set_tags(id, tags);
+    if vanillite_game::decoration::apply_nbt(entities, id, data) {
+        return Ok(());
+    }
     if let Some(mut e) = entities.store.get_mut(id) {
         if let Some(pos) = read_vec3(data.get("Pos"))
             .filter(|p| p.x.is_finite() && p.y.is_finite() && p.z.is_finite())

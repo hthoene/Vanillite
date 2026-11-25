@@ -32,7 +32,7 @@ pub struct Owner<'a> {
 }
 
 /// `hasMapInvisibilityItemEquipped`.
-fn map_invisible(inventory: &crate::inventory::PlayerInventory) -> bool {
+pub(crate) fn map_invisible(inventory: &crate::inventory::PlayerInventory) -> bool {
     let Some(data) = crate::player::play::game_data() else {
         return false;
     };

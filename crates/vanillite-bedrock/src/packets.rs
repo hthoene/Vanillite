@@ -83,6 +83,7 @@ pub mod id {
     pub const MAP_INFO_REQUEST: u32 = 68;
     pub const BOOK_EDIT: u32 = 97;
     pub const PLAYER_START_ITEM_COOLDOWN: u32 = 176;
+    pub const ADD_PAINTING: u32 = 22;
 }
 
 /// Inventory window ids.
@@ -784,6 +785,17 @@ pub fn update_block(pos: [i32; 3], runtime_id: u32, layer: u32) -> Vec<u8> {
     io::write_varu32(&mut out, runtime_id);
     io::write_varu32(&mut out, 2); // network flag
     io::write_varu32(&mut out, layer);
+    out
+}
+
+/// `add_painting`: a painting by its Bedrock motif name, centred on its wall area.
+pub fn add_painting(entity_id: i64, pos: [f32; 3], direction: i32, title: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(48);
+    io::write_vari64(&mut out, entity_id);
+    io::write_varu64(&mut out, u64::try_from(entity_id).unwrap_or(0));
+    io::write_vec3(&mut out, pos);
+    io::write_vari32(&mut out, direction);
+    io::write_str(&mut out, title);
     out
 }
 

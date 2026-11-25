@@ -288,6 +288,13 @@ pub struct LevelOutput {
     pub summon_checks: Vec<BlockPos>,
     /// An end crystal was placed: the End fight tries to respawn the dragon (`tryRespawn`).
     pub try_dragon_respawn: bool,
+    /// Entity packets for the players near a position (position, range): equipment a
+    /// dispenser put on an armor stand.
+    pub nearby_packets: Vec<(
+        vanillite_base::Vec3,
+        f64,
+        Arc<vanillite_protocol::SharedPacket>,
+    )>,
 }
 
 /// The terrain generator of a world (`getChunkSource().getGenerator()`).

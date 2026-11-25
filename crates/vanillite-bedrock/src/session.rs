@@ -98,6 +98,14 @@ enum Kind {
     Item,
     /// An item entity whose item has not arrived yet (not spawned on Bedrock).
     PendingItem,
+    /// A painting whose variant has not arrived yet (not spawned on Bedrock).
+    PendingPainting,
+    /// A painting (`add_painting`).
+    Painting,
+    /// An item frame: a frame block on Bedrock at the entity's block.
+    Frame,
+    /// An entity Bedrock does not show (markers, block and item displays, cushions).
+    Hidden,
     #[default]
     Actor,
 }
@@ -119,6 +127,9 @@ struct Entity {
     wool: u8,
     /// Rides another entity.
     riding: bool,
+    /// Block position and Java 3D direction of hanging entities (paintings, item frames).
+    block: [i32; 3],
+    direction: u8,
 }
 
 /// The player's world on the Java side, after the Java `login`.
@@ -177,6 +188,8 @@ struct World {
     input: psb::Input,
     /// The open merchant menu.
     merchant: Option<trade::Merchant>,
+    /// Item frames by block (Java entity ids): uses and hits of the frame block go to them.
+    frames: FxHashMap<[i32; 3], i32>,
 }
 
 /// The layout of a Java dimension (`dim_type`: its dimension type name).
@@ -1176,6 +1189,7 @@ impl Session {
             predicted_vehicle: None,
             input: psb::Input::default(),
             merchant: None,
+            frames: FxHashMap::default(),
         });
     }
 

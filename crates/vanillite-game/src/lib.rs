@@ -17,6 +17,7 @@ pub mod boss_bar;
 pub mod bundle;
 pub mod carried;
 pub mod commands;
+pub mod decoration;
 pub mod effect;
 pub mod enchant;
 pub mod entities;

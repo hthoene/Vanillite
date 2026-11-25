@@ -107,8 +107,35 @@ impl Level {
     }
 
     /// `EntityType.loadEntityRecursive` + `addFreshEntity` of stored entity data (a modelled
-    /// kind); whether an entity was added.
+    /// kind); whether an entity was added. Its `Tags` come along.
     pub fn load_entity(&mut self, nbt: Compound) -> bool {
+        let tags: Vec<String> = match nbt.get("Tags") {
+            Some(Tag::List(List(l))) => l
+                .iter()
+                .filter_map(|t| t.as_str().map(str::to_owned))
+                .collect(),
+            _ => Vec::new(),
+        };
+        let uuid = uuid_of(&nbt, "UUID");
+        if !self.load_entity_kind(nbt) {
+            return false;
+        }
+        // The new entity is the last row of the store.
+        if !tags.is_empty()
+            && let Some(&id) = self.entities.store.columns().id.last()
+            && self
+                .entities
+                .store
+                .get(id)
+                .is_some_and(|e| uuid.is_none_or(|u| e.uuid() == u))
+        {
+            self.entities.set_tags(id, tags);
+        }
+        true
+    }
+
+    /// [`Level::load_entity`] without the tags.
+    fn load_entity_kind(&mut self, nbt: Compound) -> bool {
         let seed = uuid_of(&nbt, "UUID").map_or(0, |uuid| uuid as i64) ^ self.game_time();
         if let Some(loaded) = crate::mob::nbt::load_mob(&nbt, seed) {
             let network_ids = Arc::clone(self.network_ids_arc());
@@ -133,6 +160,30 @@ impl Level {
             new.velocity = velocity;
             new.rot = rot;
             self.entities.spawn_special(new, data);
+            return true;
+        }
+        if let Some((kind, base, decor, flags)) = crate::decoration::load(&nbt) {
+            let network_ids = Arc::clone(self.network_ids_arc());
+            let id = crate::decoration::spawn(
+                &mut self.entities,
+                &network_ids,
+                kind,
+                base.uuid,
+                base.pos,
+                base.rot,
+                decor,
+            );
+            if let Some(mut e) = self.entities.store.get_mut(id) {
+                e.set_velocity(base.velocity);
+                for f in [
+                    EntityFlags::INVISIBLE,
+                    EntityFlags::GLOWING,
+                    EntityFlags::NO_GRAVITY,
+                    EntityFlags::ON_GROUND,
+                ] {
+                    e.set_flags(f, flags.contains(f));
+                }
+            }
             return true;
         }
         if let Some((pos, uuid, cloud)) = crate::mob::nbt::load_cloud(&nbt) {
@@ -312,8 +363,23 @@ impl Level {
     }
 
     /// `Entity.save`: the stored data of a live entity of a modelled kind, `None` for players
-    /// and kinds that are not saved.
+    /// and kinds that are not saved. Its tags are saved with it.
     pub fn save_entity(&self, id: EntityId) -> Option<Compound> {
+        let mut nbt = self.save_entity_kind(id)?;
+        let tags = self.entities.tags_of(id);
+        if tags.is_empty() {
+            nbt.remove("Tags");
+        } else {
+            nbt.insert(
+                "Tags",
+                List(tags.iter().map(|t| Tag::String(t.clone())).collect()),
+            );
+        }
+        Some(nbt)
+    }
+
+    /// [`Level::save_entity`] without the tags.
+    fn save_entity_kind(&self, id: EntityId) -> Option<Compound> {
         let entity = self.entities.store.get(id)?;
         let kind = entity.kind();
         let ents = &self.entities;
@@ -356,6 +422,9 @@ impl Level {
         }
         if let Some(c) = ents.cloud(id) {
             return Some(crate::mob::nbt::save_cloud(&entity, c));
+        }
+        if ents.decor(id).is_some() {
+            return crate::decoration::save(ents, id);
         }
         if kind != ids::ITEM && kind != ids::FALLING_BLOCK && kind != ids::TNT {
             return None;

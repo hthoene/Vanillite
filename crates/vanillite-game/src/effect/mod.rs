@@ -392,7 +392,10 @@ pub fn can_be_affected(kind: vanillite_data::entity::EntityTypeId, effect: MobEf
 /// `WitherBoss.addEffect` and `EnderDragon.addEffect`: these kinds refuse every effect (after
 /// `canBeAffected`, which still reports the effects they would take).
 pub fn refuses_all_effects(kind: vanillite_data::entity::EntityTypeId) -> bool {
-    kind == vanillite_data::entity::ids::WITHER || kind == vanillite_data::entity::ids::ENDER_DRAGON
+    kind == vanillite_data::entity::ids::WITHER
+        || kind == vanillite_data::entity::ids::ENDER_DRAGON
+        // `ArmorStand.isAffectedByPotions`.
+        || kind == vanillite_data::entity::ids::ARMOR_STAND
 }
 
 /// `isInvertedHealAndHarm`.

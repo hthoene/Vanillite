@@ -255,7 +255,10 @@ fn alive(ents: &Entities, id: EntityId) -> bool {
     if let Some(item) = ents.item(id) {
         return item.health > 0;
     }
-    living_alive(ents, id) || ents.boat(id).is_some() || ents.minecart(id).is_some()
+    living_alive(ents, id)
+        || ents.boat(id).is_some()
+        || ents.minecart(id).is_some()
+        || ents.decor(id).is_some()
 }
 
 /// `LightningBolt.tick`. Fills `hits` with the entities to strike (`thunderHit`, see
@@ -436,6 +439,12 @@ pub fn thunder_hit(
     }
     if ents.boat(target).is_some() {
         crate::vehicle::hurt_boat(ents, env, cx, target, source, 5.0);
+        return;
+    }
+    if ents.decor(target).is_some() {
+        // `BlockAttachedEntity.thunderHit` does nothing, cushions break; markers, displays and
+        // interactions take no damage (`Entity.thunderHit` ignites them only).
+        crate::decoration::thunder_hit(level, ents, env, cx, target, None);
         return;
     }
     let Some(kind) = ents.mob(target).filter(|m| m.is_alive()).map(|m| m.kind) else {

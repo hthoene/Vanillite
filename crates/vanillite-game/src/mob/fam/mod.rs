@@ -11,6 +11,7 @@
 pub mod boss;
 pub mod brainy;
 pub mod companion;
+pub mod decor;
 pub mod illager;
 pub mod mount;
 pub mod undead;
@@ -56,6 +57,8 @@ pub enum Family {
     Wildlife,
     /// Guardians, the wither, the ender dragon and the warden (`crate::mob::boss`).
     Boss,
+    /// Armor stands and mannequins: living entities without AI (`crate::decoration::stand`).
+    Decor,
 }
 
 /// Why a mob spawns (`EntitySpawnReason`).
@@ -559,6 +562,8 @@ pub enum Ext {
     /// Boxed: the records are large and most mobs are of other families.
     Companion(Box<companion::State>),
     Wildlife(Box<wildlife::State>),
+    /// Armor stands and mannequins.
+    Decor(Box<crate::decoration::stand::State>),
 }
 
 /// A goal of a family.
@@ -584,6 +589,7 @@ macro_rules! by_family {
             Family::Companion => <companion::Hooks as FamilyHooks>::$f($($arg),*),
             Family::Wildlife => <wildlife::Hooks as FamilyHooks>::$f($($arg),*),
             Family::Boss => <boss::Hooks as FamilyHooks>::$f($($arg),*),
+            Family::Decor => <decor::Hooks as FamilyHooks>::$f($($arg),*),
         }
     };
 }
@@ -912,6 +918,7 @@ macro_rules! by_missile {
             Family::Companion => <companion::Hooks as FamilyHooks>::$f($($arg),*),
             Family::Wildlife => <wildlife::Hooks as FamilyHooks>::$f($($arg),*),
             Family::Boss => <boss::Hooks as FamilyHooks>::$f($($arg),*),
+            Family::Decor => <decor::Hooks as FamilyHooks>::$f($($arg),*),
         }
     };
 }

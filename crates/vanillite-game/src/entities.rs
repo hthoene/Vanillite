@@ -85,6 +85,9 @@ pub struct Entities {
     pub minecarts: Dense<crate::minecart::MinecartData>,
     /// Lightning bolt kind data.
     pub bolts: Dense<crate::lightning::LightningData>,
+    /// Decoration kind data: item frames, paintings, cushions, markers, interactions and
+    /// displays (see [`crate::decoration`]).
+    pub decor: Dense<crate::decoration::Decor>,
 }
 
 /// Who rides what (`Entity.vehicle`, `Entity.passengers`).
@@ -493,6 +496,54 @@ impl Entities {
         self.experience_orbs.get_mut(row)
     }
 
+    /// Adds a decoration entity (players hit and use them by network id).
+    pub fn spawn_decor(&mut self, new: NewEntity, data: crate::decoration::Decor) -> EntityId {
+        let network_id = new.network_id.0;
+        let decor = &mut self.decor;
+        let id = self.store.spawn(new, |id| decor.push(id, data));
+        self.by_network_id.insert(network_id, id);
+        id
+    }
+
+    /// The decoration data of an entity.
+    pub fn decor(&self, id: EntityId) -> Option<&crate::decoration::Decor> {
+        let entity = self.store.get(id)?;
+        if !crate::decoration::is_decor_kind(entity.kind()) {
+            return None;
+        }
+        self.decor.get(entity.kind_row())
+    }
+
+    /// The decoration data of an entity, mutably.
+    pub fn decor_mut(&mut self, id: EntityId) -> Option<&mut crate::decoration::Decor> {
+        let entity = self.store.get(id)?;
+        if !crate::decoration::is_decor_kind(entity.kind()) {
+            return None;
+        }
+        let row = entity.kind_row();
+        self.decor.get_mut(row)
+    }
+
+    /// Whether entities of `kind` have a kind store (a bare core entity of such a kind would
+    /// alias another entity's data).
+    pub fn has_kind_store(kind: EntityTypeId) -> bool {
+        kind == ids::PLAYER
+            || kind == ids::ITEM
+            || kind == ids::FALLING_BLOCK
+            || crate::mob::projectile::is_arrow_kind(kind)
+            || is_mob_kind(kind)
+            || crate::mob::missile::is_missile_kind(kind)
+            || kind == ids::AREA_EFFECT_CLOUD
+            || is_special_kind(kind)
+            || kind == ids::TNT
+            || kind == ids::EXPERIENCE_ORB
+            || crate::vehicle::BoatKind::of(kind).is_some()
+            || kind == ids::LEASH_KNOT
+            || crate::minecart::MinecartKind::of(kind).is_some()
+            || kind == ids::LIGHTNING_BOLT
+            || crate::decoration::is_decor_kind(kind)
+    }
+
     /// Adds a lightning bolt.
     pub fn spawn_bolt(
         &mut self,
@@ -620,6 +671,8 @@ impl Entities {
             self.minecarts.swap_remove(row).and_then(|(_, moved)| moved)
         } else if kind == ids::LIGHTNING_BOLT {
             self.bolts.swap_remove(row).and_then(|(_, moved)| moved)
+        } else if crate::decoration::is_decor_kind(kind) {
+            self.decor.swap_remove(row).and_then(|(_, moved)| moved)
         } else {
             None
         }

@@ -144,6 +144,25 @@ pub fn game_data(packs: Option<&LoadedPacks>) -> GameData {
                 .collect()
         })
         .unwrap_or_default();
+    let painting_variants = packs
+        .registry("minecraft:painting_variant")
+        .map(|r| {
+            r.entries()
+                .iter()
+                .map(|e| {
+                    let json = serde_json::from_str::<serde_json::Value>(e.json.get()).ok();
+                    let get = |k: &str| {
+                        json.as_ref()
+                            .and_then(|j| j.get(k))
+                            .and_then(serde_json::Value::as_i64)
+                            .and_then(|v| i32::try_from(v).ok())
+                            .unwrap_or(1)
+                    };
+                    (get("width"), get("height"))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let recipes = vanillite_game::recipe::Recipes::load(packs.roots(), &|tag| {
         item_tags.get(tag).cloned().unwrap_or_default()
     });
@@ -230,6 +249,7 @@ pub fn game_data(packs: Option<&LoadedPacks>) -> GameData {
         banner_patterns,
         registry_tags,
         instruments,
+        painting_variants,
     }
 }
 

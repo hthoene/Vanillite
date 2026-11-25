@@ -429,7 +429,8 @@ fn can_attack(ents: &Entities, env: &Env<'_>, me: EntityId, target: EntityId) ->
                 vanillite_config::GameMode::Survival | vanillite_config::GameMode::Adventure
             );
     }
-    ents.mob(target).is_some_and(MobData::is_alive)
+    ents.mob(target)
+        .is_some_and(|m| m.is_alive() && crate::decoration::stand::attackable(m))
 }
 
 /// `TargetingConditions.forCombat().range(range).selector(LIVING_ENTITY_SELECTOR)` with
