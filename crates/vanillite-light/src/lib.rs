@@ -112,6 +112,17 @@ impl LightEngine for BfsLightEngine {
         }
     }
 
+    /// Light is a function of each state's emission, dampening and occlusion shape and of
+    /// which sections are empty, so a change that keeps all of them keeps every light level.
+    fn changes_light(&self, old: u16, new: u16) -> bool {
+        let air =
+            |state| vanillite_chunk::facts::block_flags(state) & vanillite_chunk::facts::AIR != 0;
+        let facts = LightFacts::get();
+        LightFacts::light(old) != LightFacts::light(new)
+            || air(old) != air(new)
+            || facts.shape_of(old) != facts.shape_of(new)
+    }
+
     fn relight(&self, changed: &[ChunkPos], area: &mut Neighbours<'_>) {
         for &center in changed {
             let origin = ChunkPos::new(center.x - 2, center.z - 2);

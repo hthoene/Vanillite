@@ -22,7 +22,7 @@ rules! {
         /// Thread counts.
         threads: ThreadRules = "performance.threads" {
             /// Worker threads of the compute pool (world generation, lighting, saving, parallel
-            /// tick phases). 0 = number of cores minus the busy tick threads, at least 1.
+            /// tick phases). 0 = number of cores minus one (the tick threads), at least 1.
             compute: u16 = "compute", Setting, range = [0, 1024], restart = true, vanilla = 0;
         }
         /// Saving.

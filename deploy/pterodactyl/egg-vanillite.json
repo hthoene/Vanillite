@@ -622,7 +622,7 @@
     },
     {
       "name": "Threads: Compute",
-      "description": "Worker threads of the compute pool (world generation, lighting, saving, parallel tick phases). 0 = number of cores minus the busy tick threads, at least 1. Range: 0 to 1024. Empty: the profile's value (vanilla profile: 0). vanillite.toml: performance.threads.compute.",
+      "description": "Worker threads of the compute pool (world generation, lighting, saving, parallel tick phases). 0 = number of cores minus one (the tick threads), at least 1. Range: 0 to 1024. Empty: the profile's value (vanilla profile: 0). vanillite.toml: performance.threads.compute.",
       "env_variable": "VANILLITE_PERFORMANCE__THREADS__COMPUTE",
       "default_value": "",
       "user_viewable": true,
