@@ -26,6 +26,7 @@ use vanillite_game::player::{
 use vanillite_game::stats::{Stat, StatType, StatsCounter, custom};
 use vanillite_game::survival::player::Survival;
 use vanillite_game::survival::rules::Rule;
+use vanillite_nbt::{List, Tag};
 use vanillite_net::{Latency, Outbound};
 use vanillite_protocol::SharedPacket;
 use vanillite_protocol::compress::Codec;
@@ -444,6 +445,22 @@ impl WorldPlayers {
             }
             _ => vanillite_game::recipe::book::PlayerRecipeBook::default(),
         };
+        let saved = arrival.saved.as_ref().map(|saved| &saved.other);
+        let previous_game_mode = saved
+            .and_then(|d| d.get("previousPlayerGameType"))
+            .and_then(Tag::as_i64)
+            .and_then(|v| i32::try_from(v).ok())
+            .and_then(game_mode_by_id);
+        let flying = join::flying_in(arrival.game_mode, saved.is_some_and(load_flying));
+        let tags = saved.map(load_tags).unwrap_or_default();
+        let motion = saved.map_or(Vec3::ZERO, load_motion);
+        let icon = saved
+            .and_then(|d| d.get("locator_bar_icon"))
+            .and_then(Tag::as_compound)
+            .and_then(crate::command_state::WaypointIcon::from_nbt);
+        if let Some(icon) = icon {
+            global.systems.waypoints().insert(arrival.uuid, icon);
+        }
         let data = PlayerData {
             stats,
             advancements,
@@ -452,7 +469,8 @@ impl WorldPlayers {
             last_equipment: std::array::from_fn(|_| ItemStack::EMPTY),
             profile: arrival.profile,
             game_mode: arrival.game_mode,
-            previous_game_mode: None,
+            previous_game_mode,
+            flying,
             client: arrival.client,
             chunk_view: ChunkView {
                 center,
@@ -481,10 +499,12 @@ impl WorldPlayers {
             },
             data,
         );
+        entities.set_tags(id, tags);
         let Some(mut entity) = entities.store.get_mut(id) else {
             return;
         };
         entity.set_flags(EntityFlags::ON_GROUND, on_ground);
+        entity.set_velocity(motion);
         let network_id = entity.as_ref().network_id().0;
         let mut body = body_of(entities, id);
         let Some(player) = entities.player_mut(id) else {
@@ -507,7 +527,7 @@ impl WorldPlayers {
             !immediate_respawn,
         );
         sink.send(&crate::survival::change_difficulty(&global.level));
-        join::send_abilities(sink.as_ref(), player.game_mode);
+        join::send_abilities(sink.as_ref(), player);
         let Some(global_arc) = global.arc() else {
             return;
         };
@@ -625,6 +645,7 @@ impl WorldPlayers {
                 sprinting: flags.contains(EntityFlags::SPRINTING),
                 client: None,
                 respawn: false,
+                flying: None,
             };
             let mut state = before.clone();
             let mut actor = actor_of(
@@ -684,6 +705,10 @@ impl WorldPlayers {
                 handled
             };
             swings.extend(hands.into_iter().map(|h| (id, h)));
+            // `handlePlayerAbilities`.
+            if let Some(flying) = state.flying {
+                player.flying = flying && join::may_fly(player.game_mode);
+            }
             // `player-idle-timeout` (`ServerGamePacketListenerImpl.tick`).
             let idle_minutes = u64::try_from(global.access.idle_timeout()).unwrap_or(0);
             let handled = match handled {
@@ -1147,7 +1172,8 @@ impl WorldPlayers {
             }
             None => log::info!("{name} lost connection: Disconnected"),
         }
-        self.save_player(entities, id);
+        self.save_player(level, Some(global), id);
+        level.remove_root_vehicle(id);
         drop_menus_on_leave(level, id);
         let entities = &mut level.entities;
         entities.despawn(id);
@@ -1167,64 +1193,228 @@ impl WorldPlayers {
         global.plugins.player_leave(world, uuid, &name);
     }
 
-    /// Queues the write of a player's data file; the fields this server does not handle stay
-    /// as they are in the file.
-    fn save_player(&self, entities: &Entities, id: EntityId) {
+    /// Queues the write of a player's data file (`PlayerList.save`): what the server keeps of
+    /// the player is written from its live state, the fields it does not handle stay as they
+    /// are in the file. Without `global` (world saves) the waypoint icon stays as saved.
+    fn save_player(&self, level: &Level, global: Option<&Global>, id: EntityId) {
+        let entities = &level.entities;
         let (Some(entity), Some(player)) = (entities.store.get(id), entities.player(id)) else {
             return;
         };
         let pos = entity.pos();
         let pos = [pos.x, pos.y, pos.z];
         let rotation = [entity.rot().y_rot, entity.rot().x_rot];
-        let on_ground = entity.flags().contains(EntityFlags::ON_GROUND);
+        let flags = entity.flags();
+        let on_ground = flags.contains(EntityFlags::ON_GROUND);
         let dimension = self.level.dimension.as_str().to_owned();
         let game_mode = game_mode_id(player.game_mode);
-        let mut survival = vanillite_nbt::Compound::new();
-        player.inventory.save(&mut survival);
-        player.survival.save(&mut survival);
-        survival.insert(
+        let uuid = entity.uuid();
+        let mut live = vanillite_nbt::Compound::new();
+        live.insert(
+            "UUID",
+            Tag::IntArray(vanillite_nbt::snbt::uuid_to_ints(uuid).to_vec()),
+        );
+        let motion = entity.velocity();
+        live.insert(
+            "Motion",
+            Tag::List(List(vec![
+                Tag::Double(motion.x),
+                Tag::Double(motion.y),
+                Tag::Double(motion.z),
+            ])),
+        );
+        let tags = entities.tags_of(id);
+        if !tags.is_empty() {
+            live.insert(
+                "Tags",
+                Tag::List(List(tags.iter().map(|t| Tag::String(t.clone())).collect())),
+            );
+        }
+        player.inventory.save(&mut live);
+        player.survival.save(&mut live);
+        live.insert(
             "post_effects",
-            vanillite_nbt::Tag::List(vanillite_nbt::List(
+            Tag::List(List(
                 player
                     .post_effects
                     .iter()
-                    .map(|e| vanillite_nbt::Tag::String(e.clone()))
+                    .map(|e| Tag::String(e.clone()))
                     .collect(),
             )),
         );
+        live.insert("recipeBook", player.recipe_book.save());
+        if let Some(previous) = player.previous_game_mode {
+            live.insert("previousPlayerGameType", Tag::Int(game_mode_id(previous)));
+        }
+        // Players do not sleep, glide, freeze or keep explosion impulses here yet: those
+        // keys carry the state of a player that does none of it.
+        live.insert("SleepTimer", Tag::Short(0));
+        live.insert(
+            "FallFlying",
+            Tag::Byte(i8::from(flags.contains(EntityFlags::FALL_FLYING))),
+        );
+        live.insert("current_impulse_context_reset_grace_time", Tag::Int(0));
+        live.insert("spawn_extra_particles_on_fall", Tag::Byte(0));
+        if let Some((attacker, tick)) = player.survival.last_hurt_by_mob
+            && let Some(attacker) = entities.store.get(attacker)
+        {
+            live.insert(
+                "last_hurt_by_mob",
+                Tag::IntArray(vanillite_nbt::snbt::uuid_to_ints(attacker.uuid()).to_vec()),
+            );
+            live.insert(
+                "ticks_since_last_hurt_by_mob",
+                Tag::Int(player.survival.tick_count.wrapping_sub(tick)),
+            );
+        }
+        if let Some(vehicle) = level.save_root_vehicle(id) {
+            live.insert("RootVehicle", Tag::Compound(vehicle));
+        }
+        let icon = global.map(|global| {
+            global
+                .systems
+                .waypoints()
+                .get(&uuid)
+                .and_then(crate::command_state::WaypointIcon::to_nbt)
+        });
+        if let Some(Some(icon)) = &icon {
+            live.insert("locator_bar_icon", Tag::Compound(icon.clone()));
+        }
+        let abilities = Abilities {
+            mode: player.game_mode,
+            flying: player.flying,
+        };
         // `PlayerList.save`: the statistics and advancements files with the data.
-        let uuid = entity.uuid();
         self.store
             .save_json(JsonFile::Stats, uuid, player.stats.to_json());
         self.store
             .save_json(JsonFile::Advancements, uuid, player.advancements.to_json());
-        survival.insert("recipeBook", player.recipe_book.save());
-        // `Survival::save` removes the death location when there is none.
-        let has_death = survival.get("LastDeathLocation").is_some();
-        let has_effects = survival.get("active_effects").is_some();
-        self.store.update(entity.uuid(), move |data| {
+        let icon_is_live = icon.is_some();
+        self.store.update(uuid, move |data| {
             data.pos = pos;
             data.rotation = rotation;
             data.on_ground = on_ground;
             data.dimension = dimension;
             data.game_mode = game_mode;
-            if !has_death {
-                data.other.remove("LastDeathLocation");
+            for key in LIVE_KEYS {
+                data.other.remove(key);
             }
-            if !has_effects {
-                data.other.remove("active_effects");
+            if icon_is_live {
+                data.other.remove("locator_bar_icon");
             }
-            for (key, tag) in survival.iter() {
+            let saved = match data.other.remove("abilities") {
+                Some(Tag::Compound(c)) => c,
+                _ => vanillite_nbt::Compound::new(),
+            };
+            data.other
+                .insert("abilities", Tag::Compound(abilities.save(saved)));
+            for (key, tag) in live.iter() {
                 data.other.insert(key, tag.clone());
             }
         });
     }
 
     /// Saves all players of this world.
-    pub(crate) fn save_all(&self, entities: &Entities) {
-        for (id, _) in entities.players.iter() {
-            self.save_player(entities, id);
+    pub(crate) fn save_all(&self, level: &Level) {
+        for (id, _) in level.entities.players.iter() {
+            self.save_player(level, None, id);
         }
+    }
+}
+
+/// The keys of a player data file that only exist for some live states: dropped before the
+/// live state is written, so a stale value never stays.
+const LIVE_KEYS: [&str; 15] = [
+    "Tags",
+    "previousPlayerGameType",
+    "LastDeathLocation",
+    "active_effects",
+    "respawn",
+    "entered_nether_pos",
+    "RootVehicle",
+    "sleeping_pos",
+    "TicksFrozen",
+    "current_explosion_impact_pos",
+    "last_explosion_impact_pos",
+    "last_hurt_by_mob",
+    "ticks_since_last_hurt_by_mob",
+    "last_hurt_by_player",
+    "last_hurt_by_player_memory_time",
+];
+
+/// `Abilities` as the game mode sets them (`GameType.updatePlayerAbilities`) with the flying
+/// state.
+#[derive(Clone, Copy, Debug)]
+struct Abilities {
+    mode: GameMode,
+    flying: bool,
+}
+
+impl Abilities {
+    /// `Abilities.Packed.CODEC` over the saved compound: the speeds the server does not
+    /// change stay as saved.
+    fn save(self, mut out: vanillite_nbt::Compound) -> vanillite_nbt::Compound {
+        let creative = self.mode == GameMode::Creative;
+        let spectator = self.mode == GameMode::Spectator;
+        out.insert("invulnerable", Tag::Byte(i8::from(creative || spectator)));
+        out.insert("flying", Tag::Byte(i8::from(self.flying)));
+        out.insert("mayfly", Tag::Byte(i8::from(join::may_fly(self.mode))));
+        out.insert("instabuild", Tag::Byte(i8::from(creative)));
+        // `isBlockPlacingRestricted`.
+        out.insert(
+            "mayBuild",
+            Tag::Byte(i8::from(matches!(
+                self.mode,
+                GameMode::Survival | GameMode::Creative
+            ))),
+        );
+        if !matches!(out.get("flySpeed"), Some(Tag::Float(_))) {
+            out.insert("flySpeed", Tag::Float(0.05));
+        }
+        if !matches!(out.get("walkSpeed"), Some(Tag::Float(_))) {
+            out.insert("walkSpeed", Tag::Float(0.1));
+        }
+        out
+    }
+}
+
+/// `Abilities.flying` of a player data file.
+fn load_flying(data: &vanillite_nbt::Compound) -> bool {
+    matches!(
+        data.get("abilities"),
+        Some(Tag::Compound(c)) if matches!(c.get("flying"), Some(Tag::Byte(b)) if *b != 0)
+    )
+}
+
+/// `Entity.load`'s `Tags`.
+fn load_tags(data: &vanillite_nbt::Compound) -> Vec<String> {
+    match data.get("Tags") {
+        Some(Tag::List(list)) => list
+            .0
+            .iter()
+            .filter_map(|t| t.as_str().map(str::to_owned))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// `Entity.load`'s `Motion`: components beyond 10 become 0.
+fn load_motion(data: &vanillite_nbt::Compound) -> Vec3 {
+    let clamp = |v: f64| {
+        if v.is_finite() && v.abs() <= 10.0 {
+            v
+        } else {
+            0.0
+        }
+    };
+    match data.get("Motion") {
+        Some(Tag::List(list)) => match list.0.as_slice() {
+            [Tag::Double(x), Tag::Double(y), Tag::Double(z)] => {
+                Vec3::new(clamp(*x), clamp(*y), clamp(*z))
+            }
+            _ => Vec3::ZERO,
+        },
+        _ => Vec3::ZERO,
     }
 }
 

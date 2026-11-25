@@ -178,6 +178,20 @@ pub mod serverbound {
     #[packet(state = Play, dir = Serverbound, name = "player_input", bucket = "movement")]
     pub struct PlayerInput(pub Input);
 
+    /// `player_abilities`: the client starts or stops flying (flag 2, `FLAG_FLYING`).
+    #[derive(Debug, Clone, PartialEq, Eq, Packet)]
+    #[packet(state = Play, dir = Serverbound, name = "player_abilities", bucket = "movement")]
+    pub struct PlayerAbilities {
+        pub flags: u8,
+    }
+
+    impl PlayerAbilities {
+        /// `isFlying`.
+        pub fn is_flying(&self) -> bool {
+            self.flags & 2 != 0
+        }
+    }
+
     varint_enum! {
         /// Action of `player_command`.
         pub enum PlayerAction {

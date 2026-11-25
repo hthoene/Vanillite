@@ -42,6 +42,7 @@ fn add_player(level: &mut Level, pos: Vec3, game_mode: GameMode) -> EntityId {
         profile: crate::player::GameProfile::default(),
         game_mode,
         previous_game_mode: None,
+        flying: false,
         client: ClientInformation::default(),
         chunk_view: ChunkView {
             center: ChunkPos::new(0, 0),

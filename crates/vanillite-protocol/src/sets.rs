@@ -154,6 +154,7 @@ packet_set! {
         MovePlayerStatusOnly(play::serverbound::MovePlayerStatusOnly),
         PlayerCommand(play::serverbound::PlayerCommand),
         PlayerInput(play::serverbound::PlayerInput),
+        PlayerAbilities(play::serverbound::PlayerAbilities),
         PingRequest(play::serverbound::PingRequest),
         PlayerLoaded(play::serverbound::PlayerLoaded),
         Pong(play::serverbound::Pong),

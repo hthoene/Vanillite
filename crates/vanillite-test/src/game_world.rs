@@ -618,6 +618,7 @@ impl GameWorld {
             },
             game_mode: vanillite_config::GameMode::Survival,
             previous_game_mode: None,
+            flying: false,
             client: ClientInformation::default(),
             chunk_view: ChunkView {
                 center: BlockPos::containing(pos.x, pos.y, pos.z).chunk(),

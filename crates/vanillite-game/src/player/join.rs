@@ -59,16 +59,34 @@ pub fn game_mode(mode: ConfigGameMode) -> GameMode {
     }
 }
 
-/// `ClientboundPlayerAbilitiesPacket` for a game mode's default abilities
-/// (`GameType.updatePlayerAbilities`).
-fn abilities(mode: ConfigGameMode) -> PlayerAbilities {
-    let flags = match mode {
+/// `Abilities.mayfly` of a game mode (`GameType.updatePlayerAbilities`).
+pub fn may_fly(mode: ConfigGameMode) -> bool {
+    matches!(mode, ConfigGameMode::Creative | ConfigGameMode::Spectator)
+}
+
+/// `Abilities.flying` after `GameType.updatePlayerAbilities`: spectators always fly, creative
+/// players keep flying, the others stop.
+pub fn flying_in(mode: ConfigGameMode, flying: bool) -> bool {
+    match mode {
+        ConfigGameMode::Spectator => true,
+        ConfigGameMode::Creative => flying,
+        ConfigGameMode::Survival | ConfigGameMode::Adventure => false,
+    }
+}
+
+/// `ClientboundPlayerAbilitiesPacket` of a game mode's abilities
+/// (`GameType.updatePlayerAbilities`) with the flying state.
+fn abilities(mode: ConfigGameMode, flying: bool) -> PlayerAbilities {
+    let mut flags = match mode {
         // invulnerable | may fly | instabuild
         ConfigGameMode::Creative => 1 | 4 | 8,
-        // invulnerable | flying | may fly
-        ConfigGameMode::Spectator => 1 | 2 | 4,
+        // invulnerable | may fly
+        ConfigGameMode::Spectator => 1 | 4,
         ConfigGameMode::Survival | ConfigGameMode::Adventure => 0,
     };
+    if flying {
+        flags |= 2;
+    }
     PlayerAbilities {
         flags,
         flying_speed: 0.05,
@@ -89,14 +107,15 @@ pub fn set_game_mode(
     }
     player.previous_game_mode = Some(player.game_mode);
     player.game_mode = mode;
+    player.flying = flying_in(mode, player.flying);
     let sink = player.connection.sink.as_ref();
-    sink.send(&abilities(mode));
+    sink.send(&abilities(mode, player.flying));
     broadcast_tab_list();
     sink.send(&GameEvent {
         event: GameEvent::CHANGE_GAME_MODE,
         param: game_mode_id(mode),
     });
-    sink.send(&abilities(mode));
+    sink.send(&abilities(mode, player.flying));
     true
 }
 
@@ -171,8 +190,8 @@ pub fn spawn_info(level: &LevelInfo, player: &PlayerData) -> SpawnInfo {
 }
 
 /// The player's abilities (`ClientboundPlayerAbilitiesPacket`).
-pub fn send_abilities(sink: &dyn PacketSink, mode: ConfigGameMode) {
-    sink.send(&abilities(mode));
+pub fn send_abilities(sink: &dyn PacketSink, player: &PlayerData) {
+    sink.send(&abilities(player.game_mode, player.flying));
 }
 
 /// What `sendLevelInfo` sends of the world border and the server's tick state.

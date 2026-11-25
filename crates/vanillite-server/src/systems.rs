@@ -25,6 +25,8 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 const SCOREBOARD: &str = "minecraft:scoreboard";
 /// The saved data of the scheduled functions (`TimerQueue.TYPE`).
 const SCHEDULED_EVENTS: &str = "minecraft:scheduled_events";
+/// The saved data of the stopwatches (`Stopwatches.TYPE`).
+const STOPWATCHES: &str = "minecraft:stopwatches";
 /// The path of a namespace's command storage (`CommandStorage.Container.type`).
 const COMMAND_STORAGE: &str = "command_storage";
 
@@ -228,8 +230,9 @@ impl GameSystems {
         lock(&self.scoreboard_sync)
     }
 
-    /// Loads the scoreboard, the command storage and the scheduled functions from the world's
-    /// saved data (`ServerScoreboard.load`, `CommandStorage`, `TimerQueue`).
+    /// Loads the scoreboard, the command storage, the scheduled functions and the stopwatches
+    /// from the world's saved data (`ServerScoreboard.load`, `CommandStorage`, `TimerQueue`,
+    /// `Stopwatches`).
     pub(crate) fn load(&self, data: &SavedDataStore) {
         let read = |id: &str| {
             data.read(id).unwrap_or_else(|e| {
@@ -242,6 +245,9 @@ impl GameSystems {
         }
         if let Some(c) = read(SCHEDULED_EVENTS) {
             *self.scheduled() = TimerQueue::from_nbt(&c);
+        }
+        if let Some(c) = read(STOPWATCHES) {
+            *self.stopwatches() = Stopwatches::from_nbt(&c);
         }
         *self.storage() = CommandStorage::load(data);
     }
@@ -261,6 +267,10 @@ impl GameSystems {
         };
         if let Some(c) = scheduled {
             data.write(SCHEDULED_EVENTS, c);
+        }
+        let stopwatches = self.stopwatches().take_dirty_nbt();
+        if let Some(c) = stopwatches {
+            data.write(STOPWATCHES, c);
         }
         for (id, c) in self.storage().take_dirty() {
             data.write(&id, c);

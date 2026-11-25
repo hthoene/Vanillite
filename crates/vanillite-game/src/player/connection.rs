@@ -45,6 +45,9 @@ pub struct PlayerState {
     pub client: Option<ClientInformation>,
     /// The client asked to respawn (`client_command` `PERFORM_RESPAWN`).
     pub respawn: bool,
+    /// The client started or stopped flying (`player_abilities`); `handlePlayerAbilities`
+    /// applies it where the player may fly.
+    pub flying: Option<bool>,
 }
 
 /// An attack or interaction of a player with an entity, by network id.
@@ -472,6 +475,7 @@ impl Connection {
             ServerboundPlay::CommandSuggestion(p) => {
                 self.chat.suggestion = Some((p.id, p.command));
             }
+            ServerboundPlay::PlayerAbilities(p) => state.flying = Some(p.is_flying()),
             ServerboundPlay::PlayerInput(p) => {
                 if self.movement.has_client_loaded() {
                     state.shift_key_down = p.0.shift;

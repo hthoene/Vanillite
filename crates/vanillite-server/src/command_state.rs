@@ -260,11 +260,14 @@ impl Stopwatch {
     }
 }
 
-/// `Stopwatches`: by id, timed with a monotonic clock (`Util.getMillis`).
+/// `Stopwatches`: by id, timed with a monotonic clock (`Util.getMillis`); saved as
+/// `minecraft:stopwatches`.
 #[derive(Debug)]
 pub(crate) struct Stopwatches {
     start: std::time::Instant,
     stopwatches: BTreeMap<String, Stopwatch>,
+    /// Changed since the last save (`setDirty`).
+    dirty: bool,
 }
 
 impl Default for Stopwatches {
@@ -272,11 +275,45 @@ impl Default for Stopwatches {
         Stopwatches {
             start: std::time::Instant::now(),
             stopwatches: BTreeMap::new(),
+            dirty: false,
         }
     }
 }
 
 impl Stopwatches {
+    /// `CODEC`'s `unpack`: every stopwatch goes on from its saved elapsed milliseconds.
+    pub(crate) fn from_nbt(data: &Compound) -> Stopwatches {
+        let mut out = Stopwatches::default();
+        let now = out.now();
+        if let Some(Tag::Compound(saved)) = data.get("stopwatches") {
+            for (id, tag) in saved.iter() {
+                if let Some(ms) = tag.as_i64() {
+                    out.stopwatches.insert(
+                        id.to_owned(),
+                        Stopwatch {
+                            creation_time: now,
+                            accumulated: ms,
+                        },
+                    );
+                }
+            }
+        }
+        out
+    }
+
+    /// `pack` when the data is to be saved: `isDirty` holds while there are stopwatches.
+    pub(crate) fn take_dirty_nbt(&mut self) -> Option<Compound> {
+        if !std::mem::take(&mut self.dirty) && self.stopwatches.is_empty() {
+            return None;
+        }
+        let now = self.now();
+        let mut saved = Compound::with_capacity(self.stopwatches.len());
+        for (id, s) in &self.stopwatches {
+            saved.insert(id.as_str(), Tag::Long(s.elapsed_ms(now)));
+        }
+        Some(Compound::new().with("stopwatches", saved))
+    }
+
     /// `currentTime`.
     pub(crate) fn now(&self) -> i64 {
         i64::try_from(self.start.elapsed().as_millis()).unwrap_or(i64::MAX)
@@ -297,6 +334,7 @@ impl Stopwatches {
             accumulated: 0,
         };
         self.stopwatches.insert(id.to_owned(), started);
+        self.dirty = true;
         true
     }
 
@@ -310,12 +348,15 @@ impl Stopwatches {
             creation_time: now,
             accumulated: 0,
         };
+        self.dirty = true;
         true
     }
 
     /// `remove`.
     pub(crate) fn remove(&mut self, id: &str) -> bool {
-        self.stopwatches.remove(id).is_some()
+        let removed = self.stopwatches.remove(id).is_some();
+        self.dirty |= removed;
+        removed
     }
 
     /// `ids`.
@@ -351,6 +392,43 @@ pub(crate) struct WaypointIcon {
     pub(crate) color: Option<i32>,
 }
 
+impl WaypointIcon {
+    /// `Waypoint.Icon.CODEC` (`locator_bar_icon`); `None` without data (`hasData`).
+    pub(crate) fn to_nbt(&self) -> Option<Compound> {
+        if self.style.is_none() && self.color.is_none() {
+            return None;
+        }
+        let mut out = Compound::with_capacity(2);
+        out.insert(
+            "style",
+            Tag::String(
+                self.style
+                    .clone()
+                    .unwrap_or_else(|| "minecraft:default".to_owned()),
+            ),
+        );
+        if let Some(color) = self.color {
+            out.insert("color", Tag::Int(color));
+        }
+        Some(out)
+    }
+
+    /// Reads `locator_bar_icon`; `None` without data.
+    pub(crate) fn from_nbt(data: &Compound) -> Option<WaypointIcon> {
+        let style = data
+            .get("style")
+            .and_then(Tag::as_str)
+            .filter(|s| *s != "minecraft:default")
+            .map(str::to_owned);
+        let color = match data.get("color") {
+            Some(Tag::Int(c)) => Some(*c),
+            _ => None,
+        };
+        let icon = WaypointIcon { style, color };
+        (icon.style.is_some() || icon.color.is_some()).then_some(icon)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -378,6 +456,26 @@ mod tests {
             loaded.next_due(3).map(|e| e.callback),
             Some(TimerCallback::Function("b:g".into()))
         );
+    }
+
+    #[test]
+    fn stopwatches_round_trip() {
+        let mut s = Stopwatches::default();
+        assert_eq!(s.take_dirty_nbt(), None);
+        assert!(s.add("test:a"));
+        let saved = s.take_dirty_nbt().unwrap();
+        let ms = match &saved.get("stopwatches") {
+            Some(Tag::Compound(c)) => c.get("test:a").and_then(Tag::as_i64).unwrap(),
+            _ => panic!("no stopwatches"),
+        };
+        let loaded = Stopwatches::from_nbt(&saved);
+        assert!(loaded.get("test:a").unwrap().elapsed_ms(loaded.now()) >= ms);
+        assert!(s.remove("test:a"));
+        assert_eq!(
+            s.take_dirty_nbt(),
+            Some(Compound::new().with("stopwatches", Compound::new()))
+        );
+        assert_eq!(s.take_dirty_nbt(), None);
     }
 
     #[test]

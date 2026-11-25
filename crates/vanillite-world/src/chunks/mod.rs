@@ -1618,6 +1618,7 @@ impl Chunks {
                     let chunk = Arc::make_mut(chunk);
                     chunk.block_ticks = blocks;
                     chunk.fluid_ticks = fluids;
+                    chunk.last_update = self.game_time;
                 }
                 self.post_process.retain(|&p| p != pos);
                 self.visibility_check.push(pos);
@@ -1731,6 +1732,7 @@ impl Chunks {
             let chunk = Arc::make_mut(chunk);
             chunk.block_ticks = self.block_ticks.pack(pos, self.game_time);
             chunk.fluid_ticks = self.fluid_ticks.pack(pos, self.game_time);
+            chunk.last_update = self.game_time;
         }
         Some(Snapshot {
             chunk: Arc::clone(chunk),
