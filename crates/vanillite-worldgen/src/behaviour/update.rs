@@ -522,7 +522,8 @@ pub(crate) fn update_shape(
                 if t.enables_bubble_column_drag_down.contains(neighbour)
                     || t.enables_bubble_column_push_up.contains(neighbour)
                 {
-                    level.schedule_block_tick(pos, state.block(), 5);
+                    // `LiquidBlock.BUBBLE_COLUMN_CHECK_DELAY`.
+                    level.schedule_block_tick(pos, state.block(), 20);
                 }
             }
             state

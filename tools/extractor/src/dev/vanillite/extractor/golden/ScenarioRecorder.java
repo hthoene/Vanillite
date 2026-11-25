@@ -123,6 +123,9 @@ public final class ScenarioRecorder {
       BlockPos max = pos(region.get(1));
       loadRegion(server, level, min, max);
 
+      // The setup may draw from the level random (blocks that schedule a random delay when
+      // placed): it starts from the world seed, like Vanillite's new level.
+      level.getRandom().setSeed(seed);
       if (scenario.has("setup")) {
         for (JsonElement op : scenario.getAsJsonArray("setup")) {
           apply(level, op.getAsJsonObject(), false);

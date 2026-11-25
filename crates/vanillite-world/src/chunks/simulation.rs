@@ -197,7 +197,9 @@ impl SimulationLevels {
     /// `checkNeighbor`.
     fn check_neighbor(&mut self, from: i64, to: i64, level: u8, only_decreased: bool) {
         let stored = self.computed.get(&to).copied().unwrap_or(NO_COMPUTED);
-        let level_from = self.level_from_neighbor(from, to, level).min(LEVEL_COUNT - 1);
+        let level_from = self
+            .level_from_neighbor(from, to, level)
+            .min(LEVEL_COUNT - 1);
         if only_decreased {
             let level_to = self.get_level(to);
             self.check_edge_with(from, to, level_from, level_to, stored, true);

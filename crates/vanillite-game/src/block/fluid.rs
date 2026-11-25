@@ -618,6 +618,7 @@ pub fn liquid_on_place(
     _moved: bool,
 ) {
     schedule_if_spreading(level, state, pos);
+    super::bubble::liquid_check(level, state, pos);
 }
 
 /// `LiquidBlock.neighborChanged`.
@@ -629,6 +630,7 @@ pub fn liquid_neighbor_changed(
     _moved: bool,
 ) {
     schedule_if_spreading(level, state, pos);
+    super::bubble::liquid_check(level, state, pos);
 }
 
 fn schedule_if_spreading(level: &mut Level, state: BlockState, pos: BlockPos) {
