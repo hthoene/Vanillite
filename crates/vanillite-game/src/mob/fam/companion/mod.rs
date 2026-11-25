@@ -961,7 +961,7 @@ impl FamilyHooks for Hooks {
         horse::offspring_kind(parent, partner)
     }
 
-    fn rider_controls(m: &MobData) -> bool {
+    fn rider_controls_mob(m: &MobData) -> bool {
         is_horse(m.kind) && horse::is_saddled(m)
     }
 

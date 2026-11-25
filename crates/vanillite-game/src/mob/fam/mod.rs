@@ -361,6 +361,16 @@ pub trait FamilyHooks {
     fn is_max_group_size_reached(_m: &MobData, _group_size: i32) -> bool {
         false
     }
+    /// How many passengers the mob carries (`canAddPassenger`).
+    fn max_passengers(_m: &MobData) -> usize {
+        1
+    }
+    /// Whether `player`, the first passenger, steers the mob (`getControllingPassenger`).
+    fn rider_controls(_ents: &Entities, _player: EntityId, _vehicle: EntityId) -> bool {
+        false
+    }
+    /// `PlayerRideableJumping.handleStartJump`: the rider's jump key (strength 0 to 100).
+    fn rider_jump(_ents: &mut Entities, _env: &mut Env<'_>, _vehicle: EntityId, _strength: i32) {}
     /// The breeding food (`isFood`).
     fn is_food(_kind: Kind, _item: u16) -> bool {
         false
@@ -458,7 +468,7 @@ pub trait FamilyHooks {
     }
     /// Whether a player that is the first passenger steers the mob (`getControllingPassenger`
     /// is the player: a saddled horse); its client then moves it.
-    fn rider_controls(_m: &MobData) -> bool {
+    fn rider_controls_mob(_m: &MobData) -> bool {
         false
     }
     /// `getBreedOffspring` setup of a bred baby (variants, colours, genes).
@@ -478,6 +488,10 @@ pub trait FamilyHooks {
     fn pick_up_items(t: &mut Tick<'_, '_>) {
         let rules = super::equipment::PickupRules::default();
         super::equipment::pick_up_items(t, &rules, None, (1.0, 0.0, 1.0));
+    }
+    /// `wantsToPickUp(stack)` (the item sensor of brain mobs).
+    fn wants_to_pick_up(_t: &Tick<'_, '_>, _stack: &ItemStack) -> bool {
+        true
     }
     /// The living entity flags (using an item, hand).
     fn living_flags(m: &MobData) -> u8 {
@@ -679,6 +693,21 @@ pub fn anger_range(kind: Kind) -> (i32, i32) {
 pub fn is_max_group_size_reached(m: &MobData, group_size: i32) -> bool {
     by_family!(m.kind, false, is_max_group_size_reached(m, group_size))
 }
+pub fn max_passengers(m: &MobData) -> usize {
+    by_family!(m.kind, 1, max_passengers(m))
+}
+pub fn rider_controls(ents: &Entities, player: EntityId, vehicle: EntityId) -> bool {
+    let Some(kind) = ents.mob(vehicle).map(|m| m.kind) else {
+        return false;
+    };
+    by_family!(kind, false, rider_controls(ents, player, vehicle))
+}
+pub fn rider_jump(ents: &mut Entities, env: &mut Env<'_>, vehicle: EntityId, strength: i32) {
+    let Some(kind) = ents.mob(vehicle).map(|m| m.kind) else {
+        return;
+    };
+    by_family!(kind, (), rider_jump(ents, env, vehicle, strength));
+}
 pub fn is_food(kind: Kind, item: u16) -> bool {
     by_family!(kind, false, is_food(kind, item))
 }
@@ -795,8 +824,8 @@ pub fn can_mate(me: &MobData, partner: &MobData) -> bool {
 pub fn offspring_kind(parent: &MobData, partner: &MobData) -> Kind {
     by_family!(parent.kind, parent.kind, offspring_kind(parent, partner))
 }
-pub fn rider_controls(m: &MobData) -> bool {
-    by_family!(m.kind, false, rider_controls(m))
+pub fn rider_controls_mob(m: &MobData) -> bool {
+    by_family!(m.kind, false, rider_controls_mob(m))
 }
 pub fn breed_offspring(
     parent: &MobData,
@@ -815,6 +844,9 @@ pub fn encode_data(w: &mut DataWriter<'_>, m: &MobData) {
 }
 pub fn pick_up_items(t: &mut Tick<'_, '_>) {
     by_family!(t.mob_ref().kind, (), pick_up_items(t));
+}
+pub fn wants_to_pick_up(t: &Tick<'_, '_>, stack: &ItemStack) -> bool {
+    by_family!(t.mob_ref().kind, true, wants_to_pick_up(t, stack))
 }
 pub fn living_flags(m: &MobData) -> u8 {
     by_family!(m.kind, u8::from(m.using_item >= 0), living_flags(m))

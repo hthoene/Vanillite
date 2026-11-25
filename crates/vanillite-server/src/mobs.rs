@@ -213,6 +213,9 @@ impl WorldMobs {
                     );
                 }
                 riding::paddle_boat(&mut ents, player, input.paddles.0, input.paddles.1);
+                if let Some(strength) = input.jump {
+                    riding::riding_jump(&mut ents, &mut env, player, strength);
+                }
                 // `wantsToStopRiding`: sneaking gets a player off its vehicle.
                 if input.input.shift && ents.vehicle_of(player).is_some() {
                     riding::stop_riding(&mut ents, &mut env, player);
@@ -520,6 +523,21 @@ impl WorldMobs {
                 }
                 WorldAction::SetDoorOpen(pos, open, source) => {
                     vanillite_game::block::redstone::set_door_open(level, pos, open, source);
+                }
+                WorldAction::WindBurst(b) => {
+                    // `ExplosionInteraction.TRIGGER` without damage (`damagesEntities` off).
+                    level.explode_with(
+                        b.source,
+                        None,
+                        b.pos,
+                        b.radius,
+                        BlockInteraction::TriggerBlock,
+                        vanillite_game::level::explosion::ExplosionStyle {
+                            damages_entities: false,
+                            knockback: b.knockback,
+                            wind_sound: Some(b.sound),
+                        },
+                    );
                 }
             }
         }

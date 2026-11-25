@@ -756,7 +756,7 @@ fn other_pos(t: &Tick<'_, '_>, id: EntityId) -> Option<Vec3> {
 }
 
 /// `Mob.isWithinMeleeAttackRange`.
-fn within_melee_range(t: &Tick<'_, '_>, target: EntityId) -> bool {
+pub(super) fn within_melee_range(t: &Tick<'_, '_>, target: EntityId) -> bool {
     let Some(o) = t.other(target) else {
         return false;
     };

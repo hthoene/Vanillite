@@ -112,6 +112,7 @@ impl Rule {
     pub const ENTITY_DROPS: Rule = Rule(10);
     pub const FALL_DAMAGE: Rule = Rule(11);
     pub const FIRE_DAMAGE: Rule = Rule(12);
+    pub const FORGIVE_DEAD_PLAYERS: Rule = Rule(14);
     pub const FREEZE_DAMAGE: Rule = Rule(15);
     pub const IMMEDIATE_RESPAWN: Rule = Rule(17);
     pub const KEEP_INVENTORY: Rule = Rule(18);
