@@ -94,7 +94,8 @@ public final class ParityServer extends MinecraftServer {
 
   /**
    * Loads the Vanilla data pack and the world (seed, flat layers bottom up, biome) into a fresh
-   * directory under {@code dir}, on the calling thread.
+   * directory under {@code dir}, on the calling thread. Without layers the overworld is
+   * Vanilla's normal generation.
    */
   public static ParityServer start(Path dir, long seed, List<Layer> layers, String biome)
       throws Exception {
@@ -130,9 +131,11 @@ public final class ParityServer extends MinecraftServer {
                     init,
                     ctx -> {
                       HolderLookup.Provider lookup = ctx.datapackWorldRegistries();
+                      WorldDimensions normal = WorldPresets.createNormalWorldDimensions(lookup);
                       WorldDimensions dimensions =
-                          WorldPresets.createNormalWorldDimensions(lookup)
-                              .replaceOverworldGenerator(
+                          layers == null
+                              ? normal
+                              : normal.replaceOverworldGenerator(
                                   lookup, new FlatLevelSource(flat(lookup, layers, biome)));
                       WorldDimensions.Complete complete =
                           dimensions.bake(

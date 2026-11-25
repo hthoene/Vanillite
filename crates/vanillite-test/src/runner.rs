@@ -28,13 +28,13 @@ pub fn record(
         apply(world.as_mut(), op, false)?;
     }
     let mut trace = Trace::new(scenario.min, scenario.max);
-    observe(world.as_ref(), &mut trace, 0);
+    observe(world.as_mut(), &mut trace, 0, scenario.world.light);
     for tick in 1..=scenario.ticks {
         for op in scenario.actions.iter().filter(|a| a.tick == tick) {
             apply(world.as_mut(), op, true)?;
         }
         world.step();
-        observe(world.as_ref(), &mut trace, tick);
+        observe(world.as_mut(), &mut trace, tick, scenario.world.light);
     }
     Ok(trace)
 }
@@ -70,7 +70,7 @@ fn apply(
     Ok(())
 }
 
-fn observe(world: &dyn ScenarioWorld, trace: &mut Trace, tick: u32) {
+fn observe(world: &mut dyn ScenarioWorld, trace: &mut Trace, tick: u32, light: bool) {
     let volume: usize = trace.size().iter().product();
     let mut frame = Frame {
         tick,
@@ -89,6 +89,9 @@ fn observe(world: &dyn ScenarioWorld, trace: &mut Trace, tick: u32) {
     world.block_ticks(trace.min, trace.max, &mut frame.block_ticks);
     world.fluid_ticks(trace.min, trace.max, &mut frame.fluid_ticks);
     world.entities(trace.min, trace.max, &mut frame.entities);
+    if light {
+        world.light(trace.min, trace.max, &mut frame.light);
+    }
     trace.frames.push(frame);
 }
 

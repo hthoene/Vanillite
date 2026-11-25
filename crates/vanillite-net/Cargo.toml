@@ -13,6 +13,7 @@ vanillite-protocol.workspace = true
 vanillite-config.workspace = true
 vanillite-data.workspace = true
 vanillite-datapack.workspace = true
+vanillite-multiversion.workspace = true
 vanillite-nbt.workspace = true
 getrandom.workspace = true
 log.workspace = true

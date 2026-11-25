@@ -78,6 +78,29 @@ impl Level {
     /// `EntityType.loadEntityRecursive`: creates a live entity of a modelled kind; `false` for
     /// kinds the game does not model.
     fn load_entity(&mut self, nbt: Compound) -> bool {
+        let seed = uuid_of(&nbt, "UUID").map_or(0, |uuid| uuid as i64) ^ self.game_time();
+        if let Some(loaded) = crate::mob::nbt::load_mob(&nbt, seed) {
+            let network_ids = Arc::clone(self.network_ids_arc());
+            let id = crate::mob::spawn(
+                &mut self.entities,
+                &network_ids,
+                loaded.uuid,
+                loaded.pos,
+                loaded.rot,
+                loaded.data,
+            );
+            if let Some(mut e) = self.entities.store.get_mut(id) {
+                e.set_velocity(loaded.velocity);
+                e.set_flags(EntityFlags::ON_GROUND, loaded.on_ground);
+            }
+            return true;
+        }
+        if let Some((pos, velocity, uuid, orb)) = crate::mob::nbt::load_orb(&nbt) {
+            let mut new = NewEntity::new(ids::EXPERIENCE_ORB, self.network_ids().next(), uuid, pos);
+            new.velocity = velocity;
+            self.entities.spawn_orb(new, orb);
+            return true;
+        }
         let Some(kind) = nbt
             .get("id")
             .and_then(Tag::as_str)
@@ -186,6 +209,19 @@ impl Level {
     fn save_entity(&self, id: EntityId) -> Option<Compound> {
         let entity = self.entities.store.get(id)?;
         let kind = entity.kind();
+        if crate::entities::is_mob_kind(kind) {
+            return self
+                .entities
+                .mob(id)
+                .filter(|m| m.is_alive())
+                .map(|m| crate::mob::nbt::save_mob(&entity, m));
+        }
+        if kind == ids::EXPERIENCE_ORB {
+            return self
+                .entities
+                .orb(id)
+                .map(|o| crate::mob::nbt::save_orb(&entity, o));
+        }
         if kind != ids::ITEM && kind != ids::FALLING_BLOCK && kind != ids::TNT {
             return None;
         }

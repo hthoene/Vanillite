@@ -13,6 +13,7 @@
 //!   "rules": {"random_tick_speed": "0"},
 //!   "region": [[0, 0, 0], [5, 3, 5]],
 //!   "ticks": 4,
+//!   "light": false,
 //!   "setup": [{"op": "fill", "from": [0, 0, 0], "to": [5, 0, 5], "block": "minecraft:stone"}],
 //!   "actions": [{"tick": 1, "op": "place", "pos": [3, 1, 3], "block": "minecraft:sand"}]
 //! }
@@ -28,6 +29,8 @@
 //!   `spawn_mobs false`, `advance_time false`, `advance_weather false`).
 //! - `region`: the observed box (inclusive). Its chunks and their neighbours are forced
 //!   (`/forceload`) and ticking before the setup.
+//! - `light`: frames also hold the settled sky and block light of the region, the levels a
+//!   client sees. Default `false`.
 //! - `setup`: applied without updates before frame 0 (`set`, `fill`; `place` with updates).
 //! - `actions`: before world tick `tick` (1-based): `place` (with neighbour and shape updates,
 //!   Vanilla `setBlock` flags 3), `set` (without updates), `fill` (with updates), `force` and
@@ -73,6 +76,8 @@ pub struct WorldSpec {
     pub profile: String,
     /// Chunks forced before the setup: the region's chunks and one chunk around them.
     pub forced: Vec<ChunkPos>,
+    /// The world runs a light engine and frames observe light.
+    pub light: bool,
 }
 
 /// What an operation does.
@@ -230,6 +235,7 @@ impl Scenario {
                     .unwrap_or("vanilla")
                     .to_owned(),
                 forced,
+                light: v.get("light").and_then(Value::as_bool).unwrap_or(false),
             },
             min,
             max,

@@ -22,7 +22,7 @@ rules! {
         /// Thread counts.
         threads: ThreadRules = "performance.threads" {
             /// Worker threads of the compute pool (world generation, lighting, saving, parallel
-            /// tick phases). 0 = number of cores minus the busy tick threads, at least 1.
+            /// tick phases). 0 = number of cores minus one (the tick threads), at least 1.
             compute: u16 = "compute", Setting, range = [0, 1024], restart = true, vanilla = 0;
         }
         /// Saving.
@@ -184,6 +184,17 @@ rules! {
             /// the proxy (authenticated as usual). Off: they are refused.
             allow_direct_connections: bool = "allow-direct-connections", Setting, restart = true,
                 vanilla = false;
+        }
+        /// Clients of older Minecraft versions (`vanillite-multiversion`): their packets are
+        /// translated to the server's version and back, like with ViaVersion.
+        multiversion: MultiversionRules = "multiversion" {
+            /// Older versions whose clients may join: `"all"` (every version this build
+            /// translates, currently 1.20.5 to 26.2), `"none"`, or a comma-separated list of
+            /// releases such as `"1.21.4, 26.2"` (a release accepts every release of its
+            /// protocol). Clients of the server's own version are not translated and pay
+            /// nothing.
+            versions: String = "versions", Setting, restart = true,
+                vanilla = String::from("all");
         }
         /// Native plugins in `plugins/`: packages with a `plugin.toml` and a library built
         /// against the plugin API. Plugins are trusted code with the server's rights.
@@ -362,6 +373,17 @@ rules! {
             /// Entity collisions processed per entity and tick.
             max_entity_collisions: VanillaOr<u32> = "max-entity-collisions", Performance,
                 range = [0, 1024], vanilla = VanillaOr::Vanilla, paper = VanillaOr::Value(8);
+        }
+        /// Mobs and animals: AI work per tick. The Vanilla profile keeps every mob exact.
+        mobs: MobRules = "performance.mobs" {
+            /// Path finding nodes all mobs of the world may visit per tick; searches over the
+            /// budget fail and are retried later. 0 = unlimited (Vanilla).
+            path_nodes_per_tick: u32 = "path-nodes-per-tick", Performance,
+                range = [0, 10_000_000], vanilla = 0;
+            /// Mobs farther than this many blocks from every player tick only every 20th tick
+            /// (activation range). 0 = off (Vanilla: every mob in simulation distance ticks).
+            activation_range: u16 = "activation-range", Performance, range = [0, 512],
+                vanilla = 0, paper = 32;
         }
         /// Item entities (dropped items).
         items: ItemRules = "performance.items" {

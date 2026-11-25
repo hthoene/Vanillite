@@ -311,6 +311,17 @@ pub(crate) fn execute(
             Ok(1)
         }
         CommandId::Seed => Ok(exec::seed(source, global, global.seed)),
+        CommandId::Summon => {
+            let entity = parsed
+                .args
+                .identifier("entity")
+                .ok_or_else(|| missing("entity"))?;
+            let pos = match parsed.args.coordinates("pos") {
+                Some(c) => exec::resolve_position(source, c),
+                None => source.pos,
+            };
+            survival::summon(source, global, entity, pos)
+        }
         CommandId::TeleportToLocation
         | CommandId::TeleportToEntity
         | CommandId::TeleportTargetsToLocation

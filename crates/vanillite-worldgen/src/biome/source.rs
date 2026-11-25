@@ -8,7 +8,9 @@ use vanillite_chunk::BiomeId;
 use vanillite_datapack::LoadedPacks;
 
 use super::BiomeRegistry;
-use super::climate::{ClimateSampler, ParameterList, ParameterPoint, SearchCache, target};
+use super::climate::{
+    ClimateCache, ClimateSampler, ParameterList, ParameterPoint, SearchCache, target,
+};
 use super::preset::Preset;
 use crate::Error;
 use crate::density::{Program, SamplerContext};
@@ -312,6 +314,27 @@ pub struct Resolver<'a> {
     sampler: &'a ClimateSampler,
     ctx: SamplerContext,
     cache: SearchCache,
+}
+
+impl Resolver<'_> {
+    /// `getNoiseBiome(quartX, 0, quartZ)` with the climate of the column taken from `climates`
+    /// (sampled and stored there on a miss). The climate is a pure function of the position,
+    /// so the result, and the search cache state it leaves, equal [`BiomeResolver::noise_biome`].
+    pub fn noise_biome_at_zero(
+        &mut self,
+        quart_x: i32,
+        quart_z: i32,
+        climates: &ClimateCache,
+    ) -> BiomeId {
+        let BiomeSource::MultiNoise(list) = self.source else {
+            return self.noise_biome(quart_x, 0, quart_z);
+        };
+        let target = climates.get_or_insert_with(quart_x, quart_z, || {
+            self.sampler
+                .sample(self.program, &mut self.ctx, quart_x, 0, quart_z)
+        });
+        *list.find_value(&target, &mut self.cache)
+    }
 }
 
 impl BiomeResolver for Resolver<'_> {

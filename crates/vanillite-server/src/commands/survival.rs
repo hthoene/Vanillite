@@ -478,3 +478,41 @@ pub(crate) fn kill(source: &CommandSource, env: &mut Env<'_>, victims: &[Target]
     source.send_success(global, message, true);
     i32::try_from(victims.len()).unwrap_or(i32::MAX)
 }
+
+/// `summon <entity> [<pos>]`: a mob with behaviour at the position, spawned between ticks in
+/// the source's world. Entity types without behaviour yet fail like Vanilla's
+/// `commands.summon.failed`.
+pub(crate) fn summon(
+    source: &CommandSource,
+    global: &Global,
+    entity: &str,
+    pos: vanillite_base::Vec3,
+) -> Result<i32, CommandError> {
+    let Some(kind) = vanillite_game::mob::Kind::by_name(entity) else {
+        return Err(CommandError::new("commands.summon.failed", vec![]));
+    };
+    if !(-30_000_000.0..30_000_000.0).contains(&pos.x)
+        || !(-30_000_000.0..30_000_000.0).contains(&pos.z)
+        || !(-20_000_000.0..20_000_000.0).contains(&pos.y)
+    {
+        return Err(CommandError::new("commands.summon.invalidPosition", vec![]));
+    }
+    let Some(arc) = global.arc() else {
+        return Err(CommandError::new("commands.summon.failed", vec![]));
+    };
+    global.run_in_world(source.world, move |world| {
+        world.summon(kind, pos, &arc);
+    });
+    source.send_success(
+        global,
+        Component::translatable_args(
+            "commands.summon.success",
+            vec![Arg::Component(Box::new(Component::translatable(
+                kind.translation_key(),
+                vec![],
+            )))],
+        ),
+        true,
+    );
+    Ok(1)
+}

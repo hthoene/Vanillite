@@ -394,3 +394,44 @@ pub fn inside_blocks(blocks: &dyn BlockAccess, facts: &BlockFacts, aabb: Aabb) -
     }
     out
 }
+
+/// The first portal block of each kind an entity's box touches on its way (`entityInside` of
+/// the portal blocks): nether portals and End gateways fill their block, End portals only the
+/// slab between 6 and 12 pixels.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InsidePortals {
+    pub nether: Option<BlockPos>,
+    pub end: Option<BlockPos>,
+    pub gateway: Option<BlockPos>,
+}
+
+/// The portal blocks inside `swept`, the box an entity covered on its way this tick.
+pub fn inside_portals(blocks: &dyn BlockAccess, swept: Aabb) -> InsidePortals {
+    use vanillite_data::block::ids;
+    let b = Aabb {
+        min_x: swept.min_x + 1.0e-5,
+        min_y: swept.min_y + 1.0e-5,
+        min_z: swept.min_z + 1.0e-5,
+        max_x: swept.max_x - 1.0e-5,
+        max_y: swept.max_y - 1.0e-5,
+        max_z: swept.max_z - 1.0e-5,
+    };
+    let mut out = InsidePortals::default();
+    for pos in cells(b) {
+        let Some(state) = blocks.block_state(pos) else {
+            continue;
+        };
+        let block = state.block();
+        if block == ids::NETHER_PORTAL {
+            out.nether.get_or_insert(pos);
+        } else if block == ids::END_GATEWAY {
+            out.gateway.get_or_insert(pos);
+        } else if block == ids::END_PORTAL {
+            let y = f64::from(pos.y);
+            if b.min_y < y + 0.75 && b.max_y > y + 0.375 {
+                out.end.get_or_insert(pos);
+            }
+        }
+    }
+    out
+}

@@ -14,6 +14,7 @@ pub mod compute;
 pub mod eula;
 mod global;
 mod level;
+mod mobs;
 mod net;
 mod player_list;
 mod players;

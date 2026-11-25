@@ -44,9 +44,32 @@ pub(crate) struct Rx {
     read: Source,
     pub(crate) decoder: FrameDecoder,
     buf: Box<[u8]>,
+    /// Translates the packets of a client of an older version (multi-version layer).
+    pub(crate) adapter: Option<vanillite_multiversion::ServerboundHalf>,
 }
 
 impl Rx {
+    /// The next complete packet body, translated for an older client; `None` if none is
+    /// buffered. Packets the translation drops are skipped.
+    pub(crate) fn next_frame(&mut self) -> vanillite_protocol::Result<Option<&[u8]>> {
+        let Some(adapter) = self.adapter.as_mut() else {
+            return self.decoder.next_frame();
+        };
+        // Packets the translation added to the last one come first.
+        if adapter.pending().is_some() {
+            return Ok(Some(adapter.translated()));
+        }
+        loop {
+            let Some(frame) = self.decoder.next_frame()? else {
+                return Ok(None);
+            };
+            if adapter.translate(frame)?.is_some() {
+                break;
+            }
+        }
+        Ok(Some(adapter.translated()))
+    }
+
     /// Reads what the socket has (cancel-safe); `false` at the end of the stream.
     pub(crate) async fn fill(&mut self) -> bool {
         match &mut self.read {
@@ -93,17 +116,28 @@ pub(crate) struct Tx {
     write: Sink,
     pub(crate) encoder: FrameEncoder,
     out: Vec<u8>,
+    /// Translates packets for a client of an older version (multi-version layer).
+    pub(crate) adapter: Option<vanillite_multiversion::ClientboundHalf>,
 }
 
 impl Tx {
     /// Queues a typed packet.
     pub(crate) fn send<P: Packet>(&mut self, packet: &P) -> vanillite_protocol::Result<()> {
+        if self.adapter.is_some() {
+            return self.body(&vanillite_protocol::frame::encode_body(packet));
+        }
         self.encoder.packet(packet, &mut self.out)
     }
 
     /// Queues an encoded packet (`id` + body).
     pub(crate) fn body(&mut self, body: &[u8]) -> vanillite_protocol::Result<()> {
-        self.encoder.body(body, &mut self.out)
+        match self.adapter.as_mut() {
+            None => self.encoder.body(body, &mut self.out),
+            Some(adapter) => match adapter.translate(body)? {
+                Some(t) => self.encoder.body(t, &mut self.out),
+                None => Ok(()),
+            },
+        }
     }
 
     /// Queues a frame of a link with the same compression threshold, unchanged.
@@ -159,11 +193,13 @@ pub(crate) fn virtual_link(
             read: Source::Virtual(from_client),
             decoder: FrameDecoder::new(),
             buf: Box::default(),
+            adapter: None,
         },
         Tx {
             write: Sink::Virtual(to_client),
             encoder: FrameEncoder::new(),
             out: Vec::with_capacity(4096),
+            adapter: None,
         },
     )
 }
@@ -179,11 +215,13 @@ pub(crate) fn split(stream: TcpStream, level: i32) -> (Rx, Tx) {
             read: Source::Socket(read),
             decoder: FrameDecoder::new(),
             buf: vec![0; READ_CHUNK].into_boxed_slice(),
+            adapter: None,
         },
         Tx {
             write: Sink::Socket(write),
             encoder,
             out: Vec::with_capacity(READ_CHUNK),
+            adapter: None,
         },
     )
 }
