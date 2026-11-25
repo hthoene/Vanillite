@@ -158,6 +158,7 @@ fn joins_walks_and_meets_java_players(version: &'static Version) {
                 yaw: -90.0,
                 position: pos,
                 head_yaw: -90.0,
+                move_vector: [0.0; 2],
                 flags: 1 << input_flag::VERTICAL_COLLISION,
                 tick,
                 delta: [0.1, -0.078, 0.0],

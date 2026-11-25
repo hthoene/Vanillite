@@ -28,6 +28,7 @@ Shared by all releases, in data/:
 - biome_definitions.bin: the body of `biome_definition_list`.
 - entity_identifiers.bin: the body of `available_actor_identifiers` (network NBT).
 - sounds.txt: `<java sound event> <bedrock sound name>` per line.
+- particles.txt: `<java particle type> <bedrock particle effect>` per line (vanilla effects only).
 """
 
 import base64
@@ -492,6 +493,13 @@ def main():
         for name, v in sorted(sounds.items()):
             if v.get('playsound_mapping'):
                 f.write(f"minecraft:{name} {v['playsound_mapping']}\n")
+    # Particles: Java particle type -> Bedrock particle effect (no Geyser resource pack ones).
+    particles = json.load(open(os.path.join(mappings, 'particles.json')))
+    with open(os.path.join(out_dir, 'particles.txt'), 'w') as f:
+        for name, v in sorted(particles.items()):
+            b = v.get('bedrock_id', '')
+            if b.startswith('minecraft:'):
+                f.write(f"{name} {b}\n")
     # Entity identifiers: already network NBT.
     data = open(os.path.join(resources, 'entity_identifiers.dat'), 'rb').read()
     open(os.path.join(out_dir, 'entity_identifiers.bin'), 'wb').write(data)

@@ -204,6 +204,8 @@ public final class ScenarioRecorder {
                 entities.hurt(action);
               } else if (action.get("op").getAsString().equals("effect")) {
                 entities.effect(action);
+              } else if (op.equals("throw_potion")) {
+                entities.throwPotion(action);
               } else {
                 apply(level, action, true);
               }

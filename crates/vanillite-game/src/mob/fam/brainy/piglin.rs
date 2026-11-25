@@ -1475,6 +1475,7 @@ pub fn shoot_crossbow(t: &mut Tick<'_, '_>, target: EntityId, _power: f32) {
         uncertainty,
         Some(id),
         Some(&weapon),
+        &crate::mob::projectile::mob_arrow(None),
         false,
         0,
     );

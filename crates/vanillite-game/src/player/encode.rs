@@ -352,6 +352,13 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
                 },
             );
         }
+        // `Arrow.ID_EFFECT_COLOR` (11); after 600 ticks in the ground it goes back to -1.
+        if entity.kind() == ids::ARROW {
+            let color = arrow.color();
+            if all || color != -1 || arrow.in_ground_time >= 600 {
+                item(&mut out, 11, serializer::INT, |o| write_varint(o, color));
+            }
+        }
     }
     if let Some(cloud) = entities.cloud(entity.id()) {
         if all || cloud.radius != 3.0 {
@@ -727,6 +734,11 @@ pub fn encode_update(message: &Message, entities: &Entities) -> Option<Encoded> 
                     })
                     .or_else(|| {
                         let owner = entities.missile(message.entity)?.owner?;
+                        Some(entities.store.get(owner)?.network_id().0)
+                    })
+                    .or_else(|| {
+                        let special = entities.special(message.entity)?;
+                        let owner = crate::mob::boss::special::spawn_owner(special)?;
                         Some(entities.store.get(owner)?.network_id().0)
                     })
                     .unwrap_or(0),

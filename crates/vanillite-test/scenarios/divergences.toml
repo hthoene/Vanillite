@@ -361,8 +361,3 @@ owner = "gameplay-developer #59"
 tick = 23
 cause = "after the hit on tick 20 the zombified piglin draws 2 numbers from its random on tick 23, Vanilla 4 (anger alert / target)"
 owner = "gameplay-developer #59"
-
-[restart_forced_chunks]
-tick = 6
-cause = "after a chunk load (here the restart) Vanilla runs no scheduled ticks in the chunk until its entities are loaded in entityManager.tick at the end of the first level tick (isPositionTickingWithEntitiesLoaded); Vanillite loads entities in the chunk runtime tick and runs the due ticks one tick early"
-owner = "architect #99"
