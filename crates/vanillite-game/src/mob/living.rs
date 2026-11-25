@@ -965,7 +965,11 @@ fn travel_in_air(t: &mut Tick<'_, '_>, input: Vec3) {
     let drag_modifier = t.mob_ref().attrs.air_drag_modifier as f32;
     let air_drag = modified_friction(0.91, drag_modifier);
     let friction = block_friction * air_drag;
-    let vertical = modified_friction(0.98, drag_modifier);
+    let vertical = if omnidirectional_air_mover(t.mob_ref()) {
+        air_drag
+    } else {
+        modified_friction(0.98, drag_modifier)
+    };
     if t.mob_ref().discard_friction {
         // `shouldDiscardFriction` (long jumps).
         t.set_velocity(Vec3::new(movement.x, y, movement.z));
@@ -976,6 +980,16 @@ fn travel_in_air(t: &mut Tick<'_, '_>, input: Vec3) {
         y * f64::from(vertical),
         movement.z * f64::from(friction),
     ));
+}
+
+/// `omnidirectionalAirMover`: parrots, bees and sulfur cubes holding a block slow down
+/// vertically like horizontally in the air.
+fn omnidirectional_air_mover(m: &super::MobData) -> bool {
+    match m.kind {
+        super::Kind::Parrot | super::Kind::Bee => true,
+        super::Kind::SulfurCube => !m.equipment.get(crate::item::EquipmentSlot::Body).is_empty(),
+        _ => false,
+    }
 }
 
 fn travel_in_fluid(t: &mut Tick<'_, '_>, input: Vec3) {
@@ -1080,7 +1094,15 @@ pub fn move_self(t: &mut Tick<'_, '_>, delta: Vec3) {
     let step = t.mob_ref().attrs.step_height as f32;
     let on_ground = t.on_ground();
     let aabb = t.aabb();
-    let movement = physics::collide(t.level, aabb, delta, step, on_ground, &mut t.cx.boxes);
+    let movement = if t.mob_ref().nav.stands_on_lava {
+        let blocks = physics::LavaWalker {
+            blocks: t.level,
+            bottom: t.pos().y,
+        };
+        physics::collide(&blocks, aabb, delta, step, on_ground, &mut t.cx.boxes)
+    } else {
+        physics::collide(t.level, aabb, delta, step, on_ground, &mut t.cx.boxes)
+    };
     let length = movement.length_sqr();
     if length > 1.0e-7 || delta.length_sqr() - length < 1.0e-7 {
         let p = t.pos();
@@ -1199,8 +1221,67 @@ fn movement_emission(
         m.next_step = next;
     }
     if !produced && in_water {
+        if emits_sounds(t.mob_ref().kind) {
+            water_swim_sound(t);
+        }
         post_game_event(t, crate::level::game_event::events().swim, pos, None);
     }
+}
+
+/// `getMovementEmission().emitsSounds()`: kinds whose moves make no sound.
+fn emits_sounds(kind: super::Kind) -> bool {
+    use super::Kind;
+    !matches!(
+        kind,
+        Kind::Silverfish
+            | Kind::Breeze
+            | Kind::Squid
+            | Kind::GlowSquid
+            | Kind::Bat
+            | Kind::Guardian
+            | Kind::ElderGuardian
+            | Kind::Endermite
+            | Kind::Shulker
+    )
+}
+
+/// `Entity.waterSwimSound` → `playSwimSound(volume)`: the swim sound of a move in water.
+fn water_swim_sound(t: &mut Tick<'_, '_>) {
+    use super::Kind;
+    let v = t.velocity();
+    let point_two = f64::from(0.2_f32);
+    #[allow(clippy::cast_possible_truncation)]
+    let speed =
+        ((v.x * v.x * point_two + v.y * v.y + v.z * v.z * point_two).sqrt() as f32 * 0.35).min(1.0);
+    let kind = t.mob_ref().kind;
+    let volume = match kind {
+        Kind::Turtle => speed * 1.5,
+        Kind::SkeletonHorse if t.on_ground() => 0.3,
+        Kind::SkeletonHorse => (speed * 25.0).min(0.1),
+        _ => speed,
+    };
+    let baby = t.mob_ref().baby;
+    let sound = match kind {
+        Kind::Cod | Kind::Salmon | Kind::Pufferfish | Kind::TropicalFish | Kind::Tadpole => {
+            "minecraft:entity.fish.swim"
+        }
+        Kind::Axolotl => "minecraft:entity.axolotl.swim",
+        Kind::Drowned => "minecraft:entity.drowned.swim",
+        Kind::Dolphin => "minecraft:entity.dolphin.swim",
+        Kind::Turtle => "minecraft:entity.turtle.swim",
+        Kind::SkeletonHorse => "minecraft:entity.skeleton_horse.swim",
+        Kind::Nautilus if baby => "minecraft:entity.baby_nautilus.swim",
+        Kind::Nautilus => "minecraft:entity.nautilus.swim",
+        Kind::ZombieNautilus => "minecraft:entity.zombie_nautilus.swim",
+        Kind::Slime | Kind::MagmaCube | Kind::Ghast | Kind::Phantom => {
+            "minecraft:entity.generic.swim"
+        }
+        _ if kind.is_monster() => "minecraft:entity.hostile.swim",
+        _ => "minecraft:entity.generic.swim",
+    };
+    let r = &mut t.mob().random;
+    let pitch = 1.0 + (r.next_float() - r.next_float()) * 0.4;
+    super::kinds::play_sound(t, sound, volume, pitch);
 }
 
 /// `Mth.equal(double, double)`.

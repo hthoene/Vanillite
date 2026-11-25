@@ -15,6 +15,41 @@ const EPSILON: f64 = 1.0e-7;
 pub trait Blocks {
     /// `getBlockState(pos)`.
     fn state(&self, pos: BlockPos) -> BlockState;
+
+    /// `getCollisionShape(level, pos, context)` of `state` at `pos` for the moving entity.
+    fn collision_shape(&self, _pos: BlockPos, state: BlockState) -> &'static [[f64; 6]] {
+        state.collision_shape()
+    }
+}
+
+/// The blocks as an entity that stands on lava sees them (`canStandOnFluid`, striders): a lava
+/// source it is above (`isAbove(getLiquidCollisionShape())`) without lava over it collides
+/// like its liquid collision shape, the lower half of the block.
+#[allow(missing_debug_implementations)]
+pub struct LavaWalker<'a> {
+    pub blocks: &'a dyn Blocks,
+    /// `entityBottom`: the entity's feet when the move starts.
+    pub bottom: f64,
+}
+
+/// `Strider.getLiquidCollisionShape`: `Block.column(16, 0, 8)`.
+const LAVA_STAND: &[[f64; 6]] = &[[0.0, 0.0, 0.0, 1.0, 0.5, 1.0]];
+
+impl Blocks for LavaWalker<'_> {
+    fn state(&self, pos: BlockPos) -> BlockState {
+        self.blocks.state(pos)
+    }
+
+    fn collision_shape(&self, pos: BlockPos, state: BlockState) -> &'static [[f64; 6]] {
+        if state.block() == ids::LAVA
+            && state.value("level") == Some("0")
+            && self.bottom > f64::from(pos.y) + 0.5 - f64::from(1.0e-5_f32)
+            && !crate::mob::is_lava(self.blocks.state(BlockPos::new(pos.x, pos.y + 1, pos.z)))
+        {
+            return LAVA_STAND;
+        }
+        state.collision_shape()
+    }
 }
 
 impl Blocks for Level {
@@ -55,7 +90,7 @@ pub fn block_boxes(blocks: &dyn Blocks, area: &Aabb, out: &mut Vec<Aabb>) {
                     continue;
                 }
                 let (ox, oy, oz) = (f64::from(x), f64::from(y), f64::from(z));
-                for b in state.collision_shape() {
+                for b in blocks.collision_shape(pos, state) {
                     let shape = Aabb {
                         min_x: ox + b[0],
                         min_y: oy + b[1],
@@ -255,33 +290,60 @@ pub fn contains_any_liquid(blocks: &dyn Blocks, aabb: &Aabb) -> bool {
     false
 }
 
-/// Where a segment from `from` to `to` enters `b`, as the fraction of the segment.
-fn ray_box(from: Vec3, to: Vec3, b: &Aabb) -> Option<f64> {
+/// `VoxelShape.clip(from, to, pos)` of a shape made of `boxes` (block-local): the fraction of
+/// the segment where it hits the shape. A segment that starts inside (its point at 0.001)
+/// hits at once; otherwise it must enter a box through a face (`AABB.clip`), so a segment
+/// leaving a surface it starts on does not hit.
+fn shape_clip(from: Vec3, to: Vec3, pos: BlockPos, boxes: &[[f64; 6]]) -> Option<f64> {
+    if boxes.is_empty() {
+        return None;
+    }
     let d = [to.x - from.x, to.y - from.y, to.z - from.z];
-    let o = [from.x, from.y, from.z];
-    let lo = [b.min_x, b.min_y, b.min_z];
-    let hi = [b.max_x, b.max_y, b.max_z];
-    let mut t0: f64 = 0.0;
-    let mut t1: f64 = 1.0;
-    for a in 0..3 {
-        if d[a].abs() < 1.0e-12 {
-            if o[a] < lo[a] || o[a] > hi[a] {
-                return None;
-            }
-        } else {
-            let inv = 1.0 / d[a];
-            let (mut near, mut far) = ((lo[a] - o[a]) * inv, (hi[a] - o[a]) * inv);
-            if near > far {
-                std::mem::swap(&mut near, &mut far);
-            }
-            t0 = t0.max(near);
-            t1 = t1.min(far);
-            if t0 > t1 {
-                return None;
+    if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < 1.0e-7 {
+        return None;
+    }
+    let o = [f64::from(pos.x), f64::from(pos.y), f64::from(pos.z)];
+    let f = [from.x, from.y, from.z];
+    let test = [
+        f[0] + d[0] * 0.001 - o[0],
+        f[1] + d[1] * 0.001 - o[1],
+        f[2] + d[2] * 0.001 - o[2],
+    ];
+    if boxes
+        .iter()
+        .any(|b| (0..3).all(|a| b[a] <= test[a] && test[a] < b[a + 3]))
+    {
+        return Some(0.001);
+    }
+    // `AABB.clip` → `getDirection` → `clipPoint` for each box.
+    let mut scale = 1.0;
+    let mut hit = false;
+    for b in boxes {
+        for a in 0..3 {
+            let face = if d[a] > 1.0e-7 {
+                b[a] + o[a]
+            } else if d[a] < -1.0e-7 {
+                b[a + 3] + o[a]
+            } else {
+                continue;
+            };
+            let s = (face - f[a]) / d[a];
+            let (ib, ic) = ((a + 1) % 3, (a + 2) % 3);
+            let pb = f[ib] + s * d[ib];
+            let pc = f[ic] + s * d[ic];
+            if 0.0 < s
+                && s < scale
+                && b[ib] + o[ib] - 1.0e-7 < pb
+                && pb < b[ib + 3] + o[ib] + 1.0e-7
+                && b[ic] + o[ic] - 1.0e-7 < pc
+                && pc < b[ic + 3] + o[ic] + 1.0e-7
+            {
+                scale = s;
+                hit = true;
             }
         }
     }
-    Some(t0)
+    hit.then_some(scale)
 }
 
 /// `Level.clip` with `ClipContext.Block.COLLIDER` and `Fluid.NONE`: the first block whose
@@ -312,10 +374,9 @@ fn clip_with(blocks: &dyn Blocks, from: Vec3, to: Vec3, fluids: bool) -> Option<
     let mut bz = floor(from_z);
     let hit = |pos: BlockPos| -> Option<(BlockPos, Vec3)> {
         let state = blocks.state(pos);
-        let (ox, oy, oz) = (f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
-        let mut best: Option<f64> = None;
+        let block = shape_clip(from, to, pos, state.collision_shape());
         let fluid = state.fluid_state();
-        if fluids && !fluid.is_empty() {
+        let liquid = if fluids && !fluid.is_empty() {
             let above = blocks
                 .state(BlockPos::new(pos.x, pos.y + 1, pos.z))
                 .fluid_state();
@@ -324,22 +385,15 @@ fn clip_with(blocks: &dyn Blocks, from: Vec3, to: Vec3, fluids: bool) -> Option<
             } else {
                 f64::from(fluid.info().own_height)
             };
-            let shape = Aabb::new(ox, oy, oz, ox + 1.0, oy + height, oz + 1.0);
-            best = ray_box(from, to, &shape);
-        }
-        for b in state.collision_shape() {
-            let shape = Aabb {
-                min_x: ox + b[0],
-                min_y: oy + b[1],
-                min_z: oz + b[2],
-                max_x: ox + b[3],
-                max_y: oy + b[4],
-                max_z: oz + b[5],
-            };
-            if let Some(t) = ray_box(from, to, &shape) {
-                best = Some(best.map_or(t, |b: f64| b.min(t)));
-            }
-        }
+            shape_clip(from, to, pos, &[[0.0, 0.0, 0.0, 1.0, height, 1.0]])
+        } else {
+            None
+        };
+        // The nearer of the two, the block's on a tie.
+        let best = match (block, liquid) {
+            (Some(b), Some(l)) => Some(b.min(l)),
+            (b, l) => b.or(l),
+        };
         best.map(|t| {
             (
                 pos,

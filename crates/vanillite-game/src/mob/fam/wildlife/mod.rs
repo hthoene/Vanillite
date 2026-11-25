@@ -645,7 +645,7 @@ impl FamilyHooks for Hooks {
             }
             // `Turtle.getWalkTargetValue` needs the going-home state; see `turtle`.
             Kind::Turtle => turtle::walk_target_value(level, env, pos, false),
-            // `Strider.getWalkTargetValue` (in lava: negative infinity off lava, see `strider`).
+            // `Strider.getWalkTargetValue` (in lava: negative infinity off lava, see `randompos::walk_value`).
             Kind::Strider => {
                 if crate::mob::is_lava(level.block(pos)) {
                     10.0

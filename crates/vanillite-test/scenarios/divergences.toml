@@ -5,174 +5,134 @@
 [mob_allay_fly]
 tick = 1
 cause = "stroll target: Vanilla takes `AirAndWaterRandomPos` (36 draws of the allay's random), Vanillite `DefaultRandomPos` (30)"
-owner = "architect #101"
+owner = "architect #120"
 
 [mob_armadillo_scared]
 tick = 40
 cause = "the hit on tick 40: Vanilla knocks the armadillo back horizontally (motion -0.023, 0.314, -0.217), Vanillite only lifts it"
-owner = "architect #101"
-
-[mob_axolotl_swim]
-tick = 18
-cause = "random draws of the axolotl differ from tick 18 on (not analysed yet)"
-owner = "architect #101"
+owner = "architect #120"
 
 [mob_bat_fly]
 tick = 114
 cause = "the bat draws 3 numbers from its random on this tick, Vanilla 5 (target position / resting check)"
-owner = "architect #101"
+owner = "architect #120"
 
 [mob_bee_fly]
 tick = 1
 cause = "Vanilla runs `BeeGrowCropGoal.canBeeUse` and starts `BeeWanderGoal` with `HoverRandomPos` (41 draws of the bee's random), Vanillite starts no goal (4 draws)"
-owner = "architect #101"
+owner = "architect #120"
 
 [mob_breeze_attack]
 tick = 16
 cause = "head yaw on tick 16: Vanilla keeps the head on the body yaw (9.67), Vanillite turns it to -0.33 (look control of the breeze)"
-owner = "architect #101"
+owner = "architect #120"
 
 [mob_camel_husk_wander]
 tick = 176
 cause = "random draws of the camel husk differ from tick 176 on (not analysed yet)"
-owner = "architect #101"
+owner = "architect #120"
 
 [mob_camel_wander]
 tick = 176
 cause = "random draws of the camel differ from tick 176 on (not analysed yet)"
-owner = "architect #101"
-
-[mob_cod_swim]
-tick = 45
-cause = "random draws of the cod differ from tick 45 on (not analysed yet)"
-owner = "architect #101"
+owner = "architect #120"
 
 [mob_copper_golem_wander]
 tick = 90
 cause = "a timed brain behaviour starts on tick 90 in Vanillite only (1 level random draw, Vanilla 0)"
-owner = "architect #101"
+owner = "architect #120"
 
 [mob_dolphin_swim]
 tick = 7
 cause = "`getRandomSwimmablePos`: Vanilla needs two `DefaultRandomPos.getPos` calls (60 draws), Vanillite takes the first position (30)"
-owner = "architect #101"
+owner = "architect #120"
 
 [mob_drowned_water]
 tick = 1
 cause = "tick 1 goals: Vanilla starts `DrownedGoToBeachGoal` (`MoveToBlockGoal` draws), Vanillite `DrownedSwimUpGoal` (37 `getPosTowards` draws)"
-owner = "architect #101"
+owner = "architect #120"
 
 [mob_evoker_spells]
 tick = 27
 cause = "the summoned vexes draw differently from their random on tick 27 (not analysed yet)"
-owner = "architect #101"
+owner = "architect #120"
 
 [mob_frog_hop]
 tick = 66
 cause = "the level random differs on tick 66 and the frog pitches differently on tick 67 (not analysed yet)"
-owner = "architect #101"
+owner = "architect #120"
 
 [mob_goat_wander]
 tick = 44
 cause = "the ram ends on tick 44 in Vanillite (`finishRam`: 1 level random draw), Vanilla keeps ramming"
-owner = "architect #101"
+owner = "architect #120"
 
 [mob_happy_ghast_float]
 tick = 18
 cause = "Vanillite plays the ambient sound on tick 18 (roll 15 < ambientSoundTime 17); Vanilla's counter is lower (cause not found yet)"
-owner = "architect #101"
+owner = "architect #120"
 
 [mob_hoglin_attack]
 tick = 122
 cause = "random draws of the hoglin differ from tick 122 on (not analysed yet)"
-owner = "architect #101"
+owner = "architect #120"
 
 [mob_iron_golem_fight]
 tick = 10
 cause = "random draws of the iron golem differ from tick 10 on (not analysed yet)"
-owner = "architect #101"
+owner = "architect #120"
 
 [mob_nautilus_swim]
-tick = 35
-cause = "random draws of the nautilus differ from tick 35 on; its pitch differs in the last float bits from tick 17 (not analysed yet)"
-owner = "architect #101"
-
-[mob_parrot_fly]
-tick = 1
-cause = "the parrot falls faster on tick 1 (motion y -0.047, Vanilla -0.0437)"
-owner = "architect #101"
+tick = 76
+cause = "random draws of the nautilus differ from tick 76 on (not analysed yet)"
+owner = "architect #120"
 
 [mob_phantom_swoop]
 tick = 2
 cause = "the phantom's motion differs in the last bits on tick 2 (float/double rounding of the circling movement)"
-owner = "architect #101"
+owner = "architect #120"
 
 [mob_piglin_hostile]
 tick = 67
 cause = "the level random differs from tick 67 on (not analysed yet)"
-owner = "architect #101"
+owner = "architect #120"
 
 [mob_pillager_crossbow]
 tick = 36
 cause = "random draws of the pillager and the level random differ on tick 36 (not analysed yet)"
-owner = "architect #101"
+owner = "architect #120"
 
 [mob_polar_bear_wander]
 tick = 38
 cause = "the polar bear starts WaterAvoidingRandomStrollGoal on tick 38; Vanilla starts no goal with the same random draws"
-owner = "architect #101"
-
-[mob_pufferfish_swim]
-tick = 115
-cause = "random draws of the pufferfish differ from tick 115 on (not analysed yet)"
-owner = "architect #101"
+owner = "architect #120"
 
 [mob_rabbit_hop]
 tick = 13
 cause = "Vanilla hops on tick 13 (motion y 0.297), Vanillite does not (rabbit jump control)"
-owner = "architect #101"
-
-[mob_salmon_swim]
-tick = 70
-cause = "random draws of the salmon differ from tick 70 on (not analysed yet)"
-owner = "architect #101"
+owner = "architect #120"
 
 [mob_shulker_bullets]
 tick = 35
 cause = "the shulker bullet draws 3 numbers from the level random when it is shot; Vanilla 0 (the bullet's own random)"
-owner = "architect #101"
-
-[mob_strider_lava]
-tick = 1
-cause = "the strider floats up in lava faster on tick 1 (motion y 0.04, Vanilla 0.0108)"
-owner = "architect #101"
-
-[mob_tadpole_swim]
-tick = 1
-cause = "the tadpole swims mirrored on tick 1 (motion x -0.00156, Vanilla +0.00156)"
-owner = "architect #101"
-
-[mob_tropical_fish_swim]
-tick = 45
-cause = "random draws of the tropical fish differ from tick 45 on (not analysed yet)"
-owner = "architect #101"
+owner = "architect #120"
 
 [mob_witch_potions]
 tick = 147
 cause = "the splash potion on tick 147: Vanilla's hurts the player (1 damage), Vanillite's does not"
-owner = "architect #101"
+owner = "architect #120"
 
 [mob_wolf_wander]
 tick = 0
 cause = "finalizeSpawn: 6 level random draws before tick 0, Vanilla 7 (variant selection)"
-owner = "architect #101"
+owner = "architect #120"
 
 [mob_zombie_nautilus_swim]
-tick = 32
-cause = "random draws of the zombie nautilus differ from tick 32 on (not analysed yet)"
-owner = "architect #101"
+tick = 135
+cause = "random draws of the zombie nautilus differ from tick 135 on (not analysed yet)"
+owner = "architect #120"
 
 [mob_zombified_piglin_anger]
 tick = 23
 cause = "after the hit on tick 20 the zombified piglin draws 2 numbers from its random on tick 23, Vanilla 4 (anger alert / target)"
-owner = "architect #101"
+owner = "architect #120"

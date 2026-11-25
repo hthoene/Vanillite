@@ -923,6 +923,12 @@ pub fn play_ambient_sound(t: &mut Tick<'_, '_>) {
         super::boss::warden::play_ambient_sound(t);
         return;
     }
+    if t.mob_ref().kind == Kind::Parrot {
+        let sound = super::fam::companion::parrot::ambient_sound(t);
+        let id = t.id;
+        combat::mob_sound(t.ents, t.env, id, sound);
+        return;
+    }
     if let Some(sound) = ambient_sound(t.mob_ref()) {
         let id = t.id;
         combat::mob_sound(t.ents, t.env, id, sound);

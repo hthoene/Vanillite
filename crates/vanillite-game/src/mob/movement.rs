@@ -475,14 +475,7 @@ pub fn can_use(t: &mut Tick<'_, '_>, g: &mut MoveGoal) -> bool {
             let pos = match mode {
                 WanderMode::Stroll => randompos::default_pos(t, 10, 7),
                 WanderMode::Swim => randompos::swimmable_pos(t, 10, 7),
-                WanderMode::Fly => {
-                    let rot = t.core().rot();
-                    let dir = randompos::view_vector(rot.x_rot, rot.y_rot);
-                    let half = std::f32::consts::FRAC_PI_2;
-                    randompos::hover_pos(t, 8, 7, dir.x, dir.z, half, 3, 1).or_else(|| {
-                        randompos::air_and_water_pos(t, 8, 4, -2, dir.x, dir.z, f64::from(half))
-                    })
-                }
+                WanderMode::Fly => randompos::water_avoiding_flying_pos(t),
             };
             match pos {
                 Some(p) => {

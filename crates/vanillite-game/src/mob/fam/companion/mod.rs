@@ -633,7 +633,7 @@ impl FamilyHooks for Hooks {
             Kind::Wolf => wolf::ambient_sound(m),
             Kind::Cat => feline::cat_ambient_sound(m),
             Kind::Ocelot => Some("minecraft:entity.ocelot.ambient"),
-            Kind::Parrot => Some(parrot::ambient_sound(m)),
+            Kind::Parrot => Some("minecraft:entity.parrot.ambient"),
             Kind::Fox => fox::ambient_sound(m),
             Kind::Panda => panda::ambient_sound(m),
             Kind::PolarBear => Some(if m.baby {

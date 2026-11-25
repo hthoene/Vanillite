@@ -410,6 +410,8 @@ impl FamilyHooks for Hooks {
             Kind::Axolotl => axolotl::MALUS,
             Kind::Frog => frog::MALUS,
             Kind::Sniffer => sniffer::MALUS,
+            // `WaterAnimal`'s constructor.
+            Kind::Tadpole => &[(crate::mob::path::PathType::Water, 0.0)],
             _ => &[],
         }
     }
@@ -532,7 +534,7 @@ impl FamilyHooks for Hooks {
                     ),
                 }
             }
-            Kind::Axolotl => 0.0,
+            Kind::Axolotl | Kind::Tadpole => 0.0,
             _ => crate::mob::kinds::base_walk_target_value(kind.is_monster(), level, env, pos),
         }
     }
