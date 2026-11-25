@@ -17,9 +17,10 @@ rules! {
             /// Dimensions tick in parallel, each on its own thread (decision D2). Cross-dimension
             /// effects then apply at the end of the tick instead of immediately: an entity
             /// entering a portal from the overworld arrives one tick later, `execute in` other
-            /// dimensions runs at the end of the tick. `false` gives exact Vanilla order.
+            /// dimensions runs at the end of the tick. `false` (the `vanilla` and `technical`
+            /// profiles) ticks the dimensions one after another in Vanilla's exact order.
             parallel_dimensions: bool = "parallel-dimensions", Performance, restart = true,
-                vanilla = true;
+                vanilla = false, paper = true, spigot = true, performance = true;
         }
         /// Thread counts.
         threads: ThreadRules = "performance.threads" {

@@ -25,7 +25,8 @@ Crates: `vanillite-server`, `vanillite-config`, binary `vanillite`.
 - `Kind::Setting` was added to the kinds of the architecture draft for operational settings
   that do not change game behaviour (thread counts, watchdog).
 - Decision D1: exploit rules (`exploits.*`) keep Vanilla behaviour in the `vanilla` profile;
-  `paper` fixes them. Decision D2: `performance.tick.parallel-dimensions` is on by default.
+  `paper` fixes them. Decision D2: `performance.tick.parallel-dimensions` is off in the `vanilla` and
+  `technical` profiles (Vanilla's exact tick order) and on in `paper`, `spigot` and `performance`.
 
 ## Slots (`slot.rs`)
 
