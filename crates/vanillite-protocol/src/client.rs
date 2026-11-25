@@ -229,6 +229,14 @@ impl<S: Read + Write> TestClient<S> {
                 ClientboundConfiguration::CodeOfConduct(_) => {
                     self.send(&csb::AcceptCodeOfConduct)?
                 }
+                // A client that loads the pack.
+                ClientboundConfiguration::ResourcePackPush(p) => {
+                    use crate::packets::common::ResourcePackAction as A;
+                    for action in [A::Accepted, A::Downloaded, A::SuccessfullyLoaded] {
+                        self.send(&csb::ResourcePack { id: p.id, action })?;
+                    }
+                    self.received.push("resource_pack_push");
+                }
                 ClientboundConfiguration::Disconnect(d) => {
                     return Err(ClientError::Disconnected(d.reason.plain()));
                 }

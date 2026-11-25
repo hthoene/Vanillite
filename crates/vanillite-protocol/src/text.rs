@@ -282,6 +282,53 @@ impl Style {
     }
 }
 
+/// Fills `%s`, `%<n>$s` and `%%` of a translation template (`decomposeTemplate`); `false` on
+/// another conversion or a missing argument.
+fn fill_template(
+    format: &str,
+    out: &mut String,
+    mut arg: impl FnMut(usize, &mut String) -> bool,
+) -> bool {
+    let mut next = 0usize;
+    let mut rest = format;
+    while let Some(at) = rest.find('%') {
+        out.push_str(rest.get(..at).unwrap_or_default());
+        let spec = rest.get(at.saturating_add(1)..).unwrap_or_default();
+        let digits = spec.bytes().take_while(u8::is_ascii_digit).count();
+        let (index, after) = match spec.get(digits..).and_then(|s| s.strip_prefix('$')) {
+            Some(after) if digits > 0 => (
+                spec.get(..digits)
+                    .and_then(|d| d.parse::<usize>().ok())
+                    .and_then(|n| n.checked_sub(1)),
+                after,
+            ),
+            _ => (None, spec),
+        };
+        let mut chars = after.chars();
+        match chars.next() {
+            Some('%') if digits == 0 => out.push('%'),
+            Some('s') => {
+                let i = match index {
+                    Some(i) => i,
+                    None if digits > 0 => return false,
+                    None => {
+                        let i = next;
+                        next = next.saturating_add(1);
+                        i
+                    }
+                };
+                if !arg(i, out) {
+                    return false;
+                }
+            }
+            Some(_) | None => return false,
+        }
+        rest = chars.as_str();
+    }
+    out.push_str(rest);
+    true
+}
+
 /// An argument of a translatable component: a component or a primitive (`Number`, `Boolean`,
 /// `String`). Equality compares floats bit by bit.
 #[derive(Debug, Clone)]
@@ -624,6 +671,68 @@ impl Component {
         let mut out = String::new();
         self.collect_plain(&mut out);
         out
+    }
+
+    /// `Component.getString` with a language table (Vanilla's server uses `en_us`):
+    /// translatable parts are filled in like `TranslatableContents.decomposeTemplate`; a
+    /// missing key shows the fallback or the key.
+    pub fn to_string_in(&self, language: &dyn Fn(&str) -> Option<String>) -> String {
+        let mut out = String::new();
+        self.collect_string(language, &mut out, 0);
+        out
+    }
+
+    fn collect_string(
+        &self,
+        language: &dyn Fn(&str) -> Option<String>,
+        out: &mut String,
+        depth: usize,
+    ) {
+        // Arguments nest; a malicious depth is cut like elsewhere (SEC-04).
+        if depth > 64 {
+            return;
+        }
+        let depth = depth.saturating_add(1);
+        match &self.content {
+            Content::Translatable {
+                key,
+                fallback,
+                args,
+            } => {
+                let format = language(key)
+                    .or_else(|| fallback.clone())
+                    .unwrap_or_else(|| key.clone());
+                let arg = |i: usize, out: &mut String| -> bool {
+                    match args.get(i) {
+                        Some(Arg::Component(c)) => c.collect_string(language, out, depth),
+                        Some(Arg::String(v)) => out.push_str(v),
+                        Some(Arg::Byte(v)) => out.push_str(&v.to_string()),
+                        Some(Arg::Short(v)) => out.push_str(&v.to_string()),
+                        Some(Arg::Int(v)) => out.push_str(&v.to_string()),
+                        Some(Arg::Long(v)) => out.push_str(&v.to_string()),
+                        Some(Arg::Float(v)) => out.push_str(&format!("{v:?}")),
+                        Some(Arg::Double(v)) => out.push_str(&format!("{v:?}")),
+                        Some(Arg::Bool(v)) => out.push_str(&v.to_string()),
+                        None => return false,
+                    }
+                    true
+                };
+                let mut filled = String::new();
+                if fill_template(&format, &mut filled, arg) {
+                    out.push_str(&filled);
+                } else {
+                    // `TranslatableFormatException`: the raw template.
+                    out.push_str(&format);
+                }
+            }
+            Content::Text(t) => out.push_str(t),
+            Content::Keybind(k) => out.push_str(k),
+            Content::Selector { pattern, .. } => out.push_str(pattern),
+            Content::Score { .. } | Content::Nbt { .. } | Content::Object { .. } => {}
+        }
+        for e in &self.extra {
+            e.collect_string(language, out, depth);
+        }
     }
 
     fn collect_plain(&self, out: &mut String) {
@@ -1782,5 +1891,43 @@ impl crate::codec::DecodeLimited for JsonComponent {
         Component::try_from_json(&v)
             .map(Self)
             .map_err(|_| crate::codec::Error::Invalid("JSON component"))
+    }
+}
+
+#[cfg(test)]
+mod string_tests {
+    use super::*;
+
+    #[test]
+    fn fills_templates_like_vanilla() {
+        let lang = |key: &str| match key {
+            "commands.list.players" => {
+                Some("There are %s of a max of %s players online: %s".to_owned())
+            }
+            "swap" => Some("%2$s then %1$s, 100%%".to_owned()),
+            "bad" => Some("%d".to_owned()),
+            _ => None,
+        };
+        let list = Component::translatable_args(
+            "commands.list.players",
+            vec![Arg::Int(0), Arg::Int(20), Arg::String(String::new())],
+        );
+        assert_eq!(
+            list.to_string_in(&lang),
+            "There are 0 of a max of 20 players online: "
+        );
+        let swap = Component::translatable_args(
+            "swap",
+            vec![Arg::String("a".into()), Arg::String("b".into())],
+        );
+        assert_eq!(swap.to_string_in(&lang), "b then a, 100%");
+        assert_eq!(
+            Component::translatable("bad", vec![]).to_string_in(&lang),
+            "%d"
+        );
+        assert_eq!(
+            Component::translatable("missing", vec![]).to_string_in(&lang),
+            "missing"
+        );
     }
 }
