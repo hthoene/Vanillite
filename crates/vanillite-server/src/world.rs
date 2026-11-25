@@ -67,8 +67,12 @@ pub struct ServerWorld {
     /// The random of the item entities (`Entity.random`).
     item_random: XoroshiroRandom,
     updates: WorldUpdates,
-    /// The chunk ticket and simulation ticket of every player at its centre chunk.
-    player_tickets: FxHashMap<EntityId, (ChunkPos, TicketId, TicketId)>,
+    /// The centre chunk of every player with tickets.
+    player_tickets: FxHashMap<EntityId, ChunkPos>,
+    /// The players' chunk ticket and simulation ticket at each centre chunk with the number
+    /// of players there: equal tickets at one chunk give the same levels as one, so dense
+    /// players crossing chunks do not recompute the levels of their whole view.
+    center_tickets: FxHashMap<ChunkPos, (u32, TicketId, TicketId)>,
     scratch: Vec<ChunkPos>,
     /// Weather, lightning and the players' survival.
     pub(crate) survival: crate::survival::WorldSurvival,
@@ -162,6 +166,7 @@ impl ServerWorld {
             packets: ChunkPackets::default(),
             updates: WorldUpdates::default(),
             player_tickets: FxHashMap::default(),
+            center_tickets: FxHashMap::default(),
             effects: LevelEffects::default(),
             item_random: XoroshiroRandom::new(seed),
             scratch: Vec::new(),
@@ -198,34 +203,52 @@ impl ServerWorld {
     }
 
     /// Keeps every player's view loaded and the chunks in its simulation distance ticking:
-    /// one load ticket and one simulation ticket at its centre chunk, moved when the centre
-    /// changes, removed when the player is gone.
+    /// one load ticket and one simulation ticket at each centre chunk, shared by the players
+    /// there, moved with a player that was alone, removed when the last one is gone.
     fn update_player_tickets(&mut self) {
         let chunks = &mut self.level.chunks;
         let level = chunks.player_ticket_level();
         let simulation = chunks.player_simulation_level();
+        let centers = &mut self.center_tickets;
         for (id, player) in self.level.entities.players.iter() {
             let center = player.chunk_view.center;
-            match self.player_tickets.get_mut(&id) {
-                Some((old, _, _)) if *old == center => {}
-                Some((old, ticket, sim)) => {
-                    chunks.move_ticket(*ticket, center);
-                    chunks.move_simulation_ticket(*sim, center);
-                    *old = center;
+            let old = self.player_tickets.get(&id).copied();
+            if old == Some(center) {
+                continue;
+            }
+            self.player_tickets.insert(id, center);
+            let alone = old.and_then(|old| {
+                centers
+                    .get(&old)
+                    .is_some_and(|entry| entry.0 == 1)
+                    .then_some(old)
+            });
+            if let Some(entry) = centers.get_mut(&center) {
+                entry.0 += 1;
+            } else if let Some(old) = alone {
+                // The only player at its old centre: move those tickets, touching only the
+                // chunks whose level changes.
+                if let Some(entry) = centers.remove(&old) {
+                    chunks.move_ticket(entry.1, center);
+                    chunks.move_simulation_ticket(entry.2, center);
+                    centers.insert(center, entry);
                 }
-                None => {
-                    let ticket = chunks.add_ticket(center, level);
-                    let sim = chunks.add_simulation_ticket(center, simulation);
-                    self.player_tickets.insert(id, (center, ticket, sim));
-                }
+                continue;
+            } else {
+                let ticket = chunks.add_ticket(center, level);
+                let sim = chunks.add_simulation_ticket(center, simulation);
+                centers.insert(center, (1, ticket, sim));
+            }
+            // The new tickets first, then the old ones: chunks in both views stay loaded.
+            if let Some(old) = old {
+                release_center(chunks, centers, old);
             }
         }
         let entities = &self.level.entities;
-        self.player_tickets.retain(|&id, &mut (_, ticket, sim)| {
+        self.player_tickets.retain(|&id, &mut center| {
             let alive = entities.player(id).is_some();
             if !alive {
-                chunks.remove_ticket(ticket);
-                chunks.remove_simulation_ticket(sim);
+                release_center(chunks, centers, center);
             }
             alive
         });
@@ -746,6 +769,23 @@ impl<'a> TickContext<'a> {
         match world {
             Some(world) => op(world),
             None => self.outbox.push((target, Box::new(op))),
+        }
+    }
+}
+
+/// Drops one player from the tickets at `pos`; the last one removes them.
+fn release_center(
+    chunks: &mut Chunks,
+    centers: &mut FxHashMap<ChunkPos, (u32, TicketId, TicketId)>,
+    pos: ChunkPos,
+) {
+    if let Some(entry) = centers.get_mut(&pos) {
+        entry.0 = entry.0.saturating_sub(1);
+        if entry.0 == 0 {
+            let (_, ticket, sim) = *entry;
+            centers.remove(&pos);
+            chunks.remove_ticket(ticket);
+            chunks.remove_simulation_ticket(sim);
         }
     }
 }

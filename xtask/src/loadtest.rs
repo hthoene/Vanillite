@@ -25,48 +25,63 @@ const DEFAULT_STEPS: &[u64] = &[50, 100, 250, 500, 1000, 2000, 5000];
 const GATE_TOLERANCE: f64 = 1.10;
 const GATE_HISTORY: usize = 5;
 
+/// A server (or proxy) under test on the test server; the references take turns on 30900.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Target {
+pub(crate) enum Target {
     Vanillite,
     Paper,
+    Vanilla,
+    Pumpkin,
+    /// Proxies in front of `vanillite@30901`.
+    Velocity,
+    VanilliteProxy,
 }
 
 impl Target {
-    fn name(self) -> &'static str {
+    /// The name in results and for `vanillite-bench` on the test server.
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Vanillite => "vanillite",
             Self::Paper => "paper",
+            Self::Vanilla => "vanilla",
+            Self::Pumpkin => "pumpkin",
+            Self::Velocity => "velocity",
+            Self::VanilliteProxy => "vanillite-proxy",
         }
     }
 
-    fn port(self) -> u16 {
+    pub(crate) fn port(self) -> u16 {
         match self {
             Self::Vanillite => 30901,
-            Self::Paper => 30900,
+            _ => 30900,
         }
     }
 
-    fn unit(self) -> String {
+    pub(crate) fn unit(self) -> String {
         match self {
             Self::Vanillite => format!("vanillite@{}.service", self.port()),
-            Self::Paper => "paper-loadtest.service".to_owned(),
+            t => format!("{}-loadtest.service", t.name()),
         }
     }
 }
 
 #[derive(Debug)]
-struct Options {
-    targets: Vec<Target>,
-    steps: Vec<u64>,
+pub(crate) struct Options {
+    pub(crate) targets: Vec<Target>,
+    pub(crate) steps: Vec<u64>,
     /// Bot movement per step (`tools/loadbot` movement spec).
-    movements: Vec<String>,
-    hold: Duration,
-    join_rate: f64,
-    chat_interval: f64,
-    view_distance: u8,
-    profile: &'static str,
-    deploy: bool,
-    gate: bool,
+    pub(crate) movements: Vec<String>,
+    /// Join rate and concurrent logins per step (`None`: the run's join rate).
+    pub(crate) rates: Vec<Option<(f64, usize)>>,
+    pub(crate) hold: Duration,
+    /// Wait between reaching a step and its measurement window.
+    pub(crate) settle: Duration,
+    pub(crate) join_rate: f64,
+    pub(crate) chat_interval: f64,
+    pub(crate) view_distance: u8,
+    pub(crate) profile: &'static str,
+    pub(crate) deploy: bool,
+    pub(crate) gate: bool,
 }
 
 fn parse(args: &[&str]) -> Result<Options> {
@@ -74,7 +89,9 @@ fn parse(args: &[&str]) -> Result<Options> {
         targets: vec![Target::Vanillite, Target::Paper],
         steps: DEFAULT_STEPS.to_vec(),
         movements: Vec::new(),
+        rates: Vec::new(),
         hold: Duration::from_secs(60),
+        settle: Duration::ZERO,
         join_rate: 20.0,
         chat_interval: 0.0,
         view_distance: 10,
@@ -132,6 +149,7 @@ fn parse(args: &[&str]) -> Result<Options> {
         .into_iter()
         .map(|m| m.unwrap_or_else(|| movement.to_owned()))
         .collect();
+    o.rates = vec![None; o.steps.len()];
     Ok(o)
 }
 
@@ -171,11 +189,17 @@ pub fn run(root: &Path, args: &[&str]) -> Result<()> {
             target.name(),
             target.port()
         );
-        let result = run_target(target, &o, &host, &bin_dir);
+        let result = deploy_or_restart(target, &o, &host, &bin_dir)
+            .and_then(|()| Session::open(&host, target, &bin_dir, &o, &[]))
+            .and_then(|mut session| {
+                let steps = ramp(&o, &mut session);
+                session.close();
+                steps
+            });
         // The instance is offline mode: never leave it running.
         let stop = match target {
             Target::Vanillite => format!("systemctl disable --now {}", target.unit()),
-            Target::Paper => format!("systemctl stop {}", target.unit()),
+            _ => format!("systemctl stop {}", target.unit()),
         };
         if let Err(e) = ssh(&host, &stop) {
             eprintln!("warning: cannot stop {}: {e}", target.unit());
@@ -255,25 +279,43 @@ fn report(files: &[&str]) -> Result<()> {
 
 /// One line of the server monitor, with its arrival time in seconds since the run start.
 #[derive(Debug, Clone)]
-enum Sample {
+pub(crate) enum Sample {
     /// RSS KiB, CPU ticks, net rx bytes, net tx bytes, then from `/proc/<pid>/io` read
     /// syscalls, bytes read from storage and bytes written to storage (0 from older monitors).
     Stats(f64, [u64; 7]),
     /// A tick in nanoseconds (Vanillite).
     Tick(f64, u64),
-    /// `/tick query` P50, P95, P99 in milliseconds (Paper, 100-tick windows).
-    Query(f64, [f64; 3]),
+    /// `/tick query` P50, P95, P99 and mean in milliseconds (Paper and Vanilla, 100-tick
+    /// windows).
+    Query(f64, [f64; 4]),
 }
 
 #[derive(Debug, Default)]
-struct Collected {
-    clock_ticks: u64,
-    server: Vec<Sample>,
+pub(crate) struct Collected {
+    pub(crate) clock_ticks: u64,
+    pub(crate) server: Vec<Sample>,
     /// Bot reports with their arrival time.
-    bots: Vec<(f64, Value)>,
+    pub(crate) bots: Vec<(f64, Value)>,
 }
 
-fn run_target(target: Target, o: &Options, host: &str, bin_dir: &Path) -> Result<Vec<Value>> {
+impl Collected {
+    /// The newest RSS sample in MiB.
+    pub(crate) fn rss_mib(&self) -> Option<f64> {
+        self.server.iter().rev().find_map(|s| match s {
+            Sample::Stats(_, v) if v[0] > 0 => Some(v[0] as f64 / 1024.0),
+            _ => None,
+        })
+    }
+
+    /// Bots online in the newest report and bots that joined or failed so far.
+    pub(crate) fn bots_online(&self) -> (u64, u64) {
+        let last = self.bots.last().map(|(_, v)| v.clone()).unwrap_or_default();
+        let field = |k: &str| last.get(k).and_then(Value::as_u64).unwrap_or(0);
+        (field("online"), field("joined") + field("failed"))
+    }
+}
+
+fn deploy_or_restart(target: Target, o: &Options, host: &str, bin_dir: &Path) -> Result<()> {
     match target {
         Target::Vanillite if o.deploy => {
             let binary = bin_dir.join("vanillite");
@@ -285,117 +327,171 @@ fn run_target(target: Target, o: &Options, host: &str, bin_dir: &Path) -> Result
                     .stdin(Stdio::from(file)),
             )?;
         }
-        Target::Vanillite => ssh(host, &format!("systemctl restart {}", target.unit()))?,
-        Target::Paper => ssh(host, &format!("systemctl restart {}", target.unit()))?,
+        _ => ssh(host, &format!("systemctl restart {}", target.unit()))?,
     }
-    wait_for_port(target.port(), Duration::from_secs(180))?;
-
-    let start = Instant::now();
-    let data = Arc::new(Mutex::new(Collected {
-        clock_ticks: 100,
-        ..Collected::default()
-    }));
-    let mut monitor = Command::new("ssh")
-        .args([host, "vanillite-loadtest-monitor", &target.unit()])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("ssh: {e}"))?;
-    let monitor_out = monitor.stdout.take().ok_or("no monitor output")?;
-    let d = Arc::clone(&data);
-    std::thread::spawn(move || read_monitor(monitor_out, start, &d));
-
-    // One socket per bot: lift the soft limit of open files to the hard limit first.
-    let mut bot = Command::new("sh")
-        .args(["-c", "ulimit -n \"$(ulimit -Hn)\" && exec \"$0\" \"$@\""])
-        .arg(bin_dir.join("loadbot"))
-        .args([
-            "--host",
-            HOST_IP,
-            "--port",
-            &target.port().to_string(),
-            "--join-rate",
-            &o.join_rate.to_string(),
-            "--chat-interval",
-            &o.chat_interval.to_string(),
-            "--view-distance",
-            &o.view_distance.to_string(),
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("loadbot: {e}"))?;
-    let bot_out = bot.stdout.take().ok_or("no loadbot output")?;
-    let d = Arc::clone(&data);
-    std::thread::spawn(move || {
-        for line in BufReader::new(bot_out)
-            .lines()
-            .map_while(std::io::Result::ok)
-        {
-            if let (Ok(v), Ok(mut d)) = (serde_json::from_str::<Value>(&line), d.lock()) {
-                d.bots.push((start.elapsed().as_secs_f64(), v));
-            }
-        }
-    });
-    let mut bot_in = bot.stdin.take().ok_or("no loadbot input")?;
-
-    let result = ramp(o, start, &data, &mut bot_in, target);
-    let _ = writeln!(bot_in, "quit");
-    drop(bot_in);
-    finish(&mut bot, Duration::from_secs(5));
-    let _ = monitor.kill();
-    let _ = monitor.wait();
-    result
+    wait_for_port(target.port(), Duration::from_secs(180))
 }
 
-/// Runs the steps; stops early when a step is not reached or the server is gone.
-fn ramp(
-    o: &Options,
+/// The server monitor and the load bots of one run against a started server.
+pub(crate) struct Session {
+    pub(crate) target: Target,
     start: Instant,
-    data: &Mutex<Collected>,
-    bot_in: &mut ChildStdin,
-    target: Target,
-) -> Result<Vec<Value>> {
-    let now = || start.elapsed().as_secs_f64();
-    // Let the monitor and the server settle.
-    std::thread::sleep(Duration::from_secs(5));
-    let mut steps = Vec::new();
-    let mut movement = "";
-    for (&n, spec) in o.steps.iter().zip(&o.movements) {
-        if spec != movement {
-            movement = spec;
-            writeln!(bot_in, "movement {spec}").map_err(|e| format!("loadbot: {e}"))?;
-        }
-        writeln!(bot_in, "target {n}").map_err(|e| format!("loadbot: {e}"))?;
-        let ramp_start = now();
+    pub(crate) data: Arc<Mutex<Collected>>,
+    monitor: Child,
+    bot: Child,
+    bot_in: ChildStdin,
+}
+
+impl Session {
+    /// Starts the monitor of `target` on the test server and the load bot here (no bots
+    /// online yet); `extra` are more loadbot arguments.
+    pub(crate) fn open(
+        host: &str,
+        target: Target,
+        bin_dir: &Path,
+        o: &Options,
+        extra: &[&str],
+    ) -> Result<Self> {
+        let start = Instant::now();
+        let data = Arc::new(Mutex::new(Collected {
+            clock_ticks: 100,
+            ..Collected::default()
+        }));
+        let mut monitor = Command::new("ssh")
+            .args([host, "vanillite-loadtest-monitor", &target.unit()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("ssh: {e}"))?;
+        let monitor_out = monitor.stdout.take().ok_or("no monitor output")?;
+        let d = Arc::clone(&data);
+        std::thread::spawn(move || read_monitor(monitor_out, start, &d));
+
+        // One socket per bot: lift the soft limit of open files to the hard limit first.
+        let mut bot = Command::new("sh")
+            .args(["-c", "ulimit -n \"$(ulimit -Hn)\" && exec \"$0\" \"$@\""])
+            .arg(bin_dir.join("loadbot"))
+            .args([
+                "--host",
+                HOST_IP,
+                "--port",
+                &target.port().to_string(),
+                "--join-rate",
+                &o.join_rate.to_string(),
+                "--chat-interval",
+                &o.chat_interval.to_string(),
+                "--view-distance",
+                &o.view_distance.to_string(),
+            ])
+            .args(extra)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("loadbot: {e}"))?;
+        let bot_out = bot.stdout.take().ok_or("no loadbot output")?;
+        let d = Arc::clone(&data);
+        std::thread::spawn(move || {
+            for line in BufReader::new(bot_out)
+                .lines()
+                .map_while(std::io::Result::ok)
+            {
+                if let (Ok(v), Ok(mut d)) = (serde_json::from_str::<Value>(&line), d.lock()) {
+                    d.bots.push((start.elapsed().as_secs_f64(), v));
+                }
+            }
+        });
+        let bot_in = bot.stdin.take().ok_or("no loadbot input")?;
+        Ok(Self {
+            target,
+            start,
+            data,
+            monitor,
+            bot,
+            bot_in,
+        })
+    }
+
+    /// Seconds since the session started (the time base of all samples).
+    pub(crate) fn now(&self) -> f64 {
+        self.start.elapsed().as_secs_f64()
+    }
+
+    /// Sends a control command to the load bot (`target <n>`, `movement <spec>`, ...).
+    pub(crate) fn bot(&mut self, command: &str) -> Result<()> {
+        writeln!(self.bot_in, "{command}").map_err(|e| format!("loadbot: {e}"))
+    }
+
+    /// Waits until `n` bots are online; gives up after 30 s without join progress. Returns
+    /// whether all are online.
+    pub(crate) fn wait_online(&self, n: u64) -> Result<bool> {
         let mut last_progress = (0u64, Instant::now());
         loop {
             std::thread::sleep(Duration::from_secs(1));
-            let (online, settled) = {
-                let d = data.lock().map_err(|_| "poisoned")?;
-                let last = d.bots.last().map(|(_, v)| v.clone()).unwrap_or_default();
-                let field = |k: &str| last.get(k).and_then(Value::as_u64).unwrap_or(0);
-                (field("online"), field("joined") + field("failed"))
-            };
+            let (online, settled) = self.data.lock().map_err(|_| "poisoned")?.bots_online();
             if online >= n {
-                break;
+                return Ok(true);
             }
             if settled != last_progress.0 {
                 last_progress = (settled, Instant::now());
             } else if last_progress.1.elapsed() > Duration::from_secs(30) {
                 println!("   no join progress for 30 s at {online}/{n} players");
-                break;
+                return Ok(false);
             }
         }
-        let hold_start = now();
+    }
+
+    /// The metrics of a window (see [`aggregate`]).
+    pub(crate) fn window(&self, wanted: u64, ramp_start: f64, from: f64, to: f64) -> Result<Value> {
+        let d = self.data.lock().map_err(|_| "poisoned")?;
+        Ok(aggregate(&d, self.target, wanted, ramp_start, from, to))
+    }
+
+    /// Ends the bots and the monitor.
+    pub(crate) fn close(mut self) {
+        let _ = writeln!(self.bot_in, "quit");
+        drop(self.bot_in);
+        finish(&mut self.bot, Duration::from_secs(5));
+        let _ = self.monitor.kill();
+        let _ = self.monitor.wait();
+    }
+}
+
+/// Runs the steps; stops early when a step is not reached or the server is gone.
+pub(crate) fn ramp(o: &Options, session: &mut Session) -> Result<Vec<Value>> {
+    // Let the monitor and the server settle.
+    std::thread::sleep(Duration::from_secs(5));
+    let idle_rss = session.data.lock().map_err(|_| "poisoned")?.rss_mib();
+    let mut steps = Vec::new();
+    let mut movement = "";
+    for ((&n, spec), rate) in o.steps.iter().zip(&o.movements).zip(&o.rates) {
+        if spec != movement {
+            movement = spec;
+            session.bot(&format!("movement {spec}"))?;
+        }
+        if let Some((per_s, logins)) = rate {
+            session.bot(&format!("rate {per_s} {logins}"))?;
+        }
+        session.bot(&format!("target {n}"))?;
+        let ramp_start = session.now();
+        session.wait_online(n)?;
+        let ramp_end = session.now();
+        std::thread::sleep(o.settle);
+        let hold_start = session.now();
         std::thread::sleep(o.hold);
-        let hold_end = now();
-        let step = {
-            let d = data.lock().map_err(|_| "poisoned")?;
-            let mut step = aggregate(&d, target, n, ramp_start, hold_start, hold_end);
-            step["movement"] = json!(spec);
-            step
-        };
+        let hold_end = session.now();
+        let mut step = session.window(n, ramp_start, hold_start, hold_end)?;
+        step["movement"] = json!(spec);
+        step["ramp_s"] = round(Some(ramp_end - ramp_start));
+        let during_ramp = session.window(n, ramp_start, ramp_start, ramp_end)?;
+        step["ramp_mspt_max"] = during_ramp["mspt"]["max"].clone();
+        let players = step["players"].as_f64().unwrap_or(0.0);
+        if let (Some(idle), Some(rss)) = (idle_rss, step["server"]["rss_mib"].as_f64())
+            && players > 0.0
+        {
+            step["server"]["idle_rss_mib"] = round(Some(idle));
+            step["server"]["rss_net_per_player_kib"] =
+                round(Some((rss - idle).max(0.0) * 1024.0 / players));
+        }
         let players = step["players"].as_u64().unwrap_or(0);
         println!(
             "   {players:>5}/{n:<5} players: MSPT p50 {} p95 {} p99 {} ms, RSS {} MiB, CPU {} %, \
@@ -461,7 +557,8 @@ fn read_monitor(out: impl std::io::Read, start: Instant, data: &Mutex<Collected>
                         .and_then(|v| v.trim().parse::<f64>().ok())
                 };
                 if let (Some(a), Some(b), Some(c)) = (p("P50:"), p("P95:"), p("P99:")) {
-                    d.server.push(Sample::Query(t, [a, b, c]));
+                    let mean = p("Average time per tick:").unwrap_or(f64::NAN);
+                    d.server.push(Sample::Query(t, [a, b, c, mean]));
                 }
             }
             _ => {}
@@ -516,8 +613,8 @@ fn aggregate(
                 "max": round(ticks.last().copied()),
             })
         }
-        Target::Paper => {
-            let windows: Vec<[f64; 3]> = d
+        Target::Paper | Target::Vanilla => {
+            let windows: Vec<[f64; 4]> = d
                 .server
                 .iter()
                 .filter_map(|s| match s {
@@ -525,16 +622,25 @@ fn aggregate(
                     _ => None,
                 })
                 .collect();
-            let col = |i: usize| -> Vec<f64> { windows.iter().map(|w| w[i]).collect() };
+            let col = |i: usize| -> Vec<f64> {
+                windows
+                    .iter()
+                    .map(|w| w[i])
+                    .filter(|v| v.is_finite())
+                    .collect()
+            };
             json!({
                 "source": "/tick query, mean of 100-tick windows",
                 "windows": windows.len(),
+                "mean": round(mean(&col(3))),
                 "p50": round(mean(&col(0))),
                 "p95": round(mean(&col(1))),
                 "p99": round(mean(&col(2))),
                 "max": round(col(2).into_iter().reduce(f64::max)),
             })
         }
+        // Pumpkin reports no tick times; proxies do not tick.
+        _ => json!({ "source": "none" }),
     };
 
     let reports: Vec<&(f64, Value)> = d.bots.iter().filter(|(t, _)| inside(*t)).collect();
@@ -617,6 +723,10 @@ fn aggregate(
             "chunks_per_s_per_bot": round(bot_rate("chunks", true)),
             "chunks_forgotten_per_s": round(bot_rate("chunks_forgotten", false)),
             "teleports": delta("teleports"),
+            "near_missing_percent": round({
+                let checked = delta("near_checked");
+                (checked > 0).then(|| delta("near_missing") as f64 * 100.0 / checked as f64)
+            }),
             "failed": field("failed"),
             "disconnected": field("disconnected"),
         },
@@ -634,16 +744,16 @@ fn pct(sorted: &[f64], p: f64) -> Option<f64> {
     sorted.get(rank.clamp(1, sorted.len().max(1)) - 1).copied()
 }
 
-fn round(v: Option<f64>) -> Value {
+pub(crate) fn round(v: Option<f64>) -> Value {
     v.map_or(Value::Null, |v| json!((v * 100.0).round() / 100.0))
 }
 
-fn show(v: &Value) -> String {
+pub(crate) fn show(v: &Value) -> String {
     v.as_f64()
         .map_or_else(|| "-".to_owned(), |v| format!("{v}"))
 }
 
-fn max_players_under(steps: &[Value], ms: f64) -> u64 {
+pub(crate) fn max_players_under(steps: &[Value], ms: f64) -> u64 {
     steps
         .iter()
         .filter(|s| s["mspt"]["p95"].as_f64().is_some_and(|p| p < ms))
@@ -716,7 +826,7 @@ fn movement(step: &Value) -> &str {
     step["movement"].as_str().unwrap_or("random")
 }
 
-fn store(host: &str, run: &Value, path: &str) -> Result<()> {
+pub(crate) fn store(host: &str, run: &Value, path: &str) -> Result<()> {
     let dir = Path::new(path)
         .parent()
         .map(Path::to_path_buf)
@@ -1013,15 +1123,15 @@ fn finish(child: &mut Child, grace: Duration) {
     let _ = child.wait();
 }
 
-fn ssh(host: &str, command: &str) -> Result<()> {
+pub(crate) fn ssh(host: &str, command: &str) -> Result<()> {
     crate::devenv::run(Command::new("ssh").args([host, command]))
 }
 
-fn git(root: &Path, args: &[&str]) -> Result<String> {
+pub(crate) fn git(root: &Path, args: &[&str]) -> Result<String> {
     command_output(Command::new("git").current_dir(root).args(args))
 }
 
-fn command_output(cmd: &mut Command) -> Result<String> {
+pub(crate) fn command_output(cmd: &mut Command) -> Result<String> {
     let out = cmd.output().map_err(|e| format!("{cmd:?}: {e}"))?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
