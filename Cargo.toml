@@ -97,6 +97,23 @@ opt-level = 3
 [profile.dev.package.vanillite-light]
 opt-level = 3
 
+# Block data, data pack loading, chunk storage and NBT sit in the inner loops of the world
+# generation and structure goldens; unoptimised they make those tests about three times slower.
+[profile.dev.package.vanillite-data]
+opt-level = 3
+
+[profile.dev.package.vanillite-datapack]
+opt-level = 3
+
+[profile.dev.package.vanillite-chunk]
+opt-level = 3
+
+[profile.dev.package.vanillite-base]
+opt-level = 3
+
+[profile.dev.package.vanillite-nbt]
+opt-level = 3
+
 [profile.release]
 lto = "fat"
 codegen-units = 1
