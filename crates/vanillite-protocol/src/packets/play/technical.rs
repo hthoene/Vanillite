@@ -449,6 +449,7 @@ pub mod serverbound {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod command_block_tests {
     use super::serverbound::*;
     use crate::codec::{Decode, Encode, Reader};
