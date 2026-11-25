@@ -108,7 +108,9 @@ pub struct Rule(pub usize);
 impl Rule {
     pub const ADVANCE_TIME: Rule = Rule(0);
     pub const ADVANCE_WEATHER: Rule = Rule(1);
+    pub const ALLOW_ENTERING_NETHER_USING_PORTALS: Rule = Rule(2);
     pub const DROWNING_DAMAGE: Rule = Rule(7);
+    pub const ENTITY_DROPS: Rule = Rule(10);
     pub const FALL_DAMAGE: Rule = Rule(11);
     pub const FIRE_DAMAGE: Rule = Rule(12);
     pub const FREEZE_DAMAGE: Rule = Rule(15);
@@ -122,6 +124,8 @@ impl Rule {
     pub const MOB_GRIEFING: Rule = Rule(31);
     pub const NATURAL_HEALTH_REGENERATION: Rule = Rule(32);
     pub const PLAYER_MOVEMENT_CHECK: Rule = Rule(33);
+    pub const PLAYERS_NETHER_PORTAL_CREATIVE_DELAY: Rule = Rule(34);
+    pub const PLAYERS_NETHER_PORTAL_DEFAULT_DELAY: Rule = Rule(35);
     pub const PVP: Rule = Rule(38);
     pub const REDUCED_DEBUG_INFO: Rule = Rule(41);
     pub const RESPAWN_RADIUS: Rule = Rule(42);
@@ -130,6 +134,7 @@ impl Rule {
     pub const SPAWN_MOBS: Rule = Rule(47);
     pub const SPAWN_MONSTERS: Rule = Rule(48);
     pub const SPAWN_WARDENS: Rule = Rule(52);
+    pub const TNT_EXPLODES: Rule = Rule(55);
     pub const TNT_EXPLOSION_DROP_DECAY: Rule = Rule(56);
     pub const UNIVERSAL_ANGER: Rule = Rule(57);
 
@@ -271,6 +276,7 @@ mod tests {
             (Rule::ADVANCE_TIME, "advance_time"),
             (Rule::ADVANCE_WEATHER, "advance_weather"),
             (Rule::DROWNING_DAMAGE, "drowning_damage"),
+            (Rule::ENTITY_DROPS, "entity_drops"),
             (Rule::FALL_DAMAGE, "fall_damage"),
             (Rule::FIRE_DAMAGE, "fire_damage"),
             (Rule::FREEZE_DAMAGE, "freeze_damage"),

@@ -44,6 +44,7 @@ public final class Main {
     write(out.resolve("items.json"), Items.extract());
     write(out.resolve("registries.json"), Registries.extract());
     write(out.resolve("packet_fields.json"), Packets.extract());
+    write(out.resolve("entity_data.json"), MultiversionMain.entityData());
     System.out.println("extractor: wrote " + out.toAbsolutePath());
   }
 

@@ -8,6 +8,8 @@
 
 pub mod boss;
 pub mod brain;
+pub mod animal;
+pub mod attack;
 pub mod combat;
 pub mod goals;
 pub mod kinds;
@@ -18,6 +20,7 @@ pub mod path;
 pub mod physics;
 pub mod projectile;
 pub mod spawn;
+pub mod tame;
 
 use vanillite_base::random::{LegacyRandom, RandomSource};
 use vanillite_base::{Aabb, BlockPos, ChunkPos, Vec3};
@@ -193,6 +196,34 @@ pub struct MobData {
     pub next_step: f32,
     /// The state of bosses and other kinds with their own machinery.
     pub ext: boss::Ext,
+    /// Wears a saddle (`EquipmentSlot.SADDLE`).
+    pub saddled: bool,
+    /// `ItemBasedSteering`: boosting, the ticks boosted and the boost length
+    /// (`DATA_BOOST_TIME`).
+    pub boosting: bool,
+    pub boost_time: i32,
+    pub boost_total: i32,
+    /// `getCustomName`, encoded as the `custom_name` component (network NBT).
+    pub custom_name: Option<Box<[u8]>>,
+    /// `TamableAnimal`: the owner's UUID, tame, ordered to sit, sitting pose.
+    pub owner: Option<u128>,
+    pub tame: bool,
+    pub order_to_sit: bool,
+    pub in_sitting_pose: bool,
+    /// `loveCause`: the player who fed it.
+    pub love_cause: Option<u128>,
+    /// `forcedAge` and `forcedAgeTimer` (babies fed to grow).
+    pub forced_age: i32,
+    pub forced_age_timer: i32,
+    /// A leash read from NBT, attached once its holder is there.
+    pub pending_leash: Option<LeashRef>,
+}
+
+/// What holds a leash in entity NBT (`leash`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LeashRef {
+    Entity(u128),
+    Knot(BlockPos),
 }
 
 impl MobData {
@@ -279,6 +310,19 @@ impl MobData {
             move_dist: 0.0,
             next_step: 1.0,
             ext: boss::new_ext(kind),
+            saddled: false,
+            boosting: false,
+            boost_time: 0,
+            boost_total: 0,
+            custom_name: None,
+            owner: None,
+            tame: false,
+            order_to_sit: false,
+            in_sitting_pose: false,
+            love_cause: None,
+            forced_age: 0,
+            forced_age_timer: 0,
+            pending_leash: None,
         };
         // `Mob.ambientSoundTime` starts at 0; only playing a sound resets it to `-interval`.
         // `LivingEntity`'s constructor turns the entity to a random yaw (`setYRot(random.nextFloat()
@@ -430,14 +474,45 @@ pub struct MobSettings {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ExplosionRequest {
     pub source: Option<EntityId>,
-    /// `getIndirectSourceEntity` when it is not `source` itself (a projectile's owner).
+    /// The entity responsible (`getIndirectSourceEntity`); `None`: the source itself.
     pub indirect: Option<EntityId>,
     pub pos: Vec3,
     pub radius: f32,
     /// `ExplosionInteraction.MOB`: blocks only break with `mobGriefing`.
     pub mob: bool,
-    /// The source's `getBlockExplosionResistance`.
+    /// The source's `getBlockExplosionResistance` (the wither's skulls, primed TNT minecarts).
     pub resistance: crate::level::explosion::BlockResistance,
+}
+
+impl ExplosionRequest {
+    /// `Level.explode` with the block interaction of the rules (`ExplosionInteraction.MOB` or
+    /// `TNT`).
+    pub fn run(&self, level: &mut crate::level::Level, rules: &crate::survival::rules::GameRules) {
+        use crate::level::explosion::BlockInteraction;
+        use crate::survival::rules::Rule;
+        let decay = if self.mob {
+            Rule::MOB_EXPLOSION_DROP_DECAY
+        } else {
+            Rule::TNT_EXPLOSION_DROP_DECAY
+        };
+        let interaction = if self.mob && !rules.bool(Rule::MOB_GRIEFING) {
+            BlockInteraction::Keep
+        } else if rules.bool(decay) {
+            BlockInteraction::DestroyWithDecay
+        } else {
+            BlockInteraction::Destroy
+        };
+        // `getIndirectSourceEntity`: a living source caused it itself.
+        let indirect = self.indirect.or(self.source);
+        level.explode_with(
+            self.source,
+            indirect,
+            self.pos,
+            self.radius,
+            interaction,
+            self.resistance,
+        );
+    }
 }
 
 /// A change of the world a mob tick causes; applied right after that tick.
@@ -461,6 +536,37 @@ pub enum WorldAction {
     },
     /// Game events, listener moves and sculk catalyst charges.
     Level(boss::warden::LevelAction),
+    /// `entityInside` of the block at the position for the entity (`applyEffectsFromBlocks`).
+    EntityInside(BlockPos, EntityId),
+    /// A hopper minecart takes in an item (`MinecartHopper.tryConsumeItems`).
+    HopperMinecart(EntityId),
+}
+
+impl WorldAction {
+    /// Applies the actions that need nothing but the level; returns `false` for the others.
+    pub fn apply_to_level(&self, level: &mut crate::level::Level) -> bool {
+        match *self {
+            WorldAction::SetBlock(pos, block, flags) => {
+                level.set_block(pos, block, flags);
+            }
+            WorldAction::DestroyBlock(pos, drop) => {
+                level.destroy_block(pos, drop, None);
+            }
+            WorldAction::LevelEvent(event, pos, data) => {
+                level.level_event(None, event, pos, data);
+            }
+            WorldAction::EntityInside(pos, id) => {
+                if level.entities.store.contains(id) {
+                    level.entity_inside(pos, id);
+                }
+            }
+            WorldAction::HopperMinecart(id) => crate::minecart::hopper_suck(level, id),
+            WorldAction::Explode(_)
+            | WorldAction::ExplodeWith { .. }
+            | WorldAction::Level(_) => return false,
+        }
+        true
+    }
 }
 
 /// The mob state of a world besides the entities: search buffers, queued world changes and
@@ -486,6 +592,9 @@ pub struct MobContext {
     pub dragon_fight: Option<boss::dragon::FightView>,
     /// What the dragon and the crystals report to the fight, handled after each tick.
     pub dragon_events: Vec<boss::dragon::DragonEvent>,
+    /// Menus players opened at entities (chest boats, container minecarts), opened once the
+    /// entities are back in the level.
+    pub menus: Vec<crate::menu::container::MenuRequest>,
 }
 
 impl MobContext {

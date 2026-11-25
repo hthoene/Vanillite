@@ -24,6 +24,7 @@ vanillite-datapack = { path = "crates/vanillite-datapack", version = "0.1.0" }
 vanillite-game = { path = "crates/vanillite-game", version = "0.1.0" }
 vanillite-light = { path = "crates/vanillite-light", version = "0.1.0" }
 vanillite-macros = { path = "crates/vanillite-macros", version = "0.1.0" }
+vanillite-multiversion = { path = "crates/vanillite-multiversion", version = "0.1.0" }
 vanillite-nbt = { path = "crates/vanillite-nbt", version = "0.1.0" }
 vanillite-net = { path = "crates/vanillite-net", version = "0.1.0" }
 vanillite-plugin = { path = "crates/vanillite-plugin", version = "0.1.0" }
@@ -55,6 +56,8 @@ flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 lz4_flex = { version = "0.11", default-features = false, features = ["safe-encode", "safe-decode"] }
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+twox-hash = { version = "2", default-features = false, features = ["xxhash3_64"] }
+zstd = { version = "0.13", default-features = false }
 
 # External crates: network (vanillite-nbt, vanillite-protocol, vanillite-macros, vanillite-net).
 aes = "0.8"
@@ -93,8 +96,25 @@ debug = false
 [profile.dev.package.vanillite-worldgen]
 opt-level = 3
 
+# The light engine recomputes whole chunk areas; its parity tests and scenarios run optimised.
 [profile.dev.package.vanillite-light]
-# The parity scenarios light their chunks; unoptimised lighting would dominate their time.
+opt-level = 3
+
+# Block data, data pack loading, chunk storage and NBT sit in the inner loops of the world
+# generation and structure goldens; unoptimised they make those tests about three times slower.
+[profile.dev.package.vanillite-data]
+opt-level = 3
+
+[profile.dev.package.vanillite-datapack]
+opt-level = 3
+
+[profile.dev.package.vanillite-chunk]
+opt-level = 3
+
+[profile.dev.package.vanillite-base]
+opt-level = 3
+
+[profile.dev.package.vanillite-nbt]
 opt-level = 3
 
 [profile.release]

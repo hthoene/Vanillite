@@ -67,7 +67,7 @@ fn registry_matches_bootstrap() {
     assert_eq!(behaviour_of(&stack(items::OAK_BOAT, 1)), Behaviour::Entity);
     assert_eq!(
         behaviour_of(&stack(items::HOPPER_MINECART, 1)),
-        Behaviour::Entity
+        Behaviour::Minecart
     );
     assert_eq!(
         behaviour_of(&stack(items::COD_BUCKET, 1)),

@@ -302,6 +302,36 @@ impl RuleValue for StorageLayout {
     }
 }
 
+/// The format of the chunk, entity and POI files of a world (`storage.world-format`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum WorldFormat {
+    /// Vanillite's own format (`.vwr`): smaller and faster; `vanillite export` writes Anvil.
+    #[default]
+    Vanillite,
+    /// Vanilla's Anvil region files (`.mca`).
+    Anvil,
+}
+
+impl RuleValue for WorldFormat {
+    const SHAPE: ValueShape = ValueShape::of(ValueType::Text);
+    fn from_toml(value: &toml::Value) -> Result<Self, String> {
+        match value.as_str().map(str::trim) {
+            Some(s) if s.eq_ignore_ascii_case("vanillite") => Ok(WorldFormat::Vanillite),
+            Some(s) if s.eq_ignore_ascii_case("anvil") => Ok(WorldFormat::Anvil),
+            _ => Err(format!(
+                "expected \"vanillite\" or \"anvil\", found {value}"
+            )),
+        }
+    }
+    fn to_toml(&self) -> toml::Value {
+        let name = match self {
+            WorldFormat::Vanillite => "vanillite",
+            WorldFormat::Anvil => "anvil",
+        };
+        toml::Value::String(name.to_owned())
+    }
+}
+
 /// A value that is either switched off (written `"disabled"` or `false`) or set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum DisabledOr<T> {

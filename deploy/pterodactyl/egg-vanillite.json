@@ -622,7 +622,7 @@
     },
     {
       "name": "Threads: Compute",
-      "description": "Worker threads of the compute pool (world generation, lighting, saving, parallel tick phases). 0 = number of cores minus the busy tick threads, at least 1. Range: 0 to 1024. Empty: the profile's value (vanilla profile: 0). vanillite.toml: performance.threads.compute.",
+      "description": "Worker threads of the compute pool (world generation, lighting, saving, parallel tick phases). 0 = number of cores minus one (the tick threads), at least 1. Range: 0 to 1024. Empty: the profile's value (vanilla profile: 0). vanillite.toml: performance.threads.compute.",
       "env_variable": "VANILLITE_PERFORMANCE__THREADS__COMPUTE",
       "default_value": "",
       "user_viewable": true,
@@ -648,6 +648,126 @@
       "user_viewable": true,
       "user_editable": true,
       "rules": "nullable|string",
+      "field_type": "text"
+    },
+    {
+      "name": "Storage: World Format",
+      "description": "Format of the chunk, entity and POI files of new worlds: `\"vanillite\"`, the own format (about 1.75 × smaller than Anvil, loads and saves several times faster, `vanillite export` writes a Vanilla copy), or `\"anvil\"`, Vanilla's region files. An existing world keeps its format unless `convert-world` is set. Empty: the profile's value (vanilla profile: vanillite). vanillite.toml: storage.world-format.",
+      "env_variable": "VANILLITE_STORAGE__WORLD_FORMAT",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string",
+      "field_type": "text"
+    },
+    {
+      "name": "Storage: Convert World",
+      "description": "Converts an existing world into `world-format` at startup, before it loads. The new files are read back and compared before the old ones are removed; if that fails, the world stays as it is and the server starts with it. Empty: the profile's value (vanilla profile: false). vanillite.toml: storage.convert-world.",
+      "env_variable": "VANILLITE_STORAGE__CONVERT_WORLD",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Storage: Keep Converted Files",
+      "description": "After a conversion the original files are moved into `world-format-backup/<time>/` in the server folder instead of being deleted. Empty: the profile's value (vanilla profile: true). vanillite.toml: storage.keep-converted-files.",
+      "env_variable": "VANILLITE_STORAGE__KEEP_CONVERTED_FILES",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Storage: Compression Level",
+      "description": "zstd level of chunk records in the own format, 1 (fastest) to 19 (smallest). Takes effect for chunks saved from then on. Range: 1 to 19. Empty: the profile's value (vanilla profile: 3). vanillite.toml: storage.compression-level.",
+      "env_variable": "VANILLITE_STORAGE__COMPRESSION_LEVEL",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,19",
+      "field_type": "text"
+    },
+    {
+      "name": "Storage: Io Threads",
+      "description": "Disk IO threads shared by all dimensions. They only read and write files; compression runs on the compute pool. More help on network volumes with high latency. Range: 1 to 16. Empty: the profile's value (vanilla profile: 2). vanillite.toml: storage.io-threads.",
+      "env_variable": "VANILLITE_STORAGE__IO_THREADS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,16",
+      "field_type": "text"
+    },
+    {
+      "name": "Storage: Commit Interval",
+      "description": "Seconds after which saves of unloaded chunks are made durable (synced when `sync-chunk-writes` is on). Save rounds and `save-all flush` commit at their end. Range: 5 to 300. Empty: the profile's value (vanilla profile: 30). vanillite.toml: storage.commit-interval.",
+      "env_variable": "VANILLITE_STORAGE__COMMIT_INTERVAL",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:5,300",
+      "field_type": "text"
+    },
+    {
+      "name": "Storage: Read Ahead",
+      "description": "Reads the neighbours of a loaded chunk in its 4 × 4 tile along when they lie next to it in the file, and keeps them for a short time: fewer disk reads for moving players. Empty: the profile's value (vanilla profile: true). vanillite.toml: storage.read-ahead.",
+      "env_variable": "VANILLITE_STORAGE__READ_AHEAD",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Storage: Read Cache",
+      "description": "MiB of chunk records read ahead kept per dimension. Range: 0 to 65536. Empty: the profile's value (vanilla profile: 64). vanillite.toml: storage.read-cache.",
+      "env_variable": "VANILLITE_STORAGE__READ_CACHE",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:0,65536",
+      "field_type": "text"
+    },
+    {
+      "name": "Storage: Max Open Files",
+      "description": "Region files kept open per dimension while unused; files in use always stay open. Range: 16 to 65536. Empty: the profile's value (vanilla profile: 256). vanillite.toml: storage.max-open-files.",
+      "env_variable": "VANILLITE_STORAGE__MAX_OPEN_FILES",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:16,65536",
+      "field_type": "text"
+    },
+    {
+      "name": "Storage: Max Pending Writes",
+      "description": "MiB of saved chunks waiting for the disk per dimension above which no more saves are queued: changed chunks stay loaded and save rounds pause until the disk caught up. Bounds RAM on slow disks. Range: 4 to 65536. Empty: the profile's value (vanilla profile: 64). vanillite.toml: storage.max-pending-writes.",
+      "env_variable": "VANILLITE_STORAGE__MAX_PENDING_WRITES",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:4,65536",
+      "field_type": "text"
+    },
+    {
+      "name": "Autosave: Tick Budget",
+      "description": "Most microseconds of one tick spent capturing chunks for a save round; only the time left in the tick is used. ~380 chunks fit into the default. Range: 100 to 10000. Empty: the profile's value (vanilla profile: 500). vanillite.toml: storage.autosave.tick-budget.",
+      "env_variable": "VANILLITE_STORAGE__AUTOSAVE__TICK_BUDGET",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:100,10000",
+      "field_type": "text"
+    },
+    {
+      "name": "Autosave: Min Chunks Per Tick",
+      "description": "Chunks captured per tick even when the tick has no time left, so a round ends on an overloaded server. Range: 1 to 1024. Empty: the profile's value (vanilla profile: 16). vanillite.toml: storage.autosave.min-chunks-per-tick.",
+      "env_variable": "VANILLITE_STORAGE__AUTOSAVE__MIN_CHUNKS_PER_TICK",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,1024",
       "field_type": "text"
     },
     {
@@ -841,6 +961,16 @@
       "field_type": "text"
     },
     {
+      "name": "Multiversion: Versions",
+      "description": "Older versions whose clients may join: `\"all\"` (every version this build translates, currently 1.20.5 to 26.2), `\"none\"`, or a comma-separated list of releases such as `\"1.21.4, 26.2\"` (a release accepts every release of its protocol). Clients of the server's own version are not translated and pay nothing. Empty: the profile's value (vanilla profile: all). vanillite.toml: multiversion.versions.",
+      "env_variable": "VANILLITE_MULTIVERSION__VERSIONS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string",
+      "field_type": "text"
+    },
+    {
       "name": "Plugins: Enabled",
       "description": "Load the plugins in `plugins/`. Empty: the profile's value (vanilla profile: true). vanillite.toml: plugins.enabled.",
       "env_variable": "VANILLITE_PLUGINS__ENABLED",
@@ -908,6 +1038,16 @@
       "user_viewable": true,
       "user_editable": true,
       "rules": "nullable|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Bedrock: Min Protocol",
+      "description": "Oldest Bedrock network protocol that may join. 0 accepts every Bedrock version this build supports (listed at startup); e.g. 2225 admits only Bedrock 1.26.60 and newer. Range: 0 to 100000. Empty: the profile's value (vanilla profile: 0). vanillite.toml: bedrock.min-protocol.",
+      "env_variable": "VANILLITE_BEDROCK__MIN_PROTOCOL",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:0,100000",
       "field_type": "text"
     },
     {

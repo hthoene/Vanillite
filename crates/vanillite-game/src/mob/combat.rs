@@ -5,7 +5,7 @@
 use vanillite_base::Vec3;
 use vanillite_base::random::{LegacyRandom, RandomSource};
 use vanillite_protocol::SharedPacket;
-use vanillite_protocol::packets::play::clientbound::{DamageEvent, EntityEvent, SoundSource};
+use vanillite_protocol::packets::play::clientbound::{DamageEvent, EntityEvent};
 use vanillite_world::entity::{EntityFlags, EntityId, Pose};
 
 use super::living::event;
@@ -395,10 +395,26 @@ fn die(
     ));
     // `dropAllDeathLoot`: the loot table, then the experience.
     if !baby && env.rules.bool(Rule::MOB_DROPS) {
-        let loot = ents
-            .mob_mut(target)
-            .map(|m| kinds::death_loot(m, killed_by_player))
+        let mut loot = table_loot(ents, env, target, &source)
+            .or_else(|| {
+                ents.mob_mut(target)
+                    .map(|m| kinds::death_loot(m, killed_by_player))
+            })
             .unwrap_or_default();
+        // `dropCustomDeathLoot` / `dropEquipment`: the saddle and the enderman's block.
+        if let Some(m) = ents.mob_mut(target) {
+            if m.saddled
+                && let Some(saddle) = vanillite_data::registry::ITEM.id("minecraft:saddle")
+            {
+                m.saddled = false;
+                loot.push(crate::item::ItemStack::new(saddle, 1));
+            }
+            if let Some(block) = m.carried.take()
+                && let Some(item) = vanillite_data::registry::ITEM.id(block.block().info().name)
+            {
+                loot.push(crate::item::ItemStack::new(item, 1));
+            }
+        }
         for stack in loot {
             // `spawnAtLocation`: an item entity with the default random motion.
             let r = &mut *env.random;
@@ -490,7 +506,7 @@ pub fn mob_attack(t: &mut super::Tick<'_, '_>, target: EntityId) -> bool {
 }
 
 /// Knocks a player or a mob back (`LivingEntity.knockback`).
-fn knock_living(
+pub fn knock_living(
     ents: &mut Entities,
     env: &mut Env<'_>,
     target: EntityId,
@@ -519,101 +535,70 @@ fn knock_living(
     }
 }
 
-/// `Player.attack` of a mob, without items (fist damage).
-pub fn player_attack(
-    level: &Level,
+/// The drops of the mob's `entities/<type>` loot table from the data packs, `None` without
+/// that table.
+fn table_loot(
     ents: &mut Entities,
     env: &mut Env<'_>,
-    cx: &mut MobContext,
-    attacker: EntityId,
     target: EntityId,
-) {
-    let Some(e) = ents.store.get(attacker) else {
-        return;
+    source: &DamageSource,
+) -> Option<Vec<crate::item::ItemStack>> {
+    let data = crate::player::play::game_data()?;
+    let name = ents.store.get(target)?.kind().info().name;
+    let (ns, path) = name.split_once(':').unwrap_or(("minecraft", name));
+    let table = format!("{ns}:entities/{path}");
+    if !data.loot.has_table(&table) {
+        return None;
+    }
+    let this = super::attack::facts(ents, target)?;
+    let attacker = source.cause.and_then(|c| super::attack::facts(ents, c));
+    let direct = source.direct.and_then(|c| super::attack::facts(ents, c));
+    let m = ents.mob(target)?;
+    let last_player = m
+        .last_hurt_by_player
+        .filter(|_| m.last_hurt_by_player_time > 0)
+        .and_then(|p| super::attack::facts(ents, p));
+    let weapon = source
+        .cause
+        .and_then(|c| ents.player(c))
+        .map(|p| p.inventory.selected_item().clone())
+        .unwrap_or_default();
+    let level = |name: &str| data.enchantment_level(&weapon, name);
+    let entity = crate::loot::EntityLootContext {
+        this,
+        attacker,
+        direct_attacker: direct,
+        last_damage_player: last_player,
+        source: Some(crate::predicate::SourceFacts {
+            kind: source.kind,
+            is_direct: source.cause.is_some() && source.cause == source.direct,
+            direct,
+            cause: attacker,
+        }),
+        types: env.types,
+        tags: data,
+        attacker_enchantment_level: &level,
     };
-    let ppos = e.pos();
-    let flags = e.flags();
-    let y_rot = e.rot().y_rot;
-    let Some(p) = ents.player(attacker) else {
-        return;
+    let none = |_: &str| 0;
+    let in_tag = |item: u16, tag: &str| data.item_in_tag(item, tag);
+    let empty = crate::item::ItemStack::default();
+    let ctx = crate::loot::BlockLootContext {
+        state: vanillite_data::block::BlockState::AIR,
+        tool: &empty,
+        enchantment_level: &none,
+        item_in_tag: &in_tag,
+        explosion_radius: None,
+        this_present: true,
+        entity: Some(&entity),
+        block_entity: None,
     };
-    if !ents.mob(target).is_some_and(super::MobData::is_alive) {
-        return;
+    let mut out = Vec::new();
+    // The mob's own random (`LootParams` with the entity's random sequence is distribution
+    // equal).
+    let mut random = ents.mob(target).map(|m| m.random.clone())?;
+    data.loot.table_drops(&table, &ctx, &mut random, &mut out);
+    if let Some(m) = ents.mob_mut(target) {
+        m.random = random;
     }
-    // `getAttackStrengthScale(0.5)` with an attack speed of 4 (5 ticks).
-    #[allow(clippy::cast_precision_loss)]
-    let scale = ((p.survival.attack_ticker as f32 + 0.5) / 5.0).clamp(0.0, 1.0);
-    let fall_distance = p.survival.fall_distance;
-    let in_water = p.survival.fluids.in_water();
-    let mut base = 1.0_f32;
-    base *= 0.2 + scale * scale * 0.8;
-    if let Some(p) = ents.player_mut(attacker) {
-        p.survival.attack_ticker = 0;
-    }
-    let full = scale > 0.9;
-    let sprinting = flags.contains(EntityFlags::SPRINTING);
-    let on_ground = flags.contains(EntityFlags::ON_GROUND);
-    let player_sound = |env: &mut Env<'_>, sound: &str| {
-        let seed = crate::survival::sound_seed();
-        play_sound(
-            env.out,
-            None,
-            ppos,
-            sound,
-            SoundSource::Players,
-            1.0,
-            1.0,
-            seed,
-        );
-    };
-    let knockback_attack = sprinting && full;
-    if knockback_attack {
-        player_sound(env, "minecraft:entity.player.attack.knockback");
-    }
-    let crit = full && fall_distance > 0.0 && !on_ground && !in_water && !sprinting;
-    if crit {
-        base *= 1.5;
-    }
-    let mut source = entity_source(ents, env.types.player_attack, attacker, attacker);
-    source.cause_is_mob = false;
-    let hurt_ok = hurt_mob(level, ents, env, cx, target, source, base);
-    if !hurt_ok {
-        player_sound(env, "minecraft:entity.player.attack.nodamage");
-        return;
-    }
-    // Dragon parts are not living entities: no knockback from the attack itself.
-    let part = ents
-        .mob(target)
-        .is_some_and(|m| m.kind == Kind::EnderDragon);
-    let kb = if knockback_attack && !part {
-        0.5_f32
-    } else {
-        0.0
-    };
-    if kb > 0.0 {
-        let rad = f64::from(y_rot * super::DEG_TO_RAD);
-        let (sin, cos) = (
-            f64::from(vanillite_base::math::sin(rad)),
-            f64::from(vanillite_base::math::cos(rad)),
-        );
-        apply_knockback(ents, target, f64::from(kb), sin, -cos);
-        if let Some(mut e) = ents.store.get_mut(attacker) {
-            e.set_flags(EntityFlags::SPRINTING, false);
-        }
-    }
-    if crit {
-        player_sound(env, "minecraft:entity.player.attack.crit");
-    } else {
-        player_sound(
-            env,
-            if full {
-                "minecraft:entity.player.attack.strong"
-            } else {
-                "minecraft:entity.player.attack.weak"
-            },
-        );
-    }
-    if let Some(p) = ents.player_mut(attacker) {
-        player::cause_food_exhaustion(p, 0.1);
-    }
+    Some(out)
 }

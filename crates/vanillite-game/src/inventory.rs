@@ -716,7 +716,7 @@ const EQUIPMENT_KEYS: [(&str, usize); 5] = [
     ("offhand", OFFHAND),
 ];
 
-pub(crate) use crate::item_nbt::{stack_from_nbt, stack_to_nbt};
+pub use crate::item_nbt::{stack_from_nbt, stack_to_nbt};
 
 impl PlayerInventory {
     /// Writes Vanilla's `Inventory`, `SelectedItemSlot` and `equipment` into `out`.

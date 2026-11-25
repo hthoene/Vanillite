@@ -49,6 +49,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/dev' }}
+      # The Vanilla data pack the tests extract from the pinned server jar. After rust-cache so
+      # that its post step saves before rust-cache cleans target/ (which drops this directory).
+      - uses: actions/cache@v4
+        with:
+          path: target/vanilla-cache
+          key: vanilla-pack-${{ hashFiles('crates/vanillite-data/src/generated/version.rs') }}
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest

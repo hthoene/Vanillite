@@ -49,6 +49,7 @@ block_tags!(
     fire,
     grows_crops,
     maintains_farmland,
+    nether_portal_frame,
     nylium,
     occludes_vibration_signals,
     overrides_mushroom_light_requirement,

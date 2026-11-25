@@ -85,6 +85,10 @@ pub enum BlockEntity {
     SculkShrieker(Box<crate::block::sculk_shrieker::Shrieker>),
     /// `SculkCatalystBlockEntity` with its `SculkSpreader`.
     SculkCatalyst(Box<crate::block::sculk_catalyst::Catalyst>),
+    /// `TheEndPortalBlockEntity` (no data; clients render the portal from it).
+    EndPortal,
+    /// `TheEndGatewayBlockEntity`.
+    EndGateway(crate::block::portal::Gateway),
 }
 
 /// `BlockEntityTicker.tick(level, pos, state, blockEntity)`: the block entity is looked up at
@@ -230,7 +234,8 @@ fn ticker_of(entity: &BlockEntity) -> Option<TickerFn> {
         | BlockEntity::Banner(_)
         | BlockEntity::DecoratedPot(_)
         | BlockEntity::ChiseledBookshelf(_)
-        | BlockEntity::Brushable(_) => None,
+        | BlockEntity::Brushable(_)
+        | BlockEntity::EndPortal => None,
         BlockEntity::Campfire(_) => Some(crate::block::campfire::tick),
         BlockEntity::Crafter(_) => Some(crate::block::crafter::server_tick),
         BlockEntity::Beacon(_) => Some(crate::block::beacon::tick),
@@ -238,6 +243,7 @@ fn ticker_of(entity: &BlockEntity) -> Option<TickerFn> {
         BlockEntity::Furnace(_) => Some(crate::block::furnace::server_tick),
         BlockEntity::BrewingStand(_) => Some(crate::block::brewing::server_tick),
         BlockEntity::Sign(_) => Some(crate::block::sign::tick),
+        BlockEntity::EndGateway(_) => Some(crate::block::portal::gateway_tick),
         BlockEntity::MovingPiston(_) => Some(crate::block::piston::moving_piston_tick),
         BlockEntity::Hopper(_) => Some(crate::block::hopper::push_items_tick),
         BlockEntity::DaylightDetector => Some(crate::block::sensor::daylight_detector_tick),
@@ -323,6 +329,12 @@ pub fn new_block_entity(state: BlockState) -> Option<BlockEntity> {
         Some(BlockEntity::Skull(Box::default()))
     } else if crate::block::decor::is_banner(block) {
         Some(BlockEntity::Banner(Box::default()))
+    } else if block == ids::END_PORTAL {
+        Some(BlockEntity::EndPortal)
+    } else if block == ids::END_GATEWAY {
+        Some(BlockEntity::EndGateway(
+            crate::block::portal::Gateway::default(),
+        ))
     } else {
         crate::block::container::new_block_entity(block)
     }
@@ -381,6 +393,8 @@ fn is_valid(entity: &BlockEntity, state: BlockState) -> bool {
         BlockEntity::Crafter(_) => state.block() == ids::CRAFTER,
         BlockEntity::Beacon(_) => state.block() == ids::BEACON,
         BlockEntity::Conduit(_) => state.block() == ids::CONDUIT,
+        BlockEntity::EndPortal => state.block() == ids::END_PORTAL,
+        BlockEntity::EndGateway(_) => state.block() == ids::END_GATEWAY,
     }
 }
 
@@ -594,6 +608,7 @@ fn load(state: BlockState, nbt: &Compound) -> Option<BlockEntity> {
             }
             h.cooldown_time = int("TransferCooldown").unwrap_or(-1);
         }
+        BlockEntity::EndGateway(gateway) => *gateway = crate::block::portal::Gateway::load(nbt),
         _ => {}
     }
     Some(entity)
@@ -658,6 +673,7 @@ fn save(entity: &BlockEntity, state: BlockState, pos: BlockPos) -> Compound {
             }
             nbt.insert("TransferCooldown", Tag::Int(h.cooldown_time));
         }
+        BlockEntity::EndGateway(gateway) => gateway.save(&mut nbt),
         _ => {}
     }
     nbt
@@ -688,7 +704,7 @@ fn direction_to_3d(direction: Direction) -> i32 {
 }
 
 /// `NbtUtils.readBlockState`.
-fn read_block_state(c: &Compound) -> BlockState {
+pub(crate) fn read_block_state(c: &Compound) -> BlockState {
     let Some(Tag::String(name)) = c.get("Name") else {
         return BlockState::AIR;
     };
@@ -707,7 +723,7 @@ fn read_block_state(c: &Compound) -> BlockState {
 }
 
 /// `NbtUtils.writeBlockState`.
-fn write_block_state(state: BlockState) -> Compound {
+pub(crate) fn write_block_state(state: BlockState) -> Compound {
     let mut c = Compound::new();
     c.insert("Name", Tag::String(state.block().name().to_owned()));
     let mut props = Compound::new();
@@ -811,6 +827,7 @@ impl Level {
         for &chunk in &chunks {
             self.load_block_entities(chunk);
         }
+        self.apply_visibility();
         self.chunk_scratch = chunks;
     }
 
@@ -830,6 +847,7 @@ impl Level {
         for chunk in chunks {
             self.write_block_entities(chunk);
         }
+        self.write_all_entities();
         self.chunks.save_all(flush);
     }
 }
@@ -877,6 +895,13 @@ pub fn update_tag(entity: &BlockEntity, state: BlockState) -> Option<Compound> {
             Some(s.update_tag(crate::block::trial_spawner::TrialState::of(state)))
         }
         BlockEntity::Vault(v) => Some(v.update_tag()),
+        // `saveCustomOnly`: the age for the beam and the exit.
+        BlockEntity::EndGateway(gateway) => {
+            let mut nbt = Compound::new();
+            gateway.save(&mut nbt);
+            nbt.sort_java_hash_order();
+            Some(nbt)
+        }
         _ => None,
     }
 }

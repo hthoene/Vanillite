@@ -65,7 +65,7 @@ async fn recv<T>(
     decode: fn(&[u8]) -> vanillite_protocol::Result<T>,
 ) -> Result<T, End> {
     loop {
-        if let Some(frame) = rx.decoder.next_frame()? {
+        if let Some(frame) = rx.next_frame()? {
             return Ok(decode(frame)?);
         }
         match tokio::time::timeout_at(deadline, rx.fill()).await {
@@ -179,9 +179,20 @@ async fn pre_play(
         else {
             return Err(Error::Invalid("expected status request").into());
         };
-        tx.send(&status::StatusResponse {
-            json: shared.status.get().to_string(),
-        })?;
+        let json = shared.status.get();
+        // Clients of an accepted older version see the proxy as compatible.
+        let json = if hs.protocol_version != vanillite_protocol::PROTOCOL_VERSION
+            && shared
+                .config
+                .multiversion
+                .version(hs.protocol_version)
+                .is_some()
+        {
+            vanillite_multiversion::status_json(&json, hs.protocol_version)
+        } else {
+            json.to_string()
+        };
+        tx.send(&status::StatusResponse { json })?;
         tx.flush(flush).await.map_err(|_| End::Closed)?;
         if let ServerboundStatus::PingRequest(p) =
             recv(rx, deadline, ServerboundStatus::decode).await?
@@ -193,7 +204,18 @@ async fn pre_play(
     }
     *state = State::Login;
     rx.set_state(State::Login);
-    if hs.protocol_version != vanillite_protocol::PROTOCOL_VERSION {
+    if hs.protocol_version != vanillite_protocol::PROTOCOL_VERSION
+        && let Some(adapter) = shared
+            .config
+            .multiversion
+            .adapter(hs.protocol_version, State::Login)
+    {
+        // An older client: its packets are translated on this side, backends see the current
+        // version only.
+        let (serverbound, clientbound) = adapter.split();
+        rx.adapter = Some(serverbound);
+        tx.adapter = Some(clientbound);
+    } else if hs.protocol_version != vanillite_protocol::PROTOCOL_VERSION {
         let key = if hs.protocol_version < vanillite_protocol::PROTOCOL_VERSION {
             "multiplayer.disconnect.outdated_client"
         } else {

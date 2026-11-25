@@ -108,7 +108,8 @@ fn add_file<W: Write + io::Seek>(
 ) -> io::Result<()> {
     // Region files change in place: copy them while no chunk is written.
     let data = {
-        let _gate = name.ends_with(".mca").then(|| crate::region::gate(name));
+        let _gate =
+            (name.ends_with(".mca") || name.ends_with(".vwr")).then(|| crate::region::gate(name));
         match File::open(path) {
             Ok(mut file) => {
                 let mut data =

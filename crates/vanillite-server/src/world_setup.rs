@@ -472,6 +472,11 @@ pub(crate) fn level_settings(
         fast_lava: attribute("minecraft:gameplay/fast_lava"),
         water_evaporates: attribute("minecraft:gameplay/water_evaporates"),
         has_sky_light: info.has_sky_light,
+        // `BaseFireBlock.inPortalDimension`.
+        portal_dimension: matches!(
+            info.dimension.as_str(),
+            "minecraft:overworld" | "minecraft:the_nether"
+        ),
         ..vanillite_game::level::LevelSettings::default()
     };
     apply_simulation_rules(

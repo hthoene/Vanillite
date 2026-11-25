@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use vanillite_base::BlockPos;
+use vanillite_base::{BlockPos, ChunkPos};
 use vanillite_chunk::{Chunk, facts};
 use vanillite_data::block::{BlockId, BlockState, STATE_COUNT};
 
@@ -43,6 +43,24 @@ pub trait ScenarioWorld {
     fn fluid_ticks(&self, min: BlockPos, max: BlockPos, out: &mut Vec<TickObs>);
     /// Entities whose block position is inside `min..=max`.
     fn entities(&self, min: BlockPos, max: BlockPos, out: &mut Vec<EntityObs>);
+
+    /// Whether `pos` is in an accessible chunk; other positions are traced as
+    /// [`crate::scenario::UNLOADED`].
+    fn is_loaded(&self, _pos: BlockPos) -> bool {
+        true
+    }
+
+    /// Adds (`forced`) or removes the forced tickets of chunks, then runs the chunk system
+    /// without a game tick until it is settled.
+    fn set_forced(&mut self, _chunks: &[ChunkPos], _forced: bool) -> Result<(), String> {
+        Err("this world has no chunk tickets".to_owned())
+    }
+
+    /// The settled light inside `min..=max` in y, z, x order as `sky << 4 | block`: the levels
+    /// a client sees. Worlds without a light engine leave `out` empty.
+    fn light(&mut self, min: BlockPos, max: BlockPos, out: &mut Vec<u8>) {
+        let _ = (min, max, out);
+    }
     /// Adds the scenario's entities after the setup (order and seeds in
     /// [`crate::scenario`]); `entity_seed` seeds the entities created later.
     fn add_entities(&mut self, entities: &[EntitySpec], entity_seed: i64) -> Result<(), String> {

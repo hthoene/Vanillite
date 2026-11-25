@@ -58,6 +58,10 @@ pub fn tick(t: &mut Tick<'_, '_>) {
     }
     // `tickHeadTurn` → `BodyRotationControl.clientTick`.
     nav::tick_body_rotation(t);
+    super::tame::tick_leash(t);
+    if !t.exists() {
+        return;
+    }
     kinds::after_tick(t);
 }
 
@@ -318,7 +322,14 @@ fn ai_step(t: &mut Tick<'_, '_>) {
             m.fall_distance = 0.0;
         }
     }
-    if effective_ai {
+    // A mob its rider steers moves on the rider's client (`isControlledByLocalInstance`).
+    let steered = t
+        .ents
+        .riding
+        .passengers_of(t.id)
+        .first()
+        .is_some_and(|&p| crate::riding::controls(t.ents, p, t.id));
+    if effective_ai && !steered {
         let m = t.mob_ref();
         let input = Vec3::new(f64::from(m.xxa), f64::from(m.yya), f64::from(m.zza));
         travel(t, input);
@@ -905,6 +916,7 @@ fn push_entities(t: &mut Tick<'_, '_>) {
     });
     ids.retain(|&o| {
         t.ents.mob(o).is_some_and(super::MobData::is_alive)
+            || t.ents.minecart(o).is_some()
             || t.ents.player(o).is_some_and(|p| {
                 !p.survival.is_dead_or_dying()
                     && p.game_mode != vanillite_config::GameMode::Spectator
@@ -928,6 +940,11 @@ fn push_entities(t: &mut Tick<'_, '_>) {
     }
     let climbing = on_climbable(t);
     for &other in &ids {
+        if t.ents.minecart(other).is_some() {
+            // `AbstractMinecart.push(this)`.
+            crate::minecart::push_by(t.ents, other, id);
+            continue;
+        }
         let Some(o) = t.ents.store.get(other) else {
             continue;
         };

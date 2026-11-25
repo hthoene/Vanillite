@@ -32,6 +32,10 @@ pub struct ArrowData {
     /// `pickup`: 0 disallowed, 1 allowed, 2 creative only.
     pub pickup: u8,
     pub random_seed: i64,
+    /// The knockback of the weapon's enchantments (Punch).
+    pub knockback: f32,
+    /// Burning (Flame): sets what it hits on fire for 5 seconds.
+    pub fire: bool,
 }
 
 /// `startUsingItem` with the bow: the "using item" living flag is synched.
@@ -65,6 +69,73 @@ fn shoot(random: &mut LegacyRandom, dir: Vec3, power: f32, uncertainty: f32) -> 
         y_head_rot: 0.0,
     };
     (v, rot)
+}
+
+/// `BowItem.releaseUsing` / `ProjectileWeaponItem.shoot` of one arrow: spawns it at `start`
+/// flying along `dir` with `power` and `uncertainty`, with the weapon's enchantments (Power
+/// adds damage, Punch knockback, Flame fire). Dispensers and other shooters use it too.
+#[allow(clippy::too_many_arguments)]
+pub fn shoot_arrow(
+    ents: &mut Entities,
+    network_ids: &vanillite_world::entity::NetworkIds,
+    random: &mut LegacyRandom,
+    start: Vec3,
+    dir: Vec3,
+    power: f32,
+    uncertainty: f32,
+    owner: Option<EntityId>,
+    weapon: Option<&crate::item::ItemStack>,
+    crit: bool,
+    pickup: u8,
+) -> EntityId {
+    let (velocity, rot) = shoot(random, dir, power, uncertainty);
+    let seed = random.next_long();
+    let uuid = random_uuid(random);
+    let mut data = ArrowData {
+        owner,
+        base_damage: 2.0,
+        in_ground: false,
+        life: 0,
+        shake: 0,
+        crit,
+        left_owner: false,
+        last_state: None,
+        tick_count: 0,
+        pickup,
+        random_seed: seed,
+        knockback: 0.0,
+        fire: false,
+    };
+    if let Some(w) = weapon {
+        let (enchants, tags) = super::attack::combat_data();
+        let arrow = crate::predicate::EntityFacts {
+            kind: Some(entity_ids::ARROW),
+            ..crate::predicate::EntityFacts::default()
+        };
+        let types = crate::survival::damage::DamageTypes::built_in();
+        let cx = crate::enchant::EnchantContext {
+            types: &types,
+            tags,
+            this: None,
+            attacker: owner.and_then(|o| super::attack::facts(ents, o)),
+            direct_attacker: Some(arrow),
+            attacking_player: None,
+            source: None,
+        };
+        #[allow(clippy::cast_possible_truncation)]
+        let dmg = enchants.modify_damage(w, &cx, random, data.base_damage as f32);
+        data.base_damage = f64::from(dmg);
+        data.knockback = enchants.modify_knockback(w, &cx, random, 0.0);
+        data.fire = enchants.projectile_ignite(w).is_some();
+    }
+    let mut new = NewEntity::new(entity_ids::ARROW, network_ids.next(), uuid, start);
+    new.velocity = velocity;
+    new.rot = rot;
+    new.flags = EntityFlags::HAS_IMPULSE;
+    if data.fire {
+        new.flags.set(EntityFlags::ON_FIRE, true);
+    }
+    ents.spawn_arrow(new, data)
 }
 
 /// `AbstractSkeleton.performRangedAttack`.
@@ -116,6 +187,8 @@ pub fn skeleton_shoot(t: &mut Tick<'_, '_>, target: EntityId, power: f32) {
             tick_count: 0,
             pickup: 0,
             random_seed: seed,
+            knockback: 0.0,
+            fire: false,
         },
     );
     let m = t.mob();
@@ -263,6 +336,26 @@ pub fn tick_arrow(
             #[allow(clippy::cast_precision_loss)]
             let hurt = combat::hurt(level, ents, env, cx, target, source, damage as f32);
             if hurt {
+                if a.fire {
+                    super::attack::ignite(ents, target, 100);
+                }
+                // `doKnockback`: Punch pushes along the arrow's flight.
+                if a.knockback > 0.0 {
+                    let resist = ents
+                        .mob(target)
+                        .map_or(0.0, |m| m.attrs.knockback_resistance);
+                    let flat = Vec3::new(velocity.x, 0.0, velocity.z);
+                    if flat.length_sqr() > 0.0 {
+                        let push = flat.normalize()
+                            * (f64::from(a.knockback) * 0.6 * (1.0 - resist).max(0.0));
+                        if let Some(mut e) = ents.store.get_mut(target) {
+                            let v = e.as_ref().velocity();
+                            e.set_velocity(v + Vec3::new(push.x, 0.1, push.z));
+                            e.set_flags(EntityFlags::HAS_IMPULSE, true);
+                            e.set_flags(EntityFlags::HURT_MARKED, true);
+                        }
+                    }
+                }
                 if let Some(owner) = a.owner
                     && let Some(m) = ents.mob_mut(owner)
                 {
