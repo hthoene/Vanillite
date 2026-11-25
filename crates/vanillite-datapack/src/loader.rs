@@ -3,6 +3,7 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde_json::Value;
 use serde_json::value::RawValue;
@@ -16,6 +17,18 @@ use crate::{Error, io_err};
 pub struct Entry {
     pub id: String,
     pub json: Box<RawValue>,
+    /// Whether it comes from a pack the client knows (`RegistrationInfo.knownPackInfo`), so
+    /// its contents need not be sent to clients that have that pack.
+    pub known: bool,
+}
+
+/// A pack opened for loading (`Pack.open`): its directory, then the directories of its
+/// active overlays (later ones override earlier ones), and its known pack id when clients
+/// ship it (`minecraft:<id>`).
+#[derive(Clone, Debug)]
+pub struct OpenedPack {
+    pub layers: Vec<PathBuf>,
+    pub known_pack: Option<String>,
 }
 
 /// A data-driven registry; the index of an entry is its protocol id.
@@ -33,7 +46,7 @@ impl DynamicRegistry {
     }
 
     pub fn get(&self, id: &str) -> Option<&Entry> {
-        self.index.get(id).map(|&i| &self.entries[i])
+        self.index.get(id).and_then(|&i| self.entries.get(i))
     }
 
     /// Protocol id of `id`.
@@ -45,7 +58,8 @@ impl DynamicRegistry {
 /// Everything loaded from a set of data packs.
 #[derive(Debug)]
 pub struct LoadedPacks {
-    registries: Vec<DynamicRegistry>,
+    /// Loaded once at start; `/reload` keeps them, like Vanilla.
+    registries: Arc<Vec<DynamicRegistry>>,
     /// Registry name → tag id → resolved entry ids.
     tags: BTreeMap<String, BTreeMap<String, Vec<String>>>,
     /// Problems that Vanilla logs and skips (for example tags with missing references).
@@ -53,6 +67,8 @@ pub struct LoadedPacks {
     /// The pack directories in load order (each contains `data/`), for resources that are read
     /// on demand instead of at load time, such as structure templates.
     roots: Vec<PathBuf>,
+    /// The packs in load order.
+    packs: Vec<OpenedPack>,
 }
 
 impl LoadedPacks {
@@ -63,7 +79,7 @@ impl LoadedPacks {
 
     /// All loaded dynamic registries, in Vanilla's load order.
     pub fn registries(&self) -> &[DynamicRegistry] {
-        &self.registries
+        self.registries.as_slice()
     }
 
     /// Tags of a registry: tag id → resolved entry ids.
@@ -76,6 +92,28 @@ impl LoadedPacks {
     /// here, last pack first, like Vanilla's resource manager.
     pub fn roots(&self) -> &[PathBuf] {
         &self.roots
+    }
+
+    /// The packs in load order.
+    pub fn packs(&self) -> &[OpenedPack] {
+        &self.packs
+    }
+
+    /// The known packs among the loaded packs, in load order (`select_known_packs`).
+    pub fn known_packs(&self) -> Vec<&str> {
+        let mut out: Vec<&str> = Vec::new();
+        for id in self.packs.iter().filter_map(|p| p.known_pack.as_deref()) {
+            if !out.contains(&id) {
+                out.push(id);
+            }
+        }
+        out
+    }
+
+    /// The tags of `packs` for the registries loaded here (`/reload`: Vanilla's
+    /// `TagLoader.loadTagsForExistingRegistries`; the dynamic registries stay as they are).
+    pub fn reload(&self, packs: &[OpenedPack]) -> Result<LoadedPacks, Error> {
+        with_tags(Arc::clone(&self.registries), packs)
     }
 
     /// All registries that have tags.
@@ -109,24 +147,43 @@ impl LoadedPacks {
 }
 
 /// Loads the dynamic registries of a world and the tags of all registries from `packs`, each a
-/// directory that contains `data/`. Later packs override earlier ones, as in Vanilla.
+/// directory that contains `data/`. Later packs override earlier ones, as in Vanilla. The first
+/// pack is taken as the Vanilla pack (known pack `minecraft:core`).
 pub fn load(packs: &[&Path]) -> Result<LoadedPacks, Error> {
+    let opened: Vec<OpenedPack> = packs
+        .iter()
+        .enumerate()
+        .map(|(i, p)| OpenedPack {
+            layers: vec![p.to_path_buf()],
+            known_pack: (i == 0).then(|| "core".to_owned()),
+        })
+        .collect();
+    load_opened(&opened)
+}
+
+/// Loads the dynamic registries of a world and the tags of all registries from opened packs in
+/// load order.
+pub fn load_opened(packs: &[OpenedPack]) -> Result<LoadedPacks, Error> {
     let mut registries = Vec::new();
     for &name in WORLD.iter().chain(DIMENSION.iter()) {
-        let mut files: BTreeMap<String, PathBuf> = BTreeMap::new();
+        let mut files: BTreeMap<String, (PathBuf, bool)> = BTreeMap::new();
         for pack in packs {
-            list_entries(pack, &elements_dir(name), &mut files)?;
+            let mut found = BTreeMap::new();
+            for layer in &pack.layers {
+                list_entries(layer, &elements_dir(name), &mut found)?;
+            }
+            let known = pack.known_pack.is_some();
+            files.extend(found.into_iter().map(|(id, path)| (id, (path, known))));
         }
-        let mut ids: Vec<String> = files.keys().cloned().collect();
-        ids.sort_by(|a, b| identifier_cmp(a, b));
-        let mut entries = Vec::with_capacity(ids.len());
-        let mut index = HashMap::with_capacity(ids.len());
-        for id in ids {
-            let path = &files[&id];
-            let text = std::fs::read_to_string(path).map_err(io_err(path))?;
+        let mut files: Vec<(String, (PathBuf, bool))> = files.into_iter().collect();
+        files.sort_by(|a, b| identifier_cmp(&a.0, &b.0));
+        let mut entries = Vec::with_capacity(files.len());
+        let mut index = HashMap::with_capacity(files.len());
+        for (id, (path, known)) in files {
+            let text = std::fs::read_to_string(&path).map_err(io_err(&path))?;
             let json = RawValue::from_string(text).map_err(|e| Error::Json(path.clone(), e))?;
             index.insert(id.clone(), entries.len());
-            entries.push(Entry { id, json });
+            entries.push(Entry { id, json, known });
         }
         registries.push(DynamicRegistry {
             name,
@@ -134,12 +191,23 @@ pub fn load(packs: &[&Path]) -> Result<LoadedPacks, Error> {
             index,
         });
     }
+    with_tags(Arc::new(registries), packs)
+}
 
+/// `registries` with the tags of all registries from `packs`.
+fn with_tags(
+    registries: Arc<Vec<DynamicRegistry>>,
+    packs: &[OpenedPack],
+) -> Result<LoadedPacks, Error> {
     let mut loaded = LoadedPacks {
         registries,
         tags: BTreeMap::new(),
         warnings: Vec::new(),
-        roots: packs.iter().map(|p| p.to_path_buf()).collect(),
+        roots: packs
+            .iter()
+            .flat_map(|p| p.layers.iter().cloned())
+            .collect(),
+        packs: packs.to_vec(),
     };
     let tagged: Vec<&'static str> = vanillite_data::registry::ALL
         .iter()
@@ -147,7 +215,7 @@ pub fn load(packs: &[&Path]) -> Result<LoadedPacks, Error> {
         .chain(WORLD.iter().copied())
         .collect();
     for registry in tagged {
-        let raw = read_tags(packs, registry)?;
+        let raw = read_tags(packs, registry, &mut loaded.warnings)?;
         if raw.is_empty() {
             continue;
         }
@@ -243,17 +311,34 @@ fn walk(
 /// A tag value: an entry or `#tag`, and whether it must exist.
 type TagValue = (String, bool);
 
-/// Tag files of all packs merged in pack order (`replace` drops earlier values).
-fn read_tags(packs: &[&Path], registry: &str) -> Result<BTreeMap<String, Vec<TagValue>>, Error> {
+/// Tag files of all packs merged in pack order (`replace` drops earlier values); within a pack
+/// the top overlay's file wins. Unreadable files are skipped with a warning (`TagLoader.load`).
+fn read_tags(
+    packs: &[OpenedPack],
+    registry: &str,
+    warnings: &mut Vec<String>,
+) -> Result<BTreeMap<String, Vec<TagValue>>, Error> {
     let dir = format!("tags/{}", elements_dir(registry));
     let mut tags: BTreeMap<String, Vec<TagValue>> = BTreeMap::new();
     for pack in packs {
         let mut files = BTreeMap::new();
-        list_entries(pack, &dir, &mut files)?;
+        for layer in &pack.layers {
+            list_entries(layer, &dir, &mut files)?;
+        }
         for (tag, path) in files {
-            let text = std::fs::read_to_string(&path).map_err(io_err(&path))?;
-            let json: Value =
-                serde_json::from_str(&text).map_err(|e| Error::Json(path.clone(), e))?;
+            let json = std::fs::read_to_string(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|t| serde_json::from_str::<Value>(&t).map_err(|e| e.to_string()));
+            let json = match json {
+                Ok(json) => json,
+                Err(e) => {
+                    warnings.push(format!(
+                        "couldn't read tag list {tag} from {}: {e}",
+                        path.display()
+                    ));
+                    continue;
+                }
+            };
             let values = tags.entry(tag).or_default();
             if json["replace"].as_bool() == Some(true) {
                 values.clear();

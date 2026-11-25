@@ -1,5 +1,6 @@
 //! Milestone 1 smoke test: two in-memory clients join, see each other (spawn, movement,
-//! sneaking), one leaves and rejoins at the position it left.
+//! sneaking), get statistics and advancements, one leaves and rejoins at the position it left
+//! with its advancements.
 
 use std::io::{self, Read, Write};
 use std::time::{Duration, Instant};
@@ -13,9 +14,9 @@ use vanillite_protocol::item::ItemStack;
 use vanillite_protocol::packets::handshake::Intent;
 use vanillite_protocol::packets::play::clientbound::GameMode;
 use vanillite_protocol::packets::play::serverbound::{
-    AcceptTeleportation, Chat, ChatCommand, ChunkBatchReceived, ClientTickEnd, CommandSuggestion,
-    DigAction, Hand, Input, MoveFlags, MovePlayerPos, PlayerActionPacket, PlayerInput,
-    PlayerLoaded, SetCreativeModeSlot, UseItemOn,
+    AcceptTeleportation, Chat, ChatCommand, ChunkBatchReceived, ClientCommand, ClientCommandAction,
+    ClientTickEnd, CommandSuggestion, DigAction, Hand, Input, MoveFlags, MovePlayerPos,
+    PlayerActionPacket, PlayerInput, PlayerLoaded, SetCreativeModeSlot, UseItemOn,
 };
 use vanillite_protocol::sets::ClientboundPlay;
 use vanillite_protocol::types::BlockPos as WirePos;
@@ -101,6 +102,11 @@ struct Player {
     uuid: u128,
     /// Root literals of the command tree the player got on joining.
     commands: Vec<String>,
+    /// `test:walk` came in an advancements update (it may arrive while waiting for other
+    /// packets: the `location` trigger runs every 20 ticks).
+    walk_added: bool,
+    /// An advancement was announced in chat.
+    announced: bool,
 }
 
 impl Player {
@@ -127,8 +133,12 @@ impl Player {
                     .send(&vanillite_protocol::packets::play::serverbound::KeepAlive { id: k.id })
                     .unwrap(),
                 ClientboundPlay::Disconnect(d) => panic!("kicked: {}", d.reason.plain()),
+                ClientboundPlay::UpdateAdvancements(u) => {
+                    self.walk_added |= u.added.iter().any(|e| e.id.as_str() == "test:walk");
+                }
                 _ => {}
             }
+            self.announced |= system_key(&packet, "chat.type.advancement.task").is_some();
             if let Some(v) = f(&packet) {
                 return v;
             }
@@ -162,6 +172,8 @@ fn connect(opener: &VirtualOpener, name: &str) -> Player {
         client,
         uuid: uuid.0,
         commands: Vec::new(),
+        walk_added: false,
+        announced: false,
     }
 }
 
@@ -250,6 +262,31 @@ fn two_players_join_see_each_other_and_rejoin() {
     )
     .unwrap();
     std::fs::write(dir.join("eula.txt"), "eula=true\n").unwrap();
+    // A data pack with two advancement tabs: one only commands grant, one for being in the
+    // overworld (the `location` trigger).
+    let pack = dir.join("world/datapacks/test");
+    let advancements = pack.join("data/test/advancement");
+    std::fs::create_dir_all(&advancements).unwrap();
+    std::fs::write(
+        pack.join("pack.mcmeta"),
+        r#"{"pack": {"description": "Test", "min_format": 121, "max_format": 121}}"#,
+    )
+    .unwrap();
+    let display = r#""display":{"icon":{"id":"minecraft:stone"},"title":"T","description":"D","background":"minecraft:b"}"#;
+    std::fs::write(
+        advancements.join("a.json"),
+        format!(r#"{{"criteria":{{"x":{{"trigger":"minecraft:impossible"}}}},{display}}}"#),
+    )
+    .unwrap();
+    std::fs::write(
+        advancements.join("walk.json"),
+        format!(
+            r#"{{"criteria":{{"here":{{"trigger":"minecraft:location","conditions":{{"player":
+            {{"type":"minecraft:entity_properties","entity":"this","predicate":
+            {{"minecraft:location":{{"dimension":"minecraft:overworld"}}}}}}}}}}}},{display}}}"#
+        ),
+    )
+    .unwrap();
     let start = |dir: &std::path::Path| {
         let mut builder = ServerBuilder::new(dir);
         builder.vanilla_pack(VanillaPack::None).network(false);
@@ -437,6 +474,47 @@ fn two_players_join_see_each_other_and_rejoin() {
         ClientboundPlay::AddEntity(e) if e.entity_type == i32::from(ids::ITEM.0) => Some(()),
         _ => None,
     });
+    // Her statistics count the drop (`minecraft:custom` 8, `minecraft:drop` 24).
+    a.send(&ClientCommand {
+        action: ClientCommandAction::RequestStats,
+    });
+    a.until("statistics", |p| match p {
+        ClientboundPlay::AwardStats(s) => s
+            .stats
+            .iter()
+            .any(|v| v.stat_type == 8 && v.value_id == 24 && v.count == 1)
+            .then_some(()),
+        _ => None,
+    });
+    // Being in the overworld grants `test:walk` to both, announced in chat.
+    if !a.walk_added {
+        a.until("walk advancement", |p| match p {
+            ClientboundPlay::UpdateAdvancements(u) => u
+                .added
+                .iter()
+                .any(|e| e.id.as_str() == "test:walk")
+                .then_some(()),
+            _ => None,
+        });
+    }
+    if !b.announced {
+        b.until("announcement", |p| {
+            system_key(p, "chat.type.advancement.task")
+        });
+    }
+    // Alice grants herself `test:a` once.
+    a.send(&ChatCommand {
+        command: "advancement grant @s only test:a".to_owned(),
+    });
+    a.until("grant feedback", |p| {
+        system_key(p, "commands.advancement.grant.one.to.one.success")
+    });
+    a.send(&ChatCommand {
+        command: "advancement grant Alice only test:a x".to_owned(),
+    });
+    a.until("grant failure", |p| {
+        system_key(p, "commands.advancement.grant.criterion.to.one.failure")
+    });
 
     // Bob may not: the command is unknown to him (permission before parse, SEC-11).
     b.send(&ChatCommand {
@@ -494,10 +572,140 @@ fn two_players_join_see_each_other_and_rejoin() {
     let mut alice_again = connect(&opener, "Alice");
     let rejoined = join(&mut alice_again);
     assert_eq!(rejoined, target);
+    // Her advancements were saved and come back with the first, resetting update.
+    alice_again.until("saved advancements", |p| match p {
+        ClientboundPlay::UpdateAdvancements(u) if u.reset => {
+            assert!(u.added.iter().any(|e| e.id.as_str() == "test:a"));
+            Some(())
+        }
+        _ => None,
+    });
     sees_spawn(&mut b, alice_again.uuid);
 
     handle.stop();
     thread.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The first of `keys` a system message has.
+fn system_keys(packet: &ClientboundPlay, keys: &[&'static str]) -> Option<&'static str> {
+    keys.iter()
+        .copied()
+        .find(|k| system_key(packet, k).is_some())
+}
+
+#[test]
+fn data_packs_are_listed_enabled_disabled_and_created() {
+    let dir = std::env::temp_dir().join(format!("vanillite-packs-smoke-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let pack = dir.join("world/datapacks/test");
+    std::fs::create_dir_all(pack.join("data/t/function")).unwrap();
+    std::fs::write(
+        pack.join("pack.mcmeta"),
+        r#"{"pack": {"description": "Test", "min_format": 121, "max_format": 121}}"#,
+    )
+    .unwrap();
+    std::fs::write(pack.join("data/t/function/hello.mcfunction"), "say hi\n").unwrap();
+    std::fs::write(dir.join("server.properties"), "view-distance=2\n").unwrap();
+    std::fs::write(
+        dir.join("ops.json"),
+        format!(
+            r#"[{{"uuid":"{}","name":"Alice","level":4,"bypassesPlayerLimit":false}}]"#,
+            Uuid::offline("Alice")
+        ),
+    )
+    .unwrap();
+    std::fs::write(dir.join("eula.txt"), "eula=true\n").unwrap();
+    let mut builder = ServerBuilder::new(&dir);
+    builder.vanilla_pack(VanillaPack::None).network(false);
+    let server = builder.start().expect("server starts");
+    let opener = server.virtual_opener().expect("network");
+    let handle = server.handle();
+    let thread = std::thread::spawn(move || server.run());
+    let mut a = connect(&opener, "Alice");
+    join(&mut a);
+    let command = |a: &mut Player, line: &str, keys: &[&'static str]| {
+        a.send(&ChatCommand {
+            command: line.to_owned(),
+        });
+        a.until(line, |p| system_keys(p, keys))
+    };
+
+    // The new world pack was enabled at start.
+    let enabled = ["commands.datapack.list.enabled.success"];
+    assert_eq!(
+        command(&mut a, "datapack list enabled", &enabled),
+        enabled[0]
+    );
+    let unknown = ["commands.datapack.unknown"];
+    assert_eq!(
+        command(&mut a, "datapack disable nope", &unknown),
+        unknown[0]
+    );
+    let disable = ["commands.datapack.modify.disable"];
+    assert_eq!(
+        command(&mut a, "datapack disable \"file/test\"", &disable),
+        disable[0]
+    );
+    // The reload loads on a worker, but the selection changes at once.
+    let available = [
+        "commands.datapack.list.available.success",
+        "commands.datapack.list.available.none",
+    ];
+    assert_eq!(
+        command(&mut a, "datapack list available", &available),
+        available[0]
+    );
+    // The functions follow once the reload is applied.
+    let function = [
+        "commands.function.scheduled.single",
+        "arguments.function.unknown",
+    ];
+    let until_function = |a: &mut Player, expected: &str| {
+        for _ in 0..100 {
+            if command(a, "function t:hello", &function) == expected {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!("function t:hello never gave {expected}");
+    };
+    until_function(&mut a, function[1]);
+    let enable = ["commands.datapack.modify.enable"];
+    assert_eq!(
+        command(&mut a, "datapack enable \"file/test\" first", &enable),
+        enable[0]
+    );
+    let reload = ["commands.reload.success"];
+    assert_eq!(command(&mut a, "reload", &reload), reload[0]);
+    until_function(&mut a, function[0]);
+
+    let created = ["commands.datapack.create.success"];
+    assert_eq!(
+        command(&mut a, "datapack create made \"Made\"", &created),
+        created[0]
+    );
+    let meta = std::fs::read_to_string(dir.join("world/datapacks/made/pack.mcmeta")).unwrap();
+    assert!(meta.contains("\"description\": \"Made\""), "{meta}");
+    let exists = ["commands.datapack.create.already_exists"];
+    assert_eq!(
+        command(&mut a, "datapack create made x", &exists),
+        exists[0]
+    );
+    let invalid = ["commands.datapack.create.invalid_name"];
+    assert_eq!(
+        command(&mut a, "datapack create Made x", &invalid),
+        invalid[0]
+    );
+
+    handle.stop();
+    thread.join().unwrap();
+    // `level.dat` keeps the selection.
+    let level = vanillite_storage::level_dat::LevelData::read(&dir.join("world"))
+        .unwrap()
+        .unwrap();
+    let (enabled, _) = level.data_packs().unwrap();
+    assert!(enabled.iter().any(|p| p == "file/test"), "{enabled:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

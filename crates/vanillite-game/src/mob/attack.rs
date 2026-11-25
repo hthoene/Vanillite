@@ -611,7 +611,7 @@ fn run_entity_effect(
                 crate::experience_orb::with_entity_random(|r| r.next_float())
             };
             let amount = roll * (max - min) + min;
-            let Some(kind) = env.types.by_id(damage_type) else {
+            let Some(kind) = env.types.kind(damage_type) else {
                 return;
             };
             // `new DamageSource(type, item.owner())`.

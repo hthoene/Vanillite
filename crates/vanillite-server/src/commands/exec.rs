@@ -30,7 +30,7 @@ pub(crate) fn config_game_mode(mode: ArgGameMode) -> GameMode {
 }
 
 /// `gameMode.<name>`.
-fn mode_component(mode: GameMode) -> Component {
+pub(crate) fn mode_component(mode: GameMode) -> Component {
     Component::translatable(format!("gameMode.{}", game_mode_name(mode)), vec![])
 }
 
@@ -78,6 +78,30 @@ fn apply_game_mode(
         return false;
     };
     set_game_mode(player, mode, broadcast)
+}
+
+/// `ServerPlayer.setGameMode` without feedback (`enforceGameTypeForPlayers`): whether the
+/// mode changed. Players of other worlds change between ticks.
+pub(crate) fn enforce_game_mode(
+    entities: &mut Entities,
+    global: &Global,
+    target: &Target,
+    mode: GameMode,
+) -> bool {
+    if target.game_mode == mode {
+        return false;
+    }
+    if target.entity.is_some() {
+        return apply_game_mode(entities, target.uuid, mode, || {
+            broadcast_game_mode(global, target.uuid, mode);
+        });
+    }
+    broadcast_game_mode(global, target.uuid, mode);
+    let uuid = target.uuid;
+    global.run_in_world(target.world, move |w| {
+        apply_game_mode(w.entities_mut(), uuid, mode, || {});
+    });
+    true
 }
 
 /// `GameModeCommand.setMode`.
@@ -167,7 +191,7 @@ fn wrap_degrees(v: f32) -> f32 {
 }
 
 /// `TeleportCommand.performTeleport` for a player in this world.
-fn teleport_local(
+pub(crate) fn teleport_local(
     entities: &mut Entities,
     target: &Target,
     pos: Vec3,
@@ -291,12 +315,25 @@ pub(crate) fn resolve_position(source: &CommandSource, coordinates: &Coordinates
                 forward.x * upv.y - forward.y * upv.x,
             );
             let leftv = Vec3::new(-leftv.x, -leftv.y, -leftv.z);
+            let origin = source.anchor_pos();
             Vec3::new(
-                source.pos.x + forward.x * forwards + upv.x * up + leftv.x * left,
-                source.pos.y + forward.y * forwards + upv.y * up + leftv.y * left,
-                source.pos.z + forward.z * forwards + upv.z * up + leftv.z * left,
+                origin.x + forward.x * forwards + upv.x * up + leftv.x * left,
+                origin.y + forward.y * forwards + upv.y * up + leftv.y * left,
+                origin.z + forward.z * forwards + upv.z * up + leftv.z * left,
             )
         }
+    }
+}
+
+/// `Coordinates.getRotation` as (`y_rot`, `x_rot`); local rotations are zero.
+#[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+pub(crate) fn resolve_rotation(source: &CommandSource, rotation: &Coordinates) -> (f32, f32) {
+    match rotation {
+        Coordinates::World([x, y, _]) => (
+            y.get(f64::from(source.rot.0)) as f32,
+            x.get(f64::from(source.rot.1)) as f32,
+        ),
+        Coordinates::Local(_) => (0.0, 0.0),
     }
 }
 

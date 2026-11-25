@@ -131,6 +131,7 @@ pub struct DamageTypes {
     pub lava: DamageKind,
     pub hot_floor: DamageKind,
     pub in_wall: DamageKind,
+    pub outside_border: DamageKind,
     pub drown: DamageKind,
     pub starve: DamageKind,
     pub fall: DamageKind,
@@ -231,6 +232,7 @@ impl DamageTypes {
             lava: find("minecraft:lava"),
             hot_floor: find("minecraft:hot_floor"),
             in_wall: find("minecraft:in_wall"),
+            outside_border: find("minecraft:outside_border"),
             drown: find("minecraft:drown"),
             starve: find("minecraft:starve"),
             fall: find("minecraft:fall"),
@@ -280,8 +282,8 @@ impl DamageTypes {
         )
     }
 
-    /// The kind of a damage type id (`minecraft:thorns`).
-    pub fn by_id(&self, id: &str) -> Option<DamageKind> {
+    /// The kind of a type id, e.g. `minecraft:generic`.
+    pub fn kind(&self, id: &str) -> Option<DamageKind> {
         self.types
             .iter()
             .position(|t| t.id == id)

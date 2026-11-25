@@ -6,9 +6,13 @@
 //! background and parallel-phase work; the watchdog watches the tick deadline.
 
 mod access;
+pub mod anti_xray;
 mod blocks;
+mod border;
 mod chat;
+mod chunk_tickets;
 mod clock;
+mod command_state;
 mod commands;
 pub mod compute;
 pub mod eula;
@@ -16,12 +20,16 @@ mod global;
 mod level;
 mod mobs;
 mod net;
+mod packs;
 mod player_list;
 mod players;
 mod plugins;
+mod progress;
+mod scoreboard;
 mod server;
 pub mod slot;
 mod survival;
+mod systems;
 mod test_bot;
 mod tick_rate;
 mod watchdog;
