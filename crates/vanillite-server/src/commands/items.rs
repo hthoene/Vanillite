@@ -324,7 +324,7 @@ impl ItemInput {
 
 /// `LivingEntity.createItemStackToDrop(stack, false, false)` with `setNoPickUpDelay` and the
 /// player as the only one to pick it up (`GiveCommand`).
-fn drop_for(level: &mut Level, id: EntityId, stack: ItemStack) {
+pub(crate) fn drop_for(level: &mut Level, id: EntityId, stack: ItemStack) {
     let Some((pos, rot, uuid)) = level
         .entities
         .store
