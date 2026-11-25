@@ -15,6 +15,8 @@ use vanillite_protocol::text::Component;
 use vanillite_world::entity::EntityId;
 
 use super::{ClickContext, MenuSlots, MenuState};
+use crate::advancements::award::Award;
+use crate::advancements::trigger::Event;
 use crate::block::container as blocks;
 use crate::inventory::{Drop, PlayerInventory};
 use crate::item::{self, ItemStack};
@@ -215,6 +217,9 @@ pub struct ContainerMenu {
     pub may_build: bool,
     /// `StonecutterMenu.lastSoundTime`.
     pub last_sound: i64,
+    /// A furnace result was quick-moved: the following `onTake` counts nothing
+    /// (`FurnaceResultSlot.removeCount` is spent).
+    pub(super) quick_crafted: bool,
 }
 
 /// Where a menu slot is stored.
@@ -605,11 +610,26 @@ impl MenuSlots for ContainerView<'_> {
             return;
         };
         match (self.menu.kind, i) {
+            (MenuKind::BrewingStand, 0..=2) => {
+                // `PotionSlot.onTake`: `BREWED_POTION` with the potion contents.
+                if taken
+                    .component(vanillite_protocol::components::ids::POTION_CONTENTS)
+                    .is_some()
+                {
+                    let potion = crate::recipe::potion_of(taken)
+                        .and_then(|p| vanillite_data::registry::POTION.name(p))
+                        .map(str::to_owned);
+                    self.inv
+                        .awards
+                        .push(Award::Trigger(Event::BrewedPotion(potion)));
+                }
+            }
             (MenuKind::Loom, 3) => self.loom_take(),
             (MenuKind::CartographyTable, 2) => self.cartography_take(taken),
             (kind, i)
                 if kind.is_workstation() && Some(i) == super::workstation::result_slot(kind) =>
             {
+                self.workstation_crafted(taken);
                 self.workstation_take(ctx, drops);
             }
             (MenuKind::Crafting, 0) => {
@@ -618,24 +638,25 @@ impl MenuSlots for ContainerView<'_> {
                 self.take_crafted(taken, ctx, drops);
             }
             (MenuKind::Furnace(_), 2) => {
-                if let Storage::Block(pos) = self.menu.storage {
-                    let xp = crate::block::furnace::pop_experience(self.level, pos);
-                    let at = self.player_pos;
-                    self.level.award_experience(at, xp);
-                }
+                let count = if std::mem::take(&mut self.menu.quick_crafted) {
+                    0
+                } else {
+                    taken.count
+                };
+                self.furnace_take(taken.item, count);
             }
             _ => {}
         }
         self.set_changed(slot);
     }
 
-    fn on_quick_craft(&mut self, slot: usize, _count: i32) {
-        if let (MenuKind::Furnace(_), Some(Source::Container(2)), Storage::Block(pos)) =
-            (self.menu.kind, self.menu.source(slot), self.menu.storage)
+    fn on_quick_craft(&mut self, slot: usize, count: i32) {
+        if let (MenuKind::Furnace(_), Some(Source::Container(2))) =
+            (self.menu.kind, self.menu.source(slot))
         {
-            let xp = crate::block::furnace::pop_experience(self.level, pos);
-            let at = self.player_pos;
-            self.level.award_experience(at, xp);
+            let item = self.item(slot).item;
+            self.furnace_take(item, count);
+            self.menu.quick_crafted = true;
         }
     }
 
@@ -893,6 +914,45 @@ impl ContainerView<'_> {
         }
     }
 
+    /// `FurnaceResultSlot.checkTakeAchievements`: `onCraftedBy` (the crafted statistic), then
+    /// `awardUsedRecipesAndPopExperience`: the experience, the used recipes unlocked and
+    /// `recipe_crafted` for each with the furnace's items.
+    fn furnace_take(&mut self, item: u16, count: i32) {
+        if count > 0 && item != 0 {
+            let stat = crate::stats::Stat::of(crate::stats::StatType::Crafted, item);
+            self.inv.awards.push(Award::Stat(stat, count));
+        }
+        let Storage::Block(pos) = self.menu.storage else {
+            return;
+        };
+        let (used, items) = match self.level.block_entity(pos) {
+            Some(BlockEntity::Furnace(f)) => (
+                f.recipes_used
+                    .iter()
+                    .map(|(id, _)| id.clone())
+                    .collect::<Vec<_>>(),
+                f.items.to_vec(),
+            ),
+            _ => return,
+        };
+        let known: Vec<String> = crate::player::play::game_data().map_or_else(Vec::new, |d| {
+            used.into_iter()
+                .filter(|id| d.recipes.cooking.iter().any(|r| r.id == *id))
+                .collect()
+        });
+        let xp = crate::block::furnace::pop_experience(self.level, pos);
+        let at = self.player_pos;
+        self.level.award_experience(at, xp);
+        if !known.is_empty() {
+            self.inv.awards.push(Award::Recipes(known.clone()));
+            for id in known {
+                self.inv
+                    .awards
+                    .push(Award::Trigger(Event::RecipeCrafted(id, items.clone())));
+            }
+        }
+    }
+
     /// `ResultSlot.onTake` of the crafting table.
     fn take_crafted(&mut self, taken: &ItemStack, ctx: ClickContext, drops: &mut Vec<Drop>) {
         let Some(data) = crate::player::play::game_data() else {
@@ -1006,6 +1066,7 @@ pub fn open(
         last_input: ItemStack::EMPTY,
         recipes: Vec::new(),
         last_sound: 0,
+        quick_crafted: false,
         crafter_grid: Vec::new(),
         may_build: true,
     };

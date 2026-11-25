@@ -55,6 +55,7 @@ impl World for LevelWorld<'_> {
 }
 
 /// A player as the entity predicates see it.
+#[allow(clippy::too_many_arguments)]
 fn player_view<'a>(
     level: &Level,
     id: EntityId,
@@ -135,6 +136,12 @@ pub(crate) fn tick(level: &mut Level, global: &Global, world: WorldId, dimension
         .registries
         .get("minecraft:worldgen/biome")
         .unwrap_or(&no_biomes);
+    // Statistics, triggers and recipes block code awarded during the tick.
+    for (id, award) in level.take_player_awards() {
+        if let Some(player) = level.entities.player_mut(id) {
+            award.apply(player);
+        }
+    }
     let mut players = std::mem::take(&mut level.entities.players);
     let mut scores = Vec::new();
     let mut rewards = Vec::new();
@@ -142,6 +149,9 @@ pub(crate) fn tick(level: &mut Level, global: &Global, world: WorldId, dimension
         let Some(entity) = level.entities.store.get(id) else {
             continue;
         };
+        for award in std::mem::take(&mut player.inventory.awards) {
+            award.apply(player);
+        }
         // `ResultSlot.checkTakeAchievements`.
         for crafted in std::mem::take(&mut player.inventory.crafted) {
             if !crafted.stack.is_empty() {

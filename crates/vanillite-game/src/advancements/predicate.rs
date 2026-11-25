@@ -243,14 +243,27 @@ impl ItemPredicate {
         };
         let mut supported = true;
         let mut damage = None;
-        for (k, v) in o.get("components").and_then(Value::as_object).into_iter().flatten() {
-            match (qualify(k).as_str(), v.as_i64().and_then(|n| i32::try_from(n).ok())) {
+        for (k, v) in o
+            .get("components")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+        {
+            match (
+                qualify(k).as_str(),
+                v.as_i64().and_then(|n| i32::try_from(n).ok()),
+            ) {
                 ("minecraft:damage", Some(n)) => damage = Some(n),
                 _ => supported = false,
             }
         }
         let mut enchantments = Vec::new();
-        for (k, v) in o.get("predicates").and_then(Value::as_object).into_iter().flatten() {
+        for (k, v) in o
+            .get("predicates")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+        {
             match (qualify(k).as_str(), v) {
                 ("minecraft:enchantments", Value::Array(list)) => {
                     for e in list {
@@ -330,7 +343,10 @@ impl MobEffectsPredicate {
             let p = object(p)?;
             out.push((
                 effect,
-                [Bounds::field(p, "amplifier")?, Bounds::field(p, "duration")?],
+                [
+                    Bounds::field(p, "amplifier")?,
+                    Bounds::field(p, "duration")?,
+                ],
                 [
                     p.get("ambient").and_then(Value::as_bool),
                     p.get("visible").and_then(Value::as_bool),
@@ -342,14 +358,19 @@ impl MobEffectsPredicate {
 
     /// `matches(activeEffects)`.
     pub fn matches(&self, effects: &[EffectView]) -> bool {
-        self.0.iter().all(|(effect, [amp, dur], [ambient, visible])| {
-            effects.iter().find(|e| e.effect == *effect).is_some_and(|e| {
-                amp.matches(f64::from(e.amplifier))
-                    && dur.matches(f64::from(e.duration))
-                    && ambient.is_none_or(|a| a == e.ambient)
-                    && visible.is_none_or(|v| v == e.visible)
+        self.0
+            .iter()
+            .all(|(effect, [amp, dur], [ambient, visible])| {
+                effects
+                    .iter()
+                    .find(|e| e.effect == *effect)
+                    .is_some_and(|e| {
+                        amp.matches(f64::from(e.amplifier))
+                            && dur.matches(f64::from(e.duration))
+                            && ambient.is_none_or(|a| a == e.ambient)
+                            && visible.is_none_or(|v| v == e.visible)
+                    })
             })
-        })
     }
 }
 
@@ -384,7 +405,12 @@ impl DamageSourcePredicate {
     pub fn parse(v: &Value) -> Res<DamageSourcePredicate> {
         let o = object(v)?;
         let mut tags = Vec::new();
-        for t in o.get("tags").and_then(Value::as_array).into_iter().flatten() {
+        for t in o
+            .get("tags")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
             let t = object(t)?;
             let id = string(t.get("id").ok_or("tag without id")?)?;
             let expected = t
@@ -395,8 +421,14 @@ impl DamageSourcePredicate {
         }
         Ok(DamageSourcePredicate {
             tags,
-            direct: o.get("direct_entity").map(EntityPredicate::parse).transpose()?,
-            cause: o.get("source_entity").map(EntityPredicate::parse).transpose()?,
+            direct: o
+                .get("direct_entity")
+                .map(EntityPredicate::parse)
+                .transpose()?,
+            cause: o
+                .get("source_entity")
+                .map(EntityPredicate::parse)
+                .transpose()?,
             is_direct: o.get("is_direct").and_then(Value::as_bool),
         })
     }
@@ -451,9 +483,15 @@ impl DamagePredicate {
         Ok(DamagePredicate {
             dealt: Bounds::field(o, "dealt")?,
             taken: Bounds::field(o, "taken")?,
-            source_entity: o.get("source_entity").map(EntityPredicate::parse).transpose()?,
+            source_entity: o
+                .get("source_entity")
+                .map(EntityPredicate::parse)
+                .transpose()?,
             blocked: o.get("blocked").and_then(Value::as_bool),
-            kind: o.get("type").map(DamageSourcePredicate::parse).transpose()?,
+            kind: o
+                .get("type")
+                .map(DamageSourcePredicate::parse)
+                .transpose()?,
         })
     }
 
@@ -764,7 +802,9 @@ impl EntityPredicate {
                 }
                 "minecraft:team" => EntityPart::Team(string(value)?.to_owned()),
                 "minecraft:type_specific/player" => Self::player(object(value)?)?,
-                "minecraft:vehicle" => EntityPart::Vehicle(Box::new(EntityPredicate::parse(value)?)),
+                "minecraft:vehicle" => {
+                    EntityPart::Vehicle(Box::new(EntityPredicate::parse(value)?))
+                }
                 "minecraft:passenger" => {
                     EntityPart::Passenger(Box::new(EntityPredicate::parse(value)?))
                 }

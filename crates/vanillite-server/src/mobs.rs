@@ -1245,9 +1245,10 @@ fn use_item(
     let creative = ents
         .player(player)
         .is_some_and(|p| p.game_mode == GameMode::Creative);
+    let item = stack.item;
     if name.ends_with("_boat") || name.ends_with("_raft") {
         let reach = if creative { 5.0 } else { 4.5 };
-        vehicle::use_boat_item(
+        if vehicle::use_boat_item(
             level,
             ents,
             network_ids,
@@ -1255,12 +1256,18 @@ fn use_item(
             &mut stack,
             creative,
             reach,
-        );
+        ) {
+            award_used(ents, player, item);
+        }
     } else if name == "minecraft:carrot_on_a_stick" || name == "minecraft:warped_fungus_on_a_stick"
     {
-        riding::boost(ents, env, player, &mut stack, creative);
+        // `FoodOnAStickItem.use` counts the use only when nothing was boosted.
+        if !riding::boost(ents, env, player, &mut stack, creative) {
+            award_used(ents, player, item);
+        }
     } else if vanillite_game::effect::thrown::kind_of(&stack).is_some() {
         vanillite_game::effect::thrown::throw(ents, env, network_ids, player, &mut stack, creative);
+        award_used(ents, player, item);
     } else {
         put_back(ents, player, hand, stack);
         vanillite_game::player::using::start(ents, env, player, hand);
@@ -1283,10 +1290,11 @@ fn use_item_on(
     difficulty: Difficulty,
 ) {
     let mut stack = take_held(ents, player, hand);
+    let before = stack.clone();
     let creative = ents
         .player(player)
         .is_some_and(|p| p.game_mode == GameMode::Creative);
-    if let Some(kind) = animal::spawn_egg_kind(&stack) {
+    let used = if let Some(kind) = animal::spawn_egg_kind(&stack) {
         animal::use_spawn_egg_on(
             level,
             ents,
@@ -1298,11 +1306,32 @@ fn use_item_on(
             &mut stack,
             creative,
             difficulty,
-        );
+        )
     } else if vanillite_game::item::item_id(&stack).name() == "minecraft:lead" {
-        tame::use_lead_on_fence(level, ents, env, player, pos);
+        tame::use_lead_on_fence(level, ents, env, player, pos)
     } else {
-        minecart::use_item_on(level, ents, network_ids, pos, &mut stack, creative);
-    }
+        minecart::use_item_on(level, ents, network_ids, pos, &mut stack, creative)
+    };
     put_back(ents, player, hand, stack);
+    if used && !before.is_empty() {
+        // `ItemStack.useOn` of a successful item interaction, then `ITEM_USED_ON_BLOCK` and
+        // `ANY_BLOCK_USE`.
+        award_used(ents, player, before.item);
+        if let Some(p) = ents.player_mut(player) {
+            use vanillite_game::advancements::trigger::Event;
+            p.advancements
+                .trigger(Event::ItemUsedOnBlock(pos, before.clone()));
+            p.advancements.trigger(Event::AnyBlockUse(pos, before));
+        }
+    }
+}
+
+/// `player.awardStat(Stats.ITEM_USED.get(item))`.
+fn award_used(ents: &mut Entities, player: EntityId, item: u16) {
+    if let Some(p) = ents.player_mut(player) {
+        p.stats.award(
+            vanillite_game::stats::Stat::of(vanillite_game::stats::StatType::Used, item),
+            1,
+        );
+    }
 }

@@ -207,6 +207,7 @@ fn unpack_loot(level: &mut Level, pos: BlockPos, user: Option<EntityId>, luck: f
         f64::from(pos.y) + 0.5,
         f64::from(pos.z) + 0.5,
     );
+    super::chest_loot::generated_loot(level, user, &table);
     let loot = super::chest_loot::roll(level, &table, seed, origin, luck, user);
     if loot.len() > 1 {
         log::warn!(
