@@ -74,6 +74,15 @@ fn armor_slot(menu_slot: usize) -> Option<EquipmentSlot> {
     }
 }
 
+/// A result taken from a crafting grid (`ResultSlot.checkTakeAchievements`): the taken stack,
+/// the recipe and the grid it was crafted from.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Crafted {
+    pub stack: ItemStack,
+    pub recipe: Option<String>,
+    pub ingredients: Vec<ItemStack>,
+}
+
 /// A player's inventory and its inventory menu.
 #[derive(Clone, Debug)]
 pub struct PlayerInventory {
@@ -100,6 +109,8 @@ pub struct PlayerInventory {
     /// Result slots of the crafting grid to send (`slotChangedCraftingGrid` sends them right
     /// away, in this order).
     pub(crate) result_updates: Vec<ItemStack>,
+    /// Crafting results taken since the server last took them (statistics and triggers).
+    pub crafted: Vec<Crafted>,
 }
 
 impl Default for PlayerInventory {
@@ -116,6 +127,7 @@ impl Default for PlayerInventory {
             container: None,
             container_counter: 0,
             result_updates: Vec::new(),
+            crafted: Vec::new(),
         }
     }
 }
@@ -420,12 +432,14 @@ impl PlayerInventory {
 
     /// `ResultSlot.onTake`: one of every ingredient is used up; remainders stay in the grid or
     /// go to the inventory.
-    fn take_crafted(&mut self, ctx: ClickContext, drops: &mut Vec<Drop>) {
+    fn take_crafted(&mut self, taken: &ItemStack, ctx: ClickContext, drops: &mut Vec<Drop>) {
         let Some(data) = crate::player::play::game_data() else {
             return;
         };
         let input = crate::recipe::CraftingInput::of(2, 2, &self.craft);
         let recipe = data.recipes.crafting_for(&input);
+        self.crafted
+            .push(crafted(taken, recipe, self.craft.to_vec()));
         let remaining = data.recipes.remainders(recipe, &input);
         for y in 0..input.height {
             for x in 0..input.width {
@@ -499,6 +513,22 @@ impl PlayerInventory {
     pub fn broadcast_full_state(&mut self, sink: &dyn PacketSink) {
         self.flush_result_updates(sink);
         menu::broadcast_full_state(self, sink);
+    }
+}
+
+/// `ResultSlot.checkTakeAchievements` of crafting recipe `recipe` from `grid`.
+pub(crate) fn crafted(taken: &ItemStack, recipe: Option<usize>, grid: Vec<ItemStack>) -> Crafted {
+    let recipe = recipe.and_then(|i| {
+        crate::player::play::game_data()?
+            .recipes
+            .crafting
+            .get(i)
+            .map(|r| r.id.clone())
+    });
+    Crafted {
+        stack: taken.clone(),
+        recipe,
+        ingredients: grid,
     }
 }
 
@@ -607,12 +637,12 @@ impl MenuSlots for PlayerInventory {
     fn on_take(
         &mut self,
         slot: usize,
-        _taken: &mut ItemStack,
+        taken: &mut ItemStack,
         ctx: ClickContext,
         drops: &mut Vec<Drop>,
     ) {
         if slot == 0 {
-            self.take_crafted(ctx, drops);
+            self.take_crafted(taken, ctx, drops);
         }
     }
 
@@ -670,14 +700,18 @@ impl MenuSlots for PlayerInventory {
     }
 }
 
-/// `Player.getDestroySpeed` without effects and attributes other than the enchantment-driven
-/// ones the caller passes: `efficiency` level, whether the player is in water without aqua
-/// affinity, and whether it stands on the ground.
+/// `Player.getDestroySpeed` without attributes other than the enchantment-driven ones the
+/// caller passes: `efficiency` level, the dig effects (Haste / Conduit Power amplification,
+/// Mining Fatigue amplifier), whether the player is in water without aqua affinity, and whether
+/// it stands on the ground.
+#[allow(clippy::too_many_arguments)]
 pub fn destroy_speed(
     tools: &ToolTable,
     stack: &ItemStack,
     state: vanillite_data::block::BlockState,
     efficiency: i32,
+    dig_speed: Option<i32>,
+    mining_fatigue: Option<i32>,
     submerged_penalty: bool,
     on_ground: bool,
 ) -> f32 {
@@ -689,6 +723,7 @@ pub fn destroy_speed(
         let bonus = bonus as f32;
         speed += bonus;
     }
+    speed = crate::player::play::dig_effects(speed, dig_speed, mining_fatigue);
     if submerged_penalty {
         speed *= 0.2;
     }

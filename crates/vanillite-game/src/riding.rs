@@ -38,6 +38,20 @@ fn mob_passenger_height(kind: Kind, height: f32) -> f64 {
         Kind::Sheep => 1.2375,
         Kind::Chicken => 0.7,
         Kind::Enderman => 2.806_25,
+        Kind::Horse => 1.443_75,
+        Kind::Donkey => 1.1125,
+        Kind::Mule => 1.2125,
+        Kind::SkeletonHorse | Kind::ZombieHorse => 1.318_75,
+        Kind::Llama | Kind::TraderLlama => 1.37,
+        Kind::Wolf => 0.818_75,
+        Kind::Cat => 0.5125,
+        Kind::Ocelot => 0.6375,
+        Kind::Parrot => 0.4625,
+        Kind::Fox => 0.6375,
+        // `getBodyAnchorAnimationYOffset` of a standing camel: its height less 0.375.
+        Kind::Camel | Kind::CamelHusk => f64::from(height) - 0.375,
+        Kind::HappyGhast => 4.0,
+        Kind::Nautilus | Kind::ZombieNautilus => 1.1375,
         _ => f64::from(height),
     }
 }
@@ -84,6 +98,9 @@ fn can_add_passenger(ents: &Entities, vehicle: EntityId) -> bool {
     let count = ents.riding.passengers_of(vehicle).len();
     if let Some(b) = ents.boat(vehicle) {
         return count < b.kind.max_passengers();
+    }
+    if let Some(m) = ents.mob(vehicle) {
+        return count < crate::mob::fam::max_passengers(m);
     }
     count == 0
 }
@@ -438,8 +455,37 @@ pub fn controls(ents: &Entities, player: EntityId, vehicle: EntityId) -> bool {
     if ents.boat(vehicle).is_some() {
         return true;
     }
-    ents.mob(vehicle)
-        .is_some_and(|m| m.saddled && m.kind == Kind::Pig && holds_carrot_on_a_stick(ents, player))
+    if crate::mob::fam::rider_controls(ents, player, vehicle) {
+        return true;
+    }
+    ents.mob(vehicle).is_some_and(|m| {
+        (m.saddled && m.kind == Kind::Pig && holds_carrot_on_a_stick(ents, player))
+            || (m.kind == Kind::Strider
+                && !m
+                    .equipment
+                    .get(crate::item::EquipmentSlot::Saddle)
+                    .is_empty()
+                && holds_item(
+                    ents,
+                    player,
+                    vanillite_data::item::ids::WARPED_FUNGUS_ON_A_STICK.0,
+                ))
+            || (m.kind.family() != crate::mob::Family::Classic
+                && crate::mob::fam::rider_controls_mob(m))
+    })
+}
+
+/// Whether a player holds `item` in either hand.
+fn holds_item(ents: &Entities, player: EntityId, item: u16) -> bool {
+    let Some(p) = ents.player(player) else {
+        return false;
+    };
+    [
+        crate::item::EquipmentSlot::MainHand,
+        crate::item::EquipmentSlot::OffHand,
+    ]
+    .iter()
+    .any(|&s| p.inventory.equipment(s).item == item)
 }
 
 /// `Pig.getControllingPassenger`: the player holds a carrot on a stick in either hand.
@@ -598,4 +644,15 @@ pub fn boost(
         crate::item::set_damage(stack, d);
     }
     true
+}
+
+/// `player_command` `START_RIDING_JUMP`: the jump of a mount the player rides
+/// (`PlayerRideableJumping.handleStartJump`).
+pub fn riding_jump(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, strength: i32) {
+    let Some(vehicle) = ents.vehicle_of(player) else {
+        return;
+    };
+    if strength > 0 {
+        crate::mob::fam::rider_jump(ents, env, vehicle, strength);
+    }
 }

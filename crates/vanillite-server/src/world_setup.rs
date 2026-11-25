@@ -203,7 +203,7 @@ fn json_to_nbt(json: &serde_json::Value) -> vanillite_nbt::Tag {
 }
 
 /// NBT as JSON for the data-driven parsers (numbers stay numbers, `Byte` too).
-fn nbt_to_json(tag: &vanillite_nbt::Tag) -> serde_json::Value {
+pub(crate) fn nbt_to_json(tag: &vanillite_nbt::Tag) -> serde_json::Value {
     use serde_json::Value;
     use vanillite_nbt::Tag;
     match tag {
@@ -232,7 +232,14 @@ fn nbt_to_json(tag: &vanillite_nbt::Tag) -> serde_json::Value {
 pub(crate) struct BuiltInGenerators {
     pub(crate) packs: Option<Arc<LoadedPacks>>,
     pub(crate) world_gen: WorldGen,
+    /// The noise generators made, by dimension, for the levels (`/locate`).
+    pub(crate) created: GeneratorsByDimension,
 }
+
+/// Terrain generators by dimension, shared with the levels.
+pub(crate) type GeneratorsByDimension = Arc<
+    std::sync::Mutex<vanillite_base::hash::FxHashMap<String, vanillite_game::level::Generation>>,
+>;
 
 impl ChunkGeneratorProvider for BuiltInGenerators {
     fn create(&self, world: &WorldInfo) -> Result<Arc<dyn ChunkGenerator>, String> {
@@ -264,10 +271,19 @@ impl ChunkGeneratorProvider for BuiltInGenerators {
         };
         let terrain =
             TerrainGenerator::new(packs, spec, self.world_gen.seed).map_err(|e| e.to_string())?;
-        Ok(Arc::new(
-            VanillaChunkGenerator::new(terrain, world.clone())
-                .with_structures(self.world_gen.generate_structures),
-        ))
+        let generator = VanillaChunkGenerator::new(terrain, world.clone())
+            .with_structures(self.world_gen.generate_structures);
+        self.created
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                world.dimension.clone(),
+                vanillite_game::level::Generation {
+                    terrain: generator.shared(),
+                    structures: generator.generates_structures(),
+                },
+            );
+        Ok(Arc::new(generator))
     }
 }
 
@@ -339,23 +355,69 @@ impl Executor for ComputeExecutor {
 #[derive(Debug, Default)]
 pub(crate) struct ChunkPackets {
     cache: RefCell<FxHashMap<ChunkPos, Arc<SharedPacket>>>,
+    /// `anticheat.anti-xray`, `None` when disabled.
+    anti_xray: Option<crate::anti_xray::AntiXray>,
+    /// Block changes of the tick, for Anti-Xray.
+    changes: Vec<vanillite_base::BlockPos>,
 }
 
 impl ChunkPackets {
-    /// Drops the packets of changed and unloaded chunks.
+    /// Applies the world's `anticheat.anti-xray` rules; changed rules drop every packet.
+    pub(crate) fn set_anti_xray(
+        &mut self,
+        rules: &vanillite_config::AntiXrayRules,
+        dimension: &str,
+    ) {
+        let same = match &self.anti_xray {
+            Some(current) => current.built_from(rules),
+            None => rules.engine_mode == vanillite_config::AntiXrayMode::Disabled,
+        };
+        if !same {
+            self.anti_xray = crate::anti_xray::AntiXray::new(rules, dimension);
+            self.cache.get_mut().clear();
+        }
+    }
+
+    /// Drops the packets of changed and unloaded chunks. With Anti-Xray, the masked blocks
+    /// around changed blocks are added to `changed` (the tick's block updates), and changes at a
+    /// chunk border also drop the neighbour's packet (its blocks may now be exposed).
     pub(crate) fn invalidate(
         &mut self,
         chunks: &mut Chunks,
         light: &[(ChunkPos, vanillite_world::chunks::LightChange)],
+        changed: &mut FxHashMap<vanillite_base::SectionPos, Vec<vanillite_base::BlockPos>>,
     ) {
         let cache = self.cache.get_mut();
         for (pos, _) in light {
             cache.remove(pos);
         }
-        let mut blocks = Vec::new();
-        chunks.take_block_changes(&mut blocks);
-        for pos in blocks {
+        let blocks = &mut self.changes;
+        blocks.clear();
+        chunks.take_block_changes(blocks);
+        for pos in blocks.iter() {
             cache.remove(&pos.chunk());
+        }
+        if let Some(anti_xray) = &self.anti_xray {
+            for pos in blocks.iter() {
+                let chunk = pos.chunk();
+                let dx = match pos.x & 15 {
+                    0 => -1,
+                    15 => 1,
+                    _ => 0,
+                };
+                let dz = match pos.z & 15 {
+                    0 => -1,
+                    15 => 1,
+                    _ => 0,
+                };
+                if dx != 0 {
+                    cache.remove(&ChunkPos::new(chunk.x.wrapping_add(dx), chunk.z));
+                }
+                if dz != 0 {
+                    cache.remove(&ChunkPos::new(chunk.x, chunk.z.wrapping_add(dz)));
+                }
+            }
+            anti_xray.reveal(chunks, blocks, changed);
         }
         if cache.len() > 4096 {
             cache.retain(|pos, _| chunks.chunk(*pos).is_some());
@@ -377,6 +439,7 @@ impl ChunkPackets {
             chunks,
             block_entities,
             cache: &self.cache,
+            anti_xray: self.anti_xray.as_ref(),
         }
     }
 }
@@ -386,6 +449,7 @@ pub(crate) struct WorldChunkSource<'a> {
     chunks: &'a Chunks,
     block_entities: &'a vanillite_game::level::BlockEntities,
     cache: &'a RefCell<FxHashMap<ChunkPos, Arc<SharedPacket>>>,
+    anti_xray: Option<&'a crate::anti_xray::AntiXray>,
 }
 
 impl ChunkSource for WorldChunkSource<'_> {
@@ -407,7 +471,7 @@ impl ChunkSource for WorldChunkSource<'_> {
                 continue;
             }
             let mut nbt = Vec::new();
-            match vanillite_game::level::block_entity::update_tag(entity) {
+            match vanillite_game::level::block_entity::update_tag(entity, state) {
                 Some(tag) => {
                     if vanillite_nbt::write::write_network_compound(&tag, &mut nbt).is_err() {
                         nbt = vec![0];
@@ -425,6 +489,33 @@ impl ChunkSource for WorldChunkSource<'_> {
                 tags.push((be.pos, u32::from(kind), vec![0]));
             }
         }
+        // Anti-Xray: one check per chunk; masked sections are copies.
+        let masked = self
+            .anti_xray
+            .and_then(|anti_xray| anti_xray.mask(self.chunks, pos, &chunk.chunk));
+        if let Some(sections) = &masked {
+            // Block entities of masked blocks would give them away.
+            let min_section = chunk.chunk.min_section();
+            tags.retain(|(bpos, _, _)| {
+                let index = usize::try_from((bpos.y >> 4).wrapping_sub(min_section)).ok();
+                match (
+                    index.and_then(|i| sections.get(i)),
+                    index.and_then(|i| chunk.chunk.sections().get(i)),
+                ) {
+                    (Some(sent), Some(real)) => {
+                        Arc::ptr_eq(sent, real) || {
+                            let (x, y, z) = (
+                                (bpos.x & 15) as u32,
+                                (bpos.y & 15) as u32,
+                                (bpos.z & 15) as u32,
+                            );
+                            sent.block(x, y, z) == real.block(x, y, z)
+                        }
+                    }
+                    _ => true,
+                }
+            });
+        }
         let block_entities: Vec<BlockEntityWire<'_>> = tags
             .iter()
             .filter_map(|(bpos, kind, nbt)| {
@@ -438,11 +529,12 @@ impl ChunkSource for WorldChunkSource<'_> {
             .collect();
         let mut body = Vec::with_capacity(16 * 1024);
         vanillite_protocol::codec::write_varint(&mut body, LevelChunkWithLight::ID);
-        vanillite_chunk::packet::encode_chunk_with_light(
+        vanillite_chunk::packet::encode_chunk_with_sections(
             &mut body,
             pos.x,
             pos.z,
             &chunk.chunk,
+            masked.as_deref().unwrap_or(chunk.chunk.sections()),
             &block_entities,
         );
         let packet = Arc::new(SharedPacket::new(body));
@@ -468,7 +560,16 @@ pub(crate) fn level_settings(
             .and_then(|json| json.get("attributes")?.get(name)?.as_bool())
             .unwrap_or(false)
     };
+    let infiniburn = packs
+        .and_then(|p| p.registry("minecraft:dimension_type"))
+        .and_then(|r| r.get(&info.dimension))
+        .and_then(|entry| serde_json::from_str::<serde_json::Value>(entry.json.get()).ok())
+        .and_then(|json| Some(json.get("infiniburn")?.as_str()?.to_owned()))
+        .map_or_else(Default::default, |tag| {
+            vanillite_game::block::fire::Infiniburn::from_tag(&tag)
+        });
     let mut settings = vanillite_game::level::LevelSettings {
+        infiniburn,
         fast_lava: attribute("minecraft:gameplay/fast_lava"),
         water_evaporates: attribute("minecraft:gameplay/water_evaporates"),
         has_sky_light: info.has_sky_light,
@@ -550,6 +651,51 @@ pub(crate) fn climate(
     })
 }
 
+/// A `SpawnerData` (`type`, `weight`, `count`) of biome or structure spawns.
+fn spawn_entry(e: &serde_json::Value) -> Option<vanillite_game::mob::spawn::SpawnEntry> {
+    let type_id = e
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .and_then(vanillite_data::entity::EntityTypeId::by_name)?;
+    let int = |v: Option<&serde_json::Value>| {
+        v.and_then(serde_json::Value::as_i64)
+            .and_then(|v| i32::try_from(v).ok())
+    };
+    let weight = int(e.get("weight")).unwrap_or(1);
+    let (min, max) = match e.get("count") {
+        Some(serde_json::Value::Object(o)) => (
+            int(o.get("min_inclusive")).unwrap_or(1),
+            int(o.get("max_inclusive")).unwrap_or(1),
+        ),
+        other => {
+            let n = int(other).unwrap_or(1);
+            (n, n)
+        }
+    };
+    Some(vanillite_game::mob::spawn::SpawnEntry {
+        type_id,
+        weight,
+        min,
+        max,
+    })
+}
+
+/// The trees saplings grow into, from the data packs; `None` without them.
+pub(crate) fn tree_features(
+    packs: Option<&LoadedPacks>,
+    seed: i64,
+) -> Option<Arc<vanillite_game::block::tree::TreeFeatures>> {
+    let packs = packs?;
+    let biomes = vanillite_worldgen::biome::BiomeRegistry::load(packs).ok()?;
+    match vanillite_game::block::tree::TreeFeatures::load(packs, &biomes, seed, -64, 384, 63) {
+        Ok(trees) => Some(Arc::new(trees)),
+        Err(e) => {
+            log::warn!("tree features: {e}");
+            None
+        }
+    }
+}
+
 /// The spawn settings of every biome from the data packs: `gameplay/natural_mob_spawns`,
 /// `gameplay/creature_world_gen_spawn_probability` and the farm animal climate tags. `None`
 /// without data packs.
@@ -557,7 +703,7 @@ pub(crate) fn spawn_table(
     packs: Option<&LoadedPacks>,
 ) -> Option<vanillite_game::mob::spawn::SpawnTable> {
     use vanillite_game::mob::kinds::FarmClimate;
-    use vanillite_game::mob::spawn::{BiomeSpawns, Category, SpawnEntry, SpawnTable};
+    use vanillite_game::mob::spawn::{BiomeSpawns, Category, SpawnTable};
     let packs = packs?;
     let registry = packs.registry("minecraft:worldgen/biome")?;
     let tag = |name: &str| {
@@ -565,6 +711,21 @@ pub(crate) fn spawn_table(
             .tag_ids("minecraft:worldgen/biome", name)
             .unwrap_or_default()
     };
+    // The tags of every biome, by protocol id.
+    let mut biome_tags: Vec<Vec<Box<str>>> = vec![Vec::new(); registry.entries().len()];
+    if let Some(all) = packs.tags("minecraft:worldgen/biome") {
+        for name in all.keys() {
+            for id in tag(name) {
+                if let Some(list) = usize::try_from(id).ok().and_then(|i| biome_tags.get_mut(i)) {
+                    list.push(name.as_str().into());
+                }
+            }
+        }
+    }
+    for list in &mut biome_tags {
+        list.sort();
+        list.dedup();
+    }
     let warm = tag("minecraft:spawns_warm_variant_farm_animals");
     let cold = tag("minecraft:spawns_cold_variant_farm_animals");
     // An attribute value, directly or as the `argument` of a modifier.
@@ -578,7 +739,17 @@ pub(crate) fn spawn_table(
         let json: serde_json::Value = serde_json::from_str(entry.json.get()).unwrap_or_default();
         let attrs = json.get("attributes").cloned().unwrap_or_default();
         let mut b = BiomeSpawns {
+            name: entry.id.as_str().into(),
+            tags: biome_tags.get(index).cloned().unwrap_or_default(),
+            #[allow(clippy::cast_possible_truncation)]
+            temperature: json
+                .get("temperature")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(0.5) as f32,
             creature_probability: 0.1,
+            patrol_spawn: attribute(&attrs, "minecraft:gameplay/can_pillager_patrol_spawn")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(true),
             climate: if warm.contains(&id) {
                 FarmClimate::Warm
             } else if cold.contains(&id) {
@@ -599,6 +770,20 @@ pub(crate) fn spawn_table(
                 b.creature_probability = p as f32;
             }
         }
+        if let Some(costs) = attribute(&attrs, "minecraft:gameplay/natural_mob_spawns")
+            .and_then(|s| s.get("spawn_costs"))
+            .and_then(serde_json::Value::as_object)
+        {
+            for (name, cost) in costs {
+                let Some(type_id) = vanillite_data::entity::EntityTypeId::by_name(name) else {
+                    continue;
+                };
+                let num = |k: &str| cost.get(k).and_then(serde_json::Value::as_f64);
+                if let (Some(charge), Some(budget)) = (num("charge"), num("energy_budget")) {
+                    b.spawn_costs.push((type_id, charge, budget));
+                }
+            }
+        }
         if let Some(by) = attribute(&attrs, "minecraft:gameplay/natural_mob_spawns")
             .and_then(|s| s.get("spawns_by_category"))
             .and_then(serde_json::Value::as_object)
@@ -611,39 +796,40 @@ pub(crate) fn spawn_table(
                     continue;
                 };
                 let slot = &mut b.by_category[c as usize];
-                for e in list {
-                    let Some(type_id) = e
-                        .get("type")
-                        .and_then(serde_json::Value::as_str)
-                        .and_then(vanillite_data::entity::EntityTypeId::by_name)
-                    else {
-                        continue;
-                    };
-                    let int = |v: Option<&serde_json::Value>| {
-                        v.and_then(serde_json::Value::as_i64)
-                            .and_then(|v| i32::try_from(v).ok())
-                    };
-                    let weight = int(e.get("weight")).unwrap_or(1);
-                    let (min, max) = match e.get("count") {
-                        Some(serde_json::Value::Object(o)) => (
-                            int(o.get("min_inclusive")).unwrap_or(1),
-                            int(o.get("max_inclusive")).unwrap_or(1),
-                        ),
-                        other => {
-                            let n = int(other).unwrap_or(1);
-                            (n, n)
-                        }
-                    };
-                    slot.push(SpawnEntry {
-                        type_id,
-                        weight,
-                        min,
-                        max,
-                    });
-                }
+                slot.extend(list.iter().filter_map(spawn_entry));
             }
         }
         biomes.push(b);
     }
-    Some(SpawnTable { biomes })
+    let mut structures = vanillite_base::hash::FxHashMap::default();
+    if let Some(registry) = packs.registry("minecraft:worldgen/structure") {
+        for entry in registry.entries() {
+            let json: serde_json::Value =
+                serde_json::from_str(entry.json.get()).unwrap_or_default();
+            let Some(overrides) = json
+                .get("spawn_overrides")
+                .and_then(serde_json::Value::as_object)
+            else {
+                continue;
+            };
+            let mut by_category: [Option<vanillite_game::mob::spawn::StructureOverride>; 7] =
+                Default::default();
+            for (category, o) in overrides {
+                let Some(c) = Category::by_name(category) else {
+                    continue;
+                };
+                let piece =
+                    o.get("bounding_box").and_then(serde_json::Value::as_str) == Some("piece");
+                let spawns = o
+                    .get("spawns")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|l| l.iter().filter_map(spawn_entry).collect())
+                    .unwrap_or_default();
+                by_category[c as usize] =
+                    Some(vanillite_game::mob::spawn::StructureOverride { piece, spawns });
+            }
+            structures.insert(entry.id.as_str().into(), by_category);
+        }
+    }
+    Some(SpawnTable { biomes, structures })
 }

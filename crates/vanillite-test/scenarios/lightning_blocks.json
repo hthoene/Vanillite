@@ -1,0 +1,30 @@
+{
+  "description": "Lightning strikes in a thunderstorm (normal difficulty): fire at and around the bolt, struck copper loses its oxidation and random walks scrape the copper around it (also from waxed copper), and a strike near a lightning rod on top of its column hits the rod, which powers the lamp below and turns into unaffected copper (its pending unpower tick then belongs to another block).",
+  "tier": "fast",
+  "world": {
+    "seed": 8902,
+    "layers": [["minecraft:bedrock", 1], ["minecraft:stone", 3]]
+  },
+  "rules": {"fire_spread_radius_around_player": "-1"},
+  "weather": "thunder",
+  "time": 6000,
+  "level_rng": true,
+  "light": true,
+  "region": [[0, -62, 0], [31, -56, 15]],
+  "ticks": 60,
+  "setup": [
+    {"op": "fill", "from": [10, -61, 10], "to": [14, -61, 14], "block": "minecraft:oxidized_copper"},
+    {"op": "set", "pos": [11, -61, 11], "block": "minecraft:weathered_cut_copper"},
+    {"op": "set", "pos": [13, -61, 12], "block": "minecraft:waxed_oxidized_copper"},
+    {"op": "fill", "from": [19, -61, 11], "to": [21, -61, 13], "block": "minecraft:weathered_copper"},
+    {"op": "set", "pos": [20, -61, 12], "block": "minecraft:waxed_weathered_copper"},
+    {"op": "set", "pos": [26, -61, 4], "block": "minecraft:redstone_lamp[lit=false]"}
+  ],
+  "actions": [
+    {"tick": 1, "op": "lightning", "pos": [4, 0, 4]},
+    {"tick": 4, "op": "lightning", "pos": [12, 0, 12]},
+    {"tick": 8, "op": "lightning", "pos": [20, 0, 12]},
+    {"tick": 12, "op": "place", "pos": [26, -60, 4], "block": "minecraft:exposed_lightning_rod[facing=up,powered=false,waterlogged=false]"},
+    {"tick": 14, "op": "lightning", "pos": [2, 0, 13]}
+  ]
+}

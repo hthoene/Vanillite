@@ -22,6 +22,9 @@ pub struct Suggestion {
     pub text: String,
     /// Tooltip.
     pub tooltip: Option<Component>,
+    /// The value of an integer suggestion (Brigadier's `IntegerSuggestion`, sorted by value
+    /// among other integer suggestions).
+    pub int: Option<i32>,
 }
 
 impl Suggestion {
@@ -43,6 +46,7 @@ impl Suggestion {
             end,
             text,
             tooltip: self.tooltip,
+            int: None,
         }
     }
 }
@@ -105,8 +109,11 @@ impl Suggestions {
             .into_iter()
             .map(|s| s.expand(input, start, end))
             .collect();
-        list.sort_by(|a, b| {
-            compare_ignore_case(&a.text, &b.text).then_with(|| a.text.cmp(&b.text))
+        list.sort_by(|a, b| match (a.int, b.int) {
+            (Some(x), Some(y)) => x.cmp(&y),
+            // `IntegerSuggestion.compareToIgnoreCase` falls back to the case-sensitive text order.
+            (Some(_), None) => a.text.cmp(&b.text),
+            _ => compare_ignore_case(&a.text, &b.text).then_with(|| a.text.cmp(&b.text)),
         });
         list.dedup();
         Self { start, end, list }
@@ -209,6 +216,19 @@ impl<'a> SuggestionsBuilder<'a> {
             end: self.input.len(),
             text,
             tooltip,
+            int: None,
+        });
+        self
+    }
+
+    /// Suggests an integer (`suggest(int)`); never skipped.
+    pub fn suggest_int(&mut self, value: i32) -> &mut Self {
+        self.result.push(Suggestion {
+            start: self.start,
+            end: self.input.len(),
+            text: value.to_string(),
+            tooltip: None,
+            int: Some(value),
         });
         self
     }
@@ -294,7 +314,7 @@ fn common_prefix_len(a: &str, b: &str) -> usize {
 
 /// `filterResources`: with a namespace typed, match the full id; otherwise the namespace or
 /// the path.
-fn resource_matches(contents: &str, id: &str) -> bool {
+pub(crate) fn resource_matches(contents: &str, id: &str) -> bool {
     if contents.contains(':') {
         matches_sub_str(contents, id)
     } else {

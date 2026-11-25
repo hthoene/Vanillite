@@ -1,8 +1,12 @@
-//! Operators and the whitelist: Vanilla's `ops.json` and `whitelist.json`, keyed by UUID
-//! (SEC-13), and the `white-list` switch of `server.properties`.
+//! Operators, the whitelist and the ban lists: Vanilla's `ops.json`, `whitelist.json`,
+//! `banned-players.json` (keyed by UUID, SEC-13) and `banned-ips.json`, and the `white-list`
+//! and `player-idle-timeout` settings of `server.properties`.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
+
+pub(crate) use vanillite_base::date::{parse_date, utc};
 
 use crate::player_list::Uuid;
 
@@ -10,6 +14,107 @@ use crate::player_list::Uuid;
 pub const OPS_FILE: &str = "ops.json";
 /// File of the whitelist.
 pub const WHITELIST_FILE: &str = "whitelist.json";
+/// File of the banned players (`PlayerList.USERBANLIST_FILE`).
+pub const BANNED_PLAYERS_FILE: &str = "banned-players.json";
+/// File of the banned IP addresses (`PlayerList.IPBANLIST_FILE`).
+pub const BANNED_IPS_FILE: &str = "banned-ips.json";
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// What every ban has (`BanListEntry`): dates as written (`yyyy-MM-dd HH:mm:ss Z`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ban {
+    /// `created`.
+    pub created: String,
+    /// `source`: who banned (`(Unknown)` when missing).
+    pub source: String,
+    /// `expires`; `None` is `forever`.
+    pub expires: Option<String>,
+    /// `reason`.
+    pub reason: Option<String>,
+}
+
+impl Ban {
+    /// A ban from now on, forever.
+    pub fn now(source: &str, reason: Option<String>) -> Ban {
+        Ban {
+            created: vanillite_base::date::format_date(unix_now()),
+            source: source.to_owned(),
+            expires: None,
+            reason,
+        }
+    }
+
+    /// `hasExpired`.
+    fn expired(&self) -> bool {
+        self.expires
+            .as_deref()
+            .and_then(parse_date)
+            .is_some_and(|t| t < unix_now())
+    }
+
+    /// The expiry in `PlayerList.BAN_DATE_FORMAT` (`yyyy-MM-dd 'at' HH:mm:ss z`), if any.
+    pub fn expiry_text(&self) -> Option<String> {
+        let (y, mo, d, h, mi, s) = utc(self.expires.as_deref().and_then(parse_date)?);
+        Some(format!(
+            "{y:04}-{mo:02}-{d:02} at {h:02}:{mi:02}:{s:02} UTC"
+        ))
+    }
+
+    fn to_json(&self, out: &mut serde_json::Map<String, serde_json::Value>) {
+        out.insert("created".into(), self.created.clone().into());
+        out.insert("source".into(), self.source.clone().into());
+        out.insert(
+            "expires".into(),
+            self.expires
+                .clone()
+                .unwrap_or_else(|| "forever".into())
+                .into(),
+        );
+        if let Some(reason) = &self.reason {
+            out.insert("reason".into(), reason.clone().into());
+        }
+    }
+
+    fn from_json(v: &serde_json::Value) -> Ban {
+        let text = |key: &str| v.get(key).and_then(serde_json::Value::as_str);
+        let created = text("created")
+            .filter(|t| parse_date(t).is_some())
+            .map_or_else(|| Ban::now("", None).created, str::to_owned);
+        Ban {
+            created,
+            source: text("source").unwrap_or("(Unknown)").to_owned(),
+            expires: text("expires")
+                .filter(|t| parse_date(t).is_some())
+                .map(str::to_owned),
+            reason: text("reason").map(str::to_owned),
+        }
+    }
+}
+
+/// One banned player (`UserBanListEntry`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UserBan {
+    /// UUID.
+    pub uuid: Uuid,
+    /// Name when banned.
+    pub name: String,
+    /// The ban.
+    pub ban: Ban,
+}
+
+/// One banned IP address (`IpBanListEntry`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IpBan {
+    /// The address.
+    pub ip: String,
+    /// The ban.
+    pub ban: Ban,
+}
 
 /// One operator (`ServerOpListEntry`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -38,6 +143,8 @@ struct Lists {
     ops: Vec<OpEntry>,
     whitelist: Vec<WhitelistEntry>,
     whitelist_enabled: bool,
+    bans: Vec<UserBan>,
+    ip_bans: Vec<IpBan>,
 }
 
 /// Operators and whitelist. Cold data behind a mutex; every change is written at once like
@@ -50,6 +157,8 @@ pub struct Access {
     pub op_permission_level: u8,
     /// `enforce-whitelist`: kick players who are not whitelisted when the list changes.
     pub enforce_whitelist: bool,
+    /// `player-idle-timeout` in minutes (0 = off).
+    idle_timeout: AtomicI32,
 }
 
 impl Access {
@@ -64,12 +173,23 @@ impl Access {
             ops: read_list(&dir.join(OPS_FILE), parse_op),
             whitelist: read_list(&dir.join(WHITELIST_FILE), parse_whitelisted),
             whitelist_enabled,
+            bans: read_list(&dir.join(BANNED_PLAYERS_FILE), parse_user_ban),
+            ip_bans: read_list(&dir.join(BANNED_IPS_FILE), parse_ip_ban),
         };
+        let idle_timeout = std::fs::read_to_string(dir.join(vanillite_config::PROPERTIES_FILE))
+            .ok()
+            .and_then(|t| {
+                vanillite_config::properties::parse(&t)
+                    .get("player-idle-timeout")
+                    .and_then(|v| v.trim().parse().ok())
+            })
+            .unwrap_or(0);
         Access {
             dir: dir.to_owned(),
             lists: Mutex::new(lists),
             op_permission_level: u8::try_from(op_permission_level.clamp(1, 4)).unwrap_or(4),
             enforce_whitelist,
+            idle_timeout: AtomicI32::new(idle_timeout),
         }
     }
 
@@ -135,14 +255,108 @@ impl Access {
     /// Turns the whitelist on or off and writes `white-list` into `server.properties`.
     pub fn set_whitelist_enabled(&self, on: bool) {
         self.lock().whitelist_enabled = on;
+        self.write_property("white-list", &on.to_string());
+    }
+
+    /// Writes one setting into `server.properties`.
+    fn write_property(&self, key: &str, value: &str) {
         let path = self.dir.join(vanillite_config::PROPERTIES_FILE);
         let mut map = std::fs::read_to_string(&path)
             .map(|t| vanillite_config::properties::parse(&t))
             .unwrap_or_default();
-        map.insert("white-list".to_owned(), on.to_string());
+        map.insert(key.to_owned(), value.to_owned());
         if let Err(e) = std::fs::write(&path, vanillite_config::properties::render(&map)) {
             log::error!("Failed to write {}: {e}", path.display());
         }
+    }
+
+    /// `player-idle-timeout` in minutes.
+    pub fn idle_timeout(&self) -> i32 {
+        self.idle_timeout.load(Ordering::Relaxed)
+    }
+
+    /// `DedicatedServer.setPlayerIdleTimeout`: keeps and writes `player-idle-timeout`.
+    pub fn set_idle_timeout(&self, minutes: i32) {
+        self.idle_timeout.store(minutes, Ordering::Relaxed);
+        self.write_property("player-idle-timeout", &minutes.to_string());
+    }
+
+    /// The ban of a player, unless it expired (`UserBanList.get`).
+    pub fn ban_of(&self, uuid: u128) -> Option<UserBan> {
+        let mut lists = self.lock();
+        lists.bans.retain(|b| !b.ban.expired());
+        lists.bans.iter().find(|b| b.uuid.0 == uuid).cloned()
+    }
+
+    /// The ban of an IP address, unless it expired (`IpBanList.get`).
+    pub fn ip_ban_of(&self, ip: &str) -> Option<IpBan> {
+        let mut lists = self.lock();
+        lists.ip_bans.retain(|b| !b.ban.expired());
+        lists.ip_bans.iter().find(|b| b.ip == ip).cloned()
+    }
+
+    /// `UserBanList.isBanned`.
+    pub fn is_banned(&self, uuid: u128) -> bool {
+        self.lock().bans.iter().any(|b| b.uuid.0 == uuid)
+    }
+
+    /// `IpBanList.isBanned`.
+    pub fn is_ip_banned(&self, ip: &str) -> bool {
+        self.lock().ip_bans.iter().any(|b| b.ip == ip)
+    }
+
+    /// The banned players in list order.
+    pub fn bans(&self) -> Vec<UserBan> {
+        self.lock().bans.clone()
+    }
+
+    /// The banned IP addresses in list order.
+    pub fn ip_bans(&self) -> Vec<IpBan> {
+        self.lock().ip_bans.clone()
+    }
+
+    /// `UserBanList.add`: replaces an existing ban of the player.
+    pub fn ban(&self, entry: UserBan) {
+        let mut lists = self.lock();
+        match lists.bans.iter_mut().find(|b| b.uuid == entry.uuid) {
+            Some(existing) => *existing = entry,
+            None => lists.bans.push(entry),
+        }
+        self.save_bans(&lists);
+    }
+
+    /// `UserBanList.remove`. `false` if the player was not banned.
+    pub fn pardon(&self, uuid: u128) -> bool {
+        let mut lists = self.lock();
+        let before = lists.bans.len();
+        lists.bans.retain(|b| b.uuid.0 != uuid);
+        let removed = lists.bans.len() != before;
+        if removed {
+            self.save_bans(&lists);
+        }
+        removed
+    }
+
+    /// `IpBanList.add`: replaces an existing ban of the address.
+    pub fn ban_ip(&self, entry: IpBan) {
+        let mut lists = self.lock();
+        match lists.ip_bans.iter_mut().find(|b| b.ip == entry.ip) {
+            Some(existing) => *existing = entry,
+            None => lists.ip_bans.push(entry),
+        }
+        self.save_ip_bans(&lists);
+    }
+
+    /// `IpBanList.remove`. `false` if the address was not banned.
+    pub fn pardon_ip(&self, ip: &str) -> bool {
+        let mut lists = self.lock();
+        let before = lists.ip_bans.len();
+        lists.ip_bans.retain(|b| b.ip != ip);
+        let removed = lists.ip_bans.len() != before;
+        if removed {
+            self.save_ip_bans(&lists);
+        }
+        removed
     }
 
     /// `PlayerList.isWhiteListed`: the whitelist is off, or the player is listed or an operator.
@@ -211,6 +425,35 @@ impl Access {
         write_list(&self.dir.join(OPS_FILE), &json);
     }
 
+    fn save_bans(&self, lists: &Lists) {
+        let json: Vec<serde_json::Value> = lists
+            .bans
+            .iter()
+            .map(|b| {
+                let mut out = serde_json::Map::new();
+                out.insert("uuid".into(), b.uuid.to_string().into());
+                out.insert("name".into(), b.name.clone().into());
+                b.ban.to_json(&mut out);
+                serde_json::Value::Object(out)
+            })
+            .collect();
+        write_list(&self.dir.join(BANNED_PLAYERS_FILE), &json);
+    }
+
+    fn save_ip_bans(&self, lists: &Lists) {
+        let json: Vec<serde_json::Value> = lists
+            .ip_bans
+            .iter()
+            .map(|b| {
+                let mut out = serde_json::Map::new();
+                out.insert("ip".into(), b.ip.clone().into());
+                b.ban.to_json(&mut out);
+                serde_json::Value::Object(out)
+            })
+            .collect();
+        write_list(&self.dir.join(BANNED_IPS_FILE), &json);
+    }
+
     fn save_whitelist(&self, lists: &Lists) {
         let json: Vec<serde_json::Value> = lists
             .whitelist
@@ -249,6 +492,21 @@ fn parse_whitelisted(v: &serde_json::Value) -> Option<WhitelistEntry> {
     Some(WhitelistEntry {
         uuid: Uuid(parse_uuid(v.get("uuid")?.as_str()?)?),
         name: v.get("name")?.as_str()?.to_owned(),
+    })
+}
+
+fn parse_user_ban(v: &serde_json::Value) -> Option<UserBan> {
+    Some(UserBan {
+        uuid: Uuid(parse_uuid(v.get("uuid")?.as_str()?)?),
+        name: v.get("name")?.as_str()?.to_owned(),
+        ban: Ban::from_json(v),
+    })
+}
+
+fn parse_ip_ban(v: &serde_json::Value) -> Option<IpBan> {
+    Some(IpBan {
+        ip: v.get("ip")?.as_str()?.to_owned(),
+        ban: Ban::from_json(v),
     })
 }
 
@@ -301,6 +559,32 @@ mod tests {
         assert!(reloaded.deop(alice));
         assert!(reloaded.whitelist_remove(alice));
         assert!(!reloaded.is_whitelisted(alice));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn bans_round_trip() {
+        let dir = std::env::temp_dir().join(format!("vl-bans-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).ok();
+        let access = Access::load(&dir, false, 4, false);
+        access.ban(UserBan {
+            uuid: Uuid(7),
+            name: "Bob".into(),
+            ban: Ban::now("Server", Some("griefing".into())),
+        });
+        access.ban_ip(IpBan {
+            ip: "10.0.0.1".into(),
+            ban: Ban::now("Server", None),
+        });
+        let reloaded = Access::load(&dir, false, 4, false);
+        assert_eq!(
+            reloaded.ban_of(7).and_then(|b| b.ban.reason),
+            Some("griefing".into())
+        );
+        assert!(reloaded.is_ip_banned("10.0.0.1"));
+        assert!(reloaded.pardon(7));
+        assert!(!reloaded.pardon(7));
+        assert!(reloaded.pardon_ip("10.0.0.1"));
         std::fs::remove_dir_all(&dir).ok();
     }
 

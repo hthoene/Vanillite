@@ -44,6 +44,13 @@ pub enum Effect {
     },
     /// A system message to every player of the server.
     Broadcast(Component),
+    /// `ServerPlayer.die`'s scoreboard part: the death message for the players the victim's
+    /// team allows, the death count and the kill scores of the killer (`getKillCredit`).
+    Died {
+        victim: EntityId,
+        killer: Option<EntityId>,
+        message: Option<Component>,
+    },
     /// To one player.
     To {
         player: EntityId,
@@ -60,6 +67,15 @@ pub enum Effect {
     },
     /// Experience orbs (`ExperienceOrb.award`).
     Experience { pos: Vec3, amount: i32 },
+    /// A mob an effect releases (`EntityType.create(level, TRIGGERED)` + `addFreshEntity`):
+    /// silverfish of Infested, slimes of Oozing. Kinds the mob system does not simulate yet
+    /// are skipped.
+    SpawnMob {
+        kind: vanillite_data::entity::EntityTypeId,
+        pos: Vec3,
+        y_rot: f32,
+        velocity: Vec3,
+    },
 }
 
 /// The seed of a sound (`Level.soundSeedGenerator`, a random of its own that Vanilla never

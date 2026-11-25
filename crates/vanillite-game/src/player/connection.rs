@@ -12,7 +12,9 @@ use vanillite_protocol::chat::{
 use vanillite_protocol::packets::common::ChatVisibility;
 use vanillite_protocol::packets::common::{ClientInfo, MainHand as WireMainHand};
 use vanillite_protocol::packets::play::clientbound::SystemChat;
-use vanillite_protocol::packets::play::serverbound::{ClientCommandAction, PlayerAction};
+use vanillite_protocol::packets::play::serverbound::{
+    ClientCommandAction, PlayerAction, SeenAdvancementsAction,
+};
 use vanillite_protocol::sets::ServerboundPlay;
 use vanillite_protocol::text::{Color, Component, NamedColor};
 
@@ -207,6 +209,9 @@ pub struct Connection {
     /// A virtual connection (test bot, Bedrock player). These have no chat session, so their
     /// chat is accepted unsigned even when the server enforces secure chat.
     pub is_virtual: bool,
+    /// The last action of the player (`ServerPlayer.lastActionTime`), for
+    /// `player-idle-timeout`.
+    pub last_action: std::time::Instant,
 }
 
 impl std::fmt::Debug for Connection {
@@ -263,6 +268,7 @@ impl Connection {
             entity_actions: Vec::new(),
             vehicle: VehicleInput::default(),
             play: Digging::new(),
+            last_action: std::time::Instant::now(),
             is_virtual,
         }
     }
@@ -300,6 +306,46 @@ impl Connection {
     }
 
     fn handle(
+        &mut self,
+        packet: ServerboundPlay,
+        state: &mut PlayerState,
+        ctx: MoveContext<'_>,
+        chat: ChatContext<'_>,
+        play: &mut PlayContext<'_>,
+    ) -> Result<(), Kick> {
+        // `resetLastActionTime`: the packets that count as an action of the player.
+        let loaded = self.movement.has_client_loaded();
+        let acts = match &packet {
+            ServerboundPlay::PlayerInput(_)
+            | ServerboundPlay::PlayerAction(_)
+            | ServerboundPlay::UseItemOn(_)
+            | ServerboundPlay::UseItem(_) => loaded,
+            ServerboundPlay::SetCarriedItem(p) => {
+                usize::try_from(p.slot).is_ok_and(|s| s < crate::inventory::HOTBAR)
+            }
+            ServerboundPlay::Chat(_) => self.chat.inbox().visibility != ChatVisibility::Hidden,
+            ServerboundPlay::ChatCommand(_)
+            | ServerboundPlay::ChatCommandSigned(_)
+            | ServerboundPlay::Punch(_)
+            | ServerboundPlay::PlayerCommand(_)
+            | ServerboundPlay::Attack(_)
+            | ServerboundPlay::ClientCommand(_)
+            | ServerboundPlay::ContainerClick(_)
+            | ServerboundPlay::PlaceRecipe(_)
+            | ServerboundPlay::ContainerButtonClick(_)
+            | ServerboundPlay::SignUpdate(_) => true,
+            _ => false,
+        };
+        let pos_before = state.body.pos;
+        self.handle_packet(packet, state, ctx, chat, play)?;
+        // `handlePlayerKnownMovement`: a move of more than `sqrt(1e-5)` blocks.
+        if acts || state.body.pos.distance_to_sqr(pos_before) > 1.0e-5 {
+            self.last_action = std::time::Instant::now();
+        }
+        Ok(())
+    }
+
+    fn handle_packet(
         &mut self,
         packet: ServerboundPlay,
         state: &mut PlayerState,
@@ -347,10 +393,26 @@ impl Connection {
                     .accept_teleport(&p, &mut state.body, ctx, sink)?;
             }
             ServerboundPlay::ClientTickEnd(_) => self.movement.client_tick_end(),
-            ServerboundPlay::ClientCommand(p) => {
-                // Statistics and game rule values come later.
-                if p.action == ClientCommandAction::PerformRespawn {
-                    state.respawn = true;
+            ServerboundPlay::ClientCommand(p) => match p.action {
+                ClientCommandAction::PerformRespawn => state.respawn = true,
+                // `sendStats`.
+                ClientCommandAction::RequestStats => {
+                    if let Some(stats) = play.stats.as_deref_mut() {
+                        sink.send(&stats.award_packet());
+                    }
+                }
+                // Game rule values come later.
+                ClientCommandAction::RequestGameRuleValues => {}
+            },
+            ServerboundPlay::SeenAdvancements(p) => {
+                // `handleSeenAdvancements`: an opened tab of a known advancement.
+                if p.0.action == SeenAdvancementsAction::OpenedTab
+                    && let Some(tab) = &p.0.tab
+                    && let Some(advancements) = play.advancements.as_deref_mut()
+                    && advancements.advancements().index(tab.as_str()).is_some()
+                    && let Some(packet) = advancements.select_tab(Some(tab.as_str()))
+                {
+                    sink.send(&packet);
                 }
             }
             ServerboundPlay::PlayerLoaded(_) => self.movement.mark_client_loaded(),
@@ -545,6 +607,7 @@ impl Connection {
                 self.container_button(p.container_id, p.button_id, play)
             }
             ServerboundPlay::RenameItem(p) => self.rename_item(&p.name, play),
+            ServerboundPlay::SetBeacon(p) => self.set_beacon(p.primary, p.secondary, play),
             ServerboundPlay::ContainerSlotStateChanged(p) => {
                 self.container_slot_state(p.slot_id, p.container_id, p.new_state, play);
             }
@@ -887,6 +950,39 @@ impl Connection {
         };
         crate::menu::container::with_view(inventory, level, actor.pos, None, |view| {
             view.crafter_slot_state(slot, enabled);
+        });
+    }
+
+    /// `handleSetBeaconPacket`: the powers of the open beacon menu.
+    fn set_beacon(
+        &mut self,
+        primary: Option<i32>,
+        secondary: Option<i32>,
+        play: &mut PlayContext<'_>,
+    ) {
+        let actor = play.actor;
+        let PlayContext {
+            level, inventory, ..
+        } = play;
+        let Some(level) = level.level_mut() else {
+            return;
+        };
+        if inventory
+            .container
+            .as_ref()
+            .is_none_or(|m| m.kind != crate::menu::container::MenuKind::Beacon)
+        {
+            return;
+        }
+        let in_range = |pos| actor.within_block_range(pos, 4.0);
+        if !crate::menu::container::still_valid(inventory, level, &in_range, &|b| {
+            actor.within_entity_range(b, 4.0)
+        }) {
+            log::debug!("A player interacted with an invalid menu");
+            return;
+        }
+        crate::menu::container::with_view(inventory, level, actor.pos, None, |view| {
+            view.update_beacon(primary, secondary);
         });
     }
 

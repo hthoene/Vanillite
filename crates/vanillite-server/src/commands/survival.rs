@@ -11,7 +11,7 @@ use super::select::Target;
 use super::source::CommandSource;
 use crate::global::Global;
 use crate::server::DIMENSIONS;
-use crate::survival::{WorldSurvival, broadcast_all, clock_update, full_time_sync};
+use crate::survival::{broadcast_all, clock_update, full_time_sync};
 
 fn error(key: &'static str, args: Vec<ErrArg>) -> CommandError {
     CommandError::new(key, args)
@@ -429,37 +429,25 @@ pub(crate) fn game_rule_set(
 pub(crate) fn kill(source: &CommandSource, env: &mut Env<'_>, victims: &[Target]) -> i32 {
     let global = env.global;
     for victim in victims {
-        let dimension = DIMENSIONS
-            .get(victim.world.index())
-            .copied()
-            .unwrap_or("minecraft:overworld");
         match victim.entity {
-            Some(id) if victim.world == source.world => {
-                WorldSurvival::kill(env.entities, None, global, dimension, id);
+            Some(id) if victim.world == env.world => {
+                let dimension = DIMENSIONS
+                    .get(victim.world.index())
+                    .copied()
+                    .unwrap_or("minecraft:overworld");
+                super::entities_cmd::kill_any(env.level, global, dimension, id);
             }
             _ => {
                 let uuid = victim.uuid;
-                let Some(arc) = global.arc() else {
-                    continue;
-                };
-                global.run_in_world(victim.world, move |world| {
-                    let id = world
-                        .entities()
-                        .players
-                        .iter()
-                        .map(|(id, _)| id)
-                        .find(|&id| {
-                            world
-                                .entities()
-                                .store
-                                .get(id)
-                                .is_some_and(|e| e.uuid() == uuid)
-                        });
-                    if let Some(id) = id {
-                        let dimension = world.dimension().to_owned();
-                        WorldSurvival::kill(world.entities_mut(), None, &arc, &dimension, id);
-                    }
-                });
+                super::entities_cmd::on_level(
+                    env,
+                    victim.world,
+                    move |level, global, dimension| {
+                        if let Some(id) = super::select::find_uuid(&level.entities, uuid) {
+                            super::entities_cmd::kill_any(level, global, dimension, id);
+                        }
+                    },
+                );
             }
         }
     }
@@ -477,42 +465,4 @@ pub(crate) fn kill(source: &CommandSource, env: &mut Env<'_>, victims: &[Target]
     };
     source.send_success(global, message, true);
     i32::try_from(victims.len()).unwrap_or(i32::MAX)
-}
-
-/// `summon <entity> [<pos>]`: a mob with behaviour at the position, spawned between ticks in
-/// the source's world. Entity types without behaviour yet fail like Vanilla's
-/// `commands.summon.failed`.
-pub(crate) fn summon(
-    source: &CommandSource,
-    global: &Global,
-    entity: &str,
-    pos: vanillite_base::Vec3,
-) -> Result<i32, CommandError> {
-    let Some(kind) = vanillite_game::mob::Kind::by_name(entity) else {
-        return Err(CommandError::new("commands.summon.failed", vec![]));
-    };
-    if !(-30_000_000.0..30_000_000.0).contains(&pos.x)
-        || !(-30_000_000.0..30_000_000.0).contains(&pos.z)
-        || !(-20_000_000.0..20_000_000.0).contains(&pos.y)
-    {
-        return Err(CommandError::new("commands.summon.invalidPosition", vec![]));
-    }
-    let Some(arc) = global.arc() else {
-        return Err(CommandError::new("commands.summon.failed", vec![]));
-    };
-    global.run_in_world(source.world, move |world| {
-        world.summon(kind, pos, &arc);
-    });
-    source.send_success(
-        global,
-        Component::translatable_args(
-            "commands.summon.success",
-            vec![Arg::Component(Box::new(Component::translatable(
-                kind.translation_key(),
-                vec![],
-            )))],
-        ),
-        true,
-    );
-    Ok(1)
 }

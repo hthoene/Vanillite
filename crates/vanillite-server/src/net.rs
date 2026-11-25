@@ -38,8 +38,12 @@ pub(crate) struct Prepared {
     pub(crate) registries: std::collections::BTreeMap<String, Vec<String>>,
     /// The loaded data packs; `None` with [`VanillaPack::None`].
     pub(crate) packs: Option<LoadedPacks>,
+    /// The pack repository and the packs selected at start.
+    pub(crate) selected: crate::packs::Selected,
     /// Seed and generators of the world.
     pub(crate) world_gen: crate::world_setup::WorldGen,
+    /// Vanilla's English translations (empty without the Vanilla pack).
+    pub(crate) language: std::collections::HashMap<String, String>,
 }
 
 /// Where new players spawn: `spawn` of `level.dat`, else on top of the flat layers, or above
@@ -70,11 +74,8 @@ fn registry_index(packs: Option<&LoadedPacks>, registry: &str, entry: &str) -> u
         .unwrap_or(0)
 }
 
-/// Loads the data packs (the Vanilla pack from the cache in `dir`, downloaded once).
-pub(crate) fn load_packs(
-    pack: &VanillaPack,
-    dir: &Path,
-) -> Result<Option<LoadedPacks>, StartError> {
+/// The Vanilla data pack's root in the cache `cache` (downloaded once), if one is used.
+fn vanilla_root(pack: &VanillaPack, cache: &Path) -> Result<Option<PathBuf>, StartError> {
     Ok(match pack {
         VanillaPack::None => None,
         VanillaPack::Download | VanillaPack::Jar(_) => {
@@ -82,17 +83,28 @@ pub(crate) fn load_packs(
                 VanillaPack::Jar(jar) => Some(jar.as_path()),
                 _ => None,
             };
-            let cache = dir.join("cache");
-            let root = vanillite_datapack::vanilla::ensure_vanilla_pack(&cache, jar)
+            let root = vanillite_datapack::vanilla::ensure_vanilla_pack(cache, jar)
                 .map_err(|e| StartError::Io(format!("Vanilla data pack: {e}")))?;
-            let packs = vanillite_datapack::load(&[root.as_path()])
-                .map_err(|e| StartError::Io(format!("data packs: {e}")))?;
-            Some(packs)
+            Some(root)
         }
     })
 }
 
-/// Loads the data packs and prepares each world's players' side.
+/// Loads the Vanilla data pack alone (the Vanilla pack from the cache in `dir`, downloaded
+/// once).
+pub(crate) fn load_packs(
+    pack: &VanillaPack,
+    dir: &Path,
+) -> Result<Option<LoadedPacks>, StartError> {
+    let Some(root) = vanilla_root(pack, &dir.join("cache"))? else {
+        return Ok(None);
+    };
+    let packs = vanillite_datapack::load(&[root.as_path()])
+        .map_err(|e| StartError::Io(format!("data packs: {e}")))?;
+    Ok(Some(packs))
+}
+
+/// Selects and loads the data packs and prepares each world's players' side.
 pub(crate) fn prepare(
     config: &Config,
     dir: &Path,
@@ -100,9 +112,36 @@ pub(crate) fn prepare(
     pack: &VanillaPack,
     player_store: &PlayerDataStore,
 ) -> Result<Prepared, StartError> {
-    let packs = load_packs(pack, dir)?;
+    let cache = dir.join("cache");
+    let vanilla = vanilla_root(pack, &cache)?;
+    let language = vanilla
+        .as_deref()
+        .map(|root| load_language(root, pack))
+        .unwrap_or_default();
+    let loads_registries = vanilla.is_some();
+    let properties = &config.properties;
+    let selected = crate::packs::select(
+        vanilla,
+        level_dir,
+        &cache,
+        (
+            &properties.initial_enabled_packs,
+            &properties.initial_disabled_packs,
+        ),
+    );
+    let packs = if loads_registries {
+        let packs = vanillite_datapack::load_opened(&selected.opened)
+            .map_err(|e| StartError::Io(format!("data packs: {e}")))?;
+        for warning in &packs.warnings {
+            log::warn!("{warning}");
+        }
+        Some(packs)
+    } else {
+        None
+    };
+    let features: Vec<&str> = selected.packs.features.iter().map(String::as_str).collect();
     let configuration = match &packs {
-        Some(packs) => ConfigurationData::from_packs(packs, &["minecraft:vanilla"]),
+        Some(packs) => ConfigurationData::from_packs(packs, &features),
         None => ConfigurationData::new(
             Vec::new(),
             Vec::new(),
@@ -122,7 +161,6 @@ pub(crate) fn prepare(
     let is_flat = world_gen.is_flat();
     let spawn = world_spawn(level_dir, is_flat);
 
-    let properties = &config.properties;
     let levels: Vec<Identifier> = DIMENSIONS
         .iter()
         .map(|d| Identifier::vanilla(d.trim_start_matches("minecraft:")))
@@ -171,26 +209,56 @@ pub(crate) fn prepare(
         msg_incoming: chat_type("minecraft:msg_command_incoming"),
         msg_outgoing: chat_type("minecraft:msg_command_outgoing"),
         emote_command: chat_type("minecraft:emote_command"),
+        team_msg_incoming: chat_type("minecraft:team_msg_command_incoming"),
+        team_msg_outgoing: chat_type("minecraft:team_msg_command_outgoing"),
     };
-    let registries = ["minecraft:timeline", "minecraft:world_clock"]
-        .into_iter()
-        .map(|name| {
-            let entries = packs
-                .as_ref()
-                .and_then(|p| p.registry(name))
-                .map(|r| r.entries().iter().map(|e| e.id.to_string()).collect())
-                .unwrap_or_default();
-            (name.to_owned(), entries)
-        })
-        .collect();
+    let registries = [
+        "minecraft:timeline",
+        "minecraft:world_clock",
+        "minecraft:enchantment",
+        "minecraft:dialog",
+        "minecraft:worldgen/biome",
+    ]
+    .into_iter()
+    .map(|name| {
+        let entries = packs
+            .as_ref()
+            .and_then(|p| p.registry(name))
+            .map(|r| r.entries().iter().map(|e| e.id.to_string()).collect())
+            .unwrap_or_default();
+        (name.to_owned(), entries)
+    })
+    .collect();
     Ok(Prepared {
         configuration,
         worlds,
         chat_types,
         registries,
         packs,
+        selected,
         world_gen,
+        language,
     })
+}
+
+/// Vanilla's `en_us.json` (`Language.loadDefault`), for texts of the console and RCON. Without
+/// it, translation keys are shown.
+fn load_language(root: &Path, pack: &VanillaPack) -> std::collections::HashMap<String, String> {
+    let jar = match pack {
+        VanillaPack::Jar(jar) => Some(jar.as_path()),
+        VanillaPack::Download | VanillaPack::None => None,
+    };
+    let text = vanillite_datapack::vanilla::ensure_language(root, jar)
+        .map_err(|e| e.to_string())
+        .and_then(|path| std::fs::read_to_string(&path).map_err(|e| e.to_string()))
+        .and_then(|text| serde_json::from_str(&text).map_err(|e| e.to_string()));
+    match text {
+        Ok(language) => language,
+        Err(e) => {
+            log::warn!("English translations unavailable, showing translation keys: {e}");
+            std::collections::HashMap::new()
+        }
+    }
 }
 
 /// The running network.
@@ -199,6 +267,10 @@ pub(crate) struct NetState {
     joins: Receiver<Joined>,
     status: StatusInfo,
     online: usize,
+    /// Player names for Query.
+    pub(crate) query: Arc<vanillite_net::query::QueryPlayers>,
+    /// State of the random picks of the player sample.
+    random: u64,
     /// The Bedrock frontend (`bedrock.enabled`).
     pub(crate) bedrock: Option<(vanillite_bedrock::Frontend, Arc<vanillite_bedrock::Status>)>,
 }
@@ -208,6 +280,7 @@ impl NetState {
     /// Without `listen` it binds to a free port of the loopback interface only.
     pub(crate) fn start(
         config: &Config,
+        dir: &Path,
         configuration: ConfigurationData,
         listen: bool,
         enforces_secure_chat: bool,
@@ -244,11 +317,22 @@ impl NetState {
                 &config.server.multiversion.versions,
             )
             .map_err(|e| StartError::Io(format!("vanillite.toml multiversion.versions: {e}")))?,
+            enable_status: p.enable_status,
+            rate_limit: u32::try_from(p.rate_limit).unwrap_or(0),
+            log_ips: p.log_ips,
+            resource_pack: crate::admin::resource_pack(p),
+            server_links: crate::admin::server_links(p),
+            code_of_conduct: if p.enable_code_of_conduct {
+                crate::admin::codes_of_conduct(dir).map_err(StartError::Io)?
+            } else {
+                std::collections::BTreeMap::new()
+            },
             ..NetConfig::default()
         };
         let status = StatusInfo {
             description: Component::text(p.motd.clone()),
             max_players: p.max_players,
+            favicon: crate::admin::server_icon(dir, &p.level_name),
             enforces_secure_chat,
             ..StatusInfo::default()
         };
@@ -264,6 +348,8 @@ impl NetState {
             joins,
             status,
             online: 0,
+            query: Arc::default(),
+            random: u64::from_le_bytes(vanillite_net::rand_bytes()) | 1,
             bedrock,
         })
     }
@@ -279,6 +365,29 @@ impl NetState {
     /// The next joined connection.
     pub(crate) fn next_join(&self) -> Option<Joined> {
         self.joins.try_recv().ok()
+    }
+
+    /// Rebuilds the player sample of the server list (`buildPlayerStatus`; Vanilla does it
+    /// every 5 seconds): up to 12 players from a random offset, shuffled, anonymous for players
+    /// who do not allow listing, none with `hide-online-players`.
+    pub(crate) fn update_sample(&mut self, players: &[(String, u128, bool)], hide: bool) {
+        let sample = if hide {
+            Vec::new()
+        } else {
+            let state = &mut self.random;
+            let mut random = |bound: usize| {
+                // xorshift64.
+                *state ^= *state << 13;
+                *state ^= *state >> 7;
+                *state ^= *state << 17;
+                usize::try_from(*state % u64::try_from(bound.max(1)).unwrap_or(1)).unwrap_or(0)
+            };
+            crate::admin::player_sample(players, &mut random)
+        };
+        if sample != self.status.sample {
+            self.status.sample = sample;
+            self.network.status().update(&self.status);
+        }
     }
 
     /// Updates the player count of the server list.
@@ -385,6 +494,8 @@ pub(crate) fn arrival(
         memory_connection: joined.memory,
         virtual_connection: joined.is_virtual,
         saved,
+        stats: None,
+        advancements: None,
         address: joined.address.to_string(),
         inbox,
     };

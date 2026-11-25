@@ -34,6 +34,8 @@ mod data_id {
     pub const POSE: u8 = 6;
     pub const ITEM_ENTITY_ITEM: u8 = 8;
     pub const HEALTH: u8 = 9;
+    pub const EFFECT_PARTICLES: u8 = 10;
+    pub const EFFECT_AMBIENCE: u8 = 11;
     pub const PLAYER_MAIN_HAND: u8 = 15;
     pub const TNT_FUSE: u8 = 8;
     pub const TNT_BLOCK_STATE: u8 = 9;
@@ -53,22 +55,52 @@ mod data_id {
 }
 
 /// Entity data serializer ids (`EntityDataSerializers` registration order of 26.3).
-mod serializer {
+#[allow(dead_code)]
+pub mod serializer {
     pub const BYTE: i32 = 0;
-    pub const ITEM_STACK: i32 = 7;
     pub const INT: i32 = 1;
+    pub const LONG: i32 = 2;
+    pub const FLOAT: i32 = 3;
     pub const STRING: i32 = 4;
     pub const COMPONENT: i32 = 5;
     pub const OPTIONAL_COMPONENT: i32 = 6;
-    pub const FLOAT: i32 = 3;
+    pub const ITEM_STACK: i32 = 7;
     pub const BOOLEAN: i32 = 8;
+    pub const ROTATIONS: i32 = 9;
+    pub const BLOCK_POS: i32 = 10;
+    pub const OPTIONAL_BLOCK_POS: i32 = 11;
+    pub const DIRECTION: i32 = 12;
+    pub const OPTIONAL_LIVING_ENTITY_REFERENCE: i32 = 13;
     pub const BLOCK_STATE: i32 = 14;
     pub const OPTIONAL_BLOCK_STATE: i32 = 15;
+    pub const PARTICLE: i32 = 16;
+    pub const PARTICLES: i32 = 17;
+    pub const VILLAGER_DATA: i32 = 18;
+    pub const OPTIONAL_UNSIGNED_INT: i32 = 19;
     pub const POSE: i32 = 20;
+    pub const CAT_VARIANT: i32 = 21;
+    pub const CAT_SOUND_VARIANT: i32 = 22;
     pub const COW_VARIANT: i32 = 23;
+    pub const COW_SOUND_VARIANT: i32 = 24;
+    pub const WOLF_VARIANT: i32 = 25;
+    pub const WOLF_SOUND_VARIANT: i32 = 26;
+    pub const FROG_VARIANT: i32 = 27;
     pub const PIG_VARIANT: i32 = 28;
+    pub const PIG_SOUND_VARIANT: i32 = 29;
     pub const CHICKEN_VARIANT: i32 = 30;
+    pub const CHICKEN_SOUND_VARIANT: i32 = 31;
+    pub const ZOMBIE_NAUTILUS_VARIANT: i32 = 32;
+    pub const OPTIONAL_GLOBAL_POS: i32 = 33;
+    pub const PAINTING_VARIANT: i32 = 34;
+    pub const SNIFFER_STATE: i32 = 35;
+    pub const ARMADILLO_STATE: i32 = 36;
+    pub const COPPER_GOLEM_STATE: i32 = 37;
+    pub const WEATHERING_COPPER_STATE: i32 = 38;
+    pub const VECTOR3: i32 = 39;
+    pub const QUATERNION: i32 = 40;
+    pub const RESOLVABLE_PROFILE: i32 = 41;
     pub const HUMANOID_ARM: i32 = 42;
+    pub const DYE_COLOR: i32 = 43;
 }
 
 fn wire_vec(v: Vec3) -> types::Vec3 {
@@ -221,6 +253,7 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
                 o.extend_from_slice(&health.to_be_bytes());
             });
         }
+        effect_data(&mut out, &player.survival.effects, all);
         let hand = player.client.main_hand;
         if all || hand != MainHand::Right {
             item(
@@ -260,6 +293,9 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
     if let Some(mob) = entities.mob(entity.id()) {
         mob_data(&mut out, mob, all);
     }
+    if let Some(special) = entities.special(entity.id()) {
+        crate::mob::boss::special::entity_data(&mut out, special, all);
+    }
     if let Some(b) = entities.boat(entity.id()) {
         if all || b.hurt_time != 0 {
             item(&mut out, 8, serializer::INT, |o| {
@@ -297,6 +333,9 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
             write_varint(o, orb.value);
         });
     }
+    if let Some(d) = entities.missile(entity.id()) {
+        crate::mob::fam::missile_encode(&mut DataWriter { out: &mut out, all }, d);
+    }
     if let Some(arrow) = entities.arrow(entity.id()) {
         if all || arrow.crit {
             item(&mut out, data_id::ARROW_FLAGS, serializer::BYTE, |o| {
@@ -312,6 +351,44 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
                     o.push(u8::from(arrow.in_ground));
                 },
             );
+        }
+        // `Arrow.ID_EFFECT_COLOR` (11); after 600 ticks in the ground it goes back to -1.
+        if entity.kind() == ids::ARROW {
+            let color = arrow.color();
+            if all || color != -1 || arrow.in_ground_time >= 600 {
+                item(&mut out, 11, serializer::INT, |o| write_varint(o, color));
+            }
+        }
+    }
+    if let Some(cloud) = entities.cloud(entity.id()) {
+        if all || cloud.radius != 3.0 {
+            item(&mut out, 8, serializer::FLOAT, |o| {
+                o.extend_from_slice(&cloud.radius.to_be_bytes());
+            });
+        }
+        if all || cloud.waiting {
+            item(&mut out, 9, serializer::BOOLEAN, |o| {
+                o.push(u8::from(cloud.waiting))
+            });
+        }
+        let particle_id = |name: &str| {
+            vanillite_data::registry::PARTICLE_TYPE
+                .id(name)
+                .map_or(0, i32::from)
+        };
+        // `PowerParticleOption` of `dragon_breath`, else `ColorParticleOption` of
+        // `entity_effect`; the default is white.
+        let color = cloud.particle_color();
+        if cloud.dragon_breath {
+            item(&mut out, 10, serializer::PARTICLE, |o| {
+                write_varint(o, particle_id("minecraft:dragon_breath"));
+                o.extend_from_slice(&1.0_f32.to_be_bytes());
+            });
+        } else if all || color != -1 {
+            item(&mut out, 10, serializer::PARTICLE, |o| {
+                write_varint(o, particle_id("minecraft:entity_effect"));
+                o.extend_from_slice(&color.to_be_bytes());
+            });
         }
     }
     if entity.kind() == ids::TNT
@@ -367,6 +444,121 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
     Some(out)
 }
 
+/// Writes synched data items of a mob kind: every value (`all`, updates) or only those that
+/// differ from their defaults (pairing).
+#[derive(Debug)]
+pub struct DataWriter<'a> {
+    out: &'a mut Vec<u8>,
+    all: bool,
+}
+
+impl<'a> DataWriter<'a> {
+    /// The buffer and whether every value is written (encoders of their own).
+    pub fn parts(&mut self) -> (&mut Vec<u8>, bool) {
+        (self.out, self.all)
+    }
+
+    /// A writer appending to `out` (`all`: every value, else only non-default ones).
+    pub fn new(out: &'a mut Vec<u8>, all: bool) -> DataWriter<'a> {
+        DataWriter { out, all }
+    }
+
+    /// A writer of every value into `out` (tests of the kind encoders).
+    #[cfg(test)]
+    pub fn all_for_test(out: &'a mut Vec<u8>) -> DataWriter<'a> {
+        DataWriter { out, all: true }
+    }
+
+    /// An item with a custom encoding; `is_default` skips it when pairing.
+    pub fn raw(
+        &mut self,
+        id: u8,
+        serializer: i32,
+        is_default: bool,
+        value: impl FnOnce(&mut Vec<u8>),
+    ) {
+        if self.all || !is_default {
+            item(self.out, id, serializer, value);
+        }
+    }
+
+    pub fn byte(&mut self, id: u8, v: u8, default: u8) {
+        self.raw(id, serializer::BYTE, v == default, |o| o.push(v));
+    }
+
+    pub fn boolean(&mut self, id: u8, v: bool, default: bool) {
+        self.raw(id, serializer::BOOLEAN, v == default, |o| {
+            o.push(u8::from(v))
+        });
+    }
+
+    /// An `INT` (var int) item.
+    pub fn int(&mut self, id: u8, v: i32, default: i32) {
+        self.varint(id, serializer::INT, v, default);
+    }
+
+    /// A var int item of any serializer (registry holders, enums, `INT`).
+    pub fn varint(&mut self, id: u8, serializer: i32, v: i32, default: i32) {
+        self.raw(id, serializer, v == default, |o| write_varint(o, v));
+    }
+
+    pub fn float(&mut self, id: u8, v: f32, default: f32) {
+        #[allow(clippy::float_cmp)]
+        let is_default = v == default;
+        self.raw(id, serializer::FLOAT, is_default, |o| {
+            o.extend_from_slice(&v.to_be_bytes());
+        });
+    }
+
+    /// An `ITEM_STACK` item.
+    pub fn stack(&mut self, id: u8, v: &ItemStack) {
+        self.raw(id, serializer::ITEM_STACK, v.is_empty(), |o| v.encode(o));
+    }
+
+    /// An `OPTIONAL_BLOCK_POS` item.
+    pub fn optional_block_pos(&mut self, id: u8, v: Option<vanillite_base::BlockPos>) {
+        self.raw(id, serializer::OPTIONAL_BLOCK_POS, v.is_none(), |o| {
+            o.push(u8::from(v.is_some()));
+            if let Some(p) = v {
+                o.extend_from_slice(&p.as_long().to_be_bytes());
+            }
+        });
+    }
+
+    /// An `OPTIONAL_LIVING_ENTITY_REFERENCE` item (a UUID).
+    pub fn optional_uuid(&mut self, id: u8, v: Option<u128>) {
+        self.raw(
+            id,
+            serializer::OPTIONAL_LIVING_ENTITY_REFERENCE,
+            v.is_none(),
+            |o| {
+                o.push(u8::from(v.is_some()));
+                if let Some(u) = v {
+                    o.extend_from_slice(&u.to_be_bytes());
+                }
+            },
+        );
+    }
+}
+
+/// `DATA_EFFECT_PARTICLES` and `DATA_EFFECT_AMBIENCE_ID` of a living entity.
+fn effect_data(out: &mut Vec<u8>, fx: &crate::effect::ActiveEffects, all: bool) {
+    let any_visible = fx.iter().any(|e| e.visible);
+    if all || any_visible {
+        item(out, data_id::EFFECT_PARTICLES, serializer::PARTICLES, |o| {
+            fx.encode_particles(o);
+        });
+    }
+    // `areAllEffectsAmbient` of no effects is true, but the data starts false and is only set
+    // while effects are active.
+    let ambient = !fx.is_empty() && fx.all_ambient();
+    if all || ambient {
+        item(out, data_id::EFFECT_AMBIENCE, serializer::BOOLEAN, |o| {
+            o.push(u8::from(ambient));
+        });
+    }
+}
+
 /// The synched data of a mob after the entity's own: health, mob flags and the kind's values.
 fn mob_data(out: &mut Vec<u8>, mob: &crate::mob::MobData, all: bool) {
     use crate::mob::Kind;
@@ -381,7 +573,9 @@ fn mob_data(out: &mut Vec<u8>, mob: &crate::mob::MobData, all: bool) {
             o.extend_from_slice(&mob.health.to_be_bytes());
         });
     }
-    let flags = u8::from(mob.no_ai) | (u8::from(mob.aggressive) << 2);
+    effect_data(out, &mob.effects, all);
+    let flags =
+        u8::from(mob.no_ai) | (u8::from(mob.left_handed) << 1) | (u8::from(mob.aggressive) << 2);
     if all || flags != 0 {
         item(out, data_id::MOB_FLAGS, serializer::BYTE, |o| o.push(flags));
     }
@@ -396,8 +590,17 @@ fn mob_data(out: &mut Vec<u8>, mob: &crate::mob::MobData, all: bool) {
             item(out, id, serializer, |o| write_varint(o, v));
         }
     };
+    if mob.kind.family() != crate::mob::Family::Classic {
+        crate::mob::fam::encode_data(&mut DataWriter { out, all }, mob);
+        return;
+    }
     match mob.kind {
-        Kind::Zombie => boolean(out, data_id::KIND_16, mob.baby),
+        Kind::Zombie => {
+            boolean(out, data_id::KIND_16, mob.baby);
+            let converting =
+                crate::mob::fam::undead::zombies::zs(mob).is_some_and(|z| z.converting);
+            boolean(out, data_id::KIND_18, converting);
+        }
         Kind::Creeper => {
             if all || mob.swell_dir != -1 {
                 item(out, data_id::KIND_16, serializer::INT, |o| {
@@ -426,7 +629,11 @@ fn mob_data(out: &mut Vec<u8>, mob: &crate::mob::MobData, all: bool) {
             }
             boolean(out, data_id::KIND_17, mob.creepy);
         }
-        Kind::Skeleton => {}
+        Kind::Skeleton => boolean(
+            out,
+            data_id::KIND_16,
+            crate::mob::fam::undead::skeletons::is_converting(mob),
+        ),
         Kind::Cow | Kind::Pig | Kind::Sheep | Kind::Chicken => {
             boolean(out, data_id::KIND_16, mob.baby);
             match mob.kind {
@@ -453,18 +660,14 @@ fn mob_data(out: &mut Vec<u8>, mob: &crate::mob::MobData, all: bool) {
                 ),
             }
         }
+        _ => {}
     }
 }
 
 /// `set_equipment` with every non-empty equipment slot of a player (pairing data).
 fn equipment(entity: &EntityRef<'_>, entities: &Entities) -> Option<SetEquipment> {
     if let Some(mob) = entities.mob(entity.id()) {
-        let mut slots = Vec::new();
-        // Skeletons hold their bow (`populateDefaultEquipmentSlots`).
-        if mob.kind == crate::mob::Kind::Skeleton {
-            let bow = vanillite_data::registry::ITEM.id("minecraft:bow")?;
-            slots.push((EquipmentSlot::MainHand.ordinal(), ItemStack::new(bow, 1)));
-        }
+        let mut slots = crate::mob::equipment::visible(mob);
         if mob.saddled {
             let saddle = vanillite_data::registry::ITEM.id("minecraft:saddle")?;
             slots.push((EquipmentSlot::Saddle.ordinal(), ItemStack::new(saddle, 1)));
@@ -527,6 +730,15 @@ pub fn encode_update(message: &Message, entities: &Entities) -> Option<Encoded> 
                     .map(|f| i32::from(f.state.0))
                     .or_else(|| {
                         let owner = entities.arrow(message.entity)?.owner?;
+                        Some(entities.store.get(owner)?.network_id().0)
+                    })
+                    .or_else(|| {
+                        let owner = entities.missile(message.entity)?.owner?;
+                        Some(entities.store.get(owner)?.network_id().0)
+                    })
+                    .or_else(|| {
+                        let special = entities.special(message.entity)?;
+                        let owner = crate::mob::boss::special::spawn_owner(special)?;
                         Some(entities.store.get(owner)?.network_id().0)
                     })
                     .unwrap_or(0),

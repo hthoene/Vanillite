@@ -24,7 +24,7 @@ use vanillite_chunk::slots::{
     self, BlockEntityData, ChunkGenerator, ChunkStatus, GenerationState, Neighbours, SavedTick,
     WorldInfo,
 };
-use vanillite_chunk::{Chunk, Section};
+use vanillite_chunk::{Chunk, Heightmap, HeightmapKind, Section};
 use vanillite_data::block::BlockId;
 use vanillite_data::registry::BLOCK_ENTITY_TYPE;
 
@@ -41,7 +41,7 @@ const MAX_KEPT_STARTS: usize = 1 << 18;
 /// Vanilla's `NoiseBasedChunkGenerator` in the `chunk-generator` slot.
 #[derive(Debug)]
 pub struct VanillaChunkGenerator {
-    generator: TerrainGenerator,
+    generator: Arc<TerrainGenerator>,
     world: WorldInfo,
     /// `WorldOptions.generateStructures`.
     structures: bool,
@@ -54,7 +54,7 @@ impl VanillaChunkGenerator {
     /// height and biome registry as `world`. Structures are generated.
     pub fn new(generator: TerrainGenerator, world: WorldInfo) -> Self {
         Self {
-            generator,
+            generator: Arc::new(generator),
             world,
             structures: true,
             starts: Mutex::default(),
@@ -70,6 +70,16 @@ impl VanillaChunkGenerator {
     /// The wrapped generator.
     pub fn generator(&self) -> &TerrainGenerator {
         &self.generator
+    }
+
+    /// The wrapped generator, shared (for `/locate` on the world's thread).
+    pub fn shared(&self) -> Arc<TerrainGenerator> {
+        Arc::clone(&self.generator)
+    }
+
+    /// `WorldOptions.generateStructures`.
+    pub fn generates_structures(&self) -> bool {
+        self.structures
     }
 }
 
@@ -144,11 +154,31 @@ fn take(chunk: &slots::ProtoChunk) -> ProtoChunk {
 /// Hands a proto chunk back to the runtime's chunk: the sections (light kept), its block
 /// entities and the rest as generation state.
 fn put(chunk: &mut slots::ProtoChunk, mut proto: ProtoChunk) {
+    // Heightmaps the proto chunk kept exact need no new prime from the blocks.
+    let height = proto.height() as u32;
+    let stored = std::array::from_fn(|id| {
+        let kind = *HeightmapKind::ALL
+            .iter()
+            .find(|k| usize::from(k.id()) == id)?;
+        let heights = proto.exact_final_heightmap(kind)?;
+        let mut map = Heightmap::new(height);
+        for z in 0..16 {
+            for x in 0..16 {
+                map.set(
+                    x,
+                    z,
+                    (heights[(x + z * 16) as usize] - proto.min_y()) as u32,
+                );
+            }
+        }
+        Some(map)
+    });
     let sections = proto.take_sections().into_iter().map(Arc::new).collect();
-    chunk.chunk = Chunk::from_sections(
+    chunk.chunk = Chunk::from_stored(
         chunk.chunk.min_section(),
         sections,
         chunk.chunk.light().clone(),
+        stored,
     );
     for (&pos, data) in proto.block_entities() {
         let Some(kind) = data

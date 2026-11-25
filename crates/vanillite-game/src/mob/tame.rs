@@ -126,12 +126,17 @@ pub fn follow_tick(t: &mut Tick<'_, '_>, speed: f64, recalc: &mut i32) {
         if teleport {
             try_to_teleport_to_owner(t, o.pos);
         } else {
-            nav::move_to_entity(t, o.pos, 0, speed);
+            nav::move_to_entity(t, o.pos, 1, speed);
         }
     }
 }
 
 /// `tryToTeleportToOwner`: ten tries at a free spot within 3 blocks of the owner.
+/// `tryToTeleportToOwner` to the owner's position (the pets' panic goal uses it too).
+pub fn teleport_near_owner(t: &mut Tick<'_, '_>, owner: Vec3) {
+    try_to_teleport_to_owner(t, owner);
+}
+
 fn try_to_teleport_to_owner(t: &mut Tick<'_, '_>, owner: Vec3) {
     let base = BlockPos::containing(owner.x, owner.y, owner.z);
     for _ in 0..10 {
@@ -297,16 +302,12 @@ pub fn drop_leash(ents: &mut Entities, env: &mut Env<'_>, mob: EntityId, drop_it
         && let Some(pos) = ents.store.get(mob).map(|e| e.pos())
         && let Some(lead) = vanillite_data::registry::ITEM.id("minecraft:lead")
     {
-        let r = &mut *env.random;
+        let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
         env.out.push(Effect::DropItem {
-            uuid: super::random_uuid(r),
+            uuid,
             pos,
-            velocity: Vec3::new(
-                r.next_double() * 0.2 - 0.1,
-                0.2,
-                r.next_double() * 0.2 - 0.1,
-            ),
-            y_rot: r.next_float() * 360.0,
+            velocity,
+            y_rot,
             pickup_delay: 10,
             stack: ItemStack::new(lead, 1),
         });
@@ -317,7 +318,7 @@ fn entity_sound(ents: &Entities, env: &mut Env<'_>, id: EntityId, sound: &str) {
     let Some(pos) = ents.store.get(id).map(|e| e.pos()) else {
         return;
     };
-    let seed = env.random.next_long();
+    let seed = crate::survival::sound_seed();
     play_sound(
         env.out,
         None,
@@ -516,7 +517,7 @@ pub fn use_lead_on_fence(
     if mine.is_empty() {
         return false;
     }
-    let uuid = super::random_uuid(env.random);
+    let uuid = crate::mob::new_entity_uuid();
     let knot = knot_at(ents, level.network_ids(), pos, uuid);
     for m in mine {
         set_leashed_to(ents, env, m, knot);
@@ -564,7 +565,7 @@ pub fn tick_leashes(
             super::LeashRef::Entity(uuid) => ents.player_by_uuid(uuid),
             super::LeashRef::Knot(pos) => {
                 if level.is_loaded(pos) && is_knot_block(level.block(pos)) {
-                    let uuid = super::random_uuid(env.random);
+                    let uuid = crate::mob::new_entity_uuid();
                     Some(knot_at(ents, level.network_ids(), pos, uuid))
                 } else {
                     None
@@ -643,7 +644,7 @@ pub fn tick_leash(t: &mut Tick<'_, '_>) {
     let distance = mpos.distance_to_sqr(hpos).sqrt();
     // `PathfinderMob.whenLeashedTo`: home at the holder.
     if distance > 12.0 {
-        let seed = t.env.random.next_long();
+        let seed = crate::survival::sound_seed();
         play_sound(
             t.env.out,
             None,

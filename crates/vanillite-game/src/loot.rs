@@ -189,15 +189,32 @@ pub struct BlockLootContext<'a> {
     pub item_in_tag: &'a dyn Fn(u16, &str) -> bool,
     /// Explosion radius if destroyed by an explosion (None for players).
     pub explosion_radius: Option<f32>,
+    /// The components of the broken block's block entity (`collectComponents`), by component
+    /// type id, as wire values; `None` without a block entity.
+    pub block_entity: Option<&'a dyn Fn(u16) -> Option<Box<[u8]>>>,
     /// Whether `THIS_ENTITY` is set for block loot: the breaker or the explosion source
     /// (`Block.dropResources(..., breaker, tool)`); a block destroyed by a shape update has none.
     pub this_present: bool,
     /// The entity parameters of entity loot (`LootContextParamSets.ENTITY`); `None` for
     /// block loot.
     pub entity: Option<&'a EntityLootContext<'a>>,
-    /// The components of the broken block's block entity (`collectComponents`), by component
-    /// type id, as wire values; `None` without a block entity.
-    pub block_entity: Option<&'a dyn Fn(u16) -> Option<Box<[u8]>>>,
+}
+
+impl<'a> BlockLootContext<'a> {
+    /// The general loot context with these parameters.
+    pub fn as_loot(&self) -> LootContext<'a> {
+        LootContext {
+            block_state: Some(self.state),
+            tool: Some(self.tool),
+            explosion_radius: self.explosion_radius,
+            block_entity: self.block_entity,
+            enchantment_level: self.enchantment_level,
+            item_in_tag: self.item_in_tag,
+            this_present: self.this_present,
+            entity: self.entity,
+            ..LootContext::empty()
+        }
+    }
 }
 
 /// The entity parameters of a loot context (`THIS_ENTITY`, `ATTACKING_ENTITY`,
@@ -245,6 +262,9 @@ pub struct LootTables {
     predicates: Vec<Cond>,
     /// Named item modifiers (`data/<ns>/item_modifier/`), referenced by index.
     modifiers: Vec<Func>,
+    /// Predicate and item modifier indices by id.
+    predicate_ids: HashMap<String, u32>,
+    modifier_ids: HashMap<String, u32>,
     /// Files that failed to parse, with the reason.
     broken: Vec<String>,
     /// Unsupported features met while parsing, with the first file using each.
@@ -252,9 +272,9 @@ pub struct LootTables {
 }
 
 impl LootTables {
-    /// Loads every `data/<ns>/loot_table/<kind>/**.json` of [`LOADED_KINDS`] of the packs in
-    /// `roots` (each root contains `data/`; later roots override earlier ones). Broken tables
-    /// are logged and skipped.
+    /// Loads every `data/<ns>/loot_table/**.json` of the packs in `roots` (each root contains
+    /// `data/`; later roots override earlier ones), like the reloadable `loot_table` registry.
+    /// Broken tables are logged and skipped.
     pub fn load(roots: &[PathBuf]) -> LootTables {
         let mut table_files = BTreeMap::new();
         let mut predicate_files = BTreeMap::new();
@@ -272,16 +292,9 @@ impl LootTables {
                 .collect();
             namespaces.sort();
             for (ns, path) in namespaces {
-                for kind in LOADED_KINDS {
-                    collect_json(
-                        &path.join("loot_table").join(kind),
-                        &format!("{ns}:{kind}/"),
-                        &mut table_files,
-                    );
-                }
                 collect_json(
-                    &path.join("loot_table/entities"),
-                    &format!("{ns}:entities/"),
+                    &path.join("loot_table"),
+                    &format!("{ns}:"),
                     &mut table_files,
                 );
                 collect_json(
@@ -339,6 +352,15 @@ impl LootTables {
         &self.unsupported
     }
 
+    /// The `random_sequence` of the loot table of `state`, if it has one.
+    pub fn block_sequence(&self, state: BlockState) -> Option<&str> {
+        let block = usize::from(state.block().0);
+        self.by_block
+            .get(block)
+            .and_then(|&i| self.tables.get(usize::try_from(i).ok()?))
+            .and_then(|t| t.sequence.as_deref())
+    }
+
     /// Drops of breaking `ctx.state` (table `minecraft:blocks/<block path>`; no table → nothing).
     /// Appends to `out`.
     pub fn block_drops(
@@ -358,17 +380,7 @@ impl LootTables {
         else {
             return;
         };
-        let ctx = LootContext {
-            block_state: Some(ctx.state),
-            tool: Some(ctx.tool),
-            explosion_radius: ctx.explosion_radius,
-            block_entity: ctx.block_entity,
-            enchantment_level: ctx.enchantment_level,
-            item_in_tag: ctx.item_in_tag,
-            this_present: ctx.this_present,
-            entity: ctx.entity,
-            ..LootContext::empty()
-        };
+        let ctx = ctx.as_loot();
         let mut eval = Eval {
             tables: self,
             ctx: &ctx,
@@ -414,6 +426,15 @@ impl LootTables {
         eval.table(table);
     }
 
+    /// `LootTable.getRandomItems` of the table `name` (e.g. `minecraft:spawners/trial_chamber/key`)
+    /// with an empty context (no block, no tool, no entity). Appends to `out`; unknown tables
+    /// drop nothing.
+    pub fn random_items(&self, name: &str, rng: &mut dyn LootRandom, out: &mut Vec<ItemStack>) {
+        if self.by_name.contains_key(name) {
+            self.roll(name, &LootContext::empty(), rng, out);
+        }
+    }
+
     /// `LootTable.fill(container, params, seed)` with the context's random `rng`: rolls the
     /// table `table_id` and spreads the stacks over the empty slots of `items` in random order,
     /// splitting stacks into the free slots (`shuffleAndSplitItems`).
@@ -455,32 +476,207 @@ impl LootTables {
         rng: &mut dyn LootRandom,
         out: &mut Vec<ItemStack>,
     ) {
-        let Some(table) = self
-            .by_name
-            .get(table)
-            .and_then(|&i| self.tables.get(usize::try_from(i).ok()?))
-        else {
-            return;
-        };
-        let ctx = LootContext {
-            block_state: ctx.state.is_valid().then_some(ctx.state),
-            explosion_radius: ctx.explosion_radius,
-            block_entity: ctx.block_entity,
-            enchantment_level: ctx.enchantment_level,
-            item_in_tag: ctx.item_in_tag,
-            this_present: ctx.this_present,
-            entity: ctx.entity,
-            ..LootContext::empty()
-        };
+        if self.by_name.contains_key(table) {
+            let ctx = LootContext {
+                block_state: ctx.state.is_valid().then_some(ctx.state),
+                tool: None,
+                ..ctx.as_loot()
+            };
+            self.roll(table, &ctx, rng, out);
+        }
+    }
+
+    /// A parser that resolves the named predicates and item modifiers of this set.
+    fn parser(&self) -> Parser<'_> {
+        Parser {
+            predicates: &self.predicate_ids,
+            modifiers: &self.modifier_ids,
+            unsupported: Vec::new(),
+        }
+    }
+
+    /// `LootTable.getRandomItems` of an inline table (`ResourceOrIdArgument` with a value).
+    pub fn roll_inline(
+        &self,
+        json: &Value,
+        ctx: &LootContext<'_>,
+        rng: &mut dyn LootRandom,
+        out: &mut Vec<ItemStack>,
+    ) -> Result<(), String> {
+        let table = self.parser().table(json)?;
         let mut eval = Eval {
             tables: self,
-            ctx: &ctx,
+            ctx,
             rng,
             out,
             post: Vec::new(),
             depth: 0,
         };
-        eval.table(table);
+        eval.table(&table);
+        Ok(())
+    }
+
+    /// Whether the named predicate is loaded.
+    pub fn has_predicate(&self, id: &str) -> bool {
+        self.predicate_ids.contains_key(id)
+    }
+
+    /// Whether the named item modifier is loaded.
+    pub fn has_modifier(&self, id: &str) -> bool {
+        self.modifier_ids.contains_key(id)
+    }
+
+    /// `LootItemCondition.test` of a named predicate (`None`: unknown) or, with `inline`, of
+    /// an inline predicate (a list is `all_of`).
+    pub fn test_predicate(
+        &self,
+        id: Option<&str>,
+        inline: Option<&Value>,
+        ctx: &LootContext<'_>,
+        rng: &mut dyn LootRandom,
+    ) -> Result<bool, String> {
+        let owned;
+        let cond = match (id, inline) {
+            (Some(id), _) => {
+                let i = *self
+                    .predicate_ids
+                    .get(id)
+                    .ok_or_else(|| format!("unknown predicate {id}"))?;
+                self.predicates
+                    .get(usize::try_from(i).unwrap_or(usize::MAX))
+                    .ok_or_else(|| format!("unknown predicate {id}"))?
+            }
+            (None, Some(Value::Array(list))) => {
+                let mut parser = self.parser();
+                let all = list
+                    .iter()
+                    .map(|c| parser.cond(c))
+                    .collect::<Res<Vec<_>>>()?;
+                owned = Cond::AllOf(all.into());
+                &owned
+            }
+            (None, Some(v)) => {
+                owned = self.parser().cond(v)?;
+                &owned
+            }
+            (None, None) => return Err("no predicate".to_owned()),
+        };
+        let mut out = Vec::new();
+        let mut eval = Eval {
+            tables: self,
+            ctx,
+            rng,
+            out: &mut out,
+            post: Vec::new(),
+            depth: 0,
+        };
+        Ok(eval.test(cond))
+    }
+
+    /// `LootItemFunction.apply` of a named item modifier or, with `inline`, of an inline one
+    /// (a list is a `sequence`).
+    pub fn modify(
+        &self,
+        id: Option<&str>,
+        inline: Option<&Value>,
+        stack: &mut ItemStack,
+        ctx: &LootContext<'_>,
+        rng: &mut dyn LootRandom,
+    ) -> Result<(), String> {
+        let owned;
+        let func = match (id, inline) {
+            (Some(id), _) => {
+                let i = *self
+                    .modifier_ids
+                    .get(id)
+                    .ok_or_else(|| format!("unknown item modifier {id}"))?;
+                self.modifiers
+                    .get(usize::try_from(i).unwrap_or(usize::MAX))
+                    .ok_or_else(|| format!("unknown item modifier {id}"))?
+            }
+            (None, Some(Value::Array(list))) => {
+                let mut parser = self.parser();
+                let all = list
+                    .iter()
+                    .map(|f| parser.func(f))
+                    .collect::<Res<Vec<_>>>()?;
+                owned = Func {
+                    condition: None,
+                    kind: FuncKind::Sequence(all.into()),
+                };
+                &owned
+            }
+            (None, Some(v)) => {
+                owned = self.parser().func(v)?;
+                &owned
+            }
+            (None, None) => return Err("no item modifier".to_owned()),
+        };
+        let mut out = Vec::new();
+        let mut eval = Eval {
+            tables: self,
+            ctx,
+            rng,
+            out: &mut out,
+            post: Vec::new(),
+            depth: 0,
+        };
+        eval.apply(func, stack);
+        Ok(())
+    }
+
+    /// [`Self::block_drops`] with the table's random sequence of `level`
+    /// (`LootContext.Builder.create(randomSequence)`), else with `fallback` (the level random).
+    pub fn roll_block(
+        &self,
+        level: &crate::level::Level,
+        ctx: &BlockLootContext<'_>,
+        fallback: &mut dyn LootRandom,
+        out: &mut Vec<ItemStack>,
+    ) {
+        match self.block_random_sequence(ctx.state) {
+            Some(key) => level.with_random_sequence(key, |r| self.block_drops(ctx, r, out)),
+            None => self.block_drops(ctx, fallback, out),
+        }
+    }
+
+    /// [`Self::table_drops`] with the table's random sequence of `level`, else with
+    /// `fallback` (the level random).
+    pub fn roll_table(
+        &self,
+        level: &crate::level::Level,
+        table: &str,
+        ctx: &BlockLootContext<'_>,
+        fallback: &mut dyn LootRandom,
+        out: &mut Vec<ItemStack>,
+    ) {
+        match self.random_sequence(table) {
+            Some(key) => {
+                level.with_random_sequence(key, |r| self.table_drops(table, ctx, r, out));
+            }
+            None => self.table_drops(table, ctx, fallback, out),
+        }
+    }
+
+    /// The `random_sequence` of the block's table.
+    pub fn block_random_sequence(&self, state: BlockState) -> Option<&str> {
+        if !state.is_valid() {
+            return None;
+        }
+        self.by_block
+            .get(usize::from(state.block().0))
+            .and_then(|&i| self.tables.get(usize::try_from(i).ok()?))?
+            .sequence
+            .as_deref()
+    }
+
+    /// The `random_sequence` of the table `table`.
+    pub fn random_sequence(&self, table: &str) -> Option<&str> {
+        self.by_name
+            .get(table)
+            .and_then(|&i| self.tables.get(usize::try_from(i).ok()?))?
+            .sequence
+            .as_deref()
     }
 
     /// Whether a table with this id is loaded.
@@ -609,6 +805,8 @@ impl LootTables {
             by_block,
             predicates: parsed_predicates,
             modifiers: parsed_modifiers,
+            predicate_ids,
+            modifier_ids,
             broken,
             unsupported,
         }
@@ -616,7 +814,7 @@ impl LootTables {
 }
 
 /// The loot table directories [`LootTables::load`] reads.
-pub const LOADED_KINDS: [&str; 4] = ["blocks", "chests", "archaeology", "pots"];
+pub const LOADED_KINDS: [&str; 5] = ["blocks", "chests", "archaeology", "pots", "spawners"];
 
 /// `Util.shuffle(list, random)`.
 fn shuffle<T>(list: &mut [T], rng: &mut dyn LootRandom) {
@@ -712,6 +910,8 @@ pub(crate) fn read_files(
 struct Table {
     pools: Vec<Pool>,
     modifier: Option<Func>,
+    /// `random_sequence`: the named random the rolls draw from.
+    sequence: Option<Box<str>>,
 }
 
 #[derive(Debug)]
@@ -1158,7 +1358,15 @@ impl Parser<'_> {
             .map(|m| self.func(m))
             .transpose()
             .map_err(|e| format!("modifier: {e}"))?;
-        Ok(Table { pools, modifier })
+        let sequence = o
+            .get("random_sequence")
+            .map(|s| string(s).map(Box::from))
+            .transpose()?;
+        Ok(Table {
+            pools,
+            modifier,
+            sequence,
+        })
     }
 
     fn pool(&mut self, v: &Value) -> Res<Pool> {
@@ -1802,7 +2010,7 @@ fn holder_entries(v: &Value) -> Res<Box<[Box<str>]>> {
 }
 
 /// The values of `block`'s property `name`, in Vanilla's order.
-fn property_values(block: BlockId, name: &str) -> Option<&'static [&'static str]> {
+pub(crate) fn property_values(block: BlockId, name: &str) -> Option<&'static [&'static str]> {
     block
         .info()
         .properties
@@ -1815,13 +2023,13 @@ fn property_values(block: BlockId, name: &str) -> Option<&'static [&'static str]
 /// A property value as the property compares it: integers numerically, booleans false < true,
 /// enums by declaration order. `None` if `value` is not a value of the property.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum PropertyKey {
+pub(crate) enum PropertyKey {
     Int(i64),
     Bool(bool),
     Index(usize),
 }
 
-fn property_key(values: &[&str], value: &str) -> Option<PropertyKey> {
+pub(crate) fn property_key(values: &[&str], value: &str) -> Option<PropertyKey> {
     if (value == "true" || value == "false") && values.contains(&value) {
         return Some(PropertyKey::Bool(value == "true"));
     }
@@ -3373,5 +3581,64 @@ mod tests {
             summary(&drops(&tables, stone, &empty, &[], None, 1)),
             [("minecraft:stone", 1)]
         );
+    }
+
+    #[test]
+    fn named_and_inline_predicates_modifiers_and_tables() {
+        let parse = |t: &str| serde_json::from_str::<Value>(t).expect("json");
+        let tables = LootTables::from_files(
+            Vec::new(),
+            vec![(
+                "test:never".to_owned(),
+                Ok(parse(
+                    r#"{"type": "minecraft:random_chance", "chance": 0.0}"#,
+                )),
+            )],
+            vec![(
+                "test:five".to_owned(),
+                Ok(parse(r#"{"type": "minecraft:set_count", "count": 5}"#)),
+            )],
+        );
+        let ctx = LootContext::empty();
+        let mut rng = XoroshiroRandom::new(1);
+        assert!(tables.has_predicate("test:never"));
+        assert_eq!(
+            tables.test_predicate(Some("test:never"), None, &ctx, &mut rng),
+            Ok(false)
+        );
+        // An inline list is `all_of`; a named reference resolves inside it.
+        let inline = parse(
+            r#"[{"type": "minecraft:random_chance", "chance": 1.0},
+                {"type": "minecraft:inverted", "term": "test:never"}]"#,
+        );
+        assert_eq!(
+            tables.test_predicate(None, Some(&inline), &ctx, &mut rng),
+            Ok(true)
+        );
+        assert!(
+            tables
+                .test_predicate(Some("test:unknown"), None, &ctx, &mut rng)
+                .is_err()
+        );
+        let mut stack = ItemStack::new(items::STONE.0, 1);
+        tables
+            .modify(Some("test:five"), None, &mut stack, &ctx, &mut rng)
+            .expect("modifier");
+        assert_eq!(stack.count, 5);
+        let inline = parse(r#"[{"type": "minecraft:set_count", "count": 2}]"#);
+        tables
+            .modify(None, Some(&inline), &mut stack, &ctx, &mut rng)
+            .expect("modifier");
+        assert_eq!(stack.count, 2);
+        let table = parse(
+            r#"{"pools": [{"rolls": 1, "entries": [
+                {"type": "minecraft:item", "name": "minecraft:stone",
+                 "modifier": "test:five"}]}]}"#,
+        );
+        let mut out = Vec::new();
+        tables
+            .roll_inline(&table, &ctx, &mut rng, &mut out)
+            .expect("table");
+        assert_eq!(summary(&out), vec![("minecraft:stone", 5)]);
     }
 }

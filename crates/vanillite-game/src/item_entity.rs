@@ -62,7 +62,12 @@ pub fn are_mergable(a: &ItemStack, b: &ItemStack) -> bool {
 
 /// `ItemEntity.merge(toStack, fromStack, 64)`: the new `to` stack; `from` shrinks.
 pub fn merge_stacks(to: &ItemStack, from: &mut ItemStack) -> ItemStack {
-    let delta = (item::max_stack_size(to).min(64) - to.count).min(from.count);
+    merge_stacks_max(to, from, 64)
+}
+
+/// `ItemEntity.merge(toStack, fromStack, maxCount)`.
+pub fn merge_stacks_max(to: &ItemStack, from: &mut ItemStack, max: i32) -> ItemStack {
+    let delta = (item::max_stack_size(to).min(max) - to.count).min(from.count);
     let new_to = to.with_count(to.count + delta);
     from.shrink(delta);
     new_to
@@ -197,12 +202,22 @@ pub fn move_with_collisions(
             z = collide_axis(2, &b, scratch, z);
         }
     }
+    // `Entity.move`: a tiny remaining movement that collisions mostly ate is not applied.
+    let length = x * x + y * y + z * z;
+    let wanted = movement.x * movement.x + movement.y * movement.y + movement.z * movement.z;
+    let applies = length > 1.0e-7 || wanted - length < 1.0e-7;
+    // `Mth.equal`: within the float 1.0E-5F.
+    let equal = |a: f64, b: f64| (b - a).abs() < f64::from(1.0e-5_f32);
     Moved {
-        pos: Vec3::new(pos.x + x, pos.y + y, pos.z + z),
+        pos: if applies {
+            Vec3::new(pos.x + x, pos.y + y, pos.z + z)
+        } else {
+            pos
+        },
         movement: Vec3::new(x, y, z),
-        hit_x: x != movement.x,
+        hit_x: !equal(movement.x, x),
         hit_y: y != movement.y,
-        hit_z: z != movement.z,
+        hit_z: !equal(movement.z, z),
     }
 }
 
@@ -276,21 +291,26 @@ pub fn tick(
     };
     // `minecraft:fluid` ids: 1 flowing water, 2 water, 3 flowing lava, 4 lava.
     if fluid_id == 1 || fluid_id == 2 {
-        // `setUnderwaterMovement`.
-        v = Vec3::new(
-            v.x * 0.99,
-            v.y + if v.y < 0.06 { 5.0e-4 } else { 0.0 },
-            v.z * 0.99,
-        );
+        // `setUnderwaterMovement`: float constants widened to double.
+        let m = f64::from(0.99_f32);
+        let rise = if v.y < f64::from(0.06_f32) {
+            f64::from(5.0e-4_f32)
+        } else {
+            0.0
+        };
+        v = Vec3::new(v.x * m, v.y + rise, v.z * m);
     } else if fluid_id == 3 || fluid_id == 4 {
         // `setUnderLavaMovement`.
-        v = Vec3::new(
-            v.x * 0.95,
-            v.y + if v.y < 0.06 { 5.0e-4 } else { 0.0 },
-            v.z * 0.95,
-        );
+        let m = f64::from(0.95_f32);
+        let rise = if v.y < f64::from(0.06_f32) {
+            f64::from(5.0e-4_f32)
+        } else {
+            0.0
+        };
+        v = Vec3::new(v.x * m, v.y + rise, v.z * m);
     } else {
-        v = Vec3::new(v.x, v.y - 0.04, v.z);
+        // `applyGravity`: `add(0, -0.04, 0)`, which turns Java's -0.0 into 0.0.
+        v = Vec3::new(v.x + 0.0, v.y - 0.04, v.z + 0.0);
     }
     let half = 0.125;
     let height = 0.25;
@@ -314,7 +334,7 @@ pub fn tick(
     }
     let horizontal = v.x * v.x + v.z * v.z;
     let skip_move = input.on_ground
-        && horizontal <= 1.0e-5
+        && horizontal <= f64::from(1.0e-5_f32)
         && !data
             .tick_count
             .wrapping_add(u32::from_ne_bytes(input.network_id.to_ne_bytes()))
@@ -333,16 +353,19 @@ pub fn tick(
         };
         out.pos = moved.pos;
         out.on_ground = moved.hit_y && v.y < 0.0;
+        // `restituteMovementAfterCollisions` without bounciness: `-v * 0.0` keeps Java's signed
+        // zeros.
         if moved.hit_x {
-            v.x = 0.0;
+            v.x = -v.x * 0.0;
         }
         if moved.hit_z {
-            v.z = 0.0;
+            v.z = -v.z * 0.0;
         }
         if moved.hit_y {
-            v.y = 0.0;
+            v.y = -v.y * 0.0;
         }
-        let air_drag = 0.98;
+        // `getAirDrag()` and the ground friction are floats, widened to double.
+        let air_drag = 0.98_f32;
         let mut ground = air_drag;
         if out.on_ground {
             let below = block(BlockPos::new(
@@ -350,8 +373,9 @@ pub fn tick(
                 floor(out.pos.y - 0.999_999),
                 floor(out.pos.z),
             ));
-            ground = air_drag * f64::from(below.block().info().friction);
+            ground = air_drag * below.block().info().friction;
         }
+        let (ground, air_drag) = (f64::from(ground), f64::from(air_drag));
         v = Vec3::new(v.x * ground, v.y * air_drag, v.z * ground);
         if out.on_ground && v.y < 0.0 {
             v.y *= -0.5;

@@ -1,0 +1,260 @@
+{
+  "description": "Coral blocks, plants and fans out of water die after their scheduled tick; coral in water stays alive.",
+  "tier": "fast",
+  "world": {
+    "seed": 8301,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:stone",
+        3
+      ]
+    ]
+  },
+  "time": 6000,
+  "level_rng": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      8,
+      -59,
+      9
+    ]
+  ],
+  "ticks": 130,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        1,
+        -61,
+        1
+      ],
+      "to": [
+        3,
+        -61,
+        3
+      ],
+      "block": "minecraft:water"
+    }
+  ],
+  "actions": [
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        1,
+        -60,
+        6
+      ],
+      "block": "minecraft:tube_coral_block"
+    },
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        1,
+        -60,
+        8
+      ],
+      "block": "minecraft:tube_coral[waterlogged=false]"
+    },
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        1,
+        -61,
+        8
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        2,
+        -60,
+        6
+      ],
+      "block": "minecraft:brain_coral_block"
+    },
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        2,
+        -60,
+        8
+      ],
+      "block": "minecraft:brain_coral[waterlogged=false]"
+    },
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        2,
+        -61,
+        8
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        3,
+        -60,
+        6
+      ],
+      "block": "minecraft:bubble_coral_block"
+    },
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        3,
+        -60,
+        8
+      ],
+      "block": "minecraft:bubble_coral[waterlogged=false]"
+    },
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        3,
+        -61,
+        8
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        4,
+        -60,
+        6
+      ],
+      "block": "minecraft:fire_coral_block"
+    },
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        4,
+        -60,
+        8
+      ],
+      "block": "minecraft:fire_coral[waterlogged=false]"
+    },
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        4,
+        -61,
+        8
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        5,
+        -60,
+        6
+      ],
+      "block": "minecraft:horn_coral_block"
+    },
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        5,
+        -60,
+        8
+      ],
+      "block": "minecraft:horn_coral[waterlogged=false]"
+    },
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        5,
+        -61,
+        8
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "place",
+      "tick": 2,
+      "pos": [
+        2,
+        -61,
+        2
+      ],
+      "block": "minecraft:tube_coral_block"
+    },
+    {
+      "op": "place",
+      "tick": 2,
+      "pos": [
+        2,
+        -60,
+        2
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "op": "place",
+      "tick": 3,
+      "pos": [
+        2,
+        -60,
+        2
+      ],
+      "block": "minecraft:brain_coral[waterlogged=true]"
+    },
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        7,
+        -60,
+        3
+      ],
+      "block": "minecraft:fire_coral_fan[waterlogged=false]"
+    },
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        7,
+        -60,
+        1
+      ],
+      "block": "minecraft:horn_coral_wall_fan[facing=north,waterlogged=false]"
+    },
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        7,
+        -60,
+        0
+      ],
+      "block": "minecraft:stone"
+    }
+  ]
+}

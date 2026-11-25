@@ -35,6 +35,59 @@ varint_enum! {
     }
 }
 
+/// The label of a server link (`ServerLinks.UntrustedEntry`): a known type or custom text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerLinkLabel {
+    /// `ServerLinks.KnownLinkType` by id (0 = bug report).
+    Known(i32),
+    /// Custom text.
+    Custom(Box<crate::text::Component>),
+}
+
+/// One entry of `server_links`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerLink {
+    pub label: ServerLinkLabel,
+    pub url: String,
+}
+
+impl ServerLink {
+    /// `KnownLinkType.BUG_REPORT`.
+    pub const BUG_REPORT: i32 = 0;
+}
+
+impl Encode for ServerLink {
+    fn encode(&self, out: &mut Vec<u8>) {
+        match &self.label {
+            ServerLinkLabel::Known(id) => {
+                true.encode(out);
+                crate::codec::write_varint(out, *id);
+            }
+            ServerLinkLabel::Custom(text) => {
+                false.encode(out);
+                text.encode(out);
+            }
+        }
+        self.url.encode(out);
+    }
+}
+
+impl Decode for ServerLink {
+    fn decode(r: &mut Reader<'_>) -> Result<Self> {
+        let label = if bool::decode(r)? {
+            ServerLinkLabel::Known(r.varint()?)
+        } else {
+            ServerLinkLabel::Custom(Box::new(crate::text::Component::decode_limited(
+                r, 2_097_152,
+            )?))
+        };
+        Ok(Self {
+            label,
+            url: String::decode_limited(r, crate::types::MAX_STRING)?,
+        })
+    }
+}
+
 /// Client settings (`ClientInformation`). The view distance is raw client input; the server
 /// clamps it (SEC-19).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -245,6 +298,43 @@ macro_rules! common_clientbound {
         #[packet(state = $state, dir = Clientbound, name = "ping")]
         pub struct Ping {
             pub id: i32,
+        }
+
+        /// `post_effects`: the post-processing shaders of the player (`/posteffect`).
+        #[derive(Debug, Clone, PartialEq, Eq, $crate::Packet)]
+        #[packet(state = $state, dir = Clientbound, name = "post_effects")]
+        pub struct PostEffects {
+            #[field(max_len = 1024)]
+            pub effects: Vec<$crate::types::Identifier>,
+        }
+
+        /// `resource_pack_pop`: removes one pack (or all without an id).
+        #[derive(Debug, Clone, PartialEq, Eq, $crate::Packet)]
+        #[packet(state = $state, dir = Clientbound, name = "resource_pack_pop")]
+        pub struct ResourcePackPop {
+            pub id: Option<$crate::types::Uuid>,
+        }
+
+        /// `resource_pack_push`: asks the client to load a server resource pack.
+        #[derive(Debug, Clone, PartialEq, Eq, $crate::Packet)]
+        #[packet(state = $state, dir = Clientbound, name = "resource_pack_push")]
+        pub struct ResourcePackPush {
+            pub id: $crate::types::Uuid,
+            #[field(max_len = 32767)]
+            pub url: String,
+            #[field(max_len = 40)]
+            pub hash: String,
+            pub required: bool,
+            #[field(max_len = 2_097_152)]
+            pub prompt: Option<$crate::text::Component>,
+        }
+
+        /// `server_links`: links shown in the pause menu.
+        #[derive(Debug, Clone, PartialEq, Eq, $crate::Packet)]
+        #[packet(state = $state, dir = Clientbound, name = "server_links")]
+        pub struct ServerLinks {
+            #[field(max_len = 1024)]
+            pub links: Vec<$crate::packets::common::ServerLink>,
         }
 
         /// `store_cookie`.

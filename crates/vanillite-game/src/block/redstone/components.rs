@@ -296,6 +296,46 @@ pub(super) fn lightning_rod_direct_signal(
     }
 }
 
+/// `LightningRodBlock.onLightningStrike`: a pulse of 8 ticks into the block it stands on or
+/// hangs from.
+pub(super) fn lightning_rod_strike(level: &mut Level, state: BlockState, pos: BlockPos) {
+    level.set_block_and_update(pos, state.set_flag("powered", true));
+    let direction = facing(state);
+    level.update_neighbors_at(pos.relative(direction.opposite()), state.block());
+    level.schedule_block_tick(pos, state.block(), 8);
+    let axis = match direction {
+        Direction::West | Direction::East => 0,
+        Direction::Down | Direction::Up => 1,
+        Direction::North | Direction::South => 2,
+    };
+    level.level_event(None, 3002, pos, axis);
+}
+
+/// `LightningRodBlock.onPlace`: a powered rod that became another block (a copper stage)
+/// ends its pulse itself.
+pub(super) fn lightning_rod_on_place(
+    level: &mut Level,
+    state: BlockState,
+    pos: BlockPos,
+    old: BlockState,
+    _: bool,
+) {
+    if old.block() != state.block()
+        && powered(state)
+        && !level.chunks.has_block_tick(pos, state.block().0)
+    {
+        level.schedule_block_tick(pos, state.block(), 8);
+    }
+}
+
+/// `LightningRodBlock.affectNeighborsAfterRemoval`.
+pub(super) fn lightning_rod_removal(level: &mut Level, state: BlockState, pos: BlockPos, _: bool) {
+    if powered(state) {
+        let direction = facing(state);
+        level.update_neighbors_at(pos.relative(direction.opposite()), state.block());
+    }
+}
+
 /// `LightningRodBlock.tick`: the pulse of a strike ends.
 pub(super) fn lightning_rod_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
     let new = state.set_flag("powered", false);
@@ -349,6 +389,28 @@ fn door_sound(
     let sound = BlockSet::of(state.block()).door_sound(open);
     let pitch = door_pitch(level);
     level.play_block_sound(player, pos, sound, SOUND_BLOCKS, 1.0, pitch);
+}
+
+/// `DoorBlock.setOpen(source, level, state, pos, open)`: mobs opening and closing doors.
+pub fn set_door_open(
+    level: &mut Level,
+    pos: BlockPos,
+    open: bool,
+    source: Option<vanillite_world::entity::EntityId>,
+) {
+    let state = level.block(pos);
+    if !state.block().name().ends_with("_door") || state.flag("open") == open {
+        return;
+    }
+    let new = state.set_flag("open", open);
+    level.set_block(pos, new, update::CLIENTS | update::IMMEDIATE);
+    door_sound(level, new, pos, open, source);
+    game_event(
+        level,
+        if open { "block_open" } else { "block_close" },
+        pos,
+        source,
+    );
 }
 
 /// `DoorBlock.useWithoutItem`.

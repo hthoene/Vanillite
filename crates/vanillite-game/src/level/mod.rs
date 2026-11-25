@@ -12,13 +12,23 @@
 //!   fluid ticks, random ticks, block events); entities tick in the world's entity phase.
 
 pub mod block_entity;
+pub mod border;
 mod entity_storage;
 pub mod explosion;
+pub mod forced;
 pub mod game_event;
 mod neighbors;
+pub mod place;
+#[cfg(test)]
+pub(crate) use neighbors::STEPS as NEIGHBOR_STEPS;
 pub mod signal;
 mod tick;
 pub mod update;
+
+pub use crate::random_sequences::RandomSequences;
+
+/// The loot random sequences the levels of a server share.
+pub type SharedRandomSequences = Arc<std::sync::Mutex<RandomSequences>>;
 
 #[cfg(test)]
 pub(crate) mod tests;
@@ -96,6 +106,16 @@ pub struct LevelSettings {
     pub block_drops: bool,
     /// `doEntityDrops` game rule (`ENTITY_DROPS`).
     pub entity_drops: bool,
+    /// `max_snow_accumulation_height` game rule.
+    pub max_snow_accumulation_height: i32,
+    /// `fire_spread_radius_around_player` game rule (-1: everywhere).
+    pub fire_spread_radius: i32,
+    /// `spread_vines` game rule.
+    pub spread_vines: bool,
+    /// The server's difficulty (`level.getDifficulty()`).
+    pub difficulty: crate::survival::rules::Difficulty,
+    /// The dimension's `infiniburn` tag.
+    pub infiniburn: crate::block::fire::Infiniburn,
     /// The dimension's `fast_lava` attribute (the Nether).
     pub fast_lava: bool,
     /// `tntExplodes` game rule (`TNT_EXPLODES`).
@@ -109,6 +129,10 @@ pub struct LevelSettings {
     pub portal_dimension: bool,
     /// Exploit switches (D1).
     pub exploits: ExploitSettings,
+    /// The difficulty is peaceful (set by the server every tick).
+    pub peaceful: bool,
+    /// `spawnWardens` game rule (set by the server every tick).
+    pub spawn_wardens: bool,
 }
 
 impl Default for LevelSettings {
@@ -122,12 +146,51 @@ impl Default for LevelSettings {
             lava_source_conversion: false,
             block_drops: true,
             entity_drops: true,
+            max_snow_accumulation_height: 1,
+            fire_spread_radius: 128,
+            spread_vines: true,
+            difficulty: crate::survival::rules::Difficulty::Normal,
+            infiniburn: crate::block::fire::Infiniburn::Overworld,
             fast_lava: false,
             tnt_explodes: true,
             has_sky_light: true,
             water_evaporates: false,
             portal_dimension: true,
             exploits: ExploitSettings::default(),
+            peaceful: false,
+            spawn_wardens: true,
+        }
+    }
+}
+
+impl LevelSettings {
+    /// Takes the simulation's game rules from `rules`.
+    pub fn apply_game_rules(&mut self, rules: &crate::survival::rules::GameRules) {
+        use crate::survival::rules::Rule;
+        let get = |name: &str| Rule::by_name(name).map(|r| rules.get(r));
+        if let Some(v) = get("random_tick_speed") {
+            self.random_tick_speed = v;
+        }
+        if let Some(v) = get("water_source_conversion") {
+            self.water_source_conversion = v != 0;
+        }
+        if let Some(v) = get("lava_source_conversion") {
+            self.lava_source_conversion = v != 0;
+        }
+        if let Some(v) = get("block_drops") {
+            self.block_drops = v != 0;
+        }
+        if let Some(v) = get("entity_drops") {
+            self.entity_drops = v != 0;
+        }
+        if let Some(v) = get("max_snow_accumulation_height") {
+            self.max_snow_accumulation_height = v;
+        }
+        if let Some(v) = get("fire_spread_radius_around_player") {
+            self.fire_spread_radius = v;
+        }
+        if let Some(v) = get("spread_vines") {
+            self.spread_vines = v != 0;
         }
     }
 }
@@ -187,6 +250,8 @@ pub struct Sound {
 pub const SOUND_BLOCKS: u8 = 4;
 /// `SoundSource.PLAYERS`.
 pub const SOUND_PLAYERS: u8 = 7;
+/// `SoundSource.HOSTILE`.
+pub const SOUND_HOSTILE: u8 = 5;
 /// `SoundSource.NEUTRAL`.
 pub const SOUND_NEUTRAL: u8 = 6;
 /// `SoundSource.RECORDS`.
@@ -209,6 +274,8 @@ pub struct LevelOutput {
     pub explosions: Vec<explosion::ExplosionEvent>,
     /// The damage of the living entities explosions hit, for the mob system.
     pub explosion_hurts: Vec<explosion::ExplosionHurt>,
+    /// Magic damage block entities deal (conduits): target and amount.
+    pub magic_hurts: Vec<(vanillite_world::entity::EntityId, f32)>,
     /// Experience to award at a position (`ExperienceOrb.award`; orbs are not simulated yet).
     pub experience: Vec<(vanillite_base::Vec3, i32)>,
     /// Block entities whose client data changed (`sendBlockUpdated` of a block entity).
@@ -216,6 +283,27 @@ pub struct LevelOutput {
     /// Global level events (`globalLevelEvent`: event, position, data), heard by every player
     /// of the server.
     pub global_level_events: Vec<(i32, BlockPos, i32)>,
+    /// Wither skeleton skulls players placed, for the wither's summon check
+    /// (`WitherSkullBlock.setPlacedBy`).
+    pub summon_checks: Vec<BlockPos>,
+    /// An end crystal was placed: the End fight tries to respawn the dragon (`tryRespawn`).
+    pub try_dragon_respawn: bool,
+}
+
+/// The terrain generator of a world (`getChunkSource().getGenerator()`).
+#[derive(Clone)]
+pub struct Generation {
+    pub terrain: Arc<vanillite_worldgen::generator::TerrainGenerator>,
+    /// `WorldOptions.generateStructures`.
+    pub structures: bool,
+}
+
+impl std::fmt::Debug for Generation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Generation")
+            .field("structures", &self.structures)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The game state of one world.
@@ -229,9 +317,18 @@ pub struct Level {
     behaviours: Arc<Behaviours>,
     network_ids: Arc<NetworkIds>,
     climate: Option<Arc<Climate>>,
+    /// The trees saplings grow into.
+    tree_features: Option<Arc<crate::block::tree::TreeFeatures>>,
     updater: NeighborUpdater,
     /// Live block entities.
     pub block_entities: BlockEntities,
+    /// The world border (`getWorldBorder`).
+    pub border: border::WorldBorder,
+    /// Force-loaded chunks (`getForceLoadedChunks`).
+    pub forced: forced::ForcedChunks,
+    /// The world's noise generator, for commands that ask it (`/locate`); `None` for other
+    /// generators.
+    pub generation: Option<Generation>,
     /// Reused buffers of the piston code.
     pub(crate) pistons: crate::block::piston::Scratch,
     /// `ServerLevel.handlingTick`: the simulation phases of the tick run (scheduled ticks to
@@ -246,6 +343,9 @@ pub struct Level {
     chunk_scratch: Vec<ChunkPos>,
     /// Scratch list of the visibility changes.
     visibility_scratch: Vec<vanillite_world::chunks::VisibilityChange>,
+    /// Chunks that became visible and load their entities in [`Level::tick_entity_manager`]
+    /// (`PersistentEntitySectionManager.loadingInbox`).
+    pending_entity_loads: Vec<ChunkPos>,
     /// The stored data live entities were loaded from: written back with their modelled
     /// fields replaced, so stored fields the game does not model are kept.
     entity_nbt: FxHashMap<EntityId, vanillite_nbt::Compound>,
@@ -263,6 +363,10 @@ pub struct Level {
     sound_seeds: LegacyRandom,
     /// `randValue` of `getBlockRandomPos`.
     rand_value: i32,
+    /// The server's named random sequences (loot tables).
+    random_sequences: Arc<std::sync::Mutex<crate::random_sequences::RandomSequences>>,
+    /// Rain and thunder levels (`Level.rainLevel`, `thunderLevel`), set by the world's weather.
+    weather: crate::survival::weather::LevelWeather,
     game_time: i64,
     output: LevelOutput,
     /// Menus blocks asked to open for the player that used them (`player.openMenu`); taken
@@ -277,6 +381,10 @@ pub struct Level {
     maps: Option<Arc<crate::map::Maps>>,
     min_y: i32,
     max_y: i32,
+    /// The seed the level was created with (`getSeed`).
+    seed: i64,
+    /// What spawner blocks read of this tick's rules and sky (set by the world each tick).
+    pub spawner_env: crate::block::spawner::SpawnerEnv,
 }
 
 impl std::fmt::Debug for Level {
@@ -308,13 +416,18 @@ impl Level {
             behaviours,
             network_ids,
             climate: None,
+            tree_features: None,
             block_entities: BlockEntities::default(),
+            border: border::WorldBorder::default(),
+            forced: forced::ForcedChunks::default(),
+            generation: None,
             pistons: crate::block::piston::Scratch::default(),
             handling_tick: false,
             wire_signals: true,
             torch_toggles: Vec::new(),
             chunk_scratch: Vec::new(),
             visibility_scratch: Vec::new(),
+            pending_entity_loads: Vec::new(),
             entity_nbt: FxHashMap::default(),
             parked_entities: FxHashMap::default(),
             entity_chunks: FxHashSet::default(),
@@ -323,6 +436,10 @@ impl Level {
             random: LegacyRandom::new(seed),
             sound_seeds: LegacyRandom::new(seed ^ 0x50_4E_44_53),
             rand_value: LegacyRandom::new(seed ^ 0x5DEE_CE66).next_int(),
+            random_sequences: Arc::new(std::sync::Mutex::new(
+                crate::random_sequences::RandomSequences::new(seed),
+            )),
+            weather: crate::survival::weather::LevelWeather::default(),
             game_time: 0,
             output: LevelOutput::default(),
             menu_requests: Vec::new(),
@@ -331,10 +448,26 @@ impl Level {
             maps: None,
             min_y,
             max_y,
+            seed,
+            spawner_env: crate::block::spawner::SpawnerEnv::default(),
         };
-        // Chunks that are visible already load their entities.
+        // Chunks that are visible already queue their entities for the end of the first tick.
         level.apply_visibility();
         level
+    }
+
+    /// `getSeed`.
+    pub fn seed(&self) -> i64 {
+        self.seed
+    }
+
+    /// `sendBlockUpdated` of a block entity whose client data changed: the block and a
+    /// `block_entity_data` packet with its update tag go to the clients that see its chunk.
+    pub fn send_block_entity_updated(&mut self, pos: BlockPos) {
+        self.send_block_updated(pos);
+        if !self.output.block_entity_updates.contains(&pos) {
+            self.output.block_entity_updates.push(pos);
+        }
     }
 
     /// `player.openMenu(provider)` from block code: the player handlers open it.
@@ -417,6 +550,16 @@ impl Level {
         self.climate.as_deref()
     }
 
+    /// Sets the tree features saplings grow into (none: saplings do not grow into trees).
+    pub fn set_tree_features(&mut self, trees: Arc<crate::block::tree::TreeFeatures>) {
+        self.tree_features = Some(trees);
+    }
+
+    /// The tree features saplings grow into.
+    pub fn tree_features(&self) -> Option<&Arc<crate::block::tree::TreeFeatures>> {
+        self.tree_features.as_ref()
+    }
+
     /// `getBiome(pos)`: the noise biome the biome manager picks for `pos`; the default biome
     /// outside live chunks.
     pub fn biome(&self, pos: BlockPos) -> u16 {
@@ -462,6 +605,90 @@ impl Level {
     /// The level random (`level.getRandom()`).
     pub fn random(&mut self) -> &mut LegacyRandom {
         &mut self.random
+    }
+
+    /// Shares the server's random sequences (every world of a server draws from the same).
+    pub fn set_random_sequences(
+        &mut self,
+        sequences: Arc<std::sync::Mutex<crate::random_sequences::RandomSequences>>,
+    ) {
+        self.random_sequences = sequences;
+    }
+
+    /// The server's random sequences.
+    pub fn random_sequences(
+        &self,
+    ) -> &Arc<std::sync::Mutex<crate::random_sequences::RandomSequences>> {
+        &self.random_sequences
+    }
+
+    /// Sets `randValue`, the LCG of random tick positions (parity scenarios start it from a
+    /// known value).
+    pub fn set_rand_value(&mut self, value: i32) {
+        self.rand_value = value;
+    }
+
+    /// Sets the rain and thunder levels (the world's weather after `advanceWeatherCycle`).
+    pub fn set_weather(&mut self, weather: crate::survival::weather::LevelWeather) {
+        self.weather = weather;
+    }
+
+    /// The rain and thunder levels.
+    pub fn weather(&self) -> crate::survival::weather::LevelWeather {
+        self.weather
+    }
+
+    /// `isRaining`.
+    pub fn is_raining(&self) -> bool {
+        self.weather.is_raining()
+    }
+
+    /// `isThundering`.
+    pub fn is_thundering(&self) -> bool {
+        self.weather.is_thundering()
+    }
+
+    /// `Level.precipitationAt(pos)`: what falls at `pos` now.
+    pub fn precipitation_at(&self, pos: BlockPos) -> crate::block::weather::Precipitation {
+        use crate::block::weather::Precipitation;
+        if !self.is_raining() || self.light(pos).0 < 15 {
+            return Precipitation::None;
+        }
+        if self.heightmap_y(vanillite_chunk::HeightmapKind::MotionBlocking, pos) > pos.y {
+            return Precipitation::None;
+        }
+        crate::block::weather::biome_precipitation(self, pos, pos)
+    }
+
+    /// `Level.isRainingAt(pos)`.
+    pub fn is_raining_at(&self, pos: BlockPos) -> bool {
+        self.precipitation_at(pos) == crate::block::weather::Precipitation::Rain
+    }
+
+    /// `getHeightmapPos(kind, pos).getY()`: the first free y of the column; the world's bottom
+    /// outside live chunks.
+    pub fn heightmap_y(&self, kind: vanillite_chunk::HeightmapKind, pos: BlockPos) -> i32 {
+        self.chunks
+            .chunk(pos.chunk())
+            .and_then(|c| {
+                let map = c.chunk.heightmaps().get(kind)?;
+                let relative = map.get((pos.x & 15) as u32, (pos.z & 15) as u32);
+                Some(c.chunk.min_y() + relative as i32)
+            })
+            .unwrap_or(self.min_y)
+    }
+
+    /// `getRandomSequence(key)`: runs `f` with the named random of loot tables.
+    pub fn with_random_sequence<R>(
+        &self,
+        key: &str,
+        f: impl FnOnce(&mut vanillite_base::random::XoroshiroRandom) -> R,
+    ) -> R {
+        let mut sequences = self
+            .random_sequences
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        f(sequences.get(key))
     }
 
     /// The game time.
@@ -973,6 +1200,20 @@ impl Level {
         }
     }
 
+    /// `ServerLevel.updateNeighboursOnBlockSet(pos, oldState)`: the neighbour updates a command
+    /// skipped while placing (`setblock`, `fill`, `clone`).
+    pub fn update_neighbours_on_block_set(&mut self, pos: BlockPos, old: BlockState) {
+        let state = self.block(pos);
+        let block = state.block();
+        if old.block() != block {
+            self.affect_neighbors_after_removal(old, pos, false);
+        }
+        self.update_neighbors_at(pos, block);
+        if Self::has_analog_output(state) {
+            self.update_neighbour_for_output_signal(pos, block);
+        }
+    }
+
     /// `state.affectNeighborsAfterRemoval(level, pos, movedByPiston)`.
     pub(crate) fn affect_neighbors_after_removal(
         &mut self,
@@ -1002,10 +1243,24 @@ impl Level {
         }
     }
 
+    /// Restarts the seeds of new entities' randoms from `seed` (on this thread, see
+    /// [`crate::mob::set_entity_seed_stream`]).
+    pub fn set_entity_seed(&mut self, seed: i64) {
+        crate::mob::set_entity_seed_stream(Some(seed));
+    }
+
+    /// The own random of a new entity (`Entity.random`); every entity the level creates
+    /// takes one, in creation order.
+    pub fn new_entity_random(&mut self) -> LegacyRandom {
+        LegacyRandom::new(crate::mob::new_entity_seed())
+    }
+
     /// A random UUID for a new entity (`Mth.createInsecureUUID(entity.random)`): drawn from a
     /// random of its own, as Vanilla's entities draw it from theirs, so spawning entities does
     /// not shift the level random.
     pub fn new_uuid(&mut self) -> u128 {
+        // A new entity: it takes its seed like Vanilla's constructor.
+        crate::mob::new_entity_seed();
         let most = self.sound_seeds.next_long() as u64;
         let least = self.sound_seeds.next_long() as u64;
         // Version 4, IETF variant.

@@ -69,6 +69,11 @@ impl<'a> DensityCompiler<'a> {
         id
     }
 
+    /// The program compiled so far.
+    pub fn program(&self) -> &Program {
+        &self.program
+    }
+
     /// The finished program.
     pub fn finish(self) -> Program {
         self.program

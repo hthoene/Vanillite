@@ -47,6 +47,10 @@ pub struct PlayerEntry {
     pub sink: Arc<dyn PacketSink>,
     /// The receiver side of the player's chat.
     pub inbox: Arc<Mutex<ChatInbox>>,
+    /// The remote IP address (`getIpAddress`), for IP bans.
+    pub ip: String,
+    /// The client allows being listed in the server list sample (`allowsListing`).
+    pub allows_listing: bool,
 }
 
 /// A player's connection with its chat inbox.
@@ -168,6 +172,26 @@ impl PlayerList {
         }
     }
 
+    /// A system message to the players whose name passes `to` (`broadcastSystemToTeam`,
+    /// `broadcastSystemToAllExceptTeam`), encoded once.
+    pub fn broadcast_system_to(&self, content: Component, to: impl Fn(&str) -> bool) {
+        let shared = SharedPacket::of(&SystemChat {
+            content,
+            overlay: false,
+        });
+        let receivers: Vec<Receiver> = self
+            .lock()
+            .iter()
+            .filter(|p| to(&p.name))
+            .map(|p| (Arc::clone(&p.sink), Arc::clone(&p.inbox)))
+            .collect();
+        for (sink, inbox) in receivers {
+            if lock_inbox(&inbox).accepts_system(false) {
+                sink.send_shared(&shared);
+            }
+        }
+    }
+
     /// `broadcastChatMessage`: a chat message to every player that accepts chat. Players
     /// with too many unacknowledged messages are kicked.
     pub fn broadcast_chat(
@@ -194,6 +218,24 @@ impl PlayerList {
             .filter(|p| Some(p.uuid) != except)
             .map(|p| (Arc::clone(&p.sink), Arc::clone(&p.inbox)))
             .collect()
+    }
+
+    /// Sends encoded packets, in order, to every player that passes `to`.
+    pub fn broadcast_all_to(&self, packets: &[Arc<SharedPacket>], to: impl Fn(Uuid) -> bool) {
+        if packets.is_empty() {
+            return;
+        }
+        let sinks: Vec<Arc<dyn PacketSink>> = self
+            .lock()
+            .iter()
+            .filter(|p| to(p.uuid))
+            .map(|p| Arc::clone(&p.sink))
+            .collect();
+        for sink in sinks {
+            for packet in packets {
+                sink.send_shared(packet);
+            }
+        }
     }
 
     /// Sends a packet to every player except `except`. The packet is encoded once.

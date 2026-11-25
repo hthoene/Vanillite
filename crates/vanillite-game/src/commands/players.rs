@@ -1,8 +1,8 @@
-//! Syntax of the player commands: gamemode, help, list, msg, say, teleport.
+//! Syntax of the player commands: advancement, gamemode, help, list, msg, say, teleport.
 
 use vanillite_command::{ArgumentType, Dispatcher, StringKind, argument, literal};
 
-use super::{CommandId, level};
+use super::{AdvancementMode, CommandId, level, suggest};
 
 fn players() -> ArgumentType {
     ArgumentType::Entity {
@@ -27,6 +27,44 @@ fn entities() -> ArgumentType {
 
 fn vec3() -> ArgumentType {
     ArgumentType::Vec3 { center: true }
+}
+
+/// `AdvancementCommands`.
+pub(super) fn register_advancement(d: &mut Dispatcher<CommandId>) {
+    let action = |name: &str, grant: bool| {
+        let id = |mode| CommandId::Advancement { grant, mode };
+        let advancement = |mode| {
+            argument(
+                "advancement",
+                ArgumentType::ResourceKey {
+                    registry: "minecraft:advancement",
+                },
+            )
+            .executes(id(mode))
+        };
+        literal(name).then(
+            argument("targets", players())
+                .then(
+                    literal("only").then(
+                        advancement(AdvancementMode::Only).then(
+                            argument("criterion", ArgumentType::String(StringKind::GreedyPhrase))
+                                .suggests(suggest::ADVANCEMENT_CRITERIA)
+                                .executes(id(AdvancementMode::Criterion)),
+                        ),
+                    ),
+                )
+                .then(literal("from").then(advancement(AdvancementMode::From)))
+                .then(literal("until").then(advancement(AdvancementMode::Until)))
+                .then(literal("through").then(advancement(AdvancementMode::Through)))
+                .then(literal("everything").executes(id(AdvancementMode::Everything))),
+        )
+    };
+    d.register(
+        literal("advancement")
+            .requires(level::GAMEMASTERS)
+            .then(action("grant", true))
+            .then(action("revoke", false)),
+    );
 }
 
 /// `GameModeCommand`.

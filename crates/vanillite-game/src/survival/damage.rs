@@ -66,9 +66,10 @@ pub mod tag {
     pub const IS_EXPLOSION: u32 = 1 << 16;
     pub const IS_PROJECTILE: u32 = 1 << 17;
     pub const BYPASSES_SHIELD: u32 = 1 << 18;
+    pub const PANIC_ENVIRONMENTAL_CAUSES: u32 = 1 << 19;
 
     /// Tag names and their bits.
-    pub const NAMES: [(&str, u32); 19] = [
+    pub const NAMES: [(&str, u32); 20] = [
         ("minecraft:is_fall", IS_FALL),
         ("minecraft:is_fire", IS_FIRE),
         ("minecraft:is_drowning", IS_DROWNING),
@@ -94,6 +95,10 @@ pub mod tag {
         ("minecraft:is_explosion", IS_EXPLOSION),
         ("minecraft:is_projectile", IS_PROJECTILE),
         ("minecraft:bypasses_shield", BYPASSES_SHIELD),
+        (
+            "minecraft:panic_environmental_causes",
+            PANIC_ENVIRONMENTAL_CAUSES,
+        ),
     ];
 }
 
@@ -126,6 +131,7 @@ pub struct DamageTypes {
     pub lava: DamageKind,
     pub hot_floor: DamageKind,
     pub in_wall: DamageKind,
+    pub outside_border: DamageKind,
     pub drown: DamageKind,
     pub starve: DamageKind,
     pub fall: DamageKind,
@@ -139,6 +145,18 @@ pub struct DamageTypes {
     pub arrow: DamageKind,
     pub explosion: DamageKind,
     pub player_explosion: DamageKind,
+    pub magic: DamageKind,
+    pub indirect_magic: DamageKind,
+    pub wither: DamageKind,
+    pub mob_projectile: DamageKind,
+    pub sting: DamageKind,
+    pub thorns: DamageKind,
+    pub freeze: DamageKind,
+    pub wither_skull: DamageKind,
+    pub dragon_breath: DamageKind,
+    pub sonic_boom: DamageKind,
+    pub fireworks: DamageKind,
+    pub fly_into_wall: DamageKind,
 }
 
 /// The built-in types of Vanilla 26.3 with their values, for servers without data packs (tests).
@@ -214,6 +232,7 @@ impl DamageTypes {
             lava: find("minecraft:lava"),
             hot_floor: find("minecraft:hot_floor"),
             in_wall: find("minecraft:in_wall"),
+            outside_border: find("minecraft:outside_border"),
             drown: find("minecraft:drown"),
             starve: find("minecraft:starve"),
             fall: find("minecraft:fall"),
@@ -227,6 +246,18 @@ impl DamageTypes {
             arrow: find("minecraft:arrow"),
             explosion: find("minecraft:explosion"),
             player_explosion: find("minecraft:player_explosion"),
+            magic: find("minecraft:magic"),
+            indirect_magic: find("minecraft:indirect_magic"),
+            wither: find("minecraft:wither"),
+            mob_projectile: find("minecraft:mob_projectile"),
+            sting: find("minecraft:sting"),
+            thorns: find("minecraft:thorns"),
+            freeze: find("minecraft:freeze"),
+            wither_skull: find("minecraft:wither_skull"),
+            dragon_breath: find("minecraft:dragon_breath"),
+            sonic_boom: find("minecraft:sonic_boom"),
+            fireworks: find("minecraft:fireworks"),
+            fly_into_wall: find("minecraft:fly_into_wall"),
             types,
         }
     }
@@ -248,6 +279,26 @@ impl DamageTypes {
                     },
                 )
                 .collect(),
+        )
+    }
+
+    /// The kind of a type id, e.g. `minecraft:generic`.
+    pub fn kind(&self, id: &str) -> Option<DamageKind> {
+        self.types
+            .iter()
+            .position(|t| t.id == id)
+            .and_then(|i| u16::try_from(i).ok())
+            .map(DamageKind)
+    }
+
+    /// The kind of a damage type by id (`minecraft:fireball`); the first type when unknown.
+    pub fn named(&self, id: &str) -> DamageKind {
+        DamageKind(
+            self.types
+                .iter()
+                .position(|t| t.id == id)
+                .and_then(|i| u16::try_from(i).ok())
+                .unwrap_or(0),
         )
     }
 
@@ -292,6 +343,9 @@ pub struct DamageSource {
     pub cause_name: Option<&'static str>,
     /// `getSecondsToDisableBlocking` of the attacker's weapon (axes disable shields).
     pub disable_shield_seconds: f32,
+    /// The motion of the projectile that hit, which the knockback follows
+    /// (`Projectile.calculateHorizontalHurtKnockbackDirection`).
+    pub projectile_motion: Option<Vec3>,
 }
 
 impl DamageSource {
@@ -305,6 +359,18 @@ impl DamageSource {
             cause_is_mob: false,
             cause_name: None,
             disable_shield_seconds: 0.0,
+            projectile_motion: None,
+        }
+    }
+
+    /// The horizontal direction towards the attacker for the default knockback
+    /// (`hurtServer`): against the projectile's motion, else towards the source position.
+    pub fn knockback_direction(&self, target: Vec3) -> (f64, f64) {
+        if let Some(m) = self.projectile_motion {
+            (-m.x, -m.z)
+        } else {
+            self.position
+                .map_or((0.0, 0.0), |p| (p.x - target.x, p.z - target.z))
         }
     }
 

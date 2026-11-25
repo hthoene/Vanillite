@@ -12,7 +12,7 @@ use vanillite_worldgen::behaviour::{PosExt, StateExt, with_properties_of};
 use vanillite_worldgen::biome::{BiomeManager, BiomeRegistry};
 
 use super::{drops, fluid, is_liquid};
-use crate::level::Level;
+use crate::level::{Level, update};
 
 /// The biomes of a world as far as the simulation needs them: temperatures for freezing.
 #[derive(Debug)]
@@ -25,20 +25,131 @@ pub struct Climate {
     pub sea_level: i32,
 }
 
-/// `ServerLevel.tickPrecipitation(pos)`: water at the surface of cold biomes freezes. Snow
-/// layers and cauldrons fill only while it rains; there is no weather yet.
-pub fn tick_precipitation(level: &mut Level, pos: BlockPos) {
-    let Some(top_y) = level.chunks.chunk(pos.chunk()).and_then(|c| {
-        let map = c.chunk.heightmaps().get(HeightmapKind::MotionBlocking)?;
-        let relative = map.get((pos.x & 15) as u32, (pos.z & 15) as u32);
-        Some(c.chunk.min_y() + relative as i32)
-    }) else {
-        return;
+/// `Biome.Precipitation`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Precipitation {
+    None,
+    Rain,
+    Snow,
+}
+
+/// `Biome.getPrecipitationAt(pos, seaLevel)` of the biome at `biome_pos`.
+pub fn biome_precipitation(level: &Level, biome_pos: BlockPos, pos: BlockPos) -> Precipitation {
+    let Some(climate) = level.climate() else {
+        return Precipitation::Rain;
     };
-    let top = BlockPos::new(pos.x, top_y, pos.z);
+    let data = climate.biomes.get(level.biome(biome_pos));
+    if !data.has_precipitation {
+        Precipitation::None
+    } else if data.warm_enough_to_rain(pos.x, pos.y, pos.z, climate.sea_level) {
+        Precipitation::Rain
+    } else {
+        Precipitation::Snow
+    }
+}
+
+/// `ServerLevel.tickPrecipitation(pos)`: water at the surface of cold biomes freezes; while it
+/// rains, snow layers grow in cold biomes and blocks below the surface get the precipitation
+/// (`handlePrecipitation`: cauldrons fill).
+pub fn tick_precipitation(level: &mut Level, pos: BlockPos) {
+    let top = BlockPos::new(
+        pos.x,
+        level.heightmap_y(HeightmapKind::MotionBlocking, pos),
+        pos.z,
+    );
     let below = top.below();
     if should_freeze(level, top, below) {
         level.set_block_and_update(below, ids::ICE.default_state());
+    }
+    if !level.is_raining() {
+        return;
+    }
+    let max_height = level.settings.max_snow_accumulation_height;
+    if max_height > 0 && should_snow(level, top) {
+        let state = level.block(top);
+        if state.is(ids::SNOW) {
+            let layers: i32 = state
+                .value("layers")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1);
+            if layers < max_height.min(8) {
+                // `Block.pushEntitiesUp` moves entities in the way; scenario worlds have none.
+                let grown = state
+                    .with("layers", &(layers + 1).to_string())
+                    .unwrap_or(state);
+                level.set_block_and_update(top, grown);
+            }
+        } else {
+            level.set_block_and_update(top, ids::SNOW.default_state());
+        }
+    }
+    let precipitation = biome_precipitation(level, top, below);
+    if precipitation != Precipitation::None {
+        let state = level.block(below);
+        handle_precipitation(level, state, below, precipitation);
+    }
+}
+
+/// `Biome.shouldSnow(level, pos)`.
+fn should_snow(level: &Level, pos: BlockPos) -> bool {
+    if biome_precipitation(level, pos, pos) != Precipitation::Snow {
+        return false;
+    }
+    if !level.in_height(pos.y) || level.light(pos).1 >= 10 {
+        return false;
+    }
+    let state = level.block(pos);
+    (state.is_air() || state.is(ids::SNOW)) && level.can_survive(ids::SNOW.default_state(), pos)
+}
+
+/// `CauldronBlock.shouldHandlePrecipitation`.
+fn cauldron_fills(level: &mut Level, precipitation: Precipitation) -> bool {
+    match precipitation {
+        Precipitation::Rain => level.random().next_float() < 0.05,
+        Precipitation::Snow => level.random().next_float() < 0.1,
+        Precipitation::None => false,
+    }
+}
+
+/// `Block.handlePrecipitation`: cauldrons fill with water or powder snow.
+fn handle_precipitation(
+    level: &mut Level,
+    state: BlockState,
+    pos: BlockPos,
+    precipitation: Precipitation,
+) {
+    let block_change = crate::level::game_event::events().block_change;
+    if state.is(ids::CAULDRON) {
+        if cauldron_fills(level, precipitation) {
+            let filled = if precipitation == Precipitation::Rain {
+                ids::WATER_CAULDRON
+            } else {
+                ids::POWDER_SNOW_CAULDRON
+            };
+            level.set_block_and_update(pos, filled.default_state());
+            level.game_event_at(None, block_change, pos);
+        }
+    } else if state.is(ids::WATER_CAULDRON) || state.is(ids::POWDER_SNOW_CAULDRON) {
+        let kind = if state.is(ids::WATER_CAULDRON) {
+            Precipitation::Rain
+        } else {
+            Precipitation::Snow
+        };
+        let fill: i32 = state
+            .value("level")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3);
+        if cauldron_fills(level, precipitation) && fill != 3 && precipitation == kind {
+            let new = state
+                .with("level", &(fill + 1).to_string())
+                .unwrap_or(state);
+            level.set_block_and_update(pos, new);
+            level.game_event_block(
+                block_change,
+                pos,
+                crate::level::game_event::GameEventContext::with_state(None, new),
+            );
+        }
     }
 }
 
@@ -67,17 +178,111 @@ fn should_freeze(level: &Level, biome_pos: BlockPos, pos: BlockPos) -> bool {
     !surrounded
 }
 
-/// `IceBlock.randomTick`: melts next to bright block light.
+/// `IceBlock.randomTick` (frosted ice too): melts next to bright block light.
 pub(super) fn ice_random_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
     if level.light(pos).1 > 11 - i32::from(state.light_dampening()) {
-        // `IceBlock.melt`; dimensions where water evaporates have no natural ice light.
-        if level.settings.water_evaporates {
-            level.remove_block(pos, false);
-        } else {
-            level.set_block_and_update(pos, ids::WATER.default_state());
-            level.neighbor_changed(pos, ids::WATER);
+        melt(level, state, pos);
+    }
+}
+
+/// `IceBlock.melt`: water, or nothing where water evaporates.
+fn melt(level: &mut Level, state: BlockState, pos: BlockPos) {
+    if level.settings.water_evaporates {
+        level.remove_block(pos, false);
+    } else {
+        level.set_block_and_update(pos, ids::WATER.default_state());
+        level.neighbor_changed(pos, ids::WATER);
+        level.game_event_block(
+            crate::level::game_event::events().block_destroy,
+            pos,
+            crate::level::game_event::GameEventContext::with_state(None, state),
+        );
+    }
+}
+
+/// `Mth.nextInt(random, min, max)` on the level random.
+fn next_int_between(level: &mut Level, min: i32, max: i32) -> i32 {
+    if min >= max {
+        min
+    } else {
+        level.random().next_int_bounded(max - min + 1) + min
+    }
+}
+
+/// `FrostedIceBlock.onPlace`.
+pub(super) fn frosted_ice_on_place(
+    level: &mut Level,
+    state: BlockState,
+    pos: BlockPos,
+    _old: BlockState,
+    _moved: bool,
+) {
+    let delay = next_int_between(level, 60, 120);
+    level.schedule_block_tick(pos, state.block(), delay);
+}
+
+/// `FrostedIceBlock.tick`: ages and melts in bright light, faster with few frosted neighbours.
+pub(super) fn frosted_ice_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
+    let block = state.block();
+    if level.random().next_int_bounded(3) == 0 || fewer_frosted_neighbours(level, pos, block, 4) {
+        // `getMaxLocalRawBrightness`; the End would use block light (no frosted ice there).
+        let brightness = level.max_local_raw_brightness(pos);
+        let age = state.int("age").unwrap_or(0);
+        if brightness > 11 - age - i32::from(state.light_dampening())
+            && slightly_melt(level, state, pos)
+        {
+            for direction in Direction::ALL {
+                let neighbour_pos = pos.relative(direction);
+                let neighbour = level.block(neighbour_pos);
+                if neighbour.is(block) && !slightly_melt(level, neighbour, neighbour_pos) {
+                    let delay = next_int_between(level, 20, 40);
+                    level.schedule_block_tick(neighbour_pos, block, delay);
+                }
+            }
+            return;
         }
     }
+    let delay = next_int_between(level, 20, 40);
+    level.schedule_block_tick(pos, block, delay);
+}
+
+/// `FrostedIceBlock.slightlyMelt`: one age older, or melted at age 3.
+fn slightly_melt(level: &mut Level, state: BlockState, pos: BlockPos) -> bool {
+    let age = state.int("age").unwrap_or(0);
+    if age < 3 {
+        level.set_block(pos, state.set_int("age", age + 1), update::CLIENTS);
+        false
+    } else {
+        melt(level, state, pos);
+        true
+    }
+}
+
+/// `FrostedIceBlock.neighborChanged`: melts once fewer than two frosted neighbours are left.
+pub(super) fn frosted_ice_neighbor_changed(
+    level: &mut Level,
+    state: BlockState,
+    pos: BlockPos,
+    source: BlockId,
+    _moved: bool,
+) {
+    if source == state.block() && fewer_frosted_neighbours(level, pos, source, 2) {
+        melt(level, state, pos);
+    }
+}
+
+/// `FrostedIceBlock.fewerNeigboursThan`.
+fn fewer_frosted_neighbours(level: &Level, pos: BlockPos, block: BlockId, limit: i32) -> bool {
+    let mut count = 0;
+    for direction in Direction::ALL {
+        if level.block(pos.relative(direction)).is(block) {
+            count += 1;
+            if count >= limit {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 /// `SnowLayerBlock.randomTick`: melts next to bright block light.
@@ -101,6 +306,10 @@ pub(super) fn redstone_ore_random_tick(level: &mut Level, state: BlockState, pos
 struct Weathering {
     age: u8,
     next: Option<BlockId>,
+    /// The unaffected stage (`WeatheringCopper.getFirst`).
+    first: BlockId,
+    /// The stage before (`getPrevious`).
+    previous: Option<BlockId>,
 }
 
 fn weathering(block: BlockId) -> Option<Weathering> {
@@ -145,7 +354,42 @@ fn weathering_of(name: &str) -> Option<Weathering> {
     Some(Weathering {
         age: age as u8,
         next: (age < 3).then(|| named(age + 1)).flatten(),
+        first: named(0)?,
+        previous: (age > 0).then(|| named(age - 1)).flatten(),
     })
+}
+
+/// Whether a block is weathering copper of any age (`instanceof WeatheringCopper`).
+pub fn is_weathering_copper(block: BlockId) -> bool {
+    weathering(block).is_some()
+}
+
+/// Whether a block is waxed copper (`HoneycombItem.WAX_OFF_BY_BLOCK` has it).
+pub fn is_waxed_copper(block: BlockId) -> bool {
+    static TABLE: OnceLock<Box<[bool]>> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        (0..BLOCK_COUNT)
+            .map(|id| {
+                BlockId(id as u16)
+                    .name()
+                    .strip_prefix("minecraft:waxed_")
+                    .and_then(|base| BlockId::by_name(&format!("minecraft:{base}")))
+                    .is_some_and(is_weathering_copper)
+            })
+            .collect()
+    })[usize::from(block.0)]
+}
+
+/// `WeatheringCopper.getFirst(state)`: the unaffected stage with the same properties.
+pub fn copper_first(state: BlockState) -> Option<BlockState> {
+    weathering(state.block()).map(|w| with_properties_of(w.first, state))
+}
+
+/// `WeatheringCopper.getPrevious(state)`: the stage before with the same properties.
+pub fn copper_previous(state: BlockState) -> Option<BlockState> {
+    weathering(state.block())
+        .and_then(|w| w.previous)
+        .map(|b| with_properties_of(b, state))
 }
 
 /// Whether a block weathers (`WeatheringCopper` that is not oxidized yet).

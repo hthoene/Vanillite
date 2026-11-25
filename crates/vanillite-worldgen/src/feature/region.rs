@@ -28,6 +28,19 @@ pub mod flags {
     pub const KNOWN_SHAPE: i32 = 16;
 }
 
+/// A live world a feature places into (`ServerLevel` as the feature's level, e.g. a growing
+/// sapling): writes and scheduled ticks go to the world with all their side effects.
+pub trait LiveLevel {
+    /// `setBlock(pos, state, flags)` in the world, with neighbour and shape updates.
+    fn set_block(&mut self, pos: BlockPos, state: BlockState, flags: i32) -> bool;
+    /// `scheduleTick(pos, block, delay)`.
+    fn schedule_block_tick(&mut self, pos: BlockPos, block: BlockId, delay: i32);
+    /// `scheduleTick(pos, fluid, delay)`.
+    fn schedule_fluid_tick(&mut self, pos: BlockPos, fluid: FluidTickKind, delay: i32);
+    /// The blocks the world changed since the last call, with their states now.
+    fn take_changes(&mut self, out: &mut Vec<(BlockPos, BlockState)>);
+}
+
 /// The chunks around a centre chunk during the features stage, with Vanilla's
 /// `WorldGenRegion` semantics: reads anywhere in the region, writes within the write radius,
 /// `VOID_AIR` outside the build height.
@@ -48,6 +61,12 @@ pub struct WorldGenRegion<'a> {
     /// The structure starts the centre chunk references (Vanilla reads them through the
     /// region's `StructureManager`).
     structure_starts: ReferencedStarts,
+    /// Every successful `setBlock` in call order (position, state, flags), when recorded.
+    journal: Option<Vec<(BlockPos, BlockState, i32)>>,
+    /// Live mode: the world the writes go to; the chunks mirror its blocks.
+    live: Option<Box<dyn LiveLevel + 'a>>,
+    /// Scratch list of the live world's changes.
+    live_changes: Vec<(BlockPos, BlockState)>,
 }
 
 impl<'a> WorldGenRegion<'a> {
@@ -83,7 +102,48 @@ impl<'a> WorldGenRegion<'a> {
             generation_context: WorldGenerationContext::new(min_y, height, sea_level),
             has_sky_light: true,
             structure_starts: ReferencedStarts::empty(),
+            journal: None,
+            live: None,
+            live_changes: Vec::new(),
         }
+    }
+
+    /// Records every following successful `setBlock` (`/place` replays them on a live world).
+    pub fn record_writes(&mut self) {
+        self.journal = Some(Vec::new());
+    }
+
+    /// The recorded writes in call order: position, state and update flags.
+    pub fn take_writes(&mut self) -> Vec<(BlockPos, BlockState, i32)> {
+        self.journal.take().unwrap_or_default()
+    }
+
+    /// Live mode: features write into `live` (no write zone, no placeholders, no
+    /// post-processing marks) and the chunks, copies of the world's, follow every block the
+    /// world changes, so later reads see the world as it is.
+    pub fn set_live(&mut self, live: Box<dyn LiveLevel + 'a>) {
+        self.live = Some(live);
+    }
+
+    /// The live world in live mode.
+    pub fn live_level(&mut self) -> Option<&mut (dyn LiveLevel + 'a)> {
+        self.live.as_deref_mut()
+    }
+
+    /// Writes the blocks the live world changed into the copies.
+    fn mirror_live(&mut self) {
+        let Some(live) = self.live.as_deref_mut() else {
+            return;
+        };
+        let mut changes = std::mem::take(&mut self.live_changes);
+        changes.clear();
+        live.take_changes(&mut changes);
+        for &(pos, state) in &changes {
+            if self.has_chunk(pos.x >> 4, pos.z >> 4) {
+                self.chunk_mut(pos).set_block(pos.x, pos.y, pos.z, state);
+            }
+        }
+        self.live_changes = changes;
     }
 
     /// Sets the structure starts the centre chunk references.
@@ -252,6 +312,11 @@ impl<'a> WorldGenRegion<'a> {
     /// block entity was already created there) or removes the block entity placeholder and, unless `flags` has [`flags::KNOWN_SHAPE`], marks the
     /// state's post-processing position. Returns `false` outside the write zone.
     pub fn set_block(&mut self, pos: BlockPos, state: BlockState, update_flags: i32) -> bool {
+        if let Some(live) = self.live.as_deref_mut() {
+            let changed = live.set_block(pos, state, update_flags);
+            self.mirror_live();
+            return changed;
+        }
         if !self.ensure_can_write(pos) {
             return false;
         }
@@ -279,6 +344,9 @@ impl<'a> WorldGenRegion<'a> {
             && let Some(post) = crate::behaviour::post_process_pos(self, state, pos)
         {
             self.mark_post_processing(post);
+        }
+        if let Some(journal) = &mut self.journal {
+            journal.push((pos, state, update_flags));
         }
         true
     }
@@ -331,6 +399,9 @@ impl<'a> WorldGenRegion<'a> {
 
     /// `scheduleTick(pos, block, 0)` (the delay of generation ticks is always 0).
     pub fn schedule_block_tick(&mut self, pos: BlockPos, block: BlockId) {
+        if let Some(live) = self.live.as_deref_mut() {
+            return live.schedule_block_tick(pos, block, 0);
+        }
         self.chunk_mut(pos)
             .block_ticks_mut()
             .schedule(block, pos, 0);
@@ -338,6 +409,9 @@ impl<'a> WorldGenRegion<'a> {
 
     /// `scheduleTick(pos, fluid, 0)`; `fluid` is the fluid's source block (water or lava).
     pub fn schedule_fluid_tick(&mut self, pos: BlockPos, fluid: FluidTickKind) {
+        if let Some(live) = self.live.as_deref_mut() {
+            return live.schedule_fluid_tick(pos, fluid, 0);
+        }
         self.chunk_mut(pos)
             .fluid_ticks_mut()
             .schedule(fluid, pos, 0);

@@ -4,12 +4,18 @@
 //!
 //! ```text
 //! cargo run --profile release-fast -p vanillite-server --example chunk_bench -- \
-//!     --radius 16 --threads 4 [--tick-ms 50] [--pump] [--seed N] [--dir /tmp/bench] [--load]
+//!     --radius 16 --threads 4 [--tick-ms 50] [--pump] [--seed N] [--dir /tmp/bench] [--load] \\
+//!     [--anti-xray] [--fly N]
 //! ```
 //!
 //! `--tick-ms` is the world tick interval: the runtime applies results and starts jobs once per
 //! tick, as on a server. `--load` saves the generated chunks and then measures loading them
-//! from disk into a fresh runtime. Output is one JSON object per phase on stdout.
+//! from disk into a fresh runtime. `--anti-xray` measures encoding the chunk packets of the
+//! generated chunks without Anti-Xray and in its `hide` and `obfuscate` modes (Paper's lists).
+//! `--fly N` (with `--load`) then moves a view distance 10 player ticket `N` chunks along x
+//! through the saved terrain, one chunk at a time, and reports the chunks read per chunk moved
+//! and the chunks in memory (`--radius` must cover the flight and the view).
+//! Output is one JSON object per phase on stdout.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -168,6 +174,8 @@ struct Args {
     load: bool,
     max_jobs: usize,
     pump: bool,
+    anti_xray: bool,
+    fly: i32,
 }
 
 fn args() -> Args {
@@ -179,6 +187,8 @@ fn args() -> Args {
         dir: std::env::temp_dir().join("vanillite-chunk-bench"),
         load: false,
         pump: false,
+        anti_xray: false,
+        fly: 0,
         max_jobs: ChunkSettings::default().max_jobs,
     };
     let mut it = std::env::args().skip(1);
@@ -193,6 +203,8 @@ fn args() -> Args {
             "--max-jobs" => a.max_jobs = value().parse().expect("max jobs"),
             "--load" => a.load = true,
             "--pump" => a.pump = true,
+            "--anti-xray" => a.anti_xray = true,
+            "--fly" => a.fly = value().parse().expect("fly"),
             other => panic!("unknown flag {other}"),
         }
     }
@@ -239,7 +251,18 @@ fn run(
     wake: Option<&mpsc::Receiver<()>>,
 ) -> (Duration, Duration) {
     let start = Instant::now();
-    let _ticket = chunks.add_ticket(ChunkPos::new(0, 0), FULL_LEVEL - radius as u8);
+    // One ticket reaches at most 32 chunks; larger areas get a ticket per chunk, as a
+    // pregenerator does.
+    let mut tickets = Vec::new();
+    if radius < i32::from(FULL_LEVEL) {
+        tickets.push(chunks.add_ticket(ChunkPos::new(0, 0), FULL_LEVEL - radius as u8));
+    } else {
+        for z in -radius..=radius {
+            for x in -radius..=radius {
+                tickets.push(chunks.add_ticket(ChunkPos::new(x, z), FULL_LEVEL));
+            }
+        }
+    }
     let mut first = None;
     let total = (2 * radius + 1).pow(2) as usize;
     loop {
@@ -413,6 +436,9 @@ fn main() {
     let cpu = cpu_ms();
     let times = run(&mut chunks, a.radius, a.tick, wake);
     report("generate", &a, &chunks, &timings, times, cpu_ms() - cpu);
+    if a.anti_xray {
+        anti_xray(&chunks, a.radius - 1);
+    }
     if a.load {
         let save = Instant::now();
         chunks.save_all(true);
@@ -424,6 +450,12 @@ fn main() {
         eprintln!("save {:?}", save.elapsed());
         drop(chunks);
         timings.take();
+        let (codec_for_fly, generator_for_fly, light_for_fly, executor_for_fly) = (
+            Arc::clone(&codec),
+            Arc::clone(&generator),
+            Arc::clone(&light),
+            Arc::clone(&executor),
+        );
         let slots = ChunkSlots {
             store: store(),
             codec,
@@ -431,12 +463,121 @@ fn main() {
             light,
             executor,
         };
-        let mut chunks = Chunks::new(info, settings, slots);
+        let mut chunks = Chunks::new(info.clone(), settings, slots);
         if a.pump {
             chunks.set_waker(Arc::new(waker));
         }
         let cpu = cpu_ms();
         let times = run(&mut chunks, a.radius, a.tick, wake);
         report("load", &a, &chunks, &timings, times, cpu_ms() - cpu);
+        if a.fly > 0 {
+            drop(chunks);
+            let settings = ChunkSettings {
+                view_distance: 10,
+                ..settings
+            };
+            let slots = ChunkSlots {
+                store: store(),
+                codec: Arc::clone(&codec_for_fly),
+                generator: Arc::clone(&generator_for_fly),
+                light: Arc::clone(&light_for_fly),
+                executor: Arc::clone(&executor_for_fly),
+            };
+            let mut chunks = Chunks::new(info.clone(), settings, slots);
+            fly(&mut chunks, &timings, a.fly, a.tick);
+        }
+    }
+}
+
+/// Moves a player ticket `distance` chunks along x through stored terrain, one chunk at a time,
+/// waiting each time until its view is full, and reports reads and chunks in memory.
+fn fly(chunks: &mut Chunks, timings: &Timings, distance: i32, tick: Duration) {
+    let view = 11;
+    let level = chunks.player_ticket_level();
+    let start = -distance / 2;
+    let ticket = chunks.add_ticket(ChunkPos::new(start, 0), level);
+    let mut visibility = Vec::new();
+    let mut settle = |chunks: &mut Chunks, x: i32| loop {
+        chunks.tick();
+        visibility.clear();
+        chunks.take_visibility_changes(&mut visibility);
+        let full = (-view..=view)
+            .flat_map(|dz| (-view..=view).map(move |dx| (dx, dz)))
+            .all(|(dx, dz)| chunks.chunk(ChunkPos::new(x + dx, dz)).is_some());
+        if full && chunks.is_idle() {
+            return;
+        }
+        std::thread::sleep(tick.min(Duration::from_millis(5)));
+    };
+    settle(chunks, start);
+    let in_memory_start = chunks.loaded();
+    timings.take();
+    let begin = Instant::now();
+    let mut in_memory = 0;
+    for x in start + 1..=start + distance {
+        chunks.move_ticket(ticket, ChunkPos::new(x, 0));
+        settle(chunks, x);
+        in_memory += chunks.loaded();
+    }
+    let loads = timings.calls[LOAD].swap(0, Ordering::Relaxed);
+    println!(
+        "{{\"phase\":\"fly\",\"chunks_moved\":{distance},\"in_memory_at_rest\":{in_memory_start},         \"in_memory_avg\":{:.0},\"reads\":{loads},\"reads_per_chunk_moved\":{:.1},\"wall_ms\":{:.0}}}",
+        in_memory as f64 / f64::from(distance),
+        loads as f64 / f64::from(distance),
+        begin.elapsed().as_secs_f64() * 1000.0
+    );
+}
+
+/// Encodes the chunk packet of every full chunk within `radius` without Anti-Xray and in its
+/// modes, single-threaded, and reports time and size per chunk.
+fn anti_xray(chunks: &Chunks, radius: i32) {
+    use vanillite_config::{AntiXrayMode, Profile, RuleSet, WorldRules};
+    let positions: Vec<ChunkPos> = (-radius..=radius)
+        .flat_map(|x| (-radius..=radius).map(move |z| ChunkPos::new(x, z)))
+        .filter(|p| chunks.chunk(*p).is_some())
+        .collect();
+    let mut rules = WorldRules::for_profile(Profile::Paper).anti_xray;
+    for mode in [
+        AntiXrayMode::Disabled,
+        AntiXrayMode::Hide,
+        AntiXrayMode::Obfuscate,
+    ] {
+        rules.engine_mode = mode;
+        let engine = vanillite_server::anti_xray::AntiXray::new(&rules, "minecraft:overworld");
+        let mut bytes = 0usize;
+        let mut body = Vec::new();
+        let rounds = 3;
+        let start = Instant::now();
+        for _ in 0..rounds {
+            for &pos in &positions {
+                let Some(chunk) = chunks.chunk(pos) else {
+                    continue;
+                };
+                body.clear();
+                let masked = engine
+                    .as_ref()
+                    .and_then(|e| e.mask(chunks, pos, &chunk.chunk));
+                vanillite_chunk::packet::encode_chunk_with_sections(
+                    &mut body,
+                    pos.x,
+                    pos.z,
+                    &chunk.chunk,
+                    masked.as_deref().unwrap_or(chunk.chunk.sections()),
+                    &[],
+                );
+                bytes += body.len();
+            }
+        }
+        let n = (positions.len() * rounds).max(1);
+        println!(
+            "{}",
+            serde_json::json!({
+                "phase": "anti-xray",
+                "mode": format!("{mode:?}").to_lowercase(),
+                "chunks": positions.len(),
+                "us_per_chunk": start.elapsed().as_secs_f64() * 1e6 / n as f64,
+                "bytes_per_chunk": bytes / n,
+            })
+        );
     }
 }

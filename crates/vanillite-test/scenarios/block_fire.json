@@ -1,0 +1,231 @@
+{
+  "description": "Fire spreads through a planks hut with a leaf roof, wool, hay and a log, ages and burns blocks away; fire on netherrack and soul fire stay; lava sets nearby planks on fire.",
+  "tier": "fast",
+  "world": {
+    "seed": 8301,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:stone",
+        3
+      ]
+    ]
+  },
+  "rules": {
+    "random_tick_speed": "1024",
+    "fire_spread_radius_around_player": "-1"
+  },
+  "time": 6000,
+  "level_rng": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      12,
+      -56,
+      9
+    ]
+  ],
+  "ticks": 400,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        2,
+        -60,
+        2
+      ],
+      "to": [
+        6,
+        -58,
+        6
+      ],
+      "block": "minecraft:oak_planks"
+    },
+    {
+      "op": "fill",
+      "from": [
+        3,
+        -60,
+        3
+      ],
+      "to": [
+        5,
+        -58,
+        5
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "fill",
+      "from": [
+        2,
+        -57,
+        2
+      ],
+      "to": [
+        6,
+        -57,
+        6
+      ],
+      "block": "minecraft:oak_leaves[distance=7,persistent=true,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -60,
+        4
+      ],
+      "block": "minecraft:white_wool"
+    },
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -59,
+        4
+      ],
+      "block": "minecraft:hay_block[axis=y]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -60,
+        6
+      ],
+      "block": "minecraft:oak_log[axis=y]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -61,
+        8
+      ],
+      "block": "minecraft:netherrack"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -61,
+        8
+      ],
+      "block": "minecraft:soul_sand"
+    },
+    {
+      "op": "set",
+      "pos": [
+        10,
+        -60,
+        1
+      ],
+      "block": "minecraft:lava"
+    },
+    {
+      "op": "fill",
+      "from": [
+        10,
+        -60,
+        2
+      ],
+      "to": [
+        10,
+        -59,
+        2
+      ],
+      "block": "minecraft:oak_planks"
+    },
+    {
+      "op": "set",
+      "pos": [
+        11,
+        -59,
+        1
+      ],
+      "block": "minecraft:oak_planks"
+    },
+    {
+      "op": "fill",
+      "from": [
+        9,
+        -60,
+        0
+      ],
+      "to": [
+        11,
+        -60,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        9,
+        -60,
+        1
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        11,
+        -60,
+        1
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "actions": [
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        4,
+        -60,
+        3
+      ],
+      "block": "minecraft:fire[age=0]"
+    },
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        4,
+        -60,
+        8
+      ],
+      "block": "minecraft:fire[age=0]"
+    },
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        6,
+        -60,
+        8
+      ],
+      "block": "minecraft:soul_fire"
+    },
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        7,
+        -60,
+        4
+      ],
+      "block": "minecraft:fire[age=0]"
+    }
+  ]
+}
