@@ -240,6 +240,8 @@ pub struct Survival {
     pub last_hurt_by_mob: Option<(vanillite_world::entity::EntityId, i32)>,
     /// The item in use (`useItem`): its hand and the ticks it has been used.
     pub using_item: Option<crate::player::using::UsingItem>,
+    /// `recentKineticEnemies`: the entities the spear in use hit, with the game time.
+    pub stabbed: Vec<(vanillite_world::entity::EntityId, i64)>,
     /// The tick until which the shield is on cool-down (an axe hit it).
     pub shield_disabled_until: i32,
     /// `cooldowns`.
@@ -323,6 +325,7 @@ impl Default for Survival {
             last_hurt_mob: None,
             last_hurt_by_mob: None,
             using_item: None,
+            stabbed: Vec::new(),
             shield_disabled_until: 0,
             cooldowns: crate::player::cooldowns::ItemCooldowns::default(),
             carried_maps: Vec::new(),

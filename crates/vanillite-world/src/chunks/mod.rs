@@ -71,6 +71,9 @@ use simulation::SimulationLevels;
 
 use crate::ticks::{LevelTicks, ScheduledTick, TickPriority};
 
+/// Most focus points a world orders its chunk work by ([`Chunks::set_focus`]).
+pub const MAX_FOCUS: usize = 16;
+
 /// An empty slot of the chunk cache (`ChunkPos.INVALID_CHUNK_POS`).
 const NO_CHUNK: ChunkPos = ChunkPos::new(i32::MAX, i32::MAX);
 
@@ -108,14 +111,22 @@ struct DoneSender {
     wake: Arc<WakeState>,
 }
 
+impl WakeState {
+    /// Wakes the owner unless a wake is already pending.
+    fn wake(&self) {
+        if let Some(waker) = self.waker.get()
+            && !self.pending.swap(true, Ordering::AcqRel)
+        {
+            waker();
+        }
+    }
+}
+
 impl DoneSender {
     fn send(&self, done: Done) {
         // A dropped runtime does not want results any more.
-        if self.tx.send(done).is_ok()
-            && let Some(waker) = self.wake.waker.get()
-            && !self.wake.pending.swap(true, Ordering::AcqRel)
-        {
-            waker();
+        if self.tx.send(done).is_ok() {
+            self.wake.wake();
         }
     }
 }
@@ -231,6 +242,11 @@ struct Holder {
     unload_at: Option<u64>,
     /// Queued for a scheduling check.
     queued: bool,
+    /// The order within its level it was queued with ([`Chunks::set_focus`]).
+    rank: u8,
+    /// Set while a queued generation step of this chunk is not needed any more (its level left
+    /// [`MAX_LEVEL`]); the step is then skipped when it starts.
+    unneeded: Option<Arc<AtomicBool>>,
     /// The step whose missing neighbours were last added as dependencies.
     planned: Option<ChunkStatus>,
     /// The chunk's stored entities are live (`ChunkLoadStatus.LOADED`); set by the entity
@@ -324,6 +340,11 @@ enum Done {
         targets: Vec<ProtoChunk>,
         neighbours: Vec<Arc<ProtoChunk>>,
     },
+    /// A generation step that was not needed any more when it started: nothing changed.
+    Skipped {
+        target: ChunkPos,
+        written: Vec<ChunkPos>,
+    },
     Relit {
         center: ChunkPos,
         chunks: Vec<Arc<ProtoChunk>>,
@@ -365,8 +386,10 @@ pub struct Chunks {
     generation_tickets: FxHashMap<ChunkPos, u8>,
     next_ticket: u64,
     level_changes: Vec<LevelChange>,
-    /// Chunks to check, most urgent (lowest level) first.
-    check: BTreeSet<(u8, ChunkPos)>,
+    /// Chunks to check, most urgent (lowest level) first, then by rank (nearest to a focus).
+    check: BTreeSet<(u8, u8, ChunkPos)>,
+    /// Points the players' views move towards ([`Chunks::set_focus`]).
+    focus: Vec<ChunkPos>,
     /// Chunks parked on a neighbour.
     waiters: FxHashMap<ChunkPos, Vec<ChunkPos>>,
     in_flight: usize,
@@ -492,7 +515,10 @@ impl Chunks {
     /// The chunk runtime of a world.
     pub fn new(info: WorldInfo, settings: ChunkSettings, slots: ChunkSlots) -> Self {
         let (done_tx, done_rx) = mpsc::channel();
-        let (inbox_tx, inbox) = CompletionTarget::channel();
+        let wake = Arc::<WakeState>::default();
+        // Store results wake the owner like job results, batched by the same pending flag.
+        let inbox_wake = Arc::clone(&wake);
+        let (inbox_tx, inbox) = CompletionTarget::with_waker(Arc::new(move || inbox_wake.wake()));
         Chunks {
             info,
             settings: ChunkSettings {
@@ -509,12 +535,10 @@ impl Chunks {
             next_ticket: 0,
             level_changes: Vec::new(),
             check: BTreeSet::new(),
+            focus: Vec::new(),
             waiters: FxHashMap::default(),
             in_flight: 0,
-            done_tx: DoneSender {
-                tx: done_tx,
-                wake: Arc::default(),
-            },
+            done_tx: DoneSender { tx: done_tx, wake },
             done_rx,
             inbox_tx,
             inbox,
@@ -759,8 +783,11 @@ impl Chunks {
             }
             let holder = self.holders.entry(pos).or_default();
             if holder.queued {
-                self.check.remove(&(holder.level, pos));
-                self.check.insert((new, pos));
+                self.check.remove(&(holder.level, holder.rank, pos));
+                self.check.insert((new, holder.rank, pos));
+            }
+            if let Some(unneeded) = &holder.unneeded {
+                unneeded.store(false, Ordering::Relaxed);
             }
             holder.level = new;
             holder.unload_at = None;
@@ -772,8 +799,12 @@ impl Chunks {
             }
         } else if let Some(holder) = self.holders.get_mut(&pos) {
             if holder.queued {
-                self.check.remove(&(holder.level, pos));
+                self.check.remove(&(holder.level, holder.rank, pos));
                 holder.queued = false;
+            }
+            // A generation step nobody needs any more is skipped if it did not start.
+            if let Some(unneeded) = &holder.unneeded {
+                unneeded.store(true, Ordering::Relaxed);
             }
             holder.level = new;
             // At least one tick later: the game writes back what the chunk holds first.
@@ -806,13 +837,34 @@ impl Chunks {
     }
 
     fn enqueue(&mut self, pos: ChunkPos) {
+        let rank = self.rank(pos);
         if let Some(holder) = self.holders.get_mut(&pos)
             && !holder.queued
             && holder.level <= MAX_LEVEL
         {
             holder.queued = true;
-            self.check.insert((holder.level, pos));
+            holder.rank = rank;
+            self.check.insert((holder.level, rank, pos));
         }
+    }
+
+    /// The order of a chunk within its level: its chessboard distance to the nearest focus
+    /// point, 0 without any.
+    fn rank(&self, pos: ChunkPos) -> u8 {
+        self.focus
+            .iter()
+            .map(|focus| pos.chessboard_distance(*focus))
+            .min()
+            .map_or(0, |distance| u8::try_from(distance).unwrap_or(u8::MAX))
+    }
+
+    /// Sets the points the players' views move towards (a flying player's view centre ahead in
+    /// its direction; at most [`MAX_FOCUS`]). Within one level, chunks nearer to a focus point
+    /// are loaded and generated first, so a moving view fills ahead first. Only the order of
+    /// the work changes, never its result.
+    pub fn set_focus(&mut self, focus: &[ChunkPos]) {
+        self.focus.clear();
+        self.focus.extend(focus.iter().take(MAX_FOCUS).copied());
     }
 
     /// Re-checks the chunks parked on `pos`.
@@ -1130,9 +1182,14 @@ impl Chunks {
                 }
                 let codec = Arc::clone(&self.slots.codec);
                 let tx = self.done_tx.clone();
-                let level = self.holders.get(&pos).map_or(MAX_LEVEL, |h| h.level);
+                let priority = self
+                    .holders
+                    .get(&pos)
+                    .map_or(job_priority(MAX_LEVEL, 0), |h| {
+                        job_priority(h.level, h.rank)
+                    });
                 self.slots.executor.spawn(
-                    u32::from(level),
+                    priority,
                     Box::new(move || {
                         let chunk = load_result(chunk).and_then(|record| {
                             record
@@ -1256,6 +1313,7 @@ impl Chunks {
                     self.put_back(pos, Arc::new(target));
                     if let Some(holder) = self.holders.get_mut(&pos) {
                         holder.busy = false;
+                        holder.unneeded = None;
                     }
                     self.wake(pos);
                 }
@@ -1289,6 +1347,18 @@ impl Chunks {
                 }
                 for neighbour in neighbours {
                     self.merge_light(&neighbour);
+                }
+            }
+            Done::Skipped { target, written } => {
+                self.in_flight -= 1;
+                for pos in std::iter::once(target).chain(written) {
+                    if let Some(holder) = self.holders.get_mut(&pos) {
+                        holder.busy = false;
+                        if pos == target {
+                            holder.unneeded = None;
+                        }
+                    }
+                    self.wake(pos);
                 }
             }
             Done::Relit { center, chunks } => {
@@ -1373,11 +1443,11 @@ impl Chunks {
 
     fn dispatch(&mut self) -> bool {
         let mut progress = false;
-        while let Some(&(level, pos)) = self.check.first() {
+        while let Some(&(level, rank, pos)) = self.check.first() {
             if self.in_flight >= self.settings.max_jobs {
                 break;
             }
-            self.check.remove(&(level, pos));
+            self.check.remove(&(level, rank, pos));
             if let Some(holder) = self.holders.get_mut(&pos) {
                 holder.queued = false;
             }
@@ -1571,6 +1641,7 @@ impl Chunks {
             return;
         };
         let level = holder.level;
+        let rank = holder.rank;
         // The holder keeps the current version for readers; the job works on a copy
         // (sections are shared until written).
         let Some(target) = holder.chunk.as_deref().cloned() else {
@@ -1600,7 +1671,7 @@ impl Chunks {
         }
         self.in_flight += 1;
         let tx = self.done_tx.clone();
-        let priority = u32::from(level);
+        let priority = job_priority(level, rank);
         match next {
             ChunkStatus::InitializeLight => {
                 let light = Arc::clone(&self.slots.light);
@@ -1634,9 +1705,20 @@ impl Chunks {
             }
             _ => {
                 let generator = Arc::clone(&self.slots.generator);
+                let unneeded = Arc::new(AtomicBool::new(false));
+                if let Some(holder) = self.holders.get_mut(&pos) {
+                    holder.unneeded = Some(Arc::clone(&unneeded));
+                }
                 self.slots.executor.spawn(
                     priority,
                     Box::new(move || {
+                        if unneeded.load(Ordering::Relaxed) {
+                            tx.send(Done::Skipped {
+                                target: pos,
+                                written,
+                            });
+                            return;
+                        }
                         let mut targets = vec![target];
                         let mut neighbours = neighbours;
                         generator.generate(
@@ -1867,7 +1949,7 @@ impl Chunks {
             self.encode_jobs += 1;
             self.round_jobs += usize::from(round);
             self.slots.executor.spawn(
-                u32::from(MAX_LEVEL) + 1,
+                job_priority(MAX_LEVEL + 1, 0),
                 Box::new(move || {
                     let mut ops = Vec::with_capacity(batch.len());
                     let mut errors = Vec::new();
@@ -2438,6 +2520,11 @@ impl Chunks {
 
 /// The level of the generation ticket of a chunk with this ticket level: the pyramid of a
 /// full chunk (or of the ring around full chunks); `None` above [`MAX_TICKET_LEVEL`].
+/// The compute-pool priority of a chunk job: by level, then by rank ([`Chunks::set_focus`]).
+fn job_priority(level: u8, rank: u8) -> u32 {
+    u32::from(level) << 8 | u32::from(rank)
+}
+
 fn generation_ticket_level(ticket: u8) -> Option<u8> {
     (ticket <= MAX_TICKET_LEVEL).then_some(ticket.max(FULL_LEVEL))
 }
