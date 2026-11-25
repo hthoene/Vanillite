@@ -23,8 +23,10 @@ pub mod container;
 pub mod crafter;
 pub mod decor;
 pub mod dispenser;
+mod dripleaf;
 mod dripstone;
 pub mod drops;
+pub mod eggs;
 pub mod falling;
 pub mod fire;
 pub mod fluid;
@@ -223,6 +225,10 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
             b.on_place = Some(falling::on_place);
             b.tick = Some(falling::tick);
         }
+        Class::Scaffolding => {
+            b.on_place = Some(falling::scaffolding_on_place);
+            b.tick = Some(falling::scaffolding_tick);
+        }
         Class::Brushable => {
             b.on_place = Some(falling::brushable_on_place);
             b.tick = Some(falling::brushable_tick);
@@ -292,6 +298,8 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
         b.random_tick = Some(growth::sweet_berry_random_tick);
     } else if growth::is_sapling(block) {
         b.random_tick = Some(growth::sapling_random_tick);
+    } else if block == ids::MANGROVE_PROPAGULE {
+        b.random_tick = Some(growth::propagule_random_tick);
     } else if block == ids::BUDDING_AMETHYST {
         b.random_tick = Some(growth::budding_amethyst_random_tick);
     } else if block == ids::REDSTONE_ORE || block == ids::DEEPSLATE_REDSTONE_ORE {
@@ -325,6 +333,8 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
     campfire::fill(block, &mut b);
     crafter::fill(block, &mut b);
     portal::fill(block, &mut b);
+    eggs::fill(block, &mut b);
+    dripleaf::fill(block, &mut b);
     b
 }
 

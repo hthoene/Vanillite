@@ -31,6 +31,9 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ThreadedLevelLightEngine;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.BoneMealItem;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.block.Block;
@@ -60,7 +63,8 @@ import net.minecraft.world.ticks.ScheduledTick;
  * restart} stops the server, which saves the world, and starts a new one on the saved world: its
  * saved chunk tickets come back and their chunks load before the next tick ({@code
  * prepareLevels}); the rules, time and difficulty are set again and the level random starts from
- * the seed.
+ * the seed. The action {@code bonemeal} uses bone meal on a block ({@code
+ * BoneMealItem.growCrop}).
  *
  * <p>Usage: {@code java -cp ... dev.vanillite.extractor.golden.ScenarioRecorder (<scenario.json>
  * <trace.json>)...}
@@ -200,6 +204,9 @@ public final class ScenarioRecorder {
                 level = server.level();
                 timeAndDifficulty(server, level, scenario);
                 level.getRandom().setSeed(seed);
+              } else if (op.equals("bonemeal")) {
+                // Bone meal used on the block (`BoneMealItem.growCrop`).
+                BoneMealItem.growCrop(new ItemStack(Items.BONE_MEAL), level, pos(action.get("pos")));
               } else if (op.equals("hurt")) {
                 entities.hurt(action);
               } else if (action.get("op").getAsString().equals("effect")) {

@@ -396,13 +396,15 @@ impl WorldMobs {
         dimension: &str,
         spawn_point: Option<BlockPos>,
     ) {
+        let env = environment(global, dimension, survival, self.seed);
+        // What random ticks read of this tick's environment (turtle eggs).
+        level.spawner_env.env = env;
         let Some(table) = self.table.clone() else {
             return;
         };
         let state = &global.level;
         let rules = state.rules().clone();
         let difficulty = state.difficulty();
-        let env = environment(global, dimension, survival, self.seed);
         // New chunks: their animals once they are live.
         level.chunks.take_generated(&mut self.scratch);
         self.generated
@@ -1070,6 +1072,7 @@ fn environment(
             monster_light_test: if nether { (7, 7) } else { (0, 7) },
             ambient_light: if nether { 0.1 } else { 0.0 },
             has_ceiling: nether,
+            turtle_egg_hatch_chance: 0.002,
         };
     }
     let day = {

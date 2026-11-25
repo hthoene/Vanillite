@@ -37,7 +37,7 @@ pub use props::{
     HORIZONTAL, PosExt, StateExt, UPDATE_SHAPE_ORDER, clockwise, counter_clockwise, is_horizontal,
     with_properties_of,
 };
-pub use survive::redstone_wire_can_survive_on;
+pub use survive::{redstone_wire_can_survive_on, scaffolding_distance};
 pub use tables::{BlockTags, FluidTags, Tags, can_burn, init, tags};
 pub use update::{
     concrete_of, fire_state_with_age, should_wire_connect_to, touches_liquid, wire_connecting_side,

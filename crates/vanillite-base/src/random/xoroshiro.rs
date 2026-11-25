@@ -135,6 +135,11 @@ impl XoroshiroRandom {
         }
     }
 
+    /// The generator's state (`seedLo`, `seedHi`), as Vanilla's codec stores it.
+    pub fn state(&self) -> (i64, i64) {
+        (self.rng.lo as i64, self.rng.hi as i64)
+    }
+
     /// `nextBits(bits)`: the top `bits` bits of the next long, `bits` in `1..=64`.
     #[inline]
     pub fn next_bits(&mut self, bits: u32) -> i64 {

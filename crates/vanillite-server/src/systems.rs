@@ -14,8 +14,9 @@ use vanillite_game::scoreboard::Scoreboard;
 use vanillite_nbt::{Compound, Tag};
 use vanillite_storage::saved_data::SavedDataStore;
 
-use crate::command_state::{Profiling, RandomSequences, Stopwatches, TimerQueue, WaypointIcon};
+use crate::command_state::{Profiling, Stopwatches, TimerQueue, WaypointIcon};
 use crate::commands::functions::FunctionLibrary;
+use vanillite_game::level::{RandomSequences, SharedRandomSequences};
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
@@ -132,7 +133,8 @@ pub(crate) struct GameSystems {
     /// Tags of the static and dynamic registries: registry → tag → entries.
     tags: RwLock<Arc<RegistryTags>>,
     scheduled: Mutex<TimerQueue>,
-    random_sequences: Mutex<RandomSequences>,
+    /// The server's random sequences, shared with every world's loot.
+    random_sequences: SharedRandomSequences,
     stopwatches: Mutex<Stopwatches>,
     profiling: Mutex<Profiling>,
     waypoints: Mutex<std::collections::BTreeMap<u128, WaypointIcon>>,
@@ -150,7 +152,11 @@ impl std::fmt::Debug for GameSystems {
 
 impl GameSystems {
     /// Empty systems; [`crate::commands::load_game_systems`] fills them once the server exists.
-    pub(crate) fn new(level_dir: PathBuf, function_level: u8) -> Self {
+    pub(crate) fn new(
+        level_dir: PathBuf,
+        function_level: u8,
+        random_sequences: SharedRandomSequences,
+    ) -> Self {
         GameSystems {
             mob_spawns: std::sync::OnceLock::new(),
             scoreboard: Mutex::new(Scoreboard::new()),
@@ -164,7 +170,7 @@ impl GameSystems {
             spawn: Mutex::new(Vec3::ZERO),
             tags: RwLock::new(Arc::new(RegistryTags::new())),
             scheduled: Mutex::default(),
-            random_sequences: Mutex::default(),
+            random_sequences,
             stopwatches: Mutex::default(),
             profiling: Mutex::default(),
             waypoints: Mutex::default(),
@@ -228,8 +234,9 @@ impl GameSystems {
         lock(&self.scoreboard_sync)
     }
 
-    /// Loads the scoreboard, the command storage and the scheduled functions from the world's
-    /// saved data (`ServerScoreboard.load`, `CommandStorage`, `TimerQueue`).
+    /// Loads the scoreboard, the command storage, the scheduled functions and the random
+    /// sequences from the world's saved data (`ServerScoreboard.load`, `CommandStorage`,
+    /// `TimerQueue`, `RandomSequences`).
     pub(crate) fn load(&self, data: &SavedDataStore) {
         let read = |id: &str| {
             data.read(id).unwrap_or_else(|e| {
@@ -242,6 +249,10 @@ impl GameSystems {
         }
         if let Some(c) = read(SCHEDULED_EVENTS) {
             *self.scheduled() = TimerQueue::from_nbt(&c);
+        }
+        if let Some(c) = read(vanillite_game::random_sequences::SAVED_DATA) {
+            let mut sequences = self.random_sequences();
+            *sequences = RandomSequences::load(sequences.world_seed(), &c);
         }
         *self.storage() = CommandStorage::load(data);
     }
@@ -261,6 +272,13 @@ impl GameSystems {
         };
         if let Some(c) = scheduled {
             data.write(SCHEDULED_EVENTS, c);
+        }
+        let sequences = {
+            let mut sequences = self.random_sequences();
+            sequences.take_dirty().then(|| sequences.to_nbt())
+        };
+        if let Some(c) = sequences {
+            data.write(vanillite_game::random_sequences::SAVED_DATA, c);
         }
         for (id, c) in self.storage().take_dirty() {
             data.write(&id, c);
