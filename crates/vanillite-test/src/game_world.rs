@@ -803,7 +803,7 @@ fn fam_goal_name(kind: Kind, goal: &FamGoal) -> &'static str {
             .map_or("", |i| word(i + 1))
     };
     let (family, variant) = (word(0), word(1));
-    let name = match (family, variant) {
+    match (family, variant) {
         ("Undead", "DrownedMelee") => "DrownedAttackGoal",
         ("Undead", "DrownedTrident") => "DrownedTridentAttackGoal",
         ("Undead", "HurtByIgnoringDrowned") => "HurtByTargetGoal",
@@ -898,8 +898,7 @@ fn fam_goal_name(kind: Kind, goal: &FamGoal) -> &'static str {
         } else {
             format!("{variant}Goal")
         }),
-    };
-    name
+    }
 }
 
 /// The Vanilla class of a [`CommonGoal`] variant by name.
