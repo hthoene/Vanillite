@@ -63,10 +63,12 @@ pub struct Entities {
     pub primed_tnts: Dense<PrimedTntData>,
     /// Entity tags (`Entity.tags`) of the entities that have any.
     tags: std::collections::HashMap<EntityId, Vec<String>>,
-    /// Kind data of the bosses' non-living entities (skulls, crystals, fireballs, clouds).
-    pub specials: Dense<SpecialData>,
+    /// Area effect cloud kind data.
+    pub clouds: Dense<crate::effect::cloud::CloudData>,
     /// Experience orb kind data.
     pub experience_orbs: Dense<ExperienceOrbData>,
+    /// Kind data of the bosses' non-living entities (skulls, crystals, fireballs).
+    pub specials: Dense<SpecialData>,
     /// Vehicles and their passengers.
     pub riding: Riding,
     /// Player entities by UUID (owners and leash holders are found by it).
@@ -266,75 +268,30 @@ impl Entities {
         self.specials.get_mut(row)
     }
 
-    /// `addEffect` on a living entity (player or mob): merges it and, for players, tells the
-    /// client. `can_be_affected` is the target's `canBeAffected` verdict (checked by the
-    /// caller for kinds with immunities). Returns whether it was added or changed.
+    /// `addEffect` on a living entity (player or mob) from outside its tick (bosses, block
+    /// entities): `canBeAffected` and the kinds that refuse every effect are checked here,
+    /// `can_be_affected` is an extra verdict of the caller. The client packets, flags and
+    /// attributes follow with the entity's next tick. Returns whether it was added or changed.
     pub fn add_effect(
         &mut self,
         id: EntityId,
         effect: crate::effect::EffectInstance,
         can_be_affected: bool,
     ) -> bool {
-        use crate::effect::Added;
-        if !can_be_affected {
-            return false;
-        }
-        if let Some(m) = self.mob_mut(id) {
-            // `WitherBoss.addEffect` and `EnderDragon.addEffect` refuse every effect.
-            if matches!(
-                m.kind,
-                crate::mob::Kind::Wither | crate::mob::Kind::EnderDragon
-            ) {
-                return false;
-            }
-            return matches!(m.effects.add(effect, true), Added::New | Added::Updated);
-        }
-        let Entities { store, players, .. } = self;
-        let Some(entity) = store.get_mut(id) else {
-            return false;
-        };
-        if entity.as_ref().kind() != ids::PLAYER {
-            return false;
-        }
-        let row = entity.as_ref().kind_row();
-        let Some(p) = players.get_mut(row) else {
-            return false;
-        };
-        crate::survival::player::add_effect(&entity, p, effect)
+        can_be_affected && crate::effect::living::add_detached(self, id, effect)
     }
 
-    /// `removeEffect` on a living entity (player or mob); whether it had the effect.
-    pub fn remove_effect(&mut self, id: EntityId, effect: u16) -> bool {
-        if let Some(m) = self.mob_mut(id) {
-            return m.effects.remove(effect).is_some();
+    /// The active effects of a living entity (player or mob), mutably (`removeEffect`,
+    /// `removeAllEffects`); the packets and attributes follow with the entity's next tick.
+    pub fn effects_mut(&mut self, id: EntityId) -> Option<&mut crate::effect::ActiveEffects> {
+        if self.mob(id).is_some() {
+            return self.mob_mut(id).map(|m| &mut m.effects);
         }
-        let Entities { store, players, .. } = self;
-        let Some(entity) = store.get_mut(id) else {
-            return false;
-        };
-        if entity.as_ref().kind() != ids::PLAYER {
-            return false;
-        }
-        let Some(p) = players.get_mut(entity.as_ref().kind_row()) else {
-            return false;
-        };
-        crate::survival::player::remove_effect(&entity, p, effect)
-    }
-
-    /// `removeAllEffects` on a living entity (player or mob); whether it had any.
-    pub fn clear_effects(&mut self, id: EntityId) -> bool {
-        let effects: Vec<u16> = match self.effects(id) {
-            Some(e) if !e.is_empty() => e.iter().map(|e| e.effect).collect(),
-            _ => return false,
-        };
-        for effect in effects {
-            self.remove_effect(id, effect);
-        }
-        true
+        self.player_mut(id).map(|p| &mut p.survival.effects)
     }
 
     /// The active effects of a living entity (player or mob).
-    pub fn effects(&self, id: EntityId) -> Option<&crate::effect::MobEffects> {
+    pub fn effects(&self, id: EntityId) -> Option<&crate::effect::ActiveEffects> {
         if let Some(m) = self.mob(id) {
             return Some(&m.effects);
         }
@@ -390,6 +347,34 @@ impl Entities {
     pub fn spawn_primed_tnt(&mut self, new: NewEntity, data: PrimedTntData) -> EntityId {
         let primed_tnts = &mut self.primed_tnts;
         self.store.spawn(new, |id| primed_tnts.push(id, data))
+    }
+
+    /// Adds an area effect cloud.
+    pub fn spawn_cloud(
+        &mut self,
+        new: NewEntity,
+        data: crate::effect::cloud::CloudData,
+    ) -> EntityId {
+        let clouds = &mut self.clouds;
+        self.store.spawn(new, |id| clouds.push(id, data))
+    }
+
+    /// The area effect cloud data of an entity.
+    pub fn cloud(&self, id: EntityId) -> Option<&crate::effect::cloud::CloudData> {
+        let entity = self.store.get(id)?;
+        (entity.kind() == ids::AREA_EFFECT_CLOUD)
+            .then(|| self.clouds.get(entity.kind_row()))
+            .flatten()
+    }
+
+    /// The area effect cloud data of an entity, mutably.
+    pub fn cloud_mut(&mut self, id: EntityId) -> Option<&mut crate::effect::cloud::CloudData> {
+        let entity = self.store.get(id)?;
+        if entity.kind() != ids::AREA_EFFECT_CLOUD {
+            return None;
+        }
+        let row = entity.kind_row();
+        self.clouds.get_mut(row)
     }
 
     /// The primed TNT data of an entity.
@@ -560,6 +545,8 @@ impl Entities {
             self.arrows.swap_remove(row).and_then(|(_, moved)| moved)
         } else if is_mob_kind(kind) {
             self.mobs.swap_remove(row).and_then(|(_, moved)| moved)
+        } else if kind == ids::AREA_EFFECT_CLOUD {
+            self.clouds.swap_remove(row).and_then(|(_, moved)| moved)
         } else if is_special_kind(kind) {
             self.specials.swap_remove(row).and_then(|(_, moved)| moved)
         } else if kind == ids::TNT {

@@ -497,7 +497,7 @@ impl LootTables {
         let table = self.parser().table(json)?;
         let mut eval = Eval {
             tables: self,
-            ctx: &ctx,
+            ctx,
             rng,
             out,
             post: Vec::new(),
@@ -751,7 +751,7 @@ impl LootTables {
 }
 
 /// The loot table directories [`LootTables::load`] reads.
-pub const LOADED_KINDS: [&str; 4] = ["blocks", "chests", "archaeology", "pots"];
+pub const LOADED_KINDS: [&str; 5] = ["blocks", "chests", "archaeology", "pots", "spawners"];
 
 /// `Util.shuffle(list, random)`.
 fn shuffle<T>(list: &mut [T], rng: &mut dyn LootRandom) {

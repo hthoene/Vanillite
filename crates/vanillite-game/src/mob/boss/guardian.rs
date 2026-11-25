@@ -11,7 +11,7 @@ use vanillite_protocol::packets::play::clientbound::GameEvent;
 use vanillite_world::entity::{EntityFlags, EntityId};
 
 use super::data;
-use crate::effect::{EffectInstance, ids as effect_ids};
+use crate::effect::{EffectInstance, MobEffect};
 use crate::entities::Entities;
 use crate::level::Level;
 use crate::mob::goals::{self, Goal, TargetState, flag, reduced};
@@ -709,7 +709,7 @@ pub fn custom_server_ai_step(t: &mut Tick<'_, '_>) {
 
 /// The curse: mining fatigue III for 5 minutes.
 pub fn curse_effect() -> EffectInstance {
-    EffectInstance::new(effect_ids::mining_fatigue(), 6000, 2)
+    EffectInstance::new(MobEffect::MINING_FATIGUE, 6000, 2)
 }
 
 /// Whether a player with `current` mining fatigue gets the curse (again): without it, with a
@@ -1040,7 +1040,6 @@ fn java_sin_cos(y_rot: f32) -> (f64, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inventory::DigEffects;
     use crate::survival::damage::{DamageKind, DamageType, DeathMessageType, Effects, Scaling};
 
     #[test]
@@ -1095,34 +1094,30 @@ mod tests {
     #[test]
     fn elder_curse_selection() {
         let fatigue = |amplifier, duration| {
-            EffectInstance::new(effect_ids::mining_fatigue(), duration, amplifier)
+            EffectInstance::new(MobEffect::MINING_FATIGUE, duration, amplifier)
         };
         assert!(needs_curse(None));
         assert!(needs_curse(Some(&fatigue(1, 6000))));
         assert!(!needs_curse(Some(&fatigue(2, 6000))));
         assert!(!needs_curse(Some(&fatigue(2, 1200))));
         assert!(needs_curse(Some(&fatigue(2, 1199))));
-        assert!(!needs_curse(Some(&fatigue(2, crate::effect::INFINITE))));
+        assert!(!needs_curse(Some(&fatigue(
+            2,
+            crate::effect::instance::INFINITE
+        ))));
         let c = curse_effect();
         assert_eq!((c.amplifier, c.duration), (2, 6000));
     }
 
     #[test]
     fn mining_fatigue_and_haste_change_the_dig_speed() {
-        let cursed = DigEffects {
-            haste: None,
-            fatigue: Some(2),
-        };
-        assert!((cursed.apply(1.0) - 0.027).abs() < 1.0e-6);
-        let hasted = DigEffects {
-            haste: Some(1),
-            fatigue: None,
-        };
-        assert!((hasted.apply(10.0) - 14.0).abs() < 1.0e-5);
-        assert_eq!(DigEffects::default().apply(3.0), 3.0);
-        let mut effects = crate::effect::MobEffects::default();
-        effects.add(curse_effect(), true);
-        assert_eq!(DigEffects::of(&effects), cursed);
+        use crate::player::play::dig_effects;
+        assert!((dig_effects(1.0, None, Some(2)) - 0.027).abs() < 1.0e-6);
+        assert!((dig_effects(10.0, Some(1), None) - 14.0).abs() < 1.0e-5);
+        assert_eq!(dig_effects(3.0, None, None), 3.0);
+        let mut effects = crate::effect::ActiveEffects::default();
+        effects.force_add(curse_effect());
+        assert_eq!(effects.amplifier(MobEffect::MINING_FATIGUE), Some(2));
     }
 
     #[test]

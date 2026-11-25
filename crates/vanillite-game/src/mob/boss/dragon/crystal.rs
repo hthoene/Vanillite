@@ -1,19 +1,23 @@
 //! End crystals (`EndCrystal`), dragon fireballs (`DragonFireball` with
-//! `AbstractHurtingProjectile`'s flight) and the dragon's breath clouds (`AreaEffectCloud`).
+//! `AbstractHurtingProjectile`'s flight) and the dragon's breath clouds (`AreaEffectCloud`
+//! with [`crate::effect::cloud`]).
 
 use vanillite_base::{Aabb, BlockPos, Vec3};
 use vanillite_data::block::ids;
 use vanillite_data::entity::{EntityTypeId, ids as entity_ids};
-use vanillite_nbt::{Compound, List, Tag};
-use vanillite_world::entity::{Dimensions, EntityId, NewEntity, Rotation};
+use vanillite_nbt::{Compound, Tag};
+use vanillite_world::entity::{EntityId, NewEntity, Rotation};
 
 use super::super::data;
 use super::super::special::{SpecialData, SpecialTick};
 use super::fight::DragonEvent;
+use crate::effect::cloud::CloudData;
+use crate::effect::potion::PotionContents;
+use crate::effect::{EffectInstance, MobEffect};
 use crate::entities::Entities;
 use crate::level::Level;
 use crate::mob::physics::{self, Blocks};
-use crate::mob::{MobContext, WorldAction, combat, random_uuid};
+use crate::mob::{MobContext, WorldAction, random_uuid};
 use crate::survival::damage::{DamageSource, tag};
 use crate::survival::player::Env;
 
@@ -56,85 +60,37 @@ pub struct Fireball {
     pub tick_count: i32,
 }
 
-/// The kind data of an `area_effect_cloud` as the dragon makes them: a dragon's breath
-/// particle and an instant damage effect.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Cloud {
-    pub owner: Option<EntityId>,
-    pub owner_uuid: Option<u128>,
-    pub radius: f32,
-    pub waiting: bool,
-    pub duration: i32,
-    pub wait_time: i32,
-    pub reapplication_delay: i32,
-    pub duration_on_use: i32,
-    pub radius_on_use: f32,
-    pub radius_per_tick: f32,
-    pub potion_duration_scale: f32,
-    /// The instant damage amplifier, `None` without an effect.
-    pub harm_amplifier: Option<i32>,
-    /// The dragon's breath particle (else the default effect particle).
-    pub dragon_breath: bool,
-    pub tick_count: i32,
-    /// Entities and the tick they may be affected again.
-    pub victims: Vec<(EntityId, i32)>,
+/// The cloud of the sitting flame phase: dragon's breath, instant damage, radius 5 for 200
+/// ticks.
+pub fn flame_cloud(owner: Option<EntityId>) -> CloudData {
+    breath_cloud(owner, 5.0, 200, 0.0, 0)
 }
 
-impl Default for Cloud {
-    fn default() -> Self {
-        Cloud {
-            owner: None,
-            owner_uuid: None,
-            radius: 3.0,
-            waiting: false,
-            duration: -1,
-            wait_time: 20,
-            reapplication_delay: 20,
-            duration_on_use: 0,
-            radius_on_use: 0.0,
-            radius_per_tick: 0.0,
-            potion_duration_scale: 1.0,
-            harm_amplifier: None,
-            dragon_breath: false,
-            tick_count: 0,
-            victims: Vec::new(),
-        }
-    }
+/// The cloud a dragon fireball leaves (`DragonFireball.onHit`): radius 3 growing to 7 over
+/// 600 ticks, instant damage II.
+pub fn fireball_cloud(owner: Option<EntityId>) -> CloudData {
+    breath_cloud(owner, 3.0, 600, (7.0 - 3.0) / 600.0, 1)
 }
 
-impl Cloud {
-    /// The cloud of the sitting flame phase.
-    pub fn dragon_flame(owner: Option<EntityId>) -> Cloud {
-        Cloud {
-            owner,
-            radius: 5.0,
-            duration: 200,
-            dragon_breath: true,
-            potion_duration_scale: 0.25,
-            harm_amplifier: Some(0),
-            ..Cloud::default()
-        }
-    }
-
-    /// The cloud a dragon fireball leaves (`DragonFireball.onHit`).
-    pub fn fireball(owner: Option<EntityId>) -> Cloud {
-        Cloud {
-            owner,
-            radius: 3.0,
-            duration: 600,
-            radius_per_tick: (7.0 - 3.0) / 600.0,
-            dragon_breath: true,
-            potion_duration_scale: 0.25,
-            harm_amplifier: Some(1),
-            ..Cloud::default()
-        }
-    }
-
-    fn dims(&self) -> Dimensions {
-        Dimensions {
-            width: self.radius * 2.0,
-            height: 0.5,
-        }
+fn breath_cloud(
+    owner: Option<EntityId>,
+    radius: f32,
+    duration: i32,
+    radius_per_tick: f32,
+    harm: i32,
+) -> CloudData {
+    CloudData {
+        owner,
+        radius,
+        duration,
+        radius_per_tick,
+        dragon_breath: true,
+        duration_scale: 0.25,
+        contents: PotionContents {
+            custom_effects: vec![EffectInstance::new(MobEffect::INSTANT_DAMAGE, 1, harm)],
+            ..PotionContents::default()
+        },
+        ..CloudData::default()
     }
 }
 
@@ -197,30 +153,8 @@ pub fn spawn_fireball(
 }
 
 /// Adds an area effect cloud at `pos`.
-pub fn spawn_cloud(
-    level: &Level,
-    ents: &mut Entities,
-    env: &mut Env<'_>,
-    pos: Vec3,
-    mut cloud: Cloud,
-) -> EntityId {
-    cloud.owner_uuid = cloud
-        .owner
-        .and_then(|o| ents.store.get(o))
-        .map(|e| e.uuid());
-    let mut new = NewEntity::new(
-        entity_ids::AREA_EFFECT_CLOUD,
-        level.network_ids().next(),
-        new_uuid(env),
-        pos,
-    );
-    new.rot = Rotation::default();
-    let dims = cloud.dims();
-    let id = ents.spawn_special(new, SpecialData::AreaEffectCloud(Box::new(cloud)));
-    if let Some(mut e) = ents.store.get_mut(id) {
-        e.set_dims(dims);
-    }
-    id
+pub fn spawn_cloud(level: &Level, ents: &mut Entities, pos: Vec3, cloud: CloudData) -> EntityId {
+    crate::effect::cloud::spawn_cloud(ents, level.network_ids(), pos, cloud)
 }
 
 fn crystal_mut(ents: &mut Entities, id: EntityId) -> Option<&mut Crystal> {
@@ -502,198 +436,23 @@ fn fireball_hit(t: &mut SpecialTick<'_, '_>, pos: Vec3) {
     }
     let block = BlockPos::containing(pos.x, pos.y, pos.z);
     t.cx.actions.push(WorldAction::LevelEvent(2006, block, 1));
-    spawn_cloud(t.level, t.ents, t.env, cloud_pos, Cloud::fireball(owner));
+    spawn_cloud(t.level, t.ents, cloud_pos, fireball_cloud(owner));
     t.cx.discarded.push(id);
 }
 
-fn cloud_mut(ents: &mut Entities, id: EntityId) -> Option<&mut Cloud> {
-    match ents.special_mut(id)? {
-        SpecialData::AreaEffectCloud(c) => Some(c),
-        _ => None,
-    }
-}
-
-/// Whether instant damage heals `id` (`isInvertedHealAndHarm`: the undead).
-fn undead(ents: &Entities, id: EntityId) -> bool {
-    ents.mob(id).is_some_and(|m| {
-        matches!(
-            m.kind,
-            crate::mob::Kind::Zombie | crate::mob::Kind::Skeleton | crate::mob::Kind::Wither
-        )
-    })
-}
-
-/// `AreaEffectCloud.serverTick`.
-pub fn tick_cloud(t: &mut SpecialTick<'_, '_>) {
-    let id = t.id;
-    let Some(c) = cloud_mut(t.ents, id) else {
-        return;
-    };
-    c.tick_count += 1;
-    if c.duration != -1 && c.tick_count - c.wait_time >= c.duration {
-        t.cx.discarded.push(id);
-        return;
-    }
-    let should_wait = c.tick_count < c.wait_time;
-    let mut dirty = false;
-    if c.waiting != should_wait {
-        c.waiting = should_wait;
-        dirty = true;
-    }
-    if should_wait {
-        if dirty && let Some(mut e) = t.ents.store.get_mut(id) {
-            e.mark_data_dirty();
-        }
-        return;
-    }
-    let mut radius = c.radius;
-    if c.radius_per_tick != 0.0 {
-        radius += c.radius_per_tick;
-        if radius < 0.5 {
-            t.cx.discarded.push(id);
-            return;
-        }
-        c.radius = radius.clamp(0.0, 32.0);
-        dirty = true;
-    }
-    let dims = c.dims();
-    let tick = c.tick_count;
-    if dirty && let Some(mut e) = t.ents.store.get_mut(id) {
-        e.set_dims(dims);
-        e.mark_data_dirty();
-    }
-    if tick % 5 != 0 {
-        return;
-    }
-    let Some(c) = cloud_mut(t.ents, id) else {
-        return;
-    };
-    c.victims.retain(|&(_, until)| tick < until);
-    let Some(amplifier) = c.harm_amplifier else {
-        c.victims.clear();
-        return;
-    };
-    let (owner, delay) = (c.owner, c.reapplication_delay);
-    let Some(e) = t.ents.store.get(id) else {
-        return;
-    };
-    let (center, area) = (e.pos(), e.aabb());
-    let mut inside = Vec::new();
-    let ents = &*t.ents;
-    ents.store.for_each_in(&area, false, |other| {
-        let living = ents.mob(other).is_some_and(|m| !m.is_dead_or_dying())
-            || ents
-                .player(other)
-                .is_some_and(|p| !p.survival.is_dead_or_dying());
-        if living {
-            inside.push(other);
-        }
-    });
-    for other in inside {
-        let Some(op) = t.ents.store.get(other).map(|e| e.pos()) else {
-            continue;
-        };
-        let Some(c) = cloud_mut(t.ents, id) else {
-            return;
-        };
-        if c.victims.iter().any(|&(v, _)| v == other) {
-            continue;
-        }
-        let (xd, zd) = (op.x - center.x, op.z - center.z);
-        if xd * xd + zd * zd > f64::from(radius * radius) {
-            continue;
-        }
-        c.victims.push((other, tick + delay));
-        // `HealOrHarmMobEffect.applyInstantaneousEffect(cloud, owner, entity, amp, 0.5)`.
-        let shift = amplifier.clamp(0, 30);
-        if undead(t.ents, other) {
-            #[allow(clippy::cast_possible_truncation)]
-            let amount = (0.5 * f64::from(4 << shift) + 0.5) as i32;
-            if let Some(m) = t.ents.mob_mut(other)
-                && m.health > 0.0
-            {
-                #[allow(clippy::cast_precision_loss)]
-                {
-                    m.health = (m.health + amount as f32).min(m.max_health());
-                }
-                if let Some(mut e) = t.ents.store.get_mut(other) {
-                    e.mark_data_dirty();
-                }
-            }
-        } else {
-            #[allow(clippy::cast_possible_truncation)]
-            let amount = (0.5 * f64::from(6 << shift) + 0.5) as i32;
-            let cause = owner.filter(|o| t.ents.store.contains(*o)).unwrap_or(id);
-            let source = combat::entity_source(t.ents, t.env.types.indirect_magic, cause, id);
-            #[allow(clippy::cast_precision_loss)]
-            combat::hurt(t.level, t.ents, t.env, t.cx, other, source, amount as f32);
-        }
-        let Some(c) = cloud_mut(t.ents, id) else {
-            return;
-        };
-        if c.radius_on_use != 0.0 {
-            radius += c.radius_on_use;
-            if radius < 0.5 {
-                t.cx.discarded.push(id);
-                return;
-            }
-            c.radius = radius;
-        }
-        if c.duration_on_use != 0 && c.duration != -1 {
-            c.duration += c.duration_on_use;
-            if c.duration <= 0 {
-                t.cx.discarded.push(id);
-                return;
-            }
-        }
-    }
-}
-
-/// The registry id of a particle type.
-fn particle_id(name: &str) -> i32 {
-    vanillite_data::registry::PARTICLE_TYPE
-        .id(name)
-        .map_or(0, i32::from)
-}
-
-/// The synched data of the specials: crystals (beam target 8, show bottom 9) and clouds
-/// (radius 8, waiting 9, particle 10).
+/// The synched data of the specials: crystals (beam target 8, show bottom 9).
 pub fn entity_data(out: &mut Vec<u8>, d: &SpecialData, all: bool) {
-    match d {
-        SpecialData::EndCrystal(c) => {
-            if all || c.beam_target.is_some() {
-                data::item(out, 8, data::OPTIONAL_BLOCK_POS, |o| match c.beam_target {
-                    Some(p) => {
-                        o.push(1);
-                        o.extend_from_slice(&p.as_long().to_be_bytes());
-                    }
-                    None => o.push(0),
-                });
-            }
-            data::boolean(out, 9, c.show_bottom, true, all);
+    if let SpecialData::EndCrystal(c) = d {
+        if all || c.beam_target.is_some() {
+            data::item(out, 8, data::OPTIONAL_BLOCK_POS, |o| match c.beam_target {
+                Some(p) => {
+                    o.push(1);
+                    o.extend_from_slice(&p.as_long().to_be_bytes());
+                }
+                None => o.push(0),
+            });
         }
-        SpecialData::AreaEffectCloud(c) => {
-            data::float(out, 8, c.radius, 3.0, all);
-            data::boolean(out, 9, c.waiting, false, all);
-            if all || c.dragon_breath {
-                data::item(out, 10, data::PARTICLE, |o| {
-                    if c.dragon_breath {
-                        vanillite_protocol::codec::write_varint(
-                            o,
-                            particle_id("minecraft:dragon_breath"),
-                        );
-                        o.extend_from_slice(&1.0_f32.to_be_bytes());
-                    } else {
-                        vanillite_protocol::codec::write_varint(
-                            o,
-                            particle_id("minecraft:entity_effect"),
-                        );
-                        o.extend_from_slice(&(-1_i32).to_be_bytes());
-                    }
-                });
-            }
-        }
-        _ => {}
+        data::boolean(out, 9, c.show_bottom, true, all);
     }
 }
 
@@ -717,20 +476,6 @@ fn uuid_of(tag: Option<&Tag>) -> Option<u128> {
     }
 }
 
-fn int(tag: &Compound, key: &str, default: i32) -> i32 {
-    tag.get(key)
-        .and_then(Tag::as_i64)
-        .and_then(|v| i32::try_from(v).ok())
-        .unwrap_or(default)
-}
-
-fn float(tag: &Compound, key: &str, default: f32) -> f32 {
-    match tag.get(key) {
-        Some(Tag::Float(f)) if f.is_finite() => *f,
-        _ => default,
-    }
-}
-
 /// The entity NBT of the specials' kind data.
 pub fn save(d: &SpecialData, out: &mut Compound) -> Option<()> {
     match d {
@@ -751,45 +496,12 @@ pub fn save(d: &SpecialData, out: &mut Compound) -> Option<()> {
             out.insert("leftOwner", Tag::Byte(i8::from(f.left_owner)));
             out.insert("acceleration_power", Tag::Double(f.acceleration_power));
         }
-        SpecialData::AreaEffectCloud(c) => {
-            out.insert("Age", Tag::Int(c.tick_count));
-            out.insert("Duration", Tag::Int(c.duration));
-            out.insert("WaitTime", Tag::Int(c.wait_time));
-            out.insert("ReapplicationDelay", Tag::Int(c.reapplication_delay));
-            out.insert("DurationOnUse", Tag::Int(c.duration_on_use));
-            out.insert("RadiusOnUse", Tag::Float(c.radius_on_use));
-            out.insert("RadiusPerTick", Tag::Float(c.radius_per_tick));
-            out.insert("Radius", Tag::Float(c.radius));
-            if c.dragon_breath {
-                let mut p = Compound::new();
-                p.insert("type", Tag::String("minecraft:dragon_breath".into()));
-                p.insert("power", Tag::Float(1.0));
-                out.insert("custom_particle", Tag::Compound(p));
-            }
-            if let Some(u) = c.owner_uuid {
-                out.insert("Owner", uuid_tag(u));
-            }
-            if let Some(amp) = c.harm_amplifier {
-                let mut e = Compound::new();
-                e.insert("id", Tag::String("minecraft:instant_damage".into()));
-                if amp != 0 {
-                    e.insert("amplifier", Tag::Byte(i8::try_from(amp).unwrap_or(0)));
-                }
-                e.insert("duration", Tag::Int(1));
-                let mut pc = Compound::new();
-                pc.insert("custom_effects", Tag::List(List(vec![Tag::Compound(e)])));
-                out.insert("potion_contents", Tag::Compound(pc));
-            }
-            if c.potion_duration_scale != 1.0 {
-                out.insert("potion_duration_scale", Tag::Float(c.potion_duration_scale));
-            }
-        }
         SpecialData::WitherSkull(_) => {}
     }
     Some(())
 }
 
-/// Reads the kind data of a crystal, fireball or cloud.
+/// Reads the kind data of a crystal or fireball.
 pub fn load(kind: EntityTypeId, tag: &Compound) -> Option<SpecialData> {
     if kind == entity_ids::END_CRYSTAL {
         let beam_target = match tag.get("beam_target") {
@@ -819,42 +531,6 @@ pub fn load(kind: EntityTypeId, tag: &Compound) -> Option<SpecialData> {
                 .is_some_and(|v| v != 0),
             tick_count: 0,
         })))
-    } else if kind == entity_ids::AREA_EFFECT_CLOUD {
-        let dragon_breath = matches!(
-            tag.get("custom_particle"),
-            Some(Tag::Compound(p)) if matches!(p.get("type"), Some(Tag::String(s)) if s == "minecraft:dragon_breath")
-        );
-        let harm_amplifier = match tag.get("potion_contents") {
-            Some(Tag::Compound(pc)) => match pc.get("custom_effects") {
-                Some(Tag::List(l)) => l.0.iter().find_map(|e| match e {
-                    Tag::Compound(e)
-                        if matches!(e.get("id"), Some(Tag::String(s)) if s == "minecraft:instant_damage") =>
-                    {
-                        Some(int(e, "amplifier", 0))
-                    }
-                    _ => None,
-                }),
-                _ => None,
-            },
-            _ => None,
-        };
-        Some(SpecialData::AreaEffectCloud(Box::new(Cloud {
-            owner: None,
-            owner_uuid: uuid_of(tag.get("Owner")),
-            radius: float(tag, "Radius", 3.0).clamp(0.0, 32.0),
-            waiting: false,
-            duration: int(tag, "Duration", -1),
-            wait_time: int(tag, "WaitTime", 20),
-            reapplication_delay: int(tag, "ReapplicationDelay", 20),
-            duration_on_use: int(tag, "DurationOnUse", 0),
-            radius_on_use: float(tag, "RadiusOnUse", 0.0),
-            radius_per_tick: float(tag, "RadiusPerTick", 0.0),
-            potion_duration_scale: float(tag, "potion_duration_scale", 1.0),
-            harm_amplifier,
-            dragon_breath,
-            tick_count: int(tag, "Age", 0),
-            victims: Vec::new(),
-        })))
     } else {
         None
     }
@@ -870,24 +546,6 @@ mod tests {
         let amount = |amp: i32| (0.5 * f64::from(6 << amp) + 0.5) as i32;
         assert_eq!(amount(0), 3);
         assert_eq!(amount(1), 6);
-    }
-
-    #[test]
-    fn cloud_nbt_round_trip() {
-        let mut out = Compound::new();
-        let cloud = Cloud::fireball(None);
-        save(
-            &SpecialData::AreaEffectCloud(Box::new(cloud.clone())),
-            &mut out,
-        );
-        let Some(SpecialData::AreaEffectCloud(back)) = load(entity_ids::AREA_EFFECT_CLOUD, &out)
-        else {
-            panic!("cloud");
-        };
-        assert_eq!(back.harm_amplifier, Some(1));
-        assert!(back.dragon_breath);
-        assert_eq!(back.duration, 600);
-        assert_eq!(back.radius_per_tick, cloud.radius_per_tick);
     }
 
     #[test]

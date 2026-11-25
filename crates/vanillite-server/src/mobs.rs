@@ -267,9 +267,15 @@ impl WorldMobs {
                         if !usable {
                             continue;
                         }
-                        let Some(target) = in_reach(&mut ents, player, network_id) else {
+                        let Some(target) = in_reach(&ents, player, network_id) else {
                             continue;
                         };
+                        // The hit goes to the dragon through the part.
+                        if let Some(i) = dragon::part_of(&ents, target, network_id)
+                            && let Some(s) = ents.mob_mut(target).and_then(|m| m.ext.dragon_mut())
+                        {
+                            s.hit_part = Some(i);
+                        }
                         attack_entity(level, &mut ents, &mut env, &mut self.cx, player, target);
                     }
                     EntityAction::Interact {
@@ -278,7 +284,7 @@ impl WorldMobs {
                         sneaking,
                         ..
                     } => {
-                        let Some(target) = in_reach(&mut ents, player, entity) else {
+                        let Some(target) = in_reach(&ents, player, entity) else {
                             continue;
                         };
                         let r = if ents
@@ -365,7 +371,6 @@ impl WorldMobs {
             }
         }
         level.entities = ents;
-        self.apply_actions(level, survival, global, dimension);
         self.apply_actions(level, survival, global, dimension);
         vanillite_game::menu::container::open_requests(level, std::mem::take(&mut self.cx.menus));
         survival.deliver(&mut level.entities, global);
@@ -493,6 +498,7 @@ impl WorldMobs {
                 && !is_minecart
                 && kind != ids::ARROW
                 && kind != ids::EXPERIENCE_ORB
+                && kind != ids::AREA_EFFECT_CLOUD
             {
                 continue;
             }
@@ -549,6 +555,14 @@ impl WorldMobs {
                     minecart::tick(level_ref, &mut ents, &mut env, &mut self.cx, id);
                 } else if kind == ids::ARROW {
                     projectile::tick_arrow(level_ref, &mut ents, &mut env, &mut self.cx, id);
+                } else if kind == ids::AREA_EFFECT_CLOUD {
+                    vanillite_game::effect::cloud::tick(
+                        level_ref,
+                        &mut ents,
+                        &mut env,
+                        &mut self.cx,
+                        id,
+                    );
                 }
             }
             if !self.cx.actions.is_empty() || !self.cx.dragon_events.is_empty() {
@@ -643,41 +657,11 @@ impl WorldMobs {
                     self.apply_explosion_hurts(level, survival, global, dimension);
                 }
                 WorldAction::Explode(e) => {
-                    // `Level.ExplosionInteraction.MOB`: `getDestroyType` with `mobGriefing`.
-                    let decay = if e.mob {
-                        Rule::MOB_EXPLOSION_DROP_DECAY
-                    } else {
-                        Rule::TNT_EXPLOSION_DROP_DECAY
-                    };
-                    let interaction = if e.mob && !rules.bool(Rule::MOB_GRIEFING) {
-                        BlockInteraction::Keep
-                    } else if rules.bool(decay) {
-                        BlockInteraction::DestroyWithDecay
-                    } else {
-                        BlockInteraction::Destroy
-                    };
-                    // `getIndirectSourceEntity`: a living source caused it itself.
-                    level.explode_with(
-                        e.source,
-                        e.indirect.or(e.source),
-                        e.pos,
-                        e.radius,
-                        interaction,
-                        e.resistance,
-                    );
+                    e.run(level, rules);
                     self.apply_explosion_hurts(level, survival, global, dimension);
                 }
-                WorldAction::SetBlock(pos, block, flags) => {
-                    level.set_block(pos, block, flags);
-                }
-                WorldAction::DestroyBlock(pos, drop) => {
-                    level.destroy_block(pos, drop, None);
-                }
-                WorldAction::LevelEvent(event, pos, data) => {
-                    level.level_event(None, event, pos, data);
-                }
                 WorldAction::Level(action) => action.apply(level),
-                other @ (WorldAction::EntityInside(..) | WorldAction::HopperMinecart(_)) => {
+                other => {
                     other.apply_to_level(level);
                 }
             }
@@ -756,6 +740,52 @@ impl WorldMobs {
                 hurt.target,
                 source,
                 hurt.amount,
+            );
+        }
+        level.entities = ents;
+        self.finish_removals(level);
+    }
+
+    /// The magic damage block entities dealt this tick (conduits hunting mobs).
+    pub(crate) fn apply_magic_hurts(
+        &mut self,
+        level: &mut Level,
+        survival: &mut WorldSurvival,
+        global: &Global,
+        dimension: &str,
+    ) {
+        if level.output().magic_hurts.is_empty() {
+            return;
+        }
+        let state = &global.level;
+        let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+        let rules = state.rules().clone();
+        let hurts = std::mem::take(&mut level.output().magic_hurts);
+        let no_blocks = NoBlocks;
+        let raining = |_| false;
+        let mut no_gateway = |_| false;
+        let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
+        let mut env = survival.env(
+            state,
+            &rules,
+            &no_blocks,
+            &raining,
+            dimension,
+            &mut no_gateway,
+            &hooks,
+            &names,
+        );
+        let mut ents = std::mem::take(&mut level.entities);
+        for (target, amount) in hurts {
+            let source = DamageSource::of(env.types.magic);
+            combat::hurt(
+                level,
+                &mut ents,
+                &mut env,
+                &mut self.cx,
+                target,
+                source,
+                amount,
             );
         }
         level.entities = ents;
@@ -887,16 +917,15 @@ fn environment(global: &Global, dimension: &str, survival: &WorldSurvival) -> En
 
 /// The entity with `network_id` if `player` can reach it (`isWithinEntityInteractionRange`:
 /// 3 blocks plus 3 from the eyes to its box).
-fn in_reach(ents: &mut Entities, player: EntityId, network_id: i32) -> Option<EntityId> {
+fn in_reach(ents: &Entities, player: EntityId, network_id: i32) -> Option<EntityId> {
     let target = ents.by_network_id(network_id)?;
     if target == player {
         return None;
     }
-    // A dragon part (`getEntityOrPart`): the hit goes to the dragon through the part.
-    let part = dragon::part_of(ents, target, network_id);
     let pe = ents.store.get(player)?;
     let te = ents.store.get(target)?;
-    let target_box = match part {
+    // A dragon part (`getEntityOrPart`): the part's box.
+    let target_box = match dragon::part_of(ents, target, network_id) {
         Some(i) => ents
             .mob(target)
             .and_then(|m| m.ext.dragon())
@@ -908,15 +937,7 @@ fn in_reach(ents: &mut Entities, player: EntityId, network_id: i32) -> Option<En
         pe.pos().y + f64::from(pe.kind().info().eye_height) * f64::from(pe.dims().height / 1.8),
         pe.pos().z,
     );
-    if distance_sqr_to_box(&target_box, eye) >= 36.0 {
-        return None;
-    }
-    if let Some(i) = part
-        && let Some(s) = ents.mob_mut(target).and_then(|m| m.ext.dragon_mut())
-    {
-        s.hit_part = Some(i);
-    }
-    Some(target)
+    (distance_sqr_to_box(&target_box, eye) < 36.0).then_some(target)
 }
 
 /// `Player.attack` of mobs and players, boats and knots.

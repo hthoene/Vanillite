@@ -57,20 +57,6 @@ pub enum BlockEntity {
     BrewingStand(Box<crate::block::brewing::BrewingStand>),
     /// Signs and hanging signs.
     Sign(Box<crate::block::sign::Sign>),
-    /// `TheEndPortalBlockEntity` (no data; clients render the portal from it).
-    EndPortal,
-    /// `TheEndGatewayBlockEntity`.
-    EndGateway(crate::block::portal::Gateway),
-    /// `SpawnerBlockEntity` (`BaseSpawner`).
-    Spawner(Box<crate::block::spawner::MobSpawner>),
-    /// `TrialSpawnerBlockEntity`.
-    TrialSpawner(Box<crate::block::trial_spawner::TrialSpawner>),
-    /// `VaultBlockEntity`.
-    Vault(Box<crate::block::vault::Vault>),
-    /// `SculkShriekerBlockEntity`.
-    SculkShrieker(Box<crate::block::sculk_shrieker::Shrieker>),
-    /// `SculkCatalystBlockEntity` with its `SculkSpreader`.
-    SculkCatalyst(Box<crate::block::sculk_catalyst::Catalyst>),
     /// Heads and skulls.
     Skull(Box<crate::block::decor::Skull>),
     /// Banners.
@@ -85,6 +71,24 @@ pub enum BlockEntity {
     Brushable(Box<crate::block::brushable::Brushable>),
     /// Crafters.
     Crafter(Box<crate::block::crafter::Crafter>),
+    /// Beacons.
+    Beacon(Box<crate::block::beacon::Beacon>),
+    /// Conduits.
+    Conduit(Box<crate::block::beacon::Conduit>),
+    /// `SpawnerBlockEntity` (`BaseSpawner`).
+    Spawner(Box<crate::block::spawner::MobSpawner>),
+    /// `TrialSpawnerBlockEntity`.
+    TrialSpawner(Box<crate::block::trial_spawner::TrialSpawner>),
+    /// `VaultBlockEntity`.
+    Vault(Box<crate::block::vault::Vault>),
+    /// `SculkShriekerBlockEntity`.
+    SculkShrieker(Box<crate::block::sculk_shrieker::Shrieker>),
+    /// `SculkCatalystBlockEntity` with its `SculkSpreader`.
+    SculkCatalyst(Box<crate::block::sculk_catalyst::Catalyst>),
+    /// `TheEndPortalBlockEntity` (no data; clients render the portal from it).
+    EndPortal,
+    /// `TheEndGatewayBlockEntity`.
+    EndGateway(crate::block::portal::Gateway),
 }
 
 /// `BlockEntityTicker.tick(level, pos, state, blockEntity)`: the block entity is looked up at
@@ -234,6 +238,8 @@ fn ticker_of(entity: &BlockEntity) -> Option<TickerFn> {
         | BlockEntity::Brushable(_) => None,
         BlockEntity::Campfire(_) => Some(crate::block::campfire::tick),
         BlockEntity::Crafter(_) => Some(crate::block::crafter::server_tick),
+        BlockEntity::Beacon(_) => Some(crate::block::beacon::tick),
+        BlockEntity::Conduit(_) => Some(crate::block::beacon::conduit_tick),
         BlockEntity::Furnace(_) => Some(crate::block::furnace::server_tick),
         BlockEntity::BrewingStand(_) => Some(crate::block::brewing::server_tick),
         BlockEntity::Sign(_) => Some(crate::block::sign::tick),
@@ -310,6 +316,10 @@ pub fn new_block_entity(state: BlockState) -> Option<BlockEntity> {
         Some(BlockEntity::DecoratedPot(Box::default()))
     } else if block == ids::CHISELED_BOOKSHELF {
         Some(BlockEntity::ChiseledBookshelf(Box::default()))
+    } else if block == ids::BEACON {
+        Some(BlockEntity::Beacon(Box::default()))
+    } else if block == ids::CONDUIT {
+        Some(BlockEntity::Conduit(Box::default()))
     } else if block == ids::CRAFTER {
         Some(BlockEntity::Crafter(Box::new(
             crate::block::crafter::Crafter {
@@ -383,6 +393,8 @@ fn is_valid(entity: &BlockEntity, state: BlockState) -> bool {
         BlockEntity::Campfire(_) => crate::block::campfire::is_campfire(state.block()),
         BlockEntity::Brushable(_) => crate::block::brushable::is_brushable(state),
         BlockEntity::Crafter(_) => state.block() == ids::CRAFTER,
+        BlockEntity::Beacon(_) => state.block() == ids::BEACON,
+        BlockEntity::Conduit(_) => state.block() == ids::CONDUIT,
     }
 }
 
@@ -443,11 +455,14 @@ impl Level {
                 }
                 if let Some(entity) = self.block_entities.get(pos).cloned() {
                     crate::block::container::pre_remove_side_effects(self, pos, &entity);
-                    if let BlockEntity::SculkShrieker(_) = entity {
-                        crate::block::sculk_shrieker::pre_remove(self, pos, old);
-                    }
                     if let BlockEntity::Lectern(lectern) = &entity {
                         crate::block::lectern::drop_book(self, pos, old, lectern);
+                    }
+                    if let BlockEntity::Beacon(_) = entity {
+                        crate::block::beacon::removed(self, pos);
+                    }
+                    if let BlockEntity::SculkShrieker(_) = entity {
+                        crate::block::sculk_shrieker::pre_remove(self, pos, old);
                     }
                     if let BlockEntity::Furnace(_) = entity {
                         let xp = crate::block::furnace::pop_experience(self, pos);
@@ -582,6 +597,8 @@ fn load(state: BlockState, nbt: &Compound) -> Option<BlockEntity> {
         BlockEntity::Campfire(campfire) => campfire.load(nbt),
         BlockEntity::Brushable(b) => b.load(nbt),
         BlockEntity::Crafter(c) => c.load(nbt),
+        BlockEntity::Beacon(b) => b.load(nbt),
+        BlockEntity::Conduit(c) => c.load(nbt),
         BlockEntity::Lectern(lectern) => lectern.load(nbt),
         BlockEntity::Hopper(h) => {
             h.custom_name = crate::block::container::load_name(nbt);
@@ -646,6 +663,8 @@ fn save(entity: &BlockEntity, state: BlockState, pos: BlockPos) -> Compound {
         BlockEntity::Campfire(campfire) => campfire.save(&mut nbt),
         BlockEntity::Brushable(b) => b.save(&mut nbt),
         BlockEntity::Crafter(c) => c.save(&mut nbt),
+        BlockEntity::Beacon(b) => b.save(&mut nbt),
+        BlockEntity::Conduit(c) => c.save(&mut nbt),
         BlockEntity::Lectern(lectern) => lectern.save(&mut nbt),
         BlockEntity::Hopper(h) => {
             crate::block::container::save_name(&h.custom_name, &mut nbt);
@@ -843,18 +862,6 @@ pub fn update_tag(entity: &BlockEntity, state: BlockState) -> Option<Compound> {
             nbt.sort_java_hash_order();
             Some(nbt)
         }
-        // `saveCustomOnly`: the age for the beam and the exit.
-        BlockEntity::EndGateway(gateway) => {
-            let mut nbt = Compound::new();
-            gateway.save(&mut nbt);
-            nbt.sort_java_hash_order();
-            Some(nbt)
-        }
-        BlockEntity::Spawner(s) => Some(crate::block::spawner::update_tag(s)),
-        BlockEntity::TrialSpawner(s) => {
-            Some(s.update_tag(crate::block::trial_spawner::TrialState::of(state)))
-        }
-        BlockEntity::Vault(v) => Some(v.update_tag()),
         BlockEntity::Skull(skull) => {
             let mut nbt = Compound::new();
             skull.save(&mut nbt);
@@ -872,6 +879,29 @@ pub fn update_tag(entity: &BlockEntity, state: BlockState) -> Option<Compound> {
         }
         BlockEntity::Campfire(campfire) => Some(campfire.update_tag()),
         BlockEntity::Brushable(b) => Some(b.update_tag()),
+        // `saveCustomOnly`.
+        BlockEntity::Beacon(b) => {
+            let mut nbt = Compound::new();
+            b.save(&mut nbt);
+            Some(nbt)
+        }
+        BlockEntity::Conduit(c) => {
+            let mut nbt = Compound::new();
+            c.save(&mut nbt);
+            Some(nbt)
+        }
+        BlockEntity::Spawner(s) => Some(crate::block::spawner::update_tag(s)),
+        BlockEntity::TrialSpawner(s) => {
+            Some(s.update_tag(crate::block::trial_spawner::TrialState::of(state)))
+        }
+        BlockEntity::Vault(v) => Some(v.update_tag()),
+        // `saveCustomOnly`: the age for the beam and the exit.
+        BlockEntity::EndGateway(gateway) => {
+            let mut nbt = Compound::new();
+            gateway.save(&mut nbt);
+            nbt.sort_java_hash_order();
+            Some(nbt)
+        }
         _ => None,
     }
 }

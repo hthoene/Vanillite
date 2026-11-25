@@ -946,7 +946,7 @@ impl WorldSurvival {
                         p.connection.sink.send_shared(packet);
                     }
                 }
-                Effect::DropItem { .. } | Effect::Experience { .. } => {}
+                Effect::DropItem { .. } | Effect::Experience { .. } | Effect::SpawnMob { .. } => {}
             }
         }
         spawn_drops(&effects, entities, global);
@@ -1074,7 +1074,7 @@ fn deliver_simple(effects: &[Effect], entities: &mut Entities, global: &Global) 
                     p.connection.sink.send_shared(packet);
                 }
             }
-            Effect::DropItem { .. } | Effect::Experience { .. } => {}
+            Effect::DropItem { .. } | Effect::Experience { .. } | Effect::SpawnMob { .. } => {}
         }
     }
     spawn_drops(effects, entities, global);
@@ -1095,6 +1095,29 @@ fn spawn_drops(effects: &[Effect], entities: &mut Entities, global: &Global) {
                     *amount,
                 );
             });
+        }
+        if let Effect::SpawnMob {
+            kind,
+            pos,
+            y_rot,
+            velocity,
+        } = effect
+            && let Some(kind) = vanillite_game::mob::Kind::of(*kind)
+        {
+            let (uuid, seed) = vanillite_game::experience_orb::with_entity_random(|r| {
+                (vanillite_game::mob::random_uuid(r), r.next_long())
+            });
+            let rot = vanillite_world::entity::Rotation {
+                y_rot: *y_rot,
+                x_rot: 0.0,
+                y_head_rot: *y_rot,
+            };
+            let data = vanillite_game::mob::MobData::new(kind, seed);
+            let id =
+                vanillite_game::mob::spawn(entities, &global.network_ids, uuid, *pos, rot, data);
+            if let Some(mut e) = entities.store.get_mut(id) {
+                e.set_velocity(*velocity);
+            }
         }
         if let Effect::DropItem {
             uuid,

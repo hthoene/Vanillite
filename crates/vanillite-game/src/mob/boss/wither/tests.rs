@@ -267,8 +267,11 @@ fn skull_hit_withers_by_difficulty() {
         }
         let cow = ents.mob(target).expect("the cow lives");
         assert!(cow.health < cow.max_health(), "the skull hurt the cow");
-        let effect = cow.effects.get(effect_ids::wither()).copied();
-        assert_eq!(effect.map(|e| (e.duration, e.amplifier)), Some((ticks, 1)));
+        let effect = cow.effects.get(MobEffect::WITHER).cloned();
+        assert_eq!(
+            effect.map(|e| (e.duration, e.amplifier())),
+            Some((ticks, 1))
+        );
         assert!(cx.discarded.contains(&skull));
         assert!(cx.actions.iter().any(|a| matches!(
             a,

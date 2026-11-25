@@ -77,6 +77,11 @@ impl Level {
 
     /// `EntityType.loadEntityRecursive`: creates a live entity of a modelled kind; `false` for
     /// kinds the game does not model.
+    /// Whether the entities of a chunk are in the world (`areEntitiesLoaded`).
+    pub fn entities_loaded(&self, chunk: ChunkPos) -> bool {
+        self.entity_chunks.contains(&chunk)
+    }
+
     fn load_entity(&mut self, nbt: Compound) -> bool {
         let seed = uuid_of(&nbt, "UUID").map_or(0, |uuid| uuid as i64) ^ self.game_time();
         if let Some(loaded) = crate::mob::nbt::load_mob(&nbt, seed) {
@@ -102,6 +107,18 @@ impl Level {
             new.velocity = velocity;
             new.rot = rot;
             self.entities.spawn_special(new, data);
+            return true;
+        }
+        if let Some((pos, uuid, cloud)) = crate::mob::nbt::load_cloud(&nbt) {
+            let radius = cloud.radius;
+            let new = NewEntity::new(ids::AREA_EFFECT_CLOUD, self.network_ids().next(), uuid, pos);
+            let id = self.entities.spawn_cloud(new, cloud);
+            if let Some(mut e) = self.entities.store.get_mut(id) {
+                e.set_dims(vanillite_world::entity::Dimensions {
+                    width: radius * 2.0,
+                    height: 0.5,
+                });
+            }
             return true;
         }
         if let Some((pos, velocity, uuid, orb)) = crate::mob::nbt::load_orb(&nbt) {
@@ -291,8 +308,11 @@ impl Level {
                 .experience_orb(id)
                 .map(|o| crate::mob::nbt::save_orb(&entity, o));
         }
-        if let Some(s) = self.entities.special(id) {
+        if let Some(s) = ents.special(id) {
             return crate::mob::nbt::save_special(&entity, s);
+        }
+        if let Some(c) = ents.cloud(id) {
+            return Some(crate::mob::nbt::save_cloud(&entity, c));
         }
         if kind != ids::ITEM && kind != ids::FALLING_BLOCK && kind != ids::TNT {
             return None;

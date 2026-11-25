@@ -150,8 +150,10 @@ pub struct Actor {
     pub permission_level: u8,
     /// Whether the player's eyes are in water.
     pub eyes_in_water: bool,
-    /// The status effects that change the mining speed.
-    pub dig: crate::inventory::DigEffects,
+    /// `MobEffectUtil.getDigSpeedAmplification` when Haste or Conduit Power is active.
+    pub dig_speed: Option<i32>,
+    /// The amplifier of Mining Fatigue, if active.
+    pub mining_fatigue: Option<i32>,
 }
 
 impl Actor {
@@ -397,12 +399,30 @@ fn destroy_progress(ctx: &PlayContext<'_>, state: BlockState) -> f32 {
         tool,
         state,
         efficiency,
-        ctx.actor.dig,
+        ctx.actor.dig_speed,
+        ctx.actor.mining_fatigue,
         submerged,
         ctx.actor.on_ground,
     );
     let modifier = if correct { 30.0 } else { 100.0 };
     player_speed / speed / modifier
+}
+
+/// `Player.getDestroySpeed`'s effect part: Haste / Conduit Power speed it up by 20 % per level,
+/// Mining Fatigue slows it to `0.3^(level)`.
+pub fn dig_effects(speed: f32, dig_speed: Option<i32>, fatigue: Option<i32>) -> f32 {
+    let mut speed = speed;
+    if let Some(amplification) = dig_speed {
+        #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
+        let factor = 1.0 + (amplification as f32 + 1.0) * 0.2;
+        speed *= factor;
+    }
+    if let Some(amplifier) = fatigue {
+        #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+        let scale = 0.3_f64.powi(amplifier.saturating_add(1)) as f32;
+        speed *= scale;
+    }
+    speed
 }
 
 /// `(int)(progress * 10.0F)`.

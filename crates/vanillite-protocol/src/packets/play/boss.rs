@@ -5,34 +5,6 @@ use crate::codec::{Decode, DecodeLimited, Encode, Error, Reader, Result, write_v
 use crate::text::Component;
 use crate::types::Uuid;
 
-/// `update_mob_effect`: a status effect of an entity started or changed.
-#[derive(Debug, Clone, PartialEq, Eq, Packet)]
-#[packet(state = Play, dir = Clientbound, name = "update_mob_effect")]
-pub struct UpdateMobEffect {
-    #[field(varint)]
-    pub entity_id: i32,
-    /// Registry id in `minecraft:mob_effect`.
-    #[field(varint)]
-    pub effect: i32,
-    #[field(varint)]
-    pub amplifier: i32,
-    /// Ticks left, `-1` for infinite.
-    #[field(varint)]
-    pub duration: i32,
-    /// `1` ambient, `2` visible, `4` show icon, `8` blend.
-    pub flags: u8,
-}
-
-/// `remove_mob_effect`.
-#[derive(Debug, Clone, PartialEq, Eq, Packet)]
-#[packet(state = Play, dir = Clientbound, name = "remove_mob_effect")]
-pub struct RemoveMobEffect {
-    #[field(varint)]
-    pub entity_id: i32,
-    #[field(varint)]
-    pub effect: i32,
-}
-
 /// `BossEvent.BossBarColor`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BossBarColor {

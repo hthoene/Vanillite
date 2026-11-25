@@ -27,7 +27,6 @@ use vanillite_game::stats::{Stat, StatType, StatsCounter, custom};
 use vanillite_game::survival::player::Survival;
 use vanillite_game::survival::rules::Rule;
 use vanillite_net::{Latency, Outbound};
-use vanillite_protocol::Inbound;
 use vanillite_protocol::SharedPacket;
 use vanillite_protocol::compress::Codec;
 use vanillite_protocol::frame::encode_frame;
@@ -928,7 +927,7 @@ impl WorldPlayers {
         let mut equipment: Vec<(EntityId, SetEquipment)> = Vec::new();
         let mut taken_orbs: Vec<(EntityId, EntityId)> = Vec::new();
         for (id, player) in players.iter_mut() {
-            let sink = &player.connection.sink;
+            let sink = &Arc::clone(&player.connection.sink);
             if let Some(sequence) = player.connection.play.take_ack() {
                 sink.send(&BlockChangedAck { sequence });
             }
@@ -1217,6 +1216,7 @@ impl WorldPlayers {
         survival.insert("recipeBook", player.recipe_book.save());
         // `Survival::save` removes the death location when there is none.
         let has_death = survival.get("LastDeathLocation").is_some();
+        let has_effects = survival.get("active_effects").is_some();
         self.store.update(entity.uuid(), move |data| {
             data.pos = pos;
             data.rotation = rotation;
@@ -1225,6 +1225,9 @@ impl WorldPlayers {
             data.game_mode = game_mode;
             if !has_death {
                 data.other.remove("LastDeathLocation");
+            }
+            if !has_effects {
+                data.other.remove("active_effects");
             }
             for (key, tag) in survival.iter() {
                 data.other.insert(key, tag.clone());
@@ -1285,7 +1288,7 @@ impl SpawnProtection {
 fn actor_of(
     entity: &EntityRef<'_>,
     game_mode: GameMode,
-    effects: &vanillite_game::effect::MobEffects,
+    effects: &vanillite_game::effect::ActiveEffects,
     global: &Global,
     chunks: &Chunks,
 ) -> Actor {
@@ -1324,7 +1327,10 @@ fn actor_of(
         game_mode,
         permission_level: crate::commands::permission_level(global, entity.uuid()),
         eyes_in_water,
-        dig: vanillite_game::inventory::DigEffects::of(effects),
+        dig_speed: effects
+            .has_dig_speed()
+            .then(|| effects.dig_speed_amplification()),
+        mining_fatigue: effects.amplifier(vanillite_game::effect::MobEffect::MINING_FATIGUE),
     }
 }
 

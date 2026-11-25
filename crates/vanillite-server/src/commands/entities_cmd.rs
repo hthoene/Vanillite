@@ -11,6 +11,8 @@ use vanillite_command::error::{Arg as ErrArg, CommandError};
 use vanillite_command::selector::EntitySelector;
 use vanillite_command::values::Anchor;
 use vanillite_game::commands::CommandId;
+use vanillite_game::effect::MobEffect;
+use vanillite_game::effect::living::add_queued;
 use vanillite_game::entities::Entities;
 use vanillite_game::survival::damage::DamageSource;
 use vanillite_nbt::Compound;
@@ -144,10 +146,12 @@ pub(crate) fn run(
 }
 
 /// The `effect` argument: a `minecraft:mob_effect` id.
-fn effect_arg(args: &Args) -> Result<(u16, Component), CommandError> {
+fn effect_arg(args: &Args) -> Result<(MobEffect, Component), CommandError> {
     let name = args.identifier("effect").ok_or_else(|| missing("effect"))?;
-    let effect = vanillite_game::effect::id(name);
-    if effect == u16::MAX {
+    let Some(effect) = vanillite_data::registry::MOB_EFFECT
+        .id(name)
+        .and_then(|id| MobEffect::from_id(i32::from(id)))
+    else {
         return Err(CommandError::new(
             "argument.resource.not_found",
             vec![
@@ -155,7 +159,7 @@ fn effect_arg(args: &Args) -> Result<(u16, Component), CommandError> {
                 ErrArg::Str("minecraft:mob_effect".to_owned()),
             ],
         ));
-    }
+    };
     // `MobEffect.getDisplayName`.
     let key = format!("effect.{}", name.replace(':', "."));
     Ok((effect, Component::translatable(key, vec![])))
@@ -164,16 +168,6 @@ fn effect_arg(args: &Args) -> Result<(u16, Component), CommandError> {
 /// Whether a target is a `LivingEntity`.
 fn is_living(target: &Target) -> bool {
     !target.kind.info().attributes.is_empty()
-}
-
-/// `canBeAffected` of a target's kind.
-fn can_be_affected(env: &Env<'_>, target: &Target, effect: u16) -> bool {
-    let game = &env.global.game();
-    vanillite_game::effect::can_be_affected(target.kind, effect, &|tag| {
-        game.entity_tags
-            .get(tag)
-            .is_some_and(|v| v.contains(&target.kind.0))
-    })
 }
 
 /// `EffectCommands.giveEffect`.
@@ -189,32 +183,34 @@ fn effect_give(
     let particles = !args.bool("hideParticles").copied().unwrap_or(false);
     // `computeDurationInTicks`.
     let duration = if infinite {
-        vanillite_game::effect::INFINITE
+        vanillite_game::effect::instance::INFINITE
     } else {
         match args.int("seconds").copied() {
-            Some(s) if vanillite_game::effect::is_instantaneous(effect) => s,
+            Some(s) if effect.is_instantaneous() => s,
             Some(s) => s.saturating_mul(20),
-            None if vanillite_game::effect::is_instantaneous(effect) => 1,
+            None if effect.is_instantaneous() => 1,
             None => 600,
         }
     };
     let instance = vanillite_game::effect::EffectInstance::with_flags(
-        effect, duration, amplifier, false, particles,
+        effect, duration, amplifier, false, particles, particles,
     );
     let mut tracker = Tracker::<Component>::default();
     for target in &targets {
         if !is_living(target) {
             continue;
         }
-        let affected = can_be_affected(env, target, effect);
         let changed = match target.entity {
-            Some(id) => env.level.entities.add_effect(id, instance, affected),
-            // An entity of another world: applied on its world's thread; counted as changed.
+            Some(id) => add_queued(&mut env.level.entities, id, instance.clone()),
+            // An entity of another world: applied on its world's thread; counted as changed
+            // when its kind can be affected.
             None => {
+                let instance = instance.clone();
                 on_entity(env, target, move |entities, id, _, _| {
-                    entities.add_effect(id, instance, affected);
+                    add_queued(entities, id, instance);
                 });
-                affected
+                vanillite_game::effect::can_be_affected(target.kind, effect)
+                    && !vanillite_game::effect::refuses_all_effects(target.kind)
             }
         };
         tracker.track(&target.display(), i32::from(changed));
@@ -246,6 +242,18 @@ fn effect_give(
     )
 }
 
+/// `removeEffect` (with `only`) or `removeAllEffects` on a living entity; whether it had it.
+fn remove_effects(
+    entities: &mut vanillite_game::entities::Entities,
+    id: vanillite_world::entity::EntityId,
+    only: Option<MobEffect>,
+) -> bool {
+    entities.effects_mut(id).is_some_and(|fx| match only {
+        Some(e) => fx.remove(e),
+        None => fx.clear(),
+    })
+}
+
 /// `EffectCommands.clearEffects` and `clearEffect`.
 fn effect_clear(
     args: &Args,
@@ -268,19 +276,10 @@ fn effect_clear(
         }
         let only = effect.as_ref().map(|(e, _)| *e);
         let changed = match target.entity {
-            Some(id) => {
-                let entities = &mut env.level.entities;
-                match only {
-                    Some(e) => entities.remove_effect(id, e),
-                    None => entities.clear_effects(id),
-                }
-            }
+            Some(id) => remove_effects(&mut env.level.entities, id, only),
             None => {
                 on_entity(env, target, move |entities, id, _, _| {
-                    match only {
-                        Some(e) => entities.remove_effect(id, e),
-                        None => entities.clear_effects(id),
-                    };
+                    remove_effects(entities, id, only);
                 });
                 true
             }

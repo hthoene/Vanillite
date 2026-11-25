@@ -30,6 +30,7 @@ use vanillite_data::entity::{EntityTypeId, ids};
 use vanillite_game::block::Behaviours;
 use vanillite_game::entities::{Entities, is_mob_kind};
 use vanillite_game::item_entity::ItemData;
+use vanillite_game::level::explosion::BlockInteraction;
 use vanillite_game::level::{Level, LevelOutput, LevelSettings, update};
 use vanillite_game::minecart::{self, MinecartKind};
 use vanillite_game::mob::goals::{Goal, MeleeKind, Slot};
@@ -320,8 +321,15 @@ impl GameWorld {
                 continue;
             }
             let is_mob = is_mob_kind(kind);
+            let is_special = mob::boss::special::is_special_kind(kind);
             let is_minecart = MinecartKind::of(kind).is_some();
-            if !is_mob && !is_minecart && kind != ids::ARROW && kind != ids::EXPERIENCE_ORB {
+            if !is_mob
+                && !is_special
+                && !is_minecart
+                && kind != ids::ARROW
+                && kind != ids::EXPERIENCE_ORB
+                && kind != ids::AREA_EFFECT_CLOUD
+            {
                 continue;
             }
             if !self
@@ -337,10 +345,14 @@ impl GameWorld {
             self.with_env(|level, ents, env, cx| {
                 if is_mob {
                     mob::tick(level, ents, env, cx, id);
+                } else if is_special {
+                    mob::boss::special::tick(level, ents, env, cx, id);
                 } else if is_minecart {
                     minecart::tick(level, ents, env, cx, id);
                 } else if kind == ids::ARROW {
                     projectile::tick_arrow(level, ents, env, cx, id);
+                } else {
+                    vanillite_game::effect::cloud::tick(level, ents, env, cx, id);
                 }
             });
             if !self.mobs.actions.is_empty() {
@@ -358,11 +370,33 @@ impl GameWorld {
     /// What the last mob tick queued (`WorldMobs::apply_actions` of the server).
     fn apply_actions(&mut self) {
         for action in std::mem::take(&mut self.mobs.actions) {
-            if let WorldAction::Explode(e) = action {
-                e.run(&mut self.level, &self.rules);
-                self.explosion_hurts();
-            } else {
-                action.apply_to_level(&mut self.level);
+            match action {
+                WorldAction::Explode(e) => {
+                    e.run(&mut self.level, &self.rules);
+                    self.explosion_hurts();
+                }
+                WorldAction::ExplodeWith {
+                    source,
+                    indirect,
+                    pos,
+                    radius,
+                    blocks,
+                } => {
+                    let interaction = if !blocks {
+                        BlockInteraction::Keep
+                    } else if self.rules.bool(Rule::BLOCK_EXPLOSION_DROP_DECAY) {
+                        BlockInteraction::DestroyWithDecay
+                    } else {
+                        BlockInteraction::Destroy
+                    };
+                    self.level
+                        .explode(source, indirect, pos, radius, interaction);
+                    self.explosion_hurts();
+                }
+                WorldAction::Level(action) => action.apply(&mut self.level),
+                other => {
+                    other.apply_to_level(&mut self.level);
+                }
             }
         }
         self.finish_removals();
@@ -413,6 +447,18 @@ impl GameWorld {
     /// other effects go to clients nobody has.
     fn spawn_drops(&mut self) {
         for effect in std::mem::take(&mut self.effects) {
+            if let Effect::Experience { pos, amount } = effect {
+                vanillite_game::experience_orb::with_entity_random(|random| {
+                    vanillite_game::experience_orb::award_in(
+                        &mut self.level.entities,
+                        &self.network_ids,
+                        random,
+                        pos,
+                        vanillite_base::Vec3::default(),
+                        amount,
+                    );
+                });
+            }
             if let Effect::DropItem {
                 uuid,
                 pos,
@@ -474,7 +520,7 @@ impl GameWorld {
 
     fn add_player(&mut self, spec: &EntitySpec, index: usize) {
         let pos = Vec3::new(spec.pos[0], spec.pos[1], spec.pos[2]);
-        let (_tx, inbound) = std::sync::mpsc::channel();
+        let (_tx, inbound) = vanillite_protocol::inbound_queue(64);
         let chat = ChatSettings::default();
         let data = PlayerData {
             profile: GameProfile {
@@ -685,6 +731,9 @@ fn goal_name(goal: &Goal) -> &'static str {
         Goal::HurtBy { .. } => "HurtByTargetGoal",
         Goal::EndermanFreeze { .. } => "EndermanFreezeWhenLookedAt",
         Goal::EndermanStare { .. } => "EndermanLookForPlayerGoal",
+        // The boss goals are not part of a parity trace yet.
+        Goal::Guardian(_) => "GuardianGoal",
+        Goal::Wither(_) => "WitherGoal",
         Goal::Breed { .. } => "BreedGoal",
         Goal::Tempt { .. } => "TemptGoal",
         Goal::SitWhenOrdered => "SitWhenOrderedToGoal",
@@ -693,8 +742,6 @@ fn goal_name(goal: &Goal) -> &'static str {
         Goal::FollowOwner { .. } => "FollowOwnerGoal",
         Goal::OwnerHurtBy { .. } => "OwnerHurtByTargetGoal",
         Goal::OwnerHurt { .. } => "OwnerHurtTargetGoal",
-        Goal::Guardian(_) => "GuardianGoal",
-        Goal::Wither(_) => "WitherGoal",
     }
 }
 
@@ -927,6 +974,20 @@ impl ScenarioWorld for GameWorld {
                 None => DamageSource::of(env.types.generic),
             };
             combat::hurt(level, ents, env, cx, target, source, hurt.amount);
+        });
+        self.finish_removals();
+        self.spawn_drops();
+        Ok(())
+    }
+
+    fn effect(&mut self, effect: &crate::scenario::EffectOp) -> Result<(), String> {
+        let target = self.named(&effect.entity)?;
+        let kind = vanillite_game::effect::MobEffect::by_name(&effect.effect)
+            .ok_or_else(|| format!("unknown effect {}", effect.effect))?;
+        let instance =
+            vanillite_game::effect::EffectInstance::new(kind, effect.duration, effect.amplifier);
+        self.with_env(|level, ents, env, cx| {
+            vanillite_game::effect::living::add_to_entity(level, ents, env, cx, target, instance);
         });
         self.finish_removals();
         self.spawn_drops();

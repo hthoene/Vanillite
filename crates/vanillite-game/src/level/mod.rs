@@ -193,10 +193,10 @@ pub struct Sound {
 
 /// `SoundSource.BLOCKS`.
 pub const SOUND_BLOCKS: u8 = 4;
-/// `SoundSource.HOSTILE`.
-pub const SOUND_HOSTILE: u8 = 5;
 /// `SoundSource.PLAYERS`.
 pub const SOUND_PLAYERS: u8 = 7;
+/// `SoundSource.HOSTILE`.
+pub const SOUND_HOSTILE: u8 = 5;
 /// `SoundSource.NEUTRAL`.
 pub const SOUND_NEUTRAL: u8 = 6;
 /// `SoundSource.RECORDS`.
@@ -219,6 +219,8 @@ pub struct LevelOutput {
     pub explosions: Vec<explosion::ExplosionEvent>,
     /// The damage of the living entities explosions hit, for the mob system.
     pub explosion_hurts: Vec<explosion::ExplosionHurt>,
+    /// Magic damage block entities deal (conduits): target and amount.
+    pub magic_hurts: Vec<(vanillite_world::entity::EntityId, f32)>,
     /// Experience to award at a position (`ExperienceOrb.award`; orbs are not simulated yet).
     pub experience: Vec<(vanillite_base::Vec3, i32)>,
     /// Block entities whose client data changed (`sendBlockUpdated` of a block entity).
@@ -260,6 +262,8 @@ pub struct Level {
     behaviours: Arc<Behaviours>,
     network_ids: Arc<NetworkIds>,
     climate: Option<Arc<Climate>>,
+    /// `isRaining`, set by the server's weather each tick.
+    pub raining: bool,
     updater: NeighborUpdater,
     /// Live block entities.
     pub block_entities: BlockEntities,
@@ -350,6 +354,7 @@ impl Level {
             behaviours,
             network_ids,
             climate: None,
+            raining: false,
             block_entities: BlockEntities::default(),
             border: border::WorldBorder::default(),
             forced: forced::ForcedChunks::default(),
@@ -476,6 +481,37 @@ impl Level {
     /// The world's biomes, if known.
     pub fn climate(&self) -> Option<&Climate> {
         self.climate.as_deref()
+    }
+
+    /// `Level.isRainingAt` without the sky light test (the motion blocking heightmap covers it
+    /// outside of caves).
+    pub fn is_raining_at(&self, pos: BlockPos) -> bool {
+        if !self.raining {
+            return false;
+        }
+        let Some(chunk) = self.chunks.chunk(pos.chunk()) else {
+            return false;
+        };
+        let Some(heights) = chunk
+            .chunk
+            .heightmaps()
+            .get(vanillite_chunk::HeightmapKind::MotionBlocking)
+        else {
+            return false;
+        };
+        let (x, z) = (
+            u32::try_from(pos.x & 15).unwrap_or(0),
+            u32::try_from(pos.z & 15).unwrap_or(0),
+        );
+        let top = i32::try_from(heights.get(x, z)).unwrap_or(0) + chunk.chunk.min_y();
+        if top > pos.y {
+            return false;
+        }
+        let Some(climate) = &self.climate else {
+            return true;
+        };
+        let data = climate.biomes.get(self.biome(pos));
+        data.has_precipitation && data.warm_enough_to_rain(pos.x, pos.y, pos.z, climate.sea_level)
     }
 
     /// `getBiome(pos)`: the noise biome the biome manager picks for `pos`; the default biome

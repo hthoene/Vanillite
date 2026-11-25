@@ -462,7 +462,14 @@ impl ServerWorld {
         if ctx.runs_normally {
             self.ticks += 1;
             self.tick_entities(ctx.global);
+            self.level.raining = self.survival.weather.is_raining();
             self.level.tick_block_entities();
+            self.mobs.apply_magic_hurts(
+                &mut self.level,
+                &mut self.survival,
+                ctx.global,
+                &self.dimension,
+            );
         }
         self.players.tick_entities(&mut self.level.entities);
         if ctx.runs_normally {

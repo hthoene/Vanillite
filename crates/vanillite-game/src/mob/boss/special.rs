@@ -1,6 +1,6 @@
-//! The non-living entities of the bosses: wither skulls, end crystals, dragon fireballs and
-//! area effect clouds (the dragon's breath). Their data lives in [`Entities::specials`]; they
-//! tick in the world's entity tick like mobs.
+//! The non-living entities of the bosses: wither skulls, end crystals and dragon fireballs
+//! (the dragon's breath clouds are [`crate::effect::cloud`]s). Their data lives in
+//! [`Entities::specials`]; they tick in the world's entity tick like mobs.
 
 use vanillite_data::entity::{EntityTypeId, ids};
 use vanillite_nbt::Compound;
@@ -18,15 +18,11 @@ pub enum SpecialData {
     WitherSkull(Box<wither::Skull>),
     EndCrystal(Box<dragon::Crystal>),
     DragonFireball(Box<dragon::Fireball>),
-    AreaEffectCloud(Box<dragon::Cloud>),
 }
 
 /// Whether entities of `kind` carry [`SpecialData`].
 pub fn is_special_kind(kind: EntityTypeId) -> bool {
-    kind == ids::WITHER_SKULL
-        || kind == ids::END_CRYSTAL
-        || kind == ids::DRAGON_FIREBALL
-        || kind == ids::AREA_EFFECT_CLOUD
+    kind == ids::WITHER_SKULL || kind == ids::END_CRYSTAL || kind == ids::DRAGON_FIREBALL
 }
 
 /// What one special entity tick works on (like [`crate::mob::Tick`]).
@@ -69,7 +65,6 @@ pub fn tick(
         SpecialData::WitherSkull(_) => wither::tick_skull,
         SpecialData::EndCrystal(_) => dragon::tick_crystal,
         SpecialData::DragonFireball(_) => dragon::tick_fireball,
-        SpecialData::AreaEffectCloud(_) => dragon::tick_cloud,
     };
     let mut t = SpecialTick {
         level,
@@ -84,9 +79,9 @@ pub fn tick(
 /// The synched data of a special entity after the entity's own (ids from 8 on).
 pub fn entity_data(out: &mut Vec<u8>, data: &SpecialData, all: bool) {
     match data {
-        SpecialData::EndCrystal(_)
-        | SpecialData::DragonFireball(_)
-        | SpecialData::AreaEffectCloud(_) => dragon::crystal::entity_data(out, data, all),
+        SpecialData::EndCrystal(_) | SpecialData::DragonFireball(_) => {
+            dragon::crystal::entity_data(out, data, all)
+        }
         SpecialData::WitherSkull(s) => wither::skull_entity_data(out, s, all),
     }
 }
@@ -110,9 +105,9 @@ pub fn hurt(
 /// The entity NBT of a special entity's kind data; `None` when the entity is not saved.
 pub fn save(data: &SpecialData, out: &mut Compound) -> Option<()> {
     match data {
-        SpecialData::EndCrystal(_)
-        | SpecialData::DragonFireball(_)
-        | SpecialData::AreaEffectCloud(_) => dragon::crystal::save(data, out),
+        SpecialData::EndCrystal(_) | SpecialData::DragonFireball(_) => {
+            dragon::crystal::save(data, out)
+        }
         SpecialData::WitherSkull(s) => {
             wither::save_skull(s, out);
             Some(())

@@ -9,7 +9,6 @@ use vanillite_world::entity::{EntityFlags, EntityId};
 
 use super::path::{Node, Path};
 use super::{BODY, HEAD, PARTS, State, alive_crystals, fight, podium, st, st_ref, y_rot};
-use crate::effect;
 use crate::entities::Entities;
 use crate::mob::Tick;
 use crate::survival::player::Env;
@@ -356,7 +355,9 @@ pub fn nearest_player(
                         visibility *= 0.8;
                     }
                     if flags.contains(EntityFlags::INVISIBLE)
-                        || p.survival.effects.has(effect::ids::invisibility())
+                        || p.survival
+                            .effects
+                            .has(crate::effect::MobEffect::INVISIBILITY)
                     {
                         visibility *= 0.7 * 0.1;
                     }
@@ -844,9 +845,8 @@ fn flaming_tick(t: &mut Tick<'_, '_>) {
         let cloud = super::crystal::spawn_cloud(
             t.level,
             t.ents,
-            t.env,
             Vec3::new(x, y, z),
-            super::crystal::Cloud::dragon_flame(Some(owner)),
+            super::crystal::flame_cloud(Some(owner)),
         );
         st(t).phases.flaming.flame = Some(cloud);
     }

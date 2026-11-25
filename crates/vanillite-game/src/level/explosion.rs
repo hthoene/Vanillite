@@ -48,9 +48,8 @@ pub enum BlockResistance {
     Default,
     /// `WitherSkull` (dangerous): at most 0.8 for blocks the wither can destroy.
     DangerousWitherSkull,
-    /// A primed TNT minecart: rails and the blocks under them have no resistance and do not
-    /// break.
-    Rails,
+    /// `MinecartTNT`: rails and the blocks under them have no resistance and do not break.
+    TntMinecart,
 }
 
 /// An explosion for the clients (`ClientboundExplodePacket`), sent to players within 64 blocks.
@@ -107,7 +106,7 @@ impl Level {
         )
     }
 
-    /// [`Self::explode`] with the source's block resistance override.
+    /// [`Self::explode`] with the source's block resistance override (`ExplosionDamageCalculator`).
     pub fn explode_with(
         &mut self,
         source: Option<EntityId>,
@@ -170,7 +169,7 @@ impl Level {
                         let state = self.block(pos);
                         let fluid = state.fluid_state();
                         // `ExplosionDamageCalculator.getBlockExplosionResistance`.
-                        let rail_protected = override_resistance == BlockResistance::Rails
+                        let rail_protected = override_resistance == BlockResistance::TntMinecart
                             && (crate::block::is_rail(state.block())
                                 || crate::block::is_rail(self.block(pos.offset(0, 1, 0)).block()));
                         if !(state.is_air() && fluid.is_empty()) {

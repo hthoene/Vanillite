@@ -20,9 +20,19 @@ fn uuid_ints(uuid: u128) -> Vec<i32> {
     vec![part(96), part(64), part(32), part(0)]
 }
 
+/// A UUID as four ints (`UUIDUtil.CODEC`).
+pub fn uuid_tag(uuid: u128) -> Tag {
+    Tag::IntArray(uuid_ints(uuid))
+}
+
 /// The UUID of an entity compound (`UUID` as four ints).
 pub fn uuid_of(tag: &Compound) -> Option<u128> {
-    match tag.get("UUID") {
+    uuid_from_tag(tag.get("UUID"))
+}
+
+/// A UUID stored as four ints.
+pub fn uuid_from_tag(tag: Option<&Tag>) -> Option<u128> {
+    match tag {
         Some(Tag::IntArray(v)) if v.len() == 4 => {
             #[allow(clippy::cast_sign_loss)]
             let part = |i: usize| u128::from(v[i] as u32);
@@ -142,6 +152,24 @@ fn save_entity(core: &EntityRef<'_>, out: &mut Compound) {
     }
 }
 
+/// An area effect cloud as entity NBT.
+pub fn save_cloud(core: &EntityRef<'_>, data: &crate::effect::cloud::CloudData) -> Compound {
+    let mut out = Compound::new();
+    save_entity(core, &mut out);
+    data.save(&mut out);
+    out
+}
+
+/// An area effect cloud loaded from entity NBT: position, UUID and data.
+pub fn load_cloud(tag: &Compound) -> Option<(Vec3, u128, crate::effect::cloud::CloudData)> {
+    if type_of(tag)? != vanillite_data::entity::ids::AREA_EFFECT_CLOUD {
+        return None;
+    }
+    let pos = vec3_of(tag, "Pos")?;
+    let uuid = uuid_of(tag)?;
+    Some((pos, uuid, crate::effect::cloud::CloudData::load(tag)))
+}
+
 /// A special entity (see [`super::boss::special`]) as entity NBT; `None` when it is not
 /// saved (`shouldBeSaved`).
 pub fn save_special(
@@ -205,10 +233,10 @@ pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
         out.insert("Silent", true);
     }
     out.insert("Health", m.health);
-    if let Some(effects) = m.effects.save() {
-        out.insert("active_effects", effects);
+    out.insert("AbsorptionAmount", m.absorption);
+    if let Some(list) = m.effects.save() {
+        out.insert("active_effects", list);
     }
-    out.insert("AbsorptionAmount", 0.0_f32);
     out.insert("FallFlying", false);
     out.insert("CanPickUpLoot", false);
     out.insert("PersistenceRequired", m.persistent);
@@ -325,6 +353,14 @@ pub fn load_mob(tag: &Compound, seed: i64) -> Option<LoadedMob> {
         super::random_uuid(&mut r)
     });
     let mut m = MobData::new(kind, seed);
+    // Effects first: their modifiers (Health Boost) raise the maximum health.
+    m.effects.load(tag.get("active_effects"));
+    if !m.effects.is_empty() {
+        let dirty = m.effects.modifiers.take_dirty();
+        crate::effect::living::apply_mob_modifiers(&mut m, &dirty);
+        m.absorption = float(tag, "AbsorptionAmount").unwrap_or(0.0).max(0.0);
+        crate::effect::living::apply_mob_modifiers(&mut m, &[]);
+    }
     if let Some(h) = float(tag, "Health") {
         m.health = h.clamp(0.0, m.max_health());
     }
@@ -394,7 +430,6 @@ pub fn load_mob(tag: &Compound, seed: i64) -> Option<LoadedMob> {
         Kind::Skeleton | Kind::Spider | Kind::Enderman => {}
         _ => super::boss::load(&mut m, tag),
     }
-    m.effects = crate::effect::MobEffects::load(tag.get("active_effects"));
     // A fresh random per loaded mob, like `Entity.random`.
     let _ = m.random.next_int();
     Some(LoadedMob {

@@ -184,8 +184,13 @@ pub struct MobData {
     pub xp_reward: i32,
     /// The last block position (`lastPos`).
     pub last_pos: BlockPos,
-    /// Active status effects (`activeEffects`).
-    pub effects: crate::effect::MobEffects,
+    /// `activeEffects` with their attribute modifiers.
+    pub effects: crate::effect::ActiveEffects,
+    /// `getAbsorptionAmount`.
+    pub absorption: f32,
+    /// The attribute values without effect modifiers while modifiers are active; `attrs`
+    /// holds the modified values then.
+    pub base_attrs: Option<Box<Attrs>>,
     /// `moveDist` and `nextStep`: when the next step makes a vibration.
     pub move_dist: f32,
     pub next_step: f32,
@@ -298,8 +303,10 @@ impl MobData {
             goal_path: None,
             variant: 0,
             xp_reward: 0,
+            effects: crate::effect::ActiveEffects::default(),
+            absorption: 0.0,
+            base_attrs: None,
             last_pos: BlockPos::new(i32::MIN, i32::MIN, i32::MIN),
-            effects: crate::effect::MobEffects::default(),
             move_dist: 0.0,
             next_step: 1.0,
             ext: boss::new_ext(kind),
@@ -467,13 +474,13 @@ pub struct MobSettings {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ExplosionRequest {
     pub source: Option<EntityId>,
-    /// `getIndirectSourceEntity` when it is not `source` itself (a projectile's owner).
+    /// The entity responsible (`getIndirectSourceEntity`); `None`: the source itself.
     pub indirect: Option<EntityId>,
     pub pos: Vec3,
     pub radius: f32,
     /// `ExplosionInteraction.MOB`: blocks only break with `mobGriefing`.
     pub mob: bool,
-    /// The source's `getBlockExplosionResistance`.
+    /// The source's `getBlockExplosionResistance` (the wither's skulls, primed TNT minecarts).
     pub resistance: crate::level::explosion::BlockResistance,
 }
 

@@ -10,6 +10,7 @@
 //! [`place`] has Vanilla-exact placement states, survival and replacement rules, and the
 //! blocks that placing or breaking one block adds or removes.
 
+pub mod beacon;
 pub mod bell;
 pub mod bonemeal;
 pub mod bookshelf;
