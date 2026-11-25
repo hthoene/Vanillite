@@ -153,7 +153,7 @@ fn fluid_state(fluid: u16, amount: i32, falling: bool) -> FluidState {
 }
 
 /// `fluidState.getHeight(level, pos)`.
-fn height(level: &Level, fluid: FluidState, pos: BlockPos) -> f32 {
+pub(crate) fn height(level: &Level, fluid: FluidState, pos: BlockPos) -> f32 {
     match Kind::of(fluid.info().fluid) {
         Some(kind) if kind.is_same(level.fluid(pos.above())) => 1.0,
         _ => fluid.info().own_height,
@@ -600,14 +600,29 @@ pub fn is_water(fluid: FluidState) -> bool {
     Kind::Water.is_same(fluid)
 }
 
+/// `fluidState.is(FluidTags.LAVA)`.
+pub fn is_lava(fluid: FluidState) -> bool {
+    Kind::Lava.is_same(fluid)
+}
+
 /// The `waterlogged` property.
 pub fn waterlogged(state: BlockState) -> bool {
     state.value("waterlogged") == Some("true")
 }
 
-/// The random tick of fluids: only lava ticks randomly, to set fire; fire is not simulated yet,
-/// so lava leaves its surroundings alone.
-pub fn random_tick(_level: &mut Level, _pos: BlockPos, _fluid: FluidState) {}
+/// The random tick of fluids: only lava ticks randomly, to set fire (`LavaFluid.randomTick`).
+pub fn random_tick(level: &mut Level, pos: BlockPos, fluid: FluidState) {
+    let kind = fluid.info().fluid;
+    if kind == LAVA || kind == FLOWING_LAVA {
+        super::fire::lava_random_tick(level, pos, fluid);
+    }
+}
+
+/// `LiquidBlock.randomTick`: the fluid's random tick. The level then runs the fluid's random
+/// tick a second time (`ServerLevel.tickChunk`), as in Vanilla.
+pub fn liquid_random_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
+    random_tick(level, pos, state.fluid_state());
+}
 
 /// `LiquidBlock.onPlace`.
 pub fn liquid_on_place(
@@ -618,6 +633,7 @@ pub fn liquid_on_place(
     _moved: bool,
 ) {
     schedule_if_spreading(level, state, pos);
+    super::bubble::liquid_check(level, state, pos);
 }
 
 /// `LiquidBlock.neighborChanged`.
@@ -629,6 +645,7 @@ pub fn liquid_neighbor_changed(
     _moved: bool,
 ) {
     schedule_if_spreading(level, state, pos);
+    super::bubble::liquid_check(level, state, pos);
 }
 
 fn schedule_if_spreading(level: &mut Level, state: BlockState, pos: BlockPos) {

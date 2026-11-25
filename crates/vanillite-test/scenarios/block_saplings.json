@@ -1,0 +1,187 @@
+{
+  "description": "Saplings of every tree grow by random ticks into trees (2x2 dark and pale oak too); tree features draw from the level random.",
+  "tier": "fast",
+  "world": {
+    "seed": 8301,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:stone",
+        3
+      ]
+    ]
+  },
+  "rules": {
+    "random_tick_speed": "1024"
+  },
+  "time": 6000,
+  "level_rng": true,
+  "light": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      23,
+      -44,
+      23
+    ]
+  ],
+  "ticks": 160,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -61,
+        0
+      ],
+      "to": [
+        23,
+        -61,
+        23
+      ],
+      "block": "minecraft:dirt"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        4
+      ],
+      "block": "minecraft:oak_sapling[stage=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        12,
+        -60,
+        4
+      ],
+      "block": "minecraft:birch_sapling[stage=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        20,
+        -60,
+        4
+      ],
+      "block": "minecraft:spruce_sapling[stage=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        12
+      ],
+      "block": "minecraft:jungle_sapling[stage=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        12,
+        -60,
+        12
+      ],
+      "block": "minecraft:acacia_sapling[stage=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        20,
+        -60,
+        12
+      ],
+      "block": "minecraft:cherry_sapling[stage=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        20
+      ],
+      "block": "minecraft:oak_sapling[stage=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        12,
+        -60,
+        20
+      ],
+      "block": "minecraft:dark_oak_sapling[stage=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        20,
+        -60,
+        20
+      ],
+      "block": "minecraft:pale_oak_sapling[stage=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        12,
+        -60,
+        21
+      ],
+      "block": "minecraft:dark_oak_sapling[stage=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        20,
+        -60,
+        21
+      ],
+      "block": "minecraft:pale_oak_sapling[stage=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        13,
+        -60,
+        20
+      ],
+      "block": "minecraft:dark_oak_sapling[stage=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        21,
+        -60,
+        20
+      ],
+      "block": "minecraft:pale_oak_sapling[stage=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        13,
+        -60,
+        21
+      ],
+      "block": "minecraft:dark_oak_sapling[stage=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        21,
+        -60,
+        21
+      ],
+      "block": "minecraft:pale_oak_sapling[stage=0]"
+    }
+  ]
+}

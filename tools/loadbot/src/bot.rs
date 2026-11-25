@@ -1,8 +1,9 @@
-//! One bot: login, configuration and the play loop (random walk or straight flight, chat,
-//! latency probes).
+//! One bot: login, configuration and the play loop (random walk, straight flight, spread or
+//! standing still, chat, latency probes).
 //!
 //! Incoming packets are framed and counted; only the few a client must answer are decoded.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
@@ -39,6 +40,11 @@ const FLIGHT_Y: f64 = 300.0;
 const CLIMB_SPEED: f64 = 5.0;
 /// Seconds between latency probes (`ping_request`).
 const PROBE_INTERVAL: Duration = Duration::from_secs(5);
+/// Chunks around the bot that count as "near" for the holes metric: a square of
+/// (2 * NEAR + 1)² chunks.
+const NEAR: i32 = 2;
+/// Speed of the flight to the spread point in blocks per second (boat on blue ice).
+const SPREAD_SPEED: f64 = 72.7;
 /// Bytes read per `read` call.
 const READ_CHUNK: usize = 16 * 1024;
 
@@ -91,8 +97,8 @@ enum Action {
     Ping(i32),
     Teleport(PlayerPosition),
     BatchFinished,
-    Chunk,
-    Forget,
+    Chunk(i32, i32),
+    Forget(i32, i32),
     Pong(i64),
     Disconnect(String),
     StartConfiguration,
@@ -122,6 +128,12 @@ impl Bot {
         let mut yaw: f64 = self.rng.next_f64() * 360.0;
         let mut movement = *self.movement.borrow_and_update();
         let mut next_turn = turn_deadline(movement);
+        // Spread: the point this bot flies to (picked when the mode starts).
+        let mut goal: Option<(f64, f64)> = None;
+        let mut loaded: HashSet<(i32, i32)> = HashSet::new();
+        // Full view: every chunk within the view distance (a circle) has arrived.
+        let mut full_view = false;
+        let view = i32::from(self.config.view_distance.max(1));
         let mut tick = tokio::time::interval_at(
             tokio::time::Instant::now() + Duration::from_millis(self.rng.next_u64() % 50),
             Duration::from_millis(50),
@@ -171,22 +183,13 @@ impl Bot {
                             Action::BatchFinished => conn.queue(&ChunkBatchReceived {
                                 desired_chunks_per_tick: 64.0,
                             })?,
-                            Action::Forget => {
+                            Action::Forget(cx, cz) => {
+                                loaded.remove(&(cx, cz));
                                 self.metrics.chunks_forgotten.fetch_add(1, Ordering::Relaxed);
                             }
-                            Action::Chunk => {
+                            Action::Chunk(cx, cz) => {
+                                loaded.insert((cx, cz));
                                 self.metrics.chunks.fetch_add(1, Ordering::Relaxed);
-                                if !*joined && pos.is_some() {
-                                    *joined = true;
-                                    permit.take();
-                                    let ms = started.elapsed().as_secs_f64() * 1e3;
-                                    if let Ok(mut v) = self.metrics.join_ms.lock() {
-                                        v.push(ms);
-                                    }
-                                    self.metrics.joined.fetch_add(1, Ordering::Relaxed);
-                                    self.metrics.online.fetch_add(1, Ordering::Relaxed);
-                                    conn.queue(&PlayerLoaded)?;
-                                }
                             }
                             Action::Pong(sent) => {
                                 let now = micros_since(started);
@@ -201,6 +204,34 @@ impl Bot {
                             }
                         }
                     }
+                    // In the world once the position and a first chunk are there, in either
+                    // order (Paper may send chunks before the position).
+                    if !*joined && pos.is_some() && !loaded.is_empty() {
+                        *joined = true;
+                        permit.take();
+                        let ms = started.elapsed().as_secs_f64() * 1e3;
+                        if let Ok(mut v) = self.metrics.join_ms.lock() {
+                            v.push(ms);
+                        }
+                        self.metrics.joined.fetch_add(1, Ordering::Relaxed);
+                        self.metrics.online.fetch_add(1, Ordering::Relaxed);
+                        conn.queue(&PlayerLoaded)?;
+                    }
+                    if *joined
+                        && !full_view
+                        && let Some((x, _, z)) = pos
+                    {
+                        let (cx, cz) = ((x / 16.0).floor() as i32, (z / 16.0).floor() as i32);
+                        full_view = (-view..=view).all(|dz| {
+                            (-view..=view).all(|dx| {
+                                dx * dx + dz * dz > view * view
+                                    || loaded.contains(&(cx + dx, cz + dz))
+                            })
+                        });
+                        if full_view && let Ok(mut v) = self.metrics.full_view_ms.lock() {
+                            v.push(started.elapsed().as_secs_f64() * 1e3);
+                        }
+                    }
                     conn.flush().await?;
                 }
                 _ = tick.tick(), if *joined => {
@@ -210,8 +241,22 @@ impl Bot {
                         next_turn = turn_deadline(movement);
                         home = (*x, *z);
                         yaw = self.rng.next_f64() * 360.0;
+                        goal = None;
                     }
                     let speed = match movement {
+                        Movement::Still => 0.0,
+                        Movement::Spread { radius } => {
+                            let (gx, gz) = *goal.get_or_insert_with(|| {
+                                // Uniform in the disk around the point where the mode started.
+                                let r = radius * self.rng.next_f64().sqrt();
+                                let a = self.rng.next_f64() * std::f64::consts::TAU;
+                                (*x + r * a.cos(), *z + r * a.sin())
+                            });
+                            let (dx, dz) = (gx - *x, gz - *z);
+                            let left = (dx * dx + dz * dz).sqrt();
+                            yaw = (-dx).atan2(dz).to_degrees();
+                            climb(y, (SPREAD_SPEED / 20.0).min(left))
+                        }
                         Movement::Random => {
                             // Drift the heading, turn back home outside the radius.
                             let (dx, dz) = (*x - home.0, *z - home.1);
@@ -231,10 +276,14 @@ impl Bot {
                                 next_turn = Some(at + Duration::from_secs_f64(turn));
                                 yaw = self.rng.next_f64() * 360.0;
                             }
-                            *y += (FLIGHT_Y - *y).clamp(-CLIMB_SPEED, CLIMB_SPEED);
-                            speed / 20.0
+                            climb(y, speed / 20.0)
                         }
                     };
+                    if movement == Movement::Still {
+                        conn.queue(&ClientTickEnd)?;
+                        conn.flush().await?;
+                        continue;
+                    }
                     let rad = yaw.to_radians();
                     *x -= rad.sin() * speed;
                     *z += rad.cos() * speed;
@@ -260,6 +309,20 @@ impl Bot {
                     conn.flush().await?;
                 }
                 _ = probe.tick(), if *joined => {
+                    if let Some((x, _, z)) = pos {
+                        let (cx, cz) = ((x / 16.0).floor() as i32, (z / 16.0).floor() as i32);
+                        let mut missing = 0;
+                        for dz in -NEAR..=NEAR {
+                            for dx in -NEAR..=NEAR {
+                                missing += u64::from(!loaded.contains(&(cx + dx, cz + dz)));
+                            }
+                        }
+                        self.metrics.near_missing.fetch_add(missing, Ordering::Relaxed);
+                        self.metrics.near_checked.fetch_add(
+                            ((2 * NEAR + 1) * (2 * NEAR + 1)) as u64,
+                            Ordering::Relaxed,
+                        );
+                    }
                     let mut b = body(ids::play::serverbound::PING_REQUEST);
                     i64::try_from(micros_since(started)).unwrap_or(i64::MAX).encode(&mut b);
                     conn.queue_body(&b)?;
@@ -268,6 +331,15 @@ impl Bot {
             }
         }
     }
+}
+
+/// Moves `y` towards the cruise altitude; returns the horizontal speed: none while climbing,
+/// so bots rise straight up out of the terrain instead of flying through hills (which servers
+/// that check movement reject).
+fn climb(y: &mut f64, speed: f64) -> f64 {
+    let step = (FLIGHT_Y - *y).clamp(-CLIMB_SPEED, CLIMB_SPEED);
+    *y += step;
+    if step.abs() < CLIMB_SPEED { speed } else { 0.0 }
 }
 
 /// When straight flight turns next (`None`: never).
@@ -519,8 +591,14 @@ impl Conn {
                     Action::Teleport(PlayerPosition::decode(&mut r).map_err(err)?)
                 }
                 id::CHUNK_BATCH_FINISHED => Action::BatchFinished,
-                id::LEVEL_CHUNK_WITH_LIGHT => Action::Chunk,
-                id::FORGET_LEVEL_CHUNK => Action::Forget,
+                id::LEVEL_CHUNK_WITH_LIGHT => {
+                    Action::Chunk(r.i32().map_err(err)?, r.i32().map_err(err)?)
+                }
+                id::FORGET_LEVEL_CHUNK => {
+                    // `ChunkPos` as one long: x in the low, z in the high 32 bits.
+                    let packed = r.i64().map_err(err)?;
+                    Action::Forget(packed as i32, (packed >> 32) as i32)
+                }
                 id::START_CONFIGURATION => Action::StartConfiguration,
                 id::DISCONNECT => Action::Disconnect(
                     vanillite_protocol::packets::play::clientbound::Disconnect::decode(&mut r)

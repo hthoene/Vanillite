@@ -1,0 +1,144 @@
+{
+  "description": "Rain in plains: cauldrons under the open sky fill with water, a roofed one does not, dry farmland gets wet, fire on planks goes out in the rain, fire on netherrack burns on.",
+  "tier": "fast",
+  "world": {
+    "seed": 8301,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:stone",
+        3
+      ]
+    ]
+  },
+  "rules": {
+    "random_tick_speed": "480",
+    "fire_spread_radius_around_player": "-1"
+  },
+  "weather": "rain",
+  "time": 6000,
+  "level_rng": true,
+  "light": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -58,
+      15
+    ]
+  ],
+  "ticks": 120,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        2
+      ],
+      "block": "minecraft:cauldron"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        2
+      ],
+      "block": "minecraft:water_cauldron[level=1]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        2
+      ],
+      "block": "minecraft:powder_snow_cauldron[level=1]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -60,
+        2
+      ],
+      "block": "minecraft:cauldron"
+    },
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -59,
+        2
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        2,
+        -61,
+        6
+      ],
+      "to": [
+        4,
+        -61,
+        8
+      ],
+      "block": "minecraft:farmland[moisture=0]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        10,
+        -60,
+        10
+      ],
+      "to": [
+        12,
+        -60,
+        12
+      ],
+      "block": "minecraft:oak_planks"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -61,
+        12
+      ],
+      "block": "minecraft:netherrack"
+    }
+  ],
+  "actions": [
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        11,
+        -59,
+        11
+      ],
+      "block": "minecraft:fire[age=0]"
+    },
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        7,
+        -60,
+        12
+      ],
+      "block": "minecraft:fire[age=0]"
+    }
+  ]
+}

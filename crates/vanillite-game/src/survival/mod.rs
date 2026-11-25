@@ -65,6 +65,8 @@ pub enum Effect {
         pickup_delay: i16,
         stack: crate::item::ItemStack,
     },
+    /// Experience orbs (`ExperienceOrb.award`).
+    Experience { pos: Vec3, amount: i32 },
 }
 
 /// The seed of a sound (`Level.soundSeedGenerator`, a random of its own that Vanilla never

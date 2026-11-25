@@ -1,0 +1,252 @@
+{
+  "description": "Sand, gravel, concrete powder, an anvil and a stalactite fall as entities: they land, break on a torch, stack on a slab, harden in water.",
+  "tier": "fast",
+  "world": {
+    "seed": 8301,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:stone",
+        3
+      ]
+    ]
+  },
+  "time": 6000,
+  "level_rng": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      9,
+      -51,
+      9
+    ]
+  ],
+  "ticks": 60,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -57,
+        1
+      ],
+      "block": "minecraft:sand"
+    },
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -56,
+        1
+      ],
+      "block": "minecraft:gravel"
+    },
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -55,
+        1
+      ],
+      "block": "minecraft:red_sand"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -60,
+        1
+      ],
+      "block": "minecraft:torch"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -55,
+        1
+      ],
+      "block": "minecraft:sand"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -60,
+        1
+      ],
+      "block": "minecraft:stone_slab[type=bottom,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -55,
+        1
+      ],
+      "block": "minecraft:gravel"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -61,
+        3
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -56,
+        3
+      ],
+      "block": "minecraft:white_concrete_powder"
+    },
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -52,
+        5
+      ],
+      "block": "minecraft:anvil[facing=north]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -54,
+        5
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -55,
+        5
+      ],
+      "block": "minecraft:pointed_dripstone[thickness=tip,vertical_direction=down,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -56,
+        6
+      ],
+      "block": "minecraft:sand"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -57,
+        6
+      ],
+      "block": "minecraft:sand"
+    }
+  ],
+  "actions": [
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        1,
+        -58,
+        1
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        3,
+        -56,
+        1
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        5,
+        -56,
+        1
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        7,
+        -57,
+        3
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        1,
+        -53,
+        5
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "place",
+      "tick": 3,
+      "pos": [
+        4,
+        -54,
+        5
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "place",
+      "tick": 2,
+      "pos": [
+        6,
+        -58,
+        6
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        8,
+        -54,
+        7
+      ],
+      "block": "minecraft:sand"
+    },
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        8,
+        -54,
+        8
+      ],
+      "block": "minecraft:black_concrete_powder"
+    }
+  ]
+}

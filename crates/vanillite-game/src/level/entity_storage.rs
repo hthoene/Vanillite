@@ -122,7 +122,7 @@ impl Level {
         if let Some((pos, velocity, uuid, orb)) = crate::mob::nbt::load_orb(&nbt) {
             let mut new = NewEntity::new(ids::EXPERIENCE_ORB, self.network_ids().next(), uuid, pos);
             new.velocity = velocity;
-            self.entities.spawn_orb(new, orb);
+            self.entities.spawn_experience_orb(new, orb);
             return true;
         }
         if let Some((e, data)) = crate::mob::nbt::load_arrow(&nbt) {
@@ -303,7 +303,7 @@ impl Level {
         if kind == ids::EXPERIENCE_ORB {
             return self
                 .entities
-                .orb(id)
+                .experience_orb(id)
                 .map(|o| crate::mob::nbt::save_orb(&entity, o));
         }
         if kind != ids::ITEM && kind != ids::FALLING_BLOCK && kind != ids::TNT {

@@ -11,11 +11,21 @@
 //! blocks that placing or breaking one block adds or removes.
 
 pub mod bell;
+pub mod bonemeal;
+pub mod bookshelf;
 pub mod brewing;
+pub mod brushable;
+mod bubble;
+pub mod campfire;
+pub mod chest_loot;
 pub mod container;
+pub mod crafter;
+pub mod decor;
 pub mod dispenser;
+mod dripstone;
 pub mod drops;
 pub mod falling;
+pub mod fire;
 pub mod fluid;
 pub mod furnace;
 mod growth;
@@ -26,6 +36,7 @@ pub mod piston;
 pub mod place;
 pub mod plate;
 pub mod portal;
+pub mod pot;
 pub mod rail;
 pub mod redstone;
 pub mod sculk;
@@ -33,6 +44,7 @@ pub mod sensor;
 pub mod sign;
 mod spread;
 pub mod tnt;
+pub mod tree;
 pub mod tripwire;
 pub mod weather;
 
@@ -184,6 +196,19 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
         Class::Liquid => {
             b.on_place = Some(fluid::liquid_on_place);
             b.neighbor_changed = Some(fluid::liquid_neighbor_changed);
+            b.random_tick = Some(fluid::liquid_random_tick);
+            b.tick = Some(bubble::liquid_tick);
+        }
+        Class::BubbleColumn => b.tick = Some(bubble::column_tick),
+        Class::ChorusFlower => {
+            b.tick = Some(destroy_unless_survives);
+            b.random_tick = Some(growth::chorus_flower_random_tick);
+        }
+        Class::Vine => b.random_tick = Some(growth::vine_random_tick),
+        Class::PitcherCrop => b.random_tick = Some(growth::pitcher_crop_random_tick),
+        Class::Speleothem => {
+            b.tick = Some(dripstone::tick);
+            b.random_tick = Some(dripstone::random_tick);
         }
         Class::Falling | Class::Anvil | Class::ConcretePowder => {
             b.on_place = Some(falling::on_place);
@@ -237,12 +262,23 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
         }
         _ => {}
     }
+    if block == ids::FIRE {
+        b.tick = Some(fire::tick);
+    }
     if block == ids::GRASS_BLOCK || block == ids::MYCELIUM {
         b.random_tick = Some(spread::spreading_snowy_dirt_random_tick);
     } else if block == ids::CRIMSON_NYLIUM || block == ids::WARPED_NYLIUM {
         b.random_tick = Some(spread::nylium_random_tick);
     } else if block == ids::ICE {
         b.random_tick = Some(weather::ice_random_tick);
+    } else if block == ids::FROSTED_ICE {
+        b.on_place = Some(weather::frosted_ice_on_place);
+        b.tick = Some(weather::frosted_ice_tick);
+        b.neighbor_changed = Some(weather::frosted_ice_neighbor_changed);
+        b.random_tick = Some(weather::ice_random_tick);
+    } else if block == ids::CAULDRON || block == ids::WATER_CAULDRON {
+        // `AbstractCauldronBlock.tick`; lava and powder snow cauldrons take no drips.
+        b.tick = Some(dripstone::cauldron_tick);
     } else if block == ids::SWEET_BERRY_BUSH {
         b.random_tick = Some(growth::sweet_berry_random_tick);
     } else if growth::is_sapling(block) {
@@ -272,6 +308,10 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
     hopper::fill(block, &mut b);
     container::fill(block, &mut b);
     sign::fill(block, &mut b);
+    pot::fill(block, &mut b);
+    bookshelf::fill(block, &mut b);
+    campfire::fill(block, &mut b);
+    crafter::fill(block, &mut b);
     portal::fill(block, &mut b);
     b
 }
@@ -335,4 +375,34 @@ pub fn sound_id(name: &str) -> u16 {
     full[prefix.len()..len].copy_from_slice(name.as_bytes());
     let full = std::str::from_utf8(&full[..len]).unwrap_or_default();
     vanillite_data::registry::SOUND_EVENT.id(full).unwrap_or(0)
+}
+
+/// `ItemStack.hurtAndBreak(amount, …)` of a held tool: `minecraft:unbreaking` skips each point
+/// with chance `level / (level + 1)`; the stack breaks at its maximum damage.
+pub fn hurt_item(level: &mut Level, stack: &mut crate::item::ItemStack, amount: i32) {
+    use crate::item;
+    if !item::is_damageable(stack) {
+        return;
+    }
+    let unbreaking = crate::player::play::game_data()
+        .map_or(0, |d| d.enchantment_level(stack, "minecraft:unbreaking"));
+    let mut taken: i32 = 0;
+    for _ in 0..amount.max(0) {
+        #[allow(clippy::as_conversions)]
+        let chance = 1.0 / (unbreaking.max(0) as f32 + 1.0);
+        if unbreaking <= 0
+            || vanillite_base::random::RandomSource::next_float(level.random()) < chance
+        {
+            taken = taken.saturating_add(1);
+        }
+    }
+    if taken == 0 {
+        return;
+    }
+    let damage = item::damage(stack).saturating_add(taken);
+    if damage >= item::max_damage(stack) {
+        stack.shrink(1);
+    } else {
+        item::set_damage(stack, damage);
+    }
 }
