@@ -37,7 +37,7 @@ impl PacketSink for NullSink {
 }
 
 fn add_player(level: &mut Level, pos: Vec3, game_mode: GameMode) -> EntityId {
-    let (_tx, inbound) = std::sync::mpsc::channel();
+    let (_tx, inbound) = vanillite_protocol::inbound_queue(16);
     let data = PlayerData {
         profile: crate::player::GameProfile::default(),
         game_mode,
@@ -57,6 +57,7 @@ fn add_player(level: &mut Level, pos: Vec3, game_mode: GameMode) -> EntityId {
             Arc::new(Mutex::new(crate::player::chat::ChatInbox::default())),
         ),
         inventory: crate::inventory::PlayerInventory::default(),
+        recipe_book: crate::recipe::book::PlayerRecipeBook::default(),
         last_equipment: std::array::from_fn(|_| crate::item::ItemStack::EMPTY),
         survival: crate::survival::player::Survival::default(),
     };

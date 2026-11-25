@@ -4,7 +4,7 @@ use crate::outbound::Outbound;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use vanillite_protocol::Inbound;
+
 use vanillite_protocol::packets::common::ClientInfo;
 use vanillite_protocol::types::GameProfile;
 
@@ -24,7 +24,7 @@ pub struct Joined {
     /// `memoryConnection`). Virtual connections of remote clients (Bedrock) are not.
     pub memory: bool,
     /// Validated play packets, bounded (SEC-17); drained by the world between ticks.
-    pub inbound: std::sync::mpsc::Receiver<Inbound>,
+    pub inbound: vanillite_protocol::InboundReceiver,
     /// Packets to the client.
     pub outbound: Outbound,
     /// Smoothed keepalive round trip.

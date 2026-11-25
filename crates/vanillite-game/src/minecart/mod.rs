@@ -463,7 +463,7 @@ pub(crate) fn explode(
                 radius,
                 mob: false,
                 resistance: if primed {
-                    crate::level::explosion::BlockResistance::MinecartTnt
+                    crate::level::explosion::BlockResistance::TntMinecart
                 } else {
                     crate::level::explosion::BlockResistance::Default
                 },

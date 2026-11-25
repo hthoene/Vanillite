@@ -467,7 +467,7 @@ pub struct MobSettings {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ExplosionRequest {
     pub source: Option<EntityId>,
-    /// `getIndirectSourceEntity` when it is not `source` itself (a projectile's owner).
+    /// The entity responsible (`getIndirectSourceEntity`); `None`: the source itself.
     pub indirect: Option<EntityId>,
     pub pos: Vec3,
     pub radius: f32,
@@ -538,25 +538,24 @@ pub enum WorldAction {
 impl WorldAction {
     /// Applies the actions that need nothing but the level; returns `false` for the others.
     pub fn apply_to_level(&self, level: &mut crate::level::Level) -> bool {
-        match *self {
+        match self {
             WorldAction::SetBlock(pos, block, flags) => {
-                level.set_block(pos, block, flags);
+                level.set_block(*pos, *block, *flags);
             }
             WorldAction::DestroyBlock(pos, drop) => {
-                level.destroy_block(pos, drop, None);
+                level.destroy_block(*pos, *drop, None);
             }
             WorldAction::LevelEvent(event, pos, data) => {
-                level.level_event(None, event, pos, data);
+                level.level_event(None, *event, *pos, *data);
             }
             WorldAction::EntityInside(pos, id) => {
-                if level.entities.store.contains(id) {
-                    level.entity_inside(pos, id);
+                if level.entities.store.contains(*id) {
+                    level.entity_inside(*pos, *id);
                 }
             }
-            WorldAction::HopperMinecart(id) => crate::minecart::hopper_suck(level, id),
-            WorldAction::Explode(_) | WorldAction::ExplodeWith { .. } | WorldAction::Level(_) => {
-                return false;
-            }
+            WorldAction::HopperMinecart(id) => crate::minecart::hopper_suck(level, *id),
+            WorldAction::Level(action) => (*action).apply(level),
+            WorldAction::Explode(_) | WorldAction::ExplodeWith { .. } => return false,
         }
         true
     }

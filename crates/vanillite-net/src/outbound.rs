@@ -129,6 +129,9 @@ impl Outbound {
     }
 }
 
+/// Capacity of a writer's buffers kept after a write; larger ones are released.
+const IDLE_BUFFER_MAX: usize = 64 * 1024;
+
 /// Writes to a TCP socket.
 pub(crate) async fn tcp_writer(
     mut socket: tokio::net::tcp::OwnedWriteHalf,
@@ -244,6 +247,11 @@ pub(crate) async fn tcp_writer(
             }
             buf.clear();
         }
+        // Bursts (the chunks of a join) grow the buffers; give that memory back.
+        if buf.capacity() > IDLE_BUFFER_MAX {
+            buf = Vec::with_capacity(8192);
+        }
+        encoder.trim(IDLE_BUFFER_MAX);
     }
     let _ = socket.shutdown().await;
 }

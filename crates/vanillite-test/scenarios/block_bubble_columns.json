@@ -1,0 +1,146 @@
+{
+  "description": "Soul sand and magma under water grow up- and downward bubble columns; a block in the column cuts it, replacing the magma ends it.",
+  "tier": "fast",
+  "world": {
+    "seed": 8301,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:stone",
+        3
+      ]
+    ]
+  },
+  "time": 6000,
+  "level_rng": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      7,
+      -54,
+      4
+    ]
+  ],
+  "ticks": 90,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        1,
+        -61,
+        1
+      ],
+      "to": [
+        1,
+        -61,
+        1
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        1,
+        -60,
+        1
+      ],
+      "to": [
+        3,
+        -55,
+        3
+      ],
+      "block": "minecraft:glass"
+    },
+    {
+      "op": "fill",
+      "from": [
+        2,
+        -60,
+        2
+      ],
+      "to": [
+        2,
+        -55,
+        2
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "op": "fill",
+      "from": [
+        4,
+        -60,
+        1
+      ],
+      "to": [
+        6,
+        -55,
+        3
+      ],
+      "block": "minecraft:glass"
+    },
+    {
+      "op": "fill",
+      "from": [
+        5,
+        -60,
+        2
+      ],
+      "to": [
+        5,
+        -55,
+        2
+      ],
+      "block": "minecraft:water"
+    }
+  ],
+  "actions": [
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        2,
+        -61,
+        2
+      ],
+      "block": "minecraft:soul_sand"
+    },
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        5,
+        -61,
+        2
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "place",
+      "tick": 40,
+      "pos": [
+        2,
+        -57,
+        2
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "place",
+      "tick": 60,
+      "pos": [
+        5,
+        -61,
+        2
+      ],
+      "block": "minecraft:stone"
+    }
+  ]
+}

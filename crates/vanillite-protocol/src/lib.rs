@@ -17,18 +17,20 @@ pub mod client;
 pub mod codec;
 pub mod commands;
 pub mod components;
+pub mod components_nbt;
 pub mod compress;
 pub mod frame;
 pub mod ids;
 pub mod item;
 pub mod packets;
+pub mod recipe_display;
 pub mod sets;
 pub mod shared;
 pub mod text;
 pub mod types;
 
 pub use codec::{Decode, DecodeLimited, Encode, Error, Reader, Result};
-pub use shared::{Inbound, SharedPacket};
+pub use shared::{Inbound, InboundReceiver, InboundSender, SharedPacket, inbound_queue};
 pub use vanillite_data::version::{PROTOCOL_VERSION, VERSION_ID};
 pub use vanillite_macros::Packet;
 

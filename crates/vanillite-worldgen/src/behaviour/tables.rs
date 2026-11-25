@@ -28,6 +28,8 @@ macro_rules! block_tags {
 }
 
 block_tags!(
+    blocks_lava_fire_spread,
+    beehives,
     campfires,
     candle_cakes,
     candles,
@@ -36,7 +38,9 @@ block_tags!(
     cannot_support_snow_layer,
     causes_continuous_geyser_eruptions,
     causes_periodic_geyser_eruptions,
+    convertible_to_mud,
     copper_chests,
+    coral_blocks,
     dampens_vibrations,
     dragon_immune,
     dragon_transparent,
@@ -44,9 +48,14 @@ block_tags!(
     enables_bubble_column_push_up,
     fences,
     fire,
+    flowers,
     grows_crops,
+    infiniburn_end,
+    infiniburn_nether,
+    infiniburn_overworld,
     maintains_farmland,
     nether_portal_frame,
+    nylium,
     occludes_vibration_signals,
     overrides_mushroom_light_requirement,
     prevents_nearby_leaf_decay,

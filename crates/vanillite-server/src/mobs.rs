@@ -269,8 +269,6 @@ impl WorldMobs {
                         let Some(target) = in_reach(&ents, player, network_id) else {
                             continue;
                         };
-                        // A dragon part (`getEntityOrPart`): the hit goes to the dragon
-                        // through the part.
                         if let Some(i) = dragon::part_of(&ents, target, network_id)
                             && let Some(s) = ents.mob_mut(target).and_then(|m| m.ext.dragon_mut())
                         {
@@ -505,6 +503,12 @@ impl WorldMobs {
             if !level.is_block_ticking(chunk) {
                 continue;
             }
+            if kind == ids::EXPERIENCE_ORB {
+                level.entities = ents;
+                vanillite_game::entities::tick_entity(level, id, kind);
+                ents = std::mem::take(&mut level.entities);
+                continue;
+            }
             if is_mob && activation > 0.0 && !self.ticks.is_multiple_of(20) {
                 let area = Aabb::new(
                     pos.x - activation,
@@ -546,8 +550,6 @@ impl WorldMobs {
                     minecart::tick(level_ref, &mut ents, &mut env, &mut self.cx, id);
                 } else if kind == ids::ARROW {
                     projectile::tick_arrow(level_ref, &mut ents, &mut env, &mut self.cx, id);
-                } else {
-                    projectile::tick_orb(level_ref, &mut ents, &mut env, &mut self.cx, id);
                 }
             }
             if !self.cx.actions.is_empty() || !self.cx.dragon_events.is_empty() {
@@ -643,7 +645,6 @@ impl WorldMobs {
                     e.run(level, rules);
                     self.apply_explosion_hurts(level, survival, global, dimension);
                 }
-                WorldAction::Level(action) => action.apply(level),
                 other => {
                     other.apply_to_level(level);
                 }
@@ -857,7 +858,7 @@ fn in_reach(ents: &Entities, player: EntityId, network_id: i32) -> Option<Entity
     }
     let pe = ents.store.get(player)?;
     let te = ents.store.get(target)?;
-    // A dragon part (`getEntityOrPart`) is reached by its own box.
+    // A dragon part (`getEntityOrPart`): its own box, the hit goes to the dragon.
     let target_box = match dragon::part_of(ents, target, network_id) {
         Some(i) => ents
             .mob(target)

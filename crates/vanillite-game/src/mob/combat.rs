@@ -9,7 +9,7 @@ use vanillite_protocol::packets::play::clientbound::{DamageEvent, EntityEvent};
 use vanillite_world::entity::{EntityFlags, EntityId, Pose};
 
 use super::living::event;
-use super::{Kind, MobContext, kinds, projectile};
+use super::{Kind, MobContext, kinds};
 use crate::entities::Entities;
 use crate::level::Level;
 use crate::survival::damage::{DamageKind, DamageSource, tag};
@@ -410,7 +410,10 @@ fn die(
         }
     }
     if !consumed && (killed_by_player && env.rules.bool(Rule::MOB_DROPS)) && reward > 0 {
-        award_experience(level, ents, cx, pos, reward);
+        env.out.push(Effect::Experience {
+            pos,
+            amount: reward,
+        });
     }
     env.out.push(Effect::Tracking {
         entity: target,
@@ -422,29 +425,6 @@ fn die(
     });
     if let Some(mut e) = ents.store.get_mut(target) {
         e.set_pose(Pose::Dying);
-    }
-}
-
-/// `ExperienceOrb.getExperienceValue`: the largest orb size not above `max`.
-pub fn experience_value(max: i32) -> i32 {
-    const SIZES: [i32; 10] = [2477, 1237, 617, 307, 149, 73, 37, 17, 7, 3];
-    SIZES.into_iter().find(|&s| max >= s).unwrap_or(1)
-}
-
-/// `ExperienceOrb.award`: splits `amount` into orbs, merging into orbs of the same value
-/// nearby.
-pub fn award_experience(
-    level: &Level,
-    ents: &mut Entities,
-    cx: &mut MobContext,
-    pos: Vec3,
-    amount: i32,
-) {
-    let mut amount = amount;
-    while amount > 0 {
-        let value = experience_value(amount);
-        amount -= value;
-        projectile::add_experience_orb(level, ents, cx, pos, value);
     }
 }
 

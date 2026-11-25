@@ -4,7 +4,8 @@
 //! - [`service`] is the storage service (#47): the built-in `chunk-storage` slot
 //!   ([`RegionStore`]) on the disk IO threads ([`IoPool`]), for both world formats.
 //! - [`format`] knows the world formats (#25): Anvil and the own format, the default for new
-//!   worlds ([`vwr`] files, [`OwnCodec`]); it detects them and converts and exports worlds.
+//!   worlds ([`vwr`] files, [`OwnCodec`]); it detects them and converts, exports and upgrades
+//!   worlds; [`upgrade`] maps the ids of records written by older Minecraft versions.
 //! - [`AnvilCodec`] turns chunks into Anvil records and back on the compute pool.
 //! - [`blocking`] waits for store results on the calling thread (tools, tests, import).
 //! - [`player_data`] reads and writes `players/data/<uuid>.dat`.
@@ -32,6 +33,7 @@ pub mod player_data;
 pub mod region;
 pub mod saved_data;
 pub mod service;
+pub mod upgrade;
 pub mod vwr;
 pub mod writer;
 

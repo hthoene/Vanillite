@@ -27,6 +27,12 @@ use crate::entities::{FallingBlockData, PrimedTntData};
 use crate::item_entity::ItemData;
 
 impl Level {
+    /// Whether the entities of a chunk are in the world (`areEntitiesLoaded`): they load when
+    /// the chunk becomes visible.
+    pub fn entities_loaded(&self, chunk: ChunkPos) -> bool {
+        self.chunks.visibility(chunk) != Visibility::Hidden
+    }
+
     /// Applies the visibility changes of the chunk runtime
     /// (`PersistentEntitySectionManager.updateChunkStatus`): a chunk that becomes visible
     /// loads its stored entities, one that becomes hidden writes them back and removes them;
@@ -107,7 +113,7 @@ impl Level {
         if let Some((pos, velocity, uuid, orb)) = crate::mob::nbt::load_orb(&nbt) {
             let mut new = NewEntity::new(ids::EXPERIENCE_ORB, self.network_ids().next(), uuid, pos);
             new.velocity = velocity;
-            self.entities.spawn_orb(new, orb);
+            self.entities.spawn_experience_orb(new, orb);
             return true;
         }
         if let Some((e, data)) = crate::mob::nbt::load_arrow(&nbt) {
@@ -291,7 +297,7 @@ impl Level {
         if kind == ids::EXPERIENCE_ORB {
             return self
                 .entities
-                .orb(id)
+                .experience_orb(id)
                 .map(|o| crate::mob::nbt::save_orb(&entity, o));
         }
         if kind != ids::ITEM && kind != ids::FALLING_BLOCK && kind != ids::TNT {
