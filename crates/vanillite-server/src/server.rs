@@ -16,9 +16,7 @@ use std::{fmt, io};
 use vanillite_chunk::slots::{
     ChunkGeneratorProvider, ChunkStoreProvider, DimensionId, LightEngineProvider,
 };
-use vanillite_config::{
-    Config, ConfigError, RegionFileCompression, RuleSet, VANILLITE_FILE, VanillaOr,
-};
+use vanillite_config::{Config, ConfigError, RuleSet, VANILLITE_FILE, VanillaOr};
 use vanillite_game::level::Level;
 use vanillite_light::BfsLightEngineProvider;
 use vanillite_storage::backup::BackupSettings;
@@ -26,7 +24,7 @@ use vanillite_storage::player_data::PlayerDataStore;
 use vanillite_storage::saved_data::SavedDataStore;
 use vanillite_storage::writer::FileWriter;
 use vanillite_storage::{
-    AnvilCodec, AnvilStoreProvider, Compression, IoPool, StoreSettings, WorldLayout,
+    AnvilCodec, IoPool, OwnCodec, RegionStoreProvider, StoreSettings, WorldFormat, WorldLayout,
 };
 use vanillite_world::chunks::{ChunkSettings, ChunkSlots, Chunks, SaveSettings};
 use vanillite_world::entity::NetworkIds;
@@ -262,15 +260,14 @@ impl ServerBuilder {
         let level_name = config.properties.level_name.clone();
         let level_dir = dir.join(&level_name);
         let session_lock = lock_world(&level_dir)?;
-        let layout = match config.server.storage.layout {
-            vanillite_config::StorageLayout::Vanilla => WorldLayout::Vanilla,
-            vanillite_config::StorageLayout::Spigot => WorldLayout::Spigot,
-        };
+        let layout = crate::world_format::layout(&config);
         let moved = vanillite_storage::layout::adopt_layout(&dir, &level_name, layout, &DIMENSIONS)
             .map_err(|e| StartError::Io(format!("world layout of \"{level_name}\": {e}")))?;
         for line in moved {
             log::warn!("storage.layout = {layout:?}: {line}");
         }
+        // Before anything writes into the world: a new world is marked with its format.
+        let format_plan = crate::world_format::plan(&config, &dir, &level_name)?;
         let writer = FileWriter::start().map_err(|e| StartError::io(&level_dir, e))?;
         let player_store = PlayerDataStore::new(&level_dir).with_writer(writer.clone());
         // Mojang's profile key signers are fetched while the data packs load.
@@ -302,11 +299,31 @@ impl ServerBuilder {
         let behaviours = Arc::new(vanillite_game::block::Behaviours::vanilla());
         let spawn_table = crate::world_setup::spawn_table(packs.as_deref()).map(Arc::new);
         let slot = |name: &str, origin: &Origin| log::info!("Slot {name}: {origin}");
-        let compression = match config.properties.region_file_compression {
-            RegionFileCompression::Deflate => Compression::Deflate,
-            RegionFileCompression::Lz4 => Compression::Lz4,
-            RegionFileCompression::None => Compression::None,
+        let compression = crate::world_format::anvil_compression(&config);
+        let world_format = if format_plan.convert_to.is_some() {
+            let infos = DIMENSIONS
+                .iter()
+                .map(|d| {
+                    crate::world_setup::world_info(
+                        packs.as_deref(),
+                        layout.dimension_dir(&dir, &level_name, d),
+                        d,
+                        seed,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            crate::world_format::convert_on_start(
+                format_plan,
+                &config,
+                &dir,
+                &level_name,
+                &infos,
+                workers,
+            )
+        } else {
+            format_plan.format
         };
+        let own_level = i32::from(config.server.storage.compression_level);
         let storage_rules = &config.server.storage;
         let io = IoPool::new(usize::from(storage_rules.io_threads))
             .map_err(|e| StartError::Io(format!("cannot start the storage IO threads: {e}")))?;
@@ -318,7 +335,8 @@ impl ServerBuilder {
                 max_open_files: storage_rules.max_open_files as usize,
             };
             (
-                Box::new(AnvilStoreProvider {
+                Box::new(RegionStoreProvider {
+                    format: world_format,
                     pool: io.clone(),
                     settings,
                 }),
@@ -335,6 +353,7 @@ impl ServerBuilder {
             max_backlog: (storage_rules.max_pending_writes as usize) << 20,
         };
         slot("chunk-storage", &origin);
+        log::info!("World format: {}", world_format.name());
         let built_in_generators = {
             let packs = packs.clone();
             let world_gen = prepared.world_gen;
@@ -439,12 +458,14 @@ impl ServerBuilder {
                 dimension,
                 seed,
             )?;
-            let entity_io = crate::entity_io::EntityChunks::new(&info.dir, compression, dimension);
             let slots = ChunkSlots {
                 store: storage_provider
                     .create(&info, DimensionId(index))
                     .map_err(|e| StartError::io(&info.dir, e))?,
-                codec: Arc::new(AnvilCodec::new(&info, compression)),
+                codec: match world_format {
+                    WorldFormat::Anvil => Arc::new(AnvilCodec::new(&info, compression)),
+                    WorldFormat::Vanillite => Arc::new(OwnCodec::new(&info, own_level)),
+                },
                 generator: generator_provider
                     .create(&info)
                     .map_err(|e| StartError::Io(format!("chunk generator of {dimension}: {e}")))?,
@@ -507,7 +528,6 @@ impl ServerBuilder {
                 level,
                 survival,
                 mobs,
-                entity_io,
                 data,
             ));
         }
@@ -661,7 +681,7 @@ fn chat_settings(
     }
 }
 
-fn lock_world(level_dir: &Path) -> Result<File, StartError> {
+pub(crate) fn lock_world(level_dir: &Path) -> Result<File, StartError> {
     fs::create_dir_all(level_dir).map_err(|e| StartError::io(level_dir, e))?;
     let path = level_dir.join("session.lock");
     let mut file = File::options()

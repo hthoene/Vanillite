@@ -18,6 +18,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use vanillite_base::ChunkPos;
+use vanillite_chunk::store::RecordMeta;
 
 use crate::compression::{Compression, MAX_DECOMPRESSED};
 
@@ -44,17 +45,17 @@ pub fn gate(name: &str) -> MutexGuard<'static, ()> {
 }
 
 #[cfg(unix)]
-fn read_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
+pub(crate) fn read_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
     std::os::unix::fs::FileExt::read_exact_at(file, buf, offset)
 }
 
 #[cfg(unix)]
-fn write_at(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
+pub(crate) fn write_at(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
     std::os::unix::fs::FileExt::write_all_at(file, buf, offset)
 }
 
 #[cfg(windows)]
-fn read_at(file: &File, mut buf: &mut [u8], mut offset: u64) -> io::Result<()> {
+pub(crate) fn read_at(file: &File, mut buf: &mut [u8], mut offset: u64) -> io::Result<()> {
     use std::os::windows::fs::FileExt;
     while !buf.is_empty() {
         match file.seek_read(buf, offset)? {
@@ -69,7 +70,7 @@ fn read_at(file: &File, mut buf: &mut [u8], mut offset: u64) -> io::Result<()> {
 }
 
 #[cfg(windows)]
-fn write_at(file: &File, mut buf: &[u8], mut offset: u64) -> io::Result<()> {
+pub(crate) fn write_at(file: &File, mut buf: &[u8], mut offset: u64) -> io::Result<()> {
     use std::os::windows::fs::FileExt;
     while !buf.is_empty() {
         match file.seek_write(buf, offset)? {
@@ -104,9 +105,20 @@ pub struct RecordRead {
     pub slot: usize,
     /// Read along with a wanted record (read-ahead).
     pub ahead: bool,
+    /// What the file keeps about the record (Anvil: nothing, the status is unknown).
+    pub meta: RecordMeta,
     /// The record, `None` if the chunk is not stored.
     pub record: io::Result<Option<Vec<u8>>>,
 }
+
+/// The metadata of Anvil records: Anvil keeps none.
+const ANVIL_META: RecordMeta = RecordMeta {
+    data_version: 0,
+    raw_len: 0,
+    checksum: 0,
+    status: RecordMeta::STATUS_UNKNOWN,
+    flags: 0,
+};
 
 /// Index of a chunk in its region.
 #[inline]
@@ -260,6 +272,7 @@ impl RegionFile {
                 out.push(RecordRead {
                     slot,
                     ahead: false,
+                    meta: ANVIL_META,
                     record: Ok(None),
                 });
             } else {
@@ -319,6 +332,7 @@ impl RegionFile {
                 out.push(RecordRead {
                     slot,
                     ahead,
+                    meta: ANVIL_META,
                     record,
                 });
             }

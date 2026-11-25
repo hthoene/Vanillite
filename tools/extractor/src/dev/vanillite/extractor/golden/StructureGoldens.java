@@ -70,6 +70,7 @@ import net.minecraft.world.level.levelgen.blending.Blender;
 import net.minecraft.world.level.levelgen.densityfunction.DensityVolume;
 import net.minecraft.world.level.levelgen.material.rule.MaterialRule;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
+import net.minecraft.world.level.levelgen.structure.PoolElementStructurePiece;
 import net.minecraft.world.level.levelgen.structure.Structure;
 import net.minecraft.world.level.levelgen.structure.StructurePiece;
 import net.minecraft.world.level.levelgen.structure.StructureSet;
@@ -963,14 +964,32 @@ public final class StructureGoldens {
   // ---------------------------------------------------------------------------------------------
   // Part 5: whole starts of large structures
 
-  /** A large structure: world index, structure id and how many of its starts to record. */
-  private record LargeTarget(int world, String structure, int count) {}
+  /**
+   * A large structure: world index, structure id, how many of its starts to record and, if not
+   * null, the start pool element their first piece must come from (a location prefix).
+   */
+  private record LargeTarget(int world, String structure, int count, String variant) {
+    LargeTarget(int world, String structure, int count) {
+      this(world, structure, count, null);
+    }
+  }
 
   private static final LargeTarget[] LARGE_TARGETS = {
     new LargeTarget(0, "minecraft:monument", 3),
     new LargeTarget(0, "minecraft:mansion", 2),
     new LargeTarget(3, "minecraft:end_city", 4),
+    new LargeTarget(2, "minecraft:bastion_remnant", 1, "minecraft:bastion/units/"),
+    new LargeTarget(2, "minecraft:bastion_remnant", 1, "minecraft:bastion/hoglin_stable/"),
+    new LargeTarget(2, "minecraft:bastion_remnant", 1, "minecraft:bastion/treasure/"),
+    new LargeTarget(2, "minecraft:bastion_remnant", 1, "minecraft:bastion/bridge/"),
   };
+
+  /** Whether the first piece of a start comes from a pool element at {@code variant}. */
+  private static boolean isVariant(StructureStart start, String variant) {
+    return variant == null
+        || start.getPieces().getFirst() instanceof PoolElementStructurePiece piece
+            && piece.getElement().toString().contains("[" + variant);
+  }
 
   private static JsonObject large(List<SWorld> worlds, StructurePieceSerializationContext context) throws Exception {
     JsonArray starts = new JsonArray();
@@ -1037,7 +1056,8 @@ public final class StructureGoldens {
     }
     JsonObject root = new JsonObject();
     root.addProperty("format", "Vanilla 26.3 whole starts of large structures. starts: one per line, for each "
-        + "target (world 0 monument x3, mansion x2; world 3 end_city x4) its first starts found by a spiral over the "
+        + "target (world 0 monument x3, mansion x2; world 2 bastion_remnant x1 per start pool variant: units, "
+        + "hoglin_stable, treasure, bridge; world 3 end_city x4) its first starts found by a spiral over the "
         + "grid cells of its random spread structure set around the origin (cells whose potential chunk passes "
         + "isStructureChunk and has a biome of the structure in its middle column, then createStructures): "
         + "dimension, seed, min_y, height, w (world index of structure_starts), structure, chunk, references, bb, "
@@ -1081,7 +1101,8 @@ public final class StructureGoldens {
             if (!placement.isStructureChunk(w.state, p.x(), p.z()) || !biomeMatch(w, p, wanted)) {
               continue;
             }
-            if (w.starts(p).getAllStarts().keySet().stream().anyMatch(wanted::contains)) {
+            if (w.starts(p).getAllStarts().entrySet().stream()
+                .anyMatch(e -> wanted.contains(e.getKey()) && isVariant(e.getValue(), target.variant()))) {
               out.add(p);
               if (out.size() == target.count()) {
                 return out;

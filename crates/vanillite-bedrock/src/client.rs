@@ -13,6 +13,7 @@ use crate::io::{self, Reader};
 use crate::login;
 use crate::packets::{self as bp, id};
 use crate::raknet::{self, RakConn, Reliability};
+use crate::version::Version;
 
 pub use crate::packets::AuthInput;
 pub use crate::packets::id as packet_id;
@@ -25,6 +26,7 @@ pub struct Client {
     server: SocketAddr,
     rak: RakConn,
     codec: Codec,
+    version: &'static Version,
     inbox: VecDeque<(u32, Vec<u8>)>,
 }
 
@@ -33,9 +35,19 @@ fn err<T>(e: impl std::fmt::Display) -> Result<T, String> {
 }
 
 impl Client {
-    /// Connects and logs in offline as `gamertag` with `xuid`; returns after the resource pack
-    /// handshake, before `start_game`.
+    /// Connects with the newest supported version (see [`Client::connect_as`]).
     pub async fn connect(server: SocketAddr, xuid: &str, gamertag: &str) -> Result<Self, String> {
+        Self::connect_as(server, xuid, gamertag, Version::latest()).await
+    }
+
+    /// Connects as a client of `version` and logs in offline as `gamertag` with `xuid`; returns
+    /// after the resource pack handshake, before `start_game`.
+    pub async fn connect_as(
+        server: SocketAddr,
+        xuid: &str,
+        gamertag: &str,
+        version: &'static Version,
+    ) -> Result<Self, String> {
         let socket = UdpSocket::bind("0.0.0.0:0")
             .await
             .map_err(|e| e.to_string())?;
@@ -94,19 +106,20 @@ impl Client {
             server,
             rak,
             codec: Codec::new(0, 6, 8 << 20, 4096),
+            version,
             inbox: VecDeque::new(),
         };
         client
             .send(
                 id::REQUEST_NETWORK_SETTINGS,
-                &crate::data::PROTOCOL.to_be_bytes(),
+                &version.protocol.to_be_bytes(),
             )
             .await?;
         client.recv(id::NETWORK_SETTINGS).await?;
         client.codec.enable_compression();
 
         let secret = <p384::SecretKey as Generate>::generate();
-        let mut login = crate::data::PROTOCOL.to_be_bytes().to_vec();
+        let mut login = version.protocol.to_be_bytes().to_vec();
         io::write_bytes(&mut login, &login::offline_request(&secret, xuid, gamertag));
         client.send(id::LOGIN, &login).await?;
         let hs = client.recv(id::SERVER_TO_CLIENT_HANDSHAKE).await?;
@@ -130,6 +143,11 @@ impl Client {
             .send(id::RESOURCE_PACK_CLIENT_RESPONSE, &pack_response(3))
             .await?;
         Ok(client)
+    }
+
+    /// The version the client speaks.
+    pub fn version(&self) -> &'static Version {
+        self.version
     }
 
     /// Sends one packet.
@@ -240,8 +258,8 @@ pub fn read_start_game(body: &[u8]) -> Result<(i64, [f32; 3]), String> {
 }
 
 /// Encodes `player_auth_input`.
-pub fn auth_input(i: &AuthInput) -> Vec<u8> {
-    bp::write_auth_input(i)
+pub fn auth_input(i: &AuthInput, v: &Version) -> Vec<u8> {
+    bp::write_auth_input(i, v, &[])
 }
 
 /// Encodes a chat `text`.
@@ -282,34 +300,35 @@ pub fn read_move_player(body: &[u8]) -> Option<(u64, [f32; 3])> {
 pub use crate::packets::{action as block_action, container};
 
 /// Encodes `player_auth_input` with block actions (action, position, face).
-pub fn auth_input_with_blocks(i: &AuthInput, actions: &[(i32, [i32; 3], i32)]) -> Vec<u8> {
-    let mut out = bp::write_auth_input(i);
-    // The tail: five optional flags, then fixed vectors (28 bytes).
-    let tail = out.split_off(out.len().saturating_sub(5 + 28));
-    out.extend_from_slice(&[0, 0, 1]);
-    io::write_len(&mut out, actions.len());
-    for (a, pos, face) in actions {
-        io::write_vari32(&mut out, *a);
-        io::write_block_pos(&mut out, *pos);
-        io::write_vari32(&mut out, *face);
-    }
-    out.extend_from_slice(tail.get(3..).unwrap_or_default());
-    out
+pub fn auth_input_with_blocks(
+    i: &AuthInput,
+    v: &Version,
+    actions: &[(i32, [i32; 3], i32)],
+) -> Vec<u8> {
+    bp::write_auth_input(i, v, actions)
 }
 
 /// Encodes `inventory_transaction`: use the held item on a block face.
-pub fn use_item_on(pos: [i32; 3], face: u8, hotbar: i32, click: [f32; 3]) -> Vec<u8> {
+pub fn use_item_on(v: &Version, pos: [i32; 3], face: u8, hotbar: i32, click: [f32; 3]) -> Vec<u8> {
     let mut out = Vec::new();
     io::write_vari32(&mut out, 0); // legacy request id
     out.push(0); // no legacy slots
+    if v.before_26_50() {
+        out.push(1);
+    }
     io::write_varu32(&mut out, 2); // use item
+    if v.before_26_50() {
+        out.push(1);
+    }
     io::write_varu32(&mut out, 0); // no actions
     io::write_vari32(&mut out, 0); // click block
     out.push(1); // trigger: player input
     io::write_block_pos(&mut out, pos);
     out.push(face);
     io::write_vari32(&mut out, hotbar);
-    out.push(0);
+    if !v.before_26_50() {
+        out.push(0); // main hand
+    }
     out.extend_from_slice(&[0; 8]); // held item (not checked)
     io::write_vec3(&mut out, [0.0; 3]);
     io::write_vec3(&mut out, click);
@@ -390,13 +409,13 @@ pub fn read_update_block(body: &[u8]) -> Option<([i32; 3], u32, u32)> {
 }
 
 /// Bedrock runtime id of air.
-pub fn air_runtime_id() -> u32 {
-    crate::data::Blocks::get().air
+pub fn air_runtime_id(v: &Version) -> u32 {
+    v.palette.blocks().air
 }
 
 /// The creative item network id of a Java item.
-pub fn creative_net_id(java_item: &str) -> Option<u32> {
+pub fn creative_net_id(v: &Version, java_item: &str) -> Option<u32> {
     let item = vanillite_data::item::ItemId::by_name(java_item)?.0;
-    let items = crate::items::Items::get();
+    let items = v.palette.items();
     (1..4096u32).find(|&n| items.creative(n) == Some(item))
 }

@@ -4,7 +4,13 @@
 //! `VANILLITE_COMPARE_WORLD=<world>/dimensions/minecraft/overworld` (the folder with `region/`),
 //! `VANILLITE_COMPARE_SEED=<seed>`, `VANILLITE_COMPARE_AREA=x0,z0,x1,z1` (chunk coordinates,
 //! inclusive; every chunk of the area and one ring around it must be full in the Vanilla world),
+//! `VANILLITE_COMPARE_DIMENSION=overworld|the_nether|the_end` (default overworld; the folder must
+//! be that dimension's), `VANILLITE_COMPARE_AGREE=<the same dimension of a second Vanilla world>`
+//! (compare only blocks where both Vanilla worlds agree: Vanilla decorates neighbouring chunks in
+//! a run-dependent order, which shows where features overlap, e.g. in basalt deltas),
 //! `VANILLITE_COMPARE_VERBOSE=<n>` (print the first n differing blocks of each chunk).
+//! The compared chunks are post-processed like chunks that become ticking (shape updates of the
+//! marked blocks; fluid ticks are not run).
 //! Structures are generated unless `VANILLITE_COMPARE_STRUCTURES=0`; then chunks within one
 //! chunk of a structure start or reference in the Vanilla world are skipped. Run with
 //! `cargo test --release -p vanillite-worldgen --test vanilla_world_compare -- --ignored --nocapture`.
@@ -15,12 +21,13 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use vanillite_base::ChunkPos;
+use vanillite_base::{BlockPos, ChunkPos};
 use vanillite_chunk::slots::{self, ChunkGenerator, ChunkStatus, Neighbours, WorldInfo};
-use vanillite_data::block::BlockState;
+use vanillite_data::block::{BlockId, BlockState, ids};
 use vanillite_nbt::{Budget, Tag};
 use vanillite_storage::region::RegionFile;
 use vanillite_storage::{AnvilCodec, Compression};
+use vanillite_worldgen::behaviour::{self, BlockLevel};
 use vanillite_worldgen::{DimensionSpec, TerrainGenerator, VanillaChunkGenerator};
 
 fn env(name: &str) -> Option<String> {
@@ -51,6 +58,39 @@ fn has_structures(dir: &std::path::Path, pos: ChunkPos) -> bool {
     })
 }
 
+/// The generated chunks as a level for shape updates.
+#[derive(Clone, Copy)]
+struct Grid<'a> {
+    chunks: &'a [Arc<slots::ProtoChunk>],
+    index: &'a dyn Fn(ChunkPos) -> usize,
+}
+
+impl BlockLevel for Grid<'_> {
+    fn block(&self, pos: BlockPos) -> BlockState {
+        let chunk = &self.chunks[(self.index)(ChunkPos::new(pos.x >> 4, pos.z >> 4))];
+        chunk
+            .chunk
+            .block((pos.x & 15) as u32, pos.y, (pos.z & 15) as u32)
+            .map_or(BlockState::AIR, BlockState)
+    }
+
+    fn raw_brightness(&self, _pos: BlockPos) -> i32 {
+        0
+    }
+
+    fn random_int(&mut self, _bound: i32) -> i32 {
+        0
+    }
+
+    fn schedule_block_tick(&mut self, _pos: BlockPos, _block: BlockId, _delay: i32) {}
+
+    fn schedule_fluid_tick(&mut self, _pos: BlockPos, _fluid: u16) {}
+
+    fn has_block_tick(&self, _pos: BlockPos, _block: BlockId) -> bool {
+        false
+    }
+}
+
 #[test]
 #[ignore = "needs a Vanilla world (VANILLITE_COMPARE_WORLD)"]
 fn compare_with_vanilla_world() {
@@ -69,17 +109,39 @@ fn compare_with_vanilla_world() {
     let (x0, z0, x1, z1) = (area[0], area[1], area[2], area[3]);
 
     let packs = common::packs();
-    let source: serde_json::Value = serde_json::json!({
-        "type": "minecraft:multi_noise",
-        "preset": "minecraft:overworld"
-    });
-    let (min_y, height) = (-64, 384);
+    let dimension = format!(
+        "minecraft:{}",
+        env("VANILLITE_COMPARE_DIMENSION").unwrap_or_else(|| "overworld".to_owned())
+    );
+    let (noise_settings, source, min_y, height, has_sky_light) = match dimension.as_str() {
+        "minecraft:the_nether" => (
+            "minecraft:nether",
+            serde_json::json!({"type": "minecraft:multi_noise", "preset": "minecraft:nether"}),
+            0,
+            256,
+            false,
+        ),
+        "minecraft:the_end" => (
+            "minecraft:end",
+            serde_json::json!({"type": "minecraft:the_end"}),
+            0,
+            256,
+            false,
+        ),
+        _ => (
+            "minecraft:overworld",
+            serde_json::json!({"type": "minecraft:multi_noise", "preset": "minecraft:overworld"}),
+            -64,
+            384,
+            true,
+        ),
+    };
     let spec = DimensionSpec {
-        noise_settings: "minecraft:overworld",
+        noise_settings,
         biome_source: &source,
         min_y,
         height,
-        has_sky_light: true,
+        has_sky_light,
     };
     let terrain = TerrainGenerator::new(packs, spec, seed).expect("generator");
     let biomes: Arc<[String]> = terrain
@@ -89,12 +151,12 @@ fn compare_with_vanilla_world() {
         .map(|b| b.name.clone())
         .collect();
     let world = WorldInfo {
-        dimension: "minecraft:overworld".to_owned(),
+        dimension,
         dir: dir.clone(),
         min_y,
         height: height as u32,
         seed,
-        has_sky_light: true,
+        has_sky_light,
         default_biome: terrain.biomes().id_of("minecraft:plains").unwrap(),
         biomes,
         air: 0,
@@ -198,6 +260,34 @@ fn compare_with_vanilla_world() {
                 }
             }
         }
+        // `LevelChunk.postProcessGeneration` when the compared chunks become ticking: marked
+        // blocks other than liquids update their shape (fluid ticks are not run).
+        for z in z0..=z1 {
+            for x in x0..=x1 {
+                let pos = ChunkPos::new(x, z);
+                let grid = Grid {
+                    chunks: &chunks,
+                    index: &index,
+                };
+                let mut changes = Vec::new();
+                for &p in &chunks[index(pos)].post_processing {
+                    let state = grid.block(p);
+                    if state.block() == ids::WATER || state.block() == ids::LAVA {
+                        continue;
+                    }
+                    let new = behaviour::update_from_neighbour_shapes(&mut { grid }, state, p);
+                    if new != state {
+                        changes.push((p, new));
+                    }
+                }
+                let chunk = Arc::make_mut(&mut chunks[index(pos)]);
+                for (p, state) in changes {
+                    chunk
+                        .chunk
+                        .set_block((p.x & 15) as u32, p.y, (p.z & 15) as u32, state.0);
+                }
+            }
+        }
     }
 
     let storage = (
@@ -227,6 +317,16 @@ fn compare_with_vanilla_world() {
                 .expect("decode"),
         )
     };
+    let agree = env("VANILLITE_COMPARE_AGREE").map(|dir| {
+        let info = WorldInfo {
+            dir: PathBuf::from(dir),
+            ..world.clone()
+        };
+        (
+            info.dir.clone(),
+            AnvilCodec::new(&info, Compression::Deflate),
+        )
+    });
     let mut pairs: BTreeMap<(String, String), u64> = BTreeMap::new();
     let (mut total, mut equal, mut compared, mut identical, mut skipped) = (0u64, 0u64, 0, 0, 0);
     let mut worst: Vec<(u64, ChunkPos)> = Vec::new();
@@ -255,6 +355,9 @@ fn compare_with_vanilla_world() {
                 }
                 None => &*chunks[index(pos)],
             };
+            let agreed = agree
+                .as_ref()
+                .map(|agree| load(agree, pos).expect("chunk in second Vanilla world"));
             let mut diff = 0u64;
             for (si, (a, b)) in ours
                 .chunk
@@ -267,6 +370,12 @@ fn compare_with_vanilla_world() {
                     for lz in 0..16 {
                         for lx in 0..16 {
                             let (sa, sb) = (a.block(lx, y, lz), b.block(lx, y, lz));
+                            if agreed
+                                .as_ref()
+                                .is_some_and(|c| c.chunk.sections()[si].block(lx, y, lz) != sb)
+                            {
+                                continue;
+                            }
                             total += 1;
                             if sa == sb {
                                 equal += 1;

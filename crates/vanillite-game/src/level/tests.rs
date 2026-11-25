@@ -96,10 +96,13 @@ pub(crate) fn flat_level_with(behaviours: Behaviours) -> Level {
 pub(crate) fn tick(level: &mut Level) {
     level.tick_time();
     level.run_scheduled_ticks();
-    level.chunks.tick();
+    level.tick_chunk_runtime();
     level.run_block_events();
     let mut cursor = level.entities.store.tick_cursor();
     while let Some(id) = level.entities.store.next_to_tick(&mut cursor) {
+        if !crate::entities::in_ticking_range(level, id) {
+            continue;
+        }
         if let Some(kind) = level.entities.store.get(id).map(|e| e.kind()) {
             crate::entities::tick_entity(level, id, kind);
         }

@@ -12,6 +12,7 @@
 //!   fluid ticks, random ticks, block events); entities tick in the world's entity phase.
 
 pub mod block_entity;
+mod entity_storage;
 pub mod explosion;
 pub mod game_event;
 mod neighbors;
@@ -238,6 +239,16 @@ pub struct Level {
     pub(crate) torch_toggles: Vec<(BlockPos, i64)>,
     /// Scratch list of [`Level::tick_chunk_runtime`].
     chunk_scratch: Vec<ChunkPos>,
+    /// Scratch list of the visibility changes.
+    visibility_scratch: Vec<vanillite_world::chunks::VisibilityChange>,
+    /// The stored data live entities were loaded from: written back with their modelled
+    /// fields replaced, so stored fields the game does not model are kept.
+    entity_nbt: FxHashMap<EntityId, vanillite_nbt::Compound>,
+    /// Stored entities of kinds the game does not model, per live chunk; written back
+    /// unchanged.
+    parked_entities: FxHashMap<ChunkPos, Vec<Arc<[u8]>>>,
+    /// Live chunks whose stored entities are not empty.
+    entity_chunks: FxHashSet<ChunkPos>,
     /// `blockEvents`, a linked set: an event already queued is not queued again.
     block_events: Vec<BlockEvent>,
     block_event_set: FxHashSet<BlockEvent>,
@@ -279,7 +290,7 @@ impl Level {
         let info = chunks.info();
         let min_y = info.min_y;
         let max_y = info.min_y + info.height as i32 - 1;
-        Level {
+        let mut level = Level {
             chunks,
             entities: Entities::new(),
             updater: NeighborUpdater::new(settings.max_chained_neighbor_updates),
@@ -293,6 +304,10 @@ impl Level {
             wire_signals: true,
             torch_toggles: Vec::new(),
             chunk_scratch: Vec::new(),
+            visibility_scratch: Vec::new(),
+            entity_nbt: FxHashMap::default(),
+            parked_entities: FxHashMap::default(),
+            entity_chunks: FxHashSet::default(),
             block_events: Vec::new(),
             block_event_set: FxHashSet::default(),
             random: LegacyRandom::new(seed),
@@ -304,7 +319,10 @@ impl Level {
             sign_editors: Vec::new(),
             min_y,
             max_y,
-        }
+        };
+        // Chunks that are visible already load their entities.
+        level.apply_visibility();
+        level
     }
 
     /// `player.openMenu(provider)` from block code: the player handlers open it.
@@ -464,10 +482,11 @@ impl Level {
         self.block(pos).fluid_state()
     }
 
-    /// `isLoaded(pos)` / `hasChunkAt`: the position is in a live chunk.
+    /// `isLoaded(pos)` / `hasChunkAt`: the position is in an accessible full chunk (level up
+    /// to full).
     #[inline]
     pub fn is_loaded(&self, pos: BlockPos) -> bool {
-        self.chunks.chunk(pos.chunk()).is_some()
+        self.chunks.is_accessible(pos.chunk())
     }
 
     /// `getBrightness(LightLayer.SKY / BLOCK, pos)` as `(sky, block)`.

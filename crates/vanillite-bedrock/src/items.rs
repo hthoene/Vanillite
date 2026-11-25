@@ -1,19 +1,12 @@
-//! Java items <-> Bedrock items (generated `items.bin`, see `data/README.md`) and the Bedrock
-//! item stack formats.
-
-use std::sync::OnceLock;
+//! Java items <-> Bedrock items (generated `items.bin` per palette, see `data/README.md`) and
+//! the Bedrock item stack formats.
 
 use vanillite_data::item::ItemId;
 use vanillite_protocol::item::ItemStack;
 
 use crate::io::{self, Reader, Result};
 
-static ITEMS: &[u8] = include_bytes!("../data/items.bin");
-static CREATIVE_JAVA: &[u8] = include_bytes!("../data/creative_java.bin");
-/// Body of `creative_content`.
-pub static CREATIVE: &[u8] = include_bytes!("../data/creative.bin");
-
-/// The item tables of this build.
+/// The item tables of one palette ([`crate::data::Palette::items`]).
 #[derive(Debug)]
 pub struct Items {
     /// Bedrock item id and metadata per Java item id.
@@ -33,58 +26,54 @@ fn u32_at(b: &[u8], i: usize) -> u32 {
 }
 
 impl Items {
-    /// The tables (built on first use).
-    pub fn get() -> &'static Items {
-        static TABLE: OnceLock<Items> = OnceLock::new();
-        TABLE.get_or_init(|| {
-            let count = usize::try_from(u32_at(ITEMS, 0)).unwrap_or(0);
-            let to_bedrock: Vec<(i16, u16)> = ITEMS
-                .get(4..)
-                .unwrap_or_default()
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .take(count)
-                .map(|c| {
-                    (
-                        i16::from_le_bytes([c[0], c[1]]),
-                        u16::from_le_bytes([c[2], c[3]]),
-                    )
-                })
-                .collect();
-            let n = usize::try_from(u32_at(CREATIVE_JAVA, 0)).unwrap_or(0);
-            let creative = CREATIVE_JAVA
-                .get(4..)
-                .unwrap_or_default()
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .take(n)
-                .map(|c| u16::from_le_bytes(*c))
-                .collect();
-            let blocks = crate::data::Blocks::get();
-            let block = (0..to_bedrock.len())
-                .map(|java| {
-                    u16::try_from(java)
-                        .ok()
-                        .filter(|&j| usize::from(j) < vanillite_data::item::ITEMS.len())
-                        .and_then(|j| ItemId(j).block())
-                        .map_or(0, |b| {
-                            let e = blocks.entry(u32::from(b.default_state().0));
-                            u32::from(e & !crate::data::WATERLOGGED)
-                        })
-                })
-                .collect();
-            let damage_component =
-                vanillite_data::registry::Registry::by_name("minecraft:data_component_type")
-                    .and_then(|r| r.id("minecraft:damage"));
-            Items {
-                to_bedrock,
-                creative,
-                block,
-                damage_component,
-            }
-        })
+    /// Parses `items.bin` and `creative_java.bin` of a palette.
+    pub(crate) fn parse(items: &[u8], creative_java: &[u8], blocks: &crate::data::Blocks) -> Items {
+        let count = usize::try_from(u32_at(items, 0)).unwrap_or(0);
+        let to_bedrock: Vec<(i16, u16)> = items
+            .get(4..)
+            .unwrap_or_default()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .take(count)
+            .map(|c| {
+                (
+                    i16::from_le_bytes([c[0], c[1]]),
+                    u16::from_le_bytes([c[2], c[3]]),
+                )
+            })
+            .collect();
+        let n = usize::try_from(u32_at(creative_java, 0)).unwrap_or(0);
+        let creative = creative_java
+            .get(4..)
+            .unwrap_or_default()
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .take(n)
+            .map(|c| u16::from_le_bytes(*c))
+            .collect();
+        let block = (0..to_bedrock.len())
+            .map(|java| {
+                u16::try_from(java)
+                    .ok()
+                    .filter(|&j| usize::from(j) < vanillite_data::item::ITEMS.len())
+                    .and_then(|j| ItemId(j).block())
+                    .map_or(0, |b| {
+                        let e = blocks.entry(u32::from(b.default_state().0));
+                        u32::from(e & !crate::data::WATERLOGGED)
+                    })
+            })
+            .collect();
+        let damage_component =
+            vanillite_data::registry::Registry::by_name("minecraft:data_component_type")
+                .and_then(|r| r.id("minecraft:damage"));
+        Items {
+            to_bedrock,
+            creative,
+            block,
+            damage_component,
+        }
     }
 
     /// Bedrock item id and metadata of a Java item (0 = air for unknown items).
@@ -213,7 +202,14 @@ mod tests {
 
     #[test]
     fn every_java_item_maps_to_a_bedrock_item() {
-        let items = Items::get();
+        for palette in [&crate::data::V26_40, &crate::data::V26_50] {
+            let items = palette.items();
+            for java in 1..items.len() {
+                let java = u16::try_from(java).unwrap_or(0);
+                assert_ne!(items.bedrock(java).0, 0, "{}", ItemId(java).name());
+            }
+        }
+        let items = crate::data::V26_60.items();
         assert_eq!(items.len(), vanillite_data::item::ITEMS.len());
         for java in 1..items.len() {
             let java = u16::try_from(java).unwrap_or(0);

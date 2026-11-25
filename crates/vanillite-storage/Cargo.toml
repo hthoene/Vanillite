@@ -17,6 +17,8 @@ flate2.workspace = true
 log.workspace = true
 lz4_flex.workspace = true
 zip.workspace = true
+twox-hash.workspace = true
+zstd.workspace = true
 
 [lints]
 workspace = true

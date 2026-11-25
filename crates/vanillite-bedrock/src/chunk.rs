@@ -1,7 +1,8 @@
 //! Java chunk sections -> Bedrock sub-chunks (format 9) and biome storages.
 //!
-//! Each Java section (its exact wire bytes plus the dimension and biome table) is translated once
-//! and cached for all Bedrock viewers; a chunk packet is assembled from cached sections.
+//! Each Java section (its exact wire bytes plus the dimension, biome table and Bedrock palette) is
+//! translated once per palette and cached for all Bedrock viewers; a chunk packet is assembled
+//! from cached sections.
 
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
@@ -11,6 +12,7 @@ use rustc_hash::{FxHashMap, FxHasher};
 
 use crate::data::{Blocks, WATERLOGGED};
 use crate::io::{self, Error, Reader, Result};
+use crate::version::Version;
 
 /// Blocks per section.
 const ENTRIES: usize = 4096;
@@ -262,8 +264,8 @@ fn translate_section(
     biomes: &Container,
     y: i32,
     table: &BiomeTable,
+    map: &Blocks,
 ) -> Translated {
-    let map = Blocks::get();
     let mut sub_chunk = Vec::new();
     sub_chunk.push(9);
     let single = blocks.single().map(|s| map.entry(s));
@@ -354,8 +356,10 @@ impl ChunkCache {
 }
 
 /// Translates the body of a Java `level_chunk_with_light` (after x and z) into the body of a
-/// Bedrock `level_chunk`.
+/// Bedrock `level_chunk` of version `v`.
+#[allow(clippy::too_many_arguments)]
 pub fn translate(
+    v: &Version,
     x: i32,
     z: i32,
     java: &[u8],
@@ -364,6 +368,7 @@ pub fn translate(
     biome_key: u64,
     cache: &ChunkCache,
 ) -> Result<Vec<u8>> {
+    let map = v.palette.blocks();
     let mut r = Reader::new(java);
     // Heightmaps.
     let maps = java_varint(&mut r)?;
@@ -400,9 +405,10 @@ pub fn translate(
         bytes.hash(&mut h);
         y.hash(&mut h);
         biome_key.hash(&mut h);
+        v.palette.name.hash(&mut h);
         let key = h.finish();
         *slot = Some(cache.get_or_insert(key, || {
-            translate_section(&blocks, &biome_container, y, biomes)
+            translate_section(&blocks, &biome_container, y, biomes, map)
         }));
     }
 
@@ -424,7 +430,7 @@ pub fn translate(
                     1,
                     i8::try_from(y).map_or(0, |v| v.to_le_bytes()[0]),
                 ]);
-                write_storage(&mut payload, |_| Blocks::get().air);
+                write_storage(&mut payload, |_| map.air);
             }
         }
     }
@@ -454,7 +460,9 @@ pub fn translate(
     out.push(0); // Blob cache off.
     out.push(0); // No blob hashes.
     io::write_bytes(&mut out, &payload);
-    out.push(0); // No client biome override.
+    if !v.before_26_60() {
+        out.push(0); // No client biome override.
+    }
     Ok(out)
 }
 
@@ -528,7 +536,7 @@ mod tests {
         let java = chunk(&sections);
         let table = BiomeTable::new(&["minecraft:plains".to_owned()]);
         let cache = ChunkCache::new(16);
-        let out = translate(3, -2, &java, layout, &table, 0, &cache).unwrap();
+        let out = translate(Version::latest(), 3, -2, &java, layout, &table, 0, &cache).unwrap();
         let mut r = Reader::new(&out);
         assert_eq!(
             (
@@ -548,8 +556,9 @@ mod tests {
         let mut p = Reader::new(payload);
         assert_eq!(p.array::<3>().unwrap(), [9, 1, 0xfc]);
         let blocks = read_storage(&mut p);
-        let stone = u32::from(Blocks::get().entry(1));
-        let air = Blocks::get().air;
+        let map = Version::latest().palette.blocks();
+        let stone = u32::from(map.entry(1));
+        let air = map.air;
         // Bedrock index x << 8 | z << 4 | y: y = 0 is stone for every column.
         assert!((0..ENTRIES).all(|i| blocks[i] == if i & 15 == 0 { stone } else { air }));
         // 24 biome storages: one plains storage, then "same as before".
@@ -557,7 +566,7 @@ mod tests {
         assert_eq!(p.rest(), [[0xffu8; 23].as_slice(), &[0]].concat());
         // A second translation hits the cache.
         assert_eq!(
-            translate(3, -2, &java, layout, &table, 0, &cache).unwrap(),
+            translate(Version::latest(), 3, -2, &java, layout, &table, 0, &cache).unwrap(),
             out
         );
     }
@@ -569,6 +578,7 @@ mod tests {
         let java = chunk(&[java_layered()]);
         assert!(
             translate(
+                Version::latest(),
                 0,
                 0,
                 &java[..java.len() - 600],

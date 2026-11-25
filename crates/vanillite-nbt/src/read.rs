@@ -129,6 +129,158 @@ pub fn skip_network(input: &[u8], budget: &mut Budget) -> Result<usize> {
         .ok_or(Error::UnexpectedEnd)
 }
 
+/// Streaming reader over binary NBT that builds no tree: the caller walks compounds and lists
+/// and reads, borrows or skips each value. It charges the same [`Budget`] as a full read (names
+/// and borrowed strings at their byte length), so it accepts the same input.
+#[derive(Debug)]
+pub struct Cursor<'a, 'b> {
+    rest: &'b [u8],
+    budget: &'a mut Budget,
+}
+
+impl<'a, 'b> Cursor<'a, 'b> {
+    /// A cursor at the start of `input`.
+    pub fn new(input: &'b [u8], budget: &'a mut Budget) -> Self {
+        Self {
+            rest: input,
+            budget,
+        }
+    }
+
+    /// The input not read yet. Comparing it before and after a value gives the value's bytes.
+    pub fn rest(&self) -> &'b [u8] {
+        self.rest
+    }
+
+    fn reader(&mut self) -> Reader<'_, 'b> {
+        Reader {
+            input: &mut self.rest,
+            budget: self.budget,
+        }
+    }
+
+    /// Reads a file root header (a compound type byte and the ignored root name) and enters the
+    /// root compound.
+    pub fn named_root(&mut self) -> Result<()> {
+        let mut r = self.reader();
+        if r.u8()? != TagType::Compound.id() {
+            return Err(Error::InvalidRoot);
+        }
+        let len = usize::from(r.u16()?);
+        r.take(len)?;
+        self.enter_compound()
+    }
+
+    /// Enters a compound value; its entries follow through [`Cursor::entry`].
+    pub fn enter_compound(&mut self) -> Result<()> {
+        self.budget.push()?;
+        self.budget.charge(48)
+    }
+
+    /// The next entry of the current compound: its type and its raw name (modified UTF-8, equal
+    /// to UTF-8 for ASCII names). `None` at the end of the compound, which leaves it. The caller
+    /// must then read or skip the value.
+    pub fn entry(&mut self) -> Result<Option<(TagType, &'b [u8])>> {
+        let mut r = self.reader();
+        let id = r.u8()?;
+        if id == 0 {
+            self.budget.pop();
+            return Ok(None);
+        }
+        let ty = tag_type(id)?;
+        let len = usize::from(r.u16()?);
+        let name = r.take(len)?;
+        r.budget.charge(28 + 36)?;
+        r.budget.charge_n(2, as_u64(len))?;
+        Ok(Some((ty, name)))
+    }
+
+    /// Enters a list value: its element type and count. Read or skip every element, then call
+    /// [`Cursor::leave_list`].
+    pub fn enter_list(&mut self) -> Result<(TagType, usize)> {
+        self.budget.push()?;
+        self.reader().list_header()
+    }
+
+    /// Leaves a list entered with [`Cursor::enter_list`].
+    pub fn leave_list(&mut self) {
+        self.budget.pop();
+    }
+
+    /// Validates and skips a value of type `ty`; returns its payload bytes.
+    pub fn skip(&mut self, ty: TagType) -> Result<&'b [u8]> {
+        let before = self.rest;
+        self.reader().skip(ty)?;
+        let used = before
+            .len()
+            .checked_sub(self.rest.len())
+            .ok_or(Error::UnexpectedEnd)?;
+        before.get(..used).ok_or(Error::UnexpectedEnd)
+    }
+
+    /// Reads a value of type `ty` as a tag.
+    pub fn read(&mut self, ty: TagType) -> Result<Tag> {
+        self.reader().payload(ty)
+    }
+
+    /// A numeric value widened to `i64` like [`Tag::as_i64`] (floating values truncated as Java
+    /// casts them); a value of another type is skipped and gives `None`.
+    #[allow(clippy::as_conversions)]
+    pub fn int(&mut self, ty: TagType) -> Result<Option<i64>> {
+        let mut r = self.reader();
+        Ok(Some(match ty {
+            TagType::Byte => i64::from(r.i8()?),
+            TagType::Short => i64::from(r.i16()?),
+            TagType::Int => i64::from(r.i32()?),
+            TagType::Long => r.i64()?,
+            TagType::Float => r.f32()? as i64,
+            TagType::Double => r.f64()? as i64,
+            _ => {
+                self.skip(ty)?;
+                return Ok(None);
+            }
+        }))
+    }
+
+    /// A string value, borrowed when its bytes are plain UTF-8 (then they mean the same in
+    /// modified UTF-8); a value of another type is skipped and gives `None`.
+    pub fn str(&mut self, ty: TagType) -> Result<Option<std::borrow::Cow<'b, str>>> {
+        if ty != TagType::String {
+            self.skip(ty)?;
+            return Ok(None);
+        }
+        let mut r = self.reader();
+        let len = usize::from(r.u16()?);
+        let bytes = r.take(len)?;
+        r.budget.charge(36)?;
+        r.budget.charge_n(2, as_u64(len))?;
+        Ok(Some(match std::str::from_utf8(bytes) {
+            Ok(s) => std::borrow::Cow::Borrowed(s),
+            Err(_) => std::borrow::Cow::Owned(mutf8::decode(bytes)?),
+        }))
+    }
+
+    /// The element bytes of a byte array (`ty` is `ByteArray`) or a long array (`LongArray`,
+    /// 8 big-endian bytes per long), without the length prefix; a value of another type is
+    /// skipped and gives `None`.
+    pub fn array(&mut self, ty: TagType) -> Result<Option<&'b [u8]>> {
+        let width: usize = match ty {
+            TagType::ByteArray => 1,
+            TagType::LongArray => 8,
+            _ => {
+                self.skip(ty)?;
+                return Ok(None);
+            }
+        };
+        let mut r = self.reader();
+        let n = r.len()?;
+        r.budget.charge(24)?;
+        r.budget.charge_n(as_u64(width), as_u64(n))?;
+        r.take(n.checked_mul(width).ok_or(Error::InvalidLength)?)
+            .map(Some)
+    }
+}
+
 fn tag_type(id: u8) -> Result<TagType> {
     TagType::from_id(id).ok_or(Error::InvalidTagType(id))
 }
@@ -168,6 +320,20 @@ impl<'b> Reader<'_, 'b> {
 
     fn len(&mut self) -> Result<usize> {
         usize::try_from(self.i32()?).map_err(|_| Error::InvalidLength)
+    }
+
+    /// Validates and skips a string, charged like [`Reader::string`]. ASCII (the same in
+    /// modified UTF-8, one UTF-16 unit per byte) is checked without decoding.
+    fn skip_string(&mut self, base: u64) -> Result<()> {
+        let len = usize::from(self.u16()?);
+        let bytes = self.take(len)?;
+        let units = if bytes.is_ascii() {
+            as_u64(len)
+        } else {
+            utf16_len(&mutf8::decode(bytes)?)
+        };
+        self.budget.charge(base)?;
+        self.budget.charge_n(2, units)
     }
 
     /// Reads a string and charges `base + 2 * chars` like Vanilla.
@@ -398,7 +564,7 @@ impl<'b> Reader<'_, 'b> {
                         let id = self.u8()?;
                         if id != 0 {
                             ty = tag_type(id)?;
-                            self.string(28)?;
+                            self.skip_string(28)?;
                             break;
                         }
                     }
@@ -430,9 +596,7 @@ impl<'b> Reader<'_, 'b> {
                 self.budget.charge_n(as_u64(width), as_u64(n))?;
                 self.take(n.checked_mul(width).ok_or(Error::InvalidLength)?)?;
             }
-            TagType::String => {
-                self.string(36)?;
-            }
+            TagType::String => self.skip_string(36)?,
         }
         Ok(())
     }

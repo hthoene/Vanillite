@@ -53,7 +53,7 @@ use vanillite_chunk::light::{ChunkLight, LightNibbles};
 use vanillite_chunk::packet::SectionMask;
 use vanillite_chunk::slots::{
     ChunkCodec, ChunkGenerator, ChunkStore, Completion, CompletionTarget, DimensionId, LightEngine,
-    Neighbours, Priority, RecordKey, StoreOp, StoreResult, Token, WorldInfo,
+    Neighbours, Priority, RecordKey, RecordMeta, StoreOp, StoreResult, Token, WorldInfo,
 };
 use vanillite_chunk::{BlockStateId, ChunkStatus, ProtoChunk};
 
@@ -206,8 +206,13 @@ struct Holder {
     level: u8,
     /// A job writes this chunk (load, generation step).
     busy: bool,
-    /// Changed since the last save; set through [`Holder::touch`].
+    /// Blocks (everything but entities) changed since the last save; set through
+    /// [`Holder::touch`].
     dirty: bool,
+    /// Entities changed since the last save; set through [`Holder::touch_entities`].
+    entities_dirty: bool,
+    /// The chunk has an entities record in the store (an empty list deletes it).
+    entities_stored: bool,
     /// The load request while the chunk is read.
     loading: Option<Token>,
     /// Tick from which an unneeded chunk may be unloaded.
@@ -225,15 +230,62 @@ impl Holder {
     /// save round.
     fn touch(&mut self, pos: ChunkPos, changed: &mut Vec<ChunkPos>) {
         if !self.dirty {
+            if !self.entities_dirty {
+                changed.push(pos);
+            }
             self.dirty = true;
-            changed.push(pos);
         }
+    }
+
+    /// Marks the chunk's entities changed, like [`Holder::touch`].
+    fn touch_entities(&mut self, pos: ChunkPos, changed: &mut Vec<ChunkPos>) {
+        if !self.entities_dirty {
+            if !self.dirty {
+                changed.push(pos);
+            }
+            self.entities_dirty = true;
+        }
+    }
+
+    /// Whether anything is unsaved.
+    fn unsaved(&self) -> bool {
+        self.dirty || self.entities_dirty
     }
 }
 
+/// A chunk captured for saving and the records to write.
+#[derive(Clone)]
+struct Snapshot {
+    chunk: Arc<ProtoChunk>,
+    /// Write the chunk record.
+    blocks: bool,
+    /// Write the entities record (delete it if the list is empty).
+    entities: bool,
+}
+
+/// A load waiting for the store: the chunk and the entities record.
+#[derive(Default)]
+struct PendingLoad {
+    pos: ChunkPos,
+    chunk: Option<StoreResult>,
+    entities: Option<StoreResult>,
+}
+
+/// A chunk read between ticks with its stored entities, waiting for the next tick.
+type LoadedChunk = (
+    ChunkPos,
+    Box<ProtoChunk>,
+    io::Result<Option<Vec<Arc<[u8]>>>>,
+);
+
 /// A finished background job.
 enum Done {
-    Loaded(ChunkPos, io::Result<Option<Box<ProtoChunk>>>),
+    /// A chunk was read (`None`: never saved) with its stored entities (`None`: no record).
+    Loaded(
+        ChunkPos,
+        io::Result<Option<Box<ProtoChunk>>>,
+        io::Result<Option<Vec<Arc<[u8]>>>>,
+    ),
     Stepped {
         status: ChunkStatus,
         targets: Vec<ProtoChunk>,
@@ -251,7 +303,7 @@ enum Done {
     Encoded {
         /// Captured for the save round.
         round: bool,
-        chunks: Vec<Arc<ProtoChunk>>,
+        chunks: Vec<Snapshot>,
         errors: Vec<(ChunkPos, io::Error)>,
     },
 }
@@ -290,7 +342,7 @@ pub struct Chunks {
     inbox: Receiver<Completion>,
     next_token: u64,
     /// Loads waiting for the store, by token.
-    loads: FxHashMap<Token, ChunkPos>,
+    loads: FxHashMap<Token, PendingLoad>,
     /// Snapshots being encoded; a load of such a chunk takes this version. Once submitted,
     /// the store answers loads from the pending write.
     encoding: FxHashMap<ChunkPos, Arc<ProtoChunk>>,
@@ -315,7 +367,7 @@ pub struct Chunks {
     /// Inside [`Chunks::pump`]: nothing becomes full and no loaded full chunk goes live.
     between_ticks: bool,
     /// Loaded full chunks that arrived between ticks; they go live in the next tick.
-    loaded_between_ticks: Vec<(ChunkPos, Box<ProtoChunk>)>,
+    loaded_between_ticks: Vec<LoadedChunk>,
     /// Chunks whose next step (spawn, full) waits for the next tick.
     due_next_tick: FxHashSet<ChunkPos>,
     unload_candidates: FxHashSet<ChunkPos>,
@@ -343,8 +395,36 @@ pub struct Chunks {
     generated: Vec<ChunkPos>,
     /// Chunks that became live since the last [`Chunks::take_promoted`].
     promoted: Vec<ChunkPos>,
-    /// Full chunks that unloaded since the last [`Self::take_unloaded`].
-    unloaded: Vec<ChunkPos>,
+    /// `ServerLevel.noSave` (`/save-off`): unneeded chunks are not unloaded.
+    no_save: bool,
+    /// The visibility of every chunk that is not hidden.
+    visibility: FxHashMap<ChunkPos, Visibility>,
+    /// Chunks to check for a visibility change at the end of the tick.
+    visibility_check: Vec<ChunkPos>,
+    /// Visibility changes since the last [`Chunks::take_visibility_changes`].
+    visibility_changes: Vec<VisibilityChange>,
+}
+
+/// What the entities of a chunk do (Vanilla's `Visibility`, from the chunk's full status).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Visibility {
+    /// Not accessible (level above full, or not loaded): its entities are stored.
+    Hidden,
+    /// Full or block ticking: its entities are loaded but do not tick.
+    Tracked,
+    /// Entity ticking: its entities tick.
+    Ticking,
+}
+
+/// A chunk's visibility changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VisibilityChange {
+    /// The chunk.
+    pub pos: ChunkPos,
+    /// Before.
+    pub old: Visibility,
+    /// Now.
+    pub new: Visibility,
 }
 
 /// A save round: chunks changed before it started, captured from the ticks' remaining time.
@@ -422,7 +502,10 @@ impl Chunks {
             post_process: Vec::new(),
             generated: Vec::new(),
             promoted: Vec::new(),
-            unloaded: Vec::new(),
+            no_save: false,
+            visibility: FxHashMap::default(),
+            visibility_check: Vec::new(),
+            visibility_changes: Vec::new(),
         }
     }
 
@@ -575,6 +658,9 @@ impl Chunks {
         let changes = std::mem::take(&mut self.level_changes);
         for change in &changes {
             let pos = change.pos;
+            if visibility_of_level(change.old) != visibility_of_level(change.new) {
+                self.visibility_check.push(pos);
+            }
             if change.new <= MAX_LEVEL {
                 let holder = self.holders.entry(pos).or_default();
                 if holder.queued {
@@ -597,7 +683,8 @@ impl Chunks {
                     holder.queued = false;
                 }
                 holder.level = change.new;
-                holder.unload_at = Some(self.tick + self.settings.unload_delay);
+                // At least one tick later: the game writes back what the chunk holds first.
+                holder.unload_at = Some(self.tick + self.settings.unload_delay.max(1));
                 self.unload_candidates.insert(pos);
                 // A queued load nobody needs any more is dropped before IO and decoding.
                 if holder.chunk.is_none()
@@ -637,8 +724,8 @@ impl Chunks {
     /// With an inline executor this runs until nothing can make progress.
     pub fn tick(&mut self) {
         self.tick += 1;
-        for (pos, chunk) in std::mem::take(&mut self.loaded_between_ticks) {
-            self.apply_loaded(pos, Ok(Some(chunk)));
+        for (pos, chunk, entities) in std::mem::take(&mut self.loaded_between_ticks) {
+            self.apply_loaded(pos, Ok(Some(chunk)), entities);
         }
         for pos in std::mem::take(&mut self.due_next_tick) {
             self.enqueue(pos);
@@ -653,6 +740,70 @@ impl Chunks {
         }
         self.start_relights();
         self.unload();
+        self.check_visibility();
+    }
+
+    /// The visibility of a chunk (`ChunkMap.onFullChunkStatusChange`): hidden unless it is
+    /// full with a level up to full.
+    pub fn visibility(&self, pos: ChunkPos) -> Visibility {
+        self.visibility
+            .get(&pos)
+            .copied()
+            .unwrap_or(Visibility::Hidden)
+    }
+
+    fn current_visibility(&self, pos: ChunkPos) -> Visibility {
+        self.holders
+            .get(&pos)
+            .filter(|h| h.status() == Some(ChunkStatus::Full))
+            .map_or(Visibility::Hidden, |h| visibility_of_level(h.level))
+    }
+
+    /// Records the visibility changes of the chunks touched this tick, in touch order.
+    fn check_visibility(&mut self) {
+        let check = std::mem::take(&mut self.visibility_check);
+        for &pos in &check {
+            let new = self.current_visibility(pos);
+            let old = if new == Visibility::Hidden {
+                self.visibility.remove(&pos)
+            } else {
+                self.visibility.insert(pos, new)
+            }
+            .unwrap_or(Visibility::Hidden);
+            if old != new {
+                self.visibility_changes
+                    .push(VisibilityChange { pos, old, new });
+            }
+        }
+        self.visibility_check = check;
+        self.visibility_check.clear();
+    }
+
+    /// Visibility changes since the last call, in order
+    /// (`PersistentEntitySectionManager.updateChunkStatus`). A chunk becomes hidden before it
+    /// unloads, at least one [`Chunks::tick`] earlier.
+    pub fn take_visibility_changes(&mut self, out: &mut Vec<VisibilityChange>) {
+        out.append(&mut self.visibility_changes);
+    }
+
+    /// Whether no job, load, save or unload is pending: the chunks are as their tickets say.
+    pub fn is_idle(&self) -> bool {
+        self.in_flight == 0
+            && self.encode_jobs == 0
+            && self.check.is_empty()
+            && self.unload_candidates.is_empty()
+            && self.visibility_changes.is_empty()
+    }
+
+    /// Whether a chunk is accessible as a full chunk (`hasChunk`: level up to full).
+    pub fn is_accessible(&self, pos: ChunkPos) -> bool {
+        self.visibility.contains_key(&pos)
+    }
+
+    /// `DistanceManager.inEntityTickingRange`: entities in this chunk tick by simulation
+    /// distance.
+    pub fn in_entity_ticking_range(&self, pos: ChunkPos) -> bool {
+        self.simulation.level(pos) <= ENTITY_TICKING_LEVEL
     }
 
     fn drain_done(&mut self) -> bool {
@@ -660,14 +811,14 @@ impl Chunks {
         while let Ok(done) = self.done_rx.try_recv() {
             any = true;
             match done {
-                Done::Loaded(pos, Ok(Some(chunk)))
+                Done::Loaded(pos, Ok(Some(chunk)), entities)
                     if self.between_ticks
                         && chunk.status == ChunkStatus::Full
                         && chunk.light_on =>
                 {
                     // The job is done; the chunk stays busy until it goes live.
                     self.in_flight -= 1;
-                    self.loaded_between_ticks.push((pos, chunk));
+                    self.loaded_between_ticks.push((pos, chunk, entities));
                 }
                 done => self.apply_done(done),
             }
@@ -682,46 +833,74 @@ impl Chunks {
     /// Installs a result of the store.
     fn apply_completion(&mut self, completion: Completion) {
         match completion {
-            Completion::Op { token, result, .. } => {
-                let Some(pos) = self.loads.remove(&token) else {
+            Completion::Op {
+                token,
+                index,
+                result,
+            } => {
+                let Some(load) = self.loads.get_mut(&token) else {
                     // A save.
                     if let StoreResult::Failed(e) = result {
                         log::error!("Couldn't save a chunk in {}: {e}", self.info.dimension);
                     }
                     return;
                 };
+                if index == 0 {
+                    load.chunk = Some(result);
+                } else {
+                    load.entities = Some(result);
+                }
+                if load.chunk.is_none() || load.entities.is_none() {
+                    return;
+                }
+                let Some(PendingLoad {
+                    pos,
+                    chunk: Some(chunk),
+                    entities: Some(entities),
+                }) = self.loads.remove(&token)
+                else {
+                    return;
+                };
                 if let Some(holder) = self.holders.get_mut(&pos) {
                     holder.loading = None;
                 }
-                match result {
-                    StoreResult::Record(meta, bytes) => {
-                        let codec = Arc::clone(&self.slots.codec);
-                        let tx = self.done_tx.clone();
-                        let level = self.holders.get(&pos).map_or(MAX_LEVEL, |h| h.level);
-                        self.slots.executor.spawn(
-                            u32::from(level),
-                            Box::new(move || {
-                                let chunk = codec.decode(pos, &meta, &bytes);
-                                tx.send(Done::Loaded(pos, chunk.map(|c| Some(Box::new(c)))));
-                            }),
-                        );
+                if matches!(chunk, StoreResult::Cancelled)
+                    || matches!(entities, StoreResult::Cancelled)
+                {
+                    self.in_flight -= 1;
+                    if let Some(holder) = self.holders.get_mut(&pos) {
+                        holder.busy = false;
                     }
-                    StoreResult::Missing => self.apply_done(Done::Loaded(pos, Ok(None))),
-                    StoreResult::Failed(e) => self.apply_done(Done::Loaded(pos, Err(e))),
-                    StoreResult::Cancelled => {
-                        self.in_flight -= 1;
-                        if let Some(holder) = self.holders.get_mut(&pos) {
-                            holder.busy = false;
-                        }
-                        self.wake(pos);
-                    }
-                    StoreResult::Meta(_) | StoreResult::Done => {
-                        self.apply_done(Done::Loaded(
-                            pos,
-                            Err(io::Error::other("unexpected store result for a load")),
-                        ));
-                    }
+                    self.wake(pos);
+                    return;
                 }
+                let needs_decode = matches!(chunk, StoreResult::Record(..))
+                    || matches!(entities, StoreResult::Record(..));
+                if !needs_decode {
+                    let chunk = load_result(chunk).map(|_| None);
+                    let entities = load_result(entities).map(|_| None);
+                    self.apply_done(Done::Loaded(pos, chunk, entities));
+                    return;
+                }
+                let codec = Arc::clone(&self.slots.codec);
+                let tx = self.done_tx.clone();
+                let level = self.holders.get(&pos).map_or(MAX_LEVEL, |h| h.level);
+                self.slots.executor.spawn(
+                    u32::from(level),
+                    Box::new(move || {
+                        let chunk = load_result(chunk).and_then(|record| {
+                            record
+                                .map(|(meta, bytes)| codec.decode(pos, &meta, &bytes).map(Box::new))
+                                .transpose()
+                        });
+                        let entities = load_result(entities).and_then(|record| {
+                            record
+                                .map(|(meta, bytes)| codec.decode_entities(pos, &meta, &bytes))
+                                .transpose()
+                        });
+                        tx.send(Done::Loaded(pos, chunk, entities));
+                    }),
+                );
             }
             Completion::Commit { round, result } => {
                 self.committing = false;
@@ -744,8 +923,13 @@ impl Chunks {
         }
     }
 
-    /// A finished load: the chunk (or a new one) goes into its holder.
-    fn apply_loaded(&mut self, pos: ChunkPos, result: io::Result<Option<Box<ProtoChunk>>>) {
+    /// A finished load: the chunk (or a new one) goes into its holder with its stored entities.
+    fn apply_loaded(
+        &mut self,
+        pos: ChunkPos,
+        result: io::Result<Option<Box<ProtoChunk>>>,
+        entities: io::Result<Option<Vec<Arc<[u8]>>>>,
+    ) {
         let mut chunk = match result {
             Ok(Some(chunk)) => *chunk,
             Ok(None) => self.slots.generator.new_chunk(pos),
@@ -759,6 +943,22 @@ impl Chunks {
                 self.slots.generator.new_chunk(pos)
             }
         };
+        let entities_stored = match entities {
+            Ok(Some(entities)) => {
+                chunk.entities = entities;
+                true
+            }
+            Ok(None) => false,
+            Err(e) => {
+                log::error!(
+                    "Couldn't load the entities of chunk {}, {} in {}: {e}",
+                    pos.x,
+                    pos.z,
+                    self.info.dimension
+                );
+                false
+            }
+        };
         let mut dirty = chunk.status == ChunkStatus::Empty;
         // Stored light that is not trusted is computed again (Vanilla: `isLightOn`).
         if chunk.status > ChunkStatus::Features && !chunk.light_on {
@@ -768,6 +968,7 @@ impl Chunks {
         if let Some(holder) = self.holders.get_mut(&pos) {
             holder.chunk = Some(Arc::new(chunk));
             holder.busy = false;
+            holder.entities_stored = entities_stored;
             if dirty {
                 holder.touch(pos, &mut self.changed);
             }
@@ -778,9 +979,9 @@ impl Chunks {
 
     fn apply_done(&mut self, done: Done) {
         match done {
-            Done::Loaded(pos, result) => {
+            Done::Loaded(pos, result, entities) => {
                 self.in_flight -= 1;
-                self.apply_loaded(pos, result);
+                self.apply_loaded(pos, result, entities);
             }
             Done::Stepped {
                 status,
@@ -869,7 +1070,7 @@ impl Chunks {
                         self.info.dimension
                     );
                 }
-                for chunk in chunks {
+                for Snapshot { chunk, .. } in chunks {
                     if self
                         .encoding
                         .get(&chunk.pos)
@@ -997,7 +1198,10 @@ impl Chunks {
         if let Some(encoding) = self.encoding.get(&pos) {
             // A save being encoded answers the load.
             holder.chunk = Some(Arc::clone(encoding));
+            holder.entities_stored = true;
             holder.touch(pos, &mut self.changed);
+            holder.touch_entities(pos, &mut self.changed);
+            self.promote(pos);
             self.wake(pos);
             return Check::Progress;
         }
@@ -1007,13 +1211,20 @@ impl Chunks {
         let token = Token(self.next_token);
         holder.loading = Some(token);
         let priority = Priority::View(holder.level);
-        self.loads.insert(token, pos);
+        self.loads.insert(
+            token,
+            PendingLoad {
+                pos,
+                ..PendingLoad::default()
+            },
+        );
+        let dimension = self.settings.save.dimension;
         self.slots.store.submit(
             token,
-            vec![StoreOp::Get(RecordKey::chunk(
-                self.settings.save.dimension,
-                pos,
-            ))],
+            vec![
+                StoreOp::Get(RecordKey::chunk(dimension, pos)),
+                StoreOp::Get(RecordKey::entities(dimension, pos)),
+            ],
             priority,
             self.inbox_tx.clone(),
         );
@@ -1144,6 +1355,7 @@ impl Chunks {
             return;
         }
         let chunk = Arc::make_mut(chunk);
+        self.visibility_check.push(pos);
         let blocks = std::mem::take(&mut chunk.block_ticks);
         let fluids = std::mem::take(&mut chunk.fluid_ticks);
         if !chunk.post_processing.is_empty() {
@@ -1162,6 +1374,9 @@ impl Chunks {
     /// Live chunks the next [`Chunks::tick`] unloads unless a ticket comes back meanwhile (the
     /// game writes their block entities back first).
     pub fn unloading_next_tick(&self, out: &mut Vec<ChunkPos>) {
+        if self.no_save {
+            return;
+        }
         let next = self.tick + 1;
         out.extend(self.unload_candidates.iter().copied().filter(|pos| {
             self.holders.get(pos).is_some_and(|holder| {
@@ -1193,7 +1408,41 @@ impl Chunks {
         Some(&mut Arc::make_mut(holder.chunk.as_mut()?).block_entities)
     }
 
+    /// The stored entities of a full chunk ([`ProtoChunk::entities`]): what it was loaded
+    /// with, or what the game last wrote back.
+    pub fn stored_entities(&self, pos: ChunkPos) -> &[Arc<[u8]>] {
+        self.chunk(pos).map_or(&[], |c| &c.entities[..])
+    }
+
+    /// Replaces the stored entities of a full chunk (the game writes its live entities back
+    /// before saving and unloading); the chunk's entities count as changed if they differ.
+    pub fn set_stored_entities(&mut self, pos: ChunkPos, entities: Vec<Arc<[u8]>>) {
+        let Some(holder) = self.holders.get_mut(&pos) else {
+            return;
+        };
+        if holder.busy || holder.status() != Some(ChunkStatus::Full) {
+            return;
+        }
+        let Some(chunk) = holder.chunk.as_mut() else {
+            return;
+        };
+        if chunk.entities == entities {
+            return;
+        }
+        Arc::make_mut(chunk).entities = entities;
+        holder.touch_entities(pos, &mut self.changed);
+    }
+
+    /// Sets `noSave` (`/save-off`): while set, chunks no ticket needs stay loaded instead of
+    /// being saved and unloaded (`ChunkMap.tick` skips `processUnloads`).
+    pub fn set_no_save(&mut self, no_save: bool) {
+        self.no_save = no_save;
+    }
+
     fn unload(&mut self) {
+        if self.no_save {
+            return;
+        }
         let now = self.tick;
         // Above the backlog limit changed chunks stay loaded until the IO threads caught up.
         let save_allowed = self.slots.store.backlog() <= self.settings.save.max_backlog;
@@ -1203,7 +1452,7 @@ impl Chunks {
                 && holder.level > MAX_LEVEL
                 && holder.unload_at.is_some_and(|at| at <= now)
                 && !holder.busy
-                && (save_allowed || !holder.dirty)
+                && (save_allowed || !holder.unsaved())
             {
                 ready.push(pos);
             }
@@ -1219,7 +1468,6 @@ impl Chunks {
                 .as_mut()
                 .filter(|c| c.status == ChunkStatus::Full)
             {
-                self.unloaded.push(pos);
                 let blocks = self.block_ticks.remove_container(pos, self.game_time);
                 let fluids = self.fluid_ticks.remove_container(pos, self.game_time);
                 if holder.dirty {
@@ -1228,16 +1476,22 @@ impl Chunks {
                     chunk.fluid_ticks = fluids;
                 }
                 self.post_process.retain(|&p| p != pos);
+                self.visibility_check.push(pos);
             }
             if let Some(waiters) = self.waiters.remove(&pos) {
                 for waiter in waiters {
                     self.enqueue(waiter);
                 }
             }
-            if holder.dirty
+            if holder.unsaved()
                 && let Some(chunk) = holder.chunk
             {
-                save.push(chunk);
+                save.push(Snapshot {
+                    entities: holder.entities_dirty
+                        && (holder.entities_stored || !chunk.entities.is_empty()),
+                    blocks: holder.dirty,
+                    chunk,
+                });
             }
         }
         self.save_chunks(save, false);
@@ -1246,12 +1500,13 @@ impl Chunks {
     // --- Saving --------------------------------------------------------------------------
 
     /// Encodes snapshots on the pool in jobs of about 1 ms; each job submits its records.
-    fn save_chunks(&mut self, chunks: Vec<Arc<ProtoChunk>>, round: bool) {
+    fn save_chunks(&mut self, chunks: Vec<Snapshot>, round: bool) {
         if chunks.is_empty() {
             return;
         }
-        for chunk in &chunks {
-            self.encoding.insert(chunk.pos, Arc::clone(chunk));
+        for snapshot in &chunks {
+            self.encoding
+                .insert(snapshot.chunk.pos, Arc::clone(&snapshot.chunk));
         }
         let per_job = self.slots.codec.chunks_per_job().max(1);
         let dimension = self.settings.save.dimension;
@@ -1270,14 +1525,31 @@ impl Chunks {
                 Box::new(move || {
                     let mut ops = Vec::with_capacity(batch.len());
                     let mut errors = Vec::new();
-                    for chunk in &batch {
-                        match codec.encode(chunk) {
-                            Ok((meta, bytes)) => ops.push(StoreOp::Put {
-                                key: RecordKey::chunk(dimension, chunk.pos),
-                                meta,
-                                bytes,
-                            }),
-                            Err(e) => errors.push((chunk.pos, e)),
+                    for snapshot in &batch {
+                        let chunk = &snapshot.chunk;
+                        if snapshot.blocks {
+                            match codec.encode(chunk) {
+                                Ok((meta, bytes)) => ops.push(StoreOp::Put {
+                                    key: RecordKey::chunk(dimension, chunk.pos),
+                                    meta,
+                                    bytes,
+                                }),
+                                Err(e) => errors.push((chunk.pos, e)),
+                            }
+                        }
+                        if snapshot.entities {
+                            let key = RecordKey::entities(dimension, chunk.pos);
+                            if chunk.entities.is_empty() {
+                                // `EntityStorage.storeEntities`: no entities, no record.
+                                ops.push(StoreOp::Delete(key));
+                            } else {
+                                match codec.encode_entities(chunk) {
+                                    Ok((meta, bytes)) => {
+                                        ops.push(StoreOp::Put { key, meta, bytes });
+                                    }
+                                    Err(e) => errors.push((chunk.pos, e)),
+                                }
+                            }
                         }
                     }
                     if !ops.is_empty() {
@@ -1295,9 +1567,9 @@ impl Chunks {
 
     /// Takes the snapshot of a changed chunk for saving; `None` if it is unchanged or a job
     /// works on it (it is then saved in the next round).
-    fn capture(&mut self, pos: ChunkPos) -> Option<Arc<ProtoChunk>> {
+    fn capture(&mut self, pos: ChunkPos) -> Option<Snapshot> {
         let holder = self.holders.get_mut(&pos)?;
-        if !holder.dirty {
+        if !holder.unsaved() {
             return None;
         }
         if holder.busy {
@@ -1305,13 +1577,22 @@ impl Chunks {
             return None;
         }
         let chunk = holder.chunk.as_mut()?;
-        holder.dirty = false;
-        if chunk.status == ChunkStatus::Full {
+        let blocks = std::mem::take(&mut holder.dirty);
+        let entities = std::mem::take(&mut holder.entities_dirty)
+            && (holder.entities_stored || !chunk.entities.is_empty());
+        if entities {
+            holder.entities_stored = !chunk.entities.is_empty();
+        }
+        if blocks && chunk.status == ChunkStatus::Full {
             let chunk = Arc::make_mut(chunk);
             chunk.block_ticks = self.block_ticks.pack(pos, self.game_time);
             chunk.fluid_ticks = self.fluid_ticks.pack(pos, self.game_time);
         }
-        Some(Arc::clone(chunk))
+        Some(Snapshot {
+            chunk: Arc::clone(chunk),
+            blocks,
+            entities,
+        })
     }
 
     /// Starts a save round (autosave, `/save-all`): every chunk changed so far is captured by
@@ -1652,11 +1933,6 @@ impl Chunks {
         out.append(&mut self.generated);
     }
 
-    /// Full chunks that unloaded since the last call (their entities are saved now).
-    pub fn take_unloaded(&mut self, out: &mut Vec<ChunkPos>) {
-        out.append(&mut self.unloaded);
-    }
-
     /// Full chunks whose light changed since the last call (for light update packets).
     pub fn take_light_changes(&mut self, out: &mut Vec<(ChunkPos, LightChange)>) {
         out.extend(self.light_changes.drain());
@@ -1708,6 +1984,29 @@ impl Chunks {
                     });
                 }),
             );
+        }
+    }
+}
+
+/// The visibility of a full chunk at `level`.
+fn visibility_of_level(level: u8) -> Visibility {
+    if level <= ENTITY_TICKING_LEVEL {
+        Visibility::Ticking
+    } else if level <= FULL_LEVEL {
+        Visibility::Tracked
+    } else {
+        Visibility::Hidden
+    }
+}
+
+/// A store result of a load: the record, `None` if it is missing.
+fn load_result(result: StoreResult) -> io::Result<Option<(RecordMeta, Arc<[u8]>)>> {
+    match result {
+        StoreResult::Record(meta, bytes) => Ok(Some((meta, bytes))),
+        StoreResult::Missing => Ok(None),
+        StoreResult::Failed(e) => Err(e),
+        StoreResult::Meta(_) | StoreResult::Done | StoreResult::Cancelled => {
+            Err(io::Error::other("unexpected store result for a load"))
         }
     }
 }

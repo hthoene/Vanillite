@@ -17,8 +17,8 @@ use crate::facts::{BiomeId, BlockStateId};
 
 pub use crate::store::{
     ChunkCodec, ChunkStore, ChunkStoreProvider, Completion, CompletionTarget, DimensionId,
-    NullCodec, NullStore, Priority, RecordKey, RecordMeta, RoundView, StoreOp, StoreResult, Stream,
-    Token,
+    MemoryStore, NullCodec, NullStore, Priority, RecordKey, RecordMeta, RoundView, StoreOp,
+    StoreResult, Stream, Token,
 };
 
 /// Vanilla's `ChunkStatus`, in generation order.
@@ -272,6 +272,10 @@ pub struct ProtoChunk {
     /// Positions generation marked for post-processing (`PostProcessing`); the world handles
     /// them when the chunk becomes live.
     pub post_processing: Vec<BlockPos>,
+    /// The entities of a chunk that is not live, as stored in its entities record (Vanilla's
+    /// `entities/`): one binary network-NBT compound per entity, in stored order. A live
+    /// chunk's entities are run by the world and put back here when it is saved.
+    pub entities: Vec<Arc<[u8]>>,
     /// The rest of the stored chunk (structures, …) as binary network NBT of a compound,
     /// written back unchanged. `None` for new chunks.
     pub extra: Option<Arc<[u8]>>,
@@ -304,6 +308,7 @@ impl ProtoChunk {
             block_ticks: Vec::new(),
             fluid_ticks: Vec::new(),
             post_processing: Vec::new(),
+            entities: Vec::new(),
             extra: None,
             generation: None,
         }

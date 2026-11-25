@@ -9,13 +9,12 @@ use std::sync::{Arc, Once};
 
 use vanillite_base::ChunkPos;
 use vanillite_chunk::light::LightNibbles;
-use vanillite_chunk::slots::{
-    ChunkCodec, LightEngine, Neighbours, ProtoChunk, RecordMeta, WorldInfo,
-};
+use vanillite_chunk::slots::{DimensionId, LightEngine, Neighbours, ProtoChunk, WorldInfo};
 use vanillite_data::block::BlockState;
 use vanillite_light::BfsLightEngine;
-use vanillite_storage::region::RegionFile;
-use vanillite_storage::{AnvilCodec, Compression};
+use vanillite_storage::{
+    AnvilCodec, Compression, IoPool, RegionStore, StoreSettings, WorldFormat, blocking,
+};
 
 /// Overworld height range.
 pub const MIN_Y: i32 = -64;
@@ -138,19 +137,21 @@ impl World {
     /// The chunks of an Anvil world.
     pub fn open(dir: &Path) -> World {
         install();
-        let codec = AnvilCodec::new(&world_info(dir), Compression::Deflate);
-        let dir = dir.to_owned();
+        let info = world_info(dir);
+        let codec = AnvilCodec::new(&info, Compression::Deflate);
+        let pool = IoPool::new(1).expect("IO thread");
+        let store = RegionStore::new(
+            info.dir.clone(),
+            WorldFormat::Anvil,
+            StoreSettings::default(),
+            pool,
+        );
         World {
             load: Box::new(move |pos| {
-                let (rx, rz) = pos.region();
-                let path = dir.join(format!("region/r.{rx}.{rz}.mca"));
-                let region = RegionFile::open(&path, false).expect("open region")?;
-                let record = region.read_record(pos).expect("read chunk")?;
-                Some(
-                    codec
-                        .decode(pos, &RecordMeta::default(), &record)
-                        .expect("decode chunk"),
-                )
+                blocking::load(&store, &codec, DimensionId(0), &[pos])
+                    .pop()
+                    .unwrap()
+                    .expect("read chunk")
             }),
         }
     }

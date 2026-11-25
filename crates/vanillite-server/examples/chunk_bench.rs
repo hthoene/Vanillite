@@ -123,6 +123,7 @@ impl LightEngine for TimedLight {
     }
 }
 
+/// Times decoding (load) and encoding (save); the store's IO runs on its own threads.
 struct TimedCodec(Arc<dyn ChunkCodec>, Arc<Timings>);
 
 impl ChunkCodec for TimedCodec {
@@ -372,14 +373,7 @@ fn main() {
         Arc::new(vanillite_light::BfsLightEngine::new(&info)),
         Arc::clone(&timings),
     ));
-    let io = vanillite_storage::IoPool::new(2).expect("start the storage IO threads");
-    let store = || {
-        Arc::new(vanillite_storage::AnvilStore::new(
-            info.dir.clone(),
-            vanillite_storage::StoreSettings::default(),
-            io.clone(),
-        ))
-    };
+    let io = vanillite_storage::IoPool::new(2).expect("IO threads");
     let codec: Arc<dyn ChunkCodec> = Arc::new(TimedCodec(
         Arc::new(vanillite_storage::AnvilCodec::new(
             &info,
@@ -387,6 +381,14 @@ fn main() {
         )),
         Arc::clone(&timings),
     ));
+    let store = || {
+        Arc::new(vanillite_storage::RegionStore::new(
+            info.dir.clone(),
+            vanillite_storage::WorldFormat::Anvil,
+            vanillite_storage::StoreSettings::default(),
+            io.clone(),
+        ))
+    };
     let settings = ChunkSettings {
         view_distance: a.radius.clamp(2, 32),
         max_jobs: a.max_jobs,

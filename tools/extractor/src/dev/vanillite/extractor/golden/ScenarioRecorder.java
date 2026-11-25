@@ -7,6 +7,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import java.io.IOException;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -22,6 +23,10 @@ import net.minecraft.commands.arguments.blocks.BlockStateParser;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.Bootstrap;
+import net.minecraft.server.level.ChunkLevel;
+import net.minecraft.server.level.ChunkMap;
+import net.minecraft.server.level.FullChunkStatus;
+import net.minecraft.server.level.ServerChunkCache;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ThreadedLevelLightEngine;
 import net.minecraft.world.entity.Entity;
@@ -31,6 +36,7 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.Property;
 import net.minecraft.world.level.entity.EntityTypeTest;
+import net.minecraft.world.level.entity.PersistentEntitySectionManager;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.ticks.LevelChunkTicks;
 import net.minecraft.world.ticks.LevelTicks;
@@ -45,6 +51,11 @@ import net.minecraft.world.ticks.ScheduledTick;
  * tick and records a frame: the block states of the region (frame 0 in full, later frames as
  * changes), the pending block and fluid ticks in drain order, the entities in the region and, for
  * scenarios with {@code "light": true}, the settled sky and block light of the region.
+ * Positions in chunks that are not accessible are recorded as {@link #UNLOADED}.
+ *
+ * <p>The actions {@code force} and {@code unforce} add or remove forced tickets of chunks and then
+ * run the chunk system and the entity manager without a game tick until every chunk around the
+ * scenario is loaded or unloaded, with its entities, as its ticket level says.
  *
  * <p>Usage: {@code java -cp ... dev.vanillite.extractor.golden.ScenarioRecorder (<scenario.json>
  * <trace.json>)...}
@@ -52,6 +63,12 @@ import net.minecraft.world.ticks.ScheduledTick;
 public final class ScenarioRecorder {
   /** Trace format version; the Rust reader rejects other versions. */
   private static final int FORMAT = 1;
+
+  /** The traced state of a position in a chunk that is not accessible. */
+  static final String UNLOADED = "<unloaded>";
+
+  /** Chunks around the forced ones whose state a settle waits for. */
+  private static final int SETTLE_MARGIN = 3;
 
   /** Game rules every scenario starts with; a scenario's {@code rules} override them. */
   private static final String[][] DEFAULT_RULES = {
@@ -119,6 +136,7 @@ public final class ScenarioRecorder {
       BlockPos min = pos(region.get(0));
       BlockPos max = pos(region.get(1));
       loadRegion(server, level, min, max);
+      Area area = new Area(min, max);
 
       if (scenario.has("setup")) {
         for (JsonElement op : scenario.getAsJsonArray("setup")) {
@@ -136,7 +154,17 @@ public final class ScenarioRecorder {
           for (JsonElement a : actions) {
             JsonObject action = a.getAsJsonObject();
             if (action.get("tick").getAsInt() == tick) {
-              apply(level, action, true);
+              String op = action.get("op").getAsString();
+              if (op.equals("force") || op.equals("unforce")) {
+                for (JsonElement c : action.getAsJsonArray("chunks")) {
+                  JsonArray xz = c.getAsJsonArray();
+                  area.add(xz.get(0).getAsInt(), xz.get(1).getAsInt());
+                  level.setChunkForced(xz.get(0).getAsInt(), xz.get(1).getAsInt(), op.equals("force"));
+                }
+                settle(server, level, area);
+              } else {
+                apply(level, action, true);
+              }
             }
           }
         }
@@ -178,6 +206,80 @@ public final class ScenarioRecorder {
         throw new IllegalStateException("interrupted while loading the scenario region", e);
       }
     }
+  }
+
+  /** The chunks a settle checks: around every chunk a scenario forced or unforced. */
+  private static final class Area {
+    private int minX;
+    private int minZ;
+    private int maxX;
+    private int maxZ;
+
+    Area(BlockPos min, BlockPos max) {
+      minX = (min.getX() >> 4) - 1;
+      minZ = (min.getZ() >> 4) - 1;
+      maxX = (max.getX() >> 4) + 1;
+      maxZ = (max.getZ() >> 4) + 1;
+    }
+
+    void add(int x, int z) {
+      minX = Math.min(minX, x);
+      minZ = Math.min(minZ, z);
+      maxX = Math.max(maxX, x);
+      maxZ = Math.max(maxZ, z);
+    }
+  }
+
+  /**
+   * Runs the chunk system (distance manager, loads, unloads and saves) and the entity manager
+   * without a game tick until every chunk of the area is as its ticket level says: full and with
+   * its entities loaded up to full level, otherwise not accessible and without entities, and
+   * dropped above the highest loaded level.
+   */
+  private static void settle(ParityServer server, ServerLevel level, Area area) throws Exception {
+    Field managerField = ServerLevel.class.getDeclaredField("entityManager");
+    managerField.setAccessible(true);
+    PersistentEntitySectionManager<?> entities =
+        (PersistentEntitySectionManager<?>) managerField.get(level);
+    Method holder = ChunkMap.class.getDeclaredMethod("getVisibleChunkIfPresent", long.class);
+    holder.setAccessible(true);
+    ServerChunkCache source = level.getChunkSource();
+    long deadline = System.nanoTime() + 20_000_000_000L;
+    while (true) {
+      source.tick(() -> true, false);
+      entities.tick();
+      server.drainEveryTask();
+      String reason = unsettled(level, source, holder, area);
+      if (reason == null) {
+        return;
+      }
+      if (System.nanoTime() > deadline) {
+        throw new IllegalStateException("the chunk system does not settle: " + reason);
+      }
+      Thread.sleep(1);
+    }
+  }
+
+  /** Why the area is not settled yet, {@code null} once it is. */
+  private static String unsettled(
+      ServerLevel level, ServerChunkCache source, Method holder, Area area) throws Exception {
+    int margin = SETTLE_MARGIN;
+    for (int x = area.minX - margin; x <= area.maxX + margin; x++) {
+      for (int z = area.minZ - margin; z <= area.maxZ + margin; z++) {
+        long key = ChunkPos.pack(x, z);
+        int ticketLevel = source.chunkMap.getDistanceManager().getChunkLevel(key, false);
+        boolean full = ticketLevel <= ChunkLevel.byStatus(FullChunkStatus.FULL);
+        boolean accessible = source.getChunkNow(x, z) != null;
+        boolean entities = level.areEntitiesLoaded(key);
+        boolean dropped = ticketLevel <= ChunkLevel.MAX_LEVEL || holder.invoke(source.chunkMap, key) == null;
+        if (accessible != full || entities != full || !dropped) {
+          return String.format(
+              "chunk %d, %d: level %d, accessible %b, entities %b, dropped %b",
+              x, z, ticketLevel, accessible, entities, dropped);
+        }
+      }
+    }
+    return null;
   }
 
   private static void apply(ServerLevel level, JsonObject op, boolean action) throws Exception {
@@ -273,7 +375,9 @@ public final class ScenarioRecorder {
         for (int z = 0; z < sz; z++) {
           for (int x = 0; x < sx; x++) {
             p.set(min.getX() + x, min.getY() + y, min.getZ() + z);
-            blocks[i++] = index(stateName(level.getBlockState(p)));
+            // Reading a position of a chunk that is not accessible would load it.
+            boolean loaded = level.getChunkSource().getChunkNow(p.getX() >> 4, p.getZ() >> 4) != null;
+            blocks[i++] = index(loaded ? stateName(level.getBlockState(p)) : UNLOADED);
           }
         }
       }

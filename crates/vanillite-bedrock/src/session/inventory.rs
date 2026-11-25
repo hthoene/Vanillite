@@ -12,7 +12,6 @@ use vanillite_protocol::packets::play::clientbound as pcb;
 use vanillite_protocol::packets::play::serverbound::{self as psb, ContainerInput, HashedStack};
 
 use super::Session;
-use crate::items::Items;
 use crate::packets::{self as bp, SlotRef, StackAction, StackRequest, container, id, window};
 
 /// Slots of the Java inventory menu.
@@ -401,7 +400,12 @@ impl Session {
         let t = |r: &SlotRef| target(r).ok_or(Refused);
         match *a {
             StackAction::CraftCreative { net_id, .. } => {
-                let item = Items::get().creative(net_id).ok_or(Refused)?;
+                let item = self
+                    .version
+                    .palette
+                    .items()
+                    .creative(net_id)
+                    .ok_or(Refused)?;
                 let stack = ItemStack::new(item, 1);
                 let max = max_stack(&stack);
                 self.inv.created = Some(stack.with_count(max));
@@ -529,12 +533,12 @@ impl Session {
 
     /// Answers the requests of an `item_stack_request` packet.
     pub(super) fn stack_requests(&mut self, body: &[u8]) -> crate::io::Result<()> {
-        let requests = bp::read_stack_requests(body)?;
+        let requests = bp::read_stack_requests(body, self.version)?;
         let responses: Vec<bp::StackResponse> =
             requests.iter().map(|r| self.stack_request(r)).collect();
         self.send(
             id::ITEM_STACK_RESPONSE,
-            &bp::item_stack_response(&responses),
+            &bp::item_stack_response(&responses, self.version),
         );
         if std::mem::take(&mut self.inventory_resync) {
             self.send_inventory();
@@ -546,13 +550,16 @@ impl Session {
 
     fn instance(&self, slot: &Slot) -> Vec<u8> {
         let mut out = Vec::with_capacity(16);
-        Items::get().write_instance(&mut out, &slot.stack, slot.net);
+        self.version
+            .palette
+            .items()
+            .write_instance(&mut out, &slot.stack, slot.net);
         out
     }
 
     /// Sends the whole inventory.
     pub(super) fn send_inventory(&mut self) {
-        let items = Items::get();
+        let items = self.version.palette.items();
         let mut main = Vec::with_capacity(36 * 12);
         for i in 0..36usize {
             let menu = if i < 9 { i.saturating_add(36) } else { i };

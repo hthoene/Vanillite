@@ -75,7 +75,6 @@ pub struct ServerWorld {
     /// Mobs: their tick, the players' attacks and spawning.
     pub(crate) mobs: crate::mobs::WorldMobs,
     /// Loading and saving the entities of chunks.
-    entity_io: crate::entity_io::EntityChunks,
     /// Player ids of the tick (block effects).
     player_scratch: Vec<vanillite_world::entity::EntityId>,
     /// The dimension's saved data (`<dimension>/data/`: world border, chunk tickets, raids,
@@ -113,7 +112,6 @@ impl ServerWorld {
         mut level: Level,
         survival: crate::survival::WorldSurvival,
         mobs: crate::mobs::WorldMobs,
-        entity_io: crate::entity_io::EntityChunks,
         data: vanillite_storage::saved_data::SavedDataStore,
     ) -> ServerWorld {
         // Entity randoms are `RandomSource.create()`: seeded from the clock, not the world seed.
@@ -145,7 +143,6 @@ impl ServerWorld {
             scratch: Vec::new(),
             survival,
             mobs,
-            entity_io,
             player_scratch: Vec::new(),
             data,
             arrivals: Vec::new(),
@@ -378,8 +375,14 @@ impl ServerWorld {
         }
         self.update_player_tickets();
         let level = &mut self.level;
+        // `/save-off` (`ServerLevel.noSave`): chunks without tickets stay loaded.
+        level.chunks.set_no_save(
+            !ctx.global
+                .level
+                .auto_save
+                .load(std::sync::atomic::Ordering::Relaxed),
+        );
         level.tick_chunk_runtime();
-        self.entity_io.tick(level);
         level.post_process();
         if ctx.runs_normally {
             let spawn_point = (self.dimension == "minecraft:overworld").then(|| {
@@ -544,7 +547,6 @@ impl ServerWorld {
         self.players.save_all(&self.level.entities);
         if !skip_chunks {
             self.data.save();
-            self.entity_io.save_all(&mut self.level, flush);
             self.level.save(flush);
         }
     }
