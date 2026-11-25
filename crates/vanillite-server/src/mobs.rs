@@ -490,6 +490,17 @@ impl WorldMobs {
                             );
                         }
                     }
+                    EntityAction::Stab => {
+                        if usable {
+                            vanillite_game::spear::player_stab(
+                                level,
+                                &mut ents,
+                                &mut env,
+                                &mut self.cx,
+                                player,
+                            );
+                        }
+                    }
                     EntityAction::ReleaseUseItem => {
                         vanillite_game::player::using::release(
                             &mut ents,
@@ -947,6 +958,7 @@ impl WorldMobs {
             );
             let mut discarded = Vec::new();
             vanillite_game::player::using::tick_all(&mut ents, &mut env);
+            vanillite_game::spear::tick_players(level, &mut ents, &mut env, &mut self.cx);
             tame::tick_leashes(level, &mut ents, &mut env, &mut discarded);
             for d in discarded {
                 ents.despawn(d);

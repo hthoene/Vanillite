@@ -179,6 +179,12 @@ pub struct MobData {
     pub ignited: bool,
     /// Ticks the mob draws its bow (`useItemRemaining` counted up), `-1` when not using it.
     pub using_item: i32,
+    /// `Entity.lastKnownPosition` (`None` before the first tick).
+    pub last_known_pos: Option<Vec3>,
+    /// `Entity.lastKnownSpeed`: the movement between the starts of the last two ticks.
+    pub known_speed: Vec3,
+    /// `recentKineticEnemies`: the entities a kinetic weapon in use hit, with the game time.
+    pub stabbed: Vec<(EntityId, i64)>,
     pub sheep_color: u8,
     pub sheared: bool,
     pub eat_animation: i32,
@@ -333,6 +339,9 @@ impl MobData {
             powered: false,
             ignited: false,
             using_item: -1,
+            last_known_pos: None,
+            known_speed: Vec3::ZERO,
+            stabbed: Vec::new(),
             sheep_color: 0,
             sheared: false,
             eat_animation: 0,

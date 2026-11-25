@@ -127,14 +127,18 @@ pub fn arrow_of(
 
 /// `startUsingItem` with the bow: the "using item" living flag is synched.
 pub fn start_using_item(t: &mut Tick<'_, '_>) {
-    t.mob().using_item = 0;
+    let m = t.mob();
+    m.using_item = 0;
+    m.stabbed.clear();
     t.core_mut().mark_data_dirty();
 }
 
 /// `stopUsingItem`.
 pub fn stop_using_item(t: &mut Tick<'_, '_>) {
     if t.mob_ref().using_item >= 0 {
-        t.mob().using_item = -1;
+        let m = t.mob();
+        m.using_item = -1;
+        m.stabbed = Vec::new();
         t.core_mut().mark_data_dirty();
     }
 }

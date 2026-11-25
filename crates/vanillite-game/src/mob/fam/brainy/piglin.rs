@@ -1475,13 +1475,17 @@ pub fn before_tick(t: &mut Tick<'_, '_>) {
         m.using_item += 1;
         // `onUseTick` sees the ticks used before this one.
         let used = m.using_item - 1;
-        crossbow_use_tick(t, used);
+        // `ItemStack.onUseTick`: a kinetic weapon damages, other items tick themselves.
+        if crate::spear::mob_holds_kinetic(t.mob_ref()) {
+            crate::spear::mob_use_tick(t, used);
+        } else {
+            crossbow_use_tick(t, used);
+        }
     }
 }
 
 fn holds_spear(t: &Tick<'_, '_>) -> bool {
-    let held = t.mob_ref().equipment.get(EquipmentSlot::MainHand);
-    !held.is_empty() && crate::item::item_id(held).name().ends_with("_spear")
+    crate::spear::mob_holds_kinetic(t.mob_ref())
 }
 
 fn spear_target(t: &Tick<'_, '_>) -> Option<EntityId> {
@@ -1662,9 +1666,10 @@ pub fn start(b: &mut Behavior, t: &mut Tick<'_, '_>, _now: i64) {
         }
         Behavior::SpearAttack { .. } => {
             super::set_aggressive(t, true);
-            // `KineticWeapon.computeDamageUseDuration` of the golden spear.
+            // `KineticWeapon.computeDamageUseDuration` of the spear.
+            let duration = crate::spear::mob_use_duration(t.mob_ref());
             let b = brain::brain(t);
-            b.set(M::SpearEngageTime, MemValue::Int(SPEAR_USE_DURATION));
+            b.set(M::SpearEngageTime, MemValue::Int(duration));
             b.erase(M::SpearChargePosition);
             crate::mob::projectile::start_using_item(t);
         }
@@ -1675,9 +1680,6 @@ pub fn start(b: &mut Behavior, t: &mut Tick<'_, '_>, _now: i64) {
         _ => {}
     }
 }
-
-/// The use duration of a golden spear's kinetic attack in ticks.
-const SPEAR_USE_DURATION: i32 = 30;
 
 pub fn tick(b: &mut Behavior, t: &mut Tick<'_, '_>, _now: i64) {
     match b {
