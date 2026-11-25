@@ -181,6 +181,7 @@ pub fn run(root: &Path, args: &[&str]) -> Result<()> {
     let stamp = command_output(Command::new("date").args(["-u", "+%Y%m%dT%H%M%SZ"]))?;
     let out_dir = root.join("target/loadtest").join(&stamp);
 
+    let _lock = Lock::take(&host, &format!("xtask loadtest from {}", root.display()))?;
     let mut runs = Vec::new();
     let mut failures = Vec::new();
     for &target in &o.targets {
@@ -330,6 +331,44 @@ fn deploy_or_restart(target: Target, o: &Options, host: &str, bin_dir: &Path) ->
         _ => ssh(host, &format!("systemctl restart {}", target.unit()))?,
     }
     wait_for_port(target.port(), Duration::from_secs(180))
+}
+
+/// The test server's benchmark lock: `xtask loadtest` and `xtask bench` restart the benchmark
+/// instances (30900, 30901), so only one run may use them at a time. Held while this lives.
+pub(crate) struct Lock(Child);
+
+impl Lock {
+    /// Waits for the lock; `owner` is shown to runs that wait for it.
+    pub(crate) fn take(host: &str, owner: &str) -> Result<Self> {
+        let mut child = Command::new("ssh")
+            .args([
+                host,
+                &format!("vanillite-bench lock '{}'", owner.replace('\'', "")),
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("ssh: {e}"))?;
+        let out = child.stdout.take().ok_or("no ssh output")?;
+        for line in BufReader::new(out).lines().map_while(std::io::Result::ok) {
+            if let Some(holder) = line.strip_prefix("busy") {
+                println!("waiting for the benchmark lock on the test server (held by{holder})");
+            } else if line == "locked" {
+                return Ok(Self(child));
+            }
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        Err("cannot take the benchmark lock on the test server".into())
+    }
+}
+
+impl Drop for Lock {
+    fn drop(&mut self) {
+        drop(self.0.stdin.take());
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }
 
 /// The server monitor and the load bots of one run against a started server.
@@ -656,6 +695,7 @@ fn aggregate(
         v
     };
     let join = samples("join_ms", ramp_start);
+    let full_view = samples("full_view_ms", ramp_start);
     let rtt = samples("rtt_ms", from);
     let last = reports.last().map(|r| r.1.clone()).unwrap_or_default();
     // Peak and mean of the bots online in the window (a crashing server drops them all).
@@ -712,6 +752,8 @@ fn aggregate(
         "bots": {
             "join_ms_p50": round(pct(&join, 50.0)),
             "join_ms_p95": round(pct(&join, 95.0)),
+            "full_view_ms_p50": round(pct(&full_view, 50.0)),
+            "full_view_ms_p95": round(pct(&full_view, 95.0)),
             "rtt_ms_p50": round(pct(&rtt, 50.0)),
             "rtt_ms_p95": round(pct(&rtt, 95.0)),
             "rtt_ms_p99": round(pct(&rtt, 99.0)),

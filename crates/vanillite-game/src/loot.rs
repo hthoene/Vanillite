@@ -345,6 +345,15 @@ impl LootTables {
         &self.unsupported
     }
 
+    /// The `random_sequence` of the loot table of `state`, if it has one.
+    pub fn block_sequence(&self, state: BlockState) -> Option<&str> {
+        let block = usize::from(state.block().0);
+        self.by_block
+            .get(block)
+            .and_then(|&i| self.tables.get(usize::try_from(i).ok()?))
+            .and_then(|t| t.sequence.as_deref())
+    }
+
     /// Drops of breaking `ctx.state` (table `minecraft:blocks/<block path>`; no table → nothing).
     /// Appends to `out`.
     pub fn block_drops(
@@ -727,6 +736,8 @@ pub(crate) fn read_files(
 struct Table {
     pools: Vec<Pool>,
     modifier: Option<Func>,
+    /// `random_sequence`: the named random the rolls draw from.
+    sequence: Option<Box<str>>,
 }
 
 #[derive(Debug)]
@@ -1173,7 +1184,15 @@ impl Parser<'_> {
             .map(|m| self.func(m))
             .transpose()
             .map_err(|e| format!("modifier: {e}"))?;
-        Ok(Table { pools, modifier })
+        let sequence = o
+            .get("random_sequence")
+            .map(|s| string(s).map(Box::from))
+            .transpose()?;
+        Ok(Table {
+            pools,
+            modifier,
+            sequence,
+        })
     }
 
     fn pool(&mut self, v: &Value) -> Res<Pool> {

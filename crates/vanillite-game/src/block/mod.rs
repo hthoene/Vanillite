@@ -15,14 +15,17 @@ pub mod bonemeal;
 pub mod bookshelf;
 pub mod brewing;
 pub mod brushable;
+mod bubble;
 pub mod campfire;
 pub mod chest_loot;
 pub mod container;
 pub mod crafter;
 pub mod decor;
 pub mod dispenser;
+mod dripstone;
 pub mod drops;
 pub mod falling;
+pub mod fire;
 pub mod fluid;
 pub mod furnace;
 mod growth;
@@ -48,6 +51,7 @@ mod spawner_tests;
 mod spread;
 pub mod tnt;
 pub mod trial_spawner;
+pub mod tree;
 pub mod tripwire;
 pub mod vault;
 pub mod weather;
@@ -200,6 +204,19 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
         Class::Liquid => {
             b.on_place = Some(fluid::liquid_on_place);
             b.neighbor_changed = Some(fluid::liquid_neighbor_changed);
+            b.random_tick = Some(fluid::liquid_random_tick);
+            b.tick = Some(bubble::liquid_tick);
+        }
+        Class::BubbleColumn => b.tick = Some(bubble::column_tick),
+        Class::ChorusFlower => {
+            b.tick = Some(destroy_unless_survives);
+            b.random_tick = Some(growth::chorus_flower_random_tick);
+        }
+        Class::Vine => b.random_tick = Some(growth::vine_random_tick),
+        Class::PitcherCrop => b.random_tick = Some(growth::pitcher_crop_random_tick),
+        Class::Speleothem => {
+            b.tick = Some(dripstone::tick);
+            b.random_tick = Some(dripstone::random_tick);
         }
         Class::Falling | Class::Anvil | Class::ConcretePowder => {
             b.on_place = Some(falling::on_place);
@@ -253,12 +270,23 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
         }
         _ => {}
     }
+    if block == ids::FIRE {
+        b.tick = Some(fire::tick);
+    }
     if block == ids::GRASS_BLOCK || block == ids::MYCELIUM {
         b.random_tick = Some(spread::spreading_snowy_dirt_random_tick);
     } else if block == ids::CRIMSON_NYLIUM || block == ids::WARPED_NYLIUM {
         b.random_tick = Some(spread::nylium_random_tick);
     } else if block == ids::ICE {
         b.random_tick = Some(weather::ice_random_tick);
+    } else if block == ids::FROSTED_ICE {
+        b.on_place = Some(weather::frosted_ice_on_place);
+        b.tick = Some(weather::frosted_ice_tick);
+        b.neighbor_changed = Some(weather::frosted_ice_neighbor_changed);
+        b.random_tick = Some(weather::ice_random_tick);
+    } else if block == ids::CAULDRON || block == ids::WATER_CAULDRON {
+        // `AbstractCauldronBlock.tick`; lava and powder snow cauldrons take no drips.
+        b.tick = Some(dripstone::cauldron_tick);
     } else if block == ids::SWEET_BERRY_BUSH {
         b.random_tick = Some(growth::sweet_berry_random_tick);
     } else if growth::is_sapling(block) {

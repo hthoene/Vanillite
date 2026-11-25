@@ -44,14 +44,14 @@ pub(crate) const fn axis(direction: Direction) -> Axis {
 
 /// `direction.getAxis().isHorizontal()`.
 #[inline]
-pub(crate) const fn is_horizontal(direction: Direction) -> bool {
+pub const fn is_horizontal(direction: Direction) -> bool {
     !matches!(direction, Direction::Down | Direction::Up)
 }
 
 /// `direction.getClockWise()` around the Y axis (vertical directions are returned unchanged;
 /// Vanilla throws for them, no caller passes one).
 #[inline]
-pub(crate) const fn clockwise(direction: Direction) -> Direction {
+pub const fn clockwise(direction: Direction) -> Direction {
     match direction {
         Direction::North => Direction::East,
         Direction::East => Direction::South,
@@ -63,7 +63,7 @@ pub(crate) const fn clockwise(direction: Direction) -> Direction {
 
 /// `direction.getCounterClockWise()` around the Y axis.
 #[inline]
-pub(crate) const fn counter_clockwise(direction: Direction) -> Direction {
+pub const fn counter_clockwise(direction: Direction) -> Direction {
     match direction {
         Direction::North => Direction::West,
         Direction::West => Direction::South,

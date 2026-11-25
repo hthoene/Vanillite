@@ -1337,8 +1337,23 @@ fn drop_resources(
             entity: None,
             block_entity: Some(&components),
         };
-        let mut rng = LevelRandom(&mut *ctx.level);
-        data.loot.block_drops(&loot, &mut rng, &mut stacks);
+        // `LootContext.Builder.create`: the table's random sequence, else the level random.
+        match (
+            data.loot.block_sequence(state),
+            ctx.level.random_sequences(),
+        ) {
+            (Some(key), Some(sequences)) => {
+                let mut sequences = sequences
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                data.loot
+                    .block_drops(&loot, sequences.get(key), &mut stacks);
+            }
+            _ => {
+                let mut rng = LevelRandom(&mut *ctx.level);
+                data.loot.block_drops(&loot, &mut rng, &mut stacks);
+            }
+        }
     }
     for stack in stacks {
         pop_resource(ctx.level, pos, stack);

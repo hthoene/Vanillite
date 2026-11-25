@@ -251,8 +251,8 @@ fn drop_content(level: &mut Level, pos: BlockPos, user: Option<EntityId>, luck: 
     );
     let n = vanillite_base::random::RandomSource::next_int_bounded(level.random(), 21) + 10;
     let part = item.split(n);
-    // `new ItemEntity(level, x, y, z, stack)` draws a velocity, replaced by zero.
-    let _ = super::drops::default_velocity(level);
+    // `new ItemEntity(level, x, y, z, stack)` draws a velocity from the item's own random,
+    // replaced by zero.
     super::drops::spawn_item(level, at, part, Vec3::default(), 10, None);
 }
 

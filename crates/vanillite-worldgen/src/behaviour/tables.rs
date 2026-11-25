@@ -28,6 +28,7 @@ macro_rules! block_tags {
 }
 
 block_tags!(
+    blocks_lava_fire_spread,
     beehives,
     campfires,
     candle_cakes,
@@ -47,7 +48,11 @@ block_tags!(
     enables_bubble_column_push_up,
     fences,
     fire,
+    flowers,
     grows_crops,
+    infiniburn_end,
+    infiniburn_nether,
+    infiniburn_overworld,
     maintains_farmland,
     nether_portal_frame,
     nylium,

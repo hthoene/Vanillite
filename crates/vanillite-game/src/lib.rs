@@ -30,6 +30,7 @@ pub mod mob;
 pub mod player;
 pub mod portal;
 pub mod predicate;
+pub mod random_sequences;
 pub mod recipe;
 pub mod riding;
 pub mod survival;
