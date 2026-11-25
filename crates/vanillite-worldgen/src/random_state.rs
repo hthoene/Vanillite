@@ -35,6 +35,18 @@ pub struct RandomState {
 }
 
 impl RandomState {
+    /// The state for `seed` without noises: enough for work that only draws positional
+    /// randoms (template placement on a live world).
+    pub fn without_noises(seed: i64, legacy_random_source: bool) -> Self {
+        Self {
+            seed,
+            legacy: legacy_random_source,
+            random: AnyRandom::new(legacy_random_source, seed).fork_positional(),
+            parameters: FxHashMap::default(),
+            noises: FxHashMap::default(),
+        }
+    }
+
     /// The state for `seed` with the noise parameters of `packs`.
     pub fn new(packs: &LoadedPacks, seed: i64, legacy_random_source: bool) -> Result<Self, Error> {
         let random = AnyRandom::new(legacy_random_source, seed).fork_positional();

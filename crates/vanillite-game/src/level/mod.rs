@@ -394,6 +394,10 @@ pub struct Level {
     player_awards: Vec<(EntityId, crate::advancements::award::Award)>,
     /// The server's maps (shared by all worlds).
     maps: Option<Arc<crate::map::Maps>>,
+    /// The server's structure templates (`getStructureTemplateManager`, shared by all worlds).
+    templates: Option<Arc<vanillite_worldgen::template::manager::StructureTemplateManager>>,
+    /// The data packs loaded at start (template pools of jigsaw blocks).
+    packs: Option<Arc<vanillite_datapack::LoadedPacks>>,
     min_y: i32,
     max_y: i32,
     /// The seed the level was created with (`getSeed`).
@@ -465,6 +469,8 @@ impl Level {
             player_gives: Vec::new(),
             player_awards: Vec::new(),
             maps: None,
+            templates: None,
+            packs: None,
             min_y,
             max_y,
             seed,
@@ -474,6 +480,31 @@ impl Level {
         // Chunks that are visible already queue their entities for the end of the first tick.
         level.apply_visibility();
         level
+    }
+
+    /// Sets the server's structure templates.
+    pub fn set_structure_templates(
+        &mut self,
+        templates: Arc<vanillite_worldgen::template::manager::StructureTemplateManager>,
+    ) {
+        self.templates = Some(templates);
+    }
+
+    /// Sets the data packs loaded at start.
+    pub fn set_data_packs(&mut self, packs: Arc<vanillite_datapack::LoadedPacks>) {
+        self.packs = Some(packs);
+    }
+
+    /// The data packs loaded at start (`registryAccess`), if the server has them.
+    pub fn data_packs(&self) -> Option<&Arc<vanillite_datapack::LoadedPacks>> {
+        self.packs.as_ref()
+    }
+
+    /// `getStructureTemplateManager`: the server's structure templates, if it has any.
+    pub fn structure_templates(
+        &self,
+    ) -> Option<&Arc<vanillite_worldgen::template::manager::StructureTemplateManager>> {
+        self.templates.as_ref()
     }
 
     /// `getSeed`.

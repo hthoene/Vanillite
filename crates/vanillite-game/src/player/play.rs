@@ -1224,6 +1224,13 @@ impl Digging {
                 target,
                 stack.component(ids::BLOCK_ENTITY_DATA).is_some(),
             );
+            if placed.block() == vanillite_data::block::ids::STRUCTURE_BLOCK {
+                crate::block::technical::structure_block::set_placed_by(
+                    level,
+                    target,
+                    ctx.actor.entity,
+                );
+            }
             if placed.block() == vanillite_data::block::ids::TRIPWIRE_HOOK {
                 crate::block::tripwire::hook_set_placed_by(level, target, placed);
             }
