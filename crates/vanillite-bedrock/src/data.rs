@@ -1,26 +1,74 @@
-//! Versioned Bedrock data (see `data/README.md`): the Java -> Bedrock block state table, biome
-//! ids and pre-encoded registries sent on join.
+//! Versioned Bedrock data (see `data/README.md`): per palette version the Java -> Bedrock block
+//! state table, the item tables and the pre-encoded registries sent on join; shared by all
+//! versions the biome ids, sounds and entity identifiers.
 
 use std::sync::OnceLock;
 
 use rustc_hash::FxHashMap;
 
-/// Bedrock network protocol this build speaks.
-pub const PROTOCOL: i32 = 2225;
-/// Bedrock release of [`PROTOCOL`].
-pub const VERSION: &str = "1.26.60";
+use crate::items::Items;
 
-static BLOCKS: &[u8] = include_bytes!("../data/blocks.bin");
 static BIOMES: &str = include_str!("../data/biomes.txt");
 static SOUNDS: &str = include_str!("../data/sounds.txt");
-/// `block properties` of `start_game` (count + entries).
-pub static BLOCK_PROPERTIES: &[u8] = include_bytes!("../data/block_properties.bin");
-/// Body of `item_registry`.
-pub static ITEM_REGISTRY: &[u8] = include_bytes!("../data/item_registry.bin");
 /// Body of `biome_definition_list`.
 pub static BIOME_DEFINITIONS: &[u8] = include_bytes!("../data/biome_definitions.bin");
 /// Body of `available_actor_identifiers`.
 pub static ENTITY_IDENTIFIERS: &[u8] = include_bytes!("../data/entity_identifiers.bin");
+
+/// The generated data of one Bedrock palette version (`data/<name>/`), shared by the protocols
+/// that use it. Tables are built on first use.
+#[derive(Debug)]
+pub struct Palette {
+    /// Palette version (directory name).
+    pub name: &'static str,
+    blocks_bin: &'static [u8],
+    items_bin: &'static [u8],
+    creative_java: &'static [u8],
+    /// `block properties` of `start_game` (count + entries).
+    pub block_properties: &'static [u8],
+    /// Body of `item_registry`.
+    pub item_registry: &'static [u8],
+    /// Body of `creative_content`.
+    pub creative: &'static [u8],
+    blocks: OnceLock<Blocks>,
+    items: OnceLock<Items>,
+}
+
+macro_rules! palette {
+    ($name:literal) => {
+        Palette {
+            name: $name,
+            blocks_bin: include_bytes!(concat!("../data/", $name, "/blocks.bin")),
+            items_bin: include_bytes!(concat!("../data/", $name, "/items.bin")),
+            creative_java: include_bytes!(concat!("../data/", $name, "/creative_java.bin")),
+            block_properties: include_bytes!(concat!("../data/", $name, "/block_properties.bin")),
+            item_registry: include_bytes!(concat!("../data/", $name, "/item_registry.bin")),
+            creative: include_bytes!(concat!("../data/", $name, "/creative.bin")),
+            blocks: OnceLock::new(),
+            items: OnceLock::new(),
+        }
+    };
+}
+
+/// Bedrock 1.26.40-1.26.45.
+pub static V26_40: Palette = palette!("26_40");
+/// Bedrock 1.26.50-1.26.52.
+pub static V26_50: Palette = palette!("26_50");
+/// Bedrock 1.26.60-1.26.66.
+pub static V26_60: Palette = palette!("26_60");
+
+impl Palette {
+    /// The block state table.
+    pub fn blocks(&self) -> &Blocks {
+        self.blocks.get_or_init(|| Blocks::parse(self.blocks_bin))
+    }
+
+    /// The item tables.
+    pub fn items(&self) -> &Items {
+        self.items
+            .get_or_init(|| Items::parse(self.items_bin, self.creative_java, self.blocks()))
+    }
+}
 
 /// Bit of a [`Blocks`] entry: the state holds water (second layer).
 pub const WATERLOGGED: u16 = 0x8000;
@@ -36,30 +84,25 @@ pub struct Blocks {
 }
 
 impl Blocks {
-    /// The table of this build.
-    pub fn get() -> &'static Blocks {
-        static TABLE: OnceLock<Blocks> = OnceLock::new();
-        TABLE.get_or_init(|| {
-            let word = |i: usize| -> u32 {
-                BLOCKS
-                    .get(i..i.saturating_add(4))
-                    .and_then(|b| b.try_into().ok())
-                    .map_or(0, u32::from_le_bytes)
-            };
-            let count = usize::try_from(word(0)).unwrap_or(0);
-            let water = word(4);
-            let table: Vec<u16> = BLOCKS
-                .get(8..)
-                .unwrap_or_default()
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .take(count)
-                .map(|c| u16::from_le_bytes(*c))
-                .collect();
-            let air = u32::from(table.first().copied().unwrap_or(0) & !WATERLOGGED);
-            Blocks { table, water, air }
-        })
+    fn parse(bin: &[u8]) -> Blocks {
+        let word = |i: usize| -> u32 {
+            bin.get(i..i.saturating_add(4))
+                .and_then(|b| b.try_into().ok())
+                .map_or(0, u32::from_le_bytes)
+        };
+        let count = usize::try_from(word(0)).unwrap_or(0);
+        let water = word(4);
+        let table: Vec<u16> = bin
+            .get(8..)
+            .unwrap_or_default()
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .take(count)
+            .map(|c| u16::from_le_bytes(*c))
+            .collect();
+        let air = u32::from(table.first().copied().unwrap_or(0) & !WATERLOGGED);
+        Blocks { table, water, air }
     }
 
     /// Entry of a Java state: runtime id and [`WATERLOGGED`]; unknown states become air.
@@ -110,8 +153,16 @@ mod tests {
 
     #[test]
     fn table_covers_java_26_3() {
-        let b = Blocks::get();
-        assert_eq!(b.len(), 35_723);
+        for p in [&V26_40, &V26_50, &V26_60] {
+            assert_eq!(p.blocks().len(), 35_723, "{}", p.name);
+            assert_eq!(
+                p.items().len(),
+                vanillite_data::item::ITEMS.len(),
+                "{}",
+                p.name
+            );
+        }
+        let b = V26_60.blocks();
         // Java water (state 89) maps to Bedrock water, oak stairs waterlogged carry the flag.
         assert_eq!(u32::from(b.entry(89) & !WATERLOGGED), b.water);
         assert_ne!(b.entry(5463) & WATERLOGGED, 0);

@@ -32,6 +32,11 @@ io-threads = 0
 forwarding-secret-file = "forwarding.secret"
 # Servers tried in this order on join and as fallback when a server is lost.
 try = ["lobby"]
+# Clients of older Minecraft versions accepted through the multi-version layer: "all" (every
+# version this build translates, 1.20.5 to 26.2), "none", or a comma-separated list of releases
+# such as "1.21.4, 26.2". Their packets are translated here, so backends only see the current
+# version.
+older-versions = "all"
 
 # Backend servers: name = "host:port". Backends must use modern forwarding with the same
 # secret (Paper: proxies.velocity; Vanillite: proxy.velocity-secret in vanillite.toml).
@@ -74,6 +79,9 @@ bind = "0.0.0.0:19132"
 online-mode = true
 # Prefix of Bedrock players' Java names, so they never collide with Java accounts.
 name-prefix = "."
+# Oldest Bedrock network protocol that may join (0: every version the proxy supports, listed at
+# startup). E.g. 2225 admits only Bedrock 1.26.60 and newer.
+min-protocol = 0
 # Bedrock connections per IP address.
 max-connections-per-ip = 8
 # Packets per second a Bedrock client may send before it is kicked.
@@ -121,6 +129,8 @@ pub struct ProxyConfig {
     pub limits: Limits,
     /// Bedrock frontend.
     pub bedrock: Bedrock,
+    /// Older client versions accepted (`older-versions`). Default all supported.
+    pub multiversion: vanillite_multiversion::Accepted,
 }
 
 /// The Bedrock frontend (`[bedrock]`).
@@ -134,6 +144,8 @@ pub struct Bedrock {
     pub online_mode: bool,
     /// Prefix of Bedrock players' Java names. Default ".".
     pub name_prefix: String,
+    /// Oldest accepted Bedrock protocol (0..=100000, 0 = all supported). Default 0.
+    pub min_protocol: i32,
     /// Connections per IP address (1..=1000). Default 8.
     pub max_connections_per_ip: u32,
     /// Packets per second per client (50..=100000). Default 1000.
@@ -153,6 +165,7 @@ impl Default for Bedrock {
             bind: SocketAddr::from(([0, 0, 0, 0], 19132)),
             online_mode: true,
             name_prefix: ".".to_owned(),
+            min_protocol: 0,
             max_connections_per_ip: 8,
             max_packets_per_second: 1000,
             max_view_distance: 12,
@@ -174,6 +187,7 @@ impl Bedrock {
             bind,
             online_mode: boolean(t, "online-mode", d.online_mode)?,
             name_prefix: string(t, "name-prefix", &d.name_prefix)?,
+            min_protocol: i32::try_from(int(t, "min-protocol", 0, 0, 100_000)?).unwrap_or(0),
             max_connections_per_ip: u32::try_from(int(t, "max-connections-per-ip", 8, 1, 1000)?)
                 .unwrap_or(8),
             max_packets_per_second: u32::try_from(int(
@@ -246,6 +260,7 @@ impl Default for ProxyConfig {
                 connect_timeout: Duration::from_secs(5),
             },
             bedrock: Bedrock::default(),
+            multiversion: vanillite_multiversion::Accepted::all(),
         }
     }
 }
@@ -378,6 +393,9 @@ impl ProxyConfig {
         };
         no_unknown(&l, "limits")?;
         let bedrock = Bedrock::parse(&mut table(&mut t, "bedrock")?)?;
+        let multiversion =
+            vanillite_multiversion::Accepted::parse(&string(&mut t, "older-versions", "all")?)
+                .map_err(|e| format!("older-versions: {e}"))?;
         let config = Self {
             bind,
             online_mode: boolean(&mut t, "online-mode", true)?,
@@ -404,6 +422,7 @@ impl ProxyConfig {
             permissions,
             limits,
             bedrock,
+            multiversion,
         };
         no_unknown(&t, "")?;
         config.check()?;

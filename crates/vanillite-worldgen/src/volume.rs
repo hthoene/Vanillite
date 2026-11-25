@@ -116,6 +116,7 @@ impl DensityVolume {
     }
 
     /// `indexOfBlock(x, y, z)`: the index of a block position on the grid, if it is on it.
+    #[inline]
     pub fn index_of_block(&self, x: i32, y: i32, z: i32) -> Option<usize> {
         let rx = x.wrapping_sub(self.min_x);
         let ry = y.wrapping_sub(self.min_y);

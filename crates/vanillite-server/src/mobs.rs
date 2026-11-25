@@ -111,7 +111,16 @@ impl WorldMobs {
             let (weather, climate) = (survival.weather, survival.climate().cloned());
             let chunks = &level.chunks;
             let raining = move |pos| raining_at(chunks, climate.as_deref(), &weather, pos);
-            let mut env = survival.env(state, &rules, &blocks, &raining, dimension, &hooks);
+            let mut no_gateway = |_| false;
+            let mut env = survival.env(
+                state,
+                &rules,
+                &blocks,
+                &raining,
+                dimension,
+                &mut no_gateway,
+                &hooks,
+            );
             combat::player_attack(level, &mut ents, &mut env, &mut self.cx, player, target);
         }
         level.entities = ents;
@@ -240,7 +249,16 @@ impl WorldMobs {
                 let (weather, climate) = (survival.weather, survival.climate().cloned());
                 let chunks = &level.chunks;
                 let raining = move |pos| raining_at(chunks, climate.as_deref(), &weather, pos);
-                let mut env = survival.env(state, &rules, &blocks, &raining, dimension, &hooks);
+                let mut no_gateway = |_| false;
+                let mut env = survival.env(
+                    state,
+                    &rules,
+                    &blocks,
+                    &raining,
+                    dimension,
+                    &mut no_gateway,
+                    &hooks,
+                );
                 let level_ref: &Level = level;
                 if is_mob {
                     mob::tick(level_ref, &mut ents, &mut env, &mut self.cx, id);
@@ -327,7 +345,16 @@ impl WorldMobs {
         let hurts = std::mem::take(&mut level.output().explosion_hurts);
         let no_blocks = NoBlocks;
         let raining = |_| false;
-        let mut env = survival.env(state, &rules, &no_blocks, &raining, dimension, &hooks);
+        let mut no_gateway = |_| false;
+        let mut env = survival.env(
+            state,
+            &rules,
+            &no_blocks,
+            &raining,
+            dimension,
+            &mut no_gateway,
+            &hooks,
+        );
         let mut ents = std::mem::take(&mut level.entities);
         for hurt in hurts {
             // `damageSources().explosion(source, indirect)`.

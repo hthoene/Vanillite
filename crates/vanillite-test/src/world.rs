@@ -61,6 +61,11 @@ pub trait ScenarioWorld {
     fn hurt(&mut self, hurt: &Hurt) -> Result<(), String> {
         Err(format!("this world cannot hurt `{}`", hurt.entity))
     }
+    /// The settled light inside `min..=max` in y, z, x order as `sky << 4 | block`: the levels
+    /// a client sees. Worlds without a light engine leave `out` empty.
+    fn light(&mut self, min: BlockPos, max: BlockPos, out: &mut Vec<u8>) {
+        let _ = (min, max, out);
+    }
 }
 
 /// Builds the world for a scenario.

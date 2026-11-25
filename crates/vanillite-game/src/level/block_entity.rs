@@ -54,6 +54,10 @@ pub enum BlockEntity {
     BrewingStand(Box<crate::block::brewing::BrewingStand>),
     /// Signs and hanging signs.
     Sign(Box<crate::block::sign::Sign>),
+    /// `TheEndPortalBlockEntity` (no data; clients render the portal from it).
+    EndPortal,
+    /// `TheEndGatewayBlockEntity`.
+    EndGateway(crate::block::portal::Gateway),
 }
 
 /// `BlockEntityTicker.tick(level, pos, state, blockEntity)`: the block entity is looked up at
@@ -194,10 +198,12 @@ fn ticker_of(entity: &BlockEntity) -> Option<TickerFn> {
         BlockEntity::Comparator { .. }
         | BlockEntity::Lectern(_)
         | BlockEntity::Container(_)
-        | BlockEntity::EnderChest { .. } => None,
+        | BlockEntity::EnderChest { .. }
+        | BlockEntity::EndPortal => None,
         BlockEntity::Furnace(_) => Some(crate::block::furnace::server_tick),
         BlockEntity::BrewingStand(_) => Some(crate::block::brewing::server_tick),
         BlockEntity::Sign(_) => Some(crate::block::sign::tick),
+        BlockEntity::EndGateway(_) => Some(crate::block::portal::gateway_tick),
         BlockEntity::MovingPiston(_) => Some(crate::block::piston::moving_piston_tick),
         BlockEntity::Hopper(_) => Some(crate::block::hopper::push_items_tick),
         BlockEntity::DaylightDetector => Some(crate::block::sensor::daylight_detector_tick),
@@ -237,6 +243,12 @@ pub fn new_block_entity(state: BlockState) -> Option<BlockEntity> {
         Some(BlockEntity::Hopper(Box::default()))
     } else if crate::block::sign::is_sign(block) {
         Some(BlockEntity::Sign(Box::default()))
+    } else if block == ids::END_PORTAL {
+        Some(BlockEntity::EndPortal)
+    } else if block == ids::END_GATEWAY {
+        Some(BlockEntity::EndGateway(
+            crate::block::portal::Gateway::default(),
+        ))
     } else {
         crate::block::container::new_block_entity(block)
     }
@@ -281,6 +293,8 @@ fn is_valid(entity: &BlockEntity, state: BlockState) -> bool {
         }
         BlockEntity::BrewingStand(_) => state.block() == ids::BREWING_STAND,
         BlockEntity::Sign(_) => crate::block::sign::is_sign(state.block()),
+        BlockEntity::EndPortal => state.block() == ids::END_PORTAL,
+        BlockEntity::EndGateway(_) => state.block() == ids::END_GATEWAY,
     }
 }
 
@@ -445,6 +459,7 @@ fn load(state: BlockState, nbt: &Compound) -> Option<BlockEntity> {
             crate::block::container::load_items(nbt, &mut h.items);
             h.cooldown_time = int("TransferCooldown").unwrap_or(-1);
         }
+        BlockEntity::EndGateway(gateway) => *gateway = crate::block::portal::Gateway::load(nbt),
         _ => {}
     }
     Some(entity)
@@ -485,6 +500,7 @@ fn save(entity: &BlockEntity, state: BlockState, pos: BlockPos) -> Compound {
             crate::block::container::save_items(&h.items, &mut nbt);
             nbt.insert("TransferCooldown", Tag::Int(h.cooldown_time));
         }
+        BlockEntity::EndGateway(gateway) => gateway.save(&mut nbt),
         _ => {}
     }
     nbt
@@ -668,6 +684,13 @@ pub fn update_tag(entity: &BlockEntity) -> Option<Compound> {
         BlockEntity::Sign(sign) => {
             let mut nbt = Compound::new();
             sign.save(&mut nbt);
+            nbt.sort_java_hash_order();
+            Some(nbt)
+        }
+        // `saveCustomOnly`: the age for the beam and the exit.
+        BlockEntity::EndGateway(gateway) => {
+            let mut nbt = Compound::new();
+            gateway.save(&mut nbt);
             nbt.sort_java_hash_order();
             Some(nbt)
         }

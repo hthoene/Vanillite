@@ -44,6 +44,15 @@ pub(crate) struct LevelSetup {
     pub(crate) spawn: (vanillite_base::Vec3, f32),
 }
 
+/// What portals need of a dimension type.
+#[derive(Clone, Copy, Debug)]
+pub struct DimensionFacts {
+    /// `coordinate_scale`: nether portals scale positions by the ratio of two of these.
+    pub coordinate_scale: f64,
+    /// `logical_height`: exit portals are built below it.
+    pub logical_height: i32,
+}
+
 /// Shared level data. Each lock is held only for short reads or a command's change.
 #[derive(Debug)]
 pub struct LevelState {
@@ -59,6 +68,8 @@ pub struct LevelState {
     /// The default clock of each dimension (`DimensionType.defaultClock`), in [`DIMENSIONS`]
     /// order.
     pub default_clocks: [Option<usize>; 3],
+    /// What portals need of each dimension's type, in [`DIMENSIONS`] order.
+    pub dimension_types: [DimensionFacts; 3],
     /// `level.dat`.
     level_data: Mutex<LevelData>,
     /// The world-wide saved data (`<world>/data/`).
@@ -153,6 +164,28 @@ impl LevelState {
             let value: Value = serde_json::from_str(json).ok()?;
             clocks.index(value.get("default_clock")?.as_str()?)
         });
+        let dimension_types = std::array::from_fn(|i| {
+            let json = || {
+                let dimension = DIMENSIONS.get(i)?;
+                let json = packs?
+                    .registry("minecraft:dimension_type")?
+                    .get(dimension)?
+                    .json
+                    .get();
+                serde_json::from_str::<Value>(json).ok()
+            };
+            let json = json();
+            let field = |key: &str| json.as_ref().and_then(|v| v.get(key));
+            DimensionFacts {
+                coordinate_scale: field("coordinate_scale")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(1.0),
+                logical_height: field("logical_height")
+                    .and_then(Value::as_i64)
+                    .and_then(|v| i32::try_from(v).ok())
+                    .unwrap_or(256),
+            }
+        });
         let (damage_types, block_facts) = match packs {
             Some(packs) => (load_damage_types(packs), load_block_facts(packs)),
             None => (DamageTypes::built_in(), BlockFacts::without_tags()),
@@ -163,6 +196,7 @@ impl LevelState {
             rules: RwLock::new(rules),
             weather: Mutex::new(weather),
             difficulty,
+            dimension_types,
             damage_types,
             block_facts,
             default_clocks,

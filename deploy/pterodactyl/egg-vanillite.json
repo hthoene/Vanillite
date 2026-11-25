@@ -622,7 +622,7 @@
     },
     {
       "name": "Threads: Compute",
-      "description": "Worker threads of the compute pool (world generation, lighting, saving, parallel tick phases). 0 = number of cores minus the busy tick threads, at least 1. Range: 0 to 1024. Empty: the profile's value (vanilla profile: 0). vanillite.toml: performance.threads.compute.",
+      "description": "Worker threads of the compute pool (world generation, lighting, saving, parallel tick phases). 0 = number of cores minus one (the tick threads), at least 1. Range: 0 to 1024. Empty: the profile's value (vanilla profile: 0). vanillite.toml: performance.threads.compute.",
       "env_variable": "VANILLITE_PERFORMANCE__THREADS__COMPUTE",
       "default_value": "",
       "user_viewable": true,
@@ -841,6 +841,16 @@
       "field_type": "text"
     },
     {
+      "name": "Multiversion: Versions",
+      "description": "Older versions whose clients may join: `\"all\"` (every version this build translates, currently 1.20.5 to 26.2), `\"none\"`, or a comma-separated list of releases such as `\"1.21.4, 26.2\"` (a release accepts every release of its protocol). Clients of the server's own version are not translated and pay nothing. Empty: the profile's value (vanilla profile: all). vanillite.toml: multiversion.versions.",
+      "env_variable": "VANILLITE_MULTIVERSION__VERSIONS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string",
+      "field_type": "text"
+    },
+    {
       "name": "Plugins: Enabled",
       "description": "Load the plugins in `plugins/`. Empty: the profile's value (vanilla profile: true). vanillite.toml: plugins.enabled.",
       "env_variable": "VANILLITE_PLUGINS__ENABLED",
@@ -908,6 +918,16 @@
       "user_viewable": true,
       "user_editable": true,
       "rules": "nullable|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Bedrock: Min Protocol",
+      "description": "Oldest Bedrock network protocol that may join. 0 accepts every Bedrock version this build supports (listed at startup); e.g. 2225 admits only Bedrock 1.26.60 and newer. Range: 0 to 100000. Empty: the profile's value (vanilla profile: 0). vanillite.toml: bedrock.min-protocol.",
+      "env_variable": "VANILLITE_BEDROCK__MIN_PROTOCOL",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:0,100000",
       "field_type": "text"
     },
     {

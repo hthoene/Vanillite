@@ -44,20 +44,25 @@ impl MaterialRuleContext<'_> {
     /// `RuleEvaluator.tryApply(x, y, z)` of rule `id`: the block to place, if any.
     pub(super) fn try_apply(&mut self, id: RuleId, x: i32, y: i32, z: i32) -> Option<BlockState> {
         let system = self.system;
-        match &system.rules.rules[id as usize] {
-            Rule::Block(state) => Some(*state),
-            Rule::Bandlands => Some(system.band(x, y, z)),
-            Rule::Sequence(sequence) => sequence
-                .iter()
-                .find_map(|&rule| self.try_apply(rule, x, y, z)),
-            &Rule::Condition { if_true, then_run } => {
-                if self.test(if_true) {
-                    self.try_apply(then_run, x, y, z)
-                } else {
-                    None
+        let mut id = id;
+        // A passed condition continues with its rule in this frame; only sequences recurse.
+        loop {
+            match &system.rules.rules[id as usize] {
+                Rule::Block(state) => return Some(*state),
+                Rule::Bandlands => return Some(system.band(x, y, z)),
+                Rule::Sequence(sequence) => {
+                    return sequence
+                        .iter()
+                        .find_map(|&rule| self.try_apply(rule, x, y, z));
                 }
+                &Rule::Condition { if_true, then_run } => {
+                    if !self.test(if_true) {
+                        return None;
+                    }
+                    id = then_run;
+                }
+                &Rule::OreVein(vein) => return self.ore_vein(vein as usize, x, y, z),
             }
-            &Rule::OreVein(vein) => self.ore_vein(vein as usize, x, y, z),
         }
     }
 

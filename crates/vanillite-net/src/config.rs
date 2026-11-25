@@ -64,6 +64,8 @@ pub struct NetConfig {
     /// With forwarding on, also accept clients that connect directly (they log in normally).
     /// Default false: direct connections are refused (SEC-14).
     pub allow_direct_connections: bool,
+    /// Older client versions accepted through the multi-version layer. Default none.
+    pub multiversion: vanillite_multiversion::Accepted,
 }
 
 impl Default for NetConfig {
@@ -103,6 +105,7 @@ impl Default for NetConfig {
             brand: "vanillite".into(),
             forwarding_secret: None,
             allow_direct_connections: false,
+            multiversion: vanillite_multiversion::Accepted::default(),
         }
     }
 }

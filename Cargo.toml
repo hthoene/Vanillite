@@ -24,6 +24,7 @@ vanillite-datapack = { path = "crates/vanillite-datapack", version = "0.1.0" }
 vanillite-game = { path = "crates/vanillite-game", version = "0.1.0" }
 vanillite-light = { path = "crates/vanillite-light", version = "0.1.0" }
 vanillite-macros = { path = "crates/vanillite-macros", version = "0.1.0" }
+vanillite-multiversion = { path = "crates/vanillite-multiversion", version = "0.1.0" }
 vanillite-nbt = { path = "crates/vanillite-nbt", version = "0.1.0" }
 vanillite-net = { path = "crates/vanillite-net", version = "0.1.0" }
 vanillite-plugin = { path = "crates/vanillite-plugin", version = "0.1.0" }
@@ -93,8 +94,8 @@ debug = false
 [profile.dev.package.vanillite-worldgen]
 opt-level = 3
 
+# The light engine recomputes whole chunk areas; its parity tests and scenarios run optimised.
 [profile.dev.package.vanillite-light]
-# The parity scenarios light their chunks; unoptimised lighting would dominate their time.
 opt-level = 3
 
 [profile.release]

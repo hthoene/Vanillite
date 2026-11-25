@@ -13,6 +13,7 @@
 //!   "rules": {"random_tick_speed": "0"},
 //!   "region": [[0, 0, 0], [5, 3, 5]],
 //!   "ticks": 4,
+//!   "light": false,
 //!   "setup": [{"op": "fill", "from": [0, 0, 0], "to": [5, 0, 5], "block": "minecraft:stone"}],
 //!   "actions": [{"tick": 1, "op": "place", "pos": [3, 1, 3], "block": "minecraft:sand"}]
 //! }
@@ -28,6 +29,8 @@
 //!   `spawn_mobs false`, `advance_time false`, `advance_weather false`).
 //! - `region`: the observed box (inclusive). Its chunks and their neighbours are loaded and
 //!   ticking before the setup.
+//! - `light`: frames also hold the settled sky and block light of the region, the levels a
+//!   client sees. Default `false`.
 //! - `setup`: applied without updates before frame 0 (`set`, `fill`; `place` with updates).
 //! - `actions`: before world tick `tick` (1-based): `place` (with neighbour and shape updates,
 //!   Vanilla `setBlock` flags 3), `set` (without updates), `fill` (with updates).
@@ -111,6 +114,8 @@ pub struct WorldSpec {
     /// Whether the world computes light: with entities (mobs see it) or `"light": true`.
     /// Block-only scenarios run without it, which is much faster.
     pub light: bool,
+    /// Whether frames observe light (`"light": true`).
+    pub observe_light: bool,
     /// `peaceful`, `easy`, `normal` or `hard`.
     pub difficulty: String,
 }
@@ -321,6 +326,7 @@ impl Scenario {
                 region: (pos(region.get(0))?, pos(region.get(1))?),
                 light: v.get("entities").is_some()
                     || v.get("light").and_then(Value::as_bool).unwrap_or(false),
+                observe_light: v.get("light").and_then(Value::as_bool).unwrap_or(false),
                 difficulty: v
                     .get("difficulty")
                     .and_then(Value::as_str)

@@ -15,6 +15,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.stream.Stream;
 import net.minecraft.SharedConstants;
 import net.minecraft.commands.arguments.blocks.BlockStateParser;
@@ -22,9 +23,11 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.Bootstrap;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ThreadedLevelLightEngine;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.Property;
@@ -41,7 +44,8 @@ import net.minecraft.world.ticks.ScheduledTick;
  * fresh {@link ParityServer}: its chunks are loaded and ticking, the setup is applied without
  * updates, frame 0 is recorded, then every tick applies the actions of that tick, runs one server
  * tick and records a frame: the block states of the region (frame 0 in full, later frames as
- * changes), the pending block and fluid ticks in drain order and the entities in the region.
+ * changes), the pending block and fluid ticks in drain order, the entities in the region and, for
+ * scenarios with {@code "light": true}, the settled sky and block light of the region.
  *
  * <p>Usage: {@code java -cp ... dev.vanillite.extractor.golden.ScenarioRecorder (<scenario.json>
  * <trace.json>)...}
@@ -149,7 +153,8 @@ public final class ScenarioRecorder {
       }
       ParityHooks.startStream(scenario.has("entity_seed") ? scenario.get("entity_seed").getAsLong() : seed);
 
-      Trace trace = new Trace(min, max, entities);
+      boolean light = scenario.has("light") && scenario.get("light").getAsBoolean();
+      Trace trace = new Trace(min, max, entities, light);
       trace.frame(level, 0, true);
       int ticks = scenario.get("ticks").getAsInt();
       JsonArray actions = scenario.has("actions") ? scenario.getAsJsonArray("actions") : null;
@@ -276,13 +281,15 @@ public final class ScenarioRecorder {
     private final Map<String, Integer> palette = new HashMap<>();
     private final List<String> paletteOrder = new ArrayList<>();
     private final List<String> frames = new ArrayList<>();
+    private final boolean light;
     private int[] last;
     private final ScenarioEntities names;
 
-    Trace(BlockPos min, BlockPos max, ScenarioEntities names) {
+    Trace(BlockPos min, BlockPos max, ScenarioEntities names, boolean light) {
       this.min = min;
       this.max = max;
       this.names = names;
+      this.light = light;
     }
 
     private int index(String state) {
@@ -357,7 +364,59 @@ public final class ScenarioRecorder {
       if (names.hasEntities()) {
         sb.append(",\"level_rng\":").append(ScenarioEntities.state(level.getRandom()));
       }
+      if (light) {
+        light(sb, level);
+      }
       frames.add(sb.append('}').toString());
+    }
+
+    /**
+     * The settled light of the region as run-length pairs of {@code sky << 4 | block} in y, z, x
+     * order: the light engine first runs until no task around the region is left.
+     */
+    private void light(StringBuilder sb, ServerLevel level) throws InterruptedException {
+      ThreadedLevelLightEngine engine = level.getChunkSource().getLightEngine();
+      while (true) {
+        List<CompletableFuture<?>> pending = new ArrayList<>();
+        for (int cx = (min.getX() >> 4) - 1; cx <= (max.getX() >> 4) + 1; cx++) {
+          for (int cz = (min.getZ() >> 4) - 1; cz <= (max.getZ() >> 4) + 1; cz++) {
+            pending.add(engine.waitForPendingTasks(cx, cz));
+          }
+        }
+        while (!pending.stream().allMatch(CompletableFuture::isDone)) {
+          engine.tryScheduleUpdate();
+          Thread.sleep(1);
+        }
+        if (!engine.hasLightWork()) {
+          break;
+        }
+      }
+      sb.append(",\"light\":[");
+      BlockPos.MutableBlockPos p = new BlockPos.MutableBlockPos();
+      int previous = -1;
+      int run = 0;
+      boolean first = true;
+      for (int y = min.getY(); y <= max.getY(); y++) {
+        for (int z = min.getZ(); z <= max.getZ(); z++) {
+          for (int x = min.getX(); x <= max.getX(); x++) {
+            p.set(x, y, z);
+            int level16 =
+                level.getBrightness(LightLayer.SKY, p) << 4
+                    | level.getBrightness(LightLayer.BLOCK, p);
+            if (level16 != previous && run > 0) {
+              sb.append(first ? "" : ",").append(run).append(',').append(previous);
+              first = false;
+              run = 0;
+            }
+            previous = level16;
+            run++;
+          }
+        }
+      }
+      if (run > 0) {
+        sb.append(first ? "" : ",").append(run).append(',').append(previous);
+      }
+      sb.append(']');
     }
 
     private boolean inside(BlockPos p) {
