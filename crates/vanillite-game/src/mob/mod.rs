@@ -459,6 +459,8 @@ pub struct Environment {
     /// `EnvironmentAttributes.BEES_STAY_IN_HIVE`: the night of the `minecraft:day` timeline or
     /// rain (any rain level).
     pub bees_stay_in_hive: bool,
+    /// `EnvironmentAttributes.CREAKING_ACTIVE` (the overworld's `day` timeline at night).
+    pub creaking_active: bool,
 }
 
 impl Default for Environment {
@@ -479,6 +481,7 @@ impl Default for Environment {
             sea_level: 63,
             day_time: 6000,
             bees_stay_in_hive: false,
+            creaking_active: false,
         }
     }
 }
@@ -502,6 +505,7 @@ impl Environment {
             sky_darken,
             monsters_burn: !night,
             bees_stay_in_hive: night || rain > 0.0,
+            creaking_active: (12600..23401).contains(&day.rem_euclid(24000)),
             thundering: thunder > 0.9,
             raining: rain > 0.2,
             has_sky_light: true,
@@ -666,6 +670,8 @@ pub enum WorldAction {
         data: Box<vanillite_nbt::Compound>,
         flower: Option<BlockPos>,
     },
+    /// `CreakingHeartBlockEntity.creakingHurt` of the heart at the position.
+    CreakingHurt(BlockPos),
 }
 
 impl WorldAction {
@@ -696,6 +702,9 @@ impl WorldAction {
                 ref data,
                 flower,
             } => crate::block::beehive::add_occupant(level, hive, bee, data, flower),
+            WorldAction::CreakingHurt(pos) => {
+                crate::block::creaking_heart::creaking_hurt(level, pos)
+            }
             WorldAction::BoneMeal(pos) => {
                 let mut meal =
                     crate::item::ItemStack::new(vanillite_data::item::ids::BONE_MEAL.0, 1);

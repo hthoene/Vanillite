@@ -321,7 +321,7 @@ impl Default for TrialSpawner {
     }
 }
 
-fn uuid_tag(uuid: u128) -> Tag {
+pub(crate) fn uuid_tag(uuid: u128) -> Tag {
     #[allow(clippy::cast_possible_truncation)]
     let parts = [
         (uuid >> 96) as u32 as i32,
@@ -332,7 +332,7 @@ fn uuid_tag(uuid: u128) -> Tag {
     Tag::IntArray(parts.to_vec())
 }
 
-fn uuid_of(tag: &Tag) -> Option<u128> {
+pub(crate) fn uuid_of(tag: &Tag) -> Option<u128> {
     match tag {
         Tag::IntArray(a) if a.len() == 4 => Some(
             a.iter()

@@ -155,7 +155,7 @@ impl Level {
         let mut targets = self.exploded_positions(center, radius, style.resistance);
         let hit_players = self.hurt_entities(source, indirect, center, radius, style);
         if interaction != BlockInteraction::Keep {
-            self.interact_with_blocks(&mut targets, source, indirect, interaction, radius);
+            self.interact_with_blocks(&mut targets, source, indirect, interaction, radius, center);
         }
         if style.fire {
             self.create_fire(&targets);
@@ -373,6 +373,7 @@ impl Level {
         indirect: Option<EntityId>,
         interaction: BlockInteraction,
         radius: f32,
+        center: Vec3,
     ) {
         // `Util.shuffle(targetBlocks, level.random)`.
         for i in (2..=targets.len()).rev() {
@@ -398,6 +399,11 @@ impl Level {
                     crate::block::beehive::anger_nearby_bees(self, pos);
                 }
                 continue;
+            }
+            if state.is(ids::CREAKING_HEART) {
+                crate::block::creaking_heart::on_explosion_hit(
+                    self, pos, state, source, indirect, center,
+                );
             }
             // `dropFromExplosion`: everything but TNT; the loot is rolled block by block.
             if !state.is(ids::TNT) {

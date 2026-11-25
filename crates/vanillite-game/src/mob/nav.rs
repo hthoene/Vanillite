@@ -340,6 +340,7 @@ fn path_mob(t: &Tick<'_, '_>) -> PathMob {
         can_open_doors: nav.can_open_doors,
         // `WaterBoundPathNavigation` cannot pass doors.
         can_pass_doors: nav.can_pass_doors && !matches!(nav.kind, NavKind::Water { .. }),
+        home: super::fam::mount::creaking::creaking_home(m),
     }
 }
 
@@ -384,7 +385,7 @@ pub fn create_path_to_any(
         max_path_length: max_len,
         reach_range,
         max_visited_nodes: max_nodes.min(budget),
-        malus: m.kind.malus(),
+        malus: super::kinds::mob_malus(m),
         min_y: t.level.min_y(),
     };
     let mut random = m.random.clone();
