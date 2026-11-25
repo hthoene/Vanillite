@@ -509,6 +509,9 @@ impl WorldMobs {
                             player,
                         );
                     }
+                    EntityAction::PickItem { entity, .. } => {
+                        pick_item_from_entity(&mut ents, player, entity);
+                    }
                     EntityAction::OpenVehicleInventory => {
                         // `openCustomInventoryScreen` of a chest boat or mount the player
                         // rides.
@@ -1527,6 +1530,17 @@ fn use_item(
     player: EntityId,
     hand: Hand,
 ) {
+    // `ServerPlayerGameMode.useItem`: nothing while the item cools down.
+    let cooling = ents.player(player).is_some_and(|p| {
+        let i = hand_index(ents, player, hand);
+        p.survival.cooldowns.is_on_cooldown(p.inventory.get(i))
+    });
+    if cooling {
+        return;
+    }
+    if vanillite_game::player::items::use_item(level, ents, env, network_ids, player, hand) {
+        return;
+    }
     let mut stack = take_held(ents, player, hand);
     let name = vanillite_game::item::item_id(&stack).name();
     let creative = ents
@@ -1561,6 +1575,57 @@ fn use_item(
         return;
     }
     put_back(ents, player, hand, stack);
+}
+
+/// `Entity.getPickResult`: a mob's spawn egg, or the item of a vehicle or decoration.
+fn pick_result(ents: &Entities, target: EntityId) -> Option<ItemStack> {
+    use vanillite_data::registry::ITEM;
+    let kind = ents.store.get(target)?.kind();
+    if kind == vanillite_data::entity::ids::PLAYER {
+        return None;
+    }
+    let name = kind.name();
+    let item = match name.strip_prefix("minecraft:").unwrap_or(name) {
+        "end_crystal" => "minecraft:end_crystal".to_owned(),
+        "leash_knot" => "minecraft:lead".to_owned(),
+        "painting" => "minecraft:painting".to_owned(),
+        "armor_stand" => "minecraft:armor_stand".to_owned(),
+        "spawner_minecart" => "minecraft:minecart".to_owned(),
+        "item_frame" | "glow_item_frame" => name.to_owned(),
+        other => {
+            let egg = format!("minecraft:{other}_spawn_egg");
+            if ITEM.id(&egg).is_some() {
+                egg
+            } else if other.ends_with("minecart")
+                || other.ends_with("boat")
+                || other.ends_with("raft")
+            {
+                name.to_owned()
+            } else {
+                return None;
+            }
+        }
+    };
+    ITEM.id(&item).map(|id| ItemStack::new(id, 1))
+}
+
+/// `handlePickItemFromEntity` + `tryPickItem`: the entity's item goes to the hotbar.
+fn pick_item_from_entity(ents: &mut Entities, player: EntityId, network_id: i32) {
+    let Some(target) = in_reach(ents, player, network_id) else {
+        return;
+    };
+    let Some(stack) = pick_result(ents, target) else {
+        return;
+    };
+    let Some(p) = ents.player_mut(player) else {
+        return;
+    };
+    let infinite = p.game_mode == GameMode::Creative;
+    p.inventory.pick_item(stack, infinite);
+    let slot = i32::try_from(p.inventory.selected).unwrap_or(0);
+    let sink = Arc::clone(&p.connection.sink);
+    sink.send(&vanillite_protocol::packets::play::clientbound::SetHeldSlot { slot });
+    p.inventory.broadcast_changes(sink.as_ref());
 }
 
 /// `use_item_on` with spawn eggs and leads.

@@ -1597,6 +1597,7 @@ impl ScenarioWorld for GameWorld {
                 effects: &mut effects,
                 spectators: &spectators,
                 actor: Some((id, aabb)),
+                dimension: "minecraft:overworld",
             };
             let mut drops = Vec::new();
             let mut swings = Vec::new();
