@@ -1,0 +1,239 @@
+{
+  "description": "Leaves far from logs decay by random ticks and drop their loot; removing a log updates the distances of its leaves with scheduled ticks before they decay; persistent leaves stay.",
+  "tier": "fast",
+  "world": {
+    "seed": 8301,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:stone",
+        3
+      ]
+    ]
+  },
+  "rules": {
+    "random_tick_speed": "2048"
+  },
+  "time": 6000,
+  "level_rng": true,
+  "light": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      10,
+      -57,
+      10
+    ]
+  ],
+  "ticks": 120,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -60,
+        5
+      ],
+      "block": "minecraft:oak_log[axis=y]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -58,
+        1
+      ],
+      "block": "minecraft:oak_leaves[distance=7,persistent=false,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -58,
+        1
+      ],
+      "block": "minecraft:birch_leaves[distance=7,persistent=false,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -58,
+        1
+      ],
+      "block": "minecraft:spruce_leaves[distance=7,persistent=false,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -58,
+        1
+      ],
+      "block": "minecraft:jungle_leaves[distance=7,persistent=false,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -58,
+        1
+      ],
+      "block": "minecraft:acacia_leaves[distance=7,persistent=false,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -58,
+        1
+      ],
+      "block": "minecraft:dark_oak_leaves[distance=7,persistent=false,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -58,
+        2
+      ],
+      "block": "minecraft:mangrove_leaves[distance=7,persistent=false,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -58,
+        2
+      ],
+      "block": "minecraft:cherry_leaves[distance=7,persistent=false,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -58,
+        2
+      ],
+      "block": "minecraft:azalea_leaves[distance=7,persistent=false,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -58,
+        2
+      ],
+      "block": "minecraft:flowering_azalea_leaves[distance=7,persistent=false,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -58,
+        2
+      ],
+      "block": "minecraft:pale_oak_leaves[distance=7,persistent=false,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        5
+      ],
+      "block": "minecraft:oak_leaves[distance=1,persistent=false,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -60,
+        5
+      ],
+      "block": "minecraft:oak_leaves[distance=2,persistent=false,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        5
+      ],
+      "block": "minecraft:oak_leaves[distance=1,persistent=false,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -60,
+        5
+      ],
+      "block": "minecraft:oak_leaves[distance=2,persistent=false,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -60,
+        6
+      ],
+      "block": "minecraft:oak_leaves[distance=1,persistent=false,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -60,
+        7
+      ],
+      "block": "minecraft:oak_leaves[distance=2,persistent=false,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -60,
+        4
+      ],
+      "block": "minecraft:oak_leaves[distance=1,persistent=false,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -60,
+        3
+      ],
+      "block": "minecraft:oak_leaves[distance=2,persistent=false,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -60,
+        8
+      ],
+      "block": "minecraft:oak_leaves[distance=7,persistent=true,waterlogged=false]"
+    }
+  ],
+  "actions": [
+    {
+      "op": "place",
+      "tick": 5,
+      "pos": [
+        5,
+        -60,
+        5
+      ],
+      "block": "minecraft:air"
+    }
+  ]
+}

@@ -329,6 +329,13 @@ impl ServerBuilder {
             format_plan.format
         };
         let own_level = i32::from(config.server.storage.compression_level);
+        let upgrades = match world_format {
+            WorldFormat::Vanillite => {
+                vanillite_storage::upgrade::Upgrades::load(&dir.join(&level_name))
+                    .map_err(|e| StartError::Io(format!("world \"{level_name}\": {e}")))?
+            }
+            WorldFormat::Anvil => vanillite_storage::upgrade::Upgrades::none(),
+        };
         let storage_rules = &config.server.storage;
         let io = IoPool::new(usize::from(storage_rules.io_threads))
             .map_err(|e| StartError::Io(format!("cannot start the storage IO threads: {e}")))?;
@@ -467,6 +474,11 @@ impl ServerBuilder {
 
         log::info!("Preparing level \"{level_name}\"");
         let mut worlds = Vec::with_capacity(DIMENSIONS.len());
+        // `MinecraftServer.randomSequences`: shared by all worlds (not saved yet).
+        let random_sequences = Arc::new(std::sync::Mutex::new(
+            vanillite_game::random_sequences::RandomSequences::new(seed),
+        ));
+        let trees = crate::world_setup::tree_features(packs.as_deref(), seed);
         for (dimension, index) in DIMENSIONS.iter().zip(0u16..) {
             let rules = Arc::new(config.world_rules(dimension));
             let view_distance = rules
@@ -492,7 +504,9 @@ impl ServerBuilder {
                     .map_err(|e| StartError::io(&info.dir, e))?,
                 codec: match world_format {
                     WorldFormat::Anvil => Arc::new(AnvilCodec::new(&info, compression)),
-                    WorldFormat::Vanillite => Arc::new(OwnCodec::new(&info, own_level)),
+                    WorldFormat::Vanillite => Arc::new(
+                        OwnCodec::new(&info, own_level).with_upgrades(Arc::clone(&upgrades)),
+                    ),
                 },
                 generator: generator_provider
                     .create(&info)
@@ -548,6 +562,11 @@ impl ServerBuilder {
                 global.level.game_time(),
                 config.properties.max_world_size,
             );
+            level.set_random_sequences(Arc::clone(&random_sequences));
+            if let Some(trees) = &trees {
+                level.set_tree_features(Arc::clone(trees));
+            }
+            level.set_maps(Arc::clone(&global.level.maps));
             let survival = crate::survival::WorldSurvival::new(
                 dimension,
                 &global.level,

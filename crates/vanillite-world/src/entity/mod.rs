@@ -25,6 +25,7 @@ use vanillite_base::{Aabb, BlockPos, SectionPos, SlotMap, Vec3};
 use vanillite_data::entity::{EntityTypeId, ids};
 
 pub use dense::Dense;
+use sections::Subset;
 pub use sections::{EntityClass, SectionIndex};
 pub use tick_order::TickCursor;
 
@@ -552,8 +553,23 @@ impl EntityStore {
 
     /// Calls `f` for every entity (or only every player) whose bounding box intersects `aabb`,
     /// in Vanilla's order (`EntitySectionStorage.getEntities`).
-    pub fn for_each_in(&self, aabb: &Aabb, players_only: bool, mut f: impl FnMut(EntityId)) {
-        self.sections.for_each_near(aabb, players_only, |id| {
+    pub fn for_each_in(&self, aabb: &Aabb, players_only: bool, f: impl FnMut(EntityId)) {
+        let subset = if players_only {
+            Subset::Players
+        } else {
+            Subset::All
+        };
+        self.for_each_in_subset(aabb, subset, f);
+    }
+
+    /// Like [`Self::for_each_in`] for every entity that is not a player: queries for other
+    /// kinds (items a player picks up) skip the players of crowded sections.
+    pub fn for_each_non_player_in(&self, aabb: &Aabb, f: impl FnMut(EntityId)) {
+        self.for_each_in_subset(aabb, Subset::Others, f);
+    }
+
+    fn for_each_in_subset(&self, aabb: &Aabb, subset: Subset, mut f: impl FnMut(EntityId)) {
+        self.sections.for_each_near(aabb, subset, |id| {
             if let Some(row) = self.row(id)
                 && self.core.aabb[row].intersects(aabb)
             {

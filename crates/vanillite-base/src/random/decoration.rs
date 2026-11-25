@@ -1,8 +1,8 @@
 //! `WorldgenRandom` over a `XoroshiroRandomSource`, as feature and structure placement use it.
 
 use super::{
-    DOUBLE_MULTIPLIER, FLOAT_MULTIPLIER, Gaussian, PositionalRandomFactory, RandomSource,
-    XoroshiroPositionalFactory, XoroshiroRandom,
+    DOUBLE_MULTIPLIER, FLOAT_MULTIPLIER, Gaussian, LegacyPositionalFactory, LegacyRandom,
+    PositionalRandomFactory, RandomSource, XoroshiroPositionalFactory, XoroshiroRandom,
 };
 
 /// Vanilla's `WorldgenRandom` wrapping a Xoroshiro source.
@@ -13,11 +13,16 @@ use super::{
 ///
 /// `fork()` and `forkPositional()` hand out plain Xoroshiro generators; those are values of this
 /// type in plain mode, which delegate every call to the source unchanged.
+///
+/// Features placed in a live world (a sapling growing) draw from the level's random instead:
+/// [`DecorationRandom::legacy`] wraps it in plain mode.
 #[derive(Clone, Debug)]
 pub struct DecorationRandom {
     source: XoroshiroRandom,
     gaussian: Gaussian,
     plain: bool,
+    /// In plain mode, a legacy source that replaces `source`.
+    legacy: Option<LegacyRandom>,
 }
 
 impl DecorationRandom {
@@ -27,6 +32,7 @@ impl DecorationRandom {
             source: XoroshiroRandom::new(seed),
             gaussian: Gaussian::default(),
             plain: false,
+            legacy: None,
         }
     }
 
@@ -35,13 +41,32 @@ impl DecorationRandom {
             source,
             gaussian: Gaussian::default(),
             plain: true,
+            legacy: None,
         }
+    }
+
+    /// A plain random over a legacy source (`level.random` handed to a feature).
+    pub fn legacy(source: LegacyRandom) -> Self {
+        Self {
+            source: XoroshiroRandom::new(0),
+            gaussian: Gaussian::default(),
+            plain: true,
+            legacy: Some(source),
+        }
+    }
+
+    /// The legacy source of [`DecorationRandom::legacy`] back.
+    pub fn into_legacy(self) -> Option<LegacyRandom> {
+        self.legacy
     }
 
     /// `next(bits)`, `bits` in `1..=32`.
     #[inline]
     pub fn next_bits(&mut self, bits: u32) -> i32 {
         if self.plain {
+            if let Some(legacy) = &mut self.legacy {
+                return legacy.next_bits(bits);
+            }
             return self.source.next_bits(bits) as i32;
         }
         ((self.source.next_long() as u64) >> (64 - bits)) as i32
@@ -95,20 +120,32 @@ impl RandomSource for DecorationRandom {
     type Positional = DecorationPositional;
 
     fn set_seed(&mut self, seed: i64) {
+        if let Some(legacy) = &mut self.legacy {
+            return legacy.set_seed(seed);
+        }
         self.source.set_seed(seed);
     }
 
     fn fork(&mut self) -> Self {
+        if let Some(legacy) = &mut self.legacy {
+            return Self::legacy(legacy.fork());
+        }
         Self::plain(self.source.fork())
     }
 
     fn fork_positional(&mut self) -> DecorationPositional {
-        DecorationPositional(self.source.fork_positional())
+        if let Some(legacy) = &mut self.legacy {
+            return DecorationPositional::Legacy(legacy.fork_positional());
+        }
+        DecorationPositional::Xoroshiro(self.source.fork_positional())
     }
 
     #[inline]
     fn next_int(&mut self) -> i32 {
         if self.plain {
+            if let Some(legacy) = &mut self.legacy {
+                return legacy.next_int();
+            }
             return self.source.next_int();
         }
         self.next_bits(32)
@@ -116,6 +153,9 @@ impl RandomSource for DecorationRandom {
 
     fn next_int_bounded(&mut self, bound: i32) -> i32 {
         if self.plain {
+            if let Some(legacy) = &mut self.legacy {
+                return legacy.next_int_bounded(bound);
+            }
             return self.source.next_int_bounded(bound);
         }
         assert!(bound > 0, "bound must be positive");
@@ -134,6 +174,9 @@ impl RandomSource for DecorationRandom {
     #[inline]
     fn next_long(&mut self) -> i64 {
         if self.plain {
+            if let Some(legacy) = &mut self.legacy {
+                return legacy.next_long();
+            }
             return self.source.next_long();
         }
         let hi = i64::from(self.next_bits(32));
@@ -144,6 +187,9 @@ impl RandomSource for DecorationRandom {
     #[inline]
     fn next_boolean(&mut self) -> bool {
         if self.plain {
+            if let Some(legacy) = &mut self.legacy {
+                return legacy.next_boolean();
+            }
             return self.source.next_boolean();
         }
         self.next_bits(1) != 0
@@ -152,6 +198,9 @@ impl RandomSource for DecorationRandom {
     #[inline]
     fn next_float(&mut self) -> f32 {
         if self.plain {
+            if let Some(legacy) = &mut self.legacy {
+                return legacy.next_float();
+            }
             return self.source.next_float();
         }
         self.next_bits(24) as f32 * FLOAT_MULTIPLIER
@@ -160,6 +209,9 @@ impl RandomSource for DecorationRandom {
     #[inline]
     fn next_double(&mut self) -> f64 {
         if self.plain {
+            if let Some(legacy) = &mut self.legacy {
+                return legacy.next_double();
+            }
             return self.source.next_double();
         }
         let hi = i64::from(self.next_bits(26));
@@ -169,6 +221,9 @@ impl RandomSource for DecorationRandom {
 
     fn next_gaussian(&mut self) -> f64 {
         if self.plain {
+            if let Some(legacy) = &mut self.legacy {
+                return legacy.next_gaussian();
+            }
             return self.source.next_gaussian();
         }
         let mut gaussian = std::mem::take(&mut self.gaussian);
@@ -179,6 +234,9 @@ impl RandomSource for DecorationRandom {
 
     fn consume_count(&mut self, count: i32) {
         if self.plain {
+            if let Some(legacy) = &mut self.legacy {
+                return legacy.consume_count(count);
+            }
             return self.source.consume_count(count);
         }
         for _ in 0..count {
@@ -187,22 +245,34 @@ impl RandomSource for DecorationRandom {
     }
 }
 
-/// The positional factory of a [`DecorationRandom`]: plain Xoroshiro generators.
+/// The positional factory of a [`DecorationRandom`]: plain generators of its source.
 #[derive(Clone, Copy, Debug)]
-pub struct DecorationPositional(pub XoroshiroPositionalFactory);
+pub enum DecorationPositional {
+    Xoroshiro(XoroshiroPositionalFactory),
+    Legacy(LegacyPositionalFactory),
+}
 
 impl PositionalRandomFactory for DecorationPositional {
     type Random = DecorationRandom;
 
     fn at(&self, x: i32, y: i32, z: i32) -> DecorationRandom {
-        DecorationRandom::plain(self.0.at(x, y, z))
+        match self {
+            Self::Xoroshiro(f) => DecorationRandom::plain(f.at(x, y, z)),
+            Self::Legacy(f) => DecorationRandom::legacy(f.at(x, y, z)),
+        }
     }
 
     fn with_hash_of(&self, name: &str) -> DecorationRandom {
-        DecorationRandom::plain(self.0.with_hash_of(name))
+        match self {
+            Self::Xoroshiro(f) => DecorationRandom::plain(f.with_hash_of(name)),
+            Self::Legacy(f) => DecorationRandom::legacy(f.with_hash_of(name)),
+        }
     }
 
     fn with_seed(&self, seed: i64) -> DecorationRandom {
-        DecorationRandom::plain(self.0.with_seed(seed))
+        match self {
+            Self::Xoroshiro(f) => DecorationRandom::plain(f.with_seed(seed)),
+            Self::Legacy(f) => DecorationRandom::legacy(f.with_seed(seed)),
+        }
     }
 }

@@ -1,0 +1,104 @@
+{
+  "description": "A sponge placed over a pool soaks up the water and turns wet; a dry sponge next to newly placed water soaks it up.",
+  "tier": "fast",
+  "world": {
+    "seed": 8301,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:stone",
+        3
+      ]
+    ]
+  },
+  "time": 6000,
+  "level_rng": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      11,
+      -58,
+      11
+    ]
+  ],
+  "ticks": 40,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        1,
+        -61,
+        1
+      ],
+      "to": [
+        7,
+        -61,
+        7
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "op": "fill",
+      "from": [
+        1,
+        -60,
+        1
+      ],
+      "to": [
+        7,
+        -60,
+        7
+      ],
+      "block": "minecraft:water"
+    }
+  ],
+  "actions": [
+    {
+      "op": "place",
+      "tick": 5,
+      "pos": [
+        4,
+        -59,
+        4
+      ],
+      "block": "minecraft:sponge"
+    },
+    {
+      "op": "place",
+      "tick": 10,
+      "pos": [
+        10,
+        -60,
+        2
+      ],
+      "block": "minecraft:sponge"
+    },
+    {
+      "op": "place",
+      "tick": 12,
+      "pos": [
+        10,
+        -60,
+        4
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "op": "place",
+      "tick": 20,
+      "pos": [
+        9,
+        -59,
+        9
+      ],
+      "block": "minecraft:wet_sponge"
+    }
+  ]
+}

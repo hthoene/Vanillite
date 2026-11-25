@@ -44,6 +44,10 @@ pub struct GameData {
     pub recipes: crate::recipe::Recipes,
     /// Enchantment data.
     pub enchanting: crate::enchant::Enchanting,
+    /// The `minecraft:banner_pattern` registry.
+    pub banner_patterns: crate::menu::BannerPatterns,
+    /// The tags of the registries: registry → tag id (without `#`) → entry ids in tag order.
+    pub registry_tags: HashMap<String, HashMap<String, Vec<u32>>>,
     /// The definitions of the enchantments by name.
     pub enchantment_info: HashMap<String, EnchantmentInfo>,
 }
@@ -97,6 +101,31 @@ impl GameData {
     /// Whether an item is in an item tag.
     pub fn item_in_tag(&self, item: u16, tag: &str) -> bool {
         self.item_tags.get(tag).is_some_and(|v| v.contains(&item))
+    }
+
+    /// One holder set entry of `registry` (`"ns:id"` or `"#ns:tag"`) as entry ids, in tag
+    /// order; unknown entries give none.
+    pub fn holder_set(&self, registry: &str, entry: &str) -> Vec<u32> {
+        if let Some(tag) = entry.strip_prefix('#') {
+            return self
+                .registry_tags
+                .get(registry)
+                .and_then(|tags| tags.get(tag))
+                .cloned()
+                .unwrap_or_default();
+        }
+        if registry == "minecraft:enchantment" {
+            return self.enchantments.get(entry).copied().into_iter().collect();
+        }
+        if let Some(r) = vanillite_data::registry::Registry::by_name(registry) {
+            return r.id(entry).map(u32::from).into_iter().collect();
+        }
+        use vanillite_protocol::components_nbt::RegistryNames;
+        vanillite_protocol::item::InstalledRegistries
+            .entry_id(registry, entry)
+            .and_then(|id| u32::try_from(id).ok())
+            .into_iter()
+            .collect()
     }
 }
 
@@ -174,6 +203,8 @@ pub struct PlayContext<'a> {
     pub inventory: &'a mut PlayerInventory,
     /// The player's experience (`None` in tests).
     pub xp: Option<&'a mut crate::survival::player::Experience>,
+    /// The player's recipe book (`None` in tests).
+    pub recipe_book: Option<&'a mut crate::recipe::book::PlayerRecipeBook>,
     /// The player.
     pub actor: Actor,
     /// Gameplay data.
@@ -633,6 +664,19 @@ impl Digging {
                 );
             }
         }
+        // `ShulkerBoxBlock.playerWillDestroy`: the loot table is rolled for the player (in
+        // creative by `isEmpty`, without the player).
+        if crate::block::container::kind_of(state.block())
+            == Some(crate::block::container::Kind::ShulkerBox)
+            && let Some(level) = ctx.level.level_mut()
+        {
+            let player = if ctx.actor.creative() {
+                None
+            } else {
+                ctx.actor.entity
+            };
+            crate::block::chest_loot::unpack(level, pos, player);
+        }
         // The block entity as `playerDestroy` sees it (captured before the removal).
         let entity = ctx
             .level
@@ -911,8 +955,20 @@ impl Digging {
         };
         let requests = level.take_menu_requests();
         let editors = level.take_sign_editors();
+        let gives = level.take_player_gives();
         for request in requests {
             open_menu(ctx, request, sink);
+        }
+        for (player, mut stack) in gives {
+            if Some(player) == ctx.actor.entity {
+                let infinite = ctx.actor.creative();
+                if !ctx.inventory.add(None, &mut stack, infinite) {
+                    ctx.drops.push(Drop {
+                        stack,
+                        thrown: false,
+                    });
+                }
+            }
         }
         for (player, pos, front) in editors {
             if Some(player) == ctx.actor.entity {
@@ -1052,8 +1108,9 @@ impl Digging {
             && placed.block() == state.block()
         {
             // `BlockItem.updateCustomBlockEntityTag` and `Block.setPlacedBy`.
-            crate::block::container::apply_item_components(level, target, stack);
+            crate::level::block_entity::apply_components(level, target, stack);
             crate::block::redstone::set_placed_by(level, placed, target);
+            crate::block::crafter::set_placed_by(level, placed, target);
             if placed.block() == vanillite_data::block::ids::TRIPWIRE_HOOK {
                 crate::block::tripwire::hook_set_placed_by(level, target, placed);
             }
@@ -1290,7 +1347,10 @@ fn block_action_restricted(ctx: &PlayContext<'_>) -> bool {
 }
 
 /// `BlockItem.updateBlockStateFromTag`: the `block_state` component sets properties.
-fn apply_block_state_component(stack: &ItemStack, state: BlockState) -> Option<BlockState> {
+pub(crate) fn apply_block_state_component(
+    stack: &ItemStack,
+    state: BlockState,
+) -> Option<BlockState> {
     let data = stack.component(ids::BLOCK_STATE)?;
     let mut r = Reader::new(data);
     let n = r.varint().ok()?;
@@ -1318,7 +1378,8 @@ fn drop_resources(
         let data = ctx.data;
         let enchantment_level = |name: &str| data.enchantment_level(tool, name);
         let item_in_tag = |item: u16, tag: &str| data.item_in_tag(item, tag);
-        let components = |id: u16| entity.and_then(|e| crate::block::container::component(e, id));
+        let components =
+            |id: u16| entity.and_then(|e| crate::level::block_entity::collect_component(e, id));
         let loot = BlockLootContext {
             state,
             tool,
@@ -1329,8 +1390,23 @@ fn drop_resources(
             entity: None,
             block_entity: Some(&components),
         };
-        let mut rng = LevelRandom(&mut *ctx.level);
-        data.loot.block_drops(&loot, &mut rng, &mut stacks);
+        // `LootContext.Builder.create`: the table's random sequence, else the level random.
+        match (
+            data.loot.block_sequence(state),
+            ctx.level.random_sequences(),
+        ) {
+            (Some(key), Some(sequences)) => {
+                let mut sequences = sequences
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                data.loot
+                    .block_drops(&loot, sequences.get(key), &mut stacks);
+            }
+            _ => {
+                let mut rng = LevelRandom(&mut *ctx.level);
+                data.loot.block_drops(&loot, &mut rng, &mut stacks);
+            }
+        }
     }
     for stack in stacks {
         pop_resource(ctx.level, pos, stack);

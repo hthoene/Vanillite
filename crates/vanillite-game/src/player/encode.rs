@@ -37,6 +37,7 @@ mod data_id {
     pub const PLAYER_MAIN_HAND: u8 = 15;
     pub const TNT_FUSE: u8 = 8;
     pub const TNT_BLOCK_STATE: u8 = 9;
+    pub const EXPERIENCE_ORB_VALUE: u8 = 8;
     pub const PLAYER_MODE_CUSTOMISATION: u8 = 16;
     pub const PLAYER_ABSORPTION: u8 = 17;
     pub const PLAYER_SCORE: u8 = 18;
@@ -289,7 +290,7 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
     if let Some(m) = entities.minecart(entity.id()) {
         minecart_data(&mut out, m, all);
     }
-    if let Some(orb) = entities.orb(entity.id())
+    if let Some(orb) = entities.experience_orb(entity.id())
         && (all || orb.value != 0)
     {
         item(&mut out, data_id::ORB_VALUE, serializer::INT, |o| {
@@ -332,6 +333,19 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
                 },
             );
         }
+    }
+    if entity.kind() == ids::EXPERIENCE_ORB
+        && let Some(orb) = entities.experience_orb(entity.id())
+        && (all || orb.value != 0)
+    {
+        item(
+            &mut out,
+            data_id::EXPERIENCE_ORB_VALUE,
+            serializer::INT,
+            |o| {
+                write_varint(o, orb.value);
+            },
+        );
     }
     if entity.kind() == ids::ITEM
         && let Some(data) = entities.item(entity.id())

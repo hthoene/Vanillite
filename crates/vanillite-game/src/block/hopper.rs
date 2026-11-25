@@ -25,6 +25,10 @@ pub struct Hopper {
     pub cooldown_time: i32,
     /// `tickedGameTime`: the game time of the last tick.
     pub ticked_game_time: i64,
+    /// `LootTable` not rolled yet.
+    pub loot_table: Option<String>,
+    /// `LootTableSeed`.
+    pub loot_seed: i64,
 }
 
 impl Default for Hopper {
@@ -34,6 +38,8 @@ impl Default for Hopper {
             custom_name: None,
             cooldown_time: -1,
             ticked_game_time: 0,
+            loot_table: None,
+            loot_seed: 0,
         }
     }
 }
@@ -106,6 +112,8 @@ pub fn push_items_tick(level: &mut Level, pos: BlockPos, state: BlockState) {
 /// `ejectItems` and `suckInItems` of `tryMoveItems`: whether an item moved.
 pub fn transfer(level: &mut Level, pos: BlockPos, state: BlockState) -> bool {
     let mut changed = false;
+    // `isEmpty` unpacks the hopper's loot table.
+    super::chest_loot::unpack(level, pos, None);
     let empty = hopper_items(level, pos).is_none_or(|items| items.iter().all(ItemStack::is_empty));
     if !empty {
         changed = eject_items(level, pos, state);
@@ -136,10 +144,16 @@ fn eject_items(level: &mut Level, pos: BlockPos, state: BlockState) -> bool {
     };
     let face = facing.opposite();
     // `isFullContainer`.
-    if target.slots_for_face(level, face).into_iter().all(|slot| {
+    let mut full = true;
+    for slot in target.slots_for_face(level, face) {
+        target.unpack(level, slot);
         let s = target.get(level, slot);
-        !s.is_empty() && s.count >= item::max_stack_size(&s)
-    }) {
+        if s.is_empty() || s.count < item::max_stack_size(&s) {
+            full = false;
+            break;
+        }
+    }
+    if full {
         return false;
     }
     let source = ContainerRef::Block(pos);
@@ -192,15 +206,14 @@ fn suck(level: &mut Level, me: ContainerRef, point: Vec3, grid_aligned: bool) ->
     let above = BlockPos::containing(above_point.x, above_point.y, above_point.z);
     if let Some(source) = ContainerRef::at_point(level, above_point) {
         for slot in source.slots_for_face(level, Direction::Down) {
+            source.unpack(level, slot);
             let stack = source.get(level, slot);
             if stack.is_empty() || !source.can_take(level, slot, &stack, Direction::Down) {
                 continue;
             }
             let rest = add_item(level, Some(source), me, stack.with_count(1), None);
             if rest.is_empty() {
-                if let Some(s) = source.get_mut(level, slot) {
-                    s.shrink(1);
-                }
+                source.remove_one(level, slot);
                 source.set_changed(level);
                 return true;
             }
@@ -286,11 +299,12 @@ fn try_move_in_item(
     mut stack: ItemStack,
     slot: usize,
 ) -> ItemStack {
+    into.unpack(level, slot);
     if !into.can_place(level, slot, &stack) {
         return stack;
     }
     let current = into.get(level, slot);
-    let was_empty = into.is_empty(level);
+    let was_empty = into.is_empty_unpacking(level);
     let mut success = false;
     if current.is_empty() {
         into.set(level, slot, std::mem::take(&mut stack));
