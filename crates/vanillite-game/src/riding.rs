@@ -38,6 +38,16 @@ fn mob_passenger_height(kind: Kind, height: f32) -> f64 {
         Kind::Sheep => 1.2375,
         Kind::Chicken => 0.7,
         Kind::Enderman => 2.806_25,
+        Kind::Horse => 1.443_75,
+        Kind::Donkey => 1.1125,
+        Kind::Mule => 1.2125,
+        Kind::SkeletonHorse | Kind::ZombieHorse => 1.318_75,
+        Kind::Llama | Kind::TraderLlama => 1.37,
+        Kind::Wolf => 0.818_75,
+        Kind::Cat => 0.5125,
+        Kind::Ocelot => 0.6375,
+        Kind::Parrot => 0.4625,
+        Kind::Fox => 0.6375,
         _ => f64::from(height),
     }
 }
@@ -373,6 +383,8 @@ pub fn controls(ents: &Entities, player: EntityId, vehicle: EntityId) -> bool {
                     player,
                     vanillite_data::item::ids::WARPED_FUNGUS_ON_A_STICK.0,
                 ))
+            || (m.kind.family() != crate::mob::Family::Classic
+                && crate::mob::fam::rider_controls(m))
     })
 }
 

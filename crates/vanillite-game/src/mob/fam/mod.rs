@@ -448,6 +448,19 @@ pub trait FamilyHooks {
     fn interact(_ix: &mut Interact<'_, '_>) -> Interaction {
         Interaction::Pass
     }
+    /// `Animal.canMate(partner)`: the default is the same kind, both in love.
+    fn can_mate(me: &MobData, partner: &MobData) -> bool {
+        me.kind == partner.kind && me.in_love > 0 && partner.in_love > 0
+    }
+    /// The kind of the bred baby (`getBreedOffspring`'s type; a mule of a horse and a donkey).
+    fn offspring_kind(parent: &MobData, _partner: &MobData) -> Kind {
+        parent.kind
+    }
+    /// Whether a player that is the first passenger steers the mob (`getControllingPassenger`
+    /// is the player: a saddled horse); its client then moves it.
+    fn rider_controls(_m: &MobData) -> bool {
+        false
+    }
     /// `getBreedOffspring` setup of a bred baby (variants, colours, genes).
     fn breed_offspring(
         _parent: &MobData,
@@ -514,8 +527,8 @@ pub enum Ext {
     Illager(illager::State),
     Brainy(brainy::State),
     Mount(mount::State),
-    Companion(companion::State),
-    /// Boxed: the record is large and most mobs are of other families.
+    /// Boxed: the records are large and most mobs are of other families.
+    Companion(Box<companion::State>),
     Wildlife(Box<wildlife::State>),
 }
 
@@ -750,6 +763,15 @@ pub fn on_die(h: &mut Hurt<'_, '_>, kind: Kind) {
 }
 pub fn interact(ix: &mut Interact<'_, '_>, kind: Kind) -> Interaction {
     by_family!(kind, Interaction::Pass, interact(ix))
+}
+pub fn can_mate(me: &MobData, partner: &MobData) -> bool {
+    by_family!(me.kind, me.kind == partner.kind, can_mate(me, partner))
+}
+pub fn offspring_kind(parent: &MobData, partner: &MobData) -> Kind {
+    by_family!(parent.kind, parent.kind, offspring_kind(parent, partner))
+}
+pub fn rider_controls(m: &MobData) -> bool {
+    by_family!(m.kind, false, rider_controls(m))
 }
 pub fn breed_offspring(
     parent: &MobData,

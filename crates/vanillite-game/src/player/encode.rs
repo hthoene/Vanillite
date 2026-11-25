@@ -334,6 +334,12 @@ impl<'a> DataWriter<'a> {
         DataWriter { out, all }
     }
 
+    /// A writer of every value into `out` (tests of the kind encoders).
+    #[cfg(test)]
+    pub fn all_for_test(out: &'a mut Vec<u8>) -> DataWriter<'a> {
+        DataWriter { out, all: true }
+    }
+
     /// An item with a custom encoding; `is_default` skips it when pairing.
     pub fn raw(
         &mut self,

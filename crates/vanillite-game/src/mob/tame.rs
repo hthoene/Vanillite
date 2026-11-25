@@ -132,6 +132,11 @@ pub fn follow_tick(t: &mut Tick<'_, '_>, speed: f64, recalc: &mut i32) {
 }
 
 /// `tryToTeleportToOwner`: ten tries at a free spot within 3 blocks of the owner.
+/// `tryToTeleportToOwner` to the owner's position (the pets' panic goal uses it too).
+pub fn teleport_near_owner(t: &mut Tick<'_, '_>, owner: Vec3) {
+    try_to_teleport_to_owner(t, owner);
+}
+
 fn try_to_teleport_to_owner(t: &mut Tick<'_, '_>, owner: Vec3) {
     let base = BlockPos::containing(owner.x, owner.y, owner.z);
     for _ in 0..10 {

@@ -191,6 +191,8 @@ pub enum TemptItems {
     /// The animal's breeding food (`isFood`).
     Food,
     CarrotOnAStick,
+    /// The items of an item tag (`minecraft:horse_tempt_items`).
+    Tag(&'static str),
 }
 
 impl Goal {
@@ -727,6 +729,8 @@ fn tempting_player(t: &mut Tick<'_, '_>, items: TemptItems) -> Option<EntityId> 
                     TemptItems::CarrotOnAStick => {
                         stack.item == vanillite_data::item::ids::CARROT_ON_A_STICK.0
                     }
+                    TemptItems::Tag(tag) => crate::player::play::game_data()
+                        .is_some_and(|d| d.item_in_tag(stack.item, tag)),
                 }
         });
         if !holds {

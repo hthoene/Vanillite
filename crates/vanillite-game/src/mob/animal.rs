@@ -82,7 +82,14 @@ pub fn free_partner(t: &mut super::Tick<'_, '_>) -> Option<EntityId> {
         let Some(m) = t.ents.mob(id) else {
             continue;
         };
-        if m.kind != kind || m.in_love <= 0 || !m.is_alive() {
+        if !m.is_alive() {
+            continue;
+        }
+        if kind.family() == super::Family::Classic {
+            if m.kind != kind || m.in_love <= 0 {
+                continue;
+            }
+        } else if !super::fam::can_mate(t.mob_ref(), m) {
             continue;
         }
         let Some(e) = t.ents.store.get(id) else {
@@ -149,7 +156,13 @@ pub fn breed(
         return;
     };
     let seed = env.random.next_long();
-    let mut child = MobData::new(kind, seed);
+    let child_kind = match (ents.mob(parent), ents.mob(partner)) {
+        (Some(a), Some(b)) if kind.family() != super::Family::Classic => {
+            super::fam::offspring_kind(a, b)
+        }
+        _ => kind,
+    };
+    let mut child = MobData::new(child_kind, seed);
     let pick = ents
         .mob_mut(parent)
         .map(|m| m.random.next_boolean())
