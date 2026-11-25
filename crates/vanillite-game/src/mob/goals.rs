@@ -664,7 +664,7 @@ pub(crate) fn test_player(
 }
 
 /// `getNearestPlayer(conditions, mob, x, eyeY, z)` over the players within `range`.
-fn nearest_player(
+pub(crate) fn nearest_player(
     t: &mut Tick<'_, '_>,
     combat: bool,
     range: f64,

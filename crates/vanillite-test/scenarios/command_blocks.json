@@ -1,0 +1,22 @@
+{
+  "description": "Block commands with block entity data: setblock with a chest's items, clone copies the chest, data merge and modify change it, execute if/unless block and if data test its items; fill hollow, clone move and a redstone block powering a lamp.",
+  "tier": "fast",
+  "region": [[0, 0, 0], [5, 3, 5]],
+  "ticks": 8,
+  "setup": [],
+  "actions": [
+    {"tick": 1, "op": "command", "command": "fill 0 0 0 5 0 5 minecraft:stone"},
+    {"tick": 1, "op": "command", "command": "setblock 1 1 1 minecraft:chest[facing=east]{Items:[{Slot:0b,id:\"minecraft:diamond\",count:3}]}"},
+    {"tick": 2, "op": "command", "command": "clone 1 1 1 1 1 1 3 1 1"},
+    {"tick": 3, "op": "command", "command": "execute if block 3 1 1 minecraft:chest{Items:[{id:\"minecraft:diamond\"}]} run setblock 3 2 1 minecraft:gold_block"},
+    {"tick": 3, "op": "command", "command": "data merge block 1 1 1 {Items:[]}"},
+    {"tick": 4, "op": "command", "command": "execute unless block 1 1 1 minecraft:chest{Items:[{id:\"minecraft:diamond\"}]} run setblock 1 2 1 minecraft:emerald_block"},
+    {"tick": 4, "op": "command", "command": "data modify block 3 1 1 Items[0].count set value 5"},
+    {"tick": 5, "op": "command", "command": "execute if data block 3 1 1 Items[{count:5}] run setblock 4 2 1 minecraft:diamond_block"},
+    {"tick": 5, "op": "command", "command": "fill 0 1 4 2 2 5 minecraft:oak_planks hollow"},
+    {"tick": 6, "op": "command", "command": "clone 0 1 4 2 2 5 3 1 4 replace move"},
+    {"tick": 6, "op": "command", "command": "setblock 2 1 2 minecraft:redstone_lamp"},
+    {"tick": 7, "op": "command", "command": "setblock 2 1 3 minecraft:redstone_block"},
+    {"tick": 7, "op": "command", "command": "fill 0 3 0 2 3 2 minecraft:glass replace minecraft:air"}
+  ]
+}

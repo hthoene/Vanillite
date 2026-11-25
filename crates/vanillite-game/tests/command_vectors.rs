@@ -22,6 +22,7 @@ const OUR_COMMANDS: &[&str] = &[
     "fillbiome",
     "forceload",
     "locate",
+    "loot",
     "place",
     "setblock",
     "spawnpoint",

@@ -25,6 +25,11 @@ const MAX_CHUNKS_PER_TICK: f32 = 64.0;
 const START_CHUNKS_PER_TICK: f32 = 9.0;
 /// `PlayerChunkSender.MAX_UNACKNOWLEDGED_BATCHES`.
 const MAX_UNACKNOWLEDGED_BATCHES: i32 = 10;
+/// Ticks after its last centre change a view still counts as moving (a flying player crosses
+/// a chunk every few ticks, a walking one about every 70).
+const MOVING_TICKS: u32 = 40;
+/// How far ahead of a moving view's centre its chunks are ordered from, in chunks.
+const MAX_LEAD: i32 = 4;
 
 /// Where chunk packets come from: the world runtime, or a placeholder generator until it
 /// exists. Packets are encoded once per chunk and shared by all players that receive it.
@@ -32,6 +37,12 @@ pub trait ChunkSource {
     /// The `level_chunk_with_light` packet of a loaded, complete chunk; `None` while the chunk
     /// is not ready.
     fn chunk_packet(&self, pos: ChunkPos) -> Option<Arc<SharedPacket>>;
+
+    /// Whether [`ChunkSource::chunk_packet`] would return a packet; sources override it when
+    /// they can tell without encoding.
+    fn is_ready(&self, pos: ChunkPos) -> bool {
+        self.chunk_packet(pos).is_some()
+    }
 }
 
 /// `ChunkTrackingView.Positioned`.
@@ -126,6 +137,10 @@ pub struct PlayerChunks {
     sent: Vec<ChunkPos>,
     /// [`PlayerChunks::sent_radius`] by centre, until `pending` changes.
     sent_radius: Option<(ChunkPos, i32)>,
+    /// The last step of the view centre (chunks; zero after a jump).
+    motion: (i32, i32),
+    /// Ticks since the view centre last moved.
+    still_ticks: u32,
 }
 
 impl PlayerChunks {
@@ -143,7 +158,29 @@ impl PlayerChunks {
             scratch: Vec::new(),
             sent: Vec::new(),
             sent_radius: None,
+            motion: (0, 0),
+            still_ticks: 0,
         }
+    }
+
+    /// Where a moving view heads: its centre moved ahead in the direction of its last step
+    /// (by up to a third of the view distance). `None` for a view that stands still or jumped.
+    /// Chunks nearer to it are sent (and generated) first; Vanilla orders by the centre only,
+    /// the chunks themselves are the same.
+    pub fn focus(&self) -> Option<ChunkPos> {
+        let view = self.view?;
+        if self.motion == (0, 0) || self.still_ticks > MOVING_TICKS {
+            return None;
+        }
+        let lead = (view.view_distance / 3).clamp(1, MAX_LEAD);
+        Some(ChunkPos::new(
+            view.center
+                .x
+                .saturating_add(self.motion.0.saturating_mul(lead)),
+            view.center
+                .z
+                .saturating_add(self.motion.1.saturating_mul(lead)),
+        ))
     }
 
     /// The current view.
@@ -191,6 +228,18 @@ impl PlayerChunks {
                 x: center.x,
                 z: center.z,
             });
+            let step = previous.map(|p| {
+                (
+                    center.x.saturating_sub(p.center.x),
+                    center.z.saturating_sub(p.center.z),
+                )
+            });
+            self.motion = match step {
+                // A step to a neighbouring chunk (or two, when fast): the view moves.
+                Some((dx, dz)) if dx.abs() <= 2 && dz.abs() <= 2 => (dx.signum(), dz.signum()),
+                _ => (0, 0),
+            };
+            self.still_ticks = 0;
         }
         match previous {
             Some(last) if last.square_intersects(&next) => {
@@ -226,6 +275,7 @@ impl PlayerChunks {
     /// next [`update_view`](Self::update_view) queues every chunk again.
     pub fn reset(&mut self) {
         self.view = None;
+        self.motion = (0, 0);
         self.pending.clear();
         self.sent_radius = None;
         self.sent.clear();
@@ -239,8 +289,12 @@ impl PlayerChunks {
         }
     }
 
-    /// `sendNextChunks`: one batch per tick, sized by the client's feedback.
+    /// `sendNextChunks`: one batch per tick, sized by the client's feedback. The batch takes
+    /// the pending chunks that are ready, nearest to the [`focus`](Self::focus) (the centre
+    /// while standing) first; Vanilla takes the nearest pending ones and sends those that are
+    /// ready, so a batch stays small while the nearest still generate.
     pub fn send_next_chunks(&mut self, source: &dyn ChunkSource, sink: &dyn PacketSink) {
+        self.still_ticks = self.still_ticks.saturating_add(1);
         if self.unacknowledged_batches >= self.max_unacknowledged_batches {
             return;
         }
@@ -252,12 +306,17 @@ impl PlayerChunks {
         let Some(view) = self.view else {
             return;
         };
-        let center = view.center;
+        let center = self.focus().unwrap_or(view.center);
         // The quota is at most 64 here.
         let max = usize::try_from(vanillite_base::math::floor_f(self.batch_quota)).unwrap_or(0);
         let mut chosen = std::mem::take(&mut self.scratch);
         chosen.clear();
-        chosen.extend(self.pending.iter().copied());
+        chosen.extend(
+            self.pending
+                .iter()
+                .copied()
+                .filter(|&pos| source.is_ready(pos)),
+        );
         let key = |pos: &ChunkPos| distance_squared(center, *pos);
         if !self.memory_connection && chosen.len() > max {
             // The `max` nearest in linear time, then only those sorted.

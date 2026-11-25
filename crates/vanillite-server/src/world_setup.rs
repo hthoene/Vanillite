@@ -203,7 +203,7 @@ fn json_to_nbt(json: &serde_json::Value) -> vanillite_nbt::Tag {
 }
 
 /// NBT as JSON for the data-driven parsers (numbers stay numbers, `Byte` too).
-fn nbt_to_json(tag: &vanillite_nbt::Tag) -> serde_json::Value {
+pub(crate) fn nbt_to_json(tag: &vanillite_nbt::Tag) -> serde_json::Value {
     use serde_json::Value;
     use vanillite_nbt::Tag;
     match tag {
@@ -453,6 +453,10 @@ pub(crate) struct WorldChunkSource<'a> {
 }
 
 impl ChunkSource for WorldChunkSource<'_> {
+    fn is_ready(&self, pos: ChunkPos) -> bool {
+        self.chunks.chunk(pos).is_some()
+    }
+
     fn chunk_packet(&self, pos: ChunkPos) -> Option<Arc<SharedPacket>> {
         if let Some(packet) = self.cache.borrow().get(&pos) {
             return Some(Arc::clone(packet));
@@ -618,6 +622,9 @@ pub(crate) fn apply_simulation_rules(
         vanillite_config::VanillaOr::Vanilla => vanilla_max_chained,
     };
     settings.exploits = exploit_settings(rules);
+    settings.hopper_transfer_cooldown = i32::from(rules.hoppers.transfer_cooldown);
+    settings.hopper_check_cooldown = i32::from(rules.hoppers.check_cooldown);
+    settings.xp_merge_radius = rules.items.xp_merge_radius;
 }
 
 /// The biomes of a world for the simulation: the biome registry, the seed's biome manager and

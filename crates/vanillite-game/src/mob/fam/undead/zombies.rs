@@ -42,6 +42,9 @@ pub struct ZombieState {
     pub cure_time: i32,
     pub cure_starter: Option<u128>,
     pub villager_xp: i32,
+    /// `ZombieVillager.gossips` and `tradeOffers` of the villager it was.
+    pub gossips: Option<crate::mob::fam::village::gossip::Gossips>,
+    pub offers: Option<crate::trading::MerchantOffers>,
     /// `ZombifiedPiglin`: the first anger sound, the alert interval, whether it had a
     /// target last tick and whether the attacking speed bonus is on.
     pub first_anger_sound_in: i32,
@@ -285,8 +288,8 @@ pub fn init(m: &mut MobData) {
     }
 }
 
-/// `Zombie.registerGoals` / `addBehaviourGoals` of the variants (the turtle egg goal, the
-/// spear goal and `MoveThroughVillageGoal` come with the navigation and villages).
+/// `Zombie.registerGoals` / `addBehaviourGoals` of the variants (`MoveThroughVillageGoal`
+/// comes with the villages).
 pub fn register_goals(m: &mut MobData) {
     let g = &mut m.goals;
     let tg = &mut m.targets;
@@ -353,6 +356,7 @@ pub fn register_goals(m: &mut MobData) {
         Kind::ZombifiedPiglin => {
             g.add(8, goals::Goal::look_at_player(8.0));
             g.add(8, goals::Goal::random_look());
+            g.add(1, goal(Goal::SpearUse(SpearUse::new(1.0, 1.0, 10.0, 2.0))));
             g.add(2, goals::Goal::melee(MeleeKind::Zombie, 1.0, false));
             g.add(7, goals::Goal::stroll(1.0));
             tg.add(1, goals::Goal::hurt_by(true));
@@ -371,6 +375,7 @@ pub fn register_goals(m: &mut MobData) {
         _ => {
             g.add(8, goals::Goal::look_at_player(8.0));
             g.add(8, goals::Goal::random_look());
+            g.add(2, goal(Goal::SpearUse(SpearUse::new(1.0, 1.0, 10.0, 2.0))));
             g.add(3, goals::Goal::melee(MeleeKind::Zombie, 1.0, false));
             g.add(7, goals::Goal::stroll(1.0));
             tg.add(1, goals::Goal::hurt_by(true));
@@ -431,13 +436,18 @@ pub fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
 
 /// `Zombie.finalizeSpawn`.
 pub fn zombie_finalize(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
+    zombie_finalize_with(m, ctx, true);
+}
+
+/// `Zombie.finalizeSpawn`; `roll_baby` false for a given `ZombieGroupData(false, true)`.
+fn zombie_finalize_with(m: &mut MobData, ctx: &mut SpawnContext<'_>, roll_baby: bool) {
     let special = ctx.special_multiplier;
     let conversion = ctx.reason == SpawnReason::Conversion;
     if !conversion {
         m.can_pick_up_loot = m.random.next_float() < 0.55 * special;
     }
     // `ZombieGroupData(getSpawnAsBabyOdds(random), true)`.
-    if m.random.next_float() < 0.05 {
+    if roll_baby && m.random.next_float() < 0.05 {
         super::set_baby(m, true);
         kinds::zombie_chicken_jockey(m, ctx);
     }
@@ -449,6 +459,43 @@ pub fn zombie_finalize(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
     }
     kinds::halloween_head(m);
     handle_attributes(m, special, ctx.reason);
+}
+
+/// `finalizeSpawn(CONVERSION, new ZombieGroupData(false, true))` of a zombie villager made
+/// from a villager: `Mob.finalizeSpawn` and the zombie part without a baby roll, drawing from
+/// the level's `random`.
+pub fn finalize_converted(m: &mut MobData, ctx: &mut SpawnContext<'_>, random: &mut LegacyRandom) {
+    std::mem::swap(&mut m.random, random);
+    let bonus = m.random.triangle(0.0, 0.114_850_000_000_000_01);
+    m.attrs.follow_range *= 1.0 + bonus;
+    m.left_handed = m.random.next_float() < 0.05;
+    if m.kind == Kind::ZombieVillager {
+        finalize_villager_type(m, ctx);
+    }
+    zombie_finalize_with(m, ctx, false);
+    std::mem::swap(&mut m.random, random);
+}
+
+/// `setVillagerData` and `setVillagerDataFinalized` of a zombie villager.
+pub fn set_villager_data(m: &mut MobData, ty: u16, profession: u16, level: i32, finalized: bool) {
+    let z = zs_mut(m);
+    z.villager_type = ty;
+    z.profession = profession;
+    z.villager_level = level;
+    z.data_finalized = finalized;
+}
+
+/// `setGossips`, `setTradeOffers` and `setVillagerXp` of a zombie villager.
+pub fn set_villager_trades(
+    m: &mut MobData,
+    gossips: crate::mob::fam::village::gossip::Gossips,
+    offers: crate::trading::MerchantOffers,
+    xp: i32,
+) {
+    let z = zs_mut(m);
+    z.gossips = Some(gossips);
+    z.offers = Some(offers);
+    z.villager_xp = xp;
 }
 
 /// `setCanBreakDoors`: ground navigation only.
@@ -642,6 +689,176 @@ fn drowned_finalize(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
     }
 }
 
+// --- Spears -----------------------------------------------------------------------------
+
+/// `SpearUseGoal`: approach the target, charge it with the spear lowered for the weapon's
+/// damage use duration, then back off and charge again (`SpearUseState`; `active` while the
+/// goal has a state).
+#[derive(Clone, Copy, Debug)]
+pub struct SpearUse {
+    pub charge_speed: f64,
+    pub reposition_speed: f64,
+    pub approach_sqr: f32,
+    pub in_range_sqr: f32,
+    pub active: bool,
+    pub engage_time: i32,
+    pub fleeing_time: i32,
+    pub away: Option<Vec3>,
+    pub done: bool,
+}
+
+impl SpearUse {
+    /// `SpearUseGoal(mob, charging, repositioning, approachDistance, targetInRangeRadius)`.
+    pub fn new(charge: f64, reposition: f64, approach: f32, in_range: f32) -> SpearUse {
+        SpearUse {
+            charge_speed: charge,
+            reposition_speed: reposition,
+            approach_sqr: approach * approach,
+            in_range_sqr: in_range * in_range,
+            active: false,
+            engage_time: -1,
+            fleeing_time: -1,
+            away: None,
+            done: false,
+        }
+    }
+}
+
+/// `SpearUseGoal.MAX_FLEEING_TIME` (`reducedTickDelay(100)`).
+const SPEAR_MAX_FLEEING_TIME: i32 = 50;
+
+/// `ableToAttack`: a target and a kinetic weapon in the main hand.
+fn spear_able(t: &Tick<'_, '_>) -> bool {
+    t.mob_ref().target.is_some() && crate::spear::mob_holds_kinetic(t.mob_ref())
+}
+
+fn spear_can_use(t: &Tick<'_, '_>) -> bool {
+    spear_able(t) && t.mob_ref().using_item < 0
+}
+
+fn spear_can_continue(t: &Tick<'_, '_>, s: &SpearUse) -> bool {
+    s.active && !s.done && spear_able(t)
+}
+
+fn spear_start(t: &mut Tick<'_, '_>, s: &mut SpearUse) {
+    goals::set_aggressive(t, true);
+    // `state = new SpearUseState()`.
+    s.active = true;
+    s.engage_time = -1;
+    s.fleeing_time = -1;
+    s.away = None;
+    s.done = false;
+}
+
+fn spear_stop(t: &mut Tick<'_, '_>, s: &mut SpearUse) {
+    t.mob().nav.stop();
+    goals::set_aggressive(t, false);
+    s.active = false;
+    crate::mob::projectile::stop_using_item(t);
+}
+
+fn spear_tick(t: &mut Tick<'_, '_>, s: &mut SpearUse) {
+    if !s.active {
+        return;
+    }
+    let Some(target) = t.mob_ref().target else {
+        return;
+    };
+    let Some(o) = t.other(target) else {
+        return;
+    };
+    let p = t.pos();
+    let dist_sqr = p.distance_to_sqr(o.pos);
+    let mut root = t.id;
+    while let Some(v) = t.ents.vehicle_of(root) {
+        root = v;
+    }
+    // `chargeSpeedModifier` of the mob the zombie rides (zombie horses charge faster).
+    let speed = if root != t.id
+        && t.ents
+            .mob(root)
+            .is_some_and(|m| m.kind == Kind::ZombieHorse)
+    {
+        1.4_f32
+    } else {
+        1.0
+    };
+    let speed = f64::from(speed);
+    let mount = if t.ents.vehicle_of(t.id).is_some() {
+        2.0
+    } else {
+        0.0
+    };
+    kinds::look_at_entity(t, o, 30.0, 30.0);
+    t.mob()
+        .look
+        .set_look_at(Vec3::new(o.pos.x, o.eye_y, o.pos.z), 30.0, 30.0);
+    if s.engage_time < 0 {
+        if dist_sqr > f64::from(s.approach_sqr) {
+            nav::move_to_entity(t, o.pos, 0, speed * s.reposition_speed);
+            return;
+        }
+        s.engage_time = goals::reduced(crate::spear::mob_use_duration(t.mob_ref()));
+        crate::mob::projectile::start_using_item(t);
+    }
+    // `tickAndCheckEngagement`.
+    if s.engage_time > 0 {
+        s.engage_time -= 1;
+        if s.engage_time == 0 {
+            crate::mob::projectile::stop_using_item(t);
+            let d = dist_sqr.sqrt();
+            s.away = randompos::land_pos_away(
+                t,
+                (9.0 + mount - d).max(0.0),
+                (11.0 + mount - d).max(1.0),
+                7,
+                o.pos,
+            );
+            s.fleeing_time = 1;
+        }
+    }
+    // `tickAndCheckFleeing`.
+    if s.fleeing_time > 0 {
+        s.fleeing_time += 1;
+        if s.fleeing_time > SPEAR_MAX_FLEEING_TIME {
+            s.done = true;
+            return;
+        }
+    }
+    if let Some(away) = s.away {
+        nav::move_to_pos(t, away, speed * s.reposition_speed);
+        if t.mob_ref().nav.is_done() {
+            if s.fleeing_time > 0 {
+                s.done = true;
+                return;
+            }
+            s.away = None;
+        }
+    } else {
+        nav::move_to_entity(t, o.pos, 0, speed * s.charge_speed);
+        if dist_sqr < f64::from(s.in_range_sqr) || t.mob_ref().nav.is_done() {
+            let d = dist_sqr.sqrt();
+            s.away = randompos::land_pos_away(t, 6.0 + mount - d, 7.0 + mount - d, 7, o.pos);
+        }
+    }
+}
+
+/// `LivingEntity.updatingUsingItem` of the zombies (they only use spears): the use counts up
+/// and the spear damages what it touches; another item in the hand stops the use.
+pub fn spear_use_tick(t: &mut Tick<'_, '_>) {
+    if t.mob_ref().using_item < 0 {
+        return;
+    }
+    if !crate::spear::mob_holds_kinetic(t.mob_ref()) {
+        crate::mob::projectile::stop_using_item(t);
+        return;
+    }
+    let m = t.mob();
+    m.using_item += 1;
+    let used = m.using_item - 1;
+    crate::spear::mob_use_tick(t, used);
+}
+
 // --- Tick -------------------------------------------------------------------------------
 
 pub fn before_tick(t: &mut Tick<'_, '_>) {
@@ -770,10 +987,70 @@ fn conversion_progress(t: &mut Tick<'_, '_>) -> i32 {
     amount
 }
 
-/// `finishConversion`: the zombie villager becomes a villager. Villagers are #60; until they
-/// exist the cured zombie villager waits here with its countdown at zero.
+/// `finishConversion`: the zombie villager becomes a villager with its data, gossip, offers
+/// and experience; the player who cured it gains reputation.
 fn finish_curing(t: &mut Tick<'_, '_>) {
-    let _ = t;
+    let Some(z) = zs(t.mob_ref()).cloned() else {
+        return;
+    };
+    // `dropPreservedEquipment`: what the zombie villager picked up goes into the villager's
+    // inventory slot of the same index.
+    let mut kept: Vec<(usize, ItemStack)> = Vec::new();
+    {
+        let m = t.mob();
+        for (i, chance) in m.equipment.drop_chances.iter().enumerate() {
+            if *chance > 1.0 && !m.equipment.items[i].is_empty() {
+                kept.push((i, m.equipment.items[i].clone()));
+            }
+        }
+    }
+    let silent = t.mob_ref().silent;
+    let pos = t.block_pos();
+    let Some(id) = super::convert_to(t, Kind::Villager, false, false, |v| {
+        crate::mob::fam::village::villager::cured(
+            v,
+            z.villager_type,
+            z.profession,
+            z.villager_level,
+            z.data_finalized,
+            z.gossips.clone().unwrap_or_default(),
+            z.offers.clone(),
+            z.villager_xp,
+        );
+        let inv = &mut crate::mob::fam::village::state_mut(v).merchant.inventory;
+        for (i, stack) in kept {
+            if let Some(slot) = inv.get_mut(i) {
+                *slot = stack;
+            }
+        }
+    }) else {
+        return;
+    };
+    // `finalizeSpawn(CONVERSION)`: the villager type of the biome unless final.
+    if let Some(v) = t.ents.mob_mut(id)
+        && !crate::mob::fam::village::villager::vs(v).data_finalized
+    {
+        let biome = crate::mob::fam::village::villager::biome_at(t.level, pos);
+        let ty = vanillite_data::registry::VILLAGER_TYPE
+            .id(villager_type_of_biome(&biome))
+            .unwrap_or(0);
+        let s = crate::mob::fam::village::villager::vs_mut(v);
+        s.villager_type = ty;
+        s.data_finalized = true;
+    }
+    if let Some(starter) = z.cure_starter
+        && let Some(player) = t.ents.player_by_uuid(starter)
+    {
+        crate::mob::fam::village::villager::reputation_event(
+            t.ents,
+            crate::mob::fam::village::villager::ReputationEvent::ZombieVillagerCured,
+            player,
+            id,
+        );
+    }
+    if !silent {
+        level_event(t.cx, 1027, pos, 0);
+    }
 }
 
 // --- Drowned --------------------------------------------------------------------------------
@@ -1355,6 +1632,12 @@ pub fn save(m: &MobData, out: &mut Compound) {
                 out.insert("ConversionPlayer", uuid_ints(u));
             }
             out.insert("Xp", z.villager_xp);
+            if let Some(g) = &z.gossips {
+                out.insert("Gossips", g.save());
+            }
+            if let Some(o) = &z.offers {
+                crate::mob::fam::village::merchant::save_offers(o, out);
+            }
         }
         Kind::ZombifiedPiglin => common::save_anger(m, out),
         _ => {}
@@ -1438,6 +1721,12 @@ pub fn load(m: &mut MobData, tag: &Compound) {
                 }
             }
             z.villager_xp = int("Xp").unwrap_or(0);
+            if tag.get("Gossips").is_some() {
+                z.gossips = Some(crate::mob::fam::village::gossip::Gossips::load(
+                    tag.get("Gossips"),
+                ));
+            }
+            z.offers = crate::mob::fam::village::merchant::load_offers(tag);
             match int("ConversionTime") {
                 Some(t) if t != -1 => {
                     z.curing = true;
@@ -1465,6 +1754,7 @@ pub fn goal_flags(g: &Goal) -> u8 {
         Goal::DrownedGoToWater { .. } => MOVE,
         Goal::DrownedGoToBeach(_) => MOVE | JUMP,
         Goal::HurtByIgnoringDrowned(_) => TARGET,
+        Goal::SpearUse(_) => MOVE | LOOK,
         _ => 0,
     }
 }
@@ -1478,6 +1768,7 @@ pub fn goal_every_tick(g: &Goal) -> bool {
 
 pub fn goal_can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
     match g {
+        Goal::SpearUse(_) => spear_can_use(t),
         Goal::DrownedMelee(melee) => {
             melee.with(t, goals::can_use)
                 && t.mob_ref()
@@ -1529,6 +1820,7 @@ pub fn goal_can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
 
 pub fn goal_can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
     match g {
+        Goal::SpearUse(s) => spear_can_continue(t, s),
         Goal::DrownedMelee(melee) => {
             melee.with(t, goals::can_continue)
                 && t.mob_ref()
@@ -1551,6 +1843,7 @@ pub fn goal_can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
 
 pub fn goal_start(t: &mut Tick<'_, '_>, g: &mut Goal) {
     match g {
+        Goal::SpearUse(s) => spear_start(t, s),
         Goal::DrownedMelee(melee) => melee.with(t, goals::start),
         Goal::DrownedTrident(c) => {
             common::start(t, c);
@@ -1575,6 +1868,7 @@ pub fn goal_start(t: &mut Tick<'_, '_>, g: &mut Goal) {
 
 pub fn goal_stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
     match g {
+        Goal::SpearUse(s) => spear_stop(t, s),
         Goal::DrownedMelee(melee) => melee.with(t, goals::stop),
         Goal::DrownedTrident(c) => {
             common::stop(t, c);
@@ -1589,6 +1883,7 @@ pub fn goal_stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
 
 pub fn goal_tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
     match g {
+        Goal::SpearUse(s) => spear_tick(t, s),
         Goal::DrownedMelee(melee) => melee.with(t, goals::tick),
         Goal::DrownedTrident(c) => common::tick(t, c),
         Goal::DrownedGoToBeach(mtb) => {

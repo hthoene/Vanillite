@@ -24,7 +24,7 @@ pub struct BannerPatterns {
     pub tags: std::collections::HashMap<String, Vec<u32>>,
 }
 
-fn game_data() -> Option<&'static crate::player::play::GameData> {
+fn game_data() -> Option<std::sync::Arc<crate::player::play::GameData>> {
     crate::player::play::game_data()
 }
 

@@ -6,6 +6,7 @@ use vanillite_protocol::text::Component;
 
 use super::Env;
 use super::source::CommandSource;
+use crate::global::Global;
 
 /// `CommandResponseTracker`.
 #[derive(Debug)]
@@ -73,6 +74,25 @@ impl<T: Clone> Tracker<T> {
             return Err(error);
         }
         source.send_success(env.global, message(single, count, self.total), broadcast);
+        Ok(self.total)
+    }
+
+    /// `sendFeedback` with `NON_ZERO` messages that name the single element or count them,
+    /// broadcast to the admins; `zero` fails when no element changed.
+    pub(crate) fn messages(
+        &self,
+        source: &CommandSource,
+        global: &Global,
+        zero: impl FnOnce() -> CommandError,
+        single: impl FnOnce(&T) -> Component,
+        multiple: impl FnOnce(i32) -> Component,
+    ) -> Result<i32, CommandError> {
+        let message = match self.pick(false) {
+            (_, 0) => return Err(zero()),
+            (Some(element), 1) => single(element),
+            (_, count) => multiple(count),
+        };
+        source.send_success(global, message, true);
         Ok(self.total)
     }
 }

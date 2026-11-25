@@ -40,9 +40,10 @@ pub struct Global {
     /// enchantments).
     pub(crate) registries: std::collections::BTreeMap<String, Vec<String>>,
     /// Tool rules, loot tables and item data of the block and item handlers.
-    pub(crate) game: Arc<vanillite_game::player::play::GameData>,
+    /// The game data at start; [`Global::game`] gives the current one.
+    pub(crate) game_at_start: Arc<vanillite_game::player::play::GameData>,
     /// `ClientboundUpdateRecipesPacket` of the loaded recipes, encoded once.
-    pub(crate) recipes_packet: Arc<vanillite_protocol::SharedPacket>,
+    pub(crate) recipes_packet: std::sync::RwLock<Arc<vanillite_protocol::SharedPacket>>,
     /// `spawn-protection` radius in blocks.
     pub(crate) spawn_protection: i32,
     /// Scoreboard, command storage, functions and tags.
@@ -68,6 +69,11 @@ pub struct Global {
 }
 
 impl Global {
+    /// The current game data (loot tables, recipes, tags), replaced by `/reload`.
+    pub(crate) fn game(&self) -> Arc<vanillite_game::player::play::GameData> {
+        vanillite_game::player::play::game_data().unwrap_or_else(|| Arc::clone(&self.game_at_start))
+    }
+
     /// A shared reference to this value (for tasks on other worlds).
     pub fn arc(&self) -> Option<Arc<Global>> {
         self.this.upgrade()

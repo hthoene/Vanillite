@@ -428,6 +428,11 @@ impl ServerBuilder {
             writer.clone(),
         );
         level.set_data_configuration(&pack_config, Some(&data_packs.features));
+        // `MinecraftServer.randomSequences`: shared by all worlds and `/random`, restored from
+        // the saved data with the game systems before the first tick.
+        let random_sequences = Arc::new(std::sync::Mutex::new(
+            vanillite_game::random_sequences::RandomSequences::new(seed),
+        ));
         let global = Arc::new_cyclic(|this| Global {
             clock,
             players: PlayerList::new(max_players),
@@ -446,12 +451,13 @@ impl ServerBuilder {
             level,
             seed: level_seed(&config.properties.level_seed),
             registries: prepared.registries.clone(),
-            game,
-            recipes_packet,
+            game_at_start: game,
+            recipes_packet: std::sync::RwLock::new(recipes_packet),
             spawn_protection: config.properties.spawn_protection,
             systems: crate::systems::GameSystems::new(
                 level_dir.clone(),
                 u8::try_from(config.properties.function_permission_level).unwrap_or(2),
+                Arc::clone(&random_sequences),
             ),
             packs: data_packs.with_loaded(packs.clone()),
             tick_rate: std::sync::Mutex::new(TickRateManager::default()),
@@ -486,10 +492,6 @@ impl ServerBuilder {
 
         log::info!("Preparing level \"{level_name}\"");
         let mut worlds = Vec::with_capacity(DIMENSIONS.len());
-        // `MinecraftServer.randomSequences`: shared by all worlds (not saved yet).
-        let random_sequences = Arc::new(std::sync::Mutex::new(
-            vanillite_game::random_sequences::RandomSequences::new(seed),
-        ));
         let trees = crate::world_setup::tree_features(packs.as_deref(), seed);
         for (dimension, index) in DIMENSIONS.iter().zip(0u16..) {
             let rules = Arc::new(config.world_rules(dimension));

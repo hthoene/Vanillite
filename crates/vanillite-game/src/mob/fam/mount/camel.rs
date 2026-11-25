@@ -402,7 +402,7 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
     let baby = m.baby;
     let kind = m.kind;
     if ix.sneaking && !baby {
-        // `openCustomInventoryScreen`: the mount inventory menu is not there yet.
+        crate::mob::fam::companion::horse::open_inventory_screen(ix);
         return Interaction::Success;
     }
     let name = crate::item::item_id(ix.stack).name();

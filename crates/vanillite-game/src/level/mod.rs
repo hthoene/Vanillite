@@ -18,6 +18,8 @@ pub mod explosion;
 pub mod forced;
 pub mod game_event;
 mod neighbors;
+pub mod particles;
+pub mod place;
 #[cfg(test)]
 pub(crate) use neighbors::STEPS as NEIGHBOR_STEPS;
 pub mod signal;
@@ -128,10 +130,18 @@ pub struct LevelSettings {
     pub portal_dimension: bool,
     /// Exploit switches (D1).
     pub exploits: ExploitSettings,
+    /// Ticks a hopper waits after moving an item (`HopperBlockEntity.MOVE_ITEM_SPEED`, 8).
+    pub hopper_transfer_cooldown: i32,
+    /// Ticks a hopper waits after finding nothing to move (Vanilla 1: every tick).
+    pub hopper_check_cooldown: i32,
+    /// Radius of the experience orb merge scan (Vanilla 0.5).
+    pub xp_merge_radius: f64,
     /// The difficulty is peaceful (set by the server every tick).
     pub peaceful: bool,
     /// `spawnWardens` game rule (set by the server every tick).
     pub spawn_wardens: bool,
+    /// `mobGriefing` game rule (`MOB_GRIEFING`).
+    pub mob_griefing: bool,
 }
 
 impl Default for LevelSettings {
@@ -156,8 +166,12 @@ impl Default for LevelSettings {
             water_evaporates: false,
             portal_dimension: true,
             exploits: ExploitSettings::default(),
+            hopper_transfer_cooldown: 8,
+            hopper_check_cooldown: 1,
+            xp_merge_radius: 0.5,
             peaceful: false,
             spawn_wardens: true,
+            mob_griefing: true,
         }
     }
 }
@@ -190,6 +204,9 @@ impl LevelSettings {
         }
         if let Some(v) = get("spread_vines") {
             self.spread_vines = v != 0;
+        }
+        if let Some(v) = get("mob_griefing") {
+            self.mob_griefing = v != 0;
         }
     }
 }
@@ -269,6 +286,8 @@ pub struct LevelOutput {
     pub level_events: Vec<LevelEvent>,
     /// Sounds.
     pub sounds: Vec<Sound>,
+    /// Server particles (`sendParticles`).
+    pub particles: Vec<particles::LevelParticles>,
     /// Explosions.
     pub explosions: Vec<explosion::ExplosionEvent>,
     /// The damage of the living entities explosions hit, for the mob system.
@@ -279,14 +298,14 @@ pub struct LevelOutput {
     pub experience: Vec<(vanillite_base::Vec3, i32)>,
     /// Block entities whose client data changed (`sendBlockUpdated` of a block entity).
     pub block_entity_updates: Vec<BlockPos>,
+    /// Global level events (`globalLevelEvent`: event, position, data), heard by every player
+    /// of the server.
+    pub global_level_events: Vec<(i32, BlockPos, i32)>,
     /// Wither skeleton skulls players placed, for the wither's summon check
     /// (`WitherSkullBlock.setPlacedBy`).
     pub summon_checks: Vec<BlockPos>,
     /// An end crystal was placed: the End fight tries to respawn the dragon (`tryRespawn`).
     pub try_dragon_respawn: bool,
-    /// Global level events (`globalLevelEvent`: event, position, data), heard by every player
-    /// of the server.
-    pub global_level_events: Vec<(i32, BlockPos, i32)>,
 }
 
 /// The terrain generator of a world (`getChunkSource().getGenerator()`).
@@ -376,6 +395,9 @@ pub struct Level {
     /// Stacks blocks hand to the player that used them (`player.getInventory().add`, else
     /// dropped); taken by the player handlers.
     player_gives: Vec<(EntityId, crate::item::ItemStack)>,
+    /// Statistics and criterion triggers for players (`awardStat`, `CriteriaTriggers`) from
+    /// block code; the server applies them after the players' tick.
+    player_awards: Vec<(EntityId, crate::advancements::award::Award)>,
     /// The server's maps (shared by all worlds).
     maps: Option<Arc<crate::map::Maps>>,
     min_y: i32,
@@ -384,6 +406,13 @@ pub struct Level {
     seed: i64,
     /// What spawner blocks read of this tick's rules and sky (set by the world each tick).
     pub spawner_env: crate::block::spawner::SpawnerEnv,
+    /// POI changes of block changes made while the entities (with the POI manager) were out
+    /// of the level; applied by [`Level::flush_poi_changes`].
+    poi_changes: Vec<(
+        BlockPos,
+        Option<crate::poi::PoiType>,
+        Option<crate::poi::PoiType>,
+    )>,
 }
 
 impl std::fmt::Debug for Level {
@@ -444,12 +473,15 @@ impl Level {
             menu_requests: Vec::new(),
             sign_editors: Vec::new(),
             player_gives: Vec::new(),
+            player_awards: Vec::new(),
             maps: None,
             min_y,
             max_y,
             seed,
             spawner_env: crate::block::spawner::SpawnerEnv::default(),
+            poi_changes: Vec::new(),
         };
+        level.entities.poi = crate::poi::PoiManager::new_live();
         // Chunks that are visible already queue their entities for the end of the first tick.
         level.apply_visibility();
         level
@@ -504,6 +536,23 @@ impl Level {
     /// Takes the stacks blocks handed to players.
     pub fn take_player_gives(&mut self) -> Vec<(EntityId, crate::item::ItemStack)> {
         std::mem::take(&mut self.player_gives)
+    }
+
+    /// `player.awardStat(stat, count)` from block code.
+    pub fn award_stat(&mut self, player: EntityId, stat: crate::stats::Stat, count: i32) {
+        self.player_awards
+            .push((player, crate::advancements::award::Award::Stat(stat, count)));
+    }
+
+    /// `CriteriaTriggers.X.trigger(player, ...)` from block code.
+    pub fn trigger(&mut self, player: EntityId, event: crate::advancements::trigger::Event) {
+        self.player_awards
+            .push((player, crate::advancements::award::Award::Trigger(event)));
+    }
+
+    /// Takes the statistics and triggers block code awarded since the last call.
+    pub fn take_player_awards(&mut self) -> Vec<(EntityId, crate::advancements::award::Award)> {
+        std::mem::take(&mut self.player_awards)
     }
 
     /// Takes the sign editors blocks asked to open.
@@ -741,6 +790,30 @@ impl Level {
         }
     }
 
+    /// `getBlockState(pos)` with the chunk loaded first like Vanilla: a chunk that is not
+    /// accessible is loaded or generated synchronously and stays accessible for a tick
+    /// ([`Level::load_chunk`]). [`Level::block`] reads without loading.
+    pub fn block_loading(&mut self, pos: BlockPos) -> BlockState {
+        if self.in_height(pos.y) {
+            self.load_chunk(pos.chunk());
+        }
+        self.block(pos)
+    }
+
+    /// `getChunk(x, z)` (`ServerChunkCache.getChunk(x, z, FULL, true)`): a chunk that is not
+    /// accessible gets a temporary `unknown` ticket and is loaded or generated while the
+    /// world thread waits; chunks that became live get their block entities.
+    #[inline]
+    pub fn load_chunk(&mut self, chunk: ChunkPos) {
+        if self.chunks.load_now(chunk) {
+            let mut promoted = Vec::new();
+            self.chunks.take_promoted(&mut promoted);
+            for chunk in promoted {
+                self.load_block_entities(chunk);
+            }
+        }
+    }
+
     /// `getFluidState(pos)`.
     #[inline]
     pub fn fluid(&self, pos: BlockPos) -> FluidState {
@@ -941,6 +1014,8 @@ impl Level {
         if !self.in_height(pos.y) {
             return false;
         }
+        // `getChunkAt(pos)` loads the chunk.
+        self.load_chunk(pos.chunk());
         // `LevelChunk.setBlockState`.
         let Some(old) = self.chunks.set_block(pos, state.0).map(BlockState) else {
             return false;
@@ -979,8 +1054,34 @@ impl Level {
                 self.update_neighbour_shapes(state, pos, neighbour_flags, limit - 1);
                 self.update_indirect_neighbour_shapes(state, pos, neighbour_flags, limit - 1);
             }
+            // `updatePOIOnBlockStateChange`.
+            let (old_poi, new_poi) = (
+                crate::poi::PoiType::of_state(old),
+                crate::poi::PoiType::of_state(state),
+            );
+            if old_poi != new_poi {
+                self.poi_changes.push((pos, old_poi, new_poi));
+                self.flush_poi_changes();
+            }
         }
         true
+    }
+
+    /// Applies the POI changes of block changes to the POI manager (`remove`, then `add`, as
+    /// the server tasks of `updatePOIOnBlockStateChange` run); kept while the entities are out
+    /// of the level.
+    pub fn flush_poi_changes(&mut self) {
+        if self.poi_changes.is_empty() || !self.entities.poi.live {
+            return;
+        }
+        for (pos, old, new) in std::mem::take(&mut self.poi_changes) {
+            if old.is_some() {
+                self.entities.poi.remove(pos);
+            }
+            if let Some(ty) = new {
+                self.entities.poi.add(pos, ty);
+            }
+        }
     }
 
     /// `removeBlock(pos, movedByPiston)`: the block becomes the fluid it holds.
@@ -1157,6 +1258,9 @@ impl Level {
         neighbour_pos: BlockPos,
         neighbour_state: BlockState,
     ) -> BlockState {
+        if block::beehive::is_beehive(state.block()) {
+            block::beehive::neighbour_changed_shape(self, pos, state, neighbour_pos);
+        }
         shared::update_shape(self, state, pos, direction, neighbour_pos, neighbour_state)
     }
 

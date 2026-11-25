@@ -11,6 +11,7 @@
 //! blocks that placing or breaking one block adds or removes.
 
 pub mod beacon;
+pub mod beehive;
 pub mod bell;
 pub mod bonemeal;
 pub mod bookshelf;
@@ -21,16 +22,20 @@ pub mod campfire;
 pub mod chest_loot;
 pub mod container;
 pub mod crafter;
+pub mod creaking_heart;
 pub mod decor;
 pub mod dispenser;
+mod dripleaf;
 mod dripstone;
 pub mod drops;
+pub mod eggs;
 pub mod falling;
 pub mod fire;
 pub mod fluid;
 pub mod furnace;
 mod growth;
 pub mod hopper;
+pub mod jukebox;
 pub mod lectern;
 pub mod note;
 pub mod piston;
@@ -223,6 +228,10 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
             b.on_place = Some(falling::on_place);
             b.tick = Some(falling::tick);
         }
+        Class::Scaffolding => {
+            b.on_place = Some(falling::scaffolding_on_place);
+            b.tick = Some(falling::scaffolding_tick);
+        }
         Class::Brushable => {
             b.on_place = Some(falling::brushable_on_place);
             b.tick = Some(falling::brushable_tick);
@@ -292,6 +301,8 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
         b.random_tick = Some(growth::sweet_berry_random_tick);
     } else if growth::is_sapling(block) {
         b.random_tick = Some(growth::sapling_random_tick);
+    } else if block == ids::MANGROVE_PROPAGULE {
+        b.random_tick = Some(growth::propagule_random_tick);
     } else if block == ids::BUDDING_AMETHYST {
         b.random_tick = Some(growth::budding_amethyst_random_tick);
     } else if block == ids::REDSTONE_ORE || block == ids::DEEPSLATE_REDSTONE_ORE {
@@ -311,6 +322,7 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
     note::fill(block, &mut b);
     bell::fill(block, &mut b);
     lectern::fill(block, &mut b);
+    jukebox::fill(block, &mut b);
     sculk::fill(block, &mut b);
     sculk_shrieker::fill(block, &mut b);
     sculk_catalyst::fill(block, &mut b);
@@ -320,11 +332,16 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
     spawner::fill(block, &mut b);
     container::fill(block, &mut b);
     sign::fill(block, &mut b);
+    portal::fill(block, &mut b);
     pot::fill(block, &mut b);
     bookshelf::fill(block, &mut b);
     campfire::fill(block, &mut b);
+    beehive::fill(block, &mut b);
     crafter::fill(block, &mut b);
+    creaking_heart::fill(block, &mut b);
     portal::fill(block, &mut b);
+    eggs::fill(block, &mut b);
+    dripleaf::fill(block, &mut b);
     b
 }
 

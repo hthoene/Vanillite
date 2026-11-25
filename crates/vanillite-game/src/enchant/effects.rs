@@ -4,11 +4,14 @@
 //! `minecraft:damage_protection`, `minecraft:armor_effectiveness`,
 //! `minecraft:smash_damage_per_fallen_block`, `minecraft:post_attack` (`ignite`,
 //! `apply_mob_effect`, `damage_entity`, `change_item_damage`),
-//! `minecraft:projectile_spawned` (`ignite`) and `minecraft:attributes`.
+//! `minecraft:projectile_spawned` (`ignite`) and `minecraft:attributes`, and the ones of
+//! projectile weapons: `minecraft:crossbow_charge_time`, `minecraft:crossbow_charging_sounds`,
+//! `minecraft:projectile_count`, `minecraft:projectile_spread`, `minecraft:projectile_piercing`
+//! and `minecraft:ammo_use`.
 //!
 //! Requirements are the loot conditions enchantments use: `entity_properties`,
-//! `damage_source_properties`, `all_of`, `any_of`, `inverted`, `random_chance`; other ones
-//! (e.g. `match_tool`) never hold.
+//! `damage_source_properties`, `all_of`, `any_of`, `inverted`, `random_chance` and
+//! `match_tool` (by item only, for the item effects); other ones never hold.
 
 use serde_json::Value;
 use vanillite_base::random::RandomSource;
@@ -227,6 +230,9 @@ pub enum Requirement {
     AnyOf(Vec<Requirement>),
     Inverted(Box<Requirement>),
     RandomChance(LevelBased),
+    /// `match_tool` with an `items` holder set (`"ns:id"`, `"#ns:tag"` or a list); holds for
+    /// the item of an item effect's context only.
+    MatchTool(Vec<String>),
     /// Never holds.
     Unsupported,
 }
@@ -284,6 +290,22 @@ impl Requirement {
                     })
                     .map_or(Requirement::Unsupported, Requirement::RandomChance)
             }
+            "match_tool" => {
+                let predicate = o.get("predicate").and_then(Value::as_object);
+                let items = predicate
+                    .filter(|p| p.len() == 1)
+                    .and_then(|p| p.get("items"));
+                match items {
+                    Some(Value::String(s)) => Requirement::MatchTool(vec![s.clone()]),
+                    Some(Value::Array(a)) => Requirement::MatchTool(
+                        a.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_owned)
+                            .collect(),
+                    ),
+                    _ => Requirement::Unsupported,
+                }
+            }
             _ => Requirement::Unsupported,
         }
     }
@@ -307,7 +329,33 @@ impl Requirement {
             Requirement::AnyOf(l) => l.iter().any(|r| r.test(cx, level, random)),
             Requirement::Inverted(r) => !r.test(cx, level, random),
             Requirement::RandomChance(c) => random.next_float() < c.calculate(level),
-            Requirement::Unsupported => false,
+            Requirement::MatchTool(_) | Requirement::Unsupported => false,
+        }
+    }
+
+    /// The test in an item context (`Enchantment.itemContext`: only the tool is known).
+    fn test_item(
+        &self,
+        tool: Option<&ItemStack>,
+        level: i32,
+        random: &mut dyn FloatRandom,
+    ) -> bool {
+        match self {
+            Requirement::MatchTool(items) => tool.is_some_and(|t| {
+                !t.is_empty()
+                    && items.iter().any(|entry| match entry.strip_prefix('#') {
+                        Some(tag) => crate::player::play::game_data()
+                            .is_some_and(|d| d.item_in_tag(t.item, tag)),
+                        None => crate::item::item_id(t).name() == entry,
+                    })
+            }),
+            Requirement::AllOf(l) => l.iter().all(|r| r.test_item(tool, level, random)),
+            Requirement::AnyOf(l) => l.iter().any(|r| r.test_item(tool, level, random)),
+            Requirement::Inverted(r) => !r.test_item(tool, level, random),
+            Requirement::RandomChance(c) => random.next_float() < c.calculate(level),
+            Requirement::Entity(..) | Requirement::DamageSource(_) | Requirement::Unsupported => {
+                false
+            }
         }
     }
 }
@@ -473,6 +521,26 @@ pub struct AttributeEffect {
     pub operation: u8,
 }
 
+/// `CrossbowItem.ChargingSounds`: the sound ids of the loading stages.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ChargingSounds {
+    pub start: Option<String>,
+    pub mid: Option<String>,
+    pub end: Option<String>,
+}
+
+impl ChargingSounds {
+    fn parse(v: &Value) -> Option<ChargingSounds> {
+        let o = v.as_object()?;
+        let s = |k: &str| o.get(k).and_then(Value::as_str).map(str::to_owned);
+        Some(ChargingSounds {
+            start: s("start"),
+            mid: s("mid"),
+            end: s("end"),
+        })
+    }
+}
+
 /// The parsed combat effects of one enchantment.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Enchantment {
@@ -487,6 +555,14 @@ pub struct Enchantment {
     pub post_attack: Vec<PostAttack>,
     pub projectile_spawned: Vec<Conditional<EntityEffect>>,
     pub attributes: Vec<AttributeEffect>,
+    /// `minecraft:crossbow_charge_time` (one effect without requirements).
+    pub crossbow_charge_time: Option<ValueEffect>,
+    /// `minecraft:crossbow_charging_sounds`, one entry per level.
+    pub crossbow_charging_sounds: Vec<ChargingSounds>,
+    pub projectile_count: Vec<Conditional<ValueEffect>>,
+    pub projectile_spread: Vec<Conditional<ValueEffect>>,
+    pub projectile_piercing: Vec<Conditional<ValueEffect>>,
+    pub ammo_use: Vec<Conditional<ValueEffect>>,
 }
 
 /// `EquipmentSlotGroup` names in ordinal order.
@@ -590,6 +666,16 @@ impl Enchantment {
                 Some(EntityEffect::parse(e))
             }),
             attributes,
+            crossbow_charge_time: get("minecraft:crossbow_charge_time")
+                .and_then(ValueEffect::parse),
+            crossbow_charging_sounds: get("minecraft:crossbow_charging_sounds")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(ChargingSounds::parse).collect())
+                .unwrap_or_default(),
+            projectile_count: values("minecraft:projectile_count"),
+            projectile_spread: values("minecraft:projectile_spread"),
+            projectile_piercing: values("minecraft:projectile_piercing"),
+            ammo_use: values("minecraft:ammo_use"),
         }
     }
 
@@ -658,6 +744,112 @@ impl Enchantments {
             }
         }
         value
+    }
+
+    /// The value effects of `stack` in an item context (`itemContext(level, enchantmentLevel,
+    /// tool)`): requirements see only `tool`.
+    fn run_item(
+        &self,
+        stack: &ItemStack,
+        pick: impl Fn(&Enchantment) -> &[Conditional<ValueEffect>],
+        tool: Option<&ItemStack>,
+        random: &mut dyn FloatRandom,
+        value: f32,
+    ) -> f32 {
+        let mut value = value;
+        for (e, level) in self.of(stack) {
+            for c in pick(e) {
+                if c.requirements
+                    .as_ref()
+                    .is_none_or(|r| r.test_item(tool, level, random))
+                {
+                    value = c.effect.process(level, random, value);
+                }
+            }
+        }
+        value
+    }
+
+    /// `EnchantmentHelper.modifyCrossbowChargingTime`: at least 0.
+    pub fn crossbow_charge_time(
+        &self,
+        crossbow: &ItemStack,
+        random: &mut dyn FloatRandom,
+        time: f32,
+    ) -> f32 {
+        let mut time = time;
+        for (e, level) in self.of(crossbow) {
+            if let Some(effect) = &e.crossbow_charge_time {
+                time = effect.process(level, random, time);
+            }
+        }
+        time.max(0.0)
+    }
+
+    /// `EnchantmentHelper.pickHighestLevel(CROSSBOW_CHARGING_SOUNDS)`: the entry for the
+    /// level of the highest enchantment that has the effect.
+    pub fn crossbow_charging_sounds(&self, crossbow: &ItemStack) -> Option<&ChargingSounds> {
+        let mut found: Option<(&Enchantment, i32)> = None;
+        for (e, level) in self.of(crossbow) {
+            if !e.crossbow_charging_sounds.is_empty() && found.is_none_or(|(_, l)| level > l) {
+                found = Some((e, level));
+            }
+        }
+        let (e, level) = found?;
+        let i = usize::try_from(level)
+            .unwrap_or(1)
+            .min(e.crossbow_charging_sounds.len())
+            .saturating_sub(1);
+        e.crossbow_charging_sounds.get(i)
+    }
+
+    /// `EnchantmentHelper.processProjectileCount`: at least 0 (the entity requirements of the
+    /// shooter are not evaluated; Vanilla's data has none).
+    pub fn projectile_count(
+        &self,
+        weapon: &ItemStack,
+        random: &mut dyn FloatRandom,
+        count: i32,
+    ) -> i32 {
+        #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+        let v = self.run_item(weapon, |e| &e.projectile_count, None, random, count as f32) as i32;
+        v.max(0)
+    }
+
+    /// `EnchantmentHelper.processProjectileSpread`: at least 0.
+    pub fn projectile_spread(
+        &self,
+        weapon: &ItemStack,
+        random: &mut dyn FloatRandom,
+        angle: f32,
+    ) -> f32 {
+        self.run_item(weapon, |e| &e.projectile_spread, None, random, angle)
+            .max(0.0)
+    }
+
+    /// `EnchantmentHelper.getPiercingCount(weapon, ammo)`: at least 0.
+    pub fn piercing_count(
+        &self,
+        weapon: &ItemStack,
+        ammo: &ItemStack,
+        random: &mut dyn FloatRandom,
+    ) -> i32 {
+        #[allow(clippy::cast_possible_truncation)]
+        let v = self.run_item(weapon, |e| &e.projectile_piercing, Some(ammo), random, 0.0) as i32;
+        v.max(0)
+    }
+
+    /// `EnchantmentHelper.processAmmoUse(weapon, ammo, amount)`.
+    pub fn ammo_use(
+        &self,
+        weapon: &ItemStack,
+        ammo: &ItemStack,
+        random: &mut dyn FloatRandom,
+        amount: i32,
+    ) -> i32 {
+        #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+        let v = self.run_item(weapon, |e| &e.ammo_use, Some(ammo), random, amount as f32) as i32;
+        v
     }
 
     /// `EnchantmentHelper.modifyDamage`.

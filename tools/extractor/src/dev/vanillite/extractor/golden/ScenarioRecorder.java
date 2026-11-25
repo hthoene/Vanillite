@@ -37,6 +37,9 @@ import net.minecraft.world.entity.EntityTypes;
 import net.minecraft.world.entity.LightningBolt;
 import net.minecraft.world.entity.animal.equine.SkeletonHorse;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.BoneMealItem;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.block.Block;
@@ -61,13 +64,17 @@ import net.minecraft.world.ticks.ScheduledTick;
  * scenarios with {@code "light": true}, the settled sky and block light of the region.
  * Positions in chunks that are not accessible are recorded as {@link #UNLOADED}.
  *
+ * <p>The action {@code command} runs a command line as the server at the origin of the
+ * overworld.
+ *
  * <p>The actions {@code force} and {@code unforce} add or remove forced tickets of chunks and then
  * run the chunk system and the entity manager without a game tick until every chunk around the
  * scenario is loaded or unloaded, with its entities, as its ticket level says. The action {@code
  * restart} stops the server, which saves the world, and starts a new one on the saved world: its
  * saved chunk tickets come back and their chunks load before the next tick ({@code
  * prepareLevels}); the rules, time and difficulty are set again and the level random starts from
- * the seed.
+ * the seed. The action {@code bonemeal} uses bone meal on a block ({@code
+ * BoneMealItem.growCrop}).
  *
  * <p>Usage: {@code java -cp ... dev.vanillite.extractor.golden.ScenarioRecorder (<scenario.json>
  * <trace.json>)...}
@@ -210,12 +217,22 @@ public final class ScenarioRecorder {
                 level = server.level();
                 timeAndDifficulty(server, level, scenario);
                 level.getRandom().setSeed(seed);
+              } else if (op.equals("bonemeal")) {
+                // Bone meal used on the block (`BoneMealItem.growCrop`).
+                BoneMealItem.growCrop(new ItemStack(Items.BONE_MEAL), level, pos(action.get("pos")));
               } else if (op.equals("hurt")) {
                 entities.hurt(action);
               } else if (op.equals("lightning")) {
                 strike(level, pos(action.get("pos")));
               } else if (op.equals("effect")) {
                 entities.effect(action);
+              } else if (op.equals("command")) {
+                // As the server, at the origin of the overworld.
+                server
+                    .getCommands()
+                    .performPrefixedCommand(
+                        server.createCommandSourceStack().withPosition(Vec3.ZERO),
+                        action.get("command").getAsString());
               } else if (op.equals("throw_potion")) {
                 entities.throwPotion(action);
               } else {

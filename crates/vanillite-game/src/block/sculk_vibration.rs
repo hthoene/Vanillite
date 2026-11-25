@@ -47,6 +47,8 @@ pub enum Listenable {
     Warden,
     /// `#shrieker_can_listen`.
     Shrieker,
+    /// `#allay_can_listen`.
+    Allay,
 }
 
 impl VibrationData {
@@ -202,7 +204,7 @@ pub fn projectile_owner(level: &Level, entity: Option<EntityId>) -> Option<Entit
 
 /// `VibrationSystem.User.isValidVibration` for a listener hearing `listenable`.
 pub fn is_valid_vibration(
-    level: &Level,
+    level: &mut Level,
     event: u16,
     context: GameEventContext,
     listenable: Listenable,
@@ -212,6 +214,7 @@ pub fn is_valid_vibration(
         Listenable::Vibrations => event_tags.vibrations.contains(event),
         Listenable::Warden => event_tags.warden_can_listen.contains(event),
         Listenable::Shrieker => event_tags.shrieker_can_listen.contains(event),
+        Listenable::Allay => event_tags.allay_can_listen.contains(event),
     };
     if !hears {
         return false;
@@ -230,6 +233,20 @@ pub fn is_valid_vibration(
             .get(entity)
             .is_some_and(|e| e.flags().contains(EntityFlags::CROUCHING));
         if crouching && event_tags.ignore_vibrations_sneaking.contains(event) {
+            // `canTriggerAvoidVibration`: sculk sensors and wardens.
+            let is_player = level
+                .entities
+                .store
+                .get(entity)
+                .is_some_and(|e| e.kind() == vanillite_data::entity::ids::PLAYER);
+            if listenable != Listenable::Shrieker && is_player {
+                level.trigger(
+                    entity,
+                    crate::advancements::trigger::Event::Player(
+                        crate::advancements::trigger::TriggerKind::AVOID_VIBRATION,
+                    ),
+                );
+            }
             return false;
         }
         // `dampensVibrations`: wardens.

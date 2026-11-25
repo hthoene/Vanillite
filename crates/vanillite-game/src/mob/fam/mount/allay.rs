@@ -2,14 +2,18 @@
 //! one slot inventory and bring them to the player (or a liked note block), heal over time,
 //! dance and duplicate with amethyst shards. Their brain is in [`super::ai`].
 
-use vanillite_base::{BlockPos, Vec3};
+use vanillite_base::{BlockPos, SectionPos, Vec3};
 use vanillite_nbt::{Compound, List, Tag};
 use vanillite_world::entity::EntityId;
 
 use super::State;
+use crate::block::sculk_vibration::{self, Listenable, Vibration, VibrationData};
 use crate::entities::Entities;
 use crate::item::{EquipmentSlot, ItemStack};
+use crate::level::Level;
+use crate::level::game_event::{EntityListener, GameEventContext, Listener, events};
 use crate::mob::animal::{self, Interaction};
+use crate::mob::boss::warden::LevelAction;
 use crate::mob::fam::{Hurt, Interact};
 use crate::mob::nav::{MoveKind, NavKind};
 use crate::mob::{Kind, MobData, Tick};
@@ -18,6 +22,8 @@ use crate::survival::Effect;
 use crate::survival::player::Env;
 use crate::survival::rules::Rule;
 
+/// `VibrationUser.VIBRATION_EVENT_LISTENER_RANGE`.
+const VIBRATION_RANGE: i32 = 16;
 /// `DUPLICATION_COOLDOWN_TICKS`.
 const DUPLICATION_COOLDOWN_TICKS: i64 = 6000;
 /// `GameEvent.JUKEBOX_PLAY.notificationRadius`.
@@ -33,6 +39,10 @@ pub struct Allay {
     /// `DATA_DANCING`.
     pub dancing: bool,
     pub jukebox_pos: Option<BlockPos>,
+    /// `vibrationData`.
+    pub vibration: VibrationData,
+    /// The section its two game event listeners are registered in.
+    pub listener_section: Option<SectionPos>,
 }
 
 /// The allay state of a mob.
@@ -93,10 +103,9 @@ pub fn ai_step(t: &mut Tick<'_, '_>) {
         t.core_mut().mark_data_dirty();
     }
     let a = allay(t.mob_ref());
-    if a.dancing && t.mob_ref().tick_count % 20 == 0 && should_stop_dancing(t, &a) {
-        let a = allay_mut(t.mob());
-        a.dancing = false;
-        a.jukebox_pos = None;
+    if a.dancing && should_stop_dancing(t, &a) && t.mob_ref().tick_count % 20 == 0 {
+        set_dancing(t.mob(), false);
+        allay_mut(t.mob()).jukebox_pos = None;
         t.core_mut().mark_data_dirty();
     }
     let a = allay_mut(t.mob());
@@ -106,11 +115,170 @@ pub fn ai_step(t: &mut Tick<'_, '_>) {
             t.core_mut().mark_data_dirty();
         }
     }
-    // `Allay.tick`: a panicking allay stops dancing.
+}
+
+/// `Allay.tick` after `super.tick()`: the vibration ticker, a panicking allay stops dancing;
+/// then its listeners follow it (`updateDynamicGameEventListener` on a section change).
+pub fn after_tick(t: &mut Tick<'_, '_>) {
+    tick_vibrations(t);
     if crate::mob::animal::is_panicking(t.mob_ref()) && allay(t.mob_ref()).dancing {
-        allay_mut(t.mob()).dancing = false;
+        set_dancing(t.mob(), false);
         t.core_mut().mark_data_dirty();
     }
+    let p = t.pos();
+    let eye = crate::mob::eye_height(t.mob_ref());
+    let section = BlockPos::containing(p.x, p.y + eye, p.z).section();
+    let id = t.id;
+    let a = allay_mut(t.mob());
+    if a.listener_section == Some(section) {
+        return;
+    }
+    let old = a.listener_section.replace(section);
+    for (kind, radius) in [
+        (EntityListener::Vibration, VIBRATION_RANGE),
+        (EntityListener::Jukebox, JUKEBOX_RADIUS as i32),
+    ] {
+        let listener = |section| Listener::Entity {
+            id,
+            section,
+            radius,
+            kind,
+        };
+        t.cx.actions
+            .push(crate::mob::WorldAction::Level(LevelAction::Listener {
+                remove: old.map(listener),
+                add: Some(listener(section)),
+            }));
+    }
+}
+
+/// `VibrationSystem.Ticker.tick` of the allay: a heard note block becomes its liked one.
+fn tick_vibrations(t: &mut Tick<'_, '_>) {
+    let time = t.game_time();
+    let a = allay_mut(t.mob());
+    a.vibration.try_select(time);
+    let Some(vibration) = a.vibration.current else {
+        return;
+    };
+    a.vibration.travel_time = (a.vibration.travel_time - 1).max(0);
+    if a.vibration.travel_time > 0 {
+        return;
+    }
+    // `receiveVibration` (no adjacent chunk requirement) and `onReceiveVibration`.
+    a.vibration.current = None;
+    if vibration.event == events().note_block_play {
+        let origin = crate::level::game_event::containing(vibration.pos);
+        let dimension = t.env.dimension;
+        super::ai::hear_noteblock(t.mob(), origin, dimension);
+    }
+}
+
+/// The allay's game event listeners (from the level's dispatch): its vibration listener
+/// (`VibrationSystem.Listener.handleGameEvent` with `Allay.VibrationUser`) and its
+/// `JukeboxListener`.
+pub(crate) fn handle_game_event(
+    level: &mut Level,
+    id: EntityId,
+    kind: EntityListener,
+    event: u16,
+    context: GameEventContext,
+    source: Vec3,
+) {
+    if kind == EntityListener::Jukebox {
+        let e = events();
+        let playing = if event == e.jukebox_play {
+            true
+        } else if event == e.jukebox_stop_play {
+            false
+        } else {
+            return;
+        };
+        let pos = crate::level::game_event::containing(source);
+        if let Some(m) = level.entities.mob_mut(id) {
+            let before = allay(m).dancing;
+            set_jukebox_playing(m, pos, playing);
+            if allay(m).dancing != before
+                && let Some(mut e) = level.entities.store.get_mut(id)
+            {
+                e.mark_data_dirty();
+            }
+        }
+        return;
+    }
+    let Some(busy) = level
+        .entities
+        .mob(id)
+        .map(|m| allay(m).vibration.current.is_some())
+    else {
+        return;
+    };
+    if busy || !sculk_vibration::is_valid_vibration(level, event, context, Listenable::Allay) {
+        return;
+    }
+    let Some(destination) = level.listener_position(Listener::Entity {
+        id,
+        section: BlockPos::ZERO.section(),
+        radius: VIBRATION_RANGE,
+        kind,
+    }) else {
+        return;
+    };
+    // `canReceiveVibration`: not without AI; with a liked note block only that one within
+    // 1024 blocks (chessboard distance).
+    let Some(m) = level.entities.mob(id) else {
+        return;
+    };
+    if m.no_ai {
+        return;
+    }
+    if let Some(liked) = m
+        .brain
+        .as_deref()
+        .and_then(|b| b.pos(crate::mob::brain::MemoryType::LikedNoteblockPosition))
+    {
+        let here = level
+            .entities
+            .store
+            .get(id)
+            .map(|e| {
+                let p = e.pos();
+                BlockPos::containing(p.x, p.y, p.z)
+            })
+            .unwrap_or(liked);
+        let chessboard = (liked.x - here.x)
+            .abs()
+            .max((liked.y - here.y).abs())
+            .max((liked.z - here.z).abs());
+        if chessboard > 1024 || liked != crate::level::game_event::containing(source) {
+            return;
+        }
+    }
+    if sculk_vibration::is_occluded(level, source, destination) {
+        return;
+    }
+    let time = level.game_time();
+    let projectile_owner = sculk_vibration::projectile_owner(level, context.source);
+    let distance = source.distance_to_sqr(destination).sqrt() as f32;
+    if let Some(m) = level.entities.mob_mut(id) {
+        allay_mut(m).vibration.add_candidate(
+            Vibration {
+                event,
+                distance,
+                pos: source,
+                source: context.source,
+                projectile_owner,
+            },
+            time,
+        );
+    }
+}
+
+/// `setDancing(dancing)`: a panicking allay does not start dancing.
+fn set_dancing(m: &mut MobData, dancing: bool) {
+    if m.no_ai || (dancing && crate::mob::animal::is_panicking(m)) {
+        return;
+    }
+    allay_mut(m).dancing = dancing;
 }
 
 /// `shouldStopDancing`: the jukebox is gone or too far.
@@ -127,18 +295,17 @@ fn should_stop_dancing(t: &Tick<'_, '_>, a: &Allay) -> bool {
         || t.level.block(j).block().name() != "minecraft:jukebox"
 }
 
-/// `setJukeboxPlaying(pos, playing)` (the jukebox game event; the jukebox block does not send
-/// it yet).
+/// `setJukeboxPlaying(pos, playing)` (the jukebox listener).
 pub fn set_jukebox_playing(m: &mut MobData, pos: BlockPos, playing: bool) {
     let a = allay_mut(m);
     if playing {
         if !a.dancing {
             a.jukebox_pos = Some(pos);
-            a.dancing = true;
+            set_dancing(m, true);
         }
     } else if a.jukebox_pos == Some(pos) || a.jukebox_pos.is_none() {
         a.jukebox_pos = None;
-        a.dancing = false;
+        set_dancing(m, false);
     }
 }
 
@@ -442,6 +609,7 @@ pub fn save(m: &MobData, out: &mut Compound) {
         vec![Tag::Compound(c)]
     };
     out.insert("Inventory", List(list));
+    out.insert("listener", Tag::Compound(a.vibration.save(|_| None)));
     out.insert("DuplicationCooldown", a.duplication_cooldown);
     super::ai::save_brain(m, out);
 }
@@ -456,6 +624,9 @@ pub fn load(m: &mut MobData, tag: &Compound) {
     };
     let cooldown = super::long(tag, "DuplicationCooldown").unwrap_or(0);
     let a = allay_mut(m);
+    if let Some(Tag::Compound(l)) = tag.get("listener") {
+        a.vibration = VibrationData::load(l, |_| None);
+    }
     a.inventory = inv.unwrap_or_default();
     a.duplication_cooldown = cooldown;
     super::ai::load_brain(m, tag);

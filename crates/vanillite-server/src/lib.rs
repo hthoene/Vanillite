@@ -10,6 +10,7 @@ mod admin;
 pub mod anti_xray;
 mod blocks;
 mod border;
+mod bossbars;
 mod chat;
 mod chunk_tickets;
 mod clock;
@@ -39,8 +40,9 @@ mod world_format;
 mod world_setup;
 mod world_updates;
 
-pub use blocks::{ItemScratch, game_data, tick_item};
+pub use blocks::{ItemScratch, ItemSettings, game_data, tick_item};
 pub use clock::Clock;
+pub use commands::run_command_on_level;
 pub use compute::{Compute, ComputePool, InlineScheduler, Job, Scheduler, Scope};
 pub use global::Global;
 pub use level::{load_block_facts, load_damage_types};
