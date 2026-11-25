@@ -119,6 +119,9 @@ fn base(ents: &Entities, id: EntityId) -> Option<EntityView<'static>> {
     v.sprinting = flags.contains(EntityFlags::SPRINTING);
     v.swimming = flags.contains(EntityFlags::SWIMMING);
     v.fall_flying = flags.contains(EntityFlags::FALL_FLYING);
+    if let Some(bolt) = ents.bolt(id) {
+        v.lightning_fires = Some(bolt.blocks_set_on_fire);
+    }
     if let Some(m) = ents.mob(id) {
         v.baby = m.baby;
         v.on_fire = m.is_on_fire();

@@ -179,7 +179,7 @@ pub fn breed(
     child.age = -24000;
     child.baby = true;
     let uuid = crate::mob::new_uuid();
-    super::spawn(
+    let child = super::spawn(
         ents,
         level.network_ids(),
         uuid,
@@ -187,6 +187,7 @@ pub fn breed(
         Rotation::default(),
         child,
     );
+    award_breeding(ents, parent, partner, Some(child));
     for id in [parent, partner] {
         if let Some(m) = ents.mob_mut(id) {
             m.age = 6000;
@@ -202,6 +203,124 @@ pub fn breed(
             .map_or(1, |m| m.random.next_int_bounded(7) + 1);
         env.out.push(Effect::Experience { pos, amount: xp });
     }
+}
+
+/// The player of a UUID in this world (`level.getPlayerByUUID`).
+pub fn player_by_uuid(ents: &Entities, uuid: Option<u128>) -> Option<EntityId> {
+    uuid.and_then(|u| ents.players_by_uuid.get(&u).copied())
+}
+
+/// The award of `finalizeSpawnChildFromBreeding` (and the turtle's and fox's breed goals):
+/// the love cause of `parent`, else of `partner`, gets `animals_bred` and `bred_animals`.
+/// Called before the love is reset.
+pub fn award_breeding(
+    ents: &mut Entities,
+    parent: EntityId,
+    partner: EntityId,
+    child: Option<EntityId>,
+) {
+    use crate::advancements::trigger::{Event, TriggerKind};
+    use crate::advancements::view;
+    let cause = ents
+        .mob(parent)
+        .and_then(|m| m.love_cause)
+        .and_then(|u| player_by_uuid(ents, Some(u)))
+        .or_else(|| player_by_uuid(ents, ents.mob(partner).and_then(|m| m.love_cause)));
+    let Some(player) = cause else {
+        return;
+    };
+    if let Some(p) = ents.player_mut(player) {
+        p.stats.award(crate::stats::custom::ANIMALS_BRED, 1);
+    }
+    if !view::listens(ents, player, TriggerKind::BRED_ANIMALS) {
+        return;
+    }
+    if let (Some(a), Some(b)) = (view::snapshot(ents, parent), view::snapshot(ents, partner)) {
+        let c = child.and_then(|c| view::snapshot(ents, c));
+        if let Some(p) = ents.player_mut(player) {
+            p.advancements.trigger(Event::BredAnimals(a, b, c));
+        }
+    }
+}
+
+/// `FILLED_BUCKET.trigger(player, bucket)`.
+pub fn filled_bucket(ents: &mut Entities, player: EntityId, bucket: &ItemStack) {
+    if let Some(p) = ents.player_mut(player) {
+        p.advancements.trigger_item(
+            crate::advancements::trigger::TriggerKind::FILLED_BUCKET,
+            bucket,
+        );
+    }
+}
+
+/// The entity of a UUID in this world, players first (`level.getEntity(uuid)`).
+pub fn entity_by_uuid(ents: &Entities, uuid: u128) -> Option<EntityId> {
+    ents.players_by_uuid.get(&uuid).copied().or_else(|| {
+        ents.mobs
+            .iter()
+            .map(|(id, _)| id)
+            .find(|&id| ents.store.get(id).is_some_and(|e| e.uuid() == uuid))
+    })
+}
+
+/// `onItemPickup(itemEntity)` of `picker` for an item entity with an owner (`thrower`):
+/// `thrown_item_picked_up_by_entity` for a throwing player and, when a player picks it up,
+/// `thrown_item_picked_up_by_player` (`ServerPlayer.onItemPickup`). `stack` is the item
+/// entity's stack after the pickup (`getItem()`).
+pub fn item_picked_up(ents: &mut Entities, picker: EntityId, thrower: u128, stack: &ItemStack) {
+    use crate::advancements::trigger::{Event, TriggerKind};
+    use crate::advancements::view;
+    let by_entity = TriggerKind::THROWN_ITEM_PICKED_UP_BY_ENTITY;
+    if let Some(owner) = ents.players_by_uuid.get(&thrower).copied() {
+        view::fire(ents, owner, by_entity, |ents| {
+            Event::EntityItem(by_entity, view::snapshot(ents, picker), stack.clone())
+        });
+    }
+    let by_player = TriggerKind::THROWN_ITEM_PICKED_UP_BY_PLAYER;
+    if ents.player(picker).is_some()
+        && view::listens(ents, picker, by_player)
+        && let Some(owner) = entity_by_uuid(ents, thrower)
+    {
+        view::fire(ents, picker, by_player, |ents| {
+            Event::EntityItem(by_player, view::snapshot(ents, owner), stack.clone())
+        });
+    }
+}
+
+/// `SUMMONED_ENTITY.trigger(player, entity)` for each of `players`.
+pub fn award_summoned(ents: &mut Entities, players: &[EntityId], entity: EntityId) {
+    use crate::advancements::trigger::{Event, TriggerKind};
+    use crate::advancements::view;
+    let kind = TriggerKind::SUMMONED_ENTITY;
+    let listening: Vec<EntityId> = players
+        .iter()
+        .copied()
+        .filter(|&p| view::listens(ents, p, kind))
+        .collect();
+    if listening.is_empty() {
+        return;
+    }
+    let Some(e) = view::snapshot(ents, entity) else {
+        return;
+    };
+    for p in listening {
+        if let Some(p) = ents.player_mut(p) {
+            p.advancements.trigger(Event::Entity(kind, e.clone()));
+        }
+    }
+}
+
+/// The players whose box intersects `aabb` (`getEntitiesOfClass(ServerPlayer.class, aabb)`).
+pub fn players_in(ents: &Entities, aabb: &vanillite_base::Aabb) -> Vec<EntityId> {
+    ents.players
+        .iter()
+        .map(|(id, _)| id)
+        .filter(|&id| {
+            ents.store
+                .get(id)
+                .is_some_and(|e| e.aabb().intersects(aabb))
+        })
+        .collect()
 }
 
 /// `Sheep.getOffspringColor`: the dye two parent colours craft into, else one of them.

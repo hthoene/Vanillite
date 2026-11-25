@@ -55,6 +55,7 @@ impl World for LevelWorld<'_> {
 }
 
 /// A player as the entity predicates see it.
+#[allow(clippy::too_many_arguments)]
 fn player_view<'a>(
     level: &Level,
     id: EntityId,
