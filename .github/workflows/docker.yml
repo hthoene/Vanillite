@@ -7,6 +7,13 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: >-
+          Publish the images of this existing release tag (e.g. v0.1.0-beta.1+mc26.3) again:
+          its source, built with this branch's Dockerfile. Empty: an image of the commit only.
+        required: false
+        default: ""
 
 concurrency:
   group: docker-${{ github.ref }}
@@ -24,6 +31,17 @@ jobs:
         run: echo "::notice::DOCKERHUB_USERNAME or DOCKERHUB_TOKEN is not set; nothing is published."
       - uses: actions/checkout@v5
         if: env.HAS_SECRETS == 'true'
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
+          fetch-depth: 0
+      # A rebuilt release keeps its source but takes the Dockerfile (build fixes) of the branch
+      # the workflow runs from.
+      - name: Use this branch's Dockerfile
+        if: env.HAS_SECRETS == 'true' && inputs.release_tag != ''
+        run: git checkout "${{ github.sha }}" -- Dockerfile
+      - id: source
+        if: env.HAS_SECRETS == 'true'
+        run: echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@v3
         if: env.HAS_SECRETS == 'true'
       - uses: docker/login-action@v3
@@ -35,9 +53,9 @@ jobs:
       # computes them: 0.1.0-beta.1-mc26.3, mc26.3-beta and beta for a pre-release,
       # 0.1.0-mc26.3, mc26.3 and latest for a stable version. Manual runs: the commit only.
       - id: release
-        if: env.HAS_SECRETS == 'true' && github.ref_type == 'tag'
+        if: env.HAS_SECRETS == 'true' && (github.ref_type == 'tag' || inputs.release_tag != '')
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
           scripts/release/meta.sh "$TAG" > "$RUNNER_TEMP/release"
           {
@@ -52,7 +70,7 @@ jobs:
           images: ${{ secrets.DOCKERHUB_USERNAME }}/vanillite
           tags: |
             ${{ steps.release.outputs.tags }}
-            type=sha,format=short,enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=sha,format=short,enable=${{ github.event_name == 'workflow_dispatch' && inputs.release_tag == '' }}
           flavor: latest=false
       # The binaries are cross-compiled in the build stage (cargo-zigbuild): no emulation.
       - uses: docker/build-push-action@v6
@@ -62,7 +80,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           build-args: |
             BINARY=build
-            VANILLITE_COMMIT=${{ github.sha }}
+            VANILLITE_COMMIT=${{ steps.source.outputs.commit }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
