@@ -89,12 +89,6 @@ fn from_3d(value: i32) -> Direction {
     Direction::ALL[(value.rem_euclid(6)) as usize]
 }
 
-/// `WorldBorder.isWithinBounds(pos)` of the default border.
-fn within_border(pos: BlockPos) -> bool {
-    const LIMIT: i32 = 29_999_984;
-    pos.x >= -LIMIT && pos.x < LIMIT && pos.z >= -LIMIT && pos.z < LIMIT
-}
-
 /// `PistonBaseBlock.isPushable(state, level, pos, direction, allowDestroyable,
 /// connectionDirection)`.
 pub fn is_pushable(
@@ -105,7 +99,7 @@ pub fn is_pushable(
     allow_destroyable: bool,
     connection_direction: Direction,
 ) -> bool {
-    if !level.in_height(pos.y) || !within_border(pos) {
+    if !level.in_height(pos.y) || !level.border.is_block_within_bounds(pos) {
         return false;
     }
     if state.is_air() {

@@ -600,11 +600,14 @@ impl WorldPlayers {
         world: crate::world::WorldId,
         blocks: &mut WorldBlocks<'_>,
     ) {
+        let border = level.border.clone();
         let ctx = MoveContext {
             runs_normally,
             rules: &rules.movement,
+            border: Some(&border),
+            no_wrong_move_check: false,
         };
-        let protection = self.spawn_protection(global);
+        let protection = self.spawn_protection(global, level);
         // The player kind data leaves the level while the packets are handled, so the block
         // handlers can change the level (`setBlock` with its updates) meanwhile. Nothing in
         // between adds or removes players.
@@ -679,7 +682,13 @@ impl WorldPlayers {
                 };
                 let handled = player.connection.handle_packets(
                     &mut state,
-                    ctx,
+                    MoveContext {
+                        no_wrong_move_check: matches!(
+                            player.game_mode,
+                            GameMode::Spectator | GameMode::Creative
+                        ),
+                        ..ctx
+                    },
                     chat,
                     &mut play,
                     PACKETS_PER_TICK,
@@ -810,8 +819,8 @@ impl WorldPlayers {
     }
 
     /// Spawn protection of this world for this tick (`isUnderSpawnProtection`).
-    fn spawn_protection(&self, global: &Global) -> SpawnProtection {
-        let spawn = self.level.spawn.0;
+    fn spawn_protection(&self, global: &Global, level: &Level) -> SpawnProtection {
+        let spawn = crate::world::effective_spawn(level, self.level.spawn).0;
         SpawnProtection {
             active: self.level.dimension.as_str() == "minecraft:overworld"
                 && global.spawn_protection > 0
@@ -827,6 +836,7 @@ impl WorldPlayers {
         for (_, player) in entities.players.iter_mut() {
             player.connection.movement.tick_client_load_timeout();
         }
+        crate::spectator::tick(entities);
     }
 
     /// `ChunkMap.tick`: one chunk batch per player.
@@ -916,7 +926,7 @@ impl WorldPlayers {
     /// block change acknowledgement, digging progress, item pickup, the inventory menu's
     /// `broadcastChanges` and equipment changes for other players.
     fn tick_players(&mut self, level: &mut Level, global: &Global, blocks: &mut WorldBlocks<'_>) {
-        let protection = self.spawn_protection(global);
+        let protection = self.spawn_protection(global, level);
         // As in `handle_packets`: the players leave the level while it may change.
         let mut players = std::mem::take(&mut level.entities.players);
         let spectators: FxHashSet<EntityId> = players

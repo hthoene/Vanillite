@@ -13,6 +13,7 @@
 
 pub mod block_entity;
 pub mod border;
+pub mod difficulty;
 mod entity_storage;
 pub mod explosion;
 pub mod forced;
@@ -114,6 +115,11 @@ pub struct LevelSettings {
     pub spread_vines: bool,
     /// The server's difficulty (`level.getDifficulty()`).
     pub difficulty: crate::survival::rules::Difficulty,
+    /// `getOverworldClockTime` (local difficulty), set by the server every tick.
+    pub overworld_clock_time: i64,
+    /// `getMoonBrightness` of this dimension (`visual/moon_phase`), set by the server every
+    /// tick.
+    pub moon_brightness: f32,
     /// The dimension's `infiniburn` tag.
     pub infiniburn: crate::block::fire::Infiniburn,
     /// The dimension's `fast_lava` attribute (the Nether).
@@ -150,6 +156,8 @@ impl Default for LevelSettings {
             fire_spread_radius: 128,
             spread_vines: true,
             difficulty: crate::survival::rules::Difficulty::Normal,
+            overworld_clock_time: 0,
+            moon_brightness: 1.0,
             infiniburn: crate::block::fire::Infiniburn::Overworld,
             fast_lava: false,
             tnt_explodes: true,

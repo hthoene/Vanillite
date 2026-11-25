@@ -395,7 +395,7 @@ pub fn apply_knockback(ents: &mut Entities, target: EntityId, power: f64, xd: f6
 /// `LivingEntity.actuallyHurt` of a mob: armour, then health.
 fn actually_hurt(
     ents: &mut Entities,
-    env: &Env<'_>,
+    env: &mut Env<'_>,
     target: EntityId,
     source: DamageSource,
     damage: f32,
@@ -435,6 +435,8 @@ fn actually_hurt(
         if let Some(mut e) = ents.store.get_mut(target) {
             e.mark_data_dirty();
         }
+        let event = crate::level::game_event::events().entity_damage;
+        super::animal::entity_game_event(ents, env, target, event, Some(target));
     }
 }
 

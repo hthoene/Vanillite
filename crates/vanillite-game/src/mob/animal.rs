@@ -427,7 +427,21 @@ pub fn interact_on(
     Interaction::Pass
 }
 
-/// `Mob.interact`: name tags and spawn eggs, leads, then `mobInteract`.
+/// `entity.gameEvent(event, source)`: at the entity's position.
+pub fn entity_game_event(
+    ents: &Entities,
+    env: &mut Env<'_>,
+    entity: EntityId,
+    event: u16,
+    source: Option<EntityId>,
+) {
+    if let Some(pos) = ents.store.get(entity).map(|e| e.pos()) {
+        crate::survival::game_event(env.out, event, pos, source);
+    }
+}
+
+/// `Mob.interact`: name tags and spawn eggs, leads, then `mobInteract`; the important
+/// interactions and `mobInteract` post `ENTITY_INTERACT` when they consume the action.
 #[allow(clippy::too_many_arguments)]
 fn mob_interact(
     level: &Level,
@@ -442,9 +456,14 @@ fn mob_interact(
 ) -> Interaction {
     let name = item::item_id(stack).name();
     // `checkAndHandleImportantInteractions`.
+    let interacted = |ents: &Entities, env: &mut Env<'_>| {
+        let event = crate::level::game_event::events().entity_interact;
+        entity_game_event(ents, env, target, event, Some(player));
+    };
     if name == "minecraft:name_tag" {
         let r = name_tag(ents, player, target, hand, stack);
         if r.consumes() {
+            interacted(ents, env);
             return r;
         }
     }
@@ -452,15 +471,38 @@ fn mob_interact(
         let own = ents.mob(target).map(|m| m.kind);
         if own == Some(egg_kind) && ents.mob(target).is_some_and(|m| m.kind.ageable()) {
             spawn_offspring(level, ents, player, target, hand, egg_kind);
+            interacted(ents, env);
             return Interaction::Success;
         }
         return Interaction::Pass;
     }
-    // `Entity.interact`: leads.
+    // `Entity.interact`: leads (with their own game events).
     let r = super::tame::leash_interact(ents, env, player, target, hand, sneaking);
     if r != Interaction::Pass {
         return r;
     }
+    // `mobInteract`.
+    let r = own_interact(level, ents, env, _cx, player, target, hand, sneaking, stack);
+    if r.consumes() {
+        interacted(ents, env);
+    }
+    r
+}
+
+/// `mobInteract` of the mob kinds.
+#[allow(clippy::too_many_arguments)]
+fn own_interact(
+    level: &Level,
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    _cx: &mut MobContext,
+    player: EntityId,
+    target: EntityId,
+    hand: Hand,
+    sneaking: bool,
+    stack: &ItemStack,
+) -> Interaction {
+    let name = item::item_id(stack).name();
     let kind = ents.mob(target).map_or(Kind::Zombie, |m| m.kind);
     if kind.family() != super::Family::Classic {
         let mut ix = super::fam::Interact {
@@ -503,6 +545,8 @@ fn mob_interact(
                 .is_some_and(|m| m.is_alive() && !m.sheared && !m.baby);
             if ready {
                 shear_sheep(ents, env, target);
+                let event = crate::level::game_event::events().shear;
+                entity_game_event(ents, env, target, event, Some(player));
                 hurt_held(ents, env, player, hand, 1);
                 return Interaction::Success;
             }
@@ -530,6 +574,8 @@ fn mob_interact(
     if name == "minecraft:shears" && !sneaking && ents.mob(target).is_some_and(|m| m.saddled) {
         // `attemptToShearEquipment`: the saddle comes off.
         unequip_saddle(ents, env, target);
+        let event = crate::level::game_event::events().shear;
+        entity_game_event(ents, env, target, event, Some(player));
         hurt_held(ents, env, player, hand, 1);
         return Interaction::Success;
     }
@@ -850,7 +896,6 @@ pub fn use_spawn_egg_on(
     face: vanillite_base::Direction,
     stack: &mut ItemStack,
     infinite: bool,
-    difficulty: crate::survival::rules::Difficulty,
 ) -> bool {
     let state = level.block(pos);
     // An empty collision shape: spawn inside, else on the face.
@@ -863,9 +908,7 @@ pub fn use_spawn_egg_on(
     let seed = crate::mob::new_entity_seed();
     let mut m = MobData::new(kind, seed);
     let mut ctx =
-        super::fam::SpawnContext::simple(difficulty, super::fam::SpawnReason::SpawnItemUse);
-    ctx.pos = spawn_pos;
-    ctx.level = Some(level);
+        super::fam::SpawnContext::at(level, spawn_pos, super::fam::SpawnReason::SpawnItemUse);
     kinds::finalize_spawn(&mut m, &mut ctx, env.random);
     if let Some(name) = stack.component(vanillite_protocol::components::ids::CUSTOM_NAME) {
         m.custom_name = Some(name.into());

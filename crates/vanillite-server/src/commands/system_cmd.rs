@@ -433,7 +433,7 @@ fn version(source: &CommandSource, env: &Env<'_>) -> i32 {
     1
 }
 
-/// `SpectateCommand`: sends the camera; the server does not move the spectator along.
+/// `SpectateCommand`: sets the spectator's camera.
 fn spectate(
     parsed: &Parsed<CommandId>,
     source: &CommandSource,
@@ -466,14 +466,20 @@ fn spectate(
             vec![ErrArg::Component(Box::new(t.display()))],
         ));
     }
-    let camera = target.as_ref().map_or(player.entity, |t| t.entity);
-    let network_id = camera
-        .and_then(|id| env.level.entities.store.get(id))
-        .map(|e| e.network_id().0);
-    if let (Some(camera_id), Some((sink, _))) =
-        (network_id, env.global.players.connection(Uuid(player.uuid)))
-    {
-        sink.send(&SetCamera { camera_id });
+    // `ServerPlayer.setCamera`: the spectator moves along with its camera.
+    if let Some(id) = player.entity {
+        let camera = target.as_ref().and_then(|t| t.entity);
+        crate::spectator::set_camera(&mut env.level.entities, id, camera);
+    } else {
+        let camera = target.as_ref().map_or(player.entity, |t| t.entity);
+        let network_id = camera
+            .and_then(|id| env.level.entities.store.get(id))
+            .map(|e| e.network_id().0);
+        if let (Some(camera_id), Some((sink, _))) =
+            (network_id, env.global.players.connection(Uuid(player.uuid)))
+        {
+            sink.send(&SetCamera { camera_id });
+        }
     }
     let message = match &target {
         Some(t) => Component::translatable("commands.spectate.success.started", vec![t.display()]),

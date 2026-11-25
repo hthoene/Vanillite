@@ -88,7 +88,10 @@ pub fn patrol_spawner_tick(
         return 0;
     }
     #[allow(clippy::cast_possible_truncation)]
-    let group = super::super::effective_difficulty(input.difficulty).ceil() as i32 + 1;
+    let group = crate::level::difficulty::at(level, spawn_pos)
+        .effective
+        .ceil() as i32
+        + 1;
     let mut spawned = 0;
     for i in 0..group {
         let y = spawn::surface_y(

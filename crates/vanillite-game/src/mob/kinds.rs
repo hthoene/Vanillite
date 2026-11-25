@@ -1147,7 +1147,9 @@ pub fn eat_block(t: &mut Tick<'_, '_>) {
                 .push(WorldAction::SetBlock(below, ids::DIRT.default_state(), 2));
         }
     }
-    // `Sheep.ate`: the wool grows back, babies grow up.
+    // `Sheep.ate`: `Mob.ate` (the eat game event), the wool grows back, babies grow up.
+    let at = t.pos();
+    super::living::post_game_event(t, crate::level::game_event::events().eat, at, None);
     let m = t.mob();
     m.sheared = false;
     if m.baby {
@@ -1245,6 +1247,8 @@ fn teleport_to(
     id: EntityId,
     to: Vec3,
 ) -> bool {
+    // `randomTeleport`: the target is clamped into the world border.
+    let to = level.border.clamp_vec(to.x, to.y, to.z);
     let mut pos = BlockPos::containing(to.x, to.y, to.z);
     while pos.y > level.min_y()
         && !blocks_motion(level.block(BlockPos::new(pos.x, pos.y - 1, pos.z)))
@@ -1276,6 +1280,12 @@ fn teleport_to(
     if let Some(m) = ents.mob_mut(id) {
         m.nav.stop();
     }
+    crate::survival::game_event(
+        env.out,
+        crate::level::game_event::events().teleport,
+        old,
+        Some(id),
+    );
     let seed = crate::survival::sound_seed();
     crate::survival::play_sound(
         env.out,

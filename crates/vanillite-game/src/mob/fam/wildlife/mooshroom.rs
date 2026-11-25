@@ -103,6 +103,13 @@ pub(super) fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
     }
     if name == "minecraft:shears" && !baby {
         shear(ix);
+        crate::mob::animal::entity_game_event(
+            ix.ents,
+            ix.env,
+            ix.target,
+            crate::level::game_event::events().shear,
+            Some(ix.player),
+        );
         hurt_held(ix.ents, ix.env, ix.player, ix.hand, 1);
         return Interaction::Success;
     }

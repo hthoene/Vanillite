@@ -232,8 +232,17 @@ fn on_broken_after_fall(level: &mut Level, block: BlockId, pos: BlockPos) {
 /// `Entity.collide` against block collision shapes: the movement left after the boxes in the
 /// way, Y first, then X and Z (larger first).
 pub(crate) fn collide(level: &Level, aabb: Aabb, movement: Vec3) -> Vec3 {
+    let mut border = Vec::new();
+    if movement.length_sqr() != 0.0 {
+        let area = aabb.expand_towards(movement.x, movement.y, movement.z);
+        crate::mob::physics::border_boxes(&level.border, &aabb, &area, &mut border);
+    }
+    let collide_axis = |aabb: &Aabb, axis: usize, delta: f64| {
+        let delta = collide_axis(level, aabb, axis, delta);
+        crate::mob::physics::collide_axis(&border, aabb, axis, delta)
+    };
     let mut aabb = aabb;
-    let dy = collide_axis(level, &aabb, 1, movement.y);
+    let dy = collide_axis(&aabb, 1, movement.y);
     aabb = aabb.offset(0.0, dy, 0.0);
     let (first, second) = if movement.x.abs() < movement.z.abs() {
         (2, 0)
@@ -242,7 +251,7 @@ pub(crate) fn collide(level: &Level, aabb: Aabb, movement: Vec3) -> Vec3 {
     };
     let mut out = [0.0, dy, 0.0];
     for axis in [first, second] {
-        let delta = collide_axis(level, &aabb, axis, [movement.x, 0.0, movement.z][axis]);
+        let delta = collide_axis(&aabb, axis, [movement.x, 0.0, movement.z][axis]);
         out[axis] = delta;
         aabb = match axis {
             0 => aabb.offset(delta, 0.0, 0.0),

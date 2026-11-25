@@ -296,6 +296,13 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
             "minecraft:entity.copper_golem.shear",
         );
         drop_above(ix, pos, antenna);
+        crate::mob::animal::entity_game_event(
+            ix.ents,
+            ix.env,
+            ix.target,
+            crate::level::game_event::events().shear,
+            Some(ix.player),
+        );
         animal::hurt_held(ix.ents, ix.env, ix.player, ix.hand, 1);
         return Interaction::Success;
     }

@@ -1,6 +1,7 @@
 //! The world border of one dimension (`WorldBorder`): centre, size with its lerp, damage,
 //! warnings; saved as the dimension's saved data `minecraft:world_border`.
 
+use vanillite_base::{BlockPos, Vec3};
 use vanillite_nbt::{Compound, Tag};
 
 /// `WorldBorder.MAX_SIZE` (`5.999997E7F`).
@@ -337,6 +338,51 @@ impl WorldBorder {
         let epsilon = f64::from(1.0e-5_f32);
         self.is_within_bounds(min_x, min_z)
             && self.is_within_bounds(max_x - epsilon, max_z - epsilon)
+    }
+
+    /// `isWithinBounds(BlockPos)`.
+    pub fn is_block_within_bounds(&self, pos: BlockPos) -> bool {
+        self.is_within_bounds(f64::from(pos.x), f64::from(pos.z))
+    }
+
+    /// `isWithinBounds(ChunkPos)`: both corner blocks of the chunk.
+    pub fn is_chunk_within_bounds(&self, pos: vanillite_base::ChunkPos) -> bool {
+        let (x, z) = (f64::from(pos.x * 16), f64::from(pos.z * 16));
+        self.is_within_bounds(x, z) && self.is_within_bounds(x + 15.0, z + 15.0)
+    }
+
+    /// `clampVec3ToBound(x, y, z)`.
+    pub fn clamp_vec(&self, x: f64, y: f64, z: f64) -> Vec3 {
+        let epsilon = f64::from(1.0e-5_f32);
+        Vec3::new(
+            x.max(self.min_x()).min(self.max_x() - epsilon),
+            y,
+            z.max(self.min_z()).min(self.max_z() - epsilon),
+        )
+    }
+
+    /// `clampToBounds(x, y, z)`.
+    pub fn clamp_to_bounds(&self, x: f64, y: f64, z: f64) -> BlockPos {
+        let v = self.clamp_vec(x, y, z);
+        BlockPos::containing(v.x, v.y, v.z)
+    }
+
+    /// `isInsideCloseToBorder(entity, box)`: an entity at `x`, `z` with a box of
+    /// `x_size` × `z_size` is near enough to the border to collide with it.
+    pub fn is_inside_close_to_border(&self, x: f64, z: f64, x_size: f64, z_size: f64) -> bool {
+        let bb_max = x_size.abs().max(z_size.abs()).max(1.0);
+        self.distance_to_border(x, z) < bb_max * 2.0 && self.is_within_bounds_margin(x, z, bb_max)
+    }
+
+    /// `getCollisionShape` of a static border as the block box it keeps entities in:
+    /// `[floor(minX), ceil(maxX)] × [floor(minZ), ceil(maxZ)]`.
+    pub fn collision_box(&self) -> (f64, f64, f64, f64) {
+        (
+            self.min_x().floor(),
+            self.min_z().floor(),
+            self.max_x().ceil(),
+            self.max_z().ceil(),
+        )
     }
 
     /// `getDistanceToBorder(x, z)`.

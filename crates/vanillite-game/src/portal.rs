@@ -135,24 +135,6 @@ impl PortalState {
     }
 }
 
-// --- World border ------------------------------------------------------------------------
-
-/// The default world border's half size (`WorldBorder` of size 59 999 968 around 0, 0); the
-/// border itself comes with the world border feature.
-const BORDER: f64 = 29_999_984.0;
-
-/// `WorldBorder.isWithinBounds(pos)`.
-pub fn within_border(pos: BlockPos) -> bool {
-    let (x, z) = (f64::from(pos.x), f64::from(pos.z));
-    (-BORDER..BORDER).contains(&x) && (-BORDER..BORDER).contains(&z)
-}
-
-/// `WorldBorder.clampToBounds(x, y, z)`.
-pub fn clamp_to_border(x: f64, y: f64, z: f64) -> BlockPos {
-    let max = BORDER - f64::from(1.0e-5_f32);
-    BlockPos::containing(x.clamp(-BORDER, max), y, z.clamp(-BORDER, max))
-}
-
 // --- Nether portals ----------------------------------------------------------------------
 
 /// `BlockUtil.FoundRectangle`: a rectangle of blocks in a vertical plane.
@@ -364,8 +346,9 @@ pub fn exit_position(
 /// `getPortalDestination`'s first guess: the entity's position scaled by
 /// `DimensionType.getTeleportationScale` (the coordinate scale of the old dimension over the
 /// new one), clamped to the world border.
-pub fn scaled_exit(pos: Vec3, scale: f64) -> BlockPos {
-    clamp_to_border(pos.x * scale, pos.y, pos.z * scale)
+#[cfg(test)]
+fn scaled_exit(border: &crate::level::border::WorldBorder, pos: Vec3, scale: f64) -> BlockPos {
+    border.clamp_to_bounds(pos.x * scale, pos.y, pos.z * scale)
 }
 
 /// `PortalForcer`'s search radius: 16 blocks into the Nether, 128 out of it.
@@ -413,7 +396,7 @@ pub fn find_closest_portal(level: &Level, approx: BlockPos, radius: i32) -> Opti
                             );
                             if (pos.x - approx.x).abs() > radius
                                 || (pos.z - approx.z).abs() > radius
-                                || !within_border(pos)
+                                || !level.border.is_block_within_bounds(pos)
                             {
                                 continue;
                             }
@@ -530,7 +513,11 @@ pub fn create_portal(
             column.x,
             column.z,
         ));
-        if !within_border(column) || !within_border(column.relative(direction)) {
+        if !level.border.is_block_within_bounds(column)
+            || !level
+                .border
+                .is_block_within_bounds(column.relative(direction))
+        {
             continue;
         }
         let mut y = height;
@@ -574,7 +561,7 @@ pub fn create_portal(
             if max_start < min_start {
                 return None;
             }
-            let start = clamp_to_border(
+            let start = level.border.clamp_to_bounds(
                 f64::from(origin.x - dx),
                 f64::from(origin.y.clamp(min_start, max_start)),
                 f64::from(origin.z - dz),
@@ -739,13 +726,25 @@ mod tests {
     #[test]
     fn coordinates_scale_by_eight_between_overworld_and_nether() {
         // Overworld (scale 1) to Nether (scale 8): 1 / 8.
-        let into = scaled_exit(Vec3::new(100.7, 64.0, -35.2), 1.0 / 8.0);
+        let into = scaled_exit(
+            &crate::level::border::WorldBorder::default(),
+            Vec3::new(100.7, 64.0, -35.2),
+            1.0 / 8.0,
+        );
         assert_eq!(into, BlockPos::new(12, 64, -5));
         // Back: 8.
-        let out = scaled_exit(Vec3::new(12.5, 70.0, -4.4), 8.0);
+        let out = scaled_exit(
+            &crate::level::border::WorldBorder::default(),
+            Vec3::new(12.5, 70.0, -4.4),
+            8.0,
+        );
         assert_eq!(out, BlockPos::new(100, 70, -36));
         // Clamped to the world border.
-        let far = scaled_exit(Vec3::new(4_000_000.0, 80.0, -4_000_000.0), 8.0);
+        let far = scaled_exit(
+            &crate::level::border::WorldBorder::default(),
+            Vec3::new(4_000_000.0, 80.0, -4_000_000.0),
+            8.0,
+        );
         assert_eq!(far, BlockPos::new(29_999_983, 80, -29_999_984));
     }
 

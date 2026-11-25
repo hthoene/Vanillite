@@ -82,6 +82,22 @@ fn use_duration(ents: &Entities, player: EntityId, stack: &ItemStack) -> i32 {
     }
 }
 
+/// `ItemStack.causeUseVibration`: `use_effects.interact_vibrations` of the stack (on by
+/// default, off for spears).
+fn use_vibrations(stack: &ItemStack) -> bool {
+    match stack.component(vanillite_protocol::components::ids::USE_EFFECTS) {
+        Some(data) => data.get(1).is_some_and(|b| *b != 0),
+        None => !item::item_id(stack).name().ends_with("_spear"),
+    }
+}
+
+/// `gameEvent(event)` of a player at its position.
+fn player_game_event(ents: &Entities, env: &mut Env<'_>, player: EntityId, event: u16) {
+    if let Some(pos) = ents.store.get(player).map(|e| e.pos()) {
+        crate::survival::game_event(env.out, event, pos, Some(player));
+    }
+}
+
 fn mark(ents: &mut Entities, player: EntityId) {
     if let Some(mut e) = ents.store.get_mut(player) {
         e.mark_data_dirty();
@@ -90,7 +106,7 @@ fn mark(ents: &mut Entities, player: EntityId) {
 
 /// `startUsingItem(hand)` from `use_item`, when the held item is used over time. A bow needs
 /// arrows unless the player has infinite materials.
-pub fn start(ents: &mut Entities, _env: &mut Env<'_>, player: EntityId, hand: Hand) {
+pub fn start(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, hand: Hand) {
     let stack = held(ents, player, hand);
     if stack.is_empty() {
         return;
@@ -123,16 +139,29 @@ pub fn start(ents: &mut Entities, _env: &mut Env<'_>, player: EntityId, hand: Ha
         });
     }
     mark(ents, player);
+    if use_vibrations(&stack) {
+        let event = crate::level::game_event::events().item_interact_start;
+        player_game_event(ents, env, player, event);
+    }
 }
 
-/// `stopUsingItem`.
-pub fn stop(ents: &mut Entities, player: EntityId) {
+/// `stopUsingItem`: the item in use (`stack`) vibrates when it was in use.
+pub fn stop(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, stack: &ItemStack) {
+    if stop_quietly(ents, player) && !stack.is_empty() && use_vibrations(stack) {
+        let event = crate::level::game_event::events().item_interact_finish;
+        player_game_event(ents, env, player, event);
+    }
+}
+
+/// `stopUsingItem` without its game event; returns whether an item was in use.
+fn stop_quietly(ents: &mut Entities, player: EntityId) -> bool {
     let was = ents
         .player_mut(player)
         .and_then(|p| p.survival.using_item.take());
     if was.is_some() {
         mark(ents, player);
     }
+    was.is_some()
 }
 
 /// Whether the player blocks with a shield (`isBlocking`).
@@ -177,7 +206,7 @@ pub fn tick(ents: &mut Entities, env: &mut Env<'_>, player: EntityId) {
     };
     let stack = held(ents, player, u.hand);
     if stack.item != u.item || stack.is_empty() {
-        stop(ents, player);
+        stop(ents, env, player, &ItemStack::new(u.item, 1));
         return;
     }
     let ticks = u.ticks.saturating_add(1);
@@ -241,7 +270,8 @@ fn on_use_tick(
 /// `completeUsingItem`: food feeds the player, the stack shrinks (or turns into its
 /// remainder), the client is told (`entity_event` 9).
 fn finish(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, u: UsingItem) {
-    stop(ents, player);
+    // `stopUsingItem` comes after `finishUsingItem`: its game event is posted at the end.
+    let was_using = stop_quietly(ents, player);
     let stack = held(ents, player, u.hand);
     let id = item::item_id(&stack);
     let name = id.name();
@@ -311,6 +341,20 @@ fn finish(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, u: UsingItem
             seed,
         );
     }
+    // `Consumable.onConsume`: the drink or eat game event.
+    let drink = matches!(
+        name,
+        "minecraft:milk_bucket"
+            | "minecraft:honey_bottle"
+            | "minecraft:potion"
+            | "minecraft:ominous_bottle"
+    );
+    let consumable = drink || id.info().food.is_some();
+    if consumable {
+        let events = crate::level::game_event::events();
+        let event = if drink { events.drink } else { events.eat };
+        player_game_event(ents, env, player, event);
+    }
     // `Consumable.onConsume`: the use statistic and `consume_item`.
     if let Some(p) = ents.player_mut(player) {
         p.stats.award(
@@ -359,6 +403,12 @@ fn finish(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, u: UsingItem
             event: 9,
         });
     }
+    // `stopUsingItem`: the used stack vibrates unless it was used up.
+    let left = !consumable || creative || stack.count > 1;
+    if was_using && left && use_vibrations(&stack) {
+        let event = crate::level::game_event::events().item_interact_finish;
+        player_game_event(ents, env, player, event);
+    }
 }
 
 /// The first arrow (`#arrows`: arrows, tipped and spectral arrows) in the inventory
@@ -397,8 +447,26 @@ pub fn release(
     let Some(u) = ents.player(player).and_then(|p| p.survival.using_item) else {
         return;
     };
-    stop(ents, player);
     let stack = held(ents, player, u.hand);
+    let was_using = stop_quietly(ents, player);
+    shoot_bow(ents, env, network_ids, player, u, &stack);
+    // `stopUsingItem` after `releaseUsing`.
+    if was_using && !stack.is_empty() && use_vibrations(&stack) {
+        let event = crate::level::game_event::events().item_interact_finish;
+        player_game_event(ents, env, player, event);
+    }
+}
+
+/// `BowItem.releaseUsing`.
+fn shoot_bow(
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    network_ids: &vanillite_world::entity::NetworkIds,
+    player: EntityId,
+    u: UsingItem,
+    stack: &ItemStack,
+) {
+    let stack = stack.clone();
     if stack.item != u.item || item::item_id(&stack).name() != "minecraft:bow" {
         return;
     }

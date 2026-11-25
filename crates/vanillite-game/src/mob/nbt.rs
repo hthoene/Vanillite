@@ -635,7 +635,7 @@ pub fn save_arrow(
     if let Some(o) = owner {
         out.insert("Owner", uuid_ints(o));
     }
-    out.insert("HasBeenShot", true);
+    out.insert("HasBeenShot", a.has_been_shot);
     out.insert("LeftOwner", a.left_owner);
     out.insert("item", crate::item_nbt::stack_to_nbt(&a.item));
     if core.kind() == ids::SPECTRAL_ARROW {
@@ -689,6 +689,7 @@ pub fn load_arrow(tag: &Compound) -> Option<(LoadedEntity, super::projectile::Ar
             item,
             in_ground_time: 0,
             spectral_duration: int(tag, "Duration").unwrap_or(200),
+            has_been_shot: matches!(tag.get("HasBeenShot"), Some(Tag::Byte(b)) if *b != 0),
         },
     ))
 }

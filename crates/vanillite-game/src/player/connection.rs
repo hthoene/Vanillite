@@ -73,6 +73,10 @@ pub enum EntityAction {
     /// `player_command` `OPEN_INVENTORY` while riding: the vehicle's inventory opens
     /// (`HasCustomInventoryScreen`: chest boats).
     OpenVehicleInventory,
+    /// `spectator_action` of a spectator: spectate the entity of this network id.
+    Spectate(i32),
+    /// `teleport_to_entity` of a spectator: to the entity of this UUID in any world.
+    TeleportToEntity(u128),
 }
 
 /// What a player sends to steer its vehicle.
@@ -202,6 +206,8 @@ pub struct Connection {
     /// Attacks and interactions with entities since the last tick (`attack`, `interact`), in
     /// packet order; the world resolves them with the entities.
     pub entity_actions: Vec<EntityAction>,
+    /// `ServerPlayer.camera`: the entity a spectator watches through (`None`: itself).
+    pub camera: Option<vanillite_world::entity::EntityId>,
     /// Vehicle input: the last `player_input`, `paddle_boat` and `move_vehicle`.
     pub vehicle: VehicleInput,
     /// Digging, placing and item handling.
@@ -266,6 +272,7 @@ impl Connection {
             chunks: PlayerChunks::new(memory_connection),
             chat: PlayerChatState::new(chat, inbox),
             entity_actions: Vec::new(),
+            camera: None,
             vehicle: VehicleInput::default(),
             play: Digging::new(),
             last_action: std::time::Instant::now(),
@@ -334,6 +341,9 @@ impl Connection {
             | ServerboundPlay::PlaceRecipe(_)
             | ServerboundPlay::ContainerButtonClick(_)
             | ServerboundPlay::SignUpdate(_) => true,
+            ServerboundPlay::SpectatorAction(_) => {
+                loaded && play.actor.game_mode == vanillite_config::GameMode::Spectator
+            }
             _ => false,
         };
         let pos_before = state.body.pos;
@@ -476,6 +486,26 @@ impl Connection {
                 if self.movement.has_client_loaded() {
                     state.shift_key_down = p.0.shift;
                     self.vehicle.input = p.0;
+                }
+            }
+            ServerboundPlay::SpectatorAction(p) => {
+                // `handleSpectatorAction`: only loaded spectators, bounded like attacks.
+                let spectator = play.actor.game_mode == vanillite_config::GameMode::Spectator;
+                if let Some(id) = p.spectate_entity_id
+                    && spectator
+                    && self.movement.has_client_loaded()
+                    && self.entity_actions.len() < 16
+                {
+                    self.entity_actions.push(EntityAction::Spectate(id));
+                }
+            }
+            ServerboundPlay::TeleportToEntity(p) => {
+                // `handleTeleportToEntityPacket`: only spectators.
+                if play.actor.game_mode == vanillite_config::GameMode::Spectator
+                    && self.entity_actions.len() < 16
+                {
+                    self.entity_actions
+                        .push(EntityAction::TeleportToEntity(p.uuid.0));
                 }
             }
             ServerboundPlay::Attack(p) => {

@@ -261,6 +261,7 @@ fn move_self(
     );
     let effect_state = level.block(effect_pos);
     let mut velocity = delta;
+    let mut bounced = false;
     if (moved_vertically && vertical) || horizontal {
         // `restituteMovementAfterCollisions` with the entity's bounciness of 0.
         let current = delta;
@@ -281,6 +282,7 @@ fn move_self(
                     0.0
                 };
             }
+            bounced = restitution > 0.0;
             velocity.y = if restitution > 0.0 {
                 let portion = movement.y / current.y;
                 let compensation = portion * gravity;
@@ -310,6 +312,13 @@ fn move_self(
             entity.set_flags(EntityFlags::ON_GROUND, below);
         }
         entity.set_velocity(velocity);
+    }
+    if bounced {
+        level.game_event(
+            crate::level::game_event::events().bounce,
+            new_pos,
+            crate::level::game_event::GameEventContext::of(Some(id)),
+        );
     }
     Moved {
         horizontal,

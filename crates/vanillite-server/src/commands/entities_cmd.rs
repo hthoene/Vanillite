@@ -465,7 +465,8 @@ pub(crate) fn hurt_any(
             vanillite_game::mob::combat::hurt_mob(level, ents, e, cx, id, source, amount)
         });
     }
-    WorldSurvival::hurt(
+    let mut events = Vec::new();
+    let hurt = WorldSurvival::hurt(
         &mut level.entities,
         Some(&level.chunks),
         global,
@@ -473,7 +474,12 @@ pub(crate) fn hurt_any(
         id,
         source,
         amount,
-    )
+        &mut events,
+    );
+    for (event, pos, context) in events {
+        level.game_event(event, pos, context);
+    }
+    hurt
 }
 
 /// `Entity.kill`: living entities take `genericKill` damage, the others are removed.
@@ -484,13 +490,18 @@ pub(crate) fn kill_any(
     id: EntityId,
 ) {
     if level.entities.player(id).is_some() {
+        let mut events = Vec::new();
         WorldSurvival::kill(
             &mut level.entities,
             Some(&level.chunks),
             global,
             dimension,
             id,
+            &mut events,
         );
+        for (event, pos, context) in events {
+            level.game_event(event, pos, context);
+        }
     } else if level.entities.mob(id).is_some() {
         let source = DamageSource::of(global.level.damage_types.generic_kill);
         hurt_any(level, global, dimension, id, source, f32::MAX);

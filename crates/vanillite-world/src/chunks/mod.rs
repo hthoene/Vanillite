@@ -230,6 +230,9 @@ struct Holder {
     /// The chunk's stored entities are live (`ChunkLoadStatus.LOADED`); set by the entity
     /// storage at the end of the level tick, required for scheduled ticks.
     entities_loaded: bool,
+    /// Inhabited ticks (`incrementInhabitedTime`) not yet folded into the shared chunk: they
+    /// are written into it when the chunk is saved, so counting never copies a chunk.
+    inhabited: i64,
 }
 
 impl Holder {
@@ -1616,6 +1619,7 @@ impl Chunks {
                 let fluids = self.fluid_ticks.remove_container(pos, self.game_time);
                 if holder.dirty {
                     let chunk = Arc::make_mut(chunk);
+                    chunk.inhabited_time = chunk.inhabited_time.saturating_add(holder.inhabited);
                     chunk.block_ticks = blocks;
                     chunk.fluid_ticks = fluids;
                 }
@@ -1729,6 +1733,9 @@ impl Chunks {
         }
         if blocks && chunk.status == ChunkStatus::Full {
             let chunk = Arc::make_mut(chunk);
+            chunk.inhabited_time = chunk
+                .inhabited_time
+                .saturating_add(std::mem::take(&mut holder.inhabited));
             chunk.block_ticks = self.block_ticks.pack(pos, self.game_time);
             chunk.fluid_ticks = self.fluid_ticks.pack(pos, self.game_time);
         }
@@ -1876,6 +1883,27 @@ impl Chunks {
             .get(&pos)
             .and_then(|h| h.chunk.as_ref())
             .filter(|c| c.status == ChunkStatus::Full)
+    }
+
+    /// `ChunkAccess.getInhabitedTime` of a full chunk.
+    pub fn inhabited_time(&self, pos: ChunkPos) -> Option<i64> {
+        let holder = self.holders.get(&pos)?;
+        let chunk = holder.chunk.as_ref()?;
+        (chunk.status == ChunkStatus::Full)
+            .then(|| chunk.inhabited_time.saturating_add(holder.inhabited))
+    }
+
+    /// `ChunkAccess.incrementInhabitedTime` of a full chunk. Like Vanilla it does not mark the
+    /// chunk unsaved.
+    pub fn increment_inhabited_time(&mut self, pos: ChunkPos) {
+        if let Some(holder) = self.holders.get_mut(&pos)
+            && holder
+                .chunk
+                .as_ref()
+                .is_some_and(|c| c.status == ChunkStatus::Full)
+        {
+            holder.inhabited = holder.inhabited.saturating_add(1);
+        }
     }
 
     /// The block state at `pos`, `None` outside full chunks and the build height.

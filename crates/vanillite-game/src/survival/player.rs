@@ -1009,6 +1009,12 @@ fn actually_hurt(
         if let Some(v) = damage_stat(remaining) {
             player.stats.award(custom::DAMAGE_TAKEN, v);
         }
+        crate::survival::game_event(
+            env.out,
+            crate::level::game_event::events().entity_damage,
+            entity.as_ref().pos(),
+            Some(entity.as_ref().id()),
+        );
     }
 }
 
@@ -1188,7 +1194,15 @@ fn apply_item_blocking(
     if source.disable_shield_seconds > 0.0 && !env.types.is(source.kind, tag::IS_PROJECTILE) {
         #[allow(clippy::cast_possible_truncation)]
         let ticks = (source.disable_shield_seconds * 20.0) as i32;
-        player.survival.using_item = None;
+        // `stopUsingItem`: the shield (still in hand) vibrates.
+        if player.survival.using_item.take().is_some() {
+            crate::survival::game_event(
+                env.out,
+                crate::level::game_event::events().item_interact_finish,
+                pos,
+                Some(entity.as_ref().id()),
+            );
+        }
         player.survival.shield_disabled_until = player.survival.tick_count + ticks;
         entity.mark_data_dirty();
         let seed = crate::survival::sound_seed();
@@ -1235,6 +1249,12 @@ pub fn die(
     let network_id = entity.as_ref().network_id().0;
     let uuid = entity.as_ref().uuid();
     let id = entity.as_ref().id();
+    crate::survival::game_event(
+        env.out,
+        crate::level::game_event::events().entity_die,
+        entity.as_ref().pos(),
+        Some(id),
+    );
     // `resetStat(TIME_SINCE_REST)`.
     player.survival.time_since_rest = 0;
     let sink = std::sync::Arc::clone(&player.connection.sink);
@@ -2265,7 +2285,7 @@ fn travel_in_fluid(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mu
                 .as_ref()
                 .aabb()
                 .offset(v.x, v.y + f64::from(0.6_f32) - pos.y + old_y, v.z);
-        let blocks = MoveBlocks(env.blocks);
+        let blocks = MoveBlocks(env.blocks, env.border);
         let mut scratch = Vec::new();
         if crate::mob::physics::no_collision(&blocks, &probe, &mut scratch)
             && !crate::mob::physics::contains_any_liquid(&blocks, &probe)
@@ -2276,13 +2296,20 @@ fn travel_in_fluid(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mu
 }
 
 /// The world's blocks for [`crate::mob::physics`] (air where nothing is loaded).
-struct MoveBlocks<'a>(&'a dyn BlockAccess);
+struct MoveBlocks<'a>(
+    &'a dyn BlockAccess,
+    Option<&'a crate::level::border::WorldBorder>,
+);
 
 impl crate::mob::physics::Blocks for MoveBlocks<'_> {
     fn state(&self, pos: BlockPos) -> vanillite_data::block::BlockState {
         self.0
             .block_state(pos)
             .unwrap_or(vanillite_data::block::BlockState::AIR)
+    }
+
+    fn border(&self) -> Option<&crate::level::border::WorldBorder> {
+        self.1
     }
 }
 
@@ -2297,7 +2324,7 @@ fn simulate_move(
 ) {
     let from = entity.as_ref().pos();
     let was_on_ground = entity.as_ref().flags().contains(EntityFlags::ON_GROUND);
-    let blocks = MoveBlocks(env.blocks);
+    let blocks = MoveBlocks(env.blocks, env.border);
     let mut scratch = Vec::new();
     let movement = crate::mob::physics::collide(
         &blocks,

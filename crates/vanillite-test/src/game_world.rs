@@ -1477,6 +1477,7 @@ impl ScenarioWorld for GameWorld {
                 stack,
                 left_owner: false,
                 tick_count: 0,
+                has_been_shot: false,
             })),
         );
         Ok(())

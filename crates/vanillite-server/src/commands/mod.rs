@@ -15,7 +15,7 @@ mod data_cmd;
 mod dispatch;
 mod engine;
 mod entities_cmd;
-mod exec;
+pub(crate) mod exec;
 mod execute;
 pub(crate) mod functions;
 pub(crate) mod items;

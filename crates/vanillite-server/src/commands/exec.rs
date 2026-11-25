@@ -46,7 +46,7 @@ pub(crate) fn find_player(
 }
 
 /// The tab list part of a game mode change (`broadcastAll(UPDATE_GAME_MODE)`).
-fn broadcast_game_mode(global: &Global, uuid: u128, mode: GameMode) {
+pub(crate) fn broadcast_game_mode(global: &Global, uuid: u128, mode: GameMode) {
     global
         .players
         .update_info(Uuid(uuid), |e| e.game_mode = mode);

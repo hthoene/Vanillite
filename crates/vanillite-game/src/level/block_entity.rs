@@ -522,7 +522,8 @@ impl Level {
             let Some(ticker) = ticker else {
                 continue;
             };
-            if !self.is_block_ticking(pos.chunk()) {
+            // `LevelChunk.isTicking`: inside the world border and in a ticking chunk.
+            if !self.border.is_block_within_bounds(pos) || !self.is_block_ticking(pos.chunk()) {
                 continue;
             }
             let state = self.block(pos);

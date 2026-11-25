@@ -754,6 +754,13 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
         cs_mut(m).pickup_timer = 100;
         super::drop_item(ix.env, pos + Vec3::new(0.0, height, 0.0), block);
         play(ix, pos, "minecraft:entity.sulfur_cube.eject");
+        crate::mob::animal::entity_game_event(
+            ix.ents,
+            ix.env,
+            ix.target,
+            crate::level::game_event::events().shear,
+            Some(ix.player),
+        );
         crate::mob::animal::hurt_held(ix.ents, ix.env, ix.player, ix.hand, 1);
         if let Some(mut e) = ix.ents.store.get_mut(ix.target) {
             e.mark_data_dirty();

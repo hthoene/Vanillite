@@ -31,6 +31,7 @@ use super::{Environment, MobContext, MobData, Tick};
 use crate::entities::Entities;
 use crate::item::ItemStack;
 use crate::level::Level;
+use crate::level::difficulty::DifficultyInstance;
 use crate::player::encode::DataWriter;
 use crate::survival::damage::DamageSource;
 use crate::survival::player::Env;
@@ -137,13 +138,14 @@ pub struct SpawnContext<'a> {
     pub own_state: i64,
 }
 
-impl SpawnContext<'_> {
-    /// A context without a level (tests, simple spawns).
+impl<'a> SpawnContext<'a> {
+    /// A context without a level (tests, simple spawns): the difficulty of a fresh world.
     pub fn simple(difficulty: Difficulty, reason: SpawnReason) -> SpawnContext<'static> {
+        let instance = DifficultyInstance::new(difficulty, 0, 0, 0.0);
         SpawnContext {
             difficulty,
-            special_multiplier: special_multiplier(difficulty),
-            effective_difficulty: effective_difficulty(difficulty),
+            special_multiplier: instance.special_multiplier(),
+            effective_difficulty: instance.effective,
             climate: FarmClimate::Temperate,
             group_index: 0,
             reason,
@@ -154,6 +156,20 @@ impl SpawnContext<'_> {
             extra: Vec::new(),
             ride: None,
             own_state: 0,
+        }
+    }
+
+    /// A context at `pos` of `level` with its local difficulty
+    /// (`level.getCurrentDifficultyAt(pos)`).
+    pub fn at(level: &'a Level, pos: BlockPos, reason: SpawnReason) -> SpawnContext<'a> {
+        let instance = crate::level::difficulty::at(level, pos);
+        SpawnContext {
+            difficulty: instance.base,
+            special_multiplier: instance.special_multiplier(),
+            effective_difficulty: instance.effective,
+            pos,
+            level: Some(level),
+            ..SpawnContext::simple(instance.base, reason)
         }
     }
 
@@ -187,24 +203,6 @@ fn month_day(days: i64) -> (u32, u32) {
         u32::try_from(month).unwrap_or(1),
         u32::try_from(day).unwrap_or(1),
     )
-}
-
-/// `DifficultyInstance.getSpecialMultiplier` of a fresh world (no regional difficulty yet).
-pub fn special_multiplier(difficulty: Difficulty) -> f32 {
-    match difficulty {
-        Difficulty::Hard => 0.25,
-        _ => 0.0,
-    }
-}
-
-/// `DifficultyInstance.getEffectiveDifficulty` of a fresh world.
-pub fn effective_difficulty(difficulty: Difficulty) -> f32 {
-    match difficulty {
-        Difficulty::Peaceful => 0.0,
-        Difficulty::Easy => 0.75,
-        Difficulty::Normal => 1.5,
-        Difficulty::Hard => 2.25,
-    }
 }
 
 /// A player using an item on a mob (`mobInteract`).

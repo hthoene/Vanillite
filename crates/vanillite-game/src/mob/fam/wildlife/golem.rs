@@ -161,6 +161,13 @@ pub(super) fn snow_interact(ix: &mut Interact<'_, '_>) -> Interaction {
             1,
         );
     }
+    crate::mob::animal::entity_game_event(
+        ix.ents,
+        ix.env,
+        ix.target,
+        crate::level::game_event::events().shear,
+        Some(ix.player),
+    );
     hurt_held(ix.ents, ix.env, ix.player, ix.hand, 1);
     Interaction::Success
 }

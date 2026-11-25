@@ -268,6 +268,10 @@ impl PlayLevel for WorldLevel<'_> {
         self.level.is_loaded(pos)
     }
 
+    fn within_border(&self, pos: BlockPos) -> bool {
+        self.level.border.is_block_within_bounds(pos)
+    }
+
     fn min_y(&self) -> i32 {
         self.level.min_y()
     }

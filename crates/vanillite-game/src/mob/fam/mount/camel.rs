@@ -468,6 +468,8 @@ fn fed_food(ix: &mut Interact<'_, '_>) -> Interaction {
     if let Some(s) = s {
         crate::mob::combat::mob_sound(ix.ents, ix.env, ix.target, s);
     }
+    let event = crate::level::game_event::events().eat;
+    animal::entity_game_event(ix.ents, ix.env, ix.target, event, Some(ix.target));
     animal::use_item(ix.ents, ix.player, ix.hand);
     Interaction::Success
 }

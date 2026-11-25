@@ -358,6 +358,8 @@ pub fn tick(
         collect_spawning_chunks(level, spawner);
         let chunks = std::mem::take(&mut spawner.chunks);
         for &chunk in &chunks {
+            // `tickSpawningChunk`.
+            level.chunks.increment_inhabited_time(chunk);
             if level.chunks.in_entity_ticking_range(chunk) {
                 crate::lightning::tick_thunder(level, chunk, input.thunder);
             }
@@ -428,8 +430,14 @@ pub fn tick(
     collect_spawning_chunks(level, spawner);
     let chunks = std::mem::take(&mut spawner.chunks);
     for &chunk in &chunks {
+        // `tickSpawningChunk`.
+        level.chunks.increment_inhabited_time(chunk);
         if level.chunks.in_entity_ticking_range(chunk) {
             crate::lightning::tick_thunder(level, chunk, input.thunder);
+        }
+        // `canSpawnEntitiesInChunk`: the chunk is ticking and inside the world border.
+        if !level.border.is_chunk_within_bounds(chunk) {
+            continue;
         }
         for &c in &categories {
             // `canSpawnForCategoryLocal`.
@@ -703,10 +711,15 @@ pub fn finalize(
     random: &mut LegacyRandom,
 ) -> Vec<ExtraMob> {
     let biome = table.and_then(|t| t.biome(level.biome(pos)));
+    // `level.getCurrentDifficultyAt(mob.blockPosition())`.
+    let instance = crate::level::difficulty::DifficultyInstance {
+        base: difficulty,
+        ..crate::level::difficulty::at(level, pos)
+    };
     let mut ctx = SpawnContext {
         difficulty,
-        special_multiplier: super::fam::special_multiplier(difficulty),
-        effective_difficulty: super::fam::effective_difficulty(difficulty),
+        special_multiplier: instance.special_multiplier(),
+        effective_difficulty: instance.effective,
         climate: biome.map_or(FarmClimate::Temperate, |b| b.climate),
         group_index,
         reason,
@@ -801,7 +814,7 @@ fn right_distance(
         }
     }
     let c = pos.chunk();
-    c == chunk || level.is_block_ticking(c)
+    c == chunk || (level.is_block_ticking(c) && level.border.is_chunk_within_bounds(c))
 }
 
 /// `isValidSpawnPostitionForType`.

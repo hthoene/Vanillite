@@ -248,7 +248,6 @@ impl WorldMobs {
         let state = &global.level;
         let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
         let rules = state.rules().clone();
-        let difficulty = state.difficulty();
         let network_ids = std::sync::Arc::clone(level.network_ids_arc());
         let mut ents = std::mem::take(&mut level.entities);
         {
@@ -339,7 +338,6 @@ impl WorldMobs {
                                 hand,
                                 pos,
                                 face,
-                                difficulty,
                             );
                         }
                     }
@@ -350,6 +348,14 @@ impl WorldMobs {
                             &network_ids,
                             player,
                         );
+                    }
+                    EntityAction::Spectate(network_id) => {
+                        if let Some(target) = in_reach(&ents, player, network_id) {
+                            crate::spectator::spectate(&mut ents, &level.border, player, target);
+                        }
+                    }
+                    EntityAction::TeleportToEntity(uuid) => {
+                        crate::spectator::teleport_to_entity(&mut ents, global, player, uuid);
                     }
                     EntityAction::OpenVehicleInventory => {
                         // `openCustomInventoryScreen` of a chest boat the player rides.
@@ -1028,7 +1034,7 @@ fn distance_sqr_to_box(b: &Aabb, p: Vec3) -> f64 {
 }
 
 /// `getOverworldClockTime`: the ticks of the overworld clock.
-fn overworld_clock_time(global: &Global) -> i64 {
+pub(crate) fn overworld_clock_time(global: &Global) -> i64 {
     global
         .level
         .clocks()
@@ -1036,6 +1042,28 @@ fn overworld_clock_time(global: &Global) -> i64 {
         .iter()
         .find(|c| c.id == "minecraft:overworld")
         .map_or(0, |c| c.total_ticks)
+}
+
+/// `ServerLevel.getMoonBrightness`: the overworld follows the `minecraft:moon` timeline, the
+/// other dimensions keep the attribute's default (`MoonPhase.FULL_MOON`).
+pub(crate) fn moon_brightness(global: &Global, dimension: &str) -> f32 {
+    /// `DimensionType.MOON_BRIGHTNESS_PER_PHASE`.
+    const MOON_BRIGHTNESS: [f32; 8] = [1.0, 0.75, 0.5, 0.25, 0.0, 0.25, 0.5, 0.75];
+    if dimension != "minecraft:overworld" {
+        return 1.0;
+    }
+    let moon = {
+        let clocks = global.level.clocks();
+        clocks.timeline("minecraft:moon").and_then(|t| {
+            clocks
+                .clocks
+                .get(t.clock)
+                .map(|c| t.current_ticks(c.total_ticks))
+        })
+    }
+    .unwrap_or(0);
+    let phase = usize::try_from((moon / 24000).rem_euclid(8)).unwrap_or(0);
+    MOON_BRIGHTNESS.get(phase).copied().unwrap_or(1.0)
 }
 
 /// This tick's environment: sky darkness from the day time and the weather, whether monsters
@@ -1075,21 +1103,9 @@ fn environment(
     }
     .unwrap_or(6000);
     let w = survival.weather;
-    // The `minecraft:moon` timeline: the surface slime chance is half the moon's brightness.
-    let moon = {
-        let clocks = global.level.clocks();
-        clocks.timeline("minecraft:moon").and_then(|t| {
-            clocks
-                .clocks
-                .get(t.clock)
-                .map(|c| t.current_ticks(c.total_ticks))
-        })
-    }
-    .unwrap_or(0);
-    const MOON_BRIGHTNESS: [f32; 8] = [1.0, 0.75, 0.5, 0.25, 0.0, 0.25, 0.5, 0.75];
-    let phase = usize::try_from((moon / 24000).rem_euclid(8)).unwrap_or(0);
+    // The surface slime chance is half the moon's brightness.
     Environment {
-        surface_slime_chance: MOON_BRIGHTNESS[phase] * 0.5,
+        surface_slime_chance: moon_brightness(global, dimension) * 0.5,
         world_seed: seed,
         ..Environment::overworld(day, w.rain(), w.thunder())
     }
@@ -1280,7 +1296,6 @@ fn use_item_on(
     hand: Hand,
     pos: BlockPos,
     face: vanillite_base::Direction,
-    difficulty: Difficulty,
 ) {
     let mut stack = take_held(ents, player, hand);
     let creative = ents
@@ -1297,7 +1312,6 @@ fn use_item_on(
             face,
             &mut stack,
             creative,
-            difficulty,
         );
     } else if vanillite_game::item::item_id(&stack).name() == "minecraft:lead" {
         tame::use_lead_on_fence(level, ents, env, player, pos);

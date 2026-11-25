@@ -212,29 +212,20 @@ fn find_lightning_rod(level: &Level, center: BlockPos) -> Option<BlockPos> {
 
 /// `getCurrentDifficultyAt(pos).getEffectiveDifficulty()`.
 fn effective_difficulty(level: &Level, pos: BlockPos, clock_time: i64) -> f32 {
-    let (inhabited, moon) = level.chunks.chunk(pos.chunk()).map_or((0, 0.0), |c| {
-        let phase = usize::try_from(clock_time.rem_euclid(8 * 24_000) / 24_000).unwrap_or(0);
-        (c.inhabited_time, MOON_BRIGHTNESS[phase])
-    });
-    let base = level.settings.difficulty;
-    if base == Difficulty::Peaceful {
-        return 0.0;
-    }
-    let hard = base == Difficulty::Hard;
-    #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
-    let global = ((clock_time as f32 + -72_000.0) / 1_440_000.0).clamp(0.0, 1.0) * 0.25;
-    let mut scale = 0.75 + global;
-    #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
-    let mut local =
-        (inhabited as f32 / 3_600_000.0).clamp(0.0, 1.0) * if hard { 1.0 } else { 0.75 };
-    local += (moon * 0.25).clamp(0.0, global);
-    if base == Difficulty::Easy {
-        local *= 0.5;
-    }
-    scale += local;
-    #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
-    let id = base.id() as f32;
-    id * scale
+    let (inhabited, moon) = level
+        .chunks
+        .inhabited_time(pos.chunk())
+        .map_or((0, 0.0), |t| {
+            let phase = usize::try_from(clock_time.rem_euclid(8 * 24_000) / 24_000).unwrap_or(0);
+            (t, MOON_BRIGHTNESS.get(phase).copied().unwrap_or(1.0))
+        });
+    crate::level::difficulty::DifficultyInstance::new(
+        level.settings.difficulty,
+        clock_time,
+        inhabited,
+        moon,
+    )
+    .effective
 }
 
 /// `Entity.blockPosition()`.

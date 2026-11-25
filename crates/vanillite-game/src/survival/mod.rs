@@ -76,6 +76,22 @@ pub enum Effect {
         y_rot: f32,
         velocity: Vec3,
     },
+    /// `gameEvent(event, pos, context)`: posted to the world's vibration listeners once the
+    /// world handles its effects.
+    GameEvent {
+        event: u16,
+        pos: Vec3,
+        context: crate::level::game_event::GameEventContext,
+    },
+}
+
+/// Queues `gameEvent(event, pos, Context.of(source))`.
+pub fn game_event(out: &mut Vec<Effect>, event: u16, pos: Vec3, source: Option<EntityId>) {
+    out.push(Effect::GameEvent {
+        event,
+        pos,
+        context: crate::level::game_event::GameEventContext::of(source),
+    });
 }
 
 /// The seed of a sound (`Level.soundSeedGenerator`, a random of its own that Vanilla never
