@@ -22,5 +22,6 @@ pub mod loot;
 pub mod menu;
 pub mod mob;
 pub mod player;
+pub mod portal;
 pub mod recipe;
 pub mod survival;

@@ -22,6 +22,8 @@ use crate::players::{FanOut, WorldBlocks, WorldPlayers};
 use crate::world_setup::ChunkPackets;
 use crate::world_updates::WorldUpdates;
 
+mod travel;
+
 /// A world (dimension) of this server: its index in Vanilla's tick order (overworld, nether,
 /// end, then others).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -79,6 +81,14 @@ pub struct ServerWorld {
     /// The dimension's saved data (`<dimension>/data/`: world border, chunk tickets, raids,
     /// ...); systems register here when they come.
     pub(crate) data: vanillite_storage::saved_data::SavedDataStore,
+    /// Players arriving from other worlds or respawning, waiting for their destination.
+    arrivals: Vec<travel::Waiting>,
+    /// Players in End gateways waiting for the exit's chunks.
+    gateway_waits: Vec<travel::GatewayWait>,
+    /// Portal tickets (load and simulation) with the tick they expire.
+    portal_tickets: Vec<(u64, TicketId, TicketId)>,
+    /// What the players' tick asked of portals.
+    portal_requests: crate::survival::PortalRequests,
 }
 
 impl fmt::Debug for ServerWorld {
@@ -138,6 +148,10 @@ impl ServerWorld {
             entity_io,
             player_scratch: Vec::new(),
             data,
+            arrivals: Vec::new(),
+            gateway_waits: Vec::new(),
+            portal_tickets: Vec::new(),
+            portal_requests: crate::survival::PortalRequests::default(),
         }
     }
 
@@ -335,15 +349,9 @@ impl ServerWorld {
             &self.dimension,
         );
         for id in self.players.take_respawns() {
-            let view_distance = self.players.view_distance();
-            self.survival.respawn(
-                &mut self.level.entities,
-                ctx.global,
-                &self.players.level,
-                view_distance,
-                id,
-            );
+            self.respawn(ctx, id);
         }
+        self.tick_travel(ctx.global);
         self.players_inside_blocks();
         self.level.set_handling_tick(true);
         if ctx.runs_normally {
@@ -397,7 +405,7 @@ impl ServerWorld {
         for pos in &self.level.output().block_entity_updates {
             self.packets.invalidate_chunk(pos.chunk());
         }
-        self.updates.broadcast(&mut self.level);
+        self.updates.broadcast(&mut self.level, ctx.global);
         WorldPlayers::send_chunks(
             &mut self.level.entities,
             &self
@@ -411,12 +419,23 @@ impl ServerWorld {
             ctx.compute,
             &mut self.fan_out,
         );
+        let mut portals = std::mem::take(&mut self.portal_requests);
         self.survival.do_tick(
             &mut self.level.entities,
             &self.level.chunks,
+            &self.level.block_entities,
             ctx.global,
             &self.dimension,
+            &mut portals,
         );
+        for pos in portals.gateways.drain(..) {
+            let state = self.level.block(pos);
+            vanillite_game::block::portal::trigger_gateway_cooldown(&mut self.level, pos, state);
+        }
+        for (id, kind, entry) in portals.travels.drain(..) {
+            self.enter_portal(ctx, id, kind, entry);
+        }
+        self.portal_requests = portals;
         self.players.tick_connections(
             &mut self.level,
             ctx.tick,
