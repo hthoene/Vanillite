@@ -421,6 +421,10 @@ pub trait FamilyHooks {
         let rules = super::equipment::PickupRules::default();
         super::equipment::pick_up_items(t, &rules, None, (1.0, 0.0, 1.0));
     }
+    /// `wantsToPickUp(stack)` (the item sensor of brain mobs).
+    fn wants_to_pick_up(_t: &Tick<'_, '_>, _stack: &ItemStack) -> bool {
+        true
+    }
     /// The living entity flags (using an item, hand).
     fn living_flags(m: &MobData) -> u8 {
         u8::from(m.using_item >= 0)
@@ -681,6 +685,9 @@ pub fn encode_data(w: &mut DataWriter<'_>, m: &MobData) {
 }
 pub fn pick_up_items(t: &mut Tick<'_, '_>) {
     by_family!(t.mob_ref().kind, (), pick_up_items(t));
+}
+pub fn wants_to_pick_up(t: &Tick<'_, '_>, stack: &ItemStack) -> bool {
+    by_family!(t.mob_ref().kind, true, wants_to_pick_up(t, stack))
 }
 pub fn living_flags(m: &MobData) -> u8 {
     by_family!(m.kind, u8::from(m.using_item >= 0), living_flags(m))
