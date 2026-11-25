@@ -391,6 +391,17 @@ impl<S: Strategy> PalettedContainer<S> {
         self.data = new;
     }
 
+    /// Whether a stored value may match `test`: exact for one value, the palette for the
+    /// paletted form (it may still list values no longer stored), always `true` for the direct
+    /// form. A cheap filter before scanning the entries.
+    pub fn may_contain(&self, test: impl Fn(u16) -> bool) -> bool {
+        match &self.data {
+            ContainerData::Single(value) => test(*value),
+            ContainerData::Indirect { palette, .. } => palette.iter().any(|&v| test(v)),
+            ContainerData::Direct { .. } => true,
+        }
+    }
+
     /// Calls `f(value, count)` for the stored values; values may repeat in the direct form.
     pub fn for_each_count(&self, mut f: impl FnMut(u16, u32)) {
         match &self.data {

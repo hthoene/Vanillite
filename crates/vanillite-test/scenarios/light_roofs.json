@@ -1,0 +1,24 @@
+{
+  "description": "Roofs built and torn down: sky light under stone, bottom and top slabs, stairs, glass, leaves, snow layers and carpet, a roof with a hole and a gap under a chunk border.",
+  "tier": "fast",
+  "light": true,
+  "world": {"layers": [["minecraft:bedrock", 1], ["minecraft:stone", 59], ["minecraft:dirt", 4], ["minecraft:grass_block", 1]]},
+  "region": [[-14, -2, -14], [14, 7, 14]],
+  "ticks": 6,
+  "actions": [
+    {"tick": 1, "op": "fill", "from": [-12, 4, -12], "to": [-5, 4, -5], "block": "minecraft:stone"},
+    {"tick": 1, "op": "fill", "from": [-3, 4, -12], "to": [3, 4, -5], "block": "minecraft:oak_slab[type=bottom,waterlogged=false]"},
+    {"tick": 1, "op": "fill", "from": [5, 4, -12], "to": [12, 4, -5], "block": "minecraft:oak_slab[type=top,waterlogged=false]"},
+    {"tick": 2, "op": "fill", "from": [-12, 4, -3], "to": [-5, 4, 3], "block": "minecraft:glass"},
+    {"tick": 2, "op": "fill", "from": [-3, 4, -3], "to": [3, 4, 3], "block": "minecraft:stone_stairs[facing=north,half=bottom,shape=straight,waterlogged=false]"},
+    {"tick": 2, "op": "fill", "from": [5, 4, -3], "to": [12, 4, 3], "block": "minecraft:oak_leaves[distance=7,persistent=true,waterlogged=false]"},
+    {"tick": 3, "op": "fill", "from": [-12, 4, 5], "to": [-5, 4, 12], "block": "minecraft:snow[layers=8]"},
+    {"tick": 3, "op": "fill", "from": [-3, 4, 5], "to": [3, 4, 12], "block": "minecraft:snow[layers=3]"},
+    {"tick": 3, "op": "fill", "from": [5, 3, 5], "to": [12, 3, 12], "block": "minecraft:stone"},
+    {"tick": 3, "op": "fill", "from": [5, 4, 5], "to": [12, 4, 12], "block": "minecraft:white_carpet"},
+    {"tick": 4, "op": "fill", "from": [-10, 4, -10], "to": [-8, 4, -8], "block": "minecraft:air"},
+    {"tick": 4, "op": "fill", "from": [-1, 4, -1], "to": [1, 4, 1], "block": "minecraft:air"},
+    {"tick": 5, "op": "fill", "from": [-12, 4, -12], "to": [12, 4, 12], "block": "minecraft:air"},
+    {"tick": 6, "op": "fill", "from": [-2, 1, -2], "to": [2, 3, 2], "block": "minecraft:dirt_path"}
+  ]
+}

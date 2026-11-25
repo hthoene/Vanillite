@@ -13,5 +13,11 @@ vanillite-base.workspace = true
 vanillite-chunk.workspace = true
 vanillite-data.workspace = true
 
+[dev-dependencies]
+# Reads Vanilla worlds and the light goldens.
+serde_json.workspace = true
+vanillite-nbt.workspace = true
+vanillite-storage.workspace = true
+
 [lints]
 workspace = true

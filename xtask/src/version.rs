@@ -111,9 +111,15 @@ pub fn update(root: &Path, args: &[&str]) -> Result<()> {
 
     // Both versions through the same (current) extractor, so their raw outputs compare.
     println!("version: extracting the pinned {pinned}");
-    let old = vanilla::extract(root, &manifest, Some(&pinned), None)?;
+    let old = vanilla::extract(
+        root,
+        &manifest,
+        Some(&pinned),
+        None,
+        vanilla::Extractor::Full,
+    )?;
     println!("version: extracting {id}");
-    let new = vanilla::extract(root, &manifest, Some(&id), None)?;
+    let new = vanilla::extract(root, &manifest, Some(&id), None, vanilla::Extractor::Full)?;
     if finalise && new.kind != "release" {
         return Err(format!(
             "{id} is a {}; only a release can become the pinned version",
@@ -126,6 +132,9 @@ pub fn update(root: &Path, args: &[&str]) -> Result<()> {
     } else {
         worktree(root, &out_dir.join("tree"))?
     };
+    // Clients of the outgoing version keep joining through the multi-version layer: its data
+    // is kept for the adapter step to the new version.
+    crate::multiversion::keep(&tree, &old)?;
     let mut steps = Steps::default();
 
     // Data and generated code.

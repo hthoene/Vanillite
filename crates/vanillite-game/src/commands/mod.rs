@@ -41,6 +41,8 @@ pub mod suggest {
     pub const WHITELIST_CANDIDATES: &str = "whitelist.candidates";
     /// Whitelisted names (`/whitelist remove`).
     pub const WHITELISTED: &str = "whitelist.names";
+    /// Entity types `/summon` accepts (a client-side provider).
+    pub const SUMMONABLE_ENTITIES: &str = "minecraft:summonable_entities";
     /// Time markers of the clock (`/time set <timemarker>`).
     pub const TIME_MARKERS: &str = "time.markers";
     /// Timelines of the clock (`/time query <timeline>`).
@@ -81,6 +83,8 @@ pub enum CommandId {
     Say,
     /// `seed`.
     Seed,
+    /// `summon <entity> [<pos>] [<nbt>]`.
+    Summon,
     /// `teleport|tp <location>`: the source to a position.
     TeleportToLocation,
     /// `teleport|tp <destination>`: the source to an entity.
@@ -155,6 +159,7 @@ pub fn register(d: &mut Dispatcher<CommandId>) {
     players::register_msg(d);
     players::register_say(d);
     world::register_seed(d);
+    world::register_summon(d);
     players::register_teleport(d);
     world::register_time(d);
     world::register_weather(d);

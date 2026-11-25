@@ -19,6 +19,7 @@ pub mod backup;
 pub mod blocking;
 pub mod chunk_nbt;
 pub mod compression;
+pub mod entities;
 pub mod files;
 pub mod import;
 pub mod layout;
