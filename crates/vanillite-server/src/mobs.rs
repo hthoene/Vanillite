@@ -17,12 +17,14 @@ use vanillite_game::minecart::{self, MinecartKind};
 use vanillite_game::mob::boss;
 use vanillite_game::mob::boss::dragon::{self, fight::DragonFight};
 use vanillite_game::mob::boss::special::{self, is_special_kind};
+use vanillite_game::mob::fam::wildlife::ender_pearl;
 use vanillite_game::mob::spawn::{self, SpawnInput, SpawnLimits, SpawnTable, Spawner};
 use vanillite_game::mob::{
     self, Environment, MobContext, MobSettings, WorldAction, animal, attack, combat, projectile,
     tame,
 };
 use vanillite_game::player::{EntityAction, VehicleInput};
+use vanillite_game::portal;
 use vanillite_game::riding;
 use vanillite_game::survival::blocks::BlockAccess;
 use vanillite_game::survival::damage::DamageSource;
@@ -32,6 +34,9 @@ use vanillite_protocol::packets::play::serverbound::Hand;
 use vanillite_world::entity::EntityId;
 
 use crate::global::Global;
+
+/// The End's dimension key.
+const END_DIMENSION: &str = "minecraft:the_end";
 use crate::survival::{WorldBlocks, WorldSurvival, raining_at};
 
 /// Block access without blocks, for effects applied after a tick.
@@ -346,6 +351,11 @@ impl WorldMobs {
         self.store_fight();
     }
 
+    /// What the entities' tick asked of the world (tickets, gateway exits, pearl owners).
+    pub(crate) fn take_travel(&mut self) -> Vec<vanillite_game::portal::TravelRequest> {
+        std::mem::take(&mut self.cx.travel)
+    }
+
     /// Takes over changed rules (config reload).
     pub(crate) fn set_rules(&mut self, rules: &WorldRules) {
         self.settings = settings(rules);
@@ -383,7 +393,6 @@ impl WorldMobs {
         let state = &global.level;
         let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
         let rules = state.rules().clone();
-        let difficulty = state.difficulty();
         let network_ids = std::sync::Arc::clone(level.network_ids_arc());
         let mut ents = std::mem::take(&mut level.entities);
         {
@@ -486,7 +495,6 @@ impl WorldMobs {
                                 hand,
                                 pos,
                                 face,
-                                difficulty,
                             );
                         }
                     }
@@ -508,6 +516,11 @@ impl WorldMobs {
                             &network_ids,
                             player,
                         );
+                    }
+                    EntityAction::Spectate(network_id) => {
+                        if let Some(target) = in_reach(&ents, player, network_id) {
+                            crate::spectator::spectate(&mut ents, &level.border, player, target);
+                        }
                     }
                     EntityAction::PickItem { entity, .. } => {
                         pick_item_from_entity(&mut ents, player, entity);
@@ -801,6 +814,7 @@ impl WorldMobs {
         };
         let activation = f64::from(self.settings.activation_range);
         minecart::players_push(&mut level.entities);
+        let in_end = dimension == END_DIMENSION;
         let mut cursor = level.entities.store.tick_cursor();
         let mut tnt_left = self.settings.max_tnt_per_tick;
         let mut ents = std::mem::take(&mut level.entities);
@@ -835,11 +849,13 @@ impl WorldMobs {
                     }
                     *left -= 1;
                 }
+                portal::tick_portal(level, &mut ents, id, in_end, &mut self.cx.travel);
                 level.entities = ents;
                 vanillite_game::entities::tick_entity(level, id, kind);
                 self.apply_explosion_hurts(level, survival, global, dimension);
                 self.apply_actions(level, survival, global, dimension);
                 ents = std::mem::take(&mut level.entities);
+                portal::enter_gateway(level, &mut ents, id, &mut self.cx.gateways);
                 continue;
             }
             let is_mob = is_mob_kind(kind);
@@ -863,9 +879,11 @@ impl WorldMobs {
                 continue;
             }
             if kind == ids::EXPERIENCE_ORB {
+                portal::tick_portal(level, &mut ents, id, in_end, &mut self.cx.travel);
                 level.entities = ents;
                 vanillite_game::entities::tick_entity(level, id, kind);
                 ents = std::mem::take(&mut level.entities);
+                portal::enter_gateway(level, &mut ents, id, &mut self.cx.gateways);
                 continue;
             }
             if is_mob && activation > 0.0 && !self.ticks.is_multiple_of(20) {
@@ -882,6 +900,11 @@ impl WorldMobs {
                 if !near {
                     continue;
                 }
+            }
+            // Throwables handle portals inside their tick (`ThrowableProjectile.tick`).
+            let throwable = is_missile && ents.missile(id).is_some_and(|d| d.kind.is_throwable());
+            if !throwable {
+                portal::tick_portal(level, &mut ents, id, in_end, &mut self.cx.travel);
             }
             {
                 let blocks = WorldBlocks(&level.chunks);
@@ -934,6 +957,9 @@ impl WorldMobs {
                 self.apply_actions(level, survival, global, dimension);
                 ents = std::mem::take(&mut level.entities);
             }
+            if !throwable {
+                portal::enter_gateway(level, &mut ents, id, &mut self.cx.gateways);
+            }
             if ents.mob(id).is_some_and(|m| m.removed) {
                 ents.despawn(id);
             }
@@ -968,6 +994,11 @@ impl WorldMobs {
             }
         }
         level.entities = ents;
+        // `TheEndGatewayBlockEntity.triggerCooldown` of the gateways that took an entity.
+        for pos in std::mem::take(&mut self.cx.gateways) {
+            let state = level.block(pos);
+            vanillite_game::block::portal::trigger_gateway_cooldown(level, pos, state);
+        }
         vanillite_game::player::using::tick_brushes(level);
         survival.deliver(&mut level.entities, global);
     }
@@ -1298,7 +1329,7 @@ fn day_time(global: &Global) -> Option<i64> {
 }
 
 /// `getOverworldClockTime`: the ticks of the overworld clock.
-fn overworld_clock_time(global: &Global) -> i64 {
+pub(crate) fn overworld_clock_time(global: &Global) -> i64 {
     global
         .level
         .clocks()
@@ -1306,6 +1337,28 @@ fn overworld_clock_time(global: &Global) -> i64 {
         .iter()
         .find(|c| c.id == "minecraft:overworld")
         .map_or(0, |c| c.total_ticks)
+}
+
+/// `ServerLevel.getMoonBrightness`: the overworld follows the `minecraft:moon` timeline, the
+/// other dimensions keep the attribute's default (`MoonPhase.FULL_MOON`).
+pub(crate) fn moon_brightness(global: &Global, dimension: &str) -> f32 {
+    /// `DimensionType.MOON_BRIGHTNESS_PER_PHASE`.
+    const MOON_BRIGHTNESS: [f32; 8] = [1.0, 0.75, 0.5, 0.25, 0.0, 0.25, 0.5, 0.75];
+    if dimension != "minecraft:overworld" {
+        return 1.0;
+    }
+    let moon = {
+        let clocks = global.level.clocks();
+        clocks.timeline("minecraft:moon").and_then(|t| {
+            clocks
+                .clocks
+                .get(t.clock)
+                .map(|c| t.current_ticks(c.total_ticks))
+        })
+    }
+    .unwrap_or(0);
+    let phase = usize::try_from((moon / 24000).rem_euclid(8)).unwrap_or(0);
+    MOON_BRIGHTNESS.get(phase).copied().unwrap_or(1.0)
 }
 
 /// This tick's environment: sky darkness from the day time and the weather, whether monsters
@@ -1362,21 +1415,9 @@ fn environment(
         };
     }
     let w = survival.weather;
-    // The `minecraft:moon` timeline: the surface slime chance is half the moon's brightness.
-    let moon = {
-        let clocks = global.level.clocks();
-        clocks.timeline("minecraft:moon").and_then(|t| {
-            clocks
-                .clocks
-                .get(t.clock)
-                .map(|c| t.current_ticks(c.total_ticks))
-        })
-    }
-    .unwrap_or(0);
-    const MOON_BRIGHTNESS: [f32; 8] = [1.0, 0.75, 0.5, 0.25, 0.0, 0.25, 0.5, 0.75];
-    let phase = usize::try_from((moon / 24000).rem_euclid(8)).unwrap_or(0);
+    // The surface slime chance is half the moon's brightness.
     Environment {
-        surface_slime_chance: MOON_BRIGHTNESS[phase] * 0.5,
+        surface_slime_chance: moon_brightness(global, dimension) * 0.5,
         world_seed: seed,
         day_time: day,
         day_count,
@@ -1520,8 +1561,8 @@ fn put_back(ents: &mut Entities, player: EntityId, hand: Hand, stack: ItemStack)
     }
 }
 
-/// `use_item` of the items that need entities: boats, the carrot on a stick, thrown potions,
-/// and items used over time.
+/// `use_item` of the items that need entities: boats, the carrot on a stick, ender pearls,
+/// thrown potions, and items used over time.
 fn use_item(
     level: &Level,
     ents: &mut Entities,
@@ -1566,6 +1607,8 @@ fn use_item(
         if !riding::boost(ents, env, player, &mut stack, creative) {
             award_used(ents, player, item);
         }
+    } else if name == ender_pearl::ITEM {
+        ender_pearl::throw(ents, env, network_ids, player, &mut stack, hand);
     } else if vanillite_game::effect::thrown::kind_of(&stack).is_some() {
         vanillite_game::effect::thrown::throw(ents, env, network_ids, player, &mut stack, creative);
         award_used(ents, player, item);
@@ -1639,7 +1682,6 @@ fn use_item_on(
     hand: Hand,
     pos: BlockPos,
     face: vanillite_base::Direction,
-    difficulty: Difficulty,
 ) {
     let mut stack = take_held(ents, player, hand);
     let before = stack.clone();
@@ -1657,7 +1699,6 @@ fn use_item_on(
             face,
             &mut stack,
             creative,
-            difficulty,
         )
     } else if vanillite_game::item::item_id(&stack).name() == "minecraft:lead" {
         tame::use_lead_on_fence(level, ents, env, player, pos)

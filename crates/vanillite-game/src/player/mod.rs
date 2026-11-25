@@ -113,7 +113,7 @@ pub struct PlayerData {
     pub profile: GameProfile,
     /// Game mode.
     pub game_mode: GameMode,
-    /// Previous game mode, if it changed during this session.
+    /// `previousPlayerGameType`: the game mode before the last change.
     pub previous_game_mode: Option<GameMode>,
     /// Client settings.
     pub client: ClientInformation,

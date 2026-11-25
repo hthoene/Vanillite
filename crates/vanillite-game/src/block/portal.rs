@@ -286,6 +286,42 @@ pub fn gateway_destination(level: &Level, gateway: &Gateway) -> Option<BlockPos>
     })
 }
 
+/// Where a gateway sends an entity now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GatewayExit {
+    /// To this block (its bottom centre).
+    At(BlockPos),
+    /// Nowhere: no gateway there, or no exit outside the End.
+    Nowhere,
+    /// The exit has to be created or its chunks loaded first.
+    Wait,
+}
+
+/// `TheEndGatewayBlockEntity.getPortalPosition` as far as it needs no chunk loading and no
+/// new exit: exact exits, and exits whose surroundings (`findExitPosition`) are loaded.
+pub fn gateway_exit_now(level: &Level, entry: BlockPos, in_end: bool) -> GatewayExit {
+    let Some(g) = gateway(level, entry) else {
+        return GatewayExit::Nowhere;
+    };
+    match g.exit {
+        None if in_end => GatewayExit::Wait,
+        None => GatewayExit::Nowhere,
+        Some(exit) => {
+            let center = exit.chunk();
+            let loaded = g.exact
+                || (center.x - 1..=center.x + 1).all(|x| {
+                    (center.z - 1..=center.z + 1)
+                        .all(|z| level.chunks.chunk(ChunkPos::new(x, z)).is_some())
+                });
+            match gateway_destination(level, g) {
+                Some(pos) if loaded => GatewayExit::At(pos),
+                Some(_) => GatewayExit::Wait,
+                None => GatewayExit::Nowhere,
+            }
+        }
+    }
+}
+
 // --- The End's exit portal and the dragon fight's gateways --------------------------------
 
 /// `EndPodiumFeature.place` at `origin` (the portal layer's centre) on the live world;

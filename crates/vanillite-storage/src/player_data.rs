@@ -1,8 +1,8 @@
 //! Player data files: `<world>/players/data/<uuid>.dat` (26.x layout), gzip-compressed named NBT in Vanilla's
 //! layout, so worlds stay interchangeable with Vanilla.
 //!
-//! Only the fields the server keeps so far are read and written; unknown fields of an existing
-//! file are kept when it is saved again.
+//! The server writes what it keeps of a player from its live state; fields it does not handle
+//! are kept from the existing file when it is saved again.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -280,6 +280,8 @@ impl PlayerData {
 
     fn to_nbt(&self) -> Compound {
         let mut root = self.other.clone();
+        // `NbtUtils.addCurrentDataVersion`: what the server writes is in the current format.
+        root.insert("DataVersion", vanillite_data::version::DATA_VERSION);
         root.insert(
             "Pos",
             List(self.pos.iter().map(|&v| Tag::Double(v)).collect()),

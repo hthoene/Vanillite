@@ -789,3 +789,131 @@ fn players_travel_to_the_end_and_back_through_the_credits() {
     thread.join().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A player data file Vanilla 26.3 wrote (`bot00000` riding a pig, with tags, an earlier game
+/// mode, ender items, equipment, attributes, effects, a respawn point and a waypoint colour)
+/// is loaded and saved again without losing or adding a key; what the player did not change
+/// keeps its value, and the player rides the pig again.
+#[test]
+fn vanilla_player_data_round_trips() {
+    use vanillite_nbt::Tag;
+    let dir = std::env::temp_dir().join(format!("vanillite-player-data-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("server.properties"), "view-distance=2\n").unwrap();
+    std::fs::write(dir.join("eula.txt"), "eula=true\n").unwrap();
+    let original = dir.join("original.dat");
+    std::fs::write(&original, include_bytes!("data/vanilla_player.dat")).unwrap();
+    let uuid = Uuid::offline("bot00000");
+    let players = dir.join("world/players/data");
+    std::fs::create_dir_all(&players).unwrap();
+    let file = players.join(format!("{uuid}.dat"));
+    std::fs::copy(&original, &file).unwrap();
+    let mut builder = ServerBuilder::new(&dir);
+    builder.vanilla_pack(VanillaPack::None).network(false);
+    let server = builder.start().expect("server starts");
+    let opener = server.virtual_opener().expect("network");
+    let handle = server.handle();
+    let thread = std::thread::spawn(move || server.run());
+
+    let mut p = connect(&opener, "bot00000");
+    join(&mut p);
+    p.until("the pig", |packet| match packet {
+        ClientboundPlay::AddEntity(a) if a.entity_type == i32::from(ids::PIG.0) => Some(()),
+        _ => None,
+    });
+    drop(p);
+    handle.stop();
+    thread.join().unwrap();
+
+    let read = |path: &std::path::Path| {
+        vanillite_storage::files::read_gzip_nbt(path)
+            .unwrap()
+            .unwrap()
+    };
+    let (before, after) = (read(&original), read(&file));
+    let keys = |c: &vanillite_nbt::Compound| {
+        let mut k: Vec<String> = c.iter().map(|(k, _)| k.to_owned()).collect();
+        k.sort();
+        k
+    };
+    assert_eq!(keys(&after), keys(&before));
+    for key in [
+        "DataVersion",
+        "Dimension",
+        "EnderItems",
+        "Inventory",
+        "SelectedItemSlot",
+        "Score",
+        "Tags",
+        "UUID",
+        "XpLevel",
+        "XpP",
+        "XpTotal",
+        "abilities",
+        "attributes",
+        "equipment",
+        "locator_bar_icon",
+        "playerGameType",
+        "post_effects",
+        "previousPlayerGameType",
+        "respawn",
+        "seenCredits",
+    ] {
+        // Without data packs there is no enchantment registry: item components that refer to
+        // one cannot be read, so the stacks are compared without their components.
+        let strip = |tag: Option<&Tag>| match tag {
+            Some(Tag::List(vanillite_nbt::List(items))) if key == "Inventory" => {
+                Some(Tag::List(vanillite_nbt::List(
+                    items
+                        .iter()
+                        .map(|item| match item {
+                            Tag::Compound(c) => {
+                                let mut c = c.clone();
+                                c.remove("components");
+                                sorted(&Tag::Compound(c))
+                            }
+                            other => sorted(other),
+                        })
+                        .collect(),
+                )))
+            }
+            other => other.map(sorted),
+        };
+        assert_eq!(strip(after.get(key)), strip(before.get(key)), "{key}");
+    }
+    let vehicle = |c: &vanillite_nbt::Compound| match c.get("RootVehicle") {
+        Some(Tag::Compound(v)) => (
+            v.get("Attach").cloned(),
+            match v.get("Entity") {
+                Some(Tag::Compound(e)) => (
+                    e.get("id").cloned(),
+                    e.get("UUID").cloned(),
+                    e.get("Tags").cloned(),
+                ),
+                _ => (None, None, None),
+            },
+        ),
+        _ => panic!("no RootVehicle"),
+    };
+    assert_eq!(vehicle(&after), vehicle(&before));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A tag with the keys of its compounds sorted: the order of compound keys carries no meaning.
+fn sorted(tag: &vanillite_nbt::Tag) -> vanillite_nbt::Tag {
+    use vanillite_nbt::{Compound, List, Tag};
+    match tag {
+        Tag::Compound(c) => {
+            let mut entries: Vec<(&str, &Tag)> = c.iter().collect();
+            entries.sort_by_key(|(k, _)| *k);
+            let mut out = Compound::new();
+            for (k, v) in entries {
+                out.insert(k, sorted(v));
+            }
+            Tag::Compound(out)
+        }
+        Tag::List(List(items)) => Tag::List(List(items.iter().map(sorted).collect())),
+        other => other.clone(),
+    }
+}

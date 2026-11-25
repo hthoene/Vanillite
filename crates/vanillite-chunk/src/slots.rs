@@ -262,6 +262,8 @@ pub struct ProtoChunk {
     pub block_entities: Vec<BlockEntityData>,
     /// Ticks players spent near this chunk (`InhabitedTime`).
     pub inhabited_time: i64,
+    /// The game time of the last save (`LastUpdate`).
+    pub last_update: i64,
     /// Whether the stored light is complete and trusted (`isLightOn`).
     pub light_on: bool,
     /// Scheduled block ticks of a chunk that is not live: a live chunk's ticks are run by the
@@ -308,6 +310,7 @@ impl ProtoChunk {
             chunk: Chunk::new(world.min_y, world.height, world.default_biome, world.air),
             block_entities: Vec::new(),
             inhabited_time: 0,
+            last_update: 0,
             light_on: false,
             block_ticks: Vec::new(),
             fluid_ticks: Vec::new(),

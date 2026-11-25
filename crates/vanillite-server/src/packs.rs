@@ -128,6 +128,8 @@ pub(crate) fn registry_tags(packs: &LoadedPacks) -> TagMap {
 
 /// What a reload loaded, ready to be swapped in.
 struct Reloaded {
+    /// The pack directories of the structure templates.
+    template_roots: Vec<std::path::PathBuf>,
     tags: Option<(TagMap, Vec<RegistryTags>)>,
     functions: FunctionLibrary,
     /// Loot tables, predicates, item modifiers, recipes and the item and block data read
@@ -188,6 +190,10 @@ impl DataPacks {
         let functions = functions::load(global, &opened);
         let advancements = crate::commands::load_advancements(&opened);
         Ok(Reloaded {
+            template_roots: opened
+                .iter()
+                .flat_map(|p| p.layers.iter().cloned())
+                .collect(),
             tags,
             functions,
             game,
@@ -216,6 +222,8 @@ impl DataPacks {
             }
         }
         global.systems.set_functions(reloaded.functions);
+        // `StructureTemplateManager.onResourceManagerReload`.
+        global.templates.reload(reloaded.template_roots);
         if let Some(game) = reloaded.game {
             // `PlayerList.reloadResources`: the recipes go to every player.
             let packet = vanillite_protocol::SharedPacket::of(&game.recipes.update_packet());

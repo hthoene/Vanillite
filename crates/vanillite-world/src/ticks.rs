@@ -239,6 +239,47 @@ impl LevelTicks {
         self.to_run_set.contains(&(kind, pos))
     }
 
+    /// `clearArea(area)`: drops the ticks inside `min..=max` (scheduled and collected).
+    /// Returns the chunks whose ticks changed.
+    pub fn clear_area(&mut self, min: BlockPos, max: BlockPos) -> Vec<ChunkPos> {
+        let inside = |p: BlockPos| {
+            (min.x..=max.x).contains(&p.x)
+                && (min.y..=max.y).contains(&p.y)
+                && (min.z..=max.z).contains(&p.z)
+        };
+        let mut changed = Vec::new();
+        for cz in (min.z >> 4)..=(max.z >> 4) {
+            for cx in (min.x >> 4)..=(max.x >> 4) {
+                let chunk = ChunkPos::new(cx, cz);
+                let Some(container) = self.containers.get_mut(&chunk) else {
+                    continue;
+                };
+                let before = container.queue.len();
+                let kept: Vec<Reverse<Queued>> = std::mem::take(&mut container.queue)
+                    .into_iter()
+                    .filter(|Reverse(Queued(t))| !inside(t.pos))
+                    .collect();
+                container.queue = kept.into_iter().collect();
+                if container.queue.len() == before {
+                    continue;
+                }
+                container.unique.retain(|(_, p)| !inside(*p));
+                changed.push(chunk);
+                match container.peek() {
+                    Some(next) => {
+                        self.next_tick.insert(chunk, next.trigger);
+                    }
+                    None => {
+                        self.next_tick.remove(&chunk);
+                    }
+                }
+            }
+        }
+        self.to_run.retain(|t| !inside(t.pos));
+        self.to_run_set.retain(|(_, p)| !inside(*p));
+        changed
+    }
+
     /// The ticks scheduled in a chunk, unordered (observation, e.g. parity traces).
     pub fn ticks_in(&self, chunk: ChunkPos) -> impl Iterator<Item = &ScheduledTick> {
         self.containers

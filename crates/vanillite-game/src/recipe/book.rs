@@ -594,9 +594,14 @@ impl PlayerRecipeBook {
     /// `ServerRecipeBook.Packed` into the player file's `recipeBook` compound.
     pub fn save(&self) -> Compound {
         let mut c = Compound::new();
+        // `optionalFieldOf(…, false)`: only the flags that are set.
         for ((open_key, filter_key), (open, filtering)) in SETTINGS_KEYS.iter().zip(self.settings) {
-            c.insert(*open_key, Tag::Byte(i8::from(open)));
-            c.insert(*filter_key, Tag::Byte(i8::from(filtering)));
+            if open {
+                c.insert(*open_key, Tag::Byte(1));
+            }
+            if filtering {
+                c.insert(*filter_key, Tag::Byte(1));
+            }
         }
         let list = |ids: &mut dyn Iterator<Item = &str>| {
             Tag::List(vanillite_nbt::List(

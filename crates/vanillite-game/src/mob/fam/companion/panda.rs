@@ -358,6 +358,9 @@ fn handle_eating(t: &mut Tick<'_, '_>) {
                 .equipment
                 .set(EquipmentSlot::MainHand, ItemStack::default());
             crate::mob::equipment::broadcast(t);
+            let at = t.pos();
+            let eat = crate::level::game_event::events().eat;
+            crate::mob::living::post_game_event(t, eat, at, None);
             set(t, SITTING, false);
         }
         st_mut(t.mob()).eat = 0;

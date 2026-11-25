@@ -48,6 +48,38 @@ pub struct PaddleBoat {
     pub right: bool,
 }
 
+/// `spectator_action`: a spectator starts spectating an entity (`OPTIONAL_VAR_INT`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpectatorAction {
+    pub spectate_entity_id: Option<i32>,
+}
+
+impl crate::codec::Encode for SpectatorAction {
+    fn encode(&self, out: &mut Vec<u8>) {
+        // `ByteBufCodecs.OPTIONAL_VAR_INT`: 0 for empty, else the id + 1.
+        let value = self.spectate_entity_id.map_or(0, |id| id.wrapping_add(1));
+        crate::codec::write_varint(out, value);
+    }
+}
+
+impl crate::codec::Decode for SpectatorAction {
+    fn decode(r: &mut crate::codec::Reader<'_>) -> crate::codec::Result<Self> {
+        let value = r.varint()?;
+        Ok(SpectatorAction {
+            spectate_entity_id: (value != 0).then(|| value.wrapping_sub(1)),
+        })
+    }
+}
+
+impl Packet for SpectatorAction {
+    const ID: i32 = crate::ids::play::serverbound::SPECTATOR_ACTION;
+    const NAME: &'static str = "spectator_action";
+    const STATE: crate::State = crate::State::Play;
+    const DIRECTION: crate::Direction = crate::Direction::Serverbound;
+    const COST: u16 = 1;
+    const BUCKET: crate::Bucket = crate::Bucket::Interact;
+}
+
 /// `set_passengers`: the passengers of a vehicle.
 #[derive(Debug, Clone, PartialEq, Eq, Packet)]
 #[packet(state = Play, dir = Clientbound, name = "set_passengers")]

@@ -823,11 +823,6 @@ pub fn add_effect(
     crate::effect::living::add_detached(ents, target, effect);
 }
 
-/// The effective difficulty as an integer (`(int) difficulty.getEffectiveDifficulty()`).
-pub fn effective_difficulty(env: &Env<'_>) -> f32 {
-    super::effective_difficulty(env.difficulty)
-}
-
 /// The rotation of a freshly spawned mob looking along `y_rot`.
 pub fn rotation(y_rot: f32) -> Rotation {
     Rotation {

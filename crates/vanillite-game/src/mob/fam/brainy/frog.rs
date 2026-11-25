@@ -461,8 +461,12 @@ fn set_tadpole_age(t: &mut Tick<'_, '_>, age: i32) {
         let Some(frog) = super::convert_to(t, Kind::Frog, false, false) else {
             return;
         };
+        let pos = t.ents.store.get(frog).map(|e| e.pos());
         if let Some(m) = t.ents.mob_mut(frog) {
-            let mut ctx = SpawnContext::simple(t.env.difficulty, super::SpawnReason::Conversion);
+            let pos = pos.map_or(BlockPos::new(0, 0, 0), |p| {
+                BlockPos::containing(p.x, p.y, p.z)
+            });
+            let mut ctx = SpawnContext::at(t.level, pos, super::SpawnReason::Conversion);
             crate::mob::kinds::finalize_spawn(m, &mut ctx, t.env.random);
             m.persistent = true;
             m.baby = false;

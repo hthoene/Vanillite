@@ -45,6 +45,8 @@ pub(crate) enum Callback {
     Announce(Arc<(CommandSource, String, Callback)>),
     /// `execute if|unless function`: keeps the source when the result passes.
     Condition(Arc<Condition>),
+    /// Counts the successful results (a command block's `successCount`).
+    Count(Arc<AtomicI32>),
 }
 
 impl Callback {
@@ -92,6 +94,11 @@ impl Callback {
                     true,
                 );
                 next.fire(env, success, value);
+            }
+            Callback::Count(count) => {
+                if success {
+                    count.fetch_add(1, Ordering::Relaxed);
+                }
             }
             Callback::Condition(c) => {
                 let pass = if c.when_nonzero {

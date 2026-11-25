@@ -465,6 +465,7 @@ impl TerrainGenerator {
                             level: region,
                             random,
                             generator: self,
+                            keep_jigsaws: false,
                         };
                         start.place_in_chunk(&self.structures, &mut ctx, &mut chunk_bb, center);
                     }

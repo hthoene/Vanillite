@@ -59,6 +59,9 @@ pub(crate) struct WorldSurvival {
     /// The overworld advances the game time.
     ticks_time: bool,
     pub(crate) effects: Vec<Effect>,
+    /// Game events of the delivered effects, posted by the world (`ServerWorld`) to its
+    /// listeners.
+    pub(crate) game_events: Vec<PendingGameEvent>,
     weather_out: Vec<WeatherPacket>,
     /// The world's biomes for `isRainingAt`, shared with the level.
     climate: Option<Arc<Climate>>,
@@ -189,6 +192,7 @@ impl WorldSurvival {
             can_have_weather: overworld,
             ticks_time: overworld,
             effects: Vec::new(),
+            game_events: Vec::new(),
             weather_out: Vec::new(),
             climate: climate.map(Arc::new),
             min_y,
@@ -413,11 +417,21 @@ impl WorldSurvival {
         global: &Global,
         dimension: &str,
         id: EntityId,
+        events: &mut Vec<PendingGameEvent>,
     ) -> bool {
-        Self::on_player(entities, chunks, global, dimension, id, player::kill)
+        Self::on_player(
+            entities,
+            chunks,
+            global,
+            dimension,
+            id,
+            events,
+            player::kill,
+        )
     }
 
     /// Hurts a player (`/damage`, `hurtServer`) and delivers the effects at once.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn hurt(
         entities: &mut Entities,
         chunks: Option<&Chunks>,
@@ -426,6 +440,7 @@ impl WorldSurvival {
         id: EntityId,
         source: vanillite_game::survival::damage::DamageSource,
         amount: f32,
+        events: &mut Vec<PendingGameEvent>,
     ) -> bool {
         Self::on_player(
             entities,
@@ -433,6 +448,7 @@ impl WorldSurvival {
             global,
             dimension,
             id,
+            events,
             |entity, data, env| player::hurt(entity, data, env, source, amount),
         )
     }
@@ -490,17 +506,28 @@ impl WorldSurvival {
             level.entities.despawn(id);
         }
         deliver_simple(&out, &mut level.entities, global);
+        for effect in &out {
+            if let Effect::GameEvent {
+                event,
+                pos,
+                context,
+            } = effect
+            {
+                level.game_event(*event, *pos, *context);
+            }
+        }
         r
     }
 
     /// Runs `f` on a player with a survival environment outside the tick (commands) and
-    /// delivers its effects at once.
+    /// delivers its effects at once; its game events go to `events` for the caller to post.
     fn on_player(
         entities: &mut Entities,
         chunks: Option<&Chunks>,
         global: &Global,
         dimension: &str,
         id: EntityId,
+        events: &mut Vec<PendingGameEvent>,
         f: impl FnOnce(
             &mut vanillite_world::entity::EntityMut<'_>,
             &mut vanillite_game::player::PlayerData,
@@ -554,6 +581,7 @@ impl WorldSurvival {
         };
         let done = f(&mut entity, data, &mut env);
         deliver_simple(&out, entities, global);
+        collect_game_events(&out, events);
         done
     }
 
@@ -578,6 +606,7 @@ impl WorldSurvival {
             return;
         }
         let effects = std::mem::take(&mut self.effects);
+        collect_game_events(&effects, &mut self.game_events);
         self.build_grid(entities);
         let mut receivers = Vec::new();
         for effect in &effects {
@@ -668,6 +697,8 @@ impl WorldSurvival {
                 Effect::DropItem { .. }
                 | Effect::Experience { .. }
                 | Effect::SpawnMob { .. }
+                | Effect::GameEvent { .. }
+                | Effect::PearlsVanish(_)
                 | Effect::RespawnShoulder { .. } => {}
             }
         }
@@ -789,16 +820,54 @@ fn deliver_simple(effects: &[Effect], entities: &mut Entities, global: &Global) 
             Effect::DropItem { .. }
             | Effect::Experience { .. }
             | Effect::SpawnMob { .. }
+            | Effect::GameEvent { .. }
+            | Effect::PearlsVanish(_)
             | Effect::RespawnShoulder { .. } => {}
         }
     }
     spawn_drops(effects, entities, global);
 }
 
+/// A game event for the world to post: the event, its position and context.
+pub(crate) type PendingGameEvent = (
+    u16,
+    Vec3,
+    vanillite_game::level::game_event::GameEventContext,
+);
+
+/// The [`Effect::GameEvent`]s of `effects`, for the world to post.
+fn collect_game_events(effects: &[Effect], out: &mut Vec<PendingGameEvent>) {
+    for effect in effects {
+        if let Effect::GameEvent {
+            event,
+            pos,
+            context,
+        } = effect
+        {
+            out.push((*event, *pos, *context));
+        }
+    }
+}
+
 /// The item entities of [`Effect::DropItem`]s (`addFreshEntity`) and the experience orbs of
 /// [`Effect::Experience`]s.
 fn spawn_drops(effects: &[Effect], entities: &mut Entities, global: &Global) {
     for effect in effects {
+        if let Effect::PearlsVanish(uuid) = *effect
+            && global
+                .level
+                .rules()
+                .bool(vanillite_game::survival::rules::Rule::ENDER_PEARLS_VANISH_ON_DEATH)
+        {
+            for i in 0..crate::server::DIMENSIONS.len() {
+                let Ok(index) = u16::try_from(i) else {
+                    continue;
+                };
+                global.run_in_world(crate::world::WorldId(index), move |world| {
+                    world.discard_pearls_of(uuid);
+                });
+            }
+        }
         if let Effect::Experience { pos, amount } = effect {
             vanillite_game::experience_orb::with_entity_random(|random| {
                 vanillite_game::experience_orb::award_in(

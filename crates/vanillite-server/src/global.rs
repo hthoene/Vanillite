@@ -50,6 +50,8 @@ pub struct Global {
     pub(crate) systems: crate::systems::GameSystems,
     /// The data pack repository.
     pub(crate) packs: crate::packs::DataPacks,
+    /// `StructureTemplateManager`: the structure templates of `generated/` and the data packs.
+    pub(crate) templates: Arc<vanillite_worldgen::template::StructureTemplateManager>,
     /// `/tick`'s state; the server loop reads it once per tick.
     pub(crate) tick_rate: std::sync::Mutex<crate::tick_rate::TickRateManager>,
     /// The durations of the last ticks (`/tick query`).

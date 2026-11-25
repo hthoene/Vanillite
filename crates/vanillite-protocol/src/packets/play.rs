@@ -2,10 +2,12 @@
 //! [`Unhandled`](crate::sets::ServerboundPlay::Unhandled) on the server side.
 
 /// Serverbound play packets.
+mod technical;
 mod world;
 
 pub mod serverbound {
     pub use super::progress::{SeenAdvancements, SeenAdvancementsAction, SeenAdvancementsPacket};
+    pub use super::technical::serverbound::*;
     pub use super::world::serverbound::*;
     use crate::Packet;
     use crate::codec::{Decode, Encode, Reader, Result};
@@ -17,7 +19,7 @@ pub mod serverbound {
         BlockEntityTagQuery, ChangeDifficultyServerbound, ChangeGameMode, EntityTagQuery,
         GameRuleEntry, LockDifficulty, PlayerAbilitiesServerbound, SetGameRule, TeleportToEntity,
     };
-    pub use super::mobs::{Attack, Interact, MoveVehicle, PaddleBoat};
+    pub use super::mobs::{Attack, Interact, MoveVehicle, PaddleBoat, SpectatorAction};
 
     /// `configuration_acknowledged`: the client entered configuration again.
     #[derive(Debug, Clone, PartialEq, Eq, Packet)]
@@ -291,6 +293,7 @@ pub mod serverbound {
 
 /// Clientbound play packets.
 pub mod clientbound {
+    pub use super::technical::clientbound::*;
     pub use super::world::clientbound::*;
     use crate::Packet;
     use crate::text::Component;

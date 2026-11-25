@@ -632,6 +632,8 @@ fn handle_eating(ix: &mut Interact<'_, '_>) -> bool {
             });
             sound(ix, s, 1.0, pitch);
         }
+        let event = crate::level::game_event::events().eat;
+        crate::mob::animal::entity_game_event(ix.ents, ix.env, ix.target, event, Some(ix.target));
         dirty(ix);
     }
     used
@@ -1230,13 +1232,14 @@ fn skeleton_trap(t: &mut Tick<'_, '_>) {
         m.baby = false;
     }
     t.core_mut().mark_data_dirty();
-    let difficulty = t.env.difficulty;
     let pos = t.pos();
+    // `SkeletonTrapGoal.tick`: `getCurrentDifficultyAt(horse.blockPosition())`.
+    let block = t.block_pos();
     let network_ids = std::sync::Arc::clone(t.level.network_ids_arc());
     let spawn_skeleton = |t: &mut Tick<'_, '_>, horse: EntityId| {
         let seed = crate::mob::new_entity_seed();
         let mut sk = MobData::new(Kind::Skeleton, seed);
-        let mut ctx = SpawnContext::simple(difficulty, SpawnReason::Triggered);
+        let mut ctx = SpawnContext::at(t.level, block, SpawnReason::Triggered);
         crate::mob::kinds::finalize_spawn(&mut sk, &mut ctx, t.env.random);
         sk.persistent = true;
         sk.damage_cooldown = 60;
@@ -1267,7 +1270,7 @@ fn skeleton_trap(t: &mut Tick<'_, '_>) {
     for _ in 0..3 {
         let seed = crate::mob::new_entity_seed();
         let mut horse = MobData::new(Kind::SkeletonHorse, seed);
-        let mut ctx = SpawnContext::simple(difficulty, SpawnReason::Triggered);
+        let mut ctx = SpawnContext::at(t.level, block, SpawnReason::Triggered);
         crate::mob::kinds::finalize_spawn(&mut horse, &mut ctx, t.env.random);
         horse.damage_cooldown = 60;
         horse.persistent = true;

@@ -298,6 +298,7 @@ fn fireball_hit(t: &mut MissileTick<'_, '_>, d: &MissileData, hit: Hit, at: Vec3
         }
         Hit::Miss => return,
     }
+    land(t, hit);
     if d.kind == MissileKind::Fireball {
         // `LargeFireball.onHit`: the explosion (`ExplosionInteraction.MOB`), with fire when
         // mobs may grief.
@@ -350,8 +351,8 @@ pub fn select_next_move_direction(
     }
     // The bullet's own random, put back below.
     let Some(mut random) = ents
-        .missile_mut(me)
-        .map(|d| std::mem::replace(&mut d.random, LegacyRandom::new(0)))
+        .missile(me)
+        .map(|d| LegacyRandom::from_state(d.random_state))
     else {
         return;
     };
@@ -435,7 +436,7 @@ pub fn select_next_move_direction(
         d.ints[0] = selection;
         d.vec = deltas;
         d.ints[1] = steps;
-        d.random = random.clone();
+        d.random_state = random.state();
     }
 }
 
@@ -568,7 +569,18 @@ fn bullet_hit(t: &mut MissileTick<'_, '_>, d: &MissileData, hit: Hit) {
         }
         Hit::Miss => return,
     }
+    land(t, hit);
     discard(t);
+}
+
+/// `Projectile.onHit`'s `PROJECTILE_LAND` of this projectile's hit.
+fn land(t: &mut MissileTick<'_, '_>, hit: Hit) {
+    let (block, at) = match hit {
+        Hit::Entity(_, at) => (None, at),
+        Hit::Block(pos, at, _) => (Some(pos), at),
+        Hit::Miss => return,
+    };
+    crate::mob::missile::land_event(t.env.out, t.level, t.id, block, at);
 }
 
 // --- Evoker fangs ---------------------------------------------------------------------------
@@ -694,6 +706,8 @@ fn potion_tick(t: &mut MissileTick<'_, '_>) {
 /// `AbstractThrownPotion.onHit` and `ThrownSplashPotion.onHitAsPotion`.
 fn potion_hit(t: &mut MissileTick<'_, '_>, d: &MissileData, hit: Hit, at: Vec3) {
     let me = t.id;
+    // `super.onHit` first: the land game event.
+    land(t, hit);
     let potion = potion::of_stack(&d.item);
     if let Some(p) = potion
         && d.kind == MissileKind::SplashPotion
@@ -701,7 +715,6 @@ fn potion_hit(t: &mut MissileTick<'_, '_>, d: &MissileData, hit: Hit, at: Vec3) 
         splash(t, d, p, at);
     }
     // Lingering potions leave an area effect cloud (#74): not spawned yet.
-    let _ = hit;
     let block = BlockPos::containing(at.x, at.y, at.z);
     let (event, sound) = if potion.is_some_and(Potion::is_instant) {
         (2007, 1054)

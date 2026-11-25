@@ -77,6 +77,16 @@ pub enum Effect {
         y_rot: f32,
         velocity: Vec3,
     },
+    /// `gameEvent(event, pos, context)`: posted to the world's vibration listeners once the
+    /// world handles its effects.
+    GameEvent {
+        event: u16,
+        pos: Vec3,
+        context: crate::level::game_event::GameEventContext,
+    },
+    /// The player with this UUID died: with `ender_pearls_vanish_on_death` its ender pearls in
+    /// the other worlds vanish (the pearls of its own world see it themselves).
+    PearlsVanish(u128),
     /// An entity from a player's shoulder back in the world (`respawnEntityOnShoulder`): its
     /// NBT, the position and the player that becomes its owner.
     RespawnShoulder {
@@ -84,6 +94,15 @@ pub enum Effect {
         pos: Vec3,
         owner: u128,
     },
+}
+
+/// Queues `gameEvent(event, pos, Context.of(source))`.
+pub fn game_event(out: &mut Vec<Effect>, event: u16, pos: Vec3, source: Option<EntityId>) {
+    out.push(Effect::GameEvent {
+        event,
+        pos,
+        context: crate::level::game_event::GameEventContext::of(source),
+    });
 }
 
 /// The seed of a sound (`Level.soundSeedGenerator`, a random of its own that Vanilla never
