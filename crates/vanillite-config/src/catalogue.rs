@@ -170,6 +170,11 @@ rules! {
             /// Require an Xbox Live login. Off accepts any identity a client claims: only for
             /// tests on closed networks.
             online_mode: bool = "online-mode", Security, restart = true, vanilla = true;
+            /// Oldest Bedrock network protocol that may join. 0 accepts every Bedrock version
+            /// this build supports (listed at startup); e.g. 2225 admits only Bedrock 1.26.60
+            /// and newer.
+            min_protocol: u32 = "min-protocol", Setting, range = [0, 100_000], restart = true,
+                vanilla = 0;
             /// Prefix of Bedrock players' Java names, so they never collide with Java accounts.
             /// Bedrock players get the UUID `00000000-0000-0000-xxxx-xxxxxxxxxxxx` of their XUID
             /// (like Floodgate); whitelist and operators use that UUID.
