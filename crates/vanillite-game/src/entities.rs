@@ -71,6 +71,8 @@ pub struct Entities {
     pub boats: Dense<crate::vehicle::BoatData>,
     /// Leash knot kind data (their position block).
     pub knots: Dense<BlockPos>,
+    /// Minecart kind data (every type of [`crate::minecart::MinecartKind`]).
+    pub minecarts: Dense<crate::minecart::MinecartData>,
 }
 
 /// Who rides what (`Entity.vehicle`, `Entity.passengers`).
@@ -282,7 +284,7 @@ impl Entities {
         self.orbs.get_mut(row)
     }
 
-    /// The entity with a network id: mobs, players, boats and leash knots.
+    /// The entity with a network id: mobs, players, boats, minecarts and leash knots.
     pub fn by_network_id(&self, network_id: i32) -> Option<EntityId> {
         self.by_network_id
             .get(&network_id)
@@ -401,6 +403,8 @@ impl Entities {
             self.boats.swap_remove(row).and_then(|(_, moved)| moved)
         } else if kind == ids::LEASH_KNOT {
             self.knots.swap_remove(row).and_then(|(_, moved)| moved)
+        } else if crate::minecart::MinecartKind::of(kind).is_some() {
+            self.minecarts.swap_remove(row).and_then(|(_, moved)| moved)
         } else {
             None
         }

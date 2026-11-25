@@ -84,6 +84,14 @@ fn boolean(tag: &Compound, key: &str) -> bool {
     tag.get(key).and_then(Tag::as_i64).is_some_and(|v| v != 0)
 }
 
+fn double(tag: &Compound, key: &str) -> Option<f64> {
+    match tag.get(key) {
+        Some(Tag::Double(v)) if v.is_finite() => Some(*v),
+        Some(Tag::Float(v)) if v.is_finite() => Some(f64::from(*v)),
+        _ => None,
+    }
+}
+
 fn float(tag: &Compound, key: &str) -> Option<f32> {
     match tag.get(key) {
         Some(Tag::Float(v)) if v.is_finite() => Some(*v),
@@ -542,6 +550,9 @@ pub fn save_boat(
     {
         out.insert("CustomName", tag);
     }
+    if b.kind.chest {
+        save_chest_vehicle(&b.items, b.loot_table.as_ref(), &mut out);
+    }
     match leash {
         Some(super::LeashRef::Entity(u)) => {
             let mut c = Compound::new();
@@ -560,5 +571,188 @@ pub fn load_boat(tag: &Compound) -> Option<(LoadedEntity, crate::vehicle::BoatDa
     let e = load_entity(tag)?;
     let mut b = crate::vehicle::BoatData::new(kind);
     b.custom_name = tag.get("CustomName").and_then(tag_component);
+    if kind.chest {
+        b.loot_table = load_chest_vehicle(tag, &mut b.items);
+    }
     Some((e, b))
+}
+
+/// `ContainerEntity.addChestVehicleSaveData`: the loot table, or the items.
+fn save_chest_vehicle(
+    items: &[crate::item::ItemStack],
+    loot_table: Option<&(String, i64)>,
+    out: &mut Compound,
+) {
+    match loot_table {
+        Some((table, seed)) => {
+            out.insert("LootTable", table.clone());
+            if *seed != 0 {
+                out.insert("LootTableSeed", *seed);
+            }
+        }
+        None => crate::block::container::save_items(items, out),
+    }
+}
+
+/// `ContainerEntity.readChestVehicleSaveData`.
+fn load_chest_vehicle(
+    tag: &Compound,
+    items: &mut [crate::item::ItemStack],
+) -> Option<(String, i64)> {
+    if let Some(Tag::String(table)) = tag.get("LootTable") {
+        let seed = tag.get("LootTableSeed").and_then(Tag::as_i64).unwrap_or(0);
+        return Some((table.clone(), seed));
+    }
+    crate::block::container::load_items(tag, items);
+    None
+}
+
+/// The keys of the kinds Vanillite does not simulate, kept as they were
+/// (`BaseCommandBlock.save`, `BaseSpawner.save`).
+const COMMAND_BLOCK_KEYS: &[&str] = &[
+    "SuccessCount",
+    "LastOutput",
+    "TrackOutput",
+    "UpdateLastExecution",
+    "LastExecution",
+    "CustomName",
+];
+const SPAWNER_KEYS: &[&str] = &[
+    "Delay",
+    "MinSpawnDelay",
+    "MaxSpawnDelay",
+    "SpawnCount",
+    "MaxNearbyEntities",
+    "RequiredPlayerRange",
+    "SpawnRange",
+    "SpawnData",
+    "SpawnPotentials",
+];
+
+/// A minecart as entity NBT (`AbstractMinecart.addAdditionalSaveData` and the kinds').
+pub fn save_minecart(core: &EntityRef<'_>, m: &crate::minecart::MinecartData) -> Compound {
+    use crate::minecart::MinecartKind;
+    let mut out = Compound::new();
+    save_entity(core, &mut out);
+    out.insert("fall_distance", m.fall_distance);
+    out.insert("Fire", -1_i16);
+    out.insert("Air", 300_i16);
+    if let Some(name) = m.custom_name.as_deref()
+        && let Some(tag) = component_tag(name)
+    {
+        out.insert("CustomName", tag);
+    }
+    if let Some(state) = m.display_state {
+        out.insert(
+            "DisplayState",
+            Tag::Compound(crate::level::block_entity::write_block_state(state)),
+        );
+    }
+    if m.display_offset != m.kind.default_display_offset() {
+        out.insert("DisplayOffset", m.display_offset);
+    }
+    out.insert("FlippedRotation", m.flipped);
+    out.insert("HasTicked", m.first_tick);
+    match m.kind {
+        MinecartKind::Chest | MinecartKind::Hopper => {
+            save_chest_vehicle(&m.items, m.loot_table.as_ref(), &mut out);
+            if m.kind == MinecartKind::Hopper {
+                out.insert("Enabled", m.enabled);
+            }
+        }
+        MinecartKind::Furnace => {
+            out.insert("PushX", m.push.x);
+            out.insert("PushZ", m.push.z);
+            #[allow(clippy::cast_possible_truncation)]
+            out.insert("Fuel", m.fuel as i16);
+        }
+        MinecartKind::Tnt => {
+            out.insert("fuse", m.fuse);
+            if m.explosion_power != 4.0 {
+                out.insert("explosion_power", m.explosion_power);
+            }
+            if m.explosion_speed_factor != 1.0 {
+                out.insert("explosion_speed_factor", m.explosion_speed_factor);
+            }
+        }
+        MinecartKind::CommandBlock => {
+            out.insert("Command", m.command.clone());
+        }
+        MinecartKind::Plain | MinecartKind::Spawner => {}
+    }
+    for (key, value) in m.extra.iter() {
+        if out.get(key).is_none() {
+            out.insert(key, value.clone());
+        }
+    }
+    out
+}
+
+/// A minecart from entity NBT.
+pub fn load_minecart(
+    tag: &Compound,
+    seed: i64,
+) -> Option<(LoadedEntity, crate::minecart::MinecartData)> {
+    use crate::minecart::{MinecartData, MinecartKind};
+    let kind = MinecartKind::of(type_of(tag)?)?;
+    let e = load_entity(tag)?;
+    let mut m = MinecartData::new(kind, seed);
+    m.custom_name = tag.get("CustomName").and_then(tag_component);
+    m.fall_distance = double(tag, "fall_distance").unwrap_or(0.0);
+    if let Some(Tag::Compound(c)) = tag.get("DisplayState") {
+        m.display_state = Some(crate::level::block_entity::read_block_state(c));
+    }
+    m.display_offset = int(tag, "DisplayOffset").unwrap_or(kind.default_display_offset());
+    m.flipped = boolean(tag, "FlippedRotation");
+    m.first_tick = boolean(tag, "HasTicked");
+    match kind {
+        MinecartKind::Chest | MinecartKind::Hopper => {
+            m.loot_table = load_chest_vehicle(tag, &mut m.items);
+            if kind == MinecartKind::Hopper {
+                m.enabled = tag
+                    .get("Enabled")
+                    .and_then(Tag::as_i64)
+                    .is_none_or(|v| v != 0);
+            }
+        }
+        MinecartKind::Furnace => {
+            let x = double(tag, "PushX").unwrap_or(0.0);
+            let z = double(tag, "PushZ").unwrap_or(0.0);
+            m.push = Vec3::new(x, 0.0, z);
+            m.fuel = int(tag, "Fuel").unwrap_or(0);
+            m.has_fuel = m.fuel > 0;
+        }
+        MinecartKind::Tnt => {
+            m.fuse = int(tag, "fuse").unwrap_or(-1);
+            m.explosion_power = float(tag, "explosion_power")
+                .unwrap_or(4.0)
+                .clamp(0.0, 128.0);
+            m.explosion_speed_factor = float(tag, "explosion_speed_factor")
+                .unwrap_or(1.0)
+                .clamp(0.0, 128.0);
+        }
+        MinecartKind::CommandBlock => {
+            m.command = tag
+                .get("Command")
+                .and_then(Tag::as_str)
+                .unwrap_or("")
+                .to_owned();
+            for &key in COMMAND_BLOCK_KEYS {
+                if let Some(v) = tag.get(key) {
+                    m.extra.insert(key, v.clone());
+                }
+            }
+        }
+        MinecartKind::Spawner => {
+            for &key in SPAWNER_KEYS {
+                if let Some(v) = tag.get(key) {
+                    m.extra.insert(key, v.clone());
+                }
+            }
+        }
+        MinecartKind::Plain => {}
+    }
+    // The command block's own custom name lives in the entity's name.
+    m.extra.remove("CustomName");
+    Some((e, m))
 }

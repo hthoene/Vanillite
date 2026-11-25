@@ -20,8 +20,9 @@
 //! - results larger than the item's max stack size are split as `LootTable.createStackSplitter`.
 //!
 //! The context has no level and no entity, so:
-//! - `entity_properties` on `this` with an empty predicate holds (the breaker or the explosion
-//!   source is assumed present); any non-empty entity predicate is unsupported;
+//! - `entity_properties` on `this` with an empty predicate holds if the context has a breaker,
+//!   an explosion source or an entity (`this_present`); any non-empty entity predicate is
+//!   unsupported;
 //! - `location_check` with only `block`/`fluid` predicates holds (the world is assumed
 //!   consistent, e.g. the other half of a double plant exists); other location predicates are
 //!   unsupported.
@@ -79,6 +80,9 @@ pub struct BlockLootContext<'a> {
     pub item_in_tag: &'a dyn Fn(u16, &str) -> bool,
     /// Explosion radius if destroyed by an explosion (None for players).
     pub explosion_radius: Option<f32>,
+    /// Whether `THIS_ENTITY` is set for block loot: the breaker or the explosion source
+    /// (`Block.dropResources(..., breaker, tool)`); a block destroyed by a shape update has none.
+    pub this_present: bool,
     /// The entity parameters of entity loot (`LootContextParamSets.ENTITY`); `None` for
     /// block loot.
     pub entity: Option<&'a EntityLootContext<'a>>,
@@ -1721,8 +1725,7 @@ impl<'t> Eval<'t, '_> {
             Cond::MatchTool(None) => true,
             Cond::MatchTool(Some(p)) => self.tool_matches(p),
             Cond::MatchBlock(p) => block_matches(p, self.ctx.state),
-            // Block loot: the breaker or the explosion source is assumed present.
-            Cond::ThisPresent => true,
+            Cond::ThisPresent => self.ctx.this_present || self.ctx.entity.is_some(),
             Cond::Entity(target, p) => {
                 let Some(e) = self.ctx.entity else {
                     return false;
@@ -2079,6 +2082,7 @@ mod tests {
             enchantment_level: &level,
             item_in_tag: &in_tag,
             explosion_radius,
+            this_present: true,
             entity: None,
             block_entity: None,
         };
@@ -2138,6 +2142,7 @@ mod tests {
             enchantment_level: &none,
             item_in_tag: &in_tag,
             explosion_radius: None,
+            this_present: true,
             entity: Some(&entity),
             block_entity: None,
         };

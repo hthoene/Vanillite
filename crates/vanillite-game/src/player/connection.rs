@@ -68,6 +68,9 @@ pub enum EntityAction {
     },
     /// `player_action` `RELEASE_USE_ITEM`.
     ReleaseUseItem,
+    /// `player_command` `OPEN_INVENTORY` while riding: the vehicle's inventory opens
+    /// (`HasCustomInventoryScreen`: chest boats).
+    OpenVehicleInventory,
 }
 
 /// What a player sends to steer its vehicle.
@@ -454,9 +457,13 @@ impl Connection {
                         PlayerAction::StartRidingJump => {
                             self.vehicle.jump = Some(p.data);
                         }
+                        PlayerAction::OpenInventory => {
+                            if self.entity_actions.len() < 16 {
+                                self.entity_actions.push(EntityAction::OpenVehicleInventory);
+                            }
+                        }
                         PlayerAction::StopSleeping
                         | PlayerAction::StopRidingJump
-                        | PlayerAction::OpenInventory
                         | PlayerAction::StartFallFlying => {}
                     }
                 }
@@ -475,7 +482,9 @@ impl Connection {
                             .equipment(crate::item::EquipmentSlot::OffHand),
                     };
                     let name = crate::item::item_id(stack).name();
-                    let entity_item = name.ends_with("_spawn_egg") || name == "minecraft:lead";
+                    let entity_item = name.ends_with("_spawn_egg")
+                        || name == "minecraft:lead"
+                        || name.ends_with("minecart");
                     self.play.use_item_on(play, &p, self.sink.as_ref());
                     if entity_item && self.entity_actions.len() < 16 {
                         self.entity_actions.push(EntityAction::UseItemOn {
@@ -626,7 +635,9 @@ impl Connection {
             return;
         }
         let in_range = |pos| actor.within_block_range(pos, 4.0);
-        if !crate::menu::container::still_valid(inventory, level, &in_range) {
+        if !crate::menu::container::still_valid(inventory, level, &in_range, &|b| {
+            actor.within_entity_range(b, 4.0)
+        }) {
             log::debug!("A player interacted with an invalid menu");
             return;
         }
@@ -675,7 +686,9 @@ impl Connection {
             return;
         };
         let in_range = |pos| actor.within_block_range(pos, 4.0);
-        if !crate::menu::container::still_valid(inventory, level, &in_range) {
+        if !crate::menu::container::still_valid(inventory, level, &in_range, &|b| {
+            actor.within_entity_range(b, 4.0)
+        }) {
             log::debug!("A player interacted with an invalid menu");
             return;
         }
@@ -706,7 +719,9 @@ impl Connection {
             return;
         }
         let in_range = |pos| actor.within_block_range(pos, 4.0);
-        if !crate::menu::container::still_valid(inventory, level, &in_range) {
+        if !crate::menu::container::still_valid(inventory, level, &in_range, &|b| {
+            actor.within_entity_range(b, 4.0)
+        }) {
             log::debug!("A player interacted with an invalid menu");
             return;
         }

@@ -256,6 +256,13 @@ fn dismount_location(
     let fallback = Vec3::new(vpos.x, v.aabb().max_y, vpos.z);
     let (pw, ph) = (f64::from(p.dims().width), f64::from(p.dims().height));
     let mut scratch = Vec::new();
+    if let Some(m) = ents.minecart(vehicle) {
+        let flipped = m.flipped;
+        if let Some(t) = minecart_dismount(ents, level, vehicle, passenger, flipped) {
+            return Some(t);
+        }
+        return Some(fallback);
+    }
     if ents.boat(vehicle).is_some() {
         // `getCollisionHorizontalEscapeVector(width * sqrt2, passengerWidth, passengerYRot)`.
         let width = f64::from(v.dims().width) * std::f64::consts::SQRT_2;
@@ -315,6 +322,74 @@ fn dismount_location(
     Some(fallback)
 }
 
+/// `AbstractMinecart.getDismountLocationForPassenger`: the blocks beside the minecart's
+/// direction of travel, at its height, one up and one down, for each pose the passenger can
+/// take.
+fn minecart_dismount(
+    ents: &Entities,
+    level: &dyn physics::Blocks,
+    vehicle: EntityId,
+    passenger: EntityId,
+    flipped: bool,
+) -> Option<Vec3> {
+    let v = ents.store.get(vehicle)?;
+    let p = ents.store.get(passenger)?;
+    // `getMotionDirection`: the clockwise of the facing (of its opposite when flipped).
+    let yaw = f64::from(v.rot().y_rot);
+    let mut dir = (floor(yaw / 90.0 + 0.5) & 3) as usize;
+    if flipped {
+        dir = (dir + 2) & 3;
+    }
+    // `Direction.from2DDataValue`: south, west, north, east; clockwise is the next one.
+    const STEPS: [(i32, i32); 4] = [(0, 1), (-1, 0), (0, -1), (1, 0)];
+    let (dx, dz) = STEPS[(dir + 1) & 3];
+    // `DismountHelper.offsetsForDirection(forward)`.
+    let (rx, rz) = (-dz, dx);
+    let (lx, lz) = (-rx, -rz);
+    let (bx, bz) = (-dx, -dz);
+    let offsets = [
+        (rx, rz),
+        (lx, lz),
+        (bx + rx, bz + rz),
+        (bx + lx, bz + lz),
+        (dx + rx, dz + rz),
+        (dx + lx, dz + lz),
+        (bx, bz),
+        (dx, dz),
+    ];
+    let base = BlockPos::containing(v.pos().x, v.pos().y, v.pos().z);
+    // `getDismountPoses` with their heights (`POSE_DISMOUNT_HEIGHTS`).
+    const ALL: &[i32] = &[0, 1, -1];
+    let poses: Vec<(f64, f64, &[i32])> = if ents.player(passenger).is_some() {
+        vec![(0.6, 1.8, ALL), (0.6, 1.5, ALL), (0.6, 0.6, &[0, 1])]
+    } else {
+        let d = p.dims();
+        vec![(f64::from(d.width), f64::from(d.height), ALL)]
+    };
+    let mut scratch = Vec::new();
+    for (width, height, heights) in poses {
+        let reach = width.min(1.0);
+        for &oy in heights {
+            for &(ox, oz) in &offsets {
+                let pos = BlockPos::new(base.x + ox, base.y + oy, base.z + oz);
+                let h = block_floor_height(level, pos);
+                if !floor_valid(h) {
+                    continue;
+                }
+                let t = Vec3::new(
+                    f64::from(pos.x) + 0.5,
+                    f64::from(pos.y) + h,
+                    f64::from(pos.z) + 0.5,
+                );
+                if can_dismount_to(level, reach, height, t, &mut scratch) {
+                    return Some(t);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// `positionRider` of every passenger of `vehicle`.
 pub fn position_riders_of(ents: &mut Entities, vehicle: EntityId) {
     let list: Vec<EntityId> = ents.riding.passengers_of(vehicle).to_vec();
@@ -329,6 +404,8 @@ pub fn position_riders_of(ents: &mut Entities, vehicle: EntityId) {
         let attach = if let Some(b) = ents.boat(vehicle) {
             let animal = ents.mob(p).is_some_and(|m| !m.kind.is_monster());
             crate::vehicle::passenger_offset(b, y_rot, count, i, animal)
+        } else if ents.minecart(vehicle).is_some() {
+            Vec3::new(0.0, crate::minecart::passenger_height(ents, p), 0.0)
         } else if let Some(m) = ents.mob(vehicle) {
             let scale = if m.baby { 0.5 } else { 1.0 };
             Vec3::new(0.0, mob_passenger_height(m.kind, height) * scale, 0.0)

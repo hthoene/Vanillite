@@ -20,7 +20,6 @@ pub fn drop_resources(
     state: BlockState,
     breaker: Option<EntityId>,
 ) {
-    let _ = breaker;
     if !level.settings.block_drops {
         return;
     }
@@ -42,6 +41,7 @@ pub fn drop_resources(
         enchantment_level: &|_| 0,
         item_in_tag: &item_in_tag,
         explosion_radius: None,
+        this_present: breaker.is_some(),
         entity: None,
         block_entity: Some(&components),
     };

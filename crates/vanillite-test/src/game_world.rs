@@ -28,8 +28,8 @@ use vanillite_data::entity::{EntityTypeId, ids};
 use vanillite_game::block::Behaviours;
 use vanillite_game::entities::{Entities, is_mob_kind};
 use vanillite_game::item_entity::ItemData;
-use vanillite_game::level::explosion::BlockInteraction;
 use vanillite_game::level::{Level, LevelOutput, LevelSettings, update};
+use vanillite_game::minecart::{self, MinecartKind};
 use vanillite_game::mob::goals::{Goal, MeleeKind, Slot};
 use vanillite_game::mob::{
     self, Environment, Kind, MobContext, MobData, MobSettings, WorldAction, combat, kinds,
@@ -299,6 +299,7 @@ impl GameWorld {
         let has_players = !self.level.entities.players.is_empty();
         self.mobs
             .begin_tick(self.env, MobSettings::default(), has_players);
+        minecart::players_push(&mut self.level.entities);
         let mut cursor = self.level.entities.store.tick_cursor();
         while let Some(id) = self.level.entities.store.next_to_tick(&mut cursor) {
             let Some(mut entity) = self.level.entities.store.get_mut(id) else {
@@ -320,7 +321,8 @@ impl GameWorld {
                 continue;
             }
             let is_mob = is_mob_kind(kind);
-            if !is_mob && kind != ids::ARROW && kind != ids::EXPERIENCE_ORB {
+            let is_minecart = MinecartKind::of(kind).is_some();
+            if !is_mob && !is_minecart && kind != ids::ARROW && kind != ids::EXPERIENCE_ORB {
                 continue;
             }
             if !self
@@ -332,6 +334,8 @@ impl GameWorld {
             self.with_env(|level, ents, env, cx| {
                 if is_mob {
                     mob::tick(level, ents, env, cx, id);
+                } else if is_minecart {
+                    minecart::tick(level, ents, env, cx, id);
                 } else if kind == ids::ARROW {
                     projectile::tick_arrow(level, ents, env, cx, id);
                 } else {
@@ -353,33 +357,11 @@ impl GameWorld {
     /// What the last mob tick queued (`WorldMobs::apply_actions` of the server).
     fn apply_actions(&mut self) {
         for action in std::mem::take(&mut self.mobs.actions) {
-            match action {
-                WorldAction::Explode(e) => {
-                    let decay = if e.mob {
-                        Rule::MOB_EXPLOSION_DROP_DECAY
-                    } else {
-                        Rule::TNT_EXPLOSION_DROP_DECAY
-                    };
-                    let interaction = if e.mob && !self.rules.bool(Rule::MOB_GRIEFING) {
-                        BlockInteraction::Keep
-                    } else if self.rules.bool(decay) {
-                        BlockInteraction::DestroyWithDecay
-                    } else {
-                        BlockInteraction::Destroy
-                    };
-                    self.level
-                        .explode(e.source, e.source, e.pos, e.radius, interaction);
-                    self.explosion_hurts();
-                }
-                WorldAction::SetBlock(pos, block, flags) => {
-                    self.level.set_block(pos, block, flags);
-                }
-                WorldAction::DestroyBlock(pos, drop) => {
-                    self.level.destroy_block(pos, drop, None);
-                }
-                WorldAction::LevelEvent(event, pos, data) => {
-                    self.level.level_event(None, event, pos, data);
-                }
+            if let WorldAction::Explode(e) = action {
+                e.run(&mut self.level, &self.rules);
+                self.explosion_hurts();
+            } else {
+                action.apply_to_level(&mut self.level);
             }
         }
         self.finish_removals();
@@ -410,6 +392,10 @@ impl GameWorld {
                     }
                 };
                 source.position.get_or_insert(hurt.center);
+                if ents.minecart(hurt.target).is_some() {
+                    minecart::hurt(ents, env, cx, hurt.target, source, hurt.amount);
+                    continue;
+                }
                 combat::hurt(level, ents, env, cx, hurt.target, source, hurt.amount);
             }
         });
@@ -527,6 +513,27 @@ impl GameWorld {
     }
 
     fn add_mob(&mut self, spec: &EntitySpec, index: usize) -> Result<(), String> {
+        if let Some(kind) = EntityTypeId::by_name(&spec.kind).and_then(MinecartKind::of) {
+            let rot = Rotation {
+                y_rot: spec.rot[0],
+                x_rot: spec.rot[1],
+                y_head_rot: spec.rot[0],
+            };
+            let pos = Vec3::new(spec.pos[0], spec.pos[1], spec.pos[2]);
+            let id = minecart::spawn(
+                &mut self.level.entities,
+                &self.network_ids,
+                spec.uuid(index),
+                pos,
+                rot,
+                minecart::MinecartData::new(kind, spec.seed),
+            );
+            if let (Some(m), Some(mut e)) = (spec.motion, self.level.entities.store.get_mut(id)) {
+                e.set_velocity(Vec3::new(m[0], m[1], m[2]));
+            }
+            self.names.push((id, spec.name.clone()));
+            return Ok(());
+        }
         let kind = EntityTypeId::by_name(&spec.kind)
             .and_then(Kind::of)
             .ok_or_else(|| format!("{}: no mob behaviour in Vanillite", spec.kind))?;
@@ -592,6 +599,9 @@ impl GameWorld {
         };
         if let Some(p) = ents.player(id) {
             living(&mut d, rot.y_rot, p.survival.health, p.survival.death_time);
+        }
+        if ents.minecart(id).is_some() {
+            d.insert("rot".into(), json!([bits(rot.y_rot), bits(rot.x_rot)]));
         }
         if let Some(m) = ents.mob(id) {
             living(&mut d, m.y_body_rot, m.health, m.death_time);

@@ -36,7 +36,12 @@ pub fn record(
             apply(world.as_mut(), op, true)?;
         }
         world.step();
-        observe(world.as_mut(), &mut trace, tick, scenario.world.observe_light);
+        observe(
+            world.as_mut(),
+            &mut trace,
+            tick,
+            scenario.world.observe_light,
+        );
     }
     Ok(trace)
 }

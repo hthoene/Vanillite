@@ -584,9 +584,11 @@ fn explode_creeper(t: &mut Tick<'_, '_>) {
     let id = t.id;
     t.cx.actions.push(WorldAction::Explode(ExplosionRequest {
         source: Some(id),
+        indirect: None,
         pos,
         radius,
         mob: true,
+        rails_resist: false,
     }));
 }
 

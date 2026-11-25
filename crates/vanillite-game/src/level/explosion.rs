@@ -84,12 +84,26 @@ impl Level {
         radius: f32,
         interaction: BlockInteraction,
     ) -> usize {
+        self.explode_with(source, indirect, center, radius, interaction, false)
+    }
+
+    /// [`Level::explode`]; with `rails_resist` (a primed TNT minecart) rails and the blocks
+    /// under them have no resistance and do not break.
+    pub fn explode_with(
+        &mut self,
+        source: Option<EntityId>,
+        indirect: Option<EntityId>,
+        center: Vec3,
+        radius: f32,
+        interaction: BlockInteraction,
+        rails_resist: bool,
+    ) -> usize {
         let context = super::game_event::GameEventContext::of(source);
         self.game_event(super::game_event::events().explode, center, context);
-        let mut targets = self.exploded_positions(center, radius);
+        let mut targets = self.exploded_positions(center, radius, rails_resist);
         let hit_players = self.hurt_entities(source, indirect, center, radius);
         if interaction != BlockInteraction::Keep {
-            self.interact_with_blocks(&mut targets, indirect, interaction);
+            self.interact_with_blocks(&mut targets, source, indirect, interaction);
         }
         let count = targets.len();
         self.output.explosions.push(ExplosionEvent {
@@ -104,7 +118,12 @@ impl Level {
 
     /// `calculateExplodedPositions`: the blocks the rays reach, in the iteration order of
     /// Vanilla's `HashSet<BlockPos>`.
-    fn exploded_positions(&mut self, center: Vec3, radius: f32) -> Vec<BlockPos> {
+    fn exploded_positions(
+        &mut self,
+        center: Vec3,
+        radius: f32,
+        rails_resist: bool,
+    ) -> Vec<BlockPos> {
         let mut seen = FxHashSet::default();
         let mut positions = Vec::new();
         for xx in 0..16 {
@@ -132,15 +151,22 @@ impl Level {
                         let state = self.block(pos);
                         let fluid = state.fluid_state();
                         // `ExplosionDamageCalculator.getBlockExplosionResistance`.
+                        let rail_protected = rails_resist
+                            && (crate::block::is_rail(state.block())
+                                || crate::block::is_rail(self.block(pos.offset(0, 1, 0)).block()));
                         if !(state.is_air() && fluid.is_empty()) {
-                            let resistance = state
-                                .block()
-                                .info()
-                                .blast_resistance
-                                .max(fluid.info().explosion_resistance);
+                            let resistance = if rail_protected {
+                                0.0
+                            } else {
+                                state
+                                    .block()
+                                    .info()
+                                    .blast_resistance
+                                    .max(fluid.info().explosion_resistance)
+                            };
                             power -= (resistance + 0.3) * 0.3;
                         }
-                        if power > 0.0 && seen.insert(pos) {
+                        if power > 0.0 && !rail_protected && seen.insert(pos) {
                             positions.push(pos);
                         }
                         xp += xd * step;
@@ -204,7 +230,8 @@ impl Level {
             }
             // `ExplosionDamageCalculator.getEntityDamageAmount`: living entities and boats
             // through the mob system, items here (`ItemEntity.hurtServer`: health 5).
-            let is_boat = crate::vehicle::BoatKind::of(kind).is_some();
+            let is_boat = crate::vehicle::BoatKind::of(kind).is_some()
+                || crate::minecart::MinecartKind::of(kind).is_some();
             if kind == entity_ids::ITEM {
                 let double_radius = f64::from(double_radius);
                 let pow = (1.0 - dist) * f64::from(self.seen_percent(center, aabb));
@@ -276,6 +303,7 @@ impl Level {
     fn interact_with_blocks(
         &mut self,
         targets: &mut [BlockPos],
+        source: Option<EntityId>,
         indirect: Option<EntityId>,
         interaction: BlockInteraction,
     ) {
@@ -303,7 +331,7 @@ impl Level {
         }
         // The drops (`Block.popResource` of the merged stacks).
         for (pos, state) in dropped {
-            drops::drop_resources(self, pos, state, None);
+            drops::drop_resources(self, pos, state, source);
         }
     }
 

@@ -170,6 +170,8 @@ pub struct EntitySpec {
     pub baby: Option<bool>,
     /// `finalizeSpawn` like `/summon`.
     pub finalize: bool,
+    /// Velocity set after spawning.
+    pub motion: Option<[f64; 3]>,
 }
 
 impl EntitySpec {
@@ -428,6 +430,7 @@ fn entity(v: &Value) -> Result<EntitySpec, String> {
         },
         baby: v.get("baby").and_then(Value::as_bool),
         finalize: v.get("finalize").and_then(Value::as_bool).unwrap_or(true),
+        motion: v.get("motion").map(|m| vec3(Some(m))).transpose()?,
         kind,
     })
 }

@@ -9,7 +9,7 @@ use vanillite_data::entity::ids;
 use vanillite_game::entities::{Entities, is_mob_kind};
 use vanillite_game::item::ItemStack;
 use vanillite_game::level::Level;
-use vanillite_game::level::explosion::BlockInteraction;
+use vanillite_game::minecart::{self, MinecartKind};
 use vanillite_game::mob::spawn::{self, SpawnInput, SpawnTable, Spawner};
 use vanillite_game::mob::{
     self, Environment, MobContext, MobSettings, WorldAction, animal, attack, combat, projectile,
@@ -190,6 +190,14 @@ impl WorldMobs {
                             player,
                         );
                     }
+                    EntityAction::OpenVehicleInventory => {
+                        // `openCustomInventoryScreen` of a chest boat the player rides.
+                        if let Some(v) = ents.vehicle_of(player)
+                            && ents.boat(v).is_some_and(|b| b.kind.chest)
+                        {
+                            minecart::open_container(&mut ents, &mut env, &mut self.cx, player, v);
+                        }
+                    }
                 }
             }
             for (player, input) in inputs {
@@ -214,6 +222,7 @@ impl WorldMobs {
         }
         level.entities = ents;
         self.finish_removals(level);
+        vanillite_game::menu::container::open_requests(level, std::mem::take(&mut self.cx.menus));
         survival.deliver(&mut level.entities, global);
     }
 
@@ -295,6 +304,7 @@ impl WorldMobs {
         self.cx.begin_tick(env, self.settings, has_players);
         self.lightning_hits(level, survival, global, dimension);
         let activation = f64::from(self.settings.activation_range);
+        minecart::players_push(&mut level.entities);
         let mut cursor = level.entities.store.tick_cursor();
         let mut ents = std::mem::take(&mut level.entities);
         while let Some(id) = ents.store.next_to_tick(&mut cursor) {
@@ -313,7 +323,13 @@ impl WorldMobs {
             }
             let is_mob = is_mob_kind(kind);
             let is_boat = BoatKind::of(kind).is_some();
-            if !is_mob && !is_boat && kind != ids::ARROW && kind != ids::EXPERIENCE_ORB {
+            let is_minecart = MinecartKind::of(kind).is_some();
+            if !is_mob
+                && !is_boat
+                && !is_minecart
+                && kind != ids::ARROW
+                && kind != ids::EXPERIENCE_ORB
+            {
                 continue;
             }
             let chunk = BlockPos::containing(pos.x, pos.y, pos.z).chunk();
@@ -346,6 +362,8 @@ impl WorldMobs {
                     mob::tick(level_ref, &mut ents, &mut env, &mut self.cx, id);
                 } else if is_boat {
                     vehicle::tick_boat(level_ref, &mut ents, &mut env, &mut self.cx, id);
+                } else if is_minecart {
+                    minecart::tick(level_ref, &mut ents, &mut env, &mut self.cx, id);
                 } else if kind == ids::ARROW {
                     projectile::tick_arrow(level_ref, &mut ents, &mut env, &mut self.cx, id);
                 } else {
@@ -392,34 +410,11 @@ impl WorldMobs {
         let state = &global.level;
         let rules = state.rules().clone();
         for action in std::mem::take(&mut self.cx.actions) {
-            match action {
-                WorldAction::Explode(e) => {
-                    // `Level.ExplosionInteraction.MOB`: `getDestroyType` with `mobGriefing`.
-                    let decay = if e.mob {
-                        Rule::MOB_EXPLOSION_DROP_DECAY
-                    } else {
-                        Rule::TNT_EXPLOSION_DROP_DECAY
-                    };
-                    let interaction = if e.mob && !rules.bool(Rule::MOB_GRIEFING) {
-                        BlockInteraction::Keep
-                    } else if rules.bool(decay) {
-                        BlockInteraction::DestroyWithDecay
-                    } else {
-                        BlockInteraction::Destroy
-                    };
-                    // `getIndirectSourceEntity`: a living source caused it itself.
-                    level.explode(e.source, e.source, e.pos, e.radius, interaction);
-                    self.apply_explosion_hurts(level, survival, global, dimension);
-                }
-                WorldAction::SetBlock(pos, block, flags) => {
-                    level.set_block(pos, block, flags);
-                }
-                WorldAction::DestroyBlock(pos, drop) => {
-                    level.destroy_block(pos, drop, None);
-                }
-                WorldAction::LevelEvent(event, pos, data) => {
-                    level.level_event(None, event, pos, data);
-                }
+            if let WorldAction::Explode(e) = action {
+                e.run(level, &rules);
+                self.apply_explosion_hurts(level, survival, global, dimension);
+            } else {
+                action.apply_to_level(level);
             }
         }
         self.finish_removals(level);
@@ -462,11 +457,11 @@ impl WorldMobs {
                 }
             };
             source.position.get_or_insert(hurt.center);
-            if ents.boat(hurt.target).is_some() {
+            if ents.boat(hurt.target).is_some() || ents.minecart(hurt.target).is_some() {
                 // `VehicleEntity.ignoreExplosion`: mob explosions without mob griefing.
                 let mob_source = hurt.indirect.is_some_and(|c| ents.mob(c).is_some());
                 if !(mob_source && !rules.bool(Rule::MOB_GRIEFING)) {
-                    vehicle::hurt_boat(
+                    hurt_vehicle(
                         &mut ents,
                         &mut env,
                         &mut self.cx,
@@ -521,8 +516,8 @@ impl WorldMobs {
                     }
                     continue;
                 }
-                if ents.boat(id).is_some() {
-                    vehicle::hurt_boat(&mut ents, &mut env, &mut self.cx, id, source, 5.0);
+                if ents.boat(id).is_some() || ents.minecart(id).is_some() {
+                    hurt_vehicle(&mut ents, &mut env, &mut self.cx, id, source, 5.0);
                     continue;
                 }
                 let Some(m) = ents.mob_mut(id) else {
@@ -635,7 +630,7 @@ fn attack_entity(
         tame::break_knot(ents, env, target, &mut cx.discarded);
         return;
     }
-    if ents.boat(target).is_some() {
+    if ents.boat(target).is_some() || ents.minecart(target).is_some() {
         let scale = attack::attack_strength_scale(ents, player, 0.5);
         let base =
             attack::player_attribute(ents, player, "minecraft:attack_damage", 1.0, 0.0, 2048.0);
@@ -646,7 +641,7 @@ fn attack_entity(
         }
         let mut source = combat::entity_source(ents, env.types.player_attack, player, player);
         source.cause_is_mob = false;
-        vehicle::hurt_boat(ents, env, cx, target, source, damage);
+        hurt_vehicle(ents, env, cx, target, source, damage);
         return;
     }
     // `canHarmPlayer`: the pvp rule.
@@ -654,6 +649,22 @@ fn attack_entity(
         return;
     }
     attack::player_attack(level, ents, env, cx, player, target);
+}
+
+/// `VehicleEntity.hurtServer` of a boat or minecart.
+fn hurt_vehicle(
+    ents: &mut Entities,
+    env: &mut vanillite_game::survival::player::Env<'_>,
+    cx: &mut MobContext,
+    target: EntityId,
+    source: DamageSource,
+    amount: f32,
+) {
+    if ents.minecart(target).is_some() {
+        minecart::hurt(ents, env, cx, target, source, amount);
+    } else {
+        vehicle::hurt_boat(ents, env, cx, target, source, amount);
+    }
 }
 
 /// `LeashFenceKnotEntity.interact`: ties the player's leashed mobs to the knot, or breaks it.
@@ -783,6 +794,8 @@ fn use_item_on(
         );
     } else if vanillite_game::item::item_id(&stack).name() == "minecraft:lead" {
         tame::use_lead_on_fence(level, ents, env, player, pos);
+    } else {
+        minecart::use_item_on(level, ents, network_ids, pos, &mut stack, creative);
     }
     put_back(ents, player, hand, stack);
 }

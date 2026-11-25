@@ -213,6 +213,21 @@ impl EntityChunks {
                     ent.set_velocity(e.velocity);
                 }
                 let _ = leash;
+            } else if let Some((e, data)) = nbt::load_minecart(&tag, self.seed ^ level.game_time())
+            {
+                let network_ids = std::sync::Arc::clone(level.network_ids_arc());
+                let id = vanillite_game::minecart::spawn(
+                    &mut level.entities,
+                    &network_ids,
+                    e.uuid,
+                    e.pos,
+                    e.rot,
+                    data,
+                );
+                if let Some(mut ent) = level.entities.store.get_mut(id) {
+                    ent.set_velocity(e.velocity);
+                    ent.set_flags(EntityFlags::ON_GROUND, e.on_ground);
+                }
             } else if nbt::type_of(&tag).is_some_and(|t| t == ids::PLAYER || t == ids::LEASH_KNOT) {
                 // Players are stored apart; knots come back with their leashes.
             } else {
@@ -287,6 +302,8 @@ impl EntityChunks {
                     .map(|d| nbt::save_item(&e, d))
             } else if let Some(b) = ents.boat(id) {
                 Some(nbt::save_boat(&e, b, leash))
+            } else if let Some(m) = ents.minecart(id) {
+                Some(nbt::save_minecart(&e, m))
             } else if kind == ids::LEASH_KNOT {
                 None
             } else {

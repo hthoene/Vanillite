@@ -20,6 +20,7 @@ pub mod item_entity;
 pub mod level;
 pub mod loot;
 pub mod menu;
+pub mod minecart;
 pub mod mob;
 pub mod player;
 pub mod predicate;

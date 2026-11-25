@@ -454,10 +454,46 @@ pub struct MobSettings {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ExplosionRequest {
     pub source: Option<EntityId>,
+    /// The entity responsible (`getIndirectSourceEntity`); `None`: the source itself.
+    pub indirect: Option<EntityId>,
     pub pos: Vec3,
     pub radius: f32,
     /// `ExplosionInteraction.MOB`: blocks only break with `mobGriefing`.
     pub mob: bool,
+    /// A primed TNT minecart: rails and the blocks under them resist
+    /// (`MinecartTNT.getBlockExplosionResistance`, `shouldBlockExplode`).
+    pub rails_resist: bool,
+}
+
+impl ExplosionRequest {
+    /// `Level.explode` with the block interaction of the rules (`ExplosionInteraction.MOB` or
+    /// `TNT`).
+    pub fn run(&self, level: &mut crate::level::Level, rules: &crate::survival::rules::GameRules) {
+        use crate::level::explosion::BlockInteraction;
+        use crate::survival::rules::Rule;
+        let decay = if self.mob {
+            Rule::MOB_EXPLOSION_DROP_DECAY
+        } else {
+            Rule::TNT_EXPLOSION_DROP_DECAY
+        };
+        let interaction = if self.mob && !rules.bool(Rule::MOB_GRIEFING) {
+            BlockInteraction::Keep
+        } else if rules.bool(decay) {
+            BlockInteraction::DestroyWithDecay
+        } else {
+            BlockInteraction::Destroy
+        };
+        // `getIndirectSourceEntity`: a living source caused it itself.
+        let indirect = self.indirect.or(self.source);
+        level.explode_with(
+            self.source,
+            indirect,
+            self.pos,
+            self.radius,
+            interaction,
+            self.rails_resist,
+        );
+    }
 }
 
 /// A change of the world a mob tick causes; applied right after that tick.
@@ -470,6 +506,35 @@ pub enum WorldAction {
     DestroyBlock(BlockPos, bool),
     /// `levelEvent(event, pos, data)`.
     LevelEvent(i32, BlockPos, i32),
+    /// `entityInside` of the block at the position for the entity (`applyEffectsFromBlocks`).
+    EntityInside(BlockPos, EntityId),
+    /// A hopper minecart takes in an item (`MinecartHopper.tryConsumeItems`).
+    HopperMinecart(EntityId),
+}
+
+impl WorldAction {
+    /// Applies the actions that need nothing but the level; returns `false` for the others.
+    pub fn apply_to_level(&self, level: &mut crate::level::Level) -> bool {
+        match *self {
+            WorldAction::SetBlock(pos, block, flags) => {
+                level.set_block(pos, block, flags);
+            }
+            WorldAction::DestroyBlock(pos, drop) => {
+                level.destroy_block(pos, drop, None);
+            }
+            WorldAction::LevelEvent(event, pos, data) => {
+                level.level_event(None, event, pos, data);
+            }
+            WorldAction::EntityInside(pos, id) => {
+                if level.entities.store.contains(id) {
+                    level.entity_inside(pos, id);
+                }
+            }
+            WorldAction::HopperMinecart(id) => crate::minecart::hopper_suck(level, id),
+            WorldAction::Explode(_) => return false,
+        }
+        true
+    }
 }
 
 /// The mob state of a world besides the entities: search buffers, queued world changes and
@@ -488,6 +553,9 @@ pub struct MobContext {
     pub has_players: bool,
     /// Entities to remove after the tick (`discard` of other entities).
     pub discarded: Vec<EntityId>,
+    /// Menus players opened at entities (chest boats, container minecarts), opened once the
+    /// entities are back in the level.
+    pub menus: Vec<crate::menu::container::MenuRequest>,
 }
 
 impl MobContext {

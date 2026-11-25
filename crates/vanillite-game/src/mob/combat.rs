@@ -539,6 +539,7 @@ fn table_loot(
         enchantment_level: &none,
         item_in_tag: &in_tag,
         explosion_radius: None,
+        this_present: true,
         entity: Some(&entity),
         block_entity: None,
     };

@@ -773,6 +773,7 @@ fn push_entities(t: &mut Tick<'_, '_>) {
     });
     ids.retain(|&o| {
         t.ents.mob(o).is_some_and(super::MobData::is_alive)
+            || t.ents.minecart(o).is_some()
             || t.ents.player(o).is_some_and(|p| {
                 !p.survival.is_dead_or_dying()
                     && p.game_mode != vanillite_config::GameMode::Spectator
@@ -796,6 +797,11 @@ fn push_entities(t: &mut Tick<'_, '_>) {
     }
     let climbing = on_climbable(t);
     for &other in &ids {
+        if t.ents.minecart(other).is_some() {
+            // `AbstractMinecart.push(this)`.
+            crate::minecart::push_by(t.ents, other, id);
+            continue;
+        }
         let Some(o) = t.ents.store.get(other) else {
             continue;
         };

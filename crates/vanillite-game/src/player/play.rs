@@ -131,6 +131,14 @@ impl Actor {
         let max = self.block_range() + buffer;
         aabb_distance_sqr(&Aabb::of_block(pos), self.eye()) < max * max
     }
+
+    /// `isWithinEntityInteractionRange(box, buffer)`: the entity range is 3, plus 2 in
+    /// creative.
+    pub fn within_entity_range(&self, aabb: &Aabb, buffer: f64) -> bool {
+        let range = if self.creative() { 5.0 } else { 3.0 };
+        let max = range + buffer;
+        aabb_distance_sqr(aabb, self.eye()) < max * max
+    }
 }
 
 /// `AABB.distanceToSqr(Vec3)`.
@@ -1066,6 +1074,7 @@ fn drop_resources(
             enchantment_level: &enchantment_level,
             item_in_tag: &item_in_tag,
             explosion_radius: None,
+            this_present: true,
             entity: None,
             block_entity: Some(&components),
         };
