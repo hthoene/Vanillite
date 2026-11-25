@@ -1,0 +1,88 @@
+{
+  "description": "A sulfur cube wanders in a closed arena by day.",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -56,
+      15
+    ]
+  ],
+  "ticks": 160,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -56,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -56,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -56,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -56,
+        15
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "entities": [
+    {
+      "name": "sulfur_cube",
+      "type": "minecraft:sulfur_cube",
+      "pos": [
+        7.5,
+        -60.0,
+        7.5
+      ],
+      "seed": 11
+    }
+  ],
+  "tier": "fast"
+}
