@@ -1,7 +1,7 @@
 //! `end_spike`: the obsidian pillars around the main End island.
 //!
-//! The End crystals on top are entities and are not spawned here; their random rotation is still
-//! drawn and the bedrock and fire under and in them are placed.
+//! The End crystal on top of each pillar is stored with the chunk as entity NBT, with the
+//! bedrock and fire under and in it.
 
 use std::sync::LazyLock;
 
@@ -86,6 +86,10 @@ pub struct EndSpikeFeature {
     spikes: Vec<EndSpike>,
     /// `#minecraft:soul_fire_base_blocks` for `BaseFireBlock.getState`.
     soul_fire_base: BlockSet,
+    /// `crystal_invulnerable`.
+    crystal_invulnerable: bool,
+    /// `crystal_beam_target`.
+    crystal_beam_target: Option<BlockPos>,
 }
 
 impl FeatureType for EndSpikeFeature {
@@ -96,12 +100,14 @@ impl FeatureType for EndSpikeFeature {
             .iter()
             .map(EndSpike::parse)
             .collect();
-        // `crystal_invulnerable` and `crystal_beam_target` only configure the crystal entity.
-        if let Some(target) = json.get("crystal_beam_target") {
-            parse_block_pos(target)?;
-        }
+        let crystal_beam_target = json
+            .get("crystal_beam_target")
+            .map(parse_block_pos)
+            .transpose()?;
         Ok(Self {
             spikes,
+            crystal_invulnerable: bool_or(json, "crystal_invulnerable", false),
+            crystal_beam_target,
             soul_fire_base: parser.block_tag("minecraft:soul_fire_base_blocks"),
         })
     }
@@ -168,8 +174,33 @@ impl EndSpikeFeature {
                 }
             }
         }
-        // The crystal entity (not spawned) draws its yaw: `random.nextFloat() * 360`.
-        ctx.random.next_float();
+        // The crystal (`EndCrystal` snapped to the pillar's top with a random yaw).
+        let yaw = ctx.random.next_float() * 360.0;
+        let mut entity = crate::feature::region::entity_tag(
+            "minecraft:end_crystal",
+            f64::from(cx) + 0.5,
+            f64::from(spike.height + 1),
+            f64::from(cz) + 0.5,
+        );
+        entity.insert(
+            "Rotation",
+            vanillite_nbt::List(vec![
+                vanillite_nbt::Tag::Float(yaw),
+                vanillite_nbt::Tag::Float(0.0),
+            ]),
+        );
+        entity.insert(
+            "Invulnerable",
+            vanillite_nbt::Tag::Byte(i8::from(self.crystal_invulnerable)),
+        );
+        entity.insert("ShowBottom", vanillite_nbt::Tag::Byte(1));
+        if let Some(t) = self.crystal_beam_target {
+            entity.insert(
+                "beam_target",
+                vanillite_nbt::Tag::IntArray(vec![t.x, t.y, t.z]),
+            );
+        }
+        level.add_fresh_entity(entity);
         let crystal = BlockPos::new(cx, spike.height + 1, cz);
         level.set_block_and_update(crystal.offset(0, -1, 0), ids::BEDROCK.default_state());
         let fire = self.fire_state(level, crystal);

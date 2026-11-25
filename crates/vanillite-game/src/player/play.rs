@@ -40,6 +40,8 @@ pub struct GameData {
     pub enchants: crate::enchant::Enchantments,
     /// `#minecraft:enderman_holdable` block ids.
     pub enderman_holdable: Vec<u16>,
+    /// Block tags: tag id → sorted block ids.
+    pub block_tags: HashMap<String, Vec<u16>>,
     /// Recipes.
     pub recipes: crate::recipe::Recipes,
     /// Enchantment data.
@@ -48,6 +50,8 @@ pub struct GameData {
     pub banner_patterns: crate::menu::BannerPatterns,
     /// The tags of the registries: registry → tag id (without `#`) → entry ids in tag order.
     pub registry_tags: HashMap<String, HashMap<String, Vec<u32>>>,
+    /// The `minecraft:trial_spawner` registry.
+    pub trial_spawner_configs: crate::block::trial_spawner::TrialConfigs,
     /// The definitions of the enchantments by name.
     pub enchantment_info: HashMap<String, EnchantmentInfo>,
 }
@@ -96,6 +100,13 @@ impl GameData {
             .into_iter()
             .find(|(e, _)| *e == id)
             .map_or(0, |(_, level)| level)
+    }
+
+    /// Whether a block (by block id) is in a block tag.
+    pub fn block_in_tag(&self, block: u16, tag: &str) -> bool {
+        self.block_tags
+            .get(tag)
+            .is_some_and(|v| v.binary_search(&block).is_ok())
     }
 
     /// Whether an item is in an item tag.
@@ -156,6 +167,10 @@ pub struct Actor {
     pub permission_level: u8,
     /// Whether the player's eyes are in water.
     pub eyes_in_water: bool,
+    /// `MobEffectUtil.getDigSpeedAmplification` when Haste or Conduit Power is active.
+    pub dig_speed: Option<i32>,
+    /// The amplifier of Mining Fatigue, if active.
+    pub mining_fatigue: Option<i32>,
 }
 
 impl Actor {
@@ -401,11 +416,30 @@ fn destroy_progress(ctx: &PlayContext<'_>, state: BlockState) -> f32 {
         tool,
         state,
         efficiency,
+        ctx.actor.dig_speed,
+        ctx.actor.mining_fatigue,
         submerged,
         ctx.actor.on_ground,
     );
     let modifier = if correct { 30.0 } else { 100.0 };
     player_speed / speed / modifier
+}
+
+/// `Player.getDestroySpeed`'s effect part: Haste / Conduit Power speed it up by 20 % per level,
+/// Mining Fatigue slows it to `0.3^(level)`.
+pub fn dig_effects(speed: f32, dig_speed: Option<i32>, fatigue: Option<i32>) -> f32 {
+    let mut speed = speed;
+    if let Some(amplification) = dig_speed {
+        #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
+        let factor = 1.0 + (amplification as f32 + 1.0) * 0.2;
+        speed *= factor;
+    }
+    if let Some(amplifier) = fatigue {
+        #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+        let scale = 0.3_f64.powi(amplifier.saturating_add(1)) as f32;
+        speed *= scale;
+    }
+    speed
 }
 
 /// `(int)(progress * 10.0F)`.
@@ -689,6 +723,12 @@ impl Digging {
             // `ShulkerBoxBlock.playerWillDestroy`: a creative player still gets a filled box.
             crate::block::container::creative_shulker_drop(level, pos, state, entity);
         }
+        ctx.level.game_event(
+            events_ids().block_destroy,
+            pos,
+            ctx.actor.entity,
+            Some(state),
+        );
         // `removeBlock`: the fluid of a waterlogged block stays.
         let replacement = state.fluid_state().block_state();
         let changed = ctx.level.set_block(pos, replacement, update::ALL);
@@ -896,8 +936,42 @@ impl Digging {
             Hand::MainHand => ctx.inventory.selected_item().clone(),
             Hand::OffHand => ctx.inventory.offhand.clone(),
         };
+        // `VaultBlock.useItemOn`: an active vault takes the key, the use is consumed.
+        if !suppress_use
+            && state.block() == vanillite_data::block::ids::VAULT
+            && let Some(level) = ctx.level.level_mut()
+            && let Some(taken) =
+                crate::block::vault::use_item_on(level, pos, ctx.actor.uuid, &stack)
+        {
+            if taken && !ctx.actor.creative() {
+                let count = crate::block::vault::key_count(level, pos);
+                let slot = match hand {
+                    Hand::MainHand => ctx.inventory.selected_item_mut(),
+                    Hand::OffHand => Some(&mut ctx.inventory.offhand),
+                };
+                if let Some(slot) = slot {
+                    slot.shrink(count);
+                }
+            }
+            return true;
+        }
         if stack.is_empty() {
             return false;
+        }
+        if item::item_id(&stack) == vanillite_data::item::ids::END_CRYSTAL {
+            if !ctx.level.use_end_crystal(pos) {
+                return false;
+            }
+            if !ctx.actor.creative() {
+                let slot = match hand {
+                    Hand::MainHand => ctx.inventory.selected_item_mut(),
+                    Hand::OffHand => Some(&mut ctx.inventory.offhand),
+                };
+                if let Some(slot) = slot {
+                    slot.shrink(1);
+                }
+            }
+            return true;
         }
         let used = item::item_id(&stack);
         if used == vanillite_data::item::ids::FLINT_AND_STEEL
@@ -1124,6 +1198,9 @@ impl Digging {
                 level.request_sign_editor(player, target, true);
             }
         }
+        if placed.block() == state.block() {
+            ctx.level.placed_by(target, placed);
+        }
         let sound = placed.block().sound();
         ctx.level.play_sound(
             Some(ctx.actor.network_id),
@@ -1136,6 +1213,12 @@ impl Digging {
             SoundSource::Blocks,
             (sound.volume + 1.0) / 2.0,
             sound.pitch * 0.8,
+        );
+        ctx.level.game_event(
+            events_ids().block_place,
+            target,
+            ctx.actor.entity,
+            Some(placed),
         );
         if !ctx.actor.creative() {
             let slot = match hand {
@@ -1431,6 +1514,10 @@ pub fn pop_resource(level: &mut dyn PlayLevel, pos: BlockPos, stack: ItemStack) 
     if stack.is_empty() {
         return;
     }
+    if let Some(level) = level.level_mut() {
+        crate::block::drops::pop_resource(level, pos, stack);
+        return;
+    }
     let half_height = 0.125;
     let offset = |level: &mut dyn PlayLevel| level.random_double() * 0.5 - 0.25;
     let x = f64::from(pos.x) + 0.5 + offset(level);
@@ -1482,3 +1569,8 @@ pub fn block_pos_of(v: Vec3) -> BlockPos {
 #[cfg(test)]
 #[path = "play_tests.rs"]
 mod tests;
+
+/// The Vanilla game event ids.
+fn events_ids() -> &'static crate::level::game_event::GameEvents {
+    crate::level::game_event::events()
+}

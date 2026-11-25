@@ -62,7 +62,12 @@ pub fn are_mergable(a: &ItemStack, b: &ItemStack) -> bool {
 
 /// `ItemEntity.merge(toStack, fromStack, 64)`: the new `to` stack; `from` shrinks.
 pub fn merge_stacks(to: &ItemStack, from: &mut ItemStack) -> ItemStack {
-    let delta = (item::max_stack_size(to).min(64) - to.count).min(from.count);
+    merge_stacks_max(to, from, 64)
+}
+
+/// `ItemEntity.merge(toStack, fromStack, maxCount)`.
+pub fn merge_stacks_max(to: &ItemStack, from: &mut ItemStack, max: i32) -> ItemStack {
+    let delta = (item::max_stack_size(to).min(max) - to.count).min(from.count);
     let new_to = to.with_count(to.count + delta);
     from.shrink(delta);
     new_to

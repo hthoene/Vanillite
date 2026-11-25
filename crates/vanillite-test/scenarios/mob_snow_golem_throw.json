@@ -1,0 +1,100 @@
+{
+  "description": "A snow golem throws snowballs at a husk at night.",
+  "time": 18000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -58,
+      15
+    ]
+  ],
+  "ticks": 160,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -58,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -58,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -58,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -58,
+        15
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "entities": [
+    {
+      "name": "snow_golem",
+      "type": "minecraft:snow_golem",
+      "pos": [
+        7.5,
+        -60.0,
+        12.5
+      ],
+      "seed": 11,
+      "finalize": false
+    },
+    {
+      "name": "husk",
+      "type": "minecraft:husk",
+      "pos": [
+        7.5,
+        -60.0,
+        3.5
+      ],
+      "seed": 12,
+      "finalize": false
+    }
+  ],
+  "tier": "fast"
+}

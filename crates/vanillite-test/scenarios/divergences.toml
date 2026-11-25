@@ -4,28 +4,363 @@
 
 [mob_creeper_explode]
 tick = 112
-cause = "explosion drops: Vanillite pops one item per block, Vanilla merges the drops into stacks (addOrAppendStack) and applies the explosion decay; the level random then differs. Also the knocked back mock player: Vanilla moves it on the server, the scenario world does not"
-owner = "gameplay-developer #30"
-
-[mob_enderman_teleport]
-tick = 1
-cause = "the enderman lacks EndermanTakeBlockGoal/EndermanLeaveBlockGoal and the endermite target goal (2 random draws per goal selection in Vanilla); it does not teleport when hurt"
-owner = "gameplay-developer #30"
+cause = "the knocked back mock player: Vanilla moves it on the server, the scenario world does not. The explosion, its drops (merged stacks, explosion decay, the loot random sequences) and the item's own random match; item entities do not tick in the scenario world yet"
+owner = "tooling-developer #65"
 
 [mob_skeleton_shoot]
-tick = 0
-cause = "finalizeSpawn draws from the mob's random; Vanilla draws Mob.finalizeSpawn, the equipment, its enchantments and canPickUpLoot from the level random (ServerLevelAccessor.getRandom); arrows take their random from the shooter instead of their own"
-owner = "gameplay-developer #30"
-
-[mob_spider_climb]
-tick = 1
-cause = "the spider lacks the iron golem SpiderTargetGoal (1 random draw per goal selection in Vanilla)"
-owner = "gameplay-developer #30"
+tick = 147
+cause = "the knocked back mock player: Vanilla moves it on the server, the scenario world does not (the skeleton then aims at another position)"
+owner = "tooling-developer #65"
 
 [mob_zombie_chase]
+tick = 169
+cause = "the knocked back mock player: Vanilla moves it on the server, the scenario world does not (the zombie then looks at another position)"
+owner = "tooling-developer #65"
+
+[mob_allay_fly]
 tick = 1
-cause = "the zombie lacks the target goals for villagers, iron golems and turtles and ZombieAttackTurtleEggGoal (4 random draws per goal selection in Vanilla)"
-owner = "gameplay-developer #30"
+cause = "brain: the allay draws 31 numbers from its random on tick 1 (Vanilla 37) and 3 from the level random (Vanilla 0; RunOne/GateBehavior (ShufflingList.shuffle) draws its weights from the level random; Vanilla's ShufflingList has its own random)"
+owner = "gameplay-developer #59"
+
+[mob_armadillo_scared]
+tick = 1
+cause = "brain: 7 level random draws on tick 1, Vanilla 3 (RunOne/GateBehavior (ShufflingList.shuffle) draws its weights from the level random; Vanilla's ShufflingList has its own random)"
+owner = "gameplay-developer #59"
+
+[mob_axolotl_swim]
+tick = 1
+cause = "the axolotl sinks in water (motion y -0.005, Vanilla 0) and draws 2 level random numbers on tick 1 (Vanilla 0; RunOne/GateBehavior (ShufflingList.shuffle) draws its weights from the level random; Vanilla's ShufflingList has its own random)"
+owner = "gameplay-developer #59"
+
+[mob_bat_fly]
+tick = 114
+cause = "the bat draws 3 numbers from its random on this tick, Vanilla 5 (target position / resting check)"
+owner = "gameplay-developer #59"
+
+[mob_bee_fly]
+tick = 1
+cause = "no goal starts on tick 1; Vanilla starts BeeWanderGoal, ValidateFlowerGoal and ValidateHiveGoal (bee random: 4 draws, Vanilla 41)"
+owner = "gameplay-developer #59"
+
+[mob_blaze_shoot]
+tick = 88
+cause = "the small fireball: its motion differs in the last bits on the tick it is shot, and it does not move on the next tick (Vanilla accelerates it)"
+owner = "gameplay-developer #59"
+
+[mob_bogged_shoot]
+tick = 28
+cause = "the first arrow comes one tick late: Vanilla shoots on tick 28 (2 draws of the bogged's random), Vanillite draws 1 and shoots later"
+owner = "gameplay-developer #59"
+
+[mob_breeze_attack]
+tick = 2
+cause = "brain: the breeze draws 32 numbers from its random on tick 2 (Vanilla 2) and 2 from the level random (Vanilla 1)"
+owner = "gameplay-developer #59"
+
+[mob_camel_husk_wander]
+tick = 1
+cause = "brain: 4 draws of the camel husk's random on tick 1 (Vanilla 37) and 9 level random draws (Vanilla 2; RunOne/GateBehavior (ShufflingList.shuffle) draws its weights from the level random; Vanilla's ShufflingList has its own random)"
+owner = "gameplay-developer #59"
+
+[mob_camel_wander]
+tick = 1
+cause = "brain: 4 draws of the camel's random on tick 1 (Vanilla 37) and 9 level random draws (Vanilla 2; RunOne/GateBehavior (ShufflingList.shuffle) draws its weights from the level random; Vanilla's ShufflingList has its own random)"
+owner = "gameplay-developer #59"
+
+[mob_cat_wander]
+tick = 4
+cause = "CatAvoidEntityGoal: the cat flees the player with the walk speed (0.8); Vanilla sprints (1.33) while the player is within 7 blocks"
+owner = "gameplay-developer #59"
+
+[mob_cave_spider_chase]
+tick = 63
+cause = "the knocked back mock player: Vanilla moves it on the server, the scenario world does not (first bite)"
+owner = "tooling-developer #65"
+
+[mob_cod_swim]
+tick = 3
+cause = "FishSwimGoal runs but the fish gets no horizontal motion; Vanilla's fish move control pushes it towards the wanted position"
+owner = "gameplay-developer #59"
+
+[mob_copper_golem_wander]
+tick = 1
+cause = "brain: 5 level random draws on tick 1, Vanilla 3 (RunOne/GateBehavior (ShufflingList.shuffle) draws its weights from the level random; Vanilla's ShufflingList has its own random)"
+owner = "gameplay-developer #59"
+
+[mob_creaking_stalk]
+tick = 1
+cause = "brain: 3 level random draws on tick 1, Vanilla 0 (RunOne/GateBehavior (ShufflingList.shuffle) draws its weights from the level random; Vanilla's ShufflingList has its own random)"
+owner = "gameplay-developer #59"
+
+[mob_dolphin_swim]
+tick = 7
+cause = "RandomSwimmingGoal picks a different target (path to x+6 instead of x-6); the dolphin drew 33 numbers since spawn, Vanilla 63"
+owner = "gameplay-developer #59"
+
+[mob_donkey_wander]
+tick = 0
+cause = "finalizeSpawn/randomizeAttributes: Vanilla still reports the type's default health (53) on tick 0 and a different random max health from tick 1 (donkey 27 vs 25); Vanillite sets the rolled health at once"
+owner = "gameplay-developer #59"
+
+[mob_drowned_water]
+tick = 1
+cause = "the drowned runs DrownedSwimUpGoal on tick 1; Vanilla runs DrownedGoToBeachGoal (drowned random: 48 draws, Vanilla 12)"
+owner = "gameplay-developer #59"
+
+[mob_endermite_chase]
+tick = 99
+cause = "the knocked back mock player: Vanilla moves it on the server, the scenario world does not"
+owner = "tooling-developer #65"
+
+[mob_evoker_spells]
+tick = 26
+cause = "summoned vexes: Vanilla's vexes keep the constructor's random yHeadRot (snapTo does not reset it), Vanillite's start with 0"
+owner = "gameplay-developer #59"
+
+[mob_fox_wander]
+tick = 104
+cause = "head yaw while looking at the player: 281.44, Vanilla 293.28 (FoxLookAtPlayerGoal turns the head at once, Vanillite by 10 degrees per tick)"
+owner = "gameplay-developer #59"
+
+[mob_frog_hop]
+tick = 1
+cause = "brain: the frog draws 31 numbers from its random on tick 1 (Vanilla 1) and 4 from the level random (Vanilla 1; RunOne/GateBehavior (ShufflingList.shuffle) draws its weights from the level random; Vanilla's ShufflingList has its own random)"
+owner = "gameplay-developer #59"
+
+[mob_ghast_fireball]
+tick = 158
+cause = "the ghast's yaw differs in the last float bits (10.407094 vs 10.407008) while it aims"
+owner = "gameplay-developer #59"
+
+[mob_glow_squid_swim]
+tick = 1
+cause = "SquidRandomMovementGoal: 4 draws of the squid's random on tick 1, Vanilla 10"
+owner = "gameplay-developer #59"
+
+[mob_goat_wander]
+tick = 1
+cause = "brain: 3 level random draws on tick 1, Vanilla 0 (RunOne/GateBehavior (ShufflingList.shuffle) draws its weights from the level random; Vanilla's ShufflingList has its own random)"
+owner = "gameplay-developer #59"
+
+[mob_happy_ghast_float]
+tick = 0
+cause = "construction/finalizeSpawn: 1 draw of the happy ghast's random before tick 0, Vanilla 6"
+owner = "gameplay-developer #59"
+
+[mob_hoglin_attack]
+tick = 1
+cause = "brain: 3 level random draws on tick 1, Vanilla 0 (RunOne/GateBehavior (ShufflingList.shuffle) draws its weights from the level random; Vanilla's ShufflingList has its own random)"
+owner = "gameplay-developer #59"
+
+[mob_horse_wander]
+tick = 0
+cause = "finalizeSpawn/randomizeAttributes: Vanilla still reports the type's default health (53) on tick 0 and a different random max health from tick 1 (donkey 27 vs 25); Vanillite sets the rolled health at once"
+owner = "gameplay-developer #59"
+
+[mob_husk_chase]
+tick = 89
+cause = "the knocked back mock player: Vanilla moves it on the server, the scenario world does not"
+owner = "tooling-developer #65"
+
+[mob_illusioner_spells]
+tick = 134
+cause = "the knocked back mock player: Vanilla moves it on the server, the scenario world does not"
+owner = "tooling-developer #65"
+
+[mob_iron_golem_fight]
+tick = 1
+cause = "the iron golem draws 45 numbers from its random on tick 1, Vanilla 46"
+owner = "gameplay-developer #59"
+
+[mob_llama_wander]
+tick = 0
+cause = "finalizeSpawn/randomizeAttributes: Vanilla still reports the type's default health (53) on tick 0 and a different random max health from tick 1 (donkey 27 vs 25); Vanillite sets the rolled health at once"
+owner = "gameplay-developer #59"
+
+[mob_magma_cube_hop]
+tick = 1
+cause = "the cube jumps along yaw 0; Vanilla jumps along the yaw CubeMobRandomDirectionGoal picked (270)"
+owner = "gameplay-developer #59"
+
+[mob_mule_wander]
+tick = 0
+cause = "finalizeSpawn/randomizeAttributes: Vanilla still reports the type's default health (53) on tick 0 and a different random max health from tick 1 (donkey 27 vs 25); Vanillite sets the rolled health at once"
+owner = "gameplay-developer #59"
+
+[mob_nautilus_swim]
+tick = 1
+cause = "brain: the nautilus draws 31 numbers from its random on tick 1, Vanilla 32"
+owner = "gameplay-developer #59"
+
+[mob_ocelot_wander]
+tick = 4
+cause = "OcelotAvoidEntityGoal: the ocelot flees the player with the walk speed (0.8); Vanilla sprints (1.33) while the player is within 7 blocks"
+owner = "gameplay-developer #59"
+
+[mob_parched_shoot]
+tick = 28
+cause = "the first arrow comes one tick late: Vanilla shoots on tick 28 (2 draws of the parched's random), Vanillite draws 1 and shoots later"
+owner = "gameplay-developer #59"
+
+[mob_parrot_fly]
+tick = 1
+cause = "the parrot falls faster (motion y -0.047 vs -0.0437: flying mob gravity), draws 4 numbers from its random (Vanilla 3) and none from the level random (Vanilla 1)"
+owner = "gameplay-developer #59"
+
+[mob_phantom_swoop]
+tick = 2
+cause = "the phantom's motion differs in the last bits (float/double rounding of the circling movement)"
+owner = "gameplay-developer #59"
+
+[mob_piglin_brute_chase]
+tick = 1
+cause = "brain: the piglin brute draws 1 number from its random on tick 1 (Vanilla 31: sensor start delays) and 13 from the level random (Vanilla 2)"
+owner = "gameplay-developer #59"
+
+[mob_piglin_hostile]
+tick = 0
+cause = "finalizeSpawn: 6 draws of the piglin's random before tick 0 (Vanilla 7) and 14 level random draws (Vanilla 12)"
+owner = "gameplay-developer #59"
+
+[mob_pillager_crossbow]
+tick = 6
+cause = "moving towards the target: Vanilla's path (moveTo(entity), reach range 1) ends one node before the target's block, Vanillite's path ends on it"
+owner = "gameplay-developer #59"
+
+[mob_polar_bear_wander]
+tick = 38
+cause = "the polar bear starts WaterAvoidingRandomStrollGoal on tick 38; Vanilla starts no goal with the same random draws"
+owner = "gameplay-developer #59"
+
+[mob_pufferfish_swim]
+tick = 10
+cause = "vertical motion in water: -0.005, Vanilla -0.0005"
+owner = "gameplay-developer #59"
+
+[mob_rabbit_hop]
+tick = 0
+cause = "construction/finalizeSpawn: 1 draw of the rabbit's random before tick 0, Vanilla 2 (variant), and the rabbit does not turn on tick 1"
+owner = "gameplay-developer #59"
+
+[mob_ravager_chase]
+tick = 51
+cause = "head yaw: 391.86, Vanilla 389.73 (head rotation towards the target)"
+owner = "gameplay-developer #59"
+
+[mob_salmon_swim]
+tick = 0
+cause = "finalizeSpawn: 2 draws of the salmon's random before tick 0 (Vanilla 3: size variant from its own random) and 6 level random draws (Vanilla 5)"
+owner = "gameplay-developer #59"
+
+[mob_shulker_bullets]
+tick = 35
+cause = "the shulker bullet draws 3 numbers from the level random when it is shot; Vanilla 0 (the bullet's own random)"
+owner = "gameplay-developer #59"
+
+[mob_silverfish_chase]
+tick = 118
+cause = "the knocked back mock player: Vanilla moves it on the server, the scenario world does not"
+owner = "tooling-developer #65"
+
+[mob_skeleton_horse_wander]
+tick = 19
+cause = "RandomLookAroundGoal does not start on tick 19 (skeleton horse random: 7 draws, Vanilla 10)"
+owner = "gameplay-developer #59"
+
+[mob_slime_hop]
+tick = 1
+cause = "the cube jumps along yaw 0; Vanilla jumps along the yaw CubeMobRandomDirectionGoal picked (270)"
+owner = "gameplay-developer #59"
+
+[mob_sniffer_wander]
+tick = 1
+cause = "brain: 7 level random draws on tick 1, Vanilla 1 (RunOne/GateBehavior (ShufflingList.shuffle) draws its weights from the level random; Vanilla's ShufflingList has its own random)"
+owner = "gameplay-developer #59"
+
+[mob_snow_golem_throw]
+tick = 7
+cause = "moving towards the target: Vanilla's path (moveTo(entity), reach range 1) ends one node before the target's block, Vanillite's path ends on it"
+owner = "gameplay-developer #59"
+
+[mob_squid_swim]
+tick = 81
+cause = "the squid's yaw differs in the last float bits (22.125256 vs 22.125254)"
+owner = "gameplay-developer #59"
+
+[mob_stray_shoot]
+tick = 28
+cause = "the first arrow comes one tick late: Vanilla shoots on tick 28 (2 draws of the stray's random), Vanillite draws 1 and shoots later"
+owner = "gameplay-developer #59"
+
+[mob_strider_lava]
+tick = 1
+cause = "the strider floats up in lava faster (motion y 0.04, Vanilla 0.0108) and draws 4 numbers from its random (Vanilla 5)"
+owner = "gameplay-developer #59"
+
+[mob_sulfur_cube_wander]
+tick = 1
+cause = "the cube jumps along yaw 0; Vanilla jumps along the yaw CubeMobRandomDirectionGoal picked (270)"
+owner = "gameplay-developer #59"
+
+[mob_tadpole_swim]
+tick = 1
+cause = "FishSwimGoal does not start on tick 1 (tadpole random: 31 draws, Vanilla 122)"
+owner = "gameplay-developer #59"
+
+[mob_trader_llama_wander]
+tick = 0
+cause = "finalizeSpawn/randomizeAttributes: Vanilla still reports the type's default health (53) on tick 0 and a different random max health from tick 1 (donkey 27 vs 25); Vanillite sets the rolled health at once"
+owner = "gameplay-developer #59"
+
+[mob_tropical_fish_swim]
+tick = 3
+cause = "FishSwimGoal runs but the fish gets no horizontal motion; Vanilla's fish move control pushes it towards the wanted position"
+owner = "gameplay-developer #59"
+
+[mob_turtle_wander]
+tick = 17
+cause = "TurtleRandomStrollGoal does not move the turtle on tick 17; Vanilla walks"
+owner = "gameplay-developer #59"
+
+[mob_vex_charge]
+tick = 1
+cause = "the vex gets no gravity on tick 1 (motion y +0.0079, Vanilla -0.0705) and its yaw differs in the last float bits"
+owner = "gameplay-developer #59"
+
+[mob_witch_potions]
+tick = 16
+cause = "moving towards the target: Vanilla's path (moveTo(entity), reach range 1) ends one node before the target's block, Vanillite's path ends on it"
+owner = "gameplay-developer #59"
+
+[mob_wolf_wander]
+tick = 0
+cause = "finalizeSpawn: 6 level random draws before tick 0, Vanilla 7 (variant selection)"
+owner = "gameplay-developer #59"
+
+[mob_zoglin_attack]
+tick = 1
+cause = "brain: 3 level random draws on tick 1, Vanilla 0 (RunOne/GateBehavior (ShufflingList.shuffle) draws its weights from the level random; Vanilla's ShufflingList has its own random)"
+owner = "gameplay-developer #59"
+
+[mob_zombie_horse_wander]
+tick = 1
+cause = "the zombie horse draws 7 numbers from its random on tick 1, Vanilla 8"
+owner = "gameplay-developer #59"
+
+[mob_zombie_nautilus_swim]
+tick = 1
+cause = "brain: the zombie nautilus draws 31 numbers from its random on tick 1, Vanilla 32"
+owner = "gameplay-developer #59"
+
+[mob_zombie_villager_chase]
+tick = 0
+cause = "construction/finalizeSpawn: 2 draws of the zombie villager's random before tick 0 (Vanilla 1); it then targets the player on tick 1, Vanilla later"
+owner = "gameplay-developer #59"
+
+[mob_zombified_piglin_anger]
+tick = 23
+cause = "after the hit on tick 20 the zombified piglin draws 2 numbers from its random on tick 23, Vanilla 4 (anger alert / target)"
+owner = "gameplay-developer #59"
 
 [restart_forced_chunks]
 tick = 6

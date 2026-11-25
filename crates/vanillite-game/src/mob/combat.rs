@@ -84,6 +84,12 @@ pub fn hurt(
     if ents.mob(target).is_some() {
         return hurt_mob(level, ents, env, cx, target, source, amount);
     }
+    if ents.special(target).is_some() {
+        return super::boss::special::hurt(ents, env, cx, target, &source);
+    }
+    if ents.player(target).is_none() {
+        return false;
+    }
     let Entities { store, players, .. } = ents;
     let Some(mut entity) = store.get_mut(target) else {
         return false;
@@ -105,7 +111,9 @@ fn invulnerable_to(ents: &Entities, env: &Env<'_>, target: EntityId, kind: Damag
         return true;
     };
     m.removed
-        || types.is(kind, tag::IS_FIRE) && e.kind().info().fire_immune
+        || types.is(kind, tag::IS_FIRE)
+            && (e.kind().info().fire_immune
+                || m.effects.has(crate::effect::MobEffect::FIRE_RESISTANCE))
         || types.is(kind, tag::IS_FALL) && m.kind.fall_damage_immune()
 }
 
@@ -124,17 +132,46 @@ pub fn hurt_mob(
     if invulnerable_to(ents, env, target, kind) {
         return false;
     }
+    if ents.mob(target).is_some_and(|m| m.is_dead_or_dying()) {
+        return false;
+    }
+    let Some(amount) = super::boss::filter_hurt(level, ents, env, cx, target, &source, amount)
+    else {
+        return false;
+    };
     let Some(m) = ents.mob_mut(target) else {
         return false;
     };
     if m.is_dead_or_dying() {
         return false;
     }
-    if m.kind == Kind::Enderman && types.is(kind, tag::IS_PROJECTILE) {
+    if types.is(kind, tag::IS_FIRE) && m.effects.has(crate::effect::MobEffect::FIRE_RESISTANCE) {
+        return false;
+    }
+    let mob_kind = m.kind;
+    let mut amount = amount;
+    if mob_kind == Kind::Enderman && types.is(kind, tag::IS_PROJECTILE) {
         // `EnderMan.hurtServer`: projectiles make it teleport instead.
         kinds::enderman_dodge(level, ents, env, cx, target);
         return false;
     }
+    if mob_kind.family() != super::Family::Classic {
+        let mut h = super::fam::Hurt {
+            level,
+            ents,
+            env,
+            cx,
+            target,
+            source,
+        };
+        match super::fam::hurt_filter(&mut h, mob_kind, amount) {
+            Some(a) => amount = a,
+            None => return false,
+        }
+    }
+    let Some(m) = ents.mob_mut(target) else {
+        return false;
+    };
     m.no_action_time = 0;
     let mut damage = amount.max(0.0);
     if !damage.is_finite() {
@@ -217,16 +254,16 @@ pub fn hurt_mob(
         .is_some_and(super::MobData::is_dead_or_dying);
     if dead {
         if took_full {
-            let sound = ents.mob(target).map(|m| m.kind.death_sound());
+            let sound = ents.mob(target).map(kinds::death_sound);
             if let Some(sound) = sound {
                 mob_sound(ents, env, target, sound);
             }
         }
-        die(ents, env, target, source);
+        die(level, ents, env, cx, target, source);
     } else if took_full {
         let sound = ents.mob_mut(target).map(|m| {
             m.ambient_sound_time = -m.kind.ambient_sound_interval();
-            m.kind.hurt_sound()
+            kinds::hurt_sound(m)
         });
         if let Some(sound) = sound {
             mob_sound(ents, env, target, sound);
@@ -235,11 +272,52 @@ pub fn hurt_mob(
     if let Some(m) = ents.mob_mut(target) {
         m.last_damage = Some((kind, env.game_time));
     }
+    // `onMobHurt` of the effects (Infested).
+    let view = ents.store.get(target).map(|e| (e.rot(), e.dims().height));
+    if let Some((rot, height)) = view
+        && let Some(m) = ents.mob_mut(target).filter(|m| !m.effects.is_empty())
+    {
+        let look = crate::effect::living::view_vector(rot.x_rot, rot.y_rot);
+        let fx = std::mem::take(&mut m.effects);
+        crate::effect::living::on_hurt(&fx, &mut m.random, env.random, pos, height, look, env.out);
+        m.effects = fx;
+    }
+    // What the kinds' `hurtServer` overrides do after `super.hurtServer` (even when it died).
+    if mob_kind.family() == super::Family::Classic {
+        if mob_kind == Kind::Enderman {
+            kinds::after_hurt(level, ents, env, target, source);
+        }
+        if mob_kind == Kind::Zombie {
+            // `Zombie.hurtServer`: reinforcements on Hard.
+            let mut h = super::fam::Hurt {
+                level,
+                ents,
+                env,
+                cx,
+                target,
+                source,
+            };
+            super::fam::undead::zombies::reinforcements(&mut h);
+        }
+    } else {
+        let mut h = super::fam::Hurt {
+            level,
+            ents,
+            env,
+            cx,
+            target,
+            source,
+        };
+        super::fam::after_hurt(&mut h, mob_kind, damage);
+    }
     true
 }
 
 /// `knockback(power, xd, zd)` of a mob.
 pub fn apply_knockback(ents: &mut Entities, target: EntityId, power: f64, xd: f64, zd: f64) {
+    if super::boss::dragon::ignores_knockback(ents, target) {
+        return;
+    }
     let Some(resistance) = ents.mob(target).map(|m| m.attrs.knockback_resistance) else {
         return;
     };
@@ -284,6 +362,20 @@ fn actually_hurt(
         let (armor, toughness) = (m.attrs.armor as f32, m.attrs.armor_toughness as f32);
         damage = crate::survival::combat::damage_after_absorb(damage, armor, toughness);
     }
+    // `getDamageAfterMagicAbsorb`: Resistance.
+    if !types.is(source.kind, tag::BYPASSES_EFFECTS) {
+        if !types.is(source.kind, tag::BYPASSES_RESISTANCE) {
+            damage = m.effects.resistance_damage(damage);
+        }
+        if damage <= 0.0 {
+            damage = 0.0;
+        }
+    }
+    damage = super::fam::absorb(m, &source, env, damage);
+    // Absorption takes the damage first.
+    let remaining = (damage - m.absorption).max(0.0);
+    m.absorption -= damage - remaining;
+    let damage = remaining;
     if damage != 0.0 {
         m.health = (m.health - damage).max(0.0);
         if let Some(mut e) = ents.store.get_mut(target) {
@@ -293,7 +385,14 @@ fn actually_hurt(
 }
 
 /// `LivingEntity.die` of a mob.
-fn die(ents: &mut Entities, env: &mut Env<'_>, target: EntityId, source: DamageSource) {
+fn die(
+    level: &Level,
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    cx: &mut MobContext,
+    target: EntityId,
+    source: DamageSource,
+) {
     let Some(m) = ents.mob_mut(target) else {
         return;
     };
@@ -301,10 +400,24 @@ fn die(ents: &mut Entities, env: &mut Env<'_>, target: EntityId, source: DamageS
         return;
     }
     m.dead = true;
+    let mob_kind = m.kind;
+    if mob_kind.family() != super::Family::Classic {
+        let mut h = super::fam::Hurt {
+            level,
+            ents,
+            env,
+            cx,
+            target,
+            source,
+        };
+        super::fam::on_die(&mut h, mob_kind);
+    }
+    let Some(m) = ents.mob_mut(target) else {
+        return;
+    };
     let killed_by_player = m.last_hurt_by_player_time > 0;
     let baby = m.baby;
-    let kind = m.kind;
-    let mut reward = kind.base_experience_reward(&mut m.random);
+    let mut reward = kinds::experience_reward(m);
     if baby {
         reward = 0;
     }
@@ -319,16 +432,36 @@ fn die(ents: &mut Entities, env: &mut Env<'_>, target: EntityId, source: DamageS
     };
     let pos = e.pos();
     let network_id = e.network_id().0;
+    // `gameEvent(ENTITY_DIE)`: a sculk catalyst nearby takes the experience
+    // (`CatalystListener`, `skipDropExperience`); vibration listeners hear the death.
+    let consumed = crate::block::sculk_catalyst::catalyst_near(level, pos);
+    if consumed {
+        cx.actions.push(super::WorldAction::Level(
+            super::boss::warden::LevelAction::SculkDeath {
+                pos,
+                experience: reward,
+            },
+        ));
+    }
+    cx.actions.push(super::WorldAction::Level(
+        super::boss::warden::LevelAction::GameEvent {
+            event: crate::level::game_event::events().entity_die,
+            pos,
+            context: crate::level::game_event::GameEventContext::of(Some(target)),
+        },
+    ));
     // `dropAllDeathLoot`: the loot table, then the experience.
     if !baby && env.rules.bool(Rule::MOB_DROPS) {
-        let mut loot = table_loot(ents, env, target, &source)
+        let mut loot = table_loot(level, ents, env, target, &source)
             .or_else(|| {
                 ents.mob_mut(target)
                     .map(|m| kinds::death_loot(m, killed_by_player))
             })
             .unwrap_or_default();
-        // `dropCustomDeathLoot` / `dropEquipment`: the saddle and the enderman's block.
+        // `dropCustomDeathLoot` / `dropEquipment`: the equipment, the saddle and the
+        // enderman's block.
         if let Some(m) = ents.mob_mut(target) {
+            super::equipment::death_drops(m, killed_by_player, &mut loot);
             if m.saddled
                 && let Some(saddle) = vanillite_data::registry::ITEM.id("minecraft:saddle")
             {
@@ -343,14 +476,7 @@ fn die(ents: &mut Entities, env: &mut Env<'_>, target: EntityId, source: DamageS
         }
         for stack in loot {
             // `spawnAtLocation`: an item entity with the default random motion.
-            let r = &mut *env.random;
-            let velocity = Vec3::new(
-                r.next_double() * 0.2 - 0.1,
-                0.2,
-                r.next_double() * 0.2 - 0.1,
-            );
-            let uuid = super::random_uuid(r);
-            let y_rot = r.next_float() * 360.0;
+            let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
             env.out.push(Effect::DropItem {
                 uuid,
                 pos,
@@ -361,11 +487,8 @@ fn die(ents: &mut Entities, env: &mut Env<'_>, target: EntityId, source: DamageS
             });
         }
     }
-    if (killed_by_player && env.rules.bool(Rule::MOB_DROPS)) && reward > 0 {
-        env.out.push(Effect::Experience {
-            pos,
-            amount: reward,
-        });
+    if !consumed && (killed_by_player && env.rules.bool(Rule::MOB_DROPS)) && reward > 0 {
+        award_experience(env, pos, reward);
     }
     env.out.push(Effect::Tracking {
         entity: target,
@@ -380,6 +503,11 @@ fn die(ents: &mut Entities, env: &mut Env<'_>, target: EntityId, source: DamageS
     }
 }
 
+/// `ExperienceOrb.award`: the world splits `amount` into orbs from the [`Effect::Experience`].
+pub fn award_experience(env: &mut Env<'_>, pos: Vec3, amount: i32) {
+    env.out.push(Effect::Experience { pos, amount });
+}
+
 /// Plays a mob's sound at its position with its volume and voice pitch (`makeSound`).
 pub fn mob_sound(ents: &mut Entities, env: &mut Env<'_>, id: EntityId, sound: &str) {
     let Some(pos) = ents.store.get(id).map(|e| e.pos()) else {
@@ -391,7 +519,7 @@ pub fn mob_sound(ents: &mut Entities, env: &mut Env<'_>, id: EntityId, sound: &s
     if m.silent {
         return;
     }
-    let volume = m.kind.sound_volume();
+    let volume = super::fam::mob_sound_volume(m);
     let a = m.random.next_float();
     let b = m.random.next_float();
     let pitch = if m.baby {
@@ -406,6 +534,16 @@ pub fn mob_sound(ents: &mut Entities, env: &mut Env<'_>, id: EntityId, sound: &s
 
 /// `Mob.doHurtTarget`: a melee hit with the mob's attack damage.
 pub fn mob_attack(t: &mut super::Tick<'_, '_>, target: EntityId) -> bool {
+    if t.mob_ref().kind.family() != super::Family::Classic
+        && let Some(r) = super::fam::do_hurt_target(t, target)
+    {
+        return r;
+    }
+    base_mob_attack(t, target)
+}
+
+/// `Mob.doHurtTarget` itself (families call it from their override).
+pub fn base_mob_attack(t: &mut super::Tick<'_, '_>, target: EntityId) -> bool {
     #[allow(clippy::cast_possible_truncation)]
     let damage = t.mob_ref().attrs.attack_damage as f32;
     let source = entity_source(t.ents, t.env.types.mob_attack, t.id, t.id);
@@ -462,6 +600,7 @@ pub fn knock_living(
 /// The drops of the mob's `entities/<type>` loot table from the data packs, `None` without
 /// that table.
 fn table_loot(
+    level: &Level,
     ents: &mut Entities,
     env: &mut Env<'_>,
     target: EntityId,
@@ -487,7 +626,7 @@ fn table_loot(
         .and_then(|c| ents.player(c))
         .map(|p| p.inventory.selected_item().clone())
         .unwrap_or_default();
-    let level = |name: &str| data.enchantment_level(&weapon, name);
+    let ench_level = |name: &str| data.enchantment_level(&weapon, name);
     let entity = crate::loot::EntityLootContext {
         this,
         attacker,
@@ -501,7 +640,7 @@ fn table_loot(
         }),
         types: env.types,
         tags: data,
-        attacker_enchantment_level: &level,
+        attacker_enchantment_level: &ench_level,
     };
     let none = |_: &str| 0;
     let in_tag = |item: u16, tag: &str| data.item_in_tag(item, tag);
@@ -517,12 +656,9 @@ fn table_loot(
         block_entity: None,
     };
     let mut out = Vec::new();
-    // The mob's own random (`LootParams` with the entity's random sequence is distribution
-    // equal).
-    let mut random = ents.mob(target).map(|m| m.random.clone())?;
-    data.loot.table_drops(&table, &ctx, &mut random, &mut out);
-    if let Some(m) = ents.mob_mut(target) {
-        m.random = random;
-    }
+    // `dropFromLootTable` without a loot table seed: the table's random sequence, else the
+    // level random.
+    data.loot
+        .roll_table(level, &table, &ctx, env.random, &mut out);
     Some(out)
 }

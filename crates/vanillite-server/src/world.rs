@@ -110,6 +110,26 @@ impl fmt::Debug for ServerWorld {
 }
 
 impl ServerWorld {
+    /// Posts the game events of the players' moves (steps, swimming, landing).
+    fn post_player_game_events(&mut self) {
+        let mut pending = Vec::new();
+        for (id, p) in self.level.entities.players.iter_mut() {
+            pending.extend(
+                p.survival
+                    .game_events
+                    .drain(..)
+                    .map(|(event, pos, affected)| (id, event, pos, affected)),
+            );
+        }
+        for (id, event, pos, affected) in pending {
+            let context = vanillite_game::level::game_event::GameEventContext {
+                source: Some(id),
+                affected,
+            };
+            self.level.game_event(event, pos, context);
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         id: WorldId,
@@ -119,9 +139,13 @@ impl ServerWorld {
         players: WorldPlayers,
         mut level: Level,
         survival: crate::survival::WorldSurvival,
-        mobs: crate::mobs::WorldMobs,
+        mut mobs: crate::mobs::WorldMobs,
         data: vanillite_storage::saved_data::SavedDataStore,
     ) -> ServerWorld {
+        // `dimensionType().hasEnderDragonFight()`.
+        if dimension == "minecraft:the_end" {
+            mobs.init_dragon_fight(&data, &mut level);
+        }
         // Entity randoms are `RandomSource.create()`: seeded from the clock, not the world seed.
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -370,6 +394,7 @@ impl ServerWorld {
             ctx.global,
             &self.dimension,
         );
+        self.post_player_game_events();
         self.mobs.player_actions(
             &mut self.level,
             &mut self.survival,
@@ -386,6 +411,14 @@ impl ServerWorld {
             crate::commands::tick_functions(&mut self.level, ctx.global, self.id);
         }
         self.players_inside_blocks();
+        // The rules block behaviour reads (sculk shriekers).
+        self.level.settings.peaceful =
+            ctx.global.level.difficulty() == vanillite_game::survival::rules::Difficulty::Peaceful;
+        self.level.settings.spawn_wardens = ctx
+            .global
+            .level
+            .rules()
+            .bool(vanillite_game::survival::rules::Rule::SPAWN_WARDENS);
         self.level.set_handling_tick(true);
         if ctx.runs_normally {
             // `advanceWeatherCycle`, then `tickTime`: the overworld advances the shared game
@@ -438,6 +471,12 @@ impl ServerWorld {
             self.ticks += 1;
             self.tick_entities(ctx.global);
             self.level.tick_block_entities();
+            self.mobs.apply_magic_hurts(
+                &mut self.level,
+                &mut self.survival,
+                ctx.global,
+                &self.dimension,
+            );
         }
         self.players.tick_entities(&mut self.level.entities);
         if ctx.runs_normally {
@@ -521,6 +560,8 @@ impl ServerWorld {
     /// `entityTickList.forEach(tickNonPassenger)`: every entity in tick order; players move
     /// through their packets.
     fn tick_entities(&mut self, global: &Global) {
+        self.mobs
+            .tick_dragon_fight(&mut self.level, &mut self.survival, global, &self.dimension);
         self.mobs
             .tick_entities(&mut self.level, &mut self.survival, global, &self.dimension);
         let level = &mut self.level;

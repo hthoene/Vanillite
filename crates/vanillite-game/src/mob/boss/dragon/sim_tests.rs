@@ -1,0 +1,308 @@
+//! Simulation tests of the dragon and the fight on a flat world.
+
+use vanillite_base::random::LegacyRandom;
+use vanillite_base::{BlockPos, Vec3};
+use vanillite_world::entity::{EntityId, Rotation};
+
+use super::crystal::{Crystal, spawn_crystal};
+use super::fight::{DragonFight, RespawnStage};
+use super::*;
+use crate::level::Level;
+use crate::level::tests::flat_level;
+use crate::mob::{Kind, MobContext, MobData};
+use crate::survival::Effect;
+use crate::survival::blocks::{BlockAccess, BlockFacts};
+use crate::survival::damage::{DamageType, DamageTypes, DeathMessageType, Effects, Scaling, tag};
+use crate::survival::rules::{Difficulty, GameRules};
+
+struct NoBlocks;
+
+impl BlockAccess for NoBlocks {
+    fn block_state(&self, _: BlockPos) -> Option<vanillite_data::block::BlockState> {
+        None
+    }
+}
+
+/// A few damage types with their tags.
+fn types() -> DamageTypes {
+    let t = |id: &str, tags: u32| DamageType {
+        id: id.to_owned(),
+        msg_id: id.to_owned(),
+        scaling: Scaling::Never,
+        exhaustion: 0.0,
+        effects: Effects::Hurt,
+        death_message_type: DeathMessageType::Default,
+        tags,
+    };
+    DamageTypes::new(vec![
+        t("minecraft:generic", tag::BYPASSES_ARMOR),
+        t("minecraft:explosion", tag::IS_EXPLOSION),
+        t("minecraft:mob_attack", 0),
+        t("minecraft:fall", tag::IS_FALL),
+    ])
+}
+
+struct World {
+    level: Level,
+    types: DamageTypes,
+    facts: BlockFacts,
+    rules: GameRules,
+    random: LegacyRandom,
+    out: Vec<Effect>,
+    cx: MobContext,
+}
+
+impl World {
+    fn new() -> World {
+        World {
+            level: flat_level(),
+            types: types(),
+            facts: BlockFacts::default(),
+            rules: GameRules::default(),
+            random: LegacyRandom::new(5),
+            out: Vec::new(),
+            cx: MobContext::default(),
+        }
+    }
+
+    /// Runs `f` with an environment and the entities taken out of the level.
+    fn with<R>(
+        &mut self,
+        f: impl FnOnce(&Level, &mut Entities, &mut Env<'_>, &mut MobContext) -> R,
+    ) -> R {
+        let raining = |_| false;
+        let mut no_gateway = |_| false;
+        let mut env = Env {
+            hooks: &crate::hooks::NoHooks,
+            types: &self.types,
+            facts: &self.facts,
+            blocks: &NoBlocks,
+            rules: &self.rules,
+            difficulty: Difficulty::Normal,
+            game_time: 0,
+            min_y: -64,
+            dimension: "minecraft:the_end",
+            raining_at: &raining,
+            enter_gateway: &mut no_gateway,
+            random: &mut self.random,
+            out: &mut self.out,
+            border: None,
+            display_name: &|n: &str, _| vanillite_protocol::text::Component::text(n.to_owned()),
+        };
+        let mut ents = std::mem::take(&mut self.level.entities);
+        let r = f(&self.level, &mut ents, &mut env, &mut self.cx);
+        self.level.entities = ents;
+        r
+    }
+
+    fn spawn_dragon(&mut self, pos: Vec3, phase: Phase) -> EntityId {
+        let mut m = MobData::new(Kind::EnderDragon, 3);
+        if let Some(s) = m.boss.dragon_mut() {
+            phase::set_phase_in(s, phase, &mut Vec::new());
+        }
+        let ids = std::sync::Arc::clone(self.level.network_ids_arc());
+        crate::mob::spawn(
+            &mut self.level.entities,
+            &ids,
+            1,
+            pos,
+            Rotation::default(),
+            m,
+        )
+    }
+
+    fn tick_mob(&mut self, id: EntityId) {
+        self.with(|level, ents, env, cx| crate::mob::tick(level, ents, env, cx, id));
+        for d in std::mem::take(&mut self.cx.discarded) {
+            self.level.entities.despawn(d);
+        }
+        self.cx.actions.clear();
+        self.cx.dragon_events.clear();
+    }
+}
+
+#[test]
+fn part_damage_multipliers() {
+    assert_eq!(part_damage(HEAD, 8.0), 8.0);
+    assert_eq!(part_damage(NECK, 8.0), 8.0);
+    assert_eq!(part_damage(BODY, 8.0), 3.0);
+    assert_eq!(part_damage(WING1, 0.5), 0.625);
+}
+
+#[test]
+fn experience_first_kill_and_later() {
+    let total = |first| (0..=200).map(|t| death_xp(first, t)).sum::<i32>();
+    assert_eq!(total(true), 12_000);
+    assert_eq!(total(false), 500);
+    assert_eq!(death_xp(true, 150), 0);
+    assert_eq!(death_xp(true, 155), 960);
+}
+
+#[test]
+fn dragon_parts_reserve_network_ids() {
+    let mut w = World::new();
+    let id = w.spawn_dragon(Vec3::new(0.5, 100.0, 0.5), Phase::Hover);
+    let nid = w.level.entities.store.get(id).unwrap().network_id().0;
+    for i in 1..=8 {
+        assert_eq!(w.level.entities.by_network_id(nid + i), Some(id));
+        assert_eq!(
+            part_of(&w.level.entities, id, nid + i),
+            Some((i - 1) as usize)
+        );
+    }
+    assert_eq!(part_of(&w.level.entities, id, nid), None);
+    let next = w.level.network_ids().next().0;
+    assert_eq!(next, nid + 9);
+    w.level.entities.despawn(id);
+    assert_eq!(w.level.entities.by_network_id(nid + 3), None);
+}
+
+#[test]
+fn crystals_heal_within_range() {
+    for (crystal_x, heals) in [(20.0, true), (60.0, false)] {
+        let mut w = World::new();
+        let dragon = w.spawn_dragon(Vec3::new(0.5, 100.0, 0.5), Phase::Hover);
+        w.level.entities.mob_mut(dragon).unwrap().health = 100.0;
+        w.with(|level, ents, env, _| {
+            spawn_crystal(
+                level,
+                ents,
+                env,
+                Vec3::new(crystal_x, 100.0, 0.5),
+                0.0,
+                Crystal::default(),
+            );
+        });
+        for _ in 0..200 {
+            w.tick_mob(dragon);
+        }
+        let m = w.level.entities.mob(dragon).unwrap();
+        assert_eq!(
+            m.health > 100.0,
+            heals,
+            "crystal at x {crystal_x}: {}",
+            m.health
+        );
+        assert_eq!(m.boss.dragon().unwrap().nearest_crystal.is_some(), heals);
+    }
+}
+
+#[test]
+fn hover_phase_holds_position() {
+    let mut w = World::new();
+    let dragon = w.spawn_dragon(Vec3::new(0.5, 100.0, 0.5), Phase::Hover);
+    for _ in 0..40 {
+        w.tick_mob(dragon);
+    }
+    let p = w.level.entities.store.get(dragon).unwrap().pos();
+    assert!(p.distance_to_sqr(Vec3::new(0.5, 100.0, 0.5)) < 4.0, "{p:?}");
+    // The parts follow the body.
+    let s = w.level.entities.mob(dragon).unwrap().boss.dragon().unwrap();
+    assert!(s.parts[HEAD].distance_to_sqr(p) < 100.0);
+}
+
+#[test]
+fn killing_blow_starts_the_dying_phase() {
+    let mut w = World::new();
+    let dragon = w.spawn_dragon(Vec3::new(0.5, 100.0, 0.5), Phase::HoldingPattern);
+    w.level.entities.mob_mut(dragon).unwrap().health = 1.0;
+    w.with(|level, ents, env, cx| {
+        let mut source = DamageSource::of(env.types.explosion);
+        source.position = Some(Vec3::new(0.5, 100.0, 0.5));
+        combat::hurt(level, ents, env, cx, dragon, source, 50.0);
+    });
+    let m = w.level.entities.mob(dragon).unwrap();
+    assert_eq!(m.health, 1.0);
+    assert!(!m.dead);
+    assert_eq!(m.boss.dragon().unwrap().phase, Phase::Dying);
+}
+
+#[test]
+fn only_players_and_explosions_hurt_the_dragon() {
+    let mut w = World::new();
+    let dragon = w.spawn_dragon(Vec3::new(0.5, 100.0, 0.5), Phase::HoldingPattern);
+    w.with(|level, ents, env, cx| {
+        let source = DamageSource::of(env.types.generic);
+        assert!(!combat::hurt(level, ents, env, cx, dragon, source, 10.0));
+    });
+    assert_eq!(w.level.entities.mob(dragon).unwrap().health, 200.0);
+}
+
+#[test]
+fn respawn_stages_take_604_ticks() {
+    let mut w = World::new();
+    let mut r = LegacyRandom::new(1);
+    let mut fight = DragonFight::new(None, 0, &mut r);
+    fight.dragon_killed = true;
+    fight.respawn_stage = Some(RespawnStage::Start);
+    let mut uuids = Vec::new();
+    w.with(|level, ents, env, _| {
+        for (dx, dz) in [(3, 0), (-3, 0), (0, 3), (0, -3)] {
+            let id = spawn_crystal(
+                level,
+                ents,
+                env,
+                Vec3::new(f64::from(dx) + 0.5, -60.0, f64::from(dz) + 0.5),
+                0.0,
+                Crystal::default(),
+            );
+            uuids.push(ents.store.get(id).unwrap().uuid());
+        }
+    });
+    fight.respawn_crystals = uuids;
+    let mut ticks = 0;
+    while fight.respawn_stage.is_some() {
+        ticks += 1;
+        assert!(ticks < 1000, "the respawn never ends");
+        let World {
+            level,
+            types,
+            facts,
+            rules,
+            random,
+            out,
+            cx,
+        } = &mut w;
+        let raining = |_| false;
+        let mut no_gateway = |_| false;
+        let mut env = Env {
+            hooks: &crate::hooks::NoHooks,
+            types,
+            facts,
+            blocks: &NoBlocks,
+            rules,
+            difficulty: Difficulty::Normal,
+            game_time: 0,
+            min_y: -64,
+            dimension: "minecraft:the_end",
+            raining_at: &raining,
+            enter_gateway: &mut no_gateway,
+            random,
+            out,
+            border: None,
+            display_name: &|n: &str, _| vanillite_protocol::text::Component::text(n.to_owned()),
+        };
+        fight.tick_respawn(level, &mut env, cx);
+        level.output().explosion_hurts.clear();
+    }
+    // START 1, PREPARING 101, SUMMONING_PILLARS 401, SUMMONING_DRAGON 101.
+    assert_eq!(ticks, 604);
+    assert!(!fight.dragon_killed);
+    let dragons = w
+        .level
+        .entities
+        .mobs
+        .iter()
+        .filter(|(_, m)| m.kind == Kind::EnderDragon)
+        .count();
+    assert_eq!(dragons, 1);
+    let crystals = w
+        .level
+        .entities
+        .specials
+        .iter()
+        .filter(|(_, d)| matches!(d, crate::mob::boss::special::SpecialData::EndCrystal(_)))
+        .count();
+    // The four respawn crystals exploded; the ten pillars got new ones.
+    assert_eq!(crystals, 10);
+}

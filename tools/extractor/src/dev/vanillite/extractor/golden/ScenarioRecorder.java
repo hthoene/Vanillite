@@ -202,6 +202,8 @@ public final class ScenarioRecorder {
                 level.getRandom().setSeed(seed);
               } else if (op.equals("hurt")) {
                 entities.hurt(action);
+              } else if (action.get("op").getAsString().equals("effect")) {
+                entities.effect(action);
               } else {
                 apply(level, action, true);
               }
