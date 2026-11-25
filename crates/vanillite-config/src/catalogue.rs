@@ -126,6 +126,35 @@ rules! {
             max_joins_per_tick: u32 = "max-joins-per-tick", Security, range = [1, 1000],
                 vanilla = 5;
         }
+        /// Remote administration: RCON (`enable-rcon`, `rcon.port`, `rcon.password`) and Query
+        /// (`enable-query`, `query.port`) of `server.properties`, with the limits of SEC-24.
+        admin: AdminRules = "admin" {
+            /// Address RCON listens on. Vanilla listens on `server-ip` (all interfaces when
+            /// empty); Vanillite listens on the loopback interface unless this is changed.
+            /// Empty = `server-ip` like Vanilla.
+            rcon_bind: String = "rcon-bind", Security, restart = true,
+                vanilla = String::from("127.0.0.1");
+            /// Shortest `rcon.password` accepted; with a shorter one RCON stays off (Vanilla
+            /// only refuses an empty password).
+            rcon_min_password_length: u32 = "rcon-min-password-length", Security,
+                range = [1, 1024], restart = true, vanilla = 8;
+            /// Failed RCON logins per IP address and minute; after that, connections of the
+            /// address are closed at once until the minute is over (Vanilla: no limit).
+            rcon_max_failed_logins: u32 = "rcon-max-failed-logins", Security,
+                range = [1, 10_000], restart = true, vanilla = 5;
+            /// RCON connections open at the same time (Vanilla: no limit).
+            rcon_max_connections: u32 = "rcon-max-connections", Security, range = [1, 1024],
+                restart = true, vanilla = 16;
+            /// Address Query listens on. Vanilla listens on `server-ip`; Vanillite listens on
+            /// the loopback interface unless this is changed (set `0.0.0.0` for public server
+            /// lists). Empty = `server-ip` like Vanilla.
+            query_bind: String = "query-bind", Security, restart = true,
+                vanilla = String::from("127.0.0.1");
+            /// Query packets answered per IP address and second; more are dropped (Vanilla:
+            /// no limit). Keeps the UDP listener from being used for reflection.
+            query_max_packets_per_second: u32 = "query-max-packets-per-second", Security,
+                range = [1, 10_000], restart = true, vanilla = 20;
+        }
         /// Limits of command parsing and tab completion (SEC-04, SEC-11).
         commands: CommandRules = "commands" {
             /// Longest command line that is parsed (Vanilla: the packet's 32767 characters).

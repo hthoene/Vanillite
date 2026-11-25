@@ -445,9 +445,9 @@ impl WorldPlayers {
             _ => vanillite_game::recipe::book::PlayerRecipeBook::default(),
         };
         let data = PlayerData {
-            recipe_book,
             stats,
             advancements,
+            recipe_book,
             inventory,
             last_equipment: std::array::from_fn(|_| ItemStack::EMPTY),
             profile: arrival.profile,
@@ -684,6 +684,21 @@ impl WorldPlayers {
                 handled
             };
             swings.extend(hands.into_iter().map(|h| (id, h)));
+            // `player-idle-timeout` (`ServerGamePacketListenerImpl.tick`).
+            let idle_minutes = u64::try_from(global.access.idle_timeout()).unwrap_or(0);
+            let handled = match handled {
+                Handled::Ok
+                    if idle_minutes > 0
+                        && player.connection.last_action.elapsed()
+                            > std::time::Duration::from_secs(idle_minutes.saturating_mul(60)) =>
+                {
+                    Handled::Kick(Box::new(vanillite_protocol::text::Component::translatable(
+                        "multiplayer.disconnect.idling",
+                        vec![],
+                    )))
+                }
+                other => other,
+            };
             match handled {
                 Handled::Ok => {}
                 Handled::Disconnected => self.leaving.push((id, None)),

@@ -12,6 +12,19 @@ pub struct RateLimit {
     pub burst: f32,
 }
 
+/// The server resource pack (`resource-pack*` and `require-resource-pack` of
+/// `server.properties`, Vanilla's `ServerResourcePackInfo`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResourcePackInfo {
+    pub id: vanillite_protocol::types::Uuid,
+    pub url: String,
+    /// SHA-1 in hex; empty without one.
+    pub hash: String,
+    /// Players who decline it are kicked.
+    pub required: bool,
+    pub prompt: Option<vanillite_protocol::text::Component>,
+}
+
 /// Network settings.
 #[derive(Debug, Clone)]
 pub struct NetConfig {
@@ -66,6 +79,19 @@ pub struct NetConfig {
     pub allow_direct_connections: bool,
     /// Older client versions accepted through the multi-version layer. Default none.
     pub multiversion: vanillite_multiversion::Accepted,
+    /// Answer server list pings (`enable-status`). Default true.
+    pub enable_status: bool,
+    /// Average packets per second after which a connection is kicked (`rate-limit`); 0 turns
+    /// the check off. Default 0.
+    pub rate_limit: u32,
+    /// Show client addresses in the log (`log-ips`). Default true.
+    pub log_ips: bool,
+    /// The resource pack sent in configuration. Default none.
+    pub resource_pack: Option<ResourcePackInfo>,
+    /// Links sent in configuration (`bug-report-link`). Default none.
+    pub server_links: Vec<vanillite_protocol::packets::common::ServerLink>,
+    /// Codes of conduct by lower-case language (`enable-code-of-conduct`). Default none.
+    pub code_of_conduct: std::collections::BTreeMap<String, String>,
 }
 
 impl Default for NetConfig {
@@ -106,6 +132,12 @@ impl Default for NetConfig {
             forwarding_secret: None,
             allow_direct_connections: false,
             multiversion: vanillite_multiversion::Accepted::default(),
+            enable_status: true,
+            rate_limit: 0,
+            log_ips: true,
+            resource_pack: None,
+            server_links: Vec::new(),
+            code_of_conduct: std::collections::BTreeMap::new(),
         }
     }
 }
