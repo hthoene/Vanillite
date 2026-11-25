@@ -296,6 +296,46 @@ pub(super) fn lightning_rod_direct_signal(
     }
 }
 
+/// `LightningRodBlock.onLightningStrike`: a pulse of 8 ticks into the block it stands on or
+/// hangs from.
+pub(super) fn lightning_rod_strike(level: &mut Level, state: BlockState, pos: BlockPos) {
+    level.set_block_and_update(pos, state.set_flag("powered", true));
+    let direction = facing(state);
+    level.update_neighbors_at(pos.relative(direction.opposite()), state.block());
+    level.schedule_block_tick(pos, state.block(), 8);
+    let axis = match direction {
+        Direction::West | Direction::East => 0,
+        Direction::Down | Direction::Up => 1,
+        Direction::North | Direction::South => 2,
+    };
+    level.level_event(None, 3002, pos, axis);
+}
+
+/// `LightningRodBlock.onPlace`: a powered rod that became another block (a copper stage)
+/// ends its pulse itself.
+pub(super) fn lightning_rod_on_place(
+    level: &mut Level,
+    state: BlockState,
+    pos: BlockPos,
+    old: BlockState,
+    _: bool,
+) {
+    if old.block() != state.block()
+        && powered(state)
+        && !level.chunks.has_block_tick(pos, state.block().0)
+    {
+        level.schedule_block_tick(pos, state.block(), 8);
+    }
+}
+
+/// `LightningRodBlock.affectNeighborsAfterRemoval`.
+pub(super) fn lightning_rod_removal(level: &mut Level, state: BlockState, pos: BlockPos, _: bool) {
+    if powered(state) {
+        let direction = facing(state);
+        level.update_neighbors_at(pos.relative(direction.opposite()), state.block());
+    }
+}
+
 /// `LightningRodBlock.tick`: the pulse of a strike ends.
 pub(super) fn lightning_rod_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
     let new = state.set_flag("powered", false);

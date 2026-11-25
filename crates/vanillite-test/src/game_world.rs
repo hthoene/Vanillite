@@ -33,6 +33,7 @@ use vanillite_game::item_entity::ItemData;
 use vanillite_game::level::explosion::BlockInteraction;
 use vanillite_game::level::forced::SavedTickets;
 use vanillite_game::level::{Level, LevelOutput, LevelSettings, update};
+use vanillite_game::lightning;
 use vanillite_game::minecart::{self, MinecartKind};
 use vanillite_game::mob::common::CommonGoal;
 use vanillite_game::mob::fam::FamGoal;
@@ -195,6 +196,10 @@ pub struct GameWorld {
     seed: i64,
     /// Frames observe the level random.
     level_rng: bool,
+    /// The overworld clock (`time`), for the local difficulty of lightning strikes.
+    clock_time: i64,
+    /// The entities the ticking lightning bolt strikes.
+    bolt_hits: Vec<EntityId>,
     /// The own random of item entities (not seeded per entity yet).
     item_random: LegacyRandom,
     item_scratch: vanillite_server::ItemScratch,
@@ -242,6 +247,8 @@ impl GameWorld {
             names: Vec::new(),
             seed: spec.seed,
             level_rng: spec.level_rng,
+            clock_time: spec.time.unwrap_or(0),
+            bolt_hits: Vec::new(),
             item_random: LegacyRandom::new(spec.seed),
             item_scratch: vanillite_server::ItemScratch::default(),
         };
@@ -328,6 +335,20 @@ impl GameWorld {
             entity.set_old_pos();
             let kind = entity.as_ref().kind();
             let pos = entity.as_ref().pos();
+            if kind == ids::LIGHTNING_BOLT {
+                let mut hits = std::mem::take(&mut self.bolt_hits);
+                lightning::tick(&mut self.level, id, &mut hits);
+                if !hits.is_empty() {
+                    self.with_env(|level, ents, env, cx| {
+                        for &target in &hits {
+                            lightning::thunder_hit(level, ents, env, cx, target);
+                        }
+                    });
+                    self.finish_removals();
+                }
+                self.bolt_hits = hits;
+                continue;
+            }
             if kind == ids::FALLING_BLOCK || kind == ids::TNT {
                 vanillite_game::entities::tick_entity(&mut self.level, id, kind);
                 self.explosion_hurts();
@@ -1298,6 +1319,15 @@ impl ScenarioWorld for GameWorld {
             }
         }
         self.level.set_entity_seed(entity_seed);
+        Ok(())
+    }
+
+    fn lightning(&mut self, column: BlockPos) -> Result<(), String> {
+        let input = lightning::StrikeInput {
+            spawn_mobs: self.rules.bool(Rule::SPAWN_MOBS),
+            clock_time: self.clock_time,
+        };
+        lightning::strike(&mut self.level, column, input);
         Ok(())
     }
 

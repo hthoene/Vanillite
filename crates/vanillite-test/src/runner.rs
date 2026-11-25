@@ -65,6 +65,7 @@ fn apply(
         OpKind::Place => true,
         OpKind::Fill => action,
         OpKind::Hurt => return Err("hurt without its damage".to_owned()),
+        OpKind::Lightning => return world.lightning(op.from),
         OpKind::Effect => return Err("effect without its effect".to_owned()),
         OpKind::ThrowPotion => return Err("throw_potion without its potion".to_owned()),
         OpKind::Force | OpKind::Unforce => {
