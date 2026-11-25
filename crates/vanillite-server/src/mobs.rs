@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use vanillite_base::{Aabb, BlockPos, ChunkPos, Vec3};
-use vanillite_config::{GameMode, WorldRules};
+use vanillite_config::{GameMode, VanillaOr, WorldRules};
 use vanillite_data::entity::ids;
 use vanillite_game::advancements::trigger::{Event, TriggerKind};
 use vanillite_game::advancements::view;
@@ -17,7 +17,7 @@ use vanillite_game::minecart::{self, MinecartKind};
 use vanillite_game::mob::boss;
 use vanillite_game::mob::boss::dragon::{self, fight::DragonFight};
 use vanillite_game::mob::boss::special::{self, is_special_kind};
-use vanillite_game::mob::spawn::{self, SpawnInput, SpawnTable, Spawner};
+use vanillite_game::mob::spawn::{self, SpawnInput, SpawnLimits, SpawnTable, Spawner};
 use vanillite_game::mob::{
     self, Environment, MobContext, MobSettings, WorldAction, animal, attack, combat, projectile,
     tame,
@@ -106,6 +106,9 @@ pub(crate) struct WorldMobs {
     table: Option<Arc<SpawnTable>>,
     seed: i64,
     settings: MobSettings,
+    limits: SpawnLimits,
+    /// Ticks between natural spawn rounds (`performance.spawning.spawn-interval`).
+    spawn_interval: i64,
     /// Generated chunks waiting to become live, with the ticks they waited.
     generated: Vec<(ChunkPos, u32)>,
     scratch: Vec<ChunkPos>,
@@ -133,6 +136,8 @@ impl WorldMobs {
             table,
             seed,
             settings: settings(rules),
+            limits: spawn_limits(rules),
+            spawn_interval: i64::from(rules.spawning.spawn_interval.max(1)),
             generated: Vec::new(),
             scratch: Vec::new(),
             ticks: 0,
@@ -344,6 +349,8 @@ impl WorldMobs {
     /// Takes over changed rules (config reload).
     pub(crate) fn set_rules(&mut self, rules: &WorldRules) {
         self.settings = settings(rules);
+        self.limits = spawn_limits(rules);
+        self.spawn_interval = i64::from(rules.spawning.spawn_interval.max(1));
     }
 
     /// The attacks, interactions, entity item uses and vehicle input of the players since the
@@ -589,6 +596,10 @@ impl WorldMobs {
             }
             self.generated = waiting;
         }
+        let persistent = level.game_time() % 400 == 0;
+        // `performance.spawning.spawn-interval`: natural spawn rounds only every n-th tick.
+        let natural =
+            self.spawn_interval == 1 || persistent || level.game_time() % self.spawn_interval == 0;
         let players: Vec<(EntityId, Vec3)> = level
             .entities
             .players
@@ -602,12 +613,13 @@ impl WorldMobs {
             spawn_enemies: difficulty != Difficulty::Peaceful && rules.bool(Rule::SPAWN_MONSTERS),
             difficulty,
             env,
+            limits: self.limits,
             thunder: StrikeInput {
                 spawn_mobs: rules.bool(Rule::SPAWN_MOBS),
                 clock_time: overworld_clock_time(global),
             },
+            natural,
         };
-        let persistent = level.game_time() % 400 == 0;
         spawn::tick(level, &table, &mut self.spawner, &input, persistent);
         if dimension == "minecraft:overworld" {
             self.custom_spawners(
@@ -776,6 +788,7 @@ impl WorldMobs {
         let activation = f64::from(self.settings.activation_range);
         minecart::players_push(&mut level.entities);
         let mut cursor = level.entities.store.tick_cursor();
+        let mut tnt_left = self.settings.max_tnt_per_tick;
         let mut ents = std::mem::take(&mut level.entities);
         while let Some(id) = ents.store.next_to_tick(&mut cursor) {
             let Some(mut entity) = ents.store.get_mut(id) else {
@@ -798,6 +811,15 @@ impl WorldMobs {
                 let chunk = BlockPos::containing(pos.x, pos.y, pos.z).chunk();
                 if !level.chunks.in_entity_ticking_range(chunk) {
                     continue;
+                }
+                // `max-tnt-per-tick`: the rest waits for a later tick.
+                if kind == ids::TNT
+                    && let Some(left) = &mut tnt_left
+                {
+                    if *left == 0 {
+                        continue;
+                    }
+                    *left -= 1;
                 }
                 level.entities = ents;
                 vanillite_game::entities::tick_entity(level, id, kind);
@@ -1205,9 +1227,40 @@ impl WorldMobs {
 }
 
 fn settings(rules: &WorldRules) -> MobSettings {
+    let vanilla = MobSettings::default();
+    let spawning = &rules.spawning;
     MobSettings {
         path_nodes_per_tick: rules.mobs.path_nodes_per_tick,
         activation_range: u32::from(rules.mobs.activation_range),
+        max_entity_collisions: match rules.collisions.max_entity_collisions {
+            VanillaOr::Vanilla => None,
+            VanillaOr::Value(n) => Some(n),
+        },
+        arrow_despawn_ticks: i32::from(rules.items.arrow_despawn_ticks),
+        hard_despawn_range: spawning.hard_despawn_range.map(f64::from),
+        soft_despawn_range: spawning
+            .soft_despawn_range
+            .map_or(vanilla.soft_despawn_range, f64::from),
+        max_tnt_per_tick: rules.explosions.max_tnt_per_tick.get(),
+    }
+}
+
+/// The mob caps and despawn distance of `performance.spawning`.
+fn spawn_limits(rules: &WorldRules) -> SpawnLimits {
+    let s = &rules.spawning;
+    let vanilla = SpawnLimits::default();
+    let caps = [
+        s.monster_cap,
+        s.creature_cap,
+        s.ambient_cap,
+        s.axolotls_cap,
+        s.underground_water_creature_cap,
+        s.water_creature_cap,
+        s.water_ambient_cap,
+    ];
+    SpawnLimits {
+        caps: std::array::from_fn(|i| caps[i].map_or(vanilla.caps[i], i32::from)),
+        despawn_distance: s.hard_despawn_range.map(i32::from),
     }
 }
 

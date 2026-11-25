@@ -359,7 +359,7 @@ pub fn tick_arrow(
             a.life = 0;
         } else {
             a.life += 1;
-            if a.life >= 1200 {
+            if a.life >= cx.settings.arrow_despawn_ticks {
                 discard = true;
             }
         }

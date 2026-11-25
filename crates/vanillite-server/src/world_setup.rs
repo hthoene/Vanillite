@@ -618,6 +618,9 @@ pub(crate) fn apply_simulation_rules(
         vanillite_config::VanillaOr::Vanilla => vanilla_max_chained,
     };
     settings.exploits = exploit_settings(rules);
+    settings.hopper_transfer_cooldown = i32::from(rules.hoppers.transfer_cooldown);
+    settings.hopper_check_cooldown = i32::from(rules.hoppers.check_cooldown);
+    settings.xp_merge_radius = rules.items.xp_merge_radius;
 }
 
 /// The biomes of a world for the simulation: the biome registry, the seed's biome manager and

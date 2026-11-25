@@ -584,14 +584,39 @@ pub fn day_sky_factor(ticks: i64) -> f32 {
     last.1 + (first.1 - last.1) * f
 }
 
-/// Performance knobs of the mob tick (`[mobs]` in the configuration).
-#[derive(Clone, Copy, Debug, PartialEq, Default)]
+/// Performance knobs of the entity tick (rules of `performance.*`). The default is Vanilla.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MobSettings {
     /// Path finding nodes all mobs of a world may visit per tick; `0` = unlimited (Vanilla).
     pub path_nodes_per_tick: u32,
     /// Mobs farther than this from every player run their AI only every 20th tick; `0` =
     /// off (Vanilla).
     pub activation_range: u32,
+    /// Entities a mob pushes per tick; `None` = all (Vanilla).
+    pub max_entity_collisions: Option<u32>,
+    /// Ticks an arrow stays stuck in a block (Vanilla 1200).
+    pub arrow_despawn_ticks: i32,
+    /// Distance to the nearest player beyond which a mob despawns at once; `None` = its
+    /// category's (Vanilla).
+    pub hard_despawn_range: Option<f64>,
+    /// Distance to the nearest player beyond which an idle mob may despawn (Vanilla 32).
+    pub soft_despawn_range: f64,
+    /// Primed TNT ticked per world tick; `None` = all (Vanilla).
+    pub max_tnt_per_tick: Option<u32>,
+}
+
+impl Default for MobSettings {
+    fn default() -> Self {
+        MobSettings {
+            path_nodes_per_tick: 0,
+            activation_range: 0,
+            max_entity_collisions: None,
+            arrow_despawn_ticks: 1200,
+            hard_despawn_range: None,
+            soft_despawn_range: 32.0,
+            max_tnt_per_tick: None,
+        }
+    }
 }
 
 /// Explosion parameters (`Level.explode`).
