@@ -780,8 +780,9 @@ impl ScenarioWorld for GameWorld {
             set.set(runtime, pos, forced);
         }
         for _ in 0..SETTLE_LIMIT {
-            // The chunk system only: no game tick.
+            // The chunk system and the entity manager only: no game tick.
             self.level.tick_chunk_runtime();
+            self.level.tick_entity_manager();
             if self.settled() {
                 return Ok(());
             }
@@ -841,7 +842,7 @@ impl ScenarioWorld for GameWorld {
 
     /// The simulation phases of `ServerLevel.tick`: game time, scheduled block then fluid
     /// ticks, the chunk source (post-processing, random ticks), block events, entities, block
-    /// entities.
+    /// entities, entity management (pending entity loads).
     fn step(&mut self) {
         let level = &mut self.level;
         level.tick_time();
@@ -854,6 +855,7 @@ impl ScenarioWorld for GameWorld {
         self.tick_entities();
         let level = &mut self.level;
         level.tick_block_entities();
+        level.tick_entity_manager();
         // Nobody watches: drop what would go to clients.
         *level.output() = LevelOutput::default();
         let mut changes = Vec::new();
