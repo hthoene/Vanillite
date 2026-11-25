@@ -22,11 +22,6 @@ tick = 1
 cause = "Vanilla runs `BeeGrowCropGoal.canBeeUse` and starts `BeeWanderGoal` with `HoverRandomPos` (41 draws of the bee's random), Vanillite starts no goal (4 draws)"
 owner = "architect #120"
 
-[mob_breeze_attack]
-tick = 16
-cause = "head yaw on tick 16: Vanilla keeps the head on the body yaw (9.67), Vanillite turns it to -0.33 (look control of the breeze)"
-owner = "architect #120"
-
 [mob_camel_husk_wander]
 tick = 176
 cause = "random draws of the camel husk differ from tick 176 on (not analysed yet)"
@@ -40,16 +35,6 @@ owner = "architect #120"
 [mob_copper_golem_wander]
 tick = 90
 cause = "a timed brain behaviour starts on tick 90 in Vanillite only (1 level random draw, Vanilla 0)"
-owner = "architect #120"
-
-[mob_dolphin_swim]
-tick = 7
-cause = "`getRandomSwimmablePos`: Vanilla needs two `DefaultRandomPos.getPos` calls (60 draws), Vanillite takes the first position (30)"
-owner = "architect #120"
-
-[mob_drowned_water]
-tick = 1
-cause = "tick 1 goals: Vanilla starts `DrownedGoToBeachGoal` (`MoveToBlockGoal` draws), Vanillite `DrownedSwimUpGoal` (37 `getPosTowards` draws)"
 owner = "architect #120"
 
 [mob_evoker_spells]
@@ -82,11 +67,6 @@ tick = 10
 cause = "random draws of the iron golem differ from tick 10 on (not analysed yet)"
 owner = "architect #120"
 
-[mob_nautilus_swim]
-tick = 76
-cause = "random draws of the nautilus differ from tick 76 on (not analysed yet)"
-owner = "architect #120"
-
 [mob_phantom_swoop]
 tick = 2
 cause = "the phantom's motion differs in the last bits on tick 2 (float/double rounding of the circling movement)"
@@ -102,34 +82,9 @@ tick = 36
 cause = "random draws of the pillager and the level random differ on tick 36 (not analysed yet)"
 owner = "architect #120"
 
-[mob_polar_bear_wander]
-tick = 38
-cause = "the polar bear starts WaterAvoidingRandomStrollGoal on tick 38; Vanilla starts no goal with the same random draws"
-owner = "architect #120"
-
-[mob_rabbit_hop]
-tick = 13
-cause = "Vanilla hops on tick 13 (motion y 0.297), Vanillite does not (rabbit jump control)"
-owner = "architect #120"
-
-[mob_shulker_bullets]
-tick = 35
-cause = "the shulker bullet draws 3 numbers from the level random when it is shot; Vanilla 0 (the bullet's own random)"
-owner = "architect #120"
-
 [mob_witch_potions]
 tick = 147
 cause = "the splash potion on tick 147: Vanilla's hurts the player (1 damage), Vanillite's does not"
-owner = "architect #120"
-
-[mob_wolf_wander]
-tick = 0
-cause = "finalizeSpawn: 6 level random draws before tick 0, Vanilla 7 (variant selection)"
-owner = "architect #120"
-
-[mob_zombie_nautilus_swim]
-tick = 135
-cause = "random draws of the zombie nautilus differ from tick 135 on (not analysed yet)"
 owner = "architect #120"
 
 [mob_zombified_piglin_anger]

@@ -253,13 +253,21 @@ fn update_fluids(t: &mut Tick<'_, '_>) {
             Currents::default(),
         )
     };
+    let first_tick = t.mob_ref().tick_count <= 1;
     let m = t.mob();
+    let was_in_water = m.fluids.in_water();
     m.fluids = contact;
+    if let Some(r) = &mut m.move_ctl.rabbit {
+        r.in_water = contact.in_water();
+    }
     if contact.in_water() {
         // `updateInWaterStateAndDoWaterCurrentPushing`: water ends the fall and the fire.
         m.fall_distance = 0.0;
         if m.fire_ticks > 0 {
             m.fire_ticks = 0;
+        }
+        if !was_in_water && !first_tick {
+            water_splash_effect(t);
         }
     }
     if pushed {
@@ -275,6 +283,55 @@ fn update_fluids(t: &mut Tick<'_, '_>) {
             apply_current(t, currents.lava, scale);
         }
     }
+}
+
+/// `Entity.doWaterSplashEffect`: the splash sound and particles of a mob falling into water
+/// (the server adds no particles, but they draw from the mob's random).
+fn water_splash_effect(t: &mut Tick<'_, '_>) {
+    let v = t.velocity();
+    let point_two = f64::from(0.2_f32);
+    #[allow(clippy::cast_possible_truncation)]
+    let speed =
+        ((v.x * v.x * point_two + v.y * v.y + v.z * v.z * point_two).sqrt() as f32 * 0.2).min(1.0);
+    let kind = t.mob_ref().kind;
+    let sound = match kind {
+        super::Kind::Axolotl if speed < 0.25 => "minecraft:entity.axolotl.splash",
+        super::Kind::Dolphin if speed < 0.25 => "minecraft:entity.dolphin.splash",
+        _ if speed < 0.25 && hostile_swimmer(kind) => "minecraft:entity.hostile.splash",
+        _ => "minecraft:entity.generic.splash",
+    };
+    let r = &mut t.mob().random;
+    let pitch = 1.0 + (r.next_float() - r.next_float()) * 0.4;
+    kinds::play_sound(t, sound, speed, pitch);
+    let width = t.core().dims().width;
+    let r = &mut t.mob().random;
+    let mut i = 0_u16;
+    while f32::from(i) < 1.0 + width * 20.0 {
+        // The bubble's x, z and y speed.
+        for _ in 0..3 {
+            r.next_double();
+        }
+        i += 1;
+    }
+    let mut i = 0_u16;
+    while f32::from(i) < 1.0 + width * 20.0 {
+        // The splash's x and z.
+        for _ in 0..2 {
+            r.next_double();
+        }
+        i += 1;
+    }
+    let pos = t.pos();
+    post_game_event(t, crate::level::game_event::events().splash, pos, None);
+}
+
+/// `Monster` (and hoglins) with the hostile swim and splash sounds.
+fn hostile_swimmer(kind: super::Kind) -> bool {
+    use super::Kind;
+    !matches!(
+        kind,
+        Kind::Slime | Kind::MagmaCube | Kind::Ghast | Kind::Phantom
+    ) && kind.is_monster()
 }
 
 /// The summed flows of the water and lava an entity touches
@@ -725,8 +782,14 @@ fn jump_in_liquid(t: &mut Tick<'_, '_>) {
 
 /// `jumpFromGround`.
 fn jump_from_ground(t: &mut Tick<'_, '_>) {
+    let rabbit = t.mob_ref().kind == super::Kind::Rabbit;
+    let multiplier = if rabbit {
+        super::fam::companion::rabbit::jump_multiplier(t)
+    } else {
+        1.0
+    };
     #[allow(clippy::cast_possible_truncation)]
-    let mut power = t.mob_ref().attrs.jump_strength as f32 * block_jump_factor(t)
+    let mut power = t.mob_ref().attrs.jump_strength as f32 * multiplier * block_jump_factor(t)
         + t.mob_ref().effects.jump_boost_power();
     if power <= 1.0e-5 {
         return;
@@ -737,6 +800,9 @@ fn jump_from_ground(t: &mut Tick<'_, '_>) {
     let v = t.velocity();
     t.set_velocity(Vec3::new(v.x, f64::from(power).max(v.y), v.z));
     t.core_mut().set_flags(EntityFlags::HAS_IMPULSE, true);
+    if rabbit {
+        super::fam::companion::rabbit::after_jump(t);
+    }
 }
 
 fn block_jump_factor(t: &Tick<'_, '_>) -> f32 {
@@ -1187,9 +1253,13 @@ fn movement_emission(
         }
     }
     let on_ground = t.on_ground();
+    let swimming = t
+        .core()
+        .flags()
+        .contains(vanillite_world::entity::EntityFlags::SWIMMING);
     let pos = t.pos();
     let steps = |t: &Tick<'_, '_>, st: BlockState| {
-        !st.is_air() && (on_ground || t.env.facts.is_climbable(st.block()))
+        !st.is_air() && (on_ground || t.env.facts.is_climbable(st.block())) && !swimming
     };
     let only_effect = supporting_pos == effect_pos;
     let mut produced = false;
@@ -1273,10 +1343,7 @@ fn water_swim_sound(t: &mut Tick<'_, '_>) {
         Kind::Nautilus if baby => "minecraft:entity.baby_nautilus.swim",
         Kind::Nautilus => "minecraft:entity.nautilus.swim",
         Kind::ZombieNautilus => "minecraft:entity.zombie_nautilus.swim",
-        Kind::Slime | Kind::MagmaCube | Kind::Ghast | Kind::Phantom => {
-            "minecraft:entity.generic.swim"
-        }
-        _ if kind.is_monster() => "minecraft:entity.hostile.swim",
+        _ if hostile_swimmer(kind) => "minecraft:entity.hostile.swim",
         _ => "minecraft:entity.generic.swim",
     };
     let r = &mut t.mob().random;
@@ -1291,6 +1358,15 @@ fn java_equal(a: f64, b: f64) -> bool {
 
 /// `LivingEntity.checkFallDamage` → `Entity.checkFallDamage` → `Block.fallOn`.
 fn check_fall_damage(t: &mut Tick<'_, '_>, ya: f64, on_ground: bool, on_state: BlockState) {
+    if !t.mob_ref().fluids.in_water() {
+        update_fluids(t);
+    }
+    if !t.mob_ref().fluids.in_water() && ya < 0.0 {
+        // `fallDistance -= (float) ya`.
+        #[allow(clippy::cast_possible_truncation)]
+        let ya = f64::from(ya as f32);
+        t.mob().fall_distance -= ya;
+    }
     if on_ground {
         let distance = t.mob_ref().fall_distance;
         if distance > 0.0 {
@@ -1319,8 +1395,6 @@ fn check_fall_damage(t: &mut Tick<'_, '_>, ya: f64, on_ground: bool, on_state: B
         if t.exists() {
             t.mob().fall_distance = 0.0;
         }
-    } else if ya < 0.0 {
-        t.mob().fall_distance -= ya;
     }
 }
 
@@ -1633,6 +1707,10 @@ fn server_ai_step(t: &mut Tick<'_, '_>) {
         nav::tick_move_control(t);
     }
     nav::tick_look_control(t);
+    if t.mob_ref().kind == super::Kind::Rabbit {
+        super::fam::companion::rabbit::jump_control(t);
+        return;
+    }
     let m = t.mob();
     m.jumping = m.jump;
     m.jump = false;

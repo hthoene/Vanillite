@@ -406,7 +406,8 @@ impl WorldMobs {
         let state = &global.level;
         let rules = state.rules().clone();
         let difficulty = state.difficulty();
-        let env = environment(global, dimension, survival, self.seed);
+        let sea_level = level.climate().map(|c| c.sea_level);
+        let env = environment(global, dimension, survival, self.seed, sea_level);
         // New chunks: their animals once they are live.
         level.chunks.take_generated(&mut self.scratch);
         self.generated
@@ -552,7 +553,8 @@ impl WorldMobs {
             .players
             .iter()
             .any(|(_, p)| p.game_mode != GameMode::Spectator);
-        let env = environment(global, dimension, survival, self.seed);
+        let sea_level = level.climate().map(|c| c.sea_level);
+        let env = environment(global, dimension, survival, self.seed, sea_level);
         self.cx.begin_tick(env, self.settings, has_players);
         // What spawner blocks read when the block entities tick after the entities.
         level.spawner_env = vanillite_game::block::spawner::SpawnerEnv {
@@ -1045,6 +1047,7 @@ fn environment(
     dimension: &str,
     survival: &WorldSurvival,
     seed: i64,
+    sea_level: Option<i32>,
 ) -> Environment {
     let overworld = dimension == "minecraft:overworld";
     let nether = dimension == "minecraft:the_nether";
@@ -1052,7 +1055,7 @@ fn environment(
         return Environment {
             surface_slime_chance: 0.0,
             world_seed: seed,
-            sea_level: if nether { 32 } else { 0 },
+            sea_level: sea_level.unwrap_or(if nether { 32 } else { 0 }),
             sky_darken: if nether { 0 } else { 11 },
             monsters_burn: false,
             thundering: false,
@@ -1091,6 +1094,7 @@ fn environment(
     Environment {
         surface_slime_chance: MOON_BRIGHTNESS[phase] * 0.5,
         world_seed: seed,
+        sea_level: sea_level.unwrap_or(63),
         ..Environment::overworld(day, w.rain(), w.thunder())
     }
 }

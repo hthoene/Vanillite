@@ -474,7 +474,7 @@ pub fn max_head_y_rot(m: &MobData) -> f32 {
     }
 }
 
-pub fn ambient_sound(m: &MobData) -> Option<&'static str> {
+pub fn ambient_sound(m: &mut MobData) -> Option<&'static str> {
     if !m.kind.classic() {
         return fam::ambient_sound(m);
     }
@@ -929,7 +929,7 @@ pub fn play_ambient_sound(t: &mut Tick<'_, '_>) {
         combat::mob_sound(t.ents, t.env, id, sound);
         return;
     }
-    if let Some(sound) = ambient_sound(t.mob_ref()) {
+    if let Some(sound) = ambient_sound(t.mob()) {
         let id = t.id;
         combat::mob_sound(t.ents, t.env, id, sound);
     }

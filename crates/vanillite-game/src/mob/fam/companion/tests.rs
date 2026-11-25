@@ -200,9 +200,10 @@ fn wolf_variant_follows_the_biome() {
         name: "minecraft:forest".into(),
         ..Default::default()
     };
+    let mut random = LegacyRandom::new(0);
     let mut ctx = SpawnContext::simple(Difficulty::Normal, SpawnReason::Natural);
     ctx.biome = Some(&forest);
-    assert_eq!(wolf::variant_for(&ctx), 8);
+    assert_eq!(wolf::variant_for(&ctx, &mut random), 8);
     let savanna = crate::mob::spawn::BiomeSpawns {
         name: "minecraft:savanna".into(),
         tags: vec!["minecraft:is_savanna".into()],
@@ -210,9 +211,9 @@ fn wolf_variant_follows_the_biome() {
     };
     let mut ctx = SpawnContext::simple(Difficulty::Normal, SpawnReason::Natural);
     ctx.biome = Some(&savanna);
-    assert_eq!(wolf::variant_for(&ctx), 6);
+    assert_eq!(wolf::variant_for(&ctx, &mut random), 6);
     let ctx = SpawnContext::simple(Difficulty::Normal, SpawnReason::Natural);
-    assert_eq!(wolf::variant_for(&ctx), wolf::VARIANT_PALE);
+    assert_eq!(wolf::variant_for(&ctx, &mut random), wolf::VARIANT_PALE);
 }
 
 #[test]

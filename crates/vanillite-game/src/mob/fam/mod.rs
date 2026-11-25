@@ -320,7 +320,7 @@ pub trait FamilyHooks {
     fn jump_in_liquid(_t: &mut Tick<'_, '_>) -> bool {
         false
     }
-    fn ambient_sound(m: &MobData) -> Option<&'static str> {
+    fn ambient_sound(m: &mut MobData) -> Option<&'static str> {
         Some(m.kind.default_sound(DefaultSound::Ambient))
     }
     fn hurt_sound(m: &MobData) -> &'static str {
@@ -666,7 +666,7 @@ pub fn jump_power_bonus(m: &MobData) -> f32 {
 pub fn jump_in_liquid(t: &mut Tick<'_, '_>) -> bool {
     by_family!(t.mob_ref().kind, false, jump_in_liquid(t))
 }
-pub fn ambient_sound(m: &MobData) -> Option<&'static str> {
+pub fn ambient_sound(m: &mut MobData) -> Option<&'static str> {
     by_family!(m.kind, m.kind.ambient_sound(), ambient_sound(m))
 }
 pub fn hurt_sound(m: &MobData) -> &'static str {
@@ -753,6 +753,7 @@ pub fn mob_spawn_part_last(kind: Kind) -> bool {
             | Kind::ZombieHorse
             | Kind::Camel
             | Kind::CamelHusk
+            | Kind::Wolf
     )
 }
 

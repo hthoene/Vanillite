@@ -326,8 +326,7 @@ pub fn register_goals(m: &mut MobData) {
                     stuck: false,
                 }),
             );
-            // `RandomStrollGoal(this, 1.0)`.
-            g.add(7, goals::Goal::stroll_with(1.0, 1.0));
+            g.add(7, crate::mob::movement::MoveGoal::random_stroll(1.0, 120));
             tg.add(1, goal(Goal::HurtByIgnoringDrowned(HurtBy::new(true))));
             tg.add(
                 2,

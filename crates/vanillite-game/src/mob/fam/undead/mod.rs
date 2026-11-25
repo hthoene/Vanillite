@@ -565,7 +565,7 @@ impl FamilyHooks for Hooks {
         }
     }
 
-    fn ambient_sound(m: &MobData) -> Option<&'static str> {
+    fn ambient_sound(m: &mut MobData) -> Option<&'static str> {
         by_group!(m.kind, ambient_sound(m), None)
     }
 

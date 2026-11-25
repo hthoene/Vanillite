@@ -65,8 +65,10 @@ fn player(t: &Tick<'_, '_>, id: EntityId) -> bool {
 
 /// `registerGoals` of the rabbit.
 pub fn register_goals(m: &mut MobData) {
-    // The constructor's `setSpeedModifier(0.0)`: the move control wants (0, 0, 0).
-    set_speed_modifier(m, false, 0.0);
+    // The constructor's `RabbitMoveControl` and `setSpeedModifier(0.0)`: the move control
+    // wants (0, 0, 0).
+    m.move_ctl.rabbit = Some(crate::mob::nav::RabbitMove::default());
+    set_speed_modifier(m, 0.0);
     let g = &mut m.goals;
     g.add(1, G::Float);
     g.add(1, fam(FamGoal::Rabbit(Goal::Panic { pos: Vec3::ZERO })));
@@ -192,18 +194,40 @@ fn start_jumping(t: &mut Tick<'_, '_>) {
     let s = st_mut(t.mob());
     s.jump_duration = 15;
     s.jump_ticks = 0;
-    // `getJumpPower`: 0.3 (0.2 slowly, 0.5 up a step) of the 0.42 base.
-    let speed = t.mob_ref().move_ctl.speed_modifier;
-    let wanted_y = t.mob_ref().move_ctl.wanted.y;
-    let up = t.mob_ref().horizontal_collision || wanted_y > t.pos().y + 0.5;
-    let power = if up {
-        0.5
-    } else if speed <= 0.6 {
-        0.2
-    } else {
-        0.3
-    };
-    t.mob().attrs.jump_strength = f64::from(power as f32);
+}
+
+/// `Rabbit.getJumpPower`: the multiplier of the jump strength, 0.3 (0.2 slowly, 0.5 up a
+/// step) of the 0.42 base.
+pub fn jump_multiplier(t: &Tick<'_, '_>) -> f32 {
+    let m = t.mob_ref();
+    let y = t.pos().y;
+    let mut base: f32 = 0.3;
+    if m.move_ctl.speed_modifier <= 0.6 {
+        base = 0.2;
+    }
+    if let Some(path) = &m.nav.path
+        && !path.is_done()
+        && path.next_entity_pos(t.core().dims().width).y > y + 0.5
+    {
+        base = 0.5;
+    }
+    if m.horizontal_collision || m.jumping && m.move_ctl.wanted.y > y + 0.5 {
+        base = 0.5;
+    }
+    base / 0.42
+}
+
+/// `Rabbit.jumpFromGround` after the jump: a push forwards from standing, the hop event.
+pub fn after_jump(t: &mut Tick<'_, '_>) {
+    if t.mob_ref().move_ctl.speed_modifier > 0.0 {
+        let v = t.velocity();
+        if v.x * v.x + v.z * v.z < 0.01 {
+            let up = if t.mob_ref().baby { 0.5 } else { 1.5 };
+            crate::mob::living::move_relative(t, 0.1, Vec3::new(0.0, up, 1.0));
+        }
+    }
+    let id = t.id;
+    crate::mob::living::entity_event(t, id, 1);
 }
 
 /// `face_point`.
@@ -250,12 +274,24 @@ pub fn custom_server_ai_step(t: &mut Tick<'_, '_>) {
             && t.mob_ref().move_ctl.has_wanted()
             && st(t.mob_ref()).jump_delay_ticks == 0
         {
-            let wanted = t.mob_ref().move_ctl.wanted;
-            face_point(t, wanted.x, wanted.z);
+            let width = t.core().dims().width;
+            let pos = match &t.mob_ref().nav.path {
+                Some(path) if !path.is_done() => path.next_entity_pos(width),
+                _ => t.mob_ref().move_ctl.wanted,
+            };
+            face_point(t, pos.x, pos.z);
             start_jumping(t);
         }
     }
     st_mut(t.mob()).was_on_ground = t.on_ground();
+}
+
+/// `RabbitJumpControl.tick`: a wanted jump starts a hop.
+pub fn jump_control(t: &mut Tick<'_, '_>) {
+    if t.mob_ref().jump {
+        start_jumping(t);
+        t.mob().jump = false;
+    }
 }
 
 /// `Rabbit.aiStep`: the hop timer.
@@ -271,29 +307,23 @@ pub fn ai_step(t: &mut Tick<'_, '_>) {
 }
 
 /// `Rabbit.setSpeedModifier`: the navigation's speed, and the move control wants its last
-/// position again with it (`RabbitMoveControl.setWantedPosition`: 1.5 in water, a positive
-/// speed is the next jump's).
-fn set_speed_modifier(m: &mut MobData, in_water: bool, speed: f64) {
+/// position again with it.
+fn set_speed_modifier(m: &mut MobData, speed: f64) {
     m.nav.speed_modifier = speed;
-    let speed = if in_water { 1.5 } else { speed };
     let wanted = m.move_ctl.wanted;
     m.move_ctl.set_wanted_position(wanted, speed);
-    if speed > 0.0 {
-        st_mut(m).next_jump_speed = speed;
-    }
 }
 
 /// `RabbitMoveControl.tick`: no speed on the ground between hops.
 pub fn move_control(t: &mut Tick<'_, '_>) -> bool {
     let on_ground = t.on_ground();
-    let in_water = t.mob_ref().fluids.in_water();
     let m = t.mob();
     if on_ground && !m.jumping && !m.jump {
-        set_speed_modifier(m, in_water, 0.0);
+        set_speed_modifier(m, 0.0);
     } else if m.move_ctl.has_wanted() || m.move_ctl.operation == crate::mob::nav::Operation::Jumping
     {
-        let next = st(m).next_jump_speed;
-        set_speed_modifier(m, in_water, next);
+        let next = m.move_ctl.rabbit.map_or(0.0, |r| r.next_jump_speed);
+        set_speed_modifier(m, next);
     }
     t.mob().move_ctl.kind = MoveKind::Default;
     crate::mob::nav::tick_move_control(t);
@@ -421,9 +451,7 @@ pub fn stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
 
 pub fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
     match g {
-        Goal::Panic { .. } => {
-            t.mob().nav.speed_modifier = 2.2;
-        }
+        Goal::Panic { .. } => set_speed_modifier(t.mob(), 2.2),
         Goal::Avoid(cg) => crate::mob::common::tick(t, cg),
         Goal::RaidGarden { base, can_raid, .. } => {
             let target = BlockPos::new(base.block_pos.x, base.block_pos.y + 1, base.block_pos.z);

@@ -271,7 +271,7 @@ impl FamilyHooks for Hooks {
         }
     }
 
-    fn ambient_sound(m: &MobData) -> Option<&'static str> {
+    fn ambient_sound(m: &mut MobData) -> Option<&'static str> {
         match m.kind {
             Kind::Camel | Kind::CamelHusk => Some(camel::ambient_sound(m)),
             Kind::HappyGhast => Some(ghast::ambient_sound(m)),

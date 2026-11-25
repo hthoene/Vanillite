@@ -126,6 +126,9 @@ pub struct MissileData {
     pub in_ground: bool,
     /// Removed during its tick; the world despawns it afterwards.
     pub removed: bool,
+    /// The projectile's own random (`Entity.random`) where its kind draws from it (shulker
+    /// bullets); the shooter seeds it with [`new_projectile_random`].
+    pub random: vanillite_base::random::LegacyRandom,
 }
 
 impl MissileData {
@@ -146,6 +149,7 @@ impl MissileData {
             vec: Vec3::ZERO,
             in_ground: false,
             removed: false,
+            random: vanillite_base::random::LegacyRandom::new(0),
         }
     }
 }

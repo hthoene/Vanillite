@@ -306,9 +306,6 @@ fn temp_mob_pos(t: &Tick<'_, '_>) -> Vec3 {
     Vec3::new(p.x, f64::from(y), p.z)
 }
 
-/// The sea level the shallow swimming of frogs measures against.
-const SEA_LEVEL: i32 = 63;
-
 /// The mob as the path finder sees it.
 fn path_mob(t: &Tick<'_, '_>) -> PathMob {
     let core = t.core();
@@ -329,7 +326,7 @@ fn path_mob(t: &Tick<'_, '_>) -> PathMob {
         evaluator,
         can_walk_over_fences: nav.can_walk_over_fences,
         stands_on_lava: nav.stands_on_lava,
-        sea_level: SEA_LEVEL,
+        sea_level: t.cx.env.sea_level,
         pos: core.pos(),
         aabb: core.aabb(),
         width: dims.width,
@@ -840,11 +837,31 @@ pub struct MoveControl {
     pub strafe_forwards: f32,
     pub strafe_right: f32,
     pub operation: Operation,
+    /// `RabbitMoveControl`'s state; `None` for other controls.
+    pub rabbit: Option<RabbitMove>,
+}
+
+/// `RabbitMoveControl`: the speed of the next hop and whether the rabbit is in water.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RabbitMove {
+    /// `nextJumpSpeed`: the last positive wanted speed.
+    pub next_jump_speed: f64,
+    /// `isInWater()`, kept current by the fluid update.
+    pub in_water: bool,
 }
 
 impl MoveControl {
-    /// `setWantedPosition`.
-    pub fn set_wanted_position(&mut self, pos: Vec3, speed: f64) {
+    /// `setWantedPosition` (`RabbitMoveControl`: 1.5 in water, a positive speed is the next
+    /// hop's).
+    pub fn set_wanted_position(&mut self, pos: Vec3, mut speed: f64) {
+        if let Some(r) = &mut self.rabbit {
+            if r.in_water {
+                speed = 1.5;
+            }
+            if speed > 0.0 {
+                r.next_jump_speed = speed;
+            }
+        }
         self.wanted = pos;
         self.speed_modifier = speed;
         if self.operation != Operation::Jumping {

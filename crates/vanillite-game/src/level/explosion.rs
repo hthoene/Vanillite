@@ -204,7 +204,16 @@ impl Level {
                         let rail_protected = override_resistance == BlockResistance::TntMinecart
                             && (crate::block::is_rail(state.block())
                                 || crate::block::is_rail(self.block(pos.offset(0, 1, 0)).block()));
-                        if !(state.is_air() && fluid.is_empty()) {
+                        if override_resistance == BlockResistance::WindCharge {
+                            // `SimpleExplosionDamageCalculator` with immune blocks: only those
+                            // resist, everything else lets the ray through.
+                            if crate::block::block_tags()
+                                .blocks_wind_charge_explosions
+                                .contains(state)
+                            {
+                                power -= (3_600_000.0 + 0.3) * 0.3;
+                            }
+                        } else if !(state.is_air() && fluid.is_empty()) {
                             let mut resistance = if rail_protected {
                                 0.0
                             } else {
@@ -218,13 +227,6 @@ impl Level {
                                 resistance = crate::mob::boss::wither::skull_block_resistance(
                                     true, state, resistance,
                                 );
-                            }
-                            if override_resistance == BlockResistance::WindCharge
-                                && crate::block::block_tags()
-                                    .blocks_wind_charge_explosions
-                                    .contains(state)
-                            {
-                                resistance = 3_600_000.0;
                             }
                             power -= (resistance + 0.3) * 0.3;
                         }
