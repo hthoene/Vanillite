@@ -206,8 +206,8 @@ pub struct Survival {
     pub combat: CombatTracker,
     /// `tickCount`.
     pub tick_count: i32,
-    /// The `minecraft:time_since_rest` statistic (ticks alive since the last sleep or death).
-    pub time_since_rest: i32,
+    /// The entities on the player's shoulders.
+    pub shoulders: super::shoulder::Shoulders,
     /// `lastClimbablePos`'s fall location.
     pub last_climbable: Option<FallLocation>,
     /// The fluids around the player after the last update.
@@ -240,12 +240,16 @@ pub struct Survival {
     pub last_hurt_by_mob: Option<(vanillite_world::entity::EntityId, i32)>,
     /// The item in use (`useItem`): its hand and the ticks it has been used.
     pub using_item: Option<crate::player::using::UsingItem>,
+    /// `recentKineticEnemies`: the entities the spear in use hit, with the game time.
+    pub stabbed: Vec<(vanillite_world::entity::EntityId, i64)>,
     /// The tick until which the shield is on cool-down (an axe hit it).
     pub shield_disabled_until: i32,
     /// The item in the main hand at the last tick (`lastItemInMainHand`).
     pub last_main_hand_item: u16,
     /// `Abilities.flying`: the player flies (creative or spectator flight).
     pub flying: bool,
+    /// `raidOmenPosition` and what the omen effects see of villages and raids.
+    pub raid_omen: crate::raid::PlayerOmen,
     /// The server moves the player itself (`canSimulateMovement` for a player no client
     /// moves: the parity scenarios' mock players), see [`simulate_travel`].
     pub simulate_movement: bool,
@@ -302,7 +306,7 @@ impl Default for Survival {
             respawn: None,
             combat: CombatTracker::default(),
             tick_count: 0,
-            time_since_rest: 0,
+            shoulders: super::shoulder::Shoulders::default(),
             last_climbable: None,
             fluids: FluidContact::default(),
             portal: crate::portal::PortalState::default(),
@@ -319,9 +323,11 @@ impl Default for Survival {
             last_hurt_mob: None,
             last_hurt_by_mob: None,
             using_item: None,
+            stabbed: Vec::new(),
             shield_disabled_until: 0,
             last_main_hand_item: 0,
             flying: false,
+            raid_omen: crate::raid::PlayerOmen::default(),
             simulate_movement: false,
             y_body_rot: 0.0,
             horizontal_collision: false,
@@ -526,6 +532,11 @@ impl Survival {
             data.get("warden_spawn_tracker"),
         );
         s.portal = crate::portal::PortalState::load(data);
+        if let Some(Tag::IntArray(v)) = data.get("raid_omen_position")
+            && let [x, y, z] = v.as_slice()
+        {
+            s.raid_omen.position = Some(BlockPos::new(*x, *y, *z));
+        }
         s.tracking = crate::advancements::tracking::Tracking::load(data);
         if let Some(Tag::Compound(loc)) = data.get("LastDeathLocation")
             && let (Some(Tag::String(dim)), Some(Tag::IntArray(pos))) =
@@ -537,6 +548,7 @@ impl Survival {
         if let Some(Tag::Compound(respawn)) = data.get("respawn") {
             s.respawn = RespawnConfig::load(respawn);
         }
+        s.shoulders = super::shoulder::Shoulders::load(data);
         s
     }
 
@@ -579,6 +591,10 @@ impl Survival {
         self.portal.save(out);
         self.tracking.save(out);
         self.food.save(out);
+        out.remove("raid_omen_position");
+        if let Some(p) = self.raid_omen.position {
+            out.insert("raid_omen_position", Tag::IntArray(vec![p.x, p.y, p.z]));
+        }
         out.remove("LastDeathLocation");
         if let Some((dim, pos)) = &self.last_death {
             let mut loc = Compound::with_capacity(2);
@@ -590,6 +606,7 @@ impl Survival {
         if let Some(respawn) = &self.respawn {
             out.insert("respawn", Tag::Compound(respawn.save()));
         }
+        self.shoulders.save(out);
     }
 
     /// `restoreFrom` for a respawn after death: health, food and air start over; experience,
@@ -602,6 +619,7 @@ impl Survival {
             respawn: self.respawn.clone(),
             warden_spawn_tracker: self.warden_spawn_tracker,
             portal: self.portal.clone(),
+            shoulders: self.shoulders.clone(),
             tracking: self.tracking.respawned(),
             ..Survival::default()
         };
@@ -794,6 +812,7 @@ pub fn hurt_with(
     if player.survival.is_dead_or_dying() {
         return false;
     }
+    super::shoulder::remove_entities(entity, player, env);
     if types.is(kind, tag::IS_FIRE)
         && player
             .survival
@@ -1145,6 +1164,7 @@ fn protection(
         smelts_loot: false,
         sheep_color: None,
         sheared: false,
+        villager_variant: None,
     };
     let cx = crate::enchant::EnchantContext {
         types: env.types,
@@ -1279,8 +1299,6 @@ pub fn die(
     let network_id = entity.as_ref().network_id().0;
     let uuid = entity.as_ref().uuid();
     let id = entity.as_ref().id();
-    // `resetStat(TIME_SINCE_REST)`.
-    player.survival.time_since_rest = 0;
     let sink = std::sync::Arc::clone(&player.connection.sink);
     let mut broadcast = None;
     if env.rules.bool(Rule::SHOW_DEATH_MESSAGES) {
@@ -1297,6 +1315,7 @@ pub fn die(
             message: Component::empty(),
         });
     }
+    super::shoulder::remove_entities(entity, player, env);
     // `dropAllDeathLoot` → `dropEquipment` and `dropExperience`.
     if !env.rules.bool(Rule::KEEP_INVENTORY) && player.game_mode != GameMode::Spectator {
         let pos = entity.as_ref().pos();
@@ -1466,10 +1485,6 @@ pub fn do_tick_ai(
     {
         let s = &mut player.survival;
         s.tick_count = s.tick_count.wrapping_add(1);
-        // `awardStat(TIME_SINCE_REST)` while alive (players cannot sleep yet).
-        if !s.is_dead_or_dying() {
-            s.time_since_rest = s.time_since_rest.saturating_add(1);
-        }
         // `ServerPlayer.tick`: `wardenSpawnTracker.tick()`.
         s.warden_spawn_tracker.tick();
     }
@@ -1637,6 +1652,8 @@ pub fn do_tick_end(
         tick_head_turn(entity, &mut player.survival);
     }
     player.survival.last_box = Some(entity.as_ref().aabb());
+    // `Player.aiStep`: `handleShoulderEntities`.
+    super::shoulder::handle(entity, player, env, false);
     // `FoodData.tick`.
     let s = &mut player.survival;
     let action = s.food.tick(

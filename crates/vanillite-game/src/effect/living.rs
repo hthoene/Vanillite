@@ -116,6 +116,38 @@ impl EffectHost for PlayerHost<'_, '_, '_> {
             seed,
         );
     }
+    fn bad_omen_tick(&mut self, amplifier: i32) -> bool {
+        // `BadOmenMobEffect.applyEffectTick`: in a village whose raid can still grow the omen
+        // becomes a Raid Omen at the player's position.
+        let view = self.player.survival.raid_omen.view;
+        if self.player.game_mode != vanillite_config::GameMode::Spectator
+            && self.env.difficulty != crate::survival::rules::Difficulty::Peaceful
+            && view.in_village
+            && !view.raid_full
+        {
+            self.player
+                .survival
+                .effects
+                .add_deferred(EffectInstance::new(MobEffect::RAID_OMEN, 600, amplifier));
+            let p = self.entity.as_ref().pos();
+            self.player.survival.raid_omen.position = Some(BlockPos::containing(p.x, p.y, p.z));
+            return false;
+        }
+        true
+    }
+    fn raid_omen_tick(&mut self, amplifier: i32) -> bool {
+        // `RaidOmenMobEffect.applyEffectTick` on its last tick: the world starts the raid.
+        if self.player.game_mode == vanillite_config::GameMode::Spectator {
+            return true;
+        }
+        let omen = &mut self.player.survival.raid_omen;
+        if let Some(pos) = omen.position.take() {
+            omen.start_raid = Some(pos);
+            omen.start_amplifier = amplifier;
+            return false;
+        }
+        true
+    }
 }
 
 /// A mob as the target of its effects.

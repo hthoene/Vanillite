@@ -72,6 +72,15 @@ impl RecordKey {
             stream: Stream::Entities,
         }
     }
+
+    /// The points of interest record of `pos`.
+    pub const fn poi(dimension: DimensionId, pos: ChunkPos) -> Self {
+        RecordKey {
+            dimension,
+            pos,
+            stream: Stream::Poi,
+        }
+    }
 }
 
 /// Metadata kept next to a record. Fields a format does not store are 0
@@ -181,21 +190,58 @@ pub enum Completion {
     },
 }
 
-/// The requesting owner's inbox. Posting only enqueues a message; no owner code runs on the
-/// provider's thread.
-#[derive(Clone, Debug)]
-pub struct CompletionTarget(Sender<Completion>);
+/// Wakes an inbox's owner after a result was posted; must not block. Owners batch it (one wake
+/// per pump), so providers may call it per result.
+pub type InboxWaker = Arc<dyn Fn() + Send + Sync>;
+
+/// The requesting owner's inbox. Posting only enqueues a message (and wakes the owner if it set
+/// a waker); no owner code runs on the provider's thread.
+#[derive(Clone)]
+pub struct CompletionTarget {
+    tx: Sender<Completion>,
+    waker: Option<InboxWaker>,
+}
+
+impl std::fmt::Debug for CompletionTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompletionTarget")
+            .field("waker", &self.waker.is_some())
+            .finish_non_exhaustive()
+    }
+}
 
 impl CompletionTarget {
     /// A new inbox and the receiver its owner drains.
     pub fn channel() -> (CompletionTarget, Receiver<Completion>) {
         let (tx, rx) = mpsc::channel();
-        (CompletionTarget(tx), rx)
+        (CompletionTarget { tx, waker: None }, rx)
+    }
+
+    /// A new inbox whose owner is woken by `waker` after every posted result, so it installs
+    /// results between its ticks instead of at the next one.
+    pub fn with_waker(waker: InboxWaker) -> (CompletionTarget, Receiver<Completion>) {
+        let (tx, rx) = mpsc::channel();
+        (
+            CompletionTarget {
+                tx,
+                waker: Some(waker),
+            },
+            rx,
+        )
+    }
+
+    fn send(&self, completion: Completion) {
+        // A dropped inbox does not want results any more.
+        if self.tx.send(completion).is_ok()
+            && let Some(waker) = &self.waker
+        {
+            waker();
+        }
     }
 
     /// Posts the result of op `index` of batch `token`. A dropped inbox is ignored.
     pub fn post(&self, token: Token, index: usize, result: StoreResult) {
-        let _ = self.0.send(Completion::Op {
+        self.send(Completion::Op {
             token,
             index,
             result,
@@ -204,7 +250,7 @@ impl CompletionTarget {
 
     /// Posts the end of a commit.
     pub fn post_commit(&self, round: u64, result: io::Result<()>) {
-        let _ = self.0.send(Completion::Commit { round, result });
+        self.send(Completion::Commit { round, result });
     }
 }
 
@@ -278,6 +324,26 @@ pub trait ChunkCodec: Send + Sync {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             format!("chunk {:?}: this world format keeps no entities", chunk.pos),
+        ))
+    }
+
+    /// Decodes a points of interest record into [`ProtoChunk::poi`]. Default: the format
+    /// keeps no POI.
+    fn decode_poi(
+        &self,
+        _pos: ChunkPos,
+        _meta: &RecordMeta,
+        _bytes: &[u8],
+    ) -> io::Result<Option<Arc<[u8]>>> {
+        Ok(None)
+    }
+
+    /// Encodes the POI of a chunk ([`ProtoChunk::poi`], which is `Some`) into a record.
+    /// Default: the format keeps no POI.
+    fn encode_poi(&self, chunk: &ProtoChunk) -> io::Result<(RecordMeta, Arc<[u8]>)> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("chunk {:?}: this world format keeps no POI", chunk.pos),
         ))
     }
 

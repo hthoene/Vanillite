@@ -482,6 +482,38 @@ fn actually_hurt(
     }
 }
 
+/// `resolveMobResponsibleForDamage` / `resolvePlayerResponsibleForDamage` without damage
+/// (`Creaking.blameSourceForDamage`): the responsible player, if any.
+pub fn blame(ents: &mut Entities, target: EntityId, source: &DamageSource) -> Option<EntityId> {
+    let cause = source.cause?;
+    let is_player = ents.player(cause).is_some();
+    let living = is_player || ents.mob(cause).is_some();
+    let m = ents.mob_mut(target)?;
+    if living {
+        m.last_hurt_by_mob = Some(cause);
+        m.last_hurt_by_mob_time = m.tick_count;
+    }
+    if is_player {
+        m.last_hurt_by_player = Some(cause);
+        m.last_hurt_by_player_time = 100;
+    }
+    is_player.then_some(cause)
+}
+
+/// `blameSourceForDamage(source)` and `die(source)` of a mob killed without damage (a
+/// creaking whose heart was broken).
+pub fn blame_and_die(
+    level: &Level,
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    cx: &mut MobContext,
+    target: EntityId,
+    source: DamageSource,
+) {
+    blame(ents, target, &source);
+    die(level, ents, env, cx, target, source);
+}
+
 /// `LivingEntity.die` of a mob.
 fn die(
     level: &Level,

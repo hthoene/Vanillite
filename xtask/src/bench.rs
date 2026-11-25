@@ -714,6 +714,8 @@ fn compact_step(step: &Value) -> Value {
         "near_missing_percent": pick(&["bots", "near_missing_percent"]),
         "full_view_ms_p50": pick(&["bots", "full_view_ms_p50"]),
         "full_view_ms_p95": pick(&["bots", "full_view_ms_p95"]),
+        "chunk_ms_p50": pick(&["bots", "chunk_ms_p50"]),
+        "chunk_ms_p95": pick(&["bots", "chunk_ms_p95"]),
         "teleports": pick(&["bots", "teleports"]),
         // Server CPU per chunk the bots received: steadier than wall time on a busy machine.
         "cpu_ms_per_chunk": match (step["server"]["cpu_percent"].as_f64(), step["bots"]["chunks_per_s"].as_f64()) {
