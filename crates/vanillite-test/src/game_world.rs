@@ -270,7 +270,12 @@ impl GameWorld {
         level.settings.difficulty = difficulty;
         // The world starts at day time 0 unless the scenario sets one; time does not advance.
         let env = Environment::overworld(spec.time.unwrap_or(0), 0.0, 0.0);
-        level.spawner_env.env = env;
+        // What spawner blocks and creaking hearts read when the block entities tick.
+        level.spawner_env = vanillite_game::block::spawner::SpawnerEnv {
+            env,
+            difficulty,
+            ..Default::default()
+        };
         let mut world = Self {
             level,
             spec: spec.clone(),
@@ -361,6 +366,8 @@ impl GameWorld {
         let has_players = !self.level.entities.players.is_empty();
         self.mobs
             .begin_tick(self.env, MobSettings::default(), has_players);
+        // What block entities (beehives) read of the world after the entities.
+        self.level.spawner_env.env = self.env;
         minecart::players_push(&mut self.level.entities);
         let mut cursor = self.level.entities.store.tick_cursor();
         while let Some(id) = self.level.entities.store.next_to_tick(&mut cursor) {
@@ -408,7 +415,10 @@ impl GameWorld {
                     id,
                     &mut || random.next_float(),
                     MIN_Y,
-                    ITEM_LIFETIME,
+                    vanillite_server::ItemSettings {
+                        lifetime: ITEM_LIFETIME,
+                        merge_radius: 0.5,
+                    },
                     &mut self.item_scratch,
                 );
                 continue;
@@ -1037,6 +1047,7 @@ fn fam_goal_name(kind: Kind, goal: &FamGoal) -> &'static str {
         ("Wildlife", "Puff") => "PufferfishPuffGoal",
         ("Wildlife", "TurtleStroll") => "TurtleRandomStrollGoal",
         ("Wildlife", "BeeValidateFlower") => "ValidateFlowerGoal",
+        ("Wildlife", "BeeValidateHive") => "ValidateHiveGoal",
         (_, variant) => leak(if variant.ends_with("Goal") {
             variant.to_owned()
         } else {

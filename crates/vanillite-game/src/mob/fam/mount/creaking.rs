@@ -18,6 +18,22 @@ const ATTACK_ANIMATION_TICKS: i32 = 15;
 const INVULNERABILITY_TICKS: i32 = 8;
 /// `ACTIVATION_RANGE_SQ`.
 const ACTIVATION_RANGE_SQR: f64 = 144.0;
+/// `TWITCH_DEATH_DURATION`: a creaking killed with its heart twitches this long.
+const TWITCH_DEATH_TICKS: i32 = 45;
+
+/// How the heart of a creaking was destroyed (`removeProtector(damageSource)`): the creaking
+/// dies by this source on its next tick (the level cannot run the mob's death itself).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum HeartDeath {
+    /// `damageSources().playerAttack(player)`: a player broke the heart.
+    Player(EntityId),
+    /// `ServerExplosion.getDamageSource()`: an explosion broke it.
+    Explosion {
+        source: Option<EntityId>,
+        indirect: Option<EntityId>,
+        center: Vec3,
+    },
+}
 
 /// The creaking part of a mob.
 #[derive(Clone, Debug, PartialEq)]
@@ -35,6 +51,8 @@ pub struct Creaking {
     pub player_stuck_counter: i32,
     /// The player it is activated for (`ATTACK_TARGET`).
     pub target: Option<EntityId>,
+    /// `creakingDeathEffects` the heart asked for.
+    pub pending_death: Option<HeartDeath>,
 }
 
 impl Default for Creaking {
@@ -48,6 +66,7 @@ impl Default for Creaking {
             invulnerability_animation: 0,
             player_stuck_counter: 0,
             target: None,
+            pending_death: None,
         }
     }
 }
@@ -81,10 +100,34 @@ pub fn can_move(m: &MobData) -> bool {
     creaking(m).can_move
 }
 
-/// `setTransient(pos)`: bound to a creaking heart.
+/// `setTransient(pos)`: bound to a creaking heart (its path costs change, see
+/// [`HEART_BOUND_MALUS`]).
 pub fn set_transient(m: &mut MobData, pos: BlockPos) {
     creaking_mut(m).home = Some(pos);
 }
+
+/// The heart a creaking keeps near (`getHomePos`), for its path finding.
+pub fn creaking_home(m: &MobData) -> Option<BlockPos> {
+    if m.kind == crate::mob::Kind::Creaking {
+        creaking(m).home
+    } else {
+        None
+    }
+}
+
+/// `isHeartBound`.
+pub fn heart_bound(m: &MobData) -> bool {
+    m.kind == crate::mob::Kind::Creaking && creaking(m).home.is_some()
+}
+
+/// The path costs `setTransient` sets.
+pub const HEART_BOUND_MALUS: &crate::mob::path::MalusTable = &[
+    (crate::mob::path::PathType::Damaging, 8.0),
+    (crate::mob::path::PathType::PowderSnow, 8.0),
+    (crate::mob::path::PathType::Lava, 8.0),
+    (crate::mob::path::PathType::Fire, 0.0),
+    (crate::mob::path::PathType::FireInNeighbor, 0.0),
+];
 
 pub fn ambient_sound(m: &MobData) -> Option<&'static str> {
     (!creaking(m).active).then_some("minecraft:entity.creaking.ambient")
@@ -98,22 +141,83 @@ pub fn hurt_sound(m: &MobData) -> &'static str {
     }
 }
 
-/// Whether the creaking heart at `pos` is there and awake (`isProtector`; the heart's block
-/// entity, which knows its creaking, is not there yet).
-fn heart_protects(t: &Tick<'_, '_>, pos: BlockPos) -> bool {
-    let state = t.level.block(pos);
-    state.block().name() == "minecraft:creaking_heart"
+/// Whether the creaking heart at `pos` protects this creaking (`isProtector`).
+fn heart_protects(level: &crate::level::Level, pos: BlockPos, uuid: u128) -> bool {
+    crate::block::creaking_heart::is_protector(level, pos, uuid)
 }
 
-/// `Creaking.tick` before `super.tick()`: a heart-bound creaking dies without its heart.
+/// `Creaking.tick` before `super.tick()`: the death its heart asked for
+/// (`creakingDeathEffects`), and a heart-bound creaking dies without its heart.
 pub fn before_tick(t: &mut Tick<'_, '_>) {
+    if let Some(death) = creaking_mut(t.mob()).pending_death.take() {
+        death_effects(t, death);
+    }
+    let uuid = t.core().uuid();
     if let Some(home) = creaking(t.mob_ref()).home
-        && !heart_protects(t, home)
+        && !heart_protects(t.level, home, uuid)
         && t.mob_ref().health > 0.0
     {
         t.mob().health = 0.0;
         t.core_mut().mark_data_dirty();
     }
+}
+
+/// `creakingDeathEffects(source)`: blamed and dead by the heart's breaker, then it twitches.
+fn death_effects(t: &mut Tick<'_, '_>, death: HeartDeath) {
+    use crate::mob::combat::entity_source;
+    use crate::survival::damage::DamageSource;
+    let types = t.env.types;
+    let source = match death {
+        HeartDeath::Player(p) => entity_source(t.ents, types.player_attack, p, p),
+        // `damageSources().explosion(source, indirect)`.
+        HeartDeath::Explosion {
+            source,
+            indirect,
+            center,
+        } => match (source, indirect) {
+            (Some(direct), Some(cause)) => {
+                let mut s = entity_source(t.ents, types.player_explosion, cause, direct);
+                s.position.get_or_insert(center);
+                s
+            }
+            (direct, _) => {
+                let mut s = DamageSource::of(types.explosion);
+                s.direct = direct;
+                s.position = Some(
+                    direct
+                        .and_then(|d| t.ents.store.get(d))
+                        .map_or(center, |e| e.pos()),
+                );
+                s
+            }
+        },
+    };
+    let id = t.id;
+    crate::mob::combat::blame_and_die(t.level, t.ents, t.env, t.cx, id, source);
+    super::make_sound(t, "minecraft:entity.creaking.twitch");
+}
+
+/// `Creaking.tickDeath`: a heart-bound creaking torn down with its heart twitches 45 ticks,
+/// then crumbles. Returns `false` for the common death.
+pub fn tick_death(t: &mut Tick<'_, '_>) -> bool {
+    let c = creaking(t.mob_ref());
+    if c.home.is_none() || !c.tearing_down {
+        return false;
+    }
+    t.mob().death_time += 1;
+    if t.mob_ref().death_time > TWITCH_DEATH_TICKS && !t.mob_ref().removed {
+        tear_down(t);
+    }
+    true
+}
+
+/// `tearDown`: the death sound and the creaking is discarded (the crumble particles are not
+/// sent).
+fn tear_down(t: &mut Tick<'_, '_>) {
+    let sound = crate::mob::kinds::death_sound(t.mob_ref());
+    let id = t.id;
+    crate::mob::combat::mob_sound(t.ents, t.env, id, sound);
+    t.mob().removed = true;
 }
 
 /// `Creaking.aiStep` before `super.aiStep()`: the animations count down and it checks
@@ -263,11 +367,12 @@ pub fn do_hurt_target(t: &mut Tick<'_, '_>, target: EntityId) -> bool {
 }
 
 /// `hurtServer`: a heart-bound creaking only flinches (event 66) at living or projectile
-/// hits and players' damage, and tells its heart; other damage passes.
+/// hits and players' damage; a player's hit makes its heart react (`creakingHurt`). Damage
+/// that bypasses invulnerability passes.
 pub fn hurt_filter(h: &mut Hurt<'_, '_>, amount: f32) -> Option<f32> {
     let m = h.ents.mob(h.target)?;
     let c = creaking(m);
-    let Some(_home) = c.home else {
+    let Some(home) = c.home else {
         return Some(amount);
     };
     if h.env.types.is(h.source.kind, tag::BYPASSES_INVULNERABILITY) {
@@ -276,13 +381,14 @@ pub fn hurt_filter(h: &mut Hurt<'_, '_>, amount: f32) -> Option<f32> {
     if c.invulnerability_animation > 0 || m.is_dead_or_dying() {
         return None;
     }
+    // `blameSourceForDamage`.
+    let player = crate::mob::combat::blame(h.ents, h.target, &h.source);
     let direct_living_or_projectile = h.source.direct.is_some_and(|d| {
         h.ents.mob(d).is_some()
             || h.ents.player(d).is_some()
             || h.ents.arrow(d).is_some()
             || h.ents.missile(d).is_some()
     });
-    let player = h.source.cause.filter(|c| h.ents.player(*c).is_some());
     if !direct_living_or_projectile && player.is_none() {
         return None;
     }
@@ -290,9 +396,25 @@ pub fn hurt_filter(h: &mut Hurt<'_, '_>, amount: f32) -> Option<f32> {
         creaking_mut(m).invulnerability_animation = INVULNERABILITY_TICKS;
     }
     crate::mob::animal::entity_event(h.ents, h.env, h.target, 66);
-    let s = h.ents.mob(h.target).map(hurt_sound);
-    if let Some(s) = s {
-        crate::mob::combat::mob_sound(h.ents, h.env, h.target, s);
+    if let Some(pos) = h.ents.store.get(h.target).map(|e| e.pos()) {
+        h.cx.actions.push(crate::mob::WorldAction::Level(
+            crate::mob::boss::warden::LevelAction::GameEvent {
+                event: crate::level::game_event::events().entity_action,
+                pos,
+                context: crate::level::game_event::GameEventContext::of(Some(h.target)),
+            },
+        ));
+    }
+    let uuid = h.ents.store.get(h.target).map_or(0, |e| e.uuid());
+    if heart_protects(h.level, home, uuid) {
+        if player.is_some() {
+            h.cx.actions
+                .push(crate::mob::WorldAction::CreakingHurt(home));
+        }
+        let s = h.ents.mob(h.target).map(hurt_sound);
+        if let Some(s) = s {
+            crate::mob::combat::mob_sound(h.ents, h.env, h.target, s);
+        }
     }
     None
 }

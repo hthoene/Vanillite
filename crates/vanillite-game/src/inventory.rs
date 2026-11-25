@@ -399,7 +399,7 @@ impl PlayerInventory {
 
     /// `Slot.mayPickup` of the armour slots: a stack with Curse of Binding stays unless the
     /// player is in creative.
-    fn armor_locked(&self, stack: &ItemStack) -> bool {
+    pub(crate) fn armor_locked(&self, stack: &ItemStack) -> bool {
         !self.menu.creative
             && crate::player::play::game_data()
                 .is_some_and(|d| d.enchantment_level(stack, "minecraft:binding_curse") > 0)

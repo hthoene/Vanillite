@@ -382,6 +382,7 @@ impl OwnCodec {
             fluid_ticks,
             post_processing,
             entities: Vec::new(),
+            poi: None,
             extra,
             generation: None,
         })
@@ -603,6 +604,33 @@ impl ChunkCodec for OwnCodec {
 
     fn encode_entities(&self, chunk: &ProtoChunk) -> io::Result<(RecordMeta, Arc<[u8]>)> {
         let root = crate::chunk_nbt::write_entities(chunk.pos, &chunk.entities)?;
+        let mut nbt = Vec::with_capacity(1024);
+        vanillite_nbt::write::write_named("", &root, &mut nbt)
+            .map_err(|e| invalid(chunk.pos, format!("{e:?}")))?;
+        let meta = RecordMeta {
+            data_version: DATA_VERSION as u32,
+            raw_len: u32::try_from(nbt.len()).unwrap_or(u32::MAX),
+            checksum: 0,
+            status: RecordMeta::STATUS_UNKNOWN,
+            flags: 0,
+        };
+        Ok((meta, Arc::from(zstd_compress(&nbt, self.level)?)))
+    }
+
+    /// A POI record is Vanilla's POI NBT (`DataVersion`, `Sections`) in one zstd frame.
+    fn decode_poi(
+        &self,
+        pos: ChunkPos,
+        _: &RecordMeta,
+        record: &[u8],
+    ) -> io::Result<Option<Arc<[u8]>>> {
+        let nbt = zstd_decompress(record).map_err(|e| invalid(pos, e))?;
+        crate::chunk_nbt::read_poi(pos, crate::read_root(pos, &nbt)?).map(Some)
+    }
+
+    fn encode_poi(&self, chunk: &ProtoChunk) -> io::Result<(RecordMeta, Arc<[u8]>)> {
+        let root =
+            crate::chunk_nbt::write_poi(chunk.pos, chunk.poi.as_deref().unwrap_or_default())?;
         let mut nbt = Vec::with_capacity(1024);
         vanillite_nbt::write::write_named("", &root, &mut nbt)
             .map_err(|e| invalid(chunk.pos, format!("{e:?}")))?;

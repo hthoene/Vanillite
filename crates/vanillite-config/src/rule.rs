@@ -35,15 +35,19 @@ pub enum Profile {
     Paper,
     /// Spigot's defaults.
     Spigot,
+    /// Vanillite's strongest optimizations that change Vanilla behaviour only a little
+    /// (activation range, merge radii, spawn and despawn tuning, overload protection, ...).
+    Performance,
 }
 
 impl Profile {
     /// All profiles, in documentation order.
-    pub const ALL: [Profile; 4] = [
+    pub const ALL: [Profile; 5] = [
         Profile::Vanilla,
         Profile::Technical,
         Profile::Paper,
         Profile::Spigot,
+        Profile::Performance,
     ];
 
     /// The name used in `vanillite.toml`.
@@ -53,6 +57,7 @@ impl Profile {
             Profile::Technical => "technical",
             Profile::Paper => "paper",
             Profile::Spigot => "spigot",
+            Profile::Performance => "performance",
         }
     }
 
@@ -242,6 +247,22 @@ impl<T: Copy> VanillaOr<T> {
         match self {
             VanillaOr::Vanilla => vanilla,
             VanillaOr::Value(v) => v,
+        }
+    }
+
+    /// `vanilla` for Vanilla's value, else the custom value mapped by `f`.
+    pub fn map_or<U>(self, vanilla: U, f: impl FnOnce(T) -> U) -> U {
+        match self {
+            VanillaOr::Vanilla => vanilla,
+            VanillaOr::Value(v) => f(v),
+        }
+    }
+
+    /// The custom value, `None` for Vanilla's.
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Option<U> {
+        match self {
+            VanillaOr::Vanilla => None,
+            VanillaOr::Value(v) => Some(f(v)),
         }
     }
 }
@@ -505,7 +526,8 @@ impl<T: RuleValue> RuleValue for DisabledOr<T> {
 /// ```
 ///
 /// The TOML key of a rule is `<group key>.<key>`; hot paths read plain fields
-/// (`rules.chunks.send_rate`). Profiles not given take the `vanilla` value. `range` bounds
+/// (`rules.chunks.send_rate`). Profiles not given take the `vanilla` value (also
+/// `performance`: it never inherits `paper`). `range` bounds
 /// numeric values (inclusive, checked on load); `restart = true` marks rules that are read only at
 /// startup, all others are hot-reloadable.
 #[macro_export]
@@ -525,6 +547,7 @@ macro_rules! rules {
                             $(, technical = $technical:expr)?
                             $(, paper = $paper:expr)?
                             $(, spigot = $spigot:expr)?
+                            $(, performance = $performance:expr)?
                         ;
                     )*
                 }
@@ -580,6 +603,8 @@ macro_rules! rules {
                                         $crate::__rules_pick!($($paper)? ; $vanilla),
                                     $crate::Profile::Spigot =>
                                         $crate::__rules_pick!($($spigot)? ; $vanilla),
+                                    $crate::Profile::Performance =>
+                                        $crate::__rules_pick!($($performance)? ; $vanilla),
                                 },
                             )*
                         },

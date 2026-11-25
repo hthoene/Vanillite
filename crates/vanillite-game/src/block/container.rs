@@ -433,7 +433,7 @@ fn clockwise(d: Direction) -> Direction {
 }
 
 /// `ChestBlock.isChestBlockedAt`: a redstone conductor above (cats are not checked).
-fn chest_blocked(level: &Level, pos: BlockPos) -> bool {
+pub(crate) fn chest_blocked(level: &Level, pos: BlockPos) -> bool {
     let above = pos.above();
     Level::is_redstone_conductor(level.block(above))
 }

@@ -468,6 +468,7 @@ pub(crate) fn explode(
                 radius,
                 mob: false,
                 resistance,
+                fire: false,
             }));
         discard(cx, id);
     } else if m.fuse > -1 {

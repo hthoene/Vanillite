@@ -927,7 +927,7 @@ fn chorus_plant_survives(block: BlockId, pos: BlockPos, level: &dyn BlockReader)
 
 /// `CreakingHeartBlock.updateState`. Whether the heart is awake depends on the time of day
 /// (`EnvironmentAttributes.CREAKING_ACTIVE`), which is not known here: a heart between logs is
-/// placed dormant.
+/// dormant, [`crate::block::creaking_heart::placement_state`] wakes it at night.
 fn creaking_heart(state: BlockState, pos: BlockPos, level: &dyn BlockReader) -> BlockState {
     let Some(axis) = state.get_axis("axis") else {
         return state;

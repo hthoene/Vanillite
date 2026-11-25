@@ -10,7 +10,7 @@ use vanillite_data::block::{BlockState, flags, ids};
 use vanillite_data::entity::EntityTypeId;
 use vanillite_world::entity::{EntityId, Rotation};
 
-use super::fam::{ExtraMob, Relation, SpawnContext, SpawnReason};
+use super::fam::{ExtraMob, GroupData, Relation, SpawnContext, SpawnReason};
 use super::kinds::{self, FarmClimate, Kind};
 use super::nearby::{CloseForSpawning, NearbyPlayers};
 use super::physics;
@@ -92,6 +92,35 @@ impl Category {
         } else {
             128
         }
+    }
+}
+
+/// Deviations from Vanilla's spawn numbers (`performance.spawning`). The default is Vanilla.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpawnLimits {
+    /// Mob cap per category, in [`Category::ALL`] order (`getMaxInstancesPerChunk`).
+    pub caps: [i32; 7],
+    /// Despawn distance of every category; `None` keeps each category's own.
+    pub despawn_distance: Option<i32>,
+}
+
+impl Default for SpawnLimits {
+    fn default() -> Self {
+        SpawnLimits {
+            caps: Category::ALL.map(Category::max_per_chunk),
+            despawn_distance: None,
+        }
+    }
+}
+
+impl SpawnLimits {
+    fn cap(&self, c: Category) -> i32 {
+        self.caps[c.index()]
+    }
+
+    fn despawn_distance(&self, c: Category) -> i32 {
+        self.despawn_distance
+            .unwrap_or_else(|| c.despawn_distance())
     }
 }
 
@@ -207,9 +236,13 @@ pub struct SpawnInput<'a> {
     pub spawn_enemies: bool,
     pub difficulty: Difficulty,
     pub env: Environment,
+    pub limits: SpawnLimits,
     /// The `spawn_mobs` rule and the clock for lightning (`tickThunder` runs in every spawning
     /// chunk, whether mobs spawn or not).
     pub thunder: crate::lightning::StrikeInput,
+    /// Whether this tick is a natural spawn round (`performance.spawning.spawn-interval`; always
+    /// in the vanilla profile). Off: only the shuffled chunks and their thunder.
+    pub natural: bool,
 }
 
 /// Per-player mob counts (`LocalMobCapCalculator.MobCounts`), by [`NearbyPlayers`] slot.
@@ -218,13 +251,15 @@ struct LocalCaps {
     counts: Vec<[i32; 7]>,
     /// The number of players below the cap per category (counts only grow during a tick).
     below: [usize; 7],
+    /// The mob cap per category ([`SpawnLimits::caps`]).
+    caps: [i32; 7],
 }
 
 impl LocalCaps {
     /// `addMob` for one player.
     fn add(&mut self, slot: u32, c: Category, n: i32) {
         let count = &mut self.counts[slot as usize][c.index()];
-        let max = c.max_per_chunk();
+        let max = self.caps[c.index()];
         if *count < max && *count + n >= max {
             self.below[c.index()] -= 1;
         }
@@ -236,7 +271,7 @@ impl LocalCaps {
         self.below[c.index()] > 0
             && near
                 .iter()
-                .any(|&s| self.counts[s as usize][c.index()] < c.max_per_chunk())
+                .any(|&s| self.counts[s as usize][c.index()] < self.caps[c.index()])
     }
 }
 
@@ -249,8 +284,8 @@ struct SpawnState {
 }
 
 impl SpawnState {
-    fn can_spawn_global(&self, c: Category) -> bool {
-        let max = c.max_per_chunk() * self.spawnable_chunks / 289;
+    fn can_spawn_global(&self, c: Category, limits: &SpawnLimits) -> bool {
+        let max = limits.cap(c) * self.spawnable_chunks / 289;
         self.counts[c.index()] < max
     }
 }
@@ -353,7 +388,7 @@ pub fn tick(
     }
     spawner.nearby.update(input.players);
     spawner.close.clear();
-    if !input.thunder.spawn_mobs {
+    if !input.thunder.spawn_mobs || !input.natural {
         // No categories: only the shuffled chunks and their thunder.
         collect_spawning_chunks(level, spawner);
         let chunks = std::mem::take(&mut spawner.chunks);
@@ -373,6 +408,7 @@ pub fn tick(
         local: LocalCaps {
             counts: vec![[0; 7]; slots],
             below: [input.players.len(); 7],
+            caps: input.limits.caps,
         },
     };
     spawner.potential.charges.clear();
@@ -422,7 +458,7 @@ pub fn tick(
         .filter(|c| {
             (input.spawn_enemies || c.is_friendly())
                 && (spawn_persistent || !c.is_persistent())
-                && state.can_spawn_global(*c)
+                && state.can_spawn_global(*c, &input.limits)
         })
         .collect();
     collect_spawning_chunks(level, spawner);
@@ -582,6 +618,7 @@ fn spawn_category_for_chunk(
         #[allow(clippy::cast_possible_truncation)]
         let mut max = (level.random().next_float() * 4.0).ceil() as i32;
         let mut group_index = 0u32;
+        let mut group = GroupData::None;
         let mut group_size = 0;
         let mut ll = 0;
         while ll < max {
@@ -643,7 +680,7 @@ fn spawn_category_for_chunk(
                 continue;
             }
             let extra = with_level_random(level, |level, random| {
-                finalize(
+                finalize_in_group(
                     level,
                     Some(table),
                     &input.env,
@@ -651,6 +688,7 @@ fn spawn_category_for_chunk(
                     pos,
                     input.difficulty,
                     group_index,
+                    &mut group,
                     SpawnReason::Natural,
                     random,
                 )
@@ -702,6 +740,36 @@ pub fn finalize(
     reason: SpawnReason,
     random: &mut LegacyRandom,
 ) -> Vec<ExtraMob> {
+    let mut group = GroupData::None;
+    finalize_in_group(
+        level,
+        table,
+        env,
+        mob,
+        pos,
+        difficulty,
+        group_index,
+        &mut group,
+        reason,
+        random,
+    )
+}
+
+/// [`finalize`] of a member of a spawn group: `group` is the `SpawnGroupData` the earlier
+/// members left and is updated for the next one.
+#[allow(clippy::too_many_arguments)]
+pub fn finalize_in_group(
+    level: &Level,
+    table: Option<&SpawnTable>,
+    env: &Environment,
+    mob: &mut MobData,
+    pos: BlockPos,
+    difficulty: Difficulty,
+    group_index: u32,
+    group: &mut GroupData,
+    reason: SpawnReason,
+    random: &mut LegacyRandom,
+) -> Vec<ExtraMob> {
     let biome = table.and_then(|t| t.biome(level.biome(pos)));
     let mut ctx = SpawnContext {
         difficulty,
@@ -709,6 +777,7 @@ pub fn finalize(
         effective_difficulty: super::fam::effective_difficulty(difficulty),
         climate: biome.map_or(FarmClimate::Temperate, |b| b.climate),
         group_index,
+        group: *group,
         reason,
         biome,
         pos,
@@ -719,6 +788,7 @@ pub fn finalize(
         own_state: 0,
     };
     kinds::finalize_spawn(mob, &mut ctx, random);
+    *group = ctx.group;
     if let Some(vehicle) = ctx.ride {
         ctx.extra.push(ExtraMob {
             mob: MobData::new(Kind::Chicken, 0),
@@ -817,7 +887,7 @@ fn valid_position_for_type(
     nearest: f64,
 ) -> bool {
     let info = entry.type_id.info();
-    let despawn = f64::from(category.despawn_distance());
+    let despawn = f64::from(input.limits.despawn_distance(category));
     if !info.can_spawn_far_from_player && nearest > despawn * despawn {
         return false;
     }
@@ -951,7 +1021,7 @@ fn valid_position_for_mob(
     nearest: f64,
 ) -> bool {
     let category = Category::of(mob.kind.type_id()).unwrap_or(Category::Monster);
-    let despawn = f64::from(category.despawn_distance());
+    let despawn = f64::from(input.limits.despawn_distance(category));
     if nearest > despawn * despawn && super::fam::remove_when_far_away_mob(mob, nearest) {
         return false;
     }
@@ -1329,6 +1399,7 @@ pub fn spawn_for_chunk_generation(
         let mut z = zo + random.next_int_bounded(16);
         let (start_x, start_z) = (x, z);
         let mut group_index = 0;
+        let mut group = GroupData::None;
         for _ in 0..count {
             let mut success = false;
             let mut attempts = 0;
@@ -1363,7 +1434,7 @@ pub fn spawn_for_chunk_generation(
                             if mob_check_spawn_rules(level, env, &mob, block)
                                 && check_spawn_obstruction(level, env, &mob, at)
                             {
-                                let extra = finalize(
+                                let extra = finalize_in_group(
                                     level,
                                     Some(table),
                                     env,
@@ -1371,6 +1442,7 @@ pub fn spawn_for_chunk_generation(
                                     block,
                                     difficulty,
                                     group_index,
+                                    &mut group,
                                     SpawnReason::ChunkGeneration,
                                     // `WorldGenRegion.getRandom()` is a positional random of
                                     // the region; this one is distribution equal.
@@ -1429,9 +1501,10 @@ pub struct CatSpawner {
     next_tick: i32,
 }
 
-/// `CatSpawner.tick`: every minute a cat may spawn 8–24 blocks from a random player, in a
-/// swamp hut (`#cats_spawn_in`, a black persistent cat when none is within 16 blocks).
-/// Villages (`isCloseToVillage`, more than four occupied homes) need POIs (#60).
+/// `CatSpawner.tick`: every minute a cat may spawn 8–24 blocks from a random player: in a
+/// village (`isCloseToVillage(pos, 2)`, more than four occupied homes within 48 blocks and fewer
+/// than five cats) or in a swamp hut (`#cats_spawn_in`, a black persistent cat when none is
+/// within 16 blocks).
 pub fn cat_spawner_tick(
     level: &mut Level,
     table: Option<&SpawnTable>,
@@ -1474,6 +1547,35 @@ pub fn cat_spawner_tick(
     if !loaded || !spawn_position_ok(level, vanillite_data::entity::ids::CAT, pos) {
         return;
     }
+    if level.entities.poi.is_close_to_village(pos, 2) {
+        // `spawnInVillage`.
+        let homes = level.entities.poi.count_in_range(
+            |t| t == crate::poi::PoiType::Home,
+            pos,
+            48,
+            crate::poi::Occupancy::IsOccupied,
+        );
+        if homes <= 4 {
+            return;
+        }
+        let area = vanillite_base::Aabb::new(
+            f64::from(pos.x) - 48.0,
+            f64::from(pos.y) - 8.0,
+            f64::from(pos.z) - 48.0,
+            f64::from(pos.x) + 49.0,
+            f64::from(pos.y) + 9.0,
+            f64::from(pos.z) + 49.0,
+        );
+        let mut cats = 0;
+        let ents = &level.entities;
+        ents.store.for_each_in(&area, false, |id| {
+            cats += usize::from(ents.mob(id).is_some_and(|m| m.kind == Kind::Cat));
+        });
+        if cats < 5 {
+            spawn_cat(level, table, env, difficulty, pos, false);
+        }
+        return;
+    }
     let mut in_hut = false;
     structures.structures_at(level, pos, |name, in_piece, _| {
         in_hut |= in_piece && name == "minecraft:swamp_hut";
@@ -1498,8 +1600,23 @@ pub fn cat_spawner_tick(
     if cats {
         return;
     }
+    spawn_cat(level, table, env, difficulty, pos, true);
+}
+
+/// `CatSpawner.spawnCat(pos, level, makePersistent)`: black in swamp huts, else a random
+/// variant (all black only under a full moon).
+fn spawn_cat(
+    level: &mut Level,
+    table: Option<&SpawnTable>,
+    env: &Environment,
+    difficulty: Difficulty,
+    pos: BlockPos,
+    in_hut: bool,
+) {
     let seed = crate::mob::new_entity_seed();
     let mut cat = MobData::new(Kind::Cat, seed);
+    // The moon's brightness is at least 0.9 at full moon only (surface slime chance 0.5).
+    let full_moon = env.surface_slime_chance >= 0.45;
     let extra = with_level_random(level, |level, random| {
         let extra = finalize(
             level,
@@ -1512,11 +1629,13 @@ pub fn cat_spawner_tick(
             SpawnReason::Natural,
             random,
         );
-        // The variant's spawn conditions (in a witch hut) with the level random.
-        cat.variant = super::fam::companion::feline::pick_cat_variant(random, true, false);
+        // The variant's spawn conditions with the level random.
+        cat.variant = super::fam::companion::feline::pick_cat_variant(random, in_hut, full_moon);
         extra
     });
-    cat.persistent = true;
+    if in_hut {
+        cat.persistent = true;
+    }
     let at = Vec3::new(f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
     add_mob_with(level, cat, at, 0.0, extra);
 }

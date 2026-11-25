@@ -73,6 +73,8 @@ pub struct ServerWorld {
     /// of players there: equal tickets at one chunk give the same levels as one, so dense
     /// players crossing chunks do not recompute the levels of their whole view.
     center_tickets: FxHashMap<ChunkPos, (u32, TicketId, TicketId)>,
+    /// Where the moving players' views head ([`Chunks::set_focus`]); reused per tick.
+    focus: Vec<ChunkPos>,
     scratch: Vec<ChunkPos>,
     /// Weather, lightning and the players' survival.
     pub(crate) survival: crate::survival::WorldSurvival,
@@ -146,6 +148,11 @@ impl ServerWorld {
         if dimension == "minecraft:the_end" {
             mobs.init_dragon_fight(&data, &mut level);
         }
+        mobs.init_raids(&data, &mut level);
+        // `MinecraftServer.customSpawners`: the wandering trader spawner of the overworld.
+        if dimension == "minecraft:overworld" {
+            mobs.init_trader_spawner(&data);
+        }
         // Entity randoms are `RandomSource.create()`: seeded from the clock, not the world seed.
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -172,6 +179,7 @@ impl ServerWorld {
             packets,
             updates: WorldUpdates::default(),
             player_tickets: FxHashMap::default(),
+            focus: Vec::new(),
             center_tickets: FxHashMap::default(),
             effects: LevelEffects::default(),
             item_random: XoroshiroRandom::new(seed),
@@ -252,6 +260,18 @@ impl ServerWorld {
                 release_center(chunks, centers, old);
             }
         }
+        // Moving views order the chunk work ahead of them first.
+        let focus = &mut self.focus;
+        focus.clear();
+        focus.extend(
+            self.level
+                .entities
+                .players
+                .iter()
+                .filter_map(|(_, player)| player.connection.chunks.focus())
+                .take(vanillite_world::chunks::MAX_FOCUS),
+        );
+        chunks.set_focus(focus);
         let entities = &self.level.entities;
         self.player_tickets.retain(|&id, &mut center| {
             let alive = entities.player(id).is_some();
@@ -453,6 +473,13 @@ impl ServerWorld {
             }
             let level = &mut self.level;
             level.run_scheduled_ticks();
+            // `raids.tick`.
+            self.mobs.tick_raids(
+                &mut self.level,
+                &mut self.survival,
+                ctx.global,
+                &self.dimension,
+            );
         }
         self.update_player_tickets();
         let level = &mut self.level;
@@ -526,6 +553,10 @@ impl ServerWorld {
             &mut self.fan_out,
         );
         let mut portals = std::mem::take(&mut self.portal_requests);
+        // The omen effects see the village and raids at the players (they tick without the
+        // level); raid omens that ran out start their raids right after the players' ticks.
+        self.level.flush_poi_changes();
+        vanillite_game::raid::update_omen_views(&mut self.level.entities);
         self.survival.do_tick(
             &mut self.level.entities,
             &self.level.chunks,
@@ -534,6 +565,15 @@ impl ServerWorld {
             ctx.global,
             &self.dimension,
             &mut portals,
+        );
+        vanillite_game::raid::start_pending_raids(
+            &mut self.level.entities,
+            ctx.global
+                .level
+                .rules()
+                .bool(vanillite_game::survival::rules::Rule::RAIDS),
+            self.dimension != "minecraft:the_nether",
+            ctx.global.level.difficulty(),
         );
         for pos in portals.gateways.drain(..) {
             let state = self.level.block(pos);
@@ -589,7 +629,10 @@ impl ServerWorld {
             &level.chunks,
             &mut self.item_random,
             min_y,
-            i16::try_from(self.rules.items.despawn_ticks).unwrap_or(i16::MAX),
+            crate::blocks::ItemSettings {
+                lifetime: i16::try_from(self.rules.items.despawn_ticks).unwrap_or(i16::MAX),
+                merge_radius: self.rules.items.merge_radius,
+            },
         );
     }
 
