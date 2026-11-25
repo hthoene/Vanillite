@@ -24,7 +24,7 @@ use vanillite_world::entity::{EntityFlags, EntityId, EntityStore};
 
 /// Builds the gameplay data from the loaded data packs and installs the registry sizes and
 /// tags the protocol needs to validate client item stacks.
-pub(crate) fn game_data(packs: Option<&LoadedPacks>) -> GameData {
+pub fn game_data(packs: Option<&LoadedPacks>) -> GameData {
     let Some(packs) = packs else {
         return GameData::default();
     };

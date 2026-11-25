@@ -143,7 +143,7 @@ pub fn attack_strength_scale(ents: &Entities, player: EntityId, a: f32) -> f32 {
 /// Plays a player sound at the player's position, heard by everyone
 /// (`playServerSideSound`).
 fn player_sound(env: &mut Env<'_>, pos: Vec3, sound: &str) {
-    let seed = env.random.next_long();
+    let seed = crate::survival::sound_seed();
     play_sound(
         env.out,
         None,

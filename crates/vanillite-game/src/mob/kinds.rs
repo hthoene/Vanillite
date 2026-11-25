@@ -524,7 +524,7 @@ pub fn play_sound(t: &mut Tick<'_, '_>, sound: &str, volume: f32, pitch: f32) {
     }
     let pos = t.pos();
     let source = t.mob_ref().kind.sound_source();
-    let seed = t.mob().random.next_long();
+    let seed = crate::survival::sound_seed();
     crate::survival::play_sound(t.env.out, None, pos, sound, source, volume, pitch, seed);
 }
 
@@ -778,11 +778,7 @@ pub fn is_stared_at_by(t: &Tick<'_, '_>, player: EntityId) -> bool {
     let rot = e.rot();
     let eye = e.pos().y + f64::from(e.kind().info().eye_height);
     // `getViewVector`.
-    let pitch = f64::from(rot.x_rot).to_radians();
-    let yaw = f64::from(-rot.y_rot).to_radians();
-    let (yc, ys) = (yaw.cos(), yaw.sin());
-    let (pc, ps) = (pitch.cos(), pitch.sin());
-    let view = Vec3::new(ys * pc, -ps, yc * pc).normalize();
+    let view = super::view_vector(rot.x_rot, rot.y_rot).normalize();
     let p = t.pos();
     let to = Vec3::new(p.x - e.pos().x, t.eye_y() - eye, p.z - e.pos().z);
     let dist = to.length_sqr().sqrt();
@@ -860,7 +856,7 @@ fn teleport_to(
         m.nav.stop();
         m.target_change_time = m.tick_count;
     }
-    let seed = env.random.next_long();
+    let seed = crate::survival::sound_seed();
     crate::survival::play_sound(
         env.out,
         None,

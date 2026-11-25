@@ -373,7 +373,7 @@ pub fn tick_arrow(
                     m.last_hurt_mob = Some(target);
                 }
                 let pitch = 1.2 / (random.next_float() * 0.2 + 0.9);
-                let seed = random.next_long();
+                let seed = crate::survival::sound_seed();
                 play_sound(
                     env.out,
                     None,
@@ -412,7 +412,7 @@ pub fn tick_arrow(
             a.shake = 7;
             a.crit = false;
             let pitch = 1.2 / (random.next_float() * 0.2 + 0.9);
-            let seed = random.next_long();
+            let seed = crate::survival::sound_seed();
             play_sound(
                 env.out,
                 None,
@@ -721,7 +721,7 @@ pub fn tick_orb(
                 data.survival.take_xp_delay = 2;
                 data.survival.xp.give_points(o.value);
                 let pitch = (random.next_float() - random.next_float()) * 0.35 + 0.9;
-                let seed = random.next_long();
+                let seed = crate::survival::sound_seed();
                 play_sound(
                     env.out,
                     None,

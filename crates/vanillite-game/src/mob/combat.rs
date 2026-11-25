@@ -209,7 +209,7 @@ pub fn hurt_mob(
             let (xd, zd) = source
                 .position
                 .map_or((0.0, 0.0), |p| (p.x - pos.x, p.z - pos.z));
-            apply_knockback(ents, target, 0.4, xd, zd);
+            apply_knockback(ents, target, f64::from(0.4_f32), xd, zd);
         }
     }
     let dead = ents
@@ -427,7 +427,7 @@ pub fn mob_sound(ents: &mut Entities, env: &mut Env<'_>, id: EntityId, sound: &s
         (a - b) * 0.2 + 1.0
     };
     let source = m.kind.sound_source();
-    let seed = m.random.next_long();
+    let seed = crate::survival::sound_seed();
     play_sound(env.out, None, pos, sound, source, volume, pitch, seed);
 }
 
@@ -441,7 +441,7 @@ pub fn mob_attack(t: &mut super::Tick<'_, '_>, target: EntityId) -> bool {
         #[allow(clippy::cast_possible_truncation)]
         let kb = t.mob_ref().attrs.attack_knockback as f32;
         if kb > 0.0 {
-            let rad = f64::from(t.core().rot().y_rot) * std::f64::consts::PI / 180.0;
+            let rad = f64::from(t.core().rot().y_rot * super::DEG_TO_RAD);
             let (sin, cos) = (
                 f64::from(vanillite_base::math::sin(rad)),
                 f64::from(vanillite_base::math::cos(rad)),

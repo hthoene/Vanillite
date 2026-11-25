@@ -640,7 +640,7 @@ fn player_sound(
     pos: Vec3,
     sound: &str,
 ) {
-    let seed = env.random.next_long();
+    let seed = crate::survival::sound_seed();
     play_sound(
         env.out,
         Some(except),
@@ -1277,7 +1277,7 @@ fn apply_block_effects(entity: &mut EntityMut<'_>, player: &mut PlayerData, env:
         let source = DamageSource::of(env.types.lava);
         if hurt(entity, player, env, source, 4.0) {
             let pitch = 2.0 + env.random.next_float() * 0.4;
-            let seed = env.random.next_long();
+            let seed = crate::survival::sound_seed();
             play_sound(
                 env.out,
                 None,
@@ -1307,7 +1307,7 @@ fn apply_block_effects(entity: &mut EntityMut<'_>, player: &mut PlayerData, env:
     if was_on_fire && player.survival.fire_ticks <= 0 {
         // `playEntityOnFireExtinguishedSound`.
         let pitch = 1.6 + (env.random.next_float() - env.random.next_float()) * 0.4;
-        let seed = env.random.next_long();
+        let seed = crate::survival::sound_seed();
         play_sound(
             env.out,
             Some(id),

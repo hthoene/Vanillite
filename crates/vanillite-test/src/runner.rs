@@ -6,6 +6,7 @@
 //!
 //! `VANILLITE_BLESS=<scenario>,...` (or `all`; set by `cargo xtask golden bless`) writes the
 //! traces of those scenarios as their blessed goldens instead of comparing them.
+//! `VANILLITE_SCENARIO=<scenario>,...` runs only those scenarios.
 
 use std::path::PathBuf;
 
@@ -27,14 +28,15 @@ pub fn record(
     for op in &scenario.setup {
         apply(world.as_mut(), op, false)?;
     }
+    world.add_entities(&scenario.entities, scenario.entity_seed)?;
     let mut trace = Trace::new(scenario.min, scenario.max);
-    observe(world.as_mut(), &mut trace, 0, scenario.world.light);
+    observe(world.as_mut(), &mut trace, 0, scenario.world.observe_light);
     for tick in 1..=scenario.ticks {
         for op in scenario.actions.iter().filter(|a| a.tick == tick) {
             apply(world.as_mut(), op, true)?;
         }
         world.step();
-        observe(world.as_mut(), &mut trace, tick, scenario.world.light);
+        observe(world.as_mut(), &mut trace, tick, scenario.world.observe_light);
     }
     Ok(trace)
 }
@@ -44,11 +46,15 @@ fn apply(
     op: &crate::scenario::Op,
     action: bool,
 ) -> Result<(), String> {
+    if let Some(hurt) = &op.hurt {
+        return world.hurt(hurt);
+    }
     let state = parse_state(&op.block)?;
     let updates = match op.kind {
         OpKind::Set => false,
         OpKind::Place => true,
         OpKind::Fill => action,
+        OpKind::Hurt => return Err("hurt without its damage".to_owned()),
     };
     let (a, b) = (op.from, op.to);
     // `BlockPos.betweenClosed` order: x fastest, then y, then z.
@@ -84,6 +90,7 @@ fn observe(world: &mut dyn ScenarioWorld, trace: &mut Trace, tick: u32, light: b
     if light {
         world.light(trace.min, trace.max, &mut frame.light);
     }
+    frame.level_rng = world.level_rng();
     trace.frames.push(frame);
 }
 
@@ -180,15 +187,37 @@ pub fn check(scenario: &Scenario, factory: WorldFactory) -> Result<(), String> {
         return Ok(());
     }
     let expected = expected(scenario)?;
+    let first = expected.first_divergence(&serial);
+    let known = scenario.diverges.as_ref();
+    if first == known.map(|d| d.tick) {
+        return Ok(());
+    }
     let diff = expected.diff(&serial, DIFF_LIMIT);
-    if diff.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
+    match (known, first) {
+        (Some(d), None) => Err(format!(
+            "matches the golden now: remove its entry (tick {}: {}) from \
+             scenarios/divergences.toml",
+            d.tick, d.cause
+        )),
+        (Some(d), Some(t)) => Err(format!(
+            "the first divergence moved from tick {} to tick {t} ({}; {}, owner {}): {} the \
+             tick in scenarios/divergences.toml if intended:\n  {}",
+            d.tick,
+            scenario.description,
+            d.cause,
+            d.owner,
+            if t > d.tick {
+                "progress, raise"
+            } else {
+                "regression, or lower"
+            },
+            diff.join("\n  ")
+        )),
+        _ => Err(format!(
             "differs from the golden ({}):\n  {}",
             scenario.description,
             diff.join("\n  ")
-        ))
+        )),
     }
 }
 
@@ -198,9 +227,40 @@ pub fn check_tier(tier: Tier, factory: WorldFactory) -> Vec<String> {
         Ok(s) => s,
         Err(e) => return vec![e],
     };
-    scenarios
+    let only = std::env::var("VANILLITE_SCENARIO").ok();
+    let todo: Vec<&Scenario> = scenarios
         .iter()
         .filter(|s| s.tier == tier)
-        .filter_map(|s| check(s, factory).err().map(|e| format!("{}: {e}", s.name)))
-        .collect()
+        .filter(|s| {
+            only.as_deref()
+                .is_none_or(|o| o.split(',').any(|n| n.trim() == s.name))
+        })
+        .collect();
+    // Scenarios are independent: run them on all cores, report in name order.
+    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mut results: Vec<(usize, String)> = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..threads.min(todo.len()))
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut failed = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(s) = todo.get(i) else {
+                            return failed;
+                        };
+                        if let Err(e) = check(s, factory) {
+                            failed.push((i, format!("{}: {e}", s.name)));
+                        }
+                    }
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .flat_map(|w| w.join().unwrap_or_else(|p| std::panic::resume_unwind(p)))
+            .collect()
+    });
+    results.sort_by_key(|r| r.0);
+    results.into_iter().map(|r| r.1).collect()
 }
