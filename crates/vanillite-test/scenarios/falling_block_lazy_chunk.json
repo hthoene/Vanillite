@@ -1,0 +1,113 @@
+{
+  "description": "Sand in a block ticking chunk that is not entity ticking (level 32): its block tick turns it into a falling block entity that hangs in the air until the chunk ticks entities again.",
+  "tier": "fast",
+  "region": [
+    [
+      44,
+      -61,
+      0
+    ],
+    [
+      46,
+      -50,
+      0
+    ]
+  ],
+  "ticks": 40,
+  "actions": [
+    {
+      "tick": 1,
+      "op": "unforce",
+      "chunks": [
+        [
+          2,
+          -1
+        ],
+        [
+          2,
+          0
+        ],
+        [
+          2,
+          1
+        ],
+        [
+          3,
+          -1
+        ],
+        [
+          3,
+          0
+        ],
+        [
+          3,
+          1
+        ],
+        [
+          4,
+          -1
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          1
+        ]
+      ]
+    },
+    {
+      "tick": 2,
+      "op": "place",
+      "pos": [
+        45,
+        -52,
+        0
+      ],
+      "block": "minecraft:sand"
+    },
+    {
+      "tick": 15,
+      "op": "force",
+      "chunks": [
+        [
+          2,
+          -1
+        ],
+        [
+          2,
+          0
+        ],
+        [
+          2,
+          1
+        ],
+        [
+          3,
+          -1
+        ],
+        [
+          3,
+          0
+        ],
+        [
+          3,
+          1
+        ],
+        [
+          4,
+          -1
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          1
+        ]
+      ]
+    }
+  ]
+}
