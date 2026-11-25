@@ -22,7 +22,7 @@ use crate::block::sculk_vibration::{self, Listenable, Vibration, VibrationData};
 use crate::effect::{EffectInstance, MobEffect};
 use crate::entities::Entities;
 use crate::level::Level;
-use crate::level::game_event::{GameEventContext, Listener, containing};
+use crate::level::game_event::{EntityListener, GameEventContext, Listener, containing};
 use crate::mob::brain::{Brain, MemValue, MemoryType as M, Tracker};
 
 /// The warden's memories: its brain.
@@ -490,6 +490,7 @@ pub(crate) fn handle_game_event(
         id,
         section: BlockPos::ZERO.section(),
         radius: LISTENER_RANGE,
+        kind: EntityListener::Vibration,
     }) else {
         return;
     };
@@ -541,6 +542,7 @@ pub fn after_tick(t: &mut Tick<'_, '_>) {
         id,
         section,
         radius: LISTENER_RANGE,
+        kind: EntityListener::Vibration,
     };
     if s.listener == Some(wanted) {
         return;

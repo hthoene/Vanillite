@@ -93,6 +93,8 @@ pub enum BlockEntity {
     Beehive(Box<crate::block::beehive::Beehive>),
     /// `CreakingHeartBlockEntity`.
     CreakingHeart(Box<crate::block::creaking_heart::CreakingHeart>),
+    /// `JukeboxBlockEntity`.
+    Jukebox(Box<crate::block::jukebox::Jukebox>),
 }
 
 /// `BlockEntityTicker.tick(level, pos, state, blockEntity)`: the block entity is looked up at
@@ -253,6 +255,7 @@ fn ticker_of(entity: &BlockEntity) -> Option<TickerFn> {
         BlockEntity::Hopper(_) => Some(crate::block::hopper::push_items_tick),
         BlockEntity::DaylightDetector => Some(crate::block::sensor::daylight_detector_tick),
         BlockEntity::Bell(_) => Some(crate::block::bell::tick),
+        BlockEntity::Jukebox(_) => Some(crate::block::jukebox::tick),
         BlockEntity::SculkSensor(_) => Some(crate::block::sculk::tick_block_entity),
         BlockEntity::Spawner(_) => Some(crate::block::spawner::tick),
         BlockEntity::TrialSpawner(_) => Some(crate::block::trial_spawner::tick),
@@ -294,6 +297,8 @@ pub fn new_block_entity(state: BlockState) -> Option<BlockEntity> {
         Some(BlockEntity::Bell(Bell::default()))
     } else if block == ids::LECTERN {
         Some(BlockEntity::Lectern(Lectern::default()))
+    } else if block == ids::JUKEBOX {
+        Some(BlockEntity::Jukebox(Box::default()))
     } else if block == ids::SCULK_SENSOR || block == ids::CALIBRATED_SCULK_SENSOR {
         Some(BlockEntity::SculkSensor(Box::new(SculkSensor::new(
             block == ids::CALIBRATED_SCULK_SENSOR,
@@ -359,6 +364,7 @@ fn is_valid(entity: &BlockEntity, state: BlockState) -> bool {
         BlockEntity::DaylightDetector => state.block() == ids::DAYLIGHT_DETECTOR,
         BlockEntity::Bell(_) => state.block() == ids::BELL,
         BlockEntity::Lectern(_) => state.block() == ids::LECTERN,
+        BlockEntity::Jukebox(_) => state.block() == ids::JUKEBOX,
         BlockEntity::SculkSensor(sensor) => {
             state.block()
                 == if sensor.calibrated {
@@ -470,6 +476,9 @@ impl Level {
                     if let BlockEntity::Lectern(lectern) = &entity {
                         crate::block::lectern::drop_book(self, pos, old, lectern);
                     }
+                    if let BlockEntity::Jukebox(_) = entity {
+                        crate::block::jukebox::pop_out_the_item(self, pos);
+                    }
                     if let BlockEntity::Beacon(_) = entity {
                         crate::block::beacon::removed(self, pos);
                     }
@@ -485,7 +494,10 @@ impl Level {
                     }
                 }
             }
-            self.block_entities.remove(pos);
+            if let Some(BlockEntity::Jukebox(_)) = self.block_entities.remove(pos) {
+                // `setRemoved`.
+                crate::block::jukebox::removed(self, pos, old);
+            }
         }
     }
 
@@ -616,6 +628,7 @@ fn load(state: BlockState, nbt: &Compound) -> Option<BlockEntity> {
         BlockEntity::Beacon(b) => b.load(nbt),
         BlockEntity::Conduit(c) => c.load(nbt),
         BlockEntity::Lectern(lectern) => lectern.load(nbt),
+        BlockEntity::Jukebox(j) => j.load(nbt),
         BlockEntity::Hopper(h) => {
             h.custom_name = crate::block::container::load_name(nbt);
             (h.loot_table, h.loot_seed) = crate::block::chest_loot::load(nbt);
@@ -684,6 +697,7 @@ fn save(entity: &BlockEntity, state: BlockState, pos: BlockPos) -> Compound {
         BlockEntity::Beacon(b) => b.save(&mut nbt),
         BlockEntity::Conduit(c) => c.save(&mut nbt),
         BlockEntity::Lectern(lectern) => lectern.save(&mut nbt),
+        BlockEntity::Jukebox(j) => j.save(&mut nbt),
         BlockEntity::Hopper(h) => {
             crate::block::container::save_name(&h.custom_name, &mut nbt);
             if !crate::block::chest_loot::save(h.loot_table.as_deref(), h.loot_seed, &mut nbt) {

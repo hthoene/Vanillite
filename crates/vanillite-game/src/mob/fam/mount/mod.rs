@@ -13,6 +13,7 @@ pub mod copper_golem;
 pub mod creaking;
 pub mod ghast;
 pub mod nautilus;
+pub mod transport;
 pub mod wind;
 
 use vanillite_base::random::LegacyRandom;
@@ -433,6 +434,7 @@ impl FamilyHooks for Hooks {
             Kind::HappyGhast => ghast::after_tick(t),
             Kind::Nautilus | Kind::ZombieNautilus => nautilus::after_tick(t),
             Kind::CopperGolem => copper_golem::after_tick(t),
+            Kind::Allay => allay::after_tick(t),
             _ => {}
         }
     }
@@ -733,8 +735,8 @@ pub enum Behavior {
     BreezeShootWhenStuck,
     /// The breeze's `Slide`.
     BreezeSlide,
-    /// The copper golem's `TransportItemsBetweenContainers` (its idle cooldown only).
-    GolemTransport,
+    /// The copper golem's `TransportItemsBetweenContainers`.
+    GolemTransport(transport::Transport),
 }
 
 /// The family's brain sensors.

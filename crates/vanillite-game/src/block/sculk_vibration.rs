@@ -47,6 +47,8 @@ pub enum Listenable {
     Warden,
     /// `#shrieker_can_listen`.
     Shrieker,
+    /// `#allay_can_listen`.
+    Allay,
 }
 
 impl VibrationData {
@@ -212,6 +214,7 @@ pub fn is_valid_vibration(
         Listenable::Vibrations => event_tags.vibrations.contains(event),
         Listenable::Warden => event_tags.warden_can_listen.contains(event),
         Listenable::Shrieker => event_tags.shrieker_can_listen.contains(event),
+        Listenable::Allay => event_tags.allay_can_listen.contains(event),
     };
     if !hears {
         return false;
