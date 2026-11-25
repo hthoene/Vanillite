@@ -1635,6 +1635,7 @@ dependencies = [
  "vanillite-datapack",
  "vanillite-game",
  "vanillite-server",
+ "vanillite-storage",
  "vanillite-world",
  "vanillite-worldgen",
 ]

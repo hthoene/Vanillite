@@ -77,8 +77,9 @@ impl AnvilCodec {
     }
 }
 
-impl ChunkCodec for AnvilCodec {
-    fn decode(&self, pos: ChunkPos, _: &RecordMeta, record: &[u8]) -> io::Result<ProtoChunk> {
+impl AnvilCodec {
+    /// The root compound of a record: a compression id byte, then the compressed NBT.
+    fn read_root(&self, pos: ChunkPos, record: &[u8]) -> io::Result<vanillite_nbt::Compound> {
         let Some((&id, data)) = record.split_first() else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -92,17 +93,19 @@ impl ChunkCodec for AnvilCodec {
             )
         })?;
         let bytes = compression.decompress(data)?;
-        let root = vanillite_nbt::read::read_named(&mut bytes.as_slice(), &mut Budget::file())
-            .map_err(|e| {
-                io::Error::new(io::ErrorKind::InvalidData, format!("chunk {pos:?}: {e:?}"))
-            })?;
-        self.codec.read(pos, root)
+        vanillite_nbt::read::read_named(&mut bytes.as_slice(), &mut Budget::file()).map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidData, format!("chunk {pos:?}: {e:?}"))
+        })
     }
 
-    fn encode(&self, chunk: &ProtoChunk) -> io::Result<(RecordMeta, Arc<[u8]>)> {
-        let root = self.codec.write(chunk)?;
+    /// A record of a root compound and its metadata.
+    fn write_root(
+        &self,
+        root: &vanillite_nbt::Compound,
+        status: u8,
+    ) -> io::Result<(RecordMeta, Arc<[u8]>)> {
         let mut bytes = Vec::with_capacity(16 * 1024);
-        vanillite_nbt::write::write_named("", &root, &mut bytes)
+        vanillite_nbt::write::write_named("", root, &mut bytes)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{e:?}")))?;
         let data = self.compression.compress(&bytes)?;
         let mut record = Vec::with_capacity(data.len() + 1);
@@ -112,10 +115,37 @@ impl ChunkCodec for AnvilCodec {
             data_version: DATA_VERSION as u32,
             raw_len: u32::try_from(bytes.len()).unwrap_or(u32::MAX),
             checksum: 0,
-            status: chunk.status as u8,
+            status,
             flags: 0,
         };
         Ok((meta, Arc::from(record)))
+    }
+}
+
+impl ChunkCodec for AnvilCodec {
+    fn decode(&self, pos: ChunkPos, _: &RecordMeta, record: &[u8]) -> io::Result<ProtoChunk> {
+        let root = self.read_root(pos, record)?;
+        self.codec.read(pos, root)
+    }
+
+    fn encode(&self, chunk: &ProtoChunk) -> io::Result<(RecordMeta, Arc<[u8]>)> {
+        let root = self.codec.write(chunk)?;
+        self.write_root(&root, chunk.status as u8)
+    }
+
+    fn decode_entities(
+        &self,
+        pos: ChunkPos,
+        _: &RecordMeta,
+        record: &[u8],
+    ) -> io::Result<Vec<Arc<[u8]>>> {
+        let root = self.read_root(pos, record)?;
+        chunk_nbt::read_entities(pos, &root)
+    }
+
+    fn encode_entities(&self, chunk: &ProtoChunk) -> io::Result<(RecordMeta, Arc<[u8]>)> {
+        let root = chunk_nbt::write_entities(chunk.pos, &chunk.entities)?;
+        self.write_root(&root, RecordMeta::STATUS_UNKNOWN)
     }
 
     fn chunks_per_job(&self) -> usize {
