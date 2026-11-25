@@ -40,6 +40,15 @@ mod data_id {
     pub const PLAYER_MODE_CUSTOMISATION: u8 = 16;
     pub const PLAYER_ABSORPTION: u8 = 17;
     pub const PLAYER_SCORE: u8 = 18;
+    pub const LIVING_FLAGS: u8 = 8;
+    pub const MOB_FLAGS: u8 = 15;
+    pub const KIND_16: u8 = 16;
+    pub const KIND_17: u8 = 17;
+    pub const KIND_18: u8 = 18;
+    pub const KIND_19: u8 = 19;
+    pub const ORB_VALUE: u8 = 8;
+    pub const ARROW_FLAGS: u8 = 8;
+    pub const ARROW_IN_GROUND: u8 = 10;
 }
 
 /// Entity data serializer ids (`EntityDataSerializers` registration order of 26.3).
@@ -48,8 +57,13 @@ mod serializer {
     pub const ITEM_STACK: i32 = 7;
     pub const INT: i32 = 1;
     pub const FLOAT: i32 = 3;
+    pub const BOOLEAN: i32 = 8;
     pub const BLOCK_STATE: i32 = 14;
+    pub const OPTIONAL_BLOCK_STATE: i32 = 15;
     pub const POSE: i32 = 20;
+    pub const COW_VARIANT: i32 = 23;
+    pub const PIG_VARIANT: i32 = 28;
+    pub const CHICKEN_VARIANT: i32 = 30;
     pub const HUMANOID_ARM: i32 = 42;
 }
 
@@ -149,6 +163,33 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
             });
         }
     }
+    if let Some(mob) = entities.mob(entity.id()) {
+        mob_data(&mut out, mob, all);
+    }
+    if let Some(orb) = entities.experience_orb(entity.id())
+        && (all || orb.value != 0)
+    {
+        item(&mut out, data_id::ORB_VALUE, serializer::INT, |o| {
+            write_varint(o, orb.value);
+        });
+    }
+    if let Some(arrow) = entities.arrow(entity.id()) {
+        if all || arrow.crit {
+            item(&mut out, data_id::ARROW_FLAGS, serializer::BYTE, |o| {
+                o.push(u8::from(arrow.crit));
+            });
+        }
+        if all || arrow.in_ground {
+            item(
+                &mut out,
+                data_id::ARROW_IN_GROUND,
+                serializer::BOOLEAN,
+                |o| {
+                    o.push(u8::from(arrow.in_ground));
+                },
+            );
+        }
+    }
     if entity.kind() == ids::TNT
         && let Some(tnt) = entities.primed_tnt(entity.id())
     {
@@ -202,8 +243,98 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
     Some(out)
 }
 
+/// The synched data of a mob after the entity's own: health, mob flags and the kind's values.
+fn mob_data(out: &mut Vec<u8>, mob: &crate::mob::MobData, all: bool) {
+    use crate::mob::Kind;
+    let living = crate::mob::kinds::living_flags(mob);
+    if all || living != 0 {
+        item(out, data_id::LIVING_FLAGS, serializer::BYTE, |o| {
+            o.push(living)
+        });
+    }
+    if all || mob.health != 1.0 {
+        item(out, data_id::HEALTH, serializer::FLOAT, |o| {
+            o.extend_from_slice(&mob.health.to_be_bytes());
+        });
+    }
+    let flags = u8::from(mob.no_ai) | (u8::from(mob.aggressive) << 2);
+    if all || flags != 0 {
+        item(out, data_id::MOB_FLAGS, serializer::BYTE, |o| o.push(flags));
+    }
+    let boolean = |out: &mut Vec<u8>, id: u8, v: bool| {
+        if all || v {
+            item(out, id, serializer::BOOLEAN, |o| o.push(u8::from(v)));
+        }
+    };
+    let variant = |out: &mut Vec<u8>, id: u8, serializer: i32, v: i32| {
+        // The default variant is `temperate` (id 1 of `cold`, `temperate`, `warm`).
+        if all || v != 1 {
+            item(out, id, serializer, |o| write_varint(o, v));
+        }
+    };
+    match mob.kind {
+        Kind::Zombie => boolean(out, data_id::KIND_16, mob.baby),
+        Kind::Creeper => {
+            if all || mob.swell_dir != -1 {
+                item(out, data_id::KIND_16, serializer::INT, |o| {
+                    write_varint(o, mob.swell_dir);
+                });
+            }
+            boolean(out, data_id::KIND_17, mob.powered);
+            boolean(out, data_id::KIND_18, mob.ignited);
+        }
+        Kind::Spider => {
+            let f = u8::from(mob.climbing);
+            if all || f != 0 {
+                item(out, data_id::KIND_16, serializer::BYTE, |o| o.push(f));
+            }
+        }
+        Kind::Enderman => {
+            if all || mob.carried.is_some() {
+                item(
+                    out,
+                    data_id::KIND_16,
+                    serializer::OPTIONAL_BLOCK_STATE,
+                    |o| {
+                        write_varint(o, mob.carried.map_or(0, |s| i32::from(s.0)));
+                    },
+                );
+            }
+            boolean(out, data_id::KIND_17, mob.creepy);
+        }
+        Kind::Skeleton => {}
+        Kind::Cow | Kind::Pig | Kind::Sheep | Kind::Chicken => {
+            boolean(out, data_id::KIND_16, mob.baby);
+            match mob.kind {
+                Kind::Sheep => {
+                    let wool = (mob.sheep_color & 0x0F) | if mob.sheared { 0x10 } else { 0 };
+                    if all || wool != 0 {
+                        item(out, data_id::KIND_18, serializer::BYTE, |o| o.push(wool));
+                    }
+                }
+                Kind::Pig => variant(out, data_id::KIND_19, serializer::PIG_VARIANT, mob.variant),
+                Kind::Cow => variant(out, data_id::KIND_18, serializer::COW_VARIANT, mob.variant),
+                _ => variant(
+                    out,
+                    data_id::KIND_18,
+                    serializer::CHICKEN_VARIANT,
+                    mob.variant,
+                ),
+            }
+        }
+    }
+}
+
 /// `set_equipment` with every non-empty equipment slot of a player (pairing data).
 fn equipment(entity: &EntityRef<'_>, entities: &Entities) -> Option<SetEquipment> {
+    if let Some(mob) = entities.mob(entity.id()) {
+        // Skeletons hold their bow (`populateDefaultEquipmentSlots`).
+        let bow = vanillite_data::registry::ITEM.id("minecraft:bow")?;
+        return (mob.kind == crate::mob::Kind::Skeleton).then(|| SetEquipment {
+            entity_id: entity.network_id().0,
+            slots: vec![(EquipmentSlot::MainHand.ordinal(), ItemStack::new(bow, 1))],
+        });
+    }
     let player = entities.player(entity.id())?;
     let slots: Vec<(u8, ItemStack)> = EQUIPMENT_SLOTS
         .iter()
@@ -250,10 +381,16 @@ pub fn encode_update(message: &Message, entities: &Entities) -> Option<Encoded> 
                 x_rot,
                 y_rot,
                 y_head_rot,
-                // `getAddEntityPacket` data: the block state of a falling block.
+                // `getAddEntityPacket` data: the block state of a falling block, the owner
+                // of a projectile.
                 data: entities
                     .falling_block(message.entity)
-                    .map_or(0, |f| i32::from(f.state.0)),
+                    .map(|f| i32::from(f.state.0))
+                    .or_else(|| {
+                        let owner = entities.arrow(message.entity)?.owner?;
+                        Some(entities.store.get(owner)?.network_id().0)
+                    })
+                    .unwrap_or(0),
             });
             let entity = entities.store.get(message.entity);
             let data = entity

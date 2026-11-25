@@ -7,6 +7,7 @@
 //! - [`entities`]: the entities of a world, the core store plus one kind store per kind.
 //! - [`player`]: the player kind, its connection and packet handlers.
 //! - [`survival`]: health, damage, hunger, death, clocks, weather and game rules.
+//! - [`mob`]: mobs and animals: physics, path finding, goals, combat and spawning.
 
 pub mod block;
 pub mod commands;
@@ -22,6 +23,7 @@ pub mod level;
 pub mod loot;
 pub mod map;
 pub mod menu;
+pub mod mob;
 pub mod player;
 pub mod recipe;
 pub mod survival;

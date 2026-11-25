@@ -1251,6 +1251,26 @@
       "field_type": "text"
     },
     {
+      "name": "Mobs: Path Nodes Per Tick",
+      "description": "Path finding nodes all mobs of the world may visit per tick; searches over the budget fail and are retried later. 0 = unlimited (Vanilla). Applies to every world. Range: 0 to 10000000. Empty: the profile's value (vanilla profile: 0). vanillite.toml: performance.mobs.path-nodes-per-tick.",
+      "env_variable": "VANILLITE_PERFORMANCE__MOBS__PATH_NODES_PER_TICK",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:0,10000000",
+      "field_type": "text"
+    },
+    {
+      "name": "Mobs: Activation Range",
+      "description": "Mobs farther than this many blocks from every player tick only every 20th tick (activation range). 0 = off (Vanilla: every mob in simulation distance ticks). Applies to every world. Range: 0 to 512. Empty: the profile's value (vanilla profile: 0). vanillite.toml: performance.mobs.activation-range.",
+      "env_variable": "VANILLITE_PERFORMANCE__MOBS__ACTIVATION_RANGE",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:0,512",
+      "field_type": "text"
+    },
+    {
       "name": "Items: Despawn Ticks",
       "description": "Ticks an item lies on the ground before it despawns. Lower values keep fewer item entities around on busy servers. Applies to every world. Range: 20 to 32766. Empty: the profile's value (vanilla profile: 6000). vanillite.toml: performance.items.despawn-ticks.",
       "env_variable": "VANILLITE_PERFORMANCE__ITEMS__DESPAWN_TICKS",

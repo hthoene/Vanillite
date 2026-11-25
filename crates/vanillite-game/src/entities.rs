@@ -8,7 +8,11 @@ use vanillite_world::entity::{
 };
 
 use crate::experience_orb::ExperienceOrbData;
+use vanillite_base::hash::FxHashMap;
+
 use crate::item_entity::ItemData;
+use crate::mob::MobData;
+use crate::mob::projectile::ArrowData;
 use crate::player::PlayerData;
 
 /// The kind data of a `falling_block` (`FallingBlockEntity`).
@@ -48,6 +52,12 @@ pub struct Entities {
     pub items: Dense<ItemData>,
     /// Falling block kind data.
     pub falling_blocks: Dense<FallingBlockData>,
+    /// Mob kind data (every type with a [`crate::mob::Kind`]).
+    pub mobs: Dense<MobData>,
+    /// Arrow kind data.
+    pub arrows: Dense<ArrowData>,
+    /// Network id → entity of mobs (attack and interaction packets name their target by it).
+    pub by_network_id: FxHashMap<i32, EntityId>,
     /// Primed TNT kind data.
     pub primed_tnts: Dense<PrimedTntData>,
     /// Experience orb kind data.
@@ -132,6 +142,66 @@ impl Entities {
         self.falling_blocks.get_mut(row)
     }
 
+    /// Adds a mob.
+    pub fn spawn_mob(&mut self, new: NewEntity, data: MobData) -> EntityId {
+        let network_id = new.network_id.0;
+        let mobs = &mut self.mobs;
+        let id = self.store.spawn(new, |id| mobs.push(id, data));
+        self.by_network_id.insert(network_id, id);
+        id
+    }
+
+    /// Adds an arrow.
+    pub fn spawn_arrow(&mut self, new: NewEntity, data: ArrowData) -> EntityId {
+        let arrows = &mut self.arrows;
+        self.store.spawn(new, |id| arrows.push(id, data))
+    }
+
+    /// The mob data of an entity.
+    pub fn mob(&self, id: EntityId) -> Option<&MobData> {
+        let entity = self.store.get(id)?;
+        if !is_mob_kind(entity.kind()) {
+            return None;
+        }
+        self.mobs.get(entity.kind_row())
+    }
+
+    /// The mob data of an entity, mutably.
+    pub fn mob_mut(&mut self, id: EntityId) -> Option<&mut MobData> {
+        let entity = self.store.get(id)?;
+        if !is_mob_kind(entity.kind()) {
+            return None;
+        }
+        let row = entity.kind_row();
+        self.mobs.get_mut(row)
+    }
+
+    /// The arrow data of an entity.
+    pub fn arrow(&self, id: EntityId) -> Option<&ArrowData> {
+        let entity = self.store.get(id)?;
+        (entity.kind() == ids::ARROW)
+            .then(|| self.arrows.get(entity.kind_row()))
+            .flatten()
+    }
+
+    /// The arrow data of an entity, mutably.
+    pub fn arrow_mut(&mut self, id: EntityId) -> Option<&mut ArrowData> {
+        let entity = self.store.get(id)?;
+        if entity.kind() != ids::ARROW {
+            return None;
+        }
+        let row = entity.kind_row();
+        self.arrows.get_mut(row)
+    }
+
+    /// The entity with a network id, for mobs.
+    pub fn by_network_id(&self, network_id: i32) -> Option<EntityId> {
+        self.by_network_id
+            .get(&network_id)
+            .copied()
+            .filter(|&id| self.store.contains(id))
+    }
+
     /// Adds a primed TNT entity.
     pub fn spawn_primed_tnt(&mut self, new: NewEntity, data: PrimedTntData) -> EntityId {
         let primed_tnts = &mut self.primed_tnts;
@@ -183,6 +253,9 @@ impl Entities {
     /// Removes an entity of any kind together with its kind data.
     pub fn despawn(&mut self, id: EntityId) -> Option<Removed> {
         let removed = self.store.despawn(id)?;
+        if is_mob_kind(removed.kind) {
+            self.by_network_id.remove(&removed.network_id.0);
+        }
         let moved = self.remove_kind_row(removed.kind, removed.kind_row);
         if let Some(moved) = moved {
             self.store.set_kind_row(moved, removed.kind_row);
@@ -214,6 +287,10 @@ impl Entities {
             self.falling_blocks
                 .swap_remove(row)
                 .and_then(|(_, moved)| moved)
+        } else if kind == ids::ARROW {
+            self.arrows.swap_remove(row).and_then(|(_, moved)| moved)
+        } else if is_mob_kind(kind) {
+            self.mobs.swap_remove(row).and_then(|(_, moved)| moved)
         } else if kind == ids::TNT {
             self.primed_tnts
                 .swap_remove(row)
@@ -244,6 +321,12 @@ impl Entities {
         let row = entity.kind_row();
         self.players.get_mut(row)
     }
+}
+
+/// Whether entities of `kind` keep their data in the mob store.
+#[inline]
+pub fn is_mob_kind(kind: EntityTypeId) -> bool {
+    crate::mob::Kind::of(kind).is_some()
 }
 
 /// `tickNonPassenger` of the non-player entity kinds that tick: the one dispatch the world tick

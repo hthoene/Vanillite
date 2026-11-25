@@ -44,6 +44,11 @@ pub enum Effect {
     },
     /// A system message to every player of the server.
     Broadcast(Component),
+    /// To one player.
+    To {
+        player: EntityId,
+        packet: Arc<SharedPacket>,
+    },
     /// A new item entity (a dropped stack): its UUID, position, motion, yaw and pickup delay.
     DropItem {
         uuid: u128,

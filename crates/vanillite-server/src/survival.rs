@@ -53,17 +53,17 @@ struct Bolt {
 /// The survival state of one world.
 #[derive(Debug)]
 pub(crate) struct WorldSurvival {
-    random: LegacyRandom,
+    pub(crate) random: LegacyRandom,
     pub(crate) weather: LevelWeather,
     /// `canHaveWeather`: sky light and no ceiling (the overworld).
     can_have_weather: bool,
     /// The overworld advances the game time.
     ticks_time: bool,
-    effects: Vec<Effect>,
+    pub(crate) effects: Vec<Effect>,
     weather_out: Vec<WeatherPacket>,
     /// The world's biomes for `isRainingAt`, shared with the level.
     climate: Option<Arc<Climate>>,
-    min_y: i32,
+    pub(crate) min_y: i32,
     max_y: i32,
     /// Tracking range of players in blocks.
     player_range: i32,
@@ -78,7 +78,7 @@ pub(crate) struct WorldSurvival {
 
 /// `Level.isRainingAt` without the sky light test (the heightmap test covers it outside of
 /// caves and under transparent blocks).
-fn raining_at(
+pub(crate) fn raining_at(
     chunks: &Chunks,
     climate: Option<&Climate>,
     weather: &LevelWeather,
@@ -256,11 +256,11 @@ impl WorldSurvival {
     }
 
     /// The survival `Env` over this world's state.
-    fn env<'a>(
+    pub(crate) fn env<'a>(
         &'a mut self,
         level: &'a LevelState,
         rules: &'a GameRules,
-        blocks: &'a WorldBlocks<'a>,
+        blocks: &'a dyn BlockAccess,
         raining_at: &'a dyn Fn(BlockPos) -> bool,
         dimension: &'a str,
         hooks: &'a dyn vanillite_game::hooks::GameHooks,
@@ -683,7 +683,7 @@ impl WorldSurvival {
     /// Sends what the survival logic produced to its receivers. Each receiver lookup visits
     /// the players near the source only: all players when there are few, else the chunks in
     /// range.
-    fn deliver(&mut self, entities: &mut Entities, global: &Global) {
+    pub(crate) fn deliver(&mut self, entities: &mut Entities, global: &Global) {
         if self.effects.is_empty() {
             return;
         }
@@ -753,6 +753,11 @@ impl WorldSurvival {
                     global
                         .players
                         .broadcast_system(message.clone(), false, None);
+                }
+                Effect::To { player, packet } => {
+                    if let Some(p) = entities.player(*player) {
+                        p.connection.sink.send_shared(packet);
+                    }
                 }
                 Effect::DropItem { .. } | Effect::Experience { .. } => {}
             }
@@ -931,6 +936,11 @@ fn deliver_simple(effects: &[Effect], entities: &mut Entities, global: &Global) 
                 global
                     .players
                     .broadcast_system(message.clone(), false, None);
+            }
+            Effect::To { player, packet } => {
+                if let Some(p) = entities.player(*player) {
+                    p.connection.sink.send_shared(packet);
+                }
             }
             Effect::DropItem { .. } | Effect::Experience { .. } => {}
         }

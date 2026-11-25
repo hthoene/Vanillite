@@ -309,6 +309,17 @@ rules! {
             max_entity_collisions: VanillaOr<u32> = "max-entity-collisions", Performance,
                 range = [0, 1024], vanilla = VanillaOr::Vanilla, paper = VanillaOr::Value(8);
         }
+        /// Mobs and animals: AI work per tick. The Vanilla profile keeps every mob exact.
+        mobs: MobRules = "performance.mobs" {
+            /// Path finding nodes all mobs of the world may visit per tick; searches over the
+            /// budget fail and are retried later. 0 = unlimited (Vanilla).
+            path_nodes_per_tick: u32 = "path-nodes-per-tick", Performance,
+                range = [0, 10_000_000], vanilla = 0;
+            /// Mobs farther than this many blocks from every player tick only every 20th tick
+            /// (activation range). 0 = off (Vanilla: every mob in simulation distance ticks).
+            activation_range: u16 = "activation-range", Performance, range = [0, 512],
+                vanilla = 0, paper = 32;
+        }
         /// Item entities (dropped items).
         items: ItemRules = "performance.items" {
             /// Ticks an item lies on the ground before it despawns. Lower values keep fewer
