@@ -230,12 +230,12 @@ fn ticker_of(entity: &BlockEntity) -> Option<TickerFn> {
         | BlockEntity::Lectern(_)
         | BlockEntity::Container(_)
         | BlockEntity::EnderChest { .. }
+        | BlockEntity::EndPortal
         | BlockEntity::Skull(_)
         | BlockEntity::Banner(_)
         | BlockEntity::DecoratedPot(_)
         | BlockEntity::ChiseledBookshelf(_)
-        | BlockEntity::Brushable(_)
-        | BlockEntity::EndPortal => None,
+        | BlockEntity::Brushable(_) => None,
         BlockEntity::Campfire(_) => Some(crate::block::campfire::tick),
         BlockEntity::Crafter(_) => Some(crate::block::crafter::server_tick),
         BlockEntity::Beacon(_) => Some(crate::block::beacon::tick),
@@ -306,6 +306,12 @@ pub fn new_block_entity(state: BlockState) -> Option<BlockEntity> {
         Some(BlockEntity::SculkCatalyst(Box::default()))
     } else if crate::block::sign::is_sign(block) {
         Some(BlockEntity::Sign(Box::default()))
+    } else if block == ids::END_PORTAL {
+        Some(BlockEntity::EndPortal)
+    } else if block == ids::END_GATEWAY {
+        Some(BlockEntity::EndGateway(
+            crate::block::portal::Gateway::default(),
+        ))
     } else if block == ids::DECORATED_POT {
         Some(BlockEntity::DecoratedPot(Box::default()))
     } else if block == ids::CHISELED_BOOKSHELF {
@@ -329,12 +335,6 @@ pub fn new_block_entity(state: BlockState) -> Option<BlockEntity> {
         Some(BlockEntity::Skull(Box::default()))
     } else if crate::block::decor::is_banner(block) {
         Some(BlockEntity::Banner(Box::default()))
-    } else if block == ids::END_PORTAL {
-        Some(BlockEntity::EndPortal)
-    } else if block == ids::END_GATEWAY {
-        Some(BlockEntity::EndGateway(
-            crate::block::portal::Gateway::default(),
-        ))
     } else {
         crate::block::container::new_block_entity(block)
     }
@@ -384,6 +384,8 @@ fn is_valid(entity: &BlockEntity, state: BlockState) -> bool {
         }
         BlockEntity::BrewingStand(_) => state.block() == ids::BREWING_STAND,
         BlockEntity::Sign(_) => crate::block::sign::is_sign(state.block()),
+        BlockEntity::EndPortal => state.block() == ids::END_PORTAL,
+        BlockEntity::EndGateway(_) => state.block() == ids::END_GATEWAY,
         BlockEntity::Skull(_) => crate::block::decor::is_skull(state.block()),
         BlockEntity::Banner(_) => crate::block::decor::is_banner(state.block()),
         BlockEntity::DecoratedPot(_) => state.block() == ids::DECORATED_POT,
@@ -393,8 +395,6 @@ fn is_valid(entity: &BlockEntity, state: BlockState) -> bool {
         BlockEntity::Crafter(_) => state.block() == ids::CRAFTER,
         BlockEntity::Beacon(_) => state.block() == ids::BEACON,
         BlockEntity::Conduit(_) => state.block() == ids::CONDUIT,
-        BlockEntity::EndPortal => state.block() == ids::END_PORTAL,
-        BlockEntity::EndGateway(_) => state.block() == ids::END_GATEWAY,
     }
 }
 
@@ -737,6 +737,92 @@ pub(crate) fn write_block_state(state: BlockState) -> Compound {
 }
 
 impl Level {
+    /// `BlockEntity.saveWithFullMetadata` of the block entity at `pos` (`id`, `x`, `y`, `z`
+    /// and its data): the live one, else the stored data of a kind the world does not model
+    /// yet. `None` when the block has no block entity.
+    pub fn block_entity_nbt(&self, pos: BlockPos) -> Option<Compound> {
+        let state = self.block(pos);
+        if let Some(entity) = self.block_entities.get(pos) {
+            return Some(save(entity, state, pos));
+        }
+        let kind = state.block().info().block_entity;
+        if kind == u16::MAX || modelled(state) {
+            return None;
+        }
+        let mut nbt = self
+            .chunks
+            .chunk(pos.chunk())
+            .and_then(|c| c.block_entities.iter().find(|d| d.pos == pos).cloned())
+            .filter(|d| d.kind == Some(kind))
+            .and_then(|d| {
+                let mut input = &d.nbt[..];
+                let mut budget = vanillite_nbt::Budget::file();
+                match vanillite_nbt::read::read_network(&mut input, &mut budget) {
+                    Ok(Some(Tag::Compound(c))) => Some(c),
+                    _ => None,
+                }
+            })
+            .unwrap_or_default();
+        let id = vanillite_data::registry::BLOCK_ENTITY_TYPE
+            .name(kind)
+            .unwrap_or("minecraft:empty");
+        nbt.insert("id", Tag::String(id.to_owned()));
+        nbt.insert("x", Tag::Int(pos.x));
+        nbt.insert("y", Tag::Int(pos.y));
+        nbt.insert("z", Tag::Int(pos.z));
+        Some(nbt)
+    }
+
+    /// `BlockEntity.loadWithComponents(nbt)`, `setChanged` and `sendBlockUpdated` of the block
+    /// entity at `pos` (the data commands, `setblock` and `fill` with block entity data,
+    /// `clone`): the live one is rebuilt from `nbt`, a kind the world does not model keeps
+    /// `nbt` as its stored data. `id`, `x`, `y` and `z` in `nbt` are ignored. Returns whether
+    /// the block has a block entity.
+    pub fn load_block_entity_nbt(&mut self, pos: BlockPos, nbt: &Compound) -> bool {
+        let state = self.block(pos);
+        let kind = state.block().info().block_entity;
+        if kind == u16::MAX && !state.is(vanillite_data::block::ids::MOVING_PISTON) {
+            return false;
+        }
+        if modelled(state) {
+            let Some(entity) = load(state, nbt) else {
+                return false;
+            };
+            self.block_entities.insert(pos, entity);
+        } else {
+            let mut data = nbt.clone();
+            for key in ["id", "x", "y", "z"] {
+                data.remove(key);
+            }
+            let id = vanillite_data::registry::BLOCK_ENTITY_TYPE
+                .name(kind)
+                .unwrap_or("minecraft:empty");
+            data.insert("id", Tag::String(id.to_owned()));
+            data.insert("x", Tag::Int(pos.x));
+            data.insert("y", Tag::Int(pos.y));
+            data.insert("z", Tag::Int(pos.z));
+            let mut bytes = Vec::new();
+            if vanillite_nbt::write::write_network_compound(&data, &mut bytes).is_err() {
+                return false;
+            }
+            let Some(list) = self.chunks.block_entities_mut(pos.chunk()) else {
+                return false;
+            };
+            let entry = BlockEntityData {
+                pos,
+                kind: Some(kind),
+                nbt: bytes.into(),
+            };
+            match list.iter_mut().find(|d| d.pos == pos) {
+                Some(old) => *old = entry,
+                None => list.push(entry),
+            }
+        }
+        self.block_entities.touch(pos.chunk());
+        self.send_block_entity_updated(pos);
+        true
+    }
+
     /// Creates the live block entities of a chunk that became live from its stored data.
     fn load_block_entities(&mut self, chunk: ChunkPos) {
         let Some(stored) = self.chunks.chunk(chunk).map(|c| c.block_entities.clone()) else {

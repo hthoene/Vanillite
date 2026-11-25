@@ -451,8 +451,8 @@ impl ServerBuilder {
             level,
             seed: level_seed(&config.properties.level_seed),
             registries: prepared.registries.clone(),
-            game,
-            recipes_packet,
+            game_at_start: game,
+            recipes_packet: std::sync::RwLock::new(recipes_packet),
             spawn_protection: config.properties.spawn_protection,
             systems: crate::systems::GameSystems::new(
                 level_dir.clone(),

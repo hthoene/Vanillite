@@ -76,7 +76,11 @@ pub(crate) fn store(store: &Store, env: &mut Env<'_>, success: bool, result: i32
             let _ = data::store_number(target, path, tag, env);
         }
         StoreKind::Bossbar { id, max } => {
-            env.global.systems.set_bossbar_value(id, *max, value);
+            let mut out = Vec::new();
+            env.global
+                .systems
+                .set_bossbar_value(id, *max, value, &mut out);
+            crate::bossbars::send(env.global, out);
         }
     }
 }
@@ -201,6 +205,7 @@ pub(crate) fn loaded_block_pos(
 pub(crate) fn block_matches(
     env: &Env<'_>,
     pred: &vanillite_command::BlockPredicateArg,
+    pos: BlockPos,
     state: BlockState,
 ) -> bool {
     let name = state.block().name();
@@ -213,8 +218,11 @@ pub(crate) fn block_matches(
             .properties
             .iter()
             .all(|(k, v)| state.value(k) == Some(v.as_str()))
-        // No block entity data is kept for commands yet: an NBT test fails.
-        && pred.nbt.is_none()
+        && pred.nbt.as_ref().is_none_or(|nbt| {
+            env.level.block_entity_nbt(pos).is_some_and(|actual| {
+                super::nbt_ops::matches(&Tag::Compound(nbt.clone()), &Tag::Compound(actual))
+            })
+        })
 }
 
 /// Score holder names of an argument, `*` for all tracked holders.
@@ -370,14 +378,57 @@ pub(crate) fn modify(
                     .and_then(|u| select::find_uuid(&env.level.entities, u))
                     .into_iter()
                     .collect(),
-                // Owners, leashes, mob targets, attackers and riding come with mobs.
-                Relation::Owner
-                | Relation::Leasher
-                | Relation::Target
-                | Relation::Attacker
-                | Relation::Vehicle
-                | Relation::Controller
-                | Relation::Passengers => Vec::new(),
+                // `OwnableEntity.getOwner`: tamed animals.
+                Relation::Owner => {
+                    let ents = &env.level.entities;
+                    ents.mob(own)
+                        .and_then(|m| m.owner)
+                        .and_then(|u| select::find_uuid(ents, u))
+                        .into_iter()
+                        .collect()
+                }
+                Relation::Leasher => env
+                    .level
+                    .entities
+                    .leashes
+                    .get(&own)
+                    .copied()
+                    .into_iter()
+                    .collect(),
+                // `Targeting.getTarget`.
+                Relation::Target => env
+                    .level
+                    .entities
+                    .mob(own)
+                    .and_then(|m| m.target)
+                    .into_iter()
+                    .collect(),
+                // `LivingEntity.getLastAttacker`.
+                Relation::Attacker => {
+                    let ents = &env.level.entities;
+                    ents.mob(own)
+                        .and_then(|m| m.last_hurt_by_mob)
+                        .or_else(|| {
+                            ents.player(own)
+                                .and_then(|p| p.survival.last_hurt_by_mob)
+                                .map(|(id, _)| id)
+                        })
+                        .into_iter()
+                        .collect()
+                }
+                Relation::Vehicle => env.level.entities.vehicle_of(own).into_iter().collect(),
+                // `getControllingPassenger`.
+                Relation::Controller => {
+                    let ents = &env.level.entities;
+                    ents.riding
+                        .passengers_of(own)
+                        .first()
+                        .copied()
+                        .filter(|&p| vanillite_game::riding::controls(ents, p, own))
+                        .into_iter()
+                        .collect()
+                }
+                Relation::Passengers => env.level.entities.riding.passengers_of(own).to_vec(),
             };
             Ok(related
                 .into_iter()
@@ -623,7 +674,7 @@ fn test(
     condition: ExecuteCondition,
     args: &Args,
     source: &CommandSource,
-    env: &Env<'_>,
+    env: &mut Env<'_>,
 ) -> Result<i32, CommandError> {
     let count = |n: usize| i32::try_from(n).unwrap_or(i32::MAX);
     Ok(match condition {
@@ -632,7 +683,7 @@ fn test(
             let Some(GameValue::BlockPredicate(pred)) = args.game("block") else {
                 return Err(missing("block"));
             };
-            i32::from(block_matches(env, pred, env.level.block(pos)))
+            i32::from(block_matches(env, pred, pos, env.level.block(pos)))
         }
         ExecuteCondition::Biome => {
             let pos = loaded_block_pos(args, "pos", source, env)?;
@@ -709,8 +760,29 @@ fn test(
         ExecuteCondition::Entity => {
             count(select::optional(env, source, selector(args, "entities")?)?.len())
         }
-        // Predicates come with the data pack loot conditions.
-        ExecuteCondition::Predicate => 0,
+        // `checkCustomPredicate` with the level's random.
+        ExecuteCondition::Predicate => {
+            let predicate = super::loot_cmd::resource_or_inline(args, "predicate")?;
+            let this = source
+                .entity
+                .as_ref()
+                .filter(|e| e.world == env.world)
+                .and_then(|e| e.id);
+            let level = &mut *env.level;
+            let entities = std::mem::take(&mut level.entities);
+            let result = super::loot_cmd::test_predicate(
+                &entities,
+                env.global,
+                this,
+                source.pos,
+                &predicate,
+                level.random(),
+            );
+            level.entities = entities;
+            i32::from(
+                result.map_err(|e| CommandError::new("command.exception", vec![ErrArg::Str(e)]))?,
+            )
+        }
         ExecuteCondition::Stopwatch => {
             let id = args.identifier("id").ok_or_else(|| missing("id"))?;
             let range = args.float_range("range").ok_or_else(|| missing("range"))?;
@@ -728,14 +800,19 @@ fn test(
             let root = Tag::Compound(data::read(&target, env)?);
             count(nbt_ops::count(path, &root))
         }
-        // Slots of entities and blocks come with the inventory access of `item`.
-        ExecuteCondition::Items(kind) | ExecuteCondition::Slots(kind) => {
-            if kind == DataKind::Block {
-                loaded_block_pos(args, "source", source, env)?;
-            } else {
-                select::optional(env, source, selector(args, "source")?)?;
-            }
-            0
+        // `countItems`: the count of the matching stacks.
+        ExecuteCondition::Items(kind) => {
+            let stacks = super::items::selected_stacks(kind == DataKind::Block, args, source, env)?;
+            let accepted = super::items::accepted_items_of(args, "item_predicate", env)?;
+            stacks
+                .iter()
+                .filter(|s| !s.is_empty() && accepted.as_ref().is_none_or(|a| a.contains(&s.item)))
+                .map(|s| s.count)
+                .sum()
+        }
+        // `countSlots`: the number of selected slots.
+        ExecuteCondition::Slots(kind) => {
+            count(super::items::selected_stacks(kind == DataKind::Block, args, source, env)?.len())
         }
     })
 }

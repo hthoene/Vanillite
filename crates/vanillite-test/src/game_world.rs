@@ -33,6 +33,7 @@ use vanillite_game::item_entity::ItemData;
 use vanillite_game::level::explosion::BlockInteraction;
 use vanillite_game::level::forced::SavedTickets;
 use vanillite_game::level::{Level, LevelOutput, LevelSettings, update};
+use vanillite_game::lightning;
 use vanillite_game::minecart::{self, MinecartKind};
 use vanillite_game::mob::common::CommonGoal;
 use vanillite_game::mob::fam::FamGoal;
@@ -175,6 +176,36 @@ fn install() {
     });
 }
 
+/// The server whose command tree, scoreboard and storage `command` actions use: started once
+/// without network in a temporary directory, with the Vanilla data pack of [`install`], and
+/// never run (the commands run on the scenario's level).
+fn command_server() -> &'static vanillite_server::Global {
+    static GLOBAL: OnceLock<Arc<vanillite_server::Global>> = OnceLock::new();
+    GLOBAL.get_or_init(|| {
+        install();
+        let dir = std::env::temp_dir().join(format!("vanillite-scenario-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scenario server directory");
+        std::fs::write(dir.join("eula.txt"), "eula=true\n").expect("scenario server eula");
+        let cache = std::env::var_os("VANILLITE_CACHE").map_or_else(
+            || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/vanilla-cache"),
+            PathBuf::from,
+        );
+        let cache = std::fs::canonicalize(&cache).unwrap_or(cache);
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&cache, dir.join("cache")).expect("link the pack cache");
+        let mut builder = vanillite_server::ServerBuilder::new(&dir);
+        builder
+            .vanilla_pack(vanillite_server::VanillaPack::Download)
+            .network(false);
+        let server = builder.start().expect("scenario server starts");
+        let global = server.global().arc().expect("server global");
+        // Kept for the whole test run: its global outlives every scenario.
+        std::mem::forget(server);
+        global
+    })
+}
+
 /// A headless level over flat chunks.
 pub struct GameWorld {
     level: Level,
@@ -195,6 +226,10 @@ pub struct GameWorld {
     seed: i64,
     /// Frames observe the level random.
     level_rng: bool,
+    /// The overworld clock (`time`), for the local difficulty of lightning strikes.
+    clock_time: i64,
+    /// The entities the ticking lightning bolt strikes.
+    bolt_hits: Vec<EntityId>,
     /// The own random of item entities (not seeded per entity yet).
     item_random: LegacyRandom,
     item_scratch: vanillite_server::ItemScratch,
@@ -209,11 +244,18 @@ impl std::fmt::Debug for GameWorld {
     }
 }
 
+/// The seed of every shuffled behaviour list's random in a scenario
+/// (`ParityHooks.SHUFFLE_SEED`).
+const PARITY_SHUFFLE_SEED: i64 = 0x5348_5546;
+
 impl GameWorld {
     /// The world of `spec`. The simulation runs on the world's thread only, so serial and
     /// parallel execution are the same.
     pub fn new(spec: &WorldSpec) -> Result<Self, String> {
         install();
+        // The recorder seeds every shuffled behaviour list's random alike
+        // (`ParityHooks.shuffleRandom`).
+        vanillite_game::mob::set_parity_shuffle_seed(Some(PARITY_SHUFFLE_SEED));
         let store = Arc::new(MemoryStore::default());
         let (mut level, network_ids) = open_level(spec, Arc::clone(&store))?;
         let mut rules = GameRules::default();
@@ -243,6 +285,8 @@ impl GameWorld {
             names: Vec::new(),
             seed: spec.seed,
             level_rng: spec.level_rng,
+            clock_time: spec.time.unwrap_or(0),
+            bolt_hits: Vec::new(),
             item_random: LegacyRandom::new(spec.seed),
             item_scratch: vanillite_server::ItemScratch::default(),
         };
@@ -297,11 +341,11 @@ impl GameWorld {
                 min_y: MIN_Y,
                 dimension: "minecraft:overworld",
                 raining_at: &raining,
+                border: None,
                 enter_gateway: &mut no_gateway,
                 random: &mut random,
                 out: &mut self.effects,
                 hooks: &vanillite_game::hooks::NoHooks,
-                border: None,
                 display_name: &names,
             };
             f(level, &mut ents, &mut env, &mut self.mobs)
@@ -329,6 +373,20 @@ impl GameWorld {
             entity.set_old_pos();
             let kind = entity.as_ref().kind();
             let pos = entity.as_ref().pos();
+            if kind == ids::LIGHTNING_BOLT {
+                let mut hits = std::mem::take(&mut self.bolt_hits);
+                lightning::tick(&mut self.level, id, &mut hits);
+                if !hits.is_empty() {
+                    self.with_env(|level, ents, env, cx| {
+                        for &target in &hits {
+                            lightning::thunder_hit(level, ents, env, cx, target);
+                        }
+                    });
+                    self.finish_removals();
+                }
+                self.bolt_hits = hits;
+                continue;
+            }
             if kind == ids::FALLING_BLOCK || kind == ids::TNT {
                 vanillite_game::entities::tick_entity(&mut self.level, id, kind);
                 self.explosion_hurts();
@@ -358,9 +416,13 @@ impl GameWorld {
             let is_mob = is_mob_kind(kind);
             let is_special = mob::boss::special::is_special_kind(kind);
             let is_minecart = MinecartKind::of(kind).is_some();
+            let is_boat = vanillite_game::vehicle::BoatKind::of(kind).is_some();
+            let is_missile = vanillite_game::mob::missile::is_missile_kind(kind);
             if !is_mob
                 && !is_special
                 && !is_minecart
+                && !is_boat
+                && !is_missile
                 && !projectile::is_arrow_kind(kind)
                 && kind != ids::EXPERIENCE_ORB
                 && kind != ids::AREA_EFFECT_CLOUD
@@ -384,8 +446,12 @@ impl GameWorld {
                     mob::boss::special::tick(level, ents, env, cx, id);
                 } else if is_minecart {
                     minecart::tick(level, ents, env, cx, id);
+                } else if is_boat {
+                    vanillite_game::vehicle::tick_boat(level, ents, env, cx, id);
                 } else if projectile::is_arrow_kind(kind) {
                     projectile::tick_arrow(level, ents, env, cx, id);
+                } else if is_missile {
+                    vanillite_game::mob::missile::tick(level, ents, env, cx, id);
                 } else {
                     vanillite_game::effect::cloud::tick(level, ents, env, cx, id);
                 }
@@ -527,12 +593,31 @@ impl GameWorld {
         if players.is_empty() {
             return;
         }
-        self.with_env(|_, ents, env, _| {
-            let Entities { store, players, .. } = ents;
-            for (id, data) in players.iter_mut() {
-                if let Some(mut entity) = store.get_mut(id) {
-                    survival_player::do_tick(&mut entity, data, env);
-                }
+        self.with_env(|level, ents, env, cx| {
+            for &id in &players {
+                let Entities { store, players, .. } = &mut *ents;
+                let Some(mut entity) = store.get_mut(id) else {
+                    continue;
+                };
+                let Some(data) = players.get_mut(entity.as_ref().kind_row()) else {
+                    continue;
+                };
+                let std::ops::ControlFlow::Continue(result) =
+                    survival_player::do_tick_ai(&mut entity, data, env)
+                else {
+                    continue;
+                };
+                // `pushEntities` and `touch` at the end of the player's `aiStep`.
+                vanillite_game::mob::living::player_push_entities(ents, id);
+                vanillite_game::mob::fam::undead::cubes::player_touch(level, ents, env, cx, id);
+                let Entities { store, players, .. } = &mut *ents;
+                let Some(mut entity) = store.get_mut(id) else {
+                    continue;
+                };
+                let Some(data) = players.get_mut(entity.as_ref().kind_row()) else {
+                    continue;
+                };
+                survival_player::do_tick_end(&mut entity, data, env, result);
             }
         });
         self.spawn_drops();
@@ -555,9 +640,9 @@ impl GameWorld {
 
     fn add_player(&mut self, spec: &EntitySpec, index: usize) {
         let pos = Vec3::new(spec.pos[0], spec.pos[1], spec.pos[2]);
-        let (_tx, inbound) = vanillite_protocol::inbound_queue(1);
+        let (_tx, inbound) = vanillite_protocol::inbound_queue(64);
         let chat = ChatSettings::default();
-        let data = PlayerData {
+        let mut data = PlayerData {
             profile: GameProfile {
                 name: spec.name.clone(),
                 properties: Vec::new(),
@@ -581,19 +666,22 @@ impl GameWorld {
             inventory: vanillite_game::inventory::PlayerInventory::default(),
             last_equipment: std::array::from_fn(|_| vanillite_game::item::ItemStack::EMPTY),
             survival: vanillite_game::survival::player::Survival::default(),
-            recipe_book: vanillite_game::recipe::book::PlayerRecipeBook::default(),
             post_effects: Vec::new(),
             stats: vanillite_game::stats::StatsCounter::default(),
             advancements: vanillite_game::advancements::PlayerAdvancements::load(
-                Arc::default(),
+                Arc::new(vanillite_game::advancements::Advancements::default()),
                 None,
             ),
+            recipe_book: vanillite_game::recipe::book::PlayerRecipeBook::default(),
         };
         let rot = Rotation {
             y_rot: spec.rot[0],
             x_rot: spec.rot[1],
             y_head_rot: spec.rot[0],
         };
+        // Nobody moves the mock player: the server does, like Vanilla's.
+        data.survival.simulate_movement = true;
+        data.survival.y_body_rot = spec.rot[0];
         let id =
             self.level
                 .entities
@@ -700,7 +788,12 @@ impl GameWorld {
             }
         };
         if let Some(p) = ents.player(id) {
-            living(&mut d, rot.y_rot, p.survival.health, p.survival.death_time);
+            living(
+                &mut d,
+                p.survival.y_body_rot,
+                p.survival.health,
+                p.survival.death_time,
+            );
         }
         if ents.minecart(id).is_some() {
             d.insert("rot".into(), json!([bits(rot.y_rot), bits(rot.x_rot)]));
@@ -1303,7 +1396,12 @@ impl ScenarioWorld for GameWorld {
             if !inside(block, min, max) {
                 continue;
             }
-            let v = core.velocity[row];
+            // A player moves by its client: its server-side motion is not part of the trace.
+            let v = if core.kind[row] == ids::PLAYER {
+                Vec3::ZERO
+            } else {
+                core.velocity[row]
+            };
             out.push(EntityObs {
                 kind: core.kind[row].name().to_owned(),
                 pos: [pos.x, pos.y, pos.z],
@@ -1331,6 +1429,15 @@ impl ScenarioWorld for GameWorld {
         Ok(())
     }
 
+    fn lightning(&mut self, column: BlockPos) -> Result<(), String> {
+        let input = lightning::StrikeInput {
+            spawn_mobs: self.rules.bool(Rule::SPAWN_MOBS),
+            clock_time: self.clock_time,
+        };
+        lightning::strike(&mut self.level, column, input);
+        Ok(())
+    }
+
     fn level_rng(&mut self) -> Option<i64> {
         (self.level_rng || !self.names.is_empty()).then(|| self.level.random().state())
     }
@@ -1350,6 +1457,18 @@ impl ScenarioWorld for GameWorld {
         // What the hurt queued (the death's game event reaches a sculk catalyst at once, like
         // Vanilla's `gameEvent`).
         self.apply_actions();
+        self.finish_removals();
+        self.spawn_drops();
+        Ok(())
+    }
+
+    fn command(&mut self, line: &str) -> Result<(), String> {
+        vanillite_server::run_command_on_level(
+            command_server(),
+            &mut self.level,
+            Vec3::ZERO,
+            line,
+        )?;
         self.finish_removals();
         self.spawn_drops();
         Ok(())

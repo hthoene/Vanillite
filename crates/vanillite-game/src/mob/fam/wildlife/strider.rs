@@ -50,6 +50,14 @@ pub(super) fn register_goals(m: &mut MobData) {
     );
     g.add(8, MobGoal::look_at_player(8.0));
     g.add(8, MobGoal::random_look());
+    g.add(
+        9,
+        crate::mob::fam::illager::raider::look_at_mobs(
+            8.0,
+            0.02,
+            crate::mob::fam::illager::raider::LookFilter::Kind(Kind::Strider),
+        ),
+    );
 }
 
 /// Whether the tempt goal runs (`isBeingTempted`).

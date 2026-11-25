@@ -309,11 +309,8 @@ pub fn tick(
         };
         v = Vec3::new(v.x * m, v.y + rise, v.z * m);
     } else {
-        // `applyGravity`: `add(0, -gravity, 0)`; adding 0.0 turns a -0.0 into 0.0 like Java.
-        #[allow(clippy::identity_op)]
-        {
-            v = Vec3::new(v.x + 0.0, v.y - 0.04, v.z + 0.0);
-        }
+        // `applyGravity`: `add(0, -0.04, 0)`, which turns Java's -0.0 into 0.0.
+        v = Vec3::new(v.x + 0.0, v.y - 0.04, v.z + 0.0);
     }
     let half = 0.125;
     let height = 0.25;
@@ -356,8 +353,8 @@ pub fn tick(
         };
         out.pos = moved.pos;
         out.on_ground = moved.hit_y && v.y < 0.0;
-        // `restituteMovementAfterCollisions` without bounciness: `-v * 0.0` keeps the sign
-        // Vanilla's zero gets.
+        // `restituteMovementAfterCollisions` without bounciness: `-v * 0.0` keeps Java's signed
+        // zeros.
         if moved.hit_x {
             v.x = -v.x * 0.0;
         }

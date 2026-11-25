@@ -100,10 +100,10 @@ pub fn casting_tick(t: &mut Tick<'_, '_>) {
         None
     });
     if let Some(o) = look.and_then(|id| t.other(id)) {
-        // `getMaxHeadYRot` 10, `getMaxHeadXRot` 40.
+        // `getMaxHeadYRot` 75, `getMaxHeadXRot` 40.
         t.mob()
             .look
-            .set_look_at(Vec3::new(o.pos.x, o.eye_y, o.pos.z), 10.0, 40.0);
+            .set_look_at(Vec3::new(o.pos.x, o.eye_y, o.pos.z), 75.0, 40.0);
     }
 }
 
@@ -283,7 +283,11 @@ fn summon_vexes(t: &mut Tick<'_, '_>) {
             t.level.network_ids(),
             uuid,
             at,
-            Rotation::default(),
+            // `snapTo(pos, 0, 0)` keeps the constructor's head yaw.
+            Rotation {
+                y_head_rot: crate::mob::constructor_y_rot(seed),
+                ..Rotation::default()
+            },
             vex,
         );
     }
@@ -301,7 +305,7 @@ fn cast_fangs(t: &mut Tick<'_, '_>) {
     let min_y = o.pos.y.min(p.y);
     let max_y = o.pos.y.max(p.y) + 1.0;
     #[allow(clippy::cast_possible_truncation)]
-    let angle = (o.pos.z - p.z).atan2(o.pos.x - p.x) as f32;
+    let angle = vanillite_base::math::atan2(o.pos.z - p.z, o.pos.x - p.x) as f32;
     let pi = std::f32::consts::PI;
     let cos = |a: f32| f64::from(vanillite_base::math::cos(f64::from(a)));
     let sin = |a: f32| f64::from(vanillite_base::math::sin(f64::from(a)));

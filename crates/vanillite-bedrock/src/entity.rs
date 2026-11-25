@@ -17,6 +17,8 @@ const RENAMED: &[(&str, &str)] = &[
     ("minecraft:fishing_bobber", "minecraft:fishing_hook"),
     ("minecraft:evoker_fangs", "minecraft:evocation_fang"),
     ("minecraft:evoker", "minecraft:evocation_illager"),
+    ("minecraft:villager", "minecraft:villager_v2"),
+    ("minecraft:zombie_villager", "minecraft:zombie_villager_v2"),
     ("minecraft:trident", "minecraft:thrown_trident"),
     ("minecraft:spectral_arrow", "minecraft:arrow"),
     ("minecraft:potion", "minecraft:splash_potion"),
@@ -77,6 +79,12 @@ pub struct Data {
     pub baby: Option<bool>,
     /// Fuse of primed TNT (index 8, an int on TNT).
     pub fuse: Option<i32>,
+    /// `LivingEntity.DATA_EFFECT_PARTICLES` (index 10) as one RGB colour (0: none).
+    pub effect_color: Option<i32>,
+    /// `Sheep.DATA_WOOL_ID` (index 17): colour and the sheared bit.
+    pub wool: Option<u8>,
+    /// `VillagerData`: type, profession and level ids.
+    pub villager: Option<[i32; 3]>,
 }
 
 /// Serializer ids (`EntityDataSerializers` registration order of 26.3) read here.
@@ -94,13 +102,58 @@ mod serializer {
     pub const BLOCK_POS: i32 = 10;
     pub const OPTIONAL_BLOCK_POS: i32 = 11;
     pub const DIRECTION: i32 = 12;
+    pub const OPTIONAL_LIVING_ENTITY_REFERENCE: i32 = 13;
     pub const BLOCK_STATE: i32 = 14;
+    pub const OPTIONAL_BLOCK_STATE: i32 = 15;
+    pub const PARTICLE: i32 = 16;
+    pub const PARTICLES: i32 = 17;
+    pub const VILLAGER_DATA: i32 = 18;
+    pub const OPTIONAL_UNSIGNED_INT: i32 = 19;
     pub const POSE: i32 = 20;
+    /// 21-32: registry holders of the mob variants (cat ... zombie nautilus), a VarInt id.
+    pub const FIRST_VARIANT: i32 = 21;
+    pub const LAST_VARIANT: i32 = 32;
+    pub const OPTIONAL_GLOBAL_POS: i32 = 33;
+    pub const PAINTING_VARIANT: i32 = 34;
+    /// 35-38: sniffer, armadillo, copper golem and weathering copper states.
+    pub const FIRST_STATE: i32 = 35;
+    pub const LAST_STATE: i32 = 38;
+    pub const VECTOR3: i32 = 39;
+    pub const QUATERNION: i32 = 40;
+    pub const HUMANOID_ARM: i32 = 42;
+    pub const DYE_COLOR: i32 = 43;
 }
 
-/// Reads the values of a Java `set_entity_data` up to the first value of a serializer it does
-/// not know (the rest is skipped).
-pub fn read_data(raw: &[u8], is_item: bool, is_tnt: bool) -> Data {
+/// Reads a particle list (`PARTICLES`) and returns the colour of its first
+/// `minecraft:entity_effect` (0 when there is none).
+fn effect_particles(r: &mut Reader<'_>) -> vanillite_protocol::codec::Result<i32> {
+    use vanillite_protocol::codec::Decode;
+    let n = r.varint()?;
+    if !(0..=256).contains(&n) {
+        return Err(vanillite_protocol::codec::Error::Invalid("particle count"));
+    }
+    let effect = vanillite_data::registry::PARTICLE_TYPE.id("minecraft:entity_effect");
+    let mut color = 0;
+    for _ in 0..n {
+        let p = vanillite_protocol::packets::play::clientbound::Particle::decode(r)?;
+        if color == 0
+            && effect.is_some_and(|e| i32::from(e) == p.kind)
+            && let Some(argb) = p.options.first_chunk::<4>()
+        {
+            color = i32::from_be_bytes(*argb) & 0x00ff_ffff;
+        }
+    }
+    Ok(color)
+}
+
+/// Reads the values of a Java `set_entity_data` of an entity of type `kind` (Java name) up to
+/// the first value of a serializer it does not know (the rest is skipped).
+#[allow(clippy::too_many_lines)]
+pub fn read_data(raw: &[u8], kind: &str) -> Data {
+    use vanillite_protocol::codec::Decode;
+    let is_item = kind == "minecraft:item";
+    let is_tnt = kind == "minecraft:tnt";
+    let is_sheep = kind == "minecraft:sheep";
     let mut d = Data::default();
     let mut r = Reader::new(raw);
     for _ in 0..64 {
@@ -110,14 +163,14 @@ pub fn read_data(raw: &[u8], is_item: bool, is_tnt: bool) -> Data {
         if index == 0xff {
             break;
         }
-        let Ok(kind) = r.varint() else {
+        let Ok(serializer) = r.varint() else {
             break;
         };
-        let ok = match kind {
-            serializer::BYTE => r.u8().map(|v| {
-                if index == 0 {
-                    d.flags = Some(v);
-                }
+        let ok = match serializer {
+            serializer::BYTE => r.u8().map(|v| match index {
+                0 => d.flags = Some(v),
+                17 if is_sheep => d.wool = Some(v),
+                _ => {}
             }),
             serializer::INT => r.varint().map(|v| {
                 if index == 8 && is_tnt {
@@ -159,9 +212,44 @@ pub fn read_data(raw: &[u8], is_item: bool, is_tnt: bool) -> Data {
                 Ok(_) => r.i64().map(|_| ()),
                 Err(e) => Err(e),
             },
-            serializer::DIRECTION | serializer::BLOCK_STATE | serializer::POSE => {
-                r.varint().map(|_| ())
+            serializer::OPTIONAL_LIVING_ENTITY_REFERENCE => match r.u8() {
+                Ok(0) => Ok(()),
+                Ok(_) => r.take(16).map(|_| ()),
+                Err(e) => Err(e),
+            },
+            serializer::PARTICLE => {
+                vanillite_protocol::packets::play::clientbound::Particle::decode(&mut r).map(|_| ())
             }
+            serializer::PARTICLES => effect_particles(&mut r).map(|c| {
+                if index == 10 {
+                    d.effect_color = Some(c);
+                }
+            }),
+            serializer::VILLAGER_DATA => {
+                (|| Ok([r.varint()?, r.varint()?, r.varint()?]))().map(|v| d.villager = Some(v))
+            }
+            serializer::OPTIONAL_GLOBAL_POS => match r.u8() {
+                Ok(0) => Ok(()),
+                Ok(_) => r.string(32_767).and_then(|_| r.i64()).map(|_| ()),
+                Err(e) => Err(e),
+            },
+            // A holder: registry id + 1, 0 for an inline variant (not sent by the server).
+            serializer::PAINTING_VARIANT => match r.varint() {
+                Ok(0) => break,
+                Ok(_) => Ok(()),
+                Err(e) => Err(e),
+            },
+            serializer::VECTOR3 => r.take(12).map(|_| ()),
+            serializer::QUATERNION => r.take(16).map(|_| ()),
+            serializer::DIRECTION
+            | serializer::BLOCK_STATE
+            | serializer::OPTIONAL_BLOCK_STATE
+            | serializer::OPTIONAL_UNSIGNED_INT
+            | serializer::POSE
+            | serializer::FIRST_VARIANT..=serializer::LAST_VARIANT
+            | serializer::FIRST_STATE..=serializer::LAST_STATE
+            | serializer::HUMANOID_ARM
+            | serializer::DYE_COLOR => r.varint().map(|_| ()),
             _ => break,
         };
         if ok.is_err() {
@@ -169,6 +257,46 @@ pub fn read_data(raw: &[u8], is_item: bool, is_tnt: bool) -> Data {
         }
     }
     d
+}
+
+/// Bedrock `VARIANT` (profession) and `MARK_VARIANT` (biome type) of Java villager data.
+pub fn villager_variants(data: [i32; 3]) -> (i32, i32) {
+    use vanillite_data::registry::Registry;
+    let name = |registry: &str, id: i32| {
+        u16::try_from(id)
+            .ok()
+            .and_then(|i| Registry::by_name(registry)?.name(i))
+            .map(|n| n.strip_prefix("minecraft:").unwrap_or(n))
+    };
+    const PROFESSIONS: &[&str] = &[
+        "none",
+        "farmer",
+        "fisherman",
+        "shepherd",
+        "fletcher",
+        "librarian",
+        "cartographer",
+        "cleric",
+        "armorer",
+        "weaponsmith",
+        "toolsmith",
+        "butcher",
+        "leatherworker",
+        "mason",
+        "nitwit",
+    ];
+    const TYPES: &[&str] = &[
+        "plains", "desert", "jungle", "savanna", "snow", "swamp", "taiga",
+    ];
+    let index = |list: &[&str], n: Option<&str>| {
+        n.and_then(|n| list.iter().position(|p| *p == n))
+            .and_then(|i| i32::try_from(i).ok())
+            .unwrap_or(0)
+    };
+    (
+        index(PROFESSIONS, name("minecraft:villager_profession", data[1])),
+        index(TYPES, name("minecraft:villager_type", data[0])),
+    )
 }
 
 /// Reads a network text component (NBT).
@@ -276,7 +404,7 @@ mod tests {
         let mut raw = vec![0u8, 0, shared::CROUCHING];
         raw.extend_from_slice(&[16, 8, 1]);
         raw.push(0xff);
-        let d = read_data(&raw, false, false);
+        let d = read_data(&raw, "minecraft:zombie");
         assert_eq!(d.flags, Some(shared::CROUCHING));
         assert_eq!(d.baby, Some(true));
     }

@@ -306,6 +306,10 @@ pub(super) fn redstone_ore_random_tick(level: &mut Level, state: BlockState, pos
 struct Weathering {
     age: u8,
     next: Option<BlockId>,
+    /// The unaffected stage (`WeatheringCopper.getFirst`).
+    first: BlockId,
+    /// The stage before (`getPrevious`).
+    previous: Option<BlockId>,
 }
 
 fn weathering(block: BlockId) -> Option<Weathering> {
@@ -350,7 +354,42 @@ fn weathering_of(name: &str) -> Option<Weathering> {
     Some(Weathering {
         age: age as u8,
         next: (age < 3).then(|| named(age + 1)).flatten(),
+        first: named(0)?,
+        previous: (age > 0).then(|| named(age - 1)).flatten(),
     })
+}
+
+/// Whether a block is weathering copper of any age (`instanceof WeatheringCopper`).
+pub fn is_weathering_copper(block: BlockId) -> bool {
+    weathering(block).is_some()
+}
+
+/// Whether a block is waxed copper (`HoneycombItem.WAX_OFF_BY_BLOCK` has it).
+pub fn is_waxed_copper(block: BlockId) -> bool {
+    static TABLE: OnceLock<Box<[bool]>> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        (0..BLOCK_COUNT)
+            .map(|id| {
+                BlockId(id as u16)
+                    .name()
+                    .strip_prefix("minecraft:waxed_")
+                    .and_then(|base| BlockId::by_name(&format!("minecraft:{base}")))
+                    .is_some_and(is_weathering_copper)
+            })
+            .collect()
+    })[usize::from(block.0)]
+}
+
+/// `WeatheringCopper.getFirst(state)`: the unaffected stage with the same properties.
+pub fn copper_first(state: BlockState) -> Option<BlockState> {
+    weathering(state.block()).map(|w| with_properties_of(w.first, state))
+}
+
+/// `WeatheringCopper.getPrevious(state)`: the stage before with the same properties.
+pub fn copper_previous(state: BlockState) -> Option<BlockState> {
+    weathering(state.block())
+        .and_then(|w| w.previous)
+        .map(|b| with_properties_of(b, state))
 }
 
 /// Whether a block weathers (`WeatheringCopper` that is not oxidized yet).

@@ -26,6 +26,7 @@ pub mod id {
     pub const UPDATE_ATTRIBUTES: u32 = 29;
     pub const SET_ACTOR_DATA: u32 = 39;
     pub const SET_ACTOR_MOTION: u32 = 40;
+    pub const SET_ACTOR_LINK: u32 = 41;
     pub const ANIMATE: u32 = 44;
     pub const LEVEL_CHUNK: u32 = 58;
     pub const SET_COMMANDS_ENABLED: u32 = 59;
@@ -149,10 +150,19 @@ pub mod input {
     pub const STOP_SPRINTING: u32 = 26;
     pub const START_SNEAKING: u32 = 27;
     pub const STOP_SNEAKING: u32 = 28;
+    pub const UP: u32 = 10;
+    pub const DOWN: u32 = 11;
+    pub const LEFT: u32 = 12;
+    pub const RIGHT: u32 = 13;
+    pub const UP_LEFT: u32 = 14;
+    pub const UP_RIGHT: u32 = 15;
     pub const START_JUMPING: u32 = 31;
     pub const HANDLED_TELEPORT: u32 = 37;
     pub const START_FLYING: u32 = 42;
     pub const STOP_FLYING: u32 = 43;
+    pub const CLIENT_PREDICTED_VEHICLE: u32 = 45;
+    pub const PADDLING_LEFT: u32 = 46;
+    pub const PADDLING_RIGHT: u32 = 47;
     pub const HORIZONTAL_COLLISION: u32 = 49;
     pub const VERTICAL_COLLISION: u32 = 50;
     /// Number of flags of this protocol version.
@@ -162,7 +172,13 @@ pub mod input {
 /// Entity metadata keys and flags used here.
 pub mod meta {
     pub const FLAGS: u32 = 0;
+    pub const COLOR: u32 = 3;
     pub const NAME: u32 = 4;
+    pub const EFFECT_COLOR: u32 = 8;
+    pub const MARK_VARIANT: u32 = 43;
+    pub const FLAG_RIDING: u32 = 2;
+    pub const FLAG_SADDLED: u32 = 8;
+    pub const FLAG_SHEARED: u32 = 31;
     pub const SCALE: u32 = 38;
     pub const WIDTH: u32 = 53;
     pub const HEIGHT: u32 = 54;
@@ -779,6 +795,8 @@ pub struct AuthInput {
     pub yaw: f32,
     /// Eye position.
     pub position: [f32; 3],
+    /// Movement keys: x left (+) / right (-), y forward (+) / back (-).
+    pub move_vector: [f32; 2],
     pub head_yaw: f32,
     /// Input flag bits (index = flag id).
     pub flags: u128,
@@ -799,7 +817,7 @@ pub fn read_auth_input(body: &[u8], v: &Version) -> Result<AuthInput> {
     let pitch = r.f32()?;
     let yaw = r.f32()?;
     let position = r.vec3()?;
-    let _move = [r.f32()?, r.f32()?];
+    let move_vector = [r.f32()?, r.f32()?];
     let head_yaw = r.f32()?;
     let n = if !v.before_26_50() || r.bool()? {
         r.varu32()?
@@ -824,12 +842,18 @@ pub fn read_auth_input(body: &[u8], v: &Version) -> Result<AuthInput> {
     let _interact_rot = [r.f32()?, r.f32()?];
     let tick = r.varu64()?;
     let delta = r.vec3()?;
-    for v in position.iter().chain(&delta).chain(&[pitch, yaw, head_yaw]) {
+    for v in position
+        .iter()
+        .chain(&delta)
+        .chain(&move_vector)
+        .chain(&[pitch, yaw, head_yaw])
+    {
         if !v.is_finite() {
             return Err(io::Error::Invalid("non-finite movement"));
         }
     }
     Ok(AuthInput {
+        move_vector,
         pitch,
         yaw,
         position,
@@ -847,7 +871,9 @@ pub fn write_auth_input(i: &AuthInput, v: &Version, blocks: &[(i32, [i32; 3], i3
     out.extend_from_slice(&i.pitch.to_le_bytes());
     out.extend_from_slice(&i.yaw.to_le_bytes());
     io::write_vec3(&mut out, i.position);
-    out.extend_from_slice(&[0; 8]);
+    for m in i.move_vector {
+        out.extend_from_slice(&m.to_le_bytes());
+    }
     out.extend_from_slice(&i.head_yaw.to_le_bytes());
     if v.before_26_50() {
         out.push(1);
@@ -1394,6 +1420,8 @@ pub struct AuthInputExtra {
     pub item_interaction: Option<Transaction>,
     pub stack_request: Option<StackRequest>,
     pub block_actions: Vec<BlockAction>,
+    /// Pitch and yaw of the vehicle the client predicts.
+    pub vehicle_rotation: Option<[f32; 2]>,
 }
 
 /// Reads the optional parts of `player_auth_input` after the movement fields.
@@ -1436,6 +1464,9 @@ pub fn read_auth_input_extra(body: &[u8], v: &Version) -> Result<AuthInputExtra>
             extra.block_actions.push(BlockAction { action, pos, face });
         }
     }
+    if read_optional_flag(&mut r, v)? {
+        extra.vehicle_rotation = Some([r.f32()?, r.f32()?]);
+    }
     Ok(extra)
 }
 
@@ -1448,6 +1479,29 @@ pub fn read_player_action(body: &[u8]) -> Result<(i32, [i32; 3], i32)> {
     let _result = read_block_pos(&mut r)?;
     let face = r.vari32()?;
     Ok((action, pos, face))
+}
+
+/// `set_actor_link` (kind 0 remove, 1 rider, 2 passenger).
+pub fn set_actor_link(ridden: i64, rider: i64, kind: u8, immediate: bool) -> Vec<u8> {
+    let mut out = Vec::with_capacity(24);
+    io::write_vari64(&mut out, ridden);
+    io::write_vari64(&mut out, rider);
+    out.push(kind);
+    out.push(u8::from(immediate));
+    out.push(1); // rider initiated
+    out.extend_from_slice(&0f32.to_le_bytes()); // vehicle angular velocity
+    out
+}
+
+/// `spawn_particle_effect` of a vanilla particle effect without MoLang variables.
+pub fn spawn_particle_effect(dimension: u8, pos: [f32; 3], name: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(name.len().saturating_add(24));
+    out.push(dimension);
+    io::write_vari64(&mut out, -1);
+    io::write_vec3(&mut out, pos);
+    io::write_str(&mut out, name);
+    out.push(0); // no MoLang variables
+    out
 }
 
 /// Reads `interact`: action and target runtime id.

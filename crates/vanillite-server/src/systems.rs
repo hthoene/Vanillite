@@ -138,6 +138,7 @@ pub(crate) struct GameSystems {
     stopwatches: Mutex<Stopwatches>,
     profiling: Mutex<Profiling>,
     waypoints: Mutex<std::collections::BTreeMap<u128, WaypointIcon>>,
+    bossbars: Mutex<crate::bossbars::CustomBossEvents>,
 }
 
 /// Registry tags: registry name → tag id → resolved entry ids.
@@ -174,6 +175,7 @@ impl GameSystems {
             stopwatches: Mutex::default(),
             profiling: Mutex::default(),
             waypoints: Mutex::default(),
+            bossbars: Mutex::default(),
         }
     }
 
@@ -237,7 +239,9 @@ impl GameSystems {
     /// Loads the scoreboard, the command storage, the scheduled functions and the random
     /// sequences from the world's saved data (`ServerScoreboard.load`, `CommandStorage`,
     /// `TimerQueue`, `RandomSequences`).
-    pub(crate) fn load(&self, data: &SavedDataStore) {
+    /// `legacy` reads the `level.dat` fields of worlds saved before the split into saved data
+    /// (`LevelDatToSavedDataPreparationFix`, `LevelDatToSavedDataFileFix`).
+    pub(crate) fn load(&self, data: &SavedDataStore, legacy: &dyn Fn(&str) -> Option<Tag>) {
         let read = |id: &str| {
             data.read(id).unwrap_or_else(|e| {
                 log::error!("Cannot read {id}: {e}");
@@ -247,7 +251,7 @@ impl GameSystems {
         if let Some(c) = read(SCOREBOARD) {
             *self.scoreboard() = Scoreboard::from_nbt(&c);
         }
-        if let Some(c) = read(SCHEDULED_EVENTS) {
+        if let Some(c) = read(SCHEDULED_EVENTS).or_else(|| legacy_scheduled_events(legacy)) {
             *self.scheduled() = TimerQueue::from_nbt(&c);
         }
         if let Some(c) = read(vanillite_game::random_sequences::SAVED_DATA) {
@@ -255,6 +259,20 @@ impl GameSystems {
             *sequences = RandomSequences::load(sequences.world_seed(), &c);
         }
         *self.storage() = CommandStorage::load(data);
+        let bars = read(crate::bossbars::SAVED_DATA).or_else(|| match legacy("CustomBossEvents") {
+            Some(Tag::Compound(c)) => Some(c),
+            _ => None,
+        });
+        if let Some(c) = bars {
+            let mut random = vanillite_base::random::LegacyRandom::new(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| i64::try_from(d.as_nanos() % (1 << 62)).unwrap_or(0)),
+            );
+            *self.bossbars() = crate::bossbars::CustomBossEvents::load(&c, &mut || {
+                vanillite_game::mob::random_uuid(&mut random)
+            });
+        }
     }
 
     /// Writes what changed since the last save (`storeToSaveDataIfDirty`, `setDirty`).
@@ -282,6 +300,9 @@ impl GameSystems {
         }
         for (id, c) in self.storage().take_dirty() {
             data.write(&id, c);
+        }
+        if let Some(c) = self.bossbars().take_dirty() {
+            data.write(crate::bossbars::SAVED_DATA, c);
         }
     }
 
@@ -332,13 +353,33 @@ impl GameSystems {
         self.post_reload.swap(false, Ordering::AcqRel)
     }
 
-    /// Whether a command boss bar exists (`CustomBossEvents.get`); boss bars are not kept yet.
-    pub(crate) fn bossbar_exists(&self, _id: &str) -> bool {
-        false
+    /// The command boss bars (`MinecraftServer.getCustomBossEvents`).
+    pub(crate) fn bossbars(&self) -> MutexGuard<'_, crate::bossbars::CustomBossEvents> {
+        lock(&self.bossbars)
     }
 
-    /// Sets a command boss bar's value or maximum (`execute store bossbar`).
-    pub(crate) fn set_bossbar_value(&self, _id: &str, _max: bool, _value: i32) {}
+    /// Whether a command boss bar exists (`CustomBossEvents.get`).
+    pub(crate) fn bossbar_exists(&self, id: &str) -> bool {
+        self.bossbars().get(id).is_some()
+    }
+
+    /// Sets a command boss bar's value or maximum (`execute store bossbar`); the packets of the
+    /// change go to `out`.
+    pub(crate) fn set_bossbar_value(
+        &self,
+        id: &str,
+        max: bool,
+        value: i32,
+        out: &mut crate::bossbars::Outbox,
+    ) {
+        if let Some(e) = self.bossbars().get_mut(id) {
+            if max {
+                e.set_max(value, out);
+            } else {
+                e.set_value(value, out);
+            }
+        }
+    }
 
     /// The elapsed seconds of a stopwatch (`Stopwatches.get`, `Stopwatch.elapsedSeconds`).
     pub(crate) fn stopwatch_seconds(&self, id: &str) -> Option<f64> {
@@ -355,5 +396,79 @@ impl GameSystems {
     /// Sets the overworld spawn.
     pub(crate) fn set_spawn(&self, pos: Vec3) {
         *self.spawn.lock().unwrap_or_else(PoisonError::into_inner) = pos;
+    }
+}
+
+/// The scheduled functions of an old `level.dat` (`ScheduledEvents`, renamed by
+/// `LevelDatToSavedDataPreparationFix`), in the saved data format.
+fn legacy_scheduled_events(legacy: &dyn Fn(&str) -> Option<Tag>) -> Option<Compound> {
+    if let Some(Tag::Compound(c)) = legacy("scheduled_events") {
+        return Some(c);
+    }
+    let Some(Tag::List(list)) = legacy("ScheduledEvents") else {
+        return None;
+    };
+    let rename = |c: &Compound, from: &str, to: &str, out: &mut Compound| {
+        if let Some(v) = c.get(from) {
+            out.insert(to, v.clone());
+        }
+    };
+    let events = list
+        .0
+        .iter()
+        .filter_map(|e| {
+            let Tag::Compound(e) = e else {
+                return None;
+            };
+            let mut out = Compound::new();
+            rename(e, "Name", "id", &mut out);
+            rename(e, "TriggerTime", "trigger_time", &mut out);
+            if let Some(Tag::Compound(cb)) = e.get("Callback") {
+                let mut callback = Compound::new();
+                rename(cb, "Type", "type", &mut callback);
+                rename(cb, "Name", "id", &mut callback);
+                out.insert("callback", Tag::Compound(callback));
+            }
+            Some(Tag::Compound(out))
+        })
+        .collect();
+    let mut c = Compound::new();
+    c.insert("events", Tag::List(vanillite_nbt::List(events)));
+    Some(c)
+}
+
+#[cfg(test)]
+mod legacy_tests {
+    use vanillite_nbt::{Compound, List, Tag};
+
+    #[test]
+    fn scheduled_events_of_old_level_dat() {
+        let mut callback = Compound::new();
+        callback.insert("Type", "minecraft:function");
+        callback.insert("Name", "test:tick");
+        let mut event = Compound::new();
+        event.insert("Name", "test:tick");
+        event.insert("TriggerTime", Tag::Long(40));
+        event.insert("Callback", Tag::Compound(callback));
+        let list = Tag::List(List(vec![Tag::Compound(event)]));
+        let converted =
+            super::legacy_scheduled_events(&|k| (k == "ScheduledEvents").then(|| list.clone()))
+                .expect("converted");
+        let Some(Tag::List(events)) = converted.get("events") else {
+            panic!("no events");
+        };
+        let Some(Tag::Compound(e)) = events.0.first() else {
+            panic!("no event");
+        };
+        assert_eq!(e.get("id").and_then(Tag::as_str), Some("test:tick"));
+        assert_eq!(e.get("trigger_time").and_then(Tag::as_i64), Some(40));
+        let Some(Tag::Compound(cb)) = e.get("callback") else {
+            panic!("no callback");
+        };
+        assert_eq!(
+            cb.get("type").and_then(Tag::as_str),
+            Some("minecraft:function")
+        );
+        assert!(super::legacy_scheduled_events(&|_| None).is_none());
     }
 }

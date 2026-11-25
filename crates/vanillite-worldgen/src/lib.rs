@@ -20,6 +20,7 @@ pub mod interval;
 pub mod material;
 pub mod mth;
 pub mod noise;
+pub mod place;
 pub mod proto;
 pub mod random;
 pub mod random_state;

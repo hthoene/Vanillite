@@ -311,6 +311,17 @@ fn finish(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, u: UsingItem
             seed,
         );
     }
+    // `Consumable.onConsume`: the use statistic and `consume_item`.
+    if let Some(p) = ents.player_mut(player) {
+        p.stats.award(
+            crate::stats::Stat::of(crate::stats::StatType::Used, stack.item),
+            1,
+        );
+        p.advancements
+            .trigger(crate::advancements::trigger::Event::ConsumeItem(
+                stack.clone(),
+            ));
+    }
     let remainder = match name {
         "minecraft:mushroom_stew"
         | "minecraft:rabbit_stew"

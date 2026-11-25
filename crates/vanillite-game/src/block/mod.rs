@@ -328,6 +328,7 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
     spawner::fill(block, &mut b);
     container::fill(block, &mut b);
     sign::fill(block, &mut b);
+    portal::fill(block, &mut b);
     pot::fill(block, &mut b);
     bookshelf::fill(block, &mut b);
     campfire::fill(block, &mut b);
