@@ -1265,4 +1265,49 @@ pub(crate) mod tests {
             primed.heightmaps().get(HeightmapKind::OceanFloor)
         );
     }
+
+    /// Every POI record of a real 26.x world (`VANILLITE_TEST_WORLD`, a copy that is only
+    /// read) comes back the same through [`read_poi`] and [`write_poi`].
+    #[test]
+    fn real_world_poi_round_trip() {
+        let Some(world) = std::env::var_os("VANILLITE_TEST_WORLD").map(std::path::PathBuf::from)
+        else {
+            return;
+        };
+        let mut count = 0;
+        for dimension in ["overworld", "the_nether", "the_end"] {
+            let dir = world
+                .join("dimensions/minecraft")
+                .join(dimension)
+                .join("poi");
+            let Ok(files) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for file in files {
+                let path = file.unwrap().path();
+                let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                let parts: Vec<&str> = name.split('.').collect();
+                let (rx, rz): (i32, i32) = (parts[1].parse().unwrap(), parts[2].parse().unwrap());
+                let region = crate::region::RegionFile::open(&path, false)
+                    .unwrap()
+                    .unwrap();
+                for i in 0..1024 {
+                    let pos = ChunkPos::new(rx * 32 + i % 32, rz * 32 + i / 32);
+                    let Some(record) = region.read_record(pos).unwrap() else {
+                        continue;
+                    };
+                    let compression = crate::Compression::from_id(record[0]).unwrap();
+                    let nbt = compression.decompress(&record[1..]).unwrap();
+                    let mut original = crate::read_root(pos, &nbt).unwrap();
+                    let bytes = read_poi(pos, original.clone()).unwrap();
+                    let mut again = write_poi(pos, &bytes).unwrap();
+                    original.remove("DataVersion");
+                    again.remove("DataVersion");
+                    assert_eq!(again, original, "{} {pos:?}", path.display());
+                    count += 1;
+                }
+            }
+        }
+        assert!(count > 0, "no POI records in the test world");
+    }
 }

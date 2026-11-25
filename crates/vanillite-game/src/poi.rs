@@ -133,7 +133,8 @@ fn by_state() -> &'static [u8] {
     TABLE.get_or_init(|| {
         let mut table = vec![NONE; vanillite_data::block::STATE_COUNT];
         for info in vanillite_data::block::BLOCKS.iter() {
-            let ty = match info.name {
+            let name = info.name.strip_prefix("minecraft:").unwrap_or(info.name);
+            let ty = match name {
                 "blast_furnace" => PoiType::Armorer,
                 "smoker" => PoiType::Butcher,
                 "cartography_table" => PoiType::Cartographer,
@@ -826,20 +827,21 @@ impl PoiManager {
             let list: Vec<Tag> = records
                 .into_iter()
                 .map(|r| {
-                    Tag::Compound(
-                        Compound::new()
-                            .with("pos", Tag::IntArray(vec![r.pos.x, r.pos.y, r.pos.z]))
-                            .with("type", format!("minecraft:{}", r.ty.name()))
-                            .with("free_tickets", r.free_tickets),
-                    )
+                    // `optionalFieldOf(.., 0)`: no `free_tickets` when 0.
+                    let mut c = Compound::new()
+                        .with("type", format!("minecraft:{}", r.ty.name()))
+                        .with("pos", Tag::IntArray(vec![r.pos.x, r.pos.y, r.pos.z]));
+                    if r.free_tickets != 0 {
+                        c.insert("free_tickets", r.free_tickets);
+                    }
+                    Tag::Compound(c)
                 })
                 .collect();
-            sections.insert(
-                y.to_string(),
-                Compound::new()
-                    .with("Valid", s.valid)
-                    .with("Records", List(list)),
-            );
+            let mut section = Compound::new().with("Records", List(list));
+            if s.valid {
+                section.insert("Valid", true);
+            }
+            sections.insert(y.to_string(), section);
         }
         let mut root = extra.clone();
         root.insert("Sections", sections);
@@ -951,7 +953,7 @@ mod tests {
     }
 
     fn state(name: &str) -> BlockState {
-        vanillite_data::block::BlockId::by_name(name)
+        vanillite_data::block::BlockId::by_name(&format!("minecraft:{name}"))
             .expect("block")
             .default_state()
     }
