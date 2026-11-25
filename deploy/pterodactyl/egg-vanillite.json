@@ -841,6 +841,16 @@
       "field_type": "text"
     },
     {
+      "name": "Multiversion: Versions",
+      "description": "Older versions whose clients may join: `\"all\"` (every version this build translates, currently the previous release), `\"none\"`, or a comma-separated list of version names such as `\"26.2\"`. Clients of the server's own version are not translated and pay nothing. Empty: the profile's value (vanilla profile: all). vanillite.toml: multiversion.versions.",
+      "env_variable": "VANILLITE_MULTIVERSION__VERSIONS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string",
+      "field_type": "text"
+    },
+    {
       "name": "Plugins: Enabled",
       "description": "Load the plugins in `plugins/`. Empty: the profile's value (vanilla profile: true). vanillite.toml: plugins.enabled.",
       "env_variable": "VANILLITE_PLUGINS__ENABLED",

@@ -4,6 +4,7 @@
 //! cargo xtask vanilla update [<version>] [--jar <server.jar>]
 //! cargo xtask version check
 //! cargo xtask version update <version> [--final] [--bulk] [--no-test]
+//! cargo xtask multiversion add <version>
 //! cargo xtask codegen [--check]
 //! cargo xtask golden check
 //! cargo xtask golden regen [--all] [--bulk] [<name>...]
@@ -22,6 +23,7 @@ mod docker;
 mod egg;
 mod golden;
 mod loadtest;
+mod multiversion;
 mod normalize;
 mod vanilla;
 mod version;
@@ -50,8 +52,14 @@ pub const USAGE: &str = "usage:
       target/version/<version>/change-report.md (protocol, packet fields, registries, blocks,
       items, entities, data pack, goldens, failing tests, affected code areas). --final does it
       in this checkout instead (only for releases): the real switch. --no-test skips the tests.
+  cargo xtask multiversion add <version>
+      Extract an older version (release or snapshot) and keep what the multi-version layer
+      needs to translate between it and its successor in data/multiversion/<version>/
+      (packets, registries, blocks, synchronised registry entries), then run codegen.
+      `version update --final` keeps the outgoing version the same way.
   cargo xtask codegen [--check]
-      Generate crates/vanillite-data/src/generated/ from data/vanilla/.
+      Generate crates/vanillite-data/src/generated/ from data/vanilla/ and the adapter tables
+      crates/vanillite-multiversion/src/generated/ from data/multiversion/.
       --check fails if the committed files are not current.
   cargo xtask golden check
       Fail if a repository golden (worldgen, data, fast scenarios) is missing or stale: its key
@@ -118,6 +126,7 @@ fn main() -> ExitCode {
         ["vanilla", "update", rest @ ..] => vanilla_update(rest),
         ["version", "check"] => version::check(&repo_root()),
         ["version", "update", rest @ ..] => version::update(&repo_root(), rest),
+        ["multiversion", "add", rest @ ..] => multiversion::add(&repo_root(), rest),
         ["codegen"] => codegen::run(&repo_root(), false),
         ["codegen", "--check"] => codegen::run(&repo_root(), true),
         ["golden", "check"] => golden::check(&repo_root()),

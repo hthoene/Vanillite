@@ -126,6 +126,9 @@ pub fn update(root: &Path, args: &[&str]) -> Result<()> {
     } else {
         worktree(root, &out_dir.join("tree"))?
     };
+    // Clients of the outgoing version keep joining through the multi-version layer: its data
+    // is kept for the adapter step to the new version.
+    crate::multiversion::keep(&tree, &old)?;
     let mut steps = Steps::default();
 
     // Data and generated code.

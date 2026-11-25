@@ -24,6 +24,7 @@ vanillite-world.workspace = true
 vanillite-protocol.workspace = true
 vanillite-nbt.workspace = true
 vanillite-net.workspace = true
+vanillite-multiversion.workspace = true
 vanillite-worldgen.workspace = true
 vanillite-light.workspace = true
 vanillite-storage.workspace = true

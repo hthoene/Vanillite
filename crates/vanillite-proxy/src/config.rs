@@ -32,6 +32,10 @@ io-threads = 0
 forwarding-secret-file = "forwarding.secret"
 # Servers tried in this order on join and as fallback when a server is lost.
 try = ["lobby"]
+# Clients of older Minecraft versions accepted through the multi-version layer: "all" (every
+# version this build translates), "none", or a comma-separated list such as "26.2". Their
+# packets are translated here, so backends only see the current version.
+older-versions = "all"
 
 # Backend servers: name = "host:port". Backends must use modern forwarding with the same
 # secret (Paper: proxies.velocity; Vanillite: proxy.velocity-secret in vanillite.toml).
@@ -121,6 +125,8 @@ pub struct ProxyConfig {
     pub limits: Limits,
     /// Bedrock frontend.
     pub bedrock: Bedrock,
+    /// Older client versions accepted (`older-versions`). Default all supported.
+    pub multiversion: vanillite_multiversion::Accepted,
 }
 
 /// The Bedrock frontend (`[bedrock]`).
@@ -246,6 +252,7 @@ impl Default for ProxyConfig {
                 connect_timeout: Duration::from_secs(5),
             },
             bedrock: Bedrock::default(),
+            multiversion: vanillite_multiversion::Accepted::all(),
         }
     }
 }
@@ -378,6 +385,9 @@ impl ProxyConfig {
         };
         no_unknown(&l, "limits")?;
         let bedrock = Bedrock::parse(&mut table(&mut t, "bedrock")?)?;
+        let multiversion =
+            vanillite_multiversion::Accepted::parse(&string(&mut t, "older-versions", "all")?)
+                .map_err(|e| format!("older-versions: {e}"))?;
         let config = Self {
             bind,
             online_mode: boolean(&mut t, "online-mode", true)?,
@@ -404,6 +414,7 @@ impl ProxyConfig {
             permissions,
             limits,
             bedrock,
+            multiversion,
         };
         no_unknown(&t, "")?;
         config.check()?;

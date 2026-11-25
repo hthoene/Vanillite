@@ -131,6 +131,16 @@ rules! {
             allow_direct_connections: bool = "allow-direct-connections", Setting, restart = true,
                 vanilla = false;
         }
+        /// Clients of older Minecraft versions (`vanillite-multiversion`): their packets are
+        /// translated to the server's version and back, like with ViaVersion.
+        multiversion: MultiversionRules = "multiversion" {
+            /// Older versions whose clients may join: `"all"` (every version this build
+            /// translates, currently the previous release), `"none"`, or a comma-separated
+            /// list of version names such as `"26.2"`. Clients of the server's own version are
+            /// not translated and pay nothing.
+            versions: String = "versions", Setting, restart = true,
+                vanilla = String::from("all");
+        }
         /// Native plugins in `plugins/`: packages with a `plugin.toml` and a library built
         /// against the plugin API. Plugins are trusted code with the server's rights.
         plugins: PluginRules = "plugins" {
