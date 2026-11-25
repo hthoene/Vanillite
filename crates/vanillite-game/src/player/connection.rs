@@ -158,6 +158,9 @@ pub struct Connection {
     pub chunks: PlayerChunks,
     /// Chat and commands.
     pub chat: PlayerChatState,
+    /// Network ids of the entities the player attacked since the last tick (`attack`); the
+    /// world resolves them with the entities.
+    pub attacks: Vec<i32>,
     /// Digging, placing and item handling.
     pub play: Digging,
     /// A virtual connection (test bot, Bedrock player). These have no chat session, so their
@@ -216,6 +219,7 @@ impl Connection {
             movement: Movement::new(pos),
             chunks: PlayerChunks::new(memory_connection),
             chat: PlayerChatState::new(chat, inbox),
+            attacks: Vec::new(),
             play: Digging::new(),
             is_virtual,
         }
@@ -383,6 +387,12 @@ impl Connection {
             ServerboundPlay::PlayerInput(p) => {
                 if self.movement.has_client_loaded() {
                     state.shift_key_down = p.0.shift;
+                }
+            }
+            ServerboundPlay::Attack(p) => {
+                // `handleAttack`: bounded like the other per-tick packet budgets.
+                if self.movement.has_client_loaded() && self.attacks.len() < 16 {
+                    self.attacks.push(p.entity_id);
                 }
             }
             ServerboundPlay::PlayerCommand(p) => {

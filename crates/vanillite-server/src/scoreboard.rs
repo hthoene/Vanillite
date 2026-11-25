@@ -233,7 +233,7 @@ pub(crate) fn flush(global: &Global) {
     };
     global
         .players
-        .broadcast_shared(&packets, |p| sync.receivers.contains(&p.0));
+        .broadcast_all_to(&packets, |p| sync.receivers.contains(&p.0));
 }
 
 /// `PlayerList.updateEntireScoreboard`: the pending changes go out first, then the joining
@@ -258,7 +258,7 @@ pub(crate) fn send_all(global: &Global, sink: &dyn PacketSink, uuid: u128) {
     };
     global
         .players
-        .broadcast_shared(&pending, |p| sync.receivers.contains(&p.0));
+        .broadcast_all_to(&pending, |p| sync.receivers.contains(&p.0));
     for packet in &packets {
         sink.send_shared(packet);
     }

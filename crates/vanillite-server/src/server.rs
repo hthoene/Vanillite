@@ -223,11 +223,12 @@ impl ServerBuilder {
         // Plugins load first: they register commands, events and slot providers.
         let plugins = crate::plugins::load(&dir, &config);
         let parallel = config.server.tick.parallel_dimensions;
-        let busy_tick_threads = if parallel { DIMENSIONS.len() } else { 1 };
+        // One core stays with the tick threads: dimensions without players sleep between their
+        // ticks, so they do not take a core each (Vanilla: cores minus the server thread).
         let workers = match config.server.threads.compute {
             0 => std::thread::available_parallelism()
                 .map_or(1, usize::from)
-                .saturating_sub(busy_tick_threads)
+                .saturating_sub(1)
                 .max(1),
             n => usize::from(n),
         };
@@ -295,7 +296,13 @@ impl ServerBuilder {
         let seed = prepared.world_gen.seed;
         let world_gen = prepared.world_gen.clone();
         let behaviours = Arc::new(vanillite_game::block::Behaviours::vanilla());
+        let spawn_table = crate::world_setup::spawn_table(packs.as_deref()).map(Arc::new);
         let slot = |name: &str, origin: &Origin| log::info!("Slot {name}: {origin}");
+        let entity_compression = match config.properties.region_file_compression {
+            RegionFileCompression::Deflate => Compression::Deflate,
+            RegionFileCompression::Lz4 => Compression::Lz4,
+            RegionFileCompression::None => Compression::None,
+        };
         let (storage_provider, origin) = self.chunk_storage.take().unwrap_or_else(|| {
             let compression = match config.properties.region_file_compression {
                 RegionFileCompression::Deflate => Compression::Deflate,
@@ -402,6 +409,9 @@ impl ServerBuilder {
             global.systems.set_tags(crate::packs::registry_tags(packs));
         }
         global.systems.set_spawn(level_setup.spawn.0);
+        if let Some(table) = &spawn_table {
+            let _ = global.systems.mob_spawns.set(Arc::clone(table));
+        }
         crate::commands::load_game_systems(&global, &opened_packs);
         let watch = Arc::new(WatchState::new(
             config.server.watchdog.early_warning_after.get(),
@@ -432,6 +442,8 @@ impl ServerBuilder {
                 dimension,
                 seed,
             )?;
+            let entity_io =
+                crate::entity_io::EntityChunks::new(&info.dir, entity_compression, dimension);
             let slots = ChunkSlots {
                 storage: storage_provider
                     .create(&info)
@@ -442,6 +454,10 @@ impl ServerBuilder {
                 light: light_provider.create(&info),
                 executor: Arc::clone(&executor) as _,
             };
+            let generator = Arc::clone(&slots.generator);
+            slots
+                .executor
+                .spawn(0, Box::new(move || generator.prepare()));
             let settings = ChunkSettings {
                 view_distance: i32::from(view_distance),
                 unload_delay: u64::from(rules.chunks.unload_delay),
@@ -491,6 +507,7 @@ impl ServerBuilder {
                 climate,
             );
             let kept_tickets = crate::chunk_tickets::load(&data, &mut level);
+            let mobs = crate::mobs::WorldMobs::new(spawn_table.clone(), seed, &rules);
             let mut world = ServerWorld::new(
                 WorldId(index),
                 (*dimension).to_owned(),
@@ -499,6 +516,8 @@ impl ServerBuilder {
                 players,
                 level,
                 survival,
+                mobs,
+                entity_io,
                 data,
             );
             world.kept_tickets = kept_tickets;
@@ -525,6 +544,12 @@ impl ServerBuilder {
             (Worlds::Parallel(threads), routes)
         } else {
             log::info!("Dimensions tick sequentially");
+            for world in &mut worlds {
+                let (wake, id) = (sender.clone(), world.id());
+                world.set_chunk_waker(Arc::new(move || {
+                    let _ = wake.send(ServerMsg::WorldTask(id, Box::new(ServerWorld::pump_chunks)));
+                }));
+            }
             let routes = worlds.iter().map(|_| Route::Server).collect();
             (Worlds::Sequential(worlds), routes)
         };
@@ -564,6 +589,7 @@ impl ServerBuilder {
             watchdog: Some(watchdog),
             net: Some(net),
             test_bots: Vec::new(),
+            dupe_waiting: Vec::new(),
             layout,
             player_store,
             next_backup: Instant::now(),
@@ -674,6 +700,10 @@ fn spawn_world_thread(
     heartbeat: Arc<Heartbeat>,
 ) -> Result<WorldThread, StartError> {
     let (sender, receiver) = mpsc::channel::<WorldMsg>();
+    let wake = sender.clone();
+    world.set_chunk_waker(Arc::new(move || {
+        let _ = wake.send(WorldMsg::Task(Box::new(ServerWorld::pump_chunks)));
+    }));
     let name = format!("World {}", world.dimension());
     let id = world.id();
     let thread_compute = compute.clone();
@@ -813,6 +843,9 @@ pub struct Server {
     net: Option<NetState>,
     /// UUIDs of the test bots this server started (`debug.test-bots`).
     test_bots: Vec<u128>,
+    /// Joins whose UUID was still online, with the tick they arrived in: they wait until the
+    /// kicked older session has left (Vanilla's `WAITING_FOR_DUPE_DISCONNECT`).
+    dupe_waiting: Vec<(vanillite_net::Joined, u64)>,
     layout: WorldLayout,
     /// Player data files, written in the background.
     player_store: PlayerDataStore,
@@ -1036,12 +1069,44 @@ impl Server {
 
     /// Takes joined connections into the game, at most `security.max-joins-per-tick`.
     fn accept_joins(&mut self) {
+        for (joined, since) in std::mem::take(&mut self.dupe_waiting) {
+            self.accept_waiting(joined, since);
+        }
         let max = self.config.server.security.max_joins_per_tick;
         for _ in 0..max {
             let Some(joined) = self.net.as_ref().and_then(NetState::next_join) else {
                 break;
             };
+            if self.global.players.contains(Uuid(joined.profile.id.0)) {
+                // `disconnectAllPlayersWithProfile`: the older session goes, the new one waits.
+                if let Some((sink, _)) = self.global.players.connection(Uuid(joined.profile.id.0)) {
+                    sink.kick(vanillite_protocol::text::Component::translatable(
+                        "multiplayer.disconnect.duplicate_login",
+                        vec![],
+                    ));
+                }
+                self.accept_waiting(joined, self.tick_count);
+            } else {
+                self.accept(joined);
+            }
+        }
+    }
+
+    /// A join waiting for its older session to leave: accepted once it has left, refused with
+    /// `slow_login` after Vanilla's login limit of 600 ticks.
+    fn accept_waiting(&mut self, joined: vanillite_net::Joined, since: u64) {
+        if !self.global.players.contains(Uuid(joined.profile.id.0)) {
             self.accept(joined);
+        } else if self.tick_count.saturating_sub(since) >= 600 {
+            let properties = &self.config.properties;
+            let (_, sink) =
+                crate::net::arrival(joined, None, properties.gamemode, properties.force_gamemode);
+            sink.kick(vanillite_protocol::text::Component::translatable(
+                "multiplayer.disconnect.slow_login",
+                vec![],
+            ));
+        } else {
+            self.dupe_waiting.push((joined, since));
         }
     }
 
@@ -1078,13 +1143,6 @@ impl Server {
             ))
         } else if let Some(reason) = crate::commands::ban_reason(access, uuid, Some(&ip)) {
             Some(reason)
-        } else if players.contains(Uuid(uuid)) {
-            // Vanilla kicks the older session; refusing the new one keeps a single owner of the
-            // player without a cross-world removal.
-            Some(Component::translatable(
-                "multiplayer.disconnect.duplicate_login",
-                vec![],
-            ))
         } else if players.count() >= players.max_players() && !access.bypasses_player_limit(uuid) {
             Some(Component::translatable(
                 "multiplayer.disconnect.server_full",

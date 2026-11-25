@@ -28,6 +28,9 @@ macro_rules! block_tags {
 }
 
 block_tags!(
+    campfires,
+    candle_cakes,
+    candles,
     cannot_support_kelp,
     cannot_support_seagrass,
     cannot_support_snow_layer,
@@ -38,8 +41,10 @@ block_tags!(
     enables_bubble_column_drag_down,
     enables_bubble_column_push_up,
     fences,
+    fire,
     grows_crops,
     maintains_farmland,
+    nether_portal_frame,
     occludes_vibration_signals,
     overrides_mushroom_light_requirement,
     prevents_nearby_leaf_decay,

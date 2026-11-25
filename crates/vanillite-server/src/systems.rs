@@ -115,6 +115,8 @@ impl CommandStorage {
 
 /// The game systems of the server.
 pub(crate) struct GameSystems {
+    /// The mob spawn table of the data packs, for `/summon`'s biome variants.
+    pub(crate) mob_spawns: std::sync::OnceLock<Arc<vanillite_game::mob::spawn::SpawnTable>>,
     scoreboard: Mutex<Scoreboard>,
     /// What the clients know of the scoreboard; locked before the scoreboard.
     scoreboard_sync: Mutex<crate::scoreboard::ScoreboardSync>,
@@ -150,6 +152,7 @@ impl GameSystems {
     /// Empty systems; [`crate::commands::load_game_systems`] fills them once the server exists.
     pub(crate) fn new(level_dir: PathBuf, function_level: u8) -> Self {
         GameSystems {
+            mob_spawns: std::sync::OnceLock::new(),
             scoreboard: Mutex::new(Scoreboard::new()),
             scoreboard_sync: Mutex::default(),
             storage: Mutex::default(),

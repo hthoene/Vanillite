@@ -24,8 +24,8 @@ use vanillite_datapack::LoadedPacks;
 use crate::Error;
 use crate::anchor::WorldGenerationContext;
 use crate::aquifer::{Aquifer, AquiferFunctions, GlobalFluidPicker};
-use crate::biome::climate::ClimateSampler;
-use crate::biome::{BiomeManager, BiomeRegistry, BiomeResolver, BiomeSource};
+use crate::biome::climate::{ClimateCache, ClimateSampler};
+use crate::biome::{BiomeManager, BiomeRegistry, BiomeSource};
 use crate::blocks::BlockSet;
 use crate::carver::{CarverId, CarverRegistry, carve_chunk};
 use crate::density::{ContextSampler, DensityCompiler, FnId, Program, SamplerContext};
@@ -38,7 +38,7 @@ use crate::settings::NoiseGeneratorSettings;
 use crate::spawn_finder::{SpawnTarget, find_spawn_chunk};
 use crate::structure::{
     Beardifier, GenerationContext, LevelHeight, NeighbourStarts, PieceContext, ReferencedStarts,
-    StructureId, StructureRegistry, StructureStart, StructureState,
+    StructureId, StructurePlacement, StructureRegistry, StructureStart, StructureState,
 };
 use crate::template::BoundingBox;
 use crate::volume::DensityVolume;
@@ -224,6 +224,8 @@ pub struct TerrainGenerator {
     carvers: CarverRegistry,
     /// Carvers per biome id.
     biome_carvers: Vec<Vec<CarverId>>,
+    /// Climates of the columns the carvers look up their biomes at.
+    carver_climates: ClimateCache,
     uncarvable: BlockSet,
     features: FeatureSet,
     structures: StructureRegistry,
@@ -316,6 +318,7 @@ impl TerrainGenerator {
             biome_source,
             carvers,
             biome_carvers,
+            carver_climates: ClimateCache::new(),
             uncarvable: BlockSet::from_tag(packs, "minecraft:uncarvable"),
             features,
             structures,
@@ -744,6 +747,20 @@ impl TerrainGenerator {
         }
     }
 
+    /// `ChunkGeneratorStructureState.ensureStructuresGenerated`: computes the ring positions of
+    /// every concentric placement the generator can place (strongholds) now, so the first
+    /// structure starts do not wait for them. Vanilla starts this when the level loads.
+    pub fn prepare_structures(&self) {
+        let state = StructureState::new(self);
+        for &set in self.structures.possible_sets() {
+            if let StructurePlacement::ConcentricRings { rings, .. } =
+                &self.structures.set(set).placement
+            {
+                state.ring_positions_for(rings);
+            }
+        }
+    }
+
     /// `Beardifier.forStructuresInChunk(structureManager, chunkPos)` bound to the context.
     fn bind_beardifier(&self, ctx: &mut SamplerContext, pos: ChunkPos, starts: &ReferencedStarts) {
         let beardifier = Beardifier::for_structures_in_chunk(&self.structures, starts, pos);
@@ -870,7 +887,11 @@ impl TerrainGenerator {
         let mut source_carvers: Vec<&[CarverId]> = Vec::with_capacity(side * side);
         for dx in -RANGE..=RANGE {
             for dz in -RANGE..=RANGE {
-                let biome = resolver.noise_biome((pos.x + dx) << 2, 0, (pos.z + dz) << 2);
+                let biome = resolver.noise_biome_at_zero(
+                    (pos.x + dx) << 2,
+                    (pos.z + dz) << 2,
+                    &self.carver_climates,
+                );
                 source_carvers.push(&self.biome_carvers[usize::from(biome)]);
             }
         }

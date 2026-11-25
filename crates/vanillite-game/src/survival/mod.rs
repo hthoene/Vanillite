@@ -51,6 +51,11 @@ pub enum Effect {
         killer: Option<EntityId>,
         message: Option<Component>,
     },
+    /// To one player.
+    To {
+        player: EntityId,
+        packet: Arc<SharedPacket>,
+    },
     /// A new item entity (a dropped stack): its UUID, position, motion, yaw and pickup delay.
     DropItem {
         uuid: u128,

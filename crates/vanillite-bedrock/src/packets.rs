@@ -1,8 +1,10 @@
-//! Bedrock packet ids and the encoders and decoders the frontend needs (protocol 2225,
-//! Bedrock 1.26.60). Field layouts follow the protocol as documented by the gophertunnel project
-//! (MIT); the code is written for Vanillite.
+//! Bedrock packet ids and the encoders and decoders the frontend needs, for every supported
+//! protocol ([`crate::version`]: functions taking a [`Version`] differ between releases). Field
+//! layouts follow the protocol as documented by the gophertunnel project (MIT); the code is
+//! written for Vanillite.
 
 use crate::io::{self, Reader, Result};
+use crate::version::Version;
 
 pub mod id {
     pub const LOGIN: u32 = 1;
@@ -335,8 +337,9 @@ pub struct StartGame<'a> {
 }
 
 /// `start_game`.
-pub fn start_game(p: &StartGame<'_>) -> Vec<u8> {
-    let mut out = Vec::with_capacity(crate::data::BLOCK_PROPERTIES.len().saturating_add(512));
+pub fn start_game(p: &StartGame<'_>, v: &Version) -> Vec<u8> {
+    let properties = v.palette.block_properties;
+    let mut out = Vec::with_capacity(properties.len().saturating_add(512));
     io::write_vari64(&mut out, p.entity_id);
     io::write_varu64(&mut out, u64::try_from(p.entity_id).unwrap_or(0));
     io::write_vari32(&mut out, p.game_mode);
@@ -356,7 +359,9 @@ pub fn start_game(p: &StartGame<'_>) -> Vec<u8> {
     io::write_vari32(&mut out, 0); // editor world type
     out.push(0); // created in editor
     out.push(0); // exported from editor
-    out.push(0); // editor level migration version
+    if !v.before_26_60() {
+        out.push(0); // editor level migration version
+    }
     io::write_vari32(&mut out, 0); // day cycle lock time
     io::write_varu32(&mut out, 0); // education offer
     out.push(0); // education features
@@ -411,7 +416,7 @@ pub fn start_game(p: &StartGame<'_>) -> Vec<u8> {
     out.push(1); // server authoritative block breaking
     out.extend_from_slice(&0i64.to_le_bytes()); // time
     io::write_vari32(&mut out, 0); // enchantment seed
-    out.extend_from_slice(crate::data::BLOCK_PROPERTIES);
+    out.extend_from_slice(properties);
     io::write_str(&mut out, ""); // multiplayer correlation id
     out.push(1); // server authoritative inventory (item stack requests)
     io::write_str(&mut out, "*"); // game version
@@ -534,7 +539,7 @@ pub struct AddPlayer<'a> {
 }
 
 /// `add_player`.
-pub fn add_player(p: &AddPlayer<'_>) -> Vec<u8> {
+pub fn add_player(p: &AddPlayer<'_>, v: &Version) -> Vec<u8> {
     let mut out = Vec::with_capacity(256);
     io::write_uuid(&mut out, p.uuid);
     io::write_str(&mut out, p.name);
@@ -562,7 +567,9 @@ pub fn add_player(p: &AddPlayer<'_>) -> Vec<u8> {
     out.push(0);
     io::write_varu32(&mut out, 0);
     io::write_varu32(&mut out, 0); // entity links
-    out.push(0); // not a passenger of a block
+    if !v.before_26_60() {
+        out.push(0); // not a passenger of a block
+    }
     io::write_str(&mut out, ""); // device id
     out.extend_from_slice(&0i32.to_le_bytes()); // build platform
     out
@@ -571,6 +578,7 @@ pub fn add_player(p: &AddPlayer<'_>) -> Vec<u8> {
 /// `add_actor` for a non-player entity with its metadata.
 #[allow(clippy::too_many_arguments)]
 pub fn add_actor(
+    v: &Version,
     entity_id: i64,
     kind: &str,
     pos: [f32; 3],
@@ -593,7 +601,9 @@ pub fn add_actor(
     metadata.write(&mut out);
     out.extend_from_slice(&[0, 0]); // no entity properties
     io::write_varu32(&mut out, 0); // links
-    out.push(0); // not a passenger of a block
+    if !v.before_26_60() {
+        out.push(0); // not a passenger of a block
+    }
     out
 }
 
@@ -614,7 +624,7 @@ pub struct ListEntry<'a> {
 }
 
 /// `player_list` adding entries.
-pub fn player_list_add(entries: &[ListEntry<'_>]) -> Vec<u8> {
+pub fn player_list_add(entries: &[ListEntry<'_>], v: &Version) -> Vec<u8> {
     let mut out = Vec::new();
     io::write_len(&mut out, entries.len());
     for e in entries {
@@ -624,10 +634,12 @@ pub fn player_list_add(entries: &[ListEntry<'_>]) -> Vec<u8> {
         io::write_vari64(&mut out, e.entity_id);
         io::write_str(&mut out, e.name);
         io::write_str(&mut out, e.xuid);
-        io::write_str(&mut out, ""); // PlayFab id
+        if !v.before_26_60() {
+            io::write_str(&mut out, ""); // PlayFab id
+        }
         io::write_str(&mut out, ""); // platform chat id
         out.extend_from_slice(&0i32.to_le_bytes()); // build platform
-        e.skin.write(&mut out);
+        e.skin.write(&mut out, v);
         out.extend_from_slice(&[0, 0, 0]); // teacher, host, sub-client
         out.extend_from_slice(&0i32.to_be_bytes()); // player colour
     }
@@ -782,14 +794,18 @@ impl AuthInput {
 }
 
 /// Reads the leading fields of `player_auth_input` (the rest is not needed).
-pub fn read_auth_input(body: &[u8]) -> Result<AuthInput> {
+pub fn read_auth_input(body: &[u8], v: &Version) -> Result<AuthInput> {
     let mut r = Reader::new(body);
     let pitch = r.f32()?;
     let yaw = r.f32()?;
     let position = r.vec3()?;
     let _move = [r.f32()?, r.f32()?];
     let head_yaw = r.f32()?;
-    let n = r.varu32()?;
+    let n = if !v.before_26_50() || r.bool()? {
+        r.varu32()?
+    } else {
+        0
+    };
     if n > input::COUNT {
         return Err(io::Error::TooLong("input flags"));
     }
@@ -824,14 +840,18 @@ pub fn read_auth_input(body: &[u8]) -> Result<AuthInput> {
     })
 }
 
-/// Writes the leading fields of `player_auth_input` (test client) with empty optional parts.
-pub fn write_auth_input(i: &AuthInput) -> Vec<u8> {
+/// Writes `player_auth_input` (test client): movement and block actions, no other optional
+/// parts.
+pub fn write_auth_input(i: &AuthInput, v: &Version, blocks: &[(i32, [i32; 3], i32)]) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&i.pitch.to_le_bytes());
     out.extend_from_slice(&i.yaw.to_le_bytes());
     io::write_vec3(&mut out, i.position);
     out.extend_from_slice(&[0; 8]);
     out.extend_from_slice(&i.head_yaw.to_le_bytes());
+    if v.before_26_50() {
+        out.push(1);
+    }
     let bits: Vec<u32> = (0..input::COUNT).filter(|&b| i.has(b)).collect();
     io::write_len(&mut out, bits.len());
     for b in bits {
@@ -843,9 +863,35 @@ pub fn write_auth_input(i: &AuthInput) -> Vec<u8> {
     out.extend_from_slice(&[0; 8]);
     io::write_varu64(&mut out, i.tick);
     io::write_vec3(&mut out, i.delta);
-    out.extend_from_slice(&[0, 0, 0, 0, 0]);
+    write_optional_flag(&mut out, false, v); // item interaction
+    write_optional_flag(&mut out, false, v); // item stack request
+    write_optional_flag(&mut out, !blocks.is_empty(), v);
+    if !blocks.is_empty() {
+        io::write_len(&mut out, blocks.len());
+        for (a, pos, face) in blocks {
+            io::write_vari32(&mut out, *a);
+            io::write_block_pos(&mut out, *pos);
+            io::write_vari32(&mut out, *face);
+        }
+    }
+    write_optional_flag(&mut out, false, v); // vehicle rotation
+    write_optional_flag(&mut out, false, v); // predicted vehicle
     out.extend_from_slice(&[0; 8 + 12 + 8]);
     out
+}
+
+/// The presence flag of an optional field (inside an always-present outer optional before
+/// 1.26.50).
+pub fn write_optional_flag(out: &mut Vec<u8>, present: bool, v: &Version) {
+    if v.before_26_50() {
+        out.push(1);
+    }
+    out.push(u8::from(present));
+}
+
+/// Reads the presence flag of an optional field (see [`write_optional_flag`]).
+fn read_optional_flag(r: &mut Reader<'_>, v: &Version) -> Result<bool> {
+    Ok((!v.before_26_50() || r.bool()?) && r.bool()?)
 }
 
 // ---- Gameplay -----------------------------------------------------------------------------------
@@ -948,8 +994,12 @@ fn read_descriptor_count(r: &mut Reader<'_>) -> Result<()> {
     Ok(())
 }
 
-fn read_stack_action(r: &mut Reader<'_>) -> Result<StackAction> {
-    let variant = r.varu32()?;
+fn read_stack_action(r: &mut Reader<'_>, v: &Version) -> Result<StackAction> {
+    let mut variant = r.varu32()?;
+    // 1.26.60 inserted the reserved action 16.
+    if v.before_26_60() && variant >= 16 {
+        variant = variant.saturating_add(1);
+    }
     r.u8()?;
     let transfer = |r: &mut Reader<'_>| -> Result<(u8, SlotRef, SlotRef)> {
         Ok((r.u8()?, read_slot_ref(r)?, read_slot_ref(r)?))
@@ -1059,12 +1109,12 @@ fn read_stack_action(r: &mut Reader<'_>) -> Result<StackAction> {
 }
 
 /// Reads one `ItemStackRequest` (also embedded in `player_auth_input`).
-pub fn read_stack_request(r: &mut Reader<'_>) -> Result<StackRequest> {
+pub fn read_stack_request(r: &mut Reader<'_>, v: &Version) -> Result<StackRequest> {
     let id = r.vari32()?;
     let n = r.len("stack actions", MAX_STACK_ACTIONS)?;
     let mut actions = Vec::with_capacity(n);
     for _ in 0..n {
-        actions.push(read_stack_action(r)?);
+        actions.push(read_stack_action(r, v)?);
     }
     let strings = r.len("filter strings", 64)?;
     for _ in 0..strings {
@@ -1075,12 +1125,12 @@ pub fn read_stack_request(r: &mut Reader<'_>) -> Result<StackRequest> {
 }
 
 /// Reads `item_stack_request`.
-pub fn read_stack_requests(body: &[u8]) -> Result<Vec<StackRequest>> {
+pub fn read_stack_requests(body: &[u8], v: &Version) -> Result<Vec<StackRequest>> {
     let mut r = Reader::new(body);
     let n = r.len("stack requests", 64)?;
     let mut out = Vec::with_capacity(n);
     for _ in 0..n {
-        out.push(read_stack_request(&mut r)?);
+        out.push(read_stack_request(&mut r, v)?);
     }
     Ok(out)
 }
@@ -1102,7 +1152,7 @@ pub struct StackResponse {
 }
 
 /// `item_stack_response`.
-pub fn item_stack_response(responses: &[StackResponse]) -> Vec<u8> {
+pub fn item_stack_response(responses: &[StackResponse], v: &Version) -> Vec<u8> {
     let mut out = Vec::new();
     io::write_len(&mut out, responses.len());
     for resp in responses {
@@ -1110,7 +1160,7 @@ pub fn item_stack_response(responses: &[StackResponse]) -> Vec<u8> {
         io::write_vari32(&mut out, resp.id);
         match &resp.containers {
             Some(containers) if !containers.is_empty() => {
-                out.push(1);
+                write_optional_flag(&mut out, true, v);
                 io::write_len(&mut out, containers.len());
                 for (container, slots) in containers {
                     out.push(*container);
@@ -1120,11 +1170,9 @@ pub fn item_stack_response(responses: &[StackResponse]) -> Vec<u8> {
                         out.push(s.slot);
                         out.push(s.slot);
                         out.push(s.count);
+                        write_optional_flag(&mut out, s.net_id > 0, v);
                         if s.net_id > 0 {
-                            out.push(1);
                             io::write_vari32(&mut out, s.net_id);
-                        } else {
-                            out.push(0);
                         }
                         io::write_str(&mut out, "");
                         out.push(0);
@@ -1132,7 +1180,7 @@ pub fn item_stack_response(responses: &[StackResponse]) -> Vec<u8> {
                     }
                 }
             }
-            _ => out.push(0),
+            _ => write_optional_flag(&mut out, false, v),
         }
     }
     out
@@ -1256,14 +1304,14 @@ fn read_legacy_slots(r: &mut Reader<'_>) -> Result<()> {
     Ok(())
 }
 
-fn read_inventory_actions(r: &mut Reader<'_>) -> Result<()> {
+fn read_inventory_actions(r: &mut Reader<'_>, v: &Version) -> Result<()> {
     let n = r.len("inventory actions", 64)?;
     for _ in 0..n {
         r.varu32()?;
-        if r.bool()? {
+        if read_optional_flag(r, v)? {
             r.u8()?;
         }
-        if r.bool()? {
+        if read_optional_flag(r, v)? {
             r.varu32()?;
         }
         r.varu32()?;
@@ -1273,13 +1321,15 @@ fn read_inventory_actions(r: &mut Reader<'_>) -> Result<()> {
     Ok(())
 }
 
-fn read_use_item(r: &mut Reader<'_>) -> Result<Transaction> {
+fn read_use_item(r: &mut Reader<'_>, v: &Version) -> Result<Transaction> {
     let action = u32::try_from(r.vari32()?).map_err(|_| io::Error::Invalid("use item action"))?;
     let _trigger = r.u8()?;
     let pos = read_block_pos(r)?;
     let face = i32::from(r.u8()?);
     let hotbar = r.vari32()?;
-    let _hand = r.u8()?;
+    if !v.before_26_50() {
+        let _hand = r.u8()?;
+    }
     crate::items::read_instance(r)?;
     let _player = r.vec3()?;
     let click = r.vec3()?;
@@ -1299,13 +1349,20 @@ fn read_use_item(r: &mut Reader<'_>) -> Result<Transaction> {
 }
 
 /// Reads `inventory_transaction`.
-pub fn read_inventory_transaction(body: &[u8]) -> Result<Transaction> {
+pub fn read_inventory_transaction(body: &[u8], v: &Version) -> Result<Transaction> {
     let mut r = Reader::new(body);
     read_legacy_slots(&mut r)?;
+    // Before 1.26.50 the type and the actions carry an (always set) presence flag.
+    if v.before_26_50() {
+        r.bool()?;
+    }
     let kind = r.varu32()?;
-    read_inventory_actions(&mut r)?;
+    if v.before_26_50() {
+        r.bool()?;
+    }
+    read_inventory_actions(&mut r, v)?;
     Ok(match kind {
-        2 => read_use_item(&mut r)?,
+        2 => read_use_item(&mut r, v)?,
         3 => {
             let target = r.varu64()?;
             let action = u32::try_from(r.vari32()?).unwrap_or(u32::MAX);
@@ -1340,11 +1397,15 @@ pub struct AuthInputExtra {
 }
 
 /// Reads the optional parts of `player_auth_input` after the movement fields.
-pub fn read_auth_input_extra(body: &[u8]) -> Result<AuthInputExtra> {
+pub fn read_auth_input_extra(body: &[u8], v: &Version) -> Result<AuthInputExtra> {
     let mut r = Reader::new(body);
     // Skip the fixed fields read by `read_auth_input`.
     r.take(4 * 2 + 12 + 8 + 4)?;
-    let n = r.len("input flags", usize::try_from(input::COUNT).unwrap_or(0))?;
+    let n = if !v.before_26_50() || r.bool()? {
+        r.len("input flags", usize::try_from(input::COUNT).unwrap_or(0))?
+    } else {
+        0
+    };
     for _ in 0..n {
         r.vari32()?;
     }
@@ -1355,15 +1416,18 @@ pub fn read_auth_input_extra(body: &[u8]) -> Result<AuthInputExtra> {
     r.varu64()?;
     r.vec3()?;
     let mut extra = AuthInputExtra::default();
-    if r.bool()? {
+    if read_optional_flag(&mut r, v)? {
         read_legacy_slots(&mut r)?;
-        read_inventory_actions(&mut r)?;
-        extra.item_interaction = Some(read_use_item(&mut r)?);
+        // Before 1.26.50 the actions are an optional inside an optional.
+        if !v.before_26_50() || read_optional_flag(&mut r, v)? {
+            read_inventory_actions(&mut r, v)?;
+        }
+        extra.item_interaction = Some(read_use_item(&mut r, v)?);
     }
-    if r.bool()? {
-        extra.stack_request = Some(read_stack_request(&mut r)?);
+    if read_optional_flag(&mut r, v)? {
+        extra.stack_request = Some(read_stack_request(&mut r, v)?);
     }
-    if r.bool()? {
+    if read_optional_flag(&mut r, v)? {
         let n = r.len("block actions", 64)?;
         for _ in 0..n {
             let action = r.vari32()?;
@@ -1444,12 +1508,14 @@ pub fn set_actor_motion(runtime_id: u64, vel: [f32; 3]) -> Vec<u8> {
 }
 
 /// `animate` (1 = swing arm, 4 = critical hit, 3 = wake up).
-pub fn animate(action: u8, runtime_id: u64) -> Vec<u8> {
+pub fn animate(action: u8, runtime_id: u64, v: &Version) -> Vec<u8> {
     let mut out = vec![action];
     io::write_varu64(&mut out, runtime_id);
     out.extend_from_slice(&0f32.to_le_bytes());
     out.push(0); // no swing source
-    out.push(0); // main hand
+    if !v.before_26_60() {
+        out.push(0); // main hand
+    }
     out
 }
 
@@ -1487,17 +1553,19 @@ pub fn level_sound_event(sound: &str, pos: [f32; 3], data: i32) -> Vec<u8> {
 }
 
 /// `play_sound`.
-pub fn play_sound(name: &str, pos: [f32; 3], volume: f32, pitch: f32) -> Vec<u8> {
+pub fn play_sound(name: &str, pos: [f32; 3], volume: f32, pitch: f32, v: &Version) -> Vec<u8> {
     let mut out = Vec::new();
     io::write_str(&mut out, name);
     let eighths = pos.map(|v| crate::num::floor_i32(f64::from(v) * 8.0));
     io::write_block_pos(&mut out, eighths);
     out.extend_from_slice(&volume.to_le_bytes());
     out.extend_from_slice(&pitch.to_le_bytes());
-    io::write_vari32(&mut out, 0);
-    out.push(0);
-    out.push(0);
-    out.push(0);
+    io::write_vari32(&mut out, 0); // loop count
+    if v.before_26_50() {
+        out.push(0); // no handle
+    } else {
+        out.extend_from_slice(&[0, 0, 0]); // in range only, no handle, no playback position
+    }
     out
 }
 
@@ -1629,9 +1697,19 @@ pub fn set_title(action: i32, text: &str, times: [i32; 3]) -> Vec<u8> {
 }
 
 /// `boss_event` show (0), hide (2), health (4) or title (5).
-pub fn boss_event(entity_id: i64, event: u8, title: &str, health: f32, colour: u8) -> Vec<u8> {
+pub fn boss_event(
+    entity_id: i64,
+    event: u8,
+    title: &str,
+    health: f32,
+    colour: u8,
+    v: &Version,
+) -> Vec<u8> {
     let mut out = Vec::new();
     io::write_vari64(&mut out, entity_id);
+    if v.before_26_50() {
+        io::write_vari64(&mut out, 0); // player id
+    }
     out.push(event);
     io::write_str(&mut out, title);
     io::write_str(&mut out, title);
@@ -1662,10 +1740,10 @@ pub fn read_modal_form_response(body: &[u8]) -> Result<(u32, Option<String>)> {
 }
 
 /// `player_skin`.
-pub fn player_skin(uuid: u128, skin: &crate::skin::Skin) -> Vec<u8> {
+pub fn player_skin(uuid: u128, skin: &crate::skin::Skin, v: &Version) -> Vec<u8> {
     let mut out = Vec::new();
     io::write_uuid(&mut out, uuid);
-    skin.write(&mut out);
+    skin.write(&mut out, v);
     io::write_str(&mut out, "");
     io::write_str(&mut out, "");
     out

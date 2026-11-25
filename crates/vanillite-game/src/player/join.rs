@@ -165,7 +165,7 @@ pub fn spawn_info(level: &LevelInfo, player: &PlayerData) -> SpawnInfo {
                 },
             })
         }),
-        portal_cooldown: 0,
+        portal_cooldown: player.survival.portal.cooldown,
         sea_level: level.sea_level,
     }
 }
@@ -209,12 +209,13 @@ pub fn send_level_info(
     sink.send(&state.step);
 }
 
-/// `ClientboundSetDefaultSpawnPositionPacket` with the world's spawn.
+/// `ClientboundSetDefaultSpawnPositionPacket` with the server's spawn (`getRespawnData`: in
+/// the overworld, the first of the levels).
 pub fn send_spawn_position(sink: &dyn PacketSink, level: &LevelInfo) {
     let (spawn, yaw) = level.spawn;
     sink.send(&SetDefaultSpawnPosition {
         pos: GlobalPos {
-            dimension: level.dimension.clone(),
+            dimension: level.levels.first().unwrap_or(&level.dimension).clone(),
             pos: BlockPos {
                 x: vanillite_base::math::floor(spawn.x),
                 y: vanillite_base::math::floor(spawn.y),

@@ -103,6 +103,9 @@ pub struct LevelSettings {
     pub has_sky_light: bool,
     /// The dimension's `water_evaporates` attribute (the Nether).
     pub water_evaporates: bool,
+    /// Fire lights nether portals here (`BaseFireBlock.inPortalDimension`: the Overworld and
+    /// the Nether).
+    pub portal_dimension: bool,
     /// Exploit switches (D1).
     pub exploits: ExploitSettings,
 }
@@ -121,6 +124,7 @@ impl Default for LevelSettings {
             fast_lava: false,
             has_sky_light: true,
             water_evaporates: false,
+            portal_dimension: true,
             exploits: ExploitSettings::default(),
         }
     }
@@ -199,10 +203,15 @@ pub struct LevelOutput {
     pub sounds: Vec<Sound>,
     /// Explosions.
     pub explosions: Vec<explosion::ExplosionEvent>,
+    /// The damage of the living entities explosions hit, for the mob system.
+    pub explosion_hurts: Vec<explosion::ExplosionHurt>,
     /// Experience to award at a position (`ExperienceOrb.award`; orbs are not simulated yet).
     pub experience: Vec<(vanillite_base::Vec3, i32)>,
     /// Block entities whose client data changed (`sendBlockUpdated` of a block entity).
     pub block_entity_updates: Vec<BlockPos>,
+    /// Global level events (`globalLevelEvent`: event, position, data), heard by every player
+    /// of the server.
+    pub global_level_events: Vec<(i32, BlockPos, i32)>,
 }
 
 /// The terrain generator of a world (`getChunkSource().getGenerator()`).
@@ -413,6 +422,11 @@ impl Level {
 
     /// The server-wide network id counter.
     pub fn network_ids(&self) -> &NetworkIds {
+        &self.network_ids
+    }
+
+    /// The server-wide network id counter, shared.
+    pub fn network_ids_arc(&self) -> &Arc<NetworkIds> {
         &self.network_ids
     }
 
@@ -630,6 +644,11 @@ impl Level {
             seed,
             except,
         });
+    }
+
+    /// `globalLevelEvent(event, pos, data)`.
+    pub fn global_level_event(&mut self, event: i32, pos: BlockPos, data: i32) {
+        self.output.global_level_events.push((event, pos, data));
     }
 
     /// `levelEvent(source, event, pos, data)`.
@@ -984,6 +1003,10 @@ impl BlockLevel for Level {
     #[inline]
     fn block(&self, pos: BlockPos) -> BlockState {
         Level::block(self, pos)
+    }
+
+    fn min_y(&self) -> i32 {
+        Level::min_y(self)
     }
 
     fn raw_brightness(&self, pos: BlockPos) -> i32 {

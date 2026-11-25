@@ -388,6 +388,12 @@ impl ChunkGenerator for VanillaChunkGenerator {
         slots::ProtoChunk::empty(pos, &self.world)
     }
 
+    fn prepare(&self) {
+        if self.structures {
+            self.generator.prepare_structures();
+        }
+    }
+
     fn generate(
         &self,
         status: ChunkStatus,

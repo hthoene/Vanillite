@@ -551,6 +551,16 @@ pub(crate) fn summon(
         Some(Tag::Compound(c)) => vanillite_game::level::block_entity::read_block_state(c),
         _ => default,
     };
+    if let Some(mob) = vanillite_game::mob::kinds::Kind::by_name(id) {
+        // Mobs with behaviour: `finalizeSpawn` with the command reason.
+        let table = env.global.systems.mob_spawns.get().map(Arc::as_ref);
+        let difficulty = env.global.level.difficulty();
+        let id = vanillite_game::mob::spawn::summon(env.level, table, mob, pos, difficulty);
+        let mut loaded = nbt.clone();
+        loaded.remove("Pos");
+        data::apply_entity_nbt(&mut env.level.entities, id, &loaded)?;
+        return select::local(&env.level.entities, env.world, id).ok_or_else(failed);
+    }
     let entities = &mut env.level.entities;
     let id = if kind == ids::ITEM {
         let stack = match nbt.get("Item") {

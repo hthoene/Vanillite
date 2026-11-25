@@ -62,9 +62,12 @@ pub mod tag {
     pub const NO_KNOCKBACK: u32 = 1 << 12;
     pub const ALWAYS_MOST_SIGNIFICANT_FALL: u32 = 1 << 13;
     pub const DAMAGES_HELMET: u32 = 1 << 14;
+    pub const PANIC_CAUSES: u32 = 1 << 15;
+    pub const IS_EXPLOSION: u32 = 1 << 16;
+    pub const IS_PROJECTILE: u32 = 1 << 17;
 
     /// Tag names and their bits.
-    pub const NAMES: [(&str, u32); 15] = [
+    pub const NAMES: [(&str, u32); 18] = [
         ("minecraft:is_fall", IS_FALL),
         ("minecraft:is_fire", IS_FIRE),
         ("minecraft:is_drowning", IS_DROWNING),
@@ -86,6 +89,9 @@ pub mod tag {
             ALWAYS_MOST_SIGNIFICANT_FALL,
         ),
         ("minecraft:damages_helmet", DAMAGES_HELMET),
+        ("minecraft:panic_causes", PANIC_CAUSES),
+        ("minecraft:is_explosion", IS_EXPLOSION),
+        ("minecraft:is_projectile", IS_PROJECTILE),
     ];
 }
 
@@ -126,6 +132,12 @@ pub struct DamageTypes {
     pub out_of_world: DamageKind,
     pub generic: DamageKind,
     pub generic_kill: DamageKind,
+    pub cramming: DamageKind,
+    pub mob_attack: DamageKind,
+    pub player_attack: DamageKind,
+    pub arrow: DamageKind,
+    pub explosion: DamageKind,
+    pub player_explosion: DamageKind,
 }
 
 /// The built-in types of Vanilla 26.3 with their values, for servers without data packs (tests).
@@ -209,6 +221,12 @@ impl DamageTypes {
             out_of_world: find("minecraft:out_of_world"),
             generic: find("minecraft:generic"),
             generic_kill: find("minecraft:generic_kill"),
+            cramming: find("minecraft:cramming"),
+            mob_attack: find("minecraft:mob_attack"),
+            player_attack: find("minecraft:player_attack"),
+            arrow: find("minecraft:arrow"),
+            explosion: find("minecraft:explosion"),
+            player_explosion: find("minecraft:player_explosion"),
             types,
         }
     }
@@ -277,6 +295,10 @@ pub struct DamageSource {
     pub direct: Option<EntityId>,
     /// `damageSourcePosition`.
     pub position: Option<Vec3>,
+    /// The causing entity is a living entity other than a player (difficulty scaling).
+    pub cause_is_mob: bool,
+    /// Translation key of the causing entity's type, for death messages (`death.attack.mob`).
+    pub cause_name: Option<&'static str>,
 }
 
 impl DamageSource {
@@ -287,6 +309,8 @@ impl DamageSource {
             cause: None,
             direct: None,
             position: None,
+            cause_is_mob: false,
+            cause_name: None,
         }
     }
 
