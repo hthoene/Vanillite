@@ -498,6 +498,7 @@ impl ServerBuilder {
                 global.level.game_time(),
                 config.properties.max_world_size,
             );
+            level.set_maps(Arc::clone(&global.level.maps));
             let survival = crate::survival::WorldSurvival::new(
                 dimension,
                 &global.level,

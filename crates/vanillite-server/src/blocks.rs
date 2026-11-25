@@ -38,7 +38,7 @@ pub(crate) fn game_data(packs: Option<&LoadedPacks>) -> GameData {
     };
     let tools = ToolTable::new(&|tag| tag_ids("minecraft:block", tag));
     let loot = LootTables::load(packs.roots());
-    log::info!("Loaded {} block loot tables", loot.len());
+    log::info!("Loaded {} loot tables", loot.len());
     let enchantments = packs
         .registry("minecraft:enchantment")
         .map(|r| {
@@ -60,6 +60,10 @@ pub(crate) fn game_data(packs: Option<&LoadedPacks>) -> GameData {
     let mut info = vanillite_protocol::item::RegistryInfo::default();
     for r in packs.registries() {
         info.sizes.insert(r.name.to_owned(), r.entries().len());
+        info.names.insert(
+            r.name.to_owned(),
+            r.entries().iter().map(|e| e.id.clone()).collect(),
+        );
     }
     for registry in packs.tagged_registries() {
         let tags: HashSet<String> = packs
@@ -134,6 +138,36 @@ pub(crate) fn game_data(packs: Option<&LoadedPacks>) -> GameData {
         &names("minecraft:trim_material"),
         &names("minecraft:trim_pattern"),
     );
+    let banner_patterns = vanillite_game::menu::BannerPatterns {
+        names: names("minecraft:banner_pattern"),
+        tags: packs
+            .tags("minecraft:banner_pattern")
+            .map(|tags| {
+                tags.keys()
+                    .map(|t| {
+                        let ids = packs
+                            .tag_ids("minecraft:banner_pattern", t)
+                            .unwrap_or_default();
+                        (t.clone(), ids)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+    };
+    let registry_tags = packs
+        .tagged_registries()
+        .map(|registry| {
+            let tags = packs
+                .tags(registry)
+                .map(|tags| {
+                    tags.keys()
+                        .map(|t| (t.clone(), packs.tag_ids(registry, t).unwrap_or_default()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            (registry.to_owned(), tags)
+        })
+        .collect();
     GameData {
         tools,
         loot,
@@ -143,6 +177,8 @@ pub(crate) fn game_data(packs: Option<&LoadedPacks>) -> GameData {
         trial_spawner_configs,
         recipes,
         enchanting,
+        banner_patterns,
+        registry_tags,
     }
 }
 

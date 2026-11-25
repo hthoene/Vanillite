@@ -397,9 +397,23 @@ impl WorldPlayers {
             global.systems.advancements(),
             arrival.advancements.as_deref(),
         );
+        let recipe_book = match (
+            arrival
+                .saved
+                .as_ref()
+                .and_then(|saved| saved.other.get("recipeBook"))
+                .and_then(vanillite_nbt::Tag::as_compound),
+            vanillite_game::player::play::game_data(),
+        ) {
+            (Some(c), Some(d)) => {
+                vanillite_game::recipe::book::PlayerRecipeBook::load(c, &d.recipes.book)
+            }
+            _ => vanillite_game::recipe::book::PlayerRecipeBook::default(),
+        };
         let data = PlayerData {
             stats,
             advancements,
+            recipe_book,
             inventory,
             last_equipment: std::array::from_fn(|_| ItemStack::EMPTY),
             profile: arrival.profile,
@@ -510,6 +524,11 @@ impl WorldPlayers {
             slot: i32::try_from(player.inventory.selected).unwrap_or(0),
         });
         sink.send_shared(&global.recipes_packet);
+        if let Some(d) = vanillite_game::player::play::game_data() {
+            let (settings, book) = player.recipe_book.initial(&d.recipes.book);
+            sink.send(&settings);
+            sink.send(&book);
+        }
         player.inventory.send_all(sink.as_ref());
         for (last, slot) in player.last_equipment.iter_mut().zip(EQUIPMENT_SLOTS) {
             *last = player.inventory.equipment(slot).clone();
@@ -599,6 +618,7 @@ impl WorldPlayers {
                     level: &mut level,
                     inventory: &mut player.inventory,
                     xp: Some(&mut player.survival.xp),
+                    recipe_book: Some(&mut player.recipe_book),
                     actor,
                     data: &global.game,
                     spawn_protected: &protected,
@@ -839,7 +859,7 @@ impl WorldPlayers {
             .collect();
         let mut taken: Vec<(EntityId, EntityId, i32)> = Vec::new();
         let mut equipment: Vec<(EntityId, SetEquipment)> = Vec::new();
-        let experience = nearest_players(level, &players, &spectators);
+        let mut taken_orbs: Vec<(EntityId, EntityId)> = Vec::new();
         for (id, player) in players.iter_mut() {
             let sink = std::sync::Arc::clone(&player.connection.sink);
             if let Some(sequence) = player.connection.play.take_ack() {
@@ -875,6 +895,7 @@ impl WorldPlayers {
                     level: &mut level,
                     inventory: &mut player.inventory,
                     xp: Some(&mut player.survival.xp),
+                    recipe_book: Some(&mut player.recipe_book),
                     actor,
                     data: &global.game,
                     spawn_protected: &protected,
@@ -918,6 +939,17 @@ impl WorldPlayers {
                     }
                 }
             }
+            // The rest of `touch`: one random experience orb of those the box touches.
+            if player.game_mode != GameMode::Spectator && player.survival.health > 0.0 {
+                touch_orb(
+                    level,
+                    id,
+                    player,
+                    &aabb.inflate(1.0, 0.5, 1.0),
+                    global,
+                    &mut taken_orbs,
+                );
+            }
             if player.inventory.container.is_some() {
                 // `containerMenu.broadcastChanges`, then `stillValid`.
                 use vanillite_game::menu::container as menus;
@@ -959,13 +991,6 @@ impl WorldPlayers {
             } else {
                 player.inventory.broadcast_changes(sink.as_ref());
             }
-            // Experience of furnace results and removed furnaces (orbs are not simulated:
-            // the nearest player within 8 blocks gets it).
-            for &(owner, amount) in &experience {
-                if owner == id {
-                    player.survival.xp.give_points(amount);
-                }
-            }
             // `detectEquipmentUpdates`.
             let mut changed = Vec::new();
             for (last, slot) in player.last_equipment.iter_mut().zip(EQUIPMENT_SLOTS) {
@@ -993,6 +1018,28 @@ impl WorldPlayers {
                 if let Some(p) = entities.player(*viewer) {
                     p.connection.sink.send_shared(&packet);
                 }
+            }
+        }
+        for (orb, taker) in taken_orbs {
+            // `Player.take(orb, 1)`; the orb goes when its last merged orb was taken.
+            let Some(orb_net) = entities.store.get(orb).map(|e| e.network_id().0) else {
+                continue;
+            };
+            let Some(player_net) = entities.store.get(taker).map(|e| e.network_id().0) else {
+                continue;
+            };
+            let packet = SharedPacket::of(&TakeItemEntity {
+                item_id: orb_net,
+                player_id: player_net,
+                amount: 1,
+            });
+            for viewer in blocks.tracker.seen_by(orb) {
+                if let Some(p) = entities.player(*viewer) {
+                    p.connection.sink.send_shared(&packet);
+                }
+            }
+            if entities.experience_orb(orb).is_some_and(|d| d.count <= 0) {
+                entities.despawn(orb);
             }
         }
         for (item_id, player_id, count) in taken {
@@ -1099,6 +1146,7 @@ impl WorldPlayers {
             .save_json(JsonFile::Stats, uuid, player.stats.to_json());
         self.store
             .save_json(JsonFile::Advancements, uuid, player.advancements.to_json());
+        survival.insert("recipeBook", player.recipe_book.save());
         // `Survival::save` removes the death location when there is none.
         let has_death = survival.get("LastDeathLocation").is_some();
         self.store.update(entity.uuid(), move |data| {
@@ -1296,32 +1344,65 @@ fn drop_menus_on_leave(level: &mut Level, id: EntityId) {
     }
 }
 
-/// The player each experience award of the tick goes to: the nearest non-spectator within
-/// 8 blocks of where it was awarded (`ExperienceOrb` follows that player).
-fn nearest_players(
+/// `ExperienceOrb.playerTouch` of the orb `Util.getRandom` picks among those `reach`
+/// touches: with `takeXpDelay` over, one orb of its stack repairs with Mending and gives the
+/// rest as experience points.
+fn touch_orb(
     level: &mut Level,
-    players: &vanillite_world::entity::Dense<vanillite_game::player::PlayerData>,
-    spectators: &FxHashSet<EntityId>,
-) -> Vec<(EntityId, i32)> {
-    let awards = std::mem::take(&mut level.output().experience);
-    let mut out = Vec::with_capacity(awards.len());
-    for (at, amount) in awards {
-        let mut best: Option<(f64, EntityId)> = None;
-        for (id, _) in players.iter() {
-            if spectators.contains(&id) {
-                continue;
-            }
-            let Some(p) = level.entities.store.get(id).map(|e| e.pos()) else {
-                continue;
-            };
-            let d = (p.x - at.x).powi(2) + (p.y - at.y).powi(2) + (p.z - at.z).powi(2);
-            if d <= 64.0 && best.is_none_or(|(b, _)| d < b) {
-                best = Some((d, id));
-            }
-        }
-        if let Some((_, id)) = best {
-            out.push((id, amount));
+    id: EntityId,
+    player: &mut vanillite_game::player::PlayerData,
+    reach: &vanillite_base::Aabb,
+    global: &Global,
+    taken: &mut Vec<(EntityId, EntityId)>,
+) {
+    use vanillite_base::random::RandomSource;
+    use vanillite_game::experience_orb as orbs;
+    let mut near = Vec::new();
+    orbs::touching(&level.entities, reach, &mut near);
+    if near.is_empty() {
+        return;
+    }
+    let n = i32::try_from(near.len()).unwrap_or(i32::MAX);
+    let pick = orbs::with_entity_random(|r| r.next_int_bounded(n));
+    let Some(&orb) = usize::try_from(pick).ok().and_then(|i| near.get(i)) else {
+        return;
+    };
+    if player.survival.take_xp_delay != 0 {
+        return;
+    }
+    player.survival.take_xp_delay = orbs::TAKE_XP_DELAY;
+    let points = orbs::with_entity_random(|r| {
+        orbs::take_one(
+            &mut level.entities,
+            orb,
+            &mut player.inventory,
+            &global.game.enchanting,
+            &mut |n| r.next_int_bounded(n),
+        )
+    });
+    let Some(points) = points else {
+        return;
+    };
+    taken.push((orb, id));
+    if points > 0 {
+        let volume = player.survival.give_experience_points(points);
+        let Some(mut entity) = level.entities.store.get_mut(id) else {
+            return;
+        };
+        // The score is synched data.
+        entity.mark_data_dirty();
+        let pos = entity.as_ref().pos();
+        if let Some(volume) = volume {
+            level.play_sound(
+                None,
+                pos.x,
+                pos.y,
+                pos.z,
+                vanillite_game::block::sound_id("entity.player.levelup"),
+                vanillite_game::level::SOUND_PLAYERS,
+                volume,
+                1.0,
+            );
         }
     }
-    out
 }

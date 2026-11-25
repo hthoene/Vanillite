@@ -7,12 +7,13 @@ use vanillite_world::entity::{
     Dense, EntityId, EntityStore, NetworkId, NetworkIds, NewEntity, Removed, Rotation,
 };
 
+use crate::experience_orb::ExperienceOrbData;
 use vanillite_base::hash::FxHashMap;
 
 use crate::item_entity::ItemData;
 use crate::mob::MobData;
 use crate::mob::boss::special::{SpecialData, is_special_kind};
-use crate::mob::projectile::{ArrowData, OrbData};
+use crate::mob::projectile::ArrowData;
 use crate::player::PlayerData;
 
 /// The kind data of a `falling_block` (`FallingBlockEntity`).
@@ -56,8 +57,6 @@ pub struct Entities {
     pub mobs: Dense<MobData>,
     /// Arrow kind data.
     pub arrows: Dense<ArrowData>,
-    /// Experience orb kind data.
-    pub orbs: Dense<OrbData>,
     /// Network id → entity of mobs (attack and interaction packets name their target by it).
     pub by_network_id: FxHashMap<i32, EntityId>,
     /// Primed TNT kind data.
@@ -66,6 +65,8 @@ pub struct Entities {
     tags: std::collections::HashMap<EntityId, Vec<String>>,
     /// Kind data of the bosses' non-living entities (skulls, crystals, fireballs, clouds).
     pub specials: Dense<SpecialData>,
+    /// Experience orb kind data.
+    pub experience_orbs: Dense<ExperienceOrbData>,
 }
 
 impl Entities {
@@ -167,12 +168,6 @@ impl Entities {
     pub fn spawn_arrow(&mut self, new: NewEntity, data: ArrowData) -> EntityId {
         let arrows = &mut self.arrows;
         self.store.spawn(new, |id| arrows.push(id, data))
-    }
-
-    /// Adds an experience orb.
-    pub fn spawn_orb(&mut self, new: NewEntity, data: OrbData) -> EntityId {
-        let orbs = &mut self.orbs;
-        self.store.spawn(new, |id| orbs.push(id, data))
     }
 
     /// Adds a special entity (see [`crate::mob::boss::special`]).
@@ -286,24 +281,6 @@ impl Entities {
         self.arrows.get_mut(row)
     }
 
-    /// The experience orb data of an entity.
-    pub fn orb(&self, id: EntityId) -> Option<&OrbData> {
-        let entity = self.store.get(id)?;
-        (entity.kind() == ids::EXPERIENCE_ORB)
-            .then(|| self.orbs.get(entity.kind_row()))
-            .flatten()
-    }
-
-    /// The experience orb data of an entity, mutably.
-    pub fn orb_mut(&mut self, id: EntityId) -> Option<&mut OrbData> {
-        let entity = self.store.get(id)?;
-        if entity.kind() != ids::EXPERIENCE_ORB {
-            return None;
-        }
-        let row = entity.kind_row();
-        self.orbs.get_mut(row)
-    }
-
     /// The entity with a network id, for mobs.
     pub fn by_network_id(&self, network_id: i32) -> Option<EntityId> {
         self.by_network_id
@@ -377,6 +354,30 @@ impl Entities {
         removed
     }
 
+    /// Adds an experience orb.
+    pub fn spawn_experience_orb(&mut self, new: NewEntity, data: ExperienceOrbData) -> EntityId {
+        let orbs = &mut self.experience_orbs;
+        self.store.spawn(new, |id| orbs.push(id, data))
+    }
+
+    /// The experience orb data of an entity.
+    pub fn experience_orb(&self, id: EntityId) -> Option<&ExperienceOrbData> {
+        let entity = self.store.get(id)?;
+        (entity.kind() == ids::EXPERIENCE_ORB)
+            .then(|| self.experience_orbs.get(entity.kind_row()))
+            .flatten()
+    }
+
+    /// The experience orb data of an entity, mutably.
+    pub fn experience_orb_mut(&mut self, id: EntityId) -> Option<&mut ExperienceOrbData> {
+        let entity = self.store.get(id)?;
+        if entity.kind() != ids::EXPERIENCE_ORB {
+            return None;
+        }
+        let row = entity.kind_row();
+        self.experience_orbs.get_mut(row)
+    }
+
     /// Removes an entity of any kind together with its kind data.
     pub fn despawn(&mut self, id: EntityId) -> Option<Removed> {
         let removed = self.store.despawn(id)?;
@@ -424,14 +425,16 @@ impl Entities {
                 .and_then(|(_, moved)| moved)
         } else if kind == ids::ARROW {
             self.arrows.swap_remove(row).and_then(|(_, moved)| moved)
-        } else if kind == ids::EXPERIENCE_ORB {
-            self.orbs.swap_remove(row).and_then(|(_, moved)| moved)
         } else if is_mob_kind(kind) {
             self.mobs.swap_remove(row).and_then(|(_, moved)| moved)
         } else if is_special_kind(kind) {
             self.specials.swap_remove(row).and_then(|(_, moved)| moved)
         } else if kind == ids::TNT {
             self.primed_tnts
+                .swap_remove(row)
+                .and_then(|(_, moved)| moved)
+        } else if kind == ids::EXPERIENCE_ORB {
+            self.experience_orbs
                 .swap_remove(row)
                 .and_then(|(_, moved)| moved)
         } else {
@@ -471,6 +474,8 @@ pub fn tick_entity(level: &mut crate::level::Level, id: EntityId, kind: EntityTy
         crate::block::falling::tick_entity(level, id);
     } else if kind == ids::TNT {
         crate::block::tnt::tick_entity(level, id);
+    } else if kind == ids::EXPERIENCE_ORB {
+        crate::experience_orb::tick_entity(level, id);
     }
 }
 

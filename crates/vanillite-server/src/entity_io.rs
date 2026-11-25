@@ -187,7 +187,7 @@ impl EntityChunks {
                     NewEntity::new(ids::EXPERIENCE_ORB, level.network_ids().next(), uuid, p);
                 new.velocity = v;
                 new.rot = Rotation::default();
-                level.entities.spawn_orb(new, orb);
+                level.entities.spawn_experience_orb(new, orb);
             } else if nbt::type_of(&tag).is_some_and(|t| t == ids::ARROW || t == ids::PLAYER) {
                 // Arrows of mobs despawn; players are stored apart.
             } else {
@@ -237,7 +237,10 @@ impl EntityChunks {
                     .filter(|m| m.is_alive())
                     .map(|m| nbt::save_mob(&e, m))
             } else if kind == ids::EXPERIENCE_ORB {
-                level.entities.orb(id).map(|o| nbt::save_orb(&e, o))
+                level
+                    .entities
+                    .experience_orb(id)
+                    .map(|o| nbt::save_orb(&e, o))
             } else if let Some(s) = level.entities.special(id) {
                 nbt::save_special(&e, s)
             } else if kind == ids::ARROW {

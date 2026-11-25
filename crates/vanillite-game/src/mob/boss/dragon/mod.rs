@@ -727,7 +727,9 @@ pub fn tick_death(t: &mut Tick<'_, '_>) -> bool {
     if death_time > 150 && death_time % 5 == 0 && drops {
         let pos = t.pos();
         let amount = (xp as f32 * 0.08).floor() as i32;
-        combat::award_experience(t.level, t.ents, t.cx, pos, amount);
+        t.env
+                .out
+                .push(crate::survival::Effect::Experience { pos, amount });
     }
     if death_time == 1 && !t.mob_ref().silent {
         // `globalLevelEvent(1028)`: the dragon's death sound for every player.
@@ -758,7 +760,9 @@ pub fn tick_death(t: &mut Tick<'_, '_>) -> bool {
             let pos = t.pos();
             #[allow(clippy::cast_possible_truncation)]
             let amount = (xp as f32 * 0.2).floor() as i32;
-            combat::award_experience(t.level, t.ents, t.cx, pos, amount);
+            t.env
+                .out
+                .push(crate::survival::Effect::Experience { pos, amount });
         }
         if st_ref(t).in_fight {
             let uuid = t.core().uuid();

@@ -7,8 +7,8 @@ use vanillite_data::entity::{EntityTypeId, ids};
 use vanillite_nbt::{Compound, List, Tag};
 use vanillite_world::entity::{EntityFlags, EntityRef, Rotation};
 
-use super::projectile::OrbData;
 use super::{Kind, MobData};
+use crate::experience_orb::ExperienceOrbData;
 
 fn doubles(v: Vec3) -> List {
     List(vec![Tag::Double(v.x), Tag::Double(v.y), Tag::Double(v.z)])
@@ -326,13 +326,14 @@ pub fn load_mob(tag: &Compound, seed: i64) -> Option<LoadedMob> {
 }
 
 /// An experience orb as entity NBT.
-pub fn save_orb(core: &EntityRef<'_>, o: &OrbData) -> Compound {
+pub fn save_orb(core: &EntityRef<'_>, o: &ExperienceOrbData) -> Compound {
     let mut out = Compound::new();
     save_entity(core, &mut out);
     out.insert("fall_distance", 0.0_f64);
     out.insert("Fire", -1_i16);
     out.insert("Air", 300_i16);
-    out.insert("Health", 5_i16);
+    #[allow(clippy::cast_possible_truncation)]
+    out.insert("Health", o.health.clamp(0, 32767) as i16);
     #[allow(clippy::cast_possible_truncation)]
     out.insert("Age", o.age.min(32767) as i16);
     #[allow(clippy::cast_possible_truncation)]
@@ -342,7 +343,7 @@ pub fn save_orb(core: &EntityRef<'_>, o: &OrbData) -> Compound {
 }
 
 /// An experience orb from entity NBT.
-pub fn load_orb(tag: &Compound) -> Option<(Vec3, Vec3, u128, OrbData)> {
+pub fn load_orb(tag: &Compound) -> Option<(Vec3, Vec3, u128, ExperienceOrbData)> {
     if type_of(tag)? != ids::EXPERIENCE_ORB {
         return None;
     }
@@ -353,13 +354,13 @@ pub fn load_orb(tag: &Compound) -> Option<(Vec3, Vec3, u128, OrbData)> {
         pos,
         velocity,
         uuid,
-        OrbData {
+        ExperienceOrbData {
             value: int(tag, "Value").unwrap_or(1),
             count: int(tag, "Count").unwrap_or(1).max(1),
             age: int(tag, "Age").unwrap_or(0),
-            tick_count: 0,
+            health: int(tag, "Health").unwrap_or(5),
             following: None,
-            random_seed: i64::from(int(tag, "Value").unwrap_or(1)) ^ (uuid as i64),
+            tick_count: 0,
         },
     ))
 }

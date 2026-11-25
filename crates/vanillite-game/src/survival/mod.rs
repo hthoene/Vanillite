@@ -65,6 +65,8 @@ pub enum Effect {
         pickup_delay: i16,
         stack: crate::item::ItemStack,
     },
+    /// Experience orbs (`ExperienceOrb.award`).
+    Experience { pos: Vec3, amount: i32 },
 }
 
 /// The registry id of a sound event, `0` if unknown.

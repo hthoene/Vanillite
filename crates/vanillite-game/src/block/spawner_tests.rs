@@ -60,6 +60,7 @@ fn add_player(level: &mut Level, pos: Vec3, game_mode: GameMode) -> EntityId {
         last_equipment: std::array::from_fn(|_| crate::item::ItemStack::EMPTY),
         survival: crate::survival::player::Survival::default(),
         post_effects: Vec::new(),
+        recipe_book: crate::recipe::book::PlayerRecipeBook::default(),
         stats: crate::stats::StatsCounter::default(),
         advancements: crate::advancements::PlayerAdvancements::load(
             Arc::new(crate::advancements::Advancements::default()),

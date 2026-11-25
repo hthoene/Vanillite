@@ -37,7 +37,7 @@ const FIRE_IMMUNE_TICKS: i32 = 20;
 /// `Attributes.SAFE_FALL_DISTANCE`.
 const SAFE_FALL_DISTANCE: f64 = 3.0;
 /// Player eye height when standing (`Player.STANDING_EYE_HEIGHT`) and the other poses.
-fn eye_height(height: f32) -> f64 {
+pub(crate) fn eye_height(height: f32) -> f64 {
     // `EntityDimensions.eyeHeight` of the player's poses: 1.62 standing, 1.27 crouching,
     // 0.4 swimming/gliding, 0.2 sleeping/dying.
     let eye: f32 = if height >= 1.8 {
@@ -123,8 +123,13 @@ impl Experience {
     }
 
     /// `giveExperiencePoints`.
-    #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
     pub fn give_points(&mut self, points: i32) {
+        self.give_points_with(points, &mut |_| {});
+    }
+
+    /// `giveExperiencePoints` calling `level_up` with the new level of every level gained.
+    #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
+    pub fn give_points_with(&mut self, points: i32, level_up: &mut dyn FnMut(i32)) {
         self.progress += points as f32 / self.needed_for_next_level() as f32;
         self.total = self.total.saturating_add(points).max(0);
         while self.progress < 0.0 {
@@ -140,6 +145,7 @@ impl Experience {
         while self.progress >= 1.0 {
             self.progress = (self.progress - 1.0) * self.needed_for_next_level() as f32;
             self.give_levels(1);
+            level_up(self.level);
             self.progress /= self.needed_for_next_level() as f32;
         }
     }
@@ -207,7 +213,7 @@ pub struct Survival {
     last_box: Option<vanillite_base::Aabb>,
     /// `attackStrengthTicker`.
     pub attack_ticker: i32,
-    /// `takeXpDelay`.
+    /// `takeXpDelay`: ticks until the next experience orb can be taken.
     pub take_xp_delay: i32,
     /// Active status effects (`activeEffects`).
     pub effects: crate::effect::MobEffects,
@@ -219,6 +225,8 @@ pub struct Survival {
     /// Game events of the player's moves (`STEP`, `SWIM`, `HIT_GROUND`) for the world to
     /// post: event, position and the affected block.
     pub game_events: Vec<(u16, Vec3, Option<vanillite_data::block::BlockState>)>,
+    /// `lastLevelUpTime`: the tick of the last level-up sound.
+    pub last_level_up_time: i32,
     first_tick: bool,
     sent: Sent,
     recorded: Recorded,
@@ -279,6 +287,7 @@ impl Default for Survival {
             move_dist: 0.0,
             next_step: 1.0,
             game_events: Vec::new(),
+            last_level_up_time: 0,
             first_tick: true,
             sent: Sent::default(),
             recorded: Recorded::default(),
@@ -545,6 +554,25 @@ impl Survival {
     /// tick are only those at its new place.
     pub fn teleported(&mut self) {
         self.last_box = None;
+    }
+
+    /// `Player.giveExperiencePoints`: the score grows by the points too. Returns the volume of
+    /// the level-up sound (`entity.player.levelup`) to play at the player, if one plays: every
+    /// fifth level, at most once per 100 ticks.
+    #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
+    pub fn give_experience_points(&mut self, points: i32) -> Option<f32> {
+        self.score = self.score.wrapping_add(points);
+        let tick = self.tick_count;
+        let last = &mut self.last_level_up_time;
+        let mut volume = None;
+        self.xp.give_points_with(points, &mut |level| {
+            if level % 5 == 0 && (*last as f32) < tick as f32 - 100.0 {
+                let v = if level > 30 { 1.0 } else { level as f32 / 30.0 };
+                volume = Some(v * 0.75);
+                *last = tick;
+            }
+        });
+        volume
     }
 
     /// Forces the next [`sync`](Self::sync) to send health, food and experience
@@ -890,7 +918,7 @@ pub fn die(
             message: Component::empty(),
         });
     }
-    // `dropAllDeathLoot` → `dropEquipment`. TODO: the experience orbs (`ExperienceOrb.award`).
+    // `dropAllDeathLoot` → `dropEquipment` and `dropExperience`.
     if !env.rules.bool(Rule::KEEP_INVENTORY) && player.game_mode != GameMode::Spectator {
         let pos = entity.as_ref().pos();
         // `getEyeY()` with the pose's float eye height.
@@ -906,6 +934,11 @@ pub fn die(
             Vec3::new(pos.x, eye_y - 0.3, pos.z),
             env,
         );
+        // `getBaseExperienceReward`.
+        let amount = player.survival.xp.level.saturating_mul(7).min(100);
+        if amount > 0 {
+            env.out.push(Effect::Experience { pos, amount });
+        }
     }
     // The kill credit is the damage's causing entity: nothing else credits kills yet.
     env.out.push(Effect::Died {
