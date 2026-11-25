@@ -168,6 +168,11 @@ impl Codec {
         }
     }
 
+    /// The world the codec belongs to.
+    pub fn info(&self) -> &WorldInfo {
+        &self.info
+    }
+
     /// Decodes a chunk compound read for `pos`.
     pub fn read(&self, pos: ChunkPos, root: Compound) -> io::Result<ProtoChunk> {
         let mut bytes = Vec::new();
@@ -950,7 +955,7 @@ fn to_anvil<S: Strategy>(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// Chunks written by Vanilla 26.3 (generated world): a full chunk with block entities and
@@ -970,7 +975,7 @@ mod tests {
         ),
     ];
 
-    fn golden() -> Vec<(ChunkPos, Vec<u8>, Compound)> {
+    pub(crate) fn golden() -> Vec<(ChunkPos, Vec<u8>, Compound)> {
         GOLDEN
             .iter()
             .map(|&((x, z), data)| {
@@ -984,7 +989,7 @@ mod tests {
     }
 
     /// An overworld codec knowing every biome of the golden chunks.
-    fn codec(chunks: &[(ChunkPos, Vec<u8>, Compound)]) -> Codec {
+    pub(crate) fn codec(chunks: &[(ChunkPos, Vec<u8>, Compound)]) -> Codec {
         vanillite_chunk::facts::install_vanilla(&[], &[], 65);
         let mut biomes = vec!["minecraft:plains".to_owned()];
         for (_, _, root) in chunks {
@@ -1039,7 +1044,7 @@ mod tests {
     }
 
     /// Paths where two tags differ, with both values shortened.
-    fn diff(a: &Tag, b: &Tag, path: String, out: &mut Vec<String>) {
+    pub(crate) fn diff(a: &Tag, b: &Tag, path: String, out: &mut Vec<String>) {
         match (a, b) {
             (Tag::Compound(a), Tag::Compound(b)) => {
                 for (name, tag) in a.iter() {
@@ -1069,7 +1074,7 @@ mod tests {
         }
     }
 
-    fn without(c: &Compound, names: &[&str]) -> Compound {
+    pub(crate) fn without(c: &Compound, names: &[&str]) -> Compound {
         let mut c = sorted_compound(c);
         for name in names {
             c.remove(name);

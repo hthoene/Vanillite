@@ -3,8 +3,9 @@
 //!
 //! - [`IoPool`] is the disk IO thread group of the server (`storage.io-threads`, default 2). Its
 //!   threads only make system calls; codec work runs on the compute pool.
-//! - [`AnvilStore`] is the built-in `chunk-storage` slot for Anvil region files. It is
-//!   owner-agnostic: any thread may submit, results go to the requester's inbox by token.
+//! - [`RegionStore`] is the built-in `chunk-storage` slot for region files of either world
+//!   format ([`WorldFormat`]): Anvil (`.mca`) or the own format (`.vwr`, [`crate::vwr`]). It
+//!   is owner-agnostic: any thread may submit, results go to the requester's inbox by token.
 //!
 //! Open files live in a table sharded by region file. Each file has one owner at a time: the IO
 //! thread that works on it takes it out of the table, so no two instances of a file allocate
@@ -16,7 +17,8 @@
 //!
 //! A commit writes every `Put` submitted before it and then syncs every touched file
 //! (`sync-chunk-writes`); replaced sectors are reused only after that, so the last committed
-//! version of a chunk survives a power failure.
+//! version of a chunk survives a power failure. Own-format files write their index at the
+//! commit (and before they are closed), so a crash leaves them exactly as of the last commit.
 
 use std::collections::{BinaryHeap, VecDeque};
 use std::io;
@@ -33,7 +35,9 @@ use vanillite_chunk::store::{
     StoreOp, StoreResult, Stream, Token,
 };
 
+use crate::format::WorldFormat;
 use crate::region::{self, RegionFile};
+use crate::vwr::VwrFile;
 
 /// Shards of the file table of one dimension.
 const SHARDS: usize = 16;
@@ -206,6 +210,81 @@ fn worker_loop(pool: &PoolInner) {
     }
 }
 
+// --- Open files ---------------------------------------------------------------------------
+
+/// An open region file of either format.
+pub(crate) enum OpenFile {
+    Anvil(Box<RegionFile>),
+    Own(VwrFile),
+}
+
+impl OpenFile {
+    pub(crate) fn open(
+        format: WorldFormat,
+        path: &std::path::Path,
+        create: bool,
+    ) -> io::Result<Option<Self>> {
+        Ok(match format {
+            WorldFormat::Anvil => {
+                RegionFile::open(path, create)?.map(|f| OpenFile::Anvil(Box::new(f)))
+            }
+            WorldFormat::Vanillite => VwrFile::open(path, create)?.map(OpenFile::Own),
+        })
+    }
+
+    pub(crate) fn name(&self) -> &str {
+        match self {
+            OpenFile::Anvil(file) => file.name(),
+            OpenFile::Own(file) => file.name(),
+        }
+    }
+
+    pub(crate) fn write(
+        &mut self,
+        pos: ChunkPos,
+        meta: RecordMeta,
+        record: &[u8],
+    ) -> io::Result<()> {
+        match self {
+            OpenFile::Anvil(file) => file.write_record(pos, record),
+            OpenFile::Own(file) => file.write_record(pos, meta, record),
+        }
+    }
+
+    pub(crate) fn delete(&mut self, pos: ChunkPos) -> io::Result<()> {
+        match self {
+            OpenFile::Anvil(file) => file.delete(pos),
+            OpenFile::Own(file) => file.delete(pos),
+        }
+    }
+
+    pub(crate) fn read_many(
+        &self,
+        region: (i32, i32),
+        wanted: &[usize],
+        ahead: &[usize],
+        out: &mut Vec<region::RecordRead>,
+    ) -> (usize, usize) {
+        match self {
+            OpenFile::Anvil(file) => file.read_many(region, wanted, ahead, out),
+            OpenFile::Own(file) => file.read_many(region, wanted, ahead, out),
+        }
+    }
+
+    /// Makes the writes durable: Anvil syncs (with `sync`) and frees replaced sectors, the
+    /// own format writes its index.
+    pub(crate) fn commit(&mut self, sync: bool) -> io::Result<()> {
+        match self {
+            OpenFile::Anvil(file) if sync => file.sync(),
+            OpenFile::Anvil(file) => {
+                file.release_freed();
+                Ok(())
+            }
+            OpenFile::Own(file) => file.flush(sync),
+        }
+    }
+}
+
 // --- The store of one dimension ----------------------------------------------------------
 
 /// A region file of a stream: (stream, region x, region z).
@@ -216,11 +295,14 @@ fn file_key(key: &RecordKey) -> FileKey {
     (key.stream, x, z)
 }
 
+/// A record with its metadata.
+type Record = (RecordMeta, Arc<[u8]>);
+
 /// A write taken by an IO thread: slot, sequence number, record (`None` deletes).
-type WriteJob = (usize, u64, Option<Arc<[u8]>>);
+type WriteJob = (usize, u64, Option<Record>);
 
 /// What a read found; errors are rebuilt for every op that wanted the record.
-type ReadOutcome = Result<Option<Arc<[u8]>>, (io::ErrorKind, String)>;
+type ReadOutcome = Result<Option<Record>, (io::ErrorKind, String)>;
 
 /// A batch's reply address.
 struct Batch {
@@ -239,21 +321,21 @@ struct PendingRead {
 struct PendingWrite {
     seq: u64,
     /// `None` deletes.
-    record: Option<Arc<[u8]>>,
+    record: Option<Record>,
     /// Ops answered once this key is written.
     waiters: Vec<(Arc<Batch>, usize)>,
 }
 
 impl PendingWrite {
     fn len(&self) -> usize {
-        self.record.as_ref().map_or(0, |r| r.len())
+        self.record.as_ref().map_or(0, |r| r.1.len())
     }
 }
 
 #[derive(Default)]
 struct FileSlot {
     /// The open file; taken out while an IO thread owns it.
-    region: Option<RegionFile>,
+    region: Option<OpenFile>,
     /// An IO thread works on this file.
     busy: bool,
     /// The file does not exist (found by the last read).
@@ -288,26 +370,26 @@ impl FileSlot {
 /// Records read ahead, first in first out under a byte budget.
 #[derive(Default)]
 struct ReadCache {
-    map: FxHashMap<(Stream, ChunkPos), Arc<[u8]>>,
+    map: FxHashMap<(Stream, ChunkPos), Record>,
     order: VecDeque<(Stream, ChunkPos)>,
     bytes: usize,
     budget: usize,
 }
 
 impl ReadCache {
-    fn take(&mut self, key: (Stream, ChunkPos)) -> Option<Arc<[u8]>> {
-        let bytes = self.map.remove(&key)?;
-        self.bytes -= bytes.len();
-        Some(bytes)
+    fn take(&mut self, key: (Stream, ChunkPos)) -> Option<Record> {
+        let record = self.map.remove(&key)?;
+        self.bytes -= record.1.len();
+        Some(record)
     }
 
-    fn insert(&mut self, key: (Stream, ChunkPos), bytes: Arc<[u8]>) {
-        if bytes.len() > self.budget {
+    fn insert(&mut self, key: (Stream, ChunkPos), record: Record) {
+        if record.1.len() > self.budget {
             return;
         }
-        self.bytes += bytes.len();
-        if let Some(old) = self.map.insert(key, bytes) {
-            self.bytes -= old.len();
+        self.bytes += record.1.len();
+        if let Some(old) = self.map.insert(key, record) {
+            self.bytes -= old.1.len();
         }
         self.order.push_back(key);
         while self.bytes > self.budget {
@@ -367,6 +449,7 @@ struct Counters {
 
 struct StoreInner {
     dir: PathBuf,
+    format: WorldFormat,
     settings: StoreSettings,
     shards: Box<[Shard]>,
     pool: IoPool,
@@ -378,24 +461,30 @@ struct StoreInner {
     counters: Counters,
 }
 
-/// The built-in `chunk-storage` slot: the Anvil files of one dimension (`region/`,
-/// `entities/`, `poi/`), on the shared IO threads.
+/// The built-in `chunk-storage` slot: the region files of one dimension (`region/`,
+/// `entities/`, `poi/`) in one world format, on the shared IO threads.
 #[derive(Clone)]
-pub struct AnvilStore {
+pub struct RegionStore {
     inner: Arc<StoreInner>,
 }
 
-impl std::fmt::Debug for AnvilStore {
+impl std::fmt::Debug for RegionStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AnvilStore")
+        f.debug_struct("RegionStore")
             .field("dir", &self.inner.dir)
+            .field("format", &self.inner.format)
             .finish_non_exhaustive()
     }
 }
 
-impl AnvilStore {
-    /// The store of the dimension folder `dir`.
-    pub fn new(dir: PathBuf, settings: StoreSettings, pool: IoPool) -> AnvilStore {
+impl RegionStore {
+    /// The store of the dimension folder `dir` in `format`.
+    pub fn new(
+        dir: PathBuf,
+        format: WorldFormat,
+        settings: StoreSettings,
+        pool: IoPool,
+    ) -> RegionStore {
         let budget = settings.read_cache / SHARDS;
         let shards = (0..SHARDS)
             .map(|_| Shard {
@@ -409,9 +498,10 @@ impl AnvilStore {
                 idle: Condvar::new(),
             })
             .collect();
-        AnvilStore {
+        RegionStore {
             inner: Arc::new(StoreInner {
                 dir,
+                format,
                 settings,
                 shards,
                 pool,
@@ -460,7 +550,7 @@ impl StoreInner {
         };
         self.dir
             .join(folder)
-            .join(format!("r.{}.{}.mca", key.1, key.2))
+            .join(format!("r.{}.{}.{}", key.1, key.2, self.format.extension()))
     }
 
     fn submit(
@@ -488,9 +578,9 @@ impl StoreInner {
                         answers.push((index, answer(write.record.clone(), meta_only)));
                         continue;
                     }
-                    if !meta_only && let Some(bytes) = state.cache.take((key.stream, key.pos)) {
+                    if !meta_only && let Some(record) = state.cache.take((key.stream, key.pos)) {
                         self.counters.cache_hits.fetch_add(1, Ordering::Relaxed);
-                        answers.push((index, answer(Some(bytes), false)));
+                        answers.push((index, answer(Some(record), false)));
                         continue;
                     }
                     let file = state.files.entry(fk).or_default();
@@ -509,8 +599,9 @@ impl StoreInner {
                         schedule.push((fk, priority));
                     }
                 }
-                StoreOp::Put { bytes, .. } => {
-                    self.queue_write(state, fk, &key, slot_index, Some(bytes), &batch, index);
+                StoreOp::Put { meta, bytes, .. } => {
+                    let record = Some((meta, bytes));
+                    self.queue_write(state, fk, &key, slot_index, record, &batch, index);
                     let file = state.files.entry(fk).or_default();
                     if needs_job(file, priority) {
                         schedule.push((fk, priority));
@@ -540,7 +631,7 @@ impl StoreInner {
         fk: FileKey,
         key: &RecordKey,
         slot_index: usize,
-        record: Option<Arc<[u8]>>,
+        record: Option<Record>,
         batch: &Arc<Batch>,
         index: usize,
     ) {
@@ -550,7 +641,7 @@ impl StoreInner {
         if record.is_some() {
             file.missing = false;
         }
-        let added = record.as_ref().map_or(0, |r| r.len());
+        let added = record.as_ref().map_or(0, |r| r.1.len());
         self.backlog.fetch_add(added, Ordering::Relaxed);
         match file.writes.get_mut(&slot_index) {
             Some(write) => {
@@ -624,7 +715,7 @@ impl StoreInner {
                 if create && let Some(dir) = path.parent() {
                     let _ = std::fs::create_dir_all(dir);
                 }
-                RegionFile::open(&path, create)
+                OpenFile::open(self.format, &path, create)
             }
         };
         let (mut region, open_error) = match region {
@@ -643,7 +734,9 @@ impl StoreInner {
         for (slot, seq, record) in writes {
             let result = match (&mut region, &record, &open_error) {
                 (_, _, Some(e)) => Err(error(e)),
-                (Some(region), Some(record), None) => region.write_record(pos_of(slot), record),
+                (Some(region), Some((meta, record)), None) => {
+                    region.write(pos_of(slot), *meta, record)
+                }
                 (Some(region), None, None) => region.delete(pos_of(slot)),
                 (None, _, None) => Ok(()),
             };
@@ -657,6 +750,7 @@ impl StoreInner {
                         read.push(region::RecordRead {
                             slot: r.slot,
                             ahead: false,
+                            meta: RecordMeta::default(),
                             record: Err(error(e)),
                         });
                     }
@@ -737,12 +831,13 @@ impl StoreInner {
         }
         let mut found: FxHashMap<usize, ReadOutcome> = FxHashMap::default();
         for r in read {
-            let record = r.record.map(|r| r.map(Arc::from));
+            let meta = r.meta;
+            let record = r.record.map(|r| r.map(|bytes| (meta, Arc::from(bytes))));
             if r.ahead {
-                if let Ok(Some(bytes)) = record
+                if let Ok(Some(record)) = record
                     && !file.writes.contains_key(&r.slot)
                 {
-                    state.cache.insert((fk.0, pos_of(r.slot)), bytes);
+                    state.cache.insert((fk.0, pos_of(r.slot)), record);
                 }
                 continue;
             }
@@ -751,7 +846,9 @@ impl StoreInner {
         for r in reads {
             let result = match found.get(&r.slot) {
                 None | Some(Ok(None)) => StoreResult::Missing,
-                Some(Ok(Some(bytes))) => answer(Some(Arc::clone(bytes)), r.meta_only),
+                Some(Ok(Some((meta, bytes)))) => {
+                    answer(Some((*meta, Arc::clone(bytes))), r.meta_only)
+                }
                 Some(Err((kind, message))) => {
                     StoreResult::Failed(io::Error::new(*kind, message.clone()))
                 }
@@ -776,8 +873,9 @@ impl StoreInner {
     }
 
     /// Closes the least recently used idle files until a quarter of the limit is free again.
-    /// Files with queued work or an IO thread on them stay open.
-    fn evict(&self) {
+    /// Files with queued work or an IO thread on them stay open. A file is made durable
+    /// before it leaves the table, so the next instance of it sees every write.
+    fn evict(self: &Arc<Self>) {
         let target = self.settings.max_open_files * 3 / 4;
         let open = self.open.load(Ordering::Relaxed);
         if open <= target {
@@ -795,26 +893,55 @@ impl StoreInner {
         candidates.sort_unstable();
         for (_, index, fk) in candidates.into_iter().take(open - target) {
             let shard = &self.shards[index];
-            let region = {
+            let taken = {
                 let mut state = lock(&shard.state);
-                match state.files.get(&fk) {
-                    Some(file) if file.idle() => state
-                        .files
-                        .remove(&fk)
-                        .and_then(|f| f.region.map(|r| (r, f.dirty))),
+                match state.files.get_mut(&fk) {
+                    Some(file) if file.idle() => {
+                        file.busy = true;
+                        file.region
+                            .take()
+                            .map(|r| (r, std::mem::take(&mut file.dirty)))
+                    }
                     _ => None,
                 }
             };
-            if let Some((mut region, dirty)) = region {
-                // Another instance may open the file now; this one only syncs.
-                if dirty && self.settings.sync {
-                    if let Err(e) = region.sync() {
-                        log::error!("Couldn't sync {}: {e}", region.name());
-                    }
-                } else {
-                    region.release_freed();
-                }
+            let Some((mut region, dirty)) = taken else {
+                continue;
+            };
+            let result = if dirty {
+                region.commit(self.settings.sync)
+            } else {
+                Ok(())
+            };
+            if let Err(e) = &result {
+                log::error!("Couldn't sync {}: {e}", region.name());
+            }
+            let mut state = lock(&shard.state);
+            let file = state
+                .files
+                .get_mut(&fk)
+                .expect("a busy file stays in the table");
+            file.busy = false;
+            let requeue = if file.has_work() || result.is_err() {
+                // Work arrived meanwhile, or the file must stay open to be synced again.
+                file.region = Some(region);
+                file.dirty |= result.is_err();
+                (file.has_work() && file.queued.is_none()).then(|| file.best_priority())
+            } else {
+                state.files.remove(&fk);
                 self.open.fetch_sub(1, Ordering::Relaxed);
+                drop(region);
+                None
+            };
+            if let Some(priority) = requeue
+                && let Some(file) = state.files.get_mut(&fk)
+            {
+                file.queued = Some(priority);
+            }
+            drop(state);
+            shard.idle.notify_all();
+            if let Some(priority) = requeue {
+                self.pool.push(priority, Work::File(Arc::clone(self), fk));
             }
         }
     }
@@ -867,12 +994,7 @@ impl StoreInner {
                 file.dirty = false;
                 let mut region = file.region.take().expect("dirty files are open");
                 drop(state);
-                let result = if self.settings.sync {
-                    region.sync()
-                } else {
-                    region.release_freed();
-                    Ok(())
-                };
+                let result = region.commit(self.settings.sync);
                 if let Err(e) = result {
                     log::error!("Couldn't sync {}: {e}", self.path(fk).display());
                     first_error.get_or_insert(e);
@@ -915,14 +1037,10 @@ fn needs_job(file: &mut FileSlot, priority: Priority) -> bool {
     }
 }
 
-fn answer(record: Option<Arc<[u8]>>, meta_only: bool) -> StoreResult {
+fn answer(record: Option<Record>, meta_only: bool) -> StoreResult {
     match record {
         None => StoreResult::Missing,
-        Some(bytes) => {
-            let meta = RecordMeta {
-                status: RecordMeta::STATUS_UNKNOWN,
-                ..RecordMeta::default()
-            };
+        Some((meta, bytes)) => {
             if meta_only {
                 StoreResult::Meta(meta)
             } else {
@@ -932,7 +1050,7 @@ fn answer(record: Option<Arc<[u8]>>, meta_only: bool) -> StoreResult {
     }
 }
 
-impl ChunkStore for AnvilStore {
+impl ChunkStore for RegionStore {
     fn submit(&self, token: Token, ops: Vec<StoreOp>, priority: Priority, to: CompletionTarget) {
         self.inner.submit(token, ops, priority, to);
     }
@@ -959,19 +1077,22 @@ impl ChunkStore for AnvilStore {
     }
 }
 
-/// Provider of [`AnvilStore`]s on one [`IoPool`].
+/// Provider of [`RegionStore`]s on one [`IoPool`].
 #[derive(Clone, Debug)]
-pub struct AnvilStoreProvider {
+pub struct RegionStoreProvider {
+    /// The world format of the files.
+    pub format: WorldFormat,
     /// The IO threads.
     pub pool: IoPool,
     /// Settings of every store.
     pub settings: StoreSettings,
 }
 
-impl ChunkStoreProvider for AnvilStoreProvider {
+impl ChunkStoreProvider for RegionStoreProvider {
     fn create(&self, world: &WorldInfo, _: DimensionId) -> io::Result<Arc<dyn ChunkStore>> {
-        Ok(Arc::new(AnvilStore::new(
+        Ok(Arc::new(RegionStore::new(
             world.dir.clone(),
+            self.format,
             self.settings,
             self.pool.clone(),
         )))
@@ -1008,9 +1129,14 @@ mod tests {
     /// already on disk; a commit makes them durable.
     #[test]
     fn read_your_writes() {
-        let dir = temp_dir("store-ryw");
+        read_your_writes_in(WorldFormat::Anvil);
+        read_your_writes_in(WorldFormat::Vanillite);
+    }
+
+    fn read_your_writes_in(format: WorldFormat) {
+        let dir = temp_dir(&format!("store-ryw-{}", format.name()));
         let pool = IoPool::new(2).unwrap();
-        let store = AnvilStore::new(dir.clone(), StoreSettings::default(), pool.clone());
+        let store = RegionStore::new(dir.clone(), format, StoreSettings::default(), pool.clone());
         let pos = ChunkPos::new(3, -7);
         for version in 0..200u8 {
             let (to, inbox) = CompletionTarget::channel();
@@ -1043,7 +1169,8 @@ mod tests {
         }
         assert!(store.stats().pending_hits > 0, "{:?}", store.stats());
         blocking::commit(&store).unwrap();
-        let reopened = AnvilStore::new(dir.clone(), StoreSettings::default(), pool.clone());
+        let reopened =
+            RegionStore::new(dir.clone(), format, StoreSettings::default(), pool.clone());
         assert_eq!(
             blocking::get(&reopened, &[key(pos)])
                 .pop()
@@ -1086,14 +1213,19 @@ mod tests {
     /// from many threads and from a fresh store: every chunk is intact (#50).
     #[test]
     fn many_threads_many_regions() {
-        let dir = temp_dir("store-many");
+        many_threads_many_regions_in(WorldFormat::Anvil);
+        many_threads_many_regions_in(WorldFormat::Vanillite);
+    }
+
+    fn many_threads_many_regions_in(format: WorldFormat) {
+        let dir = temp_dir(&format!("store-many-{}", format.name()));
         let pool = IoPool::new(4).unwrap();
         let settings = StoreSettings {
             max_open_files: 4,
             read_cache: 1 << 20,
             ..StoreSettings::default()
         };
-        let store = AnvilStore::new(dir.clone(), settings, pool.clone());
+        let store = RegionStore::new(dir.clone(), format, settings, pool.clone());
         let (files, threads, per_file) = (64, 16, 24);
         let pos =
             |file: i32, i: i32| ChunkPos::new((file % 8 - 4) * 32 + i, (file / 8 - 4) * 32 + i);
@@ -1116,7 +1248,7 @@ mod tests {
                 });
             }
         });
-        let check = |store: &AnvilStore| {
+        let check = |store: &RegionStore| {
             std::thread::scope(|scope| {
                 for t in 0..threads {
                     scope.spawn(move || {
@@ -1140,7 +1272,12 @@ mod tests {
         check(&store);
         blocking::commit(&store).unwrap();
         assert!(store.open_files() <= 64, "{}", store.open_files());
-        check(&AnvilStore::new(dir.clone(), settings, pool.clone()));
+        check(&RegionStore::new(
+            dir.clone(),
+            format,
+            settings,
+            pool.clone(),
+        ));
         pool.shutdown();
         std::fs::remove_dir_all(dir).unwrap();
     }

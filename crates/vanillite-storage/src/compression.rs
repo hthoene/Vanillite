@@ -91,6 +91,53 @@ impl Compression {
     }
 }
 
+/// Compresses one record of the own format with zstd at `level` (no dictionary). Every
+/// thread keeps its compression context, so a record costs no context setup.
+pub fn zstd_compress(data: &[u8], level: i32) -> io::Result<Vec<u8>> {
+    thread_local! {
+        static CONTEXT: std::cell::RefCell<Option<(i32, zstd::bulk::Compressor<'static>)>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    CONTEXT.with_borrow_mut(|context| {
+        let compressor = match context {
+            Some((current, compressor)) if *current == level => compressor,
+            _ => {
+                &mut context
+                    .insert((level, zstd::bulk::Compressor::new(level)?))
+                    .1
+            }
+        };
+        compressor.compress(data)
+    })
+}
+
+/// Decompresses one zstd record; its frame must state its size, at most
+/// [`MAX_DECOMPRESSED`].
+pub fn zstd_decompress(data: &[u8]) -> io::Result<Vec<u8>> {
+    thread_local! {
+        static CONTEXT: std::cell::RefCell<Option<zstd::bulk::Decompressor<'static>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    let size = match zstd::zstd_safe::get_frame_content_size(data) {
+        Ok(Some(size)) => usize::try_from(size).unwrap_or(usize::MAX),
+        _ => return Err(invalid("zstd: no frame size")),
+    };
+    if size > MAX_DECOMPRESSED {
+        return Err(too_large());
+    }
+    CONTEXT.with_borrow_mut(|context| {
+        let decompressor = match context {
+            Some(decompressor) => decompressor,
+            None => context.insert(zstd::bulk::Decompressor::new()?),
+        };
+        let out = decompressor.decompress(data, size)?;
+        if out.len() != size {
+            return Err(invalid("zstd: wrong frame size"));
+        }
+        Ok(out)
+    })
+}
+
 fn too_large() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "decompressed chunk too large")
 }

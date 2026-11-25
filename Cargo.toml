@@ -55,6 +55,8 @@ flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 lz4_flex = { version = "0.11", default-features = false, features = ["safe-encode", "safe-decode"] }
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+twox-hash = { version = "2", default-features = false, features = ["xxhash3_64"] }
+zstd = { version = "0.13", default-features = false }
 
 # External crates: network (vanillite-nbt, vanillite-protocol, vanillite-macros, vanillite-net).
 aes = "0.8"

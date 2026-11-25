@@ -2,7 +2,9 @@
 //! `level.dat` and the import of older and Spigot world layouts.
 //!
 //! - [`service`] is the storage service (#47): the built-in `chunk-storage` slot
-//!   ([`AnvilStore`]) on the disk IO threads ([`IoPool`]).
+//!   ([`RegionStore`]) on the disk IO threads ([`IoPool`]), for both world formats.
+//! - [`format`] knows the world formats (#25): Anvil and the own format, the default for new
+//!   worlds ([`vwr`] files, [`OwnCodec`]); it detects them and converts and exports worlds.
 //! - [`AnvilCodec`] turns chunks into Anvil records and back on the compute pool.
 //! - [`blocking`] waits for store results on the calling thread (tools, tests, import).
 //! - [`player_data`] reads and writes `players/data/<uuid>.dat`.
@@ -20,13 +22,16 @@ pub mod blocking;
 pub mod chunk_nbt;
 pub mod compression;
 pub mod files;
+pub mod format;
 pub mod import;
 pub mod layout;
 pub mod level_dat;
+pub mod own_codec;
 pub mod player_data;
 pub mod region;
 pub mod saved_data;
 pub mod service;
+pub mod vwr;
 pub mod writer;
 
 use std::io;
@@ -40,9 +45,11 @@ use vanillite_data::version::DATA_VERSION;
 
 pub use crate::chunk_nbt::Codec;
 pub use crate::compression::Compression;
+pub use crate::format::WorldFormat;
 pub use crate::layout::WorldLayout;
+pub use crate::own_codec::OwnCodec;
 pub use crate::saved_data::{read_saved_data, saved_data_path, write_saved_data};
-pub use crate::service::{AnvilStore, AnvilStoreProvider, IoPool, StoreSettings, StoreStats};
+pub use crate::service::{IoPool, RegionStore, RegionStoreProvider, StoreSettings, StoreStats};
 
 /// The folder of a dimension inside a world folder (26.x layout):
 /// `dimensions/<namespace>/<path>`.

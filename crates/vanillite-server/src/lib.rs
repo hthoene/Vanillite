@@ -25,6 +25,7 @@ mod test_bot;
 mod tick_rate;
 mod watchdog;
 mod world;
+mod world_format;
 mod world_setup;
 mod world_updates;
 
@@ -39,3 +40,4 @@ pub use tick_rate::TickRateManager;
 pub use vanillite_net::{VirtualConnection, VirtualOpener};
 pub use watchdog::{Heartbeat, WatchState, Watchdog};
 pub use world::{ServerWorld, TickContext, WorldId, WorldTask};
+pub use world_format::{convert_world, export_world};

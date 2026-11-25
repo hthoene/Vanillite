@@ -132,11 +132,14 @@ mod tests {
     use super::*;
     use crate::chunk_nbt::Codec;
     use crate::region::RegionFile;
-    use crate::{AnvilCodec, AnvilStore, Compression, IoPool, StoreSettings, blocking};
+    use crate::{
+        AnvilCodec, Compression, IoPool, RegionStore, StoreSettings, WorldFormat, blocking,
+    };
 
-    fn store(info: &WorldInfo) -> AnvilStore {
-        AnvilStore::new(
+    fn store(info: &WorldInfo) -> RegionStore {
+        RegionStore::new(
             info.dir.clone(),
+            WorldFormat::Anvil,
             StoreSettings::default(),
             IoPool::new(1).unwrap(),
         )
@@ -203,7 +206,7 @@ mod tests {
     }
 
     /// Saves `chunks` into `storage`, loads them back and checks that the chunk NBT is the same.
-    fn save_and_reload(storage: &AnvilStore, anvil: &AnvilCodec, chunks: Vec<ProtoChunk>) {
+    fn save_and_reload(storage: &RegionStore, anvil: &AnvilCodec, chunks: Vec<ProtoChunk>) {
         let codec = anvil.nbt();
         let expected: Vec<Compound> = chunks.iter().map(|c| codec.write(c).unwrap()).collect();
         let positions: Vec<ChunkPos> = chunks.iter().map(|c| c.pos).collect();
