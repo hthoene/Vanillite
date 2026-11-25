@@ -4,7 +4,9 @@
 //! `[worlds."<dimension>"]`. Both read their keys from the top level of `vanillite.toml`, so a
 //! group key must be unique across both sets. Performance knobs live under `performance.*`.
 
-use crate::rule::{AntiXrayMode, DisabledOr, StorageLayout, VanillaOr, WorldFormat};
+use crate::rule::{
+    AntiXrayMode, DisabledOr, RedstoneImplementation, StorageLayout, VanillaOr, WorldFormat,
+};
 use crate::rules;
 
 rules! {
@@ -192,6 +194,23 @@ rules! {
             /// with many players, the game time on the client may then lag behind a little.
             time_sync_interval: u32 = "time-sync-interval", Performance, range = [1, 1200],
                 vanilla = 20;
+        }
+        /// Redstone.
+        redstone: RedstoneRules = "performance.redstone" {
+            /// The redstone wire implementation. "vanilla" is tick-exact. "alternate-current"
+            /// follows Alternate Current (by Space Walker, MIT): a change computes the power of
+            /// the whole connected wire network in one pass and then updates every block
+            /// around the changed wires once, instead of Vanilla's recursive updates with
+            /// thousands of redundant ones. Final wire powers are the same as Vanilla's, but
+            /// the order of the neighbour and shape updates differs: it follows the direction
+            /// power flows in (front, back, right, left, down, up of each wire, wires nearest
+            /// the change first) instead of Vanilla's location-dependent hash order, so a
+            /// circuit behaves the same in every rotation and place, but contraptions that
+            /// depend on Vanilla's update order (some piston and observer builds) can behave
+            /// differently. Wires powered only by blocks update north first.
+            implementation: RedstoneImplementation = "implementation", Performance,
+                restart = true, vanilla = RedstoneImplementation::Vanilla,
+                paper = RedstoneImplementation::AlternateCurrent;
         }
         /// Development and test helpers. Never needed on a production server.
         debug: DebugRules = "debug" {

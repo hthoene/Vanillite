@@ -147,3 +147,77 @@ fn comparator_subtracts_and_reads_a_composter() {
     }
     assert_eq!(level.comparator_output(BlockPos::new(1, y, 0)), 0);
 }
+
+/// Measures a 48 × 48 wire plane powered from four redstone blocks below it, switched on and
+/// off, with Vanilla's wire and with Alternate Current, and checks that both end with the same
+/// powers. `cargo test -p vanillite-game --release -- --ignored alternate_current_bench
+/// --nocapture`.
+#[test]
+#[ignore]
+fn alternate_current_bench() {
+    use crate::block::Behaviours;
+    use crate::level::NEIGHBOR_STEPS;
+    use crate::level::tests::flat_level_with;
+
+    const SIZE: i32 = 48;
+    const ROUNDS: usize = 10;
+    let y = -60;
+    let sources = [(12, 12), (12, 36), (36, 12), (36, 36)];
+    let run = |alternate: bool| {
+        let mut behaviours = Behaviours::vanilla();
+        if alternate {
+            super::alternate_current::install(&mut behaviours);
+        }
+        let mut level = flat_level_with(behaviours);
+        for x in 0..SIZE {
+            for z in 0..SIZE {
+                place(
+                    &mut level,
+                    BlockPos::new(x, y, z),
+                    ids::REDSTONE_WIRE.default_state(),
+                );
+            }
+        }
+        let ground = level.block(BlockPos::new(0, y - 1, 0));
+        let mut snapshots = Vec::new();
+        let steps = NEIGHBOR_STEPS.with(|s| s.get());
+        let start = std::time::Instant::now();
+        for _ in 0..ROUNDS {
+            for on in [true, false] {
+                for &(x, z) in &sources {
+                    let state = if on {
+                        ids::REDSTONE_BLOCK.default_state()
+                    } else {
+                        ground
+                    };
+                    place(&mut level, BlockPos::new(x, y - 1, z), state);
+                }
+                let mut powers = Vec::with_capacity((SIZE * SIZE) as usize);
+                for x in 0..SIZE {
+                    for z in 0..SIZE {
+                        powers.push(power(&level, BlockPos::new(x, y, z)));
+                    }
+                }
+                snapshots.push(powers);
+            }
+        }
+        let elapsed = start.elapsed();
+        let steps = NEIGHBOR_STEPS.with(|s| s.get()) - steps;
+        (snapshots, elapsed, steps)
+    };
+    let (vanilla, vanilla_time, vanilla_steps) = run(false);
+    let (alternate, alternate_time, alternate_steps) = run(true);
+    let switches = (ROUNDS * 2) as u32;
+    println!(
+        "vanilla: {:?} and {} neighbour/shape update steps per switch",
+        vanilla_time / switches,
+        vanilla_steps / u64::from(switches)
+    );
+    println!(
+        "alternate-current: {:?} and {} neighbour/shape update steps per switch",
+        alternate_time / switches,
+        alternate_steps / u64::from(switches)
+    );
+    assert!(vanilla.iter().flatten().any(|&p| p > 0));
+    assert_eq!(vanilla, alternate);
+}

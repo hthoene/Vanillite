@@ -301,7 +301,13 @@ impl ServerBuilder {
         }
         let seed = prepared.world_gen.seed;
         let world_gen = prepared.world_gen.clone();
-        let behaviours = Arc::new(vanillite_game::block::Behaviours::vanilla());
+        let mut behaviours = vanillite_game::block::Behaviours::vanilla();
+        if config.server.redstone.implementation
+            == vanillite_config::RedstoneImplementation::AlternateCurrent
+        {
+            vanillite_game::block::redstone::alternate_current::install(&mut behaviours);
+        }
+        let behaviours = Arc::new(behaviours);
         let spawn_table = crate::world_setup::spawn_table(packs.as_deref()).map(Arc::new);
         if let Some(t) = &spawn_table {
             vanillite_game::mob::spawn::install_table(Arc::clone(t));
