@@ -164,6 +164,19 @@ pub fn game_data(packs: Option<&LoadedPacks>) -> GameData {
         &names("minecraft:trim_material"),
         &names("minecraft:trim_pattern"),
     );
+    let jukebox_songs = packs
+        .registry("minecraft:jukebox_song")
+        .map(|r| {
+            r.entries()
+                .iter()
+                .map(|e| {
+                    let json =
+                        serde_json::from_str::<serde_json::Value>(e.json.get()).unwrap_or_default();
+                    vanillite_game::block::jukebox::JukeboxSong::from_json(&e.id, &json)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let banner_patterns = vanillite_game::menu::BannerPatterns {
         names: names("minecraft:banner_pattern"),
         tags: packs
@@ -194,7 +207,42 @@ pub fn game_data(packs: Option<&LoadedPacks>) -> GameData {
             (registry.to_owned(), tags)
         })
         .collect();
+    let json_entries = |registry: &str| -> Vec<(String, serde_json::Value)> {
+        packs
+            .registry(registry)
+            .map(|r| {
+                r.entries()
+                    .iter()
+                    .map(|e| {
+                        let json = serde_json::from_str(e.json.get()).unwrap_or_default();
+                        (e.id.clone(), json)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let trades = vanillite_game::trading::data::TradeData::load(
+        &json_entries("minecraft:villager_trade"),
+        &json_entries("minecraft:trade_set"),
+        &|tag| {
+            packs
+                .tag_ids("minecraft:villager_trade", tag)
+                .unwrap_or_default()
+        },
+        &|id| {
+            packs
+                .registry("minecraft:villager_trade")
+                .and_then(|r| r.id_of(id))
+                .and_then(|i| u32::try_from(i).ok())
+        },
+    );
+    log::info!(
+        "Loaded {} villager trades in {} trade sets",
+        trades.trades.len(),
+        trades.sets.len()
+    );
     GameData {
+        trades,
         tools,
         loot,
         enchantments,
@@ -209,18 +257,7 @@ pub fn game_data(packs: Option<&LoadedPacks>) -> GameData {
         banner_patterns,
         registry_tags,
         compostables: vanillite_game::block::composter::load_providers(packs.roots()),
-        jukebox_songs: packs
-            .registry("minecraft:jukebox_song")
-            .map(|r| {
-                r.entries()
-                    .iter()
-                    .map(|e| {
-                        let json = serde_json::from_str(e.json.get()).unwrap_or_default();
-                        vanillite_game::block::jukebox::Song::parse(&e.id, &json)
-                    })
-                    .collect()
-            })
-            .unwrap_or_default(),
+        jukebox_songs,
     }
 }
 
@@ -523,7 +560,7 @@ pub(crate) fn tick_items(
     chunks: &Chunks,
     random: &mut XoroshiroRandom,
     min_y: i32,
-    lifetime: i16,
+    settings: ItemSettings,
 ) {
     let ids: Vec<EntityId> = entities.items.iter().map(|(id, _)| id).collect();
     if ids.is_empty() {
@@ -548,10 +585,19 @@ pub(crate) fn tick_items(
             id,
             &mut || random.next_float(),
             min_y,
-            lifetime,
+            settings,
             &mut scratch,
         );
     }
+}
+
+/// The rules of item entities for [`tick_item`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ItemSettings {
+    /// Ticks an item lies on the ground before it despawns (Vanilla 6000).
+    pub lifetime: i16,
+    /// Horizontal merge radius (Vanilla 0.5); vertically 0.5 less.
+    pub merge_radius: f64,
 }
 
 /// Reused buffers of [`tick_item`].
@@ -570,9 +616,10 @@ pub fn tick_item(
     id: EntityId,
     random_float: &mut dyn FnMut() -> f32,
     min_y: i32,
-    lifetime: i16,
+    settings: ItemSettings,
     scratch: &mut ItemScratch,
 ) {
+    let lifetime = settings.lifetime;
     let block = |p: BlockPos| BlockState(chunks.block(p).unwrap_or(0));
     scratch.gone.clear();
     let Entities { store, items, .. } = entities;
@@ -610,18 +657,27 @@ pub fn tick_item(
         }
     }
     if merge {
-        merge_with_neighbours(entities, id, lifetime, &mut scratch.near, &mut scratch.gone);
+        merge_with_neighbours(
+            entities,
+            id,
+            lifetime,
+            settings.merge_radius,
+            &mut scratch.near,
+            &mut scratch.gone,
+        );
     }
     for &gone in &scratch.gone {
         entities.despawn(gone);
     }
 }
 
-/// `ItemEntity.mergeWithNeighbours`.
+/// `ItemEntity.mergeWithNeighbours` within `radius` (Vanilla 0.5) horizontally and `radius`
+/// minus 0.5 vertically.
 fn merge_with_neighbours(
     entities: &mut Entities,
     id: EntityId,
     lifetime: i16,
+    radius: f64,
     near: &mut Vec<EntityId>,
     gone: &mut Vec<EntityId>,
 ) {
@@ -629,13 +685,15 @@ fn merge_with_neighbours(
         return;
     };
     near.clear();
-    entities
-        .store
-        .for_each_in(&aabb.inflate(0.5, 0.0, 0.5), false, |other| {
+    entities.store.for_each_in(
+        &aabb.inflate(radius, radius - 0.5, radius),
+        false,
+        |other| {
             if other != id {
                 near.push(other);
             }
-        });
+        },
+    );
     for &other in near.iter() {
         if gone.contains(&other) {
             continue;

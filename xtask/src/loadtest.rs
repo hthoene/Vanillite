@@ -696,6 +696,7 @@ fn aggregate(
     };
     let join = samples("join_ms", ramp_start);
     let full_view = samples("full_view_ms", ramp_start);
+    let chunk_wait = samples("chunk_ms", from);
     let rtt = samples("rtt_ms", from);
     let last = reports.last().map(|r| r.1.clone()).unwrap_or_default();
     // Peak and mean of the bots online in the window (a crashing server drops them all).
@@ -754,6 +755,8 @@ fn aggregate(
             "join_ms_p95": round(pct(&join, 95.0)),
             "full_view_ms_p50": round(pct(&full_view, 50.0)),
             "full_view_ms_p95": round(pct(&full_view, 95.0)),
+            "chunk_ms_p50": round(pct(&chunk_wait, 50.0)),
+            "chunk_ms_p95": round(pct(&chunk_wait, 95.0)),
             "rtt_ms_p50": round(pct(&rtt, 50.0)),
             "rtt_ms_p95": round(pct(&rtt, 95.0)),
             "rtt_ms_p99": round(pct(&rtt, 99.0)),

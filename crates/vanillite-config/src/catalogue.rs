@@ -193,7 +193,7 @@ rules! {
             /// Clients run the clocks themselves in between; a longer interval saves traffic
             /// with many players, the game time on the client may then lag behind a little.
             time_sync_interval: u32 = "time-sync-interval", Performance, range = [1, 1200],
-                vanilla = 20;
+                vanilla = 20, performance = 60;
         }
         /// Redstone.
         redstone: RedstoneRules = "performance.redstone" {
@@ -353,19 +353,19 @@ rules! {
             /// Tracking range of players.
             player_range: VanillaOr<u16> = "player-range", Performance, range = [8, 512],
                 restart = true, vanilla = VanillaOr::Vanilla, paper = VanillaOr::Value(128),
-                spigot = VanillaOr::Value(128);
+                spigot = VanillaOr::Value(128), performance = VanillaOr::Value(128);
             /// Tracking range of animals, ambient and water mobs.
             animal_range: VanillaOr<u16> = "animal-range", Performance, range = [8, 512],
                 restart = true, vanilla = VanillaOr::Vanilla, paper = VanillaOr::Value(96),
-                spigot = VanillaOr::Value(96);
+                spigot = VanillaOr::Value(96), performance = VanillaOr::Value(80);
             /// Tracking range of monsters.
             monster_range: VanillaOr<u16> = "monster-range", Performance, range = [8, 512],
                 restart = true, vanilla = VanillaOr::Vanilla, paper = VanillaOr::Value(96),
-                spigot = VanillaOr::Value(96);
+                spigot = VanillaOr::Value(96), performance = VanillaOr::Value(96);
             /// Tracking range of everything else (items, projectiles, vehicles, decorations).
             misc_range: VanillaOr<u16> = "misc-range", Performance, range = [8, 512],
                 restart = true, vanilla = VanillaOr::Vanilla, paper = VanillaOr::Value(96),
-                spigot = VanillaOr::Value(96);
+                spigot = VanillaOr::Value(96), performance = VanillaOr::Value(64);
             /// Overload protection: while a world tick takes longer than this many
             /// milliseconds (smoothed), movement updates of tracked entities (position,
             /// rotation, head) are sent less often, up to `overload-max-interval-scale` times
@@ -373,7 +373,8 @@ rules! {
             /// Spawns, removals and entity data are never delayed. "disabled" keeps Vanilla's
             /// intervals: an overloaded server then slows down like Vanilla.
             overload_tick_millis: DisabledOr<u32> = "overload-tick-millis", Performance,
-                range = [1, 1000], vanilla = DisabledOr::Disabled;
+                range = [1, 1000], vanilla = DisabledOr::Disabled,
+                performance = DisabledOr::Value(45);
             /// Largest factor on the movement update interval under overload.
             overload_max_interval_scale: u32 = "overload-max-interval-scale", Performance,
                 range = [1, 20], vanilla = 4;
@@ -423,20 +424,27 @@ rules! {
         }
         /// Entity collisions.
         collisions: CollisionRules = "performance.collisions" {
-            /// Entity collisions processed per entity and tick.
+            /// Entities a mob pushes and is pushed by per tick (`pushEntities`). Saves the push
+            /// work in crowded mob pens and farms. Deviation: in a crowd of more entities only
+            /// the first ones push, so crowds spread more slowly; cramming damage still counts
+            /// every entity. "vanilla" pushes all.
             max_entity_collisions: VanillaOr<u32> = "max-entity-collisions", Performance,
-                range = [0, 1024], vanilla = VanillaOr::Vanilla, paper = VanillaOr::Value(8);
+                range = [0, 1024], vanilla = VanillaOr::Vanilla, paper = VanillaOr::Value(8),
+                performance = VanillaOr::Value(8);
         }
         /// Mobs and animals: AI work per tick. The Vanilla profile keeps every mob exact.
         mobs: MobRules = "performance.mobs" {
             /// Path finding nodes all mobs of the world may visit per tick; searches over the
             /// budget fail and are retried later. 0 = unlimited (Vanilla).
             path_nodes_per_tick: u32 = "path-nodes-per-tick", Performance,
-                range = [0, 10_000_000], vanilla = 0;
+                range = [0, 10_000_000], vanilla = 0, performance = 50_000;
             /// Mobs farther than this many blocks from every player tick only every 20th tick
-            /// (activation range). 0 = off (Vanilla: every mob in simulation distance ticks).
+            /// (activation range). Saves most of the mob tick on servers with many mobs away
+            /// from players. Deviation: such mobs move, path-find, grow up and breed at 1/20 of
+            /// Vanilla's speed (farms and breeders outside the range slow down). 0 = off
+            /// (Vanilla: every mob in simulation distance ticks).
             activation_range: u16 = "activation-range", Performance, range = [0, 512],
-                vanilla = 0, paper = 32;
+                vanilla = 0, paper = 32, spigot = 32, performance = 32;
         }
         /// Item entities (dropped items).
         items: ItemRules = "performance.items" {
@@ -444,6 +452,83 @@ rules! {
             /// item entities around on busy servers.
             despawn_ticks: u16 = "despawn-ticks", Performance, range = [20, 32766],
                 vanilla = 6000;
+            /// Horizontal radius in blocks within which equal item stacks merge into one entity
+            /// (vertically the radius minus 0.5). Fewer item entities to tick, track and send
+            /// near farms and mob grinders. Deviation: with more than Vanilla's 0.5, items
+            /// lying apart jump together into one stack.
+            merge_radius: f64 = "merge-radius", Performance, range = [0.5, 16.0],
+                vanilla = 0.5, performance = 2.5;
+            /// Radius in blocks within which experience orbs of the same value merge (Vanilla's
+            /// scan every 20 ticks). Fewer orb entities after mob grinders. Deviation: with more
+            /// than Vanilla's 0.5, orbs lying apart merge and fly to the player as one.
+            xp_merge_radius: f64 = "xp-merge-radius", Performance, range = [0.5, 16.0],
+                vanilla = 0.5, performance = 3.0;
+            /// Ticks an arrow stuck in a block stays before it despawns. Fewer arrow entities on
+            /// PvP servers and around skeletons. Deviation: arrows vanish earlier than
+            /// Vanilla's 60 seconds.
+            arrow_despawn_ticks: u16 = "arrow-despawn-ticks", Performance, range = [20, 1200],
+                vanilla = 1200, performance = 300;
+        }
+        /// Natural mob spawning and despawning (`NaturalSpawner`). Values per category
+        /// replace Vanilla's mob caps (per 17 × 17 chunks around players, also per player).
+        spawning: SpawningRules = "performance.spawning" {
+            /// Ticks between natural spawn rounds of monsters, ambient and water mobs (animals
+            /// keep Vanilla's 400). Saves spawn attempts, which cost a lot with many players.
+            /// Deviation: caps refill more slowly after mobs die (mob farms produce less).
+            spawn_interval: u16 = "spawn-interval", Performance, range = [1, 400],
+                vanilla = 1, performance = 2;
+            /// Mob cap of monsters (Vanilla 70). Fewer mobs to tick; fewer monsters at night.
+            monster_cap: VanillaOr<u16> = "monster-cap", Gameplay, range = [0, 1000],
+                vanilla = VanillaOr::Vanilla, performance = VanillaOr::Value(50);
+            /// Mob cap of animals (`creature`, Vanilla 10).
+            creature_cap: VanillaOr<u16> = "creature-cap", Gameplay, range = [0, 1000],
+                vanilla = VanillaOr::Vanilla;
+            /// Mob cap of bats (`ambient`, Vanilla 15).
+            ambient_cap: VanillaOr<u16> = "ambient-cap", Gameplay, range = [0, 1000],
+                vanilla = VanillaOr::Vanilla, performance = VanillaOr::Value(5);
+            /// Mob cap of axolotls (Vanilla 5).
+            axolotls_cap: VanillaOr<u16> = "axolotls-cap", Gameplay, range = [0, 1000],
+                vanilla = VanillaOr::Vanilla;
+            /// Mob cap of glow squids (`underground_water_creature`, Vanilla 5).
+            underground_water_creature_cap: VanillaOr<u16> = "underground-water-creature-cap",
+                Gameplay, range = [0, 1000], vanilla = VanillaOr::Vanilla;
+            /// Mob cap of squids and dolphins (`water_creature`, Vanilla 5).
+            water_creature_cap: VanillaOr<u16> = "water-creature-cap", Gameplay,
+                range = [0, 1000], vanilla = VanillaOr::Vanilla;
+            /// Mob cap of fish (`water_ambient`, Vanilla 20).
+            water_ambient_cap: VanillaOr<u16> = "water-ambient-cap", Gameplay,
+                range = [0, 1000], vanilla = VanillaOr::Vanilla, performance = VanillaOr::Value(10);
+            /// Blocks from the nearest player beyond which a mob that may despawn is removed at
+            /// once, and beyond which no mob spawns (Vanilla 128, fish 64). Fewer far mobs to
+            /// tick. Deviation: mobs disappear closer to players.
+            hard_despawn_range: VanillaOr<u16> = "hard-despawn-range", Gameplay,
+                range = [8, 512], vanilla = VanillaOr::Vanilla, performance = VanillaOr::Value(96);
+            /// Blocks from the nearest player beyond which an idle mob may despawn by chance
+            /// (Vanilla 32).
+            soft_despawn_range: VanillaOr<u16> = "soft-despawn-range", Gameplay,
+                range = [8, 512], vanilla = VanillaOr::Vanilla;
+        }
+        /// Explosions.
+        explosions: ExplosionRules = "performance.explosions" {
+            /// Primed TNT entities ticked per world tick; the rest wait (their fuse pauses)
+            /// until a later tick. Keeps huge TNT chains from stalling the server. Deviation:
+            /// above the limit, TNT explodes later than in Vanilla.
+            max_tnt_per_tick: DisabledOr<u32> = "max-tnt-per-tick", Limit, range = [1, 100_000],
+                vanilla = DisabledOr::Disabled, paper = DisabledOr::Value(100),
+                spigot = DisabledOr::Value(100), performance = DisabledOr::Value(100);
+        }
+        /// Hoppers.
+        hoppers: HopperRules = "performance.hoppers" {
+            /// Ticks a hopper waits after it moved an item (Vanilla 8). Higher values move items
+            /// more slowly.
+            transfer_cooldown: u8 = "transfer-cooldown", Gameplay, range = [1, 64],
+                vanilla = 8;
+            /// Ticks a hopper waits after it found nothing to move (Vanilla 1: it tries every
+            /// tick). Saves the container and item lookups of idle hoppers. Deviation: a hopper
+            /// notices new items up to this many ticks later; item sorters and clocks built on
+            /// hopper timing run differently.
+            check_cooldown: u8 = "check-cooldown", Performance, range = [1, 64],
+                vanilla = 1, performance = 4;
         }
         /// Anti-Xray: ores and other hidden blocks that touch no transparent block are kept from
         /// clients, so x-ray clients and texture packs cannot find them. Chunk packets stay

@@ -62,6 +62,11 @@ pub trait ScenarioWorld {
         Err("this world cannot restart".to_owned())
     }
 
+    /// Uses bone meal on the block at `pos` (`BoneMealItem.growCrop`).
+    fn bonemeal(&mut self, _pos: BlockPos) -> Result<(), String> {
+        Err("this world has no bone meal".to_owned())
+    }
+
     /// The settled light inside `min..=max` in y, z, x order as `sky << 4 | block`: the levels
     /// a client sees. Worlds without a light engine leave `out` empty.
     fn light(&mut self, min: BlockPos, max: BlockPos, out: &mut Vec<u8>) {

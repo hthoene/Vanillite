@@ -17,6 +17,7 @@ pub fn register_goals(m: &mut MobData) {
     let g = &mut m.goals;
     let tg = &mut m.targets;
     g.add(4, raider::patrol());
+    raider::add_raider_goals(g);
     g.add(0, MobGoal::Float);
     g.add(4, MobGoal::melee(MeleeKind::Plain, 1.0, true));
     g.add(5, MobGoal::stroll(0.4));

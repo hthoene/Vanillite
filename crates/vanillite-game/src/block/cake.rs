@@ -67,7 +67,7 @@ fn cake_use_item_on(
             );
             level.set_block_and_update(pos, cake.default_state());
             level.game_event_at(Some(ctx.player), events().block_change, pos);
-            level.award_stat(ctx.player, Stat::of(StatType::Used, id.0));
+            level.award_stat(ctx.player, Stat::of(StatType::Used, id.0), 1);
             ItemInteraction::Done(Interaction::Success)
         }
         _ => ItemInteraction::TryWithEmptyHand,
@@ -89,7 +89,11 @@ fn eat(level: &mut Level, pos: BlockPos, state: BlockState, ctx: &UseContext) ->
     if !ctx.can_eat {
         return Interaction::Pass;
     }
-    level.award_stat(ctx.player, Stat::custom_named("minecraft:eat_cake_slice"));
+    level.award_stat(
+        ctx.player,
+        Stat::custom_named("minecraft:eat_cake_slice"),
+        1,
+    );
     // `FoodData.eat(2, 0.1F)`: saturation `nutrition * modifier * 2`.
     level.player_effect(ctx.player, PlayerEffect::Eat(2, 2.0 * 0.1 * 2.0));
     let bites = state.int("bites").unwrap_or(0);

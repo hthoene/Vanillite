@@ -165,6 +165,21 @@ impl ChunkCodec for AnvilCodec {
         self.write_root(&root, RecordMeta::STATUS_UNKNOWN)
     }
 
+    fn decode_poi(
+        &self,
+        pos: ChunkPos,
+        _: &RecordMeta,
+        record: &[u8],
+    ) -> io::Result<Option<Arc<[u8]>>> {
+        let root = self.read_root(pos, record)?;
+        chunk_nbt::read_poi(pos, root).map(Some)
+    }
+
+    fn encode_poi(&self, chunk: &ProtoChunk) -> io::Result<(RecordMeta, Arc<[u8]>)> {
+        let root = chunk_nbt::write_poi(chunk.pos, chunk.poi.as_deref().unwrap_or_default())?;
+        self.write_root(&root, RecordMeta::STATUS_UNKNOWN)
+    }
+
     fn chunks_per_job(&self) -> usize {
         // Jobs of about 1 ms: deflate takes ~0.5 ms per chunk, LZ4 and none far less.
         match self.compression {

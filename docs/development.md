@@ -169,6 +169,12 @@ Adding a mob:
    moves earlier (a regression) and asks to raise the tick when it moves later. Editing that
    file needs no new recording.
 
+Adding an action or a field to `Op` (`crates/vanillite-test/src/scenario.rs`): give the new
+field a type that implements `Default` (usually `Option<_>`) and derive `Default` for new action
+structs that need it. Every construction site names only `tick`, `kind` and the fields of its own
+kind and ends with `..Op::default()`, so a field added on another branch never breaks it; keep
+new sites that way.
+
 Scenario players are mock players: they join on a connection nobody reads and load no chunks
 (the region's chunks are the world). No client moves them, so the server does, in Vanilla as in
 Vanillite (`Survival::simulate_movement`): knockback, pushes and explosions move them with
@@ -182,10 +188,14 @@ does.
 
 ## CI
 
-`.github/workflows/ci.yml` runs on every push and pull request: format, clippy, tests with codegen
-and golden checks and doc tests, the world generation tests, and cargo-deny, as parallel jobs with
-Rust and toolchain caches written by `dev`. The world generation goldens run in their own job
-(`-p vanillite-worldgen`), all other tests with `--exclude vanillite-worldgen`.
+`.github/workflows/ci.yml` runs on every push and pull request: format, clippy, cargo-deny, the
+doc tests with the codegen, egg and golden checks, and the tests in four jobs, all in parallel
+with Rust and toolchain caches written by `dev`. The tests are split by crate: the world
+generation goldens (`-p vanillite-worldgen`), the game and world crates (`-p vanillite-game -p
+vanillite-world`, the menu fuzz and chunk level tests), the test harness with the parity
+scenarios (`-p vanillite-test`, built with the world crate at opt-level 1) and all
+other crates (`--workspace` with those four excluded). A crate added to the workspace lands in
+the last job by itself.
 `.github/workflows/nightly.yml` records missing bulk goldens and runs the ignored bulk tests (with
 Java 25 and a goldens cache), a
 release build and the fuzz targets (`scripts/fuzz.sh`, corpus cached between nights) once a

@@ -1,0 +1,68 @@
+{
+  "description": "Sniffer eggs schedule their next hatch stage when placed and on every stage (a third of 24000 ticks plus up to 300, halved on moss); the egg on moss about to hatch becomes a baby sniffer facing a random direction, the egg on dirt cracks later.",
+  "world": {
+    "seed": 74,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:stone",
+        3
+      ]
+    ]
+  },
+  "region": [
+    [
+      0,
+      -60,
+      0
+    ],
+    [
+      7,
+      -59,
+      7
+    ]
+  ],
+  "ticks": 4252,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -61,
+        2
+      ],
+      "block": "minecraft:moss_block"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -61,
+        2
+      ],
+      "block": "minecraft:dirt"
+    },
+    {
+      "op": "place",
+      "pos": [
+        2,
+        -60,
+        2
+      ],
+      "block": "minecraft:sniffer_egg[hatch=2]"
+    },
+    {
+      "op": "place",
+      "pos": [
+        5,
+        -60,
+        2
+      ],
+      "block": "minecraft:sniffer_egg[hatch=0]"
+    }
+  ],
+  "tier": "fast"
+}

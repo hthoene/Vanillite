@@ -306,9 +306,6 @@ fn temp_mob_pos(t: &Tick<'_, '_>) -> Vec3 {
     Vec3::new(p.x, f64::from(y), p.z)
 }
 
-/// The sea level the shallow swimming of frogs measures against.
-const SEA_LEVEL: i32 = 63;
-
 /// The mob as the path finder sees it.
 fn path_mob(t: &Tick<'_, '_>) -> PathMob {
     let core = t.core();
@@ -329,7 +326,7 @@ fn path_mob(t: &Tick<'_, '_>) -> PathMob {
         evaluator,
         can_walk_over_fences: nav.can_walk_over_fences,
         stands_on_lava: nav.stands_on_lava,
-        sea_level: SEA_LEVEL,
+        sea_level: t.cx.env.sea_level,
         pos: core.pos(),
         aabb: core.aabb(),
         width: dims.width,
@@ -343,11 +340,25 @@ fn path_mob(t: &Tick<'_, '_>) -> PathMob {
         can_open_doors: nav.can_open_doors,
         // `WaterBoundPathNavigation` cannot pass doors.
         can_pass_doors: nav.can_pass_doors && !matches!(nav.kind, NavKind::Water { .. }),
+        home: super::fam::mount::creaking::creaking_home(m),
     }
 }
 
 /// `PathNavigation.createPath(targets, radiusOffset, above, reachRange, maxPathLength)`.
 fn create_path(t: &mut Tick<'_, '_>, target: BlockPos, reach_range: i32) -> Option<Path> {
+    create_path_to_any(t, &[target], reach_range)
+}
+
+/// `createPath(targets, reachRange)`: a path to the closest reachable of `targets` (no
+/// surface adjustment, like Vanilla's set variant).
+pub fn create_path_to_any(
+    t: &mut Tick<'_, '_>,
+    targets: &[BlockPos],
+    reach_range: i32,
+) -> Option<Path> {
+    if targets.is_empty() || t.mob_ref().nav.kind == NavKind::None {
+        return None;
+    }
     if t.pos().y < f64::from(t.level.min_y()) || !can_update_path(t) {
         return None;
     }
@@ -355,7 +366,7 @@ fn create_path(t: &mut Tick<'_, '_>, target: BlockPos, reach_range: i32) -> Opti
         let nav = &t.mob_ref().nav;
         if let Some(p) = &nav.path
             && !p.is_done()
-            && nav.target_pos == Some(target)
+            && nav.target_pos.is_some_and(|tp| targets.contains(&tp))
         {
             return Some(p.clone());
         }
@@ -374,13 +385,13 @@ fn create_path(t: &mut Tick<'_, '_>, target: BlockPos, reach_range: i32) -> Opti
         max_path_length: max_len,
         reach_range,
         max_visited_nodes: max_nodes.min(budget),
-        malus: m.kind.malus(),
+        malus: super::kinds::mob_malus(m),
         min_y: t.level.min_y(),
     };
     let mut random = m.random.clone();
     let path =
         t.cx.finder
-            .find_path(t.level, &mob, &[target], search, &mut random);
+            .find_path(t.level, &mob, targets, search, &mut random);
     t.mob().random = random;
     let visited = t.cx.finder.take_visited();
     if t.cx.path_budget != u64::MAX {

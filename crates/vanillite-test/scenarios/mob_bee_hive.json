@@ -1,0 +1,110 @@
+{
+  "description": "At night a bee finds the beehive next to it, flies in and stays; fire placed beside the hive drives it out.",
+  "time": 18000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -55,
+      15
+    ]
+  ],
+  "ticks": 200,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -60,
+        7
+      ],
+      "block": "minecraft:beehive[facing=south,honey_level=0]"
+    }
+  ],
+  "entities": [
+    {
+      "name": "bee",
+      "type": "minecraft:bee",
+      "pos": [
+        7.5,
+        -60.0,
+        10.5
+      ],
+      "seed": 11,
+      "finalize": false
+    }
+  ],
+  "tier": "fast",
+  "actions": [
+    {
+      "tick": 120,
+      "op": "place",
+      "pos": [
+        6,
+        -60,
+        7
+      ],
+      "block": "minecraft:fire"
+    }
+  ]
+}

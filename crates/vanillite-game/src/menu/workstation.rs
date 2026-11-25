@@ -496,6 +496,45 @@ impl ContainerView<'_> {
         self.set_local(3, result);
     }
 
+    /// The crafted part of the `onTake` of the smithing table's and the stonecutter's result
+    /// slot: `carried.onCraftedBy(player, count)` and `awardUsedRecipes` with the inputs
+    /// (`recipe_crafted`, the recipe unlocked).
+    pub(super) fn workstation_crafted(&mut self, taken: &ItemStack) {
+        let Some(d) = data() else {
+            return;
+        };
+        let (recipe, inputs) = match self.menu.kind {
+            MenuKind::Stonecutter => {
+                let recipe = self
+                    .menu
+                    .data
+                    .first()
+                    .and_then(|&i| usize::try_from(i).ok())
+                    .and_then(|i| self.menu.recipes.get(i))
+                    .and_then(|&r| d.recipes.stonecutting.get(r))
+                    .map(|r| r.id.clone());
+                (recipe, vec![self.local(0)])
+            }
+            MenuKind::Smithing => {
+                let inputs = vec![self.local(0), self.local(1), self.local(2)];
+                let recipe = smithing_recipe(&d.recipes, &inputs[0], &inputs[1], &inputs[2]);
+                (recipe, inputs)
+            }
+            _ => return,
+        };
+        use crate::advancements::award::Award;
+        if !taken.is_empty() {
+            let stat = crate::stats::Stat::of(crate::stats::StatType::Crafted, taken.item);
+            self.inv.awards.push(Award::Stat(stat, taken.count));
+        }
+        if let Some(id) = recipe {
+            self.inv.awards.push(Award::Trigger(
+                crate::advancements::trigger::Event::RecipeCrafted(id.clone(), inputs),
+            ));
+            self.inv.awards.push(Award::Recipes(vec![id]));
+        }
+    }
+
     /// The `onTake` of a workstation's result slot.
     pub(super) fn workstation_take(&mut self, _ctx: ClickContext, _drops: &mut Vec<Drop>) {
         let pos = self.menu.pos;
@@ -756,6 +795,37 @@ fn grindstone_experience(view: &mut ContainerView<'_>) -> i32 {
 }
 
 /// The smithing result of the first recipe that matches.
+/// The id of the smithing recipe the inputs match (`getRecipeFor`).
+fn smithing_recipe(
+    recipes: &Recipes,
+    template: &ItemStack,
+    base: &ItemStack,
+    addition: &ItemStack,
+) -> Option<String> {
+    let fits = |ing: &Option<crate::recipe::Ingredient>, s: &ItemStack| match ing {
+        Some(i) => i.test(s),
+        None => s.is_empty(),
+    };
+    recipes
+        .smithing
+        .iter()
+        .find(|(_, recipe)| match recipe {
+            Smithing::Transform {
+                template: t,
+                base: b,
+                addition: a,
+                ..
+            } => fits(t, template) && fits(b, base) && fits(a, addition),
+            Smithing::Trim {
+                template: t,
+                base: b,
+                addition: a,
+                ..
+            } => t.test(template) && b.test(base) && a.test(addition),
+        })
+        .map(|(id, _)| id.clone())
+}
+
 fn smithing_result(
     recipes: &Recipes,
     e: &Enchanting,
@@ -974,6 +1044,7 @@ impl ContainerView<'_> {
             }
         }
         set_crafting_enchantments(&mut result, &current);
+        let enchanted = result.clone();
         if let Some(s) = self.menu.local.get_mut(0) {
             *s = result;
         }
@@ -988,6 +1059,13 @@ impl ContainerView<'_> {
                 currency
             };
         }
+        use crate::advancements::award::Award;
+        self.inv
+            .awards
+            .push(Award::Stat(crate::stats::custom::ENCHANT_ITEM, 1));
+        self.inv.awards.push(Award::Trigger(
+            crate::advancements::trigger::Event::EnchantedItem(enchanted, cost),
+        ));
         self.enchantment_changed();
         let pos = self.menu.pos;
         let pitch = self.level.random().next_float() * 0.1 + 0.9;

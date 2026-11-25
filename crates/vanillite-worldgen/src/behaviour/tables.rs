@@ -214,6 +214,7 @@ pub struct GameEventTags {
     pub ignore_vibrations_sneaking: GameEventSet,
     pub warden_can_listen: GameEventSet,
     pub shrieker_can_listen: GameEventSet,
+    pub allay_can_listen: GameEventSet,
 }
 
 impl GameEventTags {
@@ -226,6 +227,7 @@ impl GameEventTags {
             ),
             warden_can_listen: GameEventSet::from_tag(packs, "minecraft:warden_can_listen"),
             shrieker_can_listen: GameEventSet::from_tag(packs, "minecraft:shrieker_can_listen"),
+            allay_can_listen: GameEventSet::from_tag(packs, "minecraft:allay_can_listen"),
         }
     }
 }

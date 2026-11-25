@@ -654,7 +654,10 @@ impl WorldSurvival {
                         p.connection.sink.send_shared(packet);
                     }
                 }
-                Effect::DropItem { .. } | Effect::Experience { .. } | Effect::SpawnMob { .. } => {}
+                Effect::DropItem { .. }
+                | Effect::Experience { .. }
+                | Effect::SpawnMob { .. }
+                | Effect::RespawnShoulder { .. } => {}
             }
         }
         spawn_drops(&effects, entities, global);
@@ -763,7 +766,10 @@ fn deliver_simple(effects: &[Effect], entities: &mut Entities, global: &Global) 
                     p.connection.sink.send_shared(packet);
                 }
             }
-            Effect::DropItem { .. } | Effect::Experience { .. } | Effect::SpawnMob { .. } => {}
+            Effect::DropItem { .. }
+            | Effect::Experience { .. }
+            | Effect::SpawnMob { .. }
+            | Effect::RespawnShoulder { .. } => {}
         }
     }
     spawn_drops(effects, entities, global);
@@ -806,6 +812,24 @@ fn spawn_drops(effects: &[Effect], entities: &mut Entities, global: &Global) {
                 vanillite_game::mob::spawn(entities, &global.network_ids, uuid, *pos, rot, data);
             if let Some(mut e) = entities.store.get_mut(id) {
                 e.set_velocity(*velocity);
+            }
+        }
+        if let Effect::RespawnShoulder { tag, pos, owner } = effect {
+            // `EntityType.create(tag, LOAD)`, `setOwner`, `setPos`, `addWithUUID`.
+            let seed = vanillite_game::experience_orb::with_entity_random(|r| r.next_long());
+            if let Some(mut loaded) = vanillite_game::mob::nbt::load_mob(tag, seed) {
+                loaded.data.owner = Some(*owner);
+                let id = vanillite_game::mob::spawn(
+                    entities,
+                    &global.network_ids,
+                    loaded.uuid,
+                    *pos,
+                    loaded.rot,
+                    loaded.data,
+                );
+                if let Some(mut e) = entities.store.get_mut(id) {
+                    e.set_velocity(loaded.velocity);
+                }
             }
         }
         if let Effect::DropItem {

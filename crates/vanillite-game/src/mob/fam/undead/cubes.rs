@@ -752,9 +752,22 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
         let block =
             std::mem::take(&mut m.equipment.items[usize::from(EquipmentSlot::Body.ordinal())]);
         cs_mut(m).pickup_timer = 100;
+        let sheared = crate::advancements::trigger::TriggerKind::PLAYER_SHEARED_EQUIPMENT;
+        let award =
+            crate::advancements::view::listens(ix.ents, ix.player, sheared).then(|| block.clone());
         super::drop_item(ix.env, pos + Vec3::new(0.0, height, 0.0), block);
         play(ix, pos, "minecraft:entity.sulfur_cube.eject");
         crate::mob::animal::hurt_held(ix.ents, ix.env, ix.player, ix.hand, 1);
+        if let Some(stack) = award {
+            let target = ix.target;
+            crate::advancements::view::fire(ix.ents, ix.player, sheared, |ents| {
+                crate::advancements::trigger::Event::EntityItem(
+                    sheared,
+                    crate::advancements::view::snapshot(ents, target),
+                    stack,
+                )
+            });
+        }
         if let Some(mut e) = ix.ents.store.get_mut(ix.target) {
             e.mark_data_dirty();
         }
@@ -829,6 +842,7 @@ fn bucket(ix: &mut Interact<'_, '_>, pos: Vec3) -> Interaction {
         stack.patch_mut().set(id, bytes);
     }
     play(ix, pos, "minecraft:item.bucket.fill_sulfur_cube");
+    crate::mob::animal::filled_bucket(ix.ents, ix.player, &stack);
     crate::mob::animal::fill_held(ix.ents, ix.env, ix.player, ix.hand, stack);
     if let Some(m) = ix.ents.mob_mut(ix.target) {
         m.removed = true;

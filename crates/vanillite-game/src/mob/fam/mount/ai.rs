@@ -390,7 +390,7 @@ pub fn on_pickup_cooldown(m: &MobData) -> bool {
         .is_some_and(|b| b.has(M::ItemPickupCooldownTicks))
 }
 
-/// `AllayAi.hearNoteblock` (note blocks do not send their vibration yet).
+/// `AllayAi.hearNoteblock` (from the allay's vibration listener).
 pub fn hear_noteblock(m: &mut MobData, pos: BlockPos, dimension: &str) {
     let Some(b) = m.brain.as_deref_mut() else {
         return;
@@ -410,8 +410,7 @@ pub fn hear_noteblock(m: &mut MobData, pos: BlockPos, dimension: &str) {
     }
 }
 
-/// The copper golem brain: `CopperGolemAi` (moving items between copper chests and chests
-/// is not there yet: the transport behaviour only waits its idle cooldown).
+/// The copper golem brain: `CopperGolemAi`.
 pub fn copper_golem_brain(m: &mut MobData) {
     let cooldown = super::copper_golem::golem(m).transport_cooldown;
     let core = ActivitySpec::new(
@@ -428,7 +427,12 @@ pub fn copper_golem_brain(m: &mut MobData) {
     let idle = ActivitySpec::with_priorities(
         Activity::Idle,
         vec![
-            (0, fam(Behavior::GolemTransport)),
+            (
+                0,
+                fam(Behavior::GolemTransport(
+                    super::transport::Transport::default(),
+                )),
+            ),
             (
                 1,
                 Spec::look_at_entity_sometimes(Some(is_player), 6.0, 40, 80),
@@ -706,7 +710,7 @@ pub fn behavior_duration(b: &Behavior) -> (i32, i32) {
 
 pub fn behavior_shape(b: &Behavior) -> Shape {
     match b {
-        Behavior::StayClose | Behavior::GolemTransport | Behavior::Idle => Shape::OneShot,
+        Behavior::StayClose | Behavior::Idle => Shape::OneShot,
         _ => Shape::Timed,
     }
 }
@@ -757,13 +761,18 @@ pub fn behavior_requirements(b: &Behavior) -> &'static [(M, S)] {
             (M::BreezeJumpCooldown, S::ValueAbsent),
             (M::BreezeShoot, S::ValueAbsent),
         ],
-        Behavior::GolemTransport => &[(M::TransportItemsCooldownTicks, S::Registered)],
+        Behavior::GolemTransport(_) => &[
+            (M::VisitedBlockPositions, S::Registered),
+            (M::UnreachableTransportBlockPositions, S::Registered),
+            (M::TransportItemsCooldownTicks, S::ValueAbsent),
+            (M::IsPanicking, S::ValueAbsent),
+        ],
         Behavior::CamelSitting { .. } | Behavior::Idle => &[],
     }
 }
 
-pub fn behavior_no_timeout(_b: &Behavior) -> bool {
-    false
+pub fn behavior_no_timeout(b: &Behavior) -> bool {
+    matches!(b, Behavior::GolemTransport(_))
 }
 
 /// `checkExtraStartConditions`.
@@ -780,6 +789,7 @@ pub fn behavior_check(t: &mut Tick<'_, '_>, b: &mut Behavior) -> bool {
                 && super::camel::can_change_pose(t)
         }
         Behavior::GiveItems => can_throw_item(t),
+        Behavior::GolemTransport(_) => super::transport::check(t),
         Behavior::Charge { .. } => brain_ref(t).has(M::AttackTarget),
         Behavior::BreezeShoot => {
             if t.core().pose() != Pose::Standing {
@@ -814,6 +824,7 @@ pub fn behavior_check(t: &mut Tick<'_, '_>, b: &mut Behavior) -> bool {
 pub fn behavior_can_still_use(t: &mut Tick<'_, '_>, b: &mut Behavior, _now: i64) -> bool {
     match b {
         Behavior::GiveItems => can_throw_item(t),
+        Behavior::GolemTransport(_) => super::transport::can_still_use(t),
         Behavior::Charge { start, .. } => charge_can_still_use(t, *start),
         Behavior::BreezeShoot => {
             brain_ref(t).has(M::AttackTarget) && brain_ref(t).has(M::BreezeShoot)
@@ -898,6 +909,7 @@ pub fn behavior_start(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) {
             brain::brain(t).set_with_expiry(M::BreezeShoot, MemValue::Unit, 60);
         }
         Behavior::BreezeSlide => breeze_slide_start(t),
+        Behavior::GolemTransport(_) => super::transport::start(t),
         _ => {}
     }
     let _ = now;
@@ -923,6 +935,7 @@ pub fn behavior_tick(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) {
         Behavior::Charge { velocity, .. } => charge_tick(t, *velocity, b, now),
         Behavior::BreezeShoot => breeze_shoot_tick(t),
         Behavior::BreezeLongJump => long_jump_tick(t),
+        Behavior::GolemTransport(s) => super::transport::tick(t, s),
         _ => {}
     }
 }
@@ -931,6 +944,7 @@ pub fn behavior_tick(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) {
 pub fn behavior_stop(t: &mut Tick<'_, '_>, b: &mut Behavior, _now: i64) {
     match b {
         Behavior::Charge { .. } => charge_stop(t),
+        Behavior::GolemTransport(s) => super::transport::stop(t, s),
         Behavior::BreezeShoot => {
             if t.core().pose() == Pose::Shooting {
                 set_pose(t, Pose::Standing);
@@ -953,7 +967,7 @@ pub fn behavior_stop(t: &mut Tick<'_, '_>, b: &mut Behavior, _now: i64) {
     }
 }
 
-/// One shots: `StayCloseToTarget` and the copper golem's idle transport.
+/// One shots: `StayCloseToTarget`.
 pub fn behavior_trigger(t: &mut Tick<'_, '_>, b: &mut Behavior, _now: i64) -> bool {
     match b {
         Behavior::StayClose => {
@@ -982,16 +996,6 @@ pub fn behavior_trigger(t: &mut Tick<'_, '_>, b: &mut Behavior, _now: i64) -> bo
             );
             true
         }
-        Behavior::GolemTransport => {
-            // No containers to sort yet: the idle cooldown of `TransportItemsBetweenContainers`.
-            let ok = !brain_ref(t).has(M::TransportItemsCooldownTicks)
-                && !brain_ref(t).has(M::IsPanicking)
-                && !t.ents.leashes.contains_key(&t.id);
-            if ok {
-                brain::brain(t).set(M::TransportItemsCooldownTicks, MemValue::Int(140));
-            }
-            ok
-        }
         _ => false,
     }
 }
@@ -1016,6 +1020,11 @@ fn deposit_target(t: &mut Tick<'_, '_>) -> Option<Tracker> {
         }
         brain::brain(t).erase(M::LikedNoteblockPosition);
     }
+    liked_player_near(t).map(|id| Tracker::entity(id, true))
+}
+
+/// `AllayAi.getLikedPlayer`: the liked player within 64 blocks in survival or creative.
+fn liked_player_near(t: &Tick<'_, '_>) -> Option<EntityId> {
     let uuid = brain_ref(t).uuid(M::LikedPlayer)?;
     let id = t.ents.player_by_uuid(uuid)?;
     let p = t.ents.player(id)?;
@@ -1028,7 +1037,7 @@ fn deposit_target(t: &mut Tick<'_, '_>) -> Option<Tracker> {
         .store
         .get(id)
         .is_some_and(|e| e.pos().distance_to_sqr(t.pos()) < 64.0 * 64.0);
-    (mode_ok && close).then(|| Tracker::entity(id, true))
+    (mode_ok && close).then_some(id)
 }
 
 /// `AllayAi.throwItem`: one item towards the target, the throw sound now and then.
@@ -1043,6 +1052,19 @@ fn throw_to(t: &mut Tick<'_, '_>, target: Vec3) {
         one
     };
     let id = t.id;
+    // `ALLAY_DROP_ITEM_ON_BLOCK` for the liked player, at the block below the target.
+    let drop_kind = crate::advancements::trigger::TriggerKind::ALLAY_DROP_ITEM_ON_BLOCK;
+    if let Some(player) = liked_player_near(t)
+        && crate::advancements::view::listens(t.ents, player, drop_kind)
+        && let Some(p) = t.ents.player_mut(player)
+    {
+        let below = crate::player::play::block_pos_of(target).offset(0, -1, 0);
+        p.advancements
+            .trigger(crate::advancements::trigger::Event::AllayDropItemOnBlock(
+                below,
+                stack.clone(),
+            ));
+    }
     super::allay::throw_item(
         t.ents,
         t.env,
