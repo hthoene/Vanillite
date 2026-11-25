@@ -21,6 +21,7 @@ pub mod missile;
 pub mod movement;
 pub mod nav;
 pub mod nbt;
+pub mod nearby;
 pub mod path;
 pub mod physics;
 pub mod projectile;

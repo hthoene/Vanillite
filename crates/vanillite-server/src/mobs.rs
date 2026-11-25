@@ -541,7 +541,12 @@ impl WorldMobs {
             let seed = vanillite_game::mob::new_entity_seed();
             boss::wither::check_spawn(level, pos, state.difficulty(), seed);
         }
-        let has_players = !level.entities.players.is_empty();
+        // `getNearestPlayer` skips spectators.
+        let has_players = level
+            .entities
+            .players
+            .iter()
+            .any(|(_, p)| p.game_mode != GameMode::Spectator);
         let env = environment(global, dimension, survival, self.seed);
         self.cx.begin_tick(env, self.settings, has_players);
         // What spawner blocks read when the block entities tick after the entities.
