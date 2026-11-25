@@ -102,6 +102,7 @@ impl WorldMobs {
             return;
         }
         let state = &global.level;
+        let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
         let rules = state.rules().clone();
         let difficulty = state.difficulty;
         let network_ids = std::sync::Arc::clone(level.network_ids_arc());
@@ -111,7 +112,7 @@ impl WorldMobs {
             let (weather, climate) = (survival.weather, survival.climate().cloned());
             let chunks = &level.chunks;
             let raining = move |pos| raining_at(chunks, climate.as_deref(), &weather, pos);
-            let mut env = survival.env(state, &rules, &blocks, &raining, dimension);
+            let mut env = survival.env(state, &rules, &blocks, &raining, dimension, &hooks);
             let level: &Level = level;
             for (player, action) in pending {
                 let usable = ents.player(player).is_some_and(|p| {
@@ -287,6 +288,7 @@ impl WorldMobs {
     ) {
         self.ticks += 1;
         let state = &global.level;
+        let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
         let rules = state.rules().clone();
         let has_players = !level.entities.players.is_empty();
         let env = environment(global, dimension, survival);
@@ -338,7 +340,7 @@ impl WorldMobs {
                 let (weather, climate) = (survival.weather, survival.climate().cloned());
                 let chunks = &level.chunks;
                 let raining = move |pos| raining_at(chunks, climate.as_deref(), &weather, pos);
-                let mut env = survival.env(state, &rules, &blocks, &raining, dimension);
+                let mut env = survival.env(state, &rules, &blocks, &raining, dimension, &hooks);
                 let level_ref: &Level = level;
                 if is_mob {
                     mob::tick(level_ref, &mut ents, &mut env, &mut self.cx, id);
@@ -367,7 +369,7 @@ impl WorldMobs {
         {
             let blocks = WorldBlocks(&level.chunks);
             let raining = |_| false;
-            let mut env = survival.env(state, &rules, &blocks, &raining, dimension);
+            let mut env = survival.env(state, &rules, &blocks, &raining, dimension, &hooks);
             let mut discarded = Vec::new();
             vanillite_game::player::using::tick_all(&mut ents, &mut env);
             tame::tick_leashes(level, &mut ents, &mut env, &mut discarded);
@@ -435,11 +437,12 @@ impl WorldMobs {
             return;
         }
         let state = &global.level;
+        let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
         let rules = state.rules().clone();
         let hurts = std::mem::take(&mut level.output().explosion_hurts);
         let no_blocks = NoBlocks;
         let raining = |_| false;
-        let mut env = survival.env(state, &rules, &no_blocks, &raining, dimension);
+        let mut env = survival.env(state, &rules, &no_blocks, &raining, dimension, &hooks);
         let mut ents = std::mem::take(&mut level.entities);
         for hurt in hurts {
             // `damageSources().explosion(source, indirect)`.
@@ -507,7 +510,8 @@ impl WorldMobs {
         {
             let no_blocks = NoBlocks;
             let raining = |_| false;
-            let mut env = survival.env(state, &rules, &no_blocks, &raining, dimension);
+            let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+            let mut env = survival.env(state, &rules, &no_blocks, &raining, dimension, &hooks);
             let source = DamageSource::of(env.types.lightning_bolt);
             for id in struck {
                 if let Some(d) = ents.item_mut(id) {

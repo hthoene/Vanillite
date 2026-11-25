@@ -82,6 +82,9 @@ pub struct BlockLootContext<'a> {
     /// The entity parameters of entity loot (`LootContextParamSets.ENTITY`); `None` for
     /// block loot.
     pub entity: Option<&'a EntityLootContext<'a>>,
+    /// The components of the broken block's block entity (`collectComponents`), by component
+    /// type id, as wire values; `None` without a block entity.
+    pub block_entity: Option<&'a dyn Fn(u16) -> Option<Box<[u8]>>>,
 }
 
 /// The entity parameters of a loot context (`THIS_ENTITY`, `ATTACKING_ENTITY`,
@@ -411,7 +414,7 @@ impl LootTables {
 }
 
 /// Adds every `*.json` below `dir` as `<prefix><relative path without .json>`.
-fn collect_json(dir: &Path, prefix: &str, out: &mut BTreeMap<String, PathBuf>) {
+pub(crate) fn collect_json(dir: &Path, prefix: &str, out: &mut BTreeMap<String, PathBuf>) {
     fn walk(dir: &Path, rel: &str, prefix: &str, out: &mut BTreeMap<String, PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
@@ -432,7 +435,9 @@ fn collect_json(dir: &Path, prefix: &str, out: &mut BTreeMap<String, PathBuf>) {
 }
 
 /// Reads and parses the files of [`collect_json`].
-fn read_files(files: &BTreeMap<String, PathBuf>) -> Vec<(String, Result<Value, String>)> {
+pub(crate) fn read_files(
+    files: &BTreeMap<String, PathBuf>,
+) -> Vec<(String, Result<Value, String>)> {
     files
         .iter()
         .map(|(id, path)| {
@@ -624,6 +629,8 @@ enum FuncKind {
     },
     /// `furnace_smelt`: the smelted item (the cooked meats).
     FurnaceSmelt,
+    /// `copy_components` / `copy_name` from the block entity: component type ids.
+    CopyComponents(Box<[u16]>),
     Noop,
 }
 
@@ -1278,13 +1285,36 @@ impl Parser<'_> {
             }
             "minecraft:sequence" => FuncKind::Sequence(self.func_list(field(o, "functions")?)?),
             "minecraft:discard" => FuncKind::Discard,
-            // Block entity data is not available yet; the killer never exists for blocks.
             "minecraft:enchanted_count_increase" => FuncKind::EnchantedCountIncrease {
                 enchantment: qualify(string(field(o, "enchantment")?)?).into(),
                 count: self.float_provider(field(o, "count")?)?,
                 limit: o.get("limit").map(int).transpose()?.unwrap_or(0),
             },
             "minecraft:furnace_smelt" => FuncKind::FurnaceSmelt,
+            "minecraft:copy_components"
+                if o.get("source").and_then(Value::as_str) == Some("block_entity") =>
+            {
+                let include = o
+                    .get("include")
+                    .and_then(Value::as_array)
+                    .map(|list| {
+                        list.iter()
+                            .filter_map(Value::as_str)
+                            .filter_map(|n| {
+                                vanillite_data::registry::DATA_COMPONENT_TYPE.id(&qualify(n))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                FuncKind::CopyComponents(include)
+            }
+            "minecraft:copy_name"
+                if o.get("source").and_then(Value::as_str) == Some("block_entity") =>
+            {
+                FuncKind::CopyComponents(Box::new([
+                    vanillite_protocol::components::ids::CUSTOM_NAME,
+                ]))
+            }
             "minecraft:copy_components" | "minecraft:copy_name" | "minecraft:copy_custom_data" => {
                 FuncKind::Noop
             }
@@ -1844,6 +1874,15 @@ impl<'t> Eval<'t, '_> {
                     stack.item = cooked;
                 }
             }
+            FuncKind::CopyComponents(include) => {
+                if let Some(source) = self.ctx.block_entity {
+                    for &id in include.iter() {
+                        if let Some(value) = source(id) {
+                            stack.patch_mut().set(id, value);
+                        }
+                    }
+                }
+            }
             FuncKind::Noop => {}
         }
     }
@@ -2041,6 +2080,7 @@ mod tests {
             item_in_tag: &in_tag,
             explosion_radius,
             entity: None,
+            block_entity: None,
         };
         let mut rng = XoroshiroRandom::new(seed);
         let mut out = Vec::new();
@@ -2099,6 +2139,7 @@ mod tests {
             item_in_tag: &in_tag,
             explosion_radius: None,
             entity: Some(&entity),
+            block_entity: None,
         };
         let mut rng = XoroshiroRandom::new(seed);
         let mut out = Vec::new();

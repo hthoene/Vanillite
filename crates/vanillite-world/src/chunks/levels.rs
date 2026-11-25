@@ -45,9 +45,27 @@ pub const ENTITY_TICKING_LEVEL: u8 = 31;
 /// The ticket levels of one world.
 #[derive(Debug)]
 pub struct TicketLevels {
-    counts: FxHashMap<ChunkPos, Box<[u16; UNLOADED as usize]>>,
+    counts: FxHashMap<ChunkPos, Counts>,
     /// Levels above this are not tracked (they read as [`UNLOADED`]).
     max: u8,
+}
+
+/// How many tickets give a chunk each level, with a bit per level that has any.
+#[derive(Debug)]
+struct Counts {
+    present: u64,
+    counts: [u16; UNLOADED as usize],
+}
+
+impl Counts {
+    #[inline]
+    fn lowest(&self) -> u8 {
+        if self.present == 0 {
+            UNLOADED
+        } else {
+            self.present.trailing_zeros() as u8
+        }
+    }
 }
 
 impl Default for TicketLevels {
@@ -70,65 +88,137 @@ impl TicketLevels {
     pub fn iter(&self) -> impl Iterator<Item = (ChunkPos, u8)> + '_ {
         self.counts
             .iter()
-            .map(|(&pos, counts)| (pos, lowest(counts)))
+            .map(|(&pos, counts)| (pos, counts.lowest()))
     }
 
     /// The level of a chunk.
     #[inline]
     pub fn level(&self, pos: ChunkPos) -> u8 {
-        self.counts
-            .get(&pos)
-            .map_or(UNLOADED, |counts| lowest(counts))
+        self.counts.get(&pos).map_or(UNLOADED, Counts::lowest)
     }
 
     /// Adds a ticket of `level` at `pos`.
     pub fn add(&mut self, pos: ChunkPos, level: u8, changes: &mut Vec<LevelChange>) {
-        self.apply(pos, level, true, changes);
+        self.apply(None, Some(pos), level, changes);
     }
 
     /// Removes a ticket of `level` at `pos` that was added before.
     pub fn remove(&mut self, pos: ChunkPos, level: u8, changes: &mut Vec<LevelChange>) {
-        self.apply(pos, level, false, changes);
+        self.apply(Some(pos), None, level, changes);
     }
 
-    fn apply(&mut self, center: ChunkPos, level: u8, add: bool, changes: &mut Vec<LevelChange>) {
-        if level > self.max {
+    /// Moves a ticket of `level` that was added before from `from` to `to`: the same result
+    /// as removing and adding it, but only chunks whose given level changes are touched (for
+    /// a move by one chunk the leaving and entering edges and the half of the square that
+    /// gets closer or further).
+    pub fn shift(
+        &mut self,
+        from: ChunkPos,
+        to: ChunkPos,
+        level: u8,
+        changes: &mut Vec<LevelChange>,
+    ) {
+        self.apply(Some(from), Some(to), level, changes);
+    }
+
+    fn apply(
+        &mut self,
+        from: Option<ChunkPos>,
+        to: Option<ChunkPos>,
+        level: u8,
+        changes: &mut Vec<LevelChange>,
+    ) {
+        if level > self.max || from == to {
             return;
         }
         let reach = i32::from(self.max - level);
-        for dz in -reach..=reach {
-            for dx in -reach..=reach {
-                let pos = ChunkPos::new(center.x + dx, center.z + dz);
-                let given = level + dx.unsigned_abs().max(dz.unsigned_abs()) as u8;
-                let counts = self
-                    .counts
-                    .entry(pos)
-                    .or_insert_with(|| Box::new([0; UNLOADED as usize]));
-                let old = lowest(counts);
-                let count = &mut counts[usize::from(given)];
-                *count = if add {
-                    count.saturating_add(1)
+        if let (Some(a), Some(b)) = (from, to)
+            && (a.x.abs_diff(b.x) > 2 * reach as u32 || a.z.abs_diff(b.z) > 2 * reach as u32)
+        {
+            // The squares do not overlap: sweeping their bounding box would only waste time.
+            self.sweep(Some(a), None, level, reach, changes);
+            self.sweep(None, Some(b), level, reach, changes);
+        } else {
+            self.sweep(from, to, level, reach, changes);
+        }
+    }
+
+    /// Takes the ticket's contribution at `from` away and gives it at `to`, chunk by chunk
+    /// over the bounding box of both squares.
+    fn sweep(
+        &mut self,
+        from: Option<ChunkPos>,
+        to: Option<ChunkPos>,
+        level: u8,
+        reach: i32,
+        changes: &mut Vec<LevelChange>,
+    ) {
+        let (lo, hi) = match (from, to) {
+            (Some(a), Some(b)) => ((a.x.min(b.x), a.z.min(b.z)), (a.x.max(b.x), a.z.max(b.z))),
+            (Some(c), None) | (None, Some(c)) => ((c.x, c.z), (c.x, c.z)),
+            (None, None) => return,
+        };
+        let given = |center: Option<ChunkPos>, x: i32, z: i32| match center {
+            Some(c) => {
+                let d = c.x.abs_diff(x).max(c.z.abs_diff(z));
+                if d > reach as u32 {
+                    UNLOADED
                 } else {
-                    count.saturating_sub(1)
-                };
-                let new = lowest(counts);
-                if new == UNLOADED {
-                    self.counts.remove(&pos);
+                    level + d as u8
                 }
-                if new != old {
-                    changes.push(LevelChange { pos, old, new });
+            }
+            None => UNLOADED,
+        };
+        for z in lo.1 - reach..=hi.1 + reach {
+            for x in lo.0 - reach..=hi.0 + reach {
+                let old = given(from, x, z);
+                let new = given(to, x, z);
+                if old != new {
+                    self.update(ChunkPos::new(x, z), old, new, changes);
                 }
             }
         }
     }
-}
 
-#[inline]
-fn lowest(counts: &[u16; UNLOADED as usize]) -> u8 {
-    counts
-        .iter()
-        .position(|&c| c > 0)
-        .map_or(UNLOADED, |level| level as u8)
+    /// One ticket gives `pos` the level `new` instead of `old` ([`UNLOADED`]: none).
+    #[inline]
+    fn update(&mut self, pos: ChunkPos, old: u8, new: u8, changes: &mut Vec<LevelChange>) {
+        let counts = if new == UNLOADED {
+            match self.counts.get_mut(&pos) {
+                Some(counts) => counts,
+                None => return,
+            }
+        } else {
+            self.counts.entry(pos).or_insert_with(|| Counts {
+                present: 0,
+                counts: [0; UNLOADED as usize],
+            })
+        };
+        let before = counts.lowest();
+        if old != UNLOADED {
+            let count = &mut counts.counts[usize::from(old)];
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                counts.present &= !(1 << old);
+            }
+        }
+        if new != UNLOADED {
+            let count = &mut counts.counts[usize::from(new)];
+            *count = count.saturating_add(1);
+            counts.present |= 1 << new;
+        }
+        let after = counts.lowest();
+        if after == UNLOADED {
+            self.counts.remove(&pos);
+        }
+        if after != before {
+            changes.push(LevelChange {
+                pos,
+                old: before,
+                new: after,
+            });
+        }
+    }
 }
 
 #[cfg(test)]
@@ -152,5 +242,89 @@ mod tests {
         assert!(levels.counts.is_empty());
         assert_eq!(required_status(34), Some(ChunkStatus::InitializeLight));
         assert_eq!(required_status(45), None);
+    }
+
+    /// Random adds, removes and moves (by one chunk, a few chunks and far) give the same
+    /// levels as computing them from scratch, and the reported changes are exactly the
+    /// chunks whose level changed.
+    #[test]
+    fn moves_equal_full_recompute() {
+        let mut seed = 0x9E37_79B9_7F4A_7C15_u64;
+        let mut next = move |bound: u32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % u64::from(bound)) as i32
+        };
+        for max in [MAX_LEVEL, BLOCK_TICKING_LEVEL] {
+            let mut levels = TicketLevels::with_max(max);
+            let mut tickets: Vec<(ChunkPos, u8)> = Vec::new();
+            let mut changes = Vec::new();
+            for _ in 0..600 {
+                let before = expected(&tickets, max);
+                changes.clear();
+                match next(4) {
+                    0 | 1 if !tickets.is_empty() => {
+                        let i = next(tickets.len() as u32) as usize;
+                        let (from, level) = tickets[i];
+                        let step = [1, 1, 1, 3, 60][next(5) as usize];
+                        let to = ChunkPos::new(
+                            from.x + next(2 * step + 1) - step as i32,
+                            from.z + next(2 * step + 1) - step as i32,
+                        );
+                        levels.shift(from, to, level, &mut changes);
+                        tickets[i].0 = to;
+                    }
+                    2 if !tickets.is_empty() => {
+                        let (pos, level) = tickets.swap_remove(next(tickets.len() as u32) as usize);
+                        levels.remove(pos, level, &mut changes);
+                    }
+                    _ => {
+                        let pos = ChunkPos::new(next(40) - 20, next(40) - 20);
+                        let level = 18 + next(30) as u8;
+                        levels.add(pos, level, &mut changes);
+                        tickets.push((pos, level));
+                    }
+                }
+                let after = expected(&tickets, max);
+                let mut want: Vec<LevelChange> = before
+                    .keys()
+                    .chain(after.keys())
+                    .filter_map(|&pos| {
+                        let old = before.get(&pos).copied().unwrap_or(UNLOADED);
+                        let new = after.get(&pos).copied().unwrap_or(UNLOADED);
+                        (old != new).then_some(LevelChange { pos, old, new })
+                    })
+                    .collect();
+                want.sort_by_key(|c| (c.pos.x, c.pos.z));
+                want.dedup();
+                changes.sort_by_key(|c| (c.pos.x, c.pos.z));
+                assert_eq!(changes, want);
+                let mut got: Vec<(ChunkPos, u8)> = levels.iter().collect();
+                got.sort_by_key(|&(pos, _)| (pos.x, pos.z));
+                let mut all: Vec<(ChunkPos, u8)> = after.into_iter().collect();
+                all.sort_by_key(|&(pos, _)| (pos.x, pos.z));
+                assert_eq!(got, all);
+            }
+        }
+    }
+
+    /// Levels from scratch: the lowest `level + distance` of any ticket, up to `max`.
+    fn expected(tickets: &[(ChunkPos, u8)], max: u8) -> FxHashMap<ChunkPos, u8> {
+        let mut out = FxHashMap::default();
+        for &(c, level) in tickets {
+            if level > max {
+                continue;
+            }
+            let reach = i32::from(max - level);
+            for z in c.z - reach..=c.z + reach {
+                for x in c.x - reach..=c.x + reach {
+                    let given = level + c.x.abs_diff(x).max(c.z.abs_diff(z)) as u8;
+                    let entry = out.entry(ChunkPos::new(x, z)).or_insert(UNLOADED);
+                    *entry = (*entry).min(given);
+                }
+            }
+        }
+        out
     }
 }

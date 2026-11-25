@@ -19,6 +19,7 @@ mod mobs;
 mod net;
 mod player_list;
 mod players;
+mod plugins;
 mod server;
 pub mod slot;
 mod survival;

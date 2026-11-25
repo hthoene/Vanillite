@@ -540,6 +540,7 @@ fn table_loot(
         item_in_tag: &in_tag,
         explosion_radius: None,
         entity: Some(&entity),
+        block_entity: None,
     };
     let mut out = Vec::new();
     // The mob's own random (`LootParams` with the entity's random sequence is distribution
