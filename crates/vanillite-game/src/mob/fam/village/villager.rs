@@ -742,7 +742,11 @@ fn try_spawn_golem(t: &mut Tick<'_, '_>) -> bool {
             mob,
         );
         crate::mob::fam::undead::spawn_extras(t.ents, t.level, id, at, extra);
-        if let Some(sound) = t.ents.mob(id).and_then(crate::mob::kinds::ambient_sound) {
+        if let Some(sound) = t
+            .ents
+            .mob_mut(id)
+            .and_then(crate::mob::kinds::ambient_sound)
+        {
             crate::mob::combat::mob_sound(t.ents, t.env, id, sound);
         }
         return true;
@@ -1158,7 +1162,7 @@ impl FamilyHooks for Hooks {
     fn malus(_kind: Kind) -> &'static MalusTable {
         MALUS
     }
-    fn ambient_sound(m: &MobData) -> Option<&'static str> {
+    fn ambient_sound(m: &mut MobData) -> Option<&'static str> {
         if is_sleeping(m) {
             None
         } else if state(m).merchant.trading_player.is_some() {

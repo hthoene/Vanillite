@@ -343,10 +343,20 @@ fn face_step(face: i32) -> (i32, i32, i32) {
 pub fn select_next_move_direction(
     level: &Level,
     ents: &mut Entities,
-    random: &mut LegacyRandom,
     me: EntityId,
     avoid_axis: Option<u8>,
 ) {
+    if ents.store.get(me).is_none() {
+        return;
+    }
+    // The bullet's own random, put back below.
+    let Some(mut random) = ents
+        .missile(me)
+        .map(|d| LegacyRandom::from_state(d.random_state))
+    else {
+        return;
+    };
+    let random = &mut random;
     let Some(e) = ents.store.get(me) else {
         return;
     };
@@ -426,6 +436,7 @@ pub fn select_next_move_direction(
         d.ints[0] = selection;
         d.vec = deltas;
         d.ints[1] = steps;
+        d.random_state = random.state();
     }
 }
 
@@ -498,7 +509,7 @@ fn bullet_tick(t: &mut MissileTick<'_, '_>) {
         }
         if steps == 0 {
             let axis = (d.ints[0] != NO_DIR).then(|| u8::try_from(d.ints[0] / 2).unwrap_or(0));
-            select_next_move_direction(t.level, t.ents, t.env.random, me, axis);
+            select_next_move_direction(t.level, t.ents, me, axis);
         }
     }
     let dir = t.ents.missile(me).map_or(NO_DIR, |x| x.ints[0]);
@@ -519,7 +530,7 @@ fn bullet_tick(t: &mut MissileTick<'_, '_>) {
             _ => current.y == tp.y,
         });
         if solid || aligned {
-            select_next_move_direction(t.level, t.ents, t.env.random, me, Some(axis));
+            select_next_move_direction(t.level, t.ents, me, Some(axis));
         }
     }
 }
@@ -529,11 +540,15 @@ fn bullet_hit(t: &mut MissileTick<'_, '_>, d: &MissileData, hit: Hit) {
     match hit {
         Hit::Entity(target, _) => {
             let src = source(t.ents, t.env.types.mob_projectile, me, d);
-            if combat::hurt(t.level, t.ents, t.env, t.cx, target, src, 4.0)
-                && let Some(m) = t.ents.mob_mut(target)
-            {
-                // Players get levitation with the effect system (#74).
-                effects::living::add_to_mob(m, EffectInstance::new(MobEffect::LEVITATION, 200, 0));
+            if combat::hurt(t.level, t.ents, t.env, t.cx, target, src, 4.0) {
+                effects::living::add_to_entity(
+                    t.level,
+                    t.ents,
+                    t.env,
+                    t.cx,
+                    target,
+                    EffectInstance::new(MobEffect::LEVITATION, 200, 0),
+                );
             }
         }
         Hit::Block(..) => {

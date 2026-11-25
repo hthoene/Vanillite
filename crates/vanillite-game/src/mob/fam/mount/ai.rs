@@ -1181,7 +1181,7 @@ fn charge_stop(t: &mut Tick<'_, '_>) {
 
 // --- Breeze ---------------------------------------------------------------------------------
 
-/// `Entity.lookAt(EYES, pos)`: turns at once.
+/// `LivingEntity.lookAt(EYES, pos)`: head and body turn at once.
 fn look_at_eyes(t: &mut Tick<'_, '_>, at: Vec3) {
     let p = t.pos();
     let eye = Vec3::new(p.x, t.eye_y(), p.z);
@@ -1197,6 +1197,7 @@ fn look_at_eyes(t: &mut Tick<'_, '_>, at: Vec3) {
     rot.y_rot = y_rot;
     rot.y_head_rot = y_rot;
     e.set_rot(rot);
+    t.mob().y_body_rot = y_rot;
 }
 
 /// `Shoot.tick`: after the charge, one wind charge, then the recovery.

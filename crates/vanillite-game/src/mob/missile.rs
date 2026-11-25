@@ -144,7 +144,8 @@ pub struct MissileData {
     /// `hasBeenShot`: the `PROJECTILE_SHOOT` game event was posted.
     pub has_been_shot: bool,
     /// The state of its own random ([`vanillite_base::random::LegacyRandom::state`]) for the
-    /// kinds that draw from it (ender pearls).
+    /// kinds that draw from it (ender pearls, shulker bullets); the shooter seeds it with
+    /// [`new_projectile_random`].
     pub random_state: i64,
 }
 

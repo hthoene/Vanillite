@@ -374,7 +374,7 @@ impl FamilyHooks for Hooks {
         if kind == Kind::Ghast { 5.0 } else { 1.0 }
     }
 
-    fn ambient_sound(m: &MobData) -> Option<&'static str> {
+    fn ambient_sound(m: &mut MobData) -> Option<&'static str> {
         match m.kind {
             Kind::Shulker if st(m).peek == 0 => None,
             _ => Some(m.kind.default_sound(DefaultSound::Ambient)),

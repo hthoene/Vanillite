@@ -797,9 +797,6 @@ pub fn mob_sound(ents: &mut Entities, env: &mut Env<'_>, id: EntityId, sound: &s
     let Some(m) = ents.mob_mut(id) else {
         return;
     };
-    if m.silent {
-        return;
-    }
     let volume = super::fam::mob_sound_volume(m);
     let a = m.random.next_float();
     let b = m.random.next_float();
@@ -808,6 +805,10 @@ pub fn mob_sound(ents: &mut Entities, env: &mut Env<'_>, id: EntityId, sound: &s
     } else {
         (a - b) * 0.2 + 1.0
     };
+    // `playSound` checks `isSilent` after the pitch is drawn.
+    if m.silent {
+        return;
+    }
     let source = m.kind.sound_source();
     let seed = crate::survival::sound_seed();
     play_sound(env.out, None, pos, sound, source, volume, pitch, seed);

@@ -15,6 +15,7 @@ use crate::mob::goals::{flag, reduced};
 use crate::mob::kinds::Kind;
 use crate::mob::nav::{MoveKind, NavKind};
 use crate::mob::{MobData, Tick, nav, randompos};
+use crate::survival::rules::Difficulty;
 
 /// The parrot goals.
 #[derive(Clone, Copy, Debug)]
@@ -88,92 +89,106 @@ pub fn finalize_spawn(m: &mut MobData, _ctx: &mut SpawnContext<'_>) {
     m.variant = m.random.next_int_bounded(5);
 }
 
-/// The imitated sound of a mob kind (`MOB_SOUND_MAP`).
-pub fn imitated_sound(kind: Kind) -> Option<&'static str> {
-    Some(match kind {
-        Kind::Blaze => "minecraft:entity.parrot.imitate.blaze",
-        Kind::Bogged => "minecraft:entity.parrot.imitate.bogged",
-        Kind::Breeze => "minecraft:entity.parrot.imitate.breeze",
-        Kind::CamelHusk => "minecraft:entity.parrot.imitate.camel_husk",
-        Kind::CaveSpider | Kind::Spider => "minecraft:entity.parrot.imitate.spider",
-        Kind::Creaking => "minecraft:entity.parrot.imitate.creaking",
-        Kind::Creeper => "minecraft:entity.parrot.imitate.creeper",
-        Kind::Drowned => "minecraft:entity.parrot.imitate.drowned",
-        Kind::Endermite => "minecraft:entity.parrot.imitate.endermite",
-        Kind::Evoker => "minecraft:entity.parrot.imitate.evoker",
-        Kind::Ghast => "minecraft:entity.parrot.imitate.ghast",
-        Kind::Guardian => "minecraft:entity.parrot.imitate.guardian",
-        Kind::Hoglin => "minecraft:entity.parrot.imitate.hoglin",
-        Kind::Husk => "minecraft:entity.parrot.imitate.husk",
-        Kind::Illusioner => "minecraft:entity.parrot.imitate.illusioner",
-        Kind::MagmaCube => "minecraft:entity.parrot.imitate.magma_cube",
-        Kind::Parched => "minecraft:entity.parrot.imitate.parched",
-        Kind::Phantom => "minecraft:entity.parrot.imitate.phantom",
-        Kind::Piglin => "minecraft:entity.parrot.imitate.piglin",
-        Kind::PiglinBrute => "minecraft:entity.parrot.imitate.piglin_brute",
-        Kind::Pillager => "minecraft:entity.parrot.imitate.pillager",
-        Kind::Ravager => "minecraft:entity.parrot.imitate.ravager",
-        Kind::Shulker => "minecraft:entity.parrot.imitate.shulker",
-        Kind::Silverfish => "minecraft:entity.parrot.imitate.silverfish",
-        Kind::Skeleton => "minecraft:entity.parrot.imitate.skeleton",
-        Kind::Slime => "minecraft:entity.parrot.imitate.slime",
-        Kind::Stray => "minecraft:entity.parrot.imitate.stray",
-        Kind::Vex => "minecraft:entity.parrot.imitate.vex",
-        Kind::Vindicator => "minecraft:entity.parrot.imitate.vindicator",
-        Kind::Witch => "minecraft:entity.parrot.imitate.witch",
-        Kind::WitherSkeleton => "minecraft:entity.parrot.imitate.wither_skeleton",
-        Kind::Zoglin => "minecraft:entity.parrot.imitate.zoglin",
-        Kind::Zombie => "minecraft:entity.parrot.imitate.zombie",
-        Kind::ZombieHorse => "minecraft:entity.parrot.imitate.zombie_horse",
-        Kind::ZombieNautilus => "minecraft:entity.parrot.imitate.zombie_nautilus",
-        Kind::ZombieVillager => "minecraft:entity.parrot.imitate.zombie_villager",
-        _ => return None,
-    })
-}
-
-/// The sounds of `MOB_SOUND_MAP`, one per mob type (`getAmbient` imitates a random type).
-pub const IMITATED: [&str; 37] = [
-    "minecraft:entity.parrot.imitate.blaze",
-    "minecraft:entity.parrot.imitate.bogged",
-    "minecraft:entity.parrot.imitate.breeze",
-    "minecraft:entity.parrot.imitate.camel_husk",
-    "minecraft:entity.parrot.imitate.spider",
-    "minecraft:entity.parrot.imitate.spider",
-    "minecraft:entity.parrot.imitate.creaking",
-    "minecraft:entity.parrot.imitate.creeper",
-    "minecraft:entity.parrot.imitate.drowned",
-    "minecraft:entity.parrot.imitate.endermite",
-    "minecraft:entity.parrot.imitate.evoker",
-    "minecraft:entity.parrot.imitate.ghast",
-    "minecraft:entity.parrot.imitate.guardian",
-    "minecraft:entity.parrot.imitate.hoglin",
-    "minecraft:entity.parrot.imitate.husk",
-    "minecraft:entity.parrot.imitate.illusioner",
-    "minecraft:entity.parrot.imitate.magma_cube",
-    "minecraft:entity.parrot.imitate.parched",
-    "minecraft:entity.parrot.imitate.phantom",
-    "minecraft:entity.parrot.imitate.piglin",
-    "minecraft:entity.parrot.imitate.piglin_brute",
-    "minecraft:entity.parrot.imitate.pillager",
-    "minecraft:entity.parrot.imitate.ravager",
-    "minecraft:entity.parrot.imitate.shulker",
-    "minecraft:entity.parrot.imitate.silverfish",
-    "minecraft:entity.parrot.imitate.skeleton",
-    "minecraft:entity.parrot.imitate.slime",
-    "minecraft:entity.parrot.imitate.stray",
-    "minecraft:entity.parrot.imitate.vex",
-    "minecraft:entity.parrot.imitate.vindicator",
-    "minecraft:entity.parrot.imitate.witch",
-    "minecraft:entity.parrot.imitate.wither_skeleton",
-    "minecraft:entity.parrot.imitate.zoglin",
-    "minecraft:entity.parrot.imitate.zombie",
-    "minecraft:entity.parrot.imitate.zombie_horse",
-    "minecraft:entity.parrot.imitate.zombie_nautilus",
-    "minecraft:entity.parrot.imitate.zombie_villager",
+/// `MOB_SOUND_MAP`: the imitable mob kinds and their imitated sounds.
+const MOB_SOUNDS: &[(Kind, &str)] = &[
+    (Kind::Blaze, "minecraft:entity.parrot.imitate.blaze"),
+    (Kind::Bogged, "minecraft:entity.parrot.imitate.bogged"),
+    (Kind::Breeze, "minecraft:entity.parrot.imitate.breeze"),
+    (
+        Kind::CamelHusk,
+        "minecraft:entity.parrot.imitate.camel_husk",
+    ),
+    (Kind::CaveSpider, "minecraft:entity.parrot.imitate.spider"),
+    (Kind::Creaking, "minecraft:entity.parrot.imitate.creaking"),
+    (Kind::Creeper, "minecraft:entity.parrot.imitate.creeper"),
+    (Kind::Drowned, "minecraft:entity.parrot.imitate.drowned"),
+    (
+        Kind::ElderGuardian,
+        "minecraft:entity.parrot.imitate.elder_guardian",
+    ),
+    (
+        Kind::EnderDragon,
+        "minecraft:entity.parrot.imitate.ender_dragon",
+    ),
+    (Kind::Endermite, "minecraft:entity.parrot.imitate.endermite"),
+    (Kind::Evoker, "minecraft:entity.parrot.imitate.evoker"),
+    (Kind::Ghast, "minecraft:entity.parrot.imitate.ghast"),
+    (Kind::HappyGhast, "minecraft:intentionally_empty"),
+    (Kind::Guardian, "minecraft:entity.parrot.imitate.guardian"),
+    (Kind::Hoglin, "minecraft:entity.parrot.imitate.hoglin"),
+    (Kind::Husk, "minecraft:entity.parrot.imitate.husk"),
+    (
+        Kind::Illusioner,
+        "minecraft:entity.parrot.imitate.illusioner",
+    ),
+    (
+        Kind::MagmaCube,
+        "minecraft:entity.parrot.imitate.magma_cube",
+    ),
+    (Kind::Parched, "minecraft:entity.parrot.imitate.parched"),
+    (Kind::Phantom, "minecraft:entity.parrot.imitate.phantom"),
+    (Kind::Piglin, "minecraft:entity.parrot.imitate.piglin"),
+    (
+        Kind::PiglinBrute,
+        "minecraft:entity.parrot.imitate.piglin_brute",
+    ),
+    (Kind::Pillager, "minecraft:entity.parrot.imitate.pillager"),
+    (Kind::Ravager, "minecraft:entity.parrot.imitate.ravager"),
+    (Kind::Shulker, "minecraft:entity.parrot.imitate.shulker"),
+    (
+        Kind::Silverfish,
+        "minecraft:entity.parrot.imitate.silverfish",
+    ),
+    (Kind::Skeleton, "minecraft:entity.parrot.imitate.skeleton"),
+    (Kind::Slime, "minecraft:entity.parrot.imitate.slime"),
+    (Kind::Spider, "minecraft:entity.parrot.imitate.spider"),
+    (Kind::Stray, "minecraft:entity.parrot.imitate.stray"),
+    (Kind::Vex, "minecraft:entity.parrot.imitate.vex"),
+    (
+        Kind::Vindicator,
+        "minecraft:entity.parrot.imitate.vindicator",
+    ),
+    (Kind::Warden, "minecraft:entity.parrot.imitate.warden"),
+    (Kind::Witch, "minecraft:entity.parrot.imitate.witch"),
+    (Kind::Wither, "minecraft:entity.parrot.imitate.wither"),
+    (
+        Kind::WitherSkeleton,
+        "minecraft:entity.parrot.imitate.wither_skeleton",
+    ),
+    (Kind::Zoglin, "minecraft:entity.parrot.imitate.zoglin"),
+    (Kind::Zombie, "minecraft:entity.parrot.imitate.zombie"),
+    (
+        Kind::ZombieHorse,
+        "minecraft:entity.parrot.imitate.zombie_horse",
+    ),
+    (
+        Kind::ZombieNautilus,
+        "minecraft:entity.parrot.imitate.zombie_nautilus",
+    ),
+    (
+        Kind::ZombieVillager,
+        "minecraft:entity.parrot.imitate.zombie_villager",
+    ),
 ];
 
-/// `getAmbientSound` (the 1-in-1000 imitation is done in `ai_step`).
-pub fn ambient_sound(_m: &MobData) -> &'static str {
+/// The imitated sound of a mob kind (`MOB_SOUND_MAP`).
+pub fn imitated_sound(kind: Kind) -> Option<&'static str> {
+    MOB_SOUNDS.iter().find(|(k, _)| *k == kind).map(|(_, s)| *s)
+}
+
+/// `getAmbientSound` → `getAmbient(level, level.getRandom())`.
+pub fn ambient_sound(t: &mut Tick<'_, '_>) -> &'static str {
+    ambient(t.env.difficulty, &mut *t.env.random)
+}
+
+/// `Parrot.getAmbient(level, random)`: one in a thousand an imitated sound of a random
+/// imitable kind (Vanilla's order of that map is a hash order).
+pub fn ambient(difficulty: Difficulty, random: &mut impl RandomSource) -> &'static str {
+    if difficulty != Difficulty::Peaceful && random.next_int_bounded(1000) == 0 {
+        let n = i32::try_from(MOB_SOUNDS.len()).unwrap_or(i32::MAX);
+        let i = usize::try_from(random.next_int_bounded(n)).unwrap_or(0);
+        return MOB_SOUNDS[i].1;
+    }
     "minecraft:entity.parrot.ambient"
 }
 
@@ -375,8 +390,7 @@ pub fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
             if t.mob().random.next_float() >= 0.001 {
                 pos = tree_pos(t);
             }
-            // The hover and air positions of `WaterAvoidingRandomFlyingGoal`.
-            let pos = pos.or_else(|| randompos::default_pos(t, 8, 7));
+            let pos = pos.or_else(|| randompos::water_avoiding_flying_pos(t));
             match pos {
                 Some(p) => {
                     *wanted = p;

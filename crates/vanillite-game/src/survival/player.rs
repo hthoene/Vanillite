@@ -2448,11 +2448,9 @@ fn simulate_move(
         on_ground = vertical && delta.y < 0.0;
         entity.set_flags(EntityFlags::ON_GROUND, on_ground);
     }
+    // `isLocalInstanceAuthoritative` is false for players on the server: their fall damage
+    // comes with their movement packets only.
     let crouching = entity.as_ref().flags().contains(EntityFlags::CROUCHING);
-    check_fall_damage(entity, player, env, movement.y, on_ground, crouching);
-    if player.survival.is_dead_or_dying() {
-        return;
-    }
     if moved_vertically && vertical || horizontal {
         let mut v = entity.as_ref().velocity();
         // `restituteMovementAfterCollisions` without bounciness (Java's signed zeros).

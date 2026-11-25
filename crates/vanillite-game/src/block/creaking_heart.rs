@@ -522,7 +522,7 @@ fn spawn_protector(level: &mut Level, pos: BlockPos) -> Option<EntityId> {
         // `playAmbientSound`.
         if let Some(sound) = level
             .entities
-            .mob(id)
+            .mob_mut(id)
             .and_then(crate::mob::kinds::ambient_sound)
         {
             creaking_sound(level, id, sound);

@@ -141,9 +141,10 @@ pub fn register_goals(m: &mut MobData) {
 }
 
 /// The wolf variant of a biome (`wolf_variant` spawn conditions).
-pub fn variant_for(ctx: &SpawnContext<'_>) -> i32 {
+pub fn variant_for(ctx: &SpawnContext<'_>, random: &mut LegacyRandom) -> i32 {
     super::pick_variant(
         ctx,
+        random,
         &[
             (0, Some("minecraft:snowy_taiga")),
             (1, Some("minecraft:old_growth_pine_taiga")),
@@ -163,17 +164,17 @@ pub fn random_sound_variant(r: &mut LegacyRandom) -> u8 {
     u8::try_from(r.next_int_bounded(7)).unwrap_or(SOUND_CLASSIC)
 }
 
-/// `finalizeSpawn`: the pack variant of the biome, a random sound variant, babies.
+/// `finalizeSpawn`: the pack variant of the biome and a random sound variant, before
+/// `Mob.finalizeSpawn`; a pack (`WolfPackData`) has no babies.
 pub fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
     m.variant = if let GroupData::Wolf(v) = ctx.group {
         v
     } else {
-        let v = variant_for(ctx);
+        let v = variant_for(ctx, &mut m.random);
         ctx.group = GroupData::Wolf(v);
         v
     };
     st_mut(m).sound_variant = random_sound_variant(&mut m.random);
-    super::ageable_group(m, ctx, true, 0.05);
 }
 
 /// `applyTamingSideEffects`: 40 health when tame, 8 wild.
@@ -223,12 +224,11 @@ fn sound_set(m: &MobData, sound: &str) -> &'static str {
 }
 
 /// `getAmbientSound`: growls when angry, whines when hurt and tame, pants.
-pub fn ambient_sound(m: &MobData) -> Option<&'static str> {
+pub fn ambient_sound(m: &mut MobData) -> Option<&'static str> {
     if m.anger_end > 0 {
         return Some(sound_set(m, "growl"));
     }
-    // `random.nextInt(3) == 0` (the tick count stands in for the roll).
-    if m.tick_count % 3 == 0 {
+    if m.random.next_int_bounded(3) == 0 {
         return Some(if m.tame && m.health < 20.0 {
             sound_set(m, "whine")
         } else {

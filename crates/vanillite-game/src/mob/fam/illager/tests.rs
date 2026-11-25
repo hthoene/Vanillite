@@ -336,8 +336,8 @@ fn kind_properties() {
     assert_eq!(st(&g).explosion_power, 1);
     assert!(Hooks::fall_damage_immune(Kind::Blaze));
     assert!(Hooks::sensitive_to_water(Kind::Blaze));
-    let shulker = MobData::new(Kind::Shulker, 1);
-    assert_eq!(Hooks::ambient_sound(&shulker), None);
+    let mut shulker = MobData::new(Kind::Shulker, 1);
+    assert_eq!(Hooks::ambient_sound(&mut shulker), None);
     assert_eq!(
         Hooks::hurt_sound(&shulker),
         "minecraft:entity.shulker.hurt_closed"

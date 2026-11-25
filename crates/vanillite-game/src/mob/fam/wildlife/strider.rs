@@ -40,15 +40,7 @@ pub(super) fn register_goals(m: &mut MobData) {
             recalc: 0,
         },
     );
-    g.add(
-        7,
-        MobGoal::Stroll {
-            speed: 1.0,
-            interval: 60,
-            probability: 1.0,
-            wanted: Vec3::ZERO,
-        },
-    );
+    g.add(7, crate::mob::movement::MoveGoal::random_stroll(1.0, 60));
     g.add(8, MobGoal::look_at_player(8.0));
     g.add(8, MobGoal::random_look());
     g.add(

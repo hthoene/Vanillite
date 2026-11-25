@@ -298,18 +298,13 @@ fn shoot_bullet(t: &mut Tick<'_, '_>, target: EntityId, avoid_axis: u8) {
         (b.min_z + b.max_z) / 2.0,
     );
     let mut d = MissileData::new(MissileKind::ShulkerBullet);
+    d.random_state = missile::new_projectile_random().state();
     d.target = Some(target);
     d.target_uuid = t.ents.store.get(target).map(|e| e.uuid());
     // ints: [move direction (6 = none), steps, -, -]; vec: target deltas.
     d.ints[0] = 1;
-    let id = missile::spawn_from(t, start, Vec3::ZERO, Rotation::default(), d);
-    super::missiles::select_next_move_direction(
-        t.level,
-        t.ents,
-        t.env.random,
-        id,
-        Some(avoid_axis),
-    );
+    let id = missile::spawn_shot(t, start, Vec3::ZERO, Rotation::default(), d);
+    super::missiles::select_next_move_direction(t.level, t.ents, id, Some(avoid_axis));
 }
 
 pub fn peek_can_use(t: &mut Tick<'_, '_>) -> bool {

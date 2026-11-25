@@ -139,17 +139,7 @@ pub fn handle(
             continue;
         }
         // `Parrot.getAmbient(level, random)` and `getPitch(random)`.
-        let sound = if env.difficulty != super::rules::Difficulty::Peaceful
-            && env.random.next_int_bounded(1000) == 0
-        {
-            let sounds = crate::mob::fam::companion::parrot::IMITATED;
-            let i = env
-                .random
-                .next_int_bounded(i32::try_from(sounds.len()).unwrap_or(1));
-            sounds[usize::try_from(i).unwrap_or(0)]
-        } else {
-            "minecraft:entity.parrot.ambient"
-        };
+        let sound = crate::mob::fam::companion::parrot::ambient(env.difficulty, &mut *env.random);
         let pitch = (env.random.next_float() - env.random.next_float()) * 0.2 + 1.0;
         let seed = crate::survival::sound_seed();
         crate::survival::play_sound(

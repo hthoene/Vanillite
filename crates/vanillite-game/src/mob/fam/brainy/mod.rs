@@ -413,6 +413,8 @@ impl FamilyHooks for Hooks {
             Kind::Axolotl => axolotl::MALUS,
             Kind::Frog => frog::MALUS,
             Kind::Sniffer => sniffer::MALUS,
+            // `WaterAnimal`'s constructor.
+            Kind::Tadpole => &[(crate::mob::path::PathType::Water, 0.0)],
             _ => &[],
         }
     }
@@ -432,7 +434,7 @@ impl FamilyHooks for Hooks {
         }
     }
 
-    fn ambient_sound(m: &MobData) -> Option<&'static str> {
+    fn ambient_sound(m: &mut MobData) -> Option<&'static str> {
         match m.kind {
             Kind::Piglin => piglin::ambient_sound(m),
             Kind::PiglinBrute => piglin::brute_ambient_sound(m),
@@ -535,7 +537,7 @@ impl FamilyHooks for Hooks {
                     ),
                 }
             }
-            Kind::Axolotl => 0.0,
+            Kind::Axolotl | Kind::Tadpole => 0.0,
             _ => crate::mob::kinds::base_walk_target_value(kind.is_monster(), level, env, pos),
         }
     }
