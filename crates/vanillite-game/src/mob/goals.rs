@@ -1517,7 +1517,7 @@ pub(crate) fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
             t.mob()
                 .look
                 .set_look_at(Vec3::new(o.pos.x, o.eye_y, o.pos.z), 10.0, x_max);
-            nav::move_to_entity(t, o.pos, 0, *speed);
+            nav::move_to_entity(t, o.pos, 1, *speed);
             *love_time += 1;
             if *love_time >= reduced(60) && distance_sqr(t, o.pos) < 9.0 {
                 let id = t.id;
@@ -1537,7 +1537,7 @@ pub(crate) fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
             if distance_sqr(t, o.pos) < 6.25 {
                 t.mob().nav.stop();
             } else {
-                nav::move_to_entity(t, o.pos, 0, *speed);
+                nav::move_to_entity(t, o.pos, 1, *speed);
             }
         }
         Goal::EndermanLeaveBlock => kinds::enderman_leave_block(t),

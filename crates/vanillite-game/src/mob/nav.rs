@@ -485,8 +485,8 @@ pub fn move_to_pos(t: &mut Tick<'_, '_>, pos: Vec3, speed: f64) -> bool {
     move_to_path(t, path, speed)
 }
 
-/// `moveTo(entity, reachRange, speedModifier)`; a wall climber without a path climbs straight
-/// towards the entity.
+/// `moveTo(entity, reachRange, speedModifier)` (`moveTo(entity, speed)` uses reach range 1); a
+/// wall climber without a path climbs straight towards the entity.
 pub fn move_to_entity(t: &mut Tick<'_, '_>, target: Vec3, reach: i32, speed: f64) -> bool {
     let block = BlockPos::containing(target.x, target.y, target.z);
     let path = create_path_to(t, block, reach);
@@ -878,6 +878,20 @@ pub fn rotlerp(a: f32, b: f32, max: f32) -> f32 {
     r
 }
 
+/// `getAttributeValue(MOVEMENT_SPEED)`: sprinting mobs (cats and ocelots after their prey or
+/// fleeing) move 30% faster (`SPEED_MODIFIER_SPRINTING`).
+pub fn movement_speed(t: &Tick<'_, '_>) -> f64 {
+    let base = t.mob_ref().attrs.movement_speed;
+    if t.core()
+        .flags()
+        .contains(vanillite_world::entity::EntityFlags::SPRINTING)
+    {
+        base * (1.0 + f64::from(0.3_f32))
+    } else {
+        base
+    }
+}
+
 /// `MoveControl.tick`.
 /// `Mob.setSpeed`: the speed is also the forward input.
 fn set_speed(m: &mut super::MobData, speed: f32) {
@@ -915,7 +929,7 @@ pub fn tick_move_control(t: &mut Tick<'_, '_>) {
         }
         MoveKind::Default => {}
     }
-    let speed_attr = t.mob_ref().attrs.movement_speed;
+    let speed_attr = movement_speed(t);
     let ctl = t.mob_ref().move_ctl;
     match ctl.operation {
         Operation::Strafe => {
@@ -1100,7 +1114,7 @@ fn tick_smooth_swimming_move_control(
     rot.y_head_rot = rot.y_rot;
     t.mob().y_body_rot = rot.y_rot;
     #[allow(clippy::cast_possible_truncation)]
-    let speed = (ctl.speed_modifier * t.mob_ref().attrs.movement_speed) as f32;
+    let speed = (ctl.speed_modifier * movement_speed(t)) as f32;
     if in_water {
         // `setSpeed` sets the forward input; it is overwritten below.
         t.mob().speed = speed * in_water_speed;

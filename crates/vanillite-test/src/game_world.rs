@@ -427,9 +427,13 @@ impl GameWorld {
             let is_mob = is_mob_kind(kind);
             let is_special = mob::boss::special::is_special_kind(kind);
             let is_minecart = MinecartKind::of(kind).is_some();
+            let is_boat = vanillite_game::vehicle::BoatKind::of(kind).is_some();
+            let is_missile = vanillite_game::mob::missile::is_missile_kind(kind);
             if !is_mob
                 && !is_special
                 && !is_minecart
+                && !is_boat
+                && !is_missile
                 && kind != ids::ARROW
                 && kind != ids::EXPERIENCE_ORB
                 && kind != ids::AREA_EFFECT_CLOUD
@@ -453,8 +457,12 @@ impl GameWorld {
                     mob::boss::special::tick(level, ents, env, cx, id);
                 } else if is_minecart {
                     minecart::tick(level, ents, env, cx, id);
+                } else if is_boat {
+                    vanillite_game::vehicle::tick_boat(level, ents, env, cx, id);
                 } else if kind == ids::ARROW {
                     projectile::tick_arrow(level, ents, env, cx, id);
+                } else if is_missile {
+                    vanillite_game::mob::missile::tick(level, ents, env, cx, id);
                 } else {
                     vanillite_game::effect::cloud::tick(level, ents, env, cx, id);
                 }

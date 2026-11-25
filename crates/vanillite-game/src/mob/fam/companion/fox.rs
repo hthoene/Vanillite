@@ -1024,7 +1024,7 @@ pub fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
                 set_flag(t, CROUCHING, true);
                 t.mob().nav.stop();
             } else {
-                nav::move_to_entity(t, o.pos, 0, 1.5);
+                nav::move_to_entity(t, o.pos, 1, 1.5);
             }
         }
         Goal::Pounce => {

@@ -586,6 +586,14 @@ impl FamilyHooks for Hooks {
         by_group!(m.kind, dimensions(m), None)
     }
 
+    fn size_scale(m: &MobData) -> Option<f32> {
+        matches!(m.kind, Kind::Slime | Kind::MagmaCube | Kind::SulfurCube).then(|| {
+            #[allow(clippy::cast_precision_loss)]
+            let s = cubes::size(m) as f32 * if m.baby { 0.5 } else { 1.0 };
+            s
+        })
+    }
+
     fn walk_target_value(kind: Kind, level: &Level, env: &Environment, pos: BlockPos) -> f64 {
         match kind {
             Kind::Slime | Kind::MagmaCube | Kind::SulfurCube | Kind::Phantom => 0.0,

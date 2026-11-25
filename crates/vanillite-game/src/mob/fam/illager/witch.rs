@@ -201,14 +201,10 @@ pub fn perform_ranged_attack(t: &mut Tick<'_, '_>, target: EntityId) {
     data.item = potion::stack("minecraft:splash_potion", chosen);
     let start = Vec3::new(p.x, t.eye_y() - f64::from(0.1_f32), p.z);
     let power = if dist <= 2.0 { 0.45 } else { 0.75 };
-    let (velocity, rot) = projectile::shoot(
-        &mut t.mob().random,
-        Vec3::new(xd, yd + dist * 0.2, zd),
-        power,
-        8.0,
-    );
-    // `shootFromRotation` adds the shooter's motion only for players.
-    missile::spawn_from(t, start, velocity, rot, data);
+    let mut own = missile::new_projectile_random();
+    let (velocity, rot) =
+        projectile::shoot(&mut own, Vec3::new(xd, yd + dist * 0.2, zd), power, 8.0);
+    missile::spawn_shot(t, start, velocity, rot, data);
     if !t.mob_ref().silent {
         let pitch = 0.8 + t.mob().random.next_float() * 0.4;
         sound(t, "minecraft:entity.witch.throw", 1.0, pitch);

@@ -493,40 +493,27 @@ pub fn lerp_rotation(old: f32, new: f32) -> f32 {
     old + (new - old) * 0.2
 }
 
-/// Where the segment enters `b`, as a fraction of the segment.
+/// Where the segment enters `b`, as a fraction of the segment (`AABB.clip`: nothing when it
+/// starts inside).
 pub fn segment_box(from: Vec3, to: Vec3, b: &Aabb) -> Option<f64> {
-    if b.contains(from.x, from.y, from.z) {
-        return Some(0.0);
-    }
-    let d = [to.x - from.x, to.y - from.y, to.z - from.z];
-    let o = [from.x, from.y, from.z];
-    let lo = [b.min_x, b.min_y, b.min_z];
-    let hi = [b.max_x, b.max_y, b.max_z];
-    let (mut t0, mut t1) = (0.0_f64, 1.0_f64);
-    for a in 0..3 {
-        if d[a].abs() < 1.0e-12 {
-            if o[a] < lo[a] || o[a] > hi[a] {
-                return None;
-            }
-        } else {
-            let inv = 1.0 / d[a];
-            let (mut n, mut f) = ((lo[a] - o[a]) * inv, (hi[a] - o[a]) * inv);
-            if n > f {
-                std::mem::swap(&mut n, &mut f);
-            }
-            t0 = t0.max(n);
-            t1 = t1.min(f);
-            if t0 > t1 {
-                return None;
-            }
-        }
-    }
-    Some(t0)
+    aabb_clip_scale(b, from, to)
 }
 
 /// `AABB.clip(from, to)`: where the way from `from` to `to` enters the box; nothing when it
 /// starts inside.
 pub fn aabb_clip(b: &Aabb, from: Vec3, to: Vec3) -> Option<Vec3> {
+    let (dx, dy, dz) = (to.x - from.x, to.y - from.y, to.z - from.z);
+    aabb_clip_scale(b, from, to).map(|scale| {
+        Vec3::new(
+            from.x + scale * dx,
+            from.y + scale * dy,
+            from.z + scale * dz,
+        )
+    })
+}
+
+/// [`aabb_clip`] as the fraction of the way.
+fn aabb_clip_scale(b: &Aabb, from: Vec3, to: Vec3) -> Option<f64> {
     let (dx, dy, dz) = (to.x - from.x, to.y - from.y, to.z - from.z);
     let mut scale = 1.0;
     let mut hit = false;
@@ -618,11 +605,5 @@ pub fn aabb_clip(b: &Aabb, from: Vec3, to: Vec3) -> Option<Vec3> {
             xy,
         );
     }
-    hit.then(|| {
-        Vec3::new(
-            from.x + scale * dx,
-            from.y + scale * dy,
-            from.z + scale * dz,
-        )
-    })
+    hit.then_some(scale)
 }

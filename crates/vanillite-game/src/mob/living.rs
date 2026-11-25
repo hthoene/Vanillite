@@ -82,6 +82,7 @@ pub fn tick(t: &mut Tick<'_, '_>) {
 
 /// `Entity.baseTick` + `LivingEntity.baseTick` + `Mob.baseTick`.
 fn base_tick(t: &mut Tick<'_, '_>) {
+    sprint_particle(t);
     update_fluids(t);
     let fire_immune = t.core().kind().info().fire_immune;
     let in_lava = t.mob_ref().fluids.in_lava();
@@ -765,6 +766,39 @@ fn block_speed_factor(t: &Tick<'_, '_>) -> f32 {
     #[allow(clippy::cast_possible_truncation)]
     let efficiency = t.mob_ref().attrs.movement_efficiency as f32;
     factor + efficiency * (1.0 - factor)
+}
+
+/// `canSpawnSprintParticle` → `spawnSprintParticle`: the particles are the client's, the
+/// server still draws their position.
+fn sprint_particle(t: &mut Tick<'_, '_>) {
+    let flags = t.core().flags();
+    let fluids = t.mob_ref().fluids;
+    if !flags.contains(EntityFlags::SPRINTING)
+        || flags.contains(EntityFlags::CROUCHING)
+        || fluids.in_water()
+        || fluids.in_lava()
+        || !t.mob_ref().is_alive()
+    {
+        return;
+    }
+    use vanillite_data::block::BlockKind as K;
+    let state = t.level.block(on_pos(t, f64::from(0.2_f32)));
+    let invisible = matches!(
+        state.block().info().kind,
+        K::AirBlock
+            | K::BarrierBlock
+            | K::LiquidBlock
+            | K::BubbleColumnBlock
+            | K::LightBlock
+            | K::EndGatewayBlock
+            | K::EndPortalBlock
+            | K::StructureVoidBlock
+            | K::MovingPistonBlock
+    );
+    if !invisible {
+        let r = &mut t.mob().random;
+        let _ = (r.next_double(), r.next_double());
+    }
 }
 
 /// `getOnPos(offset)` without the supporting block search.

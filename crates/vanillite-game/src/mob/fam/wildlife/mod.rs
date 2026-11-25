@@ -7,7 +7,7 @@
 mod bat;
 mod bee;
 mod dolphin;
-mod fish;
+pub(crate) mod fish;
 mod golem;
 mod mooshroom;
 mod snowball;
@@ -230,6 +230,9 @@ pub enum Goal {
     DolphinMoveToItem { cooldown: i32 },
     /// `Dolphin.PlayWithItemsGoal`.
     DolphinPlayWithItems { cooldown: i32 },
+    /// `MoveBackToVillageGoal(golem, 0.6, false)`: outside a village it rolls its
+    /// `RandomStrollGoal` chance, then finds no section closer to a village (villages: #60).
+    MoveBackToVillage,
     /// `MoveTowardsTargetGoal(mob, speed, within)`.
     MoveTowardsTarget {
         speed: f64,
@@ -582,6 +585,20 @@ impl FamilyHooks for Hooks {
         }
     }
 
+    fn size_scale(m: &MobData) -> Option<f32> {
+        match m.kind {
+            Kind::Salmon => {
+                Some([0.5, 1.0, 1.5][usize::try_from(st(m).variant.clamp(0, 2)).unwrap_or(1)])
+            }
+            Kind::Pufferfish => Some(match st(m).puff_state {
+                0 => 0.5,
+                1 => 0.7,
+                _ => 1.0,
+            }),
+            _ => None,
+        }
+    }
+
     fn dimensions(m: &MobData) -> Option<Dimensions> {
         let d = Dimensions::of(m.kind.type_id());
         let scaled = |f: f32| Dimensions {
@@ -755,6 +772,10 @@ impl FamilyHooks for Hooks {
             Kind::Bee => bee::register_goals(m),
             _ => {}
         }
+    }
+
+    fn finalize_spawn_own(m: &mut MobData) {
+        fish::finalize_spawn_own(m);
     }
 
     fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
@@ -1128,6 +1149,7 @@ impl FamilyHooks for Hooks {
             | Goal::DolphinMoveToItem { .. }
             | Goal::DolphinPlayWithItems { .. }
             | Goal::MoveTowardsTarget { .. }
+            | Goal::MoveBackToVillage
             | Goal::TurtlePanic { .. }
             | Goal::TurtleStroll { .. }
             | Goal::BeePollinate { .. }
@@ -1171,6 +1193,12 @@ impl FamilyHooks for Hooks {
             | Goal::DolphinMoveToItem { .. }
             | Goal::DolphinPlayWithItems { .. } => dolphin::can_use(t, g),
             Goal::MoveTowardsTarget { .. } => golem::can_use(t, g),
+            Goal::MoveBackToVillage => {
+                // `RandomStrollGoal.canUse` with interval 10, then `getPosition` is null.
+                let bound = crate::mob::goals::reduced(10);
+                let _ = t.mob().random.next_int_bounded(bound);
+                false
+            }
             Goal::TurtlePanic { .. }
             | Goal::TurtleBreed { .. }
             | Goal::TurtleLayEgg(_)
@@ -1189,7 +1217,7 @@ impl FamilyHooks for Hooks {
 
     fn goal_can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
         match g {
-            Goal::Idle => false,
+            Goal::Idle | Goal::MoveBackToVillage => false,
             Goal::Swim { .. } | Goal::FollowFlockLeader { .. } | Goal::Puff => {
                 fish::can_continue(t, g)
             }
@@ -1318,7 +1346,7 @@ fn handle_air_supply(t: &mut Tick<'_, '_>) {
 
 /// `travelInWater` of fish, dolphins and turtles: `moveRelative(speed)`, move, slow down by
 /// 0.9 and sink a little without a target (`sink`).
-fn water_travel(t: &mut Tick<'_, '_>, input: Vec3, speed: f32, sink: bool) {
+pub(crate) fn water_travel(t: &mut Tick<'_, '_>, input: Vec3, speed: f32, sink: bool) {
     crate::mob::living::move_relative(t, speed, input);
     let v = t.velocity();
     crate::mob::living::move_self(t, v);

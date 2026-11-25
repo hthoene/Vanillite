@@ -4,7 +4,7 @@
 
 [mob_allay_fly]
 tick = 1
-cause = "brain: the allay draws 31 numbers from its random on tick 1, Vanilla 37 (the start of a behaviour; the gate shuffles match now)"
+cause = "stroll target: Vanilla takes `AirAndWaterRandomPos` (36 draws of the allay's random), Vanillite `DefaultRandomPos` (30)"
 owner = "architect #101"
 
 [mob_armadillo_scared]
@@ -13,8 +13,8 @@ cause = "the hit on tick 40: Vanilla knocks the armadillo back horizontally (mot
 owner = "architect #101"
 
 [mob_axolotl_swim]
-tick = 1
-cause = "the axolotl sinks in water (motion y -0.005, Vanilla 0)"
+tick = 18
+cause = "random draws of the axolotl differ from tick 18 on (not analysed yet)"
 owner = "architect #101"
 
 [mob_bat_fly]
@@ -24,17 +24,7 @@ owner = "architect #101"
 
 [mob_bee_fly]
 tick = 1
-cause = "no goal starts on tick 1; Vanilla starts BeeWanderGoal, ValidateFlowerGoal and ValidateHiveGoal (bee random: 4 draws, Vanilla 41)"
-owner = "architect #101"
-
-[mob_blaze_shoot]
-tick = 88
-cause = "the small fireball: its motion differs in the last bits on the tick it is shot, and it does not move on the next tick (Vanilla accelerates it)"
-owner = "architect #101"
-
-[mob_bogged_shoot]
-tick = 28
-cause = "the first arrow comes one tick late: Vanilla shoots on tick 28 (2 draws of the bogged's random), Vanillite draws 1 and shoots later"
+cause = "Vanilla runs `BeeGrowCropGoal.canBeeUse` and starts `BeeWanderGoal` with `HoverRandomPos` (41 draws of the bee's random), Vanillite starts no goal (4 draws)"
 owner = "architect #101"
 
 [mob_breeze_attack]
@@ -52,34 +42,29 @@ tick = 176
 cause = "random draws of the camel differ from tick 176 on (not analysed yet)"
 owner = "architect #101"
 
-[mob_cat_wander]
-tick = 4
-cause = "CatAvoidEntityGoal: the cat flees the player with the walk speed (0.8); Vanilla sprints (1.33) while the player is within 7 blocks"
-owner = "architect #101"
-
 [mob_cod_swim]
-tick = 3
-cause = "FishSwimGoal runs but the fish gets no horizontal motion; Vanilla's fish move control pushes it towards the wanted position"
+tick = 45
+cause = "random draws of the cod differ from tick 45 on (not analysed yet)"
 owner = "architect #101"
 
 [mob_copper_golem_wander]
 tick = 90
-cause = "the level random differs from tick 90 on (a timed brain behaviour starts in Vanillite only; not analysed yet)"
+cause = "a timed brain behaviour starts on tick 90 in Vanillite only (1 level random draw, Vanilla 0)"
 owner = "architect #101"
 
 [mob_dolphin_swim]
 tick = 7
-cause = "RandomSwimmingGoal picks a different target (path to x+6 instead of x-6); the dolphin drew 33 numbers since spawn, Vanilla 63"
+cause = "`getRandomSwimmablePos`: Vanilla needs two `DefaultRandomPos.getPos` calls (60 draws), Vanillite takes the first position (30)"
 owner = "architect #101"
 
 [mob_drowned_water]
 tick = 1
-cause = "the drowned runs DrownedSwimUpGoal on tick 1; Vanilla runs DrownedGoToBeachGoal (drowned random: 48 draws, Vanilla 12)"
+cause = "tick 1 goals: Vanilla starts `DrownedGoToBeachGoal` (`MoveToBlockGoal` draws), Vanillite `DrownedSwimUpGoal` (37 `getPosTowards` draws)"
 owner = "architect #101"
 
 [mob_evoker_spells]
-tick = 26
-cause = "summoned vexes: Vanilla's vexes keep the constructor's random yHeadRot (snapTo does not reset it), Vanillite's start with 0"
+tick = 27
+cause = "the summoned vexes draw differently from their random on tick 27 (not analysed yet)"
 owner = "architect #101"
 
 [mob_frog_hop]
@@ -87,24 +72,14 @@ tick = 66
 cause = "the level random differs on tick 66 and the frog pitches differently on tick 67 (not analysed yet)"
 owner = "architect #101"
 
-[mob_ghast_fireball]
-tick = 158
-cause = "the ghast's yaw differs in the last float bits (10.407094 vs 10.407008) while it aims"
-owner = "architect #101"
-
-[mob_glow_squid_swim]
-tick = 1
-cause = "SquidRandomMovementGoal: 4 draws of the squid's random on tick 1, Vanilla 10"
-owner = "architect #101"
-
 [mob_goat_wander]
 tick = 44
-cause = "the level random differs from tick 44 on (a timed brain behaviour starts in Vanillite only; not analysed yet)"
+cause = "the ram ends on tick 44 in Vanillite (`finishRam`: 1 level random draw), Vanilla keeps ramming"
 owner = "architect #101"
 
 [mob_happy_ghast_float]
-tick = 0
-cause = "construction/finalizeSpawn: 1 draw of the happy ghast's random before tick 0, Vanilla 6"
+tick = 18
+cause = "Vanillite plays the ambient sound on tick 18 (roll 15 < ambientSoundTime 17); Vanilla's counter is lower (cause not found yet)"
 owner = "architect #101"
 
 [mob_hoglin_attack]
@@ -113,8 +88,8 @@ cause = "random draws of the hoglin differ from tick 122 on (not analysed yet)"
 owner = "architect #101"
 
 [mob_iron_golem_fight]
-tick = 1
-cause = "the iron golem draws 45 numbers from its random on tick 1, Vanilla 46"
+tick = 10
+cause = "random draws of the iron golem differ from tick 10 on (not analysed yet)"
 owner = "architect #101"
 
 [mob_nautilus_swim]
@@ -122,34 +97,24 @@ tick = 35
 cause = "random draws of the nautilus differ from tick 35 on; its pitch differs in the last float bits from tick 17 (not analysed yet)"
 owner = "architect #101"
 
-[mob_ocelot_wander]
-tick = 4
-cause = "OcelotAvoidEntityGoal: the ocelot flees the player with the walk speed (0.8); Vanilla sprints (1.33) while the player is within 7 blocks"
-owner = "architect #101"
-
-[mob_parched_shoot]
-tick = 28
-cause = "the first arrow comes one tick late: Vanilla shoots on tick 28 (2 draws of the parched's random), Vanillite draws 1 and shoots later"
-owner = "architect #101"
-
 [mob_parrot_fly]
 tick = 1
-cause = "the parrot falls faster (motion y -0.047 vs -0.0437: flying mob gravity), draws 4 numbers from its random (Vanilla 3) and none from the level random (Vanilla 1)"
+cause = "the parrot falls faster on tick 1 (motion y -0.047, Vanilla -0.0437)"
 owner = "architect #101"
 
 [mob_phantom_swoop]
 tick = 2
-cause = "the phantom's motion differs in the last bits (float/double rounding of the circling movement)"
+cause = "the phantom's motion differs in the last bits on tick 2 (float/double rounding of the circling movement)"
 owner = "architect #101"
 
 [mob_piglin_hostile]
-tick = 0
-cause = "finalizeSpawn: 6 draws of the piglin's random before tick 0 (Vanilla 7) and 14 level random draws (Vanilla 12)"
+tick = 67
+cause = "the level random differs from tick 67 on (not analysed yet)"
 owner = "architect #101"
 
 [mob_pillager_crossbow]
-tick = 6
-cause = "moving towards the target: Vanilla's path (moveTo(entity), reach range 1) ends one node before the target's block, Vanillite's path ends on it"
+tick = 36
+cause = "random draws of the pillager and the level random differ on tick 36 (not analysed yet)"
 owner = "architect #101"
 
 [mob_polar_bear_wander]
@@ -158,18 +123,18 @@ cause = "the polar bear starts WaterAvoidingRandomStrollGoal on tick 38; Vanilla
 owner = "architect #101"
 
 [mob_pufferfish_swim]
-tick = 10
-cause = "vertical motion in water: -0.005, Vanilla -0.0005"
+tick = 115
+cause = "random draws of the pufferfish differ from tick 115 on (not analysed yet)"
 owner = "architect #101"
 
 [mob_rabbit_hop]
-tick = 0
-cause = "construction/finalizeSpawn: 1 draw of the rabbit's random before tick 0, Vanilla 2 (variant), and the rabbit does not turn on tick 1"
+tick = 13
+cause = "Vanilla hops on tick 13 (motion y 0.297), Vanillite does not (rabbit jump control)"
 owner = "architect #101"
 
 [mob_salmon_swim]
-tick = 0
-cause = "finalizeSpawn: 2 draws of the salmon's random before tick 0 (Vanilla 3: size variant from its own random) and 6 level random draws (Vanilla 5)"
+tick = 70
+cause = "random draws of the salmon differ from tick 70 on (not analysed yet)"
 owner = "architect #101"
 
 [mob_shulker_bullets]
@@ -177,49 +142,24 @@ tick = 35
 cause = "the shulker bullet draws 3 numbers from the level random when it is shot; Vanilla 0 (the bullet's own random)"
 owner = "architect #101"
 
-[mob_snow_golem_throw]
-tick = 7
-cause = "moving towards the target: Vanilla's path (moveTo(entity), reach range 1) ends one node before the target's block, Vanillite's path ends on it"
-owner = "architect #101"
-
-[mob_squid_swim]
-tick = 81
-cause = "the squid's yaw differs in the last float bits (22.125256 vs 22.125254)"
-owner = "architect #101"
-
-[mob_stray_shoot]
-tick = 28
-cause = "the first arrow comes one tick late: Vanilla shoots on tick 28 (2 draws of the stray's random), Vanillite draws 1 and shoots later"
-owner = "architect #101"
-
 [mob_strider_lava]
 tick = 1
-cause = "the strider floats up in lava faster (motion y 0.04, Vanilla 0.0108) and draws 4 numbers from its random (Vanilla 5)"
+cause = "the strider floats up in lava faster on tick 1 (motion y 0.04, Vanilla 0.0108)"
 owner = "architect #101"
 
 [mob_tadpole_swim]
 tick = 1
-cause = "FishSwimGoal does not start on tick 1 (tadpole random: 31 draws, Vanilla 122)"
+cause = "the tadpole swims mirrored on tick 1 (motion x -0.00156, Vanilla +0.00156)"
 owner = "architect #101"
 
 [mob_tropical_fish_swim]
-tick = 3
-cause = "FishSwimGoal runs but the fish gets no horizontal motion; Vanilla's fish move control pushes it towards the wanted position"
-owner = "architect #101"
-
-[mob_turtle_wander]
-tick = 17
-cause = "TurtleRandomStrollGoal does not move the turtle on tick 17; Vanilla walks"
-owner = "architect #101"
-
-[mob_vex_charge]
-tick = 1
-cause = "the vex gets no gravity on tick 1 (motion y +0.0079, Vanilla -0.0705) and its yaw differs in the last float bits"
+tick = 45
+cause = "random draws of the tropical fish differ from tick 45 on (not analysed yet)"
 owner = "architect #101"
 
 [mob_witch_potions]
-tick = 16
-cause = "moving towards the target: Vanilla's path (moveTo(entity), reach range 1) ends one node before the target's block, Vanillite's path ends on it"
+tick = 147
+cause = "the splash potion on tick 147: Vanilla's hurts the player (1 damage), Vanillite's does not"
 owner = "architect #101"
 
 [mob_wolf_wander]
@@ -230,11 +170,6 @@ owner = "architect #101"
 [mob_zombie_nautilus_swim]
 tick = 32
 cause = "random draws of the zombie nautilus differ from tick 32 on (not analysed yet)"
-owner = "architect #101"
-
-[mob_zombie_villager_chase]
-tick = 0
-cause = "construction/finalizeSpawn: 2 draws of the zombie villager's random before tick 0 (Vanilla 1); it then targets the player on tick 1, Vanilla later"
 owner = "architect #101"
 
 [mob_zombified_piglin_anger]

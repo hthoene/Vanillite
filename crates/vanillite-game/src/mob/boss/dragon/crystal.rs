@@ -256,32 +256,9 @@ pub fn hurt_crystal(
     true
 }
 
-/// Where the segment `from`→`to` enters `b`, as a fraction.
+/// Where the segment enters `b`, as a fraction (`AABB.clip`).
 fn segment_box(from: Vec3, to: Vec3, b: &Aabb) -> Option<f64> {
-    let d = [to.x - from.x, to.y - from.y, to.z - from.z];
-    let o = [from.x, from.y, from.z];
-    let lo = [b.min_x, b.min_y, b.min_z];
-    let hi = [b.max_x, b.max_y, b.max_z];
-    let (mut t0, mut t1) = (0.0_f64, 1.0_f64);
-    for a in 0..3 {
-        if d[a].abs() < 1.0e-12 {
-            if o[a] < lo[a] || o[a] > hi[a] {
-                return None;
-            }
-        } else {
-            let inv = 1.0 / d[a];
-            let (mut n, mut f) = ((lo[a] - o[a]) * inv, (hi[a] - o[a]) * inv);
-            if n > f {
-                std::mem::swap(&mut n, &mut f);
-            }
-            t0 = t0.max(n);
-            t1 = t1.min(f);
-            if t0 > t1 {
-                return None;
-            }
-        }
-    }
-    Some(t0)
+    crate::mob::projectile::segment_box(from, to, b)
 }
 
 fn fireball_mut(ents: &mut Entities, id: EntityId) -> Option<&mut Fireball> {

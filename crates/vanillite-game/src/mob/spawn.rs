@@ -753,6 +753,7 @@ pub fn finalize(
         env: *env,
         extra: Vec::new(),
         ride: None,
+        own_state: 0,
     };
     kinds::finalize_spawn(mob, &mut ctx, random);
     if let Some(vehicle) = ctx.ride {

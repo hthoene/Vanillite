@@ -713,8 +713,15 @@ pub fn finalize_spawn(
     ctx: &mut fam::SpawnContext<'_>,
     random: &mut vanillite_base::random::LegacyRandom,
 ) {
+    if !m.kind.classic() {
+        fam::finalize_spawn_own(m);
+    }
     std::mem::swap(&mut m.random, random);
+    ctx.own_state = random.state();
     finalize_spawn_inner(m, ctx);
+    if ctx.own_state != random.state() {
+        *random = vanillite_base::random::LegacyRandom::from_state(ctx.own_state);
+    }
     std::mem::swap(&mut m.random, random);
 }
 
