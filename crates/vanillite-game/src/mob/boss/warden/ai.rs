@@ -1,4 +1,7 @@
-//! `WardenAi`: the warden's activities, behaviors and sensors on the shared brain.
+//! `WardenAi`: the warden's activities, behaviours and sensors on the mob brain
+//! ([`crate::mob::brain`]). The shared behaviours (swimming, the look and walk sinks, the
+//! random stroll, `DoNothing`, `RunOne`) are the brain's own; the warden's plug in as
+//! [`FamBehavior::Warden`] and its entity sensor as [`FamSensor::Warden`].
 
 use vanillite_base::random::RandomSource;
 use vanillite_base::{BlockPos, Vec3};
@@ -9,16 +12,15 @@ use super::{
     set_attack_target, set_dig_cooldown, set_disturbance_location, set_sonic_boom_cooldown,
     voice_pitch,
 };
-use crate::mob::brain::sensors::{
-    find_closest_visible, sense_living_entities, sense_players, tracker_block, tracker_position,
-    tracker_visible, visible_contains,
-};
+use crate::mob::brain::behavior::{FamBehavior, Shape, Spec, StrollMode};
+use crate::mob::brain::memory::MemoryStatus as S;
+use crate::mob::brain::memory::MemoryType as M;
+use crate::mob::brain::sensor::{FamSensor, SensorKind};
 use crate::mob::brain::{
-    Activity as A, ActivityData, Behavior, BehaviorInfo, Brain, Flavor, Gate, Memories,
-    MemoryStatus as S, MemoryType as M, MemoryValue, Node, PositionTracker, Sensor, SensorInfo,
-    WalkTarget,
+    Activity as A, ActivitySpec, Brain, BrainSpec, MemValue, Tracker, WalkTarget, brain, brain_ref,
+    sensing,
 };
-use crate::mob::{Tick, combat, nav};
+use crate::mob::{MobData, Tick, combat, nav};
 
 /// `WardenAi.EMERGE_DURATION` (`ceil(133.59999)`).
 pub const EMERGE_DURATION: i32 = 134;
@@ -35,69 +37,44 @@ const SONIC_BOOM_DURATION: i32 = 60;
 /// `SonicBoom.TICKS_BEFORE_PLAYING_SOUND`.
 const SONIC_BOOM_SOUND_DELAY: i64 = 34;
 
-/// The warden's sensors.
+/// The warden's sensors (`SensorType.NEAREST_PLAYERS` is the brain's own).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Sense {
-    /// `SensorType.NEAREST_PLAYERS`.
-    NearestPlayers,
+pub enum Sensor {
     /// `SensorType.WARDEN_ENTITY_SENSOR`.
     WardenEntity,
 }
 
-impl SensorInfo for Sense {
-    fn requires(&self) -> &'static [M] {
-        match self {
-            Sense::NearestPlayers => &[
-                M::NearestPlayers,
-                M::NearestVisiblePlayer,
-                M::NearestVisibleAttackablePlayer,
-                M::NearestVisibleAttackablePlayers,
-            ],
-            Sense::WardenEntity => &[
-                M::NearestLivingEntities,
-                M::NearestVisibleLivingEntities,
-                M::NearestAttackable,
-            ],
-        }
-    }
+pub fn sensor_scan_rate(_s: Sensor) -> i32 {
+    20
 }
 
-impl Sensor<Tick<'_, '_>> for Sense {
-    fn sense(&mut self, mem: &mut Memories, t: &mut Tick<'_, '_>) {
-        match self {
-            Sense::NearestPlayers => sense_players(t, mem),
-            Sense::WardenEntity => {
-                sense_living_entities(t, mem);
-                // The nearest targetable player, else the nearest targetable other entity.
-                let list = mem.entities(M::NearestLivingEntities);
-                let pick = |player: bool| {
-                    list.iter().copied().find(|&e| {
-                        can_target_entity(t.ents, Some(e)) && t.ents.player(e).is_some() == player
-                    })
-                };
-                let nearest = pick(true).or_else(|| pick(false));
-                mem.set_opt(M::NearestAttackable, nearest.map(MemoryValue::Entity));
-            }
-        }
-    }
+pub fn sensor_requires(_s: &Sensor) -> &'static [M] {
+    &[
+        M::NearestLivingEntities,
+        M::NearestVisibleLivingEntities,
+        M::NearestAttackable,
+    ]
 }
 
-/// The warden's behaviors (each variant one Vanilla behavior with its state).
-#[derive(Clone, Debug, PartialEq)]
-pub enum Behave {
-    /// `Swim(0.8)`.
-    Swim,
+/// `WardenEntitySensor.doTick`: the nearest living entities, then the nearest targetable
+/// player, else the nearest targetable other entity.
+pub fn sensor_tick(t: &mut Tick<'_, '_>, _s: Sensor) {
+    crate::mob::brain::sensor::tick(t, SensorKind::NearestLivingEntities);
+    let list = brain_ref(t).entities(M::NearestLivingEntities).to_vec();
+    let pick = |player: bool| {
+        list.iter()
+            .copied()
+            .find(|&e| can_target_entity(t.ents, Some(e)) && t.ents.player(e).is_some() == player)
+    };
+    let nearest = pick(true).or_else(|| pick(false));
+    brain(t).set_opt(M::NearestAttackable, nearest.map(MemValue::Entity));
+}
+
+/// The warden's own behaviours.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Behavior {
     /// `SetWardenLookTarget`.
     SetWardenLookTarget,
-    /// `LookAtTargetSink(45, 90)`.
-    LookAtTargetSink,
-    /// `MoveToTargetSink()`.
-    MoveToTargetSink {
-        cooldown: i32,
-        last_target: Option<BlockPos>,
-        speed: f32,
-        path: Option<Box<crate::mob::path::Path>>,
-    },
     /// `Emerging(EMERGE_DURATION)`.
     Emerging,
     /// `ForceUnmount` (wardens never ride).
@@ -108,10 +85,6 @@ pub enum Behave {
     SetRoarTarget,
     /// `TryToSniff`.
     TryToSniff,
-    /// `RandomStroll.stroll(0.5)`.
-    RandomStroll,
-    /// `DoNothing(30, 60)`.
-    DoNothing,
     /// `Roar`.
     Roar,
     /// `DIG_COOLDOWN_SETTER`.
@@ -132,127 +105,118 @@ pub enum Behave {
     Sniffing,
 }
 
-fn move_to_target_sink() -> Behave {
-    Behave::MoveToTargetSink {
-        cooldown: 0,
-        last_target: None,
-        speed: 0.0,
-        path: None,
+fn fam(b: Behavior) -> Spec {
+    Spec::fam(FamBehavior::Warden(b))
+}
+
+pub fn behavior_duration(b: &Behavior) -> (i32, i32) {
+    match b {
+        Behavior::Emerging => (EMERGE_DURATION, EMERGE_DURATION),
+        Behavior::Digging => (DIGGING_DURATION, DIGGING_DURATION),
+        Behavior::Roar => (ROAR_DURATION, ROAR_DURATION),
+        Behavior::SonicBoom => (SONIC_BOOM_DURATION, SONIC_BOOM_DURATION),
+        Behavior::Sniffing => (SNIFFING_DURATION, SNIFFING_DURATION),
+        _ => (60, 60),
+    }
+}
+
+pub fn behavior_shape(b: &Behavior) -> Shape {
+    match b {
+        Behavior::Emerging
+        | Behavior::ForceUnmount
+        | Behavior::Digging
+        | Behavior::Roar
+        | Behavior::SonicBoom
+        | Behavior::Sniffing => Shape::Timed,
+        _ => Shape::OneShot,
     }
 }
 
 const SET_ROAR_TARGET: &[(M, S)] = &[
-    (M::RoarTarget, S::Absent),
-    (M::AttackTarget, S::Absent),
+    (M::RoarTarget, S::ValueAbsent),
+    (M::AttackTarget, S::ValueAbsent),
     (M::CantReachWalkTargetSince, S::Registered),
 ];
 
-impl BehaviorInfo for Behave {
-    fn conditions(&self) -> &'static [(M, S)] {
-        match self {
-            Behave::Swim | Behave::ForceUnmount | Behave::DoNothing => &[],
-            Behave::SetWardenLookTarget => &[
-                (M::LookTarget, S::Registered),
-                (M::DisturbanceLocation, S::Registered),
-                (M::RoarTarget, S::Registered),
-                (M::AttackTarget, S::Absent),
-            ],
-            Behave::LookAtTargetSink => &[(M::LookTarget, S::Present)],
-            Behave::MoveToTargetSink { .. } => &[
-                (M::CantReachWalkTargetSince, S::Registered),
-                (M::Path, S::Absent),
-                (M::WalkTarget, S::Present),
-            ],
-            Behave::Emerging => &[
-                (M::IsEmerging, S::Present),
-                (M::WalkTarget, S::Absent),
-                (M::LookTarget, S::Registered),
-            ],
-            Behave::Digging => &[(M::AttackTarget, S::Absent), (M::WalkTarget, S::Absent)],
-            Behave::SetRoarTarget => SET_ROAR_TARGET,
-            Behave::TryToSniff => &[
-                (M::IsSniffing, S::Registered),
-                (M::WalkTarget, S::Registered),
-                (M::SniffCooldown, S::Absent),
-                (M::NearestAttackable, S::Present),
-                (M::DisturbanceLocation, S::Absent),
-            ],
-            Behave::RandomStroll => &[(M::WalkTarget, S::Absent)],
-            Behave::Roar => &[
-                (M::RoarTarget, S::Present),
-                (M::AttackTarget, S::Absent),
-                (M::RoarSoundCooldown, S::Registered),
-                (M::RoarSoundDelay, S::Registered),
-            ],
-            Behave::DigCooldownSetter => &[(M::DigCooldown, S::Registered)],
-            Behave::StopAttackingIfTargetInvalid => &[
-                (M::AttackTarget, S::Present),
-                (M::CantReachWalkTargetSince, S::Registered),
-            ],
-            Behave::SetEntityLookTarget => &[
-                (M::LookTarget, S::Absent),
-                (M::NearestVisibleLivingEntities, S::Present),
-            ],
-            Behave::SetWalkTargetFromAttackTarget => &[
-                (M::WalkTarget, S::Registered),
-                (M::LookTarget, S::Registered),
-                (M::AttackTarget, S::Present),
-                (M::NearestVisibleLivingEntities, S::Registered),
-            ],
-            Behave::SonicBoom => &[
-                (M::AttackTarget, S::Present),
-                (M::SonicBoomCooldown, S::Absent),
-                (M::SonicBoomSoundCooldown, S::Registered),
-                (M::SonicBoomSoundDelay, S::Registered),
-            ],
-            Behave::MeleeAttack => &[
-                (M::LookTarget, S::Registered),
-                (M::AttackTarget, S::Present),
-                (M::AttackCoolingDown, S::Absent),
-                (M::NearestVisibleLivingEntities, S::Present),
-            ],
-            Behave::GoToTargetLocation => &[
-                (M::DisturbanceLocation, S::Present),
-                (M::AttackTarget, S::Absent),
-                (M::WalkTarget, S::Absent),
-                (M::LookTarget, S::Registered),
-            ],
-            Behave::Sniffing => &[
-                (M::IsSniffing, S::Present),
-                (M::AttackTarget, S::Absent),
-                (M::WalkTarget, S::Absent),
-                (M::LookTarget, S::Registered),
-                (M::NearestAttackable, S::Registered),
-                (M::DisturbanceLocation, S::Registered),
-                (M::SniffCooldown, S::Registered),
-            ],
-        }
+pub fn behavior_requirements(b: &Behavior) -> &'static [(M, S)] {
+    match b {
+        Behavior::ForceUnmount => &[],
+        Behavior::SetWardenLookTarget => &[
+            (M::LookTarget, S::Registered),
+            (M::DisturbanceLocation, S::Registered),
+            (M::RoarTarget, S::Registered),
+            (M::AttackTarget, S::ValueAbsent),
+        ],
+        Behavior::Emerging => &[
+            (M::IsEmerging, S::ValuePresent),
+            (M::WalkTarget, S::ValueAbsent),
+            (M::LookTarget, S::Registered),
+        ],
+        Behavior::Digging => &[
+            (M::AttackTarget, S::ValueAbsent),
+            (M::WalkTarget, S::ValueAbsent),
+        ],
+        Behavior::SetRoarTarget => SET_ROAR_TARGET,
+        Behavior::TryToSniff => &[
+            (M::IsSniffing, S::Registered),
+            (M::WalkTarget, S::Registered),
+            (M::SniffCooldown, S::ValueAbsent),
+            (M::NearestAttackable, S::ValuePresent),
+            (M::DisturbanceLocation, S::ValueAbsent),
+        ],
+        Behavior::Roar => &[
+            (M::RoarTarget, S::ValuePresent),
+            (M::AttackTarget, S::ValueAbsent),
+            (M::RoarSoundCooldown, S::Registered),
+            (M::RoarSoundDelay, S::Registered),
+        ],
+        Behavior::DigCooldownSetter => &[(M::DigCooldown, S::Registered)],
+        Behavior::StopAttackingIfTargetInvalid => &[
+            (M::AttackTarget, S::ValuePresent),
+            (M::CantReachWalkTargetSince, S::Registered),
+        ],
+        Behavior::SetEntityLookTarget => &[
+            (M::LookTarget, S::ValueAbsent),
+            (M::NearestVisibleLivingEntities, S::ValuePresent),
+        ],
+        Behavior::SetWalkTargetFromAttackTarget => &[
+            (M::WalkTarget, S::Registered),
+            (M::LookTarget, S::Registered),
+            (M::AttackTarget, S::ValuePresent),
+            (M::NearestVisibleLivingEntities, S::Registered),
+        ],
+        Behavior::SonicBoom => &[
+            (M::AttackTarget, S::ValuePresent),
+            (M::SonicBoomCooldown, S::ValueAbsent),
+            (M::SonicBoomSoundCooldown, S::Registered),
+            (M::SonicBoomSoundDelay, S::Registered),
+        ],
+        Behavior::MeleeAttack => &[
+            (M::LookTarget, S::Registered),
+            (M::AttackTarget, S::ValuePresent),
+            (M::AttackCoolingDown, S::ValueAbsent),
+            (M::NearestVisibleLivingEntities, S::ValuePresent),
+        ],
+        Behavior::GoToTargetLocation => &[
+            (M::DisturbanceLocation, S::ValuePresent),
+            (M::AttackTarget, S::ValueAbsent),
+            (M::WalkTarget, S::ValueAbsent),
+            (M::LookTarget, S::Registered),
+        ],
+        Behavior::Sniffing => &[
+            (M::IsSniffing, S::ValuePresent),
+            (M::AttackTarget, S::ValueAbsent),
+            (M::WalkTarget, S::ValueAbsent),
+            (M::LookTarget, S::Registered),
+            (M::NearestAttackable, S::Registered),
+            (M::DisturbanceLocation, S::Registered),
+            (M::SniffCooldown, S::Registered),
+        ],
     }
+}
 
-    fn flavor(&self) -> Flavor {
-        let timed = |d: i32| Flavor::Timed { min: d, max: d };
-        match self {
-            Behave::Swim | Behave::ForceUnmount => timed(60),
-            Behave::LookAtTargetSink => Flavor::Timed { min: 45, max: 90 },
-            Behave::MoveToTargetSink { .. } => Flavor::Timed { min: 150, max: 250 },
-            Behave::Emerging => timed(EMERGE_DURATION),
-            Behave::Digging => timed(DIGGING_DURATION),
-            Behave::DoNothing => Flavor::Timed { min: 30, max: 60 },
-            Behave::Roar => timed(ROAR_DURATION),
-            Behave::SonicBoom => timed(SONIC_BOOM_DURATION),
-            Behave::Sniffing => timed(SNIFFING_DURATION),
-            Behave::SetWardenLookTarget
-            | Behave::SetRoarTarget
-            | Behave::TryToSniff
-            | Behave::RandomStroll
-            | Behave::DigCooldownSetter
-            | Behave::StopAttackingIfTargetInvalid
-            | Behave::SetEntityLookTarget
-            | Behave::SetWalkTargetFromAttackTarget
-            | Behave::MeleeAttack
-            | Behave::GoToTargetLocation => Flavor::OneShot,
-        }
-    }
+pub fn behavior_no_timeout(_b: &Behavior) -> bool {
+    false
 }
 
 /// `setPose(pose)` with the warden's dimensions (1 block high while digging or emerging).
@@ -279,6 +243,15 @@ fn sound(t: &mut Tick<'_, '_>, name: &str, volume: f32, pitch: f32) {
     play_sound(t.ents, t.env, id, name, volume, pitch);
 }
 
+/// Runs `f` with the warden's brain taken out of it, for the warden functions that work on
+/// the entities and the memories together (they do not read the brain through the mob).
+fn with_mem<R>(t: &mut Tick<'_, '_>, f: impl FnOnce(&mut Tick<'_, '_>, &mut Brain) -> R) -> R {
+    let mut b = t.mob().brain.take().unwrap_or_default();
+    let r = f(t, &mut b);
+    t.mob().brain = Some(b);
+    r
+}
+
 /// `Entity.closerThan(other, horizontal, vertical)`.
 fn closer_than(t: &Tick<'_, '_>, other: EntityId, h: f64, v: f64) -> bool {
     let Some(o) = t.ents.store.get(other).map(|e| e.pos()) else {
@@ -303,505 +276,319 @@ fn block_pos_of(t: &Tick<'_, '_>, e: EntityId) -> Option<BlockPos> {
     Some(BlockPos::containing(p.x, p.y, p.z))
 }
 
-/// `PathNavigation.createPath(pos, 0)`.
-fn compute_path(t: &mut Tick<'_, '_>, target: BlockPos) -> Option<crate::mob::path::Path> {
-    nav::create_path_to(t, target, 0)
+/// `checkExtraStartConditions`.
+pub fn behavior_check(t: &mut Tick<'_, '_>, b: &mut Behavior) -> bool {
+    match b {
+        Behavior::ForceUnmount => false,
+        Behavior::Digging => {
+            t.on_ground() || {
+                let f = t.mob_ref().fluids;
+                f.in_water() || f.in_lava()
+            }
+        }
+        Behavior::SonicBoom => brain_ref(t)
+            .entity(M::AttackTarget)
+            .is_some_and(|target| closer_than(t, target, 15.0, 20.0)),
+        _ => true,
+    }
 }
 
-impl Behavior<Tick<'_, '_>> for Behave {
-    fn check_extra(&mut self, mem: &mut Memories, t: &mut Tick<'_, '_>) -> bool {
-        match self {
-            Behave::Swim => swim_condition(t),
-            Behave::ForceUnmount => false,
-            Behave::Digging => {
-                t.on_ground() || {
-                    let f = t.mob_ref().fluids;
-                    f.in_water() || f.in_lava()
-                }
-            }
-            Behave::SonicBoom => mem
-                .entity(M::AttackTarget)
-                .is_some_and(|target| closer_than(t, target, 15.0, 20.0)),
-            Behave::MoveToTargetSink {
-                cooldown,
-                last_target,
-                speed,
-                path,
-            } => {
-                if *cooldown > 0 {
-                    *cooldown -= 1;
-                    return false;
-                }
-                let Some(walk) = mem.walk_target() else {
-                    return false;
-                };
-                let reached = reached_target(t, walk);
-                let time = t.env.game_time;
-                if !reached && try_compute_path(t, mem, walk, time, speed, path) {
-                    *last_target = tracker_block(t, walk.target);
-                    true
-                } else {
-                    mem.erase(M::WalkTarget);
-                    if reached {
-                        mem.erase(M::CantReachWalkTargetSince);
-                    }
-                    false
-                }
-            }
-            _ => true,
-        }
+/// `canStillUse`.
+pub fn behavior_can_still_use(t: &mut Tick<'_, '_>, b: &mut Behavior, _now: i64) -> bool {
+    match b {
+        Behavior::Digging => !t.mob_ref().removed,
+        Behavior::Emerging | Behavior::Roar | Behavior::SonicBoom | Behavior::Sniffing => true,
+        _ => false,
     }
+}
 
-    fn start(&mut self, mem: &mut Memories, t: &mut Tick<'_, '_>, time: i64) -> bool {
-        let id = t.id;
-        match self {
-            // Timed behaviors (the return value is ignored).
-            Behave::Swim | Behave::LookAtTargetSink | Behave::ForceUnmount | Behave::DoNothing => {
-                true
+/// `start` of the timed behaviours.
+pub fn behavior_start(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) {
+    let id = t.id;
+    match b {
+        Behavior::Emerging => {
+            set_pose(t, Pose::Emerging);
+            sound(t, "minecraft:entity.warden.emerge", 5.0, 1.0);
+        }
+        Behavior::Digging => {
+            if t.on_ground() {
+                set_pose(t, Pose::Digging);
+                sound(t, "minecraft:entity.warden.dig", 5.0, 1.0);
+            } else {
+                sound(t, "minecraft:entity.warden.agitated", 5.0, 1.0);
+                behavior_stop(t, b, now);
             }
-            Behave::MoveToTargetSink { speed, path, .. } => {
-                mem.set(M::Path, MemoryValue::Unit);
-                let p = path.as_deref().cloned();
-                nav::move_to_path(t, p, f64::from(*speed));
-                true
-            }
-            Behave::Emerging => {
-                set_pose(t, Pose::Emerging);
-                sound(t, "minecraft:entity.warden.emerge", 5.0, 1.0);
-                true
-            }
-            Behave::Digging => {
-                if t.on_ground() {
-                    set_pose(t, Pose::Digging);
-                    sound(t, "minecraft:entity.warden.dig", 5.0, 1.0);
-                } else {
-                    sound(t, "minecraft:entity.warden.agitated", 5.0, 1.0);
-                    self.stop(mem, t, time);
-                }
-                true
-            }
-            Behave::Roar => {
-                mem.set_with_expiry(M::RoarSoundDelay, MemoryValue::Unit, 25);
-                mem.erase(M::WalkTarget);
-                if let Some(target) = mem.entity(M::RoarTarget) {
-                    mem.set(
-                        M::LookTarget,
-                        MemoryValue::Tracker(PositionTracker::Entity {
-                            id: target,
-                            eye: true,
-                        }),
-                    );
-                    set_pose(t, Pose::Roaring);
+        }
+        Behavior::Roar => {
+            let br = brain(t);
+            br.set_with_expiry(M::RoarSoundDelay, MemValue::Unit, 25);
+            br.erase(M::WalkTarget);
+            if let Some(target) = br.entity(M::RoarTarget) {
+                br.set(M::LookTarget, MemValue::Look(Tracker::entity(target, true)));
+                set_pose(t, Pose::Roaring);
+                with_mem(t, |t, mem| {
                     let Tick { ents, env, .. } = t;
                     increase_anger_at(ents, env, id, mem, Some(target), 20, false);
-                }
-                true
-            }
-            Behave::SonicBoom => {
-                mem.set_with_expiry(
-                    M::AttackCoolingDown,
-                    MemoryValue::Bool(true),
-                    i64::from(SONIC_BOOM_DURATION),
-                );
-                mem.set_with_expiry(
-                    M::SonicBoomSoundDelay,
-                    MemoryValue::Unit,
-                    SONIC_BOOM_SOUND_DELAY,
-                );
-                super::entity_event(t.ents, t.env, id, 62);
-                sound(t, "minecraft:entity.warden.sonic_charge", 3.0, 1.0);
-                true
-            }
-            Behave::Sniffing => {
-                sound(t, "minecraft:entity.warden.sniff", 5.0, 1.0);
-                true
-            }
-            // One shots: the trigger.
-            Behave::SetWardenLookTarget => {
-                let target = mem
-                    .entity(M::RoarTarget)
-                    .and_then(|e| block_pos_of(t, e))
-                    .or_else(|| mem.pos(M::DisturbanceLocation));
-                match target {
-                    Some(p) => {
-                        mem.set(
-                            M::LookTarget,
-                            MemoryValue::Tracker(PositionTracker::Block(p)),
-                        );
-                        true
-                    }
-                    None => false,
-                }
-            }
-            Behave::SetRoarTarget => {
-                let angry = entity_angry_at(t.ents, id, mem);
-                match angry.filter(|&e| can_target_entity(t.ents, Some(e))) {
-                    Some(e) => {
-                        mem.set(M::RoarTarget, MemoryValue::Entity(e));
-                        mem.erase(M::CantReachWalkTargetSince);
-                        true
-                    }
-                    None => false,
-                }
-            }
-            Behave::TryToSniff => {
-                mem.set(M::IsSniffing, MemoryValue::Unit);
-                let cooldown = 100 + t.env.random.next_int_bounded(101);
-                mem.set_with_expiry(M::SniffCooldown, MemoryValue::Unit, i64::from(cooldown));
-                mem.erase(M::WalkTarget);
-                set_pose(t, Pose::Sniffing);
-                true
-            }
-            Behave::RandomStroll => {
-                let pos = crate::mob::goals::land_random_pos(t, 10, 7);
-                mem.set_opt(
-                    M::WalkTarget,
-                    pos.map(|p| {
-                        MemoryValue::Walk(WalkTarget {
-                            target: PositionTracker::Block(BlockPos::containing(p.x, p.y, p.z)),
-                            speed: 0.5,
-                            close_enough: 0,
-                        })
-                    }),
-                );
-                true
-            }
-            Behave::DigCooldownSetter => {
-                set_dig_cooldown(mem);
-                true
-            }
-            Behave::StopAttackingIfTargetInvalid => {
-                let Some(target) = mem.entity(M::AttackTarget) else {
-                    return false;
-                };
-                let valid = can_target_entity(t.ents, Some(target));
-                let angry = super::anger_level(t.ents, id, mem).is_angry();
-                if valid && angry {
-                    return true;
-                }
-                // `WardenAi.onTargetInvalid`.
-                if !valid && let Some(s) = super::state_mut(t.ents, id) {
-                    s.anger.clear_anger(target);
-                }
-                set_dig_cooldown(mem);
-                mem.erase(M::AttackTarget);
-                true
-            }
-            Behave::SetEntityLookTarget => {
-                let Some(attack) = mem.entity(M::AttackTarget) else {
-                    return false;
-                };
-                let range = t.mob_ref().attrs.follow_range as f32;
-                let max = f64::from(range * range);
-                let me = t.pos();
-                let found = find_closest_visible(t, mem, |t, e| {
-                    e == attack
-                        && t.ents
-                            .store
-                            .get(e)
-                            .is_some_and(|x| x.pos().distance_to_sqr(me) <= max)
                 });
-                match found {
-                    Some(e) => {
-                        mem.set(
-                            M::LookTarget,
-                            MemoryValue::Tracker(PositionTracker::Entity { id: e, eye: true }),
-                        );
-                        true
-                    }
-                    None => false,
-                }
             }
-            Behave::SetWalkTargetFromAttackTarget => {
-                let Some(target) = mem.entity(M::AttackTarget) else {
-                    return false;
-                };
-                if visible_contains(t, mem, target) && within_melee_range(t, target) {
-                    mem.erase(M::WalkTarget);
-                } else {
-                    mem.set(
-                        M::LookTarget,
-                        MemoryValue::Tracker(PositionTracker::Entity {
-                            id: target,
-                            eye: true,
-                        }),
-                    );
-                    mem.set(
-                        M::WalkTarget,
-                        MemoryValue::Walk(WalkTarget {
-                            target: PositionTracker::Entity {
-                                id: target,
-                                eye: false,
-                            },
-                            speed: 1.2,
-                            close_enough: 0,
-                        }),
-                    );
-                }
-                true
-            }
-            Behave::MeleeAttack => {
-                let Some(target) = mem.entity(M::AttackTarget) else {
-                    return false;
-                };
-                if !within_melee_range(t, target) || !visible_contains(t, mem, target) {
-                    return false;
-                }
-                mem.set(
-                    M::LookTarget,
-                    MemoryValue::Tracker(PositionTracker::Entity {
-                        id: target,
-                        eye: true,
-                    }),
+        }
+        Behavior::SonicBoom => {
+            let br = brain(t);
+            br.set_with_expiry(
+                M::AttackCoolingDown,
+                MemValue::Bool(true),
+                i64::from(SONIC_BOOM_DURATION),
+            );
+            br.set_with_expiry(
+                M::SonicBoomSoundDelay,
+                MemValue::Unit,
+                SONIC_BOOM_SOUND_DELAY,
+            );
+            super::entity_event(t.ents, t.env, id, 62);
+            sound(t, "minecraft:entity.warden.sonic_charge", 3.0, 1.0);
+        }
+        Behavior::Sniffing => sound(t, "minecraft:entity.warden.sniff", 5.0, 1.0),
+        _ => {}
+    }
+}
+
+/// `tick` of the timed behaviours.
+pub fn behavior_tick(t: &mut Tick<'_, '_>, b: &mut Behavior, _now: i64) {
+    match b {
+        Behavior::Roar => {
+            let br = brain(t);
+            if !br.has(M::RoarSoundDelay) && !br.has(M::RoarSoundCooldown) {
+                br.set_with_expiry(
+                    M::RoarSoundCooldown,
+                    MemValue::Unit,
+                    i64::from(ROAR_DURATION - 25),
                 );
-                // `Warden.doHurtTarget`.
-                super::entity_event(t.ents, t.env, id, 4);
-                let pitch = voice_pitch(t.ents, id);
-                sound(t, "minecraft:entity.warden.attack_impact", 10.0, pitch);
-                set_sonic_boom_cooldown(mem, 40);
-                combat::mob_attack(t, target);
-                mem.set_with_expiry(
-                    M::AttackCoolingDown,
-                    MemoryValue::Bool(true),
-                    MELEE_ATTACK_COOLDOWN,
-                );
-                true
-            }
-            Behave::GoToTargetLocation => {
-                let Some(location) = mem.pos(M::DisturbanceLocation) else {
-                    return false;
-                };
-                let here = t.block_pos();
-                let close = location.dist_sqr(here) < 4.0;
-                if !close {
-                    let r = &mut *t.env.random;
-                    let dx = r.next_int_bounded(3) - 1;
-                    let dz = r.next_int_bounded(3) - 1;
-                    let nearby = location.offset(dx, 0, dz);
-                    let tracker = PositionTracker::Block(nearby);
-                    mem.set(M::LookTarget, MemoryValue::Tracker(tracker));
-                    mem.set(
-                        M::WalkTarget,
-                        MemoryValue::Walk(WalkTarget {
-                            target: tracker,
-                            speed: 0.7,
-                            close_enough: 2,
-                        }),
-                    );
-                }
-                true
+                sound(t, "minecraft:entity.warden.roar", 3.0, 1.0);
             }
         }
+        Behavior::SonicBoom => sonic_boom_tick(t),
+        _ => {}
     }
+}
 
-    fn can_still_use(&mut self, mem: &mut Memories, t: &mut Tick<'_, '_>, _time: i64) -> bool {
-        match self {
-            Behave::Swim => swim_condition(t),
-            Behave::LookAtTargetSink => mem
-                .tracker(M::LookTarget)
-                .is_some_and(|tr| tracker_visible(t, mem, tr)),
-            Behave::MoveToTargetSink {
-                last_target, path, ..
-            } => {
-                if path.is_none() || last_target.is_none() {
-                    return false;
-                }
-                let Some(walk) = mem.walk_target() else {
-                    return false;
-                };
-                let spectator = match walk.target {
-                    PositionTracker::Entity { id, .. } => t
-                        .ents
-                        .player(id)
-                        .is_some_and(|p| p.game_mode == vanillite_config::GameMode::Spectator),
-                    PositionTracker::Block(_) => false,
-                };
-                !t.mob_ref().nav.is_done() && !reached_target(t, walk) && !spectator
+/// `stop` of the timed behaviours.
+pub fn behavior_stop(t: &mut Tick<'_, '_>, b: &mut Behavior, _now: i64) {
+    let id = t.id;
+    match b {
+        Behavior::Emerging => {
+            if pose(t) == Pose::Emerging {
+                set_pose(t, Pose::Standing);
             }
-            Behave::Digging => !t.mob_ref().removed,
-            Behave::Emerging
-            | Behave::DoNothing
-            | Behave::Roar
-            | Behave::SonicBoom
-            | Behave::Sniffing => true,
-            _ => false,
         }
-    }
-
-    fn tick(&mut self, mem: &mut Memories, t: &mut Tick<'_, '_>, time: i64) {
-        let id = t.id;
-        match self {
-            Behave::Swim => {
-                if t.mob().random.next_float() < 0.8 {
-                    t.mob().jump = true;
-                }
+        Behavior::Digging => {
+            if !t.mob_ref().removed {
+                t.mob().removed = true;
             }
-            Behave::LookAtTargetSink => {
-                if let Some(tr) = mem.tracker(M::LookTarget)
-                    && let Some(at) = tracker_position(t, tr)
-                {
-                    nav::look_at(t, at);
-                }
-            }
-            Behave::MoveToTargetSink {
-                last_target,
-                speed,
-                path,
-                ..
-            } => {
-                let current_path = t.mob_ref().nav.path.as_ref();
-                if path.as_deref() != current_path {
-                    *path = current_path.cloned().map(Box::new);
-                    mem.set_opt(M::Path, path.as_ref().map(|_| MemoryValue::Unit));
-                }
-                if path.is_some()
-                    && let Some(last) = *last_target
-                    && let Some(walk) = mem.walk_target()
-                    && let Some(current) = tracker_block(t, walk.target)
-                    && current.dist_sqr(last) > 4.0
-                    && try_compute_path(t, mem, walk, time, speed, path)
-                {
-                    *last_target = Some(current);
-                    mem.set(M::Path, MemoryValue::Unit);
-                    let p = path.as_deref().cloned();
-                    nav::move_to_path(t, p, f64::from(*speed));
-                }
-            }
-            Behave::Roar => {
-                if !mem.has(M::RoarSoundDelay) && !mem.has(M::RoarSoundCooldown) {
-                    mem.set_with_expiry(
-                        M::RoarSoundCooldown,
-                        MemoryValue::Unit,
-                        i64::from(ROAR_DURATION - 25),
-                    );
-                    sound(t, "minecraft:entity.warden.roar", 3.0, 1.0);
-                }
-            }
-            Behave::SonicBoom => sonic_boom_tick(t, mem, id),
-            _ => {}
         }
-    }
-
-    fn stop(&mut self, mem: &mut Memories, t: &mut Tick<'_, '_>, _time: i64) {
-        let id = t.id;
-        match self {
-            Behave::LookAtTargetSink => mem.erase(M::LookTarget),
-            Behave::MoveToTargetSink { cooldown, path, .. } => {
-                if let Some(walk) = mem.walk_target()
-                    && !reached_target(t, walk)
-                    && t.mob_ref().nav.is_stuck
-                {
-                    *cooldown = t.env.random.next_int_bounded(40);
-                }
-                t.mob().nav.stop();
-                mem.erase(M::WalkTarget);
-                mem.erase(M::Path);
-                *path = None;
+        Behavior::Roar => {
+            if pose(t) == Pose::Roaring {
+                set_pose(t, Pose::Standing);
             }
-            Behave::Emerging => {
-                if pose(t) == Pose::Emerging {
-                    set_pose(t, Pose::Standing);
-                }
+            let br = brain(t);
+            if let Some(target) = br.entity(M::RoarTarget) {
+                set_attack_target(br, target);
             }
-            Behave::Digging => {
-                if !t.mob_ref().removed {
-                    t.mob().removed = true;
-                }
+            br.erase(M::RoarTarget);
+        }
+        Behavior::SonicBoom => set_sonic_boom_cooldown(brain(t), 40),
+        Behavior::Sniffing => {
+            if pose(t) == Pose::Sniffing {
+                set_pose(t, Pose::Standing);
             }
-            Behave::Roar => {
-                if pose(t) == Pose::Roaring {
-                    set_pose(t, Pose::Standing);
-                }
-                if let Some(target) = mem.entity(M::RoarTarget) {
-                    set_attack_target(mem, target);
-                }
-                mem.erase(M::RoarTarget);
-            }
-            Behave::SonicBoom => set_sonic_boom_cooldown(mem, 40),
-            Behave::Sniffing => {
-                if pose(t) == Pose::Sniffing {
-                    set_pose(t, Pose::Standing);
-                }
-                mem.erase(M::IsSniffing);
-                if let Some(e) = mem.entity(M::NearestAttackable)
-                    && can_target_entity(t.ents, Some(e))
-                {
-                    if closer_than(t, e, 6.0, 20.0) {
+            brain(t).erase(M::IsSniffing);
+            if let Some(e) = brain_ref(t).entity(M::NearestAttackable)
+                && can_target_entity(t.ents, Some(e))
+            {
+                if closer_than(t, e, 6.0, 20.0) {
+                    with_mem(t, |t, mem| {
                         let Tick { ents, env, .. } = t;
                         increase_anger_at(ents, env, id, mem, Some(e), DEFAULT_ANGER, true);
-                    }
-                    if !mem.has(M::DisturbanceLocation)
-                        && let Some(p) = block_pos_of(t, e)
-                    {
-                        set_disturbance_location(t.ents, id, mem, p);
-                    }
+                    });
+                }
+                if !brain_ref(t).has(M::DisturbanceLocation)
+                    && let Some(p) = block_pos_of(t, e)
+                {
+                    with_mem(t, |t, mem| set_disturbance_location(t.ents, id, mem, p));
                 }
             }
-            _ => {}
         }
+        _ => {}
     }
 }
 
-/// `Swim.checkExtraStartConditions`: deeper in water than the jump threshold, or in lava.
-fn swim_condition(t: &Tick<'_, '_>) -> bool {
-    let f = t.mob_ref().fluids;
-    let eye = crate::mob::eye_height(t.mob_ref());
-    let threshold = if eye < 0.4 { 0.0 } else { 0.4 };
-    f.in_water() && f.water_height > threshold || f.in_lava()
-}
-
-/// `MoveToTargetSink.reachedTarget`.
-fn reached_target(t: &Tick<'_, '_>, walk: WalkTarget) -> bool {
-    let Some(target) = tracker_block(t, walk.target) else {
-        return false;
-    };
-    let here = t.block_pos();
-    let manhattan =
-        (target.x - here.x).abs() + (target.y - here.y).abs() + (target.z - here.z).abs();
-    manhattan <= walk.close_enough
-}
-
-/// `MoveToTargetSink.tryComputePath` (the partial step towards an unreachable target is not
-/// tried).
-fn try_compute_path(
-    t: &mut Tick<'_, '_>,
-    mem: &mut Memories,
-    walk: WalkTarget,
-    time: i64,
-    speed: &mut f32,
-    path: &mut Option<Box<crate::mob::path::Path>>,
-) -> bool {
-    let Some(target) = tracker_block(t, walk.target) else {
-        return false;
-    };
-    *path = compute_path(t, target).map(Box::new);
-    *speed = walk.speed;
-    if reached_target(t, walk) {
-        mem.erase(M::CantReachWalkTargetSince);
-        return false;
+/// The trigger of the one shot behaviours.
+pub fn behavior_trigger(t: &mut Tick<'_, '_>, b: &mut Behavior, _now: i64) -> bool {
+    let id = t.id;
+    match b {
+        Behavior::SetWardenLookTarget => {
+            let target = brain_ref(t)
+                .entity(M::RoarTarget)
+                .and_then(|e| block_pos_of(t, e))
+                .or_else(|| brain_ref(t).pos(M::DisturbanceLocation));
+            match target {
+                Some(p) => {
+                    brain(t).set(M::LookTarget, MemValue::Look(Tracker::block(p)));
+                    true
+                }
+                None => false,
+            }
+        }
+        Behavior::SetRoarTarget => {
+            let angry = with_mem(t, |t, mem| entity_angry_at(t.ents, id, mem));
+            match angry.filter(|&e| can_target_entity(t.ents, Some(e))) {
+                Some(e) => {
+                    let br = brain(t);
+                    br.set(M::RoarTarget, MemValue::Entity(e));
+                    br.erase(M::CantReachWalkTargetSince);
+                    true
+                }
+                None => false,
+            }
+        }
+        Behavior::TryToSniff => {
+            brain(t).set(M::IsSniffing, MemValue::Unit);
+            let cooldown = 100 + t.env.random.next_int_bounded(101);
+            let br = brain(t);
+            br.set_with_expiry(M::SniffCooldown, MemValue::Unit, i64::from(cooldown));
+            br.erase(M::WalkTarget);
+            set_pose(t, Pose::Sniffing);
+            true
+        }
+        Behavior::DigCooldownSetter => {
+            set_dig_cooldown(brain(t));
+            true
+        }
+        Behavior::StopAttackingIfTargetInvalid => {
+            let Some(target) = brain_ref(t).entity(M::AttackTarget) else {
+                return false;
+            };
+            let valid = can_target_entity(t.ents, Some(target));
+            let angry = with_mem(t, |t, mem| super::anger_level(t.ents, id, mem).is_angry());
+            if valid && angry {
+                return true;
+            }
+            // `WardenAi.onTargetInvalid`.
+            if !valid && let Some(s) = super::state_mut(t.ents, id) {
+                s.anger.clear_anger(target);
+            }
+            let br = brain(t);
+            set_dig_cooldown(br);
+            br.erase(M::AttackTarget);
+            true
+        }
+        Behavior::SetEntityLookTarget => {
+            let Some(attack) = brain_ref(t).entity(M::AttackTarget) else {
+                return false;
+            };
+            let range = t.mob_ref().attrs.follow_range as f32;
+            let max = f64::from(range * range);
+            let me = t.pos();
+            let found = sensing::visible_find_closest(t, |t, e| {
+                e == attack
+                    && t.ents
+                        .store
+                        .get(e)
+                        .is_some_and(|x| x.pos().distance_to_sqr(me) <= max)
+            });
+            match found {
+                Some(e) => {
+                    brain(t).set(M::LookTarget, MemValue::Look(Tracker::entity(e, true)));
+                    true
+                }
+                None => false,
+            }
+        }
+        Behavior::SetWalkTargetFromAttackTarget => {
+            let Some(target) = brain_ref(t).entity(M::AttackTarget) else {
+                return false;
+            };
+            if sensing::visible_contains(t, target) && within_melee_range(t, target) {
+                brain(t).erase(M::WalkTarget);
+            } else {
+                let br = brain(t);
+                br.set(M::LookTarget, MemValue::Look(Tracker::entity(target, true)));
+                br.set(
+                    M::WalkTarget,
+                    MemValue::Walk(WalkTarget::entity(target, 1.2, 0)),
+                );
+            }
+            true
+        }
+        Behavior::MeleeAttack => {
+            let Some(target) = brain_ref(t).entity(M::AttackTarget) else {
+                return false;
+            };
+            if !within_melee_range(t, target) || !sensing::visible_contains(t, target) {
+                return false;
+            }
+            brain(t).set(M::LookTarget, MemValue::Look(Tracker::entity(target, true)));
+            // `Warden.doHurtTarget`.
+            super::entity_event(t.ents, t.env, id, 4);
+            let pitch = voice_pitch(t.ents, id);
+            sound(t, "minecraft:entity.warden.attack_impact", 10.0, pitch);
+            set_sonic_boom_cooldown(brain(t), 40);
+            combat::mob_attack(t, target);
+            if t.exists()
+                && let Some(br) = t.mob().brain.as_deref_mut()
+            {
+                br.set_with_expiry(
+                    M::AttackCoolingDown,
+                    MemValue::Bool(true),
+                    MELEE_ATTACK_COOLDOWN,
+                );
+            }
+            true
+        }
+        Behavior::GoToTargetLocation => {
+            let Some(location) = brain_ref(t).pos(M::DisturbanceLocation) else {
+                return false;
+            };
+            let here = t.block_pos();
+            let close = location.dist_sqr(here) < 4.0;
+            if !close {
+                let r = &mut *t.env.random;
+                let dx = r.next_int_bounded(3) - 1;
+                let dz = r.next_int_bounded(3) - 1;
+                let nearby = location.offset(dx, 0, dz);
+                let tracker = Tracker::block(nearby);
+                let br = brain(t);
+                br.set(M::LookTarget, MemValue::Look(tracker));
+                br.set(
+                    M::WalkTarget,
+                    MemValue::Walk(WalkTarget {
+                        target: tracker,
+                        speed: 0.7,
+                        close_enough: 2,
+                    }),
+                );
+            }
+            true
+        }
+        _ => false,
     }
-    if path.as_ref().is_some_and(|p| p.reached) {
-        mem.erase(M::CantReachWalkTargetSince);
-    } else if !mem.has(M::CantReachWalkTargetSince) {
-        mem.set(M::CantReachWalkTargetSince, MemoryValue::Long(time));
-    }
-    path.is_some()
 }
 
 /// `SonicBoom.tick`.
-fn sonic_boom_tick(t: &mut Tick<'_, '_>, mem: &mut Memories, id: EntityId) {
-    let Some(target) = mem.entity(M::AttackTarget) else {
+fn sonic_boom_tick(t: &mut Tick<'_, '_>) {
+    let id = t.id;
+    let Some(target) = brain_ref(t).entity(M::AttackTarget) else {
         return;
     };
     if let Some(o) = t.other(target) {
         nav::look_at(t, o.pos);
     }
-    if mem.has(M::SonicBoomSoundDelay) || mem.has(M::SonicBoomSoundCooldown) {
+    let br = brain(t);
+    if br.has(M::SonicBoomSoundDelay) || br.has(M::SonicBoomSoundCooldown) {
         return;
     }
-    mem.set_with_expiry(
+    br.set_with_expiry(
         M::SonicBoomSoundCooldown,
-        MemoryValue::Unit,
+        MemValue::Unit,
         i64::from(SONIC_BOOM_DURATION) - SONIC_BOOM_SOUND_DELAY,
     );
     if !can_target_entity(t.ents, Some(target)) || !closer_than(t, target, 15.0, 20.0) {
@@ -852,96 +639,91 @@ fn sonic_boom_tick(t: &mut Tick<'_, '_>, mem: &mut Memories, id: EntityId) {
     }
 }
 
-/// `WardenAi.getActivities` on `Brain.provider(memories, sensors)`.
-pub fn make_brain(random_int: impl FnMut(i32) -> i32) -> Brain<Behave, Sense> {
-    let leaf = Node::leaf;
-    let core = ActivityData::create(
+/// `WardenAi.getActivities` on `Brain.provider(memories, sensors)`: the warden's brain.
+pub fn make_brain(m: &mut MobData) {
+    let core = ActivitySpec::new(
         A::Core,
         0,
         vec![
-            leaf(Behave::Swim),
-            leaf(Behave::SetWardenLookTarget),
-            leaf(Behave::LookAtTargetSink),
-            leaf(move_to_target_sink()),
+            Spec::swim(0.8),
+            fam(Behavior::SetWardenLookTarget),
+            Spec::look_at_target_sink(45, 90),
+            Spec::move_to_target_sink(),
         ],
-        &[],
     );
-    let emerge = ActivityData::create(
-        A::Emerge,
-        5,
-        vec![leaf(Behave::Emerging)],
-        &[(M::IsEmerging, S::Present)],
+    let emerge =
+        ActivitySpec::with_memory(A::Emerge, 5, vec![fam(Behavior::Emerging)], M::IsEmerging);
+    let dig = ActivitySpec::with_priorities(
+        A::Dig,
+        vec![
+            (0, fam(Behavior::ForceUnmount)),
+            (1, fam(Behavior::Digging)),
+        ],
     )
-    .erase(&[M::IsEmerging]);
-    let dig = ActivityData {
-        activity: A::Dig,
-        behaviors: vec![(0, leaf(Behave::ForceUnmount)), (1, leaf(Behave::Digging))],
-        requirements: &[(M::RoarTarget, S::Absent), (M::DigCooldown, S::Absent)],
-        erase_on_stop: &[],
-    };
-    let idle = ActivityData::create(
+    .requires(&[
+        (M::RoarTarget, S::ValueAbsent),
+        (M::DigCooldown, S::ValueAbsent),
+    ]);
+    let idle = ActivitySpec::new(
         A::Idle,
         10,
         vec![
-            leaf(Behave::SetRoarTarget),
-            leaf(Behave::TryToSniff),
-            Node::Gate(Box::new(Gate::run_one(
-                &[(M::IsSniffing, S::Absent)],
+            fam(Behavior::SetRoarTarget),
+            fam(Behavior::TryToSniff),
+            Spec::run_one_if(
+                &[(M::IsSniffing, S::ValueAbsent)],
                 vec![
-                    (leaf(Behave::RandomStroll), 2),
-                    (leaf(Behave::DoNothing), 1),
+                    (
+                        Spec::stroll_mode(0.5, 10, 7, StrollMode::Land { from_water: true }),
+                        2,
+                    ),
+                    (Spec::do_nothing(30, 60), 1),
                 ],
-            ))),
+            ),
         ],
-        &[],
     );
-    let roar = ActivityData::create(
-        A::Roar,
-        10,
-        vec![leaf(Behave::Roar)],
-        &[(M::RoarTarget, S::Present)],
-    )
-    .erase(&[M::RoarTarget]);
-    let fight = ActivityData::create(
+    let roar = ActivitySpec::with_memory(A::Roar, 10, vec![fam(Behavior::Roar)], M::RoarTarget);
+    let fight = ActivitySpec::with_memory(
         A::Fight,
         10,
         vec![
-            leaf(Behave::DigCooldownSetter),
-            leaf(Behave::StopAttackingIfTargetInvalid),
-            leaf(Behave::SetEntityLookTarget),
-            leaf(Behave::SetWalkTargetFromAttackTarget),
-            leaf(Behave::SonicBoom),
-            leaf(Behave::MeleeAttack),
+            fam(Behavior::DigCooldownSetter),
+            fam(Behavior::StopAttackingIfTargetInvalid),
+            fam(Behavior::SetEntityLookTarget),
+            fam(Behavior::SetWalkTargetFromAttackTarget),
+            fam(Behavior::SonicBoom),
+            fam(Behavior::MeleeAttack),
         ],
-        &[(M::AttackTarget, S::Present)],
-    )
-    .erase(&[M::AttackTarget]);
-    let investigate = ActivityData::create(
+        M::AttackTarget,
+    );
+    let investigate = ActivitySpec::with_memory(
         A::Investigate,
         5,
         vec![
-            leaf(Behave::SetRoarTarget),
-            leaf(Behave::GoToTargetLocation),
+            fam(Behavior::SetRoarTarget),
+            fam(Behavior::GoToTargetLocation),
         ],
-        &[(M::DisturbanceLocation, S::Present)],
-    )
-    .erase(&[M::DisturbanceLocation]);
-    let sniff = ActivityData::create(
+        M::DisturbanceLocation,
+    );
+    let sniff = ActivitySpec::with_memory(
         A::Sniff,
         5,
-        vec![leaf(Behave::SetRoarTarget), leaf(Behave::Sniffing)],
-        &[(M::IsSniffing, S::Present)],
-    )
-    .erase(&[M::IsSniffing]);
-    Brain::build(
-        &[
+        vec![fam(Behavior::SetRoarTarget), fam(Behavior::Sniffing)],
+        M::IsSniffing,
+    );
+    let spec = BrainSpec {
+        memories: vec![
             M::NearestVisibleNemesis,
             M::RecentProjectile,
             M::TouchCooldown,
             M::VibrationCooldown,
         ],
-        vec![Sense::NearestPlayers, Sense::WardenEntity],
-        vec![core, emerge, dig, idle, roar, fight, investigate, sniff],
-        random_int,
-    )
+        sensors: vec![
+            SensorKind::NearestPlayers,
+            SensorKind::Fam(FamSensor::Warden(Sensor::WardenEntity)),
+        ],
+        activities: vec![core, emerge, dig, idle, roar, fight, investigate, sniff],
+        ..BrainSpec::default()
+    };
+    m.brain = Some(Box::new(Brain::new(spec, &mut m.random)));
 }

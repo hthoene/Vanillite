@@ -108,11 +108,11 @@ pub fn is_powered(m: &MobData) -> bool {
 }
 
 fn state(m: &MobData) -> Option<&State> {
-    m.ext.wither()
+    m.boss.wither()
 }
 
 fn state_mut(m: &mut MobData) -> Option<&mut State> {
-    m.ext.wither_mut()
+    m.boss.wither_mut()
 }
 
 /// Whether an entity type is in `#wither_friends` (`#undead`: `#skeletons`, `#zombies`, the
@@ -299,7 +299,7 @@ pub fn check_spawn(
     };
     make_invulnerable(&mut m);
     m.y_body_rot = yaw;
-    let uuid = crate::mob::random_uuid(&mut m.random);
+    let uuid = crate::mob::new_uuid();
     let network_ids = std::sync::Arc::clone(level.network_ids_arc());
     let id = crate::mob::spawn(
         &mut level.entities,
@@ -989,7 +989,7 @@ fn perform_ranged_attack(t: &mut Tick<'_, '_>, head: usize, at: Vec3, dangerous:
     let direction = (at - from).normalize();
     let rot = t.core().rot();
     let owner = t.id;
-    let uuid = crate::mob::random_uuid(&mut t.mob().random);
+    let uuid = crate::mob::new_entity_uuid();
     spawn_skull(
         t.level, t.ents, owner, from, direction, rot, dangerous, uuid,
     );

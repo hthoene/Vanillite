@@ -244,7 +244,18 @@ pub fn spawner_spawn_rules(level: &mut Level, kind: Kind, pos: BlockPos, trial: 
     let ok = if kind.is_monster() {
         trial || spawn::is_dark_enough_to_spawn(level, &env, pos, &mut random)
     } else {
-        spawn::check_spawn_rules(level, &env, kind, pos, &mut random, false)
+        spawn::check_spawn_rules(
+            level,
+            &env,
+            kind,
+            pos,
+            &mut random,
+            if trial {
+                crate::mob::fam::SpawnReason::TrialSpawner
+            } else {
+                crate::mob::fam::SpawnReason::Spawner
+            },
+        )
     };
     *level.random() = random;
     ok
@@ -529,15 +540,12 @@ pub fn tick(level: &mut Level, pos: BlockPos, _state: BlockState) {
             continue;
         }
         let mut mob = mob;
-        if data.has_no_configuration() {
-            kinds::finalize_spawn(
-                &mut mob,
-                level.spawner_env.difficulty,
-                kinds::FarmClimate::Temperate,
-                0,
-            );
-        }
-        let id = spawn::add_mob(level, mob, at, y_rot);
+        let extra = if data.has_no_configuration() {
+            finalize_spawner_mob(level, &mut mob, at, crate::mob::fam::SpawnReason::Spawner)
+        } else {
+            Vec::new()
+        };
+        let id = spawn::add_mob_with(level, mob, at, y_rot, extra);
         level.level_event(None, 2004, pos, 0);
         entity_place_event(level, id, block);
         delayed = true;
@@ -588,4 +596,20 @@ pub fn fixed_pos(data: &SpawnData) -> Option<Vec3> {
         }
         _ => None,
     }
+}
+
+/// `finalizeSpawn(level, difficulty, reason, null)` of a spawner's mob with the level random;
+/// returns the mobs that spawn with it (`tryAddFreshEntityWithPassengers`).
+pub(crate) fn finalize_spawner_mob(
+    level: &mut Level,
+    mob: &mut crate::mob::MobData,
+    at: vanillite_base::Vec3,
+    reason: crate::mob::fam::SpawnReason,
+) -> Vec<crate::mob::fam::ExtraMob> {
+    let env = level.spawner_env.env;
+    let difficulty = level.spawner_env.difficulty;
+    let block = BlockPos::containing(at.x, at.y, at.z);
+    spawn::with_level_random(level, |level, random| {
+        spawn::finalize(level, None, &env, mob, block, difficulty, 0, reason, random)
+    })
 }
