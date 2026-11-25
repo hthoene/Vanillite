@@ -346,6 +346,16 @@ pub trait FamilyHooks {
     fn is_max_group_size_reached(_m: &MobData, _group_size: i32) -> bool {
         false
     }
+    /// How many passengers the mob carries (`canAddPassenger`).
+    fn max_passengers(_m: &MobData) -> usize {
+        1
+    }
+    /// Whether `player`, the first passenger, steers the mob (`getControllingPassenger`).
+    fn rider_controls(_ents: &Entities, _player: EntityId, _vehicle: EntityId) -> bool {
+        false
+    }
+    /// `PlayerRideableJumping.handleStartJump`: the rider's jump key (strength 0 to 100).
+    fn rider_jump(_ents: &mut Entities, _env: &mut Env<'_>, _vehicle: EntityId, _strength: i32) {}
     /// The breeding food (`isFood`).
     fn is_food(_kind: Kind, _item: u16) -> bool {
         false
@@ -619,6 +629,21 @@ pub fn anger_range(kind: Kind) -> (i32, i32) {
 }
 pub fn is_max_group_size_reached(m: &MobData, group_size: i32) -> bool {
     by_family!(m.kind, false, is_max_group_size_reached(m, group_size))
+}
+pub fn max_passengers(m: &MobData) -> usize {
+    by_family!(m.kind, 1, max_passengers(m))
+}
+pub fn rider_controls(ents: &Entities, player: EntityId, vehicle: EntityId) -> bool {
+    let Some(kind) = ents.mob(vehicle).map(|m| m.kind) else {
+        return false;
+    };
+    by_family!(kind, false, rider_controls(ents, player, vehicle))
+}
+pub fn rider_jump(ents: &mut Entities, env: &mut Env<'_>, vehicle: EntityId, strength: i32) {
+    let Some(kind) = ents.mob(vehicle).map(|m| m.kind) else {
+        return;
+    };
+    by_family!(kind, (), rider_jump(ents, env, vehicle, strength));
 }
 pub fn is_food(kind: Kind, item: u16) -> bool {
     by_family!(kind, false, is_food(kind, item))

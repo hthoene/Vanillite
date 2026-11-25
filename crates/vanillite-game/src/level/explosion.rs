@@ -53,6 +53,30 @@ pub struct ExplosionEvent {
     pub small: bool,
     /// Knockback of the players it hit (`getHitPlayers`).
     pub hit_players: Vec<(EntityId, Vec3)>,
+    /// The burst sound of a wind charge (gust particles, no block particles); `None` for
+    /// normal explosions.
+    pub wind_sound: Option<&'static str>,
+}
+
+/// How an explosion treats entities (`ExplosionDamageCalculator`) and how clients show it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ExplosionStyle {
+    /// `shouldDamageEntity`.
+    pub damages_entities: bool,
+    /// `getKnockbackMultiplier`.
+    pub knockback: f64,
+    /// The wind charge burst sound, see [`ExplosionEvent::wind_sound`].
+    pub wind_sound: Option<&'static str>,
+}
+
+impl Default for ExplosionStyle {
+    fn default() -> Self {
+        ExplosionStyle {
+            damages_entities: true,
+            knockback: 1.0,
+            wind_sound: None,
+        }
+    }
 }
 
 /// The damage an explosion deals to a living entity (`entity.hurtServer(level,
@@ -84,10 +108,31 @@ impl Level {
         radius: f32,
         interaction: BlockInteraction,
     ) -> usize {
+        self.explode_with(
+            source,
+            indirect,
+            center,
+            radius,
+            interaction,
+            ExplosionStyle::default(),
+        )
+    }
+
+    /// [`Self::explode`] with a damage calculator and client style (wind charges: no damage,
+    /// more knockback, gusts).
+    pub fn explode_with(
+        &mut self,
+        source: Option<EntityId>,
+        indirect: Option<EntityId>,
+        center: Vec3,
+        radius: f32,
+        interaction: BlockInteraction,
+        style: ExplosionStyle,
+    ) -> usize {
         let context = super::game_event::GameEventContext::of(source);
         self.game_event(super::game_event::events().explode, center, context);
         let mut targets = self.exploded_positions(center, radius);
-        let hit_players = self.hurt_entities(source, indirect, center, radius);
+        let hit_players = self.hurt_entities(source, indirect, center, radius, style);
         if interaction != BlockInteraction::Keep {
             self.interact_with_blocks(&mut targets, indirect, interaction);
         }
@@ -98,6 +143,7 @@ impl Level {
             block_count: i32::try_from(count).unwrap_or(i32::MAX),
             small: radius < 2.0 || interaction == BlockInteraction::Keep,
             hit_players,
+            wind_sound: style.wind_sound,
         });
         count
     }
@@ -163,6 +209,7 @@ impl Level {
         indirect: Option<EntityId>,
         center: Vec3,
         radius: f32,
+        style: ExplosionStyle,
     ) -> Vec<(EntityId, Vec3)> {
         let mut hit_players = Vec::new();
         if radius < 1.0e-5 {
@@ -205,7 +252,7 @@ impl Level {
             // `ExplosionDamageCalculator.getEntityDamageAmount`: living entities and boats
             // through the mob system, items here (`ItemEntity.hurtServer`: health 5).
             let is_boat = crate::vehicle::BoatKind::of(kind).is_some();
-            if kind == entity_ids::ITEM {
+            if kind == entity_ids::ITEM && style.damages_entities {
                 let double_radius = f64::from(double_radius);
                 let pow = (1.0 - dist) * f64::from(self.seen_percent(center, aabb));
                 #[allow(clippy::cast_possible_truncation)]
@@ -239,7 +286,9 @@ impl Level {
             let direction = (origin - center).normalize();
             let seen = self.seen_percent(center, aabb);
             let exposure = f64::from(seen);
-            if player.is_some() || mob.is_some_and(crate::mob::MobData::is_alive) || is_boat {
+            if style.damages_entities
+                && (player.is_some() || mob.is_some_and(crate::mob::MobData::is_alive) || is_boat)
+            {
                 let double_radius = f64::from(double_radius);
                 let pow = (1.0 - dist) * exposure;
                 #[allow(clippy::cast_possible_truncation)]
@@ -253,7 +302,8 @@ impl Level {
                 });
             }
             let resistance = mob.map_or(0.0, |m| m.attrs.explosion_knockback_resistance);
-            let knockback = direction * ((1.0 - dist) * exposure * 1.0 * (1.0 - resistance));
+            let knockback =
+                direction * ((1.0 - dist) * exposure * style.knockback * (1.0 - resistance));
             if player.is_some() {
                 hit_players.push((id, knockback));
                 continue;

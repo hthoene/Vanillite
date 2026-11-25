@@ -466,6 +466,20 @@ pub struct ExplosionRequest {
     pub mob: bool,
 }
 
+/// A wind charge burst (`AbstractWindCharge.explode`): a knockback-only explosion that
+/// triggers blocks instead of breaking them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WindBurst {
+    /// The exploding charge.
+    pub source: Option<EntityId>,
+    pub pos: Vec3,
+    pub radius: f32,
+    /// The knockback multiplier of the damage calculator.
+    pub knockback: f64,
+    /// The burst sound.
+    pub sound: &'static str,
+}
+
 /// A change of the world a mob tick causes; applied right after that tick.
 #[derive(Clone, Debug, PartialEq)]
 pub enum WorldAction {
@@ -476,6 +490,8 @@ pub enum WorldAction {
     DestroyBlock(BlockPos, bool),
     /// `levelEvent(event, pos, data)`.
     LevelEvent(i32, BlockPos, i32),
+    /// A wind charge burst.
+    WindBurst(WindBurst),
 }
 
 /// The mob state of a world besides the entities: search buffers, queued world changes and
