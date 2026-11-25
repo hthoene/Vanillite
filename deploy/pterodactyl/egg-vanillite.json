@@ -623,7 +623,7 @@
     },
     {
       "name": "Performance: Tick › Parallel Dimensions",
-      "description": "Dimensions tick in parallel, each on its own thread (decision D2). Cross-dimension effects then apply at the end of the tick instead of immediately: an entity entering a portal from the overworld arrives one tick later, `execute in` other dimensions runs at the end of the tick. `false` gives exact Vanilla order. default: the profile's value (vanilla profile: true). vanillite.toml: performance.tick.parallel-dimensions.",
+      "description": "Dimensions tick in parallel, each on its own thread (decision D2). Cross-dimension effects then apply at the end of the tick instead of immediately: an entity entering a portal from the overworld arrives one tick later, `execute in` other dimensions runs at the end of the tick. `false` (the `vanilla` and `technical` profiles) ticks the dimensions one after another in Vanilla's exact order. default: the profile's value (vanilla profile: false). vanillite.toml: performance.tick.parallel-dimensions.",
       "env_variable": "VANILLITE_PERFORMANCE__TICK__PARALLEL_DIMENSIONS",
       "default_value": "default",
       "user_viewable": true,
