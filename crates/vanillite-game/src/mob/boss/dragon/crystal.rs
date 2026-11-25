@@ -496,7 +496,7 @@ pub fn save(d: &SpecialData, out: &mut Compound) -> Option<()> {
             out.insert("leftOwner", Tag::Byte(i8::from(f.left_owner)));
             out.insert("acceleration_power", Tag::Double(f.acceleration_power));
         }
-        SpecialData::WitherSkull(_) => {}
+        SpecialData::WitherSkull(_) | SpecialData::ThrownPotion(_) => {}
     }
     Some(())
 }

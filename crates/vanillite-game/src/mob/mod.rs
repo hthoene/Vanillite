@@ -540,6 +540,13 @@ pub enum WorldAction {
     EntityInside(BlockPos, EntityId),
     /// A hopper minecart takes in an item (`MinecartHopper.tryConsumeItems`).
     HopperMinecart(EntityId),
+    /// A wind burst (`explode` with `AbstractWindCharge.EXPLOSION_DAMAGE_CALCULATOR` and
+    /// `ExplosionInteraction.TRIGGER`): the Wind Charged effect of a dying entity.
+    WindBurst {
+        source: Option<EntityId>,
+        pos: Vec3,
+        radius: f32,
+    },
 }
 
 impl WorldAction {
@@ -561,6 +568,20 @@ impl WorldAction {
                 }
             }
             WorldAction::HopperMinecart(id) => crate::minecart::hopper_suck(level, id),
+            WorldAction::WindBurst {
+                source,
+                pos,
+                radius,
+            } => {
+                level.explode_with(
+                    source,
+                    None,
+                    pos,
+                    radius,
+                    crate::level::explosion::BlockInteraction::TriggerBlock,
+                    crate::level::explosion::BlockResistance::WindCharge,
+                );
+            }
             WorldAction::Explode(_) | WorldAction::ExplodeWith { .. } | WorldAction::Level(_) => {
                 return false;
             }

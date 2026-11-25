@@ -176,6 +176,26 @@ impl ServerWorld {
         if !keep_all && !player.survival.is_dead_or_dying() {
             return;
         }
+        // `remove(KILLED)` → `triggerOnDeathMobEffects`: a dead player's Wind Charged bursts.
+        let wind = !keep_all
+            && player
+                .survival
+                .effects
+                .has(vanillite_game::effect::MobEffect::WIND_CHARGED);
+        if wind && let Some(e) = self.level.entities.store.get(id) {
+            let (pos, height) = (e.pos(), e.dims().height);
+            let (center, radius) = vanillite_game::experience_orb::with_entity_random(|r| {
+                vanillite_game::effect::living::wind_burst(pos, height, r)
+            });
+            self.level.explode_with(
+                Some(id),
+                None,
+                center,
+                radius,
+                vanillite_game::level::explosion::BlockInteraction::TriggerBlock,
+                vanillite_game::level::explosion::BlockResistance::WindCharge,
+            );
+        }
         self.send_away(ctx, id, OVERWORLD, Route::Respawn { keep_all });
     }
 

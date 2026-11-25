@@ -271,6 +271,15 @@ impl DamageTypes {
         )
     }
 
+    /// The kind of a damage type id (`minecraft:thorns`).
+    pub fn by_id(&self, id: &str) -> Option<DamageKind> {
+        self.types
+            .iter()
+            .position(|t| t.id == id)
+            .and_then(|i| u16::try_from(i).ok())
+            .map(DamageKind)
+    }
+
     /// The type of a kind.
     pub fn get(&self, kind: DamageKind) -> &DamageType {
         self.types

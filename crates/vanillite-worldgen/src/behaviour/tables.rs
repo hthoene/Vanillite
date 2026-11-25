@@ -29,6 +29,7 @@ macro_rules! block_tags {
 
 block_tags!(
     beehives,
+    blocks_wind_charge_explosions,
     campfires,
     candle_cakes,
     candles,

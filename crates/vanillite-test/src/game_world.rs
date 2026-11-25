@@ -324,7 +324,7 @@ impl GameWorld {
             if !is_mob
                 && !is_special
                 && !is_minecart
-                && kind != ids::ARROW
+                && !projectile::is_arrow_kind(kind)
                 && kind != ids::EXPERIENCE_ORB
                 && kind != ids::AREA_EFFECT_CLOUD
             {
@@ -347,7 +347,7 @@ impl GameWorld {
                     mob::boss::special::tick(level, ents, env, cx, id);
                 } else if is_minecart {
                     minecart::tick(level, ents, env, cx, id);
-                } else if kind == ids::ARROW {
+                } else if projectile::is_arrow_kind(kind) {
                     projectile::tick_arrow(level, ents, env, cx, id);
                 } else {
                     vanillite_game::effect::cloud::tick(level, ents, env, cx, id);
@@ -518,7 +518,7 @@ impl GameWorld {
 
     fn add_player(&mut self, spec: &EntitySpec, index: usize) {
         let pos = Vec3::new(spec.pos[0], spec.pos[1], spec.pos[2]);
-        let (_tx, inbound) = std::sync::mpsc::channel();
+        let (_tx, inbound) = vanillite_protocol::inbound_queue(64);
         let chat = ChatSettings::default();
         let data = PlayerData {
             profile: GameProfile {
@@ -969,6 +969,47 @@ impl ScenarioWorld for GameWorld {
         });
         self.finish_removals();
         self.spawn_drops();
+        Ok(())
+    }
+
+    fn throw_potion(&mut self, op: &crate::scenario::ThrowPotionOp) -> Result<(), String> {
+        use vanillite_game::effect::potion::PotionContents;
+        use vanillite_game::effect::thrown::{self, ThrownPotion};
+        let by = op.by.as_deref().map(|b| self.named(b)).transpose()?;
+        let item = vanillite_data::registry::ITEM
+            .id(&op.item)
+            .ok_or_else(|| format!("unknown item {}", op.item))?;
+        let potion = vanillite_data::registry::POTION
+            .id(&op.potion)
+            .ok_or_else(|| format!("unknown potion {}", op.potion))?;
+        let mut stack = vanillite_game::item::ItemStack::new(item, 1);
+        stack.patch_mut().set(
+            vanillite_protocol::components::ids::POTION_CONTENTS,
+            PotionContents::of(potion).encode(),
+        );
+        let kind = thrown::kind_of(&stack).ok_or("throw_potion needs a throwable potion")?;
+        let ents = &mut self.level.entities;
+        let owner_uuid = by.and_then(|b| ents.store.get(b)).map(|e| e.uuid());
+        let uuid = 0x7072_6f6a_0000_0000_0000_0000_0000_0000_u128 | u128::from(potion);
+        let [x, y, z] = op.pos;
+        let [dx, dy, dz] = op.motion;
+        let mut new = vanillite_world::entity::NewEntity::new(
+            kind,
+            self.level.network_ids().next(),
+            uuid,
+            Vec3::new(x, y, z),
+        );
+        new.velocity = Vec3::new(dx, dy, dz);
+        self.level.entities.spawn_special(
+            new,
+            vanillite_game::mob::boss::special::SpecialData::ThrownPotion(Box::new(ThrownPotion {
+                owner: by,
+                owner_uuid,
+                stack,
+                left_owner: false,
+                tick_count: 0,
+            })),
+        );
         Ok(())
     }
 

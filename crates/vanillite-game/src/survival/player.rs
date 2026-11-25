@@ -601,6 +601,19 @@ pub fn hurt(
     source: DamageSource,
     amount: f32,
 ) -> bool {
+    hurt_with(entity, player, env, source, amount, None)
+}
+
+/// [`hurt`] with the armour effectiveness of the source's weapon (Breach, see
+/// [`crate::mob::attack::armor_effectiveness`]).
+pub fn hurt_with(
+    entity: &mut EntityMut<'_>,
+    player: &mut PlayerData,
+    env: &mut Env<'_>,
+    source: DamageSource,
+    amount: f32,
+    armor_effectiveness: Option<&dyn Fn(f32) -> f32>,
+) -> bool {
     let types = env.types;
     let kind = source.kind;
     if is_invulnerable_to(player, env, kind) {
@@ -658,13 +671,13 @@ pub fn hurt(
             return false;
         }
         let delta = damage - s.last_hurt;
-        actually_hurt(entity, player, env, source, delta);
+        actually_hurt(entity, player, env, source, delta, armor_effectiveness);
         player.survival.last_hurt = damage;
         false
     } else {
         s.last_hurt = damage;
         s.damage_cooldown = 20;
-        actually_hurt(entity, player, env, source, damage);
+        actually_hurt(entity, player, env, source, damage, armor_effectiveness);
         player.survival.hurt_time = 10;
         true
     };
@@ -787,6 +800,7 @@ fn actually_hurt(
     env: &mut Env<'_>,
     source: DamageSource,
     damage: f32,
+    armor_effectiveness: Option<&dyn Fn(f32) -> f32>,
 ) {
     let types = env.types;
     let kind = source.kind;
@@ -798,7 +812,7 @@ fn actually_hurt(
         // `hurtArmor`, then `getDamageAfterArmorAbsorb` with the equipment's armour.
         hurt_armor(player, env, &source, damage);
         let (armor, toughness) = armor_values(player);
-        damage = combat::damage_after_absorb(damage, armor, toughness);
+        damage = combat::damage_after_absorb_with(damage, armor, toughness, armor_effectiveness);
     }
     // `getDamageAfterMagicAbsorb`: the protection enchantments.
     if !types.is(kind, tag::BYPASSES_ENCHANTMENTS) && damage > 0.0 {

@@ -300,6 +300,9 @@ fn powered_wither_ignores_arrows() {
             random_seed: 0,
             knockback: 0.0,
             fire: false,
+            item: crate::item::ItemStack::default(),
+            in_ground_time: 0,
+            spectral_duration: 200,
         },
     );
     if let Some(m) = level.entities.mob_mut(wither) {

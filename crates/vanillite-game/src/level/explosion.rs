@@ -11,9 +11,12 @@
 //!
 //! Items lose health and are destroyed, boats take damage like living entities.
 //!
+//! Wind bursts (`AbstractWindCharge.EXPLOSION_DAMAGE_CALCULATOR`, e.g. the Wind Charged effect)
+//! only push entities and use the gust particles and sound.
+//!
 //! Not ported: damage of end crystals and other non-living entities, fire of fire explosions, the
 //! block reactions of `TRIGGER_BLOCK` explosions (wind charges) and the special damage
-//! calculators (wither skulls, wind charges, TNT that used a portal).
+//! calculators (wither skulls, TNT that used a portal).
 
 use vanillite_base::hash::FxHashSet;
 use vanillite_base::math::{floor, frac, lerp};
@@ -50,6 +53,10 @@ pub enum BlockResistance {
     DangerousWitherSkull,
     /// `MinecartTNT`: rails and the blocks under them have no resistance and do not break.
     TntMinecart,
+    /// `AbstractWindCharge.EXPLOSION_DAMAGE_CALCULATOR`: `#blocks_wind_charge_explosions` are
+    /// immune, entities are only pushed (no damage), and the burst uses the gust particles
+    /// and the wind burst sound.
+    WindCharge,
 }
 
 /// An explosion for the clients (`ClientboundExplodePacket`), sent to players within 64 blocks.
@@ -65,6 +72,8 @@ pub struct ExplosionEvent {
     pub small: bool,
     /// Knockback of the players it hit (`getHitPlayers`).
     pub hit_players: Vec<(EntityId, Vec3)>,
+    /// A wind burst: gust particles, the wind burst sound, no block particles.
+    pub wind: bool,
 }
 
 /// The damage an explosion deals to a living entity (`entity.hurtServer(level,
@@ -119,7 +128,13 @@ impl Level {
         let context = super::game_event::GameEventContext::of(source);
         self.game_event(super::game_event::events().explode, center, context);
         let mut targets = self.exploded_positions(center, radius, resistance);
-        let hit_players = self.hurt_entities(source, indirect, center, radius);
+        let hit_players = self.hurt_entities(
+            source,
+            indirect,
+            center,
+            radius,
+            resistance != BlockResistance::WindCharge,
+        );
         if interaction != BlockInteraction::Keep {
             self.interact_with_blocks(&mut targets, source, indirect, interaction);
         }
@@ -130,6 +145,7 @@ impl Level {
             block_count: i32::try_from(count).unwrap_or(i32::MAX),
             small: radius < 2.0 || interaction == BlockInteraction::Keep,
             hit_players,
+            wind: resistance == BlockResistance::WindCharge,
         });
         count
     }
@@ -183,6 +199,13 @@ impl Level {
                                     true, state, resistance,
                                 );
                             }
+                            if override_resistance == BlockResistance::WindCharge
+                                && crate::block::block_tags()
+                                    .blocks_wind_charge_explosions
+                                    .contains(state)
+                            {
+                                resistance = 3_600_000.0;
+                            }
                             power -= (resistance + 0.3) * 0.3;
                         }
                         if power > 0.0 && !rail_protected && seen.insert(pos) {
@@ -200,14 +223,15 @@ impl Level {
         positions
     }
 
-    /// `hurtEntities`: queues the damage of the living entities in range and pushes the
-    /// entities away; players get their knockback with the explosion packet instead.
+    /// `hurtEntities`: queues the damage of the living entities in range (when `damages`) and
+    /// pushes the entities away; players get their knockback with the explosion packet instead.
     fn hurt_entities(
         &mut self,
         source: Option<EntityId>,
         indirect: Option<EntityId>,
         center: Vec3,
         radius: f32,
+        damages: bool,
     ) -> Vec<(EntityId, Vec3)> {
         let mut hit_players = Vec::new();
         if radius < 1.0e-5 {
@@ -251,7 +275,7 @@ impl Level {
             // through the mob system, items here (`ItemEntity.hurtServer`: health 5).
             let is_boat = crate::vehicle::BoatKind::of(kind).is_some()
                 || crate::minecart::MinecartKind::of(kind).is_some();
-            if kind == entity_ids::ITEM {
+            if damages && kind == entity_ids::ITEM {
                 let double_radius = f64::from(double_radius);
                 let pow = (1.0 - dist) * f64::from(self.seen_percent(center, aabb));
                 #[allow(clippy::cast_possible_truncation)]
@@ -283,14 +307,14 @@ impl Level {
                 Vec3::new(pos.x, pos.y + eye, pos.z)
             };
             let direction = (origin - center).normalize();
-            let seen = self.seen_percent(center, aabb);
-            let exposure = f64::from(seen);
+            let exposure = f64::from(self.seen_percent(center, aabb));
             // `ExplosionDamageCalculator.getEntityDamageAmount` for the living entities.
             let crystal = kind == entity_ids::END_CRYSTAL;
-            if player.is_some()
-                || crystal
-                || mob.is_some_and(crate::mob::MobData::is_alive)
-                || is_boat
+            if damages
+                && (player.is_some()
+                    || crystal
+                    || mob.is_some_and(crate::mob::MobData::is_alive)
+                    || is_boat)
             {
                 let double_radius = f64::from(double_radius);
                 let pow = (1.0 - dist) * exposure;

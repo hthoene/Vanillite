@@ -13,6 +13,7 @@ use vanillite_world::entity::{EntityFlags, EntityId};
 use super::MobContext;
 use super::combat::{self, entity_source};
 use crate::enchant::{EnchantContext, Enchantments};
+use crate::enchant::{EntityEffect, Party};
 use crate::entities::Entities;
 use crate::item::{self, EquipmentSlot, ItemStack};
 use crate::level::Level;
@@ -291,7 +292,7 @@ pub fn player_attack(
     if let Some(p) = ents.player_mut(attacker) {
         p.survival.last_hurt_mob = Some((target, p.survival.tick_count));
     }
-    post_attack(ents, env, target, &source, &weapon);
+    post_attack(level, ents, env, cx, target, &source, Some(&weapon));
     hurt_weapon(ents, env, attacker, &weapon);
     if let Some(p) = ents.player_mut(attacker) {
         player::cause_food_exhaustion(p, 0.1);
@@ -463,29 +464,275 @@ fn sweep_attack(
                 f64::from(vanillite_base::math::sin(rad)),
                 -f64::from(vanillite_base::math::cos(rad)),
             );
-            post_attack(ents, env, id, source, &weapon);
+            post_attack(level, ents, env, cx, id, source, Some(&weapon));
         }
     }
 }
 
-/// `EnchantmentHelper.doPostAttackEffectsWithItemSource`: the weapon's post attack effects on
-/// the victim (Fire Aspect sets it on fire).
+/// `EnchantmentHelper.doPostAttackEffectsWithItemSource`: the post attack effects of the
+/// victim's equipment (Thorns hurts the attacker), then those of the attacker's `weapon`
+/// (Fire Aspect sets the victim on fire, Bane of Arthropods slows arthropods). Mobs carry no
+/// enchanted equipment yet, so only players' items count.
+#[allow(clippy::too_many_arguments)]
 pub fn post_attack(
+    level: &Level,
     ents: &mut Entities,
     env: &mut Env<'_>,
+    cx: &mut MobContext,
     victim: EntityId,
     source: &DamageSource,
-    weapon: &ItemStack,
+    weapon: Option<&ItemStack>,
 ) {
     let (enchants, tags) = combat_data();
-    let seconds = {
-        let ecx = damage_context(ents, env.types, tags, victim, source);
-        enchants.post_attack_ignite(weapon, &ecx, env.random)
-    };
-    if let Some(s) = seconds {
-        #[allow(clippy::cast_possible_truncation)]
-        ignite(ents, victim, (s * 20.0) as i32);
+    // `runIterationOnEquipment` of the victim (`EquipmentSlot` order).
+    for (slot, stack) in equipment(ents, victim) {
+        let effects = {
+            let ecx = damage_context(ents, env.types, tags, victim, source);
+            enchants.post_attack_effects(&stack, Some(slot), Party::Victim, &ecx, env.random)
+        };
+        for (effect, ench_level, affected) in effects {
+            let target = affected_entity(affected, victim, source);
+            if let Some(target) = target {
+                run_entity_effect(
+                    level,
+                    ents,
+                    env,
+                    cx,
+                    &effect,
+                    ench_level,
+                    target,
+                    Some((victim, slot)),
+                );
+            }
+        }
     }
+    // The weapon of a living attacker (`runIterationOnItem(source, MAINHAND, attacker)`).
+    let Some(weapon) = weapon else {
+        return;
+    };
+    let Some(attacker) = source
+        .cause
+        .filter(|&c| ents.mob(c).is_some() || ents.player(c).is_some())
+    else {
+        return;
+    };
+    let effects = {
+        let ecx = damage_context(ents, env.types, tags, victim, source);
+        enchants.post_attack_effects(
+            weapon,
+            Some(EquipmentSlot::MainHand),
+            Party::Attacker,
+            &ecx,
+            env.random,
+        )
+    };
+    for (effect, ench_level, affected) in effects {
+        if let Some(target) = affected_entity(affected, victim, source) {
+            run_entity_effect(
+                level,
+                ents,
+                env,
+                cx,
+                &effect,
+                ench_level,
+                target,
+                Some((attacker, EquipmentSlot::MainHand)),
+            );
+        }
+    }
+}
+
+/// The entity a post attack effect affects (`TargetedConditionalEffect.affected`).
+fn affected_entity(affected: Party, victim: EntityId, source: &DamageSource) -> Option<EntityId> {
+    match affected {
+        Party::Attacker => source.cause,
+        Party::DamagingEntity => source.direct,
+        Party::Victim => Some(victim),
+    }
+}
+
+/// `EnchantmentEntityEffect.apply` of a post attack effect on `target`; `item` is the owner
+/// and slot of the enchanted item (`EnchantedItemInUse`).
+#[allow(clippy::too_many_arguments)]
+fn run_entity_effect(
+    level: &Level,
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    cx: &mut MobContext,
+    effect: &EntityEffect,
+    ench_level: i32,
+    target: EntityId,
+    item: Option<(EntityId, EquipmentSlot)>,
+) {
+    match effect {
+        EntityEffect::Ignite(seconds) => {
+            // `igniteForSeconds`: `Mth.floor(seconds * 20)` ticks.
+            #[allow(clippy::cast_possible_truncation)]
+            let ticks = (seconds.calculate(ench_level) * 20.0).floor() as i32;
+            ignite(ents, target, ticks);
+        }
+        EntityEffect::ApplyMobEffect {
+            effects,
+            min_duration,
+            max_duration,
+            min_amplifier,
+            max_amplifier,
+        } => {
+            crate::effect::living::apply_mob_effect(
+                level,
+                ents,
+                env,
+                cx,
+                target,
+                effects,
+                (
+                    min_duration.calculate(ench_level),
+                    max_duration.calculate(ench_level),
+                ),
+                (
+                    min_amplifier.calculate(ench_level),
+                    max_amplifier.calculate(ench_level),
+                ),
+            );
+        }
+        EntityEffect::DamageEntity {
+            damage_type,
+            min_damage,
+            max_damage,
+        } => {
+            let (min, max) = (
+                min_damage.calculate(ench_level),
+                max_damage.calculate(ench_level),
+            );
+            // `Mth.randomBetween(entity.getRandom(), min, max)`.
+            let roll = if let Some(m) = ents.mob_mut(target) {
+                m.random.next_float()
+            } else {
+                crate::experience_orb::with_entity_random(|r| r.next_float())
+            };
+            let amount = roll * (max - min) + min;
+            let Some(kind) = env.types.by_id(damage_type) else {
+                return;
+            };
+            // `new DamageSource(type, item.owner())`.
+            let owner = item.map(|(o, _)| o);
+            let source = match owner {
+                Some(o) => entity_source(ents, kind, o, o),
+                None => DamageSource::of(kind),
+            };
+            combat::hurt(level, ents, env, cx, target, source, amount);
+        }
+        EntityEffect::ChangeItemDamage(amount) => {
+            #[allow(clippy::cast_possible_truncation)]
+            let amount = amount.calculate(ench_level) as i32;
+            if let Some((owner, slot)) = item {
+                hurt_equipment(ents, env, owner, slot, amount);
+            }
+        }
+        EntityEffect::AllOf(list) => {
+            for e in list {
+                run_entity_effect(level, ents, env, cx, e, ench_level, target, item);
+            }
+        }
+        EntityEffect::Unsupported => {}
+    }
+}
+
+/// `ItemStack.hurtAndBreak(amount, level, player)` of a player's equipment piece: Unbreaking
+/// saves points (armour: 2·level / (5·level + 5) each, other items level / (level + 1));
+/// creative players' items take no damage.
+fn hurt_equipment(
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    owner: EntityId,
+    slot: EquipmentSlot,
+    amount: i32,
+) {
+    let Some(p) = ents.player(owner) else {
+        return;
+    };
+    if p.game_mode == vanillite_config::GameMode::Creative || amount <= 0 {
+        return;
+    }
+    let stack = p.inventory.equipment(slot).clone();
+    if stack.is_empty() || !item::is_damageable(&stack) {
+        return;
+    }
+    let data = crate::player::play::game_data();
+    let unbreaking = data.map_or(0, |d| d.enchantment_level(&stack, "minecraft:unbreaking"));
+    let armor = data.is_some_and(|d| d.item_in_tag(stack.item, "minecraft:enchantable/armor"));
+    #[allow(clippy::cast_precision_loss)]
+    let level = unbreaking.max(0) as f32;
+    let removed_chance = if armor {
+        2.0 * level / (5.0 * level + 5.0)
+    } else {
+        level / (level + 1.0)
+    };
+    let mut damage = 0;
+    for _ in 0..amount {
+        if unbreaking <= 0 || env.random.next_float() >= removed_chance {
+            damage += 1;
+        }
+    }
+    if damage == 0 {
+        return;
+    }
+    let pos = ents.store.get(owner).map(|e| e.pos());
+    let Some(p) = ents.player_mut(owner) else {
+        return;
+    };
+    let index = match slot {
+        EquipmentSlot::MainHand => p.inventory.selected,
+        EquipmentSlot::OffHand => crate::inventory::OFFHAND,
+        EquipmentSlot::Feet => 36,
+        EquipmentSlot::Legs => 37,
+        EquipmentSlot::Chest => 38,
+        EquipmentSlot::Head => 39,
+        EquipmentSlot::Body | EquipmentSlot::Saddle => return,
+    };
+    let Some(s) = p.inventory.get_mut(index) else {
+        return;
+    };
+    let d = item::damage(s).saturating_add(damage);
+    if d >= item::max_damage(s) {
+        s.shrink(1);
+        if let Some(pos) = pos {
+            player_sound(env, pos, "minecraft:entity.item.break");
+        }
+    } else {
+        item::set_damage(s, d);
+    }
+}
+
+/// The armour effectiveness of the damage source's weapon (`DamageSource.getWeaponItem`, the
+/// held item of a player that hits directly) for `CombatRules.getDamageAfterAbsorb`
+/// (`EnchantmentHelper.modifyArmorEffectiveness`: Breach); `None` when its enchantments do
+/// not change it.
+pub fn armor_effectiveness<'t>(
+    ents: &Entities,
+    types: &'t crate::survival::damage::DamageTypes,
+    victim: EntityId,
+    source: &DamageSource,
+) -> Option<Box<dyn Fn(f32) -> f32 + 't>> {
+    let weapon = source
+        .direct
+        .and_then(|d| ents.player(d))?
+        .inventory
+        .selected_item()
+        .clone();
+    let (enchants, tags) = combat_data();
+    if !enchants
+        .of(&weapon)
+        .any(|(e, _)| !e.armor_effectiveness.is_empty())
+    {
+        return None;
+    }
+    let ecx = damage_context(ents, types, tags, victim, source);
+    Some(Box::new(move |fraction| {
+        crate::experience_orb::with_entity_random(|r| {
+            enchants.modify_armor_effectiveness(&weapon, &ecx, r, fraction)
+        })
+    }))
 }
 
 /// `igniteForTicks`: burns at least `ticks` more ticks.
