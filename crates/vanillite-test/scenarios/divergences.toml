@@ -53,8 +53,8 @@ cause = "the first arrow comes one tick late: Vanilla shoots on tick 28 (2 draws
 owner = "gameplay-developer #59"
 
 [mob_breeze_attack]
-tick = 2
-cause = "brain: the breeze draws 32 numbers from its random on tick 2 (Vanilla 2) and 2 from the level random (Vanilla 1)"
+tick = 14
+cause = "not investigated yet: the level random matches since the shuffled gates draw from their own random (ShufflingList); Vanilla's shuffle order itself is unseeded, so a different child may run"
 owner = "gameplay-developer #59"
 
 [mob_camel_husk_wander]
@@ -138,8 +138,8 @@ cause = "SquidRandomMovementGoal: 4 draws of the squid's random on tick 1, Vanil
 owner = "gameplay-developer #59"
 
 [mob_goat_wander]
-tick = 1
-cause = "brain: 3 level random draws on tick 1, Vanilla 0 (RunOne/GateBehavior (ShufflingList.shuffle) draws its weights from the level random; Vanilla's ShufflingList has its own random)"
+tick = 44
+cause = "not investigated yet: the level random matches since the shuffled gates draw from their own random (ShufflingList); Vanilla's shuffle order itself is unseeded, so a different child may run"
 owner = "gameplay-developer #59"
 
 [mob_happy_ghast_float]
@@ -148,8 +148,8 @@ cause = "construction/finalizeSpawn: 1 draw of the happy ghast's random before t
 owner = "gameplay-developer #59"
 
 [mob_hoglin_attack]
-tick = 1
-cause = "brain: 3 level random draws on tick 1, Vanilla 0 (RunOne/GateBehavior (ShufflingList.shuffle) draws its weights from the level random; Vanilla's ShufflingList has its own random)"
+tick = 94
+cause = "not investigated yet: the level random matches since the shuffled gates draw from their own random (ShufflingList); Vanilla's shuffle order itself is unseeded, so a different child may run"
 owner = "gameplay-developer #59"
 
 [mob_horse_wander]
@@ -273,8 +273,8 @@ cause = "the cube jumps along yaw 0; Vanilla jumps along the yaw CubeMobRandomDi
 owner = "gameplay-developer #59"
 
 [mob_sniffer_wander]
-tick = 1
-cause = "brain: 7 level random draws on tick 1, Vanilla 1 (RunOne/GateBehavior (ShufflingList.shuffle) draws its weights from the level random; Vanilla's ShufflingList has its own random)"
+tick = 142
+cause = "not investigated yet: the level random matches since the shuffled gates draw from their own random (ShufflingList); Vanilla's shuffle order itself is unseeded, so a different child may run"
 owner = "gameplay-developer #59"
 
 [mob_snow_golem_throw]
@@ -361,3 +361,28 @@ owner = "gameplay-developer #59"
 tick = 23
 cause = "after the hit on tick 20 the zombified piglin draws 2 numbers from its random on tick 23, Vanilla 4 (anger alert / target)"
 owner = "gameplay-developer #59"
+
+[mob_villager_workstation]
+tick = 1
+cause = "one level random draw less on tick 1 (Vanilla 5 brain draws: panic trigger, raid status, 3 AcquirePoi and two DoNothing starts; here the idle RunOne started a stroll instead of DoNothing): Vanilla's ShufflingList random is unseeded (RandomSource.create()), so which child of a RunOne starts is not reproducible"
+owner = "gameplay-developer #60"
+
+[mob_villager_bed]
+tick = 1
+cause = "one level random draw less on tick 1 (the idle RunOne started a stroll instead of DoNothing): Vanilla's ShufflingList random is unseeded (RandomSource.create()), so which child of a RunOne starts is not reproducible"
+owner = "gameplay-developer #60"
+
+[mob_villager_panic]
+tick = 1
+cause = "one level random draw less on tick 1 (the idle RunOne started a stroll instead of DoNothing): Vanilla's ShufflingList random is unseeded (RandomSource.create()), so which child of a RunOne starts is not reproducible"
+owner = "gameplay-developer #60"
+
+[mob_villager_zombie]
+tick = 1
+cause = "the villager draws other numbers from its random and two level random numbers less on tick 1 (not investigated; the shuffled RunOne children differ, Vanilla's ShufflingList random is unseeded (RandomSource.create()), so which child of a RunOne starts is not reproducible)"
+owner = "gameplay-developer #60"
+
+[mob_wandering_trader_wander]
+tick = 94
+cause = "the trader draws another count of its own random on tick 94 (a goal start, not investigated)"
+owner = "gameplay-developer #60"

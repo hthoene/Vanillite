@@ -281,9 +281,14 @@ fn brush_hit(
     let eye_height =
         f64::from(info.eye_height) * f64::from(e.dims().height / info.height.max(0.01));
     let rot = e.rot();
-    let eye = e.pos() + Vec3::new(0.0, eye_height, 0.0);
+    let p = e.pos();
+    let eye = Vec3::new(p.x, p.y + eye_height, p.z);
     let view = crate::mob::view_vector(rot.x_rot, rot.y_rot);
-    let to = eye + view * RANGE;
+    let to = Vec3::new(
+        eye.x + view.x * RANGE,
+        eye.y + view.y * RANGE,
+        eye.z + view.z * RANGE,
+    );
     let (pos, at) = crate::mob::physics::clip(level, eye, to)?;
     // An entity on the way is hit first (`getEntityHitResult` with `isPickable`).
     let area =
@@ -300,7 +305,8 @@ fn brush_hit(
         if !pickable(level, other, o.kind()) {
             return;
         }
-        if let Some(t) = ray_box(eye, at - eye, &o.aabb())
+        let delta = Vec3::new(at.x - eye.x, at.y - eye.y, at.z - eye.z);
+        if let Some(t) = ray_box(eye, delta, &o.aabb())
             && t < 1.0
         {
             entity_first = true;
@@ -362,7 +368,11 @@ fn ray_box(from: Vec3, delta: Vec3, b: &vanillite_base::Aabb) -> Option<f64> {
 /// facing against the ray.
 fn hit_face(pos: vanillite_base::BlockPos, at: Vec3, view: Vec3) -> vanillite_base::Direction {
     use vanillite_base::Direction;
-    let local = at - Vec3::new(f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
+    let local = Vec3::new(
+        at.x - f64::from(pos.x),
+        at.y - f64::from(pos.y),
+        at.z - f64::from(pos.z),
+    );
     let candidates = [
         (local.x, view.x, Direction::West, Direction::East),
         (local.y, view.y, Direction::Down, Direction::Up),
