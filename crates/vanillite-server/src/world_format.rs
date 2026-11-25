@@ -1,4 +1,5 @@
-//! The world format at startup (#25) and the offline `convert` and `export` commands.
+//! The world format at startup (#25) and the offline `convert`, `export` and `upgrade-world`
+//! commands.
 //!
 //! New worlds get `storage.world-format` (the own format by default). An existing world keeps
 //! the format it was found in, Anvil for every imported Vanilla, Paper or Spigot world, unless
@@ -63,6 +64,10 @@ pub(crate) fn plan(
     let wanted = configured(config);
     let error = |e: std::io::Error| StartError::Io(format!("world \"{level_name}\": {e}"));
     let found = format::detect(&level_dir, &dimension_dirs).map_err(error)?;
+    if found == Some(WorldFormat::Vanillite) {
+        // An own-format world of an older version: records are upgraded as they are saved.
+        format::stamp_current(&level_dir).map_err(error)?;
+    }
     let plan = match found {
         None => {
             if wanted == WorldFormat::Vanillite {
@@ -250,4 +255,22 @@ pub fn export_world(dir: &Path, target: &Path) -> Result<ConvertStats, StartErro
     settings.anvil_compression = Compression::Deflate;
     settings.backup = None;
     format::export_world(dir, &levels, &offline.infos, target, &settings).map_err(error)
+}
+
+/// `vanillite upgrade-world`: rewrites every chunk of an own-format world written by an older
+/// Minecraft version in this server's version. The server must not run.
+pub fn upgrade_world(dir: &Path) -> Result<ConvertStats, StartError> {
+    let offline = open_offline(dir)?;
+    let level_dir = dir.join(&offline.level_name);
+    let dirs: Vec<PathBuf> = offline.infos.iter().map(|i| i.dir.clone()).collect();
+    let error =
+        |e: std::io::Error| StartError::Io(format!("world \"{}\": {e}", offline.level_name));
+    if format::detect(&level_dir, &dirs).map_err(error)? != Some(WorldFormat::Vanillite) {
+        return Err(StartError::Io(format!(
+            "world \"{}\" is an Anvil world: it is read by name and needs no upgrade",
+            offline.level_name
+        )));
+    }
+    let settings = convert_settings(&offline.config, dir, threads());
+    format::upgrade_world(dir, &level_dir, &offline.infos, &settings).map_err(error)
 }

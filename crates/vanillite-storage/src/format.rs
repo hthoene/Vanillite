@@ -3,9 +3,11 @@
 //!
 //! A world is in the own format when `<level>/vanillite/format` exists. Next to it,
 //! `vanillite/ids-<data version>.txt.zst` keeps the block state, block, fluid and block entity
-//! type names in id order of the data version the records were written with: the basis of
-//! upgrades to later Minecraft versions. `level.dat`, players and `data/` stay Vanilla files
-//! in both formats.
+//! type names in id order of the data version the records were written with. A server of a
+//! later version reads such worlds ([`crate::upgrade`]): it stamps its data version into the
+//! marker and lists the older ones (`older-data-versions`) until [`upgrade_world`] rewrote every
+//! chunk; their id tables stay. Worlds of a later version are refused. `level.dat`, players and
+//! `data/` stay Vanilla files in both formats.
 //!
 //! A conversion never risks the original: the new files are written next to the old ones,
 //! synced, opened again and every record is read back and compared with the source (decoded
@@ -29,6 +31,7 @@ use crate::compression::{Compression, zstd_compress, zstd_decompress};
 use crate::own_codec::OwnCodec;
 use crate::region::RecordRead;
 use crate::service::OpenFile;
+use crate::upgrade::{Upgrades, id_table_path, id_table_text};
 use crate::{AnvilCodec, files};
 
 /// The format of a world's chunk, entity and POI files.
@@ -77,41 +80,94 @@ pub fn marker_path(level_dir: &Path) -> PathBuf {
     level_dir.join("vanillite").join("format")
 }
 
-/// The format of an existing world, `None` for a new one. An own-format world written by
-/// another data version is an error: upgrades of own-format worlds do not exist yet, and
-/// loading would regenerate every chunk.
-pub fn detect(level_dir: &Path, dimension_dirs: &[PathBuf]) -> io::Result<Option<WorldFormat>> {
-    match fs::read_to_string(marker_path(level_dir)) {
-        Ok(text) => {
-            let value = |key: &str| {
-                text.lines()
-                    .filter_map(|line| line.split_once('='))
-                    .find(|(k, _)| k.trim() == key)
-                    .map(|(_, v)| v.trim().trim_matches('"').to_owned())
-            };
-            if value("format").as_deref() != Some("vwr") {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("{}: unknown world format", marker_path(level_dir).display()),
-                ));
-            }
-            let version = value("data-version").and_then(|v| v.parse::<i32>().ok());
-            if version != Some(DATA_VERSION) {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "the world was written in the own format by data version {}, this \
-                         server is {DATA_VERSION}; upgrading own-format worlds is not supported \
-                         yet: export it with the server version that wrote it \
-                         (`vanillite export`)",
-                        version.map_or("?".to_owned(), |v| v.to_string())
-                    ),
-                ));
-            }
-            return Ok(Some(WorldFormat::Vanillite));
-        }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+/// The contents of `vanillite/format`.
+struct Marker {
+    data_version: i32,
+    older: Vec<i32>,
+}
+
+fn invalid_marker(level_dir: &Path, message: &str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("{}: {message}", marker_path(level_dir).display()),
+    )
+}
+
+/// The world's marker, `None` without one.
+fn read_marker(level_dir: &Path) -> io::Result<Option<Marker>> {
+    let text = match fs::read_to_string(marker_path(level_dir)) {
+        Ok(text) => text,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e),
+    };
+    let value = |key: &str| {
+        text.lines()
+            .filter_map(|line| line.split_once('='))
+            .find(|(k, _)| k.trim() == key)
+            .map(|(_, v)| v.trim().trim_matches('"').to_owned())
+    };
+    if value("format").as_deref() != Some("vwr") {
+        return Err(invalid_marker(level_dir, "unknown world format"));
+    }
+    let data_version = value("data-version")
+        .and_then(|v| v.parse::<i32>().ok())
+        .ok_or_else(|| invalid_marker(level_dir, "no data version"))?;
+    let older = value("older-data-versions")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| {
+            v.parse::<i32>()
+                .map_err(|_| invalid_marker(level_dir, "invalid older data version"))
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    Ok(Some(Marker {
+        data_version,
+        older,
+    }))
+}
+
+/// Writes the marker of this data version with the older data versions records may have.
+fn write_marker(level_dir: &Path, older: &[i32]) -> io::Result<()> {
+    let mut text = format!("format = \"vwr\"\nversion = 1\ndata-version = {DATA_VERSION}\n");
+    if !older.is_empty() {
+        let list: Vec<String> = older.iter().map(i32::to_string).collect();
+        text.push_str(&format!("older-data-versions = \"{}\"\n", list.join(",")));
+    }
+    files::write_atomic(&marker_path(level_dir), text.as_bytes(), false)
+}
+
+/// The older data versions whose records an own-format world may still have.
+pub fn older_data_versions(level_dir: &Path) -> io::Result<Vec<i32>> {
+    let Some(marker) = read_marker(level_dir)? else {
+        return Ok(Vec::new());
+    };
+    let mut older = marker.older;
+    older.push(marker.data_version);
+    older.retain(|&v| v != DATA_VERSION);
+    older.sort_unstable();
+    older.dedup();
+    Ok(older)
+}
+
+/// The format of an existing world, `None` for a new one. An own-format world written by a
+/// later data version is an error: its ids are unknown here, and loading would regenerate
+/// every chunk.
+pub fn detect(level_dir: &Path, dimension_dirs: &[PathBuf]) -> io::Result<Option<WorldFormat>> {
+    if let Some(marker) = read_marker(level_dir)? {
+        if marker.data_version > DATA_VERSION {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "the world was written in the own format by data version {}, this server is \
+                     {DATA_VERSION}: worlds cannot go back to an older Minecraft version; export \
+                     it with the newer server (`vanillite export`)",
+                    marker.data_version
+                ),
+            ));
+        }
+        return Ok(Some(WorldFormat::Vanillite));
     }
     let anvil = level_dir.join("level.dat").exists()
         || dimension_dirs
@@ -148,53 +204,45 @@ fn region_files(dir: &Path, format: WorldFormat) -> Vec<(PathBuf, (i32, i32))> {
     files
 }
 
-/// Marks a world as an own-format world of this data version and writes its id table.
+/// Marks a world as an own-format world whose records all have this data version and writes
+/// its id table.
 pub fn mark_own_format(level_dir: &Path) -> io::Result<()> {
     write_id_table(level_dir)?;
-    let text = format!("format = \"vwr\"\nversion = 1\ndata-version = {DATA_VERSION}\n");
-    files::write_atomic(&marker_path(level_dir), text.as_bytes(), false)
+    write_marker(level_dir, &[])
+}
+
+/// Before an own-format world of an older data version is written to: writes this version's id
+/// table and stamps it into the marker, keeping the older versions its records may still have.
+/// Returns the older data version the marker had.
+pub fn stamp_current(level_dir: &Path) -> io::Result<Option<i32>> {
+    let Some(marker) = read_marker(level_dir)? else {
+        return Ok(None);
+    };
+    if marker.data_version == DATA_VERSION {
+        return Ok(None);
+    }
+    let older = older_data_versions(level_dir)?;
+    write_id_table(level_dir)?;
+    write_marker(level_dir, &older)?;
+    log::info!(
+        "The world was written by data version {}, this server is {DATA_VERSION}: chunks are \
+         upgraded when they are saved; `vanillite upgrade-world` rewrites all of them",
+        marker.data_version
+    );
+    Ok(Some(marker.data_version))
 }
 
 /// `vanillite/ids-<data version>.txt.zst`: the names of the ids the records use, in id order.
 fn write_id_table(level_dir: &Path) -> io::Result<()> {
-    use std::fmt::Write as _;
-    use vanillite_data::block::{BlockState, STATE_COUNT};
-    use vanillite_data::registry::{BLOCK, BLOCK_ENTITY_TYPE, FLUID};
-
-    let path = level_dir
-        .join("vanillite")
-        .join(format!("ids-{DATA_VERSION}.txt.zst"));
+    let path = id_table_path(level_dir, DATA_VERSION);
     if path.exists() {
         return Ok(());
     }
-    let mut text = String::with_capacity(2 << 20);
-    text.push_str("[block_states]\n");
-    for id in 0..STATE_COUNT {
-        let state = BlockState(id as u16);
-        text.push_str(state.block().name());
-        let mut first = true;
-        for (key, value) in state.properties() {
-            text.push(if first { '[' } else { ',' });
-            first = false;
-            let _ = write!(text, "{key}={value}");
-        }
-        if !first {
-            text.push(']');
-        }
-        text.push('\n');
-    }
-    for (name, registry) in [
-        ("blocks", &BLOCK),
-        ("fluids", &FLUID),
-        ("block_entity_types", &BLOCK_ENTITY_TYPE),
-    ] {
-        let _ = writeln!(text, "[{name}]");
-        for entry in registry.entries {
-            text.push_str(entry);
-            text.push('\n');
-        }
-    }
-    files::write_atomic(&path, &zstd_compress(text.as_bytes(), 19)?, false)
+    files::write_atomic(
+        &path,
+        &zstd_compress(id_table_text().as_bytes(), 19)?,
+        false,
+    )
 }
 
 /// Settings of a conversion or an export.
@@ -303,7 +351,11 @@ pub fn convert_world(
         from.name(),
         to.name()
     );
-    let stats = match run_jobs(&jobs, dimensions, from, to, settings) {
+    let upgrades = match from {
+        WorldFormat::Vanillite => Upgrades::load(level_dir)?,
+        WorldFormat::Anvil => Upgrades::none(),
+    };
+    let stats = match run_jobs(&jobs, dimensions, from, to, settings, &upgrades) {
         Ok(stats) => stats,
         Err(e) => {
             for job in &jobs {
@@ -374,8 +426,9 @@ pub fn convert_world(
 }
 
 /// Writes a complete Vanilla (Anvil) copy of an own-format world into `target`, keeping the
-/// paths of `level_dirs` below `server_dir`: `level.dat`, players, saved data and every other
-/// file are copied, chunks, entities and POI converted. The world is only read.
+/// paths of `level_dirs` below `server_dir` (the first holds the marker): `level.dat`, players,
+/// saved data and every other file are copied, chunks, entities and POI converted, chunks of
+/// older data versions upgraded. The world is only read.
 pub fn export_world(
     server_dir: &Path,
     level_dirs: &[PathBuf],
@@ -413,6 +466,10 @@ pub fn export_world(
             }
         }
     }
+    let upgrades = match level_dirs.first() {
+        Some(level) => Upgrades::load(level)?,
+        None => Upgrades::none(),
+    };
     let started = Instant::now();
     let stats = run_jobs(
         &jobs,
@@ -420,6 +477,7 @@ pub fn export_world(
         WorldFormat::Vanillite,
         WorldFormat::Anvil,
         settings,
+        &upgrades,
     )?;
     log::info!(
         "Exported {} chunks and {} entity and POI records to {} in {:.1} s",
@@ -427,6 +485,76 @@ pub fn export_world(
         stats.records,
         target.display(),
         started.elapsed().as_secs_f64()
+    );
+    Ok(stats)
+}
+
+/// Rewrites every chunk record of an own-format world in this data version (offline: the world
+/// must not be running). Each region file is written next to the old one, verified and then
+/// renamed over it (with `settings.backup` a copy of the old one is kept); records of not yet
+/// rewritten files stay readable until the marker loses its older data versions at the end.
+/// Entity and POI records are Vanilla NBT by name and keep their data version.
+pub fn upgrade_world(
+    server_dir: &Path,
+    level_dir: &Path,
+    dimensions: &[WorldInfo],
+    settings: &ConvertSettings,
+) -> io::Result<ConvertStats> {
+    stamp_current(level_dir)?;
+    let upgrades = Upgrades::load(level_dir)?;
+    let mut jobs = Vec::new();
+    for (index, info) in dimensions.iter().enumerate() {
+        for (source, region) in region_files(&info.dir.join("region"), WorldFormat::Vanillite) {
+            jobs.push(Job {
+                dimension: index,
+                stream: Stream::Chunk,
+                region,
+                target: source.with_extension("vwr.tmp"),
+                source,
+            });
+        }
+    }
+    let started = Instant::now();
+    log::info!(
+        "Upgrading {} region files of {} to data version {DATA_VERSION}",
+        jobs.len(),
+        level_dir.display()
+    );
+    let stats = match run_jobs(
+        &jobs,
+        dimensions,
+        WorldFormat::Vanillite,
+        WorldFormat::Vanillite,
+        settings,
+        &upgrades,
+    ) {
+        Ok(stats) => stats,
+        Err(e) => {
+            for job in &jobs {
+                let _ = fs::remove_file(&job.target);
+            }
+            return Err(e);
+        }
+    };
+    for job in &jobs {
+        if let Some(backup) = &settings.backup {
+            let relative = job.source.strip_prefix(server_dir).unwrap_or(&job.source);
+            let copy = backup.join(relative);
+            copy.parent().map_or(Ok(()), fs::create_dir_all)?;
+            fs::copy(&job.source, &copy)?;
+        }
+        fs::rename(&job.target, &job.source)?;
+    }
+    // The commit point: every record has this data version now.
+    mark_own_format(level_dir)?;
+    log::info!(
+        "Upgraded {} chunks to data version {DATA_VERSION} in {:.1} s{}",
+        stats.chunks,
+        started.elapsed().as_secs_f64(),
+        settings.backup.as_ref().map_or(String::new(), |b| format!(
+            "; the old files are in {}",
+            b.display()
+        ))
     );
     Ok(stats)
 }
@@ -463,12 +591,13 @@ fn run_jobs(
     from: WorldFormat,
     to: WorldFormat,
     settings: &ConvertSettings,
+    upgrades: &std::sync::Arc<Upgrades>,
 ) -> io::Result<ConvertStats> {
     let codecs: Vec<Codecs> = dimensions
         .iter()
         .map(|info| Codecs {
             anvil: AnvilCodec::new(info, settings.anvil_compression),
-            own: OwnCodec::new(info, settings.level),
+            own: OwnCodec::new(info, settings.level).with_upgrades(upgrades.clone()),
         })
         .collect();
     let mut order: Vec<(u64, usize)> = jobs
@@ -870,16 +999,157 @@ mod tests {
         fs::remove_dir_all(server).unwrap();
     }
 
-    /// A world marked by another data version is refused instead of being regenerated.
+    /// A world marked by a later data version is refused instead of being regenerated; one of
+    /// an older version is read.
     #[test]
-    fn other_data_versions_are_refused() {
+    fn later_data_versions_are_refused() {
         let server = temp("version");
         let level = server.join("world");
         fs::create_dir_all(level.join("vanillite")).unwrap();
-        fs::write(marker_path(&level), "format = \"vwr\"\ndata-version = 1\n").unwrap();
+        let later = DATA_VERSION + 1;
+        fs::write(
+            marker_path(&level),
+            format!("format = \"vwr\"\ndata-version = {later}\n"),
+        )
+        .unwrap();
         let error = detect(&level, std::slice::from_ref(&level)).unwrap_err();
-        assert!(error.to_string().contains("data version 1"), "{error}");
+        assert!(
+            error.to_string().contains(&format!("data version {later}")),
+            "{error}"
+        );
+        fs::write(marker_path(&level), "format = \"vwr\"\ndata-version = 1\n").unwrap();
+        assert_eq!(
+            detect(&level, std::slice::from_ref(&level)).unwrap(),
+            Some(WorldFormat::Vanillite)
+        );
         assert_eq!(detect(&server.join("new"), &[]).unwrap(), None);
+        fs::remove_dir_all(server).unwrap();
+    }
+
+    /// An own-format world of an older data version (made-up id table; block entity types stay,
+    /// as their stored data names them) is stamped with this
+    /// one, exported with its chunks upgraded, and `upgrade_world` rewrites every chunk record
+    /// in this data version, after which the marker lists no older version.
+    #[test]
+    fn older_worlds_are_exported_and_upgraded() {
+        use crate::upgrade::tests::older_table;
+        let server = temp("upgrade");
+        let level = server.join("world");
+        let (info, _) = anvil_world(&level);
+        let dims = [level.clone()];
+        convert_world(
+            &server,
+            &level,
+            std::slice::from_ref(&info),
+            WorldFormat::Vanillite,
+            &settings(None),
+        )
+        .unwrap();
+
+        // Make the chunk records and the marker those of an older data version.
+        let old = DATA_VERSION - 1;
+        files::write_atomic(
+            &id_table_path(&level, old),
+            &zstd_compress(older_table(10, false).as_bytes(), 3).unwrap(),
+            false,
+        )
+        .unwrap();
+        fs::write(
+            marker_path(&level),
+            format!("format = \"vwr\"\ndata-version = {old}\n"),
+        )
+        .unwrap();
+        for (path, region) in region_files(&level.join("region"), WorldFormat::Vanillite) {
+            let mut records = Vec::new();
+            let file = OpenFile::open(WorldFormat::Vanillite, &path, false)
+                .unwrap()
+                .unwrap();
+            read_all(&file, region, |read| {
+                if let Some(record) = read.record? {
+                    let mut raw = zstd_decompress(&record)?;
+                    raw[3..7].copy_from_slice(&(old as u32).to_le_bytes());
+                    records.push((read.slot, read.meta, raw));
+                }
+                Ok(())
+            })
+            .unwrap();
+            drop(file);
+            let mut file = OpenFile::open(WorldFormat::Vanillite, &path, true)
+                .unwrap()
+                .unwrap();
+            for (slot, meta, raw) in records {
+                let meta = RecordMeta {
+                    data_version: old as u32,
+                    ..meta
+                };
+                file.write(pos_of(region, slot), meta, &zstd_compress(&raw, 3).unwrap())
+                    .unwrap();
+            }
+            file.commit(true).unwrap();
+        }
+        assert_eq!(detect(&level, &dims).unwrap(), Some(WorldFormat::Vanillite));
+        assert_eq!(stamp_current(&level).unwrap(), Some(old));
+        assert_eq!(stamp_current(&level).unwrap(), None);
+        assert_eq!(older_data_versions(&level).unwrap(), [old]);
+
+        // What the chunks are with the current ids.
+        let upgraded = OwnCodec::new(&info, 3).with_upgrades(Upgrades::load(&level).unwrap());
+        let chunks = |codec: &OwnCodec, version: u32| {
+            let mut out = Vec::new();
+            for (path, region) in region_files(&level.join("region"), WorldFormat::Vanillite) {
+                let file = OpenFile::open(WorldFormat::Vanillite, &path, false)
+                    .unwrap()
+                    .unwrap();
+                read_all(&file, region, |read| {
+                    if let Some(record) = read.record? {
+                        assert_eq!(read.meta.data_version, version);
+                        let pos = pos_of(region, read.slot);
+                        let chunk = codec.decode(pos, &read.meta, &record)?;
+                        out.push((pos, codec.encode_raw(&chunk).1));
+                    }
+                    Ok(())
+                })
+                .unwrap();
+            }
+            out
+        };
+        let expected = chunks(&upgraded, old as u32);
+        assert_eq!(expected.len(), 3);
+
+        let stats = export_world(
+            &server,
+            std::slice::from_ref(&level),
+            std::slice::from_ref(&info),
+            &server.join("export"),
+            &settings(None),
+        )
+        .unwrap();
+        assert_eq!(stats.chunks, 3);
+
+        let stats = upgrade_world(
+            &server,
+            &level,
+            std::slice::from_ref(&info),
+            &settings(Some(server.join("backup"))),
+        )
+        .unwrap();
+        assert_eq!(stats.chunks, 3);
+        assert!(older_data_versions(&level).unwrap().is_empty());
+        assert_eq!(
+            chunks(&OwnCodec::new(&info, 3), DATA_VERSION as u32),
+            expected
+        );
+        assert_eq!(
+            count_files(&server.join("backup/world"), WorldFormat::Vanillite),
+            region_files(&level.join("region"), WorldFormat::Vanillite).len()
+        );
+        assert!(
+            fs::read_dir(level.join("region")).unwrap().all(|e| !e
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp"))
+        );
         fs::remove_dir_all(server).unwrap();
     }
 }
