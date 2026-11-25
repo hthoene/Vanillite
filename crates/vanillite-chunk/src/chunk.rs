@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use crate::facts::{self, BiomeId, BlockStateId};
-use crate::heightmap::{HeightmapKind, Heightmaps};
+use crate::heightmap::{Heightmap, HeightmapKind, Heightmaps};
 use crate::light::ChunkLight;
 use crate::section::Section;
 
@@ -44,6 +44,18 @@ impl Chunk {
 
     /// A chunk from parts; the heightmaps are primed from the blocks.
     pub fn from_sections(min_section: i32, sections: Vec<Arc<Section>>, light: ChunkLight) -> Self {
+        Self::from_stored(min_section, sections, light, Default::default())
+    }
+
+    /// A chunk from parts with stored heightmaps by type id (`ChunkAccess.setHeightmap`, as
+    /// chunk loading does): each kept type takes its stored heightmap, the others are primed
+    /// from the blocks. Stored heightmaps of other sizes are ignored.
+    pub fn from_stored(
+        min_section: i32,
+        sections: Vec<Arc<Section>>,
+        light: ChunkLight,
+        mut stored: [Option<Heightmap>; 6],
+    ) -> Self {
         assert!(sections.len() <= MAX_SECTIONS, "too many sections");
         assert_eq!(
             light.len(),
@@ -57,7 +69,15 @@ impl Chunk {
             light,
             heightmaps: Heightmaps::new(height, &HeightmapKind::LIVE),
         };
-        chunk.prime_heightmaps();
+        let mut prime = [false; 6];
+        for kind in HeightmapKind::LIVE {
+            let slot = usize::from(kind.id());
+            match (stored[slot].take(), chunk.heightmaps.get_mut(kind)) {
+                (Some(map), Some(kept)) if map.bits() == kept.bits() => *kept = map,
+                _ => prime[slot] = true,
+            }
+        }
+        chunk.prime(|kind| prime[usize::from(kind.id())]);
         chunk
     }
 
@@ -206,10 +226,15 @@ impl Chunk {
 
     /// Recomputes all kept heightmaps from the blocks (`Heightmap.primeHeightmaps`).
     pub fn prime_heightmaps(&mut self) {
+        self.prime(|_| true);
+    }
+
+    /// Recomputes the kept heightmaps of the types `wanted` selects.
+    fn prime(&mut self, wanted: impl Fn(HeightmapKind) -> bool) {
         let min_y = self.min_y();
         let top = min_y + self.height() as i32 - 1;
         for kind in HeightmapKind::ALL {
-            if self.heightmaps.get(kind).is_none() {
+            if self.heightmaps.get(kind).is_none() || !wanted(kind) {
                 continue;
             }
             for z in 0..16 {

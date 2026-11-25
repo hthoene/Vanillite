@@ -32,12 +32,26 @@ pub struct GameData {
     pub enchantments: HashMap<String, u32>,
     /// Item tags: tag id → item ids.
     pub item_tags: HashMap<String, Vec<u16>>,
+    /// Entity type tags: tag id → entity type ids.
+    pub entity_tags: HashMap<String, Vec<u16>>,
+    /// The combat effects of the enchantments, by registry id.
+    pub enchants: crate::enchant::Enchantments,
+    /// `#minecraft:enderman_holdable` block ids.
+    pub enderman_holdable: Vec<u16>,
     /// Recipes.
     pub recipes: crate::recipe::Recipes,
     /// Enchantment data.
     pub enchanting: crate::enchant::Enchanting,
     /// The `minecraft:trial_spawner` registry.
     pub trial_spawner_configs: crate::block::trial_spawner::TrialConfigs,
+}
+
+impl crate::predicate::EntityTags for GameData {
+    fn entity_in_tag(&self, kind: vanillite_data::entity::EntityTypeId, tag: &str) -> bool {
+        self.entity_tags
+            .get(tag)
+            .is_some_and(|v| v.contains(&kind.0))
+    }
 }
 
 static GAME_DATA: std::sync::OnceLock<std::sync::Arc<GameData>> = std::sync::OnceLock::new();
@@ -120,6 +134,14 @@ impl Actor {
     pub fn within_block_range(&self, pos: BlockPos, buffer: f64) -> bool {
         let max = self.block_range() + buffer;
         aabb_distance_sqr(&Aabb::of_block(pos), self.eye()) < max * max
+    }
+
+    /// `isWithinEntityInteractionRange(box, buffer)`: the entity range is 3, plus 2 in
+    /// creative.
+    pub fn within_entity_range(&self, aabb: &Aabb, buffer: f64) -> bool {
+        let range = if self.creative() { 5.0 } else { 3.0 };
+        let max = range + buffer;
+        aabb_distance_sqr(aabb, self.eye()) < max * max
     }
 }
 
@@ -1249,6 +1271,8 @@ fn drop_resources(
             enchantment_level: &enchantment_level,
             item_in_tag: &item_in_tag,
             explosion_radius: None,
+            this_present: true,
+            entity: None,
             block_entity: Some(&components),
         };
         let mut rng = LevelRandom(&mut *ctx.level);

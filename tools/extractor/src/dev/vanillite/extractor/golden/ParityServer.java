@@ -22,6 +22,7 @@ import net.minecraft.resources.Identifier;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.Services;
+import net.minecraft.server.TickTask;
 import net.minecraft.server.WorldLoader;
 import net.minecraft.server.WorldStem;
 import net.minecraft.server.level.ServerLevel;
@@ -34,6 +35,7 @@ import net.minecraft.server.permissions.LevelBasedPermissionSet;
 import net.minecraft.server.permissions.PermissionSet;
 import net.minecraft.server.players.NameAndId;
 import net.minecraft.server.players.PlayerList;
+import net.minecraft.server.players.UserNameToIdResolver;
 import net.minecraft.util.Util;
 import net.minecraft.util.datafix.DataFixers;
 import net.minecraft.util.debugchart.LocalSampleLogger;
@@ -69,6 +71,31 @@ public final class ParityServer extends MinecraftServer {
 
   private final LocalSampleLogger sampleLogger = new LocalSampleLogger(1);
 
+  /** No name cache: scenario players are not remembered. */
+  private static final class NoNames implements UserNameToIdResolver {
+    @Override
+    public void add(NameAndId entry) {}
+
+    @Override
+    public Optional<NameAndId> get(String name) {
+      return Optional.empty();
+    }
+
+    @Override
+    public Optional<NameAndId> get(java.util.UUID id) {
+      return Optional.empty();
+    }
+
+    @Override
+    public void resolveOfflineUsers(boolean offline) {}
+
+    @Override
+    public void save() {}
+  }
+
+  /** Runs every queued task at once, also those Vanilla holds back for a few ticks. */
+  private boolean runEveryTask;
+
   private ParityServer(
       Thread thread,
       LevelStorageSource.LevelStorageAccess access,
@@ -82,7 +109,7 @@ public final class ParityServer extends MinecraftServer {
         Optional.of(new GameRules(WorldDataConfiguration.DEFAULT.enabledFeatures())),
         Proxy.NO_PROXY,
         DataFixers.getDataFixer(),
-        new Services(null, null, null, null, null),
+        new Services(null, null, null, new NoNames(), null),
         LoggingLevelLoadListener.forDedicatedServer(),
         false,
         new NotificationManager());
@@ -192,6 +219,25 @@ public final class ParityServer extends MinecraftServer {
         }
       }
     }
+  }
+
+  /**
+   * Like {@link #drainTasks()}, but also runs the tasks Vanilla holds back until a few ticks
+   * passed (a running server runs them while it waits for the next tick); for running the chunk
+   * system and entity loading without a game tick.
+   */
+  public void drainEveryTask() {
+    runEveryTask = true;
+    try {
+      drainTasks();
+    } finally {
+      runEveryTask = false;
+    }
+  }
+
+  @Override
+  protected boolean shouldRun(TickTask task) {
+    return runEveryTask || super.shouldRun(task);
   }
 
   /** Stops the server: saves and unlocks the world directory. */

@@ -826,6 +826,7 @@ fn sonic_boom_tick(t: &mut Tick<'_, '_>, mem: &mut Memories, id: EntityId) {
         position: Some(p),
         cause_is_mob: true,
         cause_name: Some(crate::mob::Kind::Warden.translation_key()),
+        disable_shield_seconds: 0.0,
     };
     let hurt = combat::hurt(t.level, t.ents, t.env, t.cx, target, damage, 10.0);
     if hurt {

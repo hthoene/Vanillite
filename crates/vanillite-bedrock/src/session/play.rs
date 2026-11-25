@@ -14,7 +14,6 @@ use vanillite_protocol::types::BlockPos;
 use super::{EYE, Entity, Kind, Session, f3, rid, uid};
 use crate::data::{Blocks, WATERLOGGED};
 use crate::entity::{self, shared};
-use crate::items::Items;
 use crate::num::{angle_deg, f32_of};
 use crate::packets::{
     self as bp, Transaction, action, actor_event, id, level_event, meta, move_mode,
@@ -36,8 +35,8 @@ fn block_center(p: BlockPos) -> [f32; 3] {
 }
 
 /// Bedrock runtime id of a Java block state (without the water layer).
-fn bedrock_block(state: i32) -> u32 {
-    let e = Blocks::get().entry(u32::try_from(state).unwrap_or(0));
+fn bedrock_block(blocks: &Blocks, state: i32) -> u32 {
+    let e = blocks.entry(u32::try_from(state).unwrap_or(0));
     u32::from(e & !WATERLOGGED)
 }
 
@@ -327,7 +326,7 @@ impl Session {
     pub(super) fn java_level_event(&mut self, e: &pcb::LevelEvent) {
         // 2001: a block was destroyed (particles and sound of the state in `data`).
         if e.event == 2001 {
-            let block = bedrock_block(e.data);
+            let block = bedrock_block(self.version.palette.blocks(), e.data);
             let pos = block_center(e.pos);
             self.send(
                 id::LEVEL_EVENT,
@@ -357,7 +356,7 @@ impl Session {
         let pos = [s.x, s.y, s.z].map(|v| f32_of(f64::from(v) / 8.0));
         self.send(
             id::PLAY_SOUND,
-            &bp::play_sound(name, pos, s.volume, s.pitch),
+            &bp::play_sound(name, pos, s.volume, s.pitch, self.version),
         );
     }
 
@@ -389,17 +388,20 @@ impl Session {
             let mode = super::bedrock_game_mode(w.game_mode);
             w.entities.insert(e.entity_id, entity.clone());
             let eye = [pos[0], pos[1] + EYE, pos[2]];
-            let body = bp::add_player(&bp::AddPlayer {
-                uuid: e.uuid.0,
-                name: &name,
-                entity_id: uid(e.entity_id),
-                pos: f3(eye),
-                pitch: entity.pitch,
-                yaw: entity.yaw,
-                head_yaw: entity.head_yaw,
-                game_mode: if mode == 6 { 0 } else { mode },
-                sneaking: false,
-            });
+            let body = bp::add_player(
+                &bp::AddPlayer {
+                    uuid: e.uuid.0,
+                    name: &name,
+                    entity_id: uid(e.entity_id),
+                    pos: f3(eye),
+                    pitch: entity.pitch,
+                    yaw: entity.yaw,
+                    head_yaw: entity.head_yaw,
+                    game_mode: if mode == 6 { 0 } else { mode },
+                    sneaking: false,
+                },
+                self.version,
+            );
             self.send(id::ADD_PLAYER, &body);
             return;
         }
@@ -420,7 +422,7 @@ impl Session {
         let mut m = bp::Metadata::default().long(meta::FLAGS, base_flags(0, false));
         match java_name {
             "minecraft:falling_block" => {
-                let block = bedrock_block(e.data);
+                let block = bedrock_block(self.version.palette.blocks(), e.data);
                 m = m.int(meta::VARIANT, i32::try_from(block).unwrap_or(0));
             }
             "minecraft:tnt" => {
@@ -434,6 +436,7 @@ impl Session {
             _ => {}
         }
         let body = bp::add_actor(
+            self.version,
             uid(e.entity_id),
             &name,
             f3(pos),
@@ -500,7 +503,10 @@ impl Session {
                 ent.kind = Kind::Item;
             }
             let mut stack = Vec::new();
-            Items::get().write_instance(&mut stack, &item, 0);
+            self.version
+                .palette
+                .items()
+                .write_instance(&mut stack, &item, 0);
             let body = bp::add_item_actor(uid(d.entity_id), &stack, f3(e.pos), [0.0; 3]);
             self.send(id::ADD_ITEM_ACTOR, &body);
             return;
@@ -569,7 +575,7 @@ impl Session {
             return;
         }
         let runtime = self.actor(e.entity_id);
-        let items = Items::get();
+        let items = self.version.palette.items();
         let eq = self.equipment.entry(e.entity_id).or_default();
         for (slot, stack) in &e.slots {
             if let Some(s) = eq.get_mut(usize::from(*slot)) {
@@ -638,7 +644,7 @@ impl Session {
             .as_ref()
             .is_some_and(|w| w.java_id != s.entity_id)
         {
-            self.send(id::ANIMATE, &bp::animate(1, runtime));
+            self.send(id::ANIMATE, &bp::animate(1, runtime, self.version));
         }
     }
 
@@ -884,7 +890,10 @@ impl Session {
             self.send(id::REMOVE_ACTOR, &bp::remove_actor(uid(e)));
         }
         for b in bosses {
-            self.send(id::BOSS_EVENT, &bp::boss_event(b, 2, "", 0.0, 0));
+            self.send(
+                id::BOSS_EVENT,
+                &bp::boss_event(b, 2, "", 0.0, 0, self.version),
+            );
             self.send(id::REMOVE_ACTOR, &bp::remove_actor(b));
         }
         if mode_changed {
@@ -1018,6 +1027,7 @@ impl Session {
                     .float(meta::WIDTH, 0.0)
                     .float(meta::HEIGHT, 0.0);
                 let body = bp::add_actor(
+                    self.version,
                     entity,
                     "minecraft:creeper",
                     f3(below),
@@ -1030,12 +1040,15 @@ impl Session {
                 self.send(id::ADD_ACTOR, &body);
                 self.send(
                     id::BOSS_EVENT,
-                    &bp::boss_event(entity, 0, &title, health, colour),
+                    &bp::boss_event(entity, 0, &title, health, colour, self.version),
                 );
             }
             1 => {
                 if let Some((entity, ..)) = w.bosses.remove(&uuid) {
-                    self.send(id::BOSS_EVENT, &bp::boss_event(entity, 2, "", 0.0, 0));
+                    self.send(
+                        id::BOSS_EVENT,
+                        &bp::boss_event(entity, 2, "", 0.0, 0, self.version),
+                    );
                     self.send(id::REMOVE_ACTOR, &bp::remove_actor(entity));
                 }
             }
@@ -1059,7 +1072,7 @@ impl Session {
                 let (entity, title, health, colour) = b.clone();
                 self.send(
                     id::BOSS_EVENT,
-                    &bp::boss_event(entity, event, &title, health, colour),
+                    &bp::boss_event(entity, event, &title, health, colour, self.version),
                 );
             }
             _ => {}
@@ -1123,7 +1136,7 @@ impl Session {
             .as_ref()
             .is_some_and(|w| w.listed.contains(&uuid))
         {
-            self.send(id::PLAYER_SKIN, &bp::player_skin(uuid, skin));
+            self.send(id::PLAYER_SKIN, &bp::player_skin(uuid, skin, self.version));
         }
     }
 

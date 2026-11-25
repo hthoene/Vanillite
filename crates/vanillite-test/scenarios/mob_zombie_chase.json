@@ -1,0 +1,112 @@
+{
+  "description": "A zombie at night chases a survival player around the end of a wall in a closed stone arena: target selection by line of sight past the wall, path finding around it, melee attacks on the player.",
+  "time": 18000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      23,
+      -57,
+      23
+    ]
+  ],
+  "ticks": 240,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        23,
+        -58,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        23
+      ],
+      "to": [
+        23,
+        -58,
+        23
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -58,
+        23
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        23,
+        -60,
+        0
+      ],
+      "to": [
+        23,
+        -58,
+        23
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        4,
+        -60,
+        11
+      ],
+      "to": [
+        15,
+        -58,
+        12
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        20.5,
+        -60.0,
+        20.5
+      ]
+    },
+    {
+      "name": "zombie",
+      "type": "minecraft:zombie",
+      "pos": [
+        12.5,
+        -60.0,
+        3.5
+      ],
+      "seed": 1,
+      "finalize": false
+    }
+  ],
+  "tier": "fast"
+}

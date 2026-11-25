@@ -2,8 +2,8 @@
 //! `DetectorRailBlock`) and the connection logic of `RailState`.
 //!
 //! Shape updates (the waterlogged water tick) and survival are shared with world generation.
-//! Detector rails sense minecart entities of every kind; minecarts with containers and command
-//! block minecarts give no analog output yet (no container contents exist).
+//! Detector rails sense minecart entities of every kind and give the fill level of a container
+//! minecart to comparators.
 
 use vanillite_base::{Aabb, BlockPos, Direction};
 use vanillite_data::block::{BlockId, BlockState, ids};
@@ -704,15 +704,34 @@ fn detector_direct_signal(
     }
 }
 
-/// `getAnalogOutputSignal`: the success count of a command block minecart or the fill level of
-/// a container minecart. Neither has contents yet, so 0.
+/// `getAnalogOutputSignal`: while pressed, the success count of a command block minecart
+/// (always 0: they run no commands yet) or the fill level of a container minecart.
 fn detector_analog_output(
-    _level: &Level,
-    _state: BlockState,
-    _pos: BlockPos,
+    level: &Level,
+    state: BlockState,
+    pos: BlockPos,
     _direction: Direction,
 ) -> i32 {
-    0
+    if !powered(state) {
+        return 0;
+    }
+    let ents = &level.entities;
+    let mut command_block = false;
+    let mut container = None;
+    ents.store
+        .for_each_in(&detector_search_box(pos), false, |id| {
+            if let Some(m) = ents.minecart(id) {
+                if m.kind == crate::minecart::MinecartKind::CommandBlock {
+                    command_block = true;
+                } else if container.is_none() && m.kind.container_size() > 0 {
+                    container = Some(crate::minecart::container_signal(m));
+                }
+            }
+        });
+    if command_block {
+        return 0;
+    }
+    container.unwrap_or(0)
 }
 
 /// `getSearchBB(pos)`.

@@ -32,6 +32,7 @@ use crate::num::{angle_deg, f32_of, floor_i32};
 use crate::packets::{self as bp, id, input, move_mode, status};
 use crate::raknet::RakConn;
 use crate::skin::Skin;
+use crate::version::Version;
 use crate::{BedrockConfig, Connector, Status};
 
 /// Eye height of a standing player; Bedrock positions players at their eyes.
@@ -211,6 +212,8 @@ pub(crate) struct Session {
     peer: SocketAddr,
     rak: RakConn,
     codec: Codec,
+    /// The client's Bedrock version (known after `request_network_settings`).
+    pub(super) version: &'static Version,
     phase: Phase,
     batch: Vec<u8>,
     started: Instant,
@@ -269,6 +272,7 @@ impl Session {
             peer,
             rak,
             codec,
+            version: Version::latest(),
             phase: Phase::NetworkSettings,
             batch: Vec::new(),
             started: now,
@@ -456,19 +460,23 @@ impl Session {
         match (self.phase, pid) {
             (Phase::NetworkSettings, id::REQUEST_NETWORK_SETTINGS) => {
                 let protocol = crate::io::Reader::new(body).be_i32()?;
-                if protocol != crate::data::PROTOCOL {
-                    let s = if protocol < crate::data::PROTOCOL {
+                let accepted = self.shared.config.accepts(protocol);
+                let Some(version) = Version::of(protocol).filter(|_| accepted) else {
+                    let (oldest, latest) = self.shared.config.accepted_range();
+                    let s = if protocol < oldest.protocol {
                         status::FAILED_CLIENT
                     } else {
                         status::FAILED_SERVER
                     };
                     self.send(id::PLAY_STATUS, &bp::play_status(s));
                     self.kick(&format!(
-                        "This server runs Bedrock {}",
-                        crate::data::VERSION
+                        "This server runs Bedrock {} to {}",
+                        oldest.name(),
+                        latest.last_release()
                     ));
                     return Ok(());
-                }
+                };
+                self.version = version;
                 let threshold = self.shared.config.compression_threshold;
                 self.send(id::NETWORK_SETTINGS, &bp::network_settings(threshold));
                 self.flush_batch();
@@ -509,8 +517,8 @@ impl Session {
                 self.java_send(&psb::PlayerLoaded);
             }
             (Phase::Playing, id::PLAYER_AUTH_INPUT) => {
-                self.auth_input(&bp::read_auth_input(body)?);
-                let extra = bp::read_auth_input_extra(body)?;
+                self.auth_input(&bp::read_auth_input(body, self.version)?);
+                let extra = bp::read_auth_input_extra(body, self.version)?;
                 if let Some(t) = extra.item_interaction {
                     self.transaction(t);
                 }
@@ -519,7 +527,10 @@ impl Session {
                 }
                 if let Some(req) = extra.stack_request {
                     let resp = self.stack_request(&req);
-                    self.send(id::ITEM_STACK_RESPONSE, &bp::item_stack_response(&[resp]));
+                    self.send(
+                        id::ITEM_STACK_RESPONSE,
+                        &bp::item_stack_response(&[resp], self.version),
+                    );
                     if std::mem::take(&mut self.inventory_resync) {
                         self.send_inventory();
                     }
@@ -527,7 +538,7 @@ impl Session {
             }
             (Phase::Playing, id::ITEM_STACK_REQUEST) => self.stack_requests(body)?,
             (Phase::Playing, id::INVENTORY_TRANSACTION) => {
-                let t = bp::read_inventory_transaction(body)?;
+                let t = bp::read_inventory_transaction(body, self.version)?;
                 self.transaction(t);
             }
             (Phase::Playing, id::MOB_EQUIPMENT) => {
@@ -1021,7 +1032,7 @@ impl Session {
     }
 
     fn block_update(&mut self, pos: [i32; 3], java_state: u32) {
-        let blocks = crate::data::Blocks::get();
+        let blocks = self.version.palette.blocks();
         let e = blocks.entry(java_state);
         let water = if e & crate::data::WATERLOGGED != 0 {
             blocks.water
@@ -1173,29 +1184,32 @@ impl Session {
             floor_i32(w.pos[1]),
             floor_i32(w.pos[2]),
         ];
-        let body = bp::start_game(&bp::StartGame {
-            entity_id: uid(w.entity_id),
-            game_mode: bedrock_game_mode(w.game_mode),
-            position: f3(eye),
-            yaw: w.yaw,
-            pitch: w.pitch,
-            dimension: w.layout.dimension,
-            difficulty: 2,
-            spawn,
-            hardcore: w.hardcore,
-            world_name: &self.shared.config.world_name,
-            permission: 1,
-        });
+        let body = bp::start_game(
+            &bp::StartGame {
+                entity_id: uid(w.entity_id),
+                game_mode: bedrock_game_mode(w.game_mode),
+                position: f3(eye),
+                yaw: w.yaw,
+                pitch: w.pitch,
+                dimension: w.layout.dimension,
+                difficulty: 2,
+                spawn,
+                hardcore: w.hardcore,
+                world_name: &self.shared.config.world_name,
+                permission: 1,
+            },
+            self.version,
+        );
         let runtime = rid(w.entity_id);
         let own = uid(w.entity_id);
         self.send(id::START_GAME, &body);
-        self.send(id::ITEM_REGISTRY, crate::data::ITEM_REGISTRY);
+        self.send(id::ITEM_REGISTRY, self.version.palette.item_registry);
         self.send(id::BIOME_DEFINITION_LIST, crate::data::BIOME_DEFINITIONS);
         self.send(
             id::AVAILABLE_ACTOR_IDENTIFIERS,
             crate::data::ENTITY_IDENTIFIERS,
         );
-        self.send(id::CREATIVE_CONTENT, crate::items::CREATIVE);
+        self.send(id::CREATIVE_CONTENT, self.version.palette.creative);
         self.send(id::SET_COMMANDS_ENABLED, &bp::set_commands_enabled(true));
         self.send(
             id::UPDATE_ATTRIBUTES,
@@ -1214,7 +1228,7 @@ impl Session {
             xuid: &self.xuid,
             skin: &skin,
         };
-        let body = bp::player_list_add(&[entry]);
+        let body = bp::player_list_add(&[entry], self.version);
         self.send(id::PLAYER_LIST, &body);
         if let Some(w) = &mut self.world {
             w.listed.insert(self.uuid);
@@ -1288,6 +1302,7 @@ impl Session {
             w.early_chunks.insert((x, z));
         }
         match chunk::translate(
+            self.version,
             x,
             z,
             data,
@@ -1351,7 +1366,7 @@ impl Session {
                 skin,
             })
             .collect();
-        let body = bp::player_list_add(&entries);
+        let body = bp::player_list_add(&entries, self.version);
         self.send(id::PLAYER_LIST, &body);
     }
 

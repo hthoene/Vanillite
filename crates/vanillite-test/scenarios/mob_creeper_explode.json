@@ -1,0 +1,98 @@
+{
+  "description": "A creeper at night walks to a survival player, swells and explodes: approach, swell goal, the explosion's blocks and damage, the drops.",
+  "time": 18000,
+  "region": [
+    [
+      0,
+      -63,
+      0
+    ],
+    [
+      23,
+      -57,
+      23
+    ]
+  ],
+  "ticks": 200,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        23,
+        -58,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        23
+      ],
+      "to": [
+        23,
+        -58,
+        23
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -58,
+        23
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        23,
+        -60,
+        0
+      ],
+      "to": [
+        23,
+        -58,
+        23
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        12.5,
+        -60.0,
+        16.5
+      ]
+    },
+    {
+      "name": "creeper",
+      "type": "minecraft:creeper",
+      "pos": [
+        12.5,
+        -60.0,
+        5.5
+      ],
+      "seed": 3,
+      "finalize": false
+    }
+  ],
+  "tier": "fast"
+}
