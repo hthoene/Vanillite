@@ -1,4 +1,4 @@
-//! Arrows shot by skeletons (`AbstractArrow`) and experience orbs (`ExperienceOrb`).
+//! Arrows shot by skeletons (`AbstractArrow`).
 
 use vanillite_base::math::ceil;
 use vanillite_base::random::{LegacyRandom, RandomSource};
@@ -32,17 +32,10 @@ pub struct ArrowData {
     /// `pickup`: 0 disallowed, 1 allowed, 2 creative only.
     pub pickup: u8,
     pub random_seed: i64,
-}
-
-/// The kind data of an experience orb.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct OrbData {
-    pub value: i32,
-    pub count: i32,
-    pub age: i32,
-    pub tick_count: i32,
-    pub following: Option<EntityId>,
-    pub random_seed: i64,
+    /// The knockback of the weapon's enchantments (Punch).
+    pub knockback: f32,
+    /// Burning (Flame): sets what it hits on fire for 5 seconds.
+    pub fire: bool,
 }
 
 /// `startUsingItem` with the bow: the "using item" living flag is synched.
@@ -76,6 +69,73 @@ fn shoot(random: &mut LegacyRandom, dir: Vec3, power: f32, uncertainty: f32) -> 
         y_head_rot: 0.0,
     };
     (v, rot)
+}
+
+/// `BowItem.releaseUsing` / `ProjectileWeaponItem.shoot` of one arrow: spawns it at `start`
+/// flying along `dir` with `power` and `uncertainty`, with the weapon's enchantments (Power
+/// adds damage, Punch knockback, Flame fire). Dispensers and other shooters use it too.
+#[allow(clippy::too_many_arguments)]
+pub fn shoot_arrow(
+    ents: &mut Entities,
+    network_ids: &vanillite_world::entity::NetworkIds,
+    random: &mut LegacyRandom,
+    start: Vec3,
+    dir: Vec3,
+    power: f32,
+    uncertainty: f32,
+    owner: Option<EntityId>,
+    weapon: Option<&crate::item::ItemStack>,
+    crit: bool,
+    pickup: u8,
+) -> EntityId {
+    let (velocity, rot) = shoot(random, dir, power, uncertainty);
+    let seed = random.next_long();
+    let uuid = random_uuid(random);
+    let mut data = ArrowData {
+        owner,
+        base_damage: 2.0,
+        in_ground: false,
+        life: 0,
+        shake: 0,
+        crit,
+        left_owner: false,
+        last_state: None,
+        tick_count: 0,
+        pickup,
+        random_seed: seed,
+        knockback: 0.0,
+        fire: false,
+    };
+    if let Some(w) = weapon {
+        let (enchants, tags) = super::attack::combat_data();
+        let arrow = crate::predicate::EntityFacts {
+            kind: Some(entity_ids::ARROW),
+            ..crate::predicate::EntityFacts::default()
+        };
+        let types = crate::survival::damage::DamageTypes::built_in();
+        let cx = crate::enchant::EnchantContext {
+            types: &types,
+            tags,
+            this: None,
+            attacker: owner.and_then(|o| super::attack::facts(ents, o)),
+            direct_attacker: Some(arrow),
+            attacking_player: None,
+            source: None,
+        };
+        #[allow(clippy::cast_possible_truncation)]
+        let dmg = enchants.modify_damage(w, &cx, random, data.base_damage as f32);
+        data.base_damage = f64::from(dmg);
+        data.knockback = enchants.modify_knockback(w, &cx, random, 0.0);
+        data.fire = enchants.projectile_ignite(w).is_some();
+    }
+    let mut new = NewEntity::new(entity_ids::ARROW, network_ids.next(), uuid, start);
+    new.velocity = velocity;
+    new.rot = rot;
+    new.flags = EntityFlags::HAS_IMPULSE;
+    if data.fire {
+        new.flags.set(EntityFlags::ON_FIRE, true);
+    }
+    ents.spawn_arrow(new, data)
 }
 
 /// `AbstractSkeleton.performRangedAttack`.
@@ -127,6 +187,8 @@ pub fn skeleton_shoot(t: &mut Tick<'_, '_>, target: EntityId, power: f32) {
             tick_count: 0,
             pickup: 0,
             random_seed: seed,
+            knockback: 0.0,
+            fire: false,
         },
     );
     let m = t.mob();
@@ -274,6 +336,26 @@ pub fn tick_arrow(
             #[allow(clippy::cast_precision_loss)]
             let hurt = combat::hurt(level, ents, env, cx, target, source, damage as f32);
             if hurt {
+                if a.fire {
+                    super::attack::ignite(ents, target, 100);
+                }
+                // `doKnockback`: Punch pushes along the arrow's flight.
+                if a.knockback > 0.0 {
+                    let resist = ents
+                        .mob(target)
+                        .map_or(0.0, |m| m.attrs.knockback_resistance);
+                    let flat = Vec3::new(velocity.x, 0.0, velocity.z);
+                    if flat.length_sqr() > 0.0 {
+                        let push = flat.normalize()
+                            * (f64::from(a.knockback) * 0.6 * (1.0 - resist).max(0.0));
+                        if let Some(mut e) = ents.store.get_mut(target) {
+                            let v = e.as_ref().velocity();
+                            e.set_velocity(v + Vec3::new(push.x, 0.1, push.z));
+                            e.set_flags(EntityFlags::HAS_IMPULSE, true);
+                            e.set_flags(EntityFlags::HURT_MARKED, true);
+                        }
+                    }
+                }
                 if let Some(owner) = a.owner
                     && let Some(m) = ents.mob_mut(owner)
                 {
@@ -397,260 +479,4 @@ fn segment_box(from: Vec3, to: Vec3, b: &Aabb) -> Option<f64> {
         }
     }
     Some(t0)
-}
-
-/// Adds an experience orb of `value` at `pos`, or merges it into an equal orb nearby
-/// (`tryMergeToExisting`).
-pub fn add_experience_orb(
-    level: &Level,
-    ents: &mut Entities,
-    cx: &mut MobContext,
-    pos: Vec3,
-    value: i32,
-) {
-    let area = Aabb::new(
-        pos.x - 0.5,
-        pos.y - 0.5,
-        pos.z - 0.5,
-        pos.x + 0.5,
-        pos.y + 0.5,
-        pos.z + 0.5,
-    );
-    let mut random =
-        LegacyRandom::new(level.game_time() ^ i64::from(value) ^ pos.x.to_bits() as i64);
-    let pick = random.next_int_bounded(40);
-    let mut merged = None;
-    ents.store.for_each_in(&area, false, |other| {
-        if merged.is_some() {
-            return;
-        }
-        let Some(o) = ents.orb(other) else {
-            return;
-        };
-        let Some(e) = ents.store.get(other) else {
-            return;
-        };
-        if (e.network_id().0 - pick) % 40 == 0 && o.value == value {
-            merged = Some(other);
-        }
-    });
-    if let Some(other) = merged
-        && let Some(o) = ents.orb_mut(other)
-    {
-        o.count += 1;
-        o.age = 0;
-        return;
-    }
-    let mut new = NewEntity::new(
-        entity_ids::EXPERIENCE_ORB,
-        level.network_ids().next(),
-        random_uuid(&mut random),
-        pos,
-    );
-    #[allow(clippy::cast_possible_truncation)]
-    {
-        new.rot.y_rot = (random.next_double() * 360.0) as f32;
-    }
-    new.velocity = Vec3::new(
-        (random.next_double() * f64::from(0.2_f32) - f64::from(0.1_f32)) * 2.0,
-        random.next_double() * 0.2 * 2.0,
-        (random.next_double() * f64::from(0.2_f32) - f64::from(0.1_f32)) * 2.0,
-    );
-    let _ = cx;
-    ents.spawn_orb(
-        new,
-        OrbData {
-            value,
-            count: 1,
-            age: 0,
-            tick_count: 0,
-            following: None,
-            random_seed: random.next_long(),
-        },
-    );
-}
-
-/// `ExperienceOrb.tick`, with the pickup by touching players (`playerTouch`).
-pub fn tick_orb(
-    level: &Level,
-    ents: &mut Entities,
-    env: &mut Env<'_>,
-    cx: &mut MobContext,
-    id: EntityId,
-) {
-    let Some(mut o) = ents.orb(id).copied() else {
-        return;
-    };
-    let Some(e) = ents.store.get(id) else {
-        return;
-    };
-    let mut random = LegacyRandom::new(o.random_seed);
-    o.tick_count += 1;
-    let mut pos = e.pos();
-    let aabb = e.aabb();
-    let mut velocity = e.velocity();
-    let colliding = !physics::no_collision(level, &aabb, &mut cx.boxes);
-    let eye_in_water =
-        super::is_water(level.block(BlockPos::containing(pos.x, pos.y + 0.0, pos.z)));
-    if eye_in_water {
-        velocity = Vec3::new(
-            velocity.x * f64::from(0.99_f32),
-            (velocity.y + f64::from(5.0e-4_f32)).min(f64::from(0.06_f32)),
-            velocity.z * f64::from(0.99_f32),
-        );
-    } else if !colliding {
-        velocity.y -= 0.03;
-    }
-    if super::is_lava(level.block(BlockPos::containing(pos.x, pos.y, pos.z))) {
-        velocity = Vec3::new(
-            f64::from((random.next_float() - random.next_float()) * 0.2),
-            f64::from(0.2_f32),
-            f64::from((random.next_float() - random.next_float()) * 0.2),
-        );
-    }
-    if o.tick_count % 20 == 1 {
-        // `scanForMerges`.
-        let area = aabb.inflate(0.5, 0.5, 0.5);
-        let mut others = Vec::new();
-        ents.store.for_each_in(&area, false, |other| {
-            if other != id && ents.orb(other).is_some_and(|x| x.value == o.value) {
-                others.push(other);
-            }
-        });
-        for other in others {
-            if let Some(x) = ents.orb(other).copied() {
-                o.count += x.count;
-                o.age = o.age.min(x.age);
-                cx.discarded.push(other);
-                if let Some(x) = ents.orb_mut(other) {
-                    x.count = 0;
-                }
-            }
-        }
-    }
-    // `followNearbyPlayer`.
-    let follow_valid = o
-        .following
-        .and_then(|p| ents.store.get(p))
-        .is_some_and(|p| p.pos().distance_to_sqr(pos) <= 64.0);
-    if !follow_valid {
-        let r = 8.0;
-        let area = Aabb::new(
-            pos.x - r,
-            pos.y - r,
-            pos.z - r,
-            pos.x + r,
-            pos.y + r,
-            pos.z + r,
-        );
-        let mut nearest: Option<(EntityId, f64)> = None;
-        ents.store.for_each_in(&area, true, |p| {
-            let ok = ents.player(p).is_some_and(|d| {
-                !d.survival.is_dead_or_dying()
-                    && d.game_mode != vanillite_config::GameMode::Spectator
-            });
-            if !ok {
-                return;
-            }
-            if let Some(pe) = ents.store.get(p) {
-                let d = pe.pos().distance_to_sqr(pos);
-                if d <= 64.0 && nearest.is_none_or(|(_, b)| d < b) {
-                    nearest = Some((p, d));
-                }
-            }
-        });
-        o.following = nearest.map(|(p, _)| p);
-    }
-    if let Some(pe) = o.following.and_then(|p| ents.store.get(p)) {
-        let eye = f64::from(pe.kind().info().eye_height);
-        let delta = Vec3::new(
-            pe.pos().x - pos.x,
-            pe.pos().y + eye / 2.0 - pos.y,
-            pe.pos().z - pos.z,
-        );
-        let power = 1.0 - delta.length_sqr().sqrt() / 8.0;
-        velocity = velocity + delta.normalize() * (power * power * 0.1);
-    }
-    let fall_speed = velocity.y;
-    let moved = physics::collide(level, aabb, velocity, 0.0, false, &mut cx.boxes);
-    pos = pos + moved;
-    let below = moved.y != velocity.y && velocity.y < 0.0;
-    if moved.x != velocity.x {
-        velocity.x = 0.0;
-    }
-    if moved.z != velocity.z {
-        velocity.z = 0.0;
-    }
-    if moved.y != velocity.y {
-        velocity.y = 0.0;
-    }
-    let mut friction = 0.98_f32;
-    if below {
-        let under = level.block(BlockPos::containing(pos.x, pos.y - 0.500_001, pos.z));
-        friction *= under.block().info().friction;
-    }
-    velocity = velocity * f64::from(friction);
-    if below && fall_speed < -0.03 {
-        velocity.y = -fall_speed * 0.4;
-    }
-    o.age += 1;
-    o.random_seed = random.next_long();
-    let mut discard = o.age >= 6000 || o.count <= 0;
-    if let Some(mut e) = ents.store.get_mut(id) {
-        e.set_pos(pos);
-        e.set_velocity(velocity);
-        e.set_flags(EntityFlags::ON_GROUND, below);
-    }
-    // `playerTouch`: players whose grown box touches the orb take one orb's worth.
-    if !discard {
-        let orb_box = ents.store.get(id).map(|e| e.aabb());
-        if let Some(orb_box) = orb_box {
-            let area = orb_box.inflate(1.0, 1.0, 1.0);
-            let mut touching = Vec::new();
-            ents.store.for_each_in(&area, true, |p| touching.push(p));
-            for p in touching {
-                let Some(pe) = ents.store.get(p) else {
-                    continue;
-                };
-                if !pe.aabb().inflate(1.0, 0.5, 1.0).intersects(&orb_box) {
-                    continue;
-                }
-                let ppos = pe.pos();
-                let Some(data) = ents.player_mut(p) else {
-                    continue;
-                };
-                if data.survival.is_dead_or_dying()
-                    || data.game_mode == vanillite_config::GameMode::Spectator
-                    || data.survival.take_xp_delay != 0
-                {
-                    continue;
-                }
-                data.survival.take_xp_delay = 2;
-                data.survival.xp.give_points(o.value);
-                let pitch = (random.next_float() - random.next_float()) * 0.35 + 0.9;
-                let seed = crate::survival::sound_seed();
-                play_sound(
-                    env.out,
-                    None,
-                    ppos,
-                    "minecraft:entity.experience_orb.pickup",
-                    SoundSource::Players,
-                    0.1,
-                    pitch,
-                    seed,
-                );
-                o.count -= 1;
-                if o.count <= 0 {
-                    discard = true;
-                    break;
-                }
-            }
-        }
-    }
-    if discard {
-        cx.discarded.push(id);
-    }
-    if let Some(d) = ents.orb_mut(id) {
-        *d = o;
-    }
 }

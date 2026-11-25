@@ -1,0 +1,161 @@
+{
+  "description": "Plain minecarts on straight rails: one pushed east rolls along a raised track, down a slope and slows to a stop; one pushed east climbs a slope that is too high for its speed and rolls back.",
+  "tier": "fast",
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      31,
+      -58,
+      8
+    ]
+  ],
+  "ticks": 160,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        1,
+        -60,
+        2
+      ],
+      "to": [
+        10,
+        -60,
+        2
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        1,
+        -59,
+        2
+      ],
+      "to": [
+        10,
+        -59,
+        2
+      ],
+      "block": "minecraft:rail[shape=east_west]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        11,
+        -60,
+        2
+      ],
+      "block": "minecraft:rail[shape=ascending_west]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        12,
+        -60,
+        2
+      ],
+      "to": [
+        30,
+        -60,
+        2
+      ],
+      "block": "minecraft:rail[shape=east_west]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        1,
+        -60,
+        6
+      ],
+      "to": [
+        8,
+        -60,
+        6
+      ],
+      "block": "minecraft:rail[shape=east_west]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        9,
+        -60,
+        6
+      ],
+      "block": "minecraft:rail[shape=ascending_east]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        10,
+        -60,
+        6
+      ],
+      "to": [
+        14,
+        -60,
+        6
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        10,
+        -59,
+        6
+      ],
+      "to": [
+        14,
+        -59,
+        6
+      ],
+      "block": "minecraft:rail[shape=east_west]"
+    }
+  ],
+  "entities": [
+    {
+      "name": "down",
+      "type": "minecraft:minecart",
+      "pos": [
+        2.5,
+        -58.9375,
+        2.5
+      ],
+      "rot": [
+        0,
+        0
+      ],
+      "seed": 1,
+      "motion": [
+        0.3,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "up",
+      "type": "minecraft:minecart",
+      "pos": [
+        2.5,
+        -59.9375,
+        6.5
+      ],
+      "rot": [
+        0,
+        0
+      ],
+      "seed": 2,
+      "motion": [
+        0.25,
+        0,
+        0
+      ]
+    }
+  ]
+}

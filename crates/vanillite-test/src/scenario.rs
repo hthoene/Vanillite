@@ -27,8 +27,8 @@
 //!   minimum y. Defaults: seed 0, plains, the classic layers above.
 //! - `rules`: game rules on top of the defaults every scenario has (`random_tick_speed 0`,
 //!   `spawn_mobs false`, `advance_time false`, `advance_weather false`).
-//! - `region`: the observed box (inclusive). Its chunks and their neighbours are loaded and
-//!   ticking before the setup.
+//! - `region`: the observed box (inclusive). Its chunks and their neighbours are forced
+//!   (`/forceload`) and ticking before the setup.
 //! - `light`: frames also hold the settled sky and block light of the region, the levels a
 //!   client sees. Default `false`.
 //! - `weather`: `clear` (default), `rain` or `thunder`, at full strength from the start (no
@@ -40,7 +40,13 @@
 //! of random tick positions (`Level.randValue`) starts at the seed's low 32 bits.
 //! - `setup`: applied without updates before frame 0 (`set`, `fill`; `place` with updates).
 //! - `actions`: before world tick `tick` (1-based): `place` (with neighbour and shape updates,
-//!   Vanilla `setBlock` flags 3), `set` (without updates), `fill` (with updates).
+//!   Vanilla `setBlock` flags 3), `set` (without updates), `fill` (with updates), `force` and
+//!   `unforce` (`"chunks": [[x, z], ...]`: adds or removes forced tickets like `/forceload`,
+//!   then the chunk system runs without a game tick until every chunk is loaded, unloaded and
+//!   has its entities like its new ticket level says).
+//!
+//! Positions in chunks that are not accessible (unloaded or above full level) are traced as
+//! the state [`UNLOADED`].
 //!
 //! Block states are written `name[key=value,...]` like in commands.
 //!
@@ -90,7 +96,10 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde_json::Value;
-use vanillite_base::BlockPos;
+use vanillite_base::{BlockPos, ChunkPos};
+
+/// The traced state of a position in a chunk that is not accessible.
+pub const UNLOADED: &str = "<unloaded>";
 
 use crate::golden;
 
@@ -118,6 +127,8 @@ pub struct WorldSpec {
     pub time: Option<i64>,
     /// The observed region (inclusive): its chunks and their neighbours are forced.
     pub region: (BlockPos, BlockPos),
+    /// Chunks forced before the setup: the region's chunks and one chunk around them.
+    pub forced: Vec<ChunkPos>,
     /// Whether the world computes light: with entities (mobs see it) or `"light": true`.
     /// Block-only scenarios run without it, which is much faster.
     pub light: bool,
@@ -140,6 +151,10 @@ pub enum OpKind {
     Place,
     /// A box: without updates in the setup, with updates as an action.
     Fill,
+    /// Forces chunks (an action).
+    Force,
+    /// Removes the forced tickets of chunks (an action).
+    Unforce,
     /// Damage to a scenario entity ([`Op::hurt`]).
     Hurt,
 }
@@ -181,6 +196,8 @@ pub struct EntitySpec {
     pub baby: Option<bool>,
     /// `finalizeSpawn` like `/summon`.
     pub finalize: bool,
+    /// Velocity set after spawning.
+    pub motion: Option<[f64; 3]>,
 }
 
 impl EntitySpec {
@@ -204,10 +221,12 @@ pub struct Op {
     pub kind: OpKind,
     pub from: BlockPos,
     pub to: BlockPos,
-    /// Block state, `name[key=value,...]` (empty for `hurt`).
+    /// Block state, `name[key=value,...]`; empty for `hurt` and chunk ops.
     pub block: String,
     /// The damage of a `hurt` action.
     pub hurt: Option<Hurt>,
+    /// The chunks of `force` and `unforce`.
+    pub chunks: Vec<ChunkPos>,
 }
 
 /// A parsed scenario.
@@ -301,6 +320,13 @@ impl Scenario {
             })
             .unwrap_or_default();
         let region = v.get("region").ok_or("region is missing")?;
+        let (min, max) = (pos(region.get(0))?, pos(region.get(1))?);
+        let mut forced = Vec::new();
+        for x in (min.x >> 4) - 1..=(max.x >> 4) + 1 {
+            for z in (min.z >> 4) - 1..=(max.z >> 4) + 1 {
+                forced.push(ChunkPos::new(x, z));
+            }
+        }
         let ops = |key: &str, actions: bool| -> Result<Vec<Op>, String> {
             v.get(key)
                 .and_then(Value::as_array)
@@ -335,6 +361,7 @@ impl Scenario {
                     .to_owned(),
                 time: v.get("time").and_then(Value::as_i64),
                 region: (pos(region.get(0))?, pos(region.get(1))?),
+                forced,
                 light: v.get("entities").is_some()
                     || v.get("light").and_then(Value::as_bool).unwrap_or(false),
                 observe_light: v.get("light").and_then(Value::as_bool).unwrap_or(false),
@@ -350,8 +377,8 @@ impl Scenario {
                     .to_owned(),
                 level_rng: v.get("level_rng").and_then(Value::as_bool).unwrap_or(false),
             },
-            min: pos(region.get(0))?,
-            max: pos(region.get(1))?,
+            min,
+            max,
             ticks: v
                 .get("ticks")
                 .and_then(Value::as_u64)
@@ -445,6 +472,7 @@ fn entity(v: &Value) -> Result<EntitySpec, String> {
         },
         baby: v.get("baby").and_then(Value::as_bool),
         finalize: v.get("finalize").and_then(Value::as_bool).unwrap_or(true),
+        motion: v.get("motion").map(|m| vec3(Some(m))).transpose()?,
         kind,
     })
 }
@@ -455,8 +483,42 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
         Some("place") => OpKind::Place,
         Some("fill") => OpKind::Fill,
         Some("hurt") if action => OpKind::Hurt,
+        Some("force") if action => OpKind::Force,
+        Some("unforce") if action => OpKind::Unforce,
         o => return Err(format!("unknown op {o:?}")),
     };
+    if matches!(kind, OpKind::Force | OpKind::Unforce) {
+        let chunks = v
+            .get("chunks")
+            .and_then(Value::as_array)
+            .ok_or("a chunk op needs chunks")?
+            .iter()
+            .map(|c| {
+                let c = |i: usize| {
+                    c.get(i)
+                        .and_then(Value::as_i64)
+                        .and_then(|v| i32::try_from(v).ok())
+                        .ok_or_else(|| format!("bad chunk {c:?}"))
+                };
+                Ok(ChunkPos::new(c(0)?, c(1)?))
+            })
+            .collect::<Result<_, String>>()?;
+        let tick = v
+            .get("tick")
+            .and_then(Value::as_u64)
+            .and_then(|t| u32::try_from(t).ok())
+            .filter(|&t| t >= 1)
+            .ok_or("an action needs a tick >= 1")?;
+        return Ok(Op {
+            tick,
+            kind,
+            from: BlockPos::new(0, 0, 0),
+            to: BlockPos::new(0, 0, 0),
+            block: String::new(),
+            hurt: None,
+            chunks,
+        });
+    }
     let tick = if action {
         v.get("tick")
             .and_then(Value::as_u64)
@@ -474,6 +536,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             from: BlockPos::new(0, 0, 0),
             to: BlockPos::new(0, 0, 0),
             block: String::new(),
+            chunks: Vec::new(),
             hurt: Some(Hurt {
                 entity: s("entity").ok_or("hurt needs an entity")?,
                 by: s("by"),
@@ -501,5 +564,6 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             .ok_or("an op needs a block")?
             .to_owned(),
         hurt: None,
+        chunks: Vec::new(),
     })
 }

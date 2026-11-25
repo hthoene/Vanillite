@@ -138,10 +138,10 @@ pub struct Frame {
     pub block_ticks: Vec<TickObs>,
     pub fluid_ticks: Vec<TickObs>,
     pub entities: Vec<EntityObs>,
-    /// State of the level random after the tick (scenarios with entities).
-    pub level_rng: Option<i64>,
     /// `sky << 4 | block` per block of the region, y, z, x order; empty if not observed.
     pub light: Vec<u8>,
+    /// State of the level random after the tick (scenarios with entities).
+    pub level_rng: Option<i64>,
 }
 
 /// A recorded scenario run.
@@ -276,8 +276,8 @@ impl Trace {
                 block_ticks: ticks(f.get("block_ticks"))?,
                 fluid_ticks: ticks(f.get("fluid_ticks"))?,
                 entities: entities(f.get("entities"))?,
-                level_rng: f.get("level_rng").and_then(Value::as_i64),
                 light,
+                level_rng: f.get("level_rng").and_then(Value::as_i64),
             });
         }
         Ok(trace)
@@ -371,9 +371,6 @@ impl Trace {
                 s.push(']');
             }
             s.push(']');
-            if let Some(r) = f.level_rng {
-                let _ = write!(s, ",\"level_rng\":{r}");
-            }
             if !f.light.is_empty() {
                 s.push_str(",\"light\":[");
                 let mut run = 0;
@@ -386,6 +383,9 @@ impl Trace {
                     }
                 }
                 s.push(']');
+            }
+            if let Some(r) = f.level_rng {
+                let _ = write!(s, ",\"level_rng\":{r}");
             }
             s.push('}');
         }

@@ -29,7 +29,8 @@ pub(super) fn result_slot(kind: MenuKind) -> Option<usize> {
     match kind {
         MenuKind::Stonecutter => Some(1),
         MenuKind::Anvil | MenuKind::Grindstone => Some(2),
-        MenuKind::Smithing => Some(3),
+        MenuKind::Smithing | MenuKind::Loom => Some(3),
+        MenuKind::CartographyTable => Some(2),
         _ => None,
     }
 }
@@ -41,6 +42,9 @@ pub(super) fn may_place(kind: MenuKind, i: usize, stack: &ItemStack) -> bool {
     }
     if result_slot(kind) == Some(i) {
         return false;
+    }
+    if matches!(kind, MenuKind::Loom | MenuKind::CartographyTable) {
+        return ContainerView::station_may_place(kind, i, stack);
     }
     let Some(d) = data() else {
         return matches!(kind, MenuKind::Stonecutter | MenuKind::Anvil);
@@ -164,6 +168,8 @@ impl ContainerView<'_> {
                 self.set_local(2, result);
             }
             MenuKind::Enchantment => self.enchantment_changed(),
+            MenuKind::Loom => self.loom_changed(),
+            MenuKind::CartographyTable => self.cartography_changed(),
             MenuKind::Smithing => {
                 self.smithing_result();
                 let has_error = !self.local(0).is_empty()
@@ -226,6 +232,7 @@ impl ContainerView<'_> {
     pub(super) fn workstation_button(&mut self, id: i32) -> bool {
         match self.menu.kind {
             MenuKind::Enchantment => self.enchant_button(id),
+            MenuKind::Loom => self.loom_button(id),
             MenuKind::Stonecutter => {
                 if self.menu.data.first() == Some(&id) {
                     return false;
@@ -548,8 +555,14 @@ impl ContainerView<'_> {
         if original.is_empty() {
             return ItemStack::EMPTY;
         }
-        let mut stack = original.clone();
         let kind = self.menu.kind;
+        if kind == MenuKind::Loom {
+            return self.loom_quick_move(index, ctx, drops);
+        }
+        if kind == MenuKind::CartographyTable {
+            return self.cartography_quick_move(index, ctx, drops);
+        }
+        let mut stack = original.clone();
         if kind == MenuKind::Enchantment {
             let moved = if index < 2 {
                 super::move_to(self, &mut stack, 2, 38, true)
@@ -999,69 +1012,8 @@ fn enchantment_list(
     if enchantable <= 0 {
         return Vec::new();
     }
-    let mut cost = cost
-        + 1
-        + random.next_int_bounded(enchantable / 4 + 1)
-        + random.next_int_bounded(enchantable / 4 + 1);
-    let span = (random.next_float() + random.next_float() - 1.0) * 0.15;
-    #[allow(
-        clippy::as_conversions,
-        clippy::cast_possible_truncation,
-        clippy::cast_precision_loss
-    )]
-    let rounded = (cost as f32 + cost as f32 * span + 0.5).floor() as i32;
-    cost = rounded.max(1);
+    let mut results = crate::enchant::select_enchantment(e, &mut random, item, cost, &e.table);
     let is_book = item::item_id(item) == items::BOOK;
-    // `getAvailableEnchantmentResults`.
-    let mut available: Vec<(u32, i32, i32)> = Vec::new();
-    for &id in &e.table {
-        if !(is_book || e.is_primary(id, item)) {
-            continue;
-        }
-        let Some(info) = e.get(id) else {
-            continue;
-        };
-        let mut level = info.max_level;
-        while level >= 1 {
-            if cost >= info.min_cost.at(level) && cost <= info.max_cost.at(level) {
-                available.push((id, level, info.weight));
-                break;
-            }
-            level -= 1;
-        }
-    }
-    let mut results: Vec<(u32, i32)> = Vec::new();
-    let pick = |random: &mut vanillite_base::random::LegacyRandom, list: &[(u32, i32, i32)]| {
-        let total: i32 = list.iter().map(|&(_, _, w)| w).sum();
-        if total <= 0 {
-            return None;
-        }
-        let mut selection = random.next_int_bounded(total);
-        for &(id, level, weight) in list {
-            selection -= weight;
-            if selection < 0 {
-                return Some((id, level));
-            }
-        }
-        None
-    };
-    if !available.is_empty() {
-        if let Some(first) = pick(&mut random, &available) {
-            results.push(first);
-        }
-        while random.next_int_bounded(50) <= cost {
-            if let Some(&(last, _)) = results.last() {
-                available.retain(|&(id, _, _)| e.compatible(last, id));
-            }
-            if available.is_empty() {
-                break;
-            }
-            if let Some(next) = pick(&mut random, &available) {
-                results.push(next);
-            }
-            cost /= 2;
-        }
-    }
     if is_book && results.len() > 1 {
         let len = i32::try_from(results.len()).unwrap_or(1);
         let remove = usize::try_from(random.next_int_bounded(len)).unwrap_or(0);

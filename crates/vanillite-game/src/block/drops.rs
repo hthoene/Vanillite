@@ -32,7 +32,7 @@ pub fn drop_resources(
     let components = |id: u16| {
         entity
             .as_ref()
-            .and_then(|e| super::container::component(e, id))
+            .and_then(|e| crate::level::block_entity::collect_component(e, id))
     };
     let item_in_tag = |item: u16, tag: &str| data.item_in_tag(item, tag);
     let loot = BlockLootContext {
@@ -41,7 +41,8 @@ pub fn drop_resources(
         enchantment_level: &|_| 0,
         item_in_tag: &item_in_tag,
         explosion_radius: None,
-        this_entity: breaker.is_some(),
+        this_present: breaker.is_some(),
+        entity: None,
         block_entity: Some(&components),
     };
     // `LootContext.Builder.create`: the table's random sequence, else the level random.

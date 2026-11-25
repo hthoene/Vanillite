@@ -67,15 +67,18 @@ pub struct ServerWorld {
     /// The random of the item entities (`Entity.random`).
     item_random: XoroshiroRandom,
     updates: WorldUpdates,
-    /// The chunk ticket and simulation ticket of every player at its centre chunk.
-    player_tickets: FxHashMap<EntityId, (ChunkPos, TicketId, TicketId)>,
+    /// The centre chunk of every player with tickets.
+    player_tickets: FxHashMap<EntityId, ChunkPos>,
+    /// The players' chunk ticket and simulation ticket at each centre chunk with the number
+    /// of players there: equal tickets at one chunk give the same levels as one, so dense
+    /// players crossing chunks do not recompute the levels of their whole view.
+    center_tickets: FxHashMap<ChunkPos, (u32, TicketId, TicketId)>,
     scratch: Vec<ChunkPos>,
     /// Weather, lightning and the players' survival.
     pub(crate) survival: crate::survival::WorldSurvival,
     /// Mobs: their tick, the players' attacks and spawning.
     pub(crate) mobs: crate::mobs::WorldMobs,
     /// Loading and saving the entities of chunks.
-    entity_io: crate::entity_io::EntityChunks,
     /// Player ids of the tick (block effects).
     player_scratch: Vec<vanillite_world::entity::EntityId>,
     /// The dimension's saved data (`<dimension>/data/`: world border, chunk tickets, raids,
@@ -113,7 +116,6 @@ impl ServerWorld {
         mut level: Level,
         survival: crate::survival::WorldSurvival,
         mobs: crate::mobs::WorldMobs,
-        entity_io: crate::entity_io::EntityChunks,
         data: vanillite_storage::saved_data::SavedDataStore,
     ) -> ServerWorld {
         // Entity randoms are `RandomSource.create()`: seeded from the clock, not the world seed.
@@ -140,12 +142,12 @@ impl ServerWorld {
             packets: ChunkPackets::default(),
             updates: WorldUpdates::default(),
             player_tickets: FxHashMap::default(),
+            center_tickets: FxHashMap::default(),
             effects: LevelEffects::default(),
             item_random: XoroshiroRandom::new(seed),
             scratch: Vec::new(),
             survival,
             mobs,
-            entity_io,
             player_scratch: Vec::new(),
             data,
             arrivals: Vec::new(),
@@ -177,34 +179,52 @@ impl ServerWorld {
     }
 
     /// Keeps every player's view loaded and the chunks in its simulation distance ticking:
-    /// one load ticket and one simulation ticket at its centre chunk, moved when the centre
-    /// changes, removed when the player is gone.
+    /// one load ticket and one simulation ticket at each centre chunk, shared by the players
+    /// there, moved with a player that was alone, removed when the last one is gone.
     fn update_player_tickets(&mut self) {
         let chunks = &mut self.level.chunks;
         let level = chunks.player_ticket_level();
         let simulation = chunks.player_simulation_level();
+        let centers = &mut self.center_tickets;
         for (id, player) in self.level.entities.players.iter() {
             let center = player.chunk_view.center;
-            match self.player_tickets.get_mut(&id) {
-                Some((old, _, _)) if *old == center => {}
-                Some((old, ticket, sim)) => {
-                    chunks.move_ticket(*ticket, center);
-                    chunks.move_simulation_ticket(*sim, center);
-                    *old = center;
+            let old = self.player_tickets.get(&id).copied();
+            if old == Some(center) {
+                continue;
+            }
+            self.player_tickets.insert(id, center);
+            let alone = old.and_then(|old| {
+                centers
+                    .get(&old)
+                    .is_some_and(|entry| entry.0 == 1)
+                    .then_some(old)
+            });
+            if let Some(entry) = centers.get_mut(&center) {
+                entry.0 += 1;
+            } else if let Some(old) = alone {
+                // The only player at its old centre: move those tickets, touching only the
+                // chunks whose level changes.
+                if let Some(entry) = centers.remove(&old) {
+                    chunks.move_ticket(entry.1, center);
+                    chunks.move_simulation_ticket(entry.2, center);
+                    centers.insert(center, entry);
                 }
-                None => {
-                    let ticket = chunks.add_ticket(center, level);
-                    let sim = chunks.add_simulation_ticket(center, simulation);
-                    self.player_tickets.insert(id, (center, ticket, sim));
-                }
+                continue;
+            } else {
+                let ticket = chunks.add_ticket(center, level);
+                let sim = chunks.add_simulation_ticket(center, simulation);
+                centers.insert(center, (1, ticket, sim));
+            }
+            // The new tickets first, then the old ones: chunks in both views stay loaded.
+            if let Some(old) = old {
+                release_center(chunks, centers, old);
             }
         }
         let entities = &self.level.entities;
-        self.player_tickets.retain(|&id, &mut (_, ticket, sim)| {
+        self.player_tickets.retain(|&id, &mut center| {
             let alive = entities.player(id).is_some();
             if !alive {
-                chunks.remove_ticket(ticket);
-                chunks.remove_simulation_ticket(sim);
+                release_center(chunks, centers, center);
             }
             alive
         });
@@ -354,7 +374,7 @@ impl ServerWorld {
             ctx.global,
             &self.dimension,
         );
-        self.mobs.attacks(
+        self.mobs.player_actions(
             &mut self.level,
             &mut self.survival,
             ctx.global,
@@ -383,8 +403,14 @@ impl ServerWorld {
         }
         self.update_player_tickets();
         let level = &mut self.level;
+        // `/save-off` (`ServerLevel.noSave`): chunks without tickets stay loaded.
+        level.chunks.set_no_save(
+            !ctx.global
+                .level
+                .auto_save
+                .load(std::sync::atomic::Ordering::Relaxed),
+        );
         level.tick_chunk_runtime();
-        self.entity_io.tick(level);
         level.post_process();
         if ctx.runs_normally {
             let spawn_point = (self.dimension == "minecraft:overworld").then(|| {
@@ -466,6 +492,11 @@ impl ServerWorld {
         self.effects.flush(&self.level.entities);
         self.overload
             .update(started.elapsed(), &self.rules.tracking, &self.dimension);
+        // Save rounds take only the time left in the tick (#47).
+        let left = ctx.deadline.saturating_sub(ctx.global.clock.now());
+        self.level
+            .chunks
+            .autosave_step(std::time::Duration::from_nanos(left));
     }
 
     /// `applyEffectsFromBlocks` after the players' moves: pressure plates, tripwire and other
@@ -530,16 +561,20 @@ impl ServerWorld {
         self.level.entities.store.clear_sync_flags();
     }
 
+    /// Runs `then` once the running save round of this world is committed.
+    pub(crate) fn when_saved(&mut self, then: vanillite_world::chunks::SavedCallback) {
+        self.level.chunks.when_saved(then);
+    }
+
     /// Saves the world like Vanilla (`saveEverything`): the players always, the chunks and the
     /// dimension's saved data unless `skip_chunks` (`/save-off`). `flush` waits until the
-    /// chunks are on disk (shutdown, `/save-all flush`); otherwise they are written in the
-    /// background.
+    /// chunks are written and committed (shutdown, `/save-all flush`); otherwise a save round
+    /// starts that captures them from the remaining time of the next ticks.
     pub(crate) fn save(&mut self, flush: bool, skip_chunks: bool) {
         log::debug!("Saving {} (flush: {flush})", self.dimension);
         self.players.save_all(&self.level.entities);
         if !skip_chunks {
             self.data.save();
-            self.entity_io.save_all(&mut self.level, flush);
             self.level.save(flush);
         }
     }
@@ -614,6 +649,8 @@ pub struct TickContext<'a> {
     pub tick: u64,
     /// Whether game elements run this tick (`false` while frozen).
     pub runs_normally: bool,
+    /// When the tick should end (clock nanoseconds); autosave uses the time left.
+    pub deadline: u64,
     /// The compute pool for parallel phases.
     pub compute: &'a Compute,
     /// Server-wide state.
@@ -644,6 +681,7 @@ impl<'a> TickContext<'a> {
         world: WorldId,
         tick: u64,
         runs_normally: bool,
+        deadline: u64,
         compute: &'a Compute,
         global: &'a Global,
         outbox: &'a mut Vec<(WorldId, WorldTask)>,
@@ -652,6 +690,7 @@ impl<'a> TickContext<'a> {
             world,
             tick,
             runs_normally,
+            deadline,
             compute,
             global,
             others: None,
@@ -693,6 +732,23 @@ impl<'a> TickContext<'a> {
         match world {
             Some(world) => op(world),
             None => self.outbox.push((target, Box::new(op))),
+        }
+    }
+}
+
+/// Drops one player from the tickets at `pos`; the last one removes them.
+fn release_center(
+    chunks: &mut Chunks,
+    centers: &mut FxHashMap<ChunkPos, (u32, TicketId, TicketId)>,
+    pos: ChunkPos,
+) {
+    if let Some(entry) = centers.get_mut(&pos) {
+        entry.0 = entry.0.saturating_sub(1);
+        if entry.0 == 0 {
+            let (_, ticket, sim) = *entry;
+            centers.remove(&pos);
+            chunks.remove_ticket(ticket);
+            chunks.remove_simulation_ticket(sim);
         }
     }
 }

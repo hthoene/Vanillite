@@ -54,13 +54,16 @@ fn apply(
     if let Some(hurt) = &op.hurt {
         return world.hurt(hurt);
     }
-    let state = parse_state(&op.block)?;
     let updates = match op.kind {
         OpKind::Set => false,
         OpKind::Place => true,
         OpKind::Fill => action,
         OpKind::Hurt => return Err("hurt without its damage".to_owned()),
+        OpKind::Force | OpKind::Unforce => {
+            return world.set_forced(&op.chunks, op.kind == OpKind::Force);
+        }
     };
+    let state = parse_state(&op.block)?;
     let (a, b) = (op.from, op.to);
     // `BlockPos.betweenClosed` order: x fastest, then y, then z.
     for z in a.z.min(b.z)..=a.z.max(b.z) {
@@ -86,16 +89,21 @@ fn observe(world: &mut dyn ScenarioWorld, trace: &mut Trace, tick: u32, light: b
         ..Frame::default()
     };
     for i in 0..volume {
-        let name = state_name(world.block(trace.pos_of(i)));
+        let pos = trace.pos_of(i);
+        let name = if world.is_loaded(pos) {
+            state_name(world.block(pos))
+        } else {
+            crate::scenario::UNLOADED.to_owned()
+        };
         frame.blocks.push(trace.intern(&name));
     }
     world.block_ticks(trace.min, trace.max, &mut frame.block_ticks);
     world.fluid_ticks(trace.min, trace.max, &mut frame.fluid_ticks);
     world.entities(trace.min, trace.max, &mut frame.entities);
-    frame.level_rng = world.level_rng();
     if light {
         world.light(trace.min, trace.max, &mut frame.light);
     }
+    frame.level_rng = world.level_rng();
     trace.frames.push(frame);
 }
 

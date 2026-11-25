@@ -18,7 +18,8 @@ use std::time::{Duration, Instant};
 
 use vanillite_base::ChunkPos;
 use vanillite_chunk::slots::{
-    ChunkGenerator, ChunkStatus, ChunkStorage, LightEngine, Neighbours, ProtoChunk, WorldInfo,
+    ChunkCodec, ChunkGenerator, ChunkStatus, LightEngine, Neighbours, ProtoChunk, RecordMeta,
+    WorldInfo,
 };
 use vanillite_server::{Compute, ComputePool};
 use vanillite_world::chunks::{ChunkSettings, ChunkSlots, Chunks, Executor, FULL_LEVEL};
@@ -122,23 +123,31 @@ impl LightEngine for TimedLight {
     }
 }
 
-struct TimedStorage(Arc<dyn ChunkStorage>, Arc<Timings>);
+/// Times decoding (load) and encoding (save); the store's IO runs on its own threads.
+struct TimedCodec(Arc<dyn ChunkCodec>, Arc<Timings>);
 
-impl ChunkStorage for TimedStorage {
-    fn load(&self, positions: &[ChunkPos], out: &mut Vec<std::io::Result<Option<ProtoChunk>>>) {
+impl ChunkCodec for TimedCodec {
+    fn decode(
+        &self,
+        pos: ChunkPos,
+        meta: &RecordMeta,
+        bytes: &[u8],
+    ) -> std::io::Result<ProtoChunk> {
         let start = thread_cpu_ns();
-        self.0.load(positions, out);
+        let chunk = self.0.decode(pos, meta, bytes);
         self.1.record(LOAD, start);
+        chunk
     }
 
-    fn save(&self, chunks: &[Arc<ProtoChunk>], out: &mut Vec<std::io::Result<()>>) {
+    fn encode(&self, chunk: &ProtoChunk) -> std::io::Result<(RecordMeta, Arc<[u8]>)> {
         let start = thread_cpu_ns();
-        self.0.save(chunks, out);
+        let record = self.0.encode(chunk);
         self.1.record(SAVE, start);
+        record
     }
 
-    fn flush(&self) -> std::io::Result<()> {
-        self.0.flush()
+    fn chunks_per_job(&self) -> usize {
+        self.0.chunks_per_job()
     }
 }
 
@@ -364,13 +373,20 @@ fn main() {
         Arc::new(vanillite_light::BfsLightEngine::new(&info)),
         Arc::clone(&timings),
     ));
-    let storage = || -> Arc<dyn ChunkStorage> {
-        Arc::new(TimedStorage(
-            Arc::new(vanillite_storage::AnvilStorage::new(
-                &info,
-                vanillite_storage::Compression::Deflate,
-            )),
-            Arc::clone(&timings),
+    let io = vanillite_storage::IoPool::new(2).expect("IO threads");
+    let codec: Arc<dyn ChunkCodec> = Arc::new(TimedCodec(
+        Arc::new(vanillite_storage::AnvilCodec::new(
+            &info,
+            vanillite_storage::Compression::Deflate,
+        )),
+        Arc::clone(&timings),
+    ));
+    let store = || {
+        Arc::new(vanillite_storage::RegionStore::new(
+            info.dir.clone(),
+            vanillite_storage::WorldFormat::Anvil,
+            vanillite_storage::StoreSettings::default(),
+            io.clone(),
         ))
     };
     let settings = ChunkSettings {
@@ -379,7 +395,8 @@ fn main() {
         ..ChunkSettings::default()
     };
     let slots = ChunkSlots {
-        storage: storage(),
+        store: store(),
+        codec: Arc::clone(&codec),
         generator: Arc::clone(&generator),
         light: Arc::clone(&light),
         executor: Arc::clone(&executor),
@@ -408,7 +425,8 @@ fn main() {
         drop(chunks);
         timings.take();
         let slots = ChunkSlots {
-            storage: storage(),
+            store: store(),
+            codec,
             generator,
             light,
             executor,

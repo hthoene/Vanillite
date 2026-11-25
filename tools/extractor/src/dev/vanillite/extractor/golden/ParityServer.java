@@ -22,6 +22,7 @@ import net.minecraft.resources.Identifier;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.Services;
+import net.minecraft.server.TickTask;
 import net.minecraft.server.WorldLoader;
 import net.minecraft.server.WorldStem;
 import net.minecraft.server.level.ServerLevel;
@@ -91,6 +92,9 @@ public final class ParityServer extends MinecraftServer {
     @Override
     public void save() {}
   }
+
+  /** Runs every queued task at once, also those Vanilla holds back for a few ticks. */
+  private boolean runEveryTask;
 
   private ParityServer(
       Thread thread,
@@ -215,6 +219,25 @@ public final class ParityServer extends MinecraftServer {
         }
       }
     }
+  }
+
+  /**
+   * Like {@link #drainTasks()}, but also runs the tasks Vanilla holds back until a few ticks
+   * passed (a running server runs them while it waits for the next tick); for running the chunk
+   * system and entity loading without a game tick.
+   */
+  public void drainEveryTask() {
+    runEveryTask = true;
+    try {
+      drainTasks();
+    } finally {
+      runEveryTask = false;
+    }
+  }
+
+  @Override
+  protected boolean shouldRun(TickTask task) {
+    return runEveryTask || super.shouldRun(task);
   }
 
   /** Stops the server: saves and unlocks the world directory. */

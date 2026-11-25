@@ -597,6 +597,7 @@ pub fn tick_move_control(t: &mut Tick<'_, '_>) {
             t.core_mut().set_rot(rot);
             let width = t.core().dims().width;
             let step = t.mob_ref().attrs.step_height;
+            // `Mob.setSpeed` also sets the forward input (`setZza`).
             #[allow(clippy::cast_possible_truncation)]
             set_speed(t.mob(), (ctl.speed_modifier * speed_attr) as f32);
             let pos = t.block_pos();
@@ -614,6 +615,7 @@ pub fn tick_move_control(t: &mut Tick<'_, '_>) {
             }
         }
         Operation::Jumping => {
+            // `Mob.setSpeed` also sets the forward input (`setZza`).
             #[allow(clippy::cast_possible_truncation)]
             set_speed(t.mob(), (ctl.speed_modifier * speed_attr) as f32);
             let fluid = {
