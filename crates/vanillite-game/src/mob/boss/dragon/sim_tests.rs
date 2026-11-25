@@ -87,9 +87,7 @@ impl World {
             random: &mut self.random,
             out: &mut self.out,
             border: None,
-            display_name: &|name: &str, _| {
-                vanillite_protocol::text::Component::text(name.to_owned())
-            },
+            display_name: &|n: &str, _| vanillite_protocol::text::Component::text(n.to_owned()),
         };
         let mut ents = std::mem::take(&mut self.level.entities);
         let r = f(&self.level, &mut ents, &mut env, &mut self.cx);
@@ -282,9 +280,7 @@ fn respawn_stages_take_604_ticks() {
             random,
             out,
             border: None,
-            display_name: &|name: &str, _| {
-                vanillite_protocol::text::Component::text(name.to_owned())
-            },
+            display_name: &|n: &str, _| vanillite_protocol::text::Component::text(n.to_owned()),
         };
         fight.tick_respawn(level, &mut env, cx);
         level.output().explosion_hurts.clear();
