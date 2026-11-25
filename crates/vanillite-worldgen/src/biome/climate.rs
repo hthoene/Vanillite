@@ -231,8 +231,11 @@ pub(crate) fn distance(space: &[Parameter; 7], target: &[i64; 7]) -> i64 {
 /// function of the position; only the R-tree search depends on the order of the queries, so the
 /// cache stores climates, not biomes. Sharded so threads rarely meet; a full shard is cleared.
 pub struct ClimateCache {
-    shards: Box<[Mutex<FxHashMap<(i32, i32), TargetPoint>>]>,
+    shards: Box<[Mutex<ClimateShard>]>,
 }
+
+/// Climates by quart column.
+type ClimateShard = FxHashMap<(i32, i32), TargetPoint>;
 
 impl ClimateCache {
     const SHARDS: usize = 32;

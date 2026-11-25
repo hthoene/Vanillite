@@ -809,7 +809,7 @@ impl Chunks {
                 let mut out = Vec::with_capacity(1);
                 storage.load(&[pos], &mut out);
                 let result = out.pop().unwrap_or(Ok(None));
-                let _ = tx.send(Done::Loaded(pos, result.map(|c| c.map(Box::new))));
+                tx.send(Done::Loaded(pos, result.map(|c| c.map(Box::new))));
             }),
         );
         Check::Progress
@@ -879,7 +879,7 @@ impl Chunks {
                     Box::new(move || {
                         let mut targets = vec![target];
                         light.initialize_light(&mut targets);
-                        let _ = tx.send(Done::Stepped {
+                        tx.send(Done::Stepped {
                             status: next,
                             targets,
                             written: Vec::new(),
@@ -895,7 +895,7 @@ impl Chunks {
                         let mut targets = vec![target];
                         let mut neighbours = neighbours;
                         light.light_chunks(&mut targets, &mut Neighbours::new(&mut neighbours));
-                        let _ = tx.send(Done::Lit {
+                        tx.send(Done::Lit {
                             targets,
                             neighbours,
                         });
@@ -918,7 +918,7 @@ impl Chunks {
                             .into_iter()
                             .filter(|n| written.contains(&n.pos))
                             .collect();
-                        let _ = tx.send(Done::Stepped {
+                        tx.send(Done::Stepped {
                             status: next,
                             targets,
                             written,
@@ -1056,7 +1056,7 @@ impl Chunks {
                 Box::new(move || {
                     let mut out = Vec::with_capacity(batch.len());
                     storage.save(&batch, &mut out);
-                    let _ = tx.send(Done::Saved(batch.into_iter().zip(out).collect()));
+                    tx.send(Done::Saved(batch.into_iter().zip(out).collect()));
                 }),
             );
         }
@@ -1134,7 +1134,9 @@ impl Chunks {
         )?;
         holder.dirty = true;
         self.block_changes.push(pos);
-        self.relight.insert(chunk_pos);
+        if self.slots.light.changes_light(old, state) {
+            self.relight.insert(chunk_pos);
+        }
         Some(old)
     }
 
@@ -1354,7 +1356,7 @@ impl Chunks {
                 Box::new(move || {
                     let mut area = area;
                     light.relight(&[center], &mut Neighbours::new(&mut area));
-                    let _ = tx.send(Done::Relit {
+                    tx.send(Done::Relit {
                         center,
                         chunks: area,
                     });

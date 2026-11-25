@@ -482,6 +482,13 @@ pub trait LightEngine: Send + Sync {
     /// Recomputes the light after block changes in `changed`. `area` holds the chunks within
     /// 2 of every changed chunk; the light of the chunks within 1 is replaced.
     fn relight(&self, changed: &[ChunkPos], area: &mut Neighbours<'_>);
+
+    /// Whether changing a block from `old` to `new` can change any light level. The runtime
+    /// only recomputes the light around changes where this is `true` (the default).
+    fn changes_light(&self, old: BlockStateId, new: BlockStateId) -> bool {
+        let _ = (old, new);
+        true
+    }
 }
 
 /// Creates the light engine of each world.
