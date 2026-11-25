@@ -20,6 +20,7 @@ pub fn register_goals(m: &mut MobData) {
     let g = &mut m.goals;
     let tg = &mut m.targets;
     g.add(4, raider::patrol());
+    raider::add_raider_goals(g);
     g.add(1, MobGoal::Float);
     g.add(2, MobGoal::Common(CommonGoal::ranged(1.0, 60, 60, 10.0)));
     g.add(2, MobGoal::stroll(1.0));
