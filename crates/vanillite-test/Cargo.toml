@@ -20,6 +20,7 @@ vanillite-datapack.workspace = true
 vanillite-game.workspace = true
 vanillite-light.workspace = true
 vanillite-server.workspace = true
+vanillite-storage.workspace = true
 vanillite-world.workspace = true
 vanillite-worldgen.workspace = true
 

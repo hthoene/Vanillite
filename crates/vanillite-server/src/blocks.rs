@@ -401,6 +401,15 @@ pub(crate) fn tick_items(
         let Some(entity) = store.get(id) else {
             continue;
         };
+        // Only items in the tick order (entity ticking chunk) and in entity ticking range.
+        let pos = entity.pos();
+        let chunk = vanillite_base::ChunkPos::new(
+            vanillite_base::math::floor(pos.x) >> 4,
+            vanillite_base::math::floor(pos.z) >> 4,
+        );
+        if !store.is_ticking(id) || !chunks.in_entity_ticking_range(chunk) {
+            continue;
+        }
         let row = entity.kind_row();
         let input = item_entity::TickInput {
             pos: entity.pos(),

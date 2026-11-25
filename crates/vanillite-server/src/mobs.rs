@@ -215,6 +215,10 @@ impl WorldMobs {
             let kind = entity.as_ref().kind();
             let pos = entity.as_ref().pos();
             if kind == ids::FALLING_BLOCK || kind == ids::TNT {
+                let chunk = BlockPos::containing(pos.x, pos.y, pos.z).chunk();
+                if !level.chunks.in_entity_ticking_range(chunk) {
+                    continue;
+                }
                 level.entities = ents;
                 vanillite_game::entities::tick_entity(level, id, kind);
                 self.apply_explosion_hurts(level, survival, global, dimension);
