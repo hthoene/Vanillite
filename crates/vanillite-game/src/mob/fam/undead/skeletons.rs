@@ -266,6 +266,11 @@ pub fn before_tick(t: &mut Tick<'_, '_>) {
         reassess_weapon_goal(m, difficulty);
         ss_mut(m).reassess = false;
     }
+    // `LivingEntity.updatingUsingItem`: the drawn bow counts on.
+    let m = t.mob();
+    if m.using_item >= 0 {
+        m.using_item += 1;
+    }
 }
 
 pub fn after_tick(_t: &mut Tick<'_, '_>) {}

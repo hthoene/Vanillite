@@ -42,6 +42,8 @@ pub(crate) struct Prepared {
     pub(crate) selected: crate::packs::Selected,
     /// Seed and generators of the world.
     pub(crate) world_gen: crate::world_setup::WorldGen,
+    /// Vanilla's English translations (empty without the Vanilla pack).
+    pub(crate) language: std::collections::HashMap<String, String>,
 }
 
 /// Where new players spawn: `spawn` of `level.dat`, else on top of the flat layers, or above
@@ -112,6 +114,10 @@ pub(crate) fn prepare(
 ) -> Result<Prepared, StartError> {
     let cache = dir.join("cache");
     let vanilla = vanilla_root(pack, &cache)?;
+    let language = vanilla
+        .as_deref()
+        .map(|root| load_language(root, pack))
+        .unwrap_or_default();
     let loads_registries = vanilla.is_some();
     let properties = &config.properties;
     let selected = crate::packs::select(
@@ -231,7 +237,28 @@ pub(crate) fn prepare(
         packs,
         selected,
         world_gen,
+        language,
     })
+}
+
+/// Vanilla's `en_us.json` (`Language.loadDefault`), for texts of the console and RCON. Without
+/// it, translation keys are shown.
+fn load_language(root: &Path, pack: &VanillaPack) -> std::collections::HashMap<String, String> {
+    let jar = match pack {
+        VanillaPack::Jar(jar) => Some(jar.as_path()),
+        VanillaPack::Download | VanillaPack::None => None,
+    };
+    let text = vanillite_datapack::vanilla::ensure_language(root, jar)
+        .map_err(|e| e.to_string())
+        .and_then(|path| std::fs::read_to_string(&path).map_err(|e| e.to_string()))
+        .and_then(|text| serde_json::from_str(&text).map_err(|e| e.to_string()));
+    match text {
+        Ok(language) => language,
+        Err(e) => {
+            log::warn!("English translations unavailable, showing translation keys: {e}");
+            std::collections::HashMap::new()
+        }
+    }
 }
 
 /// The running network.
@@ -240,6 +267,10 @@ pub(crate) struct NetState {
     joins: Receiver<Joined>,
     status: StatusInfo,
     online: usize,
+    /// Player names for Query.
+    pub(crate) query: Arc<vanillite_net::query::QueryPlayers>,
+    /// State of the random picks of the player sample.
+    random: u64,
     /// The Bedrock frontend (`bedrock.enabled`).
     pub(crate) bedrock: Option<(vanillite_bedrock::Frontend, Arc<vanillite_bedrock::Status>)>,
 }
@@ -249,6 +280,7 @@ impl NetState {
     /// Without `listen` it binds to a free port of the loopback interface only.
     pub(crate) fn start(
         config: &Config,
+        dir: &Path,
         configuration: ConfigurationData,
         listen: bool,
         enforces_secure_chat: bool,
@@ -285,11 +317,22 @@ impl NetState {
                 &config.server.multiversion.versions,
             )
             .map_err(|e| StartError::Io(format!("vanillite.toml multiversion.versions: {e}")))?,
+            enable_status: p.enable_status,
+            rate_limit: u32::try_from(p.rate_limit).unwrap_or(0),
+            log_ips: p.log_ips,
+            resource_pack: crate::admin::resource_pack(p),
+            server_links: crate::admin::server_links(p),
+            code_of_conduct: if p.enable_code_of_conduct {
+                crate::admin::codes_of_conduct(dir).map_err(StartError::Io)?
+            } else {
+                std::collections::BTreeMap::new()
+            },
             ..NetConfig::default()
         };
         let status = StatusInfo {
             description: Component::text(p.motd.clone()),
             max_players: p.max_players,
+            favicon: crate::admin::server_icon(dir, &p.level_name),
             enforces_secure_chat,
             ..StatusInfo::default()
         };
@@ -305,6 +348,8 @@ impl NetState {
             joins,
             status,
             online: 0,
+            query: Arc::default(),
+            random: u64::from_le_bytes(vanillite_net::rand_bytes()) | 1,
             bedrock,
         })
     }
@@ -320,6 +365,29 @@ impl NetState {
     /// The next joined connection.
     pub(crate) fn next_join(&self) -> Option<Joined> {
         self.joins.try_recv().ok()
+    }
+
+    /// Rebuilds the player sample of the server list (`buildPlayerStatus`; Vanilla does it
+    /// every 5 seconds): up to 12 players from a random offset, shuffled, anonymous for players
+    /// who do not allow listing, none with `hide-online-players`.
+    pub(crate) fn update_sample(&mut self, players: &[(String, u128, bool)], hide: bool) {
+        let sample = if hide {
+            Vec::new()
+        } else {
+            let state = &mut self.random;
+            let mut random = |bound: usize| {
+                // xorshift64.
+                *state ^= *state << 13;
+                *state ^= *state >> 7;
+                *state ^= *state << 17;
+                usize::try_from(*state % u64::try_from(bound.max(1)).unwrap_or(1)).unwrap_or(0)
+            };
+            crate::admin::player_sample(players, &mut random)
+        };
+        if sample != self.status.sample {
+            self.status.sample = sample;
+            self.network.status().update(&self.status);
+        }
     }
 
     /// Updates the player count of the server list.

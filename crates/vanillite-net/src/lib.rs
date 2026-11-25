@@ -13,6 +13,8 @@ mod conn;
 mod limits;
 mod outbound;
 mod player;
+pub mod query;
+pub mod rcon;
 pub mod services;
 mod status;
 pub mod velocity;
@@ -20,7 +22,7 @@ pub mod velocity;
 pub use auth::{
     AuthResult, Authenticator, KeyPair, SessionServer, is_valid_player_name, server_hash,
 };
-pub use config::{NetConfig, RateLimit};
+pub use config::{NetConfig, RateLimit, ResourcePackInfo};
 pub use configuration::{ConfigurationData, json_to_nbt, network_tags};
 pub use conn::rand_bytes;
 pub use limits::{ConnectionGuard, ConnectionLimiter};
@@ -210,6 +212,24 @@ impl Network {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         *current = Arc::new(current.with_tags(tags));
+    }
+
+    /// Starts the RCON listener (`enable-rcon`); returns the bound address.
+    pub fn start_rcon(
+        &self,
+        config: rcon::RconConfig,
+        runner: rcon::RconRunner,
+    ) -> std::io::Result<SocketAddr> {
+        self.runtime.block_on(rcon::bind(config, runner))
+    }
+
+    /// Starts the Query listener (`enable-query`); returns the bound address.
+    pub fn start_query(
+        &self,
+        config: query::QueryConfig,
+        players: Arc<query::QueryPlayers>,
+    ) -> std::io::Result<SocketAddr> {
+        self.runtime.block_on(query::bind(config, players))
     }
 
     /// Opens a virtual connection for a vouched-for profile.

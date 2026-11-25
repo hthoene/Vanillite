@@ -192,12 +192,10 @@ fn rand_jump(r: &mut LegacyRandom) -> f64 {
     f64::from(0.4_f32) + a * 0.2 + b * 0.2 + c * 0.2
 }
 
-/// Sets the max health base and clamps the health (`onAttributeUpdated`).
+/// Sets the max health base; the health keeps its value until the next tick caps it
+/// (`refreshDirtyAttributes`).
 fn set_max_health(m: &mut MobData, v: f64) {
     m.attrs.max_health = v;
-    #[allow(clippy::cast_possible_truncation)]
-    let max = v as f32;
-    m.health = max;
 }
 
 /// `randomizeAttributes` of the kind.
@@ -308,11 +306,21 @@ pub fn before_tick(t: &mut Tick<'_, '_>) {
     }
 }
 
+/// `AbstractHorse.isImmobile`: eating or rearing (llamas: eating only); the dead are
+/// immobile anyway.
+pub fn is_immobile(m: &MobData) -> bool {
+    let llama = matches!(m.kind, Kind::Llama | Kind::TraderLlama);
+    has_flag(m, EATING) || !llama && has_flag(m, STANDING)
+}
+
+/// `AbstractHorse.aiStep` before `super.aiStep()`: the `moveTail` roll.
+pub fn ai_step_start(t: &mut Tick<'_, '_>) {
+    let _ = t.mob().random.next_int_bounded(200);
+}
+
 /// `AbstractHorse.aiStep` (healing, grazing, following the mother) and the kind additions
 /// (skeleton trap lifetime, trader llama despawning).
 pub fn ai_step(t: &mut Tick<'_, '_>) {
-    // `moveTail` roll.
-    let _ = t.mob().random.next_int_bounded(200);
     if !t.mob_ref().is_alive() {
         return;
     }

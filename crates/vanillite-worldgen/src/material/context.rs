@@ -3,6 +3,7 @@
 
 use vanillite_chunk::BiomeId;
 
+use super::rule::FoldedRules;
 use super::system::MaterialSystem;
 use crate::anchor::{VerticalAnchor, WorldGenerationContext};
 use crate::biome::BiomeRegistry;
@@ -31,8 +32,10 @@ pub(super) struct MaterialRuleContext<'a> {
     preliminary_surface: Vec<f32>,
     /// Per `BiomeCondition`: the constant it compiled to for this chunk, if any.
     pub(super) biome_folds: Vec<Option<bool>>,
+    /// The rule tree folded with `biome_folds`.
+    pub(super) rules: &'a FoldedRules,
     /// Per ore vein: the prefilled density and richness buffers.
-    ore_densities: Vec<[Vec<f32>; 2]>,
+    ore_densities: Vec<OreBuffers>,
     /// Per noise slot: update stamp and value.
     pub(super) noise_values: Vec<(u64, f64)>,
     pub(super) last_update_xz: u64,
@@ -50,14 +53,24 @@ pub(super) struct MaterialRuleContext<'a> {
     pub(super) block_y: i32,
     /// Index of the current block in `expected_volume`, if it is inside.
     block_index: Option<usize>,
+    /// Column of the current block in `expected_volume` (`x + z * size_x`), if it is inside.
+    column: Option<i32>,
     pub(super) water_height: i32,
     pub(super) stone_depth_below: i32,
     pub(super) stone_depth_above: i32,
 }
 
+/// The prefilled densities of one ore vein: the density (`values[0]`) and richness
+/// (`values[1]`) over `volume`, the part of the expected volume where the density can be other
+/// than its constant outside the vein's Y range (none when that part is empty).
+struct OreBuffers {
+    volume: Option<DensityVolume>,
+    values: Option<[Vec<f32>; 2]>,
+}
+
 impl<'a> MaterialRuleContext<'a> {
-    /// The context plus `ruleSource.compile(context)`: biome conditions are folded against
-    /// `possible_biomes` (when given) and ore vein densities are prefilled over
+    /// The context plus `ruleSource.compile(context)`: `rules` is the rule tree folded with
+    /// `biome_folds` (`MaterialRules::biome_folds`), and ore vein densities are prefilled over
     /// `expected_volume`, in the rule tree's compile order.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn compile(
@@ -68,23 +81,22 @@ impl<'a> MaterialRuleContext<'a> {
         biome_at: &'a dyn Fn(i32, i32, i32) -> BiomeId,
         generation: WorldGenerationContext,
         expected_volume: DensityVolume,
-        possible_biomes: Option<&[BiomeId]>,
+        rules: &'a FoldedRules,
+        biome_folds: Vec<Option<bool>>,
     ) -> Self {
-        let rules = &system.rules;
-        let biome_folds = rules
-            .biome_sets
-            .iter()
-            .map(|set| possible_biomes.and_then(|possible| set.fold(possible)))
-            .collect();
         let ore_densities = system
             .ore_vein_fns
             .iter()
             .map(|fns| {
-                let mut density = vec![0.0; expected_volume.len()];
-                program.sample_volume(samplers, fns.density, &mut density, &expected_volume);
-                let mut richness = vec![0.0; expected_volume.len()];
-                program.sample_volume(samplers, fns.richness, &mut richness, &expected_volume);
-                [density, richness]
+                let volume = fns.prefill_volume(&expected_volume, system.ore_y_period);
+                let values = volume.map(|volume| {
+                    let mut density = vec![0.0; volume.len()];
+                    program.sample_volume(samplers, fns.density, &mut density, &volume);
+                    let mut richness = vec![0.0; volume.len()];
+                    program.sample_volume(samplers, fns.richness, &mut richness, &volume);
+                    [density, richness]
+                });
+                OreBuffers { volume, values }
             })
             .collect();
         Self {
@@ -105,8 +117,9 @@ impl<'a> MaterialRuleContext<'a> {
             ),
             preliminary_surface: Vec::new(),
             biome_folds,
+            rules,
             ore_densities,
-            noise_values: vec![(0, 0.0); rules.noises.len()],
+            noise_values: vec![(0, 0.0); system.rules.noises.len()],
             last_update_xz: 0,
             last_update_y: 0,
             block_x: 0,
@@ -121,6 +134,7 @@ impl<'a> MaterialRuleContext<'a> {
             biome: None,
             block_y: 0,
             block_index: None,
+            column: None,
             water_height: 0,
             stone_depth_below: 0,
             stone_depth_above: 0,
@@ -142,6 +156,11 @@ impl<'a> MaterialRuleContext<'a> {
         self.surface_gradient_x = surface_gradient_x;
         self.surface_gradient_z = surface_gradient_z;
         self.surface_depth = self.system.surface_depth(block_x, block_z);
+        let volume = &self.expected_volume;
+        let (column_x, column_z) = (block_x - volume.min_x, block_z - volume.min_z);
+        self.column = ((0..volume.size_x).contains(&column_x)
+            && (0..volume.size_z).contains(&column_z))
+        .then_some(column_x + column_z * volume.size_x);
     }
 
     /// `updateY`: moves to a new block of the column.
@@ -155,9 +174,14 @@ impl<'a> MaterialRuleContext<'a> {
         self.last_update_y += 1;
         self.biome = None;
         self.block_y = block_y;
-        self.block_index = self
-            .expected_volume
-            .index_of_block(self.block_x, block_y, self.block_z);
+        let volume = &self.expected_volume;
+        let row = block_y.wrapping_sub(volume.min_y);
+        self.block_index = match self.column {
+            Some(column) if (0..volume.size_y).contains(&row) => {
+                Some((row + column * volume.size_y) as usize)
+            }
+            _ => None,
+        };
         self.water_height = water_height;
         self.stone_depth_below = stone_depth_below;
         self.stone_depth_above = stone_depth_above;
@@ -186,8 +210,18 @@ impl<'a> MaterialRuleContext<'a> {
 
     /// `getMinSurfaceLevel()`: the preliminary surface level (`chunk_surface_level`) minus a
     /// margin, cached per column; the first call samples the whole layer of the chunk.
+    #[inline]
     pub(super) fn min_surface_level(&mut self) -> i32 {
         if self.min_surface_level_update != self.last_update_xz {
+            self.update_min_surface_level();
+        }
+        self.min_surface_level
+    }
+
+    /// Computes [`Self::min_surface_level`] for the current column.
+    #[inline(never)]
+    fn update_min_surface_level(&mut self) {
+        {
             self.min_surface_level_update = self.last_update_xz;
             let function = self.system.preliminary_surface;
             let level =
@@ -220,7 +254,6 @@ impl<'a> MaterialRuleContext<'a> {
                 .wrapping_add(self.surface_depth)
                 .wrapping_sub(BELOW_PRELIMINARY_SURFACE);
         }
-        self.min_surface_level
     }
 
     /// `resolveAnchorY(anchor)`.
@@ -233,9 +266,20 @@ impl<'a> MaterialRuleContext<'a> {
     /// outside it.
     pub(super) fn prefilled_density(&mut self, vein: usize, which: usize) -> f32 {
         let (x, y, z) = (self.block_x, self.block_y, self.block_z);
-        match self.block_index {
-            Some(index) => self.ore_densities[vein][which][index],
-            None => {
+        match (self.block_index, self.column) {
+            (Some(_), Some(column)) => {
+                let buffers = &self.ore_densities[vein];
+                if let (Some(volume), Some(values)) = (&buffers.volume, &buffers.values) {
+                    let row = y - volume.min_y;
+                    if (0..volume.size_y).contains(&row) {
+                        return values[which][(row + column * volume.size_y) as usize];
+                    }
+                }
+                // Inside the expected volume but outside the vein's Y range: only the density
+                // is read there, and it is the constant outside the range.
+                self.system.ore_vein_fns[vein].y_range.map_or(0.0, |r| r.2)
+            }
+            _ => {
                 let fns = &self.system.ore_vein_fns[vein];
                 let function = if which == 0 {
                     fns.density

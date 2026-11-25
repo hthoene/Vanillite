@@ -495,8 +495,8 @@ pub fn move_to_pos(t: &mut Tick<'_, '_>, pos: Vec3, speed: f64) -> bool {
     move_to_path(t, path, speed)
 }
 
-/// `moveTo(entity, reachRange, speedModifier)`; a wall climber without a path climbs straight
-/// towards the entity.
+/// `moveTo(entity, reachRange, speedModifier)` (`moveTo(entity, speed)` uses reach range 1); a
+/// wall climber without a path climbs straight towards the entity.
 pub fn move_to_entity(t: &mut Tick<'_, '_>, target: Vec3, reach: i32, speed: f64) -> bool {
     let block = BlockPos::containing(target.x, target.y, target.z);
     let path = create_path_to(t, block, reach);
@@ -888,6 +888,20 @@ pub fn rotlerp(a: f32, b: f32, max: f32) -> f32 {
     r
 }
 
+/// `getAttributeValue(MOVEMENT_SPEED)`: sprinting mobs (cats and ocelots after their prey or
+/// fleeing) move 30% faster (`SPEED_MODIFIER_SPRINTING`).
+pub fn movement_speed(t: &Tick<'_, '_>) -> f64 {
+    let base = t.mob_ref().attrs.movement_speed;
+    if t.core()
+        .flags()
+        .contains(vanillite_world::entity::EntityFlags::SPRINTING)
+    {
+        base * (1.0 + f64::from(0.3_f32))
+    } else {
+        base
+    }
+}
+
 /// `MoveControl.tick`.
 /// `Mob.setSpeed`: the speed is also the forward input.
 fn set_speed(m: &mut super::MobData, speed: f32) {
@@ -925,7 +939,7 @@ pub fn tick_move_control(t: &mut Tick<'_, '_>) {
         }
         MoveKind::Default => {}
     }
-    let speed_attr = t.mob_ref().attrs.movement_speed;
+    let speed_attr = movement_speed(t);
     let ctl = t.mob_ref().move_ctl;
     match ctl.operation {
         Operation::Strafe => {
@@ -1012,10 +1026,11 @@ pub fn tick_move_control(t: &mut Tick<'_, '_>) {
     }
 }
 
-/// `Mth.atan2(y, x) * 180.0F / (float) Math.PI` as a float (the controls' angle maths).
+/// `Mth.atan2(y, x) * Mth.RAD_TO_DEG` as a float (the controls' angle maths; decompilers
+/// print the constant as `180.0F / (float) Math.PI`).
 #[allow(clippy::cast_possible_truncation)]
 fn atan2_deg_f(y: f64, x: f64) -> f32 {
-    (y.atan2(x) * f64::from(180.0_f32 / std::f32::consts::PI)) as f32
+    atan2_deg(y, x) as f32
 }
 
 /// `FlyingMoveControl.tick`.
@@ -1109,7 +1124,7 @@ fn tick_smooth_swimming_move_control(
     rot.y_head_rot = rot.y_rot;
     t.mob().y_body_rot = rot.y_rot;
     #[allow(clippy::cast_possible_truncation)]
-    let speed = (ctl.speed_modifier * t.mob_ref().attrs.movement_speed) as f32;
+    let speed = (ctl.speed_modifier * movement_speed(t)) as f32;
     if in_water {
         // `setSpeed` sets the forward input; it is overwritten below.
         t.mob().speed = speed * in_water_speed;
@@ -1163,10 +1178,12 @@ impl LookControl {
     }
 }
 
-/// `setLookAt(x, y, z)` with the mob's head speed (10) and pitch limit (`getMaxHeadXRot`).
+/// `setLookAt(x, y, z)` with the mob's head speed (`getHeadRotSpeed`) and pitch limit
+/// (`getMaxHeadXRot`).
 pub fn look_at(t: &mut Tick<'_, '_>, at: Vec3) {
-    let x_max = t.mob_ref().kind.max_head_x_rot();
-    t.mob().look.set_look_at(at, 10.0, x_max);
+    let y_max = t.mob_ref().kind.head_rot_speed();
+    let x_max = super::kinds::max_head_x_rot(t.mob_ref());
+    t.mob().look.set_look_at(at, y_max, x_max);
 }
 
 /// `LookControl.tick`.
@@ -1194,22 +1211,22 @@ pub fn tick_look_control(t: &mut Tick<'_, '_>) {
         let xd = look.wanted.x - p.x;
         let yd = look.wanted.y - eye;
         let zd = look.wanted.z - p.z;
-        if zd.abs() > 1.0e-5 || xd.abs() > 1.0e-5 {
-            #[allow(clippy::cast_possible_truncation)]
-            let y_rot_d = atan2_deg(zd, xd) as f32 - 90.0;
+        let tiny = f64::from(1.0e-5_f32);
+        if zd.abs() > tiny || xd.abs() > tiny {
+            let y_rot_d = atan2_deg_f(zd, xd) - 90.0;
             rot.y_head_rot = rotate_towards(rot.y_head_rot, y_rot_d, look.y_max_rot_speed);
         }
         let sd = (xd * xd + zd * zd).sqrt();
-        if yd.abs() > 1.0e-5 || sd.abs() > 1.0e-5 {
-            #[allow(clippy::cast_possible_truncation)]
-            let x_rot_d = -(atan2_deg(yd, sd) as f32);
+        if yd.abs() > tiny || sd.abs() > tiny {
+            let x_rot_d = -atan2_deg_f(yd, sd);
             rot.x_rot = rotate_towards(rot.x_rot, x_rot_d, look.x_max_rot_angle);
         }
     } else {
         rot.y_head_rot = rotate_towards(rot.y_head_rot, body, 10.0);
     }
     if !t.mob_ref().nav.is_done() {
-        rot.y_head_rot = rotate_if_necessary(rot.y_head_rot, body, 75.0);
+        let max = super::kinds::max_head_y_rot(t.mob_ref());
+        rot.y_head_rot = rotate_if_necessary(rot.y_head_rot, body, max);
     }
     t.core_mut().set_rot(rot);
 }
@@ -1270,22 +1287,23 @@ pub fn tick_body_rotation(t: &mut Tick<'_, '_>) {
         d.x * d.x + d.z * d.z > f64::from(2.500_000_3e-7_f32)
     };
     let mut rot = core.rot();
+    let max = super::kinds::max_head_y_rot(t.mob_ref());
     let m = t.mob();
     if moved {
         m.y_body_rot = rot.y_rot;
-        rot.y_head_rot = rotate_if_necessary(rot.y_head_rot, m.y_body_rot, 75.0);
+        rot.y_head_rot = rotate_if_necessary(rot.y_head_rot, m.y_body_rot, max);
         m.body.last_stable_y_head_rot = rot.y_head_rot;
         m.body.head_stable_time = 0;
     } else if (rot.y_head_rot - m.body.last_stable_y_head_rot).abs() > 15.0 {
         m.body.head_stable_time = 0;
         m.body.last_stable_y_head_rot = rot.y_head_rot;
-        m.y_body_rot = rotate_if_necessary(m.y_body_rot, rot.y_head_rot, 75.0);
+        m.y_body_rot = rotate_if_necessary(m.y_body_rot, rot.y_head_rot, max);
     } else {
         m.body.head_stable_time += 1;
         if m.body.head_stable_time > 10 {
             #[allow(clippy::cast_precision_loss)]
             let fraction = ((m.body.head_stable_time - 10) as f32 / 10.0).clamp(0.0, 1.0);
-            let remaining = 75.0 * (1.0 - fraction);
+            let remaining = max * (1.0 - fraction);
             m.y_body_rot = rotate_if_necessary(m.y_body_rot, rot.y_head_rot, remaining);
         }
     }

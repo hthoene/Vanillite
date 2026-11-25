@@ -6,6 +6,8 @@
 
 mod inventory;
 mod play;
+mod trade;
+mod vehicle;
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -88,17 +90,18 @@ enum JavaState {
 }
 
 /// What a Java entity is on the Bedrock side.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum Kind {
     Player,
     /// An item entity (`add_item_actor`).
     Item,
     /// An item entity whose item has not arrived yet (not spawned on Bedrock).
     PendingItem,
+    #[default]
     Actor,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct Entity {
     pos: [f64; 3],
     yaw: f32,
@@ -109,6 +112,12 @@ struct Entity {
     flags: u8,
     name: Option<String>,
     baby: bool,
+    /// A saddle in the `saddle` equipment slot.
+    saddled: bool,
+    /// Sheep wool (colour and the sheared bit).
+    wool: u8,
+    /// Rides another entity.
+    riding: bool,
 }
 
 /// The player's world on the Java side, after the Java `login`.
@@ -157,6 +166,16 @@ struct World {
     /// Dimension to switch to at the next position, and whether it is the same dimension
     /// (a server switch).
     pending_dimension: Option<(i32, bool)>,
+    /// Passengers by vehicle (Java ids).
+    passengers: FxHashMap<i32, Vec<i32>>,
+    /// The vehicle the own player rides.
+    vehicle: Option<i32>,
+    /// The vehicle whose movement the client predicts (it controls it).
+    predicted_vehicle: Option<i32>,
+    /// Last movement keys sent to Java.
+    input: psb::Input,
+    /// The open merchant menu.
+    merchant: Option<trade::Merchant>,
 }
 
 /// The layout of a Java dimension (`dim_type`: its dimension type name).
@@ -517,8 +536,9 @@ impl Session {
                 self.java_send(&psb::PlayerLoaded);
             }
             (Phase::Playing, id::PLAYER_AUTH_INPUT) => {
-                self.auth_input(&bp::read_auth_input(body, self.version)?);
+                let input = bp::read_auth_input(body, self.version)?;
                 let extra = bp::read_auth_input_extra(body, self.version)?;
+                self.auth_input(&input, extra.vehicle_rotation);
                 if let Some(t) = extra.item_interaction {
                     self.transaction(t);
                 }
@@ -554,7 +574,11 @@ impl Session {
             (Phase::Playing, id::BLOCK_PICK_REQUEST) => self.pick_block(body)?,
             (Phase::Playing, id::MODAL_FORM_RESPONSE) => {
                 let (form, data) = bp::read_modal_form_response(body)?;
-                self.shared.forms.answer(self.uuid, form, data.as_deref());
+                if form == trade::TRADE_FORM {
+                    self.trade_answer(data.as_deref());
+                } else {
+                    self.shared.forms.answer(self.uuid, form, data.as_deref());
+                }
             }
             (Phase::Playing, id::TEXT) => {
                 let message = bp::read_text_message(body)?;
@@ -683,7 +707,7 @@ impl Session {
         });
     }
 
-    fn auth_input(&mut self, i: &bp::AuthInput) {
+    fn auth_input(&mut self, i: &bp::AuthInput, vehicle_rotation: Option<[f32; 2]>) {
         let Some(w) = &mut self.world else {
             return;
         };
@@ -718,14 +742,11 @@ impl Session {
         w.pitch = i.pitch;
         let on_ground = i.has(input::VERTICAL_COLLISION) && i.delta[1] <= 0.0;
         let mut commands: Vec<psb::PlayerAction> = Vec::new();
-        let mut input_changed = false;
-        if i.has(input::START_SNEAKING) && !w.sneaking {
+        if i.has(input::START_SNEAKING) {
             w.sneaking = true;
-            input_changed = true;
         }
-        if i.has(input::STOP_SNEAKING) && w.sneaking {
+        if i.has(input::STOP_SNEAKING) {
             w.sneaking = false;
-            input_changed = true;
         }
         if i.has(input::START_SPRINTING) && !w.sprinting {
             w.sprinting = true;
@@ -742,25 +763,15 @@ impl Session {
             w.flying = false;
         }
         let jumping = i.has(input::JUMP_DOWN) || i.has(input::START_JUMPING);
-        let sneaking = w.sneaking;
         let entity_id = w.java_id;
-        let move_packet = psb::MovePlayerPosRot {
-            x: feet[0],
-            y: feet[1],
-            z: feet[2],
-            y_rot: i.yaw,
-            x_rot: i.pitch,
-            flags: psb::MoveFlags {
-                on_ground,
-                horizontal_collision: i.has(input::HORIZONTAL_COLLISION),
-            },
+        let flags = psb::MoveFlags {
+            on_ground,
+            horizontal_collision: i.has(input::HORIZONTAL_COLLISION),
         };
-        if input_changed || jumping {
-            self.java_send(&psb::PlayerInput(psb::Input {
-                jump: jumping,
-                shift: sneaking,
-                ..psb::Input::default()
-            }));
+        let keys = vehicle::keys(i, jumping, w.sneaking, w.sprinting);
+        if keys != w.input {
+            w.input = keys;
+            self.java_send(&psb::PlayerInput(keys));
         }
         for action in commands {
             self.java_send(&psb::PlayerCommand {
@@ -769,7 +780,24 @@ impl Session {
                 data: 0,
             });
         }
-        self.java_send(&move_packet);
+        if self.riding() {
+            // A passenger only turns (like the Java client); the vehicle moves on its own.
+            self.steer_vehicle(i, vehicle_rotation);
+            self.java_send(&psb::MovePlayerRot {
+                y_rot: i.yaw,
+                x_rot: i.pitch,
+                flags,
+            });
+        } else {
+            self.java_send(&psb::MovePlayerPosRot {
+                x: feet[0],
+                y: feet[1],
+                z: feet[2],
+                y_rot: i.yaw,
+                x_rot: i.pitch,
+                flags,
+            });
+        }
         self.java_send(&psb::ClientTickEnd);
     }
 
@@ -840,6 +868,14 @@ impl Session {
                 self.java_send(&csb::KeepAlive { id: k.id })
             }
             Ok(ClientboundConfiguration::Ping(p)) => self.java_send(&csb::Pong { id: p.id }),
+            Ok(ClientboundConfiguration::ResourcePackPush(p)) => {
+                // Bedrock cannot use Java packs: report it loaded, so a required pack does not
+                // kick the player.
+                use vanillite_protocol::packets::common::ResourcePackAction as A;
+                for action in [A::Accepted, A::SuccessfullyLoaded] {
+                    self.java_send(&csb::ResourcePack { id: p.id, action });
+                }
+            }
             Ok(ClientboundConfiguration::CodeOfConduct(_)) => {
                 self.java_send(&csb::AcceptCodeOfConduct)
             }
@@ -1016,6 +1052,14 @@ impl Session {
             ClientboundPlay::Respawn(r) => self.java_respawn(&r),
             ClientboundPlay::SetDefaultSpawnPosition(s) => self.java_spawn_position(&s),
             ClientboundPlay::Sound(s) => self.java_sound(&s),
+            ClientboundPlay::UpdateMobEffect(m) => self.java_mob_effect(
+                m.entity_id,
+                m.effect,
+                Some((m.amplifier, m.duration, m.flags)),
+            ),
+            ClientboundPlay::RemoveMobEffect(m) => {
+                self.java_mob_effect(m.entity_id, m.effect, None)
+            }
             ClientboundPlay::Unhandled { id } => self.java_unhandled(id, body),
             _ => {}
         }
@@ -1113,6 +1157,11 @@ impl Session {
             bosses: FxHashMap::default(),
             next_boss: 0,
             pending_dimension: None,
+            passengers: FxHashMap::default(),
+            vehicle: None,
+            predicted_vehicle: None,
+            input: psb::Input::default(),
+            merchant: None,
         });
     }
 
@@ -1404,6 +1453,9 @@ impl Session {
     }
 
     fn send_entity_move(&mut self, eid: i32, on_ground: bool, teleport: bool) {
+        if self.client_moves(eid) {
+            return;
+        }
         let Some(e) = self
             .world
             .as_ref()
