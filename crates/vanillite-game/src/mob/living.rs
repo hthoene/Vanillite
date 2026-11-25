@@ -757,7 +757,7 @@ pub fn move_relative(t: &mut Tick<'_, '_>, speed: f32, input: Vec3) {
     } else {
         input
     } * f64::from(speed);
-    let rad = f64::from(t.core().rot().y_rot) * std::f64::consts::PI / 180.0;
+    let rad = f64::from(t.core().rot().y_rot * super::DEG_TO_RAD);
     let sin = f64::from(vanillite_base::math::sin(rad));
     let cos = f64::from(vanillite_base::math::cos(rad));
     let delta = Vec3::new(

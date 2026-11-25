@@ -704,37 +704,6 @@ fn distance_sqr_to_box(b: &Aabb, p: Vec3) -> f64 {
     dx * dx + dy * dy + dz * dz
 }
 
-/// The overworld's sky light factor at `ticks` of the day (the `day` timeline's
-/// `gameplay/sky_light_level` track).
-fn day_sky_factor(ticks: i64) -> f32 {
-    const KEYS: [(i64, f32); 4] = [
-        (133, 1.0),
-        (11867, 1.0),
-        (13670, 0.266_666_68),
-        (22330, 0.266_666_68),
-    ];
-    let t = ticks.rem_euclid(24000);
-    for w in KEYS.windows(2) {
-        let (a, b) = (w[0], w[1]);
-        if t >= a.0 && t < b.0 {
-            #[allow(clippy::cast_precision_loss)]
-            let f = (t - a.0) as f32 / (b.0 - a.0) as f32;
-            return a.1 + (b.1 - a.1) * f;
-        }
-    }
-    // Wraps from the last key to the first of the next day.
-    let (last, first) = (KEYS[3], KEYS[0]);
-    let span = first.0 + 24000 - last.0;
-    let since = if t >= last.0 {
-        t - last.0
-    } else {
-        t + 24000 - last.0
-    };
-    #[allow(clippy::cast_precision_loss)]
-    let f = since as f32 / span as f32;
-    last.1 + (first.1 - last.1) * f
-}
-
 /// This tick's environment: sky darkness from the day time and the weather, whether monsters
 /// burn, and the dimension's monster light rules.
 fn environment(
@@ -772,14 +741,6 @@ fn environment(
     }
     .unwrap_or(6000);
     let w = survival.weather;
-    let mut sky = 15.0 * day_sky_factor(day);
-    let rain = w.rain();
-    let thunder = w.thunder();
-    sky += (4.0 - sky) * 0.3125 * rain;
-    sky += (4.0 - sky) * 0.527_343_75 * thunder;
-    #[allow(clippy::cast_possible_truncation)]
-    let sky_darken = (15.0 - sky) as i32;
-    let burn = !(12542..23460).contains(&day);
     // The `minecraft:moon` timeline: the surface slime chance is half the moon's brightness.
     let moon = {
         let clocks = global.level.clocks();
@@ -796,16 +757,7 @@ fn environment(
     Environment {
         surface_slime_chance: MOON_BRIGHTNESS[phase] * 0.5,
         world_seed: seed,
-        sea_level: 63,
-        sky_darken,
-        monsters_burn: burn,
-        thundering: thunder > 0.9,
-        raining: rain > 0.2,
-        has_sky_light: true,
-        monster_block_light_limit: 0,
-        monster_light_test: (0, 7),
-        ambient_light: 0.0,
-        has_ceiling: false,
+        ..Environment::overworld(day, w.rain(), w.thunder())
     }
 }
 

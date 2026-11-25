@@ -130,12 +130,13 @@ fn parse(text: &str) -> Result<Parsed, String> {
                 .ok_or_else(|| format!("field outside a struct: {line:?}"))?;
             fields.push(field.into());
         } else {
-            let key = line
-                .split([':', '='])
-                .next()
-                .unwrap_or_default()
-                .trim()
-                .into();
+            // The name ends at `: ` (constants) or ` =` (types); `::` inside it is kept.
+            let end = [line.find(": "), line.find(" =")]
+                .into_iter()
+                .flatten()
+                .min()
+                .unwrap_or(line.len());
+            let key = line[..end].trim().into();
             parsed.items.push((key, line.into()));
         }
     }
@@ -273,5 +274,7 @@ mod tests {
         let reordered =
             "abi 1.1\nconst a::X: u32 = 1\nstruct S size=8 align=4\n  b: u32 @0\n  a: u32 @4\n";
         assert!(matches!(compare(old, reordered), Ok(Change::Breaking(_))));
+        let grouped = "abi 1.0\nconst a::X: u32 = 1\nconst a::Y: u32 = 2\n";
+        assert!(matches!(compare(grouped, grouped), Ok(Change::None)));
     }
 }
