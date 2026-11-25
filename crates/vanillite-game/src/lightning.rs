@@ -76,7 +76,7 @@ pub fn strike(level: &mut Level, column: BlockPos, input: StrikeInput) -> Option
         // `SkeletonHorse` (`setTrap(true)`, `setAge(0)`) at the block corner. The horse has no
         // behaviour in Vanillite yet: it only takes its place in the entity order.
         let _ = level.new_entity_random();
-        let uuid = level.new_uuid();
+        let uuid = crate::mob::new_uuid();
         let network_id = level.network_ids().next();
         let at = Vec3::new(f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
         level.entities.store.spawn(
@@ -98,7 +98,8 @@ pub fn spawn(level: &mut Level, pos: Vec3, visual_only: bool) -> EntityId {
     let mut random = level.new_entity_random();
     let seed = random.next_long();
     let flashes = random.next_int_bounded(3) + 1;
-    let uuid = level.new_uuid();
+    // The bolt's random took the entity's seed: the UUID takes none.
+    let uuid = crate::mob::new_uuid();
     let network_id = level.network_ids().next();
     level.entities.spawn_bolt(
         NewEntity::new(ids::LIGHTNING_BOLT, network_id, uuid, pos),
