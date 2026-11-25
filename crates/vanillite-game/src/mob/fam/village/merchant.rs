@@ -34,3 +34,12 @@ pub fn update_trades(_t: &mut Tick<'_, '_>) {}
 
 /// `AbstractVillager.stopTrading` (also when the villager dies or teleports).
 pub fn stop_trading(_t: &mut Tick<'_, '_>) {}
+
+/// Writes merchant offers as the `Offers` tag (`MerchantOffers.CODEC`); zombie villagers keep
+/// the offers of the villager they were.
+pub fn save_offers(_offers: &crate::trading::MerchantOffers, _out: &mut Compound) {}
+
+/// Reads the `Offers` tag (`None` without one).
+pub fn load_offers(_tag: &Compound) -> Option<crate::trading::MerchantOffers> {
+    None
+}

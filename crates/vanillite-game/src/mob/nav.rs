@@ -348,6 +348,19 @@ fn path_mob(t: &Tick<'_, '_>) -> PathMob {
 
 /// `PathNavigation.createPath(targets, radiusOffset, above, reachRange, maxPathLength)`.
 fn create_path(t: &mut Tick<'_, '_>, target: BlockPos, reach_range: i32) -> Option<Path> {
+    create_path_to_any(t, &[target], reach_range)
+}
+
+/// `createPath(targets, reachRange)`: a path to the closest reachable of `targets` (no
+/// surface adjustment, like Vanilla's set variant).
+pub fn create_path_to_any(
+    t: &mut Tick<'_, '_>,
+    targets: &[BlockPos],
+    reach_range: i32,
+) -> Option<Path> {
+    if targets.is_empty() || t.mob_ref().nav.kind == NavKind::None {
+        return None;
+    }
     if t.pos().y < f64::from(t.level.min_y()) || !can_update_path(t) {
         return None;
     }
@@ -355,7 +368,7 @@ fn create_path(t: &mut Tick<'_, '_>, target: BlockPos, reach_range: i32) -> Opti
         let nav = &t.mob_ref().nav;
         if let Some(p) = &nav.path
             && !p.is_done()
-            && nav.target_pos == Some(target)
+            && nav.target_pos.is_some_and(|tp| targets.contains(&tp))
         {
             return Some(p.clone());
         }
@@ -380,7 +393,7 @@ fn create_path(t: &mut Tick<'_, '_>, target: BlockPos, reach_range: i32) -> Opti
     let mut random = m.random.clone();
     let path =
         t.cx.finder
-            .find_path(t.level, &mob, &[target], search, &mut random);
+            .find_path(t.level, &mob, targets, search, &mut random);
     t.mob().random = random;
     let visited = t.cx.finder.take_visited();
     if t.cx.path_budget != u64::MAX {

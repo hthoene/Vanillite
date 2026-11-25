@@ -451,6 +451,9 @@ pub struct Environment {
     pub world_seed: i64,
     /// `getSeaLevel`.
     pub sea_level: i32,
+    /// The time of the overworld day (ticks into the `minecraft:overworld` clock's day): the
+    /// universal timelines (the villager schedules) follow it in every dimension.
+    pub day_time: i64,
 }
 
 impl Default for Environment {
@@ -468,6 +471,7 @@ impl Default for Environment {
             surface_slime_chance: 0.0,
             world_seed: 0,
             sea_level: 63,
+            day_time: 6000,
         }
     }
 }
@@ -632,6 +636,10 @@ pub enum WorldAction {
     EntityInside(BlockPos, EntityId),
     /// A hopper minecart takes in an item (`MinecartHopper.tryConsumeItems`).
     HopperMinecart(EntityId),
+    /// `BellBlock.attemptToRing(entity, level, pos, null)`.
+    RingBell(BlockPos, Option<EntityId>),
+    /// `BoneMealItem.growCrop` on the block (a villager's bone meal).
+    BoneMeal(BlockPos),
 }
 
 impl WorldAction {
@@ -653,6 +661,14 @@ impl WorldAction {
                 }
             }
             WorldAction::HopperMinecart(id) => crate::minecart::hopper_suck(level, id),
+            WorldAction::RingBell(pos, entity) => {
+                crate::block::bell::attempt_to_ring(level, entity, pos, None);
+            }
+            WorldAction::BoneMeal(pos) => {
+                let mut meal =
+                    crate::item::ItemStack::new(vanillite_data::item::ids::BONE_MEAL.0, 1);
+                crate::block::bonemeal::grow_crop(level, pos, &mut meal);
+            }
             WorldAction::SetDoorOpen(pos, open, source) => {
                 crate::block::redstone::set_door_open(level, pos, open, source);
             }
