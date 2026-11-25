@@ -12,7 +12,7 @@ pub mod serverbound {
 
     crate::common_serverbound!(Play);
 
-    pub use super::mobs::Attack;
+    pub use super::mobs::{Attack, Interact, MoveVehicle, PaddleBoat};
 
     /// `configuration_acknowledged`: the client entered configuration again.
     #[derive(Debug, Clone, PartialEq, Eq, Packet)]
@@ -503,8 +503,12 @@ pub mod clientbound {
     }
 
     impl GameEvent {
+        /// Event id: the respawn block (bed, anchor) is missing or blocked.
+        pub const NO_RESPAWN_BLOCK_AVAILABLE: u8 = 0;
         /// Event id: change game mode.
         pub const CHANGE_GAME_MODE: u8 = 3;
+        /// Event id: the end credits (`WIN_GAME`).
+        pub const WIN_GAME: u8 = 4;
         /// Event id: the client should wait for level chunks.
         pub const LEVEL_CHUNKS_LOAD_START: u8 = 13;
     }
@@ -527,6 +531,7 @@ pub mod clientbound {
     }
 
     pub use super::entities::*;
+    pub use super::mobs::{Animate, Cooldown, MoveVehicleBack, SetEntityLink, SetPassengers};
     pub use super::survival::*;
 }
 

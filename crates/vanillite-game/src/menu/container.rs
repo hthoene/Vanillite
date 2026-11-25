@@ -154,6 +154,8 @@ pub enum Storage {
     Ender(BlockPos),
     /// The menu's own slots (crafting grid and result).
     Local,
+    /// A container entity: a chest or hopper minecart, a chest boat or raft.
+    Entity(EntityId),
 }
 
 /// A menu a block asks to open (`MenuProvider`).
@@ -267,7 +269,7 @@ impl ContainerMenu {
         match self.storage {
             Storage::Block(p) | Storage::Ender(p) => [Some(p), None],
             Storage::Double(a, b) => [Some(a), Some(b)],
-            Storage::Local => [None, None],
+            Storage::Local | Storage::Entity(_) => [None, None],
         }
     }
 }
@@ -312,6 +314,12 @@ impl ContainerView<'_> {
             }
             Storage::Ender(_) => self.inv.ender_chest.get(i).unwrap_or(empty),
             Storage::Local => self.menu.local.get(i).unwrap_or(empty),
+            Storage::Entity(id) => self
+                .level
+                .entities
+                .container_items(id)
+                .and_then(|items| items.get(i))
+                .unwrap_or(empty),
         }
     }
 
@@ -327,6 +335,7 @@ impl ContainerView<'_> {
             }
             Storage::Ender(_) => self.inv.ender_chest.get_mut(i),
             Storage::Local => self.menu.local.get_mut(i),
+            Storage::Entity(id) => self.level.entities.container_items_mut(id)?.get_mut(i),
         }
     }
 
@@ -476,7 +485,7 @@ impl MenuSlots for ContainerView<'_> {
                     blocks::set_changed(self.level, a);
                     blocks::set_changed(self.level, b);
                 }
-                Storage::Ender(_) | Storage::Local => {}
+                Storage::Ender(_) | Storage::Local | Storage::Entity(_) => {}
             }
             if self.menu.kind == MenuKind::Crafter {
                 self.crafter_changed();
@@ -892,7 +901,7 @@ pub fn open(
     let positions = match request.storage {
         Storage::Block(p) => [Some(p), None],
         Storage::Double(a, b) => [Some(a), Some(b)],
-        Storage::Ender(_) | Storage::Local => [None, None],
+        Storage::Ender(_) | Storage::Local | Storage::Entity(_) => [None, None],
     };
     if who.spectator
         && positions
@@ -962,6 +971,53 @@ pub fn open(
         }
         super::send_all(view, sink)
     });
+}
+
+/// Opens the menus players asked for at entities (`ServerPlayer.openMenu`), with the
+/// entities back in the level; what the closed menus give back and does not fit drops at the
+/// player.
+pub fn open_requests(level: &mut Level, requests: Vec<MenuRequest>) {
+    if requests.is_empty() {
+        return;
+    }
+    let mut players = std::mem::take(&mut level.entities.players);
+    let mut drops: Vec<(Vec3, Drop)> = Vec::new();
+    for request in requests {
+        let Some(player) = request.player else {
+            continue;
+        };
+        let Some(row) = level.entities.store.get(player).map(|e| e.kind_row()) else {
+            continue;
+        };
+        let pos = level
+            .entities
+            .store
+            .get(player)
+            .map_or(Vec3::default(), |e| e.pos());
+        let Some(p) = players.get_mut(row) else {
+            continue;
+        };
+        let who = Opener {
+            spectator: p.game_mode == vanillite_config::GameMode::Spectator,
+            infinite: p.game_mode == vanillite_config::GameMode::Creative,
+            disconnected: false,
+        };
+        let sink = std::sync::Arc::clone(&p.connection.sink);
+        let mut out = Vec::new();
+        open(
+            &mut p.inventory,
+            level,
+            request,
+            who,
+            &mut out,
+            sink.as_ref(),
+        );
+        drops.extend(out.into_iter().map(|d| (pos, d)));
+    }
+    level.entities.players = players;
+    for (pos, drop) in drops {
+        crate::block::drops::spawn_item(level, pos, drop.stack, Vec3::default(), 40, None);
+    }
 }
 
 /// Runs `f` on the open container menu with the player's inventory and the level.
@@ -1079,11 +1135,13 @@ pub fn close_on_leave(
 }
 
 /// `stillValid`: the block is still there and the player close enough
-/// (`isWithinBlockInteractionRange(pos, 4)`).
+/// (`isWithinBlockInteractionRange(pos, 4)`); a container entity is still there and the
+/// player close enough to its box (`isWithinEntityInteractionRange(box, 4)`).
 pub fn still_valid(
     inv: &PlayerInventory,
     level: &Level,
     in_range: &dyn Fn(BlockPos) -> bool,
+    in_entity_range: &dyn Fn(&vanillite_base::Aabb) -> bool,
 ) -> bool {
     let Some(menu) = &inv.container else {
         return true;
@@ -1117,6 +1175,14 @@ pub fn still_valid(
                 || (menu.kind == MenuKind::Anvil
                     && block.info().kind == vanillite_data::block::BlockKind::AnvilBlock);
             fits && in_range(menu.pos)
+        }
+        Storage::Entity(id) => {
+            level.entities.container_items(id).is_some()
+                && level
+                    .entities
+                    .store
+                    .get(id)
+                    .is_some_and(|e| in_entity_range(&e.aabb()))
         }
     }
 }

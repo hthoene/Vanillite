@@ -148,7 +148,7 @@ pub enum Behaviour {
     /// `DefaultDispenseItemBehavior`: the item drops.
     Default,
     /// An entity kind that is not simulated yet: projectiles, fireworks, fire and wind
-    /// charges, boats, minecarts, armour stands, spawn eggs and mob buckets. Falls back to
+    /// charges, boats, armour stands, spawn eggs and mob buckets. Falls back to
     /// [`Behaviour::Default`].
     Entity,
     /// Water and lava buckets (`DispensibleContainerItem`).
@@ -185,6 +185,8 @@ pub enum Behaviour {
     Chest,
     /// `EquipmentDispenseItemBehavior` (items with `equippable`).
     Equipment,
+    /// `MinecartDispenseItemBehavior`.
+    Minecart,
 }
 
 /// `DispenserBlock.getDispenseMethod`: the registered behaviour of the stack's item, else
@@ -235,13 +237,15 @@ fn registered(id: ItemId) -> Option<Behaviour> {
         items::SULFUR_CUBE_BUCKET,
         items::TADPOLE_BUCKET,
     ];
+    if crate::minecart::MinecartKind::of_item(id).is_some() {
+        return Some(B::Minecart);
+    }
     let name = id.name();
     // Mob buckets (`MobBucketItem`) place water, then spawn their mob.
     let spawns_entity = projectiles.contains(&id)
         || id == items::ARMOR_STAND
         || name.ends_with("_boat")
         || name.ends_with("_raft")
-        || name.ends_with("minecart")
         || mob_buckets.contains(&id);
     Some(if spawns_entity {
         B::Entity
@@ -327,6 +331,21 @@ fn execute(
     let target = source.target();
     match behaviour {
         B::Default | B::Entity | B::Chest => default_execute(level, source, stack),
+        B::Minecart => {
+            // Onto the rail in front, else dropped like the default behaviour.
+            let Some(kind) = crate::minecart::MinecartKind::of_item(item::item_id(&stack)) else {
+                return default_execute(level, source, stack);
+            };
+            let name = stack
+                .component(vanillite_protocol::components::ids::CUSTOM_NAME)
+                .map(Into::into);
+            if crate::minecart::dispense(level, kind, source.pos, source.facing, name) {
+                stack.shrink(1);
+                stack
+            } else {
+                dispense(level, source, stack, B::Default)
+            }
+        }
         B::FilledBucket => {
             let fluid = if item::item_id(&stack) == items::LAVA_BUCKET {
                 ids::LAVA

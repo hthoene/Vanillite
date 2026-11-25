@@ -1,0 +1,13 @@
+{
+  "description": "A platform high above the ground, with empty sections between it and the ground: sky light under it, above the ground and in the empty sections, then the platform removed.",
+  "tier": "fast",
+  "light": true,
+  "world": {"layers": [["minecraft:bedrock", 1], ["minecraft:stone", 59], ["minecraft:dirt", 4], ["minecraft:grass_block", 1]]},
+  "region": [[-14, -1, -2], [14, 90, 2]],
+  "ticks": 3,
+  "actions": [
+    {"tick": 1, "op": "fill", "from": [-13, 70, -13], "to": [13, 70, 13], "block": "minecraft:stone"},
+    {"tick": 2, "op": "fill", "from": [-2, 70, -2], "to": [2, 70, 2], "block": "minecraft:air"},
+    {"tick": 3, "op": "fill", "from": [-13, 70, -13], "to": [13, 70, 13], "block": "minecraft:air"}
+  ]
+}

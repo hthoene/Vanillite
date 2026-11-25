@@ -1,0 +1,202 @@
+{
+  "description": "A minecart at rest on a powered rail beside a solid block starts away from it, a powered section speeds it up, two unpowered powered rails brake it; a second minecart rolling into an unpowered powered rail is stopped.",
+  "tier": "fast",
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      35,
+      -58,
+      8
+    ]
+  ],
+  "ticks": 200,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        0,
+        -60,
+        2
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -61,
+        2
+      ],
+      "block": "minecraft:redstone_block"
+    },
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -60,
+        2
+      ],
+      "block": "minecraft:powered_rail[powered=true,shape=east_west]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        2,
+        -60,
+        2
+      ],
+      "to": [
+        12,
+        -60,
+        2
+      ],
+      "block": "minecraft:rail[shape=east_west]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        13,
+        -61,
+        2
+      ],
+      "to": [
+        15,
+        -61,
+        2
+      ],
+      "block": "minecraft:redstone_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        13,
+        -60,
+        2
+      ],
+      "to": [
+        15,
+        -60,
+        2
+      ],
+      "block": "minecraft:powered_rail[powered=true,shape=east_west]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        16,
+        -60,
+        2
+      ],
+      "to": [
+        24,
+        -60,
+        2
+      ],
+      "block": "minecraft:rail[shape=east_west]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        25,
+        -60,
+        2
+      ],
+      "to": [
+        26,
+        -60,
+        2
+      ],
+      "block": "minecraft:powered_rail[powered=false,shape=east_west]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        27,
+        -60,
+        2
+      ],
+      "to": [
+        34,
+        -60,
+        2
+      ],
+      "block": "minecraft:rail[shape=east_west]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        1,
+        -60,
+        6
+      ],
+      "to": [
+        8,
+        -60,
+        6
+      ],
+      "block": "minecraft:rail[shape=east_west]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        9,
+        -60,
+        6
+      ],
+      "block": "minecraft:powered_rail[powered=false,shape=east_west]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        10,
+        -60,
+        6
+      ],
+      "to": [
+        14,
+        -60,
+        6
+      ],
+      "block": "minecraft:rail[shape=east_west]"
+    }
+  ],
+  "entities": [
+    {
+      "name": "launched",
+      "type": "minecraft:minecart",
+      "pos": [
+        1.5,
+        -59.9375,
+        2.5
+      ],
+      "rot": [
+        0,
+        0
+      ],
+      "seed": 3
+    },
+    {
+      "name": "braked",
+      "type": "minecraft:minecart",
+      "pos": [
+        2.5,
+        -59.9375,
+        6.5
+      ],
+      "rot": [
+        0,
+        0
+      ],
+      "seed": 4,
+      "motion": [
+        0.2,
+        0,
+        0
+      ]
+    }
+  ]
+}

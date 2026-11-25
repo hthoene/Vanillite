@@ -12,6 +12,7 @@
 //!   fluid ticks, random ticks, block events); entities tick in the world's entity phase.
 
 pub mod block_entity;
+mod entity_storage;
 pub mod explosion;
 pub mod game_event;
 mod neighbors;
@@ -103,6 +104,9 @@ pub struct LevelSettings {
     pub has_sky_light: bool,
     /// The dimension's `water_evaporates` attribute (the Nether).
     pub water_evaporates: bool,
+    /// Fire lights nether portals here (`BaseFireBlock.inPortalDimension`: the Overworld and
+    /// the Nether).
+    pub portal_dimension: bool,
     /// Exploit switches (D1).
     pub exploits: ExploitSettings,
 }
@@ -122,6 +126,7 @@ impl Default for LevelSettings {
             tnt_explodes: true,
             has_sky_light: true,
             water_evaporates: false,
+            portal_dimension: true,
             exploits: ExploitSettings::default(),
         }
     }
@@ -208,6 +213,9 @@ pub struct LevelOutput {
     pub experience: Vec<(vanillite_base::Vec3, i32)>,
     /// Block entities whose client data changed (`sendBlockUpdated` of a block entity).
     pub block_entity_updates: Vec<BlockPos>,
+    /// Global level events (`globalLevelEvent`: event, position, data), heard by every player
+    /// of the server.
+    pub global_level_events: Vec<(i32, BlockPos, i32)>,
 }
 
 /// The game state of one world.
@@ -236,6 +244,16 @@ pub struct Level {
     pub(crate) torch_toggles: Vec<(BlockPos, i64)>,
     /// Scratch list of [`Level::tick_chunk_runtime`].
     chunk_scratch: Vec<ChunkPos>,
+    /// Scratch list of the visibility changes.
+    visibility_scratch: Vec<vanillite_world::chunks::VisibilityChange>,
+    /// The stored data live entities were loaded from: written back with their modelled
+    /// fields replaced, so stored fields the game does not model are kept.
+    entity_nbt: FxHashMap<EntityId, vanillite_nbt::Compound>,
+    /// Stored entities of kinds the game does not model, per live chunk; written back
+    /// unchanged.
+    parked_entities: FxHashMap<ChunkPos, Vec<Arc<[u8]>>>,
+    /// Live chunks whose stored entities are not empty.
+    entity_chunks: FxHashSet<ChunkPos>,
     /// `blockEvents`, a linked set: an event already queued is not queued again.
     block_events: Vec<BlockEvent>,
     block_event_set: FxHashSet<BlockEvent>,
@@ -282,7 +300,7 @@ impl Level {
         let info = chunks.info();
         let min_y = info.min_y;
         let max_y = info.min_y + info.height as i32 - 1;
-        Level {
+        let mut level = Level {
             chunks,
             entities: Entities::new(),
             updater: NeighborUpdater::new(settings.max_chained_neighbor_updates),
@@ -296,6 +314,10 @@ impl Level {
             wire_signals: true,
             torch_toggles: Vec::new(),
             chunk_scratch: Vec::new(),
+            visibility_scratch: Vec::new(),
+            entity_nbt: FxHashMap::default(),
+            parked_entities: FxHashMap::default(),
+            entity_chunks: FxHashSet::default(),
             block_events: Vec::new(),
             block_event_set: FxHashSet::default(),
             random: LegacyRandom::new(seed),
@@ -309,7 +331,10 @@ impl Level {
             maps: None,
             min_y,
             max_y,
-        }
+        };
+        // Chunks that are visible already load their entities.
+        level.apply_visibility();
+        level
     }
 
     /// `player.openMenu(provider)` from block code: the player handlers open it.
@@ -496,10 +521,11 @@ impl Level {
         self.block(pos).fluid_state()
     }
 
-    /// `isLoaded(pos)` / `hasChunkAt`: the position is in a live chunk.
+    /// `isLoaded(pos)` / `hasChunkAt`: the position is in an accessible full chunk (level up
+    /// to full).
     #[inline]
     pub fn is_loaded(&self, pos: BlockPos) -> bool {
-        self.chunks.chunk(pos.chunk()).is_some()
+        self.chunks.is_accessible(pos.chunk())
     }
 
     /// `getBrightness(LightLayer.SKY / BLOCK, pos)` as `(sky, block)`.
@@ -648,6 +674,11 @@ impl Level {
             seed,
             except,
         });
+    }
+
+    /// `globalLevelEvent(event, pos, data)`.
+    pub fn global_level_event(&mut self, event: i32, pos: BlockPos, data: i32) {
+        self.output.global_level_events.push((event, pos, data));
     }
 
     /// `levelEvent(source, event, pos, data)`.
@@ -929,6 +960,11 @@ impl Level {
         }
     }
 
+    /// Whether the block of `state` reacts to entities inside it (`entityInside`).
+    pub fn has_entity_inside(&self, state: BlockState) -> bool {
+        self.behaviours.get(state.block()).entity_inside.is_some()
+    }
+
     /// `state.entityInside(level, pos, entity, ...)` of the block at `pos`.
     pub fn entity_inside(&mut self, pos: BlockPos, entity: EntityId) {
         let state = self.block(pos);
@@ -988,6 +1024,10 @@ impl BlockLevel for Level {
     #[inline]
     fn block(&self, pos: BlockPos) -> BlockState {
         Level::block(self, pos)
+    }
+
+    fn min_y(&self) -> i32 {
+        Level::min_y(self)
     }
 
     fn raw_brightness(&self, pos: BlockPos) -> i32 {

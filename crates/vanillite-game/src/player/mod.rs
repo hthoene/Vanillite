@@ -18,12 +18,13 @@ pub mod join;
 pub mod movement;
 pub mod play;
 pub mod sink;
+pub mod using;
 pub mod world;
 
 pub use chunks::{ChunkSource, PlayerChunks};
 pub use connection::{
-    ChatContext, ChatRequest, Connection, Handled, PlayerChatState, PlayerState, SignedCommand,
-    effective_view_distance,
+    ChatContext, ChatRequest, Connection, EntityAction, Handled, PlayerChatState, PlayerState,
+    SignedCommand, VehicleInput, effective_view_distance,
 };
 pub use movement::{Body, Kick, MoveContext, MoveRequest, Movement};
 pub use sink::PacketSink;

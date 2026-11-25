@@ -60,7 +60,7 @@ impl Compression {
                 }
                 Ok(data.to_vec())
             }
-            Self::Deflate => read_limited(flate2::read::ZlibDecoder::new(data)),
+            Self::Deflate => inflate(data),
             Self::Gzip => read_limited(flate2::read::GzDecoder::new(data)),
             Self::Lz4 => lz4_decompress(data),
         }
@@ -91,12 +91,90 @@ impl Compression {
     }
 }
 
+/// Compresses one record of the own format with zstd at `level` (no dictionary). Every
+/// thread keeps its compression context, so a record costs no context setup.
+pub fn zstd_compress(data: &[u8], level: i32) -> io::Result<Vec<u8>> {
+    thread_local! {
+        static CONTEXT: std::cell::RefCell<Option<(i32, zstd::bulk::Compressor<'static>)>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    CONTEXT.with_borrow_mut(|context| {
+        let compressor = match context {
+            Some((current, compressor)) if *current == level => compressor,
+            _ => {
+                &mut context
+                    .insert((level, zstd::bulk::Compressor::new(level)?))
+                    .1
+            }
+        };
+        compressor.compress(data)
+    })
+}
+
+/// Decompresses one zstd record; its frame must state its size, at most
+/// [`MAX_DECOMPRESSED`].
+pub fn zstd_decompress(data: &[u8]) -> io::Result<Vec<u8>> {
+    thread_local! {
+        static CONTEXT: std::cell::RefCell<Option<zstd::bulk::Decompressor<'static>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    let size = match zstd::zstd_safe::get_frame_content_size(data) {
+        Ok(Some(size)) => usize::try_from(size).unwrap_or(usize::MAX),
+        _ => return Err(invalid("zstd: no frame size")),
+    };
+    if size > MAX_DECOMPRESSED {
+        return Err(too_large());
+    }
+    CONTEXT.with_borrow_mut(|context| {
+        let decompressor = match context {
+            Some(decompressor) => decompressor,
+            None => context.insert(zstd::bulk::Decompressor::new()?),
+        };
+        let out = decompressor.decompress(data, size)?;
+        if out.len() != size {
+            return Err(invalid("zstd: wrong frame size"));
+        }
+        Ok(out)
+    })
+}
+
 fn too_large() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "decompressed chunk too large")
 }
 
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.to_owned())
+}
+
+/// Inflates zlib data in memory: one output buffer sized for a typical chunk (about 5:1), grown
+/// only for larger ones, no intermediate copies.
+fn inflate(data: &[u8]) -> io::Result<Vec<u8>> {
+    let mut z = flate2::Decompress::new(true);
+    let mut out = Vec::with_capacity(
+        data.len()
+            .saturating_mul(6)
+            .clamp(16 << 10, MAX_DECOMPRESSED),
+    );
+    loop {
+        let (read, written) = (z.total_in(), z.total_out());
+        let input = data.get(read as usize..).unwrap_or_default();
+        let status = z
+            .decompress_vec(input, &mut out, flate2::FlushDecompress::Finish)
+            .map_err(|e| invalid(&format!("deflate: {e}")))?;
+        match status {
+            flate2::Status::StreamEnd => return Ok(out),
+            _ if out.len() < out.capacity() && (z.total_in(), z.total_out()) == (read, written) => {
+                return Err(invalid("deflate: truncated chunk"));
+            }
+            _ => {}
+        }
+        if out.len() == out.capacity() {
+            if out.len() >= MAX_DECOMPRESSED {
+                return Err(too_large());
+            }
+            out.reserve(out.len().min(MAX_DECOMPRESSED - out.len()));
+        }
+    }
 }
 
 fn read_limited(reader: impl Read) -> io::Result<Vec<u8>> {

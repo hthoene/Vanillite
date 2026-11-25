@@ -32,6 +32,7 @@ pub mod note;
 pub mod piston;
 pub mod place;
 pub mod plate;
+pub mod portal;
 pub mod pot;
 pub mod rail;
 pub mod redstone;
@@ -283,6 +284,7 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
     bookshelf::fill(block, &mut b);
     campfire::fill(block, &mut b);
     crafter::fill(block, &mut b);
+    portal::fill(block, &mut b);
     b
 }
 

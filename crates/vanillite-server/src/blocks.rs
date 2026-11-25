@@ -24,7 +24,7 @@ use vanillite_world::entity::{EntityFlags, EntityId, EntityStore};
 
 /// Builds the gameplay data from the loaded data packs and installs the registry sizes and
 /// tags the protocol needs to validate client item stacks.
-pub(crate) fn game_data(packs: Option<&LoadedPacks>) -> GameData {
+pub fn game_data(packs: Option<&LoadedPacks>) -> GameData {
     let Some(packs) = packs else {
         return GameData::default();
     };
@@ -57,6 +57,28 @@ pub(crate) fn game_data(packs: Option<&LoadedPacks>) -> GameData {
                 .collect()
         })
         .unwrap_or_default();
+    let entity_tags: HashMap<String, Vec<u16>> = packs
+        .tags("minecraft:entity_type")
+        .map(|tags| {
+            tags.keys()
+                .map(|t| (t.clone(), tag_ids("minecraft:entity_type", t)))
+                .collect()
+        })
+        .unwrap_or_default();
+    let enchants = vanillite_game::enchant::Enchantments {
+        list: packs
+            .registry("minecraft:enchantment")
+            .map(|r| {
+                r.entries()
+                    .iter()
+                    .map(|e| {
+                        let json = serde_json::from_str(e.json.get()).unwrap_or_default();
+                        vanillite_game::enchant::Enchantment::parse(&e.id, &json)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+    };
     let mut info = vanillite_protocol::item::RegistryInfo::default();
     for r in packs.registries() {
         info.sizes.insert(r.name.to_owned(), r.entries().len());
@@ -149,6 +171,9 @@ pub(crate) fn game_data(packs: Option<&LoadedPacks>) -> GameData {
         loot,
         enchantments,
         item_tags,
+        entity_tags,
+        enchants,
+        enderman_holdable: tag_ids("minecraft:block", "minecraft:enderman_holdable"),
         recipes,
         enchanting,
         banner_patterns,
@@ -193,6 +218,20 @@ impl PlayLevel for WorldLevel<'_> {
 
     fn block(&self, pos: BlockPos) -> BlockState {
         self.level.block(pos)
+    }
+
+    fn lights_portal(&self, pos: BlockPos, forward: vanillite_base::Direction) -> bool {
+        vanillite_game::block::portal::lights_portal(self.level, pos, forward)
+    }
+
+    fn end_portal_frame_filled(&mut self, pos: BlockPos) {
+        use vanillite_game::block::portal;
+        self.level
+            .update_neighbour_for_output_signal(pos, vanillite_data::block::ids::END_PORTAL_FRAME);
+        self.level.level_event(None, 1503, pos, 0);
+        if let Some(corner) = portal::find_end_portal(self.level, pos) {
+            portal::open_end_portal(self.level, corner);
+        }
     }
 
     fn is_loaded(&self, pos: BlockPos) -> bool {
@@ -423,6 +462,15 @@ pub(crate) fn tick_items(
         let Some(entity) = store.get(id) else {
             continue;
         };
+        // Only items in the tick order (entity ticking chunk) and in entity ticking range.
+        let pos = entity.pos();
+        let chunk = vanillite_base::ChunkPos::new(
+            vanillite_base::math::floor(pos.x) >> 4,
+            vanillite_base::math::floor(pos.z) >> 4,
+        );
+        if !store.is_ticking(id) || !chunks.in_entity_ticking_range(chunk) {
+            continue;
+        }
         let row = entity.kind_row();
         let input = item_entity::TickInput {
             pos: entity.pos(),

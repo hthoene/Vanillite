@@ -315,7 +315,7 @@ impl Session {
 
     fn client_frames(&mut self) -> Result<(), End> {
         loop {
-            let Some(frame) = self.client_rx.decoder.next_frame()? else {
+            let Some(frame) = self.client_rx.next_frame()? else {
                 return Ok(());
             };
             let id = packet_id(frame)?;

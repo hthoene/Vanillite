@@ -27,6 +27,8 @@ pub struct ItemData {
     pub target: Option<u128>,
     /// `tickCount`.
     pub tick_count: u32,
+    /// `health`: explosions and fire wear it down from 5.
+    pub health: i16,
 }
 
 impl ItemData {
@@ -39,6 +41,7 @@ impl ItemData {
             thrower,
             target: None,
             tick_count: 0,
+            health: 5,
         }
     }
 

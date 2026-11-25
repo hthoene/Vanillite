@@ -360,6 +360,59 @@ fn sin_lookup(index: f64) -> f32 {
     table[(d2l(index) & 0xFFFF) as usize]
 }
 
+/// `Mth.fastInvSqrt`.
+#[inline]
+pub fn fast_inv_sqrt(x: f64) -> f64 {
+    let half = 0.5 * x;
+    let i = 6_910_469_410_427_058_090_i64.wrapping_sub((x.to_bits() as i64) >> 1);
+    let y = f64::from_bits(i as u64);
+    y * (1.5 - half * y * y)
+}
+
+/// `Mth.atan2`: Vanilla's table-based arc tangent (not `Math.atan2`; results differ in the
+/// last digits).
+pub fn atan2(mut y: f64, mut x: f64) -> f64 {
+    use crate::mth_tables::{ASIN_TAB, COS_TAB};
+    let frac_bias = f64::from_bits(4_805_340_802_404_319_232);
+    let d0 = x * x + y * y;
+    if d0.is_nan() {
+        return f64::NAN;
+    }
+    let negative_y = y < 0.0;
+    if negative_y {
+        y = -y;
+    }
+    let negative_x = x < 0.0;
+    if negative_x {
+        x = -x;
+    }
+    let swapped = y > x;
+    if swapped {
+        std::mem::swap(&mut x, &mut y);
+    }
+    let inv = fast_inv_sqrt(d0);
+    x *= inv;
+    y *= inv;
+    let d2 = frac_bias + y;
+    let i = (d2.to_bits() as i64 as i32) as usize;
+    let d3 = f64::from_bits(ASIN_TAB[i]);
+    let d4 = f64::from_bits(COS_TAB[i]);
+    let d5 = d2 - frac_bias;
+    let d6 = y * d4 - x * d5;
+    let d7 = (6.0 + d6 * d6) * d6 * 0.166_666_666_666_666_66;
+    let mut d8 = d3 + d7;
+    if swapped {
+        d8 = std::f64::consts::FRAC_PI_2 - d8;
+    }
+    if negative_x {
+        d8 = std::f64::consts::PI - d8;
+    }
+    if negative_y {
+        d8 = -d8;
+    }
+    d8
+}
+
 /// `Mth.sin(double)`: table-based, 65536 steps per turn.
 #[inline]
 pub fn sin(radians: f64) -> f32 {

@@ -198,7 +198,11 @@ impl PlayerList {
 
     /// Sends a packet to every player except `except`. The packet is encoded once.
     pub fn broadcast<P: Packet>(&self, packet: &P, except: Option<Uuid>) {
-        let shared = SharedPacket::of(packet);
+        self.broadcast_shared(&SharedPacket::of(packet), except);
+    }
+
+    /// Sends an encoded packet to every player except `except`.
+    pub fn broadcast_shared(&self, shared: &Arc<SharedPacket>, except: Option<Uuid>) {
         let sinks: Vec<Arc<dyn PacketSink>> = self
             .lock()
             .iter()
@@ -206,7 +210,7 @@ impl PlayerList {
             .map(|p| Arc::clone(&p.sink))
             .collect();
         for sink in sinks {
-            sink.send_shared(&shared);
+            sink.send_shared(shared);
         }
     }
 }

@@ -75,4 +75,10 @@ pub trait PlayLevel {
     fn level_mut(&mut self) -> Option<&mut crate::level::Level> {
         None
     }
+    /// `BaseFireBlock.isPortal`: fire at `pos` would light a nether portal (`forward` is the
+    /// player's horizontal facing).
+    fn lights_portal(&self, pos: BlockPos, forward: vanillite_base::Direction) -> bool;
+    /// The rest of `EnderEyeItem.useOn` after the frame at `pos` got its eye: comparators
+    /// re-read it, and a complete frame opens the End portal.
+    fn end_portal_frame_filled(&mut self, pos: BlockPos);
 }

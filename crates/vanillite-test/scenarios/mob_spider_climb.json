@@ -1,0 +1,112 @@
+{
+  "description": "A spider at night climbs a three blocks high wall to reach a survival player behind it: spider target goal, climbing, leap and melee attack.",
+  "time": 18000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      23,
+      -56,
+      23
+    ]
+  ],
+  "ticks": 200,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        23,
+        -56,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        23
+      ],
+      "to": [
+        23,
+        -56,
+        23
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -56,
+        23
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        23,
+        -60,
+        0
+      ],
+      "to": [
+        23,
+        -56,
+        23
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        1,
+        -60,
+        11
+      ],
+      "to": [
+        22,
+        -58,
+        11
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        12.5,
+        -60.0,
+        16.5
+      ]
+    },
+    {
+      "name": "spider",
+      "type": "minecraft:spider",
+      "pos": [
+        12.5,
+        -60.0,
+        5.5
+      ],
+      "seed": 4,
+      "finalize": false
+    }
+  ],
+  "tier": "fast"
+}

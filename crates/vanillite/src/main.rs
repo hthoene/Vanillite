@@ -18,12 +18,19 @@ const USAGE: &str = "\
 Usage: vanillite [command] [options]
 
 Commands:
-  run        Start the server (default)
-  health     Send a status ping to the local server; exit code 0 if it answers
-  version    Print the version
+  run              Start the server (default)
+  health           Send a status ping to the local server; exit code 0 if it answers
+  convert          Convert the world into another format while the server is stopped
+  export <target>  Write a Vanilla (Anvil) copy of an own-format world into <target>
+  version          Print the version
 
-Options of run and health:
+Options of run, health, convert and export:
   --dir <path>   Server folder with config files and worlds (default: current folder)
+
+Options of convert:
+  --to <format>  vanillite or anvil (default: storage.world-format of vanillite.toml).
+                 The new files are verified before the old ones are moved into
+                 world-format-backup/ (storage.keep-converted-files) or deleted
 
 Options of health:
   --port <port>  Port to ping (default: VANILLITE_SERVER_PORT, else server-port of
@@ -40,6 +47,8 @@ fn main() -> ExitCode {
     match command.as_deref() {
         None | Some("run") => run(args),
         Some("health") => health::run(args, USAGE),
+        Some("convert") => convert(args),
+        Some("export") => export(args),
         Some("version" | "--version" | "-V") => {
             println!("vanillite {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
@@ -97,6 +106,65 @@ fn run(mut args: impl Iterator<Item = String>) -> ExitCode {
         }
         Err(e) => {
             log::error!("Cannot start the server thread: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `vanillite convert [--to <format>] [--dir <path>]`.
+fn convert(mut args: impl Iterator<Item = String>) -> ExitCode {
+    let mut dir = PathBuf::from(".");
+    let mut to = None;
+    while let Some(arg) = args.next() {
+        match (arg.as_str(), args.next().as_deref()) {
+            ("--dir", Some(path)) => dir = PathBuf::from(path),
+            ("--to", Some("vanillite")) => to = Some(vanillite_storage::WorldFormat::Vanillite),
+            ("--to", Some("anvil")) => to = Some(vanillite_storage::WorldFormat::Anvil),
+            _ => {
+                eprintln!("Invalid option {arg:?}\n\n{USAGE}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    logger::init();
+    match vanillite_server::convert_world(&dir, to) {
+        Ok(_) => ExitCode::SUCCESS,
+        Err(e) => {
+            log::error!("Conversion failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `vanillite export <target> [--dir <path>]`.
+fn export(mut args: impl Iterator<Item = String>) -> ExitCode {
+    let mut dir = PathBuf::from(".");
+    let mut target = None;
+    while let Some(arg) = args.next() {
+        match (arg.as_str(), target.is_none()) {
+            ("--dir", _) => {
+                let Some(path) = args.next() else {
+                    eprintln!("--dir needs a folder\n\n{USAGE}");
+                    return ExitCode::FAILURE;
+                };
+                dir = PathBuf::from(path);
+            }
+            (_, true) if !arg.starts_with("--") => target = Some(PathBuf::from(arg)),
+            _ => {
+                eprintln!("Invalid option {arg:?}\n\n{USAGE}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    let Some(target) = target else {
+        eprintln!("export needs a target folder\n\n{USAGE}");
+        return ExitCode::FAILURE;
+    };
+    logger::init();
+    match vanillite_server::export_world(&dir, &target) {
+        Ok(_) => ExitCode::SUCCESS,
+        Err(e) => {
+            log::error!("Export failed: {e}");
             ExitCode::FAILURE
         }
     }

@@ -142,6 +142,37 @@ its scenario or recorder source. A missing or stale golden fails; it is never sk
 | `cargo xtask golden regen [--all] [--bulk] [<name>...]` | Record missing or stale goldens (JDK 25). |
 | `cargo xtask golden bless <scenario>...` | Accept Vanillite's trace for intended differences. |
 
+`VANILLITE_SCENARIO=<name>,... cargo test -p vanillite-test --test parity` runs only those scenarios.
+
+### Mob parity scenarios
+
+Mob AI, path finding and entity behaviour must match Vanilla tick for tick. Every mob gets at
+least one scenario `crates/vanillite-test/scenarios/mob_<what>.json` (see `mob_zombie_chase.json`):
+a small arena (`setup`), the time of day (`time`), the entities (`entities`: players and mobs
+with a `name` and a `seed`, `"finalize": false` to skip `finalizeSpawn`) and actions such as
+`hurt`. The recorder runs it in Vanilla with fixed entity ids, UUIDs and seeds (its Java agent
+makes every Vanilla random reproducible), and the trace holds per tick and entity: position,
+motion, rotation, health, target, running goals and target goals (Vanilla class names), the
+navigation path and the state of the entity's random (`rng`) and of the level random.
+
+Adding a mob:
+
+1. Map its goals to Vanilla's class names in `goal_name` (`crates/vanillite-test/src/game_world.rs`).
+2. Write the scenario and record it: `cargo xtask golden regen mob_<what>` (JDK 25).
+3. Run `VANILLITE_SCENARIO=mob_<what> cargo test -p vanillite-test --test parity`: it prints the
+   first differences with expected and actual values. The first tick where `rng` differs is
+   the first random call Vanillite makes differently (a missing goal, a draw from the wrong
+   random, a different call order). The number of draws between two `rng` states shows how
+   many calls each side made.
+4. Fix it, or record what is left in `scenarios/divergences.toml` (tick, cause, owner): the
+   check then stays green while the first difference is at exactly that tick, fails when it
+   moves earlier (a regression) and asks to raise the tick when it moves later. Editing that
+   file needs no new recording.
+
+Scenario players are mock players: they join on a connection nobody reads, do not move by
+themselves and load no chunks (the region's chunks are the world). Their server-side motion is
+not compared.
+
 ## CI
 
 `.github/workflows/ci.yml` runs on every push and pull request: format, clippy, tests with codegen
