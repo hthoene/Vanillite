@@ -101,6 +101,8 @@ impl Level {
                 e.set_velocity(loaded.velocity);
                 e.set_flags(EntityFlags::ON_GROUND, loaded.on_ground);
             }
+            // `Raider.readAdditionalSaveData`: back into its raid.
+            crate::raid::rejoin_loaded(&mut self.entities, id);
             return true;
         }
         if let Some((kind, pos, velocity, rot, uuid, data)) =
