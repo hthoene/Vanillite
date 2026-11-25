@@ -413,6 +413,7 @@ fn damage(args: &Args, source: &CommandSource, env: &mut Env<'_>) -> Result<i32,
             .is_some_and(|t| vanillite_game::mob::Kind::by_name(t.kind.name()).is_some()),
         cause_name: None,
         disable_shield_seconds: 0.0,
+        projectile_motion: None,
     };
     if !target.is_player() {
         return Err(CommandError::new("commands.damage.invulnerable", vec![]));

@@ -214,11 +214,18 @@ impl std::fmt::Debug for GameWorld {
     }
 }
 
+/// The seed of every shuffled behaviour list's random in a scenario
+/// (`ParityHooks.SHUFFLE_SEED`).
+const PARITY_SHUFFLE_SEED: i64 = 0x5348_5546;
+
 impl GameWorld {
     /// The world of `spec`. The simulation runs on the world's thread only, so serial and
     /// parallel execution are the same.
     pub fn new(spec: &WorldSpec) -> Result<Self, String> {
         install();
+        // The recorder seeds every shuffled behaviour list's random alike
+        // (`ParityHooks.shuffleRandom`).
+        vanillite_game::mob::set_parity_shuffle_seed(Some(PARITY_SHUFFLE_SEED));
         let store = Arc::new(MemoryStore::default());
         let (mut level, network_ids) = open_level(spec, Arc::clone(&store))?;
         let mut rules = GameRules::default();
@@ -378,9 +385,13 @@ impl GameWorld {
             let is_mob = is_mob_kind(kind);
             let is_special = mob::boss::special::is_special_kind(kind);
             let is_minecart = MinecartKind::of(kind).is_some();
+            let is_boat = vanillite_game::vehicle::BoatKind::of(kind).is_some();
+            let is_missile = vanillite_game::mob::missile::is_missile_kind(kind);
             if !is_mob
                 && !is_special
                 && !is_minecart
+                && !is_boat
+                && !is_missile
                 && !projectile::is_arrow_kind(kind)
                 && kind != ids::EXPERIENCE_ORB
                 && kind != ids::AREA_EFFECT_CLOUD
@@ -404,8 +415,12 @@ impl GameWorld {
                     mob::boss::special::tick(level, ents, env, cx, id);
                 } else if is_minecart {
                     minecart::tick(level, ents, env, cx, id);
+                } else if is_boat {
+                    vanillite_game::vehicle::tick_boat(level, ents, env, cx, id);
                 } else if projectile::is_arrow_kind(kind) {
                     projectile::tick_arrow(level, ents, env, cx, id);
+                } else if is_missile {
+                    vanillite_game::mob::missile::tick(level, ents, env, cx, id);
                 } else {
                     vanillite_game::effect::cloud::tick(level, ents, env, cx, id);
                 }
@@ -547,12 +562,31 @@ impl GameWorld {
         if players.is_empty() {
             return;
         }
-        self.with_env(|_, ents, env, _| {
-            let Entities { store, players, .. } = ents;
-            for (id, data) in players.iter_mut() {
-                if let Some(mut entity) = store.get_mut(id) {
-                    survival_player::do_tick(&mut entity, data, env);
-                }
+        self.with_env(|level, ents, env, cx| {
+            for &id in &players {
+                let Entities { store, players, .. } = &mut *ents;
+                let Some(mut entity) = store.get_mut(id) else {
+                    continue;
+                };
+                let Some(data) = players.get_mut(entity.as_ref().kind_row()) else {
+                    continue;
+                };
+                let std::ops::ControlFlow::Continue(result) =
+                    survival_player::do_tick_ai(&mut entity, data, env)
+                else {
+                    continue;
+                };
+                // `pushEntities` and `touch` at the end of the player's `aiStep`.
+                vanillite_game::mob::living::player_push_entities(ents, id);
+                vanillite_game::mob::fam::undead::cubes::player_touch(level, ents, env, cx, id);
+                let Entities { store, players, .. } = &mut *ents;
+                let Some(mut entity) = store.get_mut(id) else {
+                    continue;
+                };
+                let Some(data) = players.get_mut(entity.as_ref().kind_row()) else {
+                    continue;
+                };
+                survival_player::do_tick_end(&mut entity, data, env, result);
             }
         });
         self.spawn_drops();
@@ -577,7 +611,7 @@ impl GameWorld {
         let pos = Vec3::new(spec.pos[0], spec.pos[1], spec.pos[2]);
         let (_tx, inbound) = vanillite_protocol::inbound_queue(1);
         let chat = ChatSettings::default();
-        let data = PlayerData {
+        let mut data = PlayerData {
             profile: GameProfile {
                 name: spec.name.clone(),
                 properties: Vec::new(),
@@ -614,6 +648,9 @@ impl GameWorld {
             x_rot: spec.rot[1],
             y_head_rot: spec.rot[0],
         };
+        // Nobody moves the mock player: the server does, like Vanilla's.
+        data.survival.simulate_movement = true;
+        data.survival.y_body_rot = spec.rot[0];
         let id =
             self.level
                 .entities
@@ -720,7 +757,12 @@ impl GameWorld {
             }
         };
         if let Some(p) = ents.player(id) {
-            living(&mut d, rot.y_rot, p.survival.health, p.survival.death_time);
+            living(
+                &mut d,
+                p.survival.y_body_rot,
+                p.survival.health,
+                p.survival.death_time,
+            );
         }
         if ents.minecart(id).is_some() {
             d.insert("rot".into(), json!([bits(rot.y_rot), bits(rot.x_rot)]));
@@ -1294,7 +1336,12 @@ impl ScenarioWorld for GameWorld {
             if !inside(block, min, max) {
                 continue;
             }
-            let v = core.velocity[row];
+            // A player moves by its client: its server-side motion is not part of the trace.
+            let v = if core.kind[row] == ids::PLAYER {
+                Vec3::ZERO
+            } else {
+                core.velocity[row]
+            };
             out.push(EntityObs {
                 kind: core.kind[row].name().to_owned(),
                 pos: [pos.x, pos.y, pos.z],

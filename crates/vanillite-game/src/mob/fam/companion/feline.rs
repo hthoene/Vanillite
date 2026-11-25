@@ -730,7 +730,7 @@ pub fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
             } else {
                 0.8
             };
-            nav::move_to_entity(t, o.pos, 0, speed);
+            nav::move_to_entity(t, o.pos, 1, speed);
             *attack_time = (*attack_time - 1).max(0);
             if d <= melee && *attack_time <= 0 {
                 *attack_time = 20;

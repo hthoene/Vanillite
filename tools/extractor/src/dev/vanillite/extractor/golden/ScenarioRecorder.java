@@ -141,6 +141,9 @@ public final class ScenarioRecorder {
       BlockPos min = pos(region.get(0));
       BlockPos max = pos(region.get(1));
       loadRegion(server, level, min, max);
+      // The warm-up takes as many ticks as the chunks need to load: the scenario starts at game
+      // time 0 instead, like Vanillite's new level (camels count their pose time from it).
+      server.getWorldData().overworldData().setGameTime(0);
       Area area = new Area(min, max);
 
       // The setup may draw from the level random (blocks that schedule a random delay when
