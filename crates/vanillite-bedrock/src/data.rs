@@ -10,6 +10,7 @@ use crate::items::Items;
 
 static BIOMES: &str = include_str!("../data/biomes.txt");
 static SOUNDS: &str = include_str!("../data/sounds.txt");
+static PARTICLES: &str = include_str!("../data/particles.txt");
 /// Body of `biome_definition_list`.
 pub static BIOME_DEFINITIONS: &[u8] = include_bytes!("../data/biome_definitions.bin");
 /// Body of `available_actor_identifiers`.
@@ -145,6 +146,19 @@ pub fn sound_name(java: &str) -> Option<&'static str> {
     MAP.get_or_init(|| SOUNDS.lines().filter_map(|l| l.split_once(' ')).collect())
         .get(java)
         .copied()
+}
+
+/// The Bedrock particle effect of a Java particle type, if Bedrock has a vanilla one.
+pub fn particle_name(java: &str) -> Option<&'static str> {
+    static MAP: OnceLock<FxHashMap<&'static str, &'static str>> = OnceLock::new();
+    MAP.get_or_init(|| {
+        PARTICLES
+            .lines()
+            .filter_map(|l| l.split_once(' '))
+            .collect()
+    })
+    .get(java)
+    .copied()
 }
 
 #[cfg(test)]
