@@ -75,7 +75,6 @@ pub struct ServerWorld {
     /// Mobs: their tick, the players' attacks and spawning.
     pub(crate) mobs: crate::mobs::WorldMobs,
     /// Loading and saving the entities of chunks.
-    entity_io: crate::entity_io::EntityChunks,
     /// Player ids of the tick (block effects).
     player_scratch: Vec<vanillite_world::entity::EntityId>,
     /// The dimension's saved data (`<dimension>/data/`: world border, chunk tickets, raids,
@@ -135,7 +134,6 @@ impl ServerWorld {
         mut level: Level,
         survival: crate::survival::WorldSurvival,
         mut mobs: crate::mobs::WorldMobs,
-        entity_io: crate::entity_io::EntityChunks,
         data: vanillite_storage::saved_data::SavedDataStore,
     ) -> ServerWorld {
         // `dimensionType().hasEnderDragonFight()`.
@@ -171,7 +169,6 @@ impl ServerWorld {
             scratch: Vec::new(),
             survival,
             mobs,
-            entity_io,
             player_scratch: Vec::new(),
             data,
             kept_tickets: Vec::new(),
@@ -414,8 +411,14 @@ impl ServerWorld {
         }
         self.update_player_tickets();
         let level = &mut self.level;
+        // `/save-off` (`ServerLevel.noSave`): chunks without tickets stay loaded.
+        level.chunks.set_no_save(
+            !ctx.global
+                .level
+                .auto_save
+                .load(std::sync::atomic::Ordering::Relaxed),
+        );
         level.tick_chunk_runtime();
-        self.entity_io.tick(level);
         level.post_process();
         if ctx.runs_normally {
             let spawn_point = (self.dimension == "minecraft:overworld").then(|| {
@@ -499,6 +502,11 @@ impl ServerWorld {
         crate::scoreboard::flush(ctx.global);
         self.overload
             .update(started.elapsed(), &self.rules.tracking, &self.dimension);
+        // Save rounds take only the time left in the tick (#47).
+        let left = ctx.deadline.saturating_sub(ctx.global.clock.now());
+        self.level
+            .chunks
+            .autosave_step(std::time::Duration::from_nanos(left));
     }
 
     /// `applyEffectsFromBlocks` after the players' moves: pressure plates, tripwire and other
@@ -515,13 +523,11 @@ impl ServerWorld {
     /// `entityTickList.forEach(tickNonPassenger)`: every entity in tick order; players move
     /// through their packets.
     fn tick_entities(&mut self, global: &Global) {
-        let entity_io = &self.entity_io;
         self.mobs.tick_dragon_fight(
             &mut self.level,
             &mut self.survival,
             global,
             &self.dimension,
-            &|c| entity_io.is_loaded(c),
         );
         self.mobs
             .tick_entities(&mut self.level, &mut self.survival, global, &self.dimension);
@@ -571,10 +577,15 @@ impl ServerWorld {
         self.level.entities.store.clear_sync_flags();
     }
 
+    /// Runs `then` once the running save round of this world is committed.
+    pub(crate) fn when_saved(&mut self, then: vanillite_world::chunks::SavedCallback) {
+        self.level.chunks.when_saved(then);
+    }
+
     /// Saves the world like Vanilla (`saveEverything`): the players always, the chunks and the
     /// dimension's saved data unless `skip_chunks` (`/save-off`). `flush` waits until the
-    /// chunks are on disk (shutdown, `/save-all flush`); otherwise they are written in the
-    /// background.
+    /// chunks are written and committed (shutdown, `/save-all flush`); otherwise a save round
+    /// starts that captures them from the remaining time of the next ticks.
     pub(crate) fn save(&mut self, flush: bool, skip_chunks: bool) {
         log::debug!("Saving {} (flush: {flush})", self.dimension);
         self.players.save_all(&self.level.entities);
@@ -587,7 +598,6 @@ impl ServerWorld {
                 self.data.write(crate::chunk_tickets::SAVED_DATA, tickets);
             }
             self.data.save();
-            self.entity_io.save_all(&mut self.level, flush);
             self.level.save(flush);
         }
     }
@@ -662,6 +672,8 @@ pub struct TickContext<'a> {
     pub tick: u64,
     /// Whether game elements run this tick (`false` while frozen).
     pub runs_normally: bool,
+    /// When the tick should end (clock nanoseconds); autosave uses the time left.
+    pub deadline: u64,
     /// The compute pool for parallel phases.
     pub compute: &'a Compute,
     /// Server-wide state.
@@ -692,6 +704,7 @@ impl<'a> TickContext<'a> {
         world: WorldId,
         tick: u64,
         runs_normally: bool,
+        deadline: u64,
         compute: &'a Compute,
         global: &'a Global,
         outbox: &'a mut Vec<(WorldId, WorldTask)>,
@@ -700,6 +713,7 @@ impl<'a> TickContext<'a> {
             world,
             tick,
             runs_normally,
+            deadline,
             compute,
             global,
             others: None,

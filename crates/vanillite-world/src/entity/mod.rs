@@ -20,6 +20,7 @@ mod tick_order;
 
 use std::sync::atomic::{AtomicI32, Ordering};
 
+use vanillite_base::hash::FxHashSet;
 use vanillite_base::{Aabb, BlockPos, SectionPos, SlotMap, Vec3};
 use vanillite_data::entity::{EntityTypeId, ids};
 
@@ -337,6 +338,9 @@ pub struct EntityStore {
     tick_order: TickOrder,
     sections: SectionIndex,
     removed: Vec<Removed>,
+    /// Chunks whose entities tick (Vanilla's `Visibility.TICKING`), set by the world: only
+    /// entities in these chunks are in the tick order.
+    ticking_chunks: FxHashSet<(i32, i32)>,
 }
 
 impl EntityStore {
@@ -420,7 +424,13 @@ impl EntityStore {
         core.flags.push(new.flags);
         core.pose.push(Pose::Standing);
         core.section.push(section);
-        self.order_slot.push(self.tick_order.push(id));
+        // `addEntity`: it starts ticking if its section ticks.
+        let slot = if self.ticking_chunks.contains(&(section.x, section.z)) {
+            self.tick_order.push(id)
+        } else {
+            tick_order::NONE
+        };
+        self.order_slot.push(slot);
         self.sections.insert(section, class_of(new.kind), id);
         id
     }
@@ -475,6 +485,38 @@ impl EntityStore {
         let sync = EntityFlags::HAS_IMPULSE | EntityFlags::HURT_MARKED | EntityFlags::DATA_DIRTY;
         for flags in &mut self.core.flags {
             flags.set(sync, false);
+        }
+    }
+
+    /// Whether an entity is in the tick order.
+    pub fn is_ticking(&self, id: EntityId) -> bool {
+        self.row(id)
+            .is_some_and(|row| self.order_slot[row] != tick_order::NONE)
+    }
+
+    /// Whether the entities of a chunk tick.
+    pub fn is_chunk_ticking(&self, x: i32, z: i32) -> bool {
+        self.ticking_chunks.contains(&(x, z))
+    }
+
+    /// Sets whether the entities of a chunk tick (`updateChunkStatus`): its entities start
+    /// ticking at the end of the tick order, section by section from the bottom, or stop.
+    pub fn set_chunk_ticking(&mut self, x: i32, z: i32, ticking: bool) {
+        let changed = if ticking {
+            self.ticking_chunks.insert((x, z))
+        } else {
+            self.ticking_chunks.remove(&(x, z))
+        };
+        if !changed {
+            return;
+        }
+        let ids: Vec<EntityId> = self.sections.in_chunk(x, z).collect();
+        for id in ids {
+            if ticking {
+                self.start_ticking(id);
+            } else {
+                self.stop_ticking(id);
+            }
         }
     }
 
@@ -659,6 +701,15 @@ impl EntityMut<'_> {
             let id = core.id[row];
             self.store.sections.remove(old, class, id);
             self.store.sections.insert(section, class, id);
+            // `onMove`: ticking follows the status of the new section.
+            let ticking = &self.store.ticking_chunks;
+            let was = ticking.contains(&(old.x, old.z));
+            let is = ticking.contains(&(section.x, section.z));
+            if is && !was {
+                self.store.start_ticking(id);
+            } else if was && !is {
+                self.store.stop_ticking(id);
+            }
         }
     }
 

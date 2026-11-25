@@ -38,11 +38,19 @@ impl Section {
 #[derive(Debug, Default)]
 pub struct SectionIndex {
     sections: FxHashMap<i64, Section>,
+    /// The Y of the non-empty sections of each chunk, ascending.
+    columns: FxHashMap<(i32, i32), Vec<i32>>,
 }
 
 impl SectionIndex {
     pub(super) fn insert(&mut self, section: SectionPos, class: EntityClass, id: EntityId) {
-        let entry = self.sections.entry(section.as_long()).or_default();
+        let entry = self.sections.entry(section.as_long()).or_insert_with(|| {
+            let ys = self.columns.entry((section.x, section.z)).or_default();
+            if let Err(index) = ys.binary_search(&section.y) {
+                ys.insert(index, section.y);
+            }
+            Section::default()
+        });
         entry.all.push(id);
         if class == EntityClass::Player {
             entry.players.push(id);
@@ -60,7 +68,32 @@ impl SectionIndex {
         }
         if entry.all.is_empty() {
             self.sections.remove(&key);
+            let column = (section.x, section.z);
+            if let Some(ys) = self.columns.get_mut(&column) {
+                if let Ok(index) = ys.binary_search(&section.y) {
+                    ys.remove(index);
+                }
+                if ys.is_empty() {
+                    self.columns.remove(&column);
+                }
+            }
         }
+    }
+
+    /// The chunks with entities.
+    pub fn chunks(&self) -> impl Iterator<Item = (i32, i32)> + '_ {
+        self.columns.keys().copied()
+    }
+
+    /// The entities of a chunk, section by section from the bottom
+    /// (`getExistingSectionsInChunk`), each in section order.
+    pub fn in_chunk(&self, x: i32, z: i32) -> impl Iterator<Item = EntityId> + '_ {
+        self.columns
+            .get(&(x, z))
+            .into_iter()
+            .flatten()
+            .flat_map(move |&y| self.in_section(SectionPos::new(x, y, z), false).iter())
+            .copied()
     }
 
     /// The entities (or only the players) of one section.

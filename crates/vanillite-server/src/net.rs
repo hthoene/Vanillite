@@ -72,6 +72,24 @@ fn registry_index(packs: Option<&LoadedPacks>, registry: &str, entry: &str) -> u
         .unwrap_or(0)
 }
 
+/// Loads the Vanilla data pack alone (the cache in `dir`, downloaded once), for offline tools.
+pub(crate) fn load_packs(
+    pack: &VanillaPack,
+    dir: &Path,
+) -> Result<Option<LoadedPacks>, StartError> {
+    let cache = dir.join("cache");
+    let jar = match pack {
+        VanillaPack::None => return Ok(None),
+        VanillaPack::Jar(jar) => Some(jar.as_path()),
+        VanillaPack::Download => None,
+    };
+    let root = vanillite_datapack::vanilla::ensure_vanilla_pack(&cache, jar)
+        .map_err(|e| StartError::Io(format!("Vanilla data pack: {e}")))?;
+    vanillite_datapack::load(&[root.as_path()])
+        .map(Some)
+        .map_err(|e| StartError::Io(format!("data packs: {e}")))
+}
+
 /// Selects and loads the data packs and prepares each world's players' side.
 pub(crate) fn prepare(
     config: &Config,

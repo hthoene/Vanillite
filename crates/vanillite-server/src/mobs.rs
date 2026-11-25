@@ -114,7 +114,6 @@ impl WorldMobs {
         survival: &mut WorldSurvival,
         global: &Global,
         dimension: &str,
-        entities_loaded: &dyn Fn(ChunkPos) -> bool,
     ) {
         let Some(fight) = &mut self.fight else {
             self.cx.dragon_fight = None;
@@ -140,7 +139,7 @@ impl WorldMobs {
         if std::mem::take(&mut level.output().try_dragon_respawn) {
             fight.try_respawn(level);
         }
-        fight.tick(level, &mut env, &mut self.cx, entities_loaded);
+        fight.tick(level, &mut env, &mut self.cx);
         self.cx.dragon_fight = Some(fight.view());
         self.store_fight();
         self.apply_explosion_hurts(level, survival, global, dimension);
@@ -376,6 +375,10 @@ impl WorldMobs {
             let kind = entity.as_ref().kind();
             let pos = entity.as_ref().pos();
             if kind == ids::FALLING_BLOCK || kind == ids::TNT {
+                let chunk = BlockPos::containing(pos.x, pos.y, pos.z).chunk();
+                if !level.chunks.in_entity_ticking_range(chunk) {
+                    continue;
+                }
                 level.entities = ents;
                 vanillite_game::entities::tick_entity(level, id, kind);
                 self.apply_explosion_hurts(level, survival, global, dimension);

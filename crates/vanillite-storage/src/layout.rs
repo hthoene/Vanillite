@@ -126,13 +126,24 @@ mod tests {
 
     use vanillite_base::ChunkPos;
     use vanillite_chunk::ProtoChunk;
-    use vanillite_chunk::slots::{ChunkStorage, WorldInfo};
+    use vanillite_chunk::slots::{DimensionId, WorldInfo};
     use vanillite_nbt::{Budget, Compound};
 
     use super::*;
     use crate::chunk_nbt::Codec;
     use crate::region::RegionFile;
-    use crate::{AnvilStorage, Compression};
+    use crate::{
+        AnvilCodec, Compression, IoPool, RegionStore, StoreSettings, WorldFormat, blocking,
+    };
+
+    fn store(info: &WorldInfo) -> RegionStore {
+        RegionStore::new(
+            info.dir.clone(),
+            WorldFormat::Anvil,
+            StoreSettings::default(),
+            IoPool::new(1).unwrap(),
+        )
+    }
 
     const DIMENSIONS: [&str; 3] = [
         "minecraft:overworld",
@@ -148,7 +159,7 @@ mod tests {
     }
 
     fn info(dimension: &str, dir: PathBuf) -> WorldInfo {
-        vanillite_chunk::facts::install_vanilla(&[], &[], 1);
+        vanillite_chunk::facts::install_vanilla(&[], &[], 65);
         let (min_y, height) = match dimension {
             "minecraft:overworld" => (-64, 384),
             _ => (0, 256),
@@ -195,16 +206,15 @@ mod tests {
     }
 
     /// Saves `chunks` into `storage`, loads them back and checks that the chunk NBT is the same.
-    fn save_and_reload(storage: &AnvilStorage, codec: &Codec, chunks: Vec<ProtoChunk>) {
+    fn save_and_reload(storage: &RegionStore, anvil: &AnvilCodec, chunks: Vec<ProtoChunk>) {
+        let codec = anvil.nbt();
         let expected: Vec<Compound> = chunks.iter().map(|c| codec.write(c).unwrap()).collect();
         let positions: Vec<ChunkPos> = chunks.iter().map(|c| c.pos).collect();
-        let chunks: Vec<Arc<ProtoChunk>> = chunks.into_iter().map(Arc::new).collect();
-        let mut saved = Vec::new();
-        storage.save(&chunks, &mut saved);
+        let refs: Vec<&ProtoChunk> = chunks.iter().collect();
+        let saved = blocking::save(storage, anvil, DimensionId(0), &refs);
         assert!(saved.iter().all(Result::is_ok), "{saved:?}");
-        storage.flush().unwrap();
-        let mut loaded = Vec::new();
-        storage.load(&positions, &mut loaded);
+        blocking::commit(storage).unwrap();
+        let loaded = blocking::load(storage, anvil, DimensionId(0), &positions);
         for (loaded, expected) in loaded.into_iter().zip(expected) {
             let chunk = loaded.unwrap().expect("saved chunk is missing");
             assert_eq!(codec.write(&chunk).unwrap(), expected, "{:?}", chunk.pos);
@@ -239,7 +249,7 @@ mod tests {
         for dimension in DIMENSIONS {
             let dir = WorldLayout::Spigot.dimension_dir(&server, "world", dimension);
             let info = info(dimension, dir.clone());
-            let storage = AnvilStorage::new(&info, Compression::Deflate);
+            let storage = store(&info);
             let chunks = (-2..2)
                 .map(|x| {
                     let mut chunk = ProtoChunk::empty(ChunkPos::new(x, x * 7), &info);
@@ -247,7 +257,11 @@ mod tests {
                     chunk
                 })
                 .collect();
-            save_and_reload(&storage, &Codec::new(&info), chunks);
+            save_and_reload(
+                &storage,
+                &AnvilCodec::new(&info, Compression::Deflate),
+                chunks,
+            );
             assert!(dir.join("region").join("r.-1.-1.mca").is_file());
         }
         assert!(
@@ -323,8 +337,8 @@ mod tests {
                 .map(|(pos, root)| codec.read(*pos, root.clone()).unwrap())
                 .collect();
             save_and_reload(
-                &AnvilStorage::new(&info, Compression::Deflate),
-                &codec,
+                &store(&info),
+                &AnvilCodec::new(&info, Compression::Deflate),
                 chunks,
             );
             let resaved: std::collections::HashMap<_, _> = raw_chunks(&to).into_iter().collect();

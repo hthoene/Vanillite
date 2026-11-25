@@ -704,7 +704,7 @@ pub fn read_block_state(c: &Compound) -> BlockState {
 }
 
 /// `NbtUtils.writeBlockState`.
-fn write_block_state(state: BlockState) -> Compound {
+pub(crate) fn write_block_state(state: BlockState) -> Compound {
     let mut c = Compound::new();
     c.insert("Name", Tag::String(state.block().name().to_owned()));
     let mut props = Compound::new();
@@ -808,6 +808,7 @@ impl Level {
         for &chunk in &chunks {
             self.load_block_entities(chunk);
         }
+        self.apply_visibility();
         self.chunk_scratch = chunks;
     }
 
@@ -827,6 +828,7 @@ impl Level {
         for chunk in chunks {
             self.write_block_entities(chunk);
         }
+        self.write_all_entities();
         self.chunks.save_all(flush);
     }
 }

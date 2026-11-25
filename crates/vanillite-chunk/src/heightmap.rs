@@ -90,6 +90,19 @@ impl Heightmap {
         }
     }
 
+    /// A heightmap from stored packed words (`Heightmap.setRawData`) for a chunk of `height`
+    /// blocks; `None` if the word count does not match or a height lies above the chunk.
+    pub fn from_raw(height: u32, words: &[Word]) -> Option<Self> {
+        let mut map = Self::new(height);
+        if words.len() != map.data.len() {
+            return None;
+        }
+        map.data.copy_from_slice(words);
+        (0..256)
+            .all(|i| bits::get(&map.data, map.bits, i) <= height)
+            .then_some(map)
+    }
+
     /// Bits per entry.
     #[inline]
     pub fn bits(&self) -> u8 {
