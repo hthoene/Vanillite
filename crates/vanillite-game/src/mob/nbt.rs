@@ -630,8 +630,9 @@ pub fn save_arrow(
     out.insert("pickup", a.pickup as i8);
     out.insert("damage", a.base_damage);
     out.insert("crit", a.crit);
-    out.insert("PierceLevel", 0_i8);
-    out.insert("SoundEvent", "minecraft:entity.arrow.hit");
+    #[allow(clippy::cast_possible_wrap)]
+    out.insert("PierceLevel", a.pierce_level as i8);
+    out.insert("SoundEvent", hit_sound(a));
     if let Some(o) = owner {
         out.insert("Owner", uuid_ints(o));
     }
@@ -642,6 +643,15 @@ pub fn save_arrow(
     item.insert("count", 1);
     out.insert("item", item);
     out
+}
+
+/// The sound an arrow makes when it hits (`soundEvent`).
+fn hit_sound(a: &super::projectile::ArrowData) -> &'static str {
+    if a.crossbow_sound {
+        "minecraft:item.crossbow.hit"
+    } else {
+        "minecraft:entity.arrow.hit"
+    }
 }
 
 /// An arrow from entity NBT (its owner is not resolved).
@@ -671,6 +681,13 @@ pub fn load_arrow(tag: &Compound) -> Option<(LoadedEntity, super::projectile::Ar
             knockback: 0.0,
             fire: int(tag, "Fire").is_some_and(|f| f > 0),
             effect: None,
+            pierce_level: u8::try_from(int(tag, "PierceLevel").unwrap_or(0).clamp(0, 127))
+                .unwrap_or(0),
+            pierced: Vec::new(),
+            crossbow_sound: matches!(
+                tag.get("SoundEvent"),
+                Some(Tag::String(s)) if s.as_str() == "minecraft:item.crossbow.hit"
+            ),
         },
     ))
 }

@@ -49,6 +49,8 @@ pub struct State {
     pub inventory: Vec<ItemStack>,
     /// `DATA_IS_CHARGING_CROSSBOW`.
     pub charging_crossbow: bool,
+    /// The loading sounds the crossbow played (piglins).
+    pub crossbow_sounds: crate::crossbow::UseFlags,
     /// `DATA_IS_DANCING`.
     pub dancing: bool,
     /// `DATA_IS_SCREAMING_GOAT`, `DATA_HAS_LEFT_HORN`, `DATA_HAS_RIGHT_HORN`.

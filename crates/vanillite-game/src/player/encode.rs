@@ -53,6 +53,7 @@ mod data_id {
     pub const KIND_19: u8 = 19;
     pub const ORB_VALUE: u8 = 8;
     pub const ARROW_FLAGS: u8 = 8;
+    pub const ARROW_PIERCE_LEVEL: u8 = 9;
     pub const ARROW_IN_GROUND: u8 = 10;
 }
 
@@ -354,6 +355,16 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
             item(&mut out, data_id::ARROW_FLAGS, serializer::BYTE, |o| {
                 o.push(u8::from(arrow.crit));
             });
+        }
+        if all || arrow.pierce_level != 0 {
+            item(
+                &mut out,
+                data_id::ARROW_PIERCE_LEVEL,
+                serializer::BYTE,
+                |o| {
+                    o.push(arrow.pierce_level);
+                },
+            );
         }
         if all || arrow.in_ground {
             item(

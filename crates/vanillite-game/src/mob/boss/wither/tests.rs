@@ -305,6 +305,9 @@ fn powered_wither_ignores_arrows() {
             knockback: 0.0,
             fire: false,
             effect: None,
+            pierce_level: 0,
+            pierced: Vec::new(),
+            crossbow_sound: false,
         },
     );
     if let Some(m) = level.entities.mob_mut(wither) {

@@ -137,6 +137,8 @@ pub mod ids {
     pub const INSTRUMENT: u16 = find("minecraft:instrument");
     pub const OMINOUS_BOTTLE_AMPLIFIER: u16 = find("minecraft:ominous_bottle_amplifier");
     pub const BEES: u16 = find("minecraft:bees");
+    pub const CHARGED_PROJECTILES: u16 = find("minecraft:charged_projectiles");
+    pub const INTANGIBLE_PROJECTILE: u16 = find("minecraft:intangible_projectile");
 }
 
 /// Validates one component value: `data` must be exactly one value of the stream codec of

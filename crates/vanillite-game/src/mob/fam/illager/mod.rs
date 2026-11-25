@@ -66,9 +66,8 @@ pub struct State {
     pub speed_before_drinking: Option<f64>,
     // Pillager.
     pub charging_crossbow: bool,
-    pub crossbow_charged: bool,
-    pub start_sound_played: bool,
-    pub mid_sound_played: bool,
+    /// The loading sounds the crossbow played.
+    pub crossbow_sounds: crate::crossbow::UseFlags,
     // Vindicator.
     pub johnny: bool,
     // Spellcasters.
@@ -124,9 +123,7 @@ impl Default for State {
             heal_cooldown: 0,
             speed_before_drinking: None,
             charging_crossbow: false,
-            crossbow_charged: false,
-            start_sound_played: false,
-            mid_sound_played: false,
+            crossbow_sounds: crate::crossbow::UseFlags::default(),
             johnny: false,
             spell_ticks: 0,
             spell: 0,
