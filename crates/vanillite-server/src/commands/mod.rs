@@ -82,7 +82,9 @@ pub(crate) struct Env<'a> {
 /// (`ServerFunctionLibrary.reload`, `ServerAdvancementManager`).
 pub(crate) fn load_game_systems(global: &Global, packs: &[vanillite_datapack::OpenedPack]) {
     global.systems.set_functions(functions::load(global, packs));
-    global.systems.load(&global.level.data);
+    global
+        .systems
+        .load(&global.level.data, &|key| global.level.legacy(key));
     global.systems.set_advancements(load_advancements(packs));
 }
 

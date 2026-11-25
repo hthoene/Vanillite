@@ -232,7 +232,9 @@ impl GameSystems {
 
     /// Loads the scoreboard, the command storage and the scheduled functions from the world's
     /// saved data (`ServerScoreboard.load`, `CommandStorage`, `TimerQueue`).
-    pub(crate) fn load(&self, data: &SavedDataStore) {
+    /// `legacy` reads the `level.dat` fields of worlds saved before the split into saved data
+    /// (`LevelDatToSavedDataPreparationFix`, `LevelDatToSavedDataFileFix`).
+    pub(crate) fn load(&self, data: &SavedDataStore, legacy: &dyn Fn(&str) -> Option<Tag>) {
         let read = |id: &str| {
             data.read(id).unwrap_or_else(|e| {
                 log::error!("Cannot read {id}: {e}");
@@ -242,11 +244,15 @@ impl GameSystems {
         if let Some(c) = read(SCOREBOARD) {
             *self.scoreboard() = Scoreboard::from_nbt(&c);
         }
-        if let Some(c) = read(SCHEDULED_EVENTS) {
+        if let Some(c) = read(SCHEDULED_EVENTS).or_else(|| legacy_scheduled_events(legacy)) {
             *self.scheduled() = TimerQueue::from_nbt(&c);
         }
         *self.storage() = CommandStorage::load(data);
-        if let Some(c) = read(crate::bossbars::SAVED_DATA) {
+        let bars = read(crate::bossbars::SAVED_DATA).or_else(|| match legacy("CustomBossEvents") {
+            Some(Tag::Compound(c)) => Some(c),
+            _ => None,
+        });
+        if let Some(c) = bars {
             let mut random = vanillite_base::random::LegacyRandom::new(
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -373,4 +379,42 @@ impl GameSystems {
     pub(crate) fn set_spawn(&self, pos: Vec3) {
         *self.spawn.lock().unwrap_or_else(PoisonError::into_inner) = pos;
     }
+}
+
+/// The scheduled functions of an old `level.dat` (`ScheduledEvents`, renamed by
+/// `LevelDatToSavedDataPreparationFix`), in the saved data format.
+fn legacy_scheduled_events(legacy: &dyn Fn(&str) -> Option<Tag>) -> Option<Compound> {
+    if let Some(Tag::Compound(c)) = legacy("scheduled_events") {
+        return Some(c);
+    }
+    let Some(Tag::List(list)) = legacy("ScheduledEvents") else {
+        return None;
+    };
+    let rename = |c: &Compound, from: &str, to: &str, out: &mut Compound| {
+        if let Some(v) = c.get(from) {
+            out.insert(to, v.clone());
+        }
+    };
+    let events = list
+        .0
+        .iter()
+        .filter_map(|e| {
+            let Tag::Compound(e) = e else {
+                return None;
+            };
+            let mut out = Compound::new();
+            rename(e, "Name", "id", &mut out);
+            rename(e, "TriggerTime", "trigger_time", &mut out);
+            if let Some(Tag::Compound(cb)) = e.get("Callback") {
+                let mut callback = Compound::new();
+                rename(cb, "Type", "type", &mut callback);
+                rename(cb, "Name", "id", &mut callback);
+                out.insert("callback", Tag::Compound(callback));
+            }
+            Some(Tag::Compound(out))
+        })
+        .collect();
+    let mut c = Compound::new();
+    c.insert("events", Tag::List(vanillite_nbt::List(events)));
+    Some(c)
 }
