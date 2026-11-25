@@ -632,6 +632,8 @@ fn environment(global: &Global, dimension: &str, survival: &WorldSurvival) -> En
             monster_block_light_limit: if nether { 15 } else { 0 },
             monster_light_test: if nether { (7, 7) } else { (0, 7) },
             ambient_light: if nether { 0.1 } else { 0.0 },
+            has_ceiling: nether,
+            sea_level: if nether { 32 } else { 0 },
         };
     }
     let day = {
@@ -662,6 +664,8 @@ fn environment(global: &Global, dimension: &str, survival: &WorldSurvival) -> En
         monster_block_light_limit: 0,
         monster_light_test: (0, 7),
         ambient_light: 0.0,
+        has_ceiling: false,
+        sea_level: 63,
     }
 }
 

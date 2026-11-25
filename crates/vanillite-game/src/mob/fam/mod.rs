@@ -337,6 +337,10 @@ pub trait FamilyHooks {
     fn anger_range(_kind: Kind) -> (i32, i32) {
         (20 * 20, 39 * 20)
     }
+    /// `isMaxGroupSizeReached(groupSize)` of natural spawning (tropical fish schools).
+    fn is_max_group_size_reached(_m: &MobData, _group_size: i32) -> bool {
+        false
+    }
     /// The breeding food (`isFood`).
     fn is_food(_kind: Kind, _item: u16) -> bool {
         false
@@ -596,6 +600,9 @@ pub fn check_spawn_rules(
 }
 pub fn anger_range(kind: Kind) -> (i32, i32) {
     by_family!(kind, (20 * 20, 39 * 20), anger_range(kind))
+}
+pub fn is_max_group_size_reached(m: &MobData, group_size: i32) -> bool {
+    by_family!(m.kind, false, is_max_group_size_reached(m, group_size))
 }
 pub fn is_food(kind: Kind, item: u16) -> bool {
     by_family!(kind, false, is_food(kind, item))

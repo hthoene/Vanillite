@@ -545,6 +545,35 @@ pub(crate) fn climate(
     })
 }
 
+/// A `SpawnerData` (`type`, `weight`, `count`) of biome or structure spawns.
+fn spawn_entry(e: &serde_json::Value) -> Option<vanillite_game::mob::spawn::SpawnEntry> {
+    let type_id = e
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .and_then(vanillite_data::entity::EntityTypeId::by_name)?;
+    let int = |v: Option<&serde_json::Value>| {
+        v.and_then(serde_json::Value::as_i64)
+            .and_then(|v| i32::try_from(v).ok())
+    };
+    let weight = int(e.get("weight")).unwrap_or(1);
+    let (min, max) = match e.get("count") {
+        Some(serde_json::Value::Object(o)) => (
+            int(o.get("min_inclusive")).unwrap_or(1),
+            int(o.get("max_inclusive")).unwrap_or(1),
+        ),
+        other => {
+            let n = int(other).unwrap_or(1);
+            (n, n)
+        }
+    };
+    Some(vanillite_game::mob::spawn::SpawnEntry {
+        type_id,
+        weight,
+        min,
+        max,
+    })
+}
+
 /// The spawn settings of every biome from the data packs: `gameplay/natural_mob_spawns`,
 /// `gameplay/creature_world_gen_spawn_probability` and the farm animal climate tags. `None`
 /// without data packs.
@@ -552,7 +581,7 @@ pub(crate) fn spawn_table(
     packs: Option<&LoadedPacks>,
 ) -> Option<vanillite_game::mob::spawn::SpawnTable> {
     use vanillite_game::mob::kinds::FarmClimate;
-    use vanillite_game::mob::spawn::{BiomeSpawns, Category, SpawnEntry, SpawnTable};
+    use vanillite_game::mob::spawn::{BiomeSpawns, Category, SpawnTable};
     let packs = packs?;
     let registry = packs.registry("minecraft:worldgen/biome")?;
     let tag = |name: &str| {
@@ -642,39 +671,40 @@ pub(crate) fn spawn_table(
                     continue;
                 };
                 let slot = &mut b.by_category[c as usize];
-                for e in list {
-                    let Some(type_id) = e
-                        .get("type")
-                        .and_then(serde_json::Value::as_str)
-                        .and_then(vanillite_data::entity::EntityTypeId::by_name)
-                    else {
-                        continue;
-                    };
-                    let int = |v: Option<&serde_json::Value>| {
-                        v.and_then(serde_json::Value::as_i64)
-                            .and_then(|v| i32::try_from(v).ok())
-                    };
-                    let weight = int(e.get("weight")).unwrap_or(1);
-                    let (min, max) = match e.get("count") {
-                        Some(serde_json::Value::Object(o)) => (
-                            int(o.get("min_inclusive")).unwrap_or(1),
-                            int(o.get("max_inclusive")).unwrap_or(1),
-                        ),
-                        other => {
-                            let n = int(other).unwrap_or(1);
-                            (n, n)
-                        }
-                    };
-                    slot.push(SpawnEntry {
-                        type_id,
-                        weight,
-                        min,
-                        max,
-                    });
-                }
+                slot.extend(list.iter().filter_map(spawn_entry));
             }
         }
         biomes.push(b);
     }
-    Some(SpawnTable { biomes })
+    let mut structures = vanillite_base::hash::FxHashMap::default();
+    if let Some(registry) = packs.registry("minecraft:worldgen/structure") {
+        for entry in registry.entries() {
+            let json: serde_json::Value =
+                serde_json::from_str(entry.json.get()).unwrap_or_default();
+            let Some(overrides) = json
+                .get("spawn_overrides")
+                .and_then(serde_json::Value::as_object)
+            else {
+                continue;
+            };
+            let mut by_category: [Option<vanillite_game::mob::spawn::StructureOverride>; 7] =
+                Default::default();
+            for (category, o) in overrides {
+                let Some(c) = Category::by_name(category) else {
+                    continue;
+                };
+                let piece =
+                    o.get("bounding_box").and_then(serde_json::Value::as_str) == Some("piece");
+                let spawns = o
+                    .get("spawns")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|l| l.iter().filter_map(spawn_entry).collect())
+                    .unwrap_or_default();
+                by_category[c as usize] =
+                    Some(vanillite_game::mob::spawn::StructureOverride { piece, spawns });
+            }
+            structures.insert(entry.id.as_str().into(), by_category);
+        }
+    }
+    Some(SpawnTable { biomes, structures })
 }

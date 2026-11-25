@@ -57,6 +57,19 @@ pub(crate) fn game_data(packs: Option<&LoadedPacks>) -> GameData {
                 .collect()
         })
         .unwrap_or_default();
+    let block_tags: HashMap<String, Vec<u16>> = packs
+        .tags("minecraft:block")
+        .map(|tags| {
+            tags.keys()
+                .map(|t| {
+                    let mut ids = tag_ids("minecraft:block", t);
+                    ids.sort_unstable();
+                    ids.dedup();
+                    (t.clone(), ids)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let entity_tags: HashMap<String, Vec<u16>> = packs
         .tags("minecraft:entity_type")
         .map(|tags| {
@@ -140,6 +153,7 @@ pub(crate) fn game_data(packs: Option<&LoadedPacks>) -> GameData {
         entity_tags,
         enchants,
         enderman_holdable: tag_ids("minecraft:block", "minecraft:enderman_holdable"),
+        block_tags,
         recipes,
         enchanting,
     }

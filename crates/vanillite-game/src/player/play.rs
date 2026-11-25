@@ -42,6 +42,8 @@ pub struct GameData {
     pub enchants: crate::enchant::Enchantments,
     /// `#minecraft:enderman_holdable` block ids.
     pub enderman_holdable: Vec<u16>,
+    /// Block tags: tag id → sorted block ids.
+    pub block_tags: HashMap<String, Vec<u16>>,
 }
 
 impl crate::predicate::EntityTags for GameData {
@@ -75,6 +77,13 @@ impl GameData {
             .into_iter()
             .find(|(e, _)| *e == id)
             .map_or(0, |(_, level)| level)
+    }
+
+    /// Whether a block (by block id) is in a block tag.
+    pub fn block_in_tag(&self, block: u16, tag: &str) -> bool {
+        self.block_tags
+            .get(tag)
+            .is_some_and(|v| v.binary_search(&block).is_ok())
     }
 
     /// Whether an item is in an item tag.

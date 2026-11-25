@@ -25,6 +25,7 @@ pub mod physics;
 pub mod projectile;
 pub mod randompos;
 pub mod spawn;
+pub mod structures;
 pub mod tame;
 
 use vanillite_base::random::{LegacyRandom, RandomSource};
@@ -415,6 +416,10 @@ pub struct Environment {
     pub monster_light_test: (i32, i32),
     /// `DimensionType.ambientLight`.
     pub ambient_light: f32,
+    /// `DimensionType.hasCeiling`.
+    pub has_ceiling: bool,
+    /// `getSeaLevel`.
+    pub sea_level: i32,
 }
 
 impl Default for Environment {
@@ -428,6 +433,8 @@ impl Default for Environment {
             monster_block_light_limit: 0,
             monster_light_test: (0, 7),
             ambient_light: 0.0,
+            has_ceiling: false,
+            sea_level: 63,
         }
     }
 }
