@@ -244,7 +244,9 @@ pub(super) fn sting(t: &mut Tick<'_, '_>, target: EntityId) -> bool {
 pub(super) fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
     let name = crate::item::item_id(ix.stack).name();
     let effect = match name {
-        "minecraft:open_eyeblossom" | "minecraft:closed_eyeblossom" => Some((MobEffect::POISON, 25)),
+        "minecraft:open_eyeblossom" | "minecraft:closed_eyeblossom" => {
+            Some((MobEffect::POISON, 25))
+        }
         "minecraft:wither_rose" => Some((MobEffect::WITHER, 40)),
         _ => None,
     };

@@ -285,7 +285,10 @@ pub(super) fn load(m: &mut MobData, tag: &Compound) {
             let Tag::Compound(c) = t else {
                 return None;
             };
-            let effect = c.get("id").and_then(Tag::as_str).and_then(MobEffect::by_name)?;
+            let effect = c
+                .get("id")
+                .and_then(Tag::as_str)
+                .and_then(MobEffect::by_name)?;
             Some((effect, super::int(c, "duration").unwrap_or(160)))
         }),
         _ => None,

@@ -224,7 +224,10 @@ pub fn tick(t: &mut Tick<'_, '_>, s: &mut UseSpell) {
             spell::FANGS => cast_fangs(t),
             spell::WOLOLO => wololo(t),
             spell::DISAPPEAR => {
-                effects::living::add_to_mob(t.mob(), EffectInstance::new(MobEffect::INVISIBILITY, 1200, 0));
+                effects::living::add_to_mob(
+                    t.mob(),
+                    EffectInstance::new(MobEffect::INVISIBILITY, 1200, 0),
+                );
                 dirty(t);
             }
             _ => {
@@ -232,7 +235,10 @@ pub fn tick(t: &mut Tick<'_, '_>, s: &mut UseSpell) {
                     && let Some(m) = t.ents.mob_mut(target)
                 {
                     // Players get the blindness with the effect system (#74).
-                    effects::living::add_to_mob(m, EffectInstance::new(MobEffect::BLINDNESS, 400, 0));
+                    effects::living::add_to_mob(
+                        m,
+                        EffectInstance::new(MobEffect::BLINDNESS, 400, 0),
+                    );
                 }
             }
         }

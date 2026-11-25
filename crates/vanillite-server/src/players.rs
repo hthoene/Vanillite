@@ -846,7 +846,7 @@ impl WorldPlayers {
         let mut equipment: Vec<(EntityId, SetEquipment)> = Vec::new();
         let mut taken_orbs: Vec<(EntityId, EntityId)> = Vec::new();
         for (id, player) in players.iter_mut() {
-            let sink = &player.connection.sink;
+            let sink = Arc::clone(&player.connection.sink);
             if let Some(sequence) = player.connection.play.take_ack() {
                 sink.send(&BlockChangedAck { sequence });
             }

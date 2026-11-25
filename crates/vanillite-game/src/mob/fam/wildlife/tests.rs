@@ -178,7 +178,10 @@ fn nbt_round_trips() {
     st_mut(&mut cow).stew_effects = Some((crate::effect::MobEffect::POISON, 220));
     let n = round_trip(&cow);
     assert_eq!(st(&n).variant, 1);
-    assert_eq!(st(&n).stew_effects, Some((crate::effect::MobEffect::POISON, 220)));
+    assert_eq!(
+        st(&n).stew_effects,
+        Some((crate::effect::MobEffect::POISON, 220))
+    );
 
     let mut golem = MobData::new(Kind::IronGolem, 1);
     st_mut(&mut golem).player_created = true;

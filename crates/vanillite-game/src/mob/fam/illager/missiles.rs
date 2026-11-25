@@ -742,7 +742,10 @@ fn splash(t: &mut MissileTick<'_, '_>, d: &MissileData, p: Potion, at: Vec3) {
         }
         let scale = 1.0 - dist.sqrt() / 4.0;
         for effect in p.effects() {
-            if matches!(effect.effect, MobEffect::INSTANT_HEALTH | MobEffect::INSTANT_DAMAGE) {
+            if matches!(
+                effect.effect,
+                MobEffect::INSTANT_HEALTH | MobEffect::INSTANT_DAMAGE
+            ) {
                 instant(t, d, owner_id, target, effect, scale);
             } else if let Some(mob) = t.ents.mob_mut(target) {
                 #[allow(clippy::cast_possible_truncation)]

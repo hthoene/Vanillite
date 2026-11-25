@@ -759,7 +759,9 @@ fn ram_tick(t: &mut Tick<'_, '_>, direction: Vec3) {
             return;
         }
         let fx = &t.mob_ref().effects;
-        let speed_level = fx.amplifier(crate::effect::MobEffect::SPEED).map_or(0, |a| a + 1);
+        let speed_level = fx
+            .amplifier(crate::effect::MobEffect::SPEED)
+            .map_or(0, |a| a + 1);
         let slow_level = fx
             .amplifier(crate::effect::MobEffect::SLOWNESS)
             .map_or(0, |a| a + 1);

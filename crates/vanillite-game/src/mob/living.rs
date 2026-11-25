@@ -945,7 +945,10 @@ fn travel_in_fluid(t: &mut Tick<'_, '_>, input: Vec3) {
             slow_down += (0.546_000_06 - slow_down) * walker;
             speed += (t.mob_ref().speed - speed) * walker;
         }
-        if t.mob_ref().effects.has(crate::effect::MobEffect::DOLPHINS_GRACE) {
+        if t.mob_ref()
+            .effects
+            .has(crate::effect::MobEffect::DOLPHINS_GRACE)
+        {
             slow_down = 0.96;
         }
         move_relative(t, speed, input);

@@ -32,9 +32,9 @@ use vanillite_game::entities::{Entities, is_mob_kind};
 use vanillite_game::item_entity::ItemData;
 use vanillite_game::level::explosion::BlockInteraction;
 use vanillite_game::level::{Level, LevelOutput, LevelSettings, update};
+use vanillite_game::minecart::{self, MinecartKind};
 use vanillite_game::mob::common::CommonGoal;
 use vanillite_game::mob::fam::FamGoal;
-use vanillite_game::minecart::{self, MinecartKind};
 use vanillite_game::mob::goals::{Goal, MeleeKind, Slot};
 use vanillite_game::mob::movement::{MoveGoal, RemoveSounds};
 use vanillite_game::mob::{
@@ -521,7 +521,7 @@ impl GameWorld {
 
     fn add_player(&mut self, spec: &EntitySpec, index: usize) {
         let pos = Vec3::new(spec.pos[0], spec.pos[1], spec.pos[2]);
-        let (_tx, inbound) = std::sync::mpsc::channel();
+        let (_tx, inbound) = vanillite_protocol::inbound_queue(16);
         let chat = ChatSettings::default();
         let data = PlayerData {
             profile: GameProfile {

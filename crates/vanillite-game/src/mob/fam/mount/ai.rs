@@ -799,7 +799,9 @@ pub fn behavior_check(t: &mut Tick<'_, '_>, b: &mut Behavior) -> bool {
         Behavior::BreezeShootWhenStuck => {
             t.ents.vehicle_of(t.id).is_some()
                 || t.mob_ref().fluids.in_water()
-                || t.mob_ref().effects.has(crate::effect::MobEffect::LEVITATION)
+                || t.mob_ref()
+                    .effects
+                    .has(crate::effect::MobEffect::LEVITATION)
         }
         Behavior::BreezeSlide => {
             t.on_ground() && !t.mob_ref().fluids.in_water() && t.core().pose() == Pose::Standing
@@ -1132,8 +1134,9 @@ fn charge_tick(t: &mut Tick<'_, '_>, velocity: Vec3, b: &mut Behavior, now: i64)
     let effects = &t.mob_ref().effects;
     let level = |e| effects.amplifier(e).map_or(0, |a| a + 1);
     #[allow(clippy::cast_precision_loss)]
-    let boost =
-        0.25 * (level(crate::effect::MobEffect::SPEED) - level(crate::effect::MobEffect::SLOWNESS)) as f32;
+    let boost = 0.25
+        * (level(crate::effect::MobEffect::SPEED) - level(crate::effect::MobEffect::SLOWNESS))
+            as f32;
     let speed = if let Behavior::Charge { speed, .. } = b {
         *speed
     } else {
@@ -1408,7 +1411,11 @@ fn optimal_jump(t: &mut Tick<'_, '_>, target: Vec3) -> Option<Vec3> {
     let mob = t.pos();
     for angle in angles {
         if let Some(v) = jump_vector_for_angle(mob, target, max_velocity, angle, gravity) {
-            if let Some(a) = t.mob_ref().effects.amplifier(crate::effect::MobEffect::JUMP_BOOST) {
+            if let Some(a) = t
+                .mob_ref()
+                .effects
+                .amplifier(crate::effect::MobEffect::JUMP_BOOST)
+            {
                 // `getJumpBoostPower`: 0.1 per level.
                 let boost = v.normalize().y * 0.1 * (f64::from(a) + 1.0);
                 return Some(v + Vec3::new(0.0, boost, 0.0));

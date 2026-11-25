@@ -135,8 +135,12 @@ impl Level {
             return true;
         }
         if let Some((e, data)) = crate::mob::missile::load(&nbt) {
-            let mut new =
-                NewEntity::new(data.kind.type_id(), self.network_ids().next(), e.uuid, e.pos);
+            let mut new = NewEntity::new(
+                data.kind.type_id(),
+                self.network_ids().next(),
+                e.uuid,
+                e.pos,
+            );
             new.velocity = e.velocity;
             new.rot = e.rot;
             self.entities.spawn_missile(new, data);

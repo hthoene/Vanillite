@@ -112,7 +112,8 @@ fn invulnerable_to(ents: &Entities, env: &Env<'_>, target: EntityId, kind: Damag
     };
     m.removed
         || types.is(kind, tag::IS_FIRE)
-            && (e.kind().info().fire_immune || m.effects.has(crate::effect::MobEffect::FIRE_RESISTANCE))
+            && (e.kind().info().fire_immune
+                || m.effects.has(crate::effect::MobEffect::FIRE_RESISTANCE))
         || types.is(kind, tag::IS_FALL) && m.kind.fall_damage_immune()
 }
 
