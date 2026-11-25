@@ -1697,7 +1697,7 @@ fn firework_color(dye: i32) -> i32 {
 }
 
 /// `DyedItemColor.applyDyes(current, dyes)`.
-fn apply_dyes(current: Option<i32>, dyes: &[i32]) -> i32 {
+pub(crate) fn apply_dyes(current: Option<i32>, dyes: &[i32]) -> i32 {
     let (mut red, mut green, mut blue, mut intensity, mut n) = (0i32, 0i32, 0i32, 0i32, 0i32);
     let mut add = |rgb: i32| {
         let (r, g, b) = ((rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255);

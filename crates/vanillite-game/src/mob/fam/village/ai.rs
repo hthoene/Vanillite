@@ -2322,7 +2322,11 @@ pub fn behavior_trigger(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) -> boo
                 if !competes {
                     continue;
                 }
-                let xp = |e: EntityId| t.ents.mob(e).map_or(0, |m| vs(m).xp);
+                let xp = |e: EntityId| {
+                    t.ents
+                        .mob(e)
+                        .map_or(0, |m| super::state(m).merchant.villager_xp)
+                };
                 let (win, lose) = if xp(winner) > xp(id) {
                     (winner, id)
                 } else {
@@ -2368,7 +2372,7 @@ pub fn behavior_trigger(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) -> boo
         Behavior::ResetProfession => {
             let vv = vs(t.mob_ref());
             let firable = vv.profession != profession::NONE && vv.profession != profession::NITWIT;
-            if firable && vv.xp == 0 && vv.level <= 1 {
+            if firable && super::state(t.mob_ref()).merchant.villager_xp == 0 && vv.level <= 1 {
                 v::set_profession(t.mob(), profession::NONE);
                 t.core_mut().mark_data_dirty();
                 v::refresh_brain(t);

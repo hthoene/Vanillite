@@ -449,6 +449,8 @@ pub struct Environment {
     pub surface_slime_chance: f32,
     /// The world seed (slime chunks).
     pub world_seed: i64,
+    /// The days of the overworld clock (`Timelines.OVERWORLD_DAY` period count).
+    pub day_count: i64,
     /// `getSeaLevel`.
     pub sea_level: i32,
     /// The time of the overworld day (ticks into the `minecraft:overworld` clock's day): the
@@ -469,6 +471,7 @@ impl Default for Environment {
             ambient_light: 0.0,
             has_ceiling: false,
             surface_slime_chance: 0.0,
+            day_count: 0,
             world_seed: 0,
             sea_level: 63,
             day_time: 6000,

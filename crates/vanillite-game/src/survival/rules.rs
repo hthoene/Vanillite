@@ -137,6 +137,7 @@ impl Rule {
     pub const SPAWN_MONSTERS: Rule = Rule(48);
     pub const SPAWN_PATROLS: Rule = Rule(49);
     pub const SPAWN_PHANTOMS: Rule = Rule(50);
+    pub const SPAWN_WANDERING_TRADERS: Rule = Rule(51);
     pub const SPAWN_WARDENS: Rule = Rule(52);
     pub const TNT_EXPLODES: Rule = Rule(55);
     pub const TNT_EXPLOSION_DROP_DECAY: Rule = Rule(56);

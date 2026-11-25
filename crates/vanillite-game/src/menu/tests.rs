@@ -106,7 +106,23 @@ pub(crate) fn install_data() -> &'static GameData {
                 (registry.to_owned(), tags)
             })
             .collect();
+        let trades = crate::trading::data::TradeData::load(
+            &registry("minecraft:villager_trade"),
+            &registry("minecraft:trade_set"),
+            &|t| {
+                packs
+                    .tag_ids("minecraft:villager_trade", t)
+                    .unwrap_or_default()
+            },
+            &|id| {
+                packs
+                    .registry("minecraft:villager_trade")
+                    .and_then(|r| r.id_of(id))
+                    .and_then(|i| u32::try_from(i).ok())
+            },
+        );
         crate::player::play::install_game_data(Arc::new(GameData {
+            trades,
             loot: crate::loot::LootTables::empty(),
             recipes,
             enchanting,

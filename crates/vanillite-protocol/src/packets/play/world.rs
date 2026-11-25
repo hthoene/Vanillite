@@ -242,6 +242,14 @@ pub mod serverbound {
         Inventory
     );
 
+    /// `select_trade`: the offer picked in the merchant menu.
+    #[derive(Debug, Clone, PartialEq, Eq, Packet)]
+    #[packet(state = Play, dir = Serverbound, name = "select_trade", bucket = "inventory")]
+    pub struct SelectTrade {
+        #[field(varint)]
+        pub item: i32,
+    }
+
     /// `rename_item`: the anvil's name field.
     #[derive(Debug, Clone, PartialEq, Eq, Packet)]
     #[packet(state = Play, dir = Serverbound, name = "rename_item", bucket = "inventory")]
@@ -1120,6 +1128,160 @@ pub mod clientbound {
         clientbound,
         SET_EQUIPMENT,
         "set_equipment",
+        Default
+    );
+
+    /// `ItemCost` on the wire: item, count and the exact components (`TypedDataComponent`s,
+    /// values in their stream codec).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct TradeCost {
+        pub item: u16,
+        pub count: i32,
+        pub components: Vec<(u16, Box<[u8]>)>,
+    }
+
+    impl Encode for TradeCost {
+        fn encode(&self, out: &mut Vec<u8>) {
+            write_varint(out, i32::from(self.item));
+            write_varint(out, self.count);
+            write_len(out, self.components.len());
+            for (t, value) in &self.components {
+                write_varint(out, i32::from(*t));
+                out.extend_from_slice(value);
+            }
+        }
+    }
+
+    impl Decode for TradeCost {
+        fn decode(r: &mut Reader<'_>) -> Result<Self> {
+            let item =
+                u16::try_from(r.varint()?).map_err(|_| crate::codec::Error::Invalid("item id"))?;
+            let count = r.varint()?;
+            let n = r.len_prefix("trade cost components", 256, 1)?;
+            let mut components = Vec::with_capacity(n);
+            for _ in 0..n {
+                let t = u16::try_from(r.varint()?)
+                    .map_err(|_| crate::codec::Error::Invalid("component type"))?;
+                let len = crate::components::value_len(t, r.rest())?;
+                components.push((t, r.take(len)?.into()));
+            }
+            Ok(TradeCost {
+                item,
+                count,
+                components,
+            })
+        }
+    }
+
+    /// `MerchantOffer.STREAM_CODEC`.
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct TradeOffer {
+        pub cost_a: TradeCost,
+        pub result: ItemStack,
+        pub cost_b: Option<TradeCost>,
+        pub out_of_stock: bool,
+        pub uses: i32,
+        pub max_uses: i32,
+        pub xp: i32,
+        pub special_price: i32,
+        pub price_multiplier: f32,
+        pub demand: i32,
+    }
+
+    impl Encode for TradeOffer {
+        fn encode(&self, out: &mut Vec<u8>) {
+            self.cost_a.encode(out);
+            self.result.encode(out);
+            match &self.cost_b {
+                Some(b) => {
+                    out.push(1);
+                    b.encode(out);
+                }
+                None => out.push(0),
+            }
+            out.push(u8::from(self.out_of_stock));
+            for v in [self.uses, self.max_uses, self.xp, self.special_price] {
+                out.extend_from_slice(&v.to_be_bytes());
+            }
+            out.extend_from_slice(&self.price_multiplier.to_be_bytes());
+            out.extend_from_slice(&self.demand.to_be_bytes());
+        }
+    }
+
+    impl Decode for TradeOffer {
+        fn decode(r: &mut Reader<'_>) -> Result<Self> {
+            let cost_a = TradeCost::decode(r)?;
+            let result = ItemStack::decode_plain(r)?;
+            let cost_b = if bool::decode(r)? {
+                Some(TradeCost::decode(r)?)
+            } else {
+                None
+            };
+            Ok(TradeOffer {
+                cost_a,
+                result,
+                cost_b,
+                out_of_stock: bool::decode(r)?,
+                uses: r.i32()?,
+                max_uses: r.i32()?,
+                xp: r.i32()?,
+                special_price: r.i32()?,
+                price_multiplier: r.f32()?,
+                demand: r.i32()?,
+            })
+        }
+    }
+
+    /// `merchant_offers`: the offers of the open merchant menu.
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct MerchantOffers {
+        pub container_id: i32,
+        pub offers: Vec<TradeOffer>,
+        pub villager_level: i32,
+        pub villager_xp: i32,
+        pub show_progress: bool,
+        pub can_restock: bool,
+    }
+
+    impl Encode for MerchantOffers {
+        fn encode(&self, out: &mut Vec<u8>) {
+            write_varint(out, self.container_id);
+            write_len(out, self.offers.len());
+            for o in &self.offers {
+                o.encode(out);
+            }
+            write_varint(out, self.villager_level);
+            write_varint(out, self.villager_xp);
+            out.push(u8::from(self.show_progress));
+            out.push(u8::from(self.can_restock));
+        }
+    }
+
+    impl Decode for MerchantOffers {
+        fn decode(r: &mut Reader<'_>) -> Result<Self> {
+            let container_id = r.varint()?;
+            let n = r.len_prefix("merchant offers", 4096, 1)?;
+            let mut offers = Vec::with_capacity(n);
+            for _ in 0..n {
+                offers.push(TradeOffer::decode(r)?);
+            }
+            Ok(MerchantOffers {
+                container_id,
+                offers,
+                villager_level: r.varint()?,
+                villager_xp: r.varint()?,
+                show_progress: bool::decode(r)?,
+                can_restock: bool::decode(r)?,
+            })
+        }
+    }
+
+    manual_packet!(
+        MerchantOffers,
+        Clientbound,
+        clientbound,
+        MERCHANT_OFFERS,
+        "merchant_offers",
         Default
     );
 }

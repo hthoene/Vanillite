@@ -7,6 +7,7 @@
 //! [`broadcast_changes`] and [`send_all`] are its synchronisation with the client.
 
 pub mod container;
+pub mod merchant;
 mod station;
 mod workstation;
 
@@ -907,5 +908,7 @@ fn lerp_discrete(alpha: f32, min: i32, max: i32) -> i32 {
 
 #[cfg(test)]
 mod fuzz_tests;
+#[cfg(test)]
+mod merchant_tests;
 #[cfg(test)]
 pub(crate) mod tests;

@@ -143,6 +143,10 @@ impl ServerWorld {
             mobs.init_dragon_fight(&data, &mut level);
         }
         mobs.init_raids(&data, &mut level);
+        // `MinecraftServer.customSpawners`: the wandering trader spawner of the overworld.
+        if dimension == "minecraft:overworld" {
+            mobs.init_trader_spawner(&data);
+        }
         // Entity randoms are `RandomSource.create()`: seeded from the clock, not the world seed.
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

@@ -50,6 +50,8 @@ pub struct GameData {
     pub registry_tags: HashMap<String, HashMap<String, Vec<u32>>>,
     /// The `minecraft:trial_spawner` registry.
     pub trial_spawner_configs: crate::block::trial_spawner::TrialConfigs,
+    /// The `minecraft:villager_trade` and `minecraft:trade_set` registries.
+    pub trades: crate::trading::data::TradeData,
 }
 
 impl crate::predicate::EntityTags for GameData {

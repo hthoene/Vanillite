@@ -198,14 +198,6 @@ pub struct Villager {
     /// `lastGossipTime` and `lastGossipDecayTime`.
     pub last_gossip_time: i64,
     pub last_gossip_decay: i64,
-    /// `villagerXp`.
-    pub xp: i32,
-    /// `lastRestockGameTime`, `numberOfRestocksToday`, `lastRestockCheckDay`.
-    pub last_restock: i64,
-    pub restocks_today: i32,
-    pub last_restock_check_day: i64,
-    /// `lastTradedPlayer`: the reputation event of a trade is sent on the next tick.
-    pub last_traded_player: Option<EntityId>,
     /// `SLEEPING_POS`.
     pub sleeping_pos: Option<BlockPos>,
     /// Was a baby when the brain was built (`ageBoundaryReached` rebuilds it).
@@ -240,11 +232,6 @@ impl Default for Villager {
             gossips: Gossips::default(),
             last_gossip_time: 0,
             last_gossip_decay: 0,
-            xp: 0,
-            last_restock: 0,
-            restocks_today: 0,
-            last_restock_check_day: 0,
-            last_traded_player: None,
             sleeping_pos: None,
             brain_baby: false,
             acquire_cache: Default::default(),
@@ -1073,6 +1060,7 @@ fn killed_by_zombie(t: &mut Tick<'_, '_>, killer: EntityId) -> bool {
     let killer_silent = t.ents.mob(killer).is_some_and(|m| m.silent);
     let killer_pos = t.ents.store.get(killer).map(|e| e.pos());
     let v = vs(t.mob_ref()).clone();
+    let xp = state(t.mob_ref()).merchant.villager_xp;
     let offers = state(t.mob_ref())
         .merchant
         .offers
@@ -1102,7 +1090,7 @@ fn killed_by_zombie(t: &mut Tick<'_, '_>, killer: EntityId) -> bool {
             v.level,
             v.data_finalized,
         );
-        crate::mob::fam::undead::zombies::set_villager_trades(z, v.gossips.clone(), offers, v.xp);
+        crate::mob::fam::undead::zombies::set_villager_trades(z, v.gossips.clone(), offers, xp);
     });
     *t.env.random = random;
     if converted.is_some()
@@ -1274,7 +1262,7 @@ impl FamilyHooks for Hooks {
         if !t.exists() || t.mob_ref().removed {
             return;
         }
-        if let Some(player) = vs_mut(t.mob()).last_traded_player.take() {
+        if let Some(player) = state_mut(t.mob()).merchant.last_traded_player.take() {
             let me = t.id;
             reputation_event(t.ents, ReputationEvent::Trade, player, me);
             entity_event(t, me, 14);
@@ -1400,10 +1388,11 @@ impl FamilyHooks for Hooks {
         #[allow(clippy::cast_possible_truncation)]
         out.insert("FoodLevel", Tag::Byte(v.food_level as i8));
         out.insert("Gossips", v.gossips.save());
-        out.insert("Xp", v.xp);
-        out.insert("LastRestock", v.last_restock);
+        let merchant = &state(m).merchant;
+        out.insert("Xp", merchant.villager_xp);
+        out.insert("LastRestock", merchant.last_restock);
         out.insert("LastGossipDecay", v.last_gossip_decay);
-        out.insert("RestocksToday", v.restocks_today);
+        out.insert("RestocksToday", merchant.restocks_today);
         if let Some(p) = v.sleeping_pos {
             out.insert("sleeping_pos", Tag::IntArray(vec![p.x, p.y, p.z]));
         }
@@ -1466,15 +1455,16 @@ impl FamilyHooks for Hooks {
         let v = vs_mut(m);
         v.food_level = int("FoodLevel").unwrap_or(0);
         v.gossips = Gossips::load(tag.get("Gossips"));
-        v.xp = int("Xp").unwrap_or(0);
-        v.last_restock = long("LastRestock").unwrap_or(0);
         v.last_gossip_decay = long("LastGossipDecay").unwrap_or(0);
-        v.restocks_today = int("RestocksToday").unwrap_or(0);
         if let Some(Tag::IntArray(p)) = tag.get("sleeping_pos")
             && p.len() == 3
         {
             v.sleeping_pos = Some(BlockPos::new(p[0], p[1], p[2]));
         }
+        let merchant = &mut state_mut(m).merchant;
+        merchant.villager_xp = int("Xp").unwrap_or(0);
+        merchant.last_restock = long("LastRestock").unwrap_or(0);
+        merchant.restocks_today = int("RestocksToday").unwrap_or(0);
         rebuild_brain(m, None);
         if let Some(b) = m.brain.as_deref_mut() {
             brain::load(b, tag);
@@ -1566,7 +1556,7 @@ pub fn cured(
     s.villager.data_finalized = finalized;
     s.villager.gossips.put_all(&gossips);
     s.merchant.offers = offers;
-    s.villager.xp = xp;
+    s.merchant.villager_xp = xp;
     rebuild_brain(m, None);
     crate::effect::living::add_to_mob(m, EffectInstance::new(MobEffect::NAUSEA, 200, 0));
 }
