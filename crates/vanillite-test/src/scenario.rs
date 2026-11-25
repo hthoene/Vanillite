@@ -93,6 +93,8 @@
 //!   attack) or generic damage without `by`.
 //! - `effect` action: `addEffect` on the entity `entity` with the mob effect `effect`,
 //!   `duration` ticks and `amplifier` (default 0).
+//! - `use_item` action: the player `entity` gets `count` (default 1) of the item `item` in its
+//!   main hand and uses it (`ServerPlayerGameMode.useItem`, as a `use_item` packet would).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -161,6 +163,18 @@ pub enum OpKind {
     Hurt,
     /// A status effect on a scenario entity ([`Op::effect`]).
     Effect,
+    /// A player uses an item ([`Op::use_item`]).
+    UseItem,
+}
+
+/// The item use of a `use_item` action.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UseItemOp {
+    /// Name of the player.
+    pub entity: String,
+    /// Item id, e.g. `minecraft:ender_pearl`.
+    pub item: String,
+    pub count: i32,
 }
 
 /// The status effect of an `effect` action.
@@ -242,6 +256,8 @@ pub struct Op {
     pub hurt: Option<Hurt>,
     /// The effect of an `effect` action.
     pub effect: Option<EffectOp>,
+    /// The item use of a `use_item` action.
+    pub use_item: Option<UseItemOp>,
     /// The chunks of `force` and `unforce`.
     pub chunks: Vec<ChunkPos>,
 }
@@ -501,6 +517,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
         Some("fill") => OpKind::Fill,
         Some("hurt") if action => OpKind::Hurt,
         Some("effect") if action => OpKind::Effect,
+        Some("use_item") if action => OpKind::UseItem,
         Some("force") if action => OpKind::Force,
         Some("unforce") if action => OpKind::Unforce,
         o => return Err(format!("unknown op {o:?}")),
@@ -535,6 +552,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             block: String::new(),
             hurt: None,
             effect: None,
+            use_item: None,
             chunks,
         });
     }
@@ -567,6 +585,29 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
                 duration: int("duration").ok_or("effect needs a duration")?,
                 amplifier: int("amplifier").unwrap_or(0),
             }),
+            use_item: None,
+            chunks: Vec::new(),
+        });
+    }
+    if kind == OpKind::UseItem {
+        let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
+        return Ok(Op {
+            tick,
+            kind,
+            from: BlockPos::new(0, 0, 0),
+            to: BlockPos::new(0, 0, 0),
+            block: String::new(),
+            hurt: None,
+            effect: None,
+            use_item: Some(UseItemOp {
+                entity: s("entity").ok_or("use_item needs an entity")?,
+                item: s("item").ok_or("use_item needs an item")?,
+                count: v
+                    .get("count")
+                    .and_then(Value::as_i64)
+                    .and_then(|n| i32::try_from(n).ok())
+                    .unwrap_or(1),
+            }),
             chunks: Vec::new(),
         });
     }
@@ -588,6 +629,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
                     .ok_or("hurt needs an amount")? as f32,
             }),
             effect: None,
+            use_item: None,
         });
     }
     let (from, to) = if kind == OpKind::Fill {
@@ -608,6 +650,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             .to_owned(),
         hurt: None,
         effect: None,
+        use_item: None,
         chunks: Vec::new(),
     })
 }

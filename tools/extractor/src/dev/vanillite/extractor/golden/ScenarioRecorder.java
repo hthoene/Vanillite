@@ -212,6 +212,8 @@ public final class ScenarioRecorder {
                 settle(server, level, area);
               } else if (op.equals("hurt")) {
                 entities.hurt(action);
+              } else if (op.equals("use_item")) {
+                entities.useItem(action);
               } else if (action.get("op").getAsString().equals("effect")) {
                 entities.effect(action);
               } else {

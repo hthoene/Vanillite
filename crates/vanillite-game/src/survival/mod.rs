@@ -69,6 +69,9 @@ pub enum Effect {
         y_rot: f32,
         velocity: Vec3,
     },
+    /// The player with this UUID died: with `ender_pearls_vanish_on_death` its ender pearls in
+    /// the other worlds vanish (the pearls of its own world see it themselves).
+    Died(u128),
 }
 
 /// The seed of a sound (`Level.soundSeedGenerator`, a random of its own that Vanilla never

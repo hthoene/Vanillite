@@ -832,7 +832,10 @@ impl WorldSurvival {
                         p.connection.sink.send_shared(packet);
                     }
                 }
-                Effect::DropItem { .. } | Effect::Experience { .. } | Effect::SpawnMob { .. } => {}
+                Effect::DropItem { .. }
+                | Effect::Experience { .. }
+                | Effect::SpawnMob { .. }
+                | Effect::Died(_) => {}
             }
         }
         spawn_drops(&effects, entities, global);
@@ -931,7 +934,10 @@ fn deliver_simple(effects: &[Effect], entities: &mut Entities, global: &Global) 
                     p.connection.sink.send_shared(packet);
                 }
             }
-            Effect::DropItem { .. } | Effect::Experience { .. } | Effect::SpawnMob { .. } => {}
+            Effect::DropItem { .. }
+            | Effect::Experience { .. }
+            | Effect::SpawnMob { .. }
+            | Effect::Died(_) => {}
         }
     }
     spawn_drops(effects, entities, global);
@@ -941,6 +947,21 @@ fn deliver_simple(effects: &[Effect], entities: &mut Entities, global: &Global) 
 /// [`Effect::Experience`]s.
 fn spawn_drops(effects: &[Effect], entities: &mut Entities, global: &Global) {
     for effect in effects {
+        if let Effect::Died(uuid) = *effect
+            && global
+                .level
+                .rules()
+                .bool(vanillite_game::survival::rules::Rule::ENDER_PEARLS_VANISH_ON_DEATH)
+        {
+            for i in 0..crate::server::DIMENSIONS.len() {
+                let Ok(index) = u16::try_from(i) else {
+                    continue;
+                };
+                global.run_in_world(crate::world::WorldId(index), move |world| {
+                    world.discard_pearls_of(uuid);
+                });
+            }
+        }
         if let Effect::Experience { pos, amount } = effect {
             vanillite_game::experience_orb::with_entity_random(|random| {
                 vanillite_game::experience_orb::award_in(

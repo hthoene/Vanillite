@@ -81,6 +81,9 @@ pub struct Entities {
     pub missiles: Dense<crate::mob::missile::MissileData>,
     /// Minecart kind data (every type of [`crate::minecart::MinecartKind`]).
     pub minecarts: Dense<crate::minecart::MinecartData>,
+    /// The portal state (`portalProcess`, `portalCooldown`) of the entities besides players
+    /// that are in a portal or cool down after one; players keep theirs in their data.
+    pub portals: FxHashMap<EntityId, crate::portal::PortalState>,
 }
 
 /// Who rides what (`Entity.vehicle`, `Entity.passengers`).
@@ -443,6 +446,9 @@ impl Entities {
     pub fn despawn(&mut self, id: EntityId) -> Option<Removed> {
         self.unlink(id);
         let removed = self.store.despawn(id)?;
+        if !self.portals.is_empty() {
+            self.portals.remove(&id);
+        }
         if self.by_network_id.get(&removed.network_id.0) == Some(&id) {
             self.by_network_id.remove(&removed.network_id.0);
             if removed.kind == ids::ENDER_DRAGON {

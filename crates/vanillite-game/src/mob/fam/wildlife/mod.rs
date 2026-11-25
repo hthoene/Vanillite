@@ -7,6 +7,7 @@
 mod bat;
 mod bee;
 mod dolphin;
+pub mod ender_pearl;
 mod fish;
 mod golem;
 mod mooshroom;

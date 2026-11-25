@@ -27,6 +27,56 @@ pub struct UsingItem {
     pub duration: i32,
 }
 
+/// `ItemCooldowns` of a player (`ServerItemCooldowns`): per cooldown group (the item's name)
+/// the tick the cooldown started and ends; the client learns of each start and end.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ItemCooldowns {
+    tick_count: i32,
+    groups: Vec<(&'static str, i32, i32)>,
+}
+
+impl ItemCooldowns {
+    /// `isOnCooldown(item)`.
+    pub fn is_on_cooldown(&self, group: &str) -> bool {
+        self.groups
+            .iter()
+            .any(|&(g, _, end)| g == group && end > self.tick_count)
+    }
+
+    /// `addCooldown(group, ticks)` with the `cooldown` packet.
+    pub fn add(&mut self, group: &'static str, ticks: i32, sink: &dyn crate::player::PacketSink) {
+        let (start, end) = (self.tick_count, self.tick_count.wrapping_add(ticks));
+        match self.groups.iter_mut().find(|(g, _, _)| *g == group) {
+            Some(entry) => *entry = (group, start, end),
+            None => self.groups.push((group, start, end)),
+        }
+        send_cooldown(sink, group, ticks);
+    }
+
+    /// `tick`: cooldowns that ended go, and the client hears of it.
+    pub fn tick(&mut self, sink: &dyn crate::player::PacketSink) {
+        self.tick_count = self.tick_count.wrapping_add(1);
+        if self.groups.is_empty() {
+            return;
+        }
+        let now = self.tick_count;
+        self.groups.retain(|&(group, _, end)| {
+            let ended = end <= now;
+            if ended {
+                send_cooldown(sink, group, 0);
+            }
+            !ended
+        });
+    }
+}
+
+fn send_cooldown(sink: &dyn crate::player::PacketSink, group: &str, duration: i32) {
+    sink.send(&vanillite_protocol::packets::play::clientbound::Cooldown {
+        group: group.to_owned(),
+        duration,
+    });
+}
+
 /// Ticks a shield needs before it blocks (`block_delay_seconds` 0.25).
 const SHIELD_DELAY: i32 = 5;
 

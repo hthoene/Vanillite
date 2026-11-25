@@ -230,6 +230,8 @@ pub struct Survival {
     pub shield_disabled_until: i32,
     /// The item in the main hand at the last tick (`lastItemInMainHand`).
     pub last_main_hand_item: u16,
+    /// `Player.cooldowns`: item groups the player may not use for a while.
+    pub cooldowns: crate::player::using::ItemCooldowns,
     first_tick: bool,
     sent: Sent,
 }
@@ -270,6 +272,7 @@ impl Default for Survival {
             using_item: None,
             shield_disabled_until: 0,
             last_main_hand_item: 0,
+            cooldowns: crate::player::using::ItemCooldowns::default(),
             first_tick: true,
             sent: Sent::default(),
         }
@@ -1067,6 +1070,7 @@ pub fn die(
     let id = entity.as_ref().id();
     // `resetStat(TIME_SINCE_REST)`.
     player.survival.time_since_rest = 0;
+    env.out.push(Effect::Died(uuid));
     let sink = std::sync::Arc::clone(&player.connection.sink);
     if env.rules.bool(Rule::SHOW_DEATH_MESSAGES) {
         let name = display_name(&player.profile.name, uuid);
@@ -1229,6 +1233,11 @@ pub fn do_tick(
         // `ServerPlayer.tick`: `wardenSpawnTracker.tick()`.
         s.warden_spawn_tracker.tick();
     }
+    // `Player.tick`: `cooldowns.tick()`.
+    player
+        .survival
+        .cooldowns
+        .tick(player.connection.sink.as_ref());
     let id = entity.as_ref().id();
     // `Entity.baseTick`: `handlePortal` first.
     let can_use_portal = !player.survival.is_dead_or_dying();

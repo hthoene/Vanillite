@@ -417,9 +417,11 @@ impl GameWorld {
             let is_mob = is_mob_kind(kind);
             let is_special = mob::boss::special::is_special_kind(kind);
             let is_minecart = MinecartKind::of(kind).is_some();
+            let is_missile = mob::missile::is_missile_kind(kind);
             if !is_mob
                 && !is_special
                 && !is_minecart
+                && !is_missile
                 && kind != ids::ARROW
                 && kind != ids::EXPERIENCE_ORB
                 && kind != ids::AREA_EFFECT_CLOUD
@@ -445,6 +447,8 @@ impl GameWorld {
                     minecart::tick(level, ents, env, cx, id);
                 } else if kind == ids::ARROW {
                     projectile::tick_arrow(level, ents, env, cx, id);
+                } else if is_missile {
+                    mob::missile::tick(level, ents, env, cx, id);
                 } else {
                     vanillite_game::effect::cloud::tick(level, ents, env, cx, id);
                 }
@@ -458,6 +462,9 @@ impl GameWorld {
             }
             self.finish_removals();
         }
+        // No chunk tickets or other worlds here: every chunk of the scenario is forced.
+        self.mobs.travel.clear();
+        self.mobs.gateways.clear();
         self.spawn_drops();
     }
 
@@ -1075,6 +1082,8 @@ fn apply_rules(
                 | "fire_spread_radius_around_player"
                 | "spread_vines"
                 | "spawn_mobs"
+                | "spawn_monsters"
+                | "ender_pearls_vanish_on_death"
                 | "advance_time"
                 | "advance_weather"
                 | "mob_griefing"
@@ -1268,6 +1277,35 @@ impl ScenarioWorld for GameWorld {
         self.finish_removals();
         self.spawn_drops();
         Ok(())
+    }
+
+    fn use_item(&mut self, op: &crate::scenario::UseItemOp) -> Result<(), String> {
+        let player = self.named(&op.entity)?;
+        let item = vanillite_data::item::ItemId::by_name(&op.item)
+            .ok_or_else(|| format!("unknown item {}", op.item))?;
+        let mut stack = vanillite_game::item::ItemStack::new(item.0, op.count);
+        let network_ids = Arc::clone(&self.network_ids);
+        let used = self.with_env(|_, ents, env, _| {
+            if op.item == mob::fam::wildlife::ender_pearl::ITEM {
+                mob::fam::wildlife::ender_pearl::throw(
+                    ents,
+                    env,
+                    &network_ids,
+                    player,
+                    &mut stack,
+                    vanillite_protocol::packets::play::serverbound::Hand::MainHand,
+                );
+                Ok(())
+            } else {
+                Err(format!("using {} is not supported here", op.item))
+            }
+        });
+        if let Some(p) = self.level.entities.player_mut(player) {
+            let slot = p.inventory.selected;
+            p.inventory.set(slot, stack);
+        }
+        self.spawn_drops();
+        used
     }
 
     fn effect(&mut self, effect: &crate::scenario::EffectOp) -> Result<(), String> {

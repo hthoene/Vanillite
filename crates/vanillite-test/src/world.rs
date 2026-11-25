@@ -79,6 +79,10 @@ pub trait ScenarioWorld {
     fn hurt(&mut self, hurt: &Hurt) -> Result<(), String> {
         Err(format!("this world cannot hurt `{}`", hurt.entity))
     }
+    /// Runs a `use_item` action.
+    fn use_item(&mut self, op: &crate::scenario::UseItemOp) -> Result<(), String> {
+        Err(format!("this world cannot use items for `{}`", op.entity))
+    }
     /// Runs an `effect` action.
     fn effect(&mut self, effect: &crate::scenario::EffectOp) -> Result<(), String> {
         Err(format!("this world has no effects for `{}`", effect.entity))

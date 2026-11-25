@@ -119,6 +119,11 @@ impl PlayerList {
         Some(players.remove(index))
     }
 
+    /// The world an online player is in.
+    pub fn world_of(&self, uuid: Uuid) -> Option<WorldId> {
+        self.lock().iter().find(|p| p.uuid == uuid).map(|p| p.world)
+    }
+
     /// Records that a player moved to another world.
     pub fn set_world(&self, uuid: Uuid, world: WorldId) {
         if let Some(player) = self.lock().iter_mut().find(|p| p.uuid == uuid) {

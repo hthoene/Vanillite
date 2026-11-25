@@ -57,12 +57,16 @@ fn apply(
     if let Some(effect) = &op.effect {
         return world.effect(effect);
     }
+    if let Some(use_item) = &op.use_item {
+        return world.use_item(use_item);
+    }
     let updates = match op.kind {
         OpKind::Set => false,
         OpKind::Place => true,
         OpKind::Fill => action,
         OpKind::Hurt => return Err("hurt without its damage".to_owned()),
         OpKind::Effect => return Err("effect without its effect".to_owned()),
+        OpKind::UseItem => return Err("use_item without its item".to_owned()),
         OpKind::Force | OpKind::Unforce => {
             return world.set_forced(&op.chunks, op.kind == OpKind::Force);
         }
