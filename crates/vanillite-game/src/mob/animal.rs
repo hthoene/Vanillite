@@ -101,7 +101,7 @@ pub fn free_partner(t: &mut super::Tick<'_, '_>) -> Option<EntityId> {
 }
 
 /// `level.broadcastEntityEvent(entity, event)`.
-fn entity_event(ents: &Entities, env: &mut Env<'_>, id: EntityId, event: i8) {
+pub fn entity_event(ents: &Entities, env: &mut Env<'_>, id: EntityId, event: i8) {
     if let Some(e) = ents.store.get(id) {
         env.out.push(Effect::Tracking {
             entity: id,
@@ -115,7 +115,7 @@ fn entity_event(ents: &Entities, env: &mut Env<'_>, id: EntityId, event: i8) {
 }
 
 /// A sound at an entity's position (`playSound(sound, volume, pitch)` of the entity).
-fn sound_at(
+pub fn sound_at(
     ents: &Entities,
     env: &mut Env<'_>,
     id: EntityId,
@@ -213,7 +213,7 @@ fn offspring_color(a: u8, b: u8, pick_first: bool) -> u8 {
 }
 
 /// The inventory index of a hand.
-fn hand_index(ents: &Entities, player: EntityId, hand: Hand) -> usize {
+pub fn hand_index(ents: &Entities, player: EntityId, hand: Hand) -> usize {
     match hand {
         Hand::MainHand => ents.player(player).map_or(0, |p| p.inventory.selected),
         Hand::OffHand => OFFHAND,
@@ -221,20 +221,20 @@ fn hand_index(ents: &Entities, player: EntityId, hand: Hand) -> usize {
 }
 
 /// The stack in a player's hand.
-fn held(ents: &Entities, player: EntityId, hand: Hand) -> ItemStack {
+pub fn held(ents: &Entities, player: EntityId, hand: Hand) -> ItemStack {
     let i = hand_index(ents, player, hand);
     ents.player(player)
         .map(|p| p.inventory.get(i).clone())
         .unwrap_or_default()
 }
 
-fn infinite(ents: &Entities, player: EntityId) -> bool {
+pub fn infinite(ents: &Entities, player: EntityId) -> bool {
     ents.player(player)
         .is_some_and(|p| p.game_mode == GameMode::Creative)
 }
 
 /// `usePlayerItem`: one item of the hand is used up unless the player has infinite materials.
-fn use_item(ents: &mut Entities, player: EntityId, hand: Hand) {
+pub fn use_item(ents: &mut Entities, player: EntityId, hand: Hand) {
     if infinite(ents, player) {
         return;
     }
@@ -247,7 +247,7 @@ fn use_item(ents: &mut Entities, player: EntityId, hand: Hand) {
 }
 
 /// `ItemUtils.createFilledResult`: the hand's stack turns into `filled` (one item of it).
-fn fill_held(
+pub fn fill_held(
     ents: &mut Entities,
     env: &mut Env<'_>,
     player: EntityId,
@@ -288,7 +288,13 @@ fn fill_held(
 }
 
 /// `hurtAndBreak(amount, player, hand)` of the stack in a hand.
-fn hurt_held(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, hand: Hand, amount: i32) {
+pub fn hurt_held(
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    player: EntityId,
+    hand: Hand,
+    amount: i32,
+) {
     if infinite(ents, player) {
         return;
     }
@@ -511,7 +517,7 @@ fn mob_interact(
 }
 
 /// `Animal.mobInteract`: food makes adults fall in love and babies grow faster.
-fn animal_interact(
+pub fn animal_interact(
     ents: &mut Entities,
     env: &mut Env<'_>,
     player: EntityId,
@@ -558,7 +564,7 @@ fn animal_interact(
 }
 
 /// `playEatingSound`: sheep and pigs have one.
-fn eating_sound(ents: &mut Entities, env: &mut Env<'_>, target: EntityId) {
+pub fn eating_sound(ents: &mut Entities, env: &mut Env<'_>, target: EntityId) {
     let sound = match ents.mob(target).map(|m| m.kind) {
         Some(Kind::Sheep) => "minecraft:entity.sheep.eat",
         Some(Kind::Pig) => "minecraft:entity.pig.eat",

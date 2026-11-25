@@ -197,6 +197,9 @@ fn base_tick(t: &mut Tick<'_, '_>) {
             kinds::play_ambient_sound(t);
         }
     }
+    if t.exists() && t.mob_ref().kind.family() != super::Family::Classic {
+        super::fam::after_base_tick(t);
+    }
 }
 
 /// `LivingEntity.tickDeath`.
@@ -210,7 +213,7 @@ fn tick_death(t: &mut Tick<'_, '_>) {
 }
 
 /// Hurts the ticking mob itself (environment damage).
-fn hurt_self(t: &mut Tick<'_, '_>, source: DamageSource, amount: f32) -> bool {
+pub fn hurt_self(t: &mut Tick<'_, '_>, source: DamageSource, amount: f32) -> bool {
     let id = t.id;
     combat::hurt(t.level, t.ents, t.env, t.cx, id, source, amount)
 }
@@ -240,6 +243,12 @@ fn fluid_jump_threshold(t: &Tick<'_, '_>) -> f64 {
 
 /// `LivingEntity.aiStep` with `Mob.aiStep`'s additions.
 fn ai_step(t: &mut Tick<'_, '_>) {
+    if t.mob_ref().kind.family() != super::Family::Classic {
+        super::fam::ai_step_start(t);
+        if !t.exists() || t.mob_ref().removed {
+            return;
+        }
+    }
     {
         let m = t.mob();
         if m.no_jump_delay > 0 {
@@ -441,12 +450,12 @@ fn pos_below_affecting_movement(t: &Tick<'_, '_>) -> BlockPos {
 }
 
 /// `computeModifiedFriction`.
-fn modified_friction(friction: f32, modifier: f32) -> f32 {
+pub fn modified_friction(friction: f32, modifier: f32) -> f32 {
     (1.0 - (1.0 - friction) * modifier).clamp(0.0, 1.0)
 }
 
 /// `moveRelative(speed, input)`.
-fn move_relative(t: &mut Tick<'_, '_>, speed: f32, input: Vec3) {
+pub fn move_relative(t: &mut Tick<'_, '_>, speed: f32, input: Vec3) {
     let length = input.length_sqr();
     if length < 1.0e-7 {
         return;
@@ -482,6 +491,11 @@ fn travel(t: &mut Tick<'_, '_>, input: Vec3) {
     if t.mob_ref().kind.family() != super::Family::Classic && super::fam::travel(t, input) {
         return;
     }
+    base_travel(t, input);
+}
+
+/// `LivingEntity.travel` without the kind's override (`super.travel(input)`).
+pub fn base_travel(t: &mut Tick<'_, '_>, input: Vec3) {
     let fluids = t.mob_ref().fluids;
     if fluids.in_water() || fluids.in_lava() {
         travel_in_fluid(t, input);
@@ -490,7 +504,7 @@ fn travel(t: &mut Tick<'_, '_>, input: Vec3) {
     }
 }
 
-fn gravity(t: &Tick<'_, '_>) -> f64 {
+pub fn gravity(t: &Tick<'_, '_>) -> f64 {
     if t.core().flags().contains(EntityFlags::NO_GRAVITY) {
         0.0
     } else {
@@ -958,7 +972,7 @@ pub fn check_despawn(t: &mut Tick<'_, '_>) {
     if !t.cx.has_players {
         return;
     }
-    let persistent = t.mob_ref().persistent;
+    let persistent = t.mob_ref().persistent || super::fam::requires_custom_persistence(t.mob_ref());
     let p = t.pos();
     let r = 128.0;
     let area = Aabb::new(p.x - r, p.y - r, p.z - r, p.x + r, p.y + r, p.z + r);

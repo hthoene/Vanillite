@@ -361,8 +361,32 @@ pub fn controls(ents: &Entities, player: EntityId, vehicle: EntityId) -> bool {
     if ents.boat(vehicle).is_some() {
         return true;
     }
-    ents.mob(vehicle)
-        .is_some_and(|m| m.saddled && m.kind == Kind::Pig && holds_carrot_on_a_stick(ents, player))
+    ents.mob(vehicle).is_some_and(|m| {
+        (m.saddled && m.kind == Kind::Pig && holds_carrot_on_a_stick(ents, player))
+            || (m.kind == Kind::Strider
+                && !m
+                    .equipment
+                    .get(crate::item::EquipmentSlot::Saddle)
+                    .is_empty()
+                && holds_item(
+                    ents,
+                    player,
+                    vanillite_data::item::ids::WARPED_FUNGUS_ON_A_STICK.0,
+                ))
+    })
+}
+
+/// Whether a player holds `item` in either hand.
+fn holds_item(ents: &Entities, player: EntityId, item: u16) -> bool {
+    let Some(p) = ents.player(player) else {
+        return false;
+    };
+    [
+        crate::item::EquipmentSlot::MainHand,
+        crate::item::EquipmentSlot::OffHand,
+    ]
+    .iter()
+    .any(|&s| p.inventory.equipment(s).item == item)
 }
 
 /// `Pig.getControllingPassenger`: the player holds a carrot on a stick in either hand.

@@ -539,12 +539,25 @@ impl WorldMobs {
                     vehicle::hurt_boat(&mut ents, &mut env, &mut self.cx, id, source, 5.0);
                     continue;
                 }
+                let Some(kind) = ents.mob(id).filter(|m| m.is_alive()).map(|m| m.kind) else {
+                    continue;
+                };
+                if kind.family() != mob::Family::Classic {
+                    let mut h = vanillite_game::mob::fam::Hurt {
+                        level,
+                        ents: &mut ents,
+                        env: &mut env,
+                        cx: &mut self.cx,
+                        target: id,
+                        source,
+                    };
+                    if vanillite_game::mob::fam::thunder_hit(&mut h, kind) {
+                        continue;
+                    }
+                }
                 let Some(m) = ents.mob_mut(id) else {
                     continue;
                 };
-                if !m.is_alive() {
-                    continue;
-                }
                 m.fire_ticks += 1;
                 if m.fire_ticks == 0 {
                     m.fire_ticks = 160;
@@ -803,7 +816,8 @@ fn use_item(
             creative,
             reach,
         );
-    } else if name == "minecraft:carrot_on_a_stick" {
+    } else if name == "minecraft:carrot_on_a_stick" || name == "minecraft:warped_fungus_on_a_stick"
+    {
         riding::boost(ents, env, player, &mut stack, creative);
     } else {
         put_back(ents, player, hand, stack);
