@@ -1493,3 +1493,13 @@ pub fn enderman_take_block(t: &mut Tick<'_, '_>) {
     t.mob().carried = Some(state.block().default_state());
     t.core_mut().mark_data_dirty();
 }
+
+/// The path costs of a mob: its kind's, or those a creaking gets from its heart
+/// (`Creaking.setTransient`).
+pub fn mob_malus(m: &MobData) -> &'static MalusTable {
+    if fam::mount::creaking::heart_bound(m) {
+        fam::mount::creaking::HEART_BOUND_MALUS
+    } else {
+        m.kind.malus()
+    }
+}

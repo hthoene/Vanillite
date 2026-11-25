@@ -456,6 +456,8 @@ pub struct Environment {
     /// The time of the overworld day (ticks into the `minecraft:overworld` clock's day): the
     /// universal timelines (the villager schedules) follow it in every dimension.
     pub day_time: i64,
+    /// `EnvironmentAttributes.CREAKING_ACTIVE` (the overworld's `day` timeline at night).
+    pub creaking_active: bool,
 }
 
 impl Default for Environment {
@@ -475,6 +477,7 @@ impl Default for Environment {
             world_seed: 0,
             sea_level: 63,
             day_time: 6000,
+            creaking_active: false,
         }
     }
 }
@@ -492,6 +495,7 @@ impl Environment {
         Environment {
             sky_darken,
             monsters_burn: burn,
+            creaking_active: (12600..23401).contains(&day.rem_euclid(24000)),
             thundering: thunder > 0.9,
             raining: rain > 0.2,
             has_sky_light: true,
@@ -643,6 +647,8 @@ pub enum WorldAction {
     RingBell(BlockPos, Option<EntityId>),
     /// `BoneMealItem.growCrop` on the block (a villager's bone meal).
     BoneMeal(BlockPos),
+    /// `CreakingHeartBlockEntity.creakingHurt` of the heart at the position.
+    CreakingHurt(BlockPos),
 }
 
 impl WorldAction {
@@ -666,6 +672,9 @@ impl WorldAction {
             WorldAction::HopperMinecart(id) => crate::minecart::hopper_suck(level, id),
             WorldAction::RingBell(pos, entity) => {
                 crate::block::bell::attempt_to_ring(level, entity, pos, None);
+            }
+            WorldAction::CreakingHurt(pos) => {
+                crate::block::creaking_heart::creaking_hurt(level, pos)
             }
             WorldAction::BoneMeal(pos) => {
                 let mut meal =

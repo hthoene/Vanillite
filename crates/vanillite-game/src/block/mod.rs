@@ -21,6 +21,7 @@ pub mod campfire;
 pub mod chest_loot;
 pub mod container;
 pub mod crafter;
+pub mod creaking_heart;
 pub mod decor;
 pub mod dispenser;
 mod dripstone;
@@ -324,6 +325,7 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
     bookshelf::fill(block, &mut b);
     campfire::fill(block, &mut b);
     crafter::fill(block, &mut b);
+    creaking_heart::fill(block, &mut b);
     portal::fill(block, &mut b);
     b
 }

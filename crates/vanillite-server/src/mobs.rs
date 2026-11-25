@@ -711,6 +711,7 @@ impl WorldMobs {
             difficulty: state.difficulty(),
             spawner_blocks_work: rules.bool(Rule::SPAWNER_BLOCKS_WORK),
             spawn_mobs: rules.bool(Rule::SPAWN_MOBS),
+            spawn_monsters: rules.bool(Rule::SPAWN_MONSTERS),
         };
         self.lightning_hits(level, survival, global, dimension);
         let activation = f64::from(self.settings.activation_range);
@@ -1266,6 +1267,7 @@ fn environment(
             ambient_light: if nether { 0.1 } else { 0.0 },
             has_ceiling: nether,
             day_time: day,
+            creaking_active: false,
         };
     }
     let w = survival.weather;

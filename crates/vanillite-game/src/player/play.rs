@@ -670,6 +670,14 @@ impl Digging {
             block_update(sink, ctx.level, pos);
             return false;
         }
+        // `CreakingHeartBlock.playerWillDestroy`: the creaking dies by the player's attack.
+        if state.block() == vanillite_data::block::ids::CREAKING_HEART
+            && let Some(player) = ctx.actor.entity
+            && let Some(level) = ctx.level.level_mut()
+        {
+            let prevents = ctx.actor.creative();
+            crate::block::creaking_heart::player_will_destroy(level, pos, state, player, prevents);
+        }
         // `playerWillDestroy`: break particles and sound for everyone else, and the other half
         // of double blocks.
         ctx.level.level_event(
@@ -1132,6 +1140,9 @@ impl Digging {
         else {
             return false;
         };
+        if let Some(level) = ctx.level.level_mut() {
+            state = crate::block::creaking_heart::placement_state(level, state);
+        }
         if !ctx.level.is_unobstructed(state, target) {
             return false;
         }

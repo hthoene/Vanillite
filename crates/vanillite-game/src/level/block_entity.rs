@@ -89,6 +89,8 @@ pub enum BlockEntity {
     EndPortal,
     /// `TheEndGatewayBlockEntity`.
     EndGateway(crate::block::portal::Gateway),
+    /// `CreakingHeartBlockEntity`.
+    CreakingHeart(Box<crate::block::creaking_heart::CreakingHeart>),
 }
 
 /// `BlockEntityTicker.tick(level, pos, state, blockEntity)`: the block entity is looked up at
@@ -254,6 +256,7 @@ fn ticker_of(entity: &BlockEntity) -> Option<TickerFn> {
         BlockEntity::Vault(_) => Some(crate::block::vault::tick),
         BlockEntity::SculkShrieker(_) => Some(crate::block::sculk_shrieker::tick_block_entity),
         BlockEntity::SculkCatalyst(_) => Some(crate::block::sculk_catalyst::tick_block_entity),
+        BlockEntity::CreakingHeart(_) => Some(crate::block::creaking_heart::server_tick),
     }
 }
 
@@ -329,6 +332,8 @@ pub fn new_block_entity(state: BlockState) -> Option<BlockEntity> {
         Some(BlockEntity::Skull(Box::default()))
     } else if crate::block::decor::is_banner(block) {
         Some(BlockEntity::Banner(Box::default()))
+    } else if block == ids::CREAKING_HEART {
+        Some(BlockEntity::CreakingHeart(Box::default()))
     } else if block == ids::END_PORTAL {
         Some(BlockEntity::EndPortal)
     } else if block == ids::END_GATEWAY {
@@ -395,6 +400,7 @@ fn is_valid(entity: &BlockEntity, state: BlockState) -> bool {
         BlockEntity::Conduit(_) => state.block() == ids::CONDUIT,
         BlockEntity::EndPortal => state.block() == ids::END_PORTAL,
         BlockEntity::EndGateway(_) => state.block() == ids::END_GATEWAY,
+        BlockEntity::CreakingHeart(_) => state.block() == ids::CREAKING_HEART,
     }
 }
 
@@ -463,6 +469,9 @@ impl Level {
                     }
                     if let BlockEntity::SculkShrieker(_) = entity {
                         crate::block::sculk_shrieker::pre_remove(self, pos, old);
+                    }
+                    if let BlockEntity::CreakingHeart(_) = entity {
+                        crate::block::creaking_heart::remove_protector(self, pos, None);
                     }
                     if let BlockEntity::Furnace(_) = entity {
                         let xp = crate::block::furnace::pop_experience(self, pos);
@@ -609,6 +618,7 @@ fn load(state: BlockState, nbt: &Compound) -> Option<BlockEntity> {
             h.cooldown_time = int("TransferCooldown").unwrap_or(-1);
         }
         BlockEntity::EndGateway(gateway) => *gateway = crate::block::portal::Gateway::load(nbt),
+        BlockEntity::CreakingHeart(h) => h.load(nbt),
         _ => {}
     }
     Some(entity)
@@ -674,6 +684,7 @@ fn save(entity: &BlockEntity, state: BlockState, pos: BlockPos) -> Compound {
             nbt.insert("TransferCooldown", Tag::Int(h.cooldown_time));
         }
         BlockEntity::EndGateway(gateway) => gateway.save(&mut nbt),
+        BlockEntity::CreakingHeart(h) => h.save(&mut nbt),
         _ => {}
     }
     nbt
