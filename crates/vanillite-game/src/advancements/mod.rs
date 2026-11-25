@@ -12,6 +12,7 @@
     clippy::as_conversions
 )]
 
+pub mod award;
 pub mod predicate;
 mod progress;
 pub mod trigger;

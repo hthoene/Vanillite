@@ -473,6 +473,12 @@ pub fn release(
         pitch,
         seed,
     );
+    if let Some(p) = ents.player_mut(player) {
+        p.stats.award(
+            crate::stats::Stat::of(crate::stats::StatType::Used, stack.item),
+            1,
+        );
+    }
     if !free
         && let Some(i) = arrow_slot
         && let Some(p) = ents.player_mut(player)

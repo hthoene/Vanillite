@@ -935,6 +935,13 @@ impl Digging {
             && let Some(taken) =
                 crate::block::vault::use_item_on(level, pos, ctx.actor.uuid, &stack)
         {
+            if taken {
+                // `VaultBlockEntity.tryInsertKey`: the key counts as used.
+                ctx.award_stat(Stat::of(StatType::Used, stack.item), 1);
+            }
+            let Some(level) = ctx.level.level_mut() else {
+                return true;
+            };
             if taken && !ctx.actor.creative() {
                 let count = crate::block::vault::key_count(level, pos);
                 let slot = match hand {
@@ -945,6 +952,8 @@ impl Digging {
                     slot.shrink(count);
                 }
             }
+            ctx.trigger(Event::ItemUsedOnBlock(pos, stack));
+            any_block_use(ctx, hand, pos);
             return true;
         }
         if stack.is_empty() {
@@ -958,11 +967,19 @@ impl Digging {
             if ctx.actor.game_mode == GameMode::Adventure {
                 return false;
             }
-            return if used == vanillite_data::item::ids::FLINT_AND_STEEL {
+            let done = if used == vanillite_data::item::ids::FLINT_AND_STEEL {
                 self.use_flint_and_steel(ctx, hand, pos, face)
             } else {
                 use_ender_eye(ctx, hand, pos)
             };
+            if done {
+                // `ItemStack.useOn` of a successful item interaction, then
+                // `ITEM_USED_ON_BLOCK` and `ANY_BLOCK_USE`.
+                ctx.award_stat(Stat::of(StatType::Used, stack.item), 1);
+                ctx.trigger(Event::ItemUsedOnBlock(pos, stack));
+                any_block_use(ctx, hand, pos);
+            }
+            return done;
         }
         if used == vanillite_data::item::ids::END_CRYSTAL {
             if !ctx.level.use_end_crystal(pos) {
@@ -977,6 +994,9 @@ impl Digging {
                     slot.shrink(1);
                 }
             }
+            ctx.award_stat(Stat::of(StatType::Used, stack.item), 1);
+            ctx.trigger(Event::ItemUsedOnBlock(pos, stack));
+            any_block_use(ctx, hand, pos);
             return true;
         }
         let Some(_block) = item::item_id(&stack).block() else {
@@ -1306,6 +1326,7 @@ fn open_stat(block: vanillite_data::block::BlockId) -> Option<Stat> {
         "cartography_table" => custom::INTERACT_WITH_CARTOGRAPHY_TABLE,
         "loom" => custom::INTERACT_WITH_LOOM,
         "beacon" => custom::INTERACT_WITH_BEACON,
+        "lectern" => custom::INTERACT_WITH_LECTERN,
         _ if name.ends_with("shulker_box") => custom::OPEN_SHULKER_BOX,
         _ if name == "chest" || name.ends_with("copper_chest") => custom::OPEN_CHEST,
         _ => return None,

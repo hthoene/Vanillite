@@ -377,6 +377,9 @@ pub struct Level {
     /// Stacks blocks hand to the player that used them (`player.getInventory().add`, else
     /// dropped); taken by the player handlers.
     player_gives: Vec<(EntityId, crate::item::ItemStack)>,
+    /// Statistics and criterion triggers for players (`awardStat`, `CriteriaTriggers`) from
+    /// block code; the server applies them after the players' tick.
+    player_awards: Vec<(EntityId, crate::advancements::award::Award)>,
     /// The server's maps (shared by all worlds).
     maps: Option<Arc<crate::map::Maps>>,
     min_y: i32,
@@ -445,6 +448,7 @@ impl Level {
             menu_requests: Vec::new(),
             sign_editors: Vec::new(),
             player_gives: Vec::new(),
+            player_awards: Vec::new(),
             maps: None,
             min_y,
             max_y,
@@ -505,6 +509,23 @@ impl Level {
     /// Takes the stacks blocks handed to players.
     pub fn take_player_gives(&mut self) -> Vec<(EntityId, crate::item::ItemStack)> {
         std::mem::take(&mut self.player_gives)
+    }
+
+    /// `player.awardStat(stat, count)` from block code.
+    pub fn award_stat(&mut self, player: EntityId, stat: crate::stats::Stat, count: i32) {
+        self.player_awards
+            .push((player, crate::advancements::award::Award::Stat(stat, count)));
+    }
+
+    /// `CriteriaTriggers.X.trigger(player, ...)` from block code.
+    pub fn trigger(&mut self, player: EntityId, event: crate::advancements::trigger::Event) {
+        self.player_awards
+            .push((player, crate::advancements::award::Award::Trigger(event)));
+    }
+
+    /// Takes the statistics and triggers block code awarded since the last call.
+    pub fn take_player_awards(&mut self) -> Vec<(EntityId, crate::advancements::award::Award)> {
+        std::mem::take(&mut self.player_awards)
     }
 
     /// Takes the sign editors blocks asked to open.
