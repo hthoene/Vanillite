@@ -75,6 +75,8 @@ pub enum EntityAction {
     OpenVehicleInventory,
     /// `pick_item_from_entity`: the entity's pick result goes to the hand.
     PickItem { entity: i32, include_data: bool },
+    /// `player_action` `STAB`: a jab with the piercing weapon in the main hand.
+    Stab,
 }
 
 /// What a player sends to steer its vehicle.
@@ -713,7 +715,11 @@ impl Connection {
                     self.entity_actions.push(EntityAction::ReleaseUseItem);
                 }
             }
-            DigAction::Stab => {}
+            DigAction::Stab => {
+                if self.entity_actions.len() < 16 {
+                    self.entity_actions.push(EntityAction::Stab);
+                }
+            }
             DigAction::StartDestroyBlock
             | DigAction::ChangeDestroyDirection
             | DigAction::AbortDestroyBlock
