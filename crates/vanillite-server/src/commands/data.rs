@@ -58,7 +58,20 @@ pub(crate) fn target(
                 .ok_or_else(|| CommandError::new("argument.entity.notfound.entity", vec![]))?;
             Ok(DataTarget::Entity { uuid: t.uuid, id })
         }
-        Some(ArgValue::Coordinates(c)) => Ok(DataTarget::Block(block_pos(source, c))),
+        Some(ArgValue::Coordinates(c)) => {
+            // `BlockPosArgument.getLoadedBlockPos`, then the block entity.
+            let pos = block_pos(source, c);
+            if !env.level.in_height(pos.y) {
+                return Err(CommandError::new("argument.pos.outofworld", vec![]));
+            }
+            if source.world != env.world || !env.level.is_loaded(pos) {
+                return Err(CommandError::new("argument.pos.unloaded", vec![]));
+            }
+            if env.level.block(pos).block().info().block_entity == u16::MAX {
+                return Err(CommandError::new("commands.data.block.invalid", vec![]));
+            }
+            Ok(DataTarget::Block(pos))
+        }
         Some(ArgValue::Identifier(id)) => Ok(DataTarget::Storage(id.clone())),
         _ => Err(CommandError::new("command.exception", vec![])),
     }
@@ -94,7 +107,10 @@ pub(crate) fn read(target: &DataTarget, env: &Env<'_>) -> Result<Compound, Comma
             .unwrap_or_default()),
         DataTarget::Entity { id, .. } => entity_nbt(&env.level.entities, *id)
             .ok_or_else(|| CommandError::new("argument.entity.notfound.entity", vec![])),
-        DataTarget::Block(_) => Err(CommandError::new("commands.data.block.invalid", vec![])),
+        DataTarget::Block(pos) => env
+            .level
+            .block_entity_nbt(*pos)
+            .ok_or_else(|| CommandError::new("commands.data.block.invalid", vec![])),
     }
 }
 
@@ -110,7 +126,13 @@ pub(crate) fn write(
             Ok(())
         }
         DataTarget::Entity { id, .. } => apply_entity_nbt(&mut env.level.entities, *id, &data),
-        DataTarget::Block(_) => Err(CommandError::new("commands.data.block.invalid", vec![])),
+        DataTarget::Block(pos) => {
+            if env.level.load_block_entity_nbt(*pos, &data) {
+                Ok(())
+            } else {
+                Err(CommandError::new("commands.data.block.invalid", vec![]))
+            }
+        }
     }
 }
 

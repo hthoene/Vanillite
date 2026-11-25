@@ -47,7 +47,8 @@
 //!   then starts again on the saved world: the saved chunk tickets come back and their chunks
 //!   load before the next tick like `MinecraftServer.prepareLevels`; the rules, time and
 //!   difficulty are set again and the level random starts from the world seed; scenarios with
-//!   entities cannot restart).
+//!   entities cannot restart), `bonemeal` (`"pos"`: bone meal used on the block,
+//!   `BoneMealItem.growCrop`).
 //!
 //! Positions in chunks that are not accessible (unloaded or above full level) are traced as
 //! the state [`UNLOADED`].
@@ -79,6 +80,9 @@
 //!   spawned mobs) seeds its random with the next `nextLong()` of a legacy random seeded with
 //!   it, in creation order (default: the world seed). The Java recorder enforces this in
 //!   Vanilla with its agent (`ParityAgent.java`).
+//!
+//! Commands: `{"tick": 2, "op": "command", "command": "fill 0 1 0 3 1 3 stone"}` runs the line
+//! as the server (permission level 4) at the origin of the overworld before that tick.
 //!
 //! Known divergences from Vanilla live in `scenarios/divergences.toml`, not in the scenario
 //! (so they change without a new recording):
@@ -173,6 +177,10 @@ pub enum OpKind {
     Restart,
     /// A status effect on a scenario entity ([`Op::effect`]).
     Effect,
+    /// Bone meal used on the block at `pos` (an action).
+    Bonemeal,
+    /// A command run as the server at the origin ([`Op::command`]).
+    Command,
     /// A thrown splash or lingering potion ([`Op::throw_potion`]).
     ThrowPotion,
 }
@@ -273,6 +281,8 @@ pub struct Op {
     pub throw_potion: Option<ThrowPotionOp>,
     /// The chunks of `force` and `unforce`.
     pub chunks: Vec<ChunkPos>,
+    /// The command line of a `command` action.
+    pub command: Option<String>,
 }
 
 /// A parsed scenario.
@@ -534,9 +544,36 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
         Some("throw_potion") if action => OpKind::ThrowPotion,
         Some("force") if action => OpKind::Force,
         Some("unforce") if action => OpKind::Unforce,
+        Some("command") if action => OpKind::Command,
         Some("restart") if action => OpKind::Restart,
+        Some("bonemeal") if action => OpKind::Bonemeal,
         o => return Err(format!("unknown op {o:?}")),
     };
+    if kind == OpKind::Command {
+        let tick = v
+            .get("tick")
+            .and_then(Value::as_u64)
+            .and_then(|t| u32::try_from(t).ok())
+            .filter(|&t| t >= 1)
+            .ok_or("an action needs a tick >= 1")?;
+        return Ok(Op {
+            tick,
+            kind,
+            from: BlockPos::new(0, 0, 0),
+            to: BlockPos::new(0, 0, 0),
+            block: String::new(),
+            hurt: None,
+            effect: None,
+            throw_potion: None,
+            chunks: Vec::new(),
+            command: Some(
+                v.get("command")
+                    .and_then(Value::as_str)
+                    .ok_or("command needs a command")?
+                    .to_owned(),
+            ),
+        });
+    }
     if matches!(kind, OpKind::Force | OpKind::Unforce | OpKind::Restart) {
         let chunks = match v.get("chunks").and_then(Value::as_array) {
             Some(_) if kind == OpKind::Restart => return Err("restart takes no chunks".to_owned()),
@@ -571,6 +608,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             effect: None,
             throw_potion: None,
             chunks,
+            command: None,
         });
     }
     let tick = if action {
@@ -600,6 +638,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
                 by: s("by"),
             }),
             chunks: Vec::new(),
+            command: None,
         });
     }
     if kind == OpKind::Effect {
@@ -624,6 +663,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             }),
             throw_potion: None,
             chunks: Vec::new(),
+            command: None,
         });
     }
     if kind == OpKind::Hurt {
@@ -635,6 +675,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             to: BlockPos::new(0, 0, 0),
             block: String::new(),
             chunks: Vec::new(),
+            command: None,
             hurt: Some(Hurt {
                 entity: s("entity").ok_or("hurt needs an entity")?,
                 by: s("by"),
@@ -647,7 +688,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             throw_potion: None,
         });
     }
-    if kind == OpKind::Lightning {
+    if matches!(kind, OpKind::Bonemeal | OpKind::Lightning) {
         let p = pos(v.get("pos"))?;
         return Ok(Op {
             tick,
@@ -656,9 +697,11 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             to: p,
             block: String::new(),
             hurt: None,
+            command: None,
             effect: None,
             throw_potion: None,
             chunks: Vec::new(),
+            command: None,
         });
     }
     let (from, to) = if kind == OpKind::Fill {
@@ -681,5 +724,6 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
         effect: None,
         throw_potion: None,
         chunks: Vec::new(),
+        command: None,
     })
 }

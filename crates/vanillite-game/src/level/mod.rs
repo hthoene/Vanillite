@@ -18,6 +18,7 @@ pub mod explosion;
 pub mod forced;
 pub mod game_event;
 mod neighbors;
+pub mod place;
 #[cfg(test)]
 pub(crate) use neighbors::STEPS as NEIGHBOR_STEPS;
 pub mod signal;
@@ -279,14 +280,14 @@ pub struct LevelOutput {
     pub experience: Vec<(vanillite_base::Vec3, i32)>,
     /// Block entities whose client data changed (`sendBlockUpdated` of a block entity).
     pub block_entity_updates: Vec<BlockPos>,
+    /// Global level events (`globalLevelEvent`: event, position, data), heard by every player
+    /// of the server.
+    pub global_level_events: Vec<(i32, BlockPos, i32)>,
     /// Wither skeleton skulls players placed, for the wither's summon check
     /// (`WitherSkullBlock.setPlacedBy`).
     pub summon_checks: Vec<BlockPos>,
     /// An end crystal was placed: the End fight tries to respawn the dragon (`tryRespawn`).
     pub try_dragon_respawn: bool,
-    /// Global level events (`globalLevelEvent`: event, position, data), heard by every player
-    /// of the server.
-    pub global_level_events: Vec<(i32, BlockPos, i32)>,
 }
 
 /// The terrain generator of a world (`getChunkSource().getGenerator()`).
@@ -376,6 +377,9 @@ pub struct Level {
     /// Stacks blocks hand to the player that used them (`player.getInventory().add`, else
     /// dropped); taken by the player handlers.
     player_gives: Vec<(EntityId, crate::item::ItemStack)>,
+    /// Statistics and criterion triggers for players (`awardStat`, `CriteriaTriggers`) from
+    /// block code; the server applies them after the players' tick.
+    player_awards: Vec<(EntityId, crate::advancements::award::Award)>,
     /// The server's maps (shared by all worlds).
     maps: Option<Arc<crate::map::Maps>>,
     min_y: i32,
@@ -444,6 +448,7 @@ impl Level {
             menu_requests: Vec::new(),
             sign_editors: Vec::new(),
             player_gives: Vec::new(),
+            player_awards: Vec::new(),
             maps: None,
             min_y,
             max_y,
@@ -504,6 +509,23 @@ impl Level {
     /// Takes the stacks blocks handed to players.
     pub fn take_player_gives(&mut self) -> Vec<(EntityId, crate::item::ItemStack)> {
         std::mem::take(&mut self.player_gives)
+    }
+
+    /// `player.awardStat(stat, count)` from block code.
+    pub fn award_stat(&mut self, player: EntityId, stat: crate::stats::Stat, count: i32) {
+        self.player_awards
+            .push((player, crate::advancements::award::Award::Stat(stat, count)));
+    }
+
+    /// `CriteriaTriggers.X.trigger(player, ...)` from block code.
+    pub fn trigger(&mut self, player: EntityId, event: crate::advancements::trigger::Event) {
+        self.player_awards
+            .push((player, crate::advancements::award::Award::Trigger(event)));
+    }
+
+    /// Takes the statistics and triggers block code awarded since the last call.
+    pub fn take_player_awards(&mut self) -> Vec<(EntityId, crate::advancements::award::Award)> {
+        std::mem::take(&mut self.player_awards)
     }
 
     /// Takes the sign editors blocks asked to open.
@@ -741,6 +763,30 @@ impl Level {
         }
     }
 
+    /// `getBlockState(pos)` with the chunk loaded first like Vanilla: a chunk that is not
+    /// accessible is loaded or generated synchronously and stays accessible for a tick
+    /// ([`Level::load_chunk`]). [`Level::block`] reads without loading.
+    pub fn block_loading(&mut self, pos: BlockPos) -> BlockState {
+        if self.in_height(pos.y) {
+            self.load_chunk(pos.chunk());
+        }
+        self.block(pos)
+    }
+
+    /// `getChunk(x, z)` (`ServerChunkCache.getChunk(x, z, FULL, true)`): a chunk that is not
+    /// accessible gets a temporary `unknown` ticket and is loaded or generated while the
+    /// world thread waits; chunks that became live get their block entities.
+    #[inline]
+    pub fn load_chunk(&mut self, chunk: ChunkPos) {
+        if self.chunks.load_now(chunk) {
+            let mut promoted = Vec::new();
+            self.chunks.take_promoted(&mut promoted);
+            for chunk in promoted {
+                self.load_block_entities(chunk);
+            }
+        }
+    }
+
     /// `getFluidState(pos)`.
     #[inline]
     pub fn fluid(&self, pos: BlockPos) -> FluidState {
@@ -941,6 +987,8 @@ impl Level {
         if !self.in_height(pos.y) {
             return false;
         }
+        // `getChunkAt(pos)` loads the chunk.
+        self.load_chunk(pos.chunk());
         // `LevelChunk.setBlockState`.
         let Some(old) = self.chunks.set_block(pos, state.0).map(BlockState) else {
             return false;

@@ -1213,6 +1213,12 @@ fn check_fall_damage(t: &mut Tick<'_, '_>, ya: f64, on_ground: bool, on_state: B
     if on_ground {
         let distance = t.mob_ref().fall_distance;
         if distance > 0.0 {
+            // `TurtleEggBlock.fallOn`: zombies land on eggs without breaking them.
+            if on_state.block() == vanillite_data::block::ids::TURTLE_EGG
+                && !crate::mob::fam::undead::zombies::is_zombie(t.mob_ref().kind)
+            {
+                trample_turtle_egg(t, 3);
+            }
             let pos = t.pos();
             post_game_event(
                 t,
@@ -1265,8 +1271,28 @@ fn cause_fall_damage(t: &mut Tick<'_, '_>, distance: f64, multiplier: f32) {
     kinds::on_fall_damage(t, distance);
 }
 
+/// Queues `TurtleEggBlock.destroyEgg` for the eggs the mob stands on.
+fn trample_turtle_egg(t: &mut Tick<'_, '_>, randomness: i32) {
+    let pos = on_pos(t, f64::from(0.2_f32));
+    // `canDestroyEgg`: living entities but turtles and bats, with `mob_griefing`.
+    let can_destroy = !matches!(t.mob_ref().kind, super::Kind::Turtle | super::Kind::Bat)
+        && t.env.rules.bool(Rule::MOB_GRIEFING);
+    t.cx.actions.push(super::WorldAction::TrampleTurtleEgg {
+        pos,
+        can_destroy,
+        randomness,
+    });
+}
+
 /// `applyEffectsFromBlocks` / `checkInsideBlocks` for fire, lava, cobwebs and berry bushes.
 fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
+    // `stepOn` of the block below (turtle eggs; mobs are never careful).
+    if t.on_ground()
+        && t.level.block(on_pos(t, f64::from(0.2_f32))).block()
+            == vanillite_data::block::ids::TURTLE_EGG
+    {
+        trample_turtle_egg(t, 100);
+    }
     let inside = inside_blocks(t.env.blocks, t.env.facts, t.aabb());
     let fire_immune = t.core().kind().info().fire_immune;
     let previous_fire = t.mob_ref().fire_ticks;
@@ -1325,6 +1351,13 @@ fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
             for z in z0..=z1 {
                 let state = t.level.block(BlockPos::new(x, y, z));
                 let block = state.block();
+                if block == vanillite_data::block::ids::BIG_DRIPLEAF {
+                    // `BigDripleafBlock.entityInside`.
+                    t.cx.actions.push(super::WorldAction::EntityInside(
+                        BlockPos::new(x, y, z),
+                        t.id,
+                    ));
+                }
                 if block == vanillite_data::block::ids::COBWEB {
                     stuck = Some(Vec3::new(0.25, f64::from(0.05_f32), 0.25));
                 } else if block == vanillite_data::block::ids::SWEET_BERRY_BUSH {

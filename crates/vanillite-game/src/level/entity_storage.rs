@@ -110,9 +110,16 @@ impl Level {
         self.entity_chunks.contains(&chunk)
     }
 
+    /// `EntityType.loadEntityRecursive` + `addFreshEntityWithPassengers` of stored entity data
+    /// (a modelled kind, passengers of kinds that are not modelled left out); whether it loaded.
+    pub fn load_entity(&mut self, nbt: Compound) -> bool {
+        let mut loaded = Vec::new();
+        self.load_with_passengers(nbt, &mut loaded, false).is_some()
+    }
+
     /// `EntityType.create` of a stored entity: `None` for kinds the game does not model,
     /// `Some(None)` for data that makes no entity (leash knots, empty items).
-    fn load_entity(&mut self, nbt: Compound) -> Option<Option<EntityId>> {
+    fn create_entity(&mut self, nbt: Compound) -> Option<Option<EntityId>> {
         let seed = uuid_of(&nbt, "UUID").map_or(0, |uuid| uuid as i64) ^ self.game_time();
         if let Some(loaded) = crate::mob::nbt::load_mob(&nbt, seed) {
             let network_ids = Arc::clone(self.network_ids_arc());
@@ -336,7 +343,7 @@ impl Level {
                 .collect(),
             _ => Vec::new(),
         };
-        let Some(vehicle) = self.load_entity(nbt)? else {
+        let Some(vehicle) = self.create_entity(nbt)? else {
             return Some(None);
         };
         self.entities.set_tags(vehicle, tags);
@@ -489,7 +496,7 @@ impl Level {
 
     /// `Entity.save`: the stored data of a live entity of a modelled kind, `None` for players
     /// and kinds that are not saved.
-    fn save_entity(&self, id: EntityId) -> Option<Compound> {
+    pub fn save_entity(&self, id: EntityId) -> Option<Compound> {
         let entity = self.entities.store.get(id)?;
         let kind = entity.kind();
         let ents = &self.entities;

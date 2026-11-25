@@ -390,6 +390,11 @@ impl Book {
         }
     }
 
+    /// The ids of the recipes in the book.
+    pub fn recipe_ids(&self) -> impl Iterator<Item = &str> {
+        self.by_recipe.keys().map(|k| &**k)
+    }
+
     /// Whether `id` is a recipe with displays (the ids a book may hold).
     pub fn contains(&self, id: &str) -> bool {
         self.by_recipe.contains_key(id)

@@ -329,8 +329,25 @@ fn filter_matches(filter: &Filter, target: &Target, ctx: &Ctx<'_>) -> bool {
                     }
                 })
         }
-        // No predicates yet.
-        Filter::Predicate { inverted, .. } => *inverted,
+        // `LootContextParamSets.SELECTOR`: the entity at its position. The level's random is
+        // not reachable here; a random seeded by the game time and the entity stands in.
+        Filter::Predicate { id, inverted } => {
+            let origin = target.place.map_or(ctx.origin, |p| p.0);
+            #[allow(clippy::cast_possible_truncation)]
+            let mut rng = vanillite_base::random::LegacyRandom::new(
+                ctx.global.level.game_time() ^ (target.uuid as i64),
+            );
+            let passes = super::loot_cmd::test_predicate(
+                ctx.entities,
+                ctx.global,
+                target.entity,
+                origin,
+                &(Some(id.clone()), None),
+                &mut rng,
+            )
+            .unwrap_or(false);
+            passes != *inverted
+        }
     }
 }
 

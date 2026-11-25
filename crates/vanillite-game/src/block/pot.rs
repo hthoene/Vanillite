@@ -163,6 +163,8 @@ fn use_item_on(
         return ItemInteraction::TryWithEmptyHand;
     }
     level.block_event(pos, state.block(), EVENT_WOBBLE, WOBBLE_POSITIVE);
+    let used = crate::stats::Stat::of(crate::stats::StatType::Used, stack.item);
+    level.award_stat(ctx.player, used, 1);
     let one = stack.split(1);
     let pitch_bend = if let Some(BlockEntity::DecoratedPot(pot)) = level.block_entity_mut(pos) {
         if pot.item.is_empty() {

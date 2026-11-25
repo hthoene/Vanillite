@@ -454,6 +454,8 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
                 m.target = None;
                 m.order_to_sit = true;
             }
+            let (target, player) = (ix.target, ix.player);
+            crate::mob::tame::award_tame(ix.ents, target, player);
             event(ix, 7);
         } else {
             event(ix, 6);

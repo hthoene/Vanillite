@@ -130,12 +130,21 @@ pub(crate) fn registry_tags(packs: &LoadedPacks) -> TagMap {
 struct Reloaded {
     tags: Option<(TagMap, Vec<RegistryTags>)>,
     functions: FunctionLibrary,
+    /// Loot tables, predicates, item modifiers, recipes and the item and block data read
+    /// from tags.
+    game: Option<vanillite_game::player::play::GameData>,
+    advancements: vanillite_game::advancements::Advancements,
 }
 
 impl DataPacks {
     /// The packs as loaded at start.
     pub(crate) fn with_loaded(self, loaded: Option<Arc<LoadedPacks>>) -> DataPacks {
         DataPacks { loaded, ..self }
+    }
+
+    /// The packs as loaded at start (`None` without the Vanilla pack).
+    pub(crate) fn loaded(&self) -> Option<&Arc<LoadedPacks>> {
+        self.loaded.as_ref()
     }
 
     /// The repository, locked for one command.
@@ -159,21 +168,31 @@ impl DataPacks {
     /// registries and the functions.
     fn load(&self, global: &Global, packs: &[Pack]) -> Result<Reloaded, String> {
         let opened = open(packs, &self.cache);
-        let tags = match &self.loaded {
+        let (tags, game) = match &self.loaded {
             Some(loaded) => {
                 let reloaded = loaded.reload(&opened).map_err(|e| e.to_string())?;
                 for warning in &reloaded.warnings {
                     log::warn!("{warning}");
                 }
-                Some((
-                    registry_tags(&reloaded),
-                    vanillite_net::network_tags(&reloaded),
-                ))
+                let game = crate::blocks::game_data(Some(&reloaded));
+                (
+                    Some((
+                        registry_tags(&reloaded),
+                        vanillite_net::network_tags(&reloaded),
+                    )),
+                    Some(game),
+                )
             }
-            None => None,
+            None => (None, None),
         };
         let functions = functions::load(global, &opened);
-        Ok(Reloaded { tags, functions })
+        let advancements = crate::commands::load_advancements(&opened);
+        Ok(Reloaded {
+            tags,
+            functions,
+            game,
+            advancements,
+        })
     }
 
     /// The end of `reloadResources` on the server thread: the new tags and functions
@@ -197,6 +216,19 @@ impl DataPacks {
             }
         }
         global.systems.set_functions(reloaded.functions);
+        if let Some(game) = reloaded.game {
+            // `PlayerList.reloadResources`: the recipes go to every player.
+            let packet = vanillite_protocol::SharedPacket::of(&game.recipes.update_packet());
+            vanillite_game::player::play::install_game_data(Arc::new(game));
+            *global
+                .recipes_packet
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::clone(&packet);
+            global.players.broadcast_shared(&packet, None);
+        }
+        // `ServerAdvancementManager` reload; `PlayerAdvancements.reload` per online player.
+        global.systems.set_advancements(reloaded.advancements);
+        crate::progress::reload_advancements(global);
     }
 }
 

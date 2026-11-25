@@ -314,6 +314,15 @@ impl Entities {
         can_be_affected && crate::effect::living::add_detached(self, id, effect)
     }
 
+    /// The active effects of a living entity (player or mob), mutably (`removeEffect`,
+    /// `removeAllEffects`); the packets and attributes follow with the entity's next tick.
+    pub fn effects_mut(&mut self, id: EntityId) -> Option<&mut crate::effect::ActiveEffects> {
+        if self.mob(id).is_some() {
+            return self.mob_mut(id).map(|m| &mut m.effects);
+        }
+        self.player_mut(id).map(|p| &mut p.survival.effects)
+    }
+
     /// The active effects of a living entity (player or mob).
     pub fn effects(&self, id: EntityId) -> Option<&crate::effect::ActiveEffects> {
         if let Some(m) = self.mob(id) {
@@ -492,6 +501,15 @@ impl Entities {
     ) -> EntityId {
         let bolts = &mut self.bolts;
         self.store.spawn(new, |id| bolts.push(id, data))
+    }
+
+    /// The lightning bolt data of an entity.
+    pub fn bolt(&self, id: EntityId) -> Option<&crate::lightning::LightningData> {
+        let entity = self.store.get(id)?;
+        if entity.kind() != ids::LIGHTNING_BOLT {
+            return None;
+        }
+        self.bolts.get(entity.kind_row())
     }
 
     /// The lightning bolt data of an entity, mutably.

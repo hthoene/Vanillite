@@ -72,6 +72,7 @@ impl World {
     ) -> R {
         let raining = |_| false;
         let mut no_gateway = |_| false;
+        let names = |name: &str, _| vanillite_protocol::text::Component::text(name);
         let mut env = Env {
             hooks: &crate::hooks::NoHooks,
             types: &self.types,
@@ -83,11 +84,11 @@ impl World {
             min_y: -64,
             dimension: "minecraft:the_end",
             raining_at: &raining,
+            border: None,
             enter_gateway: &mut no_gateway,
+            display_name: &names,
             random: &mut self.random,
             out: &mut self.out,
-            border: None,
-            display_name: &|n: &str, _| vanillite_protocol::text::Component::text(n.to_owned()),
         };
         let mut ents = std::mem::take(&mut self.level.entities);
         let r = f(&self.level, &mut ents, &mut env, &mut self.cx);
@@ -265,6 +266,7 @@ fn respawn_stages_take_604_ticks() {
         } = &mut w;
         let raining = |_| false;
         let mut no_gateway = |_| false;
+        let names = |name: &str, _| vanillite_protocol::text::Component::text(name);
         let mut env = Env {
             hooks: &crate::hooks::NoHooks,
             types,
@@ -276,11 +278,11 @@ fn respawn_stages_take_604_ticks() {
             min_y: -64,
             dimension: "minecraft:the_end",
             raining_at: &raining,
+            border: None,
             enter_gateway: &mut no_gateway,
+            display_name: &names,
             random,
             out,
-            border: None,
-            display_name: &|n: &str, _| vanillite_protocol::text::Component::text(n.to_owned()),
         };
         fight.tick_respawn(level, &mut env, cx);
         level.output().explosion_hurts.clear();

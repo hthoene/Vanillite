@@ -138,6 +138,7 @@ fn with_tick<R>(
     let mut out = Vec::new();
     let raining = |_| false;
     let mut no_gateway = |_| false;
+    let names = |name: &str, _| vanillite_protocol::text::Component::text(name);
     let mut env = Env {
         hooks: &crate::hooks::NoHooks,
         types: &types,
@@ -149,11 +150,11 @@ fn with_tick<R>(
         min_y: -64,
         dimension: "minecraft:overworld",
         raining_at: &raining,
+        border: None,
         enter_gateway: &mut no_gateway,
+        display_name: &names,
         random: &mut random,
         out: &mut out,
-        border: None,
-        display_name: &|n: &str, _| vanillite_protocol::text::Component::text(n.to_owned()),
     };
     let mut ents = std::mem::take(&mut level.entities);
     let r = {
@@ -235,6 +236,7 @@ fn skull_hit_withers_by_difficulty() {
         let mut out = Vec::new();
         let raining = |_| false;
         let mut no_gateway = |_| false;
+        let names = |name: &str, _| vanillite_protocol::text::Component::text(name);
         let mut env = Env {
             hooks: &crate::hooks::NoHooks,
             types: &types,
@@ -246,11 +248,11 @@ fn skull_hit_withers_by_difficulty() {
             min_y: -64,
             dimension: "minecraft:overworld",
             raining_at: &raining,
+            border: None,
             enter_gateway: &mut no_gateway,
+            display_name: &names,
             random: &mut random,
             out: &mut out,
-            border: None,
-            display_name: &|n: &str, _| vanillite_protocol::text::Component::text(n.to_owned()),
         };
         let mut ents = std::mem::take(&mut level.entities);
         {
@@ -307,6 +309,7 @@ fn powered_wither_ignores_arrows() {
             item: crate::item::ItemStack::default(),
             in_ground_time: 0,
             spectral_duration: 200,
+            weapon: None,
         },
     );
     if let Some(m) = level.entities.mob_mut(wither) {
@@ -328,6 +331,7 @@ fn powered_wither_ignores_arrows() {
         let mut out = Vec::new();
         let raining = |_| false;
         let mut no_gateway = |_| false;
+        let names = |name: &str, _| vanillite_protocol::text::Component::text(name);
         let mut env = Env {
             hooks: &crate::hooks::NoHooks,
             types: &types,
@@ -339,11 +343,11 @@ fn powered_wither_ignores_arrows() {
             min_y: -64,
             dimension: "minecraft:overworld",
             raining_at: &raining,
+            border: None,
             enter_gateway: &mut no_gateway,
+            display_name: &names,
             random: &mut random,
             out: &mut out,
-            border: None,
-            display_name: &|n: &str, _| vanillite_protocol::text::Component::text(n.to_owned()),
         };
         let mut ents = std::mem::take(&mut level.entities);
         let r = filter_hurt(level, &mut ents, &mut env, cx, wither, &source, 5.0);

@@ -93,6 +93,9 @@ enum Route {
     Respawn { keep_all: bool },
     /// Back to where it came from: its destination had no place for it.
     Back,
+    /// `/tp` and `/teleport` into this world (`TeleportCommand.performTeleport`): to an exact
+    /// place, without motion.
+    Command { pos: Vec3, y_rot: f32, x_rot: f32 },
 }
 
 /// A traveller waiting for the chunks around its destination.
@@ -234,6 +237,74 @@ impl ServerWorld {
         self.send_away(ctx, id, target, Route::Respawn { keep_all });
     }
 
+    /// `Entity.teleportTo(level, ...)` of `/tp` and `/teleport` into another world: a player
+    /// travels like through a portal, another entity moves as its saved data (without its
+    /// passengers) and is added there. `rotation` `None` keeps the entity's own. The motion is
+    /// dropped, like `TeleportCommand.performTeleport` does.
+    pub(crate) fn teleport_to_world(
+        &mut self,
+        global: &Global,
+        uuid: u128,
+        target: WorldId,
+        pos: Vec3,
+        rotation: Option<(f32, f32)>,
+    ) {
+        let entities = &mut self.level.entities;
+        let Some(id) = crate::commands::find_uuid(entities, uuid) else {
+            return;
+        };
+        let Some(entity) = entities.store.get(id) else {
+            return;
+        };
+        let rot = entity.rot();
+        let (y_rot, x_rot) = rotation.unwrap_or((rot.y_rot, rot.x_rot));
+        let (y_rot, x_rot) = (
+            vanillite_base::math::wrap_degrees_f(y_rot),
+            vanillite_base::math::wrap_degrees_f(x_rot),
+        );
+        if entity.kind() == vanillite_data::entity::ids::PLAYER {
+            let Some(mut traveller) = self.take_player(id, Route::Command { pos, y_rot, x_rot })
+            else {
+                return;
+            };
+            traveller.velocity = Vec3::new(0.0, 0.0, 0.0);
+            if target == self.id {
+                self.arrive(global, traveller);
+                return;
+            }
+            global.players.set_world(Uuid(traveller.uuid), target);
+            if let Some(global_arc) = global.arc() {
+                global.run_in_world(target, move |world: &mut ServerWorld| {
+                    world.arrive(&global_arc, traveller);
+                });
+            }
+            return;
+        }
+        let Some(mut nbt) = self.level.save_entity(id) else {
+            return;
+        };
+        self.level.entities.despawn(id);
+        use vanillite_nbt::{List, Tag};
+        nbt.insert(
+            "Pos",
+            Tag::List(List(vec![
+                Tag::Double(pos.x),
+                Tag::Double(pos.y),
+                Tag::Double(pos.z),
+            ])),
+        );
+        nbt.insert("Motion", Tag::List(List(vec![Tag::Double(0.0); 3])));
+        nbt.insert(
+            "Rotation",
+            Tag::List(List(vec![Tag::Float(y_rot), Tag::Float(x_rot)])),
+        );
+        nbt.insert("OnGround", Tag::Byte(1));
+        nbt.remove("Passengers");
+        global.run_in_world(target, move |world: &mut ServerWorld| {
+            world.level.load_entity(nbt);
+        });
+    }
+
     /// Removes the player `id` from this world and hands it to `target` (this world too).
     fn send_away(
         &mut self,
@@ -296,6 +367,13 @@ impl ServerWorld {
             Route::EndPlatform => Some((
                 portal::END_SPAWN_POINT.chunk(),
                 portal::PORTAL_TICKET_RADIUS,
+            )),
+            Route::Command { pos, .. } => Some((
+                ChunkPos::new(
+                    vanillite_base::math::floor(pos.x) >> 4,
+                    vanillite_base::math::floor(pos.z) >> 4,
+                ),
+                1,
             )),
             Route::Spawn | Route::Respawn { .. } | Route::Back => None,
         };
@@ -397,6 +475,36 @@ impl ServerWorld {
         }
         let rules = global.level.rules();
         let data = &mut traveller.data;
+        // `teleport(TeleportTransition)`: `enteredNetherPosition` and
+        // `triggerDimensionChangeTriggers` (`changed_dimension`, `nether_travel`) from the world
+        // it left; a respawn (`PlayerList.respawn`) fires none.
+        if keep_all.is_none()
+            && traveller.from != self.id
+            && let (Some(from), Some(to)) = (
+                crate::server::DIMENSIONS.get(traveller.from.index()),
+                crate::server::DIMENSIONS.get(self.id.index()),
+            )
+        {
+            use vanillite_game::advancements::trigger::{Event, TriggerKind};
+            let (from, to) = (*from, *to);
+            let tracking = &mut data.survival.tracking;
+            if from == "minecraft:overworld" && to == "minecraft:the_nether" {
+                tracking.entered_nether = Some(traveller.pos);
+            }
+            data.advancements
+                .trigger(Event::ChangedDimension(from.to_owned(), to.to_owned()));
+            if from == "minecraft:the_nether"
+                && to == "minecraft:overworld"
+                && let Some(entered) = data.survival.tracking.entered_nether
+            {
+                let kind = TriggerKind::NETHER_TRAVEL;
+                data.advancements
+                    .trigger_with(kind, || Event::Distance(kind, entered));
+            }
+            if to != "minecraft:the_nether" {
+                data.survival.tracking.entered_nether = None;
+            }
+        }
         if let Some(keep_all) = keep_all {
             // `restoreFrom`: everything stays after the credits, else what death keeps.
             if keep_all {
@@ -713,6 +821,14 @@ impl ServerWorld {
                     ticket: None,
                 })
             }
+            &Route::Command { pos, y_rot, x_rot } => Some(Landing {
+                pos,
+                y_rot,
+                x_rot,
+                relatives: 0,
+                sound: false,
+                ticket: None,
+            }),
             Route::Back => Some(Landing {
                 pos: traveller.pos,
                 y_rot: traveller.y_rot,

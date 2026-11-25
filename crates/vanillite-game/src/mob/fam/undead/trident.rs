@@ -290,7 +290,11 @@ fn hit_entity(t: &mut MissileTick<'_, '_>, d: &mut MissileData, target: EntityId
     source.position = Some(pos);
     let mut damage = 8.0_f32;
     if !d.item.is_empty() {
-        let (enchants, tags) = crate::mob::attack::combat_data();
+        let combat = crate::mob::attack::combat_data();
+        let (enchants, tags): (
+            &crate::enchant::Enchantments,
+            &dyn crate::predicate::EntityTags,
+        ) = (&combat.enchants, &*combat);
         let cx = crate::enchant::EnchantContext {
             types: t.env.types,
             tags,

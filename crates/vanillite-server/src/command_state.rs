@@ -4,7 +4,6 @@
 
 use std::collections::BTreeMap;
 
-use vanillite_base::random::{Seed128, XoroshiroRandom};
 use vanillite_nbt::{Compound, List, Tag};
 
 /// What a scheduled event runs (`TimerCallback`).
@@ -160,80 +159,6 @@ impl TimerQueue {
         }
         queue.dirty = false;
         queue
-    }
-}
-
-/// `RandomSequences`: named random generators and the defaults of new ones.
-#[derive(Debug)]
-pub(crate) struct RandomSequences {
-    salt: i32,
-    include_world_seed: bool,
-    include_sequence_id: bool,
-    sequences: BTreeMap<String, XoroshiroRandom>,
-}
-
-impl Default for RandomSequences {
-    fn default() -> Self {
-        RandomSequences {
-            salt: 0,
-            include_world_seed: true,
-            include_sequence_id: true,
-            sequences: BTreeMap::new(),
-        }
-    }
-}
-
-/// The seed options of a random sequence: salt, include the world seed, include the id.
-pub(crate) type SeedOptions = (i32, bool, bool);
-
-impl RandomSequences {
-    /// `RandomSequences.createSequence` with `RandomSequence.createSequence`.
-    fn create(id: &str, world_seed: i64, (salt, world, with_id): SeedOptions) -> XoroshiroRandom {
-        let seed = (if world { world_seed } else { 0 }) ^ i64::from(salt);
-        let mut seed128 = Seed128::upgrade_unmixed(seed);
-        if with_id {
-            let key = Seed128::from_hash_of(id);
-            seed128 = seed128.xor(key.lo, key.hi);
-        }
-        XoroshiroRandom::from_seed128(seed128.mixed())
-    }
-
-    fn defaults(&self) -> SeedOptions {
-        (self.salt, self.include_world_seed, self.include_sequence_id)
-    }
-
-    /// `get`: the sequence, created with the defaults when missing.
-    pub(crate) fn get(&mut self, id: &str, world_seed: i64) -> &mut XoroshiroRandom {
-        let defaults = self.defaults();
-        self.sequences
-            .entry(id.to_owned())
-            .or_insert_with(|| Self::create(id, world_seed, defaults))
-    }
-
-    /// `reset`: a new sequence with the defaults or the given options.
-    pub(crate) fn reset(&mut self, id: &str, world_seed: i64, options: Option<SeedOptions>) {
-        let options = options.unwrap_or_else(|| self.defaults());
-        self.sequences
-            .insert(id.to_owned(), Self::create(id, world_seed, options));
-    }
-
-    /// `setSeedDefaults`.
-    pub(crate) fn set_defaults(&mut self, (salt, world, with_id): SeedOptions) {
-        self.salt = salt;
-        self.include_world_seed = world;
-        self.include_sequence_id = with_id;
-    }
-
-    /// `clear`: the number of sequences dropped.
-    pub(crate) fn clear(&mut self) -> usize {
-        let count = self.sequences.len();
-        self.sequences.clear();
-        count
-    }
-
-    /// The ids of the sequences (`forAllSequences`).
-    pub(crate) fn ids(&self) -> impl Iterator<Item = &str> {
-        self.sequences.keys().map(String::as_str)
     }
 }
 
@@ -476,18 +401,5 @@ mod tests {
             Some(Compound::new().with("stopwatches", Compound::new()))
         );
         assert_eq!(s.take_dirty_nbt(), None);
-    }
-
-    #[test]
-    fn random_sequences_are_stable() {
-        use vanillite_base::random::RandomSource;
-        let mut a = RandomSequences::default();
-        let mut b = RandomSequences::default();
-        let x = a.get("minecraft:test", 42).next_int();
-        let y = b.get("minecraft:test", 42).next_int();
-        assert_eq!(x, y);
-        b.reset("minecraft:test", 42, None);
-        assert_eq!(b.get("minecraft:test", 42).next_int(), x);
-        assert_eq!(a.clear(), 1);
     }
 }
