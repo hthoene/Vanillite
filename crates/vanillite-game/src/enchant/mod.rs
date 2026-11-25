@@ -39,6 +39,8 @@ impl Cost {
 pub struct Info {
     /// Its id (e.g. `minecraft:sharpness`).
     pub name: String,
+    /// `description`.
+    pub description: Option<vanillite_protocol::text::Component>,
     /// `max_level`.
     pub max_level: i32,
     /// `anvil_cost`.
@@ -337,6 +339,9 @@ impl Enchanting {
                 };
                 Info {
                     name: name.clone(),
+                    description: json
+                        .get("description")
+                        .and_then(|d| vanillite_protocol::text::Component::try_from_json(d).ok()),
                     max_level: int("max_level"),
                     anvil_cost: int("anvil_cost"),
                     weight: int("weight"),

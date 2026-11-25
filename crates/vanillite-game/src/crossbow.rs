@@ -114,28 +114,28 @@ pub fn charge_duration(crossbow: &ItemStack, random: &mut dyn FloatRandom) -> i3
 }
 
 /// `CrossbowItem.ChargingSounds`.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Sounds {
-    pub start: Option<&'static str>,
-    pub mid: Option<&'static str>,
-    pub end: Option<&'static str>,
+    pub start: Option<String>,
+    pub mid: Option<String>,
+    pub end: Option<String>,
 }
 
 /// `getChargingSounds`: the sounds of the highest enchantment that has some, else the default.
 pub fn sounds(crossbow: &ItemStack) -> Sounds {
-    if let Some(s) =
-        crate::player::play::game_data().and_then(|d| d.enchants.crossbow_charging_sounds(crossbow))
+    if let Some(d) = crate::player::play::game_data()
+        && let Some(s) = d.enchants.crossbow_charging_sounds(crossbow)
     {
         return Sounds {
-            start: s.start.as_deref(),
-            mid: s.mid.as_deref(),
-            end: s.end.as_deref(),
+            start: s.start.clone(),
+            mid: s.mid.clone(),
+            end: s.end.clone(),
         };
     }
     Sounds {
-        start: Some("minecraft:item.crossbow.loading_start"),
-        mid: Some("minecraft:item.crossbow.loading_middle"),
-        end: Some("minecraft:item.crossbow.loading_end"),
+        start: Some("minecraft:item.crossbow.loading_start".to_owned()),
+        mid: Some("minecraft:item.crossbow.loading_middle".to_owned()),
+        end: Some("minecraft:item.crossbow.loading_end".to_owned()),
     }
 }
 
@@ -547,8 +547,8 @@ pub fn mob_use_tick(t: &mut crate::mob::Tick<'_, '_>, flags: &mut UseFlags, used
     let pos = t.pos();
     let sounds = sounds(&weapon);
     for (on, sound) in [
-        (stage.start_sound, sounds.start),
-        (stage.mid_sound, sounds.mid),
+        (stage.start_sound, sounds.start.as_deref()),
+        (stage.mid_sound, sounds.mid.as_deref()),
     ] {
         if on && let Some(sound) = sound {
             let seed = crate::survival::sound_seed();
@@ -567,7 +567,7 @@ pub fn mob_use_tick(t: &mut crate::mob::Tick<'_, '_>, flags: &mut UseFlags, used
     if stage.full
         && !is_charged(&weapon)
         && mob_load(t, slot, weapon)
-        && let Some(sound) = sounds.end
+        && let Some(sound) = sounds.end.as_deref()
     {
         // `level.getRandom()`.
         let pitch = 1.0

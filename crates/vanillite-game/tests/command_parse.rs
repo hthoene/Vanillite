@@ -251,6 +251,7 @@ fn help_lines_like_vanilla() {
             "/kill [<targets>]",
             "/list [uuids]",
             "/locate (structure|biome|poi)",
+            "/loot (replace|insert|give|spawn)",
             "/msg <targets> <message>",
             "/tell -> msg",
             "/w -> msg",

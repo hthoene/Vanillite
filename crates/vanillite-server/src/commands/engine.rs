@@ -487,7 +487,11 @@ impl Engine {
             sources = std::mem::take(&mut *later.lock().unwrap_or_else(PoisonError::into_inner));
         }
         let parsed = Arc::clone(&line.parsed);
-        while let Some(st) = parsed.stages.get(stage) {
+        loop {
+            sources = forward_remote(sources, &line, stage, mods, env);
+            let Some(st) = parsed.stages.get(stage) else {
+                break;
+            };
             if st.forks {
                 mods.forked = true;
             }
@@ -939,6 +943,50 @@ impl Engine {
         );
         Ok(())
     }
+}
+
+/// Sources in another world than the execution's (after `execute in`, or a player that moved)
+/// continue there: the rest of the line from `stage` runs on that world's thread in an
+/// execution of its own, without waiting, as cross-world work does. Their results still reach
+/// `execute store` through their callbacks; a `return` there ends only that execution.
+fn forward_remote(
+    sources: Vec<CommandSource>,
+    line: &Line,
+    stage: usize,
+    mods: Mods,
+    env: &Env<'_>,
+) -> Vec<CommandSource> {
+    if sources.iter().all(|s| s.world == env.world) {
+        return sources;
+    }
+    let (local, remote): (Vec<_>, Vec<_>) = sources.into_iter().partition(|s| s.world == env.world);
+    for source in remote {
+        let line = line.clone();
+        let world = source.world;
+        env.global.run_in_world(world, move |w| {
+            let global = Arc::clone(&source.global);
+            let mut engine = super::functions::new_engine(&global);
+            let frame = engine.top_frame(Callback::Empty);
+            engine.queue_next(Entry {
+                frame,
+                action: Action::Build(Build {
+                    line,
+                    stage,
+                    original: source.clone(),
+                    sources: vec![source],
+                    later: None,
+                    mods,
+                }),
+            });
+            let mut env = Env {
+                level: w.level_mut(),
+                global: &global,
+                world,
+            };
+            engine.run(&mut env);
+        });
+    }
+    local
 }
 
 /// Commands that work on the queue themselves (`CustomCommandExecutor`).

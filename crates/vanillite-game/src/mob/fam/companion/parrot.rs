@@ -259,6 +259,8 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
             if let (Some(m), Some(o)) = (ix.ents.mob_mut(ix.target), owner) {
                 super::tame_by(m, o);
             }
+            let (target, player) = (ix.target, ix.player);
+            crate::mob::tame::award_tame(ix.ents, target, player);
             event(ix, 7);
         } else {
             event(ix, 6);

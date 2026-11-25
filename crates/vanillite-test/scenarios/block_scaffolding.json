@@ -1,0 +1,75 @@
+{
+  "description": "Scaffolding placed as a column with an arm: each piece takes its distance to support one tick after a change, pieces seven away fall as falling blocks and land, and the arm breaks piece by piece once the column loses its footing.",
+  "world": {
+    "seed": 9110,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:stone",
+        3
+      ]
+    ]
+  },
+  "rules": {
+    "block_drops": "false"
+  },
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      12,
+      -55,
+      5
+    ]
+  ],
+  "ticks": 80,
+  "actions": [
+    {
+      "tick": 1,
+      "op": "fill",
+      "from": [
+        2,
+        -60,
+        2
+      ],
+      "to": [
+        2,
+        -57,
+        2
+      ],
+      "block": "minecraft:scaffolding"
+    },
+    {
+      "tick": 4,
+      "op": "fill",
+      "from": [
+        3,
+        -57,
+        2
+      ],
+      "to": [
+        11,
+        -57,
+        2
+      ],
+      "block": "minecraft:scaffolding"
+    },
+    {
+      "tick": 40,
+      "op": "place",
+      "pos": [
+        2,
+        -61,
+        2
+      ],
+      "block": "minecraft:air"
+    }
+  ],
+  "tier": "fast"
+}

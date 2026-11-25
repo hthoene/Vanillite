@@ -66,7 +66,7 @@ impl Jukebox {
         };
         if let Some(Tag::Long(ticks)) = nbt.get("ticks_since_song_started")
             && let Some(id) = song_of(&self.item)
-            && song(id).is_some_and(|s| !s.has_finished(*ticks))
+            && song(id, |s| !s.has_finished(*ticks)) == Some(true)
         {
             // `setSongWithoutPlaying`.
             self.song = Some(id);
@@ -90,16 +90,17 @@ impl Jukebox {
     /// `getComparatorOutput`: the comparator output of the disc's song.
     pub fn comparator_output(&self) -> i32 {
         song_of(&self.item)
-            .and_then(song)
-            .map_or(0, |s| s.comparator_output)
+            .and_then(|id| song(id, |s| s.comparator_output))
+            .unwrap_or(0)
     }
 }
 
 /// The song of a registry id.
-fn song(id: u32) -> Option<&'static JukeboxSong> {
+fn song<R>(id: u32, f: impl FnOnce(&JukeboxSong) -> R) -> Option<R> {
     crate::player::play::game_data()?
         .jukebox_songs
         .get(usize::try_from(id).ok()?)
+        .map(f)
 }
 
 /// `JukeboxSong.fromStack`: the registry id of the stack's `jukebox_playable` song (a patched
@@ -330,7 +331,7 @@ pub fn tick(level: &mut Level, pos: BlockPos, state: BlockState) {
         return;
     };
     let ticks = j.ticks_since_song_started;
-    if song(id).is_none_or(|s| s.has_finished(ticks)) {
+    if song(id, |s| s.has_finished(ticks)).unwrap_or(true) {
         stop(level, pos);
         return;
     }

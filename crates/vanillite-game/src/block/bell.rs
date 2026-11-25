@@ -99,7 +99,17 @@ pub fn on_hit(
     player: Option<EntityId>,
 ) -> bool {
     if is_proper_hit(state, face, click_y) {
-        attempt_to_ring(level, player, pos, Some(face));
+        let rang = attempt_to_ring(level, player, pos, Some(face));
+        let player = player.filter(|&p| {
+            level
+                .entities
+                .store
+                .get(p)
+                .is_some_and(|e| e.kind() == vanillite_data::entity::ids::PLAYER)
+        });
+        if rang && let Some(player) = player {
+            level.award_stat(player, crate::stats::custom::BELL_RING, 1);
+        }
         true
     } else {
         false

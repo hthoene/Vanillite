@@ -639,6 +639,9 @@ pub fn save_arrow(
     out.insert("HasBeenShot", true);
     out.insert("LeftOwner", a.left_owner);
     out.insert("item", crate::item_nbt::stack_to_nbt(&a.item));
+    if let Some(w) = a.weapon.as_ref().filter(|w| !w.is_empty()) {
+        out.insert("weapon", crate::item_nbt::stack_to_nbt(w));
+    }
     if core.kind() == ids::SPECTRAL_ARROW {
         out.insert("Duration", a.spectral_duration);
     }
@@ -706,6 +709,10 @@ pub fn load_arrow(tag: &Compound) -> Option<(LoadedEntity, super::projectile::Ar
                 tag.get("SoundEvent"),
                 Some(Tag::String(s)) if s.as_str() == "minecraft:item.crossbow.hit"
             ),
+            weapon: match tag.get("weapon") {
+                Some(Tag::Compound(c)) => Some(crate::item_nbt::stack_from_nbt(c)),
+                _ => None,
+            },
         },
     ))
 }

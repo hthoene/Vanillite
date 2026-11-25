@@ -1332,7 +1332,7 @@ fn barter_items(t: &mut Tick<'_, '_>) -> Vec<ItemStack> {
         last_damage_player: None,
         source: None,
         types: t.env.types,
-        tags: data,
+        tags: &*data,
         attacker_enchantment_level: &none_level,
     };
     let none = |_: &str| 0;

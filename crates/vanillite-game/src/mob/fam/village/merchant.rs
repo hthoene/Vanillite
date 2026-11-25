@@ -178,7 +178,7 @@ fn add_offers_from_set(
         last_damage_player: None,
         source: None,
         types,
-        tags: data,
+        tags: &*data,
         attacker_enchantment_level: &no_level,
     };
     let in_tag = |item: u16, tag: &str| data.item_in_tag(item, tag);

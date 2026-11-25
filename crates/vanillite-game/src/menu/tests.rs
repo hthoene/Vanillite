@@ -20,7 +20,7 @@ use crate::player::play::GameData;
 use crate::recipe::{CookingKind, CraftingInput, Recipes};
 
 /// Installs gameplay data with the Vanilla recipes and item tags (once per test binary).
-pub(crate) fn install_data() -> &'static GameData {
+pub(crate) fn install_data() -> std::sync::Arc<GameData> {
     static DONE: OnceLock<()> = OnceLock::new();
     DONE.get_or_init(|| {
         let cache = std::env::var_os("VANILLITE_CACHE").map_or_else(

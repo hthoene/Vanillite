@@ -205,12 +205,14 @@ pub(crate) fn handle_game_event(
         }
         return;
     }
-    let Some(m) = level.entities.mob(id) else {
+    let Some(busy) = level
+        .entities
+        .mob(id)
+        .map(|m| allay(m).vibration.current.is_some())
+    else {
         return;
     };
-    if allay(m).vibration.current.is_some()
-        || !sculk_vibration::is_valid_vibration(level, event, context, Listenable::Allay)
-    {
+    if busy || !sculk_vibration::is_valid_vibration(level, event, context, Listenable::Allay) {
         return;
     }
     let Some(destination) = level.listener_position(Listener::Entity {
@@ -223,6 +225,9 @@ pub(crate) fn handle_game_event(
     };
     // `canReceiveVibration`: not without AI; with a liked note block only that one within
     // 1024 blocks (chessboard distance).
+    let Some(m) = level.entities.mob(id) else {
+        return;
+    };
     if m.no_ai {
         return;
     }

@@ -160,9 +160,11 @@ pub fn ominous_banner() -> ItemStack {
         return s;
     }
     let reg = &vanillite_data::registry::DATA_COMPONENT_TYPE;
-    if let Some(patterns) = crate::player::play::game_data().map(|d| &d.banner_patterns.names) {
+    if let Some(data) = crate::player::play::game_data() {
         for (name, color) in OMINOUS_BANNER_LAYERS {
-            let id = patterns
+            let id = data
+                .banner_patterns
+                .names
                 .iter()
                 .position(|n| n.strip_prefix("minecraft:").unwrap_or(n) == name);
             if let Some(id) = id.and_then(|i| u32::try_from(i).ok()) {

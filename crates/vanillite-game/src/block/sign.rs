@@ -313,9 +313,11 @@ fn use_item_on(
     level.play_block_sound(None, pos, sound_id(sound), BLOCKS, 1.0, 1.0);
     level.block_entity_changed(pos);
     let events = crate::level::game_event::events();
-    let context =
-        crate::level::game_event::GameEventContext::with_state(Some(context.player), state);
+    let player = context.player;
+    let context = crate::level::game_event::GameEventContext::with_state(Some(player), state);
     level.game_event_block(events.block_change, pos, context);
+    let used = crate::stats::Stat::of(crate::stats::StatType::Used, id.0);
+    level.award_stat(player, used, 1);
     stack.shrink(1);
     ItemInteraction::Done(Interaction::Success)
 }

@@ -5,7 +5,7 @@ use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use vanillite_base::ChunkPos;
-use vanillite_world::chunks::{BLOCK_TICKING_LEVEL, LevelChange, TicketLevels};
+use vanillite_world::chunks::{BLOCK_TICKING_LEVEL, LevelChange, MAX_TICKET_LEVEL, TicketLevels};
 
 /// Player ticket level at view distance 10.
 const PLAYER: u8 = 22;
@@ -75,8 +75,8 @@ fn bench(c: &mut Criterion, name: &str, max: u8, others: usize, level: u8) {
 }
 
 fn tickets(c: &mut Criterion) {
-    bench(c, "player_ticket_alone", 44, 0, PLAYER);
-    bench(c, "player_ticket_among_50", 44, 50, PLAYER);
+    bench(c, "player_ticket_alone", MAX_TICKET_LEVEL, 0, PLAYER);
+    bench(c, "player_ticket_among_50", MAX_TICKET_LEVEL, 50, PLAYER);
     bench(
         c,
         "simulation_ticket_alone",

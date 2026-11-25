@@ -46,31 +46,16 @@ pub struct GameData {
     pub recipes: crate::recipe::Recipes,
     /// Enchantment data.
     pub enchanting: crate::enchant::Enchanting,
+    /// The `minecraft:trial_spawner` registry.
+    pub trial_spawner_configs: crate::block::trial_spawner::TrialConfigs,
     /// The `minecraft:banner_pattern` registry.
     pub banner_patterns: crate::menu::BannerPatterns,
     /// The tags of the registries: registry → tag id (without `#`) → entry ids in tag order.
     pub registry_tags: HashMap<String, HashMap<String, Vec<u32>>>,
     /// The `minecraft:villager_trade` and `minecraft:trade_set` registries.
     pub trades: crate::trading::data::TradeData,
-    /// The definitions of the enchantments by name.
-    pub enchantment_info: HashMap<String, EnchantmentInfo>,
     /// The `minecraft:jukebox_song` registry, by registry id.
     pub jukebox_songs: Vec<crate::block::jukebox::JukeboxSong>,
-    /// The `minecraft:trial_spawner` registry.
-    pub trial_spawner_configs: crate::block::trial_spawner::TrialConfigs,
-}
-
-/// What `/enchant` reads of an enchantment (`Enchantment` and its `EnchantmentDefinition`).
-#[derive(Debug, Clone)]
-pub struct EnchantmentInfo {
-    /// `description`.
-    pub description: vanillite_protocol::text::Component,
-    /// `max_level`.
-    pub max_level: i32,
-    /// `supported_items`: item ids.
-    pub supported_items: Vec<u16>,
-    /// `exclusive_set`: enchantment names.
-    pub exclusive_set: Vec<String>,
 }
 
 impl crate::predicate::EntityTags for GameData {
@@ -81,17 +66,24 @@ impl crate::predicate::EntityTags for GameData {
     }
 }
 
-static GAME_DATA: std::sync::OnceLock<std::sync::Arc<GameData>> = std::sync::OnceLock::new();
+static GAME_DATA: std::sync::RwLock<Option<std::sync::Arc<GameData>>> =
+    std::sync::RwLock::new(None);
 
 /// Installs the gameplay data for code that has no player context (block drops of the level
-/// simulation). Data packs are frozen for the process: later calls are ignored.
+/// simulation); `/reload` installs the reloaded data the same way.
 pub fn install_game_data(data: std::sync::Arc<GameData>) {
-    let _ = GAME_DATA.set(data);
+    *GAME_DATA
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(data);
 }
 
-/// The installed gameplay data, if any.
-pub fn game_data() -> Option<&'static GameData> {
-    GAME_DATA.get().map(|d| &**d)
+/// The installed gameplay data, if any. Callers keep the returned data for one operation, so
+/// a reload never changes the data in the middle of it.
+pub fn game_data() -> Option<std::sync::Arc<GameData>> {
+    GAME_DATA
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
 }
 
 impl GameData {
@@ -812,14 +804,12 @@ impl Digging {
             return;
         }
         let new_damage = item::damage(tool).saturating_add(amount);
-        if new_damage >= item::max_damage(tool) {
-            let broken = tool.item;
-            tool.shrink(1);
-            // `onEquippedItemBroken`.
-            ctx.award_stat(Stat::of(StatType::Broken, broken), 1);
-        } else {
-            item::set_damage(tool, new_damage);
-        }
+        crate::advancements::view::apply_damage(
+            ctx.advancements.as_deref_mut(),
+            ctx.stats.as_deref_mut(),
+            tool,
+            new_damage,
+        );
     }
 
     /// `handleUseItemOn`.
@@ -972,6 +962,13 @@ impl Digging {
             && let Some(taken) =
                 crate::block::vault::use_item_on(level, pos, ctx.actor.uuid, &stack)
         {
+            if taken {
+                // `VaultBlockEntity.tryInsertKey`: the key counts as used.
+                ctx.award_stat(Stat::of(StatType::Used, stack.item), 1);
+            }
+            let Some(level) = ctx.level.level_mut() else {
+                return true;
+            };
             if taken && !ctx.actor.creative() {
                 let count = crate::block::vault::key_count(level, pos);
                 let slot = match hand {
@@ -982,12 +979,36 @@ impl Digging {
                     slot.shrink(count);
                 }
             }
+            ctx.trigger(Event::ItemUsedOnBlock(pos, stack));
+            any_block_use(ctx, hand, pos);
             return true;
         }
         if stack.is_empty() {
             return false;
         }
-        if item::item_id(&stack) == vanillite_data::item::ids::END_CRYSTAL {
+        let used = item::item_id(&stack);
+        if used == vanillite_data::item::ids::FLINT_AND_STEEL
+            || used == vanillite_data::item::ids::ENDER_EYE
+        {
+            // `ItemStack.useOn`: adventure players cannot build.
+            if ctx.actor.game_mode == GameMode::Adventure {
+                return false;
+            }
+            let done = if used == vanillite_data::item::ids::FLINT_AND_STEEL {
+                self.use_flint_and_steel(ctx, hand, pos, face)
+            } else {
+                use_ender_eye(ctx, hand, pos)
+            };
+            if done {
+                // `ItemStack.useOn` of a successful item interaction, then
+                // `ITEM_USED_ON_BLOCK` and `ANY_BLOCK_USE`.
+                ctx.award_stat(Stat::of(StatType::Used, stack.item), 1);
+                ctx.trigger(Event::ItemUsedOnBlock(pos, stack));
+                any_block_use(ctx, hand, pos);
+            }
+            return done;
+        }
+        if used == vanillite_data::item::ids::END_CRYSTAL {
             if !ctx.level.use_end_crystal(pos) {
                 return false;
             }
@@ -1000,21 +1021,10 @@ impl Digging {
                     slot.shrink(1);
                 }
             }
+            ctx.award_stat(Stat::of(StatType::Used, stack.item), 1);
+            ctx.trigger(Event::ItemUsedOnBlock(pos, stack));
+            any_block_use(ctx, hand, pos);
             return true;
-        }
-        let used = item::item_id(&stack);
-        if used == vanillite_data::item::ids::FLINT_AND_STEEL
-            || used == vanillite_data::item::ids::ENDER_EYE
-        {
-            // `ItemStack.useOn`: adventure players cannot build.
-            if ctx.actor.game_mode == GameMode::Adventure {
-                return false;
-            }
-            return if used == vanillite_data::item::ids::FLINT_AND_STEEL {
-                self.use_flint_and_steel(ctx, hand, pos, face)
-            } else {
-                use_ender_eye(ctx, hand, pos)
-            };
         }
         let Some(_block) = item::item_id(&stack).block() else {
             // Non-block items (buckets, tools on blocks, spawn eggs, ...) come later.
@@ -1346,6 +1356,7 @@ fn open_stat(block: vanillite_data::block::BlockId) -> Option<Stat> {
         "cartography_table" => custom::INTERACT_WITH_CARTOGRAPHY_TABLE,
         "loom" => custom::INTERACT_WITH_LOOM,
         "beacon" => custom::INTERACT_WITH_BEACON,
+        "lectern" => custom::INTERACT_WITH_LECTERN,
         _ if name.ends_with("shulker_box") => custom::OPEN_SHULKER_BOX,
         _ if name == "chest" || name.ends_with("copper_chest") => custom::OPEN_CHEST,
         _ => return None,
@@ -1445,11 +1456,12 @@ fn hurt_and_break(ctx: &mut PlayContext<'_>, hand: Hand, amount: i32) {
         return;
     }
     let new_damage = item::damage(tool).saturating_add(damage);
-    if new_damage >= item::max_damage(tool) {
-        tool.shrink(1);
-    } else {
-        item::set_damage(tool, new_damage);
-    }
+    crate::advancements::view::apply_damage(
+        ctx.advancements.as_deref_mut(),
+        ctx.stats.as_deref_mut(),
+        tool,
+        new_damage,
+    );
 }
 
 /// `blockActionRestricted`: spectators never, adventure players only with `can_break`

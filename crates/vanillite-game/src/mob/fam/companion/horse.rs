@@ -1188,6 +1188,8 @@ pub fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
                         let m = t.mob();
                         m.tame = true;
                         m.owner = Some(o);
+                        let id = t.id;
+                        crate::mob::tame::award_tame(t.ents, id, passenger);
                     }
                     let id = t.id;
                     crate::mob::living::entity_event(t, id, 7);

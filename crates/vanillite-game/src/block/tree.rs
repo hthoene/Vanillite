@@ -240,6 +240,40 @@ pub fn grow_tree(level: &mut Level, pos: BlockPos, state: BlockState) -> bool {
     }
 }
 
+/// `TreeGrower.canGrow`: draws the tree and the mega tree like `growTree` would; a grower with
+/// only mega trees needs a 2 × 2 of saplings.
+pub fn can_grow(level: &mut Level, pos: BlockPos, state: BlockState) -> bool {
+    let Some(grower) = grower(state.block()) else {
+        return false;
+    };
+    let flowers = has_flowers(level, pos);
+    let list = if flowers && !grower.flower_trees.is_empty() {
+        grower.flower_trees
+    } else {
+        grower.trees
+    };
+    let feature = pick(list, level.random());
+    let mega = pick(grower.mega_trees, level.random());
+    if feature.is_none() && mega.is_some() {
+        two_by_two(level, state, pos).is_some()
+    } else {
+        true
+    }
+}
+
+/// `TreeGrower.getMinimumHeight`: the trunk base height of the grower's shortest tree (0 for
+/// the growers without one).
+pub fn minimum_height(block: BlockId) -> i32 {
+    match block {
+        b if b == ids::OAK_SAPLING || b == ids::JUNGLE_SAPLING => 4,
+        b if b == ids::SPRUCE_SAPLING || b == ids::BIRCH_SAPLING || b == ids::ACACIA_SAPLING => 5,
+        b if b == ids::CHERRY_SAPLING => 7,
+        b if b == ids::MANGROVE_PROPAGULE => 2,
+        b if b == ids::AZALEA || b == ids::FLOWERING_AZALEA => 4,
+        _ => 0,
+    }
+}
+
 /// `findTwoByTwoSaplingPos`: the offset of a 2 × 2 of this sapling containing `pos`.
 fn two_by_two(level: &Level, state: BlockState, pos: BlockPos) -> Option<(i32, i32)> {
     for dx in [0, -1] {

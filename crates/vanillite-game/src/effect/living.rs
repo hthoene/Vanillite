@@ -254,6 +254,7 @@ pub fn sync_player(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mu
     let network_id = entity.as_ref().network_id().0;
     let fx = &mut player.survival.effects;
     if fx.has_events() {
+        let mut changed = false;
         for event in fx.take_events() {
             match event {
                 EffectEvent::Update { instance, blend } => {
@@ -261,12 +262,30 @@ pub fn sync_player(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mu
                         .connection
                         .sink
                         .send(&update_packet(network_id, &instance, blend));
+                    // `onEffectAdded`: where Levitation started.
+                    if blend && instance.effect == MobEffect::LEVITATION {
+                        crate::advancements::tracking::levitation_started(
+                            player,
+                            entity.as_ref().pos(),
+                        );
+                    }
+                    changed = true;
+                }
+                EffectEvent::Resend(instance) => {
+                    player
+                        .connection
+                        .sink
+                        .send(&update_packet(network_id, &instance, false));
                 }
                 EffectEvent::Remove(effect) => {
                     player.connection.sink.send(&RemoveMobEffect {
                         entity_id: network_id,
                         effect: i32::from(effect.0),
                     });
+                    if effect == MobEffect::LEVITATION {
+                        player.survival.tracking.levitation = None;
+                    }
+                    changed = true;
                 }
                 EffectEvent::Sound(sound) => {
                     let seed = env.random.next_long();
@@ -282,6 +301,13 @@ pub fn sync_player(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mu
                     );
                 }
             }
+        }
+        // `EFFECTS_CHANGED` (the effect source is not known here).
+        if changed {
+            let kind = crate::advancements::trigger::TriggerKind::EFFECTS_CHANGED;
+            player.advancements.trigger_with(kind, || {
+                crate::advancements::trigger::Event::EffectsChanged(None)
+            });
         }
     }
     let fx = &mut player.survival.effects;
@@ -535,13 +561,18 @@ pub fn add_to_player(ents: &mut Entities, player: EntityId, new: EffectInstance)
 /// packets, flags, attributes and the sound follow with the entity's next tick. Returns
 /// whether the effect changed.
 pub fn add_detached(ents: &mut Entities, id: EntityId, new: EffectInstance) -> bool {
+    !new.effect.is_instantaneous() && add_queued(ents, id, new)
+}
+
+/// `addEffect` from a command (`/effect give`) on a player or mob of this world, with
+/// `canBeAffected`: like [`add_detached`], but instantaneous effects are kept too and apply
+/// with the entity's next effect tick (`InstantenousMobEffect.shouldApplyEffectTickThisTick`).
+/// Returns whether the effect changed.
+pub fn add_queued(ents: &mut Entities, id: EntityId, new: EffectInstance) -> bool {
     let Some(kind) = ents.store.get(id).map(|e| e.kind()) else {
         return false;
     };
-    if new.effect.is_instantaneous()
-        || !super::can_be_affected(kind, new.effect)
-        || super::refuses_all_effects(kind)
-    {
+    if !super::can_be_affected(kind, new.effect) || super::refuses_all_effects(kind) {
         return false;
     }
     if let Some(m) = ents.mob_mut(id) {
