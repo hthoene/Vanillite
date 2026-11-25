@@ -46,6 +46,7 @@ pub(crate) static HOST_API: abi::HostApi = abi::HostApi {
     block_get,
     block_set,
     player_position,
+    player_set_tab_list,
 };
 
 /// What a callback may touch: when the call runs on a world's owner, that world.
@@ -376,6 +377,25 @@ unsafe extern "C" fn player_kick(
             return status::INVALID_ARGUMENT;
         };
         if server!(inner).kick(player.to_u128(), text) {
+            status::OK
+        } else {
+            status::NOT_FOUND
+        }
+    })
+}
+
+unsafe extern "C" fn player_set_tab_list(
+    id: abi::PluginId,
+    player: abi::Uuid,
+    header: abi::Str,
+    footer: abi::Str,
+    format: u32,
+) -> Status {
+    with(id, |inner, _| {
+        let (Some(header), Some(footer)) = (text(header, format), text(footer, format)) else {
+            return status::INVALID_ARGUMENT;
+        };
+        if server!(inner).set_tab_list(player.to_u128(), header, footer) {
             status::OK
         } else {
             status::NOT_FOUND

@@ -153,7 +153,7 @@ fn with_tick<R>(
         random: &mut random,
         out: &mut out,
         border: None,
-        display_name: &|name: &str, _| vanillite_protocol::text::Component::text(name.to_owned()),
+        display_name: &|n: &str, _| vanillite_protocol::text::Component::text(n.to_owned()),
     };
     let mut ents = std::mem::take(&mut level.entities);
     let r = {
@@ -250,9 +250,7 @@ fn skull_hit_withers_by_difficulty() {
             random: &mut random,
             out: &mut out,
             border: None,
-            display_name: &|name: &str, _| {
-                vanillite_protocol::text::Component::text(name.to_owned())
-            },
+            display_name: &|n: &str, _| vanillite_protocol::text::Component::text(n.to_owned()),
         };
         let mut ents = std::mem::take(&mut level.entities);
         {
@@ -343,9 +341,7 @@ fn powered_wither_ignores_arrows() {
             random: &mut random,
             out: &mut out,
             border: None,
-            display_name: &|name: &str, _| {
-                vanillite_protocol::text::Component::text(name.to_owned())
-            },
+            display_name: &|n: &str, _| vanillite_protocol::text::Component::text(n.to_owned()),
         };
         let mut ents = std::mem::take(&mut level.entities);
         let r = filter_hurt(level, &mut ents, &mut env, cx, wither, &source, 5.0);

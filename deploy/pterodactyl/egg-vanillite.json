@@ -841,6 +841,66 @@
       "field_type": "text"
     },
     {
+      "name": "Admin: RCON Bind",
+      "description": "Address RCON listens on. Vanilla listens on `server-ip` (all interfaces when empty); Vanillite listens on the loopback interface unless this is changed. Empty = `server-ip` like Vanilla. Empty: the profile's value (vanilla profile: 127.0.0.1). vanillite.toml: admin.rcon-bind.",
+      "env_variable": "VANILLITE_ADMIN__RCON_BIND",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string",
+      "field_type": "text"
+    },
+    {
+      "name": "Admin: RCON Min Password Length",
+      "description": "Shortest `rcon.password` accepted; with a shorter one RCON stays off (Vanilla only refuses an empty password). Range: 1 to 1024. Empty: the profile's value (vanilla profile: 8). vanillite.toml: admin.rcon-min-password-length.",
+      "env_variable": "VANILLITE_ADMIN__RCON_MIN_PASSWORD_LENGTH",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,1024",
+      "field_type": "text"
+    },
+    {
+      "name": "Admin: RCON Max Failed Logins",
+      "description": "Failed RCON logins per IP address and minute; after that, connections of the address are closed at once until the minute is over (Vanilla: no limit). Range: 1 to 10000. Empty: the profile's value (vanilla profile: 5). vanillite.toml: admin.rcon-max-failed-logins.",
+      "env_variable": "VANILLITE_ADMIN__RCON_MAX_FAILED_LOGINS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,10000",
+      "field_type": "text"
+    },
+    {
+      "name": "Admin: RCON Max Connections",
+      "description": "RCON connections open at the same time (Vanilla: no limit). Range: 1 to 1024. Empty: the profile's value (vanilla profile: 16). vanillite.toml: admin.rcon-max-connections.",
+      "env_variable": "VANILLITE_ADMIN__RCON_MAX_CONNECTIONS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,1024",
+      "field_type": "text"
+    },
+    {
+      "name": "Admin: Query Bind",
+      "description": "Address Query listens on. Vanilla listens on `server-ip`; Vanillite listens on the loopback interface unless this is changed (set `0.0.0.0` for public server lists). Empty = `server-ip` like Vanilla. Empty: the profile's value (vanilla profile: 127.0.0.1). vanillite.toml: admin.query-bind.",
+      "env_variable": "VANILLITE_ADMIN__QUERY_BIND",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string",
+      "field_type": "text"
+    },
+    {
+      "name": "Admin: Query Max Packets Per Second",
+      "description": "Query packets answered per IP address and second; more are dropped (Vanilla: no limit). Keeps the UDP listener from being used for reflection. Range: 1 to 10000. Empty: the profile's value (vanilla profile: 20). vanillite.toml: admin.query-max-packets-per-second.",
+      "env_variable": "VANILLITE_ADMIN__QUERY_MAX_PACKETS_PER_SECOND",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,10000",
+      "field_type": "text"
+    },
+    {
       "name": "Commands: Max Command Length",
       "description": "Longest command line that is parsed (Vanilla: the packet's 32767 characters). Range: 16 to 32767. Empty: the profile's value (vanilla profile: 32767). vanillite.toml: commands.max-command-length.",
       "env_variable": "VANILLITE_COMMANDS__MAX_COMMAND_LENGTH",
@@ -1418,6 +1478,56 @@
       "user_viewable": true,
       "user_editable": true,
       "rules": "nullable|integer|between:20,32766",
+      "field_type": "text"
+    },
+    {
+      "name": "Anti Xray: Engine Mode",
+      "description": "\"disabled\" sends the real blocks (Vanilla). \"hide\" sends hidden blocks as the dimension's base stone (deepslate below y 0, netherrack, end stone). \"obfuscate\" sends hidden and replacement blocks as random hidden blocks (bigger chunk packets). Applies to every world. Empty: the profile's value (vanilla profile: disabled). vanillite.toml: anticheat.anti-xray.engine-mode.",
+      "env_variable": "VANILLITE_ANTICHEAT__ANTI_XRAY__ENGINE_MODE",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string",
+      "field_type": "text"
+    },
+    {
+      "name": "Anti Xray: Hidden Blocks",
+      "description": "Blocks that are hidden (block ids). Applies to every world. Empty: the profile's value (vanilla profile: [\"minecraft:coal_ore\", \"minecraft:deepslate_coal_ore\", \"minecraft:copper_ore\", \"minecraft:deepslate_copper_ore\", \"minecraft:raw_copper_block\", \"minecraft:iron_ore\", \"minecraft:deepslate_iron_ore\", \"minecraft:raw_iron_block\", \"minecraft:gold_ore\", \"minecraft:deepslate_gold_ore\", \"minecraft:redstone_ore\", \"minecraft:deepslate_redstone_ore\", \"minecraft:lapis_ore\", \"minecraft:deepslate_lapis_ore\", \"minecraft:diamond_ore\", \"minecraft:deepslate_diamond_ore\", \"minecraft:emerald_ore\", \"minecraft:deepslate_emerald_ore\", \"minecraft:nether_gold_ore\", \"minecraft:nether_quartz_ore\", \"minecraft:ancient_debris\", \"minecraft:mossy_cobblestone\", \"minecraft:obsidian\", \"minecraft:clay\", \"minecraft:chest\", \"minecraft:ender_chest\"]). vanillite.toml: anticheat.anti-xray.hidden-blocks.",
+      "env_variable": "VANILLITE_ANTICHEAT__ANTI_XRAY__HIDDEN_BLOCKS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string",
+      "field_type": "text"
+    },
+    {
+      "name": "Anti Xray: Replacement Blocks",
+      "description": "Blocks that \"obfuscate\" also replaces with random hidden blocks (block ids). Applies to every world. Empty: the profile's value (vanilla profile: [\"minecraft:stone\", \"minecraft:deepslate\", \"minecraft:oak_planks\", \"minecraft:netherrack\", \"minecraft:end_stone\"]). vanillite.toml: anticheat.anti-xray.replacement-blocks.",
+      "env_variable": "VANILLITE_ANTICHEAT__ANTI_XRAY__REPLACEMENT_BLOCKS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string",
+      "field_type": "text"
+    },
+    {
+      "name": "Anti Xray: Max Block Height",
+      "description": "Blocks at and above this height are always sent as they are. Applies to every world. Range: -2048 to 2048. Empty: the profile's value (vanilla profile: 64). vanillite.toml: anticheat.anti-xray.max-block-height.",
+      "env_variable": "VANILLITE_ANTICHEAT__ANTI_XRAY__MAX_BLOCK_HEIGHT",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:-2048,2048",
+      "field_type": "text"
+    },
+    {
+      "name": "Anti Xray: Update Radius",
+      "description": "Distance in blocks around a changed block (mined, exploded, moved) within which hidden blocks are sent with their real state. Applies to every world. Range: 1 to 4. Empty: the profile's value (vanilla profile: 2). vanillite.toml: anticheat.anti-xray.update-radius.",
+      "env_variable": "VANILLITE_ANTICHEAT__ANTI_XRAY__UPDATE_RADIUS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,4",
       "field_type": "text"
     }
   ]

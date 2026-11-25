@@ -69,9 +69,7 @@ fn with_tick<R>(level: &mut Level, id: EntityId, f: impl FnOnce(&mut Tick<'_, '_
             random: &mut random,
             out: &mut out,
             border: None,
-            display_name: &|name: &str, _| {
-                vanillite_protocol::text::Component::text(name.to_owned())
-            },
+            display_name: &|n: &str, _| vanillite_protocol::text::Component::text(n.to_owned()),
         };
         let mut t = Tick {
             level: level_ref,

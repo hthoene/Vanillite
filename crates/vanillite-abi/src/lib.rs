@@ -41,7 +41,7 @@ pub mod layout;
 /// Major version of the plugin ABI: changes on breaking changes.
 pub const ABI_MAJOR: u16 = 1;
 /// Minor version of the plugin ABI: changes when declarations are appended.
-pub const ABI_MINOR: u16 = 0;
+pub const ABI_MINOR: u16 = 1;
 /// The symbol every plugin library exports (type [`EntryFn`]).
 pub const ENTRY_SYMBOL: &str = "vanillite_plugin_abi";
 
@@ -752,6 +752,9 @@ abi! {
             pub block_set: unsafe extern "C" fn(*mut Context, u32, BlockPos, Str) -> Status,
             /// The position of a player of the owned world.
             pub player_position: unsafe extern "C" fn(*mut Context, Uuid, *mut Vec3) -> Status,
+            /// Sets the header and footer of a player's player list (tab list); both in the
+            /// format from [`text_format`], empty text removes them. Since ABI 1.1.
+            pub player_set_tab_list: unsafe extern "C" fn(PluginId, Uuid, Str, Str, u32) -> Status,
         }
     }
 }
