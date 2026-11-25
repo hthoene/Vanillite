@@ -33,6 +33,7 @@ mod png;
 mod raknet;
 mod session;
 mod skin;
+pub mod version;
 
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -45,9 +46,9 @@ use tokio::sync::mpsc;
 use vanillite_net::VirtualConnection;
 use vanillite_protocol::types::GameProfile;
 
-pub use data::{PROTOCOL, VERSION};
 pub use forms::Forms;
 pub use raknet::Limits as RakNetLimits;
+pub use version::Version;
 
 /// Opens the Java connection of a Bedrock player (a virtual connection in the server).
 pub type Connector = Arc<dyn Fn(GameProfile, SocketAddr) -> VirtualConnection + Send + Sync>;
@@ -59,6 +60,9 @@ pub struct BedrockConfig {
     pub bind: SocketAddr,
     /// Require an Xbox Live identity. Off accepts any claimed identity: tests only.
     pub online_mode: bool,
+    /// Oldest accepted Bedrock network protocol (0: every supported one, see
+    /// [`version::SUPPORTED`]).
+    pub min_protocol: i32,
     /// Prefix of Bedrock players' Java names.
     pub name_prefix: String,
     /// World name shown in the client.
@@ -96,6 +100,7 @@ impl Default for BedrockConfig {
         Self {
             bind: SocketAddr::from(([0, 0, 0, 0], 19132)),
             online_mode: true,
+            min_protocol: 0,
             name_prefix: ".".into(),
             world_name: "Vanillite".into(),
             max_connections: 1000,
@@ -112,6 +117,23 @@ impl Default for BedrockConfig {
             chunk_backlog: 512 << 10,
             raknet: raknet::Limits::default(),
         }
+    }
+}
+
+impl BedrockConfig {
+    /// Whether clients of `protocol` may join (it must also be supported).
+    pub fn accepts(&self, protocol: i32) -> bool {
+        protocol >= self.min_protocol
+    }
+
+    /// The oldest and the newest accepted version.
+    pub fn accepted_range(&self) -> (&'static Version, &'static Version) {
+        let oldest = version::SUPPORTED
+            .iter()
+            .copied()
+            .find(|v| self.accepts(v.protocol))
+            .unwrap_or_else(Version::latest);
+        (oldest, Version::latest())
     }
 }
 
@@ -155,8 +177,8 @@ impl Status {
         let motd = self.motd.read().map(|m| clean(&m)).unwrap_or_default();
         format!(
             "MCPE;{motd};{};{};{};{};{guid};Vanillite;Survival;1;{port};{port};0;",
-            data::PROTOCOL,
-            data::VERSION,
+            Version::latest().protocol,
+            Version::latest().name(),
             self.online.load(Ordering::Relaxed),
             self.max.load(Ordering::Relaxed),
         )
@@ -200,6 +222,15 @@ impl Frontend {
         } else {
             log::warn!("Bedrock online mode is off: Bedrock identities are not verified");
         }
+        let accepted: Vec<String> = version::SUPPORTED
+            .iter()
+            .filter(|v| config.accepts(v.protocol))
+            .map(|v| format!("{} (protocol {})", v.releases, v.protocol))
+            .collect();
+        log::info!(
+            "Bedrock listening on UDP {local_addr} for {}",
+            accepted.join(", ")
+        );
         let entity_types = entity_types();
         let forms = Arc::new(forms::FormRegistry::default());
         let shared = Arc::new(session::Shared {
@@ -216,11 +247,6 @@ impl Frontend {
             forms: Arc::clone(&forms),
         });
         runtime.spawn(listen(Arc::new(socket), shared));
-        log::info!(
-            "Bedrock {} (protocol {}) listening on UDP {local_addr}",
-            data::VERSION,
-            data::PROTOCOL
-        );
         Ok(Self {
             runtime,
             local_addr,

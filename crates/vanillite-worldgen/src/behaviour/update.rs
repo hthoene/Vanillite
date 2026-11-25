@@ -451,6 +451,20 @@ pub(crate) fn update_shape(
                 state
             }
         }
+        Class::NetherPortal => {
+            // `NetherPortalBlock.updateShape`: a portal block without a complete frame breaks.
+            let portal_axis = super::HorizontalAxis::of(state).unwrap_or(super::HorizontalAxis::X);
+            let wrong_axis = super::HorizontalAxis::of_direction(dir)
+                .is_some_and(|update_axis| update_axis != portal_axis);
+            if !wrong_axis
+                && !neighbour.is(ids::NETHER_PORTAL)
+                && !super::PortalShape::find_any(&*level, pos, portal_axis).is_complete()
+            {
+                AIR
+            } else {
+                state
+            }
+        }
         Class::Fire => {
             if can_survive(level, state, pos) {
                 fire_state_with_age(level, pos, state.int("age").unwrap_or(0))
@@ -598,7 +612,6 @@ pub(crate) fn update_shape(
         | Class::Jigsaw
         | Class::Lectern
         | Class::MovingPiston
-        | Class::NetherPortal
         | Class::PistonBase
         | Class::Rod
         | Class::RotatedPillar

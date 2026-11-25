@@ -189,6 +189,10 @@ pub struct Survival {
     pub last_climbable: Option<FallLocation>,
     /// The fluids around the player after the last update.
     pub fluids: FluidContact,
+    /// Portal cooldown, the portal the player stands in and the end credits.
+    pub portal: crate::portal::PortalState,
+    /// The player's box at the end of the last tick, for portals touched on the way.
+    last_box: Option<vanillite_base::Aabb>,
     /// `attackStrengthTicker`.
     pub attack_ticker: i32,
     /// `takeXpDelay`.
@@ -227,6 +231,8 @@ impl Default for Survival {
             tick_count: 0,
             last_climbable: None,
             fluids: FluidContact::default(),
+            portal: crate::portal::PortalState::default(),
+            last_box: None,
             attack_ticker: 0,
             take_xp_delay: 0,
             last_hurt_mob: None,
@@ -254,6 +260,9 @@ pub struct Env<'a> {
     pub dimension: &'a str,
     /// `Level.isRainingAt`.
     pub raining_at: &'a dyn Fn(BlockPos) -> bool,
+    /// An End gateway at the position takes a player: `false` while it cools down, else it
+    /// starts its cooldown (`TheEndGatewayBlockEntity.triggerCooldown`).
+    pub enter_gateway: &'a mut dyn FnMut(BlockPos) -> bool,
     pub random: &'a mut LegacyRandom,
     pub out: &'a mut Vec<Effect>,
     /// Plugin hooks (damage).
@@ -342,6 +351,7 @@ impl Survival {
             seed: int(data, "XpSeed").unwrap_or(0),
         };
         s.score = int(data, "Score").unwrap_or(0);
+        s.portal = crate::portal::PortalState::load(data);
         if let Some(Tag::Compound(loc)) = data.get("LastDeathLocation")
             && let (Some(Tag::String(dim)), Some(Tag::IntArray(pos))) =
                 (loc.get("dimension"), loc.get("pos"))
@@ -378,6 +388,7 @@ impl Survival {
         out.insert("XpTotal", Tag::Int(self.xp.total));
         out.insert("XpSeed", Tag::Int(self.xp.seed));
         out.insert("Score", Tag::Int(self.score));
+        self.portal.save(out);
         self.food.save(out);
         out.remove("LastDeathLocation");
         if let Some((dim, pos)) = &self.last_death {
@@ -392,8 +403,10 @@ impl Survival {
     /// score and the death location survive only as Vanilla keeps them.
     /// `keep_inventory` is the game rule or a spectator dying.
     pub fn respawned(&self, keep_inventory: bool) -> Survival {
+        // `restoreFrom`: the portal state and the credits carry over.
         let mut s = Survival {
             last_death: self.last_death.clone(),
+            portal: self.portal.clone(),
             ..Survival::default()
         };
         if keep_inventory {
@@ -402,6 +415,12 @@ impl Survival {
         }
         s.xp.seed = self.xp.seed;
         s
+    }
+
+    /// The player was moved without walking (teleport, portal): the blocks it touches next
+    /// tick are only those at its new place.
+    pub fn teleported(&mut self) {
+        self.last_box = None;
     }
 
     /// Forces the next [`sync`](Self::sync) to send health, food and experience
@@ -1031,6 +1050,12 @@ pub enum TickResult {
     /// The death animation is over: remove the entity (`remove(KILLED)`); the player waits
     /// for its respawn.
     Remove,
+    /// The player goes through a portal now (`handlePortal`): the portal and the block it
+    /// entered.
+    Portal(crate::portal::PortalKind, BlockPos),
+    /// The player entered the End's exit portal for the first time: the credits roll
+    /// (`showEndCredits`), the entity leaves the world and the player respawns when they end.
+    Credits,
 }
 
 /// `ServerPlayer.tick`'s survival part (once per world tick, with the entities).
@@ -1063,12 +1088,31 @@ pub fn do_tick(
     let spectator = player.game_mode == GameMode::Spectator;
     let abilities = Abilities::of(player.game_mode);
     let mut result = TickResult::Alive;
+    if player.survival.portal.won_game {
+        // Removed from the world while the credits roll.
+        return result;
+    }
     {
         let s = &mut player.survival;
         s.tick_count = s.tick_count.wrapping_add(1);
     }
     let id = entity.as_ref().id();
-    // `Entity.baseTick`.
+    // `Entity.baseTick`: `handlePortal` first.
+    let can_use_portal = !player.survival.is_dead_or_dying();
+    let portal_delay = |kind| match kind {
+        crate::portal::PortalKind::Nether => env
+            .rules
+            .get(if abilities.invulnerable {
+                Rule::PLAYERS_NETHER_PORTAL_CREATIVE_DELAY
+            } else {
+                Rule::PLAYERS_NETHER_PORTAL_DEFAULT_DELAY
+            })
+            .max(0),
+        _ => 0,
+    };
+    if let Some((kind, entry)) = player.survival.portal.handle(can_use_portal, portal_delay) {
+        return TickResult::Portal(kind, entry);
+    }
     update_fluids(entity, player, env);
     update_swimming(entity, player);
     {
@@ -1175,9 +1219,15 @@ pub fn do_tick(
             s.food.food_level += 1;
         }
     }
-    if result == TickResult::Alive && !player.survival.is_dead_or_dying() && !spectator {
-        apply_block_effects(entity, player, env);
+    if result == TickResult::Alive && !player.survival.is_dead_or_dying() {
+        if !spectator {
+            apply_block_effects(entity, player, env);
+        }
+        if enter_portals(entity, player, env) {
+            result = TickResult::Credits;
+        }
     }
+    player.survival.last_box = Some(entity.as_ref().aabb());
     // `FoodData.tick`.
     let s = &mut player.survival;
     let action = s.food.tick(
@@ -1227,6 +1277,53 @@ fn update_swimming(entity: &mut EntityMut<'_>, player: &PlayerData) {
     if swimming != flags.contains(EntityFlags::SWIMMING) {
         entity.set_flags(EntityFlags::SWIMMING, swimming);
     }
+}
+
+/// The portal blocks the player touched on its way this tick (`entityInside` of nether and
+/// End portals and gateways). Returns whether the end credits start.
+fn enter_portals(entity: &EntityMut<'_>, player: &mut PlayerData, env: &mut Env<'_>) -> bool {
+    use crate::portal::PortalKind;
+    let now = entity.as_ref().aabb();
+    let swept = match player.survival.last_box {
+        Some(last) => vanillite_base::Aabb {
+            min_x: now.min_x.min(last.min_x),
+            min_y: now.min_y.min(last.min_y),
+            min_z: now.min_z.min(last.min_z),
+            max_x: now.max_x.max(last.max_x),
+            max_y: now.max_y.max(last.max_y),
+            max_z: now.max_z.max(last.max_z),
+        },
+        None => now,
+    };
+    let portals = blocks::inside_portals(env.blocks, swept);
+    let portal = &mut player.survival.portal;
+    if let Some(pos) = portals.nether {
+        portal.set_inside(PortalKind::Nether, pos);
+    }
+    if let Some(pos) = portals.end {
+        if env.dimension == "minecraft:the_end" && !portal.seen_credits {
+            // `showEndCredits`.
+            portal.seen_credits = true;
+            if !portal.won_game {
+                portal.won_game = true;
+                player.connection.sink.send(
+                    &vanillite_protocol::packets::play::clientbound::GameEvent {
+                        event: vanillite_protocol::packets::play::clientbound::GameEvent::WIN_GAME,
+                        param: 0.0,
+                    },
+                );
+                return true;
+            }
+        } else {
+            portal.set_inside(PortalKind::End, pos);
+        }
+    }
+    if let Some(pos) = portals.gateway
+        && (env.enter_gateway)(pos)
+    {
+        portal.set_inside(PortalKind::Gateway, pos);
+    }
+    false
 }
 
 /// `Entity.applyEffectsFromBlocks` at the player's position: the floor it stands on (magma),

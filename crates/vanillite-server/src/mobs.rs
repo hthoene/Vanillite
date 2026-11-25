@@ -112,7 +112,16 @@ impl WorldMobs {
             let (weather, climate) = (survival.weather, survival.climate().cloned());
             let chunks = &level.chunks;
             let raining = move |pos| raining_at(chunks, climate.as_deref(), &weather, pos);
-            let mut env = survival.env(state, &rules, &blocks, &raining, dimension, &hooks);
+            let mut no_gateway = |_| false;
+            let mut env = survival.env(
+                state,
+                &rules,
+                &blocks,
+                &raining,
+                dimension,
+                &mut no_gateway,
+                &hooks,
+            );
             let level: &Level = level;
             for (player, action) in pending {
                 let usable = ents.player(player).is_some_and(|p| {
@@ -315,6 +324,10 @@ impl WorldMobs {
             let kind = entity.as_ref().kind();
             let pos = entity.as_ref().pos();
             if kind == ids::FALLING_BLOCK || kind == ids::TNT {
+                let chunk = BlockPos::containing(pos.x, pos.y, pos.z).chunk();
+                if !level.chunks.in_entity_ticking_range(chunk) {
+                    continue;
+                }
                 level.entities = ents;
                 vanillite_game::entities::tick_entity(level, id, kind);
                 self.apply_explosion_hurts(level, survival, global, dimension);
@@ -356,7 +369,16 @@ impl WorldMobs {
                 let (weather, climate) = (survival.weather, survival.climate().cloned());
                 let chunks = &level.chunks;
                 let raining = move |pos| raining_at(chunks, climate.as_deref(), &weather, pos);
-                let mut env = survival.env(state, &rules, &blocks, &raining, dimension, &hooks);
+                let mut no_gateway = |_| false;
+                let mut env = survival.env(
+                    state,
+                    &rules,
+                    &blocks,
+                    &raining,
+                    dimension,
+                    &mut no_gateway,
+                    &hooks,
+                );
                 let level_ref: &Level = level;
                 if is_mob {
                     mob::tick(level_ref, &mut ents, &mut env, &mut self.cx, id);
@@ -387,7 +409,16 @@ impl WorldMobs {
         {
             let blocks = WorldBlocks(&level.chunks);
             let raining = |_| false;
-            let mut env = survival.env(state, &rules, &blocks, &raining, dimension, &hooks);
+            let mut no_gateway = |_| false;
+            let mut env = survival.env(
+                state,
+                &rules,
+                &blocks,
+                &raining,
+                dimension,
+                &mut no_gateway,
+                &hooks,
+            );
             let mut discarded = Vec::new();
             vanillite_game::player::using::tick_all(&mut ents, &mut env);
             tame::tick_leashes(level, &mut ents, &mut env, &mut discarded);
@@ -437,7 +468,16 @@ impl WorldMobs {
         let hurts = std::mem::take(&mut level.output().explosion_hurts);
         let no_blocks = NoBlocks;
         let raining = |_| false;
-        let mut env = survival.env(state, &rules, &no_blocks, &raining, dimension, &hooks);
+        let mut no_gateway = |_| false;
+        let mut env = survival.env(
+            state,
+            &rules,
+            &no_blocks,
+            &raining,
+            dimension,
+            &mut no_gateway,
+            &hooks,
+        );
         let mut ents = std::mem::take(&mut level.entities);
         for hurt in hurts {
             // `damageSources().explosion(source, indirect)`.
@@ -506,7 +546,16 @@ impl WorldMobs {
             let no_blocks = NoBlocks;
             let raining = |_| false;
             let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
-            let mut env = survival.env(state, &rules, &no_blocks, &raining, dimension, &hooks);
+            let mut no_gateway = |_| false;
+            let mut env = survival.env(
+                state,
+                &rules,
+                &no_blocks,
+                &raining,
+                dimension,
+                &mut no_gateway,
+                &hooks,
+            );
             let source = DamageSource::of(env.types.lightning_bolt);
             for id in struck {
                 if let Some(d) = ents.item_mut(id) {

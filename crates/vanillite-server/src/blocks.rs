@@ -184,6 +184,20 @@ impl PlayLevel for WorldLevel<'_> {
         self.level.block(pos)
     }
 
+    fn lights_portal(&self, pos: BlockPos, forward: vanillite_base::Direction) -> bool {
+        vanillite_game::block::portal::lights_portal(self.level, pos, forward)
+    }
+
+    fn end_portal_frame_filled(&mut self, pos: BlockPos) {
+        use vanillite_game::block::portal;
+        self.level
+            .update_neighbour_for_output_signal(pos, vanillite_data::block::ids::END_PORTAL_FRAME);
+        self.level.level_event(None, 1503, pos, 0);
+        if let Some(corner) = portal::find_end_portal(self.level, pos) {
+            portal::open_end_portal(self.level, corner);
+        }
+    }
+
     fn is_loaded(&self, pos: BlockPos) -> bool {
         self.level.is_loaded(pos)
     }
@@ -412,6 +426,15 @@ pub(crate) fn tick_items(
         let Some(entity) = store.get(id) else {
             continue;
         };
+        // Only items in the tick order (entity ticking chunk) and in entity ticking range.
+        let pos = entity.pos();
+        let chunk = vanillite_base::ChunkPos::new(
+            vanillite_base::math::floor(pos.x) >> 4,
+            vanillite_base::math::floor(pos.z) >> 4,
+        );
+        if !store.is_ticking(id) || !chunks.in_entity_ticking_range(chunk) {
+            continue;
+        }
         let row = entity.kind_row();
         let input = item_entity::TickInput {
             pos: entity.pos(),

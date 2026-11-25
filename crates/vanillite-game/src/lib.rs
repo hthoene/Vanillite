@@ -23,6 +23,7 @@ pub mod menu;
 pub mod minecart;
 pub mod mob;
 pub mod player;
+pub mod portal;
 pub mod predicate;
 pub mod recipe;
 pub mod riding;

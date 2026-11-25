@@ -163,8 +163,11 @@ impl Skin {
     }
 
     /// Writes the network form.
-    pub fn write(&self, out: &mut Vec<u8>) {
+    pub fn write(&self, out: &mut Vec<u8>, v: &crate::version::Version) {
         io::write_str(out, &self.id);
+        if v.before_26_60() {
+            io::write_str(out, ""); // PlayFab id
+        }
         io::write_bytes(out, &self.resource_patch);
         out.extend_from_slice(&self.width.to_le_bytes());
         out.extend_from_slice(&self.height.to_le_bytes());

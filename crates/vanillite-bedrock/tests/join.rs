@@ -1,5 +1,6 @@
 //! A headless Bedrock client joins an in-process server through the Bedrock frontend, gets the
-//! world, walks, and sees a Java player who sees it walking; chat goes both ways.
+//! world, walks, and sees a Java player who sees it walking; chat goes both ways. Once with the
+//! oldest and once with the newest supported Bedrock version.
 
 #![allow(
     clippy::unwrap_used,
@@ -11,6 +12,7 @@
 use std::net::TcpStream;
 use std::time::{Duration, Instant};
 
+use vanillite_bedrock::Version;
 use vanillite_bedrock::client::{self, AuthInput, Client, input_flag, packet_id as id};
 use vanillite_protocol::client::TestClient;
 use vanillite_protocol::packets::handshake::Intent;
@@ -49,8 +51,21 @@ fn java_until(
 }
 
 #[test]
-fn bedrock_player_joins_walks_and_meets_java_players() {
-    let dir = std::env::temp_dir().join(format!("vanillite-bedrock-join-{}", std::process::id()));
+fn oldest_bedrock_version_joins_walks_and_meets_java_players() {
+    joins_walks_and_meets_java_players(Version::oldest());
+}
+
+#[test]
+fn newest_bedrock_version_joins_walks_and_meets_java_players() {
+    joins_walks_and_meets_java_players(Version::latest());
+}
+
+fn joins_walks_and_meets_java_players(version: &'static Version) {
+    let dir = std::env::temp_dir().join(format!(
+        "vanillite-bedrock-join-{}-{}",
+        std::process::id(),
+        version.protocol
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
@@ -89,9 +104,10 @@ fn bedrock_player_joins_walks_and_meets_java_players() {
         .build()
         .unwrap();
     runtime.block_on(async {
-        let mut bedrock = Client::connect(bedrock_addr, "2535400000000001", "Bedrock Tester")
-            .await
-            .expect("Bedrock login");
+        let mut bedrock =
+            Client::connect_as(bedrock_addr, "2535400000000001", "Bedrock Tester", version)
+                .await
+                .expect("Bedrock login");
         let start = bedrock.recv(id::START_GAME).await.expect("start_game");
         let (own_id, spawn) = client::read_start_game(&start).unwrap();
         assert!(own_id > 0);
@@ -147,7 +163,7 @@ fn bedrock_player_joins_walks_and_meets_java_players() {
                 delta: [0.1, -0.078, 0.0],
             };
             bedrock
-                .send(id::PLAYER_AUTH_INPUT, &client::auth_input(&input))
+                .send(id::PLAYER_AUTH_INPUT, &client::auth_input(&input, version))
                 .await
                 .unwrap();
             tokio::time::sleep(Duration::from_millis(50)).await;

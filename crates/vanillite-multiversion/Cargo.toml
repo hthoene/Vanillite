@@ -1,0 +1,33 @@
+[package]
+name = "vanillite-multiversion"
+description = "Multi-version layer: translates the packets of clients of older Minecraft versions to the server's version and back (architecture 14.3)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+vanillite-nbt.workspace = true
+vanillite-protocol.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+vanillite-server.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+# SEC-07: input-handling crate. Cargo cannot extend `[lints] workspace = true`,
+# so this repeats the workspace lints and adds the SEC-07 set.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "warn"
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+arithmetic_side_effects = "deny"
+as_conversions = "deny"
