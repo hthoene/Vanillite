@@ -232,6 +232,14 @@ impl Goal {
         }
     }
 
+    /// `isInterruptable`.
+    pub fn interruptable(&self) -> bool {
+        match self {
+            Goal::Common(g) => g.interruptable(),
+            _ => true,
+        }
+    }
+
     /// `adjustedTickDelay`.
     fn adjusted(&self, ticks: i32) -> i32 {
         if self.every_tick() {
@@ -534,10 +542,11 @@ pub fn tick_selector(t: &mut Tick<'_, '_>, which: Which) {
                     return true;
                 }
                 let l = s.locked[b];
+                // `canBeReplacedBy`: interruptable and a lower priority.
                 l == NO_SLOT
                     || s.slots
                         .get(usize::from(l))
-                        .is_none_or(|o| slot.priority < o.priority)
+                        .is_none_or(|o| o.goal.interruptable() && slot.priority < o.priority)
             });
             (slot.running, flags, slot.priority, s.disabled, replaceable)
         };

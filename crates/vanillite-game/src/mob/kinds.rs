@@ -444,6 +444,7 @@ pub fn register_goals(m: &mut MobData) {
     let tg = &mut m.targets;
     match m.kind {
         Kind::Zombie => {
+            g.add(4, super::movement::MoveGoal::zombie_turtle_egg());
             g.add(8, Goal::look_at_player(8.0));
             g.add(8, Goal::random_look());
             g.add(3, Goal::melee(MeleeKind::Zombie, 1.0, false));
@@ -480,6 +481,7 @@ pub fn register_goals(m: &mut MobData) {
             m.nav.can_float = true;
         }
         Kind::Spider => {
+            m.nav.kind = super::nav::NavKind::WallClimber;
             g.add(1, Goal::Float);
             g.add(
                 3,
@@ -595,7 +597,8 @@ pub fn finalize_spawn(m: &mut MobData, ctx: &mut fam::SpawnContext<'_>) {
                 m.baby = true;
                 zombie_chicken_jockey(m, ctx);
             }
-            m.can_break_doors = m.random.next_float() < ctx.special_multiplier * 0.1;
+            let doors = m.random.next_float() < ctx.special_multiplier * 0.1;
+            super::movement::set_can_break_doors(m, doors);
             // `populateDefaultEquipmentSlots`: armour, then a sword, spear or shovel.
             equipment::populate_default_armor(m, difficulty, ctx.special_multiplier);
             let chance = if difficulty == Difficulty::Hard {

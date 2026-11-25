@@ -362,6 +362,15 @@ pub trait FamilyHooks {
     fn travel(_t: &mut Tick<'_, '_>, _input: Vec3) -> bool {
         false
     }
+    /// `isPushedByFluid` (water animals, axolotls, turtles, frogs and swimming drowned are
+    /// not).
+    fn pushed_by_fluid(_m: &MobData) -> bool {
+        true
+    }
+    /// `getWaterSlowDown` (polar bears 0.98, skeleton horses 0.96).
+    fn water_slow_down(_kind: Kind) -> f32 {
+        0.8
+    }
     /// The kind's own `MoveControl.tick` (with [`super::nav::MoveKind::Custom`]); `true` when
     /// handled.
     fn move_control(_t: &mut Tick<'_, '_>) -> bool {
@@ -626,6 +635,12 @@ pub fn custom_server_ai_step(t: &mut Tick<'_, '_>) {
 }
 pub fn travel(t: &mut Tick<'_, '_>, input: Vec3) -> bool {
     by_family!(t.mob_ref().kind, false, travel(t, input))
+}
+pub fn pushed_by_fluid(m: &MobData) -> bool {
+    by_family!(m.kind, true, pushed_by_fluid(m))
+}
+pub fn water_slow_down(kind: Kind) -> f32 {
+    by_family!(kind, 0.8, water_slow_down(kind))
 }
 pub fn move_control(t: &mut Tick<'_, '_>) -> bool {
     by_family!(t.mob_ref().kind, false, move_control(t))

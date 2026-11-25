@@ -332,3 +332,155 @@ pub fn land_pos_away(
     let restrict = mob_restricted(t, max_h);
     land_pos_in_direction(t, min_h, max_h, v, dir, restrict)
 }
+
+/// `AirAndWaterRandomPos.generateRandomPos`: a direction within the angle, moved up out of
+/// solid blocks, without malus.
+#[allow(clippy::too_many_arguments)]
+pub fn air_and_water_candidate(
+    t: &mut Tick<'_, '_>,
+    h: i32,
+    v: i32,
+    flying_height: i32,
+    x_dir: f64,
+    z_dir: f64,
+    max_radians: f64,
+    restrict: bool,
+) -> Option<BlockPos> {
+    let dir = direction_within_radians(
+        t,
+        0.0,
+        f64::from(h),
+        v,
+        flying_height,
+        x_dir,
+        z_dir,
+        max_radians,
+    )?;
+    let pos = toward_direction(t, f64::from(h), dir);
+    if !t.level.in_height(pos.y) || is_restricted(t, restrict, pos) {
+        return None;
+    }
+    let pos = move_up_out_of_solid(pos, t.level.max_y(), |p| is_solid(t, p));
+    (!has_malus(t, pos)).then_some(pos)
+}
+
+/// `AirAndWaterRandomPos.getPos(mob, h, v, flyingHeight, xDir, zDir, maxRadians)`.
+#[allow(clippy::too_many_arguments)]
+pub fn air_and_water_pos(
+    t: &mut Tick<'_, '_>,
+    h: i32,
+    v: i32,
+    flying_height: i32,
+    x_dir: f64,
+    z_dir: f64,
+    max_radians: f64,
+) -> Option<Vec3> {
+    let restrict = mob_restricted(t, f64::from(h));
+    generate(
+        t,
+        |t| air_and_water_candidate(t, h, v, flying_height, x_dir, z_dir, max_radians, restrict),
+        walk_value,
+    )
+}
+
+/// `AirRandomPos.getPosTowards(mob, h, v, flyingHeight, towards, maxRadians)`: like
+/// [`air_and_water_pos`] towards a point, never in water.
+pub fn air_pos_towards(
+    t: &mut Tick<'_, '_>,
+    h: i32,
+    v: i32,
+    flying_height: i32,
+    towards: Vec3,
+    max_radians: f64,
+) -> Option<Vec3> {
+    let p = t.pos();
+    let (dx, dz) = (towards.x - p.x, towards.z - p.z);
+    let restrict = mob_restricted(t, f64::from(h));
+    generate(
+        t,
+        |t| {
+            let pos =
+                air_and_water_candidate(t, h, v, flying_height, dx, dz, max_radians, restrict)?;
+            (!is_water(t, pos)).then_some(pos)
+        },
+        walk_value,
+    )
+}
+
+/// `HoverRandomPos.getPos(mob, h, v, xDir, zDir, maxRadians, hoverMaxHeight,
+/// hoverMinHeight)`: a land position lifted 1 to `max_height` blocks above the ground.
+#[allow(clippy::too_many_arguments)]
+pub fn hover_pos(
+    t: &mut Tick<'_, '_>,
+    h: i32,
+    v: i32,
+    x_dir: f64,
+    z_dir: f64,
+    max_radians: f32,
+    max_height: i32,
+    min_height: i32,
+) -> Option<Vec3> {
+    let restrict = mob_restricted(t, f64::from(h));
+    generate(
+        t,
+        |t| {
+            let dir = direction_within_radians(
+                t,
+                0.0,
+                f64::from(h),
+                v,
+                0,
+                x_dir,
+                z_dir,
+                f64::from(max_radians),
+            )?;
+            let pos = land_toward(t, f64::from(h), restrict, dir)?;
+            let above = t.mob().random.next_int_bounded(max_height - min_height + 1) + min_height;
+            let pos = move_up_to_above_solid(pos, above, t.level.max_y(), |p| is_solid(t, p));
+            (!is_water(t, pos) && !has_malus(t, pos)).then_some(pos)
+        },
+        walk_value,
+    )
+}
+
+/// `BehaviorUtils.getRandomSwimmablePos(mob, h, v)`: a default random position, retried up
+/// to 10 times until it is pathfindable for swimming.
+pub fn swimmable_pos(t: &mut Tick<'_, '_>, h: i32, v: i32) -> Option<Vec3> {
+    let swimmable = |t: &Tick<'_, '_>, p: Vec3| {
+        super::path::is_pathfindable(
+            t.level.block(BlockPos::containing(p.x, p.y, p.z)),
+            super::path::Computation::Water,
+        )
+    };
+    let mut target = default_pos(t, h, v);
+    let mut count = 0;
+    while let Some(p) = target
+        && !swimmable(t, p)
+    {
+        if count >= 10 {
+            break;
+        }
+        count += 1;
+        target = default_pos(t, h, v);
+    }
+    target
+}
+
+/// `Entity.getViewVector(0)` (`calculateViewVector(xRot, yRot)`).
+pub fn view_vector(x_rot: f32, y_rot: f32) -> Vec3 {
+    let x = x_rot * (std::f32::consts::PI / 180.0);
+    let y = -y_rot * (std::f32::consts::PI / 180.0);
+    let (y_cos, y_sin) = (
+        vanillite_base::math::cos(f64::from(y)),
+        vanillite_base::math::sin(f64::from(y)),
+    );
+    let (x_cos, x_sin) = (
+        vanillite_base::math::cos(f64::from(x)),
+        vanillite_base::math::sin(f64::from(x)),
+    );
+    Vec3::new(
+        f64::from(y_sin * x_cos),
+        f64::from(-x_sin),
+        f64::from(y_cos * x_cos),
+    )
+}
