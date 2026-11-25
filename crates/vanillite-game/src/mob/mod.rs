@@ -6,10 +6,10 @@
 //! readable for blocks and light); what changes blocks (explosions, a sheep eating grass) is
 //! queued as a [`WorldAction`] and applied by the world right after that mob's tick.
 
-pub mod boss;
-pub mod brain;
 pub mod animal;
 pub mod attack;
+pub mod boss;
+pub mod brain;
 pub mod combat;
 pub mod goals;
 pub mod kinds;
@@ -561,9 +561,9 @@ impl WorldAction {
                 }
             }
             WorldAction::HopperMinecart(id) => crate::minecart::hopper_suck(level, id),
-            WorldAction::Explode(_)
-            | WorldAction::ExplodeWith { .. }
-            | WorldAction::Level(_) => return false,
+            WorldAction::Explode(_) | WorldAction::ExplodeWith { .. } | WorldAction::Level(_) => {
+                return false;
+            }
         }
         true
     }

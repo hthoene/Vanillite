@@ -71,6 +71,7 @@ impl World {
         f: impl FnOnce(&Level, &mut Entities, &mut Env<'_>, &mut MobContext) -> R,
     ) -> R {
         let raining = |_| false;
+        let mut no_gateway = |_| false;
         let mut env = Env {
             hooks: &crate::hooks::NoHooks,
             types: &self.types,
@@ -82,6 +83,7 @@ impl World {
             min_y: -64,
             dimension: "minecraft:the_end",
             raining_at: &raining,
+            enter_gateway: &mut no_gateway,
             random: &mut self.random,
             out: &mut self.out,
         };
@@ -260,6 +262,7 @@ fn respawn_stages_take_604_ticks() {
             cx,
         } = &mut w;
         let raining = |_| false;
+        let mut no_gateway = |_| false;
         let mut env = Env {
             hooks: &crate::hooks::NoHooks,
             types,
@@ -271,6 +274,7 @@ fn respawn_stages_take_604_ticks() {
             min_y: -64,
             dimension: "minecraft:the_end",
             raining_at: &raining,
+            enter_gateway: &mut no_gateway,
             random,
             out,
         };

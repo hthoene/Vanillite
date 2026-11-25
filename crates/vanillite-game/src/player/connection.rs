@@ -913,7 +913,9 @@ impl Connection {
             return;
         }
         let in_range = |pos| actor.within_block_range(pos, 4.0);
-        if !crate::menu::container::still_valid(inventory, level, &in_range) {
+        if !crate::menu::container::still_valid(inventory, level, &in_range, &|b| {
+            actor.within_entity_range(b, 4.0)
+        }) {
             log::debug!("A player interacted with an invalid menu");
             return;
         }

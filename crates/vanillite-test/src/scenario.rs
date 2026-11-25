@@ -517,6 +517,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             to: BlockPos::new(0, 0, 0),
             block: String::new(),
             hurt: None,
+            effect: None,
             chunks,
         });
     }
@@ -549,6 +550,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
                 duration: int("duration").ok_or("effect needs a duration")?,
                 amplifier: int("amplifier").unwrap_or(0),
             }),
+            chunks: Vec::new(),
         });
     }
     if kind == OpKind::Hurt {

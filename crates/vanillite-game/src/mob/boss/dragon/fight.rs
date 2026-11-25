@@ -366,7 +366,8 @@ impl DragonFight {
                 return false;
             }
         }
-        (-1..=1).all(|dx| (-1..=1).all(|dz| level.entities_loaded(ChunkPos::new(c.x + dx, c.z + dz))))
+        (-1..=1)
+            .all(|dx| (-1..=1).all(|dz| level.entities_loaded(ChunkPos::new(c.x + dx, c.z + dz))))
     }
 
     /// `updatePlayers`: the players alive within 192 blocks of the dragon's spawn see the bar.

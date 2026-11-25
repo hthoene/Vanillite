@@ -10,10 +10,10 @@ use vanillite_game::entities::{Entities, is_mob_kind};
 use vanillite_game::item::ItemStack;
 use vanillite_game::level::Level;
 use vanillite_game::level::explosion::BlockInteraction;
+use vanillite_game::minecart::{self, MinecartKind};
 use vanillite_game::mob::boss;
 use vanillite_game::mob::boss::dragon::{self, fight::DragonFight};
 use vanillite_game::mob::boss::special::{self, is_special_kind};
-use vanillite_game::minecart::{self, MinecartKind};
 use vanillite_game::mob::spawn::{self, SpawnInput, SpawnTable, Spawner};
 use vanillite_game::mob::{
     self, Environment, MobContext, MobSettings, WorldAction, animal, attack, combat, projectile,
@@ -131,7 +131,16 @@ impl WorldMobs {
         let rules = state.rules().clone();
         let no_blocks = NoBlocks;
         let raining = |_| false;
-        let mut env = survival.env(state, &rules, &no_blocks, &raining, dimension, &hooks);
+        let mut no_gateway = |_| false;
+        let mut env = survival.env(
+            state,
+            &rules,
+            &no_blocks,
+            &raining,
+            dimension,
+            &mut no_gateway,
+            &hooks,
+        );
         if std::mem::take(&mut level.output().try_dragon_respawn) {
             fight.try_respawn(level);
         }
@@ -172,7 +181,16 @@ impl WorldMobs {
         let rules = state.rules().clone();
         let no_blocks = NoBlocks;
         let raining = |_| false;
-        let mut env = survival.env(state, &rules, &no_blocks, &raining, dimension, &hooks);
+        let mut no_gateway = |_| false;
+        let mut env = survival.env(
+            state,
+            &rules,
+            &no_blocks,
+            &raining,
+            dimension,
+            &mut no_gateway,
+            &hooks,
+        );
         for event in events {
             fight.handle(level, &mut env, &mut self.cx, event);
         }
@@ -738,7 +756,16 @@ impl WorldMobs {
         let hurts = std::mem::take(&mut level.output().magic_hurts);
         let no_blocks = NoBlocks;
         let raining = |_| false;
-        let mut env = survival.env(state, &rules, &no_blocks, &raining, dimension, &hooks);
+        let mut no_gateway = |_| false;
+        let mut env = survival.env(
+            state,
+            &rules,
+            &no_blocks,
+            &raining,
+            dimension,
+            &mut no_gateway,
+            &hooks,
+        );
         let mut ents = std::mem::take(&mut level.entities);
         for (target, amount) in hurts {
             let source = DamageSource::of(env.types.magic);

@@ -137,6 +137,7 @@ fn with_tick<R>(
     let mut random = LegacyRandom::new(3);
     let mut out = Vec::new();
     let raining = |_| false;
+    let mut no_gateway = |_| false;
     let mut env = Env {
         hooks: &crate::hooks::NoHooks,
         types: &types,
@@ -148,6 +149,7 @@ fn with_tick<R>(
         min_y: -64,
         dimension: "minecraft:overworld",
         raining_at: &raining,
+        enter_gateway: &mut no_gateway,
         random: &mut random,
         out: &mut out,
     };
@@ -230,6 +232,7 @@ fn skull_hit_withers_by_difficulty() {
         let mut random = LegacyRandom::new(3);
         let mut out = Vec::new();
         let raining = |_| false;
+        let mut no_gateway = |_| false;
         let mut env = Env {
             hooks: &crate::hooks::NoHooks,
             types: &types,
@@ -241,6 +244,7 @@ fn skull_hit_withers_by_difficulty() {
             min_y: -64,
             dimension: "minecraft:overworld",
             raining_at: &raining,
+            enter_gateway: &mut no_gateway,
             random: &mut random,
             out: &mut out,
         };
@@ -294,6 +298,8 @@ fn powered_wither_ignores_arrows() {
             tick_count: 0,
             pickup: 0,
             random_seed: 0,
+            knockback: 0.0,
+            fire: false,
         },
     );
     if let Some(m) = level.entities.mob_mut(wither) {
@@ -314,6 +320,7 @@ fn powered_wither_ignores_arrows() {
         let mut random = LegacyRandom::new(3);
         let mut out = Vec::new();
         let raining = |_| false;
+        let mut no_gateway = |_| false;
         let mut env = Env {
             hooks: &crate::hooks::NoHooks,
             types: &types,
@@ -325,6 +332,7 @@ fn powered_wither_ignores_arrows() {
             min_y: -64,
             dimension: "minecraft:overworld",
             raining_at: &raining,
+            enter_gateway: &mut no_gateway,
             random: &mut random,
             out: &mut out,
         };

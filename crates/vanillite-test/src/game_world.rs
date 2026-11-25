@@ -30,6 +30,7 @@ use vanillite_data::entity::{EntityTypeId, ids};
 use vanillite_game::block::Behaviours;
 use vanillite_game::entities::{Entities, is_mob_kind};
 use vanillite_game::item_entity::ItemData;
+use vanillite_game::level::explosion::BlockInteraction;
 use vanillite_game::level::{Level, LevelOutput, LevelSettings, update};
 use vanillite_game::minecart::{self, MinecartKind};
 use vanillite_game::mob::goals::{Goal, MeleeKind, Slot};
