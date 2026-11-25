@@ -911,6 +911,16 @@
       "field_type": "text"
     },
     {
+      "name": "Bedrock: Min Protocol",
+      "description": "Oldest Bedrock network protocol that may join. 0 accepts every Bedrock version this build supports (listed at startup); e.g. 2225 admits only Bedrock 1.26.60 and newer. Range: 0 to 100000. Empty: the profile's value (vanilla profile: 0). vanillite.toml: bedrock.min-protocol.",
+      "env_variable": "VANILLITE_BEDROCK__MIN_PROTOCOL",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:0,100000",
+      "field_type": "text"
+    },
+    {
       "name": "Bedrock: Name Prefix",
       "description": "Prefix of Bedrock players' Java names, so they never collide with Java accounts. Bedrock players get the UUID `00000000-0000-0000-xxxx-xxxxxxxxxxxx` of their XUID (like Floodgate); whitelist and operators use that UUID. Empty: the profile's value (vanilla profile: .). vanillite.toml: bedrock.name-prefix.",
       "env_variable": "VANILLITE_BEDROCK__NAME_PREFIX",

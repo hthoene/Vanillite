@@ -74,6 +74,9 @@ bind = "0.0.0.0:19132"
 online-mode = true
 # Prefix of Bedrock players' Java names, so they never collide with Java accounts.
 name-prefix = "."
+# Oldest Bedrock network protocol that may join (0: every version the proxy supports, listed at
+# startup). E.g. 2225 admits only Bedrock 1.26.60 and newer.
+min-protocol = 0
 # Bedrock connections per IP address.
 max-connections-per-ip = 8
 # Packets per second a Bedrock client may send before it is kicked.
@@ -134,6 +137,8 @@ pub struct Bedrock {
     pub online_mode: bool,
     /// Prefix of Bedrock players' Java names. Default ".".
     pub name_prefix: String,
+    /// Oldest accepted Bedrock protocol (0..=100000, 0 = all supported). Default 0.
+    pub min_protocol: i32,
     /// Connections per IP address (1..=1000). Default 8.
     pub max_connections_per_ip: u32,
     /// Packets per second per client (50..=100000). Default 1000.
@@ -153,6 +158,7 @@ impl Default for Bedrock {
             bind: SocketAddr::from(([0, 0, 0, 0], 19132)),
             online_mode: true,
             name_prefix: ".".to_owned(),
+            min_protocol: 0,
             max_connections_per_ip: 8,
             max_packets_per_second: 1000,
             max_view_distance: 12,
@@ -174,6 +180,7 @@ impl Bedrock {
             bind,
             online_mode: boolean(t, "online-mode", d.online_mode)?,
             name_prefix: string(t, "name-prefix", &d.name_prefix)?,
+            min_protocol: i32::try_from(int(t, "min-protocol", 0, 0, 100_000)?).unwrap_or(0),
             max_connections_per_ip: u32::try_from(int(t, "max-connections-per-ip", 8, 1, 1000)?)
                 .unwrap_or(8),
             max_packets_per_second: u32::try_from(int(

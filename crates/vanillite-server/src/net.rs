@@ -306,6 +306,7 @@ fn start_bedrock(
     let bedrock = vanillite_bedrock::BedrockConfig {
         bind,
         online_mode: b.online_mode,
+        min_protocol: i32::try_from(b.min_protocol).unwrap_or(i32::MAX),
         name_prefix: b.name_prefix.clone(),
         world_name: p.level_name.clone(),
         max_connections: u32::try_from(p.max_players).unwrap_or(0).saturating_add(64),
