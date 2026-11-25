@@ -93,6 +93,10 @@ debug = false
 [profile.dev.package.vanillite-worldgen]
 opt-level = 3
 
+# The light engine recomputes whole chunk areas; its parity tests and scenarios run optimised.
+[profile.dev.package.vanillite-light]
+opt-level = 3
+
 [profile.release]
 lto = "fat"
 codegen-units = 1

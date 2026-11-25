@@ -1488,9 +1488,12 @@ dependencies = [
 name = "vanillite-light"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "vanillite-base",
  "vanillite-chunk",
  "vanillite-data",
+ "vanillite-nbt",
+ "vanillite-storage",
 ]
 
 [[package]]
@@ -1634,6 +1637,7 @@ dependencies = [
  "vanillite-data",
  "vanillite-datapack",
  "vanillite-game",
+ "vanillite-light",
  "vanillite-server",
  "vanillite-world",
  "vanillite-worldgen",

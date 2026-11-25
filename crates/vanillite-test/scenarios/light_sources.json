@@ -1,0 +1,26 @@
+{
+  "description": "Light sources placed and broken next to a chunk corner: torch, glowstone, lava, sea lantern and jack o'lantern, block light through glass, leaves, water and around walls.",
+  "tier": "fast",
+  "light": true,
+  "world": {"layers": [["minecraft:bedrock", 1], ["minecraft:stone", 59], ["minecraft:dirt", 4], ["minecraft:grass_block", 1]]},
+  "region": [[-12, -3, -12], [12, 6, 12]],
+  "ticks": 7,
+  "setup": [
+    {"op": "fill", "from": [-3, 1, 2], "to": [3, 4, 2], "block": "minecraft:stone_bricks"},
+    {"op": "fill", "from": [-3, 1, -2], "to": [3, 4, -2], "block": "minecraft:glass"},
+    {"op": "fill", "from": [5, 1, -3], "to": [5, 3, 3], "block": "minecraft:oak_leaves[distance=7,persistent=true,waterlogged=false]"},
+    {"op": "fill", "from": [-7, -2, -3], "to": [-5, 0, 3], "block": "minecraft:water"},
+    {"op": "fill", "from": [6, -1, -8], "to": [8, 0, -6], "block": "minecraft:air"}
+  ],
+  "actions": [
+    {"tick": 1, "op": "place", "pos": [0, 1, 0], "block": "minecraft:torch"},
+    {"tick": 2, "op": "place", "pos": [0, 1, 5], "block": "minecraft:glowstone"},
+    {"tick": 2, "op": "set", "pos": [-6, -2, 0], "block": "minecraft:sea_lantern"},
+    {"tick": 3, "op": "set", "pos": [7, -1, -7], "block": "minecraft:lava"},
+    {"tick": 3, "op": "place", "pos": [8, 1, 0], "block": "minecraft:jack_o_lantern[facing=west]"},
+    {"tick": 4, "op": "place", "pos": [0, 1, 0], "block": "minecraft:air"},
+    {"tick": 5, "op": "place", "pos": [0, 2, 2], "block": "minecraft:air"},
+    {"tick": 6, "op": "set", "pos": [-6, -2, 0], "block": "minecraft:sand"},
+    {"tick": 7, "op": "place", "pos": [0, 1, 5], "block": "minecraft:air"}
+  ]
+}
