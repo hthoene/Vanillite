@@ -1217,6 +1217,13 @@ impl Chunks {
         out.extend(self.light_changes.drain());
     }
 
+    /// Recomputes the light around changed chunks now and applies the results that are done:
+    /// with an inline executor, all of them (scenario worlds observe settled light).
+    pub fn flush_light(&mut self) {
+        self.start_relights();
+        self.drain_done();
+    }
+
     /// Starts light recomputation around changed chunks whose 5 × 5 area is loaded.
     fn start_relights(&mut self) {
         if self.relight.is_empty() {

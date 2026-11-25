@@ -1,0 +1,18 @@
+{
+  "description": "Water poured into a walled basin and into a dug pit: sky light through flowing water and water sources, then the water drained by a block.",
+  "tier": "fast",
+  "light": true,
+  "world": {"layers": [["minecraft:bedrock", 1], ["minecraft:stone", 59], ["minecraft:dirt", 4], ["minecraft:grass_block", 1]]},
+  "region": [[-9, -6, -9], [9, 4, 9]],
+  "ticks": 40,
+  "setup": [
+    {"op": "fill", "from": [-7, 1, -7], "to": [7, 2, 7], "block": "minecraft:stone_bricks"},
+    {"op": "fill", "from": [-6, 1, -6], "to": [6, 2, 6], "block": "minecraft:air"},
+    {"op": "fill", "from": [-2, -4, -2], "to": [2, 0, 2], "block": "minecraft:air"}
+  ],
+  "actions": [
+    {"tick": 1, "op": "place", "pos": [4, 1, 4], "block": "minecraft:water"},
+    {"tick": 2, "op": "place", "pos": [-4, 2, -4], "block": "minecraft:water"},
+    {"tick": 30, "op": "place", "pos": [-4, 2, -4], "block": "minecraft:stone"}
+  ]
+}
