@@ -95,11 +95,25 @@ pub struct ValueShape {
     pub ty: ValueType,
     /// A word accepted instead of a value (`vanilla`, `disabled`).
     pub keyword: Option<&'static str>,
+    /// The complete set of accepted values, if it is fixed (enumerations); empty otherwise.
+    pub choices: &'static [&'static str],
 }
 
 impl ValueShape {
     const fn of(ty: ValueType) -> ValueShape {
-        ValueShape { ty, keyword: None }
+        ValueShape {
+            ty,
+            keyword: None,
+            choices: &[],
+        }
+    }
+
+    const fn one_of(choices: &'static [&'static str]) -> ValueShape {
+        ValueShape {
+            ty: ValueType::Text,
+            keyword: None,
+            choices,
+        }
     }
 }
 
@@ -271,6 +285,7 @@ impl<T: RuleValue> RuleValue for VanillaOr<T> {
     const SHAPE: ValueShape = ValueShape {
         ty: T::SHAPE.ty,
         keyword: Some("vanilla"),
+        choices: &[],
     };
     fn from_toml(value: &toml::Value) -> Result<Self, String> {
         match value.as_str() {
@@ -306,7 +321,7 @@ pub enum StorageLayout {
 }
 
 impl RuleValue for StorageLayout {
-    const SHAPE: ValueShape = ValueShape::of(ValueType::Text);
+    const SHAPE: ValueShape = ValueShape::one_of(&["vanilla", "spigot"]);
     fn from_toml(value: &toml::Value) -> Result<Self, String> {
         match value.as_str().map(str::trim) {
             Some(s) if s.eq_ignore_ascii_case("vanilla") => Ok(StorageLayout::Vanilla),
@@ -335,7 +350,7 @@ pub enum RedstoneImplementation {
 }
 
 impl RuleValue for RedstoneImplementation {
-    const SHAPE: ValueShape = ValueShape::of(ValueType::Text);
+    const SHAPE: ValueShape = ValueShape::one_of(&["vanilla", "alternate-current"]);
     fn from_toml(value: &toml::Value) -> Result<Self, String> {
         match value.as_str().map(str::trim) {
             Some(s) if s.eq_ignore_ascii_case("vanilla") => Ok(RedstoneImplementation::Vanilla),
@@ -367,7 +382,7 @@ pub enum WorldFormat {
 }
 
 impl RuleValue for WorldFormat {
-    const SHAPE: ValueShape = ValueShape::of(ValueType::Text);
+    const SHAPE: ValueShape = ValueShape::one_of(&["vanillite", "anvil"]);
     fn from_toml(value: &toml::Value) -> Result<Self, String> {
         match value.as_str().map(str::trim) {
             Some(s) if s.eq_ignore_ascii_case("vanillite") => Ok(WorldFormat::Vanillite),
@@ -428,7 +443,7 @@ pub enum AntiXrayMode {
 }
 
 impl RuleValue for AntiXrayMode {
-    const SHAPE: ValueShape = ValueShape::of(ValueType::Text);
+    const SHAPE: ValueShape = ValueShape::one_of(&["disabled", "hide", "obfuscate"]);
     fn from_toml(value: &toml::Value) -> Result<Self, String> {
         match value {
             toml::Value::Boolean(false) => Ok(AntiXrayMode::Disabled),
@@ -479,6 +494,7 @@ impl<T: RuleValue> RuleValue for DisabledOr<T> {
     const SHAPE: ValueShape = ValueShape {
         ty: T::SHAPE.ty,
         keyword: Some("disabled"),
+        choices: &[],
     };
     fn from_toml(value: &toml::Value) -> Result<Self, String> {
         match value {

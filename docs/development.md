@@ -94,10 +94,18 @@ scripts/docker/install-docker.sh --client   # Docker CLI and buildx
 `deploy/pterodactyl/egg-vanillite.json` is generated from the typed schema in `vanillite-config`:
 every `server.properties` key (`ServerProperties::INFO`, except those declared `panel = false`)
 and every `vanillite.toml` rule (except the `debug` group) becomes a variable named like its
-`VANILLITE_<KEY>` override, with the documentation, default, range or allowed values. After a
-change of the schema run `cargo xtask egg`; CI and the `egg` test of xtask fail while the
-committed egg is stale. `cargo xtask egg smoke [--image <ref>]` starts an image like Wings does
-(STARTUP, `/home/container`, UID 988, read-only root) and pings it.
+`VANILLITE_<KEY>` override, with the documentation, default, range or allowed values. The
+curated `ESSENTIALS` in `xtask/src/egg.rs` come first, in their order and with plain names and
+one-sentence descriptions; all other variables follow grouped by area (`AREAS`, the first part
+of the rule's table) with the area as name prefix, so new keys appear without changes to the
+generator. Panels render `in:true,false` as a switch (Pterodactyl) and other `in:` rules as
+dropdowns: booleans and enumerations (`ValueShape::choices`) of rules get a dropdown with
+`default`, which the server ignores like an empty value (`EnvOverrides`), so the profile decides.
+The image dropdown is derived from the workspace version and the Minecraft version (tags of
+`scripts/release/meta.sh`). After a change of the schema run `cargo xtask egg`; CI and the
+`egg` test of xtask fail while the committed egg is stale. `cargo xtask egg smoke [--image
+<ref>]` starts an image like Wings does (STARTUP, `/home/container`, UID 988, read-only root)
+and pings it. How to import and use the egg is in the README.
 
 ## Fuzzing
 
@@ -218,7 +226,8 @@ To release: set the workspace version (and the `version` of every internal crate
   generated notes. A manual run (`gh workflow run release.yml --ref <branch>`) is a dry run: the
   archives become workflow artifacts and nothing is published.
 - `.github/workflows/docker.yml` pushes the linux/amd64 and linux/arm64 image to Docker Hub with
-  the tags above. The Pterodactyl egg uses `beta` until the first stable release.
+  the tags above. The Pterodactyl egg offers `mc<minecraft>-<channel>` (default) and `<channel>`, after the
+  first stable release `mc<minecraft>` and `latest`.
 
 The binaries hold everything but Mojang's data: the first start downloads the pinned server jar
 into `cache/` (internet access needed once, no Java).
