@@ -9,11 +9,12 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::chain::{ClientboundStep, ServerboundStep};
 use crate::chunk::{self, Kind};
+use crate::common::{self, Registries};
 use crate::entity_data::{self, Tables};
 use crate::generated::v26_2 as g;
 use crate::io;
 use crate::items::{self, Maps};
-use crate::table::{PacketTable, Remap, similar};
+use crate::table::{PacketTable, Remap};
 use crate::{Result, State};
 use g::new_configuration_clientbound as ncc;
 use g::new_play_clientbound as npc;
@@ -21,18 +22,21 @@ use g::new_play_serverbound as nps;
 use g::old_configuration_serverbound as ocs;
 use g::old_play_serverbound as ops;
 use vanillite_protocol::Error;
-use vanillite_protocol::codec::{Reader, write_str, write_varint};
+use vanillite_protocol::codec::{Reader, write_varint};
 use vanillite_protocol::components::Ref;
 
 /// Opens both halves of the step for one connection.
-pub(crate) fn open() -> (Box<dyn ClientboundStep>, Box<dyn ServerboundStep>) {
+///
+/// `deep`: older steps follow, so item stacks keep only the components they translate
+/// ([`crate::portable`]).
+pub(crate) fn open(deep: bool) -> (Box<dyn ClientboundStep>, Box<dyn ServerboundStep>) {
     let shared = Arc::new(Mutex::new(Shared::default()));
     (
         Box::new(Clientbound {
             shared: Arc::clone(&shared),
-            dynamic: Vec::new(),
-            dropped: Vec::new(),
+            regs: Registries::default(),
             refs: Vec::new(),
+            deep,
         }),
         Box::new(Serverbound {
             shared,
@@ -51,7 +55,10 @@ struct Shared {
 }
 
 /// The step's static registry tables, by registry name.
-struct StaticMaps;
+struct StaticMaps {
+    /// Only the portable components survive (older steps follow).
+    deep: bool,
+}
 
 impl Maps for StaticMaps {
     fn registry(&self, name: &str) -> Option<&'static Remap> {
@@ -59,6 +66,13 @@ impl Maps for StaticMaps {
     }
 
     fn component(&self, t: u16) -> Option<u16> {
+        if self.deep
+            && !g::NEW_DATA_COMPONENT_TYPES
+                .get(usize::from(t))
+                .is_some_and(|n| crate::portable::portable(n))
+        {
+            return None;
+        }
         // `swing_animation` was renamed `attack_animation` with the same codec.
         if i32::from(t) == g::NEW_DATA_COMPONENT_TYPE_ATTACK_ANIMATION {
             return u16::try_from(g::OLD_DATA_COMPONENT_TYPE_SWING_ANIMATION).ok();
@@ -84,7 +98,12 @@ fn pot_decorations(value: &[u8], out: &mut Vec<u8>) -> Result<()> {
             *id = g::ITEM.older(r.varint()?).unwrap_or(g::OLD_ITEM_BRICK);
             r.varint()?;
             let mut skip = Vec::new();
-            items::patch_to_old(&mut r, &mut skip, &StaticMaps, &mut Vec::new())?;
+            items::patch_to_old(
+                &mut r,
+                &mut skip,
+                &StaticMaps { deep: false },
+                &mut Vec::new(),
+            )?;
         }
     }
     let len = ids
@@ -163,51 +182,26 @@ fn block_kind() -> Kind {
     }
 }
 
-/// A dynamic registry as the client knows it: newer index → older index.
-#[derive(Debug)]
-struct Dynamic {
-    registry: String,
-    to_old: Vec<i32>,
-    old_len: usize,
-}
-
 #[derive(Debug)]
 struct Clientbound {
     shared: Arc<Mutex<Shared>>,
     /// Synchronised registries as sent in this connection's configuration.
-    dynamic: Vec<Dynamic>,
-    /// Registries whose data was not sent to the client (it does not synchronise them).
-    dropped: Vec<String>,
+    regs: Registries,
     refs: Vec<Ref>,
+    deep: bool,
 }
 
 impl Clientbound {
-    fn dynamic(&self, registry: &str) -> Option<&Dynamic> {
-        self.dynamic.iter().find(|d| d.registry == registry)
+    fn maps(&self) -> StaticMaps {
+        StaticMaps { deep: self.deep }
     }
 
     fn biome_kind(&self) -> Kind {
-        let (new, old) = self
-            .dynamic("minecraft:worldgen/biome")
-            .map_or((64, 64), |d| (d.to_old.len(), d.old_len));
-        Kind {
-            entries: 64,
-            max_indirect: 3,
-            global_new: chunk::global_bits(new),
-            global_old: chunk::global_bits(old),
-        }
+        self.regs.biome_kind()
     }
 
     fn biome_map(&self) -> impl Fn(i32) -> i32 + '_ {
-        let d = self.dynamic("minecraft:worldgen/biome");
-        move |id| match d {
-            Some(d) => usize::try_from(id)
-                .ok()
-                .and_then(|i| d.to_old.get(i))
-                .copied()
-                .unwrap_or(0),
-            None => id,
-        }
+        self.regs.biome_map()
     }
 }
 
@@ -216,7 +210,13 @@ fn block_state_to_old(id: i32) -> i32 {
 }
 
 impl ClientboundStep for Clientbound {
-    fn translate(&mut self, state: State, body: &[u8], out: &mut Vec<u8>) -> Result<bool> {
+    fn translate(
+        &mut self,
+        state: State,
+        body: &[u8],
+        out: &mut Vec<u8>,
+        _ctx: &crate::chain::Ctx<'_>,
+    ) -> Result<bool> {
         let Some(table) = packets(state, true) else {
             out.extend_from_slice(body);
             return Ok(true);
@@ -257,139 +257,27 @@ impl ClientboundStep for Clientbound {
             || id == npc::UPDATE_TAGS
             || id == npc::START_CONFIGURATION)
     }
+
+    fn entity_type_older(&self, new: i32) -> Option<i32> {
+        g::ENTITY_TYPE.older(new)
+    }
 }
 
 impl Clientbound {
     fn configuration(&mut self, id: i32, r: &mut Reader<'_>, out: &mut Vec<u8>) -> Result<bool> {
         match id {
             ncc::SELECT_KNOWN_PACKS => {
-                known_packs(r, out, g::NEXT_ID, g::ID)?;
+                common::known_packs(r, out, g::NEXT_PROTOCOL, g::PROTOCOL)?;
             }
-            ncc::REGISTRY_DATA => return self.registry_data(r, out),
-            ncc::UPDATE_TAGS => self.tags(r, out)?,
+            ncc::REGISTRY_DATA => return self.regs.registry_data(&g::TABLES, r, out),
+            ncc::UPDATE_TAGS => self.regs.tags(&g::TABLES, r, out)?,
             _ => out.extend_from_slice(r.take_rest()),
         }
         Ok(true)
     }
 
-    /// `registry_data`: registries the older version does not synchronise are dropped; entries it
-    /// does not have built in are left out unless they come with their data. Later ids follow.
-    fn registry_data(&mut self, r: &mut Reader<'_>, out: &mut Vec<u8>) -> Result<bool> {
-        let registry = r.string(io::MAX_STRING)?.to_owned();
-        let Some((_, known)) = g::SYNCHRONIZED.iter().find(|(n, _)| *n == registry) else {
-            if !self.dropped.contains(&registry) {
-                self.dropped.push(registry);
-            }
-            return Ok(false);
-        };
-        let n = io::len(r, 1 << 16, 2)?;
-        let mut entries = Vec::new();
-        let mut names = Vec::with_capacity(n);
-        let mut kept = Vec::with_capacity(n);
-        for _ in 0..n {
-            let name = r.string(io::MAX_STRING)?.to_owned();
-            let start = r.rest();
-            let has_data = r.u8()? != 0;
-            if has_data {
-                let mut skip = Vec::new();
-                io::nbt(r, &mut skip)?;
-            }
-            let len = start.len().saturating_sub(r.remaining());
-            let keep = has_data || known.binary_search(&name.as_str()).is_ok();
-            if keep {
-                write_str(&mut entries, &name);
-                entries.extend_from_slice(start.get(..len).ok_or(Error::UnexpectedEnd)?);
-            }
-            kept.push(keep);
-            names.push(name);
-        }
-        let kept_names: Vec<&str> = names
-            .iter()
-            .zip(&kept)
-            .filter(|(_, k)| **k)
-            .map(|(n, _)| n.as_str())
-            .collect();
-        let mut to_old = Vec::with_capacity(n);
-        let mut next = 0i32;
-        for (name, keep) in names.iter().zip(&kept) {
-            if *keep {
-                to_old.push(next);
-                next = next.saturating_add(1);
-            } else {
-                let fallback = similar(name, kept_names.iter().copied())
-                    .and_then(|s| kept_names.iter().position(|k| *k == s))
-                    .and_then(|i| i32::try_from(i).ok())
-                    .unwrap_or(0);
-                to_old.push(fallback);
-            }
-        }
-        write_str(out, &registry);
-        io::write_len(out, kept_names.len());
-        out.extend_from_slice(&entries);
-        self.dynamic.retain(|d| d.registry != registry);
-        self.dynamic.push(Dynamic {
-            registry,
-            to_old,
-            old_len: kept_names.len(),
-        });
-        Ok(true)
-    }
-
-    /// `update_tags`: ids follow the older registries; registries it lacks are left out.
-    fn tags(&self, r: &mut Reader<'_>, out: &mut Vec<u8>) -> Result<()> {
-        let n = io::len(r, 1024, 2)?;
-        let mut body = Vec::new();
-        let mut kept = 0usize;
-        for _ in 0..n {
-            let registry = r.string(io::MAX_STRING)?.to_owned();
-            let remap = static_remap(&registry);
-            let dynamic = self.dynamic(&registry);
-            // A 26.2 client fails on tags of registries it does not know.
-            let known = !self.dropped.contains(&registry)
-                && (g::STATIC_REGISTRIES.contains(&registry.as_str())
-                    || g::SYNCHRONIZED.iter().any(|(n, _)| *n == registry));
-            let tags = io::len(r, 1 << 16, 2)?;
-            let mut list = Vec::new();
-            for _ in 0..tags {
-                io::string(r, &mut list)?;
-                let ids = io::len(r, 1 << 20, 1)?;
-                let mut mapped = Vec::with_capacity(ids);
-                for _ in 0..ids {
-                    let id = r.varint()?;
-                    let old = match (remap, dynamic) {
-                        (Some(m), _) => m.older(id),
-                        (None, Some(d)) => usize::try_from(id)
-                            .ok()
-                            .and_then(|i| d.to_old.get(i).copied()),
-                        (None, None) => Some(id),
-                    };
-                    // Entries the older version lacks leave the tag (fallbacks would add
-                    // unrelated entries to it).
-                    if let Some(old) = old
-                        && !is_fallback(remap, dynamic, id)
-                    {
-                        mapped.push(old);
-                    }
-                }
-                io::write_len(&mut list, mapped.len());
-                for id in mapped {
-                    write_varint(&mut list, id);
-                }
-            }
-            if known {
-                write_str(&mut body, &registry);
-                io::write_len(&mut body, tags);
-                body.extend_from_slice(&list);
-                kept = kept.saturating_add(1);
-            }
-        }
-        io::write_len(out, kept);
-        out.extend_from_slice(&body);
-        Ok(())
-    }
-
     fn play(&mut self, id: i32, r: &mut Reader<'_>, out: &mut Vec<u8>) -> Result<bool> {
-        let maps = StaticMaps;
+        let maps = self.maps();
         match id {
             npc::LEVEL_CHUNK_WITH_LIGHT => {
                 io::bytes(r, out, 8)?;
@@ -466,14 +354,14 @@ impl Clientbound {
                 if io::boolean(r, out)? {
                     io::bytes(r, out, 24)?;
                 }
-                let maps = StaticMaps;
+                let maps = self.maps();
                 let t = tables(&maps);
                 if !entity_data::particle(r, out, &t, &mut self.refs)? {
                     // No such particle in 26.2: the plain explosion.
                     write_varint(out, g::PARTICLE_TYPE.older(0).unwrap_or(0));
                 }
                 let mut sound_bytes = Vec::new();
-                sound(r, &mut sound_bytes)?;
+                common::sound(&g::TABLES, r, &mut sound_bytes)?;
                 let n = io::len(r, 1024, 2)?;
                 let mut list = Vec::new();
                 let mut kept = 0usize;
@@ -501,7 +389,7 @@ impl Clientbound {
             }
             npc::UPDATE_ADVANCEMENTS => self.advancements(r, out)?,
             npc::MERCHANT_OFFERS => {
-                let maps = StaticMaps;
+                let maps = self.maps();
                 io::varint(r, out)?;
                 let n = io::len(r, 1024, 4)?;
                 io::write_len(out, n);
@@ -591,7 +479,7 @@ impl Clientbound {
                 };
                 write_varint(out, old);
                 io::bytes(r, out, 24)?;
-                lp_vec3(r, out)?;
+                common::lp_vec3(r, out)?;
                 io::bytes(r, out, 3)?;
                 let data = r.varint()?;
                 let falling_block = g::NEW_ENTITY_TYPES
@@ -722,13 +610,13 @@ impl Clientbound {
                 items::stack_to_old(r, out, &maps, &mut self.refs)?;
             }
             npc::SOUND | npc::SOUND_ENTITY => {
-                sound(r, out)?;
+                common::sound(&g::TABLES, r, out)?;
                 out.extend_from_slice(r.take_rest());
             }
             npc::LEVEL_PARTICLES => return self.level_particles(r, out),
-            npc::UPDATE_TAGS => self.tags(r, out)?,
-            npc::AWARD_STATS => award_stats(r, out)?,
-            npc::COMMANDS => commands(r, out)?,
+            npc::UPDATE_TAGS => self.regs.tags(&g::TABLES, r, out)?,
+            npc::AWARD_STATS => common::award_stats(&g::TABLES, r, out)?,
+            npc::COMMANDS => common::commands(&g::TABLES, r, out)?,
             _ => out.extend_from_slice(r.take_rest()),
         }
         Ok(true)
@@ -737,7 +625,7 @@ impl Clientbound {
     /// `level_particles`: 26.3 sends the particle first, per-axis speeds, a VarInt count and a
     /// randomization type; 26.2 the particle last, one speed and an int count.
     fn level_particles(&mut self, r: &mut Reader<'_>, out: &mut Vec<u8>) -> Result<bool> {
-        let maps = StaticMaps;
+        let maps = self.maps();
         let mut particle = Vec::new();
         if !entity_data::particle(r, &mut particle, &tables(&maps), &mut self.refs)? {
             return Ok(false);
@@ -772,7 +660,7 @@ impl Clientbound {
     /// `update_advancements`: 26.3 moved the display position from the display info to the
     /// entry.
     fn advancements(&mut self, r: &mut Reader<'_>, out: &mut Vec<u8>) -> Result<()> {
-        let maps = StaticMaps;
+        let maps = self.maps();
         io::bytes(r, out, 1)?;
         let n = io::len(r, 1 << 16, 2)?;
         io::write_len(out, n);
@@ -866,197 +754,6 @@ fn item_cost(
     items::exact_to_old(r, out, maps, refs)
 }
 
-/// Whether `id` (newer) only maps to a fallback in the older version.
-fn is_fallback(remap: Option<&Remap>, dynamic: Option<&Dynamic>, id: i32) -> bool {
-    match (remap, dynamic) {
-        (Some(m), _) => m
-            .older(id)
-            .and_then(|old| m.newer(old))
-            .is_none_or(|back| back != id),
-        (None, Some(d)) => {
-            // Entries kept by name keep their order; a fallback repeats an earlier index.
-            let Ok(i) = usize::try_from(id) else {
-                return true;
-            };
-            let old = d.to_old.get(i).copied().unwrap_or(-1);
-            d.to_old.iter().take(i).any(|&o| o >= old)
-        }
-        (None, None) => false,
-    }
-}
-
-/// `SoundEvent` holder: newer registry ids become older ids, or the event by name.
-fn sound(r: &mut Reader<'_>, out: &mut Vec<u8>) -> Result<()> {
-    let id = r.varint()?;
-    if id == 0 {
-        write_varint(out, 0);
-        io::string(r, out)?;
-        if io::boolean(r, out)? {
-            io::bytes(r, out, 4)?;
-        }
-        return Ok(());
-    }
-    let new = id.saturating_sub(1);
-    match g::SOUND_EVENT.older(new) {
-        Some(old) => write_varint(out, old.saturating_add(1)),
-        None => {
-            let name = g::SOUND_EVENT_ADDED
-                .iter()
-                .find(|(i, _)| i32::from(*i) == new)
-                .map_or("minecraft:intentionally_empty", |(_, n)| *n);
-            write_varint(out, 0);
-            write_str(out, name);
-            out.push(0);
-        }
-    }
-    Ok(())
-}
-
-/// `award_stats`: (stat type, value id, amount); values of changed registries are rewritten,
-/// stats the older version lacks are left out.
-fn award_stats(r: &mut Reader<'_>, out: &mut Vec<u8>) -> Result<()> {
-    let types = g::NEW_STAT_TYPES;
-    let n = io::len(r, 1 << 16, 3)?;
-    let mut body = Vec::new();
-    let mut kept = 0usize;
-    for _ in 0..n {
-        let kind = r.varint()?;
-        let value = r.varint()?;
-        let amount = r.varint()?;
-        let registry = match types.get(usize::try_from(kind).unwrap_or(usize::MAX)) {
-            Some(&"minecraft:custom") => "minecraft:custom_stat",
-            Some(&"minecraft:mined") => "minecraft:block",
-            Some(&"minecraft:killed" | &"minecraft:killed_by") => "minecraft:entity_type",
-            Some(_) => "minecraft:item",
-            None => return Err(Error::Invalid("stat type")),
-        };
-        let old = match static_remap(registry) {
-            Some(m) if !is_fallback(Some(m), None, value) => m.older(value),
-            Some(_) => None,
-            None => Some(value),
-        };
-        if let Some(old) = old {
-            write_varint(&mut body, kind);
-            write_varint(&mut body, old);
-            write_varint(&mut body, amount);
-            kept = kept.saturating_add(1);
-        }
-    }
-    io::write_len(out, kept);
-    out.extend_from_slice(&body);
-    Ok(())
-}
-
-/// `commands`: argument parser ids follow the older registry; a parser the older version lacks
-/// becomes a greedy string (the client still completes the literal parts of the tree).
-fn commands(r: &mut Reader<'_>, out: &mut Vec<u8>) -> Result<()> {
-    const TYPE_MASK: u8 = 3;
-    const ARGUMENT: u8 = 2;
-    const LITERAL: u8 = 1;
-    const REDIRECT: u8 = 8;
-    const CUSTOM_SUGGESTIONS: u8 = 0x10;
-    let n = io::len(r, 1 << 20, 2)?;
-    io::write_len(out, n);
-    for _ in 0..n {
-        let flags = r.u8()?;
-        out.push(flags);
-        let children = io::len(r, 1 << 20, 1)?;
-        io::write_len(out, children);
-        for _ in 0..children {
-            io::varint(r, out)?;
-        }
-        if flags & REDIRECT != 0 {
-            io::varint(r, out)?;
-        }
-        match flags & TYPE_MASK {
-            LITERAL => io::string(r, out)?,
-            ARGUMENT => {
-                io::string(r, out)?;
-                let id = r.varint()?;
-                let name = usize::try_from(id)
-                    .ok()
-                    .and_then(|i| g::NEW_COMMAND_ARGUMENT_TYPES.get(i))
-                    .copied()
-                    .ok_or(Error::Invalid("argument type"))?;
-                let mut props = Vec::new();
-                parser_properties(name, r, &mut props)?;
-                match g::COMMAND_ARGUMENT_TYPE.older(id) {
-                    Some(old) => {
-                        write_varint(out, old);
-                        out.extend_from_slice(&props);
-                    }
-                    None => {
-                        write_varint(out, g::OLD_STRING_PARSER);
-                        write_varint(out, 2);
-                    }
-                }
-                if flags & CUSTOM_SUGGESTIONS != 0 {
-                    io::string(r, out)?;
-                }
-            }
-            _ => {}
-        }
-    }
-    io::varint(r, out)?;
-    Ok(())
-}
-
-/// Copies the properties of an argument parser (26.3 `ArgumentTypeInfos`).
-fn parser_properties(name: &str, r: &mut Reader<'_>, out: &mut Vec<u8>) -> Result<()> {
-    let bounds = |r: &mut Reader<'_>, out: &mut Vec<u8>, size: usize| -> Result<()> {
-        let f = r.u8()?;
-        out.push(f);
-        let n = usize::from(f & 1).saturating_add(usize::from((f >> 1) & 1));
-        io::bytes(r, out, size.saturating_mul(n))
-    };
-    match name {
-        "brigadier:float" | "brigadier:integer" => bounds(r, out, 4)?,
-        "brigadier:double" | "brigadier:long" => bounds(r, out, 8)?,
-        "brigadier:string" => {
-            io::varint(r, out)?;
-        }
-        "minecraft:entity" | "minecraft:score_holder" => io::bytes(r, out, 1)?,
-        "minecraft:time" => io::bytes(r, out, 4)?,
-        "minecraft:resource_or_tag"
-        | "minecraft:resource_or_tag_key"
-        | "minecraft:resource"
-        | "minecraft:resource_key"
-        | "minecraft:resource_selector" => io::string(r, out)?,
-        _ => {}
-    }
-    Ok(())
-}
-
-/// `LpVec3`: 1 byte for zero, else 6 bytes and a VarInt scale extension when bit 2 is set.
-fn lp_vec3(r: &mut Reader<'_>, out: &mut Vec<u8>) -> Result<()> {
-    let lowest = r.u8()?;
-    out.push(lowest);
-    if lowest == 0 {
-        return Ok(());
-    }
-    io::bytes(r, out, 5)?;
-    if lowest & 4 != 0 {
-        io::varint(r, out)?;
-    }
-    Ok(())
-}
-
-/// `select_known_packs`: the version of `minecraft:core` changes between `from` and `to`.
-fn known_packs(r: &mut Reader<'_>, out: &mut Vec<u8>, from: &str, to: &str) -> Result<()> {
-    let n = io::len(r, 64, 3)?;
-    io::write_len(out, n);
-    for _ in 0..n {
-        let namespace = r.string(io::MAX_STRING)?;
-        let id = r.string(io::MAX_STRING)?;
-        let version = r.string(io::MAX_STRING)?;
-        write_str(out, namespace);
-        write_str(out, id);
-        let core = namespace == "minecraft" && id == "core" && version == from;
-        write_str(out, if core { to } else { version });
-    }
-    Ok(())
-}
-
 #[derive(Debug)]
 struct Serverbound {
     shared: Arc<Mutex<Shared>>,
@@ -1068,7 +765,13 @@ struct Serverbound {
 }
 
 impl ServerboundStep for Serverbound {
-    fn translate(&mut self, state: State, body: &[u8], out: &mut Vec<u8>) -> Result<bool> {
+    fn translate(
+        &mut self,
+        state: State,
+        body: &[u8],
+        out: &mut Vec<u8>,
+        _extra: &mut Vec<Vec<u8>>,
+    ) -> Result<bool> {
         let Some(table) = packets(state, false) else {
             out.extend_from_slice(body);
             return Ok(true);
@@ -1090,7 +793,7 @@ impl ServerboundStep for Serverbound {
         write_varint(out, new_id);
         match state {
             State::Configuration if id == ocs::SELECT_KNOWN_PACKS => {
-                known_packs(&mut r, out, g::ID, g::NEXT_ID)?;
+                common::known_packs(&mut r, out, g::PROTOCOL, g::NEXT_PROTOCOL)?;
             }
             State::Play => return self.play(id, &mut r, out),
             _ => out.extend_from_slice(r.take_rest()),

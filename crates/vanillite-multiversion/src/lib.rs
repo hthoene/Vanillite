@@ -24,35 +24,112 @@
 
 mod chain;
 mod chunk;
+mod common;
 mod entity_data;
 #[rustfmt::skip]
 pub mod generated;
 mod io;
 mod items;
+mod portable;
+mod step;
 pub mod table;
 mod v26_2;
 
 pub use chain::{Adapter, ClientboundHalf, ServerboundHalf};
 pub use vanillite_protocol::State;
 
-/// A supported older version.
+/// A supported older version: one protocol, possibly several releases.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Version {
-    /// Version name (`26.2`).
+    /// Name of the release whose data the step uses (`1.21.8`).
     pub id: &'static str,
     /// Protocol version.
     pub protocol: i32,
+    /// Every release with this protocol (`1.21.7`, `1.21.8`).
+    pub names: &'static [&'static str],
 }
 
+use generated as g;
+
 /// The older versions this build translates, newest first.
-pub const SUPPORTED: &[Version] = &[Version {
-    id: generated::v26_2::ID,
-    protocol: generated::v26_2::PROTOCOL,
-}];
+pub const SUPPORTED: &[Version] = &[
+    version(g::v26_2::ID, g::v26_2::PROTOCOL, &["26.2"]),
+    version(
+        g::v26_1_2::ID,
+        g::v26_1_2::PROTOCOL,
+        &["26.1", "26.1.1", "26.1.2"],
+    ),
+    version(g::v1_21_11::ID, g::v1_21_11::PROTOCOL, &["1.21.11"]),
+    version(
+        g::v1_21_10::ID,
+        g::v1_21_10::PROTOCOL,
+        &["1.21.9", "1.21.10"],
+    ),
+    version(g::v1_21_8::ID, g::v1_21_8::PROTOCOL, &["1.21.7", "1.21.8"]),
+    version(g::v1_21_6::ID, g::v1_21_6::PROTOCOL, &["1.21.6"]),
+    version(g::v1_21_5::ID, g::v1_21_5::PROTOCOL, &["1.21.5"]),
+    version(g::v1_21_4::ID, g::v1_21_4::PROTOCOL, &["1.21.4"]),
+    version(g::v1_21_3::ID, g::v1_21_3::PROTOCOL, &["1.21.2", "1.21.3"]),
+    version(g::v1_21_1::ID, g::v1_21_1::PROTOCOL, &["1.21", "1.21.1"]),
+    version(g::v1_20_6::ID, g::v1_20_6::PROTOCOL, &["1.20.5", "1.20.6"]),
+];
+
+const fn version(id: &'static str, protocol: i32, names: &'static [&'static str]) -> Version {
+    Version {
+        id,
+        protocol,
+        names,
+    }
+}
+
+/// The steps below the newest one (26.2 ↔ 26.3, [`v26_2`]), oldest first. Each translates
+/// between its version and the next with the shared step code ([`step`]).
+pub(crate) const STEPS: &[&table::Tables] = &[
+    &g::v1_20_6::TABLES,
+    &g::v1_21_1::TABLES,
+    &g::v1_21_3::TABLES,
+    &g::v1_21_4::TABLES,
+    &g::v1_21_5::TABLES,
+    &g::v1_21_6::TABLES,
+    &g::v1_21_8::TABLES,
+    &g::v1_21_10::TABLES,
+    &g::v1_21_11::TABLES,
+    &g::v26_1_2::TABLES,
+];
 
 // The newest step must end at the server's version: after a version switch the build fails
 // here until the step from the previous version (kept by `version update --final`) is written.
-const _: () = assert!(generated::v26_2::NEXT_PROTOCOL == vanillite_protocol::PROTOCOL_VERSION);
+const _: () = assert!(g::v26_2::NEXT_PROTOCOL == vanillite_protocol::PROTOCOL_VERSION);
+// The steps must chain without gaps.
+#[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)] // Compile time.
+const _: () = {
+    let mut i = 0;
+    while i < STEPS.len() {
+        let next = match i + 1 < STEPS.len() {
+            true => STEPS[i + 1].protocol,
+            false => g::v26_2::PROTOCOL,
+        };
+        assert!(STEPS[i].next_protocol == next);
+        i += 1;
+    }
+};
+
+/// The release names of a protocol: the supported older ones, or the server's own.
+pub(crate) fn names(protocol: i32) -> &'static [&'static str] {
+    match SUPPORTED.iter().find(|v| v.protocol == protocol) {
+        Some(v) => v.names,
+        None => &[g::v26_2::NEXT_ID],
+    }
+}
+
+/// The server's entity type id of players.
+pub(crate) fn player_type() -> i32 {
+    g::v26_2::NEW_ENTITY_TYPES
+        .iter()
+        .position(|n| *n == "minecraft:player")
+        .and_then(|i| i32::try_from(i).ok())
+        .unwrap_or(0)
+}
 
 /// Errors of a translation: the input was malformed. The connection is closed.
 pub type Error = vanillite_protocol::Error;
@@ -65,7 +142,8 @@ pub struct Accepted(Vec<Version>);
 
 impl Accepted {
     /// Parses the setting: `all` (every supported version), `none` or empty (off), or a
-    /// comma-separated list of version names.
+    /// comma-separated list of release names (`1.21.4`; a release accepts every release with
+    /// its protocol).
     pub fn parse(setting: &str) -> std::result::Result<Self, String> {
         let setting = setting.trim();
         match setting {
@@ -75,16 +153,19 @@ impl Accepted {
         }
         let mut out = Vec::new();
         for name in setting.split(',').map(str::trim) {
-            let v = SUPPORTED.iter().find(|v| v.id == name).ok_or_else(|| {
-                format!(
-                    "unsupported version `{name}`; supported: {}",
-                    SUPPORTED
-                        .iter()
-                        .map(|v| v.id)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
-            })?;
+            let v = SUPPORTED
+                .iter()
+                .find(|v| v.names.contains(&name))
+                .ok_or_else(|| {
+                    format!(
+                        "unsupported version `{name}`; supported: {}",
+                        SUPPORTED
+                            .iter()
+                            .flat_map(|v| v.names.iter().copied())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                })?;
             if !out.contains(v) {
                 out.push(*v);
             }

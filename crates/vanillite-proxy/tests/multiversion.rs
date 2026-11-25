@@ -1,6 +1,7 @@
-//! A client of the previous version (26.2, protocol 776) through the proxy: the server list
-//! shows it as compatible, it joins a current-version backend, and the proxy's own command
-//! `/glist` works in its protocol. The backend only ever sees the current version.
+//! Clients of older versions through the proxy (the previous release 26.2 and the oldest
+//! supported, 1.20.5): the server list shows the proxy as compatible, the client joins a
+//! current-version backend, and the proxy's own command `/glist` works in its protocol. The
+//! backend only ever sees the current version.
 
 #![allow(
     clippy::unwrap_used,
@@ -20,9 +21,8 @@ use vanillite_server::{ServerBuilder, VanillaPack};
 
 const TIMEOUT: Duration = Duration::from_secs(20);
 const SECRET: &str = "multiversion-proxy-secret";
-const OLD_PROTOCOL: i32 = 776;
 
-/// Uncompressed frames over TCP with the 26.2 packet ids.
+/// Uncompressed frames over TCP with the older version's packet ids.
 struct Old {
     stream: TcpStream,
     buf: Vec<u8>,
@@ -46,7 +46,7 @@ impl Old {
         self.stream.write_all(&frame).unwrap();
     }
 
-    /// The next packet's 26.2 name and fields.
+    /// The next packet's name in the older version and its fields.
     fn recv(&mut self, state: &str) -> (String, Vec<u8>) {
         loop {
             let mut r = Reader::new(&self.buf);
@@ -74,9 +74,9 @@ impl Old {
     }
 }
 
-fn handshake(stream: &mut TcpStream, port: u16, intent: i32) {
+fn handshake(stream: &mut TcpStream, protocol: i32, port: u16, intent: i32) {
     let mut hs = vec![0];
-    write_varint(&mut hs, OLD_PROTOCOL);
+    write_varint(&mut hs, protocol);
     write_str(&mut hs, "localhost");
     hs.extend_from_slice(&port.to_be_bytes());
     write_varint(&mut hs, intent);
@@ -88,7 +88,21 @@ fn handshake(stream: &mut TcpStream, port: u16, intent: i32) {
 
 #[test]
 fn previous_version_client_through_the_proxy() {
-    let dir = std::env::temp_dir().join(format!("vanillite-proxy-mv-{}", std::process::id()));
+    through_the_proxy("26.2", "26.2", 776);
+}
+
+#[test]
+fn oldest_version_client_through_the_proxy() {
+    through_the_proxy("1.20.6", "1.20.5", 766);
+}
+
+/// A client of `release` (protocol `protocol`, data in `data/multiversion/<data>/`).
+#[allow(clippy::too_many_lines)]
+fn through_the_proxy(data: &str, release: &str, protocol: i32) {
+    let dir = std::env::temp_dir().join(format!(
+        "vanillite-proxy-mv-{}-{release}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
@@ -111,7 +125,7 @@ fn previous_version_client_through_the_proxy() {
 
     let mut config = ProxyConfig::parse(&format!(
         "bind = \"127.0.0.1:0\"\nonline-mode = false\ncompression-threshold = -1\n\
-         try = [\"a\"]\nolder-versions = \"26.2\"\n[servers]\na = \"{backend}\"\n\
+         try = [\"a\"]\nolder-versions = \"{release}\"\n[servers]\na = \"{backend}\"\n\
          [limits]\nlogin-interval-ms = 0\n"
     ))
     .unwrap();
@@ -119,9 +133,9 @@ fn previous_version_client_through_the_proxy() {
     let proxy = Proxy::start(config).unwrap();
     let port = proxy.local_addr().port();
     let packets: Value = serde_json::from_str(
-        &std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../data/multiversion/26.2/packets.json"
+        &std::fs::read_to_string(format!(
+            "{}/../../data/multiversion/{data}/packets.json",
+            env!("CARGO_MANIFEST_DIR")
         ))
         .unwrap(),
     )
@@ -134,7 +148,7 @@ fn previous_version_client_through_the_proxy() {
 
     // The server list shows the proxy as compatible with the client.
     let mut stream = connect();
-    handshake(&mut stream, port, 1);
+    handshake(&mut stream, protocol, port, 1);
     let mut old = Old {
         stream,
         buf: Vec::new(),
@@ -144,14 +158,11 @@ fn previous_version_client_through_the_proxy() {
     let (name, data) = old.recv("status");
     assert_eq!(name, "status_response");
     let json = Reader::new(&data).string(32767).unwrap().to_owned();
-    assert!(
-        json.contains(&format!("\"protocol\":{OLD_PROTOCOL}")),
-        "{json}"
-    );
+    assert!(json.contains(&format!("\"protocol\":{protocol}")), "{json}");
 
-    // Login and configuration in the 26.2 protocol.
+    // Login and configuration in the older protocol.
     let mut stream = connect();
-    handshake(&mut stream, port, 2);
+    handshake(&mut stream, protocol, port, 2);
     let mut old = Old {
         stream,
         buf: Vec::new(),
@@ -168,7 +179,7 @@ fn previous_version_client_through_the_proxy() {
     loop {
         let (name, _) = old.recv("login");
         assert_ne!(name, "login_disconnect", "refused by the proxy");
-        if name == "login_finished" {
+        if name == "login_finished" || name == "game_profile" {
             break;
         }
     }
@@ -189,7 +200,7 @@ fn previous_version_client_through_the_proxy() {
         }
     }
 
-    // Play: the backend's login arrives; the proxy's /glist answers in 26.2 packets.
+    // Play: the backend's login arrives; the proxy's /glist answers in the older packets.
     let deadline = Instant::now() + TIMEOUT;
     let mut joined = false;
     loop {

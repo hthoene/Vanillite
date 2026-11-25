@@ -135,9 +135,10 @@ rules! {
         /// translated to the server's version and back, like with ViaVersion.
         multiversion: MultiversionRules = "multiversion" {
             /// Older versions whose clients may join: `"all"` (every version this build
-            /// translates, currently the previous release), `"none"`, or a comma-separated
-            /// list of version names such as `"26.2"`. Clients of the server's own version are
-            /// not translated and pay nothing.
+            /// translates, currently 1.20.5 to 26.2), `"none"`, or a comma-separated list of
+            /// releases such as `"1.21.4, 26.2"` (a release accepts every release of its
+            /// protocol). Clients of the server's own version are not translated and pay
+            /// nothing.
             versions: String = "versions", Setting, restart = true,
                 vanilla = String::from("all");
         }

@@ -84,40 +84,61 @@ const NAMED: &[(&str, &str)] = &[
 
 /// `cargo xtask multiversion add <id>`.
 pub fn add(root: &Path, args: &[&str]) -> Result<()> {
-    let [id] = args else {
+    if args.is_empty() {
         return Err(crate::USAGE.to_owned());
-    };
+    }
     let manifest = vanilla::manifest()?;
-    let x = vanilla::extract(root, &manifest, Some(id), None)?;
-    keep(root, &x)?;
+    for id in args {
+        let x = vanilla::extract(
+            root,
+            &manifest,
+            Some(id),
+            None,
+            vanilla::Extractor::Multiversion,
+        )?;
+        keep(root, &x)?;
+    }
     crate::codegen::run(root, false)
 }
 
-/// Keeps the multi-version data of an extracted version in `data/multiversion/<id>/`.
+/// Keeps the multi-version data of an extracted version in `data/multiversion/<id>/`: from the
+/// data generator's reports and the extractor's entity types, synchronised registries and packet
+/// shapes (the multi-version or the full extractor; both write these files the same way).
 pub fn keep(root: &Path, x: &Extracted) -> Result<()> {
     let id = &x.info.id;
-    let normalized = x.work.join("multiversion");
-    vanilla::remove_dir(&normalized)?;
-    normalize::run(
-        &x.generated.join("reports"),
-        &x.extracted,
-        &x.info,
-        &normalized,
-    )?;
+    let reports = x.generated.join("reports");
     let out = root.join("data/multiversion").join(id);
     vanilla::remove_dir(&out)?;
-    for file in ["version.toml", "packets.json", "registries.json"] {
-        write(&out.join(file), &read(&normalized.join(file))?)?;
-    }
+    write(&out.join("version.toml"), &x.info.to_toml())?;
+    let registries = normalize::registries(&read_json(&reports.join("registries.json"))?)?;
+    write(&out.join("registries.json"), &pretty(&registries)?)?;
+    // Versions before 1.21 have no packet report; the extractor reads the same ids.
+    let packet_report = if reports.join("packets.json").exists() {
+        reports.join("packets.json")
+    } else {
+        x.extracted.join("packets.json")
+    };
+    write(
+        &out.join("packets.json"),
+        &pretty(&normalize::packets(&read_json(&packet_report)?)?)?,
+    )?;
     write(
         &out.join("blocks.json"),
-        &compact_blocks(&read_json(&normalized.join("blocks.json"))?)?,
+        &compact_blocks(&read_json(&reports.join("blocks.json"))?, &registries)?,
     )?;
     write(
         &out.join("entities.json"),
-        &compact_entities(&read_json(&normalized.join("entities.json"))?)?,
+        &compact_entities(&read_json(&x.extracted.join("entities.json"))?["entity_types"])?,
     )?;
-    let dynamic = read_json(&normalized.join("dynamic_registries.json"))?;
+    write(
+        &out.join("packet_fields.json"),
+        &compact_object(&read_json(&x.extracted.join("packet_fields.json"))?)?,
+    )?;
+    write(
+        &out.join("entity_data.json"),
+        &compact_entity_data(&read_json(&x.extracted.join("entity_data.json"))?)?,
+    )?;
+    let dynamic = read_json(&x.extracted.join("registries.json"))?;
     write(
         &out.join("synchronized.json"),
         &synchronized(&x.inner_jar, &dynamic)?,
@@ -126,14 +147,79 @@ pub fn keep(root: &Path, x: &Extracted) -> Result<()> {
     Ok(())
 }
 
-/// One line per block: name, first and default state, properties.
-fn compact_blocks(blocks: &Value) -> Result<String> {
+fn pretty(v: &Value) -> Result<String> {
+    let mut s = serde_json::to_string_pretty(v).map_err(|e| e.to_string())?;
+    s.push('\n');
+    Ok(s)
+}
+
+/// Entity data layouts: the serializers, then one line per entity type.
+pub(crate) fn compact_entity_data(v: &Value) -> Result<String> {
+    let types = compact_object(&v["types"])?;
+    Ok(format!(
+        "{{\n\"serializers\":{},\n\"types\":{}}}\n",
+        v["serializers"],
+        types.trim_end()
+    ))
+}
+
+/// One line per key.
+pub(crate) fn compact_object(v: &Value) -> Result<String> {
+    let o = v.as_object().ok_or("expected an object")?;
+    let lines: Vec<String> = o
+        .iter()
+        .map(|(k, v)| format!("{}:{v}", Value::from(k.as_str())))
+        .collect();
+    Ok(format!("{{\n{}\n}}\n", lines.join(",\n")))
+}
+
+/// One line per block: name, first and default state, properties (by name; the last varies
+/// fastest in the state ids), from the data generator's block report.
+fn compact_blocks(report: &Value, registries: &Value) -> Result<String> {
+    let report = report
+        .as_object()
+        .ok_or("blocks.json: expected an object")?;
     let mut lines = Vec::new();
-    for b in blocks.as_array().ok_or("blocks.json: expected an array")? {
+    for name in registries["minecraft:block"]["entries"]
+        .as_array()
+        .ok_or("registries: no blocks")?
+    {
+        let name = name.as_str().ok_or("block name")?;
+        let b = report
+            .get(name)
+            .ok_or_else(|| format!("{name} not in blocks.json"))?;
+        let mut props: Vec<(&String, &Value)> = b["properties"]
+            .as_object()
+            .map(|p| p.iter().collect())
+            .unwrap_or_default();
+        props.sort_by_key(|p| p.0);
+        let states = b["states"].as_array().ok_or("block states")?;
+        let first = states
+            .iter()
+            .filter_map(|s| s["id"].as_u64())
+            .min()
+            .ok_or("block states")?;
+        let default = states
+            .iter()
+            .find(|s| s["default"].as_bool() == Some(true))
+            .and_then(|s| s["id"].as_u64())
+            .ok_or_else(|| format!("{name}: no default state"))?;
         let mut o = Map::new();
-        for key in ["name", "first_state", "default_state", "properties"] {
-            o.insert(key.to_owned(), b[key].clone());
-        }
+        o.insert("name".to_owned(), name.into());
+        o.insert("first_state".to_owned(), first.into());
+        o.insert("default_state".to_owned(), default.into());
+        o.insert(
+            "properties".to_owned(),
+            props
+                .iter()
+                .map(|(n, v)| {
+                    let mut p = Map::new();
+                    p.insert("name".to_owned(), n.as_str().into());
+                    p.insert("values".to_owned(), (*v).clone());
+                    Value::Object(p)
+                })
+                .collect(),
+        );
         lines.push(Value::Object(o).to_string());
     }
     Ok(format!("[\n{}\n]\n", lines.join(",\n")))
@@ -210,6 +296,10 @@ struct Facts {
     /// Entity type name → facts that must match for a fallback.
     entities: HashMap<String, String>,
     synchronized: Option<Value>,
+    /// `entity_data.json`: serializers and per entity type its data items.
+    entity_data: Option<Value>,
+    /// `packet_fields.json`: the Java shape of every packet.
+    packet_fields: Option<Value>,
 }
 
 struct Block {
@@ -297,6 +387,12 @@ impl Facts {
                 facts.join(" "),
             );
         }
+        let optional = |f: &str| {
+            let path = dir.join(f);
+            path.exists().then(|| read_json(&path)).transpose()
+        };
+        let entity_data = optional("entity_data.json")?;
+        let packet_fields = optional("packet_fields.json")?;
         let synchronized = dir
             .join("synchronized.json")
             .exists()
@@ -317,6 +413,8 @@ impl Facts {
             blocks,
             entities,
             synchronized,
+            entity_data,
+            packet_fields,
         })
     }
 
@@ -351,6 +449,21 @@ pub fn generate(root: &Path) -> Result<Vec<(String, String)>> {
     kept.retain(|f| f.protocol < current.protocol);
     kept.sort_by_key(|f| f.protocol);
 
+    // Every configuration and play packet of all versions, by direction: the packet kinds the
+    // step code matches on.
+    let kinds = |dir: &str| -> Vec<String> {
+        let mut set = BTreeSet::new();
+        for f in kept.iter().chain(std::iter::once(&current)) {
+            for state in ["configuration", "play"] {
+                for n in f.packets[state][dir].as_array().into_iter().flatten() {
+                    set.insert(n.as_str().unwrap_or_default().to_owned());
+                }
+            }
+        }
+        set.into_iter().collect()
+    };
+    let (cb, sb) = (kinds("clientbound"), kinds("serverbound"));
+
     let mut files = Vec::new();
     let mut module = String::from(HEADER);
     module.push_str(
@@ -361,7 +474,18 @@ pub fn generate(root: &Path) -> Result<Vec<(String, String)>> {
         let new = kept.get(i + 1).unwrap_or(&current);
         let name = module_name(&old.id);
         let _ = writeln!(module, "pub mod {name};");
-        files.push((format!("{name}.rs"), step(old, new)?));
+        files.push((format!("{name}.rs"), step(old, new, &cb, &sb)?));
+    }
+    for (name, list, what) in [("Cb", &cb, "clientbound"), ("Sb", &sb, "serverbound")] {
+        let _ = writeln!(
+            module,
+            "\n/// Every {what} configuration and play packet of the kept versions and the current one.\n\
+             #[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub enum {name} {{"
+        );
+        for n in list {
+            let _ = writeln!(module, "    {},", camel(n));
+        }
+        module.push_str("}\n");
     }
     files.push(("mod.rs".to_owned(), module));
     Ok(files)
@@ -377,11 +501,12 @@ fn module_name(id: &str) -> String {
     s
 }
 
-fn step(old: &Facts, new: &Facts) -> Result<String> {
+fn step(old: &Facts, new: &Facts, cb: &[String], sb: &[String]) -> Result<String> {
     let mut o = String::from(HEADER);
     let _ = writeln!(
         o,
         "//! Minecraft {} (protocol {}) ↔ {} (protocol {}).\n\n\
+         use super::{{Cb, Sb}};\n\
          use crate::table::{{PacketTable, Remap}};\n\n\
          /// Version name of the older side.\npub const ID: &str = {:?};\n\
          /// Protocol version of the older side.\npub const PROTOCOL: i32 = {};\n\
@@ -420,6 +545,41 @@ fn step(old: &Facts, new: &Facts) -> Result<String> {
         write_ids(&mut o, "to_old", &remap.0);
         write_ids(&mut o, "to_new", &remap.1);
         o.push_str("};\n\n");
+        // Packets in both versions whose Java shape changed: the step must rewrite them (by
+        // the newer id clientbound, the older id serverbound), else they are dropped.
+        let changed: Vec<usize> = match (&old.packet_fields, &new.packet_fields) {
+            (Some(of), Some(nf)) => {
+                let flow = if dir == "clientbound" {
+                    &n_names
+                } else {
+                    &o_names
+                };
+                flow.iter()
+                    .enumerate()
+                    .filter(|(_, name)| {
+                        let key = format!("{dir}/{name}");
+                        let (a, b) = (&of[&key]["fields"], &nf[&key]["fields"]);
+                        // `ResourceLocation` was renamed `Identifier` (1.21.11), same codec.
+                        let shape =
+                            |v: &Value| v.to_string().replace("ResourceLocation", "Identifier");
+                        !a.is_null() && !b.is_null() && shape(a) != shape(b)
+                    })
+                    .map(|(i, _)| i)
+                    .collect()
+            }
+            _ => Vec::new(),
+        };
+        let _ = writeln!(
+            o,
+            "/// `{state}` {dir} packets whose shape changed ({} ids).\npub static {}_{}_CHANGED: &[i32] = &{changed:?};\n",
+            if dir == "clientbound" {
+                "newer"
+            } else {
+                "older"
+            },
+            state.to_ascii_uppercase(),
+            dir.to_ascii_uppercase()
+        );
         for (side, list) in [("old", &o_names), ("new", &n_names)] {
             let _ = writeln!(
                 o,
@@ -433,7 +593,49 @@ fn step(old: &Facts, new: &Facts) -> Result<String> {
         }
     }
 
+    // Packet kinds by id, ids by kind.
+    let mut kinds = String::new();
+    for (state, dir, side, all, enum_name) in [
+        ("configuration", "clientbound", new, cb, "Cb"),
+        ("play", "clientbound", new, cb, "Cb"),
+        ("configuration", "serverbound", old, sb, "Sb"),
+        ("play", "serverbound", old, sb, "Sb"),
+    ] {
+        let list: Vec<String> = side.packets[state][dir]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|n| format!("{enum_name}::{}", camel(n.as_str().unwrap_or_default())))
+            .collect();
+        let _ = writeln!(kinds, "    {state}_{dir}: &[{}],", list.join(", "));
+        // The other side's ids by kind (-1: absent).
+        let other = if dir == "clientbound" { old } else { new };
+        let names: Vec<&str> = other.packets[state][dir]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect();
+        let ids: Vec<String> = all
+            .iter()
+            .map(|k| {
+                names
+                    .iter()
+                    .position(|n| n == k)
+                    .map_or_else(|| "-1".to_owned(), |i| i.to_string())
+            })
+            .collect();
+        let _ = writeln!(
+            kinds,
+            "    {}_{state}_{dir}: &[{}],",
+            if dir == "clientbound" { "old" } else { "new" },
+            ids.join(", ")
+        );
+    }
+
     // Static registries that differ.
+    let mut tables = Vec::new();
+    let mut entity_type_to_old: Option<Vec<Option<usize>>> = None;
     for registry in NETWORK_REGISTRIES {
         let (oe, ne) = (old.entries(registry), new.entries(registry));
         if oe == ne || oe.is_empty() || ne.is_empty() {
@@ -466,6 +668,10 @@ fn step(old: &Facts, new: &Facts) -> Result<String> {
         write_ids(&mut o, "to_old", &remap.0);
         write_ids(&mut o, "to_new", &remap.1);
         o.push_str("};\n\n");
+        tables.push((*registry, const_name(registry)));
+        if *registry == "minecraft:entity_type" {
+            entity_type_to_old = Some(remap.0.clone());
+        }
         // Names of the newer entries without an exact counterpart (sounds go inline by name).
         let missing: Vec<(usize, &String)> = ne
             .iter()
@@ -482,6 +688,17 @@ fn step(old: &Facts, new: &Facts) -> Result<String> {
         }
         o.push_str("];\n\n");
     }
+
+    o.push_str(
+        "/// The table of a static registry whose ids differ; `None` if they are the same.\n\
+         pub fn remap(registry: &str) -> Option<&'static Remap> {\n    Some(match registry {\n",
+    );
+    for (registry, table) in &tables {
+        let _ = writeln!(o, "        {registry:?} => &{table},");
+    }
+    o.push_str("        _ => return None,\n    })\n}\n\n");
+
+    let has_entity_data = entity_data(&mut o, old, new, entity_type_to_old.as_ref())?;
 
     // Block states.
     let states = block_states(old, new);
@@ -575,7 +792,157 @@ fn step(old: &Facts, new: &Facts) -> Result<String> {
         "\n/// Id of `brigadier:string` in the older version (stands in for unknown parsers).\n\
          pub const OLD_STRING_PARSER: i32 = {old_string};"
     );
+
+    // Enchantments were a static registry before 1.21.
+    let _ = writeln!(
+        o,
+        "\n/// The older version's static enchantment registry (empty if it synchronises them).\n\
+         pub static OLD_ENCHANTMENTS: &[&str] = &{:?};",
+        old.entries("minecraft:enchantment")
+    );
+
+    // Everything above for the step code that works on any step.
+    let has = |t: &str| tables.iter().any(|(_, c)| c == t);
+    let _ = writeln!(
+        o,
+        "\n/// The tables above for the step code shared by all steps.\n\
+         pub static TABLES: crate::table::Tables = crate::table::Tables {{\n\
+         \x20   id: ID,\n    protocol: PROTOCOL,\n    next_id: NEXT_ID,\n    next_protocol: NEXT_PROTOCOL,\n\
+         \x20   packets: [&LOGIN_CLIENTBOUND, &LOGIN_SERVERBOUND, &CONFIGURATION_CLIENTBOUND, &CONFIGURATION_SERVERBOUND, &PLAY_CLIENTBOUND, &PLAY_SERVERBOUND],\n\
+         \x20   changed: [LOGIN_CLIENTBOUND_CHANGED, LOGIN_SERVERBOUND_CHANGED, CONFIGURATION_CLIENTBOUND_CHANGED, CONFIGURATION_SERVERBOUND_CHANGED, PLAY_CLIENTBOUND_CHANGED, PLAY_SERVERBOUND_CHANGED],\n\
+         {kinds}\
+         \x20   remap,\n    block_state: &BLOCK_STATE,\n    synchronized: SYNCHRONIZED,\n    static_registries: STATIC_REGISTRIES,\n\
+         \x20   new_particle_types: NEW_PARTICLE_TYPES,\n    new_command_argument_types: NEW_COMMAND_ARGUMENT_TYPES,\n\
+         \x20   new_stat_types: NEW_STAT_TYPES,\n    new_entity_types: NEW_ENTITY_TYPES,\n\
+         \x20   new_data_component_types: NEW_DATA_COMPONENT_TYPES,\n\
+         \x20   sound_added: {},\n\
+         \x20   old_serializers: {},\n    new_serializers: {},\n    entity_data: {},\n\
+         \x20   old_enchantments: OLD_ENCHANTMENTS,\n\
+         \x20   old_string_parser: OLD_STRING_PARSER,\n\
+         \x20   old_intentionally_empty: OLD_SOUND_EVENT_INTENTIONALLY_EMPTY,\n\
+         }};",
+        if has("SOUND_EVENT") {
+            "SOUND_EVENT_ADDED"
+        } else {
+            "&[]"
+        },
+        if has_entity_data {
+            "OLD_SERIALIZERS"
+        } else {
+            "&[]"
+        },
+        if has_entity_data {
+            "NEW_SERIALIZERS"
+        } else {
+            "&[]"
+        },
+        if has_entity_data {
+            "ENTITY_DATA"
+        } else {
+            "&[]"
+        },
+    );
     Ok(o)
+}
+
+/// Entity data tables: serializer names on both sides and, per newer entity type, where each
+/// of its data items goes in the older version's type (matched by the accessor's class and field
+/// name, then by field name and serializer).
+fn entity_data(
+    o: &mut String,
+    old: &Facts,
+    new: &Facts,
+    type_to_old: Option<&Vec<Option<usize>>>,
+) -> Result<bool> {
+    let (Some(od), Some(nd)) = (&old.entity_data, &new.entity_data) else {
+        return Ok(false);
+    };
+    let names = |v: &Value| -> Vec<String> {
+        v["serializers"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|s| s.as_str().unwrap_or_default().to_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let (os, ns) = (names(od), names(nd));
+    for (side, list) in [("OLD", &os), ("NEW", &ns)] {
+        let _ = writeln!(
+            o,
+            "/// Entity data serializers of the {} version by id.\npub static {side}_SERIALIZERS: &[&str] = &{list:?};\n",
+            if side == "OLD" { "older" } else { "newer" }
+        );
+    }
+    let (ot, nt) = (
+        old.entries("minecraft:entity_type"),
+        new.entries("minecraft:entity_type"),
+    );
+    o.push_str(
+        "/// Entity data per newer entity type id: by newer index, the older index << 8 | older\n\
+         /// serializer id (`u16::MAX`: the older type has no such item).\n\
+         pub static ENTITY_DATA: &[&[u16]] = &[\n",
+    );
+    for (i, name) in nt.iter().enumerate() {
+        let old_type = match type_to_old {
+            Some(t) => t.get(i).copied().flatten().and_then(|j| ot.get(j)),
+            None => ot.iter().find(|n| *n == name),
+        };
+        let items = |d: &Value, t: &str| -> Vec<(u64, String, String)> {
+            d["types"][t]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .map(|it| {
+                            (
+                                it[0].as_u64().unwrap_or(0),
+                                it[1].as_str().unwrap_or_default().to_owned(),
+                                it[2].as_str().unwrap_or_default().to_owned(),
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let new_items = items(nd, name);
+        let old_items = old_type.map(|t| items(od, t)).unwrap_or_default();
+        let len = new_items.iter().map(|it| it.0 + 1).max().unwrap_or(0);
+        let mut map = vec!["u16::MAX".to_owned(); usize::try_from(len).unwrap_or(0)];
+        for (index, serializer, field) in &new_items {
+            let short = |f: &str| f.rsplit('.').next().unwrap_or(f).to_owned();
+            let found = old_items.iter().find(|it| it.2 == *field).or_else(|| {
+                old_items
+                    .iter()
+                    .find(|it| short(&it.2) == short(field) && it.1 == *serializer)
+            });
+            if let Some((oi, os_name, _)) = found
+                && let Some(sid) = os.iter().position(|s| s == os_name)
+                && let Some(slot) = usize::try_from(*index).ok().and_then(|i| map.get_mut(i))
+            {
+                *slot = ((oi << 8) | u64::try_from(sid).unwrap_or(0)).to_string();
+            }
+        }
+        let _ = writeln!(o, "    /* {name} */ &[{}],", map.join(", "));
+    }
+    o.push_str("];\n\n");
+    Ok(true)
+}
+
+/// `minecraft:debug/block_value` → `DebugBlockValue`.
+fn camel(name: &str) -> String {
+    let path = name.strip_prefix("minecraft:").unwrap_or(name);
+    let mut out = String::new();
+    let mut upper = true;
+    for c in path.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(if upper { c.to_ascii_uppercase() } else { c });
+            upper = false;
+        } else {
+            upper = true;
+        }
+    }
+    out
 }
 
 /// `u16::MAX` stands for "no counterpart".
@@ -620,15 +987,74 @@ fn remap_by_name(
         .enumerate()
         .map(|(i, n)| (n.as_str(), i))
         .collect();
+    // Renamed entries: by the rename table, then without the attribute prefixes 1.21.2 dropped.
+    let renamed = |name: &str, ids: &HashMap<&str, usize>| -> Option<usize> {
+        RENAMED
+            .iter()
+            .find_map(|(a, b)| {
+                (*a == name)
+                    .then_some(*b)
+                    .or_else(|| (*b == name).then_some(*a))
+            })
+            .and_then(|other| ids.get(other).copied())
+            .or_else(|| {
+                let bare = unprefixed(name);
+                ids.iter()
+                    .find(|(k, _)| {
+                        k.starts_with("minecraft:") && unprefixed(k) == bare && **k != name
+                    })
+                    .map(|(_, v)| *v)
+                    .filter(|_| name != bare)
+                    .or_else(|| {
+                        ids.iter()
+                            .filter(|(k, _)| unprefixed(k) != **k)
+                            .find(|(k, _)| unprefixed(k) == name)
+                            .map(|(_, v)| *v)
+                    })
+            })
+    };
     let to_old = new
         .iter()
-        .map(|n| old_ids.get(n.as_str()).copied().or_else(|| fallback(n)))
+        .map(|n| {
+            old_ids
+                .get(n.as_str())
+                .copied()
+                .or_else(|| renamed(n, &old_ids))
+                .or_else(|| fallback(n))
+        })
         .collect();
     let to_new = old
         .iter()
-        .map(|n| new_ids.get(n.as_str()).copied())
+        .map(|n| {
+            new_ids
+                .get(n.as_str())
+                .copied()
+                .or_else(|| renamed(n, &new_ids))
+        })
         .collect();
     (to_old, to_new)
+}
+
+/// Entries renamed between versions with the same meaning: (newer, older) names.
+const RENAMED: &[(&str, &str)] = &[
+    ("minecraft:login_finished", "minecraft:game_profile"),
+    ("minecraft:set_held_slot", "minecraft:set_carried_item"),
+    ("minecraft:mount_screen_open", "minecraft:horse_screen_open"),
+];
+
+/// An attribute name without the `generic.`, `player.` or `zombie.` prefix (1.21.2 dropped
+/// them).
+fn unprefixed(name: &str) -> String {
+    for prefix in [
+        "minecraft:generic.",
+        "minecraft:player.",
+        "minecraft:zombie.",
+    ] {
+        if let Some(rest) = name.strip_prefix(prefix) {
+            return format!("minecraft:{rest}");
+        }
+    }
+    name.to_owned()
 }
 
 /// The closest name in `candidates` for a name they lack: the most trailing `_`-separated words

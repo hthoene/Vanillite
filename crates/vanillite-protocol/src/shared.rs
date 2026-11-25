@@ -9,13 +9,19 @@ use crate::sets::ServerboundPlay;
 /// A packet encoded once for many receivers (broadcasts, chunk packets, configuration data).
 /// Its compressed frame is built by the first writer that needs it and reused by all others
 /// with the same compression threshold. Clients of an older version (multi-version layer) get
-/// a translated body, likewise built once per version by the first writer that needs it.
+/// a translated body, likewise built once per version by the first writer that needs it (up to
+/// [`TRANSLATIONS`] versions; the slots are allocated by the first translation).
 #[derive(Debug)]
 pub struct SharedPacket {
     body: Vec<u8>,
     frame: OnceLock<(Option<usize>, Vec<u8>)>,
-    translated: OnceLock<(i32, Option<Box<[u8]>>)>,
+    translated: OnceLock<Box<[Translation; TRANSLATIONS]>>,
 }
+
+/// How many client versions one shared packet caches translations for.
+pub const TRANSLATIONS: usize = 12;
+
+type Translation = OnceLock<(i32, Option<Box<[u8]>>)>;
 
 impl SharedPacket {
     /// Wraps an encoded body (`id` + fields).
@@ -50,16 +56,28 @@ impl SharedPacket {
 
     /// The cached translation of the body for clients of protocol `version`, built with
     /// `build` by the first caller (`None` = the packet is dropped for them). Returns `None`
-    /// when the cache holds the translation for another version.
+    /// when the cache is full with the translations for other versions.
     pub fn translated(
         &self,
         version: i32,
         build: impl FnOnce(&[u8]) -> Option<Vec<u8>>,
     ) -> Option<Option<&[u8]>> {
-        let (v, body) = self
+        let slots = self
             .translated
-            .get_or_init(|| (version, build(&self.body).map(Vec::into_boxed_slice)));
-        (*v == version).then_some(body.as_deref())
+            .get_or_init(|| Box::new(std::array::from_fn(|_| OnceLock::new())));
+        let mut build = Some(build);
+        for slot in slots.iter() {
+            // Only the caller that fills an empty slot builds, so a slot of another version
+            // leaves `build` for the next one.
+            let (v, body) = slot.get_or_init(|| {
+                let body = build.take().and_then(|b| b(&self.body));
+                (version, body.map(Vec::into_boxed_slice))
+            });
+            if *v == version {
+                return Some(body.as_deref());
+            }
+        }
+        None
     }
 }
 

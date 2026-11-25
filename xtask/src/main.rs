@@ -52,10 +52,11 @@ pub const USAGE: &str = "usage:
       target/version/<version>/change-report.md (protocol, packet fields, registries, blocks,
       items, entities, data pack, goldens, failing tests, affected code areas). --final does it
       in this checkout instead (only for releases): the real switch. --no-test skips the tests.
-  cargo xtask multiversion add <version>
-      Extract an older version (release or snapshot) and keep what the multi-version layer
-      needs to translate between it and its successor in data/multiversion/<version>/
-      (packets, registries, blocks, synchronised registry entries), then run codegen.
+  cargo xtask multiversion add <version>...
+      Extract older versions (releases or snapshots, 1.20.5 and later; obfuscated jars are
+      remapped with Mojang's mappings) and keep what the multi-version layer needs to translate
+      between each and its successor in data/multiversion/<version>/ (packets, packet shapes,
+      registries, blocks, entity types, synchronised registry entries), then run codegen.
       `version update --final` keeps the outgoing version the same way.
   cargo xtask codegen [--check]
       Generate crates/vanillite-data/src/generated/ from data/vanilla/ and the adapter tables

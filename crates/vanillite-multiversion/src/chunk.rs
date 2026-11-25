@@ -33,6 +33,14 @@ fn longs(entries: usize, bits: u8) -> usize {
     entries.div_ceil(per.max(1))
 }
 
+/// Whether the data of a paletted container has a long count in front (before 1.21.5), as
+/// read and as written.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Format {
+    pub len_in: bool,
+    pub len_out: bool,
+}
+
 /// Rewrites one paletted container with `map` (newer value → older value).
 pub(crate) fn container(
     r: &mut Reader<'_>,
@@ -40,10 +48,37 @@ pub(crate) fn container(
     kind: Kind,
     map: &dyn Fn(i32) -> i32,
 ) -> Result<()> {
+    container_in(r, out, kind, map, Format::default())
+}
+
+/// Reads the long count of a container's data (if `format` has one) and checks it.
+fn data_len(r: &mut Reader<'_>, format: Format, expected: usize) -> Result<()> {
+    if format.len_in && io::len(r, 1 << 12, 0)? != expected {
+        return Err(Error::Invalid("palette data length"));
+    }
+    Ok(())
+}
+
+fn write_data_len(out: &mut Vec<u8>, format: Format, longs: usize) {
+    if format.len_out {
+        io::write_len(out, longs);
+    }
+}
+
+/// [`container`] between formats with and without the long count.
+pub(crate) fn container_in(
+    r: &mut Reader<'_>,
+    out: &mut Vec<u8>,
+    kind: Kind,
+    map: &dyn Fn(i32) -> i32,
+    format: Format,
+) -> Result<()> {
     let bits = r.u8()?;
     if bits == 0 {
         out.push(0);
         write_varint(out, map(r.varint()?));
+        data_len(r, format, 0)?;
+        write_data_len(out, format, 0);
         return Ok(());
     }
     if bits <= kind.max_indirect {
@@ -56,13 +91,17 @@ pub(crate) fn container(
         for _ in 0..n {
             write_varint(out, map(r.varint()?));
         }
-        io::bytes(r, out, longs(kind.entries, bits).saturating_mul(8))?;
+        let count = longs(kind.entries, bits);
+        data_len(r, format, count)?;
+        write_data_len(out, format, count);
+        io::bytes(r, out, count.saturating_mul(8))?;
         return Ok(());
     }
     // Direct: every value from the global palette.
     if bits != kind.global_new {
         return Err(Error::Invalid("direct palette bits"));
     }
+    data_len(r, format, longs(kind.entries, bits))?;
     let data = r.take(longs(kind.entries, bits).saturating_mul(8))?;
     let mut values = Vec::with_capacity(kind.entries);
     let per = 64usize.checked_div(usize::from(bits)).unwrap_or(1);
@@ -79,6 +118,7 @@ pub(crate) fn container(
     }
     let old_bits = kind.global_old.max(1);
     out.push(old_bits);
+    write_data_len(out, format, longs(kind.entries, old_bits));
     let per = 64usize.checked_div(usize::from(old_bits)).unwrap_or(1);
     for chunk in values.chunks(per) {
         let mut word = 0u64;

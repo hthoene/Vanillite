@@ -33,8 +33,9 @@ forwarding-secret-file = "forwarding.secret"
 # Servers tried in this order on join and as fallback when a server is lost.
 try = ["lobby"]
 # Clients of older Minecraft versions accepted through the multi-version layer: "all" (every
-# version this build translates), "none", or a comma-separated list such as "26.2". Their
-# packets are translated here, so backends only see the current version.
+# version this build translates, 1.20.5 to 26.2), "none", or a comma-separated list of releases
+# such as "1.21.4, 26.2". Their packets are translated here, so backends only see the current
+# version.
 older-versions = "all"
 
 # Backend servers: name = "host:port". Backends must use modern forwarding with the same

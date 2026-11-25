@@ -248,6 +248,10 @@ impl Conn {
     /// Receives and decodes the next packet, handling timeouts and keepalives while waiting.
     async fn recv<T>(&mut self, decode: fn(&[u8]) -> vanillite_protocol::Result<T>) -> Result<T> {
         loop {
+            // Packets the multi-version layer added to the last one come first.
+            if let Some(t) = self.adapter.as_mut().and_then(|a| a.pending()) {
+                return Ok(decode(t)?);
+            }
             if let Source::Tcp { decoder, .. } = &mut self.source
                 && let Some(frame) = decoder.next_frame()?
             {
