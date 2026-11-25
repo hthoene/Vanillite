@@ -231,10 +231,15 @@ pub fn tick(ents: &mut Entities, env: &mut Env<'_>, player: EntityId) {
         return;
     }
     let ticks = u.ticks.saturating_add(1);
-    if let Some(p) = ents.player_mut(player)
-        && let Some(state) = p.survival.using_item.as_mut()
-    {
-        state.ticks = ticks;
+    if let Some(p) = ents.player_mut(player) {
+        // `ServerPlayer.updateUsingItem`: `USING_ITEM`.
+        p.advancements.trigger_item(
+            crate::advancements::trigger::TriggerKind::USING_ITEM,
+            &stack,
+        );
+        if let Some(state) = p.survival.using_item.as_mut() {
+            state.ticks = ticks;
+        }
     }
     if ticks == SHIELD_DELAY && item::item_id(&stack).info().blocks_attacks {
         // The blocking state becomes visible (`isBlocking`).
@@ -359,6 +364,17 @@ fn finish(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, u: UsingItem
             0.5,
             env.random.next_float() * 0.1 + 0.9,
             seed,
+        );
+    }
+    // `Consumable.onConsume`: the use statistic and `consume_item`.
+    if let Some(p) = ents.player_mut(player) {
+        p.stats.award(
+            crate::stats::Stat::of(crate::stats::StatType::Used, stack.item),
+            1,
+        );
+        p.advancements.trigger_item(
+            crate::advancements::trigger::TriggerKind::CONSUME_ITEM,
+            &stack,
         );
     }
     let remainder = match name {
@@ -512,6 +528,12 @@ pub fn release(
         pitch,
         seed,
     );
+    if let Some(p) = ents.player_mut(player) {
+        p.stats.award(
+            crate::stats::Stat::of(crate::stats::StatType::Used, stack.item),
+            1,
+        );
+    }
     if !free
         && let Some(i) = arrow_slot
         && let Some(p) = ents.player_mut(player)
@@ -526,16 +548,18 @@ pub fn release(
         let level = f32::from(i16::try_from(unbreaking.clamp(0, 255)).unwrap_or(0));
         let keeps = unbreaking > 0 && env.random.next_float() >= 1.0 / (level + 1.0);
         let i = hand_index(ents, player, u.hand);
-        if !keeps
-            && let Some(p) = ents.player_mut(player)
-            && let Some(s) = p.inventory.get_mut(i)
-            && item::is_damageable(s)
-        {
-            let d = item::damage(s).saturating_add(1);
-            if d >= item::max_damage(s) {
-                s.shrink(1);
-            } else {
-                item::set_damage(s, d);
+        if !keeps && let Some(p) = ents.player_mut(player) {
+            let crate::player::PlayerData {
+                inventory,
+                advancements,
+                stats,
+                ..
+            } = p;
+            if let Some(s) = inventory.get_mut(i)
+                && item::is_damageable(s)
+            {
+                let d = item::damage(s).saturating_add(1);
+                crate::advancements::view::apply_damage(Some(advancements), Some(stats), s, d);
             }
         }
     }

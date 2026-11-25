@@ -60,6 +60,9 @@ fn apply(
     if let Some(use_item) = &op.use_item {
         return world.use_item(use_item);
     }
+    if let Some(command) = &op.command {
+        return world.command(command);
+    }
     if let Some(potion) = &op.throw_potion {
         return world.throw_potion(potion);
     }
@@ -71,11 +74,13 @@ fn apply(
         OpKind::Lightning => return world.lightning(op.from),
         OpKind::Effect => return Err("effect without its effect".to_owned()),
         OpKind::UseItem => return Err("use_item without its item".to_owned()),
+        OpKind::Command => return Err("command without its line".to_owned()),
         OpKind::ThrowPotion => return Err("throw_potion without its potion".to_owned()),
         OpKind::Force | OpKind::Unforce => {
             return world.set_forced(&op.chunks, op.kind == OpKind::Force);
         }
         OpKind::Restart => return world.restart(),
+        OpKind::Bonemeal => return world.bonemeal(op.from),
     };
     let state = parse_state(&op.block)?;
     let (a, b) = (op.from, op.to);

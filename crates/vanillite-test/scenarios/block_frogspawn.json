@@ -1,0 +1,78 @@
+{
+  "description": "Frogspawn on water schedules its hatch tick 3600 to 11999 ticks ahead from the level random when placed and hatches into two to five tadpoles (below the observed layer, in the water; the level random shows their draws); frogspawn whose water becomes stone breaks at once.",
+  "world": {
+    "seed": 5397,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:stone",
+        3
+      ]
+    ]
+  },
+  "level_rng": true,
+  "region": [
+    [
+      0,
+      -60,
+      0
+    ],
+    [
+      7,
+      -59,
+      7
+    ]
+  ],
+  "ticks": 3600,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        2,
+        -61,
+        2
+      ],
+      "to": [
+        5,
+        -61,
+        5
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "op": "place",
+      "pos": [
+        3,
+        -60,
+        3
+      ],
+      "block": "minecraft:frogspawn"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 2,
+      "op": "place",
+      "pos": [
+        5,
+        -60,
+        5
+      ],
+      "block": "minecraft:frogspawn"
+    },
+    {
+      "tick": 3,
+      "op": "place",
+      "pos": [
+        5,
+        -61,
+        5
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "tier": "fast"
+}

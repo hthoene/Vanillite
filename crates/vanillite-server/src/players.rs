@@ -530,6 +530,15 @@ impl WorldPlayers {
         );
         crate::commands::send_permissions(global, sink.as_ref(), network_id, &source);
         crate::scoreboard::send_all(global, sink.as_ref(), arrival.uuid);
+        // `CustomBossEvents.onPlayerConnect`.
+        let mut bars = Vec::new();
+        global
+            .systems
+            .bossbars()
+            .player_connected(arrival.uuid, &mut bars);
+        for (_, packet) in bars {
+            sink.send_shared(&packet);
+        }
         global.players.broadcast_system(
             join::joined_message(crate::scoreboard::display_name(global, &name, arrival.uuid)),
             false,
@@ -561,7 +570,13 @@ impl WorldPlayers {
         sink.send(&SetHeldSlot {
             slot: i32::try_from(player.inventory.selected).unwrap_or(0),
         });
-        sink.send_shared(&global.recipes_packet);
+        let recipes = Arc::clone(
+            &global
+                .recipes_packet
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        sink.send_shared(&recipes);
         if let Some(d) = vanillite_game::player::play::game_data() {
             let (settings, book) = player.recipe_book.initial(&d.recipes.book);
             sink.send(&settings);
@@ -658,7 +673,7 @@ impl WorldPlayers {
                     xp: Some(&mut player.survival.xp),
                     recipe_book: Some(&mut player.recipe_book),
                     actor,
-                    data: &global.game,
+                    data: &global.game(),
                     spawn_protected: &protected,
                     drops: &mut drops,
                     swings: &mut hands,
@@ -688,11 +703,13 @@ impl WorldPlayers {
                 handled
             };
             swings.extend(hands.into_iter().map(|h| (id, h)));
-            // `player-idle-timeout` (`ServerGamePacketListenerImpl.tick`).
+            // `player-idle-timeout` (`ServerGamePacketListenerImpl.tick`; not while the end
+            // credits show).
             let idle_minutes = u64::try_from(global.access.idle_timeout()).unwrap_or(0);
             let handled = match handled {
                 Handled::Ok
                     if idle_minutes > 0
+                        && !player.survival.portal.won_game
                         && player.connection.last_action.elapsed()
                             > std::time::Duration::from_secs(idle_minutes.saturating_mul(60)) =>
                 {
@@ -856,6 +873,7 @@ impl WorldPlayers {
         crate::commands::answer_suggestions(&mut level.entities, global, world);
         for uuid in std::mem::take(&mut self.left) {
             crate::scoreboard::left(global, uuid);
+            global.systems.bossbars().player_disconnected(uuid);
             if global.players.remove(Uuid(uuid)).is_some() {
                 global
                     .players
@@ -913,6 +931,8 @@ impl WorldPlayers {
         let mut taken: Vec<(EntityId, EntityId, i32)> = Vec::new();
         let mut equipment: Vec<(EntityId, SetEquipment)> = Vec::new();
         let mut taken_orbs: Vec<(EntityId, EntityId)> = Vec::new();
+        // Picked up stacks with a thrower: the picker, the thrower's UUID and `getItem()`.
+        let mut thrown: Vec<(EntityId, u128, ItemStack)> = Vec::new();
         for (id, player) in players.iter_mut() {
             let sink = Arc::clone(&player.connection.sink);
             if let Some(sequence) = player.connection.play.take_ack() {
@@ -950,7 +970,7 @@ impl WorldPlayers {
                     xp: Some(&mut player.survival.xp),
                     recipe_book: Some(&mut player.recipe_book),
                     actor,
-                    data: &global.game,
+                    data: &global.game(),
                     spawn_protected: &protected,
                     drops: &mut drops,
                     swings: &mut hands,
@@ -984,8 +1004,16 @@ impl WorldPlayers {
                     }
                     let count = item.stack.count;
                     let kind = item.stack.item;
+                    let before = item.thrower.map(|t| (t, item.stack.clone()));
                     if player.inventory.add(None, &mut item.stack, infinite) {
                         taken.push((item_id, id, count));
+                        if let Some((thrower, mut stack)) = before {
+                            // `getItem()` after `take`: the rest, or the whole stack again.
+                            if !item.stack.is_empty() {
+                                stack = item.stack.clone();
+                            }
+                            thrown.push((id, thrower, stack));
+                        }
                         player
                             .stats
                             .award(Stat::of(StatType::PickedUp, kind), count);
@@ -1068,6 +1096,9 @@ impl WorldPlayers {
         }
         level.entities.players = players;
         let entities = &mut level.entities;
+        for (picker, thrower, stack) in thrown {
+            vanillite_game::mob::animal::item_picked_up(entities, picker, thrower, &stack);
+        }
         for (id, packet) in equipment {
             let packet = SharedPacket::of(&packet);
             for viewer in blocks.tracker.seen_by(id) {
@@ -1515,7 +1546,7 @@ fn touch_orb(
             &mut level.entities,
             orb,
             inventory,
-            &global.game.enchanting,
+            &global.game().enchanting,
             &mut |n| r.next_int_bounded(n),
         )
     });

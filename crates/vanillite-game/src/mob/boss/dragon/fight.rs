@@ -712,7 +712,10 @@ impl DragonFight {
         if stage == RespawnStage::End {
             self.respawn_stage = None;
             self.dragon_killed = false;
-            self.create_new_dragon(level, env);
+            if let Some(dragon) = self.create_new_dragon(level, env) {
+                let players = self.bar.players().to_vec();
+                crate::mob::animal::award_summoned(&mut level.entities, &players, dragon);
+            }
         } else {
             self.respawn_stage = Some(stage);
         }

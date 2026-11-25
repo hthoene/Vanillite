@@ -3,7 +3,10 @@
 
 use vanillite_command::{ArgumentType, Builder, Dispatcher, argument, literal};
 
-use super::{AttributeOp, CommandId, ExperienceOp, ItemOp, ModifierOperation, level, suggest};
+use super::{
+    AttributeOp, CommandId, ExperienceOp, ItemOp, LootSource, LootTarget, LootTool,
+    ModifierOperation, level, suggest,
+};
 
 fn players() -> ArgumentType {
     ArgumentType::Entity {
@@ -314,5 +317,94 @@ pub(super) fn register_recipe(d: &mut Dispatcher<CommandId>) {
             .requires(level::GAMEMASTERS)
             .then(action("give", CommandId::RecipeGive))
             .then(action("take", CommandId::RecipeTake)),
+    );
+}
+
+/// `LootCommand`'s sources after a target node (`TailProvider`).
+fn loot_tail(node: Builder<CommandId>, target: LootTarget) -> Builder<CommandId> {
+    let id = |source| CommandId::Loot { target, source };
+    let tools = |node: Builder<CommandId>, tool: fn(LootTool) -> LootSource| {
+        node.executes(id(tool(LootTool::Empty)))
+            .then(argument("tool", ArgumentType::ItemStack).executes(id(tool(LootTool::Item))))
+            .then(literal("mainhand").executes(id(tool(LootTool::MainHand))))
+            .then(literal("offhand").executes(id(tool(LootTool::OffHand))))
+    };
+    node.then(
+        literal("fish").then(argument("loot_table", ArgumentType::LootTable).then(tools(
+            argument("pos", ArgumentType::BlockPos),
+            LootSource::Fish,
+        ))),
+    )
+    .then(
+        literal("loot")
+            .then(argument("loot_table", ArgumentType::LootTable).executes(id(LootSource::Loot))),
+    )
+    .then(
+        literal("kill").then(
+            argument(
+                "target",
+                ArgumentType::Entity {
+                    single: true,
+                    players_only: false,
+                },
+            )
+            .executes(id(LootSource::Kill)),
+        ),
+    )
+    .then(literal("mine").then(tools(
+        argument("pos", ArgumentType::BlockPos),
+        LootSource::Mine,
+    )))
+}
+
+/// `LootCommand.register` with `addTargets`.
+pub(super) fn register_loot(d: &mut Dispatcher<CommandId>) {
+    use LootTarget as T;
+    let count = || {
+        argument(
+            "count",
+            ArgumentType::Integer {
+                min: Some(0),
+                max: None,
+            },
+        )
+    };
+    d.register(
+        literal("loot")
+            .requires(level::GAMEMASTERS)
+            .then(
+                literal("replace")
+                    .then(
+                        literal("entity").then(
+                            argument("entities", entities()).then(
+                                loot_tail(
+                                    argument("slot", ArgumentType::ItemSlot),
+                                    T::ReplaceEntity,
+                                )
+                                .then(loot_tail(count(), T::ReplaceEntity)),
+                            ),
+                        ),
+                    )
+                    .then(
+                        literal("block").then(
+                            argument("targetPos", ArgumentType::BlockPos).then(
+                                loot_tail(
+                                    argument("slot", ArgumentType::ItemSlot),
+                                    T::ReplaceBlock,
+                                )
+                                .then(loot_tail(count(), T::ReplaceBlock)),
+                            ),
+                        ),
+                    ),
+            )
+            .then(literal("insert").then(loot_tail(
+                argument("targetPos", ArgumentType::BlockPos),
+                T::Insert,
+            )))
+            .then(literal("give").then(loot_tail(argument("players", players()), T::Give)))
+            .then(literal("spawn").then(loot_tail(
+                argument("targetPos", ArgumentType::Vec3 { center: true }),
+                T::Spawn,
+            ))),
     );
 }

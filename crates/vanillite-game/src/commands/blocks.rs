@@ -208,7 +208,11 @@ pub(super) fn register_place(d: &mut Dispatcher<CommandId>) {
                                                             },
                                                         )
                                                         .executes(template)
-                                                        .then(literal("strict").executes(template)),
+                                                        .then(literal("strict").executes(
+                                                            CommandId::Place(
+                                                                PlaceOp::TemplateStrict,
+                                                            ),
+                                                        )),
                                                     ),
                                                 ),
                                         ),

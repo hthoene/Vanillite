@@ -468,6 +468,8 @@ pub struct Environment {
     pub world_seed: i64,
     /// `getSeaLevel`.
     pub sea_level: i32,
+    /// `EnvironmentAttributes.TURTLE_EGG_HATCH_CHANCE` (the `day` timeline in the overworld).
+    pub turtle_egg_hatch_chance: f32,
 }
 
 impl Default for Environment {
@@ -485,6 +487,7 @@ impl Default for Environment {
             surface_slime_chance: 0.0,
             world_seed: 0,
             sea_level: 63,
+            turtle_egg_hatch_chance: 0.002,
         }
     }
 }
@@ -508,6 +511,7 @@ impl Environment {
             monster_block_light_limit: 0,
             monster_light_test: (0, 7),
             ambient_light: 0.0,
+            turtle_egg_hatch_chance: turtle_egg_hatch_chance(day),
             ..Environment::default()
         }
     }
@@ -515,6 +519,16 @@ impl Environment {
     /// `Level.isBrightOutside`.
     pub fn is_bright_outside(&self) -> bool {
         self.has_sky_light && self.sky_darken < 4
+    }
+}
+
+/// The `day` timeline's `gameplay/turtle_egg_hatch_chance` track at `ticks` of the day: 1 from
+/// 21062 to 21905 (constant ease), else the attribute's default 0.002.
+pub fn turtle_egg_hatch_chance(ticks: i64) -> f32 {
+    if (21062..21905).contains(&ticks.rem_euclid(24000)) {
+        1.0
+    } else {
+        0.002
     }
 }
 
@@ -649,6 +663,13 @@ pub enum WorldAction {
     EntityInside(BlockPos, EntityId),
     /// A hopper minecart takes in an item (`MinecartHopper.tryConsumeItems`).
     HopperMinecart(EntityId),
+    /// `TurtleEggBlock.destroyEgg` of an entity stepping (randomness 100) or falling (3) on
+    /// turtle eggs; `can_destroy` is `canDestroyEgg`.
+    TrampleTurtleEgg {
+        pos: BlockPos,
+        can_destroy: bool,
+        randomness: i32,
+    },
 }
 
 impl WorldAction {
@@ -670,6 +691,11 @@ impl WorldAction {
                 }
             }
             WorldAction::HopperMinecart(id) => crate::minecart::hopper_suck(level, id),
+            WorldAction::TrampleTurtleEgg {
+                pos,
+                can_destroy,
+                randomness,
+            } => crate::block::eggs::trample_turtle_egg(level, pos, can_destroy, randomness),
             WorldAction::SetDoorOpen(pos, open, source) => {
                 crate::block::redstone::set_door_open(level, pos, open, source);
             }

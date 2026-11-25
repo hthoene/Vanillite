@@ -166,7 +166,7 @@ fn is_empty(level: &Level, pos: BlockPos) -> bool {
 }
 
 /// `isValidBonemealTarget(level, pos, state, INTERACTION)`.
-pub fn is_valid_target(level: &Level, pos: BlockPos, state: BlockState) -> bool {
+pub fn is_valid_target(level: &mut Level, pos: BlockPos, state: BlockState) -> bool {
     use BlockKind as K;
     let age = || state.int("age").unwrap_or(0);
     match kind(state) {
@@ -179,14 +179,20 @@ pub fn is_valid_target(level: &Level, pos: BlockPos, state: BlockState) -> bool 
         K::CocoaBlock => age() < 2,
         K::SweetBerryBushBlock => age() < 3,
         K::ShelfMushroomBlock => age() < 1,
-        // The tree of a sapling at stage 1 is a world generation feature.
-        K::SaplingBlock => state.int("stage") == Some(0) && in_height(level, pos),
-        K::MangrovePropaguleBlock => {
-            if state.flag("hanging") {
-                age() != 4
-            } else {
-                state.int("stage") == Some(0) && in_height(level, pos)
-            }
+        // `SaplingBlock.isValidBonemealTarget`: `canGrow` draws from the level random.
+        K::SaplingBlock => {
+            super::tree::can_grow(level, pos, state)
+                && in_height(
+                    level,
+                    pos.offset(0, super::tree::minimum_height(state.block()), 0),
+                )
+        }
+        K::MangrovePropaguleBlock => !state.flag("hanging") || age() != 4,
+        K::AzaleaBlock => {
+            in_height(
+                level,
+                pos.offset(0, super::tree::minimum_height(state.block()) + 2, 0),
+            ) && level.fluid(pos.above()).is_empty()
         }
         K::PitcherCropBlock => {
             pitcher_lower(level, pos, state).is_some_and(|(lower_pos, lower)| {
@@ -260,7 +266,7 @@ pub fn is_valid_target(level: &Level, pos: BlockPos, state: BlockState) -> bool 
 /// `isBonemealSuccess(level, random, pos, state, INTERACTION)`.
 fn is_success(level: &mut Level, state: BlockState) -> bool {
     match kind(state) {
-        BlockKind::SaplingBlock => level.random().next_float() < 0.45,
+        BlockKind::SaplingBlock | BlockKind::AzaleaBlock => level.random().next_float() < 0.45,
         BlockKind::MangrovePropaguleBlock if !state.flag("hanging") => {
             level.random().next_float() < 0.45
         }
@@ -300,20 +306,18 @@ fn perform(level: &mut Level, pos: BlockPos, state: BlockState) {
         K::SweetBerryBushBlock => {
             level.set_block(pos, state.set_int("age", (age + 1).min(3)), update::CLIENTS);
         }
-        K::SaplingBlock => {
-            // `advanceTree`: stage 0 becomes stage 1 (the tree is not connected).
-            if state.int("stage") == Some(0) {
-                level.set_block(pos, state.set_int("stage", 1), QUIET);
-            }
-        }
+        K::SaplingBlock => advance_tree(level, pos, state),
         K::MangrovePropaguleBlock => {
             if state.flag("hanging") {
                 if age != 4 {
                     level.set_block(pos, state.set_int("age", age + 1), update::CLIENTS);
                 }
-            } else if state.int("stage") == Some(0) {
-                level.set_block(pos, state.set_int("stage", 1), QUIET);
+            } else {
+                advance_tree(level, pos, state);
             }
+        }
+        K::AzaleaBlock => {
+            super::tree::grow_tree(level, pos, state);
         }
         K::PitcherCropBlock => {
             if let Some((lower_pos, lower)) = pitcher_lower(level, pos, state) {
@@ -467,6 +471,15 @@ fn perform(level: &mut Level, pos: BlockPos, state: BlockState) {
 
 /// `setBlock` flags of `advanceTree`: `UPDATE_INVISIBLE | UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS`.
 const QUIET: u32 = update::INVISIBLE | update::SKIP_BLOCK_ENTITY_SIDEEFFECTS;
+
+/// `SaplingBlock.advanceTree`: stage 0 becomes stage 1, then the tree grows.
+fn advance_tree(level: &mut Level, pos: BlockPos, state: BlockState) {
+    if state.int("stage") == Some(0) {
+        level.set_block(pos, state.set_int("stage", 1), QUIET);
+    } else {
+        super::tree::grow_tree(level, pos, state);
+    }
+}
 
 /// `new ItemStack(block)`.
 fn item_of(block: BlockId) -> ItemStack {
