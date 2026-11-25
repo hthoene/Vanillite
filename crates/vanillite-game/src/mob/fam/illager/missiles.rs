@@ -70,12 +70,7 @@ fn hit_face(pos: BlockPos, at: Vec3, velocity: Vec3) -> u8 {
     best.1
 }
 
-/// `ProjectileUtil.computeMargin`.
-fn margin(life: i32) -> f64 {
-    #[allow(clippy::cast_precision_loss)]
-    let m = ((life - 2) as f32 / 20.0).clamp(0.0, 0.3);
-    f64::from(m)
-}
+use crate::mob::missile::margin;
 
 /// Whether the projectile may hit `target` (`canHitEntity`): a live living entity, the owner
 /// only once it left it.

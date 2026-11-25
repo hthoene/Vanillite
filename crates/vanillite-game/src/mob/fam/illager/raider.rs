@@ -53,8 +53,8 @@ pub enum LookFilter {
     AnyMob,
     /// `Guardian.class`.
     Guardian,
-    /// `Strider.class`.
-    Strider,
+    /// One kind (`Strider.class`).
+    Kind(Kind),
 }
 
 /// `LookAtPlayerGoal(mob, Mob.class or Guardian.class, distance, probability)`.
@@ -552,7 +552,7 @@ fn looks_at(t: &Tick<'_, '_>, filter: LookFilter, id: EntityId) -> bool {
             && match filter {
                 LookFilter::AnyMob => true,
                 LookFilter::Guardian => m.kind == Kind::Guardian,
-                LookFilter::Strider => m.kind == Kind::Strider,
+                LookFilter::Kind(k) => m.kind == k,
             }
     })
 }

@@ -1682,6 +1682,7 @@ dependencies = [
  "vanillite-datapack",
  "vanillite-game",
  "vanillite-light",
+ "vanillite-nbt",
  "vanillite-protocol",
  "vanillite-server",
  "vanillite-storage",

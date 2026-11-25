@@ -482,6 +482,7 @@ pub fn shoot(
                 uncertainty,
                 Some(shooter.id),
                 Some(weapon),
+                projectile,
                 shooter.player,
                 pickup,
             );

@@ -25,6 +25,10 @@ struct CacheCell {
     /// The volume `buffer` holds, if any.
     volume: Option<DensityVolume>,
     buffer: Vec<f32>,
+    /// With `partial`: the points of `volume` that `buffer` holds (only for
+    /// `Program::partial_cells`); else it holds all of them.
+    computed: Vec<bool>,
+    partial: bool,
     value_key: i64,
     value: f32,
 }
@@ -34,6 +38,8 @@ impl Default for CacheCell {
         Self {
             volume: None,
             buffer: Vec::new(),
+            computed: Vec::new(),
+            partial: false,
             value_key: 0,
             value: f32::NAN,
         }
@@ -43,8 +49,33 @@ impl Default for CacheCell {
 impl CacheCell {
     fn reset(&mut self) {
         self.volume = None;
+        self.partial = false;
         self.value_key = 0;
         self.value = f32::NAN;
+    }
+}
+
+/// A pooled scratch buffer: the first `len` values of `buf`. Pooled buffers keep their full
+/// length, so handing one out again never clears it.
+#[derive(Debug, Default)]
+struct Scratch {
+    buf: Vec<f32>,
+    len: usize,
+}
+
+impl std::ops::Deref for Scratch {
+    type Target = [f32];
+
+    #[inline]
+    fn deref(&self) -> &[f32] {
+        &self.buf[..self.len]
+    }
+}
+
+impl std::ops::DerefMut for Scratch {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut [f32] {
+        &mut self.buf[..self.len]
     }
 }
 
@@ -60,7 +91,7 @@ pub struct SamplerContext {
     /// Free scratch buffers (`DensityBufferPool`).
     pool: Vec<Vec<f32>>,
     /// Buffers in use by spline and interval-select instructions, as a stack.
-    slots: Vec<Vec<f32>>,
+    slots: Vec<Scratch>,
     /// Per-point spline coordinate values, as a stack.
     scratch: Vec<f32>,
     /// The bound `beardifier` field, if any.
@@ -84,30 +115,28 @@ impl SamplerContext {
     }
 
     /// `acquireBuffer(volume)`: a scratch buffer of `len` values (contents unspecified).
-    fn acquire(&mut self, len: usize) -> Vec<f32> {
+    fn acquire(&mut self, len: usize) -> Scratch {
         let best = self
             .pool
             .iter()
             .enumerate()
-            .filter(|(_, b)| b.capacity() >= len)
-            .min_by_key(|(_, b)| b.capacity())
+            .filter(|(_, b)| b.len() >= len)
+            .min_by_key(|(_, b)| b.len())
             .map(|(i, _)| i);
-        let mut buffer = match best {
+        let mut buf = match best {
             Some(i) => self.pool.swap_remove(i),
             None => self.pool.pop().unwrap_or_default(),
         };
-        if buffer.len() >= len {
-            buffer.truncate(len);
-        } else {
-            buffer.resize(len, 0.0);
+        if buf.len() < len {
+            buf.resize(len, 0.0);
         }
-        buffer
+        Scratch { buf, len }
     }
 
     /// Returns a buffer to the pool (`ScopedDensityBuffer.close()`).
-    fn release(&mut self, buffer: Vec<f32>) {
-        if buffer.capacity() > 0 {
-            self.pool.push(buffer);
+    fn release(&mut self, buffer: Scratch) {
+        if !buffer.buf.is_empty() {
+            self.pool.push(buffer.buf);
         }
     }
 
@@ -264,6 +293,27 @@ fn select_index(thresholds: &[f32], input: f32) -> usize {
         .unwrap_or(thresholds.len())
 }
 
+/// The points of a volume whose values are needed (`None`: all).
+type Mask<'a> = Option<&'a [bool]>;
+
+/// Whether point `index` is needed.
+#[inline(always)]
+fn needed(mask: Mask<'_>, index: usize) -> bool {
+    mask.is_none_or(|mask| mask[index])
+}
+
+/// The needed points of `mask` where `values` satisfies `test`.
+fn refine(mask: Mask<'_>, values: &[f32], test: impl Fn(f32) -> bool) -> Vec<bool> {
+    match mask {
+        Some(mask) => mask
+            .iter()
+            .zip(values)
+            .map(|(&m, &x)| m && test(x))
+            .collect(),
+        None => values.iter().map(|&x| test(x)).collect(),
+    }
+}
+
 /// The lerp of `LerpFunction`'s samplers with their `alpha == 0` / `alpha == 1` shortcuts.
 #[inline]
 fn lerp_select(alpha: f32, first: f32, second: f32) -> f32 {
@@ -285,6 +335,66 @@ fn map_in_place(out: &mut [f32], f: impl Fn(f32) -> f32) {
 }
 
 impl Program {
+    /// If `f` is a range choice on a Y gradient with a constant outside the range (as ore vein
+    /// densities are), the contiguous block Y range `[min, max)` it chooses `when_in_range`
+    /// for and the constant it has everywhere else.
+    pub fn y_range_choice(&self, f: super::FnId) -> Option<(i32, i32, f32)> {
+        let (input, min_inclusive, max_exclusive, outside) = match self.ops[f.0 as usize] {
+            Op::RangeChoice {
+                input,
+                min_inclusive,
+                max_exclusive,
+                when_out_of_range,
+                ..
+            } => match self.ops[when_out_of_range as usize] {
+                Op::Constant { value } => (input, min_inclusive, max_exclusive, value),
+                _ => return None,
+            },
+            Op::RangeChoiceConst {
+                input,
+                min_inclusive,
+                max_exclusive,
+                when_out_of_range,
+                ..
+            } => (input, min_inclusive, max_exclusive, when_out_of_range),
+            _ => return None,
+        };
+        let Op::Gradient {
+            axis: Axis::Y,
+            tiling,
+            from_coordinate,
+            from_value,
+            factor,
+        } = self.ops[input as usize]
+        else {
+            return None;
+        };
+        let in_range = |y| {
+            let v = gradient(tiling, from_coordinate, from_value, factor, y);
+            v >= min_inclusive && v < max_exclusive
+        };
+        // Every Y a dimension can have (`DimensionType.MIN_Y..=MAX_Y`).
+        let ys = -2032..=2031;
+        let min = ys.clone().find(|&y| in_range(y))?;
+        let max = ys.clone().rev().find(|&y| in_range(y))? + 1;
+        (min..max).all(in_range).then_some((min, max, outside))
+    }
+
+    /// The least common multiple of the Y cell sizes of all interpolated functions (1 without
+    /// any): a volume starting at a multiple of it interpolates exactly like any larger volume
+    /// containing it.
+    pub fn interpolation_y_period(&self) -> i32 {
+        fn gcd(a: i32, b: i32) -> i32 {
+            if b == 0 { a } else { gcd(b, a % b) }
+        }
+        self.ops.iter().fold(1, |period, op| match *op {
+            Op::Interpolated { cell_size_y, .. } if cell_size_y > 0 => {
+                period / gcd(period, cell_size_y) * cell_size_y
+            }
+            _ => period,
+        })
+    }
+
     /// `DensitySampler.sampleValue(context, x, y, z)` of function `f`.
     pub fn sample_value(
         &self,
@@ -615,7 +725,9 @@ impl Program {
         if cell.value_key == key && !cell.value.is_nan() {
             return cell.value;
         }
-        if let Some(index) = cell.volume.and_then(|v| v.index_of_block(x, y, z)) {
+        if !cell.partial
+            && let Some(index) = cell.volume.and_then(|v| v.index_of_block(x, y, z))
+        {
             return cell.buffer[index];
         }
         let value = self.value(ctx, input, x, y, z);
@@ -729,6 +841,22 @@ impl Program {
 
     /// `sampleVolume` of instruction `op`.
     fn volume(&self, ctx: &mut SamplerContext, op: OpIndex, out: &mut [f32], v: &DensityVolume) {
+        self.volume_masked(ctx, op, out, v, None);
+    }
+
+    /// [`Self::volume`] where only the points of `mask` (if any) must be right: the others may
+    /// hold anything. Every instruction is pointwise except those that read other points
+    /// (interpolation, slices, surface search), which sample their inputs fully; so the masked
+    /// points get exactly the values of the full sampling, and branches (range choices, interval
+    /// selects, lerps) only sample their inputs where they are chosen.
+    fn volume_masked(
+        &self,
+        ctx: &mut SamplerContext,
+        op: OpIndex,
+        out: &mut [f32],
+        v: &DensityVolume,
+        mask: Mask<'_>,
+    ) {
         match self.ops[op as usize] {
             Op::Constant { value } => out.fill(value),
             Op::ContextBound { field, fallback } => ctx.context_volume(field, fallback, out, v),
@@ -738,8 +866,11 @@ impl Program {
                 y_scale,
             } => {
                 out.fill(0.0);
-                self.noise(noise)
-                    .add_to_volume(out, v, xz_scale, y_scale, 1.0);
+                let noise = self.noise(noise);
+                match mask {
+                    Some(mask) => noise.add_to_volume_masked(out, v, xz_scale, y_scale, 1.0, mask),
+                    None => noise.add_to_volume(out, v, xz_scale, y_scale, 1.0),
+                }
             }
             Op::ShiftedNoiseXz {
                 shift_x,
@@ -748,9 +879,9 @@ impl Program {
                 xz_scale,
                 y_scale,
             } => {
-                self.volume(ctx, shift_x, out, v);
+                self.volume_masked(ctx, shift_x, out, v, mask);
                 let mut shift_z_buffer = ctx.acquire(out.len());
-                self.volume(ctx, shift_z, &mut shift_z_buffer, v);
+                self.volume_masked(ctx, shift_z, &mut shift_z_buffer, v, mask);
                 let noise = self.noise(noise);
                 let mut index = 0;
                 for z in 0..v.size_z {
@@ -758,6 +889,10 @@ impl Program {
                     for x in 0..v.size_x {
                         let base_x = f64::from(v.block_x(x)) * xz_scale;
                         for y in 0..v.size_y {
+                            if !needed(mask, index) {
+                                index += 1;
+                                continue;
+                            }
                             let nx = base_x + f64::from(out[index]);
                             let ny = f64::from(v.block_y(y)) * y_scale;
                             let nz = base_z + f64::from(shift_z_buffer[index]);
@@ -776,11 +911,11 @@ impl Program {
                 xz_scale,
                 y_scale,
             } => {
-                self.volume(ctx, shift_x, out, v);
+                self.volume_masked(ctx, shift_x, out, v, mask);
                 let mut shift_y_buffer = ctx.acquire(out.len());
-                self.volume(ctx, shift_y, &mut shift_y_buffer, v);
+                self.volume_masked(ctx, shift_y, &mut shift_y_buffer, v, mask);
                 let mut shift_z_buffer = ctx.acquire(out.len());
-                self.volume(ctx, shift_z, &mut shift_z_buffer, v);
+                self.volume_masked(ctx, shift_z, &mut shift_z_buffer, v, mask);
                 let noise = self.noise(noise);
                 let mut index = 0;
                 for z in 0..v.size_z {
@@ -788,6 +923,10 @@ impl Program {
                     for x in 0..v.size_x {
                         let base_x = f64::from(v.block_x(x)) * xz_scale;
                         for y in 0..v.size_y {
+                            if !needed(mask, index) {
+                                index += 1;
+                                continue;
+                            }
                             let nx = base_x + f64::from(out[index]);
                             let ny = f64::from(v.block_y(y)) * y_scale
                                 + f64::from(shift_y_buffer[index]);
@@ -890,86 +1029,102 @@ impl Program {
                 }
             }
             Op::Add { left, right } => {
-                self.binary_volume(ctx, left, right, out, v, |l, r| l + r);
+                self.binary_volume(ctx, left, right, out, v, mask, |l, r| l + r);
             }
             Op::Sub { left, right } => {
-                self.binary_volume(ctx, left, right, out, v, |l, r| l + -r);
+                self.binary_volume(ctx, left, right, out, v, mask, |l, r| l + -r);
             }
             Op::Mul { left, right } => {
-                self.binary_volume(ctx, left, right, out, v, |l, r| l * r);
+                self.binary_volume(ctx, left, right, out, v, mask, |l, r| l * r);
             }
             Op::Div { left, right } => {
-                self.binary_volume(ctx, left, right, out, v, |l, r| l / r);
+                self.binary_volume(ctx, left, right, out, v, mask, |l, r| l / r);
             }
             Op::Min { left, right, .. } => {
-                self.binary_volume(ctx, left, right, out, v, |l, r| if r < l { r } else { l });
+                self.binary_volume(
+                    ctx,
+                    left,
+                    right,
+                    out,
+                    v,
+                    mask,
+                    |l, r| if r < l { r } else { l },
+                );
             }
             Op::Max { left, right, .. } => {
-                self.binary_volume(ctx, left, right, out, v, |l, r| if r > l { r } else { l });
+                self.binary_volume(
+                    ctx,
+                    left,
+                    right,
+                    out,
+                    v,
+                    mask,
+                    |l, r| if r > l { r } else { l },
+                );
             }
             Op::ConstAdd { input, value } => {
-                self.volume(ctx, input, out, v);
+                self.volume_masked(ctx, input, out, v, mask);
                 map_in_place(out, |x| x + value);
             }
             Op::ConstSub { value, input } => {
-                self.volume(ctx, input, out, v);
+                self.volume_masked(ctx, input, out, v, mask);
                 map_in_place(out, |x| value - x);
             }
             Op::ConstMul { input, value } => {
-                self.volume(ctx, input, out, v);
+                self.volume_masked(ctx, input, out, v, mask);
                 map_in_place(out, |x| x * value);
             }
             Op::ConstDiv { value, input } => {
-                self.volume(ctx, input, out, v);
+                self.volume_masked(ctx, input, out, v, mask);
                 map_in_place(out, |x| value / x);
             }
             Op::ConstMin { input, value } => {
-                self.volume(ctx, input, out, v);
+                self.volume_masked(ctx, input, out, v, mask);
                 map_in_place(out, |x| if value < x { value } else { x });
             }
             Op::ConstMax { input, value } => {
-                self.volume(ctx, input, out, v);
+                self.volume_masked(ctx, input, out, v, mask);
                 map_in_place(out, |x| if value > x { value } else { x });
             }
-            Op::Abs { input } => self.unary_volume(ctx, input, out, v, f32::abs),
-            Op::Square { input } => self.unary_volume(ctx, input, out, v, square_f),
-            Op::Cube { input } => self.unary_volume(ctx, input, out, v, cube_f),
-            Op::Sqrt { input } => self.unary_volume(ctx, input, out, v, sqrt_f),
+            Op::Abs { input } => self.unary_volume(ctx, input, out, v, mask, f32::abs),
+            Op::Square { input } => self.unary_volume(ctx, input, out, v, mask, square_f),
+            Op::Cube { input } => self.unary_volume(ctx, input, out, v, mask, cube_f),
+            Op::Sqrt { input } => self.unary_volume(ctx, input, out, v, mask, sqrt_f),
             Op::LeakyRelu {
                 input,
                 negative_factor,
-            } => self.unary_volume(ctx, input, out, v, |x| leaky_relu(negative_factor, x)),
-            Op::Reciprocal { input } => self.unary_volume(ctx, input, out, v, |x| 1.0 / x),
-            Op::Negate { input } => self.unary_volume(ctx, input, out, v, |x| -x),
-            Op::Squeeze { input } => self.unary_volume(ctx, input, out, v, squeeze),
+            } => self.unary_volume(ctx, input, out, v, mask, |x| leaky_relu(negative_factor, x)),
+            Op::Reciprocal { input } => self.unary_volume(ctx, input, out, v, mask, |x| 1.0 / x),
+            Op::Negate { input } => self.unary_volume(ctx, input, out, v, mask, |x| -x),
+            Op::Squeeze { input } => self.unary_volume(ctx, input, out, v, mask, squeeze),
             Op::Log { input } => {
-                self.unary_volume(ctx, input, out, v, |x| f64::from(x).ln() as f32);
+                self.unary_volume(ctx, input, out, v, mask, |x| f64::from(x).ln() as f32);
             }
-            Op::Sign { input } => self.unary_volume(ctx, input, out, v, signum_f),
+            Op::Sign { input } => self.unary_volume(ctx, input, out, v, mask, signum_f),
             Op::RoundToInteger { mode, input } => {
-                self.unary_volume(ctx, input, out, v, |x| mode.round_to_integer(x));
+                self.unary_volume(ctx, input, out, v, mask, |x| mode.round_to_integer(x));
             }
             Op::Round {
                 mode,
                 input,
                 multiple,
             } => {
-                self.binary_volume(ctx, input, multiple, out, v, |i, m| {
+                self.binary_volume(ctx, input, multiple, out, v, mask, |i, m| {
                     round_multiple(mode, i, m)
                 });
             }
             Op::Pow { base, exponent } => {
-                self.binary_volume(ctx, base, exponent, out, v, |b, e| {
+                self.binary_volume(ctx, base, exponent, out, v, mask, |b, e| {
                     java_pow(f64::from(b), f64::from(e)) as f32
                 });
             }
             Op::PowConstBase { base, exponent } => {
-                self.unary_volume(ctx, exponent, out, v, |e| {
+                self.unary_volume(ctx, exponent, out, v, mask, |e| {
                     java_pow(base, f64::from(e)) as f32
                 });
             }
             Op::PowConstExponent { base, exponent } => {
-                self.unary_volume(ctx, base, out, v, |b| {
+                self.unary_volume(ctx, base, out, v, mask, |b| {
                     java_pow(f64::from(b), exponent) as f32
                 });
             }
@@ -978,12 +1133,17 @@ impl Program {
                 first,
                 second,
             } => {
-                self.volume(ctx, alpha, out, v);
+                self.volume_masked(ctx, alpha, out, v, mask);
+                // `first` is read where alpha != 1, `second` where alpha != 0.
                 let mut first_buffer = ctx.acquire(out.len());
-                self.volume(ctx, first, &mut first_buffer, v);
+                self.volume_branch(ctx, first, &mut first_buffer, v, mask, out, |a| a != 1.0);
                 let mut second_buffer = ctx.acquire(out.len());
-                self.volume(ctx, second, &mut second_buffer, v);
-                for ((a, &f), &s) in out.iter_mut().zip(&first_buffer).zip(&second_buffer) {
+                self.volume_branch(ctx, second, &mut second_buffer, v, mask, out, |a| a != 0.0);
+                for ((a, &f), &s) in out
+                    .iter_mut()
+                    .zip(first_buffer.iter())
+                    .zip(second_buffer.iter())
+                {
                     *a = lerp_select(*a, f, s);
                 }
                 ctx.release(second_buffer);
@@ -994,17 +1154,31 @@ impl Program {
                 first,
                 second,
             } => {
-                self.binary_volume(ctx, alpha, second, out, v, |a, s| lerp_select(a, first, s));
+                // `second` is read where alpha != 0.
+                self.volume_masked(ctx, alpha, out, v, mask);
+                let mut second_buffer = ctx.acquire(out.len());
+                self.volume_branch(ctx, second, &mut second_buffer, v, mask, out, |a| a != 0.0);
+                for (a, &s) in out.iter_mut().zip(second_buffer.iter()) {
+                    *a = lerp_select(*a, first, s);
+                }
+                ctx.release(second_buffer);
             }
             Op::LerpConstSecond {
                 alpha,
                 first,
                 second,
             } => {
-                self.binary_volume(ctx, alpha, first, out, v, |a, f| lerp_select(a, f, second));
+                // `first` is read where alpha != 1.
+                self.volume_masked(ctx, alpha, out, v, mask);
+                let mut first_buffer = ctx.acquire(out.len());
+                self.volume_branch(ctx, first, &mut first_buffer, v, mask, out, |a| a != 1.0);
+                for (a, &f) in out.iter_mut().zip(first_buffer.iter()) {
+                    *a = lerp_select(*a, f, second);
+                }
+                ctx.release(first_buffer);
             }
             Op::Clamp { input, min, max } => {
-                self.unary_volume(ctx, input, out, v, |x| clamp_f(x, min, max));
+                self.unary_volume(ctx, input, out, v, mask, |x| clamp_f(x, min, max));
             }
             Op::RangeChoice {
                 input,
@@ -1013,11 +1187,30 @@ impl Program {
                 when_in_range,
                 when_out_of_range,
             } => {
-                self.volume(ctx, when_in_range, out, v);
+                let chosen = |x| in_range(x, min_inclusive, max_exclusive);
                 let mut input_buffer = ctx.acquire(out.len());
-                self.volume(ctx, input, &mut input_buffer, v);
+                if self.maskable[when_in_range as usize]
+                    && !self.other_volumes[when_in_range as usize]
+                    && !self.other_volumes[input as usize]
+                {
+                    // The input first, so `when_in_range` is only sampled where it is chosen.
+                    // Both sample one volume only, so their caches end up the same.
+                    self.volume_masked(ctx, input, &mut input_buffer, v, mask);
+                    self.volume_branch(ctx, when_in_range, out, v, mask, &input_buffer, chosen);
+                } else {
+                    self.volume_masked(ctx, when_in_range, out, v, mask);
+                    self.volume_masked(ctx, input, &mut input_buffer, v, mask);
+                }
                 let mut out_of_range = ctx.acquire(out.len());
-                self.volume(ctx, when_out_of_range, &mut out_of_range, v);
+                self.volume_branch(
+                    ctx,
+                    when_out_of_range,
+                    &mut out_of_range,
+                    v,
+                    mask,
+                    &input_buffer,
+                    |x| !chosen(x),
+                );
                 for i in 0..out.len() {
                     if !in_range(input_buffer[i], min_inclusive, max_exclusive) {
                         out[i] = out_of_range[i];
@@ -1033,7 +1226,7 @@ impl Program {
                 when_in_range,
                 when_out_of_range,
             } => {
-                self.unary_volume(ctx, input, out, v, |x| {
+                self.unary_volume(ctx, input, out, v, mask, |x| {
                     if in_range(x, min_inclusive, max_exclusive) {
                         when_in_range
                     } else {
@@ -1047,11 +1240,14 @@ impl Program {
                 if_below,
                 if_above,
             } => {
-                self.volume(ctx, input, out, v);
+                self.volume_masked(ctx, input, out, v, mask);
                 let mut below = ctx.acquire(out.len());
-                self.volume(ctx, if_below, &mut below, v);
+                self.volume_branch(ctx, if_below, &mut below, v, mask, out, |x| x < threshold);
                 let mut above = ctx.acquire(out.len());
-                self.volume(ctx, if_above, &mut above, v);
+                // The `else` of `x < threshold`, NaN included.
+                self.volume_branch(ctx, if_above, &mut above, v, mask, out, |x| {
+                    x >= threshold || x.is_nan()
+                });
                 for i in 0..out.len() {
                     out[i] = if out[i] < threshold {
                         below[i]
@@ -1063,12 +1259,14 @@ impl Program {
                 ctx.release(below);
             }
             Op::IntervalSelect { input, table } => {
-                self.volume(ctx, input, out, v);
+                self.volume_masked(ctx, input, out, v, mask);
                 let table = &self.interval_selects[table as usize];
                 let base = ctx.slots.len();
-                for &function in &table.functions {
+                for (index, &function) in table.functions.iter().enumerate() {
                     let mut buffer = ctx.acquire(out.len());
-                    self.volume(ctx, function, &mut buffer, v);
+                    self.volume_branch(ctx, function, &mut buffer, v, mask, out, |x| {
+                        select_index(&table.thresholds, x) == index
+                    });
                     ctx.slots.push(buffer);
                 }
                 for (i, value) in out.iter_mut().enumerate() {
@@ -1079,9 +1277,21 @@ impl Program {
                     ctx.release(buffer);
                 }
             }
-            Op::Cached { cell, input } => self.volume_cached(ctx, cell, input, out, v),
+            Op::Cached { cell, input } => match mask {
+                Some(mask)
+                    if ctx.caching
+                        && self
+                            .partial_cells
+                            .get(cell as usize)
+                            .copied()
+                            .unwrap_or(false) =>
+                {
+                    self.volume_cached_masked(ctx, cell, input, out, v, mask);
+                }
+                _ => self.volume_cached(ctx, cell, input, out, v),
+            },
             // No blender is bound (see `SamplerContext::context_field`): the identity.
-            Op::BlendDensity { input } => self.volume(ctx, input, out, v),
+            Op::BlendDensity { input } => self.volume_masked(ctx, input, out, v, mask),
             Op::Interpolated {
                 input,
                 cell_size_xz,
@@ -1100,7 +1310,7 @@ impl Program {
             }
             Op::SliceX { input, x: sx } => {
                 if v.size_x == 1 && v.min_x == sx {
-                    return self.volume(ctx, input, out, v);
+                    return self.volume_masked(ctx, input, out, v, mask);
                 }
                 let input_volume = DensityVolume::with_step(
                     1, v.size_y, v.size_z, sx, v.min_y, v.min_z, v.step_x, v.step_y, v.step_z,
@@ -1120,7 +1330,7 @@ impl Program {
             }
             Op::SliceY { input, y: sy } => {
                 if v.size_y == 1 && v.min_y == sy {
-                    return self.volume(ctx, input, out, v);
+                    return self.volume_masked(ctx, input, out, v, mask);
                 }
                 let input_volume = DensityVolume::with_step(
                     v.size_x, 1, v.size_z, v.min_x, sy, v.min_z, v.step_x, v.step_y, v.step_z,
@@ -1139,7 +1349,7 @@ impl Program {
             }
             Op::SliceZ { input, z: sz } => {
                 if v.size_z == 1 && v.min_z == sz {
-                    return self.volume(ctx, input, out, v);
+                    return self.volume_masked(ctx, input, out, v, mask);
                 }
                 let input_volume = DensityVolume::with_step(
                     v.size_x, v.size_y, 1, v.min_x, v.min_y, sz, v.step_x, v.step_y, v.step_z,
@@ -1163,7 +1373,7 @@ impl Program {
                 z: sz,
             } => {
                 if v.size_x == 1 && v.size_z == 1 && v.min_x == sx && v.min_z == sz {
-                    return self.volume(ctx, input, out, v);
+                    return self.volume_masked(ctx, input, out, v, mask);
                 }
                 let input_volume = DensityVolume::with_step(
                     1, v.size_y, 1, sx, v.min_y, sz, v.step_x, v.step_y, v.step_z,
@@ -1211,12 +1421,52 @@ impl Program {
                 }
             }
             Op::Spline { spline } => {
-                self.spline_volume(ctx, &self.splines[spline as usize], out, v);
+                self.spline_volume(ctx, &self.splines[spline as usize], out, v, mask);
             }
         }
     }
 
+    /// Samples a branch that is read where `test(values[i])` holds (within `mask`): not at all
+    /// if nowhere, else masked to those points when that saves work (see `Program::maskable`).
+    #[allow(clippy::too_many_arguments)]
+    fn volume_branch(
+        &self,
+        ctx: &mut SamplerContext,
+        op: OpIndex,
+        out: &mut [f32],
+        v: &DensityVolume,
+        mask: Mask<'_>,
+        values: &[f32],
+        test: impl Fn(f32) -> bool,
+    ) {
+        if !self.maskable[op as usize] {
+            let any = match mask {
+                Some(mask) => mask.iter().zip(values).any(|(&m, &x)| m && test(x)),
+                None => values.iter().any(|&x| test(x)),
+            };
+            if any {
+                self.volume_masked(ctx, op, out, v, mask);
+            }
+            return;
+        }
+        let chosen = refine(mask, values, test);
+        let count = chosen.iter().filter(|&&c| c).count();
+        if count == 0 {
+            return;
+        }
+        let all = match mask {
+            Some(mask) => count == mask.iter().filter(|&&m| m).count(),
+            None => count == chosen.len(),
+        };
+        if all {
+            self.volume_masked(ctx, op, out, v, mask);
+        } else {
+            self.volume_masked(ctx, op, out, v, Some(&chosen));
+        }
+    }
+
     /// Samples `left` into `out` and `right` into a scratch buffer, then combines them.
+    #[allow(clippy::too_many_arguments)]
     fn binary_volume(
         &self,
         ctx: &mut SamplerContext,
@@ -1224,12 +1474,13 @@ impl Program {
         right: OpIndex,
         out: &mut [f32],
         v: &DensityVolume,
+        mask: Mask<'_>,
         f: impl Fn(f32, f32) -> f32,
     ) {
-        self.volume(ctx, left, out, v);
+        self.volume_masked(ctx, left, out, v, mask);
         let mut right_buffer = ctx.acquire(out.len());
-        self.volume(ctx, right, &mut right_buffer, v);
-        for (l, &r) in out.iter_mut().zip(&right_buffer) {
+        self.volume_masked(ctx, right, &mut right_buffer, v, mask);
+        for (l, &r) in out.iter_mut().zip(right_buffer.iter()) {
             *l = f(*l, r);
         }
         ctx.release(right_buffer);
@@ -1242,10 +1493,55 @@ impl Program {
         input: OpIndex,
         out: &mut [f32],
         v: &DensityVolume,
+        mask: Mask<'_>,
         f: impl Fn(f32) -> f32,
     ) {
-        self.volume(ctx, input, out, v);
+        self.volume_masked(ctx, input, out, v, mask);
         map_in_place(out, f);
+    }
+
+    /// `volume_cached` of a cell only the masked-cache root reads, at the points of `mask`:
+    /// the cell keeps which points it holds and samples only those it lacks.
+    fn volume_cached_masked(
+        &self,
+        ctx: &mut SamplerContext,
+        cell_id: u32,
+        input: OpIndex,
+        out: &mut [f32],
+        v: &DensityVolume,
+        mask: &[bool],
+    ) {
+        let cell = ctx.cell(cell_id);
+        if cell.volume == Some(*v) {
+            if !cell.partial || mask.iter().zip(&cell.computed).all(|(&m, &c)| !m || c) {
+                out.copy_from_slice(&cell.buffer);
+                return;
+            }
+            // Sample the missing points and add them to the cell.
+            let missing: Vec<bool> = mask
+                .iter()
+                .zip(&cell.computed)
+                .map(|(&m, &c)| m && !c)
+                .collect();
+            self.volume_masked(ctx, input, out, v, Some(&missing));
+            let cell = ctx.cell(cell_id);
+            for (i, &m) in missing.iter().enumerate() {
+                if m {
+                    cell.buffer[i] = out[i];
+                    cell.computed[i] = true;
+                }
+            }
+            out.copy_from_slice(&cell.buffer);
+            return;
+        }
+        self.volume_masked(ctx, input, out, v, Some(mask));
+        let cell = ctx.cell(cell_id);
+        cell.buffer.clear();
+        cell.buffer.extend_from_slice(out);
+        cell.computed.clear();
+        cell.computed.extend_from_slice(mask);
+        cell.volume = Some(*v);
+        cell.partial = true;
     }
 
     /// `SamplerContext.sampleVolumeCached`.
@@ -1261,8 +1557,9 @@ impl Program {
             return self.volume(ctx, input, out, v);
         }
         let cell = ctx.cell(cell_id);
-        if cell.volume != Some(*v) {
+        if cell.volume != Some(*v) || cell.partial {
             cell.volume = None;
+            cell.partial = false;
             let mut buffer = std::mem::take(&mut cell.buffer);
             if buffer.len() >= out.len() {
                 buffer.truncate(out.len());
@@ -1285,17 +1582,22 @@ impl Program {
         spline: &SplineProgram,
         out: &mut [f32],
         v: &DensityVolume,
+        mask: Mask<'_>,
     ) {
         let base = ctx.slots.len();
         ctx.slots
-            .resize_with(base + spline.coordinates.len(), Vec::new);
+            .resize_with(base + spline.coordinates.len(), Scratch::default);
         let len = out.len();
         for (i, value) in out.iter_mut().enumerate() {
+            if !needed(mask, i) {
+                continue;
+            }
             *value = spline.sample(spline.root, &mut |slot| {
                 let slot_index = base + slot as usize;
                 if ctx.slots[slot_index].is_empty() {
                     let mut buffer = ctx.acquire(len);
-                    self.volume(ctx, spline.coordinates[slot as usize], &mut buffer, v);
+                    let coordinate = spline.coordinates[slot as usize];
+                    self.volume_masked(ctx, coordinate, &mut buffer, v, mask);
                     ctx.slots[slot_index] = buffer;
                 }
                 ctx.slots[slot_index][i]

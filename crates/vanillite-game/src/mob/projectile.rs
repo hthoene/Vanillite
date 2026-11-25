@@ -1,4 +1,5 @@
-//! Arrows shot by skeletons (`AbstractArrow`).
+//! Arrows (`AbstractArrow`, `Arrow` with its potion, `SpectralArrow`) shot by bows,
+//! skeletons, strays and bogged.
 
 use vanillite_base::math::ceil;
 use vanillite_base::random::{LegacyRandom, RandomSource};
@@ -16,7 +17,12 @@ use crate::survival::play_sound;
 use crate::survival::player::Env;
 use crate::survival::rules::Difficulty;
 
-/// The kind data of an arrow.
+/// Whether `kind` is an arrow (`Arrow` or `SpectralArrow`).
+pub fn is_arrow_kind(kind: vanillite_data::entity::EntityTypeId) -> bool {
+    kind == entity_ids::ARROW || kind == entity_ids::SPECTRAL_ARROW
+}
+
+/// The kind data of an arrow or spectral arrow.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ArrowData {
     pub owner: Option<EntityId>,
@@ -37,9 +43,13 @@ pub struct ArrowData {
     pub knockback: f32,
     /// Burning (Flame): sets what it hits on fire for 5 seconds.
     pub fire: bool,
-    /// The effect of a tipped arrow (`Arrow.addEffect`; strays, bogged and parched shoot
-    /// them), applied to the living entity it hurts.
-    pub effect: Option<crate::effect::EffectInstance>,
+    /// The item it is picked up as (`pickupItemStack`): an arrow, a tipped arrow with its
+    /// `potion_contents`, or a spectral arrow.
+    pub item: crate::item::ItemStack,
+    /// `inGroundTime`.
+    pub in_ground_time: i32,
+    /// The glowing ticks of a spectral arrow (`duration`).
+    pub spectral_duration: i32,
     /// `PIERCE_LEVEL`: how many more entities it passes through (Piercing).
     pub pierce_level: u8,
     /// `piercingIgnoreEntityIds`: the entities it pierced (hits them no more).
@@ -47,6 +57,69 @@ pub struct ArrowData {
     /// `soundEvent` is `item.crossbow.hit` (shot from a crossbow) instead of
     /// `entity.arrow.hit`.
     pub crossbow_sound: bool,
+}
+
+impl ArrowData {
+    /// An arrow that was just shot.
+    pub fn shot(
+        owner: Option<EntityId>,
+        base_damage: f64,
+        pickup: u8,
+        random_state: i64,
+        item: crate::item::ItemStack,
+    ) -> ArrowData {
+        ArrowData {
+            owner,
+            base_damage,
+            in_ground: false,
+            life: 0,
+            shake: 0,
+            crit: false,
+            left_owner: false,
+            last_state: None,
+            tick_count: 0,
+            pickup,
+            random_state,
+            knockback: 0.0,
+            fire: false,
+            item,
+            in_ground_time: 0,
+            spectral_duration: 200,
+            pierce_level: 0,
+            pierced: Vec::new(),
+            crossbow_sound: false,
+        }
+    }
+
+    /// The arrow's `potion_contents` (`Arrow.getPotionContents`).
+    pub fn potion(&self) -> crate::effect::potion::PotionContents {
+        crate::effect::potion::PotionContents::of_stack(&self.item)
+    }
+
+    /// `ID_EFFECT_COLOR`: the potion colour, -1 without a potion.
+    pub fn color(&self) -> i32 {
+        let contents = self.potion();
+        if contents == crate::effect::potion::PotionContents::default() {
+            -1
+        } else {
+            contents.color()
+        }
+    }
+}
+
+/// The item an arrow item is shot as (`ArrowItem.createArrow`): its entity type and the
+/// pickup stack (count 1).
+pub fn arrow_of(
+    ammo: &crate::item::ItemStack,
+) -> (vanillite_data::entity::EntityTypeId, crate::item::ItemStack) {
+    let mut item = ammo.clone();
+    item.count = 1;
+    let kind = if crate::item::item_id(ammo).name() == "minecraft:spectral_arrow" {
+        entity_ids::SPECTRAL_ARROW
+    } else {
+        entity_ids::ARROW
+    };
+    (kind, item)
 }
 
 /// `startUsingItem` with the bow: the "using item" living flag is synched.
@@ -101,6 +174,7 @@ pub fn shoot_arrow(
     uncertainty: f32,
     owner: Option<EntityId>,
     weapon: Option<&crate::item::ItemStack>,
+    ammo: &crate::item::ItemStack,
     crit: bool,
     pickup: u8,
 ) -> EntityId {
@@ -108,29 +182,13 @@ pub fn shoot_arrow(
     let mut own = LegacyRandom::new(crate::mob::new_entity_seed());
     let uuid = crate::mob::new_uuid();
     let (velocity, rot) = shoot(&mut own, dir, power, uncertainty);
-    let mut data = ArrowData {
-        owner,
-        base_damage: 2.0,
-        in_ground: false,
-        life: 0,
-        shake: 0,
-        crit,
-        left_owner: false,
-        last_state: None,
-        tick_count: 0,
-        pickup,
-        random_state: own.state(),
-        knockback: 0.0,
-        fire: false,
-        effect: None,
-        pierce_level: 0,
-        pierced: Vec::new(),
-        crossbow_sound: false,
-    };
+    let (kind, item) = arrow_of(ammo);
+    let mut data = ArrowData::shot(owner, 2.0, pickup, own.state(), item);
+    data.crit = crit;
     if let Some(w) = weapon {
         let (enchants, tags) = super::attack::combat_data();
         let arrow = crate::predicate::EntityFacts {
-            kind: Some(entity_ids::ARROW),
+            kind: Some(kind),
             ..crate::predicate::EntityFacts::default()
         };
         let types = crate::survival::damage::DamageTypes::built_in();
@@ -149,7 +207,7 @@ pub fn shoot_arrow(
         data.knockback = enchants.modify_knockback(w, &cx, random, 0.0);
         data.fire = enchants.projectile_ignite(w).is_some();
     }
-    let mut new = NewEntity::new(entity_ids::ARROW, network_ids.next(), uuid, start);
+    let mut new = NewEntity::new(kind, network_ids.next(), uuid, start);
     new.velocity = velocity;
     new.rot = rot;
     new.flags = EntityFlags::HAS_IMPULSE;
@@ -201,35 +259,40 @@ pub fn skeleton_shoot(t: &mut Tick<'_, '_>, target: EntityId, power: f32) {
     if fire {
         new.flags.set(EntityFlags::ON_FIRE, true);
     }
-    t.ents.spawn_arrow(
-        new,
-        ArrowData {
-            owner: Some(id),
-            base_damage,
-            in_ground: false,
-            life: 0,
-            shake: 0,
-            crit,
-            left_owner: false,
-            last_state: None,
-            tick_count: 0,
-            pickup: 0,
-            random_state: own.state(),
-            knockback: 0.0,
-            fire,
-            effect,
-            pierce_level: 0,
-            pierced: Vec::new(),
-            crossbow_sound: false,
-        },
-    );
+    let mut data = ArrowData::shot(Some(id), base_damage, 0, own.state(), mob_arrow(effect));
+    data.crit = crit;
+    data.fire = fire;
+    t.ents.spawn_arrow(new, data);
     let m = t.mob();
     let pitch = 1.0 / (m.random.next_float() * 0.4 + 0.8);
     super::kinds::play_sound(t, "minecraft:entity.skeleton.shoot", 1.0, pitch);
     let _ = Difficulty::Peaceful;
 }
 
-/// `AbstractArrow.tick` (with `Projectile.tick`'s owner check).
+/// The arrow a skeleton type shoots (`AbstractSkeleton.getArrow`): `Arrow.addEffect` puts the
+/// effect of strays, bogged and parched into a plain arrow's potion.
+pub(crate) fn mob_arrow(effect: Option<crate::effect::EffectInstance>) -> crate::item::ItemStack {
+    use crate::effect::potion::PotionContents;
+    let mut item = crate::item::ItemStack::new(
+        vanillite_data::registry::ITEM
+            .id("minecraft:arrow")
+            .unwrap_or(0),
+        1,
+    );
+    if let Some(e) = effect {
+        let contents = PotionContents {
+            custom_effects: vec![e],
+            ..PotionContents::default()
+        };
+        item.patch_mut().set(
+            vanillite_protocol::components::ids::POTION_CONTENTS,
+            contents.encode(),
+        );
+    }
+    item
+}
+
+/// `AbstractArrow.tick` (with `Projectile.tick`'s owner check) and `Arrow.tick`.
 pub fn tick_arrow(
     level: &Level,
     ents: &mut Entities,
@@ -246,6 +309,7 @@ pub fn tick_arrow(
     let mut pos = e.pos();
     let mut velocity = e.velocity();
     let mut rot = e.rot();
+    let (kind, network_id) = (e.kind(), e.network_id().0);
     let mut random = LegacyRandom::from_state(a.random_state);
     a.tick_count += 1;
     let block_pos = BlockPos::containing(pos.x, pos.y, pos.z);
@@ -291,7 +355,9 @@ pub fn tick_arrow(
                 discard = true;
             }
         }
+        a.in_ground_time += 1;
     } else {
+        a.in_ground_time = 0;
         // The step and the rotation use the motion from the start of the tick.
         let movement = velocity;
         let in_water = super::is_water(state);
@@ -390,15 +456,12 @@ pub fn tick_arrow(
             let owner = a.owner.filter(|o| ents.store.contains(*o)).unwrap_or(id);
             let mut source = combat::entity_source(ents, env.types.arrow, owner, id);
             source.position = Some(pos);
+            source.projectile_motion = Some(velocity);
             #[allow(clippy::cast_precision_loss)]
             let hurt = combat::hurt(level, ents, env, cx, target, source, damage as f32);
             if hurt {
                 if a.fire {
                     super::attack::ignite(ents, target, 100);
-                }
-                // `Arrow.doPostHurtEffects`: the tipped arrow's effect.
-                if let Some(effect) = a.effect.clone() {
-                    crate::effect::living::add_to_entity(level, ents, env, cx, target, effect);
                 }
                 // `doKnockback`: Punch pushes along the arrow's flight.
                 if a.knockback > 0.0 {
@@ -416,6 +479,19 @@ pub fn tick_arrow(
                             e.set_flags(EntityFlags::HURT_MARKED, true);
                         }
                     }
+                }
+                // `doPostAttackEffectsWithItemSource` (the victim's equipment), then
+                // `doPostHurtEffects`: the potion of an arrow, the glowing of a spectral one.
+                super::attack::post_attack(level, ents, env, cx, target, &source, None);
+                if kind == entity_ids::SPECTRAL_ARROW {
+                    let glowing = crate::effect::EffectInstance::new(
+                        crate::effect::MobEffect::GLOWING,
+                        a.spectral_duration,
+                        0,
+                    );
+                    crate::effect::living::add_to_entity(level, ents, env, cx, target, glowing);
+                } else {
+                    crate::effect::cloud::arrow_hit(level, ents, env, cx, target, &a.item);
                 }
                 if let Some(owner) = a.owner
                     && let Some(m) = ents.mob_mut(owner)
@@ -500,6 +576,29 @@ pub fn tick_arrow(
         }
     }
     a.random_state = random.state();
+    // `Arrow.tick`: a tipped arrow in the ground for 600 ticks loses its potion.
+    if kind == entity_ids::ARROW
+        && a.in_ground
+        && a.in_ground_time >= 600
+        && a.potion() != crate::effect::potion::PotionContents::default()
+    {
+        env.out.push(crate::survival::Effect::Tracking {
+            entity: id,
+            with_self: false,
+            packet: vanillite_protocol::SharedPacket::of(
+                &vanillite_protocol::packets::play::clientbound::EntityEvent {
+                    entity_id: network_id,
+                    event: 0,
+                },
+            ),
+        });
+        a.item = crate::item::ItemStack::new(
+            vanillite_data::registry::ITEM
+                .id("minecraft:arrow")
+                .unwrap_or(0),
+            1,
+        );
+    }
     if discard || !ents.store.contains(id) {
         cx.discarded.push(id);
         return;
@@ -536,40 +635,27 @@ pub fn lerp_rotation(old: f32, new: f32) -> f32 {
     old + (new - old) * 0.2
 }
 
-/// Where the segment enters `b`, as a fraction of the segment.
+/// Where the segment enters `b`, as a fraction of the segment (`AABB.clip`: nothing when it
+/// starts inside).
 pub fn segment_box(from: Vec3, to: Vec3, b: &Aabb) -> Option<f64> {
-    if b.contains(from.x, from.y, from.z) {
-        return Some(0.0);
-    }
-    let d = [to.x - from.x, to.y - from.y, to.z - from.z];
-    let o = [from.x, from.y, from.z];
-    let lo = [b.min_x, b.min_y, b.min_z];
-    let hi = [b.max_x, b.max_y, b.max_z];
-    let (mut t0, mut t1) = (0.0_f64, 1.0_f64);
-    for a in 0..3 {
-        if d[a].abs() < 1.0e-12 {
-            if o[a] < lo[a] || o[a] > hi[a] {
-                return None;
-            }
-        } else {
-            let inv = 1.0 / d[a];
-            let (mut n, mut f) = ((lo[a] - o[a]) * inv, (hi[a] - o[a]) * inv);
-            if n > f {
-                std::mem::swap(&mut n, &mut f);
-            }
-            t0 = t0.max(n);
-            t1 = t1.min(f);
-            if t0 > t1 {
-                return None;
-            }
-        }
-    }
-    Some(t0)
+    aabb_clip_scale(b, from, to)
 }
 
 /// `AABB.clip(from, to)`: where the way from `from` to `to` enters the box; nothing when it
 /// starts inside.
 pub fn aabb_clip(b: &Aabb, from: Vec3, to: Vec3) -> Option<Vec3> {
+    let (dx, dy, dz) = (to.x - from.x, to.y - from.y, to.z - from.z);
+    aabb_clip_scale(b, from, to).map(|scale| {
+        Vec3::new(
+            from.x + scale * dx,
+            from.y + scale * dy,
+            from.z + scale * dz,
+        )
+    })
+}
+
+/// [`aabb_clip`] as the fraction of the way.
+fn aabb_clip_scale(b: &Aabb, from: Vec3, to: Vec3) -> Option<f64> {
     let (dx, dy, dz) = (to.x - from.x, to.y - from.y, to.z - from.z);
     let mut scale = 1.0;
     let mut hit = false;
@@ -661,11 +747,5 @@ pub fn aabb_clip(b: &Aabb, from: Vec3, to: Vec3) -> Option<Vec3> {
             xy,
         );
     }
-    hit.then(|| {
-        Vec3::new(
-            from.x + scale * dx,
-            from.y + scale * dy,
-            from.z + scale * dz,
-        )
-    })
+    hit.then_some(scale)
 }

@@ -229,21 +229,53 @@ impl Chunk {
         self.prime(|_| true);
     }
 
-    /// Recomputes the kept heightmaps of the types `wanted` selects.
+    /// Recomputes the kept heightmaps of the types `wanted` selects: one top-down scan per
+    /// column finds the highest matching block of every type at once.
     fn prime(&mut self, wanted: impl Fn(HeightmapKind) -> bool) {
-        let min_y = self.min_y();
-        let top = min_y + self.height() as i32 - 1;
+        let mut kinds = [HeightmapKind::WorldSurface; 6];
+        let mut count = 0;
         for kind in HeightmapKind::ALL {
-            if self.heightmaps.get(kind).is_none() || !wanted(kind) {
-                continue;
+            if self.heightmaps.get(kind).is_some() && wanted(kind) {
+                kinds[count] = kind;
+                count += 1;
             }
-            for z in 0..16 {
-                for x in 0..16 {
-                    let height = self
-                        .highest_matching(kind, x, z, top)
-                        .map_or(min_y, |y| y + 1);
-                    if let Some(map) = self.heightmaps.get_mut(kind) {
-                        map.set(x, z, (height - min_y) as u32);
+        }
+        let kinds = &kinds[..count];
+        if kinds.is_empty() {
+            return;
+        }
+        // Relative heights per type and column (`x + z * 16`); 0 is "no matching block".
+        let mut heights = [[0u32; 256]; 6];
+        for z in 0..16 {
+            for x in 0..16 {
+                let column = (x + z * 16) as usize;
+                let mut found = [false; 6];
+                let mut remaining = kinds.len();
+                'column: for (index, section) in self.sections.iter().enumerate().rev() {
+                    if section.summary().is_empty() {
+                        continue;
+                    }
+                    for local_y in (0..16).rev() {
+                        let flags = facts::block_flags(section.block(x, local_y, z));
+                        for (i, kind) in kinds.iter().enumerate() {
+                            if !found[i] && kind.matches(flags) {
+                                found[i] = true;
+                                heights[i][column] = (index * 16) as u32 + local_y + 1;
+                                remaining -= 1;
+                            }
+                        }
+                        if remaining == 0 {
+                            break 'column;
+                        }
+                    }
+                }
+            }
+        }
+        for (i, &kind) in kinds.iter().enumerate() {
+            if let Some(map) = self.heightmaps.get_mut(kind) {
+                for z in 0..16 {
+                    for x in 0..16 {
+                        map.set(x, z, heights[i][(x + z * 16) as usize]);
                     }
                 }
             }

@@ -65,6 +65,8 @@ fn player(t: &Tick<'_, '_>, id: EntityId) -> bool {
 
 /// `registerGoals` of the rabbit.
 pub fn register_goals(m: &mut MobData) {
+    // The constructor's `setSpeedModifier(0.0)`: the move control wants (0, 0, 0).
+    set_speed_modifier(m, false, 0.0);
     let g = &mut m.goals;
     g.add(1, G::Float);
     g.add(1, fam(FamGoal::Rabbit(Goal::Panic { pos: Vec3::ZERO })));
@@ -274,24 +276,30 @@ pub fn ai_step(t: &mut Tick<'_, '_>) {
     }
 }
 
+/// `Rabbit.setSpeedModifier`: the navigation's speed, and the move control wants its last
+/// position again with it (`RabbitMoveControl.setWantedPosition`: 1.5 in water, a positive
+/// speed is the next jump's).
+fn set_speed_modifier(m: &mut MobData, in_water: bool, speed: f64) {
+    m.nav.speed_modifier = speed;
+    let speed = if in_water { 1.5 } else { speed };
+    let wanted = m.move_ctl.wanted;
+    m.move_ctl.set_wanted_position(wanted, speed);
+    if speed > 0.0 {
+        st_mut(m).next_jump_speed = speed;
+    }
+}
+
 /// `RabbitMoveControl.tick`: no speed on the ground between hops.
 pub fn move_control(t: &mut Tick<'_, '_>) -> bool {
-    let m = t.mob_ref();
-    if t.on_ground() && !m.jumping && !m.jump {
-        t.mob().move_ctl.speed_modifier = 0.0;
-        t.mob().nav.speed_modifier = 0.0;
-    } else if m.move_ctl.has_wanted() {
+    let on_ground = t.on_ground();
+    let in_water = t.mob_ref().fluids.in_water();
+    let m = t.mob();
+    if on_ground && !m.jumping && !m.jump {
+        set_speed_modifier(m, in_water, 0.0);
+    } else if m.move_ctl.has_wanted() || m.move_ctl.operation == crate::mob::nav::Operation::Jumping
+    {
         let next = st(m).next_jump_speed;
-        if next > 0.0 {
-            t.mob().move_ctl.speed_modifier = next;
-        }
-    }
-    if t.mob_ref().fluids.in_water() && t.mob_ref().move_ctl.has_wanted() {
-        t.mob().move_ctl.speed_modifier = 1.5;
-    }
-    let speed = t.mob_ref().move_ctl.speed_modifier;
-    if speed > 0.0 {
-        st_mut(t.mob()).next_jump_speed = speed;
+        set_speed_modifier(m, in_water, next);
     }
     t.mob().move_ctl.kind = MoveKind::Default;
     crate::mob::nav::tick_move_control(t);

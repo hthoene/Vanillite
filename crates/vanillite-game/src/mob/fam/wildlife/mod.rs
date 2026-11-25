@@ -7,7 +7,7 @@
 mod bat;
 pub(crate) mod bee;
 mod dolphin;
-mod fish;
+pub(crate) mod fish;
 mod golem;
 mod mooshroom;
 mod snowball;
@@ -322,12 +322,11 @@ pub(crate) fn add_effect(
     duration: i32,
     amplifier: u8,
 ) {
-    if let Some(m) = ents.mob_mut(target) {
-        effects::living::add_to_mob(
-            m,
-            EffectInstance::new(effect, duration, i32::from(amplifier)),
-        );
-    }
+    effects::living::add_detached(
+        ents,
+        target,
+        EffectInstance::new(effect, duration, i32::from(amplifier)),
+    );
 }
 
 /// Whether the kind is a fish (`AbstractFish`).
@@ -611,6 +610,20 @@ impl FamilyHooks for Hooks {
         }
     }
 
+    fn size_scale(m: &MobData) -> Option<f32> {
+        match m.kind {
+            Kind::Salmon => {
+                Some([0.5, 1.0, 1.5][usize::try_from(st(m).variant.clamp(0, 2)).unwrap_or(1)])
+            }
+            Kind::Pufferfish => Some(match st(m).puff_state {
+                0 => 0.5,
+                1 => 0.7,
+                _ => 1.0,
+            }),
+            _ => None,
+        }
+    }
+
     fn dimensions(m: &MobData) -> Option<Dimensions> {
         let d = Dimensions::of(m.kind.type_id());
         let scaled = |f: f32| Dimensions {
@@ -784,6 +797,10 @@ impl FamilyHooks for Hooks {
             Kind::Bee => bee::register_goals(m),
             _ => {}
         }
+    }
+
+    fn finalize_spawn_own(m: &mut MobData) {
+        fish::finalize_spawn_own(m);
     }
 
     fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
@@ -1379,7 +1396,7 @@ fn handle_air_supply(t: &mut Tick<'_, '_>) {
 
 /// `travelInWater` of fish, dolphins and turtles: `moveRelative(speed)`, move, slow down by
 /// 0.9 and sink a little without a target (`sink`).
-fn water_travel(t: &mut Tick<'_, '_>, input: Vec3, speed: f32, sink: bool) {
+pub(crate) fn water_travel(t: &mut Tick<'_, '_>, input: Vec3, speed: f32, sink: bool) {
     crate::mob::living::move_relative(t, speed, input);
     let v = t.velocity();
     crate::mob::living::move_self(t, v);

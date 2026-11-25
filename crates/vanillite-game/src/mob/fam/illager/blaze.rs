@@ -149,7 +149,8 @@ pub fn attack_tick(t: &mut Tick<'_, '_>, a: &mut Attack) {
                 let dir = Vec3::new(r.triangle(xd, 2.297 * sqd), yd, r.triangle(zd, 2.297 * sqd));
                 let mut d = MissileData::new(MissileKind::SmallFireball);
                 d.item = super::super::super::equipment::stack("minecraft:fire_charge");
-                let velocity = dir.normalize() * d.acceleration;
+                // `new SmallFireball(level, blaze, direction.normalize())` normalizes again.
+                let velocity = dir.normalize().normalize() * d.acceleration;
                 let start = Vec3::new(p.x, p.y + half + 0.5, p.z);
                 let rot = t.core().rot();
                 missile::spawn_from(

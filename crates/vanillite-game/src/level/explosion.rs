@@ -53,6 +53,9 @@ pub enum BlockResistance {
     DangerousWitherSkull,
     /// `MinecartTNT`: rails and the blocks under them have no resistance and do not break.
     TntMinecart,
+    /// `AbstractWindCharge.EXPLOSION_DAMAGE_CALCULATOR`: `#blocks_wind_charge_explosions` are
+    /// immune.
+    WindCharge,
 }
 
 /// An explosion for the clients (`ClientboundExplodePacket`), sent to players within 64 blocks.
@@ -221,6 +224,13 @@ impl Level {
                                     true, state, resistance,
                                 );
                             }
+                            if override_resistance == BlockResistance::WindCharge
+                                && crate::block::block_tags()
+                                    .blocks_wind_charge_explosions
+                                    .contains(state)
+                            {
+                                resistance = 3_600_000.0;
+                            }
                             power -= (resistance + 0.3) * 0.3;
                         }
                         if power > 0.0 && !rail_protected && seen.insert(pos) {
@@ -347,9 +357,12 @@ impl Level {
             let resistance = mob.map_or(0.0, |m| m.attrs.explosion_knockback_resistance);
             let knockback =
                 direction * ((1.0 - dist) * exposure * style.knockback * (1.0 - resistance));
-            if player.is_some() {
+            if let Some(p) = player {
                 hit_players.push((id, knockback));
-                continue;
+                // A client moves the player by the packet, unless the server moves it itself.
+                if !p.survival.simulate_movement {
+                    continue;
+                }
             }
             // `pushFromExplosion`.
             if let Some(mut entity) = self.entities.store.get_mut(id)

@@ -50,14 +50,14 @@ pub struct GameData {
     pub banner_patterns: crate::menu::BannerPatterns,
     /// The tags of the registries: registry → tag id (without `#`) → entry ids in tag order.
     pub registry_tags: HashMap<String, HashMap<String, Vec<u32>>>,
-    /// The `minecraft:trial_spawner` registry.
-    pub trial_spawner_configs: crate::block::trial_spawner::TrialConfigs,
     /// The `minecraft:villager_trade` and `minecraft:trade_set` registries.
     pub trades: crate::trading::data::TradeData,
     /// The definitions of the enchantments by name.
     pub enchantment_info: HashMap<String, EnchantmentInfo>,
     /// The `minecraft:jukebox_song` registry, by registry id.
     pub jukebox_songs: Vec<crate::block::jukebox::JukeboxSong>,
+    /// The `minecraft:trial_spawner` registry.
+    pub trial_spawner_configs: crate::block::trial_spawner::TrialConfigs,
 }
 
 /// What `/enchant` reads of an enchantment (`Enchantment` and its `EnchantmentDefinition`).

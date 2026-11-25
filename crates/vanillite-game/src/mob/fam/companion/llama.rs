@@ -177,9 +177,10 @@ pub fn spit(t: &mut Tick<'_, '_>, target: EntityId, _power: f32) {
     let zd = o.pos.z - p.z;
     let yo = (xd * xd + zd * zd).sqrt() * f64::from(0.2_f32);
     let dir = Vec3::new(xd, yd + yo, zd);
-    let (velocity, rot) = crate::mob::projectile::shoot(&mut t.mob().random, dir, 1.5, 10.0);
+    let mut own = crate::mob::missile::new_projectile_random();
+    let (velocity, rot) = crate::mob::projectile::shoot(&mut own, dir, 1.5, 10.0);
     let data = MissileData::new(MissileKind::LlamaSpit);
-    crate::mob::missile::spawn_from(t, start, velocity, rot, data);
+    crate::mob::missile::spawn_shot(t, start, velocity, rot, data);
     let pitch = {
         let r = &mut t.mob().random;
         1.0 + (r.next_float() - r.next_float()) * 0.2
@@ -234,7 +235,10 @@ pub fn spit_tick(t: &mut MissileTick<'_, '_>) {
     let to = pos + velocity;
     let block_hit = physics::clip(t.level as &dyn Blocks, pos, to);
     let end = block_hit.map_or(to, |(_, p)| p);
-    let hit = first_entity_hit(t.ents, t.id, d.owner, left_owner, pos, end, aabb, velocity);
+    let margin = crate::mob::missile::margin(d.life);
+    let hit = first_entity_hit(
+        t.ents, t.id, d.owner, left_owner, pos, end, aabb, velocity, margin,
+    );
     if let Some(m) = t.ents.missile_mut(t.id) {
         m.left_owner = left_owner;
     }
@@ -305,7 +309,7 @@ fn touches_block(level: &Level, b: &Aabb) -> bool {
 }
 
 /// `ProjectileUtil.getEntityHitResult` along the move: the nearest living entity whose box
-/// (grown by 0.3) the segment crosses, the owner excluded until the projectile left it.
+/// (grown by `margin`) the segment crosses, the owner excluded until the projectile left it.
 #[allow(clippy::too_many_arguments)]
 pub fn first_entity_hit(
     ents: &Entities,
@@ -316,6 +320,7 @@ pub fn first_entity_hit(
     to: Vec3,
     aabb: Aabb,
     velocity: Vec3,
+    margin: f64,
 ) -> Option<EntityId> {
     let area = aabb
         .expand_towards(velocity.x, velocity.y, velocity.z)
@@ -336,7 +341,7 @@ pub fn first_entity_hit(
         let Some(oe) = ents.store.get(other) else {
             return;
         };
-        let grown = oe.aabb().inflate(0.3, 0.3, 0.3);
+        let grown = oe.aabb().inflate(margin, margin, margin);
         if crate::mob::projectile::segment_box(from, to, &grown).is_some() {
             let d = from.distance_to_sqr(oe.pos());
             if best.is_none_or(|(_, b)| d < b) {

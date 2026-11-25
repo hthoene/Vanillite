@@ -160,6 +160,9 @@ pub struct SpawnContext<'a> {
     pub extra: Vec<ExtraMob>,
     /// An existing entity the new mob rides (a free chicken for a baby zombie).
     pub ride: Option<EntityId>,
+    /// The state of the mob's own random while `finalizeSpawn` runs (`this.random`; the
+    /// mob's `random` is the level's meanwhile).
+    pub own_state: i64,
 }
 
 impl SpawnContext<'_> {
@@ -179,6 +182,7 @@ impl SpawnContext<'_> {
             env: Environment::default(),
             extra: Vec::new(),
             ride: None,
+            own_state: 0,
         }
     }
 
@@ -369,6 +373,11 @@ pub trait FamilyHooks {
     fn dimensions(_m: &MobData) -> Option<Dimensions> {
         None
     }
+    /// The factor the kind's default dimensions and eye height are scaled by (sizes and
+    /// puff states; babies at half size otherwise).
+    fn size_scale(_m: &MobData) -> Option<f32> {
+        None
+    }
     /// `getWalkTargetValue(pos)`.
     fn walk_target_value(kind: Kind, level: &Level, env: &Environment, pos: BlockPos) -> f64 {
         super::kinds::base_walk_target_value(Self::is_monster(kind), level, env, pos)
@@ -416,6 +425,9 @@ pub trait FamilyHooks {
     fn register_goals(_m: &mut MobData) {}
     /// `finalizeSpawn` (after `Mob.finalizeSpawn`'s follow range bonus and handedness).
     fn finalize_spawn(_m: &mut MobData, _ctx: &mut SpawnContext<'_>) {}
+    /// The draws of the kind's `finalizeSpawn` from the mob's own random (`this.random`;
+    /// [`FamilyHooks::finalize_spawn`] gets the level's random as `m.random`).
+    fn finalize_spawn_own(_m: &mut MobData) {}
     /// Work before `LivingEntity.tick` (the kind's `tick` override before `super.tick()`).
     fn before_tick(_t: &mut Tick<'_, '_>) {}
     /// Work after `LivingEntity.tick`.
@@ -703,6 +715,9 @@ pub fn experience_reward(m: &mut MobData) -> i32 {
 pub fn dimensions(m: &MobData) -> Option<Dimensions> {
     by_family!(m.kind, None, dimensions(m))
 }
+pub fn size_scale(m: &MobData) -> Option<f32> {
+    by_family!(m.kind, None, size_scale(m))
+}
 pub fn walk_target_value(kind: Kind, level: &Level, env: &Environment, pos: BlockPos) -> f64 {
     by_family!(
         kind,
@@ -756,9 +771,31 @@ pub fn register_goals(m: &mut MobData) {
     let kind = m.kind;
     by_family!(kind, (), register_goals(m));
 }
+/// Whether the kind's `finalizeSpawn` makes its own draws before `super.finalizeSpawn`, so
+/// `Mob.finalizeSpawn` (follow range, left-handedness) comes last: the horses
+/// (`AbstractHorse.finalizeSpawn`: `randomizeAttributes`, then `AgeableMob`, then `Mob`).
+pub fn mob_spawn_part_last(kind: Kind) -> bool {
+    matches!(
+        kind,
+        Kind::Horse
+            | Kind::Donkey
+            | Kind::Mule
+            | Kind::Llama
+            | Kind::TraderLlama
+            | Kind::SkeletonHorse
+            | Kind::ZombieHorse
+            | Kind::Camel
+            | Kind::CamelHusk
+    )
+}
+
 pub fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
     let kind = m.kind;
     by_family!(kind, (), finalize_spawn(m, ctx));
+}
+pub fn finalize_spawn_own(m: &mut MobData) {
+    let kind = m.kind;
+    by_family!(kind, (), finalize_spawn_own(m));
 }
 pub fn before_tick(t: &mut Tick<'_, '_>) {
     by_family!(t.mob_ref().kind, (), before_tick(t));

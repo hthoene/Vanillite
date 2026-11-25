@@ -2,7 +2,8 @@
 //! `EnchantmentHelper`), read from the `minecraft:enchantment` entries of the data packs, so
 //! data packs change and add them: `minecraft:damage`, `minecraft:knockback`,
 //! `minecraft:damage_protection`, `minecraft:armor_effectiveness`,
-//! `minecraft:smash_damage_per_fallen_block`, `minecraft:post_attack` (`ignite`),
+//! `minecraft:smash_damage_per_fallen_block`, `minecraft:post_attack` (`ignite`,
+//! `apply_mob_effect`, `damage_entity`, `change_item_damage`),
 //! `minecraft:projectile_spawned` (`ignite`) and `minecraft:attributes`, and the ones of
 //! projectile weapons: `minecraft:crossbow_charge_time`, `minecraft:crossbow_charging_sounds`,
 //! `minecraft:projectile_count`, `minecraft:projectile_spread`, `minecraft:projectile_piercing`
@@ -274,10 +275,21 @@ impl Requirement {
                 o.get("term")
                     .map_or(Requirement::Unsupported, Requirement::parse),
             )),
-            "random_chance" => o
-                .get("chance")
-                .and_then(LevelBased::parse)
-                .map_or(Requirement::Unsupported, Requirement::RandomChance),
+            // `random_chance` with a number or an `enchantment_level` number provider.
+            "random_chance" => {
+                o.get("chance")
+                    .and_then(|c| {
+                        let level_based = c.get("type").and_then(Value::as_str).is_some_and(|t| {
+                            t.trim_start_matches("minecraft:") == "enchantment_level"
+                        });
+                        if level_based {
+                            c.get("amount").and_then(LevelBased::parse)
+                        } else {
+                            LevelBased::parse(c)
+                        }
+                    })
+                    .map_or(Requirement::Unsupported, Requirement::RandomChance)
+            }
             "match_tool" => {
                 let predicate = o.get("predicate").and_then(Value::as_object);
                 let items = predicate
@@ -360,8 +372,26 @@ pub struct Conditional<T> {
 pub enum EntityEffect {
     /// `ignite`: sets the affected entity on fire for the given seconds.
     Ignite(LevelBased),
+    /// `apply_mob_effect`: one of the effects with a duration (seconds) and amplifier between
+    /// the bounds (Bane of Arthropods).
+    ApplyMobEffect {
+        effects: Vec<crate::effect::MobEffect>,
+        min_duration: LevelBased,
+        max_duration: LevelBased,
+        min_amplifier: LevelBased,
+        max_amplifier: LevelBased,
+    },
+    /// `damage_entity`: damage of a type between the bounds, caused by the enchanted item's
+    /// owner (Thorns).
+    DamageEntity {
+        damage_type: String,
+        min_damage: LevelBased,
+        max_damage: LevelBased,
+    },
+    /// `change_item_damage`: the enchanted item loses durability.
+    ChangeItemDamage(LevelBased),
     AllOf(Vec<EntityEffect>),
-    /// Effects of systems that do not exist yet (mob effects, explosions, sounds).
+    /// Effects of systems that do not exist yet (explosions, sounds, summons).
     Unsupported,
 }
 
@@ -380,6 +410,57 @@ impl EntityEffect {
                 .get("duration")
                 .and_then(LevelBased::parse)
                 .map_or(EntityEffect::Unsupported, EntityEffect::Ignite),
+            "apply_mob_effect" => {
+                let names: Vec<&str> = match o.get("to_apply") {
+                    Some(Value::String(s)) => vec![s.as_str()],
+                    Some(Value::Array(a)) => a.iter().filter_map(Value::as_str).collect(),
+                    _ => Vec::new(),
+                };
+                let effects = names
+                    .iter()
+                    .filter_map(|n| crate::effect::MobEffect::by_name(n))
+                    .collect();
+                let lb = |k: &str| o.get(k).and_then(LevelBased::parse);
+                match (
+                    lb("min_duration"),
+                    lb("max_duration"),
+                    lb("min_amplifier"),
+                    lb("max_amplifier"),
+                ) {
+                    (
+                        Some(min_duration),
+                        Some(max_duration),
+                        Some(min_amplifier),
+                        Some(max_amplifier),
+                    ) => EntityEffect::ApplyMobEffect {
+                        effects,
+                        min_duration,
+                        max_duration,
+                        min_amplifier,
+                        max_amplifier,
+                    },
+                    _ => EntityEffect::Unsupported,
+                }
+            }
+            "damage_entity" => {
+                let lb = |k: &str| o.get(k).and_then(LevelBased::parse);
+                match (
+                    o.get("damage_type").and_then(Value::as_str),
+                    lb("min_damage"),
+                    lb("max_damage"),
+                ) {
+                    (Some(t), Some(min_damage), Some(max_damage)) => EntityEffect::DamageEntity {
+                        damage_type: t.to_owned(),
+                        min_damage,
+                        max_damage,
+                    },
+                    _ => EntityEffect::Unsupported,
+                }
+            }
+            "change_item_damage" => o
+                .get("amount")
+                .and_then(LevelBased::parse)
+                .map_or(EntityEffect::Unsupported, EntityEffect::ChangeItemDamage),
             "all_of" => EntityEffect::AllOf(
                 o.get("effects")
                     .and_then(Value::as_array)
@@ -398,7 +479,7 @@ impl EntityEffect {
                 .iter()
                 .filter_map(|e| e.ignite_seconds(level))
                 .reduce(f32::max),
-            EntityEffect::Unsupported => None,
+            _ => None,
         }
     }
 }
@@ -848,26 +929,29 @@ impl Enchantments {
         value
     }
 
-    /// The seconds `doPostAttackEffects` of the attacker's weapon set the victim on fire
-    /// for (Fire Aspect), if any.
-    pub fn post_attack_ignite(
+    /// `Enchantment.doPostAttack` of every enchantment of `stack` for `party`: the post
+    /// attack effects whose requirements hold, with their enchantment level and who they
+    /// affect, in order.
+    pub fn post_attack_effects(
         &self,
-        weapon: &ItemStack,
+        stack: &ItemStack,
+        slot: Option<EquipmentSlot>,
+        party: Party,
         cx: &EnchantContext<'_>,
         random: &mut dyn FloatRandom,
-    ) -> Option<f32> {
-        let mut out: Option<f32> = None;
-        for (e, level) in self.of(weapon) {
+    ) -> Vec<(EntityEffect, i32, Party)> {
+        let mut out = Vec::new();
+        for (e, level) in self.of(stack) {
+            if slot.is_some_and(|s| !e.works_in(s)) {
+                continue;
+            }
             for p in &e.post_attack {
-                if p.enchanted != Party::Attacker || p.affected != Party::Victim {
-                    continue;
-                }
-                if p.requirements
-                    .as_ref()
-                    .is_none_or(|r| r.test(cx, level, random))
-                    && let Some(s) = p.effect.ignite_seconds(level)
+                if p.enchanted == party
+                    && p.requirements
+                        .as_ref()
+                        .is_none_or(|r| r.test(cx, level, random))
                 {
-                    out = Some(out.map_or(s, |o| o.max(s)));
+                    out.push((p.effect.clone(), level, p.affected));
                 }
             }
         }

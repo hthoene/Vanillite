@@ -492,13 +492,16 @@ pub fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
         if m.random.next_float() < 0.2 {
             m.baby = true;
         } else {
-            let weapon = if m.random.next_float() < 0.5 {
+            // `createSpawnWeapon` draws from the piglin's own random.
+            let mut own = vanillite_base::random::LegacyRandom::from_state(ctx.own_state);
+            let weapon = if own.next_float() < 0.5 {
                 "minecraft:crossbow"
-            } else if m.random.next_int_bounded(10) == 0 {
+            } else if own.next_int_bounded(10) == 0 {
                 "minecraft:golden_spear"
             } else {
                 "minecraft:golden_sword"
             };
+            ctx.own_state = own.state();
             m.equipment
                 .set(EquipmentSlot::MainHand, equipment::stack(weapon));
         }
@@ -1726,7 +1729,7 @@ pub fn tick(b: &mut Behavior, t: &mut Tick<'_, '_>, _now: i64) {
             };
             brain::brain(t).set(M::LookTarget, MemValue::Look(Tracker::entity(target, true)));
             if let Some(tp) = bh::entity_pos(t, target) {
-                nav::move_to_entity(t, tp, 0, *speed);
+                nav::move_to_entity(t, tp, 1, *speed);
             }
         }
         Behavior::SpearAttack {
@@ -1755,7 +1758,7 @@ pub fn tick(b: &mut Behavior, t: &mut Tick<'_, '_>, _now: i64) {
                     brain::brain(t).erase(M::SpearChargePosition);
                 }
             } else if let Some(tp) = bh::entity_pos(t, target) {
-                nav::move_to_entity(t, tp, 0, *charge);
+                nav::move_to_entity(t, tp, 1, *charge);
                 if d_sqr < f64::from(*radius_sqr) || t.mob_ref().nav.is_done() {
                     let d = d_sqr.sqrt();
                     let away = randompos::land_pos_away(t, 6.0 + mount - d, 7.0 + mount - d, 7, tp);

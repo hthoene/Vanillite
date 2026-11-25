@@ -633,6 +633,34 @@ impl FamilyHooks for Hooks {
         }
     }
 
+    fn register_goals(m: &mut MobData) {
+        // A tadpole is an `AbstractFish`: the fish goals besides its brain.
+        if m.kind == Kind::Tadpole {
+            super::wildlife::fish::register_goals(m);
+        }
+    }
+
+    fn travel(t: &mut Tick<'_, '_>, input: Vec3) -> bool {
+        // `travelInWater` of axolotls and frogs (their own speed, no sinking) and of tadpoles
+        // (`AbstractFish`: slow, sinking without a target).
+        let kind = t.mob_ref().kind;
+        if !t.mob_ref().fluids.in_water() {
+            return false;
+        }
+        match kind {
+            Kind::Axolotl | Kind::Frog => {
+                let speed = t.mob_ref().speed;
+                super::wildlife::water_travel(t, input, speed, false);
+                true
+            }
+            Kind::Tadpole => {
+                super::wildlife::water_travel(t, input, 0.01, true);
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn custom_server_ai_step(t: &mut Tick<'_, '_>) {
         brain::tick(t);
         if !t.exists() || t.mob_ref().removed {
