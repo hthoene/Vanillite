@@ -805,7 +805,6 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             throw_potion: None,
             chunks: Vec::new(),
             player_use: None,
-            command: None,
         });
     }
     let (from, to) = if kind == OpKind::Fill {

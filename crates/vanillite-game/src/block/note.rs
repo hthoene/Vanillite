@@ -12,7 +12,6 @@ use super::{BlockBehaviour, Interaction, ItemInteraction, UseContext, sound_id};
 use crate::item::ItemStack;
 use crate::level::game_event::events;
 use crate::level::{Level, SOUND_RECORDS};
-use crate::stats::Stat;
 
 /// Fills the note block behaviours.
 pub(super) fn fill(block: BlockId, b: &mut BlockBehaviour) {
