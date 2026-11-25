@@ -627,7 +627,13 @@ impl WorldPlayers {
                 respawn: false,
             };
             let mut state = before.clone();
-            let mut actor = actor_of(&entity, player.game_mode, global, &level.chunks);
+            let mut actor = actor_of(
+                &entity,
+                player.game_mode,
+                &player.survival.effects,
+                global,
+                &level.chunks,
+            );
             let op = actor.permission_level > 0;
             let protected = |pos: BlockPos| protection.protects(pos, op);
             let aabb = entity.aabb();
@@ -889,14 +895,20 @@ impl WorldPlayers {
         let mut equipment: Vec<(EntityId, SetEquipment)> = Vec::new();
         let mut taken_orbs: Vec<(EntityId, EntityId)> = Vec::new();
         for (id, player) in players.iter_mut() {
-            let sink = &player.connection.sink;
+            let sink = Arc::clone(&player.connection.sink);
             if let Some(sequence) = player.connection.play.take_ack() {
                 sink.send(&BlockChangedAck { sequence });
             }
             let Some(entity) = level.entities.store.get(id) else {
                 continue;
             };
-            let actor = actor_of(&entity, player.game_mode, global, &level.chunks);
+            let actor = actor_of(
+                &entity,
+                player.game_mode,
+                &player.survival.effects,
+                global,
+                &level.chunks,
+            );
             let aabb = entity.aabb();
             let network_id = entity.network_id().0;
             let uuid = entity.uuid();
@@ -966,7 +978,8 @@ impl WorldPlayers {
                 touch_orb(
                     level,
                     id,
-                    player,
+                    &mut player.survival,
+                    &mut player.inventory,
                     &aabb.inflate(1.0, 0.5, 1.0),
                     global,
                     &mut taken_orbs,
@@ -1173,6 +1186,7 @@ impl WorldPlayers {
         survival.insert("recipeBook", player.recipe_book.save());
         // `Survival::save` removes the death location when there is none.
         let has_death = survival.get("LastDeathLocation").is_some();
+        let has_effects = survival.get("active_effects").is_some();
         self.store.update(entity.uuid(), move |data| {
             data.pos = pos;
             data.rotation = rotation;
@@ -1181,6 +1195,9 @@ impl WorldPlayers {
             data.game_mode = game_mode;
             if !has_death {
                 data.other.remove("LastDeathLocation");
+            }
+            if !has_effects {
+                data.other.remove("active_effects");
             }
             for (key, tag) in survival.iter() {
                 data.other.insert(key, tag.clone());
@@ -1241,6 +1258,7 @@ impl SpawnProtection {
 fn actor_of(
     entity: &EntityRef<'_>,
     game_mode: GameMode,
+    effects: &vanillite_game::effect::ActiveEffects,
     global: &Global,
     chunks: &Chunks,
 ) -> Actor {
@@ -1279,6 +1297,10 @@ fn actor_of(
         game_mode,
         permission_level: crate::commands::permission_level(global, entity.uuid()),
         eyes_in_water,
+        dig_speed: effects
+            .has_dig_speed()
+            .then(|| effects.dig_speed_amplification()),
+        mining_fatigue: effects.amplifier(vanillite_game::effect::MobEffect::MINING_FATIGUE),
     }
 }
 
@@ -1372,7 +1394,8 @@ fn drop_menus_on_leave(level: &mut Level, id: EntityId) {
 fn touch_orb(
     level: &mut Level,
     id: EntityId,
-    player: &mut vanillite_game::player::PlayerData,
+    survival: &mut vanillite_game::survival::player::Survival,
+    inventory: &mut vanillite_game::inventory::PlayerInventory,
     reach: &vanillite_base::Aabb,
     global: &Global,
     taken: &mut Vec<(EntityId, EntityId)>,
@@ -1389,15 +1412,15 @@ fn touch_orb(
     let Some(&orb) = usize::try_from(pick).ok().and_then(|i| near.get(i)) else {
         return;
     };
-    if player.survival.take_xp_delay != 0 {
+    if survival.take_xp_delay != 0 {
         return;
     }
-    player.survival.take_xp_delay = orbs::TAKE_XP_DELAY;
+    survival.take_xp_delay = orbs::TAKE_XP_DELAY;
     let points = orbs::with_entity_random(|r| {
         orbs::take_one(
             &mut level.entities,
             orb,
-            &mut player.inventory,
+            inventory,
             &global.game.enchanting,
             &mut |n| r.next_int_bounded(n),
         )
@@ -1407,7 +1430,7 @@ fn touch_orb(
     };
     taken.push((orb, id));
     if points > 0 {
-        let volume = player.survival.give_experience_points(points);
+        let volume = survival.give_experience_points(points);
         let Some(mut entity) = level.entities.store.get_mut(id) else {
             return;
         };

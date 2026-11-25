@@ -186,8 +186,7 @@ pub fn drop_book(level: &mut Level, pos: BlockPos, state: BlockState, lectern: &
         f64::from(pos.y) + 1.0,
         f64::from(pos.z) + 0.5 + f64::from(0.25 * dz as f32),
     );
-    let velocity = super::drops::default_velocity(level);
-    super::drops::spawn_item(level, at, lectern.book.clone(), velocity, 10, None);
+    super::drops::spawn_item_moving(level, at, lectern.book.clone(), None, 10, None);
 }
 
 /// `LecternBlock.tick`: the page turn pulse ends.

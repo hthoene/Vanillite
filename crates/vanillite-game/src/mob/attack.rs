@@ -250,6 +250,11 @@ pub fn player_attack(
         enchants.modify_knockback(&weapon, &ecx, env.random, kb_base as f32) / 2.0
     };
     let kb = kb + if knockback_attack { 0.5 } else { 0.0 };
+    // Dragon parts are not living entities: no knockback from the attack itself.
+    let part = ents
+        .mob(target)
+        .is_some_and(|m| m.kind == super::Kind::EnderDragon);
+    let kb = if part { 0.0 } else { kb };
     extra_knockback(ents, env, attacker, target, kb, y_rot, old_movement);
     if sweep {
         sweep_attack(
@@ -355,7 +360,7 @@ fn extra_knockback(
     old_movement: Option<Vec3>,
 ) {
     if amount > 0.0 {
-        let rad = f64::from(y_rot) * std::f64::consts::PI / 180.0;
+        let rad = f64::from(y_rot * super::DEG_TO_RAD);
         let (sin, cos) = (
             f64::from(vanillite_base::math::sin(rad)),
             f64::from(vanillite_base::math::cos(rad)),
@@ -449,7 +454,7 @@ fn sweep_attack(
             enchants.modify_damage(&weapon, &ecx, env.random, sweep_damage) * scale
         };
         if combat::hurt(level, ents, env, cx, id, *source, damage) {
-            let rad = f64::from(y_rot) * std::f64::consts::PI / 180.0;
+            let rad = f64::from(y_rot * super::DEG_TO_RAD);
             combat::knock_living(
                 ents,
                 env,

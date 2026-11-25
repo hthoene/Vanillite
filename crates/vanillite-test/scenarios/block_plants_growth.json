@@ -1,0 +1,406 @@
+{
+  "description": "Cactus, sugar cane, bamboo, kelp, weeping, twisting and cave vines, a vine on a wall, a chorus flower and budding amethyst grow by random ticks; stalactites drip water and lava into cauldrons.",
+  "tier": "fast",
+  "world": {
+    "seed": 8301,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:stone",
+        3
+      ]
+    ]
+  },
+  "rules": {
+    "random_tick_speed": "1024"
+  },
+  "time": 6000,
+  "level_rng": true,
+  "light": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      12,
+      -51,
+      11
+    ]
+  ],
+  "ticks": 220,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -61,
+        1
+      ],
+      "block": "minecraft:sand"
+    },
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -60,
+        1
+      ],
+      "block": "minecraft:cactus[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -61,
+        1
+      ],
+      "block": "minecraft:sand"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -61,
+        1
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -60,
+        1
+      ],
+      "block": "minecraft:sugar_cane[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -61,
+        1
+      ],
+      "block": "minecraft:dirt"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        1
+      ],
+      "block": "minecraft:bamboo[age=0,leaves=none,stage=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -61,
+        1
+      ],
+      "block": "minecraft:dirt"
+    },
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -60,
+        1
+      ],
+      "block": "minecraft:bamboo_sapling"
+    },
+    {
+      "op": "fill",
+      "from": [
+        10,
+        -60,
+        0
+      ],
+      "to": [
+        12,
+        -52,
+        2
+      ],
+      "block": "minecraft:glass"
+    },
+    {
+      "op": "fill",
+      "from": [
+        11,
+        -60,
+        1
+      ],
+      "to": [
+        11,
+        -52,
+        1
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "op": "set",
+      "pos": [
+        11,
+        -60,
+        1
+      ],
+      "block": "minecraft:kelp[age=0]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -52,
+        4
+      ],
+      "to": [
+        6,
+        -52,
+        6
+      ],
+      "block": "minecraft:netherrack"
+    },
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -53,
+        5
+      ],
+      "block": "minecraft:weeping_vines[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -53,
+        5
+      ],
+      "block": "minecraft:cave_vines[age=0,berries=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -61,
+        5
+      ],
+      "block": "minecraft:netherrack"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -60,
+        5
+      ],
+      "block": "minecraft:twisting_vines[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -60,
+        6
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -59,
+        6
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -60,
+        5
+      ],
+      "block": "minecraft:vine[east=false,north=false,south=true,up=false,west=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        11,
+        -61,
+        6
+      ],
+      "block": "minecraft:end_stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        11,
+        -60,
+        6
+      ],
+      "block": "minecraft:chorus_flower[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -60,
+        9
+      ],
+      "block": "minecraft:budding_amethyst"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -52,
+        9
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -53,
+        9
+      ],
+      "block": "minecraft:dripstone_block"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -54,
+        9
+      ],
+      "block": "minecraft:pointed_dripstone[thickness=tip,vertical_direction=down,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -60,
+        9
+      ],
+      "block": "minecraft:cauldron"
+    },
+    {
+      "op": "fill",
+      "from": [
+        4,
+        -52,
+        8
+      ],
+      "to": [
+        6,
+        -52,
+        10
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -52,
+        9
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -52,
+        9
+      ],
+      "block": "minecraft:lava"
+    },
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -53,
+        9
+      ],
+      "block": "minecraft:dripstone_block"
+    },
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -54,
+        9
+      ],
+      "block": "minecraft:pointed_dripstone[thickness=tip,vertical_direction=down,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -60,
+        9
+      ],
+      "block": "minecraft:cauldron"
+    },
+    {
+      "op": "fill",
+      "from": [
+        7,
+        -52,
+        8
+      ],
+      "to": [
+        9,
+        -52,
+        10
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -52,
+        9
+      ],
+      "block": "minecraft:lava"
+    },
+    {
+      "op": "fill",
+      "from": [
+        7,
+        -51,
+        7
+      ],
+      "to": [
+        9,
+        -51,
+        11
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        4,
+        -51,
+        7
+      ],
+      "to": [
+        6,
+        -51,
+        11
+      ],
+      "block": "minecraft:stone"
+    }
+  ]
+}

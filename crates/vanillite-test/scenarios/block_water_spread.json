@@ -1,0 +1,170 @@
+{
+  "description": "Water spreads seven blocks, prefers the way down, runs into a trench and a hole, forms a new source between two sources, falls off a ledge and dries up when its source goes.",
+  "tier": "fast",
+  "world": {
+    "seed": 8301,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:stone",
+        3
+      ]
+    ]
+  },
+  "time": 6000,
+  "level_rng": true,
+  "region": [
+    [
+      0,
+      -62,
+      0
+    ],
+    [
+      12,
+      -58,
+      12
+    ]
+  ],
+  "ticks": 90,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -61,
+        6
+      ],
+      "to": [
+        12,
+        -61,
+        6
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -62,
+        6
+      ],
+      "to": [
+        12,
+        -62,
+        6
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        6,
+        -60,
+        0
+      ],
+      "to": [
+        6,
+        -60,
+        4
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        10,
+        -61,
+        10
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        10,
+        -62,
+        10
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "fill",
+      "from": [
+        1,
+        -59,
+        9
+      ],
+      "to": [
+        3,
+        -59,
+        9
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "actions": [
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        3,
+        -60,
+        2
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        9,
+        -60,
+        2
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        10,
+        -60,
+        3
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        2,
+        -58,
+        9
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "op": "place",
+      "tick": 1,
+      "pos": [
+        11,
+        -60,
+        11
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "op": "place",
+      "tick": 40,
+      "pos": [
+        3,
+        -60,
+        2
+      ],
+      "block": "minecraft:stone"
+    }
+  ]
+}

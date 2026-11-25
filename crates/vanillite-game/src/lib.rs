@@ -12,7 +12,9 @@
 
 pub mod advancements;
 pub mod block;
+pub mod boss_bar;
 pub mod commands;
+pub mod effect;
 pub mod enchant;
 pub mod entities;
 pub mod experience_orb;
@@ -30,6 +32,7 @@ pub mod mob;
 pub mod player;
 pub mod portal;
 pub mod predicate;
+pub mod random_sequences;
 pub mod recipe;
 pub mod riding;
 pub mod scoreboard;

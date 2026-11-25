@@ -70,10 +70,35 @@ pub trait PlayLevel {
     fn random_boolean(&mut self) -> bool;
     /// `nextInt(bound)` of the world's random source; `bound` is at least 1.
     fn random_int(&mut self, bound: i32) -> i32;
+    /// The server's random sequences (loot tables draw from them); `None` without.
+    fn random_sequences(
+        &self,
+    ) -> Option<std::sync::Arc<std::sync::Mutex<crate::random_sequences::RandomSequences>>> {
+        None
+    }
     /// The level itself, for gameplay that works on block entities and block behaviours
     /// (block use, containers); `None` in tests without a level.
     fn level_mut(&mut self) -> Option<&mut crate::level::Level> {
         None
+    }
+    /// `gameEvent(event, pos, Context.of(source, affected))` at the centre of a block.
+    fn game_event(
+        &mut self,
+        event: u16,
+        pos: BlockPos,
+        source: Option<vanillite_world::entity::EntityId>,
+        affected: Option<BlockState>,
+    ) {
+        let _ = (event, pos, source, affected);
+    }
+    /// `Block.setPlacedBy` of a block a player placed (the wither skull's summon check).
+    fn placed_by(&mut self, pos: BlockPos, state: BlockState) {
+        let _ = (pos, state);
+    }
+    /// `EndCrystalItem.useOn` on the block at `on`: places an end crystal; whether it did.
+    fn use_end_crystal(&mut self, on: BlockPos) -> bool {
+        let _ = on;
+        false
     }
     /// `BaseFireBlock.isPortal`: fire at `pos` would light a nether portal (`forward` is the
     /// player's horizontal facing).

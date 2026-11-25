@@ -31,6 +31,13 @@
 //!   (`/forceload`) and ticking before the setup.
 //! - `light`: frames also hold the settled sky and block light of the region, the levels a
 //!   client sees. Default `false`.
+//! - `weather`: `clear` (default), `rain` or `thunder`, at full strength from the start (no
+//!   fade in); with `advance_weather` off it stays.
+//! - `level_rng`: frames also hold the state of the level random (always with entities).
+//!   Scenarios with random ticks set it: the random draws must match call by call.
+//!
+//! Random ticks: the level random is reseeded with the world seed after the setup, and the LCG
+//! of random tick positions (`Level.randValue`) starts at the seed's low 32 bits.
 //! - `setup`: applied without updates before frame 0 (`set`, `fill`; `place` with updates).
 //! - `actions`: before world tick `tick` (1-based): `place` (with neighbour and shape updates,
 //!   Vanilla `setBlock` flags 3), `set` (without updates), `fill` (with updates), `force` and
@@ -84,6 +91,8 @@
 //! the scenario matches Vanilla).
 //! - `hurt` action: `amount` damage to the entity `entity`, by `by` (player attack or mob
 //!   attack) or generic damage without `by`.
+//! - `effect` action: `addEffect` on the entity `entity` with the mob effect `effect`,
+//!   `duration` ticks and `amplifier` (default 0).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -125,10 +134,14 @@ pub struct WorldSpec {
     /// Whether the world computes light: with entities (mobs see it) or `"light": true`.
     /// Block-only scenarios run without it, which is much faster.
     pub light: bool,
+    /// Whether frames observe light (`"light": true`).
+    pub observe_light: bool,
     /// `peaceful`, `easy`, `normal` or `hard`.
     pub difficulty: String,
-    /// Frames observe the settled light (`"light": true`).
-    pub observe_light: bool,
+    /// `clear`, `rain` or `thunder`.
+    pub weather: String,
+    /// Whether frames observe the level random.
+    pub level_rng: bool,
 }
 
 /// What an operation does.
@@ -146,6 +159,19 @@ pub enum OpKind {
     Unforce,
     /// Damage to a scenario entity ([`Op::hurt`]).
     Hurt,
+    /// A status effect on a scenario entity ([`Op::effect`]).
+    Effect,
+}
+
+/// The status effect of an `effect` action.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EffectOp {
+    /// Name of the entity.
+    pub entity: String,
+    /// Mob effect id, e.g. `minecraft:poison`.
+    pub effect: String,
+    pub duration: i32,
+    pub amplifier: i32,
 }
 
 /// The damage of a `hurt` action.
@@ -214,6 +240,8 @@ pub struct Op {
     pub block: String,
     /// The damage of a `hurt` action.
     pub hurt: Option<Hurt>,
+    /// The effect of an `effect` action.
+    pub effect: Option<EffectOp>,
     /// The chunks of `force` and `unforce`.
     pub chunks: Vec<ChunkPos>,
 }
@@ -353,12 +381,18 @@ impl Scenario {
                 forced,
                 light: v.get("entities").is_some()
                     || v.get("light").and_then(Value::as_bool).unwrap_or(false),
+                observe_light: v.get("light").and_then(Value::as_bool).unwrap_or(false),
                 difficulty: v
                     .get("difficulty")
                     .and_then(Value::as_str)
                     .unwrap_or("normal")
                     .to_owned(),
-                observe_light: v.get("light").and_then(Value::as_bool).unwrap_or(false),
+                weather: v
+                    .get("weather")
+                    .and_then(Value::as_str)
+                    .unwrap_or("clear")
+                    .to_owned(),
+                level_rng: v.get("level_rng").and_then(Value::as_bool).unwrap_or(false),
             },
             min,
             max,
@@ -466,6 +500,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
         Some("place") => OpKind::Place,
         Some("fill") => OpKind::Fill,
         Some("hurt") if action => OpKind::Hurt,
+        Some("effect") if action => OpKind::Effect,
         Some("force") if action => OpKind::Force,
         Some("unforce") if action => OpKind::Unforce,
         o => return Err(format!("unknown op {o:?}")),
@@ -499,6 +534,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             to: BlockPos::new(0, 0, 0),
             block: String::new(),
             hurt: None,
+            effect: None,
             chunks,
         });
     }
@@ -511,6 +547,29 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
     } else {
         0
     };
+    if kind == OpKind::Effect {
+        let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
+        let int = |k: &str| {
+            v.get(k)
+                .and_then(Value::as_i64)
+                .and_then(|n| i32::try_from(n).ok())
+        };
+        return Ok(Op {
+            tick,
+            kind,
+            from: BlockPos::new(0, 0, 0),
+            to: BlockPos::new(0, 0, 0),
+            block: String::new(),
+            hurt: None,
+            effect: Some(EffectOp {
+                entity: s("entity").ok_or("effect needs an entity")?,
+                effect: s("effect").ok_or("effect needs an effect")?,
+                duration: int("duration").ok_or("effect needs a duration")?,
+                amplifier: int("amplifier").unwrap_or(0),
+            }),
+            chunks: Vec::new(),
+        });
+    }
     if kind == OpKind::Hurt {
         let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
         return Ok(Op {
@@ -528,6 +587,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
                     .and_then(Value::as_f64)
                     .ok_or("hurt needs an amount")? as f32,
             }),
+            effect: None,
         });
     }
     let (from, to) = if kind == OpKind::Fill {
@@ -547,6 +607,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             .ok_or("an op needs a block")?
             .to_owned(),
         hurt: None,
+        effect: None,
         chunks: Vec::new(),
     })
 }
