@@ -10,6 +10,9 @@ pub mod templates;
 pub mod test_block;
 pub mod test_instance;
 
+#[cfg(test)]
+mod structure_tests;
+
 use vanillite_base::BlockPos;
 use vanillite_data::block::{BlockId, BlockState};
 use vanillite_protocol::packets::play::clientbound::SystemChat;
@@ -68,8 +71,9 @@ pub(super) fn fill(block: BlockId, b: &mut BlockBehaviour) {
 }
 
 /// `newBlockEntity` of the technical blocks.
-pub(crate) fn new_block_entity(block: BlockId) -> Option<BlockEntity> {
+pub(crate) fn new_block_entity(state: BlockState) -> Option<BlockEntity> {
     use vanillite_data::block::ids;
+    let block = state.block();
     Some(match block {
         b if b == ids::COMMAND_BLOCK
             || b == ids::CHAIN_COMMAND_BLOCK
@@ -77,8 +81,10 @@ pub(crate) fn new_block_entity(block: BlockId) -> Option<BlockEntity> {
         {
             BlockEntity::CommandBlock(Box::new(command_block::CommandBlock::new(block)))
         }
-        b if b == ids::STRUCTURE_BLOCK => BlockEntity::StructureBlock(Box::default()),
-        b if b == ids::JIGSAW => BlockEntity::Jigsaw(Box::default()),
+        b if b == ids::STRUCTURE_BLOCK => {
+            BlockEntity::StructureBlock(Box::new(structure_block::StructureBlock::new(state)))
+        }
+        b if b == ids::JIGSAW => BlockEntity::Jigsaw(Box::new(jigsaw::Jigsaw::new(state))),
         b if b == ids::TEST_BLOCK => BlockEntity::TestBlock(Box::default()),
         b if b == ids::TEST_INSTANCE_BLOCK => BlockEntity::TestInstance(Box::default()),
         _ => return None,

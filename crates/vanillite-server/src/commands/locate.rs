@@ -587,7 +587,7 @@ pub(super) fn place(
             let mut random = placement_random(env);
             let mut area = PlaceArea::copy(env.level, &generator, min, max);
             area.run(&generator, |region| {
-                wgp::place_jigsaw(&generator, &mut pieces, region, &mut random, pos);
+                wgp::place_jigsaw(&generator, &mut pieces, region, &mut random, pos, false);
             });
             area.apply(env.level);
             source.send_success(
@@ -669,7 +669,6 @@ fn place_template(
     use vanillite_game::level::place::PlaceArea;
     use vanillite_worldgen::template::{
         Mirror, Rotation, StructurePlaceSettings, StructureProcessor,
-        manager::StructureTemplateManager,
     };
     let id = args
         .identifier("template")
@@ -680,12 +679,9 @@ fn place_template(
             vec![ErrArg::Str(id.clone())],
         )
     };
-    let (packs, generator) = generation(env).ok_or_else(invalid)?;
-    let template = StructureTemplateManager::new(&packs)
-        .get(id)
-        .ok()
-        .flatten()
-        .ok_or_else(invalid)?;
+    let (_, generator) = generation(env).ok_or_else(invalid)?;
+    // `getStructureTemplateManager().get(id)`: the world's `generated/` templates first.
+    let template = env.level.structure_template(id).ok_or_else(invalid)?;
     let rotation = args
         .string("rotation")
         .and_then(|r| Rotation::from_name(r).ok())

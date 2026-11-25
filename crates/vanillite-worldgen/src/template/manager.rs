@@ -10,11 +10,15 @@ use super::structure::StructureTemplate;
 use crate::Error;
 use crate::blocks::qualify;
 
-/// A thread safe cache of structure templates read from `data/<ns>/structure/<path>.nbt` of the
-/// data packs (later packs override earlier ones, like Vanilla's resource manager).
+/// A thread safe cache of structure templates read from the world's
+/// `generated/<ns>/structure/<path>.nbt` (when it has one) and then from
+/// `data/<ns>/structure/<path>.nbt` of the data packs (later packs override earlier ones, like
+/// Vanilla's resource manager).
 #[derive(Debug, Default)]
 pub struct StructureTemplateManager {
-    roots: Vec<PathBuf>,
+    roots: RwLock<Vec<PathBuf>>,
+    /// The world's `generated` directory: read first, structure blocks save there.
+    generated: Option<PathBuf>,
     /// Loaded templates; `None` for ids without a file.
     cache: RwLock<FxHashMap<String, Option<Arc<StructureTemplate>>>>,
 }
@@ -28,9 +32,88 @@ impl StructureTemplateManager {
     /// A manager over pack directories (each contains `data/`), in load order.
     pub fn from_roots(roots: Vec<PathBuf>) -> Self {
         Self {
-            roots,
+            roots: RwLock::new(roots),
+            generated: None,
             cache: RwLock::new(FxHashMap::default()),
         }
+    }
+
+    /// A manager of a world: its `generated` directory first, then the pack directories.
+    pub fn for_world(roots: Vec<PathBuf>, generated: PathBuf) -> Self {
+        Self {
+            generated: Some(generated),
+            ..Self::from_roots(roots)
+        }
+    }
+
+    /// `onResourceManagerReload`: new pack directories, every cached template goes.
+    pub fn reload(&self, roots: Vec<PathBuf>) {
+        *self.roots.write().unwrap_or_else(PoisonError::into_inner) = roots;
+        self.cache
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+    }
+
+    /// The file of `id` below a `generated` directory (`<ns>/structure/<path>.nbt`).
+    fn generated_file(dir: &Path, id: &str) -> Option<PathBuf> {
+        let (namespace, path) = id.split_once(':')?;
+        if !portable(namespace) || !path.split('/').all(portable) {
+            return None;
+        }
+        Some(
+            dir.join(namespace)
+                .join("structure")
+                .join(format!("{path}.nbt")),
+        )
+    }
+
+    /// Puts `template` into the cache as `id` (`getOrCreate(id)` filled in place).
+    pub fn put(&self, id: &str, template: StructureTemplate) {
+        self.cache
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(qualify(id), Some(Arc::new(template)));
+    }
+
+    /// `remove(id)`: drops the cached template, the next `get` reads the files again.
+    pub fn remove(&self, id: &str) {
+        self.cache
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&qualify(id));
+    }
+
+    /// `save(id)`: writes the cached template of `id` to the world's `generated` directory.
+    /// `Ok(false)` without a cached template, a `generated` directory or a valid file name; an
+    /// error when writing fails.
+    pub fn save(&self, id: &str) -> Result<bool, Error> {
+        let id = qualify(id);
+        let Some(Some(template)) = self
+            .cache
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&id)
+            .cloned()
+        else {
+            return Ok(false);
+        };
+        let Some(file) = self
+            .generated
+            .as_deref()
+            .and_then(|dir| Self::generated_file(dir, &id))
+        else {
+            return Ok(false);
+        };
+        let failed = |e: &dyn std::fmt::Display| {
+            Error::new(format!("structure file {id} to {}: {e}", file.display()))
+        };
+        let bytes = template.to_gzip().map_err(|e| failed(&e))?;
+        if let Some(parent) = file.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| failed(&e))?;
+        }
+        std::fs::write(&file, bytes).map_err(|e| failed(&e))?;
+        Ok(true)
     }
 
     fn file(root: &Path, id: &str) -> Option<PathBuf> {
@@ -50,7 +133,28 @@ impl StructureTemplateManager {
     }
 
     fn load(&self, id: &str) -> Result<Option<Arc<StructureTemplate>>, Error> {
-        for root in self.roots.iter().rev() {
+        if let Some(file) = self
+            .generated
+            .as_deref()
+            .and_then(|dir| Self::generated_file(dir, id))
+        {
+            match std::fs::read(&file) {
+                Ok(bytes) => {
+                    // `tryLoad`: a source that fails counts as not having the template.
+                    if let Ok(template) = StructureTemplate::from_gzip(&bytes) {
+                        return Ok(Some(Arc::new(template)));
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(Error::new(format!("{}: {e}", file.display()))),
+            }
+        }
+        let roots = self
+            .roots
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        for root in roots.iter().rev() {
             let Some(file) = Self::file(root, id) else {
                 return Ok(None);
             };
@@ -101,7 +205,25 @@ impl StructureTemplateManager {
     /// `listTemplates()`: the ids of every template file of the packs, sorted.
     pub fn list_templates(&self) -> Result<Vec<String>, Error> {
         let mut ids = Vec::new();
-        for root in &self.roots {
+        if let Some(dir) = &self.generated
+            && let Ok(namespaces) = std::fs::read_dir(dir)
+        {
+            for namespace in namespaces.flatten() {
+                let Some(ns) = namespace.file_name().to_str().map(str::to_owned) else {
+                    continue;
+                };
+                let base = namespace.path().join("structure");
+                if base.is_dir() {
+                    collect(&base, &base, &ns, &mut ids)?;
+                }
+            }
+        }
+        let roots = self
+            .roots
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        for root in &roots {
             let data = root.join("data");
             let Ok(namespaces) = std::fs::read_dir(&data) else {
                 continue;
@@ -123,6 +245,26 @@ impl StructureTemplateManager {
         Ok(ids)
     }
 }
+
+/// `FileUtil.isPathPartPortable` and the identifier rules a path part must meet.
+fn portable(part: &str) -> bool {
+    !part.is_empty()
+        && !part.ends_with('.')
+        && part
+            .bytes()
+            .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-' | b'.'))
+        && !RESERVED.iter().any(|r| {
+            part.split('.')
+                .next()
+                .is_some_and(|stem| stem.eq_ignore_ascii_case(r))
+        })
+}
+
+/// Windows' reserved file names (`FileUtil.RESERVED_WINDOWS_FILENAMES`).
+const RESERVED: [&str; 24] = [
+    "com", "clock$", "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6",
+    "com7", "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+];
 
 fn collect(base: &Path, dir: &Path, ns: &str, out: &mut Vec<String>) -> Result<(), Error> {
     let entries =

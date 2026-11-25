@@ -447,3 +447,69 @@ pub mod serverbound {
         Interact
     );
 }
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::indexing_slicing)]
+mod structure_tests {
+    use super::serverbound::{JigsawGenerate, SetJigsawBlock, SetStructureBlock};
+    use crate::codec::{Decode, Encode, Reader};
+    use crate::types::{BlockPos, Identifier};
+
+    fn round_trip<T: Encode + Decode>(packet: &T) -> (Vec<u8>, T) {
+        let mut buf = Vec::new();
+        packet.encode(&mut buf);
+        let decoded = T::decode(&mut Reader::new(&buf)).expect("decodes");
+        (buf, decoded)
+    }
+
+    #[test]
+    fn set_structure_block_decodes_and_clamps() {
+        let packet = SetStructureBlock {
+            pos: BlockPos { x: 1, y: -2, z: 3 },
+            update_type: 1,
+            mode: 0,
+            name: "a".to_owned(),
+            offset: [-48, 5, 48],
+            size: [1, 48, 0],
+            mirror: 2,
+            rotation: 3,
+            data: "marker".to_owned(),
+            ignore_entities: false,
+            strict: true,
+            show_air: true,
+            show_bounding_box: false,
+            integrity: 0.5,
+            seed: -9,
+        };
+        let (mut buf, decoded) = round_trip(&packet);
+        assert_eq!(decoded, packet);
+        // Position (8), update type, mode, the name (2): then the offsets and sizes.
+        buf[12] = 100;
+        buf[15] = 0x80;
+        let clamped = SetStructureBlock::decode(&mut Reader::new(&buf)).expect("decodes");
+        assert_eq!(clamped.offset[0], 48);
+        assert_eq!(clamped.size[0], 0);
+    }
+
+    #[test]
+    fn jigsaw_packets_decode() {
+        let id = |s: &str| Identifier::new(s).expect("identifier");
+        let packet = SetJigsawBlock {
+            pos: BlockPos { x: 0, y: 64, z: 0 },
+            name: id("minecraft:bottom"),
+            target: id("minecraft:top"),
+            pool: id("minecraft:empty"),
+            final_state: "minecraft:air".to_owned(),
+            joint: "rollable".to_owned(),
+            selection_priority: 2,
+            placement_priority: -1,
+        };
+        assert_eq!(round_trip(&packet).1, packet);
+        let generate = JigsawGenerate {
+            pos: BlockPos { x: 5, y: 6, z: 7 },
+            levels: 7,
+            keep_jigsaws: true,
+        };
+        assert_eq!(round_trip(&generate).1, generate);
+    }
+}

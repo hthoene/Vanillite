@@ -454,6 +454,15 @@ impl ServerBuilder {
                 u8::try_from(config.properties.function_permission_level).unwrap_or(2),
             ),
             packs: data_packs.with_loaded(packs.clone()),
+            templates: Arc::new(
+                vanillite_worldgen::template::StructureTemplateManager::for_world(
+                    packs
+                        .as_deref()
+                        .map(|p| p.roots().to_vec())
+                        .unwrap_or_default(),
+                    level_dir.join("generated"),
+                ),
+            ),
             tick_rate: std::sync::Mutex::new(TickRateManager::default()),
             tick_times: std::sync::Mutex::new(crate::tick_rate::TickTimes::default()),
             force_game_mode: config.properties.force_gamemode,
@@ -579,6 +588,10 @@ impl ServerBuilder {
                 level.set_tree_features(Arc::clone(trees));
             }
             level.set_maps(Arc::clone(&global.level.maps));
+            level.set_structure_templates(Arc::clone(&global.templates));
+            if let Some(packs) = &packs {
+                level.set_data_packs(Arc::clone(packs));
+            }
             let survival = crate::survival::WorldSurvival::new(
                 dimension,
                 &global.level,

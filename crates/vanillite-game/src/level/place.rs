@@ -27,6 +27,23 @@ pub struct PlaceArea {
 impl PlaceArea {
     /// Copies the chunks of the square around `min..=max` (chunk corners).
     pub fn copy(level: &Level, generator: &TerrainGenerator, min: ChunkPos, max: ChunkPos) -> Self {
+        Self::copy_with(level, min, max, |pos| generator.new_chunk(pos))
+    }
+
+    /// Like [`Self::copy`] without a generator: chunks that are not loaded are empty.
+    pub fn copy_plain(level: &Level, min: ChunkPos, max: ChunkPos) -> Self {
+        let height = level.max_y() - level.min_y() + 1;
+        Self::copy_with(level, min, max, |pos| {
+            ProtoChunk::new(pos, level.min_y(), height, 0)
+        })
+    }
+
+    fn copy_with(
+        level: &Level,
+        min: ChunkPos,
+        max: ChunkPos,
+        empty: impl Fn(ChunkPos) -> ProtoChunk,
+    ) -> Self {
         let center = ChunkPos::new(min.x + (max.x - min.x) / 2, min.z + (max.z - min.z) / 2);
         let radius = (center.x - min.x)
             .max(max.x - center.x)
@@ -55,7 +72,7 @@ impl PlaceArea {
                         live.push(true);
                     }
                     None => {
-                        chunks.push(generator.new_chunk(pos));
+                        chunks.push(empty(pos));
                         live.push(false);
                     }
                 }
@@ -76,6 +93,24 @@ impl PlaceArea {
         f: impl FnOnce(&mut WorldGenRegion<'_>) -> R,
     ) -> R {
         let mut region = generator.region(self.chunks.iter_mut().collect(), self.radius);
+        region.record_writes();
+        let result = f(&mut region);
+        self.writes.extend(region.take_writes());
+        result
+    }
+
+    /// Runs `f` on the copy as a plain region of the level's seed (no generator: template
+    /// placement), recording its writes.
+    pub fn run_plain<R>(&mut self, seed: i64, f: impl FnOnce(&mut WorldGenRegion<'_>) -> R) -> R {
+        let random_state =
+            vanillite_worldgen::random_state::RandomState::without_noises(seed, false);
+        let mut region = WorldGenRegion::new(
+            self.chunks.iter_mut().collect(),
+            self.radius,
+            self.radius,
+            &random_state,
+            63,
+        );
         region.record_writes();
         let result = f(&mut region);
         self.writes.extend(region.take_writes());
