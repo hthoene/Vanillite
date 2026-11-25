@@ -217,6 +217,7 @@ pub fn tick_death(t: &mut Tick<'_, '_>) -> bool {
         Kind::EnderDragon => dragon::tick_death(t),
         Kind::Warden => warden::tick_death(t),
         Kind::Wither => wither::tick_death(t),
+        Kind::Creaking => crate::mob::fam::mount::creaking::tick_death(t),
         _ => false,
     }
 }

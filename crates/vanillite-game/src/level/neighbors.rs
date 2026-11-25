@@ -181,7 +181,7 @@ impl Level {
                 limit,
             }) => {
                 // `NeighborUpdater.executeShapeUpdate`.
-                let current = self.block(pos);
+                let current = self.block_loading(pos);
                 if flags & update::SKIP_SHAPE_UPDATE_ON_WIRE == 0
                     || !current.block().eq(&ids::REDSTONE_WIRE)
                 {
@@ -192,7 +192,7 @@ impl Level {
             }
             Some(Step::Neighbor { pos, source }) => {
                 // `NeighborUpdater.executeUpdate`.
-                let state = self.block(pos);
+                let state = self.block_loading(pos);
                 self.handle_neighbor_changed(state, pos, source, false);
             }
             Some(Step::Full {

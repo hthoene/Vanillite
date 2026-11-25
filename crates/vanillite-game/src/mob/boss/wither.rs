@@ -1063,6 +1063,7 @@ pub fn custom_server_ai_step(t: &mut Tick<'_, '_>) {
                 radius: 7.0,
                 mob: true,
                 resistance: BlockResistance::Default,
+                fire: false,
             }));
             if !t.mob_ref().silent {
                 global_spawn_event(t);
@@ -1649,6 +1650,7 @@ pub fn tick_skull(t: &mut SpecialTick<'_, '_>) {
         } else {
             BlockResistance::Default
         },
+        fire: false,
     }));
     t.cx.discarded.push(id);
 }

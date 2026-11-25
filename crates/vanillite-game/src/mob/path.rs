@@ -420,6 +420,9 @@ pub struct PathMob {
     pub can_float: bool,
     pub can_open_doors: bool,
     pub can_pass_doors: bool,
+    /// The creaking heart a creaking keeps near (`Creaking.HomeNodeEvaluator`): blocks more
+    /// than 32 blocks from it are blocked unless the mob is even farther.
+    pub home: Option<BlockPos>,
 }
 
 /// The malus overrides a mob kind sets: `(type, cost)`.
@@ -448,6 +451,7 @@ impl PathMob {
             can_float: false,
             can_open_doors: false,
             can_pass_doors: true,
+            home: None,
         }
     }
 
@@ -1400,7 +1404,16 @@ impl PathFinder {
                     amphibious_path_type(blocks, min_y, x, y, z)
                 }
             }
-            _ => path_type_static(blocks, min_y, x, y, z),
+            _ => {
+                if let Some(home) = eval.mob.home {
+                    let at = BlockPos::new(x, y, z);
+                    let distance = home.dist_sqr(at);
+                    if distance > 1024.0 && distance >= home.dist_sqr(eval.mob.block_pos()) {
+                        return PathType::Blocked;
+                    }
+                }
+                path_type_static(blocks, min_y, x, y, z)
+            }
         }
     }
 

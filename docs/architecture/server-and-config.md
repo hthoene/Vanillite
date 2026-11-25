@@ -11,8 +11,8 @@ Crates: `vanillite-server`, `vanillite-config`, binary `vanillite`.
   rule commented out, documented, with its range.
 - Every deviation from Vanilla and every setting is one declaration in the `rules!` catalogue
   (`catalogue.rs`): field, TOML key, `Kind`, optional `range = [min, max]`, optional
-  `restart = true`, and per-profile values (`vanilla`, `technical`, `paper`, `spigot`; missing
-  profiles take the `vanilla` value). The macro generates the typed structs, TOML access by
+  `restart = true`, and per-profile values (`vanilla`, `technical`, `paper`, `spigot`,
+  `performance`; missing profiles take the `vanilla` value). The macro generates the typed structs, TOML access by
   dotted key and the `RuleInfo` table used for docs and validation.
 - Two rule sets: `ServerRules` (server scope) and `WorldRules` (overridable per world). Both
   read from the top level of `vanillite.toml`; group keys must be unique across both.

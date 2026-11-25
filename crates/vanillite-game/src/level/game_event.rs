@@ -260,8 +260,8 @@ pub enum Listener {
         radius: i32,
     },
     /// The listener of an entity (`DynamicGameEventListener` with an `EntityPositionSource` at
-    /// the eyes, the warden's vibration listener), registered in the section its position was
-    /// in when it last moved there.
+    /// the eyes: the vibration listeners of wardens and allays, the allay's jukebox listener),
+    /// registered in the section its position was in when it last moved there.
     Entity {
         /// The entity.
         id: EntityId,
@@ -269,7 +269,18 @@ pub enum Listener {
         section: SectionPos,
         /// `getListenerRadius()`.
         radius: i32,
+        /// Which of the entity's listeners it is.
+        kind: EntityListener,
     },
+}
+
+/// The game event listeners an entity can have.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EntityListener {
+    /// `VibrationSystem.Listener`.
+    Vibration,
+    /// `Allay.JukeboxListener`.
+    Jukebox,
 }
 
 impl Listener {
@@ -444,9 +455,17 @@ impl Level {
                 // Catalysts hear deaths through `sculk_catalyst::on_mob_death`.
                 _ => {}
             },
-            Listener::Entity { id, .. } => {
-                crate::mob::boss::warden::handle_game_event(self, id, event, context, source);
-            }
+            Listener::Entity { id, kind, .. } => match self.entities.mob(id).map(|m| m.kind) {
+                Some(crate::mob::Kind::Warden) => {
+                    crate::mob::boss::warden::handle_game_event(self, id, event, context, source);
+                }
+                Some(crate::mob::Kind::Allay) => {
+                    crate::mob::fam::mount::allay::handle_game_event(
+                        self, id, kind, event, context, source,
+                    );
+                }
+                _ => {}
+            },
         }
     }
 
@@ -458,7 +477,14 @@ impl Level {
             Listener::Entity { id, .. } => {
                 let e = self.entities.store.get(id)?;
                 let p = e.pos();
-                let eye = crate::mob::boss::warden::listener_eye_height(self, id)?;
+                let m = self.entities.mob(id)?;
+                let eye = match m.kind {
+                    crate::mob::Kind::Warden => {
+                        crate::mob::boss::warden::listener_eye_height(self, id)?
+                    }
+                    crate::mob::Kind::Allay => crate::mob::eye_height(m),
+                    _ => return None,
+                };
                 Some(Vec3::new(p.x, p.y + eye, p.z))
             }
         }

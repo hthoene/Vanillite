@@ -75,6 +75,8 @@ pub struct EntityFacts {
     /// A sheep's colour (`DyeColor` id) and whether it is sheared.
     pub sheep_color: Option<u8>,
     pub sheared: bool,
+    /// A villager's or zombie villager's type (`minecraft:villager_type` id).
+    pub villager_variant: Option<u16>,
 }
 
 /// `EntityPredicate`: the parts the game evaluates (`type`, `flags`); other parts are
@@ -96,6 +98,8 @@ pub struct EntityPredicate {
     pub sheep_color: Option<u8>,
     /// `type_specific/sheep` `sheared`.
     pub sheared: Option<bool>,
+    /// `predicates` `minecraft:villager/variant`: the villager types (`villager_type` ids).
+    pub villager_variants: Option<Vec<u16>>,
     /// Has parts that are not evaluated.
     pub unsupported: bool,
 }
@@ -149,6 +153,15 @@ impl EntityPredicate {
                 "type_specific/sheep" => {
                     p.sheared = v.get("sheared").and_then(Value::as_bool);
                 }
+                "predicates" => {
+                    // Only the villager type of the villager trades.
+                    let only = v
+                        .as_object()
+                        .is_some_and(|c| c.keys().all(|k| k == "minecraft:villager/variant"));
+                    let variants = v.get("minecraft:villager/variant").and_then(villager_types);
+                    p.unsupported |= !only || variants.is_none();
+                    p.villager_variants = variants;
+                }
                 "equipment" => {
                     // Only the smelting check of the mob loot tables.
                     let tag = v
@@ -186,6 +199,11 @@ impl EntityPredicate {
         if self.sheep_color.is_some() && self.sheep_color != e.sheep_color {
             return false;
         }
+        if let Some(types) = &self.villager_variants
+            && !e.villager_variant.is_some_and(|v| types.contains(&v))
+        {
+            return false;
+        }
         if self
             .sheared
             .is_some_and(|s| e.sheep_color.is_none() || s != e.sheared)
@@ -199,6 +217,16 @@ impl EntityPredicate {
             && flag(self.sprinting, e.sprinting)
             && flag(self.swimming, e.swimming)
             && flag(self.on_ground, e.on_ground)
+    }
+}
+
+/// A `villager_type` holder set of ids (a single id or a list; tags are not supported).
+fn villager_types(v: &Value) -> Option<Vec<u16>> {
+    let one = |s: &str| vanillite_data::registry::VILLAGER_TYPE.id(&qualify(s));
+    match v {
+        Value::String(s) if !s.starts_with('#') => Some(vec![one(s)?]),
+        Value::Array(list) => list.iter().map(|e| e.as_str().and_then(one)).collect(),
+        _ => None,
     }
 }
 

@@ -1,0 +1,107 @@
+{
+  "description": "A villager in the evening claims a free bed, walks to it and goes to sleep.",
+  "time": 12100,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -58,
+      15
+    ]
+  ],
+  "ticks": 400,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -58,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -58,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -58,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -58,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        11,
+        -60,
+        11
+      ],
+      "block": "minecraft:red_bed[facing=south,part=head]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        11,
+        -60,
+        10
+      ],
+      "block": "minecraft:red_bed[facing=south,part=foot]"
+    }
+  ],
+  "entities": [
+    {
+      "name": "villager",
+      "type": "minecraft:villager",
+      "pos": [
+        3.5,
+        -60.0,
+        3.5
+      ],
+      "seed": 22,
+      "finalize": false
+    }
+  ],
+  "tier": "fast"
+}
