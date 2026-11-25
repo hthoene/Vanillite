@@ -569,16 +569,16 @@ impl GameWorld {
     fn spawn_drops(&mut self) {
         for effect in std::mem::take(&mut self.effects) {
             if let Effect::Experience { pos, amount } = effect {
-                vanillite_game::experience_orb::with_entity_random(|random| {
-                    vanillite_game::experience_orb::award_in(
-                        &mut self.level.entities,
-                        &self.network_ids,
-                        random,
-                        pos,
-                        vanillite_base::Vec3::default(),
-                        amount,
-                    );
-                });
+                // The merge group comes from the level random (`tryMergeToExisting`).
+                let (entities, network_ids, random) = self.level.entity_parts();
+                vanillite_game::experience_orb::award_in(
+                    entities,
+                    network_ids,
+                    random,
+                    pos,
+                    vanillite_base::Vec3::default(),
+                    amount,
+                );
             }
             if let Effect::DropItem {
                 uuid,

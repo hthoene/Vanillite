@@ -505,7 +505,7 @@ impl WorldSurvival {
         for id in std::mem::take(&mut cx.discarded) {
             level.entities.despawn(id);
         }
-        deliver_simple(&out, &mut level.entities, global);
+        deliver_simple(&out, &mut level.entities, &mut random, global);
         for effect in &out {
             if let Effect::GameEvent {
                 event,
@@ -580,7 +580,7 @@ impl WorldSurvival {
             return false;
         };
         let done = f(&mut entity, data, &mut env);
-        deliver_simple(&out, entities, global);
+        deliver_simple(&out, entities, &mut random, global);
         collect_game_events(&out, events);
         done
     }
@@ -702,7 +702,7 @@ impl WorldSurvival {
                 | Effect::RespawnShoulder { .. } => {}
             }
         }
-        spawn_drops(&effects, entities, global);
+        spawn_drops(&effects, entities, &mut self.random, global);
     }
 
     /// The players of the chunks within `range` of `pos` (all players when that is fewer).
@@ -751,7 +751,13 @@ pub(crate) fn forced_respawn(
 }
 
 /// Effects of a command, delivered by looking at all players of the world.
-fn deliver_simple(effects: &[Effect], entities: &mut Entities, global: &Global) {
+/// `random` is the level random.
+fn deliver_simple(
+    effects: &[Effect],
+    entities: &mut Entities,
+    random: &mut LegacyRandom,
+    global: &Global,
+) {
     for effect in effects {
         match effect {
             Effect::Tracking {
@@ -825,7 +831,7 @@ fn deliver_simple(effects: &[Effect], entities: &mut Entities, global: &Global) 
             | Effect::RespawnShoulder { .. } => {}
         }
     }
-    spawn_drops(effects, entities, global);
+    spawn_drops(effects, entities, random, global);
 }
 
 /// A game event for the world to post: the event, its position and context.
@@ -849,9 +855,34 @@ fn collect_game_events(effects: &[Effect], out: &mut Vec<PendingGameEvent>) {
     }
 }
 
+/// `ExperienceOrb.award` of an [`Effect::Experience`]: the merge group comes from the level
+/// `random`, the new orbs' yaw and motion from the orbs' own random.
+fn award_experience(
+    effect: &Effect,
+    entities: &mut Entities,
+    network_ids: &vanillite_world::entity::NetworkIds,
+    random: &mut LegacyRandom,
+) {
+    if let Effect::Experience { pos, amount } = *effect {
+        vanillite_game::experience_orb::award_in(
+            entities,
+            network_ids,
+            random,
+            pos,
+            Vec3::default(),
+            amount,
+        );
+    }
+}
+
 /// The item entities of [`Effect::DropItem`]s (`addFreshEntity`) and the experience orbs of
-/// [`Effect::Experience`]s.
-fn spawn_drops(effects: &[Effect], entities: &mut Entities, global: &Global) {
+/// [`Effect::Experience`]s. `random` is the level random.
+fn spawn_drops(
+    effects: &[Effect],
+    entities: &mut Entities,
+    random: &mut LegacyRandom,
+    global: &Global,
+) {
     for effect in effects {
         if let Effect::PearlsVanish(uuid) = *effect
             && global
@@ -868,18 +899,7 @@ fn spawn_drops(effects: &[Effect], entities: &mut Entities, global: &Global) {
                 });
             }
         }
-        if let Effect::Experience { pos, amount } = effect {
-            vanillite_game::experience_orb::with_entity_random(|random| {
-                vanillite_game::experience_orb::award_in(
-                    entities,
-                    &global.network_ids,
-                    random,
-                    *pos,
-                    Vec3::default(),
-                    *amount,
-                );
-            });
-        }
+        award_experience(effect, entities, &global.network_ids, random);
         if let Effect::SpawnMob {
             kind,
             pos,
@@ -945,4 +965,29 @@ fn spawn_drops(effects: &[Effect], entities: &mut Entities, global: &Global) {
 /// Sends `packet` to every player of the server (`broadcastAll`).
 pub(crate) fn broadcast_all<P: vanillite_protocol::Packet>(global: &Global, packet: &P) {
     global.players.broadcast(packet, None);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An [`Effect::Experience`] spawns its orbs (#134: it borrowed the orb random twice).
+    #[test]
+    fn experience_effects_spawn_orbs() {
+        let ids = vanillite_world::entity::NetworkIds::new();
+        let mut entities = Entities::new();
+        let mut random = LegacyRandom::new(7);
+        let effect = Effect::Experience {
+            pos: Vec3::new(0.5, 64.0, 0.5),
+            amount: 10,
+        };
+        award_experience(&effect, &mut entities, &ids, &mut random);
+        award_experience(&effect, &mut entities, &ids, &mut random);
+        let total: i32 = entities
+            .experience_orbs
+            .iter()
+            .map(|(_, d)| d.value * d.count)
+            .sum();
+        assert_eq!(total, 20);
+    }
 }
