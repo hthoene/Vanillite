@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "tools/loadbot", "xtask"]
+members = ["crates/*", "examples/*", "tools/loadbot", "xtask"]
 default-members = ["crates/*"]
 
 [workspace.package]
@@ -41,6 +41,8 @@ vanillite-worldgen = { path = "crates/vanillite-worldgen", version = "0.1.0" }
 bumpalo = { version = "3.20", features = ["collections"] }
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 ctrlc = { version = "3.5", features = ["termination"] }
+libc = "0.2"
+libloading = "0.8"
 log = { version = "0.4", features = ["std"] }
 md5 = { package = "md-5", version = "0.11", default-features = false }
 rustc-hash = "2.1"
@@ -90,6 +92,10 @@ debug = false
 
 # World generation is bit-exact floating point work; its parity tests run optimised (section 10.3).
 [profile.dev.package.vanillite-worldgen]
+opt-level = 3
+
+# The light engine recomputes whole chunk areas; its parity tests and scenarios run optimised.
+[profile.dev.package.vanillite-light]
 opt-level = 3
 
 [profile.release]

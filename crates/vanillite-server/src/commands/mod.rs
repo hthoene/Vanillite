@@ -22,7 +22,7 @@ use vanillite_protocol::packets::play::clientbound::{Commands, SystemChat};
 use vanillite_protocol::text::{Arg, ClickEvent, Color, Component, NamedColor};
 use vanillite_world::entity::EntityId;
 
-pub(crate) use exec::permission_event;
+pub(crate) use exec::{find_player, permission_event};
 pub(crate) use source::{CommandSource, SourceKind};
 
 use crate::global::Global;
@@ -213,6 +213,9 @@ pub(crate) fn run_player_command(
             }
         }
     };
+    if !global.plugins.player_command(uuid, &name, command) {
+        return None;
+    }
     log::info!("{name} issued server command: /{command}");
     let mut env = Env { entities, global };
     match parse.finish(&global.commands) {

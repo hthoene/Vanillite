@@ -141,6 +141,24 @@ rules! {
             versions: String = "versions", Setting, restart = true,
                 vanilla = String::from("all");
         }
+        /// Native plugins in `plugins/`: packages with a `plugin.toml` and a library built
+        /// against the plugin API. Plugins are trusted code with the server's rights.
+        plugins: PluginRules = "plugins" {
+            /// Load the plugins in `plugins/`.
+            enabled: bool = "enabled", Setting, restart = true, vanilla = true;
+            /// After a crash inside a plugin's code (a fatal signal or a watchdog kill), skip
+            /// that plugin at the next starts until its library changes or `plugins/.crashed`
+            /// is removed, so a supervisor (Docker, systemd) brings the server back.
+            safe_mode_after_crash: bool = "safe-mode-after-crash", Setting, restart = true,
+                vanilla = true;
+            /// Development: the console command `vanillite plugin reload <id>` loads a new
+            /// build of a plugin at runtime and moves its state. Old builds stay in memory.
+            /// Not for production servers.
+            development: bool = "development", Setting, restart = true, vanilla = false;
+            /// Pinned SHA-256 hashes of plugin libraries, `id=hex,id=hex`. A plugin whose
+            /// library has another hash is refused.
+            pins: String = "pins", Security, restart = true, vanilla = String::new();
+        }
         /// Bedrock Edition players (`vanillite-bedrock`): a RakNet listener on UDP that
         /// translates Bedrock clients into virtual connections. The address is `server-ip`.
         bedrock: BedrockRules = "bedrock" {
@@ -300,6 +318,17 @@ rules! {
             /// Entity collisions processed per entity and tick.
             max_entity_collisions: VanillaOr<u32> = "max-entity-collisions", Performance,
                 range = [0, 1024], vanilla = VanillaOr::Vanilla, paper = VanillaOr::Value(8);
+        }
+        /// Mobs and animals: AI work per tick. The Vanilla profile keeps every mob exact.
+        mobs: MobRules = "performance.mobs" {
+            /// Path finding nodes all mobs of the world may visit per tick; searches over the
+            /// budget fail and are retried later. 0 = unlimited (Vanilla).
+            path_nodes_per_tick: u32 = "path-nodes-per-tick", Performance,
+                range = [0, 10_000_000], vanilla = 0;
+            /// Mobs farther than this many blocks from every player tick only every 20th tick
+            /// (activation range). 0 = off (Vanilla: every mob in simulation distance ticks).
+            activation_range: u16 = "activation-range", Performance, range = [0, 512],
+                vanilla = 0, paper = 32;
         }
         /// Item entities (dropped items).
         items: ItemRules = "performance.items" {

@@ -544,3 +544,101 @@ pub(crate) fn climate(
         sea_level,
     })
 }
+
+/// The spawn settings of every biome from the data packs: `gameplay/natural_mob_spawns`,
+/// `gameplay/creature_world_gen_spawn_probability` and the farm animal climate tags. `None`
+/// without data packs.
+pub(crate) fn spawn_table(
+    packs: Option<&LoadedPacks>,
+) -> Option<vanillite_game::mob::spawn::SpawnTable> {
+    use vanillite_game::mob::kinds::FarmClimate;
+    use vanillite_game::mob::spawn::{BiomeSpawns, Category, SpawnEntry, SpawnTable};
+    let packs = packs?;
+    let registry = packs.registry("minecraft:worldgen/biome")?;
+    let tag = |name: &str| {
+        packs
+            .tag_ids("minecraft:worldgen/biome", name)
+            .unwrap_or_default()
+    };
+    let warm = tag("minecraft:spawns_warm_variant_farm_animals");
+    let cold = tag("minecraft:spawns_cold_variant_farm_animals");
+    // An attribute value, directly or as the `argument` of a modifier.
+    fn attribute<'a>(attrs: &'a serde_json::Value, key: &str) -> Option<&'a serde_json::Value> {
+        let v = attrs.get(key)?;
+        Some(v.get("argument").unwrap_or(v))
+    }
+    let mut biomes = Vec::with_capacity(registry.entries().len());
+    for (index, entry) in registry.entries().iter().enumerate() {
+        let id = u32::try_from(index).unwrap_or(u32::MAX);
+        let json: serde_json::Value = serde_json::from_str(entry.json.get()).unwrap_or_default();
+        let attrs = json.get("attributes").cloned().unwrap_or_default();
+        let mut b = BiomeSpawns {
+            creature_probability: 0.1,
+            climate: if warm.contains(&id) {
+                FarmClimate::Warm
+            } else if cold.contains(&id) {
+                FarmClimate::Cold
+            } else {
+                FarmClimate::Temperate
+            },
+            ..BiomeSpawns::default()
+        };
+        if let Some(p) = attribute(
+            &attrs,
+            "minecraft:gameplay/creature_world_gen_spawn_probability",
+        )
+        .and_then(serde_json::Value::as_f64)
+        {
+            #[allow(clippy::cast_possible_truncation)]
+            {
+                b.creature_probability = p as f32;
+            }
+        }
+        if let Some(by) = attribute(&attrs, "minecraft:gameplay/natural_mob_spawns")
+            .and_then(|s| s.get("spawns_by_category"))
+            .and_then(serde_json::Value::as_object)
+        {
+            for (category, list) in by {
+                let Some(c) = Category::by_name(category) else {
+                    continue;
+                };
+                let Some(list) = list.as_array() else {
+                    continue;
+                };
+                let slot = &mut b.by_category[c as usize];
+                for e in list {
+                    let Some(type_id) = e
+                        .get("type")
+                        .and_then(serde_json::Value::as_str)
+                        .and_then(vanillite_data::entity::EntityTypeId::by_name)
+                    else {
+                        continue;
+                    };
+                    let int = |v: Option<&serde_json::Value>| {
+                        v.and_then(serde_json::Value::as_i64)
+                            .and_then(|v| i32::try_from(v).ok())
+                    };
+                    let weight = int(e.get("weight")).unwrap_or(1);
+                    let (min, max) = match e.get("count") {
+                        Some(serde_json::Value::Object(o)) => (
+                            int(o.get("min_inclusive")).unwrap_or(1),
+                            int(o.get("max_inclusive")).unwrap_or(1),
+                        ),
+                        other => {
+                            let n = int(other).unwrap_or(1);
+                            (n, n)
+                        }
+                    };
+                    slot.push(SpawnEntry {
+                        type_id,
+                        weight,
+                        min,
+                        max,
+                    });
+                }
+            }
+        }
+        biomes.push(b);
+    }
+    Some(SpawnTable { biomes })
+}
