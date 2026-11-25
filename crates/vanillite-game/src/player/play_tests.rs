@@ -101,6 +101,8 @@ fn actor(game_mode: GameMode) -> Actor {
         game_mode,
         permission_level: 0,
         eyes_in_water: false,
+        dig_speed: None,
+        mining_fatigue: None,
     }
 }
 
