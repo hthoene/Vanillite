@@ -182,9 +182,44 @@ pub(crate) fn recipe(
     env: &mut Env<'_>,
 ) -> Result<i32, CommandError> {
     let players = many(args, "targets", source, env)?;
+    let game = env.global.game();
+    let ids: Vec<String> = match args.identifier("recipe") {
+        Some(id) => {
+            if !game.recipes.book.contains(id) {
+                return Err(error("recipe.notFound", vec![ErrArg::Str(id.clone())]));
+            }
+            vec![id.clone()]
+        }
+        // `*`: every recipe.
+        None => game.recipes.book.recipe_ids().map(str::to_owned).collect(),
+    };
     let mut tracker = Tracker::<Component>::default();
     for player in &players {
-        tracker.track(&player.display(), 0);
+        let changed = match player.entity.and_then(|id| env.level.entities.player_mut(id)) {
+            Some(p) => {
+                let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+                if give {
+                    p.unlock_recipes(&refs)
+                } else {
+                    p.lock_recipes(&refs)
+                }
+            }
+            None => {
+                let list = ids.clone();
+                super::items::on_player(env, player, move |level, id| {
+                    if let Some(p) = level.entities.player_mut(id) {
+                        let refs: Vec<&str> = list.iter().map(String::as_str).collect();
+                        if give {
+                            p.unlock_recipes(&refs);
+                        } else {
+                            p.lock_recipes(&refs);
+                        }
+                    }
+                });
+                ids.len()
+            }
+        };
+        tracker.track(&player.display(), i32::try_from(changed).unwrap_or(i32::MAX));
     }
     let action = if give { "give" } else { "take" };
     let failed = if give {
