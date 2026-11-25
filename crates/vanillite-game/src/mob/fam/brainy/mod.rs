@@ -322,7 +322,7 @@ pub fn gift_loot(t: &mut Tick<'_, '_>, table: &str) -> Vec<ItemStack> {
         last_damage_player: None,
         source: None,
         types: t.env.types,
-        tags: data,
+        tags: &*data,
         attacker_enchantment_level: &none_level,
     };
     let none = |_: &str| 0;

@@ -437,6 +437,62 @@ impl WorldSurvival {
         )
     }
 
+    /// Runs `f` on the entities of a level with a survival environment and a mob context
+    /// outside the tick (commands acting on any entity); delivers the effects, applies the
+    /// world changes that need only the level and removes the discarded entities.
+    pub(crate) fn with_entities<R>(
+        level: &mut vanillite_game::level::Level,
+        global: &Global,
+        dimension: &str,
+        f: impl FnOnce(
+            &vanillite_game::level::Level,
+            &mut Entities,
+            &mut Env<'_>,
+            &mut vanillite_game::mob::MobContext,
+        ) -> R,
+    ) -> R {
+        let state = &global.level;
+        let rules = state.rules().clone();
+        let mut random = LegacyRandom::new(state.game_time() ^ level.game_time());
+        let mut out = Vec::new();
+        let mut cx = vanillite_game::mob::MobContext::default();
+        let mut ents = std::mem::take(&mut level.entities);
+        let r = {
+            let blocks = WorldBlocks(&level.chunks);
+            let raining = |_| false;
+            let mut no_gateway = |_| false;
+            let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+            let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
+            let mut env = Env {
+                hooks: &hooks,
+                display_name: &names,
+                types: &state.damage_types,
+                facts: &state.block_facts,
+                blocks: &blocks,
+                rules: &rules,
+                difficulty: state.difficulty(),
+                game_time: state.game_time(),
+                min_y: level.min_y(),
+                dimension,
+                raining_at: &raining,
+                border: None,
+                enter_gateway: &mut no_gateway,
+                random: &mut random,
+                out: &mut out,
+            };
+            f(level, &mut ents, &mut env, &mut cx)
+        };
+        level.entities = ents;
+        for action in std::mem::take(&mut cx.actions) {
+            action.apply_to_level(level);
+        }
+        for id in std::mem::take(&mut cx.discarded) {
+            level.entities.despawn(id);
+        }
+        deliver_simple(&out, &mut level.entities, global);
+        r
+    }
+
     /// Runs `f` on a player with a survival environment outside the tick (commands) and
     /// delivers its effects at once.
     fn on_player(

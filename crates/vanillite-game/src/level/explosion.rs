@@ -205,11 +205,15 @@ impl Level {
                             && (crate::block::is_rail(state.block())
                                 || crate::block::is_rail(self.block(pos.offset(0, 1, 0)).block()));
                         if !(state.is_air() && fluid.is_empty()) {
-                            let mut resistance = state
-                                .block()
-                                .info()
-                                .blast_resistance
-                                .max(fluid.info().explosion_resistance);
+                            let mut resistance = if rail_protected {
+                                0.0
+                            } else {
+                                state
+                                    .block()
+                                    .info()
+                                    .blast_resistance
+                                    .max(fluid.info().explosion_resistance)
+                            };
                             if override_resistance == BlockResistance::DangerousWitherSkull {
                                 resistance = crate::mob::boss::wither::skull_block_resistance(
                                     true, state, resistance,

@@ -598,6 +598,12 @@ impl Survival {
         s
     }
 
+    /// The player was moved without walking (teleport, portal): the blocks it touches next
+    /// tick are only those at its new place.
+    pub fn teleported(&mut self) {
+        self.last_box = None;
+    }
+
     /// `Player.giveExperiencePoints`: the score grows by the points too. Returns the volume of
     /// the level-up sound (`entity.player.levelup`) to play at the player, if one plays: every
     /// fifth level, at most once per 100 ticks.
@@ -615,12 +621,6 @@ impl Survival {
             }
         });
         volume
-    }
-
-    /// The player was moved without walking (teleport, portal): the blocks it touches next
-    /// tick are only those at its new place.
-    pub fn teleported(&mut self) {
-        self.last_box = None;
     }
 
     /// Forces the next [`sync`](Self::sync) to send health, food and experience
@@ -1107,7 +1107,7 @@ fn protection(
     };
     let cx = crate::enchant::EnchantContext {
         types: env.types,
-        tags: data,
+        tags: &*data,
         this: Some(this),
         attacker: None,
         direct_attacker: None,

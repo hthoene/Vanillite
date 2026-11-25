@@ -544,6 +544,18 @@ fn die(
     if !consumed && (killed_by_player && env.rules.bool(Rule::MOB_DROPS)) && reward > 0 {
         award_experience(env, pos, reward);
     }
+    // `getKillCredit().awardKillScore(this, source)`: the player that hurt it last, else the
+    // last attacking mob.
+    let credit = ents.mob(target).and_then(|m| {
+        m.last_hurt_by_player
+            .filter(|_| m.last_hurt_by_player_time > 0)
+            .or(m.last_hurt_by_mob)
+    });
+    env.out.push(Effect::Died {
+        victim: target,
+        killer: credit.or(source.cause),
+        message: None,
+    });
     env.out.push(Effect::Tracking {
         entity: target,
         with_self: false,
@@ -667,7 +679,7 @@ fn table_loot(
     let name = ents.store.get(target)?.kind().info().name;
     let (ns, path) = name.split_once(':').unwrap_or(("minecraft", name));
     let table = format!("{ns}:entities/{path}");
-    if !data.loot.has_table(&table) {
+    if !data.loot.contains(&table) {
         return None;
     }
     let this = super::attack::facts(ents, target)?;
@@ -696,7 +708,7 @@ fn table_loot(
             cause: attacker,
         }),
         types: env.types,
-        tags: data,
+        tags: &*data,
         attacker_enchantment_level: &ench_level,
     };
     let none = |_: &str| 0;

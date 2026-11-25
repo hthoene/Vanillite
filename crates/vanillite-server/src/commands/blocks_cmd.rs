@@ -1,9 +1,8 @@
 //! The block commands: `setblock` (`SetBlockCommand`), `fill` (`FillCommand`), `clone`
 //! (`CloneCommands`) and `fillbiome` (`FillBiomeCommand`).
 //!
-//! They work on the world the command runs on. A source in another world (`execute in`) gets
-//! `argument.pos.unloaded`, like positions of `execute if block`: the other world's blocks are
-//! owned by its thread and the result is needed now.
+//! They work on the world the command runs on: an execution moves to its source's world first
+//! (`execute in`). `clone` between two worlds continues on the other world's thread.
 
 use std::collections::VecDeque;
 
@@ -12,7 +11,7 @@ use vanillite_command::error::CommandError;
 use vanillite_command::{Arg as ErrArg, Args, BlockPredicateArg, BlockStateArg, GameValue};
 use vanillite_data::block::{BlockState, ids};
 use vanillite_game::commands::{CloneFilter, CloneMode, FillMode, SetBlockMode};
-use vanillite_game::level::{BlockEntity, Level, update};
+use vanillite_game::level::{Level, update};
 use vanillite_game::survival::rules::Rule;
 use vanillite_protocol::packets::play::clientbound::{ChunkBiomeData, ChunksBiomes};
 use vanillite_protocol::text::{Arg, Component};
@@ -80,9 +79,9 @@ fn volume(min: BlockPos, max: BlockPos) -> i64 {
 }
 
 /// `BlockInput.place(level, pos, flags)`: the state with its shape from the neighbours (unless
-/// `KNOWN_SHAPE`), the typed properties kept. Block entity data of the input is not applied: no
-/// block entity loads NBT yet.
-fn place(level: &mut Level, pos: BlockPos, input: &BlockStateArg, flags: u32) -> bool {
+/// `KNOWN_SHAPE`), the typed properties kept, then the input's block entity data loaded into
+/// the block entity there; affected when the block or the block entity data changed.
+pub(super) fn place(level: &mut Level, pos: BlockPos, input: &BlockStateArg, flags: u32) -> bool {
     let state = BlockState(input.state);
     let mut placed = if flags & update::KNOWN_SHAPE != 0 {
         state
@@ -100,7 +99,16 @@ fn place(level: &mut Level, pos: BlockPos, input: &BlockStateArg, flags: u32) ->
             }
         }
     }
-    level.set_block(pos, placed, flags)
+    let mut affected = level.set_block(pos, placed, flags);
+    if let Some(tag) = &input.nbt
+        && let Some(before) = level.block_entity_nbt(pos)
+    {
+        level.load_block_entity_nbt(pos, tag);
+        if level.block_entity_nbt(pos).as_ref() != Some(&before) {
+            affected = true;
+        }
+    }
+    affected
 }
 
 /// The flags of a command placement: `2 | (strict ? 816 : 256)`.
@@ -194,7 +202,7 @@ pub(super) fn fill(
                 let state = env.level.block(pos);
                 let passes = match (mode, filter) {
                     (FillMode::Keep, _) => state.is_air(),
-                    (_, Some(pred)) => block_matches(env, pred, state),
+                    (_, Some(pred)) => block_matches(env, pred, pos, state),
                     (_, None) => true,
                 };
                 if !passes {
@@ -254,89 +262,72 @@ fn has_chunks_at(level: &Level, a: BlockPos, b: BlockPos) -> bool {
     })
 }
 
-/// `BlockPosArgument.getLoadedBlockPos(context, level, name)` for the world of `clone`.
+/// A clone position (`BlockPosArgument.getLoadedBlockPos(context, level, name)`): checked
+/// against `level` when that world is the command's.
 fn clone_pos(
     args: &Args,
     name: &str,
     source: &CommandSource,
-    env: &Env<'_>,
+    level: Option<&Level>,
 ) -> Result<BlockPos, CommandError> {
     let c = args.coordinates(name).ok_or_else(|| missing(name))?;
     let pos = data::block_pos(source, c);
-    if !env.level.in_height(pos.y) {
-        return Err(CommandError::new("argument.pos.outofworld", vec![]));
-    }
-    if !env.level.is_loaded(pos) {
-        return Err(not_loaded());
+    if let Some(level) = level {
+        if !level.in_height(pos.y) {
+            return Err(CommandError::new("argument.pos.outofworld", vec![]));
+        }
+        if !level.is_loaded(pos) {
+            return Err(not_loaded());
+        }
     }
     Ok(pos)
 }
 
-/// `CloneCommands.CloneBlockInfo`.
+/// `CloneCommands.CloneBlockInfo`: the block entity as its `saveCustomOnly` data.
 struct CloneInfo {
     pos: BlockPos,
     state: BlockState,
-    entity: Option<BlockEntity>,
+    entity: Option<vanillite_nbt::Compound>,
     previous: BlockState,
 }
 
-/// `CloneCommands.clone`. Both dimensions must be the world the command runs on.
-pub(super) fn clone(
-    (filter, mode, strict): (CloneFilter, CloneMode, bool),
-    args: &Args,
-    source: &CommandSource,
-    env: &mut Env<'_>,
-) -> Result<i32, CommandError> {
-    let world_of = |name: &str| {
-        if args.has(name) {
-            dimension(args, name)
-        } else {
-            Ok(source.world)
-        }
-    };
-    if world_of("sourceDimension")? != env.world || world_of("targetDimension")? != env.world {
-        return Err(not_loaded());
+/// What one clone copies: the source box, the offset to the destination and the options.
+#[derive(Clone)]
+struct ClonePlan {
+    min: BlockPos,
+    max: BlockPos,
+    offset: BlockPos,
+    filter: CloneFilter,
+    pred: Option<vanillite_command::BlockPredicateArg>,
+    mode: CloneMode,
+    strict: bool,
+}
+
+/// The blocks a clone copies, in Vanilla's three lists, and the positions it clears.
+#[derive(Default)]
+struct CloneBlocks {
+    solid: Vec<CloneInfo>,
+    entities: Vec<CloneInfo>,
+    other: Vec<CloneInfo>,
+    clear: VecDeque<BlockPos>,
+}
+
+/// `saveCustomOnly`: the block entity data without `id`, `x`, `y`, `z`.
+fn custom_only(mut nbt: vanillite_nbt::Compound) -> vanillite_nbt::Compound {
+    for key in ["id", "x", "y", "z"] {
+        nbt.remove(key);
     }
-    let begin = clone_pos(args, "begin", source, env)?;
-    let end = clone_pos(args, "end", source, env)?;
-    let destination = clone_pos(args, "destination", source, env)?;
-    let (min, max) = bounds(begin, end);
-    let dest_end = BlockPos::new(
-        destination.x.saturating_add(max.x.saturating_sub(min.x)),
-        destination.y.saturating_add(max.y.saturating_sub(min.y)),
-        destination.z.saturating_add(max.z.saturating_sub(min.z)),
-    );
-    let (dest_min, dest_max) = bounds(destination, dest_end);
-    let intersects = max.x >= dest_min.x
-        && min.x <= dest_max.x
-        && max.y >= dest_min.y
-        && min.y <= dest_max.y
-        && max.z >= dest_min.z
-        && min.z <= dest_max.z;
-    if mode == CloneMode::Normal && intersects {
-        return Err(CommandError::new("commands.clone.overlap", vec![]));
-    }
-    let area = volume(min, max);
-    let limit = max_block_modifications(env);
-    if area > i64::from(limit) {
-        return Err(CommandError::new(
-            "commands.clone.toobig",
-            vec![ErrArg::Int(limit), ErrArg::Long(area)],
-        ));
-    }
-    if !has_chunks_at(env.level, begin, end) || !has_chunks_at(env.level, destination, dest_end) {
-        return Err(not_loaded());
-    }
-    let pred = block_predicate(args, "filter");
-    let offset = BlockPos::new(
-        dest_min.x.saturating_sub(min.x),
-        dest_min.y.saturating_sub(min.y),
-        dest_min.z.saturating_sub(min.z),
-    );
-    let mut solid = Vec::new();
-    let mut entities = Vec::new();
-    let mut other = Vec::new();
-    let mut clear = VecDeque::new();
+    nbt
+}
+
+/// The source part of `CloneCommands.clone`: collects the blocks of the source world (and
+/// the destination's previous states when it is the same world), then clears the source for
+/// `move`.
+fn clone_collect(env: &mut Env<'_>, plan: &ClonePlan, same_world: bool) -> CloneBlocks {
+    let mut out = CloneBlocks::default();
+    let ClonePlan {
+        min, max, offset, ..
+    } = *plan;
     for z in min.z..=max.z {
         for y in min.y..=max.y {
             for x in min.x..=max.x {
@@ -347,10 +338,13 @@ pub(super) fn clone(
                     z.saturating_add(offset.z),
                 );
                 let state = env.level.block(from);
-                let copies = match filter {
+                let copies = match plan.filter {
                     CloneFilter::All => true,
                     CloneFilter::Masked => !state.is_air(),
-                    CloneFilter::Filtered => pred.is_some_and(|p| block_matches(env, p, state)),
+                    CloneFilter::Filtered => plan
+                        .pred
+                        .as_ref()
+                        .is_some_and(|p| block_matches(env, p, from, state)),
                 };
                 if !copies {
                     continue;
@@ -359,49 +353,76 @@ pub(super) fn clone(
                     pos: to,
                     state,
                     entity: None,
-                    previous: env.level.block(to),
+                    previous: if same_world {
+                        env.level.block(to)
+                    } else {
+                        BlockState::AIR
+                    },
                 };
-                if let Some(entity) = env.level.block_entity(from) {
-                    entities.push(CloneInfo {
-                        entity: Some(entity.clone()),
+                if let Some(nbt) = env.level.block_entity_nbt(from) {
+                    out.entities.push(CloneInfo {
+                        entity: Some(custom_only(nbt)),
                         ..info
                     });
-                    clear.push_back(from);
+                    out.clear.push_back(from);
                 } else if !shared::is_solid_render(state)
                     && !shared::is_full_block(state.collision_shape())
                 {
-                    other.push(info);
-                    clear.push_front(from);
+                    out.other.push(info);
+                    out.clear.push_front(from);
                 } else {
-                    solid.push(info);
-                    clear.push_back(from);
+                    out.solid.push(info);
+                    out.clear.push_back(from);
                 }
             }
         }
     }
-    // `2 | (strict ? 816 : 0)`; barriers always with 816.
-    let flags = if strict {
-        place_flags(true)
-    } else {
-        update::CLIENTS
-    };
-    let barrier_flags = place_flags(true);
-    let barrier = ids::BARRIER.default_state();
-    let level = &mut *env.level;
-    if mode == CloneMode::Move {
-        for &pos in &clear {
-            level.set_block(pos, barrier, barrier_flags);
+    if plan.mode == CloneMode::Move {
+        let flags = clone_flags(plan.strict);
+        let level = &mut *env.level;
+        let barrier = ids::BARRIER.default_state();
+        for &pos in &out.clear {
+            level.set_block(pos, barrier, place_flags(true));
         }
-        let standard = if strict { flags } else { update::ALL };
-        for &pos in &clear {
+        let standard = if plan.strict { flags } else { update::ALL };
+        for &pos in &out.clear {
             level.set_block(pos, BlockState::AIR, standard);
         }
     }
+    out
+}
+
+/// `2 | (strict ? 816 : 0)`.
+fn clone_flags(strict: bool) -> u32 {
+    if strict {
+        place_flags(true)
+    } else {
+        update::CLIENTS
+    }
+}
+
+/// The destination part of `CloneCommands.clone`: barriers, the blocks, the block entity data,
+/// the neighbour updates; returns the number of blocks set.
+fn clone_place(level: &mut Level, blocks: CloneBlocks, strict: bool, same_world: bool) -> i32 {
+    let flags = clone_flags(strict);
+    let barrier_flags = place_flags(true);
+    let barrier = ids::BARRIER.default_state();
+    let CloneBlocks {
+        solid,
+        mut entities,
+        mut other,
+        ..
+    } = blocks;
     let solid_count = solid.len();
     let entity_count = entities.len();
     let mut all = solid;
     all.append(&mut entities);
     all.append(&mut other);
+    if !same_world {
+        for info in &mut all {
+            info.previous = level.block(info.pos);
+        }
+    }
     for info in all.iter().rev() {
         level.set_block(info.pos, barrier, barrier_flags);
     }
@@ -415,10 +436,11 @@ pub(super) fn clone(
         .get(solid_count..solid_count.saturating_add(entity_count))
         .unwrap_or_default();
     for info in with_entities {
-        if let Some(entity) = &info.entity
-            && level.block_entity(info.pos).is_some()
+        // `loadCustomOnly` + `setComponents` + `setChanged`.
+        if let Some(nbt) = &info.entity
+            && level.block_entity_nbt(info.pos).is_some()
         {
-            level.set_block_entity(info.pos, entity.clone());
+            level.load_block_entity_nbt(info.pos, nbt);
         }
         level.set_block(info.pos, info.state, flags);
     }
@@ -427,16 +449,127 @@ pub(super) fn clone(
             level.update_neighbours_on_block_set(info.pos, info.previous);
         }
     }
-    level.chunks.copy_block_ticks(min, max, offset);
-    if count == 0 {
-        return Err(CommandError::new("commands.clone.failed", vec![]));
-    }
-    source.send_success(
-        env.global,
-        Component::translatable_args("commands.clone.success", vec![Arg::Int(count)]),
-        true,
+    count
+}
+
+/// `CloneCommands.clone`. A source or destination in another world than the command's is
+/// handled on that world's thread without waiting: the blocks are collected there, placed in
+/// the destination world, and the feedback follows from there; the command counts the blocks
+/// of the area then. Scheduled block ticks are copied within one world only.
+pub(super) fn clone(
+    (filter, mode, strict): (CloneFilter, CloneMode, bool),
+    args: &Args,
+    source: &CommandSource,
+    env: &mut Env<'_>,
+) -> Result<i32, CommandError> {
+    let world_of = |name: &str| {
+        if args.has(name) {
+            dimension(args, name)
+        } else {
+            Ok(source.world)
+        }
+    };
+    let from_world = world_of("sourceDimension")?;
+    let to_world = world_of("targetDimension")?;
+    let local = |w: crate::world::WorldId| (w == env.world).then_some(&*env.level);
+    let begin = clone_pos(args, "begin", source, local(from_world))?;
+    let end = clone_pos(args, "end", source, local(from_world))?;
+    let destination = clone_pos(args, "destination", source, local(to_world))?;
+    let (min, max) = bounds(begin, end);
+    let dest_end = BlockPos::new(
+        destination.x.saturating_add(max.x.saturating_sub(min.x)),
+        destination.y.saturating_add(max.y.saturating_sub(min.y)),
+        destination.z.saturating_add(max.z.saturating_sub(min.z)),
     );
-    Ok(count)
+    let (dest_min, dest_max) = bounds(destination, dest_end);
+    let intersects = max.x >= dest_min.x
+        && min.x <= dest_max.x
+        && max.y >= dest_min.y
+        && min.y <= dest_max.y
+        && max.z >= dest_min.z
+        && min.z <= dest_max.z;
+    if mode == CloneMode::Normal && from_world == to_world && intersects {
+        return Err(CommandError::new("commands.clone.overlap", vec![]));
+    }
+    let area = volume(min, max);
+    let limit = max_block_modifications(env);
+    if area > i64::from(limit) {
+        return Err(CommandError::new(
+            "commands.clone.toobig",
+            vec![ErrArg::Int(limit), ErrArg::Long(area)],
+        ));
+    }
+    if local(from_world).is_some_and(|l| !has_chunks_at(l, begin, end))
+        || local(to_world).is_some_and(|l| !has_chunks_at(l, destination, dest_end))
+    {
+        return Err(not_loaded());
+    }
+    let plan = ClonePlan {
+        min,
+        max,
+        offset: BlockPos::new(
+            dest_min.x.saturating_sub(min.x),
+            dest_min.y.saturating_sub(min.y),
+            dest_min.z.saturating_sub(min.z),
+        ),
+        filter,
+        pred: block_predicate(args, "filter").cloned(),
+        mode,
+        strict,
+    };
+    if from_world == env.world && to_world == env.world {
+        let blocks = clone_collect(env, &plan, true);
+        let count = clone_place(env.level, blocks, strict, true);
+        env.level.chunks.copy_block_ticks(min, max, plan.offset);
+        if count == 0 {
+            return Err(CommandError::new("commands.clone.failed", vec![]));
+        }
+        source.send_success(
+            env.global,
+            Component::translatable_args("commands.clone.success", vec![Arg::Int(count)]),
+            true,
+        );
+        return Ok(count);
+    }
+    let source = source.clone();
+    let collect = move |env: &mut Env<'_>| {
+        let blocks = clone_collect(env, &plan, false);
+        let place = move |level: &mut Level, global: &crate::global::Global| {
+            let count = clone_place(level, blocks, strict, false);
+            if count == 0 {
+                source.send_failure(
+                    global,
+                    Component::translatable("commands.clone.failed", vec![]),
+                );
+            } else {
+                source.send_success(
+                    global,
+                    Component::translatable_args("commands.clone.success", vec![Arg::Int(count)]),
+                    true,
+                );
+            }
+        };
+        if to_world == env.world {
+            place(env.level, env.global);
+        } else {
+            super::entities_cmd::on_level(env, to_world, move |level, global, _| {
+                place(level, global);
+            });
+        }
+    };
+    if from_world == env.world {
+        collect(env);
+    } else {
+        super::entities_cmd::on_level(env, from_world, move |level, global, _| {
+            let mut env = Env {
+                level,
+                global,
+                world: from_world,
+            };
+            collect(&mut env);
+        });
+    }
+    Ok(i32::try_from(area).unwrap_or(i32::MAX))
 }
 
 /// `FillBiomeCommand.quantize`: the block at the start of its quart.

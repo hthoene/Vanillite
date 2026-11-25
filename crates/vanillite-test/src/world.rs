@@ -93,6 +93,10 @@ pub trait ScenarioWorld {
     fn effect(&mut self, effect: &crate::scenario::EffectOp) -> Result<(), String> {
         Err(format!("this world has no effects for `{}`", effect.entity))
     }
+    /// Runs a `command` action: the line as the server at the origin of the overworld.
+    fn command(&mut self, line: &str) -> Result<(), String> {
+        Err(format!("this world runs no commands (`{line}`)"))
+    }
     /// Runs a `throw_potion` action.
     fn throw_potion(&mut self, potion: &crate::scenario::ThrowPotionOp) -> Result<(), String> {
         Err(format!("this world cannot throw `{}`", potion.potion))

@@ -1593,6 +1593,7 @@ mod tests {
         let mut out = Vec::new();
         let raining = |_| false;
         let hooks = crate::hooks::NoHooks;
+        let names = |name: &str, _| vanillite_protocol::text::Component::text(name);
         {
             let blocks = LevelBlocks(level);
             let mut env = crate::survival::player::Env {
@@ -1605,12 +1606,12 @@ mod tests {
                 min_y: level.min_y(),
                 dimension: "minecraft:overworld",
                 raining_at: &raining,
+                border: None,
+                display_name: &names,
                 enter_gateway: &mut |_| false,
                 random: &mut random,
                 out: &mut out,
                 hooks: &hooks,
-                border: None,
-                display_name: &|n: &str, _| vanillite_protocol::text::Component::text(n.to_owned()),
             };
             let mut cx = crate::mob::MobContext {
                 path_budget: u64::MAX,
