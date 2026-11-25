@@ -1208,6 +1208,12 @@ impl Digging {
             crate::level::block_entity::apply_components(level, target, stack);
             crate::block::redstone::set_placed_by(level, placed, target);
             crate::block::crafter::set_placed_by(level, placed, target);
+            crate::block::technical::command_block::set_placed_by(
+                level,
+                placed,
+                target,
+                stack.component(ids::BLOCK_ENTITY_DATA).is_some(),
+            );
             if placed.block() == vanillite_data::block::ids::TRIPWIRE_HOOK {
                 crate::block::tripwire::hook_set_placed_by(level, target, placed);
             }

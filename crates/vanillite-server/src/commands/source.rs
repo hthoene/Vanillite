@@ -6,6 +6,7 @@ use std::sync::Arc;
 use vanillite_base::Vec3;
 use vanillite_game::player::PacketSink;
 use vanillite_game::player::join::display_name;
+use vanillite_game::survival::rules::Rule;
 use vanillite_protocol::packets::play::clientbound::SystemChat;
 use vanillite_protocol::text::{Color, Component, NamedColor};
 
@@ -33,6 +34,39 @@ pub(crate) enum SourceKind {
     Rcon(Arc<std::sync::Mutex<String>>),
     /// The server itself (functions of the game loop, scheduled functions): no feedback.
     Server,
+    /// A command block or command block minecart: `CloseableCommandBlockSource` while it
+    /// tracks its output, else `CommandSource.NULL`.
+    CommandBlock(Arc<BlockOutput>),
+}
+
+/// What a command block source keeps of its run: its name and the last message.
+pub(crate) struct BlockOutput {
+    /// `trackOutput`.
+    track: bool,
+    /// The block's name (`getName`): the source's display name.
+    name: Component,
+    /// Its plain text (`getTextName`).
+    text: String,
+    last: std::sync::Mutex<Option<Component>>,
+}
+
+impl BlockOutput {
+    pub(crate) fn new(track: bool, name: Component) -> Self {
+        Self {
+            track,
+            text: name.plain(),
+            name,
+            last: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// The last message the source took.
+    pub(crate) fn take(&self) -> Option<Component> {
+        self.last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
 }
 
 /// The entity a command runs as (`CommandSourceStack.entity`).
@@ -105,7 +139,10 @@ impl vanillite_command::Source for CommandSource {
                 let operator = self.global.access.op_level(*uuid).is_some();
                 self.global.plugins.has_permission(*uuid, node, operator)
             }
-            SourceKind::Console | SourceKind::Rcon(_) | SourceKind::Server => true,
+            SourceKind::Console
+            | SourceKind::Rcon(_)
+            | SourceKind::Server
+            | SourceKind::CommandBlock(_) => true,
         }
     }
 
@@ -393,7 +430,10 @@ impl CommandSource {
     pub(crate) fn receiver_uuid(&self) -> Option<u128> {
         match &self.kind {
             SourceKind::Player { uuid, .. } => Some(*uuid),
-            SourceKind::Console | SourceKind::Rcon(_) | SourceKind::Server => None,
+            SourceKind::Console
+            | SourceKind::Rcon(_)
+            | SourceKind::Server
+            | SourceKind::CommandBlock(_) => None,
         }
     }
 
@@ -406,6 +446,7 @@ impl CommandSource {
             SourceKind::Player { uuid, name, .. } => display_name(name, *uuid),
             SourceKind::Console | SourceKind::Server => Component::text("Server"),
             SourceKind::Rcon(_) => Component::text("Rcon"),
+            SourceKind::CommandBlock(out) => out.name.clone(),
         }
     }
 
@@ -418,6 +459,7 @@ impl CommandSource {
             SourceKind::Player { name, .. } => name,
             SourceKind::Console | SourceKind::Server => "Server",
             SourceKind::Rcon(_) => "Rcon",
+            SourceKind::CommandBlock(out) => &out.text,
         }
     }
 
@@ -459,54 +501,99 @@ impl CommandSource {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push_str(&global.english(&message)),
             SourceKind::Server => {}
+            // `CloseableCommandBlockSource.sendSystemMessage`: the block's last output.
+            SourceKind::CommandBlock(out) => {
+                if out.track {
+                    *out.last
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(message);
+                }
+            }
         }
     }
 
-    /// `sendSuccess`: feedback to the source and, when `inform_admins` and the source informs
-    /// admins (`broadcast-console-to-ops`, `broadcast-rcon-to-ops`), a gray italic note to the
-    /// other operators and the log (`broadcastToAdmins`; the game rules `sendCommandFeedback`
-    /// and `logAdminCommands` are on, as by default).
-    pub(crate) fn send_success(&self, global: &Global, message: Component, inform_admins: bool) {
-        if self.silent || matches!(self.kind, SourceKind::Server) {
-            return;
+    /// `CommandSource.acceptsSuccess`: players by `send_command_feedback`, command blocks
+    /// that track their output by it too.
+    fn accepts_success(&self, global: &Global) -> bool {
+        let feedback = || global.level.rules().bool(Rule::SEND_COMMAND_FEEDBACK);
+        match &self.kind {
+            SourceKind::Player { .. } => feedback(),
+            SourceKind::Console | SourceKind::Rcon(_) => true,
+            SourceKind::Server => false,
+            SourceKind::CommandBlock(out) => out.track && feedback(),
         }
-        self.send_system(global, message.clone());
-        let informs = match self.kind {
+    }
+
+    /// `CommandSource.shouldInformAdmins`.
+    fn informs_admins(&self, global: &Global) -> bool {
+        match &self.kind {
             SourceKind::Console => global.broadcast_console_to_ops,
             SourceKind::Rcon(_) => global.broadcast_rcon_to_ops,
-            SourceKind::Player { .. } | SourceKind::Server => true,
-        };
-        if !inform_admins || !informs {
+            SourceKind::Player { .. } => true,
+            SourceKind::Server => false,
+            SourceKind::CommandBlock(out) => {
+                out.track && global.level.rules().bool(Rule::COMMAND_BLOCK_OUTPUT)
+            }
+        }
+    }
+
+    /// `sendSuccess`: feedback to the source if it accepts it and, when `inform_admins` and
+    /// the source informs admins, `broadcastToAdmins`: a gray italic note to the other
+    /// operators (by `send_command_feedback`) and the log (by `log_admin_commands`, not for
+    /// the console itself).
+    pub(crate) fn send_success(&self, global: &Global, message: Component, inform_admins: bool) {
+        if self.silent {
+            return;
+        }
+        let broadcast = inform_admins && self.informs_admins(global);
+        if self.accepts_success(global) {
+            self.send_system(global, message.clone());
+        }
+        if !broadcast {
             return;
         }
         let broadcast =
             Component::translatable("chat.type.admin", vec![self.display_name(), message])
                 .color(Color::Named(NamedColor::Gray))
                 .italic(true);
+        let (feedback, log_admin) = {
+            let rules = global.level.rules();
+            (
+                rules.bool(Rule::SEND_COMMAND_FEEDBACK),
+                rules.bool(Rule::LOG_ADMIN_COMMANDS),
+            )
+        };
         let own = self.receiver_uuid();
-        for entry in global.players.snapshot() {
-            if Some(entry.uuid.0) != own && global.access.op_level(entry.uuid.0).is_some() {
-                let accepts = entry
-                    .inbox
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .accepts_system(false);
-                if accepts {
-                    entry.sink.send(&SystemChat {
-                        content: broadcast.clone(),
-                        overlay: false,
-                    });
+        if feedback {
+            for entry in global.players.snapshot() {
+                if Some(entry.uuid.0) != own && global.access.op_level(entry.uuid.0).is_some() {
+                    let accepts = entry
+                        .inbox
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .accepts_system(false);
+                    if accepts {
+                        entry.sink.send(&SystemChat {
+                            content: broadcast.clone(),
+                            overlay: false,
+                        });
+                    }
                 }
             }
         }
-        // Everything but the server itself (the console) is logged.
-        if !matches!(self.kind, SourceKind::Console) {
+        if log_admin && !matches!(self.kind, SourceKind::Console) {
             log::info!("{}", global.english(&broadcast));
         }
     }
 
-    /// `sendFailure`: the message in red.
+    /// `sendFailure`: the message in red, if the source accepts failures (command blocks only
+    /// while they track their output).
     pub(crate) fn send_failure(&self, global: &Global, message: Component) {
+        if let SourceKind::CommandBlock(out) = &self.kind
+            && !out.track
+        {
+            return;
+        }
         self.send_system(
             global,
             Component::empty()

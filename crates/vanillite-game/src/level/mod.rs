@@ -133,6 +133,12 @@ pub struct LevelSettings {
     pub peaceful: bool,
     /// `spawnWardens` game rule (set by the server every tick).
     pub spawn_wardens: bool,
+    /// `command_blocks_work` game rule (`isCommandBlockEnabled`).
+    pub command_blocks_work: bool,
+    /// `max_command_sequence_length` game rule (chain command blocks).
+    pub max_command_sequence_length: i32,
+    /// `send_command_feedback` game rule (new command blocks track their output).
+    pub send_command_feedback: bool,
 }
 
 impl Default for LevelSettings {
@@ -159,6 +165,9 @@ impl Default for LevelSettings {
             exploits: ExploitSettings::default(),
             peaceful: false,
             spawn_wardens: true,
+            command_blocks_work: true,
+            max_command_sequence_length: 65536,
+            send_command_feedback: true,
         }
     }
 }
@@ -192,6 +201,9 @@ impl LevelSettings {
         if let Some(v) = get("spread_vines") {
             self.spread_vines = v != 0;
         }
+        self.command_blocks_work = rules.bool(Rule::COMMAND_BLOCKS_WORK);
+        self.max_command_sequence_length = rules.get(Rule::MAX_COMMAND_SEQUENCE_LENGTH);
+        self.send_command_feedback = rules.bool(Rule::SEND_COMMAND_FEEDBACK);
     }
 }
 
@@ -388,6 +400,9 @@ pub struct Level {
     seed: i64,
     /// What spawner blocks read of this tick's rules and sky (set by the world each tick).
     pub spawner_env: crate::block::spawner::SpawnerEnv,
+    /// The server's dispatcher for command blocks and command block minecarts.
+    pub(crate) command_runner:
+        Option<Arc<dyn crate::block::technical::command_block::CommandRunner>>,
 }
 
 impl std::fmt::Debug for Level {
@@ -454,6 +469,7 @@ impl Level {
             max_y,
             seed,
             spawner_env: crate::block::spawner::SpawnerEnv::default(),
+            command_runner: None,
         };
         // Chunks that are visible already queue their entities for the end of the first tick.
         level.apply_visibility();

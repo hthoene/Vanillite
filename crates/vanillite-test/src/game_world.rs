@@ -1430,6 +1430,10 @@ impl ScenarioWorld for GameWorld {
     }
 
     fn command(&mut self, line: &str) -> Result<(), String> {
+        // Command blocks run on the same server's dispatcher.
+        if self.level.command_runner().is_none() {
+            vanillite_server::install_command_runner(command_server(), &mut self.level);
+        }
         vanillite_server::run_command_on_level(
             command_server(),
             &mut self.level,

@@ -579,6 +579,10 @@ impl ServerBuilder {
                 level.set_tree_features(Arc::clone(trees));
             }
             level.set_maps(Arc::clone(&global.level.maps));
+            level.set_command_runner(Arc::new(crate::commands::BlockCommands::new(
+                &global,
+                WorldId(index),
+            )));
             let survival = crate::survival::WorldSurvival::new(
                 dimension,
                 &global.level,

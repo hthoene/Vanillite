@@ -822,7 +822,12 @@ impl Level {
             let Some(entity) = load(state, nbt) else {
                 return false;
             };
+            let previous_auto = match self.block_entities.get(pos) {
+                Some(BlockEntity::CommandBlock(c)) => Some(c.auto),
+                _ => None,
+            };
             self.block_entities.insert(pos, entity);
+            crate::block::technical::command_block::loaded(self, pos, previous_auto);
         } else {
             let mut data = nbt.clone();
             for key in ["id", "x", "y", "z"] {

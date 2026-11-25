@@ -447,3 +447,31 @@ pub mod serverbound {
         Interact
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::serverbound::*;
+    use crate::codec::{Decode, Encode, Reader};
+    use crate::types::BlockPos;
+
+    #[test]
+    fn set_command_block_round_trips() {
+        let packet = SetCommandBlock {
+            pos: BlockPos { x: 1, y: -2, z: 3 },
+            command: "say hi".to_owned(),
+            mode: 1,
+            track_output: true,
+            conditional: false,
+            automatic: true,
+        };
+        let mut out = Vec::new();
+        packet.encode(&mut out);
+        assert_eq!(*out.last().unwrap(), 0b101);
+        let decoded = SetCommandBlock::decode(&mut Reader::new(&out)).unwrap();
+        assert_eq!(decoded, packet);
+        // `readEnum` rejects unknown modes.
+        let mut bad = out.clone();
+        bad[8 + 7] = 3;
+        assert!(SetCommandBlock::decode(&mut Reader::new(&bad)).is_err());
+    }
+}

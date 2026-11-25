@@ -649,6 +649,8 @@ pub enum WorldAction {
     EntityInside(BlockPos, EntityId),
     /// A hopper minecart takes in an item (`MinecartHopper.tryConsumeItems`).
     HopperMinecart(EntityId),
+    /// A command block minecart runs its command (`BaseCommandBlock.performCommand`).
+    MinecartCommand(EntityId),
 }
 
 impl WorldAction {
@@ -670,6 +672,12 @@ impl WorldAction {
                 }
             }
             WorldAction::HopperMinecart(id) => crate::minecart::hopper_suck(level, id),
+            WorldAction::MinecartCommand(id) => {
+                crate::block::technical::command_block::perform_command(
+                    level,
+                    crate::block::technical::command_block::Owner::Minecart(id),
+                );
+            }
             WorldAction::SetDoorOpen(pos, open, source) => {
                 crate::block::redstone::set_door_open(level, pos, open, source);
             }

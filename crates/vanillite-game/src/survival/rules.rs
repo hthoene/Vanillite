@@ -109,6 +109,8 @@ impl Rule {
     pub const ADVANCE_TIME: Rule = Rule(0);
     pub const ADVANCE_WEATHER: Rule = Rule(1);
     pub const ALLOW_ENTERING_NETHER_USING_PORTALS: Rule = Rule(2);
+    pub const COMMAND_BLOCKS_WORK: Rule = Rule(5);
+    pub const COMMAND_BLOCK_OUTPUT: Rule = Rule(6);
     pub const DROWNING_DAMAGE: Rule = Rule(7);
     pub const ENTITY_DROPS: Rule = Rule(10);
     pub const FALL_DAMAGE: Rule = Rule(11);
@@ -119,6 +121,8 @@ impl Rule {
     pub const KEEP_INVENTORY: Rule = Rule(18);
     pub const LIMITED_CRAFTING: Rule = Rule(20);
     pub const BLOCK_EXPLOSION_DROP_DECAY: Rule = Rule(4);
+    pub const LOG_ADMIN_COMMANDS: Rule = Rule(22);
+    pub const MAX_COMMAND_SEQUENCE_LENGTH: Rule = Rule(25);
     pub const MAX_ENTITY_CRAMMING: Rule = Rule(26);
     pub const MOB_DROPS: Rule = Rule(29);
     pub const MOB_EXPLOSION_DROP_DECAY: Rule = Rule(30);
@@ -130,6 +134,7 @@ impl Rule {
     pub const PVP: Rule = Rule(38);
     pub const REDUCED_DEBUG_INFO: Rule = Rule(41);
     pub const RESPAWN_RADIUS: Rule = Rule(42);
+    pub const SEND_COMMAND_FEEDBACK: Rule = Rule(43);
     pub const SHOW_ADVANCEMENT_MESSAGES: Rule = Rule(44);
     pub const SHOW_DEATH_MESSAGES: Rule = Rule(45);
     pub const SPAWNER_BLOCKS_WORK: Rule = Rule(46);

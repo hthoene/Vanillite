@@ -156,7 +156,7 @@ pub(super) fn tick(
     if on_rails {
         move_along_track(&mut c, rail_pos, state);
         if state.is(block_ids::ACTIVATOR_RAIL) && c.exists() {
-            super::activate(c.ents, c.env, id, powered(state));
+            super::activate(c.ents, c.env, c.cx, id, powered(state));
         }
     } else {
         come_off_track(&mut c);
