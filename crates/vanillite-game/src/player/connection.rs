@@ -209,6 +209,8 @@ pub struct Connection {
     /// A virtual connection (test bot, Bedrock player). These have no chat session, so their
     /// chat is accepted unsigned even when the server enforces secure chat.
     pub is_virtual: bool,
+    /// `ServerPlayer.lastActionTime`: the last packet that counts as player activity.
+    pub last_action: std::time::Instant,
 }
 
 impl std::fmt::Debug for Connection {
@@ -266,6 +268,7 @@ impl Connection {
             vehicle: VehicleInput::default(),
             play: Digging::new(),
             is_virtual,
+            last_action: std::time::Instant::now(),
         }
     }
 
@@ -309,6 +312,29 @@ impl Connection {
         chat: ChatContext<'_>,
         play: &mut PlayContext<'_>,
     ) -> Result<(), Kick> {
+        // `resetLastActionTime` of the packets that show activity (moves count when they move
+        // the player).
+        if matches!(
+            packet,
+            ServerboundPlay::PlayerAction(_)
+                | ServerboundPlay::UseItemOn(_)
+                | ServerboundPlay::UseItem(_)
+                | ServerboundPlay::SetCarriedItem(_)
+                | ServerboundPlay::ChatCommandSigned(_)
+                | ServerboundPlay::Punch(_)
+                | ServerboundPlay::PlayerCommand(_)
+                | ServerboundPlay::Attack(_)
+                | ServerboundPlay::Interact(_)
+                | ServerboundPlay::ClientCommand(_)
+                | ServerboundPlay::ContainerClick(_)
+                | ServerboundPlay::PlaceRecipe(_)
+                | ServerboundPlay::ContainerButtonClick(_)
+                | ServerboundPlay::SignUpdate(_)
+        ) || matches!(packet, ServerboundPlay::PlayerInput(_)) && self.movement.has_client_loaded()
+        {
+            self.last_action = std::time::Instant::now();
+        }
+        let before = state.body.pos;
         let sink = self.sink.as_ref();
         let mv =
             |pos: Option<(f64, f64, f64)>,
@@ -593,6 +619,11 @@ impl Connection {
             | ServerboundPlay::Pong(_)
             | ServerboundPlay::ResourcePack(_)
             | ServerboundPlay::Unhandled { .. } => {}
+        }
+        // `handlePlayerKnownMovement`: a real move counts as activity.
+        let moved = state.body.pos - before;
+        if moved.x * moved.x + moved.y * moved.y + moved.z * moved.z > 1.0e-5 {
+            self.last_action = std::time::Instant::now();
         }
         Ok(())
     }

@@ -665,6 +665,22 @@ impl WorldPlayers {
                 handled
             };
             swings.extend(hands.into_iter().map(|h| (id, h)));
+            // `ServerGamePacketListenerImpl.tick`: `playerIdleTimeout` kicks idle players (not
+            // while the end credits show).
+            let idle = global.access.idle_timeout();
+            let handled = if matches!(handled, Handled::Ok)
+                && idle > 0
+                && !player.survival.portal.won_game
+                && player.connection.last_action.elapsed()
+                    > std::time::Duration::from_secs(u64::try_from(idle).unwrap_or(0) * 60)
+            {
+                Handled::Kick(Box::new(vanillite_protocol::text::Component::translatable(
+                    "multiplayer.disconnect.idling",
+                    vec![],
+                )))
+            } else {
+                handled
+            };
             match handled {
                 Handled::Ok => {}
                 Handled::Disconnected => self.leaving.push((id, None)),
