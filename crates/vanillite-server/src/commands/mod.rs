@@ -18,6 +18,7 @@ mod entities_cmd;
 mod exec;
 mod execute;
 pub(crate) mod functions;
+pub(crate) mod gametest;
 pub(crate) mod items;
 mod locate;
 pub(crate) mod loot_cmd;

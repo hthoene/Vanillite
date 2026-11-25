@@ -447,3 +447,126 @@ pub mod serverbound {
         Interact
     );
 }
+
+/// Clientbound packets.
+pub mod clientbound {
+    use crate::codec::{Decode, DecodeLimited, Encode, Reader, Result, write_varint};
+    use crate::text::Component;
+    use crate::types::BlockPos;
+
+    /// `test_instance_block_status`: the description of the test a test instance block
+    /// screen shows and, for a query, the size of its structure.
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct TestInstanceBlockStatus {
+        pub status: Component,
+        pub size: Option<[i32; 3]>,
+    }
+
+    impl Encode for TestInstanceBlockStatus {
+        fn encode(&self, out: &mut Vec<u8>) {
+            self.status.encode(out);
+            out.push(u8::from(self.size.is_some()));
+            if let Some(size) = self.size {
+                for v in size {
+                    write_varint(out, v);
+                }
+            }
+        }
+    }
+
+    impl Decode for TestInstanceBlockStatus {
+        fn decode(r: &mut Reader<'_>) -> Result<Self> {
+            let status = Component::decode_limited(r, 2_097_152)?;
+            let size = if r.u8()? != 0 {
+                Some([r.varint()?, r.varint()?, r.varint()?])
+            } else {
+                None
+            };
+            Ok(Self { status, size })
+        }
+    }
+
+    manual_packet!(
+        TestInstanceBlockStatus,
+        Clientbound,
+        clientbound,
+        TEST_INSTANCE_BLOCK_STATUS,
+        "test_instance_block_status",
+        Default
+    );
+
+    /// `game_test_highlight_pos`: `/test pos` marks a block for the player.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct GameTestHighlightPos {
+        pub absolute: BlockPos,
+        pub relative: BlockPos,
+    }
+
+    impl Encode for GameTestHighlightPos {
+        fn encode(&self, out: &mut Vec<u8>) {
+            self.absolute.encode(out);
+            self.relative.encode(out);
+        }
+    }
+
+    impl Decode for GameTestHighlightPos {
+        fn decode(r: &mut Reader<'_>) -> Result<Self> {
+            Ok(Self {
+                absolute: BlockPos::decode(r)?,
+                relative: BlockPos::decode(r)?,
+            })
+        }
+    }
+
+    manual_packet!(
+        GameTestHighlightPos,
+        Clientbound,
+        clientbound,
+        GAME_TEST_HIGHLIGHT_POS,
+        "game_test_highlight_pos",
+        Default
+    );
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::serverbound::*;
+    use crate::codec::{Decode, Encode, Reader};
+    use crate::types::{BlockPos, Identifier};
+
+    fn round_trip<T: Encode + Decode + PartialEq + std::fmt::Debug>(value: &T) {
+        let mut out = Vec::new();
+        value.encode(&mut out);
+        let mut r = Reader::new(&out);
+        assert_eq!(&T::decode(&mut r).expect("decodes"), value);
+        assert_eq!(r.remaining(), 0);
+    }
+
+    #[test]
+    fn test_block_packets_decode() {
+        round_trip(&SetTestBlock {
+            pos: BlockPos { x: 1, y: -2, z: 3 },
+            mode: 3,
+            message: "accepted".into(),
+        });
+        // Unknown modes are `start`.
+        let mut out = Vec::new();
+        BlockPos { x: 0, y: 0, z: 0 }.encode(&mut out);
+        out.extend_from_slice(&[9, 0]);
+        let decoded = SetTestBlock::decode(&mut Reader::new(&out)).expect("decodes");
+        assert_eq!(decoded.mode, 0);
+        round_trip(&TestInstanceBlockAction {
+            pos: BlockPos { x: 5, y: 64, z: -7 },
+            action: 6,
+            data: TestInstanceData {
+                test: Some(Identifier::new("minecraft:always_pass").expect("id")),
+                size: [1, 2, 3],
+                rotation: 2,
+                ignore_entities: true,
+                status: 1,
+                error_message: None,
+            },
+        });
+    }
+}

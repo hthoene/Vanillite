@@ -68,8 +68,9 @@ pub(super) fn fill(block: BlockId, b: &mut BlockBehaviour) {
 }
 
 /// `newBlockEntity` of the technical blocks.
-pub(crate) fn new_block_entity(block: BlockId) -> Option<BlockEntity> {
+pub(crate) fn new_block_entity(state: BlockState) -> Option<BlockEntity> {
     use vanillite_data::block::ids;
+    let block = state.block();
     Some(match block {
         b if b == ids::COMMAND_BLOCK
             || b == ids::CHAIN_COMMAND_BLOCK
@@ -79,7 +80,9 @@ pub(crate) fn new_block_entity(block: BlockId) -> Option<BlockEntity> {
         }
         b if b == ids::STRUCTURE_BLOCK => BlockEntity::StructureBlock(Box::default()),
         b if b == ids::JIGSAW => BlockEntity::Jigsaw(Box::default()),
-        b if b == ids::TEST_BLOCK => BlockEntity::TestBlock(Box::default()),
+        b if b == ids::TEST_BLOCK => {
+            BlockEntity::TestBlock(Box::new(test_block::TestBlock::new(state)))
+        }
         b if b == ids::TEST_INSTANCE_BLOCK => BlockEntity::TestInstance(Box::default()),
         _ => return None,
     })

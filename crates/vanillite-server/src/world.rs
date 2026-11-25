@@ -380,6 +380,12 @@ impl ServerWorld {
             },
         );
         self.effects.flush(&self.level.entities);
+        // `handleTestInstanceBlockAction` of the players' packets.
+        crate::commands::gametest::handle_actions(&mut crate::commands::Env {
+            level: &mut self.level,
+            global: ctx.global,
+            world: self.id,
+        });
         if let Some(before) = positions {
             let moves: Vec<(u128, [f64; 3], [f64; 3])> = self
                 .player_positions()
@@ -473,6 +479,12 @@ impl ServerWorld {
             self.ticks += 1;
             self.tick_entities(ctx.global);
             self.level.tick_block_entities();
+            // `GameTestTicker.tick` for this world's tests.
+            crate::commands::gametest::tick(&mut crate::commands::Env {
+                level: &mut self.level,
+                global: ctx.global,
+                world: self.id,
+            });
             self.mobs.apply_magic_hurts(
                 &mut self.level,
                 &mut self.survival,

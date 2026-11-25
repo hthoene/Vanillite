@@ -321,7 +321,7 @@ pub fn new_block_entity(state: BlockState) -> Option<BlockEntity> {
         Some(BlockEntity::SculkCatalyst(Box::default()))
     } else if crate::block::sign::is_sign(block) {
         Some(BlockEntity::Sign(Box::default()))
-    } else if let Some(entity) = crate::block::technical::new_block_entity(block) {
+    } else if let Some(entity) = crate::block::technical::new_block_entity(state) {
         Some(entity)
     } else if block == ids::END_PORTAL {
         Some(BlockEntity::EndPortal)
