@@ -176,7 +176,9 @@ not compared.
 ## CI
 
 `.github/workflows/ci.yml` runs on every push and pull request: format, clippy, tests with codegen
-and golden checks and doc tests, and cargo-deny, as parallel jobs with a shared Rust cache written by `dev`.
+and golden checks and doc tests, the world generation tests, and cargo-deny, as parallel jobs with
+Rust and toolchain caches written by `dev`. The world generation goldens run in their own job
+(`-p vanillite-worldgen`), all other tests with `--exclude vanillite-worldgen`.
 `.github/workflows/nightly.yml` records missing bulk goldens and runs the ignored bulk tests (with
 Java 25 and a goldens cache), a
 release build and the fuzz targets (`scripts/fuzz.sh`, corpus cached between nights) once a
