@@ -472,7 +472,7 @@ impl GameWorld {
 
     fn add_player(&mut self, spec: &EntitySpec, index: usize) {
         let pos = Vec3::new(spec.pos[0], spec.pos[1], spec.pos[2]);
-        let (_tx, inbound) = std::sync::mpsc::channel();
+        let (_tx, inbound) = vanillite_protocol::inbound_queue(1);
         let chat = ChatSettings::default();
         let data = PlayerData {
             profile: GameProfile {
