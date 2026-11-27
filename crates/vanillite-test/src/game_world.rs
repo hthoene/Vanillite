@@ -52,7 +52,7 @@ use vanillite_game::survival::blocks::{BlockAccess, BlockFacts};
 use vanillite_game::survival::damage::{DamageSource, DamageTypes};
 use vanillite_game::survival::player::{self as survival_player, Env};
 use vanillite_game::survival::rules::{Difficulty, GameRules, Rule};
-use vanillite_game::survival::weather::LevelWeather;
+use vanillite_game::survival::weather::{LevelWeather, WeatherData};
 use vanillite_protocol::SharedPacket;
 use vanillite_storage::{AnvilCodec, Compression};
 use vanillite_world::chunks::{ChunkSettings, ChunkSlots, Chunks, InlineExecutor, Visibility};
@@ -312,6 +312,8 @@ pub struct GameWorld {
     rules: GameRules,
     difficulty: Difficulty,
     env: Environment,
+    /// The server's weather timers (`WeatherData`).
+    weather: WeatherData,
     effects: Vec<Effect>,
     /// Scenario names of entities.
     names: Vec<(EntityId, String)>,
@@ -635,7 +637,7 @@ impl GameWorld {
         level.settings.difficulty = difficulty;
         // The world starts at day time 0 unless the scenario sets one; time advances with
         // `advance_time` (off by default).
-        let env = day_environment(sea_level(spec), spec.time.unwrap_or(0), 0.0, 0.0);
+        let env = environment(spec, spec.time.unwrap_or(0), LevelWeather::default());
         // What spawner blocks and creaking hearts read when the block entities tick.
         level.spawner_env = vanillite_game::block::spawner::SpawnerEnv {
             env,
@@ -652,6 +654,7 @@ impl GameWorld {
             mobs: MobContext::default(),
             rules,
             difficulty,
+            weather: weather_data(spec),
             env,
             effects: Vec::new(),
             names: Vec::new(),
@@ -1740,12 +1743,12 @@ fn path_type_name(t: mob::path::PathType) -> String {
     out
 }
 
-/// The overworld's environment at `day` ticks of the day with the given weather levels.
-fn day_environment(sea_level: i32, day: i64, rain: f32, thunder: f32) -> Environment {
+/// The overworld's environment at `day` ticks of the day in `weather`.
+fn environment(spec: &WorldSpec, day: i64, weather: LevelWeather) -> Environment {
     Environment {
-        sea_level,
+        sea_level: sea_level(spec),
         day_time: day,
-        ..Environment::overworld(day, rain, thunder)
+        ..Environment::overworld(day, weather.rain(), weather.thunder())
     }
 }
 
@@ -1844,6 +1847,18 @@ fn open_level(
         o_thunder_level: thunder,
     });
     Ok((level, network_ids))
+}
+
+/// The weather timers the recorder sets for the scenario's weather (`setWeatherParameters`):
+/// rain and thunder last, clear is the cycle of a new world.
+fn weather_data(spec: &WorldSpec) -> WeatherData {
+    let mut data = WeatherData::default();
+    match spec.weather.as_str() {
+        "rain" => data.set(0, 1_000_000, true, false),
+        "thunder" => data.set(0, 1_000_000, true, true),
+        _ => {}
+    }
+    data
 }
 
 fn apply_rules(
@@ -1972,6 +1987,7 @@ impl ScenarioWorld for GameWorld {
         let Level { chunks, forced, .. } = &mut level;
         forced.load_tickets(chunks, &tickets);
         self.level = level;
+        self.weather = weather_data(&self.spec);
         self.network_ids = network_ids;
         self.mobs = MobContext::default();
         self.effects.clear();
@@ -2013,20 +2029,28 @@ impl ScenarioWorld for GameWorld {
         if self.rules.bool(Rule::ADVANCE_TIME) {
             self.clock_time += 1;
         }
-        // `ServerLevel.tick`: the night skip (the weather stands still in scenarios).
-        vanillite_game::survival::sleep::skip_night(
+        // `ServerLevel.tick`: `advanceWeatherCycle` with the level random.
+        let advance_weather = self.rules.bool(Rule::ADVANCE_WEATHER);
+        let mut weather = self.level.weather();
+        weather.advance(
+            Some(&mut self.weather),
+            advance_weather,
+            self.level.random(),
+            &mut Vec::new(),
+        );
+        self.level.set_weather(weather);
+        // The night skip; rain stops with `advance_weather` (`resetWeatherCycle`).
+        if vanillite_game::survival::sleep::skip_night(
             &mut self.level,
             &vanillite_game::hooks::NoHooks,
-        );
+        ) && advance_weather
+            && weather.is_raining()
+        {
+            self.weather.reset_cycle();
+        }
         // `updateSkyBrightness`: what this tick's block ticks read of the sky.
-        if self.env.day_time != self.clock_time {
-            let weather = self.level.weather();
-            self.env = day_environment(
-                sea_level(&self.spec),
-                self.clock_time,
-                weather.rain(),
-                weather.thunder(),
-            );
+        if self.env.day_time != self.clock_time || advance_weather {
+            self.env = environment(&self.spec, self.clock_time, weather);
             self.level.spawner_env.env = self.env;
             self.level.entities.day_time = self.env.day_time;
         }

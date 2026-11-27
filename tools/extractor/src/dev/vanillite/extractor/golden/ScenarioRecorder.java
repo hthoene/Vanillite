@@ -372,8 +372,6 @@ public final class ScenarioRecorder {
           scenario.has("player_state") && scenario.get("player_state").getAsBoolean();
       entities.sleepState =
           scenario.has("sleep_state") && scenario.get("sleep_state").getAsBoolean();
-      entities.progressState =
-          scenario.has("progress_state") && scenario.get("progress_state").getAsBoolean();
       JsonArray specs = scenario.has("entities") ? scenario.getAsJsonArray("entities") : new JsonArray();
       // Players join first; then the level random starts from the world seed and the mobs come.
       for (int i = 0; i < specs.size(); i++) {
@@ -515,18 +513,18 @@ public final class ScenarioRecorder {
   /** The scenario's time of day and difficulty. */
   private static void timeAndDifficulty(
       ParityServer server, ServerLevel level, JsonObject scenario) {
-    if (scenario.has("weather")) {
-      String weather = scenario.get("weather").getAsString();
-      boolean thunder = weather.equals("thunder");
-      if (!thunder && !weather.equals("rain") && !weather.equals("clear")) {
-        throw new IllegalArgumentException("unknown weather " + weather);
-      }
-      boolean rain = !weather.equals("clear");
-      // Full rain (and thunder) at once instead of the client fade of 0.01 per tick.
-      server.setWeatherParameters(0, rain ? 1_000_000 : 0, rain, thunder);
-      level.setRainLevel(rain ? 1.0F : 0.0F);
-      level.setThunderLevel(thunder ? 1.0F : 0.0F);
+    // Always: with `advance_weather` the timers ran (and drew from the level random) during the
+    // warm-up, whose length depends on wall time. Clear starts the cycle of a new world.
+    String weather = scenario.has("weather") ? scenario.get("weather").getAsString() : "clear";
+    boolean thunder = weather.equals("thunder");
+    if (!thunder && !weather.equals("rain") && !weather.equals("clear")) {
+      throw new IllegalArgumentException("unknown weather " + weather);
     }
+    boolean rain = !weather.equals("clear");
+    // Full rain (and thunder) at once instead of the client fade of 0.01 per tick.
+    server.setWeatherParameters(0, rain ? 1_000_000 : 0, rain, thunder);
+    level.setRainLevel(rain ? 1.0F : 0.0F);
+    level.setThunderLevel(thunder ? 1.0F : 0.0F);
     if (scenario.has("time")) {
       server.command("time set " + scenario.get("time").getAsLong());
     }
