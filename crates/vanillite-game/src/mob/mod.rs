@@ -249,6 +249,9 @@ pub struct MobData {
     /// `moveDist` and `nextStep`: when the next step makes a vibration.
     pub move_dist: f32,
     pub next_step: f32,
+    /// `flyDist` and `nextFlap` (chickens and parrots flap when the flight passes it).
+    pub fly_dist: f32,
+    pub next_flap: f32,
     /// The state of bosses and the other kinds with their own machinery.
     pub boss: boss::Ext,
 }
@@ -368,6 +371,8 @@ impl MobData {
             discard_friction: false,
             move_dist: 0.0,
             next_step: 1.0,
+            fly_dist: 0.0,
+            next_flap: 1.0,
             boss: boss::new_ext(kind),
         };
         // `Mob.ambientSoundTime` starts at 0; only playing a sound resets it to `-interval`.
@@ -895,7 +900,8 @@ impl WorldAction {
                 let halves = match c {
                     crate::block::container::ContainerRef::Block(p) => [Some(p), None],
                     crate::block::container::ContainerRef::Double(a, b) => [Some(a), Some(b)],
-                    crate::block::container::ContainerRef::Entity(_) => [None, None],
+                    crate::block::container::ContainerRef::Entity(_)
+                    | crate::block::container::ContainerRef::Composter(..) => [None, None],
                 };
                 for p in halves.into_iter().flatten() {
                     if open {

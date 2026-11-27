@@ -529,11 +529,11 @@ impl MenuSlots for ContainerView<'_> {
         }
     }
 
-    fn before_set_by_player(&mut self, slot: usize, stack: &ItemStack) {
+    fn before_set_by_player(&mut self, slot: usize, stack: &ItemStack, previous: &ItemStack) {
         if let (Storage::Mount(id), Some(Source::Container(i))) =
             (self.menu.storage, self.menu.source(slot))
         {
-            self.mount_before_set_by_player(id, i, stack);
+            self.mount_before_set_by_player(id, i, stack, previous);
         }
     }
 

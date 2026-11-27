@@ -1299,6 +1299,7 @@ impl Connection {
         play.inventory.menu.suppress_remote = true;
         play.inventory
             .click(p.slot, p.button, p.input, ctx, play.drops);
+        super::play::flush_equips(play);
         let sounds = std::mem::take(&mut play.inventory.menu.sounds);
         play_bundle_sounds(play, sounds);
         play.inventory.flush_result_updates(sink);

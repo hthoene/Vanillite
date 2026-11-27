@@ -115,6 +115,9 @@ pub struct PlayerInventory {
     pub bundle_selection: Option<(u64, i32)>,
     /// Statistics and triggers menus awarded since the server last took them.
     pub awards: Vec<crate::advancements::award::Award>,
+    /// `ArmorSlot.setByPlayer` since the player handlers last took them: the slot, the old
+    /// and the new stack (`onEquipItem` needs the level).
+    pub equips: Vec<(EquipmentSlot, ItemStack, ItemStack)>,
 }
 
 impl Default for PlayerInventory {
@@ -134,6 +137,7 @@ impl Default for PlayerInventory {
             crafted: Vec::new(),
             bundle_selection: None,
             awards: Vec::new(),
+            equips: Vec::new(),
         }
     }
 }
@@ -623,6 +627,12 @@ impl MenuSlots for PlayerInventory {
     fn slot_contents_changed(&mut self, slot: usize) {
         if let Some(SlotRef::Craft(_)) = slot_ref(slot) {
             self.craft_changed();
+        }
+    }
+
+    fn before_set_by_player(&mut self, slot: usize, stack: &ItemStack, previous: &ItemStack) {
+        if let Some(eq) = armor_slot(slot) {
+            self.equips.push((eq, previous.clone(), stack.clone()));
         }
     }
 
