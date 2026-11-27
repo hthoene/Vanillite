@@ -23,6 +23,7 @@ use vanillite_world::entity::{EntityFlags, EntityId, NewEntity, Rotation};
 
 use super::Level;
 use super::block_entity::{read_block_state, write_block_state};
+use crate::entities::PERSISTENT_DATA;
 use crate::entities::{FallingBlockData, PrimedTntData};
 use crate::item_entity::ItemData;
 
@@ -390,10 +391,15 @@ impl Level {
                 .collect(),
             _ => Vec::new(),
         };
+        let persistent = match nbt.get(PERSISTENT_DATA) {
+            Some(Tag::Compound(c)) => Some(c.clone()),
+            _ => None,
+        };
         let Some(vehicle) = self.create_entity(nbt)? else {
             return Some(None);
         };
         self.entities.set_tags(vehicle, tags);
+        self.entities.set_persistent_data(vehicle, persistent);
         loaded.push(vehicle);
         for tag in passengers {
             let Tag::Compound(c) = tag else {
@@ -553,6 +559,12 @@ impl Level {
                 "Tags",
                 List(tags.iter().map(|t| Tag::String(t.clone())).collect()),
             );
+        }
+        match self.entities.persistent_data(id) {
+            Some(data) => nbt.insert(PERSISTENT_DATA, data.clone()),
+            None => {
+                nbt.remove(PERSISTENT_DATA);
+            }
         }
         Some(nbt)
     }

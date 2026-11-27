@@ -1318,23 +1318,41 @@ impl Server {
         let access = &self.global.access;
         // The server's own test bots come over virtual connections it opened itself.
         let test_bot = arrival.memory_connection && self.test_bots.contains(&uuid);
+        use vanillite_abi::login_reason;
         use vanillite_protocol::text::Component;
-        let refuse = if let Some(reason) = crate::commands::ban_reason(access, uuid, None) {
-            Some(reason)
+        let (reason, refuse) = if let Some(reason) = crate::commands::ban_reason(access, uuid, None)
+        {
+            (login_reason::BANNED, Some(reason))
         } else if !test_bot && !access.is_whitelisted(uuid) {
-            Some(Component::translatable(
-                "multiplayer.disconnect.not_whitelisted",
-                vec![],
-            ))
+            (
+                login_reason::NOT_WHITELISTED,
+                Some(Component::translatable(
+                    "multiplayer.disconnect.not_whitelisted",
+                    vec![],
+                )),
+            )
         } else if let Some(reason) = crate::commands::ban_reason(access, uuid, Some(&ip)) {
-            Some(reason)
+            (login_reason::BANNED, Some(reason))
         } else if players.count() >= players.max_players() && !access.bypasses_player_limit(uuid) {
-            Some(Component::translatable(
-                "multiplayer.disconnect.server_full",
-                vec![],
-            ))
+            (
+                login_reason::FULL,
+                Some(Component::translatable(
+                    "multiplayer.disconnect.server_full",
+                    vec![],
+                )),
+            )
         } else {
-            None
+            (login_reason::ALLOWED, None)
+        };
+        let refuse = if self
+            .global
+            .plugins
+            .wants(vanillite_abi::event::PLAYER_LOGIN)
+        {
+            let name = arrival.profile.name.clone();
+            crate::plugins::login(&self.global, uuid, &name, &ip, reason, refuse)
+        } else {
+            refuse
         };
         if let Some(reason) = refuse {
             sink.kick(reason);

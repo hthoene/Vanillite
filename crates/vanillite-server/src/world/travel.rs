@@ -76,6 +76,8 @@ pub(crate) struct Traveller {
     route: Route,
     /// Its entity tags (`entityTags`), kept like `PlayerList.respawn` and `teleport` do.
     tags: Vec<String>,
+    /// The plugins' persistent data.
+    persistent: Option<vanillite_nbt::Compound>,
 }
 
 /// Where a traveller goes in its new world.
@@ -596,6 +598,7 @@ impl ServerWorld {
             (entity.uuid(), entity.pos(), entity.velocity(), entity.rot());
         let (width, height) = size(&entity.aabb());
         let tags = self.level.entities.tags_of(id).to_vec();
+        let persistent = self.level.entities.persistent_data(id).cloned();
         let (removed, mut data) = self.level.entities.despawn_player(id)?;
         // The camera entity stays behind (`setCamera(this)` of the transition).
         data.connection.camera = None;
@@ -612,6 +615,7 @@ impl ServerWorld {
             height,
             route,
             tags,
+            persistent,
         })
     }
 
@@ -854,6 +858,7 @@ impl ServerWorld {
             Route::Pearl(arrival) => Some((arrival, (traveller.pos, traveller.y_rot))),
             _ => None,
         };
+        let from_world = traveller.from;
         let landing = match self.landing(global, &traveller) {
             Some(landing) => landing,
             None => return Some(traveller),
@@ -899,8 +904,11 @@ impl ServerWorld {
             if keep_all {
                 data.survival.portal.won_game = false;
             } else {
-                let keep_inventory =
-                    rules.bool(Rule::KEEP_INVENTORY) || data.game_mode == GameMode::Spectator;
+                let keep_inventory = data
+                    .survival
+                    .keep_inventory_override
+                    .unwrap_or_else(|| rules.bool(Rule::KEEP_INVENTORY))
+                    || data.game_mode == GameMode::Spectator;
                 data.survival = data.survival.respawned(keep_inventory);
             }
         }
@@ -999,6 +1007,7 @@ impl ServerWorld {
             network_id,
             data,
             tags,
+            persistent,
             ..
         } = traveller;
         let id = self.level.entities.spawn_player_as(
@@ -1013,6 +1022,7 @@ impl ServerWorld {
             data,
         );
         self.level.entities.set_tags(id, tags);
+        self.level.entities.set_persistent_data(id, persistent);
         if let Some(mut entity) = self.level.entities.store.get_mut(id) {
             entity.set_velocity(body.velocity);
             entity.set_flags(EntityFlags::ON_GROUND, false);
@@ -1063,6 +1073,19 @@ impl ServerWorld {
         if let Some((arrival, from)) = pearl {
             self.pearl_landed(global, id, arrival, from);
         }
+        // Plugins see the player in its place: a respawn, or the arrival in another world.
+        let from = u32::from(from_world.0);
+        let respawned = keep_all.is_some();
+        if respawned || from_world != self.id {
+            let plugins = global.plugins.clone();
+            plugins.player_world(
+                respawned,
+                &mut crate::plugins::PluginWorld(self),
+                uuid,
+                from,
+                [body.pos.x, body.pos.y, body.pos.z],
+            );
+        }
         None
     }
 
@@ -1076,6 +1099,8 @@ impl ServerWorld {
             velocity,
             y_rot,
             x_rot,
+            tags,
+            persistent,
             ..
         } = traveller;
         let id = self.level.entities.spawn_player_as(
@@ -1089,6 +1114,8 @@ impl ServerWorld {
             },
             data,
         );
+        self.level.entities.set_tags(id, tags);
+        self.level.entities.set_persistent_data(id, persistent);
         if let Some(mut entity) = self.level.entities.store.get_mut(id) {
             entity.set_velocity(velocity);
         }

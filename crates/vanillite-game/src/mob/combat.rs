@@ -228,6 +228,16 @@ pub fn hurt_mob(
             None => return false,
         }
     }
+    // Plugins see the damage after the kind's own filters.
+    if let Some(e) = ents.store.get(target) {
+        match env
+            .hooks
+            .entity_damage(e.uuid(), e.kind().name(), &types.get(kind).id, amount)
+        {
+            Some(changed) => amount = changed,
+            None => return false,
+        }
+    }
     let Some(m) = ents.mob_mut(target) else {
         return false;
     };
@@ -576,6 +586,18 @@ fn die(
     };
     m.dead = true;
     let mob_kind = m.kind;
+    if let Some(e) = ents.store.get(target) {
+        let killer = source
+            .cause
+            .and_then(|c| ents.store.get(c))
+            .map(|c| c.uuid());
+        env.hooks.entity_death(
+            e.uuid(),
+            e.kind().name(),
+            &env.types.get(source.kind).id,
+            killer,
+        );
+    }
     if mob_kind.family() != super::Family::Classic {
         let mut h = super::fam::Hurt {
             level,

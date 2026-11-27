@@ -1,6 +1,8 @@
 //! Example Vanillite plugin: a `/hello` command with suggestions, `/hello pad` (bulk block
 //! access by numeric id from a task on the player's owner), a join message from its config,
-//! and a simple flat generator that replaces the `chunk-generator` slot when
+//! a join counter in the player's persistent data shown above the hotbar, a refused login
+//! name, fire protection and kept inventories (`protect.enabled`), a periodic background
+//! task, and a simple flat generator that replaces the `chunk-generator` slot when
 //! `generator.enabled` is set in `plugins/hello/config.toml`.
 //!
 //! Build it with `cargo build -p vanillite-example-hello` and put `plugin.toml` and the library
@@ -27,7 +29,59 @@ impl Plugin for Hello {
                 .unwrap_or_else(|| "Welcome, {name}!".to_owned());
             let text = template.replace("{name}", event.name());
             let _ = server.send_message(event.player(), Text::colored(&text, "gold"));
+            // The join counter lives in the player's persistent data (`hello:joins`).
+            let (world, player) = (event.world(), event.player());
+            let joins = match ctx.entity_data(world, player, "joins") {
+                Ok(Some(DataValue::Int(n))) => n,
+                _ => 0,
+            } + 1;
+            if ctx
+                .set_entity_data(world, player, "joins", &DataValue::Int(joins))
+                .is_ok()
+            {
+                let visit = server
+                    .config_string("messages.visit")
+                    .unwrap_or_else(|| "Visit #{count}".to_owned());
+                let _ =
+                    server.send_action_bar(player, visit.replace("{count}", &joins.to_string()));
+            }
         });
+
+        registrar.on_login(priority::NORMAL, |_, ctx, login| {
+            let server = ctx.server();
+            let refused = server.config_string("login.refuse").unwrap_or_default();
+            if !refused.is_empty() && login.name() == refused {
+                let message = server
+                    .config_string("login.message")
+                    .unwrap_or_else(|| "This name is reserved.".to_owned());
+                login.refuse(Text::colored(&message, "red"));
+            }
+        });
+
+        if server.config_bool("protect.enabled") == Some(true) {
+            registrar.on_interact(priority::NORMAL, |_, ctx, interact| {
+                if matches!(
+                    interact.item(),
+                    "minecraft:flint_and_steel" | "minecraft:fire_charge"
+                ) {
+                    interact.set_cancelled(true);
+                    let _ = ctx
+                        .server()
+                        .send_action_bar(interact.player(), Text::colored("No fire here", "red"));
+                }
+            });
+            registrar.on_death(priority::NORMAL, |_, ctx, death| {
+                death.set_keep_inventory(true);
+                let name = ctx
+                    .server()
+                    .player_name(death.player())
+                    .unwrap_or_else(|| "A player".to_owned());
+                death.set_message(Text::colored(
+                    &format!("{name} died and kept everything"),
+                    "gray",
+                ));
+            });
+        }
 
         registrar.command(
             Command::literal("hello")
@@ -94,8 +148,15 @@ impl Plugin for Hello {
     }
 
     fn enable(&mut self, ctx: &mut Ctx<'_>) {
-        let worlds = ctx.server().worlds().len();
+        let server = ctx.server();
+        let worlds = server.worlds().len();
         vanillite_plugin::info!("Hello is enabled ({worlds} worlds)");
+        // Every five minutes off the tick: how many players are online (a real plugin would
+        // write statistics to a database here).
+        let _ = server.run_async_timer(6000, 6000, move || {
+            let online = server.online_players().len();
+            vanillite_plugin::debug!("{online} players online");
+        });
     }
 
     fn disable(&mut self, _ctx: &mut Ctx<'_>) {

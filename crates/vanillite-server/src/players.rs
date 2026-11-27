@@ -3,6 +3,7 @@
 //! `vanillite_game::player`.
 
 use std::sync::{Arc, Mutex};
+use vanillite_game::entities::PERSISTENT_DATA;
 
 use vanillite_base::BlockPos;
 use vanillite_base::hash::FxHashSet;
@@ -470,6 +471,10 @@ impl WorldPlayers {
             .and_then(|v| i32::try_from(v).ok())
             .and_then(game_mode_by_id);
         let tags = saved.map(load_tags).unwrap_or_default();
+        let persistent = saved.and_then(|d| match d.get(PERSISTENT_DATA) {
+            Some(Tag::Compound(c)) => Some(c.clone()),
+            _ => None,
+        });
         let motion = saved.map_or(Vec3::ZERO, load_motion);
         let icon = saved
             .and_then(|d| d.get("locator_bar_icon"))
@@ -516,6 +521,7 @@ impl WorldPlayers {
             data,
         );
         entities.set_tags(id, tags);
+        entities.set_persistent_data(id, persistent);
         let Some(mut entity) = entities.store.get_mut(id) else {
             return;
         };
@@ -1418,6 +1424,9 @@ impl WorldPlayers {
                 Tag::List(List(tags.iter().map(|t| Tag::String(t.clone())).collect())),
             );
         }
+        if let Some(data) = entities.persistent_data(id) {
+            live.insert(PERSISTENT_DATA, data.clone());
+        }
         player.inventory.save(&mut live);
         player.survival.save(&mut live);
         live.insert(
@@ -1513,8 +1522,9 @@ impl WorldPlayers {
 
 /// The keys of a player data file that only exist for some live states: dropped before the
 /// live state is written, so a stale value never stays.
-const LIVE_KEYS: [&str; 15] = [
+const LIVE_KEYS: [&str; 16] = [
     "Tags",
+    PERSISTENT_DATA,
     "previousPlayerGameType",
     "LastDeathLocation",
     "active_effects",

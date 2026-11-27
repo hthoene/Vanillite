@@ -88,7 +88,15 @@ pub(crate) fn enforce_game_mode(
     target: &Target,
     mode: GameMode,
 ) -> bool {
-    if target.game_mode == mode {
+    if target.game_mode == mode
+        || !crate::plugins::game_mode_change(
+            global,
+            u32::from(target.world.0),
+            target.uuid,
+            target.game_mode,
+            mode,
+        )
+    {
         return false;
     }
     if target.entity.is_some() {
@@ -114,7 +122,15 @@ pub(crate) fn game_mode(
 ) -> i32 {
     let mut count = 0;
     for target in targets {
-        if target.game_mode == mode {
+        if target.game_mode == mode
+            || !crate::plugins::game_mode_change(
+                global,
+                u32::from(target.world.0),
+                target.uuid,
+                target.game_mode,
+                mode,
+            )
+        {
             continue;
         }
         if target.entity.is_some() {

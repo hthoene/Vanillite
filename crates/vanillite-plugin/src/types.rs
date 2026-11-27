@@ -220,6 +220,113 @@ impl From<String> for Text {
     }
 }
 
+/// A game mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum GameMode {
+    /// Survival.
+    Survival,
+    /// Creative.
+    Creative,
+    /// Adventure.
+    Adventure,
+    /// Spectator.
+    Spectator,
+}
+
+impl GameMode {
+    pub(crate) fn from_abi(v: u32) -> GameMode {
+        match v {
+            abi::game_mode::CREATIVE => GameMode::Creative,
+            abi::game_mode::ADVENTURE => GameMode::Adventure,
+            abi::game_mode::SPECTATOR => GameMode::Spectator,
+            _ => GameMode::Survival,
+        }
+    }
+}
+
+/// A hand.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Hand {
+    /// The main hand.
+    Main,
+    /// The off hand.
+    Off,
+}
+
+/// A persistent data value ([`Ctx::entity_data`](crate::Ctx::entity_data)), stored as the NBT
+/// tag of the same name in the entity's `BukkitValues`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DataValue {
+    /// A byte.
+    Byte(i8),
+    /// A short.
+    Short(i16),
+    /// An int.
+    Int(i32),
+    /// A long.
+    Long(i64),
+    /// A float.
+    Float(f32),
+    /// A double.
+    Double(f64),
+    /// Bytes.
+    Bytes(Vec<u8>),
+    /// A string.
+    String(String),
+    /// Ints.
+    Ints(Vec<i32>),
+    /// Longs.
+    Longs(Vec<i64>),
+}
+
+impl DataValue {
+    /// The ABI type and bytes.
+    pub(crate) fn encode(&self) -> (u32, Vec<u8>) {
+        use abi::data_type as t;
+        match self {
+            DataValue::Byte(v) => (t::BYTE, v.to_le_bytes().to_vec()),
+            DataValue::Short(v) => (t::SHORT, v.to_le_bytes().to_vec()),
+            DataValue::Int(v) => (t::INT, v.to_le_bytes().to_vec()),
+            DataValue::Long(v) => (t::LONG, v.to_le_bytes().to_vec()),
+            DataValue::Float(v) => (t::FLOAT, v.to_le_bytes().to_vec()),
+            DataValue::Double(v) => (t::DOUBLE, v.to_le_bytes().to_vec()),
+            DataValue::Bytes(v) => (t::BYTE_ARRAY, v.clone()),
+            DataValue::String(v) => (t::STRING, v.as_bytes().to_vec()),
+            DataValue::Ints(v) => (
+                t::INT_ARRAY,
+                v.iter().flat_map(|x| x.to_le_bytes()).collect(),
+            ),
+            DataValue::Longs(v) => (
+                t::LONG_ARRAY,
+                v.iter().flat_map(|x| x.to_le_bytes()).collect(),
+            ),
+        }
+    }
+
+    /// From the ABI type and bytes; `None` for a malformed value.
+    pub(crate) fn decode(kind: u32, bytes: &[u8]) -> Option<DataValue> {
+        fn array<const N: usize, T>(bytes: &[u8], f: fn([u8; N]) -> T) -> Option<Vec<T>> {
+            let (chunks, rest) = bytes.as_chunks::<N>();
+            rest.is_empty()
+                .then(|| chunks.iter().map(|c| f(*c)).collect())
+        }
+        use abi::data_type as t;
+        Some(match kind {
+            t::BYTE => DataValue::Byte(i8::from_le_bytes(bytes.try_into().ok()?)),
+            t::SHORT => DataValue::Short(i16::from_le_bytes(bytes.try_into().ok()?)),
+            t::INT => DataValue::Int(i32::from_le_bytes(bytes.try_into().ok()?)),
+            t::LONG => DataValue::Long(i64::from_le_bytes(bytes.try_into().ok()?)),
+            t::FLOAT => DataValue::Float(f32::from_le_bytes(bytes.try_into().ok()?)),
+            t::DOUBLE => DataValue::Double(f64::from_le_bytes(bytes.try_into().ok()?)),
+            t::BYTE_ARRAY => DataValue::Bytes(bytes.to_vec()),
+            t::STRING => DataValue::String(String::from_utf8(bytes.to_vec()).ok()?),
+            t::INT_ARRAY => DataValue::Ints(array(bytes, i32::from_le_bytes)?),
+            t::LONG_ARRAY => DataValue::Longs(array(bytes, i64::from_le_bytes)?),
+            _ => return None,
+        })
+    }
+}
+
 /// Escapes a string for a JSON string literal.
 fn escape_json(s: &str) -> String {
     let mut out = String::with_capacity(s.len());

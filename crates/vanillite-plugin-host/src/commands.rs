@@ -324,7 +324,7 @@ impl PluginHost {
             arg_stride: size_of::<abi::CommandArg>(),
         };
         let mut result = 0;
-        let mut ctx = CallCtx::new(world);
+        let mut ctx = CallCtx::new(world, &plugin);
         let s = plugin.call("a command", || {
             // SAFETY: the plugin's callback and user data live as long as its library; the
             // records, strings and context are valid for the call.
@@ -376,7 +376,7 @@ impl PluginHost {
             state: std::ptr::from_mut(&mut out).cast(),
             add: add_suggestion,
         };
-        let mut ctx = CallCtx::new(None);
+        let mut ctx = CallCtx::new(None, &plugin);
         plugin.call("a suggestion provider", || {
             // SAFETY: as in `execute_command`.
             unsafe { suggest(tree.user.0, ctx.as_raw(), &request, &sink) }

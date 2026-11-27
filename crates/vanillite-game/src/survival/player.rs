@@ -268,6 +268,9 @@ pub struct Survival {
     pub y_body_rot: f32,
     /// `horizontalCollision` of the last server-side move.
     horizontal_collision: bool,
+    /// A plugin decided at the last death whether the inventory stays (else the game rule at
+    /// the respawn decides, as in Vanilla).
+    pub keep_inventory_override: Option<bool>,
     first_tick: bool,
     sent: Sent,
     recorded: Recorded,
@@ -347,6 +350,7 @@ impl Default for Survival {
             simulate_movement: false,
             y_body_rot: 0.0,
             horizontal_collision: false,
+            keep_inventory_override: None,
             first_tick: true,
             sent: Sent::default(),
             recorded: Recorded::default(),
@@ -1354,24 +1358,26 @@ pub fn die(
     );
     env.out.push(Effect::PearlsVanish(uuid));
     let sink = std::sync::Arc::clone(&player.connection.sink);
-    let mut broadcast = None;
-    if env.rules.bool(Rule::SHOW_DEATH_MESSAGES) {
-        let name = (env.display_name)(&player.profile.name, uuid);
-        let message = player.survival.combat.death_message(env.types, name);
-        sink.send(&PlayerCombatKill {
-            player_id: network_id,
-            message: message.clone(),
-        });
-        broadcast = Some(message);
-    } else {
-        sink.send(&PlayerCombatKill {
-            player_id: network_id,
-            message: Component::empty(),
-        });
+    let mut death = crate::hooks::Death {
+        message: env.rules.bool(Rule::SHOW_DEATH_MESSAGES).then(|| {
+            let name = (env.display_name)(&player.profile.name, uuid);
+            player.survival.combat.death_message(env.types, name)
+        }),
+        keep_inventory: env.rules.bool(Rule::KEEP_INVENTORY),
+    };
+    env.hooks
+        .player_death(uuid, &env.types.get(source.kind).id, None, &mut death);
+    sink.send(&PlayerCombatKill {
+        player_id: network_id,
+        message: death.message.clone().unwrap_or_else(Component::empty),
+    });
+    let broadcast = death.message;
+    if death.keep_inventory != env.rules.bool(Rule::KEEP_INVENTORY) {
+        player.survival.keep_inventory_override = Some(death.keep_inventory);
     }
     super::shoulder::remove_entities(entity, player, env);
     // `dropAllDeathLoot` → `dropEquipment` and `dropExperience`.
-    if !env.rules.bool(Rule::KEEP_INVENTORY) && player.game_mode != GameMode::Spectator {
+    if !death.keep_inventory && player.game_mode != GameMode::Spectator {
         let pos = entity.as_ref().pos();
         // `getEyeY()` with the pose's float eye height.
         let eye = match entity.as_ref().pose() {
