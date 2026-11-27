@@ -29,9 +29,11 @@
 //! cargo xtask bench list | report | publish <time|latest|results.json> | nightly [--no-push]
 //! cargo xtask bench commands <scenario>
 //! cargo xtask setup [--global] | regen
+//! cargo xtask clean-stale [--incremental-hours N] [--unit-hours N] [--every MIN] [--dry-run] [<dir>...]
 //! ```
 
 mod bench;
+mod clean;
 mod configdoc;
 mod data;
 mod devenv;
@@ -264,7 +266,14 @@ pub const USAGE: &str = "usage:
       additions there merge without conflicts. --global: for all clones of this user.
   cargo xtask regen
       After a merge: rewrite the generated files (the egg, the configuration reference) from
-      their sources; cargo updates Cargo.lock on the way.";
+      their sources; cargo updates Cargo.lock on the way.
+  cargo xtask clean-stale [--incremental-hours N] [--unit-hours N] [--every MIN] [--dry-run]
+                          [<dir>...]
+      Free disk space in cargo target directories: below each <dir> (default this checkout's
+      target directory) every profile directory no build holds the lock of loses incremental
+      caches not written for N hours (default 4; the next build of such a crate compiles it in
+      full once), older incremental sessions, and build units none of whose files was read for
+      N hours (default 48). Safe while other builds run. --every repeats it every MIN minutes.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -295,6 +304,7 @@ fn main() -> ExitCode {
         ["bench", rest @ ..] => bench::run(&repo_root(), rest),
         ["setup", rest @ ..] => merge::setup(rest),
         ["regen"] => merge::regen(&repo_root()),
+        ["clean-stale", rest @ ..] => clean::run(&repo_root(), rest),
         ["merge-driver", base, ours, theirs, marker, path] => {
             merge::driver(base, ours, theirs, marker, path)
         }
