@@ -246,12 +246,18 @@ impl Chunk {
         }
         // Relative heights per type and column (`x + z * 16`); 0 is "no matching block".
         let mut heights = [[0u32; 256]; 6];
+        // Sections above the highest one with a block cannot match (none in a new chunk).
+        let filled = self
+            .sections
+            .iter()
+            .rposition(|section| !section.summary().is_empty())
+            .map_or(0, |top| top + 1);
         for z in 0..16 {
             for x in 0..16 {
                 let column = (x + z * 16) as usize;
                 let mut found = [false; 6];
                 let mut remaining = kinds.len();
-                'column: for (index, section) in self.sections.iter().enumerate().rev() {
+                'column: for (index, section) in self.sections[..filled].iter().enumerate().rev() {
                     if section.summary().is_empty() {
                         continue;
                     }

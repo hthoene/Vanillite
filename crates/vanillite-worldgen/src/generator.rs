@@ -23,7 +23,7 @@ use vanillite_datapack::LoadedPacks;
 
 use crate::Error;
 use crate::anchor::WorldGenerationContext;
-use crate::aquifer::{Aquifer, AquiferFunctions, GlobalFluidPicker};
+use crate::aquifer::{Aquifer, AquiferFunctions, GlobalFluidPicker, SurfaceLevelCache};
 use crate::biome::climate::{ClimateCache, ClimateSampler};
 use crate::biome::{BiomeManager, BiomeRegistry, BiomeSource};
 use crate::blocks::BlockSet;
@@ -219,6 +219,8 @@ pub struct TerrainGenerator {
     final_density: FnId,
     climate: ClimateSampler,
     aquifer: Option<AquiferFunctions>,
+    /// The surface levels the aquifers of all chunks share.
+    surface_levels: Arc<SurfaceLevelCache>,
     fluid_picker: GlobalFluidPicker,
     material: MaterialSystem,
     biomes: BiomeRegistry,
@@ -317,6 +319,7 @@ impl TerrainGenerator {
             final_density,
             climate,
             aquifer,
+            surface_levels: Arc::default(),
             material,
             biome_manager: BiomeManager::for_world_seed(seed),
             biomes,
@@ -701,6 +704,7 @@ impl TerrainGenerator {
             self.fluid_picker,
             &self.program,
             &mut ctx,
+            Some(&self.surface_levels),
         );
         let mut density = vec![0.0_f32; volume.len()];
         self.program
@@ -841,6 +845,7 @@ impl TerrainGenerator {
             self.fluid_picker,
             &self.program,
             ctx,
+            Some(&self.surface_levels),
         );
         chunk.begin_dense();
         self.fill_from_noise(chunk, &volume, &mut aquifer, ctx);
