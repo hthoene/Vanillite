@@ -252,6 +252,7 @@ pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
     if m.silent {
         out.insert("Silent", true);
     }
+    out.insert("Invulnerable", m.invulnerable);
     out.insert("Health", m.health);
     out.insert("AbsorptionAmount", m.absorption);
     if let Some(list) = m.effects.save() {
@@ -448,6 +449,7 @@ fn read_mob(m: &mut MobData, tag: &Compound) {
         || kind == Kind::ElderGuardian && tag.get("PersistenceRequired").is_none();
     m.no_ai = boolean(tag, "NoAI");
     m.silent = boolean(tag, "Silent");
+    m.invulnerable = boolean(tag, "Invulnerable");
     m.custom_name = tag.get("CustomName").and_then(tag_component);
     super::fam::reload_brain(m, tag);
     super::equipment::load(m, tag);

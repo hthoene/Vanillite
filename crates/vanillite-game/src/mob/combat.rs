@@ -245,16 +245,23 @@ fn with_projectile_motion(ents: &Entities, mut source: DamageSource) -> DamageSo
     source
 }
 
-/// `isInvulnerableTo` of a mob.
-fn invulnerable_to(ents: &Entities, env: &Env<'_>, target: EntityId, kind: DamageKind) -> bool {
+/// `isInvulnerableTo` of a mob: also the `Invulnerable` flag, unless the damage bypasses it
+/// or comes from a creative player (`isCreativePlayer`).
+fn invulnerable_to(ents: &Entities, env: &Env<'_>, target: EntityId, source: &DamageSource) -> bool {
     let types = env.types;
+    let kind = source.kind;
     let Some(e) = ents.store.get(target) else {
         return true;
     };
     let Some(m) = ents.mob(target) else {
         return true;
     };
+    let creative = source
+        .cause
+        .and_then(|c| ents.player(c))
+        .is_some_and(|p| p.game_mode == vanillite_config::GameMode::Creative);
     m.removed
+        || m.invulnerable && !types.is(kind, tag::BYPASSES_INVULNERABILITY) && !creative
         || types.is(kind, tag::IS_FIRE)
             && (e.kind().info().fire_immune
                 || m.effects.has(crate::effect::MobEffect::FIRE_RESISTANCE))
@@ -276,7 +283,7 @@ pub fn hurt_mob(
     // invulnerable after a hit), damage not caused by a living entity makes it teleport.
     let enderman_after = ents.mob(target).is_some_and(|m| m.kind == Kind::Enderman)
         && !env.types.is(source.kind, tag::IS_PROJECTILE)
-        && !invulnerable_to(ents, env, target, source.kind)
+        && !invulnerable_to(ents, env, target, &source)
         && !immune_to_damage(ents, env, target, &source);
     let took = hurt_mob_inner(level, ents, env, cx, target, source, amount);
     if enderman_after {
@@ -300,7 +307,7 @@ fn hurt_mob_inner(
     if ents.mob(target).is_some_and(|m| m.kind == Kind::ArmorStand) {
         return crate::decoration::stand::hurt(level, ents, env, cx, target, &source);
     }
-    if invulnerable_to(ents, env, target, kind) || immune_to_damage(ents, env, target, &source) {
+    if invulnerable_to(ents, env, target, &source) || immune_to_damage(ents, env, target, &source) {
         return false;
     }
     if ents.mob(target).is_some_and(|m| m.is_dead_or_dying()) {
@@ -399,6 +406,18 @@ fn hurt_mob_inner(
     if let Some(cause) = source.cause {
         let is_player = ents.player(cause).is_some();
         let living = is_player || ents.mob(cause).is_some();
+        // `resolvePlayerResponsibleForDamage`: a tame wolf's hit counts for its owner (none
+        // without an owner).
+        let wolf_owner = ents
+            .mob(cause)
+            .filter(|m| m.kind == Kind::Wolf && m.tame)
+            .map(|m| super::tame::owner_of(ents, m));
+        if let Some(owner) = wolf_owner
+            && let Some(m) = ents.mob_mut(target)
+        {
+            m.last_hurt_by_player = owner;
+            m.last_hurt_by_player_time = if owner.is_some() { 100 } else { 0 };
+        }
         if let Some(m) = ents.mob_mut(target) {
             if living {
                 m.last_hurt_by_mob = Some(cause);
@@ -971,6 +990,21 @@ fn die(
                     .map(|m| kinds::death_loot(m, killed_by_player))
             })
             .unwrap_or_default();
+        // `looting.json` `equipment_drops`: +0.01 per level for a killing player.
+        let looting = source
+            .cause
+            .and_then(|c| ents.player(c))
+            .and_then(|p| {
+                let d = crate::player::play::game_data()?;
+                let hand = p.inventory.equipment(crate::item::EquipmentSlot::MainHand);
+                Some(d.enchantment_level(hand, "minecraft:looting"))
+            })
+            .filter(|&l| l > 0)
+            .map_or(0.0, |l| {
+                #[allow(clippy::cast_precision_loss)]
+                let above = (l - 1) as f32;
+                0.01_f32 + 0.01 * above
+            });
         // `dropCustomDeathLoot` / `dropEquipment`: the equipment, the saddle and the
         // enderman's block.
         // `LivingEntity.dropEquipment` drops nothing; `Mob` and the players drop theirs.
@@ -978,7 +1012,7 @@ fn die(
             .mob_mut(target)
             .filter(|m| m.kind.family() != super::Family::Decor)
         {
-            super::equipment::death_drops(m, killed_by_player, &mut loot);
+            super::equipment::death_drops(m, killed_by_player, looting, &mut loot);
             if m.saddled
                 && let Some(saddle) = vanillite_data::registry::ITEM.id("minecraft:saddle")
             {

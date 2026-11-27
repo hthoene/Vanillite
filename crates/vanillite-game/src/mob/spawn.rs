@@ -7,7 +7,7 @@ use vanillite_base::random::{LegacyRandom, RandomSource};
 use vanillite_base::{BlockPos, ChunkPos, Vec3};
 use vanillite_chunk::HeightmapKind;
 use vanillite_data::block::{BlockState, flags, ids};
-use vanillite_data::entity::EntityTypeId;
+use vanillite_data::entity::{EntityTypeId, ids as entity_ids};
 use vanillite_world::entity::{EntityId, Rotation};
 
 use super::fam::{ExtraMob, GroupData, Relation, SpawnContext, SpawnReason};
@@ -1600,19 +1600,41 @@ pub fn is_valid_spawn(_level: &Level, state: BlockState, type_id: EntityTypeId) 
     valid_spawn_floor(state, type_id)
 }
 
-/// `BlockState.isValidSpawn` for a mob: a sturdy top face that is not too bright, except
-/// the blocks that never let mobs spawn on them.
+/// `BlockState.isValidSpawn` for a mob: a sturdy top face that is not too bright, except the
+/// blocks with their own rule in `Blocks` (`never`, `always`, `ocelotOrParrot`, ice for polar
+/// bears, magma for fire immune mobs).
 pub fn valid_spawn_floor(state: BlockState, type_id: EntityTypeId) -> bool {
     let name = state.block().name();
-    if name.ends_with("glass")
-        || name.ends_with("glass_pane")
-        || name.ends_with("leaves")
-        || name == "minecraft:barrier"
-        || name == "minecraft:bedrock"
-        || name.ends_with("ice")
-        || name == "minecraft:spawner"
+    let name = name.strip_prefix("minecraft:").unwrap_or(name);
+    // `Blocks::never`.
+    if matches!(
+        name,
+        "bedrock"
+            | "glass"
+            | "tinted_glass"
+            | "moving_piston"
+            | "barrier"
+            | "chorus_flower"
+            | "scaffolding"
+    ) || name.ends_with("_stained_glass")
+        || name.ends_with("trapdoor")
+        || name.ends_with("copper_grate")
     {
         return false;
+    }
+    // `Blocks::always`.
+    if matches!(
+        name,
+        "soul_sand" | "carved_pumpkin" | "jack_o_lantern" | "redstone_lamp" | "mud"
+    ) {
+        return true;
+    }
+    // `Blocks::ocelotOrParrot` (every leaves block).
+    if name.ends_with("leaves") {
+        return type_id == entity_ids::OCELOT || type_id == entity_ids::PARROT;
+    }
+    if name == "ice" || name == "frosted_ice" {
+        return type_id == entity_ids::POLAR_BEAR;
     }
     if state.block() == ids::MAGMA_BLOCK {
         return type_id.info().fire_immune;
