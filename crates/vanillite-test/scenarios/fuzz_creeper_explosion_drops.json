@@ -1,0 +1,109 @@
+{
+  "actions": [
+    {
+      "data": "402b79f4c2db47d7c04d673c34cabd4c4014ad13759182c000",
+      "entity": "p",
+      "op": "packet",
+      "packet": "move_player_pos",
+      "tick": 22,
+      "what": "MovePlayerPos { x: 13.738195504443793, y: -58.806524847978466, z: 5.1690195436537465, flags: MoveFlags { on_ground: false, horizontal_collision: false } }"
+    },
+    {
+      "data": "402bc7cb5ea24534c04e0000000000004014147a45435f5901",
+      "entity": "p",
+      "op": "packet",
+      "packet": "move_player_pos",
+      "tick": 23,
+      "what": "MovePlayerPos { x: 13.8902234623989, y: -60.0, z: 5.0199976751681215, flags: MoveFlags { on_ground: true, horizontal_collision: false } }"
+    }
+  ],
+  "description": "A creeper explodes next to a client player and a wolf; the dirt drops fly. Random parity scenario (#132), shrunk by `cargo xtask parity fuzz`.",
+  "difficulty": "hard",
+  "entities": [
+    {
+      "client": true,
+      "inventory": [
+        [
+          0,
+          "minecraft:wheat",
+          8
+        ],
+        [
+          1,
+          "minecraft:minecart",
+          1
+        ],
+        [
+          2,
+          "minecraft:cooked_beef",
+          4
+        ],
+        [
+          3,
+          "minecraft:iron_pickaxe",
+          1
+        ],
+        [
+          4,
+          "minecraft:torch",
+          16
+        ]
+      ],
+      "name": "p",
+      "pos": [
+        10.5,
+        -48.0,
+        7.5
+      ],
+      "rot": [
+        315.0,
+        0.0
+      ],
+      "type": "minecraft:player"
+    },
+    {
+      "name": "m0",
+      "pos": [
+        6.5,
+        -60,
+        8.5
+      ],
+      "rot": [
+        0.0,
+        0.0
+      ],
+      "seed": 854749,
+      "type": "minecraft:wolf"
+    },
+    {
+      "name": "m1",
+      "pos": [
+        11.5,
+        -60,
+        3.5
+      ],
+      "rot": [
+        270.0,
+        0.0
+      ],
+      "seed": 679532,
+      "type": "minecraft:creeper"
+    }
+  ],
+  "region": [
+    [
+      0,
+      -62,
+      0
+    ],
+    [
+      15,
+      -36,
+      15
+    ]
+  ],
+  "setup": [],
+  "ticks": 53,
+  "tier": "fast",
+  "time": 6000
+}

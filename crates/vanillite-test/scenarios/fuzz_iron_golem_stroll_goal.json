@@ -1,0 +1,84 @@
+{
+  "actions": [],
+  "description": "An iron golem outside a village near a client player that stands still. Random parity scenario (#132), shrunk by `cargo xtask parity fuzz`.",
+  "difficulty": "normal",
+  "entities": [
+    {
+      "client": true,
+      "food": 7,
+      "inventory": [
+        [
+          0,
+          "minecraft:cooked_beef",
+          4
+        ],
+        [
+          1,
+          "minecraft:stone_pickaxe",
+          1
+        ],
+        [
+          2,
+          "minecraft:torch",
+          16
+        ],
+        [
+          3,
+          "minecraft:iron_pickaxe",
+          1
+        ],
+        [
+          4,
+          "minecraft:bread",
+          8
+        ],
+        [
+          5,
+          "minecraft:torch",
+          16
+        ]
+      ],
+      "name": "p",
+      "pos": [
+        7.5,
+        -60.0,
+        14.5
+      ],
+      "rot": [
+        270.0,
+        0.0
+      ],
+      "type": "minecraft:player"
+    },
+    {
+      "name": "m0",
+      "pos": [
+        11.5,
+        -60,
+        11.5
+      ],
+      "rot": [
+        90.0,
+        0.0
+      ],
+      "seed": 766381,
+      "type": "minecraft:iron_golem"
+    }
+  ],
+  "region": [
+    [
+      0,
+      -62,
+      0
+    ],
+    [
+      15,
+      -36,
+      15
+    ]
+  ],
+  "setup": [],
+  "ticks": 58,
+  "tier": "fast",
+  "time": 6000
+}

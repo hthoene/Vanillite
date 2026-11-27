@@ -1,0 +1,109 @@
+{
+  "actions": [
+    {
+      "data": "4029b33333333336c04e0000000000003fd999999999999a03",
+      "entity": "p",
+      "op": "packet",
+      "packet": "move_player_pos",
+      "tick": 124,
+      "what": "MovePlayerPos { x: 12.850000000000005, y: -60.0, z: 0.4, flags: MoveFlags { on_ground: true, horizontal_collision: true } }"
+    },
+    {
+      "data": "000000030000000fc30107",
+      "entity": "p",
+      "op": "packet",
+      "packet": "player_action",
+      "tick": 129,
+      "what": "PlayerActionPacket { action: StartDestroyBlock, pos: BlockPos { x: 12, y: -61, z: 0 }, direction: 1, sequence: 7 }"
+    },
+    {
+      "data": "030000030000000fc30108",
+      "entity": "p",
+      "op": "packet",
+      "packet": "player_action",
+      "tick": 131,
+      "what": "PlayerActionPacket { action: StopDestroyBlock, pos: BlockPos { x: 12, y: -61, z: 0 }, direction: 1, sequence: 8 }"
+    }
+  ],
+  "description": "A client player that floated since its join lands and digs the grass block under it for 2 ticks. Random parity scenario (#132), shrunk by `cargo xtask parity fuzz`.",
+  "difficulty": "normal",
+  "entities": [
+    {
+      "client": true,
+      "inventory": [
+        [
+          0,
+          "minecraft:golden_apple",
+          2
+        ],
+        [
+          1,
+          "minecraft:shield",
+          1
+        ],
+        [
+          2,
+          "minecraft:oak_planks",
+          16
+        ],
+        [
+          3,
+          "minecraft:water_bucket",
+          1
+        ],
+        [
+          4,
+          "minecraft:golden_apple",
+          2
+        ],
+        [
+          5,
+          "minecraft:golden_apple",
+          2
+        ],
+        [
+          14,
+          "minecraft:shears",
+          1
+        ],
+        [
+          13,
+          "minecraft:bow",
+          1
+        ],
+        [
+          13,
+          "minecraft:bread",
+          8
+        ]
+      ],
+      "name": "p",
+      "pos": [
+        13.5,
+        -55.0,
+        6.5
+      ],
+      "rot": [
+        0.0,
+        0.0
+      ],
+      "type": "minecraft:player"
+    }
+  ],
+  "region": [
+    [
+      0,
+      -62,
+      0
+    ],
+    [
+      15,
+      -36,
+      15
+    ]
+  ],
+  "setup": [],
+  "ticks": 131,
+  "tier": "fast",
+  "time": 13000
+}

@@ -1,0 +1,9 @@
+{"format":1,
+"region":[[0,-62,0],[15,-36,15]],
+"palette":[
+"minecraft:dirt",
+"minecraft:grass_block[snowy=false]",
+"minecraft:air"],
+"frames":[
+{"tick":0,"blocks":[256,0,256,1,6400,2],"block_ticks":[],"fluid_ticks":[],"entities":[["minecraft:player",4623789442425946112,-4589730970243956736,4620974692658839552,0,0,0,{"name":"p","inv":[[0,"minecraft:cobblestone",32],[1,"minecraft:shears",1],[2,"minecraft:iron_sword",1],[3,"minecraft:ender_pearl",4]],"food":[19,1084227584],"rot":[1119092736,0,1119092736],"hp":1101004800}],["minecraft:slime",4624352392379367424,-4589730970243956736,4621537642612260864,0,0,0,{"name":"m0","rot":[1127481344,0,1127481344,1127481344],"hp":1098907648,"rng":141288797991709,"goals":[],"targets":[]}]],"level_rng":86990003003491},
+{"tick":1,"changes":[],"block_ticks":[],"fluid_ticks":[],"entities":[["minecraft:player",4623789442425946112,-4589730970243956736,4620974692658839552,0,0,0,{"name":"p","inv":[[0,"minecraft:cobblestone",32],[1,"minecraft:shears",1],[2,"minecraft:iron_sword",1],[3,"minecraft:ender_pearl",4]],"food":[19,1084227584],"rot":[1119092736,0,1119092736],"hp":1098907648}],["minecraft:slime",4624352475278512357,-4589730970243956736,4621530887721253348,4591879836267011959,-4633058300709086167,4590995859618555278,{"name":"m0","rot":[1127527552,0,1127527552,1127527552],"hp":1098907648,"rng":221930585854120,"goals":["CubeMobKeepOnJumpingGoal"],"targets":[]}]],"level_rng":86990003003491}]}

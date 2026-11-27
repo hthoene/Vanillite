@@ -1,7 +1,8 @@
 name: Nightly
 
 # Bulk parity tests (ignored tests: chunk goldens by seed, large scenario runs), release build,
-# fuzzing and the Minecraft version check. Runs on dev once a night and on demand.
+# fuzzing, random parity scenarios against Vanilla and the Minecraft version check. Runs on dev
+# once a night and on demand.
 on:
   schedule:
     - cron: "0 2 * * *"
@@ -10,6 +11,9 @@ on:
       fuzz_seconds:
         description: Fuzzing time per target in seconds
         default: "300"
+      parity_minutes:
+        description: Time for random parity scenarios in minutes
+        default: "40"
 
 env:
   CARGO_TERM_COLOR: always
@@ -125,3 +129,40 @@ jobs:
           path: |
             fuzz/artifacts
             fuzz/*.log
+
+  parity-fuzz:
+    name: Random parity scenarios
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: dev
+      - run: rustup toolchain install --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "25"
+      # The unpacked Mojang jar; recompiled from the pinned jar when missing.
+      - uses: actions/cache@v4
+        with:
+          path: target/vanilla
+          key: vanilla-jar-${{ hashFiles('data/vanilla/version.toml') }}
+      # New seeds every night; found divergences are shrunk and listed in the job summary
+      # (not a failure: known ones go into scenarios/divergences/ with their owner).
+      - name: Random scenarios with a packet-level player, compared with Vanilla
+        run: >-
+          cargo xtask parity fuzz --seed ${{ github.run_number }}000
+          --minutes ${{ inputs.parity_minutes || 40 }} --jobs 2
+      - name: Summary
+        if: always()
+        run: cat target/parity-fuzz/summary.md >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: parity-fuzz
+          path: |
+            target/parity-fuzz/found
+            target/parity-fuzz/summary.md

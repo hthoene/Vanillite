@@ -68,6 +68,10 @@ final class ScenarioEntities {
 
   /** The players removed from the chunk system, given back by {@link #release()}. */
   private final List<ServerPlayer> players = new ArrayList<>();
+  /** The packet-level players ({@code "client": true}), in join order. */
+  private final List<ServerPlayer> clients = new ArrayList<>();
+  /** Serverbound play packet ids by name. */
+  private Map<String, Integer> packetIds;
   /** Every scenario player, for their connection tick. */
   private final List<ServerPlayer> tickedPlayers = new ArrayList<>();
 
@@ -131,13 +135,177 @@ final class ScenarioEntities {
     // are the whole world, as in Vanillite's scenario world.
     level.getChunkSource().move(player);
     name(spec, player);
+    tickedPlayers.add(player);
+    if (!loadingPlayers) {
+      level.getChunkSource().chunkMap.getDistanceManager().removePlayer(SectionPos.of(player), player);
+      players.add(player);
+    }
+    if (spec.has("inventory")) {
+      for (com.google.gson.JsonElement e : spec.getAsJsonArray("inventory")) {
+        JsonArray entry = e.getAsJsonArray();
+        net.minecraft.world.item.Item item =
+            BuiltInRegistries.ITEM.getValue(Identifier.parse(entry.get(1).getAsString()));
+        player
+            .getInventory()
+            .setItem(
+                entry.get(0).getAsInt(),
+                new net.minecraft.world.item.ItemStack(item, entry.get(2).getAsInt()));
+      }
+    }
+    if (spec.has("food")) {
+      player.getFoodData().setFoodLevel(spec.get("food").getAsInt());
+    }
+    if (spec.has("client") && spec.get("client").getAsBoolean()) {
+      // The join of a client: the server teleports the player where it stands, the client
+      // accepts and reports the world loaded.
+      clients.add(player);
+      player.connection.teleport(p[0], p[1], p[2], rot(spec, 0), rot(spec, 1));
+      // A real client accepts after the server's first connection tick, which starts the
+      // movement checks from where the player stands (`resetPosition`).
+      player.connection.resetPosition();
+      untrack(player);
+    }
+  }
+
+  /** Client players that accepted their join teleport and reported the world loaded. */
+  private final java.util.Set<ServerPlayer> joined =
+      java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+
+  /**
+   * Keeps a client player out of the chunk tickets like the other scenario players, while its
+   * moves still update its section ({@code ChunkMap.move} removes it from its last chunk's
+   * players, which must exist): undoes what a move added before the tickets are processed.
+   */
+  @SuppressWarnings("unchecked")
+  private void untrack(ServerPlayer p) {
     if (loadingPlayers) {
-      tickedPlayers.add(player);
       return;
     }
-    level.getChunkSource().chunkMap.getDistanceManager().removePlayer(SectionPos.of(player), player);
-    tickedPlayers.add(player);
-    players.add(player);
+    net.minecraft.server.level.DistanceManager dm =
+        level.getChunkSource().chunkMap.getDistanceManager();
+    it.unimi.dsi.fastutil.longs.Long2ObjectMap<it.unimi.dsi.fastutil.objects.ObjectSet<ServerPlayer>>
+        perChunk =
+            (it.unimi.dsi.fastutil.longs.Long2ObjectMap<
+                    it.unimi.dsi.fastutil.objects.ObjectSet<ServerPlayer>>)
+                field(net.minecraft.server.level.DistanceManager.class, dm, "playersPerChunk");
+    long chunk = p.getLastSectionPos().chunk().pack();
+    it.unimi.dsi.fastutil.objects.ObjectSet<ServerPlayer> players = perChunk.get(chunk);
+    if (players != null && players.contains(p)) {
+      dm.removePlayer(p.getLastSectionPos(), p);
+    }
+    perChunk.computeIfAbsent(chunk, k -> new it.unimi.dsi.fastutil.objects.ObjectOpenHashSet<>());
+  }
+
+  /** Hands a packet to the player's packet listener, as the connection would. */
+  private void handle(
+      ServerPlayer player,
+      net.minecraft.network.protocol.Packet<
+              ? super net.minecraft.network.protocol.game.ServerGamePacketListener>
+          packet) {
+    packet.handle(player.connection);
+    untrack(player);
+    Connection connection =
+        (Connection)
+            field(
+                net.minecraft.server.network.ServerCommonPacketListenerImpl.class,
+                player.connection,
+                "connection");
+    if (!connection.isConnected()) {
+      throw new IllegalStateException(
+          "a client player left: " + player.getPlainTextName() + " after " + packet);
+    }
+  }
+
+  private static Object field(Class<?> c, Object o, String name) {
+    try {
+      Field f = c.getDeclaredField(name);
+      f.setAccessible(true);
+      return f.get(o);
+    } catch (ReflectiveOperationException ex) {
+      throw new IllegalStateException(ex);
+    }
+  }
+
+  /** The start of a client tick: every client accepts the teleport the server waits for. */
+  void clientBegin() {
+    for (ServerPlayer p : clients) {
+      untrack(p);
+      Class<?> c = net.minecraft.server.network.ServerGamePacketListenerImpl.class;
+      net.minecraft.world.phys.Vec3 to =
+          (net.minecraft.world.phys.Vec3) field(c, p.connection, "awaitingPositionFromClient");
+      if (to != null) {
+        int id = (Integer) field(c, p.connection, "awaitingTeleport");
+        handle(
+            p,
+            new net.minecraft.network.protocol.game.ServerboundAcceptTeleportationPacket(
+                id, to.x, to.y, to.z, p.getYRot(), p.getXRot()));
+      }
+    }
+    for (ServerPlayer p : clients) {
+      if (joined.add(p)) {
+        handle(p, new net.minecraft.network.protocol.game.ServerboundPlayerLoadedPacket());
+      }
+    }
+  }
+
+  /** The end of a client tick: {@code client_tick_end} of every client. */
+  void clientEnd() {
+    for (ServerPlayer p : clients) {
+      handle(p, net.minecraft.network.protocol.game.ServerboundClientTickEndPacket.INSTANCE);
+    }
+  }
+
+  /**
+   * The {@code packet} action: the body decoded by Vanilla's serverbound play codec and handled
+   * by the player's packet listener. With {@code target}, the leading VarInt of the body is the
+   * network id of that scenario entity.
+   */
+  void packet(JsonObject action) {
+    ServerPlayer p = (ServerPlayer) byName.get(action.get("entity").getAsString());
+    if (p == null || !clients.contains(p)) {
+      throw new IllegalArgumentException("packets need a client player: " + action);
+    }
+    if (packetIds == null) {
+      packetIds = new java.util.HashMap<>();
+      net.minecraft.network.protocol.game.GameProtocols.SERVERBOUND_TEMPLATE
+          .details()
+          .listPackets((type, id) -> packetIds.put(type.id().getPath(), id));
+    }
+    String name = action.get("packet").getAsString();
+    Integer id = packetIds.get(name);
+    if (id == null) {
+      throw new IllegalArgumentException("unknown serverbound play packet " + name);
+    }
+    String hex = action.has("data") ? action.get("data").getAsString() : "";
+    byte[] body = java.util.HexFormat.of().parseHex(hex);
+    io.netty.buffer.ByteBuf buf = io.netty.buffer.Unpooled.buffer();
+    net.minecraft.network.VarInt.write(buf, id);
+    if (action.has("target")) {
+      Entity target = byName.get(action.get("target").getAsString());
+      if (target == null) {
+        throw new IllegalArgumentException("no scenario entity " + action.get("target"));
+      }
+      int skip = 0;
+      while ((body[skip] & 0x80) != 0) {
+        skip++;
+      }
+      net.minecraft.network.VarInt.write(buf, target.getId());
+      buf.writeBytes(body, skip + 1, body.length - skip - 1);
+    } else {
+      buf.writeBytes(body);
+    }
+    net.minecraft.network.ProtocolInfo<net.minecraft.network.protocol.game.ServerGamePacketListener>
+        info =
+            net.minecraft.network.protocol.game.GameProtocols.SERVERBOUND_TEMPLATE.bind(
+                net.minecraft.network.RegistryFriendlyByteBuf.decorator(server.registryAccess()),
+                p.connection);
+    net.minecraft.network.protocol.Packet<
+            ? super net.minecraft.network.protocol.game.ServerGamePacketListener>
+        packet = info.codec().decode(buf);
+    if (buf.isReadable()) {
+      throw new IllegalArgumentException(name + " has bytes left: " + hex);
+    }
+    handle(p, packet);
   }
 
   /**
@@ -191,7 +359,22 @@ final class ScenarioEntities {
   /** {@code ServerPlayer.doTick} of the players, as their connections would. */
   void tickPlayers() {
     for (ServerPlayer p : tickedPlayers) {
-      if (!p.isRemoved()) {
+      if (p.isRemoved()) {
+        continue;
+      }
+      if (clients.contains(p)) {
+        // The whole connection tick of a client (`tickPlayer`: `resetPosition`, `doTick`,
+        // back to the last accepted position); the client answers the keep-alive at once.
+        p.connection.tick();
+        untrack(p);
+        Class<?> c = net.minecraft.server.network.ServerCommonPacketListenerImpl.class;
+        if ((Boolean) field(c, p.connection, "keepAlivePending")) {
+          handle(
+              p,
+              new net.minecraft.network.protocol.common.ServerboundKeepAlivePacket(
+                  (Long) field(c, p.connection, "keepAliveChallenge")));
+        }
+      } else {
         p.doTick();
       }
     }
@@ -403,6 +586,29 @@ final class ScenarioEntities {
           .append("\",\"count\":")
           .append(item.getItem().getCount());
     }
+    if (e instanceof ServerPlayer client && clients.contains(client)) {
+      sb.append(",\"inv\":[");
+      boolean first = true;
+      for (int slot = 0; slot <= 40; slot++) {
+        net.minecraft.world.item.ItemStack stack = client.getInventory().getItem(slot);
+        if (!stack.isEmpty()) {
+          sb.append(first ? "" : ",")
+              .append('[')
+              .append(slot)
+              .append(",\"")
+              .append(BuiltInRegistries.ITEM.getKey(stack.getItem()))
+              .append("\",")
+              .append(stack.getCount())
+              .append(']');
+          first = false;
+        }
+      }
+      sb.append("],\"food\":[")
+          .append(client.getFoodData().getFoodLevel())
+          .append(',')
+          .append(Float.floatToRawIntBits(client.getFoodData().getSaturationLevel()))
+          .append(']');
+    }
     if (playerState && e instanceof Player player) {
       sb.append(",\"food\":[")
           .append(player.getFoodData().getFoodLevel())
@@ -451,10 +657,12 @@ final class ScenarioEntities {
           .append(',')
           .append(Float.floatToRawIntBits(l.getXRot()))
           .append(',')
-          .append(Float.floatToRawIntBits(l.getYHeadRot()))
-          .append(',')
-          .append(Float.floatToRawIntBits(l.yBodyRot))
-          .append("],\"hp\":")
+          .append(Float.floatToRawIntBits(l.getYHeadRot()));
+      // The body rotation of a client's player is the client's own look (not synchronised).
+      if (!(e instanceof ServerPlayer client && clients.contains(client))) {
+        sb.append(',').append(Float.floatToRawIntBits(l.yBodyRot));
+      }
+      sb.append("],\"hp\":")
           .append(Float.floatToRawIntBits(l.getHealth()));
       if (l.deathTime > 0) {
         sb.append(",\"death\":").append(l.deathTime);

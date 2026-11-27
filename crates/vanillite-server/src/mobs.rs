@@ -440,212 +440,18 @@ impl WorldMobs {
             );
             let level: &Level = level;
             for (player, action) in pending {
-                let usable = ents.player(player).is_some_and(|p| {
-                    p.game_mode != GameMode::Spectator && !p.survival.is_dead_or_dying()
-                });
-                match action {
-                    EntityAction::Attack(network_id) => {
-                        if !usable {
-                            continue;
-                        }
-                        let Some(target) = in_reach(&ents, player, network_id) else {
-                            continue;
-                        };
-                        // The part the player hit takes the damage (`EnderDragon.hurt(part)`).
-                        if let Some(i) = dragon::part_of(&ents, target, network_id)
-                            && let Some(s) = ents.mob_mut(target).and_then(|m| m.boss.dragon_mut())
-                        {
-                            s.hit_part = Some(i);
-                        }
-                        item_use::attack_entity(
-                            level,
-                            &mut ents,
-                            &mut env,
-                            &mut self.cx,
-                            player,
-                            target,
-                        );
-                    }
-                    EntityAction::Interact {
-                        entity,
-                        hand,
-                        sneaking,
-                        location,
-                    } => {
-                        let Some(target) = in_reach(&ents, player, entity) else {
-                            continue;
-                        };
-                        // `handleInteract`: the stack before the interaction for
-                        // `player_interacted_with_entity`.
-                        let interacted = TriggerKind::PLAYER_INTERACTED_WITH_ENTITY;
-                        let used = view::listens(&ents, player, interacted)
-                            .then(|| animal::held(&ents, player, hand));
-                        let r = if ents
-                            .store
-                            .get(target)
-                            .is_some_and(|e| e.kind() == ids::LEASH_KNOT)
-                        {
-                            knot_interact(&mut ents, &mut env, &mut self.cx, player, target)
-                        } else if ents.decor(target).is_some() {
-                            let spectator = ents
-                                .player(player)
-                                .is_none_or(|p| p.game_mode == GameMode::Spectator);
-                            if spectator {
-                                animal::Interaction::Pass
-                            } else {
-                                vanillite_game::decoration::interact(
-                                    level,
-                                    &mut ents,
-                                    &mut env,
-                                    &mut self.cx,
-                                    player,
-                                    target,
-                                    hand,
-                                    sneaking,
-                                )
-                            }
-                        } else if ents.mob(target).is_some_and(|m| {
-                            m.kind == vanillite_game::mob::Kind::ArmorStand && m.is_alive()
-                        }) && let r @ (animal::Interaction::Success
-                        | animal::Interaction::Consume) =
-                            vanillite_game::decoration::stand::interact(
-                                &mut ents, &mut env, player, target, hand, location,
-                            )
-                        {
-                            r
-                        } else {
-                            animal::interact_on(
-                                level,
-                                &mut ents,
-                                &mut env,
-                                &mut self.cx,
-                                player,
-                                target,
-                                hand,
-                                sneaking,
-                            )
-                        };
-                        if r.consumes()
-                            && let Some(used) = used
-                        {
-                            view::fire(&mut ents, player, interacted, |ents| {
-                                Event::EntityItem(interacted, view::snapshot(ents, target), used)
-                            });
-                        }
-                        if r == animal::Interaction::Success
-                            && let Some(p) = ents.player_mut(player)
-                        {
-                            // `swingAndResetAttackStrength`.
-                            p.survival.attack_ticker = 0;
-                        }
-                    }
-                    EntityAction::UseItem(hand) => {
-                        if usable {
-                            item_use::use_item(
-                                level,
-                                &mut ents,
-                                &mut env,
-                                &mut self.cx,
-                                &network_ids,
-                                player,
-                                hand,
-                            );
-                        }
-                    }
-                    EntityAction::UseItemOn {
-                        hand,
-                        pos,
-                        face,
-                        location,
-                    } => {
-                        if usable {
-                            item_use::use_item_on(
-                                level,
-                                &mut ents,
-                                &mut env,
-                                &network_ids,
-                                player,
-                                hand,
-                                pos,
-                                face,
-                                location,
-                            );
-                        }
-                    }
-                    EntityAction::StartFallFlying => {
-                        if usable {
-                            vanillite_game::elytra::start_fall_flying(&mut ents, player);
-                        }
-                    }
-                    EntityAction::Stab => {
-                        if usable {
-                            vanillite_game::spear::player_stab(
-                                level,
-                                &mut ents,
-                                &mut env,
-                                &mut self.cx,
-                                player,
-                            );
-                        }
-                    }
-                    EntityAction::ReleaseUseItem => {
-                        vanillite_game::player::using::release(
-                            &mut ents,
-                            &mut env,
-                            &network_ids,
-                            player,
-                        );
-                    }
-                    EntityAction::Spectate(network_id) => {
-                        if let Some(target) = in_reach(&ents, player, network_id) {
-                            crate::spectator::spectate(&mut ents, &level.border, player, target);
-                        }
-                    }
-                    EntityAction::PickItem { entity, .. } => {
-                        pick_item_from_entity(&mut ents, player, entity);
-                    }
-                    EntityAction::OpenVehicleInventory => {
-                        // `openCustomInventoryScreen` of a chest boat or mount the player
-                        // rides.
-                        if let Some(v) = ents.vehicle_of(player) {
-                            if ents.boat(v).is_some_and(|b| b.kind.chest) {
-                                minecart::open_container(
-                                    &mut ents,
-                                    &mut env,
-                                    &mut self.cx,
-                                    player,
-                                    v,
-                                );
-                            } else if let Some(request) =
-                                vanillite_game::menu::mount::request(&ents, v, player)
-                            {
-                                self.cx.menus.push(request);
-                            }
-                        }
-                    }
-                }
+                player_entity_action(
+                    level,
+                    &mut ents,
+                    &mut env,
+                    &mut self.cx,
+                    &network_ids,
+                    player,
+                    action,
+                );
             }
             for (player, input) in inputs {
-                if let Some((pos, y_rot, x_rot, on_ground)) = input.moved {
-                    riding::move_vehicle(
-                        level,
-                        &mut ents,
-                        &mut self.cx,
-                        player,
-                        pos,
-                        y_rot,
-                        x_rot,
-                        on_ground,
-                    );
-                }
-                riding::paddle_boat(&mut ents, player, input.paddles.0, input.paddles.1);
-                if let Some(strength) = input.jump {
-                    riding::riding_jump(&mut ents, &mut env, player, strength);
-                }
-                // `wantsToStopRiding`: sneaking gets a player off its vehicle.
-                if input.input.shift && ents.vehicle_of(player).is_some() {
-                    riding::stop_riding(&mut ents, &mut env, player);
-                }
+                player_vehicle_input(level, &mut ents, &mut env, &mut self.cx, player, input);
             }
         }
         level.entities = ents;
@@ -1618,6 +1424,179 @@ fn environment(
         day_count,
         sea_level: sea_level.unwrap_or(63),
         ..Environment::overworld(day, w.rain(), w.thunder())
+    }
+}
+
+/// One attack, interaction, entity item use, spectate or pick of a player
+/// (`handleAttack`, `handleInteract`, `handleUseItem`, ...), as [`WorldMobs::player_actions`]
+/// runs it. The scenario harness drives its packet-level players through it too.
+#[allow(clippy::too_many_arguments)]
+pub fn player_entity_action(
+    level: &Level,
+    ents: &mut Entities,
+    env: &mut vanillite_game::survival::player::Env<'_>,
+    cx: &mut MobContext,
+    network_ids: &Arc<vanillite_world::entity::NetworkIds>,
+    player: EntityId,
+    action: EntityAction,
+) {
+    let usable = ents
+        .player(player)
+        .is_some_and(|p| p.game_mode != GameMode::Spectator && !p.survival.is_dead_or_dying());
+    match action {
+        EntityAction::Attack(network_id) => {
+            if !usable {
+                return;
+            }
+            let Some(target) = in_reach(ents, player, network_id) else {
+                return;
+            };
+            // The part the player hit takes the damage (`EnderDragon.hurt(part)`).
+            if let Some(i) = dragon::part_of(ents, target, network_id)
+                && let Some(s) = ents.mob_mut(target).and_then(|m| m.boss.dragon_mut())
+            {
+                s.hit_part = Some(i);
+            }
+            item_use::attack_entity(level, ents, env, cx, player, target);
+        }
+        EntityAction::Interact {
+            entity,
+            hand,
+            sneaking,
+            location,
+        } => {
+            let Some(target) = in_reach(ents, player, entity) else {
+                return;
+            };
+            // `handleInteract`: the stack before the interaction for
+            // `player_interacted_with_entity`.
+            let interacted = TriggerKind::PLAYER_INTERACTED_WITH_ENTITY;
+            let used =
+                view::listens(ents, player, interacted).then(|| animal::held(ents, player, hand));
+            let r = if ents
+                .store
+                .get(target)
+                .is_some_and(|e| e.kind() == ids::LEASH_KNOT)
+            {
+                knot_interact(ents, env, cx, player, target)
+            } else if ents.decor(target).is_some() {
+                let spectator = ents
+                    .player(player)
+                    .is_none_or(|p| p.game_mode == GameMode::Spectator);
+                if spectator {
+                    animal::Interaction::Pass
+                } else {
+                    vanillite_game::decoration::interact(
+                        level, ents, env, cx, player, target, hand, sneaking,
+                    )
+                }
+            } else if ents
+                .mob(target)
+                .is_some_and(|m| m.kind == vanillite_game::mob::Kind::ArmorStand && m.is_alive())
+                && let r @ (animal::Interaction::Success | animal::Interaction::Consume) =
+                    vanillite_game::decoration::stand::interact(
+                        ents, env, player, target, hand, location,
+                    )
+            {
+                r
+            } else {
+                animal::interact_on(level, ents, env, cx, player, target, hand, sneaking)
+            };
+            if r.consumes()
+                && let Some(used) = used
+            {
+                view::fire(ents, player, interacted, |ents| {
+                    Event::EntityItem(interacted, view::snapshot(ents, target), used)
+                });
+            }
+            if r == animal::Interaction::Success
+                && let Some(p) = ents.player_mut(player)
+            {
+                // `swingAndResetAttackStrength`.
+                p.survival.attack_ticker = 0;
+            }
+        }
+        EntityAction::UseItem(hand) => {
+            if usable {
+                item_use::use_item(level, ents, env, cx, network_ids, player, hand);
+            }
+        }
+        EntityAction::UseItemOn {
+            hand,
+            pos,
+            face,
+            location,
+        } => {
+            if usable {
+                item_use::use_item_on(
+                    level,
+                    ents,
+                    env,
+                    network_ids,
+                    player,
+                    hand,
+                    pos,
+                    face,
+                    location,
+                );
+            }
+        }
+        EntityAction::StartFallFlying => {
+            if usable {
+                vanillite_game::elytra::start_fall_flying(ents, player);
+            }
+        }
+        EntityAction::Stab => {
+            if usable {
+                vanillite_game::spear::player_stab(level, ents, env, cx, player);
+            }
+        }
+        EntityAction::ReleaseUseItem => {
+            vanillite_game::player::using::release(ents, env, network_ids, player);
+        }
+        EntityAction::Spectate(network_id) => {
+            if let Some(target) = in_reach(ents, player, network_id) {
+                crate::spectator::spectate(ents, &level.border, player, target);
+            }
+        }
+        EntityAction::PickItem { entity, .. } => {
+            pick_item_from_entity(ents, player, entity);
+        }
+        EntityAction::OpenVehicleInventory => {
+            // `openCustomInventoryScreen` of a chest boat or mount the player
+            // rides.
+            if let Some(v) = ents.vehicle_of(player) {
+                if ents.boat(v).is_some_and(|b| b.kind.chest) {
+                    minecart::open_container(ents, env, cx, player, v);
+                } else if let Some(request) = vanillite_game::menu::mount::request(ents, v, player)
+                {
+                    cx.menus.push(request);
+                }
+            }
+        }
+    }
+}
+
+/// The vehicle input of a player since the last tick (`handleMoveVehicle`,
+/// `handlePaddleBoat`, riding jumps, sneaking off a vehicle).
+pub fn player_vehicle_input(
+    level: &Level,
+    ents: &mut Entities,
+    env: &mut vanillite_game::survival::player::Env<'_>,
+    cx: &mut MobContext,
+    player: EntityId,
+    input: VehicleInput,
+) {
+    if let Some((pos, y_rot, x_rot, on_ground)) = input.moved {
+        riding::move_vehicle(level, ents, cx, player, pos, y_rot, x_rot, on_ground);
+    }
+    riding::paddle_boat(ents, player, input.paddles.0, input.paddles.1);
+    if let Some(strength) = input.jump {
+        riding::riding_jump(ents, env, player, strength);
+    }
+    // `wantsToStopRiding`: sneaking gets a player off its vehicle.
+    if input.input.shift && ents.vehicle_of(player).is_some() {
+        riding::stop_riding(ents, env, player);
     }
 }
 

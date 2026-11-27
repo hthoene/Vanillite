@@ -1,0 +1,3 @@
+tick = 72
+cause = "Vanilla turns the player to the rotation of use_item first (handleUseItem absSnapRotationTo), Vanillite throws with the old rotation"
+owner = "network-developer #132"

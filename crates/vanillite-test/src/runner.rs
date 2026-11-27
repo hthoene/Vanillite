@@ -36,6 +36,7 @@ pub fn record(
     let mut trace = Trace::new(scenario.min, scenario.max);
     observe(world.as_mut(), scenario, &mut trace, 0)?;
     for tick in 1..=scenario.ticks {
+        world.client_begin()?;
         let mut acted = false;
         for op in scenario.actions.iter().filter(|a| a.tick == tick) {
             apply_in(world.as_mut(), scenario, op, true)?;
@@ -44,6 +45,7 @@ pub fn record(
         if acted {
             world.settle_light();
         }
+        world.client_end()?;
         world.step();
         observe(world.as_mut(), scenario, &mut trace, tick)?;
     }
@@ -94,6 +96,9 @@ fn apply(
     if let Some(click) = &op.player_use {
         return world.player_use(click);
     }
+    if let Some(packet) = &op.packet {
+        return world.packet(packet);
+    }
     let updates = match op.kind {
         OpKind::Set => false,
         OpKind::Place => true,
@@ -107,6 +112,7 @@ fn apply(
         OpKind::Use | OpKind::Attack => {
             return Err("use without its click".to_owned());
         }
+        OpKind::Packet => return Err("packet without its packet".to_owned()),
         OpKind::Force | OpKind::Unforce => {
             return world.set_forced(&op.chunks, op.kind == OpKind::Force);
         }

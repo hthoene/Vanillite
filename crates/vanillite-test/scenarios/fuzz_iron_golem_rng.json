@@ -1,0 +1,93 @@
+{
+  "actions": [],
+  "description": "An iron golem and a slime near a client player that stands still. Random parity scenario (#132), shrunk by `cargo xtask parity fuzz`.",
+  "difficulty": "normal",
+  "entities": [
+    {
+      "client": true,
+      "food": 11,
+      "inventory": [
+        [
+          0,
+          "minecraft:rail",
+          8
+        ],
+        [
+          1,
+          "minecraft:ender_pearl",
+          4
+        ],
+        [
+          2,
+          "minecraft:arrow",
+          16
+        ],
+        [
+          3,
+          "minecraft:arrow",
+          16
+        ],
+        [
+          4,
+          "minecraft:oak_planks",
+          16
+        ]
+      ],
+      "name": "p",
+      "pos": [
+        6.5,
+        -60.0,
+        1.5
+      ],
+      "rot": [
+        0.0,
+        0.0
+      ],
+      "type": "minecraft:player"
+    },
+    {
+      "name": "m0",
+      "pos": [
+        10.5,
+        -60,
+        0.5
+      ],
+      "rot": [
+        270.0,
+        0.0
+      ],
+      "seed": 356705,
+      "type": "minecraft:iron_golem"
+    },
+    {
+      "name": "m1",
+      "pos": [
+        3.5,
+        -60,
+        3.5
+      ],
+      "rot": [
+        180.0,
+        0.0
+      ],
+      "seed": 140643,
+      "type": "minecraft:slime"
+    }
+  ],
+  "region": [
+    [
+      0,
+      -62,
+      0
+    ],
+    [
+      15,
+      -36,
+      15
+    ]
+  ],
+  "setup": [],
+  "ticks": 5,
+  "tier": "fast",
+  "time": 13000
+}

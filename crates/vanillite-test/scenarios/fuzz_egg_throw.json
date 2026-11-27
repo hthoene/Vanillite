@@ -1,0 +1,86 @@
+{
+  "actions": [
+    {
+      "data": "0002",
+      "entity": "p",
+      "op": "packet",
+      "packet": "set_carried_item",
+      "tick": 19,
+      "what": "SetCarriedItem { slot: 2 }"
+    },
+    {
+      "data": "000142b40000c1900000",
+      "entity": "p",
+      "op": "packet",
+      "packet": "use_item",
+      "tick": 19,
+      "what": "UseItem { hand: MainHand, sequence: 1, y_rot: 90.0, x_rot: -18.0 }"
+    }
+  ],
+  "description": "A client player throws an egg (use_item). Random parity scenario (#132), shrunk by `cargo xtask parity fuzz`.",
+  "difficulty": "normal",
+  "entities": [
+    {
+      "client": true,
+      "inventory": [
+        [
+          0,
+          "minecraft:oak_planks",
+          16
+        ],
+        [
+          1,
+          "minecraft:leather_boots",
+          1
+        ],
+        [
+          2,
+          "minecraft:egg",
+          16
+        ],
+        [
+          3,
+          "minecraft:cobblestone",
+          32
+        ],
+        [
+          4,
+          "minecraft:minecart",
+          1
+        ],
+        [
+          24,
+          "minecraft:leather_boots",
+          1
+        ]
+      ],
+      "name": "p",
+      "pos": [
+        5.5,
+        -55.0,
+        4.5
+      ],
+      "rot": [
+        90.0,
+        0.0
+      ],
+      "type": "minecraft:player"
+    }
+  ],
+  "region": [
+    [
+      0,
+      -62,
+      0
+    ],
+    [
+      15,
+      -36,
+      15
+    ]
+  ],
+  "setup": [],
+  "ticks": 19,
+  "tier": "fast",
+  "time": 13000
+}
