@@ -1047,17 +1047,19 @@ fn spawn_category_for_chunk<R: Round>(
     }
     let start = BlockPos::new(x0, y, z0);
     #[allow(clippy::cast_sign_loss)]
-    let conductor = match here.as_deref().and_then(|c| {
-        let sections = c.chunk.sections();
+    let in_chunk = here.as_deref().and_then(|c| {
         let index = usize::try_from((y >> 4) - c.chunk.min_section()).ok()?;
-        sections.get(index)
-    }) {
-        // A section of conductors only answers without reading its blocks.
-        Some(section) if section.summary().all_conductors() => true,
-        Some(section) => {
-            BlockState(section.block((x0 & 15) as u32, (y & 15) as u32, (z0 & 15) as u32))
-                .has(flags::REDSTONE_CONDUCTOR)
-        }
+        (index < c.chunk.sections().len()).then_some((c, index))
+    });
+    let conductor = match in_chunk {
+        // A section of conductors only answers without visiting it.
+        Some((c, index)) if c.chunk.section_all_conductors(index) => true,
+        Some((c, index)) => BlockState(c.chunk.sections()[index].block(
+            (x0 & 15) as u32,
+            (y & 15) as u32,
+            (z0 & 15) as u32,
+        ))
+        .has(flags::REDSTONE_CONDUCTOR),
         None => round.level().block(start).has(flags::REDSTONE_CONDUCTOR),
     };
     if conductor {

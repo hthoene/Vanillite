@@ -131,13 +131,10 @@ impl Level {
             };
             let sections = c.chunk.sections();
             if left == 0 {
-                let Some(offset) = sections.get(next..).and_then(|rest| {
-                    rest.iter()
-                        .position(|section| section.summary().is_randomly_ticking())
-                }) else {
+                let Some(found) = c.chunk.next_randomly_ticking(next) else {
                     break;
                 };
-                index = next + offset;
+                index = found;
                 next = index + 1;
                 left = speed;
             }
