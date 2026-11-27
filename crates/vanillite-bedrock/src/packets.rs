@@ -93,6 +93,8 @@ pub mod id {
     pub const SET_SCORE: u32 = 108;
     pub const OPEN_SIGN: u32 = 202;
     pub const PLAYER_ENCHANT_OPTIONS: u32 = 146;
+    pub const LECTERN_UPDATE: u32 = 125;
+    pub const PLAYER_TOGGLE_CRAFTER_SLOT_REQUEST: u32 = 306;
 }
 
 /// Inventory window ids.
@@ -137,6 +139,11 @@ pub mod container {
     pub const CARTOGRAPHY_ADDITIONAL: u8 = 56;
     pub const SMITHING_TEMPLATE: u8 = 61;
     pub const CRAFTER: u8 = 62;
+    pub const BEACON_PAYMENT: u8 = 8;
+    pub const HORSE_EQUIP: u8 = 27;
+    pub const LOOM_INPUT: u8 = 41;
+    pub const LOOM_DYE: u8 = 42;
+    pub const LOOM_MATERIAL: u8 = 43;
 }
 
 /// `ContainerType` of `container_open`.
@@ -159,6 +166,10 @@ pub mod container_type {
     pub const CARTOGRAPHY: i8 = 30;
     pub const SMITHING_TABLE: i8 = 33;
     pub const CRAFTER: i8 = 36;
+    pub const HORSE: i8 = 12;
+    pub const BEACON: i8 = 13;
+    pub const LOOM: i8 = 24;
+    pub const LECTERN: i8 = 25;
 }
 
 /// `player_action` / block action types used here.
@@ -258,6 +269,15 @@ pub mod meta {
     pub const FLAG_IGNITED: u32 = 10;
     pub const VARIANT: u32 = 2;
     pub const FUSE: u32 = 55;
+    pub const LEASH_HOLDER: u32 = 37;
+    pub const CONTAINER_TYPE: u32 = 44;
+    pub const CONTAINER_SIZE: u32 = 45;
+    pub const CONTAINER_STRENGTH_MODIFIER: u32 = 46;
+    pub const STRENGTH: u32 = 75;
+    pub const STRENGTH_MAX: u32 = 76;
+    pub const FLAG_TAMED: u32 = 28;
+    pub const FLAG_LEASHED: u32 = 30;
+    pub const FLAG_CHESTED: u32 = 36;
 }
 
 /// Entity metadata, written in key order.
@@ -1066,6 +1086,15 @@ pub enum StackAction {
     },
     /// A grindstone craft.
     CraftGrindstone,
+    /// The beacon's confirm button: Bedrock effect ids (0: none).
+    BeaconPayment {
+        primary: i32,
+        secondary: i32,
+    },
+    /// A loom craft: the Bedrock banner pattern code (`cre`, `bo`, ...), zero padded.
+    CraftLoom {
+        pattern: [u8; 4],
+    },
     /// Tool durability prediction of block breaking (nothing to do).
     MineBlock,
     /// The deprecated list of crafting results (nothing to do).
@@ -1152,11 +1181,10 @@ fn read_stack_action(r: &mut Reader<'_>, v: &Version) -> Result<StackAction> {
         }
         // Lab table combine.
         7 => StackAction::Unsupported,
-        8 => {
-            r.vari32()?;
-            r.vari32()?;
-            StackAction::Unsupported
-        }
+        8 => StackAction::BeaconPayment {
+            primary: r.vari32()?,
+            secondary: r.vari32()?,
+        },
         9 => {
             r.vari32()?;
             r.vari32()?;
@@ -1191,9 +1219,18 @@ fn read_stack_action(r: &mut Reader<'_>, v: &Version) -> Result<StackAction> {
             StackAction::CraftGrindstone
         }
         15 => {
-            r.string("loom pattern", 256)?;
+            let code = r.string("loom pattern", 256)?;
             r.u8()?;
-            StackAction::Unsupported
+            let mut pattern = [0u8; 4];
+            match code.as_bytes() {
+                b if b.len() <= 4 => {
+                    for (p, c) in pattern.iter_mut().zip(b) {
+                        *p = *c;
+                    }
+                    StackAction::CraftLoom { pattern }
+                }
+                _ => StackAction::Unsupported,
+            }
         }
         16 => {
             r.string("reserved id", 256)?;
@@ -1697,6 +1734,25 @@ pub fn read_interact(body: &[u8]) -> Result<(u8, u64)> {
     Ok((r.u8()?, r.varu64()?))
 }
 
+/// Reads `lectern_update`: the page (spread of two pages) and the lectern's position.
+pub fn read_lectern_update(body: &[u8]) -> Result<(u8, [i32; 3])> {
+    let mut r = Reader::new(body);
+    let page = r.u8()?;
+    let _count = r.u8()?;
+    Ok((page, read_block_pos(&mut r)?))
+}
+
+/// Reads `player_toggle_crafter_slot_request`: the crafter, the slot and whether it is now
+/// disabled.
+pub fn read_toggle_crafter_slot(body: &[u8]) -> Result<([i32; 3], u8, bool)> {
+    let mut r = Reader::new(body);
+    let mut pos = [0i32; 3];
+    for p in &mut pos {
+        *p = i32::from_le_bytes(r.array::<4>()?);
+    }
+    Ok((pos, r.u8()?, r.bool()?))
+}
+
 /// Reads `block_pick_request`: the block position.
 pub fn read_block_pick(body: &[u8]) -> Result<[i32; 3]> {
     read_block_pos(&mut Reader::new(body))
@@ -2124,4 +2180,30 @@ pub fn read_book_edit(body: &[u8]) -> Result<(i32, BookAction)> {
         _ => return Err(io::Error::Invalid("book edit action")),
     };
     Ok((slot, action))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_beacon_and_loom_actions() {
+        // Request 1: beacon payment (speed, none), loom craft `cre`; no filter strings.
+        let mut body = vec![1, 2, 2];
+        body.extend_from_slice(&[8, 0, 2, 0]);
+        body.extend_from_slice(&[15, 0, 3, b'c', b'r', b'e', 1]);
+        body.extend_from_slice(&[0, 0, 0, 0, 0]);
+        let reqs = read_stack_requests(&body, crate::Version::latest()).unwrap_or_default();
+        let actions = reqs.first().map(|r| r.actions.clone()).unwrap_or_default();
+        assert_eq!(
+            actions,
+            vec![
+                StackAction::BeaconPayment {
+                    primary: 1,
+                    secondary: 0
+                },
+                StackAction::CraftLoom { pattern: *b"cre\0" },
+            ]
+        );
+    }
 }

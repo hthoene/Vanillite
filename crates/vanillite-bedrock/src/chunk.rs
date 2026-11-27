@@ -417,7 +417,8 @@ pub fn translate(
         }));
         java_blocks.push(blocks);
     }
-    let actors = block_entities(&mut r, x, z, layout.java_min_section, &java_blocks);
+    let mut actors = block_entities(&mut r, x, z, layout.java_min_section, &java_blocks, v);
+    flower_pots(&mut actors, x, z, layout.java_min_section, &java_blocks, v);
 
     // Sub-chunks up to the highest non-empty one; biomes for the whole dimension.
     let count = translated
@@ -480,6 +481,7 @@ fn block_entities(
     cz: i32,
     min_section: i32,
     sections: &[Container],
+    v: &Version,
 ) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     let Ok(n) = java_varint(r) else {
@@ -523,11 +525,47 @@ fn block_entities(
             Some(vanillite_nbt::Tag::Compound(c)) => Some(c),
             _ => None,
         };
-        if let Some(nbt) = crate::blockentity::translate(pos, state, compound) {
+        if let Some(nbt) = crate::blockentity::translate(pos, state, compound, v.palette) {
             out.push(crate::packets::block_actor_data(pos, &nbt));
         }
     }
     out
+}
+
+/// Block actor data of the potted plants (Java pots have no block entity; Bedrock keeps the
+/// plant in one). Only sections whose palette holds a potted plant are scanned.
+fn flower_pots(
+    out: &mut Vec<Vec<u8>>,
+    cx: i32,
+    cz: i32,
+    min_section: i32,
+    sections: &[Container],
+    v: &Version,
+) {
+    let pot = |s: u32| v.palette.potted_plant(s).is_some();
+    for (i, c) in sections.iter().enumerate() {
+        if !c.palette.is_empty() && !c.palette.iter().any(|&s| pot(s)) {
+            continue;
+        }
+        let base_y = min_section
+            .saturating_add(i32::try_from(i).unwrap_or(0))
+            .saturating_mul(16);
+        for index in 0..ENTRIES {
+            let state = c.get(index);
+            if !pot(state) {
+                continue;
+            }
+            let i = i32::try_from(index).unwrap_or(0);
+            let pos = [
+                cx.wrapping_mul(16).wrapping_add(i & 15),
+                base_y.wrapping_add(i >> 8),
+                cz.wrapping_mul(16).wrapping_add((i >> 4) & 15),
+            ];
+            if let Some(nbt) = crate::blockentity::translate(pos, state, None, v.palette) {
+                out.push(crate::packets::block_actor_data(pos, &nbt));
+            }
+        }
+    }
 }
 
 #[cfg(test)]
