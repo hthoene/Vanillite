@@ -272,6 +272,37 @@ pub fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
     super::ageable_group(m, ctx, true, chance);
 }
 
+/// `AbstractHorse.tick`: `standAnim` follows `isStanding` (after the stand counter of this
+/// tick, which [`before_tick`] only applies at the start of the next one).
+pub fn after_tick(m: &mut MobData) {
+    let s = st_mut(m);
+    let standing = s.horse_flags & STANDING != 0 && s.stand_counter != 1;
+    s.stand_anim_o = s.stand_anim;
+    let a = s.stand_anim;
+    s.stand_anim = if standing {
+        (a + ((1.0 - a) * 0.4 + 0.05)).min(1.0)
+    } else {
+        (a + ((0.8 * a * a * a - a) * 0.6 - 0.05)).max(0.0)
+    };
+}
+
+/// `AbstractHorse.getPassengerAttachmentPoint`: the rearing offset (`standAnimO`) turned by
+/// the horse's yaw, added to the passenger attachment.
+pub fn rearing_offset(m: &MobData, y_rot: f32, scale: f32) -> Vec3 {
+    let o = st(m).stand_anim_o;
+    if o == 0.0 {
+        return Vec3::ZERO;
+    }
+    let angle = -y_rot * (std::f32::consts::PI / 180.0);
+    let (cos, sin) = (
+        vanillite_base::math::cos(f64::from(angle)),
+        vanillite_base::math::sin(f64::from(angle)),
+    );
+    let y = 0.15 * f64::from(o * scale);
+    let z = -0.7 * f64::from(o * scale);
+    Vec3::new(z * f64::from(sin), y, z * f64::from(cos))
+}
+
 /// `AbstractHorse.tick` counters (after `LivingEntity.tick`; here before the next one).
 pub fn before_tick(t: &mut Tick<'_, '_>) {
     let m = t.mob();
@@ -1089,13 +1120,6 @@ pub fn skeleton_spawn_rules(level: &Level, pos: BlockPos, reason: SpawnReason) -
     }
 }
 
-/// The zombie horse spawns like a monster in the dark (`Monster.checkMonsterSpawnRules`
-/// is not used; it uses the animal rules on grass at night by its spawn list).
-pub fn zombie_spawn_rules(level: &Level, pos: BlockPos, reason: SpawnReason) -> bool {
-    let below = level.block(BlockPos::new(pos.x, pos.y - 1, pos.z));
-    below.block() == vanillite_data::block::ids::GRASS_BLOCK || reason != SpawnReason::Natural
-}
-
 // --- Goals --------------------------------------------------------------------------------
 
 pub fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
@@ -1160,7 +1184,7 @@ pub fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
 pub fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
     match g {
         Goal::RunAround { .. } => {
-            !t.mob_ref().tame && !t.mob_ref().nav.is_done() && super::is_vehicle(t)
+            !t.mob_ref().tame && !t.nav_ref().is_done() && super::is_vehicle(t)
         }
         Goal::RandomStand { .. } => false,
         Goal::SkeletonTrap => can_use(t, g),

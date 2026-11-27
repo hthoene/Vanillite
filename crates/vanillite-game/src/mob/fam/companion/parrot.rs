@@ -473,12 +473,12 @@ fn set_on_shoulder(t: &mut Tick<'_, '_>, owner: EntityId) -> bool {
 
 pub fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
     match g {
-        Goal::Wander { .. } => !t.mob_ref().nav.is_done() && t.ents.vehicle_of(t.id).is_none(),
+        Goal::Wander { .. } => !t.nav_ref().is_done() && t.ents.vehicle_of(t.id).is_none(),
         Goal::FollowMob { following, .. } => {
             let Some(o) = following.and_then(|id| t.other(id)) else {
                 return false;
             };
-            !t.mob_ref().nav.is_done() && o.pos.distance_to_sqr(t.pos()) > 9.0
+            !t.nav_ref().is_done() && o.pos.distance_to_sqr(t.pos()) > 9.0
         }
         Goal::LandOnShoulder { .. } => can_land_on_shoulder(t),
     }
@@ -496,10 +496,10 @@ pub fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
 
 pub fn stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
     match g {
-        Goal::Wander { .. } => t.mob().nav.stop(),
+        Goal::Wander { .. } => t.nav().stop(),
         Goal::FollowMob { following, .. } => {
             *following = None;
-            t.mob().nav.stop();
+            t.nav().stop();
         }
         Goal::LandOnShoulder { .. } => {}
     }
@@ -542,7 +542,7 @@ pub fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
         if d > 9.0 {
             nav::move_to_entity(t, o.pos, 1, 1.0);
         } else {
-            t.mob().nav.stop();
+            t.nav().stop();
             if d <= 3.0 {
                 let back = Vec3::new(p.x - (o.pos.x - p.x), p.y, p.z - (o.pos.z - p.z));
                 nav::move_to_pos(t, back, 1.0);

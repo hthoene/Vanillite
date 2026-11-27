@@ -304,7 +304,7 @@ fn heightmap_pos(t: &Tick<'_, '_>, x: i32, z: i32) -> BlockPos {
 
 pub fn patrol_tick(t: &mut Tick<'_, '_>, p: &mut Patrol) {
     let leader = st(t.mob_ref()).patrol_leader;
-    if !t.mob_ref().nav.is_done() {
+    if !t.nav_ref().is_done() {
         return;
     }
     let mut companions = Vec::new();
@@ -414,7 +414,7 @@ fn nearby_raiders(t: &mut Tick<'_, '_>, out: &mut Vec<EntityId>) {
 }
 
 pub fn hold_ground_start(t: &mut Tick<'_, '_>) {
-    t.mob().nav.stop();
+    t.nav().stop();
     let target = t.mob_ref().target;
     let mut raiders = Vec::new();
     nearby_raiders(t, &mut raiders);
@@ -847,7 +847,7 @@ pub fn banner_can_continue(t: &mut Tick<'_, '_>, banner: &Option<EntityId>) -> b
     if t.ents.item(id).is_none() || t.cx.discarded.contains(&id) {
         return false;
     }
-    let done = t.mob_ref().nav.path.as_ref().is_none_or(|p| p.is_done());
+    let done = t.nav_ref().path.as_ref().is_none_or(|p| p.is_done());
     !done && !cannot_pick_up_banner(t)
 }
 
@@ -870,11 +870,7 @@ pub fn banner_tick(t: &mut Tick<'_, '_>, banner: &mut Option<EntityId>) {
 
 /// `hasControllingPassenger`.
 fn has_controlling_passenger(t: &Tick<'_, '_>) -> bool {
-    t.ents
-        .riding
-        .passengers_of(t.id)
-        .first()
-        .is_some_and(|&p| crate::riding::controls(t.ents, p, t.id))
+    crate::mob::has_controlling_passenger(t.ents, t.id)
 }
 
 /// `hasActiveRaid() && !getCurrentRaid().isOver()`: the raid id.
@@ -931,7 +927,7 @@ pub fn pathfind_tick(t: &mut Tick<'_, '_>, recruitment_tick: &mut i32) {
             crate::raid::join_existing(t.ents, raid_id, wave, id, t.env.out);
         }
     }
-    if t.mob_ref().nav.is_done() {
+    if t.nav_ref().is_done() {
         let towards = randompos::bottom_center(center);
         if let Some(p) = randompos::default_pos_towards(t, 15, 4, towards, randompos::half_pi()) {
             nav::move_to_pos(t, p, 1.0);
@@ -1011,7 +1007,7 @@ pub fn move_through_can_use(t: &mut Tick<'_, '_>, v: &mut MoveThroughVillage) ->
 }
 
 pub fn move_through_can_continue(t: &mut Tick<'_, '_>, v: &MoveThroughVillage) -> bool {
-    if t.mob_ref().nav.is_done() {
+    if t.nav_ref().is_done() {
         return false;
     }
     let width = f64::from(t.core().dims().width);
@@ -1040,7 +1036,7 @@ pub fn move_through_stop(t: &mut Tick<'_, '_>, v: &mut MoveThroughVillage) {
 }
 
 pub fn move_through_tick(t: &mut Tick<'_, '_>, v: &mut MoveThroughVillage) {
-    if !t.mob_ref().nav.is_done() {
+    if !t.nav_ref().is_done() {
         return;
     }
     let towards = randompos::bottom_center(v.poi);

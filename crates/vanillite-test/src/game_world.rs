@@ -1510,7 +1510,11 @@ pub(crate) fn entity_detail(
         }
         d.insert("goals".into(), running(m.kind, &m.goals.slots));
         d.insert("targets".into(), running(m.kind, &m.targets.slots));
-        if let Some(path) = m.nav.path.as_ref().filter(|p| !p.is_done()) {
+        // `getNavigation()`: a rider steering a mob vehicle reports the vehicle's.
+        let nav = ents
+            .mob(vanillite_game::mob::nav_owner(ents, id))
+            .map_or(&m.nav, |o| &o.nav);
+        if let Some(path) = nav.path.as_ref().filter(|p| !p.is_done()) {
             let nodes: Vec<Value> = path
                 .nodes
                 .iter()
