@@ -968,7 +968,7 @@ fn crossbow_shoot(
     let shooter = crate::crossbow::Shooter {
         id: player,
         pos,
-        eye_y: pos.y + 1.62 * f64::from(e.dims().height / 1.8),
+        eye_y: pos.y + f64::from(1.62_f32 * (e.dims().height / 1.8)),
         x_rot: rot.x_rot,
         y_rot: rot.y_rot,
         player: true,
@@ -979,7 +979,9 @@ fn crossbow_shoot(
         .is_some_and(|p| p.game_mode == GameMode::Creative);
     let power = crate::crossbow::shooting_power(&projectiles);
     // The player's own random (`getRandom`) for the shot sounds.
-    let mut own = vanillite_base::random::LegacyRandom::new(crate::mob::new_entity_seed());
+    let Some(mut own) = ents.player(player).map(|p| p.survival.random.clone()) else {
+        return;
+    };
     let random = &mut *env.random;
     crate::crossbow::shoot(
         ents,
@@ -994,6 +996,9 @@ fn crossbow_shoot(
         None,
         |ents, amount| !creative && hurt_held(ents, random, player, i, amount),
     );
+    if let Some(p) = ents.player_mut(player) {
+        p.survival.random = own;
+    }
     // `performShooting`: `SHOT_CROSSBOW` and the use statistic with the (maybe broken) weapon.
     if let Some(p) = ents.player_mut(player) {
         let weapon = p.inventory.get(i).clone();

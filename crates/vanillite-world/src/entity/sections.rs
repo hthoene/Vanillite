@@ -53,7 +53,13 @@ pub struct SectionIndex {
     sections: FxHashMap<i64, Section>,
     /// The Y of the non-empty sections of each chunk, ascending.
     columns: FxHashMap<(i32, i32), Vec<i32>>,
+    /// The players by region of [`REGION`] sections on X and Z, in no order: who is near a
+    /// position without walking the sections around it.
+    player_regions: FxHashMap<(i32, i32), Vec<EntityId>>,
 }
+
+/// Sections per player region on X and Z, as a shift (8 sections, 128 blocks).
+const REGION: i32 = 3;
 
 impl SectionIndex {
     pub(super) fn insert(&mut self, section: SectionPos, class: EntityClass, id: EntityId) {
@@ -66,7 +72,13 @@ impl SectionIndex {
         });
         entry.all.push(id);
         match class {
-            EntityClass::Player => entry.players.push(id),
+            EntityClass::Player => {
+                entry.players.push(id);
+                self.player_regions
+                    .entry((section.x >> REGION, section.z >> REGION))
+                    .or_default()
+                    .push(id);
+            }
             EntityClass::Other => entry.others.push(id),
         }
     }
@@ -78,7 +90,18 @@ impl SectionIndex {
         };
         remove_ordered(&mut entry.all, id);
         match class {
-            EntityClass::Player => remove_ordered(&mut entry.players, id),
+            EntityClass::Player => {
+                remove_ordered(&mut entry.players, id);
+                let region = (section.x >> REGION, section.z >> REGION);
+                if let Some(list) = self.player_regions.get_mut(&region) {
+                    if let Some(index) = list.iter().position(|&e| e == id) {
+                        list.swap_remove(index);
+                    }
+                    if list.is_empty() {
+                        self.player_regions.remove(&region);
+                    }
+                }
+            }
             EntityClass::Other => remove_ordered(&mut entry.others, id),
         }
         if entry.all.is_empty() {
@@ -152,26 +175,28 @@ impl SectionIndex {
                 && (min_y..=max_y).contains(&s.y)
                 && (min_z..=max_z).contains(&s.z)
         };
-        let mut keys: Vec<i64> = if volume <= self.sections.len() as u64 {
-            let mut keys = Vec::new();
+        if volume <= self.sections.len() as u64 {
+            // The sections in key order without collecting them: a field of the key orders
+            // as unsigned, so 0 and up come before the negatives.
+            let unsigned = |min: i32, max: i32| (min.max(0)..=max).chain(min..=max.min(-1));
             for x in min_x..=max_x {
-                for z in min_z..=max_z {
-                    for y in min_y..=max_y {
+                for z in unsigned(min_z, max_z) {
+                    for y in unsigned(min_y, max_y) {
                         let key = SectionPos::new(x, y, z).as_long();
-                        if self.sections.contains_key(&key) {
-                            keys.push(key);
+                        if let Some(section) = self.sections.get(&key) {
+                            section.list(subset).iter().copied().for_each(&mut f);
                         }
                     }
                 }
             }
-            keys
-        } else {
-            self.sections
-                .keys()
-                .copied()
-                .filter(|&key| in_range(SectionPos::from_long(key)))
-                .collect()
-        };
+            return;
+        }
+        let mut keys: Vec<i64> = self
+            .sections
+            .keys()
+            .copied()
+            .filter(|&key| in_range(SectionPos::from_long(key)))
+            .collect();
         // X sits in the top bits with its sign, so signed order is X ascending; within one X
         // the remaining bits compare like Vanilla's sorted long set.
         keys.sort_unstable();
@@ -181,10 +206,162 @@ impl SectionIndex {
             }
         }
     }
+
+    /// Calls `f` for every player whose position is within `range` blocks of (`x`, `z`) on
+    /// both axes, and for some farther ones, in no particular order, until `f` returns `true`.
+    pub(super) fn players_around(
+        &self,
+        x: f64,
+        z: f64,
+        range: f64,
+        mut f: impl FnMut(EntityId) -> bool,
+    ) {
+        let region = |v: f64| floor(v) >> (4 + REGION);
+        let (min_x, max_x) = (region(x - range), region(x + range));
+        let (min_z, max_z) = (region(z - range), region(z + range));
+        let span = |min: i32, max: i32| u64::try_from(i64::from(max) - i64::from(min) + 1);
+        let area = span(min_x, max_x)
+            .unwrap_or(u64::MAX)
+            .saturating_mul(span(min_z, max_z).unwrap_or(u64::MAX));
+        if area > self.player_regions.len() as u64 {
+            for (&(rx, rz), list) in &self.player_regions {
+                if (min_x..=max_x).contains(&rx)
+                    && (min_z..=max_z).contains(&rz)
+                    && list.iter().any(|&id| f(id))
+                {
+                    return;
+                }
+            }
+            return;
+        }
+        for rx in min_x..=max_x {
+            for rz in min_z..=max_z {
+                if let Some(list) = self.player_regions.get(&(rx, rz))
+                    && list.iter().any(|&id| f(id))
+                {
+                    return;
+                }
+            }
+        }
+    }
 }
 
 fn remove_ordered(list: &mut Vec<EntityId>, id: EntityId) {
     if let Some(index) = list.iter().position(|&e| e == id) {
         list.remove(index);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use vanillite_base::SlotMap;
+
+    use super::*;
+
+    /// A spread of sections on both sides of zero on every axis, one entity each.
+    fn index(count: i32, class: EntityClass) -> (SectionIndex, Vec<(SectionPos, EntityId)>) {
+        let mut ids: SlotMap<EntityId, ()> = SlotMap::new();
+        let mut index = SectionIndex::default();
+        let mut placed = Vec::new();
+        let mut seed = 0x2545_F491_4F6C_DD1D_u64;
+        let mut next = |span: i32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            i32::try_from(seed % u64::try_from(span).unwrap()).unwrap() - span / 2
+        };
+        for _ in 0..count {
+            let section = SectionPos::new(next(12), next(8), next(12));
+            let id = ids.insert(());
+            index.insert(section, class, id);
+            placed.push((section, id));
+        }
+        (index, placed)
+    }
+
+    /// The sections `for_each_near` covers for a box, as it computes them.
+    fn covered(aabb: &Aabb, s: SectionPos) -> bool {
+        (floor(aabb.min_x - 2.0) >> 4..=floor(aabb.max_x + 2.0) >> 4).contains(&s.x)
+            && (floor(aabb.min_y - 4.0) >> 4..=floor(aabb.max_y) >> 4).contains(&s.y)
+            && (floor(aabb.min_z - 2.0) >> 4..=floor(aabb.max_z + 2.0) >> 4).contains(&s.z)
+    }
+
+    /// Vanilla walks the sorted section keys; the walk without a sort visits the same order
+    /// on both sides of zero, and so does the search over all sections for large boxes.
+    #[test]
+    fn sections_are_visited_in_key_order() {
+        for (count, half) in [(400, 20.0), (400, 70.0), (12, 90.0), (3, 500.0)] {
+            let (index, placed) = index(count, EntityClass::Other);
+            let aabb = Aabb::new(-half, -half, -half, half, half, half);
+            let mut expected: Vec<(i64, usize)> = placed
+                .iter()
+                .enumerate()
+                .filter(|(_, (s, _))| covered(&aabb, *s))
+                .map(|(i, (s, _))| (s.as_long(), i))
+                .collect();
+            // Entities of one section keep their insertion order.
+            expected.sort();
+            let expected: Vec<EntityId> = expected.iter().map(|&(_, i)| placed[i].1).collect();
+            let mut visited = Vec::new();
+            index.for_each_near(&aabb, Subset::All, |id| visited.push(id));
+            assert!(!expected.is_empty(), "{count} sections, box {half}");
+            assert_eq!(visited, expected, "{count} sections, box {half}");
+        }
+    }
+
+    /// Every player within the range on both axes is found, by the walk over the regions and
+    /// by the search over all of them.
+    #[test]
+    fn players_around_finds_every_player_in_range() {
+        for (count, range) in [(300, 40.0), (300, 128.0), (4, 128.0), (4, 3000.0)] {
+            let (index, placed) = index(count, EntityClass::Player);
+            for (x, z) in [
+                (0.0, 0.0),
+                (-37.5, 81.25),
+                (95.0, -96.0),
+                (-127.999, -128.0),
+            ] {
+                let mut found = Vec::new();
+                index.players_around(x, z, range, |id| {
+                    found.push(id);
+                    false
+                });
+                for (section, id) in &placed {
+                    // The player can be anywhere in its section.
+                    let near = |v: f64, s: i32| {
+                        let lo = f64::from(s * 16);
+                        v + range >= lo && v - range < lo + 16.0
+                    };
+                    if near(x, section.x) && near(z, section.z) {
+                        assert!(found.contains(id), "{section:?} from {x}, {z} in {range}");
+                    }
+                }
+                let mut unique = found.clone();
+                unique.sort();
+                unique.dedup();
+                assert_eq!(unique.len(), found.len(), "a player was visited twice");
+            }
+        }
+    }
+
+    #[test]
+    fn players_around_stops_when_asked() {
+        let (index, _) = index(300, EntityClass::Player);
+        let mut calls = 0;
+        index.players_around(0.0, 0.0, 128.0, |_| {
+            calls += 1;
+            true
+        });
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn removed_players_leave_their_region() {
+        let (mut index, placed) = index(50, EntityClass::Player);
+        for (section, id) in &placed {
+            index.remove(*section, EntityClass::Player, *id);
+        }
+        assert!(index.player_regions.is_empty());
+        assert!(index.is_empty());
     }
 }

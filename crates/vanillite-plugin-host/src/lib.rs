@@ -330,6 +330,21 @@ pub struct Location {
     pub pitch: f32,
 }
 
+/// An entity as a box query reports it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct EntityInfo {
+    /// Its UUID.
+    pub uuid: u128,
+    /// Its position.
+    pub pos: [f64; 3],
+    /// Yaw in degrees.
+    pub yaw: f32,
+    /// Pitch in degrees.
+    pub pitch: f32,
+    /// The numeric id of its type.
+    pub kind: u32,
+}
+
 /// Server-wide services for plugins, callable from any thread.
 pub trait ServerAccess: Send + Sync {
     /// UUIDs of the online players.
@@ -611,6 +626,17 @@ pub trait WorldAccess {
     /// The entities within `radius` of `center`, nearest first, optionally of one type.
     fn entities_near(&self, _center: [f64; 3], _radius: f64, _kind: Option<&str>) -> Vec<u128> {
         Vec::new()
+    }
+
+    /// Calls `found` for every entity whose bounding box intersects the box from `min` to
+    /// `max`, in section order, optionally of one type (an unknown type finds nothing).
+    fn entities_in_box(
+        &self,
+        _min: [f64; 3],
+        _max: [f64; 3],
+        _kind: Option<&str>,
+        _found: &mut dyn FnMut(EntityInfo),
+    ) {
     }
 
     /// An entity's data as `/data get entity` shows it.

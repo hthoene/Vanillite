@@ -1,0 +1,7 @@
+{
+  "pack": {
+    "description": "Vanillite parity test: advancements for triggers no Vanilla advancement listens to",
+    "min_format": 121,
+    "max_format": 121
+  }
+}

@@ -512,9 +512,7 @@ pub(crate) fn select(
 
 /// The entity of this world with a UUID.
 pub(crate) fn find_uuid(entities: &Entities, uuid: u128) -> Option<EntityId> {
-    let columns = entities.store.columns();
-    let row = columns.uuid.iter().position(|&u| u == uuid)?;
-    columns.id.get(row).copied()
+    entities.store.by_uuid(uuid)
 }
 
 /// `EntityArgument.getEntities`/`getPlayers`: at least one, with the selector permission.

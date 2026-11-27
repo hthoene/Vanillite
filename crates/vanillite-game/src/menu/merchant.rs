@@ -152,7 +152,7 @@ impl ContainerView<'_> {
 
     /// `MerchantResultSlot.onTake`: the price is paid and the merchant notified.
     pub(super) fn merchant_take_result(&mut self) {
-        self.menu.merchant.remove_count = 0;
+        let crafted = std::mem::take(&mut self.menu.merchant.remove_count);
         let (Some(id), Some(active)) = (self.merchant_id(), self.menu.merchant.active_offer) else {
             return;
         };
@@ -171,6 +171,15 @@ impl ContainerView<'_> {
             let paid = offer.take(&mut a, &mut b) || offer.take(&mut b, &mut a);
             (paid, offer.result.clone())
         };
+        // `checkTakeAchievements`: `onCraftedBy` with the count taken.
+        if crafted > 0 {
+            self.inv
+                .awards
+                .push(crate::advancements::award::Award::Stat(
+                    crate::stats::Stat::of(crate::stats::StatType::Crafted, result.item),
+                    crafted,
+                ));
+        }
         if paid {
             let pos = self.player_pos;
             if merchant::notify_trade_in_level(self.level, id, active, pos) {
