@@ -94,6 +94,8 @@ pub enum LevelAction {
     },
     /// A mob died next to a sculk catalyst: the catalyst takes its experience.
     SculkDeath { pos: Vec3, experience: i32 },
+    /// A lightning bolt at `pos` (`summon_entity` of Channeling).
+    Lightning { pos: Vec3 },
 }
 
 impl LevelAction {
@@ -116,6 +118,9 @@ impl LevelAction {
             }
             LevelAction::SculkDeath { pos, experience } => {
                 crate::block::sculk_catalyst::on_mob_death(level, pos, experience);
+            }
+            LevelAction::Lightning { pos } => {
+                crate::lightning::spawn(level, pos, false);
             }
         }
     }
@@ -592,7 +597,9 @@ pub fn custom_server_ai_step(t: &mut Tick<'_, '_>) {
         A::Idle,
     ]);
     let attack = target(brain);
-    t.mob().target = attack;
+    if crate::mob::brain::target_changed(t, attack) {
+        t.mob().target = attack;
+    }
 }
 
 /// `angerManagement.tick(level, canTargetEntity)`.
@@ -864,6 +871,12 @@ fn spawn_emerging(level: &mut Level, pos: BlockPos) -> bool {
         },
         m,
     );
+    if !level
+        .entities
+        .spawned(id, vanillite_abi::spawn_reason::TRIGGERED, 0)
+    {
+        return false;
+    }
     if let Some(mut e) = level.entities.store.get_mut(id) {
         e.set_pose(Pose::Emerging);
         e.set_dims(vanillite_world::entity::Dimensions {

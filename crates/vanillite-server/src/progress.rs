@@ -219,7 +219,13 @@ pub(crate) fn tick(level: &mut Level, global: &Global, world: WorldId, dimension
         if let Some(packet) = player.advancements.flush(true) {
             player.connection.sink.send(&packet);
         }
-        let changes = player.stats.take_score_changes();
+        let mut changes = player.stats.take_score_changes();
+        if !changes.is_empty() && global.plugins.wants(vanillite_abi::event::PLAYER_STATISTIC) {
+            let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+            player
+                .stats
+                .fire_increases(&mut changes, &hooks, entity.uuid());
+        }
         if !changes.is_empty() {
             scores.push((player.profile.name.clone(), entity.uuid(), changes));
         }
@@ -230,6 +236,7 @@ pub(crate) fn tick(level: &mut Level, global: &Global, world: WorldId, dimension
         level,
         global,
         world,
+        others: Vec::new(),
     };
     for id in rewards {
         grant_rewards(&mut env, id);
@@ -358,6 +365,9 @@ pub(crate) fn grant_rewards(env: &mut Env<'_>, id: EntityId) {
         let Some(a) = set.get(index) else {
             continue;
         };
+        global
+            .plugins
+            .advancement_done(u32::from(env.world.0), uuid, &a.id);
         let rewards = &a.rewards;
         crate::commands::add_experience(env.level, id, rewards.experience, false);
         give_loot(env, id, &rewards.loot);

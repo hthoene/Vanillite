@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use toml::{Table, Value};
@@ -18,6 +18,8 @@ online-mode = true
 # Server list text and the maximum player count shown there.
 motd = "A Vanillite proxy"
 max-players = 500
+# Server list icon: a 64x64 PNG file (relative to this folder); missing = no icon.
+favicon = "server-icon.png"
 # Compression threshold towards clients in bytes (-1 = off) and libdeflate level (1-12).
 compression-threshold = 256
 compression-level = 4
@@ -27,9 +29,19 @@ compression-level = 4
 trusted-link = true
 # I/O threads (0 = number of cores).
 io-threads = 0
+# How backends learn the player's identity and address: "modern" (Velocity modern forwarding,
+# signed with the secret; Paper: proxies.velocity, Vanillite: proxy.velocity-secret), "legacy"
+# (BungeeCord forwarding in the handshake, unsigned: Spigot with bungeecord: true, only behind a
+# firewall) or "none" (offline-mode backends see offline UUIDs).
+player-info-forwarding = "modern"
 # File with the secret shared with the backends (Velocity modern forwarding). Created with a
 # random secret if missing. The environment variable VANILLITE_PROXY_SECRET overrides it.
 forwarding-secret-file = "forwarding.secret"
+# Answer backend plugins on the BungeeCord plugin message channel (Connect, PlayerCount,
+# PlayerList, GetServers, Message, Forward, ...). Players cannot send on that channel.
+bungee-plugin-channel = true
+# Accept players that a server sent here with a transfer packet.
+accepts-transfers = false
 # Servers tried in this order on join and as fallback when a server is lost.
 try = ["lobby"]
 # Clients of older Minecraft versions accepted through the multi-version layer: "all" (every
@@ -47,11 +59,15 @@ lobby = "127.0.0.1:25565"
 [forced-hosts]
 # "lobby.example.com" = ["lobby"]
 
-# Who may use the proxy's commands: "*" = everybody, otherwise player names or UUIDs.
-# Commands not listed here are open to everybody.
+# Who may use the proxy's commands: "*" = everybody, otherwise player names or UUIDs. The
+# console may use all of them. Defaults: server and glist for everybody, send (move players),
+# alert (message to everybody) and proxy (reload, info) for nobody.
 [permissions]
 server = ["*"]
 glist = ["*"]
+send = []
+alert = []
+proxy = []
 
 [limits]
 # Open connections in total.
@@ -68,6 +84,11 @@ login-timeout = 30
 read-timeout = 30
 # Seconds to connect and log in to a backend.
 connect-timeout = 5
+
+# "proxy reload" (console or command) reads this file again. It applies to new connections:
+# servers, try, forced hosts, permissions, motd, favicon, max players, forwarding, compression,
+# older versions and the login limits. bind, online-mode, io-threads, max-connections,
+# max-pending-per-ip, max-concurrent-auth and [bedrock] need a restart.
 
 # Bedrock Edition players (vanillite-bedrock): a RakNet listener on UDP that translates Bedrock
 # clients into proxy connections. Backends get the Bedrock identity by forwarding.
@@ -105,6 +126,18 @@ pub struct ProxyConfig {
     pub motd: String,
     /// Maximum player count shown in the server list. Default 500.
     pub max_players: i32,
+    /// Server list icon file. Default `server-icon.png`.
+    pub favicon_file: String,
+    /// The icon as a data URL (loaded from the file).
+    pub favicon: Option<String>,
+    /// Player info forwarding to backends. Default modern.
+    pub forwarding: Forwarding,
+    /// Answer the BungeeCord plugin message channel. Default true.
+    pub bungee_channel: bool,
+    /// Accept transferred players. Default false.
+    pub accepts_transfers: bool,
+    /// Folder the configuration was loaded from (for reloads).
+    pub dir: Option<PathBuf>,
     /// Compression threshold towards clients (-1 = off). Default 256.
     pub compression_threshold: i32,
     /// libdeflate level (1..=12). Default 4.
@@ -131,6 +164,17 @@ pub struct ProxyConfig {
     pub bedrock: Bedrock,
     /// Older client versions accepted (`older-versions`). Default all supported.
     pub multiversion: vanillite_multiversion::Accepted,
+}
+
+/// How backends learn the player's identity (`player-info-forwarding`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Forwarding {
+    /// Velocity modern forwarding, signed with the secret.
+    Modern,
+    /// BungeeCord forwarding: address, UUID and properties in the handshake host.
+    Legacy,
+    /// Nothing: offline-mode backends.
+    None,
 }
 
 /// The Bedrock frontend (`[bedrock]`).
@@ -227,19 +271,33 @@ pub struct Limits {
 }
 
 /// The proxy's own commands.
-pub const COMMANDS: [&str; 2] = ["server", "glist"];
+pub const COMMANDS: [&str; 5] = ["server", "glist", "send", "alert", "proxy"];
+
+/// Commands everybody may use unless configured otherwise.
+const OPEN_COMMANDS: [&str; 2] = ["server", "glist"];
 
 impl Default for ProxyConfig {
     fn default() -> Self {
         let mut permissions = BTreeMap::new();
         for c in COMMANDS {
-            permissions.insert(c.to_owned(), vec!["*".to_owned()]);
+            let all = if OPEN_COMMANDS.contains(&c) {
+                vec!["*".to_owned()]
+            } else {
+                Vec::new()
+            };
+            permissions.insert(c.to_owned(), all);
         }
         Self {
             bind: SocketAddr::from(([0, 0, 0, 0], 25577)),
             online_mode: true,
             motd: "A Vanillite proxy".to_owned(),
             max_players: 500,
+            favicon_file: "server-icon.png".to_owned(),
+            favicon: None,
+            forwarding: Forwarding::Modern,
+            bungee_channel: true,
+            accepts_transfers: false,
+            dir: None,
             compression_threshold: 256,
             compression_level: 4,
             trusted_link: true,
@@ -363,7 +421,7 @@ impl ProxyConfig {
                 strings(list, &format!("forced-hosts.{host}"))?,
             );
         }
-        // Commands not listed keep their default (everybody).
+        // Commands not listed keep their default.
         let mut permissions = d.permissions;
         for (command, list) in table(&mut t, "permissions")? {
             if !COMMANDS.contains(&command.as_str()) {
@@ -402,6 +460,21 @@ impl ProxyConfig {
             motd: string(&mut t, "motd", &d.motd)?,
             max_players: i32::try_from(int(&mut t, "max-players", 500, 0, 1_000_000)?)
                 .unwrap_or(500),
+            favicon_file: string(&mut t, "favicon", &d.favicon_file)?,
+            favicon: None,
+            forwarding: match string(&mut t, "player-info-forwarding", "modern")?.as_str() {
+                "modern" => Forwarding::Modern,
+                "legacy" => Forwarding::Legacy,
+                "none" => Forwarding::None,
+                other => {
+                    return Err(format!(
+                        "player-info-forwarding must be modern, legacy or none, got {other:?}"
+                    ));
+                }
+            },
+            bungee_channel: boolean(&mut t, "bungee-plugin-channel", true)?,
+            accepts_transfers: boolean(&mut t, "accepts-transfers", false)?,
+            dir: None,
             compression_threshold: i32::try_from(int(
                 &mut t,
                 "compression-threshold",
@@ -488,6 +561,11 @@ impl ProxyConfig {
         if config.secret.is_none() {
             return Err("the forwarding secret is empty".to_owned());
         }
+        let icon = dir.join(&config.favicon_file);
+        if icon.is_file() {
+            config.favicon = Some(favicon(&icon)?);
+        }
+        config.dir = Some(dir.to_path_buf());
         Ok(config)
     }
 
@@ -500,6 +578,38 @@ impl ProxyConfig {
     }
 }
 
+/// A 64x64 PNG file as a data URL.
+fn favicon(path: &Path) -> Result<String, String> {
+    const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    let bytes = std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let size = bytes.get(16..24).map(|s| {
+        let (w, h) = s.split_at(4);
+        (w.to_vec(), h.to_vec())
+    });
+    if bytes.get(..8) != Some(&SIGNATURE[..])
+        || bytes.get(12..16) != Some(b"IHDR")
+        || size != Some((vec![0, 0, 0, 64], vec![0, 0, 0, 64]))
+    {
+        return Err(format!("{} must be a 64x64 PNG image", path.display()));
+    }
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::from("data:image/png;base64,");
+    for chunk in bytes.chunks(3) {
+        let b = |i: usize| u32::from(chunk.get(i).copied().unwrap_or(0));
+        let n = (b(0) << 16) | (b(1) << 8) | b(2);
+        for i in 0..4usize {
+            if i <= chunk.len() {
+                let shift = 18usize.saturating_sub(i.saturating_mul(6));
+                let index = usize::try_from((n >> shift) & 63).unwrap_or(0);
+                out.push(char::from(ALPHABET.get(index).copied().unwrap_or(b'A')));
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -508,6 +618,8 @@ mod tests {
         let c = super::ProxyConfig::parse(super::DEFAULT_TOML).unwrap();
         assert_eq!(c.try_order, ["lobby"]);
         assert!(c.permitted("server", "x", "y"));
+        assert!(!c.permitted("send", "x", "y"));
+        assert_eq!(c.forwarding, super::Forwarding::Modern);
         assert!(super::ProxyConfig::parse("tyop = 1").is_err());
     }
 }

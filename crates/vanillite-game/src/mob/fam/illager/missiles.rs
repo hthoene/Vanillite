@@ -125,12 +125,19 @@ fn hit_on_move(
             }
         }
     });
-    if let Some((id, _, at)) = best {
+    // Bukkit's `ProjectileHitEvent`: a cancelled hit is ignored and the projectile flies on.
+    let shooter = owner(ents, d);
+    let allowed = |hit| crate::mob::missile::hit_event(level, ents, me, shooter, hit);
+    if let Some((id, _, at)) = best
+        && allowed(crate::mob::missile::HitWhat::Entity(id))
+    {
         return Hit::Entity(id, at);
     }
     match block {
-        Some((p, at)) => Hit::Block(p, at, hit_face(p, at, v)),
-        None => Hit::Miss,
+        Some((p, at)) if allowed(crate::mob::missile::HitWhat::Block(p, at)) => {
+            Hit::Block(p, at, hit_face(p, at, v))
+        }
+        _ => Hit::Miss,
     }
 }
 

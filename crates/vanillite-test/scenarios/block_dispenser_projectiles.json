@@ -1,0 +1,15 @@
+{
+  "description": "Dispensers facing east shoot their projectiles when powered (ProjectileDispenseBehavior, #107): an arrow, a snowball, an egg, an experience bottle, a firework rocket and a wind charge, with the launch level events, the spread from each projectile's own random and the flights.",
+  "rules": {"spawn_monsters": "false"},
+  "region": [[0, -61, 0], [31, -40, 15]],
+  "ticks": 60,
+  "actions": [
+    {"tick": 1, "op": "command", "command": "setblock 2 -60 1 minecraft:dispenser[facing=east]{Items:[{Slot:0b,id:\"minecraft:arrow\",count:2}]}"},
+    {"tick": 1, "op": "command", "command": "setblock 2 -60 3 minecraft:dispenser[facing=east]{Items:[{Slot:0b,id:\"minecraft:snowball\",count:2}]}"},
+    {"tick": 1, "op": "command", "command": "setblock 2 -60 5 minecraft:dispenser[facing=east]{Items:[{Slot:0b,id:\"minecraft:egg\",count:2}]}"},
+    {"tick": 1, "op": "command", "command": "setblock 2 -60 7 minecraft:dispenser[facing=east]{Items:[{Slot:0b,id:\"minecraft:experience_bottle\",count:2}]}"},
+    {"tick": 1, "op": "command", "command": "setblock 2 -60 9 minecraft:dispenser[facing=up]{Items:[{Slot:0b,id:\"minecraft:firework_rocket\",count:2}]}"},
+    {"tick": 1, "op": "command", "command": "setblock 2 -60 11 minecraft:dispenser[facing=east]{Items:[{Slot:0b,id:\"minecraft:wind_charge\",count:2}]}"},
+    {"tick": 5, "op": "command", "command": "fill 1 -60 1 1 -60 11 minecraft:redstone_block"}
+  ]
+}

@@ -787,7 +787,7 @@ fn items(data: &Path, regs: &Value) -> Result<String> {
         };
         let _ = writeln!(
             item_lines,
-            "    ItemInfo {{ name: {name:?}, max_stack_size: {}, max_damage: {}, rarity: Rarity::{rarity}, block: {block}, tool: {tool}, equip_slot: {equip}, modifiers: &[{}], weapon: {weapon}, food: {food}, blocks_attacks: {}, compostable: {:?}, jukebox_song: {:?} }},",
+            "    ItemInfo {{ name: {name:?}, max_stack_size: {}, max_damage: {}, rarity: Rarity::{rarity}, block: {block}, tool: {tool}, equip_slot: {equip}, modifiers: &[{}], weapon: {weapon}, food: {food}, blocks_attacks: {}, compostable: {:?}, jukebox_song: {:?}, block_transformer: {:?}, equip_sound: {:?}, equip_swappable: {}, damage_resistant: {:?} }},",
             c["minecraft:max_stack_size"].as_u64().unwrap_or(1),
             c["minecraft:max_damage"].as_u64().unwrap_or(0),
             modifiers.trim_end_matches(", "),
@@ -796,6 +796,21 @@ fn items(data: &Path, regs: &Value) -> Result<String> {
                 .as_str()
                 .unwrap_or_default(),
             c["minecraft:jukebox_playable"].as_str().unwrap_or_default(),
+            c["minecraft:block_transformer"]
+                .as_str()
+                .unwrap_or_default(),
+            c["minecraft:equippable"]["equip_sound"]
+                .as_str()
+                .unwrap_or("minecraft:item.armor.equip_generic"),
+            // `Equippable.swappable` (default true); `allowed_entities` lists only mobs.
+            c.get("minecraft:equippable").is_some()
+                && c["minecraft:equippable"]["swappable"].as_bool() != Some(false)
+                && c["minecraft:equippable"].get("allowed_entities").is_none(),
+            // `DamageResistant.types`: a damage type tag.
+            c["minecraft:damage_resistant"]["types"]
+                .as_str()
+                .unwrap_or_default()
+                .trim_start_matches('#'),
         );
     }
     o.push_str(&item_lines);

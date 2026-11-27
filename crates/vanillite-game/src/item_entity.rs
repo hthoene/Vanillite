@@ -5,7 +5,10 @@ use vanillite_base::math::floor;
 use vanillite_base::{Aabb, BlockPos, Vec3};
 use vanillite_data::block::{BlockState, flags as block_flags};
 
+use vanillite_world::entity::EntityId;
+
 use crate::item::{self, ItemStack};
+use crate::survival::damage::{DamageKind, DamageTypes};
 
 /// `INFINITE_PICKUP_DELAY`.
 pub const NEVER_PICK_UP: i16 = 32767;
@@ -29,6 +32,8 @@ pub struct ItemData {
     pub tick_count: u32,
     /// `health`: explosions and fire wear it down from 5.
     pub health: i16,
+    /// `remainingFireTicks`.
+    pub fire_ticks: i32,
 }
 
 impl ItemData {
@@ -42,6 +47,7 @@ impl ItemData {
             target: None,
             tick_count: 0,
             health: 5,
+            fire_ticks: 0,
         }
     }
 
@@ -52,6 +58,172 @@ impl ItemData {
             && self.age != UNLIMITED_LIFETIME
             && self.age < lifetime
             && self.stack.count < item::max_stack_size(&self.stack)
+    }
+}
+
+/// What the fire handling of an item entity reads of the world.
+#[derive(Clone, Copy)]
+pub struct FireWorld<'a> {
+    pub blocks: &'a dyn crate::survival::blocks::BlockAccess,
+    pub facts: &'a crate::survival::blocks::BlockFacts,
+    pub types: &'a DamageTypes,
+    /// `Level.isRainingAt`.
+    pub raining_at: &'a dyn Fn(BlockPos) -> bool,
+}
+
+impl std::fmt::Debug for FireWorld<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FireWorld").finish_non_exhaustive()
+    }
+}
+
+/// What fire and lava did to an item entity in one tick ([`burn_effects`] tells the world).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Burn {
+    /// How often the item was hurt (`ItemEntity.hurtServer`: one `ENTITY_DAMAGE` each).
+    pub hurts: u8,
+    /// The pitch of the burn sound of `lavaHurt`.
+    pub lava_sound: Option<f32>,
+    /// Its health ran out: `Item.onDestroyed` and `discard`.
+    pub destroyed: bool,
+}
+
+impl Burn {
+    /// Nothing happened (nearly every tick of nearly every item).
+    pub fn is_none(&self) -> bool {
+        self.hurts == 0
+    }
+}
+
+/// `ItemEntity.hurtServer`: damage the stack does not resist (`canBeHurtBy`) wears the health
+/// down.
+fn hurt(data: &mut ItemData, types: &DamageTypes, kind: DamageKind, damage: f32, burn: &mut Burn) {
+    if burn.destroyed || !item::can_be_hurt_by(&data.stack, types, kind) {
+        return;
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    let health = (f32::from(data.health) - damage) as i16;
+    data.health = health;
+    burn.hurts = burn.hurts.saturating_add(1);
+    burn.destroyed = health <= 0;
+}
+
+/// `ItemEntity.fireImmune`: the stack resists fire.
+fn fire_immune(data: &ItemData, types: &DamageTypes) -> bool {
+    !item::can_be_hurt_by(&data.stack, types, types.in_fire)
+}
+
+/// The fire part of `Entity.baseTick` for an item in the box `aabb`, before it moves: a
+/// burning item takes one fire damage every second outside lava.
+pub fn base_tick_fire(data: &mut ItemData, aabb: Aabb, world: &FireWorld<'_>, burn: &mut Burn) {
+    if data.fire_ticks <= 0 {
+        return;
+    }
+    if fire_immune(data, world.types) {
+        data.fire_ticks = 0;
+        return;
+    }
+    if data.fire_ticks % 20 == 0
+        && crate::survival::blocks::inside_blocks(world.blocks, world.facts, aabb).lava_blocks == 0
+    {
+        hurt(data, world.types, world.types.on_fire, 1.0, burn);
+    }
+    data.fire_ticks -= 1;
+}
+
+/// `applyEffectsFromBlocks` of an item in the box `aabb`, after it moved: fire ignites and
+/// hurts it (`BaseFireBlock.entityInside`), lava ignites and hurts it (`lavaIgnite`,
+/// `lavaHurt`), water and rain put it out. `random_float` is the item's own random (the pitch
+/// of the burn sound).
+pub fn inside_blocks_fire(
+    data: &mut ItemData,
+    aabb: Aabb,
+    world: &FireWorld<'_>,
+    random_float: &mut dyn FnMut() -> f32,
+    burn: &mut Burn,
+) {
+    let inside = crate::survival::blocks::inside_blocks(world.blocks, world.facts, aabb);
+    if inside.fire.is_none() && inside.lava_blocks == 0 && data.fire_ticks == 0 {
+        return;
+    }
+    let immune = fire_immune(data, world.types);
+    let previous = data.fire_ticks;
+    if let Some(damage) = inside.fire {
+        // `BaseFireBlock.fireIgnite`, then the block's fire damage.
+        if !immune {
+            if data.fire_ticks < 0 {
+                data.fire_ticks += 1;
+            }
+            if data.fire_ticks >= 0 {
+                data.fire_ticks = data.fire_ticks.max(160);
+            }
+        }
+        hurt(data, world.types, world.types.in_fire, damage, burn);
+    }
+    if inside.lava_blocks > 0 && !immune {
+        data.fire_ticks = data.fire_ticks.max(300);
+        let before = burn.hurts;
+        hurt(data, world.types, world.types.lava, 4.0, burn);
+        // `shouldPlayLavaHurtSound`: every tenth tick, and when the item is destroyed.
+        if burn.hurts > before && (data.health <= 0 || data.tick_count.is_multiple_of(10)) {
+            burn.lava_sound = Some(2.0 + random_float() * 0.4);
+        }
+    }
+    if data.fire_ticks > 0 {
+        // `EXTINGUISH` (water) and `isInRain`: `clearFire`.
+        let feet = BlockPos::new(
+            floor(aabb.min_x + 0.125),
+            floor(aabb.min_y),
+            floor(aabb.min_z + 0.125),
+        );
+        let top = BlockPos::new(feet.x, floor(aabb.max_y), feet.z);
+        if inside.water || (world.raining_at)(feet) || (world.raining_at)(top) {
+            data.fire_ticks = 0;
+        }
+    }
+    // Not burning and not ignited this tick: `-getFireImmuneTicks()`.
+    if data.fire_ticks <= 0 && data.fire_ticks <= previous {
+        data.fire_ticks = 0;
+    }
+}
+
+/// Tells the world what fire and lava did to the item entity `id` ([`Burn`]): the
+/// `ENTITY_DAMAGE` game events, the burn sound, and for a destroyed item the contents it
+/// leaves (`Item.onDestroyed`) and its removal.
+pub fn burn_effects(level: &mut crate::level::Level, id: EntityId, burn: Burn) {
+    let Some(e) = level.entities.store.get(id) else {
+        return;
+    };
+    let pos = e.pos();
+    for _ in 0..burn.hurts {
+        level.game_event(
+            crate::level::game_event::events().entity_damage,
+            pos,
+            crate::level::game_event::GameEventContext::of(None),
+        );
+    }
+    if let Some(pitch) = burn.lava_sound {
+        level.play_sound(
+            None,
+            pos.x,
+            pos.y,
+            pos.z,
+            crate::block::sound_id("minecraft:entity.generic.burn"),
+            crate::level::SOUND_NEUTRAL,
+            0.4,
+            pitch,
+        );
+    }
+    if burn.destroyed {
+        let contents = level
+            .entities
+            .item_mut(id)
+            .map(|d| take_destroyed_contents(&mut d.stack))
+            .unwrap_or_default();
+        for stack in contents {
+            crate::block::drops::spawn_item_moving(level, pos, stack, None, 0, None);
+        }
+        level.entities.despawn(id);
     }
 }
 
@@ -315,7 +487,26 @@ pub fn tick(
         fluid.info().fluid
     };
     // `minecraft:fluid` ids: 1 flowing water, 2 water, 3 flowing lava, 4 lava.
-    if fluid_id == 1 || fluid_id == 2 {
+    let water = |id: u16| id == 1 || id == 2;
+    let lava = |id: u16| id == 3 || id == 4;
+    // `getFluidHeight(tag) > 0.1F`: the fluid's surface above the item's feet (`getHeight`: a
+    // full block under the same fluid).
+    let deep = fluid_id != 0 && {
+        let above =
+            block(BlockPos::new(floor(old.x), floor(old.y) + 1, floor(old.z))).fluid_state();
+        let above_id = if above.is_empty() {
+            0
+        } else {
+            above.info().fluid
+        };
+        let same = (water(fluid_id) && water(above_id)) || (lava(fluid_id) && lava(above_id));
+        let height = if same { 1.0 } else { fluid.info().own_height };
+        f64::from(floor(old.y)) + f64::from(height) - old.y > f64::from(0.1_f32)
+    };
+    if !deep {
+        // `applyGravity`: `add(0, -0.04, 0)`, which turns Java's -0.0 into 0.0.
+        v = Vec3::new(v.x + 0.0, v.y - 0.04, v.z + 0.0);
+    } else if water(fluid_id) {
         // `setUnderwaterMovement`: float constants widened to double.
         let m = f64::from(0.99_f32);
         let rise = if v.y < f64::from(0.06_f32) {
@@ -324,7 +515,7 @@ pub fn tick(
             0.0
         };
         v = Vec3::new(v.x * m, v.y + rise, v.z * m);
-    } else if fluid_id == 3 || fluid_id == 4 {
+    } else {
         // `setUnderLavaMovement`.
         let m = f64::from(0.95_f32);
         let rise = if v.y < f64::from(0.06_f32) {
@@ -333,9 +524,6 @@ pub fn tick(
             0.0
         };
         v = Vec3::new(v.x * m, v.y + rise, v.z * m);
-    } else {
-        // `applyGravity`: `add(0, -0.04, 0)`, which turns Java's -0.0 into 0.0.
-        v = Vec3::new(v.x + 0.0, v.y - 0.04, v.z + 0.0);
     }
     let half = 0.125;
     let height = 0.25;

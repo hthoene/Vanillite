@@ -29,7 +29,7 @@ fn missing(name: &str) -> CommandError {
 }
 
 /// The `SoundSource` of an index into [`SOUND_SOURCES`].
-fn sound_source(index: u8) -> SoundSource {
+pub(crate) fn sound_source(index: u8) -> SoundSource {
     match index {
         1 => SoundSource::Music,
         2 => SoundSource::Records,

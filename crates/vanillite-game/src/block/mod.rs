@@ -11,10 +11,12 @@
 //! blocks that placing or breaking one block adds or removes.
 
 pub mod beacon;
+pub mod bed;
 pub mod beehive;
 pub mod bell;
 pub mod bonemeal;
 pub mod bookshelf;
+pub mod break_hooks;
 pub mod brewing;
 pub mod brushable;
 mod bubble;
@@ -23,6 +25,7 @@ pub mod campfire;
 pub mod cauldron;
 pub mod chest_loot;
 pub mod composter;
+pub mod contact;
 pub mod container;
 pub mod crafter;
 pub mod creaking_heart;
@@ -32,11 +35,14 @@ mod dripleaf;
 mod dripstone;
 pub mod drops;
 pub mod eggs;
+mod eyeblossom;
 pub mod falling;
 pub mod fire;
 pub mod fluid;
 pub mod furnace;
+pub mod geyser;
 mod growth;
+pub mod hook_events;
 pub mod hopper;
 pub mod interact;
 pub mod jukebox;
@@ -47,6 +53,7 @@ pub mod place;
 pub mod plate;
 pub mod portal;
 pub mod pot;
+pub mod projectile_hit;
 pub mod rail;
 pub mod redstone;
 pub mod sculk;
@@ -54,6 +61,7 @@ pub mod sculk_catalyst;
 pub mod sculk_shrieker;
 pub mod sculk_vibration;
 pub mod sensor;
+pub mod shelf;
 pub mod sign;
 pub mod spawner;
 #[cfg(test)]
@@ -119,8 +127,6 @@ pub type AttackFn = fn(&mut Level, BlockState, BlockPos, EntityId);
 /// (the player's data is not part of the level).
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlayerEffect {
-    /// `player.awardStat(stat, count)`.
-    Stat(crate::stats::Stat, i32),
     /// `player.getFoodData().eat(nutrition, saturation)`.
     Eat(i32, f32),
     /// `ItemUtils.createFilledResult` for a creative player: the stack goes into the inventory
@@ -151,6 +157,12 @@ pub struct UseContext {
     pub can_eat: bool,
     /// `player.canUseGameMasterBlocks()`: creative with operator permission level 2.
     pub game_master: bool,
+    /// The click is with the main hand.
+    pub main_hand: bool,
+    /// The item id in the player's off hand.
+    pub off_hand_item: u16,
+    /// The player's respawn position if it is in this world (`getRespawnConfig`).
+    pub respawn_here: Option<BlockPos>,
 }
 
 /// `InteractionResult` as far as block use goes.
@@ -206,6 +218,8 @@ pub struct BlockBehaviour {
     pub entity_inside: Option<EntityInsideFn>,
     /// `attack`.
     pub attack: Option<AttackFn>,
+    /// `onProjectileHit`.
+    pub projectile_hit: Option<projectile_hit::ProjectileHitFn>,
 }
 
 /// The behaviour table of all blocks.
@@ -341,6 +355,7 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
         b.random_tick = Some(growth::budding_amethyst_random_tick);
     } else if block == ids::REDSTONE_ORE || block == ids::DEEPSLATE_REDSTONE_ORE {
         b.random_tick = Some(weather::redstone_ore_random_tick);
+        b.attack = Some(weather::redstone_ore_attack);
     } else if block == ids::SPONGE {
         b.on_place = Some(fluid::sponge_on_place);
         b.neighbor_changed = Some(fluid::sponge_neighbor_changed);
@@ -369,8 +384,10 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
     portal::fill(block, &mut b);
     pot::fill(block, &mut b);
     bookshelf::fill(block, &mut b);
+    shelf::fill(block, &mut b);
     campfire::fill(block, &mut b);
     cake::fill(block, &mut b);
+    bed::fill(block, &mut b);
     cauldron::fill(block, &mut b);
     composter::fill(block, &mut b);
     interact::fill(block, &mut b);
@@ -380,7 +397,10 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
     creaking_heart::fill(block, &mut b);
     portal::fill(block, &mut b);
     eggs::fill(block, &mut b);
+    eyeblossom::fill(block, &mut b);
+    geyser::fill(block, &mut b);
     dripleaf::fill(block, &mut b);
+    projectile_hit::fill(block, &mut b);
     b
 }
 
@@ -473,4 +493,49 @@ pub fn hurt_item(level: &mut Level, stack: &mut crate::item::ItemStack, amount: 
     } else {
         item::set_damage(stack, damage);
     }
+}
+
+/// `level.findBlocksIn(from, to).filterState(predicate).forEach`: the matching positions in
+/// `BlockScanUtils` order (sections by x, z, y; inside a section by y, z, x). Positions in
+/// unloaded chunks and outside the build height are skipped.
+pub fn find_blocks_in(
+    level: &Level,
+    from: BlockPos,
+    to: BlockPos,
+    mut predicate: impl FnMut(BlockState) -> bool,
+) -> Vec<BlockPos> {
+    let (min_x, max_x) = (from.x.min(to.x), from.x.max(to.x));
+    let (min_y, max_y) = (
+        from.y.min(to.y).max(level.min_y()),
+        from.y.max(to.y).min(level.max_y()),
+    );
+    let (min_z, max_z) = (from.z.min(to.z), from.z.max(to.z));
+    let mut out = Vec::new();
+    if min_y > max_y {
+        return out;
+    }
+    for sx in (min_x >> 4)..=(max_x >> 4) {
+        for sz in (min_z >> 4)..=(max_z >> 4) {
+            if level
+                .chunks
+                .chunk(vanillite_base::ChunkPos::new(sx, sz))
+                .is_none()
+            {
+                continue;
+            }
+            for sy in (min_y >> 4)..=(max_y >> 4) {
+                for y in (sy * 16).max(min_y)..=(sy * 16 + 15).min(max_y) {
+                    for z in (sz * 16).max(min_z)..=(sz * 16 + 15).min(max_z) {
+                        for x in (sx * 16).max(min_x)..=(sx * 16 + 15).min(max_x) {
+                            let pos = BlockPos::new(x, y, z);
+                            if predicate(level.block(pos)) {
+                                out.push(pos);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
 }

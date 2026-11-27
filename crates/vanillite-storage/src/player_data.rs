@@ -159,11 +159,19 @@ impl PlayerDataStore {
         if queued && let Some(writer) = &self.writer {
             writer.flush();
         }
-        match std::fs::read_to_string(self.json_path(kind, uuid)) {
-            Ok(text) => Ok(Some(text)),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(e),
+        let path = self.json_path(kind, uuid);
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        // The game starts a damaged file anew and saves over it: keep a copy first.
+        if serde_json::from_slice::<serde_json::Value>(&bytes).is_err() {
+            files::keep_damaged(&path, &bytes);
         }
+        String::from_utf8(bytes)
+            .map(Some)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
     /// Writes a player's JSON file, in the background when the store has a writer.

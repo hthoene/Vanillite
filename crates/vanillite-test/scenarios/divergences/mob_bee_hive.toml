@@ -1,3 +1,0 @@
-tick = 1
-cause = "same start as mob_bee_fly: ValidateFlowerGoal and ValidateHiveGoal do not start on tick 1 (the game world's game time is below their cooldown) and the bee random takes one draw more; finding, entering and leaving the hive happen on Vanilla's ticks"
-owner = "gameplay-developer #81"

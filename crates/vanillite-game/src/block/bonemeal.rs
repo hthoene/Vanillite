@@ -2,11 +2,10 @@
 //! behaviour of every `BonemealableBlock`: `isValidBonemealTarget`, `isBonemealSuccess` and
 //! `performBonemeal`, dispatched by the block's Vanilla class.
 //!
-//! Blocks that grow by placing a configured world generation feature at run time (trees from
-//! saplings past stage 0 and azaleas, huge mushrooms, huge fungi, moss and nylium vegetation,
-//! the flowers of grass blocks) need the features on the live world, which are not connected
-//! yet: they are no target (the bone meal stays), and a grass block grows only short grass.
-//! Glow lichen spreading (`MultifaceSpreader`) is not ported either.
+//! Blocks that grow by placing a configured world generation feature at run time (trees,
+//! huge mushrooms, huge fungi, moss and nylium vegetation, the flowers of grass blocks) place
+//! Vanilla's feature in the live world ([`super::tree`]); without the features (no data
+//! packs) they are no target.
 
 use vanillite_base::random::RandomSource;
 use vanillite_base::{BlockPos, Direction};
@@ -25,7 +24,34 @@ pub fn grow_crop(level: &mut Level, pos: BlockPos, stack: &mut ItemStack) -> boo
         return false;
     }
     if is_success(level, state) {
-        perform(level, pos, state);
+        perform(level, pos, state, 0);
+    }
+    stack.shrink(1);
+    true
+}
+
+/// [`grow_crop`] by a player or (`player` 0) a dispenser, which plugins may cancel
+/// (`BLOCK_FERTILIZE`; Bukkit's `BlockFertilizeEvent`): a cancelled use takes no bone meal and
+/// returns `false`. Trees and huge plants it grows name the player (`STRUCTURE_GROW`).
+pub fn fertilize(level: &mut Level, pos: BlockPos, stack: &mut ItemStack, player: u128) -> bool {
+    let state = level.block(pos);
+    if !is_valid_target(level, pos, state) {
+        return false;
+    }
+    if let Some(hooks) = level.hooks_for(vanillite_abi::event::BLOCK_FERTILIZE) {
+        let mut ev = crate::hooks::Event {
+            player,
+            pos,
+            state: Some(state),
+            ..crate::hooks::Event::new(vanillite_abi::event::BLOCK_FERTILIZE)
+        };
+        hooks.event(&mut ev);
+        if ev.cancelled {
+            return false;
+        }
+    }
+    if is_success(level, state) {
+        perform(level, pos, state, player);
     }
     stack.shrink(1);
     true
@@ -35,6 +61,17 @@ pub fn grow_crop(level: &mut Level, pos: BlockPos, stack: &mut ItemStack) -> boo
 /// seagrass (and corals in warm oceans) around it. Takes one bone meal and returns `true` if
 /// `pos` is a full water block.
 pub fn grow_water_plant(level: &mut Level, pos: BlockPos, stack: &mut ItemStack) -> bool {
+    grow_water_plant_from(level, pos, None, stack)
+}
+
+/// `BoneMealItem.growWaterPlant` with the clicked face of a player's use: the first attempt
+/// against a horizontal face in a warm ocean grows a wall coral on it.
+pub fn grow_water_plant_from(
+    level: &mut Level,
+    pos: BlockPos,
+    clicked_face: Option<Direction>,
+    stack: &mut ItemStack,
+) -> bool {
     if !is_full_water(level, pos) {
         return false;
     }
@@ -51,11 +88,22 @@ pub fn grow_water_plant(level: &mut Level, pos: BlockPos, stack: &mut ItemStack)
                 continue 'attempts;
             }
         }
-        if produces_corals(level, test) && level.random().next_int_bounded(4) == 0 {
-            let options = underwater_bonemeals();
-            let index = level.random().next_int_bounded(options.len() as i32) as usize;
-            if let Some(&block) = options.get(index) {
-                grow = block.default_state();
+        if produces_corals(level, test) {
+            let horizontal = clicked_face
+                .filter(|f| !matches!(f, Direction::Up | Direction::Down))
+                .filter(|_| j == 0);
+            if let Some(face) = horizontal {
+                let options = WALL_CORALS;
+                let index = level.random().next_int_bounded(options.len() as i32) as usize;
+                if let Some(&block) = options.get(index) {
+                    grow = block.default_state().set_direction("facing", face);
+                }
+            } else if level.random().next_int_bounded(4) == 0 {
+                let options = underwater_bonemeals();
+                let index = level.random().next_int_bounded(options.len() as i32) as usize;
+                if let Some(&block) = options.get(index) {
+                    grow = block.default_state();
+                }
             }
         }
         if is_wall_coral(grow.block()) {
@@ -74,7 +122,7 @@ pub fn grow_water_plant(level: &mut Level, pos: BlockPos, stack: &mut ItemStack)
                 && is_valid_target(level, test, current)
                 && level.random().next_int_bounded(10) == 0
             {
-                perform(level, test, current);
+                perform(level, test, current, 0);
             }
         }
     }
@@ -130,16 +178,18 @@ fn underwater_bonemeals() -> [BlockId; 16] {
     ]
 }
 
+/// `#minecraft:wall_corals` in tag order.
+const WALL_CORALS: [BlockId; 5] = [
+    ids::TUBE_CORAL_WALL_FAN,
+    ids::BRAIN_CORAL_WALL_FAN,
+    ids::BUBBLE_CORAL_WALL_FAN,
+    ids::FIRE_CORAL_WALL_FAN,
+    ids::HORN_CORAL_WALL_FAN,
+];
+
 /// `#minecraft:wall_corals`.
 fn is_wall_coral(block: BlockId) -> bool {
-    [
-        ids::TUBE_CORAL_WALL_FAN,
-        ids::BRAIN_CORAL_WALL_FAN,
-        ids::BUBBLE_CORAL_WALL_FAN,
-        ids::FIRE_CORAL_WALL_FAN,
-        ids::HORN_CORAL_WALL_FAN,
-    ]
-    .contains(&block)
+    WALL_CORALS.contains(&block)
 }
 
 /// `Mth.nextInt(random, min, max)`.
@@ -259,7 +309,157 @@ pub fn is_valid_target(level: &mut Level, pos: BlockPos, state: BlockState) -> b
                 && nylium_around(level, pos) != (false, false)
         }
         K::GrassBlock => level.block(pos.above()).is_air() && in_height(level, pos.above()),
+        K::NetherFungusBlock => {
+            let required = if state.is(ids::CRIMSON_FUNGUS) {
+                ids::CRIMSON_NYLIUM
+            } else {
+                ids::WARPED_NYLIUM
+            };
+            level.block(pos.below()).is(required)
+                && in_height(level, pos.above())
+                && level.tree_features().is_some()
+        }
+        K::MushroomBlock => mushroom_feature(state.block()).is_some_and(|(_, foliage)| {
+            level.tree_features().is_some() && in_height(level, pos.offset(0, 4 + foliage, 0))
+        }),
+        K::BonemealableFeaturePlacerBlock => {
+            level.block(pos.above()).is_air() && level.tree_features().is_some()
+        }
+        K::NyliumBlock => {
+            level.block(pos.above()).is_air()
+                && in_height(level, pos.above())
+                && level.tree_features().is_some()
+        }
+        K::GlowLichenBlock => Direction::ALL
+            .into_iter()
+            .any(|face| lichen_can_spread_in_any_direction(level, state, pos, face.opposite())),
         _ => false,
+    }
+}
+
+/// The huge mushroom feature of a mushroom and its foliage radius.
+fn mushroom_feature(block: BlockId) -> Option<(&'static str, i32)> {
+    if block == ids::BROWN_MUSHROOM {
+        Some(("minecraft:huge_brown_mushroom", 3))
+    } else if block == ids::RED_MUSHROOM {
+        Some(("minecraft:huge_red_mushroom", 2))
+    } else {
+        None
+    }
+}
+
+// --- Glow lichen (`MultifaceSpreader` with `DefaultSpreaderConfig`) ---------------------
+
+fn axis_of(d: Direction) -> u8 {
+    match d {
+        Direction::Down | Direction::Up => 1,
+        Direction::North | Direction::South => 2,
+        Direction::West | Direction::East => 0,
+    }
+}
+
+/// `MultifaceBlock.isValidStateForPlacement` of glow lichen.
+fn lichen_valid_for_placement(
+    level: &Level,
+    old: BlockState,
+    pos: BlockPos,
+    face: Direction,
+) -> bool {
+    if old.is(ids::GLOW_LICHEN) && super::sculk_catalyst::has_face(old, face) {
+        return false;
+    }
+    super::sculk_catalyst::can_attach_to(level, pos, face)
+}
+
+/// `DefaultSpreaderConfig.canSpreadInto`.
+fn lichen_can_spread_into(level: &Level, (pos, face): (BlockPos, Direction)) -> bool {
+    let existing = level.block(pos);
+    let replaceable = existing.is_air()
+        || existing.is(ids::GLOW_LICHEN)
+        || existing.is(ids::WATER) && existing.fluid_state().info().source;
+    replaceable && lichen_valid_for_placement(level, existing, pos, face)
+}
+
+/// `getSpreadFromFaceTowardDirection` with the default spread order.
+fn lichen_spread_pos(
+    level: &Level,
+    state: BlockState,
+    pos: BlockPos,
+    starting: Direction,
+    spread: Direction,
+) -> Option<(BlockPos, Direction)> {
+    use super::sculk_catalyst::has_face;
+    if axis_of(spread) == axis_of(starting) {
+        return None;
+    }
+    if !(has_face(state, starting) && !has_face(state, spread)) {
+        return None;
+    }
+    [
+        (pos, spread),
+        (pos.relative(spread), starting),
+        (pos.relative(spread).relative(starting), spread.opposite()),
+    ]
+    .into_iter()
+    .find(|&target| lichen_can_spread_into(level, target))
+}
+
+/// `canSpreadInAnyDirection(state, level, pos, startingFace)`.
+fn lichen_can_spread_in_any_direction(
+    level: &Level,
+    state: BlockState,
+    pos: BlockPos,
+    starting: Direction,
+) -> bool {
+    Direction::ALL
+        .into_iter()
+        .any(|spread| lichen_spread_pos(level, state, pos, starting, spread).is_some())
+}
+
+/// `Direction.allShuffled(random)` (`Util.shuffle`).
+fn shuffled_directions(level: &mut Level) -> [Direction; 6] {
+    let mut d = Direction::ALL;
+    for i in (2..=d.len()).rev() {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        let j = level.random().next_int_bounded(i as i32) as usize;
+        d.swap(i - 1, j);
+    }
+    d
+}
+
+/// `spreadToFace` with `placeBlock` (`getStateForPlacement`, `setBlock(pos, state, 2)`).
+fn lichen_spread_to_face(level: &mut Level, (pos, face): (BlockPos, Direction)) -> bool {
+    let old = level.block(pos);
+    if !lichen_valid_for_placement(level, old, pos, face) {
+        return false;
+    }
+    let base = if old.is(ids::GLOW_LICHEN) {
+        old
+    } else if old.fluid_state().info().source && super::sculk_catalyst::is_water(old) {
+        ids::GLOW_LICHEN
+            .default_state()
+            .set_flag("waterlogged", true)
+    } else {
+        ids::GLOW_LICHEN.default_state()
+    };
+    let state = base.set_flag(super::sculk_catalyst::direction_name(face), true);
+    level.set_block(pos, state, update::CLIENTS)
+}
+
+/// `spreadFromRandomFaceTowardRandomDirection`: the faces the lichen has in random order,
+/// each toward the directions in random order, until one spreads.
+fn perform_lichen(level: &mut Level, pos: BlockPos, state: BlockState) {
+    for face in shuffled_directions(level) {
+        if !super::sculk_catalyst::has_face(state, face) {
+            continue;
+        }
+        for spread in shuffled_directions(level) {
+            if let Some(target) = lichen_spread_pos(level, state, pos, face, spread)
+                && lichen_spread_to_face(level, target)
+            {
+                return;
+            }
+        }
     }
 }
 
@@ -270,12 +470,16 @@ fn is_success(level: &mut Level, state: BlockState) -> bool {
         BlockKind::MangrovePropaguleBlock if !state.flag("hanging") => {
             level.random().next_float() < 0.45
         }
+        BlockKind::NetherFungusBlock | BlockKind::MushroomBlock => {
+            level.random().next_float() < 0.4
+        }
         _ => true,
     }
 }
 
-/// `performBonemeal(level, random, pos, state, INTERACTION)`.
-fn perform(level: &mut Level, pos: BlockPos, state: BlockState) {
+/// `performBonemeal(level, random, pos, state, INTERACTION)`; `player` (0 for none) used the
+/// bone meal.
+fn perform(level: &mut Level, pos: BlockPos, state: BlockState, player: u128) {
     use BlockKind as K;
     let block = state.block();
     let age = state.int("age").unwrap_or(0);
@@ -306,18 +510,18 @@ fn perform(level: &mut Level, pos: BlockPos, state: BlockState) {
         K::SweetBerryBushBlock => {
             level.set_block(pos, state.set_int("age", (age + 1).min(3)), update::CLIENTS);
         }
-        K::SaplingBlock => advance_tree(level, pos, state),
+        K::SaplingBlock => advance_tree(level, pos, state, player),
         K::MangrovePropaguleBlock => {
             if state.flag("hanging") {
                 if age != 4 {
                     level.set_block(pos, state.set_int("age", age + 1), update::CLIENTS);
                 }
             } else {
-                advance_tree(level, pos, state);
+                advance_tree(level, pos, state, player);
             }
         }
         K::AzaleaBlock => {
-            super::tree::grow_tree(level, pos, state);
+            super::tree::grow_tree_by(level, pos, state, player);
         }
         K::PitcherCropBlock => {
             if let Some((lower_pos, lower)) = pitcher_lower(level, pos, state) {
@@ -465,6 +669,42 @@ fn perform(level: &mut Level, pos: BlockPos, state: BlockState) {
             }
         }
         K::GrassBlock => perform_grass(level, pos),
+        K::NetherFungusBlock => {
+            let name = if block == ids::CRIMSON_FUNGUS {
+                "minecraft:crimson_fungus_planted"
+            } else {
+                "minecraft:warped_fungus_planted"
+            };
+            if super::tree::structure_may_grow(level, pos, state, player) {
+                super::tree::place_named(level, name, pos);
+            }
+        }
+        K::MushroomBlock => {
+            // `growMushroom`: the mushroom goes, and comes back if the feature fails.
+            if let Some((name, _)) = mushroom_feature(block)
+                && level.tree_features().is_some()
+                && super::tree::structure_may_grow(level, pos, state, player)
+            {
+                level.remove_block(pos, false);
+                if super::tree::place_named(level, name, pos) != Some(true) {
+                    level.set_block_and_update(pos, state);
+                }
+            }
+        }
+        K::BonemealableFeaturePlacerBlock => {
+            let name = if block == ids::PALE_MOSS_BLOCK {
+                "minecraft:pale_moss_patch_bonemeal"
+            } else {
+                "minecraft:moss_patch_bonemeal"
+            };
+            super::tree::place_named(level, name, pos.above());
+        }
+        K::NyliumBlock => {
+            if in_height(level, pos.above()) {
+                super::tree::place_named(level, "minecraft:nylium_bonemeal", pos.above());
+            }
+        }
+        K::GlowLichenBlock => perform_lichen(level, pos, state),
         _ => {}
     }
 }
@@ -473,11 +713,11 @@ fn perform(level: &mut Level, pos: BlockPos, state: BlockState) {
 const QUIET: u32 = update::INVISIBLE | update::SKIP_BLOCK_ENTITY_SIDEEFFECTS;
 
 /// `SaplingBlock.advanceTree`: stage 0 becomes stage 1, then the tree grows.
-fn advance_tree(level: &mut Level, pos: BlockPos, state: BlockState) {
+fn advance_tree(level: &mut Level, pos: BlockPos, state: BlockState, player: u128) {
     if state.int("stage") == Some(0) {
         level.set_block(pos, state.set_int("stage", 1), QUIET);
     } else {
-        super::tree::grow_tree(level, pos, state);
+        super::tree::grow_tree_by(level, pos, state, player);
     }
 }
 
@@ -869,8 +1109,8 @@ fn nylium_around(level: &Level, pos: BlockPos) -> (bool, bool) {
     (warped, crimson)
 }
 
-/// `GrassBlock.performBonemeal`: short grass around the block (`grass_bonemeal`); the flower
-/// features of the biome are not connected, so the 1-in-8 flower attempts place nothing.
+/// `GrassBlock.performBonemeal`: short grass (`grass_bonemeal`) and one in eight times a flower
+/// feature of the biome (`getBoneMealFeatures`) around the block.
 fn perform_grass(level: &mut Level, pos: BlockPos) {
     let above = pos.above();
     let grass = ids::SHORT_GRASS.default_state();
@@ -893,11 +1133,17 @@ fn perform_grass(level: &mut Level, pos: BlockPos) {
             && level.random().next_float() < 0.1
             && is_valid_target(level, test, current)
         {
-            perform(level, test, current);
+            perform(level, test, current, 0);
         }
-        if current.is_air() && in_height(level, test) && level.random().next_float() >= 0.125 {
-            // `grass_bonemeal`: `simple_block` of short grass where the block is empty.
-            if level.block(test).is_air() && level.can_survive(grass, test) {
+        if current.is_air() && in_height(level, test) {
+            if level.random().next_float() < 0.125 {
+                if !super::tree::biome_flowers_empty(level, test) {
+                    super::tree::place_biome_flower(level, test);
+                }
+            } else if level.tree_features().is_some() {
+                super::tree::place_grass_bonemeal(level, test);
+            } else if level.block(test).is_air() && level.can_survive(grass, test) {
+                // `grass_bonemeal` without the data packs: `simple_block` of short grass.
                 level.set_block(test, grass, update::CLIENTS);
             }
         }

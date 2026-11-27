@@ -7,7 +7,7 @@
 //! (detector rails, a hopper minecart taking in items, explosions) is queued as
 //! [`WorldAction`]s and runs right after the minecart's tick, in Vanilla's order.
 //! Command block minecarts run their command on a powered activator rail; spawner minecarts
-//! keep their spawner data but spawn nothing.
+//! tick their spawner like a spawner block.
 
 mod movement;
 
@@ -167,7 +167,8 @@ pub struct MinecartData {
     pub random: LegacyRandom,
     /// The slots of chest and hopper minecarts.
     pub items: Vec<ItemStack>,
-    /// `LootTable` and `LootTableSeed` (kept; filling is not implemented for any container).
+    /// `LootTable` and `LootTableSeed` until the loot is rolled
+    /// ([`crate::block::chest_loot::unpack_entity`]).
     pub loot_table: Option<(String, i64)>,
     /// Hopper minecart: `enabled` (off on a powered activator rail).
     pub enabled: bool,
@@ -184,8 +185,10 @@ pub struct MinecartData {
     /// Command block minecart: its `BaseCommandBlock` and `lastActivated`.
     pub command: crate::block::technical::command_block::BaseCommandBlock,
     pub last_activated: i32,
-    /// What the kind saves that is not simulated (spawner data, command block output).
+    /// What the kind saves that is not simulated (command block output).
     pub extra: Compound,
+    /// Spawner minecart: its `BaseSpawner`.
+    pub spawner: Option<Box<crate::block::spawner::MobSpawner>>,
 }
 
 impl MinecartData {
@@ -221,6 +224,7 @@ impl MinecartData {
             command: Default::default(),
             last_activated: 0,
             extra: Compound::new(),
+            spawner: (kind == MinecartKind::Spawner).then(Box::default),
         }
     }
 
@@ -284,6 +288,14 @@ impl Entities {
         self.boat(id)
             .filter(|b| b.kind.chest)
             .map(|b| b.items.as_slice())
+    }
+
+    /// `LootTable` and `LootTableSeed` of a container entity that still has its loot to roll.
+    pub fn container_loot_mut(&mut self, id: EntityId) -> Option<&mut Option<(String, i64)>> {
+        if self.minecart(id).is_some() {
+            return self.minecart_mut(id).map(|m| &mut m.loot_table);
+        }
+        self.boat_mut(id).map(|b| &mut b.loot_table)
     }
 
     /// The slots of a container entity, mutably.
@@ -354,6 +366,9 @@ pub fn tick(
             if ents.minecart(id).is_some_and(|m| m.enabled) && !cx.discarded.contains(&id) =>
         {
             cx.actions.push(WorldAction::HopperMinecart(id));
+        }
+        MinecartKind::Spawner if !cx.discarded.contains(&id) => {
+            cx.actions.push(WorldAction::SpawnerMinecart(id));
         }
         _ => {}
     }
@@ -659,19 +674,34 @@ fn destroy_minecart(
         }
     }
     let items = std::mem::take(&mut m.items);
+    let loot = m.loot_table.take();
     let drop = m.kind.drop_item();
     let name = m.custom_name.clone();
     crate::riding::eject_passengers(ents, env, id);
     discard(cx, id);
+    let mut stack = ItemStack::new(drop.0, 1);
+    if let Some(n) = name {
+        stack
+            .patch_mut()
+            .set(vanillite_protocol::components::ids::CUSTOM_NAME, n);
+    }
+    let entity_drops = env.rules.bool(Rule::ENTITY_DROPS);
+    if let Some((table, seed)) = loot.filter(|_| !items.is_empty()) {
+        // The loot is rolled first, which needs the world.
+        cx.actions
+            .push(WorldAction::DestroyLootVehicle(Box::new(LootVehicleDrop {
+                pos,
+                table,
+                seed,
+                slots: items.len(),
+                drop: Some(stack),
+                entity_drops,
+            })));
+        return;
+    }
     // `kill` → `remove(KILLED)`: a container drops its contents (whatever the rules say).
     drop_contents(env, pos, &items);
-    if env.rules.bool(Rule::ENTITY_DROPS) {
-        let mut stack = ItemStack::new(drop.0, 1);
-        if let Some(n) = name {
-            stack
-                .patch_mut()
-                .set(vanillite_protocol::components::ids::CUSTOM_NAME, n);
-        }
+    if entity_drops {
         spawn_at_location(env, pos, stack);
         if !items.is_empty() {
             // `chestVehicleDestroyed` drops the (now empty) contents once more.
@@ -680,28 +710,54 @@ fn destroy_minecart(
     }
 }
 
-/// `spawnAtLocation(stack)`: an item at the entity's position with the default pickup delay.
+/// A destroyed chest minecart or chest boat whose loot table was never rolled: the world
+/// rolls it, then drops what `destroy` drops ([`destroy_with_loot`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LootVehicleDrop {
+    pub pos: Vec3,
+    pub table: String,
+    pub seed: i64,
+    /// The container's size.
+    pub slots: usize,
+    /// The vehicle's own item.
+    pub drop: Option<ItemStack>,
+    /// The `entity_drops` game rule.
+    pub entity_drops: bool,
+}
+
+/// `destroy` of a container vehicle with a loot table: `remove(KILLED)` rolls the table
+/// (`getItem` → `unpackChestVehicleLootTable(null)`) and drops the contents; with entity
+/// drops the vehicle's item follows and `chestVehicleDestroyed` drops the (now empty)
+/// contents once more.
+pub fn destroy_with_loot(level: &mut Level, d: LootVehicleDrop) {
+    let mut items = vec![ItemStack::EMPTY; d.slots];
+    crate::block::chest_loot::fill(level, &d.table, d.seed, d.pos, 0.0, None, &mut items);
+    let base = BlockPos::containing(d.pos.x, d.pos.y, d.pos.z);
+    for stack in items {
+        crate::block::container::drop_item_stack(level, base, stack);
+    }
+    if d.entity_drops {
+        if let Some(stack) = d.drop {
+            crate::block::drops::spawn_item_moving(level, d.pos, stack, None, 10, None);
+        }
+        for _ in 0..d.slots {
+            crate::block::container::drop_item_stack(level, base, ItemStack::EMPTY);
+        }
+    }
+}
+
+/// `spawnAtLocation(stack)`: an item at the entity's position with the default pickup delay
+/// (the item draws its yaw and motion from its own random).
 pub(crate) fn spawn_at_location(env: &mut Env<'_>, pos: Vec3, stack: ItemStack) {
-    let r = &mut *env.random;
-    let velocity = Vec3::new(
-        r.next_double() * 0.2 - 0.1,
-        0.2,
-        r.next_double() * 0.2 - 0.1,
-    );
+    let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
     env.out.push(Effect::DropItem {
-        uuid: crate::block::tnt::insecure_uuid(),
+        uuid,
         pos,
         velocity,
-        y_rot: insecure_float() * 360.0,
+        y_rot,
         pickup_delay: 10,
         stack,
     });
-}
-
-/// A float from a random of its own (an entity's yaw at creation draws from that entity).
-fn insecure_float() -> f32 {
-    let mut r = LegacyRandom::new(crate::survival::sound_seed());
-    r.next_float()
 }
 
 /// `Containers.dropContents(level, entity, container)`: every slot drops in parts of 10 to 30
@@ -721,19 +777,20 @@ pub(crate) fn drop_contents(env: &mut Env<'_>, pos: Vec3, items: &[ItemStack]) {
             let r = &mut *env.random;
             let n = r.next_int_bounded(21) + 10;
             let part = stack.split(n);
-            r.next_double();
-            r.next_double();
             let mut triangle = |mode: f64| {
                 let a = r.next_double();
                 let b = r.next_double();
                 mode + 0.114_850_001_711_398_36 * (a - b)
             };
             let velocity = Vec3::new(triangle(0.0), triangle(0.2), triangle(0.0));
+            // `new ItemEntity(level, x, y, z, stack)` draws its yaw and first motion from the
+            // item's own random.
+            let (uuid, y_rot, _) = crate::mob::new_item_entity();
             env.out.push(Effect::DropItem {
-                uuid: crate::block::tnt::insecure_uuid(),
+                uuid,
                 pos: Vec3::new(xo, yo, zo),
                 velocity,
-                y_rot: insecure_float() * 360.0,
+                y_rot,
                 pickup_delay: 0,
                 stack: part,
             });
@@ -889,7 +946,7 @@ pub fn use_item_on(
     data.custom_name = stack
         .component(vanillite_protocol::components::ids::CUSTOM_NAME)
         .map(Into::into);
-    spawn(
+    let id = spawn(
         ents,
         network_ids,
         crate::block::tnt::insecure_uuid(),
@@ -897,6 +954,9 @@ pub fn use_item_on(
         Rotation::default(),
         data,
     );
+    if !ents.spawned(id, vanillite_abi::spawn_reason::DEFAULT, 0) {
+        return false;
+    }
     if !infinite {
         stack.shrink(1);
     }
@@ -940,7 +1000,7 @@ pub fn dispense(
     let mut data = MinecartData::new(kind, crate::survival::sound_seed());
     data.custom_name = name;
     let network_ids = std::sync::Arc::clone(level.network_ids_arc());
-    spawn(
+    let id = spawn(
         &mut level.entities,
         &network_ids,
         crate::block::tnt::insecure_uuid(),
@@ -948,6 +1008,9 @@ pub fn dispense(
         Rotation::default(),
         data,
     );
+    level
+        .entities
+        .spawned(id, vanillite_abi::spawn_reason::DISPENSER, 0);
     true
 }
 

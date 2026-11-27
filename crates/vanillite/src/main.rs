@@ -14,6 +14,24 @@ use vanillite_server::ServerBuilder;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+/// Returns freed memory of the allocator to the system.
+fn release_memory() {
+    #[cfg(target_env = "musl")]
+    {
+        // Part of the mimalloc library the global allocator links.
+        unsafe extern "C" {
+            fn mi_collect(force: bool);
+        }
+        // SAFETY: `mi_collect` may be called from any thread at any time.
+        unsafe { mi_collect(true) };
+    }
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: `malloc_trim` may be called from any thread at any time.
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}
+
 const USAGE: &str = "\
 Usage: vanillite [command] [options]
 
@@ -21,7 +39,8 @@ Commands:
   run              Start the server (default)
   health           Send a status ping to the local server; exit code 0 if it answers
   convert          Convert the world into another format while the server is stopped
-  export <target>  Write a Vanilla (Anvil) copy of an own-format world into <target>
+  export <target>  Write a copy of the world in another format into <target>
+                   (default: a Vanilla (Anvil) copy of an own-format world)
   upgrade-world    Rewrite every chunk of an own-format world written by an older
                    Minecraft version in this version (otherwise chunks are upgraded
                    when they are saved)
@@ -33,7 +52,11 @@ Options of run, health, convert, export and upgrade-world:
 Options of convert:
   --to <format>  vanillite or anvil (default: storage.world-format of vanillite.toml).
                  The new files are verified before the old ones are moved into
-                 world-format-backup/ (storage.keep-converted-files) or deleted
+                 world-format-backup/ (storage.keep-converted-files) or deleted.
+                 An interrupted conversion is resumed by running it again
+
+Options of export:
+  --to <format>  anvil (default) or vanillite
 
 Options of health:
   --port <port>  Port to ping (default: VANILLITE_SERVER_PORT, else server-port of
@@ -87,6 +110,7 @@ fn run(mut args: impl Iterator<Item = String>) -> ExitCode {
         .spawn(move || {
             let mut builder = ServerBuilder::new(dir);
             builder.version(version());
+            builder.memory_release(release_memory);
             let server = match builder.start() {
                 Ok(server) => server,
                 Err(e) => {
@@ -174,10 +198,11 @@ fn upgrade_world(mut args: impl Iterator<Item = String>) -> ExitCode {
     }
 }
 
-/// `vanillite export <target> [--dir <path>]`.
+/// `vanillite export <target> [--to <format>] [--dir <path>]`.
 fn export(mut args: impl Iterator<Item = String>) -> ExitCode {
     let mut dir = PathBuf::from(".");
     let mut target = None;
+    let mut to = vanillite_storage::WorldFormat::Anvil;
     while let Some(arg) = args.next() {
         match (arg.as_str(), target.is_none()) {
             ("--dir", _) => {
@@ -187,6 +212,14 @@ fn export(mut args: impl Iterator<Item = String>) -> ExitCode {
                 };
                 dir = PathBuf::from(path);
             }
+            ("--to", _) => match args.next().as_deref() {
+                Some("anvil") => to = vanillite_storage::WorldFormat::Anvil,
+                Some("vanillite") => to = vanillite_storage::WorldFormat::Vanillite,
+                _ => {
+                    eprintln!("--to needs anvil or vanillite\n\n{USAGE}");
+                    return ExitCode::FAILURE;
+                }
+            },
             (_, true) if !arg.starts_with("--") => target = Some(PathBuf::from(arg)),
             _ => {
                 eprintln!("Invalid option {arg:?}\n\n{USAGE}");
@@ -199,7 +232,7 @@ fn export(mut args: impl Iterator<Item = String>) -> ExitCode {
         return ExitCode::FAILURE;
     };
     logger::init();
-    match vanillite_server::export_world(&dir, &target) {
+    match vanillite_server::export_world(&dir, &target, to) {
         Ok(_) => ExitCode::SUCCESS,
         Err(e) => {
             log::error!("Export failed: {e}");

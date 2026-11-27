@@ -1,0 +1,13 @@
+{
+  "description": "A player launches a firework rocket from the ground (FireworkRocketItem.useOn, #107): the rocket's start, its acceleration and its explosion at the end of its random lifetime.",
+  "rules": {"spawn_monsters": "false"},
+  "region": [[0, -61, 0], [15, -10, 15]],
+  "ticks": 120,
+  "entities": [
+    {"name": "steve", "type": "minecraft:player", "pos": [4.5, -60.0, 4.5]}
+  ],
+  "actions": [
+    {"tick": 62, "op": "use", "entity": "steve", "item": "minecraft:firework_rocket", "pos": [7, -61, 4], "face": "up", "hit": [0.25, 1.0, 0.75]},
+    {"tick": 70, "op": "use", "entity": "steve", "item": "minecraft:firework_rocket", "count": 2, "components": "{\"minecraft:fireworks\": {\"flight_duration\": 2}}", "pos": [7, -61, 9], "face": "up"}
+  ]
+}

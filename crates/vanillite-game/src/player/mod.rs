@@ -11,10 +11,12 @@
 )]
 
 pub mod chat;
+pub mod chorus;
 pub mod chunks;
 pub mod connection;
 pub mod cooldowns;
 pub mod encode;
+pub mod item_use;
 pub mod items;
 pub mod join;
 pub mod movement;
@@ -186,4 +188,26 @@ pub fn dimensions(pose: Pose) -> Dimensions {
         _ => (0.6, 1.8),
     };
     Dimensions { width, height }
+}
+
+/// Fires a player event of `kind` (`vanillite_abi::event`; `entity` the player) when a plugin
+/// listens: `fill` sets the kind's other fields. Returns the event with the handlers'
+/// changes, `None` when nobody listens (nothing is built then).
+pub fn player_event(
+    hooks: &dyn crate::hooks::GameHooks,
+    kind: u32,
+    player: u128,
+    fill: impl FnOnce(&mut crate::hooks::Event),
+) -> Option<crate::hooks::Event> {
+    if !hooks.wants(kind) {
+        return None;
+    }
+    let mut event = crate::hooks::Event {
+        entity: player,
+        entity_type: "minecraft:player".to_owned(),
+        ..crate::hooks::Event::new(kind)
+    };
+    fill(&mut event);
+    hooks.event(&mut event);
+    Some(event)
 }

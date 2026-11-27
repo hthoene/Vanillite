@@ -1,0 +1,35 @@
+{
+  "description": "A snow golem melts in a desert (the biome's snow_golem_melts attribute, SnowGolem.aiStep): one fire damage per tick through its invulnerability frames until it dies, leaving its snow trail meanwhile.",
+  "tier": "fast",
+  "world": {
+    "seed": 21,
+    "biome": "minecraft:desert"
+  },
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -58,
+      15
+    ]
+  ],
+  "ticks": 70,
+  "entities": [
+    {
+      "name": "golem",
+      "type": "minecraft:snow_golem",
+      "pos": [
+        7.5,
+        -60.0,
+        7.5
+      ],
+      "seed": 8,
+      "finalize": false
+    }
+  ]
+}

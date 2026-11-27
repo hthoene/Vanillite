@@ -163,6 +163,11 @@ impl Modifiers {
         self.dirty |= 1u64.checked_shl(u32::from(attribute.0)).unwrap_or(0);
     }
 
+    /// Marks an attribute whose base value changed for `onAttributeUpdated` and the sync.
+    pub fn touch(&mut self, attribute: Attribute) {
+        self.mark(attribute);
+    }
+
     /// `removeModifier(id)` + `addPermanentModifier`: sets the modifier `id` of `attribute`.
     pub fn set(&mut self, attribute: Attribute, id: &str, amount: f64, operation: Operation) {
         self.mark(attribute);

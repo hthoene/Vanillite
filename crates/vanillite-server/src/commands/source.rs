@@ -154,7 +154,8 @@ impl vanillite_command::Source for CommandSource {
     ) {
         use vanillite_game::commands::suggest;
         if provider.starts_with(vanillite_plugin_host::SUGGEST_PREFIX) {
-            let args = super::dispatch::plugin_args(None, self, args).unwrap_or_default();
+            let input = builder.input().to_owned();
+            let args = super::dispatch::plugin_args(None, self, args, &input).unwrap_or_default();
             let list = self.global.plugins.suggest(
                 provider,
                 &self.plugin_sender(),
@@ -379,8 +380,18 @@ impl vanillite_command::Source for CommandSource {
 impl CommandSource {
     /// The source as a plugin command sender.
     pub(crate) fn plugin_sender(&self) -> vanillite_plugin_host::Sender {
+        let kind = match (&self.kind, &self.entity) {
+            (SourceKind::CommandBlock(_), _) => vanillite_abi::sender::COMMAND_BLOCK,
+            (_, Some(e)) if !e.is_player() => vanillite_abi::sender::ENTITY,
+            _ => vanillite_abi::sender::CONSOLE,
+        };
         vanillite_plugin_host::Sender {
-            player: self.uuid(),
+            kind,
+            player: self.uuid().or_else(|| {
+                (kind == vanillite_abi::sender::ENTITY)
+                    .then(|| self.entity.as_ref().map(|e| e.uuid))
+                    .flatten()
+            }),
             world: Some(u32::from(self.world.0)),
             pos: [self.pos.x, self.pos.y, self.pos.z],
         }

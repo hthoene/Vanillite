@@ -9,6 +9,7 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+vanillite-data.workspace = true
 vanillite-nbt.workspace = true
 vanillite-protocol.workspace = true
 log.workspace = true

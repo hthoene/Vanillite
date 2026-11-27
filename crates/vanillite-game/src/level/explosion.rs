@@ -56,6 +56,8 @@ pub enum BlockResistance {
     /// `AbstractWindCharge.EXPLOSION_DAMAGE_CALCULATOR`: `#blocks_wind_charge_explosions` are
     /// immune.
     WindCharge,
+    /// `RespawnAnchorBlock.explode` in water: the anchor's position resists like water.
+    WaterAt(BlockPos),
 }
 
 /// An explosion for the clients (`ClientboundExplodePacket`), sent to players within 64 blocks.
@@ -89,6 +91,8 @@ pub struct ExplosionStyle {
     pub resistance: BlockResistance,
     /// `fire`: sets fire to some of the blown up positions (`createFire`).
     pub fire: bool,
+    /// The damage is `badRespawnPointExplosion` (beds and respawn anchors).
+    pub bad_respawn_point: bool,
 }
 
 impl Default for ExplosionStyle {
@@ -99,6 +103,7 @@ impl Default for ExplosionStyle {
             wind_sound: None,
             resistance: BlockResistance::Default,
             fire: false,
+            bad_respawn_point: false,
         }
     }
 }
@@ -123,6 +128,8 @@ pub struct ExplosionHurt {
     pub blocklike: bool,
     /// The source is a wind charge.
     pub wind: bool,
+    /// `badRespawnPointExplosion` instead of `explosion`.
+    pub bad_respawn_point: bool,
 }
 
 impl ExplosionHurt {
@@ -170,6 +177,42 @@ impl Level {
         interaction: BlockInteraction,
         style: ExplosionStyle,
     ) -> usize {
+        self.explode_full(source, indirect, center, radius, interaction, style, None)
+    }
+
+    /// [`Self::explode_with`] of a block without a source entity (a bed or respawn anchor):
+    /// `block` is the exploding block and its state before it went, for the plugins.
+    pub fn explode_block(
+        &mut self,
+        block: (BlockPos, BlockState),
+        center: Vec3,
+        radius: f32,
+        interaction: BlockInteraction,
+        style: ExplosionStyle,
+    ) -> usize {
+        self.explode_full(None, None, center, radius, interaction, style, Some(block))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn explode_full(
+        &mut self,
+        source: Option<EntityId>,
+        indirect: Option<EntityId>,
+        center: Vec3,
+        radius: f32,
+        interaction: BlockInteraction,
+        style: ExplosionStyle,
+        block: Option<(BlockPos, BlockState)>,
+    ) -> usize {
+        let (mut radius, mut interaction, mut style) = (radius, interaction, style);
+        if let Some(hooks) = self.hooks_for(vanillite_abi::event::ENTITY_EXPLODE) {
+            let Some((r, i, fire)) =
+                self.explode_event(&*hooks, source, center, radius, interaction, &style, block)
+            else {
+                return 0;
+            };
+            (radius, interaction, style.fire) = (r, i, fire);
+        }
         let context = super::game_event::GameEventContext::of(source);
         self.game_event(super::game_event::events().explode, center, context);
         let mut targets = self.exploded_positions(center, radius, style.resistance);
@@ -194,6 +237,63 @@ impl Level {
             wind_sound: style.wind_sound,
         });
         count
+    }
+
+    /// The plugins' explosion event (`vanillite_abi::event::ENTITY_EXPLODE`): `None` when a
+    /// plugin cancelled it, else the radius, block interaction and fire it may have changed.
+    #[allow(clippy::too_many_arguments)]
+    fn explode_event(
+        &self,
+        hooks: &dyn crate::hooks::GameHooks,
+        source: Option<EntityId>,
+        center: Vec3,
+        radius: f32,
+        interaction: BlockInteraction,
+        style: &ExplosionStyle,
+        block: Option<(BlockPos, BlockState)>,
+    ) -> Option<(f32, BlockInteraction, bool)> {
+        use vanillite_abi::explode_flag;
+        let destroys = matches!(
+            interaction,
+            BlockInteraction::Destroy | BlockInteraction::DestroyWithDecay
+        );
+        let mut flags = 0;
+        if destroys {
+            flags |= explode_flag::BREAK_BLOCKS;
+        }
+        if style.fire {
+            flags |= explode_flag::FIRE;
+        }
+        let entity = source.and_then(|s| self.entities.store.get(s));
+        let mut ev = crate::hooks::Event {
+            entity: entity.as_ref().map_or(0, |e| e.uuid()),
+            entity_type: entity
+                .as_ref()
+                .map_or_else(String::new, |e| e.kind().name().to_owned()),
+            pos: block.map_or(BlockPos::containing(center.x, center.y, center.z), |b| b.0),
+            state: block.map(|b| b.1),
+            to: crate::hooks::Place::at(center),
+            amount: f64::from(radius),
+            flags,
+            ..crate::hooks::Event::new(vanillite_abi::event::ENTITY_EXPLODE)
+        };
+        hooks.event(&mut ev);
+        if ev.cancelled {
+            return None;
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        let radius = if ev.amount.is_finite() {
+            ev.amount.clamp(0.0, crate::hooks::MAX_EXPLOSION_RADIUS) as f32
+        } else {
+            radius
+        };
+        let breaks = ev.flags & explode_flag::BREAK_BLOCKS != 0;
+        let interaction = match (destroys, breaks) {
+            (true, false) => BlockInteraction::Keep,
+            (false, true) => BlockInteraction::Destroy,
+            _ => interaction,
+        };
+        Some((radius, interaction, ev.flags & explode_flag::FIRE != 0))
     }
 
     /// `calculateExplodedPositions`: the blocks the rays reach, in the iteration order of
@@ -243,6 +343,9 @@ impl Level {
                             {
                                 power -= (3_600_000.0 + 0.3) * 0.3;
                             }
+                        } else if override_resistance == BlockResistance::WaterAt(pos) {
+                            let water = vanillite_data::block::ids::WATER.default_state();
+                            power -= (water.block().info().blast_resistance + 0.3) * 0.3;
                         } else if !(state.is_air() && fluid.is_empty()) {
                             let mut resistance = if rail_protected {
                                 0.0
@@ -342,8 +445,9 @@ impl Level {
                 #[allow(clippy::cast_possible_truncation)]
                 let amount = ((pow * pow + pow) / 2.0 * 7.0 * double_radius + 1.0) as f32;
                 let destroyed = self.entities.item_mut(id).is_some_and(|d| {
-                    // The nether star resists explosions (`damage_resistant`).
-                    if crate::item::item_id(&d.stack).name() == "minecraft:nether_star" {
+                    // `ItemStack.canBeHurtBy`: the nether star resists explosions
+                    // (`damage_resistant` with `#is_explosion`).
+                    if crate::item::damage_resistant(&d.stack) == Some("minecraft:is_explosion") {
                         return false;
                     }
                     #[allow(clippy::cast_possible_truncation)]
@@ -401,6 +505,7 @@ impl Level {
                     center,
                     blocklike: destroys && !wind,
                     wind,
+                    bad_respawn_point: style.bad_respawn_point,
                 });
             }
             if decor || crate::decoration::is_decor_kind(kind) {
@@ -482,6 +587,15 @@ impl Level {
                     crate::block::beehive::exploded(self, pos, state, source);
                 }
                 loot.clear();
+                // `spawnAfterBreak` with experience only for a player's explosion.
+                let by_player = indirect.is_some_and(|i| self.entities.player(i).is_some());
+                crate::block::break_hooks::spawn_after_break(
+                    self,
+                    state,
+                    pos,
+                    &crate::item::ItemStack::EMPTY,
+                    by_player,
+                );
                 drops::explosion_loot(self, pos, state, decay, source, &mut loot);
                 for mut stack in loot.drain(..) {
                     for (_, collected) in &mut stacks {

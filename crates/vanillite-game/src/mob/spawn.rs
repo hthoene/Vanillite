@@ -152,6 +152,8 @@ pub struct BiomeSpawns {
     pub temperature: f32,
     /// `minecraft:gameplay/can_pillager_patrol_spawn`.
     pub patrol_spawn: bool,
+    /// `minecraft:gameplay/snow_golem_melts` where the biome sets it (else the dimension's).
+    pub snow_golem_melts: Option<bool>,
 }
 
 impl BiomeSpawns {
@@ -770,7 +772,7 @@ fn spawn_category_for_chunk(
             cluster += 1;
             group_size += 1;
             let group_reached = super::fam::is_max_group_size_reached(&mob, group_size);
-            add_mob_with(level, mob, pos_v, y_rot, extra);
+            add_mob_with(level, mob, pos_v, y_rot, extra, SpawnReason::Natural);
             // `afterSpawn`: the charge, the counts.
             spawner.potential.add(pos, cost.map_or(0.0, |c| c.0));
             state.counts[category.index()] += 1;
@@ -877,15 +879,35 @@ pub fn finalize_in_group(
     ctx.extra
 }
 
-/// Adds a finished mob and the mobs spawned with it (`addFreshEntityWithPassengers`).
+/// Adds a finished mob and the mobs spawned with it (`addFreshEntityWithPassengers`) for
+/// `reason`. A plugin may cancel the spawn ([`Entities::spawned`](crate::entities::Entities::spawned)):
+/// the returned mob is then gone and nothing spawns with it.
 pub fn add_mob_with(
     level: &mut Level,
     mob: MobData,
     pos: Vec3,
     y_rot: f32,
     extra: Vec<ExtraMob>,
+    reason: SpawnReason,
 ) -> EntityId {
-    let id = add_mob(level, mob, pos, y_rot);
+    add_mob_with_code(level, mob, pos, y_rot, extra, reason.abi())
+}
+
+/// [`add_mob_with`] with the plugins' `vanillite_abi::spawn_reason` (riders: `JOCKEY`).
+fn add_mob_with_code(
+    level: &mut Level,
+    mob: MobData,
+    pos: Vec3,
+    y_rot: f32,
+    extra: Vec<ExtraMob>,
+    reason: u32,
+) -> EntityId {
+    let id = add_mob_raw(level, mob, pos, y_rot);
+    level.entities.spawned(id, reason, 0);
+    if extra.is_empty() || !level.entities.store.contains(id) {
+        return id;
+    }
+    let parent = level.entities.store.get(id).map_or(0, |e| e.uuid());
     let mut spawned = Vec::with_capacity(extra.len());
     for e in extra {
         if let Relation::Existing(vehicle) = e.relation {
@@ -893,7 +915,8 @@ pub fn add_mob_with(
             spawned.push(vehicle);
             continue;
         }
-        let other = add_mob(level, e.mob, pos + e.offset, y_rot);
+        let rides = !matches!(e.relation, Relation::Beside);
+        let other = add_mob_raw(level, e.mob, pos + e.offset, y_rot);
         spawned.push(other);
         match e.relation {
             Relation::RidesExtra(i) => {
@@ -905,12 +928,31 @@ pub fn add_mob_with(
             Relation::CarriesIt => level.entities.riding.add(id, other, false),
             Relation::Beside | Relation::Existing(_) => {}
         }
+        let reason = if rides {
+            vanillite_abi::spawn_reason::JOCKEY
+        } else {
+            reason
+        };
+        level.entities.spawned(other, reason, parent);
     }
     id
 }
 
-/// Adds a finished mob to the level (`addFreshEntityWithPassengers`).
-pub fn add_mob(level: &mut Level, mut mob: MobData, pos: Vec3, y_rot: f32) -> EntityId {
+/// Adds a finished mob to the level (`addFreshEntity`) for `reason`; a plugin may cancel it
+/// (the returned mob is then gone).
+pub fn add_mob(
+    level: &mut Level,
+    mob: MobData,
+    pos: Vec3,
+    y_rot: f32,
+    reason: SpawnReason,
+) -> EntityId {
+    let id = add_mob_raw(level, mob, pos, y_rot);
+    level.entities.spawned(id, reason.abi(), 0);
+    id
+}
+
+fn add_mob_raw(level: &mut Level, mut mob: MobData, pos: Vec3, y_rot: f32) -> EntityId {
     let uuid = crate::mob::new_uuid();
     mob.y_body_rot = y_rot;
     let rot = Rotation {
@@ -1527,7 +1569,14 @@ pub fn spawn_for_chunk_generation(
                                     &mut random,
                                 );
                                 group_index += 1;
-                                add_mob_with(level, mob, at, y_rot, extra);
+                                add_mob_with(
+                                    level,
+                                    mob,
+                                    at,
+                                    y_rot,
+                                    extra,
+                                    SpawnReason::ChunkGeneration,
+                                );
                                 success = true;
                             }
                         }
@@ -1544,13 +1593,16 @@ pub fn spawn_for_chunk_generation(
     }
 }
 
-/// Spawns a mob by command (`/summon`): `finalizeSpawn` with `COMMAND`, persistent.
+/// Spawns a mob by command (`/summon`): `finalizeSpawn` with `COMMAND`, persistent. `reason`
+/// is the plugins' `vanillite_abi::spawn_reason` (`COMMAND`, or `PLUGIN` for `entity_spawn`);
+/// a plugin may cancel the spawn (the returned mob is then gone).
 pub fn summon(
     level: &mut Level,
     table: Option<&SpawnTable>,
     kind: Kind,
     pos: Vec3,
     difficulty: Difficulty,
+    reason: u32,
 ) -> EntityId {
     let seed = crate::mob::new_entity_seed();
     let mut mob = MobData::new(kind, seed);
@@ -1570,7 +1622,7 @@ pub fn summon(
         )
     });
     let y_rot = level.random().next_float() * 360.0;
-    add_mob_with(level, mob, pos, y_rot, extra)
+    add_mob_with_code(level, mob, pos, y_rot, extra, reason)
 }
 
 /// `CatSpawner`'s state.
@@ -1715,7 +1767,7 @@ fn spawn_cat(
         cat.persistent = true;
     }
     let at = Vec3::new(f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
-    add_mob_with(level, cat, at, 0.0, extra);
+    add_mob_with(level, cat, at, 0.0, extra, SpawnReason::Event);
 }
 
 /// Counts the mobs per kind (for `/vanillite` style statistics and tests).

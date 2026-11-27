@@ -136,8 +136,16 @@ pub fn start_riding(
     if !force && !can_add_passenger(ents, vehicle) {
         return false;
     }
-    if ents.vehicle_of(passenger).is_some() {
-        stop_riding(ents, env, passenger);
+    if !riding_event(
+        ents,
+        vanillite_abi::event::VEHICLE_ENTER,
+        passenger,
+        vehicle,
+    ) {
+        return false;
+    }
+    if ents.vehicle_of(passenger).is_some() && stop_riding(ents, env, passenger).is_none() {
+        return false;
     }
     let is_player = ents.player(passenger).is_some();
     if let Some(mut e) = ents.store.get_mut(passenger) {
@@ -174,13 +182,94 @@ pub fn start_riding(
     true
 }
 
+/// The plugins' `VEHICLE_ENTER` or `VEHICLE_EXIT` event (`vanillite_abi::event`) of
+/// `passenger` and `vehicle`: whether it may. Without listeners one branch.
+fn riding_event(ents: &Entities, kind: u32, passenger: EntityId, vehicle: EntityId) -> bool {
+    let Some(hooks) = ents.hooks_for(kind) else {
+        return true;
+    };
+    let (Some(p), Some(v)) = (ents.store.get(passenger), ents.store.get(vehicle)) else {
+        return true;
+    };
+    let mut ev = crate::hooks::Event {
+        entity: p.uuid(),
+        entity_type: p.kind().name().to_owned(),
+        other: v.uuid(),
+        other_type: v.kind().name().to_owned(),
+        ..crate::hooks::Event::new(kind)
+    };
+    hooks.event(&mut ev);
+    !ev.cancelled
+}
+
+/// `stopRiding` from block code without the survival environment (a player lying down in a
+/// bed): `passenger` gets off where it is and the players near the vehicle see it. The exit
+/// event cannot be cancelled here.
+pub fn stop_riding_in_level(level: &mut crate::level::Level, passenger: EntityId) {
+    if let Some(vehicle) = level.entities.vehicle_of(passenger) {
+        riding_event(
+            &level.entities,
+            vanillite_abi::event::VEHICLE_EXIT,
+            passenger,
+            vehicle,
+        );
+    }
+    let Some(vehicle) = level.entities.riding.remove(passenger) else {
+        return;
+    };
+    if let Some(mut e) = level.entities.store.get_mut(passenger) {
+        e.set_flags(EntityFlags::PASSENGER, false);
+    }
+    if let Some(p) = level.entities.player_mut(passenger) {
+        p.connection.movement.passenger = false;
+    }
+    let Some(v) = level.entities.store.get(vehicle) else {
+        return;
+    };
+    let at = v.pos();
+    let packet = SetPassengers {
+        vehicle: v.network_id().0,
+        passengers: VarIntList(
+            level
+                .entities
+                .riding
+                .passengers_of(vehicle)
+                .iter()
+                .filter_map(|&p| level.entities.store.get(p).map(|e| e.network_id().0))
+                .collect(),
+        ),
+    };
+    let event = crate::level::game_event::events().entity_dismount;
+    level.game_event(
+        event,
+        at,
+        crate::level::game_event::GameEventContext::of(Some(passenger)),
+    );
+    level
+        .output()
+        .nearby_packets
+        .push((at, 64.0, vanillite_protocol::SharedPacket::of(&packet)));
+}
+
 /// `stopRiding`: `passenger` gets off and is placed at the dismount location. Returns the
-/// old vehicle.
+/// old vehicle; `None` also when a plugin cancelled it (`VEHICLE_EXIT`: it stays, its
+/// client is corrected).
 pub fn stop_riding(
     ents: &mut Entities,
     env: &mut Env<'_>,
     passenger: EntityId,
 ) -> Option<EntityId> {
+    let vehicle = ents.vehicle_of(passenger)?;
+    if !riding_event(ents, vanillite_abi::event::VEHICLE_EXIT, passenger, vehicle) {
+        send_passengers(ents, env, vehicle);
+        return None;
+    }
+    dismount(ents, env, passenger)
+}
+
+/// [`stop_riding`] where Vanilla does not let the passenger stay (its vehicle breaks): the
+/// exit event cannot be cancelled.
+fn dismount(ents: &mut Entities, env: &mut Env<'_>, passenger: EntityId) -> Option<EntityId> {
     let vehicle = ents.riding.remove(passenger)?;
     if let Some(at) = ents.store.get(vehicle).map(|e| e.pos()) {
         let event = crate::level::game_event::events().entity_dismount;
@@ -196,25 +285,53 @@ pub fn stop_riding(
     crate::decoration::cushion::passenger_left(ents, env, vehicle);
     let alive = ents.store.contains(passenger);
     if alive && let Some(target) = dismount_location(ents, env, vehicle, passenger) {
-        dismount_to(ents, passenger, target);
+        dismount_to(ents, env.hooks, passenger, target);
     }
     Some(vehicle)
 }
 
-/// `ejectPassengers`.
+/// `ejectPassengers` (a vehicle breaks or a rail ejects): the exit events cannot be
+/// cancelled.
 pub fn eject_passengers(ents: &mut Entities, env: &mut Env<'_>, vehicle: EntityId) {
     let list: Vec<EntityId> = ents.riding.passengers_of(vehicle).to_vec();
     for p in list.into_iter().rev() {
-        stop_riding(ents, env, p);
+        riding_event(ents, vanillite_abi::event::VEHICLE_EXIT, p, vehicle);
+        dismount(ents, env, p);
     }
 }
 
-/// `dismountTo`: players are teleported, others placed.
-fn dismount_to(ents: &mut Entities, passenger: EntityId, target: Vec3) {
+/// `dismountTo`: players are teleported (a plugin may cancel or move it: Bukkit's
+/// `PlayerTeleportEvent` with `DISMOUNT`), others placed.
+fn dismount_to(
+    ents: &mut Entities,
+    hooks: &dyn crate::hooks::GameHooks,
+    passenger: EntityId,
+    target: Vec3,
+) {
     let Some(e) = ents.store.get(passenger) else {
         return;
     };
-    let rot = e.rot();
+    let mut rot = e.rot();
+    let mut target = target;
+    if ents.player(passenger).is_some() && hooks.wants(vanillite_abi::event::PLAYER_TELEPORT) {
+        let to = crate::hooks::Place::looking(target, rot.y_rot, rot.x_rot);
+        let Some(place) = crate::player::movement::teleport_event(
+            Some(hooks),
+            ents,
+            passenger,
+            vanillite_abi::teleport_cause::DISMOUNT,
+            to,
+        ) else {
+            return;
+        };
+        if place.world.is_none() {
+            target = place.vec();
+            (rot.y_rot, rot.x_rot) = (place.yaw, place.pitch);
+        }
+    }
+    let Some(e) = ents.store.get(passenger) else {
+        return;
+    };
     let velocity = e.velocity();
     let on_ground = e.flags().contains(EntityFlags::ON_GROUND);
     let mut body = crate::player::Body {
@@ -234,6 +351,10 @@ fn dismount_to(ents: &mut Entities, passenger: EntityId, target: Vec3) {
     }
     if let Some(mut e) = ents.store.get_mut(passenger) {
         e.set_pos(target);
+        let old = e.as_ref().rot();
+        if old.y_rot != rot.y_rot || old.x_rot != rot.x_rot {
+            e.set_rot(rot);
+        }
     }
 }
 

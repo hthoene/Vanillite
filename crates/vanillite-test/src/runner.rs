@@ -7,6 +7,8 @@
 //! `VANILLITE_BLESS=<scenario>,...` (or `all`; set by `cargo xtask golden bless`) writes the
 //! traces of those scenarios as their blessed goldens instead of comparing them.
 //! `VANILLITE_SCENARIO=<scenario>,...` runs only those scenarios.
+//! `VANILLITE_SCENARIO_SHARD=<k>/<n>` runs only part k of n (CI jobs side by side): the
+//! scenarios in name order, every n-th from the k-th on, so the parts together run all of them.
 
 use std::path::PathBuf;
 
@@ -26,11 +28,13 @@ pub fn record(
 ) -> Result<Trace, String> {
     let mut world = factory(&scenario.world, execution);
     for op in &scenario.setup {
-        apply(world.as_mut(), op, false)?;
+        apply_in(world.as_mut(), scenario, op, false)?;
     }
+    world.settle_light();
     world.add_entities(&scenario.entities, scenario.entity_seed)?;
+    world.settle_light();
     let mut trace = Trace::new(scenario.min, scenario.max);
-    observe(world.as_mut(), &mut trace, 0, scenario.world.observe_light);
+    observe(world.as_mut(), scenario, &mut trace, 0)?;
     for tick in 1..=scenario.ticks {
         for (i, spec) in scenario.entities.iter().enumerate() {
             if spec.join == Some(tick) {
@@ -38,19 +42,40 @@ pub fn record(
             }
         }
         world.client_begin()?;
+        let mut acted = false;
         for op in scenario.actions.iter().filter(|a| a.tick == tick) {
-            apply(world.as_mut(), op, true)?;
+            apply_in(world.as_mut(), scenario, op, true)?;
+            acted = true;
+        }
+        if acted {
+            world.settle_light();
         }
         world.client_end()?;
         world.step();
-        observe(
-            world.as_mut(),
-            &mut trace,
-            tick,
-            scenario.world.observe_light,
-        );
+        observe(world.as_mut(), scenario, &mut trace, tick)?;
     }
     Ok(trace)
+}
+
+/// [`apply`] in the op's dimension (default the overworld); the region's dimension stays
+/// selected.
+fn apply_in(
+    world: &mut dyn ScenarioWorld,
+    scenario: &Scenario,
+    op: &crate::scenario::Op,
+    action: bool,
+) -> Result<(), String> {
+    let dimension = op
+        .dimension
+        .as_deref()
+        .unwrap_or(crate::scenario::OVERWORLD);
+    if dimension == scenario.world.dimension {
+        return apply(world, op, action);
+    }
+    world.select_dimension(dimension)?;
+    let applied = apply(world, op, action);
+    world.select_dimension(&scenario.world.dimension)?;
+    applied
 }
 
 fn apply(
@@ -86,10 +111,12 @@ fn apply(
         OpKind::Hurt => return Err("hurt without its damage".to_owned()),
         OpKind::Lightning => return world.lightning(op.from),
         OpKind::Effect => return Err("effect without its effect".to_owned()),
-        OpKind::UseItem => return Err("use_item without its item".to_owned()),
+        OpKind::UseItem | OpKind::Interact => return Err("use_item without its item".to_owned()),
         OpKind::Command => return Err("command without its line".to_owned()),
         OpKind::ThrowPotion => return Err("throw_potion without its potion".to_owned()),
-        OpKind::Use | OpKind::Attack => return Err("use without its click".to_owned()),
+        OpKind::Use | OpKind::Attack => {
+            return Err("use without its click".to_owned());
+        }
         OpKind::Packet => return Err("packet without its packet".to_owned()),
         OpKind::Force | OpKind::Unforce => {
             return world.set_forced(&op.chunks, op.kind == OpKind::Force);
@@ -115,7 +142,13 @@ fn apply(
     Ok(())
 }
 
-fn observe(world: &mut dyn ScenarioWorld, trace: &mut Trace, tick: u32, light: bool) {
+fn observe(
+    world: &mut dyn ScenarioWorld,
+    scenario: &Scenario,
+    trace: &mut Trace,
+    tick: u32,
+) -> Result<(), String> {
+    let light = scenario.world.observe_light;
     let volume: usize = trace.size().iter().product();
     let mut frame = Frame {
         tick,
@@ -138,7 +171,15 @@ fn observe(world: &mut dyn ScenarioWorld, trace: &mut Trace, tick: u32, light: b
         world.light(trace.min, trace.max, &mut frame.light);
     }
     frame.level_rng = world.level_rng();
+    for view in &scenario.world.views {
+        world.select_dimension(&view.dimension)?;
+        world.entities(view.min, view.max, &mut frame.entities);
+    }
+    if !scenario.world.views.is_empty() {
+        world.select_dimension(&scenario.world.dimension)?;
+    }
     trace.frames.push(frame);
+    Ok(())
 }
 
 /// Path of the Vanilla golden of a scenario (repository or bulk tier).
@@ -268,6 +309,13 @@ pub fn check(scenario: &Scenario, factory: WorldFactory) -> Result<(), String> {
     }
 }
 
+/// Parses a `VANILLITE_SCENARIO_SHARD` value `<k>/<n>` into (k, n).
+fn shard(v: &str) -> Option<(usize, usize)> {
+    let (k, n) = v.trim().split_once('/')?;
+    let (k, n) = (k.trim().parse().ok()?, n.trim().parse().ok()?);
+    (1 <= k && k <= n).then_some((k, n))
+}
+
 /// Checks every scenario of a tier; returns one message per failing scenario.
 pub fn check_tier(tier: Tier, factory: WorldFactory) -> Vec<String> {
     let scenarios = match Scenario::all() {
@@ -275,6 +323,17 @@ pub fn check_tier(tier: Tier, factory: WorldFactory) -> Vec<String> {
         Err(e) => return vec![e],
     };
     let only = std::env::var("VANILLITE_SCENARIO").ok();
+    let (part, parts) = match std::env::var("VANILLITE_SCENARIO_SHARD") {
+        Ok(v) => match shard(&v) {
+            Some(s) => s,
+            None => {
+                return vec![format!(
+                    "VANILLITE_SCENARIO_SHARD={v}: expected <k>/<n>, 1 <= k <= n"
+                )];
+            }
+        },
+        Err(_) => (1, 1),
+    };
     let todo: Vec<&Scenario> = scenarios
         .iter()
         .filter(|s| s.tier == tier)
@@ -282,6 +341,9 @@ pub fn check_tier(tier: Tier, factory: WorldFactory) -> Vec<String> {
             only.as_deref()
                 .is_none_or(|o| o.split(',').any(|n| n.trim() == s.name))
         })
+        .enumerate()
+        .filter(|(i, _)| i % parts == part - 1)
+        .map(|(_, s)| s)
         .collect();
     // Scenarios are independent: run them on all cores, report in name order.
     let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);

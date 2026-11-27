@@ -215,6 +215,9 @@ pub fn shoot_arrow(
             direct_attacker: Some(arrow),
             attacking_player: None,
             source: None,
+            raining: false,
+            thundering: false,
+            location: None,
         };
         #[allow(clippy::cast_possible_truncation)]
         let dmg = enchants.modify_damage(w, &cx, random, data.base_damage as f32);
@@ -229,7 +232,9 @@ pub fn shoot_arrow(
     if data.fire {
         new.flags.set(EntityFlags::ON_FIRE, true);
     }
-    ents.spawn_arrow(new, data)
+    let id = ents.spawn_arrow(new, data);
+    ents.launched(id, owner);
+    id
 }
 
 /// `AbstractSkeleton.performRangedAttack`.
@@ -277,7 +282,8 @@ pub fn skeleton_shoot(t: &mut Tick<'_, '_>, target: EntityId, power: f32) {
     let mut data = ArrowData::shot(Some(id), base_damage, 0, own.state(), mob_arrow(effect));
     data.crit = crit;
     data.fire = fire;
-    t.ents.spawn_arrow(new, data);
+    let arrow = t.ents.spawn_arrow(new, data);
+    t.ents.launched(arrow, Some(id));
     let m = t.mob();
     let pitch = 1.0 / (m.random.next_float() * 0.4 + 0.8);
     super::kinds::play_sound(t, "minecraft:entity.skeleton.shoot", 1.0, pitch);
@@ -322,6 +328,8 @@ pub fn tick_arrow(
         return;
     };
     let mut pos = e.pos();
+    let start = pos;
+    let start_box = e.aabb();
     let mut velocity = e.velocity();
     let mut rot = e.rot();
     let (kind, network_id) = (e.kind(), e.network_id().0);
@@ -375,6 +383,9 @@ pub fn tick_arrow(
             }
         }
         a.in_ground_time += 1;
+        if !discard {
+            inside_blocks(level, cx, id, start_box, start, pos);
+        }
     } else {
         a.in_ground_time = 0;
         // The step and the rotation use the motion from the start of the tick.
@@ -456,7 +467,20 @@ pub fn tick_arrow(
         if let Some(&(_, _, first)) = hits.first() {
             pos = first;
         }
+        // Whether an entity was hit: Bukkit's `ProjectileHitEvent` may make the arrow ignore
+        // every one on its way.
+        let mut hit_any = false;
         for &(target, _, hit) in &hits {
+            if !super::missile::hit_event(
+                level,
+                ents,
+                id,
+                a.owner,
+                super::missile::HitWhat::Entity(target),
+            ) {
+                continue;
+            }
+            hit_any = true;
             // `onHit` posts `PROJECTILE_LAND` at the hit location after `onHitEntity`.
             super::missile::land_event(env.out, level, id, None, hit);
             // `onHitEntity`.
@@ -575,7 +599,17 @@ pub fn tick_arrow(
         }
         // A piercing arrow that went through everything on its way: no entity it has not
         // pierced is left, so it goes on to the block or the end of its step.
-        let flies_on = hits.is_empty() || (!discard && !deflected && a.pierce_level > 0);
+        let flies_on = !hit_any || (!discard && !deflected && a.pierce_level > 0);
+        let block_hit = block_hit.filter(|&(hit_pos, at)| {
+            !flies_on
+                || super::missile::hit_event(
+                    level,
+                    ents,
+                    id,
+                    a.owner,
+                    super::missile::HitWhat::Block(hit_pos, at),
+                )
+        });
         if flies_on && let Some((hit_pos, at)) = block_hit {
             // `onHitBlock`.
             let sign = |v: f64| {
@@ -615,6 +649,7 @@ pub fn tick_arrow(
         } else if flies_on {
             pos = to;
         }
+        inside_blocks(level, cx, id, start_box, start, pos);
         if !super::is_water(level.block(BlockPos::containing(pos.x, pos.y, pos.z))) {
             // `applyInertia(0.99F)`.
             velocity = velocity * f64::from(0.99_f32);
@@ -659,6 +694,39 @@ pub fn tick_arrow(
     }
     if let Some(d) = ents.arrow_mut(id) {
         *d = a;
+    }
+}
+
+/// `Entity.applyEffectsFromBlocks(from, to)` of a projectile whose box was `start_box` at
+/// `from`: `entityInside` (buttons, pressure plates, tripwires) of the blocks the box touches
+/// on its way, as world actions. The way is sampled in steps of at most a quarter block.
+pub fn inside_blocks(
+    level: &Level,
+    cx: &mut MobContext,
+    id: EntityId,
+    start_box: Aabb,
+    from: Vec3,
+    to: Vec3,
+) {
+    let delta = to - from;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let steps = ((delta.length() / 0.25).ceil() as u32).clamp(1, 64);
+    let base = start_box.inflate(-1.0e-5, -1.0e-5, -1.0e-5);
+    let mut seen: Vec<BlockPos> = Vec::new();
+    for i in 0..=steps {
+        let f = f64::from(i) / f64::from(steps);
+        let b = base.offset(delta.x * f, delta.y * f, delta.z * f);
+        for x in b.min_x.floor() as i32..=b.max_x.floor() as i32 {
+            for y in b.min_y.floor() as i32..=b.max_y.floor() as i32 {
+                for z in b.min_z.floor() as i32..=b.max_z.floor() as i32 {
+                    let p = BlockPos::new(x, y, z);
+                    if !seen.contains(&p) && level.has_entity_inside(level.block(p)) {
+                        seen.push(p);
+                        cx.actions.push(super::WorldAction::EntityInside(p, id));
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -796,4 +864,33 @@ fn aabb_clip_scale(b: &Aabb, from: Vec3, to: Vec3) -> Option<f64> {
         );
     }
     hit.then_some(scale)
+}
+
+/// `AbstractArrow.playerTouch` and `tryPickup` of arrows and tridents: a player takes a
+/// projectile in the ground (a returning trident too) once it no longer shakes. Returns whether
+/// it was taken; the caller sends `take` and removes it.
+pub fn try_pickup(
+    ents: &mut crate::entities::Entities,
+    projectile: EntityId,
+    player: &mut crate::player::PlayerData,
+    player_id: EntityId,
+) -> bool {
+    if ents.missile(projectile).is_some() {
+        return super::fam::undead::trident::try_pickup(ents, projectile, player, player_id);
+    }
+    let Some(a) = ents.arrow(projectile) else {
+        return false;
+    };
+    if !a.in_ground || a.shake > 0 {
+        return false;
+    }
+    let infinite = player.game_mode == vanillite_config::GameMode::Creative;
+    match a.pickup {
+        1 => {
+            let mut item = a.item.clone();
+            player.inventory.add(None, &mut item, infinite)
+        }
+        2 => infinite,
+        _ => false,
+    }
 }

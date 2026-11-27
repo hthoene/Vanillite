@@ -196,7 +196,11 @@ pub fn perform_ranged_attack(t: &mut Tick<'_, '_>, target: EntityId) {
         .map(|x| x.1)
         .or_else(|| t.ents.player(target).map(|p| p.survival.health))
         .unwrap_or(20.0);
-    let has = |e| target_mob.as_ref().is_some_and(|x| x.2.has(e));
+    let player_effects = t.ents.player(target).map(|p| p.survival.effects.clone());
+    let has = |e| {
+        target_mob.as_ref().is_some_and(|x| x.2.has(e))
+            || player_effects.as_ref().is_some_and(|x| x.has(e))
+    };
     let mut chosen = Potion::Harming;
     if target_mob.as_ref().is_some_and(|x| is_raider(x.0)) {
         chosen = if target_health <= 4.0 {
@@ -232,7 +236,7 @@ pub fn perform_ranged_attack(t: &mut Tick<'_, '_>, target: EntityId) {
     new.rot = rot;
     let owner_uuid = t.core().uuid();
     let owner = t.id;
-    t.ents.spawn_special(
+    let potion = t.ents.spawn_special(
         new,
         crate::mob::boss::special::SpecialData::ThrownPotion(Box::new(
             crate::effect::thrown::ThrownPotion {
@@ -245,6 +249,7 @@ pub fn perform_ranged_attack(t: &mut Tick<'_, '_>, target: EntityId) {
             },
         )),
     );
+    t.ents.launched(potion, Some(owner));
     if !t.mob_ref().silent {
         let pitch = 0.8 + t.mob().random.next_float() * 0.4;
         sound(t, "minecraft:entity.witch.throw", 1.0, pitch);

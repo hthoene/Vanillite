@@ -93,7 +93,11 @@ pub fn strike(level: &mut Level, column: BlockPos, input: StrikeInput) -> Option
         f64::from(pos.y),
         f64::from(pos.z) + 0.5,
     );
-    Some(spawn(level, at, trap))
+    let id = spawn(level, at, trap);
+    level
+        .entities
+        .spawned(id, vanillite_abi::spawn_reason::DEFAULT, 0)
+        .then_some(id)
 }
 
 /// Adds a lightning bolt at `pos` (`EntityTypes.LIGHTNING_BOLT.create`): it draws its seed and
@@ -397,9 +401,19 @@ fn spawn_fire(level: &mut Level, id: EntityId, pos: Vec3, additional: i32) {
     if !fire::can_spread_fire_around(level, at) {
         return;
     }
+    let bolt = level.entities.store.get(id).map_or(0, |e| e.uuid());
     let place_fire = |level: &mut Level, target: BlockPos| {
         let state = place::fire_state(&*level, target);
-        if level.block(target).is_air() && level.can_survive(state, target) {
+        if level.block(target).is_air()
+            && level.can_survive(state, target)
+            && crate::block::hook_events::may_ignite(
+                level,
+                target,
+                vanillite_abi::ignite_cause::LIGHTNING,
+                bolt,
+                0,
+            )
+        {
             level.set_block_and_update(target, state);
             return 1;
         }
@@ -465,14 +479,16 @@ fn random_step_cleaning_copper(level: &mut Level, pos: BlockPos) -> Option<Block
 /// `Entity.thunderHit` and its overrides: one more fire tick (eight seconds of fire when that
 /// reached zero) and 5 lightning damage; creepers become charged.
 ///
-/// Pigs and villagers would convert (zombified piglin, witch) and mooshrooms, turtles and
-/// copper golems react on their own once those mobs exist; until then pigs take the plain hit.
+/// Pigs and villagers convert (zombified piglin, witch); mooshrooms, turtles and copper golems
+/// react on their own. `bolt` is the striking bolt (a copper golem loses one oxidation stage
+/// per bolt, not per flash).
 pub fn thunder_hit(
     level: &Level,
     ents: &mut Entities,
     env: &mut Env<'_>,
     cx: &mut MobContext,
     target: EntityId,
+    bolt: EntityId,
 ) {
     if ents.player(target).is_some() {
         let Entities { store, players, .. } = ents;
@@ -519,8 +535,13 @@ pub fn thunder_hit(
             source,
         };
         if crate::mob::fam::thunder_hit(&mut h, kind) {
+            discard_converted(ents, cx, target);
             return;
         }
+    }
+    if kind == Kind::Pig && pig_struck(level, ents, env, cx, target) {
+        discard_converted(ents, cx, target);
+        return;
     }
     let Some(m) = ents.mob_mut(target) else {
         return;
@@ -541,4 +562,60 @@ pub fn thunder_hit(
     {
         c.powered = true;
     }
+    if kind == Kind::CopperGolem {
+        let bolt = ents.store.get(bolt).map_or(0, |e| e.network_id().0);
+        crate::mob::fam::mount::copper_golem::thunder_hit(ents, target, bolt);
+    }
+}
+
+/// `convertTo` discards the struck mob at once (it does not wait for its next tick).
+fn discard_converted(ents: &Entities, cx: &mut MobContext, target: EntityId) {
+    if ents.mob(target).is_some_and(|m| m.removed) && !cx.discarded.contains(&target) {
+        cx.discarded.push(target);
+    }
+}
+
+/// `Pig.thunderHit`: a zombified piglin outside peaceful (with the equipment drawn from the
+/// pig's random, persistent). `false`: the pig takes the plain hit.
+fn pig_struck(
+    level: &Level,
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    cx: &mut MobContext,
+    target: EntityId,
+) -> bool {
+    if env.difficulty == Difficulty::Peaceful {
+        return false;
+    }
+    let Some(mut random) = ents.mob_mut(target).map(|m| m.random.clone()) else {
+        return false;
+    };
+    let mut t = crate::mob::Tick {
+        level,
+        ents,
+        env,
+        cx,
+        id: target,
+    };
+    let new = crate::mob::fam::undead::convert_to(
+        &mut t,
+        Kind::ZombifiedPiglin,
+        false,
+        true,
+        vanillite_abi::transform_reason::LIGHTNING,
+        |z| {
+            // `populateDefaultEquipmentSlots(pig.getRandom(), ...)`.
+            let item = if random.next_int_bounded(20) == 0 {
+                "minecraft:golden_spear"
+            } else {
+                "minecraft:golden_sword"
+            };
+            z.equipment.set(
+                crate::item::EquipmentSlot::MainHand,
+                crate::mob::equipment::stack(item),
+            );
+            z.persistent = true;
+        },
+    );
+    new.is_some()
 }

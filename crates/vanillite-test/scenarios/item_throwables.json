@@ -1,0 +1,16 @@
+{
+  "description": "A player throws a snowball, an egg, an experience bottle and a wind charge, one after another, slightly downwards (#107): the throws with the player's motion, the flights, the egg's chance of chicks, the bottle's orbs and the wind charge's burst.",
+  "rules": {"spawn_monsters": "false"},
+  "region": [[0, -61, 0], [31, -50, 15]],
+  "ticks": 100,
+  "entities": [
+    {"name": "steve", "type": "minecraft:player", "pos": [2.5, -60.0, 8.5], "rot": [-90, 15]}
+  ],
+  "actions": [
+    {"tick": 62, "op": "use_item", "entity": "steve", "item": "minecraft:snowball", "count": 4},
+    {"tick": 66, "op": "use_item", "entity": "steve", "item": "minecraft:egg", "count": 4},
+    {"tick": 70, "op": "use_item", "entity": "steve", "item": "minecraft:experience_bottle", "count": 4},
+    {"tick": 74, "op": "use_item", "entity": "steve", "item": "minecraft:wind_charge", "count": 4},
+    {"tick": 76, "op": "use_item", "entity": "steve", "item": "minecraft:wind_charge", "count": 4}
+  ]
+}

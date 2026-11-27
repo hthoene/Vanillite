@@ -2,7 +2,7 @@
 //! breeding, sleeping, golem summoning and the brain set up of [`super::ai`].
 
 use vanillite_base::random::{LegacyRandom, RandomSource};
-use vanillite_base::{Aabb, BlockPos, Vec3};
+use vanillite_base::{BlockPos, Vec3};
 use vanillite_data::block::BlockState;
 use vanillite_data::item::ids as items;
 use vanillite_nbt::{Compound, Tag};
@@ -219,6 +219,9 @@ pub struct Villager {
     pub willing_trades: Vec<u16>,
     /// `SetHiddenState.ticksHidden`.
     pub ticks_hidden: i32,
+    /// A player used the bed this villager sleeps in (`kickVillagerOutOfBed`): it wakes at
+    /// its next tick.
+    pub kicked_out: bool,
 }
 
 impl Default for Villager {
@@ -245,6 +248,7 @@ impl Default for Villager {
             display_items: Vec::new(),
             willing_trades: Vec::new(),
             ticks_hidden: 0,
+            kicked_out: false,
         }
     }
 }
@@ -741,7 +745,20 @@ fn try_spawn_golem(t: &mut Tick<'_, '_>) -> bool {
             },
             mob,
         );
-        crate::mob::fam::undead::spawn_extras(t.ents, t.level, id, at, extra);
+        if !t
+            .ents
+            .spawned(id, vanillite_abi::spawn_reason::MOB_SUMMONED, 0)
+        {
+            return true;
+        }
+        crate::mob::fam::undead::spawn_extras(
+            t.ents,
+            t.level,
+            id,
+            at,
+            extra,
+            SpawnReason::MobSummoned,
+        );
         if let Some(sound) = t
             .ents
             .mob_mut(id)
@@ -761,18 +778,13 @@ pub fn is_villager_bed(state: BlockState) -> bool {
     state.block().name().ends_with("_bed")
 }
 
-/// `AbstractBedBlock.getSleepHeight`: the top of the bed's shape.
-fn sleep_height(state: BlockState) -> Option<f64> {
-    if !is_villager_bed(state) {
-        return None;
-    }
-    state.outline_shape().iter().map(|b| b[4]).reduce(f64::max)
-}
-
 /// `LivingEntity.startSleeping(bedPos)`.
 pub fn start_sleeping(t: &mut Tick<'_, '_>, bed: BlockPos) -> bool {
     let state = t.level.block(bed);
-    let Some(h) = sleep_height(state) else {
+    if !is_villager_bed(state) {
+        return false;
+    }
+    let Some(h) = crate::block::bed::sleep_height(t.level, state, bed) else {
         return false;
     };
     if t.ents.riding.vehicle_of(t.id).is_some() {
@@ -802,152 +814,6 @@ pub fn start_sleeping(t: &mut Tick<'_, '_>, bed: BlockPos) -> bool {
     true
 }
 
-/// `EntityType.isBlockDangerous` for villagers.
-fn dangerous(state: BlockState) -> bool {
-    let name = state.block().name();
-    matches!(
-        name,
-        "minecraft:fire"
-            | "minecraft:soul_fire"
-            | "minecraft:lava"
-            | "minecraft:magma_block"
-            | "minecraft:campfire"
-            | "minecraft:soul_campfire"
-            | "minecraft:wither_rose"
-            | "minecraft:sweet_berry_bush"
-            | "minecraft:cactus"
-            | "minecraft:powder_snow"
-    ) || name.ends_with("lava_cauldron")
-}
-
-/// `DismountHelper.findSafeDismountLocation(VILLAGER, level, pos, checkDangerous)`.
-fn safe_dismount(
-    level: &crate::level::Level,
-    pos: BlockPos,
-    check_dangerous: bool,
-    dims: Dimensions,
-) -> Option<Vec3> {
-    let state = level.block(pos);
-    if check_dangerous && dangerous(state) {
-        return None;
-    }
-    let climbable = |s: BlockState| {
-        let n = s.block().name();
-        n.ends_with("ladder") || n.ends_with("vines") || n == "minecraft:scaffolding"
-    };
-    let top = |s: BlockState| -> Option<f64> {
-        if climbable(s) {
-            return None;
-        }
-        s.collision_shape().iter().map(|b| b[4]).reduce(f64::max)
-    };
-    let below = level.block(pos.offset(0, -1, 0));
-    let floor = match top(state) {
-        Some(h) => h,
-        None => match top(below) {
-            Some(h) if h >= 1.0 => h - 1.0,
-            _ => f64::NEG_INFINITY,
-        },
-    };
-    if !(floor.is_finite() && floor < 1.0) {
-        return None;
-    }
-    if check_dangerous && floor <= 0.0 && dangerous(below) {
-        return None;
-    }
-    let at = Vec3::new(
-        f64::from(pos.x) + 0.5,
-        f64::from(pos.y) + floor,
-        f64::from(pos.z) + 0.5,
-    );
-    let half = f64::from(dims.width) / 2.0;
-    let aabb = Aabb::new(
-        at.x - half,
-        at.y,
-        at.z - half,
-        at.x + half,
-        at.y + f64::from(dims.height),
-        at.z + half,
-    );
-    let mut scratch = Vec::new();
-    crate::mob::physics::no_collision(&level.view(), &aabb, &mut scratch).then_some(at)
-}
-
-fn dir_xz(d: vanillite_base::Direction) -> (i32, i32) {
-    use vanillite_base::Direction as D;
-    match d {
-        D::North => (0, -1),
-        D::South => (0, 1),
-        D::West => (-1, 0),
-        D::East => (1, 0),
-        _ => (0, 0),
-    }
-}
-
-/// `AbstractBedBlock.findStandUpPosition` (the bunk bed search included).
-fn stand_up_position(
-    level: &crate::level::Level,
-    bed: BlockPos,
-    forward: vanillite_base::Direction,
-    yaw: f32,
-    dims: Dimensions,
-) -> Option<Vec3> {
-    use vanillite_base::Direction as D;
-    let right = match forward {
-        D::North => D::East,
-        D::East => D::South,
-        D::South => D::West,
-        _ => D::North,
-    };
-    // `right.isFacingAngle(yaw)`.
-    let (rx, rz) = dir_xz(right);
-    let a = yaw * crate::mob::DEG_TO_RAD;
-    let facing = f64::from(rx) * f64::from(-a.sin()) + f64::from(rz) * f64::from(a.cos()) > 0.0;
-    let side = if facing { right.opposite() } else { right };
-    let (fx, fz) = dir_xz(forward);
-    let (sx, sz) = dir_xz(side);
-    // `bedStandUpOffsets(forward, side)`.
-    let stand: [(i32, i32); 10] = [
-        (sx, sz),
-        (sx - fx, sz - fz),
-        (sx - fx * 2, sz - fz * 2),
-        (-fx * 2, -fz * 2),
-        (-sx - fx * 2, -sz - fz * 2),
-        (-sx - fx, -sz - fz),
-        (-sx, -sz),
-        (-sx + fx, -sz + fz),
-        (fx, fz),
-        (sx + fx, sz + fz),
-    ];
-    let at = |base: BlockPos, offsets: &[(i32, i32)], safe: bool| {
-        offsets
-            .iter()
-            .find_map(|&(x, z)| safe_dismount(level, base.offset(x, 0, z), safe, dims))
-    };
-    let bunk = is_villager_bed(level.block(bed.offset(0, -1, 0)));
-    if !bunk {
-        return at(bed, &stand, true).or_else(|| at(bed, &stand, false));
-    }
-    // `bedSurroundStandUpOffsets` and `bedAboveStandUpOffsets`.
-    let surround: [(i32, i32); 6] = [
-        (sx, sz),
-        (sx - fx, sz - fz),
-        (-sx, -sz),
-        (-sx - fx, -sz - fz),
-        (fx, fz),
-        (-fx * 2, -fz * 2),
-    ];
-    let above: [(i32, i32); 2] = [(0, 0), (-fx, -fz)];
-    let below = bed.offset(0, -1, 0);
-    let up = bed.offset(0, 1, 0);
-    at(bed, &surround, true)
-        .or_else(|| at(below, &surround, true))
-        .or_else(|| at(up, &above, true))
-        .or_else(|| at(bed, &surround, false))
-        .or_else(|| at(below, &surround, false))
-        .or_else(|| at(up, &above, false))
-}
-
 /// `LivingEntity.stopSleeping`.
 pub fn stop_sleeping(t: &mut Tick<'_, '_>) {
     let Some(bed) = vs(t.mob_ref()).sleeping_pos else {
@@ -966,11 +832,13 @@ pub fn stop_sleeping(t: &mut Tick<'_, '_>) {
                     .unwrap_or(vanillite_base::Direction::North);
             let yaw = t.core().rot().y_rot;
             let dims = crate::mob::kinds::mob_dimensions(t.mob_ref());
-            let stand = stand_up_position(t.level, bed, forward, yaw, dims).unwrap_or(Vec3::new(
-                f64::from(bed.x) + 0.5,
-                f64::from(bed.y) + 1.1,
-                f64::from(bed.z) + 0.5,
-            ));
+            let stand =
+                crate::block::bed::stand_up_position(t.level, bed, forward, yaw, dims, false)
+                    .unwrap_or(Vec3::new(
+                        f64::from(bed.x) + 0.5,
+                        f64::from(bed.y) + 1.1,
+                        f64::from(bed.z) + 0.5,
+                    ));
             let look = Vec3::new(
                 f64::from(bed.x) + 0.5 - stand.x,
                 f64::from(bed.y) - stand.y,
@@ -1002,6 +870,18 @@ pub fn stop_sleeping(t: &mut Tick<'_, '_>) {
 /// `isSleeping`.
 pub fn is_sleeping(m: &MobData) -> bool {
     vs(m).sleeping_pos.is_some()
+}
+
+/// A villager asleep (`Villager` with `isSleeping`).
+pub fn is_villager_sleeping(m: &MobData) -> bool {
+    m.kind == Kind::Villager && is_sleeping(m)
+}
+
+/// `kickVillagerOutOfBed`: the villager wakes at its next tick.
+pub fn kick_out(m: &mut MobData) {
+    if m.kind == Kind::Villager {
+        vs_mut(m).kicked_out = true;
+    }
 }
 
 // --- POI ----------------------------------------------------------------------------------
@@ -1074,28 +954,35 @@ fn killed_by_zombie(t: &mut Tick<'_, '_>, killer: EntityId) -> bool {
     let pos = t.block_pos();
     let mut random = std::mem::replace(t.env.random, LegacyRandom::new(0));
     let level = t.level;
-    let converted = crate::mob::fam::undead::convert_to(t, Kind::ZombieVillager, true, true, |z| {
-        crate::mob::fam::undead::zombies::set_villager_data(
-            z,
-            v.villager_type,
-            v.profession,
-            v.level,
-            v.data_finalized,
-        );
-        let mut ctx = SpawnContext::simple(difficulty, SpawnReason::Conversion);
-        ctx.env = env;
-        ctx.pos = pos;
-        ctx.level = Some(level);
-        crate::mob::fam::undead::zombies::finalize_converted(z, &mut ctx, &mut random);
-        crate::mob::fam::undead::zombies::set_villager_data(
-            z,
-            v.villager_type,
-            v.profession,
-            v.level,
-            v.data_finalized,
-        );
-        crate::mob::fam::undead::zombies::set_villager_trades(z, v.gossips.clone(), offers, xp);
-    });
+    let converted = crate::mob::fam::undead::convert_to(
+        t,
+        Kind::ZombieVillager,
+        true,
+        true,
+        vanillite_abi::transform_reason::INFECTION,
+        |z| {
+            crate::mob::fam::undead::zombies::set_villager_data(
+                z,
+                v.villager_type,
+                v.profession,
+                v.level,
+                v.data_finalized,
+            );
+            let mut ctx = SpawnContext::simple(difficulty, SpawnReason::Conversion);
+            ctx.env = env;
+            ctx.pos = pos;
+            ctx.level = Some(level);
+            crate::mob::fam::undead::zombies::finalize_converted(z, &mut ctx, &mut random);
+            crate::mob::fam::undead::zombies::set_villager_data(
+                z,
+                v.villager_type,
+                v.profession,
+                v.level,
+                v.data_finalized,
+            );
+            crate::mob::fam::undead::zombies::set_villager_trades(z, v.gossips.clone(), offers, xp);
+        },
+    );
     *t.env.random = random;
     if converted.is_some()
         && !killer_silent
@@ -1116,26 +1003,36 @@ fn struck_by_lightning(t: &mut Tick<'_, '_>) -> bool {
     if difficulty == Difficulty::Peaceful {
         return false;
     }
-    release_all_pois(t);
     let env = t.cx.env;
     let pos = t.block_pos();
     let mut random = std::mem::replace(t.env.random, LegacyRandom::new(0));
     let level = t.level;
-    let id = crate::mob::fam::undead::convert_to(t, Kind::Witch, false, false, |w| {
-        crate::mob::spawn::finalize(
-            level,
-            None,
-            &env,
-            w,
-            pos,
-            difficulty,
-            0,
-            SpawnReason::Conversion,
-            &mut random,
-        );
-        w.persistent = true;
-    });
+    let id = crate::mob::fam::undead::convert_to(
+        t,
+        Kind::Witch,
+        false,
+        false,
+        vanillite_abi::transform_reason::LIGHTNING,
+        |w| {
+            crate::mob::spawn::finalize(
+                level,
+                None,
+                &env,
+                w,
+                pos,
+                difficulty,
+                0,
+                SpawnReason::Conversion,
+                &mut random,
+            );
+            w.persistent = true;
+        },
+    );
     *t.env.random = random;
+    if id.is_some() {
+        // `releaseAllPois` in the conversion callback: not when a plugin cancelled it.
+        release_all_pois(t);
+    }
     id.is_some()
 }
 
@@ -1197,6 +1094,14 @@ impl FamilyHooks for Hooks {
         rebuild_brain(m, None);
     }
 
+    /// `registerBrainGoals`: the brain made in the constructor (or from the saved one) takes
+    /// the scheduled activity at once.
+    fn created(m: &mut MobData, game_time: i64, day_time: i64) {
+        if let Some(b) = m.brain.as_deref_mut() {
+            b.update_activity_from_schedule(game_time, day_time);
+        }
+    }
+
     fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
         if ctx.reason == SpawnReason::Breeding {
             set_profession(m, profession::NONE);
@@ -1224,7 +1129,12 @@ impl FamilyHooks for Hooks {
     fn before_tick(t: &mut Tick<'_, '_>) {
         // `LivingEntity.tick`: out of a bed that is gone; sleepers look straight.
         if let Some(bed) = vs(t.mob_ref()).sleeping_pos {
-            if sleep_height(t.level.block(bed)).is_none() {
+            let kicked = std::mem::take(&mut vs_mut(t.mob()).kicked_out);
+            let state = t.level.block(bed);
+            if kicked
+                || !is_villager_bed(state)
+                || crate::block::bed::sleep_height(t.level, state, bed).is_none()
+            {
                 stop_sleeping(t);
             } else {
                 let mut e = t.core_mut();
@@ -1505,6 +1415,20 @@ pub fn breed(t: &mut Tick<'_, '_>, partner: EntityId) -> Option<EntityId> {
     rebuild_brain(&mut child, Some((t.game_time(), t.cx.env.day_time)));
     let pos = t.pos();
     let uuid = crate::mob::new_uuid();
+    if let Some(hooks) = t.ents.hooks_for(vanillite_abi::event::ENTITY_BREED)
+        && crate::mob::animal::breed_event(
+            &*hooks,
+            t.ents,
+            (uuid, Kind::Villager),
+            t.id,
+            partner,
+            0,
+            0,
+        )
+        .is_none()
+    {
+        return None;
+    }
     let id = crate::mob::spawn(
         t.ents,
         t.level.network_ids(),
@@ -1513,6 +1437,13 @@ pub fn breed(t: &mut Tick<'_, '_>, partner: EntityId) -> Option<EntityId> {
         vanillite_world::entity::Rotation::default(),
         child,
     );
+    let parent = t.ents.store.get(t.id).map_or(0, |e| e.uuid());
+    if !t
+        .ents
+        .spawned(id, vanillite_abi::spawn_reason::BREEDING, parent)
+    {
+        return None;
+    }
     entity_event(t, id, 12);
     Some(id)
 }

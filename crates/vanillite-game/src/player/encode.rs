@@ -32,6 +32,7 @@ mod data_id {
     pub const CUSTOM_NAME: u8 = 2;
     pub const AIR_SUPPLY: u8 = 1;
     pub const POSE: u8 = 6;
+    pub const TICKS_FROZEN: u8 = 7;
     pub const ITEM_ENTITY_ITEM: u8 = 8;
     pub const HEALTH: u8 = 9;
     pub const EFFECT_PARTICLES: u8 = 10;
@@ -114,7 +115,8 @@ fn wire_vec(v: Vec3) -> types::Vec3 {
     }
 }
 
-fn pose_id(pose: Pose) -> i32 {
+/// `Pose.id()`.
+pub fn pose_id(pose: Pose) -> i32 {
     // `Pose` is `repr(u8)` in protocol order.
     #[allow(clippy::as_conversions)]
     let id = pose as u8;
@@ -269,6 +271,12 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
             write_varint(o, pose_id(pose));
         });
     }
+    let frozen = entities.mob(entity.id()).map_or(0, |m| m.ticks_frozen);
+    if all || frozen != 0 {
+        item(&mut out, data_id::TICKS_FROZEN, serializer::INT, |o| {
+            write_varint(o, frozen);
+        });
+    }
     if let Some(player) = player {
         let living = crate::player::using::living_flags(player.survival.using_item);
         if all || living != 0 {
@@ -284,6 +292,7 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
             });
         }
         effect_data(&mut out, &player.survival.effects, all);
+        DataWriter::new(&mut out, all).optional_block_pos(14, player.survival.sleeping_pos);
         let hand = player.client.main_hand;
         if all || hand != MainHand::Right {
             item(

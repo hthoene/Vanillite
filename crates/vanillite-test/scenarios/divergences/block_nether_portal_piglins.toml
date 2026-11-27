@@ -1,0 +1,3 @@
+tick = 129
+cause = "the recorder's Vanilla server draws the spawn roll (level random equal up to here) but spawns no zombified piglin; most likely anyPlayerCloseEnoughForSpawning is false for its mock player (placed in creative, then switched to survival), Vanillite counts the player and spawns"
+owner = "world-developer #110"

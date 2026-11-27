@@ -115,45 +115,312 @@ pub fn fall(level: &mut Level, pos: BlockPos, state: BlockState, drop_item: bool
     );
     level.set_block_and_update(pos, below);
     // The entity takes its own random (not drawn from at creation) with its UUID.
-    let uuid = level.new_uuid();
+    let (uuid, seed) = level.new_uuid_and_seed();
     let network_id = level.network_ids().next();
     let new = NewEntity::new(entity_ids::FALLING_BLOCK, network_id, uuid, spawn_pos);
-    level.entities.spawn_falling_block(
-        new,
-        FallingBlockData {
-            state: falling,
-            time: 0,
-            drop_item,
-            start: pos,
-        },
+    let mut data = FallingBlockData::new(falling, drop_item, pos, seed);
+    if is_anvil(falling.block()) {
+        // `AnvilBlock.falling`: `setHurtsEntities(2.0F, 40)`.
+        data.hurt_entities = true;
+        data.fall_hurt_amount = 2.0;
+    }
+    let id = level.entities.spawn_falling_block(new, data);
+    level
+        .entities
+        .spawned(id, vanillite_abi::spawn_reason::DEFAULT, 0);
+    id
+}
+
+/// `state.is(BlockTags.ANVIL)`.
+pub fn is_anvil(block: BlockId) -> bool {
+    block == ids::ANVIL || block == ids::CHIPPED_ANVIL || block == ids::DAMAGED_ANVIL
+}
+
+/// `FallingBlockEntity.setHurtsEntities(damagePerDistance, max)`.
+pub fn set_hurts_entities(level: &mut Level, id: EntityId, per_distance: f32, max: i32) {
+    if let Some(d) = level.entities.falling_block_mut(id) {
+        d.hurt_entities = true;
+        d.fall_hurt_amount = per_distance;
+        d.fall_hurt_max = max;
+    }
+}
+
+/// What a falling block's damage is (`Fallable.getFallDamageSource`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FallingDamage {
+    /// `falling_block`.
+    Block,
+    /// `falling_anvil`.
+    Anvil,
+    /// `falling_stalactite`.
+    Stalactite,
+}
+
+/// A living entity a landing falling block hurts, for the mob system to apply.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FallingHurt {
+    pub target: EntityId,
+    /// The falling block (the direct and causing entity) and where it was.
+    pub source: EntityId,
+    pub pos: Vec3,
+    pub kind: FallingDamage,
+    pub amount: f32,
+}
+
+fn aabb_center_bottom(aabb: &Aabb) -> Vec3 {
+    Vec3::new(
+        f64::midpoint(aabb.min_x, aabb.max_x),
+        aabb.min_y,
+        f64::midpoint(aabb.min_z, aabb.max_z),
     )
+}
+
+/// Applies the damage of landing falling blocks (`entity.hurt(source, damage)` with
+/// `damageSources().anvil(this)` and the like).
+pub fn apply_falling_hurts(
+    level: &Level,
+    ents: &mut crate::entities::Entities,
+    env: &mut crate::survival::player::Env<'_>,
+    cx: &mut crate::mob::MobContext,
+    hurts: Vec<FallingHurt>,
+) {
+    for hurt in hurts {
+        let kind = match hurt.kind {
+            FallingDamage::Block => env.types.falling_block,
+            FallingDamage::Anvil => env.types.falling_anvil,
+            FallingDamage::Stalactite => env.types.falling_stalactite,
+        };
+        let mut source = crate::survival::damage::DamageSource::of(kind);
+        source.cause = Some(hurt.source);
+        source.direct = Some(hurt.source);
+        source.position = Some(hurt.pos);
+        crate::mob::combat::hurt(level, ents, env, cx, hurt.target, source, hurt.amount);
+    }
+}
+
+/// `Block.fallOn` of the block a falling block lands on: the fall distance its
+/// `causeFallDamage` sees, `None` for blocks that never call it (powder snow).
+fn falling_block_fall_on(level: &mut Level, on: BlockState, distance: f64) -> Option<f64> {
+    use crate::survival::blocks::{Landing, bounce_restitution};
+    let landing = match on.block() {
+        b if b == ids::HAY_BLOCK || b == ids::SLIME_BLOCK || b == ids::HONEY_BLOCK => {
+            Landing::Fall(1.0)
+        }
+        b if b == ids::FARMLAND => Landing::Farmland,
+        b if b == ids::POWDER_SNOW => Landing::PowderSnow,
+        b if b == ids::POINTED_DRIPSTONE
+            && on.value("vertical_direction") == Some("up")
+            && on.value("thickness") == Some("tip") =>
+        {
+            Landing::Stalagmite
+        }
+        b if bounce_restitution(b) > 0.0 => Landing::Bed,
+        _ => Landing::Fall(1.0),
+    };
+    match landing {
+        Landing::PowderSnow => None,
+        Landing::Stalagmite => Some(distance + 2.5),
+        Landing::Bed => Some(distance * f64::from(1.0_f32 - 0.5)),
+        Landing::Farmland => {
+            // `level.getRandom().nextFloat() < fallDistance - 0.5` runs for every entity.
+            let _ = vanillite_base::random::RandomSource::next_float(level.random());
+            Some(distance)
+        }
+        _ => Some(distance),
+    }
+}
+
+/// `FallingBlockEntity.causeFallDamage`: anvils and stalactite tips hurt the living entities
+/// in their box; an anvil may chip (or break: `cancelDrop`).
+fn falling_block_fall_damage(level: &mut Level, id: EntityId, distance: f64) {
+    let Some(data) = level.entities.falling_block(id).copied() else {
+        return;
+    };
+    if !data.hurt_entities {
+        return;
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    let n = (distance - 1.0).ceil() as i32;
+    if n < 0 {
+        return;
+    }
+    let block = data.state.block();
+    let kind = if is_anvil(block) {
+        FallingDamage::Anvil
+    } else if block == ids::POINTED_DRIPSTONE {
+        FallingDamage::Stalactite
+    } else {
+        FallingDamage::Block
+    };
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+    let damage = ((n as f32 * data.fall_hurt_amount).floor() as i32).min(data.fall_hurt_max) as f32;
+    let Some(aabb) = level.entities.store.get(id).map(|e| e.aabb()) else {
+        return;
+    };
+    let mut targets = Vec::new();
+    let ents = &level.entities;
+    ents.store.for_each_in(&aabb, false, |e| {
+        if e == id {
+            return;
+        }
+        // `NO_CREATIVE_OR_SPECTATOR` and `LIVING_ENTITY_STILL_ALIVE`.
+        let alive = if let Some(p) = ents.player(e) {
+            !matches!(
+                p.game_mode,
+                vanillite_config::GameMode::Creative | vanillite_config::GameMode::Spectator
+            ) && p.survival.health > 0.0
+        } else {
+            ents.mob(e).is_some_and(crate::mob::MobData::is_alive)
+        };
+        if alive {
+            targets.push(e);
+        }
+    });
+    for target in targets {
+        level.output().falling_hurts.push(FallingHurt {
+            target,
+            source: id,
+            pos: aabb_center_bottom(&aabb),
+            kind,
+            amount: damage,
+        });
+    }
+    if is_anvil(block) && damage > 0.0 {
+        // The entity's own random: its first draw.
+        let mut random = vanillite_base::random::LegacyRandom::new(data.seed);
+        #[allow(clippy::cast_precision_loss)]
+        let chance = 0.05 + n as f32 * 0.05;
+        if vanillite_base::random::RandomSource::next_float(&mut random) < chance
+            && let Some(d) = level.entities.falling_block_mut(id)
+        {
+            // `AnvilBlock.damage`.
+            let next = if block == ids::ANVIL {
+                Some(ids::CHIPPED_ANVIL)
+            } else if block == ids::CHIPPED_ANVIL {
+                Some(ids::DAMAGED_ANVIL)
+            } else {
+                None
+            };
+            match next {
+                Some(next) => {
+                    let facing = d.state.value("facing").unwrap_or("north");
+                    d.state = next
+                        .default_state()
+                        .with("facing", facing)
+                        .unwrap_or_else(|| next.default_state());
+                }
+                None => d.cancel_drop = true,
+            }
+        }
+    }
 }
 
 /// `FallingBlockEntity.tick`.
 pub fn tick_entity(level: &mut Level, id: EntityId) {
-    let Some(data) = level.entities.falling_block(id).copied() else {
-        return;
-    };
+    if let Some(resume) = tick_until_hurt(level, id) {
+        resume_tick(level, id, resume);
+    }
+}
+
+/// Where [`tick_until_hurt`] stopped: the rest of the tick after the entities it hurt took
+/// their damage.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Resume {
+    velocity: Vec3,
+    moved: Vec3,
+    new_pos: Vec3,
+    on_pos: BlockPos,
+    time: i32,
+}
+
+/// `FallingBlockEntity.tick` up to the landing damage: returns `Some` when the falling block
+/// hurt entities ([`crate::level::LevelOutput::falling_hurts`]); the caller applies the damage
+/// (deaths drop their loot before the block lands) and finishes with [`resume_tick`].
+pub fn tick_until_hurt(level: &mut Level, id: EntityId) -> Option<Resume> {
+    let resume = tick_move(level, id)?;
+    if level.output().falling_hurts.is_empty() {
+        resume_tick(level, id, resume);
+        return None;
+    }
+    Some(resume)
+}
+
+fn tick_move(level: &mut Level, id: EntityId) -> Option<Resume> {
+    let data = level.entities.falling_block(id).copied()?;
     if data.state.is_air() {
         level.entities.despawn(id);
-        return;
+        return None;
     }
     let time = data.time + 1;
     if let Some(d) = level.entities.falling_block_mut(id) {
         d.time = time;
     }
-    let Some(entity) = level.entities.store.get(id) else {
-        return;
-    };
+    let entity = level.entities.store.get(id)?;
     let (pos, aabb) = (entity.pos(), entity.aabb());
     // `applyGravity` and `move(SELF, deltaMovement)`.
     let mut velocity = entity.velocity();
     velocity.y -= 0.04;
     let moved = collide(&level.view(), aabb, velocity);
     let vertical = moved.y != velocity.y;
-    let horizontal = moved.x != velocity.x || moved.z != velocity.z;
     let on_ground = vertical && velocity.y < 0.0;
     let new_pos = Vec3::new(pos.x + moved.x, pos.y + moved.y, pos.z + moved.z);
+    if let Some(mut entity) = level.entities.store.get_mut(id) {
+        entity.set_pos(new_pos);
+        entity.set_flags(EntityFlags::ON_GROUND, on_ground);
+    }
+    // `Entity.checkFallDamage`: falling blocks never update their water state.
+    let on_pos = BlockPos::containing(new_pos.x, new_pos.y - f64::from(0.2_f32), new_pos.z);
+    if moved.y < 0.0 {
+        #[allow(clippy::cast_possible_truncation)]
+        let dy = f64::from(moved.y as f32);
+        if let Some(d) = level.entities.falling_block_mut(id) {
+            d.fall_distance -= dy;
+        }
+    }
+    if on_ground {
+        let distance = level
+            .entities
+            .falling_block(id)
+            .map_or(0.0, |d| d.fall_distance);
+        if distance > 0.0 {
+            let on_state = level.block(on_pos);
+            if let Some(distance) = falling_block_fall_on(level, on_state, distance) {
+                falling_block_fall_damage(level, id, distance);
+            }
+            level.game_event(
+                crate::level::game_event::events().hit_ground,
+                new_pos,
+                crate::level::game_event::GameEventContext {
+                    source: Some(id),
+                    affected: Some(on_state),
+                },
+            );
+        }
+        if let Some(d) = level.entities.falling_block_mut(id) {
+            d.fall_distance = 0.0;
+        }
+    }
+    Some(Resume {
+        velocity,
+        moved,
+        new_pos,
+        on_pos,
+        time,
+    })
+}
+
+/// The rest of `FallingBlockEntity.tick` after [`tick_until_hurt`].
+pub fn resume_tick(level: &mut Level, id: EntityId, r: Resume) {
+    let Resume {
+        mut velocity,
+        moved,
+        new_pos,
+        on_pos,
+        time,
+    } = r;
+    let vertical = moved.y != velocity.y;
+    let horizontal = moved.x != velocity.x || moved.z != velocity.z;
+    let on_ground = vertical && velocity.y < 0.0;
     if moved.x != velocity.x {
         velocity.x = 0.0;
     }
@@ -164,10 +431,13 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
         // `Block.updateEntityMovementAfterFallOn`.
         velocity.y = 0.0;
     }
-    if let Some(mut entity) = level.entities.store.get_mut(id) {
-        entity.set_pos(new_pos);
-        entity.set_flags(EntityFlags::ON_GROUND, on_ground);
+    // `applyEffectsFromBlocks`: `stepOn` of the block below (redstone ore lights up).
+    if on_ground && super::contact::has_step_on(level.block(on_pos).block()) {
+        super::contact::step_on(level, on_pos, id);
     }
+    let Some(data) = level.entities.falling_block(id).copied() else {
+        return;
+    };
     let block_pos = BlockPos::containing(new_pos.x, new_pos.y, new_pos.z);
     let block = data.state.block();
     let concrete = class_of(data.state) == Class::ConcretePowder;
@@ -186,7 +456,13 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
     } else {
         let current = level.block(block_pos);
         velocity = Vec3::new(velocity.x * 0.7, velocity.y * -0.5, velocity.z * 0.7);
-        if !current.is(ids::MOVING_PISTON) {
+        if current.is(ids::MOVING_PISTON) {
+            // A block moved by a piston: the entity stays for another tick.
+        } else if data.cancel_drop {
+            level.entities.despawn(id);
+            removed = true;
+            on_broken_after_fall(level, block, block_pos);
+        } else {
             let may_replace = can_be_replaced_by_falling(current);
             let would_continue =
                 is_free(level.block(block_pos.below())) && (!concrete || !stuck_in_water);
@@ -210,10 +486,6 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
                 on_broken_after_fall(level, block, block_pos);
                 drops::spawn_block_item(level, new_pos, block);
             }
-        } else {
-            level.entities.despawn(id);
-            removed = true;
-            on_broken_after_fall(level, block, block_pos);
         }
     }
     if !removed && let Some(mut entity) = level.entities.store.get_mut(id) {
@@ -246,7 +518,12 @@ fn on_land(level: &mut Level, pos: BlockPos, state: BlockState, replaced: BlockS
             if (fluid::is_water(replaced.fluid_state()) || shared::touches_liquid(level, pos))
                 && let Some(concrete) = shared::concrete_of(state)
             {
-                level.set_block_and_update(pos, concrete.default_state());
+                super::hook_events::set_block_and_update(
+                    level,
+                    vanillite_abi::event::BLOCK_FORM,
+                    pos,
+                    concrete.default_state(),
+                );
             }
         }
         _ => {}

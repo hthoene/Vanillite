@@ -27,6 +27,27 @@ pub fn tame(m: &mut MobData, owner: u128) {
     m.persistent = true;
 }
 
+/// The plugins' tame event (`vanillite_abi::event::ENTITY_TAME`) of `animal` by the player
+/// `owner` (its UUID): whether it may (`false`: the attempt fails). Without listeners one
+/// branch.
+pub fn tame_event(ents: &Entities, animal: EntityId, owner: u128) -> bool {
+    let Some(hooks) = ents.hooks_for(vanillite_abi::event::ENTITY_TAME) else {
+        return true;
+    };
+    let Some(e) = ents.store.get(animal) else {
+        return true;
+    };
+    let mut ev = crate::hooks::Event {
+        entity: e.uuid(),
+        entity_type: e.kind().name().to_owned(),
+        other: owner,
+        player: owner,
+        ..crate::hooks::Event::new(vanillite_abi::event::ENTITY_TAME)
+    };
+    hooks.event(&mut ev);
+    !ev.cancelled
+}
+
 /// The `tame_animal` trigger of `TamableAnimal.tame(player)` and
 /// `AbstractHorse.tameWithName(player)`.
 pub fn award_tame(ents: &mut Entities, animal: EntityId, player: EntityId) {
@@ -317,6 +338,22 @@ pub fn set_leashed_to(ents: &mut Entities, env: &mut Env<'_>, mob: EntityId, hol
     }
 }
 
+/// `dropAllLeashConnections` of a player: the mobs on its leads go free and drop their leads;
+/// `true` when there were any.
+pub fn drop_leashes_of(ents: &mut Entities, env: &mut Env<'_>, holder: EntityId) -> bool {
+    let mut mine: Vec<EntityId> = ents
+        .leashes
+        .iter()
+        .filter(|(_, h)| **h == holder)
+        .map(|(m, _)| *m)
+        .collect();
+    mine.sort_unstable();
+    for &m in &mine {
+        drop_leash(ents, env, m, true);
+    }
+    !mine.is_empty()
+}
+
 /// `dropLeash` (`drop_item`) or `removeLeash`.
 pub fn drop_leash(ents: &mut Entities, env: &mut Env<'_>, mob: EntityId, drop_item: bool) {
     if ents.leashes.remove(&mob).is_none() {
@@ -562,7 +599,11 @@ pub fn use_lead_on_fence(
         return false;
     }
     let uuid = crate::mob::new_entity_uuid();
+    let knots = ents.knots.len();
     let knot = knot_at(ents, level.network_ids(), pos, uuid);
+    if ents.knots.len() > knots && !ents.spawned(knot, vanillite_abi::spawn_reason::DEFAULT, 0) {
+        return false;
+    }
     for m in mine {
         set_leashed_to(ents, env, m, knot);
     }

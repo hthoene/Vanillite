@@ -1,7 +1,7 @@
 //! Recipe book displays (`SlotDisplay`, `RecipeDisplay`, `RecipeDisplayEntry`) and their
 //! stream codecs.
 
-use crate::codec::{Encode, write_len, write_varint};
+use crate::codec::{Decode, Encode, Error, Reader, Result, write_len, write_varint};
 use crate::item::ItemStack;
 
 /// `minecraft:slot_display` ids.
@@ -277,5 +277,152 @@ impl Encode for RecipeDisplayEntry {
                 }
             }
         }
+    }
+}
+
+/// Nesting limit of decoded slot displays (`composite`, `with_remainder`, ...).
+const MAX_DEPTH: u8 = 8;
+/// Elements of one decoded list (ingredients, holder sets, composites).
+const MAX_LIST: usize = 4096;
+
+/// Decodes `ByteBufCodecs.holderSet`: a direct list of ids; a tag reference decodes as an
+/// empty list (its items are unknown here).
+pub fn decode_holder_set(r: &mut Reader<'_>) -> Result<Box<[u16]>> {
+    let n = usize::try_from(r.varint()?).map_err(|_| Error::NegativeLength)?;
+    let Some(n) = n.checked_sub(1) else {
+        r.string(32767)?;
+        return Ok(Box::default());
+    };
+    if n > MAX_LIST || n > r.remaining() {
+        return Err(Error::TooLong {
+            what: "holder set",
+            len: n,
+            max: MAX_LIST,
+        });
+    }
+    (0..n)
+        .map(|_| u16::try_from(r.varint()?).map_err(|_| Error::Invalid("item id")))
+        .collect()
+}
+
+fn decode_list(r: &mut Reader<'_>, depth: u8) -> Result<Vec<SlotDisplay>> {
+    let n = r.len_prefix("slot displays", MAX_LIST, 1)?;
+    (0..n)
+        .map(|_| SlotDisplay::decode_depth(r, depth))
+        .collect()
+}
+
+impl SlotDisplay {
+    fn decode_depth(r: &mut Reader<'_>, depth: u8) -> Result<Self> {
+        let depth = depth
+            .checked_sub(1)
+            .ok_or(Error::Invalid("slot display depth"))?;
+        let inner = |r: &mut Reader<'_>| SlotDisplay::decode_depth(r, depth).map(Box::new);
+        Ok(match r.varint()? {
+            slot_ids::EMPTY => SlotDisplay::Empty,
+            slot_ids::ANY_FUEL => SlotDisplay::AnyFuel,
+            slot_ids::WITH_ANY_POTION => SlotDisplay::WithAnyPotion(inner(r)?),
+            slot_ids::ONLY_WITH_COMPONENT => {
+                let source = inner(r)?;
+                let component =
+                    u16::try_from(r.varint()?).map_err(|_| Error::Invalid("component type"))?;
+                SlotDisplay::OnlyWithComponent(source, component)
+            }
+            slot_ids::ITEM => SlotDisplay::Item(
+                u16::try_from(r.varint()?).map_err(|_| Error::Invalid("item id"))?,
+            ),
+            slot_ids::ITEM_STACK => SlotDisplay::ItemStack(ItemStack::decode_template(r)?),
+            slot_ids::TAG => SlotDisplay::Tag(decode_holder_set(r)?),
+            slot_ids::DYED => {
+                let dye = inner(r)?;
+                SlotDisplay::Dyed(dye, inner(r)?)
+            }
+            slot_ids::SMITHING_TRIM => {
+                let base = inner(r)?;
+                let material = inner(r)?;
+                let pattern = u32::try_from(r.varint()?.saturating_sub(1))
+                    .map_err(|_| Error::Invalid("trim pattern"))?;
+                SlotDisplay::SmithingTrim(base, material, pattern)
+            }
+            slot_ids::WITH_REMAINDER => {
+                let input = inner(r)?;
+                SlotDisplay::WithRemainder(input, inner(r)?)
+            }
+            slot_ids::COMPOSITE => SlotDisplay::Composite(decode_list(r, depth)?),
+            _ => return Err(Error::Invalid("slot display type")),
+        })
+    }
+}
+
+impl Decode for SlotDisplay {
+    fn decode(r: &mut Reader<'_>) -> Result<Self> {
+        SlotDisplay::decode_depth(r, MAX_DEPTH)
+    }
+}
+
+impl Decode for RecipeDisplay {
+    fn decode(r: &mut Reader<'_>) -> Result<Self> {
+        let d = |r: &mut Reader<'_>| SlotDisplay::decode(r);
+        Ok(match r.varint()? {
+            display_ids::CRAFTING_SHAPELESS => RecipeDisplay::Shapeless {
+                ingredients: decode_list(r, MAX_DEPTH)?,
+                result: d(r)?,
+                station: d(r)?,
+            },
+            display_ids::CRAFTING_SHAPED => RecipeDisplay::Shaped {
+                width: r.varint()?,
+                height: r.varint()?,
+                ingredients: decode_list(r, MAX_DEPTH)?,
+                result: d(r)?,
+                station: d(r)?,
+            },
+            display_ids::FURNACE => RecipeDisplay::Furnace {
+                ingredient: d(r)?,
+                fuel: d(r)?,
+                result: d(r)?,
+                station: d(r)?,
+                duration: r.varint()?,
+                experience: r.f32()?,
+            },
+            display_ids::STONECUTTER => RecipeDisplay::Stonecutter {
+                input: d(r)?,
+                result: d(r)?,
+                station: d(r)?,
+            },
+            display_ids::SMITHING => RecipeDisplay::Smithing {
+                template: d(r)?,
+                base: d(r)?,
+                addition: d(r)?,
+                result: d(r)?,
+                station: d(r)?,
+            },
+            _ => return Err(Error::Invalid("recipe display type")),
+        })
+    }
+}
+
+impl Decode for RecipeDisplayEntry {
+    fn decode(r: &mut Reader<'_>) -> Result<Self> {
+        let id = r.varint()?;
+        let display = RecipeDisplay::decode(r)?;
+        let group = r.varint()?.checked_sub(1).filter(|g| *g >= 0);
+        let category = r.varint()?;
+        let requirements = if bool::decode(r)? {
+            let n = r.len_prefix("crafting requirements", MAX_LIST, 1)?;
+            Some(
+                (0..n)
+                    .map(|_| decode_holder_set(r))
+                    .collect::<Result<_>>()?,
+            )
+        } else {
+            None
+        };
+        Ok(RecipeDisplayEntry {
+            id,
+            display,
+            group,
+            category,
+            requirements,
+        })
     }
 }

@@ -1,6 +1,8 @@
 //! The player inventory: a mirror of the Java inventory menu with Bedrock stack ids, Bedrock's
 //! item stack requests as Java clicks (survival) or creative slot changes (creative), and the
-//! Java inventory updates as Bedrock inventory packets.
+//! Java inventory updates as Bedrock inventory packets. An open Java menu (chest, furnace,
+//! crafting table, ...) adds its own slots ([`super::container`]); the player inventory part of
+//! that menu stays in the inventory mirror.
 //!
 //! Java menu slots: 0 crafting result, 1-4 crafting grid, 5-8 armour (head..feet), 9-35 main
 //! inventory, 36-44 hotbar, 45 offhand. Bedrock: window 0 slots 0-8 hotbar and 9-35 main
@@ -12,6 +14,7 @@ use vanillite_protocol::packets::play::clientbound as pcb;
 use vanillite_protocol::packets::play::serverbound::{self as psb, ContainerInput, HashedStack};
 
 use super::Session;
+use super::container::{Kind, Open};
 use crate::packets::{self as bp, SlotRef, StackAction, StackRequest, container, id, window};
 
 /// Slots of the Java inventory menu.
@@ -36,6 +39,14 @@ pub(super) struct Inventory {
     /// The item of the last creative pick (`craft_creative`), taken from the created output.
     created: Option<ItemStack>,
     clicks: usize,
+    /// The open Java menu other than the inventory.
+    pub open: Option<Open>,
+    /// Crafted items on the cursor that the request has not placed yet.
+    crafted: i32,
+    /// The result of the recipe the request crafts.
+    recipe: Option<ItemStack>,
+    /// The Java recipe of a recipe book craft: placed before each craft.
+    auto: Option<i32>,
 }
 
 impl Default for Inventory {
@@ -48,19 +59,26 @@ impl Default for Inventory {
             selected: 0,
             created: None,
             clicks: 0,
+            open: None,
+            crafted: 0,
+            recipe: None,
+            auto: None,
         }
     }
 }
 
 /// A slot named by a request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Target {
+pub(super) enum Target {
+    /// A slot of the Java inventory menu.
     Menu(usize),
+    /// A slot of the open menu's own part.
+    Open(usize),
     Cursor,
     Created,
 }
 
-/// The Java slot of a Bedrock request slot.
+/// The inventory menu slot of a Bedrock request slot.
 fn target(r: &SlotRef) -> Option<Target> {
     let s = usize::from(r.slot);
     Some(match r.container {
@@ -119,33 +137,85 @@ fn same(a: &ItemStack, b: &ItemStack) -> bool {
 }
 
 impl Inventory {
+    /// The slot of a Bedrock request slot, with the open menu.
+    fn target(&self, r: &SlotRef) -> Option<Target> {
+        let Some(open) = &self.open else {
+            return target(r);
+        };
+        let s = usize::from(r.slot);
+        let own = |i: usize| (i < open.slots.len()).then_some(Target::Open(i));
+        match (open.kind, r.container) {
+            (Kind::Crafting, container::CRAFTING_INPUT) => s
+                .checked_sub(31)
+                .filter(|i| (1..10).contains(i))
+                .and_then(own),
+            (_, container::CRAFTING_INPUT | container::ARMOUR | container::OFFHAND) => None,
+            (
+                Kind::Chest | Kind::Dispenser | Kind::Hopper,
+                container::LEVEL_ENTITY | container::BARREL | container::SHULKER_BOX,
+            ) => own(s),
+            (
+                Kind::Furnace,
+                container::FURNACE_INGREDIENT
+                | container::BLAST_FURNACE_INGREDIENT
+                | container::SMOKER_INGREDIENT,
+            ) => own(0),
+            (Kind::Furnace, container::FURNACE_FUEL) => own(1),
+            (Kind::Furnace, container::FURNACE_RESULT) => own(2),
+            (Kind::Brewing, container::BREWING_INPUT) => own(3),
+            (Kind::Brewing, container::BREWING_RESULT) => {
+                s.checked_sub(1).filter(|&i| i < 3).and_then(own)
+            }
+            (Kind::Brewing, container::BREWING_FUEL) => own(4),
+            _ => target(r),
+        }
+    }
+
+    /// The Java slot of a target in the open menu (`None`: outside the window, -999).
+    fn java_slot(&self, t: Option<Target>) -> Result<i16, Refused> {
+        let slot = match (t, &self.open) {
+            (None, _) => return Ok(-999),
+            (Some(Target::Open(i)), Some(o)) if i < o.slots.len() => i,
+            (Some(Target::Menu(i)), Some(o)) if (9..45).contains(&i) => {
+                o.slots.len().saturating_add(i).saturating_sub(9)
+            }
+            (Some(Target::Menu(i)), None) if (1..MENU).contains(&i) => i,
+            (Some(Target::Created), Some(o)) if o.kind == Kind::Crafting => 0,
+            (Some(Target::Created), None) => 0,
+            _ => return Err(Refused),
+        };
+        i16::try_from(slot).map_err(|_| Refused)
+    }
+
+    /// The crafting result slot of the open menu.
+    fn result_slot(&self) -> Option<Target> {
+        match &self.open {
+            None => Some(Target::Menu(0)),
+            Some(o) if o.kind == Kind::Crafting => Some(Target::Open(0)),
+            Some(_) => None,
+        }
+    }
+
     fn fresh(&mut self) -> i32 {
         self.next_net = self.next_net.wrapping_add(1).max(1);
         self.next_net
     }
 
     fn get(&self, t: Target) -> ItemStack {
-        match t {
-            Target::Menu(i) => self
-                .slots
-                .get(i)
-                .map(|s| s.stack.clone())
-                .unwrap_or_default(),
-            Target::Cursor => self.cursor.stack.clone(),
-            Target::Created => ItemStack::EMPTY,
-        }
+        self.slot(t).map(|s| s.stack.clone()).unwrap_or_default()
     }
 
     fn slot(&self, t: Target) -> Option<&Slot> {
         match t {
             Target::Menu(i) => self.slots.get(i),
+            Target::Open(i) => self.open.as_ref()?.slots.get(i),
             Target::Cursor => Some(&self.cursor),
             Target::Created => None,
         }
     }
 
     /// Sets a slot; a changed stack gets a new stack id. Returns whether it changed.
-    fn put(&mut self, t: Target, stack: ItemStack) -> bool {
+    pub(super) fn put(&mut self, t: Target, stack: ItemStack) -> bool {
         let stack = if stack.is_empty() {
             ItemStack::EMPTY
         } else {
@@ -154,6 +224,10 @@ impl Inventory {
         let net = self.fresh();
         let slot = match t {
             Target::Menu(i) => match self.slots.get_mut(i) {
+                Some(s) => s,
+                None => return false,
+            },
+            Target::Open(i) => match self.open.as_mut().and_then(|o| o.slots.get_mut(i)) {
                 Some(s) => s,
                 None => return false,
             },
@@ -171,9 +245,9 @@ impl Inventory {
     }
 
     /// Applies a Java click to the mirror (`AbstractContainerMenu.doClick` for plain slots).
-    fn simulate_click(&mut self, slot: i16, button: i8, input: ContainerInput) {
+    fn simulate_click(&mut self, t: Option<Target>, button: i8, input: ContainerInput) {
         let mut c = self.cursor.stack.clone();
-        if slot == -999 {
+        let Some(t) = t else {
             if input == ContainerInput::Pickup && !c.is_empty() {
                 if button == 0 {
                     c = ItemStack::EMPTY;
@@ -183,11 +257,11 @@ impl Inventory {
                 self.put(Target::Cursor, c);
             }
             return;
-        }
-        let Some(i) = usize::try_from(slot).ok().filter(|&i| i > 0 && i < MENU) else {
-            return;
         };
-        let mut s = self.get(Target::Menu(i));
+        if matches!(t, Target::Cursor | Target::Created | Target::Menu(0)) {
+            return;
+        }
+        let mut s = self.get(t);
         match (input, button) {
             (ContainerInput::Throw, b) => {
                 if c.is_empty() && !s.is_empty() {
@@ -232,7 +306,7 @@ impl Inventory {
             }
             _ => {}
         }
-        self.put(Target::Menu(i), s);
+        self.put(t, s);
         self.put(Target::Cursor, c);
     }
 }
@@ -243,15 +317,31 @@ struct Refused;
 
 impl Session {
     /// One Java click: applied to the mirror and sent.
-    fn click(&mut self, slot: i16, button: i8, input: ContainerInput) -> Result<(), Refused> {
+    fn click(
+        &mut self,
+        t: Option<Target>,
+        button: i8,
+        input: ContainerInput,
+    ) -> Result<(), Refused> {
+        let slot = self.inv.java_slot(t)?;
+        self.send_click(slot, button, input)?;
+        self.inv.simulate_click(t, button, input);
+        Ok(())
+    }
+
+    /// Sends one Java click without changing the mirror.
+    fn send_click(&mut self, slot: i16, button: i8, input: ContainerInput) -> Result<(), Refused> {
         self.inv.clicks = self.inv.clicks.saturating_add(1);
         if self.inv.clicks > MAX_CLICKS {
             return Err(Refused);
         }
-        self.inv.simulate_click(slot, button, input);
-        let state_id = self.inv.state_id;
+        let (container_id, state_id) = self
+            .inv
+            .open
+            .as_ref()
+            .map_or((0, self.inv.state_id), |o| (o.container, o.state_id));
         self.java_send(&psb::ContainerClick {
-            container_id: 0,
+            container_id,
             state_id,
             slot,
             button,
@@ -262,16 +352,50 @@ impl Session {
         Ok(())
     }
 
-    fn java_slot(t: Target) -> Result<i16, Refused> {
-        match t {
-            Target::Menu(i) if i > 0 => i16::try_from(i).map_err(|_| Refused),
-            _ => Err(Refused),
+    /// Crafts `n` items onto the cursor (clicks on the result slot) and places them in `dst`.
+    fn craft_take(&mut self, n: i32, dst: Target) -> Result<(), Refused> {
+        let result_slot = self.inv.result_slot().ok_or(Refused)?;
+        let result = self
+            .inv
+            .recipe
+            .clone()
+            .unwrap_or_else(|| self.inv.get(result_slot));
+        if result.is_empty() || n <= 0 {
+            return Err(Refused);
         }
+        let java = self.inv.java_slot(Some(Target::Created))?;
+        while self.inv.crafted < n {
+            let c = self.inv.cursor.stack.clone();
+            let grown = if c.is_empty() {
+                result.clone()
+            } else if same(&c, &result) && c.count.saturating_add(result.count) <= max_stack(&c) {
+                c.with_count(c.count.saturating_add(result.count))
+            } else {
+                return Err(Refused);
+            };
+            if let Some(recipe) = self.inv.auto {
+                let container_id = self.inv.open.as_ref().map_or(0, |o| o.container);
+                self.java_send(&psb::PlaceRecipe {
+                    container_id,
+                    recipe,
+                    use_max_items: false,
+                });
+            }
+            self.send_click(java, 0, ContainerInput::Pickup)?;
+            self.inv.put(Target::Cursor, grown);
+            self.inv.crafted = self.inv.crafted.saturating_add(result.count.max(1));
+        }
+        self.inv.crafted = self.inv.crafted.saturating_sub(n);
+        if dst == Target::Cursor {
+            return Ok(());
+        }
+        self.place_from_cursor(dst, n)
     }
 
     /// Takes `n` items of menu slot `t` onto the (Java) cursor.
     fn take_to_cursor(&mut self, t: Target, n: i32) -> Result<(), Refused> {
-        let slot = Self::java_slot(t)?;
+        let slot = Some(t);
+        self.inv.java_slot(slot)?;
         let s = self.inv.get(t);
         let c = self.inv.cursor.stack.clone();
         if n <= 0 || s.count < n {
@@ -298,7 +422,8 @@ impl Session {
 
     /// Places `n` items of the cursor into menu slot `t`.
     fn place_from_cursor(&mut self, t: Target, n: i32) -> Result<(), Refused> {
-        let slot = Self::java_slot(t)?;
+        let slot = Some(t);
+        self.inv.java_slot(slot)?;
         let c = self.inv.cursor.stack.clone();
         let d = self.inv.get(t);
         if n <= 0 || c.count < n || (!d.is_empty() && !same(&d, &c)) {
@@ -315,11 +440,13 @@ impl Session {
 
     /// One action in survival: Java clicks.
     fn survival_action(&mut self, a: &StackAction) -> Result<(), Refused> {
-        let t = |r: &SlotRef| target(r).ok_or(Refused);
+        let inv = &self.inv;
+        let t = |r: &SlotRef| inv.target(r).ok_or(Refused);
         match *a {
             StackAction::Take { count, src, dst } | StackAction::Place { count, src, dst } => {
                 let (src, dst, n) = (t(&src)?, t(&dst)?, i32::from(count));
                 match (src, dst) {
+                    (Target::Created, d) if d != Target::Created => self.craft_take(n, d),
                     (Target::Created, _) | (_, Target::Created) => Err(Refused),
                     (Target::Cursor, Target::Cursor) => Ok(()),
                     (s, Target::Cursor) => self.take_to_cursor(s, n),
@@ -334,24 +461,20 @@ impl Session {
                 }
             }
             StackAction::Swap { src, dst } => match (t(&src)?, t(&dst)?) {
-                (Target::Cursor, Target::Menu(_)) | (Target::Menu(_), Target::Cursor) => {
-                    let other = if t(&src)? == Target::Cursor {
-                        t(&dst)?
-                    } else {
-                        t(&src)?
-                    };
-                    self.click(Self::java_slot(other)?, 0, ContainerInput::Pickup)
+                (Target::Cursor, Target::Cursor) | (Target::Created, _) | (_, Target::Created) => {
+                    Err(Refused)
                 }
-                (a @ Target::Menu(_), b @ Target::Menu(_)) => {
+                (Target::Cursor, other) | (other, Target::Cursor) => {
+                    self.click(Some(other), 0, ContainerInput::Pickup)
+                }
+                (a, b) => {
                     if !self.inv.cursor.stack.is_empty() {
                         return Err(Refused);
                     }
-                    let (a, b) = (Self::java_slot(a)?, Self::java_slot(b)?);
-                    self.click(a, 0, ContainerInput::Pickup)?;
-                    self.click(b, 0, ContainerInput::Pickup)?;
-                    self.click(a, 0, ContainerInput::Pickup)
+                    self.click(Some(a), 0, ContainerInput::Pickup)?;
+                    self.click(Some(b), 0, ContainerInput::Pickup)?;
+                    self.click(Some(a), 0, ContainerInput::Pickup)
                 }
-                _ => Err(Refused),
             },
             StackAction::Drop { count, src } => {
                 let n = i32::from(count);
@@ -359,15 +482,15 @@ impl Session {
                     Target::Cursor => {
                         let c = self.inv.cursor.stack.count;
                         if n == c {
-                            return self.click(-999, 0, ContainerInput::Pickup);
+                            return self.click(None, 0, ContainerInput::Pickup);
                         }
                         for _ in 0..n.min(c) {
-                            self.click(-999, 1, ContainerInput::Pickup)?;
+                            self.click(None, 1, ContainerInput::Pickup)?;
                         }
                         Ok(())
                     }
-                    s @ Target::Menu(_) => {
-                        let slot = Self::java_slot(s)?;
+                    s @ (Target::Menu(_) | Target::Open(_)) => {
+                        let slot = Some(s);
                         let have = self.inv.get(s).count;
                         if n >= have {
                             return self.click(slot, 1, ContainerInput::Throw);
@@ -380,7 +503,24 @@ impl Session {
                     Target::Created => Err(Refused),
                 }
             }
-            StackAction::MineBlock => Ok(()),
+            StackAction::Consume { count, src } => {
+                // The Java server takes the ingredients itself; the mirror follows.
+                let s = t(&src)?;
+                let mut rest = self.inv.get(s);
+                rest.shrink(i32::from(count));
+                self.inv.put(s, rest);
+                Ok(())
+            }
+            StackAction::CraftRecipe { net_id, .. } => {
+                self.inv.recipe = self.recipes.result(net_id);
+                Ok(())
+            }
+            StackAction::CraftRecipeAuto { net_id, .. } => {
+                self.inv.recipe = self.recipes.result(net_id);
+                self.inv.auto = Some(self.recipes.java(net_id).ok_or(Refused)?);
+                Ok(())
+            }
+            StackAction::MineBlock | StackAction::Create | StackAction::Results => Ok(()),
             _ => Err(Refused),
         }
     }
@@ -413,6 +553,9 @@ impl Session {
             }
             StackAction::Take { count, src, dst } | StackAction::Place { count, src, dst } => {
                 let (src, dst, n) = (t(&src)?, t(&dst)?, i32::from(count));
+                if matches!(src, Target::Created) && self.inv.created.is_none() {
+                    return self.survival_action(a);
+                }
                 let from = match src {
                     Target::Created => self.inv.created.clone().ok_or(Refused)?,
                     s => self.inv.get(s),
@@ -464,18 +607,25 @@ impl Session {
                 }
                 Ok(())
             }
-            StackAction::MineBlock => Ok(()),
-            _ => Err(Refused),
+            StackAction::MineBlock | StackAction::Create | StackAction::Results => Ok(()),
+            // Crafting in creative works like in survival.
+            _ => self.survival_action(a),
         }
     }
 
     /// Answers one item stack request.
     pub(super) fn stack_request(&mut self, req: &StackRequest) -> bp::StackResponse {
-        let creative = self
-            .world
-            .as_ref()
-            .is_some_and(|w| w.game_mode == pcb::GameMode::Creative);
+        // Java creative slots only reach the inventory menu: an open menu takes clicks.
+        let creative = self.inv.open.is_none()
+            && self
+                .world
+                .as_ref()
+                .is_some_and(|w| w.game_mode == pcb::GameMode::Creative);
         self.inv.clicks = 0;
+        self.inv.crafted = 0;
+        self.inv.recipe = None;
+        self.inv.auto = None;
+        self.inv.created = None;
         let mut ok = true;
         for a in &req.actions {
             let r = if creative {
@@ -507,7 +657,7 @@ impl Session {
             _ => [None, None],
         });
         for r in refs.flatten() {
-            let Some(slot) = target(&r).and_then(|t| self.inv.slot(t)) else {
+            let Some(slot) = self.inv.target(&r).and_then(|t| self.inv.slot(t)) else {
                 continue;
             };
             let info = bp::ResponseSlot {
@@ -548,7 +698,7 @@ impl Session {
 
     // ---- Java -> Bedrock --------------------------------------------------------------
 
-    fn instance(&self, slot: &Slot) -> Vec<u8> {
+    pub(super) fn instance(&self, slot: &Slot) -> Vec<u8> {
         let mut out = Vec::with_capacity(16);
         self.version
             .palette
@@ -598,7 +748,7 @@ impl Session {
     }
 
     /// Sends one menu slot.
-    fn send_slot(&mut self, menu: usize) {
+    pub(super) fn send_slot(&mut self, menu: usize) {
         let (Some((w, s)), Some(slot)) = (bedrock_slot(menu), self.inv.slots.get(menu)) else {
             return;
         };
@@ -606,7 +756,7 @@ impl Session {
         self.send(id::INVENTORY_SLOT, &bp::inventory_slot(w, s, &item));
     }
 
-    fn send_cursor(&mut self) {
+    pub(super) fn send_cursor(&mut self) {
         let item = self.instance(&self.inv.cursor);
         self.send(
             id::INVENTORY_SLOT,
@@ -620,6 +770,8 @@ impl Session {
                 for (i, stack) in c.items.into_iter().enumerate() {
                     self.merchant_inventory_slot(i, stack);
                 }
+            } else {
+                self.open_content(c);
             }
             return;
         }
@@ -633,10 +785,12 @@ impl Session {
 
     pub(super) fn java_container_slot(&mut self, c: pcb::ContainerSetSlot) {
         if c.container_id != 0 {
-            if self.merchant_state(c.container_id, c.state_id)
-                && let Ok(i) = usize::try_from(c.slot)
-            {
-                self.merchant_inventory_slot(i, c.item);
+            if self.merchant_state(c.container_id, c.state_id) {
+                if let Ok(i) = usize::try_from(c.slot) {
+                    self.merchant_inventory_slot(i, c.item);
+                }
+            } else {
+                self.open_slot(c);
             }
             return;
         }
@@ -731,15 +885,15 @@ mod tests {
         let stone = vanillite_data::item::ItemId::by_name("minecraft:stone").map_or(1, |i| i.0);
         inv.put(Target::Menu(36), ItemStack::new(stone, 10));
         // Right click takes half, rounded up.
-        inv.simulate_click(36, 1, ContainerInput::Pickup);
+        inv.simulate_click(Some(Target::Menu(36)), 1, ContainerInput::Pickup);
         assert_eq!(inv.cursor.stack.count, 5);
         assert_eq!(inv.get(Target::Menu(36)).count, 5);
         // Right click into an empty slot places one.
-        inv.simulate_click(9, 1, ContainerInput::Pickup);
+        inv.simulate_click(Some(Target::Menu(9)), 1, ContainerInput::Pickup);
         assert_eq!(inv.get(Target::Menu(9)).count, 1);
         assert_eq!(inv.cursor.stack.count, 4);
         // Left click merges.
-        inv.simulate_click(36, 0, ContainerInput::Pickup);
+        inv.simulate_click(Some(Target::Menu(36)), 0, ContainerInput::Pickup);
         assert_eq!(inv.get(Target::Menu(36)).count, 9);
         assert!(inv.cursor.stack.is_empty());
     }

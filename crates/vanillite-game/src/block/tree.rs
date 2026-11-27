@@ -20,7 +20,7 @@ use vanillite_worldgen::behaviour::StateExt;
 use vanillite_worldgen::biome::BiomeRegistry;
 use vanillite_worldgen::feature::region::LiveLevel;
 use vanillite_worldgen::feature::{
-    FeatureContext, FeatureEnv, FeatureId, FeatureParser, WorldGenRegion,
+    FeatureContext, FeatureEnv, FeatureId, FeatureParser, PlacedFeatureId, WorldGenRegion,
 };
 use vanillite_worldgen::proto::ProtoChunk;
 use vanillite_worldgen::random_state::RandomState;
@@ -120,7 +120,23 @@ pub struct TreeFeatures {
     random_state: RandomState,
     ids: FxHashMap<&'static str, FeatureId>,
     sea_level: i32,
+    /// `VegetationPlacements.GRASS_BONEMEAL`.
+    grass_bonemeal: Option<PlacedFeatureId>,
+    /// `getBoneMealFeatures()` of each biome by protocol id: the features of its placed
+    /// features in `#can_spawn_from_bone_meal` (the flowers grass grows).
+    biome_flowers: Vec<Vec<FeatureId>>,
 }
+
+/// The configured features bone meal places besides trees.
+pub const BONEMEAL_FEATURES: [&str; 7] = [
+    "minecraft:crimson_fungus_planted",
+    "minecraft:warped_fungus_planted",
+    "minecraft:huge_brown_mushroom",
+    "minecraft:huge_red_mushroom",
+    "minecraft:moss_patch_bonemeal",
+    "minecraft:pale_moss_patch_bonemeal",
+    "minecraft:nylium_bonemeal",
+];
 
 impl TreeFeatures {
     /// Parses every tree a sapling grows into from the data packs.
@@ -158,6 +174,20 @@ impl TreeFeatures {
                 }
             }
         }
+        for name in BONEMEAL_FEATURES {
+            match parser.feature(&serde_json::Value::String(name.to_owned())) {
+                Ok(id) => {
+                    ids.insert(name, id);
+                }
+                Err(e) => log::warn!("bone meal feature {name}: {e}"),
+            }
+        }
+        let grass_bonemeal = parser
+            .placed(&serde_json::Value::String(
+                "minecraft:grass_bonemeal".to_owned(),
+            ))
+            .ok();
+        let biome_flowers = biome_flower_features(packs, biomes, &mut parser);
         let env = FeatureEnv {
             registry: parser.finish(),
             context: WorldGenerationContext::new(min_y, height, sea_level),
@@ -168,8 +198,121 @@ impl TreeFeatures {
             random_state,
             ids,
             sea_level,
+            grass_bonemeal,
+            biome_flowers,
         })
     }
+}
+
+/// `BiomeGenerationSettings.getBoneMealFeatures` of every biome: in step order, the feature of
+/// each placed feature (and the features inside it) that is in `#can_spawn_from_bone_meal`.
+fn biome_flower_features(
+    packs: &LoadedPacks,
+    biomes: &BiomeRegistry,
+    parser: &mut FeatureParser<'_>,
+) -> Vec<Vec<FeatureId>> {
+    let tag: Vec<String> = packs
+        .tags("minecraft:worldgen/feature")
+        .and_then(|t| t.get("minecraft:can_spawn_from_bone_meal"))
+        .cloned()
+        .unwrap_or_default();
+    let placed_registry = packs.registry("minecraft:worldgen/placed_feature");
+    let mut out = Vec::with_capacity(biomes.all().len());
+    for biome in biomes.all() {
+        let mut list = Vec::new();
+        let steps = biome
+            .json
+            .get("features")
+            .and_then(serde_json::Value::as_array);
+        for step in steps.into_iter().flatten() {
+            let names: Vec<String> = match step {
+                serde_json::Value::Array(a) => a
+                    .iter()
+                    .filter_map(|v| v.as_str().map(str::to_owned))
+                    .collect(),
+                serde_json::Value::String(s) => match s.strip_prefix('#') {
+                    Some(t) => packs
+                        .tags("minecraft:worldgen/placed_feature")
+                        .and_then(|tags| tags.get(t))
+                        .cloned()
+                        .unwrap_or_default(),
+                    None => vec![s.clone()],
+                },
+                _ => Vec::new(),
+            };
+            for name in names {
+                let Some(entry) = placed_registry.and_then(|r| r.get(&qualify(&name))) else {
+                    continue;
+                };
+                let Ok(json) = serde_json::from_str::<serde_json::Value>(entry.json.get()) else {
+                    continue;
+                };
+                if let Some(feature) = json.get("feature").and_then(serde_json::Value::as_str) {
+                    let feature = qualify(feature);
+                    if tag.contains(&feature)
+                        && let Ok(id) = parser.feature(&serde_json::Value::String(feature))
+                    {
+                        list.push(id);
+                    }
+                }
+            }
+        }
+        out.push(list);
+    }
+    out
+}
+
+/// A resource location with the default namespace.
+fn qualify(name: &str) -> String {
+    if name.contains(':') {
+        name.to_owned()
+    } else {
+        format!("minecraft:{name}")
+    }
+}
+
+/// `Holder<Feature>.value().place(level, generator, level.random, origin)` of a bone meal
+/// feature ([`BONEMEAL_FEATURES`]); `None` without it.
+pub fn place_named(level: &mut Level, name: &str, origin: BlockPos) -> Option<bool> {
+    let trees = level.tree_features().cloned()?;
+    let id = *trees.ids.get(name)?;
+    Some(place(level, &trees, id, origin))
+}
+
+/// `GRASS_BONEMEAL.place(level, generator, level.random, origin)`.
+pub fn place_grass_bonemeal(level: &mut Level, origin: BlockPos) -> bool {
+    let Some(trees) = level.tree_features().cloned() else {
+        return false;
+    };
+    let Some(id) = trees.grass_bonemeal else {
+        return false;
+    };
+    place_with(level, &trees, origin, |ctx| ctx.place_placed(id, origin))
+}
+
+/// `getBoneMealFeatures()` of the biome at `pos` is empty.
+pub fn biome_flowers_empty(level: &Level, pos: BlockPos) -> bool {
+    let biome = usize::from(level.biome(pos));
+    level
+        .tree_features()
+        .and_then(|t| t.biome_flowers.get(biome))
+        .is_none_or(Vec::is_empty)
+}
+
+/// `Util.getRandom(getBoneMealFeatures(), random).place(level, generator, random, pos)` of the
+/// biome at `pos`.
+pub fn place_biome_flower(level: &mut Level, pos: BlockPos) {
+    let Some(trees) = level.tree_features().cloned() else {
+        return;
+    };
+    let biome = usize::from(level.biome(pos));
+    let Some(list) = trees.biome_flowers.get(biome).filter(|l| !l.is_empty()) else {
+        return;
+    };
+    let len = i32::try_from(list.len()).unwrap_or(i32::MAX);
+    let index = usize::try_from(level.random().next_int_bounded(len)).unwrap_or(0);
+    let id = list[index];
+    place(level, &trees, id, pos);
 }
 
 /// `WeightedList.getRandom(random)`.
@@ -190,6 +333,30 @@ fn pick(list: Weighted, random: &mut LegacyRandom) -> Option<&'static str> {
 
 /// `TreeGrower.growTree(level, generator, pos, state, level.random)`.
 pub fn grow_tree(level: &mut Level, pos: BlockPos, state: BlockState) -> bool {
+    grow_tree_by(level, pos, state, 0)
+}
+
+/// Whether plugins let the sapling, mushroom or fungus `state` at `pos` grow into its tree or
+/// huge plant (`STRUCTURE_GROW`, Bukkit's `StructureGrowEvent`); `player` (0 for none) used
+/// bone meal on it. `true` when no plugin listens.
+pub fn structure_may_grow(level: &Level, pos: BlockPos, state: BlockState, player: u128) -> bool {
+    let Some(hooks) = level.hooks_for(vanillite_abi::event::STRUCTURE_GROW) else {
+        return true;
+    };
+    let mut ev = crate::hooks::Event {
+        pos,
+        key: super::hook_events::state_text(state),
+        state: Some(state),
+        player,
+        ..crate::hooks::Event::new(vanillite_abi::event::STRUCTURE_GROW)
+    };
+    hooks.event(&mut ev);
+    !ev.cancelled
+}
+
+/// [`grow_tree`] by `player`'s bone meal (0 for a random tick); plugins may cancel it
+/// ([`structure_may_grow`]) after the tree is chosen: the sapling stays.
+pub fn grow_tree_by(level: &mut Level, pos: BlockPos, state: BlockState, player: u128) -> bool {
     let Some(grower) = grower(state.block()) else {
         return false;
     };
@@ -201,6 +368,9 @@ pub fn grow_tree(level: &mut Level, pos: BlockPos, state: BlockState) -> bool {
         && let Some(&id) = trees.ids.get(name)
         && let Some((dx, dz)) = two_by_two(level, state, pos)
     {
+        if !structure_may_grow(level, pos, state, player) {
+            return false;
+        }
         let saplings: Vec<(BlockState, BlockPos)> = [(0, 0), (1, 0), (0, 1), (1, 1)]
             .iter()
             .map(|&(x, z)| {
@@ -231,6 +401,9 @@ pub fn grow_tree(level: &mut Level, pos: BlockPos, state: BlockState) -> bool {
     let Some(&id) = trees.ids.get(name) else {
         return false;
     };
+    if !structure_may_grow(level, pos, state, player) {
+        return false;
+    }
     remove_sapling(level, pos);
     if place(level, &trees, id, pos) {
         true
@@ -310,6 +483,16 @@ fn has_flowers(level: &Level, pos: BlockPos) -> bool {
 
 /// `ConfiguredFeature.place(level, generator, level.random, origin)` in the live level.
 fn place(level: &mut Level, trees: &TreeFeatures, id: FeatureId, origin: BlockPos) -> bool {
+    place_with(level, trees, origin, |ctx| ctx.place_feature(id, origin))
+}
+
+/// Runs `f` on a feature context of the live level around `origin` with the level random.
+fn place_with(
+    level: &mut Level,
+    trees: &TreeFeatures,
+    origin: BlockPos,
+    f: impl FnOnce(&mut FeatureContext<'_, '_>) -> bool,
+) -> bool {
     let center = origin.chunk();
     let mut copies = Vec::with_capacity(9);
     for dz in -1..=1 {
@@ -352,7 +535,7 @@ fn place(level: &mut Level, trees: &TreeFeatures, id: FeatureId, origin: BlockPo
             env: &trees.env,
             random: &mut random,
         };
-        ctx.place_feature(id, origin)
+        f(&mut ctx)
     };
     *level.random() = random.into_legacy().unwrap_or_else(|| LegacyRandom::new(0));
     placed

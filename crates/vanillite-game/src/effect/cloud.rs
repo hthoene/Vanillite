@@ -377,10 +377,12 @@ pub fn spawn_cloud(
     data.owner_uuid = data.owner.and_then(|o| ents.store.get(o)).map(|e| e.uuid());
     let radius = data.radius;
     let new = NewEntity::new(ids::AREA_EFFECT_CLOUD, network_ids.next(), uuid, pos);
+    let parent = data.owner_uuid.unwrap_or(0);
     let id = ents.spawn_cloud(new, data);
     if let Some(mut e) = ents.store.get_mut(id) {
         e.set_dims(dims_of(radius));
     }
+    ents.spawned(id, vanillite_abi::spawn_reason::DEFAULT, parent);
     id
 }
 
@@ -508,7 +510,7 @@ fn mark_dirty(ents: &mut Entities, id: EntityId) {
 }
 
 /// `setRadius`: the synched radius and the box (`refreshDimensions`).
-fn set_radius(ents: &mut Entities, id: EntityId, radius: f32) {
+pub(crate) fn set_radius(ents: &mut Entities, id: EntityId, radius: f32) {
     if let Some(c) = ents.cloud_mut(id) {
         c.radius = radius;
     }

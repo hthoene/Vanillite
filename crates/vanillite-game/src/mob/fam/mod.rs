@@ -90,6 +90,34 @@ pub enum SpawnReason {
     DimensionTravel,
 }
 
+impl SpawnReason {
+    /// The plugin code (`vanillite_abi::spawn_reason`; `LOAD` never fires an event).
+    pub fn abi(self) -> u32 {
+        use vanillite_abi::spawn_reason as r;
+        match self {
+            SpawnReason::Natural => r::NATURAL,
+            SpawnReason::ChunkGeneration => r::CHUNK_GENERATION,
+            SpawnReason::Spawner => r::SPAWNER,
+            SpawnReason::Structure => r::STRUCTURE,
+            SpawnReason::Breeding => r::BREEDING,
+            SpawnReason::MobSummoned => r::MOB_SUMMONED,
+            SpawnReason::Jockey => r::JOCKEY,
+            SpawnReason::Event => r::EVENT,
+            SpawnReason::Conversion => r::CONVERSION,
+            SpawnReason::Reinforcement => r::REINFORCEMENT,
+            SpawnReason::Triggered => r::TRIGGERED,
+            SpawnReason::Bucket => r::BUCKET,
+            SpawnReason::SpawnItemUse => r::SPAWN_ITEM_USE,
+            SpawnReason::Command => r::COMMAND,
+            SpawnReason::Dispenser => r::DISPENSER,
+            SpawnReason::Patrol => r::PATROL,
+            SpawnReason::TrialSpawner => r::TRIAL_SPAWNER,
+            SpawnReason::Load => r::DEFAULT,
+            SpawnReason::DimensionTravel => r::DIMENSION_TRAVEL,
+        }
+    }
+}
+
 /// How a mob that spawns together with another one relates to it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Relation {
@@ -425,6 +453,9 @@ pub trait FamilyHooks {
     fn init(_m: &mut MobData) {}
     /// `registerGoals`.
     fn register_goals(_m: &mut MobData) {}
+    /// What the constructor reads of its level: the mob joins a level at this game time and
+    /// time of the overworld day.
+    fn created(_m: &mut MobData, _game_time: i64, _day_time: i64) {}
     /// `finalizeSpawn` (after `Mob.finalizeSpawn`'s follow range bonus and handedness).
     fn finalize_spawn(_m: &mut MobData, _ctx: &mut SpawnContext<'_>) {}
     /// The draws of the kind's `finalizeSpawn` from the mob's own random (`this.random`;
@@ -493,6 +524,8 @@ pub trait FamilyHooks {
     fn absorb(_m: &MobData, _source: &DamageSource, _env: &Env<'_>, damage: f32) -> f32 {
         damage
     }
+    /// `actuallyHurt` after the damage, before the knockback (the armadillo rolls up).
+    fn actually_hurt(_h: &mut Hurt<'_, '_>) {}
     /// After `hurtServer` hurt the mob (calls for help, teleports).
     fn after_hurt(_h: &mut Hurt<'_, '_>, _amount: f32) {}
     /// `die` before the loot (splitting, conversions, extra drops).
@@ -778,6 +811,10 @@ pub fn register_goals(m: &mut MobData) {
     let kind = m.kind;
     by_family!(kind, (), register_goals(m));
 }
+pub fn created(m: &mut MobData, game_time: i64, day_time: i64) {
+    let kind = m.kind;
+    by_family!(kind, (), created(m, game_time, day_time));
+}
 /// Whether the kind's `finalizeSpawn` makes its own draws before `super.finalizeSpawn`, so
 /// `Mob.finalizeSpawn` (follow range, left-handedness) comes last: the horses
 /// (`AbstractHorse.finalizeSpawn`: `randomizeAttributes`, then `AgeableMob`, then `Mob`).
@@ -794,6 +831,7 @@ pub fn mob_spawn_part_last(kind: Kind) -> bool {
             | Kind::Camel
             | Kind::CamelHusk
             | Kind::Wolf
+            | Kind::Vex
     )
 }
 
@@ -890,6 +928,9 @@ pub fn hurt_filter(h: &mut Hurt<'_, '_>, kind: Kind, amount: f32) -> Option<f32>
 }
 pub fn absorb(m: &MobData, source: &DamageSource, env: &Env<'_>, damage: f32) -> f32 {
     by_family!(m.kind, damage, absorb(m, source, env, damage))
+}
+pub fn actually_hurt(h: &mut Hurt<'_, '_>, kind: Kind) {
+    by_family!(kind, (), actually_hurt(h));
 }
 pub fn after_hurt(h: &mut Hurt<'_, '_>, kind: Kind, amount: f32) {
     by_family!(kind, (), after_hurt(h, amount));
@@ -996,4 +1037,64 @@ pub fn goal_stop(t: &mut Tick<'_, '_>, g: &mut FamGoal) {
 }
 pub fn goal_tick(t: &mut Tick<'_, '_>, g: &mut FamGoal) {
     by_goal!(g, goal_tick(t, @g));
+}
+
+/// `MobBucketItem.spawn` after the mob is created: the bucket's components
+/// (`createDefaultStackConfig`: the variants), `Bucketable.loadFromBucketTag` of its
+/// `bucket_entity_data` and `setFromBucket(true)`. `NoGravity`, `Glowing` and `Invulnerable`
+/// are entity flags the mob data does not hold.
+pub fn load_from_bucket(m: &mut MobData, stack: &crate::item::ItemStack) {
+    let id = |name: &str| vanillite_data::registry::DATA_COMPONENT_TYPE.id(name);
+    let varint = |name: &str| -> Option<i32> {
+        let data = stack.component(id(name)?)?;
+        vanillite_protocol::codec::Reader::new(data).varint().ok()
+    };
+    let tag = id("minecraft:bucket_entity_data")
+        .and_then(|c| stack.component(c))
+        .and_then(crate::mob::nbt::component_tag);
+    let empty = Compound::new();
+    let tag = match &tag {
+        Some(vanillite_nbt::Tag::Compound(c)) => c,
+        _ => &empty,
+    };
+    let flag = |key: &str| match tag.get(key) {
+        Some(vanillite_nbt::Tag::Byte(v)) => Some(*v != 0),
+        _ => None,
+    };
+    if let Some(v) = flag("NoAI") {
+        m.no_ai = v;
+    }
+    if let Some(v) = flag("Silent") {
+        m.silent = v;
+    }
+    if flag("PersistenceRequired") == Some(true) {
+        m.persistent = true;
+    }
+    if let Some(vanillite_nbt::Tag::Float(h)) = tag.get("Health") {
+        m.health = *h;
+    }
+    match m.kind {
+        Kind::Cod | Kind::Salmon | Kind::Pufferfish | Kind::TropicalFish => {
+            wildlife::fish::from_bucket(m, &varint);
+        }
+        Kind::Axolotl => {
+            if let Some(v) = varint("minecraft:axolotl/variant") {
+                brainy::state_mut(m).variant = v.clamp(0, 4);
+            }
+            if let Some(vanillite_nbt::Tag::Int(age)) = tag.get("Age") {
+                m.age = *age;
+                m.baby = m.age < 0;
+            }
+            brainy::state_mut(m).from_bucket = true;
+        }
+        Kind::Tadpole => {
+            let s = brainy::state_mut(m);
+            if let Some(vanillite_nbt::Tag::Int(age)) = tag.get("Age") {
+                s.tadpole_age = *age;
+            }
+            s.playing_dead = flag("AgeLocked").unwrap_or(false);
+            s.from_bucket = true;
+        }
+        _ => {}
+    }
 }

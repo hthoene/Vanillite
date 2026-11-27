@@ -412,7 +412,6 @@ pub fn hear_noteblock(m: &mut MobData, pos: BlockPos, dimension: &str) {
 
 /// The copper golem brain: `CopperGolemAi`.
 pub fn copper_golem_brain(m: &mut MobData) {
-    let cooldown = super::copper_golem::golem(m).transport_cooldown;
     let core = ActivitySpec::new(
         Activity::Core,
         0,
@@ -463,9 +462,6 @@ pub fn copper_golem_brain(m: &mut MobData) {
             ..BrainSpec::default()
         },
     );
-    if let Some(b) = m.brain.as_deref_mut() {
-        b.set(M::TransportItemsCooldownTicks, MemValue::Int(cooldown));
-    }
 }
 
 /// The breeze brain: `BreezeAi` (default activity `FIGHT`).
@@ -647,7 +643,9 @@ pub fn tick(t: &mut Tick<'_, '_>) {
     }
     // The mob's target follows `ATTACK_TARGET` (`getTargetFromBrain`).
     let target = brain_ref(t).entity(M::AttackTarget);
-    t.mob().target = target;
+    if crate::mob::brain::target_changed(t, target) {
+        t.mob().target = target;
+    }
     match kind {
         Kind::Camel | Kind::CamelHusk => {
             // `CamelPanic.start`: a panicking camel stands up at once.
@@ -1631,6 +1629,7 @@ mod tests {
                 raining_at: &raining,
                 border: None,
                 display_name: &names,
+                entity_team: &|_| None,
                 enter_gateway: &mut |_| false,
                 random: &mut random,
                 out: &mut out,
@@ -1661,7 +1660,13 @@ mod tests {
             let mut level = crate::level::tests::flat_level();
             let mut m = MobData::new(kind, 11);
             m.persistent = true;
-            let id = crate::mob::spawn::add_mob(&mut level, m, Vec3::new(0.5, -60.0, 0.5), 0.0);
+            let id = crate::mob::spawn::add_mob(
+                &mut level,
+                m,
+                Vec3::new(0.5, -60.0, 0.5),
+                0.0,
+                crate::mob::fam::SpawnReason::Command,
+            );
             for time in 0..300 {
                 tick_mob(&mut level, id, time);
             }

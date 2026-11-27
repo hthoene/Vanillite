@@ -255,7 +255,11 @@ impl ClientboundStep for Clientbound {
             || id == npc::LOGIN
             || id == npc::RESPAWN
             || id == npc::UPDATE_TAGS
-            || id == npc::START_CONFIGURATION)
+            || id == npc::START_CONFIGURATION
+            || id == npc::RECIPE_BOOK_ADD
+            || id == npc::UPDATE_RECIPES
+            || id == npc::PLACE_GHOST_RECIPE
+            || id == npc::UPDATE_ADVANCEMENTS)
     }
 
     fn entity_type_older(&self, new: i32) -> Option<i32> {
@@ -403,11 +407,42 @@ impl Clientbound {
                 }
                 out.extend_from_slice(r.take_rest());
             }
-            // Recipe displays changed (tag slot displays) and new recipe property sets: not
-            // translated yet, so the 26.2 client gets no recipe book data instead of a broken
-            // one.
-            npc::RECIPE_BOOK_ADD | npc::UPDATE_RECIPES | npc::PLACE_GHOST_RECIPE => {
-                return Ok(false);
+            npc::RECIPE_BOOK_ADD => {
+                let n = io::len(r, 1 << 16, 3)?;
+                io::write_len(out, n);
+                for _ in 0..n {
+                    self.display_entry(r, out)?;
+                    io::bytes(r, out, 1)?;
+                }
+                io::bytes(r, out, 1)?;
+            }
+            npc::UPDATE_RECIPES => {
+                let n = io::len(r, 1 << 16, 2)?;
+                io::write_len(out, n);
+                for _ in 0..n {
+                    io::string(r, out)?;
+                    let m = io::len(r, 1 << 16, 1)?;
+                    let mut ids = Vec::with_capacity(m);
+                    for _ in 0..m {
+                        if let Some(id) = g::ITEM.older(r.varint()?) {
+                            ids.push(id);
+                        }
+                    }
+                    io::write_len(out, ids.len());
+                    for id in ids {
+                        write_varint(out, id);
+                    }
+                }
+                let n = io::len(r, 1 << 16, 2)?;
+                io::write_len(out, n);
+                for _ in 0..n {
+                    item_set(r, out)?;
+                    self.slot_display(r, out, SLOT_DEPTH)?;
+                }
+            }
+            npc::PLACE_GHOST_RECIPE => {
+                io::varint(r, out)?;
+                self.recipe_display(r, out)?;
             }
             npc::CHUNKS_BIOMES => {
                 let n = io::len(r, 1024, 9)?;
@@ -702,6 +737,196 @@ impl Clientbound {
             out.extend_from_slice(&rest);
         }
         out.extend_from_slice(r.take_rest());
+        Ok(())
+    }
+}
+
+/// Nesting limit of slot displays.
+const SLOT_DEPTH: u8 = 16;
+
+/// `minecraft:slot_display` ids (the same in 26.2 and 26.3).
+mod slot {
+    pub const ITEM: i32 = 4;
+    pub const TAG: i32 = 6;
+    pub const COMPOSITE: i32 = 10;
+}
+
+/// An item `HolderSet` (`Ingredient`): a tag name or a direct list of items.
+fn item_set(r: &mut Reader<'_>, out: &mut Vec<u8>) -> Result<()> {
+    let n = r.varint()?;
+    let Some(n) = n.checked_sub(1) else {
+        write_varint(out, 0);
+        return io::string(r, out);
+    };
+    let n = usize::try_from(n).map_err(|_| Error::NegativeLength)?;
+    if n > 1 << 16 || n > r.remaining() {
+        return Err(Error::Invalid("item set"));
+    }
+    let mut ids = Vec::with_capacity(n);
+    for _ in 0..n {
+        if let Some(id) = g::ITEM.older(r.varint()?) {
+            ids.push(id);
+        }
+    }
+    io::write_len(out, ids.len().saturating_add(1));
+    for id in ids {
+        write_varint(out, id);
+    }
+    Ok(())
+}
+
+impl Clientbound {
+    /// `SlotDisplay`: 26.3 sends `tag` as an item holder set, 26.2 as a tag name; a direct list
+    /// becomes a `composite` of `item`s.
+    fn slot_display(&mut self, r: &mut Reader<'_>, out: &mut Vec<u8>, depth: u8) -> Result<()> {
+        let depth = depth
+            .checked_sub(1)
+            .ok_or(Error::Invalid("slot display depth"))?;
+        let kind = r.varint()?;
+        match kind {
+            // empty, any_fuel
+            0 | 1 => write_varint(out, kind),
+            // with_any_potion
+            2 => {
+                write_varint(out, kind);
+                self.slot_display(r, out, depth)?;
+            }
+            // only_with_component
+            3 => {
+                let mut inner = Vec::new();
+                self.slot_display(r, &mut inner, depth)?;
+                let component =
+                    u16::try_from(r.varint()?).map_err(|_| Error::Invalid("component type"))?;
+                match self.maps().component(component) {
+                    Some(c) => {
+                        write_varint(out, kind);
+                        out.extend_from_slice(&inner);
+                        write_varint(out, i32::from(c));
+                    }
+                    None => out.extend_from_slice(&inner),
+                }
+            }
+            slot::ITEM => {
+                write_varint(out, kind);
+                write_varint(out, g::ITEM.older(r.varint()?).unwrap_or(1));
+            }
+            // item_stack
+            5 => {
+                write_varint(out, kind);
+                let maps = self.maps();
+                items::template_to_old(r, out, &maps, &mut self.refs)?;
+            }
+            slot::TAG => {
+                let n = r.varint()?;
+                let Some(n) = n.checked_sub(1) else {
+                    write_varint(out, slot::TAG);
+                    return io::string(r, out);
+                };
+                let n = usize::try_from(n).map_err(|_| Error::NegativeLength)?;
+                if n > 1 << 16 || n > r.remaining() {
+                    return Err(Error::Invalid("item set"));
+                }
+                let mut ids = Vec::with_capacity(n);
+                for _ in 0..n {
+                    if let Some(id) = g::ITEM.older(r.varint()?) {
+                        ids.push(id);
+                    }
+                }
+                write_varint(out, slot::COMPOSITE);
+                io::write_len(out, ids.len());
+                for id in ids {
+                    write_varint(out, slot::ITEM);
+                    write_varint(out, id);
+                }
+            }
+            // dyed, with_remainder
+            7 | 9 => {
+                write_varint(out, kind);
+                self.slot_display(r, out, depth)?;
+                self.slot_display(r, out, depth)?;
+            }
+            // smithing_trim: base, material, `trim_pattern` holder
+            8 => {
+                let mut base = Vec::new();
+                self.slot_display(r, &mut base, depth)?;
+                let mut material = Vec::new();
+                self.slot_display(r, &mut material, depth)?;
+                let pattern = r
+                    .varint()?
+                    .checked_sub(1)
+                    .filter(|i| *i >= 0)
+                    .ok_or(Error::Invalid("inline trim pattern"))?;
+                match self.regs.older("minecraft:trim_pattern", pattern) {
+                    Some(p) => {
+                        write_varint(out, kind);
+                        out.extend_from_slice(&base);
+                        out.extend_from_slice(&material);
+                        write_varint(out, p.saturating_add(1));
+                    }
+                    None => out.extend_from_slice(&base),
+                }
+            }
+            slot::COMPOSITE => {
+                write_varint(out, kind);
+                let n = io::len(r, 1 << 16, 1)?;
+                io::write_len(out, n);
+                for _ in 0..n {
+                    self.slot_display(r, out, depth)?;
+                }
+            }
+            _ => return Err(Error::Invalid("slot display type")),
+        }
+        Ok(())
+    }
+
+    fn slot_displays(&mut self, r: &mut Reader<'_>, out: &mut Vec<u8>, n: usize) -> Result<()> {
+        for _ in 0..n {
+            self.slot_display(r, out, SLOT_DEPTH)?;
+        }
+        Ok(())
+    }
+
+    /// `RecipeDisplay`: the same five types in 26.2 and 26.3.
+    fn recipe_display(&mut self, r: &mut Reader<'_>, out: &mut Vec<u8>) -> Result<()> {
+        match io::varint(r, out)? {
+            0 => {
+                let n = io::len(r, 1 << 16, 1)?;
+                io::write_len(out, n);
+                self.slot_displays(r, out, n)?;
+                self.slot_displays(r, out, 2)
+            }
+            1 => {
+                io::varint(r, out)?;
+                io::varint(r, out)?;
+                let n = io::len(r, 1 << 16, 1)?;
+                io::write_len(out, n);
+                self.slot_displays(r, out, n)?;
+                self.slot_displays(r, out, 2)
+            }
+            2 => {
+                self.slot_displays(r, out, 4)?;
+                io::varint(r, out)?;
+                io::bytes(r, out, 4)
+            }
+            3 => self.slot_displays(r, out, 3),
+            4 => self.slot_displays(r, out, 5),
+            _ => Err(Error::Invalid("recipe display type")),
+        }
+    }
+
+    /// `RecipeDisplayEntry`: id, display, group, book category, crafting requirements.
+    fn display_entry(&mut self, r: &mut Reader<'_>, out: &mut Vec<u8>) -> Result<()> {
+        io::varint(r, out)?;
+        self.recipe_display(r, out)?;
+        io::varint(r, out)?;
+        io::varint(r, out)?;
+        if io::boolean(r, out)? {
+            let n = io::len(r, 1 << 16, 1)?;
+            io::write_len(out, n);
+            for _ in 0..n {
+                item_set(r, out)?;
+            }
+        }
         Ok(())
     }
 }

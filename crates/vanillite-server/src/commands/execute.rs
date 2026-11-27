@@ -559,6 +559,26 @@ pub(crate) fn summon(
     pos: Vec3,
     nbt: &vanillite_nbt::Compound,
 ) -> Result<Target, CommandError> {
+    summon_for(
+        env,
+        source,
+        id,
+        pos,
+        nbt,
+        vanillite_abi::spawn_reason::COMMAND,
+    )
+}
+
+/// [`summon`] for a plugin's spawn reason (`vanillite_abi::spawn_reason`: `COMMAND`, or
+/// `PLUGIN` for `entity_spawn`); a plugin that cancels the spawn makes it fail.
+pub(crate) fn summon_for(
+    env: &mut Env<'_>,
+    source: &CommandSource,
+    id: &str,
+    pos: Vec3,
+    nbt: &vanillite_nbt::Compound,
+    reason: u32,
+) -> Result<Target, CommandError> {
     use vanillite_game::entities::{FallingBlockData, PrimedTntData};
     let failed = || CommandError::new("commands.summon.failed", vec![]);
     let duplicate = || CommandError::new("commands.summon.failed.uuid", vec![]);
@@ -605,7 +625,8 @@ pub(crate) fn summon(
     if select::find_uuid(&env.level.entities, uuid).is_some() {
         return Err(duplicate());
     }
-    let network_id = env.global.network_ids.next();
+    // The level's allocator (the server's shared one).
+    let network_id = env.level.network_ids_arc().next();
     let new = NewEntity::new(kind, network_id, uuid, pos);
     let short = |key: &str, default: i32| {
         nbt.get(key)
@@ -623,8 +644,14 @@ pub(crate) fn summon(
         // Mobs with behaviour: `finalizeSpawn` with the command reason.
         let table = env.global.systems.mob_spawns.get().map(Arc::as_ref);
         let difficulty = env.global.level.difficulty();
-        let id = vanillite_game::mob::spawn::summon(env.level, table, mob, pos, difficulty);
-        let mut loaded = nbt.clone();
+        let id = vanillite_game::mob::spawn::summon(env.level, table, mob, pos, difficulty, reason);
+        if !env.level.entities.store.contains(id) {
+            // A plugin cancelled the spawn (`tryAddFreshEntityWithPassengers` failed).
+            return Err(failed());
+        }
+        // The given tags on top of what the mob has (like `data merge`).
+        let mut loaded = data::entity_nbt(&env.level.entities, id).unwrap_or_default();
+        super::data_cmd::merge_compound(&mut loaded, nbt);
         loaded.remove("Pos");
         data::apply_entity_nbt(&mut env.level.entities, id, &loaded)?;
         return select::local(&env.level.entities, env.world, id).ok_or_else(failed);
@@ -668,10 +695,16 @@ pub(crate) fn summon(
             e.set_velocity(loaded.velocity);
         }
         env.level.entities.set_tags(id, tags);
+        if !env.level.entities.spawned(id, reason, 0) {
+            return Err(failed());
+        }
         return select::local(&env.level.entities, env.world, id).ok_or_else(failed);
     }
     if kind == ids::LIGHTNING_BOLT {
         let id = vanillite_game::lightning::spawn(env.level, pos, false);
+        if !env.level.entities.spawned(id, reason, 0) {
+            return Err(failed());
+        }
         return select::local(&env.level.entities, env.world, id).ok_or_else(failed);
     }
     if kind != ids::ITEM
@@ -695,9 +728,12 @@ pub(crate) fn summon(
         if !env.level.load_entity(full) {
             return Err(failed());
         }
-        let entities = &env.level.entities;
+        let entities = &mut env.level.entities;
         let id = *entities.store.columns().id.last().ok_or_else(failed)?;
         if entities.store.get(id).is_none_or(|e| e.uuid() != uuid) {
+            return Err(failed());
+        }
+        if !entities.spawned(id, reason, 0) {
             return Err(failed());
         }
         return select::local(entities, env.world, id).ok_or_else(failed);
@@ -716,22 +752,36 @@ pub(crate) fn summon(
         let data = vanillite_game::item_entity::ItemData::new(stack, 0, None);
         entities.spawn_item(network_id, uuid, pos, Vec3::new(0.0, 0.0, 0.0), 0.0, data)
     } else if kind == ids::FALLING_BLOCK {
-        let data = FallingBlockData {
-            state: block_state(
+        let mut data = FallingBlockData::new(
+            block_state(
                 "BlockState",
                 vanillite_data::block::ids::SAND.default_state(),
             ),
-            time: nbt
-                .get("Time")
-                .and_then(Tag::as_i64)
-                .and_then(|v| i32::try_from(v).ok())
-                .unwrap_or(0),
-            drop_item: nbt
-                .get("DropItem")
+            nbt.get("DropItem")
                 .and_then(Tag::as_i64)
                 .is_none_or(|v| v != 0),
-            start: BlockPos::new(0, 0, 0),
-        };
+            BlockPos::new(0, 0, 0),
+            vanillite_game::mob::new_entity_seed(),
+        );
+        data.time = nbt
+            .get("Time")
+            .and_then(Tag::as_i64)
+            .and_then(|v| i32::try_from(v).ok())
+            .unwrap_or(0);
+        data.hurt_entities = nbt.get("HurtEntities").and_then(Tag::as_i64).map_or_else(
+            || vanillite_game::block::falling::is_anvil(data.state.block()),
+            |v| v != 0,
+        );
+        if let Some(Tag::Float(v)) = nbt.get("FallHurtAmount") {
+            data.fall_hurt_amount = *v;
+        }
+        if let Some(v) = nbt.get("FallHurtMax").and_then(Tag::as_i64) {
+            data.fall_hurt_max = i32::try_from(v).unwrap_or(40);
+        }
+        data.cancel_drop = nbt
+            .get("CancelDrop")
+            .and_then(Tag::as_i64)
+            .is_some_and(|v| v != 0);
         entities.spawn_falling_block(new, data)
     } else if kind == ids::TNT {
         let power = match nbt.get("explosion_power") {
@@ -755,6 +805,9 @@ pub(crate) fn summon(
     let mut loaded = nbt.clone();
     loaded.remove("Pos");
     data::apply_entity_nbt(entities, id, &loaded)?;
+    if !entities.spawned(id, reason, 0) {
+        return Err(failed());
+    }
     select::local(entities, env.world, id).ok_or_else(failed)
 }
 

@@ -114,7 +114,7 @@ fn flower_pot_use_without_item(
 
 /// `Block.dropFromBlockInteractLootTable`: the stacks of a `BLOCK_INTERACT` loot table with
 /// the table's random sequence, else the level random.
-fn interact_loot(level: &mut Level, table: &str, state: BlockState) -> Vec<ItemStack> {
+pub(crate) fn interact_loot(level: &mut Level, table: &str, state: BlockState) -> Vec<ItemStack> {
     let Some(data) = crate::player::play::game_data() else {
         return Vec::new();
     };

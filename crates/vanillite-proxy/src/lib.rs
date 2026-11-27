@@ -14,7 +14,9 @@
 //! player becomes a virtual connection that the proxy logs in with the identity the frontend
 //! verified and forwards like a Java player.
 
+mod admin;
 mod backend;
+mod bungee;
 mod client;
 pub mod config;
 mod link;
@@ -23,7 +25,7 @@ mod zlib;
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
 use tokio::sync::Semaphore;
@@ -40,11 +42,31 @@ pub use config::ProxyConfig;
 pub(crate) struct Online {
     pub(crate) name: String,
     pub(crate) server: Option<Arc<str>>,
+    pub(crate) address: SocketAddr,
+    /// Orders to the player's session (commands, plugin messages of other players).
+    pub(crate) control: tokio::sync::mpsc::Sender<Control>,
 }
+
+/// An order to a player's session from elsewhere on the proxy.
+#[derive(Debug)]
+pub(crate) enum Control {
+    /// Connect to this server.
+    Send(Arc<str>),
+    /// Show a chat message.
+    Chat(Component),
+    /// Disconnect with this reason.
+    Kick(Component),
+    /// Send this BungeeCord plugin message to the player's current server.
+    Payload(Vec<u8>),
+}
+
+/// Orders queued per session; more are dropped.
+pub(crate) const CONTROL_QUEUE: usize = 64;
 
 /// State shared by all connections.
 pub(crate) struct Shared {
-    pub(crate) config: ProxyConfig,
+    /// The configuration; replaced by a reload.
+    config: RwLock<Arc<ProxyConfig>>,
     pub(crate) keys: Option<KeyPair>,
     pub(crate) authenticator: Arc<dyn Authenticator>,
     pub(crate) auth_permits: Semaphore,
@@ -59,9 +81,92 @@ pub(crate) struct Shared {
 }
 
 impl Shared {
+    /// The current configuration.
+    pub(crate) fn config(&self) -> Arc<ProxyConfig> {
+        match self.config.read() {
+            Ok(c) => Arc::clone(&c),
+            Err(e) => Arc::clone(&e.into_inner()),
+        }
+    }
+
+    /// Reads the configuration again from its folder.
+    pub(crate) fn reload(&self) -> Result<(), String> {
+        let old = self.config();
+        let Some(dir) = old.dir.as_deref() else {
+            return Err("the configuration was not loaded from a folder".to_owned());
+        };
+        let new = ProxyConfig::load(dir)?;
+        let restart = [
+            ("bind", old.bind != new.bind),
+            ("online-mode", old.online_mode != new.online_mode),
+            ("io-threads", old.io_threads != new.io_threads),
+            (
+                "limits.max-connections",
+                old.limits.max_connections != new.limits.max_connections,
+            ),
+            (
+                "limits.max-pending-per-ip",
+                old.limits.max_pending_per_ip != new.limits.max_pending_per_ip,
+            ),
+            (
+                "limits.max-concurrent-auth",
+                old.limits.max_concurrent_auth != new.limits.max_concurrent_auth,
+            ),
+            (
+                "bedrock",
+                format!("{:?}", old.bedrock) != format!("{:?}", new.bedrock),
+            ),
+        ];
+        for (key, changed) in restart {
+            if changed {
+                log::warn!("{key} changed: this takes effect after a restart");
+            }
+        }
+        match self.config.write() {
+            Ok(mut c) => *c = Arc::new(new),
+            Err(e) => *e.into_inner() = Arc::new(new),
+        }
+        if let Ok(players) = self.players.lock() {
+            self.update_status(&players);
+        }
+        log::info!("Reloaded the configuration");
+        Ok(())
+    }
+
+    /// Sends an order to the player named `name` (any case); `false` if nobody has that name.
+    pub(crate) fn control_by_name(&self, name: &str, order: Control) -> bool {
+        let sender = self.players.lock().ok().and_then(|players| {
+            players
+                .values()
+                .find(|p| p.name.eq_ignore_ascii_case(name))
+                .map(|p| p.control.clone())
+        });
+        sender.is_some_and(|s| s.try_send(order).is_ok())
+    }
+
+    /// Sends an order to every player for which `pick` is true; the number reached.
+    pub(crate) fn control_all(
+        &self,
+        pick: impl Fn(&Online) -> bool,
+        order: impl Fn() -> Control,
+    ) -> usize {
+        let senders: Vec<_> = match self.players.lock() {
+            Ok(players) => players
+                .values()
+                .filter(|p| pick(p))
+                .map(|p| p.control.clone())
+                .collect(),
+            Err(_) => return 0,
+        };
+        senders
+            .iter()
+            .filter(|s| s.try_send(order()).is_ok())
+            .count()
+    }
+
     /// Whether a login from `ip` is allowed now; records it.
     pub(crate) fn login_allowed(&self, ip: IpAddr) -> bool {
-        let interval = self.config.limits.login_interval;
+        let interval = self.config().limits.login_interval;
         if interval.is_zero() {
             return true;
         }
@@ -87,18 +192,19 @@ impl Shared {
 
     /// Renders the server list status from the player table.
     pub(crate) fn update_status(&self, players: &HashMap<Uuid, Online>) {
+        let config = self.config();
         self.bedrock_status
             .set_online(u32::try_from(players.len()).unwrap_or(u32::MAX));
         self.status.update(&StatusInfo {
-            description: Component::text(self.config.motd.clone()),
-            max_players: self.config.max_players,
+            description: Component::text(config.motd.clone()),
+            max_players: config.max_players,
             online_players: i32::try_from(players.len()).unwrap_or(i32::MAX),
             sample: players
                 .iter()
                 .take(12)
                 .map(|(id, p)| (p.name.clone(), *id))
                 .collect(),
-            favicon: None,
+            favicon: config.favicon.clone(),
             enforces_secure_chat: true,
         });
     }
@@ -116,6 +222,7 @@ impl Shared {
 /// The running proxy.
 pub struct Proxy {
     runtime: tokio::runtime::Runtime,
+    shared: Arc<Shared>,
     local_addr: SocketAddr,
     bedrock: Option<vanillite_bedrock::Frontend>,
 }
@@ -167,23 +274,30 @@ impl Proxy {
                 u32::try_from(config.max_players).unwrap_or(0),
             )),
             session_id: Uuid(u128::from_be_bytes(vanillite_net::rand_bytes())),
-            config,
+            config: RwLock::new(Arc::new(config)),
         });
         shared.update_status(&HashMap::new());
-        let listener = runtime.block_on(tokio::net::TcpListener::bind(shared.config.bind))?;
+        let config = shared.config();
+        let listener = runtime.block_on(tokio::net::TcpListener::bind(config.bind))?;
         let local_addr = listener.local_addr()?;
-        let bedrock = if shared.config.bedrock.enabled {
+        let bedrock = if config.bedrock.enabled {
             Some(start_bedrock(&shared, runtime.handle().clone())?)
         } else {
             None
         };
-        runtime.spawn(accept_loop(listener, shared));
+        runtime.spawn(accept_loop(listener, Arc::clone(&shared)));
         log::info!("Proxy listening on {local_addr}");
         Ok(Self {
             runtime,
+            shared,
             local_addr,
             bedrock,
         })
+    }
+
+    /// Runs a console command (`help` lists them) and returns its output.
+    pub fn console(&self, line: &str) -> String {
+        admin::console(&self.shared, line)
     }
 
     /// The bound address.
@@ -214,14 +328,15 @@ fn start_bedrock(
     shared: &Arc<Shared>,
     runtime: tokio::runtime::Handle,
 ) -> std::io::Result<vanillite_bedrock::Frontend> {
-    let b = &shared.config.bedrock;
+    let proxy_config = shared.config();
+    let b = &proxy_config.bedrock;
     let config = vanillite_bedrock::BedrockConfig {
         bind: b.bind,
         online_mode: b.online_mode,
         min_protocol: b.min_protocol,
         name_prefix: b.name_prefix.clone(),
-        world_name: shared.config.motd.clone(),
-        max_connections: u32::try_from(shared.config.limits.max_connections).unwrap_or(u32::MAX),
+        world_name: proxy_config.motd.clone(),
+        max_connections: u32::try_from(proxy_config.limits.max_connections).unwrap_or(u32::MAX),
         max_connections_per_ip: b.max_connections_per_ip,
         max_packets_per_second: b.max_packets_per_second,
         max_view_distance: b.max_view_distance,

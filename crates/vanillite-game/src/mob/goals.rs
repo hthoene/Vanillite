@@ -15,6 +15,8 @@ use super::{Tick, combat, kinds, nav, projectile};
 use crate::survival::damage::tag;
 use crate::survival::rules::{Difficulty, Rule};
 
+pub mod plugin;
+
 /// `Goal.Flag` bits.
 pub mod flag {
     pub const MOVE: u8 = 1;
@@ -509,76 +511,168 @@ fn start_slot(t: &mut Tick<'_, '_>, which: Which, i: usize) {
     with_goal(t, which, i, start);
 }
 
-/// `GoalSelector.tick`.
-pub fn tick_selector(t: &mut Tick<'_, '_>, which: Which) {
+/// One goal of a selector as the selector sees it: the Vanilla slots first, then the mob's
+/// plugin goals ([`plugin`]), as Paper appends custom goals to `availableGoals`.
+#[derive(Clone, Copy, Debug)]
+struct Unit {
+    running: bool,
+    flags: u8,
+    priority: i32,
+    interruptable: bool,
+    every_tick: bool,
+}
+
+/// Goal `i` of a selector whose first `n` goals are its Vanilla slots.
+fn unit(t: &Tick<'_, '_>, which: Which, n: usize, i: usize) -> Option<Unit> {
+    if i >= n {
+        return plugin::unit(t, which, i - n);
+    }
+    let slot = selector_ref(t, which).slots.get(i)?;
+    Some(Unit {
+        running: slot.running,
+        flags: slot.goal.flags(),
+        priority: i32::from(slot.priority),
+        interruptable: slot.goal.interruptable(),
+        every_tick: slot.goal.every_tick(),
+    })
+}
+
+fn unit_can_use(t: &mut Tick<'_, '_>, which: Which, n: usize, i: usize) -> bool {
+    if i >= n {
+        return plugin::can_use(t, which, i - n);
+    }
+    with_goal(t, which, i, can_use).unwrap_or(false)
+}
+
+fn unit_can_continue(t: &mut Tick<'_, '_>, which: Which, n: usize, i: usize) -> bool {
+    if i >= n {
+        return plugin::can_continue(t, which, i - n);
+    }
+    with_goal(t, which, i, can_continue).unwrap_or(false)
+}
+
+fn start_unit(t: &mut Tick<'_, '_>, which: Which, n: usize, i: usize) {
+    if i >= n {
+        plugin::start(t, which, i - n);
+    } else {
+        start_slot(t, which, i);
+    }
+}
+
+fn stop_unit(t: &mut Tick<'_, '_>, which: Which, n: usize, i: usize) {
+    if i >= n {
+        plugin::stop(t, which, i - n);
+    } else {
+        stop_slot(t, which, i);
+    }
+}
+
+fn tick_unit(t: &mut Tick<'_, '_>, which: Which, n: usize, i: usize) {
+    if i >= n {
+        plugin::tick(t, which, i - n);
+    } else {
+        with_goal(t, which, i, tick);
+    }
+}
+
+/// `GoalSelector.removeAllGoals` of the Vanilla goals a plugin cleared (`mob_goals_clear`):
+/// the running ones stop, the locks of the plugin goals move with them.
+fn clear_vanilla(t: &mut Tick<'_, '_>, which: Which) {
+    if !plugin::take_clear(t, which) {
+        return;
+    }
     let n = selector_ref(t, which).slots.len();
     for i in 0..n {
         if !t.exists() {
             return;
         }
-        let (running, flags, disabled) = {
-            let s = selector_ref(t, which);
-            let slot = s.slots[i];
-            (slot.running, slot.goal.flags(), s.disabled)
+        stop_slot(t, which, i);
+    }
+    if !t.exists() {
+        return;
+    }
+    let s = selector(t, which);
+    s.slots.clear();
+    for l in &mut s.locked {
+        if *l != NO_SLOT {
+            let i = usize::from(*l);
+            *l = if i < n {
+                NO_SLOT
+            } else {
+                u8::try_from(i - n).unwrap_or(NO_SLOT)
+            };
+        }
+    }
+}
+
+/// `GoalSelector.tick`.
+pub fn tick_selector(t: &mut Tick<'_, '_>, which: Which) {
+    clear_vanilla(t, which);
+    let n = selector_ref(t, which).slots.len();
+    let total = n + plugin::count(t, which);
+    for i in 0..total {
+        if !t.exists() {
+            return;
+        }
+        let disabled = selector_ref(t, which).disabled;
+        let Some(u) = unit(t, which, n, i) else {
+            continue;
         };
-        if running {
-            let stop_it =
-                flags & disabled != 0 || !with_goal(t, which, i, can_continue).unwrap_or(false);
+        if u.running {
+            let stop_it = u.flags & disabled != 0 || !unit_can_continue(t, which, n, i);
             if stop_it {
-                stop_slot(t, which, i);
+                stop_unit(t, which, n, i);
             }
         }
     }
     if !t.exists() {
         return;
     }
-    {
-        let s = selector(t, which);
-        for l in &mut s.locked {
-            if *l != NO_SLOT && !s.slots.get(usize::from(*l)).is_some_and(|x| x.running) {
-                *l = NO_SLOT;
-            }
+    for b in 0..4 {
+        let l = selector_ref(t, which).locked[b];
+        if l != NO_SLOT && !unit(t, which, n, usize::from(l)).is_some_and(|x| x.running) {
+            selector(t, which).locked[b] = NO_SLOT;
         }
     }
-    for i in 0..n {
+    for i in 0..total {
         if !t.exists() {
             return;
         }
-        let (running, flags, priority, disabled, replaceable) = {
-            let s = selector_ref(t, which);
-            let slot = s.slots[i];
-            let flags = slot.goal.flags();
+        let Some(u) = unit(t, which, n, i) else {
+            continue;
+        };
+        let (disabled, replaceable) = {
+            let view: &Tick<'_, '_> = t;
+            let s = selector_ref(view, which);
             let replaceable = (0..4).all(|b| {
-                if flags & (1 << b) == 0 {
+                if u.flags & (1 << b) == 0 {
                     return true;
                 }
                 let l = s.locked[b];
                 // `canBeReplacedBy`: interruptable and a lower priority.
                 l == NO_SLOT
-                    || s.slots
-                        .get(usize::from(l))
-                        .is_none_or(|o| o.goal.interruptable() && slot.priority < o.priority)
+                    || unit(view, which, n, usize::from(l))
+                        .is_none_or(|o| o.interruptable && u.priority < o.priority)
             });
-            (slot.running, flags, slot.priority, s.disabled, replaceable)
+            (s.disabled, replaceable)
         };
-        let _ = priority;
-        if running || flags & disabled != 0 || !replaceable {
+        if u.running || u.flags & disabled != 0 || !replaceable {
             continue;
         }
-        if !with_goal(t, which, i, can_use).unwrap_or(false) {
+        if !unit_can_use(t, which, n, i) {
             continue;
         }
         for b in 0..4 {
-            if flags & (1 << b) == 0 {
+            if u.flags & (1 << b) == 0 {
                 continue;
             }
             let current = selector_ref(t, which).locked[b];
             if current != NO_SLOT {
-                stop_slot(t, which, usize::from(current));
+                stop_unit(t, which, n, usize::from(current));
             }
             selector(t, which).locked[b] = u8::try_from(i).unwrap_or(NO_SLOT);
         }
-        start_slot(t, which, i);
+        start_unit(t, which, n, i);
     }
     tick_running(t, which, true);
 }
@@ -586,15 +680,16 @@ pub fn tick_selector(t: &mut Tick<'_, '_>, which: Which) {
 /// `GoalSelector.tickRunningGoals`.
 pub fn tick_running(t: &mut Tick<'_, '_>, which: Which, force: bool) {
     let n = selector_ref(t, which).slots.len();
-    for i in 0..n {
+    let total = n + plugin::count(t, which);
+    for i in 0..total {
         if !t.exists() || t.mob_ref().removed {
             return;
         }
-        let Some(slot) = selector_ref(t, which).slots.get(i).copied() else {
+        let Some(u) = unit(t, which, n, i) else {
             return;
         };
-        if slot.running && (force || slot.goal.every_tick()) {
-            with_goal(t, which, i, tick);
+        if u.running && (force || u.every_tick) {
+            tick_unit(t, which, n, i);
         }
     }
 }
@@ -807,8 +902,77 @@ pub(super) fn set_aggressive(t: &mut Tick<'_, '_>, on: bool) {
     }
 }
 
+/// `Mob.setTarget` without a known reason (forgetting it: `FORGET`).
 pub(crate) fn set_target(t: &mut Tick<'_, '_>, target: Option<EntityId>) {
-    t.mob().target = target;
+    let reason = if target.is_none() {
+        vanillite_abi::target_reason::FORGET
+    } else {
+        vanillite_abi::target_reason::UNKNOWN
+    };
+    set_target_why(t, target, reason);
+}
+
+/// `Mob.setTarget` for a reason of `vanillite_abi::target_reason`; a plugin may cancel the
+/// change (the mob keeps its target). Returns whether the target is `target` now.
+pub(crate) fn set_target_why(t: &mut Tick<'_, '_>, target: Option<EntityId>, reason: u32) -> bool {
+    let old = t.mob_ref().target;
+    if !target_event(t.ents, t.id, old, target, reason) {
+        return false;
+    }
+    assign_target(t.mob(), target);
+    true
+}
+
+/// The plugins' target event (`vanillite_abi::event::ENTITY_TARGET`) of the mob `id` about
+/// to change its target from `old` to `new` for `reason`: whether it may. Without listeners
+/// (or without a change) one branch.
+pub(crate) fn target_event(
+    ents: &crate::entities::Entities,
+    id: EntityId,
+    old: Option<EntityId>,
+    new: Option<EntityId>,
+    reason: u32,
+) -> bool {
+    if old == new {
+        return true;
+    }
+    let Some(hooks) = ents.hooks_for(vanillite_abi::event::ENTITY_TARGET) else {
+        return true;
+    };
+    let Some(e) = ents.store.get(id) else {
+        return true;
+    };
+    let target = new.and_then(|n| ents.store.get(n));
+    let mut ev = crate::hooks::Event {
+        entity: e.uuid(),
+        entity_type: e.kind().name().to_owned(),
+        other: target.as_ref().map_or(0, |t| t.uuid()),
+        other_type: target
+            .as_ref()
+            .map_or_else(String::new, |t| t.kind().name().to_owned()),
+        cause: reason,
+        ..crate::hooks::Event::new(vanillite_abi::event::ENTITY_TARGET)
+    };
+    hooks.event(&mut ev);
+    !ev.cancelled
+}
+
+/// `NearestAttackableTargetGoal`'s reason: the closest player or the closest other entity.
+pub(crate) fn closest_reason(t: &Tick<'_, '_>, found: Option<EntityId>) -> u32 {
+    if found.is_some_and(|f| t.ents.player(f).is_some()) {
+        vanillite_abi::target_reason::CLOSEST_PLAYER
+    } else {
+        vanillite_abi::target_reason::CLOSEST_ENTITY
+    }
+}
+
+/// `Mob.setTarget` with the kinds' overrides: a zombified piglin rolls its anger sound delay
+/// and alert interval when it takes its first target.
+pub(crate) fn assign_target(m: &mut super::MobData, target: Option<EntityId>) {
+    if m.kind == super::Kind::ZombifiedPiglin && m.target.is_none() && target.is_some() {
+        super::fam::undead::zombies::piglin_first_target(m);
+    }
+    m.target = target;
 }
 
 fn fluid_jump_threshold(t: &Tick<'_, '_>) -> f64 {
@@ -1306,7 +1470,7 @@ pub(crate) fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
             timestamp,
             found,
         } => {
-            set_target(t, *found);
+            set_target_why(t, *found, vanillite_abi::target_reason::OWNER);
             state.unseen_ticks = 0;
             *timestamp = super::tame::owner_hurt_stamp(t, true);
         }
@@ -1315,12 +1479,13 @@ pub(crate) fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
             timestamp,
             found,
         } => {
-            set_target(t, *found);
+            set_target_why(t, *found, vanillite_abi::target_reason::OWNER);
             state.unseen_ticks = 0;
             *timestamp = super::tame::owner_hurt_stamp(t, false);
         }
         Goal::NearestTarget { state, found, .. } => {
-            set_target(t, *found);
+            let reason = closest_reason(t, *found);
+            set_target_why(t, *found, reason);
             state.unseen_ticks = 0;
         }
         Goal::HurtBy {
@@ -1329,7 +1494,7 @@ pub(crate) fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
             alert,
         } => {
             let by = t.mob_ref().last_hurt_by_mob;
-            set_target(t, by);
+            set_target_why(t, by, vanillite_abi::target_reason::RETALIATE);
             state.target_mob = by;
             *timestamp = t.mob_ref().last_hurt_by_mob_time;
             state.unseen_memory = 300;
@@ -1369,12 +1534,21 @@ fn alert_others(t: &mut Tick<'_, '_>, by: EntityId) {
         if id == t.id {
             continue;
         }
-        if let Some(m) = t.ents.mob_mut(id)
-            && m.kind == kind
-            && m.target.is_none()
-            && m.is_alive()
+        let alerted = t
+            .ents
+            .mob(id)
+            .is_some_and(|m| m.kind == kind && m.target.is_none() && m.is_alive());
+        if alerted
+            && target_event(
+                t.ents,
+                id,
+                None,
+                Some(by),
+                vanillite_abi::target_reason::RETALIATE,
+            )
+            && let Some(m) = t.ents.mob_mut(id)
         {
-            m.target = Some(by);
+            assign_target(m, Some(by));
         }
     }
     t.cx.ids = ids;
@@ -1562,7 +1736,7 @@ pub(crate) fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
                 *aggro_time -= 1;
                 if *aggro_time <= 0 {
                     // Screams and takes the player as its target.
-                    set_target(t, Some(id));
+                    set_target_why(t, Some(id), vanillite_abi::target_reason::CLOSEST_PLAYER);
                     state.target_mob = Some(id);
                     *pending = None;
                     kinds::play_sound(t, "minecraft:entity.enderman.stare", 2.5, 1.0);

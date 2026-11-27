@@ -18,6 +18,8 @@ const VALID: u64 = 1 << 63;
 /// Milliseconds since the connection started, wrapping (23 bits).
 const MS_MASK: u64 = 0x7F_FFFF;
 const SIZE_MASK: u64 = 0xFF_FFFF;
+/// Frames recorded per batch.
+const BATCH_FRAMES: usize = 32;
 /// Packet id that is unknown (compressed inside a batch) or above 254.
 const UNKNOWN_ID: u8 = 0xFF;
 
@@ -52,6 +54,12 @@ impl SentLog {
     }
 
     fn record(&self, ms: u64, id: Option<i32>, size: usize) {
+        let index = self.next.fetch_add(1, Ordering::Relaxed);
+        self.store(index, ms, id, size);
+    }
+
+    /// Writes the entry with the sequence number `index`.
+    fn store(&self, index: usize, ms: u64, id: Option<i32>, size: usize) {
         let id = id
             .and_then(|i| u8::try_from(i).ok())
             .filter(|&i| i != UNKNOWN_ID)
@@ -63,8 +71,7 @@ impl SentLog {
             | state.wrapping_shl(32)
             | u64::from(id).wrapping_shl(24)
             | size;
-        let index = self.next.fetch_add(1, Ordering::Relaxed) & SLOT_MASK;
-        if let Some(slot) = self.slots.get(index) {
+        if let Some(slot) = self.slots.get(index & SLOT_MASK) {
             slot.store(packed, Ordering::Relaxed);
         }
     }
@@ -74,18 +81,25 @@ impl SentLog {
         self.record(ms, Reader::new(body).varint().ok(), body.len());
     }
 
-    /// Records every frame of a batch built for `compressed` or uncompressed framing. The id
-    /// of a compressed frame is not read (that would inflate it).
+    /// Records the first [`BATCH_FRAMES`] frames of a batch built for `compressed` or
+    /// uncompressed framing: a crowd's batch holds thousands of small frames, and reading
+    /// them all would cost the writer more than writing them. The id of a compressed frame is
+    /// not read (that would inflate it).
     pub(crate) fn frames(&self, ms: u64, frames: &[u8], compressed: bool) {
+        let mut first = [(None, 0usize); BATCH_FRAMES];
+        let mut count = 0usize;
         let mut r = Reader::new(frames);
-        while r.remaining() > 0 {
+        for entry in &mut first {
+            if r.remaining() == 0 {
+                break;
+            }
             let Some(frame) = r
                 .varint()
                 .ok()
                 .and_then(|len| usize::try_from(len).ok())
                 .and_then(|len| r.take(len).ok())
             else {
-                return;
+                break;
             };
             let mut f = Reader::new(frame);
             let id = if compressed {
@@ -96,7 +110,12 @@ impl SentLog {
             } else {
                 f.varint().ok()
             };
-            self.record(ms, id, frame.len());
+            *entry = (id, frame.len());
+            count = count.wrapping_add(1);
+        }
+        let start = self.next.fetch_add(count, Ordering::Relaxed);
+        for (&(id, size), index) in first.iter().take(count).zip(start..) {
+            self.store(index, ms, id, size);
         }
     }
 

@@ -47,15 +47,20 @@ pub struct Outbound {
 const NO_COMPRESSION: usize = usize::MAX;
 
 impl Outbound {
-    pub(crate) fn new(max_bytes: usize) -> (Self, mpsc::UnboundedReceiver<Out>, Arc<AtomicUsize>) {
+    pub(crate) fn new(max_bytes: usize) -> (Self, OutReceiver, Arc<AtomicUsize>) {
         let (tx, rx) = mpsc::unbounded_channel();
         let queued = Arc::new(AtomicUsize::new(0));
+        let closed = Arc::new(AtomicBool::new(false));
+        let rx = OutReceiver {
+            rx,
+            closed: Arc::clone(&closed),
+        };
         (
             Self {
                 tx,
                 queued: Arc::clone(&queued),
                 max_bytes,
-                closed: Arc::new(AtomicBool::new(false)),
+                closed,
                 threshold: Arc::new(AtomicUsize::new(NO_COMPRESSION)),
                 sent: Arc::new(SentLog::new()),
             },
@@ -132,9 +137,34 @@ impl Outbound {
         Arc::clone(&self.sent)
     }
 
-    /// Whether the connection was closed.
+    /// Whether the connection was closed (by [`Outbound::close`] or its writer ending).
     pub fn is_closed(&self) -> bool {
-        self.closed.load(Ordering::Relaxed) || self.tx.is_closed()
+        self.closed.load(Ordering::Relaxed)
+    }
+}
+
+/// The writer's end of an [`Outbound`]. Dropping it (the writer ended) closes the connection
+/// for the senders, so [`Outbound::is_closed`] reads one flag instead of the channel state
+/// the writer changes with every message.
+#[derive(Debug)]
+pub(crate) struct OutReceiver {
+    rx: mpsc::UnboundedReceiver<Out>,
+    closed: Arc<AtomicBool>,
+}
+
+impl OutReceiver {
+    pub(crate) async fn recv(&mut self) -> Option<Out> {
+        self.rx.recv().await
+    }
+
+    pub(crate) fn try_recv(&mut self) -> Result<Out, mpsc::error::TryRecvError> {
+        self.rx.try_recv()
+    }
+}
+
+impl Drop for OutReceiver {
+    fn drop(&mut self) {
+        self.closed.store(true, Ordering::Relaxed);
     }
 }
 
@@ -144,7 +174,7 @@ const IDLE_BUFFER_MAX: usize = 64 * 1024;
 /// Writes to a TCP socket.
 pub(crate) async fn tcp_writer(
     mut socket: tokio::net::tcp::OwnedWriteHalf,
-    mut rx: mpsc::UnboundedReceiver<Out>,
+    mut rx: OutReceiver,
     queued: Arc<AtomicUsize>,
     compression_level: i32,
     sent: Arc<SentLog>,
@@ -174,14 +204,26 @@ pub(crate) async fn tcp_writer(
                                 log::debug!("multiversion: untranslatable packet: {e}");
                             }
                         }
+                        while let Some(t) = a.pending() {
+                            if encoder.body(t, &mut buf).is_err() {
+                                open = false;
+                            }
+                        }
                     }
                     body.len()
                 }
                 Out::Shared(p) if adapter.is_some() => {
-                    if let Some(t) = adapter.as_mut().and_then(|a| a.translate_shared(&p))
-                        && encoder.body(t, &mut buf).is_err()
-                    {
-                        open = false;
+                    if let Some(a) = adapter.as_mut() {
+                        if let Some(t) = a.translate_shared(&p)
+                            && encoder.body(t, &mut buf).is_err()
+                        {
+                            open = false;
+                        }
+                        while let Some(t) = a.pending() {
+                            if encoder.body(t, &mut buf).is_err() {
+                                open = false;
+                            }
+                        }
                     }
                     p.body().len()
                 }
@@ -198,6 +240,9 @@ pub(crate) async fn tcp_writer(
                                 Ok(Some(t)) => encoder.body(t, &mut buf)?,
                                 Ok(None) => {}
                                 Err(e) => log::debug!("multiversion: untranslatable packet: {e}"),
+                            }
+                            while let Some(t) = a.pending() {
+                                encoder.body(t, &mut buf)?;
                             }
                         }
                         Ok(true)
@@ -271,24 +316,30 @@ pub(crate) async fn tcp_writer(
 /// Forwards to a virtual connection: plain packet bodies, no framing, compression or cipher.
 pub(crate) async fn virtual_writer(
     tx: mpsc::Sender<Vec<u8>>,
-    mut rx: mpsc::UnboundedReceiver<Out>,
+    mut rx: OutReceiver,
     queued: Arc<AtomicUsize>,
     sent: Arc<SentLog>,
 ) {
     let mut adapter: Option<Box<ClientboundHalf>> = None;
     while let Some(msg) = rx.recv().await {
         record(&sent, sent.now_ms(), &msg);
+        let mut more = Vec::new();
         let (body, queued_len) = match msg {
             Out::Batch(frames, threshold) => {
                 queued.fetch_sub(frames.len(), Ordering::Relaxed);
                 let mut bodies = Vec::new();
                 if for_each_body(&frames, threshold, |body| {
                     match adapter.as_mut() {
-                        Some(a) => match a.translate(body) {
-                            Ok(Some(t)) => bodies.push(t.to_vec()),
-                            Ok(None) => {}
-                            Err(e) => log::debug!("multiversion: untranslatable packet: {e}"),
-                        },
+                        Some(a) => {
+                            match a.translate(body) {
+                                Ok(Some(t)) => bodies.push(t.to_vec()),
+                                Ok(None) => {}
+                                Err(e) => log::debug!("multiversion: untranslatable packet: {e}"),
+                            }
+                            while let Some(t) = a.pending() {
+                                bodies.push(t.to_vec());
+                            }
+                        }
                         None => bodies.push(body.to_vec()),
                     }
                     Ok(true)
@@ -307,11 +358,17 @@ pub(crate) async fn virtual_writer(
             Out::Body(b) => match adapter.as_mut() {
                 Some(a) => {
                     let n = b.len();
-                    let t = a.translate(&b).unwrap_or_else(|e| {
-                        log::debug!("multiversion: untranslatable packet: {e}");
-                        None
-                    });
-                    (t.map(<[u8]>::to_vec), n)
+                    let t = a
+                        .translate(&b)
+                        .unwrap_or_else(|e| {
+                            log::debug!("multiversion: untranslatable packet: {e}");
+                            None
+                        })
+                        .map(<[u8]>::to_vec);
+                    while let Some(t) = a.pending() {
+                        more.push(t.to_vec());
+                    }
+                    (t, n)
                 }
                 None => {
                     let n = b.len();
@@ -319,7 +376,13 @@ pub(crate) async fn virtual_writer(
                 }
             },
             Out::Shared(p) => match adapter.as_mut() {
-                Some(a) => (a.translate_shared(&p).map(<[u8]>::to_vec), p.body().len()),
+                Some(a) => {
+                    let t = a.translate_shared(&p).map(<[u8]>::to_vec);
+                    while let Some(t) = a.pending() {
+                        more.push(t.to_vec());
+                    }
+                    (t, p.body().len())
+                }
                 None => (Some(p.body().to_vec()), p.body().len()),
             },
             Out::Adapter(a) => {
@@ -334,6 +397,11 @@ pub(crate) async fn virtual_writer(
             && tx.send(body).await.is_err()
         {
             break;
+        }
+        for body in more {
+            if tx.send(body).await.is_err() {
+                return;
+            }
         }
     }
 }

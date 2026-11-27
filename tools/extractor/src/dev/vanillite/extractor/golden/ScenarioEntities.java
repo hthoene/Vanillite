@@ -48,6 +48,16 @@ final class ScenarioEntities {
   private final ServerLevel level;
   private final Map<Entity, String> names = new IdentityHashMap<>();
   private final Map<String, Entity> byName = new LinkedHashMap<>();
+  /**
+   * Names by UUID: an entity that changes dimension is a new object with the same UUID
+   * ({@code Entity.teleportCrossDimension}).
+   */
+  private final Map<UUID, String> byUuid = new java.util.HashMap<>();
+  /**
+   * Players load chunks like on a normal server (scenarios across dimensions); otherwise the
+   * scenario's forced chunks are the whole world.
+   */
+  boolean loadingPlayers;
   /** Frames hold the players' food and hands ({@code "player_state": true}). */
   boolean playerState;
   /**
@@ -55,11 +65,21 @@ final class ScenarioEntities {
    * true; session replays have the recorded ones among their packets).
    */
   boolean clientTickEnd = true;
+
+  /**
+   * Frames hold the players' sleeping position, sleep timer, pose id and respawn point ({@code
+   * "sleep_state": true}).
+   */
+  boolean sleepState;
+
+  /** The players removed from the chunk system, given back by {@link #release()}. */
   private final List<ServerPlayer> players = new ArrayList<>();
   /** The packet-level players ({@code "client": true}), in join order. */
   private final List<ServerPlayer> clients = new ArrayList<>();
   /** Serverbound play packet ids by name. */
   private Map<String, Integer> packetIds;
+  /** Every scenario player, for their connection tick. */
+  private final List<ServerPlayer> tickedPlayers = new ArrayList<>();
 
   ScenarioEntities(ParityServer server, ServerLevel level) {
     this.server = server;
@@ -97,6 +117,7 @@ final class ScenarioEntities {
     String name = spec.get("name").getAsString();
     names.put(e, name);
     byName.put(name, e);
+    byUuid.put(e.getUUID(), name);
   }
 
   /** A survival player on a connection nobody reads (like GameTest's mock server player). */
@@ -127,9 +148,12 @@ final class ScenarioEntities {
     // The player loads, ticks and offers for spawning no chunks: the scenario's forced chunks
     // are the whole world, as in Vanillite's scenario world.
     level.getChunkSource().move(player);
-    level.getChunkSource().chunkMap.getDistanceManager().removePlayer(SectionPos.of(player), player);
     name(spec, player);
-    players.add(player);
+    tickedPlayers.add(player);
+    if (!loadingPlayers) {
+      level.getChunkSource().chunkMap.getDistanceManager().removePlayer(SectionPos.of(player), player);
+      players.add(player);
+    }
     if (spec.has("inventory")) {
       for (com.google.gson.JsonElement e : spec.getAsJsonArray("inventory")) {
         JsonArray entry = e.getAsJsonArray();
@@ -168,6 +192,9 @@ final class ScenarioEntities {
    */
   @SuppressWarnings("unchecked")
   private void untrack(ServerPlayer p) {
+    if (loadingPlayers) {
+      return;
+    }
     net.minecraft.server.level.DistanceManager dm =
         level.getChunkSource().chunkMap.getDistanceManager();
     it.unimi.dsi.fastutil.longs.Long2ObjectMap<it.unimi.dsi.fastutil.objects.ObjectSet<ServerPlayer>>
@@ -377,7 +404,7 @@ final class ScenarioEntities {
 
   /** {@code ServerPlayer.doTick} of the players, as their connections would. */
   void tickPlayers() {
-    for (ServerPlayer p : players) {
+    for (ServerPlayer p : tickedPlayers) {
       if (p.isRemoved()) {
         continue;
       }
@@ -486,17 +513,51 @@ final class ScenarioEntities {
   }
 
   /**
-   * The {@code use_item} action: the named player gets {@code count} of {@code item} in its main
-   * hand and uses it, as a {@code use_item} packet would ({@code ServerPlayerGameMode.useItem}).
+   * The {@code use_item}, {@code release_item} and {@code attack_entity} actions: the named player
+   * gets {@code count} of {@code item} (with SNBT {@code components}; without {@code item} the hand
+   * stays as it is) in its main hand, then uses it as a {@code use_item} packet would ({@code
+   * ServerPlayerGameMode.useItem}), stops using it ({@code releaseUsingItem}, the {@code
+   * RELEASE_USE_ITEM} action) or attacks the named {@code target} ({@code Player.attack}) with its
+   * {@code fall_distance} set first if given (as its client's moves would). The {@code interact} action
+   * uses it on the named {@code target} instead ({@code Player.interactOn}).
    */
-  void useItem(JsonObject action) {
+  void useItem(JsonObject action, String op) throws Exception {
     ServerPlayer player = (ServerPlayer) byName.get(action.get("entity").getAsString());
-    var item =
-        BuiltInRegistries.ITEM.getValue(Identifier.parse(action.get("item").getAsString()));
-    int count = action.has("count") ? action.get("count").getAsInt() : 1;
-    net.minecraft.world.item.ItemStack stack = new net.minecraft.world.item.ItemStack(item, count);
-    player.setItemInHand(net.minecraft.world.InteractionHand.MAIN_HAND, stack);
-    player.gameMode.useItem(player, level, stack, net.minecraft.world.InteractionHand.MAIN_HAND);
+    if (action.has("item")) {
+      net.minecraft.nbt.CompoundTag tag = new net.minecraft.nbt.CompoundTag();
+      tag.putString("id", action.get("item").getAsString());
+      tag.putInt("count", action.has("count") ? action.get("count").getAsInt() : 1);
+      if (action.has("components")) {
+        tag.put(
+            "components",
+            net.minecraft.nbt.TagParser.parseCompoundFully(action.get("components").getAsString()));
+      }
+      net.minecraft.world.item.ItemStack stack =
+          net.minecraft.world.item.ItemStack.CODEC
+              .parse(
+                  level.registryAccess().createSerializationContext(net.minecraft.nbt.NbtOps.INSTANCE),
+                  tag)
+              .getOrThrow();
+      player.setItemInHand(net.minecraft.world.InteractionHand.MAIN_HAND, stack);
+    }
+    if (action.has("fall_distance")) {
+      player.fallDistance = action.get("fall_distance").getAsDouble();
+    }
+    switch (op) {
+      case "release_item" -> player.releaseUsingItem();
+      case "attack_entity" -> player.attack(byName.get(action.get("target").getAsString()));
+      case "interact" ->
+          player.interactOn(
+              byName.get(action.get("target").getAsString()),
+              net.minecraft.world.InteractionHand.MAIN_HAND,
+              net.minecraft.world.phys.Vec3.ZERO);
+      default ->
+          player.gameMode.useItem(
+              player,
+              player.level(),
+              player.getItemInHand(net.minecraft.world.InteractionHand.MAIN_HAND),
+              net.minecraft.world.InteractionHand.MAIN_HAND);
+    }
   }
 
   /** The {@code effect} action: {@code addEffect} on a named living entity. */
@@ -544,7 +605,7 @@ final class ScenarioEntities {
   }
 
   private String nameOf(Entity e) {
-    String n = names.get(e);
+    String n = name(e);
     return n != null ? n : BuiltInRegistries.ENTITY_TYPE.getKey(e.getType()).toString();
   }
 
@@ -553,9 +614,15 @@ final class ScenarioEntities {
     return "[\"" + BuiltInRegistries.ITEM.getKey(stack.getItem()) + "\"," + stack.getCount() + "]";
   }
 
+  /** The scenario name of an entity, also after it changed dimension. */
+  private String name(Entity e) {
+    String name = names.get(e);
+    return name != null ? name : byUuid.get(e.getUUID());
+  }
+
   String detail(Entity e) {
     StringBuilder sb = new StringBuilder();
-    String name = names.get(e);
+    String name = name(e);
     if (name != null) {
       sb.append(",\"name\":\"").append(name).append('"');
     }
@@ -598,6 +665,30 @@ final class ScenarioEntities {
           .append(',')
           .append(hand(player.getOffhandItem()))
           .append(']');
+    }
+    if (sleepState && e instanceof ServerPlayer sp) {
+      BlockPos bed = sp.getSleepingPos().orElse(null);
+      ServerPlayer.RespawnConfig spawn = sp.getRespawnConfig();
+      sb.append(",\"sleep\":{\"pos\":")
+          .append(bed == null ? "null" : "[" + bed.getX() + "," + bed.getY() + "," + bed.getZ() + "]")
+          .append(",\"pose\":")
+          .append(sp.getPose().id())
+          .append(",\"spawn\":");
+      if (spawn == null) {
+        sb.append("null");
+      } else {
+        BlockPos at = spawn.respawnData().pos();
+        sb.append('[')
+            .append(at.getX())
+            .append(',')
+            .append(at.getY())
+            .append(',')
+            .append(at.getZ())
+            .append(',')
+            .append(spawn.forced())
+            .append(']');
+      }
+      sb.append(",\"timer\":").append(sp.getSleepTimer()).append('}');
     }
     if (e instanceof AbstractMinecart cart) {
       sb.append(",\"rot\":[")

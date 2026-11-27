@@ -74,16 +74,18 @@ pub fn tick(t: &mut Tick<'_, '_>) {
     if t.mob_ref().removed || !t.exists() {
         return;
     }
-    // `tickHeadTurn` → `BodyRotationControl.clientTick` (`CamelBodyRotationControl`).
-    let camel = matches!(
-        t.mob_ref().kind,
-        super::Kind::Camel | super::Kind::CamelHusk
-    );
+    // `tickHeadTurn` → `BodyRotationControl.clientTick` (`CamelBodyRotationControl`, the
+    // armadillo's: none while it is scared).
+    let turns_body = match t.mob_ref().kind {
+        super::Kind::Camel | super::Kind::CamelHusk => super::fam::mount::camel::turns_body(t),
+        super::Kind::Armadillo => !super::fam::brainy::armadillo::is_scared(t.mob_ref()),
+        _ => true,
+    };
     if t.mob_ref().kind == super::Kind::ArmorStand {
         // `ArmorStand.tickHeadTurn`: the body follows the yaw.
         let y = t.core().rot().y_rot;
         crate::decoration::stand::tick_head_turn(t.mob(), y);
-    } else if !camel || super::fam::mount::camel::turns_body(t) {
+    } else if turns_body {
         nav::tick_body_rotation(t);
     }
     // `refreshDirtyAttributes`: a lowered max health caps the health.
@@ -104,6 +106,11 @@ pub fn tick(t: &mut Tick<'_, '_>) {
 
 /// `Entity.baseTick` + `LivingEntity.baseTick` + `Mob.baseTick`.
 fn base_tick(t: &mut Tick<'_, '_>) {
+    {
+        let m = t.mob();
+        m.was_in_powder_snow = m.in_powder_snow;
+        m.in_powder_snow = false;
+    }
     sprint_particle(t);
     update_fluids(t);
     let fire_immune = t.core().kind().info().fire_immune;
@@ -737,6 +744,10 @@ fn ai_step(t: &mut Tick<'_, '_>) {
     if !t.exists() {
         return;
     }
+    tick_freezing(t);
+    if !t.exists() {
+        return;
+    }
     push_entities(t);
     if !t.exists() {
         return;
@@ -867,14 +878,25 @@ fn block_speed_factor(t: &Tick<'_, '_>) -> f32 {
 /// `canSpawnSprintParticle` → `spawnSprintParticle`: the particles are the client's, the
 /// server still draws their position.
 fn sprint_particle(t: &mut Tick<'_, '_>) {
-    let flags = t.core().flags();
-    let fluids = t.mob_ref().fluids;
-    if !flags.contains(EntityFlags::SPRINTING)
-        || flags.contains(EntityFlags::CROUCHING)
-        || fluids.in_water()
-        || fluids.in_lava()
-        || !t.mob_ref().is_alive()
-    {
+    // `canSpawnSprintParticle`: iron golems walking one in five ticks, rabbits never.
+    let can = match t.mob_ref().kind {
+        super::Kind::Rabbit => false,
+        super::Kind::IronGolem => {
+            let v = t.velocity();
+            v.x * v.x + v.z * v.z > f64::from(2.500_000_3e-7_f32)
+                && t.mob().random.next_int_bounded(5) == 0
+        }
+        _ => {
+            let flags = t.core().flags();
+            let fluids = t.mob_ref().fluids;
+            flags.contains(EntityFlags::SPRINTING)
+                && !flags.contains(EntityFlags::CROUCHING)
+                && !fluids.in_water()
+                && !fluids.in_lava()
+                && t.mob_ref().is_alive()
+        }
+    };
+    if !can {
         return;
     }
     use vanillite_data::block::BlockKind as K;
@@ -1191,7 +1213,8 @@ pub fn move_self(t: &mut Tick<'_, '_>, delta: Vec3) {
     let on_ground = t.on_ground();
     let aabb = t.aabb();
     let on_lava = t.mob_ref().nav.stands_on_lava;
-    let movement = physics::collide_for(
+    let snow = snow_collision(t.mob_ref(), aabb);
+    let movement = physics::collide_in_context(
         &t.level.view(),
         aabb,
         delta,
@@ -1199,6 +1222,7 @@ pub fn move_self(t: &mut Tick<'_, '_>, delta: Vec3) {
         on_ground,
         &mut t.cx.boxes,
         on_lava,
+        snow,
     );
     let length = movement.length_sqr();
     if length > 1.0e-7 || delta.length_sqr() - length < 1.0e-7 {
@@ -1211,7 +1235,8 @@ pub fn move_self(t: &mut Tick<'_, '_>, delta: Vec3) {
     t.mob().horizontal_collision = horizontal;
     let moved_vertically = delta.y.abs() > 0.0;
     let mut vertical = t.mob_ref().vertical_collision;
-    if moved_vertically {
+    // `isLocalInstanceAuthoritative`: always, unless a player steers the mob.
+    if moved_vertically || !crate::vehicle::player_controlled(t.ents, t.id) {
         vertical = delta.y != movement.y;
         let below = vertical && delta.y < 0.0;
         t.mob().vertical_collision = vertical;
@@ -1224,18 +1249,17 @@ pub fn move_self(t: &mut Tick<'_, '_>, delta: Vec3) {
         return;
     }
     if moved_vertically && vertical || horizontal {
-        // `restituteMovementAfterCollisions` without bouncy blocks: the colliding axes stop.
-        let mut v = t.velocity();
-        if x_collision {
-            v.x = -v.x * 0.0;
-        }
-        if z_collision {
-            v.z = -v.z * 0.0;
-        }
-        if vertical {
-            v.y = -v.y * 0.0;
-        }
-        t.set_velocity(v);
+        restitute_after_collisions(
+            t,
+            effect_state,
+            (
+                x_collision,
+                z_collision,
+                vertical,
+                vertical && delta.y < 0.0,
+            ),
+            movement,
+        );
     }
     if t.mob_ref().kind != super::Kind::EnderDragon {
         movement_emission(t, movement, effect_pos, effect_state);
@@ -1243,6 +1267,117 @@ pub fn move_self(t: &mut Tick<'_, '_>, delta: Vec3) {
     let factor = f64::from(block_speed_factor(t));
     let v = t.velocity();
     t.set_velocity(v.multiply(factor, 1.0, factor));
+}
+
+/// `Entity.restituteMovementAfterCollisions`: the colliding axes stop, or bounce back with the
+/// mob's `bounciness` attribute; landing fast enough on a slime block, bed or shelf mushroom
+/// bounces with the block's restitution. `collisions` is x, z, vertical, vertical below.
+fn restitute_after_collisions(
+    t: &mut Tick<'_, '_>,
+    effect_state: BlockState,
+    collisions: (bool, bool, bool, bool),
+    movement: Vec3,
+) {
+    let (x_collision, z_collision, vertical, below) = collisions;
+    // Mobs never suppress the bounce (`isShiftKeyDown`).
+    let mut restitution = entity_bounciness(t.mob_ref().kind);
+    let current = t.velocity();
+    let mut after = current;
+    if x_collision {
+        after.x = -current.x * restitution;
+    }
+    if z_collision {
+        after.z = -current.z * restitution;
+    }
+    let mut bounced = restitution > 0.0 && (x_collision || z_collision);
+    if vertical {
+        if below {
+            let block = effect_state.block();
+            restitution =
+                if -current.y > gravity(t) && block != vanillite_data::block::ids::HONEY_BLOCK {
+                    restitution.max(f64::from(crate::survival::blocks::bounce_restitution(
+                        block,
+                    )))
+                } else {
+                    0.0
+                };
+        }
+        let (compensation, drag) = if restitution > 0.0 {
+            let portion = movement.y / current.y;
+            #[allow(clippy::cast_possible_truncation)]
+            let drag_modifier = t.mob_ref().attrs.air_drag_modifier as f32;
+            let air_drag = if omnidirectional_air_mover(t.mob_ref()) {
+                modified_friction(0.91, drag_modifier)
+            } else {
+                modified_friction(0.98, drag_modifier)
+            };
+            bounced = true;
+            (
+                portion * gravity(t),
+                1.0 + portion * (f64::from(air_drag) - 1.0),
+            )
+        } else {
+            (0.0, 1.0)
+        };
+        after.y = (compensation - current.y) * drag * restitution;
+    }
+    if bounced {
+        // `bounceOn` (the shelf mushroom's sound) and the `bounce` game event.
+        if effect_state.block() == vanillite_data::block::ids::SHELF_MUSHROOM {
+            let pos = pos_below_affecting_movement(t);
+            crate::survival::play_sound(
+                t.env.out,
+                None,
+                Vec3::new(
+                    f64::from(pos.x) + 0.5,
+                    f64::from(pos.y) + 0.5,
+                    f64::from(pos.z) + 0.5,
+                ),
+                "minecraft:block.shelf_mushroom.bounce",
+                vanillite_protocol::packets::play::clientbound::SoundSource::Blocks,
+                1.0,
+                1.0,
+                crate::survival::sound_seed(),
+            );
+        }
+        let pos = t.pos();
+        post_game_event(t, crate::level::game_event::events().bounce, pos, None);
+    }
+    t.set_velocity(after);
+}
+
+/// The mob's powder snow collision: falling more than 2.5 blocks lands on it, powder snow
+/// walkers (`#powder_snow_walkable_mobs`, leather boots) stand on it.
+fn snow_collision(m: &super::MobData, aabb: Aabb) -> physics::SnowCollision {
+    use super::Kind;
+    if m.fall_distance > 2.5 {
+        physics::SnowCollision::Falling
+    } else if matches!(
+        m.kind,
+        Kind::Rabbit | Kind::Endermite | Kind::Silverfish | Kind::Fox
+    ) || crate::item::item_id(m.equipment.get(crate::item::EquipmentSlot::Feet))
+        == vanillite_data::item::ids::LEATHER_BOOTS
+    {
+        physics::SnowCollision::Walker(aabb.min_y)
+    } else {
+        physics::SnowCollision::None
+    }
+}
+
+/// `LivingEntity.getEntityBounciness`: the kind's `bounciness` attribute.
+fn entity_bounciness(kind: super::Kind) -> f64 {
+    use vanillite_data::entity::ATTRIBUTES;
+    let info = kind.type_id().info();
+    let Some(id) = ATTRIBUTES
+        .iter()
+        .position(|a| a.name == "minecraft:bounciness")
+    else {
+        return 0.0;
+    };
+    info.attributes
+        .iter()
+        .find(|(a, _)| usize::from(*a) == id)
+        .map_or(ATTRIBUTES[id].default, |&(_, v)| v)
 }
 
 /// Queues `gameEvent(event, pos, Context.of(this mob, affected))`.
@@ -1284,9 +1419,14 @@ fn movement_emission(
     {
         let m = t.mob();
         m.move_dist += if climbing { moved } else { horizontal };
-        if m.move_dist <= m.next_step || supporting.is_air() {
-            return;
-        }
+        m.fly_dist += moved;
+    }
+    if supporting.is_air() {
+        process_flapping(t);
+        return;
+    }
+    if t.mob_ref().move_dist <= t.mob_ref().next_step {
+        return;
     }
     let on_ground = t.on_ground();
     let swimming = t
@@ -1332,6 +1472,47 @@ fn movement_emission(
         }
         post_game_event(t, crate::level::game_event::events().swim, pos, None);
     }
+}
+
+/// `Entity.processFlappingMovement`: bees flap every other tick in the air, chickens and
+/// parrots whenever their flight passes `nextFlap`, allays in the air, bats and phantoms on
+/// their beat; each flap is a `flap` game event.
+fn process_flapping(t: &mut Tick<'_, '_>) {
+    use super::Kind;
+    let kind = t.mob_ref().kind;
+    let flapping = match kind {
+        // `Bee.isFlapping`: `TICKS_PER_FLAP` is 2.
+        Kind::Bee => !t.on_ground() && t.mob_ref().tick_count % 2 == 0,
+        Kind::Chicken | Kind::Parrot => t.mob_ref().fly_dist > t.mob_ref().next_flap,
+        Kind::Allay => !t.on_ground(),
+        Kind::Bat => {
+            !super::fam::wildlife::st(t.mob_ref()).resting && t.mob_ref().tick_count % 10 == 0
+        }
+        // `getUniqueFlapTickOffset` is the entity id times 3; `TICKS_PER_FLAP` is 25.
+        Kind::Phantom => {
+            let id = t.core().network_id().0;
+            id.wrapping_mul(3).wrapping_add(t.mob_ref().tick_count) % 25 == 0
+        }
+        // Vexes move without physics: their moves make no events.
+        _ => false,
+    };
+    if !flapping {
+        return;
+    }
+    match kind {
+        Kind::Chicken => {
+            let m = t.mob();
+            m.next_flap = m.fly_dist + super::fam::classic::chicken(m).flap_speed / 2.0;
+        }
+        Kind::Parrot => {
+            kinds::play_sound(t, "minecraft:entity.parrot.fly", 0.15, 1.0);
+            let m = t.mob();
+            m.next_flap = m.fly_dist + super::fam::companion::st(m).flap / 2.0;
+        }
+        _ => {}
+    }
+    let pos = t.pos();
+    post_game_event(t, crate::level::game_event::events().flap, pos, None);
 }
 
 /// `getMovementEmission().emitsSounds()`: kinds whose moves make no sound.
@@ -1431,19 +1612,54 @@ fn check_fall_damage(
                 pos,
                 Some(on_state),
             );
-            let multiplier = match t.env.facts.landing(on_state) {
-                Landing::Fall(m) => Some(m),
-                Landing::Slime => None,
-                Landing::Honey => Some(0.2),
-                Landing::Stalagmite => Some(2.0),
-            };
-            if let Some(multiplier) = multiplier {
-                let extra = if matches!(t.env.facts.landing(on_state), Landing::Stalagmite) {
-                    2.5
-                } else {
-                    0.0
-                };
-                cause_fall_damage(t, distance + extra, multiplier);
+            match t.env.facts.landing(on_state) {
+                Landing::Fall(m) => {
+                    cause_fall_damage(t, distance, m);
+                }
+                // `SlimeBlock.fallOn`: mobs never suppress the bounce.
+                Landing::Slime => {
+                    cause_fall_damage(t, distance, 0.0);
+                }
+                Landing::Honey => {
+                    // `HoneyBlock.fallOn`.
+                    kinds::play_sound(t, "minecraft:block.honey_block.slide", 1.0, 1.0);
+                    let id = t.id;
+                    entity_event(t, id, 54);
+                    if cause_fall_damage(t, distance, 0.2) && t.exists() {
+                        kinds::play_sound(t, "minecraft:block.honey_block.fall", 0.5, 0.75);
+                    }
+                }
+                Landing::Stalagmite => {
+                    cause_fall_damage(t, distance + 2.5, 2.0);
+                }
+                Landing::Bed => {
+                    cause_fall_damage(t, distance * f64::from(1.0_f32 - 0.5), 1.0);
+                }
+                Landing::Farmland => {
+                    // `FarmlandBlock.fallOn`: the level random decides, mob griefing allows.
+                    if f64::from(t.env.random.next_float()) < distance - 0.5
+                        && t.env.rules.bool(Rule::MOB_GRIEFING)
+                    {
+                        let dims = t.core().dims();
+                        if crate::block::contact::can_trample(dims.width, dims.height) {
+                            let id = t.id;
+                            t.cx.actions
+                                .push(super::WorldAction::TrampleFarmland(on_pos, id));
+                        }
+                    }
+                    cause_fall_damage(t, distance, 1.0);
+                }
+                Landing::PowderSnow => {
+                    // `PowderSnowBlock.fallOn`: no damage, only the fall sound.
+                    if distance >= 4.0 {
+                        let sound = if distance < 7.0 {
+                            t.mob_ref().kind.fall_sound_small()
+                        } else {
+                            t.mob_ref().kind.fall_sound_big()
+                        };
+                        kinds::play_sound(t, sound, 1.0, 1.0);
+                    }
+                }
             }
         }
         if t.exists() {
@@ -1483,10 +1699,10 @@ fn fall_particles(t: &mut Tick<'_, '_>, distance: f64, on_state: BlockState, on_
     );
 }
 
-/// `LivingEntity.causeFallDamage`.
-fn cause_fall_damage(t: &mut Tick<'_, '_>, distance: f64, multiplier: f32) {
+/// `LivingEntity.causeFallDamage`; returns whether the mob took damage.
+fn cause_fall_damage(t: &mut Tick<'_, '_>, distance: f64, multiplier: f32) -> bool {
     if t.mob_ref().kind.fall_damage_immune() {
-        return;
+        return false;
     }
     let attrs = t.mob_ref().attrs;
     let power = distance + 1.0e-6 - attrs.safe_fall_distance;
@@ -1500,9 +1716,12 @@ fn cause_fall_damage(t: &mut Tick<'_, '_>, distance: f64, multiplier: f32) {
         kinds::play_sound(t, sound, 1.0, 1.0);
         let source = DamageSource::of(t.env.types.fall);
         #[allow(clippy::cast_precision_loss)]
-        hurt_self(t, source, damage as f32);
+        let hurt = hurt_self(t, source, damage as f32);
+        kinds::on_fall_damage(t, distance);
+        return hurt;
     }
     kinds::on_fall_damage(t, distance);
+    false
 }
 
 /// Queues `TurtleEggBlock.destroyEgg` for the eggs the mob stands on.
@@ -1518,20 +1737,103 @@ fn trample_turtle_egg(t: &mut Tick<'_, '_>, randomness: i32) {
     });
 }
 
-/// `applyEffectsFromBlocks` / `checkInsideBlocks` for fire, lava, cobwebs and berry bushes.
+/// `applyEffectsFromBlocks` / `checkInsideBlocks`: `stepOn` of the block below, the contact
+/// blocks (cactus, berry bushes, campfires, wither roses, powder snow, honey, crops under
+/// ravagers), fire, lava, cobwebs and bubble columns.
 fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
-    // `stepOn` of the block below (turtle eggs, mobs are never careful; sculk sensors and
-    // shriekers).
+    use vanillite_data::block::ids;
+    // `stepOn` of the block below (mobs are never careful).
     if t.on_ground() {
         let on = on_pos(t, f64::from(0.2_f32));
         let block = t.level.block(on).block();
-        if block == vanillite_data::block::ids::TURTLE_EGG {
+        if block == ids::TURTLE_EGG {
             trample_turtle_egg(t, 100);
-        } else if crate::block::sculk::has_step_on(block) {
+        } else if crate::block::contact::has_step_on(block) {
             t.cx.actions.push(super::WorldAction::StepOn(on, t.id));
+        } else if block == ids::MAGMA_BLOCK {
+            // `MagmaBlock.stepOn`.
+            let source = DamageSource::of(t.env.types.hot_floor);
+            hurt_self(t, source, 1.0);
+        } else if block == ids::SLIME_BLOCK {
+            // `SlimeBlock.stepOn`.
+            let v = t.velocity();
+            if v.y.abs() < 0.1 {
+                let scale = 0.4 + v.y.abs() * 0.2;
+                t.set_velocity(Vec3::new(v.x * scale, v.y, v.z * scale));
+            }
         }
     }
+    if !t.exists() {
+        return;
+    }
+    let was_freezing = t.mob_ref().ticks_frozen > 0;
     let inside = inside_blocks(t.env.blocks, t.env.facts, t.aabb());
+    let kind = t.mob_ref().kind;
+    // The `entityInside` effects that act at once.
+    if inside.cactus {
+        let source = DamageSource::of(t.env.types.cactus);
+        hurt_self(t, source, 1.0);
+    }
+    if let Some(grown) = inside.berry_bush
+        && grown
+        && !matches!(kind, super::Kind::Fox | super::Kind::Bee)
+        && t.exists()
+    {
+        // `SweetBerryBushBlock.entityInside`: the movement since the tick started.
+        let moved = t.core().old_pos() - t.pos();
+        if moved.x * moved.x + moved.z * moved.z > 0.0
+            && (moved.x.abs() >= f64::from(0.003_f32) || moved.z.abs() >= f64::from(0.003_f32))
+        {
+            let source = DamageSource::of(t.env.types.sweet_berry_bush);
+            hurt_self(t, source, 1.0);
+        }
+    }
+    if let Some(damage) = inside.campfire
+        && t.exists()
+    {
+        let source = DamageSource::of(t.env.types.campfire);
+        hurt_self(t, source, damage);
+    }
+    if inside.wither_rose
+        && t.exists()
+        && t.env.difficulty != crate::survival::rules::Difficulty::Peaceful
+    {
+        // `WitherRoseBlock.entityInside`.
+        let effect = crate::effect::EffectInstance::new(crate::effect::MobEffect::WITHER, 40, 0);
+        let type_id = kind.type_id();
+        crate::effect::consume::add_effect(
+            type_id,
+            effect,
+            &mut crate::effect::living::MobHost { t },
+        );
+    }
+    if !t.exists() {
+        return;
+    }
+    if let Some(snow) = inside.powder_snow {
+        // `PowderSnowBlock.entityInside`: the snowflakes of a moving entity.
+        let v = t.velocity();
+        if (v.x != 0.0 || v.z != 0.0) && t.env.random.next_boolean() {
+            let r = &mut *t.env.random;
+            let vx = f64::from((r.next_float() * 2.0 - 1.0) * 0.083_333_336);
+            let vz = f64::from((r.next_float() * 2.0 - 1.0) * 0.083_333_336);
+            let p = t.pos();
+            t.cx.send_particles(
+                crate::level::particles::simple("minecraft:snowflake"),
+                Vec3::new(p.x, f64::from(snow.y + 1), p.z),
+                0,
+                Vec3::new(vx, f64::from(0.05_f32), vz),
+                1.0,
+            );
+        }
+        // `InsideBlockEffectType.FREEZE`.
+        t.mob().in_powder_snow = true;
+        if can_freeze(t.mob_ref()) {
+            let m = t.mob();
+            m.ticks_frozen = (m.ticks_frozen + 1).min(TICKS_TO_FREEZE);
+            t.core_mut().mark_data_dirty();
+        }
+    }
     let fire_immune = t.core().kind().info().fire_immune;
     let previous_fire = t.mob_ref().fire_ticks;
     if let Some(damage) = inside.fire
@@ -1561,6 +1863,14 @@ fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
     if !t.exists() {
         return;
     }
+    if let Some(snow) = inside.powder_snow
+        && t.mob_ref().fire_ticks > 0
+        && t.env.rules.bool(Rule::MOB_GRIEFING)
+    {
+        // `PowderSnowBlock.entityInside`'s `runBefore(EXTINGUISH)`: a burning mob melts it.
+        t.cx.actions
+            .push(super::WorldAction::DestroyBlock(snow, false));
+    }
     // `isInRain`: the feet's block or the column at the top of the box.
     let p = t.pos();
     let feet = BlockPos::containing(p.x, p.y, p.z);
@@ -1577,7 +1887,7 @@ fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
             .push(super::WorldAction::BurningInCauldron(cauldron));
     }
     let m = t.mob();
-    if (inside.water || in_rain) && m.fire_ticks > 0 {
+    if (inside.water || inside.powder_snow.is_some() || in_rain) && m.fire_ticks > 0 {
         // `clearFire`.
         m.fire_ticks = 0;
     }
@@ -1585,39 +1895,192 @@ fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
     if m.fire_ticks <= 0 && m.fire_ticks <= previous_fire {
         m.fire_ticks = -1;
     }
-    // Cobwebs and sweet berry bushes slow the next move (`makeStuckInBlock`).
+    // `playEntityOnFireExtinguishedSound` (the fire half is not simulated for mobs yet).
+    if was_freezing && m.ticks_frozen <= 0 {
+        let r = &mut m.random;
+        let pitch = 1.6 + (r.next_float() - r.next_float()) * 0.4;
+        kinds::play_sound(t, "minecraft:entity.generic.extinguish_fire", 0.7, pitch);
+    }
+    // Cobwebs, sweet berry bushes and powder snow slow the next move (`makeStuckInBlock`).
     let b = t.aabb().inflate(-1.0e-5, -1.0e-5, -1.0e-5);
     let (x0, y0, z0) = (floor(b.min_x), floor(b.min_y), floor(b.min_z));
     let (x1, y1, z1) = (floor(b.max_x), floor(b.max_y), floor(b.max_z));
+    let feet_in_snow = t.level.block(t.block_pos()).block() == ids::POWDER_SNOW;
+    let ravager_griefs = kind == super::Kind::Ravager && t.env.rules.bool(Rule::MOB_GRIEFING);
     let mut stuck = None;
+    let mut honey = Vec::new();
     for x in x0..=x1 {
         for y in y0..=y1 {
             for z in z0..=z1 {
-                let state = t.level.block(BlockPos::new(x, y, z));
+                let pos = BlockPos::new(x, y, z);
+                let state = t.level.block(pos);
                 let block = state.block();
-                if block == vanillite_data::block::ids::BIG_DRIPLEAF {
+                if block == ids::BIG_DRIPLEAF {
                     // `BigDripleafBlock.entityInside`.
-                    t.cx.actions.push(super::WorldAction::EntityInside(
-                        BlockPos::new(x, y, z),
-                        t.id,
-                    ));
+                    t.cx.actions
+                        .push(super::WorldAction::EntityInside(pos, t.id));
                 }
-                if block == vanillite_data::block::ids::COBWEB {
+                if block == ids::COBWEB {
                     stuck = Some(Vec3::new(0.25, f64::from(0.05_f32), 0.25));
-                } else if block == vanillite_data::block::ids::SWEET_BERRY_BUSH {
-                    stuck = Some(Vec3::new(f64::from(0.8_f32), 0.75, f64::from(0.8_f32)));
+                } else if block == ids::SWEET_BERRY_BUSH {
+                    if !matches!(kind, super::Kind::Fox | super::Kind::Bee) {
+                        stuck = Some(Vec3::new(f64::from(0.8_f32), 0.75, f64::from(0.8_f32)));
+                    }
+                } else if block == ids::POWDER_SNOW {
+                    if feet_in_snow {
+                        stuck = Some(Vec3::new(f64::from(0.9_f32), 1.5, f64::from(0.9_f32)));
+                    }
+                } else if block == ids::HONEY_BLOCK {
+                    honey.push(pos);
+                } else if ravager_griefs
+                    && matches!(
+                        vanillite_worldgen::behaviour::class_of_block(block),
+                        vanillite_worldgen::behaviour::Class::Crop
+                            | vanillite_worldgen::behaviour::Class::PitcherCrop
+                    )
+                {
+                    // `CropBlock.entityInside` / `PitcherCropBlock.entityInside`.
+                    t.cx.actions
+                        .push(super::WorldAction::DestroyBlockBy(pos, true, t.id));
                 }
             }
         }
     }
     // `WitherBoss.makeStuckInBlock` does nothing.
     if let Some(s) = stuck
-        && t.mob_ref().kind != super::Kind::Wither
+        && kind != super::Kind::Wither
     {
         t.mob().fall_distance = 0.0;
         t.mob().stuck_speed = s;
     }
+    // `HoneyBlock.entityInside` of each honey block touched.
+    for pos in honey {
+        honey_slide(t, pos);
+    }
     bubble_columns(t, x0..=x1, y0..=y1, z0..=z1);
+}
+
+/// `Entity.getTicksRequiredToFreeze`.
+pub const TICKS_TO_FREEZE: i32 = 140;
+
+/// `LivingEntity.canFreeze`: not a `#freeze_immune_entity_types` kind and no
+/// `#freeze_immune_wearables` (leather) armor.
+fn can_freeze(m: &super::MobData) -> bool {
+    use crate::item::EquipmentSlot;
+    use vanillite_data::item::ids;
+    if matches!(
+        m.kind,
+        super::Kind::Stray | super::Kind::PolarBear | super::Kind::SnowGolem | super::Kind::Wither
+    ) {
+        return false;
+    }
+    let leather = [
+        ids::LEATHER_BOOTS,
+        ids::LEATHER_LEGGINGS,
+        ids::LEATHER_CHESTPLATE,
+        ids::LEATHER_HELMET,
+        ids::LEATHER_HORSE_ARMOR,
+    ];
+    ![
+        EquipmentSlot::Feet,
+        EquipmentSlot::Legs,
+        EquipmentSlot::Chest,
+        EquipmentSlot::Head,
+        EquipmentSlot::Body,
+    ]
+    .into_iter()
+    .any(|slot| leather.contains(&crate::item::item_id(m.equipment.get(slot))))
+}
+
+/// `LivingEntity.aiStep`'s freezing after `applyEffectsFromBlocks`: thawing outside powder
+/// snow, the speed penalty (`removeFrost`, `tryAddFrost`) and the freeze damage every two
+/// seconds once fully frozen.
+fn tick_freezing(t: &mut Tick<'_, '_>) {
+    use crate::effect::Operation;
+    use crate::effect::attribute::Attribute;
+    let freezes = can_freeze(t.mob_ref());
+    if !t.mob_ref().in_powder_snow || !freezes {
+        let m = t.mob();
+        let before = m.ticks_frozen;
+        m.ticks_frozen = (m.ticks_frozen - 2).max(0);
+        if m.ticks_frozen != before {
+            t.core_mut().mark_data_dirty();
+        }
+    }
+    // `removeFrost`, then `tryAddFrost` on a block that is not air.
+    let mut changed = t
+        .mob()
+        .effects
+        .modifiers
+        .remove(Attribute::MOVEMENT_SPEED, POWDER_SNOW_SPEED);
+    let frozen = t.mob_ref().ticks_frozen;
+    if frozen > 0 && !t.level.block(on_pos(t, f64::from(0.2_f32))).is_air() {
+        #[allow(clippy::cast_precision_loss)]
+        let percent = frozen.min(TICKS_TO_FREEZE) as f32 / TICKS_TO_FREEZE as f32;
+        t.mob().effects.modifiers.set(
+            Attribute::MOVEMENT_SPEED,
+            POWDER_SNOW_SPEED,
+            f64::from(-0.05 * percent),
+            Operation::AddValue,
+        );
+        changed = true;
+    }
+    if changed {
+        let id = t.id;
+        crate::effect::living::sync_mob(t.ents, t.env.out, id);
+    }
+    if t.mob_ref().tick_count % 40 == 0 && frozen >= TICKS_TO_FREEZE && freezes {
+        // `freeze` damage, five times for `#freeze_hurts_extra_types`.
+        let amount = if matches!(
+            t.mob_ref().kind,
+            super::Kind::Strider | super::Kind::Blaze | super::Kind::MagmaCube
+        ) {
+            5.0
+        } else {
+            1.0
+        };
+        let source = DamageSource::of(t.env.types.freeze);
+        hurt_self(t, source, amount);
+    }
+}
+
+/// `SPEED_MODIFIER_POWDER_SNOW_ID`.
+const POWDER_SNOW_SPEED: &str = "minecraft:powder_snow";
+
+/// `HoneyBlock.entityInside`: a mob sliding down the side of a honey block.
+fn honey_slide(t: &mut Tick<'_, '_>, pos: BlockPos) {
+    let old_dy = |dy: f64| dy / f64::from(0.98_f32) + 0.08;
+    let new_dy = |dy: f64| (dy - 0.08) * f64::from(0.98_f32);
+    let p = t.pos();
+    let v = t.velocity();
+    // `isSlidingDown`.
+    if t.on_ground() || p.y > f64::from(pos.y) + 0.9375 - 1.0e-7 || old_dy(v.y) >= -0.08 {
+        return;
+    }
+    let dx = (f64::from(pos.x) + 0.5 - p.x).abs();
+    let dz = (f64::from(pos.z) + 0.5 - p.z).abs();
+    let overlap = 0.4375 + f64::from(t.core().dims().width / 2.0);
+    if !(dx + 1.0e-7 > overlap || dz + 1.0e-7 > overlap) {
+        return;
+    }
+    // `doSlideMovement`.
+    let old = old_dy(v.y);
+    let velocity = if old < -0.13 {
+        let factor = -0.05 / old;
+        Vec3::new(v.x * factor, new_dy(-0.05), v.z * factor)
+    } else {
+        Vec3::new(v.x, new_dy(-0.05), v.z)
+    };
+    t.set_velocity(velocity);
+    t.mob().fall_distance = 0.0;
+    // `maybeDoSlideEffects`: living entities.
+    if t.env.random.next_int_bounded(5) == 0 {
+        kinds::play_sound(t, "minecraft:block.honey_block.slide", 1.0, 1.0);
+    }
+    if t.env.random.next_int_bounded(5) == 0 {
+        let id = t.id;
+        entity_event(t, id, 53);
+    }
 }
 
 /// `BubbleColumnBlock.entityInside`: an upward or downward drag, stronger at the top
@@ -1727,6 +2190,12 @@ fn push_entities(t: &mut Tick<'_, '_>) {
             return;
         }
     }
+    // `Entity.push` does nothing while either side has `noPhysics`: a vex has it during its
+    // own tick, so it only gets pushed by the others' ticks.
+    if t.mob_ref().kind == super::Kind::Vex {
+        t.cx.ids = ids;
+        return;
+    }
     let climbing = on_climbable(t);
     // `max-entity-collisions`: only the first ones push.
     let limit =
@@ -1734,6 +2203,15 @@ fn push_entities(t: &mut Tick<'_, '_>) {
             .max_entity_collisions
             .map_or(usize::MAX, |n| usize::try_from(n).unwrap_or(usize::MAX));
     for &other in ids.iter().take(limit) {
+        // `IronGolem.doPush`: now and then turns on the enemy it bumps into.
+        if t.mob_ref().kind == super::Kind::IronGolem
+            && t.ents
+                .mob(other)
+                .is_some_and(|m| m.kind.is_monster() && m.kind != super::Kind::Creeper)
+            && t.mob().random.next_int_bounded(20) == 0
+        {
+            super::goals::set_target(t, Some(other));
+        }
         if t.ents.minecart(other).is_some() {
             // `AbstractMinecart.push(this)`.
             crate::minecart::push_by(t.ents, other, id);
@@ -1890,8 +2368,11 @@ fn is_sun_burn_tick(t: &mut Tick<'_, '_>) -> bool {
     let rain = (t.env.raining_at)(t.block_pos())
         || (t.env.raining_at)(BlockPos::containing(p.x, t.aabb().max_y, p.z));
     let wet = t.mob_ref().fluids.in_water() || rain;
-    let roll = t.mob().random.next_float() * 30.0;
-    br > 0.5 && roll < (br - 0.4) * 2.0 && !wet && super::can_see_sky(t.level, rounded)
+    // The roll is only drawn in bright light.
+    br > 0.5
+        && t.mob().random.next_float() * 30.0 < (br - 0.4) * 2.0
+        && !wet
+        && super::can_see_sky(t.level, rounded)
 }
 
 /// `Mob.checkDespawn`.
@@ -1923,16 +2404,15 @@ pub fn check_despawn(t: &mut Tick<'_, '_>) {
     let area = Aabb::new(p.x - r, p.y - r, p.z - r, p.x + r, p.y + r, p.z + r);
     let mut nearest = f64::MAX;
     t.ents.store.for_each_in(&area, true, |player| {
-        // `getNearestPlayer` skips spectators.
-        if t.ents
-            .player(player)
-            .is_some_and(|p| p.game_mode == vanillite_config::GameMode::Spectator)
-        {
-            return;
-        }
         if let Some(e) = t.ents.store.get(player) {
             let d = e.pos().distance_to_sqr(p);
-            if d < nearest {
+            // `getNearestPlayer` skips spectators (looked up only for a closer player).
+            if d < nearest
+                && !t
+                    .ents
+                    .player(player)
+                    .is_some_and(|p| p.game_mode == vanillite_config::GameMode::Spectator)
+            {
                 nearest = d;
             }
         }

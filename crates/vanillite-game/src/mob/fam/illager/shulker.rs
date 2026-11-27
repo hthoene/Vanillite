@@ -59,7 +59,35 @@ pub fn register_goals(m: &mut MobData) {
             gate: Gate::NotPeaceful,
         }),
     );
-    // `ShulkerDefenseAttackGoal` needs a team; teams are not simulated.
+    tg.add(
+        3,
+        fam(Goal::Target {
+            inner: CommonGoal::nearest(10, true, defense_target),
+            gate: Gate::InTeam,
+        }),
+    );
+}
+
+/// The scoreboard team of an entity that is no player (`getTeam`).
+pub(super) fn team_of(t: &Tick<'_, '_>, id: EntityId) -> Option<Box<str>> {
+    let uuid = t.ents.store.get(id)?.uuid();
+    (t.env.entity_team)(uuid)
+}
+
+/// `ShulkerDefenseAttackGoal`'s targets: an `Enemy` that is not in the shulker's team
+/// (`isAlliedTo` of `TargetingConditions`).
+fn defense_target(t: &Tick<'_, '_>, id: EntityId) -> bool {
+    common::enemy(t, id) && team_of(t, id) != team_of(t, t.id)
+}
+
+/// `getTargetSearchArea` of the shulker's target goals: the follow distance across the face
+/// it sits on, 4 blocks along its axis.
+pub fn target_search_area(t: &Tick<'_, '_>, follow: f64) -> Aabb {
+    match axis(st(t.mob_ref()).attach_face) {
+        2 => t.aabb().inflate(4.0, follow, follow),
+        1 => t.aabb().inflate(follow, follow, 4.0),
+        _ => t.aabb().inflate(follow, 4.0, follow),
+    }
 }
 
 /// `getPhysicalPeek`.
@@ -219,7 +247,13 @@ fn on_peek_change(t: &mut Tick<'_, '_>) {
         f64::from(push * f32::from(i8::try_from(sz).unwrap_or(0))),
     );
     for &id in &ids {
-        if id == t.id || t.ents.mob(id).is_some_and(|m| m.kind == Kind::Shulker) {
+        // Not other shulkers, nor what has `noPhysics` (its own bullets).
+        if id == t.id
+            || t.ents.mob(id).is_some_and(|m| m.kind == Kind::Shulker)
+            || t.ents
+                .missile(id)
+                .is_some_and(|d| d.kind == MissileKind::ShulkerBullet)
+        {
             continue;
         }
         if let Some(mut e) = t.ents.store.get_mut(id) {
@@ -291,7 +325,9 @@ pub fn attack_tick(t: &mut Tick<'_, '_>, attack_time: &mut i32) {
 /// `new ShulkerBullet(level, shulker, target, axis)`: from the box centre, first step off the
 /// shulker's axis.
 fn shoot_bullet(t: &mut Tick<'_, '_>, target: EntityId, avoid_axis: u8) {
-    let b = t.aabb();
+    // `makeBoundingBox`: the box of the lid as far as it is open now.
+    let s = st(t.mob_ref());
+    let b = progress_aabb(s.attach_face, physical_peek(s.current_peek), t.pos());
     let start = Vec3::new(
         (b.min_x + b.max_x) / 2.0,
         (b.min_y + b.max_y) / 2.0,
@@ -524,7 +560,7 @@ fn hit_by_bullet(h: &mut Hurt<'_, '_>) {
     let mut baby = MobData::new(Kind::Shulker, crate::mob::new_entity_seed());
     st_mut(&mut baby).color = color;
     let uuid = crate::mob::new_uuid();
-    super::super::super::spawn(
+    let id = super::super::super::spawn(
         h.ents,
         h.level.network_ids(),
         uuid,
@@ -532,4 +568,7 @@ fn hit_by_bullet(h: &mut Hurt<'_, '_>) {
         Rotation::default(),
         baby,
     );
+    let parent = h.ents.store.get(h.target).map_or(0, |e| e.uuid());
+    h.ents
+        .spawned(id, vanillite_abi::spawn_reason::BREEDING, parent);
 }

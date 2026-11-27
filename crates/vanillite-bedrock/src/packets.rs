@@ -84,6 +84,14 @@ pub mod id {
     pub const BOOK_EDIT: u32 = 97;
     pub const PLAYER_START_ITEM_COOLDOWN: u32 = 176;
     pub const ADD_PAINTING: u32 = 22;
+    pub const BLOCK_EVENT: u32 = 26;
+    pub const CONTAINER_SET_DATA: u32 = 51;
+    pub const CRAFTING_DATA: u32 = 52;
+    pub const BLOCK_ACTOR_DATA: u32 = 56;
+    pub const REMOVE_OBJECTIVE: u32 = 106;
+    pub const SET_DISPLAY_OBJECTIVE: u32 = 107;
+    pub const SET_SCORE: u32 = 108;
+    pub const OPEN_SIGN: u32 = 202;
 }
 
 /// Inventory window ids.
@@ -102,8 +110,34 @@ pub mod container {
     pub const HOTBAR: u8 = 28;
     pub const INVENTORY: u8 = 29;
     pub const OFFHAND: u8 = 34;
+    pub const LEVEL_ENTITY: u8 = 7;
+    pub const BREWING_INPUT: u8 = 9;
+    pub const BREWING_RESULT: u8 = 10;
+    pub const BREWING_FUEL: u8 = 11;
+    pub const FURNACE_FUEL: u8 = 24;
+    pub const FURNACE_INGREDIENT: u8 = 25;
+    pub const FURNACE_RESULT: u8 = 26;
+    pub const SHULKER_BOX: u8 = 30;
+    pub const BLAST_FURNACE_INGREDIENT: u8 = 45;
+    pub const SMOKER_INGREDIENT: u8 = 46;
+    pub const BARREL: u8 = 58;
     pub const CURSOR: u8 = 59;
     pub const CREATED_OUTPUT: u8 = 60;
+}
+
+/// `ContainerType` of `container_open`.
+pub mod container_type {
+    pub const CONTAINER: i8 = 0;
+    pub const WORKBENCH: i8 = 1;
+    pub const FURNACE: i8 = 2;
+    pub const BREWING_STAND: i8 = 4;
+    pub const DISPENSER: i8 = 6;
+    pub const HOPPER: i8 = 8;
+    pub const CART_CHEST: i8 = 10;
+    pub const CART_HOPPER: i8 = 11;
+    pub const BLAST_FURNACE: i8 = 27;
+    pub const SMOKER: i8 = 28;
+    pub const CHEST_BOAT: i8 = 34;
 }
 
 /// `player_action` / block action types used here.
@@ -998,8 +1032,15 @@ pub enum StackAction {
         net_id: u32,
         times: u8,
     },
+    /// A recipe of the recipe book, placed from the inventory and crafted.
+    CraftRecipeAuto {
+        net_id: u32,
+        times: u8,
+    },
     /// Tool durability prediction of block breaking (nothing to do).
     MineBlock,
+    /// The deprecated list of crafting results (nothing to do).
+    Results,
     /// Anything the frontend does not translate (lab table, beacon, loom, ...).
     Unsupported,
 }
@@ -1102,7 +1143,7 @@ fn read_stack_action(r: &mut Reader<'_>, v: &Version) -> Result<StackAction> {
             for _ in 0..n {
                 read_descriptor_count(r)?;
             }
-            StackAction::CraftRecipe { net_id, times }
+            StackAction::CraftRecipeAuto { net_id, times }
         }
         12 => StackAction::CraftCreative {
             net_id: r.varu32()?,
@@ -1144,7 +1185,7 @@ fn read_stack_action(r: &mut Reader<'_>, v: &Version) -> Result<StackAction> {
                 r.bytes("item user data", 1 << 16)?;
             }
             r.u8()?;
-            StackAction::Unsupported
+            StackAction::Results
         }
         _ => return Err(io::Error::Invalid("stack request action")),
     })
@@ -1294,6 +1335,74 @@ pub fn container_open(window: u8, kind: i8, pos: [i32; 3], entity: i64) -> Vec<u
     let mut out = vec![window, kind.to_le_bytes()[0]];
     io::write_block_pos(&mut out, pos);
     io::write_vari64(&mut out, entity);
+    out
+}
+
+/// `container_set_data`.
+pub fn container_set_data(window: u8, key: i32, value: i32) -> Vec<u8> {
+    let mut out = vec![window];
+    io::write_vari32(&mut out, key);
+    io::write_vari32(&mut out, value);
+    out
+}
+
+/// `block_event` (type 1: chest lid, data 1 open / 0 closed).
+pub fn block_event(pos: [i32; 3], kind: i32, data: i32) -> Vec<u8> {
+    let mut out = Vec::with_capacity(20);
+    io::write_block_pos(&mut out, pos);
+    io::write_vari32(&mut out, kind);
+    io::write_vari32(&mut out, data);
+    out
+}
+
+/// `block_actor_data` from a network NBT compound.
+pub fn block_actor_data(pos: [i32; 3], nbt: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(nbt.len().saturating_add(16));
+    io::write_block_pos(&mut out, pos);
+    out.extend_from_slice(nbt);
+    out
+}
+
+/// `open_sign`.
+pub fn open_sign(pos: [i32; 3], front: bool) -> Vec<u8> {
+    let mut out = Vec::with_capacity(16);
+    io::write_block_pos(&mut out, pos);
+    out.push(u8::from(front));
+    out
+}
+
+/// `set_display_objective` (`slot`: `sidebar`, `list` or `belowname`; descending order).
+pub fn set_display_objective(slot: &str, name: &str, display: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(name.len().saturating_add(display.len()).saturating_add(24));
+    io::write_str(&mut out, slot);
+    io::write_str(&mut out, name);
+    io::write_str(&mut out, display);
+    io::write_str(&mut out, "dummy");
+    io::write_vari32(&mut out, 1);
+    out
+}
+
+/// `remove_objective`.
+pub fn remove_objective(name: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(name.len().saturating_add(2));
+    io::write_str(&mut out, name);
+    out
+}
+
+/// `set_score` of fake-player entries: entry id, objective, score and shown name.
+pub fn set_score<'a>(
+    entries: impl ExactSizeIterator<Item = (i64, &'a str, i32, &'a str)>,
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    io::write_len(&mut out, entries.len());
+    for (id, objective, score, name) in entries {
+        io::write_varu32(&mut out, 3);
+        io::write_str(&mut out, "changefakeplayer");
+        io::write_vari64(&mut out, id);
+        io::write_str(&mut out, objective);
+        out.extend_from_slice(&score.to_le_bytes());
+        io::write_str(&mut out, name);
+    }
     out
 }
 

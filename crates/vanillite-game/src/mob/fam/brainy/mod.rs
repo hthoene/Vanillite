@@ -188,12 +188,14 @@ pub fn zombifies(t: &Tick<'_, '_>) -> bool {
 }
 
 /// `Mob.convertTo(type, ConversionParams.single(this, keepEquipment, preserveLoot))`: the new
-/// mob takes the place of this one, which is discarded.
+/// mob takes the place of this one, which is discarded. `reason` is the plugins'
+/// `vanillite_abi::transform_reason`; `None` when a plugin cancelled the conversion.
 pub fn convert_to(
     t: &mut Tick<'_, '_>,
     kind: Kind,
     keep_equipment: bool,
     preserve_loot: bool,
+    reason: u32,
 ) -> Option<EntityId> {
     let seed = t.mob().random.next_long_seed();
     let mut new = MobData::new(kind, seed);
@@ -243,7 +245,17 @@ pub fn convert_to(
         )
     };
     let uuid = crate::mob::new_uuid();
+    if !t.ents.transforming(t.id, kind.type_id(), uuid, reason) {
+        return None;
+    }
     let id = crate::mob::spawn(t.ents, t.level.network_ids(), uuid, pos, rot, new);
+    let old_uuid = t.core().uuid();
+    if !t
+        .ents
+        .spawned(id, vanillite_abi::spawn_reason::CONVERSION, old_uuid)
+    {
+        return None;
+    }
     if let Some(mut e) = t.ents.store.get_mut(id) {
         e.set_velocity(velocity);
         e.set_flags(vanillite_world::entity::EntityFlags::ON_GROUND, on_ground);
@@ -351,6 +363,9 @@ pub fn gift_loot(t: &mut Tick<'_, '_>, table: &str) -> Vec<ItemStack> {
 /// `Mob.getTargetFromBrain`: keeps `MobData.target` in sync with `ATTACK_TARGET`.
 pub fn sync_target(t: &mut Tick<'_, '_>) {
     let target = brain::brain_ref(t).entity(MemoryType::AttackTarget);
+    if !crate::mob::brain::target_changed(t, target) {
+        return;
+    }
     t.mob().target = target;
 }
 
@@ -364,6 +379,15 @@ pub fn set_aggressive(t: &mut Tick<'_, '_>, on: bool) {
 
 impl FamilyHooks for Hooks {
     type Goal = Goal;
+
+    fn ambient_sound_interval(kind: Kind) -> i32 {
+        // `Monster`s (piglins, the zoglin) 80; the others are `Animal`s or fish (120), also
+        // the hostile hoglin.
+        match kind {
+            Kind::Piglin | Kind::PiglinBrute | Kind::Zoglin => 80,
+            _ => 120,
+        }
+    }
 
     fn ageable(kind: Kind) -> bool {
         matches!(
@@ -636,6 +660,12 @@ impl FamilyHooks for Hooks {
         }
     }
 
+    fn after_tick(t: &mut Tick<'_, '_>) {
+        if t.mob_ref().kind == Kind::Armadillo {
+            armadillo::after_tick(t);
+        }
+    }
+
     fn register_goals(m: &mut MobData) {
         // A tadpole is an `AbstractFish`: the fish goals besides its brain.
         if m.kind == Kind::Tadpole {
@@ -715,6 +745,18 @@ impl FamilyHooks for Hooks {
         }
     }
 
+    fn actually_hurt(h: &mut Hurt<'_, '_>) {
+        if h.ents
+            .mob(h.target)
+            .is_some_and(|m| m.kind == Kind::Armadillo)
+        {
+            let source = h.source;
+            let mut t = hurt_tick(h);
+            let living = living_cause(&t, &source).is_some();
+            armadillo::actually_hurt(&mut t, living, source.kind);
+        }
+    }
+
     fn after_hurt(h: &mut Hurt<'_, '_>, amount: f32) {
         let Some(kind) = h.ents.mob(h.target).map(|m| m.kind) else {
             return;
@@ -725,9 +767,6 @@ impl FamilyHooks for Hooks {
             if kind == Kind::Axolotl {
                 axolotl::after_hurt(&mut t, None, amount);
             }
-            if kind == Kind::Armadillo {
-                armadillo::after_hurt(&mut t);
-            }
             return;
         };
         match kind {
@@ -736,7 +775,6 @@ impl FamilyHooks for Hooks {
             Kind::Hoglin => hoglin::was_hurt_by(&mut t, cause),
             Kind::Zoglin => hoglin::zoglin_was_hurt_by(&mut t, cause),
             Kind::Axolotl => axolotl::after_hurt(&mut t, Some(cause), amount),
-            Kind::Armadillo => armadillo::after_hurt(&mut t),
             Kind::Sniffer | Kind::Goat | Kind::Frog => {}
             _ => {}
         }

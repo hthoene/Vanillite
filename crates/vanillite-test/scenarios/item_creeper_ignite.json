@@ -1,0 +1,18 @@
+{
+  "description": "Creeper igniters on creepers (Creeper.mobInteract): flint and steel (durability) and a fire charge (used up) ignite a creeper each, the igniter sound, the fuse and both explosions.",
+  "tier": "fast",
+  "player_state": true,
+  "rules": {"spawn_monsters": "false"},
+  "region": [[0, -62, 0], [23, -55, 23]],
+  "ticks": 40,
+  "entities": [
+    {"name": "a", "type": "minecraft:player", "pos": [4.5, -60.0, 20.5]},
+    {"name": "b", "type": "minecraft:player", "pos": [18.5, -60.0, 20.5]},
+    {"name": "c1", "type": "minecraft:creeper", "pos": [4.5, -60.0, 4.5], "seed": 3, "finalize": false},
+    {"name": "c2", "type": "minecraft:creeper", "pos": [18.5, -60.0, 4.5], "seed": 5, "finalize": false}
+  ],
+  "actions": [
+    {"tick": 2, "op": "interact", "entity": "a", "target": "c1", "item": "minecraft:flint_and_steel"},
+    {"tick": 3, "op": "interact", "entity": "b", "target": "c2", "item": "minecraft:fire_charge", "count": 2}
+  ]
+}

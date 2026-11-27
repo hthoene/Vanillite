@@ -1,0 +1,69 @@
+{
+  "description": "Lightning converts a pig (easy difficulty): a strike next to a pig without AI turns it into a zombified piglin with a golden sword or spear drawn from the pig's random (Pig.thunderHit), which a command reads back as a gold block.",
+  "tier": "fast",
+  "world": {
+    "seed": 8904
+  },
+  "rules": {
+    "fire_spread_radius_around_player": "-1"
+  },
+  "weather": "thunder",
+  "time": 6000,
+  "difficulty": "easy",
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      31,
+      -55,
+      15
+    ]
+  ],
+  "ticks": 40,
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        28.5,
+        -60.0,
+        13.5
+      ]
+    },
+    {
+      "name": "pig",
+      "type": "minecraft:pig",
+      "pos": [
+        6.5,
+        -60.0,
+        6.5
+      ],
+      "seed": 11,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge entity @e[type=minecraft:pig,limit=1] {NoAI:1b}"
+    },
+    {
+      "tick": 2,
+      "op": "lightning",
+      "pos": [
+        7,
+        0,
+        7
+      ]
+    },
+    {
+      "tick": 30,
+      "op": "command",
+      "command": "execute if entity @e[type=minecraft:zombified_piglin] run setblock 2 -60 1 minecraft:gold_block"
+    }
+  ]
+}

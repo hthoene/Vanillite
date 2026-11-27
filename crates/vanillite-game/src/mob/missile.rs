@@ -32,6 +32,16 @@ pub enum MissileKind {
     Snowball,
     /// `ThrownEnderpearl` (players).
     EnderPearl,
+    /// `ThrownEgg`.
+    Egg,
+    /// `ThrownExperienceBottle`.
+    ExperienceBottle,
+    /// `EyeOfEnder` (no `Projectile`, but it flies like one).
+    EyeOfEnder,
+    /// `FireworkRocketEntity`.
+    FireworkRocket,
+    /// `FishingHook`.
+    FishingBobber,
     /// `ThrownTrident` (drowned).
     Trident,
     WindCharge,
@@ -39,7 +49,7 @@ pub enum MissileKind {
 }
 
 impl MissileKind {
-    pub const ALL: [MissileKind; 12] = [
+    pub const ALL: [MissileKind; 17] = [
         MissileKind::SmallFireball,
         MissileKind::Fireball,
         MissileKind::ShulkerBullet,
@@ -49,6 +59,11 @@ impl MissileKind {
         MissileKind::LlamaSpit,
         MissileKind::Snowball,
         MissileKind::EnderPearl,
+        MissileKind::Egg,
+        MissileKind::ExperienceBottle,
+        MissileKind::EyeOfEnder,
+        MissileKind::FireworkRocket,
+        MissileKind::FishingBobber,
         MissileKind::Trident,
         MissileKind::WindCharge,
         MissileKind::BreezeWindCharge,
@@ -66,6 +81,11 @@ impl MissileKind {
             MissileKind::LlamaSpit => ids::LLAMA_SPIT,
             MissileKind::Snowball => ids::SNOWBALL,
             MissileKind::EnderPearl => ids::ENDER_PEARL,
+            MissileKind::Egg => ids::EGG,
+            MissileKind::ExperienceBottle => ids::EXPERIENCE_BOTTLE,
+            MissileKind::EyeOfEnder => ids::EYE_OF_ENDER,
+            MissileKind::FireworkRocket => ids::FIREWORK_ROCKET,
+            MissileKind::FishingBobber => ids::FISHING_BOBBER,
             MissileKind::Trident => ids::TRIDENT,
             MissileKind::WindCharge => ids::WIND_CHARGE,
             MissileKind::BreezeWindCharge => ids::BREEZE_WIND_CHARGE,
@@ -78,6 +98,8 @@ impl MissileKind {
             self,
             MissileKind::Snowball
                 | MissileKind::EnderPearl
+                | MissileKind::Egg
+                | MissileKind::ExperienceBottle
                 | MissileKind::SplashPotion
                 | MissileKind::LingeringPotion
         )
@@ -98,7 +120,13 @@ impl MissileKind {
             | MissileKind::SplashPotion
             | MissileKind::LingeringPotion => Family::Illager,
             MissileKind::LlamaSpit => Family::Companion,
-            MissileKind::Snowball | MissileKind::EnderPearl => Family::Wildlife,
+            MissileKind::Snowball
+            | MissileKind::EnderPearl
+            | MissileKind::Egg
+            | MissileKind::ExperienceBottle
+            | MissileKind::EyeOfEnder
+            | MissileKind::FireworkRocket
+            | MissileKind::FishingBobber => Family::Wildlife,
             MissileKind::Trident => Family::Undead,
             MissileKind::WindCharge | MissileKind::BreezeWindCharge => Family::Mount,
         }
@@ -148,6 +176,10 @@ pub struct MissileData {
     /// kinds that draw from it (ender pearls, shulker bullets); the shooter seeds it with
     /// [`new_projectile_random`].
     pub random_state: i64,
+    /// `AbstractArrow.pickup` of tridents: 0 disallowed, 1 allowed, 2 creative only.
+    pub pickup: u8,
+    /// The state of a fishing bobber.
+    pub bobber: Option<Box<crate::fishing::Bobber>>,
 }
 
 impl MissileData {
@@ -170,6 +202,8 @@ impl MissileData {
             in_ground: false,
             removed: false,
             random_state: 0,
+            pickup: 0,
+            bobber: None,
         }
     }
 }
@@ -242,7 +276,10 @@ fn spawn_owned(
     if data.owner_uuid.is_none() {
         data.owner_uuid = t.ents.store.get(t.id).map(|e| e.uuid());
     }
-    spawn(
+    // Evoker fangs are no projectile: only their spawn.
+    let fangs = data.kind == MissileKind::EvokerFangs;
+    let owner = data.owner;
+    let id = spawn(
         t.ents,
         t.level.network_ids(),
         uuid,
@@ -250,7 +287,92 @@ fn spawn_owned(
         velocity,
         rot,
         data,
+    );
+    if fangs {
+        let parent = owner
+            .and_then(|o| t.ents.store.get(o))
+            .map_or(0, |e| e.uuid());
+        t.ents
+            .spawned(id, vanillite_abi::spawn_reason::DEFAULT, parent);
+    } else {
+        t.ents.launched(id, owner);
+    }
+    id
+}
+
+/// `Projectile.spawnProjectileFromRotation` from `source`: the projectile takes its seed
+/// (its constructor) and a UUID, `shootFromRotation(xRot, yRot, yOffset, pow, uncertainty)`
+/// draws the spread from its random and adds the source's known movement (its vertical part
+/// only off the ground), then it joins the world at `start`. Its random's state ends in
+/// `data.random_state`; the owner is the source.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_from_rotation(
+    ents: &mut Entities,
+    network_ids: &NetworkIds,
+    source: EntityId,
+    start: Vec3,
+    y_offset: f32,
+    pow: f32,
+    uncertainty: f32,
+    mut data: MissileData,
+) -> Option<EntityId> {
+    let e = ents.store.get(source)?;
+    let (rot, on_ground, uuid) = (
+        e.rot(),
+        e.flags()
+            .contains(vanillite_world::entity::EntityFlags::ON_GROUND),
+        e.uuid(),
+    );
+    let known = crate::spear::known_movement(ents, source);
+    let mut own = new_projectile_random();
+    let projectile_uuid = crate::mob::new_uuid();
+    let dir = direction_from_rotation(rot.x_rot, rot.y_rot, y_offset);
+    let (velocity, shot_rot) = crate::mob::projectile::shoot(&mut own, dir, pow, uncertainty);
+    let velocity = velocity + Vec3::new(known.x, if on_ground { 0.0 } else { known.y }, known.z);
+    data.owner = Some(source);
+    data.owner_uuid = Some(uuid);
+    data.random_state = own.state();
+    let id = spawn(
+        ents,
+        network_ids,
+        projectile_uuid,
+        start,
+        velocity,
+        Rotation {
+            y_head_rot: 0.0,
+            ..shot_rot
+        },
+        data,
+    );
+    if let Some(mut e) = ents.store.get_mut(id) {
+        e.set_flags(vanillite_world::entity::EntityFlags::HAS_IMPULSE, true);
+    }
+    Some(id)
+}
+
+/// The direction of `shootFromRotation(xRot, yRot, yOffset)`.
+pub fn direction_from_rotation(x_rot: f32, y_rot: f32, y_offset: f32) -> Vec3 {
+    let rad = crate::mob::DEG_TO_RAD;
+    let sin = |a: f32| vanillite_base::math::sin(f64::from(a));
+    let cos = |a: f32| vanillite_base::math::cos(f64::from(a));
+    Vec3::new(
+        f64::from(-sin(y_rot * rad) * cos(x_rot * rad)),
+        f64::from(-sin((x_rot + y_offset) * rad)),
+        f64::from(cos(y_rot * rad) * cos(x_rot * rad)),
     )
+}
+
+/// The eye height of an entity (`getEyeY() - getY()`): players' from their pose, mobs' from
+/// their kind.
+pub fn eye_height(ents: &Entities, id: EntityId) -> f64 {
+    let Some(e) = ents.store.get(id) else {
+        return 0.0;
+    };
+    if ents.player(id).is_some() {
+        return crate::survival::player::eye_height(e.dims().height);
+    }
+    ents.mob(id)
+        .map_or_else(|| f64::from(e.dims().height * 0.85), crate::mob::eye_height)
 }
 
 /// What one projectile tick works on.
@@ -325,8 +447,83 @@ pub fn tick(
     }
 }
 
-/// `Projectile.onHitBlock`: `onProjectileHit` of the block `projectile` hit at `at` (target
-/// blocks), applied with the world actions after the tick.
+/// What a projectile is about to hit, for [`hit_event`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum HitWhat {
+    /// An entity.
+    Entity(EntityId),
+    /// A block, at a point on it.
+    Block(vanillite_base::BlockPos, Vec3),
+}
+
+/// The plugins' hit event (`vanillite_abi::event::PROJECTILE_HIT`, Bukkit's
+/// `preHitTargetOrDeflectSelf`) of `projectile`, shot by `shooter`: whether the hit happens
+/// (`false`: a plugin cancelled it and the projectile ignores it). Without listeners one
+/// branch.
+pub fn hit_event(
+    level: &Level,
+    ents: &Entities,
+    projectile: EntityId,
+    shooter: Option<EntityId>,
+    hit: HitWhat,
+) -> bool {
+    let Some(hooks) = ents.hooks_for(vanillite_abi::event::PROJECTILE_HIT) else {
+        return true;
+    };
+    let Some(e) = ents.store.get(projectile) else {
+        return true;
+    };
+    let uuid_of = |id: EntityId| ents.store.get(id).map_or(0, |e| e.uuid());
+    let mut ev = crate::hooks::Event {
+        entity: e.uuid(),
+        entity_type: e.kind().name().to_owned(),
+        source: shooter.map_or(0, uuid_of),
+        to: crate::hooks::Place::at(e.pos()),
+        ..crate::hooks::Event::new(vanillite_abi::event::PROJECTILE_HIT)
+    };
+    match hit {
+        HitWhat::Entity(target) => {
+            ev.other = uuid_of(target);
+            ev.other_type = ents
+                .store
+                .get(target)
+                .map_or_else(String::new, |t| t.kind().name().to_owned());
+        }
+        HitWhat::Block(pos, at) => {
+            ev.pos = pos;
+            ev.state = Some(level.block(pos));
+            ev.cause = face_at(pos, at);
+            ev.to = crate::hooks::Place::at(at);
+        }
+    }
+    hooks.event(&mut ev);
+    !ev.cancelled
+}
+
+/// The face of the block at `pos` nearest to the point `at` on it (`Direction` 3D data value:
+/// down, up, north, south, west, east).
+fn face_at(pos: vanillite_base::BlockPos, at: Vec3) -> u32 {
+    let (x, y, z) = (
+        at.x - f64::from(pos.x),
+        at.y - f64::from(pos.y),
+        at.z - f64::from(pos.z),
+    );
+    let faces = [
+        (y, 0),
+        (1.0 - y, 1),
+        (z, 2),
+        (1.0 - z, 3),
+        (x, 4),
+        (1.0 - x, 5),
+    ];
+    faces
+        .into_iter()
+        .min_by(|a, b| a.0.abs().total_cmp(&b.0.abs()))
+        .map_or(1, |f| f.1)
+}
+
+/// `Projectile.onHitBlock`: `onProjectileHit` of the block `projectile` hit at `at`, applied
+/// with the world actions after the tick.
 pub fn hit_block(
     level: &Level,
     cx: &mut MobContext,
@@ -334,9 +531,27 @@ pub fn hit_block(
     block: vanillite_base::BlockPos,
     at: Vec3,
 ) {
-    if level.block(block).block() == vanillite_data::block::ids::TARGET {
+    hit_block_at_speed(level, cx, projectile, block, at, 0.0);
+}
+
+/// [`hit_block`] of a projectile that hit with `speed` (tridents break pointed dripstone).
+pub fn hit_block_at_speed(
+    level: &Level,
+    cx: &mut MobContext,
+    projectile: EntityId,
+    block: vanillite_base::BlockPos,
+    at: Vec3,
+    speed: f64,
+) {
+    let state = level.block(block);
+    if level
+        .behaviours()
+        .get(state.block())
+        .projectile_hit
+        .is_some()
+    {
         cx.actions.push(super::WorldAction::ProjectileHitBlock(
-            block, at, projectile,
+            block, at, projectile, speed,
         ));
     }
 }

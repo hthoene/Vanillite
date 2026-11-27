@@ -1,9 +1,17 @@
 //! Builds the example plugin (`examples/hello-plugin`) as a real `cdylib` and runs it through
 //! the C ABI: validation and `load`, its command in a Brigadier tree with suggestions, the join
-//! event, the `chunk-generator` slot and a development reload that keeps its state.
+//! event with persistent data and the action bar, login, interaction and death events, a
+//! periodic background task, the `chunk-generator` slot and a development reload that keeps its
+//! state. ABI 1.5: the join message, scoreboard, boss bar, sound, particles and MOTD, player
+//! properties, effects, items and entity spawning from tasks, `Vec3` arguments, plugin
+//! messages, advancements, plugin events with `ignore_cancelled`, services, permission
+//! defaults and saving the config. ABI 1.6: a plugin menu with a click event and item
+//! persistent data, entity names, attribute modifiers, a plugin goal, the retired callback of
+//! an entity task, a ray trace and the experience of drops.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use vanillite_base::ChunkPos;
@@ -12,9 +20,11 @@ use vanillite_chunk::slots::{
 };
 use vanillite_command::Dispatcher;
 use vanillite_data::block::BlockId;
+use vanillite_nbt::{Compound, Tag};
 use vanillite_plugin_host::{
-    Arg, ArgValue, BlockBox, PluginHost, Sender, ServerAccess, SetMode, Settings, Text,
-    WorldAccess, loader,
+    Arg, ArgValue, BlockBox, BossBarOp, GameEvent, InteractTarget, Location, Menu, NewText,
+    Particles, PluginGoal, PluginHost, ScoreReply, ScoreboardOp, Sender, ServerAccess, SetMode,
+    Settings, Sound, Text, WorldAccess, loader,
 };
 
 const PLAYER: u128 = 0x069a_79f4_44e9_4726_a5be_fca9_0e38_aaf5;
@@ -22,11 +32,91 @@ const PLAYER: u128 = 0x069a_79f4_44e9_4726_a5be_fca9_0e38_aaf5;
 #[derive(Default)]
 struct FakeServer {
     messages: Mutex<Vec<(u128, String)>>,
+    action_bars: Mutex<Vec<String>>,
+    online_calls: AtomicUsize,
+    /// Everything else the plugin did, as debug text.
+    calls: Mutex<Vec<String>>,
+}
+
+impl FakeServer {
+    fn record(&self, call: String) {
+        self.calls.lock().unwrap().push(call);
+    }
+
+    fn called(&self, prefix: &str) -> Vec<String> {
+        let calls = self.calls.lock().unwrap();
+        calls
+            .iter()
+            .filter(|c| c.starts_with(prefix))
+            .cloned()
+            .collect()
+    }
 }
 
 impl ServerAccess for FakeServer {
+    fn item_set_component(
+        &self,
+        item: &Compound,
+        component: &str,
+        value: Option<&Tag>,
+    ) -> Result<Compound, i32> {
+        let mut item = item.clone();
+        let mut components = match item.remove("components") {
+            Some(Tag::Compound(c)) => c,
+            _ => Compound::new(),
+        };
+        match value {
+            Some(v) => {
+                components.insert(component.to_owned(), v.clone());
+            }
+            None => {
+                components.remove(component);
+            }
+        }
+        item.insert("components".to_owned(), Tag::Compound(components));
+        Ok(item)
+    }
+    fn play_sound(&self, _: u128, sound: &Sound<'_>) -> bool {
+        self.record(format!("sound {}", sound.sound));
+        true
+    }
+    fn spawn_particle(&self, _: u128, particles: &Particles<'_>) -> Result<(), i32> {
+        self.record(format!(
+            "particle {} {}",
+            particles.particle, particles.count
+        ));
+        Ok(())
+    }
+    fn send_plugin_message(&self, _: u128, channel: &str, data: &[u8]) -> bool {
+        self.record(format!(
+            "message {channel} {}",
+            String::from_utf8_lossy(data)
+        ));
+        true
+    }
+    fn scoreboard(&self, op: ScoreboardOp<'_>) -> Result<ScoreReply, i32> {
+        self.record(format!("scoreboard {op:?}"));
+        match op {
+            ScoreboardOp::GetScore { .. } => Err(vanillite_abi::status::NOT_FOUND),
+            _ => Ok(ScoreReply::Done),
+        }
+    }
+    fn boss_bar(&self, op: BossBarOp<'_>) -> Result<(), i32> {
+        self.record(format!("bossbar {op:?}"));
+        Ok(())
+    }
+    fn set_motd(&self, motd: Text<'_>) -> bool {
+        self.record(format!("motd {motd:?}"));
+        true
+    }
     fn online_players(&self) -> Vec<u128> {
+        self.online_calls.fetch_add(1, Ordering::Relaxed);
         vec![PLAYER]
+    }
+    fn send_action_bar(&self, _: u128, text: Text<'_>) -> bool {
+        let (Text::Plain(s) | Text::Json(s)) = text;
+        self.action_bars.lock().unwrap().push(s.to_owned());
+        true
     }
     fn player_name(&self, player: u128) -> Option<String> {
         (player == PLAYER).then(|| "Alex".to_owned())
@@ -76,20 +166,126 @@ impl ServerAccess for FakeServer {
     }
 }
 
-struct FakeWorld;
+/// A world holding the player's persistent data, recording what plugins change.
+#[derive(Default)]
+struct FakeWorld {
+    data: Compound,
+    changes: Vec<String>,
+    goals: Vec<PluginGoal>,
+    menu_items: String,
+}
 
 impl WorldAccess for FakeWorld {
+    fn set_entity_name(&mut self, entity: u128, name: Option<Text<'_>>) -> Result<(), i32> {
+        self.changes.push(format!(
+            "name {entity} {:?}",
+            name.map(|n| n.as_str().to_owned())
+        ));
+        Ok(())
+    }
+    fn attribute_modifier(
+        &mut self,
+        entity: u128,
+        attribute: &str,
+        id: &str,
+        change: Option<(f64, u32)>,
+    ) -> Result<(), i32> {
+        self.changes
+            .push(format!("modifier {entity} {attribute} {id} {change:?}"));
+        Ok(())
+    }
+    fn add_goal(&mut self, entity: u128, goal: PluginGoal) -> Result<u64, i32> {
+        self.changes.push(format!(
+            "goal {entity} priority={} flags={}",
+            goal.priority(),
+            goal.flags()
+        ));
+        self.goals.push(goal);
+        Ok(self.goals.len() as u64)
+    }
+    fn open_menu(&mut self, player: u128, menu: &Menu<'_>) -> Result<u32, i32> {
+        assert_eq!(player, PLAYER);
+        self.changes.push(format!("menu {}", menu.menu_type));
+        self.menu_items = menu.items.to_owned();
+        Ok(3)
+    }
+    fn close_menu(&mut self, _: u128) -> Result<(), i32> {
+        self.changes.push("close menu".to_owned());
+        Ok(())
+    }
+    fn raytrace(
+        &self,
+        from: [f64; 3],
+        to: [f64; 3],
+        flags: u32,
+        ignore: Option<u128>,
+    ) -> Result<vanillite_abi::RayHit, i32> {
+        assert_eq!(ignore, Some(PLAYER));
+        assert!(flags & vanillite_abi::raytrace_flag::BLOCKS != 0);
+        assert!((to[2] - from[2] - 50.0).abs() < 1e-9, "{from:?} {to:?}");
+        Ok(vanillite_abi::RayHit {
+            size: 0,
+            kind: vanillite_abi::ray_hit::BLOCK,
+            pos: vanillite_abi::Vec3 {
+                x: 1.0,
+                y: 65.0,
+                z: 9.0,
+            },
+            block: vanillite_abi::BlockPos { x: 1, y: 65, z: 9 },
+            face: 2,
+            entity: vanillite_abi::Uuid::NIL,
+        })
+    }
     fn id(&self) -> u32 {
         0
     }
-    fn block(&self, _: [i32; 3]) -> Option<String> {
-        None
+    fn block(&self, pos: [i32; 3]) -> Option<String> {
+        (pos == [1, 65, 9]).then(|| "minecraft:oak_log[axis=y]".to_owned())
     }
     fn set_block(&mut self, _: [i32; 3], _: &str) -> Result<(), i32> {
         Ok(())
     }
-    fn player_position(&self, _: u128) -> Option<[f64; 3]> {
-        None
+    fn player_position(&self, player: u128) -> Option<[f64; 3]> {
+        (player == PLAYER).then_some([1.0, 64.0, 2.0])
+    }
+    fn entity_location(&self, entity: u128) -> Result<Location, i32> {
+        if entity != PLAYER {
+            return Err(vanillite_abi::status::NOT_FOUND);
+        }
+        Ok(Location {
+            world: 0,
+            pos: [1.0, 64.0, 2.0],
+            yaw: 0.0,
+            pitch: 0.0,
+        })
+    }
+    fn player_set(&mut self, _: u128, prop: u32, value: f64) -> Result<(), i32> {
+        self.changes.push(format!("prop {prop} {value}"));
+        Ok(())
+    }
+    fn add_effect(
+        &mut self,
+        _: u128,
+        effect: &str,
+        duration: i32,
+        _: i32,
+        _: u32,
+    ) -> Result<(), i32> {
+        self.changes.push(format!("effect {effect} {duration}"));
+        Ok(())
+    }
+    fn give_item(&mut self, _: u128, item: &Compound) -> Result<(), i32> {
+        self.changes.push(format!(
+            "give {}",
+            vanillite_nbt::snbt::to_string(&Tag::Compound(item.clone()))
+        ));
+        Ok(())
+    }
+    fn spawn_entity(&mut self, kind: &str, pos: [f64; 3], nbt: &Compound) -> Result<u128, i32> {
+        let glowing = nbt.get("Glowing").is_some();
+        self.changes
+            .push(format!("spawn {kind} {pos:?} glowing={glowing}"));
+        Ok(42)
     }
     fn has_entity(&self, entity: u128) -> bool {
         entity == PLAYER
@@ -102,6 +298,18 @@ impl WorldAccess for FakeWorld {
     }
     fn set_blocks(&mut self, _: BlockBox, _: &[u32], _: SetMode) -> Result<usize, i32> {
         Ok(0)
+    }
+    fn entity_data(&self, entity: u128) -> Result<Option<&Compound>, i32> {
+        if entity != PLAYER {
+            return Err(vanillite_abi::status::NOT_FOUND);
+        }
+        Ok((!self.data.is_empty()).then_some(&self.data))
+    }
+    fn entity_data_mut(&mut self, entity: u128) -> Result<&mut Compound, i32> {
+        if entity != PLAYER {
+            return Err(vanillite_abi::status::NOT_FOUND);
+        }
+        Ok(&mut self.data)
     }
 }
 
@@ -181,7 +389,8 @@ fn example_plugin_runs_through_the_abi() {
     std::fs::copy(&library, package.join(library.file_name().unwrap())).unwrap();
     let config = std::fs::read_to_string(root().join("examples/hello-plugin/config.toml"))
         .unwrap()
-        .replace("enabled = false", "enabled = true");
+        .replace("enabled = false", "enabled = true")
+        .replace("refuse = \"\"", "refuse = \"Herobrine\"");
     std::fs::write(package.join("config.toml"), config).unwrap();
 
     let host = PluginHost::load(
@@ -207,8 +416,47 @@ fn example_plugin_runs_through_the_abi() {
     let (name_command, provider) = (name_node.command.unwrap(), name_node.suggests.unwrap());
 
     host.enable_all();
-    host.player_join(&mut FakeWorld, PLAYER, "Alex");
+    // Enabling creates the objective (shown in the player list), the boss bar and the MOTD.
+    assert_eq!(
+        server.called("scoreboard"),
+        [
+            "scoreboard GetScore { objective: \"hello_joins\", holder: \"#check\" }",
+            "scoreboard AddObjective { name: \"hello_joins\", criteria: \"dummy\", display: Json(\"{\\\"text\\\":\\\"Joins\\\",\\\"color\\\":\\\"gold\\\"}\") }",
+            "scoreboard Display { slot: 0, objective: Some(\"hello_joins\") }",
+        ]
+    );
+    assert_eq!(
+        server.called("bossbar").len(),
+        2,
+        "{:?}",
+        server.called("bossbar")
+    );
+    assert!(server.called("bossbar")[0].contains("hello:welcome"));
+    assert_eq!(
+        server.called("motd"),
+        ["motd Plain(\"A Vanillite server with Hello\")"]
+    );
+    let mut overworld = FakeWorld::default();
+    let joined = host.player_join(&mut overworld, PLAYER, "Alex", "\"Alex joined the game\"");
+    assert!(
+        matches!(&joined, Some(NewText::Json(m)) if m.contains("Alex joined the fun")),
+        "{joined:?}"
+    );
+    assert!(
+        server
+            .called("scoreboard SetScore")
+            .first()
+            .is_some_and(|c| c.contains("value: 1")),
+        "{:?}",
+        server.called("scoreboard")
+    );
+    assert!(server.called("bossbar Player").len() == 1);
+    assert_eq!(
+        server.called("sound"),
+        ["sound minecraft:entity.player.levelup"]
+    );
     let sender = Sender {
+        kind: vanillite_abi::sender::CONSOLE,
         player: Some(PLAYER),
         world: Some(0),
         pos: [0.0; 3],
@@ -240,6 +488,308 @@ fn example_plugin_runs_through_the_abi() {
     assert!(messages[1].contains("Hello, Alex!"), "{messages:?}");
     assert!(messages[2].contains("Hello, Steve!"), "{messages:?}");
 
+    // Persistent data: the join counter under the plugin's namespace, and the action bar.
+    host.player_join(&mut overworld, PLAYER, "Alex", "");
+    assert_eq!(overworld.data.get("hello:joins"), Some(&Tag::Int(2)));
+    assert_eq!(
+        *server.action_bars.lock().unwrap(),
+        ["Visit #1", "Visit #2"]
+    );
+
+    // Login: the configured name is refused with its message, others pass untouched.
+    let refused = host
+        .player_login(
+            7,
+            "Herobrine",
+            "127.0.0.1",
+            vanillite_abi::login_reason::ALLOWED,
+            "",
+        )
+        .expect("the example listens to logins");
+    assert!(refused.refused);
+    assert!(
+        matches!(&refused.message, Some(NewText::Json(m)) if m.contains("This name is reserved.")),
+        "{refused:?}"
+    );
+    let full = host
+        .player_login(
+            8,
+            "Steve",
+            "127.0.0.1",
+            vanillite_abi::login_reason::FULL,
+            "\"full\"",
+        )
+        .unwrap();
+    assert!(full.refused && full.message.is_none());
+
+    // Protection: fire starting is cancelled, other items are not; deaths keep the inventory.
+    let block = InteractTarget {
+        pos: [0, 64, 0],
+        face: 1,
+        state: "minecraft:stone",
+    };
+    assert!(!host.player_interact(
+        0,
+        PLAYER,
+        vanillite_abi::interact::USE_ON_BLOCK,
+        0,
+        "minecraft:flint_and_steel",
+        Some(block)
+    ));
+    assert!(host.player_interact(
+        0,
+        PLAYER,
+        vanillite_abi::interact::USE_ITEM,
+        0,
+        "minecraft:stick",
+        None
+    ));
+    let death = host
+        .player_death(0, PLAYER, "minecraft:fall", None, "\"Alex fell\"", false)
+        .expect("the example listens to deaths");
+    assert!(death.keep_inventory);
+    assert!(
+        matches!(&death.message, Some(NewText::Json(m)) if m.contains("Alex died and kept everything")),
+        "{death:?}"
+    );
+
+    // `/hello treat` and `/hello pig <pos>` change the world from tasks on its owner.
+    let treat = dispatcher.child(hello, "treat").unwrap();
+    let treat = dispatcher.node(treat).unwrap().command.unwrap();
+    assert_eq!(
+        host.execute_command(treat, &sender, "hello treat", &[], None),
+        Some(1)
+    );
+    let pig = dispatcher.child(hello, "pig").unwrap();
+    let pos = dispatcher.child(pig, "pos").unwrap();
+    let pig = dispatcher.node(pos).unwrap().command.unwrap();
+    let at = [Arg {
+        name: "pos".into(),
+        value: ArgValue::Vec3([3.5, 65.0, 4.5]),
+    }];
+    assert_eq!(
+        host.execute_command(pig, &sender, "hello pig 3.5 65 4.5", &at, None),
+        Some(1)
+    );
+    host.run_world_tasks(&mut overworld, 0);
+    let food = vanillite_abi::player_prop::FOOD;
+    let saturation = vanillite_abi::player_prop::SATURATION;
+    assert_eq!(
+        overworld.changes,
+        [
+            format!("prop {food} 20"),
+            format!("prop {saturation} 5"),
+            "effect minecraft:speed 200".to_owned(),
+            "give {id:\"minecraft:cookie\",count:1}".to_owned(),
+            "spawn minecraft:pig [3.5, 65.0, 4.5] glowing=true".to_owned(),
+            "name 42 Some(\"{\\\"text\\\":\\\"Homebody\\\",\\\"color\\\":\\\"light_purple\\\"}\")"
+                .to_owned(),
+            "modifier 42 minecraft:movement_speed hello:homebody Some((0.5, 1))".to_owned(),
+            format!(
+                "goal 42 priority=1 flags={}",
+                vanillite_abi::goal_flag::MOVE
+            ),
+        ]
+    );
+    // The pig's goal walks it home once it is more than four blocks away.
+    let goal = &overworld.goals[0];
+    let mut mob = vanillite_abi::GoalMob {
+        size: vanillite_abi::size_of::<vanillite_abi::GoalMob>(),
+        mob: vanillite_abi::Uuid::from_u128(42),
+        world: 0,
+        pos: vanillite_abi::Vec3 {
+            x: 4.5,
+            y: 65.0,
+            z: 5.5,
+        },
+        yaw: 0.0,
+        pitch: 0.0,
+        health: 10.0,
+        on_ground: 1,
+        navigating: 0,
+        target: vanillite_abi::Uuid::NIL,
+        target_pos: vanillite_abi::Vec3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        game_time: 0,
+    };
+    assert!(!goal.can_use(&mob));
+    mob.pos.x = 20.0;
+    assert!(goal.can_use(&mob));
+    goal.start(&mob);
+    let action = goal.tick(&mob);
+    assert_eq!(
+        action.actions,
+        vanillite_abi::goal_action::MOVE | vanillite_abi::goal_action::LOOK
+    );
+    assert_eq!(
+        (action.move_to.x, action.move_to.z, action.speed),
+        (3.5, 4.5, 1.0)
+    );
+    // The pig is not in this fake world: its task's retired callback runs instead.
+    host.run_world_tasks(&mut overworld, 1);
+    assert!(
+        server
+            .messages
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(_, m)| m.contains("The homebody pig is gone"))
+    );
+    overworld.goals.clear();
+
+    // `/hello menu` opens a plugin menu whose button is marked with item persistent data;
+    // a click on it is cancelled and gives a cookie.
+    let menu = dispatcher.child(hello, "menu").unwrap();
+    let menu = dispatcher.node(menu).unwrap().command.unwrap();
+    assert_eq!(
+        host.execute_command(menu, &sender, "hello menu", &[], None),
+        Some(1)
+    );
+    overworld.changes.clear();
+    host.run_world_tasks(&mut overworld, 2);
+    assert_eq!(overworld.changes, ["menu minecraft:generic_9x1"]);
+    let items = overworld.menu_items.clone();
+    assert!(items.starts_with("[{Slot:4b,"), "{items}");
+    assert!(
+        items.contains("PublicBukkitValues:{\"hello:button\":1b}"),
+        "{items}"
+    );
+    let button = items
+        .strip_prefix("[{Slot:4b,")
+        .and_then(|i| i.strip_suffix(']'))
+        .map(|i| format!("{{{i}"))
+        .unwrap();
+    let mut click = GameEvent {
+        kind: vanillite_abi::event::INVENTORY_CLICK,
+        entity: PLAYER,
+        key: "minecraft:generic_9x1",
+        item: &button,
+        value: 4,
+        flags: vanillite_abi::menu_flag::PLUGIN,
+        ..GameEvent::default()
+    };
+    assert!(host.game_event(Some(&mut overworld), &mut click));
+    assert!(click.cancelled);
+    // Clicks in other menus are left alone.
+    let mut chest = GameEvent {
+        kind: vanillite_abi::event::INVENTORY_CLICK,
+        entity: PLAYER,
+        item: &button,
+        ..GameEvent::default()
+    };
+    host.game_event(None, &mut chest);
+    assert!(!chest.cancelled);
+    host.run_world_tasks(&mut overworld, 3);
+    assert_eq!(
+        overworld.changes,
+        [
+            "menu minecraft:generic_9x1",
+            "close menu",
+            "give {id:\"minecraft:cookie\",count:1}"
+        ]
+    );
+
+    // Mobs drop twice the experience; natural phantoms do not spawn.
+    let mut drops = GameEvent {
+        kind: vanillite_abi::event::ENTITY_DROPS,
+        entity_type: "minecraft:zombie",
+        item: "[]",
+        value: 5,
+        ..GameEvent::default()
+    };
+    host.game_event(None, &mut drops);
+    assert_eq!(drops.value, 10);
+    let mut phantom = GameEvent {
+        kind: vanillite_abi::event::ENTITY_SPAWN,
+        entity_type: "minecraft:phantom",
+        cause: vanillite_abi::spawn_reason::NATURAL,
+        ..GameEvent::default()
+    };
+    host.game_event(None, &mut phantom);
+    assert!(phantom.cancelled);
+    // Nobody listens to fluids: the event is not even built.
+    let mut flow = GameEvent {
+        kind: vanillite_abi::event::BLOCK_FLUID_FLOW,
+        ..GameEvent::default()
+    };
+    assert!(!host.game_event(None, &mut flow));
+
+    // `/hello look` traces a ray along the player's view.
+    let look = dispatcher.child(hello, "look").unwrap();
+    let look = dispatcher.node(look).unwrap().command.unwrap();
+    assert_eq!(
+        host.execute_command(look, &sender, "hello look", &[], None),
+        Some(1)
+    );
+    host.run_world_tasks(&mut overworld, 4);
+    assert!(
+        server
+            .messages
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(_, m)| m.contains("You look at minecraft:oak_log[axis=y] at 1 65 9")),
+        "{:?}",
+        server.messages.lock().unwrap()
+    );
+    assert_eq!(server.called("particle"), ["particle minecraft:heart 5"]);
+
+    // Plugin messages on the registered channel are answered; others do not reach it.
+    host.plugin_message(0, PLAYER, "hello:ping", b"abc");
+    host.plugin_message(0, PLAYER, "other:ping", b"abc");
+    assert_eq!(server.called("message"), ["message hello:pong abc"]);
+
+    // Advancements and another plugin's event (skipped while cancelled).
+    host.advancement_done(0, PLAYER, "minecraft:story/root");
+    assert_eq!(
+        host.fire_event("economy:payment", "economy", b"5 coins", false),
+        Some(false)
+    );
+    assert_eq!(
+        host.fire_event("economy:payment", "economy", b"6 coins", true),
+        Some(true)
+    );
+    assert_eq!(
+        host.fire_event("nobody:listens", "economy", b"", false),
+        None
+    );
+    assert_eq!(
+        server.action_bars.lock().unwrap()[3..],
+        ["Well done: minecraft:story/root", "Payment: 5 coins"]
+    );
+
+    // The service other plugins call: two greetings so far.
+    #[repr(C)]
+    struct GreeterApi {
+        size: u32,
+        greetings: extern "C" fn() -> u64,
+    }
+    let (version, table) = host
+        .service("hello:greeter")
+        .expect("the example offers it");
+    assert_eq!(version, 1);
+    // SAFETY: the example documents this layout; its library stays loaded.
+    let greeter = unsafe { &*table.cast::<GreeterApi>() };
+    assert!(greeter.size as usize >= size_of::<GreeterApi>());
+    assert_eq!((greeter.greetings)(), 2);
+
+    // Permission defaults without a provider.
+    assert!(!host.has_permission(PLAYER, "hello.pad", false));
+    assert!(host.has_permission(PLAYER, "hello.pad", true));
+    assert!(host.has_permission(PLAYER, "hello.treat", false));
+    assert!(!host.has_permission(PLAYER, "other.node", false));
+
+    // The periodic background task runs every 6000 ticks.
+    let before = server.online_calls.load(Ordering::Relaxed);
+    host.run_global_tasks(5999);
+    assert_eq!(server.online_calls.load(Ordering::Relaxed), before);
+    host.run_global_tasks(6000);
+    host.run_global_tasks(12000);
+    assert_eq!(server.online_calls.load(Ordering::Relaxed), before + 2);
+
     let (id, provider) = host
         .take_chunk_generator(|| Box::new(FlatGeneratorProvider))
         .expect("the example fills the chunk-generator slot");
@@ -270,5 +820,8 @@ fn example_plugin_runs_through_the_abi() {
         Some(3)
     );
     host.disable_all();
+    // `disable` saved the greeting count into the config.
+    let saved = std::fs::read_to_string(package.join("config.toml")).unwrap();
+    assert!(saved.contains("greetings = 3"), "{saved}");
     let _ = std::fs::remove_dir_all(&dir);
 }

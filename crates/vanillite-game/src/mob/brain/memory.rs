@@ -106,10 +106,11 @@ pub struct WalkTarget {
 }
 
 impl WalkTarget {
-    /// `new WalkTarget(vec, speed, closeEnough)`.
+    /// `new WalkTarget(vec, speed, closeEnough)`: a `BlockPosTracker` of the block holding
+    /// `vec` (its centre, not `vec` itself).
     pub fn at(v: Vec3, speed: f32, close_enough: i32) -> WalkTarget {
         WalkTarget {
-            target: Tracker::at(v),
+            target: Tracker::block(BlockPos::containing(v.x, v.y, v.z)),
             speed,
             close_enough,
         }

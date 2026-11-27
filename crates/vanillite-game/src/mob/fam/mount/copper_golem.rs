@@ -90,6 +90,8 @@ pub struct CopperGolem {
     pub transport_cooldown: i32,
     /// `openedChestPos` with the container whose lid it opened.
     pub opened_chest: Option<(BlockPos, crate::block::container::ContainerRef)>,
+    /// `lastLightningBoltUUID`, as the bolt's network id (0: none).
+    pub last_lightning_bolt: i32,
 }
 
 pub fn golem(m: &MobData) -> CopperGolem {
@@ -113,14 +115,47 @@ pub fn golem_mut(m: &mut MobData) -> &mut CopperGolem {
     }
 }
 
+/// `CopperGolem.thunderHit` after the plain hit: the first strike of the bolt with the
+/// network id `bolt` takes one oxidation stage off and restarts the weathering timer.
+pub fn thunder_hit(
+    ents: &mut crate::entities::Entities,
+    id: vanillite_world::entity::EntityId,
+    bolt: i32,
+) {
+    let Some(m) = ents.mob_mut(id) else {
+        return;
+    };
+    let g = golem_mut(m);
+    if g.last_lightning_bolt == bolt {
+        return;
+    }
+    g.last_lightning_bolt = bolt;
+    if g.weather != Weather::Unaffected {
+        g.next_weathering_tick = UNSET;
+        g.weather = g.weather.previous();
+        if let Some(mut e) = ents.store.get_mut(id) {
+            e.mark_data_dirty();
+        }
+    }
+}
+
 pub fn init(m: &mut MobData) {
     golem_mut(m);
     // `setRequiredPathLength(48)`, `setCanOpenDoors(true)`, `setPersistenceRequired`.
     m.nav.can_open_doors = true;
+    let follow = m.attrs.follow_range;
+    m.nav.set_required_path_length(48.0, follow);
     m.persistent = true;
+    // The brain (its sensors roll their start delay) comes first, then the cooldown roll.
+    super::ai::copper_golem_brain(m);
     let cooldown = m.random.next_int_between_inclusive(60, 99);
     golem_mut(m).transport_cooldown = cooldown;
-    super::ai::copper_golem_brain(m);
+    if let Some(b) = m.brain.as_deref_mut() {
+        b.set(
+            crate::mob::brain::MemoryType::TransportItemsCooldownTicks,
+            crate::mob::brain::MemValue::Int(cooldown),
+        );
+    }
 }
 
 /// The sounds by oxidation (`CopperGolemOxidationLevels`).

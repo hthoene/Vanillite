@@ -1,0 +1,63 @@
+{
+  "description": "A chest minecart with a loot table is destroyed by a player with an axe (ContainerEntity): the table is rolled with its seed when the contents drop (unpackChestVehicleLootTable), every stack drops around the minecart with the level random, then the minecart's item.",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -56,
+      15
+    ]
+  ],
+  "ticks": 60,
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        2.5,
+        -60.0,
+        6.5
+      ]
+    },
+    {
+      "name": "chest",
+      "type": "minecraft:chest_minecart",
+      "pos": [
+        8.5,
+        -60.0,
+        6.5
+      ],
+      "rot": [
+        0,
+        0
+      ],
+      "seed": 9
+    }
+  ],
+  "actions": [
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "data merge entity @e[type=minecraft:chest_minecart,limit=1] {LootTable:\"minecraft:chests/simple_dungeon\",LootTableSeed:42L}"
+    },
+    {
+      "tick": 5,
+      "op": "attack_entity",
+      "entity": "steve",
+      "target": "chest",
+      "item": "minecraft:netherite_axe"
+    },
+    {
+      "tick": 40,
+      "op": "attack_entity",
+      "entity": "steve",
+      "target": "chest"
+    }
+  ]
+}

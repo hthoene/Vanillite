@@ -44,18 +44,22 @@ pub(crate) struct Prepared {
     pub(crate) world_gen: crate::world_setup::WorldGen,
     /// Vanilla's English translations (empty without the Vanilla pack).
     pub(crate) language: std::collections::HashMap<String, String>,
+    /// `level.dat` has a spawn; else the server searches one (`setInitialSpawn`).
+    pub(crate) spawn_known: bool,
 }
 
 /// Where new players spawn: `spawn` of `level.dat`, else on top of the flat layers, or above
-/// the noise terrain (searching a spawn position like Vanilla is not ported yet).
-fn world_spawn(level_dir: &Path, is_flat: bool) -> (Vec3, f32) {
+/// the noise terrain until the server searched the new world's spawn
+/// (`crate::world::initial_spawn`). The flag says whether `level.dat` had one.
+fn world_spawn(level_dir: &Path, is_flat: bool) -> ((Vec3, f32), bool) {
     let spawn = vanillite_storage::level_dat::LevelData::read(level_dir)
         .ok()
         .flatten()
         .and_then(|level| level.spawn);
     let pos = spawn.as_ref().map(|s| s.pos.to_vec());
     let yaw = spawn.as_ref().map_or(0.0, |s| s.yaw);
-    match pos.as_deref() {
+    let known = spawn.is_some();
+    let spawn = match pos.as_deref() {
         Some(&[x, y, z]) => (
             Vec3::new(f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5),
             yaw,
@@ -64,7 +68,8 @@ fn world_spawn(level_dir: &Path, is_flat: bool) -> (Vec3, f32) {
         _ if is_flat => (Vec3::new(0.5, -60.0, 0.5), 0.0),
         // The top of the overworld; the player falls onto the terrain.
         _ => (Vec3::new(0.5, 320.0, 0.5), 0.0),
-    }
+    };
+    (spawn, known)
 }
 
 fn registry_index(packs: Option<&LoadedPacks>, registry: &str, entry: &str) -> usize {
@@ -159,7 +164,7 @@ pub(crate) fn prepare(
         packs.as_ref(),
     )?;
     let is_flat = world_gen.is_flat();
-    let spawn = world_spawn(level_dir, is_flat);
+    let (spawn, spawn_known) = world_spawn(level_dir, is_flat);
 
     let levels: Vec<Identifier> = DIMENSIONS
         .iter()
@@ -244,6 +249,7 @@ pub(crate) fn prepare(
         selected,
         world_gen,
         language,
+        spawn_known,
     })
 }
 
@@ -394,6 +400,12 @@ impl NetState {
             self.status.sample = sample;
             self.network.status().update(&self.status);
         }
+    }
+
+    /// Replaces the message of the day of the server list (a plugin's).
+    pub(crate) fn set_motd(&mut self, motd: Component) {
+        self.status.description = motd;
+        self.network.status().update(&self.status);
     }
 
     /// Updates the player count of the server list.

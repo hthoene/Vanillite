@@ -44,6 +44,16 @@ pub trait ScenarioWorld {
     /// Entities whose block position is inside `min..=max`.
     fn entities(&self, min: BlockPos, max: BlockPos, out: &mut Vec<EntityObs>);
 
+    /// Makes `dimension` the one the block operations and observations work in (scenarios
+    /// across dimensions); worlds of the overworld only refuse the others.
+    fn select_dimension(&mut self, dimension: &str) -> Result<(), String> {
+        if dimension == crate::scenario::OVERWORLD {
+            Ok(())
+        } else {
+            Err(format!("this world has no dimension {dimension}"))
+        }
+    }
+
     /// Whether `pos` is in an accessible chunk; other positions are traced as
     /// [`crate::scenario::UNLOADED`].
     fn is_loaded(&self, _pos: BlockPos) -> bool {
@@ -66,6 +76,13 @@ pub trait ScenarioWorld {
     fn bonemeal(&mut self, _pos: BlockPos) -> Result<(), String> {
         Err("this world has no bone meal".to_owned())
     }
+
+    /// Recomputes the light of the block changes so far. The runner calls it wherever the
+    /// recorder waits for Vanilla's light thread (`ParityServer.settleLight`): after the setup,
+    /// the entities and the actions of a tick; [`ScenarioWorld::step`] does it for the changes
+    /// of its tick. Not across dimensions: there the recorder does not wait either (chunks
+    /// load meanwhile).
+    fn settle_light(&mut self) {}
 
     /// The settled light inside `min..=max` in y, z, x order as `sky << 4 | block`: the levels
     /// a client sees. Worlds without a light engine leave `out` empty.

@@ -11,6 +11,7 @@
 //! World generation has its own copy of the spreader (`sculk_patch` in vanillite-worldgen)
 //! with the world generation configuration and no side effects.
 
+use vanillite_abi::event::BLOCK_SPREAD;
 use vanillite_base::random::RandomSource;
 use vanillite_base::{BlockPos, Direction, Vec3};
 use vanillite_data::block::{BlockId, BlockState, ids};
@@ -393,7 +394,7 @@ fn attempt_spread_vein(
     spread_all(level, false, state, pos) > 0
 }
 
-fn is_water(state: BlockState) -> bool {
+pub(super) fn is_water(state: BlockState) -> bool {
     crate::mob::is_water(state)
 }
 
@@ -438,13 +439,15 @@ fn sculk_use_charge(level: &mut Level, cursor: &ChargeCursor, origin: BlockPos) 
         if level.random().next_int_bounded(GROWTH_SPAWN_COST) < charge {
             let growth_pos = pos.offset(0, 1, 0);
             let state = random_growth_state(level, growth_pos);
-            level.set_block_and_update(growth_pos, state);
-            let sound = if state.is(ids::SCULK_SHRIEKER) {
-                "block.sculk_shrieker.place"
-            } else {
-                "block.sculk_sensor.place"
-            };
-            level.play_block_sound(None, pos, sound_id(sound), SOUND_BLOCKS, 1.0, 1.0);
+            if super::hook_events::allows(level, BLOCK_SPREAD, growth_pos, state) {
+                level.set_block_and_update(growth_pos, state);
+                let sound = if state.is(ids::SCULK_SHRIEKER) {
+                    "block.sculk_shrieker.place"
+                } else {
+                    "block.sculk_sensor.place"
+                };
+                level.play_block_sound(None, pos, sound_id(sound), SOUND_BLOCKS, 1.0, 1.0);
+            }
         }
         return 0.max(charge - GROWTH_SPAWN_COST);
     }
@@ -523,6 +526,9 @@ fn attempt_place_sculk(level: &mut Level, pos: BlockPos) -> bool {
             continue;
         }
         let sculk = ids::SCULK.default_state();
+        if !super::hook_events::allows(level, BLOCK_SPREAD, support_pos, sculk) {
+            return false;
+        }
         level.set_block_and_update(support_pos, sculk);
         let sound = sound_id("block.sculk.spread");
         level.play_block_sound(None, support_pos, sound, SOUND_BLOCKS, 1.0, 1.0);
@@ -659,7 +665,7 @@ fn is_pos_unreasonable(pos: BlockPos, origin: BlockPos) -> bool {
 }
 
 /// The serialized name of a direction.
-fn direction_name(direction: Direction) -> &'static str {
+pub(super) fn direction_name(direction: Direction) -> &'static str {
     match direction {
         Direction::Down => "down",
         Direction::Up => "up",
@@ -677,7 +683,7 @@ fn direction_by_name(name: &str) -> Option<Direction> {
 }
 
 /// `MultifaceBlock.hasFace`.
-fn has_face(state: BlockState, face: Direction) -> bool {
+pub(super) fn has_face(state: BlockState, face: Direction) -> bool {
     state.value(direction_name(face)) == Some("true")
 }
 
@@ -698,7 +704,7 @@ fn available_faces(state: BlockState) -> u8 {
 }
 
 /// `MultifaceBlock.canAttachTo(level, pos, direction)`.
-fn can_attach_to(level: &Level, pos: BlockPos, direction: Direction) -> bool {
+pub(super) fn can_attach_to(level: &Level, pos: BlockPos, direction: Direction) -> bool {
     let neighbour = level.block(pos.relative(direction));
     let face = direction.opposite();
     is_face_sturdy(neighbour, face)
@@ -837,7 +843,7 @@ fn place_vein(level: &mut Level, pos: BlockPos, face: Direction) -> bool {
     let Some(state) = base.with(direction_name(face), "true") else {
         return false;
     };
-    level.set_block(pos, state, update::CLIENTS)
+    super::hook_events::set_block(level, BLOCK_SPREAD, pos, state, update::CLIENTS)
 }
 
 /// `SculkVeinBlock.regrow`.

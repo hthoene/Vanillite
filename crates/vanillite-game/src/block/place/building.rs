@@ -797,6 +797,32 @@ fn chest_connected_direction(state: BlockState) -> Option<Direction> {
     })
 }
 
+/// `CopperChestBlock.getFromCopperBlock` with the chest block of the copper block: the chest
+/// joins a single copper chest beside it (`getChestType`) as the least oxidized of the pair.
+pub fn copper_chest_from_block(
+    chest: BlockId,
+    facing: Direction,
+    pos: BlockPos,
+    level: &dyn BlockReader,
+) -> BlockState {
+    let can_connect = |s: BlockState| tags::COPPER_CHESTS.has(s) && s.has_prop("type");
+    let kind = if chest_partner_facing(level, pos, facing.clockwise(), &can_connect) == Some(facing)
+    {
+        "left"
+    } else if chest_partner_facing(level, pos, facing.counter_clockwise(), &can_connect)
+        == Some(facing)
+    {
+        "right"
+    } else {
+        "single"
+    };
+    let state = chest
+        .default_state()
+        .set_dir("facing", facing)
+        .set("type", kind);
+    least_oxidized_copper_chest(state, pos, level)
+}
+
 /// Copper chests by weathering: `(waxed, ordinal)` of a copper chest block.
 fn copper_chest_info(block: BlockId) -> Option<(bool, u16)> {
     let offset = block.0.checked_sub(ids::COPPER_CHEST.0)?;

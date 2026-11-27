@@ -317,6 +317,9 @@ pub fn check_spawn(
         },
         m,
     );
+    level
+        .entities
+        .spawned(id, vanillite_abi::spawn_reason::TRIGGERED, 0);
     // `SUMMONED_ENTITY` for the players within 50 blocks of the wither's box.
     if let Some(b) = level.entities.store.get(id).map(|e| e.aabb()) {
         let near = crate::mob::animal::players_in(&level.entities, &b.inflate(50.0, 50.0, 50.0));
@@ -587,7 +590,8 @@ pub fn goal_start(t: &mut Tick<'_, '_>, g: &mut WitherGoal) {
             nav_move_to(t, w, 1.0);
         }
         WitherGoal::NearestLiving { found, .. } => {
-            t.mob().target = *found;
+            let reason = crate::mob::goals::closest_reason(t, *found);
+            crate::mob::goals::set_target_why(t, *found, reason);
         }
     }
 }
@@ -1026,7 +1030,7 @@ pub fn spawn_skull(
         x_rot: rot.x_rot,
         y_head_rot: rot.y_rot,
     };
-    ents.spawn_special(
+    let id = ents.spawn_special(
         new,
         SpecialData::WitherSkull(Box::new(Skull {
             owner: Some(owner),
@@ -1034,9 +1038,12 @@ pub fn spawn_skull(
             dangerous,
             acceleration_power: 0.1,
             left_owner: false,
+            has_been_shot: false,
             tick_count: 0,
         })),
-    )
+    );
+    ents.launched(id, Some(owner));
+    id
 }
 
 /// `Mth.nextDouble(random, min, max)`.
@@ -1430,7 +1437,9 @@ pub fn on_death(
         crate::item_entity::ItemData::new(crate::item::ItemStack::new(item, 1), 10, None);
     // `setExtendedLifetime`.
     data.age = -6000;
-    ents.spawn_item(level.network_ids().next(), uuid, pos, velocity, y_rot, data);
+    let id = ents.spawn_item(level.network_ids().next(), uuid, pos, velocity, y_rot, data);
+    let parent = ents.store.get(target).map_or(0, |e| e.uuid());
+    ents.spawned(id, vanillite_abi::spawn_reason::DEFAULT, parent);
 }
 
 /// `tickDeath`: the bar leaves the players when the wither is removed.
@@ -1491,6 +1500,8 @@ pub struct Skull {
     pub acceleration_power: f64,
     /// `leftOwner`.
     pub left_owner: bool,
+    /// `hasBeenShot`: the `projectile_shoot` game event is posted.
+    pub has_been_shot: bool,
     /// `tickCount`.
     pub tick_count: i32,
 }
@@ -1614,6 +1625,13 @@ pub fn tick_skull(t: &mut SpecialTick<'_, '_>) {
         });
     }
     let hit_entity = best.map(|(other, _, at)| (other, at));
+    // Bukkit's `ProjectileHitEvent`: a cancelled hit is ignored, the skull flies on.
+    let hit_event = |what| crate::mob::missile::hit_event(t.level, t.ents, id, skull.owner, what);
+    let hit_entity =
+        hit_entity.filter(|&(target, _)| hit_event(crate::mob::missile::HitWhat::Entity(target)));
+    let block_hit = block_hit.filter(|&(block, at)| {
+        hit_entity.is_some() || hit_event(crate::mob::missile::HitWhat::Block(block, at))
+    });
     let new_pos = match (hit_entity, block_hit) {
         (Some((_, at)), _) => at,
         (None, Some((_, at))) => at,
@@ -1625,6 +1643,10 @@ pub fn tick_skull(t: &mut SpecialTick<'_, '_>) {
         e.set_pos(pos);
         e.set_velocity(velocity);
         e.set_rot(rot);
+    }
+    // `Projectile.tick`: the first tick posts `PROJECTILE_SHOOT` from the shooter.
+    if !std::mem::replace(&mut skull.has_been_shot, true) {
+        crate::mob::missile::shoot_event(t.env.out, pos, skull.owner);
     }
     if let Some(SpecialData::WitherSkull(s)) = t.ents.special_mut(id) {
         **s = skull.clone();
@@ -1734,7 +1756,7 @@ pub fn save_skull(s: &Skull, out: &mut Compound) {
         out.insert("Owner", Tag::IntArray(ints));
     }
     out.insert("LeftOwner", s.left_owner);
-    out.insert("HasBeenShot", true);
+    out.insert("HasBeenShot", s.has_been_shot);
     out.insert("acceleration_power", s.acceleration_power);
     out.insert("dangerous", s.dangerous);
 }
@@ -1761,6 +1783,10 @@ pub fn load_skull(tag: &Compound) -> Skull {
         },
         left_owner: tag
             .get("LeftOwner")
+            .and_then(Tag::as_i64)
+            .is_some_and(|v| v != 0),
+        has_been_shot: tag
+            .get("HasBeenShot")
             .and_then(Tag::as_i64)
             .is_some_and(|v| v != 0),
         tick_count: 0,

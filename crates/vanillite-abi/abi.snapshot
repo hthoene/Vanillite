@@ -1,4 +1,4 @@
-abi 1.2
+abi 1.6
 type Status = i32
 type PluginId = u32
 type EntryFn = unsafeextern"C"fn()->*constPluginInfo
@@ -17,6 +17,11 @@ type PermissionFn = unsafeextern"C"fn(user:*mutc_void,player:Uuid,node:Str,out:*
 type GeneratorCreateFn = unsafeextern"C"fn(user:*mutc_void,world:*constWorldInfo,instance:*mut*mutc_void,)->Status
 type GeneratorRunFn = unsafeextern"C"fn(instance:*mutc_void,chunks:*constGenChunk,count:usize,stride:usize,)->Status
 type GeneratorDestroyFn = unsafeextern"C"fn(instance:*mutc_void)
+type TextSetFn = unsafeextern"C"fn(state:*mutc_void,text:Str,format:u32)
+type GoalCheckFn = unsafeextern"C"fn(user:*mutc_void,mob:*constGoalMob)->u32
+type GoalFn = unsafeextern"C"fn(user:*mutc_void,mob:*constGoalMob)
+type GoalTickFn = unsafeextern"C"fn(user:*mutc_void,mob:*constGoalMob,action:*mutGoalAction)
+type PopulateFn = unsafeextern"C"fn(user:*mutc_void,world:*constWorldInfo,chunks:*constGenChunk,count:usize,stride:usize,)->Status
 const status::OK: Status = 0
 const status::ERROR: Status = 1
 const status::UNSUPPORTED: Status = 2
@@ -43,6 +48,85 @@ const event::PLAYERS_MOVED: u32 = 5
 const event::ENTITY_DAMAGE: u32 = 6
 const event::BLOCK_BREAK: u32 = 7
 const event::BLOCK_PLACE: u32 = 8
+const event::PLAYER_BED_ENTER: u32 = 9
+const event::PLAYER_BED_LEAVE: u32 = 10
+const event::PLAYER_SPAWN_CHANGE: u32 = 11
+const event::PLAYER_LOGIN: u32 = 12
+const event::PLAYER_DEATH: u32 = 13
+const event::ENTITY_DEATH: u32 = 14
+const event::PLAYER_RESPAWN: u32 = 15
+const event::PLAYER_CHANGE_WORLD: u32 = 16
+const event::PLAYER_GAME_MODE_CHANGE: u32 = 17
+const event::PLAYER_INTERACT: u32 = 18
+const event::PLAYER_PLUGIN_MESSAGE: u32 = 19
+const event::PLAYER_ADVANCEMENT_DONE: u32 = 20
+const event::PLAYER_MOVE: u32 = 21
+const event::PLAYER_TELEPORT: u32 = 22
+const event::PLAYER_INTERACT_ENTITY: u32 = 23
+const event::PLAYER_ATTACK_ENTITY: u32 = 24
+const event::PLAYER_DROP_ITEM: u32 = 25
+const event::ENTITY_PICKUP_ITEM: u32 = 26
+const event::PLAYER_TOGGLE_SNEAK: u32 = 27
+const event::PLAYER_TOGGLE_SPRINT: u32 = 28
+const event::PLAYER_TOGGLE_FLIGHT: u32 = 29
+const event::PLAYER_ITEM_HELD: u32 = 30
+const event::PLAYER_ITEM_CONSUME: u32 = 31
+const event::PLAYER_KICK: u32 = 32
+const event::PLAYER_STATISTIC: u32 = 33
+const event::PLAYER_RESOURCE_PACK: u32 = 34
+const event::PLAYER_SWAP_HANDS: u32 = 35
+const event::PLAYER_EXP_CHANGE: u32 = 36
+const event::PLAYER_LAUNCH_PROJECTILE: u32 = 37
+const event::PLAYER_FISH: u32 = 38
+const event::ENTITY_SPAWN: u32 = 40
+const event::ENTITY_DROPS: u32 = 41
+const event::ENTITY_TARGET: u32 = 42
+const event::ENTITY_EXPLODE: u32 = 43
+const event::PROJECTILE_LAUNCH: u32 = 44
+const event::PROJECTILE_HIT: u32 = 45
+const event::VEHICLE_ENTER: u32 = 46
+const event::VEHICLE_EXIT: u32 = 47
+const event::ENTITY_TAME: u32 = 48
+const event::ENTITY_BREED: u32 = 49
+const event::ENTITY_PORTAL: u32 = 50
+const event::ENTITY_TRANSFORM: u32 = 51
+const event::ENTITY_RESURRECT: u32 = 52
+const event::SHEEP_DYE_WOOL: u32 = 53
+const event::ENTITY_DROP_ITEM: u32 = 54
+const event::BLOCK_DROP: u32 = 60
+const event::BLOCK_GROW: u32 = 61
+const event::BLOCK_FORM: u32 = 62
+const event::BLOCK_SPREAD: u32 = 63
+const event::BLOCK_FADE: u32 = 64
+const event::LEAVES_DECAY: u32 = 65
+const event::BLOCK_FLUID_FLOW: u32 = 66
+const event::BLOCK_BURN: u32 = 67
+const event::BLOCK_IGNITE: u32 = 68
+const event::BLOCK_FERTILIZE: u32 = 69
+const event::STRUCTURE_GROW: u32 = 70
+const event::BLOCK_PISTON: u32 = 71
+const event::SIGN_CHANGE: u32 = 72
+const event::BLOCK_DISPENSE: u32 = 73
+const event::CHUNK_LOAD: u32 = 74
+const event::CHUNK_UNLOAD: u32 = 75
+const event::WORLD_SAVE: u32 = 76
+const event::WEATHER_CHANGE: u32 = 77
+const event::TIME_SKIP: u32 = 78
+const event::PORTAL_CREATE: u32 = 79
+const event::INVENTORY_OPEN: u32 = 90
+const event::INVENTORY_CLICK: u32 = 91
+const event::INVENTORY_DRAG: u32 = 92
+const event::INVENTORY_CLOSE: u32 = 93
+const event::CRAFT_PREPARE: u32 = 94
+const event::CRAFT_ITEM: u32 = 95
+const event::ANVIL_PREPARE: u32 = 96
+const event::FURNACE_SMELT: u32 = 97
+const event::FURNACE_BURN: u32 = 98
+const event::FURNACE_EXTRACT: u32 = 99
+const event::INVENTORY_MOVE_ITEM: u32 = 100
+const event::ENCHANT_ITEM: u32 = 101
+const event::BREW: u32 = 102
+const subscribe_flag::IGNORE_CANCELLED: u32 = 1
 const priority::LOWEST: i32 = -200
 const priority::LOW: i32 = -100
 const priority::NORMAL: i32 = 0
@@ -67,8 +151,22 @@ const arg::GREEDY_STRING: u32 = 7
 const arg::PLAYER: u32 = 8
 const arg::PLAYERS: u32 = 9
 const arg::BLOCK_POS: u32 = 10
+const arg::ENTITY: u32 = 11
+const arg::ENTITIES: u32 = 12
+const arg::VEC3: u32 = 13
+const arg::ROTATION: u32 = 14
+const arg::IDENTIFIER: u32 = 15
+const arg::BLOCK_STATE: u32 = 16
+const arg::ITEM_STACK: u32 = 17
+const arg::COMPONENT: u32 = 18
+const arg::NBT_COMPOUND: u32 = 19
+const arg::GAME_MODE: u32 = 20
+const arg::TIME: u32 = 21
+const arg::UUID: u32 = 22
 const sender::CONSOLE: u32 = 0
 const sender::PLAYER: u32 = 1
+const sender::COMMAND_BLOCK: u32 = 2
+const sender::ENTITY: u32 = 3
 const permission::DENY: u32 = 0
 const permission::ALLOW: u32 = 1
 const permission::UNDEFINED: u32 = 2
@@ -76,6 +174,232 @@ const limits::ROOT: u32 = 4294967295
 const limits::NO_WORLD: u32 = 4294967295
 const limits::NO_BLOCK: u32 = 4294967295
 const limits::MAX_BOX_VOLUME: u32 = 16777216
+const limits::FIRST_CUSTOM_EVENT: u32 = 192
+const limits::LAST_CUSTOM_EVENT: u32 = 255
+const limits::MAX_PLUGIN_MESSAGE: u32 = 32767
+const limits::MAX_CHANNELS: u32 = 128
+const limits::MAX_SNBT: u32 = 2097152
+const login_reason::ALLOWED: u32 = 0
+const login_reason::BANNED: u32 = 1
+const login_reason::NOT_WHITELISTED: u32 = 2
+const login_reason::FULL: u32 = 3
+const login_reason::PLUGIN: u32 = 4
+const interact::USE_ON_BLOCK: u32 = 0
+const interact::USE_ITEM: u32 = 1
+const interact::LEFT_CLICK_BLOCK: u32 = 2
+const interact::LEFT_CLICK_AIR: u32 = 3
+const interact::PHYSICAL: u32 = 4
+const hand::MAIN: u32 = 0
+const hand::OFF: u32 = 1
+const game_mode::SURVIVAL: u32 = 0
+const game_mode::CREATIVE: u32 = 1
+const game_mode::ADVENTURE: u32 = 2
+const game_mode::SPECTATOR: u32 = 3
+const data_type::BYTE: u32 = 1
+const data_type::SHORT: u32 = 2
+const data_type::INT: u32 = 3
+const data_type::LONG: u32 = 4
+const data_type::FLOAT: u32 = 5
+const data_type::DOUBLE: u32 = 6
+const data_type::BYTE_ARRAY: u32 = 7
+const data_type::STRING: u32 = 8
+const data_type::INT_ARRAY: u32 = 11
+const data_type::LONG_ARRAY: u32 = 12
+const data_limits::MAX_VALUE: u32 = 65536
+const data_limits::MAX_KEYS: u32 = 256
+const data_limits::MAX_KEY: u32 = 256
+const sound_source::MASTER: u32 = 0
+const sound_source::MUSIC: u32 = 1
+const sound_source::RECORD: u32 = 2
+const sound_source::WEATHER: u32 = 3
+const sound_source::BLOCK: u32 = 4
+const sound_source::HOSTILE: u32 = 5
+const sound_source::NEUTRAL: u32 = 6
+const sound_source::PLAYER: u32 = 7
+const sound_source::AMBIENT: u32 = 8
+const sound_source::VOICE: u32 = 9
+const sound_source::UI: u32 = 10
+const sound_source::ANY: u32 = 4294967295
+const player_prop::HEALTH: u32 = 1
+const player_prop::MAX_HEALTH: u32 = 2
+const player_prop::FOOD: u32 = 3
+const player_prop::SATURATION: u32 = 4
+const player_prop::EXHAUSTION: u32 = 5
+const player_prop::XP_LEVEL: u32 = 6
+const player_prop::XP_PROGRESS: u32 = 7
+const player_prop::XP_TOTAL: u32 = 8
+const player_prop::GAME_MODE: u32 = 9
+const player_prop::FLYING: u32 = 10
+const player_prop::MAY_FLY: u32 = 11
+const player_prop::FLY_SPEED: u32 = 12
+const player_prop::WALK_SPEED: u32 = 13
+const player_prop::SELECTED_SLOT: u32 = 14
+const player_prop::AIR: u32 = 15
+const player_prop::FIRE_TICKS: u32 = 16
+const effect_flag::AMBIENT: u32 = 1
+const effect_flag::HIDE_PARTICLES: u32 = 2
+const effect_flag::HIDE_ICON: u32 = 4
+const display_slot::LIST: u32 = 0
+const display_slot::SIDEBAR: u32 = 1
+const display_slot::BELOW_NAME: u32 = 2
+const display_slot::SIDEBAR_TEAM_BLACK: u32 = 3
+const bossbar_prop::VALUE: u32 = 0
+const bossbar_prop::MAX: u32 = 1
+const bossbar_prop::COLOR: u32 = 2
+const bossbar_prop::STYLE: u32 = 3
+const bossbar_prop::VISIBLE: u32 = 4
+const bossbar_color::PINK: u32 = 0
+const bossbar_color::BLUE: u32 = 1
+const bossbar_color::RED: u32 = 2
+const bossbar_color::GREEN: u32 = 3
+const bossbar_color::YELLOW: u32 = 4
+const bossbar_color::PURPLE: u32 = 5
+const bossbar_color::WHITE: u32 = 6
+const bossbar_style::PROGRESS: u32 = 0
+const bossbar_style::NOTCHED_6: u32 = 1
+const bossbar_style::NOTCHED_10: u32 = 2
+const bossbar_style::NOTCHED_12: u32 = 3
+const bossbar_style::NOTCHED_20: u32 = 4
+const access_list::OPERATOR: u32 = 0
+const access_list::WHITELIST: u32 = 1
+const access_list::BAN: u32 = 2
+const access_list::IP_BAN: u32 = 3
+const access_list::WHITELIST_ON: u32 = 4
+const permission_default::FALSE: u32 = 0
+const permission_default::TRUE: u32 = 1
+const permission_default::OP: u32 = 2
+const permission_default::NOT_OP: u32 = 3
+const weather::CLEAR: u32 = 0
+const weather::RAIN: u32 = 1
+const weather::THUNDER: u32 = 2
+const teleport_cause::UNKNOWN: u32 = 0
+const teleport_cause::COMMAND: u32 = 1
+const teleport_cause::PLUGIN: u32 = 2
+const teleport_cause::ENDER_PEARL: u32 = 3
+const teleport_cause::CONSUMABLE: u32 = 4
+const teleport_cause::SPECTATE: u32 = 5
+const teleport_cause::END_GATEWAY: u32 = 6
+const teleport_cause::DISMOUNT: u32 = 7
+const resource_pack_status::SUCCESSFULLY_LOADED: u32 = 0
+const resource_pack_status::DECLINED: u32 = 1
+const resource_pack_status::FAILED_DOWNLOAD: u32 = 2
+const resource_pack_status::ACCEPTED: u32 = 3
+const resource_pack_status::DOWNLOADED: u32 = 4
+const resource_pack_status::INVALID_URL: u32 = 5
+const resource_pack_status::FAILED_RELOAD: u32 = 6
+const resource_pack_status::DISCARDED: u32 = 7
+const spawn_reason::DEFAULT: u32 = 0
+const spawn_reason::NATURAL: u32 = 1
+const spawn_reason::CHUNK_GENERATION: u32 = 2
+const spawn_reason::SPAWNER: u32 = 3
+const spawn_reason::STRUCTURE: u32 = 4
+const spawn_reason::BREEDING: u32 = 5
+const spawn_reason::MOB_SUMMONED: u32 = 6
+const spawn_reason::JOCKEY: u32 = 7
+const spawn_reason::EVENT: u32 = 8
+const spawn_reason::CONVERSION: u32 = 9
+const spawn_reason::REINFORCEMENT: u32 = 10
+const spawn_reason::TRIGGERED: u32 = 11
+const spawn_reason::BUCKET: u32 = 12
+const spawn_reason::SPAWN_ITEM_USE: u32 = 13
+const spawn_reason::COMMAND: u32 = 14
+const spawn_reason::DISPENSER: u32 = 15
+const spawn_reason::PATROL: u32 = 16
+const spawn_reason::TRIAL_SPAWNER: u32 = 17
+const spawn_reason::DIMENSION_TRAVEL: u32 = 18
+const spawn_reason::PLUGIN: u32 = 19
+const target_reason::UNKNOWN: u32 = 0
+const target_reason::CLOSEST_PLAYER: u32 = 1
+const target_reason::CLOSEST_ENTITY: u32 = 2
+const target_reason::RETALIATE: u32 = 3
+const target_reason::OWNER: u32 = 4
+const target_reason::DEFEND_VILLAGE: u32 = 5
+const target_reason::FORGET: u32 = 6
+const target_reason::ANGER: u32 = 7
+const target_reason::PLUGIN: u32 = 8
+const explode_flag::BREAK_BLOCKS: u32 = 1
+const explode_flag::FIRE: u32 = 2
+const portal_kind::NETHER: u32 = 0
+const portal_kind::END: u32 = 1
+const portal_kind::END_GATEWAY: u32 = 2
+const transform_reason::UNKNOWN: u32 = 0
+const transform_reason::CURED: u32 = 1
+const transform_reason::INFECTION: u32 = 2
+const transform_reason::DROWNED: u32 = 3
+const transform_reason::FROZEN: u32 = 4
+const transform_reason::LIGHTNING: u32 = 5
+const transform_reason::PIGLIN_ZOMBIFIED: u32 = 6
+const transform_reason::SHEARED: u32 = 7
+const transform_reason::SPLIT: u32 = 8
+const transform_reason::METAMORPHOSIS: u32 = 9
+const fish_state::FISHING: u32 = 0
+const fish_state::CAUGHT_ENTITY: u32 = 1
+const fish_state::CAUGHT_FISH: u32 = 2
+const fish_state::IN_GROUND: u32 = 3
+const fish_state::REEL_IN: u32 = 4
+const ignite_cause::UNKNOWN: u32 = 0
+const ignite_cause::FLINT_AND_STEEL: u32 = 1
+const ignite_cause::LAVA: u32 = 2
+const ignite_cause::LIGHTNING: u32 = 3
+const ignite_cause::SPREAD: u32 = 4
+const ignite_cause::FIREBALL: u32 = 5
+const ignite_cause::EXPLOSION: u32 = 6
+const ignite_cause::ARROW: u32 = 7
+const click::PICKUP: u32 = 0
+const click::QUICK_MOVE: u32 = 1
+const click::SWAP: u32 = 2
+const click::CLONE: u32 = 3
+const click::THROW: u32 = 4
+const click::QUICK_CRAFT: u32 = 5
+const click::PICKUP_ALL: u32 = 6
+const menu_flag::PLUGIN: u32 = 1
+const entity_prop::HEALTH: u32 = 1
+const entity_prop::MAX_HEALTH: u32 = 2
+const entity_prop::ABSORPTION: u32 = 3
+const entity_prop::FIRE_TICKS: u32 = 4
+const entity_prop::FREEZE_TICKS: u32 = 5
+const entity_prop::AIR: u32 = 6
+const entity_prop::FALL_DISTANCE: u32 = 7
+const entity_prop::NO_GRAVITY: u32 = 8
+const entity_prop::SILENT: u32 = 9
+const entity_prop::GLOWING: u32 = 10
+const entity_prop::INVULNERABLE: u32 = 11
+const entity_prop::NO_AI: u32 = 12
+const entity_prop::PERSISTENT: u32 = 13
+const entity_prop::CUSTOM_NAME_VISIBLE: u32 = 14
+const entity_prop::INVISIBLE: u32 = 15
+const entity_prop::ON_GROUND: u32 = 16
+const entity_prop::AGE: u32 = 17
+const entity_prop::TICKS_LIVED: u32 = 18
+const entity_prop::PORTAL_COOLDOWN: u32 = 19
+const entity_prop::SNEAKING: u32 = 20
+const entity_prop::SPRINTING: u32 = 21
+const attribute_op::ADD_VALUE: u32 = 0
+const attribute_op::ADD_MULTIPLIED_BASE: u32 = 1
+const attribute_op::ADD_MULTIPLIED_TOTAL: u32 = 2
+const goal_flag::MOVE: u32 = 1
+const goal_flag::LOOK: u32 = 2
+const goal_flag::JUMP: u32 = 4
+const goal_flag::TARGET: u32 = 8
+const goal_action::MOVE: u32 = 1
+const goal_action::LOOK: u32 = 2
+const goal_action::JUMP: u32 = 4
+const goal_action::TARGET: u32 = 8
+const goal_action::STOP: u32 = 16
+const goal_clear::GOALS: u32 = 1
+const goal_clear::TARGETS: u32 = 2
+const raytrace_flag::BLOCKS: u32 = 1
+const raytrace_flag::FLUIDS: u32 = 2
+const raytrace_flag::ENTITIES: u32 = 4
+const ray_hit::MISS: u32 = 0
+const ray_hit::BLOCK: u32 = 1
+const ray_hit::ENTITY: u32 = 2
+const chunk_state::UNLOADED: u32 = 0
+const chunk_state::FULL: u32 = 1
+const chunk_state::BLOCK_TICKING: u32 = 2
+const chunk_state::ENTITY_TICKING: u32 = 3
+const gen_stage::AFTER_SURFACE: u32 = 1
+const gen_stage::AFTER_FEATURES: u32 = 2
 const set_mode::UPDATE: u32 = 0
 const set_mode::NO_PHYSICS: u32 = 1
 struct Str size=16 align=8
@@ -123,16 +447,19 @@ struct EventHeader size=12 align=4
   size: u32 @0
   kind: u32 @4
   cancelled: u32 @8
-struct PlayerEvent size=56 align=8
+struct PlayerEvent size=80 align=8
   header: EventHeader @0
   player: Uuid @16
   name: Str @32
   world: u32 @48
-struct PlayerTextEvent size=64 align=8
+  message: Str @56
+  message_out: *constTextOut @72
+struct PlayerTextEvent size=72 align=8
   header: EventHeader @0
   player: Uuid @16
   name: Str @32
   text: Str @48
+  text_out: *constTextOut @64
 struct PlayerMove size=64 align=8
   player: Uuid @0
   from: Vec3 @16
@@ -143,25 +470,136 @@ struct PlayersMovedEvent size=40 align=8
   moves: *constPlayerMove @16
   count: usize @24
   stride: usize @32
-struct EntityDamageEvent size=72 align=8
+struct EntityDamageEvent size=104 align=8
   header: EventHeader @0
   world: u32 @12
   entity: Uuid @16
   entity_type: Str @32
   damage_type: Str @48
   amount: f32 @64
+  attacker: Uuid @72
+  direct: Uuid @88
 struct BlockEvent size=64 align=8
   header: EventHeader @0
   world: u32 @12
   player: Uuid @16
   pos: BlockPos @32
   state: Str @48
+struct TextOut size=24 align=8
+  size: u32 @0
+  state: *mutc_void @8
+  set: TextSetFn @16
+struct LoginEvent size=96 align=8
+  header: EventHeader @0
+  player: Uuid @16
+  name: Str @32
+  address: Str @48
+  reason: u32 @64
+  message: Str @72
+  message_out: *constTextOut @88
+struct PlayerDeathEvent size=96 align=8
+  header: EventHeader @0
+  world: u32 @12
+  player: Uuid @16
+  damage_type: Str @32
+  killer: Uuid @48
+  message: Str @64
+  message_out: *constTextOut @80
+  keep_inventory: u32 @88
+struct EntityDeathEvent size=80 align=8
+  header: EventHeader @0
+  world: u32 @12
+  entity: Uuid @16
+  entity_type: Str @32
+  damage_type: Str @48
+  killer: Uuid @64
+struct PlayerWorldEvent size=64 align=8
+  header: EventHeader @0
+  player: Uuid @16
+  from: u32 @32
+  world: u32 @36
+  pos: Vec3 @40
+struct GameModeEvent size=40 align=8
+  header: EventHeader @0
+  world: u32 @12
+  player: Uuid @16
+  from: u32 @32
+  to: u32 @36
+struct InteractEvent size=88 align=8
+  header: EventHeader @0
+  world: u32 @12
+  player: Uuid @16
+  action: u32 @32
+  hand: u32 @36
+  item: Str @40
+  pos: BlockPos @56
+  face: u32 @68
+  state: Str @72
+struct TitleSpec size=56 align=8
+  size: u32 @0
+  title: Str @8
+  subtitle: Str @24
+  format: u32 @40
+  fade_in: i32 @44
+  stay: i32 @48
+  fade_out: i32 @52
+struct PluginMessageEvent size=64 align=8
+  header: EventHeader @0
+  world: u32 @12
+  player: Uuid @16
+  channel: Str @32
+  data: Bytes @48
+struct AdvancementEvent size=48 align=8
+  header: EventHeader @0
+  world: u32 @12
+  player: Uuid @16
+  advancement: Str @32
+struct CustomEvent size=64 align=8
+  header: EventHeader @0
+  name: Str @16
+  source: Str @32
+  data: Bytes @48
+struct SoundSpec size=72 align=8
+  size: u32 @0
+  sound: Str @8
+  source: u32 @24
+  pos: Vec3 @32
+  volume: f32 @56
+  pitch: f32 @60
+  seed: i64 @64
+struct ParticleSpec size=88 align=8
+  size: u32 @0
+  particle: Str @8
+  pos: Vec3 @24
+  delta: Vec3 @48
+  speed: f32 @72
+  count: i32 @76
+  force: u32 @80
+struct PlayerInfo size=20 align=4
+  size: u32 @0
+  world: u32 @4
+  game_mode: u32 @8
+  op_level: u32 @12
+  ping: i32 @16
+struct ServerStats size=48 align=8
+  size: u32 @0
+  tick: u64 @8
+  mspt: f64 @16
+  tps: f64 @24
+  tick_rate: f64 @32
+  online: u32 @40
+  max_players: u32 @44
+struct Location size=40 align=8
+  world: u32 @0
+  pos: Vec3 @8
+  yaw: f32 @32
+  pitch: f32 @36
 struct Owner size=40 align=8
   kind: u32 @0
   world: u32 @4
   pos: BlockPos @8
   entity: Uuid @24
-struct TaskSpec size=88 align=8
+struct TaskSpec size=96 align=8
   size: u32 @0
   owner: Owner @8
   delay: u64 @48
@@ -169,6 +607,7 @@ struct TaskSpec size=88 align=8
   run: TaskFn @64
   drop: Option<DropFn> @72
   user: *mutc_void @80
+  retired: Option<TaskFn> @88
 struct CommandNode size=88 align=8
   parent: u32 @0
   kind: u32 @4
@@ -195,7 +634,7 @@ struct Sender size=56 align=8
   player: Uuid @8
   world: u32 @24
   pos: Vec3 @32
-struct CommandArg size=88 align=8
+struct CommandArg size=112 align=8
   name: Str @0
   kind: u32 @16
   int: i64 @24
@@ -204,6 +643,7 @@ struct CommandArg size=88 align=8
   pos: BlockPos @56
   players: *constUuid @72
   player_count: usize @80
+  vec: Vec3 @88
 struct CommandInvocation size=104 align=8
   size: u32 @0
   command: u32 @4
@@ -242,7 +682,93 @@ struct ChunkGeneratorProvider size=40 align=8
   create: GeneratorCreateFn @16
   generate: GeneratorRunFn @24
   destroy: GeneratorDestroyFn @32
-struct HostApi size=280 align=8
+struct GameEvent size=344 align=8
+  header: EventHeader @0
+  world: u32 @12
+  entity: Uuid @16
+  entity_type: Str @32
+  other: Uuid @48
+  other_type: Str @64
+  source: Uuid @80
+  player: Uuid @96
+  cause: u32 @112
+  key: Str @120
+  pos: BlockPos @136
+  state: Str @152
+  from: Location @168
+  to: Location @208
+  item: Str @248
+  other_item: Str @264
+  item_out: *constTextOut @280
+  text: Str @288
+  text_out: *constTextOut @304
+  amount: f64 @312
+  value: i64 @320
+  extra: i64 @328
+  flags: u32 @336
+struct BorderInfo size=72 align=8
+  size: u32 @0
+  center_x: f64 @8
+  center_z: f64 @16
+  diameter: f64 @24
+  target: f64 @32
+  lerp_ticks: i64 @40
+  damage_per_block: f64 @48
+  safe_zone: f64 @56
+  warning_blocks: i32 @64
+  warning_time: i32 @68
+struct RayHit size=64 align=8
+  size: u32 @0
+  kind: u32 @4
+  pos: Vec3 @8
+  block: BlockPos @32
+  face: u32 @44
+  entity: Uuid @48
+struct MenuSpec size=64 align=8
+  size: u32 @0
+  menu_type: Str @8
+  title: Str @24
+  format: u32 @40
+  items: Str @48
+struct GoalMob size=128 align=8
+  size: u32 @0
+  mob: Uuid @8
+  world: u32 @24
+  pos: Vec3 @32
+  yaw: f32 @56
+  pitch: f32 @60
+  health: f32 @64
+  on_ground: u32 @68
+  navigating: u32 @72
+  target: Uuid @80
+  target_pos: Vec3 @96
+  game_time: i64 @120
+struct GoalAction size=80 align=8
+  size: u32 @0
+  actions: u32 @4
+  move_to: Vec3 @8
+  speed: f64 @32
+  look_at: Vec3 @40
+  target: Uuid @64
+struct GoalSpec size=72 align=8
+  size: u32 @0
+  priority: i32 @4
+  flags: u32 @8
+  target: u32 @12
+  can_use: GoalCheckFn @16
+  can_continue: Option<GoalCheckFn> @24
+  start: Option<GoalFn> @32
+  stop: Option<GoalFn> @40
+  tick: GoalTickFn @48
+  drop: Option<DropFn> @56
+  user: *mutc_void @64
+struct ChunkPopulatorProvider size=32 align=8
+  size: u32 @0
+  data_version: i32 @4
+  stage: u32 @8
+  user: *mutc_void @16
+  populate: PopulateFn @24
+struct HostApi size=1160 align=8
   size: u32 @0
   abi_major: u16 @4
   abi_minor: u16 @6
@@ -280,3 +806,113 @@ struct HostApi size=280 align=8
   block_set_id: unsafeextern"C"fn(*mutContext,u32,BlockPos,u32,u32)->Status @256
   blocks_get: unsafeextern"C"fn(*mutContext,u32,*constBlockBox,*mutu32,usize)->Status @264
   blocks_set: unsafeextern"C"fn(*mutContext,u32,*constBlockBox,*constu32,usize,u32,*mutusize,)->Status @272
+  player_send_action_bar: unsafeextern"C"fn(PluginId,Uuid,Str,u32)->Status @280
+  player_send_title: unsafeextern"C"fn(PluginId,Uuid,*constTitleSpec)->Status @288
+  entity_data_get: unsafeextern"C"fn(*mutContext,u32,Uuid,Str,*mutu32,*constByteSink,)->Status @296
+  entity_data_set: unsafeextern"C"fn(*mutContext,u32,Uuid,Str,u32,Bytes)->Status @304
+  entity_data_remove: unsafeextern"C"fn(*mutContext,u32,Uuid,Str)->Status @312
+  entity_data_keys: unsafeextern"C"fn(*mutContext,u32,Uuid,*constByteSink)->Status @320
+  subscribe_flags: unsafeextern"C"fn(PluginId,u32,i32,u32,EventFn,*mutc_void)->Status @328
+  unsubscribe: unsafeextern"C"fn(PluginId,u32)->Status @336
+  event_register: unsafeextern"C"fn(PluginId,Str,*mutu32)->Status @344
+  event_fire: unsafeextern"C"fn(PluginId,*mutContext,u32,Bytes,*mutu32)->Status @352
+  service_register: unsafeextern"C"fn(PluginId,Str,u32,*constc_void)->Status @360
+  service_unregister: unsafeextern"C"fn(PluginId,Str)->Status @368
+  service_get: unsafeextern"C"fn(PluginId,Str,*mutu32,*mut*constc_void)->Status @376
+  plugin_list: unsafeextern"C"fn(PluginId,*constByteSink)->Status @384
+  config_set: unsafeextern"C"fn(PluginId,Str,Str)->Status @392
+  config_save: unsafeextern"C"fn(PluginId)->Status @400
+  config_toml: unsafeextern"C"fn(PluginId,Str,*mutStrBuf)->Status @408
+  permission_register: unsafeextern"C"fn(PluginId,Str,u32)->Status @416
+  player_info: unsafeextern"C"fn(PluginId,Uuid,*mutPlayerInfo)->Status @424
+  player_address: unsafeextern"C"fn(PluginId,Uuid,*mutStrBuf)->Status @432
+  player_play_sound: unsafeextern"C"fn(PluginId,Uuid,*constSoundSpec)->Status @440
+  player_stop_sound: unsafeextern"C"fn(PluginId,Uuid,Str,u32)->Status @448
+  player_spawn_particle: unsafeextern"C"fn(PluginId,Uuid,*constParticleSpec)->Status @456
+  player_transfer: unsafeextern"C"fn(PluginId,Uuid,Str,u32)->Status @464
+  register_channel: unsafeextern"C"fn(PluginId,Str)->Status @472
+  player_send_plugin_message: unsafeextern"C"fn(PluginId,Uuid,Str,Bytes)->Status @480
+  objective_add: unsafeextern"C"fn(PluginId,Str,Str,Str,u32)->Status @488
+  objective_remove: unsafeextern"C"fn(PluginId,Str)->Status @496
+  objective_display: unsafeextern"C"fn(PluginId,u32,Str)->Status @504
+  score_get: unsafeextern"C"fn(PluginId,Str,Str,*muti32)->Status @512
+  score_set: unsafeextern"C"fn(PluginId,Str,Str,i32)->Status @520
+  score_reset: unsafeextern"C"fn(PluginId,Str,Str)->Status @528
+  team_add: unsafeextern"C"fn(PluginId,Str)->Status @536
+  team_remove: unsafeextern"C"fn(PluginId,Str)->Status @544
+  team_join: unsafeextern"C"fn(PluginId,Str,Str)->Status @552
+  team_leave: unsafeextern"C"fn(PluginId,Str)->Status @560
+  team_modify: unsafeextern"C"fn(PluginId,Str,Str,Str)->Status @568
+  team_of: unsafeextern"C"fn(PluginId,Str,*mutStrBuf)->Status @576
+  bossbar_create: unsafeextern"C"fn(PluginId,Str,Str,u32)->Status @584
+  bossbar_remove: unsafeextern"C"fn(PluginId,Str)->Status @592
+  bossbar_set: unsafeextern"C"fn(PluginId,Str,u32,i64)->Status @600
+  bossbar_set_name: unsafeextern"C"fn(PluginId,Str,Str,u32)->Status @608
+  bossbar_player: unsafeextern"C"fn(PluginId,Str,Uuid,u32)->Status @616
+  server_stats: unsafeextern"C"fn(PluginId,*mutServerStats)->Status @624
+  server_set_motd: unsafeextern"C"fn(PluginId,Str,u32)->Status @632
+  access_set: unsafeextern"C"fn(PluginId,u32,Uuid,Str,u32,Str)->Status @640
+  access_get: unsafeextern"C"fn(PluginId,u32,Uuid,Str,*mutu32)->Status @648
+  world_time: unsafeextern"C"fn(PluginId,u32,*muti64)->Status @656
+  world_set_time: unsafeextern"C"fn(PluginId,u32,i64)->Status @664
+  world_set_weather: unsafeextern"C"fn(PluginId,u32,i32)->Status @672
+  game_rule_get: unsafeextern"C"fn(PluginId,Str,*mutStrBuf)->Status @680
+  game_rule_set: unsafeextern"C"fn(PluginId,Str,Str)->Status @688
+  player_get: unsafeextern"C"fn(*mutContext,u32,Uuid,u32,*mutf64)->Status @696
+  player_set: unsafeextern"C"fn(*mutContext,u32,Uuid,u32,f64)->Status @704
+  entity_location: unsafeextern"C"fn(*mutContext,u32,Uuid,*mutLocation)->Status @712
+  entity_type: unsafeextern"C"fn(*mutContext,u32,Uuid,*mutStrBuf)->Status @720
+  entity_teleport: unsafeextern"C"fn(*mutContext,u32,Uuid,*constLocation)->Status @728
+  entity_set_velocity: unsafeextern"C"fn(*mutContext,u32,Uuid,Vec3)->Status @736
+  entity_spawn: unsafeextern"C"fn(*mutContext,u32,Str,Vec3,Str,*mutUuid)->Status @744
+  entity_remove: unsafeextern"C"fn(*mutContext,u32,Uuid)->Status @752
+  entities_near: unsafeextern"C"fn(*mutContext,u32,Vec3,f64,Str,*mutUuid,usize,*mutusize,)->Status @760
+  entity_nbt: unsafeextern"C"fn(*mutContext,u32,Uuid,*constByteSink)->Status @768
+  entity_nbt_merge: unsafeextern"C"fn(*mutContext,u32,Uuid,Str)->Status @776
+  entity_effect_add: unsafeextern"C"fn(*mutContext,u32,Uuid,Str,i32,i32,u32)->Status @784
+  entity_effect_remove: unsafeextern"C"fn(*mutContext,u32,Uuid,Str)->Status @792
+  player_give: unsafeextern"C"fn(*mutContext,u32,Uuid,Str)->Status @800
+  entity_item_get: unsafeextern"C"fn(*mutContext,u32,Uuid,Str,*constByteSink)->Status @808
+  entity_item_set: unsafeextern"C"fn(*mutContext,u32,Uuid,Str,Str)->Status @816
+  block_entity_nbt: unsafeextern"C"fn(*mutContext,u32,BlockPos,*constByteSink)->Status @824
+  block_entity_merge: unsafeextern"C"fn(*mutContext,u32,BlockPos,Str)->Status @832
+  advancement_set: unsafeextern"C"fn(*mutContext,u32,Uuid,Str,Str,u32)->Status @840
+  advancement_done: unsafeextern"C"fn(*mutContext,u32,Uuid,Str,*mutu32)->Status @848
+  entity_get: unsafeextern"C"fn(*mutContext,u32,Uuid,u32,*mutf64)->Status @856
+  entity_set: unsafeextern"C"fn(*mutContext,u32,Uuid,u32,f64)->Status @864
+  entity_name: unsafeextern"C"fn(*mutContext,u32,Uuid,*mutStrBuf)->Status @872
+  entity_set_name: unsafeextern"C"fn(*mutContext,u32,Uuid,Str,u32)->Status @880
+  entity_passengers: unsafeextern"C"fn(*mutContext,u32,Uuid,*mutUuid,usize,*mutusize)->Status @888
+  entity_vehicle: unsafeextern"C"fn(*mutContext,u32,Uuid,*mutUuid)->Status @896
+  entity_mount: unsafeextern"C"fn(*mutContext,u32,Uuid,Uuid)->Status @904
+  entity_dismount: unsafeextern"C"fn(*mutContext,u32,Uuid)->Status @912
+  entity_attribute: unsafeextern"C"fn(*mutContext,u32,Uuid,Str,*mutf64,*mutf64)->Status @920
+  entity_attribute_set_base: unsafeextern"C"fn(*mutContext,u32,Uuid,Str,f64)->Status @928
+  entity_attribute_modifier: unsafeextern"C"fn(*mutContext,u32,Uuid,Str,Str,f64,u32,u32,)->Status @936
+  mob_target: unsafeextern"C"fn(*mutContext,u32,Uuid,*mutUuid)->Status @944
+  mob_set_target: unsafeextern"C"fn(*mutContext,u32,Uuid,Uuid)->Status @952
+  mob_navigate: unsafeextern"C"fn(*mutContext,u32,Uuid,Vec3,f64)->Status @960
+  mob_goal_add: unsafeextern"C"fn(*mutContext,u32,Uuid,*constGoalSpec,*mutu64)->Status @968
+  mob_goal_remove: unsafeextern"C"fn(*mutContext,u32,Uuid,u64)->Status @976
+  mob_goals_clear: unsafeextern"C"fn(*mutContext,u32,Uuid,u32)->Status @984
+  biome_get: unsafeextern"C"fn(*mutContext,u32,BlockPos,*mutStrBuf)->Status @992
+  biome_set: unsafeextern"C"fn(*mutContext,u32,*constBlockBox,Str)->Status @1000
+  light_get: unsafeextern"C"fn(*mutContext,u32,BlockPos,*mutu32,*mutu32)->Status @1008
+  chunk_state: unsafeextern"C"fn(*mutContext,u32,i32,i32,*mutu32)->Status @1016
+  chunk_force_load: unsafeextern"C"fn(*mutContext,u32,i32,i32,u32)->Status @1024
+  chunk_ticket: unsafeextern"C"fn(*mutContext,u32,i32,i32,u32)->Status @1032
+  border_get: unsafeextern"C"fn(*mutContext,u32,*mutBorderInfo)->Status @1040
+  border_set: unsafeextern"C"fn(*mutContext,u32,*constBorderInfo)->Status @1048
+  explode: unsafeextern"C"fn(*mutContext,u32,Vec3,f32,u32,Uuid)->Status @1056
+  raytrace: unsafeextern"C"fn(*mutContext,u32,Vec3,Vec3,u32,Uuid,*mutRayHit,)->Status @1064
+  provide_chunk_populator: unsafeextern"C"fn(PluginId,*constChunkPopulatorProvider)->Status @1072
+  menu_open: unsafeextern"C"fn(*mutContext,u32,Uuid,*constMenuSpec,*mutu32)->Status @1080
+  menu_item: unsafeextern"C"fn(*mutContext,u32,Uuid,u32,*constByteSink)->Status @1088
+  menu_set_item: unsafeextern"C"fn(*mutContext,u32,Uuid,u32,Str)->Status @1096
+  menu_close: unsafeextern"C"fn(*mutContext,u32,Uuid)->Status @1104
+  item_component: unsafeextern"C"fn(PluginId,Str,Str,*constByteSink)->Status @1112
+  item_set_component: unsafeextern"C"fn(PluginId,Str,Str,Str,*constByteSink)->Status @1120
+  item_data_get: unsafeextern"C"fn(PluginId,Str,Str,*mutu32,*constByteSink)->Status @1128
+  item_data_set: unsafeextern"C"fn(PluginId,Str,Str,u32,Bytes,*constByteSink)->Status @1136
+  item_data_remove: unsafeextern"C"fn(PluginId,Str,Str,*constByteSink)->Status @1144
+  item_data_keys: unsafeextern"C"fn(PluginId,Str,*constByteSink)->Status @1152

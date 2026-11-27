@@ -14,6 +14,14 @@
 //! chunks by their canonical encoding, entities and POI by their NBT bytes). Only then the
 //! marker is written (to the own format) or removed (to Anvil), which is the commit point, and
 //! the originals are moved into a backup folder or deleted.
+//!
+//! An in-place conversion keeps a journal, `vanillite/convert` (#167): the target format, one
+//! line per verified file with the size and modification time its source had, and `committed`
+//! once every file is verified. A conversion that stopped (killed, disk full, an unreadable
+//! chunk) is resumed by running it again: verified files whose source did not change since are
+//! kept, the others are converted again. A committed one is finished ([`finish_interrupted`])
+//! before the world is opened. Dimension folders that are not among the converted dimensions
+//! (custom dimensions of data packs) stop a conversion instead of being left behind.
 
 use std::fs;
 use std::io;
@@ -74,6 +82,228 @@ const STREAMS: [(Stream, &str); 3] = [
     (Stream::Entities, "entities"),
     (Stream::Poi, "poi"),
 ];
+
+/// `<level>/vanillite/convert`, the journal of an in-place conversion.
+fn journal_path(level_dir: &Path) -> PathBuf {
+    level_dir.join("vanillite").join("convert")
+}
+
+/// The journal of an in-place conversion.
+struct Journal {
+    to: WorldFormat,
+    /// Every file is verified: the conversion only has to be finished.
+    committed: bool,
+    /// Verified target files (relative to the server folder) with the size and modification
+    /// time of their source then.
+    verified: std::collections::HashMap<PathBuf, (u64, u128)>,
+}
+
+fn read_journal(level_dir: &Path) -> io::Result<Option<Journal>> {
+    let text = match fs::read_to_string(journal_path(level_dir)) {
+        Ok(text) => text,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let mut journal = Journal {
+        to: WorldFormat::Vanillite,
+        committed: false,
+        verified: Default::default(),
+    };
+    let mut to = None;
+    for line in text.lines() {
+        match line.split_once('\t') {
+            _ if line == "committed" => journal.committed = true,
+            _ if line.starts_with("to=") => {
+                to = match &line[3..] {
+                    "anvil" => Some(WorldFormat::Anvil),
+                    "vanillite" => Some(WorldFormat::Vanillite),
+                    _ => None,
+                };
+            }
+            Some((path, source)) => {
+                // A torn last line (a crash while it was appended) is ignored.
+                let mut parts = source.split('\t');
+                if let (Some(Ok(len)), Some(Ok(modified)), None) = (
+                    parts.next().map(str::parse::<u64>),
+                    parts.next().map(str::parse::<u128>),
+                    parts.next(),
+                ) {
+                    journal
+                        .verified
+                        .insert(PathBuf::from(path), (len, modified));
+                }
+            }
+            None => {}
+        }
+    }
+    let Some(to) = to else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{}: no target format", journal_path(level_dir).display()),
+        ));
+    };
+    journal.to = to;
+    Ok(Some(journal))
+}
+
+/// Appends a line to the journal and syncs it.
+fn append_journal(file: &Mutex<fs::File>, line: &str) -> io::Result<()> {
+    use std::io::Write;
+    let file = file
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    (&*file).write_all(format!("{line}\n").as_bytes())?;
+    file.sync_data()
+}
+
+/// Size and modification time (ns since the epoch) of a file.
+fn file_stamp(path: &Path) -> io::Result<(u64, u128)> {
+    let meta = fs::metadata(path)?;
+    let modified = meta
+        .modified()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    Ok((meta.len(), modified))
+}
+
+/// What [`finish_interrupted`] found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Interrupted {
+    /// No interrupted conversion.
+    None,
+    /// A verified conversion into this format was finished now.
+    Finished(WorldFormat),
+    /// A conversion into this format stopped before every file was verified; the world is
+    /// still in the other format and running the conversion again resumes it.
+    Pending(WorldFormat),
+}
+
+/// Finishes an in-place conversion that stopped after every file was verified: the marker,
+/// then the originals moved into `backup` (or deleted). Runs before a world is opened.
+pub fn finish_interrupted(
+    server_dir: &Path,
+    level_dir: &Path,
+    dimension_dirs: &[PathBuf],
+    backup: Option<&Path>,
+) -> io::Result<Interrupted> {
+    let Some(journal) = read_journal(level_dir)? else {
+        return Ok(Interrupted::None);
+    };
+    if !journal.committed {
+        return Ok(Interrupted::Pending(journal.to));
+    }
+    log::info!(
+        "Finishing the interrupted conversion of {} to the {} format",
+        level_dir.display(),
+        journal.to.name()
+    );
+    finish(server_dir, level_dir, dimension_dirs, journal.to, backup)?;
+    Ok(Interrupted::Finished(journal.to))
+}
+
+/// The end of a verified conversion into `to`: the marker of the format, then the originals
+/// out of the dimension folders, then the journal.
+fn finish(
+    server_dir: &Path,
+    level_dir: &Path,
+    dimension_dirs: &[PathBuf],
+    to: WorldFormat,
+    backup: Option<&Path>,
+) -> io::Result<()> {
+    match to {
+        WorldFormat::Vanillite => mark_own_format(level_dir)?,
+        WorldFormat::Anvil => match fs::remove_file(marker_path(level_dir)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        },
+    }
+    let from = to.other();
+    for dir in dimension_dirs {
+        for (_, folder) in STREAMS {
+            let folder = dir.join(folder);
+            let mut originals: Vec<PathBuf> = region_files(&folder, from)
+                .into_iter()
+                .map(|(path, _)| path)
+                .collect();
+            if from == WorldFormat::Anvil
+                && let Ok(entries) = fs::read_dir(&folder)
+            {
+                // External chunks (`c.<x>.<z>.mcc`).
+                originals.extend(
+                    entries
+                        .filter_map(Result::ok)
+                        .map(|e| e.path())
+                        .filter(|p| {
+                            p.file_name()
+                                .and_then(|n| n.to_str())
+                                .is_some_and(|n| n.starts_with("c.") && n.ends_with(".mcc"))
+                        }),
+                );
+            }
+            for path in originals {
+                let result = match backup {
+                    Some(backup) => {
+                        let relative = path.strip_prefix(server_dir).unwrap_or(&path);
+                        let moved = backup.join(relative);
+                        moved
+                            .parent()
+                            .map_or(Ok(()), fs::create_dir_all)
+                            .and_then(|()| fs::rename(&path, &moved))
+                    }
+                    None => fs::remove_file(&path),
+                };
+                if let Err(e) = result {
+                    log::warn!("Couldn't remove the converted file {}: {e}", path.display());
+                }
+            }
+        }
+    }
+    match fs::remove_file(journal_path(level_dir)) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
+}
+
+/// Dimension folders of the worlds `level_dirs` (`<level>/dimensions/<namespace>/<path>/`)
+/// with region files of `format` that are not among `dimensions`: custom dimensions of data
+/// packs, which a conversion cannot leave behind in the old format.
+fn unknown_dimensions(
+    level_dirs: &[PathBuf],
+    dimensions: &[WorldInfo],
+    format: WorldFormat,
+) -> io::Result<()> {
+    let mut unknown = Vec::new();
+    for level in level_dirs {
+        let Ok(namespaces) = fs::read_dir(level.join("dimensions")) else {
+            continue;
+        };
+        for namespace in namespaces.filter_map(Result::ok) {
+            let Ok(paths) = fs::read_dir(namespace.path()) else {
+                continue;
+            };
+            for dir in paths.filter_map(Result::ok).map(|e| e.path()) {
+                if dir.is_dir()
+                    && !dimensions.iter().any(|d| d.dir == dir)
+                    && count_files(&dir, format) > 0
+                {
+                    unknown.push(dir.display().to_string());
+                }
+            }
+        }
+    }
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        format!(
+            "the world has dimensions this server does not load ({}); it cannot be converted \
+             without them",
+            unknown.join(", ")
+        ),
+    ))
+}
 
 /// `<level>/vanillite/format`.
 pub fn marker_path(level_dir: &Path) -> PathBuf {
@@ -240,7 +470,9 @@ fn write_id_table(level_dir: &Path) -> io::Result<()> {
     }
     files::write_atomic(
         &path,
-        &zstd_compress(id_table_text().as_bytes(), 19)?,
+        // A one-shot context: the per-thread one of `zstd_compress` would keep the level-19
+        // context (about 50 MiB) alive for the server's lifetime.
+        &zstd::bulk::compress(id_table_text().as_bytes(), 19)?,
         false,
     )
 }
@@ -310,16 +542,65 @@ pub fn convert_world(
     settings: &ConvertSettings,
 ) -> io::Result<ConvertStats> {
     let from = to.other();
+    let dimension_dirs: Vec<PathBuf> = dimensions.iter().map(|d| d.dir.clone()).collect();
+    match finish_interrupted(
+        server_dir,
+        level_dir,
+        &dimension_dirs,
+        settings.backup.as_deref(),
+    )? {
+        Interrupted::Finished(done) if done == to => return Ok(ConvertStats::default()),
+        Interrupted::Pending(pending) if pending != to => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "an interrupted conversion to the {} format is unfinished; run it again to \
+                     finish it",
+                    pending.name()
+                ),
+            ));
+        }
+        _ => {}
+    }
+    unknown_dimensions(&[level_dir.to_path_buf()], dimensions, from)?;
+    let journal = read_journal(level_dir)?;
+    let verified = journal.map(|j| j.verified).unwrap_or_default();
+    let relative = |path: &Path| path.strip_prefix(server_dir).unwrap_or(path).to_path_buf();
     let mut jobs = Vec::new();
+    let mut resumed = 0;
     for (index, info) in dimensions.iter().enumerate() {
         for (stream, folder) in STREAMS {
             let dir = info.dir.join(folder);
-            // Files of the target format in the folder are not part of the world: without a
-            // marker `.vwr` files are leftovers of an interrupted conversion; `.mca` files
-            // next to an own-format world may be Vanilla's (opened by mistake), so they stop
-            // the conversion instead of being overwritten.
+            let mut kept = Vec::new();
+            for (source, region) in region_files(&dir, from) {
+                let target = source.with_extension(to.extension());
+                // Verified by an interrupted run of this conversion, the source unchanged.
+                if target.exists()
+                    && verified
+                        .get(&relative(&target))
+                        .is_some_and(|stamp| file_stamp(&source).ok() == Some(*stamp))
+                {
+                    kept.push(target);
+                    resumed += 1;
+                    continue;
+                }
+                jobs.push(Job {
+                    dimension: index,
+                    stream,
+                    region,
+                    source,
+                    target,
+                });
+            }
+            // Other files of the target format in the folder are not part of the world:
+            // without a marker `.vwr` files are leftovers of an interrupted conversion; `.mca`
+            // files next to an own-format world may be Vanilla's (opened by mistake), so they
+            // stop the conversion instead of being overwritten, unless the journal has them.
             for (path, _) in region_files(&dir, to) {
-                if to == WorldFormat::Vanillite {
+                if kept.contains(&path) {
+                    continue;
+                }
+                if to == WorldFormat::Vanillite || verified.contains_key(&relative(&path)) {
                     fs::remove_file(&path)?;
                 } else {
                     return Err(io::Error::new(
@@ -331,82 +612,65 @@ pub fn convert_world(
                     ));
                 }
             }
-            for (source, region) in region_files(&dir, from) {
-                let target = source.with_extension(to.extension());
-                jobs.push(Job {
-                    dimension: index,
-                    stream,
-                    region,
-                    source,
-                    target,
-                });
-            }
         }
     }
     let started = Instant::now();
     log::info!(
-        "Converting {} region files of {} from {} to {}",
+        "Converting {} region files of {} from {} to {}{}",
         jobs.len(),
         level_dir.display(),
         from.name(),
-        to.name()
+        to.name(),
+        if resumed > 0 {
+            format!(" ({resumed} were converted before)")
+        } else {
+            String::new()
+        }
     );
     let upgrades = match from {
         WorldFormat::Vanillite => Upgrades::load(level_dir)?,
         WorldFormat::Anvil => Upgrades::none(),
     };
-    let stats = match run_jobs(&jobs, dimensions, from, to, settings, &upgrades) {
+    let journal_file = {
+        let path = journal_path(level_dir);
+        if !path.exists() {
+            files::write_atomic(&path, format!("to={}\n", to.name()).as_bytes(), false)?;
+        }
+        Mutex::new(fs::OpenOptions::new().append(true).open(&path)?)
+    };
+    let journal = Some((&journal_file, server_dir));
+    let stats = match run_jobs(&jobs, dimensions, from, to, settings, &upgrades, journal) {
         Ok(stats) => stats,
         Err(e) => {
+            // Verified files stay for a resumed run; the failed and unfinished ones go.
+            let verified = read_journal(level_dir)?
+                .map(|j| j.verified)
+                .unwrap_or_default();
             for job in &jobs {
-                let _ = fs::remove_file(&job.target);
+                if !verified.contains_key(&relative(&job.target)) {
+                    let _ = fs::remove_file(&job.target);
+                }
             }
-            return Err(e);
+            return Err(io::Error::new(
+                e.kind(),
+                format!(
+                    "{e}; the world stays in the {} format, running the conversion again \
+                     resumes it",
+                    from.name()
+                ),
+            ));
         }
     };
-    // The commit point.
-    match to {
-        WorldFormat::Vanillite => mark_own_format(level_dir)?,
-        WorldFormat::Anvil => match fs::remove_file(marker_path(level_dir)) {
-            Ok(()) => {}
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e),
-        },
-    }
-    for job in &jobs {
-        let mut originals = vec![job.source.clone()];
-        if from == WorldFormat::Anvil
-            && let Some(dir) = job.source.parent()
-        {
-            // External chunks (`c.<x>.<z>.mcc`) of the region.
-            for slot in 0..1024 {
-                let pos = ChunkPos::new(
-                    job.region.0 * 32 + (slot & 31),
-                    job.region.1 * 32 + (slot / 32),
-                );
-                let external = dir.join(format!("c.{}.{}.mcc", pos.x, pos.z));
-                if external.exists() {
-                    originals.push(external);
-                }
-            }
-        }
-        for path in originals {
-            let result = match &settings.backup {
-                Some(backup) => {
-                    let relative = path.strip_prefix(server_dir).unwrap_or(&path);
-                    let moved = backup.join(relative);
-                    moved
-                        .parent()
-                        .map_or(Ok(()), fs::create_dir_all)
-                        .and_then(|()| fs::rename(&path, &moved))
-                }
-                None => fs::remove_file(&path),
-            };
-            if let Err(e) = result {
-                log::warn!("Couldn't remove the converted file {}: {e}", path.display());
-            }
-        }
-    }
+    // The commit point: every file is verified.
+    append_journal(&journal_file, "committed")?;
+    drop(journal_file);
+    finish(
+        server_dir,
+        level_dir,
+        &dimension_dirs,
+        to,
+        settings.backup.as_deref(),
+    )?;
     log::info!(
         "Converted {} chunks and {} entity and POI records in {:.1} s: {:.1} MiB of {} became \
          {:.1} MiB of {}{}",
@@ -425,17 +689,21 @@ pub fn convert_world(
     Ok(stats)
 }
 
-/// Writes a complete Vanilla (Anvil) copy of an own-format world into `target`, keeping the
-/// paths of `level_dirs` below `server_dir` (the first holds the marker): `level.dat`, players,
-/// saved data and every other file are copied, chunks, entities and POI converted, chunks of
-/// older data versions upgraded. The world is only read.
+/// Writes a complete copy of a world in the format `to` into `target`, keeping the paths of
+/// `level_dirs` below `server_dir` (the first holds the marker): `level.dat`, players, saved
+/// data, data packs and every other file are copied, chunks, entities and POI converted and
+/// verified, chunks of older data versions upgraded. The world is only read. To Anvil this is
+/// the export of an own-format world for Vanilla; to the own format a converted copy of an
+/// Anvil world.
 pub fn export_world(
     server_dir: &Path,
     level_dirs: &[PathBuf],
     dimensions: &[WorldInfo],
     target: &Path,
+    to: WorldFormat,
     settings: &ConvertSettings,
 ) -> io::Result<ConvertStats> {
+    let from = to.other();
     let relative = |path: &Path| path.strip_prefix(server_dir).unwrap_or(path).to_path_buf();
     for level in level_dirs {
         let out = target.join(relative(level));
@@ -446,16 +714,17 @@ pub fn export_world(
             ));
         }
     }
+    unknown_dimensions(level_dirs, dimensions, from)?;
     for level in level_dirs {
-        copy_tree(level, &target.join(relative(level)), true)?;
+        copy_tree(level, &target.join(relative(level)), from)?;
     }
     let mut jobs = Vec::new();
     for (index, info) in dimensions.iter().enumerate() {
         for (stream, folder) in STREAMS {
             let out = target.join(relative(&info.dir)).join(folder);
-            for (source, region) in region_files(&info.dir.join(folder), WorldFormat::Vanillite) {
+            for (source, region) in region_files(&info.dir.join(folder), from) {
                 fs::create_dir_all(&out)?;
-                let target = out.join(format!("r.{}.{}.mca", region.0, region.1));
+                let target = out.join(format!("r.{}.{}.{}", region.0, region.1, to.extension()));
                 jobs.push(Job {
                     dimension: index,
                     stream,
@@ -466,23 +735,22 @@ pub fn export_world(
             }
         }
     }
-    let upgrades = match level_dirs.first() {
-        Some(level) => Upgrades::load(level)?,
-        None => Upgrades::none(),
+    let upgrades = match (from, level_dirs.first()) {
+        (WorldFormat::Vanillite, Some(level)) => Upgrades::load(level)?,
+        _ => Upgrades::none(),
     };
     let started = Instant::now();
-    let stats = run_jobs(
-        &jobs,
-        dimensions,
-        WorldFormat::Vanillite,
-        WorldFormat::Anvil,
-        settings,
-        &upgrades,
-    )?;
+    let stats = run_jobs(&jobs, dimensions, from, to, settings, &upgrades, None)?;
+    if to == WorldFormat::Vanillite
+        && let Some(level) = level_dirs.first()
+    {
+        mark_own_format(&target.join(relative(level)))?;
+    }
     log::info!(
-        "Exported {} chunks and {} entity and POI records to {} in {:.1} s",
+        "Wrote {} chunks and {} entity and POI records in the {} format to {} in {:.1} s",
         stats.chunks,
         stats.records,
+        to.name(),
         target.display(),
         started.elapsed().as_secs_f64()
     );
@@ -527,6 +795,7 @@ pub fn upgrade_world(
         WorldFormat::Vanillite,
         settings,
         &upgrades,
+        None,
     ) {
         Ok(stats) => stats,
         Err(e) => {
@@ -559,24 +828,31 @@ pub fn upgrade_world(
     Ok(stats)
 }
 
-/// Copies a folder; with `skip_own` without own-format files, `vanillite/` and the lock.
-fn copy_tree(from: &Path, to: &Path, skip_own: bool) -> io::Result<()> {
+/// Copies a folder without the region files of `format` (they are converted), the lock,
+/// temporary files and the own format's `vanillite/` folder.
+fn copy_tree(from: &Path, to: &Path, format: WorldFormat) -> io::Result<()> {
     fs::create_dir_all(to)?;
     for entry in fs::read_dir(from)? {
         let entry = entry?;
         let name = entry.file_name();
         let name = name.to_string_lossy();
         let path = entry.path();
-        if skip_own
-            && (name.ends_with(".vwr")
-                || name == "session.lock"
-                || name.ends_with(".tmp")
-                || (name == "vanillite" && path.join("format").exists()))
+        let region_file = match format {
+            WorldFormat::Vanillite => name.ends_with(".vwr"),
+            WorldFormat::Anvil => {
+                (name.starts_with("r.") && name.ends_with(".mca"))
+                    || (name.starts_with("c.") && name.ends_with(".mcc"))
+            }
+        };
+        if region_file
+            || name == "session.lock"
+            || name.ends_with(".tmp")
+            || (name == "vanillite" && path.join("format").exists())
         {
             continue;
         }
         if entry.file_type()?.is_dir() {
-            copy_tree(&path, &to.join(&*name), skip_own)?;
+            copy_tree(&path, &to.join(&*name), format)?;
         } else {
             fs::copy(&path, to.join(&*name))?;
         }
@@ -592,6 +868,7 @@ fn run_jobs(
     to: WorldFormat,
     settings: &ConvertSettings,
     upgrades: &std::sync::Arc<Upgrades>,
+    journal: Option<(&Mutex<fs::File>, &Path)>,
 ) -> io::Result<ConvertStats> {
     let codecs: Vec<Codecs> = dimensions
         .iter()
@@ -619,6 +896,20 @@ fn run_jobs(
                     };
                     let job = &jobs[index];
                     let outcome = convert_file(job, &codecs[job.dimension], from, to, settings)
+                        .and_then(|stats| {
+                            // The source as it was converted: a resumed run keeps the file
+                            // only while the source is unchanged.
+                            if let Some((file, server_dir)) = journal {
+                                let (len, modified) = file_stamp(&job.source)?;
+                                let target =
+                                    job.target.strip_prefix(server_dir).unwrap_or(&job.target);
+                                append_journal(
+                                    file,
+                                    &format!("{}\t{len}\t{modified}", target.display()),
+                                )?;
+                            }
+                            Ok(stats)
+                        })
                         .map_err(|e| {
                             io::Error::new(e.kind(), format!("{}: {e}", job.source.display()))
                         });
@@ -939,6 +1230,7 @@ mod tests {
             std::slice::from_ref(&level),
             std::slice::from_ref(&info),
             &export,
+            WorldFormat::Anvil,
             &settings(None),
         )
         .unwrap();
@@ -961,6 +1253,213 @@ mod tests {
         assert_eq!(detect(&level, &dims).unwrap(), Some(WorldFormat::Anvil));
         assert_eq!(count_files(&level, WorldFormat::Vanillite), 0);
         assert_same_as_vanilla(&level, &chunks, &info);
+        assert!(!journal_path(&level).exists());
+
+        // To a copy: Anvil → own format copy → Anvil copy, the world itself untouched.
+        let own = server.join("own");
+        export_world(
+            &server,
+            std::slice::from_ref(&level),
+            std::slice::from_ref(&info),
+            &own,
+            WorldFormat::Vanillite,
+            &settings(None),
+        )
+        .unwrap();
+        let own_level = own.join("world");
+        assert_eq!(
+            detect(&own_level, std::slice::from_ref(&own_level)).unwrap(),
+            Some(WorldFormat::Vanillite)
+        );
+        assert_eq!(count_files(&own_level, WorldFormat::Anvil), 0);
+        assert!(own_level.join("level.dat").exists());
+        let mut own_info = info.clone();
+        own_info.dir = own_level.clone();
+        let back = server.join("back");
+        export_world(
+            &own,
+            std::slice::from_ref(&own_level),
+            std::slice::from_ref(&own_info),
+            &back,
+            WorldFormat::Anvil,
+            &settings(None),
+        )
+        .unwrap();
+        assert_same_as_vanilla(&back.join("world"), &chunks, &info);
+        assert_same_as_vanilla(&level, &chunks, &info);
+        fs::remove_dir_all(server).unwrap();
+    }
+
+    /// Every record of the Anvil files in `folder` (decompressed), by chunk.
+    fn anvil_records(folder: &Path) -> std::collections::BTreeMap<(i32, i32), Vec<u8>> {
+        let mut out = std::collections::BTreeMap::new();
+        for (path, region) in region_files(folder, WorldFormat::Anvil) {
+            let mut file = RegionFile::open(&path, false).unwrap().unwrap();
+            for slot in 0..1024 {
+                let pos = pos_of(region, slot);
+                if let Some((compression, data)) = file.read(pos).unwrap() {
+                    out.insert((pos.x, pos.z), compression.decompress(&data).unwrap());
+                }
+            }
+        }
+        out
+    }
+
+    /// The files of a folder that are not region files, by path below it.
+    fn other_files(dir: &Path, below: &Path, out: &mut Vec<(PathBuf, Vec<u8>)>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            if path.is_dir() {
+                if name != "vanillite" {
+                    other_files(&path, below, out);
+                }
+            } else if !(name.ends_with(".mca") || name.ends_with(".vwr") || name == "session.lock")
+            {
+                let relative = path.strip_prefix(below).unwrap().to_path_buf();
+                out.push((relative, fs::read(&path).unwrap()));
+            }
+        }
+        out.sort();
+    }
+
+    /// A real Paper world (`VANILLITE_TEST_WORLD`, a copy; it is only read): Anvil → own
+    /// format copy → Anvil copy gives every entity and POI record back byte for byte, every
+    /// chunk with the same decoded content and every tag the codec does not decode unchanged,
+    /// and every other file (`level.dat`, players, saved data, data packs) unchanged. Skipped
+    /// without the variable.
+    #[test]
+    fn paper_world_round_trip() {
+        let Some(world) = std::env::var_os("VANILLITE_TEST_WORLD").map(PathBuf::from) else {
+            return;
+        };
+        let source = world.parent().unwrap();
+        let level = world.file_name().unwrap();
+        let server = temp("paper-round-trip");
+        let dims = ["overworld", "the_nether", "the_end"];
+        let dim_dir =
+            |root: &Path, dim: &str| root.join(level).join("dimensions/minecraft").join(dim);
+        // Every biome of the world, so the codec knows them all.
+        let mut all = Vec::new();
+        for dim in dims {
+            for (pos, bytes) in anvil_records(&dim_dir(source, dim).join("region")) {
+                let root =
+                    vanillite_nbt::read::read_named(&mut bytes.as_slice(), &mut Budget::file())
+                        .unwrap();
+                all.push((ChunkPos::new(pos.0, pos.1), bytes, root));
+            }
+        }
+        assert!(!all.is_empty(), "no chunks in {}", world.display());
+        let base = codec(&all).info().clone();
+        let infos = |root: &Path| -> Vec<WorldInfo> {
+            dims.iter()
+                .map(|dim| WorldInfo {
+                    dimension: format!("minecraft:{dim}"),
+                    dir: dim_dir(root, dim),
+                    min_y: if *dim == "overworld" { -64 } else { 0 },
+                    height: if *dim == "overworld" { 384 } else { 256 },
+                    has_sky_light: *dim != "the_nether",
+                    ..base.clone()
+                })
+                .collect()
+        };
+        let own = server.join("own");
+        export_world(
+            source,
+            std::slice::from_ref(&world),
+            &infos(source),
+            &own,
+            WorldFormat::Vanillite,
+            &settings(None),
+        )
+        .unwrap();
+        assert_eq!(
+            count_files(&dim_dir(&own, "overworld"), WorldFormat::Anvil),
+            0
+        );
+        let back = server.join("back");
+        export_world(
+            &own,
+            &[own.join(level)],
+            &infos(&own),
+            &back,
+            WorldFormat::Anvil,
+            &settings(None),
+        )
+        .unwrap();
+        let mut chunks = 0;
+        for (dim, info) in dims.iter().zip(infos(source)) {
+            let anvil = crate::Codec::new(&info);
+            for (folder, _) in [("region", 0), ("entities", 1), ("poi", 2)] {
+                let before = anvil_records(&dim_dir(source, dim).join(folder));
+                let after = anvil_records(&dim_dir(&back, dim).join(folder));
+                assert_eq!(
+                    before.keys().collect::<Vec<_>>(),
+                    after.keys().collect::<Vec<_>>(),
+                    "{dim} {folder}"
+                );
+                for (key, bytes) in &before {
+                    let again = &after[key];
+                    if folder != "region" {
+                        assert_eq!(bytes, again, "{dim} {folder} {key:?}");
+                        continue;
+                    }
+                    chunks += 1;
+                    let pos = ChunkPos::new(key.0, key.1);
+                    let read = |bytes: &[u8]| {
+                        vanillite_nbt::read::read_named(&mut &bytes[..], &mut Budget::file())
+                            .unwrap()
+                    };
+                    let (root, root_again) = (read(bytes), read(again));
+                    for (name, tag) in root.iter() {
+                        if !crate::chunk_nbt::DECODED.contains(&name) {
+                            assert_eq!(root_again.get(name), Some(tag), "{dim} {key:?} {name}");
+                        }
+                    }
+                    assert_eq!(
+                        anvil.write(&anvil.read(pos, root).unwrap()).unwrap(),
+                        anvil.write(&anvil.read(pos, root_again).unwrap()).unwrap(),
+                        "{dim} {key:?}"
+                    );
+                }
+            }
+        }
+        assert!(chunks > 0);
+        let (mut before, mut after) = (Vec::new(), Vec::new());
+        other_files(&world, &world, &mut before);
+        other_files(&back.join(level), &back.join(level), &mut after);
+        assert_eq!(
+            before.iter().map(|f| &f.0).collect::<Vec<_>>(),
+            after.iter().map(|f| &f.0).collect::<Vec<_>>()
+        );
+        assert!(before == after, "a file differs");
+        fs::remove_dir_all(server).unwrap();
+    }
+
+    /// Region files of a dimension the server does not load (a data pack's) stop a conversion
+    /// instead of being left behind in the old format.
+    #[test]
+    fn unknown_dimensions_stop_a_conversion() {
+        let server = temp("unknown-dimension");
+        let level = server.join("world");
+        let (info, _) = anvil_world(&level);
+        let moon = level.join("dimensions/custom/moon/region");
+        fs::create_dir_all(&moon).unwrap();
+        RegionFile::open(&moon.join("r.0.0.mca"), true).unwrap();
+        let error = convert_world(
+            &server,
+            &level,
+            std::slice::from_ref(&info),
+            WorldFormat::Vanillite,
+            &settings(None),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("moon"), "{error}");
+        assert_eq!(
+            detect(&level, std::slice::from_ref(&level)).unwrap(),
+            Some(WorldFormat::Anvil)
+        );
+        assert_eq!(count_files(&level, WorldFormat::Vanillite), 0);
         fs::remove_dir_all(server).unwrap();
     }
 
@@ -993,9 +1492,74 @@ mod tests {
             detect(&level, std::slice::from_ref(&level)).unwrap(),
             Some(WorldFormat::Anvil)
         );
-        assert_eq!(count_files(&level, WorldFormat::Vanillite), 0);
+        assert!(!path.with_extension("vwr").exists());
         assert_eq!(fs::read(&path).unwrap(), before);
         assert!(!server.join("backup").exists());
+        // Verified files are kept for the next run, which resumes: it converts only the rest.
+        let journal = read_journal(&level).unwrap().unwrap();
+        assert_eq!(
+            journal.verified.len(),
+            count_files(&level, WorldFormat::Vanillite)
+        );
+        let mut file = RegionFile::open(&path, false).unwrap().unwrap();
+        file.delete(ChunkPos::new(chunks[0].0.x + 1, chunks[0].0.z))
+            .unwrap();
+        drop(file);
+        let stats = convert_world(
+            &server,
+            &level,
+            std::slice::from_ref(&info),
+            WorldFormat::Vanillite,
+            &settings(None),
+        )
+        .unwrap();
+        assert_eq!(stats.files as usize, 4 - journal.verified.len());
+        assert_eq!(
+            detect(&level, std::slice::from_ref(&level)).unwrap(),
+            Some(WorldFormat::Vanillite)
+        );
+        assert_eq!(count_files(&level, WorldFormat::Anvil), 0);
+        assert_eq!(count_files(&level, WorldFormat::Vanillite), 4);
+        assert!(!journal_path(&level).exists());
+        fs::remove_dir_all(server).unwrap();
+    }
+
+    /// A conversion killed after its commit point is finished before the world opens: the
+    /// marker is set and the originals are removed.
+    #[test]
+    fn a_committed_conversion_is_finished() {
+        let server = temp("committed");
+        let level = server.join("world");
+        let (info, _) = anvil_world(&level);
+        convert_world(
+            &server,
+            &level,
+            std::slice::from_ref(&info),
+            WorldFormat::Vanillite,
+            &settings(Some(server.join("backup"))),
+        )
+        .unwrap();
+        // Back to the state of a kill right after `committed` was written.
+        fs::remove_file(marker_path(&level)).unwrap();
+        let backup = server.join("backup").join("world");
+        for folder in ["region", "entities"] {
+            for entry in fs::read_dir(backup.join(folder)).unwrap() {
+                let entry = entry.unwrap();
+                fs::copy(entry.path(), level.join(folder).join(entry.file_name())).unwrap();
+            }
+        }
+        fs::write(journal_path(&level), "to=vanillite\ncommitted\n").unwrap();
+        assert_eq!(
+            finish_interrupted(&server, &level, std::slice::from_ref(&level), None).unwrap(),
+            Interrupted::Finished(WorldFormat::Vanillite)
+        );
+        assert_eq!(
+            detect(&level, std::slice::from_ref(&level)).unwrap(),
+            Some(WorldFormat::Vanillite)
+        );
+        assert_eq!(count_files(&level, WorldFormat::Anvil), 0);
+        assert_eq!(count_files(&level, WorldFormat::Vanillite), 4);
+        assert!(!journal_path(&level).exists());
         fs::remove_dir_all(server).unwrap();
     }
 
@@ -1121,6 +1685,7 @@ mod tests {
             std::slice::from_ref(&level),
             std::slice::from_ref(&info),
             &server.join("export"),
+            WorldFormat::Anvil,
             &settings(None),
         )
         .unwrap();
